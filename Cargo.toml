@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/logfmt", "crates/trust", "crates/vault", "crates/model", "crates/dbc", "crates/ingest", "crates/timeline", "crates/sentry-mate"]
+members = ["crates/logfmt", "crates/trust", "crates/vault", "crates/model", "crates/dbc", "crates/ingest", "crates/timeline", "crates/db", "crates/sentry-mate"]
 
 [workspace.package]
 version = "0.1.0"
