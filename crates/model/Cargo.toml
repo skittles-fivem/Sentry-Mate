@@ -1,0 +1,13 @@
+[package]
+name = "model"
+description = "Sentry Mate's shared types: cars, samples, states, drives, charges, places, prices"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
