@@ -152,6 +152,20 @@ Every rule above gets checked against the owner's real drives and charges before
 - **Desktop first.** The UI is made for desktop browsers now; phone layouts come later (the packs are written so
   they can be added without starting over). Screenshots with changes: desktop only, until phone support is added.
 
+## Display: native 4K and scaling (owner, 2026-11-16)
+
+- **Native 4K** (3840 x 2160 at 100 %): the interface uses the space (more columns, wider maps and charts, more rows
+  in lists) instead of a narrow column in the middle, and text and controls grow with the screen so they read well at
+  a distance. Crisp at any pixel density: canvas charts drawn at the device pixel ratio and redrawn when it changes,
+  icons and logos as SVG, the map's vector tiles (offline PMTiles) sharp at any zoom.
+- **Scaling**: works with the operating system's scaling (100 %, 125 %, 150 %, 175 %, 200 %) and browser zoom
+  (50 % to 200 %) without overlapping, cut-off or tiny elements: sizes in rem/em, layouts that reflow, no fixed
+  pixel widths that break; charts and the map resize with their space.
+- **Interface size** setting (per person, 75 % to 200 %, remembered with the account) on top of the system's, for a
+  dashboard on a wall-mounted 4K screen or a small laptop.
+- Checked with screenshots at 1440 x 900 at 2x, 1920 x 1080 at 1x and 2x (a 4K screen at 200 %), 2560 x 1440,
+  3840 x 2160 at 1x, and browser zoom 67 % and 150 %. Packs are expected to do the same; the built-in ones show how.
+
 ## UI packs: any interface, installed from a zip (owner, 2026-11-16)
 
 Every interface is a **UI pack**, the built-in ones included, the way Sentry Six Manager's interface packs work
