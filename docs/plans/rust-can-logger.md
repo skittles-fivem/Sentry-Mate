@@ -327,6 +327,62 @@ services:
 - **First start**: the log prints a one-time setup code; the web UI (HTTPS) asks for it, creates the
   admin account, makes the keys and shows the recovery key once.
 
+## Findings from the first real log (2026-11-16)
+
+One log and its sidecar from the owner's car (`<key>_20261116T035057Z_5677`, SMO build 147, columns /2,
+232,920 bytes, 125,645 frames in 61.5 s). Analysed in a session's scratch space only; the log, VIN and
+position stay out of the repo.
+
+- **Integrity**: SHA-256, length, key fingerprint and ECDSA signature all check (chain index 10,380).
+  The `trust` crate's first test vector can be built the same way from a synthetic log.
+- **What the car was doing**: parked at night, plugged in, charge complete (`BMS_uiChargeStatus` 4
+  BMS_CHARGE_COMPLETE, `CP_hvChargeStatus` 5 ENABLED, `PCS_hvChargeStatus` 2 ENABLED, battery current
+  ~0 A, 401 V, 12 V battery 15.7 V, outside -1.5 °C). Only **can0** (~2,000 frames/s) and **can3** sent;
+  **can1 (chassis) was silent** and there was no gear or speed message (0x118 / 0x257). So "asleep" can't
+  just mean "no frames": the timeline needs per-bus states (vehicle bus awake + chassis asleep = parked,
+  awake, e.g. charging or keeping the battery warm).
+- **Battery % disagrees**: `UI_SOC` (0x33A) 71 %, while `SOCUI292` (0x292) says 100 % and `SOCave292`
+  99.6 %. Sentry Manager's `canNow` takes `SOCUI292` first, so its Battery stat may show 100 % here.
+  `UI_idealRange` 580 mi is also not believable (`UI_Range` 256 mi is). Before the timeline trusts
+  any SOC or range signal, check them against the car's screen at several levels; likely a 0x292 layout
+  change in newer firmware (a candidate for `override.dbc`), or 0x292 is relative to the charge limit.
+  Reported here only; nothing changed in Sentry Manager.
+- **Decoded share**: 55,966 of 125,645 frames (45 %) decode with the Model 3/Y set (1,475 signals);
+  200 of 286 IDs are unknown. Raw logs must stay the source of truth so these can be decoded later.
+- **Clocks**: the wall-clock to monotonic offset is steady to about 1 ms across the whole file, and the
+  helper's clock is within 7 ms after 4 days running. But the file has **20 `# clock … jump` lines**, in
+  pairs about 425 ms apart in monotonic time with the same wall time: not real jumps. They look like the
+  logger being paused (about 0.4 s, roughly every 17 s, plus one 1.55 s gap between frames) between
+  reading one clock and the other. Sentry Mate must not treat a lone `jump` pair as a clock change; use
+  the helper-clock lines and the median offset. Worth fixing in SMO (read monotonic, wall, monotonic and
+  keep the pair only when the two monotonic reads are close); not done here.
+- **Frames start 1.5 s before `start_wall_ms`** (queued frames): file spans overlap by a moment; the
+  timeline orders by frame time, not by file.
+- **Compression, measured on this log**:
+
+  | What | Bytes |
+  |---|---|
+  | candump text | 5,781,525 |
+  | candump text, xz -6 / -9e | 490,356 / 500,484 |
+  | columns /2 as uploaded (xz -6) | 232,920 |
+  | columns /2 body, xz -9e | 232,840 (0.04 % smaller) |
+  | ... of which: frame times | ~134,800 (58 %) |
+  | ... which key each frame is | ~44,300 |
+  | ... payload bytes | ~51,900 |
+  | every decoded signal, on change + once a second, ms, xz -9e | 99,828 |
+  | every decoded signal, on change only, ms, xz -9e | 87,652 |
+
+  Conclusions: **/2 is already at the floor for lossless.** The frame times carry about 9 bits of real
+  information each (helper-receive jitter at microsecond resolution), so no layout can shrink them
+  without losing exactness. Per-message delta-of-delta times and XOR'd payloads were tried and came out
+  **worse** (~350 KB). No `/3` format for SMO, then; keep the uploaded logs as they are. The savings are
+  in what Sentry Mate derives: decoded signals at ms resolution are ~38 % of the raw log, and the 1 Hz
+  car samples and drives/charges far smaller. zstd wasn't on this machine; it gets measured in Phase 4
+  for decode speed (likely zstd for derived data the UI reads often, xz for cold archives).
+- **Storage estimate**: about 0.23 MB/min parked and awake, ~0.76 MB/min driving (SMO's figure), plus
+  ~0.1-0.3 MB/min derived. A year of a car that is awake ~6 h a day is roughly 50-120 GB raw; retention
+  settings matter more than codecs.
+
 ## Phases
 
 0. **Decide** (questions below). Then the one removal commit (see This repo). Get a real bundle from the owner (Sentry Manager → Nerd → export
@@ -355,4 +411,5 @@ services:
 8. Several cars and accounts: yes, the Sentry Manager way.
 9. Runs in **Docker**: one container (see Docker).
 
-Nothing left open to start Phase 0 except the real CAN bundle from the owner.
+Phase 0 has its first real log. Still wanted from the owner: a bundle with a few drives and a charge in
+progress, and the battery % shown on the car's screen at the time of a log (to settle the SOC signals).
