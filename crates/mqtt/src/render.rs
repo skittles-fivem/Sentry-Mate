@@ -184,6 +184,25 @@ pub(crate) fn round(v: f64, decimals: i32) -> Option<f64> {
     Some(if r == 0.0 { 0.0 } else { r })
 }
 
+/// Longest car name, model or place name published, in bytes (longer ones are cut).
+pub const MAX_NAME: usize = 256;
+/// Longest address published, in bytes (longer ones are cut).
+pub const MAX_ADDRESS: usize = 1024;
+
+/// `s` cut to at most `max` bytes, at a character boundary. Names and addresses are typed by people or looked up, so
+/// without a bound one could make a message larger than the link sends (or the broker takes); that message would fail
+/// the connection, be first in line again after reconnecting, and stop publishing for every car.
+pub(crate) fn clip(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 fn text(v: Option<f64>, decimals: i32) -> Option<String> {
     v.and_then(|v| round(v, decimals)).map(|r| r.to_string())
 }
@@ -228,7 +247,7 @@ pub fn field_payload(layout: &Layout, field: Field, now: &Now, place: Option<&st
         Field::State => Some(car_state(now).to_string()),
         Field::Driving => Some(bool_text(now.driving)),
         Field::Charging => s.charging.map(bool_text),
-        Field::Place => Some(place.unwrap_or_default().to_string()),
+        Field::Place => Some(clip(place.unwrap_or_default(), MAX_NAME).to_string()),
         Field::Soc => text(s.soc, 1),
         Field::Range => text(s.range_km.map(|v| u.distance(v)), 1),
         Field::Speed => text(s.speed_kmh.map(|v| u.speed(v)), 1),
@@ -352,7 +371,7 @@ fn put_position(
     let pos = p.and_then(|p| valid_position(Some(p.lat), Some(p.lon)));
     put(o, &format!("{prefix}latitude"), num(pos.map(|(la, _)| la), 6));
     put(o, &format!("{prefix}longitude"), num(pos.map(|(_, lo)| lo), 6));
-    put(o, &format!("{prefix}address"), address.map_or(Value::Null, Value::from));
+    put(o, &format!("{prefix}address"), address.map_or(Value::Null, |a| clip(a, MAX_ADDRESS).into()));
 }
 
 /// The event as JSON on `<prefix>/cars/<id>/event`, not retained: `event_type` (as Home Assistant's event entity
@@ -362,7 +381,7 @@ pub fn event_message(layout: &Layout, event: &Event) -> Message {
     let u = &layout.units;
     let dist = |v: Option<f64>| num(v.map(|v| u.distance(v)), 1);
     let temp = |v: Option<f64>| num(v.map(|v| u.temperature(v)), 1);
-    let place = |p: &Option<String>| p.clone().map_or(Value::Null, Value::from);
+    let place = |p: &Option<String>| p.as_deref().map_or(Value::Null, |s| clip(s, MAX_NAME).into());
     let mut o = Map::new();
     put(&mut o, "event_type", event.event_type().into());
     put(&mut o, "car", event.car().into());
@@ -742,6 +761,70 @@ pub(crate) mod tests {
         assert_eq!(e["energy_used_kwh"], Value::Null);
         assert_eq!((e["end_soc"].as_f64(), e["cost"].as_f64()), (Some(80.0), Some(12.35)));
         assert!(Event::TYPES.contains(&"charge_ended"));
+    }
+
+    #[test]
+    fn clipping_cuts_at_a_character() {
+        assert_eq!(clip("Home", 10), "Home");
+        assert_eq!(clip("Home", 2), "Ho");
+        assert_eq!(clip("Café", 4), "Caf", "é is two bytes: cut before it, not through it");
+        assert_eq!(clip("Café", 5), "Café");
+        assert_eq!(clip("ééé", 1), "");
+    }
+
+    #[test]
+    fn every_message_is_small_however_long_the_names() {
+        // names and addresses people type or look up: control characters grow 6x as JSON (\u0001), and 4-byte
+        // characters must not be cut through
+        let long = format!("{}{}", "\u{1}".repeat(400_000), "🚗".repeat(100_000));
+        let info = CarInfo { name: long.clone(), model: Some(long.clone()) };
+        let mut d = drive(3);
+        d.start_address = Some(long.clone());
+        d.end_address = Some(long.clone());
+        let c = Charge {
+            id: 1,
+            car: 3,
+            start_ms: 0,
+            end_ms: 0,
+            position: d.start.clone(),
+            place: None,
+            address: Some(long.clone()),
+            kind: None,
+            energy_added_kwh: None,
+            energy_used_kwh: None,
+            start_soc: None,
+            end_soc: None,
+            start_range_km: None,
+            end_range_km: None,
+            power_max_kw: None,
+            outside_temp_avg_c: None,
+            battery_temp_avg_c: None,
+            cost: None,
+            source: model::Source::Can,
+            rules_version: 1,
+        };
+        let p = || Some(long.clone());
+        for l in [layout(true, Units::default()), layout(false, Units::default())] {
+            let mut msgs = now_messages(&l, &parked(3), Some(&long));
+            msgs.extend(crate::discovery::configs(&l, 3, &info));
+            for e in [
+                Event::DriveStarted { drive: Box::new(d.clone()), start_place: p() },
+                Event::DriveEnded { drive: Box::new(d.clone()), start_place: p(), end_place: p() },
+                Event::ChargeStarted { charge: Box::new(c.clone()), place: p() },
+                Event::ChargeEnded { charge: Box::new(c.clone()), place: p() },
+            ] {
+                msgs.push(event_message(&l, &e));
+            }
+            for m in &msgs {
+                let size = m.topic.len() + m.payload.len();
+                assert!(size <= 32 * 1024, "{} is {size} bytes", m.topic);
+                if m.payload.starts_with('{') {
+                    let _: Value = serde_json::from_str(&m.payload).unwrap();
+                }
+            }
+            let place = msgs.iter().find(|m| m.topic.ends_with("/place")).unwrap();
+            assert_eq!(place.payload.len(), MAX_NAME);
+        }
     }
 
     #[test]

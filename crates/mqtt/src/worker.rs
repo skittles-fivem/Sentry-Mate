@@ -1,6 +1,7 @@
 //! The connection, run as one task: connect, publish what waits in the queue, and on any error drop the connection
-//! whole and try again after a wait that doubles (reset once a connection worked). Each try gets a fresh rumqttc
-//! client and event loop, so nothing from a dead connection is replayed out of order.
+//! whole and try again after a wait that doubles (reset once a connection has lasted [`STABLE_AFTER`], so a broker
+//! that accepts and then drops the connection, e.g. another client with the same id, isn't hammered every second).
+//! Each try gets a fresh rumqttc client and event loop, so nothing from a dead connection is replayed out of order.
 //!
 //! Nothing is lost to a dropped link: the broker acknowledges QoS 1 messages in the order it got them (MQTT 3.1.1,
 //! 4.6), so counting its PUBACKs tells exactly which items it has. Items it hasn't confirmed when the link drops go
@@ -11,18 +12,24 @@ use crate::cache::{Sent, SentCache, fingerprint};
 use crate::discovery;
 use crate::queue::{Item, NowItem, Pending, Queue};
 use crate::render::{self, Field, Layout, Message};
+use crate::settings::STABLE_AFTER;
 use model::CarId;
 use rumqttc::{AsyncClient, EventLoop, MqttOptions, NetworkOptions, Outgoing, Packet, QoS};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 use tokio::sync::{Notify, watch};
 
 /// Requests rumqttc holds before `publish` waits; with the in-flight limit, the most a dropped link can leave
 /// unconfirmed.
 pub(crate) const CHANNEL: usize = 64;
 pub(crate) const INFLIGHT: u16 = 100;
+
+/// Items worked through between yields to the runtime. A car with nothing new sends nothing (no await at all), and
+/// handing a message to rumqttc doesn't wait while its channel has room: without this, going through many cars would
+/// hold a runtime thread (and every other task on it) until the queue is empty.
+const ITEMS_PER_YIELD: u32 = 64;
 
 /// What the callers and the connection task share.
 #[derive(Debug)]
@@ -73,6 +80,8 @@ pub(crate) struct Config {
 #[derive(Default)]
 struct Conn {
     up: AtomicBool,
+    /// When the broker accepted it.
+    up_since: OnceLock<Instant>,
     up_notify: Notify,
     /// PUBACKs received on this connection.
     acked: AtomicU64,
@@ -134,7 +143,7 @@ pub(crate) async fn run(shared: std::sync::Arc<Shared>, cfg: Config, mut stop: w
         match ended {
             Ended::Closed => return,
             Ended::Lost(e) => {
-                if conn.up.load(Ordering::SeqCst) {
+                if conn.up_since.get().is_some_and(|t| t.elapsed() >= STABLE_AFTER) {
                     delay = cfg.reconnect_min;
                 }
                 tracing::warn!("MQTT {}: {e}; trying again in {:.1} s", cfg.describe, delay.as_secs_f64());
@@ -154,6 +163,7 @@ async fn drive(eventloop: &mut EventLoop, conn: &Conn, shared: &Shared, describe
     loop {
         match eventloop.poll().await {
             Ok(rumqttc::Event::Incoming(Packet::ConnAck(_))) => {
+                let _ = conn.up_since.set(Instant::now());
                 conn.up.store(true, Ordering::SeqCst);
                 conn.up_notify.notify_one();
                 shared.connected.store(true, Ordering::SeqCst);
@@ -192,6 +202,9 @@ fn explain(e: &rumqttc::ConnectionError) -> String {
             }
             R::InvalidCertificate(C::Expired | C::ExpiredContext { .. }) => {
                 "the broker's certificate has expired".into()
+            }
+            R::InvalidCertificate(C::BadSignature) => {
+                "the handshake was not signed with the key of the broker's certificate: something else answers".into()
             }
             R::AlertReceived(AlertDescription::ProtocolVersion) => {
                 "the broker doesn't offer TLS 1.3 (allow TLS 1.2 for an old broker)".into()
@@ -235,11 +248,19 @@ async fn publish(
     let mut seq = 0u64;
     let status = layout.topics.status();
     send(client, &mut seq, Message { topic: status.clone(), payload: "online".into(), retain: true }).await;
+    let mut since_yield = 0u32;
     loop {
         if *stop.borrow() {
             send(client, &mut seq, Message { topic: status, payload: "offline".into(), retain: true }).await;
             let _ = client.disconnect().await;
             return std::future::pending().await;
+        }
+        // here, before an item is taken, never between taking it and putting it in `flight`: a link that drops while
+        // this waits ends the task at this point, and an item held then would be lost
+        since_yield += 1;
+        if since_yield >= ITEMS_PER_YIELD {
+            since_yield = 0;
+            tokio::task::yield_now().await;
         }
         flight.confirm(conn.acked.load(Ordering::SeqCst));
         let next = shared.queue().take();

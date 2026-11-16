@@ -3,6 +3,9 @@
 //! coalesce: only its newest is kept, so thousands of cars updating every few seconds hold at most one state each,
 //! however long the broker is gone. Events are moments and are all kept, up to a bound; past it the oldest go (and
 //! are counted). Cars are served in the order they started waiting, so a busy car can't starve the others.
+//!
+//! A car waiting to be forgotten (deleted: its retained values and Home Assistant device to be cleared) is never
+//! dropped, since no later update would bring it back; those don't count against the bound (a few bytes each).
 
 use crate::render::{CarInfo, Event};
 use model::{CarId, Now};
@@ -34,6 +37,8 @@ pub(crate) struct Queue {
     /// The cars in `states`, oldest waiting first.
     order: VecDeque<CarId>,
     events: VecDeque<Event>,
+    /// How many of `states` are [`Pending::Forget`].
+    forgets: usize,
     max_cars: usize,
     max_events: usize,
     pub states_dropped: u64,
@@ -46,6 +51,7 @@ impl Queue {
             states: HashMap::new(),
             order: VecDeque::new(),
             events: VecDeque::new(),
+            forgets: 0,
             max_cars: max_cars.max(1),
             max_events: max_events.max(1),
             states_dropped: 0,
@@ -55,18 +61,51 @@ impl Queue {
 
     /// The car's newest state replaces any it has waiting (keeping its place in line).
     pub fn put_state(&mut self, car: CarId, pending: Pending) {
+        let forget = is_forget(&pending);
         if let Some(slot) = self.states.get_mut(&car) {
+            let was = is_forget(slot);
             *slot = pending;
+            self.forgets = self.forgets + usize::from(forget) - usize::from(was);
             return;
         }
-        if self.states.len() >= self.max_cars {
-            if let Some(oldest) = self.order.pop_front() {
-                self.states.remove(&oldest);
-                self.states_dropped += 1;
+        if !forget && self.full() {
+            self.drop_oldest_state();
+        }
+        self.insert(car, pending);
+        self.order.push_back(car);
+    }
+
+    /// As many cars wait with values (forgets not counted) as allowed.
+    fn full(&self) -> bool {
+        self.states.len() - self.forgets >= self.max_cars
+    }
+
+    /// Drops the values of the car waiting longest. Forgets in front of it go to the back of the line, behind every
+    /// car waiting with values (`max_cars` of them), so each forget moves again only after that many have left the
+    /// line: cheap however many wait.
+    fn drop_oldest_state(&mut self) {
+        while let Some(oldest) = self.order.pop_front() {
+            match self.states.get(&oldest) {
+                Some(Pending::Forget) => self.order.push_back(oldest),
+                Some(Pending::Now(_)) => {
+                    self.states.remove(&oldest);
+                    self.states_dropped += 1;
+                    return;
+                }
+                None => {}
             }
         }
+    }
+
+    fn insert(&mut self, car: CarId, pending: Pending) {
+        self.forgets += usize::from(is_forget(&pending));
         self.states.insert(car, pending);
-        self.order.push_back(car);
+    }
+
+    fn remove(&mut self, car: CarId) -> Option<Pending> {
+        let p = self.states.remove(&car)?;
+        self.forgets -= usize::from(is_forget(&p));
+        Some(p)
     }
 
     pub fn put_event(&mut self, event: Event) {
@@ -89,7 +128,7 @@ impl Queue {
             return Some(Item::Event(e));
         }
         while let Some(car) = self.order.pop_front() {
-            if let Some(p) = self.states.remove(&car) {
+            if let Some(p) = self.remove(car) {
                 return Some(Item::State(car, p));
             }
         }
@@ -116,9 +155,9 @@ impl Queue {
                 Item::Event(e) if self.events.len() < self.max_events => self.events.push_front(e),
                 Item::Event(_) => self.events_dropped += 1,
                 Item::State(car, _) if self.states.contains_key(&car) => {}
-                Item::State(_, _) if self.states.len() >= self.max_cars => self.states_dropped += 1,
+                Item::State(_, Pending::Now(_)) if self.full() => self.states_dropped += 1,
                 Item::State(car, p) => {
-                    self.states.insert(car, p);
+                    self.insert(car, p);
                     self.order.push_front(car);
                 }
             }
@@ -132,6 +171,10 @@ impl Queue {
     pub fn events_len(&self) -> usize {
         self.events.len()
     }
+}
+
+fn is_forget(p: &Pending) -> bool {
+    matches!(p, Pending::Forget)
 }
 
 #[cfg(test)]
@@ -237,6 +280,68 @@ mod tests {
         assert_eq!(soc(&p), Some(21.0), "the newer state of car 2 wins over the one in flight");
         assert!(matches!(q.take(), Some(Item::State(3, _))));
         assert_eq!(q.take(), None);
+    }
+
+    fn drain(q: &mut Queue) -> Vec<(CarId, bool)> {
+        std::iter::from_fn(|| q.take())
+            .map(|i| match i {
+                Item::State(car, p) => (car, is_forget(&p)),
+                Item::Event(_) => panic!("no events were put"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_forget_is_never_dropped() {
+        // a deleted car sends no later update that would bring a dropped forget back: its values and Home Assistant
+        // device would stay on the broker for good. With too many cars waiting, the oldest values go instead.
+        let mut q = Queue::new(3, 10);
+        q.put_state(0, Pending::Forget);
+        for car in 1..=3 {
+            q.put_state(car, now(car, 1.0));
+        }
+        assert_eq!((q.states_len(), q.states_dropped), (4, 0), "forgets don't count against the bound");
+        q.put_state(4, now(4, 1.0));
+        q.put_state(5, Pending::Forget);
+        assert_eq!((q.states_len(), q.states_dropped), (5, 1), "car 1, the oldest values, was dropped");
+        assert_eq!(drain(&mut q), [(2, false), (3, false), (0, true), (4, false), (5, true)]);
+        assert_eq!(q.forgets, 0);
+
+        // values replacing a forget (the car is back) count again, and the other way round
+        let mut q = Queue::new(1, 10);
+        q.put_state(1, Pending::Forget);
+        q.put_state(1, now(1, 1.0));
+        q.put_state(2, now(2, 1.0));
+        assert_eq!((q.states_len(), q.states_dropped), (1, 1));
+        q.put_state(2, Pending::Forget);
+        q.put_state(3, now(3, 1.0));
+        assert_eq!((q.states_len(), q.states_dropped, q.forgets), (2, 1, 1));
+
+        // and one in flight when the link dropped comes back however full the queue is
+        let mut q = Queue::new(1, 10);
+        q.put_state(1, now(1, 1.0));
+        q.requeue(vec![Item::State(9, Pending::Forget), Item::State(8, now(8, 1.0))]);
+        assert_eq!((q.states_len(), q.states_dropped), (2, 1));
+        assert_eq!(drain(&mut q), [(9, true), (1, false)]);
+    }
+
+    #[test]
+    fn dropping_stays_cheap_with_many_forgets_waiting() {
+        let mut q = Queue::new(1_000, 10);
+        for car in 0..20_000 {
+            q.put_state(car, Pending::Forget);
+        }
+        let t = Instant::now();
+        for car in 20_000..50_000 {
+            q.put_state(car, now(car, 1.0));
+        }
+        let took = t.elapsed();
+        assert_eq!((q.states_len(), q.states_dropped), (21_000, 29_000));
+        let left = drain(&mut q);
+        assert_eq!(left.iter().filter(|(_, f)| *f).count(), 20_000, "every forget is still there");
+        assert!(left.iter().filter(|(_, f)| !f).all(|(car, _)| *car >= 49_000), "the newest values are kept");
+        eprintln!("30,000 cars past the bound with 20,000 forgets waiting: {took:?}");
+        assert!(took.as_millis() < 2_000, "{took:?}");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! them again after a restart without the server listening for it; each car's are sent once per connection (again
 //! only if its name changes or it was out of the recent-car cache).
 
-use crate::render::{Event, Field, Layout, Message, STATES};
+use crate::render::{Event, Field, Layout, MAX_NAME, Message, STATES, clip};
 use model::CarId;
 use serde_json::{Map, Value, json};
 
@@ -128,11 +128,12 @@ fn base(layout: &Layout, car: CarId, info: &crate::CarInfo, name: &str, object: 
     let node = t.node_id(car);
     let mut device = Map::new();
     device.insert("identifiers".into(), json!([node]));
-    let car_name = if info.name.trim().is_empty() { format!("Car {car}") } else { info.name.clone() };
+    let car_name =
+        if info.name.trim().is_empty() { format!("Car {car}") } else { clip(&info.name, MAX_NAME).to_string() };
     device.insert("name".into(), car_name.into());
     device.insert("manufacturer".into(), "Tesla".into());
     if let Some(m) = &info.model {
-        device.insert("model".into(), m.clone().into());
+        device.insert("model".into(), clip(m, MAX_NAME).into());
     }
     let mut o = Map::new();
     o.insert("name".into(), name.into());

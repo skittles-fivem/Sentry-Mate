@@ -86,7 +86,8 @@ pub struct Stats {
 
 impl Mqtt {
     /// Checks the settings and starts publishing in the background (on the current Tokio runtime). `Ok(None)` while
-    /// MQTT is off; an error says what to change.
+    /// MQTT is off; an error says what to change. Stop the previous publisher before starting one with new settings:
+    /// two with the same client id would take the connection from each other.
     pub fn start(settings: &Settings) -> Result<Option<Mqtt>, Error> {
         if !settings.enabled {
             return Ok(None);
@@ -138,7 +139,9 @@ impl Mqtt {
     }
 
     /// Queues a car's newest values (`place`: the saved place it is at, by name). Returns at once; if the car's
-    /// previous values haven't gone out yet, these replace them. Cars outside the chosen set are ignored.
+    /// previous values haven't gone out yet, these replace them. Cars outside the chosen set are ignored. The values
+    /// replace what the broker holds even if they were recorded earlier than ones sent before, so pass the car's
+    /// newest (not those of a late log being worked through).
     pub fn publish_now(&self, car: &CarInfo, now: &Now, place: Option<&str>) {
         if !self.includes(now.car) {
             return;

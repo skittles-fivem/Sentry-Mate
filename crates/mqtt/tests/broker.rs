@@ -52,6 +52,24 @@ enum Tls {
     V12Only,
 }
 
+/// How the broker misbehaves on purpose: it acknowledges only the first `acked` publishes of a connection and closes
+/// it after `after` publishes, `linger` later (so the acknowledgements it sent reach the client first). Only the
+/// first connection, unless `every`.
+#[derive(Clone, Copy)]
+struct Cut {
+    after: usize,
+    acked: usize,
+    linger: Duration,
+    every: bool,
+}
+
+impl Cut {
+    /// The first connection acknowledges nothing and is closed after `after` publishes.
+    fn first(after: usize) -> Cut {
+        Cut { after, acked: 0, linger: Duration::ZERO, every: false }
+    }
+}
+
 struct Broker {
     addr: SocketAddr,
     log: Arc<Mutex<Log>>,
@@ -61,8 +79,7 @@ struct Broker {
 }
 
 impl Broker {
-    /// `cut_first_after`: the first MQTT connection acknowledges nothing and is closed after that many publishes.
-    async fn start(tls: Tls, cut_first_after: Option<usize>) -> Broker {
+    async fn start(tls: Tls, cut: Option<Cut>) -> Broker {
         let made = rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
         let fingerprint = mqtt::security::fingerprint(made.cert.der());
         let acceptor = (tls != Tls::None).then(|| {
@@ -91,7 +108,7 @@ impl Broker {
                     drop(tcp);
                     continue;
                 }
-                let cut = if conns == 0 { cut_first_after } else { None };
+                let cut = cut.filter(|c| c.every || conns == 0);
                 let (log, conn) = (log2.clone(), conns);
                 conns += 1;
                 let acceptor = acceptor.clone();
@@ -123,7 +140,7 @@ impl Broker {
     }
 }
 
-async fn serve<S: AsyncRead + AsyncWrite + Unpin>(mut s: S, log: Arc<Mutex<Log>>, conn: usize, cut: Option<usize>) {
+async fn serve<S: AsyncRead + AsyncWrite + Unpin>(mut s: S, log: Arc<Mutex<Log>>, conn: usize, cut: Option<Cut>) {
     let mut buf = BytesMut::new();
     let mut publishes = 0usize;
     let mut chunk = vec![0u8; 16 * 1024];
@@ -154,13 +171,13 @@ async fn serve<S: AsyncRead + AsyncWrite + Unpin>(mut s: S, log: Arc<Mutex<Log>>
                         qos: p.qos,
                     });
                     publishes += 1;
-                    if let Some(n) = cut {
-                        if publishes >= n {
+                    match cut {
+                        Some(c) if publishes >= c.after => {
+                            tokio::time::sleep(c.linger).await;
                             return;
                         }
-                        None
-                    } else {
-                        (p.qos == QoS::AtLeastOnce).then(|| Packet::PubAck(PubAck::new(p.pkid)))
+                        Some(c) if publishes > c.acked => None,
+                        _ => (p.qos == QoS::AtLeastOnce).then(|| Packet::PubAck(PubAck::new(p.pkid))),
                     }
                 }
                 Packet::PingReq => Some(Packet::PingResp),
@@ -446,7 +463,7 @@ async fn location_when_turned_on() {
 #[tokio::test]
 async fn unconfirmed_messages_are_sent_again_after_a_drop() {
     // the first connection takes 5 messages, acknowledges none, and drops
-    let b = Broker::start(Tls::V13, Some(5)).await;
+    let b = Broker::start(Tls::V13, Some(Cut::first(5))).await;
     let m = Mqtt::start(&settings(&b)).unwrap().unwrap();
     m.publish_now(&info("One"), &now(1, 80.0), None);
     m.publish_event(Event::DriveStarted { drive: Box::new(drive(1)), start_place: None });
@@ -464,6 +481,161 @@ async fn unconfirmed_messages_are_sent_again_after_a_drop() {
     assert_eq!(s.connects, 2);
     assert_eq!(s.states_waiting + s.events_waiting, 0);
     m.stop().await;
+}
+
+#[tokio::test]
+async fn only_unconfirmed_messages_are_sent_again() {
+    // the first connection acknowledges "online" and the first two events, takes a third, and drops
+    let cut = Cut { after: 4, acked: 3, linger: Duration::from_millis(200), every: false };
+    let b = Broker::start(Tls::V13, Some(cut)).await;
+    b.open.store(false, Ordering::SeqCst);
+    let m = Mqtt::start(&settings(&b)).unwrap().unwrap();
+    for id in 1..=5u64 {
+        let mut d = drive(1);
+        d.id = id;
+        m.publish_event(Event::DriveStarted { drive: Box::new(d), start_place: None });
+    }
+    b.open.store(true, Ordering::SeqCst);
+    let ids = |conn: usize| -> Vec<u64> {
+        b.got()
+            .iter()
+            .filter(|g| g.conn == conn && g.topic.ends_with("/event"))
+            .map(|g| serde_json::from_str::<serde_json::Value>(&g.payload).unwrap()["drive"].as_u64().unwrap())
+            .collect()
+    };
+    wait_for("the last event on the second connection", || ids(1).contains(&5)).await;
+    assert_eq!(ids(0), [1, 2, 3], "the first connection took three events");
+    assert_eq!(ids(1), [3, 4, 5], "confirmed ones are not sent again, the rest are, in order");
+    assert_eq!(m.stats().connects, 2);
+    m.stop().await;
+}
+
+#[tokio::test]
+async fn a_broker_that_drops_each_connection_at_once_is_not_hammered() {
+    // e.g. another client with the same id, or a broker that refuses what we publish by closing the link: each
+    // connection is accepted, then closed after its first message. The wait must keep doubling (50, 100, 200,
+    // 400, 800 ms: about 5 connections in 1.5 s), not start again at 50 ms because the broker said yes first.
+    let cut = Cut { after: 1, acked: 0, linger: Duration::ZERO, every: true };
+    let b = Broker::start(Tls::V13, Some(cut)).await;
+    let mut s = settings(&b);
+    s.limits.reconnect_max_ms = 1_600;
+    let m = Mqtt::start(&s).unwrap().unwrap();
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    let tries = b.hellos().len();
+    assert!((3..=8).contains(&tries), "{tries} connections in 1.5 s");
+    assert!(m.stats().last_error.is_some());
+    m.stop().await;
+}
+
+#[tokio::test]
+async fn a_copy_of_the_pinned_certificate_without_its_key_is_refused() {
+    // someone in the middle has the broker's certificate (it is public) but not its private key: the pin matches,
+    // and the handshake's signature, made with another key, must not
+    let real = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let other = rcgen::KeyPair::generate().unwrap();
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(other.serialize_der().into());
+    let signer = rustls::crypto::ring::sign::any_supported_type(&key).unwrap();
+    let certified = rustls::sign::CertifiedKey::new(vec![real.cert.der().clone()], signer);
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(rustls::sign::SingleCertAndKey::from(certified)));
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let got_bytes = Arc::new(AtomicBool::new(false));
+    let got = got_bytes.clone();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            if let Ok(mut s) = acceptor.accept(tcp).await {
+                let mut buf = [0u8; 64];
+                if matches!(s.read(&mut buf).await, Ok(n) if n > 0) {
+                    got.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+    });
+    let s = Settings {
+        enabled: true,
+        broker: format!("mqtts://127.0.0.1:{port}"),
+        cert_sha256: Some(mqtt::security::fingerprint(real.cert.der())),
+        username: Some("ha".into()),
+        password: Some("synthetic-password".into()),
+        limits: Limits { reconnect_min_ms: 50, reconnect_max_ms: 200, connect_timeout_s: 2, ..Limits::default() },
+        ..Settings::default()
+    };
+    let m = Mqtt::start(&s).unwrap().unwrap();
+    wait_for("a refused connection", || m.stats().last_error.is_some()).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let st = m.stats();
+    assert!(!st.connected && st.connects == 0, "{st:?}");
+    assert!(!got_bytes.load(Ordering::SeqCst), "nothing, not even the password, was sent");
+    let err = st.last_error.unwrap_or_default();
+    assert!(err.contains("not signed with the key of the broker's certificate"), "{err}");
+    m.stop().await;
+}
+
+#[tokio::test]
+async fn names_too_long_for_a_packet_dont_stop_publishing() {
+    // a name longer than a packet may be (256 KiB) would fail the connection; since what wasn't confirmed is sent
+    // first again, that one car would stop publishing for every car, for good
+    let b = Broker::start(Tls::V13, None).await;
+    let m = Mqtt::start(&settings(&b)).unwrap().unwrap();
+    let long = "x".repeat(300 * 1024);
+    m.publish_now(&info(&long), &now(1, 80.0), Some(&long));
+    m.publish_event(Event::DriveEnded {
+        drive: Box::new(drive(1)),
+        start_place: Some(long.clone()),
+        end_place: Some(long.clone()),
+    });
+    m.publish_now(&info("Two"), &now(2, 60.0), None);
+    wait_for("both cars and the event", || {
+        let l = b.latest();
+        ["sentry-mate/cars/1/soc", "sentry-mate/cars/2/soc", "sentry-mate/cars/1/event"]
+            .iter()
+            .all(|t| l.contains_key(*t))
+    })
+    .await;
+    let l = b.latest();
+    assert_eq!(l["sentry-mate/cars/1/place"].len(), mqtt::render::MAX_NAME, "cut to fit");
+    let config: serde_json::Value =
+        serde_json::from_str(&l["homeassistant/sensor/sentry-mate_car1/soc/config"]).unwrap();
+    assert_eq!(config["device"]["name"].as_str().map(str::len), Some(mqtt::render::MAX_NAME));
+    assert_eq!(m.stats().connects, 1, "the link never dropped");
+    m.stop().await;
+}
+
+// `#[tokio::test]` runs on one thread: the publisher shares it with every other task
+#[tokio::test]
+async fn going_through_many_cars_lets_other_tasks_run() {
+    let b = Broker::start(Tls::V13, None).await;
+    let mut s = settings(&b);
+    s.discovery = false;
+    let m = Arc::new(Mqtt::start(&s).unwrap().unwrap());
+    let cars = 2_000u32;
+    for car in 0..cars {
+        m.publish_now(&info("Car"), &now(car, 50.0), None);
+    }
+    // the last message of the last car is in and acknowledged: the publisher is idle, waiting for work
+    let last = format!("sentry-mate/cars/{}/location", cars - 1);
+    wait_for("every car", || {
+        let got = b.got();
+        got.iter().any(|g| g.topic == last) && m.stats().delivered as usize == got.len()
+    })
+    .await;
+    // the same values again: nothing to send, but going through 2,000 cars must not hold the thread until done
+    for car in 0..cars {
+        m.publish_now(&info("Car"), &now(car, 50.0), None);
+    }
+    let m2 = m.clone();
+    let waiting_when_we_ran = tokio::spawn(async move { m2.stats().states_waiting }).await.unwrap();
+    assert!(waiting_when_we_ran > 0, "another task ran only once the publisher had gone through every car");
+    wait_for("the queue to drain", || m.stats().states_waiting == 0).await;
+    let before = b.got().len();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(b.got().len(), before, "nothing new, nothing sent");
+    Arc::into_inner(m).unwrap().stop().await;
 }
 
 #[tokio::test]

@@ -231,14 +231,18 @@ pub struct Limits {
     /// Events waiting while the broker is away; past this the oldest are dropped (and counted).
     pub max_events: usize,
     /// Cars with a state waiting (one each, the newest); past this the car waiting longest loses its state (counted;
-    /// its next update brings it back).
+    /// its next update brings it back). Cars waiting to be forgotten don't count and are never dropped: no later
+    /// update would bring them back.
     pub max_pending_cars: usize,
     /// Cars whose last published values are remembered, so only changed values are sent again. A car that fell out
-    /// just has all its values sent once more.
+    /// just has all its values (and its Home Assistant configs) sent once more. Cars update in turn, so the number
+    /// remembered through a whole round is half of this (16,384 by default); each takes about 220 bytes, and only
+    /// cars that publish take any.
     pub cache_cars: usize,
     pub keep_alive_s: u16,
     pub connect_timeout_s: u16,
-    /// Waits between reconnects, doubling from the first to the second.
+    /// Waits between reconnects, doubling from the first to the second; back to the first once a connection has
+    /// lasted [`STABLE_AFTER`] (one that drops sooner, e.g. the broker accepts and then closes it, keeps doubling).
     pub reconnect_min_ms: u64,
     pub reconnect_max_ms: u64,
 }
@@ -248,7 +252,7 @@ impl Default for Limits {
         Limits {
             max_events: 10_000,
             max_pending_cars: 100_000,
-            cache_cars: 4_096,
+            cache_cars: 32_768,
             keep_alive_s: 30,
             connect_timeout_s: 10,
             reconnect_min_ms: 1_000,
@@ -256,6 +260,9 @@ impl Default for Limits {
         }
     }
 }
+
+/// How long a connection must last for the wait between reconnects to start again from `reconnect_min_ms`.
+pub const STABLE_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The broker's address, from [`Settings::broker`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -363,6 +370,10 @@ impl Settings {
         }
         if user.is_some_and(|u| u.len() > 1024 || u.chars().any(char::is_control)) {
             return Err(Error::BadUsername);
+        }
+        // an MQTT string's length is 16 bits: rumqttc would write a longer one's length cut short, a broken CONNECT
+        if password.is_some_and(|p| p.len() > usize::from(u16::MAX)) {
+            return Err(Error::BadPassword);
         }
         let id = &self.client_id;
         if id.is_empty() || id.len() > 128 || id.chars().any(|c| c.is_control() || c.is_whitespace()) {
@@ -473,6 +484,11 @@ mod tests {
         s.username = Some(String::new());
         assert_eq!(s.check(), Err(Error::PasswordWithoutUser));
         assert!(!format!("{s:?}").contains("secret"), "Debug never shows the password");
+        s.username = Some("ha".into());
+        s.password = Some("p".repeat(65_535));
+        assert!(s.check().is_ok(), "as long as MQTT allows");
+        s.password = Some("p".repeat(65_536));
+        assert_eq!(s.check(), Err(Error::BadPassword));
     }
 
     #[test]

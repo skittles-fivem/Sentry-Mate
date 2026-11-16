@@ -1,8 +1,9 @@
 //! What was last sent for recently published cars on this connection, so a car's unchanged values (tire pressures,
 //! odometer while parked) aren't sent again with every update. Bounded however many cars there are: two generations
 //! of at most half the size each; when the newer fills, the older is dropped whole and the newer becomes the older,
-//! so lookups and inserts stay O(1) and the cars used least recently fall out. A car that fell out costs only one
-//! full send of its values (retained topics, so sending again is harmless).
+//! so lookups and inserts stay O(1) and the cars used least recently fall out. Cars that take turns are all
+//! remembered while there are at most half the size of them. A car that fell out costs only one full send of its
+//! values (retained topics, so sending again is harmless).
 
 use crate::render::Field;
 use model::CarId;
@@ -100,6 +101,24 @@ mod tests {
         }
         // the cars used last are still there
         assert_eq!(c.entry(1_999).fields[1], 3);
+    }
+
+    #[test]
+    fn thousands_of_cars_taking_turns_stay_remembered_with_the_default_limit() {
+        // cars update in turn (each every minute or so), so a car comes back only after every other active car: the
+        // default has to hold a whole round of thousands of cars, or every update sends everything again (all values
+        // and some 24 Home Assistant configs per car)
+        let mut c = SentCache::new(crate::Limits::default().cache_cars);
+        let cars = 10_000;
+        for round in 1..=3u64 {
+            let mut missed = 0;
+            for car in 0..cars {
+                let sent = c.entry(car);
+                missed += usize::from(sent.fields[0] == 0);
+                sent.fields[0] = round;
+            }
+            assert_eq!(missed, if round == 1 { cars as usize } else { 0 }, "round {round}");
+        }
     }
 
     #[test]

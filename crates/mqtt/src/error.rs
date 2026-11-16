@@ -19,6 +19,8 @@ pub enum Error {
     PasswordWithoutUser,
     #[error("the user name has control characters or is too long")]
     BadUsername,
+    #[error("the password is longer than MQTT allows (65,535 bytes)")]
+    BadPassword,
     #[error("the certificate pin must be a SHA-256 fingerprint (64 hex digits)")]
     BadPin,
     #[error("a certificate pin needs an encrypted link: use mqtts://")]
