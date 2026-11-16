@@ -1,0 +1,6 @@
+target
+.git
+data
+docs
+*.log.xz
+*.log.xz.json

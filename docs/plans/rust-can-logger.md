@@ -381,6 +381,15 @@ position stay out of the repo.
   ~0.1-0.3 MB/min derived. A year of a car that is awake ~6 h a day is roughly 50-120 GB raw; retention
   settings matter more than codecs.
 
+## Progress
+
+- 2026-11-16: TeslaMate contents removed. Built and tested: `logfmt` (both log formats, decodes SMO's columns
+  fixture and a real build 147 log byte for byte like SMO's reference decoder, 0.06 s per one-minute log), `trust`
+  (signatures, pairing, chain report; verifies a real Screenmate signature), `ingest` (upload API, storage, tokens,
+  trust records, TLS 1.3 server), the `sentry-mate` program and its Docker image (6.6 MB, `scratch`, non-root,
+  read-only). A real log and sidecar uploaded end to end in chunks came out verified and paired. Phase 1 is done
+  except encryption at rest (Phase 6). Next: Phase 2, decoding signals (DBC).
+
 ## Phases
 
 0. **Decide** (questions below). Then the one removal commit (see This repo). Get a real bundle from the owner (Sentry Manager → Nerd → export

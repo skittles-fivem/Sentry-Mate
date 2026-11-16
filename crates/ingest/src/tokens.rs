@@ -28,9 +28,11 @@ struct Book {
     tokens: Vec<Token>,
 }
 
+/// The token file, read afresh on every use (it is tiny), so tokens made from the command line while the server runs
+/// work at once. Changes are made one at a time and written whole.
 pub struct Tokens {
     file: PathBuf,
-    book: Mutex<Book>,
+    lock: Mutex<()>,
 }
 
 fn hash(token: &str) -> String {
@@ -53,16 +55,20 @@ pub async fn write_atomic(file: &std::path::Path, bytes: &[u8]) -> std::io::Resu
 
 impl Tokens {
     pub async fn open(file: impl Into<PathBuf>) -> std::io::Result<Tokens> {
-        let file = file.into();
-        let book = match tokio::fs::read(&file).await {
-            Ok(b) => serde_json::from_slice(&b).map_err(std::io::Error::other)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Book::default(),
-            Err(e) => return Err(e),
+        let t = Tokens {
+            file: file.into(),
+            lock: Mutex::new(()),
         };
-        Ok(Tokens {
-            file,
-            book: Mutex::new(book),
-        })
+        t.load().await?;
+        Ok(t)
+    }
+
+    async fn load(&self) -> std::io::Result<Book> {
+        match tokio::fs::read(&self.file).await {
+            Ok(b) => serde_json::from_slice(&b).map_err(std::io::Error::other),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Book::default()),
+            Err(e) => Err(e),
+        }
     }
 
     async fn save(&self, book: &Book) -> std::io::Result<()> {
@@ -72,7 +78,8 @@ impl Tokens {
 
     /// A new token for a car: returns it (shown once) and its record.
     pub async fn create(&self, car: &str) -> std::io::Result<(String, Token)> {
-        let mut book = self.book.lock().await;
+        let _one = self.lock.lock().await;
+        let mut book = self.load().await?;
         if book.tokens.iter().filter(|t| !t.revoked).count() >= MAX_TOKENS {
             return Err(std::io::Error::other(format!(
                 "at most {MAX_TOKENS} tokens; revoke one first"
@@ -102,18 +109,18 @@ impl Tokens {
     /// The token's record, if it is one in use.
     pub async fn find(&self, token: &str) -> Option<Token> {
         let h = hash(token);
-        self.book
-            .lock()
+        self.load()
             .await
+            .ok()?
             .tokens
-            .iter()
+            .into_iter()
             .find(|t| !t.revoked && t.hash == h)
-            .cloned()
     }
 
     /// Ties a token to a car key (its first upload). Returns the key it is tied to (an earlier one wins).
     pub async fn bind(&self, id: &str, vehicle_key: &str) -> std::io::Result<String> {
-        let mut book = self.book.lock().await;
+        let _one = self.lock.lock().await;
+        let mut book = self.load().await?;
         let Some(t) = book.tokens.iter_mut().find(|t| t.id == id) else {
             return Err(std::io::Error::other("no such token"));
         };
@@ -126,7 +133,8 @@ impl Tokens {
     }
 
     pub async fn revoke(&self, id: &str) -> std::io::Result<bool> {
-        let mut book = self.book.lock().await;
+        let _one = self.lock.lock().await;
+        let mut book = self.load().await?;
         let Some(t) = book.tokens.iter_mut().find(|t| t.id == id && !t.revoked) else {
             return Ok(false);
         };
@@ -136,6 +144,6 @@ impl Tokens {
     }
 
     pub async fn list(&self) -> Vec<Token> {
-        self.book.lock().await.tokens.clone()
+        self.load().await.map(|b| b.tokens).unwrap_or_default()
     }
 }

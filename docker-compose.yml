@@ -1,0 +1,18 @@
+services:
+  sentry-mate:
+    build: .
+    image: sentry-mate:local
+    restart: unless-stopped
+    ports:
+      - "10100:10100"   # CAN Bridge uploads, HTTPS (TLS 1.3 only)
+    volumes:
+      - ./data:/data    # logs exactly as uploaded, tokens, the server certificate
+    environment:
+      - TZ=UTC
+      # host names or addresses of this server for its certificate, comma separated (optional:
+      # the app pins the certificate by its SHA-256 and does not check names)
+      # - SENTRY_MATE_NAMES=server.local,192.168.1.20
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "1000:1000"
