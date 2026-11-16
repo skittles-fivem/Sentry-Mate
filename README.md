@@ -14,7 +14,8 @@ the web UI and the rest are being built; the plan is in [docs/plans/rust-can-log
 | One upload token per car, tied to its CAN key on first upload | done |
 | Signature check, pairing with the car's key, chain report (gaps, swaps, restarts) | done |
 | Reading both log formats (candump text, columns) | done |
-| Decoding signals, drives, charges, states | next |
+| Decoding signals (DBC sets per model, bus split, the Screenmate's GPS), same values as Sentry Six Manager | done |
+| Drives, charges, states, battery, efficiency | next |
 | Encryption at rest (pure Rust): everything stored is sealed, key file + recovery key | done |
 | Web UI, accounts, maps, TeslaMate import | planned |
 
@@ -73,6 +74,10 @@ docker compose exec sentry-mate /sentry-mate fingerprint
 docker compose exec sentry-mate /sentry-mate chain <car key>
 ```
 
+```bash
+docker compose exec sentry-mate /sentry-mate log decode <log name> > signals.csv
+```
+
 New machine, or the key file lost: bring the data folder, then type the recovery key:
 
 ```bash
@@ -114,7 +119,8 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Crates: `logfmt` (reads the logs), `trust` (signatures and chain), `ingest` (upload API, storage, tokens, TLS
+Crates: `logfmt` (reads the logs), `trust` (signatures and chain), `vault` (encryption at rest), `dbc` (decodes
+signals), `ingest` (upload API, storage, tokens, TLS
 server), `sentry-mate` (the program).
 
 Sentry Mate is written from scratch and copies no code from TeslaMate; it is not affiliated with TeslaMate, Tesla,

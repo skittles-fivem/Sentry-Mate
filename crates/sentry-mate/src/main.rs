@@ -107,6 +107,8 @@ enum TokenCmd {
 enum LogCmd {
     /// A stored log or sidecar (by its name), unsealed, to standard output.
     Export { name: String },
+    /// A stored log's decoded signals as CSV (each value when it changes): time, signal, value, unit, value name.
+    Decode { name: String },
     /// A log file of either format as candump text.
     Candump { file: PathBuf },
     /// What a log file's signature says.
@@ -211,6 +213,19 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let v = Vault::open(&data, &keys)?;
             println!("{}", Identity::load_or_create(&tls_dir(&data), &[], &v)?.fingerprint());
         }
+        Cmd::Log { cmd: LogCmd::Decode { name } } => {
+            let store = Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?));
+            let Some(log) = store.read(&name).await? else {
+                eprintln!("no stored log {name}");
+                return Ok(ExitCode::FAILURE);
+            };
+            let side = store
+                .read(&format!("{name}.json"))
+                .await?
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_default();
+            decode_csv(&log, &side)?;
+        }
         Cmd::Log { cmd: LogCmd::Export { name } } => {
             let store = Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?));
             match store.read(&name).await? {
@@ -274,9 +289,34 @@ fn log_cmd(cmd: LogCmd) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
             }
         }
-        LogCmd::Export { .. } => {}
+        LogCmd::Export { .. } | LogCmd::Decode { .. } => {}
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Decoded signals as CSV, a row when a value changes.
+fn decode_csv(log: &[u8], side: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+    let mut d = dbc::Decoder::new(dbc::Profile::Tesla3Y, side);
+    let mut last: std::collections::HashMap<&'static str, f64> = std::collections::HashMap::new();
+    let out = std::io::stdout();
+    let mut out = std::io::BufWriter::new(out.lock());
+    writeln!(out, "timestamp_utc,signal,value,unit,value_name")?;
+    let mut err = None;
+    logfmt::read_log(log, logfmt::Limits::default(), |l| {
+        let logfmt::Line::Frame(f) = logfmt::Line::parse(l) else { return };
+        for (sig, v) in d.decode(&f) {
+            if last.insert(sig.series.as_str(), v) == Some(v) {
+                continue;
+            }
+            let name = sig.values.as_ref().and_then(|n| n.get(&(v as i64))).map(String::as_str).unwrap_or("");
+            let (s, us) = (f.time_us / 1_000_000, f.time_us % 1_000_000);
+            if let Err(e) = writeln!(out, "{s}.{us:06},{},{v},{},{name}", sig.series, sig.unit) {
+                err = Some(e);
+            }
+        }
+    })?;
+    out.flush()?;
+    err.map_or(Ok(()), |e| Err(e.into()))
 }
 
 async fn serve(

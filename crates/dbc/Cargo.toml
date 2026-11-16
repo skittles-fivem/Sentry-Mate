@@ -1,0 +1,18 @@
+[package]
+name = "dbc"
+description = "Decodes Tesla CAN frames with DBC files, by Sentry Six Manager's rules (sets per model, bus split, the Screenmate's GPS)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+logfmt = { path = "../logfmt" }
+regex = "1"
+serde_json = "1"
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }

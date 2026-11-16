@@ -397,6 +397,12 @@ position stay out of the repo.
   public). Files from an older version are sealed on start. The recovery key goes to `/keys/RECOVERY-KEY.txt`, not
   the log. Not done: TPM sealing of the key file (optional, later). When a database arrives (Phase 3) it is sealed
   the same way (sealed segment files, no C library).
+- 2026-11-16: Phase 2 done, crate `dbc`: Sentry Six Manager's DBC sets (`files/`, with their licences), parser,
+  Intel/Motorola, signed, multiplexed, value names, series names, the bus split and the internal bus's 0x04F rule.
+  Checked bit for bit against Sentry Six Manager's own decoder: a synthetic log reaching every message of the Model
+  3/Y set (1,568 series), SMO's columns fixture, and a real Model Y log (1,486 series, 470,944 values; checked
+  locally, not committed). `sentry-mate log decode` gives a stored log's signals as CSV (0.14 s a minute). Next:
+  Phase 3, the timeline (states, drives, charges), and choosing the DBC set from the VIN.
 
 ## Phases
 
