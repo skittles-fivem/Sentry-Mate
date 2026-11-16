@@ -37,6 +37,66 @@ tracked separately). The logger implements the same upload API (Sentry-Manager `
 Alternative considered: pull decoded signals from Sentry Manager's export API. Rejected: it ties the
 logger to Sentry Manager being up, needs a new read token there, and loses the raw-log evidence.
 
+## What we take from Sentry Manager (reference, not copied)
+
+Sentry Manager (`skittles-fivem/Sentry-Manager`: `docs/can-bridge-api.md`, `server/canLogs.js`,
+`canTrust.js`, `canIndex.js`, `canDbc.js`, `carModels.js`, `canNow.js`, `places.js`, `powerPrice.js`)
+already handles these logs and several cars. The logger behaves the same way, rewritten in Rust (its
+code is JavaScript, so nothing is copied; only the rules and the API, which SMO already speaks).
+
+### Handling the data
+
+- **Kept as received, never replaced**: `<data>/can/<vehicleKey>/`, a finished file can't be overwritten
+  (`409 exists_different`), only added; resending the same bytes is a harmless `201 already`.
+- **Uploads**: same API, limits and errors (`maxChunk` 16 MiB, `maxFile` 1 GiB, `maxSidecar` 1 MiB,
+  2,000 names per `status`), port of its own that is **closed while uploads are off**, every other path
+  `404`, `403 https_only` over plain HTTP. Same connection guards: headers within 20 s, a request at
+  most 10 min, 6 connections per address (256 in all), idle connection closed after 15 s.
+- **A log's check** (judged when log and sidecar are both in): `verified` (paired key, bytes match),
+  `failed` (kept, listed with the reason, never used unless the owner picks *Use anyway*, then marked
+  in the UI wherever that data shows), `could not sign` (bridge said so; *use all* per key, password
+  asked), `unsigned` (car not paired: used, with a quiet note), `waiting` (no sidecar yet; judged
+  unsigned after 10 min). **Nothing is decoded until its check allows it.**
+- **Pairing**: the first signed log pins the key; another key's logs are kept, not used, and offered for
+  trust by fingerprint; *Forget the pairing*. **Chain report**: gaps, mismatches, duplicates, reorders,
+  restarts at 0 (with the bridge's `chain_note`), deleted logs still counted as links.
+- **Rules carry a version**: trust records and decoded data are stamped with the version of the rules
+  and the DBC set they were made with; after an update, older ones are judged / decoded again in the
+  background, and what an older decoding wrote is taken out. Same idea for the timeline (drives and
+  charges are stamped with the timeline rules' version and rebuilt when they change).
+- **Safe reading**: lines over 512 bytes skipped, a log that unpacks past 4 GB stopped there, columns
+  files refused on any bad count (SMO's spec), so a crafted file can't exhaust memory.
+- **Audit log** for every trust, token, delete and setting change.
+
+### Several cars (owner: yes, as Sentry Manager does it)
+
+- **A car** is the logger's own record: name, model and year (Automatic from the VIN, or set), time
+  zone, units, battery and price settings, places.
+- **CAN keys**: each SMO install (and each Raspberry Pi logger) has its own `vehicleKey`. A car can have
+  **several keys** over time (new Screenmate, app reinstalled, a Pi as well); a key belongs to exactly
+  one car. The map key → car is kept in the database; a key no car claims goes to the car when there is
+  only one, and otherwise waits in Settings → Cars ("New CAN Bridge seen: which car?").
+- **Tokens**: one per car, write-only, tied to that car's key on its first upload (`403 wrong_car` for
+  another key, other keys' names answered `forbidden` in `status`), at most 20, revoked one by one.
+  `ping` answers the key the token is tied to.
+- **DBC set per car** from its model and year (Automatic: VIN from 0x405, or 0x508 on a pre-2021 S/X;
+  4th character the model, 10th the year), the same sets: `tesla-3y` and `tesla-sx-legacy`; changing it
+  decodes that car's logs again. Only the Model Y is checked on a real car so far; others are marked
+  "not checked on a real car" in the UI, as Sentry Manager does.
+- **Two keys at once on one car** (a Screenmate and a Pi both recording): the car's timeline uses one
+  source per span (the car's preferred key, set in Settings, else the verified one with fewer drops);
+  the other is kept and viewable in Signals.
+- **Every page has a car picker**, plus an "All cars" view for Statistics, Mileage and the Timeline.
+  Now and the MQTT topics are per car.
+- **People**: roles as in Sentry Manager: **Admin** (everything) and **Watch only** (sees drives,
+  charges, maps, stats, exports; can't change settings, trust, tokens or delete; can't read logs). At
+  least one admin always; adding or changing an account asks for the password again. Two-step sign-in
+  (authenticator app) per account, and an option to require it from outside the home network. New
+  here: an account can be limited to some cars (e.g. a family member sees only their car).
+- **Places and prices**: saved places with their own radius (50 m to 2 km, default 200 m), suggestions
+  from where the cars park most; electricity price as one price or a time-of-use plan, costs summed at
+  the price of each moment of a charge, per place (home vs work vs a supercharger price typed in).
+
 ## Architecture (one binary, Cargo workspace)
 
 | Crate | Job |
@@ -225,4 +285,4 @@ The TeslaMate fork's contents go; the Rust app takes the whole repo.
 4. **Encryption at rest**: key file (restarts by itself) or passphrase at every start?
 5. ~~Maps and addresses~~: answered, both offline and online (see Security).
 6. ~~Import~~: answered, yes (see Importing old TeslaMate history).
-7. **Several cars / several people**, or one car, one owner for now?
+7. ~~Several cars~~: answered, yes, the Sentry Manager way (see What we take from Sentry Manager).
