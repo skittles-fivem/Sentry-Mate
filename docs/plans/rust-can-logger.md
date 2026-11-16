@@ -140,6 +140,37 @@ Phone and desktop layouts for every page (screenshots of both with every change,
   root filesystem), signed release images.
 - Nothing in the logger can transmit on a CAN bus or talk to Tesla.
 
+## Importing old TeslaMate history (owner: yes, 2026-11-16)
+
+The owner's existing TeslaMate data comes in, so history starts years before the CAN Bridge.
+
+- **What to upload**: TeslaMate's normal backup, made with its documented command
+  (`docker compose exec -T database pg_dump -U teslamate teslamate > teslamate.bck`), plain SQL, or
+  the same file gzipped / xz'd. Settings → Import → upload (resumable, chunked, HTTPS, admins only). No
+  Postgres needed: the importer (Rust) reads the `COPY ... FROM stdin` blocks of the dump itself and
+  ignores everything else (no SQL is ever run). A newer or older TeslaMate schema is matched by column
+  names, not positions; unknown columns are skipped and listed in the import report.
+- **Optional second way**: connect to a running TeslaMate Postgres (host, database, user, password,
+  TLS required) and read the same tables, for owners who still run it.
+- **Tables taken**: `cars` (VIN, model, trim, name, efficiency), `positions`, `drives`,
+  `charging_processes`, `charges`, `states`, `updates`, `addresses`, `geofences`, charge costs and
+  tariffs, car settings that still mean something (units, names). Tesla tokens (`tokens`, `private.*`)
+  are **never** read or kept, even encrypted.
+- **Matching cars**: by VIN to the car the CAN Bridge reports (VIN from 0x405 / 0x508). A car with no
+  CAN data yet is created from the import and joined later when its VIN shows up.
+- **Kept apart, marked**: every imported row is tagged `source = teslamate` (unsigned, API resolution,
+  a point every few seconds). The UI shows a small "from TeslaMate" mark on those drives and charges.
+  Where imported and CAN history overlap (the owner ran both at once), CAN wins for that span and the
+  imported rows for it are hidden, not deleted; Settings shows the overlap and can flip it.
+- **Re-runnable**: importing the same or a newer backup again adds only what's new (rows keyed by
+  TeslaMate's own ids + car), so the owner can keep TeslaMate running until happy, then stop it.
+- **Stored small**: imported positions and charge points go into the same compressed segment files as
+  CAN data; drives and charges into SQLite.
+- **Report**: rows read, imported, skipped (with why), overlap found, time taken; kept in the audit log.
+- **Tests**: a synthetic TeslaMate dump (made from TeslaMate's migrations in this repo, fake
+  coordinates) covering several schema versions; then the owner's real backup, uploaded to a session
+  only if the owner chooses (it holds every place the car has been).
+
 ## Phases
 
 0. **Decide** (questions below). Get a real bundle from the owner (Sentry Manager → Nerd → export
@@ -153,7 +184,8 @@ Phone and desktop layouts for every page (screenshots of both with every change,
 4. **Compression**: segment format, measured, picked.
 5. **UI**: Now, Drives, Charges, Timeline first; then the other pages; phone + desktop.
 6. **Accounts, encryption at rest, backups, MQTT/Home Assistant**.
-7. **Docker image, docs, first release**. Optional: importer for an existing TeslaMate database.
+7. **TeslaMate import** (backup upload, then the optional live Postgres connection).
+8. **Docker image, docs, first release**.
 
 ## Open questions for the owner
 
@@ -165,5 +197,5 @@ Phone and desktop layouts for every page (screenshots of both with every change,
    third slot.
 4. **Encryption at rest**: key file (restarts by itself) or passphrase at every start?
 5. ~~Maps and addresses~~: answered, both offline and online (see Security).
-6. **Import** the old TeslaMate history, if there is any?
+6. ~~Import~~: answered, yes (see Importing old TeslaMate history).
 7. **Several cars / several people**, or one car, one owner for now?
