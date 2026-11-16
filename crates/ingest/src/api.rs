@@ -32,35 +32,90 @@ pub struct Conn {
 pub const MAX_BAD_TOKENS: usize = 20;
 pub const MAX_REQUESTS_PER_TOKEN: usize = 1200;
 pub const WINDOW: Duration = Duration::from_secs(600);
+/// Addresses (or tokens) a window follows at most. Only those seen in the last [`WINDOW`] are kept at all; past this
+/// many (a flood from countless addresses), the ones seen longest ago are forgotten first.
+pub const MAX_TRACKED: usize = 100_000;
+/// Below this many entries a window doesn't bother pruning.
+const MIN_PRUNE: usize = 1024;
 
-#[derive(Default)]
+/// Recent hits per address or token, bounded however many there are: each keeps at most `limit + 1` times (enough
+/// to know it is over the limit), entries with no hit in the window are dropped as the table grows (each prune at
+/// least doubles the room, so it costs O(1) per hit over time), and the table never holds more than `cap`.
 struct Window {
+    limit: usize,
+    cap: usize,
     hits: HashMap<String, VecDeque<Instant>>,
+    prune_at: usize,
+}
+
+fn expire(q: &mut VecDeque<Instant>, now: Instant) {
+    while q.front().is_some_and(|t| now.duration_since(*t) > WINDOW) {
+        q.pop_front();
+    }
 }
 
 impl Window {
-    /// Counts one hit for `who`; returns how many are in the window now.
+    fn new(limit: usize, cap: usize) -> Window {
+        Window { limit, cap: cap.max(1), hits: HashMap::new(), prune_at: MIN_PRUNE.min(cap.max(1)) }
+    }
+
+    /// Counts one hit for `who`; returns how many are in the window now (at most `limit + 1`).
     fn hit(&mut self, who: &str, now: Instant) -> usize {
+        if !self.hits.contains_key(who) && self.hits.len() >= self.prune_at {
+            self.prune(now);
+        }
+        let limit = self.limit;
         let q = self.hits.entry(who.to_string()).or_default();
-        while q.front().is_some_and(|t| now.duration_since(*t) > WINDOW) {
-            q.pop_front();
+        expire(q, now);
+        if q.len() <= limit {
+            q.push_back(now);
         }
-        q.push_back(now);
-        let n = q.len();
-        if self.hits.len() > 10_000 {
-            self.hits.retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) <= WINDOW));
-        }
-        n
+        q.len()
     }
 
     fn count(&mut self, who: &str, now: Instant) -> usize {
         let Some(q) = self.hits.get_mut(who) else {
             return 0;
         };
-        while q.front().is_some_and(|t| now.duration_since(*t) > WINDOW) {
-            q.pop_front();
-        }
+        expire(q, now);
         q.len()
+    }
+
+    /// Drops entries with no hit in the window; if still full, the least recently seen go until a quarter is free.
+    fn prune(&mut self, now: Instant) {
+        self.hits.retain(|_, q| {
+            expire(q, now);
+            !q.is_empty()
+        });
+        if self.hits.len() >= self.cap {
+            let mut seen: Vec<(Instant, String)> =
+                self.hits.iter().filter_map(|(k, q)| q.back().map(|t| (*t, k.clone()))).collect();
+            let forget = seen.len() - self.cap * 3 / 4;
+            seen.select_nth_unstable(forget.saturating_sub(1));
+            for (_, k) in seen.into_iter().take(forget) {
+                self.hits.remove(&k);
+            }
+        }
+        self.prune_at = (self.hits.len() * 2).clamp(MIN_PRUNE.min(self.cap), self.cap);
+    }
+
+    fn len(&self) -> usize {
+        self.hits.len()
+    }
+}
+
+/// Who a wrong token counts against: the address, or for IPv6 its /64 (a home or a server gets a whole /64, so a
+/// client can't step around the limit, or fill the table, by changing the rest of its address).
+fn who(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(a) => a.to_string(),
+        IpAddr::V6(a) => match a.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = a.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
     }
 }
 
@@ -72,9 +127,50 @@ pub struct Uploads {
     per_token: Mutex<Window>,
 }
 
+/// What the upload side holds in memory now: every one of these is bounded, whatever the number of cars.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Memory {
+    /// Car keys whose trust head is cached ([`crate::judge::CACHED_HEADS`] at most).
+    pub trust_heads: usize,
+    /// Car keys in the judge's lock table (about those being judged now).
+    pub trust_locks: usize,
+    /// Cars whose log count is cached ([`crate::store::CACHED_CARS`] at most).
+    pub store_cars: usize,
+    /// Cars in the store's lock table (about those uploading now).
+    pub store_locks: usize,
+    /// Tokens cached ([`crate::tokens::CACHED_TOKENS`] at most).
+    pub tokens: usize,
+    /// Addresses with wrong tokens in the window ([`MAX_TRACKED`] at most).
+    pub bad_token_addresses: usize,
+    /// Tokens with requests in the window ([`MAX_TRACKED`] at most).
+    pub token_windows: usize,
+}
+
+fn lock_window(m: &Mutex<Window>) -> std::sync::MutexGuard<'_, Window> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl Uploads {
     pub fn new(store: Store, tokens: Tokens, judge: Judge) -> Arc<Uploads> {
-        Arc::new(Uploads { store, tokens, judge, bad_tokens: Mutex::default(), per_token: Mutex::default() })
+        Arc::new(Uploads {
+            store,
+            tokens,
+            judge,
+            bad_tokens: Mutex::new(Window::new(MAX_BAD_TOKENS, MAX_TRACKED)),
+            per_token: Mutex::new(Window::new(MAX_REQUESTS_PER_TOKEN, MAX_TRACKED)),
+        })
+    }
+
+    pub fn memory(&self) -> Memory {
+        Memory {
+            trust_heads: self.judge.cached_heads(),
+            trust_locks: self.judge.lock_entries(),
+            store_cars: self.store.cached_cars(),
+            store_locks: self.store.lock_entries(),
+            tokens: self.tokens.cached(),
+            bad_token_addresses: lock_window(&self.bad_tokens).len(),
+            token_windows: lock_window(&self.per_token).len(),
+        }
     }
 }
 
@@ -100,9 +196,8 @@ async fn authorize(up: &Uploads, headers: &HeaderMap, conn: Conn) -> Result<Toke
         Some(t) => up.tokens.find(t).await,
         None => None,
     };
-    let ip = conn.ip.to_string();
     let Some(token) = found else {
-        let n = up.bad_tokens.lock().map(|mut w| w.hit(&ip, now)).unwrap_or(0);
+        let n = lock_window(&up.bad_tokens).hit(&who(conn.ip), now);
         if n > MAX_BAD_TOKENS {
             return Err(ApiError::new(
                 429,
@@ -112,16 +207,16 @@ async fn authorize(up: &Uploads, headers: &HeaderMap, conn: Conn) -> Result<Toke
         }
         return Err(ApiError::new(401, "bad_token", "No token, or not one in use: ask the owner for a new one."));
     };
-    let n = up.per_token.lock().map(|mut w| w.hit(&token.id, now)).unwrap_or(0);
+    let n = lock_window(&up.per_token).hit(&token.id, now);
     if n > MAX_REQUESTS_PER_TOKEN {
         return Err(ApiError::new(429, "slow_down", "Too many requests with this token; wait a few minutes."));
     }
     Ok(token)
 }
 
-/// How many wrong tokens an address sent in the window (for tests and the status page).
+/// How many wrong tokens an address (an IPv6 address: its /64) sent in the window (for tests and the status page).
 pub fn bad_token_count(up: &Uploads, ip: IpAddr) -> usize {
-    up.bad_tokens.lock().map(|mut w| w.count(&ip.to_string(), Instant::now())).unwrap_or(0)
+    lock_window(&up.bad_tokens).count(&who(ip), Instant::now())
 }
 
 async fn ping(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, ApiError> {
@@ -202,7 +297,7 @@ async fn upload(AxState(up): St, Path(name): Path<String>, req: Request) -> Resu
         .map_err(|_| ApiError::new(413, "chunk_too_large", format!("A chunk can be at most {MAX_CHUNK} bytes.")))?;
     // the first upload ties the token to this car key
     if token.vehicle_key.is_none() {
-        let bound = up.tokens.bind(&token.id, n.vehicle_key).await?;
+        let bound = up.tokens.tie(&token, n.vehicle_key).await?;
         if bound != n.vehicle_key {
             return Err(ApiError::new(403, "wrong_car", "This token is for another car's CAN Bridge."));
         }
@@ -230,4 +325,57 @@ pub fn router(up: Arc<Uploads>) -> Router {
         .route("/api/can/logs/{name}", post(upload))
         .fallback(not_found)
         .with_state(up)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn a_window_keeps_at_most_limit_plus_one_hits_and_still_refuses() {
+        let mut w = Window::new(20, 1000);
+        let t0 = Instant::now();
+        for i in 0..10_000u32 {
+            let n = w.hit("1.2.3.4", t0 + Duration::from_millis(u64::from(i)));
+            assert!(n <= 21);
+        }
+        assert_eq!(w.hits["1.2.3.4"].len(), 21, "hammering is still over the limit, with 21 times kept, not 10,000");
+        // after the window, it is let in again
+        assert_eq!(w.hit("1.2.3.4", t0 + WINDOW + Duration::from_secs(11)), 1);
+    }
+
+    #[test]
+    fn any_number_of_tokens_or_addresses_stay_bounded() {
+        let t0 = Instant::now();
+        // 50,000 tokens at once, all in the window: never more than the cap
+        let mut w = Window::new(MAX_REQUESTS_PER_TOKEN, 4096);
+        for i in 0..50_000u32 {
+            w.hit(&format!("token{i}"), t0 + Duration::from_micros(u64::from(i)));
+            assert!(w.len() <= 4096);
+        }
+        assert!(w.len() >= 3072, "{}", w.len());
+        assert!(w.hits.contains_key("token49999"), "the most recent are kept");
+        assert!(!w.hits.contains_key("token0"), "the ones seen longest ago went first");
+        // tokens seen once, long ago, are dropped as new ones come: the table follows the window, not the history
+        let mut w = Window::new(MAX_REQUESTS_PER_TOKEN, MAX_TRACKED);
+        for round in 0..10u64 {
+            let at = t0 + WINDOW * u32::try_from(round).unwrap() + Duration::from_secs(round);
+            for i in 0..3000u32 {
+                w.hit(&format!("r{round}-{i}"), at);
+            }
+            assert!(w.len() <= 6000 + MIN_PRUNE, "round {round}: {}", w.len());
+        }
+    }
+
+    #[test]
+    fn ipv6_addresses_count_by_their_64() {
+        let a: IpAddr = "2001:db8:1:2:aaaa::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:2:ffff:1:2:3".parse().unwrap();
+        let c: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert_eq!(who(a), who(b));
+        assert_ne!(who(a), who(c));
+        assert_eq!(who("::ffff:192.168.1.20".parse().unwrap()), "192.168.1.20");
+        assert_eq!(who("10.0.0.1".parse().unwrap()), "10.0.0.1");
+    }
 }

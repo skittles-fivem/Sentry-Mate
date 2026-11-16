@@ -485,6 +485,18 @@ position stay out of the repo.
   - `accounts`: admin and watch-only, per-account car lists of any size, Argon2id passwords, sessions (`__Host-`
     cookie, CSRF), two-step codes with recovery codes, throttling per address and per account (home and outside
     counted apart), one-time setup code, a sealed audit log. 2,000 accounts tested.
+- 2026-11-16: the upload side scales to any number of cars (`ingest`). Tokens: no cap, one sealed file per token
+  named by its SHA-256 (finding one opens one file; a revoke from the command line counts at the next request), a
+  bounded cache. Trust records: per key a small sealed head (pairing, logs waiting, overrides), a sealed records file
+  in name order and an append-only sealed journal (`vault::records`, a crash-cut record is dropped), folded into the
+  next generation every 2,048 changes (streamed, the head is the commit point); only heads are cached (4,096), a lock
+  per key; the sweep looks only at keys with a "waiting" marker; old whole `trust.json` files are moved over on first
+  use. Store: each car's log count in a sealed `counts.json` (a car stored before is counted once), unfinished uploads
+  in the car's own `uploading/` folder, so an upload never lists the car's folder and `clean_stale` looks only there.
+  Rate windows keep at most limit + 1 times per address or token and at most 100,000 entries (IPv6 by /64). The
+  start-up sealing pass of older files runs once. Measured in a debug build: 2,000 cars with a token each, uploading
+  in parallel through the router, about 4 ms a car with every cache at 64; a car with 50,000 logs uploads as fast as
+  an empty one and its folder is never listed.
 
 ## Phases
 

@@ -12,7 +12,8 @@ program; the web UI is being built. The plan is in [docs/plans/rust-can-logger.m
 |---|---|
 | Upload API the bridge speaks (ping, status, resumable chunks), TLS 1.3 only | done |
 | Logs kept exactly as uploaded, never replaced | done |
-| One upload token per car, tied to its CAN key on first upload | done |
+| One upload token per car, tied to its CAN key on first upload, no limit on cars | done |
+| Any number of cars: kept per car, bounded memory, cars upload in parallel, an upload never reads a car's folder | done |
 | Signature check, pairing with the car's key, chain report (gaps, swaps, restarts) | done |
 | Reading both log formats (candump text, columns) | done |
 | Decoding signals (DBC sets per model, bus split, the Screenmate's GPS), same values as Sentry Six Manager | done |

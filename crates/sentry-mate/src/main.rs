@@ -349,7 +349,7 @@ async fn serve(
     }
     let id = Identity::load_or_create(&tls_dir(data), names, &v)?;
     let tokens = Tokens::open(tokens_file(data), v.clone()).await?;
-    let in_use = tokens.list().await.iter().filter(|t| !t.revoked).count();
+    let any_token = tokens.has_any().await;
     let store = Store::new(can_dir(data), v.clone());
     let up = Uploads::new(store.clone(), tokens, Judge::new(store));
     let listener = tokio::net::TcpListener::bind((bind, port)).await?;
@@ -358,11 +358,12 @@ async fn serve(
         id.fingerprint(),
         v.key_id()
     );
-    if in_use == 0 {
+    if !any_token {
         tracing::info!("no upload token yet: make one with `sentry-mate token new --car \"My car\"`");
     }
 
-    // logs whose sidecar never came are judged without it; unfinished uploads are dropped after two days
+    // logs whose sidecar never came are judged without it (only cars with logs waiting are looked at); unfinished
+    // uploads are dropped after two days (only the cars' `uploading/` folders are looked in)
     let housekeeping = up.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(60));

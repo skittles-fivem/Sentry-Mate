@@ -285,13 +285,15 @@ async fn nothing_reaches_storage_in_the_clear() {
     put(&t, &format!("{LOG}.json"), &side, 0, &side).await;
     assert_eq!(t.up.judge.record("abcdef123456", LOG).await.unwrap().status, ingest::judge::Status::Verified);
     let files = all_files(&t.data);
-    assert!(files.iter().any(|(p, _)| p.ends_with("trust.json")));
+    // the trust records: a sealed journal (sealed records, like an upload in progress)
+    assert!(files.iter().any(|(p, _)| p.ends_with("can/abcdef123456/trust-0.journal")));
     for (p, bytes) in &files {
         let name = p.file_name().unwrap().to_string_lossy().to_string();
         if name == "vault.json" {
             continue;
         }
-        assert!(vault::is_sealed(bytes), "{} is not sealed", p.display());
+        let sealed = vault::is_sealed(bytes) || bytes.starts_with(vault::records::MAGIC);
+        assert!(sealed, "{} is not sealed", p.display());
         for needle in [&b"CLEARTEXT-MARKER-"[..], b"abcdef123456", b"Model Y", b"integrity", t.token.as_bytes()] {
             assert!(
                 !bytes.windows(needle.len()).any(|w| w == needle),
