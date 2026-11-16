@@ -91,6 +91,10 @@ impl LogFacts {
     }
 }
 
+/// The most `# not recorded` lines kept from one log. The bridge writes one, at the top of a file; a crafted log with
+/// millions would otherwise grow the facts (and every timeline built from them) without bound.
+pub const MAX_NOT_RECORDED: usize = 64;
+
 /// Reads a log's lines into its [`LogFacts`].
 #[derive(Debug, Clone)]
 pub struct FactsCollector {
@@ -122,7 +126,7 @@ impl FactsCollector {
                 self.buses[usize::from(f.bus >> 6)] |= 1 << (f.bus & 63);
             }
             logfmt::Line::Dropped(_) => self.facts.dropped = self.facts.dropped.saturating_add(1),
-            logfmt::Line::NotRecorded { paused_s, .. } => {
+            logfmt::Line::NotRecorded { paused_s, .. } if self.facts.not_recorded.len() < MAX_NOT_RECORDED => {
                 self.pending.push(self.facts.not_recorded.len());
                 self.facts.not_recorded.push(NotRecorded {
                     at_ms: self.facts.start_ms,
@@ -185,6 +189,16 @@ mod tests {
         assert_eq!(f.dropped, 1);
         assert_eq!(f.not_recorded, vec![NotRecorded { at_ms: 1_767_225_600_000, paused_ms: Some(120_000) }]);
         assert_eq!(f.span(), (1_767_225_598_500, 1_767_225_660_000));
+    }
+
+    #[test]
+    fn a_flood_of_pause_lines_is_bounded() {
+        let mut text = String::from("(1767225600.100000) can0 132#00\n");
+        for _ in 0..10_000 {
+            text += "# not recorded: paused 5 s, about 1 KB of frames (folder full)\n";
+        }
+        let f = lines(&text, serde_json::json!({ "start_wall_ms": 1_767_225_600_000u64 }));
+        assert_eq!(f.not_recorded.len(), MAX_NOT_RECORDED);
     }
 
     #[test]

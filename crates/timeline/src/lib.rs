@@ -11,7 +11,9 @@
 //! 2. **Log facts** ([`LogFacts`]): when a log's frames came and on which buses, why the bridge closed it, recording
 //!    pauses and lost frames: what the states come from.
 //! 3. **The timeline** ([`build`]): a window's samples and log facts → states, drives, charges, positions and charge
-//!    points. [`rebuild_window`] says which window a newly arrived log changes.
+//!    points, and the idle cut points where nothing goes on across. [`rebuild_window`] says which window a newly
+//!    arrived log changes: back and forward to the nearest sleep, long gap or cut point, so a car that never sleeps
+//!    still gets small windows.
 //!
 //! Units are those of `model`: ms since 1970 UTC, km, km/h, kW, kWh, °C, bar; battery power positive out of the pack.
 
@@ -29,7 +31,7 @@ pub mod vin;
 mod window;
 
 pub use facts::{Closed, FactsCollector, LogFacts, NotRecorded};
-pub use read::{LogRead, read_log};
+pub use read::{LogRead, MAX_LOG_SAMPLES, read_log};
 pub use sample::{SampleBuilder, SampleParams};
 pub use states::is_settled;
 pub use timeline::{Input, Loss, Params, RULES_VERSION, Timeline, build, charge_id, drive_id};

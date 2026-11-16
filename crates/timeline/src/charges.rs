@@ -1,5 +1,7 @@
 //! Charges: the seconds the car says it is charging, with interruptions shorter than [`Params::charge_gap_ms`] (a
-//! charger pausing, a cable reseated) merged into one charge. A drive in between always splits them.
+//! charger pausing, a cable reseated) merged into one charge. A drive in between always splits them. A stretch with no
+//! data at all (a lost log, an app update: unknown, but too short to be a settled span) is no interruption: charging on
+//! both sides of it is one charge, as a drive goes on across one.
 
 use crate::calc::{counters_in, integrate_kwh, max, mean, position};
 use crate::timeline::{Params, RULES_VERSION, charge_id};
@@ -18,7 +20,9 @@ pub(crate) fn find(seg: &[&Sample], drives: &[(usize, usize)], params: &Params) 
             // (drives are in order: the first one that starts after the last charging second)
             let next_drive = drives.partition_point(|&(a, _)| a <= *last);
             let drive_between = drives.get(next_drive).is_some_and(|&(a, _)| a < i);
-            if gap < params.charge_gap_ms && !drive_between {
+            // (no sample at all in between: nothing says it stopped)
+            let no_data_between = i == *last + 1;
+            if (gap < params.charge_gap_ms || no_data_between) && !drive_between {
                 *last = i;
                 continue;
             }

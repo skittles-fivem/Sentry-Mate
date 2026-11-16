@@ -61,6 +61,24 @@ fn frame(t_us: u64, values: &[(&str, f64)]) -> String {
     format!("({}.{:06}) {iface} {:03X}#{hex}\n", t_us / 1_000_000, t_us % 1_000_000, msg.id)
 }
 
+/// A broken or crafted log whose frame times jump back and forth between two seconds would make a sample per frame;
+/// a log gives at most `MAX_LOG_SAMPLES`, and its facts still see every frame.
+#[test]
+fn frame_times_going_back_and_forth_make_a_bounded_number_of_samples() {
+    let mut log = String::new();
+    let frames = 3 * timeline::MAX_LOG_SAMPLES;
+    for k in 0..frames as u64 {
+        let t = T0_US + (k % 2) * 1_000_000 + k;
+        writeln!(log, "({}.{:06}) can0 33A#0000000000470000", t / 1_000_000, t % 1_000_000).unwrap();
+    }
+    writeln!(log, "({}.000000) can1 132#0000000000000000", T0_US / 1_000_000 + 5).unwrap();
+    let side = serde_json::json!({ "closed_because": "rotate" });
+    let read = read_log(&xz(&log), &side, Profile::Tesla3Y, SampleParams::default()).unwrap();
+    assert!(read.samples.len() <= timeline::MAX_LOG_SAMPLES + 1, "{}", read.samples.len());
+    assert_eq!(read.facts.buses, vec!["can0", "can1"], "the facts read the whole log");
+    assert_eq!(read.facts.last_frame_ms, Some(T0_US / 1000 + 5000));
+}
+
 fn xz(text: &str) -> Vec<u8> {
     let mut out = Vec::new();
     lzma_rs::xz_compress(&mut text.as_bytes(), &mut out).unwrap();

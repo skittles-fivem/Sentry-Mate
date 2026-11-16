@@ -61,20 +61,41 @@ pub(crate) fn haversine_km(a: (f64, f64), b: (f64, f64)) -> f64 {
     2.0 * EARTH_KM * h.sqrt().min(1.0).asin()
 }
 
+/// Fixes in a row that agree with each other but not with the last good one: that one was the bad fix (a stale
+/// position at the start), so the track goes on from them.
+const REANCHOR_AFTER: usize = 3;
+
 /// The length of the GPS track, km: steps between fixes, leaving out jumps faster than `max_kmh` (a bad fix) and
 /// steps while the car says it is standing (the fix wanders at a stop). `None` with fewer than two fixes.
 pub(crate) fn gps_km(s: &[&Sample], max_kmh: f64) -> Option<f64> {
+    let plausible = |a: (f64, f64, u64), b: (f64, f64, u64)| {
+        let hours = b.2.saturating_sub(a.2).max(1) as f64 / 3_600_000.0;
+        haversine_km((a.0, a.1), (b.0, b.1)) / hours <= max_kmh
+    };
     let mut last: Option<(f64, f64, u64)> = None;
+    // fixes left out since the last good one, as (the newest, how many in a row agree with each other)
+    let mut left_out: Option<((f64, f64, u64), usize)> = None;
     let mut total = 0.0;
     let mut steps = 0;
     for x in s {
         let (Some(lat), Some(lon)) = (x.lat, x.lon) else { continue };
+        let here = (lat, lon, x.t_ms);
         if let Some((la, lo, t)) = last {
             let d = haversine_km((la, lo), (lat, lon));
-            let hours = x.t_ms.saturating_sub(t).max(1) as f64 / 3_600_000.0;
-            if d / hours > max_kmh {
-                continue; // keep measuring from the last good fix
+            if !plausible((la, lo, t), here) {
+                // keep measuring from the last good fix, unless the fixes left out agree with each other
+                let run = match left_out {
+                    Some((prev, n)) if plausible(prev, here) => n + 1,
+                    _ => 1,
+                };
+                left_out = Some((here, run));
+                if run >= REANCHOR_AFTER {
+                    last = Some(here);
+                    left_out = None;
+                }
+                continue;
             }
+            left_out = None;
             if x.speed_kmh.is_none_or(|v| v.abs() > 0.5) {
                 total += d;
             }
@@ -185,6 +206,20 @@ mod tests {
         let km = gps_km(&r, 300.0).unwrap();
         // the jump to 5,5 and back is left out: 0.0002° of longitude at the equator
         assert!((km - 0.0222).abs() < 0.0005, "{km}");
+    }
+
+    #[test]
+    fn a_bad_first_fix_does_not_hold_the_track_back() {
+        // a stale fix 2 km south, then the car driving north at 36 km/h (10 m a second) for a minute
+        let mut v = vec![Sample { t_ms: 0, lat: Some(-0.018), lon: Some(0.0), ..Sample::default() }];
+        for i in 1..=60u64 {
+            let lat = (i as f64 * 0.01) / 111.195;
+            v.push(Sample { t_ms: i * 1000, lat: Some(lat), lon: Some(0.0), ..Sample::default() });
+        }
+        let r: Vec<&Sample> = v.iter().collect();
+        let km = gps_km(&r, 300.0).unwrap();
+        // the drive's 0.6 km, less the first steps the track waited out; not the 2 km jump from the stale fix
+        assert!((0.55..=0.6).contains(&km), "{km}");
     }
 
     #[test]

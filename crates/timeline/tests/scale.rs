@@ -118,7 +118,7 @@ fn a_long_history_costs_the_window_lookup_next_to_nothing() {
     for k in 0..10_000u64 {
         let d = k * 3650 / 10_000;
         let log_from = T0 + d * day + 3_600_000;
-        let w = rebuild_window(&spans, log_from, log_from + 60_000, &params);
+        let w = rebuild_window(&spans, &[], log_from, log_from + 60_000, &params);
         let to = w.to_ms.unwrap();
         assert!(w.from_ms <= log_from && to >= log_from + 60_000);
         // (0: nothing settled before, from the car's first data)
@@ -129,4 +129,41 @@ fn a_long_history_costs_the_window_lookup_next_to_nothing() {
     // the window is the day around the log (the night before to the night after), never the ten years
     assert!(widest <= 2 * day, "{widest}");
     assert!(took.as_secs_f64() < 2.0, "{took:?}");
+}
+
+#[test]
+fn a_car_that_never_sleeps_costs_the_window_lookup_next_to_nothing_too() {
+    // a year of a car that is never asleep (Sentry mode every day), parked most of the time: its online stretches
+    // are split at an idle cut point every five minutes, 105,120 spans and as many cut points
+    let step = 300_000u64;
+    let n = 365 * 288u64;
+    let spans: Vec<StateSpan> = (0..n)
+        .map(|k| StateSpan {
+            car: 1,
+            state: State::Online,
+            start_ms: T0 + k * step,
+            end_ms: T0 + (k + 1) * step,
+            buses: vec!["can0".into()],
+            source: Source::Can,
+        })
+        .collect();
+    let cuts: Vec<u64> = (1..n).map(|k| T0 + k * step).collect();
+    let params = Params::default();
+    let started = Instant::now();
+    let mut widest = 0;
+    for k in 0..10_000u64 {
+        let log_from = T0 + (k * (n - 2) / 10_000 + 1) * step + 100_000;
+        let w = rebuild_window(&spans, &cuts, log_from, log_from + 60_000, &params);
+        let to = w.to_ms.unwrap();
+        assert!(w.from_ms <= log_from && to >= log_from + 60_000);
+        // (0: nothing before, from the car's first data)
+        widest = widest.max(to - w.from_ms.max(T0));
+    }
+    let took = started.elapsed();
+    eprintln!("10,000 window lookups over {n} spans and cut points: {took:?}");
+    // a quarter of an hour around the log, not the year (nor, without the cut points, everything since it began)
+    assert!(widest <= 3 * step, "{widest}");
+    assert!(took.as_secs_f64() < 2.0, "{took:?}");
+    let without = rebuild_window(&spans, &[], T0 + 100 * step, T0 + 100 * step + 60_000, &params);
+    assert_eq!(without, timeline::Window { from_ms: 0, to_ms: None });
 }

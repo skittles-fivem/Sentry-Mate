@@ -142,6 +142,36 @@ fn a_one_minute_interruption_is_one_charge_and_a_ten_minute_one_two() {
     assert!(t.drives.is_empty());
 }
 
+/// A log lost in the middle of a charge (five minutes with no data: unknown, too short to settle) is no interruption:
+/// the car charged on both sides of it, as a drive goes on across a lost log. A known interruption that long (the car
+/// says it is not charging) still splits it.
+#[test]
+fn a_lost_log_in_the_middle_of_a_charge_does_not_split_it() {
+    let make = |lost: bool| {
+        let mut car = Car::new(1, T0);
+        car.park(60);
+        car.charge(900, 11.0, ChargeKind::Ac);
+        if lost {
+            car.gap(300);
+        } else {
+            car.plugged(300, ChargeKind::Ac);
+        }
+        car.charge(900, 11.0, ChargeKind::Ac);
+        car.park(60);
+        let end = car.t;
+        let (samples, logs) = car.finish();
+        build(1, T0, end, &samples, &logs)
+    };
+    let t = make(true);
+    assert!(t.states.iter().any(|s| s.state == State::Unknown && s.end_ms - s.start_ms >= 300_000));
+    assert_eq!(t.charges.len(), 1, "{:?}", t.charges.iter().map(|c| (c.start_ms, c.end_ms)).collect::<Vec<_>>());
+    let c = &t.charges[0];
+    assert_eq!(((c.start_ms - T0) / 1000, (c.end_ms - T0) / 1000), (60, 2160));
+    // what the counter says went in: the 1,800 s charged (nothing in the lost minutes here)
+    assert!(close(c.energy_added_kwh.unwrap(), 1800.0 * 11.0 / 3600.0, 1e-6), "{:?}", c.energy_added_kwh);
+    assert_eq!(make(false).charges.len(), 2);
+}
+
 #[test]
 fn the_lifetime_counter_gives_the_energy_added_when_it_is_there() {
     let charge = |counters: bool| {
@@ -367,51 +397,158 @@ fn merge<T: Clone>(
     v
 }
 
-/// Rebuilding the window a late log changes gives what building everything at once gives.
-#[test]
-fn rebuilding_the_window_of_a_late_log_matches_a_full_build() {
-    let (samples, logs, end) = day();
+/// What the store does with a rebuilt window: keeps what lies outside it, puts the window's in (the cut points strictly
+/// between its ends).
+fn put_window(old: &Timeline, part: &Timeline, from: u64, to: u64) -> Timeline {
+    let outside = |t0: u64, t1: u64| t1 <= from || t0 >= to;
+    let mut cuts: Vec<u64> =
+        old.cuts.iter().copied().filter(|&c| c <= from || c >= to).chain(part.cuts.clone()).collect();
+    cuts.sort_unstable();
+    Timeline {
+        states: merge(&old.states, &part.states, |s| (s.start_ms, s.end_ms), &outside),
+        drives: merge(&old.drives, &part.drives, |d| (d.start_ms, d.end_ms), &outside),
+        charges: merge(&old.charges, &part.charges, |c| (c.start_ms, c.end_ms), &outside),
+        positions: merge(&old.positions, &part.positions, |p| (p.t_ms, p.t_ms + 1), &outside),
+        charge_points: merge(&old.charge_points, &part.charge_points, |(_, p)| (p.t_ms, p.t_ms + 1), &outside),
+        losses: part.losses.clone(),
+        cuts,
+    }
+}
+
+/// The window's own build: only the logs that overlap it, the one before it and the one after it, and the samples in it.
+fn build_window(car: u32, from: u64, to: u64, samples: &[model::Sample], logs: &[timeline::LogFacts]) -> Timeline {
+    let mut window_logs: Vec<_> = logs.iter().filter(|l| l.span().1 >= from && l.span().0 < to).cloned().collect();
+    if let Some(prev) = logs.iter().filter(|l| l.span().1 < from).max_by_key(|l| l.span().1) {
+        window_logs.push(prev.clone());
+    }
+    if let Some(next) = logs.iter().filter(|l| l.span().0 >= to).min_by_key(|l| l.span().0) {
+        window_logs.push(next.clone());
+    }
+    let window_samples: Vec<_> = samples.iter().filter(|s| s.t_ms >= from && s.t_ms < to).cloned().collect();
+    build(car, from, to, &window_samples, &window_logs)
+}
+
+fn assert_same(got: &Timeline, want: &Timeline, what: &str) {
+    assert_eq!(got.states, want.states, "states, {what}");
+    assert_eq!(got.drives, want.drives, "drives, {what}");
+    assert_eq!(got.charges, want.charges, "charges, {what}");
+    assert_eq!(got.positions, want.positions, "positions, {what}");
+    assert_eq!(got.charge_points, want.charge_points, "charge points, {what}");
+    assert_eq!(got.cuts, want.cuts, "cut points, {what}");
+}
+
+/// Each log of a car arriving last: the window it changes, rebuilt and put in, gives what building everything at once
+/// gives. Returns the windows' lengths (ms) and how many were closed on both sides.
+fn every_log_late(car: u32, samples: &[model::Sample], logs: &[timeline::LogFacts], end: u64) -> (Vec<u64>, usize) {
     let params = Params::default();
-    let full = build(3, T0, end, &samples, &logs);
-    let (mut smaller, mut closed_both_sides) = (0, 0);
+    let full = build(car, T0, end, samples, logs);
+    let (mut widths, mut closed_both_sides) = (Vec::new(), 0);
     for late in 0..logs.len() {
         let (a, b) = logs[late].span();
         let others: Vec<_> = logs.iter().enumerate().filter(|(i, _)| *i != late).map(|(_, l)| l.clone()).collect();
         let without: Vec<_> = samples.iter().filter(|s| s.t_ms + 1000 <= a || s.t_ms > b).cloned().collect();
-        let before = build(3, T0, end, &without, &others);
-        let w = rebuild_window(&before.states, a, b, &params);
+        let before = build(car, T0, end, &without, &others);
+        let w = rebuild_window(&before.states, &before.cuts, a, b, &params);
         let (from, to) = (w.from_ms.max(T0), w.to_ms.unwrap_or(end));
         assert!(from <= a && to >= b, "window {from}..{to} misses the log {a}..{b}");
-        if to - from < end - T0 {
-            smaller += 1;
-        }
+        widths.push(to - from);
         if w.from_ms > T0 && w.to_ms.is_some() {
             closed_both_sides += 1;
         }
-        // the rebuild sees only the logs that overlap the window, and the one before it
-        let mut window_logs: Vec<_> = logs.iter().filter(|l| l.span().1 >= from && l.span().0 < to).cloned().collect();
-        if let Some(prev) = logs.iter().filter(|l| l.span().1 < from).max_by_key(|l| l.span().1) {
-            window_logs.push(prev.clone());
-        }
-        let window_samples: Vec<_> = samples.iter().filter(|s| s.t_ms >= from && s.t_ms < to).cloned().collect();
-        let part = build(3, from, to, &window_samples, &window_logs);
-
-        // what the store would do: keep what lies outside the window, put the rebuilt window in
-        let outside = |t0: u64, t1: u64| t1 <= from || t0 >= to;
-        let merged = Timeline {
-            states: merge(&before.states, &part.states, |s| (s.start_ms, s.end_ms), &outside),
-            drives: merge(&before.drives, &part.drives, |d| (d.start_ms, d.end_ms), &outside),
-            charges: merge(&before.charges, &part.charges, |c| (c.start_ms, c.end_ms), &outside),
-            positions: merge(&before.positions, &part.positions, |p| (p.t_ms, p.t_ms + 1), &outside),
-            charge_points: merge(&before.charge_points, &part.charge_points, |(_, p)| (p.t_ms, p.t_ms + 1), &outside),
-            losses: full.losses.clone(),
-        };
-        assert_eq!(merged.states, full.states, "states, late log {late}");
-        assert_eq!(merged.drives, full.drives, "drives, late log {late}");
-        assert_eq!(merged.charges, full.charges, "charges, late log {late}");
-        assert_eq!(merged.positions, full.positions, "positions, late log {late}");
-        assert_eq!(merged.charge_points, full.charge_points, "charge points, late log {late}");
+        let part = build_window(car, from, to, samples, logs);
+        let mut merged = put_window(&before, &part, from, to);
+        merged.losses = full.losses.clone();
+        assert_same(&merged, &full, &format!("late log {late}"));
     }
-    assert_eq!(smaller, logs.len(), "every window is less than the whole history");
+    (widths, closed_both_sides)
+}
+
+/// Rebuilding the window a late log changes gives what building everything at once gives.
+#[test]
+fn rebuilding_the_window_of_a_late_log_matches_a_full_build() {
+    let (samples, logs, end) = day();
+    let (widths, closed_both_sides) = every_log_late(3, &samples, &logs, end);
+    assert!(widths.iter().all(|&w| w < end - T0), "every window is less than the whole history");
     assert!(closed_both_sides > 10, "{closed_both_sides} windows between two settled spans");
+}
+
+/// Five and a half hours of a car that never sleeps (Sentry mode at work, a charge, a lost log): no settled span at all.
+fn awake_day() -> (Vec<model::Sample>, Vec<timeline::LogFacts>, u64) {
+    let mut car = Car::new(4, T0);
+    car.park(1800);
+    car.drive(1200, 50.0, 15.0);
+    car.stand(40);
+    car.drive(600, 50.0, 15.0);
+    car.park(5400);
+    car.charge(1800, 11.0, ChargeKind::Ac);
+    car.plugged(60, ChargeKind::Ac);
+    car.charge(600, 11.0, ChargeKind::Ac);
+    car.plugged(1200, ChargeKind::Ac);
+    car.park(3600);
+    car.gap(120);
+    car.park(1800);
+    car.drive(900, 60.0, 18.0);
+    car.park(600);
+    let end = car.t;
+    let (samples, logs) = car.finish();
+    (samples, logs, end)
+}
+
+/// A car that stays awake for hours still gets small windows: the idle cut points bound them where no settled span
+/// does, and they never cut a drive or a charge.
+#[test]
+fn a_car_that_never_sleeps_gets_small_windows() {
+    let (samples, logs, end) = awake_day();
+    let params = Params::default();
+    let full = build(4, T0, end, &samples, &logs);
+    assert!(full.states.iter().all(|s| !timeline::is_settled(s, &params)), "nothing settled all day");
+    assert_eq!(full.drives.len(), 2, "the stop at a light doesn't cut the drive");
+    assert_eq!(full.charges.len(), 1, "nor does a one-minute pause cut the charge");
+    assert!(full.cuts.len() > 30, "{} cut points", full.cuts.len());
+    for c in &full.cuts {
+        assert_eq!(c % 300_000, 0, "on the five-minute grid");
+        let inside = |a: u64, b: u64| a < *c && *c < b;
+        assert!(!full.drives.iter().any(|d| inside(d.start_ms, d.end_ms)), "a cut point in a drive");
+        assert!(!full.charges.iter().any(|ch| inside(ch.start_ms, ch.end_ms)), "a cut point in a charge");
+        assert!(full.states.iter().any(|s| s.start_ms == *c), "the states are split at {c}");
+    }
+    // without the cut points, every log would rebuild the whole day
+    let (a, b) = logs[logs.len() / 2].span();
+    assert_eq!(rebuild_window(&full.states, &[], a, b, &params), timeline::Window { from_ms: 0, to_ms: None });
+
+    let (widths, _) = every_log_late(4, &samples, &logs, end);
+    let widest = widths.iter().max().copied().unwrap_or(0);
+    // the longest stretch without one: the charge with its pause and the margins around it
+    assert!(widest <= 75 * 60_000, "widest window {} min", widest / 60_000);
+}
+
+/// Logs arriving one by one, in order: each rebuilds only the end of the timeline, and the timeline built that way is
+/// the one built at once. The timeline is built up to "now", a moment (or two minutes, or a quarter of an hour: the
+/// upload running late) after the newest log.
+#[test]
+fn logs_arriving_in_order_rebuild_only_the_end() {
+    for (lag, car, (samples, logs, _)) in
+        [1, 120_000, 900_000].into_iter().flat_map(|lag| [(lag, 3, day()), (lag, 4, awake_day())])
+    {
+        let params = Params::default();
+        let mut cur = Timeline::default();
+        let mut most = 0;
+        for k in 0..logs.len() {
+            let known = &logs[..=k];
+            let now = logs[k].span().1 + lag;
+            let (a, b) = logs[k].span();
+            let w = rebuild_window(&cur.states, &cur.cuts, a, b, &params);
+            let (from, to) = (w.from_ms.max(T0), w.to_ms.unwrap_or(now));
+            let arrived: Vec<_> = samples.iter().filter(|s| s.t_ms <= b).cloned().collect();
+            most = most.max(arrived.iter().filter(|s| s.t_ms >= from && s.t_ms < to).count());
+            let part = build_window(car, from, to, &arrived, known);
+            cur = put_window(&cur, &part, from, to);
+        }
+        let now = logs[logs.len() - 1].span().1 + lag;
+        let full = build(car, T0, now, &samples, &logs);
+        assert_same(&cur, &full, &format!("car {car} built log by log, {lag} ms behind"));
+        // never the whole history (the day sleeps; the awake day has its cut points): at most the samples of the
+        // longest stretch between two cut points or sleeps
+        assert!(most <= 75 * 60, "car {car}: {most} samples in a window, of {}", samples.len());
+    }
 }

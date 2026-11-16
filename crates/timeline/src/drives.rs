@@ -6,7 +6,7 @@ use crate::calc::{climb, counters_net_out, gps_km, integrate_kwh, max, mean, min
 use crate::timeline::{Params, RULES_VERSION, drive_id};
 use model::{CarId, Drive, Gear, Sample, Source};
 
-fn moving(s: &Sample) -> bool {
+pub(crate) fn moving(s: &Sample) -> bool {
     matches!(s.gear, Some(Gear::D | Gear::R | Gear::N))
 }
 

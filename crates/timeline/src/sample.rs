@@ -99,6 +99,12 @@ impl SampleBuilder {
         std::mem::take(&mut self.out)
     }
 
+    /// How many samples wait to be taken. (A sample is made at every change of second, so frames whose times go back
+    /// and forth make one each: a caller reading untrusted input bounds this, as [`crate::read_log`] does.)
+    pub fn pending(&self) -> usize {
+        self.out.len()
+    }
+
     /// Ends the log: its last second is given too.
     pub fn finish(mut self) -> (Vec<Sample>, Option<VinInfo>) {
         if let (Some(s), false) = (self.second, self.first) {
@@ -132,14 +138,15 @@ impl SampleBuilder {
 
     /// The best signal of a field with a fresh value: (its value, its kind).
     fn best(&self, field: Field, end_us: u64) -> Option<(f64, Kind)> {
-        let hold = self.params.hold_ms * 1000;
+        let hold = self.params.hold_ms.saturating_mul(1000);
         self.table.fields[field as usize]
             .iter()
             .find_map(|&i| self.fresh(i, end_us, hold).map(|v| (v, self.table.cands[i].kind)))
     }
 
     fn sample(&self, sec: u64) -> Sample {
-        let end_us = (sec + 1) * 1_000_000;
+        // (saturating: a frame time near the end of u64 must not overflow)
+        let end_us = sec.saturating_add(1).saturating_mul(1_000_000);
         let num = |f: Field| self.best(f, end_us).map(|(v, _)| v);
 
         let battery_voltage_v = num(Field::BattVolts);
@@ -217,7 +224,7 @@ impl SampleBuilder {
     /// Latitude, longitude and accuracy of one message, the best with all three fresh. A position is kept only when
     /// it is plausible: on the globe, not 0,0, and with a known accuracy.
     fn position(&self, end_us: u64) -> (Option<f64>, Option<f64>, Option<f64>) {
-        let hold = self.params.gps_hold_ms * 1000;
+        let hold = self.params.gps_hold_ms.saturating_mul(1000);
         for &[la, lo, ac] in &self.table.gps {
             let (lat, lon, acc) =
                 (self.fresh(la, end_us, hold), self.fresh(lo, end_us, hold), self.fresh(ac, end_us, hold));
@@ -341,6 +348,20 @@ mod tests {
         assert_eq!(s[0].charge_kind, Some(ChargeKind::Dc));
         assert_eq!((s[0].charger_voltage_v, s[0].charger_current_a), (Some(380.0), Some(300.0)));
         assert_eq!(s[1].charge_kind, Some(ChargeKind::Ac));
+    }
+
+    #[test]
+    fn a_frame_time_at_the_end_of_u64_does_not_overflow() {
+        // (a crafted line "(18446744073709.551615) can0 ..." parses to u64::MAX µs)
+        let mut b =
+            SampleBuilder::new(dbc::Profile::Tesla3Y, SampleParams { hold_ms: u64::MAX, gps_hold_ms: u64::MAX });
+        b.value(5_000_000, "UI_SOC", 50.0);
+        b.value(u64::MAX, "UI_SOC", 60.0);
+        b.value(u64::MAX - 1, "GPSAccuracy04F", 3.0);
+        b.value(7_000_000, "UI_SOC", 70.0);
+        let (s, _) = b.finish();
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].soc, Some(60.0));
     }
 
     #[test]

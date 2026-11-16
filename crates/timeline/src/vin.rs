@@ -47,11 +47,21 @@ pub fn decode_vin(vin: &str, via: u32) -> Option<VinInfo> {
 }
 
 /// Collects the VIN from a log's frames, one at a time, on whichever bus they come.
-#[derive(Debug, Clone, Default)]
+///
+/// The pages it holds while collecting carry the serial number, so they are dropped once the VIN is found and its
+/// `Debug` shows only what was found (a builder printed in a log line must not print the VIN).
+#[derive(Clone, Default)]
 pub struct VinCollector {
     /// The pages of 0x405 and of 0x508 seen so far.
     parts: [[Option<String>; 3]; 2],
     found: Option<VinInfo>,
+}
+
+impl std::fmt::Debug for VinCollector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pages = self.parts.iter().flatten().filter(|p| p.is_some()).count();
+        f.debug_struct("VinCollector").field("pages", &pages).field("found", &self.found).finish()
+    }
 }
 
 impl VinCollector {
@@ -86,7 +96,11 @@ impl VinCollector {
         parts[page] = Some(text);
         if let [Some(a), Some(b), Some(c)] = parts {
             match decode_vin(&format!("{a}{b}{c}"), id) {
-                Some(v) => self.found = Some(v),
+                Some(v) => {
+                    self.found = Some(v);
+                    // the pages hold the serial number: keep only what was found
+                    self.parts = Default::default();
+                }
                 // pages of two different sends: start again
                 None => *parts = [None, None, None],
             }
@@ -183,6 +197,22 @@ mod tests {
         assert_eq!(v.via, 0x405);
         // kept once found, whatever comes next
         assert_eq!(c.add(0x123, &[0; 8]), Some(&v));
+    }
+
+    #[test]
+    fn the_serial_number_is_never_kept_or_printed() {
+        let p = pages_405(FAKE);
+        let mut c = VinCollector::new();
+        c.add(0x405, &p[2]);
+        assert!(!format!("{c:?}").contains("000042"), "{c:?}");
+        c.add(0x405, &p[0]);
+        c.add(0x405, &p[1]);
+        assert!(c.vin().is_some());
+        assert!(c.parts.iter().flatten().all(Option::is_none), "pages dropped once found");
+        let shown = format!("{c:?}");
+        assert!(!shown.contains("000042") && shown.contains("XP7YGCEK0RB"), "{shown}");
+        let b = crate::SampleBuilder::new(dbc::Profile::Tesla3Y, crate::SampleParams::default());
+        assert!(format!("{b:?}").contains("VinCollector"));
     }
 
     #[test]
