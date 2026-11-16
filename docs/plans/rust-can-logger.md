@@ -127,9 +127,14 @@ Phone and desktop layouts for every page (screenshots of both with every change,
 - **At rest**: SQLite and segments encrypted (XChaCha20-Poly1305 per file / SQLCipher-style), key in a
   key file in the data volume or a passphrase asked at start (owner choice: key file means it restarts
   on its own). Raw logs encrypted the same way, the signature still checks after decrypting.
-- **Privacy**: logs hold GPS. Nothing leaves the container by default: offline reverse geocoding
-  (bundled dataset) and offline map tiles (one PMTiles file); online geocoding / OSM tiles only if
-  turned on. No telemetry. Real coordinates never in code, tests or commits.
+- **Privacy**: logs hold GPS. No telemetry. Real coordinates never in code, tests or commits.
+- **Maps and addresses: both offline and online** (owner's choice, 2026-11-16). Offline: map tiles from
+  one PMTiles file and reverse geocoding from a bundled dataset, so maps and addresses work with no
+  internet. Online: OpenStreetMap tiles and Nominatim addresses (or a server the owner sets), for
+  fresher detail. Settings → Maps and addresses picks Offline, Online, or Online with offline fallback
+  (used when the internet is down), separately for maps and for addresses. Offline data is a one-time
+  download into the data volume, not baked into the image. Online requests send only tile numbers or one
+  coordinate, over HTTPS, nothing else; addresses found online are cached so each place is asked once.
 - **Code**: `#![forbid(unsafe_code)]` in our crates, `cargo deny` + `cargo audit` in CI, fuzzing of
   `logfmt`, `dbc` and the upload parser, minimal Docker image (distroless/scratch, non-root, read-only
   root filesystem), signed release images.
@@ -159,6 +164,6 @@ Phone and desktop layouts for every page (screenshots of both with every change,
 3. **SMO's second upload slot**: is it free, or used for a second Sentry Manager? If used, SMO needs a
    third slot.
 4. **Encryption at rest**: key file (restarts by itself) or passphrase at every start?
-5. **Maps and addresses**: offline only (bigger image / one-time download) or allow OSM online?
+5. ~~Maps and addresses~~: answered, both offline and online (see Security).
 6. **Import** the old TeslaMate history, if there is any?
 7. **Several cars / several people**, or one car, one owner for now?
