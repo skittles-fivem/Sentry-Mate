@@ -1,0 +1,20 @@
+[package]
+name = "timeline"
+description = "Works out a car's history (states, drives, charges, positions) from its decoded CAN signals, per car"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbc = { path = "../dbc" }
+logfmt = { path = "../logfmt" }
+model = { path = "../model" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+lzma-rs = "0.3"
