@@ -6,7 +6,7 @@ containers, no Tesla account, nothing that wakes the car.
 
 **Status: early.** What runs today is receiving, checking and decoding the bridge's logs. The parts that work out
 drives and charges, store them, and handle places and accounts are built and tested but not yet wired into the
-program; the web UI is being built. The plan is in [docs/plans/rust-can-logger.md](docs/plans/rust-can-logger.md).
+program, and neither are the TeslaMate import and MQTT; the web UI is being built. The plan is in [docs/plans/rust-can-logger.md](docs/plans/rust-can-logger.md).
 
 | Part | State |
 |---|---|
@@ -22,7 +22,9 @@ program; the web UI is being built. The plan is in [docs/plans/rust-can-logger.m
 | Places, geofences, charge costs with time-of-use rates, addresses offline or online | built, not wired in yet |
 | Accounts: admin and watch-only, per-car access, two-step sign-in, sessions, audit log | built, not wired in yet |
 | Encryption at rest (pure Rust): everything stored is sealed, key file + recovery key | done |
-| Web UI (UI packs, two built-in designs), maps, TeslaMate import, MQTT | being built |
+| TeslaMate import from TeslaMate's own backup file (any number of cars, streamed, again later adds only what's new) | built, not wired in yet |
+| MQTT for Home Assistant (TLS only, discovery, any number of cars on one connection) | built, not wired in yet |
+| Web UI (UI packs, two built-in designs, every TeslaMate tab covered), maps | being built |
 
 ## Run it
 
@@ -127,7 +129,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 Crates: `logfmt` (reads the logs), `trust` (signatures and chain), `vault` (encryption at rest), `model` (the
 shared types), `dbc` (decodes signals), `ingest` (upload API, storage, tokens, TLS server), `timeline` (states,
 drives, charges from the signals), `db` (sealed storage for what the timeline works out), `places` (geofences,
-prices, addresses, map settings), `accounts` (people and sign-in), `sentry-mate` (the program).
+prices, addresses, map settings), `accounts` (people and sign-in), `import` (TeslaMate history), `mqtt` (Home Assistant), `sentry-mate` (the program).
 
 Sentry Mate is written from scratch and copies no code from TeslaMate; it is not affiliated with TeslaMate, Tesla,
 or Screenmate.

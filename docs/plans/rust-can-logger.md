@@ -497,6 +497,21 @@ position stay out of the repo.
   start-up sealing pass of older files runs once. Measured in a debug build: 2,000 cars with a token each, uploading
   in parallel through the router, about 4 ms a car with every cache at 64; a car with 50,000 logs uploads as fast as
   an empty one and its folder is never listed.
+- 2026-11-16: `import` and `mqtt` built, reviewed, not yet wired in.
+  - `import`: reads TeslaMate's own backup (`pg_dump` plain SQL, also gzip or xz) as a stream, without running any
+    SQL: only the `COPY` blocks, columns matched by name so any TeslaMate version works, the private schema (tokens)
+    skipped unread. Cars, drives, charges and their curves, states, updates, positions, places, all marked as
+    imported so a CAN rebuild never deletes them; units checked against TeslaMate's schema. Importing a newer backup
+    again adds only what is new, and a backup of a different TeslaMate database is flagged rather than skipped. xz is
+    read with a bounded window (one-block xz files stay at a few MB of memory).
+  - `mqtt`: off unless turned on. TLS only (plain `mqtt://` only with an explicit setting), the broker's certificate
+    checked or pinned by SHA-256, Home Assistant discovery, location published only if chosen separately. One
+    connection for every car; while the broker is away only each car's latest values wait (events are kept, bounded),
+    so thousands of cars can't flood it. Reconnects back off for real, messages are kept under the packet limit.
+  - Reviews also fixed the four crates merged earlier (timeline, db, places, accounts) and the upload side.
+  - Found in review, being fixed: a growing sealed file (`vault::records`) cut by a crash could seal the next piece
+    under a number already used; and readers opened those files for writing. Next: a random nonce per record, and
+    read-only opens.
 
 ## Phases
 
