@@ -291,3 +291,69 @@ fn files_of_another_version_are_reported() {
         Err(Error::Version { found: 2, .. })
     ));
 }
+
+#[test]
+fn a_lost_table_file_is_reported_not_read_as_empty() {
+    let mut t = test_db(quiet());
+    let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
+    let drives: Vec<Drive> = (0..10).map(|i| drive(car, i, DAY0 + i * H, 30, 2.0, Source::Can)).collect();
+    t.db.upsert(car, &drives).unwrap();
+    t.db.upsert(car, &[state(car, 1, DAY0, DAY0 + H, State::Online, Source::Can)]).unwrap();
+    // folded: the snapshot is the only file the drives have
+    t.db.settle(car, 0).unwrap();
+    let dir = t.data.join("db/cars").join(car.to_string());
+    assert!(!dir.join("drives.log").exists());
+    std::fs::remove_file(dir.join("drives.snap")).unwrap();
+    t.reopen(quiet());
+    // it used to read as no drives, and the summary was "mended" to match, hiding the loss for good
+    damaged_in(t.db.list::<Drive>(car, &Query::default()).unwrap_err(), "drives.snap");
+    damaged_in(t.db.upsert(car, &[drive(car, 50, DAY0, 1, 1.0, Source::Can)]).unwrap_err(), "drives.snap");
+    assert_eq!(t.db.entry(car).unwrap().unwrap().summary.tally.can.drives, 10, "the summary still says so");
+    // the car's other tables are fine, and a table never written is empty, not lost
+    assert_eq!(t.db.count::<StateRow>(car).unwrap(), 1);
+    assert_eq!(t.db.count::<model::Charge>(car).unwrap(), 0);
+    // emptying a table is not a loss
+    let other = t.db.create_car(new_car("Model 3", &[])).unwrap().id;
+    t.db.upsert(other, &[drive(other, 1, DAY0, 30, 2.0, Source::Can)]).unwrap();
+    t.db.delete::<Drive>(other, &[1]).unwrap();
+    t.db.settle(other, 0).unwrap();
+    t.reopen(quiet());
+    assert_eq!(t.db.count::<Drive>(other).unwrap(), 0);
+}
+
+#[test]
+fn a_lost_fleet_is_reported_and_no_car_inherits_another_cars_folder() {
+    let mut t = test_db(quiet());
+    let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
+    t.db.upsert(car, &[drive(car, 1, DAY0, 30, 2.0, Source::Can)]).unwrap();
+    t.db.settle(car, 0).unwrap();
+    let fleet = t.data.join("db/fleet.log");
+    let saved = std::fs::read(&fleet).unwrap();
+    std::fs::remove_file(&fleet).unwrap();
+    // opened as empty, the next car would have been given id 1, and car 1's drives with it
+    damaged_in(t.try_reopen(quiet()).err().unwrap(), "fleet.snap");
+    std::fs::write(&fleet, &saved).unwrap();
+    t.reopen(quiet());
+    assert_eq!(t.db.count::<Drive>(car).unwrap(), 1);
+    // a folder already there for a new car's id is refused, whatever left it
+    std::fs::create_dir_all(t.data.join("db/cars").join((car + 1).to_string())).unwrap();
+    assert!(matches!(t.db.create_car(new_car("Model 3", &[])), Err(Error::Damaged { .. })));
+}
+
+#[cfg(unix)]
+#[test]
+fn every_file_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = test_db(quiet());
+    let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
+    t.db.upsert(car, &[drive(car, 1, DAY0, 30, 2.0, Source::Can)]).unwrap();
+    t.db.write_points(car, Source::Can, DAY0, DAY0 + 60_000, &samples(DAY0, 60)).unwrap();
+    t.db.write_points(car, Source::Can, DAY0 + DAY_MS, DAY0 + 2 * DAY_MS, &samples(DAY0 + DAY_MS, 60)).unwrap();
+    t.db.kv().put("ns", "k", b"v").unwrap();
+    let files = all_files(&t.data.join("db"));
+    assert!(files.iter().any(|f| f.extension().is_some_and(|x| x == "log")));
+    for f in files {
+        let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{} is {mode:o}", f.display());
+    }
+}

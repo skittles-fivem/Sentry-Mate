@@ -7,8 +7,9 @@
 //!
 //! Paths are the files' paths under the data folder (`db/...`); the bytes are the files as stored, each still
 //! sealed to its own path, so the archive is sealed twice over and a restore needs the same vault (the same data
-//! key: the key file, or the recovery key on a new machine). Each car is copied under its own lock, so each car is
-//! whole as of one moment; the fleet's summaries are mended from the cars' tables when they are next read.
+//! key: the key file, or the recovery key on a new machine). The fleet is copied first, then each car under its own
+//! lock, so each car is whole as of one moment and never older than its summary; the fleet's summaries are mended
+//! from the cars' tables when they are next read.
 
 use crate::Db;
 use crate::error::{Error, Result};
@@ -104,9 +105,14 @@ impl Db {
         let data = ctx.data.clone();
         let mut a = Archive { w: ctx.vault.seal_writer(LABEL, out)?, report: BackupReport::default() };
         a.w.write_all(&header(Kind::Backup))?;
-        // each car under its own lock
+        // the fleet first, and the cars it lists at that moment: a car's files are then never older than its
+        // summary (a summary ahead of its car would count rows of a table that isn't there, which reads as a lost
+        // file); rows written while the backup runs are counted when the table is next read
         let ids: Vec<model::CarId> = {
             let f = crate::lock(&self.inner.fleet)?;
+            for name in ["fleet.snap", "fleet.log"] {
+                a.add(&data, &self.inner.dir.join(name))?;
+            }
             let mut ids = Vec::with_capacity(f.state.len());
             let mut q = crate::FleetQuery { limit: crate::MAX_PAGE, ..Default::default() };
             loop {
@@ -119,6 +125,7 @@ impl Db {
             }
             ids
         };
+        // each car under its own lock
         for id in ids {
             let slot = self.inner.cars.get(id);
             let car = slot.lock();
@@ -135,12 +142,6 @@ impl Db {
             self.inner.cars.trim();
         }
         // then the shared tables, each under its lock
-        {
-            let _f = crate::lock(&self.inner.fleet)?;
-            for name in ["fleet.snap", "fleet.log"] {
-                a.add(&data, &self.inner.dir.join(name))?;
-            }
-        }
         {
             let _p = crate::lock(&self.inner.places)?;
             let _s = crate::lock(&self.inner.settings)?;

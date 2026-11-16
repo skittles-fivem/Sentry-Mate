@@ -52,6 +52,10 @@ impl<T: Item> TimeTable<T> {
 
     /// The ids of rows from `source` that start in `[from, to)`.
     pub(crate) fn starting_in(&self, from: u64, to: u64, source: Source) -> Vec<u64> {
+        if from >= to {
+            // BTreeSet::range panics on a backwards range
+            return Vec::new();
+        }
         self.by_start
             .range((Bound::Included((from, 0)), Bound::Excluded((to, 0))))
             .filter(|(_, id)| self.rows.get(id).is_some_and(|r| r.source() == source))

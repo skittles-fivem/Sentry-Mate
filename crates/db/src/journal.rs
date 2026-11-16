@@ -14,7 +14,7 @@
 //! happens to point past the end looks torn and loses the records after it: the one case not told apart.)
 
 use crate::error::{Error, Result};
-use crate::file::{Ctx, Kind, check_header, header, remove_if_exists, sync_dir, with_suffix};
+use crate::file::{Ctx, Kind, check_header, header, private_create, remove_if_exists, sync_dir, with_suffix};
 use std::path::{Path, PathBuf};
 use vault::stream::{CHUNK, TAG};
 
@@ -93,6 +93,8 @@ impl Journal {
         std::fs::create_dir_all(dir)?;
         let tmp = with_suffix(path, ".new");
         remove_if_exists(&tmp)?;
+        // made here, owner-only like every other db file (the vault would make it with the default mode)
+        drop(private_create(&tmp)?);
         let mut rec = ctx.vault.records(&tmp, &label)?;
         let mut head = header(Kind::Journal);
         head.extend_from_slice(&generation.to_be_bytes());

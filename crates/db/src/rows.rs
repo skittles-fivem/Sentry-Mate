@@ -64,13 +64,19 @@ impl Totals {
     }
 
     fn add(&mut self, other: &Totals, sign: i64) {
-        self.drives += sign * other.drives;
-        self.charges += sign * other.charges;
-        self.distance_m += sign * other.distance_m;
-        self.drive_energy_wh += sign * other.drive_energy_wh;
-        self.charge_added_wh += sign * other.charge_added_wh;
-        self.charge_used_wh += sign * other.charge_used_wh;
+        add(&mut self.drives, sign, other.drives);
+        add(&mut self.charges, sign, other.charges);
+        add(&mut self.distance_m, sign, other.distance_m);
+        add(&mut self.drive_energy_wh, sign, other.drive_energy_wh);
+        add(&mut self.charge_added_wh, sign, other.charge_added_wh);
+        add(&mut self.charge_used_wh, sign, other.charge_used_wh);
     }
+}
+
+/// `to += sign × v`, wrapping: a row with an absurd value (a bad odometer jump) can't overflow and panic, and
+/// adding it and taking it away again still gives back exactly what was there.
+fn add(to: &mut i64, sign: i64, v: i64) {
+    *to = to.wrapping_add(sign.wrapping_mul(v));
 }
 
 /// What a row adds to its car's summary.
@@ -100,8 +106,18 @@ impl Tally {
     pub(crate) fn add(&mut self, other: &Tally, sign: i64) {
         self.can.add(&other.can, sign);
         self.teslamate.add(&other.teslamate, sign);
-        self.states += sign * other.states;
-        self.updates += sign * other.updates;
+        add(&mut self.states, sign, other.states);
+        add(&mut self.updates, sign, other.updates);
+    }
+
+    /// How many rows of `table` it counts.
+    pub(crate) fn rows(&self, table: Table) -> i64 {
+        match table {
+            Table::Drives => self.can.drives.wrapping_add(self.teslamate.drives),
+            Table::Charges => self.can.charges.wrapping_add(self.teslamate.charges),
+            Table::States => self.states,
+            Table::Updates => self.updates,
+        }
     }
 
     pub(crate) fn is_zero(&self) -> bool {
@@ -180,9 +196,9 @@ impl Item for Drive {
     }
     fn tally(&self, t: &mut Tally, sign: i64) {
         let x = t.totals_mut(self.source);
-        x.drives += sign;
-        x.distance_m += sign * milli(self.distance_km);
-        x.drive_energy_wh += sign * milli(self.energy_used_kwh);
+        add(&mut x.drives, sign, 1);
+        add(&mut x.distance_m, sign, milli(self.distance_km));
+        add(&mut x.drive_energy_wh, sign, milli(self.energy_used_kwh));
     }
 }
 
@@ -205,9 +221,9 @@ impl Item for Charge {
     }
     fn tally(&self, t: &mut Tally, sign: i64) {
         let x = t.totals_mut(self.source);
-        x.charges += sign;
-        x.charge_added_wh += sign * milli(self.energy_added_kwh);
-        x.charge_used_wh += sign * milli(self.energy_used_kwh);
+        add(&mut x.charges, sign, 1);
+        add(&mut x.charge_added_wh, sign, milli(self.energy_added_kwh));
+        add(&mut x.charge_used_wh, sign, milli(self.energy_used_kwh));
     }
 }
 
@@ -236,7 +252,7 @@ impl Item for StateRow {
         self.span.source
     }
     fn tally(&self, t: &mut Tally, sign: i64) {
-        t.states += sign;
+        add(&mut t.states, sign, 1);
     }
 }
 
@@ -265,7 +281,7 @@ impl Item for UpdateRow {
         self.update.source
     }
     fn tally(&self, t: &mut Tally, sign: i64) {
-        t.updates += sign;
+        add(&mut t.updates, sign, 1);
     }
 }
 

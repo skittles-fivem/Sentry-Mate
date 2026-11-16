@@ -27,6 +27,29 @@ use std::path::{Path, PathBuf};
 
 pub const DAY_MS: u64 = 86_400_000;
 
+/// 10000-01-01 00:00 UTC: points are kept up to here. A day's files are named `YYYY-MM-DD`, so a later day would
+/// get a name no listing finds; a window reaching past it (a rebuild of "everything", `0..u64::MAX`) ends here.
+pub const END_MS: u64 = 253_402_300_800_000;
+
+/// A window cut to what can be kept (see [`END_MS`]).
+fn clamp(from: u64, to: u64) -> (u64, u64) {
+    (from.min(END_MS), to.min(END_MS))
+}
+
+/// The days of `[from, to)` (cut to [`END_MS`]) the series has, from a listing of its folder, for a long window: a
+/// window of years or `0..u64::MAX` costs one listing, not a step per day. `None` for a window of a few weeks,
+/// whose days are cheaper checked one by one by name.
+fn window_days(dir: &Path, from: u64, to: u64) -> Result<Option<Vec<u64>>> {
+    if from >= to {
+        return Ok(Some(Vec::new()));
+    }
+    let (first, last) = (from / DAY_MS, (to - 1) / DAY_MS);
+    if last - first > 62 {
+        return Ok(Some(list_days(dir)?.into_iter().filter(|d| (first..=last).contains(d)).collect()));
+    }
+    Ok(None)
+}
+
 /// A day kept for a series.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DayInfo {
@@ -206,6 +229,9 @@ fn check_points<P: Point>(from: u64, to: u64, points: &[P]) -> Result<()> {
     if points.first().is_some_and(|p| p.t_ms() < from) || points.last().is_some_and(|p| p.t_ms() >= to) {
         return Err(Error::invalid("points must be inside their window"));
     }
+    if points.last().is_some_and(|p| p.t_ms() >= END_MS) {
+        return Err(Error::invalid("points after the year 9999 can't be kept"));
+    }
     Ok(())
 }
 
@@ -219,22 +245,29 @@ pub(crate) fn write<P: Point>(
     points: &[P],
 ) -> Result<Option<u64>> {
     check_points(from, to, points)?;
+    let (from, to) = clamp(from, to);
     if from == to {
         return Ok(None);
     }
     let dir = series_dir::<P>(car_dir, source);
-    let (first, last) = (from / DAY_MS, (to - 1) / DAY_MS);
-    let existing = if last - first > 62 { Some(list_days(&dir)?) } else { None };
+    // a long window: the days there are, and the days of the new points
+    let days = match window_days(&dir, from, to)? {
+        Some(mut days) => {
+            days.extend(points.iter().map(|p| p.t_ms() / DAY_MS));
+            days.sort_unstable();
+            days.dedup();
+            days
+        }
+        None => (from / DAY_MS..=(to - 1) / DAY_MS).collect(),
+    };
     let mut rest = points;
-    for day in first..=last {
+    for day in days {
+        // day < END_MS / DAY_MS, so this doesn't overflow
         let (ds, de) = (day * DAY_MS, (day + 1) * DAY_MS);
         let (wf, wt) = (from.max(ds), to.min(de));
         let n = rest.partition_point(|p| p.t_ms() < wt);
         let (pts, after) = rest.split_at(n);
         rest = after;
-        if pts.is_empty() && existing.as_ref().is_some_and(|e| e.binary_search(&day).is_err()) {
-            continue;
-        }
         let files = day_files(&dir, day);
         if wf == ds && wt == de {
             write_whole_day(ctx, &files, pts.to_vec())?;
@@ -253,7 +286,7 @@ pub(crate) fn write<P: Point>(
             }
         }
     }
-    Ok(Some(first))
+    Ok(Some(from / DAY_MS))
 }
 
 /// The days a series has, in order.
@@ -278,14 +311,11 @@ pub(crate) fn list_days(dir: &Path) -> Result<Vec<u64>> {
 
 /// The days of `[from, to)` that have files.
 fn days_in(dir: &Path, from: u64, to: u64) -> Result<Vec<u64>> {
-    if from >= to {
-        return Ok(Vec::new());
+    let (from, to) = clamp(from, to);
+    if let Some(days) = window_days(dir, from, to)? {
+        return Ok(days);
     }
-    let (first, last) = (from / DAY_MS, (to - 1) / DAY_MS);
-    if last - first > 62 {
-        return Ok(list_days(dir)?.into_iter().filter(|d| (first..=last).contains(d)).collect());
-    }
-    Ok((first..=last)
+    Ok((from / DAY_MS..=(to - 1) / DAY_MS)
         .filter(|&d| {
             let f = day_files(dir, d);
             f.snap.exists() || f.log.exists()

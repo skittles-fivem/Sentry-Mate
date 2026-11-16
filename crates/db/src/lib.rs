@@ -39,8 +39,11 @@
 //! Everything is sealed with the vault before it touches the disk, temporary files and journals included (labels
 //! are the file's path under the data folder, so a file moved elsewhere doesn't open). Nothing is ever written in
 //! the clear. Every file carries the format version; a file of another version, or one damaged, is reported with
-//! its name, never read as empty. Writes are crash-safe: whole files go to a sealed temporary file, are synced and
-//! renamed; journals drop only a half-written last entry.
+//! its name, never read as empty. So is a file that is gone where it can be told: a table whose files are missing
+//! while the car's summary counts rows in it, a fleet missing while cars' folders are there. Values JSON can't hold
+//! (NaN, infinities) are refused when written, not lost when read back. Writes are crash-safe: whole files go to a
+//! sealed temporary file (owner-only, like every db file), are synced and renamed; journals drop only a
+//! half-written last entry.
 //!
 //! # Compression
 //!
@@ -90,7 +93,7 @@ pub use file::FORMAT_VERSION;
 pub use fleet::{FleetCursor, FleetEntry, FleetPage, FleetQuery, Summary};
 pub use kv::{Kv, MAX_VALUE};
 pub use rows::{Cursor, Item, MAX_PAGE, Order, Page, Query, StateRow, Table, Tally, Totals, UpdateRow};
-pub use segment::{DAY_MS, DayInfo, Fields, Point};
+pub use segment::{DAY_MS, DayInfo, END_MS, Fields, Point};
 
 use cars::{CarData, OpenCars};
 use file::{Ctx, Which};
@@ -99,7 +102,7 @@ use global::{PlaceOp, Places, SettingOp, Settings};
 use journal::Files;
 use logged::LoggedFile;
 use model::{Car, CarId, ChargePoint, Now, Place, PlaceId, Sample, Source};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -221,7 +224,28 @@ fn check_rows<T: Item>(car: CarId, rows: &[T]) -> Result<()> {
     if let Some(r) = rows.iter().find(|r| r.car() != car) {
         return Err(Error::invalid(format!("row {} of {} is for car {}, not {car}", r.id(), T::TABLE.name(), r.car())));
     }
+    if let Some(r) = rows.iter().find(|r| !storable(*r)) {
+        return Err(Error::invalid(format!(
+            "row {} of {} has a value that can't be kept (a number that isn't finite)",
+            r.id(),
+            T::TABLE.name()
+        )));
+    }
     Ok(())
+}
+
+/// Whether a value comes back from its stored form as it is. JSON has no NaN or infinity: serde writes them as
+/// `null`, which reads back as `None` (a value silently lost) or, for a plain `f64` such as a position's
+/// latitude, doesn't read at all, and the whole file would then be reported damaged.
+fn storable<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq>(v: &T) -> bool {
+    serde_json::to_vec(v).ok().and_then(|b| serde_json::from_slice::<T>(&b).ok()).is_some_and(|back| back == *v)
+}
+
+fn check_storable<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq>(v: &T, what: &str) -> Result<()> {
+    match storable(v) {
+        true => Ok(()),
+        false => Err(Error::invalid(format!("{what} has a value that can't be kept (a number that isn't finite)"))),
+    }
 }
 
 impl Db {
@@ -236,7 +260,15 @@ impl Db {
         }
         let cars = OpenCars::new(opts.max_open_cars, opts.max_open_bytes);
         let ctx = Arc::new(Ctx::new(vault, data.to_path_buf(), opts));
-        let fleet = LoggedFile::<Fleet>::load(&ctx, Files::named(&dir, "fleet"))?;
+        let files = Files::named(&dir, "fleet");
+        if !files.snap.exists() && !files.log.exists() && std::fs::read_dir(dir.join("cars"))?.next().is_some() {
+            // opened as empty, the next car made would get the first car's id, and its folder
+            return Err(Error::Damaged {
+                file: ctx.label(&files.snap),
+                why: "is missing, but there are cars' folders: put it back (or restore a backup)".into(),
+            });
+        }
+        let fleet = LoggedFile::<Fleet>::load(&ctx, files)?;
         let kv = Kv::new(ctx.clone(), dir.join("kv"));
         Ok(Db {
             inner: Arc::new(Inner {
@@ -288,9 +320,19 @@ impl Db {
 
     /// Adds a car; its id is given here (never reused). Returns the car as kept.
     pub fn create_car(&self, mut car: Car) -> Result<Car> {
+        check_storable(&car, "the car")?;
         let mut f = lock(&self.inner.fleet)?;
         car.id = f.state.next_id;
         Db::check_keys(&f.state, &car)?;
+        // a new car's folder can't be there already: if it is, the fleet lost cars and the new one would get
+        // another car's history
+        let dir = self.car_dir(car.id);
+        if dir.exists() {
+            return Err(Error::Damaged {
+                file: self.inner.ctx.label(&dir),
+                why: "is there already for a new car (the fleet's files lost cars?)".into(),
+            });
+        }
         let e = FleetEntry { car: car.clone(), summary: Summary::default() };
         f.commit(&self.inner.ctx, FleetOp::Put(Box::new(e)))?;
         Ok(car)
@@ -298,6 +340,7 @@ impl Db {
 
     /// Changes a car's record (name, keys, settings); its summary stays.
     pub fn update_car(&self, car: Car) -> Result<()> {
+        check_storable(&car, "the car")?;
         let mut f = lock(&self.inner.fleet)?;
         let summary = f.state.get(car.id).ok_or(Error::NoSuchCar(car.id))?.summary.clone();
         Db::check_keys(&f.state, &car)?;
@@ -353,6 +396,7 @@ impl Db {
 
     /// Keeps a car's newest values (older ones than those kept are ignored).
     pub fn set_now(&self, now: Now) -> Result<()> {
+        check_storable(&now, "the car's Now")?;
         let mut f = lock(&self.inner.fleet)?;
         let mut e = f.state.get(now.car).ok_or(Error::NoSuchCar(now.car))?.clone();
         if e.summary.now.as_ref().is_some_and(|n| n.at_ms > now.at_ms) {
@@ -417,9 +461,20 @@ impl Db {
                 r.tally(&mut part, 1);
                 last = last.max(Some(r.end_ms()));
             }
+            // no file at all, though the summary counts rows: the files were lost, not emptied (emptying a table
+            // leaves its files). Reported, never mended to zero: that would hide the loss for good. (A car whose
+            // whole folder is gone, as after a backup that caught it being removed, is left to be mended.)
+            let lost = t.state.len() == 0 && !t.files.snap.exists() && !t.files.log.exists() && dir.exists();
             let mut f = lock(&self.inner.fleet)?;
             if let Some(e) = f.state.get(car) {
                 let have = e.summary.tally.part(T::TABLE);
+                let counted = have.rows(T::TABLE);
+                if lost && counted > 0 {
+                    return Err(Error::Damaged {
+                        file: self.inner.ctx.label(&t.files.snap),
+                        why: format!("is missing, but the car's summary counts {counted} rows in it"),
+                    });
+                }
                 let late = last.is_some_and(|l| e.summary.last_activity_ms.is_none_or(|a| l > a));
                 if have != part || late {
                     let mut e = e.clone();
@@ -463,25 +518,30 @@ impl Db {
     /// Replaces the CAN rows that start in `[from_ms, to_ms)` with `rows` (which must start there too), all or
     /// none: a rebuilt window. Rows from TeslaMate stay. Returns how many rows were removed.
     pub fn replace_window<T: Item>(&self, car: CarId, from_ms: u64, to_ms: u64, rows: &[T]) -> Result<usize> {
+        if from_ms > to_ms {
+            return Err(Error::invalid("a window ends before it starts"));
+        }
         check_rows(car, rows)?;
         if let Some(r) = rows.iter().find(|r| r.start_ms() < from_ms || r.start_ms() >= to_ms) {
             return Err(Error::invalid(format!("row {} starts outside the window", r.id())));
         }
         let rows = dedup(rows);
+        let new_ids: HashSet<u64> = rows.iter().map(Item::id).collect();
         self.with_car(car, |db, data, dir| {
             let t = db.table::<T>(data, car, dir)?;
             let del = t.state.starting_in(from_ms, to_ms, Source::Can);
+            let del_ids: HashSet<u64> = del.iter().copied().collect();
             let mut delta = Tally::default();
             let mut gone = 0;
             for id in &del {
                 if let Some(old) = t.state.get(*id) {
                     old.tally(&mut delta, -1);
-                    gone += usize::from(!rows.iter().any(|r| r.id() == *id));
+                    gone += usize::from(!new_ids.contains(id));
                 }
             }
             let mut last = None;
             for r in &rows {
-                if !del.contains(&r.id()) {
+                if !del_ids.contains(&r.id()) {
                     if let Some(old) = t.state.get(r.id()) {
                         old.tally(&mut delta, -1);
                     }
@@ -506,9 +566,10 @@ impl Db {
             let t = db.table::<T>(data, car, dir)?;
             let mut delta = Tally::default();
             let mut del = Vec::new();
+            let mut seen = HashSet::with_capacity(ids.len());
             for id in ids {
                 if let Some(old) = t.state.get(*id) {
-                    if !del.contains(id) {
+                    if seen.insert(*id) {
                         old.tally(&mut delta, -1);
                         del.push(*id);
                     }
@@ -682,7 +743,7 @@ impl Db {
         if !(-90.0..=90.0).contains(&p.lat) || !(-180.0..=180.0).contains(&p.lon) {
             return Err(Error::invalid("a place's position is out of range"));
         }
-        Ok(())
+        check_storable(p, "the place")
     }
 
     /// Adds a place; its id is given here. Returns the place as kept.

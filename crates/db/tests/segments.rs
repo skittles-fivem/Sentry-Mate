@@ -144,3 +144,39 @@ fn a_long_range_reads_only_days_that_exist() {
     t.db.write_points::<Sample>(car, Source::Teslamate, DAY0, DAY0 + 300 * DAY_MS, &[]).unwrap();
     assert_eq!(t.db.days::<Sample>(car, Source::Teslamate).unwrap().len(), 1);
 }
+
+#[test]
+fn a_window_of_everything_touches_only_the_days_there_are() {
+    let t = test_db(Options::default());
+    let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
+    for d in [0u64, 3, 400] {
+        let t0 = DAY0 + d * DAY_MS;
+        t.db.write_points(car, Source::Can, t0, t0 + 60_000, &samples(t0, 60)).unwrap();
+        t.db.write_points(car, Source::Can, t0, t0 + 60_000, &charge_points(t0, 30)).unwrap();
+    }
+    t.db.write_points(car, Source::Teslamate, DAY0, DAY0 + 60_000, &samples(DAY0, 60)).unwrap();
+    // a rebuild of everything: once a step per day of 0..u64::MAX (it never ended) and an overflow past the
+    // last day
+    let start = std::time::Instant::now();
+    t.db.delete_window(car, 0, u64::MAX).unwrap();
+    assert!(start.elapsed().as_secs() < 10, "{:?}", start.elapsed());
+    assert!(t.db.days::<Sample>(car, Source::Can).unwrap().is_empty());
+    assert!(t.db.days::<ChargePoint>(car, Source::Can).unwrap().is_empty());
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Teslamate, 0, u64::MAX).unwrap().len(), 60);
+    // writing into a window of everything: the points' days are written, nothing else is visited
+    let pts = samples(DAY0 + 7 * DAY_MS, 10);
+    t.db.write_points(car, Source::Can, 0, u64::MAX, &pts).unwrap();
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap(), pts);
+    assert_eq!(t.db.days::<Sample>(car, Source::Can).unwrap().len(), 1);
+    // points past the year 9999 would go into a day no listing finds: refused
+    let far = db::END_MS + 5 * DAY_MS;
+    assert!(t.db.write_points(car, Source::Can, far, far + 60_000, &samples(far, 10)).is_err());
+    assert!(t.db.write_points::<Sample>(car, Source::Can, far, far + 60_000, &[]).is_ok());
+    assert!(t.db.read_points::<Sample>(car, Source::Can, far, u64::MAX).unwrap().is_empty());
+}
+
+fn charge_points(t0: u64, n: u64) -> Vec<ChargePoint> {
+    (0..n)
+        .map(|i| ChargePoint { t_ms: t0 + i * 1000, power_kw: Some(11.0), soc: Some(50.0), ..ChargePoint::default() })
+        .collect()
+}
