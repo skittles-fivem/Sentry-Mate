@@ -1,0 +1,22 @@
+[package]
+name = "import"
+description = "Brings old TeslaMate history into Sentry Mate from TeslaMate's own backup (plain SQL, gzip or xz), read as data, per car, streamed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+model = { path = "../model" }
+crc32fast = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+lzma-rs = "0.3"
+memchr = "2"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
