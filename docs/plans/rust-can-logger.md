@@ -237,10 +237,12 @@ Stealing the disk, the data folder or a backup gives nothing readable.
 
 - **Keys in layers.** One random 256-bit data key encrypts everything. It is never stored as it is: it is
   kept wrapped (encrypted) twice, and either wrapper opens it:
-  1. **Machine unlock (daily use)**: wrapped by a key sealed to the server's **TPM 2.0** chip (Docker:
-     pass `/dev/tpmrm0`), bound to the machine's boot state. The data only opens on that machine. No
-     TPM: wrapped by a key in a separate key file that lives **outside the data volume** (a Docker secret
-     or another disk), so the data folder or a backup alone is useless.
+  1. **Machine unlock (daily use), in Docker**: by default a **key file in its own volume, `/keys`**,
+     separate from the data volume `/data` (ideally on another disk, and never in the same backup), made
+     on first start, readable only by the container's user. Copying `/data` or a backup of it gives
+     nothing. If the host has a **TPM 2.0** chip and `/dev/tpmrm0` is passed to the container, the key
+     file itself is sealed to that chip, so even `/data` + `/keys` together only open on that machine.
+     The logger says at start which of the two it uses.
   2. **Recovery key**: shown **once** at setup (a long random key, also as a printable sheet), turned
      into a wrapping key with Argon2id at heavy settings (1 GiB memory, several passes) so guessing is
      out of reach. Needed only for a new machine, a dead TPM or a restore. The logger never stores it.
@@ -287,6 +289,44 @@ The TeslaMate fork's contents go; the Rust app takes the whole repo.
 - **GitHub Actions**: TeslaMate's workflows are removed with everything else (they'd publish TeslaMate
   images); new ones: `cargo test`, clippy, `cargo deny`/`audit`, fuzz smoke run, Docker image.
 
+## Docker (owner: it runs in Docker, 2026-11-16)
+
+One container, one image, nothing else to run (no database or Grafana container).
+
+```yaml
+services:
+  sentry-mate:
+    image: ghcr.io/skittles-fivem/sentry-mate:latest   # name follows the final app name
+    restart: unless-stopped
+    ports:
+      - "9100:9100"     # web UI, HTTPS
+      - "10100:10100"   # CAN Bridge uploads, HTTPS, closed while uploads are off
+    volumes:
+      - ./data:/data    # database, segments, raw logs (all encrypted)
+      - ./keys:/keys    # the key file: keep it apart from data and its backups
+    # devices: ["/dev/tpmrm0"]   # optional: seal the key to the host's TPM 2.0
+    environment:
+      - TZ=America/Chicago       # default time zone; each car can have its own
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "1000:1000"
+```
+
+- **Ports** differ from Sentry Manager's (9000 / 10000) so both can run on the same server; both are
+  settings. SMO's second slot points at `https://<server>:10100/api/can/logs`.
+- **Image**: static Rust binary (musl) on `scratch` / distroless, non-root, read-only root filesystem,
+  amd64 and arm64, built and signed by GitHub Actions; tiny (target well under 50 MB without map data).
+- **Offline map and address data** is downloaded once into `/data` from Settings, not baked into the
+  image.
+- **Health check** built in (`sentry-mate health`), graceful shutdown on `SIGTERM` (finish the upload
+  chunk being written, flush SQLite).
+- **Updates**: pull the new image and restart; database changes run by themselves at start, after an
+  automatic encrypted backup.
+- **First start**: the log prints a one-time setup code; the web UI (HTTPS) asks for it, creates the
+  admin account, makes the keys and shows the recovery key once.
+
 ## Phases
 
 0. **Decide** (questions below). Then the one removal commit (see This repo). Get a real bundle from the owner (Sentry Manager → Nerd → export
@@ -310,6 +350,7 @@ The TeslaMate fork's contents go; the Rust app takes the whole repo.
 3. No new set of repo rules.
 4. SMO's second upload slot is free: the logger uses it.
 5. Encryption at rest: set once, unlocks by itself, very hard to break (see Encryption at rest).
+9. Runs in **Docker**: one container (see Docker).
 6. Maps and addresses: offline and online.
 7. Import old TeslaMate history: yes.
 8. Several cars and accounts: yes, the Sentry Manager way.
