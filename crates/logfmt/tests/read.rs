@@ -53,24 +53,17 @@ fn every_line_of_the_fixture_parses() {
         _ => {}
     })
     .unwrap();
-    assert!(
-        frames > 10_000 && clocks >= 2,
-        "frames {frames} clocks {clocks} other {other}"
-    );
+    assert!(frames > 10_000 && clocks >= 2, "frames {frames} clocks {clocks} other {other}");
 }
 
 #[test]
 fn a_frame_line_parses_and_round_trips() {
     let l = b"(1794099498.083812) can0 2E5#0000030D0000D000";
-    let Line::Frame(f) = Line::parse(l) else {
-        panic!()
-    };
+    let Line::Frame(f) = Line::parse(l) else { panic!() };
     assert_eq!(f.time_us, 1_794_099_498_083_812);
     assert_eq!((f.bus, f.id, f.extended), (0, 0x2E5, false));
     assert_eq!(f.payload(), &[0, 0, 3, 0x0D, 0, 0, 0xD0, 0]);
-    let Line::Frame(e) = Line::parse(b"(1.000001) can1 18DAF110#") else {
-        panic!()
-    };
+    let Line::Frame(e) = Line::parse(b"(1.000001) can1 18DAF110#") else { panic!() };
     assert!(e.extended && e.id == 0x18DA_F110 && e.len == 0);
     for bad in [
         &b"(1.00001) can0 2E5#00"[..],
@@ -78,11 +71,7 @@ fn a_frame_line_parses_and_round_trips() {
         b"(1.000001) vcan0 2E5#00",
         b"(1.000001) can0 2E55#00",
     ] {
-        assert!(
-            matches!(Line::parse(bad), Line::Other(_)),
-            "{}",
-            String::from_utf8_lossy(bad)
-        );
+        assert!(matches!(Line::parse(bad), Line::Other(_)), "{}", String::from_utf8_lossy(bad));
     }
 }
 
@@ -90,38 +79,16 @@ fn a_frame_line_parses_and_round_trips() {
 fn comments_parse() {
     assert_eq!(
         Line::parse(b"# clock wall=1794801109.764000 mono_ns=350415590160178 jump"),
-        Line::Clock {
-            wall_us: 1_794_801_109_764_000,
-            mono_ns: 350_415_590_160_178,
-            kind: ClockKind::Jump
-        }
+        Line::Clock { wall_us: 1_794_801_109_764_000, mono_ns: 350_415_590_160_178, kind: ClockKind::Jump }
     );
-    assert!(matches!(
-        Line::parse(b"# clock wall=1.000000 mono_ns=5 end"),
-        Line::Clock {
-            kind: ClockKind::End,
-            ..
-        }
-    ));
-    assert!(matches!(
-        Line::parse(b"# canbridge v1 app=0.2.147 build=147"),
-        Line::Header(_)
-    ));
-    assert!(matches!(
-        Line::parse(b"# dropped 3 chunks of frames: logger fell behind"),
-        Line::Dropped(_)
-    ));
+    assert!(matches!(Line::parse(b"# clock wall=1.000000 mono_ns=5 end"), Line::Clock { kind: ClockKind::End, .. }));
+    assert!(matches!(Line::parse(b"# canbridge v1 app=0.2.147 build=147"), Line::Header(_)));
+    assert!(matches!(Line::parse(b"# dropped 3 chunks of frames: logger fell behind"), Line::Dropped(_)));
     assert!(matches!(
         Line::parse(b"# not recorded: paused 42 s, about 900 KB of frames (log folder full)"),
-        Line::NotRecorded {
-            paused_s: Some(42),
-            ..
-        }
+        Line::NotRecorded { paused_s: Some(42), .. }
     ));
-    assert!(matches!(
-        Line::parse(b"# something new"),
-        Line::Comment("something new")
-    ));
+    assert!(matches!(Line::parse(b"# something new"), Line::Comment("something new")));
 }
 
 #[test]
@@ -172,10 +139,7 @@ fn malformed_columns_are_refused() {
 
 #[test]
 fn a_columns_body_over_the_limit_is_refused() {
-    let limits = Limits {
-        max_columns_body: 1000,
-        ..Limits::default()
-    };
+    let limits = Limits { max_columns_body: 1000, ..Limits::default() };
     assert!(read_log(COLUMNS, limits, |_| {}).is_err());
 }
 
@@ -190,20 +154,9 @@ fn candump_text_stops_at_the_unpack_limit_and_long_lines_are_skipped() {
     let log = xz(&text);
     let mut n = 0;
     let s = read_log(&log, Limits::default(), |_| n += 1).unwrap();
-    assert_eq!(
-        (s.format, s.lines, s.skipped_long_lines, s.truncated),
-        (Format::Candump, 101, 1, false)
-    );
+    assert_eq!((s.format, s.lines, s.skipped_long_lines, s.truncated), (Format::Candump, 101, 1, false));
     let mut n = 0;
-    let s = read_log(
-        &log,
-        Limits {
-            max_unpacked: 700,
-            ..Limits::default()
-        },
-        |_| n += 1,
-    )
-    .unwrap();
+    let s = read_log(&log, Limits { max_unpacked: 700, ..Limits::default() }, |_| n += 1).unwrap();
     assert!(s.truncated && s.lines < 101 && n == s.lines, "{s:?}");
 }
 

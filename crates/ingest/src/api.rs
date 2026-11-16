@@ -48,8 +48,7 @@ impl Window {
         q.push_back(now);
         let n = q.len();
         if self.hits.len() > 10_000 {
-            self.hits
-                .retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) <= WINDOW));
+            self.hits.retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) <= WINDOW));
         }
         n
     }
@@ -75,13 +74,7 @@ pub struct Uploads {
 
 impl Uploads {
     pub fn new(store: Store, tokens: Tokens, judge: Judge) -> Arc<Uploads> {
-        Arc::new(Uploads {
-            store,
-            tokens,
-            judge,
-            bad_tokens: Mutex::default(),
-            per_token: Mutex::default(),
-        })
+        Arc::new(Uploads { store, tokens, judge, bad_tokens: Mutex::default(), per_token: Mutex::default() })
     }
 }
 
@@ -90,11 +83,7 @@ type St = AxState<Arc<Uploads>>;
 fn conn_of(req_conn: Option<&Conn>) -> Result<Conn, ApiError> {
     match req_conn {
         Some(c) if c.tls => Ok(*c),
-        _ => Err(ApiError::new(
-            403,
-            "https_only",
-            "Use HTTPS: this address only answers over TLS.",
-        )),
+        _ => Err(ApiError::new(403, "https_only", "Use HTTPS: this address only answers over TLS.")),
     }
 }
 
@@ -104,10 +93,7 @@ async fn authorize(up: &Uploads, headers: &HeaderMap, conn: Conn) -> Result<Toke
     let given = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| {
-            v.strip_prefix("Bearer ")
-                .or_else(|| v.strip_prefix("bearer "))
-        })
+        .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
         .map(str::trim)
         .filter(|t| !t.is_empty() && t.len() < 200);
     let found = match given {
@@ -116,11 +102,7 @@ async fn authorize(up: &Uploads, headers: &HeaderMap, conn: Conn) -> Result<Toke
     };
     let ip = conn.ip.to_string();
     let Some(token) = found else {
-        let n = up
-            .bad_tokens
-            .lock()
-            .map(|mut w| w.hit(&ip, now))
-            .unwrap_or(0);
+        let n = up.bad_tokens.lock().map(|mut w| w.hit(&ip, now)).unwrap_or(0);
         if n > MAX_BAD_TOKENS {
             return Err(ApiError::new(
                 429,
@@ -128,33 +110,18 @@ async fn authorize(up: &Uploads, headers: &HeaderMap, conn: Conn) -> Result<Toke
                 "Too many wrong tokens from this address; wait a few minutes.",
             ));
         }
-        return Err(ApiError::new(
-            401,
-            "bad_token",
-            "No token, or not one in use: ask the owner for a new one.",
-        ));
+        return Err(ApiError::new(401, "bad_token", "No token, or not one in use: ask the owner for a new one."));
     };
-    let n = up
-        .per_token
-        .lock()
-        .map(|mut w| w.hit(&token.id, now))
-        .unwrap_or(0);
+    let n = up.per_token.lock().map(|mut w| w.hit(&token.id, now)).unwrap_or(0);
     if n > MAX_REQUESTS_PER_TOKEN {
-        return Err(ApiError::new(
-            429,
-            "slow_down",
-            "Too many requests with this token; wait a few minutes.",
-        ));
+        return Err(ApiError::new(429, "slow_down", "Too many requests with this token; wait a few minutes."));
     }
     Ok(token)
 }
 
 /// How many wrong tokens an address sent in the window (for tests and the status page).
 pub fn bad_token_count(up: &Uploads, ip: IpAddr) -> usize {
-    up.bad_tokens
-        .lock()
-        .map(|mut w| w.count(&ip.to_string(), Instant::now()))
-        .unwrap_or(0)
+    up.bad_tokens.lock().map(|mut w| w.count(&ip.to_string(), Instant::now())).unwrap_or(0)
 }
 
 async fn ping(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, ApiError> {
@@ -179,26 +146,15 @@ struct StatusBody {
 async fn status(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, ApiError> {
     let conn = conn_of(req.extensions().get::<Conn>())?;
     let token = authorize(&up, req.headers(), conn).await?;
-    let bad = || {
-        ApiError::new(
-            400,
-            "bad_request",
-            "Send { \"names\": [...] } with up to 2000 names.",
-        )
-    };
-    let body = axum::body::to_bytes(req.into_body(), 1 << 20)
-        .await
-        .map_err(|_| bad())?;
+    let bad = || ApiError::new(400, "bad_request", "Send { \"names\": [...] } with up to 2000 names.");
+    let body = axum::body::to_bytes(req.into_body(), 1 << 20).await.map_err(|_| bad())?;
     let StatusBody { names } = serde_json::from_slice(&body).map_err(|_| bad())?;
     if names.len() > 2000 {
         return Err(bad());
     }
     if token.vehicle_key.is_none() {
-        let keys: std::collections::HashSet<&str> = names
-            .iter()
-            .filter_map(|n| trust::LogName::parse(n))
-            .map(|n| n.vehicle_key)
-            .collect();
+        let keys: std::collections::HashSet<&str> =
+            names.iter().filter_map(|n| trust::LogName::parse(n)).map(|n| n.vehicle_key).collect();
         if keys.len() > 1 {
             return Err(ApiError::new(
                 400,
@@ -225,76 +181,39 @@ fn header_u64(h: &HeaderMap, name: &str) -> Option<u64> {
     v.parse().ok()
 }
 
-async fn upload(
-    AxState(up): St,
-    Path(name): Path<String>,
-    req: Request,
-) -> Result<Response, ApiError> {
+async fn upload(AxState(up): St, Path(name): Path<String>, req: Request) -> Result<Response, ApiError> {
     let conn = conn_of(req.extensions().get::<Conn>())?;
     let token = authorize(&up, req.headers(), conn).await?;
     let n = trust::LogName::parse(&name)
         .ok_or_else(|| ApiError::new(400, "bad_name", "That is not a CAN Bridge log name."))?;
     if let Some(k) = &token.vehicle_key {
         if k != n.vehicle_key {
-            return Err(ApiError::new(
-                403,
-                "wrong_car",
-                "This token is for another car's CAN Bridge.",
-            ));
+            return Err(ApiError::new(403, "wrong_car", "This token is for another car's CAN Bridge."));
         }
     }
     let h = req.headers().clone();
-    let offset = header_u64(&h, "upload-offset").ok_or_else(|| {
-        ApiError::new(
-            400,
-            "bad_offset",
-            "Upload-Offset must be a whole number of bytes.",
-        )
-    })?;
-    let length = header_u64(&h, "upload-length").ok_or_else(|| {
-        ApiError::new(
-            400,
-            "bad_length",
-            "Upload-Length must be the whole file's size in bytes.",
-        )
-    })?;
-    let sha = h
-        .get("upload-sha256")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
+    let offset = header_u64(&h, "upload-offset")
+        .ok_or_else(|| ApiError::new(400, "bad_offset", "Upload-Offset must be a whole number of bytes."))?;
+    let length = header_u64(&h, "upload-length")
+        .ok_or_else(|| ApiError::new(400, "bad_length", "Upload-Length must be the whole file's size in bytes."))?;
+    let sha = h.get("upload-sha256").and_then(|v| v.to_str().ok()).unwrap_or("").trim().to_ascii_lowercase();
     let body: Bytes = axum::body::to_bytes(req.into_body(), MAX_CHUNK as usize)
         .await
-        .map_err(|_| {
-            ApiError::new(
-                413,
-                "chunk_too_large",
-                format!("A chunk can be at most {MAX_CHUNK} bytes."),
-            )
-        })?;
+        .map_err(|_| ApiError::new(413, "chunk_too_large", format!("A chunk can be at most {MAX_CHUNK} bytes.")))?;
     // the first upload ties the token to this car key
     if token.vehicle_key.is_none() {
         let bound = up.tokens.bind(&token.id, n.vehicle_key).await?;
         if bound != n.vehicle_key {
-            return Err(ApiError::new(
-                403,
-                "wrong_car",
-                "This token is for another car's CAN Bridge.",
-            ));
+            return Err(ApiError::new(403, "wrong_car", "This token is for another car's CAN Bridge."));
         }
     }
-    let r = up.store.receive(&name, &body, offset, length, &sha).await?;
+    let r = up.store.receive(&name, body, offset, length, &sha).await?;
     if r.complete && !r.already {
         if let Err(e) = up.judge.arrived(&name).await {
             tracing::warn!("CAN upload: could not judge {name}: {e}");
         }
     }
-    let code = if r.complete {
-        StatusCode::CREATED
-    } else {
-        StatusCode::OK
-    };
+    let code = if r.complete { StatusCode::CREATED } else { StatusCode::OK };
     Ok((code, Json(r)).into_response())
 }
 

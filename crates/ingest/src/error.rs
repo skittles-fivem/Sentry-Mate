@@ -29,11 +29,7 @@ impl ApiError {
 
     pub fn server(e: impl std::fmt::Display) -> ApiError {
         tracing::error!("CAN upload: {e}");
-        ApiError::new(
-            500,
-            "server_error",
-            "Something went wrong here; try again later.",
-        )
+        ApiError::new(500, "server_error", "Something went wrong here; try again later.")
     }
 }
 
@@ -55,12 +51,8 @@ impl IntoResponse for ApiError {
 
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} {}: {}",
-            self.status.as_u16(),
-            self.code,
-            self.message
-        )
+        write!(f, "{} {}: {}", self.status.as_u16(), self.code, self.message)
     }
 }
+
+impl std::error::Error for ApiError {}

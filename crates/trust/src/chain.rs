@@ -15,31 +15,11 @@ pub struct Entry {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ChainIssue {
-    Gap {
-        from: u64,
-        to: u64,
-        text: String,
-    },
-    Duplicate {
-        index: u64,
-        names: [String; 2],
-        text: String,
-    },
-    Failed {
-        index: u64,
-        name: String,
-        text: String,
-    },
-    Mismatch {
-        index: u64,
-        name: String,
-        text: String,
-    },
-    Reordered {
-        index: u64,
-        name: String,
-        text: String,
-    },
+    Gap { from: u64, to: u64, text: String },
+    Duplicate { index: u64, names: [String; 2], text: String },
+    Failed { index: u64, name: String, text: String },
+    Mismatch { index: u64, name: String, text: String },
+    Reordered { index: u64, name: String, text: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -74,10 +54,7 @@ fn at(name: &str) -> Option<i64> {
 }
 
 fn note_of(l: &Link) -> String {
-    l.chain_note
-        .as_ref()
-        .map(|n| format!(" (the bridge says: {n})"))
-        .unwrap_or_default()
+    l.chain_note.as_ref().map(|n| format!(" (the bridge says: {n})")).unwrap_or_default()
 }
 
 /// The chain of one car key's signed logs by its paired key (verified ones and ones that failed their check).
@@ -87,28 +64,19 @@ pub fn chain(entries: &[Entry]) -> ChainReport {
     let mut geneses: Vec<i64> = entries
         .iter()
         .filter(|e| {
-            e.failed.is_none()
-                && e.link.index == 0
-                && e.link.prev_name == "-"
-                && e.link.prev_sha256 == GENESIS_SHA
+            e.failed.is_none() && e.link.index == 0 && e.link.prev_name == "-" && e.link.prev_sha256 == GENESIS_SHA
         })
         .filter_map(|e| at(&e.link.name))
         .collect();
     geneses.sort_unstable();
-    let older = |a: i64| {
-        entries
-            .iter()
-            .filter(|e| at(&e.link.name).is_some_and(|t| t < a))
-            .count()
-    };
+    let older = |a: i64| entries.iter().filter(|e| at(&e.link.name).is_some_and(|t| t < a)).count();
     let mut bounds: Vec<i64> = Vec::new();
     for (k, &a) in geneses.iter().enumerate() {
         if ((k > 0 && a > geneses[0]) || older(a) >= 2) && !bounds.contains(&a) {
             bounds.push(a);
         }
     }
-    let seg_of =
-        |name: &str| at(name).map_or(0, |a| bounds.iter().take_while(|&&b| b <= a).count());
+    let seg_of = |name: &str| at(name).map_or(0, |a| bounds.iter().take_while(|&&b| b <= a).count());
     let mut parts: Vec<Vec<&Entry>> = vec![Vec::new(); bounds.len() + 1];
     for e in entries {
         parts[seg_of(&e.link.name)].push(e);
@@ -121,11 +89,7 @@ pub fn chain(entries: &[Entry]) -> ChainReport {
         for e in part {
             match by_index.get(&e.link.index) {
                 Some(other) if other.link.name != e.link.name => {
-                    let note = if note_of(&e.link).is_empty() {
-                        note_of(&other.link)
-                    } else {
-                        note_of(&e.link)
-                    };
+                    let note = if note_of(&e.link).is_empty() { note_of(&other.link) } else { note_of(&e.link) };
                     report.issues.push(ChainIssue::Duplicate {
                         index: e.link.index,
                         names: [other.link.name.clone(), e.link.name.clone()],
@@ -141,17 +105,12 @@ pub fn chain(entries: &[Entry]) -> ChainReport {
         let idx: Vec<u64> = by_index.keys().copied().collect();
         if p > 0 {
             if let Some(s0) = idx.first().and_then(|i| by_index.get(i)) {
-                let before = report
-                    .segments
-                    .last()
-                    .map(|s| (s.last, last_names.last().cloned().unwrap_or_default()));
+                let before = report.segments.last().map(|s| (s.last, last_names.last().cloned().unwrap_or_default()));
                 let said = s0
                     .link
                     .chain_note
                     .as_ref()
-                    .map_or(" (the bridge gave no note)".to_string(), |n| {
-                        format!(" (the bridge says: {n})")
-                    });
+                    .map_or(" (the bridge gave no note)".to_string(), |n| format!(" (the bridge says: {n})"));
                 let tail = before.as_ref().map_or(String::new(), |(i, n)| {
                     format!(": logs signed between {n} (#{i}) and it cannot be checked for gaps")
                 });
@@ -160,10 +119,7 @@ pub fn chain(entries: &[Entry]) -> ChainReport {
                     name: s0.link.name.clone(),
                     note: s0.link.chain_note.clone(),
                     after: before,
-                    text: format!(
-                        "the chain started again at {} with {}{said}{tail}",
-                        s0.link.index, s0.link.name
-                    ),
+                    text: format!("the chain started again at {} with {}{said}{tail}", s0.link.index, s0.link.name),
                 });
             }
         }
@@ -192,8 +148,7 @@ pub fn chain(entries: &[Entry]) -> ChainReport {
             if let Some(prev) = prev {
                 // a failed log is already reported: the one after it is compared with what was signed, not with it
                 if prev.failed.is_none()
-                    && (cur.link.prev_name != prev.link.name
-                        || cur.link.prev_sha256 != prev.link.sha256)
+                    && (cur.link.prev_name != prev.link.name || cur.link.prev_sha256 != prev.link.sha256)
                 {
                     report.issues.push(ChainIssue::Mismatch {
                         index: i,
@@ -219,11 +174,7 @@ pub fn chain(entries: &[Entry]) -> ChainReport {
             }
         }
         let (first, last) = (idx[0], idx[idx.len() - 1]);
-        report.segments.push(Segment {
-            first,
-            last,
-            count: idx.len() as u64,
-        });
+        report.segments.push(Segment { first, last, count: idx.len() as u64 });
         last_names.push(by_index[&last].link.name.clone());
     }
     report.count = report.segments.iter().map(|s| s.count).sum();

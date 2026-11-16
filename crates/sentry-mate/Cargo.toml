@@ -17,6 +17,8 @@ path = "src/main.rs"
 ingest = { path = "../ingest" }
 logfmt = { path = "../logfmt" }
 trust = { path = "../trust" }
+vault = { path = "../vault" }
+zeroize = "1"
 clap = { version = "4", features = ["derive", "env"] }
 hex = "0.4"
 serde_json = "1"

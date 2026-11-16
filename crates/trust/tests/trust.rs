@@ -26,33 +26,16 @@ impl Bridge {
         }
     }
     fn der(&self) -> Vec<u8> {
-        self.key
-            .verifying_key()
-            .to_public_key_der()
-            .unwrap()
-            .as_bytes()
-            .to_vec()
+        self.key.verifying_key().to_public_key_der().unwrap().as_bytes().to_vec()
     }
     fn fp(&self) -> String {
         fingerprint(&self.der())
     }
     /// Signs `log` as the bridge does; returns (name, sha, len, sidecar) and moves the chain on.
     fn sign(&mut self, minute: u32, log: &[u8]) -> (String, String, u64, Value) {
-        let name = format!(
-            "{}_20261108T14{minute:02}00Z_{}.log.xz",
-            self.vehicle,
-            self.index + 1
-        );
+        let name = format!("{}_20261108T14{minute:02}00Z_{}.log.xz", self.vehicle, self.index + 1);
         let sha = hex::encode(Sha256::digest(log));
-        let msg = signed_message(
-            &self.vehicle,
-            &name,
-            &sha,
-            log.len() as u64,
-            self.index,
-            &self.prev.0,
-            &self.prev.1,
-        );
+        let msg = signed_message(&self.vehicle, &name, &sha, log.len() as u64, self.index, &self.prev.0, &self.prev.1);
         let sig: Signature = self.key.sign(msg.as_bytes());
         let side = json!({ "format": "canbridge-columns-xz/2", "integrity": {
             "signed": true, "version": VERSION, "algorithm": ALGORITHM, "public_key": B64.encode(self.der()),
@@ -69,15 +52,10 @@ impl Bridge {
 fn a_signed_log_checks_and_its_changes_do_not() {
     let mut b = Bridge::new("abcdef123456");
     let (name, sha, len, side) = b.sign(30, b"frames");
-    let Check::Signed(link) = check(&name, &sha, len, &side) else {
-        panic!("{:?}", check(&name, &sha, len, &side))
-    };
+    let Check::Signed(link) = check(&name, &sha, len, &side) else { panic!("{:?}", check(&name, &sha, len, &side)) };
     assert_eq!((link.index, link.prev_name.as_str()), (0, "-"));
     assert_eq!(judge(&Check::Signed(link.clone()), None), Verdict::Verified);
-    assert_eq!(
-        judge(&Check::Signed(link), Some(&b.fp().to_uppercase())),
-        Verdict::Verified
-    );
+    assert_eq!(judge(&Check::Signed(link), Some(&b.fp().to_uppercase())), Verdict::Verified);
 
     let other_sha = hex::encode(Sha256::digest(b"frameZ"));
     let reason = |c: Check| match c {
@@ -86,21 +64,10 @@ fn a_signed_log_checks_and_its_changes_do_not() {
     };
     assert!(reason(check(&name, &other_sha, len, &side)).contains("SHA-256 differs"));
     assert!(reason(check(&name, &sha, len + 1, &side)).contains("length differs"));
-    assert!(
-        reason(check(
-            &name.replace("abcdef123456", "other1"),
-            &sha,
-            len,
-            &side
-        ))
-        .contains("another car key")
-    );
+    assert!(reason(check(&name.replace("abcdef123456", "other1"), &sha, len, &side)).contains("another car key"));
     let mut s = side.clone();
     s["integrity"]["index"] = json!(1);
-    assert_eq!(
-        reason(check(&name, &sha, len, &s)),
-        "the signature does not match"
-    );
+    assert_eq!(reason(check(&name, &sha, len, &s)), "the signature does not match");
     let mut s = side.clone();
     s["integrity"]["key_fingerprint"] = json!("00:11");
     assert!(reason(check(&name, &sha, len, &s)).contains("fingerprint"));
@@ -119,10 +86,7 @@ fn another_key_fails_once_paired() {
     let (name, sha, len, side) = b.sign(30, b"x");
     let c = check(&name, &sha, len, &side);
     assert!(matches!(c, Check::Signed(_)));
-    assert_eq!(
-        judge(&c, Some(&a.fp())),
-        Verdict::Failed("signed by another key".into())
-    );
+    assert_eq!(judge(&c, Some(&a.fp())), Verdict::Failed("signed by another key".into()));
     let _ = a.sign(31, b"y");
 }
 
@@ -133,21 +97,9 @@ fn unsigned_logs_depend_on_the_pairing() {
     assert_eq!(none, Check::NotSigned { bridge_error: None });
     assert_eq!(judge(&none, None), Verdict::Unsigned);
     assert!(matches!(judge(&none, Some("aa")), Verdict::Failed(_)));
-    let err = check(
-        name,
-        "00",
-        1,
-        &json!({ "integrity": { "signed": false, "error": "chain.json\nwas zeroed" } }),
-    );
-    assert_eq!(
-        err,
-        Check::NotSigned {
-            bridge_error: Some("chain.json was zeroed".into())
-        }
-    );
-    assert!(
-        matches!(judge(&err, Some("aa")), Verdict::CouldNotSign(r) if r.contains("chain.json was zeroed"))
-    );
+    let err = check(name, "00", 1, &json!({ "integrity": { "signed": false, "error": "chain.json\nwas zeroed" } }));
+    assert_eq!(err, Check::NotSigned { bridge_error: Some("chain.json was zeroed".into()) });
+    assert!(matches!(judge(&err, Some("aa")), Verdict::CouldNotSign(r) if r.contains("chain.json was zeroed")));
     assert!(!judge(&err, Some("aa")).usable() && judge(&err, None).usable());
 }
 
@@ -156,9 +108,7 @@ fn entries(b: &mut Bridge, minutes: &[u32]) -> Vec<Entry> {
         .iter()
         .map(|&m| {
             let (name, sha, len, side) = b.sign(m, format!("log {m}").as_bytes());
-            let Check::Signed(link) = check(&name, &sha, len, &side) else {
-                panic!()
-            };
+            let Check::Signed(link) = check(&name, &sha, len, &side) else { panic!() };
             Entry { link, failed: None }
         })
         .collect()
@@ -178,53 +128,26 @@ fn gaps_mismatches_duplicates_and_reorders_are_reported() {
     let mut e = entries(&mut b, &[1, 2, 3, 4, 5, 6]);
     e.remove(2); // log 2 deleted
     let r = chain(&e);
-    assert!(
-        matches!(&r.issues[..], [ChainIssue::Gap { from: 2, to: 2, .. }]),
-        "{r:?}"
-    );
+    assert!(matches!(&r.issues[..], [ChainIssue::Gap { from: 2, to: 2, .. }]), "{r:?}");
 
     let mut e = entries(&mut Bridge::new("abcdef123456"), &[1, 2, 3]);
     e[1].link.sha256 = "1".repeat(64); // the stored log 1 is not the one log 2 names
-    assert!(
-        chain(&e)
-            .issues
-            .iter()
-            .any(|i| matches!(i, ChainIssue::Mismatch { index: 2, .. }))
-    );
+    assert!(chain(&e).issues.iter().any(|i| matches!(i, ChainIssue::Mismatch { index: 2, .. })));
 
     let mut e = entries(&mut Bridge::new("abcdef123456"), &[1, 2]);
     let mut dup = e[1].clone();
     dup.link.name = dup.link.name.replace("T1402", "T1403");
     e.push(dup);
-    assert!(
-        chain(&e)
-            .issues
-            .iter()
-            .any(|i| matches!(i, ChainIssue::Duplicate { index: 1, .. }))
-    );
+    assert!(chain(&e).issues.iter().any(|i| matches!(i, ChainIssue::Duplicate { index: 1, .. })));
 
     let e = entries(&mut Bridge::new("abcdef123456"), &[5, 4]); // log 1 starts before log 0
-    assert!(
-        chain(&e)
-            .issues
-            .iter()
-            .any(|i| matches!(i, ChainIssue::Reordered { index: 1, .. }))
-    );
+    assert!(chain(&e).issues.iter().any(|i| matches!(i, ChainIssue::Reordered { index: 1, .. })));
 
     let mut e = entries(&mut Bridge::new("abcdef123456"), &[1, 2]);
     e[0].failed = Some("the signature does not match".into());
     let r = chain(&e);
-    assert!(
-        r.issues
-            .iter()
-            .any(|i| matches!(i, ChainIssue::Failed { index: 0, .. }))
-    );
-    assert!(
-        !r.issues
-            .iter()
-            .any(|i| matches!(i, ChainIssue::Mismatch { .. })),
-        "{r:?}"
-    );
+    assert!(r.issues.iter().any(|i| matches!(i, ChainIssue::Failed { index: 0, .. })));
+    assert!(!r.issues.iter().any(|i| matches!(i, ChainIssue::Mismatch { .. })), "{r:?}");
 }
 
 #[test]
@@ -237,25 +160,10 @@ fn a_restart_at_zero_splits_the_chain() {
     more[0].link.chain_note = Some("chain.json was 64 zero bytes".into());
     e.extend(more);
     let r = chain(&e);
-    assert_eq!(
-        r.segments,
-        vec![
-            Segment {
-                first: 0,
-                last: 2,
-                count: 3
-            },
-            Segment {
-                first: 0,
-                last: 1,
-                count: 2
-            }
-        ]
-    );
+    assert_eq!(r.segments, vec![Segment { first: 0, last: 2, count: 3 }, Segment { first: 0, last: 1, count: 2 }]);
     assert_eq!(r.restarts.len(), 1);
     assert!(
-        r.restarts[0].text.contains("chain.json was 64 zero bytes")
-            && r.restarts[0].text.contains("(#2)"),
+        r.restarts[0].text.contains("chain.json was 64 zero bytes") && r.restarts[0].text.contains("(#2)"),
         "{}",
         r.restarts[0].text
     );

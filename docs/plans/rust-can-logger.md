@@ -389,6 +389,14 @@ position stay out of the repo.
   trust records, TLS 1.3 server), the `sentry-mate` program and its Docker image (6.6 MB, `scratch`, non-root,
   read-only). A real log and sidecar uploaded end to end in chunks came out verified and paired. Phase 1 is done
   except encryption at rest (Phase 6). Next: Phase 2, decoding signals (DBC).
+- 2026-11-16: encryption at rest done in pure Rust (owner: no SQLCipher), crate `vault`: one data key wrapped by
+  the key file (`/keys`, its own volume, refused inside the data folder) and by the recovery key (Argon2id, 1 GiB,
+  3 passes; about 3 s once). XChaCha20-Poly1305 STREAM in 64 KiB chunks, a key per file (HKDF-SHA256), the file's
+  path bound in; growing files (uploads in progress) as sealed records that survive a crash mid-write. Everything
+  stored is sealed: logs, sidecars, partial uploads, trust records, tokens, the TLS key (the certificate itself is
+  public). Files from an older version are sealed on start. The recovery key goes to `/keys/RECOVERY-KEY.txt`, not
+  the log. Not done: TPM sealing of the key file (optional, later). When a database arrives (Phase 3) it is sealed
+  the same way (sealed segment files, no C library).
 
 ## Phases
 

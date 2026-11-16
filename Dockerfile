@@ -4,16 +4,17 @@ RUN apk add --no-cache musl-dev
 WORKDIR /src
 COPY . .
 RUN cargo build --release --locked -p sentry-mate \
- && mkdir -p /out/data \
- && chown 1000:1000 /out/data
+ && mkdir -p /out/data /out/keys \
+ && chown 1000:1000 /out/data /out/keys
 
 FROM scratch
 COPY --from=build /src/target/release/sentry-mate /sentry-mate
 COPY --from=build --chown=1000:1000 /out/data /data
+COPY --from=build --chown=1000:1000 /out/keys /keys
 USER 1000:1000
-ENV SENTRY_MATE_DATA=/data
+ENV SENTRY_MATE_DATA=/data SENTRY_MATE_KEYS=/keys
 EXPOSE 10100
-VOLUME ["/data"]
+VOLUME ["/data", "/keys"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD ["/sentry-mate", "health"]
 ENTRYPOINT ["/sentry-mate"]
 CMD ["serve"]

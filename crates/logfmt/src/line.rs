@@ -43,20 +43,18 @@ pub struct HelperClock {
 impl HelperClock {
     /// The monotonic time (ns) of a frame of this helper run.
     pub fn mono_ns_of(&self, frame_us: u64) -> i128 {
-        i128::from(self.anchor_mono_ns)
-            + (i128::from(frame_us) - i128::from(self.anchor_wall_us)) * 1000
+        i128::from(self.anchor_mono_ns) + (i128::from(frame_us) - i128::from(self.anchor_wall_us)) * 1000
     }
 
     /// A frame's time by this line's later, possibly corrected, wall clock (spec: `true_us = W + (mono_ns - N) / 1000`).
     pub fn true_us(&self, frame_us: u64) -> i128 {
-        i128::from(self.now_wall_us)
-            + (self.mono_ns_of(frame_us) - i128::from(self.now_mono_ns)) / 1000
+        i128::from(self.now_wall_us) + (self.mono_ns_of(frame_us) - i128::from(self.now_mono_ns)) / 1000
     }
 
     /// How far the current wall clock is from the anchored one at this line (µs; positive: the anchor was behind).
     pub fn drift_us(&self) -> i128 {
-        let anchored = i128::from(self.anchor_wall_us)
-            + (i128::from(self.now_mono_ns) - i128::from(self.anchor_mono_ns)) / 1000;
+        let anchored =
+            i128::from(self.anchor_wall_us) + (i128::from(self.now_mono_ns) - i128::from(self.anchor_mono_ns)) / 1000;
         i128::from(self.now_wall_us) - anchored
     }
 }
@@ -113,9 +111,7 @@ fn parse_frame(l: &[u8]) -> Option<Frame> {
     if usec.len() != 6 {
         return None;
     }
-    let time_us = digits(sec)?
-        .checked_mul(1_000_000)?
-        .checked_add(digits(usec)?)?;
+    let time_us = digits(sec)?.checked_mul(1_000_000)?.checked_add(digits(usec)?)?;
     let rest = rest.strip_prefix(b") ")?;
     let sp = rest.iter().position(|&c| c == b' ')?;
     let (iface, rest) = rest.split_at(sp);
@@ -139,35 +135,22 @@ fn parse_frame(l: &[u8]) -> Option<Frame> {
     for (i, pair) in data_hex.chunks(2).enumerate() {
         data[i] = (hex_val(pair[0])? << 4) | hex_val(pair[1])?;
     }
-    Some(Frame {
-        time_us,
-        bus,
-        id,
-        extended,
-        len: (data_hex.len() / 2) as u8,
-        data,
-    })
+    Some(Frame { time_us, bus, id, extended, len: (data_hex.len() / 2) as u8, data })
 }
 
 /// `key=value` fields of a comment, as numbers.
 fn field(text: &str, key: &str) -> Option<i64> {
-    text.split_whitespace()
-        .find_map(|w| w.strip_prefix(key)?.strip_prefix('=')?.parse().ok())
+    text.split_whitespace().find_map(|w| w.strip_prefix(key)?.strip_prefix('=')?.parse().ok())
 }
 
 /// `wall=1794099498.083000` as microseconds.
 fn wall_us(text: &str) -> Option<i64> {
-    let w = text
-        .split_whitespace()
-        .find_map(|w| w.strip_prefix("wall="))?;
+    let w = text.split_whitespace().find_map(|w| w.strip_prefix("wall="))?;
     let (s, us) = w.split_once('.')?;
     if us.len() != 6 {
         return None;
     }
-    s.parse::<i64>()
-        .ok()?
-        .checked_mul(1_000_000)?
-        .checked_add(us.parse().ok()?)
+    s.parse::<i64>().ok()?.checked_mul(1_000_000)?.checked_add(us.parse().ok()?)
 }
 
 impl<'a> Line<'a> {
@@ -175,10 +158,7 @@ impl<'a> Line<'a> {
         if l.first() == Some(&b'(') {
             return parse_frame(l).map_or(Line::Other(l), Line::Frame);
         }
-        let Some(text) = l
-            .strip_prefix(b"# ")
-            .and_then(|t| std::str::from_utf8(t).ok())
-        else {
+        let Some(text) = l.strip_prefix(b"# ").and_then(|t| std::str::from_utf8(t).ok()) else {
             return if l.first() == Some(&b'#') {
                 std::str::from_utf8(&l[1..]).map_or(Line::Other(l), |t| Line::Comment(t.trim()))
             } else {
@@ -195,11 +175,7 @@ impl<'a> Line<'a> {
                         Some("end") => ClockKind::End,
                         _ => ClockKind::Regular,
                     };
-                    Line::Clock {
-                        wall_us,
-                        mono_ns,
-                        kind,
-                    }
+                    Line::Clock { wall_us, mono_ns, kind }
                 }
                 _ => Line::Comment(text),
             }
@@ -210,26 +186,15 @@ impl<'a> Line<'a> {
                 field(rest, "now_wall_us"),
                 field(rest, "now_mono_ns"),
             ) {
-                (
-                    Some(anchor_wall_us),
-                    Some(anchor_mono_ns),
-                    Some(now_wall_us),
-                    Some(now_mono_ns),
-                ) => Line::HelperClock(HelperClock {
-                    anchor_wall_us,
-                    anchor_mono_ns,
-                    now_wall_us,
-                    now_mono_ns,
-                }),
+                (Some(anchor_wall_us), Some(anchor_mono_ns), Some(now_wall_us), Some(now_mono_ns)) => {
+                    Line::HelperClock(HelperClock { anchor_wall_us, anchor_mono_ns, now_wall_us, now_mono_ns })
+                }
                 _ => Line::Comment(text),
             }
         } else if text.starts_with("dropped") {
             Line::Dropped(text)
         } else if let Some(rest) = text.strip_prefix("not recorded: paused ") {
-            Line::NotRecorded {
-                paused_s: rest.split_whitespace().next().and_then(|n| n.parse().ok()),
-                text,
-            }
+            Line::NotRecorded { paused_s: rest.split_whitespace().next().and_then(|n| n.parse().ok()), text }
         } else if text.starts_with("rolled over") {
             Line::RolledOver(text)
         } else {

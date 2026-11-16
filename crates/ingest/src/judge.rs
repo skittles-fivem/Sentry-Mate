@@ -8,11 +8,10 @@
 //! whose sidecar hasn't come after [`WAIT_MS`] is judged without it (unsigned, or failed once the car is paired).
 //! Records judged by older rules ([`trust::RULES_VERSION`]) are judged again by [`Judge::rejudge_all`].
 
+use crate::store::Store;
 use crate::store::now_ms;
-use crate::tokens::write_atomic;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::sync::Mutex;
 use trust::{Check, Entry, Link, LogName, Verdict};
 
@@ -70,34 +69,30 @@ pub struct Book {
 
 pub struct Judge {
     dir: PathBuf,
+    store: Store,
     books: Mutex<HashMap<String, Book>>,
 }
 
-async fn hash_file(file: &Path) -> std::io::Result<(String, u64)> {
-    let bytes = tokio::fs::read(file).await?;
-    Ok((hex::encode(Sha256::digest(&bytes)), bytes.len() as u64))
+fn io(e: crate::ApiError) -> std::io::Error {
+    std::io::Error::other(e.to_string())
 }
 
 impl Judge {
-    pub fn new(can_dir: impl Into<PathBuf>) -> Judge {
-        Judge {
-            dir: can_dir.into(),
-            books: Mutex::new(HashMap::new()),
-        }
+    /// Judges the logs `store` keeps (its trust records are sealed with the same vault).
+    pub fn new(store: Store) -> Judge {
+        Judge { dir: store.dir().to_path_buf(), store, books: Mutex::new(HashMap::new()) }
     }
 
-    fn file_of(&self, key: &str) -> PathBuf {
-        self.dir.join(key).join("trust.json")
+    fn file_of(&self, key: &str) -> (PathBuf, String) {
+        (self.dir.join(key).join("trust.json"), format!("can/{key}/trust.json"))
     }
 
     async fn load<'a>(&self, books: &'a mut HashMap<String, Book>, key: &str) -> &'a mut Book {
         if !books.contains_key(key) {
-            let book = match tokio::fs::read(self.file_of(key)).await {
-                Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
-                Err(_) => Book {
-                    v: trust::RULES_VERSION,
-                    ..Book::default()
-                },
+            let (file, label) = self.file_of(key);
+            let book = match self.store.vault().read_file(&file, &label) {
+                Ok(Some(b)) => serde_json::from_slice(&b).unwrap_or_default(),
+                _ => Book { v: trust::RULES_VERSION, ..Book::default() },
             };
             books.insert(key.to_string(), book);
         }
@@ -105,11 +100,9 @@ impl Judge {
     }
 
     async fn save(&self, key: &str, book: &Book) -> std::io::Result<()> {
-        write_atomic(
-            &self.file_of(key),
-            &serde_json::to_vec(book).map_err(std::io::Error::other)?,
-        )
-        .await
+        let (file, label) = self.file_of(key);
+        let bytes = serde_json::to_vec(book).map_err(std::io::Error::other)?;
+        self.store.vault().write_file(&file, &label, &bytes).map_err(std::io::Error::other)
     }
 
     /// A log or sidecar finished arriving: judge its log if both are here (or mark it waiting).
@@ -132,29 +125,19 @@ impl Judge {
     async fn judge_one(
         &self,
         book: &mut Book,
-        key: &str,
+        _key: &str,
         log_name: &str,
         force: bool,
     ) -> std::io::Result<Option<Record>> {
-        let log = self.dir.join(key).join(log_name);
-        if tokio::fs::metadata(&log).await.is_err() {
+        if !self.store.exists(log_name) {
             return Ok(None);
         }
-        let arrived_ms = book
-            .logs
-            .get(log_name)
-            .map_or_else(now_ms, |r| r.arrived_ms);
-        let side_bytes = tokio::fs::read(self.dir.join(key).join(format!("{log_name}.json")))
-            .await
-            .ok();
+        let arrived_ms = book.logs.get(log_name).map_or_else(now_ms, |r| r.arrived_ms);
+        let side_bytes = self.store.read(&format!("{log_name}.json")).await.ok().flatten();
         let waited = now_ms().saturating_sub(arrived_ms) >= WAIT_MS;
         let Some(side) = side_bytes
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .or(if force || waited {
-                Some(serde_json::Value::Null)
-            } else {
-                None
-            })
+            .or(if force || waited { Some(serde_json::Value::Null) } else { None })
         else {
             let r = Record {
                 v: trust::RULES_VERSION,
@@ -168,7 +151,7 @@ impl Judge {
             book.logs.insert(log_name.to_string(), r.clone());
             return Ok(Some(r));
         };
-        let (sha, len) = hash_file(&log).await?;
+        let (sha, len) = self.store.hash(log_name).await.map_err(io)?;
         let check = trust::check(log_name, &sha, len, &side);
         let verdict = trust::judge(&check, book.pin.as_ref().map(|p| p.fingerprint.as_str()));
         let link = match &check {
@@ -195,15 +178,7 @@ impl Judge {
             Verdict::Unsigned => (Status::Unsigned, None),
         };
         let override_use = book.logs.get(log_name).is_some_and(|r| r.override_use);
-        let r = Record {
-            v: trust::RULES_VERSION,
-            status,
-            reason,
-            link,
-            override_use,
-            judged_ms: now_ms(),
-            arrived_ms,
-        };
+        let r = Record { v: trust::RULES_VERSION, status, reason, link, override_use, judged_ms: now_ms(), arrived_ms };
         book.logs.insert(log_name.to_string(), r.clone());
         Ok(Some(r))
     }
@@ -229,9 +204,7 @@ impl Judge {
             let waiting: Vec<String> = book
                 .logs
                 .iter()
-                .filter(|(_, r)| {
-                    r.status == Status::Waiting && now_ms().saturating_sub(r.arrived_ms) >= WAIT_MS
-                })
+                .filter(|(_, r)| r.status == Status::Waiting && now_ms().saturating_sub(r.arrived_ms) >= WAIT_MS)
                 .map(|(k, _)| k.clone())
                 .collect();
             for name in &waiting {
@@ -253,10 +226,7 @@ impl Judge {
         let book = self.load(&mut books, key).await;
         let names: Vec<String> = book.logs.keys().cloned().collect();
         for name in &names {
-            let force = book
-                .logs
-                .get(name)
-                .is_some_and(|r| r.status != Status::Waiting);
+            let force = book.logs.get(name).is_some_and(|r| r.status != Status::Waiting);
             self.judge_one(book, key, name, force).await?;
         }
         book.v = trust::RULES_VERSION;
@@ -271,11 +241,7 @@ impl Judge {
         {
             let mut books = self.books.lock().await;
             let book = self.load(&mut books, key).await;
-            book.pin = Some(Pin {
-                fingerprint: fingerprint.to_string(),
-                pinned_ms: now_ms(),
-                how: "owner".into(),
-            });
+            book.pin = Some(Pin { fingerprint: fingerprint.to_string(), pinned_ms: now_ms(), how: "owner".into() });
             book.new_key = None;
         }
         self.rejudge_all(key).await.map(|_| ())
@@ -305,14 +271,8 @@ impl Judge {
                     return None;
                 }
                 match r.status {
-                    Status::Verified => Some(Entry {
-                        link: l.clone(),
-                        failed: None,
-                    }),
-                    Status::Failed => Some(Entry {
-                        link: l.clone(),
-                        failed: r.reason.clone(),
-                    }),
+                    Status::Verified => Some(Entry { link: l.clone(), failed: None }),
+                    Status::Failed => Some(Entry { link: l.clone(), failed: r.reason.clone() }),
                     _ => None,
                 }
             })

@@ -4,7 +4,9 @@
 use base64::Engine;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::Mutex;
+use vault::Vault;
 
 /// At most this many tokens in use at once.
 pub const MAX_TOKENS: usize = 20;
@@ -32,48 +34,33 @@ struct Book {
 /// work at once. Changes are made one at a time and written whole.
 pub struct Tokens {
     file: PathBuf,
+    vault: Arc<Vault>,
     lock: Mutex<()>,
 }
+
+const LABEL: &str = "tokens.json";
 
 fn hash(token: &str) -> String {
     hex::encode(Sha256::digest(token.trim().as_bytes()))
 }
 
-/// Writes a file whole or not at all: a temporary file, synced, then renamed over the old one.
-pub async fn write_atomic(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(d) = file.parent() {
-        tokio::fs::create_dir_all(d).await?;
-    }
-    let tmp = file.with_extension("tmp");
-    {
-        let mut f = tokio::fs::File::create(&tmp).await?;
-        tokio::io::AsyncWriteExt::write_all(&mut f, bytes).await?;
-        f.sync_all().await?;
-    }
-    tokio::fs::rename(&tmp, file).await
-}
-
 impl Tokens {
-    pub async fn open(file: impl Into<PathBuf>) -> std::io::Result<Tokens> {
-        let t = Tokens {
-            file: file.into(),
-            lock: Mutex::new(()),
-        };
+    pub async fn open(file: impl Into<PathBuf>, vault: Arc<Vault>) -> std::io::Result<Tokens> {
+        let t = Tokens { file: file.into(), vault, lock: Mutex::new(()) };
         t.load().await?;
         Ok(t)
     }
 
     async fn load(&self) -> std::io::Result<Book> {
-        match tokio::fs::read(&self.file).await {
-            Ok(b) => serde_json::from_slice(&b).map_err(std::io::Error::other),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Book::default()),
-            Err(e) => Err(e),
+        match self.vault.read_file(&self.file, LABEL).map_err(std::io::Error::other)? {
+            Some(b) => serde_json::from_slice(&b).map_err(std::io::Error::other),
+            None => Ok(Book::default()),
         }
     }
 
     async fn save(&self, book: &Book) -> std::io::Result<()> {
         let bytes = serde_json::to_vec_pretty(book).map_err(std::io::Error::other)?;
-        write_atomic(&self.file, &bytes).await
+        self.vault.write_file(&self.file, LABEL, &bytes).map_err(std::io::Error::other)
     }
 
     /// A new token for a car: returns it (shown once) and its record.
@@ -81,16 +68,11 @@ impl Tokens {
         let _one = self.lock.lock().await;
         let mut book = self.load().await?;
         if book.tokens.iter().filter(|t| !t.revoked).count() >= MAX_TOKENS {
-            return Err(std::io::Error::other(format!(
-                "at most {MAX_TOKENS} tokens; revoke one first"
-            )));
+            return Err(std::io::Error::other(format!("at most {MAX_TOKENS} tokens; revoke one first")));
         }
         let mut raw = [0u8; 32];
         getrandom::fill(&mut raw).map_err(std::io::Error::other)?;
-        let token = format!(
-            "{PREFIX}{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
-        );
+        let token = format!("{PREFIX}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw));
         let mut id = [0u8; 6];
         getrandom::fill(&mut id).map_err(std::io::Error::other)?;
         let t = Token {
@@ -109,12 +91,7 @@ impl Tokens {
     /// The token's record, if it is one in use.
     pub async fn find(&self, token: &str) -> Option<Token> {
         let h = hash(token);
-        self.load()
-            .await
-            .ok()?
-            .tokens
-            .into_iter()
-            .find(|t| !t.revoked && t.hash == h)
+        self.load().await.ok()?.tokens.into_iter().find(|t| !t.revoked && t.hash == h)
     }
 
     /// Ties a token to a car key (its first upload). Returns the key it is tied to (an earlier one wins).

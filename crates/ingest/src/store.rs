@@ -1,19 +1,25 @@
-//! Where uploaded logs are kept: exactly as received, never replaced.
+//! Where uploaded logs are kept: exactly as received, never replaced, and sealed with the vault (nothing is written
+//! to storage in the clear, uploads in progress included).
 //!
 //! ```text
-//! <can>/<vehicleKey>/<name>.log.xz           a finished log
-//! <can>/<vehicleKey>/<name>.log.xz.json      its sidecar
-//! <can>/<vehicleKey>/<name>.part             a file still arriving
-//! <can>/<vehicleKey>/<name>.part.json        what that upload promised (length, SHA-256, when it started)
+//! <can>/<vehicleKey>/<name>.log.xz           a finished log (sealed)
+//! <can>/<vehicleKey>/<name>.log.xz.json      its sidecar (sealed)
+//! <can>/<vehicleKey>/<name>.part             a file still arriving (sealed records, see vault::records)
+//! <can>/<vehicleKey>/<name>.part.json        what that upload promised: length, SHA-256, when it started (sealed)
 //! ```
+//!
+//! Each file's label (its path under the data folder) is bound into its sealing, so a file moved or copied under
+//! another name doesn't open. What the bridge signed is the plaintext; it is checked after unsealing.
 
 use crate::error::ApiError;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::sync::{Arc, Mutex};
 use trust::LogName;
+use vault::Vault;
+use zeroize::Zeroizing;
 
 pub const MAX_CHUNK: u64 = 16 << 20;
 pub const MAX_FILE: u64 = 1 << 30;
@@ -61,24 +67,28 @@ struct PartMeta {
 }
 
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-pub struct Store {
+type FreeBytes = Box<dyn Fn(&Path) -> u64 + Send + Sync>;
+
+struct Inner {
     dir: PathBuf,
+    vault: Arc<Vault>,
     busy: Mutex<HashSet<PathBuf>>,
     min_free: u64,
     max_logs_per_car: usize,
-    free_bytes: Box<dyn Fn(&Path) -> u64 + Send + Sync>,
+    free_bytes: FreeBytes,
 }
 
+#[derive(Clone)]
+pub struct Store(Arc<Inner>);
+
 /// Frees a file's "being uploaded" mark when the request ends, however it ends.
-struct Busy<'a>(&'a Mutex<HashSet<PathBuf>>, PathBuf);
-impl Drop for Busy<'_> {
+struct Busy(Arc<Inner>, PathBuf);
+impl Drop for Busy {
     fn drop(&mut self) {
-        if let Ok(mut b) = self.0.lock() {
+        if let Ok(mut b) = self.0.busy.lock() {
             b.remove(&self.1);
         }
     }
@@ -86,19 +96,6 @@ impl Drop for Busy<'_> {
 
 fn bad_name() -> ApiError {
     ApiError::new(400, "bad_name", "That is not a CAN Bridge log name.")
-}
-
-async fn sha256_of(file: &Path) -> std::io::Result<String> {
-    let mut f = tokio::fs::File::open(file).await?;
-    let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
-    loop {
-        let n = f.read(&mut buf).await?;
-        if n == 0 {
-            return Ok(hex::encode(h.finalize()));
-        }
-        h.update(&buf[..n]);
-    }
 }
 
 fn free_space(dir: &Path) -> u64 {
@@ -113,98 +110,69 @@ fn free_space(dir: &Path) -> u64 {
     }
 }
 
-impl Store {
-    pub fn new(dir: impl Into<PathBuf>) -> Store {
-        Store {
-            dir: dir.into(),
-            busy: Mutex::new(HashSet::new()),
-            min_free: MIN_FREE,
-            max_logs_per_car: MAX_LOGS_PER_CAR,
-            free_bytes: Box::new(free_space),
-        }
-    }
+fn with_suffix(file: &Path, suffix: &str) -> PathBuf {
+    let mut s = file.as_os_str().to_owned();
+    s.push(suffix);
+    PathBuf::from(s)
+}
 
-    /// For tests: a different free-space reading, floor and per-car cap.
-    pub fn with_limits(
-        mut self,
-        min_free: u64,
-        max_logs_per_car: usize,
-        free_bytes: impl Fn(&Path) -> u64 + Send + Sync + 'static,
-    ) -> Store {
-        self.min_free = min_free;
-        self.max_logs_per_car = max_logs_per_car;
-        self.free_bytes = Box::new(free_bytes);
-        self
-    }
+fn vault_err(e: vault::Error) -> ApiError {
+    ApiError::server(e)
+}
 
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, ApiError> + Send + 'static) -> Result<T, ApiError> {
+    tokio::task::spawn_blocking(f).await.map_err(ApiError::server)?
+}
 
-    /// The path of a finished file (`name` checked: a key folder and a file name, nothing else).
-    pub fn file_of(&self, name: &str) -> Result<PathBuf, ApiError> {
+impl Inner {
+    fn file_of(&self, name: &str) -> Result<(PathBuf, String), ApiError> {
         let n = LogName::parse(name).ok_or_else(bad_name)?;
-        Ok(self.dir.join(n.vehicle_key).join(name))
+        Ok((self.dir.join(n.vehicle_key).join(name), format!("can/{}/{name}", n.vehicle_key)))
     }
 
-    pub async fn state_of(&self, name: &str) -> Result<FileState, ApiError> {
-        let file = self.file_of(name)?;
-        if let Ok(m) = tokio::fs::metadata(&file).await {
-            return Ok(FileState {
-                state: State::Complete,
-                received: m.len(),
-                length: Some(m.len()),
-            });
+    /// SHA-256 and length of a finished file's plaintext.
+    fn hash_complete(&self, file: &Path, label: &str) -> Result<(String, u64), ApiError> {
+        let f = std::fs::File::open(file)?;
+        let len = f.metadata()?.len();
+        let mut r = self.vault.open_reader(label, std::io::BufReader::new(f), len).map_err(vault_err)?;
+        let mut h = Sha256::new();
+        let mut buf = vec![0u8; 1 << 16];
+        let mut total = 0u64;
+        loop {
+            let n = r.read(&mut buf).map_err(|e| vault_err(vault::unwrap_io(e)))?;
+            if n == 0 {
+                return Ok((hex::encode(h.finalize()), total));
+            }
+            total += n as u64;
+            h.update(&buf[..n]);
         }
-        let part = part_of(&file);
-        if let Ok(m) = tokio::fs::metadata(&part).await {
-            let meta: Option<PartMeta> = tokio::fs::read(meta_of(&file))
-                .await
-                .ok()
-                .and_then(|b| serde_json::from_slice(&b).ok());
+    }
+
+    fn meta(&self, file: &Path, label: &str) -> Option<PartMeta> {
+        let b = self.vault.read_file(&with_suffix(file, ".part.json"), &format!("{label}.part.json")).ok()??;
+        serde_json::from_slice(&b).ok()
+    }
+
+    fn state_of(&self, name: &str) -> Result<FileState, ApiError> {
+        let (file, label) = self.file_of(name)?;
+        if let Ok(m) = std::fs::metadata(&file) {
+            let len = vault::plaintext_len(m.len()).unwrap_or(0);
+            return Ok(FileState { state: State::Complete, received: len, length: Some(len) });
+        }
+        let part = with_suffix(&file, ".part");
+        if part.exists() {
+            let received = self.vault.records(&part, &format!("{label}.part")).map(|r| r.plain_len()).unwrap_or(0);
             return Ok(FileState {
                 state: State::Partial,
-                received: m.len(),
-                length: meta.map(|m| m.length),
+                received,
+                length: self.meta(&file, &label).map(|m| m.length),
             });
         }
-        Ok(FileState {
-            state: State::Missing,
-            received: 0,
-            length: None,
-        })
+        Ok(FileState { state: State::Missing, received: 0, length: None })
     }
 
-    /// Many names at once; with `key`, another car's names answer `forbidden`.
-    pub async fn status(&self, names: &[String], key: Option<&str>) -> Vec<(String, FileState)> {
-        let mut out = Vec::with_capacity(names.len());
-        for name in names {
-            let st = match LogName::parse(name) {
-                Some(n) if key.is_some_and(|k| k != n.vehicle_key) => FileState {
-                    state: State::Forbidden,
-                    received: 0,
-                    length: None,
-                },
-                Some(_) => self.state_of(name).await.unwrap_or(FileState {
-                    state: State::Invalid,
-                    received: 0,
-                    length: None,
-                }),
-                None => FileState {
-                    state: State::Invalid,
-                    received: 0,
-                    length: None,
-                },
-            };
-            out.push((name.clone(), st));
-        }
-        out
-    }
-
-    /// One chunk of a file. `offset` must be what is already here; `length` and `sha256` describe the whole file
-    /// (the same on every chunk). The file is kept when its last byte arrives and its SHA-256 matches.
-    pub async fn receive(
-        &self,
+    fn receive(
+        self: &Arc<Self>,
         name: &str,
         body: &[u8],
         offset: u64,
@@ -213,64 +181,30 @@ impl Store {
     ) -> Result<Received, ApiError> {
         let n = LogName::parse(name).ok_or_else(bad_name)?;
         if length == 0 {
-            return Err(ApiError::new(
-                400,
-                "bad_length",
-                "Upload-Length must be the whole file's size in bytes.",
-            ));
+            return Err(ApiError::new(400, "bad_length", "Upload-Length must be the whole file's size in bytes."));
         }
-        if sha256.len() != 64
-            || !sha256
-                .bytes()
-                .all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
-        {
-            return Err(ApiError::new(
-                400,
-                "bad_sha256",
-                "Upload-SHA256 must be the whole file's SHA-256 in hex.",
-            ));
+        if sha256.len() != 64 || !sha256.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(ApiError::new(400, "bad_sha256", "Upload-SHA256 must be the whole file's SHA-256 in hex."));
         }
         let limit = if n.sidecar { MAX_SIDECAR } else { MAX_FILE };
         if length > limit {
             let what = if n.sidecar { "sidecar" } else { "log" };
-            return Err(ApiError::new(
-                413,
-                "too_large",
-                format!("A {what} can be at most {limit} bytes."),
-            ));
+            return Err(ApiError::new(413, "too_large", format!("A {what} can be at most {limit} bytes.")));
         }
-        let file = self.file_of(name)?;
-        let taken = self
-            .busy
-            .lock()
-            .map(|mut b| b.insert(file.clone()))
-            .map_err(|_| ApiError::server("busy lock"))?;
+        let (file, label) = self.file_of(name)?;
+        let taken = self.busy.lock().map(|mut b| b.insert(file.clone())).map_err(|_| ApiError::server("busy lock"))?;
         if !taken {
-            let r = self.state_of(name).await?.received;
-            return Err(ApiError::new(
-                409,
-                "busy",
-                "This file is being uploaded by another request.",
-            )
-            .received(r));
+            let r = self.state_of(name)?.received;
+            return Err(ApiError::new(409, "busy", "This file is being uploaded by another request.").received(r));
         }
-        let _busy = Busy(&self.busy, file.clone());
+        let _busy = Busy(self.clone(), file.clone());
 
-        let had = self.state_of(name).await?;
+        let had = self.state_of(name)?;
         if had.state == State::Complete {
-            if had.length == Some(length) && sha256_of(&file).await? == sha256 {
-                return Ok(Received {
-                    received: length,
-                    length,
-                    complete: true,
-                    already: true,
-                });
+            if had.length == Some(length) && self.hash_complete(&file, &label)?.0 == sha256 {
+                return Ok(Received { received: length, length, complete: true, already: true });
             }
-            return Err(ApiError::new(
-                409,
-                "exists_different",
-                "A different file with this name is already here.",
-            ));
+            return Err(ApiError::new(409, "exists_different", "A different file with this name is already here."));
         }
         if had.state == State::Partial && had.length.is_some_and(|l| l != length) {
             return Err(ApiError::new(
@@ -281,43 +215,24 @@ impl Store {
             .received(had.received));
         }
         if offset != had.received {
-            return Err(ApiError::new(
-                409,
-                "offset_mismatch",
-                format!("Expected Upload-Offset {}.", had.received),
-            )
-            .received(had.received));
+            return Err(ApiError::new(409, "offset_mismatch", format!("Expected Upload-Offset {}.", had.received))
+                .received(had.received));
         }
         if offset + body.len() as u64 > length {
-            return Err(
-                ApiError::new(400, "past_end", "The chunk goes past Upload-Length.")
-                    .received(had.received),
-            );
+            return Err(ApiError::new(400, "past_end", "The chunk goes past Upload-Length.").received(had.received));
         }
         if body.len() as u64 > MAX_CHUNK {
-            return Err(ApiError::new(
-                413,
-                "chunk_too_large",
-                format!("A chunk can be at most {MAX_CHUNK} bytes."),
-            )
-            .received(had.received));
+            return Err(ApiError::new(413, "chunk_too_large", format!("A chunk can be at most {MAX_CHUNK} bytes."))
+                .received(had.received));
         }
-        let car_dir = file
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.dir.clone());
+        let car_dir = file.parent().map(Path::to_path_buf).unwrap_or_else(|| self.dir.clone());
         if offset == 0 {
-            if (self.free_bytes)(&self.dir) < length.saturating_mul(2).saturating_add(self.min_free)
-            {
-                return Err(ApiError::new(
-                    507,
-                    "no_space",
-                    "There is not enough free space for this file.",
-                ));
+            if (self.free_bytes)(&self.dir) < length.saturating_mul(2).saturating_add(self.min_free) {
+                return Err(ApiError::new(507, "no_space", "There is not enough free space for this file."));
             }
             let (mut logs, mut parts) = (0usize, 0usize);
-            if let Ok(mut rd) = tokio::fs::read_dir(&car_dir).await {
-                while let Ok(Some(e)) = rd.next_entry().await {
+            if let Ok(rd) = std::fs::read_dir(&car_dir) {
+                for e in rd.flatten() {
                     let f = e.file_name();
                     let f = f.to_string_lossy();
                     if f.ends_with(".log.xz") {
@@ -345,46 +260,53 @@ impl Store {
                 .received(0));
             }
         }
-        tokio::fs::create_dir_all(&car_dir).await?;
-        let part = part_of(&file);
+        std::fs::create_dir_all(&car_dir)?;
+        let part = with_suffix(&file, ".part");
+        let part_label = format!("{label}.part");
+        let meta_file = with_suffix(&file, ".part.json");
         if offset == 0 {
-            let meta = PartMeta {
-                length,
-                sha256: sha256.to_string(),
-                started_ms: now_ms(),
-            };
-            tokio::fs::write(
-                meta_of(&file),
-                serde_json::to_vec(&meta).map_err(ApiError::server)?,
-            )
-            .await?;
+            let _ = std::fs::remove_file(&part);
+            let meta = PartMeta { length, sha256: sha256.to_string(), started_ms: now_ms() };
+            let bytes = serde_json::to_vec(&meta).map_err(ApiError::server)?;
+            self.vault.write_file(&meta_file, &format!("{label}.part.json"), &bytes).map_err(vault_err)?;
         }
-        {
-            let mut f = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&part)
-                .await?;
-            f.write_all(body).await?;
-            f.flush().await?;
-        }
-        let received = offset + body.len() as u64;
+        let mut records = self.vault.records(&part, &part_label).map_err(vault_err)?;
+        records.append(body)?;
+        let received = records.plain_len();
         if received < length {
-            return Ok(Received {
-                received,
-                length,
-                complete: false,
-                already: false,
-            });
+            return Ok(Received { received, length, complete: false, already: false });
         }
 
-        // the last byte: kept only if it is the file the app hashed
-        let discard = || async {
-            let _ = tokio::fs::remove_file(&part).await;
-            let _ = tokio::fs::remove_file(meta_of(&file)).await;
+        // the last byte: kept only if it is the file the app hashed, sealed again as a finished file
+        let discard = |tmp: Option<&Path>| {
+            let _ = std::fs::remove_file(&part);
+            let _ = std::fs::remove_file(&meta_file);
+            if let Some(t) = tmp {
+                let _ = std::fs::remove_file(t);
+            }
         };
-        if sha256_of(&part).await? != sha256 {
-            discard().await;
+        let tmp = with_suffix(&file, ".sealing");
+        let mut hash = Sha256::new();
+        let mut side = Zeroizing::new(Vec::new());
+        {
+            let out = std::fs::File::create(&tmp)?;
+            let mut w = self.vault.seal_writer(&label, std::io::BufWriter::new(out)).map_err(vault_err)?;
+            let r = records.read_all(|piece| {
+                hash.update(piece);
+                if n.sidecar {
+                    side.extend_from_slice(piece);
+                }
+                w.write_all(piece)
+            });
+            if let Err(e) = r {
+                discard(Some(&tmp));
+                return Err(vault_err(vault::unwrap_io(e)));
+            }
+            let out = w.finish()?;
+            out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        }
+        if hex::encode(hash.finalize()) != sha256 {
+            discard(Some(&tmp));
             return Err(ApiError::new(
                 422,
                 "sha256_mismatch",
@@ -392,78 +314,147 @@ impl Store {
             )
             .received(0));
         }
-        if n.sidecar {
-            let ok = tokio::fs::read(&part)
-                .await
-                .ok()
-                .is_some_and(|b| serde_json::from_slice::<serde_json::Value>(&b).is_ok());
-            if !ok {
-                discard().await;
-                return Err(ApiError::new(
-                    422,
-                    "bad_sidecar",
-                    "The sidecar is not JSON; it was discarded.",
-                )
-                .received(0));
-            }
+        if n.sidecar && serde_json::from_slice::<serde_json::Value>(&side).is_err() {
+            discard(Some(&tmp));
+            return Err(ApiError::new(422, "bad_sidecar", "The sidecar is not JSON; it was discarded.").received(0));
         }
-        // on storage for good before it is renamed into place, so a power cut can't leave it half there
-        tokio::fs::File::open(&part).await?.sync_all().await?;
-        tokio::fs::rename(&part, &file).await?;
-        let _ = tokio::fs::remove_file(meta_of(&file)).await;
-        if let Ok(d) = tokio::fs::File::open(&car_dir).await {
-            let _ = d.sync_all().await;
+        std::fs::rename(&tmp, &file)?;
+        discard(None);
+        if let Ok(d) = std::fs::File::open(&car_dir) {
+            let _ = d.sync_all();
         }
-        Ok(Received {
-            received,
-            length,
-            complete: true,
-            already: false,
+        Ok(Received { received, length, complete: true, already: false })
+    }
+}
+
+impl Store {
+    pub fn new(dir: impl Into<PathBuf>, vault: Arc<Vault>) -> Store {
+        Store(Arc::new(Inner {
+            dir: dir.into(),
+            vault,
+            busy: Mutex::new(HashSet::new()),
+            min_free: MIN_FREE,
+            max_logs_per_car: MAX_LOGS_PER_CAR,
+            free_bytes: Box::new(free_space),
+        }))
+    }
+
+    /// For tests: a different free-space reading, floor and per-car cap.
+    pub fn with_limits(
+        dir: impl Into<PathBuf>,
+        vault: Arc<Vault>,
+        min_free: u64,
+        max_logs_per_car: usize,
+        free_bytes: impl Fn(&Path) -> u64 + Send + Sync + 'static,
+    ) -> Store {
+        Store(Arc::new(Inner {
+            dir: dir.into(),
+            vault,
+            busy: Mutex::new(HashSet::new()),
+            min_free,
+            max_logs_per_car,
+            free_bytes: Box::new(free_bytes),
+        }))
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.0.dir
+    }
+
+    pub fn vault(&self) -> &Arc<Vault> {
+        &self.0.vault
+    }
+
+    pub async fn state_of(&self, name: &str) -> Result<FileState, ApiError> {
+        let (inner, name) = (self.0.clone(), name.to_string());
+        blocking(move || inner.state_of(&name)).await
+    }
+
+    /// Many names at once; with `key`, another car's names answer `forbidden`.
+    pub async fn status(&self, names: &[String], key: Option<&str>) -> Vec<(String, FileState)> {
+        let (inner, names, key) = (self.0.clone(), names.to_vec(), key.map(str::to_string));
+        blocking(move || {
+            Ok(names
+                .into_iter()
+                .map(|name| {
+                    let st = match LogName::parse(&name) {
+                        Some(n) if key.as_deref().is_some_and(|k| k != n.vehicle_key) => {
+                            FileState { state: State::Forbidden, received: 0, length: None }
+                        }
+                        Some(_) => inner.state_of(&name).unwrap_or(FileState {
+                            state: State::Invalid,
+                            received: 0,
+                            length: None,
+                        }),
+                        None => FileState { state: State::Invalid, received: 0, length: None },
+                    };
+                    (name, st)
+                })
+                .collect())
         })
+        .await
+        .unwrap_or_default()
+    }
+
+    /// One chunk of a file. `offset` must be what is already here; `length` and `sha256` describe the whole file
+    /// (the same on every chunk). The file is kept when its last byte arrives and its SHA-256 matches.
+    pub async fn receive(
+        &self,
+        name: &str,
+        body: axum::body::Bytes,
+        offset: u64,
+        length: u64,
+        sha256: &str,
+    ) -> Result<Received, ApiError> {
+        let (inner, name, sha) = (self.0.clone(), name.to_string(), sha256.to_string());
+        blocking(move || inner.receive(&name, &body, offset, length, &sha)).await
+    }
+
+    /// A finished file's plaintext (a log or sidecar), checked as it is unsealed. `Ok(None)`: not here.
+    pub async fn read(&self, name: &str) -> Result<Option<Zeroizing<Vec<u8>>>, ApiError> {
+        let inner = self.0.clone();
+        let (file, label) = self.0.file_of(name)?;
+        blocking(move || inner.vault.read_file(&file, &label).map_err(vault_err)).await
+    }
+
+    /// SHA-256 and length of a finished file's plaintext.
+    pub async fn hash(&self, name: &str) -> Result<(String, u64), ApiError> {
+        let inner = self.0.clone();
+        let (file, label) = self.0.file_of(name)?;
+        blocking(move || inner.hash_complete(&file, &label)).await
+    }
+
+    pub fn exists(&self, name: &str) -> bool {
+        self.0.file_of(name).is_ok_and(|(f, _)| f.exists())
     }
 
     /// Drops unfinished uploads older than `max_age_ms` (an app that gave up, or someone filling the disk).
     pub async fn clean_stale(&self, max_age_ms: u64) -> usize {
-        let mut n = 0;
-        let Ok(mut cars) = tokio::fs::read_dir(&self.dir).await else {
-            return 0;
-        };
-        while let Ok(Some(car)) = cars.next_entry().await {
-            let Ok(mut rd) = tokio::fs::read_dir(car.path()).await else {
-                continue;
-            };
-            while let Ok(Some(e)) = rd.next_entry().await {
-                let p = e.path();
-                if !p.to_string_lossy().ends_with(".part") {
-                    continue;
-                }
-                let old = e
-                    .metadata()
-                    .await
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.elapsed().ok())
-                    .is_some_and(|age| age.as_millis() as u64 > max_age_ms);
-                if old {
-                    let _ = tokio::fs::remove_file(&p).await;
-                    let _ = tokio::fs::remove_file(PathBuf::from(format!("{}.json", p.display())))
-                        .await;
-                    n += 1;
+        let dir = self.0.dir.clone();
+        blocking(move || {
+            let mut n = 0;
+            for car in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                for e in std::fs::read_dir(car.path()).into_iter().flatten().flatten() {
+                    let p = e.path();
+                    if !p.to_string_lossy().ends_with(".part") {
+                        continue;
+                    }
+                    let old = e
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age.as_millis() as u64 > max_age_ms);
+                    if old {
+                        let _ = std::fs::remove_file(&p);
+                        let _ = std::fs::remove_file(with_suffix(&p, ".json"));
+                        n += 1;
+                    }
                 }
             }
-        }
-        n
+            Ok(n)
+        })
+        .await
+        .unwrap_or(0)
     }
-}
-
-fn part_of(file: &Path) -> PathBuf {
-    let mut s = file.as_os_str().to_owned();
-    s.push(".part");
-    PathBuf::from(s)
-}
-
-fn meta_of(file: &Path) -> PathBuf {
-    let mut s = file.as_os_str().to_owned();
-    s.push(".part.json");
-    PathBuf::from(s)
 }

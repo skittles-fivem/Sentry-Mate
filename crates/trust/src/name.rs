@@ -12,11 +12,7 @@ pub struct LogName<'a> {
 }
 
 fn num(s: &str) -> Option<i64> {
-    if s.bytes().all(|c| c.is_ascii_digit()) {
-        s.parse().ok()
-    } else {
-        None
-    }
+    if s.bytes().all(|c| c.is_ascii_digit()) { s.parse().ok() } else { None }
 }
 
 /// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's days_from_civil).
@@ -61,22 +57,14 @@ impl<'a> LogName<'a> {
         };
         let (rest, seq) = stem.rsplit_once('_')?;
         let (key, stamp) = rest.rsplit_once('_')?;
-        if key.is_empty()
-            || key.len() > 64
-            || !key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
-        {
+        if key.is_empty() || key.len() > 64 || !key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
             return None;
         }
         if seq.is_empty() || seq.len() > 6 {
             return None;
         }
         let seq = u32::try_from(num(seq)?).ok()?;
-        Some(LogName {
-            vehicle_key: key,
-            started_ms: parse_stamp(stamp)?,
-            seq,
-            sidecar,
-        })
+        Some(LogName { vehicle_key: key, started_ms: parse_stamp(stamp)?, seq, sidecar })
     }
 }
 
@@ -87,16 +75,9 @@ mod tests {
     #[test]
     fn names() {
         let n = LogName::parse("abcdef123456_20261108T143000Z_1.log.xz").unwrap();
-        assert_eq!(
-            (n.vehicle_key, n.seq, n.sidecar),
-            ("abcdef123456", 1, false)
-        );
+        assert_eq!((n.vehicle_key, n.seq, n.sidecar), ("abcdef123456", 1, false));
         assert_eq!(n.started_ms, 1_794_148_200_000);
-        assert!(
-            LogName::parse("MY-car_20261108T143000Z_000001.log.xz.json")
-                .unwrap()
-                .sidecar
-        );
+        assert!(LogName::parse("MY-car_20261108T143000Z_000001.log.xz.json").unwrap().sidecar);
         for bad in [
             "abc_20261108T143000Z_1.log",
             "ab_c_20261108T143000Z_1.log.xz",

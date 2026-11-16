@@ -33,46 +33,22 @@ pub const RULES_VERSION: u32 = 1;
 
 /// Text from a sidecar shown as a reason or note: one line, no control characters, at most `n` characters.
 pub fn one_line(s: &str, n: usize) -> String {
-    let cleaned: String = s
-        .chars()
-        .map(|c| {
-            if c.is_control() || c == '\u{2028}' || c == '\u{2029}' {
-                ' '
-            } else {
-                c
-            }
-        })
-        .collect();
+    let cleaned: String =
+        s.chars().map(|c| if c.is_control() || c == '\u{2028}' || c == '\u{2029}' { ' ' } else { c }).collect();
     let words: Vec<&str> = cleaned.split_whitespace().collect();
     let s = words.join(" ");
-    if s.chars().count() > n {
-        format!(
-            "{}…",
-            s.chars().take(n.saturating_sub(1)).collect::<String>()
-        )
-    } else {
-        s
-    }
+    if s.chars().count() > n { format!("{}…", s.chars().take(n.saturating_sub(1)).collect::<String>()) } else { s }
 }
 
 /// SHA-256 of a public key's DER, lowercase hex in pairs with colons (as the app shows it).
 pub fn fingerprint(spki_der: &[u8]) -> String {
     let h = hex::encode(Sha256::digest(spki_der));
-    h.as_bytes()
-        .chunks(2)
-        .map(|p| std::str::from_utf8(p).unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join(":")
+    h.as_bytes().chunks(2).map(|p| std::str::from_utf8(p).unwrap_or("")).collect::<Vec<_>>().join(":")
 }
 
 /// Two fingerprints are the same key (any case, with or without colons).
 pub fn same_fingerprint(a: &str, b: &str) -> bool {
-    let norm = |s: &str| {
-        s.chars()
-            .filter(char::is_ascii_hexdigit)
-            .map(|c| c.to_ascii_lowercase())
-            .collect::<String>()
-    };
+    let norm = |s: &str| s.chars().filter(char::is_ascii_hexdigit).map(|c| c.to_ascii_lowercase()).collect::<String>();
     let (a, b) = (norm(a), norm(b));
     !a.is_empty() && a == b
 }
@@ -87,9 +63,7 @@ pub fn signed_message(
     prev_name: &str,
     prev_sha256: &str,
 ) -> String {
-    format!(
-        "{VERSION}\n{vehicle_key}\n{name}\n{sha256}\n{length}\n{index}\n{prev_name}\n{prev_sha256}\n"
-    )
+    format!("{VERSION}\n{vehicle_key}\n{name}\n{sha256}\n{length}\n{index}\n{prev_name}\n{prev_sha256}\n")
 }
 
 /// A signed log's place in its key's chain.
@@ -120,10 +94,7 @@ pub enum Check {
 
 /// Checks a log (`name`, its bytes' SHA-256 and length) against its sidecar's `integrity` object.
 pub fn check(name: &str, sha256: &str, length: u64, sidecar: &serde_json::Value) -> Check {
-    let bad = |reason: &str, link: Option<Link>| Check::Bad {
-        reason: reason.to_string(),
-        link,
-    };
+    let bad = |reason: &str, link: Option<Link>| Check::Bad { reason: reason.to_string(), link };
     let Some(n) = LogName::parse(name).filter(|n| !n.sidecar) else {
         return bad("not a CAN Bridge log name", None);
     };
@@ -144,19 +115,10 @@ pub fn check(name: &str, sha256: &str, length: u64, sidecar: &serde_json::Value)
     };
     let text = |k: &str| g.get(k).and_then(|v| v.as_str()).unwrap_or("");
     if text("version") != VERSION {
-        return bad(
-            &format!(
-                "unknown signature version {}",
-                one_line(text("version"), 40)
-            ),
-            None,
-        );
+        return bad(&format!("unknown signature version {}", one_line(text("version"), 40)), None);
     }
     if text("algorithm") != ALGORITHM {
-        return bad(
-            &format!("unknown algorithm {}", one_line(text("algorithm"), 40)),
-            None,
-        );
+        return bad(&format!("unknown algorithm {}", one_line(text("algorithm"), 40)), None);
     }
     let Ok(der) = base64::engine::general_purpose::STANDARD.decode(text("public_key")) else {
         return bad("the public key cannot be read", None);
@@ -186,16 +148,10 @@ pub fn check(name: &str, sha256: &str, length: u64, sidecar: &serde_json::Value)
         return bad("signed for another car key", link);
     }
     if !text("sha256").eq_ignore_ascii_case(sha256) {
-        return bad(
-            "the file is not the one that was signed (SHA-256 differs)",
-            link,
-        );
+        return bad("the file is not the one that was signed (SHA-256 differs)", link);
     }
     if g.get("length").and_then(serde_json::Value::as_u64) != Some(length) {
-        return bad(
-            "the file is not the one that was signed (length differs)",
-            link,
-        );
+        return bad("the file is not the one that was signed (length differs)", link);
     }
     let Some(link) = link else {
         return bad("bad chain index", None);
@@ -208,15 +164,8 @@ pub fn check(name: &str, sha256: &str, length: u64, sidecar: &serde_json::Value)
     {
         return bad("bad chain fields", Some(link));
     }
-    let message = signed_message(
-        n.vehicle_key,
-        name,
-        &sha256.to_ascii_lowercase(),
-        length,
-        link.index,
-        &prev_name,
-        &prev_sha256,
-    );
+    let message =
+        signed_message(n.vehicle_key, name, &sha256.to_ascii_lowercase(), length, link.index, &prev_name, &prev_sha256);
     let signature = base64::engine::general_purpose::STANDARD
         .decode(text("signature"))
         .ok()
@@ -243,17 +192,12 @@ pub enum Verdict {
 pub fn judge(check: &Check, paired: Option<&str>) -> Verdict {
     match (check, paired) {
         (Check::Signed(_), None) => Verdict::Verified,
-        (Check::Signed(l), Some(fp)) if same_fingerprint(&l.key_fingerprint, fp) => {
-            Verdict::Verified
-        }
+        (Check::Signed(l), Some(fp)) if same_fingerprint(&l.key_fingerprint, fp) => Verdict::Verified,
         (Check::Signed(_), Some(_)) => Verdict::Failed("signed by another key".into()),
         (Check::NotSigned { .. }, None) => Verdict::Unsigned,
-        (
-            Check::NotSigned {
-                bridge_error: Some(e),
-            },
-            Some(_),
-        ) => Verdict::CouldNotSign(format!("the CAN Bridge could not sign it ({e})")),
+        (Check::NotSigned { bridge_error: Some(e) }, Some(_)) => {
+            Verdict::CouldNotSign(format!("the CAN Bridge could not sign it ({e})"))
+        }
         (Check::NotSigned { bridge_error: None }, Some(_)) => {
             Verdict::Failed("not signed, but this car is paired".into())
         }

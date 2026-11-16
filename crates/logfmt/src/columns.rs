@@ -88,10 +88,7 @@ pub fn decode(body: &[u8], mut on_line: impl FnMut(&[u8])) -> Result<(), Error> 
     if !is_columns(body) {
         return Err(Error::Malformed("not a columns log"));
     }
-    let mut r = Reader {
-        body,
-        pos: MAGIC.len(),
-    };
+    let mut r = Reader { body, pos: MAGIC.len() };
 
     let key_count = r.count(MAX_KEYS)?;
     let mut keys = Vec::with_capacity(key_count);

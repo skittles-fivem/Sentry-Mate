@@ -55,11 +55,7 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits {
-            max_unpacked: 4 << 30,
-            max_columns_body: 64 << 20,
-            max_line: 512,
-        }
+        Limits { max_unpacked: 4 << 30, max_columns_body: 64 << 20, max_line: 512 }
     }
 }
 
@@ -152,9 +148,7 @@ impl<F: FnMut(&[u8])> Sink<'_, F> {
     fn decide(&mut self, head: Vec<u8>) -> io::Result<()> {
         if columns::is_columns(&head) {
             if head.len() as u64 > self.limits.max_columns_body {
-                return Err(io::Error::other(Error::ColumnsTooLarge(
-                    self.limits.max_columns_body,
-                )));
+                return Err(io::Error::other(Error::ColumnsTooLarge(self.limits.max_columns_body)));
             }
             self.mode = Mode::Columns(head);
             Ok(())
@@ -178,9 +172,7 @@ impl<F: FnMut(&[u8])> Write for Sink<'_, F> {
             Mode::Text => self.text_limited(buf)?,
             Mode::Columns(body) => {
                 if (body.len() + buf.len()) as u64 > self.limits.max_columns_body {
-                    return Err(io::Error::other(Error::ColumnsTooLarge(
-                        self.limits.max_columns_body,
-                    )));
+                    return Err(io::Error::other(Error::ColumnsTooLarge(self.limits.max_columns_body)));
                 }
                 body.extend_from_slice(buf);
             }
@@ -203,11 +195,7 @@ impl std::fmt::Display for Stop {
 impl std::error::Error for Stop {}
 
 /// Reads one `.log.xz` (either format) and calls `on_line` with every line, without its LF, in order.
-pub fn read_log(
-    xz: &[u8],
-    limits: Limits,
-    mut on_line: impl FnMut(&[u8]),
-) -> Result<Summary, Error> {
+pub fn read_log(xz: &[u8], limits: Limits, mut on_line: impl FnMut(&[u8])) -> Result<Summary, Error> {
     let mut sink = Sink {
         mode: Mode::Detect(Vec::with_capacity(32)),
         limits,
@@ -248,12 +236,7 @@ pub fn read_log(
                     on_line(l);
                 }
             })?;
-            return Ok(Summary {
-                format: Format::Columns,
-                lines,
-                skipped_long_lines: skipped,
-                truncated: false,
-            });
+            return Ok(Summary { format: Format::Columns, lines, skipped_long_lines: skipped, truncated: false });
         }
         _ => Format::Candump,
     };
@@ -261,12 +244,7 @@ pub fn read_log(
         let rest = std::mem::take(&mut sink.partial);
         sink.line(&rest);
     }
-    Ok(Summary {
-        format,
-        lines: sink.lines,
-        skipped_long_lines: sink.skipped,
-        truncated: sink.truncated,
-    })
+    Ok(Summary { format, lines: sink.lines, skipped_long_lines: sink.skipped, truncated: sink.truncated })
 }
 
 /// Unpacks a columns or candump log to its candump text (LF after each line), as SMO's reference decoder does.
