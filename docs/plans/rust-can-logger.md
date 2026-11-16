@@ -329,15 +329,13 @@ services:
 
 ## Findings from the first real log (2026-11-16)
 
-One log and its sidecar from the owner's car (`<key>_20261116T035057Z_5677`, SMO build 147, columns /2,
+One log and its sidecar from the owner's car (SMO build 147, columns /2,
 232,920 bytes, 125,645 frames in 61.5 s). Analysed in a session's scratch space only; the log, VIN and
 position stay out of the repo.
 
-- **Integrity**: SHA-256, length, key fingerprint and ECDSA signature all check (chain index 10,380).
+- **Integrity**: SHA-256, length, key fingerprint and ECDSA signature all check.
   The `trust` crate's first test vector can be built the same way from a synthetic log.
-- **What the car was doing**: parked at night, plugged in, charge complete (`BMS_uiChargeStatus` 4
-  BMS_CHARGE_COMPLETE, `CP_hvChargeStatus` 5 ENABLED, `PCS_hvChargeStatus` 2 ENABLED, battery current
-  ~0 A, 401 V, 12 V battery 15.7 V, outside -1.5 °C). Only **can0** (~2,000 frames/s) and **can3** sent;
+- **What the car was doing**: parked, awake, not driving, charge status signals all present. Only **can0** (~2,000 frames/s) and **can3** sent;
   **can1 (chassis) was silent** and there was no gear or speed message (0x118 / 0x257). So "asleep" can't
   just mean "no frames": the timeline needs per-bus states (vehicle bus awake + chassis asleep = parked,
   awake, e.g. charging or keeping the battery warm).
