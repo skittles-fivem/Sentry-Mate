@@ -167,13 +167,41 @@ The owner's existing TeslaMate data comes in, so history starts years before the
 - **Stored small**: imported positions and charge points go into the same compressed segment files as
   CAN data; drives and charges into SQLite.
 - **Report**: rows read, imported, skipped (with why), overlap found, time taken; kept in the audit log.
-- **Tests**: a synthetic TeslaMate dump (made from TeslaMate's migrations in this repo, fake
-  coordinates) covering several schema versions; then the owner's real backup, uploaded to a session
+- **Tests**: synthetic TeslaMate dumps made by the official TeslaMate image in CI (see This repo), fake
+  coordinates, several TeslaMate versions; then the owner's real backup, uploaded to a session
   only if the owner chooses (it holds every place the car has been).
+
+## This repo (owner: replace the fork entirely, 2026-11-16)
+
+The TeslaMate fork's contents go; the Rust app takes the whole repo.
+
+- **Clean-room**: no TeslaMate code, SQL, dashboards, translations, logos or text are copied into the
+  new app. Its pages, rules and formulas are written fresh from this plan and from the car's data. That
+  keeps the app free of TeslaMate's AGPL code and its trademark. (The importer only reads TeslaMate's
+  backup *format*, which is data, not code.)
+- **One removal commit**: the first commit of the build deletes everything except `docs/plans/`, then
+  the Cargo workspace goes in. Git history stays as it is (no force-push, no rewritten `main`). If the
+  owner wants the TeslaMate history gone too, that's a fresh repo or a force-push the owner does.
+- **Import test files** can't come from the migrations once they're deleted, and copying them would
+  copy TeslaMate code. Instead CI runs the official `teslamate/teslamate` image against a throwaway
+  Postgres, lets it make its own schema, inserts fake rows, and `pg_dump`s that as the fixture (for a
+  few TeslaMate versions). Nothing of TeslaMate is committed.
+- **Repo name**: `teslamate---Sentry-manager` has TeslaMate's name in it; the owner renames it in GitHub
+  (Settings → General) once the app has a name. GitHub keeps the old address redirecting. If GitHub
+  still shows it as "forked from teslamate-org/teslamate", only GitHub support (or a new repo) removes
+  that link.
+- **Licence**: the owner picks (AGPL-3.0, MIT/Apache-2.0, or private/all rights reserved). Third-party
+  bits keep their own: model3dbc (MIT), opendbc (MIT), uPlot (MIT), MapLibre (BSD-3), map and address
+  data (ODbL, credited in the UI).
+- **Rules file**: a `CLAUDE.md` like Sentry Manager's (main / release/next-update / wip, nothing to
+  `main` without the owner, tests before every push, phone + desktop screenshots with UI changes, no
+  co-author trailers, no PRs unless asked), if the owner wants the same rules here.
+- **GitHub Actions**: TeslaMate's workflows are removed with everything else (they'd publish TeslaMate
+  images); new ones: `cargo test`, clippy, `cargo deny`/`audit`, fuzz smoke run, Docker image.
 
 ## Phases
 
-0. **Decide** (questions below). Get a real bundle from the owner (Sentry Manager → Nerd → export
+0. **Decide** (questions below). Then the one removal commit (see This repo). Get a real bundle from the owner (Sentry Manager → Nerd → export
    bundle, a few drives and a charge; cloud sessions can't reach the home network) for tests.
 1. **Ingest + trust**: upload API, storage, signature/chain, tokens, TLS. Done when SMO uploads to it as
    the second server with no errors and Sentry Manager still gets everything.
@@ -190,9 +218,8 @@ The owner's existing TeslaMate data comes in, so history starts years before the
 ## Open questions for the owner
 
 1. **Name** of the app (it can't be TeslaMate).
-2. **This repo**: replace the TeslaMate fork's contents with the new Rust app, or start a new repo? (A
-   from-scratch rewrite that copies no TeslaMate code can pick its own license; porting TeslaMate's code
-   or SQL keeps it AGPL.)
+2. ~~This repo~~: answered, replace the fork entirely (see This repo). Still to pick: the **licence**,
+   and whether this repo gets **Sentry Manager's branch rules**.
 3. **SMO's second upload slot**: is it free, or used for a second Sentry Manager? If used, SMO needs a
    third slot.
 4. **Encryption at rest**: key file (restarts by itself) or passphrase at every start?
