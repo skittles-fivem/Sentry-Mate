@@ -117,7 +117,7 @@ impl Index {
             events.push(IndexEvent::Next { id: s.id + 1 });
         }
         events.push(IndexEvent::Put(s.clone()));
-        self.journal.append(&events)?;
+        self.journal.append(vault, &events)?;
         self.next_id = self.next_id.max(s.id + 1);
         if let Some(old) = self.by_id.get(&s.id) {
             if old.role == Role::Admin {
@@ -139,7 +139,7 @@ impl Index {
         if !self.by_id.contains_key(&id) {
             return Ok(());
         }
-        self.journal.append(&[IndexEvent::Remove { id }])?;
+        self.journal.append(vault, &[IndexEvent::Remove { id }])?;
         if let Some(old) = self.by_id.remove(&id) {
             self.by_key.remove(&old.key);
             if old.role == Role::Admin {

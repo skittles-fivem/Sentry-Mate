@@ -156,7 +156,7 @@ impl Audit {
             }
         }
         match cur.as_mut() {
-            Some(c) => c.journal.append(std::slice::from_ref(&entry)),
+            Some(c) => c.journal.append(&self.vault, std::slice::from_ref(&entry)),
             None => Err(corrupt("no audit part")),
         }
     }

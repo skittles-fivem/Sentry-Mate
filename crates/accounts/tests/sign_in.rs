@@ -419,3 +419,39 @@ fn a_wrong_code_writes_nothing_and_one_code_sent_twice_at_once_signs_in_once() {
     });
     assert_eq!(results.iter().filter(|ok| **ok).count(), 1, "{results:?}");
 }
+
+#[test]
+fn a_new_password_ends_sign_ins_still_waiting_for_their_code() {
+    let env = Env::new();
+    let (_, owner) = env.owner();
+    let (secret, _) = turn_on_two_step(&env, &owner, OWNER_PASSWORD);
+    env.advance(30_000);
+    let c = client(OUTSIDE);
+    // someone with the old password got as far as the code
+    let SignIn::NeedCode { pending, .. } = env.acc.sign_in("owner", OWNER_PASSWORD, &c).unwrap() else { panic!() };
+    env.acc.set_password(&owner, OWNER_PASSWORD, owner.account.id, "a fresh long passphrase").unwrap();
+    assert!(matches!(env.acc.finish_sign_in(&pending, &code_at(&secret, env.now()), &c), Err(Error::SignInExpired)));
+}
+
+#[test]
+fn a_crash_while_two_step_sign_in_is_turned_off_does_not_lock_the_account_out() {
+    let mut env = Env::new();
+    let (_, owner) = env.owner();
+    turn_on_two_step(&env, &owner, OWNER_PASSWORD);
+    // what a crash between writing the account's file and its index line leaves: the file says off, the index on
+    let id = owner.account.id;
+    let (path, label) = (env.data.join(format!("accounts/account-{id}.sealed")), format!("accounts/{id}"));
+    let mut secrets: serde_json::Value =
+        serde_json::from_slice(&env.vault.read_file(&path, &label).unwrap().unwrap()).unwrap();
+    secrets["totp"] = serde_json::Value::Null;
+    secrets["recovery"] = serde_json::json!([]);
+    env.vault.write_file(&path, &label, &serde_json::to_vec(&secrets).unwrap()).unwrap();
+    env.reopen();
+    assert!(env.acc.account(id).unwrap().two_step, "not read yet");
+    // the account's file is what counts: no code is asked that could never be given
+    match env.acc.sign_in("owner", OWNER_PASSWORD, &client(HOME)).unwrap() {
+        SignIn::Done(_) => {}
+        SignIn::NeedCode { .. } => panic!("asked for a two-step code although it is off"),
+    }
+    assert!(!env.acc.account(id).unwrap().two_step, "the index says so again");
+}

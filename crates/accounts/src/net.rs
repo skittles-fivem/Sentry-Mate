@@ -51,10 +51,27 @@ pub fn parse_address(text: &str) -> Option<IpAddr> {
     if let Ok(sa) = s.parse::<std::net::SocketAddr>() {
         return Some(canonical(sa.ip()));
     }
-    // a bracketed IPv6 without a port, or an address with a zone
-    let s = s.strip_prefix('[').and_then(|r| r.split_once(']')).map_or(s, |(inner, _)| inner);
-    let s = s.split_once('%').map_or(s, |(a, _)| a);
-    s.parse::<IpAddr>().ok().map(canonical)
+    // a bracketed IPv6 without a port, or with a zone (`[fe80::1%eth0]:443`): nothing but a port after the bracket
+    let inner = match s.strip_prefix('[') {
+        Some(r) => {
+            let (inner, rest) = r.split_once(']')?;
+            if !(rest.is_empty() || rest.strip_prefix(':').is_some_and(|p| p.parse::<u16>().is_ok())) {
+                return None;
+            }
+            inner
+        }
+        None => s,
+    };
+    // a zone is for IPv6 only, and is a name or a number
+    let (addr, zone) = inner.split_once('%').map_or((inner, None), |(a, z)| (a, Some(z)));
+    if zone.is_some_and(|z| z.is_empty() || !z.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))) {
+        return None;
+    }
+    // (a plain address was read above: here it is bracketed or has a zone, which IPv4 never has)
+    match addr.parse::<IpAddr>().ok()? {
+        v6 @ IpAddr::V6(_) => Some(canonical(v6)),
+        IpAddr::V4(_) => None,
+    }
 }
 
 /// The key failed tries from an address are counted under: the address itself for IPv4, the /64 for IPv6 (one home

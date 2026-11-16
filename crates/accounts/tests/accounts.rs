@@ -46,6 +46,7 @@ fn the_first_admin_needs_the_setup_code_once() {
     assert_eq!(ns.account.role, Role::Admin);
     assert!(!env.acc.needs_setup());
     assert!(!file.exists(), "the code file is removed once used");
+    assert!(!env.data.join("accounts/setup.sealed").exists(), "and the code itself is gone");
     // used once: never again, and no new one
     assert!(matches!(env.acc.setup(&made.code, "second", OWNER_PASSWORD, &c), Err(Error::SetupDone)));
     assert!(matches!(env.acc.start_setup(&file), Err(Error::SetupDone)));
@@ -66,6 +67,27 @@ fn the_setup_code_expires_after_a_day_and_a_new_one_replaces_it() {
     assert_ne!(first.code.as_str(), second.code.as_str());
     assert!(matches!(env.acc.setup(&first.code, "owner", OWNER_PASSWORD, &client(HOME)), Err(Error::WrongSetupCode)));
     env.acc.setup(&second.code, "owner", OWNER_PASSWORD, &client(HOME)).unwrap();
+}
+
+#[test]
+fn one_setup_code_sent_twice_at_once_makes_one_admin() {
+    let env = Env::new();
+    let file = env.keys.join("SETUP-CODE.txt");
+    let made = env.acc.start_setup(&file).unwrap();
+    let results: Vec<_> = std::thread::scope(|s| {
+        let handles: Vec<_> = ["first", "second", "third", "fourth"]
+            .into_iter()
+            .map(|name| {
+                let (env, code) = (&env, made.code.as_str());
+                s.spawn(move || env.acc.setup(code, name, OWNER_PASSWORD, &client(HOME)).map(|ns| ns.account.name))
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let made: Vec<&String> = results.iter().filter_map(|r| r.as_ref().ok()).collect();
+    assert_eq!(made.len(), 1, "{results:?}");
+    assert!(results.iter().all(|r| matches!(r, Ok(_) | Err(Error::SetupDone | Error::WrongSetupCode))));
+    assert_eq!(env.acc.count(), 1);
 }
 
 #[test]

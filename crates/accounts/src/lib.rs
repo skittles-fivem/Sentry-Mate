@@ -448,13 +448,27 @@ impl Accounts {
         let mut st = lock(&slot.state);
         if matches!(*st, SlotState::Unloaded) {
             *st = match self.files.load(id)? {
-                Some(l) => SlotState::Loaded(l),
+                Some(l) => {
+                    self.repair_two_step_flag(id, &l);
+                    SlotState::Loaded(l)
+                }
                 None => SlotState::Gone,
             };
         }
         match &mut *st {
             SlotState::Loaded(l) => f(l),
             _ => Err(Error::NoSuchAccount),
+        }
+    }
+
+    /// Whether two-step sign-in is on is the account's own file's say; the index's flag is written just after the
+    /// file (under the account's lock), so a crash in between leaves them apart. Set right when the file is read, else
+    /// an account whose two-step sign-in was being turned off would be asked for a code it can never give.
+    fn repair_two_step_flag(&self, id: AccountId, l: &Loaded) {
+        let on = l.secrets.totp.is_some();
+        if self.summary(id).is_some_and(|s| s.two_step != on) {
+            // the next load tries again if this can't be written
+            let _ = self.set_two_step_flag(id, on);
         }
     }
 
@@ -644,7 +658,8 @@ impl Accounts {
         };
         drop(pass);
         let s = match found {
-            Some(s) if ok => s,
+            // as it is now that the account's file has been read (see `repair_two_step_flag`)
+            Some(s) if ok => self.summary(s.id).unwrap_or(s),
             Some(s) => {
                 self.record(Some(&s.name), Some(client), "sign-in-failed", "wrong password")?;
                 return Err(Error::WrongCredentials);
@@ -1020,6 +1035,8 @@ impl Accounts {
             sec.password_changed_ms = now;
             Ok(())
         })?;
+        // a sign-in waiting for its two-step code was let through by the old password: it ends too
+        lock(&self.pending).retain(|_, p| p.account != target);
         let keep = own.then_some(&by.hash);
         let n = self.sessions.end_account(target, keep)?;
         let details = format!("{} ({n} other sessions signed out)", s.name);

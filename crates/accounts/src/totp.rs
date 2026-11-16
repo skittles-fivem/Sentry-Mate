@@ -61,7 +61,8 @@ pub fn hotp(secret: &[u8], counter: u64, digits: u32) -> u32 {
     let h = mac.finalize().into_bytes();
     let o = usize::from(h[19] & 15);
     let n = u32::from_be_bytes([h[o] & 0x7f, h[o + 1], h[o + 2], h[o + 3]]);
-    n % 10u32.pow(digits)
+    // 31 bits: 10 digits hold any of them (and 10^10 is past a u32)
+    (u64::from(n) % 10u64.pow(digits.min(10))) as u32
 }
 
 /// The 30-second step a moment falls in.
@@ -190,6 +191,9 @@ mod tests {
         for (c, w) in want.iter().enumerate() {
             assert_eq!(hotp(SECRET, c as u64, 6), *w, "counter {c}");
         }
+        // the whole 31-bit value (RFC 4226 appendix D, "Truncated" for count 0), however many digits are asked
+        assert_eq!(hotp(SECRET, 0, 10), 1_284_755_224);
+        assert_eq!(hotp(SECRET, 0, 12), 1_284_755_224);
     }
 
     #[test]

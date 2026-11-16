@@ -63,7 +63,15 @@ fn addresses_are_read_however_they_arrive() {
     assert_eq!(ip("[2001:db8::1]"), ip("2001:db8::1"));
     assert_eq!(ip("fe80::1%eth0"), ip("fe80::1"));
     assert_eq!(ip(" ::FFFF:192.0.2.1 "), ip("192.0.2.1"), "IPv4 inside IPv6 is the IPv4 address");
+    assert_eq!(ip("[fe80::1%eth0]:443"), ip("fe80::1"));
+    assert_eq!(ip("[fe80::1%3]"), ip("fe80::1"));
     for bad in ["", "localhost", "192.168.1", "1.2.3.4.5", "[::1", "::g", &"1".repeat(200)] {
+        assert_eq!(parse_address(bad), None, "{bad}");
+    }
+    // nothing but a port after a bracket, zones only on IPv6, brackets only around IPv6
+    for bad in
+        ["[::1]junk", "[::1]:", "[::1]:99999", "[::1]:443x", "1.2.3.4%eth0", "fe80::1%", "fe80::1%a b", "[1.2.3.4]"]
+    {
         assert_eq!(parse_address(bad), None, "{bad}");
     }
     let c = Client::new(ip("::ffff:10.0.0.9"), "Phone\nwith a newline");

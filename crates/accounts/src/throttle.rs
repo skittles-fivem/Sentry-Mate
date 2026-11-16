@@ -11,7 +11,8 @@
 //! - **A try is counted when it starts**, before the slow password check, and cleared if it was right: a burst of
 //!   guesses sent in parallel can't all slip past before the first failure is noted.
 //! - **Bounded memory**: entries are forgotten a day after their last failure, and at most [`MAX_TRACKED`] are kept
-//!   (those not holding anyone back go first when it is full).
+//!   (when it is full, those not holding anyone back and with the fewest failures go first, so a flood of new names
+//!   can't wipe the count of an account under attack in the moment between two of its waits).
 
 use crate::error::{Error, Result};
 use std::collections::HashMap;
@@ -109,19 +110,20 @@ impl Throttle {
     }
 
     /// Drops what is no longer needed, down to 90 % of the limit: forgotten keys first, then those not holding
-    /// anyone back, then those whose wait ends soonest.
+    /// anyone back, fewest failures first (a key whose wait has just ended still knows how long the next one is),
+    /// then those holding back, again fewest failures first.
     fn make_room(map: &mut HashMap<String, Strikes>, max: usize, now: u64) {
         map.retain(|_, s| s.last_ms + FORGET_AFTER_MS > now);
         let target = max - max / 10;
-        if map.len() > target {
-            map.retain(|_, s| s.until_ms > now);
+        if map.len() <= target {
+            return;
         }
-        if map.len() > target {
-            let mut by_end: Vec<(u64, String)> = map.iter().map(|(k, s)| (s.until_ms, k.clone())).collect();
-            by_end.sort_unstable();
-            for (_, k) in by_end.into_iter().take(map.len() - target) {
-                map.remove(&k);
-            }
+        let excess = map.len() - target;
+        let mut order: Vec<((bool, u32, u64), String)> =
+            map.iter().map(|(k, s)| ((s.until_ms > now, s.failures, s.last_ms), k.clone())).collect();
+        order.sort_unstable();
+        for (_, k) in order.into_iter().take(excess) {
+            map.remove(&k);
         }
     }
 
@@ -206,5 +208,25 @@ mod tests {
             assert!(t.tracked() <= 1000);
         }
         assert!(t.check(&held, 2).is_err(), "still held back");
+    }
+
+    #[test]
+    fn a_flood_does_not_reset_a_count_whose_wait_has_just_ended() {
+        let t = Throttle::new(1000);
+        let victim = keys("account:0123:out");
+        let mut now = 1_000_000;
+        // seven failures, each after waiting its turn: the next wait is 4 minutes
+        for _ in 0..FREE_FAILURES + 2 {
+            t.begin(&victim, now).unwrap();
+            now += wait_after(t.lock()[&victim[0]].failures);
+        }
+        t.check(&victim, now).unwrap();
+        // the moment its wait is over, 50,000 new names are tried once each
+        for i in 0..50_000u32 {
+            t.begin(&keys(&format!("account:{i}")), now).unwrap();
+        }
+        assert!(t.tracked() <= 1000);
+        t.begin(&victim, now).unwrap();
+        assert!(matches!(t.check(&victim, now), Err(Error::Throttled { retry_after_s: 240 })), "the count went on");
     }
 }

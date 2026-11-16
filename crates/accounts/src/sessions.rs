@@ -290,7 +290,7 @@ impl Sessions {
             return j.rewrite(&self.vault, &all);
         }
         drop(st);
-        j.append(&events)
+        j.append(&self.vault, &events)
     }
 
     /// Starts a session; returns its token (for the cookie, never kept) and how it is listed.
@@ -369,7 +369,7 @@ impl Sessions {
                 let events = st.take_dirty();
                 drop(st);
                 // a failed write loses only "last seen" times
-                let _ = j.append(&events);
+                let _ = j.append(&self.vault, &events);
             }
         }
         Ok((h, view))

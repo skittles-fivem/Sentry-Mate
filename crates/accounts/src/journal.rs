@@ -21,6 +21,11 @@ pub(crate) struct Journal {
     lines: u64,
     /// The last line wasn't finished (a cut append): start the next append with a newline.
     torn: bool,
+    /// An append failed and the file couldn't be read again since: nothing more is added until it can.
+    stale: bool,
+    /// Tests: make the next append fail the way a full disk does.
+    #[cfg(test)]
+    pub(crate) fail_next_append: bool,
 }
 
 fn sync_dir(path: &Path) {
@@ -66,7 +71,16 @@ impl Journal {
         }
         let mut records = vault.records(path, label)?;
         let (lines, torn) = scan(&mut records, &mut line)?;
-        Ok(Journal { records, path: path.to_path_buf(), label: label.to_string(), lines, torn })
+        Ok(Journal {
+            records,
+            path: path.to_path_buf(),
+            label: label.to_string(),
+            lines,
+            torn,
+            stale: false,
+            #[cfg(test)]
+            fail_next_append: false,
+        })
     }
 
     /// Hands each whole line to `line` again, oldest first (through this handle, so it never races its appends).
@@ -92,14 +106,47 @@ impl Journal {
     }
 
     /// Adds lines at the end, synced to disk before it returns.
-    pub(crate) fn append<T: serde::Serialize>(&mut self, items: &[T]) -> Result<()> {
+    ///
+    /// When writing fails (a full disk, say), the file is opened again before anything more is added:
+    /// `vault::Records` has already counted the records it was asked to write by then, so the next append would
+    /// number its records after ones that aren't there, and the whole journal would no longer open. Opened again, it
+    /// counts the records really on disk (a cut one is dropped) and carries on after them.
+    pub(crate) fn append<T: serde::Serialize>(&mut self, vault: &Vault, items: &[T]) -> Result<()> {
         if items.is_empty() {
             return Ok(());
         }
+        if self.stale {
+            self.reopen(vault)?;
+        }
         let body = Self::body(items, self.torn)?;
-        self.records.append(&body)?;
+        if let Err(e) = self.write(&body) {
+            self.stale = true;
+            // if this fails too, the next append tries again first
+            let _ = self.reopen(vault);
+            return Err(e.into());
+        }
         self.torn = false;
         self.lines += items.len() as u64;
+        Ok(())
+    }
+
+    fn write(&mut self, body: &[u8]) -> std::io::Result<()> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_append) {
+            // what a failed write leaves behind: the records counted by `vault::Records`, the disk without them
+            let len = std::fs::metadata(&self.path)?.len();
+            self.records.append(body)?;
+            std::fs::OpenOptions::new().write(true).open(&self.path)?.set_len(len)?;
+            return Err(std::io::Error::other("no space left on device (test)"));
+        }
+        self.records.append(body)
+    }
+
+    /// Opens the file again and counts what is really in it (after a failed append).
+    fn reopen(&mut self, vault: &Vault) -> Result<()> {
+        let mut records = vault.records(&self.path, &self.label)?;
+        let (lines, torn) = scan(&mut records, &mut |_| {})?;
+        (self.records, self.lines, self.torn, self.stale) = (records, lines, torn, false);
         Ok(())
     }
 
@@ -118,6 +165,7 @@ impl Journal {
         self.records = records;
         self.lines = items.len() as u64;
         self.torn = false;
+        self.stale = false;
         Ok(())
     }
 
@@ -153,11 +201,11 @@ pub(crate) mod tests {
         let path = data.join("x.journal");
         let (lines, mut j) = read(&v, &path, "x");
         assert!(lines.is_empty());
-        j.append(&[1, 2, 3]).unwrap();
+        j.append(&v, &[1, 2, 3]).unwrap();
         // one append bigger than a sealed record (64 KiB)
         let big: Vec<String> = (0..2000).map(|i| format!("{i:0>60}")).collect();
-        j.append(&big).unwrap();
-        j.append(&["last"]).unwrap();
+        j.append(&v, &big).unwrap();
+        j.append(&v, &["last"]).unwrap();
         drop(j);
         let (lines, j) = read(&v, &path, "x");
         assert_eq!(lines.len(), 3 + 2000 + 1);
@@ -174,17 +222,37 @@ pub(crate) mod tests {
         let (_t, data, v) = vault();
         let path = data.join("x.journal");
         let mut j = Journal::open(&v, &path, "x", |_| {}).unwrap();
-        j.append(&["a"]).unwrap();
+        j.append(&v, &["a"]).unwrap();
         // what a crash in the middle of a multi-record append leaves: a line with no end
         j.records.append(b"{\"half").unwrap();
         drop(j);
         let (lines, mut j) = read(&v, &path, "x");
         assert_eq!(lines, ["\"a\""]);
         assert!(j.torn);
-        j.append(&["b"]).unwrap();
+        j.append(&v, &["b"]).unwrap();
         drop(j);
         let (lines, _) = read(&v, &path, "x");
         assert_eq!(lines, ["\"a\"", "{\"half", "\"b\""], "the cut line stands alone (and won't parse)");
+    }
+
+    #[test]
+    fn a_failed_append_does_not_break_the_journal() {
+        let (_t, data, v) = vault();
+        let path = data.join("x.journal");
+        let mut j = Journal::open(&v, &path, "x", |_| {}).unwrap();
+        j.append(&v, &["a"]).unwrap();
+        // a full disk: the append fails, then space is freed and work carries on
+        j.fail_next_append = true;
+        assert!(j.append(&v, &["lost"]).is_err());
+        j.append(&v, &["b", "c"]).unwrap();
+        assert_eq!(j.lines(), 3);
+        let mut now = Vec::new();
+        j.read(|l| now.push(String::from_utf8(l.to_vec()).unwrap())).unwrap();
+        assert_eq!(now, ["\"a\"", "\"b\"", "\"c\""]);
+        drop(j);
+        // and after a restart everything written since still opens
+        let (lines, _) = read(&v, &path, "x");
+        assert_eq!(lines, ["\"a\"", "\"b\"", "\"c\""]);
     }
 
     #[test]
@@ -193,12 +261,12 @@ pub(crate) mod tests {
         let path = data.join("x.journal");
         let mut j = Journal::open(&v, &path, "x", |_| {}).unwrap();
         for i in 0..3000 {
-            j.append(&[i]).unwrap();
+            j.append(&v, &[i]).unwrap();
         }
         assert!(j.wants_compaction(10));
         assert!(!j.wants_compaction(1000));
         j.rewrite(&v, &["state"]).unwrap();
-        j.append(&["after"]).unwrap();
+        j.append(&v, &["after"]).unwrap();
         assert_eq!(j.lines(), 2);
         drop(j);
         let (lines, _) = read(&v, &path, "x");
