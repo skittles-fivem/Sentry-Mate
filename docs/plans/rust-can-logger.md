@@ -11,7 +11,8 @@ rebuilt around the CAN logs the SMO app already records and uploads, instead of 
 
 - **One app, one UI.** TeslaMate needs a web app, Postgres and Grafana. The logger is one Rust binary
   that serves its own web UI with every page in it. No Grafana, no Postgres, no extra containers.
-- **Full Rust**: server, ingest, decoder, storage, analysis and the UI (Leptos, compiled to WASM).
+- **Full Rust** on the server: ingest, decoder, storage, analysis, security and the API. The interface is a UI pack
+  (HTML/CSS/JS, or Rust compiled to WebAssembly) so anyone can make their own (see UI packs).
 - **Best compression** of what we keep, measured on the owner's real logs.
 - **Security first**: TLS 1.3 only, signed logs checked, no Tesla account, nothing leaves the box unless
   turned on.
@@ -138,6 +139,44 @@ wins):
 | Places | Reverse geocode + geofences (home, work, chargers). |
 
 Every rule above gets checked against the owner's real drives and charges before it's trusted (Phase 3).
+
+## UI packs: any interface, installed from a zip (owner, 2026-11-16)
+
+Every interface is a **UI pack**, the built-in ones included, the way Sentry Six Manager's interface packs work
+(`docs/interface-packs.md` there). The server (Rust) owns the data, the rules and security; a pack is only how it
+looks and works in the browser. So a pack you upload can do everything the built-in ones do: no second-class UIs.
+
+- **A pack is a `.zip`**: `ui.json` (`name`, `description`, `author`, `version`, `api`: the API version it was made
+  for) and `web/` (`index.html` and its files). Its files take the place of the built-in pack's files with the same
+  path, so a pack can change one stylesheet or replace the whole interface.
+- **The API it uses** is the same documented, versioned JSON API the built-in packs use (`/api/v1/...`, written up
+  in `docs/ui-api.md`): cars, now, drives, charges, timeline, positions, charge curves, signals, logs and trust,
+  places, prices, settings, accounts, and a live stream (server-sent events) for the Now page. Cookies carry the
+  session; every change needs the CSRF header. A pack made for an older `api` keeps working while that version
+  is served; the UI shows a note when a pack targets a version the server no longer has.
+- **Built in**: two packs (the two designs shown to the owner; the owner picks the default) and **Download the
+  built-in pack to start from**.
+- **Choosing**: Settings → Interface, for everyone (admins), and each person can pick their own on their Account
+  page. A switch applies at once.
+- **If a pack breaks**: `https://<server>/original` shows the built-in interface in that browser (until **Show the
+  chosen interface**), and from there Settings → Interface can switch back for everyone.
+- **Safety** (a pack's scripts run as whoever is signed in and can do anything they can):
+  - only admins upload or choose packs, after their password (and two-step sign-in when on); every install,
+    choice and removal is in the audit log, with the pack's SHA-256;
+  - the zip is checked before anything is kept: at most 50 MB and 2,000 files, no absolute paths, no `..`, no
+    links, names limited to safe characters, only web file types (html, css, js, mjs, json, svg, png, jpg, webp,
+    avif, gif, ico, woff, woff2, ttf, wasm, txt, md), and a `web/index.html`;
+  - pack files are served with a strict Content-Security-Policy: scripts and styles only from the pack's own files
+    (no inline scripts, nothing from other sites), `connect-src 'self'`, images and map tiles only from the server
+    and the tile server the owner chose, `wasm-unsafe-eval` only so a pack can be written in Rust (WebAssembly),
+    `frame-ancestors 'none'`, `nosniff`, exact MIME types, no directory listings;
+  - packs are kept sealed with the vault like everything else.
+- **Every page gets the server's own notices** whatever the pack: a fixed bar for critical ones (the recovery key
+  file still on the server, a vault or certificate problem, an update that matters), from `/api/v1/notices`, which
+  packs should show too.
+
+The two built-in packs are plain HTML, CSS and JavaScript with no build step, so anyone can open the downloaded pack
+and change it. Charts use uPlot (MIT) and maps MapLibre GL with PMTiles (BSD-3), all inside the pack.
 
 ## The UI (one app, every page)
 
