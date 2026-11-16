@@ -501,3 +501,9 @@ pub fn rss() -> Option<u64> {
     let kb: u64 = l.split_whitespace().nth(1)?.parse().ok()?;
     Some(kb * 1024)
 }
+
+/// Starts measuring the process's peak memory afresh (Linux): the peak becomes what is in use now. False where that
+/// can't be done (then the peak counts what came before too).
+pub fn reset_peak() -> bool {
+    std::fs::write("/proc/self/clear_refs", "5").is_ok()
+}

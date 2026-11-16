@@ -203,7 +203,8 @@ pub struct Report {
     pub packed_bytes: u64,
     pub unpacked_bytes: u64,
     pub tables: BTreeMap<Table, TableReport>,
-    /// Tables of the backup passed over unread, with why (Tesla's tokens among them).
+    /// Tables of the backup passed over unread, with why (Tesla's tokens among them). Like the other lists here, at
+    /// most 1000 entries, whatever the file holds.
     pub skipped_tables: BTreeMap<String, String>,
     /// Columns this importer doesn't know (a newer TeslaMate), per table: passed over.
     pub unknown_columns: BTreeMap<Table, Vec<String>>,
@@ -218,6 +219,7 @@ pub struct Report {
     /// The most rows waiting at once to be handed over: bounded by
     /// [`Options::max_buffered_rows`](crate::Options) however many cars there are.
     pub peak_buffered_rows: usize,
+    /// Each warning once, however often it happened.
     pub warnings: Vec<String>,
 }
 

@@ -21,6 +21,37 @@ fn from_bytes(bytes: &[u8], sink: &mut Keep, o: &Options) -> Result<import::Repo
     import(|| Ok(std::io::Cursor::new(bytes.to_vec())), sink, o)
 }
 
+/// `bytes` xz'd in one block (as the `xz` tool does by default) at a quick level, with the block's window set to
+/// `window` (xz's coding of it: 28 is 64 MiB, 36 is 1 GiB) when given.
+fn xz_one_block(bytes: &[u8], window: Option<u8>) -> Vec<u8> {
+    let mut w = lzma_rust2::XzWriter::new(Vec::new(), lzma_rust2::XzOptions::with_preset(1)).unwrap();
+    w.write_all(bytes).unwrap();
+    let mut xz = w.finish().unwrap();
+    if let Some(window) = window {
+        // The stream header (12 bytes), then the block header: its size, its flags, the sizes the flags say are
+        // there, the LZMA2 filter (id 0x21, one byte of properties: the window), padding and its CRC32.
+        let size = (usize::from(xz[12]) + 1) * 4;
+        let flags = xz[13];
+        let varint_end = |b: &[u8], mut at: usize| {
+            while b[at] & 0x80 != 0 {
+                at += 1;
+            }
+            at + 1
+        };
+        let mut at = 14;
+        for bit in [0x40, 0x80] {
+            if flags & bit != 0 {
+                at = varint_end(&xz, at);
+            }
+        }
+        assert_eq!((flags & 0x03, xz[at], xz[at + 1]), (0, 0x21, 0x01), "one LZMA2 filter");
+        xz[at + 2] = window;
+        let crc = crc32fast::hash(&xz[12..12 + size - 4]);
+        xz[12 + size - 4..12 + size].copy_from_slice(&crc.to_le_bytes());
+    }
+    xz
+}
+
 fn close(a: Option<f64>, b: f64) -> bool {
     a.is_some_and(|a| (a - b).abs() < 1e-9)
 }
@@ -349,9 +380,10 @@ fn gzip_xz_and_windows_text_read_the_same() {
     };
     let mut xz = Vec::new();
     lzma_rs::xz_compress(&mut std::io::Cursor::new(&plain), &mut xz).unwrap();
-    // gzip in two members (as `cat a.gz b.gz` makes), split in the middle of a line.
+    // gzip in two members (as `cat a.gz b.gz` makes), split in the middle of a line; the same with xz streams.
     let (a, b) = plain.split_at(plain.len() / 2);
     let two = [gz(a), gz(b)].concat();
+    let two_xz = [xz_one_block(a, None), xz_one_block(b, None)].concat();
     let mut utf16 = vec![0xff, 0xfe];
     let crlf = String::from_utf8(plain.clone()).unwrap().replace('\n', "\r\n");
     utf16.extend(crlf.encode_utf16().flat_map(u16::to_le_bytes));
@@ -361,6 +393,9 @@ fn gzip_xz_and_windows_text_read_the_same() {
         ("gzip", gz(&plain), Compression::Gzip, Encoding::Utf8),
         ("gzip, two members", two, Compression::Gzip, Encoding::Utf8),
         ("xz", xz, Compression::Xz, Encoding::Utf8),
+        ("xz in one block, as the xz tool makes it", xz_one_block(&plain, None), Compression::Xz, Encoding::Utf8),
+        ("xz with xz -9's window", xz_one_block(&plain, Some(28)), Compression::Xz, Encoding::Utf8),
+        ("xz, two streams", two_xz, Compression::Xz, Encoding::Utf8),
         ("utf-16 with crlf", utf16, Compression::Plain, Encoding::Utf16Le),
         ("utf-8 with a bom", bom, Compression::Plain, Encoding::Utf8),
         (
@@ -420,6 +455,10 @@ fn what_isnt_a_whole_backup_is_refused_before_anything_is_handed_over() {
     let mut xz = Vec::new();
     lzma_rs::xz_compress(&mut std::io::Cursor::new(&plain), &mut xz).unwrap();
     assert!(matches!(refused(&xz[..xz.len() - 10]), Error::Unpack(_)));
+
+    // An xz window larger than xz's largest level is refused before it is allocated, with what to do.
+    let e = refused(&xz_one_block(&plain, Some(36)));
+    assert!(matches!(&e, Error::Unpack(m) if m.contains("window over 65 MiB") && m.contains("pack it again")), "{e}");
 }
 
 #[test]
@@ -493,6 +532,40 @@ fn a_newer_backup_adds_only_whats_new() {
     assert_eq!(k.states, later);
 }
 
+/// A backup of another TeslaMate database (TeslaMate set up afresh: its ids start again at 1) after one was imported:
+/// its rows have ids imported before, so they are left out, and the car's report says why.
+#[test]
+fn another_teslamate_database_is_flagged() {
+    let o = Options::default();
+    let mut k = both();
+    import_file(&fixture("teslamate-4.4.0.sql"), &mut k, &o).unwrap();
+    k.clear();
+    let fresh = dump(&[
+        ("public.cars (id, vin, name)", &["1\t5YJ3E1EA0KF000000\tTest Three"]),
+        (
+            "public.positions (id, car_id, date, latitude, longitude)",
+            &["1\t1\t2025-06-01 08:00:00\t1.0\t2.0", "2\t1\t2025-06-01 08:00:30\t1.0\t2.0"],
+        ),
+        (
+            "public.states (id, car_id, state, start_date, end_date)",
+            &["1\t1\tonline\t2025-06-01 07:59:00\t2025-06-01 09:00:00"],
+        ),
+    ]);
+    let r = from_bytes(fresh.as_bytes(), &mut k, &o).unwrap();
+    assert_eq!(r.table(Table::Positions).skipped(Skip::AlreadyImported), 2);
+    let w = &k.report(1).warnings;
+    assert_eq!(w.len(), 2, "{w:?}");
+    assert!(w[0].starts_with("positions: ") && w[1].starts_with("states: "), "{w:?}");
+    assert!(w.iter().all(|w| w.contains("another TeslaMate database")), "{w:?}");
+
+    // An older backup of the same database is no other database.
+    let mut k = both();
+    import_file(&fixture("teslamate-4.4.0-later.sql"), &mut k, &o).unwrap();
+    k.clear();
+    import_file(&fixture("teslamate-4.4.0.sql"), &mut k, &o).unwrap();
+    assert!(k.reports.iter().all(|r| r.warnings.iter().all(|w| !w.contains("another"))), "{:?}", k.reports);
+}
+
 #[test]
 fn cars_left_out_or_shared() {
     let o = Options::default();
@@ -522,6 +595,8 @@ fn a_failing_sink_stops_the_import_without_states() {
     let e = import_file(&fixture("teslamate-4.4.0.sql"), &mut k, &Options::default()).unwrap_err();
     assert!(matches!(e, Error::Sink(_)), "{e}");
     assert!(e.to_string().contains("the disk is full"));
+    assert_eq!(k.batches.len(), 1);
+    assert!(k.states.is_empty() && k.reports.is_empty(), "no state for rows that weren't all stored");
 
     let mut k = both();
     k.states.insert(10, ImportState { version: 99, ..ImportState::default() });
@@ -726,6 +801,58 @@ fn damaged_backups_never_panic() {
             assert_eq!(r.cars, k.reports.len() as u64);
         }
     }
+
+    // Damaged packing: the unpackers report it, never panic.
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(&plain).unwrap();
+    let packed = [gz.finish().unwrap(), xz_one_block(&plain, None)];
+    for round in 0..300 {
+        let mut b = packed[round % 2].clone();
+        for _ in 0..1 + next() % 3 {
+            let at = (next() as usize) % b.len();
+            match next() % 3 {
+                0 => b[at] ^= 1 << (next() % 8),
+                1 => {
+                    b.remove(at);
+                }
+                _ => b.truncate(at.max(1)),
+            }
+        }
+        let mut k = both();
+        if from_bytes(&b, &mut k, &Options::default()).is_ok() {
+            assert!(k.batches.iter().all(|(c, _)| [10, 20, 30].contains(c)));
+        }
+    }
+}
+
+/// A damaged or made-up file can't make the report grow without end, nor take long to list what it holds: the same
+/// warning comes once, and the lists stop at a ceiling.
+#[test]
+fn the_report_stays_small_whatever_the_file() {
+    let mut text = String::from("COPY public.cars (id, vin) FROM stdin;\n1\t5YJ3E1EA0KF000000\n\\.\n");
+    for i in 0..3000 {
+        text.push_str(&format!("COPY public.a{i} (id) FROM stdin;\n1\n\\.\nCOPY (x) FROM stdin;\n\\.\n"));
+        text.push_str("COPY public.positions (id) FROM stdin;\n\\.\n");
+    }
+    // A table with a great many columns no TeslaMate has, twice (the first ones again, then new ones).
+    for range in [0..60_000, 30_000..90_000] {
+        let cols: Vec<String> = range.map(|i| format!("c{i}")).collect();
+        text.push_str(&format!(
+            "COPY public.states (id, car_id, start_date, end_date, {}) FROM stdin;\n",
+            cols.join(", ")
+        ));
+        text.push_str("\\.\n");
+    }
+    text.push_str("-- PostgreSQL database dump complete\n");
+    let mut k = both();
+    let o = Options { max_line: 4 << 20, ..Options::default() };
+    let t0 = std::time::Instant::now();
+    let r = from_bytes(text.as_bytes(), &mut k, &o).unwrap();
+    assert!(t0.elapsed() < std::time::Duration::from_secs(20), "{:?}", t0.elapsed());
+    assert_eq!(r.warnings.len(), 2, "{:?}", r.warnings);
+    assert_eq!(r.skipped_tables.len(), 1000);
+    let unknown = &r.unknown_columns[&Table::States];
+    assert_eq!((unknown.len(), unknown[0].as_str(), unknown[999].as_str()), (1000, "c0", "c999"));
 }
 
 #[test]

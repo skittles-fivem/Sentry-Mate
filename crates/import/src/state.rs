@@ -60,10 +60,14 @@ pub(crate) struct TableWork {
     /// Earlier open rows that this backup has (open or not).
     old_open_seen: BTreeSet<i64>,
     /// The row with the earlier high id has another time: probably another database.
-    pub mismatch: bool,
+    mismatch: bool,
     /// Open rows not remembered (past the ceilings).
     forgotten: u64,
 }
+
+/// How much later than the row that set a mark another database's newest row must be to be taken for one (rows are
+/// numbered as they are written, which can be a little out of time order).
+const OTHER_DATABASE_SLACK_MS: u64 = 10 * 60_000;
 
 /// How the open rows changed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +91,22 @@ impl TableWork {
             if m.open.contains(&id) {
                 self.old_open_seen.insert(id);
             }
+        }
+    }
+
+    /// Whether this backup looks like another TeslaMate database than the one the mark came from (TeslaMate set up
+    /// afresh numbers its rows from 1 again, so its rows look imported already): the row that set the mark has another
+    /// time here, or this backup's newest row has a lower id than that row yet is later (one database numbers its
+    /// rows in the order they come, so its older backups end with older rows).
+    pub fn other_database(&self, old: Option<&Mark>) -> bool {
+        if self.mismatch {
+            return true;
+        }
+        match (old, self.high) {
+            (Some(m), Some((h, Some(t)))) => {
+                h < m.high_id && m.high_ms.is_some_and(|ms| t > ms.saturating_add(OTHER_DATABASE_SLACK_MS))
+            }
+            _ => false,
         }
     }
 
@@ -170,6 +190,14 @@ mod tests {
         assert_eq!(m2, Mark { high_id: 5, high_ms: Some(50), open: [5].into() });
         assert!(!w_mismatch(&m, 3, 30));
         assert!(w_mismatch(&m, 3, 99));
+        // Another database with fewer rows: its newest is below the mark but later; an older backup's is earlier.
+        let newest = |id, t| {
+            let mut w = TableWork::default();
+            w.see(Some(&m), id, Some(t));
+            w.other_database(Some(&m))
+        };
+        assert!(newest(2, 30 + OTHER_DATABASE_SLACK_MS + 1));
+        assert!(!newest(2, 20) && !newest(2, 30 + OTHER_DATABASE_SLACK_MS) && !newest(4, 1_000_000_000));
 
         // An older backup doesn't lose what is still open, nor move the mark back.
         let mut w = TableWork::default();

@@ -3,11 +3,15 @@
 //!
 //! What it holds is told by its first bytes, not its name. A custom-format pg_dump (`-Fc`) and other packings are
 //! refused with a clear message instead of being read as text.
+//!
+//! xz: the `xz` tool writes the whole file as one block by default, so the unpacker must stream within a block, holding
+//! only the window the file was packed with (8 MiB at xz's default level, 64 MiB at -9). A window past
+//! [`XZ_MAX_WINDOW_KIB`] is refused before anything is allocated for it.
 
 use crate::Error;
 use crate::copy::{CopyReader, Handler};
 use serde::{Deserialize, Serialize};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 
 /// How the backup file was packed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -42,6 +46,10 @@ pub struct Stats {
 
 const CHUNK: usize = 64 << 10;
 
+/// The largest xz window taken (the dictionary plus the unpacker's own state), KiB: xz's largest level (-9, 64 MiB)
+/// and a little room. A backup packed with a larger one is refused rather than allowed to take that much memory.
+pub const XZ_MAX_WINDOW_KIB: u32 = (64 << 10) + 1024;
+
 /// Reads the whole file once, handing its text to `copy`.
 pub fn read<R: Read, H: Handler<Error = Error>>(reader: R, copy: &mut CopyReader, h: &mut H) -> Result<Stats, Error> {
     let mut packed = 0u64;
@@ -69,17 +77,14 @@ pub fn read<R: Read, H: Handler<Error = Error>>(reader: R, copy: &mut CopyReader
         text: Text::Detect(Vec::new()),
         crc: crc32fast::Hasher::new(),
         unpacked: 0,
-        error: None,
         utf16: Utf16::default(),
     };
     match compression {
         Compression::Plain => pump(&mut src, &mut feed, "")?,
         Compression::Gzip => pump(&mut flate2::read::MultiGzDecoder::new(&mut src), &mut feed, "gzip: ")?,
         Compression::Xz => {
-            let mut buffered = io::BufReader::with_capacity(CHUNK, &mut src);
-            if let Err(e) = lzma_rs::xz_decompress(&mut buffered, &mut feed) {
-                return Err(feed.error.take().unwrap_or_else(|| Error::Unpack(format!("xz: {e}"))));
-            }
+            let buffered = io::BufReader::with_capacity(CHUNK, &mut src);
+            pump(&mut lzma_rust2::XzReader::new_mem_limit(buffered, true, XZ_MAX_WINDOW_KIB), &mut feed, "xz: ")?
         }
     }
     feed.finish()?;
@@ -111,6 +116,13 @@ fn pump<R: Read, H: Handler<Error = Error>>(src: &mut R, feed: &mut Feed<'_, H>,
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) if what.is_empty() => return Err(Error::Io(e)),
+            // lzma-rust2 says so before allocating a window over the limit.
+            Err(e) if e.kind() == io::ErrorKind::OutOfMemory && what == "xz: " => {
+                return Err(Error::Unpack(format!(
+                    "{what}it was packed with a window over {} MiB: pack it again at a normal level (xz -6)",
+                    XZ_MAX_WINDOW_KIB >> 10
+                )));
+            }
             Err(e) => return Err(Error::Unpack(format!("{what}{e}"))),
         };
         feed.push(&buf[..n])?;
@@ -143,8 +155,6 @@ struct Feed<'r, H> {
     text: Text,
     crc: crc32fast::Hasher,
     unpacked: u64,
-    /// Kept when a write fails so the real error comes back, not the unpacker's wrapping of it.
-    error: Option<Error>,
     utf16: Utf16,
 }
 
@@ -195,25 +205,6 @@ impl<H: Handler<Error = Error>> Feed<'_, H> {
             self.copy.feed(&self.utf16.out, &mut *self.h)?;
         }
         self.copy.finish(&mut *self.h)
-    }
-}
-
-impl<H: Handler<Error = Error>> Write for Feed<'_, H> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.error.is_some() {
-            return Err(io::Error::other("stopped"));
-        }
-        match self.push(buf) {
-            Ok(()) => Ok(buf.len()),
-            Err(e) => {
-                self.error = Some(e);
-                Err(io::Error::other("stopped"))
-            }
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }
 

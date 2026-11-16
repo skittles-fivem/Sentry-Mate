@@ -13,10 +13,16 @@ workspace = true
 model = { path = "../model" }
 crc32fast = "1"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-lzma-rs = "0.3"
+# Unpacks as it is read, holding only the xz window (lzma-rs holds a whole xz block: the whole file for what the `xz`
+# tool makes by default). Without its "optimization" feature the crate forbids unsafe code.
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 memchr = "2"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
 [dev-dependencies]
+crc32fast = "1"
 serde_json = "1"
+# xz files as another implementation makes them.
+lzma-rs = "0.3"
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "encoder"] }

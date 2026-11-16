@@ -15,6 +15,11 @@ use crate::rows::{
 use crate::schema::{Addr, Car, CarSetting, Chg, Class, ColumnMap, Cp, Drv, Geo, Pos, Row, St, Table, Upd, classify};
 use crate::state::ImportState;
 use crate::{Error, Options};
+use std::collections::HashSet;
+
+/// The most entries of each list in the report (warnings, tables passed over, unknown columns per table): a TeslaMate
+/// backup has a handful, and a damaged or made-up file can't make the report grow past this.
+const MAX_LISTED: usize = 1000;
 
 #[derive(Default)]
 struct Bufs {
@@ -128,6 +133,21 @@ impl<'s> Emit<'s> {
             addresses: Vec::new(),
             current: None,
             notes: Vec::new(),
+        }
+    }
+
+    /// A warning for the whole import, once however often it happens.
+    fn warn(&mut self, w: String) {
+        let ws = &mut self.report.warnings;
+        if ws.len() < MAX_LISTED && !ws.contains(&w) {
+            ws.push(w);
+        }
+    }
+
+    fn passed_over(&mut self, header: &CopyHeader, why: &str) {
+        let tables = &mut self.report.skipped_tables;
+        if tables.len() < MAX_LISTED {
+            tables.insert(header.full_name(), why.into());
         }
     }
 
@@ -443,13 +463,13 @@ impl<'s> Emit<'s> {
             let mut state = ImportState { version: slot.state.version, tables: Default::default() };
             for (t, w) in Table::PER_CAR.into_iter().zip(slot.work) {
                 let old = slot.state.tables.get(&t);
-                let mismatch = w.mismatch;
+                let mismatch = w.other_database(old);
                 let (mark, change) = w.finish(old, self.max_open);
                 r.open_waiting += mark.open.len() as u64;
                 if mismatch {
                     r.warnings.push(format!(
-                        "{}: a row has another time than when it was imported before: is this another TeslaMate \
-                         database? Rows with ids imported before were left out.",
+                        "{}: rows have other times than rows with the same ids imported before: is this another \
+                         TeslaMate database? Rows with ids imported before were left out.",
                         t.name()
                     ));
                 }
@@ -498,28 +518,35 @@ impl Handler for Emit<'_> {
         let t = match classify(header) {
             Class::Ours(t) => t,
             Class::Secret => {
-                self.report.skipped_tables.insert(header.full_name(), "Tesla's tokens: never read".into());
+                self.passed_over(header, "Tesla's tokens: never read");
                 return Ok(Take::Skip);
             }
             Class::Other => {
-                self.report.skipped_tables.insert(header.full_name(), "not used".into());
+                self.passed_over(header, "not used");
                 return Ok(Take::Skip);
             }
         };
         let map = ColumnMap::new(t, header);
         for (list, columns) in [
-            (&mut self.report.unknown_columns, map.unknown.clone()),
-            (&mut self.report.missing_columns, map.missing.iter().map(|c| c.to_string()).collect()),
+            (&mut self.report.unknown_columns, map.unknown.iter().map(String::as_str).collect::<Vec<_>>()),
+            (&mut self.report.missing_columns, map.missing.clone()),
         ] {
+            if columns.is_empty() {
+                continue;
+            }
+            let l = list.entry(t).or_default();
+            let mut listed: HashSet<String> = l.iter().cloned().collect();
             for c in columns {
-                let l = list.entry(t).or_default();
-                if !l.contains(&c) {
-                    l.push(c);
+                if l.len() >= MAX_LISTED {
+                    break;
+                }
+                if listed.insert(c.to_string()) {
+                    l.push(c.to_string());
                 }
             }
         }
         if !map.missing_required.is_empty() {
-            self.report.warnings.push(format!(
+            self.warn(format!(
                 "{} can't be read: it has no {} column",
                 header.full_name(),
                 map.missing_required.join(", ")
@@ -555,6 +582,6 @@ impl Handler for Emit<'_> {
     }
 
     fn unreadable(&mut self) {
-        self.report.warnings.push("a COPY line couldn't be read: its rows were passed over".into());
+        self.warn("a COPY line couldn't be read: its rows were passed over".into());
     }
 }
