@@ -25,8 +25,6 @@ pub const WAIT_MS: u64 = 10 * 60 * 1000;
 pub const CACHED_HEADS: usize = 4096;
 /// Changes a key's journal holds before it is folded into the next generation of its records.
 pub const COMPACT_AFTER: usize = 2048;
-/// Logs judged again per journal batch by [`Judge::rejudge_all`].
-const REJUDGE_BATCH: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -109,15 +107,15 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> std::io::Result<T> + Se
     tokio::task::spawn_blocking(f).await.map_err(std::io::Error::other)?
 }
 
-/// When a write goes through the journal.
+/// How a write is kept.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fold {
-    /// When the journal is long.
+    /// Added to the journal, which is folded when it is long.
     WhenLong,
-    /// Not now (many batches follow: one fold at the end).
-    Later,
-    /// Now.
-    Now,
+    /// Folded straight into the next generation, with the journal: all of it at once or (a crash, an error) none of
+    /// it, as the new head is the one commit point. For changes that only make sense together, such as a new pin and
+    /// every log judged again by it.
+    Whole,
 }
 
 impl Judge {
@@ -196,9 +194,13 @@ impl Judge {
                 ledger::mark_waiting(&can, &key)?;
                 head.marked = true;
             }
-            ledger.append(&mut head, &changes)?;
-            if fold == Fold::Now || (fold == Fold::WhenLong && head.journal_len >= limit) {
-                ledger.compact(&mut head, &[])?;
+            if fold == Fold::Whole {
+                ledger.compact(&mut head, changes)?;
+            } else {
+                ledger.append(&mut head, &changes)?;
+                if head.journal_len >= limit {
+                    ledger.compact(&mut head, Vec::new())?;
+                }
             }
             if head.waiting.is_empty() && (marker || head.marked) {
                 ledger::unmark_waiting(&can, &key)?;
@@ -320,7 +322,8 @@ impl Judge {
         for key in keys {
             match self.sweep_key(&key).await {
                 Ok(k) => n += k,
-                Err(e) => tracing::warn!("judging the waiting logs of {key}: {e}"),
+                // not the key: the server's log is kept in the clear
+                Err(e) => tracing::warn!("judging the waiting logs of a car: {e}"),
             }
         }
         Ok(n)
@@ -360,13 +363,21 @@ impl Judge {
         let lock = self.locks.get(key);
         let _one = lock.lock().await;
         let head = self.take_head(key).await?;
-        let (head, n) = self.rejudge_locked(key, head).await?;
+        let (head, n) = self.rejudge_locked(key, head, Vec::new()).await?;
         self.put_head(key, head);
         Ok(n)
     }
 
-    /// Every log again, in name order, a batch at a time (the key's lock held); folded once at the end.
-    async fn rejudge_locked(&self, key: &str, mut head: Head) -> std::io::Result<(Head, usize)> {
+    /// Every log again, in name order (the key's lock held), with `changes` already applied to `head` (a new pin).
+    /// Nothing is written until every log is judged; then it all goes into the next generation at once, so a crash or
+    /// an error part way (a log that can't be read) leaves the key exactly as it was, never half judged by a new pin.
+    /// Memory: this key's records once (a fold of a journal this long needs them anyway).
+    async fn rejudge_locked(
+        &self,
+        key: &str,
+        mut head: Head,
+        mut changes: Vec<Change>,
+    ) -> std::io::Result<(Head, usize)> {
         let (ledger, h) = (self.ledger(key), head.clone());
         let names: Vec<(String, u64, bool)> = blocking(move || {
             let mut v = Vec::new();
@@ -377,24 +388,19 @@ impl Judge {
             Ok(v)
         })
         .await?;
-        let mut marker = !head.waiting.is_empty();
-        for batch in names.chunks(REJUDGE_BATCH) {
-            let mut changes = Vec::new();
-            for (name, arrived_ms, force) in batch {
-                if let Some((_, ch)) = self.judge_one(&head, name, *arrived_ms, *force).await? {
-                    for c in &ch {
-                        head.apply(c);
-                    }
-                    changes.extend(ch);
+        let marker = !head.waiting.is_empty();
+        for (name, arrived_ms, force) in &names {
+            if let Some((_, ch)) = self.judge_one(&head, name, *arrived_ms, *force).await? {
+                for c in &ch {
+                    head.apply(c);
                 }
+                changes.extend(ch);
             }
-            marker |= !head.waiting.is_empty();
-            head = self.commit(key, head, marker, changes, Fold::Later).await?;
-            marker = head.marked;
         }
         let rules = Change::Rules { v: trust::RULES_VERSION };
         head.apply(&rules);
-        let head = self.commit(key, head, marker, vec![rules], Fold::Now).await?;
+        changes.push(rules);
+        let head = self.commit(key, head, marker, changes, Fold::Whole).await?;
         Ok((head, names.len()))
     }
 
@@ -408,12 +414,12 @@ impl Judge {
         let mut head = self.take_head(key).await?;
         let pin = Pin { fingerprint: fingerprint.to_string(), pinned_ms: now_ms(), how: "owner".into() };
         let changes = vec![Change::Pin { pin: Some(pin) }, Change::NewKey { fingerprint: None }];
-        let marker = !head.waiting.is_empty();
         for c in &changes {
             head.apply(c);
         }
-        let head = self.commit(key, head, marker, changes, Fold::WhenLong).await?;
-        let (head, _) = self.rejudge_locked(key, head).await?;
+        // the pin is written with every log judged by it, or not at all (on an error the head in memory, with the
+        // new pin, is dropped: the next use reads the key as it is on disk)
+        let (head, _) = self.rejudge_locked(key, head, changes).await?;
         self.put_head(key, head);
         Ok(())
     }

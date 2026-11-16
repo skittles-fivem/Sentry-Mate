@@ -184,6 +184,46 @@ async fn the_owner_trusts_another_key_and_every_log_is_judged_again() {
 }
 
 #[tokio::test]
+async fn trusting_another_key_is_kept_whole_or_not_at_all() {
+    let t = setup();
+    let judge = Judge::new(t.store.clone()).compact_after(3);
+    let first = SigningKey::random(&mut rand_core::OsRng);
+    let second = SigningKey::random(&mut rand_core::OsRng);
+    for (name, log, side) in &chain_of(&first, 2) {
+        arrive(&t, &judge, name, log).await;
+        arrive(&t, &judge, &format!("{name}.json"), side).await;
+    }
+    let mut b = chain_of(&second, 5);
+    b.drain(..2);
+    for (name, log, side) in &b {
+        arrive(&t, &judge, name, log).await;
+        arrive(&t, &judge, &format!("{name}.json"), side).await;
+    }
+    let before = serde_json::to_value(Judge::new(t.store.clone()).book(KEY).await).unwrap();
+    // the last log can't be read any more (a damaged disk): judging every log again stops there, with an error
+    let damaged = t.can.join(KEY).join(&b[2].0);
+    let good = std::fs::read(&damaged).unwrap();
+    let mut bad = good.clone();
+    let n = bad.len();
+    bad[n - 1] ^= 1;
+    std::fs::write(&damaged, &bad).unwrap();
+    assert!(judge.trust_key(KEY, &fp(&second)).await.is_err());
+    // nothing of it was kept, in memory or on disk: not the new pin, not the logs judged before the error
+    for j in [&judge, &Judge::new(t.store.clone())] {
+        assert_eq!(serde_json::to_value(j.book(KEY).await).unwrap(), before);
+        assert_eq!(j.summary(KEY).await.unwrap().pin.unwrap().fingerprint, fp(&first));
+    }
+    // once the log reads again, the owner's choice goes through whole
+    std::fs::write(&damaged, &good).unwrap();
+    judge.trust_key(KEY, &fp(&second)).await.unwrap();
+    let book = Judge::new(t.store.clone()).book(KEY).await;
+    assert_eq!(book.pin.unwrap().fingerprint, fp(&second));
+    for (name, ..) in &b {
+        assert_eq!(book.logs[name].status, Status::Verified, "{name}");
+    }
+}
+
+#[tokio::test]
 async fn trust_records_of_the_format_before_are_read_and_moved_over() {
     let t = setup();
     let key = SigningKey::random(&mut rand_core::OsRng);

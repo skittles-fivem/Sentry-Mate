@@ -419,7 +419,8 @@ impl Inner {
             lock(&self.logs).put(p.key.clone(), before + 1);
             // the log is kept either way; a count not written down is only a little low after a restart
             if let Err(e) = self.save_logs(&p.key, before + 1) {
-                tracing::warn!("CAN upload: could not write the log count of {}: {e}", p.key);
+                // not the key: the server's log is kept in the clear
+                tracing::warn!("CAN upload: could not write a car's log count: {e}");
             }
         }
         Ok(Received { received, length, complete: true, already: false })

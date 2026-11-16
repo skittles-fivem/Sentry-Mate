@@ -14,9 +14,13 @@
 //!                                 looks only at those keys (it names a car key, as the folder names do)
 //! ```
 //!
-//! An upload reads the head (kept in memory for recently used keys) and adds one batch to the journal. A journal record
-//! that a crash cut short is dropped when the journal is opened again (`vault::records`), so a batch is either all
-//! there or not at all; a batch always fits in one record.
+//! An upload reads the head (kept in memory for recently used keys) and adds one batch to the journal. Each journal
+//! record holds whole changes, and a record that a crash cut short is dropped whole when the journal is opened again
+//! (`vault::records`). An upload's batch (a log's record, with a new pin or key) always fits in one record, so it is
+//! all there or not at all. A longer batch (the sweep's) can take several records, and a crash then keeps the first
+//! ones: that is safe because each log's change stands on its own (a log whose verdict was lost is still waiting and
+//! is judged again). Changes that only make sense together (a new pin with every log judged again by it) don't go
+//! through the journal: they are folded straight into the next generation, all or nothing.
 //!
 //! When the journal is long it is folded into the next generation: `trust-<g+1>.records` is written (the old records
 //! merged with the journal, streamed in name order, so a key's history is never all in memory), then the head naming
@@ -138,7 +142,7 @@ pub(crate) struct Ledger {
 
 /// A sealed file written whole or not at all: a temporary file of its own (two processes never share one), synced,
 /// renamed over the file, and the folder synced.
-fn write_sealed(
+pub(crate) fn write_sealed(
     vault: &Vault,
     path: &Path,
     label: &str,
@@ -175,7 +179,7 @@ fn write_sealed(
     Ok(())
 }
 
-fn remove_if_there(path: &Path) -> io::Result<()> {
+pub(crate) fn remove_if_there(path: &Path) -> io::Result<()> {
     match std::fs::remove_file(path) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
         _ => Ok(()),
@@ -270,7 +274,8 @@ impl Ledger {
             Some(bytes) => {
                 let f: HeadFile = serde_json::from_slice(&bytes).map_err(other)?;
                 if f.format != FORMAT {
-                    return Err(other(format!("trust records of {} are in an unknown format {}", self.key, f.format)));
+                    // (not the key in the message: errors end up in the server's log, kept in the clear)
+                    return Err(other(format!("trust records in an unknown format {}", f.format)));
                 }
                 // left by a crash just after a commit: the format before, and the generation before
                 remove_if_there(&self.legacy_file().0)?;
@@ -381,14 +386,14 @@ impl Ledger {
             return Ok(());
         }
         if head.damaged {
-            return self.compact(head, changes);
+            return self.compact(head, changes.to_vec());
         }
         let mut batches: Vec<Vec<u8>> = Vec::new();
         let mut cur: Vec<u8> = Vec::new();
         for c in changes {
             let b = serde_json::to_vec(c).map_err(other)?;
             if b.len() + 2 > BATCH_LIMIT {
-                return self.compact(head, changes);
+                return self.compact(head, changes.to_vec());
             }
             if !cur.is_empty() && cur.len() + b.len() + 2 > BATCH_LIMIT {
                 cur.push(b']');
@@ -414,10 +419,11 @@ impl Ledger {
     }
 
     /// Folds the journal, and `extra` (changes already applied to `head` but not in the journal), into the next
-    /// generation. Memory: the journal's records, never the key's whole history.
-    pub(crate) fn compact(&self, head: &mut Head, extra: &[Change]) -> io::Result<()> {
+    /// generation, all at once: until the new head is in place the old generation is in force. Memory: the journal's
+    /// changes and `extra`; the records file is streamed.
+    pub(crate) fn compact(&self, head: &mut Head, extra: Vec<Change>) -> io::Result<()> {
         let (mut changes, _) = self.read_journal(head.generation)?;
-        changes.extend_from_slice(extra);
+        changes.extend(extra);
         let mut newer: BTreeMap<String, Record> = BTreeMap::new();
         for c in changes {
             if let Change::Log { name, record } = c {
@@ -614,7 +620,7 @@ mod tests {
                 h.apply(c);
             }
             l.append(&mut h, &changes).unwrap();
-            l.compact(&mut h, &[]).unwrap();
+            l.compact(&mut h, Vec::new()).unwrap();
         }
         assert_eq!(h.generation, 3);
         let got = all(&l, &h);
@@ -680,7 +686,7 @@ mod tests {
         let c = vec![Change::Log { name: name(1), record: rec(Status::Unsigned, 1) }];
         h.apply(&c[0]);
         l.append(&mut h, &c).unwrap();
-        l.compact(&mut h, &[]).unwrap(); // generation 1
+        l.compact(&mut h, Vec::new()).unwrap(); // generation 1
         let c = vec![Change::Log { name: name(2), record: rec(Status::Waiting, 2) }];
         h.apply(&c[0]);
         l.append(&mut h, &c).unwrap();
@@ -694,7 +700,7 @@ mod tests {
         assert_eq!(all(&l, &back), [(name(1), Status::Unsigned), (name(2), Status::Waiting)]);
         // compacting again replaces the half-made generation
         let mut back = back;
-        l.compact(&mut back, &[]).unwrap();
+        l.compact(&mut back, Vec::new()).unwrap();
         assert_eq!(back.generation, 2);
         assert_eq!(all(&l, &back), [(name(1), Status::Unsigned), (name(2), Status::Waiting)]);
     }

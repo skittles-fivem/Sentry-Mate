@@ -39,13 +39,16 @@ pub const MAX_TRACKED: usize = 100_000;
 const MIN_PRUNE: usize = 1024;
 
 /// Recent hits per address or token, bounded however many there are: each keeps at most `limit + 1` times (enough
-/// to know it is over the limit), entries with no hit in the window are dropped as the table grows (each prune at
-/// least doubles the room, so it costs O(1) per hit over time), and the table never holds more than `cap`.
+/// to know it is over the limit), entries with no hit in the window are dropped as the table grows (after each prune
+/// the next is at least as many new entries away as are left, or an eighth of the table, so pruning costs O(1) per hit
+/// over time), and the table never holds more than `cap`.
 struct Window {
     limit: usize,
     cap: usize,
     hits: HashMap<String, VecDeque<Instant>>,
     prune_at: usize,
+    /// Prunes so far (each is O(entries)): tests check they stay rare, however the flood is paced.
+    prunes: u64,
 }
 
 fn expire(q: &mut VecDeque<Instant>, now: Instant) {
@@ -56,7 +59,7 @@ fn expire(q: &mut VecDeque<Instant>, now: Instant) {
 
 impl Window {
     fn new(limit: usize, cap: usize) -> Window {
-        Window { limit, cap: cap.max(1), hits: HashMap::new(), prune_at: MIN_PRUNE.min(cap.max(1)) }
+        Window { limit, cap: cap.max(1), hits: HashMap::new(), prune_at: MIN_PRUNE.min(cap.max(1)), prunes: 0 }
     }
 
     /// Counts one hit for `who`; returns how many are in the window now (at most `limit + 1`).
@@ -81,13 +84,17 @@ impl Window {
         q.len()
     }
 
-    /// Drops entries with no hit in the window; if still full, the least recently seen go until a quarter is free.
+    /// Drops entries with no hit in the window; if still (nearly) full, the least recently seen go until a quarter is
+    /// free. "Nearly": a flood paced so that only a few entries expire between prunes would otherwise leave the table
+    /// just under the cap and make every new entry pay a whole prune; going down to three quarters whenever more than
+    /// seven eighths are in use puts the next prune at least an eighth of the table away.
     fn prune(&mut self, now: Instant) {
+        self.prunes += 1;
         self.hits.retain(|_, q| {
             expire(q, now);
             !q.is_empty()
         });
-        if self.hits.len() >= self.cap {
+        if self.hits.len() >= self.cap || self.hits.len() > self.cap - self.cap / 8 {
             let mut seen: Vec<(Instant, String)> =
                 self.hits.iter().filter_map(|(k, q)| q.back().map(|t| (*t, k.clone()))).collect();
             let forget = seen.len() - self.cap * 3 / 4;
@@ -305,7 +312,8 @@ async fn upload(AxState(up): St, Path(name): Path<String>, req: Request) -> Resu
     let r = up.store.receive(&name, body, offset, length, &sha).await?;
     if r.complete && !r.already {
         if let Err(e) = up.judge.arrived(&name).await {
-            tracing::warn!("CAN upload: could not judge {name}: {e}");
+            // not the name: it holds the car's key, and the server's log is kept in the clear
+            tracing::warn!("CAN upload: could not judge a log that arrived: {e}");
         }
     }
     let code = if r.complete { StatusCode::CREATED } else { StatusCode::OK };
@@ -366,6 +374,26 @@ mod tests {
             }
             assert!(w.len() <= 6000 + MIN_PRUNE, "round {round}: {}", w.len());
         }
+    }
+
+    #[test]
+    fn a_flood_paced_to_sit_just_under_the_cap_does_not_prune_on_every_new_address() {
+        const CAP: usize = 1000;
+        let mut w = Window::new(MAX_BAD_TOKENS, CAP);
+        let t0 = Instant::now();
+        // a new address a little more often than WINDOW / CAP: about one entry expires for each new one, so the table
+        // stays just under the cap (a prune that only drops what expired would then come every other address)
+        let step = WINDOW / 999 + Duration::from_micros(1);
+        let n = 20_000u32;
+        for i in 0..n {
+            w.hit(&format!("10.0.{}.{}", i / 256, i % 256), t0 + step * i);
+            assert!(w.len() <= CAP);
+        }
+        // each prune walks the whole table, so they must be at least an eighth of it apart
+        let most = u64::from(n) / (CAP as u64 / 8) + 4;
+        assert!(w.prunes <= most, "{} prunes for {n} new addresses (at most {most})", w.prunes);
+        // and the flood is still followed: the latest addresses are there
+        assert!(w.hits.contains_key(&format!("10.0.{}.{}", (n - 1) / 256, (n - 1) % 256)));
     }
 
     #[test]

@@ -317,3 +317,53 @@ async fn a_sealed_log_moved_under_another_name_does_not_open() {
     assert!(t.up.store.read(other).await.is_err());
     assert!(t.up.store.read(LOG).await.unwrap().is_some());
 }
+
+/// What the server writes to its log (kept in the clear), caught for the test running on this thread.
+struct Capture(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl tracing::Subscriber for Capture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!("{}={value:?} ", field.name()));
+            }
+        }
+        let mut f = Fields(String::new());
+        event.record(&mut f);
+        self.0.lock().unwrap().push(f.0);
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+#[tokio::test]
+async fn a_car_that_cant_be_judged_is_reported_without_its_key() {
+    let t = setup().await;
+    let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let _catch = tracing::subscriber::set_default(Capture(logs.clone()));
+    // the car's trust head is damaged: its uploads are still kept, but can't be judged
+    let car = t.data.join("can/abcdef123456");
+    std::fs::create_dir_all(&car).unwrap();
+    std::fs::write(car.join("trust.head"), b"damaged, not sealed").unwrap();
+    let (s, _) = put(&t, LOG, b"a minute", 0, b"a minute").await;
+    assert_eq!(s, StatusCode::CREATED);
+    // and the sweep can't judge its waiting logs either
+    std::fs::create_dir_all(t.data.join("can/.waiting")).unwrap();
+    std::fs::write(t.data.join("can/.waiting/abcdef123456"), b"").unwrap();
+    assert_eq!(t.up.judge.sweep().await.unwrap(), 0);
+    let logs = logs.lock().unwrap().clone();
+    assert!(logs.iter().any(|l| l.contains("could not judge")), "{logs:?}");
+    assert!(logs.iter().any(|l| l.contains("judging the waiting logs")), "{logs:?}");
+    for l in &logs {
+        assert!(!l.contains("abcdef123456"), "the car's key is in the server's log: {l}");
+    }
+}

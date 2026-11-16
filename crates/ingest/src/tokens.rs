@@ -158,12 +158,17 @@ impl Tokens {
                 }
             }
         }
-        std::fs::remove_file(legacy)
+        // the server and a command may both have moved it at the same moment: gone is as good as removed
+        crate::ledger::remove_if_there(legacy)
     }
 
+    /// Writes one of a token's files whole or not at all. Each write has a temporary file of its own: a token's two
+    /// files are written by different processes (the owner's commands, the server), and a temporary name shared by
+    /// `<hash>.json` and `<hash>.key` (as `vault::write_private` would give both) would let one write land in the
+    /// other's file.
     fn write(&self, file: &std::path::Path, label: &str, what: &impl serde::Serialize) -> std::io::Result<()> {
         let bytes = serde_json::to_vec(what).map_err(other)?;
-        self.vault.write_file(file, label, &bytes).map_err(other)
+        crate::ledger::write_sealed(&self.vault, file, label, |w| w.write_all(&bytes))
     }
 
     fn read_tie(&self, hash: &str) -> std::io::Result<Option<String>> {
@@ -222,10 +227,36 @@ impl Tokens {
             return None;
         };
         let stamp = stamp_of(&mut f).ok()?;
-        if let Some(c) = self.cache.lock().unwrap_or_else(PoisonError::into_inner).get(&h) {
-            if c.stamp == stamp {
-                return (!c.token.revoked).then(|| c.token.clone());
+        let cached = self
+            .cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&h)
+            .filter(|c| c.stamp == stamp)
+            .map(|c| c.token.clone());
+        if let Some(mut token) = cached {
+            if token.revoked {
+                return None;
             }
+            // a tie is written to its own file, which the stamp doesn't cover: while the token isn't tied in memory,
+            // look again (only until its first upload), so a tie made by another request or process is never missed
+            // (an untied token may ask about any one car's files)
+            if token.vehicle_key.is_none() {
+                match self.read_tie(&h) {
+                    Ok(Some(k)) => {
+                        token.vehicle_key = Some(k.clone());
+                        if let Some(c) = self.cache.lock().unwrap_or_else(PoisonError::into_inner).get(&h) {
+                            c.token.vehicle_key = Some(k);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!("CAN upload: a token file can't be read: {e}");
+                        return None;
+                    }
+                }
+            }
+            return Some(token);
         }
         let token = match self.load(&h, &mut f) {
             Ok(t) => t,
@@ -312,13 +343,19 @@ impl Tokens {
         out
     }
 
-    /// Whether any token was made yet (stops at the first).
+    /// Whether any token is in use (made and not revoked), as the start-up hint "no upload token yet" needs. Stops
+    /// at the first one in use: only revoked ones before it are read.
     pub async fn has_any(&self) -> bool {
-        std::fs::read_dir(&self.dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .any(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).is_some_and(valid_hash))
+        for e in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
+            let name = e.file_name();
+            let Some(h) = name.to_str().and_then(|n| n.strip_suffix(".json")).filter(|h| valid_hash(h)) else {
+                continue;
+            };
+            if std::fs::File::open(e.path()).and_then(|mut f| self.load(h, &mut f)).is_ok_and(|t| !t.revoked) {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -366,6 +403,59 @@ mod tests {
         assert_eq!(list.iter().filter(|t| t.revoked).count(), 1);
         assert_eq!(list.iter().find(|t| t.id == made[4].1.id).unwrap().vehicle_key.as_deref(), Some("def"));
         assert!(cli.has_any().await);
+    }
+
+    #[tokio::test]
+    async fn only_tokens_in_use_count_as_having_one() {
+        let (_d, v, data) = setup().await;
+        let t = Tokens::open(data.join("tokens.json"), v.clone()).await.unwrap();
+        assert!(!t.has_any().await, "none made yet");
+        let (_, a) = t.create("car a").await.unwrap();
+        let (_, b) = t.create("car b").await.unwrap();
+        assert!(t.has_any().await);
+        assert!(t.revoke(&a.id).await.unwrap() && t.revoke(&b.id).await.unwrap());
+        assert!(!t.has_any().await, "every token revoked: the owner still has to make one");
+        t.create("car c").await.unwrap();
+        assert!(t.has_any().await);
+    }
+
+    #[tokio::test]
+    async fn a_tie_made_elsewhere_counts_even_for_a_token_in_memory() {
+        let (_d, v, data) = setup().await;
+        let server = Tokens::open(data.join("tokens.json"), v.clone()).await.unwrap();
+        let (tok, t) = server.create("car").await.unwrap();
+        assert_eq!(server.find(&tok).await.unwrap().vehicle_key, None, "in memory, not tied yet");
+        // tied by another request or process: the token's own file is unchanged, only its tie file is new
+        let other = Tokens::open(data.join("tokens.json"), v.clone()).await.unwrap();
+        assert_eq!(other.tie(&t, "abc").await.unwrap(), "abc");
+        assert_eq!(server.find(&tok).await.unwrap().vehicle_key.as_deref(), Some("abc"), "the tie is seen at once");
+        assert_eq!(server.find(&tok).await.unwrap().vehicle_key.as_deref(), Some("abc"));
+    }
+
+    #[tokio::test]
+    async fn a_tokens_two_files_written_at_once_never_land_in_each_other() {
+        let (_d, v, data) = setup().await;
+        let cli = Tokens::open(data.join("tokens.json"), v.clone()).await.unwrap();
+        let server = Tokens::open(data.join("tokens.json"), v.clone()).await.unwrap();
+        let (tok, t) = cli.create("car").await.unwrap();
+        let (json, json_label) = cli.file_of(&t.hash, "json");
+        let (key, key_label) = server.file_of(&t.hash, "key");
+        // the owner's command rewrites the token while the server writes its tie (two processes, so no shared lock)
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                for _ in 0..100 {
+                    let st = Stored { id: t.id.clone(), car: t.car.clone(), created_ms: t.created_ms, revoked: false };
+                    cli.write(&json, &json_label, &st).unwrap();
+                }
+            });
+            s.spawn(|| {
+                for _ in 0..100 {
+                    server.write(&key, &key_label, &Tie { vehicle_key: "abc".into(), tied_ms: 1 }).unwrap();
+                }
+            });
+        });
+        let fresh = Tokens::open(data.join("tokens.json"), v.clone()).await.unwrap();
+        assert_eq!(fresh.find(&tok).await.unwrap().vehicle_key.as_deref(), Some("abc"), "both files whole");
     }
 
     #[tokio::test]
