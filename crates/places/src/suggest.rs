@@ -5,7 +5,8 @@
 //! are offered, busiest first, then the most recently visited. Here the groups live in a grid on the sphere, so each
 //! stop looks only at the groups near it, and stops come in one at a time ([`Suggester::add`]): a fleet's or a
 //! decade's stops can be streamed from the per-car files without ever being a list in memory. Memory grows with
-//! the number of groups, not with the number of stops.
+//! the number of groups (and, in each, the ids of the cars that stopped there: 4 bytes a car), not with the number
+//! of stops.
 //!
 //! Feed one spot per stop (where a drive ended, or each parked span), not every position while parked: each spot
 //! counts as a visit.

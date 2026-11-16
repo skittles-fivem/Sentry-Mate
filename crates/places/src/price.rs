@@ -9,7 +9,7 @@
 //!
 //! A charge is priced from its curve ([`model::ChargePoint`]s): energy for each stretch between two points is the
 //! area under the power (straight between the points), cut wherever the price changes, so a charge that runs from
-//! peak into off-peak pays each part at its own price. Every time zone in use since 1970 is offset from UTC by
+//! peak into off-peak pays each part at its own price. Every time zone in use since 1972 is offset from UTC by
 //! whole minutes, so the price can only change on a UTC minute; the curve is cut on minutes and the rate looked up
 //! once per minute, which keeps a week-long plug-in cheap.
 
@@ -261,17 +261,26 @@ impl Tariff {
         kwh.max(0.0) * self.price_at(at_ms)
     }
 
-    /// What a charge cost, from its curve. Power is the charge curve's, positive into the pack; a negative value
-    /// (the pack giving power) costs nothing. Points need not be sorted; points without power are skipped, and
-    /// of two at the same moment the later in the list counts.
+    /// What a charge cost, from its curve. Power may be given either way round: as charge power (positive into the
+    /// pack) or as battery power in `model`'s convention (positive out of the pack, so negative while charging). A
+    /// charge puts energy into the pack, so whichever sign carries more energy over the curve is "into the pack";
+    /// power the other way (the pack giving power) costs nothing. Points need not be sorted; points without power
+    /// are skipped, and of two at the same moment the later in the list counts.
     pub fn charge_cost(&self, points: &[ChargePoint], opts: &CostOptions) -> ChargeCost {
         let mut curve: Vec<(u64, f64)> =
-            points.iter().filter_map(|p| p.power_kw.filter(|w| w.is_finite()).map(|w| (p.t_ms, w.max(0.0)))).collect();
+            points.iter().filter_map(|p| p.power_kw.filter(|w| w.is_finite()).map(|w| (p.t_ms, w))).collect();
         curve.sort_by_key(|&(t, _)| t);
         // Keep the last of equal times (the sort is stable, so that is the later one in the list).
         curve.reverse();
         curve.dedup_by_key(|&mut (t, _)| t);
         curve.reverse();
+        let signed: f64 = curve
+            .windows(2)
+            .filter(|w| w[1].0 - w[0].0 <= opts.max_gap_ms)
+            .map(|w| (w[0].1 + w[1].1) * (w[1].0 - w[0].0) as f64)
+            .sum();
+        let into_pack = if signed < 0.0 { -1.0 } else { 1.0 };
+        curve.iter_mut().for_each(|(_, w)| *w = (*w * into_pack).max(0.0));
 
         let other = self.rates.len();
         let mut kwh_by_rate = vec![0.0f64; other + 1];

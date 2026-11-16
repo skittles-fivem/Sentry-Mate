@@ -197,7 +197,7 @@ fn gaps_unsorted_points_and_odd_values() {
         point(s, 6.0),
         ChargePoint { t_ms: s + 30_000, power_kw: None, ..ChargePoint::default() },
         point(s + 60_000, 6.0),
-        point(s + 120_000, -50.0),
+        point(s + 120_000, -2.0),
         point(s + 180_000, 0.0),
         point(s + 180_000, 6.0),
         ChargePoint { t_ms: s + 240_000, power_kw: Some(f64::NAN), ..ChargePoint::default() },
@@ -205,6 +205,26 @@ fn gaps_unsorted_points_and_odd_values() {
     let c = t.charge_cost(&pts, &CostOptions::default());
     // 6 kW for a minute (0.1 kWh), a ramp 6 → 0 (0.05 kWh), then a ramp 0 → 6 kW (0.05 kWh).
     assert!(close(c.kwh, 0.1 + 0.05 + 0.05), "{}", c.kwh);
+}
+
+/// `model`'s convention is battery power, positive out of the pack: a curve taken from it is negative while charging.
+/// It must cost the same as the same curve given as charge power (it used to cost nothing).
+#[test]
+fn a_curve_in_battery_convention_costs_the_same() {
+    let t = Tariff::new(&plan(0.10, vec![rate("Day", 0.30, ALL, "07:00", "19:00")]), "UTC").unwrap();
+    let s = utc(2026, 11, 16, 6, 0);
+    let charge: Vec<ChargePoint> = flat(s, s + 2 * HOUR, 1000, 5.0);
+    let battery: Vec<ChargePoint> =
+        charge.iter().map(|p| ChargePoint { power_kw: p.power_kw.map(|w| -w), ..p.clone() }).collect();
+    let opts = CostOptions { grid_kwh: Some(11.0), ..CostOptions::default() };
+    let (a, b) = (t.charge_cost(&charge, &opts), t.charge_cost(&battery, &opts));
+    assert!(close(b.curve_kwh, 10.0) && close(b.kwh, 11.0), "{} {}", b.curve_kwh, b.kwh);
+    assert_eq!(a, b);
+    // In battery convention a moment of the pack giving power (positive) costs nothing.
+    let mut blip = battery.clone();
+    blip[600].power_kw = Some(3.0);
+    let c = t.charge_cost(&blip, &CostOptions::default());
+    assert!(c.curve_kwh < 10.0 && c.curve_kwh > 9.99, "{}", c.curve_kwh);
 }
 
 #[test]

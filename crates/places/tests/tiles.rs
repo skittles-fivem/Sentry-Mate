@@ -51,10 +51,17 @@ fn settings_are_checked() {
         "https://{s}.tile.example/{z}/{x}/{y}.png",
         "https://tile.example/{z}/{x}/{y}.png\"onload=",
         "https://user:pw@tile.example/{z}/{x}/{y}.png",
+        // The host goes into the CSP: a wildcard or a `;` there would widen or rewrite the policy.
+        "https://*/{z}/{x}/{y}.png",
+        "https://a;sandbox;/{z}/{x}/{y}.png",
+        "https://a,b/{z}/{x}/{y}.png",
+        "https://{z}.tile.example/{x}/{y}.png",
     ] {
         assert!(matches!(with(&|t| t.online_url = bad.into()), Err(TilesError::OnlineUrl(_))), "{bad}");
     }
     assert_eq!(with(&|t| t.online_url = "https://tiles.example:8443/osm/{z}/{x}/{y}.png?key=abc".into()), Ok(()));
+    let t = MapTiles { online_url: "https://*/{z}/{x}/{y}.png".into(), ..MapTiles::default() };
+    assert_eq!(MapTiles { mode: Mode::Online, ..t }.online_origin(), None, "never a wildcard in the CSP");
     assert_eq!(with(&|t| t.online_attribution = String::new()), Err(TilesError::Attribution));
     assert_eq!(with(&|t| t.online_attribution = "<script>".into()), Err(TilesError::Attribution));
     assert_eq!(with(&|t| t.max_zoom = 0), Err(TilesError::Zoom));

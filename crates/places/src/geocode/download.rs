@@ -17,6 +17,7 @@ use crate::http::{self, HttpOptions};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Where GeoNames publishes its files.
 pub const DEFAULT_GEONAMES_URL: &str = "https://download.geonames.org/export/dump/";
@@ -83,15 +84,22 @@ fn get(agent: &ureq::Agent, url: &str, file: &str, limit: u64) -> Result<Vec<u8>
     resp.body_mut().with_config().limit(limit).read_to_vec().map_err(net)
 }
 
-/// Writes `bytes` to `path` so that `path` is always either the old file or the whole new one.
+/// Writes `bytes` to `path` so that `path` is always either the old file or the whole new one. Each write has its
+/// own temporary file (never opened twice), so two downloads at once can't write into each other's.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DownloadError> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let io = |source| DownloadError::Io { path: path.to_path_buf(), source };
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.part"));
-    let mut f = std::fs::File::create(&tmp).map_err(io)?;
-    f.write_all(bytes).and_then(|_| f.sync_all()).map_err(io)?;
-    drop(f);
-    std::fs::rename(&tmp, path).map_err(io)?;
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_file_name(format!(".{name}.{}-{n}.part", std::process::id()));
+    let written = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).and_then(|mut f| {
+        f.write_all(bytes)?;
+        f.sync_all()
+    });
+    if let Err(e) = written.and_then(|_| std::fs::rename(&tmp, path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(io(e));
+    }
     // Make the rename itself last (best effort: not every system can open a folder).
     if let Some(Ok(d)) = path.parent().map(std::fs::File::open) {
         let _ = d.sync_all();
@@ -143,4 +151,30 @@ pub fn download_geonames(cfg: &DownloadConfig, data_dir: &Path) -> Result<Downlo
         txt_bytes: txt.len() as u64,
         folder: dir,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
+    use super::*;
+
+    /// Many writers at once (two downloads started together): every write succeeds, the file is one of them whole,
+    /// and no temporary file is left (they used to share one, so renames failed and writes ran into each other).
+    #[test]
+    fn writers_at_once_never_mix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cities1000.txt");
+        let bodies: Vec<Vec<u8>> = (0..16u8).map(|i| vec![b'a' + i; 256 * 1024]).collect();
+        std::thread::scope(|s| {
+            for b in &bodies {
+                let path = &path;
+                s.spawn(move || write_atomic(path, b).unwrap());
+            }
+        });
+        let got = std::fs::read(&path).unwrap();
+        assert!(bodies.contains(&got));
+        let names: Vec<String> =
+            std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        assert_eq!(names, vec!["cities1000.txt".to_string()]);
+    }
 }

@@ -140,9 +140,33 @@ fn one_rate_limit_for_the_whole_server() {
     let gaps: Vec<Duration> = times.windows(2).map(|w| w[1] - w[0]).collect();
     let min_gap = gaps.iter().min().unwrap();
     println!("{callers} lookups from 2 clients in {took:?}; smallest gap between requests {min_gap:?}");
-    // Arrival times carry a TLS handshake each, which varies by a few ms.
-    assert!(*min_gap >= interval - Duration::from_millis(15), "{min_gap:?}");
-    assert!(times[callers - 1] - times[0] >= interval * (callers as u32 - 1) - Duration::from_millis(15));
+    // The interval counts from the end of the request before, so arrivals are at least that far apart however
+    // long each TLS handshake takes (each request here opens a new connection).
+    assert!(*min_gap >= interval, "{min_gap:?}");
+    assert!(times[callers - 1] - times[0] >= interval * (callers as u32 - 1));
+}
+
+/// A slow server and two clients for it: one request at a time, never two in flight.
+#[test]
+fn requests_never_overlap_even_from_two_clients() {
+    let (now, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (n2, m2) = (now.clone(), most.clone());
+    let server = MockServer::start(move |p| {
+        m2.fetch_max(n2.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(150));
+        n2.fetch_sub(1, Ordering::SeqCst);
+        answer(p)
+    });
+    let a = Nominatim::new(cfg(&server, 20)).unwrap();
+    let b = Nominatim::new(cfg(&server, 20)).unwrap();
+    std::thread::scope(|s| {
+        for i in 0..8 {
+            let n = if i % 2 == 0 { a.clone() } else { b.clone() };
+            s.spawn(move || n.lookup(1.0 + f64::from(i), 2.0, WAIT).unwrap().unwrap());
+        }
+    });
+    assert_eq!(server.hits().len(), 8);
+    assert_eq!(most.load(Ordering::SeqCst), 1, "two requests were in flight at once");
 }
 
 #[test]

@@ -1,11 +1,13 @@
 //! Online addresses from Nominatim (OpenStreetMap's, or the owner's own), only when the owner turns them on.
 //!
 //! Nominatim's public server allows one request a second from a whole application, so the limit here is per
-//! server address for the whole process, not per car: every lookup goes through one queue with one worker, and the
-//! moment of the last request to each server is kept process-wide, so even two clients made by mistake can't
-//! double the rate. With thousands of cars the queue just gets longer: a spot many cars stop at is asked about once
-//! (callers waiting on the same rounded position share one request) and then answered from the cache, and when
-//! the queue is full a caller is told so at once ([`OnlineError::Busy`]) instead of piling up.
+//! server address for the whole process, not per car: every lookup goes through one queue with one worker, and each
+//! server has one turn for the whole process, held for the whole request, with the next request starting the interval
+//! after the last one ended. So even two clients made by mistake can't double the rate or overlap requests, and a TLS
+//! handshake can't bring two requests closer than the interval. With thousands of cars the queue just gets longer: a
+//! spot many cars stop at is asked about once (callers waiting on the same rounded position share one request and
+//! one answer slot) and then answered from the cache, and when the queue is full a caller is told so at once
+//! ([`OnlineError::Busy`]) instead of piling up.
 //!
 //! What is sent: `GET /reverse?format=jsonv2&lat=..&lon=..&zoom=18&addressdetails=1` with the position rounded to
 //! 4 decimals (about 10 m), over HTTPS, with the User-Agent `Sentry Mate (self-hosted)`. Nothing else: no cookies,
@@ -22,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, mpsc};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// OpenStreetMap's own Nominatim.
@@ -140,11 +142,34 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
+/// The answer for one rounded position, shared by everyone waiting for it. A caller that stops waiting just drops
+/// its [`Pending`]: nothing per caller is left behind, however many cars ask or how often they time out and ask
+/// again while the position is still queued.
+struct Slot {
+    reply: Mutex<Option<Reply>>,
+    ready: Condvar,
+}
+
+impl Slot {
+    fn new(reply: Option<Reply>) -> Arc<Slot> {
+        Arc::new(Slot { reply: Mutex::new(reply), ready: Condvar::new() })
+    }
+
+    fn fill(&self, reply: Reply) {
+        let mut r = lock(&self.reply);
+        if r.is_none() {
+            *r = Some(reply);
+        }
+        drop(r);
+        self.ready.notify_all();
+    }
+}
+
 struct State {
     cache: Lru,
     queue: VecDeque<RoundedPos>,
-    /// Everyone waiting for a position that is queued or being fetched.
-    waiting: HashMap<RoundedPos, Vec<mpsc::Sender<Reply>>>,
+    /// The answer slot of each position that is queued or being fetched.
+    waiting: HashMap<RoundedPos, Arc<Slot>>,
     down_until: Option<Instant>,
     closed: bool,
 }
@@ -183,26 +208,20 @@ pub struct Nominatim {
 
 /// A lookup on its way.
 pub struct Pending {
-    rx: mpsc::Receiver<Reply>,
+    slot: Arc<Slot>,
 }
 
 impl Pending {
     /// Waits at most `timeout`. On [`OnlineError::Timeout`] the lookup is still queued; its answer lands in the cache.
     pub fn wait(&self, timeout: Duration) -> Reply {
-        match self.rx.recv_timeout(timeout) {
-            Ok(r) => r,
-            Err(mpsc::RecvTimeoutError::Timeout) => Err(OnlineError::Timeout),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(OnlineError::Closed),
-        }
+        let r = lock(&self.slot.reply);
+        let (r, _) = self.slot.ready.wait_timeout_while(r, timeout, |r| r.is_none()).unwrap_or_else(|e| e.into_inner());
+        r.clone().unwrap_or(Err(OnlineError::Timeout))
     }
 
     /// The answer if it is there, without waiting.
     pub fn try_get(&self) -> Option<Reply> {
-        match self.rx.try_recv() {
-            Ok(r) => Some(r),
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => Some(Err(OnlineError::Closed)),
-        }
+        lock(&self.slot.reply).clone()
     }
 }
 
@@ -242,7 +261,6 @@ impl Nominatim {
     /// Queues a lookup (or answers it from the cache, or joins one already queued for the same spot).
     pub fn request(&self, lat: f64, lon: f64) -> Result<Pending, OnlineError> {
         let key = RoundedPos::new(lat, lon).ok_or(OnlineError::InvalidPosition)?;
-        let (tx, rx) = mpsc::channel();
         let sh = &self.shared;
         let mut st = lock(&sh.state);
         if st.closed {
@@ -250,13 +268,11 @@ impl Nominatim {
         }
         if let Some(a) = st.cache.get(&key) {
             sh.hits.fetch_add(1, Ordering::Relaxed);
-            let _ = tx.send(Ok(a));
-            return Ok(Pending { rx });
+            return Ok(Pending { slot: Slot::new(Some(Ok(a))) });
         }
-        if let Some(list) = st.waiting.get_mut(&key) {
+        if let Some(slot) = st.waiting.get(&key) {
             sh.joined.fetch_add(1, Ordering::Relaxed);
-            list.push(tx);
-            return Ok(Pending { rx });
+            return Ok(Pending { slot: slot.clone() });
         }
         if let Some(until) = st.down_until {
             let now = Instant::now();
@@ -267,11 +283,12 @@ impl Nominatim {
         if st.queue.len() >= sh.max_queue {
             return Err(OnlineError::Busy);
         }
+        let slot = Slot::new(None);
         st.queue.push_back(key);
-        st.waiting.insert(key, vec![tx]);
+        st.waiting.insert(key, slot.clone());
         drop(st);
         sh.wake.notify_all();
-        Ok(Pending { rx })
+        Ok(Pending { slot })
     }
 
     /// The address of a position, waiting at most `wait`.
@@ -324,16 +341,23 @@ impl Nominatim {
 impl Shared {
     fn run(&self) {
         while let Some(key) = self.next_job() {
-            self.take_turn();
+            let mut turn = self.take_turn();
             if lock(&self.state).closed {
                 break;
             }
             let reply = self.fetch(key);
+            // The interval counts from the end of this request, and the turn is held until then: requests to one
+            // server never overlap (even from two clients), and each arrives at least the interval after the one
+            // before, whatever a TLS handshake or a slow answer adds.
+            *turn = Some(Instant::now());
+            drop(turn);
             self.finish(key, reply);
         }
         let mut st = lock(&self.state);
         st.queue.clear();
-        st.waiting.clear();
+        for (_, slot) in st.waiting.drain() {
+            slot.fill(Err(OnlineError::Closed));
+        }
     }
 
     /// The next position to fetch, waiting while there is none or the server failed a moment ago.
@@ -367,9 +391,10 @@ impl Shared {
         }
     }
 
-    /// Waits until this server may be sent the next request (process-wide), and claims that moment.
-    fn take_turn(&self) {
-        let mut last = lock(&self.gate);
+    /// Waits until this server may be sent the next request (process-wide: `interval` after the last one ended)
+    /// and holds the server's turn; the caller stamps the end of its request into it.
+    fn take_turn(&self) -> MutexGuard<'_, Option<Instant>> {
+        let last = lock(&self.gate);
         if let Some(l) = *last {
             let next = l + self.interval;
             let now = Instant::now();
@@ -377,7 +402,7 @@ impl Shared {
                 std::thread::sleep(next - now);
             }
         }
-        *last = Some(Instant::now());
+        last
     }
 
     fn fetch(&self, k: RoundedPos) -> Result<Answer, (OnlineError, Duration)> {
@@ -428,8 +453,8 @@ impl Shared {
 }
 
 fn deliver(st: &mut State, key: &RoundedPos, reply: Reply) {
-    for tx in st.waiting.remove(key).unwrap_or_default() {
-        let _ = tx.send(reply.clone());
+    if let Some(slot) = st.waiting.remove(key) {
+        slot.fill(reply);
     }
 }
 
@@ -547,6 +572,34 @@ mod tests {
             parse_reverse(br#"{"address":{"city":5,"town":"Real\u0007Town","country_code":"usa"}}"#).unwrap().unwrap();
         assert_eq!(a.short, "Real Town");
         assert_eq!(a.country_code, None);
+    }
+
+    /// Callers that time out and ask again while their position is still queued share its one slot: polling costs
+    /// nothing per poll (each used to leave a channel behind until the answer came).
+    #[test]
+    fn callers_that_give_up_leave_nothing_behind() {
+        let url = "https://slot-test.invalid";
+        // Someone has just asked this server and the interval is an hour: the first lookup stays waiting its turn.
+        *lock(&gate_for(&http::origin(url))) = Some(Instant::now());
+        let n = Nominatim::new(NominatimConfig {
+            url: url.into(),
+            min_interval_ms: 3_600_000,
+            ..NominatimConfig::default()
+        })
+        .unwrap();
+        for _ in 0..10_000 {
+            assert_eq!(n.lookup(1.0, 2.0, Duration::ZERO), Err(OnlineError::Timeout));
+        }
+        let kept = n.request(1.0, 2.0).unwrap();
+        assert_eq!(kept.try_get(), None);
+        {
+            let st = lock(&n.shared.state);
+            let slot = &st.waiting[&RoundedPos::new(1.0, 2.0).unwrap()];
+            // The map's own reference and `kept`: the 10,000 that gave up left nothing.
+            assert_eq!(Arc::strong_count(slot), 2);
+            assert_eq!(st.waiting.len(), 1);
+        }
+        assert_eq!(n.stats().joined, 10_000);
     }
 
     #[test]

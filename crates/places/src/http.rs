@@ -28,16 +28,50 @@ impl Default for HttpOptions {
     }
 }
 
-/// The address is `https://` with a host, no user name or password in it, no fragment.
+/// The address is `https://` with a real host (see [`host_ok`]), no user name or password in it, no fragment.
 pub(crate) fn check_https_url(url: &str) -> Result<(), String> {
     let Some(rest) = url.strip_prefix("https://") else {
         return Err("the address must start with https://".into());
     };
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if host.is_empty() || host.contains('@') || url.contains('#') || url.chars().any(|c| c.is_whitespace()) {
-        return Err("the address needs a host, with no user name, spaces or #".into());
+    if !host_ok(host) || url.contains('#') || url.chars().any(|c| c.is_whitespace()) {
+        return Err(
+            "the address needs a host name (letters, digits, -, _ and .) or [IPv6 address], an optional port, \
+                    and no user name, spaces or #"
+                .into(),
+        );
     }
     Ok(())
+}
+
+/// A host as an address may name it: letters, digits, `-`, `_` and `.`, or an IPv6 address in brackets, then an
+/// optional port 1 to 65535. The tile server's origin goes into the page's Content-Security-Policy as it is, so
+/// anything that would widen or end a CSP source (`*`, `;`, `,`, quotes, braces) must never pass as a host.
+fn host_ok(host: &str) -> bool {
+    let (name, port) = if host.starts_with('[') {
+        match host.find(']') {
+            Some(i) => host.split_at(i + 1),
+            None => return false,
+        }
+    } else {
+        host.split_at(host.find(':').unwrap_or(host.len()))
+    };
+    let name_ok = match name.strip_prefix('[').and_then(|n| n.strip_suffix(']')) {
+        Some(v6) => v6.contains(':') && v6.bytes().all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.'),
+        None => {
+            name.bytes().any(|b| b.is_ascii_alphanumeric())
+                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        }
+    };
+    let port_ok = match port.strip_prefix(':') {
+        None => port.is_empty(),
+        Some(p) => {
+            p.len() <= 5
+                && p.bytes().all(|b| b.is_ascii_digit())
+                && p.parse::<u32>().is_ok_and(|n| (1..=65_535).contains(&n))
+        }
+    };
+    name_ok && port_ok
 }
 
 /// `https://host[:port]` of an address: lower case, the default port and a trailing dot left out, so one server
@@ -127,8 +161,27 @@ mod tests {
             "https://example.org/#x",
             "https://exa mple.org",
             "ftp://example.org",
+            // Hosts that would widen or break a Content-Security-Policy source.
+            "https://*/{z}/{x}/{y}.png",
+            "https://*.example.org/x",
+            "https://a;sandbox;/x",
+            "https://a,b/x",
+            "https://{z}.tile.example/{x}/{y}.png",
+            "https://exa'mple.org",
+            "https://example.org:/x",
+            "https://example.org:0/x",
+            "https://example.org:65536/x",
+            "https://example.org:443:443/x",
+            "https://example.org:80a/x",
+            "https://[::1/x",
+            "https://[nothex]/x",
+            "https://.../x",
         ] {
             assert!(check_https_url(bad).is_err(), "{bad}");
+        }
+        for good in ["https://127.0.0.1:8443/x", "https://[::1]:8443/", "https://[fe80::1]", "https://geo_lan.local./"]
+        {
+            assert!(check_https_url(good).is_ok(), "{good}");
         }
         assert_eq!(origin("https://Geo.Example:8443/x?y"), "https://geo.example:8443");
         assert_eq!(origin("https://nominatim.openstreetmap.org.:443/"), "https://nominatim.openstreetmap.org");
