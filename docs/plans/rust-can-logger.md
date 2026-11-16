@@ -468,6 +468,23 @@ position stay out of the repo.
   3/Y set (1,568 series), SMO's columns fixture, and a real Model Y log (1,486 series, 470,944 values; checked
   locally, not committed). `sentry-mate log decode` gives a stored log's signals as CSV (0.14 s a minute). Next:
   Phase 3, the timeline (states, drives, charges), and choosing the DBC set from the VIN.
+- 2026-11-16: built in parallel, each in its own crate, tested, not yet wired into the program:
+  - `timeline`: one sample a second from the decoded signals (each value from the best signal that has it, units
+    taken from the DBC), the VIN and the car's model, states (Online/Asleep/Unknown, Unknown never counted as sleep),
+    drives (gear out of P until 60 s back in P), charges (pauses under 3 min merged, a drive always splits), positions,
+    charge curves, and rebuilding only the window a late log touches (same result as a full build). 2,000 cars in
+    parallel: about 82 µs a car.
+  - `db`: per-car folders, a bounded cache of open cars, a lock per car, append-only journals folded into snapshots,
+    a fleet summary that lists and searches without opening any car; time series as columns then brotli then sealed
+    (a driving day about 73 KB, a parked day asleep about 4 KB); sealed backups. zstd has no pure-Rust compressor, so
+    brotli (measured against deflate, lz4 and xz).
+  - `places`: geofences on a grid (any number of places, about 2 µs a lookup), parking suggestions, prices with
+    time-of-use rates in the car's time zone (daylight saving handled), addresses offline (GeoNames, downloaded on
+    the owner's request) or online (Nominatim, at most one request a second, positions rounded to about 11 m), map
+    tile settings.
+  - `accounts`: admin and watch-only, per-account car lists of any size, Argon2id passwords, sessions (`__Host-`
+    cookie, CSRF), two-step codes with recovery codes, throttling per address and per account (home and outside
+    counted apart), one-time setup code, a sealed audit log. 2,000 accounts tested.
 
 ## Phases
 

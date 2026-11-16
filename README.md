@@ -4,8 +4,9 @@ A self-hosted car logger for Teslas fed by the **Screenmate CAN Bridge**: the ca
 the bridge app, instead of Tesla's API. One Rust program in one small Docker image, no database or dashboard
 containers, no Tesla account, nothing that wakes the car.
 
-**Status: early.** What works today is receiving and checking the bridge's logs. Drives, charges, battery health,
-the web UI and the rest are being built; the plan is in [docs/plans/rust-can-logger.md](docs/plans/rust-can-logger.md).
+**Status: early.** What runs today is receiving, checking and decoding the bridge's logs. The parts that work out
+drives and charges, store them, and handle places and accounts are built and tested but not yet wired into the
+program; the web UI is being built. The plan is in [docs/plans/rust-can-logger.md](docs/plans/rust-can-logger.md).
 
 | Part | State |
 |---|---|
@@ -15,9 +16,12 @@ the web UI and the rest are being built; the plan is in [docs/plans/rust-can-log
 | Signature check, pairing with the car's key, chain report (gaps, swaps, restarts) | done |
 | Reading both log formats (candump text, columns) | done |
 | Decoding signals (DBC sets per model, bus split, the Screenmate's GPS), same values as Sentry Six Manager | done |
-| Drives, charges, states, battery, efficiency | next |
+| Drives, charges, states, positions, charge curves from the decoded signals; the car's model from its VIN | built, not wired in yet |
+| Storage for everything worked out (sealed, compressed columns, any number of cars, backups) | built, not wired in yet |
+| Places, geofences, charge costs with time-of-use rates, addresses offline or online | built, not wired in yet |
+| Accounts: admin and watch-only, per-car access, two-step sign-in, sessions, audit log | built, not wired in yet |
 | Encryption at rest (pure Rust): everything stored is sealed, key file + recovery key | done |
-| Web UI, accounts, maps, TeslaMate import | planned |
+| Web UI (UI packs, two built-in designs), maps, TeslaMate import, MQTT | being built |
 
 ## Run it
 
@@ -119,9 +123,10 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Crates: `logfmt` (reads the logs), `trust` (signatures and chain), `vault` (encryption at rest), `dbc` (decodes
-signals), `ingest` (upload API, storage, tokens, TLS
-server), `sentry-mate` (the program).
+Crates: `logfmt` (reads the logs), `trust` (signatures and chain), `vault` (encryption at rest), `model` (the
+shared types), `dbc` (decodes signals), `ingest` (upload API, storage, tokens, TLS server), `timeline` (states,
+drives, charges from the signals), `db` (sealed storage for what the timeline works out), `places` (geofences,
+prices, addresses, map settings), `accounts` (people and sign-in), `sentry-mate` (the program).
 
 Sentry Mate is written from scratch and copies no code from TeslaMate; it is not affiliated with TeslaMate, Tesla,
 or Screenmate.
