@@ -79,7 +79,7 @@ code is JavaScript, so nothing is copied; only the rules and the API, which SMO 
   one car. The map key → car is kept in the database; a key no car claims goes to the car when there is
   only one, and otherwise waits in Settings → Cars ("New CAN Bridge seen: which car?").
 - **Tokens**: one per car, write-only, tied to that car's key on its first upload (`403 wrong_car` for
-  another key, other keys' names answered `forbidden` in `status`), at most 20, revoked one by one.
+  another key, other keys' names answered `forbidden` in `status`), no cap, revoked one by one.
   `ping` answers the key the token is tied to.
 - **DBC set per car** from its model and year (Automatic: VIN from 0x405, or 0x508 on a pre-2021 S/X;
   4th character the model, 10th the year), the same sets: `tesla-3y` and `tesla-sx-legacy`; changing it
@@ -140,6 +140,18 @@ wins):
 
 Every rule above gets checked against the owner's real drives and charges before it's trusted (Phase 3).
 
+## Unlimited cars, desktop first (owner, 2026-11-16)
+
+- **No limit on the number of cars.** Nothing may hold every car in memory or scan every car to answer one:
+  everything is kept per car (a folder each) and loaded when used (a bounded cache of recently used cars); lists of
+  cars, the fleet view and totals come from small per-car summaries; each car is worked on independently (its own
+  lock and work queue), so cars upload and rebuild in parallel; per-car history files are appended to, never
+  rewritten whole on every upload. Tokens: no cap (one per car, as many as there are cars). The UI's car picker is
+  a search, not a short list, and there is an **All cars** (fleet) page that pages through any number of cars.
+  Accounts can be limited to a set of cars of any size. MQTT publishes all cars over one connection.
+- **Desktop first.** The UI is made for desktop browsers now; phone layouts come later (the packs are written so
+  they can be added without starting over). Screenshots with changes: desktop only, until phone support is added.
+
 ## UI packs: any interface, installed from a zip (owner, 2026-11-16)
 
 Every interface is a **UI pack**, the built-in ones included, the way Sentry Six Manager's interface packs work
@@ -180,7 +192,7 @@ and change it. Charts use uPlot (MIT) and maps MapLibre GL with PMTiles (BSD-3),
 
 ## The UI (one app, every page)
 
-Phone and desktop layouts for every page (screenshots of both with every change, as in Sentry Manager).
+Desktop layouts for every page now (phone layouts later; see Unlimited cars, desktop first).
 
 - **Now**: the car's newest values (SOC, range, state, location, temps, tires, charging), live as logs
   arrive, with how old they are.
