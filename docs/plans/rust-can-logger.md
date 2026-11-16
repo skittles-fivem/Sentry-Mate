@@ -350,9 +350,9 @@ services:
 3. No new set of repo rules.
 4. SMO's second upload slot is free: the logger uses it.
 5. Encryption at rest: set once, unlocks by itself, very hard to break (see Encryption at rest).
-9. Runs in **Docker**: one container (see Docker).
 6. Maps and addresses: offline and online.
 7. Import old TeslaMate history: yes.
 8. Several cars and accounts: yes, the Sentry Manager way.
+9. Runs in **Docker**: one container (see Docker).
 
 Nothing left open to start Phase 0 except the real CAN bundle from the owner.
