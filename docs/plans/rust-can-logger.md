@@ -1,7 +1,8 @@
 # Plan: a Rust car logger fed by the Screenmate CAN Bridge (SMO)
 
-Status: plan only, nothing built yet (2026-11-16). Working name below is **"the logger"**; it can't be
-called TeslaMate (see TRADEMARK.md), so the owner picks a name.
+Status: plan only, nothing built yet (2026-11-16). Working name: **Sentry Mate** (owner, not final;
+"the logger" below means the same app). It can't be called TeslaMate (see TRADEMARK.md). Before it's
+final, check it isn't too close to TeslaMate or to Screenmate (the device's maker) to be confused.
 
 ## Goal
 
@@ -25,7 +26,7 @@ the Tesla API knows (car name, paint, some settings) must be typed in or skipped
 ## Where the data comes from
 
 SMO already supports **two upload servers** ("Second Sentry Six Manager", every log goes to both, each
-tracked separately). The logger implements the same upload API (Sentry-Manager `docs/can-bridge-api.md`):
+tracked separately). **The second slot is free (owner, 2026-11-16): the logger takes it.** The logger implements the same upload API (Sentry-Manager `docs/can-bridge-api.md`):
 
 - `GET /api/can/logs/ping`, `POST /api/can/logs/status`, `POST /api/can/logs/<name>` chunked and
   resumable (`Upload-Offset`, `Upload-Length`, `Upload-SHA256`), per-car bearer token, its own port.
@@ -184,9 +185,7 @@ Phone and desktop layouts for every page (screenshots of both with every change,
 - **Accounts**: argon2id passwords, passkeys (WebAuthn) optional, first-run setup over HTTPS only,
   rate limits and lockout, session cookies `Secure; HttpOnly; SameSite=Strict`, CSRF tokens, strict CSP
   (no inline scripts, nothing from a CDN), audit log of every setting change.
-- **At rest**: SQLite and segments encrypted (XChaCha20-Poly1305 per file / SQLCipher-style), key in a
-  key file in the data volume or a passphrase asked at start (owner choice: key file means it restarts
-  on its own). Raw logs encrypted the same way, the signature still checks after decrypting.
+- **At rest**: see "Encryption at rest" below.
 - **Privacy**: logs hold GPS. No telemetry. Real coordinates never in code, tests or commits.
 - **Maps and addresses: both offline and online** (owner's choice, 2026-11-16). Offline: map tiles from
   one PMTiles file and reverse geocoding from a bundled dataset, so maps and addresses work with no
@@ -231,6 +230,37 @@ The owner's existing TeslaMate data comes in, so history starts years before the
   coordinates, several TeslaMate versions; then the owner's real backup, uploaded to a session
   only if the owner chooses (it holds every place the car has been).
 
+## Encryption at rest (owner: set once, extremely hard to break, 2026-11-16)
+
+Set up once on first start; after that the logger unlocks itself on every restart, with nothing to type.
+Stealing the disk, the data folder or a backup gives nothing readable.
+
+- **Keys in layers.** One random 256-bit data key encrypts everything. It is never stored as it is: it is
+  kept wrapped (encrypted) twice, and either wrapper opens it:
+  1. **Machine unlock (daily use)**: wrapped by a key sealed to the server's **TPM 2.0** chip (Docker:
+     pass `/dev/tpmrm0`), bound to the machine's boot state. The data only opens on that machine. No
+     TPM: wrapped by a key in a separate key file that lives **outside the data volume** (a Docker secret
+     or another disk), so the data folder or a backup alone is useless.
+  2. **Recovery key**: shown **once** at setup (a long random key, also as a printable sheet), turned
+     into a wrapping key with Argon2id at heavy settings (1 GiB memory, several passes) so guessing is
+     out of reach. Needed only for a new machine, a dead TPM or a restore. The logger never stores it.
+- **What is encrypted**: the SQLite database (SQLCipher: AES-256 per page with an HMAC on every page,
+  the one C library, chosen because it is widely audited), the signal segments and the raw uploaded logs
+  (XChaCha20-Poly1305 per file chunk, with a per-file key derived from the data key with HKDF, file name
+  and chunk number bound in, so a swapped, cut or changed chunk is refused). Uploaded logs still verify
+  against their signature after decryption. Temporary and `.part` files are encrypted too; nothing is
+  ever written in the clear.
+- **Backups** are encrypted with the same data key; a restore on another machine asks for the recovery
+  key once, then seals to the new machine.
+- **In memory**: keys held in locked memory (`mlock`), wiped on exit (`zeroize`), core dumps off.
+- **Changing it**: new recovery key, or move to a new machine (re-seal), from Settings, password and
+  two-step sign-in asked. The data key itself can be rotated (everything re-encrypted in the background).
+- **Honest limits**: this protects data on a stolen or copied disk or backup. It can't protect against
+  someone who has taken over the running server (the key is in memory while it runs): that is what the
+  rest of the Security section is for. **Lose both the machine (or its TPM / key file) and the recovery
+  key and the data is gone for good**, by design; the setup page says so and asks the owner to confirm
+  they saved the recovery key.
+
 ## This repo (owner: replace the fork entirely, 2026-11-16)
 
 The TeslaMate fork's contents go; the Rust app takes the whole repo.
@@ -250,12 +280,10 @@ The TeslaMate fork's contents go; the Rust app takes the whole repo.
   (Settings → General) once the app has a name. GitHub keeps the old address redirecting. If GitHub
   still shows it as "forked from teslamate-org/teslamate", only GitHub support (or a new repo) removes
   that link.
-- **Licence**: the owner picks (AGPL-3.0, MIT/Apache-2.0, or private/all rights reserved). Third-party
+- **Licence**: decided later (owner, 2026-11-16); clean-room keeps every choice open. Third-party
   bits keep their own: model3dbc (MIT), opendbc (MIT), uPlot (MIT), MapLibre (BSD-3), map and address
   data (ODbL, credited in the UI).
-- **Rules file**: a `CLAUDE.md` like Sentry Manager's (main / release/next-update / wip, nothing to
-  `main` without the owner, tests before every push, phone + desktop screenshots with UI changes, no
-  co-author trailers, no PRs unless asked), if the owner wants the same rules here.
+- **No new rules file** (owner, 2026-11-16): this repo gets no branch rules of its own.
 - **GitHub Actions**: TeslaMate's workflows are removed with everything else (they'd publish TeslaMate
   images); new ones: `cargo test`, clippy, `cargo deny`/`audit`, fuzz smoke run, Docker image.
 
@@ -275,14 +303,15 @@ The TeslaMate fork's contents go; the Rust app takes the whole repo.
 7. **TeslaMate import** (backup upload, then the optional live Postgres connection).
 8. **Docker image, docs, first release**.
 
-## Open questions for the owner
+## Decisions (owner, 2026-11-16)
 
-1. **Name** of the app (it can't be TeslaMate).
-2. ~~This repo~~: answered, replace the fork entirely (see This repo). Still to pick: the **licence**,
-   and whether this repo gets **Sentry Manager's branch rules**.
-3. **SMO's second upload slot**: is it free, or used for a second Sentry Manager? If used, SMO needs a
-   third slot.
-4. **Encryption at rest**: key file (restarts by itself) or passphrase at every start?
-5. ~~Maps and addresses~~: answered, both offline and online (see Security).
-6. ~~Import~~: answered, yes (see Importing old TeslaMate history).
-7. ~~Several cars~~: answered, yes, the Sentry Manager way (see What we take from Sentry Manager).
+1. Name: **Sentry Mate** for now, not final.
+2. Repo: replace the fork entirely, clean-room. Licence: later.
+3. No new set of repo rules.
+4. SMO's second upload slot is free: the logger uses it.
+5. Encryption at rest: set once, unlocks by itself, very hard to break (see Encryption at rest).
+6. Maps and addresses: offline and online.
+7. Import old TeslaMate history: yes.
+8. Several cars and accounts: yes, the Sentry Manager way.
+
+Nothing left open to start Phase 0 except the real CAN bundle from the owner.
