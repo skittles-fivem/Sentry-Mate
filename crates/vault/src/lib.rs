@@ -10,8 +10,9 @@
 //!    settings (1 GiB of memory), for a new machine or a lost key file. It is never stored.
 //!
 //! Files are sealed with XChaCha20-Poly1305 ([`stream`] for finished files, [`records`] for files that grow), each
-//! with its own key derived from the data key (HKDF-SHA256) and its path bound in. Keys are wiped from memory when
-//! dropped, and core dumps are turned off ([`harden_process`]).
+//! with its own key derived from the data key (HKDF-SHA256) and its path bound in. A file that grows gives every
+//! record a random nonce of its own, so a record written again after a crash never reuses one. Keys are wiped from
+//! memory when dropped, and core dumps are turned off ([`harden_process`]).
 //!
 //! What this protects: data on a stolen or copied disk, or a backup. What it can't: a server someone has taken over
 //! while it runs (the key is in memory then). Losing both the key file and the recovery key loses the data, by design.
@@ -28,7 +29,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, Zeroizing};
 
-pub use records::Records;
+pub use records::{Records, RecordsReader};
 pub use stream::{OpenReader, SealWriter, is_sealed, plaintext_len};
 
 pub const VAULT_FILE: &str = "vault.json";
@@ -57,6 +58,13 @@ pub enum Error {
     WrongRecoveryKey,
     #[error("the key folder {0} is inside the data folder: give it a folder (volume) of its own")]
     KeysInsideData(PathBuf),
+}
+
+impl Error {
+    /// Whether this is a missing file (an [`Error::Io`] of kind `NotFound`).
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound)
+    }
 }
 
 /// Argon2id settings for the recovery key.
@@ -375,9 +383,15 @@ impl Vault {
         }
     }
 
-    /// Opens a growing sealed file (see [`records`]).
+    /// Opens a growing sealed file to add to it, made if missing (see [`records`]). One writer per file at a time.
     pub fn records(&self, path: &Path, label: &str) -> Result<Records, Error> {
         Records::open(self, label, path)
+    }
+
+    /// Opens a growing sealed file to read only (see [`records`]): never made, cut or changed; a record still being
+    /// written is not read. A missing file is an error of kind `NotFound` ([`Error::is_not_found`]).
+    pub fn records_read(&self, path: &Path, label: &str) -> Result<RecordsReader, Error> {
+        RecordsReader::open(self, label, path)
     }
 }
 

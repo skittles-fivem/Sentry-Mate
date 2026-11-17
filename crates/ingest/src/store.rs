@@ -215,7 +215,8 @@ impl Inner {
             return Ok(FileState { state: State::Complete, received: len, length: Some(len) });
         }
         if p.part.exists() {
-            let received = self.vault.records(&p.part, &p.part_label).map(|r| r.plain_len()).unwrap_or(0);
+            // read only: an upload being written at this moment is neither cut nor changed
+            let received = self.vault.records_read(&p.part, &p.part_label).map(|r| r.plain_len()).unwrap_or(0);
             return Ok(FileState { state: State::Partial, received, length: self.meta(&p).map(|m| m.length) });
         }
         Ok(FileState { state: State::Missing, received: 0, length: None })

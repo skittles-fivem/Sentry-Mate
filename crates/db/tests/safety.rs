@@ -184,6 +184,31 @@ fn a_half_written_entry_is_dropped_and_the_rest_kept() {
 }
 
 #[test]
+fn reading_a_day_leaves_its_journal_as_it_is_and_the_next_write_carries_on() {
+    let t = test_db(quiet());
+    let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
+    let pts = samples(DAY0 + 1000, 180);
+    for w in pts[..120].chunks(60) {
+        t.db.write_points(car, Source::Can, w[0].t_ms, w[0].t_ms + 60_000, w).unwrap();
+    }
+    let log = t.data.join("db/cars").join(car.to_string()).join("seg/samples.can/2026-11-16.log");
+    // a crash while an entry was being written: its record is torn
+    let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+    f.write_all(&[0, 0, 1, 0, 7, 7, 7, 7, 7]).unwrap();
+    drop(f);
+    let before = std::fs::read(&log).unwrap();
+    // readers see the whole entries and leave the file alone (opened read-only: never cut or changed)
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap(), pts[..120]);
+    assert_eq!(t.db.read_fields::<Sample>(car, Source::Can, 0, u64::MAX, &["soc"]).unwrap().t_ms.len(), 120);
+    assert_eq!(std::fs::read(&log).unwrap(), before);
+    // the next write cuts the torn record off first, then adds its own
+    let w = &pts[120..];
+    t.db.write_points(car, Source::Can, w[0].t_ms, w[0].t_ms + 60_000, w).unwrap();
+    assert!(std::fs::read(&log).unwrap().starts_with(&before[..before.len() - 9]));
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap(), pts);
+}
+
+#[test]
 fn damaged_files_are_reported_not_emptied() {
     let mut t = test_db(quiet());
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;

@@ -357,8 +357,11 @@ impl Ledger {
         if !path.exists() {
             return Ok((Vec::new(), false));
         }
-        let mut journal = match self.vault.records(&path, &label) {
+        // read only: never cut or changed here, so a reader (the `chain` command, say) can't harm an append under way
+        let mut journal = match self.vault.records_read(&path, &label) {
             Ok(j) => j,
+            // folded away since it was looked for: as when it isn't there
+            Err(e) if e.is_not_found() => return Ok((Vec::new(), false)),
             Err(vault::Error::NotSealed) => return Ok((Vec::new(), true)),
             Err(e) => return Err(other(e)),
         };
@@ -660,19 +663,23 @@ mod tests {
         l.append(&mut h, &second).unwrap();
         // the crash: the second batch's record is only partly on disk
         let f = std::fs::OpenOptions::new().write(true).open(&journal).unwrap();
-        f.set_len(std::fs::metadata(&journal).unwrap().len() - 5).unwrap();
+        let cut = std::fs::metadata(&journal).unwrap().len() - 5;
+        f.set_len(cut).unwrap();
         drop(f);
         let back = l.load_head().unwrap();
         assert_eq!(back.waiting.keys().collect::<Vec<_>>(), [&name(1)], "the first batch is all there");
         assert_eq!(back.pin.as_ref().map(|p| p.fingerprint.as_str()), Some("aa"));
         assert_eq!(back.journal_len, 2);
         assert!(!back.damaged);
-        assert_eq!(std::fs::metadata(&journal).unwrap().len(), whole, "the cut record was taken off");
-        // and the journal goes on from there
+        assert_eq!(std::fs::metadata(&journal).unwrap().len(), cut, "reading leaves the file as it is");
+        // and the journal goes on from there: the next append cuts the torn record off first
+        let kept = std::fs::read(&journal).unwrap()[..whole as usize].to_vec();
         let mut back = back;
         let third = vec![Change::Log { name: name(2), record: rec(Status::Unsigned, 2) }];
         back.apply(&third[0]);
         l.append(&mut back, &third).unwrap();
+        let now = std::fs::read(&journal).unwrap();
+        assert!(now.starts_with(&kept) && now.len() as u64 > whole, "the new record follows the whole ones");
         let again = l.load_head().unwrap();
         assert_eq!(again.journal_len, 3);
         assert_eq!(all(&l, &again), [(name(1), Status::Waiting), (name(2), Status::Unsigned)]);

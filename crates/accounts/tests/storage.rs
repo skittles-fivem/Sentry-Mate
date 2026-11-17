@@ -57,7 +57,11 @@ fn nothing_readable_is_kept_on_disk() {
         if name == vault::VAULT_FILE {
             continue;
         }
-        assert!(bytes.starts_with(b"SMENC\x01") || bytes.starts_with(b"SMPRT\x01"), "{} isn't sealed", path.display());
+        assert!(
+            bytes.starts_with(b"SMENC\x01") || bytes.starts_with(vault::records::MAGIC),
+            "{} isn't sealed",
+            path.display()
+        );
         for s in &secrets {
             assert!(!contains(bytes, s), "{} holds {:?} in the clear", path.display(), String::from_utf8_lossy(s));
         }

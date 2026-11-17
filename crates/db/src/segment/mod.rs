@@ -188,7 +188,7 @@ impl<P: Point> Logged for DayLog<P> {
 /// The generation a day's files are at (the newer of snapshot and journal headers).
 fn current_gen(ctx: &Ctx, files: &Files) -> Result<u64> {
     let snap = snapshot_head(ctx, files, Kind::Segment)?.map_or(0, |(g, _, _)| g);
-    let log = Journal::open_for_append(ctx, &files.log)?.map_or(0, |o| o.generation);
+    let log = Journal::read_only(ctx, &files.log, true)?.map_or(0, |r| r.generation);
     if log > snap {
         return Err(Error::Damaged {
             file: ctx.label(&files.log),
@@ -328,8 +328,7 @@ pub(crate) fn read<P: Point>(ctx: &Ctx, car_dir: &Path, source: Source, from: u6
     let dir = series_dir::<P>(car_dir, source);
     let mut out = Vec::new();
     for day in days_in(&dir, from, to)? {
-        let lf = LoggedFile::<DayLog<P>>::load(ctx, day_files(&dir, day))?;
-        let pts = lf.state.points;
+        let pts = LoggedFile::<DayLog<P>>::read_state(ctx, day_files(&dir, day))?.points;
         let a = pts.partition_point(|p| p.t_ms() < from);
         let b = pts.partition_point(|p| p.t_ms() < to);
         out.extend(pts.into_iter().skip(a).take(b - a));
@@ -353,11 +352,11 @@ pub(crate) fn read_fields<P: Point>(
     for day in days_in(&dir, from, to)? {
         let files = day_files(&dir, day);
         let fields = if files.log.exists() {
-            let lf = LoggedFile::<DayLog<P>>::load(ctx, files)?;
+            let points = LoggedFile::<DayLog<P>>::read_state(ctx, files)?.points;
             let mut f = Fields::new(names);
-            f.t_ms = lf.state.points.iter().map(Point::t_ms).collect();
+            f.t_ms = points.iter().map(Point::t_ms).collect();
             for ((_, v), c) in f.values.iter_mut().zip(&cols) {
-                *v = lf.state.points.iter().map(|p| c.value(p)).collect();
+                *v = points.iter().map(|p| c.value(p)).collect();
             }
             f
         } else {

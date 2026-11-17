@@ -12,7 +12,7 @@
 
 use crate::error::{Result, corrupt};
 use std::path::{Path, PathBuf};
-use vault::{Records, Vault};
+use vault::{Records, RecordsReader, Vault};
 
 pub(crate) struct Journal {
     records: Records,
@@ -37,7 +37,7 @@ fn sync_dir(path: &Path) {
 }
 
 /// Reads every whole line; returns how many there were and whether the last one was cut short.
-fn scan(records: &mut Records, line: &mut impl FnMut(&[u8])) -> Result<(u64, bool)> {
+fn scan(records: &mut RecordsReader, line: &mut impl FnMut(&[u8])) -> Result<(u64, bool)> {
     let (mut buf, mut lines) = (Vec::new(), 0u64);
     records
         .read_all(|piece| {
@@ -58,6 +58,17 @@ fn scan(records: &mut Records, line: &mut impl FnMut(&[u8])) -> Result<(u64, boo
     Ok((lines, !buf.is_empty()))
 }
 
+/// Hands each whole line of the journal at `path` to `line`, oldest first, without opening it to add to it: the file
+/// is never made, cut or changed (a missing one has no lines), so this can't harm an append under way.
+pub(crate) fn read_lines(vault: &Vault, path: &Path, label: &str, mut line: impl FnMut(&[u8])) -> Result<()> {
+    let mut records = match vault.records_read(path, label) {
+        Ok(r) => r,
+        Err(e) if e.is_not_found() => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    scan(&mut records, &mut line).map(|_| ())
+}
+
 impl Journal {
     /// Opens (or starts) the journal at `path` and hands each whole line to `line`, oldest first.
     pub(crate) fn open(vault: &Vault, path: &Path, label: &str, mut line: impl FnMut(&[u8])) -> Result<Journal> {
@@ -70,7 +81,7 @@ impl Journal {
             _ => {}
         }
         let mut records = vault.records(path, label)?;
-        let (lines, torn) = scan(&mut records, &mut line)?;
+        let (lines, torn) = scan(records.as_reader(), &mut line)?;
         Ok(Journal {
             records,
             path: path.to_path_buf(),
@@ -85,7 +96,7 @@ impl Journal {
 
     /// Hands each whole line to `line` again, oldest first (through this handle, so it never races its appends).
     pub(crate) fn read(&mut self, mut line: impl FnMut(&[u8])) -> Result<()> {
-        scan(&mut self.records, &mut line).map(|_| ())
+        scan(self.records.as_reader(), &mut line).map(|_| ())
     }
 
     /// Lines written so far (since the last compaction).
@@ -107,10 +118,9 @@ impl Journal {
 
     /// Adds lines at the end, synced to disk before it returns.
     ///
-    /// When writing fails (a full disk, say), the file is opened again before anything more is added:
-    /// `vault::Records` has already counted the records it was asked to write by then, so the next append would
-    /// number its records after ones that aren't there, and the whole journal would no longer open. Opened again, it
-    /// counts the records really on disk (a cut one is dropped) and carries on after them.
+    /// When writing fails (a full disk, say), the file is opened again before anything more is added, so the lines
+    /// counted are those really on disk (a cut record is dropped) and the next append carries on after them.
+    /// (`vault::Records` counts nothing a failed write was given, and cuts off what it left before writing again.)
     pub(crate) fn append<T: serde::Serialize>(&mut self, vault: &Vault, items: &[T]) -> Result<()> {
         if items.is_empty() {
             return Ok(());
@@ -133,7 +143,7 @@ impl Journal {
     fn write(&mut self, body: &[u8]) -> std::io::Result<()> {
         #[cfg(test)]
         if std::mem::take(&mut self.fail_next_append) {
-            // what a failed write leaves behind: the records counted by `vault::Records`, the disk without them
+            // a write the disk lost: the records counted by `vault::Records`, the disk without them
             let len = std::fs::metadata(&self.path)?.len();
             self.records.append(body)?;
             std::fs::OpenOptions::new().write(true).open(&self.path)?.set_len(len)?;
@@ -145,7 +155,7 @@ impl Journal {
     /// Opens the file again and counts what is really in it (after a failed append).
     fn reopen(&mut self, vault: &Vault) -> Result<()> {
         let mut records = vault.records(&self.path, &self.label)?;
-        let (lines, torn) = scan(&mut records, &mut |_| {})?;
+        let (lines, torn) = scan(records.as_reader(), &mut |_| {})?;
         (self.records, self.lines, self.torn, self.stale) = (records, lines, torn, false);
         Ok(())
     }
@@ -233,6 +243,27 @@ pub(crate) mod tests {
         drop(j);
         let (lines, _) = read(&v, &path, "x");
         assert_eq!(lines, ["\"a\"", "{\"half", "\"b\""], "the cut line stands alone (and won't parse)");
+    }
+
+    #[test]
+    fn reading_without_opening_to_add_never_makes_cuts_or_changes_the_file() {
+        let (_t, data, v) = vault();
+        let path = data.join("x.journal");
+        let mut lines = Vec::new();
+        read_lines(&v, &path, "x", |l| lines.push(l.to_vec())).unwrap();
+        assert!(lines.is_empty() && !path.exists(), "a missing journal has no lines and isn't made");
+        let mut j = Journal::open(&v, &path, "x", |_| {}).unwrap();
+        j.append(&v, &["a", "b"]).unwrap();
+        drop(j);
+        // a crash while a record was being written
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(&[0, 0, 0, 90, 1, 2, 3]).unwrap();
+        drop(f);
+        let before = std::fs::read(&path).unwrap();
+        read_lines(&v, &path, "x", |l| lines.push(l.to_vec())).unwrap();
+        assert_eq!(lines, [b"\"a\"".to_vec(), b"\"b\"".to_vec()]);
+        assert_eq!(std::fs::read(&path).unwrap(), before, "not cut, not changed");
+        assert!(read_lines(&v, &path, "y", |_| {}).is_err(), "under another label it doesn't open");
     }
 
     #[test]

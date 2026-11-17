@@ -109,10 +109,12 @@ async fn a_journal_record_cut_by_a_crash_is_dropped_and_the_state_before_is_inta
     let judge = Judge::new(t.store.clone());
     assert_eq!(judge.record(KEY, &a).await.unwrap().status, Status::Unsigned, "what was there before is intact");
     assert!(judge.record(KEY, &b).await.is_none(), "the cut record is gone, as if the crash came just before it");
-    assert_eq!(std::fs::read(&journal).unwrap(), before, "and the journal is exactly as before it");
+    assert_eq!(std::fs::metadata(&journal).unwrap().len(), len - 7, "reading leaves the journal as it is");
     // and it goes on: b's sidecar comes and b is judged; more logs are added
     let r = arrive(&t, &judge, &format!("{b}.json"), br#"{"format":"canbridge-columns-xz/2"}"#).await.unwrap();
     assert_eq!(r.status, Status::Unsigned);
+    let now = std::fs::read(&journal).unwrap();
+    assert!(now.starts_with(&before) && now.len() > before.len(), "the cut record was taken off before the next");
     let c = log_name(2);
     arrive(&t, &judge, &c, b"minute c").await;
     let judge = Judge::new(t.store.clone());

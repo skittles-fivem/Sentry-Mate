@@ -71,8 +71,18 @@ fn parse_gen_level(body: &[u8], label: &str) -> Result<(u64, u8)> {
 }
 
 impl<S: Logged> LoggedFile<S> {
-    /// Reads the snapshot and replays the journal.
+    /// Reads the snapshot and replays the journal, kept open to commit changes to.
     pub(crate) fn load(ctx: &Ctx, files: Files) -> Result<LoggedFile<S>> {
+        LoggedFile::load_as(ctx, files, true)
+    }
+
+    /// Reads the state only (snapshot and journal), for a reader that commits nothing: the journal is opened
+    /// read-only, so it is never cut or changed.
+    pub(crate) fn read_state(ctx: &Ctx, files: Files) -> Result<S> {
+        Ok(LoggedFile::load_as(ctx, files, false)?.state)
+    }
+
+    fn load_as(ctx: &Ctx, files: Files, to_commit: bool) -> Result<LoggedFile<S>> {
         files.clean_temporary()?;
         let snap_label = ctx.label(&files.snap);
         let (state, generation, snap_bytes, snap_plain, snap_level) = match ctx.read(&files.snap)? {
@@ -87,21 +97,26 @@ impl<S: Logged> LoggedFile<S> {
         };
         let mut lf = LoggedFile { state, files, generation, journal: None, snap_bytes, snap_plain, snap_level };
         let log_label = ctx.label(&lf.files.log);
-        if let Some(o) = Journal::open(ctx, &lf.files.log)? {
-            if o.generation < lf.generation {
+        let found = if to_commit {
+            Journal::open(ctx, &lf.files.log)?.map(|o| (o.generation, o.entries, Some(o.journal)))
+        } else {
+            Journal::read_only(ctx, &lf.files.log, false)?.map(|r| (r.generation, r.entries, None))
+        };
+        if let Some((generation, entries, journal)) = found {
+            if generation < lf.generation {
                 // folded into the snapshot already; a crash came before it was removed
-                drop(o);
+                drop(journal);
                 remove_if_exists(&lf.files.log)?;
-            } else if o.generation > lf.generation {
+            } else if generation > lf.generation {
                 return Err(Error::Damaged {
                     file: log_label,
-                    why: format!("it follows snapshot {} but the snapshot is {}", o.generation, lf.generation),
+                    why: format!("it follows snapshot {} but the snapshot is {}", generation, lf.generation),
                 });
             } else {
-                for e in &o.entries {
+                for e in &entries {
                     lf.state.apply(S::decode_op(e).map_err(|e| e.in_file(&log_label))?);
                 }
-                lf.journal = Some(o.journal);
+                lf.journal = journal;
             }
         }
         Ok(lf)

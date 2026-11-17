@@ -9,20 +9,24 @@
 //!
 //! An entry is one write, so a crash leaves at most its last entry half written: that entry is dropped when the
 //! journal is read (it was never acknowledged). A record damaged anywhere else is reported, never cut off: the
-//! vault drops a torn last record on its own, so the records are walked first, and anything after the last whole
-//! record that is neither a torn record (right length, bytes missing) nor zeros is damage. (A damaged length that
-//! happens to point past the end looks torn and loses the records after it: the one case not told apart.)
+//! vault skips a torn last record on its own (and cuts it off when the journal is opened to add to it), so the
+//! records are walked first, and anything after the last whole record that is neither a torn record (right length,
+//! bytes missing) nor zeros is damage. (A damaged length that happens to point past the end looks torn and loses the
+//! records after it: the one case not told apart.)
+//!
+//! A journal only read ([`Journal::read_only`]) is opened read-only: never cut, changed or written again in the
+//! vault's newer format.
 
 use crate::error::{Error, Result};
 use crate::file::{Ctx, Kind, check_header, header, private_create, remove_if_exists, sync_dir, with_suffix};
 use std::path::{Path, PathBuf};
-use vault::stream::{CHUNK, TAG};
+use vault::stream::CHUNK;
 
 const FIRST: u8 = 1;
 const LAST: u8 = 2;
 const PIECE: usize = CHUNK - 1;
 /// The vault's records header: magic and file id.
-const RECORDS_HEADER: usize = vault::records::MAGIC.len() + 16;
+const RECORDS_HEADER: usize = vault::records::HEADER;
 
 pub(crate) struct Journal {
     rec: vault::Records,
@@ -43,13 +47,14 @@ fn check_tail(path: &Path, label: &str) -> Result<()> {
     if b.len() < RECORDS_HEADER {
         return Err(damaged(label, "too short to be a journal"));
     }
-    if !b.starts_with(vault::records::MAGIC) {
+    // either of the vault's formats (the older one is still read)
+    let Some(lengths) = vault::records::record_lengths(&b) else {
         return Err(damaged(label, "not a sealed journal"));
-    }
+    };
     let mut pos = RECORDS_HEADER;
     while pos + 4 <= b.len() {
         let n = u32::from_be_bytes([b[pos], b[pos + 1], b[pos + 2], b[pos + 3]]) as usize;
-        if !(TAG..=CHUNK + TAG).contains(&n) {
+        if !lengths.contains(&n) {
             if b[pos..].iter().any(|&x| x != 0) {
                 return Err(damaged(label, "a record before its end doesn't read"));
             }
@@ -82,6 +87,69 @@ pub(crate) struct Opened {
     pub generation: u64,
     /// The entries after the header, in order (only filled by [`Journal::open`]).
     pub entries: Vec<Vec<u8>>,
+}
+
+/// What reading a journal without opening it to add to it found ([`Journal::read_only`]).
+pub(crate) struct ReadJournal {
+    pub generation: u64,
+    /// The entries after the header, in order (none when only the header was read).
+    pub entries: Vec<Vec<u8>>,
+}
+
+/// Reads a journal's entries (only its header's when `header_only`): its generation and the entries after the header.
+fn parse(rec: &mut vault::RecordsReader, label: &str, header_only: bool) -> Result<(u64, Vec<Vec<u8>>)> {
+    let mut entries: Vec<Vec<u8>> = Vec::new();
+    let mut cur: Option<Vec<u8>> = None;
+    let mut bad: Option<&'static str> = None;
+    let stop = std::io::ErrorKind::Interrupted;
+    let r = rec.read_all(|piece| {
+        let Some((&flags, body)) = piece.split_first() else {
+            bad = Some("an empty record");
+            return Err(std::io::Error::other("bad"));
+        };
+        if flags & !(FIRST | LAST) != 0 {
+            bad = Some("bad entry flags");
+            return Err(std::io::Error::other("bad"));
+        }
+        if flags & FIRST != 0 {
+            // an entry still open here was cut by a crash and never acknowledged: dropped
+            cur = Some(body.to_vec());
+        } else {
+            match cur.as_mut() {
+                Some(c) => c.extend_from_slice(body),
+                None => {
+                    bad = Some("a piece of an entry without its start");
+                    return Err(std::io::Error::other("bad"));
+                }
+            }
+        }
+        if flags & LAST != 0 {
+            entries.extend(cur.take());
+            if header_only {
+                return Err(std::io::Error::new(stop, "header read"));
+            }
+        }
+        Ok(())
+    });
+    if let Some(why) = bad {
+        return Err(damaged(label, why));
+    }
+    match r {
+        Err(e) if e.kind() == stop && header_only => {}
+        Err(e) => return Err(Error::from(vault::unwrap_io(e)).in_file(label)),
+        Ok(()) => {}
+    }
+    if entries.is_empty() {
+        return Err(damaged(label, "no header"));
+    }
+    let head = entries.remove(0);
+    let body = check_header(&head, Kind::Journal, label)?;
+    let generation = body
+        .get(..8)
+        .and_then(|g| <[u8; 8]>::try_from(g).ok())
+        .map(u64::from_be_bytes)
+        .ok_or_else(|| damaged(label, "bad header"))?;
+    Ok((generation, entries))
 }
 
 impl Journal {
@@ -121,60 +189,27 @@ impl Journal {
         let label = ctx.label(path);
         check_tail(path, &label)?;
         let mut rec = ctx.vault.records(path, &label).map_err(|e| Error::from(e).in_file(&label))?;
-        let mut entries: Vec<Vec<u8>> = Vec::new();
-        let mut cur: Option<Vec<u8>> = None;
-        let mut bad: Option<&'static str> = None;
-        let stop = std::io::ErrorKind::Interrupted;
-        let r = rec.read_all(|piece| {
-            let Some((&flags, body)) = piece.split_first() else {
-                bad = Some("an empty record");
-                return Err(std::io::Error::other("bad"));
-            };
-            if flags & !(FIRST | LAST) != 0 {
-                bad = Some("bad entry flags");
-                return Err(std::io::Error::other("bad"));
-            }
-            if flags & FIRST != 0 {
-                // an entry still open here was cut by a crash and never acknowledged: dropped
-                cur = Some(body.to_vec());
-            } else {
-                match cur.as_mut() {
-                    Some(c) => c.extend_from_slice(body),
-                    None => {
-                        bad = Some("a piece of an entry without its start");
-                        return Err(std::io::Error::other("bad"));
-                    }
-                }
-            }
-            if flags & LAST != 0 {
-                entries.extend(cur.take());
-                if header_only {
-                    return Err(std::io::Error::new(stop, "header read"));
-                }
-            }
-            Ok(())
-        });
-        if let Some(why) = bad {
-            return Err(damaged(&label, why));
-        }
-        match r {
-            Err(e) if e.kind() == stop && header_only => {}
-            Err(e) => return Err(Error::from(vault::unwrap_io(e)).in_file(&label)),
-            Ok(()) => {}
-        }
-        if entries.is_empty() {
-            return Err(damaged(&label, "no header"));
-        }
-        let head = entries.remove(0);
-        let body = check_header(&head, Kind::Journal, &label)?;
-        let generation = body
-            .get(..8)
-            .and_then(|g| <[u8; 8]>::try_from(g).ok())
-            .map(u64::from_be_bytes)
-            .ok_or_else(|| damaged(&label, "bad header"))?;
+        let (generation, entries) = parse(rec.as_reader(), &label, header_only)?;
         let bytes = if header_only { rec.plain_len() } else { entries.iter().map(|e| e.len() as u64).sum() };
         let journal = Journal { rec, bytes, entries: entries.len() as u64 };
         Ok(Some(Opened { journal, generation, entries }))
+    }
+
+    /// Reads a journal (only its header when `header_only`) without opening it to add to it: the file is never cut
+    /// or changed. `Ok(None)`: there is none.
+    pub(crate) fn read_only(ctx: &Ctx, path: &Path, header_only: bool) -> Result<Option<ReadJournal>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let label = ctx.label(path);
+        check_tail(path, &label)?;
+        let mut rec = match ctx.vault.records_read(path, &label) {
+            Ok(r) => r,
+            Err(e) if e.is_not_found() => return Ok(None),
+            Err(e) => return Err(Error::from(e).in_file(&label)),
+        };
+        let (generation, entries) = parse(&mut rec, &label, header_only)?;
+        Ok(Some(ReadJournal { generation, entries }))
     }
 
     /// Adds an entry (synced before this returns).
@@ -204,5 +239,44 @@ impl Files {
         remove_if_exists(&with_suffix(&self.snap, ".tmp"))?;
         remove_if_exists(&with_suffix(&self.log, ".new"))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use vault::records::{MAGIC, MAGIC_V1};
+
+    /// A records file's layout (the bytes themselves don't open): header, records of these lengths, then `tail`.
+    fn layout(magic: &[u8], lens: &[u32], tail: &[u8]) -> Vec<u8> {
+        let mut b = magic.to_vec();
+        b.extend_from_slice(&[9u8; 16]);
+        for &n in lens {
+            b.extend_from_slice(&n.to_be_bytes());
+            b.extend(std::iter::repeat_n(1u8, n as usize));
+        }
+        b.extend_from_slice(tail);
+        b
+    }
+
+    #[test]
+    fn the_tail_check_knows_both_record_formats() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("j.log");
+        let check = |b: Vec<u8>| {
+            std::fs::write(&p, b).unwrap();
+            check_tail(&p, "j.log").is_ok()
+        };
+        // the format written now: a record's length counts its nonce, ciphertext and tag (40 bytes at least)
+        assert!(check(layout(MAGIC, &[40, 41, 40 + 65_536], &[])));
+        assert!(check(layout(MAGIC, &[41], &[0, 0, 1, 0, 7, 7])), "a torn last record");
+        assert!(check(layout(MAGIC, &[41], &[0; 9])), "zeros not written yet");
+        assert!(!check(layout(MAGIC, &[16, 41], &[])), "too short a record for this format");
+        assert!(!check(layout(MAGIC, &[41 + 65_536], &[])), "too long");
+        // the format before, still read: ciphertext and tag only (16 bytes at least)
+        assert!(check(layout(MAGIC_V1, &[16, 17, 16 + 65_536], &[0, 0, 0, 30, 1])));
+        assert!(!check(layout(MAGIC_V1, &[17 + 65_536], &[])));
+        assert!(!check(layout(b"SMPRT\x09", &[40], &[])), "not a format the vault knows");
     }
 }

@@ -108,7 +108,8 @@ docker compose exec sentry-mate /sentry-mate recovery-key new
 - **Encryption at rest, in Rust.** One random data key seals everything stored (logs, sidecars, uploads still
   arriving, trust records, tokens, the TLS key) with XChaCha20-Poly1305, in 64 KiB chunks, each file with its own
   key (HKDF-SHA256) and its path bound in, so a file that is changed, cut short, or moved under another name doesn't
-  open. The data key is kept only wrapped: by the key file in `/keys` (a separate volume, refused inside the data
+  open. Files that grow (uploads still arriving, journals) give every piece its own random nonce, so a piece written
+  again after a crash never reuses one. The data key is kept only wrapped: by the key file in `/keys` (a separate volume, refused inside the data
   folder) for restarts with nothing to type, and by the recovery key through Argon2id at 1 GiB. Keys are wiped from
   memory when no longer needed and core dumps are off. This protects a stolen or copied disk or backup; it can't
   protect a server taken over while it runs.

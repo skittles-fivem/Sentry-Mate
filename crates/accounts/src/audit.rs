@@ -10,7 +10,7 @@
 //! newest first, a page at a time, with a cursor (`<part>:<entry>`) for the next page.
 
 use crate::error::{Error, Result, corrupt};
-use crate::journal::Journal;
+use crate::journal::{self, Journal};
 use crate::{Clock, one_line};
 use std::collections::VecDeque;
 use std::net::IpAddr;
@@ -216,12 +216,12 @@ impl Audit {
                 each(e);
             }
         };
-        // reads happen under the writer's lock: opening a part trims a record cut short by a crash, which must never
-        // meet an append in progress
+        // the part being added to is read through the writer's own handle, under its lock; any other is opened to read
+        // only, which never cuts or changes it
         let mut cur = self.current.lock().unwrap_or_else(|e| e.into_inner());
         match cur.as_mut().filter(|c| c.stem == stem) {
             Some(c) => c.journal.read(&mut keep),
-            None => Journal::open(&self.vault, &self.path(stem), &label(stem), &mut keep).map(drop),
+            None => journal::read_lines(&self.vault, &self.path(stem), &label(stem), &mut keep),
         }
     }
 

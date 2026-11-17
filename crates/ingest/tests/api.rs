@@ -9,6 +9,7 @@ use p256::ecdsa::{Signature, SigningKey, signature::Signer};
 use p256::pkcs8::EncodePublicKey;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -137,6 +138,38 @@ async fn a_log_uploads_in_chunks_and_resumes() {
     assert_eq!((s, b["code"].as_str()), (StatusCode::CONFLICT, Some("exists_different")));
     let (_, b) = status(&t, &[LOG]).await;
     assert_eq!(b["files"][LOG]["state"], "complete");
+}
+
+fn files_ending(dir: &std::path::Path, end: &str, out: &mut Vec<std::path::PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            files_ending(&p, end, out);
+        } else if p.to_string_lossy().ends_with(end) {
+            out.push(p);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_status_request_reads_an_upload_without_cutting_or_changing_it() {
+    let t = setup().await;
+    let bytes: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+    put(&t, LOG, &bytes, 0, &bytes[..400]).await;
+    let mut parts = Vec::new();
+    files_ending(&t.data, ".part", &mut parts);
+    let [part] = &parts[..] else { panic!("one upload under way: {parts:?}") };
+    // a chunk being written at this moment (or cut by a crash): its record isn't whole yet
+    let mut f = std::fs::OpenOptions::new().append(true).open(part).unwrap();
+    f.write_all(&[0, 0, 0, 200, 1, 2, 3]).unwrap();
+    drop(f);
+    let before = std::fs::read(part).unwrap();
+    let (_, b) = status(&t, &[LOG]).await;
+    assert_eq!(b["files"][LOG], json!({ "state": "partial", "received": 400, "length": 1000 }));
+    assert_eq!(std::fs::read(part).unwrap(), before, "the status request left the upload as it is");
+    // the next chunk carries on after the whole records
+    let (s, b) = put(&t, LOG, &bytes, 400, &bytes[400..]).await;
+    assert_eq!((s, b["complete"].as_bool()), (StatusCode::CREATED, Some(true)));
 }
 
 #[tokio::test]
