@@ -16,6 +16,7 @@ SCALE, then the CAN Bridge app, updates, backups, restoring and moving.
 - [Backups](#backups)
 - [Restore](#restore)
 - [Moving to a new server](#moving-to-a-new-server)
+- [Moving the folders on this server](#moving-the-folders-on-this-server)
 - [Ports and firewalls](#ports-and-firewalls)
 - [Settings](#settings)
 - [When it does not start](#when-it-does-not-start)
@@ -91,7 +92,7 @@ Sentry Mate then stops and says what to run
    ```
    ... WARN sentry_mate: new vault made: its recovery key is in /keys/RECOVERY-KEY.txt — copy it somewhere safe off this server, then delete that file
    ... INFO sentry_mate: CAN Bridge uploads on https://0.0.0.0:10100/api/can/logs (TLS 1.3), certificate SHA-256 <64 hex digits>, vault <id>
-   ... INFO sentry_mate: no upload token yet: make one with `sentry-mate token new --car "My car"`
+   ... INFO sentry_mate: no upload token yet: make one with `docker exec sentry-mate /sentry-mate token new --car "My car"`
    ```
 
 4. Take the recovery key:
@@ -139,7 +140,8 @@ On TrueNAS SCALE 24.10 or newer, install it as a custom app with
    `ssd/sentry-mate-keys`). Otherwise put it next to the data one (for
    example `tank/apps/sentry-mate-keys`), not inside it. Then, in
    *System → Shell* (it asks for your password), give both to the apps user
-   (568) and to nobody else:
+   (568) and to nobody else. Put your datasets' paths in these lines (the
+   keys on another pool: for example `/mnt/ssd/sentry-mate-keys`):
 
    ```bash
    sudo chown 568:568 /mnt/tank/apps/sentry-mate /mnt/tank/apps/sentry-mate-keys
@@ -154,7 +156,8 @@ On TrueNAS SCALE 24.10 or newer, install it as a custom app with
    the log icon shows the line `CAN Bridge uploads on ... certificate
    SHA-256 <64 hex digits>`.
 
-4. **Recovery key.** In *System → Shell*:
+4. **Recovery key.** In *System → Shell*, with your keys dataset's path
+   (on another pool: for example `/mnt/ssd/sentry-mate-keys`):
 
    ```bash
    sudo cat /mnt/tank/apps/sentry-mate-keys/RECOVERY-KEY.txt
@@ -196,9 +199,15 @@ Sentry Six Manager, use the first section, **Sentry Six Manager (CAN log
 upload)**, the same way. The bridge's messages say "Sentry Manager" in both
 sections.
 
-**Check it works.** The bridge uploads a log once it is finished. After the
-first one, `token list` shows the car's key in place of `not tied to a car
-key yet`:
+**Check it works.** First check that the server can be reached from the
+car's Wi-Fi: on a phone or laptop on that network, open
+`https://<server>:10100/api/can/logs/ping` and accept the certificate
+warning. An answer with `bad_token` means the address, the port and the
+firewall are right (the browser has no token). The upload address itself,
+without `/ping`, answers `Nothing here.`, and that is normal too.
+
+The bridge uploads a log once it is finished. After the first one,
+`token list` shows the car's key in place of `not tied to a car key yet`:
 
 ```bash
 docker exec sentry-mate /sentry-mate token list
@@ -335,24 +344,52 @@ Type the recovery key when it asks, then *Start* the app.
 
 ### The data from a backup
 
-Stop Sentry Mate, put the backup in place of the data folder, give it to the
-user Sentry Mate runs as, and start it again:
+Docker Compose, in the folder with `docker-compose.yml`:
 
-```bash
-docker compose stop
-sudo mv data data.old
-mkdir data
-sudo tar -C data -xpf ~/sentry-mate-data-2026-11-17.tar
-sudo chown -R 1000:1000 data
-sudo chmod 700 data
-docker compose up -d
-```
+1. Stop Sentry Mate and put the data folder aside:
 
-Delete `data.old` once it works. If the log says `the key file doesn't open
-this vault`, the backup is from before a restore: run the restore above.
+   ```bash
+   docker compose stop
+   sudo mv data data.old
+   mkdir data
+   ```
+
+2. Put the backup in. Use your backup file's name in place of
+   `sentry-mate-data-<date>.tar`:
+
+   ```bash
+   sudo tar -C data -xpf ~/sentry-mate-data-<date>.tar
+   ```
+
+3. Check that the backup went in: this must show `vault.json`. If it
+   doesn't, fix step 2 before you start it.
+
+   ```bash
+   sudo ls data
+   ```
+
+4. Give it to the user Sentry Mate runs as, and start it:
+
+   ```bash
+   sudo chown -R 1000:1000 data
+   sudo chmod 700 data
+   docker compose up -d
+   ```
+
+5. It works when `fingerprint` prints the same SHA-256 as the CAN Bridge
+   app has, and `token list` shows your tokens. Only then delete `data.old`:
+
+   ```bash
+   sudo rm -r data.old
+   ```
+
+If the log says `the key file doesn't open this vault`, the backup is from
+before a restore: run the restore above.
 
 On TrueNAS, stop the app, roll the data dataset back to a snapshot (in the
-dataset's snapshots, *Rollback*), then start it.
+dataset's snapshots, *Rollback*), then start it. If the log then says `the
+key file doesn't open this vault`, the snapshot is from before a restore:
+run the TrueNAS restore above.
 
 ## Moving to a new server
 
@@ -360,41 +397,99 @@ The certificate and the tokens are in the data folder, so the bridge keeps
 working with the same token and certificate SHA-256. Change only its
 address, if the server's address changed.
 
-1. On the old server, stop Sentry Mate and copy what is in the two folders,
-   each to its own file:
+1. On the old server, in the folder with `docker-compose.yml`, stop
+   Sentry Mate and copy what is in the two folders, each to its own file in
+   your home folder. The keys file is then made yours and readable by you
+   only:
 
    ```bash
    docker compose stop
    sudo tar -C data -cpf ~/sentry-mate-data.tar .
    sudo tar -C keys -cpf ~/sentry-mate-keys.tar .
+   sudo chown "$(id -un)" ~/sentry-mate-data.tar ~/sentry-mate-keys.tar
+   chmod 600 ~/sentry-mate-keys.tar
    ```
 
    Or take only the data: on the new server you then
    [restore](#restore) with the recovery key.
 
-2. Copy the files to the new server (`scp`, a USB stick).
+2. Copy the files into your home folder on the new server (`scp`, a USB
+   stick). Carry the keys file apart from the data file (another USB stick,
+   or a separate `scp`), never in the same backup. To TrueNAS: copy them into an
+   SMB share on it (for example one at `/mnt/tank/share`), or turn on SSH
+   (*System → Services*) for `scp`. TrueNAS has SSH off at first and does
+   not mount USB sticks.
 
-3. On the new server, make the two folders as for a new install (Docker
-   Compose step 2, or TrueNAS step 1). Put the copies in, and give them to
-   the user Sentry Mate runs as there, with `-R` for everything inside:
+3. On the new server, do Docker Compose steps 1 and 2 (the compose file and
+   the two folders), or TrueNAS step 1 (the datasets). Put the copies in,
+   and give them to the user Sentry Mate runs as there, with `-R` for
+   everything inside:
 
    ```bash
-   sudo tar -C data -xpf sentry-mate-data.tar
-   sudo tar -C keys -xpf sentry-mate-keys.tar
+   sudo tar -C data -xpf ~/sentry-mate-data.tar
+   sudo tar -C keys -xpf ~/sentry-mate-keys.tar
    sudo chown -R 1000:1000 data keys
+   sudo chmod 700 data keys
+   sudo ls data
    ```
 
-   On TrueNAS the user is 568, and the folders are your datasets:
+   On TrueNAS the user is 568, the folders are your datasets, and the files
+   are where you copied them (here the share at `/mnt/tank/share`). Delete
+   them from the share right after, the keys one above all:
 
    ```bash
-   sudo tar -C /mnt/tank/apps/sentry-mate -xpf sentry-mate-data.tar
-   sudo tar -C /mnt/tank/apps/sentry-mate-keys -xpf sentry-mate-keys.tar
+   sudo tar -C /mnt/tank/apps/sentry-mate -xpf /mnt/tank/share/sentry-mate-data.tar
+   sudo tar -C /mnt/tank/apps/sentry-mate-keys -xpf /mnt/tank/share/sentry-mate-keys.tar
    sudo chown -R 568:568 /mnt/tank/apps/sentry-mate /mnt/tank/apps/sentry-mate-keys
+   sudo chmod 700 /mnt/tank/apps/sentry-mate /mnt/tank/apps/sentry-mate-keys
+   sudo rm /mnt/tank/share/sentry-mate-data.tar /mnt/tank/share/sentry-mate-keys.tar
+   sudo ls /mnt/tank/apps/sentry-mate
    ```
+
+   The last line must show `vault.json`. If it doesn't, the data didn't go
+   in: fix that before you start it.
 
 4. Start it (`docker compose up -d`, or *Install via YAML*), and check that
-   `fingerprint` prints the same SHA-256 as before. Then delete the `.tar`
-   files (the keys one above all), and leave the old server stopped.
+   `fingerprint` prints the same SHA-256 as the CAN Bridge app has, and
+   `token list` shows your tokens. Then delete the `.tar` files on both
+   servers (`rm ~/sentry-mate-data.tar ~/sentry-mate-keys.tar`), and leave
+   the old server stopped.
+
+## Moving the folders on this server
+
+To put the keys on a second disk after the install, or the data on a bigger
+one. Copy first, then change the volume line: pointed at an empty folder,
+Sentry Mate finds nothing to open and stops.
+
+1. Note what `fingerprint` prints. Then stop Sentry Mate, and copy the
+   folder into a new one (here the keys, to `/mnt/disk2/sentry-mate-keys`;
+   the data the same way, from `data/`):
+
+   ```bash
+   docker exec sentry-mate /sentry-mate fingerprint
+   docker compose stop
+   sudo mkdir -p /mnt/disk2/sentry-mate-keys
+   sudo cp -a keys/. /mnt/disk2/sentry-mate-keys/
+   sudo chown -R 1000:1000 /mnt/disk2/sentry-mate-keys
+   sudo chmod 700 /mnt/disk2/sentry-mate-keys
+   ```
+
+2. In `docker-compose.yml`, put the new path in that volume line, for
+   example `- /mnt/disk2/sentry-mate-keys:/keys`. Then start it:
+
+   ```bash
+   docker compose up -d
+   docker exec sentry-mate /sentry-mate fingerprint
+   ```
+
+3. It must print the same SHA-256 as before. Then delete the old folder
+   (`sudo rm -r keys`, or `data`).
+
+On TrueNAS: stop the app, make the new dataset, then in *System → Shell*
+copy into it with `sudo cp -a <old path>/. <new path>/`, and run
+`sudo chown -R 568:568` and `sudo chmod 700` on the new path. *Edit* the
+app, change the line marked `CHANGE` to the new path, and *Save*. Check
+`fingerprint` the same way before you delete the old dataset.
 
 ## Ports and firewalls
 
@@ -439,16 +534,19 @@ stopping, `docker compose ps` shows `Restarting`.
 
 | The log says | What to do |
 | --- | --- |
-| `Sentry Mate runs as uid 1000 (group 1000) and can't write to the data folder /data: it belongs to uid 0 (group 0), root.` | The folder belongs to root: Docker made it because it was missing, or it was made with `sudo`. Run the `sudo chown` it gives on that folder on the server (`data`, `keys`, or the dataset's path). The same message names the keys folder when that one is wrong. |
+| `Sentry Mate runs as uid 1000 (group 1000) and can't write to the data folder /data: it belongs to uid 0 (group 0), root.` (and the same for the keys folder) | The folders belong to root: Docker made them because they were missing, or they were made with `sudo`. Docker Compose, in the folder with `docker-compose.yml`: `sudo chown 1000:1000 data keys && sudo chmod 700 data keys` (or the paths in your volume lines). TrueNAS: `sudo chown 568:568` and `sudo chmod 700` on the two datasets' paths. It starts again by itself within a minute, or run `docker compose restart`. |
 | `... it belongs to uid 1000 (group 1000).` and `Or run Sentry Mate as the folder's owner: user: "1000:1000"` | The folders come from an install that ran as another user (Docker Compose 1000, TrueNAS 568). Give them to the user it runs as now, with `sudo chown -R`. |
 | `Permission denied (os error 13)`, then `the data and keys folders and everything in them must belong to it` | Something inside the folders belongs to another user, most often after a move with a `chown` without `-R`. Run the `sudo chown -R` it gives. |
 | `the data folder /data is read-only` | The volume line ends in `:ro`: remove it. |
-| `the key file is missing: restore it with the recovery key` | The keys folder is empty: a wrong path in the keys line, a disk that isn't there, or the key file is lost. Fix the path, or [restore](#restore). |
+| `the key file is missing: restore it with the recovery key` | The keys folder is empty: a wrong path in the keys line, a disk that isn't there, or the key file is lost. Fix the path, or [restore](#restore) (with Sentry Mate stopped: not with `docker exec`). |
+| `the keys folder has a key file (/keys/sentry-mate.key), but the data folder /data has no vault` | The data folder is empty or not the right one: a wrong path in the data line, a disk that isn't there, or a backup that didn't go in. Sentry Mate makes no new vault over a key file, which may open your data. Fix the path, or put the data back (`sudo ls data` must show `vault.json`). To start over with no data on purpose, delete the key file. |
 | `the key file doesn't open this vault (another machine's, or replaced)` | The keys folder is another install's, or the data is a backup from before a restore. Mount the right keys folder, or [restore](#restore) with this data's recovery key. |
 | `that recovery key doesn't open this vault` (from `restore`) | A typo, the key of another install, or a key replaced with `recovery-key new`. |
 | `/keys/RECOVERY-KEY.txt is still there` (it starts all the same) | Copy the recovery key somewhere safe and delete the file. |
 | Only the first line, `Sentry Mate 0.1.0 ...`, again and again, and `docker compose ps` shows `Restarting (137)` | Out of memory: making the vault on first start and a restore need about 1 GiB for a few seconds. Free some memory, or raise the container's memory limit. |
 | `docker compose up -d` says `Bind for 0.0.0.0:10100 failed: port is already allocated` | Another app uses 10100: change the left number ([Ports](#ports-and-firewalls)). |
+| `docker compose up -d` or `docker compose pull` says `error from registry: denied` | The image can't be pulled: it is not public yet, or the `image:` line is mistyped. It is `ghcr.io/skittles-fivem/sentry-mate`. `docker pull ghcr.io/skittles-fivem/sentry-mate:latest` must work without a login. |
+| `docker compose pull` says `not found` or `manifest unknown` for a `build-` or `sha-` tag | The tag in `.env` (`SENTRY_MATE_TAG`) doesn't exist: check its number, or delete `.env` for `latest`. |
 
 What the bridge says, in its upload section:
 
