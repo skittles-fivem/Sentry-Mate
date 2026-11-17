@@ -52,12 +52,20 @@ pub enum Error {
     BadVault(String),
     #[error("the key file doesn't open this vault (another machine's, or replaced)")]
     WrongKeyFile,
-    #[error("the key file is missing: restore it with the recovery key (`sentry-mate restore`)")]
+    #[error("the key file is missing: restore it with the recovery key")]
     NoKeyFile,
     #[error("that recovery key doesn't open this vault")]
     WrongRecoveryKey,
     #[error("the key folder {0} is inside the data folder: give it a folder (volume) of its own")]
     KeysInsideData(PathBuf),
+    #[error("there is a vault in {0} already")]
+    VaultThere(PathBuf),
+    #[error(
+        "the keys folder has a key file ({key}), but the data folder {data} has no vault: check that the right \
+         folder is mounted there and that the data was put back. To start over with a new, empty vault on \
+         purpose, delete the key file"
+    )]
+    KeyFileButNoVault { data: PathBuf, key: PathBuf },
 }
 
 impl Error {
@@ -270,9 +278,18 @@ impl Vault {
         Ok(Vault { id: vf.key_id, key })
     }
 
-    /// Makes a new vault: a new data key, a new key file, and a recovery key (returned once, never stored).
+    /// Makes a new vault: a new data key, a new key file, and a recovery key (returned once, never stored). Never
+    /// over a vault or a key file that is there: that key file may open data that is only missing from the data
+    /// folder (a wrong path, a backup not put back), and the new one would replace it.
     pub fn create(data: &Path, keys: &Path, kdf: Kdf) -> Result<(Vault, RecoveryKey), Error> {
         check_apart(data, keys)?;
+        if there(&data.join(VAULT_FILE))? {
+            return Err(Error::VaultThere(data.to_path_buf()));
+        }
+        let key_file = keys.join(KEY_FILE);
+        if there(&key_file)? {
+            return Err(Error::KeyFileButNoVault { data: data.to_path_buf(), key: key_file });
+        }
         let key = random::<32>()?;
         let kek = random::<32>()?;
         let recovery = random::<32>()?;
@@ -284,7 +301,8 @@ impl Vault {
             key_file: wrap(&kek, &*key, KEY_FILE_PURPOSE)?,
             recovery: RecoverySlot { salt: B64.encode(*salt), kdf, wrapped: wrap(&rkek, &*key, RECOVERY_PURPOSE)? },
         };
-        write_private(&keys.join(KEY_FILE), &*kek)?;
+        // (cut off between the two, a key file is left alone: the next start says to delete it)
+        write_private(&key_file, &*kek)?;
         write_vault(data, &vf)?;
         let shown = RecoveryKey(Zeroizing::new(encode_recovery(&recovery)));
         Ok((Vault { id: vf.key_id, key }, shown))
@@ -407,6 +425,15 @@ pub fn unwrap_io(e: std::io::Error) -> Error {
         Some(Error::Damaged) => Error::Damaged,
         Some(Error::NotSealed) => Error::NotSealed,
         _ => Error::Io(e),
+    }
+}
+
+/// Whether something is at `path` (a file, a folder, a link): an error other than "not found" is passed on.
+fn there(path: &Path) -> Result<bool, Error> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.into()),
     }
 }
 

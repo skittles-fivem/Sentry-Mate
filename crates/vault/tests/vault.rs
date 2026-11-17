@@ -96,6 +96,38 @@ fn the_recovery_key_restores_a_lost_key_file() {
 }
 
 #[test]
+fn a_new_vault_is_never_made_over_a_key_file_or_a_vault() {
+    let (t, data, keys) = dirs();
+    let (v, _) = Vault::create(&data, &keys, Kdf::FAST_FOR_TESTS).unwrap();
+    let id = v.key_id().to_string();
+    drop(v);
+    let key = std::fs::read(keys.join(vault::KEY_FILE)).unwrap();
+    let vf = std::fs::read(data.join(vault::VAULT_FILE)).unwrap();
+    assert!(matches!(Vault::create(&data, &keys, Kdf::FAST_FOR_TESTS), Err(Error::VaultThere(_))));
+
+    // the data folder empty or not the right one (a wrong path, a backup not put back): nothing is made or replaced
+    let empty = t.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    for _ in 0..2 {
+        let e = Vault::open_or_create(&empty, &keys, Kdf::FAST_FOR_TESTS).err().unwrap();
+        assert!(matches!(e, Error::KeyFileButNoVault { .. }), "{e}");
+        let said = e.to_string();
+        assert!(said.contains("has a key file") && said.contains("delete the key file"), "{said}");
+    }
+    assert!(matches!(Vault::create(&empty, &keys, Kdf::FAST_FOR_TESTS), Err(Error::KeyFileButNoVault { .. })));
+    assert!(!empty.join(vault::VAULT_FILE).exists());
+    assert_eq!(std::fs::read(keys.join(vault::KEY_FILE)).unwrap(), key, "the key file was replaced");
+    assert_eq!(std::fs::read(data.join(vault::VAULT_FILE)).unwrap(), vf);
+    assert_eq!(Vault::open(&data, &keys).unwrap().key_id(), id, "the right data folder still opens");
+
+    // the key file deleted on purpose: a new vault, with a recovery key
+    std::fs::remove_file(keys.join(vault::KEY_FILE)).unwrap();
+    let (v, made) = Vault::open_or_create(&empty, &keys, Kdf::FAST_FOR_TESTS).unwrap();
+    assert!(made.is_some());
+    assert_ne!(v.key_id(), id);
+}
+
+#[test]
 fn keys_must_not_live_in_the_data_folder() {
     let (_t, data, _) = dirs();
     let inside = data.join("keys");

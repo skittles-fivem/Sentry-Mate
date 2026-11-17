@@ -146,6 +146,9 @@ async fn main() -> ExitCode {
             if let Some(h) = folders::hint(&*e, &data, &keys) {
                 eprintln!("{h}");
             }
+            if let Some(h) = restore_hint(&*e) {
+                eprintln!("{h}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -155,6 +158,18 @@ fn print_recovery(key: &vault::RecoveryKey) {
     println!("Recovery key (shown once; Sentry Mate does not keep it):\n\n  {}\n", key.as_str());
     println!("Write it down or put it in a password manager, away from this server. With the key file it is the only");
     println!("way to open your data on a new machine: lose both and the data can't be opened by anyone.");
+}
+
+/// What to do when the key file is missing or wrong: the restore runs with Sentry Mate stopped, so not with
+/// `docker exec`.
+fn restore_hint(e: &(dyn std::error::Error + 'static)) -> Option<&'static str> {
+    match e.downcast_ref::<vault::Error>()? {
+        vault::Error::NoKeyFile | vault::Error::WrongKeyFile => Some(
+            "Check the keys folder's path first. To restore with the recovery key, stop Sentry Mate, then: docker \
+             compose run --rm -it sentry-mate restore (TrueNAS: Restore in docs/install.md)",
+        ),
+        _ => None,
+    }
 }
 
 /// What a command needs of the data and keys folders: whether it writes to each, or `None` when it uses neither.
@@ -170,10 +185,15 @@ fn needs(cmd: &Cmd) -> Option<(bool, bool)> {
 async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let (data, keys) = (cli.data, cli.keys);
     if let Some((data_write, keys_write)) = needs(&cli.cmd) {
-        folders::check(&data, "data", data_write)?;
+        // both checked, so that both are named when both are wrong (two folders Docker made as root)
+        let mut wrong = Vec::new();
+        wrong.extend(folders::check(&data, "data", data_write).err());
         // a keys folder inside the data folder is refused by the vault: not made here first
         if !keys.starts_with(&data) {
-            folders::check(&keys, "keys", keys_write)?;
+            wrong.extend(folders::check(&keys, "keys", keys_write).err());
+        }
+        if !wrong.is_empty() {
+            return Err(wrong.join("\n").into());
         }
     }
     match cli.cmd {
@@ -385,7 +405,9 @@ async fn serve(
         v.key_id()
     );
     if !any_token {
-        tracing::info!("no upload token yet: make one with `sentry-mate token new --car \"My car\"`");
+        tracing::info!(
+            "no upload token yet: make one with `docker exec sentry-mate /sentry-mate token new --car \"My car\"`"
+        );
     }
 
     // logs whose sidecar never came are judged without it (only cars with logs waiting are looked at); unfinished
@@ -437,7 +459,30 @@ async fn shutdown() {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    #[tokio::test]
+    async fn both_folders_are_named_when_both_are_wrong() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::write(&data, b"x").unwrap();
+        std::fs::write(&keys, b"x").unwrap();
+        let cli = Cli { data, keys, upload_port: 0, cmd: Cmd::Fingerprint };
+        let Err(e) = run(cli).await else { panic!("it ran") };
+        let said = e.to_string();
+        assert!(said.contains("the data folder") && said.contains("the keys folder"), "{said}");
+    }
+
+    #[test]
+    fn a_missing_or_wrong_key_file_says_how_to_restore() {
+        for e in [vault::Error::NoKeyFile, vault::Error::WrongKeyFile] {
+            let e: Box<dyn std::error::Error> = e.into();
+            assert!(restore_hint(&*e).is_some_and(|h| h.contains("docker compose run --rm -it sentry-mate restore")));
+        }
+        let e: Box<dyn std::error::Error> = vault::Error::NoVault.into();
+        assert_eq!(restore_hint(&*e), None);
+    }
 
     #[test]
     fn the_version_starts_with_the_crates_own() {
