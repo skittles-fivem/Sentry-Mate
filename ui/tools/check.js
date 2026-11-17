@@ -1,0 +1,1056 @@
+#!/usr/bin/env node
+// Sentry Mate UI page checker.
+//
+//   node ui/tools/check.js --pack instrument [--pages fleet,car,...|all] [--sizes 1440x900,3840x2160]
+//        [--out DIR] [--server-args "<dev server flags>"] [--json] [--allow-missing] [--full]
+//        [--fixture-matrix FILE] [--ready-timeout-ms N] [--idle-timeout-ms N] [--jobs N]
+//        [--car ID] [--drive ID] [--charge ID]
+//   node ui/tools/check.js --self-test
+//
+// It starts the dev API server (ui/devserver/serve.py) on a free port with the pack, opens every chosen
+// page at every chosen size in Chromium (Playwright), waits for the page to say it is ready
+// (document.documentElement.dataset.ready = '<page id>'), and reports per page and size: coverage items
+// that are missing, marked on the wrong page or unknown; console errors; page errors; Content Security
+// Policy violations; failed /api requests; requests to other hosts; horizontal overflow; visible text
+// under 10 CSS px. It saves a screenshot of each. Exit code 0 only when every checked page passes.
+// See ui/tools/README.md. Plain Node (CommonJS) plus Playwright; nothing else.
+
+'use strict';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const http = require('http');
+const zlib = require('zlib');
+const { spawn } = require('child_process');
+
+const TOOLS_DIR = __dirname;
+const UI_DIR = path.dirname(TOOLS_DIR);
+const REPO_DIR = path.dirname(UI_DIR);
+const SERVE_PY = path.join(UI_DIR, 'devserver', 'serve.py');
+const MATRIX_FILE = path.join(REPO_DIR, 'docs', 'parity', 'coverage-matrix.json');
+const FIXTURES_DIR = path.join(TOOLS_DIR, 'fixtures');
+const DEFAULT_OUT = process.env.UI_CHECK_OUT
+  || '/tmp/claude-0/-home-user/a21ca915-d66a-535e-bc49-94ea44f3d987/scratchpad/ui-build/check';
+const DEFAULT_SIZES = '1440x900,3840x2160';
+const TILE_HOST = 'tile.openstreetmap.org';
+const MIN_TEXT_PX = 10;
+const OTHER_ID_GRACE_MS = 2000; // a data-ready value of another page, unchanged this long, ends the wait
+const QUIET_MS = 500; // "network idle": no request in flight for this long
+const UNREAD_BODY_MS = 1500; // Chromium never finishes a fetch whose body the page does not read
+const LIST_CAP = 100; // entries kept per list and size; the rest are counted
+
+// Page id -> routes (contract 3). A page with two routes (health) is loaded at both; its own items
+// may sit on either one, the frame items must be on each.
+const ROUTES = {
+  fleet: ['/'],
+  car: ['/cars/{car}'],
+  timeline: ['/cars/{car}/timeline'],
+  drives: ['/cars/{car}/drives'],
+  drive: ['/cars/{car}/drives/{drive}'],
+  trip: ['/cars/{car}/trip'],
+  logbook: ['/cars/{car}/logbook'],
+  charges: ['/cars/{car}/charges'],
+  charge: ['/cars/{car}/charges/{charge}'],
+  battery: ['/cars/{car}/battery'],
+  efficiency: ['/cars/{car}/efficiency'],
+  statistics: ['/cars/{car}/statistics'],
+  travel: ['/travel'],
+  software: ['/cars/{car}/software'],
+  places: ['/places'],
+  'settings-cars': ['/settings/cars/{car}'],
+  'settings-display': ['/settings/display'],
+  'settings-integrations': ['/settings/integrations'],
+  'settings-server': ['/settings/server'],
+  import: ['/settings/import'],
+  health: ['/cars/{car}/health', '/system'],
+  help: ['/help'],
+};
+
+// Frame screens: not pages of the matrix. Each gets its own dev server in the state it needs, requires
+// no items, and expects 401 and 404 from /api (signed out, nothing set up yet).
+const FRAME_SCREENS = {
+  'sign-in': { route: '/sign-in', serverArgs: ['--signed-out'], expect: [401, 404] },
+  setup: { route: '/setup', serverArgs: ['--needs-setup'], expect: [401, 404] },
+};
+
+class UsageError extends Error {}
+class StartError extends Error {} // the dev server or the browser did not start
+
+// ------------------------------------------------------------------ small helpers
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// A promise that gives up after ms (an evaluate in a page that stopped running never settles).
+function within(ms, promise, what) {
+  let t;
+  const limit = new Promise((_, reject) => { t = setTimeout(() => reject(new Error(`${what} took more than ${(ms / 1000).toFixed(0)} s`)), ms); });
+  return Promise.race([promise, limit]).finally(() => clearTimeout(t));
+}
+const clip = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+const rel = (p) => { const r = path.relative(process.cwd(), p); return r && !r.startsWith('..') ? r : p; };
+const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
+
+function shortUrl(u, origin) {
+  if (!u) return '';
+  if (origin && u.startsWith(origin)) return u.slice(origin.length) || '/';
+  return clip(u, 200);
+}
+
+// A list that keeps the first LIST_CAP entries and counts the rest.
+function push(res, key, item) {
+  if (res[key].length < LIST_CAP) res[key].push(item);
+  else res._dropped[key] = (res._dropped[key] || 0) + 1;
+}
+
+function splitArgs(s) {
+  const out = [];
+  let cur = '', quote = null, has = false;
+  for (const ch of String(s || '')) {
+    if (quote) { if (ch === quote) quote = null; else cur += ch; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; has = true; continue; }
+    if (/\s/.test(ch)) { if (has) { out.push(cur); cur = ''; has = false; } continue; }
+    cur += ch; has = true;
+  }
+  if (quote) throw new UsageError('--server-args has an unclosed quote');
+  if (has) out.push(cur);
+  return out;
+}
+
+// A blank (transparent) 256 x 256 PNG, answered for every map tile request.
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function blankPng(w, h) {
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(td));
+    return Buffer.concat([len, td, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; ihdr[9] = 6; // 8 bits, RGBA
+  const raw = Buffer.alloc((w * 4 + 1) * h); // filter byte 0 and transparent pixels on every row
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+const BLANK_TILE = blankPng(256, 256);
+
+// ------------------------------------------------------------------ processes and clean-up
+
+const live = { children: new Set(), browsers: new Set() };
+
+function killChildren(signal) {
+  for (const c of live.children) { try { c.kill(signal); } catch (_) { /* gone */ } }
+}
+process.on('exit', () => killChildren('SIGKILL'));
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => {
+    process.stderr.write(`\nstopped (${sig}): closing the browser and the dev server\n`);
+    for (const b of live.browsers) b.close().catch(() => {});
+    killChildren('SIGTERM');
+    setTimeout(() => process.exit(sig === 'SIGINT' ? 130 : 143), 200);
+  });
+}
+
+// Starts serve.py on a free port and resolves when it prints "listening on http://HOST:PORT/".
+function startServer(packDir, args) {
+  return new Promise((resolve, reject) => {
+    const argv = [SERVE_PY, '--pack', packDir, '--port', '0', ...args];
+    const child = spawn('python3', argv, { cwd: REPO_DIR, stdio: ['ignore', 'pipe', 'pipe'] });
+    live.children.add(child);
+    let out = '', err = '', ready = false;
+    const exited = new Promise((r) => child.once('exit', r));
+    const stop = async () => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM');
+        const t = setTimeout(() => child.kill('SIGKILL'), 3000);
+        await exited;
+        clearTimeout(t);
+      }
+      live.children.delete(child);
+    };
+    const fail = (msg) => {
+      if (ready) return;
+      ready = true;
+      stop().then(() => reject(new StartError(`${msg}\n  command: python3 ${argv.map((a) => rel(a)).join(' ')}${err.trim() ? `\n  stderr:\n${err.trim().split('\n').slice(-15).map((l) => '    ' + l).join('\n')}` : ''}`)));
+    };
+    const timer = setTimeout(() => fail('the dev server printed no "listening on" line within 60 s'), 60000);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (d) => {
+      if (ready) return; // keep reading so the pipe never fills
+      out += d;
+      const m = /listening on (http:\/\/\S+?)\/?\s/.exec(out);
+      if (!m) return;
+      ready = true;
+      clearTimeout(timer);
+      const u = new URL(m[1]);
+      if (u.hostname === '0.0.0.0') u.hostname = '127.0.0.1';
+      if (u.hostname === '[::]') u.hostname = '[::1]';
+      resolve({ origin: u.origin, host: u.host, args, stop, stderr: () => err });
+    });
+    child.stderr.on('data', (d) => { err = (err + d).slice(-20000); });
+    child.once('error', (e) => { clearTimeout(timer); fail(`could not start python3: ${e.message}`); });
+    child.once('exit', (code, sig) => { clearTimeout(timer); fail(`the dev server stopped before it was ready (${sig || 'exit code ' + code})`); });
+  });
+}
+
+function getJson(origin, p, jar) {
+  return new Promise((resolve, reject) => {
+    const headers = { Accept: 'application/json' };
+    if (jar.cookie) headers.Cookie = jar.cookie;
+    const req = http.get(origin + p, { headers, timeout: 30000 }, (res) => {
+      const set = res.headers['set-cookie'];
+      if (set && set.length) jar.cookie = set.map((c) => c.split(';')[0]).join('; ');
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (d) => { body += d; });
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(body); } catch (_) { /* not JSON */ }
+        if (res.statusCode >= 400 || !json) {
+          const code = json && json.error && json.error.code ? ` ${json.error.code}` : '';
+          reject(new Error(`GET ${p} answered ${res.statusCode}${code}`));
+        } else resolve(json);
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error(`GET ${p} took more than 30 s`)));
+    req.on('error', reject);
+  });
+}
+
+// {car} is the first car of GET /api/v1/cars; {drive} and {charge} that car's newest drive and charge
+// (the lists come newest first). --car, --drive and --charge override them.
+async function resolveIds(server, o, need) {
+  const ids = { car: o.car || null, drive: o.drive || null, charge: o.charge || null };
+  const problems = {};
+  if (!server) return { ids, problems };
+  const jar = {};
+  const enc = encodeURIComponent;
+  if (need.car && !ids.car) {
+    try {
+      const cars = await getJson(server.origin, '/api/v1/cars?limit=1', jar);
+      ids.car = cars.items && cars.items[0] ? String(cars.items[0].id) : null;
+      if (!ids.car) problems.car = 'no car to open: GET /api/v1/cars lists none';
+    } catch (e) { problems.car = `no car to open: ${e.message}`; }
+  }
+  for (const [name, list] of [['drive', 'drives'], ['charge', 'charges']]) {
+    if (!need[name] || ids[name]) continue;
+    if (!ids.car) { problems[name] = problems.car || 'no car to open'; continue; }
+    const p = `/api/v1/cars/${enc(ids.car)}/${list}?limit=1`;
+    try {
+      const page = await getJson(server.origin, p, jar);
+      ids[name] = page.items && page.items[0] ? String(page.items[0].id) : null;
+      if (!ids[name]) problems[name] = `no ${name} to open: car ${ids.car} has none`;
+    } catch (e) { problems[name] = `no ${name} to open: ${e.message}`; }
+  }
+  return { ids, problems };
+}
+
+function fillRoute(route, ids, problems) {
+  let problem = null;
+  const url = route.replace(/\{([a-z]+)\}/g, (m, name) => {
+    if (!(name in ids)) { problem = problem || `the route ${route} has an unknown part {${name}}`; return m; }
+    if (!ids[name]) { problem = problem || problems[name] || `no ${name} to open`; return m; }
+    return encodeURIComponent(ids[name]);
+  });
+  return { url, problem };
+}
+
+// ------------------------------------------------------------------ the matrix and the page plan
+
+function loadMatrix(file) {
+  let m;
+  try { m = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { throw new UsageError(`cannot read the matrix ${file}: ${e.message}`); }
+  if (!m || typeof m.pages !== 'object' || !Array.isArray(m.items)) throw new UsageError(`${file} is not a coverage matrix (it needs "pages" and "items")`);
+  const itemPage = new Map();
+  for (const it of m.items) if (it && typeof it.id === 'string') itemPage.set(it.id, String(it.page));
+  const byPage = new Map();
+  for (const [id, page] of itemPage) { if (!byPage.has(page)) byPage.set(page, []); byPage.get(page).push(id); }
+  return { file, pages: m.pages, itemPage, byPage };
+}
+
+// Routes of a page the built-in table does not know, from the matrix text ("/a  and  /b", "/x?from=&to=").
+function routesFromMatrix(text) {
+  const head = String(text || '').split('(')[0];
+  return (head.match(/\/[^\s]*/g) || []).map((r) => r.replace(/\?.*$/, '') || '/');
+}
+
+function slug(route) {
+  return route.replace(/\{[^}]*\}/g, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'root';
+}
+
+function planPages(matrix, pagesOpt) {
+  const known = Object.keys(matrix.pages).filter((id) => id !== 'frame');
+  const all = [...known, ...Object.keys(FRAME_SCREENS)];
+  const ids = pagesOpt === 'all' ? all : [...new Set(String(pagesOpt).split(',').map((s) => s.trim()).filter(Boolean))];
+  if (!ids.length) throw new UsageError('--pages names no page');
+  const entries = [];
+  for (const id of ids) {
+    if (id === 'frame') throw new UsageError('"frame" is checked on every page; name the pages to check');
+    if (FRAME_SCREENS[id]) {
+      const f = FRAME_SCREENS[id];
+      entries.push({ id, key: id, route: f.route, mode: id, serverArgs: f.serverArgs, expect: f.expect, screen: true });
+      continue;
+    }
+    if (!matrix.pages[id]) throw new UsageError(`unknown page "${id}". Pages: ${all.join(', ')}`);
+    const routes = ROUTES[id] || routesFromMatrix(matrix.pages[id].route);
+    if (!routes.length) throw new UsageError(`no route for page "${id}"`);
+    routes.forEach((route, i) => entries.push({
+      id, key: i === 0 ? id : `${id}-${slug(route)}`, route, mode: 'normal', serverArgs: [], expect: [], screen: false,
+    }));
+  }
+  return entries;
+}
+
+// ------------------------------------------------------------------ in the page
+
+// Runs before any page script, in every frame: Content Security Policy violations of the document.
+function initScript() {
+  document.addEventListener('securitypolicyviolation', (e) => {
+    try {
+      window.__smCheckCsp({
+        directive: e.effectiveDirective || e.violatedDirective, blocked: e.blockedURI,
+        source: e.sourceFile, line: e.lineNumber, sample: e.sample,
+      });
+    } catch (_) { /* the binding is gone */ }
+  }, true);
+}
+
+// Runs in each worker once it exists (a violation in a worker's first line can be missed). A worker
+// cannot call the page binding, but its console reaches the page, so it reports through that.
+function workerHook() {
+  self.addEventListener('securitypolicyviolation', (e) => {
+    console.error('[sm-check-csp] ' + JSON.stringify({
+      directive: e.effectiveDirective || e.violatedDirective, blocked: e.blockedURI,
+      source: e.sourceFile, line: e.lineNumber, sample: e.sample, worker: true,
+    }));
+  });
+}
+
+// Coverage tokens, horizontal overflow and small text, measured in the page after it is ready.
+function pageChecks({ minPx, maxElements }) {
+  const de = document.documentElement;
+  const body = document.body;
+
+  function sel(e) {
+    const parts = [];
+    for (let x = e; x && x.nodeType === 1 && parts.length < 4; x = x.parentElement) {
+      let s = x.localName;
+      if (x.id) { parts.unshift(s + '#' + CSS.escape(x.id)); break; }
+      const cls = (x.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 2);
+      if (cls.length) s += '.' + cls.map((c) => CSS.escape(c)).join('.');
+      const p = x.parentElement;
+      if (p && x !== body) {
+        const same = Array.prototype.filter.call(p.children, (c) => c.localName === x.localName);
+        if (same.length > 1) s += ':nth-of-type(' + (same.indexOf(x) + 1) + ')';
+      }
+      parts.unshift(s);
+      if (x === body) break;
+    }
+    return parts.join(' > ');
+  }
+
+  // every data-cover token, open shadow roots included
+  const tokens = new Set();
+  const roots = [document];
+  while (roots.length) {
+    const r = roots.pop();
+    for (const e of r.querySelectorAll('*')) {
+      const v = e.getAttribute('data-cover');
+      if (v) for (const t of v.split(/\s+/)) if (t) tokens.add(t);
+      if (e.shadowRoot) roots.push(e.shadowRoot);
+    }
+  }
+
+  const opacityCache = new Map();
+  function transparent(e) { // opacity 0 on the element or an ancestor
+    if (!e || e === de) return false;
+    if (opacityCache.has(e)) return opacityCache.get(e);
+    const v = getComputedStyle(e).opacity === '0' || transparent(e.parentElement);
+    opacityCache.set(e, v);
+    return v;
+  }
+
+  // the document is wider than the window
+  const vw = de.clientWidth;
+  const overflow = { document: de.scrollWidth > vw + 1, scrollWidth: de.scrollWidth, clientWidth: vw, elements: [], count: 0 };
+
+  // elements cut by the left or right edge of the window, after the clipping of ancestors that hide or
+  // scroll their overflow (body and html excepted: content they cut off is lost); outermost ones only
+  const cut = new Set();
+  const crosses = (l, r) => (r > vw + 1 && l < vw - 1) || (l < -1 && r > 1);
+  if (body) {
+    for (const e of body.querySelectorAll('*')) {
+      const r = e.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1 || !crosses(r.left, r.right)) continue;
+      const cs = getComputedStyle(e);
+      if (cs.visibility !== 'visible' || transparent(e)) continue;
+      let l = r.left, rt = r.right;
+      if (cs.position !== 'fixed') {
+        for (let a = e.parentElement; a && a !== body && a !== de; a = a.parentElement) {
+          const as = getComputedStyle(a);
+          if (as.overflowX !== 'visible') { const ar = a.getBoundingClientRect(); l = Math.max(l, ar.left); rt = Math.min(rt, ar.right); }
+          if (as.position === 'fixed') break;
+        }
+      }
+      if (rt - l < 1 || !crosses(l, rt)) continue;
+      let inner = false;
+      for (let a = e.parentElement; a; a = a.parentElement) if (cut.has(a)) { inner = true; break; }
+      if (inner) continue;
+      cut.add(e);
+      overflow.count++;
+      if (overflow.elements.length < maxElements) {
+        overflow.elements.push({ selector: sel(e), left: Math.round(l), right: Math.round(rt), width: Math.round(r.width) });
+      }
+    }
+  }
+
+  // visible text smaller than minPx: the computed font size, times the SVG scale (viewBox, transforms)
+  // or a CSS transform that shrinks it
+  const sizeCache = new Map();
+  function rendered(e) {
+    if (sizeCache.has(e)) return sizeCache.get(e);
+    const cs = getComputedStyle(e);
+    let px = parseFloat(cs.fontSize) || 0;
+    if (e instanceof SVGElement) {
+      const g = typeof e.getScreenCTM === 'function' ? e : e.closest('svg');
+      const m = g && g.getScreenCTM ? g.getScreenCTM() : null;
+      if (m) px *= Math.hypot(m.c, m.d);
+    } else if (e.offsetHeight > 0) {
+      const s = e.getBoundingClientRect().height / e.offsetHeight;
+      if (s > 0 && s < 0.98) px *= s;
+    }
+    const v = { px: Math.round(px * 10) / 10, visible: cs.visibility === 'visible' && !transparent(e) };
+    sizeCache.set(e, v);
+    return v;
+  }
+  const small = [];
+  let smallCount = 0;
+  if (body) {
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    const docW = Math.max(de.scrollWidth, vw);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!/\S/.test(n.nodeValue)) continue;
+      const e = n.parentElement;
+      if (!e || e.closest('script, style, noscript, template, title, desc')) continue;
+      const s = rendered(e);
+      if (!s.visible || s.px >= minPx) continue;
+      range.selectNodeContents(n);
+      const rects = Array.from(range.getClientRects()).filter((q) => q.width > 1 && q.height > 1);
+      const sx = window.scrollX, sy = window.scrollY;
+      if (!rects.some((q) => q.right + sx > 0 && q.left + sx < docW && q.bottom + sy > 0)) continue;
+      smallCount++;
+      small.push({ px: s.px, selector: sel(e), text: n.nodeValue.trim().replace(/\s+/g, ' ').slice(0, 60) });
+    }
+  }
+  small.sort((a, b) => a.px - b.px);
+  const smallest = [];
+  const seen = new Set();
+  for (const s of small) {
+    if (seen.has(s.selector)) continue;
+    seen.add(s.selector);
+    smallest.push(s);
+    if (smallest.length >= 5) break;
+  }
+
+  return { tokens: [...tokens], overflow, smallText: { count: smallCount, smallest } };
+}
+
+// ------------------------------------------------------------------ one page at one size
+
+async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
+  const t0 = Date.now();
+  const res = {
+    size: size.label, ready: { ok: false, value: null, ms: null, landed: null, reason: null },
+    missing: [], foreign: [], unknown: [], console: [], pageErrors: [], csp: [], apiFailures: [], outside: [],
+    overflow: null, smallText: null, shot: null, fullShot: null, tiles: 0, notes: [], loadError: null,
+    _tokens: new Set(), _dropped: {},
+  };
+  if (entry.problem) { res.loadError = entry.problem; res.ready.reason = 'not_loaded'; return finish(); }
+
+  const origin = server.origin;
+  const isApi = (u) => u.host === server.host && u.pathname.startsWith('/api/');
+  const cspEvents = [];
+  const cspConsole = [];
+  const pending = [];
+  const inflight = new Set();
+  let lastBusy = Date.now();
+  let context;
+
+  function finish() {
+    res.ms = Date.now() - t0;
+    return res;
+  }
+
+  try {
+    context = await browser.newContext({
+      viewport: { width: size.w, height: size.h }, screen: { width: size.w, height: size.h }, deviceScaleFactor: 1,
+    });
+    // every host but the dev server: map tiles get a blank tile, anything else is recorded and blocked
+    await context.route((u) => /^(https?|wss?):$/.test(u.protocol) && u.host !== server.host, (route) => {
+      const req = route.request();
+      let u = null;
+      try { u = new URL(req.url()); } catch (_) { /* odd URL */ }
+      if (u && u.protocol === 'https:' && u.host === TILE_HOST) {
+        res.tiles++;
+        return route.fulfill({ status: 200, contentType: 'image/png', headers: { 'access-control-allow-origin': '*' }, body: BLANK_TILE }).catch(() => {});
+      }
+      push(res, 'outside', { url: clip(req.url(), 300), method: req.method(), type: req.resourceType() });
+      return route.abort('blockedbyclient').catch(() => {});
+    });
+    const page = await context.newPage();
+    // a popup (window.open, target=_blank) is closed again; its requests are checked by the route above.
+    // While it is open the page is in the background, where animation frames stop: bring it back.
+    let popups = 0;
+    context.on('page', (p) => {
+      if (p === page) return;
+      popups++;
+      setTimeout(() => p.close().catch(() => {}).then(() => page.bringToFront().catch(() => {})), 200);
+    });
+    await page.exposeFunction('__smCheckCsp', (v) => { if (v) cspEvents.push(v); });
+    await page.addInitScript(initScript);
+    page.on('worker', (w) => { w.evaluate(workerHook).catch(() => {}); });
+
+    page.on('console', (msg) => {
+      const type = msg.type();
+      if (type !== 'error' && type !== 'assert') return;
+      const text = msg.text();
+      if (text.startsWith('[sm-check-csp] ')) {
+        try { cspEvents.push(JSON.parse(text.slice(15))); } catch (_) { /* not ours */ }
+        return;
+      }
+      if (/Content[- ]Security[- ]Policy/i.test(text)) { cspConsole.push(text); return; }
+      const loc = msg.location() || {};
+      if (/^Failed to load resource/i.test(text) && loc.url) {
+        let u = null;
+        try { u = new URL(loc.url); } catch (_) { /* odd URL */ }
+        // failed /api answers and other hosts have their own lists
+        if (u && (u.host !== server.host || u.pathname.startsWith('/api/'))) return;
+      }
+      push(res, 'console', { text: clip(text, 500), url: shortUrl(loc.url, origin), line: loc.url ? (loc.lineNumber || 0) + 1 : null });
+    });
+    page.on('pageerror', (err) => {
+      const stack = String(err.stack || '').split('\n').slice(1, 4).map((l) => l.trim().replace(/^at /, '')).join(' | ');
+      push(res, 'pageErrors', { message: clip(err.message || String(err), 500), stack: clip(stack.replaceAll(origin, ''), 400) });
+    });
+
+    // requests in flight, for "network idle"; event streams and sockets stay open and do not count
+    const counts = (r) => { const t = r.resourceType(); return t !== 'eventsource' && t !== 'websocket'; };
+    const settle = (r) => { if (inflight.delete(r)) lastBusy = Date.now(); };
+    page.on('request', (r) => { if (counts(r)) { inflight.add(r); lastBusy = Date.now(); } });
+    page.on('requestfinished', settle);
+    page.on('response', (resp) => {
+      const req = resp.request();
+      const headers = resp.headers();
+      if (String(headers['content-type'] || '').includes('text/event-stream')) settle(req);
+      else if (inflight.has(req)) setTimeout(() => settle(req), UNREAD_BODY_MS);
+      let u = null;
+      try { u = new URL(resp.url()); } catch (_) { return; }
+      const status = resp.status();
+      if (isApi(u) && status >= 400 && !entry.expect.includes(status)) {
+        const item = { method: req.method(), url: clip(u.pathname + u.search, 300), status, code: null };
+        push(res, 'apiFailures', item);
+        // the error code from the body; a GET whose body the page never read is asked again
+        const codeOf = (t) => { try { const j = JSON.parse(t); return j && j.error && j.error.code ? String(j.error.code) : null; } catch (_) { return null; } };
+        pending.push(within(UNREAD_BODY_MS + 500, resp.text(), 'reading the body').then((t) => { item.code = codeOf(t); }, () => {
+          if (req.method() !== 'GET') return null;
+          return context.request.get(resp.url(), { headers: { Accept: 'application/json' }, timeout: 10000 })
+            .then((again) => again.text()).then((t) => { item.code = codeOf(t); }, () => {});
+        }));
+      } else if (u.host === server.host && !isApi(u) && status < 400 && ['script', 'stylesheet', 'font', 'image'].includes(req.resourceType())
+        && String(headers['content-type'] || '').startsWith('text/html')) {
+        res.notes.push(`${req.resourceType()} ${clip(u.pathname, 120)} came back as HTML (the page's index.html): is the file missing or the path relative?`);
+      }
+    });
+    page.on('requestfailed', (r) => {
+      settle(r);
+      const err = r.failure() ? r.failure().errorText : 'failed';
+      let u = null;
+      try { u = new URL(r.url()); } catch (_) { return; }
+      if (!isApi(u) || /ERR_ABORTED/.test(err)) return; // cancelled on purpose: a newer request, a page change
+      push(res, 'apiFailures', { method: r.method(), url: clip(u.pathname + u.search, 300), status: null, code: null, error: err });
+    });
+
+    // navigate and wait for data-ready
+    const navStart = Date.now();
+    try {
+      await page.goto(origin + entry.url, { waitUntil: 'commit', timeout: 30000 });
+    } catch (e) {
+      res.loadError = `the page did not load: ${clip(e.message.split('\n')[0], 300)}`;
+    }
+    if (!res.loadError) {
+      let other = null, otherSince = 0, last = null;
+      for (;;) {
+        let v;
+        try { v = await within(5000, page.evaluate(() => document.documentElement.dataset.ready ?? null), 'reading data-ready'); } catch (_) { v = undefined; }
+        if (v !== undefined) last = v;
+        const ms = Date.now() - navStart;
+        if (v === entry.id) { Object.assign(res.ready, { ok: true, value: v, ms }); break; }
+        if (typeof v === 'string' && v.startsWith('error:')) { Object.assign(res.ready, { value: v, ms, reason: 'error' }); break; }
+        if (typeof v === 'string' && v) {
+          if (v !== other) { other = v; otherSince = Date.now(); } else if (Date.now() - otherSince >= OTHER_ID_GRACE_MS) {
+            Object.assign(res.ready, { value: v, ms, reason: 'other_page' }); break;
+          }
+        } else other = null;
+        if (ms >= o.readyTimeoutMs) { Object.assign(res.ready, { value: last, ms, reason: 'timeout' }); break; }
+        await sleep(100);
+      }
+      // then wait until no request has been in flight for QUIET_MS
+      const idleStart = Date.now();
+      while (!(inflight.size === 0 && Date.now() - lastBusy >= QUIET_MS)) {
+        if (Date.now() - idleStart >= o.idleTimeoutMs) {
+          const busy = [...inflight].slice(0, 3).map((r) => shortUrl(r.url(), origin)).join(', ');
+          res.notes.push(`the network was still busy after ${(o.idleTimeoutMs / 1000).toFixed(0)} s (${plural(inflight.size, 'request')} open: ${busy})`);
+          break;
+        }
+        await sleep(50);
+      }
+      if (popups) await within(5000, page.bringToFront(), 'bringing the page to the front').catch(() => {});
+      await within(2000, page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))), 'two animation frames').catch(() => {});
+    }
+    try { res.ready.landed = shortUrl(page.url(), origin); } catch (_) { /* closed */ }
+
+    // measure the page
+    try {
+      const dom = await within(30000, page.evaluate(pageChecks, { minPx: MIN_TEXT_PX, maxElements: 10 }), 'measuring the page');
+      res._tokens = new Set(dom.tokens);
+      res.overflow = dom.overflow;
+      res.smallText = dom.smallText;
+    } catch (e) {
+      res.notes.push(`could not measure the page: ${clip(e.message.split('\n')[0], 200)}`);
+    }
+
+    // screenshots
+    const base = path.join(outDir, `${entry.key}-${size.label}`);
+    try {
+      await page.screenshot({ path: base + '.png', animations: 'disabled', caret: 'hide', timeout: 20000 });
+      res.shot = base + '.png';
+    } catch (e) { res.notes.push(`no screenshot: ${clip(e.message.split('\n')[0], 200)}`); }
+    if (o.full && sizeIndex === 0) {
+      try {
+        await page.screenshot({ path: base + '-full.png', fullPage: true, animations: 'disabled', caret: 'hide', timeout: 30000 });
+        res.fullShot = base + '-full.png';
+      } catch (e) { res.notes.push(`no full-page screenshot: ${clip(e.message.split('\n')[0], 200)}`); }
+    }
+    await within(10000, Promise.allSettled(pending), 'reading error answers').catch(() => {});
+  } catch (e) {
+    res.loadError = res.loadError || `checker error: ${clip(e.message.split('\n')[0], 300)}`;
+  } finally {
+    if (context) await within(15000, context.close(), 'closing the page').catch(() => {});
+  }
+
+  // one list of CSP violations: the events, plus console reports that match no event (a worker's first
+  // line, a policy the event listener did not see)
+  const used = new Set();
+  for (const ev of cspEvents) push(res, 'csp', { directive: ev.directive || null, blocked: clip(ev.blocked, 300) || null, source: shortUrl(ev.source, origin) || null, line: ev.line || null, sample: ev.sample ? clip(ev.sample, 120) : null, ...(ev.worker ? { worker: true } : {}) });
+  for (const text of cspConsole) {
+    const i = cspEvents.findIndex((ev, k) => !used.has(k) && ev.directive && text.includes(ev.directive.replace(/-(attr|elem)$/, '')));
+    if (i >= 0) used.add(i);
+    else push(res, 'csp', { directive: null, blocked: null, source: null, line: null, sample: null, message: clip(text, 400) });
+  }
+  return finish();
+}
+
+// ------------------------------------------------------------------ verdicts
+
+function failures(r, o) {
+  const f = [];
+  if (r.loadError) f.push('load');
+  if (!r.ready.ok) f.push('ready');
+  if (r.missing.length && !o.allowMissing) f.push('missing');
+  for (const k of ['foreign', 'unknown', 'console', 'pageErrors', 'csp', 'apiFailures', 'outside']) if (r[k].length) f.push(k);
+  if (r.overflow && (r.overflow.document || r.overflow.count)) f.push('overflow');
+  if (r.smallText && r.smallText.count) f.push('smallText');
+  return f;
+}
+
+// Missing, foreign and unknown ids. A page's own items count when they are on any of its routes at that
+// size; frame items must be on every route. Frame screens (sign-in, setup) need no items.
+function coverage(entries, results, matrix, o) {
+  const frameItems = matrix.byPage.get('frame') || [];
+  for (let si = 0; si < o.sizes.length; si++) {
+    const union = new Map();
+    entries.forEach((e, ei) => {
+      if (!union.has(e.id)) union.set(e.id, new Set());
+      for (const t of results[ei][si]._tokens) union.get(e.id).add(t);
+    });
+    entries.forEach((e, ei) => {
+      const r = results[ei][si];
+      const tokens = r._tokens;
+      if (!e.screen) {
+        const own = (matrix.byPage.get(e.id) || []).filter((id) => !union.get(e.id).has(id));
+        const frame = frameItems.filter((id) => !tokens.has(id));
+        r.missing = [...new Set([...frame, ...own])].sort();
+      }
+      for (const t of [...tokens].sort()) {
+        const page = matrix.itemPage.get(t);
+        if (page === undefined) r.unknown.push(t);
+        else if (page !== 'frame' && page !== e.id) r.foreign.push({ id: t, page });
+      }
+    });
+  }
+}
+
+function clean(r, o) {
+  const out = { ...r };
+  out.covered = r._tokens.size;
+  if (Object.keys(r._dropped).length) out.dropped = r._dropped;
+  delete out._tokens;
+  delete out._dropped;
+  out.fails = failures(r, o);
+  out.pass = out.fails.length === 0;
+  return out;
+}
+
+// ------------------------------------------------------------------ a run
+
+async function run(o) {
+  const log = o.log || (() => {});
+  const matrix = loadMatrix(o.matrixFile);
+  const packName = path.basename(o.packDir);
+  const entries = planPages(matrix, o.pages);
+  const outDir = path.join(o.out, packName);
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const servers = {};
+  let browser = null;
+  try {
+    const modes = [...new Map(entries.map((e) => [e.mode, e.serverArgs])).entries()];
+    await Promise.all(modes.map(async ([mode, args]) => { servers[mode] = await startServer(o.packDir, [...o.serverArgs, ...args]); }));
+    const need = {};
+    for (const e of entries) if (e.mode === 'normal') for (const m of e.route.matchAll(/\{([a-z]+)\}/g)) need[m[1]] = true;
+    const { ids, problems } = await resolveIds(servers.normal, o, need);
+    for (const e of entries) Object.assign(e, fillRoute(e.route, ids, problems));
+    log(`checking ${plural(entries.length, 'route')} of pack ${packName} at ${o.sizes.map((s) => s.label).join(', ')} on ${servers.normal ? servers.normal.origin : Object.values(servers)[0].origin}`);
+
+    let chromium;
+    try { ({ chromium } = require('playwright')); } catch (e) { throw new StartError(`Playwright is not installed here: ${e.message.split('\n')[0]}`); }
+    try { browser = await chromium.launch(); } catch (e) { throw new StartError(`Chromium did not start: ${e.message.split('\n')[0]}`); }
+    live.browsers.add(browser);
+
+    const tasks = [];
+    entries.forEach((e, ei) => o.sizes.forEach((s, si) => tasks.push({ e, ei, s, si })));
+    const results = entries.map(() => new Array(o.sizes.length));
+    let next = 0;
+    const worker = async () => {
+      while (next < tasks.length) {
+        const t = tasks[next++];
+        const r = await checkOne(browser, servers[t.e.mode], t.e, t.s, t.si, o, outDir);
+        results[t.ei][t.si] = r;
+        log(`  ${t.e.key} at ${t.s.label}: ${r.loadError ? 'not loaded' : r.ready.ok ? 'ready' : 'not ready'} (${(r.ms / 1000).toFixed(1)} s)`);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(o.jobs, tasks.length)) }, worker));
+
+    coverage(entries, results, matrix, o);
+    const pages = entries.map((e, ei) => {
+      const sizes = results[ei].map((r) => clean(r, o));
+      return { id: e.id, url: e.url, route: e.route, sizes, pass: sizes.every((s) => s.pass) };
+    });
+    return {
+      pack: packName,
+      packDir: rel(o.packDir),
+      matrix: rel(matrix.file),
+      server: { origin: servers.normal ? servers.normal.origin : null, args: o.serverArgs },
+      opened: ids,
+      sizes: o.sizes.map((s) => s.label),
+      out: outDir,
+      allowMissing: !!o.allowMissing,
+      pages,
+      pass: pages.every((p) => p.pass),
+    };
+  } finally {
+    if (browser) { await browser.close().catch(() => {}); live.browsers.delete(browser); }
+    await Promise.all(Object.values(servers).map((s) => s.stop()));
+  }
+}
+
+// ------------------------------------------------------------------ the readable report
+
+const COLUMNS = [
+  ['size', (s) => s.size],
+  ['ready', (s) => (s.loadError ? 'no load' : s.ready.ok ? 'yes' : s.ready.reason === 'error' ? 'error' : 'no')],
+  ['missing', (s) => s.missing.length],
+  ['foreign', (s) => s.foreign.length],
+  ['unknown', (s) => s.unknown.length],
+  ['console', (s) => s.console.length + ((s.dropped && s.dropped.console) || 0)],
+  ['page err', (s) => s.pageErrors.length + ((s.dropped && s.dropped.pageErrors) || 0)],
+  ['csp', (s) => s.csp.length + ((s.dropped && s.dropped.csp) || 0)],
+  ['api', (s) => s.apiFailures.length + ((s.dropped && s.dropped.apiFailures) || 0)],
+  ['outside', (s) => s.outside.length + ((s.dropped && s.dropped.outside) || 0)],
+  ['overflow', (s) => (!s.overflow ? '?' : s.overflow.document || s.overflow.count ? 'yes' : 'no')],
+  ['small text', (s) => (!s.smallText ? '?' : s.smallText.count)],
+];
+
+const listOf = (arr, n, f = String) => arr.slice(0, n).map(f).join(', ') + (arr.length > n ? `, and ${arr.length - n} more` : '');
+
+function details(s, pageId) {
+  const d = [];
+  if (s.loadError) d.push(`not loaded: ${s.loadError}`);
+  else if (!s.ready.ok) {
+    const secs = `${((s.ready.ms || 0) / 1000).toFixed(1)} s`;
+    if (s.ready.reason === 'error') d.push(`load error: data-ready is "${s.ready.value}"`);
+    else if (s.ready.reason === 'other_page') d.push(`not ready: data-ready is "${s.ready.value}", expected "${pageId}"`);
+    else d.push(`not ready: data-ready ${s.ready.value ? `is "${s.ready.value}"` : 'was never set'} (waited ${secs})`);
+  }
+  if (s.ready.landed && s.ready.landed !== s.url) d.push(`landed on ${s.ready.landed}`);
+  if (s.missing.length) d.push(`missing (${s.missing.length}): ${listOf(s.missing, 12)}`);
+  if (s.foreign.length) d.push(`items of other pages (${s.foreign.length}): ${listOf(s.foreign, 8, (f) => `${f.id} (${f.page})`)}`);
+  if (s.unknown.length) d.push(`unknown items (${s.unknown.length}): ${listOf(s.unknown, 8)}`);
+  for (const c of s.console.slice(0, 3)) d.push(`console: ${clip(c.text, 200)}${c.url ? ` (${c.url}:${c.line})` : ''}`);
+  if (s.console.length > 3) d.push(`console: and ${s.console.length - 3} more`);
+  for (const e of s.pageErrors.slice(0, 3)) d.push(`page error: ${clip(e.message, 200)}${e.stack ? ` at ${clip(e.stack.split(' | ')[0], 120)}` : ''}`);
+  if (s.pageErrors.length > 3) d.push(`page error: and ${s.pageErrors.length - 3} more`);
+  for (const c of s.csp.slice(0, 4)) {
+    d.push(c.message ? `csp: ${clip(c.message, 200)}`
+      : `csp: ${c.directive} blocked ${c.blocked || '?'}${c.worker ? ' in a worker' : ''}${c.source ? ` (${c.source}${c.line ? ':' + c.line : ''})` : ''}`);
+  }
+  if (s.csp.length > 4) d.push(`csp: and ${s.csp.length - 4} more`);
+  for (const a of s.apiFailures.slice(0, 5)) d.push(`api: ${a.method} ${a.url} -> ${a.status == null ? a.error : a.status}${a.code ? ' ' + a.code : ''}`);
+  if (s.apiFailures.length > 5) d.push(`api: and ${s.apiFailures.length - 5} more`);
+  for (const x of s.outside.slice(0, 4)) d.push(`outside: ${x.method} ${x.url} (${x.type})`);
+  if (s.outside.length > 4) d.push(`outside: and ${s.outside.length - 4} more`);
+  if (s.overflow && s.overflow.document) d.push(`overflow: the page is ${s.overflow.scrollWidth} px wide in a ${s.overflow.clientWidth} px window`);
+  if (s.overflow && s.overflow.count) d.push(`overflow: ${plural(s.overflow.count, 'element')} cut by the window edge: ${listOf(s.overflow.elements, 3, (e) => `${e.selector} (${e.left} to ${e.right} px)`)}`);
+  if (s.smallText && s.smallText.count) d.push(`small text: ${plural(s.smallText.count, 'text')} under ${MIN_TEXT_PX} px; smallest: ${s.smallText.smallest.map((t) => `${t.px} px ${t.selector} "${clip(t.text, 30)}"`).join('; ')}`);
+  for (const n of s.notes) d.push(`note: ${n}`);
+  if (s.dropped) d.push(`not listed: ${Object.entries(s.dropped).map(([k, n]) => `${n} more ${k}`).join(', ')}`);
+  return d;
+}
+
+function formatReport(rep) {
+  const L = [];
+  L.push(`Page check of pack ${rep.pack} (${rep.packDir}), matrix ${rep.matrix}`);
+  const opened = Object.entries(rep.opened).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(', ');
+  if (rep.server.origin) L.push(`Dev server ${rep.server.origin}${rep.server.args.length ? ` (${rep.server.args.join(' ')})` : ''}${opened ? `; opened ${opened}` : ''}`);
+  L.push(`Screenshots in ${rep.out}`);
+  L.push('');
+  let pass = 0, warn = 0;
+  for (const p of rep.pages) {
+    const warned = p.pass && p.sizes.some((s) => s.missing.length || s.notes.length);
+    if (p.pass) pass++;
+    if (warned) warn++;
+    L.push(`${p.pass ? (warned ? 'WARN' : 'PASS') : 'FAIL'}  ${p.id}  ${p.url}`);
+    const rows = [COLUMNS.map(([h]) => h), ...p.sizes.map((s) => COLUMNS.map(([, f]) => String(f(s))))];
+    const widths = COLUMNS.map((_, i) => Math.max(...rows.map((r) => r[i].length)));
+    for (const r of rows) L.push('  ' + r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd());
+    // detail lines, once for the sizes that share them
+    const bySize = p.sizes.map((s) => details({ ...s, url: p.url }, p.id));
+    const order = [];
+    const where = new Map();
+    bySize.forEach((lines, i) => lines.forEach((l) => {
+      if (!where.has(l)) { where.set(l, []); order.push(l); }
+      where.get(l).push(p.sizes[i].size);
+    }));
+    for (const l of order) {
+      const sizes = where.get(l);
+      const tag = p.sizes.length > 1 ? (sizes.length === p.sizes.length ? 'all sizes' : sizes.join(', ')) + ': ' : '';
+      L.push(`  ${tag}${l}`);
+    }
+    L.push('');
+  }
+  L.push(`${pass} of ${plural(rep.pages.length, 'page route')} pass${warn ? ` (${warn} with warnings)` : ''}.${rep.allowMissing ? ' Missing items only warn (--allow-missing).' : ''}`);
+  return L.join('\n') + '\n';
+}
+
+// ------------------------------------------------------------------ self-test
+
+async function selfTest(o) {
+  const out = path.join(o.out, 'self-test');
+  const matrixFile = path.join(FIXTURES_DIR, 'matrix.json');
+  const common = {
+    pages: 'fleet,drives,drive,charge,health,sign-in,setup',
+    sizes: parseSizes('1280x800,1600x1000'),
+    out, matrixFile, serverArgs: [], allowMissing: false, full: true,
+    readyTimeoutMs: 3000, idleTimeoutMs: 5000, jobs: Math.max(o.jobs, 3), log: o.log,
+  };
+  const checks = [];
+  const expect = (what, ok) => checks.push({ what, ok: !!ok });
+  const find = (rep, url) => rep.pages.find((p) => p.url === url || p.id === url);
+  const every = (p, f) => !!p && p.sizes.every(f);
+
+  const ok = await run({ ...common, packDir: path.join(FIXTURES_DIR, 'pack-ok') });
+  expect('pack-ok passes', ok.pass);
+  for (const p of ok.pages) for (const s of p.sizes) expect(`pack-ok ${p.url} at ${s.size} passes${s.fails.length ? ` (failed: ${s.fails.join(', ')})` : ''}`, s.pass);
+  expect('{car} is the first car', ok.opened.car === 'c1');
+  expect('{drive} and {charge} are resolved from the API', /^\d+$/.test(ok.opened.drive || '') && /^\d+$/.test(ok.opened.charge || ''));
+  expect('health is checked at both routes', ok.pages.filter((p) => p.id === 'health').map((p) => p.url).join(' ') === '/cars/c1/health /system');
+  expect('a map tile is answered locally, not counted as outside', every(find(ok, 'fleet'), (s) => s.tiles >= 1 && s.outside.length === 0));
+  expect('an open event stream does not hold up "network idle"', every(find(ok, 'fleet'), (s) => !s.notes.some((n) => n.includes('busy'))));
+  expect('hidden 6 px text is not counted', every(find(ok, 'fleet'), (s) => s.smallText && s.smallText.count === 0));
+  expect('a 401 on the sign-in page is expected', every(find(ok, 'sign-in'), (s) => s.apiFailures.length === 0));
+  expect('every route and size has a screenshot', ok.pages.every((p) => p.sizes.every((s) => s.shot && fs.existsSync(s.shot))));
+  expect('--full saves a full-page screenshot at the first size', ok.pages.every((p) => p.sizes[0].fullShot && fs.existsSync(p.sizes[0].fullShot) && !p.sizes[1].fullShot));
+
+  const bad = await run({ ...common, packDir: path.join(FIXTURES_DIR, 'pack-bad') });
+  expect('pack-bad fails', !bad.pass);
+  const fleet = find(bad, 'fleet');
+  expect('missing item reported', every(fleet, (s) => s.missing.includes('fx.fleet.summary') && s.fails.includes('missing')));
+  expect('item of another page reported', every(fleet, (s) => s.foreign.some((f) => f.id === 'fx.drives.table' && f.page === 'drives')));
+  expect('unknown item reported', every(fleet, (s) => s.unknown.includes('fx.nope.unknown')));
+  expect('console error reported', every(fleet, (s) => s.console.some((c) => c.text.includes('fixture console error'))));
+  expect('CSP violation by an inline style attribute reported', every(fleet, (s) => s.csp.some((c) => c.directive === 'style-src-attr')));
+  expect('document overflow reported', every(fleet, (s) => s.overflow.document && s.overflow.scrollWidth > s.overflow.clientWidth));
+  expect('element cut by the window edge reported', every(fleet, (s) => s.overflow.elements.some((e) => e.selector.includes('div.wide'))));
+  expect('8 px text reported', every(fleet, (s) => s.smallText.count >= 1 && s.smallText.smallest[0].px === 8 && s.smallText.smallest[0].selector.includes('p.tiny')));
+  const drives = find(bad, 'drives');
+  expect('page error reported', every(drives, (s) => s.pageErrors.some((e) => e.message.includes('fixture page error'))));
+  expect('failed /api request reported', every(drives, (s) => s.apiFailures.some((a) => a.status === 404 && a.code === 'not_found')));
+  expect('404 of a failed /api request is not also a console error', every(drives, (s) => s.console.length === 0));
+  expect('outside request reported', every(drives, (s) => s.outside.some((x) => x.url.startsWith('https://outside.invalid/'))));
+  expect('CSP violation in a worker reported', every(drives, (s) => s.csp.some((c) => c.worker && c.directive === 'connect-src')));
+  expect('data-ready "error:drive" reported', every(find(bad, 'drive'), (s) => !s.ready.ok && s.ready.value === 'error:drive' && s.ready.reason === 'error'));
+  expect('data-ready never set reported', every(find(bad, 'charge'), (s) => !s.ready.ok && s.ready.value === null && s.ready.reason === 'timeout'));
+  expect('data-ready of another page reported', every(find(bad, '/cars/c1/health'), (s) => !s.ready.ok && s.ready.value === 'fleet' && s.ready.reason === 'other_page'));
+  expect('a health item on neither route is missing', every(find(bad, '/system'), (s) => s.missing.includes('fx.health.server') && !s.missing.includes('fx.health.car')));
+  expect('sign-in: 403 reported, 401 expected', every(find(bad, 'sign-in'), (s) => s.apiFailures.length === 1 && s.apiFailures[0].status === 403 && s.apiFailures[0].code === 'csrf'));
+  expect('a clean page in a failing pack passes', find(bad, 'setup') && find(bad, 'setup').pass);
+  expect('the report reads', /FAIL {2}fleet {2}\//.test(formatReport(bad)) && /PASS {2}setup/.test(formatReport(bad)));
+
+  // --allow-missing turns missing items into warnings
+  const extra = path.join(out, 'matrix-extra.json');
+  const m = JSON.parse(fs.readFileSync(matrixFile, 'utf8'));
+  m.items.push({ id: 'fx.fleet.extra', page: 'fleet', section: 'Not built' });
+  fs.mkdirSync(out, { recursive: true });
+  fs.writeFileSync(extra, JSON.stringify(m));
+  const quick = { ...common, packDir: path.join(FIXTURES_DIR, 'pack-ok'), pages: 'fleet', sizes: parseSizes('1280x800'), full: false, matrixFile: extra };
+  const strict = await run(quick);
+  const lenient = await run({ ...quick, allowMissing: true });
+  expect('a missing item fails without --allow-missing', !strict.pass && strict.pages[0].sizes[0].missing.join() === 'fx.fleet.extra');
+  expect('a missing item only warns with --allow-missing', lenient.pass && /WARN {2}fleet/.test(formatReport(lenient)));
+
+  const failed = checks.filter((c) => !c.ok);
+  const L = checks.map((c) => `${c.ok ? 'ok  ' : 'FAIL'}  ${c.what}`);
+  L.push('', failed.length ? `self-test failed: ${failed.length} of ${checks.length} checks` : `self-test passed: ${checks.length} checks`);
+  if (failed.length) {
+    L.push('', 'pack-bad report:', formatReport(bad));
+    if (!ok.pass) L.push('pack-ok report:', formatReport(ok));
+  }
+  return { pass: failed.length === 0, text: L.join('\n') + '\n', reports: { ok, bad } };
+}
+
+// ------------------------------------------------------------------ command line
+
+const HELP = `Usage: node ui/tools/check.js --pack <name or folder> [options]
+       node ui/tools/check.js --self-test
+
+  --pack NAME|DIR        a pack in ui/packs (instrument) or a pack folder with web/
+  --pages LIST|all       page ids, comma separated (default all: every page of the matrix plus sign-in, setup)
+  --sizes WxH,...        window sizes (default ${DEFAULT_SIZES})
+  --out DIR              screenshots go to DIR/<pack>/ (default ${DEFAULT_OUT}; or set UI_CHECK_OUT)
+  --server-args "..."    extra dev server flags, e.g. "--cars 200 --latency-ms 150"
+  --json                 print one JSON object instead of the table
+  --allow-missing        missing items only warn
+  --full                 also a full-page screenshot at the first size
+  --fixture-matrix FILE  a coverage matrix to use instead of docs/parity/coverage-matrix.json
+  --ready-timeout-ms N   how long to wait for data-ready (default 20000)
+  --idle-timeout-ms N    how long to wait for the network to go quiet after that (default 10000)
+  --jobs N               pages checked at the same time (default 2)
+  --car ID, --drive ID, --charge ID   open these instead of the first car and its newest drive and charge
+  --self-test            check both fixtures in ui/tools/fixtures and assert the results
+
+Exit code 0 when every checked page passes, 1 when one fails, 2 on a usage or start-up error.
+`;
+
+function parseSizes(s) {
+  const sizes = String(s).split(',').map((x) => x.trim()).filter(Boolean).map((x) => {
+    const m = /^(\d{2,5})x(\d{2,5})$/.exec(x);
+    if (!m) throw new UsageError(`bad size "${x}": use WIDTHxHEIGHT, e.g. 1440x900`);
+    return { w: +m[1], h: +m[2], label: `${+m[1]}x${+m[2]}` };
+  });
+  if (!sizes.length) throw new UsageError('--sizes names no size');
+  return sizes;
+}
+
+function parseArgs(argv) {
+  const o = {
+    pack: null, pages: 'all', sizes: DEFAULT_SIZES, out: DEFAULT_OUT, serverArgs: '', json: false, allowMissing: false,
+    full: false, fixtureMatrix: null, selfTest: false, readyTimeoutMs: '20000', idleTimeoutMs: '10000', jobs: '2',
+    car: null, drive: null, charge: null, help: false,
+  };
+  const values = {
+    '--pack': 'pack', '--pages': 'pages', '--sizes': 'sizes', '--out': 'out', '--server-args': 'serverArgs',
+    '--fixture-matrix': 'fixtureMatrix', '--ready-timeout-ms': 'readyTimeoutMs', '--idle-timeout-ms': 'idleTimeoutMs',
+    '--jobs': 'jobs', '--car': 'car', '--drive': 'drive', '--charge': 'charge',
+  };
+  const flags = { '--json': 'json', '--allow-missing': 'allowMissing', '--full': 'full', '--self-test': 'selfTest', '--help': 'help', '-h': 'help' };
+  for (let i = 0; i < argv.length; i++) {
+    let a = argv[i];
+    let v;
+    const eq = a.indexOf('=');
+    if (a.startsWith('--') && eq > 0) { v = a.slice(eq + 1); a = a.slice(0, eq); }
+    if (flags[a] && v === undefined) { o[flags[a]] = true; continue; }
+    if (values[a]) {
+      if (v === undefined) {
+        if (i + 1 >= argv.length) throw new UsageError(`${a} needs a value`);
+        v = argv[++i];
+      }
+      o[values[a]] = v;
+      continue;
+    }
+    throw new UsageError(`unknown option ${argv[i]} (see --help)`);
+  }
+  for (const k of ['readyTimeoutMs', 'idleTimeoutMs', 'jobs']) {
+    const n = Number(o[k]);
+    if (!Number.isInteger(n) || n < (k === 'jobs' ? 1 : 0)) throw new UsageError(`--${k.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())} needs a whole number`);
+    o[k] = n;
+  }
+  o.sizes = parseSizes(o.sizes);
+  o.serverArgs = splitArgs(o.serverArgs);
+  o.out = path.resolve(o.out);
+  o.matrixFile = o.fixtureMatrix ? path.resolve(o.fixtureMatrix) : MATRIX_FILE;
+  if (!o.help && !o.selfTest) {
+    if (!o.pack) throw new UsageError('--pack is required (see --help)');
+    const asDir = path.resolve(o.pack);
+    const named = path.join(UI_DIR, 'packs', o.pack);
+    if (fs.existsSync(path.join(asDir, 'web'))) o.packDir = asDir;
+    else if (!o.pack.includes('/') && fs.existsSync(path.join(named, 'web'))) o.packDir = named;
+    else throw new UsageError(`no pack "${o.pack}": give a name in ui/packs or a folder that has web/`);
+  }
+  return o;
+}
+
+async function main() {
+  let o;
+  try { o = parseArgs(process.argv.slice(2)); } catch (e) {
+    if (e instanceof UsageError) { process.stderr.write(`check.js: ${e.message}\n`); process.exit(2); }
+    throw e;
+  }
+  if (o.help) { process.stdout.write(HELP); return 0; }
+  o.log = (line) => process.stderr.write(line + '\n');
+  if (o.selfTest) {
+    const r = await selfTest(o);
+    if (o.json) process.stdout.write(JSON.stringify({ pass: r.pass, ok: r.reports.ok, bad: r.reports.bad }, null, 2) + '\n');
+    else process.stdout.write(r.text);
+    return r.pass ? 0 : 1;
+  }
+  const rep = await run(o);
+  process.stdout.write(o.json ? JSON.stringify(rep, null, 2) + '\n' : formatReport(rep));
+  return rep.pass ? 0 : 1;
+}
+
+if (require.main === module) {
+  main().then((code) => { process.exitCode = code; }, (e) => {
+    process.stderr.write(`check.js: ${e instanceof UsageError || e instanceof StartError ? e.message : e.stack || e}\n`);
+    killChildren('SIGTERM');
+    process.exitCode = 2;
+  });
+}
+
+module.exports = { run, formatReport, selfTest, parseArgs, ROUTES, FRAME_SCREENS };

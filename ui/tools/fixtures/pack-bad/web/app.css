@@ -1,0 +1,13 @@
+/* Checker fixture: bad. Some rules here break checks on purpose (see app.js). */
+* { box-sizing: border-box; }
+html { font: 16px/1.4 system-ui, sans-serif; color: #1b1f24; background: #f6f7f9; }
+body { margin: 0; }
+.frame { display: flex; gap: 24px; align-items: baseline; padding: 12px 24px; background: #fff; border-bottom: 1px solid #d8dce1; }
+.nav { display: flex; gap: 16px; }
+.title { margin: 0; font-size: 20px; }
+main { padding: 24px; }
+.card { background: #fff; border: 1px solid #d8dce1; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+/* breaks "small text": 8 px is below the 10 px floor */
+.tiny { font-size: 8px; }
+/* breaks "overflow": wider than any window the checker uses */
+.wide { width: 5000px; height: 24px; background: #c9d3de; }
