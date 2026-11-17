@@ -234,10 +234,12 @@ impl Files {
         Files { snap: dir.join(format!("{name}.snap")), log: dir.join(format!("{name}.log")) }
     }
 
-    /// Removes what a crash may have left: a snapshot's temporary file, a journal never renamed into place.
+    /// Removes what a crash may have left: a snapshot's temporary file, a journal never renamed into place, and a
+    /// copy of the journal the vault was writing again in its newer format (the journal itself is whole).
     pub(crate) fn clean_temporary(&self) -> Result<()> {
         remove_if_exists(&with_suffix(&self.snap, ".tmp"))?;
         remove_if_exists(&with_suffix(&self.log, ".new"))?;
+        remove_if_exists(&vault::records::converting_path(&self.log))?;
         Ok(())
     }
 }

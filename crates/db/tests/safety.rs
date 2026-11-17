@@ -209,6 +209,33 @@ fn reading_a_day_leaves_its_journal_as_it_is_and_the_next_write_carries_on() {
 }
 
 #[test]
+fn copies_left_while_journals_were_written_in_the_newer_format_are_not_kept() {
+    let mut t = test_db(quiet());
+    let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
+    t.db.upsert(car, &[drive(car, 1, DAY0, 30, 2.0, Source::Can)]).unwrap();
+    t.db.write_points(car, Source::Can, DAY0, DAY0 + 60_000, &samples(DAY0, 60)).unwrap();
+    let before = t.db.backup_to_file(&t.dir.path().join("before.smdb")).unwrap();
+    // a crash while the vault wrote these journals again in its newer format (each journal is still whole)
+    let dir = t.data.join("db/cars").join(car.to_string());
+    let journals = [t.data.join("db/fleet.log"), dir.join("drives.log"), dir.join("seg/samples.can/2026-11-16.log")];
+    let copies: Vec<_> = journals.iter().map(|j| vault::records::converting_path(j)).collect();
+    for (j, c) in journals.iter().zip(&copies) {
+        assert!(j.exists(), "{}", j.display());
+        std::fs::write(c, b"half a copy").unwrap();
+    }
+    // never in a backup
+    let after = t.db.backup_to_file(&t.dir.path().join("after.smdb")).unwrap();
+    assert_eq!((after.files, after.bytes), (before.files, before.bytes));
+    // removed when their journal is next opened or read
+    t.reopen(quiet());
+    assert_eq!(t.db.list::<Drive>(car, &Query::default()).unwrap().items.len(), 1);
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap().len(), 60);
+    for c in &copies {
+        assert!(!c.exists(), "{} was left", c.display());
+    }
+}
+
+#[test]
 fn damaged_files_are_reported_not_emptied() {
     let mut t = test_db(quiet());
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;

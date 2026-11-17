@@ -42,7 +42,7 @@ pub struct RestoreReport {
 }
 
 /// Every regular file under `dir`, sorted; temporary files are left out (a crash's leftovers, or a write under
-/// way).
+/// way), the vault's copies of journals being written again in its newer format among them.
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -59,7 +59,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         } else if t.is_file() {
             let name = e.file_name();
             let name = name.to_string_lossy();
-            if !(name.ends_with(".tmp") || name.ends_with(".new")) {
+            if !(name.ends_with(".tmp") || name.ends_with(".new") || name.ends_with(vault::records::CONVERTING)) {
                 out.push(p);
             }
         }

@@ -109,10 +109,15 @@ docker compose exec sentry-mate /sentry-mate recovery-key new
   arriving, trust records, tokens, the TLS key) with XChaCha20-Poly1305, in 64 KiB chunks, each file with its own
   key (HKDF-SHA256) and its path bound in, so a file that is changed, cut short, or moved under another name doesn't
   open. Files that grow (uploads still arriving, journals) give every piece its own random nonce, so a piece written
-  again after a crash never reuses one. The data key is kept only wrapped: by the key file in `/keys` (a separate volume, refused inside the data
-  folder) for restarts with nothing to type, and by the recovery key through Argon2id at 1 GiB. Keys are wiped from
-  memory when no longer needed and core dumps are off. This protects a stolen or copied disk or backup; it can't
-  protect a server taken over while it runs.
+  again after a crash never reuses one, and bind each piece to the one before it, so pieces can't be reordered,
+  dropped from the middle or mixed with those of an older copy of the file (an older copy put back whole, or pieces
+  missing at the end, can't be told from a crash). The data key is kept only wrapped: by the key file in `/keys` (a
+  separate volume, refused inside the data folder) for restarts with nothing to type, and by the recovery key
+  through Argon2id at 1 GiB. Keys are wiped from memory when no longer needed and core dumps are off. This protects
+  a stolen or copied disk or backup; it can't protect a server taken over while it runs.
+- **No way back without a backup.** This version writes growing files in a newer format (format 2) as soon as it
+  opens them to add to, from its first start. Older versions can't open that format, so once it has run on a data
+  folder, going back to an older image needs a backup of the data folder made before the upgrade.
 - Pure Rust where it matters (`unsafe` forbidden in this code, the xz reader included); files from the network are
   read with fixed limits. The image is one static binary on `scratch`, run as a normal user.
 - Nothing leaves the server. Logs hold the car's GPS position: treat the data folder as private.

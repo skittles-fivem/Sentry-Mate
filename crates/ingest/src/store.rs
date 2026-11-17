@@ -8,6 +8,7 @@
 //! <can>/<vehicleKey>/uploading/<name>.part             a file still arriving (sealed records, see vault::records)
 //! <can>/<vehicleKey>/uploading/<name>.part.json        what that upload promised: length, SHA-256, when it started
 //! <can>/<vehicleKey>/uploading/<name>.sealing          the finished file being sealed, renamed into place when done
+//! <can>/<vehicleKey>/uploading/<name>.part.to-v2       a part from before the vault's format 2 being written again
 //! ```
 //!
 //! Each file's label (its path under the data folder) is bound into its sealing, so a file moved or copied under
@@ -359,7 +360,23 @@ impl Inner {
             let bytes = serde_json::to_vec(&meta).map_err(ApiError::server)?;
             self.vault.write_file(&p.meta, &p.meta_label, &bytes).map_err(vault_err)?;
         }
-        let mut records = self.vault.records(&p.part, &p.part_label).map_err(vault_err)?;
+        let mut records = match self.vault.records(&p.part, &p.part_label) {
+            Ok(r) => r,
+            // a part from before the vault's format 2 with a damaged record: it can't be written again in format 2
+            // (that checks every record), so it is dropped and the upload starts over, as a damaged part found at
+            // the last chunk is
+            Err(vault::Error::Damaged) => {
+                let _ = std::fs::remove_file(&p.part);
+                let _ = std::fs::remove_file(&p.meta);
+                return Err(ApiError::new(
+                    409,
+                    "offset_mismatch",
+                    "What had arrived of this file was damaged here and was discarded; upload it again from offset 0.",
+                )
+                .received(0));
+            }
+            Err(e) => return Err(vault_err(e)),
+        };
         records.append(body)?;
         let received = records.plain_len();
         if received < length {
@@ -427,7 +444,8 @@ impl Inner {
         Ok(Received { received, length, complete: true, already: false })
     }
 
-    /// Drops one car's unfinished uploads older than `max_age_ms`, and leftovers of a crash while sealing.
+    /// Drops one car's unfinished uploads older than `max_age_ms`, and leftovers of a crash while sealing or while
+    /// the vault wrote a part again in its newer format (`<name>.part.to-v2`, see `vault::records`).
     fn clean_car(&self, up_dir: &Path, max_age_ms: u64) -> usize {
         let mut n = 0;
         let old = |e: &std::fs::DirEntry| {
@@ -440,7 +458,8 @@ impl Inner {
         for e in std::fs::read_dir(up_dir).into_iter().flatten().flatten() {
             let file_name = e.file_name();
             let f = file_name.to_string_lossy();
-            let Some(name) = f.strip_suffix(".part").or_else(|| f.strip_suffix(".sealing")) else {
+            let converting = || f.strip_suffix(vault::records::CONVERTING).and_then(|n| n.strip_suffix(".part"));
+            let Some(name) = f.strip_suffix(".part").or_else(|| f.strip_suffix(".sealing")).or_else(converting) else {
                 // a promise whose upload is gone
                 if let Some(name) = f.strip_suffix(".part.json") {
                     if !up_dir.join(format!("{name}.part")).exists() && old(&e) {

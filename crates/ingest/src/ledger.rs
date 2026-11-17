@@ -280,7 +280,7 @@ impl Ledger {
                 // left by a crash just after a commit: the format before, and the generation before
                 remove_if_there(&self.legacy_file().0)?;
                 if f.generation > 0 {
-                    remove_if_there(&self.journal_file(f.generation - 1).0)?;
+                    self.remove_journal(f.generation - 1)?;
                     remove_if_there(&self.records_file(f.generation - 1).0)?;
                 }
                 Head {
@@ -464,9 +464,17 @@ impl Ledger {
         head.generation = next;
         head.journal_len = 0;
         head.damaged = false;
-        remove_if_there(&self.journal_file(old).0)?;
+        self.remove_journal(old)?;
         remove_if_there(&self.records_file(old).0)?;
         Ok(())
+    }
+
+    /// Removes a generation's journal, with the copy a crash may have left while the vault wrote it again in its
+    /// newer format (`vault::records::converting_path`).
+    fn remove_journal(&self, generation: u64) -> io::Result<()> {
+        let path = self.journal_file(generation).0;
+        remove_if_there(&path)?;
+        remove_if_there(&vault::records::converting_path(&path))
     }
 
     /// Calls `each` with every line of the records file of `generation` (none for generation 0, which has no file).
@@ -728,6 +736,9 @@ mod tests {
         let n = bytes.len();
         bytes[n - 3] ^= 1;
         std::fs::write(&journal, &bytes).unwrap();
+        // and a copy a crash left while the vault wrote the journal again in its newer format
+        let converting = vault::records::converting_path(&journal);
+        std::fs::write(&converting, b"half a copy").unwrap();
         let mut back = l.load_head().unwrap();
         assert!(back.damaged);
         assert_eq!(back.journal_len, 2);
@@ -736,6 +747,13 @@ mod tests {
         l.append(&mut back, &c).unwrap();
         assert_eq!((back.generation, back.damaged), (1, false), "folded into a new generation before adding");
         assert_eq!(all(&l, &back).len(), 3);
+        assert!(!journal.exists() && !converting.exists(), "the folded journal goes, with its copy");
+        // a crash just after a commit left the generation before, and its copy: both go when the head is read
+        let (old, old_copy) = (can.join("k1/trust-0.journal"), converting);
+        std::fs::write(&old, b"left").unwrap();
+        std::fs::write(&old_copy, b"left").unwrap();
+        l.load_head().unwrap();
+        assert!(!old.exists() && !old_copy.exists());
     }
 
     #[test]

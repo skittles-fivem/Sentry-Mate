@@ -172,6 +172,75 @@ async fn a_status_request_reads_an_upload_without_cutting_or_changing_it() {
     assert_eq!((s, b["complete"].as_bool()), (StatusCode::CREATED, Some(true)));
 }
 
+/// The one upload under way, as (its part, its promise).
+fn the_part(t: &T) -> (std::path::PathBuf, std::path::PathBuf) {
+    let mut parts = Vec::new();
+    files_ending(&t.data, ".part", &mut parts);
+    let [part] = &parts[..] else { panic!("one upload under way: {parts:?}") };
+    let mut meta = part.clone().into_os_string();
+    meta.push(".json");
+    (part.clone(), meta.into())
+}
+
+#[tokio::test]
+async fn a_damaged_part_from_before_format_2_is_dropped_and_the_upload_starts_over() {
+    let t = setup().await;
+    let bytes: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+    put(&t, LOG, &bytes, 0, &bytes[..400]).await;
+    let (part, meta) = the_part(&t);
+    // the part as the vault's format 1 left it, one record damaged (the bytes of a record don't open): it reads as
+    // 400 bytes received, but can't be written again in format 2, which checks every record
+    let mut old = vault::records::MAGIC_V1.to_vec();
+    old.extend_from_slice(&[7u8; 16]);
+    for n in [300u32, 100] {
+        old.extend_from_slice(&(n + 16).to_be_bytes());
+        old.extend(std::iter::repeat_n(9u8, n as usize + 16));
+    }
+    std::fs::write(&part, &old).unwrap();
+    let (_, b) = status(&t, &[LOG]).await;
+    assert_eq!(b["files"][LOG], json!({ "state": "partial", "received": 400, "length": 1000 }));
+    // the next chunk: the part is dropped and the app told to start again from 0, at once
+    let (s, b) = put(&t, LOG, &bytes, 400, &bytes[400..]).await;
+    assert_eq!(
+        (s, b["code"].as_str(), b["received"].as_u64()),
+        (StatusCode::CONFLICT, Some("offset_mismatch"), Some(0)),
+        "{b}"
+    );
+    assert!(!part.exists() && !meta.exists() && !vault::records::converting_path(&part).exists());
+    let (_, b) = status(&t, &[LOG]).await;
+    assert_eq!(b["files"][LOG]["state"], "missing");
+    let (s, b) = put(&t, LOG, &bytes, 0, &bytes).await;
+    assert_eq!((s, b["complete"].as_bool()), (StatusCode::CREATED, Some(true)));
+    assert_eq!(&**t.up.store.read(LOG).await.unwrap().unwrap(), &bytes[..]);
+}
+
+#[tokio::test]
+async fn a_copy_left_while_a_part_was_written_in_format_2_is_cleaned_with_stale_uploads() {
+    let t = setup().await;
+    let bytes: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+    put(&t, LOG, &bytes, 0, &bytes[..400]).await;
+    let (part, _) = the_part(&t);
+    // a crash while the vault wrote the part again in format 2 (the part itself is whole)
+    let copy = vault::records::converting_path(&part);
+    std::fs::write(&copy, b"half a copy").unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&copy)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - DAYS_3)
+        .unwrap();
+    // a fresh copy is left alone (a conversion may be under way), an old one goes with the stale uploads
+    let fresh = vault::records::converting_path(&part.with_file_name("abcdef123456_20261108T150000Z_2.log.xz.part"));
+    std::fs::write(&fresh, b"being written").unwrap();
+    assert_eq!(t.up.store.clean_stale(ingest::store::STALE_PARTIAL_MS).await, 0, "no upload is stale");
+    assert!(!copy.exists() && fresh.exists() && part.exists());
+    // the upload carries on
+    let (s, b) = put(&t, LOG, &bytes, 400, &bytes[400..]).await;
+    assert_eq!((s, b["complete"].as_bool()), (StatusCode::CREATED, Some(true)));
+}
+
+const DAYS_3: std::time::Duration = std::time::Duration::from_secs(3 * 24 * 3600);
+
 #[tokio::test]
 async fn a_file_that_does_not_match_its_hash_is_discarded() {
     let t = setup().await;

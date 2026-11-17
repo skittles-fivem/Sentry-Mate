@@ -96,6 +96,15 @@ impl Audit {
     pub fn open(dir: impl Into<PathBuf>, vault: Arc<Vault>, clock: Clock) -> Result<Audit> {
         let dir = dir.into();
         std::fs::create_dir_all(&dir)?;
+        // a copy a crash left while the vault wrote a part again in its newer format (the part itself is whole): a
+        // part of an earlier month is never opened to add to again, so nothing else would remove it
+        for e in std::fs::read_dir(&dir)?.flatten() {
+            let name = e.file_name();
+            let stem = name.to_str().and_then(|n| n.strip_suffix(vault::records::CONVERTING)?.strip_suffix(".log"));
+            if stem.is_some_and(valid_stem) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
         Ok(Audit { dir, vault, clock, current: Mutex::new(None) })
     }
 

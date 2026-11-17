@@ -249,6 +249,18 @@ fn the_audit_log_lists_newest_first_a_page_at_a_time_and_rotates_monthly() {
     audit.record(Some("a\nb"), None, "x\r\ny", &"z".repeat(5000)).unwrap();
     let e = &audit.list(1, None).unwrap().entries[0];
     assert_eq!((e.account.as_deref(), e.action.as_str(), e.details.len()), (Some("a b"), "x  y", 2000));
+    // a copy a crash left while the vault wrote October's part again in its newer format: October's part is never
+    // opened to add to again, so the audit log removes it when it is opened; other files are left alone
+    drop(audit);
+    let dir = env.data.join("audit2");
+    let copy = vault::records::converting_path(&dir.join("2026-10.0001.log"));
+    std::fs::write(&copy, b"half a copy").unwrap();
+    std::fs::write(dir.join("notes.to-v2"), b"not the audit log's").unwrap();
+    let t = env.time.clone();
+    let audit = Audit::open(&dir, env.vault.clone(), Arc::new(move || t.load(std::sync::atomic::Ordering::SeqCst)));
+    assert_eq!(audit.unwrap().list(100, None).unwrap().entries.len(), 57);
+    assert!(!copy.exists());
+    assert!(dir.join("notes.to-v2").exists());
 }
 
 #[test]

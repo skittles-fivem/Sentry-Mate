@@ -11,8 +11,8 @@
 //!
 //! Files are sealed with XChaCha20-Poly1305 ([`stream`] for finished files, [`records`] for files that grow), each
 //! with its own key derived from the data key (HKDF-SHA256) and its path bound in. A file that grows gives every
-//! record a random nonce of its own, so a record written again after a crash never reuses one. Keys are wiped from
-//! memory when dropped, and core dumps are turned off ([`harden_process`]).
+//! record a random nonce of its own, so a record written again after a crash never reuses one, and binds each record
+//! to the one before it. Keys are wiped from memory when dropped, and core dumps are turned off ([`harden_process`]).
 //!
 //! What this protects: data on a stolen or copied disk, or a backup. What it can't: a server someone has taken over
 //! while it runs (the key is in memory then). Losing both the key file and the recovery key loses the data, by design.
