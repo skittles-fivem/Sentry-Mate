@@ -11,8 +11,10 @@ name: Image
 #     `sha-<commit>` (pin a `build-` or `sha-` tag in the compose file to
 #     stay on, or go back to, a version).
 #   - Running it by hand for another branch (Actions > Image > Run workflow)
-#     publishes an image tagged with that branch's name and `sha-<commit>`
-#     (no `build-N` tag: those are only for releases from main).
+#     publishes an image tagged with that branch's name, and `sha-<commit>`
+#     when no image has that tag yet (no `build-N` tag: those are only for
+#     releases from main). A branch or git tag named latest, build-... or
+#     sha-... gets branch- in front, so it never replaces a release's tag.
 #   - A push that changes only README.md, docs/ or truenas/ runs nothing: no
 #     code changed, so there is nothing to test and no new image.
 # This replaces ci.yml: it ran the same tests on every push to main, so with
@@ -67,8 +69,8 @@ jobs:
         run: |
           branch="$GITHUB_REF_NAME"
           if [ "$branch" = main ]; then tag=latest; else tag="${branch//[^A-Za-z0-9_.-]/-}"; tag="${tag#[.-]}"; fi
-          # only main publishes latest (a branch named latest gets another tag)
-          if [ "$branch" != main ] && [ "$tag" = latest ]; then tag=branch-latest; fi
+          # latest, build-N and sha- are main's tags: a branch named like one gets branch- in front
+          if [ "$branch" != main ]; then case "$tag" in latest|build-*|sha-*) tag="branch-$tag" ;; esac; fi
           sha="$(git rev-parse HEAD)"
           {
             echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
@@ -201,9 +203,21 @@ jobs:
         working-directory: digests
         run: |
           image="${{ needs.names.outputs.image }}"
+          tag="${{ needs.names.outputs.tag }}"
+          sha="$image:sha-${{ needs.names.outputs.short }}"
           test "$(ls | wc -l)" -eq 2
-          tags=(-t "$image:${{ needs.names.outputs.tag }}" -t "$image:sha-${{ needs.names.outputs.short }}")
-          # build-N only for a release (main): a branch run by hand is not one
-          if [ "${{ needs.names.outputs.tag }}" = latest ]; then tags+=(-t "$image:build-${{ needs.names.outputs.build }}"); fi
+          tags=()
+          if [ "$tag" = latest ]; then
+            # a release (main): build-N only for one
+            tags+=(-t "$sha" -t "$image:build-${{ needs.names.outputs.build }}")
+          elif ! docker buildx imagetools inspect "$sha" >/dev/null 2>&1; then
+            # a branch run by hand: sha- only for a commit no image has yet (a
+            # branch just reset to main would move the release's)
+            tags+=(-t "$sha")
+          fi
+          # The tags are pushed one after another, in this order: the one that
+          # moves (latest, or the branch's) last, so a run cancelled in between
+          # never leaves latest on a build whose build-N tag is missing.
+          tags+=(-t "$image:$tag")
           docker buildx imagetools create "${tags[@]}" $(printf "$image@sha256:%s " *)
-          docker buildx imagetools inspect "$image:${{ needs.names.outputs.tag }}"
+          docker buildx imagetools inspect "$image:$tag"
