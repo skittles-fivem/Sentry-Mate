@@ -1526,6 +1526,7 @@ dependencies = [
  "hex",
  "ingest",
  "logfmt",
+ "rustix",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",

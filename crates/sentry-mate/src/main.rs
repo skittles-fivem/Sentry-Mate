@@ -17,6 +17,7 @@
 //!   chain KEY                     the chain report of a car key's logs
 //!   health                        exit 0 when the upload port answers (for Docker)
 
+mod folders;
 mod migrate;
 
 use clap::{Parser, Subcommand};
@@ -31,7 +32,7 @@ use std::time::Duration;
 use vault::{Kdf, Vault};
 
 #[derive(Parser)]
-#[command(name = "sentry-mate", version, about = "A car logger fed by the Screenmate CAN Bridge's uploads")]
+#[command(name = "sentry-mate", version = VERSION, about = "A car logger fed by the Screenmate CAN Bridge's uploads")]
 struct Cli {
     /// Where everything is kept (all of it sealed).
     #[arg(long, env = "SENTRY_MATE_DATA", default_value = "/data", global = true)]
@@ -125,6 +126,9 @@ fn tokens_file(data: &Path) -> PathBuf {
 
 const RECOVERY_FILE: &str = "RECOVERY-KEY.txt";
 
+/// The version, and the image build's number, commit and date when it was given them (build.rs).
+const VERSION: &str = env!("SENTRY_MATE_VERSION");
+
 #[tokio::main]
 async fn main() -> ExitCode {
     vault::harden_process();
@@ -134,10 +138,14 @@ async fn main() -> ExitCode {
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .init();
     let cli = Cli::parse();
+    let (data, keys) = (cli.data.clone(), cli.keys.clone());
     match run(cli).await {
         Ok(code) => code,
         Err(e) => {
             eprintln!("sentry-mate: {e}");
+            if let Some(h) = folders::hint(&*e, &data, &keys) {
+                eprintln!("{h}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -149,8 +157,25 @@ fn print_recovery(key: &vault::RecoveryKey) {
     println!("way to open your data on a new machine: lose both and the data can't be opened by anyone.");
 }
 
+/// What a command needs of the data and keys folders: whether it writes to each, or `None` when it uses neither.
+fn needs(cmd: &Cmd) -> Option<(bool, bool)> {
+    match cmd {
+        Cmd::Serve { .. } | Cmd::Init | Cmd::Restore => Some((true, true)),
+        Cmd::RecoveryKey { .. } | Cmd::Token { .. } | Cmd::Fingerprint => Some((true, false)),
+        Cmd::Log { cmd: LogCmd::Export { .. } | LogCmd::Decode { .. } } | Cmd::Chain { .. } => Some((false, false)),
+        Cmd::Log { .. } | Cmd::Health => None,
+    }
+}
+
 async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let (data, keys) = (cli.data, cli.keys);
+    if let Some((data_write, keys_write)) = needs(&cli.cmd) {
+        folders::check(&data, "data", data_write)?;
+        // a keys folder inside the data folder is refused by the vault: not made here first
+        if !keys.starts_with(&data) {
+            folders::check(&keys, "keys", keys_write)?;
+        }
+    }
     match cli.cmd {
         Cmd::Serve { bind, names } => serve(&data, &keys, &bind, cli.upload_port, &names).await?,
         Cmd::Init => {
@@ -326,6 +351,7 @@ async fn serve(
     port: u16,
     names: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    tracing::info!("Sentry Mate {VERSION}");
     std::fs::create_dir_all(can_dir(data))?;
     let (v, made) = Vault::open_or_create(data, keys, Kdf::STRONG)?;
     if let Some(rk) = made {
@@ -406,5 +432,23 @@ async fn shutdown() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_version_starts_with_the_crates_own() {
+        assert!(VERSION.starts_with(env!("CARGO_PKG_VERSION")), "{VERSION}");
+    }
+
+    #[test]
+    fn commands_that_need_no_folder_dont_check_one() {
+        assert_eq!(needs(&Cmd::Health), None);
+        assert_eq!(needs(&Cmd::Log { cmd: LogCmd::Candump { file: PathBuf::from("x") } }), None);
+        assert_eq!(needs(&Cmd::Serve { bind: String::new(), names: vec![] }), Some((true, true)));
+        assert_eq!(needs(&Cmd::Chain { key: String::new() }), Some((false, false)));
     }
 }
