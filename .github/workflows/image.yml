@@ -1,0 +1,209 @@
+name: Image
+
+# Tests Sentry Mate and publishes its Docker image to GitHub's registry,
+# ghcr.io/<owner>/<repo> (ghcr.io/skittles-fivem/sentry-mate), for amd64 and
+# arm64.
+#   - Every image gets a build number: this workflow's run number, which
+#     only ever goes up (runs that published nothing leave gaps). It shows in
+#     `sentry-mate --version` as build-N, with sha-<commit> and the date, and
+#     in the label org.opencontainers.image.version=build-N.
+#   - A push to main that changes code publishes `latest`, `build-N` and
+#     `sha-<commit>` (pin a `build-` or `sha-` tag in the compose file to
+#     stay on, or go back to, a version).
+#   - Running it by hand for another branch (Actions > Image > Run workflow)
+#     publishes an image tagged with that branch's name and `sha-<commit>`
+#     (no `build-N` tag: those are only for releases from main).
+#   - A push that changes only README.md, docs/ or truenas/ runs nothing: no
+#     code changed, so there is nothing to test and no new image.
+# This replaces ci.yml: it ran the same tests on every push to main, so with
+# this file they would have run twice.
+# The tests (once, on amd64) and the two images (each on its own kind of
+# machine, no emulation) run at the same time. The images are pushed only by
+# digest, which nobody pulls; the tags that people pull are put on them last,
+# and only when the tests passed and both images passed
+# .github/check-image.sh, as 1000:1000 and as TrueNAS's 568:568: no
+# capabilities, a read-only root, healthy, TLS 1.3 only, the recovery key
+# file in keys, a token made with docker exec, a clean stop, the same
+# certificate after a restart.
+# New packages are private: make it public once under the owner's
+# Packages > sentry-mate > Package settings so anyone can pull it.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['README.md', 'docs/**', 'truenas/**']
+  workflow_dispatch:
+
+# Read-only by default; only the jobs that push images may write packages.
+permissions:
+  contents: read
+
+# A newer push replaces a build still running for an older one.
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  names:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.names.outputs.image }}
+      tag: ${{ steps.names.outputs.tag }}
+      sha: ${{ steps.names.outputs.sha }}
+      short: ${{ steps.names.outputs.short }}
+      created: ${{ steps.names.outputs.created }}
+      build: ${{ steps.names.outputs.build }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Image name and tag
+        id: names
+        run: |
+          branch="$GITHUB_REF_NAME"
+          if [ "$branch" = main ]; then tag=latest; else tag="${branch//[^A-Za-z0-9_.-]/-}"; tag="${tag#[.-]}"; fi
+          # only main publishes latest (a branch named latest gets another tag)
+          if [ "$branch" != main ] && [ "$tag" = latest ]; then tag=branch-latest; fi
+          sha="$(git rev-parse HEAD)"
+          {
+            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+            echo "tag=${tag:0:120}"
+            echo "sha=$sha"
+            echo "short=${sha:0:7}"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "build=$GITHUB_RUN_NUMBER"
+          } >> "$GITHUB_OUTPUT"
+
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # (the tests never see a token)
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  build:
+    needs: names
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build for checking (${{ matrix.arch }})
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: sentry-mate:check
+          build-args: |
+            BUILD_NUMBER=${{ needs.names.outputs.build }}
+            GIT_SHA=${{ needs.names.outputs.sha }}
+            BUILD_DATE=${{ needs.names.outputs.created }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      # as the image's own user (1000), then as TrueNAS's apps user (568)
+      - name: Check the image
+        env:
+          EXPECT_VERSION: build-${{ needs.names.outputs.build }}, sha-${{ needs.names.outputs.short }}
+        run: |
+          label="$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' sentry-mate:check)"
+          [ "$label" = "build-${{ needs.names.outputs.build }}" ] || { echo "::error::version label: $label"; exit 1; }
+          .github/check-image.sh sentry-mate:check
+          .github/check-image.sh sentry-mate:check 568
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushed by digest only (no tag), from the build cache of the check above
+      - name: Push by digest (${{ matrix.arch }})
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ needs.names.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            BUILD_NUMBER=${{ needs.names.outputs.build }}
+            GIT_SHA=${{ needs.names.outputs.sha }}
+            BUILD_DATE=${{ needs.names.outputs.created }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      - name: Keep the digest
+        run: |
+          mkdir -p digests
+          digest="${{ steps.push.outputs.digest }}"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest"; exit 1; }
+          touch "digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [names, tests, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag both images (amd64, arm64)
+        working-directory: digests
+        run: |
+          image="${{ needs.names.outputs.image }}"
+          test "$(ls | wc -l)" -eq 2
+          tags=(-t "$image:${{ needs.names.outputs.tag }}" -t "$image:sha-${{ needs.names.outputs.short }}")
+          # build-N only for a release (main): a branch run by hand is not one
+          if [ "${{ needs.names.outputs.tag }}" = latest ]; then tags+=(-t "$image:build-${{ needs.names.outputs.build }}"); fi
+          docker buildx imagetools create "${tags[@]}" $(printf "$image@sha256:%s " *)
+          docker buildx imagetools inspect "$image:${{ needs.names.outputs.tag }}"
