@@ -28,6 +28,9 @@ def cached_drive_row(req, h, d):
     if in_progress(d, req.now) or d.start > req.now:
         return drive_row(req.app, h, d, req.now)
     cache = req.app.cache.setdefault("drive_rows", {})
+    if cache.get("_rev") != req.store.rev:  # something changed: start the cache again
+        cache.clear()
+        cache["_rev"] = req.store.rev
     key = (d.id, req.store.rev)
     row = cache.get(key)
     if row is None:

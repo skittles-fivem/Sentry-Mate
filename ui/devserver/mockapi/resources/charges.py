@@ -21,6 +21,9 @@ def cached_charge_row(req, h, c):
     if in_progress(c, req.now):
         return charge_row(req.app, h, c, req.now, with_breakdown=True)
     cache = req.app.cache.setdefault("charge_rows", {})
+    if cache.get("_rev") != req.store.rev:  # something changed: start the cache again
+        cache.clear()
+        cache["_rev"] = req.store.rev
     key = (c.id, req.store.rev)
     row = cache.get(key)
     if row is None:
