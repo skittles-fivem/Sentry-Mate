@@ -1,0 +1,6 @@
+{
+  "name": "sentry-mate-ui-shared",
+  "private": true,
+  "type": "module",
+  "description": "Shared browser modules for Sentry Mate UI packs. Not published; the package.json only tells Node the files are ES modules, for the tests."
+}
