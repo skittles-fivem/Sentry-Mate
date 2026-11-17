@@ -308,6 +308,7 @@ Points this document left open, decided while building the dev server (`ui/devse
 - `/me` gives `cars: "all"` for an account that sees every car, as in `/accounts`.
 - `/me/sessions` rows also have `device`. `DELETE /me/sessions` ends every other session; this one stays (sign out with `DELETE /session`).
 - `interface_size` is a percent, 50 to 200. `ui_pack` defaults to the pack being served.
+- `follow_screen` (true or false, default true) is the person's "Follow screen size" switch. Packs size the interface as Auto x `interface_size`: Auto grows with the screen while `follow_screen` is true and is 1 when it is false.
 - `/setup/status` adds `fixes: [{ cause: "no_token" | "token_unused" | "key_waiting" | "logs_waiting_trust" | "import_running", link }]`.
 - `/cars/{car}/trip` also lists the `drives` and `charges` it counted.
 - In `/charging-stats`: `heatmap.start` and `heatmap.end` are 7 rows (Monday first) of 24 hours in the car's local time. A run is two or more charges, each starting within a day of the one before. `share_above_80_pct` is the share of charges that ended above 80 %; `share_below_20_pct` of those that started below 20 %.

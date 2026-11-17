@@ -214,7 +214,8 @@ def patch_prefs(req):
     st = req.store
     body = req.json()
     bad, rule = {}, {}
-    allowed = {"units", "range", "theme", "language", "interface_size", "ui_pack", "car_order", "pinned_cars"}
+    allowed = {"units", "range", "theme", "language", "interface_size", "follow_screen", "ui_pack", "car_order",
+               "pinned_cars"}
     for k in body:
         if k not in allowed:
             bad[k] = "Unknown field."
@@ -239,6 +240,8 @@ def patch_prefs(req):
             bad["interface_size"] = "Must be a whole number (percent)."
         elif not 50 <= v <= 200:
             rule["interface_size"] = "Must be between 50 and 200 (percent)."
+    if "follow_screen" in body and not isinstance(body["follow_screen"], bool):
+        bad["follow_screen"] = "Must be true or false."
     if "ui_pack" in body and (not isinstance(body["ui_pack"], str) or not 1 <= len(body["ui_pack"]) <= 64):
         rule["ui_pack"] = "A pack name of 1 to 64 characters."
     for k, most in (("car_order", 10000), ("pinned_cars", 50)):

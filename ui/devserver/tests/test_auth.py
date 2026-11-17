@@ -91,8 +91,9 @@ class Accounts(ServerCase):
 class Preferences(ServerCase):
     def test_get_patch(self):
         p = self.c.get("/api/v1/me/preferences")
-        self.assertEqual(set(p), {"units", "range", "theme", "language", "interface_size", "ui_pack", "car_order",
-                                  "pinned_cars"})
+        self.assertEqual(set(p), {"units", "range", "theme", "language", "interface_size", "follow_screen", "ui_pack",
+                                  "car_order", "pinned_cars"})
+        self.assertIs(p["follow_screen"], True)
         self.assertEqual(p["ui_pack"], "instrument")
         q = self.c.json("PATCH", "/api/v1/me/preferences", {"units": {"distance": "mi"}, "pinned_cars": ["c3"]})
         self.assertEqual(q["units"], {"distance": "mi", "temperature": "c", "pressure": "bar"})
@@ -101,6 +102,11 @@ class Preferences(ServerCase):
         self.assertIn("units.pressure", e["fields"])
         self.c.error("PATCH", "/api/v1/me/preferences", 422, "invalid", body={"car_order": ["c99"]})
         self.c.error("PATCH", "/api/v1/me/preferences", 400, "bad_input", body={"colour": "red"})
+        self.c.error("PATCH", "/api/v1/me/preferences", 400, "bad_input", body={"follow_screen": "yes"})
+        q = self.c.json("PATCH", "/api/v1/me/preferences", {"follow_screen": False, "interface_size": 125})
+        self.assertIs(q["follow_screen"], False)
+        self.assertEqual(q["interface_size"], 125)
+        self.c.json("PATCH", "/api/v1/me/preferences", {"follow_screen": True, "interface_size": 100})
         # custom sort follows the pins
         cars = self.c.get("/api/v1/cars?sort=custom")
         self.assertEqual(cars["items"][0]["id"], "c3")

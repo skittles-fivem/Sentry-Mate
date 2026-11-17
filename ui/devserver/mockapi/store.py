@@ -25,6 +25,7 @@ DEFAULT_PREFS = {
     "theme": "device",
     "language": "en",
     "interface_size": 100,
+    "follow_screen": True,
     "ui_pack": None,
     "car_order": [],
     "pinned_cars": [],
