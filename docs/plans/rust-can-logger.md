@@ -509,9 +509,12 @@ position stay out of the repo.
     connection for every car; while the broker is away only each car's latest values wait (events are kept, bounded),
     so thousands of cars can't flood it. Reconnects back off for real, messages are kept under the packet limit.
   - Reviews also fixed the four crates merged earlier (timeline, db, places, accounts) and the upload side.
-  - Found in review, being fixed: a growing sealed file (`vault::records`) cut by a crash could seal the next piece
-    under a number already used; and readers opened those files for writing. Next: a random nonce per record, and
-    read-only opens.
+  - Found in review and fixed (`vault::records`, format 2): a growing sealed file cut by a crash could seal the next
+    piece under a nonce already used. Now every record has its own random 24-byte nonce, and its tag is bound to its
+    number, the label and the tag of the record before it, so records can't be moved, dropped from the middle,
+    copied between files or mixed from two versions of a file. Appends count only what reached the disk. Readers
+    open read-only (never create, cut or change a file). Format 1 files are read and rewritten in format 2 when
+    next added to; once this version runs on a data folder, older versions can't open it (keep a backup from before).
 
 ## Phases
 
