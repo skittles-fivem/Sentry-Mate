@@ -135,8 +135,15 @@ def patch_settings(req):
     with st.lock:
         new["version"] = cur["version"] + 1
         st.server_settings = new
+        accounts = list(st.accounts.values())
     st.record(req.account, "settings.update", "settings:server",
               "Changed the server settings: " + ", ".join(sorted(k for k in body if k != "version")) + ".")
+    if any(cur[k] != new[k] for k in ("units", "range", "car_order")):
+        # preferences default from these: everyone's (merged) preferences may have changed
+        for a in accounts:
+            req.app.events.publish("prefs", st.get_prefs(a), account_id=a["id"])
+    if new["release_check"]["enabled"] and not cur["release_check"]["enabled"]:
+        req.app.events.publish("notice", release_notice(req))
     return copy.deepcopy(new)
 
 
@@ -170,9 +177,14 @@ def notices(req):
             n["detail"] = {"expires_ms": n.pop("expires_ms"), "days": days}
         items.append(n)
     if req.store.server_settings["release_check"]["enabled"]:
-        items.append({"code": "release_available", "level": "info", "message": "Sentry Mate 0.2.0 is out.",
-                      "since_ms": req.app.cfg.now_ms - 2 * DAY, "fix_link": "/help"})
+        items.append(release_notice(req))
     return {"items": items, "next": None}
+
+
+def release_notice(req):
+    """The opt-in release notice: shown only while the owner has the release check on."""
+    return {"code": "release_available", "level": "info", "message": "Sentry Mate 0.2.0 is out.",
+            "since_ms": req.app.cfg.now_ms - 2 * DAY, "fix_link": "/help"}
 
 
 def about(req):
@@ -353,19 +365,22 @@ def patch_overlap(req):
 GB = 1024 ** 3
 CAR_KINDS = [("logs", "CAN logs (sealed)", 52_000_000), ("series", "Time series", 8_300_000),
              ("curves", "Charge curves", 600_000), ("rows", "Drives, charges, states", 140_000)]
+# a light synthetic car stores this much per kind (they have only summary data)
+SYNTHETIC_BYTES = {"logs": 2_400_000_000, "series": 380_000_000, "curves": 20_000_000, "rows": 6_000_000}
+SYNTHETIC_PER_DAY = 3_600_000
 
 
-def _day_bytes(h, d, tz, kind, base):
-    """Made-up bytes one car stores for one day of one kind (more on busy days)."""
-    from ..util import local_ms
-    a = local_ms(d, 0, tz)
-    awake = 0
-    for s in h.segs_between(a, a + DAY, 10 ** 15):
-        for k, x, y in s.activity():
-            if k != "asleep" and k != "unknown":
-                awake += max(0, min(y, a + DAY) - max(x, a))
-    f = 0.08 + awake / DAY
+def _day_bytes(h, d, tz, kind, base, known, awake):
+    """Made-up bytes one car stores for one day of one kind: more on busy days, none without data."""
+    f = 0.08 * known / DAY + awake / DAY
     return int(base * f * (0.9 + 0.2 * h01("bytes", h.car.id, d.isoformat(), kind)))
+
+
+def car_storage_days(req, h):
+    """[(date, source, {kind: bytes})] for every local day of a car's history that has data."""
+    tz = h.car.time_zone
+    key = (derive.started(h, req.now),)
+    return derive.memo(req.app, f"storage:{h.car.id}", key, lambda: _storage_days(h, tz, req.now))
 
 
 def car_storage(req):
@@ -375,8 +390,7 @@ def car_storage(req):
     kinds_q = req.list_param("kinds", [k for k, _, _ in CAR_KINDS])
     rows, tot = [], {}
     if h is not None:
-        key = (derive.started(h, req.now),)
-        days = derive.memo(req.app, f"storage:{h.car.id}", key, lambda: _storage_days(h, tz, req.now))
+        days = car_storage_days(req, h)
         for d, src, per in days:
             for kind, b_ in per.items():
                 tot[kind] = tot.get(kind, 0) + b_
@@ -387,6 +401,8 @@ def car_storage(req):
                 for kind, b_ in per.items():
                     if not kinds_q or kind in kinds_q:
                         rows.append({"series": kind, "source": src, "date": d, "bytes": b_})
+    elif req.ds.exists(req.car):
+        tot = dict(SYNTHETIC_BYTES)
     items, nxt = page(req, rows, key=lambda x: (x["date"], x["series"]), reverse=True)
     kinds = [{"kind": k, "label": lab, "bytes": tot.get(k, 0)} for k, lab, _ in CAR_KINDS]
     return {"car": req.car, "time_zone": tz, "kinds": kinds, "total_bytes": sum(tot.values()), "items": items,
@@ -394,35 +410,68 @@ def car_storage(req):
 
 
 def _storage_days(h, tz, now):
+    from ..util import local_ms
     out = []
     d = local_date(h.first_ms, tz)
     last = local_date(now, tz)
     while d <= last:
-        from ..util import local_ms
-        s = h.seg_at(local_ms(d, 12, tz))
-        src = s.source if s is not None else "can"
-        per = {}
-        for kind, _lab, base in CAR_KINDS:
-            if src == "teslamate" and kind in ("logs", "curves"):
-                continue
-            per[kind] = _day_bytes(h, d, tz, kind, base if src == "can" else base // 6)
-        out.append((d.isoformat(), src, per))
+        a = local_ms(d, 0, tz)
+        e = min(a + DAY, now)
+        known = awake = 0
+        tm = can = 0
+        for s in h.segs_between(a, e, now):
+            for k, x, y in s.activity():
+                span = max(0, min(y, e) - max(x, a))
+                if k != "unknown":
+                    known += span
+                    if s.source == "teslamate":
+                        tm += span
+                    else:
+                        can += span
+                if k not in ("asleep", "unknown"):
+                    awake += span
+        if known > 0:
+            src = "teslamate" if tm > can else "can"
+            per = {}
+            for kind, _lab, base in CAR_KINDS:
+                if src == "teslamate" and kind in ("logs", "curves"):
+                    continue  # an import brings rows and positions, no CAN logs
+                per[kind] = _day_bytes(h, d, tz, kind, base if src == "can" else base // 6, known, awake)
+            out.append((d.isoformat(), src, per))
         d = d.fromordinal(d.toordinal() + 1)
     return out
 
 
 def system_storage(req):
+    """The server's storage: the sum of every car's figures, imported history, and offline map tiles."""
     s = req.store.storage
-    days = 30
-    growth = []
-    total = sum(k["bytes"] for k in s["kinds"])
-    for i in range(days, 0, -1):
-        t = req.now - i * DAY
-        g = int(s["growth_per_day_bytes"] * (0.7 + 0.6 * h01("growth", i)))
-        growth.append({"date": date_str(t, "UTC"), "bytes": g})
-    per_day = sum(g["bytes"] for g in growth) / days
-    return {"kinds": s["kinds"], "total_bytes": total, "free_bytes": s["free_bytes"], "growth": growth,
-            "growth_per_day_bytes": int(per_day), "full_in_days": int(s["free_bytes"] / per_day) if per_day else None}
+    ds = req.ds
+    sums = {"logs": 0, "series": 0, "rows": 0, "imported": 0}
+    growth = {}
+    first_growth = date_str(req.now - 32 * DAY, "UTC")
+    for cid, h in ds.featured.items():
+        for d, src, per in car_storage_days(req, h):
+            for kind, b_ in per.items():
+                if src == "teslamate":
+                    sums["imported"] += b_
+                else:
+                    sums["series" if kind == "curves" else kind] += b_
+            if d > first_growth and src == "can":
+                growth[d] = growth.get(d, 0) + sum(per.values())
+    n_syn = ds.synthetic.count
+    for k, v in SYNTHETIC_BYTES.items():
+        sums["series" if k == "curves" else k] += v * n_syn
+    labels = {"logs": "CAN logs (sealed)", "series": "Time series and charge curves",
+              "rows": "Drives, charges, states", "imported": "Imported from TeslaMate"}
+    kinds = [{"kind": k, "label": labels[k], "bytes": v} for k, v in sums.items()]
+    kinds.append({"kind": "tiles", "label": "Offline map tiles", "bytes": s["tiles_bytes"]})
+    today = date_str(req.now, "UTC")
+    days = sorted(d for d in growth if d < today)[-30:]
+    rows = [{"date": d, "bytes": growth[d] + SYNTHETIC_PER_DAY * n_syn} for d in days]
+    per_day = sum(g["bytes"] for g in rows) / len(rows) if rows else 0
+    return {"kinds": kinds, "total_bytes": sum(k["bytes"] for k in kinds), "free_bytes": s["free_bytes"],
+            "growth": rows, "growth_per_day_bytes": int(per_day),
+            "full_in_days": int(s["free_bytes"] / per_day) if per_day else None}
 
 
 def system_health(req):

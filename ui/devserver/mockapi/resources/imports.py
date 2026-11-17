@@ -16,22 +16,13 @@ import hashlib
 import re
 
 from ..conventions import page
+from ..dataset import extras
 from ..errors import ApiError, bad_input, conflict, invalid, not_found
-from ..util import DAY
 
 CHECK_MS = 6_000
 IMPORT_MS = 12_000
 MAX_FILE = 64 * 1024 ** 3
 COMPRESSIONS = ("plain", "gzip", "xz")
-
-# what the made-up backup holds: one car that is c3 here, and one that is not here at all
-FILE_CARS = [
-    {"tm_car": 1, "name": "Atlas", "vin_prefix": "5YJSA1E20HF", "drives": 1188, "charges": 224,
-     "first_days": -900, "last_days": -393},
-    {"tm_car": 2, "name": "Old Roadster", "vin_prefix": "5YJRE1A10BF", "drives": 312, "charges": 61,
-     "first_days": -1500, "last_days": -1100},
-]
-
 
 def _job(req):
     j = req.store.imports.get(req.params["import"])
@@ -43,58 +34,53 @@ def _job(req):
 
 def _advance(req, j):
     """Move a job along the virtual clock."""
-    now = req.now
-    if j["status"] == "checking" and now >= j["_check_done_ms"]:
-        if "broken" in (j.get("name") or ""):
-            j["status"] = "failed"
-            j["error"] = {"code": "not_a_backup", "message": "This file is not a TeslaMate backup (no drives table)."}
-            j["finished_ms"] = j["_check_done_ms"]
-        else:
-            j["status"] = "ready"
-            j["pass"] = 1
+    with req.store.lock:
+        now = req.now
+        if j["status"] == "checking" and now >= j["_check_done_ms"]:
+            if "broken" in (j.get("name") or ""):
+                j["status"] = "failed"
+                j["error"] = {"code": "not_a_backup",
+                              "message": "This file is not a TeslaMate backup (no drives table)."}
+                j["finished_ms"] = j["_check_done_ms"]
+            else:
+                j["status"] = "ready"
+                j["pass"] = 1
+                j["bytes_read"] = j["bytes_total"]
+                j["checked_ms"] = j["_check_done_ms"]
+                j["report"] = _report(req, j, imported=False)
+        if j["status"] == "importing" and now >= j["_import_done_ms"]:
+            j["status"] = "done"
             j["bytes_read"] = j["bytes_total"]
-            j["checked_ms"] = j["_check_done_ms"]
-            j["report"] = _report(req, j, imported=False)
-    if j["status"] == "importing" and now >= j["_import_done_ms"]:
-        j["status"] = "done"
-        j["bytes_read"] = j["bytes_total"]
-        j["finished_ms"] = j["_import_done_ms"]
-        j["report"] = _report(req, j, imported=True)
-    if j["status"] == "checking":
-        f = (now - j["_check_start_ms"]) / CHECK_MS
-        j["bytes_read"] = int(j["bytes_total"] * max(0.0, min(1.0, f)))
-    if j["status"] == "importing":
-        f = (now - j["_import_start_ms"]) / IMPORT_MS
-        j["bytes_read"] = int(j["bytes_total"] * max(0.0, min(1.0, f)))
+            j["finished_ms"] = j["_import_done_ms"]
+            j["report"] = _report(req, j, imported=True)
+        if j["status"] == "checking":
+            f = (now - j["_check_start_ms"]) / CHECK_MS
+            j["bytes_read"] = int(j["bytes_total"] * max(0.0, min(1.0, f)))
+        if j["status"] == "importing":
+            f = (now - j["_import_start_ms"]) / IMPORT_MS
+            j["bytes_read"] = int(j["bytes_total"] * max(0.0, min(1.0, f)))
 
 
 def _report(req, j, imported):
-    now = req.app.cfg.now_ms
-    tables = {}
-    use = [c for c in j["cars"] if c["match"] != "leave_out"] if imported else j["cars"]
-    d = sum(c["drives"] for c in use)
-    ch = sum(c["charges"] for c in use)
-    for name, read, skipped, bad in (
-            ("cars", len(j["cars"]), {}, {}),
-            ("drives", d, {"duplicate": d // 150}, {}),
-            ("charging_processes", ch, {"no_energy": max(1, ch // 110)}, {"cost": 1}),
-            ("positions", d * 2030, {"no_position": d // 2}, {"elevation": d // 30}),
-            ("updates", 4 * len(use), {}, {}),
-            ("geofences", 6, {}, {})):
-        sk = sum(skipped.values())
-        tables[name] = {"read": read, "imported": (read - sk) if imported else 0, "skipped": skipped,
-                        "bad_values": bad}
-    first = min(c["first_days"] for c in j["cars"])
-    last = max(c["last_days"] for c in j["cars"])
-    return {"tables": tables, "span": {"from_ms": now + first * DAY, "to_ms": now + last * DAY},
-            "cars": [{"tm_car": c["tm_car"], "match": c["match"], "drives": c["drives"], "charges": c["charges"]}
-                     for c in j["cars"]], "imported": imported}
+    return extras.import_report(j["cars"], imported)
 
 
 def view(j):
     out = {k: copy.deepcopy(v) for k, v in j.items() if not k.startswith("_") and k != "cars"}
     out["cars_to_match"] = sum(1 for c in j["cars"] if c["match"] is None) if j["cars"] else None
     return out
+
+
+RUNNING = ("uploading", "checking", "ready", "importing")
+
+
+def running_import(req):
+    """The import that is not finished yet (uploading, checked or importing), or None."""
+    for j in req.store.imports.values():
+        _advance(req, j)
+        if j["status"] in RUNNING:
+            return j
+    return None
 
 
 def list_imports(req):
@@ -129,10 +115,9 @@ def create_import(req):
         comp = "xz" if name.endswith(".xz") else "gzip" if name.endswith(".gz") else "plain"
     if comp not in COMPRESSIONS:
         rule["compression"] = "Must be plain, gzip or xz."
-    running = [j for j in st.imports.values() if j["status"] in ("uploading", "checking", "importing")]
     if rule:
         raise invalid(rule)
-    if running:
+    if running_import(req):
         raise conflict("import_running", "Another import is running. Wait for it or discard it first.")
     jid = st.new_id("im")
     j = {"id": jid, "name": name, "compression": comp, "status": "uploading", "pass": 0, "bytes_read": 0,
@@ -201,7 +186,8 @@ def patch_import(req):
             j["bytes_read"] = 0
             j["_check_start_ms"] = req.now
             j["_check_done_ms"] = req.now + CHECK_MS
-            j["cars"] = [dict(c, match=_suggest(req, c)) for c in FILE_CARS]
+            j["cars"] = [dict(c, match=_suggest(req, c))
+                         for c in extras.backup_cars(req.app.cfg.now_ms, req.ds.history("c3"))]
             st.rev += 1
     if j["status"] == "checking":
         st.record(req.account, "import.uploaded", f"import:{j['id']}", "Uploaded the whole file; checking it.")
@@ -229,8 +215,8 @@ def delete_import(req):
 
 def _car_row(req, j, c):
     return {"tm_car": c["tm_car"], "name": c["name"], "vin_prefix": c["vin_prefix"], "drives": c["drives"],
-            "charges": c["charges"], "first_ms": req.app.cfg.now_ms + c["first_days"] * DAY,
-            "last_ms": req.app.cfg.now_ms + c["last_days"] * DAY, "match": c["match"], "suggested": _suggest(req, c)}
+            "charges": c["charges"], "first_ms": c["first_ms"], "last_ms": c["last_ms"], "match": c["match"],
+            "suggested": _suggest(req, c)}
 
 
 def get_cars(req):
@@ -252,7 +238,10 @@ def put_cars(req):
         raise bad_input({"items": "Send { items: [{ tm_car, match }] }."})
     known = {c["tm_car"]: c for c in j["cars"]}
     bad, rule = {}, {}
-    seen = {}
+    named = {x.get("tm_car") for x in rows}
+    # one car here takes at most one imported car (the matches this body leaves alone count too)
+    seen = {c["match"]: c["tm_car"] for c in j["cars"]
+            if c["tm_car"] not in named and c["match"] not in (None, "new", "leave_out")}
     for i, x in enumerate(rows):
         if set(x) - {"tm_car", "match"}:
             bad[f"items.{i}"] = "Only tm_car and match."

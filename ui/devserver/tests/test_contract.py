@@ -297,8 +297,17 @@ class Contract(ServerCase):
                 if key:
                     new(key, data["id"])
             row = doc[(m, pattern)]
-            if m in ("PATCH", "PUT") and row.shape and "GET" in row.methods and pattern == row.paths[-1]:
-                miss = apidoc.missing_fields(row.shape, data, columns=row.columns)
+            want = None
+            if m in row.writes:  # the document spells out this write's answer
+                want = row.writes[m]
+            elif m in ("PATCH", "PUT") and row.shape and "GET" in row.methods and pattern == row.paths[-1]:
+                want = row.shape  # a change answers the changed object
+            elif m == "POST" and st == 201 and row.shape and "GET" in row.methods and len(row.paths) == 2:
+                want = row.shape  # creating answers the new object
+            elif m == "POST" and st == 201 and pattern == "/api/v1/imports":
+                want = doc[("GET", "/api/v1/imports/{import}")].shape
+            if want is not None:
+                miss = apidoc.missing_fields(want, data, columns=row.columns)
                 if miss:
                     problems.append(f"{m} {path}: answer lacks {', '.join(miss[:8])}")
         self.assertEqual(problems, [], "\n".join(problems))

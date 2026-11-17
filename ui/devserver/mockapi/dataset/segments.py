@@ -116,13 +116,14 @@ def address_at(lat, lon):
         return dict(pl["address"])
     near, d = nearest_place(lat, lon)
     a = dict(near["address"])
-    if d > 30_000:
-        a.update(short=f"{a['locality']} area" if d < 80_000 else f"{a['region']}", street=None,
-                 neighbourhood=None)
-        if d >= 80_000:
-            a["locality"] = None
-    else:
+    if d <= 1_200:
         a.update(short=f"near {a['street']}, {a['neighbourhood'] or a['locality']}")
+    elif d <= 8_000:  # same town, but too far to name the street
+        a.update(short=a["locality"] or a["region"], street=None, neighbourhood=None)
+    elif d < 80_000:
+        a.update(short=f"{a['locality']} area" if a["locality"] else a["region"], street=None, neighbourhood=None)
+    else:
+        a.update(short=a["region"], street=None, neighbourhood=None, locality=None)
     return a
 
 

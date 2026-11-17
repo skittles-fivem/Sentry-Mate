@@ -75,7 +75,7 @@ class Store:
         self.notices = extras.notices(now)
         self.server_settings = extras.server_settings(now)
         self.mqtt = extras.mqtt(now)
-        self.imports = extras.imports(now)
+        self.imports = extras.imports(now, ds.history("c3"))
         self.storage = extras.storage(now)
 
     # ------------------------------------------------------------ seeding

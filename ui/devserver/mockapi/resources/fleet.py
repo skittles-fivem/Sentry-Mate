@@ -493,8 +493,12 @@ def setup_status(req):
         fixes.append({"cause": "key_waiting", "link": "/settings/cars", "key": waiting[0]["key"]})
     if trust:
         fixes.append({"cause": "logs_waiting_trust", "link": "/settings/cars"})
+    from .imports import running_import
+    running = running_import(req)
+    if running:
+        fixes.append({"cause": "import_running", "link": "/settings/import", "import": running["id"]})
     return {"cars": cars, "tokens": {"count": len(toks), "first_used_ms": first}, "keys_waiting": len(waiting),
-            "logs_waiting_trust": trust, "import_running": False, "fixes": fixes}
+            "logs_waiting_trust": trust, "import_running": running is not None, "fixes": fixes}
 
 
 def register(router):

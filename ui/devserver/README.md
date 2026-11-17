@@ -67,8 +67,15 @@ start after the virtual clock are not shown yet, and the piece the clock is in i
 Also present: places that overlap (Work and the Mission Bay Supercharger, Home and Noe Valley), charges with
 and without cost, two software changes per car (one known only as "software changed"), awake, asleep and
 vehicle-bus-only spells, attention items, upload tokens, a CAN Bridge key waiting to be assigned, an audit log,
-saved trips and purpose rules. Seeds for the sections still to build are in `mockapi/dataset/extras.py`
-(a certificate that expires in 12 days, server and MQTT settings, an import job, storage figures).
+saved trips and purpose rules, 40 places (some with prices by time of day), server and MQTT settings, notices (a
+certificate that expires in 12 days, an unsaved recovery key), the finished import that brought `c3`'s TeslaMate
+history in (its report counts exactly what `c3` holds), and storage figures that add up from the cars to the server.
+Seeds that are not car history are in `mockapi/dataset/extras.py`.
+
+Everything agrees across pages because it is all worked out from the same pieces and rows: a month in Statistics
+has the same drives, energy and cost as the Drives and Charges lists for that month; battery capacity readings come
+from the charges the Charges page lists; a renamed place shows at once in drives, charges, the timeline, stops,
+Travel, `now` and the MQTT preview. A charge keeps the cost it had when it ended until the owner reprices it.
 
 Series (1 Hz while driving or charging, every 30 s parked and awake, nothing asleep) are computed on demand from
 each piece's own seed and never stored, so a year of data answers in a few hundred milliseconds.
@@ -85,7 +92,13 @@ each piece's own seed and never stored, so a year of data answers in a few hundr
 | Timeline and states | done |
 | Drives (track as GeoJSON and GPX, logbook as JSON, CSV and PDF) | done |
 | Charges | done |
-| Battery and efficiency, Reports, Places, Integrations, Server settings and health, Import | `501 { error: { code: "not_built" } }` |
+| Battery and efficiency | done |
+| Reports (statistics, mileage, totals, gaps, compare, stops and Travel, tracks, software, car events) | done |
+| Places (preview of a change, reprice, suggestions, the place at a point) | done |
+| Integrations (MQTT settings, status, preview, test; outside connections) | done |
+| Server, settings and health (notices, maps, data health, rebuild, overlaps, storage) | done |
+| Import (resumable upload, check, car matching, import, report) | done |
+| Deliberately absent (no car commands, no Tesla account, no SQL, no VIN serial) | absent: `404` |
 
 Decisions on points the API document left open are at the end of `docs/ui-api.md` ("Decisions").
 
@@ -99,12 +112,14 @@ mockapi/conventions.py   the request object, query parsing with field errors, cu
 mockapi/errors.py        the one error shape
 mockapi/store.py         everything that can change (accounts, sessions, preferences, audit, overrides)
 mockapi/rows.py          history pieces -> Drive, Charge and timeline rows (in progress, costs, purposes)
+mockapi/placing.py       places as they are now, the nearest-centre match, costs that stay put
+mockapi/derive.py        figures several sections share: odometer, stops (visits), parked spells, caching
 mockapi/live.py          the "now" object, the car list item, attention items
 mockapi/series.py        bucketed series that keep minima and maxima
 mockapi/events.py        the event hub behind /api/v1/events
 mockapi/dataset/         places, cars, routes, the day-by-day simulator, pieces, synthetic cars, extras
-mockapi/resources/       one module per section of docs/ui-api.md, plus stubs.py
-tests/                   unittest
+mockapi/resources/       one module per section of docs/ui-api.md (Reports is reports, travel and software)
+tests/                   unittest; test_contract.py checks the server against docs/ui-api.md
 ```
 
 ### Adding a section
@@ -115,8 +130,8 @@ tests/                   unittest
    TeslaMate copies, `h.overlaps`), page with `conventions.page(req, rows, key=..., reverse=...)` (CSV then
    comes for free), and for changes validate (400 for shape, 422 for rules), change the store under
    `st.lock`, then `st.record(account, action, target, summary)` for the audit log.
-2. Add the module to `MODULES` in `mockapi/resources/__init__.py` and remove its lines from `stubs.py` (a real
-   route replaces a stub with the same pattern even if the line stays).
+2. Add the module to `MODULES` in `mockapi/resources/__init__.py`, and the resource to `docs/ui-api.md`:
+   `tests/test_contract.py` fails for a route the document lacks, and for a documented write without a recipe.
 3. Car-scoped routes (`{car}` in the pattern) are checked before the handler runs; `admin=("PATCH",)` makes a
    method admin-only; `public=("GET",)` needs no sign-in. Return a dict (JSON), a `conventions.Response`, or
    raise `errors.ApiError`. A `POST` that sets `"_created": True` in its dict answers 201. Keys starting with
@@ -132,6 +147,13 @@ tests/                   unittest
 python3 -m unittest discover -s ui/devserver/tests -t ui/devserver
 ```
 
-They start servers in-process on free ports and cover the conventions (paging, errors, hidden cars with the
-watch role, CSRF, CSV, headers, the SPA fallback), every built resource's documented fields, determinism, paging
-a 200,000-car fleet under 200 ms a page, and the event stream.
+They start servers in-process on free ports (about 45 s for all). They cover:
+
+- the conventions: paging, errors, hidden cars with the watch role, CSRF, CSV, headers, the SPA fallback;
+- every section's documented fields and rules, and that figures agree across sections (statistics and the lists,
+  capacity and the charges, a renamed place everywhere, storage from the cars to the server, the import report and
+  `c3`'s history);
+- the contract (`test_contract.py`): every resource, method and field in the tables of `docs/ui-api.md` is read from
+  the document and called with ids from the API; it fails on a missing resource, a 5xx or a missing field, on a route
+  the document lacks, on anything under "Deliberately absent" that answers, and on a VIN serial in any answer;
+- determinism, a 200,000-car fleet paged under 200 ms a page, and the event stream.

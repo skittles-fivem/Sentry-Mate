@@ -338,7 +338,7 @@ def network(req):
 
 
 def register(router):
-    router.add("/api/v1/settings/mqtt", GET=get_mqtt, PUT=put_mqtt, admin=("PUT",))
+    router.add("/api/v1/settings/mqtt", GET=get_mqtt, PUT=put_mqtt, admin=("GET", "PUT"))
     router.add("/api/v1/settings/mqtt/status", GET=mqtt_status)
     router.add("/api/v1/settings/mqtt/preview", GET=preview)
     router.add("/api/v1/settings/mqtt/test", POST=test, admin=("POST",))

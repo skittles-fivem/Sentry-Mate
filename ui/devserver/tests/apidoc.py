@@ -25,6 +25,7 @@ class Row:
         self.notes = notes
         self.shape = shape  # what GET answers, or None when the row documents no shape
         self.columns = columns  # the shape is a list of columns (t_ms plus values)
+        self.writes = {}  # {method: shape} of write answers the notes spell out
 
     def __repr__(self):
         return f"Row({self.paths}, {self.methods})"
@@ -250,6 +251,22 @@ def _response(notes, types, has_get):
     return shape, columns, aliases
 
 
+def write_shapes(notes, types, methods):
+    """{method: shape} for the answers of writes the notes spell out (`POST {...} -> {...}`)."""
+    out = {}
+    writes = [m for m in methods if m != "GET"]
+    for sm in re.finditer(r"`([^`]+)`", notes):
+        before = notes[:sm.start()].rstrip()
+        if not before.endswith("->") or sm.group(1).startswith(("/", "?")):
+            continue
+        method = _last_method(before)
+        if method is None and len(writes) == 1 and "GET" not in methods:
+            method = writes[0]
+        if method in writes:
+            out[method] = Parser(sm.group(1), types).top()
+    return out
+
+
 def read(path=DOC):
     """Every resource row of the document, in order, plus the named types (Drive, Charge)."""
     with open(path, encoding="utf-8") as f:
@@ -282,9 +299,18 @@ def read(path=DOC):
         methods = [m for m in METHODS if re.search(rf"\b{m}\b", meth)]
         shape, columns, aliases = _response(notes, types, "GET" in methods)
         paths = _paths(res)
-        rows.append(Row(section, paths, methods, notes, shape, columns))
+        row = Row(section, paths, methods, notes, shape, columns)
+        row.writes = write_shapes(notes, types, methods)
+        rows.append(row)
         for a in aliases:
-            rows.append(Row(section, [a], ["GET"] if "GET" in methods else methods, notes, shape, columns))
+            alias = Row(section, [a], ["GET"] if "GET" in methods else methods, notes, shape, columns)
+            alias.writes = {}
+            rows.append(alias)
+    # "GET lists the imports (... same fields as one import)": the list's rows have the shape of the next row
+    for i, row in enumerate(rows):
+        if row.shape is None and "GET" in row.methods and re.search(r"same fields as one \w+", row.notes) \
+                and i + 1 < len(rows) and rows[i + 1].shape is not None:
+            row.shape = {"keys": {"items": {"list": rows[i + 1].shape}, "next": None}}
     return rows, types
 
 
