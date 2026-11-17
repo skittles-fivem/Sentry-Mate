@@ -1,0 +1,1308 @@
+/* Sentry Mate, "Logbook" UI pack.
+   Paper by day, night ink after dark. One accent (deep green), hairline
+   rules instead of boxes, a serif for the story and a sans for the figures. */
+
+/* ---------------------------------------------------------------- fonts -- */
+
+@font-face { font-family: "Logbook Serif"; src: url("fonts/charter-regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Logbook Serif"; src: url("fonts/charter-italic.woff2") format("woff2"); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: "Logbook Serif"; src: url("fonts/charter-bold.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "Logbook Serif"; src: url("fonts/charter-bolditalic.woff2") format("woff2"); font-weight: 700; font-style: italic; font-display: swap; }
+@font-face { font-family: "Logbook Sans"; src: url("fonts/inter-regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Logbook Sans"; src: url("fonts/inter-medium.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: "Logbook Sans"; src: url("fonts/inter-semibold.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; }
+
+/* --------------------------------------------------------------- tokens -- */
+
+:root {
+  color-scheme: light;
+  --paper: #f6f2e9;
+  --paper-raised: #fcfaf5;
+  --paper-sunk: #eee8dc;
+  --ink: #1c1a16;
+  --ink-2: #47423a;
+  --ink-3: #685f52;
+  --ink-4: #a0978a;
+  --rule: #ddd4c4;
+  --rule-strong: #bcb09b;
+  --accent: #1d5a43;
+  --accent-strong: #123f2e;
+  --accent-wash: #e1eadf;
+  --on-accent: #f6f2e9;
+  --ochre: #85540d;
+  --ochre-wash: #f1e4c8;
+  --slate: #56606b;
+  --dusk: #5c5984;
+  --rust: #a2361d;
+  --rust-wash: #f6e1d8;
+  --map-paper: #ede6d8;
+  --chart-wash: rgba(29, 90, 67, 0.13);
+  --chart-ochre-wash: rgba(133, 84, 13, 0.18);
+  --chart-sunk: rgba(104, 95, 82, 0.11);
+  --shadow-pop: 0 1px 0 rgba(28, 26, 22, 0.04), 0 1.5rem 3.75rem -1.25rem rgba(28, 26, 22, 0.35);
+  --backdrop: rgba(39, 34, 25, 0.28);
+  /* The select's caret: one drawn shape (a data: image, which the CSP allows), in --ink-3 for each theme. */
+  --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 5'%3E%3Cpath d='M0 0h10L5 5z' fill='%23685f52'/%3E%3C/svg%3E");
+
+  --serif: "Logbook Serif", "Iowan Old Style", "Charter", "Sitka Text", Cambria, Georgia, serif;
+  --sans: "Logbook Sans", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --nav-h: 2.875rem;
+  --mast-row-h: 4.25rem;
+  /* The sticky masthead: its row, the nav and their rules. Sticky table heads sit just below it. */
+  --masthead-h: calc(var(--mast-row-h) + 1px + var(--nav-h) + 3px); /* the rules are hairlines, in px */
+  --sticky-top: var(--masthead-h);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #11151b;
+    --paper-raised: #181d25;
+    --paper-sunk: #0c0f14;
+    --ink: #ece6d8;
+    --ink-2: #c6bfb0;
+    --ink-3: #9d9687;
+    --ink-4: #686357;
+    --rule: #272d37;
+    --rule-strong: #3b4351;
+    --accent: #7fc5a2;
+    --accent-strong: #a9dfc3;
+    --accent-wash: #17302a;
+    --on-accent: #0c1512;
+    --ochre: #e2b35f;
+    --ochre-wash: #3a2d15;
+    --slate: #a2aebb;
+    --dusk: #aeabd9;
+    --rust: #f08f78;
+    --rust-wash: #3b1e18;
+    --map-paper: #11151b;
+    --chart-wash: rgba(127, 197, 162, 0.16);
+    --chart-ochre-wash: rgba(226, 179, 95, 0.2);
+    --chart-sunk: rgba(157, 150, 135, 0.12);
+    --shadow-pop: 0 1px 0 rgba(0, 0, 0, 0.3), 0 1.75rem 4.375rem -1.125rem rgba(0, 0, 0, 0.75);
+    --backdrop: rgba(4, 6, 9, 0.6);
+    --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 5'%3E%3Cpath d='M0 0h10L5 5z' fill='%239d9687'/%3E%3C/svg%3E");
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #11151b;
+  --paper-raised: #181d25;
+  --paper-sunk: #0c0f14;
+  --ink: #ece6d8;
+  --ink-2: #c6bfb0;
+  --ink-3: #9d9687;
+  --ink-4: #686357;
+  --rule: #272d37;
+  --rule-strong: #3b4351;
+  --accent: #7fc5a2;
+  --accent-strong: #a9dfc3;
+  --accent-wash: #17302a;
+  --on-accent: #0c1512;
+  --ochre: #e2b35f;
+  --ochre-wash: #3a2d15;
+  --slate: #a2aebb;
+  --dusk: #aeabd9;
+  --rust: #f08f78;
+  --rust-wash: #3b1e18;
+  --map-paper: #11151b;
+  --chart-wash: rgba(127, 197, 162, 0.16);
+  --chart-ochre-wash: rgba(226, 179, 95, 0.2);
+  --chart-sunk: rgba(157, 150, 135, 0.12);
+  --shadow-pop: 0 1px 0 rgba(0, 0, 0, 0.3), 0 1.75rem 4.375rem -1.125rem rgba(0, 0, 0, 0.75);
+  --backdrop: rgba(4, 6, 9, 0.6);
+  --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 5'%3E%3Cpath d='M0 0h10L5 5z' fill='%239d9687'/%3E%3C/svg%3E");
+}
+
+/* ----------------------------------------------------------------- size -- */
+
+/* The one place the size of everything is set. Everything else is in rem or
+   em, so text, controls, cards, table rows, chart text and map controls all
+   grow and shrink together, live. Hairlines (1px rules) stay 1px on purpose.
+
+     html font-size = the browser's default size (100%, 16px unless the
+                      person changed it) x one factor:
+
+   Interface size, when the person chose one in Settings or under "Aa" in the
+   top bar: 75% to 200% of the standard size, on any screen. app.js sets
+   data-ui-size on <html> (boot.js does it before the first paint).
+
+   Auto otherwise (the default): 1 on laptops and most monitors, growing on
+   very wide windows: none up to 2400 px, then 1% per 32 px, up to 145% at
+   3840 px (a 4K screen at 100% OS scaling, such as a wall display). boot.js
+   measures the window in device-independent pixels, which browser zoom does
+   not change, and sets --auto. So zoom always multiplies the whole page: at
+   the same window size, 150% zoom is 1.5x the size at 100%, everywhere.
+   A 4K screen at 150% or 200% OS scaling is 2560 or 1920 px wide: the OS has
+   enlarged it already, so it gets little or no growth.
+
+   Without boot.js, a CSS-only Auto from the viewport width stands in. */
+html { font-size: clamp(100%, 100% + (100vw - 2400px) / 200, 145%); }
+html[data-auto] { font-size: calc(var(--auto) * 100%); }
+html[data-ui-size] { font-size: calc(var(--ui-size) * 100%); }
+:root[data-ui-size="75"] { --ui-size: 0.75; }
+:root[data-ui-size="90"] { --ui-size: 0.9; }
+:root[data-ui-size="100"] { --ui-size: 1; }
+:root[data-ui-size="110"] { --ui-size: 1.1; }
+:root[data-ui-size="125"] { --ui-size: 1.25; }
+:root[data-ui-size="150"] { --ui-size: 1.5; }
+:root[data-ui-size="175"] { --ui-size: 1.75; }
+:root[data-ui-size="200"] { --ui-size: 2; }
+
+/* The smallest text (eyebrows, column heads, units, flags, notes under
+   figures) keeps a floor of 9.5 to 10 px when the interface size goes below
+   standard: 75% makes the layout and the body text smaller, not the small
+   print unreadable. Every size under 0.8rem goes through one of these. */
+:root { --micro: max(0.6875rem, 9.5px); --micro-2: max(0.71875rem, 10px); --small: max(0.75rem, 10px); --small-2: max(0.78125rem, 10px); }
+
+/* The page is the container the layouts ask about: its width in rem says how
+   much room there is at the current size, so a bigger interface size or zoom
+   gets the layout a narrower window would get. Tiers, narrowest first:
+     under 50rem      compact: 200% zoom or size on a 1280-1366 px laptop
+     50 to 72rem      narrow: 200% on a 1920 px window is 60rem
+     72 to 112.5rem   standard: the laptop layout (1440 x 900 is 90rem);
+                      the column grows with the window, gutters stay modest
+     112.5rem and up  wide: 1080p, 1440p and 4K monitors (1920 is 120rem,
+                      native 4K 165rem); pages add columns, side panels and
+                      bigger maps and charts, never longer lines of text
+     150rem and up    the register adds a few more columns */
+body { container: page / inline-size; }
+
+/* ----------------------------------------------------------------- base -- */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { background: var(--paper); -webkit-text-size-adjust: 100%; }
+
+/* Keyboard focus never lands under the sticky masthead (or the register's sticky column heads):
+   whatever the browser scrolls into view on the page stops this far below the top. It is set on the
+   page's content, not as the document's scroll-padding, which would count the masthead itself as
+   hidden, so that focusing anything in it (a tab, the "Aa" menu) would scroll the page. */
+:root { --clear-top: calc(var(--masthead-h) + 1rem); }
+:where(.main, .colophon, .proto) * { scroll-margin-top: var(--clear-top); }
+.ledger tbody * { scroll-margin-top: calc(var(--clear-top) + 2.5rem); }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 0.90625rem/1.5 var(--sans);
+  font-feature-settings: "cv11" 1, "ss03" 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, p, dl, dd, ol, ul, figure { margin: 0; }
+ol, ul { padding: 0; list-style: none; }
+
+a { color: inherit; text-decoration-color: var(--rule-strong); text-underline-offset: 0.2em; text-decoration-thickness: 1px; }
+a:hover { text-decoration-color: currentColor; }
+
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+
+:root { --focus-w: max(2px, 0.125rem); }
+/* Focus rings grow with the interface size (never thinner than 2px), so they read from a distance too. */
+:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: 0.1875rem; border-radius: 0.125rem; }
+::selection { background: var(--accent-wash); color: var(--ink); }
+
+/* A 1rem square app.js watches, to hear when the root size or the pixel ratio changes. */
+.rem-probe { position: absolute; top: 0; left: 0; width: 1rem; height: 1rem; visibility: hidden; pointer-events: none; }
+.standard-probe { position: absolute; top: 0; left: 0; font-size: medium; visibility: hidden; pointer-events: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.mono { font-family: var(--mono); font-size: 0.92em; letter-spacing: 0; }
+.sep { color: var(--ink-4); }
+
+.skip-link {
+  position: absolute; left: 1rem; top: -3rem; z-index: 50;
+  background: var(--ink); color: var(--paper); padding: 0.625rem 0.875rem; border-radius: 0.25rem; text-decoration: none; font-weight: 600;
+}
+.skip-link:focus { top: 0.75rem; }
+
+.kbd {
+  display: inline-block; min-width: 1.7em; padding: 1px 0.3125rem; margin-left: 0.125rem;
+  font: 500 var(--micro)/1rem var(--sans); text-align: center; color: var(--ink-3);
+  border: 1px solid var(--rule-strong); border-bottom-width: 2px; border-radius: 0.25rem; background: var(--paper-raised);
+}
+
+.icon { width: 1rem; height: 1rem; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+/* The page's column. Standard tier: 77.5rem on a 1440 laptop (90rem), then it
+   grows with the window (86% of it) up to 98rem, so the margins stay modest
+   instead of the column floating in a growing field. Wide tier: the whole
+   window less 4rem gutters; the pages there have the layouts to fill it. */
+.wrap { --gutter: 3rem; width: min(100% - 2 * var(--gutter), max(77.5rem, 86.1%), 98rem); margin-inline: auto; }
+@container page (width < 85rem) { .wrap { --gutter: 2.5rem; } }
+@container page (width < 72rem) { .wrap { --gutter: 2rem; } }
+@container page (width < 50rem) { .wrap { --gutter: 1.5rem; } }
+@container page (width >= 112.5rem) { .wrap { --gutter: 4rem; width: calc(100% - 2 * var(--gutter)); } }
+
+/* ------------------------------------------------------------- masthead -- */
+
+.masthead { background: var(--paper); border-bottom: 3px double var(--rule-strong); position: sticky; top: 0; z-index: 30; }
+
+.masthead-row { display: flex; align-items: center; gap: 1.75rem; height: var(--mast-row-h); }
+
+.brand { display: inline-flex; align-items: center; gap: 0.6875rem; text-decoration: none; color: var(--ink); flex: none; }
+.brand-mark { width: 1.75rem; height: 1.75rem; }
+.brand-mark-bg { fill: var(--accent); }
+.brand-mark-road { fill: none; stroke: var(--on-accent); stroke-width: 2.4; stroke-linecap: round; }
+.brand-mark-dot { fill: var(--on-accent); }
+.brand-mark-ring { fill: none; stroke: var(--on-accent); stroke-width: 2; }
+.brand-name { font: 700 1.3125rem/1 var(--serif); letter-spacing: -0.01em; }
+
+.switcher-trigger {
+  display: flex; align-items: center; gap: 0.875rem; min-width: 20rem; max-width: 23.75rem; height: 2.75rem; padding: 0 0.625rem 0 1rem;
+  background: transparent; border: 1px solid var(--rule-strong); border-radius: 0.375rem; text-align: left;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.switcher-trigger:hover { border-color: var(--ink-3); background: var(--paper-raised); }
+.switcher-trigger-text { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.15; }
+.switcher-trigger-name { font: 400 1rem/1.2 var(--serif); color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.switcher-trigger-meta { font-size: var(--small); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.trigger-age.is-stale { color: var(--rust); font-weight: 500; }
+
+.masthead-tools { margin-left: auto; display: flex; align-items: center; gap: 1.5rem; }
+
+.units { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: 999px; padding: 0.125rem; }
+.units-option {
+  border: 0; background: transparent; padding: 0.3125rem 0.75rem; border-radius: 999px;
+  font-size: var(--small-2); font-weight: 500; color: var(--ink-3); letter-spacing: 0.01em; white-space: nowrap;
+}
+.units-option:hover { color: var(--ink); }
+.units-option[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+
+.clock { font-size: 0.8125rem; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.clock abbr { text-decoration: none; color: var(--ink-3); font-weight: 500; margin-left: 0.125rem; }
+
+/* "Aa": the interface size, one click away. Settings has the same control. */
+.size-menu { position: relative; }
+.size-trigger {
+  display: inline-flex; align-items: center; gap: 0.375rem; height: 1.9375rem; padding: 0 0.6875rem; border: 1px solid var(--rule-strong); border-radius: 999px;
+  background: transparent; color: var(--ink-2); font-size: var(--small-2); font-weight: 500; font-variant-numeric: tabular-nums;
+}
+.size-trigger:hover, .size-trigger[aria-expanded="true"] { color: var(--ink); border-color: var(--ink-3); background: var(--paper-raised); }
+.size-trigger-glyph { font: 400 1rem/1 var(--serif); }
+.size-trigger-value:empty { display: none; }
+.size-pop {
+  position: absolute; right: 0; top: calc(100% + 0.75rem); z-index: 40; width: 17.5rem; max-width: calc(100vw - 2rem); padding: 0.875rem 1rem 0.9375rem;
+  background: var(--paper-raised); border: 1px solid var(--rule-strong); border-radius: 0.5rem; box-shadow: var(--shadow-pop);
+}
+.size-pop[hidden] { display: none; }
+.size-pop-title { font: 600 var(--micro)/1.2 var(--sans); letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 0.625rem; }
+.size-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--rule-strong); border-radius: 0.375rem; overflow: hidden; }
+.size-options .segmented-option { justify-content: center; height: 2.125rem; padding: 0; border-left: 1px solid var(--rule); border-top: 1px solid var(--rule); }
+.size-options .segmented-option:nth-child(3n + 1) { border-left: 0; }
+.size-options .segmented-option:nth-child(-n + 3) { border-top: 0; }
+.size-pop-note { font-size: var(--small); color: var(--ink-3); margin-top: 0.625rem; font-variant-numeric: tabular-nums; }
+.size-pop-more { display: inline-block; margin-top: 0.375rem; font-size: 0.8125rem; font-weight: 500; color: var(--ink-2); }
+.size-pop-more:hover { color: var(--accent); }
+
+.primary-nav { border-top: 1px solid var(--rule); }
+.nav-row { display: flex; align-items: stretch; gap: 1.625rem; height: var(--nav-h); }
+.nav-link {
+  /* A little room each side for the focus ring, taken back by the margin so the row is unchanged. */
+  position: relative; display: inline-flex; align-items: center; padding-inline: 0.375rem; margin-inline: -0.375rem;
+  text-decoration: none; color: var(--ink-2); font-size: 0.875rem; font-weight: 500; white-space: nowrap; transition: color 0.15s;
+}
+/* The underline is as wide as the word. */
+.nav-link::after { content: ""; position: absolute; left: 0.375rem; right: 0.375rem; bottom: 0; height: 0.125rem; background: transparent; transition: background-color 0.15s; }
+.nav-link:hover { color: var(--ink); }
+.nav-link:hover::after { background: var(--rule-strong); }
+.nav-link[aria-current="page"] { color: var(--ink); }
+.nav-link[aria-current="page"]::after { background: var(--accent); }
+.nav-link:focus-visible { outline-offset: calc(-1 * var(--focus-w)); }
+.nav-divider { width: 1px; background: var(--rule); margin: 0.8125rem 0; }
+/* On pages for the whole fleet, the car tabs say whose they are. */
+.nav-car { display: none; align-items: center; margin-right: -0.75rem; font: italic 400 0.9375rem/1 var(--serif); color: var(--ink-3); white-space: nowrap; }
+.primary-nav.is-fleet .nav-car:not(:empty) { display: inline-flex; }
+.primary-nav.is-fleet .nav-link[data-car-link] { color: var(--ink-3); }
+.primary-nav.is-fleet .nav-link[data-car-link]:hover { color: var(--ink); }
+.nav-link-end { margin-left: auto; }
+
+/* ----------------------------------------------------------------- main -- */
+
+.main { padding: 2.375rem 0 5.5rem; min-height: 40rem; }
+.main:focus { outline: none; }
+
+.colophon { border-top: 1px solid var(--rule); color: var(--ink-3); font-size: var(--small-2); }
+.colophon-row { display: flex; justify-content: space-between; gap: 1.5rem; padding: 1.375rem 0 1.875rem; }
+.colophon-row p:first-child { font-family: var(--serif); font-size: 0.875rem; color: var(--ink-2); }
+
+/* ---------------------------------------------------------- page heads -- */
+
+.page-head {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 2rem;
+  padding-bottom: 1.625rem; margin-bottom: 0; border-bottom: 1px solid var(--rule);
+}
+.page-head-main { min-width: 0; }
+.page-head-aside { flex: none; text-align: right; }
+
+.eyebrow { font: 600 var(--micro-2)/1.3 var(--sans); letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-3); }
+.page-title { font: 400 3.125rem/1.04 var(--serif); letter-spacing: -0.018em; margin: 0.5rem 0 0.625rem; color: var(--ink); }
+.page-title .to, .entry-title .to, .route-name .to { font-style: italic; color: var(--ink-3); }
+.title-soft { color: var(--ink-3); }
+.deck { font: 400 1.125rem/1.5 var(--serif); color: var(--ink-2); max-width: 64ch; }
+.car-line { font-size: 0.875rem; color: var(--ink-2); }
+
+.label { font: 600 var(--micro-2)/1.3 var(--sans); letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-3); display: flex; align-items: baseline; gap: 0.5rem; }
+.label-note { font-weight: 500; letter-spacing: 0.02em; text-transform: none; color: var(--ink-3); }
+
+.asof { font-size: 0.8125rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.asof-dot { display: inline-block; width: 0.4375rem; height: 0.4375rem; border-radius: 50%; background: var(--accent); margin-right: 0.5625rem; box-shadow: 0 0 0 0.1875rem var(--accent-wash); vertical-align: 1px; }
+.asof-time { font-weight: 500; }
+.asof-note { color: var(--ink-3); font-size: var(--small-2); }
+.asof-note::before { content: " · "; color: var(--ink-4); }
+/* "Updated" sits on the deck's baseline. */
+.page-head-fleet { align-items: last baseline; padding-bottom: 1.375rem; }
+.page-head-fleet .page-head-aside { white-space: nowrap; }
+.page-head-fleet .page-title { font-size: 2.75rem; margin: 0.375rem 0 0.375rem; }
+.fleet-top + .toolbar { padding: 1rem 0 0.875rem; }
+
+/* -------------------------------------------------------------- figures -- */
+
+.q { display: inline-flex; align-items: baseline; gap: 0.22em; white-space: nowrap; font-variant-numeric: tabular-nums lining-nums; }
+/* Units read quieter than their figures, but never below 11px at the standard size. */
+.q-u { font-size: max(0.78em, var(--micro)); color: var(--ink-3); font-weight: 400; letter-spacing: 0.01em; }
+.q-tight { gap: 0.03em; }
+.plus { display: inline-flex; align-items: baseline; white-space: nowrap; }
+.plus-sign { color: var(--ink-3); margin-right: 0.06em; font-size: 0.82em; }
+
+.fig { min-width: 0; }
+.fig-name { font: 500 var(--small)/1.3 var(--sans); color: var(--ink-3); letter-spacing: 0.01em; }
+.fig-value { font: 400 1.5rem/1.2 var(--serif); color: var(--ink); margin-top: 0.25rem; font-variant-numeric: tabular-nums lining-nums; }
+.fig-value .q-u { font-family: var(--sans); font-size: var(--small-2); }
+.fig-note { font-size: var(--small-2); color: var(--ink-3); margin-top: 0.125rem; }
+
+/* --------------------------------------------------------------- states -- */
+
+.state { display: inline-flex; align-items: center; gap: 0.4375rem; font-weight: 500; color: var(--ink); white-space: nowrap; }
+.state-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; flex: none; background: var(--slate); display: inline-block; }
+.state-dot.state-driving, .state-driving .state-dot { background: var(--accent); }
+.state-dot.state-charging, .state-charging .state-dot { background: var(--ochre); }
+.state-dot.state-parked, .state-parked .state-dot { background: var(--slate); }
+.state-dot.state-asleep, .state-asleep .state-dot { background: transparent; box-shadow: inset 0 0 0 0.1rem var(--dusk); }
+.state-dot.state-offline, .state-offline .state-dot { background: transparent; box-shadow: inset 0 0 0 0.1rem var(--rust); }
+.state-offline { color: var(--rust); }
+.state-dot.is-stale { opacity: 0.5; }
+
+/* -------------------------------------------------------------- controls -- */
+
+.button {
+  display: inline-flex; align-items: center; gap: 0.4375rem; height: 2.25rem; padding: 0 0.875rem;
+  border: 1px solid var(--ink); border-radius: 0.375rem; background: var(--ink); color: var(--paper);
+  font-size: 0.84375rem; font-weight: 500; text-decoration: none; white-space: nowrap;
+}
+.button:hover { background: var(--ink-2); border-color: var(--ink-2); }
+.button-quiet { background: transparent; color: var(--ink); border-color: var(--rule-strong); }
+.button-quiet:hover { background: var(--paper-raised); border-color: var(--ink-3); }
+.button:disabled, .button.is-disabled { color: var(--ink-4); border-color: var(--rule); background: transparent; cursor: default; }
+
+.segmented { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: 0.375rem; overflow: hidden; }
+.segmented-option {
+  display: inline-flex; align-items: center; height: 2.125rem; padding: 0 0.8125rem; border: 0; border-left: 1px solid var(--rule);
+  background: transparent; color: var(--ink-2); font-size: 0.8125rem; font-weight: 500; text-decoration: none; white-space: nowrap;
+}
+.segmented-option:first-child { border-left: 0; }
+.segmented-option:hover { color: var(--ink); background: var(--paper-raised); }
+.segmented-option[aria-pressed="true"], .segmented-option[aria-current="true"], .segmented-option[aria-checked="true"] { background: var(--ink); color: var(--paper); }
+.segmented-option:focus-visible { outline-offset: -3px; }
+.segmented-field .segmented-option { height: 2.25rem; }
+
+.toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 1.5rem; padding: 1.375rem 0; }
+.toolbar-end { display: flex; align-items: flex-end; gap: 1rem; }
+
+.field { display: flex; flex-direction: column; gap: 0.375rem; }
+.field-label { font: 600 var(--micro)/1.2 var(--sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+.field-control { position: relative; display: flex; align-items: center; }
+.field-icon { position: absolute; left: 0.75rem; color: var(--ink-3); pointer-events: none; }
+.field-input, .field-select {
+  height: 2.375rem; border: 1px solid var(--rule-strong); border-radius: 0.375rem; background: var(--paper-raised); color: var(--ink);
+  padding: 0 0.75rem; font-size: 0.875rem;
+}
+.field-input::placeholder { color: var(--ink-3); opacity: 1; }
+.field-input:hover, .field-select:hover { border-color: var(--ink-3); }
+.field-input:focus-visible, .field-select:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: 0.0625rem; border-color: var(--accent); }
+.field-search { flex: 0 1 26.25rem; }
+.field-search .field-input { width: 100%; padding-left: 2.25rem; }
+.field-select { padding-right: 1.875rem; min-width: 13.125rem; appearance: none; background-image: var(--select-caret); background-position: right 0.75rem center; background-size: 0.625rem 0.3125rem; background-repeat: no-repeat; }
+.field-select-narrow { min-width: 7.5rem; }
+.field-date { min-width: 9.375rem; font-variant-numeric: tabular-nums; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.chip { display: inline-flex; align-items: center; gap: 0.375rem; height: 1.625rem; padding: 0 0.625rem; border: 1px solid var(--rule-strong); border-radius: 999px; font-size: var(--small-2); font-weight: 500; color: var(--ink-2); }
+.chip .icon { width: 0.875rem; height: 0.875rem; }
+.chip-plug { border-color: var(--ochre); color: var(--ochre); }
+
+/* ================================================================ fleet == */
+
+.tallies { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border-bottom: 1px solid var(--rule); }
+.tally {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 0.125rem; padding: 0.875rem 1rem 0.8125rem; text-align: left; min-width: 0;
+  border: 0; border-left: 1px solid var(--rule); background: transparent; position: relative; color: var(--ink);
+}
+.tally:first-child { border-left: 0; padding-left: 0; }
+.tally::before { content: ""; position: absolute; left: 0; right: 0; top: -1px; height: 0.1875rem; background: transparent; }
+.tally:first-child::before { left: 0; }
+.tally:hover .tally-count { color: var(--accent); }
+.tally[aria-pressed="true"]::before { background: var(--ink); }
+.tally[aria-pressed="true"] .tally-name { color: var(--ink); }
+.tally-count { font: 400 2rem/1 var(--serif); letter-spacing: -0.01em; font-variant-numeric: tabular-nums lining-nums; transition: color 0.15s; }
+.tally-name { display: inline-flex; align-items: baseline; gap: 0.4375rem; font-size: 0.8125rem; font-weight: 500; color: var(--ink-2); margin-top: 0.375rem; white-space: nowrap; max-width: 100%; overflow: hidden; }
+.tally-name .state-dot { align-self: center; }
+.tally-note { font-size: var(--small); font-weight: 400; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; }
+.tally-note::before { content: "· "; color: var(--ink-4); }
+.tally-offline .tally-count { color: var(--rust); }
+.tally:focus-visible { outline-offset: -2px; }
+
+.ledger-frame { border-top: 1px solid var(--ink); }
+.ledger { width: 100%; border-collapse: collapse; table-layout: fixed; font-variant-numeric: tabular-nums; transition: opacity 0.15s; }
+.ledger.is-loading tbody { opacity: 0.55; }
+/* No. fits the longest number on the page ("100,000" in a big fleet): app.js sets --no-chars. */
+.ledger { --no-min: 3.25rem; --no-pad: 1.5rem; }
+.col-no { width: max(var(--no-min), var(--no-pad) + var(--no-chars, 3) * 0.47rem); } .col-car { width: 21%; } .col-state { width: 15%; } .col-battery { width: 13%; }
+.col-where { width: 17%; } .col-seen { width: 19%; } .col-today { width: 8%; }
+/* Last seen has room for "25 days ago" and its NO SIGNAL flag; State for "Charging last known". */
+.is-compact .col-car { width: 18%; } .is-compact .col-model { width: 11%; } .is-compact .col-state { width: 14%; }
+.is-compact .col-battery { width: 14.5%; } .is-compact .col-where { width: 13.5%; } .is-compact .col-seen { width: 18%; } .is-compact .col-today { width: 7%; }
+/* Column names stay in view under the masthead while the rows scroll. */
+.ledger thead th {
+  font: 600 var(--micro)/1.2 var(--sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3);
+  text-align: left; padding: 0.75rem 0.875rem; white-space: nowrap;
+  position: sticky; top: var(--sticky-top); z-index: 2; background: var(--paper);
+}
+/* The rule under the column heads is drawn once, by the first head, across the whole table (100cqi of
+   the frame): one line, so at fractional pixel ratios (150% OS scaling) it cannot break into segments
+   that each snap to a different device pixel. */
+.ledger-frame { container: ledger / inline-size; }
+.ledger thead th:first-child { z-index: 3; }
+.ledger thead th:first-child::after { content: ""; position: absolute; left: 0; bottom: 0; width: 100cqi; height: 1px; background: var(--rule-strong); pointer-events: none; }
+.ledger thead th.c-no, .ledger thead th.c-today { text-align: right; }
+.sort-button { display: inline-flex; align-items: center; gap: 0.375rem; border: 0; background: none; padding: 0; font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; }
+.sort-button:hover { color: var(--ink); }
+.sort-mark { width: 0.4375rem; height: 0.4375rem; border-right: 1.5px solid transparent; border-bottom: 1.5px solid transparent; transform: rotate(45deg) translate(-1px, -1px); }
+th[aria-sort] .sort-button { color: var(--ink); }
+th[aria-sort="ascending"] .sort-mark { border-color: currentColor; transform: rotate(-135deg) translate(-0.125rem, -0.125rem); }
+th[aria-sort="descending"] .sort-mark { border-color: currentColor; }
+.ledger thead th.c-today .sort-button { flex-direction: row-reverse; }
+
+.ledger tbody td, .ledger tbody th { padding: 0.875rem 0.875rem 0.8125rem; border-bottom: 1px solid var(--rule); vertical-align: top; text-align: left; font-weight: 400; }
+.ledger tbody tr:nth-child(5n) > * { border-bottom-color: var(--rule-strong); }
+.ledger-row { cursor: pointer; transition: background-color 0.12s; }
+.ledger-row:hover > * { background: var(--paper-sunk); }
+.ledger td.c-no { text-align: right; color: var(--ink-3); font-size: var(--small-2); padding-top: 1.0625rem; padding-right: 0.625rem; }
+.car-name { font: 400 1.09375rem/1.3 var(--serif); color: var(--ink); text-decoration: none; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.car-name:hover { text-decoration: underline; text-decoration-color: var(--rule-strong); }
+.cell-sub { display: block; font-size: var(--small-2); color: var(--ink-3); margin-top: 0.1875rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The key is what people search for and quote: the trim gives way, never the key. */
+.cell-sub-car { display: flex; align-items: baseline; gap: 0; }
+.cell-sub-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-sub-car .sep { flex: none; white-space: pre; }
+.car-key { flex: none; white-space: nowrap; }
+.plug-mark { display: inline-flex; vertical-align: -0.125rem; color: var(--ochre); }
+.icon-plug { width: 0.8125rem; height: 0.8125rem; }
+.c-state .state { margin-top: 0.125rem; }
+.batt-row { display: flex; align-items: center; gap: 0.625rem; margin-top: 1px; }
+.batt-row .q { font-weight: 500; min-width: 3.1em; }
+.bar-cell { width: 4rem; height: 0.25rem; flex: none; }
+.bar-track { fill: var(--rule); }
+.bar-fill { fill: var(--ink-2); }
+.bar-fill.is-low { fill: var(--rust); }
+.bar-added { fill: var(--ochre); }
+.bar-limit { fill: var(--ink); width: 0.125rem; } /* the limit mark, in rem like the bar around it */
+.place { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
+.seen-line { display: flex; align-items: center; gap: 0.5rem; margin-top: 1px; min-width: 0; }
+.age { display: block; font-weight: 500; white-space: nowrap; }
+.age.is-stale { color: var(--rust); }
+.flag {
+  display: inline-block; flex: none; padding: 0 0.3125rem; border: 1px solid currentColor; border-radius: 0.1875rem;
+  font: 600 var(--micro)/0.9375rem var(--sans); letter-spacing: 0.07em; text-transform: uppercase; color: var(--rust); white-space: nowrap;
+}
+.ledger td.c-today { text-align: right; padding-top: 0.9375rem; }
+.nil { color: var(--ink-3); }
+.is-stale .car-name, .is-stale .place { color: var(--ink-2); }
+.is-stale .bar-fill { fill: var(--ink-4); }
+.is-stale .c-state .state { color: var(--ink-2); }
+.is-stale .c-state .state-dot { opacity: 0.55; }
+.is-offline .c-state .state, .is-offline .c-state .state-dot { color: var(--rust); opacity: 1; }
+
+/* Columns only wide screens have room for (see "Wide screens" below). */
+.ledger .c-range, .ledger .c-area, .ledger:not(.is-compact) .c-model,
+.ledger col.col-range, .ledger col.col-area, .ledger:not(.is-compact) col.col-model,
+.ledger .c-odo, .ledger .c-sw, .ledger .c-cabin, .ledger .c-plug,
+.ledger col.col-odo, .ledger col.col-sw, .ledger col.col-cabin, .ledger col.col-plug { display: none; }
+.ledger td.c-odo, .ledger td.c-sw, .ledger td.c-cabin, .ledger td.c-plug { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ledger thead th.c-odo, .ledger thead th.c-cabin, .ledger td.c-odo, .ledger td.c-cabin { text-align: right; }
+.ledger td.c-range, .ledger td.c-area { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-name { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 0.0625rem; }
+
+.ledger-skeleton td { padding: 1rem 0.875rem; border-bottom: 1px solid var(--rule); }
+.is-compact .ledger-skeleton td { padding: 0.5625rem 0.75rem; }
+.is-compact .ledger-skeleton .skeleton-row { height: 1.25rem; }
+/* Empty: set flush with the Car column, like the rows it stands in for. */
+.ledger tbody .ledger-empty td { padding: 3rem 0.875rem 3.5rem 4.125rem; text-align: left; border-bottom: 1px solid var(--rule); }
+.empty-title { font: 400 1.375rem/1.3 var(--serif); color: var(--ink); }
+.empty-body { color: var(--ink-3); margin: 0.5rem 0 1.125rem; max-width: 52ch; }
+
+/* Compact density: one line per car. */
+.is-compact tbody td, .is-compact tbody th { padding: 0.5625rem 0.75rem 0.5rem; white-space: nowrap; vertical-align: middle; }
+.is-compact thead th { padding: 0.6875rem 0.75rem; }
+.is-compact td.c-no { padding-top: 0.5625rem; font-size: var(--small); }
+.is-compact .car-line-1 { display: flex; align-items: baseline; gap: 0.625rem; min-width: 0; }
+.is-compact .car-name { font-size: 1rem; line-height: 1.4; flex: 0 1 auto; min-width: 0; }
+.is-compact .car-key { font-size: var(--small); color: var(--ink-3); }
+.is-compact td.c-model { color: var(--ink-2); font-size: 0.84375rem; overflow: hidden; text-overflow: ellipsis; }
+.is-compact .c-state .state { margin-top: 0; }
+.state-inline { display: inline-flex; align-items: center; gap: 0.5rem; max-width: 100%; }
+.inline-note { font-size: var(--small); color: var(--ink-3); white-space: nowrap; }
+.is-compact .batt-row { margin-top: 0; }
+.is-compact .batt-row .inline-note { margin-left: 0.125rem; }
+.is-compact .bar-cell { width: 3rem; }
+.is-compact .place { margin-top: 0; }
+.is-compact .seen-line { margin-top: 0; }
+.is-compact td.c-today { padding-top: 0.5625rem; }
+.is-compact tbody tr:nth-child(5n) > * { border-bottom-color: var(--rule); }
+.is-compact tbody tr:nth-child(10n) > * { border-bottom-color: var(--rule-strong); }
+
+/* Above the table: the rows shown and a thumb index by initial. */
+.ledger-index { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; min-height: 1.875rem; padding: 0 0 0.5rem; }
+.thumb { display: flex; align-items: center; }
+.thumb-letters { display: flex; align-items: center; gap: 1px; }
+/* On narrow windows the 26 letters fold into a menu (see "Narrow windows"). */
+.thumb-select { display: none; min-width: 0; height: 2rem; font-size: 0.8125rem; }
+.thumb-label { font: 600 var(--micro)/1 var(--sans); letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-3); margin-right: 0.625rem; }
+.thumb-letter {
+  display: inline-flex; align-items: center; justify-content: center; width: 1.375rem; height: 1.625rem; padding: 0; border: 0; border-radius: 0.1875rem;
+  background: transparent; font: 400 0.875rem/1 var(--serif); color: var(--ink-2);
+}
+button.thumb-letter:hover { background: var(--paper-sunk); color: var(--ink); }
+.thumb-letter[aria-current="true"] { color: var(--ink); box-shadow: inset 0 -0.125rem 0 var(--accent); }
+.thumb-letter.is-empty { color: var(--ink-4); }
+
+.pager { display: flex; align-items: center; justify-content: space-between; padding: 1.125rem 0 0; }
+.pager-status { color: var(--ink-3); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+.pager-controls { display: flex; align-items: center; gap: 0.5rem; }
+.pager-controls .pager-page { margin: 0 0.375rem; }
+.pager-page { font: 400 0.9375rem var(--serif); color: var(--ink-2); font-variant-numeric: tabular-nums; min-width: 5.75rem; text-align: center; }
+
+/* ================================================================== now == */
+
+.car-head { align-items: flex-end; }
+.freshness { font-size: 0.875rem; color: var(--ink-2); }
+.freshness-line { display: inline-flex; align-items: center; gap: 0.3em; }
+.freshness strong { font-weight: 600; color: var(--ink); }
+.freshness-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0.25rem var(--accent-wash); margin-right: 0.375rem; }
+.freshness-note { font-size: var(--small-2); color: var(--ink-3); font-variant-numeric: tabular-nums; margin-top: 0.1875rem; }
+.freshness.is-stale .freshness-dot { background: var(--rust); box-shadow: 0 0 0 0.25rem var(--rust-wash); }
+.freshness.is-stale strong { color: var(--rust); }
+/* Old figures say so: a ruled rust note, and the figures themselves go quiet. */
+.stale-banner {
+  margin: 0 0 1.375rem; padding: 0.6875rem 0 0.75rem; border-top: 1px solid var(--rust); border-bottom: 1px solid var(--rule);
+  color: var(--ink-2); font-size: 0.875rem; font-variant-numeric: tabular-nums;
+}
+.stale-banner strong { color: var(--rust); font-weight: 600; }
+.hero.is-stale .fig-value, .vitals.is-stale .spec-row dd, .vitals.is-stale .tire-value { color: var(--ink-3); fill: var(--ink-3); }
+.hero.is-stale .bar-gauge .bar-fill { fill: var(--ink-4); }
+.chips-label { align-self: center; font: 600 var(--micro)/1 var(--sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); margin-right: 0.125rem; }
+
+/* Prototype controls: demo only, outside the design, below the colophon. */
+.proto { padding: 0 0 1.75rem; }
+.proto-row { display: flex; align-items: center; justify-content: space-between; gap: 1.25rem; padding: 0.625rem 0.875rem; border: 1px dashed var(--rule-strong); border-radius: 0.375rem; color: var(--ink-3); }
+.proto-label { font-size: var(--small-2); }
+.proto-tag { font: 600 var(--micro)/1 var(--sans); letter-spacing: 0.1em; text-transform: uppercase; margin-right: 0.5rem; }
+.segmented-proto { border-style: dashed; }
+.segmented-proto .segmented-option { height: 1.75rem; font-size: var(--small-2); padding: 0 0.6875rem; color: var(--ink-3); }
+.segmented-proto .segmented-option[aria-current="true"] { background: var(--paper-sunk); color: var(--ink); }
+
+.now-grid { display: grid; grid-template-columns: minmax(0, 1fr) 23.25rem; column-gap: 3.5rem; }
+.now-main { min-width: 0; padding-top: 1.875rem; }
+.now-aside { border-left: 1px solid var(--rule); padding: 1.875rem 0 0 2.5rem; min-width: 0; }
+
+.lede { font: 400 1.6875rem/1.38 var(--serif); letter-spacing: -0.006em; color: var(--ink); max-width: 30em; }
+.lede em { font-style: italic; }
+
+.hero { padding: 1.875rem 0 1.875rem; border-bottom: 1px solid var(--rule); container: hero / inline-size; }
+.hero-figs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.5rem; }
+/* The big figures follow the width of their row (8% of it, 2.75rem to 4rem), so "+15.2 kWh" fits
+   whether the row is the laptop's main column or one of three columns on a 4K screen. */
+.fig-hero .fig-value { font-size: clamp(2.75rem, 8cqi, 4rem); line-height: 1; letter-spacing: -0.02em; margin-top: 0.5rem; }
+.fig-hero .fig-value .q-u { font-size: 1.0625rem; color: var(--ink-3); letter-spacing: 0; }
+.fig-hero .q { gap: 0.1em; }
+.fig-hero .q-tight { gap: 0.02em; }
+.fig-hero .q-tight .q-u { font-family: var(--serif); font-size: 1.875rem; }
+.fig-hero .fig-name { font: 600 var(--micro-2)/1.3 var(--sans); letter-spacing: 0.11em; text-transform: uppercase; }
+.fig-hero .fig-note { font-size: 0.8125rem; margin-top: 0.5rem; }
+.fig-hero + .fig-hero { border-left: 1px solid var(--rule); padding-left: 1.5rem; }
+
+.gauge { margin: 1.75rem 0 1.125rem; }
+.gauge-bar { height: 0.625rem; }
+.bar-gauge { display: block; width: 100%; height: 0.625rem; overflow: visible; }
+.bar-gauge .bar-track { fill: var(--paper-sunk); stroke: var(--rule-strong); stroke-width: 1; }
+.bar-gauge .bar-fill { fill: var(--accent); }
+.bar-gauge .bar-added { fill: var(--ochre); }
+.bar-gauge .bar-limit { fill: var(--ink); transform: translate(-1px, -0.25rem) scaleY(1.8); transform-box: fill-box; }
+.gauge-scale { display: block; width: 100%; height: 1.625rem; overflow: visible; }
+.gauge-tick { stroke: var(--rule-strong); stroke-width: 1; }
+.gauge-num { font: 500 var(--micro) var(--sans); fill: var(--ink-3); font-variant-numeric: tabular-nums; }
+.gauge-limit { font: 600 var(--micro) var(--sans); fill: var(--ink); }
+
+.vitals { display: grid; grid-template-columns: 1fr 1.18fr 1fr; border-bottom: 1px solid var(--rule); }
+.vital { padding: 1.625rem 1.5rem 1.625rem; border-left: 1px solid var(--rule); min-width: 0; }
+.vital:first-child { border-left: 0; padding-left: 0; }
+.vital:last-child { padding-right: 0; }
+.spec { margin-top: 0.75rem; }
+.spec-row { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; padding: 0.5625rem 0; border-bottom: 1px solid var(--rule); }
+.spec-row:last-child { border-bottom: 0; }
+.spec-row dt { color: var(--ink-2); font-size: 0.84375rem; }
+.spec-row dd { font: 400 1.0625rem/1.2 var(--serif); text-align: right; font-variant-numeric: tabular-nums; }
+.spec-row dd .q-u { font-family: var(--sans); font-size: var(--small); }
+.spec-note { display: block; font: 400 var(--micro-2) var(--sans); color: var(--ink-3); margin-top: 0.125rem; }
+.spec-foot { font-size: var(--small-2); color: var(--ink-3); margin-top: 0.375rem; }
+.spec-foot.is-low { color: var(--rust); }
+
+.tires-figure { width: 100%; max-width: 15.625rem; margin: 0.5rem auto 0; }
+.tires { display: block; width: 100%; margin: 0.3125rem 0; }
+.tire-body { fill: var(--paper-raised); stroke: var(--rule-strong); stroke-width: 1.2; }
+.tire-glass { fill: none; stroke: var(--rule-strong); stroke-width: 1.2; stroke-linecap: round; }
+.tire-wheel { fill: var(--ink-2); }
+/* The pressures are in the drawing's viewBox units (px), and the drawing scales with rem. FRONT and
+   REAR are HTML labels around it, so they keep the labels' size and floor however wide it is drawn. */
+.tire-value { font: 400 23px var(--serif); fill: var(--ink); font-variant-numeric: tabular-nums; }
+.tire-value.is-low { fill: var(--rust); }
+.tire-axle { display: block; text-align: center; font: 600 var(--micro)/1 var(--sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+
+.where { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.5fr); gap: 2rem; padding: 1.75rem 0; border-bottom: 1px solid var(--rule); }
+.where-text { display: flex; flex-direction: column; min-width: 0; }
+.where-place { font: 400 1.875rem/1.15 var(--serif); margin-top: 0.75rem; letter-spacing: -0.01em; }
+.where-area { color: var(--ink-2); font-size: 0.875rem; margin-top: 0.25rem; }
+.where-since { color: var(--ink-3); font-size: 0.8125rem; margin-top: 0.625rem; }
+.where-since + .where-since { margin-top: 0.125rem; }
+.where-coords { color: var(--ink-3); font-size: var(--small); margin-top: auto; padding-top: 0.875rem; }
+.where-facts { margin-top: 1rem; border-top: 1px solid var(--rule); }
+.where-facts > div { display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.4375rem 0; border-bottom: 1px solid var(--rule); font-size: 0.8125rem; }
+.where-facts dt { color: var(--ink-3); }
+.where-facts dd { color: var(--ink); text-align: right; }
+
+.map { position: relative; background: var(--map-paper); border-radius: 0.1875rem; overflow: hidden; box-shadow: inset 0 0 0 1px var(--rule); }
+.map-where { height: 14.75rem; }
+.map .maplibregl-canvas-container, .map canvas { border-radius: 0.1875rem; }
+/* Until the tiles are in: the same shimmer as the other placeholders. */
+.map.is-loading::after {
+  content: ""; position: absolute; inset: 0; z-index: 3; pointer-events: none; opacity: 0.75;
+  background: linear-gradient(90deg, var(--paper-sunk) 0%, var(--rule) 50%, var(--paper-sunk) 100%); background-size: 300% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+.map-note {
+  position: absolute; left: 0.625rem; bottom: 1.875rem; z-index: 4; max-width: calc(100% - 1.25rem); padding: 0.3125rem 0.5625rem; border-radius: 0.1875rem;
+  background: color-mix(in srgb, var(--paper) 92%, transparent); box-shadow: 0 0 0 1px var(--rule); font-size: var(--small-2); color: var(--ink-3);
+}
+
+.pin { display: flex; align-items: center; gap: 0.4375rem; pointer-events: none; --pin-half: 0.375rem; translate: calc(-1 * var(--pin-half)) 0; }
+/* The marker is anchored at its left edge; this puts the dot's centre on the place, in rem. */
+.pin-here { --pin-half: 0.5rem; }
+.pin-stop { --pin-half: 0.3125rem; }
+.pin-dot { width: 0.75rem; height: 0.75rem; border-radius: 50%; flex: none; background: var(--paper); box-shadow: 0 0 0 0.15625rem var(--ink); }
+.pin-end .pin-dot, .pin-here .pin-dot { background: var(--ink); box-shadow: 0 0 0 0.15625rem var(--paper), 0 0 0 0.21875rem var(--ink); }
+.pin-here .pin-dot { width: 1rem; height: 1rem; background: var(--accent); box-shadow: 0 0 0 0.1875rem var(--paper), 0 0 0 0.25rem var(--accent), 0 0 0 0.625rem var(--chart-wash); }
+.pin-stop .pin-dot { width: 0.625rem; height: 0.625rem; box-shadow: 0 0 0 0.125rem var(--ink-2); }
+.pin-label {
+  font: italic 400 0.875rem/1 var(--serif); color: var(--ink); white-space: nowrap; padding: 0.25rem 0.4375rem 0.3125rem; border-radius: 0.1875rem;
+  background: color-mix(in srgb, var(--paper) 88%, transparent); box-shadow: 0 0 0 1px var(--rule);
+}
+.pin-stop .pin-label { font-size: var(--small-2); padding: 0.1875rem 0.375rem 0.25rem; }
+/* Label on the left: the marker is still anchored by its left edge, so shift the pin back by its own width. */
+.pin-flip { flex-direction: row-reverse; translate: calc(var(--pin-half) - 100%) 0; }
+.car-dot { width: 1rem; height: 1rem; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0.1875rem var(--paper), 0 0 0 0.75rem var(--chart-wash), 0 1px 0.375rem 0.1875rem rgba(0, 0, 0, 0.18); pointer-events: none; }
+.car-dot.is-hidden { visibility: hidden; }
+
+.latest { display: grid; grid-template-columns: 1fr 1fr; padding-top: 0; }
+.entry { min-width: 0; border-left: 1px solid var(--rule); container: entry / inline-size; }
+.entry:first-child { border-left: 0; }
+.entry-link { display: flex; flex-direction: column; gap: 0; padding: 1.625rem 1.5rem 1.5rem; text-decoration: none; color: inherit; height: 100%; transition: background-color 0.15s; }
+.entry:first-child .entry-link { padding-left: 0; }
+.entry:last-child .entry-link { padding-right: 0; }
+.entry-link:hover .entry-title { text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 0.18em; text-decoration-thickness: 1px; }
+.entry-link:hover .entry-more { color: var(--accent); }
+.entry-link:focus-visible { outline-offset: -2px; }
+.entry-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-top: 0.75rem; }
+.entry-title { font: 400 1.375rem/1.25 var(--serif); letter-spacing: -0.005em; }
+.entry-title em { font-style: normal; }
+.entry-head-text { min-width: 0; }
+.entry-when { font-size: 0.8125rem; color: var(--ink-3); margin-top: 0.25rem; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.eyebrow-note { letter-spacing: 0.06em; color: var(--ochre); }
+.entry-figs .fig-note { font-size: var(--micro-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.entry-figs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; margin-top: 1.125rem; padding-top: 0.875rem; border-top: 1px solid var(--rule); }
+.entry-figs .fig-value { font-size: 1.125rem; }
+.entry-figs .fig-value .q-u { font-size: var(--micro-2); }
+@container entry (width < 24rem) { .entry-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.entry-more { display: inline-flex; align-items: center; gap: 0.375rem; margin-top: 1.125rem; font-size: 0.8125rem; font-weight: 500; color: var(--ink-2); }
+.entry-more .icon { width: 0.9375rem; height: 0.9375rem; }
+.entry-empty { padding: 1.625rem 1.5rem; }
+.entry-empty:first-child { padding-left: 0; }
+.entry-empty .empty-note { margin-top: 0.625rem; }
+
+.sketch { display: block; width: 4rem; height: 2.75rem; flex: none; }
+.entry-sketch { width: 5.5rem; height: 3.75rem; }
+.sketch-line { fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.sketch-start { fill: var(--paper); stroke: var(--ink); stroke-width: 1.3; }
+.sketch-end { fill: var(--ink); }
+.sketch-charge { stroke: var(--ochre); }
+.sketch-charge-end { fill: var(--ochre); }
+.sketch-area { fill: var(--chart-ochre-wash); stroke: none; }
+.sketch-base { stroke: var(--rule-strong); stroke-width: 1; }
+
+.today-head { padding-bottom: 0.875rem; }
+.today-note { font: italic 400 0.875rem/1.4 var(--serif); color: var(--ink-3); margin-top: 0.25rem; }
+.today-figs.is-unknown .fig-value { color: var(--ink-3); }
+.today-date { font: 400 1.5625rem/1.2 var(--serif); margin-top: 0.375rem; letter-spacing: -0.005em; }
+.today-figs { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); margin-bottom: 1.625rem; }
+.today-figs .fig { padding: 0.75rem 0 0.8125rem; }
+.today-figs .fig:nth-child(even) { padding-left: 1.125rem; border-left: 1px solid var(--rule); }
+.today-figs .fig:nth-child(n + 3) { border-top: 1px solid var(--rule); }
+.today-figs .fig-value { font-size: 1.4375rem; }
+.more-link { display: inline-flex; align-items: center; gap: 0.375rem; margin-top: 0.375rem; font-size: 0.84375rem; font-weight: 500; color: var(--ink-2); text-decoration: none; }
+.more-link:hover { color: var(--accent); }
+
+/* ============================================================= timeline == */
+
+.tl { position: relative; }
+.tl-item { display: grid; grid-template-columns: 4rem 1.25rem minmax(0, 1fr); column-gap: 0.75rem; position: relative; padding-bottom: 1.0625rem; --rail: var(--rule-strong); --rail-style: solid; --rail-w: 0.125rem; --node: var(--ink-3); --node-fill: var(--paper); }
+.tl-time { text-align: right; font-size: var(--small-2); color: var(--ink-3); padding-top: 0.1875rem; font-variant-numeric: tabular-nums; white-space: nowrap; line-height: 1.35; }
+.tl-mark { position: relative; }
+.tl-mark::before { content: ""; position: absolute; left: 50%; top: 1.125rem; bottom: -1.3125rem; border-left: var(--rail-w) var(--rail-style) var(--rail); transform: translateX(-50%); }
+.tl-mark::after { content: ""; position: absolute; left: 50%; top: 0.3125rem; width: 0.6875rem; height: 0.6875rem; border-radius: 50%; transform: translateX(-50%); background: var(--node-fill); box-shadow: inset 0 0 0 0.125rem var(--node); }
+.tl-item:last-child .tl-mark::before { bottom: 0; }
+.tl-item.is-now:last-child .tl-mark::before { bottom: -0.375rem; border-image: linear-gradient(var(--rail), transparent) 1; }
+.tl-title { font: 400 1rem/1.35 var(--serif); color: var(--ink); }
+.tl-title a { text-decoration: none; }
+.tl-title a:hover { text-decoration: underline; text-decoration-color: var(--rule-strong); }
+.tl-place { font-style: italic; }
+.tl-meta { font-size: var(--small-2); color: var(--ink-3); margin-top: 0.125rem; font-variant-numeric: tabular-nums; }
+.tl-seg { white-space: nowrap; }
+
+.tl-drive { --rail: var(--accent); --node: var(--accent); --node-fill: var(--accent); }
+.tl-charge { --rail: var(--ochre); --node: var(--ochre); --node-fill: var(--ochre); --rail-w: 0.1875rem; }
+.tl-parked { --rail: var(--rule-strong); --node: var(--ink-3); }
+.tl-awake { --rail: var(--rule-strong); --node: var(--ink-3); --node-fill: var(--paper); }
+.tl-asleep { --rail: var(--ink-4); --rail-style: dotted; --node: var(--dusk); }
+.tl-nodata { --rail: var(--rust); --rail-style: dashed; --node: var(--rust); }
+.tl-nodata .tl-title { color: var(--rust); }
+.tl-item.is-now .tl-mark::after { box-shadow: inset 0 0 0 0.125rem var(--node), 0 0 0 0.25rem var(--paper), 0 0 0 0.3125rem var(--node); }
+
+.tl-full .tl-item { grid-template-columns: 4.875rem 1.5rem minmax(0, 1fr) 4.5rem; column-gap: 1rem; padding-bottom: 1.625rem; }
+.tl-full .tl-mark::before { bottom: -1.875rem; }
+.tl-full .tl-item:last-child .tl-mark::before { bottom: 0; }
+.tl-full .tl-title { font-size: 1.15625rem; }
+.tl-full .tl-meta { font-size: 0.8125rem; margin-top: 0.25rem; }
+.tl-full .tl-time { font-size: 0.84375rem; color: var(--ink-2); }
+.tl-end { display: block; color: var(--ink-3); font-size: var(--small); }
+.tl-full .tl-mark::after { width: 0.8125rem; height: 0.8125rem; top: 0.25rem; }
+.tl-sketch { width: 4.5rem; height: 3rem; margin-top: -0.125rem; }
+.tl-full .tl-item:not(.tl-drive):not(.tl-charge) .tl-body { grid-column: 3 / 5; }
+
+/* =============================================================== drives == */
+
+.toolbar-drives { padding: 1.375rem 0 1.375rem; }
+
+.totals { display: grid; grid-template-columns: 1.25fr repeat(6, minmax(0, 1fr)); border-top: 1px solid var(--ink); border-bottom: 1px solid var(--rule); }
+.totals > * { padding: 1.125rem 1.125rem 1.125rem; border-left: 1px solid var(--rule); }
+.totals > :first-child { border-left: 0; padding-left: 0; }
+.totals .fig-value { font-size: 1.6875rem; }
+.totals-span { font: 400 1.125rem/1.3 var(--serif); margin-top: 0.375rem; }
+
+.drives-list { margin-top: 0.625rem; transition: opacity 0.15s; }
+.drives-list.is-loading { opacity: 0.55; }
+.drives { width: 100%; border-collapse: collapse; table-layout: fixed; font-variant-numeric: tabular-nums; }
+.col-time { width: 9.375rem; } .col-route { width: auto; } .col-dist { width: 6.5rem; } .col-dur { width: 6.25rem; } .col-eff { width: 7.5rem; } .col-energy { width: 6.5rem; } .col-go { width: 2.5rem; }
+.col-batt { width: 7.75rem; } .col-speed { width: 6.75rem; }
+/* Battery used and average speed: columns for wide screens. */
+.drives .c-batt, .drives .c-speed, .drives col.col-batt, .drives col.col-speed { display: none; }
+.drives thead th { font: 600 var(--micro)/1.2 var(--sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); text-align: left; padding: 0.875rem 0.75rem 0.625rem; border-bottom: 1px solid var(--rule-strong); }
+.drives thead th:first-child { padding-left: 0; }
+.drives .c-num { text-align: right; }
+.day-row { position: relative; }
+.day-row > * { text-align: left; padding: 1.875rem 0 0.625rem; border-bottom: 1px solid var(--rule-strong); font-weight: 400; }
+.day:first-of-type .day-row > * { padding-top: 1.25rem; }
+.day-name { font: 400 1.3125rem/1.3 var(--serif); color: var(--ink); }
+.day-date { font-size: 0.82em; color: var(--ink-3); margin-left: 0.625rem; }
+/* The day's sum, at the right end of the row (whatever columns it crosses), on the day name's baseline:
+   its line box is the day name's (same font and line height) and its bottom is level with it. */
+.day-sum { position: absolute; right: 0; bottom: 0.625rem; font: 400 1.3125rem/1.3 var(--serif); white-space: nowrap; }
+.day-sum-text { font: 400 var(--small-2) var(--sans); color: var(--ink-3); }
+.drive-row { cursor: pointer; transition: background-color 0.12s; }
+.drive-row:hover > td { background: var(--paper-sunk); }
+.drive-row > td { padding: 0.75rem 0.75rem; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+.drive-row > td:first-child { padding-left: 0; color: var(--ink-2); font-size: 0.84375rem; white-space: nowrap; }
+.drive-row:hover > td:first-child { padding-left: 0.5rem; }
+.route-cell { display: flex; align-items: center; gap: 1rem; min-width: 0; }
+.route-cell > div { min-width: 0; }
+.route-name { font: 400 1.0625rem/1.3 var(--serif); color: var(--ink); text-decoration: none; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.route-name:hover { text-decoration: underline; text-decoration-color: var(--rule-strong); }
+.row-sketch { width: 3.375rem; height: 2.25rem; }
+.drive-row .c-num { font-size: 0.875rem; }
+.drive-row .c-go { color: var(--ink-4); text-align: right; padding-right: 0; }
+.drive-row .c-go .icon { display: block; margin-left: auto; }
+.drive-row:hover .c-go { color: var(--ink); }
+.drives-side { display: none; }
+.map-period { height: 30rem; margin-top: 0.75rem; }
+.label-by-day { margin-top: 2.25rem; }
+.by-day { margin-top: 0.875rem; }
+.by-day-svg { display: block; width: 100%; height: 11rem; overflow: visible; }
+.by-day-base { stroke: var(--rule-strong); stroke-width: 1; }
+.by-day-hit { fill: transparent; }
+.by-day-bar[data-day] { cursor: pointer; }
+.by-day-bar[data-day]:hover .by-day-hit { fill: var(--paper-sunk); }
+/* The chart is one tab stop; arrow keys move between days (app.js). The focused day is outlined. */
+.by-day-bar:focus { outline: none; }
+.by-day-bar:focus-visible .by-day-hit { fill: var(--paper-sunk); stroke: var(--accent); stroke-width: var(--focus-w); }
+.by-day-fill { fill: var(--accent); }
+.by-day-bar.is-empty .by-day-fill { fill: var(--rule-strong); }
+.by-day-value { font: 400 0.875rem var(--serif); fill: var(--ink); font-variant-numeric: tabular-nums; }
+.by-day-name { font: 500 var(--micro) var(--sans); fill: var(--ink-3); }
+.by-day-note { font-size: var(--small-2); color: var(--ink-3); margin-top: 0.625rem; }
+.drives .day { scroll-margin-top: var(--clear-top); }
+.list-more { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-top: 1.375rem; }
+.list-more-note { color: var(--ink-3); font-size: 0.8125rem; }
+
+/* ========================================================= drive detail == */
+
+.crumbs { display: flex; gap: 0.5rem; align-items: baseline; font: 600 var(--micro-2)/1.3 var(--sans); letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-3); }
+.crumbs a { color: var(--ink-2); text-decoration: none; }
+.crumbs a:hover { color: var(--accent); text-decoration: underline; }
+.crumb-sep { color: var(--ink-4); }
+.step-nav { display: flex; gap: 0.5rem; }
+
+.drive-top { display: grid; grid-template-columns: minmax(0, 1fr) 18.125rem; gap: 2.5rem; padding: 1.875rem 0 2.125rem; border-bottom: 1px solid var(--rule); }
+.map-drive { height: 29.375rem; }
+/* The route's shape, for wide screens where the map is sized by it (app.js sets data-shape). */
+.map-drive[data-shape="wide"] { --route-aspect: 2 / 1; }
+.map-drive[data-shape="landscape"] { --route-aspect: 3 / 2; }
+.map-drive[data-shape="square"] { --route-aspect: 1 / 1; }
+.map-drive[data-shape="tall"] { --route-aspect: 4 / 5; }
+.drive-side { min-width: 0; }
+.drive-stats { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--ink); }
+.drive-stats .fig { padding: 0.8125rem 0 0.875rem; border-bottom: 1px solid var(--rule); }
+.drive-stats .fig:nth-child(even) { padding-left: 1.125rem; border-left: 1px solid var(--rule); }
+.drive-stats .fig-value { font-size: 1.4375rem; }
+.drive-stats .fig:nth-last-child(-n + 2) { grid-column: 1 / -1; padding-left: 0; border-left: 0; }
+
+.along { padding-top: 1.75rem; }
+.along-head { display: flex; align-items: center; gap: 1.5rem; padding-bottom: 0.875rem; }
+.readout { flex: 1; display: flex; gap: 1.375rem; justify-content: flex-end; font-size: 0.84375rem; color: var(--ink-3); font-variant-numeric: tabular-nums; min-height: 1.5rem; align-items: baseline; }
+.readout b { font: 400 1.1875rem var(--serif); color: var(--ink); }
+.readout-time { font-weight: 600; color: var(--ink); }
+.readout-idle { font-style: italic; font-family: var(--serif); font-size: 0.9375rem; }
+.charts { border-top: 1px solid var(--ink); }
+.chart-row { display: grid; grid-template-columns: 9.25rem minmax(0, 1fr); border-bottom: 1px solid var(--rule); }
+.chart-label { display: flex; flex-direction: column; padding: 0.875rem 0 0; }
+.chart-name { font: 400 1.125rem/1.2 var(--serif); }
+.chart-unit { font-size: var(--small-2); color: var(--ink-3); margin-top: 0.125rem; }
+.chart-note { font-size: var(--small); color: var(--ink-3); font-style: italic; font-family: var(--serif); margin-top: 0.375rem; }
+.chart-plot { min-width: 0; padding-top: 0.25rem; }
+/* The charts fill these boxes; their sizes are set here, in rem, and the charts follow. */
+.chart-box { height: 8.125rem; }
+.chart-elev .chart-box { height: 9.75rem; }
+.along-hint { font: italic 400 0.875rem/1.5 var(--serif); color: var(--ink-3); margin-top: 0.75rem; }
+
+/* uPlot, drawn to suit the page */
+.uplot { font-family: var(--sans); width: 100%; }
+.uplot .u-select { background: var(--chart-wash); box-shadow: inset 1px 0 0 var(--accent), inset -1px 0 0 var(--accent); }
+.uplot .u-cursor-x { border-right: 1px solid var(--ink); }
+.uplot .u-over { cursor: crosshair; }
+
+/* ============================================================ timeline page == */
+
+.strip { padding: 1.5rem 0 0.5rem; border-bottom: 1px solid var(--rule); }
+.strip-svg { display: block; width: 100%; height: 3.375rem; overflow: visible; }
+.strip-hour.is-minor { display: none; }
+.strip-tick.is-minor { stroke: var(--rule); }
+.strip-seg { stroke: var(--paper); stroke-width: 1; }
+.strip-drive { fill: var(--accent); }
+.strip-charge { fill: var(--ochre); }
+.strip-parked { fill: var(--rule-strong); }
+/* Asleep: the dusk of the sleep ring in the timeline, strong enough to stand off the paper. */
+.strip-asleep { fill: color-mix(in srgb, var(--dusk) 70%, var(--paper)); }
+.strip-nodata { fill: var(--rust-wash); stroke: var(--rust); stroke-width: 1; stroke-dasharray: 3 2; }
+/* Hours still to come: an outline, no fill. */
+.strip-future { fill: none; stroke: var(--rule-strong); stroke-width: 1; stroke-dasharray: 3 3; }
+.strip-tick { stroke: var(--rule-strong); }
+.strip-hour { font: 500 var(--micro) var(--sans); fill: var(--ink-3); }
+.strip-now { stroke: var(--ink); stroke-width: 2; }
+.strip-key { display: flex; flex-wrap: wrap; column-gap: 1.375rem; row-gap: 0.25rem; padding-top: 0.5rem; font-size: var(--small-2); color: var(--ink-2); }
+.key { display: inline-flex; align-items: center; gap: 0.4375rem; }
+.key-swatch { width: 0.875rem; height: 0.5rem; border-radius: 1px; display: inline-block; }
+.key-swatch.strip-drive { background: var(--accent); }
+.key-swatch.strip-charge { background: var(--ochre); }
+.key-swatch.strip-parked { background: var(--rule-strong); }
+.key-swatch.strip-asleep { background: color-mix(in srgb, var(--dusk) 70%, var(--paper)); }
+.key-swatch.strip-nodata { background: var(--rust-wash); border: 1px dashed var(--rust); }
+.key-swatch.strip-future { background: transparent; border: 1px dashed var(--rule-strong); }
+
+.button-day { height: 2.75rem; padding: 0 0.75rem; gap: 0.5rem; }
+.day-button-text { display: flex; flex-direction: column; line-height: 1.15; text-align: left; }
+.button-day .icon + .day-button-text { text-align: left; }
+.day-button-text:first-child { text-align: right; }
+.day-button-name { font-size: 0.84375rem; font-weight: 500; }
+.day-button-date { font-size: var(--micro-2); font-weight: 400; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.button.is-disabled .day-button-date { color: var(--ink-4); }
+.button-today { align-self: stretch; }
+
+/* The entries keep their reading width (52rem); a wider window gives the room to the day's map. */
+.timeline-grid { display: grid; grid-template-columns: minmax(0, 52rem) minmax(23.75rem, 1fr); gap: 3.5rem; padding-top: 2.125rem; }
+.timeline-main { min-width: 0; }
+.day-side { border-left: 1px solid var(--rule); padding-left: 2.5rem; display: flex; flex-direction: column; gap: 0.875rem; }
+.map-day { height: 20.625rem; }
+.day-side .today-figs { margin-top: 0.5rem; }
+
+/* ===================================================== placeholders etc. == */
+
+.planned { display: grid; grid-template-columns: 18.75rem minmax(0, 1fr); gap: 3.5rem; padding-top: 2.125rem; }
+.planned-note p { font: italic 400 1rem/1.55 var(--serif); color: var(--ink-2); margin-top: 0.75rem; max-width: 30ch; }
+.planned-list { border-top: 1px solid var(--ink); }
+.planned-item { display: grid; grid-template-columns: 3.5rem minmax(0, 1fr); gap: 0.5rem; padding: 1.25rem 0 1.375rem; border-bottom: 1px solid var(--rule); }
+.planned-no { font: 400 1.375rem/1.2 var(--serif); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.planned-title { font: 400 1.3125rem/1.3 var(--serif); }
+.planned-desc { color: var(--ink-2); margin-top: 0.25rem; max-width: 60ch; }
+
+.settings { border-top: 1px solid var(--ink); margin-top: 2.125rem; }
+.setting { display: flex; justify-content: space-between; align-items: center; gap: 2rem; padding: 1.375rem 0; border-bottom: 1px solid var(--rule); }
+.setting-name { font: 400 1.3125rem/1.3 var(--serif); }
+.setting-desc { color: var(--ink-3); margin-top: 0.125rem; }
+.setting-value { font: 400 1.0625rem var(--serif); text-align: right; }
+.setting-size { align-items: flex-start; }
+.setting-size > div:first-child { flex: 1 1 20rem; }
+.setting-size .setting-desc { max-width: 52ch; }
+.setting-note { font-size: 0.8125rem; color: var(--ink-2); margin-top: 0.5rem; font-variant-numeric: tabular-nums; }
+.segmented-sizes { flex: none; margin-top: 0.25rem; }
+.settings + .planned { padding-top: 3rem; }
+
+.empty { padding: 3.5rem 0; text-align: center; border-bottom: 1px solid var(--rule); }
+.empty-page { text-align: left; padding: 1.5rem 0; border: 0; }
+.empty-page .deck { margin-bottom: 1.5rem; }
+.empty-note { color: var(--ink-3); font-style: italic; font-family: var(--serif); font-size: 0.9375rem; }
+
+/* ============================================================ switcher == */
+
+.switcher {
+  width: min(41.25rem, 100% - 2rem); max-height: min(49.375rem, 100% - 4.5rem); margin: 3.25rem auto auto; padding: 0;
+  border: 1px solid var(--rule-strong); border-radius: 0.625rem; background: var(--paper-raised); color: var(--ink);
+  box-shadow: var(--shadow-pop); overflow: hidden;
+}
+.switcher[open] { display: flex; flex-direction: column; }
+.switcher::backdrop { background: var(--backdrop); }
+.switcher-search { display: flex; align-items: center; gap: 0.75rem; padding: 0 1rem 0 1.25rem; height: 3.75rem; border-bottom: 1px solid var(--rule); flex: none; }
+.switcher-search .icon { width: 1.1875rem; height: 1.1875rem; color: var(--ink-3); }
+.switcher-input { flex: 1; border: 0; background: transparent; font: 400 1.1875rem/1.3 var(--serif); color: var(--ink); height: 100%; min-width: 0; }
+.switcher-input::placeholder { color: var(--ink-3); opacity: 1; }
+.switcher-input:focus-visible { outline: none; }
+.switcher-body { overflow-y: auto; flex: 1; padding: 0.375rem 0 0.5rem; overscroll-behavior: contain; }
+.switcher-group { font: 600 var(--micro)/1.2 var(--sans); letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-3); padding: 0.75rem 1.25rem 0.3125rem; }
+.switcher-option {
+  display: grid; grid-template-columns: 0.625rem minmax(0, 1fr) auto; align-items: center; column-gap: 0.875rem;
+  padding: 0.4375rem 1.25rem 0.4375rem 1.25rem; cursor: pointer; position: relative;
+}
+.switcher-option[aria-selected="true"] { background: var(--paper-sunk); }
+.switcher-option[aria-selected="true"]::before { content: ""; position: absolute; left: 0; top: 0.375rem; bottom: 0.375rem; width: 0.1875rem; background: var(--accent); border-radius: 0 0.125rem 0.125rem 0; }
+.switcher-option-main { display: flex; flex-direction: column; min-width: 0; }
+.switcher-option-name { font: 400 1.03125rem/1.3 var(--serif); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tag { display: inline-block; margin-left: 0.625rem; padding: 0 0.375rem; border-radius: 0.1875rem; background: var(--accent-wash); color: var(--accent-strong); font: 600 var(--micro)/1.0625rem var(--sans); letter-spacing: 0.07em; text-transform: uppercase; vertical-align: 0.125rem; }
+.switcher-option-meta { font-size: var(--small-2); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.switcher-option-side { display: flex; flex-direction: column; align-items: flex-end; font-size: var(--small-2); text-align: right; }
+.switcher-option-state { color: var(--ink-2); font-weight: 500; font-variant-numeric: tabular-nums; }
+.switcher-option-state.is-stale { color: var(--rust); }
+.switcher-list[aria-busy="true"] .switcher-option { opacity: 0.6; }
+.switcher-skeleton { display: grid; grid-template-columns: 0.625rem minmax(0, 1fr) 5.625rem; align-items: center; column-gap: 0.875rem; padding: 0.6875rem 1.25rem; }
+.skeleton-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; }
+.skeleton-lines { display: flex; flex-direction: column; gap: 0.375rem; }
+.skeleton-name { display: block; height: 0.8125rem; width: 46%; }
+.skeleton-meta { display: block; height: 0.625rem; width: 72%; }
+.skeleton-side { display: block; height: 0.75rem; }
+.switcher-option-place { color: var(--ink-3); max-width: 12.5rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.switcher mark { background: var(--accent-wash); color: inherit; border-radius: 0.125rem; padding: 0 1px; box-shadow: inset 0 -1px 0 var(--accent); }
+.switcher-more { padding: 0.75rem 1.25rem 0.375rem; color: var(--ink-3); font: italic 400 0.875rem var(--serif); }
+.switcher-empty { padding: 1.75rem 1.25rem; display: flex; flex-direction: column; gap: 0.25rem; }
+.switcher-empty strong { font: 400 1.125rem var(--serif); }
+.switcher-empty span { color: var(--ink-3); }
+.switcher-foot { display: flex; gap: 1.125rem; align-items: center; padding: 0.625rem 1.25rem; border-top: 1px solid var(--rule); font-size: var(--small); color: var(--ink-3); flex: none; background: var(--paper); }
+.switcher-foot .kbd { margin-right: 0.1875rem; }
+.switcher-foot-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+/* ============================================================ loading == */
+
+.loading { padding-top: 0.25rem; }
+.skeleton { background: linear-gradient(90deg, var(--paper-sunk) 0%, var(--rule) 50%, var(--paper-sunk) 100%); background-size: 300% 100%; border-radius: 0.1875rem; animation: shimmer 1.6s ease-in-out infinite; }
+.skeleton-eyebrow { width: 5.625rem; height: 0.6875rem; }
+.skeleton-title { width: 21.25rem; height: 2.75rem; margin-top: 0.875rem; }
+.skeleton-deck { width: 32.5rem; height: 1rem; margin-top: 1rem; }
+.skeleton-rule { height: 1px; background: var(--rule); margin: 1.875rem 0 1.5rem; }
+.skeleton-line { height: 0.875rem; margin: 0 0 1.375rem; width: 100%; }
+.skeleton-line.is-short { width: 62%; }
+.skeleton-row { height: 1.625rem; width: 100%; }
+.skeleton-block .skeleton-row { margin: 1.125rem 0; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+
+/* =========================================================== MapLibre == */
+
+/* MapLibre sets 12px/20px; the same in rem, so attribution and controls follow the interface size. */
+.maplibregl-map { font-family: var(--sans); font-size: var(--small); line-height: 1.25rem; }
+.maplibregl-ctrl-attrib { font-size: var(--micro); }
+.maplibregl-ctrl-attrib.maplibregl-compact, .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib { background: color-mix(in srgb, var(--paper) 86%, transparent); color: var(--ink-2); padding: 1px 0.375rem; }
+.maplibregl-ctrl-attrib a { color: var(--ink-2); }
+.maplibregl-ctrl-group { background: var(--paper-raised); box-shadow: 0 0 0 1px var(--rule-strong); border-radius: 0.3125rem; }
+.maplibregl-ctrl-group button + button { border-top: 1px solid var(--rule); }
+.maplibregl-ctrl-top-right .maplibregl-ctrl { margin: 0.75rem 0.75rem 0 0; }
+/* Map buttons in rem, so they grow with the interface size; the icons scale with them. */
+.maplibregl-ctrl-group button { width: 1.8125rem; height: 1.8125rem; }
+.maplibregl-ctrl button .maplibregl-ctrl-icon { background-size: contain; }
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .maplibregl-ctrl-group button .maplibregl-ctrl-icon { filter: invert(0.9); }
+}
+:root[data-theme="dark"] .maplibregl-ctrl-group button .maplibregl-ctrl-icon { filter: invert(0.9); }
+
+/* ===================================================== narrower windows == */
+
+@container page (width < 82.5rem) {
+  .is-compact .col-car { width: 16.5%; } .is-compact .col-model { width: 10.5%; } .is-compact .col-state { width: 14.5%; } .is-compact .col-battery { width: 16%; }
+  .now-grid { grid-template-columns: minmax(0, 1fr) 21.25rem; column-gap: 2.75rem; }
+  .now-aside { padding-left: 2rem; }
+  .switcher-trigger { min-width: 17.5rem; }
+  .nav-row { gap: 1.375rem; }
+  .masthead-tools { gap: 1.125rem; }
+  .totals .fig-value { font-size: 1.5rem; }
+  .timeline-grid { grid-template-columns: minmax(0, 52rem) minmax(21.25rem, 1fr); gap: 2.75rem; }
+}
+
+/* ======================================================= narrow windows == */
+
+/* Under 72rem: a big interface size, or a big zoom, on a desktop window
+   (200% on a 1920px window is 60rem). Rows wrap, side columns move under
+   or above the main one, and the ledger keeps its most-used columns. The
+   masthead scrolls away with the page: at these sizes a sticky one would
+   keep a fifth of the window to itself. */
+@container page (width < 72rem) {
+  .masthead { position: relative; }
+  .ledger { --sticky-top: 0px; }
+  .main, .colophon, .proto { --clear-top: 1rem; }
+  .main { padding-top: 1.5rem; }
+  /* The open "Aa" menu stays in the window when the masthead has scrolled away (as it does when a
+     bigger size is picked from it halfway down a page): it sits where it would under the button. */
+  .size-pop { position: fixed; top: calc(var(--mast-row-h) / 2 + 1.75rem); right: var(--gutter); }
+  .masthead-row { gap: 1.25rem; }
+  .masthead-tools { gap: 0.75rem; }
+  .switcher-trigger { min-width: 0; flex: 0 1 20rem; }
+  .switcher-trigger .kbd, .clock { display: none; }
+  .nav-row { gap: 1.125rem; }
+
+  .page-head { flex-wrap: wrap; row-gap: 1rem; }
+  .page-head-aside { text-align: left; }
+  .page-head-fleet .page-head-aside { white-space: normal; }
+  .toolbar, .toolbar-end { flex-wrap: wrap; }
+  .ledger-index, .pager { flex-wrap: wrap; gap: 0.75rem; }
+  .colophon-row, .proto-row { flex-wrap: wrap; }
+
+  /* All cars: the cars come first. The deck repeats the tallies, the tallies become one row of
+     chips, and the A to Z index folds into a menu, so rows show on the first screen. */
+  .page-head-fleet { padding-bottom: 1rem; }
+  .page-head-fleet .page-title { font-size: 2.25rem; }
+  .page-head-fleet .deck, .page-head-fleet .asof-note { display: none; }
+  .field-search { flex: 1 1 14rem; min-width: 12rem; }
+  .tallies { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 1rem 0; }
+  .tally, .tally:first-child {
+    flex-direction: row; align-items: baseline; gap: 0.4375rem; padding: 0.3125rem 0.75rem 0.375rem; min-width: 0;
+    border: 1px solid var(--rule-strong); border-radius: 999px;
+  }
+  .tally::before, .tally-note { display: none; }
+  .tally-count { font-size: 1.125rem; }
+  .tally-name { margin-top: 0; }
+  .tally[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); }
+  .tally[aria-pressed="true"] .tally-count, .tally[aria-pressed="true"] .tally-name { color: var(--paper); }
+  .tally[aria-pressed="true"] .state-dot.state-asleep, .tally[aria-pressed="true"] .state-dot.state-offline { box-shadow: inset 0 0 0 0.1rem var(--paper); }
+  .tally:focus-visible { outline-offset: 0.125rem; }
+  .thumb-letters { display: none; }
+  .thumb-select { display: block; }
+
+  .ledger .c-today, .ledger col.col-today, .ledger .c-model, .ledger col.col-model { display: none; }
+  /* The dimmed dot and the STALE flag still say a car's figures are old. */
+  .is-compact .c-battery .inline-note, .is-compact .c-state .inline-note { display: none; }
+  .col-car { width: 26%; } .col-state { width: 17%; } .col-battery { width: 13%; } .col-where { width: 18%; } .col-seen { width: 26%; }
+  .is-compact .col-car { width: 25%; } .is-compact .col-state { width: 17%; } .is-compact .col-battery { width: 13%; } .is-compact .col-where { width: 19%; } .is-compact .col-seen { width: 26%; }
+  /* A flag that does not fit beside the age goes under it. */
+  .seen-line { flex-wrap: wrap; row-gap: 0.125rem; }
+  .is-compact tbody td.c-seen { white-space: normal; }
+
+  .now-grid { grid-template-columns: minmax(0, 1fr); }
+  .now-aside { border-left: 0; border-top: 1px solid var(--rule); padding: 1.875rem 0 0; margin-top: 1rem; }
+
+  .totals { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .totals > :nth-child(4n + 1) { border-left: 0; padding-left: 0; }
+  .totals > :nth-child(n + 5) { border-top: 1px solid var(--rule); }
+
+  .drive-top { grid-template-columns: minmax(0, 1fr) 15rem; gap: 2rem; }
+  .along-head { flex-wrap: wrap; row-gap: 0.5rem; }
+  .readout { order: 3; flex-basis: 100%; justify-content: flex-start; flex-wrap: wrap; }
+  .chart-row { grid-template-columns: 7rem minmax(0, 1fr); }
+
+  /* The day's map and figures above its entries. */
+  .timeline-grid { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
+  .day-side { order: -1; border-left: 0; padding-left: 0; display: grid; grid-template-columns: minmax(0, 1fr) 16rem; grid-template-areas: "label label" "map figs"; column-gap: 2rem; row-gap: 0.875rem; }
+  .day-side > .label { grid-area: label; }
+  .day-side > .map-day { grid-area: map; }
+  .day-side .today-figs { grid-area: figs; margin: 0; align-self: start; }
+
+  .planned { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
+  .setting { flex-wrap: wrap; row-gap: 1rem; }
+}
+
+/* ====================================================== compact windows == */
+
+/* Under 50rem: 200% zoom or a 200% interface size on a 1280 or 1366 px
+   laptop (40 to 43rem). Everything stacks; nothing scrolls sideways. The
+   nav wraps to two lines, and the units move to Settings. */
+@container page (width < 50rem) {
+  .masthead-row { gap: 1rem; }
+  .units { display: none; }
+  .switcher-trigger { padding-left: 0.75rem; }
+  .nav-row { flex-wrap: wrap; height: auto; column-gap: 1.125rem; row-gap: 0; padding-bottom: 0.125rem; }
+  .nav-link { min-height: 2.5rem; }
+  .nav-divider { margin: 0.6875rem 0; }
+
+  .page-title { font-size: 2.5rem; }
+
+  .hero-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 1.25rem; }
+  .fig-hero:nth-child(3) { grid-column: 1 / -1; border-left: 0; padding-left: 0; border-top: 1px solid var(--rule); padding-top: 1rem; }
+  .vitals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vital:nth-child(3) { grid-column: 1 / -1; border-left: 0; padding-left: 0; border-top: 1px solid var(--rule); }
+  .where { grid-template-columns: minmax(0, 1fr); }
+  .latest { grid-template-columns: minmax(0, 1fr); }
+  .entry, .entry:first-child { border-left: 0; }
+  .entry + .entry { border-top: 1px solid var(--rule); }
+  .entry .entry-link, .entry-empty, .entry:first-child .entry-link { padding-inline: 0; }
+
+  .is-compact tbody td, .is-compact tbody th { padding-inline: 0.5rem; white-space: normal; }
+  .is-compact thead th { padding-inline: 0.5rem; }
+  .is-compact .car-line-1 { flex-wrap: wrap; column-gap: 0.5rem; }
+  .is-compact .car-name { max-width: 100%; }
+  .state-inline { flex-wrap: wrap; row-gap: 0.125rem; }
+  .bar-cell, .is-compact .bar-cell { display: none; }
+  .ledger { --no-min: 2.75rem; --no-pad: 1.125rem; }
+  .col-car, .is-compact .col-car { width: 25%; } .col-state, .is-compact .col-state { width: 19%; } .col-battery, .is-compact .col-battery { width: 12%; }
+  .col-where, .is-compact .col-where { width: 15%; } .col-seen, .is-compact .col-seen { width: 22%; }
+
+  .totals { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .totals > :nth-child(n) { border-left: 1px solid var(--rule); padding-left: 1.125rem; border-top: 0; }
+  .totals > :nth-child(3n + 1) { border-left: 0; padding-left: 0; }
+  .totals > :nth-child(n + 4) { border-top: 1px solid var(--rule); }
+  .drives .c-eff, .drives .c-energy, .drives col.col-eff, .drives col.col-energy, .row-sketch { display: none; }
+  .col-time { width: 8.75rem; }
+  .day-sum { position: static; display: block; line-height: 1.25rem; }
+
+  .drive-top { grid-template-columns: minmax(0, 1fr); }
+  .map-drive { height: 22rem; }
+  .chart-row { grid-template-columns: 6rem minmax(0, 1fr); }
+
+  .day-side { grid-template-columns: minmax(0, 1fr); grid-template-areas: "label" "map" "figs"; }
+
+  .segmented-sizes { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .segmented-sizes .segmented-option { justify-content: center; border-top: 1px solid var(--rule); }
+  .segmented-sizes .segmented-option:nth-child(5n + 1) { border-left: 0; }
+  .segmented-sizes .segmented-option:nth-child(-n + 5) { border-top: 0; }
+}
+
+/* ========================================================= wide screens == */
+
+/* 112.5rem and up: 1080p, 1440p and 4K monitors (1920 CSS px is 120rem,
+   native 4K about 165rem), or a small interface size on a big screen. The
+   room goes to more columns, bigger maps and charts and side panels, never
+   to longer lines: prose, lists and tables keep their measure. */
+@container page (width >= 112.5rem) {
+  /* All cars: the title and the tallies share a row, so more cars fit on the first screen,
+     and facts that share a cell elsewhere get columns of their own. */
+  .fleet-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); column-gap: 4rem; align-items: end; border-bottom: 1px solid var(--rule); }
+  .fleet-top .page-head { border-bottom: 0; }
+  .fleet-top .tallies { border-bottom: 0; border-top: 1px solid var(--rule); margin-bottom: 0.25rem; }
+  .ledger .c-range, .ledger .c-area, .ledger:not(.is-compact) .c-model { display: table-cell; }
+  .ledger col.col-range, .ledger col.col-area, .ledger:not(.is-compact) col.col-model { display: table-column; }
+  .ledger:not(.is-compact) .cell-sub-car .cell-sub-model, .ledger:not(.is-compact) .cell-sub-car .sep { display: none; }
+  .is-compact .c-battery .inline-note { display: none; }
+  .bar-cell, .is-compact .bar-cell { width: 5rem; }
+  .col-car { width: 18%; } .col-model { width: 13%; } .col-state { width: 13%; } .col-battery { width: 11%; } .col-where { width: 18%; } .col-seen { width: 15%; } .col-today { width: 8%; }
+  .is-compact .col-car { width: 16%; } .is-compact .col-model { width: 9.5%; } .is-compact .col-state { width: 12.5%; } .is-compact .col-battery { width: 10%; }
+  .is-compact .col-range { width: 6%; } .is-compact .col-where { width: 11%; } .is-compact .col-area { width: 11%; } .is-compact .col-seen { width: 12.5%; } .is-compact .col-today { width: 6%; }
+
+  /* Now: the story and figures, the place on a big map, and the day beside them. */
+  .now-grid { grid-template-columns: minmax(0, 1fr) clamp(24rem, 19%, 30rem); column-gap: 3.5rem; }
+  .now-aside { padding-left: 3rem; }
+  .now-main {
+    display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); column-gap: 3rem; align-content: start;
+    grid-template-areas: "banner banner" "lede where" "hero where" "vitals where" "latest where";
+  }
+  .now-main > .stale-banner { grid-area: banner; }
+  .now-main > .lede { grid-area: lede; }
+  .now-main > .hero { grid-area: hero; }
+  .now-main > .vitals { grid-area: vitals; }
+  .now-main > .latest { grid-area: latest; }
+  .now-main > .where { grid-area: where; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(26rem, 1fr); gap: 1.75rem; padding: 0.5rem 0 0; border-bottom: 0; }
+  .where-text { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 2.5rem; align-content: start; }
+  .where-text > * { grid-column: 1; }
+  .where-text > .where-facts { grid-column: 2; grid-row: 1 / span 8; margin-top: 0; align-self: start; }
+  .where-coords { margin-top: 0; }
+  .map-where { height: auto; }
+
+  /* Drives: the list at its reading width, and beside it, getting the rest of the room,
+     the period's drives on a map and its distance by day. */
+  .drives-body { display: grid; grid-template-columns: minmax(0, 75rem) minmax(32rem, 1fr); column-gap: 4rem; align-items: start; }
+  .drives-side { display: block; position: sticky; top: calc(var(--sticky-top) + 1.5rem); padding-top: 1.5rem; }
+  .map-period { height: clamp(24rem, 100vh - var(--masthead-h) - 26rem, 44rem); }
+  .drives .c-batt, .drives col.col-batt { display: table-cell; }
+  .drives col.col-batt { display: table-column; }
+
+  /* A drive: the map, shaped like the route, with the figures under it; the charts beside them,
+     tall enough to fill the window. */
+  .drive-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); grid-template-rows: auto 1fr; grid-template-areas: "map along" "side along"; column-gap: 3.5rem; row-gap: 1.75rem; padding-top: 1.875rem; align-items: start; }
+  .drive-top { display: contents; }
+  .drive-top > .map-drive { grid-area: map; height: auto; aspect-ratio: var(--route-aspect, 3 / 2); min-height: 22rem; max-height: calc(100vh - var(--masthead-h) - 20rem); }
+  .drive-top > .drive-side { grid-area: side; }
+  .drive-stats { grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); column-gap: 1.5rem; }
+  .drive-stats .fig:nth-child(n) { grid-column: auto; padding-left: 0; border-left: 0; }
+  .drive-body > .along { grid-area: along; padding-top: 0; }
+  .chart-row { grid-template-columns: 8.5rem minmax(0, 1fr); }
+  .chart-box { height: clamp(9.5rem, (100vh - var(--masthead-h) - 20rem) / 4.4, 40rem); }
+  .chart-elev .chart-box { height: calc(clamp(9.5rem, (100vh - var(--masthead-h) - 20rem) / 4.4, 40rem) + 1.75rem); }
+
+  /* Timeline: every hour named on the strip; the entries at reading width, the day's map big beside them. */
+  .strip-svg { height: 3.75rem; }
+  .strip-hour.is-minor { display: inline; }
+  .timeline-grid { grid-template-columns: minmax(0, 46rem) minmax(0, 1fr); gap: 5rem; }
+  .day-side { position: sticky; top: calc(var(--sticky-top) + 1.5rem); align-self: start; padding-left: 4rem; }
+  .day-side > .map-day { height: clamp(24rem, 100vh - var(--masthead-h) - 14rem, 46rem); }
+  .day-side .today-figs { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0.25rem 0 0; }
+  .day-side .today-figs .fig:nth-child(n) { padding-left: 1.125rem; border-left: 1px solid var(--rule); border-top: 0; }
+  .day-side .today-figs .fig:first-child { padding-left: 0; border-left: 0; }
+
+  /* Settings beside what is coming; placeholder pages list it in two columns. */
+  .settings-page { display: grid; grid-template-columns: minmax(0, 72rem) minmax(28rem, 1fr); column-gap: 5rem; align-items: start; }
+  .settings-page > .planned { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; padding-top: 0; margin-top: 2.125rem; }
+  .main > .planned .planned-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 3rem; }
+}
+
+/* 150rem and up (native 4K, 1440p): the register has room for a few more facts per car, and the
+   drives list for the average speed. */
+@container page (width >= 150rem) {
+  .ledger .c-odo, .ledger .c-sw, .ledger .c-cabin, .ledger .c-plug { display: table-cell; }
+  .ledger col.col-odo, .ledger col.col-sw, .ledger col.col-cabin, .ledger col.col-plug { display: table-column; }
+  .col-car { width: 15%; } .col-model { width: 10%; } .col-state { width: 11%; } .col-battery { width: 9%; } .col-where { width: 13%; } .col-seen { width: 11.5%; } .col-today { width: 5.5%; }
+  .col-odo { width: 6.5%; } .col-sw { width: 6.5%; } .col-cabin { width: 5%; } .col-plug { width: 6.5%; }
+  .is-compact .col-car { width: 13%; } .is-compact .col-model { width: 7.5%; } .is-compact .col-state { width: 9.5%; } .is-compact .col-battery { width: 7.5%; }
+  .is-compact .col-range { width: 4.5%; } .is-compact .col-where { width: 8.5%; } .is-compact .col-area { width: 8.5%; } .is-compact .col-seen { width: 10%; } .is-compact .col-today { width: 4.5%; }
+  .is-compact .col-odo { width: 6%; } .is-compact .col-sw { width: 6.5%; } .is-compact .col-cabin { width: 5%; } .is-compact .col-plug { width: 6%; }
+  .drives .c-speed { display: table-cell; }
+  .drives col.col-speed { display: table-column; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
