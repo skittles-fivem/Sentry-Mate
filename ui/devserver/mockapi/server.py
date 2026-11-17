@@ -1,0 +1,319 @@
+"""The HTTP side: static pack files, the SPA fallback, security headers, the session cookie,
+dispatch to /api/v1 routes, and the server-sent event stream.
+"""
+
+from __future__ import annotations
+
+import http.server
+import mimetypes
+import os
+import socketserver
+import sys
+import time
+import traceback
+from http.cookies import SimpleCookie
+from urllib.parse import parse_qs, unquote, urlsplit
+
+from . import resources
+from .config import Clock
+from .conventions import Req, Response, json_bytes, to_csv
+from .dataset import Dataset
+from .errors import ApiError, bad_input, csrf, no_such_car, not_allowed, not_found, not_signed_in
+from .events import EventHub, frame
+from .router import Router
+from .store import COOKIE, COOKIE_SIGNED_OUT, Store
+
+CSP = ("default-src 'self'; img-src 'self' data: blob: https://tile.openstreetmap.org; worker-src 'self' blob:; "
+       "style-src 'self'; script-src 'self'; connect-src 'self' https://tile.openstreetmap.org; font-src 'self'; "
+       "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+CSRF_HEADER = "X-Sentry-Mate"
+MAX_BODY = 1 << 20
+TYPES = {".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
+         ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8", ".svg": "image/svg+xml",
+         ".json": "application/json; charset=utf-8", ".woff2": "font/woff2", ".woff": "font/woff",
+         ".txt": "text/plain; charset=utf-8", ".png": "image/png", ".webp": "image/webp", ".ico": "image/x-icon",
+         ".map": "application/json; charset=utf-8", ".pmtiles": "application/octet-stream"}
+
+
+class App:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.clock = Clock(cfg.now_ms, frozen=cfg.freeze_clock)
+        t0 = time.monotonic()
+        self.ds = Dataset(cfg)
+        self.build_s = time.monotonic() - t0
+        self.store = Store(cfg, self.ds, self.clock)
+        self.cache = {}
+        self.events = EventHub(self)
+        self.router = Router()
+        resources.register_all(self.router)
+        self.web_root = os.path.realpath(os.path.join(cfg.pack, "web"))
+
+    def make_server(self):
+        srv = Server((self.cfg.host, self.cfg.port), Handler)
+        srv.app = self
+        self.events.start()
+        return srv
+
+
+class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = 128
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    server_version = "SentryMateDev"
+    sys_version = ""
+
+    @property
+    def app(self) -> App:
+        return self.server.app
+
+    def log_message(self, fmt, *args):
+        if self.app.cfg.verbose:
+            sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
+
+    def do_GET(self):
+        self.handle_any("GET")
+
+    def do_HEAD(self):
+        self.handle_any("HEAD")
+
+    def do_POST(self):
+        self.handle_any("POST")
+
+    def do_PUT(self):
+        self.handle_any("PUT")
+
+    def do_PATCH(self):
+        self.handle_any("PATCH")
+
+    def do_DELETE(self):
+        self.handle_any("DELETE")
+
+    def do_OPTIONS(self):
+        self.handle_any("OPTIONS")
+
+    # ------------------------------------------------------------ responses
+    def send(self, status, body=b"", content_type=None, headers=None, api=False):
+        self.send_response(status)
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        if api:
+            self.send_header("Cache-Control", "no-store")
+        else:
+            self.send_header("Cache-Control", "no-cache")
+        if content_type:
+            self.send_header("Content-Type", content_type)
+        for k, v in (headers or {}).items():
+            if isinstance(v, list):
+                for x in v:
+                    self.send_header(k, x)
+            else:
+                self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD" and body:
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    def send_error_obj(self, e: ApiError, cookie=None):
+        headers = dict(e.headers)
+        if cookie:
+            headers["Set-Cookie"] = cookie
+        self.send(e.status, json_bytes(e.body()), "application/json; charset=utf-8", headers, api=True)
+
+    # ------------------------------------------------------------ sessions
+    def cookie_value(self):
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return None
+        try:
+            c = SimpleCookie()
+            c.load(raw)
+        except Exception:
+            return None
+        m = c.get(COOKIE)
+        return m.value if m else None
+
+    def session(self):
+        """(session or None, Set-Cookie value or None). Signs in the default account on first contact."""
+        st = self.app.store
+        token = self.cookie_value()
+        if token and token != COOKIE_SIGNED_OUT:
+            s = st.session_for(token)
+            if s:
+                return s, None
+        # first contact, or a cookie from an earlier run of the dev server: sign in the default account
+        # (not after a sign-out, and not for a session this server ended)
+        if token != COOKIE_SIGNED_OUT and token not in st.ended and not self.app.cfg.signed_out:
+            acc = st.default_account()
+            if acc is not None:
+                s = st.start_session(acc, device=_device(self.headers.get("User-Agent", "")))
+                return s, set_cookie(s["token"])
+        return None, None
+
+    # ------------------------------------------------------------ dispatch
+    def handle_any(self, method):
+        try:
+            parts = urlsplit(self.path)
+            path = unquote(parts.path)
+            if path == "/health":
+                if method in ("GET", "HEAD"):
+                    return self.send(200, b"", None, api=True)
+                return self.send(405, b"", None, {"Allow": "GET, HEAD"}, api=True)
+            if path.startswith("/api/"):
+                return self.api(method, path, parts.query)
+            return self.static(method, path)
+        except Exception as e:  # last line of defence: answer 500 in the one error shape
+            traceback.print_exception(e)
+            try:
+                self.send_error_obj(ApiError(500, "server_error", "The dev server failed on this request."))
+            except Exception:
+                pass
+
+    def read_body(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > MAX_BODY:
+            raise ApiError(413, "too_large", "The body is larger than 1 MB.")
+        return self.rfile.read(n) if n > 0 else b""
+
+    def api(self, method, path, query_string):
+        app = self.app
+        cookie = None
+        try:
+            body = self.read_body() if method in ("POST", "PUT", "PATCH", "DELETE") else b""
+            route, params = app.router.match(path)
+            if route is None:
+                raise not_found("not_found", f"No API route {path}.")
+            m = "GET" if method == "HEAD" else method
+            if m not in route.handlers:
+                allow = ", ".join(sorted(route.handlers))
+                raise ApiError(405, "method_not_allowed", f"{path} answers {allow}.", headers={"Allow": allow})
+            session, cookie = self.session()
+            if m != "GET" and self.headers.get(CSRF_HEADER) != "1":
+                raise csrf()
+            if m not in route.public and session is None:
+                raise not_signed_in()
+            account = session["account"] if session else None
+            if m in route.admin and (account is None or account["role"] != "admin"):
+                raise not_allowed("Only an admin may do this.")
+            if route.car_scoped:
+                car = params["car"]
+                if not app.ds.exists(car) or not app.store.sees(account, car):
+                    raise no_such_car()
+            query = parse_qs(query_string, keep_blank_values=True)
+            req = Req(app, m, path, query, self.headers, body, params, session)
+            req.raw_cookie_token = self.cookie_value()
+            if route.handlers[m] is resources.SSE:
+                return self.sse(req, cookie)
+            if app.cfg.latency_ms:
+                time.sleep(app.cfg.latency_ms / 1000)
+            res = route.handlers[m](req)
+            if req.set_cookie:
+                cookie = req.set_cookie
+            if isinstance(res, Response):
+                headers = dict(res.headers)
+                if cookie:
+                    headers["Set-Cookie"] = cookie
+                return self.send(res.status, res.body, res.content_type, headers, api=True)
+            if req.csv:
+                name = path.rstrip("/").split("/")[-1] or "data"
+                csv_res = to_csv(res, name)
+                if csv_res is None:
+                    raise bad_input({"format": "CSV is offered for lists and columns only."})
+                headers = dict(csv_res.headers)
+                if cookie:
+                    headers["Set-Cookie"] = cookie
+                return self.send(200, csv_res.body, csv_res.content_type, headers, api=True)
+            status = 201 if m == "POST" and isinstance(res, dict) and res.pop("_created", False) else 200
+            headers = {"Set-Cookie": cookie} if cookie else {}
+            return self.send(status, json_bytes(_strip(res)), "application/json; charset=utf-8", headers, api=True)
+        except ApiError as e:
+            return self.send_error_obj(e, cookie)
+
+    def sse(self, req, cookie):
+        app = self.app
+        stream = app.events.subscribe(req.session)
+        self.send_response(200)
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Connection", "close")
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+        self.close_connection = True
+        try:
+            self.wfile.write(b"retry: 3000\n: connected\n\n")
+            self.wfile.flush()
+            while not stream.closed and not app.events.stop.is_set():
+                try:
+                    event, data = stream.q.get(timeout=15)
+                except Exception:
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
+                    continue
+                if event == "_close":
+                    break
+                self.wfile.write(frame(event, data, app.events.next_id()))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            app.events.unsubscribe(stream)
+
+    # ------------------------------------------------------------ static files
+    def static(self, method, path):
+        if method not in ("GET", "HEAD"):
+            return self.send(405, b"", None, {"Allow": "GET, HEAD"})
+        root = self.app.web_root
+        rel = path.lstrip("/")
+        full = os.path.realpath(os.path.join(root, rel)) if rel else root
+        cookie = None
+        if not (full == root or full.startswith(root + os.sep)) or not os.path.isfile(full):
+            full = os.path.join(root, "index.html")
+        if full.endswith("index.html"):
+            _s, cookie = self.session()
+        try:
+            with open(full, "rb") as f:
+                data = f.read()
+        except OSError:
+            return self.send(404, b"Not found", "text/plain; charset=utf-8")
+        ext = os.path.splitext(full)[1].lower()
+        ctype = TYPES.get(ext) or mimetypes.guess_type(full)[0] or "application/octet-stream"
+        headers = {"Set-Cookie": cookie} if cookie else {}
+        return self.send(200, data, ctype, headers)
+
+
+def set_cookie(token):
+    """The session cookie: HttpOnly and SameSite=Strict. Not Secure: the dev server is plain HTTP on 127.0.0.1."""
+    return f"{COOKIE}={token}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Strict"
+
+
+def clear_cookie():
+    return f"{COOKIE}={COOKIE_SIGNED_OUT}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Strict"
+
+
+def _device(ua):
+    for name in ("Firefox", "Edg", "Chrome", "Safari"):
+        if name in ua:
+            return {"Edg": "Edge"}.get(name, name)
+    return "Browser"
+
+
+def _strip(obj):
+    """Drop private keys (starting with _) before sending."""
+    if isinstance(obj, dict):
+        return {k: _strip(v) for k, v in obj.items() if not (isinstance(k, str) and k.startswith("_"))}
+    if isinstance(obj, list):
+        return [_strip(v) for v in obj]
+    return obj
+

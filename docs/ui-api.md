@@ -179,3 +179,81 @@ This is the `/api/v1` the pages in [`parity/ui-parity.md`](parity/ui-parity.md) 
 - No Tesla account, token or vehicle-list endpoint.
 - No raw SQL, database tuning or index statistics.
 - No VIN serial anywhere: only the VIN prefix is stored.
+
+## Decisions
+
+Points this document left open, decided while building the dev server (`ui/devserver`). Pages can rely on them.
+
+### Requests and answers
+
+- **CSRF header:** every POST, PUT, PATCH and DELETE carries `X-Sentry-Mate: 1`. Without it: `403 { error: { code: "csrf" } }`. Sign-in and set-up need it too.
+- **Session cookie:** `HttpOnly`, `SameSite=Strict`, `Path=/`, 30 days. The real server names it `__Host-sentry-mate` and adds `Secure`. The dev server names it `sentry-mate` without `Secure`, because it is plain HTTP on 127.0.0.1.
+- **Car-scoped answers** carry `car` and `time_zone` at the top. In answers that mix cars, every row carries its own `car` and `time_zone`.
+- **Ids:** cars are `c1`, `c2`, ...; places `p1`, ...; drive, charge and update ids are decimal strings above 2^53. Timeline rows use `<kind>:<start_ms>`.
+- **Creating** answers `201` with the new object. **Deleting** answers `200` with a small JSON body (`{ deleted: true, id }`, or the changed object), never an empty body.
+- **Versions:** objects that need `version` on PATCH (`cars/{car}`, `cars/{car}/settings`, `accounts/{account}`) return it on GET. A stale one gives `409 { error: { code: "stale_version", version } }` with the current version.
+- **400 or 422:** a wrong type, an unknown field or a bad query value is `400 bad_input`. A well-formed value that breaks a rule (an unknown time zone, a password too short) is `422 invalid`. Both name the fields in `fields`, keyed by path (`units.distance`, `free_supercharging.0.from_date`).
+- **Error codes** in use: `bad_input` 400; `not_signed_in`, `wrong_credentials`, `wrong_code`, `sign_in_expired` 401; `csrf`, `not_allowed`, `wrong_setup_code` 403; `no_such_car`, `no_such_drive`, `no_such_charge`, `no_such_account`, `no_such_session`, `no_such_token`, `no_such_key`, `no_such_rule`, `no_such_trip`, `not_found` 404; `method_not_allowed` 405 (with `Allow`); `stale_version`, `name_taken`, `last_admin`, `setup_done` 409; `too_large` 413 (bodies over 1 MB); `invalid` 422; `throttled` 429 (with `Retry-After`); `server_error` 500; `not_built` 501 (dev server only).
+- **Sign-in throttle:** five wrong tries for one name within 60 s, then `429` until the oldest try is 60 s old.
+
+### Lists, periods and CSV
+
+- **Cursors** are opaque strings (base64url of the last row's sort key and a hash of the filters). A cursor sent with other filters or another sort gives `400` on `after`. Start again without it.
+- `limit` is 1 to 500, default 50. `total` is sent only where it is cheap: `/cars` without `search` or `state`, and `/accounts`.
+- **Period:** `from_ms` is inclusive, `to_ms` exclusive, both epoch ms. A missing edge means the start of the history or now. Some resources default to a window when `from_ms` is missing: `series` and `activity` 24 hours, `signals` 1 hour, `trip` 7 days.
+- **`cars=`** on report resources: absent or `all` means every car the account sees. A list with an unknown or hidden car gives `404 no_such_car`.
+- **CSV:** `?format=csv`, or `Accept: text/csv` without JSON in it. A CSV answer carries every matching row, not one page. Nested fields become dotted columns (`start.place.name`), lists of plain values are joined with `;`, null is an empty cell. The file starts with a UTF-8 byte order mark and comes with `Content-Disposition: attachment`. Columns (series, curves, signals) give one row per `t_ms`. Asking CSV of something that is not a list gives `400` on `format`.
+- **Car list sorts:** `sort=last_activity` (default newest first), `name` (A to Z), `soc` (highest first), and `custom`: the person's `pinned_cars`, then their `car_order`, then the rest by last activity. `search` matches the name, the model and the VIN prefix.
+
+### Rows
+
+- **In progress:** a drive, charge or gap still going has `end_ms: null`, its figures up to now, and `flags.in_progress: true`. The current state span in `/states` has `end_ms: null`.
+- **Where:** a Drive's `start` and `end` are `{ lat, lon, place: { id, name } | null, address: { short, locality, region, country_code }, label }`. `label` is what to show: the place name, else the short address. A drive whose data stopped has the last known point and the label "Data stopped here". Timeline points are the same with `address` as the short text.
+- **Purpose** on a Drive is `{ value: "business" | "private" | "commute", relation, note, source: "owner" | "rule" }` or null. An owner's choice wins over a rule.
+- **Overlaps:** where CAN and TeslaMate history both exist, lists with `source=all` show only the side chosen for that span (CAN at first). `source=can` or `source=teslamate` shows that side only.
+- **Power signs:** `power_kw` in `now` and in series is the pack's power: positive out of the pack (driving, heating), negative into it (charging, regenerating). Charge figures and the charge curve's `power_kw` are charging power, positive.
+- **Tyres** are always ordered front left, front right, rear left, rear right.
+- **Price per kWh:** basis `grid` is the cost over the grid energy (AC, by the meter). Basis `pack` is the cost over the energy added to the pack (fast charging, where the grid energy is unknown). `fast_charger.billed_kwh` is what the charger delivered (about the car's inlet energy).
+- **Attention items** carry `detail` as an object in metric units, for example `{ tyre, pressure_kpa, recommended_kpa }`, `{ last_upload_ms }`, `{ soc_pct }`, `{ door }`, `{ reason, log_start_ms }`, `{ last_data_ms }`. The page writes the sentence.
+- **Stale** means no upload for more than one hour.
+- **Saved trips** belong to the account that saved them; a watch account may save its own. Purposes and purpose rules change car data and need an admin.
+- **Upload tokens and CAN keys** are admin-only, reading included. DELETE on a token revokes it (it stays listed with `revoked: true`). The secret comes once, in the POST answer.
+
+### Live values
+
+- In `/cars/{car}/now`, every value read from the car is `{ value, at_ms }` or null: the signals, each `location` part, each tyre, each flag and door, each `charge` part. The snapshot's own facts are plain: `state`, `since_ms`, `at_ms` (the newest sample), `received_ms`, `delay_s`, `stale`, `buses` (each `{ bus: "vehicle" | "chassis", awake, at_ms }`), `driving`, `est_basis`, `charge.finish_ms`, `charge.charge_id`, `drive`, `awake_reasons`, `software`, `location.place` and `location.address`.
+- `state` in the car list and in `now` is one of `driving`, `charging`, `parked`, `asleep`, `unknown`. In `/states` it is `online`, `asleep` or `unknown`, with the awake buses; vehicle bus only is `online` with `buses: ["vehicle"]`.
+- `charge.status` is one of `disconnected`, `no_power`, `about_to_charge`, `charging`, `complete`, `stopped`.
+- `/states` `share_pct`: `parked` is the share of time not driving (known time only), `asleep` asleep, `awake` online (driving included), `unknown` no data. They overlap on purpose and need not add up to 100.
+- `/awake-reasons` joins awake spans that touch into one, with the reasons of both and a time-weighted average power.
+
+### Events (`/api/v1/events`)
+
+- Standard server-sent events: `event:` name, `id:` (a counter), `data:` JSON. The stream starts with `retry: 3000`. A comment line every 15 s keeps it open. There is no replay for `Last-Event-ID`; after a reconnect, load what you show again.
+- `now`: `{ car, now }`. The first one for a car on a stream carries the whole object; later ones carry only what changed, to be merged field by field. A `{ value, at_ms }` pair is always sent whole.
+- `rows`: `{ car, kinds, from_ms, to_ms }` when a drive, charge, parked spell or gap starts or ends. `fleet`: `{ car, change: "renamed" | "added" | "removed", name }`. `prefs`: the whole preferences object, to that person only. `notice`: one notice.
+- A stream ends when its session ends (sign-out, account removed).
+
+### Time series
+
+- `values` holds one column per field. With one `agg` (or none), the key is the field name. With several, every agg is also under `<field>.<agg>` and the plain key holds the first one.
+- Without `agg`, the plain column is the mean (the last value for `lat`, `lon`, `accuracy_m`, `odometer_km`, `heading_deg`), and when buckets are longer than 1 s, `<field>.min` and `<field>.max` come too. That is how downsampling keeps minima and maxima.
+- `max_points` is 2 to 20000, default 1000. Buckets are 1 s, 2 s, 5 s, 10 s, 15 s, 30 s, 1, 2, 5, 10, 15, 30 min, 1, 2, 3, 6, 12 h, 1, 2 or 7 days, aligned to UTC, the smallest that fits.
+- `state` per bucket is the state that took most of it. `coverage_pct` is the share of the bucket with known data (asleep counts as known). A bucket with no sample is null in every column.
+- The charge curve is 1 Hz up to `max_points` (default 4000); longer charges come at a coarser `step_ms`, which the answer states.
+
+### Formats
+
+- **GeoJSON track:** a FeatureCollection with one LineString per stretch without dropped frames. Coordinates are `[lon, lat, elevation_m]`; `properties` holds parallel `t_ms` and `accuracy_m` arrays, plus `speed_kph`, `power_kw`, `soc_pct` when asked in `extensions`. `simplify_m` thins points (Douglas-Peucker) and keeps the arrays aligned.
+- **GPX track:** GPX 1.1, one `trkseg` per stretch, `ele` and `time` on every point, extensions in our own namespace.
+- **Logbook PDF:** a plain table, landscape, times in the car's time zone, with the continuity warnings and the totals per purpose.
+
+### Additions
+
+- `/api/v1/cars/{car}/charging-stats` is `/api/v1/charging-stats` for one car.
+- `/me` gives `cars: "all"` for an account that sees every car, as in `/accounts`.
+- `/me/sessions` rows also have `device`. `DELETE /me/sessions` ends every other session; this one stays (sign out with `DELETE /session`).
+- `interface_size` is a percent, 50 to 200. `ui_pack` defaults to the pack being served.
+- `/setup/status` adds `fixes: [{ cause: "no_token" | "token_unused" | "key_waiting" | "logs_waiting_trust", link }]`.
+- `/cars/{car}/trip` also lists the `drives` and `charges` it counted.
+- In `/charging-stats`: `heatmap.start` and `heatmap.end` are 7 rows (Monday first) of 24 hours in the car's local time. A run is two or more charges, each starting within a day of the one before. `share_above_80_pct` is the share of charges that ended above 80 %; `share_below_20_pct` of those that started below 20 %.
