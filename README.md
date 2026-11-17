@@ -24,7 +24,7 @@ program, and neither are the TeslaMate import and MQTT; the web UI is being buil
 | Encryption at rest (pure Rust): everything stored is sealed, key file + recovery key | done |
 | TeslaMate import from TeslaMate's own backup file (any number of cars, streamed, again later adds only what's new) | built, not wired in yet |
 | MQTT for Home Assistant (TLS only, discovery, any number of cars on one connection) | built, not wired in yet |
-| Web UI: UI packs, two designs as prototypes on made-up data in [`ui/`](ui/), every TeslaMate tab covered, maps | being built |
+| Web UI: UI packs, two designs as prototypes on made-up data in [`ui/`](ui/), maps; every TeslaMate tab gets a clearer page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) with the API in [`docs/ui-api.md`](docs/ui-api.md) | being built |
 
 ## Run it
 
