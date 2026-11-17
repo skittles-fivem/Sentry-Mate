@@ -104,6 +104,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         if api:
             self.send_header("Cache-Control", "no-store")
+            # The virtual clock, so pages count "5 min ago" and the period presets from the dataset's "now".
+            self.send_header("X-Sentry-Mate-Now-Ms", str(self.app.clock.now()))
         else:
             self.send_header("Cache-Control", "no-cache")
         if content_type:

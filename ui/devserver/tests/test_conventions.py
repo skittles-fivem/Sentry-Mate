@@ -196,6 +196,8 @@ class StaticAndHeaders(ServerCase):
             self.assertEqual(hd["referrer-policy"], "no-referrer")
         st, hd, _ = self.c.request("GET", "/api/v1/me")
         self.assertEqual(hd["cache-control"], "no-store")
+        # the virtual clock, for the pages' "now" (api.js reads it)
+        self.assertLess(abs(int(hd["x-sentry-mate-now-ms"]) - self.server.app.clock.now()), 5000)
 
     def test_health(self):
         st, hd, raw = self.server.client().request("GET", "/health")
