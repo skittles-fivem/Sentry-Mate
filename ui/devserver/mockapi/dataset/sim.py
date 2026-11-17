@@ -442,6 +442,7 @@ def _insert_update(car, segs, t, seq, version, vsrc, detected, source, rnd):
         return segs
     p = segs[i]
     u = Update(car, seq, t, t + dur, version, vsrc, detected, p.lat, p.lon, p.pid, p.soc_at(t), source=source)
+    u.odo = getattr(p, "odo", None)
     return _split_parked(segs, i, t, t + dur, [u])
 
 

@@ -1,6 +1,6 @@
-"""Seeds for the sections not built yet (notices, server and MQTT settings, an import job, storage
-figures), so the endpoints that come next only need to expose them. The Store copies these in
-(store.notices, store.server_settings, store.mqtt, store.imports, store.storage).
+"""Seeds for what the owner can change outside the car data: notices, server and MQTT settings,
+import jobs and storage figures. The Store copies these in (store.notices, store.server_settings,
+store.mqtt, store.imports, store.storage).
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ def server_settings(now):
         "version": 1,
         "units": {"distance": "km", "temperature": "c", "pressure": "bar"},
         "range": "rated",
-        "car_order": "last_activity",
+        "car_order": [],
         "geocode": {"mode": "offline", "dataset": "made-up offline set", "url": None, "language": "en",
                     "rounding_m": 10},
         "tiles": {"mode": "online", "online_url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -47,9 +47,12 @@ def mqtt(now):
 
 def imports(now):
     return {
-        "im1": {"id": "im1", "status": "done", "pass": 2, "bytes_read": 412_000_000, "bytes_total": 412_000_000,
-                "started_ms": now - 398 * DAY, "finished_ms": now - 398 * DAY + 40 * MIN, "error": None,
-                "cars": [{"tm_car": 1, "vin_prefix": "5YJSA1E20HF", "match": "c3"}],
+        "im1": {"id": "im1", "name": "teslamate-backup-atlas.sql.xz", "compression": "xz", "status": "done", "pass": 2,
+                "bytes_read": 412_000_000, "bytes_total": 412_000_000, "uploaded_bytes": 412_000_000,
+                "started_ms": now - 398 * DAY, "checked_ms": now - 398 * DAY + 9 * MIN,
+                "finished_ms": now - 398 * DAY + 40 * MIN, "error": None,
+                "cars": [{"tm_car": 1, "name": "Atlas", "vin_prefix": "5YJSA1E20HF", "drives": 1188, "charges": 224,
+                          "first_days": -900, "last_days": -393, "match": "c3"}],
                 "report": {"tables": {
                     "drives": {"read": 1188, "imported": 1180, "skipped": {"duplicate": 8}, "bad_values": {}},
                     "charging_processes": {"read": 224, "imported": 222, "skipped": {"no_energy": 2},
@@ -57,7 +60,8 @@ def imports(now):
                     "positions": {"read": 2_410_000, "imported": 2_409_500, "skipped": {"no_position": 500},
                                   "bad_values": {"elevation": 40}},
                     "updates": {"read": 4, "imported": 4, "skipped": {}, "bad_values": {}},
-                }, "span": {"from_ms": now - 900 * DAY, "to_ms": now - 393 * DAY}}},
+                }, "span": {"from_ms": now - 900 * DAY, "to_ms": now - 393 * DAY},
+                    "cars": [{"tm_car": 1, "match": "c3", "drives": 1188, "charges": 224}], "imported": True}},
     }
 
 

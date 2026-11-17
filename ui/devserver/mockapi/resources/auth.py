@@ -174,6 +174,13 @@ def delete_sessions(req):
     return {"ended": n}
 
 
+def get_one_session(req):
+    for s in _my_sessions(req):
+        if s["id"] == req.params["session"]:
+            return {k: v for k, v in s.items() if not k.startswith("_")}
+    raise not_found("no_such_session", "There is no such session.")
+
+
 def delete_one_session(req):
     from ..server import clear_cookie
     st = req.store
@@ -422,7 +429,7 @@ def register(router):
     router.add("/api/v1/session/two-step", POST=post_two_step, public=("POST",))
     router.add("/api/v1/me", GET=get_me)
     router.add("/api/v1/me/sessions", GET=get_sessions, DELETE=delete_sessions)
-    router.add("/api/v1/me/sessions/{session}", DELETE=delete_one_session)
+    router.add("/api/v1/me/sessions/{session}", GET=get_one_session, DELETE=delete_one_session)
     router.add("/api/v1/me/preferences", GET=get_prefs, PATCH=patch_prefs)
     router.add("/api/v1/accounts", GET=list_accounts, POST=create_account, admin=("GET", "POST"))
     router.add("/api/v1/accounts/{account}", GET=get_account, PATCH=patch_account, DELETE=delete_account,

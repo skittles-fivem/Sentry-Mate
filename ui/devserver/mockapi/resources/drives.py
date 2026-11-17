@@ -15,6 +15,7 @@ import math
 from ..conventions import Response, page
 from ..errors import bad_input, invalid, not_found
 from ..pdf import text_pdf
+from ..placing import drive_pids
 from ..rows import charge_row, drive_row, in_progress, place_obj
 from ..util import DAY, HOUR, iso_utc, local_dt, median, r
 
@@ -65,8 +66,9 @@ def _filtered(req, h):
     rows = []
     for d in _drives(req, h, a, b, source):
         if places:
-            s_ok = d.from_pid in places
-            e_ok = d.to_pid in places
+            a_pid, b_pid = drive_pids(req.app, d)
+            s_ok = a_pid in places
+            e_ok = b_pid in places and d.cut_ms is None
             if not (s_ok if side == "start" else e_ok if side == "end" else s_ok or e_ok):
                 continue
         row = cached_drive_row(req, h, d)
@@ -346,6 +348,13 @@ def create_rule(req):
     return dict(row, _created=True)
 
 
+def get_rule(req):
+    for x in req.store.rules.get(req.car, []):
+        if x["id"] == req.params["rule"]:
+            return dict(x, car=req.car, time_zone=req.tz())
+    raise not_found("no_such_rule", "There is no such purpose rule.")
+
+
 def delete_rule(req):
     st = req.store
     rows = st.rules.get(req.car, [])
@@ -372,7 +381,7 @@ def drive_stats(req):
              "projection": {"per_month_km": None, "per_year_km": None, "basis_days": 0}, "top_destinations": []}
     if h is None:
         return empty
-    ds = [d for d in _drives(req, h, a, b) if d.from_pid not in excl and d.to_pid not in excl]
+    ds = [d for d in _drives(req, h, a, b) if not excl or not (set(drive_pids(req.app, d)) & excl)]
     if not ds:
         return empty
     rows = [(d, cached_drive_row(req, h, d)) for d in ds]
@@ -404,8 +413,9 @@ def drive_stats(req):
     span_days = max(1.0, (end - max(a, h.first_ms)) / DAY)
     dest = {}
     for d, x in rows:
-        key = d.to_pid or x["end"]["label"]
-        e = dest.setdefault(key, {"place": d.to_pid, "label": x["end"]["label"], "count": 0})
+        pid = (x["end"]["place"] or {}).get("id")
+        key = pid or x["end"]["label"]
+        e = dest.setdefault(key, {"place": pid, "label": x["end"]["label"], "count": 0})
         e["count"] += 1
     top = sorted(dest.values(), key=lambda e: (-e["count"], e["label"]))[:10]
     return {
@@ -673,7 +683,7 @@ def register(router):
     router.add("/api/v1/cars/{car}/drives/{drive}/purpose", PUT=put_purpose, DELETE=delete_purpose,
                admin=("PUT", "DELETE"))
     router.add("/api/v1/cars/{car}/purpose-rules", GET=list_rules, POST=create_rule, admin=("POST",))
-    router.add("/api/v1/cars/{car}/purpose-rules/{rule}", DELETE=delete_rule, admin=("DELETE",))
+    router.add("/api/v1/cars/{car}/purpose-rules/{rule}", GET=get_rule, DELETE=delete_rule, admin=("DELETE",))
     router.add("/api/v1/cars/{car}/drive-stats", GET=drive_stats)
     router.add("/api/v1/cars/{car}/logbook", GET=logbook)
     router.add("/api/v1/cars/{car}/trip", GET=trip)

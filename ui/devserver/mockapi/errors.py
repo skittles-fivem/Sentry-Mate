@@ -61,7 +61,3 @@ def conflict(code, message):
 def throttled(retry_after_s):
     return ApiError(429, "throttled", f"Too many tries. Wait {retry_after_s} s.",
                     headers={"Retry-After": str(retry_after_s)})
-
-
-def not_built(path):
-    return ApiError(501, "not_built", f"{path} is not built in the dev server yet.")

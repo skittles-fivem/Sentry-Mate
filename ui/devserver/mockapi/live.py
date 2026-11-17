@@ -6,7 +6,7 @@ carries its own `at_ms`: while the car sleeps, values keep the time they were la
 
 from __future__ import annotations
 
-from .dataset.segments import address_at, match_place
+from . import placing
 from .util import DAY, HOUR, MIN, r
 
 FLEET_STATE = {"drive": "driving", "charge": "charging", "update": "parked", "gap": "unknown"}
@@ -60,14 +60,27 @@ def software_at(app, h, t):
     for u in h.updates:
         if u.start > t:
             break
-        if u.version:
-            ver, src, since, changed = u.version, u.version_source, u.end, None
+        v, vs = update_version(app, u)
+        if v:
+            ver, src, since, changed = v, vs, u.end, None
         else:
             changed = u.end
     typed = (app.store.car_settings.get(car.id) or {}).get("software_version_typed")
     if typed:
         ver, src = typed, "owner"
     return {"version": ver, "version_source": src, "version_since_ms": since, "changed_since_ms": changed}
+
+
+def update_version(app, u):
+    """(version, version_source) of an update: the owner's, else one learned from the same build, else the dataset's."""
+    st = app.store
+    own = st.update_versions.get(u.id)
+    if own is not None:
+        return own, "owner"
+    learned = st.builds.get(u.build_id)
+    if learned and learned["from_update"] != u.id:
+        return learned["version"], "build_match"
+    return u.version, u.version_source
 
 
 def avg_wh_per_km(app, h, t):
@@ -132,10 +145,11 @@ def now_object(app, car_id, t):
     if odo is None:
         odo = getattr(seg, "odo", None)
     lat, lon = vals.get("lat"), vals.get("lon")
-    pl = match_place(lat, lon) if lat is not None else None
-    if seg.kind == "drive":
-        pl = None
-    addr = address_at(lat, lon) if lat is not None else None
+    pl = None
+    if lat is not None and seg.kind != "drive":
+        pl = placing.eff_place(app, lat, lon, getattr(seg, "pid", None))
+    addr = placing.full_address(app, lat, lon, getattr(seg, "pid", None) if seg.kind != "drive" else None) \
+        if lat is not None else None
     ty_keys = ("tyre_fl_kpa", "tyre_fr_kpa", "tyre_rl_kpa", "tyre_rr_kpa")
     has_ty = vals.get("tyre_fl_kpa") is not None
     soc = vals["soc_pct"]

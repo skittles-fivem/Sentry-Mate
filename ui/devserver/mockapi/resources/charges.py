@@ -7,6 +7,7 @@ from __future__ import annotations
 from ..conventions import nk, page
 from ..dataset.segments import CURVE_FIELDS
 from ..errors import bad_input, invalid, not_found
+from ..placing import piece_pid
 from ..rows import charge_row, in_progress, place_obj
 from ..util import DAY, MIN, local_dt, median, r
 
@@ -62,7 +63,7 @@ def _filtered(req, car_ids):
         if h is None:
             continue
         for c in _charges_of(req, h, a, b, source):
-            if places and c.pid not in places:
+            if places and piece_pid(req.app, c) not in places:
                 continue
             if kind and c.ckind != kind:
                 continue
@@ -239,7 +240,7 @@ def _stats_rows(req):
         if h is None:
             continue
         for c in _charges_of(req, h, a, b):
-            if places and c.pid not in places:
+            if places and piece_pid(req.app, c) not in places:
                 continue
             x = cached_charge_row(req, h, c)
             if min_dur is not None and x["charging_ms"] < min_dur * MIN:
@@ -371,7 +372,7 @@ def dc_curve(req):
         return out
     by_soc = {}
     for c in _charges_of(req, h, a, b):
-        if c.ckind != "dc" or (places and c.pid not in places):
+        if c.ckind != "dc" or (places and piece_pid(req.app, c) not in places):
             continue
         pts = []
         last = None
@@ -386,7 +387,7 @@ def dc_curve(req):
                     by_soc.setdefault(s, []).append(v["power_kw"])
                     last = s
             t += 5000
-        pl = place_obj(req.app, c.pid)
+        pl = place_obj(req.app, piece_pid(req.app, c))
         out["sessions"].append({"charge": c.id, "label": pl["name"] if pl else "Fast charger", "start_ms": c.start,
                                 "points": pts})
     out["median"] = [{"soc_pct": s, "power_kw": r(median(v), 1)} for s, v in sorted(by_soc.items())]

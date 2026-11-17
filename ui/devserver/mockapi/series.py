@@ -43,13 +43,18 @@ def pieces(h, a, b, now, source):
     return out
 
 
-def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, explicit_aggs=True):
-    """Columns { t_ms, values, bucket_ms, coverage_pct, state } for [a, b)."""
+def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, explicit_aggs=True, bucket=None,
+          align=None):
+    """Columns { t_ms, values, bucket_ms, coverage_pct, state } for [a, b).
+
+    `bucket` fixes the bucket size (else the smallest nice one for max_points); `align` is a moment
+    buckets start from (for example a local midnight), else buckets are aligned to UTC."""
     b = min(b, now)
     if b <= a:
-        return {"t_ms": [], "values": {f: [] for f in fields}, "bucket_ms": 1000, "coverage_pct": [], "state": []}
-    bucket = nice_bucket(b - a, max_points)
-    a0 = a - a % bucket
+        return {"t_ms": [], "values": {f: [] for f in fields}, "bucket_ms": bucket or 1000, "coverage_pct": [],
+                "state": []}
+    bucket = bucket or nice_bucket(b - a, max_points)
+    a0 = a - a % bucket if align is None else align + ((a - align) // bucket) * bucket
     n = int(math.ceil((b - a0) / bucket))
     samples = [[] for _ in range(n)]  # (t, values)
     state_ms = [dict() for _ in range(n)]

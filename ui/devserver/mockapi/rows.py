@@ -8,21 +8,21 @@ from __future__ import annotations
 
 import datetime as dt
 
-from .dataset import places as P
-from .dataset.segments import point
+from . import placing
 from .util import DAY, MIN, local_dt, local_hour, r
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
 def place_obj(app, pid):
-    """The effective place (the dataset's, with any owner changes the store keeps)."""
-    if pid is None:
-        return None
-    over = getattr(app.store, "place_over", {}).get(pid)
-    if over is not None:
-        return None if over.get("deleted") else over
-    return P.BY_ID.get(pid)
+    """The effective place (the dataset's, with the owner's changes); None when unknown or deleted."""
+    return placing.place_obj(app, pid)
+
+
+def _point(app, lat, lon, pid=None, label=None, at_place=True):
+    p = placing.point(app, lat, lon, pid, label, at_place)
+    p.pop("_address", None)
+    return p
 
 
 def in_progress(seg, now):
@@ -54,8 +54,14 @@ def purpose_of(app, car_id, d, tz):
     if own:
         return {"value": own["purpose"], "relation": own.get("relation"), "note": own.get("note"), "source": "owner"}
     wd = local_dt(d.start, tz).weekday()
-    for rule in app.store.rules.get(car_id, []):
-        if rule["from_place"] == d.from_pid and rule["to_place"] == d.to_pid and _day_matches(rule["days"], wd):
+    rules = app.store.rules.get(car_id, [])
+    if not rules:
+        return None
+    a, b = placing.drive_pids(app, d)
+    if d.cut_ms is not None:
+        b = None
+    for rule in rules:
+        if rule["from_place"] == a and rule["to_place"] == b and _day_matches(rule["days"], wd):
             return {"value": rule["purpose"], "relation": None, "note": None, "source": "rule", "rule": rule["id"]}
     return None
 
@@ -75,14 +81,13 @@ def drive_row(app, h, d, now):
     tm = d.source == "teslamate"
     legacy = car.profile == "tesla-sx-legacy"
     end_label = "Data stopped here" if cut else ("Driving now" if live else None)
-    end_pid = d.to_pid if not cut and not live else None
     lost = sum(int((b - a) / 1000 * 140) for a, b in d.drops)
     duration = (now if live else d.data_end) - d.start
     return {
         "id": d.id, "car": car.id, "time_zone": meta["time_zone"],
         "start_ms": d.start, "end_ms": None if live else d.data_end, "duration_ms": duration,
-        "start": point(*f["start_pt"], pid=d.from_pid),
-        "end": point(*f["end_pt"], pid=end_pid, label=end_label),
+        "start": _point(app, *f["start_pt"], pid=d.from_pid),
+        "end": _point(app, *f["end_pt"], pid=d.to_pid, label=end_label, at_place=not cut and not live),
         "start_odometer_km": r(d.odo0, 3), "end_odometer_km": r(d.odo0 + dist, 3), "distance_km": r(dist, 3),
         "speed_avg_kph": r(dist / (duration / 3_600_000), 1) if duration > 0 else None,
         "speed_max_kph": r(f["vmax"], 1),
@@ -142,14 +147,16 @@ def free_supercharging(app, car_id, ms, tz):
     return False
 
 
-def charge_cost(app, car_id, c, f, now):
-    """(cost, price_per_kwh, cost_breakdown) for a charge, applying owner overrides first."""
+def charge_cost(app, car_id, c, f, now, pricing=None):
+    """(cost, price_per_kwh, cost_breakdown) for a charge, applying owner overrides first.
+
+    `pricing` is (place, price) to cost it with instead of its own (a preview or a reprice)."""
     end = min(now, c.data_end)
     minutes = (end - c.start) / MIN
     added = f["added"]
     grid = f["grid"]
     inlet = f["inlet"]
-    pl = place_obj(app, c.pid)
+    pl, price = pricing if pricing is not None else placing.pricing(app, c)
     tz = pl["time_zone"] if pl else app.store.car_meta(car_id)["time_zone"]
     gap_ms = int(f["gap_ms"])
     over = app.store.costs.get(c.id)
@@ -177,8 +184,7 @@ def charge_cost(app, car_id, c, f, now):
         return cost, {"value": c.tm_cost, "basis": "grid" if grid else "pack"}, {
             "parts": [{"rate": "Imported", "per_kwh": c.tm_cost, "kwh": r(grid or added, 3), "cost": amount}],
             "session_fee": None, "total": amount, "gap_ms": gap_ms, "mode": "teslamate"}
-    price = pl.get("price") if pl else None
-    if c.ckind == "dc" and pl and "Supercharger" in pl["name"] and free_supercharging(app, car_id, c.start, tz):
+    if c.ckind == "dc" and c.station_kw >= 250 and free_supercharging(app, car_id, c.start, tz):
         cur = price["currency"] if price else "USD"
         return ({"amount": 0.0, "currency": cur, "source": "free_supercharging"}, {"value": 0.0, "basis": "pack"},
                 {"parts": [], "session_fee": None, "total": 0.0, "gap_ms": gap_ms, "mode": "free_supercharging"})
@@ -196,16 +202,18 @@ def charge_cost(app, car_id, c, f, now):
         rate = _rate_at(price, t, tz)
         name = rate["name"] if rate else "Standard"
         per = rate["per_kwh"] if rate and rate.get("per_kwh") is not None else price.get("per_kwh")
+        pm = rate["per_minute"] if rate and rate.get("per_minute") is not None else price.get("per_minute")
         share = kwh * (e - t) / total_ms
-        p = parts.setdefault(name, {"rate": name, "per_kwh": per, "kwh": 0.0, "cost": 0.0})
+        p = parts.setdefault(name, {"rate": name, "per_kwh": per, "per_minute": pm, "kwh": 0.0, "minutes": 0.0,
+                                    "cost": 0.0})
         p["kwh"] += share
-        p["cost"] += share * (per or 0)
+        p["minutes"] += (e - t) / MIN
+        p["cost"] += share * (per or 0) + (e - t) / MIN * (pm or 0)
         t = e
-    plist = [{"rate": p["rate"], "per_kwh": p["per_kwh"], "kwh": r(p["kwh"], 3), "cost": round(p["cost"], 2)}
-             for p in parts.values()]
+    plist = [{"rate": p["rate"], "per_kwh": p["per_kwh"], "per_minute": p["per_minute"], "kwh": r(p["kwh"], 3),
+              "minutes": r(p["minutes"], 1), "cost": round(p["cost"], 2)} for p in parts.values()]
     fee = price.get("session_fee")
-    per_min = price.get("per_minute")
-    amount = sum(p["cost"] for p in parts.values()) + (fee or 0) + (per_min or 0) * minutes
+    amount = sum(p["cost"] for p in parts.values()) + (fee or 0)
     cost = {"amount": round(amount, 2), "currency": price["currency"], "source": "tariff"}
     per = grid if basis == "grid" else added
     ppk = {"value": round(amount / per, 4), "basis": basis} if per else None
@@ -218,8 +226,8 @@ def charge_row(app, h, c, now, with_breakdown=False):
     meta = app.store.car_meta(car.id)
     live = in_progress(c, now)
     f = c.figures(now if live else None)
-    pl = place_obj(app, c.pid)
-    addr = pl["address"] if pl else point(c.lat, c.lon)["address"]
+    pl = place_obj(app, placing.piece_pid(app, c))
+    addr = pl["address"] if pl else _point(app, c.lat, c.lon, at_place=False)["address"]
     cost, ppk, bd = charge_cost(app, car.id, c, f, now)
     end = now if live else c.data_end
     plug_end = now if live else c.plug_end
@@ -231,9 +239,10 @@ def charge_row(app, h, c, now, with_breakdown=False):
         "start_ms": c.start, "end_ms": None if live else c.data_end,
         "charging_ms": end - c.start, "plugged_ms": max(end, plug_end) - min(c.start, c.plug_start),
         "kind": c.ckind,
-        "fast_charger": ({"type": "supercharger" if pl and "Supercharger" in pl["name"] else "ccs",
-                          "brand": "Tesla" if pl and "Supercharger" in pl["name"] else None,
-                          "class": "V3" if c.station_kw >= 250 else "V2", "billed_kwh": r(f["inlet"], 3)}
+        # what the charger says about itself (CAN), not the place name
+        "fast_charger": ({"type": "supercharger" if c.station_kw >= 250 else "ccs",
+                          "brand": "Tesla" if c.station_kw >= 250 else None,
+                          "class": "V3" if c.station_kw >= 250 else None, "billed_kwh": r(f["inlet"], 3)}
                          if dc else None),
         "place": {"id": pl["id"], "name": pl["name"], "kind": pl["kind"]} if pl else None,
         "address": {k: addr.get(k) for k in ("short", "locality", "region", "country_code")},
@@ -262,8 +271,8 @@ def charge_row(app, h, c, now, with_breakdown=False):
 # ------------------------------------------------------------------ timeline
 
 
-def _tl_point(lat, lon, pid=None):
-    p = point(lat, lon, pid)
+def _tl_point(app, lat, lon, pid=None):
+    p = _point(app, lat, lon, pid)
     return {"place": p["place"], "address": p["address"]["short"], "lat": p["lat"], "lon": p["lon"],
             "label": p["label"]}
 
@@ -277,7 +286,7 @@ def timeline_row(app, h, s, now):
     if s.kind == "drive":
         d = drive_row(app, h, s, now)
         base.update({
-            "end_ms": d["end_ms"], "start": _tl_point(d["start"]["lat"], d["start"]["lon"], s.from_pid),
+            "end_ms": d["end_ms"], "start": _tl_point(app, d["start"]["lat"], d["start"]["lon"], s.from_pid),
             "end": None if live else {"place": d["end"]["place"], "address": d["end"]["address"]["short"],
                                       "lat": d["end"]["lat"], "lon": d["end"]["lon"], "label": d["end"]["label"]},
             "odometer_km": d["end_odometer_km"], "distance_km": d["distance_km"], "duration_ms": d["duration_ms"],
@@ -290,7 +299,7 @@ def timeline_row(app, h, s, now):
     if s.kind == "charge":
         c = charge_row(app, h, s, now)
         base.update({
-            "end_ms": c["end_ms"], "start": _tl_point(s.lat, s.lon, s.pid), "end": None,
+            "end_ms": c["end_ms"], "start": _tl_point(app, s.lat, s.lon, s.pid), "end": None,
             "odometer_km": c["odometer_km"], "distance_km": None, "duration_ms": c["charging_ms"],
             "soc_end_pct": c["end_soc_pct"], "soc_delta_pct": r(c["end_soc_pct"] - c["start_soc_pct"], 1),
             "range_end_km": c["end_range_km"], "range_delta_km": c["range_added_km"],
@@ -307,7 +316,7 @@ def timeline_row(app, h, s, now):
         full1 = car.full_range_km(end)
         split = s.split_ms() if not live else s.clip(s.start, end).split_ms()
         base.update({
-            "end_ms": None if live else s.end, "start": _tl_point(s.lat, s.lon, s.pid), "end": None,
+            "end_ms": None if live else s.end, "start": _tl_point(app, s.lat, s.lon, s.pid), "end": None,
             "odometer_km": r(getattr(s, "odo", None), 3), "distance_km": None, "duration_ms": end - s.start,
             "soc_end_pct": r(soc1, 1), "soc_delta_pct": r(soc1 - soc0, 2),
             "range_end_km": r(soc1 / 100 * full1, 1), "range_delta_km": r(soc1 / 100 * full1 - soc0 / 100 * full0, 1),
@@ -317,8 +326,8 @@ def timeline_row(app, h, s, now):
         })
         return base
     if s.kind == "gap":
-        bp = _tl_point(*s.before) if s.before else None
-        ap = _tl_point(*s.after) if s.after and s.after != s.before else None
+        bp = _tl_point(app, *s.before) if s.before else None
+        ap = _tl_point(app, *s.after) if s.after and s.after != s.before else None
         base.update({
             "end_ms": None if live else s.end, "start": bp, "end": ap,
             "odometer_km": None, "distance_km": r(s.odo_jump, 3) if s.odo_jump else None,
@@ -329,7 +338,7 @@ def timeline_row(app, h, s, now):
         return base
     # software update
     base.update({
-        "end_ms": None if live else s.end, "start": _tl_point(s.lat, s.lon, s.pid), "end": None,
+        "end_ms": None if live else s.end, "start": _tl_point(app, s.lat, s.lon, s.pid), "end": None,
         "odometer_km": None, "distance_km": None, "duration_ms": end - s.start, "soc_end_pct": r(s.soc, 1),
         "soc_delta_pct": 0.0, "range_end_km": None, "range_delta_km": None, "energy_delta_kwh": None,
         "outside_avg_c": None, "ref": {"update": s.id}, "version": s.version, "version_source": s.version_source,

@@ -19,7 +19,7 @@ METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 
 
 class Route:
-    def __init__(self, pattern, handlers, admin=(), public=(), stub=False):
+    def __init__(self, pattern, handlers, admin=(), public=()):
         self.pattern = pattern
         names = re.findall(r"{(\w+)}", pattern)
         rx = re.escape(pattern)
@@ -30,7 +30,6 @@ class Route:
         self.handlers = handlers
         self.admin = set(admin)
         self.public = set(public)
-        self.stub = stub
         self.static_len = len(pattern) - sum(len(n) + 2 for n in names)
 
     @property
@@ -42,21 +41,17 @@ class Router:
     def __init__(self):
         self.routes = []
 
-    def add(self, pattern, admin=(), public=(), stub=False, **handlers):
+    def add(self, pattern, admin=(), public=(), **handlers):
         for m in handlers:
             if m not in METHODS:
                 raise ValueError(m)
         for r in self.routes:
             if r.pattern == pattern:
-                if stub:
-                    return r  # a real route (or the stub) is already there
-                if r.stub:  # the real one replaces the stub
-                    r.handlers, r.admin, r.public, r.stub = {}, set(), set(), False
                 r.handlers.update(handlers)
                 r.admin |= set(admin)
                 r.public |= set(public)
                 return r
-        r = Route(pattern, dict(handlers), admin, public, stub)
+        r = Route(pattern, dict(handlers), admin, public)
         self.routes.append(r)
         # the most specific pattern (most fixed characters) wins
         self.routes.sort(key=lambda x: -x.static_len)

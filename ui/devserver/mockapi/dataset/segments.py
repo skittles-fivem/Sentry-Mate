@@ -12,6 +12,7 @@ charging power, positive.
 from __future__ import annotations
 
 import bisect
+import hashlib
 import math
 
 from ..util import HOUR, MIN, clamp, h01, haversine_m
@@ -134,6 +135,12 @@ def point(lat, lon, pid=None, label=None):
         "address": {k: addr[k] for k in ("short", "locality", "region", "country_code")},
         "label": label or (pl["name"] if pl else addr["short"]),
     }
+
+
+def _odo(s):
+    """The odometer while standing still (the car sends it while awake); None when not known."""
+    o = getattr(s, "odo", None)
+    return None if o is None else round(o, 3)
 
 
 # ------------------------------------------------------------------ base
@@ -666,7 +673,7 @@ class Charge(Seg):
         legacy = car.profile == "tesla-sx-legacy"
         vals.update({
             "speed_kph": 0.0, "power_kw": round(-c["power_kw"] + c["heater_kw"] if c["heater_kw"] else -c["power_kw"], 2),
-            "odometer_km": None, "outside_c": c["outside_c"],
+            "odometer_km": _odo(self), "outside_c": c["outside_c"],
             "cabin_c": None if legacy else round(self.outside + 3, 1),
             "battery_c": c["battery_c"], "setpoint_left_c": None, "setpoint_right_c": None,
             "elevation_m": round(R.terrain_m(self.lat, self.lon), 1),
@@ -808,7 +815,7 @@ class Parked(Seg):
         ty = None if tm else tyres(car, t, out, warm)
         legacy = car.profile == "tesla-sx-legacy"
         vals.update({
-            "speed_kph": 0.0, "power_kw": round(sub[4], 3), "odometer_km": None,
+            "speed_kph": 0.0, "power_kw": round(sub[4], 3), "odometer_km": _odo(self),
             "outside_c": round(out, 1),
             "cabin_c": None if legacy and not tm else round(21.0 if climate else out + 2.5, 1),
             "battery_c": None if tm else round(batt, 1),
@@ -929,6 +936,13 @@ class Update(Seg):
         self.detected_by = detected_by
         self.lat, self.lon, self.pid = lat, lon, pid
         self.soc = soc
+        # the module build ids the car reported after the update (made up; one set per version)
+        self.build_id = hashlib.blake2b((version or f"{car.id}:{seq}").encode(), digest_size=6).hexdigest()
+        mods = ["bms", "vcfront", "di_front", "di_rear", "fc"]
+        if car.config.get("drivetrain", ("AWD",))[0] == "RWD":
+            mods.remove("di_front")
+        k = int(h01("mods", car.id, seq) * 3)
+        self.changed_modules = [m for i, m in enumerate(mods) if (i + k) % 3 != 2 or m == "bms"]
 
     def state_at(self, t):
         return "parked"
@@ -943,7 +957,7 @@ class Update(Seg):
         out = outside_c(car, t, self.lat, self.lon)
         vals = battery_values(car, t, self.soc, out + 4)
         vals.update({k: None for k in SERIES_FIELDS if k not in vals})
-        vals.update({"speed_kph": 0.0, "power_kw": 0.6, "outside_c": round(out, 1),
+        vals.update({"speed_kph": 0.0, "power_kw": 0.6, "outside_c": round(out, 1), "odometer_km": _odo(self),
                      "lat": round(self.lat, 6), "lon": round(self.lon, 6), "lv_v": lv_volts(car, True)})
         return vals
 

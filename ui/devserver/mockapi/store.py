@@ -62,10 +62,15 @@ class Store:
         self.rules = {}  # car id -> [rules]
         self.costs = {}  # charge id -> {mode, amount, currency, energy_basis}
         self.trips = {}
-        self.place_over = {}  # place id -> the whole edited place, or {"deleted": True} (used by rows.place_obj)
+        from .placing import seed_places
+        self.places = seed_places()  # place id -> the place as it is now (dataset places plus the owner's changes)
+        self.places_rev = 0  # goes up on every place change (place matches are cached by it)
+        self.charge_price = {}  # charge id -> {place, price, at_ms}: the price a charge keeps (see placing.py)
+        self.update_versions = {}  # update id -> version typed by the owner
+        self.builds = {}  # build id -> {version, from_update}: versions learned from the owner
+        self.rebuilds = {}  # car id -> [{from_ms, to_ms, at_ms}]
         self._seed_cars(now)
         self._seed_audit(now)
-        # seeds for the sections still to build (see dataset/extras.py)
         from .dataset import extras
         self.notices = extras.notices(now)
         self.server_settings = extras.server_settings(now)
@@ -227,6 +232,12 @@ class Store:
     def get_prefs(self, account):
         with self.lock:
             p = copy.deepcopy(self.default_prefs)
+            # units, range and car order default from the server settings
+            ss = getattr(self, "server_settings", None)
+            if ss:
+                p["units"] = copy.deepcopy(ss["units"])
+                p["range"] = ss["range"]
+                p["car_order"] = list(ss["car_order"])
             own = self.prefs.get(account["id"], {})
             for k, v in own.items():
                 if k == "units":

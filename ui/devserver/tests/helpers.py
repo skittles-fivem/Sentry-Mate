@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import http.client
 import json
 import os
@@ -102,6 +103,9 @@ class ServerCase(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.close()
+        # drop this class's dataset and caches, so later classes do not pay for them in garbage collection
+        cls.server = cls.c = None
+        gc.collect()
 
     def walk(self, path, limit=50, max_pages=1000):
         """Every item of a paged list, following `next`."""

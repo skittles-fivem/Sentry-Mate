@@ -96,9 +96,9 @@ class Errors(ServerCase):
         e, _ = self.c.error("PATCH", "/api/v1/me/preferences", 400, "bad_input", body=b"{not json")
         self.assertIn("body", e["fields"])
 
-    def test_stubs_answer_501(self):
-        self.c.error("GET", "/api/v1/cars/c1/battery", 501, "not_built")
-        self.c.error("GET", "/api/v1/places", 501, "not_built")
+    def test_every_section_is_built(self):
+        self.c.get("/api/v1/cars/c1/battery")
+        self.c.get("/api/v1/places")
         self.c.error("GET", "/api/v1/cars/c99/battery", 404, "no_such_car")
 
 
