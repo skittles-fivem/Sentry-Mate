@@ -40,6 +40,13 @@ export function niceStep(span, count) {
   const mag = 10 ** Math.floor(Math.log10(raw));
   return [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw - 1e-12) || raw;
 }
+/** The decimals the step between ticks needs, so a 2.5 step never prints 517.5 as 518. */
+export function stepDigits(splits) {
+  if (!splits || splits.length < 2) return 0;
+  const step = Math.abs(splits[1] - splits[0]);
+  for (let d = 0; d < 4; d++) if (Math.abs(Math.round(step * 10 ** d) - step * 10 ** d) < 1e-6) return d;
+  return 4;
+}
 /** Tick values from min to max on nice steps. */
 export function niceSplits(min, max, count) {
   const span = max - min;
@@ -168,7 +175,7 @@ export async function stackedCharts(ctx, container, { tz, t_ms, rows, spans = []
           {
             stroke: C.ink3, font, size: px(48), gap: px(8), ticks: { show: false }, grid: { stroke: C.rule, width: 1 },
             splits: (u, ax, min, max) => niceSplits(min, max, b.r.ticks || 4),
-            values: (u, splits) => splits.map((v) => formatNumber(v, { maximumFractionDigits: digits, minimumFractionDigits: 0 })),
+            values: (u, splits) => { const d = Math.max(digits, stepDigits(splits)); return splits.map((v) => formatNumber(v, { maximumFractionDigits: d, minimumFractionDigits: 0 })); },
           },
         ],
         series,

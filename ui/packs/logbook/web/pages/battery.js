@@ -15,7 +15,7 @@
 // in rem, so they stay sharp at any size.
 
 import { h, svg, replace, cover } from '../shared/dom.js';
-import { format, formatMoney, convert, toMetric, unitLabel, rangeLabel } from '../shared/units.js';
+import { format, formatMoney, convert, toMetric, unitLabel, rangeField } from '../shared/units.js';
 import { formatDate, formatDateTime, formatDuration, periodLabel, dateFormat, HOUR } from '../shared/time.js';
 import { formatNumber, formatList, tn } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
@@ -33,13 +33,13 @@ export const css = true;
 export const title = () => 'Battery';
 
 const NEW_SOURCE = {
-  owner: 'typed in by the owner (Reference values below)',
+  owner: 'the value the owner typed in (Reference values below)',
   early_bms: 'the median of the pack’s own readings in its first 30 days of logging',
   imported_charges: 'the earliest imported charges (estimated)',
   pack_code: 'the pack’s size code: a hint only, type the real value below if you know it',
 };
 const RANGE_NEW_SOURCE = {
-  owner: 'typed in by the owner (Reference values below)',
+  owner: 'the value the owner typed in (Reference values below)',
   first_30_days: 'the median full-charge range of the first 30 days of logging',
   pack_code: 'the pack’s size code: a hint only, type the real value below if you know it',
 };
@@ -67,7 +67,10 @@ const p3 = (v) => `${v.toFixed(3)}%`;
 const num = (v) => v != null && Number.isFinite(v);
 const pctText = (v, digits = 0) => (num(v) ? `${formatNumber(v, { maximumFractionDigits: digits, minimumFractionDigits: digits })} %` : '—');
 const csvButton = (label, onclick, cover = null) => h('button', { type: 'button', class: 'button button-quiet button-small', onclick, cover, 'aria-label': `Download CSV: ${label}` }, icon('download'), 'Download CSV');
-const rangeWord = () => rangeLabel().toLowerCase();
+// /battery, /projected-range, /parked and the reference values keep rated range only (no ideal twin), so
+// this page always says rated, and says so to someone who prefers ideal.
+const prefersIdeal = () => rangeField('range_km') !== 'range_km';
+const idealNote = (what) => (prefersIdeal() ? h('p', { class: 'note bt-rated-note' }, icon('info'), `You prefer ideal range; ${what} shows rated range, the only one kept for it.`) : null);
 
 export async function mount(ctx) {
   const car = ctx.car;
@@ -135,14 +138,24 @@ export async function mount(ctx) {
       ctx.api.get(api.apiPath`cars/${car.id}/settings`),
       ctx.api.get(api.apiPath`cars/${car.id}/efficiency`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms }),
     ]);
-    if (b.status === 'rejected') throw b.reason;
-    bat = b.value;
+    if (!ctx.alive()) return;
     settings = s.status === 'fulfilled' ? s.value : null;
+    drawRef(s.status === 'rejected' ? s.reason : null);
+    if (b.status === 'rejected') {
+      if (ctx.signal.aborted) return;
+      bat = null;
+      replace(asOf, 'Battery readings could not be loaded');
+      const retry = () => loadTop().then(() => { if (bat) drawCap().catch(() => {}); }).catch(() => {});
+      replace(nowBox, head('bt-now-title', 'Now'), errorView(b.reason, { eyebrow: 'Now', retry }));
+      replace(healthBox, head('bt-health-title', 'Capacity and health'), errorView(b.reason, { eyebrow: 'Capacity and health', retry }));
+      replace(rangeBox, head('bt-range-title', 'Full-charge range'), errorView(b.reason, { eyebrow: 'Full-charge range', retry }));
+      return;
+    }
+    bat = b.value;
     replace(asOf, bat.as_of_ms ? ['Battery readings as of ', ago(bat.as_of_ms)] : 'No battery readings yet');
     drawNow();
     drawHealth(eff.status === 'fulfilled' ? eff.value : null, eff.status === 'rejected' ? eff.reason : null);
     drawRange();
-    drawRef(s.status === 'rejected' ? s.reason : null);
   }
 
   function drawNow() {
@@ -220,12 +233,13 @@ export async function mount(ctx) {
   function drawRange() {
     const r = bat.range || {};
     replace(rangeBox,
-      head('bt-range-title', 'Full-charge range', `${rangeWord()}, at 100 %`),
+      head('bt-range-title', 'Full-charge range', 'rated range, at 100 %'),
       figures([
         figure('Now', q(r.full_now_km, 'range', { why: 'no reading yet' }), num(r.full_now_from_energy_km) ? ['From battery % and range; ', q(r.full_now_from_energy_km, 'range'), ' from energy stored.'] : 'From battery % and range.', { cover: 'bh.ranges.max_now' }),
         figure('When new', q(r.full_new_km, 'range', { why: 'not known' }), ['From ', RANGE_NEW_SOURCE[r.new_source] || 'no source', '.'], { cover: 'bh.ranges.max_new' }),
         figure('Lost', q(r.lost_km, 'range', { why: 'needs both values' }), num(r.lost_km) && num(r.full_new_km) && r.full_new_km ? `${pctText((r.lost_km / r.full_new_km) * 100, 1)} of when new. Range also drops in the cold; the chart below shows how it moves with temperature.` : null, { cover: 'bh.ranges.lost' }),
-      ], { cls: 'bt-figs-3' }));
+      ], { cls: 'bt-figs-3' }),
+      idealNote('this box'));
   }
 
   function drawRef(err) {
@@ -240,15 +254,15 @@ export async function mount(ctx) {
       replace(refBox, head('bt-ref-title', 'Reference values', 'for this car'),
         h('dl', { class: 'bt-spec', cover: ['bh.setting.capacity_new_override', 'bh.setting.range_new_override', 'bh.setting.override_help'] },
           h('div', null, h('dt', null, 'Capacity when new'), h('dd', null, num(s.capacity_new_kwh) ? q(s.capacity_new_kwh, 'energy', { digits: 1 }) : 'not typed in')),
-          h('div', null, h('dt', null, 'Full-charge range when new'), h('dd', null, num(s.full_range_new_km) ? q(s.full_range_new_km, 'range') : 'not typed in')),
+          h('div', null, h('dt', null, 'Full-charge range when new (rated)'), h('dd', null, num(s.full_range_new_km) ? q(s.full_range_new_km, 'range') : 'not typed in')),
           h('div', null, h('dt', null, 'Warranty line'), h('dd', null, pctText(s.warranty_threshold_pct)))),
         h('p', { class: 'note' }, 'Only an admin can change these. Empty values are worked out from the car’s own early readings.'));
       return;
     }
     const cap = field({ label: 'Capacity when new (kWh, full pack)', name: 'cap', type: 'number', value: s.capacity_new_kwh, attrs: { min: '10', max: '250', step: '0.1', inputmode: 'decimal', placeholder: 'from early readings' },
       hint: 'Only if the car was bought used or logging began late. Leave empty to use the median of the earliest readings. 10 to 250 kWh.', cover: 'bh.setting.capacity_new_override' });
-    const rng = field({ label: `Full-charge range when new (${dist}, ${rangeWord()})`, name: 'range', type: 'number', value: rangeShown, attrs: { min: String(Math.ceil(convert(100, 'range'))), max: String(Math.floor(convert(1500, 'range'))), step: '1', inputmode: 'numeric', placeholder: 'from the first 30 days' },
-      hint: `The range the car showed at 100 % when new. Leave empty to use the first 30 days. ${Math.ceil(convert(100, 'range'))} to ${Math.floor(convert(1500, 'range'))} ${dist}.`, cover: 'bh.setting.range_new_override' });
+    const rng = field({ label: `Full-charge range when new (${dist}, rated range)`, name: 'range', type: 'number', value: rangeShown, attrs: { min: String(Math.ceil(convert(100, 'range'))), max: String(Math.floor(convert(1500, 'range'))), step: '1', inputmode: 'numeric', placeholder: 'from the first 30 days' },
+      hint: `The rated range the car showed at 100 % when new (with the car set to rated, not ideal). Leave empty to use the first 30 days. ${Math.ceil(convert(100, 'range'))} to ${Math.floor(convert(1500, 'range'))} ${dist}.`, cover: 'bh.setting.range_new_override' });
     const war = field({ label: 'Warranty line (% of new)', name: 'warranty', type: 'number', value: s.warranty_threshold_pct, attrs: { min: '50', max: '95', step: '1', inputmode: 'numeric', required: true },
       hint: 'The capacity the battery warranty promises, usually 70 %. 50 to 95 %.' });
     const check = (f, v, lo, hi, text) => { if (v != null && !(v >= lo && v <= hi)) { setFieldError(f, text); return false; } return true; };
@@ -289,8 +303,10 @@ export async function mount(ctx) {
       timeColumn('Time', 't_ms', tz), column('Odometer', 'odometer_km', 'odometer', { digits: 1 }), column('Full pack', 'full_pack_kwh', 'energy', { digits: 2 }),
       column('Usable', 'usable_kwh', 'energy', { digits: 2 }), { label: 'Method', value: (r) => r.method }, { label: 'Readings', value: (r) => r.readings ?? '' },
       { label: 'Charge', value: (r) => r.charge || '' }, { label: 'Source', value: (r) => r.source }]);
+    const capCsv = csvButton('capacity readings', csv);
+    capCsv.disabled = true;
     replace(capBox,
-      head('bt-cap-title', 'Capacity over the car’s life', 'whole history, not the period', csvButton('capacity readings', csv)),
+      head('bt-cap-title', 'Capacity over the car’s life', 'whole history, not the period', capCsv),
       h('div', { class: 'bt-controls' }, groupChoice, axisChoice),
       h('ul', { class: 'bt-key' },
         h('li', null, h('span', { class: 'bt-sw bt-sw-dot', 'aria-hidden': 'true' }), opt.group === 'charge' ? 'one reading per charge that added at least 10 % (click to open it)' : opt.group === 'day' ? 'the pack’s own reading, one per awake day' : 'median of the pack’s daily readings, per month'),
@@ -314,6 +330,7 @@ export async function mount(ctx) {
     const pts = items.filter((r) => num(xOf(r))).sort((a, b) => xOf(a) - xOf(b));
     const idle = () => replace(read, h('span', { class: 'readout-idle' }, pts.length ? `${tn(pts.length, '{n} reading', '{n} readings')}, ${formatDate(pts[0].t_ms, tz, { weekday: false })} to ${formatDate(pts[pts.length - 1].t_ms, tz, { weekday: false })}. Point at a dot for its value.` : ''));
     idle();
+    capCsv.disabled = !pts.length;
     if (!pts.length) {
       replace(plot, empty({ title: 'No capacity readings yet.', text: opt.group === 'charge' ? 'A reading needs a finished charge that added at least 10 %. Choose Each day for the pack’s own daily readings.' : 'The pack sends its capacity while the car is awake; imported days have none.' }));
       return;
@@ -473,10 +490,11 @@ export async function mount(ctx) {
   async function drawProj() {
     const resChoice = choice({ label: 'Resolution', name: 'bt-res', value: opt.res, options: RESOLUTIONS, onchange: (v) => { opt.res = v; remember(); drawProj().catch(() => {}); } });
     const block = timeBlock(projBox, {
-      titleId: 'bt-proj-title', title: 'Projected range', note: `${rangeWord()} at a full charge, next to what moves it`, csvName: 'projected range',
+      titleId: 'bt-proj-title', title: 'Projected range', note: 'rated range at a full charge, next to what moves it', csvName: 'projected range',
       cover: ['pr.control.shared_crosshair', 'pr.axis.titles', 'pr.temp.projected', 'pr.section.per_car'],
       controls: h('div', { class: 'bt-controls' },
         periodNote('pr.filter.time_range', 'one line per chart, all on one time axis'),
+        idealNote('this chart'),
         h('div', { cover: 'pr.control.resolution' }, resChoice, h('p', { class: 'field-hint' }, 'How long each point averages. Auto fits about a thousand points in the period.'))),
     });
     block.fill(loadingBlock(6));
@@ -608,7 +626,7 @@ export async function mount(ctx) {
   const cold = (r) => !!r.cold;
   const drain = dataTable(ctx, {
     path: api.apiPath`cars/${car.id}/parked`, params: { ...ctx.params, min_hours: opt.min_hours }, limit: 50,
-    itemName: ['parked spell', 'parked spells'], cover: 'vd.table', label: 'Parked spells',
+    itemName: ['parked spell', 'parked spells'], cover: 'vd.table', label: 'Parked spells', sortAll: 5000,
     caption: 'Newest first. Spells crossing the period’s edges are cut at them. The CSV holds every listed spell.',
     columns: [
       { key: 'start', label: 'Parked', th: true, cover: ['vd.col.start', 'vd.col.end', 'vd.link.start_details'], value: (r) => r.start_ms,
@@ -631,7 +649,7 @@ export async function mount(ctx) {
           num(r.awake_avg_power_w) && r.awake_ms > 0 ? h('span', { class: 'cell-sub bt-when' }, 'awake ', q(r.awake_avg_power_w, 'power_w')) : null,
           r.energy_method === 'range' ? h('span', { class: 'cell-sub' }, flag('estimated', { kind: 'estimated' })) : null] },
       { key: 'range', label: `Range lost`, num: true, sort: true, cover: ['vd.col.range_loss', 'vd.col.range_per_hour'], value: (r) => (cold(r) ? null : r.range_lost_km),
-        hint: `${rangeLabel()} lost while parked, and per hour parked. Blank when the battery ended cold: that drop is locked energy, not energy used.`,
+        hint: `Rated range lost while parked, and per hour parked. Blank when the battery ended cold: that drop is locked energy, not energy used.`,
         cell: (r) => (cold(r) ? q(null, 'range', { why: 'cold battery' }) : [h('span', { class: 'cell-main' }, q(r.range_lost_km, 'range', { digits: 1 })),
           num(r.range_lost_per_hour_km) ? h('span', { class: 'cell-sub bt-when' }, q(r.range_lost_per_hour_km, 'distance', { digits: 2 }), ' per hour') : null,
           num(r.range_start_km) ? h('span', { class: 'cell-sub bt-when' }, `${format(r.range_start_km, 'range')} to ${format(r.range_end_km, 'range')}`) : null]) },
@@ -663,7 +681,8 @@ export async function mount(ctx) {
         h('div', { class: 'bt-inline' }, minIn, h('span', { class: 'bt-unit' }, 'hours')),
         h('p', { class: 'field-hint' }, 'Leaves out short stops; 0 lists every spell.'))),
     drainSum,
-    h('p', { class: 'note' }, 'Open a spell’s time for its battery and state charts over exactly that span. Asleep counts only real sleep: time with no data is shown apart, in red, and never counted as sleep. ‘Cold’ marks spells where the pack ended cold enough to lock part of its energy; their range columns stay blank because the range drop there is not energy used.'),
+    h('p', { class: 'note' }, 'Open a spell’s time for its battery and state charts over exactly that span. Asleep counts only real sleep: time with no data is shown apart, in red, and never counted as sleep. ‘Cold’ marks spells where the pack ended cold enough to lock part of its energy; their range columns stay blank because the range drop there is not energy used. Sorting a column first loads every spell of the period, so the order covers them all.'),
+    idealNote('the Range lost column'),
     drain.el);
 
   /* ---------------------------------------------------------------- every car */
@@ -738,7 +757,7 @@ export async function mount(ctx) {
   ctx.onCleanup(() => clearTimeout(rowsTimer));
 
   await loadTop();
-  await Promise.all([drawCap(), drawLife(), drawProj(), drawLevel(), drain.load(), drawCars()]);
+  await Promise.all([drawCap(), drawLife(), drawProj(), drawLevel(), drain.load().catch(() => {}), drawCars()]);
   ctx.ready();
 }
 

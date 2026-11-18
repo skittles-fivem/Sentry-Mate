@@ -28,6 +28,8 @@ import { icon, empty as emptyView, errorView, loadingBlock } from './ui.js';
  *   onRows(items, page),              // after each page arrives (summaries in the answer: page.summary)
  *   onSort({ key, dir }),             // a column head was clicked, before the rows load again in that order
  *   caption: node,                    // extra text after the count
+ *   sortAll: 2000,                    // a paged list: a client sort (sort: true) first loads every page, up to
+ *                                     // this many rows, so the order covers the whole list, not one page
  *   cover, cls, label,                // ids for the table, extra class, the table's accessible name
  * }) -> { el, reload(params), items, destroy() }
  */
@@ -75,7 +77,20 @@ export function dataTable(ctx, opts) {
     opts.onSort?.({ ...sort });
     head.replaceChildren(h('tr', null, columns.map((x) => headCell(x))));
     if (pager && typeof c.sort === 'string') { pager.reset(serverParams()); body.replaceChildren(); loadMore(); }
-    else draw();
+    else { draw(); fillForSort(); }
+  }
+  function clientSorted() { return !!(sort && columns.find((c) => c.key === sort.key && c.sort === true)); }
+  // A client sort of a paged list orders only what is loaded: load the rest first (opts.sortAll rows at most).
+  let filling = false;
+  async function fillForSort() {
+    if (!pager || !opts.sortAll || !clientSorted() || filling) return;
+    filling = true;
+    try {
+      while (!pager.done && pager.items.length < opts.sortAll && clientSorted() && !ctx.signal.aborted) {
+        count.textContent = `${formatNumber(pager.items.length)} ${itemName[1]} loaded, loading the rest to sort them all…`;
+        if (!(await loadMore())) break;
+      }
+    } finally { filling = false; }
   }
   function sortedClient(list) {
     const c = sort && columns.find((x) => x.key === sort.key);
@@ -102,13 +117,14 @@ export function dataTable(ctx, opts) {
   }
   function items() { return pager ? pager.items : rows; }
   function draw() {
-    const list = pager && !(sort && columns.find((c) => c.key === sort.key && c.sort === true)) ? pager.items : sortedClient(items() || []);
+    const list = pager && !clientSorted() ? pager.items : sortedClient(items() || []);
     body.replaceChildren(...list.map(rowEl));
     const n = (items() || []).length;
     const [one, many] = itemName;
     const word = (x) => (x === 1 ? one : many);
     if (pager) {
       count.textContent = total != null ? `${formatNumber(total)} ${word(total)}` : pager.done ? `${formatNumber(n)} ${word(n)}` : `${formatNumber(n)} ${many} shown, more to load`;
+      if (!pager.done && clientSorted()) count.textContent += `; sorted within the ${formatNumber(n)} shown`;
       more.hidden = pager.done;
     } else {
       count.textContent = `${formatNumber(n)} ${word(n)}`;
@@ -126,10 +142,12 @@ export function dataTable(ctx, opts) {
       if (pager.last && typeof pager.last.total === 'number') total = pager.last.total;
       opts.onRows?.(got, pager.last);
       draw();
+      return true;
     } catch (err) {
-      if (ctx.signal.aborted) return;
-      status.replaceChildren(errorView(err, { retry: () => loadMore(), eyebrow: 'Could not load the list' }));
+      if (ctx.signal.aborted) return false;
+      status.replaceChildren(errorView(err, { retry: () => loadMore().then((ok) => ok && fillForSort()), eyebrow: 'Could not load the list' }));
       if (rethrow) throw err;
+      return false;
     } finally {
       more.disabled = false;
     }
@@ -143,13 +161,13 @@ export function dataTable(ctx, opts) {
   const ctl = {
     el,
     /** The first page (call once after putting el in the page); resolves when it is drawn. */
-    async load() { if (pager) { await loadMore(true); } else { draw(); opts.onRows?.(rows, null); } },
+    async load() { if (pager) { await loadMore(true); fillForSort(); } else { draw(); opts.onRows?.(rows, null); } },
     /** New filters: start again from the first page. opts.sort: a new column order, or null for the resource's own. */
     async reload(newParams, o = {}) {
       if (newParams) params = { ...newParams };
       if ('sort' in o) { sort = o.sort ? { ...o.sort } : null; head.replaceChildren(h('tr', null, columns.map((x) => headCell(x)))); }
       total = null;
-      if (pager) { pager.reset(serverParams()); body.replaceChildren(); await loadMore(); } else draw();
+      if (pager) { pager.reset(serverParams()); body.replaceChildren(); if (await loadMore()) await fillForSort(); } else draw();
     },
     /** Replace the rows (rows source only). */
     setRows(list) { rows = [...list]; draw(); },

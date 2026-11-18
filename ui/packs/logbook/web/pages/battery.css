@@ -174,3 +174,7 @@
   .page-battery .bt-split-key { grid-template-columns: minmax(0, 1fr); }
   .page-battery .bt-cap-plot { grid-template-columns: 3.5rem minmax(0, 1fr); grid-template-rows: 14rem 1.75rem; }
 }
+
+/* rated range only: a note for someone who prefers ideal */
+.page-battery .bt-rated-note { display: flex; gap: 0.5rem; align-items: flex-start; margin-top: 0.75rem; }
+.page-battery .bt-rated-note .icon { flex: none; width: 1rem; height: 1rem; color: var(--ink-3); margin-top: 0.125rem; }
