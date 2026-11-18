@@ -54,6 +54,11 @@ fn the_drives_and_charges_that_happened() {
     for (c, want) in t.charges.iter().zip(&truth.charges) {
         assert_eq!(c.kind, Some(want.kind));
         assert!(c.start_ms.abs_diff(want.start_ms) <= 3_000, "charge start {} vs {}", c.start_ms, want.start_ms);
+        if want.end_ms >= s.end_ms() {
+            // still charging at the end: the log being written then is not given, so the logs end up to a minute early
+            assert!(c.end_ms <= want.end_ms && want.end_ms - c.end_ms <= 61_000, "{} vs {}", c.end_ms, want.end_ms);
+            continue;
+        }
         assert!(c.end_ms.abs_diff(want.end_ms) <= 3_000, "charge end {} vs {}", c.end_ms, want.end_ms);
         let kwh = c.energy_added_kwh.unwrap();
         assert!(

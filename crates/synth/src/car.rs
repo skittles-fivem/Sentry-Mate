@@ -198,7 +198,7 @@ impl CarState {
     pub fn drive(&mut self, model: CarModel, kmh: f64, accel: f64, aux_kw: f64, dt_s: f64) {
         let v = kmh / 3.6;
         let m = model.mass_kg();
-        let wheel = 0.5 * 1.2 * model.cda() * v.powi(3) + 0.009 * m * 9.81 * v + m * accel * v;
+        let wheel = 0.5 * 1.2 * model.cda() * v * v * v + 0.009 * m * 9.81 * v + m * accel * v;
         let kw = if wheel >= 0.0 {
             wheel / 1000.0 / 0.88
         } else if kmh > 5.0 {
@@ -224,7 +224,7 @@ impl CarState {
         self.energy_kwh = (self.energy_kwh - kwh).max(0.0);
         self.total_discharge_kwh += kwh;
         self.set_power(0.0);
-        let f = (-dt_s / 7200.0).exp();
+        let f = libm::exp(-dt_s / 7200.0);
         self.batt_temp_c = self.outside_c + (self.batt_temp_c - self.outside_c) * f;
         self.cabin_c = self.outside_c + (self.cabin_c - self.outside_c) * f;
     }
@@ -264,7 +264,7 @@ impl CarState {
 
 /// A made-up landscape: gentle hills from the position.
 pub fn elevation_at(p: LatLon) -> f64 {
-    45.0 + 30.0 * (p.lat * 37.0).sin() * (p.lon * 29.0).cos() + 12.0 * (p.lon * 113.0).sin()
+    45.0 + 30.0 * libm::sin(p.lat * 37.0) * libm::cos(p.lon * 29.0) + 12.0 * libm::sin(p.lon * 113.0)
 }
 
 /// The DC charge curve: the most the car takes at this battery %, kW.

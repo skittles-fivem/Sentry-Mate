@@ -34,6 +34,7 @@ mod decode;
 mod folders;
 mod keys;
 mod migrate;
+#[cfg(any(test, feature = "dev-seed"))]
 mod seed;
 #[cfg(test)]
 mod testkit;
@@ -146,7 +147,9 @@ enum Cmd {
     },
     /// Exit 0 when the upload port accepts connections (or a move comes in, while it copies).
     Health,
-    /// Development only (not in the help): made-up cars for trying the server without anyone's car.
+    /// Development only (not in the help, and only in a build with the `dev-seed` feature): made-up cars for trying
+    /// the server without anyone's car.
+    #[cfg(feature = "dev-seed")]
     #[command(hide = true)]
     Dev {
         #[command(subcommand)]
@@ -154,6 +157,7 @@ enum Cmd {
     },
 }
 
+#[cfg(feature = "dev-seed")]
 #[derive(Subcommand)]
 enum DevCmd {
     /// Upload made-up cars' logs (signed, chained, sealed and judged like real uploads) into the data folder.
@@ -174,6 +178,10 @@ enum DevCmd {
         /// Candump text logs (/1) instead of columns (/2).
         #[arg(long)]
         candump: bool,
+        /// Put made-up cars in a data folder that has real cars too (they show in its fleet, and anyone can forge
+        /// their logs: their signing keys come from a public seed).
+        #[arg(long, env = "SENTRY_MATE_DEV")]
+        with_real_cars: bool,
     },
 }
 
@@ -363,6 +371,7 @@ fn needs(cmd: &Cmd) -> Option<(bool, bool)> {
         Cmd::Log { cmd: LogCmd::Export { .. } | LogCmd::Decode { .. } } | Cmd::Chain { .. } | Cmd::Keys { .. } => {
             Some((false, false))
         }
+        #[cfg(feature = "dev-seed")]
         Cmd::Dev { cmd: DevCmd::Seed { .. } } => Some((true, false)),
         Cmd::Log { .. } | Cmd::Health => None,
     }
@@ -512,18 +521,23 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
         Cmd::Export => return export_cmd(&data, &keys),
         Cmd::Import { file, cancel } => return import_cmd(&data, &keys, file.as_deref(), cancel).await,
         Cmd::Move { cmd } => return move_cmd(&data, &keys, cli.upload_port, cmd).await,
-        Cmd::Dev { cmd: DevCmd::Seed { days, cars, seed, light, clean, candump } } => {
+        #[cfg(feature = "dev-seed")]
+        Cmd::Dev { cmd: DevCmd::Seed { days, cars, seed, light, clean, candump, with_real_cars } } => {
             let v = Arc::new(Vault::open(&data, &keys)?);
-            refuse_writes(&data, &v)?;
-            // the writes of an upload, through the data folder's gate
-            let _pass = gate::Gate::open(&data)?.enter(GATE_WAIT)?;
             refuse_writes(&data, &v)?;
             let store = Store::new(can_dir(&data), v.clone());
             let judge = Judge::new(store.clone());
-            let tokens = Tokens::open(tokens_file(&data), v).await?;
-            let o = seed::Options { days, cars, seed, light, clean, candump };
-            seed::run(&store, &judge, &tokens, &o, &mut std::io::stdout()).await?;
-            println!("Made-up cars are in. A running server's engine finds them when it starts again.");
+            let tokens = Tokens::open(tokens_file(&data), v.clone()).await?;
+            let o = seed::Options { days, cars, seed, light, clean, candump, with_real_cars };
+            // each file's writes go through the data folder's gate, as an upload's chunk does (an export or a move
+            // started meanwhile waits for one file, not for the whole run)
+            let gate = gate::Gate::open(&data)?;
+            let enter = || -> Result<gate::Pass, Box<dyn std::error::Error>> {
+                let pass = gate.enter(GATE_WAIT)?;
+                refuse_writes(&data, &v)?;
+                Ok(pass)
+            };
+            seed::run(&store, &judge, &tokens, &o, &enter, &mut std::io::stdout()).await?;
         }
         Cmd::Health => {
             // a move coming in keeps the upload port closed until it switches: healthy meanwhile

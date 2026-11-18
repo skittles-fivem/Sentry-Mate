@@ -109,6 +109,8 @@ pub struct Bridge {
     pub lost: Vec<String>,
     pub not_recorded: Vec<(u64, u64)>,
     pub dropped: Vec<String>,
+    /// When the app really updated itself (ms).
+    pub app_updates: Vec<u64>,
 }
 
 const QUIET_US: u64 = 60_000_000;
@@ -135,6 +137,7 @@ impl Bridge {
             lost: Vec::new(),
             not_recorded: Vec::new(),
             dropped: Vec::new(),
+            app_updates: Vec::new(),
         }
     }
 
@@ -292,12 +295,13 @@ impl Bridge {
             self.anchor = (us, self.mono(us));
             self.next_helper_us = us;
         }
-        if let Some(&(at, len)) = self.cfg.trouble.app_update_at.iter().find(|&&(at, _)| ms >= at && ms < at + 60_000)
-            && self.restarting_until.is_none()
-            && self.open.as_ref().is_some_and(|o| o.start_us / 1000 <= at)
-        {
-            self.close(at * 1000, "flush");
+        // (whatever the car does: the log open then, if any, closes `flush`)
+        if let Some(&(at, len)) = self.cfg.trouble.app_update_at.iter().find(|&&(at, _)| ms >= at) {
+            if self.open.is_some() {
+                self.close(at * 1000, "flush");
+            }
             self.cfg.trouble.app_update_at.retain(|&(a, _)| a != at);
+            self.app_updates.push(at);
             self.restarting_until = Some((at + len) * 1000);
             return false;
         }
@@ -337,9 +341,52 @@ impl Bridge {
         }
     }
 
+    /// The first time at or after `from_us` that one of the bridge's own events begins (the Screenmate off, a pause
+    /// in recording, an app update), µs.
+    fn next_event_us(&self, from_us: u64) -> u64 {
+        let t = &self.cfg.trouble;
+        t.offline
+            .iter()
+            .map(|&(a, _)| a)
+            .chain(t.not_recorded.iter().map(|&(a, _)| a))
+            .chain(t.app_update_at.iter().map(|&(a, _)| a))
+            .map(|a| a * 1000)
+            .filter(|&a| a >= from_us)
+            .min()
+            .unwrap_or(u64::MAX)
+    }
+
+    /// Every time in `(from_us, to_us)` where the bridge's trouble begins or ends, in order (µs): a sleep is cut there,
+    /// so each happens on time and each pause is measured from its real edges.
+    pub fn boundaries(&self, from_us: u64, to_us: u64) -> Vec<u64> {
+        let t = &self.cfg.trouble;
+        let mut b: Vec<u64> = t
+            .offline
+            .iter()
+            .chain(&t.not_recorded)
+            .flat_map(|&(a, b)| [a, b])
+            .chain(t.app_update_at.iter().flat_map(|&(a, l)| [a, a + l]))
+            .chain(t.lose_log_at.iter().copied())
+            .map(|ms| ms * 1000)
+            .filter(|&us| us > from_us && us < to_us)
+            .collect();
+        b.sort_unstable();
+        b.dedup();
+        b
+    }
+
+    /// A log 60 s without frames closes `quiet` before anything the bridge does later (`us` at the latest).
+    fn quiet_before_events(&mut self, us: u64) {
+        let Some(o) = &self.open else { return };
+        let last = o.last_frame_us.unwrap_or(o.start_us);
+        let cut = us.min(self.next_event_us(last));
+        self.quiet_check(cut);
+    }
+
     /// Frames of one step, in time order.
     pub fn frames(&mut self, frames: &[RawFrame]) {
         for f in frames {
+            self.quiet_before_events(f.t_us);
             if !self.events(f.t_us) {
                 if let Some((since, n)) = self.paused {
                     self.paused = Some((since, n + 1));
@@ -357,21 +404,15 @@ impl Bridge {
                 Some(_) => {}
             }
             self.timed_lines(f.t_us);
-            let drop = self
-                .cfg
-                .trouble
-                .drop_at
-                .iter()
-                .find(|&&(at, len)| f.t_us >= at * 1000 && f.t_us < (at + len) * 1000)
-                .copied();
+            let drop =
+                self.cfg.trouble.drop_at.iter().any(|&(at, len)| f.t_us >= at * 1000 && f.t_us < (at + len) * 1000);
             let Some(o) = self.open.as_mut() else { continue };
-            if let Some((at, _)) = drop {
+            if drop {
                 if !o.drop_note {
                     o.drop_note = true;
                     o.dropped_chunks += 3;
                     o.text.push_str("# dropped 3 chunks of frames: logger fell behind\n");
                 }
-                let _ = at;
                 continue;
             }
             let _ = write!(o.text, "({}) can{} ", wall(f.t_us), f.bus);
@@ -400,17 +441,18 @@ impl Bridge {
 
     /// The time is now `us` (an asleep span, or a step with no frames).
     pub fn tick(&mut self, us: u64) {
+        self.quiet_before_events(us);
         let _ = self.events(us);
         self.quiet_check(us);
     }
 
-    /// The end: the open log closes (`stop`).
+    /// The scenario's end at `us`: a log that would close `quiet` by then does; the one still being written is not
+    /// finished, so it is not given (a longer run of the same scenario finishes it, under the same name), and the
+    /// logs given are always the start of a longer run's, byte for byte.
     pub fn finish(&mut self, us: u64) {
-        if let Some(o) = &self.open {
-            let end = o.last_frame_us.map_or(us, |l| (l + 1).max(us.min(l + QUIET_US)));
-            let end = end.max(o.start_us);
-            self.close(end, "stop");
-        }
+        self.tick(us);
+        // not signed: the chain goes on from the log before it
+        self.open = None;
     }
 }
 

@@ -25,7 +25,7 @@ fn scenario() -> Scenario {
 
 #[test]
 fn logfmt_reads_them_in_both_formats() {
-    let (files, _) = run(&scenario());
+    let (files, report) = run(&scenario());
     assert!(files.len() > 100, "{}", files.len());
     let (mut candump, mut columns) = (0, 0);
     for f in &files {
@@ -56,7 +56,12 @@ fn logfmt_reads_them_in_both_formats() {
         assert!(f.end_ms >= f.start_ms && f.end_ms - f.start_ms <= 120_000, "{}: {} ms", f.name, f.end_ms - f.start_ms);
         assert!(f.name.ends_with(".log.xz") && trust::LogName::parse(&f.name).is_some_and(|n| !n.sidecar));
     }
-    assert_eq!(candump, 20);
+    // the first 20 logs the bridge wrote are text, the lost one among them
+    let mut written: Vec<&str> =
+        files.iter().map(|f| f.name.as_str()).chain(report.lost.iter().map(String::as_str)).collect();
+    written.sort_by_key(|n| n.split('_').nth(1).map(str::to_string));
+    let lost_text = written[..20].iter().filter(|n| report.lost.iter().any(|l| l == *n)).count();
+    assert_eq!(candump + lost_text, 20);
     assert!(columns > 50);
     // a log a minute while awake; a log closed quiet before each sleep
     assert!(files.iter().filter(|f| f.closed_because == "rotate").count() > files.len() / 2);

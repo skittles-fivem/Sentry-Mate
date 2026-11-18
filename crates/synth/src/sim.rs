@@ -146,10 +146,6 @@ impl Sim {
         &self.state
     }
 
-    pub fn plan(&self) -> &Plan {
-        &self.plan
-    }
-
     pub fn now(&self) -> u64 {
         self.t_ms
     }
@@ -158,8 +154,8 @@ impl Sim {
     fn outside_at(&self, t: u64) -> f64 {
         let day = (t / DAY_MS) as f64;
         let hour = (t % DAY_MS) as f64 / 3_600_000.0;
-        let base = self.outside_base + 3.0 * (day * 1.7 + (self.seed % 97) as f64).sin();
-        base + 6.0 * ((hour - 9.0) / 24.0 * std::f64::consts::TAU).sin()
+        let base = self.outside_base + 3.0 * libm::sin(day * 1.7 + (self.seed % 97) as f64);
+        base + 6.0 * libm::sin((hour - 9.0) / 24.0 * std::f64::consts::TAU)
     }
 
     /// When the next activity is due, after skipping charges not needed.
@@ -190,22 +186,21 @@ impl Sim {
         })
     }
 
-    /// The start of the first activity after the current one that has a fixed time.
-    fn next_fixed(&self) -> u64 {
-        self.plan.activities[self.next..]
-            .iter()
-            .find_map(|a| match a.when() {
-                When::At(t) => Some(t),
-                When::After(_) => None,
-            })
-            .unwrap_or(self.end_ms)
+    /// The start of the first activity after the current one that has a fixed time (none: nothing more planned).
+    fn next_fixed(&self) -> Option<u64> {
+        self.plan.activities[self.next..].iter().find_map(|a| match a.when() {
+            When::At(t) => Some(t),
+            When::After(_) => None,
+        })
     }
 
     fn begin(&mut self) {
         let Some(a) = self.plan.activities.get(self.next).cloned() else { return };
         self.next += 1;
         let t = self.t_ms;
-        let deadline = self.next_fixed().saturating_sub(15 * 60_000).max(t + 60_000);
+        // a charge stops 15 min before the next thing planned; the scenario's end only stops the run (a longer run of
+        // the same scenario does the same until then)
+        let deadline = self.next_fixed().map_or(u64::MAX, |n| n.saturating_sub(15 * 60_000).max(t + 60_000));
         let s = &mut self.state;
         self.running = Some(match a {
             Activity::Drive { from, to, route, .. } => {
@@ -354,7 +349,7 @@ impl Sim {
                     }
                     DrivePhase::Go => {
                         let leg = route.leg_at(km);
-                        let wobble = 2.0 * ((t as f64 / 9_000.0) + noise).sin();
+                        let wobble = 2.0 * libm::sin((t as f64 / 9_000.0) + noise);
                         let target = (route.limit_kmh[leg] + wobble).max(5.0) / 3.6;
                         let stop_km = (leg..route.limit_kmh.len())
                             .find(|&l| route.stop_after[l] && route.leg_end_km(l) > passed + 1e-9)
@@ -372,7 +367,7 @@ impl Sim {
                         s.drive(self.model, v2 * 3.6, a, climate, dt);
                         s.pos = route.at(km);
                         s.elevation_m = elevation_at(s.pos);
-                        s.gps_accuracy_m = 1.6 + 1.2 * ((t as f64 / 17_000.0) + noise).sin().abs();
+                        s.gps_accuracy_m = 1.6 + 1.2 * libm::sin((t as f64 / 17_000.0) + noise).abs();
                         truth.max_speed_kmh = truth.max_speed_kmh.max(s.speed_kmh);
                         if (stop_km - km) * 1000.0 < 1.5 && v2 < 0.4 {
                             s.speed_kmh = 0.0;

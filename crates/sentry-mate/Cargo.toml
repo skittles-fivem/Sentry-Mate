@@ -13,6 +13,11 @@ workspace = true
 name = "sentry-mate"
 path = "src/main.rs"
 
+[features]
+# The hidden `dev seed` command (made-up cars for development). Off in the image and every release build: a server
+# built with it can be filled with made-up cars whose signing keys come from a public seed.
+dev-seed = ["dep:synth"]
+
 [dependencies]
 dbc = { path = "../dbc" }
 gate = { path = "../gate" }
@@ -20,7 +25,7 @@ moving = { path = "../moving" }
 ingest = { path = "../ingest" }
 logfmt = { path = "../logfmt" }
 model = { path = "../model" }
-synth = { path = "../synth" }
+synth = { path = "../synth", optional = true }
 timeline = { path = "../timeline" }
 trust = { path = "../trust" }
 vault = { path = "../vault" }
@@ -36,6 +41,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
+synth = { path = "../synth" }
 base64 = "0.22"
 lzma-rs = "0.3"
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }

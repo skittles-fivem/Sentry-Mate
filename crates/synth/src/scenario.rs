@@ -16,6 +16,13 @@ pub const DEFAULT_START_MS: u64 = 1_772_409_600_000;
 /// The made-up town's centre: open sea in the Gulf of Guinea (0.30° N, 0.20° E), where no one lives.
 pub const TOWN: LatLon = LatLon::new(0.30, 0.20);
 
+/// The most cars [`fleet`] makes: their homes fill a grid of 15 by 14 spots 2 km apart, all of it (and every car's
+/// work, shop and supercharger) in the open sea north east of [`TOWN`], inside 0° to 1.5° N and 0° to 1.5° E.
+pub const MAX_FLEET: u32 = 200;
+
+/// The highest car number: its VIN's six digits are 100 + the number.
+pub const MAX_CAR: u32 = 999_899;
+
 /// A made-up car and what it does. Every choice has a default; the same scenario (seed included) gives the same logs,
 /// byte for byte.
 #[derive(Debug, Clone)]
@@ -37,7 +44,7 @@ pub struct Scenario {
     pub leave_min: u32,
     pub back_min: u32,
     pub errands: bool,
-    /// A trip to the supercharger and back (DC charge) on the first Saturday, else the last day.
+    /// A trip to the supercharger and back (DC charge) on the third day, or the first Saturday before it.
     pub supercharger_trip: bool,
     /// Plugged in at home: an AC charge from `charge_start_min` (local) when below `charge_below` %, to `charge_limit`.
     pub home_charging: bool,
@@ -55,8 +62,8 @@ pub struct Scenario {
     pub xz_preset: u32,
     /// The bridge's trouble set by hand (times in ms).
     pub trouble: Trouble,
-    /// Adds the usual trouble around the first home charge: a lost log (a chain gap), dropped frames, a pause in
-    /// recording and an app update.
+    /// Adds the usual trouble, each where the car is parked and awake (see [`Scenario::bridge_trouble`]): a lost log
+    /// (a chain gap), dropped frames, a pause in recording and an app update.
     pub with_trouble: bool,
 }
 
@@ -95,8 +102,9 @@ impl Scenario {
         }
     }
 
+    /// Which car of a fleet, at most [`MAX_CAR`] (a higher number is taken as that).
     pub fn car(mut self, n: u32) -> Self {
-        self.car = n;
+        self.car = n.min(MAX_CAR);
         self
     }
     pub fn model(mut self, m: CarModel) -> Self {
@@ -145,7 +153,7 @@ impl Scenario {
         self.errands = on;
         self
     }
-    /// A supercharger, and a trip to it (DC charge) on the first Saturday, else the last day.
+    /// A supercharger, and a trip to it (DC charge) on the third day, or the first Saturday before it.
     pub fn supercharger(mut self, lat: f64, lon: f64) -> Self {
         self.supercharger = LatLon::new(lat, lon);
         self.supercharger_trip = true;
@@ -220,7 +228,7 @@ impl Scenario {
     /// A VIN that is clearly made up (maker `SYN`, `FAKE`), yet reads as a model, a year and a plant: `SYN`, the model
     /// letter, `FAKE0`, `R` (2024), `X`, then six digits.
     pub fn vin(&self) -> String {
-        format!("SYN{}FAKE0RX{:06}", self.model.letter(), 100 + u64::from(self.car))
+        format!("SYN{}FAKE0RX{:06}", self.model.letter(), 100 + u64::from(self.car.min(MAX_CAR)))
     }
 
     /// The bridge's signing key.
@@ -250,10 +258,72 @@ impl Scenario {
         sim.truth
     }
 
-    /// The logs, one at a time, in the order the bridge finishes them.
+    /// The trouble the bridge has: the trouble set by hand, and with [`Scenario::with_trouble`] the usual four, each
+    /// in a span of its own where the car is parked and awake (so each really happens): a lost log in the first span
+    /// of 5 min or more, dropped frames in the next of 4 min or more, a 6 min pause in recording in the next of 9 min
+    /// or more, and an app update in the next of 4 min or more. The spans are found in a run one day longer, so a
+    /// scenario's first days have the same trouble whatever its length.
+    pub fn bridge_trouble(&self) -> Trouble {
+        let mut t = self.trouble.clone();
+        if !self.with_trouble {
+            return t;
+        }
+        let mut longer = self.clone();
+        longer.days = self.days.saturating_add(1);
+        longer.with_trouble = false;
+        let truth = longer.truth();
+        let end = longer.end_ms();
+        // awake: between sleeps (the car is asleep at the start)
+        let mut awake = Vec::new();
+        let mut woke: Option<u64> = None;
+        for &(a, b) in &truth.sleeps {
+            if let Some(w) = woke {
+                awake.push((w, a));
+            }
+            woke = Some(b);
+        }
+        if let Some(w) = woke.filter(|&w| w < end) {
+            awake.push((w, end));
+        }
+        // parked: awake but not driving (half a minute either side of a drive)
+        let mut parked = Vec::new();
+        for (a, b) in awake {
+            let mut from = a;
+            for d in truth.drives.iter().filter(|d| d.end_ms > a && d.start_ms < b) {
+                let to = d.start_ms.saturating_sub(30_000);
+                if to > from {
+                    parked.push((from, to));
+                }
+                from = from.max(d.end_ms + 30_000);
+            }
+            if b > from {
+                parked.push((from, b));
+            }
+        }
+        const MIN: u64 = 60_000;
+        let mut kind = 0;
+        for (a, b) in parked {
+            let len = b - a;
+            match kind {
+                0 if len >= 5 * MIN => t.lose_log_at.push(a + 2 * MIN),
+                1 if len >= 4 * MIN => t.drop_at.push((a + 2 * MIN + 20_000, 400)),
+                2 if len >= 9 * MIN => t.not_recorded.push((a + 90_000, a + 90_000 + 6 * MIN)),
+                3 if len >= 4 * MIN => t.app_update_at.push((a + 2 * MIN, 25_000)),
+                _ => continue,
+            }
+            kind += 1;
+            if kind == 4 {
+                break;
+            }
+        }
+        t
+    }
+
+    /// The logs, one at a time, in the order the bridge finishes them. The log still being written at the end is not
+    /// given: the logs of a scenario are always the first logs of a longer run of it, byte for byte.
     pub fn logs(&self) -> Logs {
         let sim = self.sim();
-        let trouble = sim.plan().trouble.clone();
+        let trouble = self.bridge_trouble();
         let rng = Rng::new(self.car_seed()).fork(3);
         let cfg = BridgeConfig {
             vehicle_key: self.vehicle_key(),
@@ -264,6 +334,7 @@ impl Scenario {
         };
         let uptime = 3 * 86_400 + rng.clone().below(86_400);
         Logs {
+            trouble: cfg.trouble.clone(),
             bridge: Bridge::new(cfg, self.signer(), self.start_ms * 1000, uptime),
             schedule: Schedule::new(&self.vin(), self.rates, rng),
             sim,
@@ -275,6 +346,7 @@ impl Scenario {
 
 /// The logs of a scenario ([`Scenario::logs`]).
 pub struct Logs {
+    trouble: Trouble,
     bridge: Bridge,
     schedule: Schedule,
     sim: Sim,
@@ -292,6 +364,10 @@ pub struct Report {
     pub dropped: Vec<String>,
     /// Spans recording was paused, `[from, to)` ms.
     pub not_recorded: Vec<(u64, u64)>,
+    /// When the app updated itself (ms).
+    pub app_updates: Vec<u64>,
+    /// The trouble the bridge was given ([`Scenario::bridge_trouble`]).
+    pub trouble: Trouble,
     pub fingerprint: String,
 }
 
@@ -303,6 +379,8 @@ impl Logs {
             lost: self.bridge.lost.clone(),
             dropped: self.bridge.dropped.clone(),
             not_recorded: self.bridge.not_recorded.clone(),
+            app_updates: self.bridge.app_updates.clone(),
+            trouble: self.trouble.clone(),
             fingerprint: self.bridge.signer().fingerprint(),
         }
     }
@@ -336,8 +414,12 @@ impl Iterator for Logs {
                         self.bridge.frames(&self.buf);
                     }
                 }
-                Some(Step::Asleep { to_ms, .. }) => {
+                Some(Step::Asleep { from_ms, to_ms }) => {
                     self.schedule.frames(0, 0, 0, self.sim.state(), &mut self.buf);
+                    // the bridge's trouble happens on time while the car sleeps
+                    for us in self.bridge.boundaries(from_ms * 1000, to_ms * 1000) {
+                        self.bridge.tick(us);
+                    }
                     self.bridge.tick(to_ms * 1000);
                 }
                 None => {
@@ -349,15 +431,15 @@ impl Iterator for Logs {
     }
 }
 
-/// Several cars of one made-up fleet: each its own key, VIN, signing key and home in the town; Model Y and Model 3
-/// in turn.
+/// Several cars of one made-up fleet (at most [`MAX_FLEET`]): each its own key, VIN, signing key and home in the
+/// town; Model Y and Model 3 in turn.
 pub fn fleet(seed: u64, cars: u32, days: u32) -> Vec<Scenario> {
-    (0..cars)
+    (0..cars.min(MAX_FLEET))
         .map(|i| {
             let f = f64::from(i);
             let model = if i % 2 == 0 { CarModel::Y } else { CarModel::Three };
             let base = Scenario::new(seed).car(i).model(model).days(days);
-            let home = TOWN.offset(1.7 * f, -1.1 * f);
+            let home = TOWN.offset(2.0 * f64::from(i / 15), 2.0 * f64::from(i % 15));
             base.home(home.lat, home.lon).battery(50.0 + (f * 7.0) % 20.0).odometer(12_000.0 + f * 9_731.0)
         })
         .collect()

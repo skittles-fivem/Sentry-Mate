@@ -133,11 +133,12 @@ pub fn make(s: &Scenario) -> Plan {
     let minutes = |m: f64| (m * MIN_MS as f64) as u64;
     let mut acts: Vec<Activity> = Vec::new();
     let days = u64::from(s.days);
-    // the long trip: the first Saturday, else the last day (of two or more)
+    // the long trip: the third day, or the first Saturday before it. Never chosen from the number of days: the first
+    // days of a scenario are the same whatever its length
     let trip_day = s
         .supercharger_trip
-        .then(|| (0..days).find(|&d| weekday(local_midnight(d) + DAY_MS / 2) == 5).or((days >= 2).then(|| days - 1)));
-    let trip_day = trip_day.flatten();
+        .then(|| (0..=2).find(|&d| d == 2 || weekday(local_midnight(d) + DAY_MS / 2) == 5))
+        .flatten();
     let mut update_done = !s.software_update;
     let mut first_home_charge: Option<u64> = None;
     for d in 0..days {
@@ -222,15 +223,6 @@ pub fn make(s: &Scenario) -> Plan {
             });
         }
     }
-    let mut trouble = s.trouble.clone();
-    if s.with_trouble
-        && let Some(at) = first_home_charge
-    {
-        trouble.lose_log_at.push(at + minutes(40.0));
-        trouble.drop_at.push((at + minutes(50.0) + 20_000, 400));
-        trouble.not_recorded.push((at + minutes(60.0), at + minutes(66.0)));
-        trouble.app_update_at.push((at + minutes(90.0), 25_000));
-    }
     // in time order (an `After` keeps its place behind the one it follows)
     let mut keyed: Vec<(u64, usize, Activity)> = Vec::new();
     let mut last = 0u64;
@@ -243,5 +235,5 @@ pub fn make(s: &Scenario) -> Plan {
         keyed.push((k, i, a));
     }
     keyed.sort_by_key(|(k, i, _)| (*k, *i));
-    Plan { places, activities: keyed.into_iter().map(|(_, _, a)| a).collect(), trouble }
+    Plan { places, activities: keyed.into_iter().map(|(_, _, a)| a).collect(), trouble: s.trouble.clone() }
 }

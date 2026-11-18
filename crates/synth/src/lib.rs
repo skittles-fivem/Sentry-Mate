@@ -6,7 +6,7 @@
 //! signing key) living in a made-up town in the open sea (0.30° N, 0.20° E). Day by day it sleeps, wakes, commutes,
 //! runs errands, takes a trip to a supercharger (DC, along a charge curve), charges at home overnight (AC, with a
 //! pause), updates its software (the buses go quiet while modules restart), and has the bridge's trouble when asked
-//! (a lost log, dropped frames, a pause in recording, the app updating itself).
+//! (a lost log, dropped frames, a pause in recording, the app updating itself; [`Report`] says which happened).
 //!
 //! Its frames are encoded with the DBC set `dbc` decodes (`tesla-3y`), on the buses the car uses: the vehicle bus
 //! (`can0`), the chassis bus (`can1`, asleep while charging) and the Screenmate's internal bus (`can3`, its own GPS
@@ -29,7 +29,10 @@
 //! assert!(!report.truth.drives.is_empty());
 //! ```
 //!
-//! Everything is deterministic: the same scenario and seed give the same logs, byte for byte.
+//! Everything is deterministic: the same scenario and seed give the same logs, byte for byte, on every platform (the
+//! sines and exponentials come from the pure-Rust `libm`, not the platform's). A scenario's first days do not depend on
+//! how many days it has: the logs of `days(n)` are the first logs of `days(n + 1)`, the same names and bytes (the log
+//! still being written at the end is left out), so seeding a longer run over a shorter one only adds logs.
 
 mod bridge;
 mod car;
@@ -47,7 +50,7 @@ pub use bridge::{Formats, LogFile, utc_stamp};
 pub use car::{CarModel, CarState, ChargeStatus};
 pub use geo::LatLon;
 pub use plan::{Place, Trouble};
-pub use scenario::{DEFAULT_START_MS, Logs, Report, Scenario, TOWN, fleet};
+pub use scenario::{DEFAULT_START_MS, Logs, MAX_CAR, MAX_FLEET, Report, Scenario, TOWN, fleet};
 pub use signals::{Encoded, Rates, frames_for, vin_pages};
 pub use signer::Signer;
 pub use sim::{TrueCharge, TrueDrive, Truth};

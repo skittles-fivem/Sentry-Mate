@@ -18,8 +18,9 @@ impl LatLon {
         let (p1, p2) = (self.lat.to_radians(), o.lat.to_radians());
         let dp = p2 - p1;
         let dl = (o.lon - self.lon).to_radians();
-        let a = (dp / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dl / 2.0).sin().powi(2);
-        2.0 * R * a.sqrt().asin()
+        let (sp, sl) = (libm::sin(dp / 2.0), libm::sin(dl / 2.0));
+        let a = sp * sp + libm::cos(p1) * libm::cos(p2) * sl * sl;
+        2.0 * R * libm::asin(a.sqrt())
     }
 
     /// The point a fraction `f` of the way to `o` (straight in degrees: fine over a few hundred km).
@@ -30,7 +31,7 @@ impl LatLon {
     /// Moved by `north_km` and `east_km`.
     pub fn offset(self, north_km: f64, east_km: f64) -> LatLon {
         let lat = self.lat + north_km / 111.195;
-        let lon = self.lon + east_km / (111.195 * self.lat.to_radians().cos().max(0.01));
+        let lon = self.lon + east_km / (111.195 * libm::cos(self.lat.to_radians()).max(0.01));
         LatLon { lat, lon }
     }
 }
