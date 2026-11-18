@@ -65,6 +65,8 @@ def list_cars(req):
     if sort == "custom" and d == "desc":
         reverse = True
     limit = req.limit()
+    if req.csv:  # every matching car, in the same order as the pages (from `after` on)
+        limit = 10 ** 9
     fp = req.fingerprint()
     after = req.q("after")
     ck = decode_cursor(after, fp) if after else None
@@ -127,8 +129,6 @@ def list_cars(req):
     res = {"items": [it for _, it in out], "next": nxt}
     if not search and not states:
         res["total"] = st.visible_car_count(acc)
-    if req.csv:
-        return _all_cars_csv(req, sort, reverse, search, states, special_set, cands, soc_desc)
     return res
 
 
@@ -182,14 +182,6 @@ def _syn_iter(req, sort, reverse, ck, search, states, special, soc_desc):
         it = syn.summary(i, req.now)
         it = {k: v for k, v in it.items() if not k.startswith("_")}
         yield _syn_key(syn, sort, i, soc_desc), it
-
-
-def _all_cars_csv(req, sort, reverse, search, states, special, cands, soc_desc):
-    items = [it for _, it in (cands[::-1] if reverse else cands)]
-    if req.store.visible_car_count(req.account) > len(cands) and req.account["cars"] == "all":
-        for _, it in _syn_iter(req, sort, reverse, None, search, states, special, soc_desc):
-            items.append(it)
-    return {"items": items}
 
 
 def fleet_summary(req):

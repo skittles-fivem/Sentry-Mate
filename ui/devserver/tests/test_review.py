@@ -108,6 +108,47 @@ class WatchSeesOnlyItsCars(ServerCase):
         self.w.json("POST", "/api/v1/places/preview", {"place": sorted(seen)[0], "delete": True})
 
 
+class PeriodEdges(ServerCase):
+    """Rows belong to a period by their start and keep their own start, end and id (docs: Conventions)."""
+
+    def test_states_are_not_cut_at_the_edges(self):
+        a = NOW - 10 * DAY + 12_345  # inside a state span
+        whole = {x["id"]: x for x in self.walk(f"/api/v1/cars/c1/states?from_ms={NOW - 12 * DAY}", limit=500)}
+        part = self.walk(f"/api/v1/cars/c1/states?from_ms={a}&to_ms={a + 2 * DAY}", limit=500)
+        self.assertTrue(part)
+        for x in part:
+            self.assertGreaterEqual(x["start_ms"], a)
+            self.assertEqual(whole.get(x["id"]), x)
+
+    def test_awake_spans_by_start(self):
+        a = NOW - 10 * DAY + 12_345
+        whole = {x["start_ms"]: x for x in self.walk(f"/api/v1/cars/c1/awake-reasons?from_ms={NOW - 12 * DAY}",
+                                                      limit=500)}
+        for x in self.walk(f"/api/v1/cars/c1/awake-reasons?from_ms={a}&to_ms={a + 2 * DAY}", limit=500):
+            self.assertEqual(whole.get(x["start_ms"]), x)
+
+    def test_default_windows_end_at_to_ms(self):
+        b = NOW - 5 * DAY
+        for path, window in (("series?fields=soc_pct", DAY), ("signals?series=soc_display", 3_600_000),
+                             ("activity", DAY), ("trip", 7 * DAY)):
+            d = self.c.get(f"/api/v1/cars/c1/{path}{'&' if '?' in path else '?'}to_ms={b}")
+            if "t_ms" in d:
+                self.assertTrue(d["t_ms"], path)
+                self.assertGreaterEqual(d["t_ms"][0], b - window - 3_600_000, path)
+                self.assertLess(d["t_ms"][-1], b, path)
+            else:
+                self.assertEqual(d["from_ms"], b - window, path)
+                self.assertEqual(d["to_ms"], b, path)
+        lvl = self.c.get(f"/api/v1/cars/c1/battery-level?to_ms={b}")
+        self.assertEqual(lvl["from_ms"], b - 30 * DAY)
+        self.assertTrue(lvl["buckets"])
+
+    def test_place_delete_version_must_be_a_number(self):
+        e, _ = self.c.error("DELETE", "/api/v1/places/p1?version=abc", 400, "bad_input")
+        self.assertIn("version", e["fields"])
+        self.c.error("DELETE", "/api/v1/places/p1?version=999", 409, "stale_version")
+
+
 class TimelinePlaceFilter(ServerCase):
     def rows(self, q):
         return self.walk(f"/api/v1/cars/c1/timeline?from_ms={NOW - 20 * DAY}{q}", limit=500)
@@ -228,6 +269,18 @@ class SmallFleetFilters(ServerCase):
         self.assertEqual([k[0] for k in keys], sorted((k[0] for k in keys), reverse=True))
         st, hd, raw = self.c.request("GET", "/api/v1/fleet/attention?format=csv")
         self.assertEqual(len(list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))), len(att))
+
+    def test_csv_has_the_order_of_the_pages(self):
+        self.c.json("PATCH", "/api/v1/me/preferences", {"pinned_cars": ["c400", "c2"], "car_order": ["c7", "c3"]})
+        try:
+            for q in ("sort=last_activity", "sort=name", "sort=soc&dir=asc", "sort=custom", "sort=custom&dir=desc",
+                      "search=a&sort=name&dir=desc", "state=asleep&sort=soc"):
+                pages = [x["id"] for x in self.walk(f"/api/v1/cars?{q}", limit=97)]
+                st, hd, raw = self.c.request("GET", f"/api/v1/cars?{q}&format=csv")
+                rows = [x["id"] for x in csv.DictReader(io.StringIO(raw.decode("utf-8-sig")))]
+                self.assertEqual(rows, pages, q)
+        finally:
+            self.c.json("PATCH", "/api/v1/me/preferences", {"pinned_cars": [], "car_order": []})
 
 
 __all__ = ["Running"]

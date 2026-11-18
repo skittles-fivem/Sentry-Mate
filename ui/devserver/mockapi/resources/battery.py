@@ -274,9 +274,7 @@ def _trend(req, h, rows):
 
 
 def get_battery_level(req):
-    a, b = req.period()
-    if req.q("from_ms") is None:
-        a = req.now - 30 * DAY
+    a, b = req.period(30 * DAY)
     bucket_name = req.enum("bucket", ("hour", "day"), None)
     moving_on = req.bool_param("moving", True)
     window = req.enum("window", ("7d", "30d"), "7d")

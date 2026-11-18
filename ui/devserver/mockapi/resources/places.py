@@ -395,8 +395,8 @@ def patch_place(req):
 def delete_place(req):
     st = req.store
     cur = _place(req)
-    v = req.q("version")
-    if v is not None and v != str(cur["version"]):
+    v = req.int_param("version", None, 0)
+    if v is not None and v != cur["version"]:
         from ..errors import stale_version
         raise stale_version(cur["version"])
     summary = _apply(req, "delete", cur["id"], None)

@@ -215,9 +215,7 @@ def car_health(req):
     st = req.store
     cid = req.car
     h = req.history()
-    a, b = req.period()
-    if req.q("from_ms") is None:
-        a = req.now - 30 * DAY
+    a, b = req.period(30 * DAY)
     keys = [k for k in st.keys if k["car"] == cid]
     toks = [t for t in st.tokens.get(cid, []) if not t["revoked"]]
     waiting = sum(k["logs_waiting"] for k in keys)

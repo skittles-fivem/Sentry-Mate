@@ -500,9 +500,7 @@ def logbook(req):
 
 def trip(req):
     h = req.history()
-    a, b = req.period()
-    if req.q("from_ms") is None:
-        a = req.now - 7 * DAY
+    a, b = req.period(7 * DAY)
     tz = req.tz()
     out = {"car": req.car, "time_zone": tz, "from_ms": a, "to_ms": min(b, req.now)}
     if h is None:

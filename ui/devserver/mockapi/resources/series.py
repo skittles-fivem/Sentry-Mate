@@ -52,9 +52,7 @@ def _fields(req):
 
 def get_series(req):
     fields = _fields(req)
-    a, b = req.period()
-    if req.q("from_ms") is None:
-        a = req.now - 24 * HOUR
+    a, b = req.period(24 * HOUR)
     max_points = req.int_param("max_points", 1000, 2, 20000)
     aggs = req.list_param("agg", S.AGGS, 6)
     source = req.enum("source", ("can", "teslamate", "all"), "all")
@@ -108,9 +106,7 @@ def get_signals(req):
     names = req.list_param("series", [s[0] for s in SIGNALS])
     if not names:
         raise bad_input({"series": "Name at least one series (see /signals/latest)."})
-    a, b = req.period()
-    if req.q("from_ms") is None:
-        a = req.now - HOUR
+    a, b = req.period(HOUR)
     max_points = req.int_param("max_points", 2000, 2, 20000)
     h = req.history()
     fields = [BY_SERIES[n][5] for n in names]

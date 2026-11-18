@@ -17,7 +17,8 @@ def awake_reasons(req):
     rows = []
     if h is not None:
         spans = []
-        for s in h.segs_between(a, b, req.now):
+        # from a little earlier: a span that touches one before the period is that span, not a new one
+        for s in h.segs_between(max(0, a - 2 * 86_400_000), b, req.now):
             for x, y, buses, reasons, kw in s.awake_spans():
                 y = min(y, req.now)
                 if y > x:

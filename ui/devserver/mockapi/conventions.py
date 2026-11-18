@@ -140,13 +140,17 @@ class Req:
                 raise bad_input({name: "Unknown: " + ", ".join(badv[:5]) + ". Allowed: " + ", ".join(allowed) + "."})
         return items
 
-    def period(self):
-        """(from_ms, to_ms): the period filter. Missing edges mean "from the start" and "until now"."""
+    def period(self, window_ms=None):
+        """(from_ms, to_ms): the period filter. Missing edges mean "from the start" and "until now".
+        With `window_ms`, a missing from_ms means that long before to_ms (or before now)."""
         a = self.int_param("from_ms", None, 0, MAX_MS)
         b = self.int_param("to_ms", None, 0, MAX_MS)
         if a is not None and b is not None and a >= b:
             raise bad_input({"to_ms": "Must be after from_ms."})
-        return (0 if a is None else a, self.now + 1 if b is None else b)
+        b = self.now + 1 if b is None else b
+        if a is None:
+            a = max(0, min(b, self.now) - window_ms) if window_ms else 0
+        return (a, b)
 
     def limit(self):
         return self.int_param("limit", DEFAULT_LIMIT, 1, MAX_LIMIT)

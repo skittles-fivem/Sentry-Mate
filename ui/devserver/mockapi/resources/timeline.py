@@ -115,7 +115,10 @@ def get_states(req):
     tv = now - delay_s(now) * 1000
     cur_spans = _states(h, tv - 3 * DAY, tv, now)
     cur = cur_spans[-1] if cur_spans else None
-    rows = [dict(sp, end_ms=None if sp["end_ms"] >= now - 1 else sp["end_ms"]) for sp in spans if a <= sp["start_ms"] < b]
+    # rows belong to the period by their start and keep their own start, end and id: work them out on a
+    # wider window (the shares above stay clipped to the period)
+    wide = _states(h, max(h.first_ms, lo - 3 * DAY), min(hi + 14 * DAY, now), now) if hi > lo else []
+    rows = [dict(sp, end_ms=None if sp["end_ms"] >= now - 1 else sp["end_ms"]) for sp in wide if a <= sp["start_ms"] < b]
     items, nxt = page(req, rows, key=lambda x: (x["start_ms"],), reverse=True)
     return {
         "car": req.car, "time_zone": req.tz(), "items": items, "next": nxt,
@@ -127,9 +130,7 @@ def get_states(req):
 
 
 def get_activity(req):
-    a, b = req.period()
-    if req.q("from_ms") is None:
-        a = req.now - DAY
+    a, b = req.period(DAY)
     h = req.history()
     items = []
     if h is not None:
