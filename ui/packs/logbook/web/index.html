@@ -1,27 +1,27 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-cover="web.shell.document-language">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob: https://tile.openstreetmap.org; worker-src 'self' blob:; style-src 'self'; script-src 'self'">
   <meta name="color-scheme" content="light dark">
-  <title>Sentry Mate</title>
-  <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <script src="boot.js"></script>
-  <link rel="preload" href="fonts/charter-regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="fonts/inter-regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="vendor/maplibre-gl/maplibre-gl.css">
-  <link rel="stylesheet" href="vendor/uplot/uPlot.min.css">
-  <link rel="stylesheet" href="app.css">
-  <script src="vendor/uplot/uPlot.iife.min.js" defer></script>
-  <script type="module" src="app.js"></script>
+  <meta name="theme-color" content="#f6f2e9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#11151b" media="(prefers-color-scheme: dark)">
+  <title data-cover="shell.page_title web.shell.page-title">Sentry Mate</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="manifest" href="/manifest.webmanifest" data-cover="shell.installable web.shell.installable">
+  <script src="/boot.js"></script>
+  <link rel="preload" href="/fonts/charter-regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/inter-regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/core/start.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
 
-  <header class="masthead">
-    <div class="wrap masthead-row">
-      <a class="brand" href="#/fleet" aria-label="Sentry Mate, all cars">
+  <header class="masthead" id="masthead">
+    <div class="wrap masthead-row" id="masthead-row">
+      <a class="brand" href="/" aria-label="Sentry Mate, home" data-cover="shell.nav.home web.shell.logo-home web.shell.home-routing">
         <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
           <rect class="brand-mark-bg" width="32" height="32" rx="7"/>
           <path class="brand-mark-road" d="M9 23c3.5 0 4-4.5 7-7s7-1.5 7-7"/>
@@ -30,88 +30,18 @@
         </svg>
         <span class="brand-name">Sentry Mate</span>
       </a>
-
-      <button class="switcher-trigger" id="switcher-trigger" type="button" aria-haspopup="dialog" aria-controls="switcher" aria-keyshortcuts="Control+K Meta+K">
-        <span class="switcher-trigger-text">
-          <span class="switcher-trigger-name" id="switcher-trigger-name">Choose a car</span>
-          <span class="switcher-trigger-meta" id="switcher-trigger-meta">Search all cars</span>
-        </span>
-        <kbd class="kbd" id="switcher-kbd">Ctrl K</kbd>
-      </button>
-
-      <div class="masthead-tools">
-        <div class="units" role="group" aria-label="Units">
-          <button type="button" class="units-option" data-units="us" aria-pressed="true">mi · °F · psi</button>
-          <button type="button" class="units-option" data-units="metric" aria-pressed="false">km · °C · bar</button>
-        </div>
-        <div class="size-menu" id="size-menu">
-          <button class="size-trigger" id="size-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="size-pop">
-            <span class="size-trigger-glyph" aria-hidden="true">Aa</span>
-            <span class="size-trigger-value" id="size-trigger-value"></span>
-            <span class="sr-only">Interface size</span>
-          </button>
-          <div class="size-pop" id="size-pop" role="dialog" aria-labelledby="size-pop-title" hidden>
-            <p class="size-pop-title" id="size-pop-title">Interface size</p>
-            <div class="size-options" id="size-options" role="radiogroup" aria-labelledby="size-pop-title"></div>
-            <p class="size-pop-note" id="size-pop-note"></p>
-            <a class="size-pop-more" href="#/settings">More in Settings</a>
-          </div>
-        </div>
-        <p class="clock"><time id="clock" datetime="">&nbsp;</time> <abbr title="Central Time (America/Chicago)">CT</abbr></p>
-      </div>
+      <div class="masthead-slot" id="car-slot"></div>
+      <div class="masthead-slot" id="period-slot"></div>
+      <div class="masthead-tools" id="tools-slot"></div>
     </div>
-
-    <nav class="primary-nav" aria-label="Main">
-      <div class="wrap nav-row">
-        <a class="nav-link" data-nav="fleet" href="#/fleet">All cars</a>
-        <span class="nav-divider" aria-hidden="true"></span>
-        <span class="nav-car" id="nav-car"></span>
-        <a class="nav-link" data-nav="now" data-car-link href="#/cars/model-y/now">Now</a>
-        <a class="nav-link" data-nav="drives" data-car-link href="#/cars/model-y/drives">Drives</a>
-        <a class="nav-link" data-nav="charges" data-car-link href="#/cars/model-y/charges">Charges</a>
-        <a class="nav-link" data-nav="timeline" data-car-link href="#/cars/model-y/timeline">Timeline</a>
-        <a class="nav-link" data-nav="battery" data-car-link href="#/cars/model-y/battery">Battery</a>
-        <a class="nav-link" data-nav="stats" data-car-link href="#/cars/model-y/stats">Stats</a>
-        <a class="nav-link" data-nav="signals" data-car-link href="#/cars/model-y/signals">Signals</a>
-        <a class="nav-link" data-nav="logs" data-car-link href="#/cars/model-y/logs">Logs</a>
-        <a class="nav-link nav-link-end" data-nav="settings" href="#/settings">Settings</a>
-      </div>
-    </nav>
+    <nav class="primary-nav" id="primary-nav" aria-label="Pages"></nav>
   </header>
+
+  <div class="notices" id="notices" hidden></div>
+  <div class="flash-zone wrap" id="flash" role="status" aria-live="polite" data-cover="shell.banner.flash web.shell.flash"></div>
 
   <main id="main" class="wrap main" tabindex="-1"></main>
 
-  <footer class="colophon">
-    <div class="wrap colophon-row">
-      <p>Sentry Mate <span class="colophon-sep" aria-hidden="true">·</span> Logbook UI pack 0.1.0</p>
-      <p>Figures trail the cars by about a minute. Times are Central Time (America/Chicago).</p>
-      <p>Map data © OpenStreetMap contributors</p>
-    </div>
-  </footer>
-
-  <aside class="proto" id="proto" aria-label="Prototype controls" hidden>
-    <div class="wrap proto-row">
-      <p class="proto-label"><span class="proto-tag">Prototype controls</span> Demo only: switch sample state</p>
-      <div class="proto-controls" id="proto-controls"></div>
-    </div>
-  </aside>
-
-  <dialog class="switcher" id="switcher" aria-labelledby="switcher-title">
-    <h2 class="sr-only" id="switcher-title">Switch car</h2>
-    <div class="switcher-search">
-      <svg class="icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg>
-      <input id="switcher-input" class="switcher-input" type="text" role="combobox" aria-expanded="true" aria-controls="switcher-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" placeholder="Find a car by name, key, model or place">
-      <kbd class="kbd">Esc</kbd>
-    </div>
-    <div class="switcher-body" id="switcher-body">
-      <ul class="switcher-list" id="switcher-list" role="listbox" aria-label="Cars"></ul>
-    </div>
-    <div class="switcher-foot">
-      <span><kbd class="kbd">↑</kbd><kbd class="kbd">↓</kbd> move</span>
-      <span><kbd class="kbd">Enter</kbd> open</span>
-      <span><kbd class="kbd">Esc</kbd> close</span>
-      <span class="switcher-foot-count" id="switcher-count" aria-live="polite"></span>
-    </div>
-  </dialog>
+  <footer class="colophon" id="colophon"></footer>
 </body>
 </html>
