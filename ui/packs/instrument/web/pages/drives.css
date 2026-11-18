@@ -1,11 +1,13 @@
-/* Drives (pages/drives.js): the filter bar, the summary with distance per day, the list, the patterns. */
+/* Drives (pages/drives.js): the filter bar, the summary, the list with picks for a trip, the patterns with
+   distance per day, the drives with missing data. */
 
-.drives-summary { padding: 1.125rem 1.25rem 0.75rem; margin-bottom: var(--gap); }
+.drives-summary { padding: 1.125rem 1.25rem; margin-bottom: var(--gap); }
 .drives-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .drives-metrics .metric { padding: 0 1.25rem; border-left: 1px solid var(--line); }
 .drives-metrics .metric:first-child { padding-left: 0; border-left: 0; }
-.daily-chart { margin-top: 1rem; padding-top: 0.875rem; border-top: 1px solid var(--line); }
-.daily-chart-head { display: flex; justify-content: space-between; gap: 1rem; font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-3); }
+.daily-chart { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
+.daily-chart-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem 1rem; font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-3); }
+.daily-chart-side { display: inline-flex; align-items: center; gap: 0.875rem; }
 .daily-chart-head b { color: var(--text); font-weight: 600; }
 .daily-chart-plot { position: relative; height: 6.5rem; margin-top: 0.375rem; }
 
@@ -17,14 +19,38 @@
 .temp-cell.is-cold { color: var(--st-parked); }
 .temp-cell.is-warm { color: var(--warm); }
 .eff { display: inline-grid; grid-template-columns: 4.5rem auto; align-items: center; gap: 0.625rem; }
-.eff-bar { position: relative; height: 0.375rem; border-radius: 99px; background: rgba(150, 182, 240, 0.12); overflow: hidden; }
-.eff-bar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); border-radius: inherit; background: rgba(167, 180, 200, 0.6); }
+.eff-bar { position: relative; height: 0.375rem; border-radius: 99px; background: var(--glass-3); overflow: hidden; }
+.eff-bar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); border-radius: inherit; background: var(--text-3); }
 .eff-bar.is-better > i { background: linear-gradient(90deg, var(--live-2), var(--live)); }
 .eff-val { font-size: max(0.8125rem, var(--fs-floor)); white-space: nowrap; }
 .flag-icons { display: inline-flex; gap: 0.375rem; align-items: center; color: var(--warm); }
+
+/* picks for a trip */
+.drives-table .col-pick { width: 2.5rem; padding-right: 0; }
+.pick { display: inline-flex; align-items: center; justify-content: center; width: 1.75rem; height: 1.75rem; cursor: pointer; }
+.pick input { width: 1rem; height: 1rem; margin: 0; accent-color: var(--live); cursor: pointer; }
+.pick-bar { display: inline-flex; align-items: center; gap: 0.5rem; margin-left: auto; }
+.pick-bar[hidden] { display: none; }
+.pick-text { font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); white-space: nowrap; }
+
+/* places left out of the patterns */
+.excl-btn.is-on { border-color: var(--live-line); background: var(--live-soft); }
+.excl-text { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.excl-pop { width: 20rem; }
+.excl-hint { font-size: max(0.78125rem, var(--fs-floor)); line-height: 1.45; color: var(--text-2); margin-bottom: 0.75rem; }
+.excl-pop .input { width: 100%; margin-bottom: 0.625rem; }
+.excl-sub { margin-left: auto; padding-left: 0.75rem; font-size: max(0.75rem, var(--fs-floor)); white-space: nowrap; }
+.excl-list .check { width: 100%; }
+.excl-list { display: flex; flex-direction: column; gap: 0.5rem; max-height: 16rem; overflow-y: auto; padding: 0.125rem; }
+.excl-actions { display: flex; justify-content: space-between; gap: 0.5rem; margin-top: 0.875rem; padding-top: 0.75rem; border-top: 1px solid var(--line); }
 .missing-table { margin-top: var(--gap); }
 
 .patterns { margin-bottom: 0; }
+.patterns > .panel-head { flex-wrap: wrap; gap: 0.5rem 1rem; }
+.patterns-scope { flex: 1; min-width: 0; font-size: max(0.8125rem, var(--fs-floor)); }
+.patterns-empty { margin-bottom: 1rem; }
+.list-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.pattern-lists .note { margin-top: 0.625rem; }
 .pattern-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: 1.125rem 1.5rem; }
 .spark { display: flex; align-items: flex-end; gap: 1px; height: 1.5rem; margin-top: 0.25rem; }
 .spark i { flex: 1; min-width: 1px; height: max(1px, var(--h)); background: var(--live-line); border-radius: 1px 1px 0 0; }
