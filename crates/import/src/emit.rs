@@ -239,10 +239,10 @@ impl<'s> Emit<'s> {
                 self.push(at.slot, o)?;
             }
             Mapped::Open => {
-                if let Some(w) = self.routes.slots[at.slot].work(t) {
-                    if w.still_open(id, self.max_open, self.open_total < self.max_open_total) {
-                        self.open_total += 1;
-                    }
+                if let Some(w) = self.routes.slots[at.slot].work(t)
+                    && w.still_open(id, self.max_open, self.open_total < self.max_open_total)
+                {
+                    self.open_total += 1;
                 }
                 self.skip(t, Some(at.report), Skip::Open, None);
             }
@@ -381,10 +381,10 @@ impl<'s> Emit<'s> {
             }
             Table::Positions => {
                 let Some(id) = self.id(t, row.req_i64(Pos::id)) else { return Ok(()) };
-                if self.ends.wants(id) {
-                    if let Some(p) = map::endpoint(&row) {
-                        self.ends.fill(id, &p);
-                    }
+                if self.ends.wants(id)
+                    && let Some(p) = map::endpoint(&row)
+                {
+                    self.ends.fill(id, &p);
                 }
                 let Some(at) = self.admit(t, id, row.i64(Pos::car_id), row.ms(Pos::date)) else { return Ok(()) };
                 let out = map::position(&row, id).map(|p| {

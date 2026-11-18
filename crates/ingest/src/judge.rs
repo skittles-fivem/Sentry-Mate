@@ -292,10 +292,11 @@ impl Judge {
                 Pin { fingerprint: l.key_fingerprint.clone(), pinned_ms: now_ms(), how: "first-signed-log".into() };
             changes.push(Change::Pin { pin: Some(pin) });
         }
-        if let (Verdict::Failed(reason), Some(l)) = (&verdict, &link) {
-            if reason == "signed by another key" && head.new_key.is_none() {
-                changes.push(Change::NewKey { fingerprint: Some(l.key_fingerprint.clone()) });
-            }
+        if let (Verdict::Failed(reason), Some(l)) = (&verdict, &link)
+            && reason == "signed by another key"
+            && head.new_key.is_none()
+        {
+            changes.push(Change::NewKey { fingerprint: Some(l.key_fingerprint.clone()) });
         }
         let (status, reason) = match verdict {
             Verdict::Verified => (Status::Verified, None),

@@ -207,7 +207,7 @@ impl Car {
                 let dv = (target - self.speed).clamp(-9.0, 7.0) + self.rng.normal() * 0.6;
                 self.speed = (self.speed + dv).max(0.0);
                 let ms = self.speed / 3.6;
-                self.heading += self.rng.normal() * 0.02 + if sec_in_mode % 300 == 0 { 1.2 } else { 0.0 };
+                self.heading += self.rng.normal() * 0.02 + if sec_in_mode.is_multiple_of(300) { 1.2 } else { 0.0 };
                 self.lat += ms * self.heading.cos() / 111_320.0;
                 self.lon += ms * self.heading.sin() / (111_320.0 * self.lat.to_radians().cos());
                 self.elev += self.rng.normal() * 0.3 + (sec_in_mode as f64 / 200.0).sin() * 0.2;

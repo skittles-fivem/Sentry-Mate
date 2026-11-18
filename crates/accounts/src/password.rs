@@ -120,7 +120,9 @@ const COMMON_WORDS: &[&str] = &[
 
 /// Whether the text is one short piece (up to 4 characters) over and over: "aaaaaaaaaaaa", "abababababab".
 fn repeats(lower: &[char]) -> bool {
-    (1..=4).any(|unit| lower.len() > unit && lower.len() % unit == 0 && lower.chunks(unit).all(|c| c == &lower[..unit]))
+    (1..=4).any(|unit| {
+        lower.len() > unit && lower.len().is_multiple_of(unit) && lower.chunks(unit).all(|c| c == &lower[..unit])
+    })
 }
 
 /// Checks a new password for an account: at least 12 characters besides the account name, not one of the most common

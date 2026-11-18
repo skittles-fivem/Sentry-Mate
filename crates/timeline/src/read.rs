@@ -32,10 +32,10 @@ pub fn read_log(
     let mut facts = FactsCollector::new(LogFacts::from_sidecar(sidecar));
     logfmt::read_log(xz, logfmt::Limits::default(), |l| {
         let line = logfmt::Line::parse(l);
-        if let logfmt::Line::Frame(f) = &line {
-            if builder.pending() < MAX_LOG_SAMPLES {
-                builder.feed(&mut decoder, f);
-            }
+        if let logfmt::Line::Frame(f) = &line
+            && builder.pending() < MAX_LOG_SAMPLES
+        {
+            builder.feed(&mut decoder, f);
         }
         facts.line(&line);
     })?;

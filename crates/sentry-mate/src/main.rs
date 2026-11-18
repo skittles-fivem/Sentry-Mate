@@ -422,7 +422,7 @@ async fn serve(
             if let Err(e) = housekeeping.judge.sweep().await {
                 tracing::warn!("judging waiting logs: {e}");
             }
-            if n % 60 == 0 {
+            if n.is_multiple_of(60) {
                 let dropped = housekeeping.store.clean_stale(ingest::store::STALE_PARTIAL_MS).await;
                 if dropped > 0 {
                     tracing::info!("dropped {dropped} unfinished upload(s) older than two days");

@@ -130,7 +130,7 @@ fn encode_recovery(bytes: &[u8; 32]) -> String {
     // 256 bits as 52 symbols of 5 bits (the last one padded), in groups of four
     let (mut bits, mut nbits, mut out) = (0u32, 0u32, String::with_capacity(72));
     let push = |v: u32, out: &mut String| {
-        if !out.is_empty() && out.replace('-', "").len() % 4 == 0 {
+        if !out.is_empty() && out.replace('-', "").len().is_multiple_of(4) {
             out.push('-');
         }
         out.push(B32[v as usize] as char);
@@ -248,10 +248,10 @@ pub fn write_private(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
         f.sync_all()?;
     }
     std::fs::rename(&tmp, file)?;
-    if let Some(d) = file.parent() {
-        if let Ok(d) = std::fs::File::open(d) {
-            let _ = d.sync_all();
-        }
+    if let Some(d) = file.parent()
+        && let Ok(d) = std::fs::File::open(d)
+    {
+        let _ = d.sync_all();
     }
     Ok(())
 }

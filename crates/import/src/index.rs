@@ -128,10 +128,11 @@ impl<'s> Index<'s> {
                     p.car = car;
                 }
                 let closed = matches!(row.val(Cp::end_date, timestamp_ms), Val::Ok(_));
-                if closed && self.routes.may_take(Table::ChargingProcesses, car, id) {
-                    if let Some(p) = row.i64(Cp::position_id) {
-                        self.ends.want(p);
-                    }
+                if closed
+                    && self.routes.may_take(Table::ChargingProcesses, car, id)
+                    && let Some(p) = row.i64(Cp::position_id)
+                {
+                    self.ends.want(p);
                 }
             }
             Table::Drives => {
@@ -164,12 +165,11 @@ impl<'s> Index<'s> {
                 }
             }
             Table::Positions => {
-                if let Ok(id) = row.req_i64(Pos::id) {
-                    if self.ends.wants(id) {
-                        if let Some(p) = map::endpoint(&row) {
-                            self.ends.fill(id, &p);
-                        }
-                    }
+                if let Ok(id) = row.req_i64(Pos::id)
+                    && self.ends.wants(id)
+                    && let Some(p) = map::endpoint(&row)
+                {
+                    self.ends.fill(id, &p);
                 }
             }
             Table::Geofences | Table::States | Table::Updates => {}

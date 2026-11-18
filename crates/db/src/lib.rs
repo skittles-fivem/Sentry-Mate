@@ -541,10 +541,10 @@ impl Db {
             }
             let mut last = None;
             for r in &rows {
-                if !del_ids.contains(&r.id()) {
-                    if let Some(old) = t.state.get(r.id()) {
-                        old.tally(&mut delta, -1);
-                    }
+                if !del_ids.contains(&r.id())
+                    && let Some(old) = t.state.get(r.id())
+                {
+                    old.tally(&mut delta, -1);
                 }
                 r.tally(&mut delta, 1);
                 last = last.max(Some(r.end_ms()));
@@ -568,11 +568,11 @@ impl Db {
             let mut del = Vec::new();
             let mut seen = HashSet::with_capacity(ids.len());
             for id in ids {
-                if let Some(old) = t.state.get(*id) {
-                    if seen.insert(*id) {
-                        old.tally(&mut delta, -1);
-                        del.push(*id);
-                    }
+                if let Some(old) = t.state.get(*id)
+                    && seen.insert(*id)
+                {
+                    old.tally(&mut delta, -1);
+                    del.push(*id);
                 }
             }
             if del.is_empty() {

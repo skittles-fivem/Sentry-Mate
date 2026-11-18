@@ -231,10 +231,10 @@ pub fn decode_frame<'m>(msg: &'m Message, bytes: &[u8]) -> Vec<(&'m Signal, f64)
     let mux_value = msg.mux.and_then(|i| raw_bits(bytes, &msg.signals[i]));
     let mut out = Vec::with_capacity(msg.signals.len());
     for sig in &msg.signals {
-        if let Mux::Value(v) = sig.mux {
-            if mux_value != Some(v as f64) {
-                continue;
-            }
+        if let Mux::Value(v) = sig.mux
+            && mux_value != Some(v as f64)
+        {
+            continue;
         }
         if let Some(v) = signal_value(bytes, sig).filter(|v| v.is_finite()) {
             out.push((sig, v));

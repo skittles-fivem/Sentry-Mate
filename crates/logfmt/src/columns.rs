@@ -110,10 +110,10 @@ pub fn decode(body: &[u8], mut on_line: impl FnMut(&[u8])) -> Result<(), Error> 
 
     // each frame takes at least 3 bytes (a time, a key, a length)
     let frames = r.count((r.left() / 3) as u64)?;
-    if let Some(&(last, _)) = notes.last() {
-        if last > frames as u64 {
-            return Err(Error::Malformed("note after the last frame"));
-        }
+    if let Some(&(last, _)) = notes.last()
+        && last > frames as u64
+    {
+        return Err(Error::Malformed("note after the last frame"));
     }
 
     let mut times = Vec::with_capacity(frames);
