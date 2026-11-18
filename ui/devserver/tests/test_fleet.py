@@ -1,0 +1,134 @@
+"""Fleet and cars."""
+
+from __future__ import annotations
+
+from .helpers import ServerCase
+
+ITEM = {"id", "name", "model", "year", "vin_prefix", "trim", "profile", "time_zone", "last_activity_ms", "now",
+        "attention"}
+NOW_KEYS = {"state", "since_ms", "at_ms", "received_ms", "stale", "soc_pct", "range_km", "place", "plugged",
+            "charge_power_kw"}
+
+
+class Cars(ServerCase):
+    def test_list(self):
+        d = self.c.get("/api/v1/cars")
+        self.assertEqual(d["total"], 3)
+        ids = {x["id"] for x in d["items"]}
+        self.assertEqual(ids, {"c1", "c2", "c3"})
+        for x in d["items"]:
+            self.assertEqual(set(x), ITEM)
+            self.assertEqual(set(x["now"]), NOW_KEYS)
+            self.assertEqual(len(x["vin_prefix"]), 11)  # never the serial
+        by = {x["id"]: x for x in d["items"]}
+        self.assertEqual(by["c1"]["now"]["state"], "driving")
+        self.assertEqual(by["c2"]["now"]["state"], "charging")
+        self.assertTrue(by["c2"]["now"]["plugged"])
+        self.assertGreater(by["c2"]["now"]["charge_power_kw"], 1)
+        self.assertEqual(by["c3"]["now"]["state"], "unknown")
+        self.assertTrue(by["c3"]["now"]["stale"])
+        self.assertIn("upload_silence", by["c3"]["attention"])
+        self.assertIn("tyre_low", by["c2"]["attention"])
+        self.assertEqual(by["c1"]["time_zone"], "America/Los_Angeles")
+        self.assertEqual(by["c2"]["time_zone"], "America/Chicago")
+
+    def test_filters_and_sorts(self):
+        self.assertEqual([x["id"] for x in self.c.get("/api/v1/cars?state=charging")["items"]], ["c2"])
+        self.assertEqual([x["id"] for x in self.c.get("/api/v1/cars?search=atl")["items"]], ["c3"])
+        self.assertEqual([x["id"] for x in self.c.get("/api/v1/cars?search=model%203")["items"]], ["c2"])
+        names = [x["name"] for x in self.c.get("/api/v1/cars?sort=name")["items"]]
+        self.assertEqual(names, sorted(names, key=str.lower))
+        rev = [x["name"] for x in self.c.get("/api/v1/cars?sort=name&dir=desc")["items"]]
+        self.assertEqual(rev, names[::-1])
+        acts = [x["last_activity_ms"] for x in self.c.get("/api/v1/cars")["items"]]
+        self.assertEqual(acts, sorted(acts, reverse=True))
+        self.c.error("GET", "/api/v1/cars?state=flying", 400, "bad_input")
+
+    def test_summary_and_attention(self):
+        s = self.c.get("/api/v1/fleet/summary")
+        self.assertEqual(s["cars"], 3)
+        self.assertEqual(sum(s["by_state"].values()), 3)
+        self.assertEqual(set(s["by_state"]), {"driving", "charging", "parked", "asleep", "unknown"})
+        a = self.c.get("/api/v1/fleet/attention")
+        codes = {(x["car"], x["code"]) for x in a["items"]}
+        self.assertIn(("c2", "tyre_low"), codes)
+        self.assertIn(("c3", "upload_silence"), codes)
+        self.assertIn(("c3", "trust_failed"), codes)
+        tyre = next(x for x in a["items"] if x["code"] == "tyre_low")
+        self.assertEqual(tyre["detail"]["tyre"], "rl")
+        self.assertLess(tyre["detail"]["pressure_kpa"], tyre["detail"]["recommended_kpa"])
+
+    def test_detail_and_patch(self):
+        d = self.c.get("/api/v1/cars/c1")
+        self.assertTrue(ITEM <= set(d))
+        self.assertIn("version", d)
+        for k, v in d["config"].items():
+            self.assertEqual(set(v), {"value", "source"}, k)
+        self.assertEqual(d["config"]["paint"]["source"], "can")
+        up = self.c.json("PATCH", "/api/v1/cars/c1", {"version": d["version"], "config": {"paint": "Ultra Red"},
+                                                       "time_zone": "America/Denver"})
+        self.assertEqual(up["config"]["paint"], {"value": "Ultra Red", "source": "owner"})
+        self.assertEqual(up["time_zone"], "America/Denver")
+        self.assertEqual(self.c.get("/api/v1/cars/c1/now")["time_zone"], "America/Denver")
+        self.c.error("PATCH", "/api/v1/cars/c1", 422, "invalid", body={"version": up["version"], "time_zone": "Mars/Base"})
+        self.c.error("PATCH", "/api/v1/cars/c1", 400, "bad_input", body={"version": up["version"], "config": {"colour": 1}})
+        back = self.c.json("PATCH", "/api/v1/cars/c1", {"version": up["version"], "config": {"paint": None},
+                                                         "time_zone": "America/Los_Angeles"})
+        self.assertEqual(back["config"]["paint"]["source"], "can")
+
+
+class Settings(ServerCase):
+    def test_settings(self):
+        s = self.c.get("/api/v1/cars/c3/settings")
+        self.assertEqual(s["free_supercharging"], [{"from_date": "2017-03-01", "to_date": None}])
+        self.assertEqual(self.c.get("/api/v1/cars/c2/settings")["battery_chemistry"]["detected"], "lfp")
+        e, _ = self.c.error("PATCH", "/api/v1/cars/c3/settings", 422, "invalid",
+                            body={"version": s["version"], "warranty_threshold_pct": 120,
+                                  "software_version_typed": "latest"})
+        self.assertEqual(set(e["fields"]), {"warranty_threshold_pct", "software_version_typed"})
+        up = self.c.json("PATCH", "/api/v1/cars/c3/settings", {"version": s["version"], "software_version_typed": "2026.38.4"})
+        self.assertEqual(up["version"], s["version"] + 1)
+        sw = self.c.get("/api/v1/cars/c3/now")["software"]
+        self.assertEqual((sw["version"], sw["version_source"]), ("2026.38.4", "owner"))
+
+
+class TokensAndKeys(ServerCase):
+    def test_tokens(self):
+        lst = self.c.get("/api/v1/cars/c1/upload-tokens")
+        self.assertEqual(len(lst["items"]), 2)
+        st, hd, raw = self.c.request("POST", "/api/v1/cars/c1/upload-tokens")
+        self.assertEqual(st, 201)
+        import json
+        t = json.loads(raw)
+        self.assertTrue(t["secret"].startswith("smu_"))
+        again = self.c.get(f"/api/v1/cars/c1/upload-tokens/{t['id']}")
+        self.assertNotIn("secret", again)
+        gone = self.c.json("DELETE", f"/api/v1/cars/c1/upload-tokens/{t['id']}")
+        self.assertTrue(gone["revoked"])
+
+    def test_keys(self):
+        waiting = self.c.get("/api/v1/can-keys?assigned=false")["items"]
+        self.assertEqual(len(waiting), 1)
+        k = waiting[0]
+        self.assertEqual(set(k) >= {"key", "first_seen_ms", "last_upload_ms", "logs_waiting", "car", "preferred"}, True)
+        status = self.c.get("/api/v1/setup/status")
+        self.assertEqual(status["keys_waiting"], 1)
+        self.assertIn("key_waiting", [f["cause"] for f in status["fixes"]])
+        self.c.error("PATCH", f"/api/v1/can-keys/{k['key']}", 422, "invalid", body={"car": "c42"})
+        up = self.c.json("PATCH", f"/api/v1/can-keys/{k['key']}", {"car": "c3", "preferred": True})
+        self.assertEqual((up["car"], up["preferred"]), ("c3", True))
+        c3keys = [x for x in self.c.get("/api/v1/can-keys?assigned=true")["items"] if x["car"] == "c3"]
+        self.assertEqual(sum(1 for x in c3keys if x["preferred"]), 1)
+        self.assertEqual(self.c.get("/api/v1/setup/status")["keys_waiting"], 0)
+        self.c.json("PATCH", f"/api/v1/can-keys/{k['key']}", {"car": None})
+
+
+class EmptyFleet(ServerCase):
+    server_args = {"cars": 0}
+
+    def test_empty(self):
+        self.assertEqual(self.c.get("/api/v1/cars")["items"], [])
+        self.assertEqual(self.c.get("/api/v1/fleet/summary")["cars"], 0)
+        st = self.c.get("/api/v1/setup/status")
+        self.assertEqual(st["cars"], 0)
+        self.assertIn("no_token", [f["cause"] for f in st["fixes"]])

@@ -269,10 +269,10 @@ impl Client {
         while conn.is_handshaking() {
             if let Err(e) = conn.complete_io(&mut tcp) {
                 let got = seen.lock().ok().and_then(|s| *s);
-                if let (Some(pin), Some(got)) = (self.pin, got) {
-                    if !same(&pin, &got) {
-                        return Err(NetError::WrongCertificate(shown));
-                    }
+                if let (Some(pin), Some(got)) = (self.pin, got)
+                    && !same(&pin, &got)
+                {
+                    return Err(NetError::WrongCertificate(shown));
                 }
                 return Err(NetError::Tls(shown, e.to_string()));
             }

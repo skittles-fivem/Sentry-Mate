@@ -29,10 +29,10 @@ pub(crate) struct Journal {
 }
 
 fn sync_dir(path: &Path) {
-    if let Some(d) = path.parent() {
-        if let Ok(d) = std::fs::File::open(d) {
-            let _ = d.sync_all();
-        }
+    if let Some(d) = path.parent()
+        && let Ok(d) = std::fs::File::open(d)
+    {
+        let _ = d.sync_all();
     }
 }
 

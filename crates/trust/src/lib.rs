@@ -30,6 +30,8 @@ pub const ALGORITHM: &str = "ECDSA-P256-SHA256";
 pub const GENESIS_SHA: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 /// Version of these rules: records judged by an older one are judged again.
 pub const RULES_VERSION: u32 = 1;
+/// The reason of a log that is signed and intact, but by a key other than the one its car key is paired with.
+pub const SIGNED_BY_ANOTHER_KEY: &str = "signed by another key";
 
 /// Text from a sidecar shown as a reason or note: one line, no control characters, at most `n` characters.
 pub fn one_line(s: &str, n: usize) -> String {
@@ -193,7 +195,7 @@ pub fn judge(check: &Check, paired: Option<&str>) -> Verdict {
     match (check, paired) {
         (Check::Signed(_), None) => Verdict::Verified,
         (Check::Signed(l), Some(fp)) if same_fingerprint(&l.key_fingerprint, fp) => Verdict::Verified,
-        (Check::Signed(_), Some(_)) => Verdict::Failed("signed by another key".into()),
+        (Check::Signed(_), Some(_)) => Verdict::Failed(SIGNED_BY_ANOTHER_KEY.into()),
         (Check::NotSigned { .. }, None) => Verdict::Unsigned,
         (Check::NotSigned { bridge_error: Some(e) }, Some(_)) => {
             Verdict::CouldNotSign(format!("the CAN Bridge could not sign it ({e})"))

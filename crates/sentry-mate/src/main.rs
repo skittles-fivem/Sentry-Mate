@@ -12,6 +12,8 @@
 //!   token list | token revoke ID
 //!   fingerprint                   the certificate SHA-256 the app pins
 //!   log export NAME               a stored log or sidecar, unsealed, to standard output
+//!   log decode NAME               a stored log's signals as CSV: only a log its check allows (--any: any), with the
+//!                                 signal set from the car's VIN (--model 3y or sx-legacy: that one)
 //!   log candump FILE              a log file of either format as candump text
 //!   log check FILE [SIDECAR]      what its signature says
 //!   chain KEY                     the chain report of a car key's logs
@@ -21,12 +23,19 @@
 //!   move from ADDRESS CODE        a new server: bring the data here from the old one
 //!   move status | cancel | undo   what a move does; stop it; after one, take uploads here again
 //!   move finish --recovery-key    a new server, last resort: switch to what was copied
+//!   keys KEY                      the signing keys a car key's logs name, and which one is trusted
+//!   keys trust KEY SIGNING-KEY    trust another signing key for a car key (asks first; --yes doesn't)
 //!   health                        exit 0 when the upload port answers, or a move comes in (for Docker)
 //!
 //! A new server can also move in with no shell at all: `SENTRY_MATE_MOVE_FROM` and `SENTRY_MATE_MOVE_CODE` in its
 //! environment, and it brings the data in as it starts (`docs/plans/move-server.md`).
 
+mod decode;
+mod folders;
+mod keys;
 mod migrate;
+#[cfg(test)]
+mod testkit;
 
 use clap::{Parser, Subcommand};
 use ingest::server::{Identity, serve_tls, tls_dir};
@@ -39,14 +48,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vault::{Kdf, Vault};
 
-/// This version (an export or import says it, an import refuses an export from a newer one).
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// This version as a move or an export says it (an import refuses an export from a newer one): the crate's alone,
+/// without the image build's part `--version` shows.
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// How long a command waits for a pause of the writes (an export's snapshot) to end, or a snapshot for the writes
 /// under way.
 const GATE_WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Parser)]
-#[command(name = "sentry-mate", version, about = "A car logger fed by the Screenmate CAN Bridge's uploads")]
+#[command(name = "sentry-mate", version = VERSION, about = "A car logger fed by the Screenmate CAN Bridge's uploads")]
 struct Cli {
     /// Where everything is kept (all of it sealed).
     #[arg(long, env = "SENTRY_MATE_DATA", default_value = "/data", global = true)]
@@ -103,8 +113,19 @@ enum Cmd {
         #[command(subcommand)]
         cmd: LogCmd,
     },
-    /// The chain report of a car key's signed logs (JSON).
-    Chain { key: String },
+    /// The chain report of a car key's signed logs (JSON), with the signing key it covers.
+    Chain {
+        /// The car key (the last column of `token list`).
+        key: String,
+    },
+    /// The signing keys a car key's logs name, and which one is trusted; `keys trust` trusts another.
+    #[command(args_conflicts_with_subcommands = true)]
+    Keys {
+        #[command(subcommand)]
+        cmd: Option<KeysCmd>,
+        /// The car key (the last column of `token list`).
+        key: Option<String>,
+    },
     /// The whole server as one export file, to standard output: `docker exec <container> /sentry-mate export >
     /// sentry-mate.smexport`. It opens on a new server with this server's recovery key.
     Export,
@@ -187,11 +208,34 @@ enum TokenCmd {
 }
 
 #[derive(Subcommand)]
+enum KeysCmd {
+    /// Trust a signing key for a car key: the logs it signed are used from then on. Asks first.
+    Trust {
+        /// The car key (the last column of `token list`).
+        key: String,
+        /// The signing key, as `keys` lists it (the CAN Bridge app's "Log signing key").
+        signing_key: String,
+        /// Don't ask.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum LogCmd {
     /// A stored log or sidecar (by its name), unsealed, to standard output.
     Export { name: String },
     /// A stored log's decoded signals as CSV (each value when it changes): time, signal, value, unit, value name.
-    Decode { name: String },
+    /// Only a log whose check allows its data (verified or unsigned), unless --any.
+    Decode {
+        name: String,
+        /// Decode it whatever its check says (failed, could not sign, waiting, not checked yet).
+        #[arg(long)]
+        any: bool,
+        /// The signal set: auto (from the car's VIN, else Model 3/Y), 3y or sx-legacy.
+        #[arg(long, value_enum, default_value_t = decode::Model::Auto)]
+        model: decode::Model,
+    },
     /// A log file of either format as candump text.
     Candump { file: PathBuf },
     /// What a log file's signature says.
@@ -208,6 +252,13 @@ fn tokens_file(data: &Path) -> PathBuf {
 
 const RECOVERY_FILE: &str = "RECOVERY-KEY.txt";
 
+/// What `keys` without a car key says.
+const KEYS_USAGE: &str = "sentry-mate: which car key? The car keys are the last column of `token list`.\n\nUsage: \
+                          sentry-mate keys <KEY>\n       sentry-mate keys trust <KEY> <SIGNING-KEY>";
+
+/// The version, and the image build's number, commit and date when it was given them (build.rs).
+const VERSION: &str = env!("SENTRY_MATE_VERSION");
+
 #[tokio::main]
 async fn main() -> ExitCode {
     vault::harden_process();
@@ -217,10 +268,23 @@ async fn main() -> ExitCode {
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .init();
     let cli = Cli::parse();
-    match run(cli).await {
+    if let Cmd::Keys { cmd: None, key: None } = cli.cmd {
+        // (not clap's own message: its usage line shows --data and --keys as if they had to be given)
+        eprintln!("{KEYS_USAGE}");
+        return ExitCode::from(2);
+    }
+    let (data, keys) = (cli.data.clone(), cli.keys.clone());
+    let mounts = folders::mounts_required(std::env::var_os("SENTRY_MATE_REQUIRE_MOUNTS").as_deref());
+    match run(cli, mounts).await {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("sentry-mate: {e}");
+            eprintln!("sentry-mate: {}", said(&*e));
+            if let Some(h) = folders::hint(&*e, &data, &keys) {
+                eprintln!("{h}");
+            }
+            if let Some(h) = restore_hint(&*e) {
+                eprintln!("{h}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -232,8 +296,61 @@ fn print_recovery(key: &vault::RecoveryKey) {
     println!("way to open your data on a new machine: lose both and the data can't be opened by anyone.");
 }
 
-async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
+/// An error as the owner reads it: an upload API error without its HTTP status and code.
+fn said(e: &(dyn std::error::Error + 'static)) -> String {
+    match e.downcast_ref::<ingest::ApiError>() {
+        Some(a) => a.message.clone(),
+        None => e.to_string(),
+    }
+}
+
+/// What to do when the key file is missing or wrong: the restore runs with Sentry Mate stopped, so not with
+/// `docker exec`.
+fn restore_hint(e: &(dyn std::error::Error + 'static)) -> Option<&'static str> {
+    match e.downcast_ref::<vault::Error>()? {
+        vault::Error::NoKeyFile | vault::Error::WrongKeyFile => Some(
+            "Check the keys folder's path first. To restore with the recovery key, stop Sentry Mate, then: docker \
+             compose run --rm -it sentry-mate restore (TrueNAS: Restore in docs/install.md)",
+        ),
+        _ => None,
+    }
+}
+
+/// What a command needs of the data and keys folders: whether it writes to each, or `None` when it uses neither.
+fn needs(cmd: &Cmd) -> Option<(bool, bool)> {
+    match cmd {
+        Cmd::Serve { .. } | Cmd::Init | Cmd::Restore => Some((true, true)),
+        Cmd::RecoveryKey { .. } | Cmd::Token { .. } | Cmd::Fingerprint => Some((true, false)),
+        Cmd::Keys { cmd: Some(KeysCmd::Trust { .. }), .. } => Some((true, false)),
+        // an export's snapshot is made in the data folder; a move code, an undo and the old server's cancel write
+        // there too
+        Cmd::Export | Cmd::Move { cmd: MoveCmd::Code { .. } | MoveCmd::Undo } => Some((true, false)),
+        // a new server taking data in writes its own key file; a cancel removes the staged one
+        Cmd::Import { .. } | Cmd::Move { cmd: MoveCmd::From { .. } | MoveCmd::Finish { .. } | MoveCmd::Cancel } => {
+            Some((true, true))
+        }
+        Cmd::Move { cmd: MoveCmd::Status } => Some((false, false)),
+        Cmd::Log { cmd: LogCmd::Export { .. } | LogCmd::Decode { .. } } | Cmd::Chain { .. } | Cmd::Keys { .. } => {
+            Some((false, false))
+        }
+        Cmd::Log { .. } | Cmd::Health => None,
+    }
+}
+
+/// Runs a command. `mounts`: the data and keys folders must each be a mount of their own (`SENTRY_MATE_REQUIRE_MOUNTS`,
+/// set in the image), checked before any command that uses them.
+async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let (data, keys) = (cli.data, cli.keys);
+    if let Some(writes) = needs(&cli.cmd) {
+        let mountinfo = mounts.then(|| std::fs::read_to_string(folders::MOUNTINFO)).transpose().map_err(|e| {
+            format!(
+                "can't read {} to check that the data and keys folders are mounted: {e} (SENTRY_MATE_REQUIRE_MOUNTS=0 \
+                 turns that check off)",
+                folders::MOUNTINFO
+            )
+        })?;
+        folders::check_all(&data, &keys, writes, mountinfo.as_deref())?;
+    }
     match cli.cmd {
         Cmd::Serve { bind, names, move_from, move_code, offer_move } => {
             let env = MoveEnv {
@@ -322,18 +439,11 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 if moving::old::is_moved(&data) { None } else { Some(gate::Gate::open(&data)?.enter(GATE_WAIT)?) };
             println!("{}", Identity::load_or_create(&tls_dir(&data), &[], &v)?.fingerprint());
         }
-        Cmd::Log { cmd: LogCmd::Decode { name } } => {
+        Cmd::Log { cmd: LogCmd::Decode { name, any, model } } => {
             let store = Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?));
-            let Some(log) = store.read(&name).await? else {
-                eprintln!("no stored log {name}");
-                return Ok(ExitCode::FAILURE);
-            };
-            let side = store
-                .read(&format!("{name}.json"))
-                .await?
-                .and_then(|b| serde_json::from_slice(&b).ok())
-                .unwrap_or_default();
-            decode_csv(&log, &side)?;
+            let judge = Judge::new(store.clone());
+            let out = std::io::stdout();
+            return decode::run(&store, &judge, &name, any, model, &mut out.lock(), &mut std::io::stderr()).await;
         }
         Cmd::Log { cmd: LogCmd::Export { name } } => {
             let store = Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?));
@@ -347,9 +457,26 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         Cmd::Log { cmd } => return log_cmd(cmd),
         Cmd::Chain { key } => {
-            let store = Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?));
-            let report = Judge::new(store).chain(&key).await;
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            let judge = Judge::new(Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?)));
+            if !judge.known(&key) {
+                return Ok(keys::unknown(&key, &mut std::io::stderr())?);
+            }
+            println!("{}", serde_json::to_string_pretty(&judge.chain(&key).await)?);
+        }
+        Cmd::Keys { cmd, key } => {
+            let judge = Judge::new(Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?)));
+            let (out, err) = (&mut std::io::stdout(), &mut std::io::stderr());
+            return match (cmd, key) {
+                (Some(KeysCmd::Trust { key, signing_key, yes }), _) => {
+                    keys::trust(&judge, &key, &signing_key, yes, &mut std::io::stdin().lock(), out, err).await
+                }
+                (None, Some(key)) => keys::list(&judge, &key, out, err).await,
+                // main() stops before this
+                (None, None) => {
+                    writeln!(err, "{KEYS_USAGE}")?;
+                    Ok(ExitCode::from(2))
+                }
+            };
         }
         Cmd::Export => return export_cmd(&data, &keys),
         Cmd::Import { file, cancel } => return import_cmd(&data, &keys, file.as_deref(), cancel).await,
@@ -369,10 +496,15 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// A file's bytes; an error names the file.
+fn read_named(path: &Path) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| format!("can't read {}: {e}", path.display()))
+}
+
 fn log_cmd(cmd: LogCmd) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match cmd {
         LogCmd::Candump { file } => {
-            let bytes = std::fs::read(&file)?;
+            let bytes = read_named(&file)?;
             let out = std::io::stdout();
             let mut out = std::io::BufWriter::new(out.lock());
             let s = logfmt::read_log(&bytes, logfmt::Limits::default(), |l| {
@@ -384,9 +516,10 @@ fn log_cmd(cmd: LogCmd) -> Result<ExitCode, Box<dyn std::error::Error>> {
             eprintln!("{}: {} lines, {} long lines skipped{cut}", s.format.name(), s.lines, s.skipped_long_lines);
         }
         LogCmd::Check { file, sidecar } => {
-            let bytes = std::fs::read(&file)?;
+            let bytes = read_named(&file)?;
             let side_path = sidecar.unwrap_or_else(|| PathBuf::from(format!("{}.json", file.display())));
-            let side: serde_json::Value = serde_json::from_slice(&std::fs::read(&side_path)?)?;
+            let side: serde_json::Value = serde_json::from_slice(&read_named(&side_path)?)
+                .map_err(|e| format!("{} is not a sidecar (JSON): {e}", side_path.display()))?;
             let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let sha = hex::encode(Sha256::digest(&bytes));
             match trust::check(name, &sha, bytes.len() as u64, &side) {
@@ -410,31 +543,6 @@ fn log_cmd(cmd: LogCmd) -> Result<ExitCode, Box<dyn std::error::Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Decoded signals as CSV, a row when a value changes.
-fn decode_csv(log: &[u8], side: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
-    let mut d = dbc::Decoder::new(dbc::Profile::Tesla3Y, side);
-    let mut last: std::collections::HashMap<&'static str, f64> = std::collections::HashMap::new();
-    let out = std::io::stdout();
-    let mut out = std::io::BufWriter::new(out.lock());
-    writeln!(out, "timestamp_utc,signal,value,unit,value_name")?;
-    let mut err = None;
-    logfmt::read_log(log, logfmt::Limits::default(), |l| {
-        let logfmt::Line::Frame(f) = logfmt::Line::parse(l) else { return };
-        for (sig, v) in d.decode(&f) {
-            if last.insert(sig.series.as_str(), v) == Some(v) {
-                continue;
-            }
-            let name = sig.values.as_ref().and_then(|n| n.get(&(v as i64))).map(String::as_str).unwrap_or("");
-            let (s, us) = (f.time_us / 1_000_000, f.time_us % 1_000_000);
-            if let Err(e) = writeln!(out, "{s}.{us:06},{},{v},{},{name}", sig.series, sig.unit) {
-                err = Some(e);
-            }
-        }
-    })?;
-    out.flush()?;
-    err.map_or(Ok(()), |e| Err(e.into()))
-}
-
 async fn serve(
     data: &Path,
     keys: &Path,
@@ -443,6 +551,7 @@ async fn serve(
     names: &[String],
     env: &MoveEnv,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    tracing::info!("Sentry Mate {VERSION}");
     std::fs::create_dir_all(data)?;
     let _lock = take_server_lock(data).await?;
     let gate = gate::Gate::open(data)?;
@@ -507,8 +616,8 @@ async fn serve(
                     }
                 }
                 _ = hourly.tick() => {
-                    if let Some(r) = offer.last_refused() {
-                        if said_refused != Some(r.at_ms) && ingest::store::now_ms().saturating_sub(r.at_ms) < 3_600_000 {
+                    if let Some(r) = offer.last_refused()
+                        && said_refused != Some(r.at_ms) && ingest::store::now_ms().saturating_sub(r.at_ms) < 3_600_000 {
                             said_refused = Some(r.at_ms);
                             let car = r.car_key.as_deref().map(|k| format!(" (car key {k})")).unwrap_or_default();
                             tracing::warn!(
@@ -516,7 +625,6 @@ async fn serve(
                                 moving::old::when(r.at_ms)
                             );
                         }
-                    }
                 }
             }
         };
@@ -614,10 +722,10 @@ async fn move_incoming(data: PathBuf, keys: PathBuf) {
             continue;
         }
         let (d, k) = (data.clone(), keys.clone());
-        if let Ok(p) = tokio::task::spawn_blocking(move || moving::pull::pending(&d, &k)).await {
-            if pull_wanted(&p) {
-                return;
-            }
+        if let Ok(p) = tokio::task::spawn_blocking(move || moving::pull::pending(&d, &k)).await
+            && pull_wanted(&p)
+        {
+            return;
         }
     }
 }
@@ -661,14 +769,14 @@ async fn carry_on_move(data: &Path, keys: &Path, env: &MoveEnv, port: u16, tried
                 if tried.is_some() && *tried == id {
                     return true;
                 }
-                if let Some(note) = moved_in_note(data, keys) {
-                    if id.as_deref() == Some(note.code_id.as_str()) {
-                        tracing::info!(
-                            "move: the move from {} is done; you can remove SENTRY_MATE_MOVE_FROM and SENTRY_MATE_MOVE_CODE",
-                            note.from
-                        );
-                        return true;
-                    }
+                if let Some(note) = moved_in_note(data, keys)
+                    && id.as_deref() == Some(note.code_id.as_str())
+                {
+                    tracing::info!(
+                        "move: the move from {} is done; you can remove SENTRY_MATE_MOVE_FROM and SENTRY_MATE_MOVE_CODE",
+                        note.from
+                    );
+                    return true;
                 }
                 let (d, k) = (data.to_path_buf(), keys.to_path_buf());
                 if let Ok(Err(e)) = tokio::task::spawn_blocking(move || moving::import::unused(&d, &k)).await {
@@ -794,7 +902,7 @@ async fn begin_move(data: &Path, keys: &Path, from: &str, code: &str, opts: &Arc
 }
 
 fn move_options() -> moving::pull::Options {
-    let mut o = moving::pull::Options::new(VERSION);
+    let mut o = moving::pull::Options::new(APP_VERSION);
     o.min_free = ingest::store::MIN_FREE;
     o
 }
@@ -982,10 +1090,9 @@ async fn import_ready(data: PathBuf, keys: PathBuf, refused: Option<String>) {
         let (d, k) = (data.clone(), keys.clone());
         if let Ok(moving::Pending::Ready { export_id }) =
             tokio::task::spawn_blocking(move || moving::import::pending(&d, &k)).await
+            && refused.as_deref() != Some(export_id.as_str())
         {
-            if refused.as_deref() != Some(export_id.as_str()) {
-                return;
-            }
+            return;
         }
     }
 }
@@ -1003,8 +1110,9 @@ async fn start(
     // the start's own writes go through the gate too (an export's snapshot from the command line may be under way);
     // a server whose data moved away writes nothing
     let pass = if moved { None } else { Some(ingest::api::enter_gate(gate, GATE_WAIT).await?) };
-    std::fs::create_dir_all(can_dir(data))?;
     let (v, made) = Vault::open_or_create(data, keys, Kdf::STRONG)?;
+    // only once the vault opened: a start that is refused writes nothing
+    std::fs::create_dir_all(can_dir(data))?;
     if let Some(rk) = made {
         // not in the log (container logs are kept in the clear): in a file of the keys folder, for the owner to take
         let file = keys.join(RECOVERY_FILE);
@@ -1034,7 +1142,7 @@ async fn start(
     let up = Uploads::with_gate(store.clone(), tokens, Judge::new(store), gate.clone(), ingest::api::GATE_WAIT);
     // the move's side of this server: a moved one closes its gate and holds it from here on
     let (d, v2, g, fp) = (data.to_path_buf(), v.clone(), gate.clone(), id.fingerprint());
-    let offer = tokio::task::spawn_blocking(move || moving::old::Offer::open(&d, v2, g, VERSION, &fp)).await??;
+    let offer = tokio::task::spawn_blocking(move || moving::old::Offer::open(&d, v2, g, APP_VERSION, &fp)).await??;
     if let Some(o) = env.offer.as_deref() {
         offer_from_env(data, &v, o);
     }
@@ -1045,7 +1153,9 @@ async fn start(
         v.key_id()
     );
     if !any_token && !offer.is_moved() {
-        tracing::info!("no upload token yet: make one with `sentry-mate token new --car \"My car\"`");
+        tracing::info!(
+            "no upload token yet: make one with `docker exec sentry-mate /sentry-mate token new --car \"My car\"`"
+        );
     }
     let confirm = spawn_confirm(data, v.clone());
 
@@ -1067,7 +1177,7 @@ async fn start(
             if let Err(e) = housekeeping.judge.sweep().await {
                 tracing::warn!("judging waiting logs: {e}");
             }
-            if n % 60 == 0 {
+            if n.is_multiple_of(60) {
                 let dropped = housekeeping.store.clean_stale(ingest::store::STALE_PARTIAL_MS).await;
                 if dropped > 0 {
                     tracing::info!("dropped {dropped} unfinished upload(s) older than two days");
@@ -1137,7 +1247,7 @@ fn export_cmd(data: &Path, keys: &Path) -> Result<ExitCode, Box<dyn std::error::
     // a server whose data moved away writes nothing (and holds its gate): its snapshot needs no pause
     let g = if moving::old::is_moved(data) { gate::Gate::memory() } else { gate::Gate::open(data)? };
     eprintln!("export: taking a snapshot (uploads wait a few seconds) ...");
-    let snap = moving::Snapshot::make(data, &v, &g, VERSION, GATE_WAIT)?;
+    let snap = moving::Snapshot::make(data, &v, &g, APP_VERSION, GATE_WAIT)?;
     let h = snap.header();
     eprintln!(
         "export: snapshot taken: {} files, {}; writing {} ({})",
@@ -1201,7 +1311,7 @@ async fn import_cmd(
         );
         return Ok(ExitCode::FAILURE);
     }
-    let ex = moving::import::open_file(file, VERSION)?;
+    let ex = moving::import::open_file(file, APP_VERSION)?;
     std::fs::create_dir_all(data)?;
     let h = &ex.header;
     eprintln!(
@@ -1211,7 +1321,7 @@ async fn import_cmd(
         h.files,
         moving::size(h.bytes)
     );
-    let opts = moving::Options::new(VERSION);
+    let opts = moving::Options::new(APP_VERSION);
     let mut imp = match moving::import::resume(data, keys, &ex, &opts)? {
         moving::Resume::Same(i) => {
             let i = *i;
@@ -1635,5 +1745,190 @@ async fn shutdown() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+
+    #[tokio::test]
+    async fn both_folders_are_named_when_both_are_wrong() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::write(&data, b"x").unwrap();
+        std::fs::write(&keys, b"x").unwrap();
+        let cli = Cli { data, keys, upload_port: 0, cmd: Cmd::Fingerprint };
+        let Err(e) = run(cli, false).await else { panic!("it ran") };
+        let said = e.to_string();
+        assert!(said.contains("the data folder") && said.contains("the keys folder"), "{said}");
+    }
+
+    /// With the mounts required (the image), this process's own mounts are read: a temporary folder is no mount.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn with_the_mounts_required_folders_that_are_not_mounted_are_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        let cli = Cli { data: data.clone(), keys: keys.clone(), upload_port: 0, cmd: Cmd::Init };
+        let Err(e) = run(cli, true).await else { panic!("it ran") };
+        let said = e.to_string();
+        assert!(said.starts_with(&format!("the data folder {} and the keys folder", data.display())), "{said}");
+        assert!(said.contains("are not mounted"), "{said}");
+        // nothing made: no folder, no vault
+        assert!(!data.exists() && !keys.exists());
+    }
+
+    /// `chain` for a car key with no logs here says so (exit 1) rather than print an empty report.
+    #[tokio::test]
+    async fn the_chain_of_an_unknown_car_key_fails() {
+        let k = testkit::kit();
+        let chain = |key: &str| Cli {
+            data: k.data.clone(),
+            keys: k.keys.clone(),
+            upload_port: 0,
+            cmd: Cmd::Chain { key: key.to_string() },
+        };
+        assert_eq!(run(chain("fedcba654321"), false).await.unwrap(), ExitCode::FAILURE);
+        assert_eq!(run(chain("../../etc"), false).await.unwrap(), ExitCode::FAILURE);
+        testkit::chain(&k, &testkit::new_key(), 0, 1, 0, testkit::genesis(), None).await;
+        assert_eq!(run(chain(testkit::CAR), false).await.unwrap(), ExitCode::SUCCESS);
+        let keys = Cli {
+            data: k.data.clone(),
+            keys: k.keys.clone(),
+            upload_port: 0,
+            cmd: Cmd::Keys { cmd: None, key: Some("fedcba654321".into()) },
+        };
+        assert_eq!(run(keys, false).await.unwrap(), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn the_command_line_takes_keys_and_keys_trust() {
+        let cli = Cli::try_parse_from(["sentry-mate", "keys", "abcdef123456"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::Keys { cmd: None, key: Some(k) } if k == "abcdef123456"));
+        let cli = Cli::try_parse_from(["sentry-mate", "keys", "trust", "abcdef123456", "aa:bb", "--yes"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::Keys { cmd: Some(KeysCmd::Trust { yes: true, .. }), key: None }));
+        // no car key: main() says which usage, not clap (its usage line would show --data and --keys as needed)
+        let cli = Cli::try_parse_from(["sentry-mate", "keys"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::Keys { cmd: None, key: None }));
+        assert!(KEYS_USAGE.contains("keys <KEY>") && !KEYS_USAGE.contains("--data"));
+        assert!(Cli::try_parse_from(["sentry-mate", "keys", "trust", "abcdef123456"]).is_err());
+        let cli =
+            Cli::try_parse_from(["sentry-mate", "log", "decode", "x", "--any", "--model", "tesla-sx-legacy"]).unwrap();
+        let Cmd::Log { cmd: LogCmd::Decode { any: true, model, .. } } = cli.cmd else { panic!("not decode") };
+        assert_eq!(model, decode::Model::SxLegacy);
+        let cli = Cli::try_parse_from(["sentry-mate", "log", "decode", "x"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::Log { cmd: LogCmd::Decode { any: false, model: decode::Model::Auto, .. } }));
+        assert!(Cli::try_parse_from(["sentry-mate", "log", "decode", "x", "--model", "z"]).is_err());
+    }
+
+    #[test]
+    fn a_missing_or_wrong_key_file_says_how_to_restore() {
+        for e in [vault::Error::NoKeyFile, vault::Error::WrongKeyFile] {
+            let e: Box<dyn std::error::Error> = e.into();
+            assert!(restore_hint(&*e).is_some_and(|h| h.contains("docker compose run --rm -it sentry-mate restore")));
+        }
+        let e: Box<dyn std::error::Error> = vault::Error::NoVault.into();
+        assert_eq!(restore_hint(&*e), None);
+    }
+
+    #[test]
+    fn errors_read_plainly() {
+        let e: Box<dyn std::error::Error> = ingest::ApiError::new(400, "bad_name", "That is not a log name.").into();
+        assert_eq!(said(&*e), "That is not a log name.");
+        let e = read_named(Path::new("/no/such/file.log.xz")).unwrap_err();
+        assert!(e.starts_with("can't read /no/such/file.log.xz: "), "{e}");
+    }
+
+    #[test]
+    fn the_version_starts_with_the_crates_own() {
+        assert!(VERSION.starts_with(env!("CARGO_PKG_VERSION")), "{VERSION}");
+    }
+
+    /// A new server that takes data in (an import; a direct move ends with the same switch) writes a key file of its
+    /// own. The folder checks pass on its empty folders, and the refusal of a new vault next to a key file doesn't stop
+    /// it starting afterwards. A key file with no vault is still refused, by the vault and by the import.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_import_into_an_empty_server_passes_the_checks_and_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let (od, ok) = (dir.path().join("old-data"), dir.path().join("old-keys"));
+        std::fs::create_dir_all(&od).unwrap();
+        let (ov, rk) = Vault::create(&od, &ok, Kdf::FAST_FOR_TESTS).unwrap();
+        let ov = Arc::new(ov);
+        let fp = Identity::load_or_create(&tls_dir(&od), &[], &ov).unwrap().fingerprint();
+        Tokens::open(tokens_file(&od), ov.clone()).await.unwrap().create("Test car").await.unwrap();
+        let file = dir.path().join("x.smexport");
+        {
+            let g = gate::Gate::open(&od).unwrap();
+            let snap = moving::Snapshot::make(&od, &ov, &g, APP_VERSION, Duration::from_secs(5)).unwrap();
+            let mut out = Vec::new();
+            snap.write_to(&ov, &mut out).unwrap();
+            std::fs::write(&file, out).unwrap();
+        }
+
+        let (nd, nk) = (dir.path().join("new-data"), dir.path().join("new-keys"));
+        std::fs::create_dir_all(&nd).unwrap();
+        std::fs::create_dir_all(&nk).unwrap();
+        folders::check_all(&nd, &nk, needs(&Cmd::Import { file: None, cancel: false }).unwrap(), None).unwrap();
+        moving::import::unused(&nd, &nk).unwrap();
+        let mut opts = moving::Options::new(APP_VERSION);
+        opts.min_free = 0;
+        let ex = moving::import::open_file(&file, APP_VERSION).unwrap();
+        let mut imp = moving::import::begin(&nd, &nk, &ex, rk.as_str(), &opts).unwrap();
+        assert_eq!(imp.run(|_| std::ops::ControlFlow::Continue(())).unwrap(), moving::Outcome::Ready);
+        drop(imp);
+        moving::import::switch(&nd, &nk).unwrap();
+        assert!(nk.join(vault::KEY_FILE).exists(), "the new server's own key file");
+        assert_ne!(std::fs::read(nk.join(vault::KEY_FILE)).unwrap(), std::fs::read(ok.join(vault::KEY_FILE)).unwrap());
+
+        // the start's vault step opens it and makes nothing; a command reads the same certificate
+        let (nv, made) = Vault::open_or_create(&nd, &nk, Kdf::FAST_FOR_TESTS).unwrap();
+        assert!(made.is_none());
+        assert_eq!(nv.key_id(), ov.key_id());
+        let cli = Cli { data: nd.clone(), keys: nk.clone(), upload_port: 0, cmd: Cmd::Fingerprint };
+        assert_eq!(run(cli, false).await.unwrap(), ExitCode::SUCCESS);
+        assert_eq!(Identity::load_or_create(&tls_dir(&nd), &[], &nv).unwrap().fingerprint(), fp);
+
+        // a key file with no vault: neither a new vault nor an import goes there
+        let (d2, k2) = (dir.path().join("d2"), dir.path().join("k2"));
+        std::fs::create_dir_all(&d2).unwrap();
+        std::fs::create_dir_all(&k2).unwrap();
+        std::fs::write(k2.join(vault::KEY_FILE), [7u8; 32]).unwrap();
+        assert!(matches!(
+            Vault::open_or_create(&d2, &k2, Kdf::FAST_FOR_TESTS),
+            Err(vault::Error::KeyFileButNoVault { .. })
+        ));
+        assert!(moving::import::unused(&d2, &k2).is_err());
+    }
+
+    #[test]
+    fn commands_that_need_no_folder_dont_check_one() {
+        assert_eq!(needs(&Cmd::Health), None);
+        assert_eq!(needs(&Cmd::Log { cmd: LogCmd::Candump { file: PathBuf::from("x") } }), None);
+        let serve =
+            Cmd::Serve { bind: String::new(), names: vec![], move_from: None, move_code: None, offer_move: None };
+        assert_eq!(needs(&serve), Some((true, true)));
+        assert_eq!(needs(&Cmd::Chain { key: String::new() }), Some((false, false)));
+        assert_eq!(needs(&Cmd::Keys { cmd: None, key: Some(String::new()) }), Some((false, false)));
+        let trust = KeysCmd::Trust { key: String::new(), signing_key: String::new(), yes: true };
+        assert_eq!(needs(&Cmd::Keys { cmd: Some(trust), key: None }), Some((true, false)));
+        // every command that writes is checked (and so, in the image, needs both folders mounted)
+        assert_eq!(needs(&Cmd::Init), Some((true, true)));
+        assert_eq!(needs(&Cmd::Restore), Some((true, true)));
+        assert_eq!(needs(&Cmd::RecoveryKey { cmd: RecoveryCmd::New }), Some((true, false)));
+        assert_eq!(needs(&Cmd::Token { cmd: TokenCmd::New { car: String::new() } }), Some((true, false)));
+        assert_eq!(needs(&Cmd::Token { cmd: TokenCmd::Revoke { id: String::new() } }), Some((true, false)));
+        assert_eq!(needs(&Cmd::Fingerprint), Some((true, false)));
+        // the move: the old server writes in its data folder, a new one taking data in writes its own key file
+        assert_eq!(needs(&Cmd::Export), Some((true, false)));
+        assert_eq!(needs(&Cmd::Move { cmd: MoveCmd::Code { anywhere: false, replace: false } }), Some((true, false)));
+        assert_eq!(needs(&Cmd::Move { cmd: MoveCmd::Undo }), Some((true, false)));
+        assert_eq!(needs(&Cmd::Move { cmd: MoveCmd::Status }), Some((false, false)));
+        assert_eq!(needs(&Cmd::Import { file: None, cancel: false }), Some((true, true)));
+        let from = MoveCmd::From { address: String::new(), code: String::new() };
+        assert_eq!(needs(&Cmd::Move { cmd: from }), Some((true, true)));
+        assert_eq!(needs(&Cmd::Move { cmd: MoveCmd::Finish { recovery_key: true } }), Some((true, true)));
+        assert_eq!(needs(&Cmd::Move { cmd: MoveCmd::Cancel }), Some((true, true)));
     }
 }

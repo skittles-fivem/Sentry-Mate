@@ -1,7 +1,7 @@
 {
   "name": "Instrument",
-  "description": "Dark-first interface in the style of a premium instrument cluster: frosted glass panels, a battery gauge, the map as the hero, and a mission-control board for any number of cars. Desktop layouts from a 1280 px laptop to a native 4K screen, with an Interface size setting.",
+  "description": "Dark-first interface in the style of a premium instrument cluster: frosted glass panels, a battery gauge, the map as the hero, and a menu grouped by task for any number of cars. Desktop layouts from a 1280 px laptop to a native 4K screen, with an Interface size setting. Runs on /api/v1.",
   "author": "Sentry Mate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "api": 1
 }

@@ -371,10 +371,10 @@ async fn upload(AxState(up): St, Path(name): Path<String>, req: Request) -> Resu
     open_for_uploads(&up, &token, conn)?;
     let n = trust::LogName::parse(&name)
         .ok_or_else(|| ApiError::new(400, "bad_name", "That is not a CAN Bridge log name."))?;
-    if let Some(k) = &token.vehicle_key {
-        if k != n.vehicle_key {
-            return Err(ApiError::new(403, "wrong_car", "This token is for another car's CAN Bridge."));
-        }
+    if let Some(k) = &token.vehicle_key
+        && k != n.vehicle_key
+    {
+        return Err(ApiError::new(403, "wrong_car", "This token is for another car's CAN Bridge."));
     }
     let h = req.headers().clone();
     let offset = header_u64(&h, "upload-offset")
@@ -421,11 +421,12 @@ async fn write_chunk(
         }
     }
     let r = up.store.receive(name, body, offset, length, sha).await?;
-    if r.complete && !r.already {
-        if let Err(e) = up.judge.arrived(name).await {
-            // not the name: it holds the car's key, and the server's log is kept in the clear
-            tracing::warn!("CAN upload: could not judge a log that arrived: {e}");
-        }
+    if r.complete
+        && !r.already
+        && let Err(e) = up.judge.arrived(name).await
+    {
+        // not the name: it holds the car's key, and the server's log is kept in the clear
+        tracing::warn!("CAN upload: could not judge a log that arrived: {e}");
     }
     Ok(r)
 }

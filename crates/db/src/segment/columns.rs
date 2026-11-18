@@ -561,10 +561,10 @@ fn parse<P: Point>(body: &[u8]) -> Result<(Vec<u64>, Vec<ColReader<'_, P>>), Err
 
 fn fill_derived<P>(readers: &[ColReader<'_, P>], p: &mut P) {
     for c in readers.iter().filter(|c| matches!(c.present, Present::Derived)) {
-        if let Col::F64 { set, derived: Some(d), .. } = c.col {
-            if let Some(v) = (d.derive)(p) {
-                set(p, v);
-            }
+        if let Col::F64 { set, derived: Some(d), .. } = c.col
+            && let Some(v) = (d.derive)(p)
+        {
+            set(p, v);
         }
     }
 }

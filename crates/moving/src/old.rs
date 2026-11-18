@@ -242,18 +242,18 @@ pub fn make_code(data: &Path, vault: &Vault, anywhere: bool, replace: bool) -> R
     if let Some(m) = read::<MovedRecord>(data, vault, MOVED)? {
         return Err(Error::Move(format!("{}: to take uploads here again first: `move undo`", moved_words(&m))));
     }
-    if let Some(c) = read::<CodeRecord>(data, vault, CODE)? {
-        if let Some(cl) = &c.claimed {
-            if !replace {
-                return Err(Error::MoveUnderWay(format!(
-                    "a move is under way: {} took the move code {} on {}",
-                    cl.from,
-                    c.id,
-                    when(cl.at_ms)
-                )));
-            }
-            add_cancelled(data, vault, &cl.session_sha256, "replaced by a new move code")?;
+    if let Some(c) = read::<CodeRecord>(data, vault, CODE)?
+        && let Some(cl) = &c.claimed
+    {
+        if !replace {
+            return Err(Error::MoveUnderWay(format!(
+                "a move is under way: {} took the move code {} on {}",
+                cl.from,
+                c.id,
+                when(cl.at_ms)
+            )));
         }
+        add_cancelled(data, vault, &cl.session_sha256, "replaced by a new move code")?;
     }
     new_code(data, vault, anywhere, false)
 }
@@ -682,9 +682,9 @@ impl Offer {
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 o.pause_timers();
-                if n % 5 == 0 {
+                if n.is_multiple_of(5) {
                     let t = o.clone();
-                    let _ = tokio::task::spawn_blocking(move || t.look_at_disk(n % 60 == 0)).await;
+                    let _ = tokio::task::spawn_blocking(move || t.look_at_disk(n.is_multiple_of(60))).await;
                 }
                 n += 1;
             }
@@ -761,25 +761,24 @@ impl Offer {
         let code = read::<CodeRecord>(&self.data, &self.vault, CODE).ok().flatten();
         let session = code.as_ref().and_then(|c| c.claimed.as_ref()).map(|c| c.session_sha256.clone());
         let paused_for = lock(&self.paused).as_ref().map(|p| p.session.clone());
-        if let Some(s) = paused_for {
-            if session.as_deref() != Some(s.as_str()) && !self.is_moved() {
-                self.end_pause("the move was cancelled here");
-            }
+        if let Some(s) = paused_for
+            && session.as_deref() != Some(s.as_str())
+            && !self.is_moved()
+        {
+            self.end_pause("the move was cancelled here");
         }
         self.save_seen(false);
-        if idle_check {
-            if let Some(cl) = code.and_then(|c| c.claimed) {
-                let last = cl.last_seen_ms.max(lock(&self.seen).last_ms);
-                if now_ms().saturating_sub(last) > SESSION_IDLE_MS {
-                    let _l = lock_dir(&self.data);
-                    let _ = add_cancelled(&self.data, &self.vault, &cl.session_sha256, "not heard from in 7 days");
-                    let _ = crate::import::remove_file(&path(&self.data, CODE));
-                    tracing::warn!(
-                        "move: the move to {} ended: not heard from since {}. Make a new move code to move again.",
-                        cl.from,
-                        when(last)
-                    );
-                }
+        if idle_check && let Some(cl) = code.and_then(|c| c.claimed) {
+            let last = cl.last_seen_ms.max(lock(&self.seen).last_ms);
+            if now_ms().saturating_sub(last) > SESSION_IDLE_MS {
+                let _l = lock_dir(&self.data);
+                let _ = add_cancelled(&self.data, &self.vault, &cl.session_sha256, "not heard from in 7 days");
+                let _ = crate::import::remove_file(&path(&self.data, CODE));
+                tracing::warn!(
+                    "move: the move to {} ended: not heard from since {}. Make a new move code to move again.",
+                    cl.from,
+                    when(last)
+                );
             }
         }
     }
@@ -795,12 +794,12 @@ impl Offer {
             (s.last_ms, s.sent)
         };
         let Ok(_l) = lock_dir(&self.data) else { return };
-        if let Ok(Some(mut c)) = read::<CodeRecord>(&self.data, &self.vault, CODE) {
-            if let Some(cl) = c.claimed.as_mut() {
-                cl.last_seen_ms = cl.last_seen_ms.max(last_ms);
-                cl.sent_bytes = cl.sent_bytes.max(sent);
-                let _ = write(&self.data, &self.vault, CODE, &c);
-            }
+        if let Ok(Some(mut c)) = read::<CodeRecord>(&self.data, &self.vault, CODE)
+            && let Some(cl) = c.claimed.as_mut()
+        {
+            cl.last_seen_ms = cl.last_seen_ms.max(last_ms);
+            cl.sent_bytes = cl.sent_bytes.max(sent);
+            let _ = write(&self.data, &self.vault, CODE, &c);
         }
     }
 
@@ -852,16 +851,16 @@ impl Offer {
                 self.heard();
                 return Ok((Who::Moved(Box::new(m)), session));
             }
-        } else if let Some(c) = &code {
-            if c.claimed.as_ref().is_some_and(|cl| proto::same(cl.session_sha256.as_bytes(), sh.as_bytes())) {
-                self.heard();
-                return Ok((Who::Copying(Box::new(c.clone())), session));
-            }
+        } else if let Some(c) = &code
+            && c.claimed.as_ref().is_some_and(|cl| proto::same(cl.session_sha256.as_bytes(), sh.as_bytes()))
+        {
+            self.heard();
+            return Ok((Who::Copying(Box::new(c.clone())), session));
         }
-        if let Some(list) = read::<Vec<CancelledRecord>>(&self.data, &self.vault, CANCELLED)? {
-            if let Some(c) = list.iter().rev().find(|c| c.session_sha256 == sh) {
-                return Err(cancelled_refusal(&c.why, c.at_ms));
-            }
+        if let Some(list) = read::<Vec<CancelledRecord>>(&self.data, &self.vault, CANCELLED)?
+            && let Some(c) = list.iter().rev().find(|c| c.session_sha256 == sh)
+        {
+            return Err(cancelled_refusal(&c.why, c.at_ms));
         }
         if !is_moved(&self.data) && code.is_none() {
             return Err(not_found());
@@ -887,10 +886,12 @@ impl Offer {
     fn head(&self, f: &Found<'_>, need_whole: bool, skips: &mut Skips) -> io::Result<Option<Head>> {
         let key = (f.dev, f.ino);
         let cached = lock(&self.heads).get(&key).copied();
-        if let Some(h) = cached {
-            if h.len == f.len && h.mt == f.mtime_us && (h.kind != Kind::Records || !need_whole || h.whole.is_some()) {
-                return Ok(Some(h));
-            }
+        if let Some(h) = cached
+            && h.len == f.len
+            && h.mt == f.mtime_us
+            && (h.kind != Kind::Records || !need_whole || h.whole.is_some())
+        {
+            return Ok(Some(h));
         }
         let mut file = match tree::open_file(f.full) {
             Ok(x) => x,
@@ -1188,14 +1189,12 @@ impl Offer {
                 (_, Some(id)) => hex::encode(id),
             };
             let mut ok = version == w.v && w.to <= len;
-            if ok {
-                if let Some(t) = &w.tail {
-                    ok = w.from >= proto::TAIL && {
-                        let mut b = [0u8; proto::TAIL as usize];
-                        file.seek(SeekFrom::Start(w.from - proto::TAIL))?;
-                        file.read_exact(&mut b).is_ok() && hex::encode(b) == *t
-                    };
-                }
+            if ok && let Some(t) = &w.tail {
+                ok = w.from >= proto::TAIL && {
+                    let mut b = [0u8; proto::TAIL as usize];
+                    file.seek(SeekFrom::Start(w.from - proto::TAIL))?;
+                    file.read_exact(&mut b).is_ok() && hex::encode(b) == *t
+                };
             }
             if !ok {
                 frame.flags = proto::CHANGED;

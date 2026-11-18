@@ -36,18 +36,18 @@ fn online(logs: &[&LogFacts], join_ms: u64) -> Vec<Piece> {
     pieces.sort_by_key(|a| (a.start, a.end));
     let mut out: Vec<Piece> = Vec::with_capacity(pieces.len());
     for p in pieces {
-        if let Some(last) = out.last_mut() {
-            if p.start <= last.end.saturating_add(join_ms) {
-                if last.buses == p.buses {
-                    last.end = last.end.max(p.end);
-                    continue;
-                }
-                if p.end <= last.end {
-                    continue; // inside another log's frames (two bridges at once): adds nothing
-                }
-                // other buses: the earlier one runs until these start
-                last.end = p.start;
+        if let Some(last) = out.last_mut()
+            && p.start <= last.end.saturating_add(join_ms)
+        {
+            if last.buses == p.buses {
+                last.end = last.end.max(p.end);
+                continue;
             }
+            if p.end <= last.end {
+                continue; // inside another log's frames (two bridges at once): adds nothing
+            }
+            // other buses: the earlier one runs until these start
+            last.end = p.start;
         }
         out.push(p);
     }
@@ -112,11 +112,13 @@ pub(crate) fn states(
             None if asleep > 0 => (State::Asleep, Vec::new()),
             None => (State::Unknown, Vec::new()),
         };
-        if let Some(last) = spans.last_mut() {
-            if last.state == state && last.buses == buses && last.end_ms == start {
-                last.end_ms = end;
-                return;
-            }
+        if let Some(last) = spans.last_mut()
+            && last.state == state
+            && last.buses == buses
+            && last.end_ms == start
+        {
+            last.end_ms = end;
+            return;
         }
         spans.push(StateSpan { car, state, start_ms: start, end_ms: end, buses, source: Source::Can });
     };

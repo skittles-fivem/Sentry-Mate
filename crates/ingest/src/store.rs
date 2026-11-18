@@ -461,10 +461,11 @@ impl Inner {
             let converting = || f.strip_suffix(vault::records::CONVERTING).and_then(|n| n.strip_suffix(".part"));
             let Some(name) = f.strip_suffix(".part").or_else(|| f.strip_suffix(".sealing")).or_else(converting) else {
                 // a promise whose upload is gone
-                if let Some(name) = f.strip_suffix(".part.json") {
-                    if !up_dir.join(format!("{name}.part")).exists() && old(&e) {
-                        let _ = std::fs::remove_file(e.path());
-                    }
+                if let Some(name) = f.strip_suffix(".part.json")
+                    && !up_dir.join(format!("{name}.part")).exists()
+                    && old(&e)
+                {
+                    let _ = std::fs::remove_file(e.path());
                 }
                 continue;
             };

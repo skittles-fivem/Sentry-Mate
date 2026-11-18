@@ -231,11 +231,11 @@ impl Utf16 {
                 }
             }
         }
-        let mut pairs = buf.chunks_exact(2);
-        for p in &mut pairs {
-            self.unit(u16::from_le_bytes([p[0], p[1]]));
+        let (pairs, rest) = buf.as_chunks::<2>();
+        for p in pairs {
+            self.unit(u16::from_le_bytes(*p));
         }
-        self.odd = pairs.remainder().first().copied();
+        self.odd = rest.first().copied();
     }
 
     fn unit(&mut self, u: u16) {

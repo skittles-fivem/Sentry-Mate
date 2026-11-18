@@ -1,5 +1,7 @@
 # Moving to another server
 
+[← Back to the README](../README.md)
+
 This guide moves everything from one Sentry Mate server to another: the CAN logs, uploads still arriving, the
 upload tokens, the trust records and the TLS key. The CAN Bridge keeps its token and its certificate SHA-256. At
 most you change the server address in the app.

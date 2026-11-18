@@ -1,0 +1,7 @@
+{
+  "name": "Checker fixture: ok",
+  "description": "A tiny pack that passes every check of ui/tools/check.js. Test data only.",
+  "author": "Sentry Mate",
+  "version": "0.0.1",
+  "api": 1
+}

@@ -103,25 +103,25 @@ pub fn chain(entries: &[Entry]) -> ChainReport {
             }
         }
         let idx: Vec<u64> = by_index.keys().copied().collect();
-        if p > 0 {
-            if let Some(s0) = idx.first().and_then(|i| by_index.get(i)) {
-                let before = report.segments.last().map(|s| (s.last, last_names.last().cloned().unwrap_or_default()));
-                let said = s0
-                    .link
-                    .chain_note
-                    .as_ref()
-                    .map_or(" (the bridge gave no note)".to_string(), |n| format!(" (the bridge says: {n})"));
-                let tail = before.as_ref().map_or(String::new(), |(i, n)| {
-                    format!(": logs signed between {n} (#{i}) and it cannot be checked for gaps")
-                });
-                report.restarts.push(Restart {
-                    index: s0.link.index,
-                    name: s0.link.name.clone(),
-                    note: s0.link.chain_note.clone(),
-                    after: before,
-                    text: format!("the chain started again at {} with {}{said}{tail}", s0.link.index, s0.link.name),
-                });
-            }
+        if p > 0
+            && let Some(s0) = idx.first().and_then(|i| by_index.get(i))
+        {
+            let before = report.segments.last().map(|s| (s.last, last_names.last().cloned().unwrap_or_default()));
+            let said = s0
+                .link
+                .chain_note
+                .as_ref()
+                .map_or(" (the bridge gave no note)".to_string(), |n| format!(" (the bridge says: {n})"));
+            let tail = before.as_ref().map_or(String::new(), |(i, n)| {
+                format!(": logs signed between {n} (#{i}) and it cannot be checked for gaps")
+            });
+            report.restarts.push(Restart {
+                index: s0.link.index,
+                name: s0.link.name.clone(),
+                note: s0.link.chain_note.clone(),
+                after: before,
+                text: format!("the chain started again at {} with {}{said}{tail}", s0.link.index, s0.link.name),
+            });
         }
         if idx.is_empty() {
             continue;
@@ -162,14 +162,14 @@ pub fn chain(entries: &[Entry]) -> ChainReport {
                         ),
                     });
                 }
-                if let (Some(a), Some(b)) = (at(&prev.link.name), at(&cur.link.name)) {
-                    if b < a {
-                        report.issues.push(ChainIssue::Reordered {
-                            index: i,
-                            name: cur.link.name.clone(),
-                            text: format!("log {i} starts before log {}", i - 1),
-                        });
-                    }
+                if let (Some(a), Some(b)) = (at(&prev.link.name), at(&cur.link.name))
+                    && b < a
+                {
+                    report.issues.push(ChainIssue::Reordered {
+                        index: i,
+                        name: cur.link.name.clone(),
+                        text: format!("log {i} starts before log {}", i - 1),
+                    });
                 }
             }
         }

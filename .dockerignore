@@ -1,6 +1,12 @@
+# Docker build context: only what the image needs
 target
 .git
-data
+.github
 docs
+truenas
+data
+keys
+.env
+README.md
 *.log.xz
 *.log.xz.json

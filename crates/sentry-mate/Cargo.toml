@@ -19,11 +19,14 @@ gate = { path = "../gate" }
 moving = { path = "../moving" }
 ingest = { path = "../ingest" }
 logfmt = { path = "../logfmt" }
+model = { path = "../model" }
+timeline = { path = "../timeline" }
 trust = { path = "../trust" }
 vault = { path = "../vault" }
 zeroize = "1"
 clap = { version = "4", features = ["derive", "env"] }
 hex = "0.4"
+rustix = { version = "1", features = ["process"] }
 serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
@@ -31,4 +34,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
+base64 = "0.22"
+lzma-rs = "0.3"
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 tempfile = "3"

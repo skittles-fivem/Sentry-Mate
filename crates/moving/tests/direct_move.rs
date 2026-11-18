@@ -261,14 +261,13 @@ async fn a_whole_move_while_a_bridge_keeps_uploading() {
         if p.starts_with("can/") && !p.contains("/uploading/") && !p.contains(".waiting") && !after.contains_key(p) {
             panic!("{p} is missing on the new server");
         }
-        if let Some((b2, mt2)) = after.get(p) {
-            if !p.ends_with("counts.json")
-                && !p.contains("trust")
-                && !p.contains("uploading")
-                && !p.contains(".waiting")
-            {
-                assert_eq!((bytes, mt), (b2, mt2), "{p}");
-            }
+        if let Some((b2, mt2)) = after.get(p)
+            && !p.ends_with("counts.json")
+            && !p.contains("trust")
+            && !p.contains("uploading")
+            && !p.contains(".waiting")
+        {
+            assert_eq!((bytes, mt), (b2, mt2), "{p}");
         }
     }
     assert_eq!(token_list(&old.data, old.vault.clone()).await, token_list(&data, v.clone()).await, "the same tokens");
@@ -564,10 +563,10 @@ async fn cut_connections_and_restarts_of_both_servers_carry_on() {
     let first = tokio::task::spawn_blocking(move || pull::run(&d, &k, &o1));
     let t0 = Instant::now();
     loop {
-        if let Some(s) = pull::status(&data, &keys).unwrap() {
-            if s.progress.bytes_done > 1_000_000 {
-                break;
-            }
+        if let Some(s) = pull::status(&data, &keys).unwrap()
+            && s.progress.bytes_done > 1_000_000
+        {
+            break;
         }
         assert!(t0.elapsed() < Duration::from_secs(60), "the copy doesn't start");
         tokio::time::sleep(Duration::from_millis(20)).await;

@@ -162,10 +162,10 @@ impl Inner {
     fn leave(&self) {
         let mut st = self.lock();
         st.inside = st.inside.saturating_sub(1);
-        if st.inside == 0 {
-            if let Some(f) = &self.files {
-                let _ = flock(&f.gate, FlockOperation::Unlock);
-            }
+        if st.inside == 0
+            && let Some(f) = &self.files
+        {
+            let _ = flock(&f.gate, FlockOperation::Unlock);
         }
     }
 }

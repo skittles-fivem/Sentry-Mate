@@ -569,11 +569,11 @@ struct Sink {
 impl Sink {
     fn start(&mut self, path: &str) -> io::Result<()> {
         let full = self.root.join(path);
-        if let Some(parent) = full.parent() {
-            if self.last_dir.as_deref() != Some(parent) {
-                std::fs::create_dir_all(parent)?;
-                self.last_dir = Some(parent.to_path_buf());
-            }
+        if let Some(parent) = full.parent()
+            && self.last_dir.as_deref() != Some(parent)
+        {
+            std::fs::create_dir_all(parent)?;
+            self.last_dir = Some(parent.to_path_buf());
         }
         self.file = Some(BufWriter::with_capacity(1 << 16, create_private(&full)?));
         Ok(())

@@ -4,6 +4,13 @@
 //! whose sidecar hasn't come after [`WAIT_MS`] is judged without it (unsigned, or failed once the car is paired).
 //! Records judged by older rules ([`trust::RULES_VERSION`]) are judged again by [`Judge::rejudge_all`].
 //!
+//! The owner can trust another key that signed a car key's logs ([`Judge::trust_key`]): it becomes the pin, and the
+//! key trusted before stays trusted for the logs that came while it was ([`Former`]), as Sentry Six Manager keeps
+//! them verified.
+//!
+//! The server and an owner's command can use a car key's records at the same time: each holds the key's lock file
+//! while it does (see [`crate::ledger`]), and a head kept in memory is read again when another process changed it.
+//!
 //! Built for any number of car keys: each key's records are kept on disk per key (see [`crate::ledger`]: a small head,
 //! the records, and a journal an upload adds one batch to), only the heads of recently used keys stay in memory (a
 //! bounded cache), each key has its own lock so keys never wait on each other, and the sweep looks only at the keys
@@ -17,7 +24,7 @@ use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
-use trust::{Check, Entry, Link, LogName, Verdict};
+use trust::{Check, Entry, Link, LogName, SIGNED_BY_ANOTHER_KEY, Verdict, same_fingerprint};
 
 /// A log without its sidecar this long is judged without it.
 pub const WAIT_MS: u64 = 10 * 60 * 1000;
@@ -56,6 +63,13 @@ impl Record {
     pub fn usable(&self) -> bool {
         matches!(self.status, Status::Verified | Status::Unsigned) || self.override_use
     }
+
+    /// The key that signed it, when its signature checks out (verified, or failed only for being another key's).
+    pub fn signed_by(&self) -> Option<&str> {
+        let good = self.status == Status::Verified
+            || (self.status == Status::Failed && self.reason.as_deref() == Some(SIGNED_BY_ANOTHER_KEY));
+        self.link.as_ref().filter(|_| good).map(|l| l.key_fingerprint.as_str())
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -66,6 +80,14 @@ pub struct Pin {
     pub how: String,
 }
 
+/// A key trusted before the one trusted now. Its logs that came while it was trusted stay verified; later ones fail.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Former {
+    pub fingerprint: String,
+    /// When the owner trusted another key in its place.
+    pub until_ms: u64,
+}
+
 /// A key's whole trust state, every log's record in it: for one car's page or a tool, never for every car at once.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Book {
@@ -73,6 +95,8 @@ pub struct Book {
     pub pin: Option<Pin>,
     /// Another key that signed logs here, offered to the owner to trust.
     pub new_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub former: Vec<Former>,
     pub logs: BTreeMap<String, Record>,
 }
 
@@ -82,8 +106,54 @@ pub struct Summary {
     pub v: u32,
     pub pin: Option<Pin>,
     pub new_key: Option<String>,
+    pub former: Vec<Former>,
     /// Logs waiting for their sidecar.
     pub waiting: usize,
+}
+
+/// One signing key named by a car key's logs.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Signer {
+    /// Its fingerprint as the CAN Bridge app shows it ("Log signing key"): the id [`Judge::trust_key`] takes and the
+    /// chain report names.
+    pub fingerprint: String,
+    /// Logs it signed: the signature checks out, whether or not the key is trusted.
+    pub signed: u64,
+    /// Logs that name it but failed their check (a changed file, a bad signature, signed for another car key).
+    pub failed: u64,
+    /// When the first and the last of those logs arrived.
+    pub first_seen_ms: u64,
+    pub last_seen_ms: u64,
+}
+
+/// The signing keys of a car key, and which is trusted.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Signers {
+    pub pin: Option<Pin>,
+    pub former: Vec<Former>,
+    /// In the order they were first seen.
+    pub keys: Vec<Signer>,
+}
+
+/// What [`Judge::trust_key`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Trusted {
+    /// It is the trusted key now. `verified`: its logs, all verified now. `before`: the key trusted until now, which
+    /// stays trusted for the logs that came before.
+    Now { fingerprint: String, verified: u64, before: Option<String> },
+    /// It was the trusted key already.
+    Already,
+    /// No log of this car key is signed by it.
+    NotSeen,
+}
+
+/// The chain report of a car key's trusted key.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
+pub struct KeyChain {
+    /// The key the report covers (its fingerprint, as `keys` lists it); `None` before the first signed log.
+    pub signing_key: Option<String>,
+    #[serde(flatten)]
+    pub report: trust::ChainReport,
 }
 
 pub struct Judge {
@@ -101,6 +171,12 @@ fn io(e: crate::ApiError) -> std::io::Error {
 
 fn bad_key() -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a CAN Bridge key")
+}
+
+/// A key held by this process: its lock in memory, then its lock file (released in that order's reverse).
+struct Held {
+    _file: ledger::Locked,
+    _one: tokio::sync::OwnedMutexGuard<()>,
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> std::io::Result<T> + Send + 'static) -> std::io::Result<T> {
@@ -163,13 +239,31 @@ impl Judge {
         Ledger::new(&self.dir, key, self.store.vault().clone())
     }
 
-    /// The key's head (the caller holds the key's lock): from memory, else from disk.
-    async fn take_head(&self, key: &str) -> std::io::Result<Head> {
-        if let Some(h) = self.heads.lock().unwrap_or_else(PoisonError::into_inner).take(key) {
-            return Ok(h);
-        }
+    /// Holds a key: one task of this process at a time, and one process at a time (its lock file), until dropped.
+    async fn hold(&self, key: &str) -> std::io::Result<Held> {
+        let one = self.locks.get(key).lock_owned().await;
         let ledger = self.ledger(key);
-        blocking(move || ledger.load_head()).await
+        let file = blocking(move || ledger.lock()).await?;
+        Ok(Held { _file: file, _one: one })
+    }
+
+    /// The key's head (the caller holds the key): from memory while the files are as it last saw them, else from
+    /// disk (another process changed them, or it isn't in memory).
+    async fn take_head(&self, key: &str) -> std::io::Result<Head> {
+        let cached = self.heads.lock().unwrap_or_else(PoisonError::into_inner).take(key);
+        let ledger = self.ledger(key);
+        blocking(move || {
+            if let Some(h) = cached
+                && h.stamp.is_some()
+                && h.stamp == Some(ledger.stamp(h.generation)?)
+            {
+                return Ok(h);
+            }
+            let mut h = ledger.load_head()?;
+            h.stamp = Some(ledger.stamp(h.generation)?);
+            Ok(h)
+        })
+        .await
     }
 
     fn put_head(&self, key: &str, head: Head) {
@@ -206,6 +300,7 @@ impl Judge {
                 ledger::unmark_waiting(&can, &key)?;
                 head.marked = false;
             }
+            head.stamp = Some(ledger.stamp(head.generation)?);
             Ok(head)
         })
         .await
@@ -218,8 +313,7 @@ impl Judge {
         };
         let log_name = name.strip_suffix(".json").unwrap_or(name).to_string();
         let key = n.vehicle_key.to_string();
-        let lock = self.locks.get(&key);
-        let _one = lock.lock().await;
+        let _held = self.hold(&key).await?;
         let mut head = self.take_head(&key).await?;
         if !self.store.exists(&log_name) {
             self.put_head(&key, head);
@@ -280,7 +374,18 @@ impl Judge {
         };
         let (sha, len) = self.store.hash(log_name).await.map_err(io)?;
         let check = trust::check(log_name, &sha, len, &side);
-        let verdict = trust::judge(&check, head.pin.as_ref().map(|p| p.fingerprint.as_str()));
+        // signed by a key the owner trusted before the one trusted now, and here while it was: still verified
+        let earlier = match &check {
+            Check::Signed(l) => head
+                .former
+                .iter()
+                .any(|f| same_fingerprint(&f.fingerprint, &l.key_fingerprint) && arrived_ms < f.until_ms),
+            _ => false,
+        };
+        let verdict = match trust::judge(&check, head.pin.as_ref().map(|p| p.fingerprint.as_str())) {
+            Verdict::Failed(r) if earlier && r == SIGNED_BY_ANOTHER_KEY => Verdict::Verified,
+            v => v,
+        };
         let link = match &check {
             Check::Signed(l) => Some(l.clone()),
             Check::Bad { link, .. } => link.clone(),
@@ -292,10 +397,11 @@ impl Judge {
                 Pin { fingerprint: l.key_fingerprint.clone(), pinned_ms: now_ms(), how: "first-signed-log".into() };
             changes.push(Change::Pin { pin: Some(pin) });
         }
-        if let (Verdict::Failed(reason), Some(l)) = (&verdict, &link) {
-            if reason == "signed by another key" && head.new_key.is_none() {
-                changes.push(Change::NewKey { fingerprint: Some(l.key_fingerprint.clone()) });
-            }
+        if let (Verdict::Failed(reason), Some(l)) = (&verdict, &link)
+            && reason == SIGNED_BY_ANOTHER_KEY
+            && head.new_key.is_none()
+        {
+            changes.push(Change::NewKey { fingerprint: Some(l.key_fingerprint.clone()) });
         }
         let (status, reason) = match verdict {
             Verdict::Verified => (Status::Verified, None),
@@ -330,8 +436,7 @@ impl Judge {
     }
 
     async fn sweep_key(&self, key: &str) -> std::io::Result<usize> {
-        let lock = self.locks.get(key);
-        let _one = lock.lock().await;
+        let _held = self.hold(key).await?;
         let mut head = self.take_head(key).await?;
         let now = now_ms();
         let due: Vec<(String, u64)> = head
@@ -360,29 +465,33 @@ impl Judge {
         if !ledger::valid_key(key) {
             return Err(bad_key());
         }
-        let lock = self.locks.get(key);
-        let _one = lock.lock().await;
-        let head = self.take_head(key).await?;
-        let (head, n) = self.rejudge_locked(key, head, Vec::new()).await?;
+        let _held = self.hold(key).await?;
+        let mut head = self.take_head(key).await?;
+        let rules = Change::Rules { v: trust::RULES_VERSION };
+        head.apply(&rules);
+        let (head, n) = self.rejudge_locked(key, head, vec![rules], |_| true).await?;
         self.put_head(key, head);
         Ok(n)
     }
 
-    /// Every log again, in name order (the key's lock held), with `changes` already applied to `head` (a new pin).
-    /// Nothing is written until every log is judged; then it all goes into the next generation at once, so a crash or
-    /// an error part way (a log that can't be read) leaves the key exactly as it was, never half judged by a new pin.
-    /// Memory: this key's records once (a fold of a journal this long needs them anyway).
+    /// The logs `which` picks again, in name order (the key held), with `changes` already applied to `head` (a new
+    /// pin). Nothing is written until every one is judged; then it all goes into the next generation at once, so a
+    /// crash or an error part way (a log that can't be read) leaves the key exactly as it was, never half judged by a
+    /// new pin. Memory: the picked names once (a fold of a journal this long needs them anyway).
     async fn rejudge_locked(
         &self,
         key: &str,
         mut head: Head,
         mut changes: Vec<Change>,
+        which: impl Fn(&Record) -> bool + Send + 'static,
     ) -> std::io::Result<(Head, usize)> {
         let (ledger, h) = (self.ledger(key), head.clone());
         let names: Vec<(String, u64, bool)> = blocking(move || {
             let mut v = Vec::new();
             ledger.for_each(&h, |name, r| {
-                v.push((name.to_string(), r.arrived_ms, r.status != Status::Waiting));
+                if which(r) {
+                    v.push((name.to_string(), r.arrived_ms, r.status != Status::Waiting));
+                }
                 ControlFlow::Continue(())
             })?;
             Ok(v)
@@ -397,35 +506,135 @@ impl Judge {
                 changes.extend(ch);
             }
         }
-        let rules = Change::Rules { v: trust::RULES_VERSION };
-        head.apply(&rules);
-        changes.push(rules);
         let head = self.commit(key, head, marker, changes, Fold::Whole).await?;
         Ok((head, names.len()))
     }
 
-    /// The owner trusts another key (checked by its fingerprint in the app): it becomes the pin, all logs judged again.
-    pub async fn trust_key(&self, key: &str, fingerprint: &str) -> std::io::Result<()> {
+    /// The owner trusts another key that signed this car key's logs (checked by its fingerprint in the app): it
+    /// becomes the pin, and its logs are judged again (they are verified now). The key trusted until now stays trusted
+    /// for the logs that came before ([`Former`]); its later logs fail. Only a key that signed at least one of the car
+    /// key's logs can be trusted. Any case, with or without colons.
+    pub async fn trust_key(&self, key: &str, fingerprint: &str) -> std::io::Result<Trusted> {
         if !ledger::valid_key(key) {
             return Err(bad_key());
         }
-        let lock = self.locks.get(key);
-        let _one = lock.lock().await;
+        let _held = self.hold(key).await?;
         let mut head = self.take_head(key).await?;
-        let pin = Pin { fingerprint: fingerprint.to_string(), pinned_ms: now_ms(), how: "owner".into() };
-        let changes = vec![Change::Pin { pin: Some(pin) }, Change::NewKey { fingerprint: None }];
+        if head.pin.as_ref().is_some_and(|p| same_fingerprint(&p.fingerprint, fingerprint)) {
+            self.put_head(key, head);
+            return Ok(Trusted::Already);
+        }
+        // the key as its logs name it, from a log it really signed
+        let (ledger, h, want) = (self.ledger(key), head.clone(), fingerprint.to_string());
+        let seen = blocking(move || {
+            let mut found = None;
+            ledger.for_each(&h, |_, r| match r.signed_by() {
+                Some(fp) if same_fingerprint(fp, &want) => {
+                    found = Some(fp.to_string());
+                    ControlFlow::Break(())
+                }
+                _ => ControlFlow::Continue(()),
+            })?;
+            Ok(found)
+        })
+        .await?;
+        let Some(fp) = seen else {
+            self.put_head(key, head);
+            return Ok(Trusted::NotSeen);
+        };
+        let now = now_ms();
+        let before = head.pin.as_ref().map(|p| p.fingerprint.clone());
+        let mut former: Vec<Former> = head.former.clone();
+        former.retain(|f| {
+            !same_fingerprint(&f.fingerprint, &fp)
+                && before.as_ref().is_none_or(|b| !same_fingerprint(&f.fingerprint, b))
+        });
+        if let Some(b) = &before {
+            former.push(Former { fingerprint: b.clone(), until_ms: now });
+        }
+        let pin = Pin { fingerprint: fp.clone(), pinned_ms: now, how: "owner".into() };
+        let changes =
+            vec![Change::Pin { pin: Some(pin) }, Change::NewKey { fingerprint: None }, Change::Former { former }];
         for c in &changes {
             head.apply(c);
         }
-        // the pin is written with every log judged by it, or not at all (on an error the head in memory, with the
-        // new pin, is dropped: the next use reads the key as it is on disk)
-        let (head, _) = self.rejudge_locked(key, head, changes).await?;
+        // Only logs signed and intact but by another key can change: those of the new key become verified, the old
+        // key's stay verified (they came before), others' stay failed. The pin is written with them, or not at all (on
+        // an error the head in memory, with the new pin, is dropped: the next use reads the key as it is on disk).
+        let other_key = |r: &Record| r.status == Status::Failed && r.reason.as_deref() == Some(SIGNED_BY_ANOTHER_KEY);
+        let (head, _) = self.rejudge_locked(key, head, changes, other_key).await?;
+        let (ledger, h, want) = (self.ledger(key), head.clone(), fp.clone());
+        let verified = blocking(move || {
+            let mut n = 0u64;
+            ledger.for_each(&h, |_, r| {
+                if r.status == Status::Verified && r.link.as_ref().is_some_and(|l| l.key_fingerprint == want) {
+                    n += 1;
+                }
+                ControlFlow::Continue(())
+            })?;
+            Ok(n)
+        })
+        .await?;
         self.put_head(key, head);
-        Ok(())
+        Ok(Trusted::Now { fingerprint: fp, verified, before })
     }
 
-    /// Reads a key's records with `f` (the key's lock held). Another process (a command) may fold the journal at the
-    /// same moment: a generation that vanished while being read is read again from the new head.
+    /// Whether a car key has a folder here (an upload of it began). A mistyped key has none.
+    pub fn known(&self, key: &str) -> bool {
+        ledger::valid_key(key) && self.dir.join(key).is_dir()
+    }
+
+    /// The signing keys named by a car key's logs, and which one is trusted (its whole history: one key at a time).
+    pub async fn signers(&self, key: &str) -> std::io::Result<Signers> {
+        self.read(key, |l, h| {
+            // (a map: logs uploaded with the token could each name a key of their own)
+            let mut by_key: std::collections::HashMap<String, Signer> = std::collections::HashMap::new();
+            l.for_each(h, |_, r| {
+                let Some(link) = r.link.as_ref() else { return ControlFlow::Continue(()) };
+                let k = by_key.entry(link.key_fingerprint.clone()).or_insert_with(|| Signer {
+                    fingerprint: link.key_fingerprint.clone(),
+                    signed: 0,
+                    failed: 0,
+                    first_seen_ms: r.arrived_ms,
+                    last_seen_ms: r.arrived_ms,
+                });
+                if r.signed_by().is_some() {
+                    k.signed += 1;
+                } else {
+                    k.failed += 1;
+                }
+                k.first_seen_ms = k.first_seen_ms.min(r.arrived_ms);
+                k.last_seen_ms = k.last_seen_ms.max(r.arrived_ms);
+                ControlFlow::Continue(())
+            })?;
+            let mut keys: Vec<Signer> = by_key.into_values().collect();
+            keys.sort_by(|a, b| a.first_seen_ms.cmp(&b.first_seen_ms).then_with(|| a.fingerprint.cmp(&b.fingerprint)));
+            Ok(Signers { pin: h.pin.clone(), former: h.former.clone(), keys })
+        })
+        .await
+    }
+
+    /// The names of a car key's `n` newest logs whose data may be used, newest first.
+    pub async fn latest_usable(&self, key: &str, n: usize) -> std::io::Result<Vec<String>> {
+        self.read(key, move |l, h| {
+            let mut last = std::collections::VecDeque::with_capacity(n + 1);
+            l.for_each(h, |name, r| {
+                if r.usable() && n > 0 {
+                    if last.len() == n {
+                        last.pop_front();
+                    }
+                    last.push_back(name.to_string());
+                }
+                ControlFlow::Continue(())
+            })?;
+            Ok(last.into_iter().rev().collect())
+        })
+        .await
+    }
+
+    /// Reads a key's records with `f` (the key held). A process that doesn't take the lock file (an older version)
+    /// may fold the journal at the same moment: a generation that vanished while being read is read again from the
+    /// new head.
     async fn read<T: Send + 'static>(
         &self,
         key: &str,
@@ -434,8 +643,7 @@ impl Judge {
         if !ledger::valid_key(key) {
             return Err(bad_key());
         }
-        let lock = self.locks.get(key);
-        let _one = lock.lock().await;
+        let _held = self.hold(key).await?;
         let f = Arc::new(f);
         let mut tries = 0;
         loop {
@@ -466,7 +674,7 @@ impl Judge {
                 logs.insert(name.to_string(), r.clone());
                 ControlFlow::Continue(())
             })?;
-            Ok(Book { v: h.v, pin: h.pin.clone(), new_key: h.new_key.clone(), logs })
+            Ok(Book { v: h.v, pin: h.pin.clone(), new_key: h.new_key.clone(), former: h.former.clone(), logs })
         })
         .await
         .unwrap_or_else(|_| Book { v: trust::RULES_VERSION, ..Book::default() })
@@ -475,7 +683,13 @@ impl Judge {
     /// A key's pairing and how many logs wait, without reading its records.
     pub async fn summary(&self, key: &str) -> Option<Summary> {
         self.read(key, |_, h| {
-            Ok(Summary { v: h.v, pin: h.pin.clone(), new_key: h.new_key.clone(), waiting: h.waiting.len() })
+            Ok(Summary {
+                v: h.v,
+                pin: h.pin.clone(),
+                new_key: h.new_key.clone(),
+                former: h.former.clone(),
+                waiting: h.waiting.len(),
+            })
         })
         .await
         .ok()
@@ -486,11 +700,11 @@ impl Judge {
         self.read(key, move |l, h| l.lookup(h, &name)).await.ok().flatten()
     }
 
-    /// The chain report of a key's signed logs by its paired key.
-    pub async fn chain(&self, key: &str) -> trust::ChainReport {
+    /// The chain report of a key's signed logs by its paired key, and which key that is.
+    pub async fn chain(&self, key: &str) -> KeyChain {
         self.read(key, |l, h| {
             let Some(pin) = &h.pin else {
-                return Ok(trust::ChainReport::default());
+                return Ok(KeyChain::default());
             };
             let mut entries: Vec<Entry> = Vec::new();
             l.for_each(h, |_, r| {
@@ -504,7 +718,7 @@ impl Judge {
                 }
                 ControlFlow::Continue(())
             })?;
-            Ok(trust::chain(&entries))
+            Ok(KeyChain { signing_key: Some(pin.fingerprint.clone()), report: trust::chain(&entries) })
         })
         .await
         .unwrap_or_default()

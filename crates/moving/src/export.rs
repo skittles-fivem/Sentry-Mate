@@ -171,10 +171,10 @@ pub fn remove_unused_snapshots(data: &Path) -> usize {
             continue;
         }
         // held while it is in use; one with no lock file was cut short while it was made
-        if let Ok(Some(_held)) = lock_snapshot(&dir) {
-            if std::fs::remove_dir_all(&dir).is_ok() {
-                n += 1;
-            }
+        if let Ok(Some(_held)) = lock_snapshot(&dir)
+            && std::fs::remove_dir_all(&dir).is_ok()
+        {
+            n += 1;
         }
     }
     n
@@ -320,11 +320,11 @@ fn take(
             Err(e) => return Err(e.into()),
         };
         let dst = files_dir.join(f.path);
-        if let Some(parent) = dst.parent() {
-            if last_dir.as_deref() != Some(parent) {
-                std::fs::create_dir_all(parent)?;
-                last_dir = Some(parent.to_path_buf());
-            }
+        if let Some(parent) = dst.parent()
+            && last_dir.as_deref() != Some(parent)
+        {
+            std::fs::create_dir_all(parent)?;
+            last_dir = Some(parent.to_path_buf());
         }
         let mut head = [0u8; vault::records::HEADER];
         let n = read_up_to(&mut src, &mut head)?;

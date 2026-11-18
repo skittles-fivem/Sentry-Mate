@@ -723,10 +723,10 @@ impl Accounts {
         if p.len() >= MAX_PENDING {
             p.retain(|_, v| v.until_ms > now);
         }
-        if p.len() >= MAX_PENDING {
-            if let Some(oldest) = p.iter().min_by_key(|(_, v)| v.until_ms).map(|(k, _)| *k) {
-                p.remove(&oldest);
-            }
+        if p.len() >= MAX_PENDING
+            && let Some(oldest) = p.iter().min_by_key(|(_, v)| v.until_ms).map(|(k, _)| *k)
+        {
+            p.remove(&oldest);
         }
         p.insert(h, Pending { account: s.id, key: s.key.clone(), until_ms, tries: 0 });
         Ok((token, until_ms))

@@ -1,51 +1,39 @@
 // Sentry Mate, "Logbook" UI pack: runs before the first paint.
 //
-// Sets the page's size and theme on <html> before anything is drawn, so it
-// never shows at one size and then jumps to another. A classic script file,
-// not inline, to suit the page's Content-Security-Policy.
+// Sets the size and the theme on <html> before anything is drawn, so the page never shows at one size and
+// then jumps to another. A classic script file, not inline, to suit the page's Content-Security-Policy.
 //
-// Size. app.css sets html font-size from one of three things:
-//   1. Interface size, when the person chose one (data-ui-size): that share of
-//      the standard size, 75% to 200%, on any screen. It is stored by the
-//      server (api.getPrefs); this browser keeps a copy of the last value it
-//      saw so the first paint is right, and app.js puts the server's value in
-//      place as soon as it arrives.
-//   2. Otherwise Auto (--auto, worked out here): the standard size on most
-//      screens, larger on very wide windows. It is measured from the window's
-//      width in device-independent pixels (window.outerWidth), which browser
-//      zoom does not change. So zoom always multiplies the whole page: 150%
-//      zoom is 1.5x the size at 100%, on a laptop and on a 4K wall alike.
-//   3. Without this script: a CSS-only Auto from the viewport width.
+// The size of everything is the root font size (app.css):
+//   html font-size = 100% (the browser's standard size) x --auto x --ui-size
+// The rule is the same in every Sentry Mate pack:
+// - Auto follows the screen, not the window, from screen.width x screen.height in CSS pixels: 1 up to
+//   1440 x 810, rising in a straight line to 1.45 at 3840 x 2160, capped there. The long and the short side
+//   both count, so a portrait 4K screen grows like a landscape one and a 3440 x 1440 ultrawide grows like a
+//   2560 x 1440 screen. Firefox reports the screen scaled by its page zoom, so there Auto is 1.
+// - "Follow screen size" (on by default) turns Auto on; off, Auto is 1.
+// - --ui-size is the person's Interface size, 75 to 200 % (default 100), whole numbers.
+// Both are stored with the person's preferences on the server; this browser keeps a copy only so this
+// first paint is right. core/display.js has the same formula and takes over once the page has started:
+// change both together.
 (function () {
   var html = document.documentElement;
-
-  // Auto: no growth up to 2400 device-independent px, then 1% more per 32 px,
-  // up to 145% at 3840 (a 4K screen at 100% OS scaling). A 4K screen at 150%
-  // or 200% OS scaling is 2560 or 1920 px wide here: the OS has already made
-  // everything bigger, so it gets little or no growth.
-  var AUTO_FROM = 2400, AUTO_SPAN = 3200, AUTO_MAX = 1.45;
-  function windowWidth() {
-    var w = window.outerWidth;
-    if (!(w > 0) && window.screen) w = window.screen.width; // some embedded views report no outer size
-    return w > 0 ? w : 0;
-  }
-  function applyAuto() {
-    var w = windowWidth();
-    if (!w) { html.removeAttribute('data-auto'); return; } // CSS falls back to the viewport width
-    var f = Math.min(AUTO_MAX, Math.max(1, 1 + (w - AUTO_FROM) / AUTO_SPAN));
-    var v = String(Math.round(f * 1000) / 1000);
-    if (html.getAttribute('data-auto') === v) return;
-    html.style.setProperty('--auto', v); // CSSOM, which the CSP allows (unlike style attributes in markup)
-    html.setAttribute('data-auto', v);
-  }
-  applyAuto();
-  window.addEventListener('resize', applyAuto);
-
   function read(key) {
-    try { var v = localStorage.getItem('logbook:' + key); return v == null ? null : JSON.parse(v); } catch (e) { return null; }
+    try { var v = localStorage.getItem(key); return v == null ? null : JSON.parse(v); } catch (e) { return null; }
   }
-  var size = read('uiSize');
-  if ([75, 90, 100, 110, 125, 150, 175, 200].indexOf(size) >= 0) html.setAttribute('data-ui-size', String(size));
-  var theme = read('theme');
+  function auto() {
+    if (/\bFirefox\//.test(navigator.userAgent || '')) return 1;
+    var s = window.screen || {}, w = s.width, h = s.height;
+    if (!(w > 0) || !(h > 0)) return 1;
+    var long = Math.max(w, h), short = Math.min(w, h);
+    var f = Math.max(0, Math.min(1, Math.min((long - 1440) / 2400, (short - 810) / 1350)));
+    return Math.round((1 + 0.45 * f) * 1000) / 1000;
+  }
+  var size = read('logbook:size') || {};
+  var n = Math.round(Number(size.size));
+  var pct = isFinite(n) && size.size != null ? Math.max(75, Math.min(200, n)) : 100;
+  var follow = size.follow !== false;
+  html.style.setProperty('--auto', String(follow ? auto() : 1)); // CSSOM, which the CSP allows
+  html.style.setProperty('--ui-size', String(pct / 100));
+  var theme = read('logbook:theme');
   if (theme === 'light' || theme === 'dark') html.setAttribute('data-theme', theme);
 }());

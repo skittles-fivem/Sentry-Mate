@@ -1,198 +1,199 @@
 # Sentry Mate
 
-A self-hosted car logger for Teslas fed by the **Screenmate CAN Bridge**: the car's own CAN bus data, uploaded by
-the bridge app, instead of Tesla's API. One Rust program in one small Docker image, no database or dashboard
-containers, no Tesla account, nothing that wakes the car.
+A self-hosted car logger for Teslas, fed by the **Screenmate CAN Bridge**. The bridge app records the car's own CAN
+bus and uploads the logs. Sentry Mate is meant to do what TeslaMate does, from those logs instead of Tesla's API: no
+Tesla account, nothing that wakes the car, one Rust program in one small Docker image, no database or dashboard
+containers.
 
-**Status: early.** What runs today is receiving, checking and decoding the bridge's logs. The parts that work out
-drives and charges, store them, and handle places and accounts are built and tested but not yet wired into the
-program, and neither are the TeslaMate import and MQTT; the web UI is being built. The plan is in [docs/plans/rust-can-logger.md](docs/plans/rust-can-logger.md).
+**Status: early.** Today it receives the bridge's logs, stores them sealed and checks each one's signature. You can
+decode one stored log at a time to CSV from the command line. There are no drives, charges, maps or web pages yet.
+The parts that work those out are built and tested but not yet wired in. All of it:
+[Status in detail](#status-in-detail).
 
-| Part | State |
+## Contents
+
+| Guide | What is in it |
 |---|---|
-| Upload API the bridge speaks (ping, status, resumable chunks), TLS 1.3 only | done |
-| Logs kept exactly as uploaded, never replaced | done |
-| One upload token per car, tied to its CAN key on first upload, no limit on cars | done |
-| Any number of cars: kept per car, bounded memory, cars upload in parallel, an upload never reads a car's folder | done |
-| Signature check, pairing with the car's key, chain report (gaps, swaps, restarts) | done |
-| Reading both log formats (candump text, columns) | done |
-| Decoding signals (DBC sets per model, bus split, the Screenmate's GPS), same values as Sentry Six Manager | done |
-| Drives, charges, states, positions, charge curves from the decoded signals; the car's model from its VIN | built, not wired in yet |
-| Storage for everything worked out (sealed, compressed columns, any number of cars, backups) | built, not wired in yet |
-| Places, geofences, charge costs with time-of-use rates, addresses offline or online | built, not wired in yet |
-| Accounts: admin and watch-only, per-car access, two-step sign-in, sessions, audit log | built, not wired in yet |
-| Encryption at rest (pure Rust): everything stored is sealed, key file + recovery key | done |
-| Moving to another server: a direct move with a one-time move code (two lines in the new server's compose file, no shell), or one export file (opens with the recovery key) | done, see [`docs/plans/move-server.md`](docs/plans/move-server.md) |
-| TeslaMate import from TeslaMate's own backup file (any number of cars, streamed, again later adds only what's new) | built, not wired in yet |
-| MQTT for Home Assistant (TLS only, discovery, any number of cars on one connection) | built, not wired in yet |
-| Web UI: UI packs, two designs as prototypes on made-up data in [`ui/`](ui/), maps; every TeslaMate tab gets a clearer page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) with the API in [`docs/ui-api.md`](docs/ui-api.md) | being built |
+| [docs/install.md](docs/install.md) | What you need, Docker Compose and TrueNAS step by step, updates, backups, restore, moving, ports and firewalls, when it does not start |
+| [docs/commands.md](docs/commands.md) | Every command, the settings (environment variables and flags), ports and limits, the files it keeps, changing the certificate |
+| [docs/moving.md](docs/moving.md) | Moving to another server in one step: a move code (TrueNAS: two lines), or one export file; the CAN Bridge app, undo, when it stops half way |
+| [docs/cars-and-bridge.md](docs/cars-and-bridge.md) | Supported cars, setting up the CAN Bridge app, running next to TeslaMate and Sentry Six Manager |
+| [docs/security.md](docs/security.md) | Security, privacy, when a log fails its check, a new signing key |
+| [docs/development.md](docs/development.md) | Building, the gates, CI and the image check, the crates and the layout |
+| [ui/README.md](ui/README.md) | The UI packs |
+| [docs/plans/rust-can-logger.md](docs/plans/rust-can-logger.md) | The plan |
 
-## Run it
+## Quick start
 
-```yaml
-# docker-compose.yml
-services:
-  sentry-mate:
-    build: .
-    restart: unless-stopped
-    ports:
-      - "10100:10100"   # CAN Bridge uploads, HTTPS (TLS 1.3 only)
-    volumes:
-      - ./data:/data    # everything, sealed
-      - ./keys:/keys    # the key file that opens it (its own folder, ideally another disk)
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    user: "1000:1000"
+On TrueNAS SCALE, follow [TrueNAS SCALE](docs/install.md#truenas-scale) instead: a custom app from
+[`truenas/sentry-mate.yaml`](truenas/sentry-mate.yaml), with two datasets owned by 568:568. The steps below are for
+Docker Compose.
+
+You need Linux with Docker and the Compose plugin, or TrueNAS SCALE 24.10 or newer, on amd64 or arm64, and the
+Screenmate CAN Bridge app build 149 or later. All of it: [What you need](docs/install.md#what-you-need).
+
+The image is published (`ghcr.io/skittles-fivem/sentry-mate`), so there is nothing to clone or build. If your user
+is not in the `docker` group, put `sudo` before the `docker` commands. Make a folder for it:
+
+```bash
+mkdir sentry-mate
 ```
 
 ```bash
-mkdir -p data keys && sudo chown 1000:1000 data keys
+cd sentry-mate
+```
+
+Get the compose file:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/skittles-fivem/Sentry-Mate/main/docker-compose.yml
+```
+
+It mounts two folders: `./data` at `/data` (everything, sealed) and `./keys` at `/keys` (the key file that opens it).
+Both lines are needed. Put the keys on another disk if you can: change `./keys` to that folder's path. Make the two
+folders and give them to the container's user, readable by nobody else:
+
+```bash
+mkdir -p data keys
 ```
 
 ```bash
-docker compose up -d --build
-```
-
-On first start Sentry Mate makes its vault and puts the **recovery key** in `keys/RECOVERY-KEY.txt` (not in the
-log). Copy it somewhere safe away from the server (a password manager, paper), then delete that file. With the key
-file it is the only way to open the data; lose both and nobody can.
-
-Make an upload token for the car (shown once):
-
-```bash
-docker compose exec sentry-mate /sentry-mate token new --car "Model Y"
-```
-
-In the CAN Bridge app, fill in **Second Sentry Six Manager** with what that prints: the address
-`https://<this server>:10100/api/can/logs`, the token, and the certificate SHA-256. The bridge then sends every log
-to Sentry Mate as well as to Sentry Six Manager, each on its own.
-
-Other commands:
-
-```bash
-docker compose exec sentry-mate /sentry-mate token list
+sudo chown 1000:1000 data keys
 ```
 
 ```bash
-docker compose exec sentry-mate /sentry-mate fingerprint
+sudo chmod 700 data keys
+```
+
+Start it, then read the log. It shows the upload address, the certificate SHA-256 and the vault's id, or why it
+didn't start and what to do:
+
+```bash
+docker compose up -d
 ```
 
 ```bash
-docker compose exec sentry-mate /sentry-mate chain <car key>
+docker logs sentry-mate
+```
+
+**The recovery key.** The first start puts it in `keys/RECOVERY-KEY.txt` (not in the log). With the key file it is
+the only way to open the data; lose both and nobody can. Read it, copy the line that starts with `SMRK-` somewhere
+safe away from the server (a password manager, paper), then delete the file:
+
+```bash
+sudo cat keys/RECOVERY-KEY.txt
 ```
 
 ```bash
-docker compose exec sentry-mate /sentry-mate log decode <log name> > signals.csv
+sudo rm keys/RECOVERY-KEY.txt
 ```
 
-New machine, or the key file lost: bring the data folder, then type the recovery key:
+Every start logs a warning while that file is still there.
+
+**An upload token** for the car (shown once). It prints the token's id, the token (it starts with `smt_`), and the
+three fields for the app:
 
 ```bash
-docker compose run --rm -it sentry-mate restore
+docker exec sentry-mate /sentry-mate token new --car "Model Y"
 ```
 
-Replace the recovery key (the old one stops working):
+**The CAN Bridge app.** Fill in its **Second Sentry Six Manager (optional)** section, then press **Apply &
+restart**. The app saves the fields only then.
 
-```bash
-docker compose exec sentry-mate /sentry-mate recovery-key new
-```
+| App field | What to put in |
+|---|---|
+| Upload address (empty = off) | `https://<this server>:10100/api/can/logs` |
+| Token | The line that starts with `smt_`. |
+| Certificate SHA-256 | The 64 hex digits that `token new` printed. |
 
-### Move to another server
+`<this server>` is the server's name or LAN address, not the `0.0.0.0` in the log. `hostname -I` shows its
+addresses; give it a fixed address in your router ([The CAN Bridge app](docs/cars-and-bridge.md#the-can-bridge-app)).
 
-The new server pulls everything from the old one over the upload port, while the old one keeps taking uploads, then
-takes over by itself. The logs, uploads still arriving, the tokens, the trust records and the TLS key all move, so
-the CAN Bridge keeps its token and its certificate SHA-256.
+How to check it works: [Check it works](docs/cars-and-bridge.md#check-it-works). The full guide, with updates,
+backups, restore and moving: [docs/install.md](docs/install.md).
 
-1. **On the old server, get a move code** (valid 24 hours, works once):
+## Web UI
 
-   ```bash
-   docker compose exec sentry-mate /sentry-mate move code
-   ```
+Not served yet. The two UI packs run on made-up data.
 
-   With no shell (TrueNAS): add `SENTRY_MATE_OFFER_MOVE=yes` to its environment, redeploy, and copy the code from
-   its log.
+- [`ui/README.md`](ui/README.md): the two packs, Instrument and Logbook. They run on made-up data from
+  `web/mock-api.js`. To preview them: [Previewing the UI packs](docs/development.md#previewing-the-ui-packs).
+- [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md): every TeslaMate tab (51 tabs, 1161 items) placed on 23
+  Sentry Mate pages, described in our own words. [`docs/parity/coverage-matrix.json`](docs/parity/coverage-matrix.json)
+  is the same, machine-readable.
+- [`docs/ui-api.md`](docs/ui-api.md): the `/api/v1` the pages need. Not built yet.
 
-2. **Install the new server with empty `data` and `keys` folders and two more lines**, then start it:
+## Roadmap
 
-   ```yaml
-       environment:
-         - SENTRY_MATE_MOVE_FROM=192.168.1.20
-         - SENTRY_MATE_MOVE_CODE=SMMV-1K3QX-7WD2M-ZP4HT-9BN6R-XC8VA-5JE0F
-   ```
+From the plan's phases and progress:
 
-   (Made-up values: the old server's address as the CAN Bridge uses it, and the code from step 1.) Its log shows the
-   copy and ends with `move: finished`. The old server's log then says `move: done`: only then stop it.
+1. Wire the built parts into the program: decode each log in the background after its check, with the DBC set chosen
+   from the VIN, then work out and store states, drives and charges.
+2. Check the timeline by hand against real drives and charges.
+3. A web server for the UI packs and `/api/v1`, and the packs moved off their made-up data. Desktop first, phone
+   layouts later.
+4. Accounts, places, MQTT and the TeslaMate import in the program.
+5. First release: the docs, a licence and the final name.
 
-3. **If the new server has another address, change it in the CAN Bridge app.** Nothing else changes. The bridge keeps
-   its logs meanwhile and sends them once it reaches the new server.
-
-The two lines can stay; they are ignored once the move is done. The old server answers the bridge "moved, try later"
-and takes no more uploads; `move undo` there makes it take them again. `move status` shows what a move is doing on
-either server, `move cancel` stops it. On one machine (a new disk or pool), give the new app another host port for
-the move (`10101:10100`), then port 10100 back once the old app is stopped.
-
-The code proves itself over the TLS connection, so a fake server or someone in between learns nothing; the data key
-travels only at the end, wrapped with a key from the code, and the key file never leaves its folder.
-
-**Export file**, for when the two servers can't reach each other, or to keep a copy. One export file holds everything: the logs, uploads still arriving, the tokens, the trust records and the TLS key,
-all sealed as stored. It opens only with the recovery key, never with the file alone. Make it while the server runs
-(uploads wait a few seconds):
-
-```bash
-docker compose exec -T sentry-mate /sentry-mate export > sentry-mate.smexport
-```
-
-On the new server (empty `data` and `keys` folders, started once or not at all), put the file in its data folder,
-readable by the server's user, then:
-
-```bash
-docker compose exec sentry-mate /sentry-mate import /data/sentry-mate.smexport
-```
-
-It asks for the old server's recovery key, checks the whole file, and only then switches to it; a running server
-switches by itself. A stop part way is fine: run it again and it carries on. The CAN Bridge keeps its token and its
-certificate SHA-256: change only the server address, if it changed. The old recovery key opens the data there too.
-
-## Security
-
-- TLS 1.3 only on the upload port; plain HTTP and older TLS are refused. The certificate is made on first start
-  (its key readable only by the server's user); the app pins it by SHA-256.
-- Tokens are write-only, one per car, stored only as their SHA-256, tied to one CAN key on the first upload.
-  Wrong tokens are rate limited per address; a right token is never refused because of wrong ones.
-- Every log's ECDSA P-256 signature is checked against the key the car is paired with; a log signed by another
-  key is kept but not used until the owner trusts that key. Deleted, swapped or reordered logs show in the chain.
-- **Encryption at rest, in Rust.** One random data key seals everything stored (logs, sidecars, uploads still
-  arriving, trust records, tokens, the TLS key) with XChaCha20-Poly1305, in 64 KiB chunks, each file with its own
-  key (HKDF-SHA256) and its path bound in, so a file that is changed, cut short, or moved under another name doesn't
-  open. Files that grow (uploads still arriving, journals) give every piece its own random nonce, so a piece written
-  again after a crash never reuses one, and bind each piece to the one before it, so pieces can't be reordered,
-  dropped from the middle or mixed with those of an older copy of the file (an older copy put back whole, or pieces
-  missing at the end, can't be told from a crash). The data key is kept only wrapped: by the key file in `/keys` (a
-  separate volume, refused inside the data folder) for restarts with nothing to type, and by the recovery key
-  through Argon2id at 1 GiB. Keys are wiped from memory when no longer needed and core dumps are off. This protects
-  a stolen or copied disk or backup; it can't protect a server taken over while it runs.
-- **No way back without a backup.** This version writes growing files in a newer format (format 2) as soon as it
-  opens them to add to, from its first start. Older versions can't open that format, so once it has run on a data
-  folder, going back to an older image needs a backup of the data folder made before the upgrade.
-- Pure Rust where it matters (`unsafe` forbidden in this code, the xz reader included); files from the network are
-  read with fixed limits. The image is one static binary on `scratch`, run as a normal user.
-- Nothing leaves the server. Logs hold the car's GPS position: treat the data folder as private.
+Open questions: two battery % signals disagree (0x33A and 0x292) and need checking against the car's screen. A
+firmware-version signal for software updates is still to be found.
 
 ## Development
 
-```bash
-cargo test --workspace
-```
+Rust 1.88 or newer, edition 2024. The gates CI runs, what each crate does, CI, the image check and the layout:
+[docs/development.md](docs/development.md).
 
-```bash
-cargo clippy --workspace --all-targets -- -D warnings
-```
+Crates: `logfmt` (reads the logs), `trust` (signatures, chain), `vault` (encryption at rest), `dbc` (signals),
+`ingest` (upload API, storage), `gate` and `moving` (export, import, move), `model`, `timeline`, `db`, `places`,
+`accounts`, `import`, `mqtt`, and the program, `sentry-mate`.
 
-Crates: `logfmt` (reads the logs), `trust` (signatures and chain), `vault` (encryption at rest), `model` (the
-shared types), `dbc` (decodes signals), `ingest` (upload API, storage, tokens, TLS server), `timeline` (states,
-drives, charges from the signals), `db` (sealed storage for what the timeline works out), `places` (geofences,
-prices, addresses, map settings), `accounts` (people and sign-in), `import` (TeslaMate history), `mqtt` (Home Assistant), `sentry-mate` (the program).
+## Status in detail
+
+| Part | State |
+|---|---|
+| **Working now** | |
+| Upload API the bridge speaks (ping, status, resumable chunks), TLS 1.3 only | done |
+| Logs kept exactly as uploaded, never replaced | done |
+| Upload tokens: no limit, each tied to one car key (one bridge install) on its first upload | done |
+| Any number of cars: kept per car, bounded memory, cars upload in parallel, an upload never reads a car's folder | done |
+| Signature check, pairing with the car's key, chain report (gaps, swaps, restarts) | done |
+| Trusting a new signing key for a car | done (`keys trust`) |
+| Reading both log formats (candump text, columns) | done |
+| Encryption at rest (pure Rust): every file's contents sealed (not the names), key file + recovery key | done |
+| Command line: tokens, certificate, chain report, signing keys, log export and decode, restore, recovery key, move, export, import | done |
+| Docker image: one static binary on `scratch`, non-root, health check; run read-only by the compose file | done |
+| Published image for amd64 and arm64 (`ghcr.io/skittles-fivem/sentry-mate`), a compose file and a TrueNAS file | done |
+| Refusing folders it can't keep: not mounted, the keys inside the data, root's | done |
+| Moving to another server in one step: a one-time move code, or one export file that opens with the recovery key ([docs/moving.md](docs/moving.md)) | done |
+| Decoding signals (DBC sets per model, bus split, the Screenmate's GPS), same values as Sentry Six Manager | done; used only by `log decode` |
+| Choosing the DBC set from the car's VIN | done in `log decode` |
+| Using a failed log anyway | only `log decode --any`, one log at a time |
+| **Built and tested, not wired in yet** | |
+| Drives, charges, states, positions, charge curves from the decoded signals; the car's model from its VIN | built; not yet checked against real drives and charges |
+| Storage for everything worked out (sealed, compressed columns, any number of cars, backups) | built |
+| Places, geofences, charge costs with time-of-use rates, addresses offline or online | built |
+| Accounts: admin and watch-only, per-car access, two-step sign-in, sessions, audit log | built; passkeys planned |
+| TeslaMate import from TeslaMate's own backup file (any number of cars, streamed, again later adds only what's new) | built; a live connection to TeslaMate's database is planned |
+| MQTT for Home Assistant (TLS unless plain is turned on, never a password in the clear, discovery, any number of cars on one connection) | built |
+| **Being built here** | |
+| Web UI: UI packs, two designs as prototypes on made-up data in [`ui/`](ui/), maps; every TeslaMate tab gets a page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) | being built; next, after the groundwork below: every page built in both designs and checked item by item, with screenshots |
+| **Being built on separate working copies** (paused 2026-11-18, waiting for their last checks before they come into this repository) | |
+| Web UI groundwork: a dev API server that answers all of [`docs/ui-api.md`](docs/ui-api.md) on made-up data (139 tests), shared browser modules, a page checker that loads every page at laptop and 4K sizes and checks each TeslaMate item against [`docs/parity/coverage-matrix.json`](docs/parity/coverage-matrix.json), and both designs split into one module per page on the real API | the review was cut short |
+| **Not built yet** | |
+| Decoding each log as it arrives, after its check | planned |
+| Web server and the `/api/v1` the pages need ([`docs/ui-api.md`](docs/ui-api.md)), on its own HTTPS port | planned |
+| Listing stored logs and their check results, deleting logs, a backup command | not built |
+| `cargo deny` and `cargo audit`, fuzzing in CI | planned |
+| Sealing the key file to the host's TPM | optional, later |
+
+## Licence
+
+No licence has been chosen yet; the repo has no LICENSE file. Bundled third-party files keep their own:
+
+- DBC files from model3dbc, opendbc and Open Vehicle Monitoring System's Model S module: MIT. `override.dbc` is from
+  Sentry Six Manager. See [crates/dbc/files/README.md](crates/dbc/files/README.md).
+- In the UI packs: MapLibre GL JS 6.18.0 (BSD-3-Clause), uPlot 1.6.32 (MIT), Inter (SIL Open Font License 1.1),
+  JetBrains Mono (Apache License 2.0, per its bundled licence file), Bitstream Charter (Bitstream's free licence).
 
 Sentry Mate is written from scratch and copies no code from TeslaMate; it is not affiliated with TeslaMate, Tesla,
 or Screenmate.

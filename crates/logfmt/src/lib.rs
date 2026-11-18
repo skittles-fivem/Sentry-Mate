@@ -211,10 +211,10 @@ pub fn read_log(xz: &[u8], limits: Limits, mut on_line: impl FnMut(&[u8])) -> Re
     if let Err(e) = lzma_rs::xz_decompress(&mut input, &mut sink) {
         let stopped = matches!(&e, lzma_rs::error::Error::IoError(io) if io.get_ref().is_some_and(|i| i.is::<Stop>()));
         if !stopped {
-            if let lzma_rs::error::Error::IoError(io) = &e {
-                if io.get_ref().is_some_and(|i| i.is::<Error>()) {
-                    return Err(Error::ColumnsTooLarge(limits.max_columns_body));
-                }
+            if let lzma_rs::error::Error::IoError(io) = &e
+                && io.get_ref().is_some_and(|i| i.is::<Error>())
+            {
+                return Err(Error::ColumnsTooLarge(limits.max_columns_body));
             }
             return Err(Error::Xz(e.to_string()));
         }

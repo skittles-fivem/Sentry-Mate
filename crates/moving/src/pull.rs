@@ -1104,17 +1104,17 @@ impl<'a> Pull<'a> {
             return Err(not_proven());
         }
         let part: vault::RecoveryPart = serde_json::from_str(&a.recovery).map_err(|_| not_proven())?;
-        if let (Some(theirs), Some(ours)) = (crate::import::version(&a.app), crate::import::version(&self.opts.app)) {
-            if theirs > ours {
-                return Err(Problem::new(
-                    "too_old",
-                    format!(
-                        "the old server runs a newer Sentry Mate ({}) than this one ({}): update this server first, then start it again",
-                        a.app, self.opts.app
-                    ),
-                    false,
-                ));
-            }
+        if let (Some(theirs), Some(ours)) = (crate::import::version(&a.app), crate::import::version(&self.opts.app))
+            && theirs > ours
+        {
+            return Err(Problem::new(
+                "too_old",
+                format!(
+                    "the old server runs a newer Sentry Mate ({}) than this one ({}): update this server first, then start it again",
+                    a.app, self.opts.app
+                ),
+                false,
+            ));
         }
         let k = part.slot.kdf();
         if !(8..=4 << 20).contains(&k.m) || !(1..=16).contains(&k.t) || !(1..=16).contains(&k.p) {
@@ -1266,20 +1266,21 @@ impl<'a> Pull<'a> {
                     false => continue,
                 }
             }
-            if let Some(prev) = last_round {
-                if r.bytes >= prev.bytes && round_no > 2 {
-                    tracing::warn!(
-                        "move: the old server changes faster than this copy catches up ({} in the last round); waiting {} s. If a big job runs there (an import), let it end first.",
-                        crate::size(r.bytes),
-                        self.opts.between_rounds.as_secs()
-                    );
-                    lock(&self.st).problem = Some(Problem::new(
-                        "changing_fast",
-                        "the old server changes faster than this copy catches up",
-                        true,
-                    ));
-                    self.sleep(self.opts.between_rounds)?;
-                }
+            if let Some(prev) = last_round
+                && r.bytes >= prev.bytes
+                && round_no > 2
+            {
+                tracing::warn!(
+                    "move: the old server changes faster than this copy catches up ({} in the last round); waiting {} s. If a big job runs there (an import), let it end first.",
+                    crate::size(r.bytes),
+                    self.opts.between_rounds.as_secs()
+                );
+                lock(&self.st).problem = Some(Problem::new(
+                    "changing_fast",
+                    "the old server changes faster than this copy catches up",
+                    true,
+                ));
+                self.sleep(self.opts.between_rounds)?;
             }
             if round_no > 1 {
                 tracing::info!("move: catching up: {} files, {} changed", r.files, crate::size(r.bytes));
@@ -1590,10 +1591,10 @@ impl<'a> Pull<'a> {
             &mut Skips::default(),
             after,
             |f| -> io::Result<ControlFlow<()>> {
-                if let Some(u) = upto {
-                    if walk_cmp(f.path, u) == Ordering::Greater {
-                        return Ok(ControlFlow::Break(()));
-                    }
+                if let Some(u) = upto
+                    && walk_cmp(f.path, u) == Ordering::Greater
+                {
+                    return Ok(ControlFlow::Break(()));
                 }
                 out.push(Local { path: f.path.to_string(), len: f.len, mt: f.mtime_us });
                 Ok(ControlFlow::Continue(()))
@@ -2093,10 +2094,10 @@ fn parse_list(b: &[u8], after: Option<&str>) -> Result<(Vec<Line>, End), String>
         if !tree::carried(&l.p, Purpose::Move) || proto::kind_of_letter(&l.k).is_none() {
             return Err(format!("a path the move doesn't carry: {:?}", l.p));
         }
-        if let Some(p) = &prev {
-            if walk_cmp(p, &l.p) != Ordering::Less {
-                return Err("a list out of order".into());
-            }
+        if let Some(p) = &prev
+            && walk_cmp(p, &l.p) != Ordering::Less
+        {
+            return Err("a list out of order".into());
         }
         prev = Some(l.p.clone());
         lines.push(l);

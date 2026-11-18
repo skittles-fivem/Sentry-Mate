@@ -344,7 +344,9 @@ async fn the_first_signed_log_pairs_the_car_and_another_key_fails() {
     put(&t, log2, b"log two", 0, b"log two").await;
     assert_eq!(t.up.judge.record("abcdef123456", log2).await.unwrap().status, ingest::judge::Status::Verified);
     let chain = t.up.judge.chain("abcdef123456").await;
-    assert_eq!((chain.count, chain.issues.len()), (2, 0), "{chain:?}");
+    assert_eq!((chain.report.count, chain.report.issues.len()), (2, 0), "{chain:?}");
+    let paired = trust::fingerprint(key.verifying_key().to_public_key_der().unwrap().as_bytes());
+    assert_eq!(chain.signing_key.as_deref(), Some(paired.as_str()), "the report names the key it covers");
 
     // a log signed by some other key is kept, failed, and its key offered
     let log3 = "abcdef123456_20261108T143200Z_3.log.xz";
@@ -392,6 +394,11 @@ async fn nothing_reaches_storage_in_the_clear() {
     for (p, bytes) in &files {
         let name = p.file_name().unwrap().to_string_lossy().to_string();
         if name == "vault.json" {
+            continue;
+        }
+        // the lock file the server and a command take turns by: empty, it holds nothing
+        if name == "trust.lock" {
+            assert!(bytes.is_empty(), "{} is not empty", p.display());
             continue;
         }
         let sealed = vault::is_sealed(bytes) || bytes.starts_with(vault::records::MAGIC);

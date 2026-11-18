@@ -1,0 +1,78 @@
+# Sentry Mate on TrueNAS SCALE 24.10 or newer (Apps run on Docker).
+#
+# First make two datasets, one for the data and one for the keys (on another
+# pool if you have one), and give both to the apps user (568). Then:
+#
+#   Apps > Discover Apps > (three dots, top right) > Install via YAML
+#   Name: sentry-mate, paste this file, change the lines marked CHANGE, then
+#   Save. Full steps: docs/install.md (TrueNAS).
+#
+# CAN Bridge uploads then go to https://<truenas>:10100/api/can/logs. The
+# certificate SHA-256 is in the app's logs (Apps > Installed > sentry-mate >
+# Workloads > the log icon).
+#
+# In System > Shell (it asks for your password), with your keys dataset's
+# path:
+#   the recovery key, made on first start: copy it somewhere safe away from
+#   TrueNAS, then delete the file
+#     sudo cat /mnt/tank/apps/sentry-mate-keys/RECOVERY-KEY.txt
+#     sudo rm /mnt/tank/apps/sentry-mate-keys/RECOVERY-KEY.txt
+#   an upload token for the car (shown once, with what to fill in the CAN
+#   Bridge app: the address, the token and the certificate SHA-256)
+#     sudo docker exec sentry-mate /sentry-mate token new --car "Model Y"
+#   the certificate SHA-256 again
+#     sudo docker exec sentry-mate /sentry-mate fingerprint
+#
+# Update (System > Shell), then Stop and Start the app:
+#   sudo docker pull ghcr.io/skittles-fivem/sentry-mate:latest
+#
+# Key file lost, or a new TrueNAS with only the data: Stop the app, run this
+# in System > Shell with the two paths below, type the recovery key when it
+# asks, then Start the app:
+#   sudo docker run --rm -it --user 568:568
+#     -v /mnt/tank/apps/sentry-mate:/data
+#     -v /mnt/tank/apps/sentry-mate-keys:/keys
+#     ghcr.io/skittles-fivem/sentry-mate:latest restore
+# (one line; docs/install.md has it ready to copy)
+#
+# OPTIONAL lines start with # in the first column. To turn one on, delete only
+# that # (nothing else): the rest of the line is already lined up.
+
+services:
+  sentry-mate:
+    image: ghcr.io/skittles-fivem/sentry-mate:latest
+    container_name: sentry-mate
+    restart: unless-stopped
+    # time to stop cleanly (it needs under a second)
+    stop_grace_period: 30s
+    ports:
+      # CAN Bridge uploads, HTTPS (TLS 1.3 only). Another app already on
+      # 10100: change the left number, and use it in the bridge's address.
+      # (Sentry Six Manager's 9000 and 10000 don't clash; 9100 is kept for
+      # the web UI, which is not built yet.)
+      - "10100:10100"
+
+    # OPTIONAL: the names / addresses you reach TrueNAS by, for the
+    # certificate. Read only when it is made, on first start; the bridge
+    # pins its SHA-256 and does not check names.
+#    environment:
+#      SENTRY_MATE_NAMES: 192.168.1.20,truenas.local
+
+    # Both lines are needed, each with a dataset of its own. Without one it
+    # does not start, and the log says which.
+    volumes:
+      # CHANGE: the data dataset: everything Sentry Mate stores, sealed
+      - /mnt/tank/apps/sentry-mate:/data
+      # CHANGE: the keys dataset: the key file that opens the data. Not
+      # inside the data dataset; on another pool if you can (for example
+      # /mnt/ssd/sentry-mate-keys), and left out of the data's snapshot and
+      # replication tasks.
+      - /mnt/tank/apps/sentry-mate-keys:/keys
+
+    # TrueNAS's "apps" user: both datasets must belong to it
+    user: "568:568"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
