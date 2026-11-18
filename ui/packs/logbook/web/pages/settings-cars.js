@@ -32,6 +32,13 @@ const CONFIG_ROWS = [
   ['wheel', 'Wheels'], ['paint', 'Paint'], ['roof', 'Roof'], ['spoiler', 'Spoiler'], ['right_hand_drive', 'Right-hand drive'],
   ['map_region', 'Map region'], ['supercharging_access', 'Supercharging access'],
 ];
+const TRUST_REASONS = {
+  signature_mismatch: 'its signature does not match the bridge’s key',
+  chain_break: 'it does not follow the log before it in the chain',
+  unknown_key: 'it was signed with a key the server does not know',
+  bad_format: 'the file could not be read',
+};
+const TRUST_WORDS = { verified: 'was verified', unsigned: 'came without a signature', failed: 'failed its check' };
 const yesNo = (v) => (v === true ? 'Yes' : v === false ? 'No' : v == null || v === '' ? '—' : String(v));
 const settingsUrl = (carId) => state.buildUrl('settings-cars', carId ? { car: carId } : {});
 
@@ -67,7 +74,21 @@ function howCarsAppear() {
 }
 
 /** The car list: every car the account sees, searched and paged by the server. */
-function carRail(ctx, currentId) {
+function carRail(ctx, current) {
+  const currentId = current ? current.id : null;
+  // The car being edited, pinned above the list while it is not among the rows loaded (a long list, a search).
+  const editing = h('div', { class: 'sc-editing', hidden: true });
+  const drawEditing = () => {
+    const shown = (table.items || []).some((c) => c.id === currentId);
+    editing.hidden = !current || shown;
+    if (!current || shown) { replace(editing); return; }
+    replace(editing,
+      h('p', { class: 'sc-editing-label' }, 'Editing'),
+      h('a', { class: ['sc-car-link', 'is-current'], href: settingsUrl(current.id), 'aria-current': 'page' },
+        h('span', { class: 'cell-main' }, current.name || current.vin_prefix || current.id),
+        h('span', { class: 'cell-sub' }, [current.model, current.year].filter(Boolean).join(' '), current.vin_prefix ? [sep(), h('span', { class: 'mono' }, current.vin_prefix)] : null)),
+      h('p', { class: 'sc-editing-note' }, input.value.trim() ? 'Not among the cars that match the search.' : 'Further down the list; the list below starts at the top.'));
+  };
   const input = h('input', { class: 'field-input', type: 'search', id: 'sc-car-search', placeholder: 'Name, model or VIN prefix', autocomplete: 'off', spellcheck: 'false' });
   const table = dataTable(ctx, {
     path: 'cars', params: { sort: 'custom' }, limit: 25, itemName: ['car', 'cars'], label: 'Cars, in your order',
@@ -79,6 +100,7 @@ function carRail(ctx, currentId) {
         c.now ? h('span', { class: 'cell-sub' }, stateMark(c.now.state, { stale: c.now.stale })) : null),
     }],
     rowAttrs: (c) => ({ class: c.id === currentId ? 'is-current' : null }),
+    onRows: () => drawEditing(),
     empty: () => empty({ title: input.value.trim() ? `No car matches “${input.value.trim()}”.` : 'No car yet.', text: input.value.trim() ? 'Try part of the name, the model or the VIN prefix.' : null }),
   });
   let timer = 0;
@@ -91,6 +113,7 @@ function carRail(ctx, currentId) {
     h('h2', { class: 'label' }, 'Cars', h('span', { class: 'label-note' }, 'pick one to change its settings')),
     h('div', { class: 'field field-search sc-search' }, h('label', { class: 'field-label', for: 'sc-car-search' }, 'Find a car'),
       h('div', { class: 'field-control' }, icon('search', 'icon field-icon'), input)),
+    editing,
     table.el,
     // The same steps the empty state shows when no car is known yet.
     h('details', { class: 'sc-how', cover: 'web.settings.car.empty-state' },
@@ -98,8 +121,54 @@ function carRail(ctx, currentId) {
   return { el, table };
 }
 
+/**
+ * Pick any car, however many there are: a search over every car the account sees (cars?search=),
+ * the first matches listed. Resolves with the chosen car, or null.
+ */
+function pickCar(ctx, { title, text }) {
+  const input = h('input', { class: 'field-input', type: 'search', id: 'sc-pick-search', placeholder: 'Name, model or VIN prefix', autocomplete: 'off', spellcheck: 'false' });
+  const list = h('ul', { class: 'sc-pick-list', 'aria-live': 'polite' });
+  const status = h('p', { class: 'sc-pick-status' });
+  let found = [];
+  let seq = 0;
+  let timer = 0;
+  let chosen = null;
+  return openDialog({
+    title,
+    initialFocus: '#sc-pick-search',
+    body: (close) => {
+      const search = async () => {
+        const n = ++seq;
+        const s = input.value.trim();
+        status.textContent = 'Looking…';
+        try {
+          const page = await ctx.api.page('cars', { sort: 'custom', search: s || undefined }, { limit: 20 });
+          if (n !== seq) return;
+          found = page.items || [];
+          replace(list, found.map((c) => h('li', null, h('button', { type: 'button', class: 'sc-pick-car', onclick: () => { chosen = c; close('picked'); } },
+            h('span', { class: 'cell-main' }, c.name || c.vin_prefix || c.id),
+            h('span', { class: 'cell-sub' }, [c.model, c.year].filter(Boolean).join(' ') || 'Model not known yet', c.vin_prefix ? [sep(), h('span', { class: 'mono' }, c.vin_prefix)] : null)))));
+          status.textContent = !found.length ? (s ? `No car matches “${s}”. Try part of the name, the model or the VIN prefix.` : 'No car yet.')
+            : page.next ? `The first ${found.length} ${s ? 'matches' : 'cars'}; type to narrow the list.` : `${count(found.length, s ? 'match' : 'car')}.`;
+        } catch (err) {
+          if (n === seq) status.textContent = `The cars could not be loaded: ${err.message}`;
+        }
+      };
+      input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 200); });
+      search();
+      return h('div', { class: 'sc-pick' },
+        text ? h('p', { class: 'dialog-text' }, text) : null,
+        h('div', { class: 'field field-search' }, h('label', { class: 'field-label', for: 'sc-pick-search' }, 'Find the car'),
+          h('div', { class: 'field-control' }, icon('search', 'icon field-icon'), input)),
+        status, list);
+    },
+    actions: [{ label: 'Cancel', value: null, kind: 'quiet' }],
+    signal: ctx.signal,
+  }).then((v) => { clearTimeout(timer); return v === 'picked' ? chosen : null; });
+}
+
 /** Keys no car has yet, with a way to tie each to a car. */
-function waitingTable(ctx, { car = null, cars = [], onChange }) {
+function waitingTable(ctx, { car = null, onChange }) {
   const assign = async (k, carId, carName) => {
     const ok = await confirmDialog({
       title: `Tie key ${k.key} to ${carName}?`,
@@ -123,9 +192,10 @@ function waitingTable(ctx, { car = null, cars = [], onChange }) {
       { key: 'waiting', label: 'Logs kept', num: true, cell: (k) => count(k.logs_waiting || 0, 'log'), value: (k) => k.logs_waiting, hint: 'Logs it uploaded, kept until the key is tied to a car.' },
       { key: 'do', label: 'Tie to', cell: (k) => {
         if (car) return button(`Tie to ${car.name}`, { onclick: () => assign(k, car.id, car.name) });
-        if (!cars.length) return '—';
-        const sel = h('select', { class: 'field-select sc-assign-select', 'aria-label': `Car for key ${k.key}` }, cars.map((c) => h('option', { value: c.id }, c.name || c.id)));
-        return h('div', { class: 'sc-assign' }, sel, button('Tie', { onclick: () => { const c = cars.find((x) => x.id === sel.value); assign(k, c.id, c.name || c.id); } }));
+        return button('Choose the car…', { iconName: 'search', cls: 'button-small', onclick: async () => {
+          const c = await pickCar(ctx, { title: `Tie key ${k.key} to a car`, text: `Find the car this logger is in (${k.device || 'logger not named'}). Every car is searched, however many there are.` });
+          if (c) await assign(k, c.id, c.name || c.id);
+        } });
       } },
     ],
     empty: () => empty({ title: 'No key is waiting.', text: 'Every CAN Bridge that uploads belongs to a car.' }),
@@ -160,7 +230,7 @@ async function mountIndex(ctx) {
       fixes.length ? h('p', { class: 'note' }, `Now: ${fixes.map((f) => FIX_NOW[f.cause] || f.cause).join(' ')}`) : null);
     ctx.main.append(head, box);
     if (admin && status.keys_waiting) {
-      const w = waitingTable(ctx, { cars: [] });
+      const w = waitingTable(ctx, {});
       ctx.main.append(section({ title: 'Keys waiting for a car', note: 'they become a car once one is known' }, w.el));
       await w.load();
     }
@@ -175,8 +245,7 @@ async function mountIndex(ctx) {
       h('p', { class: 'sc-choose-text' }, 'Its name, its time zone, its battery chemistry, free Supercharging, and how its CAN Bridge is tied to it. The car picker at the top of the page also works here.')));
   let waiting = null;
   if (admin) {
-    const cars = await ctx.api.page('cars', { sort: 'custom' }, { limit: 100 }).then((p) => p.items || []).catch(() => []);
-    waiting = waitingTable(ctx, { cars, onChange: () => waiting.reload() });
+    waiting = waitingTable(ctx, { onChange: () => waiting.reload() });
     mainCol.append(section({ title: 'Keys waiting for a car', note: 'a CAN Bridge uploading with a key no car has yet' }, waiting.el));
   }
   ctx.main.append(head, h('div', { class: 'sc-layout' }, rail.el, mainCol));
@@ -206,29 +275,53 @@ async function mountCar(ctx) {
   let carVersion = car.version;
   const ro = !admin;
 
-  /** PATCH the car (name, time zone); a stale version is fetched fresh and tried once more. */
+  /*
+   * Saving with the object's version. When someone else saved in between (409 stale_version), the fresh
+   * object is read. The change is sent again only when every field it touches is still what this page
+   * showed (someone changed another field); otherwise nothing is sent and a ConflictError carries the
+   * fresh object, so the page shows the other change instead of writing over it.
+   */
+  class ConflictError extends Error {
+    constructor(fresh) { super('Someone else changed this at the same time; your change was not saved.'); this.code = 'conflict'; this.fresh = fresh; }
+  }
+  const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const fsList = (l) => (l || []).map((r) => ({ from_date: r.from_date || null, to_date: r.to_date || null }));
+  /** PATCH the car (name, time zone). */
   async function patchCar(body) {
     try {
       return await ctx.api.patch(carPath, { version: carVersion, ...body });
     } catch (err) {
-      if (err && err.code === 'stale_version') {
-        const fresh = await ctx.api.get(carPath);
-        carVersion = fresh.version;
-        return ctx.api.patch(carPath, { version: carVersion, ...body });
-      }
-      throw err;
+      if (!err || err.code !== 'stale_version') throw err;
+      api.invalidate(carPath);
+      const fresh = await ctx.api.get(carPath);
+      if (Object.keys(body).some((k) => !same(fresh[k], car[k]))) throw new ConflictError(fresh);
+      carVersion = fresh.version;
+      return ctx.api.patch(carPath, { version: carVersion, ...body });
     }
   }
-  /** PATCH the car's settings with its version, the same way. */
+  /** A car field someone else changed: the page is drawn again from the car as it is now. */
+  function carConflict(err, what) {
+    if (!err || err.code !== 'conflict') return false;
+    api.invalidate('');
+    ctx.flash(`Not saved: someone else changed the ${what} at the same time. The page now shows their change; make yours again if it is still needed.`, { kind: 'error', next: true });
+    remount();
+    return true;
+  }
+  /** PATCH the car's settings. */
   async function patchSettings(body) {
     const path = api.apiPath`cars/${car.id}/settings`;
+    const base = settings; // what this change was made against (another save may finish meanwhile)
     try {
-      settings = await ctx.api.patch(path, { version: settings.version, ...body });
+      settings = await ctx.api.patch(path, { version: base.version, ...body });
     } catch (err) {
-      if (err && err.code === 'stale_version') {
-        const fresh = await ctx.api.get(path);
-        settings = await ctx.api.patch(path, { version: fresh.version, ...body });
-      } else throw err;
+      if (!err || err.code !== 'stale_version') throw err;
+      api.invalidate(path);
+      const fresh = await ctx.api.get(path);
+      const changed = Object.keys(body).some((k) => (k === 'free_supercharging'
+        ? !same(fsList(fresh[k]), fsList(base[k]))
+        : k === 'battery_chemistry' ? !same(fresh[k] && fresh[k].setting, base[k] && base[k].setting) : !same(fresh[k], base[k])));
+      if (changed) { settings = fresh; throw new ConflictError(fresh); }
+      settings = await ctx.api.patch(path, { version: fresh.version, ...body });
     }
     api.invalidate(api.apiPath`cars/${car.id}`);
     return settings;
@@ -248,7 +341,7 @@ async function mountCar(ctx) {
     if (!v) { setFieldError(nameField, 'A car needs a name.'); return; }
     if (v === car.name) return;
     try { await patchCar({ name: v }); afterCarChange(`Saved: the car is now called ${v}.`); }
-    catch (err) { setFieldError(nameField, (err.fields && err.fields.name) || err.message); }
+    catch (err) { if (carConflict(err, 'name')) return; setFieldError(nameField, (err.fields && err.fields.name) || err.message); }
   });
   nameField.control.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); nameField.control.blur(); } });
 
@@ -361,16 +454,21 @@ async function mountCar(ctx) {
       const hl = health.value;
       const waitingKeys = waiting.items || [];
       const trustWaiting = (keys.items || []).reduce((n, k) => n + (k.logs_waiting || 0), 0);
+      const fmt = (ms) => formatDateTime(ms, ctx.tz, { weekday: false, now: api.now() });
+      const reasons = hl ? hl.reasons || [] : [];
+      const trust = hl && hl.last_log_trust;
+      // First, always: how this car's own uploads are doing.
+      if (!hl) items.push(['info', 'How this car’s uploads are doing could not be read just now.', 'Data health shows every upload and check; try again there.']);
+      else if (reasons.includes('upload_silence')) items.push(['warn', hl.last_upload_ms ? `This car has not uploaded since ${fmt(hl.last_upload_ms)}.` : 'This car has not uploaded yet.', 'The bridge may be off, out of reach of the server, or its token revoked. Logs are kept in the car and catch up once it reaches the server again.']);
+      if (hl && reasons.includes('trust_failed')) items.push(['warn', reasons.includes('upload_silence') ? 'The last log of this car failed its signature check.' : 'This car’s uploads arrive, but a log failed its signature check.', `${trust && trust.reason ? `The reason: ${TRUST_REASONS[trust.reason] || 'a check the server could not name'}. ` : ''}${trust && trust.log_start_ms ? `The log starts ${fmt(trust.log_start_ms)}. ` : ''}Its time shows as unknown, never as asleep. Data health shows which log.`]);
+      if (hl && !reasons.includes('upload_silence') && !reasons.includes('trust_failed') && (hl.healthy || !reasons.length)) items.push(['ok', 'This car is uploading normally.', `Last upload ${hl.last_upload_ms ? fmt(hl.last_upload_ms) : '—'}; the last log ${trust ? TRUST_WORDS[trust.result] || 'was checked' : 'is not checked yet'}.`]);
+      else if (hl && !reasons.includes('upload_silence') && !reasons.includes('trust_failed')) items.push(['info', 'This car’s uploads arrive, with something still pending.', `Last upload ${hl.last_upload_ms ? fmt(hl.last_upload_ms) : '—'}. What is pending is listed below.`]);
+      // Then what needs doing.
       if (!active.length) items.push(['todo', 'No upload token is active.', 'This car’s CAN Bridge cannot upload. Make a token and enter it in the app.', button('Make an upload token', { kind: 'primary', onclick: makeToken })]);
       for (const t of unused) items.push(['todo', `Token ${t.id} has not been used yet.`, `Made ${formatDate(t.created_ms, ctx.tz, { weekday: false, now: api.now() })}. Enter it in the CAN Bridge app and press Apply & restart; the first upload ties it to the bridge’s key.`]);
-      if (hl && (hl.reasons || []).includes('upload_silence')) items.push(['warn', hl.last_upload_ms ? `No upload since ${formatDateTime(hl.last_upload_ms, ctx.tz, { weekday: false, now: api.now() })}.` : 'No upload yet.', 'The bridge may be off, out of reach of the server, or its token revoked. Logs are kept in the car and catch up once it reaches the server again.']);
-      if (hl && (hl.reasons || []).includes('trust_failed')) items.push(['warn', 'A log failed its signature check.', `${hl.last_log_trust && hl.last_log_trust.reason ? `Reason: ${hl.last_log_trust.reason}. ` : ''}Its time shows as unknown, never as asleep. Data health shows which log.`]);
       if (trustWaiting) items.push(['warn', `${count(trustWaiting, 'log')} wait for a trust check.`, 'They are stored but not decoded until their signature checks out.']);
-      if (hl && (hl.reasons || []).includes('rebuild_pending')) items.push(['info', 'History is being rebuilt.', 'Drives, charges and states of the rebuilt days come back in a few seconds.']);
-      if (waitingKeys.length) items.push(['todo', `${count(waitingKeys.length, 'key')} no car has ${waitingKeys.length === 1 ? 'is' : 'are'} uploading.`, `If one is a new logger in ${car.name} (a new Screenmate, a reinstall, a Raspberry Pi), tie it below. Its logs are kept until then.`]);
-      if (!items.length || (hl && hl.healthy && items.every((x) => x[0] === 'info'))) {
-        items.unshift(['ok', 'Uploading normally.', hl ? `Last upload ${hl.last_upload_ms ? formatDateTime(hl.last_upload_ms, ctx.tz, { weekday: false, now: api.now() }) : '—'}; last log ${hl.last_log_trust ? { verified: 'verified', unsigned: 'unsigned', failed: 'failed its check' }[hl.last_log_trust.result] || hl.last_log_trust.result : 'not checked yet'}.` : 'Every token is in use and no key is waiting.']);
-      }
+      if (reasons.includes('rebuild_pending')) items.push(['info', 'History is being rebuilt.', 'Drives, charges and states of the rebuilt days come back in a few seconds.']);
+      if (waitingKeys.length) items.push(['todo', `${count(waitingKeys.length, 'key')} that no car has ${waitingKeys.length === 1 ? 'is' : 'are'} uploading.`, `Not about ${car.name}’s own uploads: a logger the server does not know yet. If one is a new logger in ${car.name} (a new Screenmate, a reinstall, a Raspberry Pi), tie it below. Its logs are kept until then.`]);
       replace(outcome,
         h('ul', { class: 'sc-outcome-list' }, items.map(([kind, t, text, action]) => h('li', { class: ['sc-out', `sc-out-${kind}`] },
           h('span', { class: 'sc-out-mark', 'aria-hidden': 'true' }, icon(kind === 'ok' ? 'check' : kind === 'info' ? 'info' : 'warning')),
@@ -426,7 +524,7 @@ async function mountCar(ctx) {
     if (!v || !isValidZone(v)) { setFieldError(tzField, 'Not a known time zone. Pick one from the list, for example Europe/Amsterdam.'); return; }
     if (v === car.time_zone) return;
     try { await patchCar({ time_zone: v }); afterCarChange(`Saved: ${car.name} now uses ${v.replace(/_/g, ' ')}.`); }
-    catch (err) { setFieldError(tzField, (err.fields && err.fields.time_zone) || err.message); }
+    catch (err) { if (carConflict(err, 'time zone')) return; setFieldError(tzField, (err.fields && err.fields.time_zone) || err.message); }
   };
   tzField.control.addEventListener('change', () => saveZone(tzField.control.value.trim()));
   const useBrowser = browserZone && browserZone !== car.time_zone && !ro
@@ -441,8 +539,15 @@ async function mountCar(ctx) {
   const chemChoice = choice({ label: 'Battery chemistry', labelHidden: true, name: 'chemistry', value: bc.setting || 'auto',
     options: [['auto', 'Automatic'], ['lfp', 'LFP'], ['nca_nmc', 'NCA / NMC']],
     onchange: async (v) => {
-      try { await patchSettings({ battery_chemistry: { setting: v } }); ctx.flash(`Saved: battery chemistry ${v === 'auto' ? 'is worked out automatically' : `set to ${CHEM_LONG[v]}`}.`); drawChem(); }
-      catch (err) { chemChoice.set(settings.battery_chemistry.setting); ctx.flash(`Not saved: ${err.message}`, { kind: 'error' }); }
+      try { await patchSettings({ battery_chemistry: { setting: v } }); ctx.flash(`Saved: battery chemistry ${v === 'auto' ? 'is worked out automatically' : `set to ${CHEM_LONG[v]}`}.`); drawChem(); syncRanges(); }
+      catch (err) {
+        const now = (settings.battery_chemistry || {}).setting || 'auto';
+        chemChoice.set(now);
+        if (err && err.code === 'conflict') {
+          drawChem(); syncRanges();
+          ctx.flash(`Not saved: someone else set the battery chemistry to ${CHEM[now] || now} at the same time. That is what is shown now; choose again if yours is still needed.`, { kind: 'error' });
+        } else ctx.flash(`Not saved: ${err.message}`, { kind: 'error' });
+      }
     } });
   if (ro) chemChoice.querySelectorAll('button').forEach((b) => { b.disabled = true; });
   const chemNow = h('div', { class: 'sc-chem-now' });
@@ -466,48 +571,102 @@ async function mountCar(ctx) {
 
   /* ---------- charging: free Supercharging */
   const fsBox = h('div', { class: 'sc-fs' });
-  let ranges = (settings.free_supercharging || []).map((r) => ({ ...r }));
+  // Rows as shown. A row added here and not given a start date yet (fresh) is left out of what is saved;
+  // a saved row whose dates are wrong holds the whole list back (sending the rest would delete it), and
+  // says so next to it. A removal is saved at once unless such a row holds it back.
+  const fromSaved = () => (settings.free_supercharging || []).map((r) => ({ from_date: r.from_date || null, to_date: r.to_date || null, fresh: false }));
+  let ranges = fromSaved();
+  let fsEls = [];
+  let fsNote = null; // [kind, text] under the list
   const access = cfg.supercharging_access;
-  async function saveRanges(rowsEls) {
-    const complete = ranges.every((r) => r.from_date);
-    if (!complete) return;
-    for (let i = 0; i < ranges.length; i += 1) {
-      const r = ranges[i];
-      if (r.to_date && r.to_date < r.from_date) { setFieldError(rowsEls[i].to, 'Must not be before the start.'); return; }
+  const rowProblem = (r) => {
+    if (!r.from_date) return r.fresh ? null : 'This range needs a start date; until it has one the list is not saved.';
+    if (r.to_date && r.to_date < r.from_date) return 'The end is before the start; until that is fixed the list is not saved.';
+    return null;
+  };
+  async function saveRanges({ removed = false } = {}) {
+    const blocked = ranges.map(rowProblem);
+    if (blocked.some(Boolean)) {
+      ranges.forEach((r, i) => { if (blocked[i] && fsEls[i]) setFieldError(r.from_date ? fsEls[i].to : fsEls[i].from, blocked[i]); });
+      fsNote = ['held', removed ? 'The removed range is not saved yet: fix the marked range first, then it is saved with it.' : 'Not saved yet: fix the marked range first.'];
+      drawFsNote();
+      return;
     }
+    const keep = ranges.filter((r) => r.from_date);
+    const pending = ranges.filter((r) => !r.from_date); // new rows without a start: kept on screen, not sent
     try {
-      await patchSettings({ free_supercharging: ranges.map((r) => ({ from_date: r.from_date, to_date: r.to_date || null })) });
-      ranges = (settings.free_supercharging || []).map((r) => ({ ...r }));
-      ctx.flash(ranges.length ? `Saved: ${count(ranges.length, 'free Supercharging range')}.` : 'Saved: no free Supercharging.');
+      await patchSettings({ free_supercharging: keep.map((r) => ({ from_date: r.from_date, to_date: r.to_date || null })) });
+      ranges = [...fromSaved(), ...pending];
+      chemChoice.set((settings.battery_chemistry || {}).setting || 'auto'); drawChem();
+      fsNote = pending.length ? ['held', keep.length ? `Saved the ${count(keep.length, 'range')} that ${keep.length === 1 ? 'has' : 'have'} dates. The new range is saved once it has a start date.` : 'Saved: no dated range is left. The new range is saved once it has a start date.'] : null;
+      ctx.flash(keep.length ? `Saved: ${count(keep.length, 'free Supercharging range')}.` : 'Saved: no free Supercharging.');
       drawRanges();
     } catch (err) {
+      if (err && err.code === 'conflict') {
+        const mine = keep;
+        ranges = fromSaved();
+        fsNote = ['conflict', `Not saved: someone else changed these ranges at the same time. The list now shows theirs (${count(ranges.length, 'range')}). You tried to save ${mine.length ? mine.map((r) => rangeWords(r)).join('; ') : 'no range'}. Make your change again if it is still needed.`];
+        drawRanges();
+        ctx.flash('Not saved: someone else changed the free Supercharging ranges at the same time.', { kind: 'error' });
+        return;
+      }
       const f = err.fields || {};
       let placed = false;
+      const sentIdx = ranges.map((r, i) => (r.from_date ? i : -1)).filter((i) => i >= 0);
       for (const [path, msg] of Object.entries(f)) {
         const m = /^free_supercharging\.(\d+)\.(from_date|to_date)$/.exec(path);
-        if (m && rowsEls[Number(m[1])]) { setFieldError(rowsEls[Number(m[1])][m[2] === 'from_date' ? 'from' : 'to'], msg); placed = true; }
+        const i = m ? sentIdx[Number(m[1])] : undefined;
+        if (i != null && fsEls[i]) { setFieldError(fsEls[i][m[2] === 'from_date' ? 'from' : 'to'], msg); placed = true; }
       }
+      fsNote = ['held', removed ? 'The removed range is not saved: the server refused the list (see the marked range or the note at the top).' : 'Not saved: the server refused the list.'];
+      drawFsNote();
       if (!placed) ctx.flash(`Not saved: ${err.message}`, { kind: 'error' });
     }
   }
+  /** After another setting was saved: if the server's ranges are not the ones shown, show the server's. */
+  function syncRanges() {
+    const shown = ranges.filter((r) => !r.fresh);
+    if (same(fsList(settings.free_supercharging), fsList(shown))) return;
+    ranges = [...fromSaved(), ...ranges.filter((r) => r.fresh && !r.from_date)];
+    fsNote = ['conflict', `Someone else changed these ranges in the meantime; the list now shows theirs (${count(ranges.filter((r) => !r.fresh).length, 'range')}).`];
+    drawRanges();
+  }
+  const rangeWords = (r) => (r.to_date ? `${formatDayKey(r.from_date, { weekday: false })} to ${formatDayKey(r.to_date, { weekday: false })}` : `from ${formatDayKey(r.from_date, { weekday: false })} on`);
+  const fsNoteEl = h('p', { class: 'sc-fs-note', role: 'status', hidden: true });
+  function drawFsNote() {
+    fsNoteEl.hidden = !fsNote;
+    fsNoteEl.className = fsNote ? `sc-fs-note sc-fs-note-${fsNote[0]}` : 'sc-fs-note';
+    replace(fsNoteEl, fsNote ? [icon('warning'), ' ', fsNote[1]] : null);
+  }
   function drawRanges() {
-    const els = [];
+    fsEls = [];
     const rows = ranges.map((r, i) => {
       const from = field({ label: 'From', name: `fs-from-${i}`, type: 'date', value: r.from_date || '', attrs: { required: true, disabled: ro } });
       const to = field({ label: 'Until (blank: no end)', name: `fs-to-${i}`, type: 'date', value: r.to_date || '', attrs: { disabled: ro } });
-      els[i] = { from, to };
-      from.control.addEventListener('change', () => { setFieldError(from, null); r.from_date = from.control.value || null; if (!r.from_date) setFieldError(from, 'Pick the first free day.'); saveRanges(els); });
-      to.control.addEventListener('change', () => { setFieldError(to, null); r.to_date = to.control.value || null; saveRanges(els); });
+      fsEls[i] = { from, to };
+      const changed = () => { setFieldError(from, null); setFieldError(to, null); fsNote = null; drawFsNote(); saveRanges(); };
+      from.control.addEventListener('change', () => { r.from_date = from.control.value || null; changed(); });
+      to.control.addEventListener('change', () => { r.to_date = to.control.value || null; changed(); });
       const status = h('p', { class: 'sc-fs-status' }, r.from_date
         ? `Supercharger sessions that start ${r.to_date ? `from ${formatDayKey(r.from_date, { weekday: false })} to ${formatDayKey(r.to_date, { weekday: false })}` : `on or after ${formatDayKey(r.from_date, { weekday: false })}`} cost nothing.`
-        : 'Not saved yet: pick the first free day.');
+        : 'Not saved yet: pick the first free day. The other ranges are saved without it.');
       return h('li', { class: 'sc-fs-row' }, from, to,
-        ro ? null : button('Remove', { cls: 'button-small', onclick: () => { ranges.splice(i, 1); drawRanges(); saveRanges([]); } }),
+        ro ? null : button('Remove', { cls: 'button-small', onclick: () => {
+          const wasSaved = !ranges[i].fresh;
+          ranges.splice(i, 1);
+          fsNote = null;
+          drawRanges();
+          if (wasSaved) saveRanges({ removed: true });
+        } }),
         status);
     });
     replace(fsBox,
       rows.length ? h('ol', { class: 'sc-fs-list' }, rows) : h('p', { class: 'note-serif' }, 'No free Supercharging: every Supercharger session is priced from the charger’s own billed energy or the place’s tariff.'),
-      ro ? null : button('Add a range', { onclick: () => { ranges.push({ from_date: null, to_date: null }); drawRanges(); fsBox.querySelector('.sc-fs-row:last-child input')?.focus(); } }));
+      fsNoteEl,
+      ro ? null : button('Add a range', { onclick: () => { ranges.push({ from_date: null, to_date: null, fresh: true }); drawRanges(); fsBox.querySelector('.sc-fs-row:last-child input')?.focus(); } }));
+    drawFsNote();
+    // Rows that still hold the list back keep their message after a redraw.
+    ranges.forEach((r, i) => { const p = rowProblem(r); if (p && fsNote && fsNote[0] === 'held') setFieldError(r.from_date ? fsEls[i].to : fsEls[i].from, p); });
   }
   drawRanges();
   const chargingSection = section({ title: 'Charging', id: 'sc-chg', cover: 'web.settings.car.free-supercharging' },
@@ -522,7 +681,7 @@ async function mountCar(ctx) {
     h('p', { class: 'sc-more' }, h('a', { class: 'link-arrow', href: ctx.link('charges') }, 'Charges and their cost', icon('arrowRight'))));
 
   /* ---------- put it together */
-  const rail = carRail(ctx, car.id);
+  const rail = carRail(ctx, car);
   const mainCol = h('div', { class: 'sc-main', cover: 'web.settings.car.autosave' },
     h('p', { class: 'sc-autosave' }, icon('check'), ro
       ? ' Your account can read these settings; an admin changes them.'
@@ -531,7 +690,7 @@ async function mountCar(ctx) {
   ctx.main.append(
     pageHead({ eyebrow: crumbs(car), title: car.name, deck: ctx.info.purpose,
       aside: h('p', { class: 'sc-as-of' }, car.last_activity_ms ? ['Last heard ', ago(car.last_activity_ms)] : 'Not heard from yet') }),
-    h('div', { class: 'sc-layout' }, rail.el, mainCol));
+    h('div', { class: ['sc-layout', 'sc-layout-car'] }, rail.el, mainCol));
   await Promise.all([rail.table.load(), configTable.load(), uploads.load ? uploads.load() : null]);
   ctx.ready();
   return {
