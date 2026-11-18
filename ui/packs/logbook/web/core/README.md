@@ -177,6 +177,8 @@ await table.load();
   `shared/csv.js` so the CSV names its units).
 - `table.reload(params, { sort: null })` starts again with new filters; `table.redraw()` draws the rows again;
   `table.redrawRow(item)` redraws one row in place (live updates); `table.items` are the rows loaded.
+- `onSort({ key, dir })` is called when a column head is clicked, before the rows load again in that order
+  (a page with its own order control keeps it, and its URL, in step).
 - `num: true` right-aligns figures; `th: true` makes the cell the row's header; `rowAttrs(row)` adds a class or
   `data-` value to a row. The heads stick under the masthead while the rows scroll.
 

@@ -7,11 +7,11 @@
 
 import { h } from '../shared/dom.js';
 import { formatNumber, tn } from '../shared/i18n.js';
-import { format } from '../shared/units.js';
+import { format, rangeValue, rangeLabel } from '../shared/units.js';
 import { formatTime, formatDate, dayKey } from '../shared/time.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { pageHead, stateMark, stateLabel, ago, batteryBar, icon, empty, flag, sep, q } from '../core/ui.js';
+import { pageHead, stateMark, stateLabel, ago, batteryBar, icon, empty, flag, sep, q, errorWords, button } from '../core/ui.js';
 import { dataTable } from '../core/table.js';
 import { currentPrefs } from '../core/prefs.js';
 import { savePref } from '../core/frame.js';
@@ -23,6 +23,13 @@ export const title = () => 'Fleet';
 const zone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 const STATES = [['all', 'All cars'], ['driving', 'Driving'], ['charging', 'Charging'], ['parked', 'Parked'], ['asleep', 'Asleep'], ['unknown', 'Unknown']];
 const SORTS = [['custom', 'Your order: pinned first'], ['last_activity', 'Last activity, newest first'], ['name', 'Name, A to Z'], ['soc', 'Battery, highest first']];
+/** Each order's first direction, and its words both ways (the column heads and the Order menu are one control). */
+const SORT_DIR = { last_activity: 'desc', name: 'asc', soc: 'desc' };
+const SORT_WORDS = {
+  last_activity: { desc: 'Last activity, newest first', asc: 'Last activity, oldest first' },
+  name: { asc: 'Name, A to Z', desc: 'Name, Z to A' },
+  soc: { desc: 'Battery, highest first', asc: 'Battery, lowest first' },
+};
 
 /** The sentence for an attention item, from its code and detail (metric values, shown in the person's units). */
 function attentionText(a, tz) {
@@ -55,10 +62,14 @@ export async function mount(ctx) {
     state: STATES.some(([k]) => k === ctx.query.state) ? ctx.query.state : 'all',
     sort: SORTS.some(([k]) => k === ctx.query.sort) ? ctx.query.sort : 'custom',
   };
+  st.dir = st.sort !== 'custom' && (ctx.query.dir === 'asc' || ctx.query.dir === 'desc') ? ctx.query.dir : SORT_DIR[st.sort] || null;
+  const isAdmin = ctx.me?.role === 'admin';
   const pinned = new Set(prefs.pinned_cars || []);
-  const [summary, attention] = await Promise.all([ctx.api.get('fleet/summary'), ctx.api.get('fleet/attention', { limit: 20 })]);
+  // The totals are the page; the "Needs a look" panel is extra, so its failure stays in the panel.
+  const attnFirst = ctx.api.get('fleet/attention', { limit: 20 }).then((r) => ({ ok: r }), (err) => ({ err }));
+  const summary = await ctx.api.get('fleet/summary');
 
-  if (!summary.cars) return emptyFleet(ctx);
+  if (!summary.cars) return emptyFleet(ctx, isAdmin);
 
   // Tallies: counts per state; a click shows only those cars.
   const by = summary.by_state || {};
@@ -70,27 +81,31 @@ export async function mount(ctx) {
     h('span', { class: 'tally-count', dataset: { count: k } }, formatNumber(k === 'all' ? summary.cars : by[k] || 0)),
     h('span', { class: 'tally-name' }, k === 'all' ? null : h('span', { class: ['state-dot', `state-${k}`], 'aria-hidden': 'true' }), name,
       k === 'all' ? h('span', { class: 'tally-note', dataset: { stale: '' } }, summary.stale ? `${formatNumber(summary.stale)} stale` : 'none stale') : null,
-      k === 'unknown' ? h('span', { class: 'tally-note' }, 'no data') : null))));
+      k === 'unknown' ? h('span', { class: 'tally-note' }, 'no recent log') : null))));
   function drawSummary(sm) {
     const b = sm.by_state || {};
     for (const el of tallies.querySelectorAll('[data-count]')) el.textContent = formatNumber(el.dataset.count === 'all' ? sm.cars : b[el.dataset.count] || 0);
     const stale = tallies.querySelector('[data-stale]');
     if (stale) stale.textContent = sm.stale ? `${formatNumber(sm.stale)} stale` : 'none stale';
+    summary.cars = sm.cars;
+    deckLine.textContent = deckText();
   }
   const syncTallies = () => tallies.querySelectorAll('.tally').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.state === st.state)));
 
   // Attention: which car needs a look and why, each linked to the page that shows the cause. Times are in the
   // car's own zone once the car is known (from the list, or one GET per car not on the first page).
   const carInfo = new Map(); // car id -> { name, tz }
-  const attnItems = [...attention.items];
-  let attnNext = attention.next || null;
+  const attnItems = [];
+  let attnNext = null;
+  let attnError = null;
   const attnList = h('ul', { class: 'attention-list' });
   const attnCount = h('span', { class: 'label-note' });
   const attnMore = h('button', { type: 'button', class: ['button', 'button-quiet', 'button-small', 'attention-more'], onclick: moreAttention }, 'Show more');
   const attnEmpty = h('p', { class: 'note' }, 'Every car is uploading, its logs pass their checks, and no tyre, door or battery needs a look.');
+  const attnStatus = h('div', { class: 'attention-status' });
   const attentionBox = h('section', { class: 'attention', 'aria-labelledby': 'attention-title' },
     h('h2', { class: 'label', id: 'attention-title' }, 'Needs a look', attnCount),
-    attnList, attnEmpty, attnMore);
+    attnList, attnEmpty, attnStatus, attnMore);
   function attentionRow(a) {
     const info = carInfo.get(a.car);
     const tz = info?.tz || zone;
@@ -103,10 +118,29 @@ export async function mount(ctx) {
   }
   function drawAttention() {
     attnList.replaceChildren(...attnItems.map(attentionRow));
-    attnCount.textContent = attnItems.length ? `${tn(attnItems.length, '{n} item', '{n} items')}${attnNext ? ' shown, more below' : ''}` : 'nothing';
+    attnCount.textContent = attnError ? 'not known' : attnItems.length ? `${tn(attnItems.length, '{n} item', '{n} items')}${attnNext ? ' shown, more below' : ''}` : 'nothing';
     attnList.hidden = !attnItems.length;
-    attnEmpty.hidden = !!attnItems.length;
-    attnMore.hidden = !attnNext;
+    attnEmpty.hidden = !!attnItems.length || !!attnError;
+    attnMore.hidden = !attnNext || !!attnError;
+    attnStatus.replaceChildren(...(attnError ? [partError(attnError, 'Could not check which cars need a look', retryAttention)] : []));
+    deckLine.textContent = deckText();
+  }
+  /** The head's line: the cars, and how many need a look (at least that many while more items are to load). */
+  function deckText() {
+    const cars = tn(summary.cars, '{n} car', '{n} cars');
+    if (attnError) return `${cars}. Which need a look is not known right now.`;
+    const n = new Set(attnItems.map((a) => a.car)).size;
+    if (!n) return `${cars}. None needs a look.`;
+    if (attnNext) return `${cars}. At least ${tn(n, '{n} needs a look', '{n} need a look')}; more are listed below.`;
+    return `${cars}. ${tn(n, '{n} needs a look.', '{n} need a look.')}`;
+  }
+  function takeAttention(res) {
+    if (res.err) { attnError = res.err; attnItems.length = 0; attnNext = null; } else { attnError = null; attnItems.splice(0, attnItems.length, ...res.ok.items); attnNext = res.ok.next || null; }
+    drawAttention();
+  }
+  async function retryAttention() {
+    takeAttention(await ctx.api.get('fleet/attention', { limit: 20 }).then((r) => ({ ok: r }), (err) => ({ err })));
+    learnCars();
   }
   async function moreAttention() {
     if (!attnNext) return;
@@ -124,7 +158,8 @@ export async function mount(ctx) {
       ctx.api.get(api.apiPath`cars/${a.car}`).then((c) => { carInfo.set(c.id, { name: c.name, tz: c.time_zone }); drawAttention(); }).catch(() => {});
     }
   }
-  drawAttention();
+  const deckLine = h('span', { class: 'fleet-deck' });
+  takeAttention(await attnFirst);
 
   // Search and order.
   const search = h('input', { class: 'field-input', type: 'search', id: 'fleet-search', value: st.q, placeholder: 'Name, model or VIN prefix', autocomplete: 'off', spellcheck: 'false' });
@@ -133,19 +168,31 @@ export async function mount(ctx) {
   ctx.onCleanup(() => clearTimeout(timer));
   const sortSel = h('select', { class: 'field-select', id: 'fleet-sort', cover: ['web.settings.general.car-order', 'faq.reorder-cars', 'cars.list.order'] },
     SORTS.map(([v, t]) => h('option', { value: v, selected: v === st.sort }, t)));
-  sortSel.addEventListener('change', () => { st.sort = sortSel.value; write(); reload(); });
+  sortSel.addEventListener('change', () => { st.sort = sortSel.value; st.dir = SORT_DIR[st.sort] || null; syncSort(); write(); reload(); });
+  /** The menu says the order the rows are in, whichever way it was chosen (the menu or a column head). */
+  function syncSort() {
+    sortSel.value = st.sort;
+    for (const o of sortSel.options) if (SORT_WORDS[o.value]) o.textContent = SORT_WORDS[o.value][o.value === st.sort ? st.dir : SORT_DIR[o.value]];
+  }
+  syncSort();
   const toolbar = h('div', { class: 'toolbar' },
     h('div', { class: 'field field-search' },
       h('label', { class: 'field-label', for: 'fleet-search' }, 'Find a car'),
       h('div', { class: 'field-control' }, icon('search', 'icon field-icon'), search)),
     h('div', { class: 'toolbar-end' },
       h('div', { class: 'field' }, h('label', { class: 'field-label', for: 'fleet-sort' }, 'Order'), sortSel),
-      h('p', { class: 'note toolbar-note' }, 'Pin a car with its star. In your order, the arrows move a car up or down; the order is kept with your account.')));
+      h('p', { class: 'note toolbar-note' }, 'Pin a car with its star. In your order, the arrows move a car among the pinned or the other cars; the order is kept with your account. A column head orders by that column.')));
 
-  const write = () => ctx.setQuery({ q: st.q, state: st.state === 'all' ? null : st.state, sort: st.sort === 'custom' ? null : st.sort });
-  const params = () => ({ search: st.q || undefined, state: st.state === 'all' ? undefined : st.state, sort: st.sort, dir: st.sort === 'name' ? 'asc' : undefined });
+  const write = () => ctx.setQuery({ q: st.q, state: st.state === 'all' ? null : st.state, sort: st.sort === 'custom' ? null : st.sort,
+    dir: st.sort !== 'custom' && st.dir !== SORT_DIR[st.sort] ? st.dir : null });
+  // Your order is the server's `custom` sort; any other order is a column's sort (the table sends sort and dir).
+  const params = () => ({ search: st.q || undefined, state: st.state === 'all' ? undefined : st.state, sort: st.sort === 'custom' ? 'custom' : undefined });
+  const tableSort = () => (st.sort === 'custom' ? null : { key: st.sort, dir: st.dir });
+  /** A column head was clicked: that is the order now, in the menu and the URL; the move arrows go away. */
+  function headSort(s) { st.sort = s.key; st.dir = s.dir; syncSort(); write(); }
 
-  // The person's order: pinned first, then car_order. Moving a car writes the whole visible order.
+  // The person's order: pinned cars first (in pinned_cars order), then car_order, then the rest by last activity.
+  // A car moves only within its own group, and only in your order (the rows are then the server's custom order).
   async function togglePin(car) {
     const list = [...(currentPrefs()?.pinned_cars || [])];
     const i = list.indexOf(car.id);
@@ -154,14 +201,33 @@ export async function mount(ctx) {
     pinned.clear(); list.forEach((x) => pinned.add(x));
     if (st.sort === 'custom') reload(); else redrawRows();
   }
+  /** The loaded car next to this one in its own group (pinned or not), or null. */
+  function neighbour(car, step) {
+    if (st.sort !== 'custom') return null;
+    const list = table.items || [];
+    const i = list.findIndex((c) => c.id === car.id);
+    const o = i < 0 ? null : list[i + step];
+    return o && pinned.has(o.id) === pinned.has(car.id) ? o : null;
+  }
   async function move(car, step) {
-    const ids = table.items.map((c) => c.id);
-    const i = ids.indexOf(car.id), j = i + step;
-    if (i < 0 || j < 0 || j >= ids.length) return;
-    [ids[i], ids[j]] = [ids[j], ids[i]];
-    const rest = (currentPrefs()?.car_order || []).filter((x) => !ids.includes(x));
-    try { await savePref({ car_order: [...ids, ...rest] }); } catch { return; }
-    ctx.flash(`${car.name} moved ${step < 0 ? 'up' : 'down'}.`);
+    const other = neighbour(car, step);
+    if (!other) return;
+    const p = currentPrefs() || {};
+    const group = pinned.has(car.id);
+    let key, order;
+    if (group) {
+      key = 'pinned_cars'; order = [...(p.pinned_cars || [])];
+    } else {
+      // Cars not yet in car_order follow it in the order shown; adding them at its end keeps that order.
+      key = 'car_order'; order = [...(p.car_order || [])];
+      for (const c of table.items) if (!pinned.has(c.id) && !order.includes(c.id)) order.push(c.id);
+    }
+    const a = order.indexOf(car.id), b = order.indexOf(other.id);
+    if (a < 0 || b < 0) return;
+    [order[a], order[b]] = [order[b], order[a]];
+    try { await savePref({ [key]: order }); } catch { return; }
+    if (group) { pinned.clear(); order.forEach((x) => pinned.add(x)); }
+    ctx.flash(`${nameOf(car)} moved ${step < 0 ? 'up' : 'down'}, ${step < 0 ? 'above' : 'below'} ${nameOf(other)}.`);
     reload();
   }
 
@@ -177,7 +243,7 @@ export async function mount(ctx) {
       cell: (c) => [stateMark(c.now?.state, { stale: !!c.now?.stale }), h('span', { class: 'cell-sub' }, sinceText(c))] },
     { key: 'soc', label: 'Battery', sort: 'soc', firstDir: 'desc', cls: 'c-battery', value: (c) => c.now?.soc_pct,
       cell: (c) => [h('span', { class: 'batt-row' }, q(c.now?.soc_pct, 'percent', { why: blankWhy(c) }), c.now?.soc_pct != null ? batteryBar(c.now.soc_pct, { cls: 'bar-cell' }) : null),
-        h('span', { class: 'cell-sub' }, c.now?.range_km != null ? `${format(c.now.range_km, 'range')} range` : 'range not known')] },
+        h('span', { class: 'cell-sub' }, rangeText(c))] },
     { key: 'place', label: 'Where', cls: 'c-where', value: (c) => c.now?.place?.name,
       cell: (c) => [h('span', { class: 'place' }, c.now?.place ? c.now.place.name : c.now?.state === 'driving' ? 'On the road' : 'No saved place'),
         h('span', { class: 'cell-sub' }, c.time_zone ? `${c.time_zone.split('/').pop().replace(/_/g, ' ')} time` : '')] },
@@ -193,13 +259,24 @@ export async function mount(ctx) {
       cell: (c) => h('span', { class: 'order-tools' },
         h('button', { type: 'button', class: ['icon-button', 'pin-button', { 'is-on': pinned.has(c.id) }], 'aria-pressed': String(pinned.has(c.id)), title: pinned.has(c.id) ? 'Unpin' : 'Pin to the top', 'aria-label': `${pinned.has(c.id) ? 'Unpin' : 'Pin'} ${nameOf(c)}`, onclick: () => togglePin(c) }, icon('star')),
         st.sort === 'custom' ? [
-          h('button', { type: 'button', class: 'icon-button', title: 'Move up', 'aria-label': `Move ${nameOf(c)} up`, onclick: () => move(c, -1) }, icon('chevronLeft', 'icon icon-up')),
-          h('button', { type: 'button', class: 'icon-button', title: 'Move down', 'aria-label': `Move ${nameOf(c)} down`, onclick: () => move(c, 1) }, icon('chevronRight', 'icon icon-down'))] : null) },
+          moveButton(c, -1), moveButton(c, 1)] : null) },
   ];
+  function moveButton(c, step) {
+    const up = step < 0;
+    const other = neighbour(c, step);
+    const why = other ? null : `No ${pinned.has(c.id) ? 'pinned' : 'unpinned'} car ${up ? 'above' : 'below'} it in the list`;
+    return h('button', { type: 'button', class: 'icon-button', disabled: !other, title: why || (up ? `Move up, above ${nameOf(other)}` : `Move down, below ${nameOf(other)}`),
+      'aria-label': `Move ${nameOf(c)} ${up ? 'up' : 'down'}`, onclick: () => move(c, step) }, icon(up ? 'chevronLeft' : 'chevronRight', `icon icon-${up ? 'up' : 'down'}`));
+  }
+  /** The range under the battery, named rated or ideal as the person chose. */
+  function rangeText(c) {
+    const v = rangeValue(c.now, 'range_km');
+    return v != null ? `${format(v, 'range')} ${rangeLabel().toLowerCase()}` : `${rangeLabel().toLowerCase()} not known`;
+  }
   /** Why a value is blank: a sleeping car sends nothing new; unknown means no log reached Sentry Mate. */
   function blankWhy(c) {
     const s = c.now?.state;
-    if (!c.now || s === 'unknown') return 'no data';
+    if (!c.now || s === 'unknown') return 'no recent log';
     if (s === 'asleep') return 'asleep, not sent';
     return 'not sent by this car';
   }
@@ -211,7 +288,7 @@ export async function mount(ctx) {
     return `since ${dayKey(n.since_ms, t) === dayKey(api.now(), t) ? formatTime(n.since_ms, t) : formatDate(n.since_ms, t, { weekday: false, now: api.now() })}`;
   }
   const table = dataTable(ctx, {
-    path: 'cars', params: params(), limit: 50, columns, itemName: ['car', 'cars'], cls: 'fleet-ledger', label: 'Cars',
+    path: 'cars', params: params(), sort: tableSort(), onSort: headSort, limit: 50, columns, itemName: ['car', 'cars'], cls: 'fleet-ledger', label: 'Cars',
     cover: ['cars.list.cards', 'faq.null-panels', 'cars.list.live_refresh'],
     rowAttrs: (c) => ({ class: ['ledger-row', { 'is-stale': !!c.now?.stale, 'is-unknown': c.now?.state === 'unknown' }], dataset: { car: c.id } }),
     onRows: (items) => { for (const c of items) carInfo.set(c.id, { name: c.name, tz: c.time_zone }); drawAttention(); },
@@ -221,19 +298,21 @@ export async function mount(ctx) {
       action: h('button', { type: 'button', class: 'button', onclick: () => { st.q = ''; search.value = ''; st.state = 'all'; syncTallies(); write(); reload(); } }, 'Show all cars'),
     }),
   });
-  function reload() { return table.reload(params(), { sort: null }); }
+  function reload() { return table.reload(params(), { sort: tableSort() }); }
   function redrawRows() { table.redraw(); }
 
   const asof = h('p', { class: 'asof' }, h('span', { class: 'asof-dot', 'aria-hidden': 'true' }), 'Live', h('span', { class: 'asof-note' }, 'values reach Sentry Mate about a minute after the car sends them'));
   ctx.main.append(
     h('div', { class: 'fleet-top' },
-      pageHead({ eyebrow: 'The register', title: 'Fleet', deck: `${tn(summary.cars, '{n} car', '{n} cars')}. ${attention.items.length ? tn(new Set(attention.items.map((a) => a.car)).size, '{n} needs a look.', '{n} need a look.') : 'None needs a look.'}`, aside: asof, cls: 'page-head-fleet' }),
+      pageHead({ eyebrow: 'The register', title: 'Fleet', deck: deckLine, aside: asof, cls: 'page-head-fleet' }),
       tallies),
     attentionBox,
     toolbar,
     table.el);
   await table.load();
-  ctx.main.append(await missingCars(ctx));
+  const missing = missingCars(ctx, isAdmin);
+  ctx.main.append(missing);
+  await missing.done;
   // Names and zones for the attention list, when those cars are not on the first page.
   learnCars();
 
@@ -254,7 +333,7 @@ export async function mount(ctx) {
     const v = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : x);
     const now = { ...car.now };
     const before = now.state, staleBefore = !!now.stale;
-    for (const k of ['state', 'since_ms', 'at_ms', 'received_ms', 'stale', 'soc_pct', 'range_km']) if (k in n) now[k] = v(n[k]);
+    for (const k of ['state', 'since_ms', 'at_ms', 'received_ms', 'stale', 'soc_pct', 'range_km', 'ideal_range_km']) if (k in n) now[k] = v(n[k]);
     if (n.location && 'place' in n.location) now.place = v(n.location.place);
     if (n.charge) {
       if ('plugged' in n.charge) now.plugged = v(n.charge.plugged);
@@ -270,36 +349,64 @@ export async function mount(ctx) {
   return { update: (c) => { table.redraw(); c.ready(); } };
 }
 
-/** Why a car may be missing although others show: what waits in set-up (GET /api/v1/setup/status). */
-async function missingCars(ctx) {
-  const s = await ctx.api.get('setup/status').catch(() => null);
-  const fixes = (s && s.fixes) || [];
-  return h('section', { class: 'block missing-cars', 'aria-labelledby': 'missing-title', cover: ['cars.empty.title', 'cars.empty.hint'] },
-    h('div', { class: 'block-head' }, h('h2', { class: 'label', id: 'missing-title' }, 'Missing a car?')),
-    h('p', { class: 'note' }, 'A car appears here when its CAN Bridge uploads its first log; you name it afterwards.'),
-    fixes.length
-      ? h('ul', { class: 'fix-list' }, fixes.map((f) => h('li', null,
-        h('p', { class: 'fix-title' }, (FIX_WORDS[f.cause] || [f.cause])[0]),
-        h('p', { class: 'fix-text' }, (FIX_WORDS[f.cause] || ['', ''])[1]),
-        f.link ? h('a', { class: 'link-arrow', href: f.link }, 'Fix it', icon('arrowRight')) : null)))
-      : h('p', { class: 'note-serif' }, 'Nothing is waiting: every upload token was used and every CAN Bridge key belongs to a car.'));
+/** A failed part of the page (the rest still shows): what failed, why, and Try again. */
+function partError(err, what, retry) {
+  const w = errorWords(err);
+  const generic = !err || !err.status || err.status >= 500;
+  return h('div', { class: 'part-error', role: 'alert' },
+    h('p', { class: 'part-error-title' }, what, '.'),
+    h('p', { class: 'note' }, generic && err?.status !== 0 ? `The server did not answer this part${err?.message ? ` (${err.message})` : ''}; the rest of the page is up to date.` : `${w.title} ${w.text}`),
+    h('p', { class: 'part-error-action' }, button('Try again', { onclick: retry, iconName: 'reset', kind: 'quiet' })));
 }
 
-/** No car shows: say exactly why, and link the fix. */
-async function emptyFleet(ctx) {
-  const s = await ctx.api.get('setup/status').catch(() => null);
-  const fixes = (s && s.fixes) || [];
+/** The fixes set-up lists (GET /api/v1/setup/status), each linked to where it is fixed, or for a watch account who to ask. */
+function fixList(fixes, isAdmin) {
+  return h('ul', { class: 'fix-list' }, fixes.map((f) => h('li', null,
+    h('p', { class: 'fix-title' }, (FIX_WORDS[f.cause] || [String(f.cause).replace(/_/g, ' ')])[0]),
+    h('p', { class: 'fix-text' }, (FIX_WORDS[f.cause] || ['', ''])[1]),
+    isAdmin
+      ? (f.link ? h('a', { class: 'link-arrow', href: f.link }, 'Fix it', icon('arrowRight')) : null)
+      : h('p', { class: 'note fix-ask' }, 'Ask an admin of this Sentry Mate to fix this; a watch account cannot change set-up.'))));
+}
+
+/**
+ * Loads set-up's status into `box` with `draw(fixes)`; a failure says the status is not known, with Try again,
+ * never an all-clear or advice that may not apply.
+ */
+function loadStatus(ctx, box, draw) {
+  const run = () => {
+    box.replaceChildren(h('p', { class: 'note' }, 'Checking set-up…'));
+    return ctx.api.get('setup/status').then((s) => box.replaceChildren(...[].concat(draw((s && s.fixes) || []))),
+      (err) => { if (!ctx.signal.aborted) box.replaceChildren(partError(err, 'Could not check why a car might be missing', run)); });
+  };
+  box.done = run();
+  return box;
+}
+
+/** Why a car may be missing although others show: what waits in set-up. */
+function missingCars(ctx, isAdmin) {
+  const status = loadStatus(ctx, h('div', { class: 'missing-status' }), (fixes) => (fixes.length ? fixList(fixes, isAdmin)
+    : h('p', { class: 'note-serif' }, 'Nothing is waiting: every upload token was used and every CAN Bridge key belongs to a car.')));
+  const el = h('section', { class: 'block missing-cars', 'aria-labelledby': 'missing-title', cover: ['cars.empty.title', 'cars.empty.hint'] },
+    h('div', { class: 'block-head' }, h('h2', { class: 'label', id: 'missing-title' }, 'Missing a car?')),
+    h('p', { class: 'note' }, 'A car appears here when its CAN Bridge uploads its first log; you name it afterwards.'),
+    status);
+  el.done = status.done;
+  return el;
+}
+
+/** No car shows: say exactly why, and link the fix (for an admin). */
+async function emptyFleet(ctx, isAdmin) {
+  const status = h('div', { class: 'missing-status' });
   ctx.main.append(
     pageHead({ eyebrow: 'The register', title: 'Fleet', deck: 'No car shows yet.' }),
     h('section', { class: 'empty fleet-empty', cover: ['cars.empty.title', 'cars.empty.hint'] },
       h('p', { class: 'empty-title' }, 'No car is being logged yet.'),
       h('p', { class: 'empty-text' }, 'A car appears here when its CAN Bridge uploads its first log. You name it afterwards.'),
-      fixes.length
-        ? h('ul', { class: 'fix-list' }, fixes.map((f) => h('li', null,
-          h('p', { class: 'fix-title' }, (FIX_WORDS[f.cause] || [f.cause])[0]),
-          h('p', { class: 'fix-text' }, (FIX_WORDS[f.cause] || ['', ''])[1]),
-          f.link ? h('a', { class: 'link-arrow', href: f.link }, 'Fix it', icon('arrowRight')) : null)))
-        : h('p', { class: 'empty-action' }, h('a', { class: 'button', href: '/settings/cars' }, 'Make an upload token in Settings: Cars'))));
+      loadStatus(ctx, status, (fixes) => (fixes.length ? fixList(fixes, isAdmin)
+        : isAdmin ? h('p', { class: 'empty-action' }, h('a', { class: 'button', href: '/settings/cars' }, 'Make an upload token in Settings: Cars'))
+          : h('p', { class: 'empty-text' }, 'Ask an admin of this Sentry Mate to make an upload token for the car.')))));
+  await status.done;
   ctx.ready();
   return {};
 }

@@ -34,7 +34,7 @@ This is the `/api/v1` the pages in [`parity/ui-parity.md`](parity/ui-parity.md) 
 
 | Resource | Methods | Fields and notes | Pages |
 |---|---|---|---|
-| `/api/v1/cars` | GET | `?search=&state=&sort=last_activity\|name\|soc&dir=&limit=&after=`. Item: `{ id, name, model, year, vin_prefix, trim, profile, time_zone, last_activity_ms, now: { state, since_ms, at_ms, received_ms, stale, soc_pct, range_km, place: { id, name } \| null, plugged, charge_power_kw }, attention: [code] }`. Read from the fleet index; no car store is opened. | Fleet, every car picker |
+| `/api/v1/cars` | GET | `?search=&state=&sort=last_activity\|name\|soc&dir=&limit=&after=`. Item: `{ id, name, model, year, vin_prefix, trim, profile, time_zone, last_activity_ms, now: { state, since_ms, at_ms, received_ms, stale, soc_pct, range_km, ideal_range_km, place: { id, name } \| null, plugged, charge_power_kw }, attention: [code] }`. Read from the fleet index; no car store is opened. | Fleet, every car picker |
 | `/api/v1/fleet/summary` | GET | `{ cars, by_state: { driving, charging, parked, asleep, unknown }, stale }` | Fleet |
 | `/api/v1/fleet/attention` | GET | `?limit=&after=` -> `{ items: [{ car, code: "stopped_mid_drive" \| "stopped_mid_charge" \| "upload_silence" \| "trust_failed" \| "low_battery" \| "tyre_low" \| "door_open_asleep", since_ms, detail }], next }` | Fleet |
 | `/api/v1/cars/{car}` | GET, PATCH | GET: the list item plus `config: { trim, drivetrain, performance_package, pack_kwh_code, wheel, paint, roof, spoiler, right_hand_drive, map_region, supercharging_access }`, each `{ value, source: "can" \| "vin" \| "owner" \| "teslamate" }`, and `version`. PATCH (admin) with `version`: `name, time_zone, config overrides`. | Car overview, Settings: Cars |
@@ -321,3 +321,4 @@ Points this document left open, decided while building the dev server (`ui/devse
 - `/cars/{car}/trip` also lists the `drives` and `charges` it counted.
 - In `/charging-stats`: `heatmap.start` and `heatmap.end` are 7 rows (Monday first) of 24 hours in the car's local time. A run is two or more charges, each starting within a day of the one before. `share_above_80_pct` is the share of charges that ended above 80 %; `share_below_20_pct` of those that started below 20 %.
 - `/can-keys` takes `car=` (the keys tied to that car; an unknown or hidden car gives `404 no_such_car`), so a page lists one car's keys without reading every key.
+- **`/cars` items carry `now.ideal_range_km`** beside `now.range_km` (rated), so a car list can show the range the person chose (`range: "ideal"` in `/me/preferences`) without one `/now` read per car.

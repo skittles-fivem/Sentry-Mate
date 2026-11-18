@@ -303,6 +303,7 @@ def synthetic_now(app, car_id, t, meta):
         "buses": [{"bus": "vehicle", "awake": awake, "at_ms": at}, {"bus": "chassis", "awake": awake, "at_ms": at}],
         "driving": n["state"] == "driving",
         "soc_pct": W(n["soc_pct"], at), "range_km": W(n["range_km"], at),
+        "ideal_range_km": W(n.get("ideal_range_km"), at),
         "location": {"lat": W(depot[1], at), "lon": W(depot[2], at), "accuracy_m": W(8.0, at),
                      "elevation_m": None, "heading_deg": None, "place": None, "address": None},
         "charge": {"status": W("charging" if n["state"] == "charging" else "disconnected", at),
@@ -333,6 +334,7 @@ def list_item(app, car_id, t):
         "now": {
             "state": n["state"], "since_ms": n["since_ms"], "at_ms": n["at_ms"], "received_ms": n["received_ms"],
             "stale": n["stale"], "soc_pct": _v(n.get("soc_pct")), "range_km": _v(n.get("range_km")),
+            "ideal_range_km": _v(n.get("ideal_range_km")),
             "place": pl, "plugged": _v(ch.get("plugged")),
             "charge_power_kw": _v(ch.get("power_kw")) if _v(ch.get("status")) == "charging" else None,
         },

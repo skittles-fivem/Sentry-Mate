@@ -124,6 +124,7 @@ class SyntheticFleet:
                 "state": st, "since_ms": since, "at_ms": at_ms, "received_ms": received,
                 "stale": now_ms - received > HOUR,
                 "soc_pct": soc, "range_km": round(soc / 100 * full_km, 1),
+                "ideal_range_km": round(soc / 100 * full_km * 1.08, 1),
                 "place": None if st == "driving" else {"id": None, "name": depot[0]},
                 "plugged": plugged,
                 "charge_power_kw": round(7 + 240 * u01(i, self.salt + 12) ** 3, 1) if st == "charging" else None,

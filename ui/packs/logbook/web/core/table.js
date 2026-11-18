@@ -26,6 +26,7 @@ import { icon, empty as emptyView, errorView, loadingBlock } from './ui.js';
  *   empty: () => node,                // what to say when nothing matches (say which filter removed it all)
  *   rowAttrs(row) -> attrs,           // a class, a data- value, a cover id for a row
  *   onRows(items, page),              // after each page arrives (summaries in the answer: page.summary)
+ *   onSort({ key, dir }),             // a column head was clicked, before the rows load again in that order
  *   caption: node,                    // extra text after the count
  *   cover, cls, label,                // ids for the table, extra class, the table's accessible name
  * }) -> { el, reload(params), items, destroy() }
@@ -71,6 +72,7 @@ export function dataTable(ctx, opts) {
   function sortBy(c) {
     const dir = sort && sort.key === c.key && sort.dir === 'desc' ? 'asc' : sort && sort.key === c.key ? 'desc' : (c.firstDir || (c.num ? 'desc' : 'asc'));
     sort = { key: c.key, dir };
+    opts.onSort?.({ ...sort });
     head.replaceChildren(h('tr', null, columns.map((x) => headCell(x))));
     if (pager && typeof c.sort === 'string') { pager.reset(serverParams()); body.replaceChildren(); loadMore(); }
     else draw();

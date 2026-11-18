@@ -6,7 +6,7 @@ from .helpers import ServerCase
 
 ITEM = {"id", "name", "model", "year", "vin_prefix", "trim", "profile", "time_zone", "last_activity_ms", "now",
         "attention"}
-NOW_KEYS = {"state", "since_ms", "at_ms", "received_ms", "stale", "soc_pct", "range_km", "place", "plugged",
+NOW_KEYS = {"state", "since_ms", "at_ms", "received_ms", "stale", "soc_pct", "range_km", "ideal_range_km", "place", "plugged",
             "charge_power_kw"}
 
 
