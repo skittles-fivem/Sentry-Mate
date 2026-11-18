@@ -19,6 +19,7 @@ pub mod charges;
 pub mod drives;
 pub mod fleet;
 pub mod keys;
+pub mod logbook;
 pub mod now;
 pub mod parked;
 pub mod places;
@@ -28,6 +29,7 @@ pub mod signals;
 pub mod system;
 pub mod timeline;
 pub mod travel;
+pub mod trips;
 
 use crate::Engine;
 use base64::Engine as _;
@@ -228,6 +230,32 @@ pub(crate) fn paginate<T>(
         _ => None,
     };
     Ok(List { items: rest, next, total: with_total.then_some(total) })
+}
+
+/// The key a list's cursor holds (`None`: the first page), for lists that page without [`paginate`] (they keep only
+/// a page of rows while they read): `400` on `after` when it was made for other filters or by someone else.
+pub(crate) fn read_after(paging: &Paging, sig: &str) -> QResult<Option<(f64, String)>> {
+    let Some(c) = &paging.after else { return Ok(None) };
+    let bad = || QueryError::bad("after", "not a cursor of this list: start again without it");
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(c).map_err(|_| bad())?;
+    let body: CursorBody = serde_json::from_slice(&raw).map_err(|_| bad())?;
+    if body.h != sig_hash(sig) {
+        return Err(bad());
+    }
+    Ok(Some((f64::from_bits(body.k), body.id)))
+}
+
+/// The cursor after the row whose key is `key`, read back by [`read_after`] (and by [`paginate`]).
+pub(crate) fn make_after(key: &(f64, String), sig: &str) -> QResult<String> {
+    let body = CursorBody { k: key.0.to_bits(), id: key.1.clone(), h: sig_hash(sig) };
+    let raw = serde_json::to_vec(&body).map_err(|e| QueryError::Engine(crate::Error::Damaged(e.to_string())))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw))
+}
+
+/// The order [`paginate`] gives rows: by key, then by id, both one way.
+pub(crate) fn cmp_key(a: &(f64, String), b: &(f64, String), desc: bool) -> std::cmp::Ordering {
+    let o = a.0.total_cmp(&b.0).then_with(|| cmp_ids(&a.1, &b.1));
+    if desc { o.reverse() } else { o }
 }
 
 /// Ids compare as numbers when both are (ids pass 2^53, so not through f64), else as text.

@@ -31,11 +31,6 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/fleet/versions", get(fleet_versions))
         // live values, series, timeline
         .route("/api/v1/cars/{car}/gaps", get(gaps))
-        // drives
-        .route("/api/v1/cars/{car}/drives", get(drives))
-        .route("/api/v1/cars/{car}/drives/{drive}", get(drive))
-        .route("/api/v1/cars/{car}/drives/{drive}/track", get(track))
-        .route("/api/v1/cars/{car}/drive-stats", get(drive_stats))
         // charges
         .route("/api/v1/charges", get(charges_all))
         .route("/api/v1/cars/{car}/charges", get(charges_car))
@@ -185,78 +180,8 @@ async fn gaps(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -
     answer(&app, &p, "gaps", move |e| q::timeline::gaps(e, car, &per, &pg)).await
 }
 
-// ---- drives
-
-async fn drives(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let query = q::drives::DrivesQuery {
-        period: period(&p)?,
-        places: text(&p, "places")?,
-        place_side: text(&p, "place_side")?,
-        q: text(&p, "q")?,
-        min_distance_km: p.float("min_distance_km", 0.0, 1e6)?,
-        min_avg_kph: p.float("min_avg_kph", 0.0, 1e3)?,
-        source: text(&p, "source")?,
-        flags: text(&p, "flags")?,
-        efficiency: text(&p, "efficiency")?,
-        sort: text(&p, "sort")?,
-        dir: text(&p, "dir")?,
-    };
-    let pg = paging(&p)?;
-    answer(&app, &p, "drives", move |e| q::drives::drives(e, car, &query, &pg)).await
-}
-
-async fn drive(
-    State(app): State<AppState>,
-    CarParam(car): CarParam,
-    Path(path): Path<HashMap<String, String>>,
-    p: Params,
-) -> ApiResult<Response> {
-    let id = id_of(&path, "drive", "no_such_drive")?;
-    let band = p.float("speed_band_kph", 1.0, 100.0)?;
-    answer(&app, &p, "drive", move |e| q::drives::drive(e, car, id, band)).await
-}
-
-/// A drive's track: GeoJSON (the default) or GPX (a file, with the export permission).
-async fn track(
-    State(app): State<AppState>,
-    v: Viewer,
-    CarParam(car): CarParam,
-    Path(path): Path<HashMap<String, String>>,
-    p: Params,
-) -> ApiResult<Response> {
-    let id = id_of(&path, "drive", "no_such_drive")?;
-    let gpx = p.one_of("format", &["geojson", "gpx"])? == Some("gpx");
-    if gpx && !v.signed_in().may(accounts::Permission::Export) {
-        return Err(ApiError::not_allowed());
-    }
-    let simplify = p.float("simplify_m", 0.0, 10_000.0)?;
-    let ext = list(&p, "extensions")?;
-    let e = app.service::<Engine>()?;
-    app.blocking(move |_| {
-        let t = q::drives::track(&e, car, id).map_err(failed)?;
-        let ext: Vec<&str> = ext.iter().map(String::as_str).collect();
-        if !gpx {
-            return Ok(axum::Json(q::drives::geojson(&t, simplify, &ext)).into_response());
-        }
-        let mut res = q::drives::gpx(&t, simplify, &ext).into_response();
-        let h = res.headers_mut();
-        h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/gpx+xml"));
-        let name: String = q::drives::track_file_name(&t, "gpx")
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
-            .collect();
-        if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{name}\"")) {
-            h.insert(header::CONTENT_DISPOSITION, v);
-        }
-        Ok(res)
-    })
-    .await
-}
-
-async fn drive_stats(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let (per, exclude, now_ms) = (period(&p)?, text(&p, "exclude_places")?, app.now());
-    answer(&app, &p, "drive-stats", move |e| q::drives::drive_stats(e, car, &per, exclude.as_deref(), now_ms)).await
-}
+// ---- drives (the web crate serves drives, a drive, its track and purpose, purpose rules, drive stats, the
+// logbook, the trip and saved trips)
 
 // ---- charges
 

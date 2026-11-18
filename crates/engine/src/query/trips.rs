@@ -1,0 +1,435 @@
+//! `/cars/{car}/trip` (what a stretch of days added up to) and the saved trips of `/trips` (a person's own named
+//! periods of a car).
+//!
+//! Saved trips are kept in the db's sealed key/value store, one record per account:
+//!
+//! ```text
+//! trips  account/<id>   the account's saved trips
+//! ```
+
+use super::drives::{DriveView, each};
+use super::system::Shown;
+use super::{CarRef, List, Money, Paging, Period, QResult, QueryError, Scoped, car_of, money, paginate, r, scoped};
+use crate::Engine;
+use crate::records;
+use model::{CarId, Charge, Drive};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
+
+const NS: &str = "trips";
+/// Saved trips an account keeps at most.
+pub const MAX_TRIPS: usize = 500;
+/// Drives, charges and markers a trip answer lists at most.
+pub const MAX_LISTED: usize = 5_000;
+const DAY_MS: u64 = 86_400_000;
+
+static WRITES: Mutex<()> = Mutex::new(());
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TripDistance {
+    pub odometer_km: Option<f64>,
+    pub drives_km: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct TripTime {
+    pub driving: u64,
+    pub charging_ac: u64,
+    pub charging_dc: u64,
+    pub parked_awake: u64,
+    pub asleep: u64,
+    pub not_recorded: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TripSpeed {
+    pub moving: Option<f64>,
+    pub incl_dc: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TripEnergy {
+    pub drive_net: f64,
+    pub gross: f64,
+    pub added_ac: f64,
+    pub added_dc: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TripWhKm {
+    pub net: Option<f64>,
+    pub gross: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TripCost {
+    pub by_currency: Vec<Money>,
+    pub per_100km: Vec<Money>,
+    pub priced: u64,
+    pub unpriced: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Marker {
+    /// `start`, `end`, `charge`, `overnight`.
+    pub kind: &'static str,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub t_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charge: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Trip {
+    pub from_ms: u64,
+    pub to_ms: u64,
+    pub distance: TripDistance,
+    pub time_ms: TripTime,
+    pub speed_kph: TripSpeed,
+    pub energy_kwh: TripEnergy,
+    pub wh_per_km: TripWhKm,
+    pub cost: TripCost,
+    pub markers: Vec<Marker>,
+    /// The drives and charges counted (by start in the period), oldest first.
+    pub drives: Vec<String>,
+    pub charges: Vec<String>,
+}
+
+/// A stop of more than this long that spans two local dates away from home is an overnight stop.
+const OVERNIGHT_MS: u64 = 6 * 3_600_000;
+
+/// `/cars/{car}/trip`: the period (default the 7 days before its end, which is at most now), its drives and charges
+/// (by start, as their lists show them), the time in each state, energy and cost.
+pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Scoped<Trip>> {
+    let c = car_of(e, car)?;
+    let (a, b) = period.window(7 * DAY_MS, now_ms)?;
+    let end = b.min(now_ms).max(a);
+    let tz = crate::tz::zone(&c.time_zone);
+    let shown = Shown::new(e, car, None)?;
+    let dx = super::drives::ctx(e, &c)?;
+    let mut drives: Vec<String> = Vec::new();
+    let (mut km, mut net) = (0.0, 0.0);
+    let (mut odo_first, mut odo_last) = (None::<f64>, None::<f64>);
+    let mut markers: Vec<Marker> = Vec::new();
+    let mut first: Option<DriveView> = None;
+    let mut last: Option<DriveView> = None;
+    each::<Drive>(e, car, a, end, None, &shown, false, |d| {
+        let v = super::drives::view(&c, &d, &dx);
+        km += v.distance_km.unwrap_or(0.0);
+        net += v.energy_kwh.unwrap_or(0.0);
+        if odo_first.is_none() {
+            odo_first = v.start_odometer_km;
+        }
+        odo_last = v.end_odometer_km.or(odo_last);
+        if let Some(p) = &last {
+            // the stop between the drive before and this one
+            let stop_from = p.end_ms.unwrap_or(p.start_ms);
+            let home = p.end.place.as_ref().and_then(|x| super::parse_place(&x.id)).and_then(|id| dx.places.get(id));
+            let at_home = home.is_some_and(|pl| dx.places.kind_word(pl) == "home");
+            if d.start_ms.saturating_sub(stop_from) > OVERNIGHT_MS
+                && crate::tz::date(stop_from, tz) != crate::tz::date(d.start_ms, tz)
+                && !at_home
+                && markers.len() < MAX_LISTED
+            {
+                markers.push(Marker {
+                    kind: "overnight",
+                    lat: p.end.lat,
+                    lon: p.end.lon,
+                    t_ms: stop_from,
+                    charge: None,
+                });
+            }
+        }
+        if drives.len() < MAX_LISTED {
+            drives.push(v.id.clone());
+        }
+        if first.is_none() {
+            first = Some(v.clone());
+        }
+        last = Some(v);
+        Ok(true)
+    })?;
+    let cx = super::charges::ctx(e, &c)?;
+    let mut charges: Vec<String> = Vec::new();
+    let mut kinds: HashMap<String, Option<&'static str>> = HashMap::new();
+    let (mut ac, mut dc) = (0.0, 0.0);
+    let mut by_cur: BTreeMap<String, f64> = BTreeMap::new();
+    let (mut priced, mut unpriced) = (0u64, 0u64);
+    // a charge that started before the period and runs into it still counts for the time charging
+    each::<Charge>(e, car, a.saturating_sub(7 * DAY_MS), end, None, &shown, false, |ch| {
+        let v = super::charges::view(e, &c, &ch, &cx)?;
+        kinds.insert(v.id.clone(), v.kind);
+        if ch.start_ms < a {
+            return Ok(true);
+        }
+        match v.kind {
+            Some("dc") => dc += v.energy_added_kwh.unwrap_or(0.0),
+            _ => ac += v.energy_added_kwh.unwrap_or(0.0),
+        }
+        match v.cost.as_ref().filter(|k| !k.currency.is_empty()) {
+            Some(k) => {
+                priced += 1;
+                *by_cur.entry(k.currency.clone()).or_default() += k.amount;
+            }
+            None => unpriced += 1,
+        }
+        if markers.len() < MAX_LISTED {
+            markers.push(Marker {
+                kind: "charge",
+                lat: v.position.as_ref().map(|p| p.lat),
+                lon: v.position.as_ref().map(|p| p.lon),
+                t_ms: v.start_ms,
+                charge: Some(v.id.clone()),
+            });
+        }
+        if charges.len() < MAX_LISTED {
+            charges.push(v.id);
+        }
+        Ok(true)
+    })?;
+    if let (Some(f), Some(l)) = (&first, &last) {
+        markers.push(Marker { kind: "start", lat: f.start.lat, lon: f.start.lon, t_ms: f.start_ms, charge: None });
+        markers.push(Marker {
+            kind: "end",
+            lat: l.end.lat.or(l.start.lat),
+            lon: l.end.lon.or(l.start.lon),
+            t_ms: l.end_ms.unwrap_or(end),
+            charge: None,
+        });
+    }
+    markers.sort_by_key(|m| (m.t_ms, m.kind != "start"));
+    // the time in each state, from the activity strip of the same period
+    let mut time = TripTime::default();
+    if end > a {
+        for s in super::timeline::activity(e, car, &Period::new(Some(a), Some(end)))?.body.items {
+            let ms = s.end_ms.saturating_sub(s.start_ms);
+            let charge_kind = || {
+                s.reference
+                    .as_ref()
+                    .and_then(|x| x.get("charge"))
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|id| kinds.get(id).copied().flatten())
+            };
+            match s.kind {
+                "driving" => time.driving += ms,
+                "charging" if charge_kind() == Some("dc") => time.charging_dc += ms,
+                "charging" => time.charging_ac += ms,
+                "asleep" => time.asleep += ms,
+                "unknown" => time.not_recorded += ms,
+                _ => time.parked_awake += ms,
+            }
+        }
+    }
+    let parked_kwh = if end > a {
+        super::parked::parked(e, car, &Period::new(Some(a), Some(end)), None, &Paging::first(1))?
+            .body
+            .summary
+            .energy_kwh
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    let gross = net + parked_kwh;
+    let hours = |ms: u64| ms as f64 / 3_600_000.0;
+    let per_100: Vec<Money> = if km > 1.0 {
+        by_cur
+            .iter()
+            .map(|(cur, amt)| Money { currency: cur.clone(), amount: (amt / km * 100.0 * 100.0).round() / 100.0 })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok(scoped(
+        &c,
+        Trip {
+            from_ms: a,
+            to_ms: end,
+            distance: TripDistance {
+                odometer_km: r(odo_first.zip(odo_last).map(|(f, l)| (l - f).max(0.0)), 3),
+                drives_km: r(Some(km), 3).unwrap_or(0.0),
+            },
+            speed_kph: TripSpeed {
+                moving: r((time.driving > 0).then(|| km / hours(time.driving)), 1),
+                incl_dc: r((time.driving > 0).then(|| km / hours(time.driving + time.charging_dc)), 1),
+            },
+            time_ms: time,
+            energy_kwh: TripEnergy {
+                drive_net: r(Some(net), 3).unwrap_or(0.0),
+                gross: r(Some(gross), 3).unwrap_or(0.0),
+                added_ac: r(Some(ac), 3).unwrap_or(0.0),
+                added_dc: r(Some(dc), 3).unwrap_or(0.0),
+            },
+            wh_per_km: TripWhKm {
+                net: r((km > 0.1).then(|| net * 1000.0 / km), 1),
+                gross: r((km > 0.1).then(|| gross * 1000.0 / km), 1),
+            },
+            cost: TripCost { by_currency: money(by_cur), per_100km: per_100, priced, unpriced },
+            markers,
+            drives,
+            charges,
+        },
+    ))
+}
+
+/// A saved trip as kept.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Stored {
+    id: String,
+    car: CarId,
+    from_ms: u64,
+    to_ms: u64,
+    name: String,
+    created_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct Saved {
+    next: u64,
+    items: Vec<Stored>,
+}
+
+/// A saved trip as the API writes it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SavedTrip {
+    pub id: String,
+    pub car: CarRef,
+    pub time_zone: String,
+    pub from_ms: u64,
+    pub to_ms: u64,
+    pub name: String,
+}
+
+fn key(account: &str) -> String {
+    format!("account/{account}")
+}
+
+fn saved(e: &Engine, account: &str) -> QResult<Saved> {
+    Ok(records::get(e.db(), NS, &key(account))?.unwrap_or_default())
+}
+
+fn view(e: &Engine, t: &Stored) -> QResult<SavedTrip> {
+    let tz = e.db().car(t.car)?.map(|c| c.time_zone).unwrap_or_else(|| "UTC".into());
+    Ok(SavedTrip {
+        id: t.id.clone(),
+        car: CarRef(t.car),
+        time_zone: tz,
+        from_ms: t.from_ms,
+        to_ms: t.to_ms,
+        name: t.name.clone(),
+    })
+}
+
+/// The name a trip may have: 1 to 80 characters, trimmed.
+fn name_of(name: &str, fields: &mut BTreeMap<String, String>) -> String {
+    let n = name.trim();
+    if !(1..=80).contains(&n.chars().count()) {
+        fields.insert("name".into(), "1 to 80 characters.".into());
+    }
+    n.to_string()
+}
+
+/// `GET /trips?car=`: the account's saved trips of the cars it sees (`visible`), the latest period first.
+pub fn trips(
+    e: &Engine,
+    account: &str,
+    visible: &[CarId],
+    car: Option<CarId>,
+    paging: &Paging,
+) -> QResult<List<SavedTrip>> {
+    let mut rows = Vec::new();
+    for t in saved(e, account)?.items {
+        if visible.contains(&t.car) && car.is_none_or(|c| c == t.car) && e.db().car(t.car)?.is_some() {
+            rows.push(view(e, &t)?);
+        }
+    }
+    let sig = format!("trips|{account}|{car:?}");
+    let key = |t: &SavedTrip| (t.from_ms as f64, t.id.clone());
+    paginate(rows, key, true, &sig, paging, false)
+}
+
+fn find(all: &Saved, visible: &[CarId], id: &str) -> QResult<usize> {
+    all.items.iter().position(|t| t.id == id && visible.contains(&t.car)).ok_or(QueryError::NotFound("no_such_trip"))
+}
+
+/// `GET /trips/{trip}`: one of the account's own, of a car it sees (else `no_such_trip`).
+pub fn get_trip(e: &Engine, account: &str, visible: &[CarId], id: &str) -> QResult<SavedTrip> {
+    let all = saved(e, account)?;
+    let i = find(&all, visible, id)?;
+    view(e, &all.items[i])
+}
+
+/// `POST /trips`: a new saved trip of `car` (checked by the caller); `422` when `to_ms` is not after `from_ms` or
+/// the name is empty or too long.
+pub fn add_trip(
+    e: &Engine,
+    account: &str,
+    car: CarId,
+    from_ms: u64,
+    to_ms: u64,
+    name: &str,
+    now_ms: u64,
+) -> QResult<SavedTrip> {
+    car_of(e, car)?;
+    let mut fields = BTreeMap::new();
+    let name = name_of(name, &mut fields);
+    if to_ms <= from_ms {
+        fields.insert("to_ms".into(), "Must be after from_ms.".into());
+    }
+    let _one = WRITES.lock().unwrap_or_else(|x| x.into_inner());
+    let mut all = saved(e, account)?;
+    if all.items.len() >= MAX_TRIPS {
+        fields.insert("name".into(), format!("An account keeps at most {MAX_TRIPS} saved trips."));
+    }
+    if !fields.is_empty() {
+        return Err(QueryError::Invalid { fields });
+    }
+    all.next = all.next.max(all.items.len() as u64) + 1;
+    let t = Stored { id: format!("t{}", all.next), car, from_ms, to_ms, name, created_ms: now_ms };
+    all.items.push(t.clone());
+    records::put(e.db(), NS, &key(account), &all)?;
+    view(e, &t)
+}
+
+/// `PATCH /trips/{trip}`: a new period or name (the car stays).
+pub fn patch_trip(
+    e: &Engine,
+    account: &str,
+    visible: &[CarId],
+    id: &str,
+    from_ms: Option<u64>,
+    to_ms: Option<u64>,
+    name: Option<&str>,
+) -> QResult<SavedTrip> {
+    let _one = WRITES.lock().unwrap_or_else(|x| x.into_inner());
+    let mut all = saved(e, account)?;
+    let i = find(&all, visible, id)?;
+    let mut fields = BTreeMap::new();
+    let t = &mut all.items[i];
+    let (a, b) = (from_ms.unwrap_or(t.from_ms), to_ms.unwrap_or(t.to_ms));
+    if b <= a {
+        fields.insert("to_ms".into(), "Must be after from_ms.".into());
+    }
+    let name = name.map(|n| name_of(n, &mut fields));
+    if !fields.is_empty() {
+        return Err(QueryError::Invalid { fields });
+    }
+    (t.from_ms, t.to_ms) = (a, b);
+    if let Some(n) = name {
+        t.name = n;
+    }
+    let out = t.clone();
+    records::put(e.db(), NS, &key(account), &all)?;
+    view(e, &out)
+}
+
+/// `DELETE /trips/{trip}`: the trip removed (its last state answered).
+pub fn remove_trip(e: &Engine, account: &str, visible: &[CarId], id: &str) -> QResult<SavedTrip> {
+    let _one = WRITES.lock().unwrap_or_else(|x| x.into_inner());
+    let mut all = saved(e, account)?;
+    let i = find(&all, visible, id)?;
+    let gone = all.items.remove(i);
+    records::put(e.db(), NS, &key(account), &all)?;
+    view(e, &gone)
+}

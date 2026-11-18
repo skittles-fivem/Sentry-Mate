@@ -2,13 +2,14 @@
 
 use super::system::Shown;
 use super::{
-    CarRef, Paging, Period, QResult, QueryError, Scoped, Where, car_of, paginate, parse_place, r, scoped, source_word,
-    where_of,
+    CarRef, Paging, Period, QResult, QueryError, Scoped, Where, car_of, cmp_key, make_after, parse_place, r, scoped,
+    source_word, where_of,
 };
 use crate::Engine;
 use crate::pipeline::all_rows;
 use model::{Car, CarId, Drive, Sample, Source};
 use serde::Serialize;
+use std::collections::BinaryHeap;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct DriveFlags {
@@ -184,119 +185,330 @@ pub(crate) fn rows(e: &Engine, car: CarId, period: &Period, source: Option<Sourc
     Ok(all.into_iter().filter(|d| d.start_ms >= a && d.start_ms < b && shown.keep(d.source, d.start_ms)).collect())
 }
 
-/// `/cars/{car}/drives`.
-pub fn drives(e: &Engine, car: CarId, q: &DrivesQuery, paging: &Paging) -> QResult<Scoped<DrivesPage>> {
-    let c = car_of(e, car)?;
-    let x = ctx(e, &c)?;
-    let source = super::parse_source(q.source.as_deref())?;
-    let side = q.place_side.as_deref().unwrap_or("any");
-    if !["start", "end", "any"].contains(&side) {
-        return Err(QueryError::bad("place_side", "start, end or any"));
+/// Calls `f` with each row of `car` whose start is in `[a, b)` and that is shown (overlaps with imported history
+/// settled), newest first or oldest first, reading the db a page at a time: `f` answers whether to go on. Nothing
+/// is held but the page being read.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn each<T: db::Item>(
+    e: &Engine,
+    car: CarId,
+    a: u64,
+    b: u64,
+    source: Option<Source>,
+    shown: &Shown,
+    newest_first: bool,
+    mut f: impl FnMut(T) -> QResult<bool>,
+) -> QResult<()> {
+    if a >= b {
+        return Ok(());
     }
-    let hill = match q.efficiency.as_deref() {
-        None | Some("plain") => false,
-        Some("hill_corrected") => true,
-        Some(_) => return Err(QueryError::bad("efficiency", "plain or hill_corrected")),
-    };
-    let flags: Vec<&str> =
-        q.flags.as_deref().map_or_else(Vec::new, |f| f.split(',').filter(|s| !s.is_empty()).collect());
-    if let Some(bad) = flags.iter().find(|f| !["gap", "in_progress", "reduced_range"].contains(f)) {
-        return Err(QueryError::bad("flags", &format!("{bad}: gap, in_progress or reduced_range")));
+    let mut q = db::Query::between(a, b).limit(500);
+    if !newest_first {
+        q = q.oldest_first();
     }
-    let want_places = place_list(q.places.as_deref(), &x.places)?;
-    let needle = q.q.as_deref().map(str::to_lowercase).filter(|s| !s.is_empty());
-    let mut items: Vec<DriveView> = Vec::new();
-    for d in rows(e, car, &q.period, source)? {
-        let mut v = view(&c, &d, &x);
-        if hill {
-            // the climb's potential energy taken off (a 2 t car, 85 % recovered on the way down is not assumed)
-            let climb_kwh = d.ascent_m.map(|m| 2000.0 * 9.81 * m / 3.6e6);
-            let w = d
-                .energy_used_kwh
-                .zip(d.distance_km)
-                .filter(|(_, km)| *km > 0.1)
-                .map(|(kwh, km)| (kwh - climb_kwh.unwrap_or(0.0)) * 1000.0 / km);
-            v.wh_per_km = r(w.filter(|w| *w > 0.0), 1);
-            v.efficiency_pct = r(x.rated_wh_per_km.zip(v.wh_per_km).map(|(rated, w)| rated / w * 100.0), 1);
+    q.source = source;
+    loop {
+        let page = e.db().list::<T>(car, &q)?;
+        for row in page.items {
+            let (start, src) = (row.start_ms(), row.source());
+            if start >= a && start < b && shown.keep(src, start) && !f(row)? {
+                return Ok(());
+            }
         }
-        if let Some(ps) = &want_places {
+        match page.next {
+            Some(c) => q.after = Some(c),
+            None => return Ok(()),
+        }
+    }
+}
+
+/// The first shown row of `car` in `[a, b)`, newest or oldest.
+fn first<T: db::Item>(
+    e: &Engine,
+    car: CarId,
+    a: u64,
+    b: u64,
+    shown: &Shown,
+    newest_first: bool,
+    keep: impl Fn(&T) -> bool,
+) -> QResult<Option<T>> {
+    let mut out = None;
+    each::<T>(e, car, a, b, None, shown, newest_first, |row| {
+        if keep(&row) {
+            out = Some(row);
+            return Ok(false);
+        }
+        Ok(true)
+    })?;
+    Ok(out)
+}
+
+/// A row ranked by its list key, for [`Best`].
+struct Ranked<T> {
+    key: (f64, String),
+    desc: bool,
+    row: T,
+}
+
+impl<T> PartialEq for Ranked<T> {
+    fn eq(&self, o: &Self) -> bool {
+        self.cmp(o) == std::cmp::Ordering::Equal
+    }
+}
+impl<T> Eq for Ranked<T> {}
+impl<T> PartialOrd for Ranked<T> {
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+impl<T> Ord for Ranked<T> {
+    fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+        cmp_key(&self.key, &o.key, self.desc)
+    }
+}
+
+/// The first `k` rows of a list in its order, after a cursor, kept while the rows stream past (never more than `k`
+/// at once, however many the period holds).
+pub(crate) struct Best<T> {
+    k: usize,
+    desc: bool,
+    after: Option<(f64, String)>,
+    heap: BinaryHeap<Ranked<T>>,
+}
+
+impl<T> Best<T> {
+    pub(crate) fn new(k: usize, desc: bool, after: Option<(f64, String)>) -> Best<T> {
+        Best { k, desc, after, heap: BinaryHeap::with_capacity(k + 1) }
+    }
+
+    pub(crate) fn offer(&mut self, key: (f64, String), row: T) {
+        if self.after.as_ref().is_some_and(|at| cmp_key(&key, at, self.desc) != std::cmp::Ordering::Greater) {
+            return;
+        }
+        if self.heap.len() >= self.k
+            && self.heap.peek().is_some_and(|top| cmp_key(&key, &top.key, self.desc) != std::cmp::Ordering::Less)
+        {
+            return;
+        }
+        self.heap.push(Ranked { key, desc: self.desc, row });
+        if self.heap.len() > self.k {
+            self.heap.pop();
+        }
+    }
+
+    /// The rows in the list's order, with their keys.
+    pub(crate) fn sorted(self) -> Vec<((f64, String), T)> {
+        self.heap.into_sorted_vec().into_iter().map(|r| (r.key, r.row)).collect()
+    }
+}
+
+/// A page of the list from a [`Best`] of `limit + 1`: the rows and the cursor after the last (when more follow).
+pub(crate) fn page_of<T>(best: Best<T>, limit: usize, sig: &str) -> QResult<(Vec<T>, Option<String>)> {
+    let mut rows = best.sorted();
+    let more = rows.len() > limit;
+    rows.truncate(limit);
+    let next = match rows.last() {
+        Some((key, _)) if more => Some(make_after(key, sig)?),
+        _ => None,
+    };
+    Ok((rows.into_iter().map(|(_, r)| r).collect(), next))
+}
+
+/// What `/cars/{car}/drives` filters with, checked.
+struct Filter {
+    source: Option<Source>,
+    side: &'static str,
+    hill: bool,
+    flags: Vec<String>,
+    places: Option<Vec<u32>>,
+    needle: Option<String>,
+    min_distance_km: Option<f64>,
+    min_avg_kph: Option<f64>,
+}
+
+impl Filter {
+    fn new(q: &DrivesQuery, places: &crate::placing::Places) -> QResult<Filter> {
+        let side = match q.place_side.as_deref() {
+            None | Some("") | Some("any") => "any",
+            Some("start") => "start",
+            Some("end") => "end",
+            Some(_) => return Err(QueryError::bad("place_side", "start, end or any")),
+        };
+        let hill = match q.efficiency.as_deref() {
+            None | Some("") | Some("plain") => false,
+            Some("hill_corrected") => true,
+            Some(_) => return Err(QueryError::bad("efficiency", "plain or hill_corrected")),
+        };
+        let flags: Vec<String> = q.flags.as_deref().map_or_else(Vec::new, |f| {
+            f.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()
+        });
+        if let Some(bad) = flags.iter().find(|f| !["gap", "in_progress", "reduced_range"].contains(&f.as_str())) {
+            return Err(QueryError::bad("flags", &format!("{bad}: gap, in_progress or reduced_range")));
+        }
+        Ok(Filter {
+            source: super::parse_source(q.source.as_deref())?,
+            side,
+            hill,
+            flags,
+            places: place_list(q.places.as_deref(), places)?,
+            needle: q.q.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()),
+            min_distance_km: q.min_distance_km,
+            min_avg_kph: q.min_avg_kph,
+        })
+    }
+
+    /// Whether the row passes (after its efficiency basis is set).
+    fn keeps(&self, v: &DriveView) -> bool {
+        if let Some(ps) = &self.places {
             let at = |w: &Where| w.place.as_ref().and_then(|p| parse_place(&p.id)).is_some_and(|id| ps.contains(&id));
-            let ok = match side {
+            // a drive still going has no destination yet
+            let end = !v.flags.in_progress && at(&v.end);
+            let ok = match self.side {
                 "start" => at(&v.start),
-                "end" => at(&v.end),
-                _ => at(&v.start) || at(&v.end),
+                "end" => end,
+                _ => at(&v.start) || end,
             };
             if !ok {
-                continue;
+                return false;
             }
         }
-        if let Some(n) = &needle {
-            let hit = |w: &Where| w.label.as_deref().is_some_and(|l| l.to_lowercase().contains(n));
-            if !hit(&v.start) && !hit(&v.end) {
-                continue;
+        if let Some(n) = &self.needle {
+            let p = |k: &str| v.purpose.as_ref().and_then(|p| p.get(k)).and_then(serde_json::Value::as_str);
+            let hit = texts(&v.start)
+                .into_iter()
+                .chain(texts(&v.end))
+                .chain([p("value"), p("relation"), p("note")])
+                .flatten()
+                .any(|t| t.to_lowercase().contains(n));
+            if !hit {
+                return false;
             }
         }
-        if q.min_distance_km.is_some_and(|m| v.distance_km.is_none_or(|d| d < m)) {
-            continue;
+        if self.min_distance_km.is_some_and(|m| v.distance_km.is_none_or(|d| d < m)) {
+            return false;
         }
-        if q.min_avg_kph.is_some_and(|m| v.speed_avg_kph.is_none_or(|s| s < m)) {
-            continue;
+        if self.min_avg_kph.is_some_and(|m| v.speed_avg_kph.is_none_or(|s| s < m)) {
+            return false;
         }
-        if !flags.is_empty() {
+        if !self.flags.is_empty() {
             let f = &v.flags;
-            let any = flags.iter().any(|w| match *w {
-                "gap" => f.gap_ms > 0,
+            let any = self.flags.iter().any(|w| match w.as_str() {
+                "gap" => f.gap_ms > 0 || f.lost_frames > 0,
                 "in_progress" => f.in_progress,
                 _ => f.reduced_range,
             });
             if !any {
-                continue;
+                return false;
             }
         }
-        items.push(v);
+        true
     }
-    let summary = summarize(&items, hill);
-    let sort = q.sort.as_deref().unwrap_or("start");
-    let desc = super::parse_dir(q.dir.as_deref(), true)?;
-    let key = |v: &DriveView| -> f64 {
-        let n = |x: Option<f64>| x.unwrap_or(f64::NEG_INFINITY);
-        match sort {
-            "distance" => n(v.distance_km),
-            "duration" => v.duration_ms as f64,
-            "energy" => n(v.energy_kwh),
-            "wh_per_km" => n(v.wh_per_km),
-            "speed_max" => n(v.speed_max_kph),
-            _ => v.start_ms as f64,
-        }
+}
+
+/// The texts of a drive's end a search looks in.
+fn texts(w: &Where) -> [Option<&str>; 2] {
+    [w.label.as_deref(), w.address.short.as_deref()]
+}
+
+/// Sets a row's `wh_per_km` and `efficiency_pct` on the hill-corrected basis: the climb's potential energy taken
+/// off (a 2 t car); null when that is not above 0.
+fn hill_corrected(v: &mut DriveView, d: &Drive, rated: Option<f64>) {
+    let climb_kwh = d.ascent_m.map(|m| 2000.0 * 9.81 * m / 3.6e6);
+    let w = d
+        .energy_used_kwh
+        .zip(d.distance_km)
+        .filter(|(_, km)| *km > 0.1)
+        .map(|(kwh, km)| (kwh - climb_kwh.unwrap_or(0.0)) * 1000.0 / km);
+    v.wh_per_km = r(w.filter(|w| *w > 0.0), 1);
+    v.efficiency_pct = r(rated.zip(v.wh_per_km).map(|(rated, w)| rated / w * 100.0), 1);
+}
+
+/// The drives list's sort key.
+fn sort_key(sort: &str, v: &DriveView) -> (f64, String) {
+    let n = |x: Option<f64>| x.unwrap_or(f64::NEG_INFINITY);
+    let k = match sort {
+        "distance" => n(v.distance_km),
+        "duration" => v.duration_ms as f64,
+        "energy" => n(v.energy_kwh),
+        "wh_per_km" => n(v.wh_per_km),
+        "speed_max" => n(v.speed_max_kph),
+        _ => v.start_ms as f64,
     };
+    (k, v.id.clone())
+}
+
+/// `/cars/{car}/drives`: one pass over the period's drives (a page of the db at a time) that sums the summary and
+/// keeps only the page asked for.
+pub fn drives(e: &Engine, car: CarId, q: &DrivesQuery, paging: &Paging) -> QResult<Scoped<DrivesPage>> {
+    let c = car_of(e, car)?;
+    let x = ctx(e, &c)?;
+    let f = Filter::new(q, &x.places)?;
+    let sort = q.sort.as_deref().filter(|s| !s.is_empty()).unwrap_or("start");
     if !["start", "distance", "duration", "energy", "wh_per_km", "speed_max"].contains(&sort) {
         return Err(QueryError::bad("sort", "start, distance, duration, energy, wh_per_km or speed_max"));
     }
+    let desc = super::parse_dir(q.dir.as_deref(), true)?;
+    let limit = paging.limit()?;
     let sig = format!("drives|{car}|{}|{q:?}", q.period.sig());
-    let page = paginate(items, |v| (key(v), v.id.clone()), desc, &sig, paging, false)?;
-    Ok(scoped(&c, DrivesPage { items: page.items, next: page.next, summary }))
+    let mut best = Best::new(limit + 1, desc, super::read_after(paging, &sig)?);
+    let (a, b) = q.period.bounds()?;
+    let shown = Shown::new(e, car, f.source)?;
+    let mut purposes = super::logbook::Purposes::new(e, &c)?;
+    let mut sum = Summer::new(f.hill);
+    each::<Drive>(e, car, a, b, f.source, &shown, desc, |d| {
+        let mut v = view(&c, &d, &x);
+        v.purpose = purposes.of(e, &d, &v)?;
+        if f.hill {
+            hill_corrected(&mut v, &d, x.rated_wh_per_km);
+        }
+        if f.keeps(&v) {
+            sum.add(&v);
+            best.offer(sort_key(sort, &v), v);
+        }
+        Ok(true)
+    })?;
+    let (items, next) = page_of(best, limit, &sig)?;
+    Ok(scoped(&c, DrivesPage { items, next, summary: sum.done() }))
 }
 
-fn summarize(items: &[DriveView], hill: bool) -> DrivesSummary {
-    let mut s = DrivesSummary {
-        count: items.len() as u64,
-        distance_km: 0.0,
-        duration_ms: 0,
-        energy_kwh: 0.0,
-        energy_measured_kwh: 0.0,
-        energy_estimated_kwh: 0.0,
-        wh_per_km: None,
-        without_energy: 0,
-        efficiency: if hill { "hill_corrected" } else { "plain" },
-    };
-    let mut km_with_energy = 0.0;
-    for v in items {
-        s.distance_km += v.distance_km.unwrap_or(0.0);
+/// The drives summary, summed row by row.
+struct Summer {
+    s: DrivesSummary,
+    km_with_energy: f64,
+    basis_kwh: f64,
+}
+
+impl Summer {
+    fn new(hill: bool) -> Summer {
+        Summer {
+            s: DrivesSummary {
+                count: 0,
+                distance_km: 0.0,
+                duration_ms: 0,
+                energy_kwh: 0.0,
+                energy_measured_kwh: 0.0,
+                energy_estimated_kwh: 0.0,
+                wh_per_km: None,
+                without_energy: 0,
+                efficiency: if hill { "hill_corrected" } else { "plain" },
+            },
+            km_with_energy: 0.0,
+            basis_kwh: 0.0,
+        }
+    }
+
+    fn add(&mut self, v: &DriveView) {
+        let s = &mut self.s;
+        s.count += 1;
+        let km = v.distance_km.unwrap_or(0.0);
+        s.distance_km += km;
         s.duration_ms += v.duration_ms;
         match v.energy_kwh {
             Some(kwh) => {
                 s.energy_kwh += kwh;
-                km_with_energy += v.distance_km.unwrap_or(0.0);
+                self.km_with_energy += km;
+                // the basis of wh_per_km: the row's own (hill corrected or not)
+                self.basis_kwh += v.wh_per_km.filter(|_| km > 0.1).map_or(kwh, |w| w * km / 1000.0);
                 if v.energy_basis == "measured" {
                     s.energy_measured_kwh += kwh;
                 } else {
@@ -306,12 +518,16 @@ fn summarize(items: &[DriveView], hill: bool) -> DrivesSummary {
             None => s.without_energy += 1,
         }
     }
-    s.wh_per_km = r((km_with_energy > 0.1).then(|| s.energy_kwh * 1000.0 / km_with_energy), 1);
-    s.distance_km = r(Some(s.distance_km), 3).unwrap_or(0.0);
-    s.energy_kwh = r(Some(s.energy_kwh), 3).unwrap_or(0.0);
-    s.energy_measured_kwh = r(Some(s.energy_measured_kwh), 3).unwrap_or(0.0);
-    s.energy_estimated_kwh = r(Some(s.energy_estimated_kwh), 3).unwrap_or(0.0);
-    s
+
+    fn done(mut self) -> DrivesSummary {
+        let s = &mut self.s;
+        s.wh_per_km = r((self.km_with_energy > 0.1).then(|| self.basis_kwh * 1000.0 / self.km_with_energy), 1);
+        s.distance_km = r(Some(s.distance_km), 3).unwrap_or(0.0);
+        s.energy_kwh = r(Some(s.energy_kwh), 3).unwrap_or(0.0);
+        s.energy_measured_kwh = r(Some(s.energy_measured_kwh), 3).unwrap_or(0.0);
+        s.energy_estimated_kwh = r(Some(s.energy_estimated_kwh), 3).unwrap_or(0.0);
+        self.s
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -360,42 +576,53 @@ pub fn drive(e: &Engine, car: CarId, id: u64, speed_band_kph: Option<f64>) -> QR
     }
     let d: Drive = e.db().get(car, id)?.ok_or(QueryError::NotFound("no_such_drive"))?;
     let x = ctx(e, &c)?;
-    let all = rows(e, car, &Period::all(), None)?;
-    let i = all.iter().position(|o| o.id == d.id);
-    let prev = i.and_then(|i| i.checked_sub(1)).and_then(|j| all.get(j)).map(|o| o.id.to_string());
-    let next = i.and_then(|i| all.get(i + 1)).map(|o| o.id.to_string());
-    let charges: Vec<model::Charge> = super::charges::rows(e, car, &Period::all(), None)?;
-    let prev_charge = charges.iter().rev().find(|ch| ch.start_ms < d.start_ms).map(|ch| ch.id.to_string());
-    let next_charge = charges.iter().find(|ch| ch.start_ms > d.start_ms).map(|ch| ch.id.to_string());
+    let shown = Shown::new(e, car, None)?;
+    // the neighbours, read from the db a page at a time from the drive outwards
+    let prev = first::<Drive>(e, car, 0, d.start_ms, &shown, true, |o| o.id != d.id)?.map(|o| o.id.to_string());
+    let next =
+        first::<Drive>(e, car, d.start_ms.saturating_add(1), u64::MAX, &shown, false, |o| o.start_ms > d.start_ms)?
+            .map(|o| o.id.to_string());
+    let prev_charge =
+        first::<model::Charge>(e, car, 0, d.start_ms, &shown, true, |_| true)?.map(|ch| ch.id.to_string());
+    let live = x.live == Some(d.id);
+    let next_charge = if live {
+        None
+    } else {
+        first::<model::Charge>(e, car, d.start_ms, u64::MAX, &shown, false, |ch| ch.start_ms >= d.start_ms)?
+            .map(|ch| ch.id.to_string())
+    };
     let s = samples(e, car, &d)?;
     let mut bands: std::collections::BTreeMap<u64, u64> = Default::default();
     let mut gaps = Vec::new();
     for w in s.windows(2) {
         let dt = w[1].t_ms.saturating_sub(w[0].t_ms);
         if dt > 10_000 {
-            gaps.push(Gap { start_ms: w[0].t_ms + 1000, end_ms: w[1].t_ms, kind: "unknown" });
+            gaps.push(Gap { start_ms: w[0].t_ms + 1000, end_ms: w[1].t_ms, kind: "dropped" });
             continue;
         }
         if let Some(v) = w[0].speed_kmh.filter(|v| *v > 0.5) {
-            *bands.entry((v / band).floor() as u64).or_default() += dt / 1000;
+            *bands.entry((v / band).floor() as u64).or_default() += dt;
         }
     }
     let speed_bands = bands
         .into_iter()
-        .map(|(k, seconds)| SpeedBand {
+        .map(|(k, ms)| SpeedBand {
             from_kph: r(Some(k as f64 * band), 3).unwrap_or(0.0),
             to_kph: r(Some((k + 1) as f64 * band), 3).unwrap_or(0.0),
-            seconds,
+            seconds: ms / 1000,
         })
         .collect();
     // the consumption of the 30 days of drives before this one
-    let month: Vec<&Drive> =
-        all.iter().filter(|o| o.start_ms < d.start_ms && o.start_ms + 30 * 86_400_000 >= d.start_ms).collect();
-    let (kwh, km) = month.iter().fold((0.0, 0.0), |(k, m), o| match (o.energy_used_kwh, o.distance_km) {
-        (Some(a), Some(b)) => (k + a, m + b),
-        _ => (k, m),
-    });
+    let (mut kwh, mut km) = (0.0, 0.0);
+    each::<Drive>(e, car, d.start_ms.saturating_sub(30 * 86_400_000), d.start_ms, None, &shown, false, |o| {
+        if let (Some(a), Some(b)) = (o.energy_used_kwh, o.distance_km) {
+            kwh += a;
+            km += b;
+        }
+        Ok(true)
+    })?;
     let mut view = view(&c, &d, &x);
+    view.purpose = super::logbook::Purposes::new(e, &c)?.of(e, &d, &view)?;
     view.flags.gap_ms = gaps.iter().map(|g| g.end_ms - g.start_ms).sum();
     Ok(DriveDetail {
         drive: view,
@@ -622,24 +849,70 @@ pub struct DayCount {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MaxSpeed {
-    pub kph: Option<f64>,
-    pub drive: Option<String>,
+    pub kph: f64,
+    pub drive: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MaxSpeeds {
+    pub period: Option<MaxSpeed>,
+    pub last_30d: Option<MaxSpeed>,
+    pub last_7d: Option<MaxSpeed>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StatBand {
+    pub from_kph: f64,
+    pub to_kph: f64,
+    pub seconds: u64,
+    pub share_pct: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Projection {
+    pub per_month_km: Option<f64>,
+    pub per_year_km: Option<f64>,
+    pub basis_days: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Destination {
+    pub place: Option<String>,
+    pub label: Option<String>,
+    pub count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DriveStats {
+    pub from_ms: u64,
+    pub to_ms: u64,
     pub count: u64,
     pub distance_km: f64,
     pub energy_kwh: f64,
     pub median_distance_km: Option<f64>,
     pub per_day: Vec<DayCount>,
     pub days: u64,
-    pub max_speed: serde_json::Value,
-    pub projection: serde_json::Value,
-    pub top_destinations: Vec<serde_json::Value>,
+    pub max_speed: MaxSpeeds,
+    pub speed_bands: Vec<StatBand>,
+    pub projection: Projection,
+    pub top_destinations: Vec<Destination>,
 }
 
-/// `/cars/{car}/drive-stats`: the period's drives (leaving out those that start or end at `exclude_places`).
+/// Local days `per_day` holds at most (about 55 years).
+const MAX_DAYS: usize = 20_000;
+/// The width of `/drive-stats`' speed bands.
+const STAT_BAND_KPH: f64 = 10.0;
+
+fn faster(best: &mut Option<MaxSpeed>, d: &Drive) {
+    if let Some(s) = d.speed_max_kmh.filter(|s| s.is_finite())
+        && best.as_ref().is_none_or(|b| s > b.kph)
+    {
+        *best = Some(MaxSpeed { kph: r(Some(s), 1).unwrap_or(s), drive: d.id.to_string() });
+    }
+}
+
+/// `/cars/{car}/drive-stats`: the period's drives (leaving out those that start or end at `exclude_places`), read a
+/// page of the db at a time; only sums, the distances (for the median) and a count per local day are kept.
 pub fn drive_stats(
     e: &Engine,
     car: CarId,
@@ -651,82 +924,125 @@ pub fn drive_stats(
     let x = ctx(e, &c)?;
     let tz = crate::tz::zone(&c.time_zone);
     let exclude = place_list(exclude_places, &x.places)?.unwrap_or_default();
-    let all = rows(e, car, &Period::all(), None)?;
     let (a, b) = period.bounds()?;
-    let end = b.min(now_ms);
-    let views: Vec<DriveView> = all
-        .iter()
-        .filter(|d| d.start_ms >= a && d.start_ms < b)
-        .map(|d| view(&c, d, &x))
-        .filter(|v| {
-            let at =
-                |w: &Where| w.place.as_ref().and_then(|p| parse_place(&p.id)).is_some_and(|id| exclude.contains(&id));
-            !at(&v.start) && !at(&v.end)
-        })
-        .collect();
-    let mut dist: Vec<f64> = views.iter().filter_map(|v| v.distance_km).collect();
-    dist.sort_by(f64::total_cmp);
-    let median = dist.get(dist.len() / 2).copied().filter(|_| !dist.is_empty());
-    let first = all.first().map_or(a, |d| d.start_ms).max(a);
-    let mut per_day = Vec::new();
-    let mut day = crate::tz::date(first, tz);
-    let last = crate::tz::date(end.max(first), tz);
-    while day <= last && per_day.len() < 20_000 {
-        let label = day.format("%Y-%m-%d").to_string();
-        let on: Vec<&DriveView> = views.iter().filter(|v| crate::tz::date_str(v.start_ms, tz) == label).collect();
-        per_day.push(DayCount {
-            date: label,
-            count: on.len() as u64,
-            distance_km: r(Some(on.iter().filter_map(|v| v.distance_km).sum()), 3).unwrap_or(0.0),
-            energy_kwh: r(Some(on.iter().filter_map(|v| v.energy_kwh).sum()), 3).unwrap_or(0.0),
-        });
-        let Some(n) = day.succ_opt() else { break };
-        day = n;
-    }
-    let fastest = |from: u64| -> MaxSpeed {
-        let best = all
-            .iter()
-            .filter(|d| d.start_ms >= from && d.start_ms < end)
-            .filter_map(|d| d.speed_max_kmh.map(|s| (s, d.id)))
-            .max_by(|p, q| p.0.total_cmp(&q.0));
-        MaxSpeed { kph: r(best.map(|b| b.0), 1), drive: best.map(|b| b.1.to_string()) }
-    };
-    let period_best =
-        views.iter().filter_map(|v| v.speed_max_kph.map(|s| (s, v.id.clone()))).max_by(|p, q| p.0.total_cmp(&q.0));
-    let total_km: f64 = views.iter().filter_map(|v| v.distance_km).sum();
-    let days = per_day.len() as u64;
-    let mut dest: std::collections::BTreeMap<String, (String, u64)> = Default::default();
-    for v in views.iter().filter(|v| !v.flags.in_progress) {
-        if let Some(p) = &v.end.place {
-            dest.entry(p.id.clone()).or_insert((p.name.clone(), 0)).1 += 1;
+    let end = b.min(now_ms).max(a);
+    let shown = Shown::new(e, car, None)?;
+    let first_drive = first::<Drive>(e, car, 0, u64::MAX, &shown, false, |_| true)?.map(|d| d.start_ms);
+    let first_data = [first_drive, crate::records::meta(e.db(), car)?.first_ms].into_iter().flatten().min();
+    let mut per: std::collections::BTreeMap<String, DayCount> = Default::default();
+    if let Some(f) = first_data.map(|f| f.max(a)).filter(|f| *f < end) {
+        let mut day = crate::tz::date(f, tz);
+        let last = crate::tz::date(end - 1, tz);
+        while day <= last && per.len() < MAX_DAYS {
+            let k = day.format("%Y-%m-%d").to_string();
+            per.insert(k.clone(), DayCount { date: k, count: 0, distance_km: 0.0, energy_kwh: 0.0 });
+            let Some(n) = day.succ_opt() else { break };
+            day = n;
         }
     }
-    let mut top: Vec<(String, (String, u64))> = dest.into_iter().collect();
-    top.sort_by_key(|p| std::cmp::Reverse(p.1.1));
+    let (mut count, mut km, mut kwh) = (0u64, 0.0, 0.0);
+    let mut dist: Vec<f64> = Vec::new();
+    let mut best: Option<MaxSpeed> = None;
+    let mut dest: std::collections::BTreeMap<String, Destination> = Default::default();
+    let mut bands: std::collections::BTreeMap<u64, u64> = Default::default();
+    each::<Drive>(e, car, a, b, None, &shown, false, |d| {
+        let v = view(&c, &d, &x);
+        let at = |w: &Where| w.place.as_ref().and_then(|p| parse_place(&p.id)).is_some_and(|id| exclude.contains(&id));
+        if at(&v.start) || at(&v.end) {
+            return Ok(true);
+        }
+        count += 1;
+        km += v.distance_km.unwrap_or(0.0);
+        kwh += v.energy_kwh.unwrap_or(0.0);
+        dist.extend(v.distance_km);
+        faster(&mut best, &d);
+        let day = crate::tz::date_str(d.start_ms, tz);
+        let p = per.entry(day.clone()).or_insert(DayCount { date: day, count: 0, distance_km: 0.0, energy_kwh: 0.0 });
+        p.count += 1;
+        p.distance_km += v.distance_km.unwrap_or(0.0);
+        p.energy_kwh += v.energy_kwh.unwrap_or(0.0);
+        // a drive still going, or whose data stopped, has no destination yet
+        if !v.flags.in_progress && d.end.is_some() {
+            let key = v.end.place.as_ref().map(|p| p.id.clone()).or_else(|| v.end.label.clone());
+            if let Some(key) = key {
+                let place = v.end.place.as_ref().map(|p| p.id.clone());
+                let n = dest.entry(key).or_insert(Destination { place, label: v.end.label.clone(), count: 0 });
+                n.count += 1;
+            }
+        }
+        // the time spent in each band, from the drive's speed column alone
+        let f =
+            e.db().read_fields::<Sample>(car, d.source, d.start_ms, d.end_ms.max(d.start_ms) + 1, &["speed_kmh"])?;
+        if let Some((_, col)) = f.values.first() {
+            for i in 1..f.t_ms.len() {
+                let dt = f.t_ms[i].saturating_sub(f.t_ms[i - 1]);
+                if dt > 10_000 {
+                    continue;
+                }
+                if let Some(s) = col[i - 1].filter(|s| *s > 0.5) {
+                    *bands.entry((s / STAT_BAND_KPH).floor() as u64).or_default() += dt;
+                }
+            }
+        }
+        Ok(true)
+    })?;
+    dist.sort_by(f64::total_cmp);
+    let median = match dist.len() {
+        0 => None,
+        n if n % 2 == 1 => Some(dist[n / 2]),
+        n => Some((dist[n / 2 - 1] + dist[n / 2]) / 2.0),
+    };
+    // the fastest of the 30 and 7 days to the period's end, whatever the period's start and the places left out
+    let (mut last_30d, mut last_7d) = (None, None);
+    let week = end.saturating_sub(7 * 86_400_000);
+    each::<Drive>(e, car, end.saturating_sub(30 * 86_400_000), end, None, &shown, false, |d| {
+        faster(&mut last_30d, &d);
+        if d.start_ms >= week {
+            faster(&mut last_7d, &d);
+        }
+        Ok(true)
+    })?;
+    let total_ms: u64 = bands.values().sum();
+    let speed_bands = bands
+        .into_iter()
+        .map(|(k, ms)| StatBand {
+            from_kph: k as f64 * STAT_BAND_KPH,
+            to_kph: (k + 1) as f64 * STAT_BAND_KPH,
+            seconds: ms / 1000,
+            share_pct: r(Some(ms as f64 * 100.0 / total_ms.max(1) as f64), 2).unwrap_or(0.0),
+        })
+        .collect();
+    let per_day: Vec<DayCount> = per
+        .into_values()
+        .map(|mut p| {
+            p.distance_km = r(Some(p.distance_km), 3).unwrap_or(0.0);
+            p.energy_kwh = r(Some(p.energy_kwh), 3).unwrap_or(0.0);
+            p
+        })
+        .collect();
+    let days = per_day.len() as u64;
+    let mut top: Vec<Destination> = dest.into_values().collect();
+    top.sort_by(|p, q| q.count.cmp(&p.count).then_with(|| p.label.cmp(&q.label)));
+    top.truncate(10);
     Ok(scoped(
         &c,
         DriveStats {
-            count: views.len() as u64,
-            distance_km: r(Some(total_km), 3).unwrap_or(0.0),
-            energy_kwh: r(Some(views.iter().filter_map(|v| v.energy_kwh).sum()), 3).unwrap_or(0.0),
+            from_ms: a,
+            to_ms: end,
+            count,
+            distance_km: r(Some(km), 3).unwrap_or(0.0),
+            energy_kwh: r(Some(kwh), 3).unwrap_or(0.0),
             median_distance_km: r(median, 3),
             per_day,
             days,
-            max_speed: serde_json::json!({
-                "period": { "kph": period_best.as_ref().map(|b| b.0), "drive": period_best.map(|b| b.1) },
-                "last_30d": fastest(end.saturating_sub(30 * 86_400_000)),
-                "last_7d": fastest(end.saturating_sub(7 * 86_400_000)),
-            }),
-            projection: serde_json::json!({
-                "per_month_km": r((days > 0).then(|| total_km / days as f64 * 30.436_875), 1),
-                "per_year_km": r((days > 0).then(|| total_km / days as f64 * 365.25), 1),
-                "basis_days": days,
-            }),
-            top_destinations: top
-                .into_iter()
-                .take(10)
-                .map(|(id, (label, count))| serde_json::json!({ "place": id, "label": label, "count": count }))
-                .collect(),
+            max_speed: MaxSpeeds { period: best, last_30d, last_7d },
+            speed_bands,
+            projection: Projection {
+                per_month_km: r((days > 0).then(|| km / days as f64 * 30.436_875), 1),
+                per_year_km: r((days > 0).then(|| km / days as f64 * 365.25), 0),
+                basis_days: days,
+            },
+            top_destinations: top,
         },
     ))
 }
