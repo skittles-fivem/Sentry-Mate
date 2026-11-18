@@ -13,6 +13,7 @@ import { formatList } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { sep } from './ui.js';
+import { spanHref } from './period.js';
 
 export const STRIP_NAMES = Object.freeze({
   driving: 'Driving', charging: 'Charging', online: 'Awake, parked', online_vehicle_bus_only: 'Awake, vehicle bus only',
@@ -154,7 +155,7 @@ export function timelineRow(r, { car, tz, now = api.now(), full = false, period 
   const awake = r.kind === 'parked' && r.awake_reasons && r.awake_reasons.length
     ? h('p', { class: 'tl-why' }, 'Stayed awake for ', formatList(r.awake_reasons.map((x) => AWAKE_WORDS[x] || x.replace(/_/g, ' '))), '.') : null;
   const links = full ? h('p', { class: 'tl-links' },
-    r.kind !== 'update' ? h('a', { href: state.buildUrl('trip', { car, period: { from: r.start_ms, to: end } }) }, 'Trip for this span') : null,
+    r.kind !== 'update' ? h('a', { href: spanHref('trip', { car, from: r.start_ms, to: Math.max(end, r.start_ms + 60000) }) }, 'Trip for this span') : null,
     placeLink(r.start) && r.kind !== 'gap' ? h('a', { href: placeLink(r.start) }, r.start.place ? `Edit ${r.start.place.name}` : 'Name this place') : null,
     r.kind === 'drive' && !going && placeLink(r.end) ? h('a', { href: placeLink(r.end) }, r.end.place ? `Edit ${r.end.place.name}` : 'Name the destination') : null,
     r.source === 'teslamate' ? h('span', { class: 'flag flag-estimated' }, 'Imported') : null) : null;

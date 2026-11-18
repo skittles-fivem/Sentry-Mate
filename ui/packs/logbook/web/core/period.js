@@ -15,10 +15,26 @@ import { resolvePeriod, periodLabel, shiftPeriod, dayRange, periodDays, PRESETS,
 import { icon } from './ui.js';
 import { popover } from './dialog.js';
 
+/**
+ * A link that opens a page on one span without making it the tab's period: spanHref('trip', { car, from, to }).
+ * The span rides in the page's own query (span_from, span_to, ms), which shared/state.js does not keep, so
+ * Back, and every later page without a period in its address, still have the period the person chose.
+ */
+export function spanHref(page, { car = null, from, to, query = null } = {}) {
+  return state.buildUrl(page, { car, query: { ...(query || {}), span_from: String(Math.round(from)), span_to: String(Math.round(to)) } });
+}
+
+/** The one-off span of an address (spanHref), or null: only when the address names no period itself. */
+function spanOf(s) {
+  if (!s || s.periodFromUrl || !s.query) return null;
+  const a = Number(s.query.span_from), b = Number(s.query.span_to);
+  return Number.isFinite(a) && Number.isFinite(b) && a >= 0 && b > a ? { from: a, to: b } : null;
+}
+
 /** The period of a page now, resolved in tz; null for a page without a period. */
 export function resolveFor(info, s, tz) {
   if (!info || !info.period) return null;
-  return resolvePeriod(s.period || { preset: info.period }, { now: api.now(), tz, fallback: info.period });
+  return resolvePeriod(spanOf(s) || s.period || { preset: info.period }, { now: api.now(), tz, fallback: info.period });
 }
 
 /** 'Nov 10 – 16, 2026' for a resolved period (the dates it covers, in the zone). */

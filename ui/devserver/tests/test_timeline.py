@@ -41,6 +41,15 @@ class Timeline(ServerCase):
         q = self.c.get("/api/v1/cars/c1/timeline?q=stanford&limit=500")["items"]
         self.assertTrue(q)
         self.assertTrue(all("stanford" in str(x).lower() for x in q))
+        # q also finds the words a page shows for the codes
+        sw = self.c.get("/api/v1/cars/c1/timeline?q=software&limit=500")["items"]
+        self.assertTrue(sw)
+        self.assertTrue(all(x["kind"] == "update" or "software" in str(x).lower() for x in sw))
+        for word, check in (("gap in the data", lambda x: x["kind"] == "gap"),
+                            ("someone in the car", lambda x: "user_present" in (x.get("awake_reasons") or []))):
+            got = self.c.get(f"/api/v1/cars/c1/timeline?q={word.replace(' ', '+')}&limit=500")["items"]
+            self.assertTrue(got, word)
+            self.assertTrue(all(check(x) for x in got), word)
         p = self.c.get("/api/v1/cars/c1/timeline?place=p5&limit=500")["items"]
         self.assertTrue(p)
         self.c.error("GET", "/api/v1/cars/c1/timeline?kinds=flight", 400, "bad_input")
@@ -66,6 +75,11 @@ class States(ServerCase):
         self.assertEqual(d["current"]["state"], "online")
         self.assertEqual(set(d["share_pct"]), {"parked", "asleep", "awake", "unknown"})
         self.assertGreater(d["share_pct"]["asleep"], 30)
+        # parked is a share of the known time, so it and driving make up the known time: it is at least
+        # the asleep share scaled up to the known time
+        sh = d["share_pct"]
+        self.assertLessEqual(sh["parked"], 100)
+        self.assertGreaterEqual(sh["parked"] + 0.1, 100 * sh["asleep"] / (100 - sh["unknown"]))
         c3 = self.c.get("/api/v1/cars/c3/states?limit=5")
         self.assertEqual(c3["current"]["state"], "unknown")
 

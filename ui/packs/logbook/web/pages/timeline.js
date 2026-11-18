@@ -18,6 +18,7 @@ import { pageHead, q, plus, figure, icon, empty, errorView, loadingBlock, button
 import { activityStrip, placeLink, AWAKE_WORDS, GAP_WORDS, STRIP_NAMES } from '../core/journal.js';
 import { makeMap, boundsOf } from '../core/map.js';
 import { zoneLabel } from '../core/format.js';
+import { spanHref } from '../core/period.js';
 
 export const id = 'timeline';
 export const css = true;
@@ -91,7 +92,7 @@ export async function mount(ctx) {
       h('legend', { class: 'field-label' }, 'Show'), h('div', { class: 'checks' }, checks)),
     h('div', { class: 'field tl-place-field', cover: 'timeline.filter.address' },
       h('label', { class: 'field-label', for: 'tl-place' }, 'Place'), h('div', { class: 'field-control' }, placeSel),
-      h('p', { class: 'field-hint' }, 'Entries that start or end there.')),
+      h('p', { class: 'field-hint' }, 'Places this car has been to; entries that start or end there.')),
     h('div', { class: 'field field-search', cover: 'timeline.filter.address' },
       h('label', { class: 'field-label', for: 'tl-q' }, 'Find'),
       h('div', { class: 'field-control' }, icon('search', 'icon field-icon'), qIn),
@@ -177,11 +178,16 @@ export async function mount(ctx) {
   placeSel.addEventListener('change', () => { place = placeSel.value; ctx.setQuery({ place: place || null }); loadRows().catch(() => {}); });
   ctx.onCleanup(() => clearTimeout(timer));
 
-  // The place filter lists the places the account may see (watch accounts: where their cars have been).
+  // The place filter lists the places this car has been to (counts are the car's with ?car=), by name, and
+  // where two share a name, with the part of town (else the street) that tells them apart.
   async function loadPlaces() {
     try {
-      const found = await ctx.api.list('places', { sort: 'name' }, { limit: 200 }).all({ max: 2000 });
-      replace(placeSel, h('option', { value: '' }, 'Any place'), found.map((p) => h('option', { value: p.id, selected: p.id === place }, p.name)));
+      const all = await ctx.api.list('places', { car: car.id, sort: 'name' }, { limit: 200 }).all({ max: 2000 });
+      const used = (p) => p.counts && (p.counts.drives || p.counts.charges || p.counts.visits);
+      const found = all.filter((p) => used(p) || p.id === place);
+      const names = placeNames(found);
+      replace(placeSel, h('option', { value: '' }, found.length ? 'Any place' : 'Any place (this car has no saved place yet)'),
+        found.map((p) => h('option', { value: p.id, selected: p.id === place }, names.get(p.id))));
       if (place && !found.some((p) => p.id === place)) { place = ''; ctx.setQuery({ place: null }); }
     } catch (err) {
       if (ctx.signal.aborted) return;
@@ -217,9 +223,11 @@ export async function mount(ctx) {
         const spent = Object.values(tr.time_ms || {}).reduce((a, b) => a + b, 0);
         return c.api.get(api.apiPath`cars/${car.id}/activity`, { ...c.params, from_ms: Math.max(0, tr.to_ms - Math.max(spent, 86400000)) });
       });
-    const [st, ac, trip, tracks] = await Promise.allSettled([
+    // What the car is doing now, whatever the period: the strip's segments of the last two days.
+    const nowP = c.api.get(api.apiPath`cars/${car.id}/activity`, { from_ms: api.now() - 2 * 86400000 });
+    const [st, ac, trip, tracks, nowAct] = await Promise.allSettled([
       c.api.get(api.apiPath`cars/${car.id}/states`, { ...c.params, limit: 1 }),
-      actP, tripP, roads(c),
+      actP, tripP, roads(c), nowP,
     ]);
     if (c.signal.aborted) return;
     const now = api.now();
@@ -240,10 +248,10 @@ export async function mount(ctx) {
     if (st.status === 'fulfilled') {
       const s = st.value;
       const sh = s.share_pct || {};
-      const cur = s.current?.state || 'unknown';
+      const cur = currentState(s, nowAct.status === 'fulfilled' ? nowAct.value : null);
       replace(summary,
-        figure('Now', h('span', { class: ['state', `state-${cur}`] }, h('span', { class: 'state-dot', 'aria-hidden': 'true' }), stateLabel(cur)),
-          s.current?.since_ms ? `since ${formatDateTime(s.current.since_ms, tz, { now })}` : 'no data from the car yet', { cover: 'states.stat.current' }),
+        figure('Now', h('span', { class: ['state', `state-${cur.state}`] }, h('span', { class: 'state-dot', 'aria-hidden': 'true' }), stateLabel(cur.state)),
+          cur.since_ms ? `${cur.how} ${formatDateTime(cur.since_ms, tz, { now })}` : 'no data from the car yet', { cover: 'states.stat.current' }),
         figure('Last change', s.last_change_ms ? formatDateTime(s.last_change_ms, tz, { now }) : '—',
           s.last_change_ms ? 'between awake, asleep and unknown' : 'no change in this period', { cover: 'states.stat.last_change' }),
         figure('Parked', q(sh.parked, 'percent', { why: 'no known time' }), 'of the known time, not driving', { cover: 'states.stat.parked_pct' }),
@@ -340,6 +348,59 @@ export async function mount(ctx) {
   };
 }
 
+/* ------------------------------------------------------------------ place names */
+
+/** Each place's name for the filter, with what tells apart two of the same name ('Home · Noe Valley'). */
+function placeNames(list) {
+  const by = new Map();
+  for (const p of list) { const k = p.name.trim().toLowerCase(); if (!by.has(k)) by.set(k, []); by.get(k).push(p); }
+  const out = new Map();
+  for (const group of by.values()) {
+    if (group.length === 1) { out.set(group[0].id, group[0].name); continue; }
+    // the finest part of the address that differs in the group: the part of town, the town, the street
+    const parts = ['neighbourhood', 'locality', 'short'];
+    const a = (p, k) => (p.address && p.address[k]) || '';
+    const key = parts.find((k) => new Set(group.map((p) => a(p, k))).size === group.length && group.every((p) => a(p, k)))
+      || parts.find((k) => group.some((p) => a(p, k))) || null;
+    for (const p of group) {
+      const extra = key ? a(p, key) || a(p, 'locality') || a(p, 'short') : '';
+      out.set(p.id, extra ? `${p.name} · ${extra}` : p.name);
+    }
+    // still the same words: add the place's number so each choice is its own
+    const seen = new Map();
+    for (const p of group) { const t = out.get(p.id); seen.set(t, (seen.get(t) || 0) + 1); }
+    for (const p of group) if (seen.get(out.get(p.id)) > 1) out.set(p.id, `${out.get(p.id)} (${p.id})`);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ the state now */
+
+// The strip's segment kinds as the states a person reads (the car switcher's words).
+const NOW_STATE = { driving: 'driving', charging: 'charging', updating: 'updating', online: 'online', online_vehicle_bus_only: 'online', asleep: 'asleep', unknown: 'unknown' };
+const NOW_HOW = { updating: 'installing software', online: 'parked and awake', unknown: 'no data' };
+
+/**
+ * What the car is doing at its newest data: the last activity segment (driving, charging and updating
+ * included), with the time it started; /states only knows awake, asleep and unknown, so it is the fallback.
+ */
+function currentState(st, act) {
+  const segs = (act && act.items) || [];
+  const last = segs[segs.length - 1];
+  if (last) {
+    const state = NOW_STATE[last.kind] || 'unknown';
+    // the segments of one state run on (awake on both buses, then on the vehicle bus only): start at the first
+    let i = segs.length - 1;
+    while (i > 0 && (NOW_STATE[segs[i - 1].kind] || 'unknown') === state && segs[i - 1].end_ms === segs[i].start_ms) i -= 1;
+    let since = segs[i].start_ms;
+    // clipped at the start of the window: the three-way state knows when an awake, asleep or unknown spell began
+    if (i === 0 && since <= act.from_ms && ['online', 'asleep', 'unknown'].includes(state) && st.current?.state === state && st.current.since_ms) since = st.current.since_ms;
+    return { state, since_ms: since, how: NOW_HOW[state] ? `${NOW_HOW[state]} since` : 'since' };
+  }
+  const state = st.current?.state || 'unknown';
+  return { state, since_ms: st.current?.since_ms || null, how: NOW_HOW[state] ? `${NOW_HOW[state]} since` : 'since' };
+}
+
 /* ------------------------------------------------------------------ one entry */
 
 const signed = (v, kind) => (v == null ? null : Math.abs(v) < 0.5 ? h('span', { class: 'tl-delta' }, '(no change)')
@@ -433,7 +494,8 @@ function entry(r, { car, tz, now, period }) {
   }
 
   const endTime = going ? 'now' : dayKey(r.end_ms, tz) === dayKey(r.start_ms, tz) ? formatTime(r.end_ms, tz) : null;
-  const tripHref = state.buildUrl('trip', { car, period: { from: r.start_ms, to: Math.max(end, r.start_ms + 60000) } });
+  // the row's span, without making it the tab's period: Back and later pages keep the one chosen
+  const tripHref = spanHref('trip', { car, from: r.start_ms, to: Math.max(end, r.start_ms + 60000) });
   return h('li', { class: ['tl-item', `tl-${cls}`, { 'is-now': going }], dataset: { id: r.id } },
     h('div', { class: 'tl-time' },
       h('a', { class: 'tl-start', href: tripHref, 'aria-label': `${formatTime(r.start_ms, tz)}: the Trip for this span` },

@@ -305,6 +305,12 @@ and remembered by the tab. A page reads `ctx.period` and sends `ctx.params`; it 
 control. A page's default period is `period` in `core/pages.js` (null: the page shows no period, and the
 picker says so). To show a narrower span (a zoom inside a drive) keep it in the page, not in the period.
 
+A link that opens another page on one span (a timeline row's "Trip for this span") uses
+`spanHref(page, { car, from, to, query })` from `core/period.js`, not `period:` in `buildUrl`: a period in an
+address becomes the tab's period, so Back and every later page would show the row's span. `spanHref` puts the
+span in `?span_from=&span_to=` (ms), which the router resolves as that page's `ctx.period` only while the
+address names no period of its own; the picker shows it, and choosing another period there replaces it.
+
 ## Design tokens and classes
 
 Colours (light paper and night ink, switched by `data-theme` and the device setting): `--paper`,

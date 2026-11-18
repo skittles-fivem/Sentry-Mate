@@ -16,6 +16,18 @@ ACT_STATE = {"driving": ("online", ("vehicle", "chassis")), "charging": ("online
              "unknown": ("unknown", ())}
 
 
+# The words a page shows for the codes, so that q finds a row by what it reads (docs/ui-api.md, Decisions).
+KIND_TEXT = {"drive": "drive driving", "charge": "charge charging", "parked": "parked",
+             "gap": "gap in the data no data missing", "update": "software update"}
+GAP_TEXT = {"no_log": "no log arrived for this time", "not_recorded": "not recorded recording was paused",
+            "failed_check": "the log failed its check", "dropped_frames": "frames were dropped"}
+AWAKE_TEXT = {"sentry": "sentry mode", "keep_climate_on": "keep-climate on keep climate", "keep_climate_dog": "dog mode",
+              "keep_climate_camp": "camp mode", "user_present": "someone in the car",
+              "preconditioning_cabin": "cabin preconditioning", "preconditioning_battery": "battery preconditioning",
+              "charging": "charging", "keep_warm": "battery kept warm", "door_open": "a door open",
+              "accessory_power": "accessory power on"}
+
+
 def _text(row):
     parts = []
     for side in ("start", "end"):
@@ -25,7 +37,10 @@ def _text(row):
             parts.append(p.get("address") or "")
             if p.get("place"):
                 parts.append(p["place"]["name"])
-    parts += [row["kind"], row.get("gap_reason") or "", " ".join(row.get("awake_reasons") or [])]
+    parts += [row["kind"], KIND_TEXT.get(row["kind"], ""), row.get("gap_reason") or "",
+              GAP_TEXT.get(row.get("gap_reason"), "")]
+    for x in row.get("awake_reasons") or []:
+        parts += [x, AWAKE_TEXT.get(x, x.replace("_", " "))]
     if row.get("version"):
         parts.append(row["version"])
     return " ".join(parts).lower()
@@ -109,7 +124,8 @@ def get_states(req):
     for sp in spans:
         tot[sp["state"]] += sp["end_ms"] - sp["start_ms"]
     span = max(1, hi - lo)
-    share = {"parked": r(100 * (span - driving - tot["unknown"]) / span, 1), "asleep": r(100 * tot["asleep"] / span, 1),
+    known = span - tot["unknown"]  # parked is a share of the known time (docs/ui-api.md); none known gives null
+    share = {"parked": r(100 * max(0, known - driving) / known, 1) if known > 0 else None, "asleep": r(100 * tot["asleep"] / span, 1),
              "awake": r(100 * tot["online"] / span, 1), "unknown": r(100 * tot["unknown"] / span, 1)}
     # the current state, at the newest data
     tv = now - delay_s(now) * 1000
