@@ -12,6 +12,7 @@
 - [Logs](#logs)
 - [The vault](#the-vault)
 - [Moving](#moving)
+- [The web UI](#the-web-ui)
 - [Health](#health)
 - [Settings](#settings)
 - [Ports and limits](#ports-and-limits)
@@ -21,6 +22,8 @@
 ## What you can do today
 
 - Receive every log the CAN Bridge uploads and keep it sealed, exactly as uploaded.
+- Turn the checked logs into each car's history (drives, charges, states, the time series) in the background, and
+  read it in the web UI on port 9100 (see [The web UI](#the-web-ui)).
 - See each upload token and the car key it is tied to (`token list`).
 - See a car key's chain report: gaps, failed logs, restarts (`chain`).
 - See which keys signed a car key's logs, and trust a new one (`keys`, `keys trust`).
@@ -29,7 +32,7 @@
 - Move everything to another server in one step (`move code`, `move from`), or with one export file (`export`,
   `import`). See [moving.md](moving.md).
 
-No command lists cars or logs yet. File and folder names are not sealed, so you find them on the host (see
+No command lists cars or logs yet (the web UI does). File and folder names are not sealed, so you find them on the host (see
 [Logs](#logs)).
 
 ## How to run a command
@@ -47,7 +50,7 @@ a file it can't read is on standard error.
 
 | Command | What it does |
 |---|---|
-| `serve` | Runs the upload server until stopped (the image's default). Makes the vault on its first start. |
+| `serve` | Runs the server until stopped (the image's default): the upload port, the history (decoded in the background) and the web UI. Makes the vault on its first start. |
 | `init` | Makes the vault now and prints the recovery key on screen, not into a file. Exit 1 if there is a vault or a key file already. |
 | `restore` | Reads the recovery key from standard input and writes a new key file. Run it with Sentry Mate stopped. |
 | `recovery-key new` | Prints a new recovery key. The old one stops working. |
@@ -70,7 +73,7 @@ a file it can't read is on standard error.
 | `move cancel` | The old server: the code stops working. The new server: the move stops and what was copied is removed. |
 | `move undo` | The old server, after a move: takes uploads again (asks to type `yes`). Stop the new server first. |
 | `move finish --recovery-key` | A new server, last resort when the old one is gone: switches to what was copied. Asks for the recovery key. The last changes may be missing. |
-| `health` | Exit 0 when the upload port accepts a TCP connection on 127.0.0.1, or while a move comes in. Docker's health check runs it. |
+| `health` | Exit 0 when the upload port and the web port accept a TCP connection on 127.0.0.1 (only the upload port on a server whose data moved away), or while a move comes in. Docker's health check runs it. |
 | `--version` | Prints the version and build, for example `sentry-mate 0.1.0 (build-1001, sha-6f83191, 2026-11-17T19:06:35Z)`. A local build shows no build number. |
 
 ## Tokens
@@ -261,9 +264,27 @@ The full guide, with TrueNAS and plain Docker, the CAN Bridge app, undo and what
 - Commands that change data refuse on a server whose data moved away. `token list`, `fingerprint` and `export` still
   work there.
 
+## The web UI
+
+`serve` opens the web UI on port 9100 (`SENTRY_MATE_WEB_PORT`), HTTPS with TLS 1.3 only and the same certificate as
+the upload port, so the browser warns once about a certificate it doesn't know: compare the SHA-256 it shows with
+`fingerprint`. Open `https://<server address>:9100/`.
+
+- **First start**: with no account yet, the log shows a one-time setup code, and the same code is in
+  `SETUP-CODE.txt` in the keys folder. Type it on the first page with the first admin's name and password. It is
+  valid 24 hours; a new one is made (and logged) when it runs out while no account exists, and on every start
+  until setup is done. The file is removed once the first admin exists.
+- **The history** is made from stored logs whose check allows their data, in the background: right after an upload,
+  and on every start for logs not worked on yet (a first start over many logs takes a while; the pages fill in as
+  it goes). A log whose check fails is never used.
+- **Read only today**: the pages read cars, the Now values, the timeline, drives, charges, battery, places, reports
+  and data health. Changes made from the pages (places, costs, car settings, tokens, MQTT, import) are not served yet
+  and answer `404`.
+- A server whose data moved away serves no web UI: it runs on the new server.
+
 ## Health
 
-`docker ps` shows `(healthy)` once the upload port answers, and `Restarting` while it keeps stopping:
+`docker ps` shows `(healthy)` once the upload port and the web port answer, and `Restarting` while it keeps stopping:
 
 ```bash
 docker ps
@@ -279,7 +300,8 @@ a flag, except `SENTRY_MATE_TAG`, which goes in a `.env` file. The compose and T
 | `SENTRY_MATE_DATA` | `--data` | `/data` | The data folder. Leave it: change the folder in the volume line instead. |
 | `SENTRY_MATE_KEYS` | `--keys` | `/keys` | The keys folder. Refused inside the data folder, and when it is the data folder or a folder right inside it on the server (compared by device and inode, through the mounts). Leave it: change the folder in the volume line instead. |
 | `SENTRY_MATE_UPLOAD_PORT` | `--upload-port` | `10100` | The upload port. Also the port `token new` prints and `health` checks. Change the port mapping with it. For only another host port, leave it and change the left number of the port mapping. |
-| `SENTRY_MATE_BIND` | `--bind` (`serve`) | `0.0.0.0` | The address to listen on. `health` connects to 127.0.0.1, so in Docker keep the default: another address makes the container unhealthy. |
+| `SENTRY_MATE_WEB_PORT` | `--web-port` | `9100` | The web UI's port (HTTPS). `health` checks it too. Change the port mapping with it; for only another host port, leave it and change the left number of the port mapping. |
+| `SENTRY_MATE_BIND` | `--bind` (`serve`) | `0.0.0.0` | The address both ports listen on. `health` connects to 127.0.0.1, so in Docker keep the default: another address makes the container unhealthy. |
 | `SENTRY_MATE_NAMES` | `--names` (`serve`) | none | Names or addresses for the certificate, comma separated (the OPTIONAL lines in the compose and TrueNAS files). Used only when the certificate is made. The bridge pins the SHA-256 and does not check names, so it can stay off. |
 | `SENTRY_MATE_MOVE_FROM` | `--move-from` (`serve`) | none | A new server: the old server's address, as the CAN Bridge uses it (`192.168.1.20`, `nas.local:10100`). With `SENTRY_MATE_MOVE_CODE`, it brings the data in as it starts. Ignored once the move is done. See [moving.md](moving.md). |
 | `SENTRY_MATE_MOVE_CODE` | `--move-code` (`serve`) | none | A new server: the move code the old server showed. Not shown in `--help`. |
@@ -291,14 +313,15 @@ a flag, except `SENTRY_MATE_TAG`, which goes in a `.env` file. The compose and T
 The image sets `SENTRY_MATE_REQUIRE_MOUNTS` (the folders are the defaults, `/data` and `/keys`), and has no `VOLUME`: a
 folder left out of the compose file stops it at once instead of going into an anonymous volume. The certificate is
 normally made by the first `serve`; `token new` and `fingerprint` make it without names if it isn't there yet. Times
-in the log are UTC: it does not read `TZ`.
+in the log are UTC. `TZ` (an IANA name such as `Europe/Berlin`) is only the time zone a new car's days are grouped
+in until it has its own; without it, UTC.
 
 ## Ports and limits
 
 | Port | What | State |
 |---|---|---|
 | 10100/tcp | CAN Bridge uploads: HTTPS, TLS 1.3 and HTTP/1.1 only | done |
-| 9100/tcp | Web UI, HTTPS | planned: nothing listens yet |
+| 9100/tcp | Web UI and its `/api/v1`: HTTPS, TLS 1.3 and HTTP/1.1 only | done (reads; changes from the pages not yet) |
 
 Firewalls, another host port and uploads from away from home: [Ports and firewalls](install.md#ports-and-firewalls).
 
@@ -341,6 +364,9 @@ The data folder (contents sealed unless said):
 | `.move/` | Move notes: a move code waiting, a move done, an import done. |
 | `.moving/`, `.importing/` | A move or an import coming in, until it switches. Removed then. |
 | `.export/` | An export's snapshot while it is written. Removed after. |
+| `db/` | Each car's history (drives, charges, states, time series), made from the logs: rebuilt from them if lost. |
+| `accounts/`, `audit/` | The web UI's accounts, sessions and their audit log. |
+| `web/` | The web UI's own files: uploaded UI packs, the pack chosen, preferences. |
 | `*.smexport` | An export file put there to import. Delete it once the new server runs. |
 
 The keys folder:
@@ -349,6 +375,7 @@ The keys folder:
 |---|---|
 | `sentry-mate.key` | 32 random bytes that open the vault, readable only by the user it runs as (1000, or 568 on TrueNAS). |
 | `RECOVERY-KEY.txt` | The recovery key, written on the first start only. Delete it once copied. |
+| `SETUP-CODE.txt` | The web UI's one-time setup code, while no account exists. Removed once the first admin exists. |
 | `.moving/`, `.importing/` | The key file a move or an import writes for this server, until it switches. |
 
 ## Changing the certificate

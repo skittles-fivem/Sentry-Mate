@@ -1599,10 +1599,14 @@ dependencies = [
 name = "sentry-mate"
 version = "0.1.0"
 dependencies = [
+ "accounts",
+ "axum",
  "base64 0.22.1",
  "bytes",
  "clap",
+ "db",
  "dbc",
+ "engine",
  "gate",
  "hex",
  "ingest",
@@ -1613,16 +1617,20 @@ dependencies = [
  "p256",
  "rand_core",
  "rustix",
+ "rustls",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "synth",
  "tempfile",
  "timeline",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
  "trust",
  "vault",
+ "web",
  "zeroize",
 ]
 

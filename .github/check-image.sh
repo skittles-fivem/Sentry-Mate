@@ -12,13 +12,15 @@
 #   .github/check-image.sh sentry-mate:check 568      (as 568:568, like TrueNAS)
 #
 # EXPECT_VERSION: text `--version` must show (the workflow: build-N, sha-...).
-# CHECK_PORT: the port on 127.0.0.1 it uses (10100).
+# CHECK_PORT: the port on 127.0.0.1 it uses for uploads (10100); CHECK_WEB_PORT
+# the one for the web UI (9100).
 # Needs docker, curl, openssl, and sudo when not run as root.
 set -euo pipefail
 
 image="${1:?usage: check-image.sh IMAGE [UID]}"
 id="${2:-1000}"
 port="${CHECK_PORT:-10100}"
+web="${CHECK_WEB_PORT:-9100}"
 name="sentry-mate-check-$$"
 sudo=""
 if [ "$(id -u)" -ne 0 ]; then sudo=sudo; fi
@@ -40,7 +42,7 @@ fail() {
 user=()
 if [ "$id" != 1000 ]; then user=(--user "$id:$id"); fi
 start() {
-  docker run -d --name "$name" -p "127.0.0.1:$port:10100" --cap-drop ALL --read-only \
+  docker run -d --name "$name" -p "127.0.0.1:$port:10100" -p "127.0.0.1:$web:9100" --cap-drop ALL --read-only \
     --security-opt no-new-privileges:true "${user[@]}" \
     -v "$dir/data:/data" -v "$dir/keys:/keys" "$image" >/dev/null
 }
@@ -83,7 +85,7 @@ healthy() {
 }
 
 served_fingerprint() {
-  openssl s_client -connect "127.0.0.1:$port" -tls1_3 </dev/null 2>/dev/null \
+  openssl s_client -connect "127.0.0.1:${1:-$port}" -tls1_3 </dev/null 2>/dev/null \
     | openssl x509 -outform DER | sha256sum | cut -d' ' -f1
 }
 
@@ -167,6 +169,17 @@ if curl -sk --tlsv1.2 --tls-max 1.2 -o /dev/null "https://127.0.0.1:$port/api/ca
 fi
 if curl -s -o /dev/null "http://127.0.0.1:$port/api/can/logs/ping"; then fail "plain HTTP answered"; fi
 
+echo "== the web UI: TLS 1.3 only, the built-in pack, the API behind sign-in"
+code="$(curl -sk --tlsv1.3 -o /dev/null -w '%{http_code}' "https://127.0.0.1:$web/health")"
+[ "$code" = 200 ] || fail "web /health: HTTP $code, not 200"
+code="$(curl -sk --tlsv1.3 -o /dev/null -w '%{http_code}' "https://127.0.0.1:$web/api/v1/cars")"
+[ "$code" = 401 ] || fail "web /api/v1/cars without signing in: HTTP $code, not 401"
+csp="$(curl -sk --tlsv1.3 -o /dev/null -D - "https://127.0.0.1:$web/")"
+grep -qi '^content-security-policy:' <<<"$csp" || fail "the web UI's page has no CSP"
+if curl -sk --tlsv1.2 --tls-max 1.2 -o /dev/null "https://127.0.0.1:$web/health"; then fail "web: TLS 1.2 answered"; fi
+if curl -s -o /dev/null "http://127.0.0.1:$web/health"; then fail "web: plain HTTP answered"; fi
+$sudo test -s "$dir/keys/SETUP-CODE.txt" || fail "no SETUP-CODE.txt in keys on a fresh server"
+
 echo "== the recovery key file is in keys, not in the log"
 $sudo test -s "$dir/keys/RECOVERY-KEY.txt" || fail "no RECOVERY-KEY.txt in keys"
 [ "$($sudo stat -c '%u %a' "$dir/keys/sentry-mate.key")" = "$id 600" ] || fail "the key file is not $id's, mode 600"
@@ -178,6 +191,7 @@ if grep -qF "$rk" <<<"$logs"; then fail "the recovery key is in the log"; fi
 echo "== the certificate is the one \`fingerprint\` prints"
 fp="$(docker exec "$name" /sentry-mate fingerprint)"
 [ "$(served_fingerprint)" = "$fp" ] || fail "served certificate is not $fp"
+[ "$(served_fingerprint "$web")" = "$fp" ] || fail "the web UI's certificate is not $fp"
 echo "$fp"
 
 echo "== token new and token list (docker exec), the token works"

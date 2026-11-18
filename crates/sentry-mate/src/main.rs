@@ -30,12 +30,16 @@
 //! A new server can also move in with no shell at all: `SENTRY_MATE_MOVE_FROM` and `SENTRY_MATE_MOVE_CODE` in its
 //! environment, and it brings the data in as it starts (`docs/plans/move-server.md`).
 
+mod api;
 mod decode;
+#[cfg(test)]
+mod e2e;
 mod folders;
 mod keys;
 mod migrate;
 #[cfg(any(test, feature = "dev-seed"))]
 mod seed;
+mod site;
 #[cfg(test)]
 mod testkit;
 
@@ -53,6 +57,8 @@ use vault::{Kdf, Vault};
 /// This version as a move or an export says it (an import refuses an export from a newer one): the crate's alone,
 /// without the image build's part `--version` shows.
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The web UI's port by default (beside the upload port, 10100; Sentry Six Manager's are 9000 and 10000).
+const WEB_PORT: u16 = 9100;
 /// How long a command waits for a pause of the writes (an export's snapshot) to end, or a snapshot for the writes
 /// under way.
 const GATE_WAIT: Duration = Duration::from_secs(60);
@@ -69,6 +75,9 @@ struct Cli {
     /// The CAN Bridge upload port (HTTPS).
     #[arg(long, env = "SENTRY_MATE_UPLOAD_PORT", default_value_t = 10100, global = true)]
     upload_port: u16,
+    /// The web UI's port (HTTPS).
+    #[arg(long, env = "SENTRY_MATE_WEB_PORT", default_value_t = WEB_PORT, global = true)]
+    web_port: u16,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -398,7 +407,8 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
                 code: move_code.filter(|s| !s.trim().is_empty()),
                 offer: offer_move.filter(|s| !s.trim().is_empty()),
             };
-            serve(&data, &keys, &bind, cli.upload_port, &names, &env).await?
+            let net = Net { bind, upload: cli.upload_port, web: cli.web_port };
+            serve(&data, &keys, &net, &names, &env, accounts::Hashing::STRONG).await?
         }
         Cmd::Init => {
             std::fs::create_dir_all(&data)?;
@@ -544,11 +554,21 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
             if data.join(moving::pull::STAGING).exists() {
                 return Ok(ExitCode::SUCCESS);
             }
-            let addr = format!("127.0.0.1:{}", cli.upload_port);
-            let ok = tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect(&addr))
-                .await
-                .is_ok_and(|r| r.is_ok());
-            return Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE });
+            // the upload port, and the web port unless the data moved away (the web UI then runs on the new server)
+            let mut ports = vec![cli.upload_port];
+            if !moving::old::is_moved(&data) {
+                ports.push(cli.web_port);
+            }
+            for port in ports {
+                let addr = format!("127.0.0.1:{port}");
+                let ok = tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect(&addr))
+                    .await
+                    .is_ok_and(|r| r.is_ok());
+                if !ok {
+                    return Ok(ExitCode::FAILURE);
+                }
+            }
+            return Ok(ExitCode::SUCCESS);
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -601,14 +621,24 @@ fn log_cmd(cmd: LogCmd) -> Result<ExitCode, Box<dyn std::error::Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Where `serve` listens.
+struct Net {
+    bind: String,
+    upload: u16,
+    web: u16,
+}
+
+/// Runs the server until stopped: the upload port, the engine and the web port, started again after an import is
+/// switched to, a move undone or a move coming in. `hashing`: the accounts' password hashing (tests make it fast).
 async fn serve(
     data: &Path,
     keys: &Path,
-    bind: &str,
-    port: u16,
+    net: &Net,
     names: &[String],
     env: &MoveEnv,
+    hashing: accounts::Hashing,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let port = net.upload;
     tracing::info!("Sentry Mate {VERSION}");
     refuse_key_file_over_empty_data(data, keys)?;
     std::fs::create_dir_all(data)?;
@@ -628,8 +658,8 @@ async fn serve(
             tracing::info!("stopping");
             return Ok(());
         }
-        let Instance { mut server, housekeeping, offer, ticker, confirm } =
-            start(data, keys, &gate, bind, port, names, env).await?;
+        let Instance { mut server, housekeeping, offer, ticker, confirm, mut side } =
+            start(data, keys, &gate, net, names, env, hashing).await?;
         let mut housekeeping = Some(housekeeping);
         let mut moved = offer.watch();
         let was_moved = offer.is_moved();
@@ -653,6 +683,13 @@ async fn serve(
             tokio::select! {
                 r = &mut server => {
                     stop(&mut housekeeping);
+                    side.stop(site::ENGINE_STOP).await;
+                    r?;
+                    return Ok(());
+                }
+                r = &mut side.web => {
+                    stop(&mut housekeeping);
+                    side.stop(site::ENGINE_STOP).await;
                     r?;
                     return Ok(());
                 }
@@ -665,10 +702,13 @@ async fn serve(
                     }
                     let now = *moved.borrow_and_update();
                     if now {
-                        // the data moved away: nothing writes here from now on
+                        // the data moved away: nothing writes here from now on (the history and the web side
+                        // included: the web port closes)
                         if let Some(h) = housekeeping.take() {
                             h.abort();
                         }
+                        side.stop(site::ENGINE_STOP_RESTART).await;
+                        tracing::info!("move: the web UI stops here; it runs on the new server");
                     } else if was_moved || housekeeping.is_none() {
                         // `move undo`: this server takes uploads again, with its housekeeping
                         break Next::Restart;
@@ -690,11 +730,13 @@ async fn serve(
         match next {
             Next::Stop => {
                 stop(&mut housekeeping);
+                side.stop(site::ENGINE_STOP).await;
                 tracing::info!("stopping");
                 return Ok(());
             }
             Next::Restart => {
                 stop(&mut housekeeping);
+                side.stop(site::ENGINE_STOP_RESTART).await;
                 drop(server);
                 continue;
             }
@@ -703,6 +745,8 @@ async fn serve(
         // an import was read and checked by `import` while this server ran: stop the writes, switch, start again
         tracing::info!("import: the imported data is checked; this server stops its uploads and switches to it");
         let g = gate.clone();
+        // the history and the web side first: they write to the data folder without the gate
+        side.stop(site::ENGINE_STOP_RESTART).await;
         let pause = match tokio::task::spawn_blocking(move || g.pause(GATE_WAIT)).await? {
             Ok(p) => p,
             Err(e) => {
@@ -742,6 +786,33 @@ struct Instance {
     ticker: tokio::task::JoinHandle<()>,
     /// Telling the old server this one serves (after a move in).
     confirm: Option<tokio::task::JoinHandle<()>>,
+    /// The engine and the web port.
+    side: Side,
+}
+
+/// The engine and the web port of one start (neither on a server whose data moved away).
+struct Side {
+    engine: Option<site::EngineRun>,
+    /// The web port (pending forever when it isn't served).
+    web: std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>,
+    app: Option<web::AppState>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Side {
+    /// Stops the web port (its connections end) and then the engine (waiting at most `wait` for a log under way).
+    async fn stop(&mut self, wait: Duration) {
+        self.web = Box::pin(std::future::pending());
+        for t in self.tasks.drain(..) {
+            t.abort();
+        }
+        if let Some(app) = self.app.take() {
+            site::flush(&app).await;
+        }
+        if let Some(mut e) = self.engine.take() {
+            e.stop(wait).await;
+        }
+    }
 }
 
 /// The move side of the running server, with its uploads (for the line about bridges still sending here).
@@ -1174,11 +1245,12 @@ async fn start(
     data: &Path,
     keys: &Path,
     gate: &gate::Gate,
-    bind: &str,
-    port: u16,
+    net: &Net,
     names: &[String],
     env: &MoveEnv,
+    hashing: accounts::Hashing,
 ) -> Result<Instance, Box<dyn std::error::Error>> {
+    let (bind, port) = (net.bind.as_str(), net.upload);
     let moved = moving::old::is_moved(data);
     // the start's own writes go through the gate too (an export's snapshot from the command line may be under way);
     // a server whose data moved away writes nothing
@@ -1212,10 +1284,17 @@ async fn start(
     drop(pass);
     let any_token = tokens.has_any().await;
     let store = Store::new(can_dir(data), v.clone());
-    let up = Uploads::with_gate(store.clone(), tokens, Judge::new(store), gate.clone(), ingest::api::GATE_WAIT);
     // the move's side of this server: a moved one closes its gate and holds it from here on
     let (d, v2, g, fp) = (data.to_path_buf(), v.clone(), gate.clone(), id.fingerprint());
     let offer = tokio::task::spawn_blocking(move || moving::old::Offer::open(&d, v2, g, APP_VERSION, &fp)).await??;
+    // the history: told of every log the uploads' judge checks (not on a server whose data moved away)
+    let serving = !offer.is_moved();
+    let (d, v2, s2) = (data.to_path_buf(), v.clone(), store.clone());
+    let engine = tokio::task::spawn_blocking(move || site::EngineRun::open(&d, v2, s2, serving))
+        .await?
+        .map_err(|e| e as Box<dyn std::error::Error>)?;
+    let judge = Judge::new(store.clone()).on_judged(engine.engine.listener());
+    let up = Uploads::with_gate(store, tokens, judge, gate.clone(), ingest::api::GATE_WAIT);
     if let Some(o) = env.offer.as_deref() {
         offer_from_env(data, &v, o);
     }
@@ -1262,8 +1341,40 @@ async fn start(
     let ticker = offer.spawn_ticker();
     let app = router(up.clone()).merge(moving::old::router(offer.clone()));
     let server = Box::pin(serve_tls(listener, id.tls_config()?, app));
+    let side = if serving {
+        start_web(data, keys, &v, engine, &id, net, hashing).await?
+    } else {
+        tracing::info!("the data moved away: no web UI here (it runs on the new server)");
+        Side { engine: Some(engine), web: Box::pin(std::future::pending()), app: None, tasks: Vec::new() }
+    };
     let offer = Arc::new(OfferAndUploads { offer, uploads: up });
-    Ok(Instance { server, housekeeping, offer, ticker, confirm })
+    Ok(Instance { server, housekeeping, offer, ticker, confirm, side })
+}
+
+/// The web port, over the engine (its cars, its live changes), with the certificate the upload port uses.
+async fn start_web(
+    data: &Path,
+    keys: &Path,
+    v: &Arc<Vault>,
+    engine: site::EngineRun,
+    id: &Identity,
+    net: &Net,
+    hashing: accounts::Hashing,
+) -> Result<Side, Box<dyn std::error::Error>> {
+    let (d, k, v2, e2) = (data.to_path_buf(), keys.to_path_buf(), v.clone(), engine.engine.clone());
+    let app = tokio::task::spawn_blocking(move || site::web_state(&d, &k, v2, &e2, hashing))
+        .await?
+        .map_err(|e| e as Box<dyn std::error::Error>)?;
+    let listener = tokio::net::TcpListener::bind((net.bind.as_str(), net.web)).await?;
+    tracing::info!("web UI on https://{}:{}/ (TLS 1.3), the same certificate", net.bind, net.web);
+    let a2 = app.clone();
+    let announced =
+        tokio::task::spawn_blocking(move || a2.announce_setup().map(|c| c.is_some()).map_err(|e| e.message))
+            .await?
+            .map_err(|e| format!("the setup code: {e}"))?;
+    let tasks = vec![site::forward(&engine.engine, app.events.clone()), site::spawn_upkeep(app.clone(), announced)];
+    let web = Box::pin(web::serve(listener, id.tls_config()?, web::router_with(app.clone(), api::routes())));
+    Ok(Side { engine: Some(engine), web, app: Some(app), tasks })
 }
 
 /// `SENTRY_MATE_OFFER_MOVE`: keeps a move code ready and prints it in the log (with no shell, the log is the only
@@ -1832,7 +1943,7 @@ mod tests {
         let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
         std::fs::write(&data, b"x").unwrap();
         std::fs::write(&keys, b"x").unwrap();
-        let cli = Cli { data, keys, upload_port: 0, cmd: Cmd::Fingerprint };
+        let cli = Cli { data, keys, upload_port: 0, web_port: 0, cmd: Cmd::Fingerprint };
         let Err(e) = run(cli, false).await else { panic!("it ran") };
         let said = e.to_string();
         assert!(said.contains("the data folder") && said.contains("the keys folder"), "{said}");
@@ -1844,7 +1955,7 @@ mod tests {
     async fn with_the_mounts_required_folders_that_are_not_mounted_are_named() {
         let dir = tempfile::tempdir().unwrap();
         let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
-        let cli = Cli { data: data.clone(), keys: keys.clone(), upload_port: 0, cmd: Cmd::Init };
+        let cli = Cli { data: data.clone(), keys: keys.clone(), upload_port: 0, web_port: 0, cmd: Cmd::Init };
         let Err(e) = run(cli, true).await else { panic!("it ran") };
         let said = e.to_string();
         assert!(said.starts_with(&format!("the data folder {} and the keys folder", data.display())), "{said}");
@@ -1861,6 +1972,7 @@ mod tests {
             data: k.data.clone(),
             keys: k.keys.clone(),
             upload_port: 0,
+            web_port: 0,
             cmd: Cmd::Chain { key: key.to_string() },
         };
         assert_eq!(run(chain("fedcba654321"), false).await.unwrap(), ExitCode::FAILURE);
@@ -1871,6 +1983,7 @@ mod tests {
             data: k.data.clone(),
             keys: k.keys.clone(),
             upload_port: 0,
+            web_port: 0,
             cmd: Cmd::Keys { cmd: None, key: Some("fedcba654321".into()) },
         };
         assert_eq!(run(keys, false).await.unwrap(), ExitCode::FAILURE);
@@ -1929,7 +2042,8 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         std::fs::create_dir_all(&k).unwrap();
         std::fs::write(k.join("sentry-mate.key"), b"old-key").unwrap();
-        let e = serve(&d, &k, "127.0.0.1", 0, &[], &MoveEnv::default()).await.unwrap_err();
+        let net = Net { bind: "127.0.0.1".into(), upload: 0, web: 0 };
+        let e = serve(&d, &k, &net, &[], &MoveEnv::default(), accounts::Hashing::FAST_FOR_TESTS).await.unwrap_err();
         assert!(e.to_string().contains("has a key file"), "{e}");
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0, "something was written to the data folder");
     }
@@ -1971,7 +2085,7 @@ mod tests {
         let (nv, made) = Vault::open_or_create(&nd, &nk, Kdf::FAST_FOR_TESTS).unwrap();
         assert!(made.is_none());
         assert_eq!(nv.key_id(), ov.key_id());
-        let cli = Cli { data: nd.clone(), keys: nk.clone(), upload_port: 0, cmd: Cmd::Fingerprint };
+        let cli = Cli { data: nd.clone(), keys: nk.clone(), upload_port: 0, web_port: 0, cmd: Cmd::Fingerprint };
         assert_eq!(run(cli, false).await.unwrap(), ExitCode::SUCCESS);
         assert_eq!(Identity::load_or_create(&tls_dir(&nd), &[], &nv).unwrap().fingerprint(), fp);
 

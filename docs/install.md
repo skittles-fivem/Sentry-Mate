@@ -146,6 +146,8 @@ the same as 568:568.
    ... WARN sentry_mate: new vault made: its recovery key is in /keys/RECOVERY-KEY.txt — copy it somewhere safe off this server, then delete that file
    ... INFO sentry_mate: CAN Bridge uploads on https://0.0.0.0:10100/api/can/logs (TLS 1.3), certificate SHA-256 <64 hex digits>, vault <id>
    ... INFO sentry_mate: no upload token yet: make one with `docker exec sentry-mate /sentry-mate token new --car "My car"`
+   ... INFO sentry_mate: web UI on https://0.0.0.0:9100/ (TLS 1.3), the same certificate
+   ... WARN web: No account yet. Open the web page and set up the first admin with this one-time code (valid 24 hours, also in /keys/SETUP-CODE.txt): <code>
    ```
 
 4. Take the recovery key:
@@ -172,6 +174,13 @@ the same as 568:568.
    ```
 
    Then fill in [the CAN Bridge app](#the-can-bridge-app).
+
+6. Open the web UI: `https://<this machine's address>:9100/`. The browser
+   warns about the certificate once (it is the server's own): check that the
+   SHA-256 it shows is the one in the log, then go on. On the first page,
+   type the setup code from the log (or `sudo cat keys/SETUP-CODE.txt`)
+   with a name and password for the first admin. See
+   [The web UI](commands.md#the-web-ui).
 
 If it doesn't start, the log says why and what to do. For example `Sentry
 Mate runs as uid 1000 (group 1000) and can't write to the data folder /data:
@@ -237,6 +246,11 @@ On TrueNAS SCALE 24.10 or newer, install it as a custom app with
    ```
 
    Then fill in [the CAN Bridge app](#the-can-bridge-app).
+
+6. **Web UI.** Open `https://<TrueNAS address>:9100/`, check the
+   certificate's SHA-256 against the log, and set up the first admin with
+   the setup code from the log (or
+   `sudo cat /mnt/tank/apps/sentry-mate-keys/SETUP-CODE.txt`).
 
 The `docker exec` and `docker logs` commands in this guide and in
 [commands.md](commands.md) work the same way in *System → Shell*, with
@@ -637,11 +651,11 @@ app, change the line marked `CHANGE` to the new path, and *Save*. Check
 | Port | What | |
 | --- | --- | --- |
 | 10100/tcp | CAN Bridge uploads, HTTPS, TLS 1.3 only | Published: the Screenmate connects to it. |
-| 9100/tcp | The web UI | Kept for later: not built yet, nothing listens. |
+| 9100/tcp | The web UI, HTTPS, TLS 1.3 only, the same certificate | Published: open it in a browser. |
 
 - Sentry Six Manager uses 9000 and 10000, so both run on one server
   ([Running next to TeslaMate and Sentry Six Manager](cars-and-bridge.md#running-next-to-teslamate-and-sentry-six-manager)).
-- Another app already on 10100: change only the left number (for example
+- Another app already on 9100 or 10100: change only the left number (for example
   `"10200:10100"`) and use it in the bridge's address. The address that
   `token new` prints shows the port inside the container (10100 unless
   `SENTRY_MATE_UPLOAD_PORT` is set), not the host port.

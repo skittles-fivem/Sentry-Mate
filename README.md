@@ -5,10 +5,11 @@ bus and uploads the logs. Sentry Mate is meant to do what TeslaMate does, from t
 Tesla account, nothing that wakes the car, one Rust program in one small Docker image, no database or dashboard
 containers.
 
-**Status: early.** Today it receives the bridge's logs, stores them sealed and checks each one's signature. You can
-decode one stored log at a time to CSV from the command line. There are no drives, charges, maps or web pages yet.
-The parts that work those out are built and tested but not yet wired in. All of it:
-[Status in detail](#status-in-detail).
+**Status: early.** It receives the bridge's logs, stores them sealed and checks each one's signature. Each checked
+log is decoded in the background into the car's history (states, drives, charges, positions), and the web UI on its
+own HTTPS port (9100) shows it after a first-admin setup. The pages read; changing things from them (places, costs,
+car settings, tokens, MQTT, the TeslaMate import) is not served yet, and the history is not yet checked against real
+drives and charges. All of it: [Status in detail](#status-in-detail).
 
 ## Contents
 
@@ -114,25 +115,27 @@ backups, restore and moving: [docs/install.md](docs/install.md).
 
 ## Web UI
 
-Not served yet. The two UI packs run on made-up data.
+Open `https://<this server>:9100/` (TLS 1.3 only, the same certificate as the upload port). On a fresh server the
+log shows a one-time setup code (also in `SETUP-CODE.txt` in the keys folder) for the first admin:
+[The web UI](docs/commands.md#the-web-ui). The read side of `/api/v1` is served; the changes the pages make are not
+yet.
 
-- [`ui/README.md`](ui/README.md): the two packs, Instrument and Logbook. They run on made-up data from
-  `web/mock-api.js`. To preview them: [Previewing the UI packs](docs/development.md#previewing-the-ui-packs).
+- [`ui/README.md`](ui/README.md): the two packs, Instrument and Logbook, built into the server. To preview them on
+  made-up data: [Previewing the UI packs](docs/development.md#previewing-the-ui-packs).
 - [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md): every TeslaMate tab (51 tabs, 1161 items) placed on 23
   Sentry Mate pages, described in our own words. [`docs/parity/coverage-matrix.json`](docs/parity/coverage-matrix.json)
   is the same, machine-readable.
-- [`docs/ui-api.md`](docs/ui-api.md): the `/api/v1` the pages need. Not built yet.
+- [`docs/ui-api.md`](docs/ui-api.md): the `/api/v1` the pages need. Its reads over the history are served; its
+  changes, and a few reads with nothing behind them yet (settings, maps, MQTT, tokens, import), are not.
 
 ## Roadmap
 
 From the plan's phases and progress:
 
-1. Wire the built parts into the program: decode each log in the background after its check, with the DBC set chosen
-   from the VIN, then work out and store states, drives and charges.
-2. Check the timeline by hand against real drives and charges.
-3. A web server for the UI packs and `/api/v1`, and the packs moved off their made-up data. Desktop first, phone
-   layouts later.
-4. Accounts, places, MQTT and the TeslaMate import in the program.
+1. Check the timeline by hand against real drives and charges.
+2. The rest of `/api/v1`: the changes the pages make (places, costs, car settings, tokens and keys), settings and
+   maps. Desktop first, phone layouts later.
+3. MQTT and the TeslaMate import in the program.
 5. First release: the docs, a licence and the final name.
 
 Open questions: two battery % signals disagree (0x33A and 0x292) and need checking against the car's screen. A
@@ -165,24 +168,24 @@ Crates: `logfmt` (reads the logs), `trust` (signatures, chain), `vault` (encrypt
 | Published image for amd64 and arm64 (`ghcr.io/skittles-fivem/sentry-mate`), a compose file and a TrueNAS file | done |
 | Refusing folders it can't keep: not mounted, the keys inside the data, root's | done |
 | Moving to another server in one step: a one-time move code, or one export file that opens with the recovery key ([docs/moving.md](docs/moving.md)) | done |
-| Decoding signals (DBC sets per model, bus split, the Screenmate's GPS), same values as Sentry Six Manager | done; used only by `log decode` |
-| Choosing the DBC set from the car's VIN | done in `log decode` |
+| Decoding signals (DBC sets per model, bus split, the Screenmate's GPS), same values as Sentry Six Manager | done |
+| Choosing the DBC set from the car's VIN | done |
+| Each checked log decoded in the background into the car's history (states, drives, charges, positions, charge curves), late and out-of-order logs rebuilding only what they touch, picked up again after a restart; a failed log never used | done; not yet checked against real drives and charges |
+| Storage for the history (sealed, compressed columns, any number of cars), rebuilt from the logs if lost | done |
+| Web server on its own HTTPS port (9100, TLS 1.3, the same certificate): the built-in UI packs with a strict CSP, sign-in with a one-time setup code for the first admin, accounts (admin and watch-only, per-car access, two-step sign-in, audit log), live changes as server-sent events, and the reads of [`docs/ui-api.md`](docs/ui-api.md) over the history | done; the changes the pages make are not served yet |
 | Using a failed log anyway | only `log decode --any`, one log at a time |
 | **Built and tested, not wired in yet** | |
-| Drives, charges, states, positions, charge curves from the decoded signals; the car's model from its VIN | built; not yet checked against real drives and charges |
-| Storage for everything worked out (sealed, compressed columns, any number of cars, backups) | built |
-| Places, geofences, charge costs with time-of-use rates, addresses offline or online | built |
-| Accounts: admin and watch-only, per-car access, two-step sign-in, sessions, audit log | built; passkeys planned |
+| Places, geofences, charge costs with time-of-use rates, addresses offline or online | built; charges are priced and matched to places, but places can't be made or changed from the pages yet |
 | TeslaMate import from TeslaMate's own backup file (any number of cars, streamed, again later adds only what's new) | built; a live connection to TeslaMate's database is planned |
 | MQTT for Home Assistant (TLS unless plain is turned on, never a password in the clear, discovery, any number of cars on one connection) | built |
 | **Being built here** | |
-| Web UI: UI packs, two designs as prototypes on made-up data in [`ui/`](ui/), maps; every TeslaMate tab gets a page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) | being built; next, after the groundwork below: every page built in both designs and checked item by item, with screenshots |
+| Web UI: UI packs, two designs in [`ui/`](ui/), built into the server and served on 9100, maps; every TeslaMate tab gets a page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) | being built; next, after the groundwork below: every page built in both designs and checked item by item, with screenshots |
 | **Being built on separate working copies** (paused 2026-11-18, waiting for their last checks before they come into this repository) | |
 | Web UI groundwork: a dev API server that answers all of [`docs/ui-api.md`](docs/ui-api.md) on made-up data (139 tests), shared browser modules, a page checker that loads every page at laptop and 4K sizes and checks each TeslaMate item against [`docs/parity/coverage-matrix.json`](docs/parity/coverage-matrix.json), and both designs split into one module per page on the real API | the review was cut short |
 | **Not built yet** | |
-| Decoding each log as it arrives, after its check | planned |
-| Web server and the `/api/v1` the pages need ([`docs/ui-api.md`](docs/ui-api.md)), on its own HTTPS port | planned |
+| The changes of [`docs/ui-api.md`](docs/ui-api.md) (places, costs, car settings, tokens and keys from the pages, rebuilds), and its settings, maps, MQTT and import resources | planned |
 | Listing stored logs and their check results, deleting logs, a backup command | not built |
+| Passkeys | planned |
 | `cargo deny` and `cargo audit`, fuzzing in CI | planned |
 | Sealing the key file to the host's TPM | optional, later |
 

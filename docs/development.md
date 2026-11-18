@@ -33,7 +33,10 @@ cargo clippy -p sentry-mate --all-targets --features dev-seed --locked -- -D war
 
 The second checks the hidden `dev seed` command, which only a build with the `dev-seed` feature has (made-up cars
 for development: `cargo run -p sentry-mate --features dev-seed -- --data DIR --keys DIR dev seed --days 3 --light`,
-into a data folder of its own).
+into a data folder of its own). Then `serve` with the same `--data` and `--keys` decodes the made-up logs and shows
+them on the web port (`--web-port`, 9100); the setup code for the first admin is in the log and in the keys folder's
+`SETUP-CODE.txt`. The end-to-end test (`crates/sentry-mate/src/e2e.rs`) does the same in-process: seed, `serve` on
+free ports, setup, the cars, drives and charges, and the built-in pack with its CSP.
 
 ```bash
 cargo test --workspace --locked
@@ -103,19 +106,15 @@ cargo tree -e normal,build -i cc --depth 1
 
 ## Previewing the UI packs
 
-The packs ([`ui/README.md`](../ui/README.md)) run on made-up data from `web/mock-api.js`; no server serves them yet.
-Preview a pack with any static file server, from the repo's root:
+The packs ([`ui/README.md`](../ui/README.md)) are built into the server and served on its web port. To work on them
+without a server, the dev API server answers all of `/api/v1` on made-up data
+([`ui/devserver/README.md`](../ui/devserver/README.md)):
 
 ```bash
-python3 -m http.server -d ui/packs/instrument/web 8000
+python3 ui/devserver/serve.py --pack ui/packs/instrument --port 8000
 ```
 
-```bash
-python3 -m http.server -d ui/packs/logbook/web 8000
-```
-
-Then open `http://127.0.0.1:8000/`. Add `?cars=200000` to try a large fleet, `?latency=0` to drop the simulated
-network delay. The previews load map tiles from `tile.openstreetmap.org`.
+Then open `http://127.0.0.1:8000/`. The pages load map tiles from `tile.openstreetmap.org`.
 
 ## Crates
 
@@ -124,19 +123,21 @@ network delay. The previews load map tiles from `tile.openstreetmap.org`.
 | `logfmt` | Reads the logs (both formats, xz in pure Rust) | yes |
 | `trust` | Signatures, pairing, chain report | yes |
 | `vault` | Encryption at rest | yes |
-| `dbc` | Decodes signals | only `log decode` |
+| `dbc` | Decodes signals | yes |
 | `ingest` | Upload API, storage, tokens, trust records, TLS server | yes |
 | `gate` | One server per data folder, and the pause of the writes an export or a move takes | yes |
 | `moving` | The export file, the import and the direct move (`docs/plans/move-server.md`) | yes |
-| `model` | The shared types | only the signal set from the VIN |
-| `timeline` | States, drives, charges from the signals | only the VIN reader, in `log decode` |
-| `db` | Sealed storage for what the timeline works out | not yet |
-| `places` | Geofences, prices, addresses, map settings | not yet |
-| `accounts` | People and sign-in | not yet |
-| `import` | TeslaMate history | not yet |
+| `model` | The shared types | yes |
+| `timeline` | States, drives, charges from the signals | yes, through the engine |
+| `db` | Sealed storage for what the timeline works out | yes |
+| `places` | Geofences, prices, addresses, map settings | yes, through the engine (no way to make places from the pages yet) |
+| `accounts` | People and sign-in | yes, through the web server |
+| `import` | TeslaMate history | not yet (the engine has its importer; the import routes are not served) |
+| `engine` | Checked logs into each car's history in the background, and the read side of `/api/v1` | yes |
+| `web` | The web port: UI packs, sign-in, accounts, preferences, the live stream, the frame every `/api/v1` route shares | yes |
 | `mqtt` | Home Assistant | not yet |
 | `synth` | Made-up CAN Bridge logs (signed, chained, both formats) for tests | only the hidden `dev seed`, in a build with `--features dev-seed` (never the image) |
-| `sentry-mate` | The program | |
+| `sentry-mate` | The program: `serve` runs the upload port, the engine and the web port together (`src/site.rs`); the `/api/v1` reads over the engine are in `src/api.rs` | |
 
 ## Layout
 
