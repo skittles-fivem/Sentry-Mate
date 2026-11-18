@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 accounts = { path = "../accounts" }
+engine = { path = "../engine" }
 model = { path = "../model" }
 vault = { path = "../vault" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
@@ -39,6 +40,8 @@ ingest = { path = "../ingest", optional = true }
 tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
+synth = { path = "../synth" }
+db = { path = "../db" }
 # its own test server (web::testkit) in the tests here
 web = { path = ".", features = ["testkit"] }
 http-body-util = "0.1"

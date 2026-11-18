@@ -110,6 +110,12 @@ pub fn web_state(
         .cars(Arc::new(EngineCars(engine.db().clone())))
         .service(Arc::new(engine.clone()))
         .service(Arc::new(engine.db().clone()))
+        .service(Arc::new(web::resources::notices::Sources {
+            recovery_file: Some(keys.join("RECOVERY-KEY.txt")),
+            key_file: Some(keys.join(vault::KEY_FILE)),
+            data_dir: Some(data.to_path_buf()),
+            certificate: Some(ingest::server::tls_dir(data).join("cert.pem")),
+        }))
         .build()?;
     Ok(app)
 }

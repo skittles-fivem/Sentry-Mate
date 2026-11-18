@@ -27,12 +27,8 @@ use web::{ApiError, ApiResult, AppState, CarParam, CarsParam, Fields, JsonBody, 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/about", get(about))
-        // fleet and cars
-        .route("/api/v1/cars", get(cars))
-        .route("/api/v1/fleet/summary", get(fleet_summary))
-        .route("/api/v1/fleet/attention", get(fleet_attention))
+        // fleet and cars (the cars list, the fleet summary and attention, a car and its settings: web's fleet module)
         .route("/api/v1/fleet/versions", get(fleet_versions))
-        .route("/api/v1/cars/{car}", get(car))
         // live values, series, timeline
         .route("/api/v1/cars/{car}/now", get(now))
         .route("/api/v1/cars/{car}/series", get(series))
@@ -180,42 +176,12 @@ type Json = axum::Json<serde_json::Value>;
 
 // ---- fleet and cars
 
-async fn cars(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResult<Response> {
-    let query = q::fleet::CarsQuery {
-        search: text(&p, "search")?,
-        state: text(&p, "state")?,
-        sort: text(&p, "sort")?,
-        dir: text(&p, "dir")?,
-        ..Default::default()
-    };
-    let (pg, access) = (paging(&p)?, v.cars().clone());
-    answer(&app, &p, "cars", move |e| {
-        let cars = visible(e, &access, &CarsParam(None))?;
-        q::fleet::cars(e, &cars, &query, &pg)
-    })
-    .await
-}
-
-async fn fleet_summary(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResult<Response> {
-    let access = v.cars().clone();
-    answer(&app, &p, "fleet-summary", move |e| q::fleet::summary(e, &visible(e, &access, &CarsParam(None))?)).await
-}
-
-async fn fleet_attention(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResult<Response> {
-    let (pg, access) = (paging(&p)?, v.cars().clone());
-    answer(&app, &p, "attention", move |e| q::fleet::attention(e, &visible(e, &access, &CarsParam(None))?, &pg)).await
-}
-
 async fn fleet_versions(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResult<Response> {
     let (pg, access, search) = (paging(&p)?, v.cars().clone(), text(&p, "search")?);
     answer(&app, &p, "versions", move |e| {
         q::reports::versions(e, &visible(e, &access, &CarsParam(None))?, search.as_deref(), &pg)
     })
     .await
-}
-
-async fn car(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    answer(&app, &p, "car", move |e| q::fleet::car(e, car)).await
 }
 
 // ---- live values, series, timeline
