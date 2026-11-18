@@ -5,7 +5,7 @@
 // starts or ends (`rows` events).
 
 import * as state from '../shared/state.js';
-import { h, svg, replace, cover, cssVar } from '../shared/dom.js';
+import { h, svg, replace, cover, cssVar, quantity } from '../shared/dom.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDate, formatDateTime, zoneName, buckets } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -147,7 +147,7 @@ export async function mount(ctx) {
       titleExtra: h('span', { cover: 'summary.stat.status' }, statePill(n.state, { lg: true, stale: n.stale })),
       sub: [
         h('span', { cover: 'summary.header.model', title: 'Model and year come from the VIN prefix.' }, [car.model, car.year].filter(Boolean).join(' · ') || 'Model not known yet'),
-        trim?.value ? h('span', { cover: 'summary.header.trim', title: `Trim: ${trim.value}, from ${trim.source === 'can' ? "the car's own configuration message" : trim.source === 'owner' ? 'the owner' : trim.source === 'vin' ? 'the VIN prefix' : 'the TeslaMate import'}` }, trim.value, h('span', { class: 'src' }, trim.source === 'can' ? 'from the car' : trim.source)) : h('span', { cover: 'summary.header.trim' }, 'Trim not known yet'),
+        trim?.value ? h('span', { cover: 'summary.header.trim', title: `Trim: ${trim.value}, from ${trim.source === 'can' ? "the car's own configuration message" : trim.source === 'owner' ? 'the owner' : trim.source === 'vin' ? 'the VIN prefix' : 'the TeslaMate import'}` }, trim.value, h('span', { class: 'src' }, { can: 'from the car', vin: 'from the VIN', owner: 'typed by the owner', teslamate: 'imported from TeslaMate' }[trim.source] || 'source not known')) : h('span', { cover: 'summary.header.trim' }, 'Trim not known yet'),
         vin ? h('span', null, 'VIN ', h('span', { class: 'key-chip', title: 'Only the VIN prefix is stored; the serial number never is.' }, vin)) : null,
         h('span', { cover: 'summary.stat.status' }, `${stateLabel(n.state)} since ${n.since_ms ? when(n.since_ms, tz) : '—'}`, n.since_ms ? h('span', { class: 'faint' }, ` (${dur(Math.max(0, ctx.api.now() - n.since_ms))})`) : null),
       ],
@@ -305,7 +305,7 @@ export async function mount(ctx) {
         [['Outside', n.outside_c, null, ['summary.stat.outside_temp', 'overview.stat.outside_temp']],
           ['Cabin', n.cabin_c, [18, 24], ['summary.stat.inside_temp', 'overview.stat.inside_temp']],
           ['Battery', n.battery_c, [15, 35], null]].map(([l, pair, band, cv]) => {
-          const row = h('div', { class: 'temp-row' }, h('span', { class: 'temp-label' }, l), h('span', { class: 'temp-val' }, aged(pair, format(val(pair), 'temperature', { why: l === 'Cabin' ? 'Not sent by this car' : null }), newest)), scale(val(pair), band));
+          const row = h('div', { class: 'temp-row' }, h('span', { class: 'temp-label' }, l), h('span', { class: 'temp-val' }, aged(pair, quantity(val(pair), 'temperature', { why: val(pair) == null ? (l === 'Cabin' ? 'Not sent by this car' : 'No reading') : null }), newest)), scale(val(pair), band));
           if (cv) cover(row, cv);
           return row;
         })),
@@ -317,12 +317,15 @@ export async function mount(ctx) {
     // tyres: all four at all times, with the car's recommended pressure
     const rec = val(n.tyre_recommended_kpa);
     const tyres = (n.tyres_kpa || []).map((p) => val(p));
-    const low = (v) => v != null && rec != null && v < rec - 15;
+    // flagged at 10 % under the recommended pressure: a cold morning takes a few percent off every tyre,
+    // a slow leak goes well past that (a TPMS warning starts at about 20 to 25 % under)
+    const LOW_SHARE = 0.1;
+    const low = (v) => v != null && rec != null && v < rec * (1 - LOW_SHARE);
     const tyre = ([key, label], i, right) => {
       const v = tyres[i];
       return h('div', { class: ['tire', right && 'tire--r', low(v) && 'is-low'] },
         h('span', { class: 'tire-pos' }, label),
-        h('span', { class: 'tire-val' }, aged(n.tyres_kpa?.[i], format(v, 'pressure', { why: 'No reading' }), newest)),
+        h('span', { class: 'tire-val' }, aged(n.tyres_kpa?.[i], quantity(v, 'pressure', { why: v == null ? 'No reading' : null }), newest)),
         low(v) ? h('span', { class: 'tire-note' }, `${format(rec - v, 'pressure')} under`) : null);
     };
     const wheel = (i) => (low(tyres[i]) ? 'wheel is-low' : 'wheel');
@@ -337,7 +340,7 @@ export async function mount(ctx) {
           svg('path', { class: 'glass', d: 'M18.5 86 Q32 90 45.5 86 L47.5 98 Q32 103 16.5 98 Z' })),
         tyre(TYRES[1], 1, true), tyre(TYRES[2], 2, false), tyre(TYRES[3], 3, true)),
       h('p', { class: 'note tire-rec' }, rec != null
-        ? ['The car recommends ', h('b', null, format(rec, 'pressure')), `. A tyre more than ${format(15, 'pressure')} under it is flagged.`]
+        ? ['The car recommends ', h('b', null, format(rec, 'pressure')), `. A tyre more than 10 % under it (${format(rec * LOW_SHARE, 'pressure')}) is flagged; a cold morning alone takes a few percent off every tyre.`]
         : "The car's recommended pressure has not been seen yet, so no tyre is flagged."),
       !n.tyres_slots_mapped ? h('p', { class: 'note' }, 'Which wheel each sensor sits on is not confirmed yet.') : null);
 
@@ -408,7 +411,7 @@ export async function mount(ctx) {
     const chg = n.charge || {};
     const charging = n.state === 'charging';
     const plugged = val(chg.plugged);
-    const usualStart = scheduleHint;
+    const usualStart = scheduleFor === n.location?.place?.id ? scheduleHint : null;
     const chargePanel = panel({ title: 'Charging now', icon: 'bolt', cover: ['nr.dash.panel.charge-status', 'summary.stat.scheduled_charging'], cls: charging ? 'is-charging' : null,
       side: chg.charge_id ? panelLink(state.buildUrl('charge', { car: cid, charge: chg.charge_id }), 'Open the charge') : panelLink(ctx.link('charges'), 'Charges') },
     h('p', { class: 'charge-word' }, h('b', null, CHARGE_STATUS[val(chg.status)] || (plugged ? 'Plugged in' : 'Not plugged in')),
@@ -429,19 +432,23 @@ export async function mount(ctx) {
   }
 
   // "usually starts at HH:MM here": the median start time of past charges at this place
-  let scheduleHint = null;
+  let scheduleHint = null, scheduleFor = null, learning = false;
   async function learnSchedule() {
     const pid = now.location?.place?.id;
-    if (!pid || !val(now.charge?.plugged) || now.state === 'charging') return;
+    if (!pid || !val(now.charge?.plugged) || now.state === 'charging' || learning) return;
+    if (scheduleHint && scheduleFor === pid) return;
+    learning = true;
     try {
       const pg = await ctx.api.page(`cars/${encodeURIComponent(cid)}/charges`, { places: pid }, { limit: 20 });
       const mins = pg.items.map((c) => { const d = new Date(c.start_ms); const p = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(d).split(':'); return +p[0] * 60 + +p[1]; }).sort((a, b) => a - b);
       if (mins.length < 3 || !ctx.alive()) return;
       const m = mins[Math.floor(mins.length / 2)];
       const base = new Date(Date.UTC(2026, 0, 5, Math.floor(m / 60), m % 60));
+      if (now.location?.place?.id !== pid) return;
       scheduleHint = new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', hour: 'numeric', minute: '2-digit' }).format(base);
+      scheduleFor = pid;
       paintLive();
-    } catch { /* a hint only */ }
+    } catch { /* a hint only */ } finally { learning = false; }
   }
 
   /* ---------- today, newest first (beside the map on large screens) */
@@ -472,13 +479,20 @@ export async function mount(ctx) {
     ]);
     if (!ctx.alive()) return;
     const row = stats?.items?.[0] || {};
+    // a period with no data is not a period the car stood still: say which it was
+    const rec = row.completeness?.recorded_pct;
+    const noStats = !stats || !stats.items?.length;
+    const noData = !noStats && rec === 0;
+    const blank = noStats ? 'Could not be loaded' : noData ? 'No data for this period' : null;
+    const partNote = !blank && rec != null && rec < 100 ? ` · ${formatNumber(rec, { maximumFractionDigits: rec < 10 ? 1 : 0 })} % of the period recorded` : '';
+    const fig = (v) => (blank ? null : v);
 
     const periodBtn = h('button', { class: 'btn btn--sm', type: 'button', onclick: (e) => openPeriodPicker(e.currentTarget), cover: 'overview.control.time_range', title: 'Choose the period (shared by every page)' }, icon('calendar', 'ico--sm'), p.preset === 'custom' ? 'Custom period' : p.label, icon('chev-d', 'ico--sm'));
     const summary = h('div', { class: 'window-figures' },
-      metric('Distance driven', row.distance_logged_km, 'distance', { cover: 'overview.stat.distance_logged', explain: `${row.drives ?? 0} ${row.drives === 1 ? 'drive' : 'drives'} logged in the period` }),
-      metric('Net consumption', row.net_wh_per_km, 'efficiency', { cover: 'overview.stat.consumption_net', explain: 'Energy the pack gave while driving, regen taken off, per distance.', why: 'No drive in the period' }),
-      metric('Gross consumption', row.gross_wh_per_km, 'efficiency', { cover: 'overview.stat.consumption_gross', explain: 'Everything used, parked time included, from the pack’s own counters, per distance.', why: 'No drive in the period' }),
-      metric('Energy added', row.energy_added_kwh, 'energy', { explain: `${row.charges ?? 0} ${row.charges === 1 ? 'charge' : 'charges'}` }));
+      metric('Distance driven', fig(row.distance_logged_km), 'distance', { cover: 'overview.stat.distance_logged', why: blank, explain: blank ? (noStats ? 'The period figures did not load; the charts below may still show data.' : 'Nothing was logged in this period, so it is not known whether the car moved.') : `${row.drives ?? 0} ${row.drives === 1 ? 'drive' : 'drives'} logged in the period${partNote}` }),
+      metric('Net consumption', fig(row.net_wh_per_km), 'efficiency', { cover: 'overview.stat.consumption_net', explain: blank ? null : `Energy the pack gave while driving, regen taken off, per distance.${partNote}`, why: blank || 'No drive in the period' }),
+      metric('Gross consumption', fig(row.gross_wh_per_km), 'efficiency', { cover: 'overview.stat.consumption_gross', explain: blank ? null : `Everything used, parked time included, from the pack’s own counters, per distance.${partNote}`, why: blank || 'No drive in the period' }),
+      metric('Energy added', fig(row.energy_added_kwh), 'energy', { why: blank, explain: blank ? null : `${row.charges ?? 0} ${row.charges === 1 ? 'charge' : 'charges'}, from the pack’s counters${partNote}` }));
 
     const battEl = h('div', { class: 'chart chart--batt' });
     const battLegend = h('div', { class: 'legend', role: 'group', 'aria-label': 'Battery chart series' });
@@ -530,6 +544,14 @@ export async function mount(ctx) {
     };
   }
 
+  // a value axis whose numbers carry their unit (100 %, 150 km, 7 kW)
+  const unitAxis = (scale, unit, { size = 60, digits = 0, side = 3 } = {}) => ({
+    ...valueAxis({ size, digits }), scale, side,
+    values: (u, v) => v.map((n) => (n == null ? '' : `${formatNumber(n, { maximumFractionDigits: digits })}${unit === '%' ? ' %' : `\u00a0${unit}`}`)),
+    ...(side === 1 ? { grid: { show: false } } : {}),
+  });
+  const span = (a, kind) => { const f = a.filter((v) => v != null); return f.length ? `${format(Math.min(...f), kind)} – ${format(Math.max(...f), kind)}` : 'no data'; };
+
   // asleep and unknown buckets drawn behind the lines
   const stateBands = (states, xs) => (u) => {
     if (!states) return;
@@ -553,13 +575,14 @@ export async function mount(ctx) {
     // asleep is not unknown: the battery holds while the car sleeps, so its line goes on through asleep
     // buckets; it breaks only where nothing is known
     const carry = (a) => { let last = null; return (a || []).map((v, i) => { if (v != null) { last = v; return v; } return series.state?.[i] === 'asleep' ? last : (last = null); }); };
-    const soc = carry(series.values.soc_pct), usable = carry(series.values.usable_soc_pct), range = carry(series.values[rk]).map((v) => (v == null ? null : convert(v, 'range')));
+    const soc = carry(series.values.soc_pct), usable = carry(series.values.usable_soc_pct), rangeKm = carry(series.values[rk]);
+    const range = rangeKm.map((v) => (v == null ? null : convert(v, 'range')));
     const mm = (a) => { const f = a.filter((v) => v != null); return f.length ? [Math.min(...f), Math.max(...f)] : [null, null]; };
     const [s0, s1] = mm(soc), [r0, r1] = mm(range);
     const entries = [
       { key: 'soc', label: 'Battery', color: '--c-soc', plot: 'batt', index: 1, idle: s0 != null ? `${pct(s0)} – ${pct(s1)}` : 'no data' },
-      { key: 'usable', label: 'Usable', color: '--c-power', plot: 'batt', index: 2, idle: '' },
-      { key: 'range', label: rk === 'ideal_range_km' ? 'Ideal range' : 'Rated range', color: '--live', plot: 'batt', index: 3, idle: r0 != null ? `${formatNumber(r0, { maximumFractionDigits: 0 })} – ${formatNumber(r1, { maximumFractionDigits: 0 })} ${unitLabel('range')}` : '' },
+      { key: 'usable', label: 'Usable', color: '--c-power', plot: 'batt', index: 2, idle: span(usable, 'percent') },
+      { key: 'range', label: rk === 'ideal_range_km' ? 'Ideal range' : 'Rated range', color: '--live', plot: 'batt', index: 3, idle: r0 != null ? `${formatNumber(r0, { maximumFractionDigits: 0 })} – ${formatNumber(r1, { maximumFractionDigits: 0 })} ${unitLabel('range')}` : 'no data' },
     ];
     const leg = legendChips(legendHost, entries, plots);
     const make = (width, height) => {
@@ -568,14 +591,14 @@ export async function mount(ctx) {
         width, height, padding: [rpx(10), rpx(4), 0, 0], legend: { show: false },
         cursor: { sync: { key: sync, setSeries: false }, drag: { x: false, y: false }, points: { size: rpx(8), width: rpx(2), stroke: c.cursor } },
         scales: { x: { time: true, min: from / 1000, max: to / 1000 }, pct: { range: [0, 100] }, dist: { auto: true, range: (u, a, b) => [0, Math.max(10, (b || 0) * 1.1)] } },
-        axes: [timeAxis(tz, { spanMs: to - from }), { ...valueAxis({ size: 44 }), scale: 'pct' }, { ...valueAxis({ size: 52 }), scale: 'dist', side: 1, grid: { show: false } }],
+        axes: [timeAxis(tz, { spanMs: to - from }), unitAxis('pct', '%', { size: 52 }), unitAxis('dist', unitLabel('range'), { size: 66, side: 1 })],
         series: [{},
           { label: 'Battery', scale: 'pct', stroke: cssVar('--c-soc'), width: rpx(2), fill: areaFill(cssVar('--c-soc'), 0.2, 0.01), points: { show: false } },
           { label: 'Usable', scale: 'pct', stroke: cssVar('--c-power'), width: rpx(1.5), dash: [rpx(4), rpx(3)], points: { show: false } },
           { label: 'Range', scale: 'dist', stroke: c.live, width: rpx(1.5), points: { show: false } }],
         hooks: {
           drawClear: [stateBands(series.state, xs)],
-          setCursor: [(u) => { const i = u.cursor.idx; leg.show(i == null || u.cursor.left < 0 ? null : i, [pct(soc[i]), pct(usable[i]), format(series.values[rk]?.[i], 'range')]); }],
+          setCursor: [(u) => { const i = u.cursor.idx; leg.show(i == null || u.cursor.left < 0 ? null : i, [pct(soc[i]), pct(usable[i]), format(rangeKm[i], 'range')]); }],
         },
       };
     };
@@ -588,18 +611,28 @@ export async function mount(ctx) {
     const curves = await Promise.all(sorted.map((c) => ctx.api.get(`cars/${encodeURIComponent(cid)}/charges/${encodeURIComponent(c.id)}/curve`, { fields: 'power_kw,volts_v,amps_a,heater_kw,dc_volts_v,dc_amps_a', max_points: 400 }).catch(() => null)));
     if (!ctx.alive()) return;
     const T = [], P = [], E = [], V = [], A = [], HT = [];
+    let addedInWin = 0;
     chgRows = [];
     curves.forEach((cv, k) => {
       if (!cv || !cv.t_ms?.length) return;
       const dc = cv.kind === 'dc';
-      let kwh = 0;
+      // the curve's power added up gives the shape; it is scaled to end at the charge's own figure
+      // (energy_added_kwh, from the pack's counters), so chart, legend, CSV and Summary agree
+      let raw = 0;
+      cv.t_ms.forEach((t, i) => { if (i) raw += ((cv.values.power_kw[i - 1] || 0) * (t - cv.t_ms[i - 1])) / 3600000; });
+      const own = sorted[k].energy_added_kwh;
+      const k2 = own != null && raw > 0 ? own / raw : 1;
+      let kwh = 0, before = 0, inWin = null;
       cv.t_ms.forEach((t, i) => {
-        if (i) kwh += ((cv.values.power_kw[i - 1] || 0) * (t - cv.t_ms[i - 1])) / 3600000;
+        if (i) kwh += (((cv.values.power_kw[i - 1] || 0) * (t - cv.t_ms[i - 1])) / 3600000) * k2;
+        if (t < from) before = kwh;
+        if (t >= from && t <= to) inWin = kwh;
         if (t < from || t > to) return;
         T.push(t / 1000); P.push(cv.values.power_kw[i]); E.push(kwh); HT.push(cv.values.heater_kw?.[i] ?? null);
         V.push(dc ? cv.values.dc_volts_v?.[i] ?? null : cv.values.volts_v[i]); A.push(dc ? cv.values.dc_amps_a?.[i] ?? null : cv.values.amps_a[i]);
         chgRows.push({ t, charge: sorted[k].id, kind: dc ? 'DC' : 'AC', power: P[P.length - 1], heater: HT[HT.length - 1], energy: kwh, volts: V[V.length - 1], amps: A[A.length - 1] });
       });
+      if (inWin != null) addedInWin += inWin - before;
       const last = T[T.length - 1];
       if (last != null) { T.push(last + 1); P.push(null); E.push(null); HT.push(null); V.push(null); A.push(null); }
     });
@@ -610,9 +643,9 @@ export async function mount(ctx) {
     const entries = [
       { key: 'power', label: 'Charging power', color: '--c-charge', plot: 'chg', index: 1, idle: T.length ? `peak ${format(maxOf(P), 'power')}` : '' },
       { key: 'heater', label: 'Battery heating', color: '--danger', plot: 'chg', index: 2, idle: T.length ? `peak ${format(maxOf(HT), 'power')}` : '' },
-      { key: 'energy', label: 'Energy added', color: '--c-soc', plot: 'chg', index: 3, idle: T.length ? `up to ${format(maxOf(E), 'energy')}` : '' },
-      { key: 'volts', label: 'Volts', color: '--c-power', plot: 'sup', index: 1, idle: '' },
-      { key: 'amps', label: 'Amps', color: '--live', plot: 'sup', index: 2, idle: '' },
+      { key: 'energy', label: 'Energy added', color: '--c-soc', plot: 'chg', index: 3, idle: `${format(addedInWin, 'energy')}${sorted.length > 1 ? ' in all' : ''}` },
+      { key: 'volts', label: 'Volts', color: '--c-power', plot: 'sup', index: 1, idle: span(V, 'voltage') },
+      { key: 'amps', label: 'Amps', color: '--live', plot: 'sup', index: 2, idle: span(A, 'current') },
     ];
     const leg = legendChips(legendHost, entries, plots);
     const css = cssVar;
@@ -630,7 +663,7 @@ export async function mount(ctx) {
     plots.chg = mountPlot(el, (width, height) => ({
       ...base(width, height, false),
       scales: { x: { time: true, min: from / 1000, max: to / 1000 }, kw: { range: (u, a, b) => [0, Math.max(5, (b || 0) * 1.12)] }, kwh: { range: (u, a, b) => [0, Math.max(1, (b || 0) * 1.12)] } },
-      axes: [timeAxis(tz, { show: false, spanMs: to - from }), { ...valueAxis({ size: 44 }), scale: 'kw' }, { ...valueAxis({ size: 52, digits: 1 }), scale: 'kwh', side: 1, grid: { show: false } }],
+      axes: [timeAxis(tz, { show: false, spanMs: to - from }), unitAxis('kw', unitLabel('power'), { size: 58 }), unitAxis('kwh', unitLabel('energy'), { size: 70, digits: 1, side: 1 })],
       series: [{},
         { label: 'Power', scale: 'kw', stroke: css('--c-charge'), width: rpx(2), fill: areaFill(css('--c-charge'), 0.22, 0.01), points: { show: false } },
         { label: 'Heating', scale: 'kw', stroke: css('--danger'), width: rpx(1.5), points: { show: false } },
@@ -639,7 +672,7 @@ export async function mount(ctx) {
     plots.sup = mountPlot(supEl, (width, height) => ({
       ...base(width, height, true),
       scales: { x: { time: true, min: from / 1000, max: to / 1000 }, v: { auto: true }, a: { range: (u, a, b) => [0, Math.max(5, (b || 0) * 1.15)] } },
-      axes: [timeAxis(tz, { spanMs: to - from }), { ...valueAxis({ size: 44 }), scale: 'v' }, { ...valueAxis({ size: 52 }), scale: 'a', side: 1, grid: { show: false } }],
+      axes: [timeAxis(tz, { spanMs: to - from }), unitAxis('v', unitLabel('voltage'), { size: 58 }), unitAxis('a', unitLabel('current'), { size: 70, side: 1 })],
       series: [{},
         { label: 'Volts', scale: 'v', stroke: css('--c-power'), width: rpx(1.5), points: { show: false } },
         { label: 'Amps', scale: 'a', stroke: css('--live'), width: rpx(1.5), points: { show: false } }],
@@ -665,7 +698,11 @@ export async function mount(ctx) {
   let pend = 0;
   ctx.events('now', (ev) => {
     if (ev.data?.car !== cid || !ev.data.now) return;
+    const plugKey = () => `${val(now.charge?.plugged)}|${now.location?.place?.id ?? ''}|${now.state}`;
+    const before = plugKey();
     merge(now, ev.data.now);
+    // plugged in, unplugged or moved: learn the usual start time for the place it is at now
+    if (plugKey() !== before && !(scheduleHint && scheduleFor === now.location?.place?.id)) learnSchedule();
     if (pend) return;
     pend = setTimeout(() => { pend = 0; if (!ctx.alive()) return; paintHead(); paintBanner(); paintGauge(); paintPlace(); paintLive(); placeMarker(); }, 2000);
   });
