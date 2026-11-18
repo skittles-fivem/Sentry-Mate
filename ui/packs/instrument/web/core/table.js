@@ -36,6 +36,7 @@ export function dataTable(ctx, opts) {
   let params = { ...(opts.params || {}) };
   let sort = opts.sort ? { ...opts.sort } : null;
   let pager = null, loaded = [], done = false, total = null, busy = false, gen = 0;
+  let fresh = false, freshQuiet = false, prevPager = null;
 
   const count = h('span', { class: 'tbl-count', 'aria-live': 'polite' });
   const csvSlot = h('span', { class: 'tbl-csv' });
@@ -147,26 +148,32 @@ export function dataTable(ctx, opts) {
     setCsv();
   }
 
-  async function load() {
+  // quiet (live refreshes): the rows on screen stay until the new first page arrives, with no skeleton
+  async function load(quiet = false) {
     const my = ++gen;
-    loaded = []; done = false; total = null;
-    replace(tbody, skeleton());
-    foot.hidden = true;
-    count.textContent = '';
+    busy = false; // an earlier load still under way must not block this one
+    fresh = true; freshQuiet = quiet && loaded.length > 0;
+    if (!freshQuiet) {
+      loaded = []; done = false; total = null;
+      replace(tbody, skeleton());
+      foot.hidden = true;
+      count.textContent = '';
+    }
+    prevPager = pager;
     pager = ctx.api.pager(opts.path, { ...params, ...sortParams() }, { limit });
-    setCsv();
+    if (!freshQuiet) setCsv();
     await more(my);
   }
 
   async function more(my = gen) {
-    if (busy || done || !pager) return;
+    if (busy || (done && !fresh) || !pager) return;
     busy = true;
     moreBtn.disabled = true;
     try {
       const items = (await pager.more()) || [];
       const pg = pager.last || { items, next: null };
       if (my !== gen || !ctx.alive()) return;
-      if (loaded.length === 0) tbody.replaceChildren();
+      if (fresh) { fresh = false; loaded = []; total = null; tbody.replaceChildren(); if (freshQuiet) setCsv(); }
       loaded.push(...items);
       tbody.append(...items.map(rowEl));
       done = !pg.next;
@@ -176,11 +183,15 @@ export function dataTable(ctx, opts) {
       opts.onPage?.(pg);
     } catch (e) {
       if (my !== gen || !ctx.alive() || e.name === 'AbortError') return;
+      // a failed live refresh keeps the rows on screen; the next refresh tries again
+      if (fresh && freshQuiet) { fresh = false; pager = prevPager; return; }
+      fresh = false;
       const w = errorWords(e);
       replace(tbody, emptyRow(h('div', { class: 'empty empty--compact', role: 'alert' }, h('h3', null, w.title), h('p', null, w.text),
         h('button', { class: 'btn btn--sm', type: 'button', onclick: () => load() }, icon('reset'), 'Try again'))));
       opts.onError?.(e);
     } finally {
+      // a stale load leaves busy alone: load() cleared it and the current load owns it now
       if (my === gen) { busy = false; moreBtn.disabled = false; }
     }
   }
@@ -192,8 +203,8 @@ export function dataTable(ctx, opts) {
     el,
     /** Resolves when the first page has been drawn. */
     ready,
-    /** Load again from the first page, with new filters if given. */
-    reload(p) { if (p) params = { ...p }; if (opts.rows) renderLocal(); else return load(); return Promise.resolve(); },
+    /** Load again from the first page, with new filters if given; { quiet: true } keeps the rows on screen until the new ones arrive. */
+    reload(p, o = {}) { if (p) params = { ...p }; if (opts.rows) renderLocal(); else return load(!!o.quiet); return Promise.resolve(); },
     /** Set the order shown in the header ({ key, dir } or null) without loading; reload() follows. */
     setSortKey(next) { sort = next ? { ...next } : null; head(); },
     /** Change some filters (null removes one) and load again. */

@@ -154,7 +154,7 @@ export async function mount(ctx) {
     rowHref: (c) => state.linkTo('car', { car: c.id }),
     empty: () => (searchIn.value.trim() || stateFilter
       ? emptyState({ icon: 'search', title: 'No car matches', text: `Nothing matches${searchIn.value.trim() ? ` "${searchIn.value.trim()}"` : ''}${stateFilter ? ` in the state ${STATES[stateFilter].label.toLowerCase()}` : ''}. Clear the search or pick All states.` })
-      : emptyState({ icon: 'car', title: 'No cars yet', text: 'See why below.' })),
+      : emptyState({ icon: 'car', title: 'No cars yet', text: 'The reason and the fix are shown above.' })),
   });
   table.el.classList.add('fleet-table');
 
@@ -203,7 +203,8 @@ export async function mount(ctx) {
       tile('stale', 'Stale', 'clock', s.stale || 0, 'no upload for over 1 h', { stale: true }));
   }
 
-  async function loadTop() {
+  // namesFresh: after a 'fleet' event (car added, removed or renamed) the names are asked again, not cached
+  async function loadTop(namesFresh = false) {
     const [s, at, setup] = await Promise.all([
       ctx.api.get('fleet/summary'),
       ctx.api.page('fleet/attention', {}, { limit: 8 }).catch(() => ({ items: [], next: null })),
@@ -228,7 +229,7 @@ export async function mount(ctx) {
     if (at.items.length || fixes.length) {
       const names = new Map();
       await Promise.all([...new Set(at.items.map((a) => a.car))].map(async (cid) => {
-        try { names.set(cid, (await ctx.api.get(`cars/${encodeURIComponent(cid)}`, null, { maxAgeMs: 60000 })).name); } catch { names.set(cid, cid); }
+        try { names.set(cid, (await ctx.api.get(`cars/${encodeURIComponent(cid)}`, null, namesFresh ? {} : { maxAgeMs: 60000 })).name); } catch { names.set(cid, cid); }
       }));
       if (!ctx.alive()) return;
       replace(attn, panel({ title: 'Need a look', icon: 'warn', cls: 'attn-panel', side: at.next ? h('span', { class: 'faint' }, 'More below in the list') : null },
@@ -265,14 +266,20 @@ export async function mount(ctx) {
   ctx.ready();
 
   // live: counts and attention follow the cars; the list reloads while only its first page is open
-  let pending = 0;
+  // a 'fleet' event (car added, removed or renamed) runs within 300 ms even when a 'now' refresh waits
+  let pending = 0, fleetSeen = false;
   ctx.events(['fleet', 'now'], (ev) => {
-    if (pending) return;
+    const isFleet = ev.type === 'fleet';
+    if (pending && !(isFleet && !fleetSeen)) return;
+    if (isFleet) { fleetSeen = true; clearTimeout(pending); }
     pending = setTimeout(async () => {
       pending = 0;
-      try { await loadTop(); } catch { /* the next event tries again */ }
-      if (ev.type === 'fleet' || table.rows().length <= 50) table.reload(params());
-    }, ev.type === 'fleet' ? 300 : 10000);
+      const fleet = fleetSeen; fleetSeen = false;
+      try { await loadTop(fleet); } catch { /* the next event tries again */ }
+      if (!ctx.alive()) return;
+      // quiet: the rows stay on screen until the new first page is in (no grey blink every 10 s)
+      if (fleet || table.rows().length <= 50) table.reload(params(), { quiet: true });
+    }, isFleet ? 300 : 10000);
   });
   ctx.onCleanup(() => clearTimeout(pending));
 }
