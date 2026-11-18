@@ -55,6 +55,8 @@ pub struct Row {
     /// `no_log`, `not_recorded`, `failed_check`, `dropped_frames`.
     pub gap_reason: Option<&'static str>,
     pub source: &'static str,
+    /// A drive's or charge's flags (`in_progress`, ...); null on the other rows.
+    pub flags: Option<serde_json::Value>,
     pub version: Option<String>,
     pub version_source: Option<&'static str>,
 }
@@ -174,6 +176,7 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             awake_reasons: Vec::new(),
             gap_reason: None,
             source: v.source,
+            flags: serde_json::to_value(&v.flags).ok(),
             version: None,
             version_source: None,
         };
@@ -211,6 +214,7 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             awake_reasons: vec!["charging"],
             gap_reason: None,
             source: v.source,
+            flags: serde_json::to_value(&v.flags).ok(),
             version: None,
             version_source: None,
         };
@@ -266,6 +270,7 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
                 awake_reasons: Vec::new(),
                 gap_reason: None,
                 source: "can",
+                flags: None,
                 version: None,
                 version_source: None,
             });
@@ -300,6 +305,7 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
                 awake_reasons: Vec::new(),
                 gap_reason: Some(gap_reason),
                 source: "can",
+                flags: None,
                 version: None,
                 version_source: None,
             });
@@ -333,6 +339,7 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             awake_reasons: Vec::new(),
             gap_reason: None,
             source: source_word(up.source),
+            flags: None,
             version: Some(up.version.clone()).filter(|v| !v.is_empty()),
             version_source: (up.source == Source::Teslamate).then_some("teslamate"),
         });
@@ -527,15 +534,28 @@ pub struct Segment {
     pub kind: &'static str,
     pub start_ms: u64,
     pub end_ms: u64,
+    /// `{ drive: id }`, `{ charge: id }` or `{ update: id }`; null for the states between them.
     #[serde(rename = "ref")]
-    pub reference: Option<String>,
+    pub reference: Option<serde_json::Value>,
     pub source: &'static str,
 }
 
-/// `/cars/{car}/activity`: segments for the strip, clipped to the period (default the last 24 hours).
-pub fn activity(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Vec<Segment>>> {
+/// The strip's segments of a period, and the period they cover (`to_ms` no later than now).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Activity {
+    pub from_ms: u64,
+    pub to_ms: u64,
+    pub items: Vec<Segment>,
+    /// Always null: the strip is one list.
+    pub next: Option<String>,
+}
+
+/// `/cars/{car}/activity`: segments for the strip, clipped to the period (default the last 24 hours) and to now.
+pub fn activity(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Activity>> {
     let c = car_of(e, car)?;
-    let (a, b) = period.window(86_400_000, crate::now_ms())?;
+    let now = crate::now_ms();
+    let (a, b) = period.window(86_400_000, now)?;
+    let b = b.min(now).max(a);
     let mut busy: Vec<Segment> = Vec::new();
     for d in super::drives::rows(e, car, &Period::new(Some(a.saturating_sub(86_400_000)), Some(b)), None)? {
         if d.end_ms > a {
@@ -543,7 +563,7 @@ pub fn activity(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Vec<S
                 kind: "driving",
                 start_ms: d.start_ms.max(a),
                 end_ms: d.end_ms.min(b),
-                reference: Some(d.id.to_string()),
+                reference: Some(serde_json::json!({ "drive": d.id.to_string() })),
                 source: source_word(d.source),
             });
         }
@@ -554,8 +574,20 @@ pub fn activity(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Vec<S
                 kind: "charging",
                 start_ms: ch.start_ms.max(a),
                 end_ms: ch.end_ms.min(b),
-                reference: Some(ch.id.to_string()),
+                reference: Some(serde_json::json!({ "charge": ch.id.to_string() })),
                 source: source_word(ch.source),
+            });
+        }
+    }
+    for u in all_rows::<UpdateRow>(e.db(), car, a.saturating_sub(86_400_000), b, None)? {
+        let end = u.update.end_ms.unwrap_or(b);
+        if end > a {
+            busy.push(Segment {
+                kind: "updating",
+                start_ms: u.update.start_ms.max(a),
+                end_ms: end.min(b),
+                reference: Some(serde_json::json!({ "update": u.id.to_string() })),
+                source: source_word(u.update.source),
             });
         }
     }
@@ -593,7 +625,7 @@ pub fn activity(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Vec<S
     }
     out.extend(busy.into_iter().filter(|s| s.end_ms > s.start_ms));
     out.sort_by_key(|s| s.start_ms);
-    Ok(scoped(&c, out))
+    Ok(scoped(&c, Activity { from_ms: a, to_ms: b, items: out, next: None }))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

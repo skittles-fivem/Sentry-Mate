@@ -111,6 +111,8 @@ pub fn bucket_for(a: u64, b: u64, max: u64) -> u64 {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Columns {
+    /// The fields asked for, in their order.
+    pub fields: Vec<String>,
     pub t_ms: Vec<u64>,
     pub values: BTreeMap<String, Vec<Option<f64>>>,
     pub bucket_ms: u64,
@@ -196,9 +198,17 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     if !(2..=20_000).contains(&max) {
         return Err(QueryError::bad("max_points", "2 to 20000"));
     }
-    if q.fields.is_empty() {
-        return Err(QueryError::bad("fields", "name at least one field"));
+    // the fields once each, in their order; none named: the battery level and the range
+    let mut fields: Vec<String> = Vec::new();
+    for f in &q.fields {
+        if !fields.contains(f) {
+            fields.push(f.clone());
+        }
     }
+    if fields.is_empty() {
+        fields = vec!["soc_pct".into(), "range_km".into()];
+    }
+    let q = &SeriesQuery { fields, ..q.clone() };
     if let Some(bad) = q.fields.iter().find(|f| !FIELDS.contains(&f.as_str())) {
         return Err(QueryError::bad("fields", &format!("{bad} is not a series field")));
     }
@@ -216,7 +226,7 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
         if aggs.is_empty() {
             let plain = if last_by_default(f) { "last" } else { "mean" };
             cols.push((f.clone(), fi, plain));
-            if w > 1000 {
+            if w > 1000 && !last_by_default(f) {
                 cols.push((format!("{f}.min"), fi, "min"));
                 cols.push((format!("{f}.max"), fi, "max"));
             }
@@ -267,7 +277,22 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     for (name, fi, how) in &cols {
         values.insert(name.clone(), accs[*fi].iter_mut().map(|acc| r(acc.get(how), 4)).collect());
     }
-    // coverage and state per bucket, from the state spans
+    let (coverage, state) = coverage_and_state(e, car, &t_ms, w, b, source)?;
+    Ok(scoped(&c, Columns { fields: q.fields.clone(), t_ms, values, bucket_ms: w, coverage_pct: coverage, state }))
+}
+
+/// Per bucket of `t_ms` (each `w` long, the last ending by `b`): the share with known data (asleep counts as known)
+/// and the state that took most of it, from the car's state spans, drives and charges.
+pub(crate) fn coverage_and_state(
+    e: &Engine,
+    car: CarId,
+    t_ms: &[u64],
+    w: u64,
+    b: u64,
+    source: Option<Source>,
+) -> QResult<(Vec<f64>, Vec<Option<&'static str>>)> {
+    let n = t_ms.len();
+    let first = t_ms.first().copied().unwrap_or(b);
     let spans: Vec<model::StateSpan> =
         all_rows::<StateRow>(e.db(), car, first, b, source)?.into_iter().map(|s| s.span).collect();
     let mut coverage = Vec::with_capacity(n);
@@ -276,12 +301,19 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
         super::drives::rows(e, car, &super::Period::new(Some(first.saturating_sub(86_400_000)), Some(b)), source)?;
     let charges =
         super::charges::rows(e, car, &super::Period::new(Some(first.saturating_sub(7 * 86_400_000)), Some(b)), source)?;
-    for &t in &t_ms {
+    // the lists are in time order and do not overlap within themselves: each bucket starts looking where the one
+    // before stopped
+    let (mut si, mut di, mut ci) = (0usize, 0usize, 0usize);
+    let words = ["driving", "charging", "parked", "asleep", "unknown"];
+    for &t in t_ms {
         let (x, y) = (t, t + w);
         let mut by: [u64; 5] = [0; 5]; // driving, charging, parked, asleep, unknown
         let mut known = 0;
-        for s in spans.iter().filter(|s| s.end_ms > x && s.start_ms < y) {
-            let len = s.end_ms.min(y) - s.start_ms.max(x);
+        while spans.get(si).is_some_and(|s| s.end_ms <= x) {
+            si += 1;
+        }
+        for s in spans[si.min(spans.len())..].iter().take_while(|s| s.start_ms < y) {
+            let len = s.end_ms.min(y).saturating_sub(s.start_ms.max(x));
             match s.state {
                 State::Online => {
                     by[2] += len;
@@ -295,18 +327,31 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
             }
         }
         let overlap = |s: u64, en: u64| en.min(y).saturating_sub(s.max(x));
-        let dr: u64 = drives.iter().map(|d| overlap(d.start_ms, d.end_ms)).sum();
-        let ch: u64 = charges.iter().map(|c| overlap(c.start_ms, c.end_ms)).sum();
+        while drives.get(di).is_some_and(|d| d.end_ms <= x) {
+            di += 1;
+        }
+        while charges.get(ci).is_some_and(|c| c.end_ms <= x) {
+            ci += 1;
+        }
+        let dr: u64 = drives[di.min(drives.len())..]
+            .iter()
+            .take_while(|d| d.start_ms < y)
+            .map(|d| overlap(d.start_ms, d.end_ms))
+            .sum();
+        let ch: u64 = charges[ci.min(charges.len())..]
+            .iter()
+            .take_while(|c| c.start_ms < y)
+            .map(|c| overlap(c.start_ms, c.end_ms))
+            .sum();
         by[0] = dr;
         by[1] = ch;
         by[2] = by[2].saturating_sub(dr + ch);
         by[4] += w.saturating_sub(known.max(dr + ch) + by[4]);
         coverage.push(r(Some(known.max(dr + ch).min(w) as f64 / w as f64 * 100.0), 1).unwrap_or(0.0));
-        let words = ["driving", "charging", "parked", "asleep", "unknown"];
         let best = by.iter().enumerate().max_by_key(|(_, v)| **v).map(|(i, _)| words[i]);
         state.push(best);
     }
-    Ok(scoped(&c, Columns { t_ms, values, bucket_ms: w, coverage_pct: coverage, state }))
+    Ok((coverage, state))
 }
 
 #[cfg(test)]

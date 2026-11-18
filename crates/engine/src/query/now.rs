@@ -1,7 +1,7 @@
 //! `/cars/{car}/now`: the car's newest values. Every value read from the car is `{ value, at_ms }` or null; the
 //! snapshot's own facts (`state`, `since_ms`, `at_ms`, ...) are plain.
 
-use super::{CarRef, PlaceBrief, QResult, car_of, kpa, place_ref, r};
+use super::{Address, CarRef, PlaceBrief, QResult, car_of, kpa, place_ref, r};
 use crate::{Engine, now_ms, records};
 use db::StateRow;
 use model::{CarId, ChargeKind, Drive, Gear, Now, Sample, Source, State};
@@ -40,7 +40,8 @@ pub struct Location {
     pub elevation_m: Option<V<f64>>,
     pub heading_deg: Option<V<f64>>,
     pub place: Option<PlaceBrief>,
-    pub address: Option<String>,
+    /// `{ short, locality, region, country_code }`; null until the spot's address is known.
+    pub address: Option<Address>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -116,7 +117,7 @@ pub struct NowView {
     pub location: Option<Location>,
     pub tyres_kpa: [Option<V<f64>>; 4],
     pub tyres_slots_mapped: bool,
-    pub tyre_recommended_kpa: Option<f64>,
+    pub tyre_recommended_kpa: Option<V<f64>>,
     pub flags: serde_json::Value,
     pub charge: ChargeNow,
     pub drive: Option<DriveNow>,
@@ -264,6 +265,26 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     if charging {
         reasons.push("charging");
     }
+    // Sentry Mate's own range estimate: the energy left at the consumption of the last 30 days of drives
+    let est_wh_km = {
+        let from = at.saturating_sub(30 * 86_400_000);
+        let mut kwh = 0.0;
+        let mut km = 0.0;
+        for d in super::drives::rows(e, car, &super::Period::new(Some(from), Some(at.saturating_add(1))), None)? {
+            if let (Some(k), Some(x)) = (d.energy_used_kwh, d.distance_km)
+                && k > 0.0
+                && x > 0.0
+            {
+                kwh += k;
+                km += x;
+            }
+        }
+        (km >= 10.0).then(|| kwh * 1000.0 / km).filter(|w| *w > 50.0)
+    };
+    let est_range = s.energy_remaining_kwh.zip(est_wh_km).map(|(k, w)| k * 1000.0 / w);
+    // the software the car runs: the newest update's version
+    let update =
+        db.list::<db::UpdateRow>(car, &db::Query::default().limit(1))?.items.into_iter().next().map(|u| u.update);
     Ok(NowView {
         car: CarRef(car),
         time_zone: c.time_zone.clone(),
@@ -283,8 +304,8 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         usable_soc_pct: None,
         range_km: vf(s.range_km, 1, t("range_km")),
         ideal_range_km: vf(s.ideal_range_km, 1, t("ideal_range_km")),
-        est_range_km: None,
-        est_basis: None,
+        est_range_km: vf(est_range, 1, t("energy_remaining_kwh")),
+        est_basis: est_range.map(|_| "wh_per_km_30d"),
         energy_remaining_kwh: vf(s.energy_remaining_kwh, 2, t("energy_remaining_kwh")),
         odometer_km: vf(s.odometer_km, 3, t("odometer_km")),
         outside_c: vf(s.outside_temp_c, 1, t("outside_temp_c")),
@@ -307,6 +328,11 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         charge,
         drive,
         awake_reasons: reasons,
-        software: Software { version: None, version_source: None, version_since_ms: None, changed_since_ms: None },
+        software: Software {
+            version: update.as_ref().map(|u| u.version.clone()).filter(|v| !v.is_empty()),
+            version_source: update.as_ref().filter(|u| u.source == Source::Teslamate).map(|_| "teslamate"),
+            version_since_ms: update.as_ref().map(|u| u.end_ms.unwrap_or(u.start_ms)),
+            changed_since_ms: None,
+        },
     })
 }

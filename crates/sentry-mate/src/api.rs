@@ -30,11 +30,6 @@ pub fn routes() -> Router<AppState> {
         // fleet and cars (the cars list, the fleet summary and attention, a car and its settings: web's fleet module)
         .route("/api/v1/fleet/versions", get(fleet_versions))
         // live values, series, timeline
-        .route("/api/v1/cars/{car}/now", get(now))
-        .route("/api/v1/cars/{car}/series", get(series))
-        .route("/api/v1/cars/{car}/timeline", get(timeline))
-        .route("/api/v1/cars/{car}/states", get(states))
-        .route("/api/v1/cars/{car}/activity", get(activity))
         .route("/api/v1/cars/{car}/gaps", get(gaps))
         // drives
         .route("/api/v1/cars/{car}/drives", get(drives))
@@ -53,7 +48,6 @@ pub fn routes() -> Router<AppState> {
         // battery and efficiency
         .route("/api/v1/cars/{car}/battery", get(battery))
         .route("/api/v1/cars/{car}/battery/capacity", get(capacity))
-        .route("/api/v1/cars/{car}/parked", get(parked))
         .route("/api/v1/cars/{car}/efficiency", get(efficiency))
         .route("/api/v1/cars/{car}/temperatures", get(temperatures))
         // reports
@@ -184,45 +178,7 @@ async fn fleet_versions(State(app): State<AppState>, v: Viewer, p: Params) -> Ap
     .await
 }
 
-// ---- live values, series, timeline
-
-async fn now(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    answer(&app, &p, "now", move |e| q::now::now_view(e, car)).await
-}
-
-async fn series(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let query = q::series::SeriesQuery {
-        fields: list(&p, "fields")?,
-        from_ms: p.uint("from_ms", 0, MAX_MS)?,
-        to_ms: p.uint("to_ms", 0, MAX_MS)?,
-        max_points: p.uint("max_points", 0, u64::MAX)?,
-        agg: list(&p, "agg")?,
-        source: text(&p, "source")?,
-    };
-    let now_ms = app.now();
-    answer(&app, &p, "series", move |e| q::series::series(e, car, &query, now_ms)).await
-}
-
-async fn timeline(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let query = q::timeline::TimelineQuery {
-        period: period(&p)?,
-        kinds: text(&p, "kinds")?,
-        place: text(&p, "place")?,
-        q: text(&p, "q")?,
-    };
-    let pg = paging(&p)?;
-    answer(&app, &p, "timeline", move |e| q::timeline::timeline(e, car, &query, &pg)).await
-}
-
-async fn states(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let (per, pg) = (period(&p)?, paging(&p)?);
-    answer(&app, &p, "states", move |e| q::timeline::states(e, car, &per, &pg)).await
-}
-
-async fn activity(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let per = period(&p)?;
-    answer(&app, &p, "activity", move |e| q::timeline::activity(e, car, &per)).await
-}
+// ---- live values, series, timeline (the web crate serves now, series, timeline, states and activity)
 
 async fn gaps(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
     let (per, pg) = (period(&p)?, paging(&p)?);
@@ -395,11 +351,6 @@ async fn battery(State(app): State<AppState>, CarParam(car): CarParam, p: Params
 async fn capacity(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
     let (per, pg, x) = (period(&p)?, paging(&p)?, text(&p, "x")?);
     answer(&app, &p, "capacity", move |e| q::battery::capacity(e, car, &per, x.as_deref(), &pg)).await
-}
-
-async fn parked(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let (per, pg, min) = (period(&p)?, paging(&p)?, p.float("min_hours", 0.0, 1e5)?);
-    answer(&app, &p, "parked", move |e| q::battery::parked(e, car, &per, min, &pg)).await
 }
 
 async fn efficiency(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {

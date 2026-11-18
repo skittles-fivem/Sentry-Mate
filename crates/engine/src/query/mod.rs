@@ -13,15 +13,18 @@
 //! Access (which cars an account sees) is the web server's: it passes only cars the account may see, and maps
 //! [`QueryError`] to the contract's error answers ([`QueryError::status`], [`QueryError::code`]).
 
+pub mod awake;
 pub mod battery;
 pub mod charges;
 pub mod drives;
 pub mod fleet;
 pub mod keys;
 pub mod now;
+pub mod parked;
 pub mod places;
 pub mod reports;
 pub mod series;
+pub mod signals;
 pub mod system;
 pub mod timeline;
 pub mod travel;
