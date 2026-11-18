@@ -21,7 +21,9 @@ in [docs/plans/rust-can-logger.md](docs/plans/rust-can-logger.md).
 | Reading both log formats (candump text, columns) | done |
 | Encryption at rest (pure Rust): every file's contents sealed (not the names), key file + recovery key | done |
 | Command line: tokens, certificate, chain report, signing keys, log export and decode, restore, recovery key | done |
-| Docker image: one static binary on `scratch`, non-root, health check; run read-only by the compose file | done; built from a clone, no published image yet |
+| Docker image: one static binary on `scratch`, non-root, health check; run read-only by the compose file | done |
+| Published image for amd64 and arm64 (`ghcr.io/skittles-fivem/sentry-mate`), a compose file and a TrueNAS file | done |
+| Refusing folders it can't keep: not mounted, the keys inside the data, root's | done |
 | Decoding signals (DBC sets per model, bus split, the Screenmate's GPS), same values as Sentry Six Manager | done; used only by `log decode` |
 | Decoding each log as it arrives, after its check | planned |
 | Choosing the DBC set from the car's VIN | done in `log decode` |
@@ -36,7 +38,8 @@ in [docs/plans/rust-can-logger.md](docs/plans/rust-can-logger.md).
 | Listing stored logs and their check results, deleting logs, a backup command | not built |
 | Web server and the `/api/v1` the pages need ([`docs/ui-api.md`](docs/ui-api.md)), on its own HTTPS port | planned |
 | Web UI: UI packs, two designs as prototypes on made-up data in [`ui/`](ui/), maps; every TeslaMate tab gets a page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) | being built |
-| Published images (amd64 and arm64), `cargo deny` and `cargo audit`, fuzzing in CI | planned |
+| `cargo deny` and `cargo audit`, fuzzing in CI | planned |
+| Moving to a new server in one step (a move code, or an export file) | being built |
 | Sealing the key file to the host's TPM | optional, later |
 
 ### In progress, not in this repository yet (paused 2026-11-18)
@@ -78,11 +81,13 @@ No command lists cars or logs yet. File and folder names are not sealed, so you 
 
 ## Requirements
 
-- A Linux server with Docker, Docker Compose (`docker compose`) and git.
-- Internet while building: the build pulls the `rust:1-alpine` image, one Alpine package (`musl-dev`) and the Rust
-  crates. The image is built on the server, for the server's own CPU. While it runs, Sentry Mate makes no outgoing
-  connections.
-- About 3 GB of free disk for the build: the Rust build image and what it builds.
+- A server that is on when the car is home: Linux with Docker and the Compose plugin (`docker compose`), or TrueNAS
+  SCALE 24.10 or newer. The image is for amd64 and arm64 (for example a Raspberry Pi 4 or 5 with a 64-bit system).
+- No Rust and no clone of this repo: the image is published, and you only download the compose file. Internet is
+  needed to pull the image and its updates. While it runs, Sentry Mate makes no outgoing connections.
+- Building the image yourself is optional (the OPTIONAL `build: .` line in `docker-compose.yml`, see
+  [Development](#development)). That needs a clone, internet for the Rust build image and crates, and about 3 GB of
+  free disk.
 - About 1 GiB of free memory for a few seconds when the vault is made (the first start), and for `restore` and
   `recovery-key new`: the recovery key is stretched with Argon2id at 1 GiB. A container memory limit below that can
   make these steps fail.
@@ -97,17 +102,31 @@ No command lists cars or logs yet. File and folder names are not sealed, so you 
 
 ## Run it
 
-Get the code. No image is published yet, so you build it from this repo:
+**Step by step, with TrueNAS, backups, restore and moving: [docs/install.md](docs/install.md).** This is the short
+version for Docker Compose; TrueNAS is [further down](#truenas-scale).
+
+Sentry Mate is a published image, `ghcr.io/skittles-fivem/sentry-mate`. There is nothing to clone or build. Make a
+folder for it:
 
 ```bash
-git clone https://github.com/skittles-fivem/sentry-mate.git
+mkdir sentry-mate
 ```
 
 ```bash
 cd sentry-mate
 ```
 
-Make the two folders and give them to the container's user (uid 1000):
+Get the compose file:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/skittles-fivem/Sentry-Mate/main/docker-compose.yml
+```
+
+It runs the image as uid 1000 (group 1000), with a read-only root and no capabilities, and publishes port 10100. It
+mounts two folders: `./data` at `/data` (everything, sealed) and `./keys` at `/keys` (the key file that opens it).
+Both lines are needed. Put the keys on another disk if you can: change `./keys` to that folder's path.
+
+Make the two folders and give them to the container's user, readable by nobody else:
 
 ```bash
 mkdir -p data keys
@@ -117,50 +136,33 @@ mkdir -p data keys
 sudo chown 1000:1000 data keys
 ```
 
-The repo's `docker-compose.yml`:
-
-```yaml
-services:
-  sentry-mate:
-    build: .
-    image: sentry-mate:local
-    restart: unless-stopped
-    ports:
-      - "10100:10100"   # CAN Bridge uploads, HTTPS (TLS 1.3 only)
-    volumes:
-      - ./data:/data    # everything, sealed (logs exactly as uploaded, tokens, trust records, the TLS key)
-      - ./keys:/keys    # the key file that opens it: keep it on another disk if you can, and out of data's backups
-    environment:
-      - TZ=UTC
-      # host names or addresses of this server for its certificate, comma separated (optional:
-      # the app pins the certificate by its SHA-256 and does not check names)
-      # - SENTRY_MATE_NAMES=server.local,192.168.1.20
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    user: "1000:1000"
+```bash
+sudo chmod 700 data keys
 ```
 
-Sentry Mate refuses a keys folder inside the data folder. Build and start it. The first build takes a few minutes
-(about 3 on a 4-core PC, longer on a NAS or a small board):
+Start it:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
-The first start makes the vault. That takes a few seconds, with nothing in the log until it is done. Then the log
-shows the upload address, the certificate SHA-256 and the vault's id:
+The first start makes the vault. That takes a few seconds, with only the version line in the log until it is done.
+Then the log shows the upload address, the certificate SHA-256 and the vault's id:
 
 ```bash
-docker compose logs sentry-mate
+docker logs sentry-mate
 ```
 
-If the log shows only `Permission denied (os error 13)` and the container keeps restarting, the folders are not
-owned by uid 1000 (Docker makes missing ones owned by root). Run the `chown` above, then restart it:
+If it doesn't start, the log says why and what to do. For example `Sentry Mate runs as uid 1000 (group 1000) and
+can't write to the data folder /data: it belongs to uid 0 (group 0), root.` means the folders belong to root (Docker
+makes missing ones owned by root). Run the `chown` and `chmod` above, then restart it:
 
 ```bash
 docker compose restart
 ```
+
+The other messages are in the install guide's [When it does not start](docs/install.md#when-it-does-not-start). If
+your user is not in the `docker` group, put `sudo` before the `docker` commands.
 
 ### The recovery key
 
@@ -171,7 +173,8 @@ file it is the only way to open the data; lose both and nobody can. Read it:
 sudo cat keys/RECOVERY-KEY.txt
 ```
 
-Copy it somewhere safe away from the server (a password manager, paper), then delete the file:
+Copy the line that starts with `SMRK-` somewhere safe away from the server (a password manager, paper), then delete
+the file:
 
 ```bash
 sudo rm keys/RECOVERY-KEY.txt
@@ -184,7 +187,7 @@ Every start logs a warning while that file is still there.
 Make a token for the car (shown once):
 
 ```bash
-docker compose exec sentry-mate /sentry-mate token new --car "Model Y"
+docker exec sentry-mate /sentry-mate token new --car "Model Y"
 ```
 
 It prints the token's id, the token (it starts with `smt_`), and the three fields for the app.
@@ -213,7 +216,7 @@ Then press **Apply & restart** at the top of the app. The app saves the fields o
 - The bridge then sends every log to Sentry Mate as well as to Sentry Six Manager, each on its own.
 - **Upload only on Wi-Fi**, in the app's **Sentry Six Manager (CAN log upload)** section, holds uploads to Sentry
   Mate too.
-- `token new` prints the port inside the container. If you map another host port (for example `"8443:10100"`), use
+- `token new` prints the port inside the container. If you map another host port (for example `"10200:10100"`), use
   the host port.
 - The certificate names only `localhost` unless `SENTRY_MATE_NAMES` was set when it was made, but the app pins the
   SHA-256 and does not check names.
@@ -234,7 +237,7 @@ Check that the bridge reached Sentry Mate. The token's last column changes from 
 car key:
 
 ```bash
-docker compose exec sentry-mate /sentry-mate token list
+docker exec sentry-mate /sentry-mate token list
 ```
 
 The token is tied when the first piece of a log comes in, before it is stored. So this shows that the bridge got
@@ -244,18 +247,60 @@ through with this token, not that a whole log arrived. The logs that arrived are
 sudo ls data/can/<car key>
 ```
 
+### TrueNAS SCALE
+
+On TrueNAS SCALE 24.10 or newer it is a custom app, from [`truenas/sentry-mate.yaml`](truenas/sentry-mate.yaml).
+The install guide's [TrueNAS SCALE](docs/install.md#truenas-scale) part has every step.
+
+- Make two datasets, one for the data and one for the keys (on another pool if you have one, never inside the data
+  one). Give both to the apps user: `sudo chown 568:568` and `sudo chmod 700` on their paths, in *System → Shell*.
+- *Apps → Discover Apps →* the three dots *→ Install via YAML*. Name it `sentry-mate`, paste the file and change
+  the two lines marked `CHANGE` to your datasets' paths.
+- The commands in this README work in *System → Shell* with `sudo` in front, for example
+  `sudo docker exec sentry-mate /sentry-mate token new --car "Model Y"`. The recovery key file is in the keys
+  dataset.
+
+### Updates
+
+Docker Compose, in the folder with `docker-compose.yml`:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+TrueNAS: fetch the new image in *System → Shell*, then *Stop* and *Start* the app (if the version didn't change,
+*Edit* the app and *Save*):
+
+```bash
+sudo docker pull ghcr.io/skittles-fivem/sentry-mate:latest
+```
+
+Every image has a build number. `--version` shows it, for example `sentry-mate 0.1.0 (build-1001, sha-6f83191,
+2026-11-17T19:06:35Z)`, and the log shows the same at every start:
+
+```bash
+docker exec sentry-mate /sentry-mate --version
+```
+
+Each image is also tagged `build-N` and `sha-<commit>`. To stay on a version, pin one of those tags: in a `.env` file
+next to `docker-compose.yml` (`SENTRY_MATE_TAG=build-1001`), or on TrueNAS in the app's `image:` line in place of
+`latest`. More in [Upgrades](#upgrades).
+
 ## Commands
 
-Run them in the running container with `docker compose exec sentry-mate /sentry-mate ...`. `init`, `restore` and
-`log check` use `docker compose run --rm` instead. Exit code 0 means it worked, 1 that it failed, 2 a usage error.
-The reason for a failure is on standard error, except `log check`, which prints it on standard output, and `health`,
-which prints nothing.
+Run them in the running container with `docker exec sentry-mate /sentry-mate ...`. That works from any folder, and
+on TrueNAS in *System → Shell* with `sudo` in front. `init` and `restore` run while Sentry Mate is stopped, with
+`docker compose run --rm` in the folder with `docker-compose.yml` (the TrueNAS restore is in
+[docs/install.md](docs/install.md#restore)). `log check` runs in a container of its own (`docker run --rm`).
+
+Exit code 0 means it worked, 1 that it failed, 2 a usage error. The reason for a failure is on standard error, except
+`log check`, which prints it on standard output, and `health`, which prints nothing.
 
 | Command | What it does |
 |---|---|
 | `serve` | Runs the upload server until stopped (the image's default). Makes the vault on its first start. |
-| `init` | Makes the vault now and prints the recovery key on screen, not into a file. Exit 1 if there is a vault already. |
-| `restore` | Reads the recovery key from standard input and writes a new key file. |
+| `init` | Makes the vault now and prints the recovery key on screen, not into a file. Exit 1 if there is a vault or a key file already. |
+| `restore` | Reads the recovery key from standard input and writes a new key file. Run it with Sentry Mate stopped. |
 | `recovery-key new` | Prints a new recovery key. The old one stops working. |
 | `token new --car NAME` | Makes an upload token (shown once) and prints the three fields for the app. |
 | `token list` | One line per token: id, car name, `in use` or `revoked`, the car key it is tied to. |
@@ -275,13 +320,13 @@ which prints nothing.
 A new token works at once, with no restart. List them:
 
 ```bash
-docker compose exec sentry-mate /sentry-mate token list
+docker exec sentry-mate /sentry-mate token list
 ```
 
 Revoke one by its id:
 
 ```bash
-docker compose exec sentry-mate /sentry-mate token revoke <id>
+docker exec sentry-mate /sentry-mate token revoke <id>
 ```
 
 Revoked tokens stay in the list. No command deletes a token or ties it to another car key.
@@ -289,7 +334,7 @@ Revoked tokens stay in the list. No command deletes a token or ties it to anothe
 ### The certificate
 
 ```bash
-docker compose exec sentry-mate /sentry-mate fingerprint
+docker exec sentry-mate /sentry-mate fingerprint
 ```
 
 ### The chain report
@@ -297,7 +342,7 @@ docker compose exec sentry-mate /sentry-mate fingerprint
 The car key is the last column of `token list`:
 
 ```bash
-docker compose exec sentry-mate /sentry-mate chain <car key>
+docker exec sentry-mate /sentry-mate chain <car key>
 ```
 
 It covers only logs signed by the key the car key is paired with, and names that key first (`signing_key`, as
@@ -311,7 +356,7 @@ The CAN Bridge signs each log with a key kept in the Screenmate. The first signe
 key. A log signed by another key is kept, marked failed, and not used. List the keys a car key's logs name:
 
 ```bash
-docker compose exec sentry-mate /sentry-mate keys <car key>
+docker exec sentry-mate /sentry-mate keys <car key>
 ```
 
 Each key shows as the CAN Bridge app shows it under **Log signing key**, with how many logs it signed, when its
@@ -321,12 +366,13 @@ A new key can be right: the Screenmate's keystore made a new one. It can also be
 upload token. Compare it with **Log signing key** in the app first. Only if they match, trust it:
 
 ```bash
-docker compose exec sentry-mate /sentry-mate keys trust <car key> <signing key>
+docker exec -it sentry-mate /sentry-mate keys trust <car key> <signing key>
 ```
 
-It shows what will change and asks you to type `yes` (`--yes` skips that). Then the logs that key signed are used,
-and so are its later logs. The key trusted before stays trusted for the logs that came before; its later logs fail.
-It works with Sentry Mate running. Only a key that signed at least one of the car key's logs can be trusted.
+It shows what will change and asks you to type `yes` (`-it` lets you answer; `--yes` skips the question). Then the
+logs that key signed are used, and so are its later logs. The key trusted before stays trusted for the logs that came
+before; its later logs fail. It works with Sentry Mate running. Only a key that signed at least one of the car key's
+logs can be trusted.
 
 ### Logs
 
@@ -340,11 +386,12 @@ sudo ls data/can
 sudo ls data/can/<car key>
 ```
 
-A log is named `<car key>_<UTC start, yyyyMMddTHHmmssZ>_<seq>.log.xz`, and its sidecar the same plus `.json`. Use
-`-T` when you send output to a file, so no terminal changes the bytes.
+On TrueNAS, use your data dataset's path in place of `data`. A log is named
+`<car key>_<UTC start, yyyyMMddTHHmmssZ>_<seq>.log.xz`, and its sidecar the same plus `.json`. Don't add `-t` or
+`-it` when you send output to a file: a terminal would change the bytes.
 
-Write what you export to a folder outside the clone. Files you put in the clone go into Docker's build cache at the
-next build, and exported logs hold the car's GPS position:
+What you export is not sealed, and logs hold the car's GPS position. Write it to a folder of your own, not into the
+data or keys folder:
 
 ```bash
 mkdir -p ~/sentry-mate-logs
@@ -353,19 +400,19 @@ mkdir -p ~/sentry-mate-logs
 A stored log, exactly as uploaded:
 
 ```bash
-docker compose exec -T sentry-mate /sentry-mate log export <log name> > ~/sentry-mate-logs/<log name>
+docker exec sentry-mate /sentry-mate log export <log name> > ~/sentry-mate-logs/<log name>
 ```
 
 Its sidecar:
 
 ```bash
-docker compose exec -T sentry-mate /sentry-mate log export <log name>.json > ~/sentry-mate-logs/<log name>.json
+docker exec sentry-mate /sentry-mate log export <log name>.json > ~/sentry-mate-logs/<log name>.json
 ```
 
 Its decoded signals:
 
 ```bash
-docker compose exec -T sentry-mate /sentry-mate log decode <log name> > ~/sentry-mate-logs/signals.csv
+docker exec sentry-mate /sentry-mate log decode <log name> > ~/sentry-mate-logs/signals.csv
 ```
 
 The CSV columns are `timestamp_utc,signal,value,unit,value_name`, with a row each time a value changes.
@@ -379,19 +426,19 @@ set it used.
   [Supported cars](#supported-cars)).
 
 `log candump` and `log check` read plain files, not the sealed store, and the container sees only `/data` and
-`/keys`. Give `log candump` the file on standard input:
+`/keys`. Give `log candump` the file on standard input (`-i` passes it on):
 
 ```bash
-docker compose exec -T sentry-mate /sentry-mate log candump /dev/stdin < ~/sentry-mate-logs/<log name> > ~/sentry-mate-logs/<log name>.txt
+docker exec -i sentry-mate /sentry-mate log candump /dev/stdin < ~/sentry-mate-logs/<log name> > ~/sentry-mate-logs/<log name>.txt
 ```
 
 It writes a summary on standard error: the format, the lines, and how many long lines it skipped.
 
 `log check` needs the file under its CAN Bridge name, with its sidecar next to it (or named as the second
-argument). Mount the folder that holds them:
+argument). Mount the folder that holds them into a container of its own (it needs no data or keys):
 
 ```bash
-docker compose run --rm -v ~/sentry-mate-logs:/check:ro sentry-mate log check /check/<log name>
+docker run --rm -v ~/sentry-mate-logs:/check:ro ghcr.io/skittles-fivem/sentry-mate log check /check/<log name>
 ```
 
 It prints `signed and intact: key <fingerprint>, chain index <n>`, `not signed`, or `failed: <reason>` (exit 1). A
@@ -400,25 +447,36 @@ missing sidecar gives only `No such file or directory`.
 ### The vault
 
 Make the vault before the first start, with the recovery key shown on screen instead of written to a file. Only for
-an empty data folder: it writes a new key file too.
+an empty data folder and an empty keys folder: it writes a new key file too. In the folder with `docker-compose.yml`:
 
 ```bash
 docker compose run --rm sentry-mate init
 ```
 
 New machine, or the key file lost: bring the data folder, then type the recovery key. It shows on screen as you
-type. Dashes, spaces and case don't matter.
+type. Dashes, spaces and case don't matter. Stop Sentry Mate first:
+
+```bash
+docker compose stop
+```
 
 ```bash
 docker compose run --rm -it sentry-mate restore
 ```
 
-After a restore, older copies of the key file no longer open the data folder. Keep only the new one.
+Then start it again:
+
+```bash
+docker compose up -d
+```
+
+It answers `Restored: a new key file is in /keys.` After a restore, older copies of the key file no longer open the
+data folder. Keep only the new one. On TrueNAS, see [Restore](docs/install.md#restore) in the install guide.
 
 Replace the recovery key (the old one stops working):
 
 ```bash
-docker compose exec sentry-mate /sentry-mate recovery-key new
+docker exec sentry-mate /sentry-mate recovery-key new
 ```
 
 It prints the new key on screen. It does not touch `keys/RECOVERY-KEY.txt`: if that file is still there, it holds
@@ -426,15 +484,16 @@ the old key, which no longer works. Delete it.
 
 ### Health
 
-`docker compose ps` shows `healthy` once the upload port answers:
+`docker ps` shows `(healthy)` once the upload port answers, and `Restarting` while it keeps stopping:
 
 ```bash
-docker compose ps
+docker ps
 ```
 
 ## Settings
 
-Each is an environment variable (under `environment:` in `docker-compose.yml`) or a flag.
+Each is an environment variable (under `environment:` in `docker-compose.yml`: turn on the OPTIONAL lines there) or
+a flag. The compose and TrueNAS files need none of them.
 
 | Variable | Flag | Default | What it is |
 |---|---|---|---|
@@ -443,13 +502,13 @@ Each is an environment variable (under `environment:` in `docker-compose.yml`) o
 | `SENTRY_MATE_UPLOAD_PORT` | `--upload-port` | `10100` | The upload port. Also the port `token new` prints and `health` checks. Change the port mapping with it. |
 | `SENTRY_MATE_BIND` | `--bind` (`serve`) | `0.0.0.0` | The address to listen on. `health` connects to 127.0.0.1, so in Docker keep the default: another address makes the container unhealthy. |
 | `SENTRY_MATE_NAMES` | `--names` (`serve`) | none | Names or addresses for the certificate, comma separated. Used only when the certificate is made. |
-| `SENTRY_MATE_REQUIRE_MOUNTS` | | not set (`1` in the image) | When set (not `0`): every command that uses the data and keys folders first checks, in `/proc/self/mountinfo`, that each is a mount of its own, and stops with the volume line to add if not. |
+| `SENTRY_MATE_REQUIRE_MOUNTS` | | not set (`1` in the image) | When set to anything but `0`, `false`, `no` or `off`: every command that uses the data and keys folders first checks, in `/proc/self/mountinfo`, that each is a mount of its own, and stops with the volume line to add if not. |
 | `RUST_LOG` | | `info` | How much to log, for example `debug`. The log goes to standard error. |
 
 The image sets `SENTRY_MATE_DATA`, `SENTRY_MATE_KEYS` and `SENTRY_MATE_REQUIRE_MOUNTS`, and has no `VOLUME`: a
 folder left out of the compose file stops it at once instead of going into an anonymous volume. The certificate is
-normally made by the first `serve`; `token new` and `fingerprint` make it without names if it isn't there yet. `TZ`
-in the compose file is not used by the program yet.
+normally made by the first `serve`; `token new` and `fingerprint` make it without names if it isn't there yet. Times
+in the log are UTC: it does not read `TZ`.
 
 ## Ports and files
 
@@ -496,18 +555,18 @@ The keys folder:
 
 | Path | What |
 |---|---|
-| `sentry-mate.key` | 32 random bytes that open the vault, readable only by uid 1000. |
+| `sentry-mate.key` | 32 random bytes that open the vault, readable only by the user it runs as (1000, or 568 on TrueNAS). |
 | `RECOVERY-KEY.txt` | The recovery key, written on the first start only. Delete it once copied. |
 
 A running server keeps the certificate it started with. To change it, stop the container first and start it again
-after:
+after (TrueNAS: *Stop* and *Start* the app):
 
 ```bash
 docker compose stop
 ```
 
-- Your own certificate: put `cert.pem` and `key.pem` in `data/tls/`, readable by uid 1000. On the next start the key
-  is sealed into `key.sealed`, and `key.pem` is overwritten and removed.
+- Your own certificate: put `cert.pem` and `key.pem` in `data/tls/`, readable by the user it runs as. On the next
+  start the key is sealed into `key.sealed`, and `key.pem` is overwritten and removed.
 - A new self-signed one: delete `data/tls/cert.pem`. The next start makes a new one with `SENTRY_MATE_NAMES`.
 
 ```bash
@@ -519,12 +578,20 @@ Then `fingerprint` shows the SHA-256 the app needs. Don't delete `cert.pem` whil
 
 ## Backups, upgrades, moving
 
-### Don't start it on an empty data folder
+### A folder that is missing, empty or wrong
 
-When `serve` or `init` finds no `vault.json` in the data folder, it makes a new vault and **replaces
-`keys/sentry-mate.key` without asking**. A wrong path or a missing data mount does this: the image declares `/data`
-a volume, so Docker then gives it an empty one. The real data then opens only with the recovery key. The log shows
-`new vault made` and a new vault id. If it happens, stop the container, fix the mount, and run `restore`.
+The data and keys folders must each be mounted from the server. Sentry Mate checks that before it writes anything:
+
+- A volume line left out of the compose file stops it at once, and the log gives the line to add. The image has no
+  `VOLUME`, so nothing goes into a folder that would be lost with the container.
+- A keys folder inside the data folder on the server, or the same folder at both, is refused: the key file would be
+  in every backup of the data.
+- A data folder with no vault next to a keys folder with a key file (a wrong path, a disk that isn't there, a backup
+  not put back) stops it. It never makes a new vault over a key file, which may open your data. Fix the path, or put
+  the data back. To start over with no data on purpose, delete the key file.
+
+It makes a new vault only when there is neither a vault nor a key file, as on the first start. The install guide's
+[When it does not start](docs/install.md#when-it-does-not-start) lists each message and what to do.
 
 ### Backups
 
@@ -548,26 +615,25 @@ docker compose start
   whole can move.
 - A backup made before `recovery-key new` still opens with the old recovery key.
 - Stopping drops the chunk being sent at that moment. What had arrived is kept, and the bridge carries on from there.
+- On TrueNAS, give the data dataset a periodic snapshot task instead, and leave the keys dataset out of it
+  ([Backups](docs/install.md#backups) in the install guide).
 
 ### Upgrades
 
 Make a backup first (see [Backups](#backups)). Going back to an older version needs one from before the upgrade
-(see [Security](#security), "No way back without a backup").
+(see [Security](#security), "No way back without a backup"). Then, in the folder with `docker-compose.yml`:
 
 ```bash
-git pull
+docker compose pull && docker compose up -d
 ```
 
-```bash
-docker compose up -d --build
-```
+On TrueNAS, `sudo docker pull ghcr.io/skittles-fivem/sentry-mate:latest` in *System → Shell*, then *Stop* and
+*Start* the app (see [Updates](#updates) for staying on one build).
 
 - A start after a version that stored files in the clear seals them once. Unfinished uploads stored in the clear are
   dropped; the bridge sends them again.
-- `.dockerignore` does not leave out `keys/` yet. A rebuild sends the key file, and `RECOVERY-KEY.txt` if it is still
-  there, into Docker's build cache on this server, and anything else you put in the clone (exported logs,
-  `signals.csv`). They don't reach the image. To avoid that, keep the keys folder outside the clone and change the
-  `./keys` line in `docker-compose.yml`, and export logs outside the clone (see [Logs](#logs)).
+- Built from a clone instead (the OPTIONAL `build: .` line): `git pull`, then `docker compose up -d --build`. The
+  build leaves out `data/`, `keys/` and `.env` (`.dockerignore`).
 
 ### Moving to a new server
 
@@ -577,9 +643,10 @@ Stop it on the old server:
 docker compose down
 ```
 
-On the new server, clone the repo and copy the data folder in, owned by uid 1000. Put it in place **before** the
-first start there (see above). Bring the keys folder too, or make an empty one owned by uid 1000 and type the
-recovery key:
+On the new server, get the compose file and make the two folders (see [Run it](#run-it)). Copy the data folder in,
+owned by the user it runs as (`sudo chown -R 1000:1000 data`; TrueNAS: 568). Put it in place **before** the first
+start there (see [A folder that is missing, empty or wrong](#a-folder-that-is-missing-empty-or-wrong)). Bring the
+keys folder too, the same way, or leave it empty and type the recovery key:
 
 ```bash
 docker compose run --rm -it sentry-mate restore
@@ -588,11 +655,14 @@ docker compose run --rm -it sentry-mate restore
 Then start it:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
-The certificate moves with the data folder, so the app's SHA-256 stays the same. If the server's address changed,
-change the app's upload address and press **Apply & restart**.
+The certificate and the tokens move with the data folder, so the app's token and SHA-256 stay the same. If the
+server's address changed, change the app's upload address and press **Apply & restart**. Every step, TrueNAS
+included, is in the install guide's [Moving to a new server](docs/install.md#moving-to-a-new-server).
+
+A one-step move (a move code, or an export file) is being built.
 
 ## When a log fails its check or comes from a new key
 
@@ -661,7 +731,15 @@ key's newest logs), else `tesla-3y`. `--model` picks one by hand. The DBC files 
   opens them to add to, from its first start. Older versions can't open that format, so once it has run on a data
   folder, going back to an older image needs a backup of the data folder made before the upgrade.
 - Pure Rust where it matters (`unsafe` forbidden in this code, the xz reader included); files from the network are
-  read with fixed limits. The image is one static binary on `scratch`, run as a normal user.
+  read with fixed limits. The image is one static binary on `scratch`.
+- **The container.** The image runs as 1000:1000; the TrueNAS file runs it as TrueNAS's apps user, 568:568. The
+  compose and TrueNAS files drop every capability, make the root read-only and set `no-new-privileges`, so it can
+  write only to its two mounted folders.
+- **Folders it can't keep are refused**, before anything is written: a data or keys folder that is not mounted (it
+  would be lost with the container, the key file with it), a keys folder inside the data folder or the same folder
+  at both (the key file would be in the data's backups), and a folder it can't write to (most often root's).
+- **A new vault is never made over an existing key file.** An empty or wrong data folder next to a key file stops it
+  instead, so the key file that opens your data is never replaced.
 - Nothing leaves the server: while it runs, Sentry Mate makes no outgoing connections.
 
 ## Privacy
@@ -705,14 +783,16 @@ From the plan's phases and progress:
 3. A web server for the UI packs and `/api/v1`, and the packs moved off their made-up data. Desktop first, phone
    layouts later.
 4. Accounts, places, MQTT and the TeslaMate import in the program.
-5. First release: published images, the docs, a licence and the final name.
+5. First release: the docs, a licence and the final name.
 
 Open questions: two battery % signals disagree (0x33A and 0x292) and need checking against the car's screen. A
 firmware-version signal for software updates is still to be found.
 
 ## Development
 
-CI runs these on every push to `main`:
+CI is [`.github/workflows/image.yml`](.github/workflows/image.yml). It runs on a push to `main` that changes code (a
+push that changes only `README.md`, `docs/` or `truenas/` runs nothing), and by hand (*Actions → Image → Run
+workflow*). First the gates, once:
 
 ```bash
 cargo fmt --all --check
@@ -726,16 +806,46 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
+At the same time it builds the image for amd64 and arm64, each on a machine of its kind. It checks each one with
+[`.github/check-image.sh`](.github/check-image.sh), as 1000:1000 and as TrueNAS's 568:568: folders it can't keep
+are refused (root's, not mounted, the keys inside the data, the same folder at both), no capabilities, a read-only
+root, healthy, TLS 1.3 only, the recovery key file, a token made with `docker exec`, a clean stop, and the same
+certificate after a restart. Only when all of that passed does it publish both as one image,
+`ghcr.io/skittles-fivem/sentry-mate`, tagged `latest`, `build-N` (the workflow's run number) and `sha-<commit>`.
+`latest` is tagged last. A run by hand for another branch gets the branch's name as its tag, never `latest` or a
+`build-N`.
+
+Check an image you built yourself the same way. The check needs docker, curl and openssl, and sudo when not run as
+root. It uses port 10100 on 127.0.0.1 (`CHECK_PORT` picks another, for a server that runs Sentry Mate already):
+
 ```bash
-docker build -t sentry-mate:ci .
+docker build -t sentry-mate:check .
 ```
 
 ```bash
-docker run --rm sentry-mate:ci --version
+.github/check-image.sh sentry-mate:check
 ```
 
-CI publishes nothing. Rust 1.88 or newer (the locked `time` crate, used by rcgen, needs 1.88), edition 2024.
-`unsafe` is forbidden in every crate here, and clippy denies `unwrap`.
+```bash
+.github/check-image.sh sentry-mate:check 568
+```
+
+A local build shows no build number in `--version`. To run your own build instead of the published one, turn on the
+OPTIONAL `build: .` line in `docker-compose.yml` (in a clone) and start it with `docker compose up -d --build`. A
+later `docker compose pull` puts the published image back.
+
+Rust 1.88 or newer (`rust-version`: the locked `time` and `sha2` crates need 1.88), edition 2024. `unsafe` is
+forbidden in every crate here, and clippy denies `unwrap`.
+
+### After the first publish (the repo owner, once)
+
+GitHub makes a new package private. Until it is public, every pull fails with `denied`, on Docker Compose and on
+TrueNAS. Make it public once: on GitHub, *Packages → sentry-mate → Package settings → Change visibility →
+Public*. Then check that it pulls without a login:
+
+```bash
+docker pull ghcr.io/skittles-fivem/sentry-mate:latest
+```
 
 The aim is pure Rust. Today only `ring` (used by rustls and rcgen for TLS) builds C code. Check that nothing else
 does:
@@ -768,7 +878,9 @@ cargo tree -e normal,build -i cc --depth 1
 | `docs/parity/`, `docs/ui-api.md` | The UI plan and the API it needs |
 | `ui/packs/` | The UI packs |
 | `Dockerfile`, `docker-compose.yml` | The image and how to run it |
-| `.github/workflows/ci.yml` | CI |
+| `truenas/sentry-mate.yaml` | The TrueNAS SCALE app |
+| `docs/install.md` | The install guide |
+| `.github/workflows/image.yml`, `.github/check-image.sh` | CI: the gates, the image, its check, publishing |
 
 ## Licence
 
