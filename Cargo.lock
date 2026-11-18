@@ -2161,6 +2161,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "web"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "crc32fast",
+ "flate2",
+ "futures-core",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "ingest",
+ "model",
+ "percent-encoding",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tower",
+ "tracing",
+ "vault",
+ "web",
+ "zeroize",
+]
+
+[[package]]
 name = "webpki-roots"
 version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

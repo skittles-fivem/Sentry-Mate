@@ -1,0 +1,49 @@
+[package]
+name = "web"
+description = "Sentry Mate's web side: the HTTPS server for the UI packs and the /api/v1 JSON API (sign-in, accounts, roles, the live stream)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+accounts = { path = "../accounts" }
+model = { path = "../model" }
+vault = { path = "../vault" }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
+base64 = "0.22"
+bytes = "1"
+crc32fast = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+futures-core = "0.3"
+getrandom = { version = "0.3", features = ["std"] }
+hex = "0.4"
+hmac = "0.12"
+http = "1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
+percent-encoding = "2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+zeroize = "1"
+ingest = { path = "../ingest", optional = true }
+tempfile = { version = "3", optional = true }
+
+[dev-dependencies]
+# its own test server (web::testkit) in the tests here
+web = { path = ".", features = ["testkit"] }
+http-body-util = "0.1"
+tempfile = "3"
+
+[features]
+# web::testkit: a real TLS server on a temporary folder, for tests of the resource modules (and their callers)
+testkit = ["dep:ingest", "dep:tempfile"]
