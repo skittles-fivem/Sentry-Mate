@@ -311,12 +311,15 @@ def _pinfo(p):
 def effect(req, old_places, new_places, focus):
     """What changes between two place sets, for the history near the edited place.
 
-    Returns ({drives_named, drives_unnamed, charges_named, charges_unnamed, charges_repriced, examples},
-    the charge pieces whose place or price changes, to freeze their costs before saving).
-    `charges_repriced` counts the past charges a reprice after saving would change."""
+    Returns ({drives_named, drives_unnamed, charges_named, charges_unnamed, drives_taken, charges_taken,
+    taken_from, charges_repriced, examples}, the charge pieces whose place or price changes, to freeze
+    their costs before saving). `charges_repriced` counts the past charges a reprice after saving would
+    change. `drives_taken` and `charges_taken` count what moves from another place to the edited one
+    (also part of the named counts); `taken_from` names those places, most taken first."""
     circles = [(p["lat"], p["lon"], p["radius_m"]) for p in focus if p]
     focus_ids = {p["id"] for p in focus if p}
     named, unnamed, c_named, c_unnamed, repriced = set(), set(), set(), set(), set()
+    taken = {}  # other place id -> {"place": {id, name}, "drives": set, "charges": set}
     affected, examples, example_rows = [], [], []
     st = req.store
 
@@ -332,6 +335,9 @@ def effect(req, old_places, new_places, focus):
         after = placing.match_in(new_places, la, lo)
         bid, aid = (before or {}).get("id"), (after or {}).get("id")
         moved = bid != aid
+        if moved and bid is not None and bid not in focus_ids and aid in focus_ids:
+            t = taken.setdefault(bid, {"place": {"id": bid, "name": before["name"]}, "drives": set(), "charges": set()})
+            t["drives" if kind == "drive" else "charges"].add(rid)
         if kind == "drive":
             if moved:
                 if aid in focus_ids:
@@ -360,8 +366,13 @@ def effect(req, old_places, new_places, focus):
                 repriced.add(rid)
                 if not moved:
                     note("charge", rid, piece, h, "repriced")
+    taken_from = sorted(({"place": t["place"], "drives": len(t["drives"]), "charges": len(t["charges"])}
+                         for t in taken.values()), key=lambda x: (-(x["drives"] + x["charges"]), x["place"]["id"]))
     return {"drives_named": len(named), "drives_unnamed": len(unnamed), "charges_named": len(c_named),
-            "charges_unnamed": len(c_unnamed), "charges_repriced": len(repriced), "examples": examples,
+            "charges_unnamed": len(c_unnamed),
+            "drives_taken": len(set().union(*(t["drives"] for t in taken.values()))),
+            "charges_taken": len(set().union(*(t["charges"] for t in taken.values()))),
+            "taken_from": taken_from, "charges_repriced": len(repriced), "examples": examples,
             "example_rows": example_rows}, affected
 
 

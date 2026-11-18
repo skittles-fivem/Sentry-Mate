@@ -176,3 +176,30 @@ class PlacesWrite(ServerCase):
         self.assertIn("p1", ids)
         self.assertNotIn("p30", ids)
         w.error("GET", "/api/v1/places/p30", 404, "no_such_place")
+
+    def test_6_preview_matches_what_create_does(self):
+        # A new place at Costco's centre (p5) ties with Costco everywhere: the older place wins a tie,
+        # so the preview must promise no relabel, and create must then count the same.
+        costco = self.c.get("/api/v1/places/p5")
+        at = {"lat": costco["lat"], "lon": costco["lon"]}
+        prev = self.c.json("POST", "/api/v1/places/preview", dict(at, name="Tie", radius_m=costco["radius_m"]))
+        self.assertEqual((prev["drives_named"], prev["charges_named"], prev["drives_taken"]), (0, 0, 0))
+        d = self.c.json("POST", "/api/v1/places", dict(at, name="Tie", kind="other", radius_m=costco["radius_m"]),
+                        expect=201)
+        self.assertEqual(d["effect"]["drives_named"], prev["drives_named"])
+        self.assertEqual(self.c.get(f"/api/v1/places/{d['id']}")["counts"]["drives"], 0)
+        self.assertEqual(self.c.get("/api/v1/places/p5")["counts"]["drives"], costco["counts"]["drives"])
+        self.c.json("DELETE", f"/api/v1/places/{d['id']}")
+        # An older place moved onto Costco's centre wins the tie and takes Costco's stops: the preview says
+        # how many it takes from Costco, and the change does exactly that.
+        p2 = self.c.get("/api/v1/places/p2")
+        prev = self.c.json("POST", "/api/v1/places/preview", dict(at, id="p2"))
+        self.assertGreater(prev["drives_taken"], 0)
+        self.assertEqual(prev["taken_from"][0]["place"], {"id": "p5", "name": costco["name"]})
+        self.assertEqual(prev["taken_from"][0]["drives"], prev["drives_taken"])
+        d = self.c.json("PATCH", "/api/v1/places/p2", dict(at, version=p2["version"]))
+        self.assertEqual(d["effect"]["drives_taken"], prev["drives_taken"])
+        self.assertEqual(self.c.get("/api/v1/places/p5")["counts"]["drives"],
+                         costco["counts"]["drives"] - prev["drives_taken"])
+        self.c.json("PATCH", "/api/v1/places/p2", {"lat": p2["lat"], "lon": p2["lon"], "version": d["version"]})
+        self.assertEqual(self.c.get("/api/v1/places/p5")["counts"]["drives"], costco["counts"]["drives"])

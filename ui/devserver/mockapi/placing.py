@@ -41,10 +41,12 @@ def place_obj(app, pid):
 
 
 def _num(pid):
+    """The place number of an id ('p12' -> 12). A draft without a saved id (a preview of a new place)
+    counts as newer than every saved place, so it loses ties the way the place will once saved."""
     try:
         return int(pid[1:])
-    except ValueError:
-        return 0
+    except (TypeError, ValueError):
+        return float("inf")
 
 
 def match_in(places, lat, lon):

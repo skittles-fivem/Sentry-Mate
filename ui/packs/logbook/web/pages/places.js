@@ -55,6 +55,18 @@ const num = (v) => { if (v == null) return null; const s = String(v).trim().repl
 const plural = (n, one, many = `${one}s`) => `${format(n, 'count')} ${n === 1 ? one : many}`;
 const sepEl = () => h('span', { class: 'crumb-sep', 'aria-hidden': 'true' }, '/');
 const clone = (x) => (x == null ? x : JSON.parse(JSON.stringify(x)));
+// Carried from one mount of the editor to the next: the unsaved draft over a change of units, and
+// the place whose price was just saved (its reprice section then starts with every charge in view).
+let carriedDraft = null;
+let repriceNext = null;
+
+/** 'Fourth St, Berkeley': the short address, with the town only when the short one does not name it already. */
+function addressLine(a) {
+  if (!a) return '';
+  const s = (a.short || '').trim(), l = (a.locality || '').trim();
+  if (!s) return l;
+  return l && !s.toLowerCase().includes(l.toLowerCase()) ? `${s}, ${l}` : s;
+}
 
 /** Distance in metres over the earth's surface. */
 function metres(lat1, lon1, lat2, lon2) {
@@ -174,7 +186,7 @@ async function mountList(ctx) {
     const bits = [];
     if (c.drives) bits.push(firstCar && cars.length === 1
       ? h('a', { href: state.buildUrl('drives', { car: firstCar.id, query: { places: p.id, place_side: 'any' } }), title: `Drives of ${firstCar.name} that start or end here` }, plural(c.drives, 'drive'))
-      : h('span', null, plural(c.drives, 'drive')));
+      : h('a', { href: `${editUrl(p.id)}#pl-used`, title: 'Drives here, car by car' }, plural(c.drives, 'drive')));
     if (c.charges) bits.push(h('a', { href: state.buildUrl('charges', { query: { cars: 'all', places: p.id } }), title: 'Charges of every car at this place' }, plural(c.charges, 'charge')));
     if (!bits.length) return h('span', { class: 'cell-sub' }, c.visits ? plural(c.visits, 'stop') : 'Not used yet');
     return h('span', { class: 'pl-use' }, bits.flatMap((b, i) => (i ? [h('span', { class: 'pl-dot', 'aria-hidden': 'true' }, ' · '), b] : [b])), c.visits ? h('span', { class: 'cell-sub' }, plural(c.visits, 'stop')) : null);
@@ -190,7 +202,7 @@ async function mountList(ctx) {
       { key: 'name', label: 'Name', sort: 'name', firstDir: 'asc', th: true, cover: 'web.geofences.list.col-name',
         cell: (p) => h('div', { class: 'pl-name-cell' },
           h('a', { class: 'cell-main pl-name', href: editUrl(p.id), title: p.name }, p.name),
-          h('span', { class: 'cell-sub' }, [p.address && p.address.short, p.address && p.address.locality].filter((x, i, a) => x && a.indexOf(x) === i).join(', ') || 'No address')),
+          h('span', { class: 'cell-sub' }, addressLine(p.address) || 'No address')),
         value: (p) => p.name },
       { key: 'kind', label: 'Kind', cell: (p) => h('span', { class: ['pl-kind', `pl-kind-${p.kind}`] }, KIND_NAME[p.kind] || p.kind) },
       { key: 'position', label: 'Centre (lat, lon)', cover: 'web.geofences.list.col-position',
@@ -234,7 +246,7 @@ async function mountList(ctx) {
         { key: 'act', label: '', cls: 'pl-actions', cell: (r) => (admin ? h('a', { class: 'button button-quiet button-small', href: newUrl(r.lat, r.lon) }, 'Name this place', icon('arrowRight')) : null) },
       ],
       sort: { key: 'visits', dir: 'desc' },
-      empty: () => empty({ title: 'Every frequent stop already has a name.', text: 'Stops outside all saved places show up here once a car has parked at the same spot more than once.' }),
+      empty: () => empty({ title: 'Every frequent stop already has a name.', text: 'Any stop outside all saved places shows up here, with how often and how long the cars parked there.' }),
     });
     replace(suggBox, t.el);
     t.load();
@@ -319,7 +331,12 @@ async function mountEditor(ctx) {
     }
   }
   const saved = cur ? { name: cur.name, kind: cur.kind, lat: cur.lat, lon: cur.lon, radius_m: cur.radius_m, price: clone(cur.price) } : null;
-  const d = saved ? clone(saved) : { name: '', kind: 'other', lat: start.lat, lon: start.lon, radius_m: RADIUS_NEW, price: null };
+  const fresh = saved ? clone(saved) : { name: '', kind: 'other', lat: start.lat, lon: start.lon, radius_m: RADIUS_NEW, price: null };
+  // A change of units mounts the page again: the unsaved draft comes back as it was (only the shown units change).
+  const draftKey = `${pid || ''}|${ctx.query.new || ''}|${cur ? cur.version : ''}`;
+  const kept = carriedDraft && carriedDraft.key === draftKey ? carriedDraft : null;
+  carriedDraft = null;
+  const d = kept ? kept.d : fresh;
   const others = places.filter((p) => !cur || p.id !== cur.id);
   const nearest = (lat, lon) => (lat == null ? null : others.reduce((best, p) => { const m = metres(lat, lon, p.lat, p.lon); return !best || m < best.m ? { p, m } : best; }, null));
   const zoneOf = () => (cur ? cur.time_zone : (nearest(d.lat, d.lon) || {}).p?.time_zone || ctx.tz);
@@ -327,7 +344,7 @@ async function mountEditor(ctx) {
   let dirty = false;
   const priceDraft = () => d.price || { currency: (nearestPrice() || {}).currency || 'USD', per_kwh: null, per_minute: null, rates: [], session_fee: null };
   function nearestPrice() { const n = others.filter((p) => p.price).sort((a, b) => metres(d.lat ?? 0, d.lon ?? 0, a.lat, a.lon) - metres(d.lat ?? 0, d.lon ?? 0, b.lat, b.lon))[0]; return n && n.price; }
-  let lastPrice = d.price ? clone(d.price) : null; // what the price switch brings back
+  let lastPrice = kept ? kept.lastPrice : d.price ? clone(d.price) : null; // what the price switch brings back
 
   const setTitleText = () => {
     const n = d.name.trim();
@@ -341,7 +358,7 @@ async function mountEditor(ctx) {
   const head = pageHead({
     eyebrow: crumbs,
     title: titleEl,
-    deck: cur ? [KIND_NAME[cur.kind] || cur.kind, ' · ', [cur.address && cur.address.short, cur.address && cur.address.locality].filter(Boolean).join(', ') || coordsText([cur.lon, cur.lat])] : 'A new place: give it a name, move the circle where it belongs, and save.',
+    deck: cur ? [KIND_NAME[cur.kind] || cur.kind, ' · ', addressLine(cur.address) || coordsText([cur.lon, cur.lat])] : 'A new place: give it a name, move the circle where it belongs, and save.',
     aside: h('div', { class: 'pl-head-aside' }, backTop, status),
   });
   setTitleText();
@@ -376,7 +393,7 @@ async function mountEditor(ctx) {
     onchange: (on) => { if (on) d.price = lastPrice ? clone(lastPrice) : priceDraft(); else { lastPrice = clone(d.price); d.price = null; } touched(); drawPrice(); },
   });
   if (!editable) priceSwitch.input.disabled = true;
-  let billing = d.price && d.price.per_minute != null && d.price.per_kwh == null ? 'minute' : d.price && d.price.per_minute != null ? 'both' : 'kwh';
+  let billing = kept ? kept.billing : d.price && d.price.per_minute != null && d.price.per_kwh == null ? 'minute' : d.price && d.price.per_minute != null ? 'both' : 'kwh';
   const priceFields = new Map(); // path -> field element
 
   function moneyField(label, path, value, hint, attrs = {}) {
@@ -422,7 +439,9 @@ async function mountEditor(ctx) {
     function rateRow(r, i) {
       const base = `price.rates.${i}`;
       const fN = field({ label: 'Rate', name: `${base}.name`, value: r.name, attrs: { maxlength: 40, ...ro } });
-      const opts = DAY_SETS.some(([v]) => v === r.days) ? DAY_SETS : [[r.days, r.days === 'mon-sun' ? 'Every day' : r.days], ...DAY_SETS];
+      // Another spelling of a preset ('mon-sun' for 'all') takes the preset's place, so no two options read the same.
+      const same = DAY_SETS.find(([v]) => v === r.days) ? null : DAY_SETS.find(([v]) => DAY_KEYS.every((_, k) => daysInclude(v, k) === daysInclude(r.days, k)));
+      const opts = same ? DAY_SETS.map((o) => (o === same ? [r.days, same[1]] : o)) : DAY_SETS.some(([v]) => v === r.days) ? DAY_SETS : [[r.days, r.days], ...DAY_SETS];
       const fD = field({ label: 'Days', name: `${base}.days`, type: 'select', value: r.days, options: opts, attrs: ro });
       const fF = field({ label: 'From', name: `${base}.from`, value: r.from, attrs: { maxlength: 5, placeholder: '00:00', inputmode: 'numeric', ...ro }, cls: 'pl-hm' });
       const fT = field({ label: 'Until', name: `${base}.to`, value: r.to, attrs: { maxlength: 5, placeholder: '24:00', inputmode: 'numeric', ...ro }, cls: 'pl-hm' });
@@ -572,10 +591,16 @@ async function mountEditor(ctx) {
       near.length
         ? h('ul', { class: 'pl-overlaps' }, near.map(({ p, dist }) => {
           const inside = dist <= d.radius_m || dist <= p.radius_m;
+          // Same centre: every shared point is a tie, and the older place wins each one.
+          const older = !cur || Number(String(p.id).slice(1)) < Number(String(cur.id).slice(1)) ? p.name : name;
+          const Name = name.charAt(0).toUpperCase() + name.slice(1);
+          const rule = dist < 0.5
+            ? `Both circles have the same centre, so every point they share is a tie and ${older}, the older place, keeps them all. ${older === p.name ? `${Name} gets only the points outside ${p.name}’s circle.` : `${p.name} keeps only the points outside this circle.`} Move the centre to split them.`
+            : `Where both circles reach, points nearer the centre of ${p.name} go to ${p.name}, the others to ${name}; the line between is halfway, ${format(dist / 2, 'length')} from each centre.${inside ? ' One centre lies inside the other circle.' : ''}`;
           return h('li', null,
             h('a', { href: editUrl(p.id), class: 'pl-overlap-name' }, p.name),
             h('span', { class: 'cell-sub' }, `${KIND_NAME[p.kind] || p.kind}, centre ${format(dist, 'length')} away, radius ${format(p.radius_m, 'length')}`),
-            h('span', { class: 'pl-overlap-rule' }, `Where both circles reach, points nearer the centre of ${p.name} go to ${p.name}, the others to ${name}; the line between is halfway, ${format(dist / 2, 'length')} from each centre.${inside ? ' One centre lies inside the other circle.' : ''}`));
+            h('span', { class: 'pl-overlap-rule' }, rule));
         }))
         : h('p', { class: 'pl-none' }, icon('check'), `No other saved place overlaps this circle: every point inside it goes to ${name}.`));
   }
@@ -606,17 +631,37 @@ async function mountEditor(ctx) {
       return;
     }
     const nm = d.name.trim() || (cur ? cur.name : 'the new place');
-    const none = !e.drives_named && !e.drives_unnamed && !e.charges_named && !e.charges_unnamed;
+    // A new name: every drive and charge that stays at the place shows it. /places/preview counts only
+    // what moves between places, so the relabel itself comes from the place's own counts.
+    const renamed = !!cur && !!d.name.trim() && d.name.trim() !== cur.name;
+    const stay = renamed ? { drives: Math.max(0, (cur.counts.drives || 0) - (e.drives_unnamed || 0)), charges: Math.max(0, (cur.counts.charges || 0) - (e.charges_unnamed || 0)) } : null;
+    const moves = e.drives_named + e.drives_unnamed + e.charges_named + e.charges_unnamed;
+    const taken = e.taken_from || [];
+    const both = (dr, ch) => `${plural(dr, 'drive')} and ${plural(ch, 'charge')}`;
+    const lines = [];
+    if (stay && (stay.drives || stay.charges)) lines.push(`${both(stay.drives, stay.charges)} will show “${nm}” instead of “${cur.name}”.`);
+    else if (renamed) lines.push(`No drive or charge shows “${cur.name}” now, so the new name shows on nothing yet.`);
+    if (moves) lines.push(`${plural(e.drives_named + e.drives_unnamed, 'drive')} and ${plural(e.charges_named + e.charges_unnamed, 'charge')} move ${cur ? 'into or out of this place' : 'into it'}.`);
+    const topLine = dirty || !cur
+      ? (lines.length ? `If you save now: ${lines.join(' ')} Nothing changes until you save.` : 'Saving would not change the name of any drive or charge.')
+      : 'No unsaved changes. Move the circle or change the name or price to see what saving would do.';
+    const takenFrom = taken.length === 1 ? `“${taken[0].place.name}”`
+      : `${taken.slice(0, 3).map((t) => `“${t.place.name}” (${both(t.drives, t.charges)})`).join(', ')}${taken.length > 3 ? ` and ${plural(taken.length - 3, 'other place')}` : ''}`;
+    const tk = [e.drives_taken || 0, e.charges_taken || 0];
+    const loseText = cur
+      ? `show “${cur.name}” now, and will not${taken.length ? `. Also, ${both(...tk)} stop showing ${takenFrom} and move here` : ''}`
+      : taken.length ? `stop showing ${takenFrom} and show “${nm}” instead` : 'no other place loses a drive or charge to it';
     const figs = h('div', { class: 'figs pl-effect-figs' },
-      figure('Gain the name', h('span', null, plural(e.drives_named, 'drive'), h('br'), plural(e.charges_named, 'charge')), `will show “${nm}”`),
-      figure('Lose the name', h('span', null, plural(e.drives_unnamed, 'drive'), h('br'), plural(e.charges_unnamed, 'charge')), cur ? `show “${cur.name}” now, and will not` : 'a new place takes points from overlapping places'),
+      stay ? figure('Shown under the new name', h('span', null, plural(stay.drives, 'drive'), h('br'), plural(stay.charges, 'charge')), `stay at the place and show “${nm}” instead of “${cur.name}”`) : null,
+      figure('Gain the name', h('span', null, plural(e.drives_named, 'drive'), h('br'), plural(e.charges_named, 'charge')), cur ? `move into the place and will show “${nm}”` : `will show “${nm}”`),
+      figure('Lose the name', cur ? h('span', null, plural(e.drives_unnamed, 'drive'), h('br'), plural(e.charges_unnamed, 'charge')) : h('span', null, plural(tk[0], 'drive'), h('br'), plural(tk[1], 'charge')), loseText),
       figure('Would be repriced', plural(e.charges_repriced, 'charge'), d.price ? 'past charges here whose cost a reprice after saving would change' : 'no price, so nothing to reprice'));
     const rows = e.example_rows || [];
     const WORD = { named: 'gains the name', unnamed: 'loses the name', repriced: 'cost would change on a reprice' };
     const examples = rows.length ? h('div', { class: 'pl-examples' }, h('p', { class: 'label' }, 'For example'),
       h('ul', null, rows.map((x) => { const c = carNames.get(x.car); return h('li', null, h('a', { href: exampleHref(x) }, `${x.kind === 'drive' ? 'Drive' : 'Charge'} of ${formatDate(x.start_ms, (c && c.time_zone) || ctx.tz, { now: api.now() })}`), h('span', { class: 'cell-sub' }, ` ${c ? c.name : x.car}, ${WORD[x.change] || x.change}`)); }))) : null;
     replace(effectBox,
-      h('p', { class: 'note' }, dirty || !cur ? (none ? 'Saving would not change the name of any drive or charge.' : `If you save now: ${plural(e.drives_named + e.drives_unnamed, 'drive')} and ${plural(e.charges_named + e.charges_unnamed, 'charge')} change their name. Nothing changes until you save.`) : 'No unsaved changes. Move the circle or change the name or price to see what saving would do.'),
+      h('p', { class: 'note' }, topLine),
       figs, examples,
       h('p', { class: 'note' }, 'Counts look at drive starts and ends, charges and stops of the cars your account sees. Costs stay as they are when you save; only a reprice changes past charges.'));
   }
@@ -630,7 +675,10 @@ async function mountEditor(ctx) {
     const today = dayKey(api.now(), tz);
     const fFrom = field({ label: 'From', name: 'from', type: 'date', value: '', hint: 'Empty: from the first charge.', attrs: { max: today, ...ro } });
     const fTo = field({ label: 'Until', name: 'to', type: 'date', value: today, hint: 'Including this day.', attrs: { max: today, ...ro } });
-    const only = switchField({ label: 'Only charges without a cost', checked: true, hint: 'Off: charges priced before, with an older price, get the price saved now as well. Typed costs are never changed.' });
+    // Right after a price change, the point is to apply it to charges priced before: start with the switch off.
+    const afterPriceChange = repriceNext === cur.id;
+    repriceNext = null;
+    const only = switchField({ label: 'Only charges without a cost', checked: !afterPriceChange, hint: 'Off: charges priced before, with an older price, get the price saved now as well. Typed costs are never changed.' });
     if (!editable) only.input.disabled = true;
     const out = h('div', { class: 'pl-reprice-out', 'aria-live': 'polite' });
     const span = () => {
@@ -647,6 +695,12 @@ async function mountEditor(ctx) {
       let r;
       try { r = await ctx.api.post(api.apiPath`places/${cur.id}/reprice`, { ...span(), dry_run: true }); } catch (err) { if (ctx.alive()) replace(out, errorView(err, { retry: check, eyebrow: 'Could not check' })); return; }
       if (!ctx.alive()) return;
+      // Nothing without a cost: say what the switch left out, so a new price is not taken as applied.
+      let priced = null;
+      if (only.input.checked && !r.repriced) {
+        try { priced = await ctx.api.post(api.apiPath`places/${cur.id}/reprice`, { ...span(), only_without_cost: false, dry_run: true }); } catch { priced = null; }
+        if (!ctx.alive()) return;
+      }
       const go = r.repriced && editable ? button(`Reprice ${plural(r.repriced, 'charge')}`, { kind: 'primary', onclick: async () => {
         const ok = await confirmDialog({ title: `Reprice ${plural(r.repriced, 'charge')} at ${cur.name}?`, text: `Their cost becomes what the saved price gives: ${money(r.cost_before)} in all now, ${money(r.cost_after)} after. Charges with a typed cost are left alone.`, yes: 'Reprice', danger: false });
         if (!ok || !ctx.alive()) return;
@@ -662,17 +716,22 @@ async function mountEditor(ctx) {
           figure('Would change', format(r.repriced, 'count'), `${format(r.unchanged, 'count')} keep the same cost`),
           figure('Cost now', money(r.cost_before), 'of those charges, per currency'),
           figure('After the reprice', money(r.cost_after), 'with the price saved now')),
-        go ? h('div', { class: 'form-actions' }, go) : h('p', { class: 'note' }, r.repriced ? 'Only an admin can reprice.' : 'Every charge in the span already has the cost this price gives.'));
+        go ? h('div', { class: 'form-actions' }, go) : h('p', { class: 'note' }, r.repriced ? 'Only an admin can reprice.'
+          : priced && priced.repriced ? `No charge in the span is without a cost. Turn off “Only charges without a cost” to apply the price saved now to the ${plural(priced.repriced, 'charge')} priced before (${money(priced.cost_before)} now, ${money(priced.cost_after)} after).`
+            : only.input.checked && !r.charges ? 'No charge in the span is without a cost, and every charge priced before already has the cost this price gives.'
+              : 'Every charge in the span already has the cost this price gives.'));
     }
     replace(repriceBox,
       h('p', { class: 'note' }, `Applies the price saved now to charges that already ended here, in the span you pick (days in ${zoneLabel(tz)}). Check first: nothing changes until you press Reprice.`),
-      h('div', { class: 'pl-reprice-form' }, fFrom, fTo, only, h('div', { class: 'pl-reprice-go' }, button('Check what would change', { onclick: check, iconName: 'search' }))),
+      h('div', { class: 'pl-reprice-form' }, fFrom, fTo, only, h('div', { class: 'pl-reprice-go' },
+        editable ? button('Check what would change', { onclick: check, iconName: 'search' })
+          : h('p', { class: 'note' }, icon('info'), 'Only an admin can check or reprice past charges.'))),
       out);
   }
   drawReprice();
 
   /* ---------------------------------------------------------------- used by */
-  const usedBy = cur ? section({ title: 'Used by', note: 'drill down', cls: 'pl-used' },
+  const usedBy = cur ? section({ title: 'Used by', note: 'drill down', cls: 'pl-used', id: 'pl-used' },
     h('p', { class: 'note' }, `${plural(cur.counts.drives, 'drive')}, ${plural(cur.counts.charges, 'charge')} and ${plural(cur.counts.visits, 'stop')} of the cars your account sees${cur.last_visit_ms ? `; last visit ${formatDateTime(cur.last_visit_ms, cur.time_zone, { now: api.now() })}` : ''}.`),
     h('ul', { class: 'pl-used-list' },
       cur.counts.charges ? h('li', null, h('a', { class: 'link-arrow', href: state.buildUrl('charges', { query: { cars: 'all', places: cur.id } }) }, 'Charges here, every car', icon('arrowRight'))) : null,
@@ -705,7 +764,7 @@ async function mountEditor(ctx) {
   }
   const bodyOf = (x) => ({ name: x.name.trim(), kind: x.kind, lat: x.lat, lon: x.lon, radius_m: x.radius_m, price: x.price ? cleanPrice(x.price) : null });
   const currentBody = () => bodyOf(d);
-  const initialBody = bodyOf(d);
+  const initialBody = bodyOf(fresh);
 
   function cleanPrice(p) {
     return { currency: p.currency, per_kwh: p.per_kwh ?? null, per_minute: p.per_minute ?? null, session_fee: p.session_fee ?? null,
@@ -790,6 +849,7 @@ async function mountEditor(ctx) {
     const msg = `${cur ? 'Saved' : 'Added'} ${res.name}.${gained.length ? ` ${gained.join(' and ')} now show its name.` : ''}${priceChanged && e.charges_repriced ? ` ${plural(e.charges_repriced, 'past charge')} would get a new cost: reprice them below if you want.` : ''}`;
     ctx.flash(msg, { next: true });
     const target = priceChanged ? editUrl(res.id) : listUrl();
+    if (priceChanged && e.charges_repriced) repriceNext = res.id;
     // the same address does not mount the page again by itself: the editor must show the saved place
     if (target === location.pathname + location.search) remount(); else ctx.go(target);
   }
@@ -819,5 +879,11 @@ async function mountEditor(ctx) {
   await runPreview();
   await Promise.race([mapDone.then(() => m && m.ready), new Promise((r) => setTimeout(r, 4000))]);
   ctx.ready();
-  return {};
+  return {
+    // New units: keep the unsaved draft over the fresh mount instead of dropping it without a word.
+    update(c, why) {
+      if (why && why.prefs && dirty) carriedDraft = { key: draftKey, d: structuredClone(d), lastPrice: structuredClone(lastPrice), billing };
+      remount();
+    },
+  };
 }
