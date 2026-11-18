@@ -300,25 +300,22 @@ def tracks(req):
         raise bad_input({"max_points": f"{len(drives)} drives need at least {len(drives) * 2} points; "
                                        "ask for more points or a shorter period."})
     total_ms = sum(max(1000, min(req.now, d.data_end) - d.start) for _, d in drives) or 1
+    spare = max_points - 2 * len(drives)  # two points each, the rest shared by duration: never more than asked
     out = []
     used = 0
     for h, d in drives:
         de = min(req.now, d.data_end)
         dur = max(1000, de - d.start)
-        n = max(2, min(int(dur / 1000) + 1, int(max_points * dur / total_ms)))
-        step = max(1000, dur // (n - 1))
+        n = max(2, min(dur // 1000 + 1, 2 + int(spare * dur / total_ms)))
         t_ms, lat, lon, acc = [], [], [], []
-        t = d.start
-        while t <= de:
-            v = d.values(t)
-            if v is not None:
+        for k in range(n):
+            t = d.start + (de - d.start) * k // (n - 1)
+            p = d.position(t)
+            if p is not None:
                 t_ms.append(t)
-                lat.append(v["lat"])
-                lon.append(v["lon"])
-                acc.append(v["accuracy_m"])
-            if t == de:
-                break
-            t = min(de, t + step)
+                lat.append(p[0])
+                lon.append(p[1])
+                acc.append(p[2])
         used += len(t_ms)
         out.append({"car": h.car.id, "drive": d.id, "source": d.source, "t_ms": t_ms, "lat": lat, "lon": lon,
                     "accuracy_m": acc})

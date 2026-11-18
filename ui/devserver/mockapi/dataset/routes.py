@@ -68,6 +68,20 @@ class Route:
         self.climb_m = climb
         self.descent_m = descent
 
+    def latlon(self, s: float):
+        """(lat, lon) at s metres along the route: at() without elevation and heading (for long tracks)."""
+        cum = self.cum
+        if s <= 0:
+            k, f = 1, 0.0
+        elif s >= self.length:
+            k, f = len(cum) - 1, 1.0
+        else:
+            k = min(max(bisect.bisect_right(cum, s), 1), len(cum) - 1)
+            seg = cum[k] - cum[k - 1]
+            f = (s - cum[k - 1]) / seg if seg > 0 else 0.0
+        a, b = self.pts[k - 1], self.pts[k]
+        return a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f
+
     def at(self, s: float):
         """(lat, lon, elevation m, heading deg) at s metres along the route."""
         cum = self.cum

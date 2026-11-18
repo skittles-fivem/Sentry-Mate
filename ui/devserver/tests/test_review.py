@@ -9,6 +9,7 @@ import csv
 import http.client
 import io
 import json
+import socket
 import time
 
 from .helpers import DAY, NOW, Running, ServerCase
@@ -47,6 +48,26 @@ class OddInput(ServerCase):
         self.assertEqual(body["error"]["code"], "bad_input")
         self.assertIn("Content-Length", body["error"]["fields"])
 
+    def test_head_on_the_event_stream_has_no_body(self):
+        # it used to start the stream: a HEAD answer with a body that never ends
+        sock = socket.create_connection(("127.0.0.1", self.server.port), timeout=1.5)
+        sock.sendall(b"HEAD /api/v1/events HTTP/1.1\r\nHost: x\r\nCookie: " + (self.c.cookie or "").encode()
+                     + b"\r\n\r\n")
+        data = b""
+        try:
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        except socket.timeout:
+            pass
+        sock.close()
+        head, _, body = data.partition(b"\r\n\r\n")
+        self.assertTrue(head.startswith(b"HTTP/1.1 200"), head[:40])
+        self.assertIn(b"text/event-stream", head)
+        self.assertEqual(body, b"")
+
     def test_wrong_types_in_bodies_are_400(self):
         trip = {"car": "c1", "from_ms": NOW - 3 * DAY, "to_ms": NOW - DAY, "name": "T"}
         rule = {"from_place": "p1", "to_place": "p11", "days": "sat,sun", "purpose": "private"}
@@ -69,6 +90,26 @@ class OddInput(ServerCase):
         # an id that is not text is just not a car
         self.assertFalse(self.server.app.ds.exists(["c1"]))
         self.assertFalse(self.server.app.ds.exists("c٤"))  # a non-ASCII digit is not car c4
+
+
+class Tracks(ServerCase):
+    def test_never_more_points_than_asked(self):
+        for q in ("max_points=3000&cars=c1", f"max_points=2400&cars=c1&from_ms={NOW - 400 * DAY}",
+                  f"max_points=100&from_ms={NOW - 3 * DAY}", "max_points=10000"):
+            d = self.c.get(f"/api/v1/tracks?{q}")
+            want = int(q.split("max_points=")[1].split("&")[0])
+            self.assertLessEqual(d["points"], want, q)
+            self.assertEqual(d["points"], sum(len(x["t_ms"]) for x in d["drives"]), q)
+            self.assertTrue(all(len(x["t_ms"]) == len(x["lat"]) == len(x["lon"]) == len(x["accuracy_m"])
+                                for x in d["drives"]), q)
+        # a drive's points are its own track's points (the same positions as the drive track)
+        d = self.c.get(f"/api/v1/tracks?cars=c1&from_ms={NOW - 2 * DAY}&max_points=200000")["drives"][0]
+        geo = json.loads(self.c.request("GET", f"/api/v1/cars/c1/drives/{d['drive']}/track")[2])
+        pts = {t: (c[1], c[0]) for f in geo["features"] for t, c in zip(f["properties"]["t_ms"],
+                                                                       f["geometry"]["coordinates"])}
+        for t, la, lo in zip(d["t_ms"], d["lat"], d["lon"]):
+            if t in pts:
+                self.assertEqual(pts[t], (la, lo))
 
 
 class WatchSeesOnlyItsCars(ServerCase):

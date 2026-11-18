@@ -311,6 +311,14 @@ class Drive(Seg):
         k = max(range(len(self.kv)), key=lambda i: self.kv[i])
         return (self.start + int(self.kt[k] * 1000), tmax, tmin)
 
+    def position(self, t):
+        """(lat, lon, accuracy_m) at t, exactly as values(t) has them, without the rest (for long tracks)."""
+        if t < self.start or t > self.data_end or self.in_drop(t):
+            return None
+        lat, lon = self.route.latlon(self.kin(t)[0])
+        tau = (t - self.start) / 1000
+        return round(lat, 6), round(lon, 6), round(4 + 2.5 * (1 + math.sin(tau / 37)), 1)
+
     def values(self, t):
         if t < self.start or t > self.data_end or self.in_drop(t):
             return None

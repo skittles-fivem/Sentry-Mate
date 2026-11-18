@@ -222,6 +222,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             req = Req(app, m, path, query, self.headers, body, params, session)
             req.raw_cookie_token = self.cookie_value()
             if route.handlers[m] is resources.SSE:
+                if method == "HEAD":  # the headers only: a stream has no length to tell
+                    return self.send(200, b"", "text/event-stream; charset=utf-8",
+                                     {"Set-Cookie": cookie} if cookie else {}, api=True)
                 return self.sse(req, cookie)
             if app.cfg.latency_ms:
                 time.sleep(app.cfg.latency_ms / 1000)

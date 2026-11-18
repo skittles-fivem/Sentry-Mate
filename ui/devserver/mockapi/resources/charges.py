@@ -326,8 +326,8 @@ def charging_stats(req):
         "end_bands": [{"band": bd, "count": eb.get(bd, 0)} for bd in bands],
         "heatmap": {"start": heat_s, "end": heat_e, "rows": "weekday, Monday first", "columns": "hour, local time"},
         "runs": [{k: v for k, v in z.items() if not k.startswith("_")} for z in runs],
-        "share_above_80_pct": r(100 * sum(1 for x in rows if x["end_soc_pct"] > 80) / n, 1),
-        "share_below_20_pct": r(100 * sum(1 for x in rows if x["start_soc_pct"] < 20) / n, 1),
+        "share_above_80_pct": r(100 * sum(1 for x in rows if x["end_soc_pct"] > 80) / n, 1) if rows else None,
+        "share_below_20_pct": r(100 * sum(1 for x in rows if x["start_soc_pct"] < 20) / n, 1) if rows else None,
     }
     return out
 
@@ -341,7 +341,8 @@ def charging_places(req):
         key = pid or f"addr:{x['address']['short']}"
         g = groups.setdefault(key, {"place": pid, "label": (x["place"] or {}).get("name") or x["address"]["short"],
                                     "lat": x["position"]["lat"], "lon": x["position"]["lon"], "sessions": 0,
-                                    "energy_added_kwh": 0.0, "_cost": {}, "_basis_kwh": 0.0, "cars": set()})
+                                    "energy_added_kwh": 0.0, "_cost": {}, "_basis_kwh": 0.0, "cars": set(),
+                                    "_key": key})
         g["sessions"] += 1
         g["energy_added_kwh"] += x["energy_added_kwh"] or 0
         g["cars"].add(x["car"])
@@ -356,9 +357,11 @@ def charging_places(req):
                     "sessions": g["sessions"], "energy_added_kwh": r(g["energy_added_kwh"], 3),
                     "cost_by_currency": cbc,
                     "price_per_kwh": round(total / g["_basis_kwh"], 4) if g["_basis_kwh"] and len(cbc) == 1 else None,
-                    "cars": sorted(g["cars"], key=lambda c: int(c[1:])), "_total": total})
-    keyf = {"energy": lambda g: (g["energy_added_kwh"], g["label"]), "cost": lambda g: (g["_total"], g["label"]),
-            "sessions": lambda g: (g["sessions"], g["label"])}[sort]
+                    "cars": sorted(g["cars"], key=lambda c: int(c[1:])), "_total": total, "_key": g["_key"]})
+    # the group key last: two places may share a name and a figure, and a page must not skip one of them
+    keyf = {"energy": lambda g: (g["energy_added_kwh"], g["label"], g["_key"]),
+            "cost": lambda g: (g["_total"], g["label"], g["_key"]),
+            "sessions": lambda g: (g["sessions"], g["label"], g["_key"])}[sort]
     items, nxt = page(req, out, key=keyf, reverse=True)
     return {"cars": car_ids, "items": items, "next": nxt}
 
