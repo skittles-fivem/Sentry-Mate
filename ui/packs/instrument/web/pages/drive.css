@@ -1,0 +1,39 @@
+/* Drive detail (pages/drive.js): the map beside the figures, the charts below, speed bands and export. */
+.drive-layout { display: grid; gap: var(--gap); grid-template-columns: minmax(0, 8fr) minmax(21rem, 4fr); margin-bottom: var(--gap); }
+.drive-layout > .map-panel { min-height: 32.5rem; }
+.stats-panel { display: flex; flex-direction: column; }
+.drive-figures { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem 1rem; }
+.drive-figures .metric-value { font-size: 1.375rem; }
+.drive-soc { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 0.875rem; margin-top: 1.125rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.drive-soc > div { display: flex; flex-direction: column; line-height: 1.25; }
+.drive-soc > div.r { text-align: right; }
+.drive-soc b { font-family: var(--font-display); font-weight: 500; font-size: 1.375rem; }
+.drive-soc span { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
+.drive-soc .bar { height: 0.5rem; }
+.drive-odo { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.375rem 1rem; margin: 1rem 0 0; padding-top: 0.875rem; border-top: 1px solid var(--line); font-size: max(0.8125rem, var(--fs-floor)); }
+.drive-odo dt { color: var(--text-3); }
+.drive-odo dd { margin: 0; text-align: right; }
+.route-colour { background: var(--surface-ctrl); backdrop-filter: blur(0.75rem); }
+.hover-marker { width: 1rem; height: 1rem; }
+.hover-marker::before { display: none; }
+
+.charts-panel { padding: 1.125rem 1.25rem 0.875rem; margin-bottom: var(--gap); }
+.charts-panel .panel-head .row { justify-content: flex-end; }
+.selection { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.75rem 1.75rem; padding: 0.25rem 0 0.875rem; border-bottom: 1px solid var(--line); }
+.selection-title { flex-basis: 100%; font-size: max(0.75rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+.drive-charts .chart { height: 8.5rem; }
+.drive-charts .chart-block[data-series="soc"] .chart, .drive-charts .chart-block[data-series="range"] .chart { height: 6.5rem; }
+.drive-charts .chart-block[data-series="tyres"] .chart { height: 9rem; }
+.drive-lower { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: var(--gap); }
+.export-extras { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; margin-top: 0.875rem; font-size: max(0.8125rem, var(--fs-floor)); }
+
+@container page (max-width: 85.375rem) {
+  .drive-layout { grid-template-columns: minmax(0, 7fr) minmax(19rem, 5fr); }
+}
+@container page (max-width: 76rem) {
+  .drive-layout, .drive-lower { grid-template-columns: minmax(0, 1fr); }
+  .drive-layout > .map-panel { min-height: 26rem; }
+}
+@container page (min-width: 140rem) {
+  .drive-charts .chart { height: 10rem; }
+}

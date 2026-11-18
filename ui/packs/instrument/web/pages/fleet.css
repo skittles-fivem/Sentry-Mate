@@ -1,0 +1,71 @@
+/* Fleet (pages/fleet.js): state tiles, the attention list, the car list. */
+.page-head--fleet { margin-bottom: 1.125rem; }
+.head-stats { display: flex; margin: 0; }
+.head-stat { display: flex; flex-direction: column; gap: 0.1875rem; margin-left: 1.375rem; padding-left: 1.375rem; border-left: 1px solid var(--line); }
+.head-stat:first-child { margin-left: 0; padding-left: 0; border-left: 0; }
+.head-stat dt { display: flex; align-items: center; gap: 0.375rem; font-size: max(0.75rem, var(--fs-floor)); font-weight: 500; color: var(--text-3); }
+.head-stat dd { margin: 0; font-family: var(--font-display); font-size: 1.5rem; font-weight: 500; line-height: 1.1; letter-spacing: -0.01em; white-space: nowrap; }
+.sub-warn { display: inline-flex; align-items: center; gap: 0.3125rem; color: var(--warm); }
+
+.fleet-board { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+.state-tile {
+  --dot: var(--st-unknown);
+  position: relative; display: flex; flex-direction: column; gap: 0.375rem; padding: 0.875rem 1rem; text-align: left; min-width: 0;
+  container-type: inline-size; color: inherit; font: inherit;
+  border-radius: 1rem; border: 1px solid var(--line);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--dot) 9%, transparent), rgba(146, 176, 236, 0.03));
+  box-shadow: var(--shadow); overflow: hidden; transition: border-color 120ms;
+}
+.state-tile::after { content: ""; position: absolute; left: 1rem; right: 1rem; top: 0; height: 0.125rem; border-radius: 0 0 0.125rem 0.125rem; background: var(--dot); opacity: 0.85; box-shadow: 0 0 0.875rem var(--dot); }
+button.state-tile:hover { border-color: var(--line-3); }
+.state-tile[aria-pressed="true"] { border-color: color-mix(in oklab, var(--dot) 60%, transparent); box-shadow: var(--shadow), 0 0 0 1px color-mix(in oklab, var(--dot) 40%, transparent); }
+.state-tile-label { display: flex; align-items: center; gap: 0.5rem; font-size: max(0.78125rem, var(--fs-floor)); font-weight: 500; color: var(--text-2); }
+.state-tile-label .ico { width: 0.9375rem; height: 0.9375rem; color: var(--dot); }
+.state-tile-value { font-family: var(--font-display); font-weight: 300; font-size: clamp(1.5rem, 26cqi, 2.5rem); line-height: 1; letter-spacing: -0.02em; color: var(--text); white-space: nowrap; }
+.state-tile-sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.state-tile--stale { --dot: var(--warm); background: linear-gradient(180deg, rgba(245, 181, 74, 0.07), rgba(146, 176, 236, 0.02)); }
+.state-tile--stale::after { background: repeating-linear-gradient(90deg, var(--warm) 0 0.375rem, transparent 0.375rem 0.625rem); box-shadow: none; }
+
+/* attention */
+.attn-panel { margin-bottom: 1rem; }
+.attn-list { display: flex; flex-direction: column; }
+.attn-row { display: grid; grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr) auto auto; gap: 0.5rem 1.25rem; align-items: center; padding: 0.5rem 0; border-top: 1px solid var(--line); }
+.attn-row:first-child { border-top: 0; padding-top: 0; }
+.attn-car { font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+a.attn-car:hover { color: var(--live); }
+.attn-text { color: var(--text-2); min-width: 0; }
+.attn-when { font-size: max(0.78125rem, var(--fs-floor)); white-space: nowrap; }
+
+/* the empty state */
+.empty-causes { display: flex; flex-direction: column; gap: 0.5rem; max-width: 40rem; text-align: left; }
+.empty-causes li { color: var(--text-2); }
+.empty-causes b { color: var(--text); font-weight: 600; }
+
+/* the list */
+.toolbar .select { min-width: 9.5rem; }
+.car-cell, .cell-since, .cell-place { display: flex; flex-direction: column; align-items: flex-start; gap: 0.1875rem; min-width: 0; line-height: 1.3; }
+.car-name { font-weight: 600; font-size: 0.875rem; color: var(--text); border-radius: 0.25rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 18rem; }
+.car-meta { display: block; min-width: 0; font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cell-batt { display: grid; grid-template-columns: 4.5rem auto; align-items: center; gap: 0.75rem; min-width: 10rem; }
+.cell-batt-text { display: flex; flex-direction: column; line-height: 1.25; }
+.cell-batt-text b { font-weight: 600; }
+.cell-batt-text span { font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-3); white-space: nowrap; }
+.cell-place b { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 16rem; }
+.cell-place span, .cell-since > span:not(.age):not(.pill) { font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-3); white-space: nowrap; }
+.pin-cell { display: inline-flex; align-items: center; gap: 0.125rem; }
+.pin-btn { color: var(--text-3); }
+.pin-btn.is-on { color: var(--live); }
+.pin-btn.is-on .ico { fill: var(--live-soft); }
+.rot-90 { transform: rotate(90deg); }
+.fleet-table .tbl td { height: 3.625rem; }
+.fleet-table .col-pin { width: 1%; white-space: nowrap; }
+
+@container page (max-width: 85.375rem) {
+  .fleet-board { gap: 0.625rem; }
+  .state-tile { padding: 0.75rem 0.875rem; }
+}
+@container page (max-width: 76rem) {
+  .fleet-board { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .attn-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .attn-text { grid-column: 1 / -1; grid-row: 2; }
+}
