@@ -47,6 +47,35 @@ const placeHref = (c) => (c.place?.id ? state.buildUrl('places', { query: { plac
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const viewerZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
 
+// a rate with the decimals it was entered with (2 to 5), so $0.25000/min is not rounded to $0.25 or $0.250
+function rateText(v, kind, currency) {
+  const dec = (String(+Number(v).toFixed(5)).split('.')[1] || '').length;
+  return format(v, kind, { currency, digits: clamp(dec, 2, 5) });
+}
+
+// the first drive after t. The timeline is newest first, so within a window the last row of the last page
+// is the oldest; the window widens (3 days, a month, a year, then up to now) until a drive turns up.
+async function driveAfterOf(ctx, cid, t) {
+  const now = ctx.api.now();
+  try {
+    for (const span of [3 * DAY, 30 * DAY, 365 * DAY, Infinity]) {
+      const to = Math.min(t + span, now + 1);
+      if (to <= t) return null;
+      let after = null, last = null;
+      for (let i = 0; i < 50; i++) {
+        const res = await ctx.api.get(`cars/${encodeURIComponent(cid)}/timeline`, { from_ms: t, to_ms: to, kinds: 'drive', limit: 500, ...(after ? { after } : {}) });
+        const items = res?.items || [];
+        if (items.length) last = items[items.length - 1];
+        after = res?.next || null;
+        if (!after || !items.length) break;
+      }
+      if (last) return last.ref?.drive || null;
+      if (to > now) return null;
+    }
+  } catch { /* no button */ }
+  return null;
+}
+
 export async function mount(ctx) {
   const { car, tz } = ctx;
   const cid = car.id, chid = ctx.state.charge;
@@ -69,8 +98,9 @@ export async function mount(ctx) {
     ctx.api.get(`${base}/curve`, { fields: FIELDS.join(','), max_points: 4000 }).catch(() => null),
     c.place?.id ? ctx.api.get(`places/${encodeURIComponent(c.place.id)}`).catch(() => null) : null,
     Promise.all([
-      ctx.api.get(`cars/${encodeURIComponent(cid)}/timeline`, { from_ms: t0 - 3 * DAY, to_ms: t0, kinds: 'drive', limit: 1 }).catch(() => null),
-      ctx.api.get(`cars/${encodeURIComponent(cid)}/timeline`, { from_ms: t1, to_ms: t1 + 3 * DAY, kinds: 'drive', limit: 50 }).catch(() => null),
+      // the timeline is newest first: the first row before the charge is the drive before, however long the car stood
+      ctx.api.get(`cars/${encodeURIComponent(cid)}/timeline`, { to_ms: t0, kinds: 'drive', limit: 1 }).catch(() => null),
+      live ? null : driveAfterOf(ctx, cid, t1),
     ]),
     dc ? ctx.api.get(`cars/${encodeURIComponent(cid)}/charging-stats/dc-curve`, { from_ms: t0 - 365 * DAY, to_ms: t1 + 1 }).catch(() => null) : null,
   ]);
@@ -83,8 +113,7 @@ export async function mount(ctx) {
   if (live) ctx.events('rows', (ev) => { if (ev.data?.car === cid && (ev.data.kinds || []).includes('charges')) ctx.reload(); });
 
   const driveBefore = around[0]?.items?.[0]?.ref?.drive || null;
-  const after = around[1]?.items || [];
-  const driveAfter = after.length ? after[after.length - 1].ref?.drive || null : null;
+  const driveAfter = around[1] || null;
   const backHref = ctx.link('charges');
   const back = h('a', {
     class: 'back', href: backHref, cover: 'web.charge-cost.back',
@@ -101,12 +130,12 @@ export async function mount(ctx) {
   /* ---------- the figures */
   const why = live ? 'Still charging' : imported ? 'Not in imported history' : 'Not recorded';
   const gridKwh = c.energy_grid_kwh;
-  const drawn = ac ? metric('Energy drawn', gridKwh, 'energy', { cover: 'cd.stat.energy_used', explain: 'from the supply, AC line volts × amps', why: imported ? 'Not in imported history' : why })
+  const drawn = ac ? metric('Energy drawn', gridKwh, 'energy', { cover: 'cd.stat.energy_used', explain: imported ? 'estimated (imported)' : 'from the supply, AC line volts × amps', why: imported ? 'Not in imported history' : why })
     : dc ? metric('Delivered by the charger', c.dc_inlet_kwh, 'energy', { cover: 'cd.stat.energy_used', explain: c.fast_charger?.billed_kwh != null ? `at the inlet; the charger billed ${format(c.fast_charger.billed_kwh, 'energy')}` : "at the inlet (the charger's volts × amps); the grid side is not sent", why })
       : metric('Energy drawn', null, 'energy', { cover: 'cd.stat.energy_used', why: 'Unknown whether AC or DC' });
   const eff = metric('Efficiency', c.efficiency_pct, 'percent', {
     cover: 'cd.stat.efficiency', digits: 1,
-    explain: c.efficiency_pct != null ? `${format(c.losses_kwh, 'energy')} lost on the way${c.efficiency_pct > 100 ? '; above 100 % means a bad reading' : ''}` : null,
+    explain: c.efficiency_pct != null ? `${format(c.losses_kwh, 'energy')} lost on the way${imported ? ' (estimated)' : ''}${c.efficiency_pct > 100 ? '; above 100 % means a bad reading' : ''}` : null,
     why: dc ? "DC: the charger's own losses are not on the CAN bus" : why,
   });
   const avgTemp = metric('Outside', c.outside_avg_c, 'temperature', { cover: 'cd.stat.avg_temp', explain: c.battery_avg_c != null ? `average; battery ${format(c.battery_avg_c, 'temperature')}` : 'average of the session', why });
@@ -194,22 +223,38 @@ export async function mount(ctx) {
   const bd = c.cost_breakdown || { parts: [] };
   const manual = c.manual_cost || (cost?.source === 'manual' ? { mode: bd.mode, amount: cost.amount, currency: cost.currency } : null);
   const price = place?.price || null;
+  const isManual = cost?.source === 'manual' && manual;
+  const manualMin = (bd.parts || [])[0]?.minutes ?? (t1 - t0) / 60000;
+  const manualBasis = manual?.energy_basis || c.price_per_kwh?.basis || (gridKwh != null ? 'grid' : 'pack');
+  const manualKwh = (bd.parts || [])[0]?.kwh ?? (manualBasis === 'grid' && gridKwh != null ? gridKwh : c.energy_added_kwh);
+  const basisWords = (b) => (b === 'grid' ? 'energy drawn' : 'energy added to the pack');
+  const manualWhy = !isManual ? null
+    : manual.mode === 'per_minute' ? ` · ${rateText(manual.amount, 'price_time', cost.currency)} × ${formatNumber(manualMin, { maximumFractionDigits: 1 })} min`
+      : manual.mode === 'per_kwh' ? ` · ${rateText(manual.amount, 'price_energy', cost.currency)} × ${format(manualKwh, 'energy')} (${basisWords(manualBasis)})`
+        : ' · one amount, as entered';
   const costHead = h('div', { class: 'cost-now', cover: ['cd.stat.cost', 'web.charge-cost.current-cost'] },
     h('span', { class: 'metric-label' }, 'Cost'),
     h('span', { class: 'cost-amount' }, cost ? formatMoney(cost.amount, cost.currency) : 'No cost yet'),
     h('span', { class: 'explain' }, cost ? [COST_SOURCE[cost.source] || cost.source,
-      c.price_per_kwh?.value != null ? ` · ${format(c.price_per_kwh.value, 'price_energy', { currency: cost.currency })} over the ${c.price_per_kwh.basis === 'grid' ? 'energy drawn' : 'energy added to the pack'}` : '']
+      isManual ? manualWhy : c.price_per_kwh?.value != null ? ` · ${format(c.price_per_kwh.value, 'price_energy', { currency: cost.currency })} over the ${c.price_per_kwh.basis === 'grid' ? 'energy drawn' : 'energy added to the pack'}` : '']
       : price ? 'The place has a price, but it gave no figure for this charge.' : c.place ? `${c.place.name} has no price yet: add one on Places, or enter the cost below.` : 'Not at a saved place with a price: enter the cost below, or save the spot as a place with a price.'),
     cost?.source === 'manual' ? tag('Entered by hand', 'warm') : null);
   const parts = (bd.parts || []).map((p) => ({ ...p }));
+  // an entered cost shows the rate as it was entered, with what it was multiplied by
+  if (isManual && parts.length === 1) {
+    const p = parts[0];
+    if (manual.mode === 'per_minute') Object.assign(p, { per_minute: manual.amount, minutes: manualMin, per_kwh: null, rate: 'Entered per minute' });
+    else if (manual.mode === 'per_kwh') Object.assign(p, { per_kwh: manual.amount, kwh: manualKwh, per_minute: null, minutes: null, rate: `Entered per kWh (${basisWords(manualBasis)})` });
+    else Object.assign(p, { per_kwh: null, per_minute: null, minutes: null, rate: 'Entered as one amount' });
+  }
   if (bd.session_fee) parts.push({ rate: 'Session fee', per_kwh: null, per_minute: null, kwh: null, minutes: null, cost: bd.session_fee });
   const cur = cost?.currency || price?.currency || 'USD';
   const breakdown = dataTable(ctx, {
     title: 'How the cost was made', icon: 'stats', rows: parts, cls: 'cost-table',
     columns: [
       { key: 'rate', label: 'Rate', render: (p) => p.rate, csv: (p) => p.rate },
-      { key: 'per_kwh', label: 'Per kWh', num: true, render: (p) => (p.per_kwh != null ? format(p.per_kwh, 'price_energy', { currency: cur }) : '—'), csv: (p) => p.per_kwh },
-      { key: 'per_minute', label: 'Per minute', num: true, render: (p) => (p.per_minute != null ? format(p.per_minute, 'price_time', { currency: cur }) : '—'), csv: (p) => p.per_minute },
+      { key: 'per_kwh', label: 'Per kWh', num: true, render: (p) => (p.per_kwh != null ? rateText(p.per_kwh, 'price_energy', cur) : '—'), csv: (p) => p.per_kwh },
+      { key: 'per_minute', label: 'Per minute', num: true, render: (p) => (p.per_minute != null ? rateText(p.per_minute, 'price_time', cur) : '—'), csv: (p) => p.per_minute },
       { key: 'kwh', label: 'Energy', num: true, render: (p) => format(p.kwh, 'energy'), csv: (p) => p.kwh },
       { key: 'minutes', label: 'Time', num: true, render: (p) => (p.minutes != null ? formatDuration(p.minutes * 60000) : '—'), csv: (p) => p.minutes },
       { key: 'cost', label: `Cost (${cur})`, num: true, render: (p) => formatMoney(p.cost, cur), csv: (p) => p.cost },
@@ -351,22 +396,45 @@ export async function mount(ctx) {
     for (let k = 1; k < idx.length; k++) { const v = col('power_kw')[idx[k]]; const dt = (t[idx[k]] - t[idx[k - 1]]) / 3.6e6; if (v != null && dt < 0.05) kwh += v * dt; }
     const zoomed = a > xMin + 1 || b < xMax - 1;
     resetBtn.hidden = !zoomed;
+    // the whole session shows the charge's own figures (as in Figures); a zoomed part is worked out from the curve
     replace(selBox, h('span', { class: 'selection-title' }, zoomed ? `Selection ${formatTime(a * 1000, tz)} – ${formatTime(b * 1000, tz)}` : 'The whole session'),
-      metric('Duration', (b - a) * 1000, 'duration', { size: 'sm' }),
-      metric('Energy added', pw.length ? kwh : null, 'energy', { size: 'sm', explain: 'power × time', why: 'No power here' }),
-      metric('Average power', pw.length ? pw.reduce((s, v) => s + v, 0) / pw.length : null, 'power', { size: 'sm', why: 'No power here' }),
-      metric('Battery', soc.length > 1 ? soc[soc.length - 1] - soc[0] : null, 'percent', { size: 'sm', sign: true, why: 'No battery % here' }));
+      metric('Duration', zoomed ? (b - a) * 1000 : c.charging_ms, 'duration', { size: 'sm', explain: zoomed ? null : 'charging time' }),
+      zoomed ? metric('Energy added', pw.length ? kwh : null, 'energy', { size: 'sm', explain: 'from the 1 Hz curve, power × time', why: 'No power here' })
+        : metric('Energy added', c.energy_added_kwh, 'energy', { size: 'sm', explain: imported ? 'estimated (imported)' : 'the figure for this charge', why }),
+      zoomed ? metric('Average power', pw.length ? pw.reduce((s, v) => s + v, 0) / pw.length : null, 'power', { size: 'sm', explain: 'from the 1 Hz curve', why: 'No power here' })
+        : metric('Average power', c.power_avg_kw, 'power', { size: 'sm', explain: c.power_max_kw != null ? `peak ${format(c.power_max_kw, 'power')}` : null, why }),
+      zoomed ? metric('Battery', soc.length > 1 ? soc[soc.length - 1] - soc[0] : null, 'percent', { size: 'sm', sign: true, explain: 'from the 1 Hz curve', why: 'No battery % here' })
+        : metric('Battery', socAdded, 'percent', { size: 'sm', sign: true, why }));
   }
   const zoomTo = (a, b) => { zoom = [a, b]; for (const p of plots) p.u?.setScale('x', { min: a, max: b }); paintSelection(); };
   resetBtn.addEventListener('click', () => zoomTo(xMin, xMax));
   paintSelection();
 
+  // stretches without data: grey hatching like the rest of the pack's unknown time (a canvas cannot take the
+  // CSS gradient of --nodata-fill, so the tile is drawn from --st-unknown; remade when the theme changes)
+  let gapTile = null;
+  const gapPattern = (cx) => {
+    const g = cssVar('--st-unknown') || '#7D889C';
+    const n = Math.max(4, Math.round(rpx(7) * (window.devicePixelRatio || 1)));
+    if (gapTile?.g !== g || gapTile?.n !== n) {
+      const tile = document.createElement('canvas');
+      tile.width = tile.height = n;
+      const tc = tile.getContext('2d');
+      tc.fillStyle = hexA(g, 0.14); tc.fillRect(0, 0, n, n);
+      tc.strokeStyle = hexA(g, 0.5); tc.lineWidth = n * 0.3;
+      tc.beginPath();
+      for (const o of [-n, 0, n]) { tc.moveTo(o, n); tc.lineTo(o + n, 0); }
+      tc.stroke();
+      gapTile = { g, n, tile };
+    }
+    return cx.createPattern(gapTile.tile, 'repeat') || hexA(g, 0.25);
+  };
   const drawGaps = (u) => {
     if (!gaps.length) return;
     const { left, top, width, height } = u.bbox;
     const cx = u.ctx;
     cx.save(); cx.beginPath(); cx.rect(left, top, width, height); cx.clip();
-    cx.fillStyle = cssVar('--nodata-fill');
+    cx.fillStyle = gapPattern(cx);
     for (const [a, b] of gaps) { const pa = u.valToPos(a, 'x', true), pb = u.valToPos(b, 'x', true); cx.fillRect(pa, top, Math.max(1, pb - pa), height); }
     cx.restore();
   };
@@ -414,7 +482,7 @@ export async function mount(ctx) {
 
   /* ---------- power against battery % */
   const pts = [];
-  t.forEach((ms, i) => { const s = col('soc_pct')[i], p = col('power_kw')[i]; if (s != null && p != null) pts.push([s, p, col('battery_c')[i] ?? null]); });
+  t.forEach((ms, i) => { const s = col('soc_pct')[i], p = col('power_kw')[i]; if (s != null && p != null && p > 0.05) pts.push([s, p, col('battery_c')[i] ?? null]); });
   pts.sort((a, b) => a[0] - b[0]);
   const bySoc = new Map();
   for (const [s, p] of pts) { const k = Math.round(s); const e = bySoc.get(k) || [0, 0]; e[0] += p; e[1] += 1; bySoc.set(k, e); }

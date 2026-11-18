@@ -618,10 +618,14 @@ class Charge(Seg):
                 return 0.0
             wob = 1 + 0.004 * math.sin(tau / 7) + 0.003 * math.sin(tau / 13)
             return self.pack_kw * wob
+        _, t_t, p_t = self.table
+        # the start ramp tops out at the first table power, and nothing flows once the target is reached, so
+        # the 1 Hz curve adds up to the session's own power_max_kw, power_avg_kw and energy_added_kwh
         if tau < 30:
-            return self.peak_kw * 0.5 * tau / 30
+            return min(self.peak_kw * 0.5, p_t[0]) * tau / 30
+        if tau - 30 >= t_t[-1]:
+            return 0.0
         soc = self._soc_raw(t)
-        _, _, p_t = self.table
         k = int(clamp(soc - self.soc0, 0, len(p_t) - 1))
         return p_t[k] * (1 + 0.006 * math.sin(tau / 5))
 
