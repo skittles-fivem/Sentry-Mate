@@ -94,6 +94,7 @@ class Preferences(ServerCase):
         self.assertEqual(set(p), {"units", "range", "theme", "language", "interface_size", "follow_screen", "ui_pack",
                                   "car_order", "pinned_cars"})
         self.assertIs(p["follow_screen"], True)
+        self.assertEqual(p["language"], "auto")  # a new account follows its browser until it picks one
         self.assertEqual(p["ui_pack"], "instrument")
         q = self.c.json("PATCH", "/api/v1/me/preferences", {"units": {"distance": "mi"}, "pinned_cars": ["c3"]})
         self.assertEqual(q["units"], {"distance": "mi", "temperature": "c", "pressure": "bar"})

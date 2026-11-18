@@ -9,7 +9,7 @@
 import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { getLocale, isSupportedLocale } from '../shared/i18n.js';
-import { format } from '../shared/units.js';
+import { format, getUnits, FT_PER_M } from '../shared/units.js';
 import { formatDateTime } from '../shared/time.js';
 import { pageHead, errorView, pageLink, flag } from '../core/ui.js';
 import { choice, switchField, field, form, setFieldError } from '../core/form.js';
@@ -148,6 +148,7 @@ export async function mount(ctx) {
     langEx.textContent = sample ? `Numbers and dates now look like this: ${sample}. Words stay in English.` : '';
     size.set(sizeState().size); follow.set(sizeState().follow);
     sizeNoteEl.textContent = sizeNote();
+    if (srv && feet() !== drawnFeet) redraw(srv);
   };
   ctx.onCleanup(onPrefs(sync));
   ctx.onCleanup(display.onChange(sync));
@@ -184,41 +185,84 @@ export async function mount(ctx) {
   // ------------------------------------------------------------ server settings
   const serverBox = h('div', { class: 'settings-server' });
 
+  const proxyHost = (u) => { try { const x = new URL(u); return `${x.protocol.replace(':', '')} ${x.host}`; } catch { return 'the proxy'; } };
+  const healthLink = () => {
+    // Admins see the address look-ups under Server health there; the anchor takes them to it.
+    const a = pageLink('Address status in Data health and storage', 'health');
+    a.setAttribute('href', `${a.getAttribute('href')}#hl-srv`);
+    return a;
+  };
+
   async function refreshGeo() {
     try { geo = await ctx.api.get('geocode/status'); } catch { /* keep the last one */ }
   }
 
+  // Rounding is typed in the person's own length unit: feet when distances are in miles, else metres.
+  const feet = () => getUnits().distance === 'mi';
+  const roundShown = (m) => (m == null ? '' : feet() ? Math.round(m * FT_PER_M) : m);
+  let drawnFeet = feet();
+
+  // What the person typed in the server forms (and where the focus was) outlives a redraw: a toggle, a
+  // default or a fresh copy after someone else's change never empties a half-filled form.
+  function keepTyped() {
+    const typed = new Map();
+    for (const c of serverBox.querySelectorAll('form input[name]')) {
+      if (c.dataset.saved != null && c.value !== c.dataset.saved) typed.set(c.closest('form').dataset.form + '/' + c.name, c.value);
+    }
+    const all = [...serverBox.querySelectorAll('button, input, select, textarea, a[href]')];
+    return { typed, focus: all.indexOf(document.activeElement), feet: drawnFeet };
+  }
+  function putTyped(kept) {
+    for (const c of serverBox.querySelectorAll('form input[name]')) {
+      const k = c.closest('form').dataset.form + '/' + c.name;
+      if (!kept.typed.has(k)) continue;
+      if (c.name === 'rounding' && kept.feet !== drawnFeet) continue; // typed in the other unit
+      c.value = kept.typed.get(k);
+      c.dispatchEvent(new Event('input'));
+    }
+    if (kept.focus >= 0) [...serverBox.querySelectorAll('button, input, select, textarea, a[href]')][kept.focus]?.focus();
+  }
+  const redraw = (s) => { const kept = keepTyped(); drawServer(s); putTyped(kept); };
+
+  /** "Not saved: …" with the server's own reasons, not only its summary. */
+  const notSaved = (err) => {
+    const why = err && err.fields ? Object.values(err.fields).join(' ') : (err && err.message) || String(err);
+    return `Not saved: ${why}`;
+  };
+
   function drawServer(s) {
     srv = s;
+    drawnFeet = feet();
     const disabled = !admin;
-    const failed = (err) => {
-      ctx.flash(`Not saved: ${err.message || err}`, { kind: 'error' });
-      drawServer(srv);
-    };
     const patch = async (body) => {
       try {
         const next = await ctx.api.patch('settings', { version: srv.version, ...body });
         ctx.flash('Saved for everyone on this server.');
-        if (body.geocode) await refreshGeo();
-        if (ctx.alive()) { drawServer(next); sync(); }
+        if (body.geocode || body.outbound) await refreshGeo();
+        if (ctx.alive()) { redraw(next); sync(); }
         return next;
       } catch (err) {
         if (err && err.code === 'stale_version') {
           ctx.flash('Someone changed these settings meanwhile; they are shown fresh now. Make your change again.', { kind: 'info' });
           const fresh = await ctx.api.get('settings');
-          if (ctx.alive()) drawServer(fresh);
+          if (ctx.alive()) { redraw(fresh); sync(); }
           return null;
         }
         throw err;
       }
     };
-    const quick = (body) => patch(body).catch(failed);
+    // A toggle or default saves at once. When it is refused, only that control goes back; nothing else
+    // on the page is drawn again, so what is typed in the forms stays.
+    const quick = (body, undo) => patch(body).catch((err) => {
+      undo();
+      ctx.flash(notSaved(err), { kind: 'error' });
+    });
 
     // Defaults
-    const defDist = choice({ label: 'Default distance', labelHidden: true, name: 'def-distance', value: s.units.distance, options: [['km', 'km'], ['mi', 'mi']], onchange: (v) => quick({ units: { distance: v } }) });
-    const defTemp = choice({ label: 'Default temperature', labelHidden: true, name: 'def-temperature', value: s.units.temperature, options: [['c', '°C'], ['f', '°F']], onchange: (v) => quick({ units: { temperature: v } }) });
-    const defPress = choice({ label: 'Default pressure', labelHidden: true, name: 'def-pressure', value: s.units.pressure, options: [['bar', 'bar'], ['psi', 'psi']], onchange: (v) => quick({ units: { pressure: v } }) });
-    const defRange = choice({ label: 'Default range', labelHidden: true, name: 'def-range', value: s.range, options: [['rated', 'Rated'], ['ideal', 'Ideal']], onchange: (v) => quick({ range: v }) });
+    const defDist = choice({ label: 'Default distance', labelHidden: true, name: 'def-distance', value: s.units.distance, options: [['km', 'km'], ['mi', 'mi']], onchange: (v) => quick({ units: { distance: v } }, () => defDist.set(s.units.distance)) });
+    const defTemp = choice({ label: 'Default temperature', labelHidden: true, name: 'def-temperature', value: s.units.temperature, options: [['c', '°C'], ['f', '°F']], onchange: (v) => quick({ units: { temperature: v } }, () => defTemp.set(s.units.temperature)) });
+    const defPress = choice({ label: 'Default pressure', labelHidden: true, name: 'def-pressure', value: s.units.pressure, options: [['bar', 'bar'], ['psi', 'psi']], onchange: (v) => quick({ units: { pressure: v } }, () => defPress.set(s.units.pressure)) });
+    const defRange = choice({ label: 'Default range', labelHidden: true, name: 'def-range', value: s.range, options: [['rated', 'Rated'], ['ideal', 'Ideal']], onchange: (v) => quick({ range: v }, () => defRange.set(s.range)) });
     const defaults = h('div', { class: 'defaults-grid' },
       h('span', { class: 'defaults-name' }, 'Distance'), defDist,
       h('span', { class: 'defaults-name' }, 'Temperature'), defTemp,
@@ -227,7 +271,27 @@ export async function mount(ctx) {
 
     // Address lookup
     const lookup = choice({ label: 'Address lookup', labelHidden: true, name: 'geocode', value: s.geocode.mode, options: [['offline', 'Offline (on this server)'], ['online', 'Online service']],
-      onchange: (v) => quick({ geocode: { mode: v } }) });
+      onchange: (v) => {
+        const body = { mode: v };
+        if (v === 'online') {
+          // Online needs the service's address. A valid one typed but not saved yet is sent along; with none,
+          // the page says so under the address field instead of asking the server.
+          const typed = String(urlField.control.value || '').trim();
+          if (typed && typed !== (s.geocode.url || '')) {
+            if (!/^https:\/\/[^\s/]+/.test(typed)) return refuse(lookup, s.geocode.mode, urlField, 'Use an https:// address here; then choose Online service.');
+            body.url = typed;
+          } else if (!s.geocode.url) {
+            return refuse(lookup, s.geocode.mode, urlField, 'Type the https:// address of the address service here first, then choose Online service again.');
+          }
+        }
+        quick({ geocode: body }, () => lookup.set(s.geocode.mode));
+      } });
+    function refuse(ctl, old, fieldEl, text) {
+      ctl.set(old);
+      setFieldError(fieldEl, text);
+      fieldEl.control.focus();
+      ctx.flash(`Not changed: ${text}`, { kind: 'error' });
+    }
     const g = geo || {};
     const od = g.offline_data;
     const statusRows = [];
@@ -239,7 +303,8 @@ export async function mount(ctx) {
         statusRows.push(['Offline names', od ? 'present' : 'not installed']);
       }
       if (g.cache_size != null) statusRows.push(['Kept addresses', `${format(g.cache_size, 'count')} looked up before, answered without asking again`]);
-      statusRows.push(['Rounding', `${format(s.geocode.rounding_m, 'length')} before a position leaves the server`]);
+      statusRows.push(['Rounding', `${format(s.geocode.rounding_m, 'length')}${drawnFeet ? ` (${format(s.geocode.rounding_m, 'count')} m)` : ''} before a position leaves the server`]);
+      if (s.outbound?.proxy) statusRows.push(['Through', `the outbound proxy ${proxyHost(s.outbound.proxy)}`]);
       const on = g.online || {};
       if (s.geocode.mode === 'online' || on.last_error) {
         statusRows.push(['Online service', on.last_error ? `last error: ${on.last_error}${on.retry_ms ? `; tries again ${formatDateTime(on.retry_ms, ctx.tz)}` : ''}` : 'no error']);
@@ -249,7 +314,7 @@ export async function mount(ctx) {
       g.mode
         ? h('dl', { class: 'geo-status-list' }, statusRows.map(([k, v]) => [h('dt', null, k), h('dd', { class: { 'geo-bad': /^last error/.test(v) } }, v)]))
         : h('p', { class: 'setting-note' }, 'The address lookup did not answer, so its status is not known.'),
-      pageLink('Address status in Data health and storage', 'health'));
+      admin ? healthLink() : null);
 
     // Address details
     const datalistId = 'addr-langs';
@@ -265,10 +330,13 @@ export async function mount(ctx) {
     langField.querySelector('.field-control').append(langNameEl);
     showLangName();
     const urlField = field({ label: 'Online service address', name: 'url', value: s.geocode.url || '',
-      hint: 'Only used with the online service: an https:// address of a reverse-lookup service, your own copy of one, or a proxy in front of it. Positions are rounded first; nothing is sent while lookup is offline.',
+      hint: 'Only used with the online service: the https:// address of a reverse-lookup service or of your own copy of one. Positions are rounded first; nothing is sent while lookup is offline.',
       attrs: { placeholder: 'https://…', spellcheck: 'false', autocomplete: 'off', disabled } });
-    const roundField = field({ label: 'Round positions to (metres)', name: 'rounding_m', type: 'number', value: s.geocode.rounding_m ?? '',
-      hint: '0 to 1000 m. A larger number tells the service less about where the car was, with less exact addresses.', attrs: { min: '0', max: '1000', step: '1', disabled } });
+    urlField.control.addEventListener('input', () => setFieldError(urlField, null));
+    const maxRound = drawnFeet ? Math.round(1000 * FT_PER_M) : 1000;
+    const roundField = field({ label: `Round positions to (${drawnFeet ? 'feet' : 'metres'})`, name: 'rounding', type: 'number', value: roundShown(s.geocode.rounding_m),
+      hint: `0 to ${format(maxRound, 'count')} ${drawnFeet ? 'ft' : 'm'}${drawnFeet ? ' (kept in metres on the server, so it may move by a foot)' : ''}. A larger number tells the service less about where the car was, with less exact addresses.`,
+      attrs: { min: '0', max: String(maxRound), step: '1', disabled } });
     const addr = form({
       fields: [langField, urlField, roundField],
       extra: h('datalist', { id: datalistId }, ADDRESS_LANGS.map((c) => h('option', { value: c }, langName(c) || c))),
@@ -279,35 +347,68 @@ export async function mount(ctx) {
         if (r.error) bad.language = r.error;
         const url = String(v.url || '').trim();
         if (url && !/^https:\/\/[^\s/]+/.test(url)) bad.url = 'Use an https:// address, or leave it empty.';
-        if (v.rounding_m == null || !Number.isInteger(v.rounding_m) || v.rounding_m < 0 || v.rounding_m > 1000) bad.rounding_m = 'A whole number of metres from 0 to 1000.';
+        if (v.rounding == null || !Number.isInteger(v.rounding) || v.rounding < 0 || v.rounding > maxRound) bad.rounding = `A whole number of ${drawnFeet ? 'feet' : 'metres'} from 0 to ${format(maxRound, 'count')}.`;
         if (Object.keys(bad).length) throw Object.assign(new Error('Not saved: check the fields marked.'), { fields: bad });
+        const roundingM = drawnFeet ? Math.min(1000, Math.round(v.rounding / FT_PER_M)) : v.rounding;
         try {
-          await patch({ geocode: { language: r.code, url: url || null, rounding_m: v.rounding_m } });
+          await patch({ geocode: { language: r.code, url: url || null, rounding_m: roundingM } });
         } catch (err) {
           // Field paths come as geocode.language: put them under their fields.
           if (err && err.fields) {
-            err.fields = Object.fromEntries(Object.entries(err.fields).map(([k, m]) => [k.replace(/^geocode\./, ''), m]));
+            err.fields = Object.fromEntries(Object.entries(err.fields).map(([k, m]) => [k.replace(/^geocode\./, '').replace(/^rounding_m$/, 'rounding'), m]));
           } else if (err && !err.message?.startsWith('Not saved')) {
             err.message = `Not saved: ${err.message || 'the server did not answer'}. The addresses stay as they were; try again.`;
           }
           throw err;
         }
       },
-      cover: ['web.settings.general.address-language', 'web.settings.general.address-language-error', 'web.settings.general.address-language-invalid', 'docs.env.tesla-api.nominatim-proxy'],
+      cover: ['web.settings.general.address-language', 'web.settings.general.address-language-error', 'web.settings.general.address-language-invalid'],
     });
+    addr.dataset.form = 'addr';
     if (disabled) addr.querySelector('[type="submit"]').hidden = true;
+
+    // Outbound proxy: one for everything the server fetches itself.
+    const proxyField = field({ label: 'Proxy address', name: 'proxy', value: s.outbound?.proxy || '',
+      hint: 'For example http://proxy.lan:3128 or socks5://proxy.lan:1080, with no name or password in it. Leave it empty to connect directly.',
+      attrs: { placeholder: 'http://…', spellcheck: 'false', autocomplete: 'off', disabled } });
+    const proxyForm = form({
+      fields: [proxyField],
+      submitLabel: 'Save proxy',
+      onsubmit: async (v) => {
+        const url = String(v.proxy || '').trim();
+        if (url && !/^(https?|socks5):\/\/[A-Za-z0-9.-]+(:\d{1,5})?\/?$/.test(url)) {
+          throw Object.assign(new Error('Not saved: check the fields marked.'), { fields: { proxy: 'An address such as http://proxy.lan:3128: http, https or socks5, a host name and a port, nothing else.' } });
+        }
+        try {
+          await patch({ outbound: { proxy: url || null } });
+        } catch (err) {
+          if (err && err.fields) err.fields = Object.fromEntries(Object.entries(err.fields).map(([k, m]) => [k.replace(/^outbound\./, ''), m]));
+          throw err;
+        }
+      },
+    });
+    proxyForm.dataset.form = 'proxy';
+    if (disabled) proxyForm.querySelector('[type="submit"]').hidden = true;
+    const proxyNow = h('p', { class: 'setting-note' }, s.outbound?.proxy
+      ? `Now: through ${proxyHost(s.outbound.proxy)}. Online address look-ups and map tiles the server downloads go through it; nothing else leaves the server.`
+      : 'Now: none. The server connects directly, and only when online look-ups or tile downloads are on.');
 
     // Map tiles
     const tiles = choice({ label: 'Map tiles', labelHidden: true, name: 'tiles', value: s.tiles.mode, options: [['offline', 'Offline (on this server)'], ['online', 'Online tile server']],
-      onchange: (v) => quick({ tiles: { mode: v } }) });
+      onchange: (v) => {
+        if (v === 'online' && !s.tiles.online_url) return refuse(tiles, s.tiles.mode, tileUrlField, 'Save an https:// tile address with {z}, {x} and {y} here first; then choose Online tile server.');
+        quick({ tiles: { mode: v } }, () => tiles.set(s.tiles.mode));
+      } });
     let tileHost = null;
     try { tileHost = s.tiles.online_url ? new URL(s.tiles.online_url.replace(/\{[a-z]\}/g, '0')).host : null; } catch { tileHost = null; }
     const tileNow = h('p', { class: 'setting-note' }, s.tiles.mode === 'online'
       ? `Now: online, from ${tileHost || 'the tile server below'}. Each viewer’s browser asks it for the map pictures, so it sees which area is shown.`
       : 'Now: offline. Maps are drawn by this server; where no offline tiles are installed, maps show the routes and pins on plain paper.');
+    const tileUrlField = field({ label: 'Online tile address', name: 'online_url', value: s.tiles.online_url || '', hint: 'An https:// address with {z}, {x} and {y} in it.', attrs: { spellcheck: 'false', autocomplete: 'off', placeholder: 'https://…/{z}/{x}/{y}.png', disabled } });
+    tileUrlField.control.addEventListener('input', () => setFieldError(tileUrlField, null));
     const tileForm = form({
       fields: [
-        field({ label: 'Online tile address', name: 'online_url', value: s.tiles.online_url || '', hint: 'An https:// address with {z}, {x} and {y} in it.', attrs: { spellcheck: 'false', autocomplete: 'off', placeholder: 'https://…/{z}/{x}/{y}.png', disabled } }),
+        tileUrlField,
         field({ label: 'Credit shown on the map', name: 'attribution', value: s.tiles.attribution || '', hint: 'Who made the map pictures, as their licence asks.', attrs: { disabled } }),
         field({ label: 'Deepest zoom', name: 'max_zoom', type: 'number', value: s.tiles.max_zoom ?? '', hint: '1 to 22; the tile server’s own limit.', attrs: { min: '1', max: '22', step: '1', disabled } }),
       ],
@@ -326,26 +427,32 @@ export async function mount(ctx) {
         }
       },
     });
+    tileForm.dataset.form = 'tiles';
     if (disabled) tileForm.querySelector('[type="submit"]').hidden = true;
+    // What each form field holds on the server now: a value that differs was typed and is kept on a redraw.
+    for (const c of [...addr.elements, ...tileForm.elements, ...proxyForm.elements]) if (c.name && c.tagName === 'INPUT') c.dataset.saved = c.value;
 
-    const mapsLink = switchField({ label: 'Allow links to an outside map', checked: !!s.outside_links.maps, onchange: (on) => quick({ outside_links: { maps: on } }) });
-    const notesLink = switchField({ label: 'Allow release-notes links', checked: !!s.outside_links.release_notes, onchange: (on) => quick({ outside_links: { release_notes: on } }) });
-    const release = switchField({ label: 'Check for new releases', checked: !!s.release_check.enabled, onchange: (on) => quick({ release_check: { enabled: on } }) });
+    const mapsLink = switchField({ label: 'Allow links to an outside map', checked: !!s.outside_links.maps, onchange: (on) => quick({ outside_links: { maps: on } }, () => mapsLink.set(s.outside_links.maps)) });
+    const notesLink = switchField({ label: 'Allow release-notes links', checked: !!s.outside_links.release_notes, onchange: (on) => quick({ outside_links: { release_notes: on } }, () => notesLink.set(s.outside_links.release_notes)) });
+    const release = switchField({ label: 'Check for new releases', checked: !!s.release_check.enabled, onchange: (on) => quick({ release_check: { enabled: on } }, () => release.set(s.release_check.enabled)) });
     for (const el of [defDist, defTemp, defPress, defRange, lookup, tiles]) el.querySelectorAll('button').forEach((b) => { b.disabled = disabled; });
     for (const el of [mapsLink, notesLink, release]) el.input.disabled = disabled;
 
-    const readOnly = disabled ? flag('Read only') : null;
+    // A new flag for each header: one node appended twice would only show in the second.
+    const readOnly = () => (disabled ? flag('Read only') : null);
     replace(serverBox,
       h('section', { class: 'settings', 'aria-labelledby': 'defaults-title' },
-        h('h2', { class: 'label settings-label', id: 'defaults-title' }, 'Defaults for everyone', h('span', { class: 'label-note' }, admin ? 'admins only; saved at once' : 'read only for your account'), readOnly),
+        h('h2', { class: 'label settings-label', id: 'defaults-title' }, 'Defaults for everyone', h('span', { class: 'label-note' }, admin ? 'admins only; saved at once' : 'read only for your account'), readOnly()),
         setting('Units and range', 'For people who have not chosen their own. The distance unit can start from the one a car reports from its own screen settings.', defaults)),
       h('section', { class: 'settings', 'aria-labelledby': 'maps-title' },
-        h('h2', { class: 'label settings-label', id: 'maps-title' }, 'Addresses and maps', h('span', { class: 'label-note' }, 'private by default: nothing leaves this server unless an admin turns it on'), readOnly),
+        h('h2', { class: 'label settings-label', id: 'maps-title' }, 'Addresses and maps', h('span', { class: 'label-note' }, 'private by default: nothing leaves this server unless an admin turns it on'), readOnly()),
         setting('Address lookup', `How a recorded position becomes a street address. Offline uses the place names bundled with Sentry Mate (${s.geocode.dataset || 'built in'}); nothing leaves the server. Online asks the service below, with positions rounded, and keeps each answer so the same spot is asked once.`,
           lookup, { cover: 'web.settings.general.address-lookup', extra: geoStatus }),
         setting('Address details', 'Language, online service and rounding.', addr, { cls: 'setting-form' }),
         setting('Map tiles', `The pictures under every map. Credit: ${s.tiles.attribution || 'shown on the map'}; zoom up to ${s.tiles.max_zoom}.`, h('div', { class: 'tiles-control' }, tiles, tileNow), { cover: 'web.shell.map-tiles' }),
         setting('Online tile server', 'Only used with online tiles.', tileForm, { cls: 'setting-form' }),
+        setting('Outbound proxy', 'If this server may only reach the internet through a proxy: online address look-ups and map tiles the server downloads go through it. Viewers’ browsers loading online tiles use their own connection.',
+          h('div', { class: 'proxy-control' }, proxyForm, proxyNow), { cls: 'setting-form', cover: 'docs.env.tesla-api.nominatim-proxy' }),
         setting('Outside links', 'Off by default: nothing on a page sends you to another site unless an admin allows it. Links open in a new tab, only when clicked.', h('div', { class: 'switches' }, mapsLink, notesLink)),
         setting('Release check', 'Asks for the newest version number once a day and shows a note in the footer. Off by default.', release)));
   }

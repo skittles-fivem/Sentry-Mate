@@ -10,6 +10,18 @@ from .helpers import DAY, NOW, ServerCase
 from .test_live import read_events
 
 
+class OutboundProxy(ServerCase):
+    def test_proxy(self):
+        s = self.c.get("/api/v1/settings")
+        t = self.c.json("PATCH", "/api/v1/settings", {"version": s["version"], "outbound": {"proxy": "http://proxy.lan:3128"}})
+        self.assertEqual(t["outbound"]["proxy"], "http://proxy.lan:3128")
+        e, _ = self.c.error("PATCH", "/api/v1/settings", 422, "invalid",
+                            body={"version": t["version"], "outbound": {"proxy": "ftp://proxy.lan"}})
+        self.assertIn("outbound.proxy", e["fields"])
+        u = self.c.json("PATCH", "/api/v1/settings", {"version": t["version"], "outbound": {"proxy": None}})
+        self.assertIsNone(u["outbound"]["proxy"])
+
+
 class Settings(ServerCase):
     def test_1_checks(self):
         s = self.c.get("/api/v1/settings")
@@ -22,12 +34,14 @@ class Settings(ServerCase):
                             body={"version": 1, "units": {"distance": "furlong"}, "range": "far",
                                   "tiles": {"mode": "online", "online_url": "https://tiles.example/x.png"},
                                   "geocode": {"mode": "online"}, "host_names": ["bad host"],
-                                  "car_order": ["c1", "c99"]})
-        for f in ("units.distance", "range", "tiles.online_url", "geocode.url", "host_names.0", "car_order"):
+                                  "car_order": ["c1", "c99"], "outbound": {"proxy": "http://me:pw@proxy.lan:3128"}})
+        for f in ("units.distance", "range", "tiles.online_url", "geocode.url", "host_names.0", "car_order",
+                  "outbound.proxy"):
             self.assertIn(f, e["fields"])
         e, _ = self.c.error("PATCH", "/api/v1/settings", 409, "stale_version", body={"version": 7, "range": "ideal"})
         self.assertEqual(e["version"], 1)
         self.assertEqual(self.c.get("/api/v1/settings"), s)  # nothing saved
+        self.assertIsNone(s["outbound"]["proxy"])
 
     def test_2_defaults_follow(self):
         watch = self.server.client()

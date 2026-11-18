@@ -51,7 +51,7 @@ def patch_settings(req):
     req.version_check(cur["version"])
     bad, rule = {}, {}
     known = ("version", "units", "range", "car_order", "geocode", "tiles", "release_check", "outside_links",
-             "host_names")
+             "outbound", "host_names")
     for k in body:
         if k not in known:
             bad[k] = "Unknown field."
@@ -93,6 +93,7 @@ def patch_settings(req):
     sub("tiles", {"mode": ("offline", "online"), "online_url": "str?", "attribution": "str", "max_zoom": int})
     sub("release_check", {"enabled": bool})
     sub("outside_links", {"maps": bool, "release_notes": bool})
+    sub("outbound", {"proxy": "str?"})
     if "range" in body:
         if body["range"] not in ("rated", "ideal"):
             rule["range"] = "Must be rated or ideal."
@@ -131,6 +132,9 @@ def patch_settings(req):
         rule["geocode.language"] = "A language code such as en or de."
     if t["mode"] == "online" and not _https_url(t.get("online_url"), template=True):
         rule["tiles.online_url"] = "An https:// tile address with {z}, {x} and {y}."
+    px = new["outbound"].get("proxy")
+    if px is not None and not re.fullmatch(r"(https?|socks5)://[A-Za-z0-9.-]+(:\d{1,5})?/?", px):
+        rule["outbound.proxy"] = "A proxy address such as http://proxy.lan:3128 (no name or password in it), or null."
     if not 1 <= t["max_zoom"] <= 22:
         rule["tiles.max_zoom"] = "Must be between 1 and 22."
     if rule:

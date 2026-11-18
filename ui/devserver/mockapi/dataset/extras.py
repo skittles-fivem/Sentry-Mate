@@ -31,6 +31,7 @@ def server_settings(now):
                   "attribution": "© OpenStreetMap contributors", "max_zoom": 19},
         "release_check": {"enabled": False},
         "outside_links": {"maps": False, "release_notes": False},
+        "outbound": {"proxy": None},
         "host_names": ["sentry-mate.local"],
     }
 

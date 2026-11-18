@@ -153,7 +153,7 @@ This is the `/api/v1` the pages in [`parity/ui-parity.md`](parity/ui-parity.md) 
 
 | Resource | Methods | Fields and notes | Pages |
 |---|---|---|---|
-| `/api/v1/settings` | GET, PATCH (admin) | Server defaults: `{ units, range, car_order, geocode: { mode: "offline" \| "online", dataset, url, language, rounding_m }, tiles: { mode, online_url, attribution, max_zoom }, release_check: { enabled }, outside_links: { maps, release_notes }, host_names, version }` | Settings: Display and units, Settings: Server and access |
+| `/api/v1/settings` | GET, PATCH (admin) | Server defaults: `{ units, range, car_order, geocode: { mode: "offline" \| "online", dataset, url, language, rounding_m }, tiles: { mode, online_url, attribution, max_zoom }, release_check: { enabled }, outside_links: { maps, release_notes }, outbound: { proxy }, host_names, version }` | Settings: Display and units, Settings: Server and access |
 | `/api/v1/maps/config` | GET | `{ tiles: { mode, offline_url, online_template, attribution, max_zoom }, geocoding: { mode, credit, offline_data_present } }`; offline PMTiles are served by Sentry Mate. | Every map |
 | `/api/v1/geocode/status` | GET | `{ mode, offline_data, cache_size, online: { last_error, retry_ms } }` | Settings: Display and units, Data health and storage |
 | `/api/v1/notices` | GET | `{ items: [{ code, level, message, since_ms, fix_link }] }`: vault, certificate, recovery key file, opt-in release notice | App frame |
@@ -337,3 +337,5 @@ Points this document left open, decided while building the dev server (`ui/devse
 - **`/fleet/versions` items carry `time_zone`** (the car's own zone), so the list of every car can show each row's dates where that car is, not in the zone of the car being viewed.
 - **Audit rows carry `car`:** the id of the car the changed item belongs to (a `car:<id>` target's own car, and the car of a `drive:`, `charge:`, `trip:` or `update:` target), else null. A drive, charge or update id is only unique within its car, so a page needs it to link the entry to the item.
 - **`/network` carries `certificate: { names }`:** the names in the certificate the server runs with now. Saving `host_names` in `/settings` does not change them; they change when a new certificate is made. A page compares an address with these, not with `host_names`.
+- **`/settings` carries `outbound: { proxy }`:** one proxy (`http://`, `https://` or `socks5://` host with an optional port, no name or password in it; null for none) that the server uses for everything it fetches itself: online address lookups and map tiles it downloads. Viewers' browsers loading online tiles do not go through it.
+- **`/me/preferences` `language` defaults to `"auto"`** for an account that never picked one, so dates and numbers follow the browser's languages; a page says "your choice" only for any other value.

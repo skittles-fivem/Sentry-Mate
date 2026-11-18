@@ -23,7 +23,7 @@ DEFAULT_PREFS = {
     "units": {"distance": "km", "temperature": "c", "pressure": "bar"},
     "range": "rated",
     "theme": "device",
-    "language": "en",
+    "language": "auto",
     "interface_size": 100,
     "follow_screen": True,
     "ui_pack": None,
