@@ -190,10 +190,10 @@ export async function mount(ctx) {
   const moneyEl = (list, kind) => (list.length ? h('span', { class: 'money-stack' }, list.map((x) => h('span', null, kind ? format({ amount: x.amount, currency: x.currency }, kind) : formatMoney(x.amount, x.currency), list.length > 1 ? h('small', { class: 'cur' }, ` ${x.currency}`) : null))) : null);
   const figs = panel({ title: 'Trip figures', icon: 'stats', cls: 'trip-figures', cover: 'trip.empty_states', side: csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(from, tz), 'figures'), figureRows(trip, car), FIG_COLS) }) },
     h('div', { class: 'trip-fig-grid' },
-      metric('Distance', dist.odometer_km, 'distance', { size: 'lg', cover: 'trip.stat.mileage', why: noDrive ? whyDrive : 'No odometer reading', explain: dist.drives_km != null ? `by odometer; the ${formatNumber(nDrives)} ${nDrives === 1 ? 'drive adds' : 'drives add'} up to ${format(dist.drives_km, 'distance')}` : 'by odometer' }),
-      metric('Average speed, moving', trip.speed_kph?.moving, 'speed', { cover: 'trip.stat.speed_moving', why: whyDrive, explain: `distance over ${formatDuration(tm.driving || 0)} of driving` }),
+      metric('Distance', dist.odometer_km, 'distance', { size: 'lg', cover: 'trip.stat.mileage', why: noDrive ? whyDrive : 'No odometer reading', explain: !noDrive && dist.drives_km != null ? `by odometer; the ${formatNumber(nDrives)} ${nDrives === 1 ? 'drive adds' : 'drives add'} up to ${format(dist.drives_km, 'distance')}` : 'by odometer' }),
+      metric('Average speed, moving', trip.speed_kph?.moving, 'speed', { cover: 'trip.stat.speed_moving', why: whyDrive, explain: noDrive ? 'distance over the time driving' : `distance over ${formatDuration(tm.driving || 0)} of driving` }),
       metric('Average speed, with fast charging', trip.speed_kph?.incl_dc, 'speed', { cover: 'trip.stat.speed_incl_dc', why: whyDrive, explain: tm.charging_dc ? `the ${formatDuration(tm.charging_dc)} at DC chargers counted as travel time` : 'no DC charging in this window, so the same as moving' }),
-      metric('Net consumption', trip.wh_per_km?.net, 'efficiency', { cover: 'trip.stat.consumption_net', why: noDrive ? whyDrive : 'Too little distance', explain: `${format(en.drive_net, 'energy')} the pack gave while driving, regen taken off` }),
+      metric('Net consumption', trip.wh_per_km?.net, 'efficiency', { cover: 'trip.stat.consumption_net', why: noDrive ? whyDrive : 'Too little distance', explain: noDrive ? 'energy at the pack per distance, regen taken off' : `${format(en.drive_net, 'energy')} the pack gave while driving, regen taken off` }),
       metric('Gross consumption', trip.wh_per_km?.gross, 'efficiency', { cover: 'trip.stat.consumption_gross', why: noDrive ? whyDrive : 'Too little distance', explain: `${format(en.gross, 'energy')} used in all, parked time included, from the pack’s own counters; the same method for any window length` }),
       metric('Charging cost', moneyEl(costList), null, { cover: 'trip.stat.charging_cost', why: costWhy, explain: nCharges ? `${formatNumber(cost.priced ?? 0)} of ${formatNumber(nCharges)} ${nCharges === 1 ? 'charge' : 'charges'} priced${cost.unpriced ? `; ${formatNumber(cost.unpriced)} without a price are not counted` : ''}; per currency, never added across` : 'charges that started in the window' }),
       metric('Cost per distance', moneyEl(per100, 'money_per_distance'), null, { cover: 'trip.stat.cost_per_100', why: noDrive ? whyDrive : costList.length ? 'Too little distance' : costWhy, explain: 'the charging cost over the distance driven' })),
@@ -235,7 +235,7 @@ export async function mount(ctx) {
     h('span', null, h('span', { class: 'route-pin route-pin--b', 'aria-hidden': 'true' }, 'B'), 'End'),
     h('span', null, h('i', { class: 'trip-dot', dataset: { kind: 'charge' } }), 'Charge (click to open)'),
     h('span', null, h('i', { class: 'trip-dot', dataset: { kind: 'overnight' } }), 'Overnight stop'),
-    vsId ? h('span', null, h('i', { class: 'trip-line', dataset: { car: 'b' } }), vsCar?.name || 'Second car') : null);
+    vsCar && vsTrip ? h('span', null, h('i', { class: 'trip-line', dataset: { car: 'b' } }), vsCar.name) : null);
   const readout = h('div', { class: 'glass-card trip-readout', hidden: true, 'aria-hidden': 'true' });
   const mapPanel = h('section', { class: 'panel map-panel trip-map', 'aria-label': 'Route map', cover: 'trip.map.route' },
     mapEl, h('div', { class: 'map-overlay map-overlay--tl' }, mapLegend), h('div', { class: 'map-overlay map-overlay--bl' }, readout));
@@ -288,15 +288,15 @@ export async function mount(ctx) {
         render: (d) => h('span', { class: 'cell-text cell-num', title: `${hm(d.duration_ms)} (hours:minutes), ${formatTime(d.start_ms, tz)} to ${d.end_ms ? formatTime(d.end_ms, tz) : 'now'}` },
           h('span', { class: 'main' }, formatDuration(d.duration_ms)), h('span', { class: 'sub' }, `${hm(d.duration_ms)} h:min`)) },
       { key: 'distance', label: 'Distance', num: true, sort: 'distance', cover: 'trip.drives.distance', csv: column('Distance', 'distance_km', 'distance'), render: (d) => format(d.distance_km, 'distance') },
-      { key: 'soc_a', label: 'Battery at start', num: true, cover: 'trip.drives.soc_start', csv: (d) => d.start_soc_pct, render: (d) => socCell(d.start_soc_pct, d.start_range_km) },
-      { key: 'soc_b', label: 'Battery at end', num: true, cover: 'trip.drives.soc_end', csv: (d) => d.end_soc_pct, render: (d) => socCell(d.end_soc_pct, d.end_range_km) },
+      { key: 'soc', label: 'Battery', num: true, cover: ['trip.drives.soc_start', 'trip.drives.soc_end'], title: `Battery at the start → at the end, with the ${rangeLabel().toLowerCase()} below`,
+        render: (d) => socCell(d.start_soc_pct, d.end_soc_pct, d.start_range_km, d.end_range_km) },
       { key: 'wh', label: 'Consumption', num: true, sort: 'wh_per_km', cover: 'trip.drives.consumption', csv: column('Consumption', 'wh_per_km', 'efficiency'), render: consumptionCell },
     ],
     empty: () => emptyState({ icon: 'route', title: 'No drive in this window', text: 'Drives belong to the window by their start. Widen the window, or use Last three drives above.' }),
   });
   const admin = isAdmin();
   const tripCharges = dataTable(ctx, {
-    title: 'Charges', icon: 'bolt', path: `cars/${enc(cid)}/charges`, params: listParams, limit: 50, csvName: 'trip-charges', cls: 'trip-table',
+    title: 'Charges', icon: 'bolt', path: `cars/${enc(cid)}/charges`, params: listParams, limit: 50, csvName: 'trip-charges', cls: 'trip-table trip-table--charges',
     cover: 'trip.charges.table', sort: { key: 'start', dir: 'asc' },
     note: `Every charge that started in the window, oldest first. Energy added is measured at the pack; from the grid is measured on AC only (a fast charger’s grid side is not). ${admin ? 'Click a cost to set or change it.' : 'An admin can set costs.'}`,
     rowHref: (c) => state.buildUrl('charge', { car: cid, charge: c.id }),
@@ -310,12 +310,13 @@ export async function mount(ctx) {
       { key: 'cost', label: 'Cost', num: true, sort: 'cost', cover: ['trip.charges.cost', 'trip.charges.link.cost'], csv: (c) => (c.cost ? `${c.cost.amount} ${c.cost.currency}` : ''), render: (c) => costCell(c, cid, admin) },
       { key: 'added', label: 'Added', num: true, sort: 'energy', cover: 'trip.charges.energy_added', title: 'Energy into the pack', csv: column('Energy added', 'energy_added_kwh', 'energy'), render: (c) => format(c.energy_added_kwh, 'energy') },
       { key: 'grid', label: 'From grid', num: true, cover: 'trip.charges.energy_used', title: 'Energy drawn, losses included (AC only)', csv: column('Energy from grid', 'energy_grid_kwh', 'energy'),
-        render: (c) => (c.energy_grid_kwh != null ? format(c.energy_grid_kwh, 'energy') : h('span', { class: 'faint nowrap', title: c.kind === 'dc' ? 'A fast charger’s grid side is not measured.' : 'No meter reading for this charge.' }, c.kind === 'dc' ? 'not measured (DC)' : '—')) },
-      { key: 'power', label: 'Average power', num: true, cover: 'trip.charges.power_avg', title: 'While charging, waiting time left out', csv: column('Average power', 'power_avg_kw', 'power'),
+        render: (c) => (c.energy_grid_kwh != null ? format(c.energy_grid_kwh, 'energy') : h('span', { class: 'cell-text cell-num', title: c.kind === 'dc' ? 'A fast charger’s grid side is not measured.' : 'No meter reading for this charge.' },
+          h('span', { class: 'main faint' }, '—'), h('span', { class: 'sub' }, c.kind === 'dc' ? 'DC: not metered' : 'no reading'))) },
+      { key: 'power', label: 'Avg power', num: true, cover: 'trip.charges.power_avg', title: 'While charging, waiting time left out', csv: column('Average power', 'power_avg_kw', 'power'),
         render: (c) => h('span', { class: 'cell-text cell-num' }, h('span', { class: 'main' }, format(c.power_avg_kw, 'power')), h('span', { class: 'sub' }, c.power_max_kw != null ? `peak ${format(c.power_max_kw, 'power')}` : '')) },
       { key: 'range', label: 'Range added', num: true, cover: 'trip.charges.range_added', title: `${rangeLabel()} added`, csv: column('Range added', 'range_added_km', 'range'), render: (c) => format(c.range_added_km, 'range') },
-      { key: 'soc_a', label: 'Battery at start', num: true, cover: 'trip.charges.soc_start', csv: (c) => c.start_soc_pct, render: (c) => socCell(c.start_soc_pct, c.start_range_km) },
-      { key: 'soc_b', label: 'Battery at end', num: true, sort: 'end_soc', cover: 'trip.charges.soc_end', csv: (c) => c.end_soc_pct, render: (c) => socCell(c.end_soc_pct, c.end_range_km) },
+      { key: 'soc', label: 'Battery', num: true, sort: 'end_soc', cover: ['trip.charges.soc_start', 'trip.charges.soc_end'], title: `Battery at the start → at the end, with the ${rangeLabel().toLowerCase()} below (sorts by the end)`,
+        render: (c) => socCell(c.start_soc_pct, c.end_soc_pct, c.start_range_km, c.end_range_km) },
     ],
     empty: () => emptyState({ icon: 'bolt', title: 'No charge in this window', text: 'Charges belong to the window by their start. A charge that began before the window is on the trip before it.' }),
   });
@@ -339,6 +340,17 @@ export async function mount(ctx) {
     tripCharges.el));
   await Promise.all([tripDrives.ready, tripCharges.ready]);
   if (!ctx.alive()) return;
+  // a table wider than its panel (a narrow window) says so above it, instead of hiding columns at the edge
+  for (const t of [tripDrives, tripCharges]) {
+    const box = t.el.querySelector('.tbl-scroll');
+    if (!box || typeof ResizeObserver !== 'function') continue;
+    const hint = h('p', { class: 'trip-scroll-hint', hidden: true }, icon('chev-r', 'ico--sm'), 'More columns to the right: scroll the table sideways');
+    box.before(hint);
+    const ro = new ResizeObserver(() => { hint.hidden = box.scrollWidth <= box.clientWidth + 1; });
+    ro.observe(box);
+    ctx.onCleanup(() => ro.disconnect());
+  }
+  if (!ctx.alive()) return;
   ctx.ready();
 
   // a drive or charge that starts or ends: everything again (only when the window reaches now)
@@ -356,7 +368,7 @@ export async function mount(ctx) {
   /* ---------- the map, after the first paint */
   let m = null, hoverMarker = null;
   (async () => {
-    const cars = [cid, vsId].filter(Boolean).join(',');
+    const cars = [cid, vsCar && vsTrip ? vsId : null].filter(Boolean).join(','); // a second car that did not load cannot hide the first car's route
     const n = nDrives + (vsTrip?.drives?.length ?? 0);
     let tracks = null;
     try { tracks = await ctx.api.get('tracks', { cars, ...win, max_points: clamp(Math.max(12000, n * 6), 12000, 200000) }); } catch { tracks = null; }
@@ -444,9 +456,19 @@ export async function mount(ctx) {
     elevVal.textContent = format(series.values.elevation_m?.[i], 'length');
     hoverAt(i);
   };
+  let zoomed = false;
   const zoomTo = (a, b) => {
-    if (b - a < 60) return;
-    state.setPeriod({ from: Math.round(a * 1000), to: Math.round(b * 1000) }, { push: true });
+    // both charts share one selection, so this runs once per chart: only the first one navigates
+    if (b - a < 60 || zoomed) return;
+    zoomed = true;
+    // the wider window goes into this entry's URL first (a page without from/to would fall back to the
+    // tab's stored period, which by then is the narrow one), then one new entry for the narrow window
+    if (!ctx.state.periodFromUrl) {
+      const p = ctx.period;
+      const wide = ctx.state.period || (p?.preset && p.preset !== 'custom' ? { preset: p.preset } : { from, to: p?.to_ms ?? null });
+      try { globalThis.history?.replaceState(null, '', periodLink(wide)); } catch { /* no history: fine */ }
+    }
+    ctx.navigate(periodLink({ from: Math.round(a * 1000), to: Math.round(b * 1000) }));
   };
   const make = (kind) => (width, height) => {
     const c = colors();
@@ -508,8 +530,11 @@ function placeCell(p, lat, lon) {
     h('span', { class: 'sub' }, saved ? (p.address?.short && p.address.short !== name ? p.address.short : 'saved place') : 'not a saved place yet'));
 }
 
-function socCell(v, rangeKm) {
-  return h('span', { class: 'cell-text cell-num' }, h('span', { class: 'main' }, pct(v)), h('span', { class: 'sub' }, rangeKm != null ? format(rangeKm, 'range') : ''));
+// the battery at the start and the end in one cell: "63% → 61%" over "322 → 315 km"
+function socCell(a, b, ra, rb) {
+  const rng = ra != null || rb != null ? `${ra != null ? formatNumber(convert(ra, 'range'), { maximumFractionDigits: 0 }) : '—'} → ${format(rb, 'range')}` : '';
+  return h('span', { class: 'cell-text cell-num', title: `Start ${pct(a)}${ra != null ? ` (${format(ra, 'range')})` : ''}, end ${pct(b)}${rb != null ? ` (${format(rb, 'range')})` : ''}` },
+    h('span', { class: 'main' }, `${pct(a)} → ${pct(b)}`), h('span', { class: 'sub' }, rng));
 }
 
 function consumptionCell(d) {
@@ -565,7 +590,7 @@ function figText(v, kind) {
 function figureRows(t, car) {
   return FIGS.map(([label, get, kind]) => {
     const v = get(t);
-    if (kind === 'money' || kind === 'money_per_distance') return { car: car.name, figure: label, value: v.map((x) => `${x.amount} ${x.currency}`).join(' + '), unit: kind === 'money' ? 'currency' : unitLabel('money_per_distance') };
+    if (kind === 'money' || kind === 'money_per_distance') return { car: car.name, figure: label, value: v.map((x) => `${kind === 'money' ? x.amount : Number(convert(x.amount, kind).toFixed(2))} ${x.currency}`).join(' + '), unit: kind === 'money' ? 'currency' : unitLabel('money_per_distance') };
     if (kind === 'duration') return { car: car.name, figure: label, value: v == null ? null : Math.round(v / 60000), unit: 'min' };
     return { car: car.name, figure: label, value: v == null ? null : kind === 'count' ? v : Number(convert(v, kind).toFixed(kind === 'energy' ? 3 : 1)), unit: kind === 'count' ? '' : unitLabel(kind) };
   });

@@ -90,12 +90,20 @@
 .trip-page .cell-text > * { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .trip-page .cell-text .sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
 .trip-page .cell-num { align-items: flex-end; }
-.trip-table .col-place .cell-text { max-width: 16rem; }
+/* places are capped so every column fits the panel at a laptop width (the charges table has ten) */
+.trip-table .col-place .cell-text { max-width: 13rem; }
+.trip-table--charges .col-place .cell-text { max-width: 9rem; }
+.trip-table .tbl th { white-space: nowrap; }
+.trip-scroll-hint { display: flex; align-items: center; justify-content: flex-end; gap: 0.25rem; margin: 0; padding: 0.375rem 1.25rem; font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
+.trip-scroll-hint[hidden] { display: none; }
 .trip-page .place-link:hover, .trip-page .cost-link:hover { color: var(--live); }
-.trip-page .cell-text > .cost-link { display: flex; flex-wrap: nowrap; justify-content: flex-end; align-items: center; gap: 0.25rem; overflow: visible; }
+.trip-page .cell-text > .cost-link { display: flex; flex-direction: row; white-space: nowrap; flex-wrap: nowrap; justify-content: flex-end; align-items: center; gap: 0.25rem; overflow: visible; }
 .trip-page .cost-link .ico { color: var(--text-3); }
 .trip-page .cost-link.is-missing { color: var(--warm); }
 
+@container page (min-width: 100rem) {
+  .trip-table--charges .col-place .cell-text { max-width: 14rem; }
+}
 @container page (min-width: 140rem) {
   .trip-map { min-height: 40rem; }
   .trip-chart--batt { height: 14rem; }
