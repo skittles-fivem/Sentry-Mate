@@ -21,7 +21,7 @@ import { flash } from '../core/flash.js';
 import { confirmDialog } from '../core/dialog.js';
 import { errorWords } from '../core/states.js';
 import { dateTime, dur, DASH } from '../core/fmt.js';
-import { codeGroups, copyButton } from './settings-server-move.js';
+import { keyBox, etaText } from './settings-server-move.js';
 
 export const id = 'setup';
 export const css = true;
@@ -34,6 +34,7 @@ const pctText = (a, b) => `${format(pct(a, b), 'number', { digits: 0 })} %`;
 const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : e?.message || errorWords(e).text);
 const wait = (e) => `Wait ${e?.retryAfterMs ? Math.ceil(e.retryAfterMs / 1000) : 60} s, then try again.`;
 const FINAL = new Set(['done', 'failed']);
+const RESUMABLE = new Set(['cancelled', 'bad_session', 'not_proven']);  // stopped: a new code from the same server carries on
 
 const MOVE_STEPS = [
   ['connecting', 'Connecting', 'Checks the code'],
@@ -192,44 +193,42 @@ export async function mount(ctx) {
   }
 
   function keyStep(key, me) {
-    const fileText = `Sentry Mate recovery key\r\n\r\n${key}\r\n\r\nFor the server at ${globalThis.location.host}, set up ${dateTime(ctx.api.now(), tz)}.\r\n`
-      + 'It opens this server\'s data if its key file is lost, and the export files it makes.\r\nKeep it away from the server: in a password manager, or on paper.\r\n';
+    const madeMs = ctx.api.now();
     const saved = h('input', { type: 'checkbox', id: 'su-saved' });
     const go = h('button', { class: 'btn btn--primary', type: 'button', disabled: true }, 'Go on to Sentry Mate', icon('arrow-r', 'ico--sm'));
     const err = h('p', { class: 'form-error', hidden: true, role: 'alert' });
     saved.addEventListener('change', () => { go.disabled = !saved.checked; });
+    const anyway = h('button', { class: 'btn btn--ghost', type: 'button', hidden: true }, 'Go on anyway');
+    const enter = async () => {
+      await session.signedIn();
+      if (!ctx.alive()) return;
+      flash(`Welcome, ${me?.name || 'admin'}. Your server is ready: install the CAN Bridge and make an upload token in Settings: Cars.`, { next: true });
+      ctx.navigate('/', { replace: true });
+    };
     go.addEventListener('click', async () => {
       go.disabled = true; err.hidden = true;
       try { await ctx.api.post('system/recovery-key/saved', {}); } catch (e) {
         if (!ctx.alive()) return;
-        replace(err, icon('warn'), `The server could not delete its copy of the key (${errText(e)}). Your account is ready: Settings: Server and access reminds you to do it later.`);
-        err.hidden = false;
+        // stay on this page so the message is read: try again, or go on and do it in Settings
+        replace(err, icon('warn'), `The server could not delete its copy of the key (${errText(e)}). Press the button again, or go on anyway: Settings: Server and access then shows "I have saved it already" to do it later.`);
+        err.hidden = false; go.disabled = !saved.checked; anyway.hidden = false;
+        return;
       }
-      await session.signedIn();
-      flash(`Welcome, ${me?.name || 'admin'}. Your server is ready: install the CAN Bridge and make an upload token in Settings: Cars.`, { next: true });
-      ctx.navigate('/', { replace: true });
+      await enter();
     });
-    const download = btn('Download as a file', () => {
-      const href = URL.createObjectURL(new Blob([fileText], { type: 'text/plain;charset=utf-8' }));
-      const a = h('a', { href, download: 'sentry-mate-recovery-key.txt', hidden: true });
-      document.body.append(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(href), 30000);
-    }, { ic: 'download' });
+    anyway.addEventListener('click', enter);
     paint(true,
       crumbs(3, 'Start fresh'),
       h('h1', { id: 'auth-title' }, 'Save your recovery key'),
       h('p', null, h('b', null, 'It is shown only now, once.'), ' Your account is made. Everything this server stores is encrypted; the recovery key opens it if the server\'s key file is ever lost, and it opens export files of this server when you move.'),
-      h('div', { class: 'su-keybox' },
-        h('p', { class: 'su-keybox-head' }, 'Recovery key'),
-        codeGroups(key, 'mv-code su-key'),
-        h('div', { class: 'row su-acts' }, copyButton(key, 'Copy', { primary: true }), download)),
+      keyBox(key, { ms: madeMs, tz, why: 'set up' }),
       h('ul', { class: 'su-rules' },
-        h('li', null, 'Keep it in a password manager or on paper, ', h('b', null, 'away from the server'), ': a backup with the key next to it opens for anyone.'),
-        h('li', null, 'Nobody can show it again: not the server, not an admin. If it is lost, an admin can make a new one later.'),
-        h('li', null, 'Until you tick below, the server keeps a copy in its keys folder (RECOVERY-KEY.txt) and Settings reminds you. Ticking deletes that copy.')),
+        h('li', null, 'Keep it in a password manager or on paper, ', h('b', null, 'away from the server'), ': a backup with the key next to it opens for anyone. The downloaded file names this server and today\'s date.'),
+        h('li', null, 'Page closed before the tick? Nothing is lost: until you tick, the server keeps a copy, and ', h('b', null, 'Settings: Server and access'), ' has ', h('b', null, 'Show the key again'), ' (with your password).'),
+        h('li', null, 'Ticking below deletes the server\'s copy; after that nobody can show this key again. If it is lost later, an admin presses ', h('b', null, 'Make a new recovery key'), ' in the same place.')),
       h('label', { class: 'check su-saved', for: 'su-saved' }, saved, h('span', null, 'I have saved it somewhere safe, away from this server')),
       err,
-      h('div', { class: 'row su-acts' }, go));
+      h('div', { class: 'row su-acts' }, go, anyway));
   }
 
   /* ================================================================ move here */
@@ -472,7 +471,7 @@ export async function mount(ctx) {
       replace(J.prog, bar, h('p', { class: 'su-bar-text' }, h('b', null, bytes(done)), ` of ${bytes(total)} ${label} (${pctText(done, total)})`,
         p?.files_total ? ` · ${count(p.files_done)} of ${count(p.files_total)} files` : null,
         rate ? ` · ${bytes(rate)} per second` : null,
-        eta != null && rate ? ` · about ${dur(eta * 1000)} to go` : null));
+        eta != null && rate ? ` · ${etaText(eta)}` : null));
     }
 
     // what is happening, in words
@@ -498,7 +497,9 @@ export async function mount(ctx) {
 
     // the buttons: rebuilt only when what they offer changes, so a half-typed key stays
     const canForce = move && (j.state === 'waiting' || j.state === 'stopped') && (p?.bytes_done || 0) > 0;
-    const k = j.state === 'done' ? 'done' : j.state === 'failed' ? 'failed' : j.state === 'switching' ? 'none' : canForce ? 'force' : (!move && j.state === 'uploading' && !S.up.active) ? 'resume' : 'giveup';
+    const canResume = move && j.state === 'stopped' && RESUMABLE.has(pr?.code);
+    const k = j.state === 'done' ? 'done' : j.state === 'failed' ? 'failed' : j.state === 'switching' ? 'none'
+      : canResume ? (canForce ? 'carry+force' : 'carry') : canForce ? 'force' : (!move && j.state === 'uploading' && !S.up.active) ? 'resume' : 'giveup';
     if (k !== J.actsKey) {
       J.actsKey = k;
       const halfway = move
@@ -509,6 +510,7 @@ export async function mount(ctx) {
       else if (k === 'failed') replace(J.acts, h('div', { class: 'row su-acts' }, btn('Choose another file', () => clearFailed(() => restoreStep()), { kind: 'primary', ic: 'upload' }), btn('Back to the three choices', () => clearFailed(() => choose()), { kind: 'ghost', ic: 'arrow-l' })));
       else if (k === 'none') replace(J.acts, halfway);
       else if (k === 'resume') replace(J.acts, h('div', { class: 'row su-acts' }, btn('Choose the file again', () => restoreStep(S.job), { kind: 'primary', ic: 'upload' }), giveBtn), halfway);
+      else if (k === 'carry' || k === 'carry+force') replace(J.acts, carryOnBox(j), k === 'carry+force' ? forceBox() : null, h('div', { class: 'row su-acts' }, giveBtn), halfway);
       else if (k === 'force') replace(J.acts, forceBox(), h('div', { class: 'row su-acts' }, giveBtn), halfway);
       else replace(J.acts, h('div', { class: 'row su-acts' }, giveBtn), halfway);
     }
@@ -521,10 +523,53 @@ export async function mount(ctx) {
       disk: 'This server\'s disk reported a problem. Check it, then it carries on.',
       slow_down: 'The old server asked it to go slower; it carries on by itself.',
       changing_fast: 'Something big is running on the old server; it carries on once that calms down.',
-      bad_session: 'Make a new move code on the old server and start again.',
-      not_proven: 'The old server could not prove who it is. Make a new move code there and start again.',
+      cancelled: 'Make a new code on the old server and type it below.',
+      bad_session: 'Make a new move code on the old server and type it below: it carries on from where it stopped.',
+      not_proven: 'The old server could not prove who it is. Make a new move code there and type it below.',
       disk_times: 'This server\'s disk keeps file times only roughly: give the app a dataset on ZFS, ext4, xfs or btrfs, and start again.',
     }[code] || '';
+  }
+
+  // a move that stopped for the person (cancelled on the old server, its session ended): a new code carries it on
+  function carryOnBox(j) {
+    const code = field({ label: 'New move code from the old server', name: 'code', required: true,
+      hint: `Make it on ${j.from || 'the old server'}: Settings: Server and access, Move to another server, Make a move code. Case and spaces don't matter.`,
+      attrs: { autocomplete: 'off', spellcheck: 'false', autocapitalize: 'characters', placeholder: 'SMMV-…' } });
+    const f = form({
+      fields: [code], submit: 'Carry on',
+      async onSubmit(v) {
+        try {
+          S.job = await ctx.api.post('setup/move-here', { from: j.from, code: v.code.trim() });
+        } catch (e) {
+          const say = {
+            bad_input: e.fields?.code ? 'This code has a typo: check it against the one the old server shows (SMMV- and six groups of five).' : null,
+            invalid: e.fields?.code ? 'A newer Sentry Mate made this code. Update this server first (on TrueNAS: Apps, Update), then type it again.' : null,
+            move_code_wrong: 'The old server did not take this code. Check it letter by letter, or make a new one there.',
+            move_code_expired: 'This code expired (a code works for 24 hours). Make a new one on the old server.',
+            move_code_used: e.message || 'This code was used already. Make a new one on the old server.',
+          }[e.code];
+          if (say) { code.setError(say); code.input.focus(); return; }
+          const msg = {
+            old_server_unreachable: `Nothing answers at ${j.from}. Turn the old server on, check it is on the network, then press Carry on again: the code still works.`,
+            move_too_old: 'The old server runs a newer Sentry Mate than this one. Update this server first (on TrueNAS: Apps, Update), then press Carry on again.',
+            move_not_home_network: 'The code works only from the old server\'s home network. On the old server, make a new code with "From anywhere" ticked.',
+            move_not_offered: 'No move code waits on the old server. Make one there first, then type it here.',
+            setup_busy: 'The move is not stopped any more (perhaps another browser carried it on). This page shows it again.',
+          }[e.code];
+          if (msg) { f.setMessage(msg); if (e.code === 'setup_busy') await loadJob(); return; }
+          if (common(e)) return;
+          throw e;
+        }
+        if (!ctx.alive()) return;
+        flash('Carrying on with the move: what was copied before is kept.', { kind: 'info' });
+        J.actsKey = null;
+        paintJob(); poll();
+      },
+    });
+    return h('div', { class: 'su-where su-carry' },
+      h('p', { class: 'su-where-head' }, icon('share', 'ico--sm'), 'Carry on with a new move code'),
+      h('p', { class: 'su-where-text' }, `What was copied here (${bytes(j.progress?.bytes_done)}) is kept. With a new code from the same server, ${j.from || 'the old server'}, the move goes on from there: nothing is copied twice.`),
+      f.el);
   }
 
   function forceBox() {
@@ -534,8 +579,10 @@ export async function mount(ctx) {
     const f = form({
       fields: [key, sure], submit: 'Finish with what was copied',
       async onSubmit(v) {
+        // the one step that can't be undone: only with the person's own tick
+        if (!v.confirm) { sure.setError('Tick this first: only when the old server is gone for good. If it is only off, turn it on instead.'); sure.input.focus(); return; }
         try {
-          S.job = await ctx.api.post('setup/move-here/finish', { recovery_key: v.recovery_key.trim(), confirm: true });
+          S.job = await ctx.api.post('setup/move-here/finish', { recovery_key: v.recovery_key.trim(), confirm: v.confirm });
         } catch (e) {
           if (e.code === 'wrong_recovery_key') { key.setError('This key does not open the old server\'s data. Use the recovery key saved when the old server was set up.'); key.input.select(); return; }
           if (e.status === 429) { f.setMessage(`Too many wrong keys from this device. ${wait(e)}`); return; }

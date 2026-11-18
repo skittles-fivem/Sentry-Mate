@@ -14,6 +14,7 @@
 .ss-check-head { font-weight: 600; overflow-wrap: anywhere; }
 .ss-check-text { color: var(--text-2); margin-top: 0.125rem; max-width: 52rem; }
 .ss-check .btn { margin-top: 0.5rem; }
+.ss-keyacts { flex-wrap: wrap; gap: 0 0.5rem; }
 .ss-code { font-size: max(0.8125rem, var(--fs-floor)); padding: 0 0.25rem; border-radius: 0.25rem; background: var(--glass-2); overflow-wrap: anywhere; }
 .ss-addr { margin: 0 0 0.75rem; color: var(--text-2); overflow-wrap: anywhere; }
 .ss-addr .mono { color: var(--text); }
@@ -87,6 +88,12 @@
 .mv-codebox-note b { color: var(--text); }
 .mv-code { font-family: var(--font-mono); font-size: 1.625rem; line-height: 1.35; letter-spacing: 0.04em; color: var(--text); display: flex; flex-wrap: wrap; column-gap: 0.125rem; user-select: all; }
 .mv-group { white-space: nowrap; }
+/* the recovery key dialog (in the page's body, outside the page container) */
+.mv-keydlg { display: flex; flex-direction: column; gap: 0.875rem; }
+.mv-key { font-size: 1.3125rem; }
+.mv-saved { align-items: flex-start; font-weight: 600; }
+.mv-saved input { margin-top: 0.1875rem; }
+@media (max-width: 30rem) { .mv-key { font-size: 1.0625rem; } }
 .mv-copy { display: inline-flex; align-items: center; gap: 0.625rem; flex-wrap: wrap; }
 .mv-copied { color: var(--text-3); font-size: max(0.78125rem, var(--fs-floor)); }
 

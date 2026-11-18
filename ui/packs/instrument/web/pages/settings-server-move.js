@@ -17,13 +17,14 @@ import { errorWords } from '../core/states.js';
 import { flash } from '../core/flash.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { dateTime, dur, ago, DASH } from '../core/fmt.js';
+import { dayKey } from '../shared/time.js';
 
 const enc = encodeURIComponent;
 const bytes = (n) => (n == null ? DASH : format(n, 'bytes'));
 const count = (n) => (n == null ? DASH : format(n, 'count'));
 const pct = (a, b) => (a != null && b ? Math.max(0, Math.min(100, (a / b) * 100)) : 0);
 const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : e?.message || errorWords(e).text);
-const STAY = Symbol('stay');   // run() answers this to keep the dialog open
+export const STAY = Symbol('stay');   // run() answers this to keep the dialog open
 const LIVE = new Set(['offered', 'copying', 'paused', 'moved']);
 
 /** A code split into its groups, so it wraps between groups and never inside one. */
@@ -41,11 +42,41 @@ export function copyButton(text, label = 'Copy', { primary = false } = {}) {
   return h('span', { class: 'mv-copy' }, btn, said);
 }
 
+/** "about 2 min to go", or "almost done" under a second (never "about 0 s"). */
+export const etaText = (s) => (s == null ? null : s < 1 ? 'almost done' : `about ${dur(s * 1000)} to go`);
+
+/**
+ * The recovery key as a text file to keep for years: the server and the full date (with the year) in the file
+ * and in its name, so two servers' keys never look alike.
+ */
+export function downloadKey(key, { ms, tz, why = 'set up' }) {
+  const host = globalThis.location.host;
+  const day = dayKey(ms, tz);
+  const safeHost = globalThis.location.hostname.replace(/[^A-Za-z0-9.-]+/g, '_') || 'server';
+  const text = `Sentry Mate recovery key\r\n\r\n${key}\r\n\r\nFor the server at ${host}, ${why} ${dateTime(ms, tz, { year: true, month: 'long', weekday: 'long' })} (${day}).\r\n`
+    + 'It opens this server\'s data if its key file is lost, and the export files it makes.\r\n'
+    + 'Keep it away from the server: in a password manager, or on paper.\r\n';
+  const href = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+  const a = h('a', { href, download: `sentry-mate-recovery-key-${safeHost}-${day}.txt`, hidden: true });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 30000);
+}
+
+/** The key, big and in groups, with Copy and Download. look: 'su' on the set-up page, 'mv' in Settings. */
+export function keyBox(key, file, look = 'su') {
+  const su = look === 'su';
+  return h('div', { class: su ? 'su-keybox' : 'mv-codebox' },
+    h('p', { class: su ? 'su-keybox-head' : 'mv-codebox-head' }, 'Recovery key'),
+    codeGroups(key, su ? 'mv-code su-key' : 'mv-code mv-key'),
+    h('div', { class: ['row', su ? 'su-acts' : 'mv-acts'] }, copyButton(key, 'Copy', { primary: true }),
+      h('button', { class: 'btn', type: 'button', onclick: () => downloadKey(key, file) }, icon('download', 'ico--sm'), 'Download as a file')));
+}
+
 /**
  * The person's own password again (and the two-step code when the account asks for one) before a dangerous
  * action. run(credentials) does the call and returns its answer; the dialog stays open on a wrong password.
  */
-function askPassword(ctx, { title, intro, submit, danger = false, extra = [], run }) {
+export function askPassword(ctx, { title, intro, submit, danger = false, extra = [], run }) {
   const me = ctx.me || {};
   const pass = field({ label: 'Your password', name: 'password', type: 'password', required: true,
     hint: `The password you sign in with as ${me.name || 'this account'}.`, attrs: { autocomplete: 'current-password' } });
@@ -76,6 +107,84 @@ function askPassword(ctx, { title, intro, submit, danger = false, extra = [], ru
   const done = openDialog({ title, body: [intro, f.el], actions: [] });
   pass.input.focus();
   return done.then(() => result);
+}
+
+/* ---------------------------------------------------------------- the recovery key, from Settings (admin) */
+
+/** The key in a dialog, with Copy, Download and the tick "I have saved it" (POST /system/recovery-key/saved). */
+async function keyDialog(ctx, key, { title, intro, file }) {
+  const saved = h('input', { type: 'checkbox', id: 'mv-key-saved' });
+  const err = h('p', { class: 'form-error', hidden: true, role: 'alert' });
+  const say = (t) => { replace(err, icon('warn'), t); err.hidden = false; };
+  saved.addEventListener('change', () => { if (saved.checked) err.hidden = true; });
+  let ok = false;
+  await openDialog({
+    title, wide: true,
+    body: h('div', { class: 'mv-keydlg' }, intro, keyBox(key, file, 'mv'),
+      h('label', { class: 'check mv-saved', for: 'mv-key-saved' }, saved, h('span', null, 'I have saved it somewhere safe, away from this server')),
+      h('p', { class: 'note' }, 'Closed without the tick? Nothing is lost: the server keeps its copy, and this page can show the key again.'),
+      err),
+    actions: [
+      { label: 'Close', value: false },
+      { label: 'Done: delete the server\'s copy', kind: 'primary', onClick: async () => {
+        if (!saved.checked) { say('Tick this first: save the key (Copy or Download), then tick "I have saved it".'); saved.focus(); return false; }
+        try { await ctx.api.post('system/recovery-key/saved', {}); } catch (e) {
+          say(`The server could not delete its copy (${errText(e)}). Press Done again; until it works the copy stays on the server.`);
+          return false;
+        }
+        ok = true;
+        return true;
+      } },
+    ],
+  });
+  return ok;
+}
+
+/** "Show the key again": the key still waiting in RECOVERY-KEY.txt (POST /system/recovery-key/show). Resolves true once saved. */
+export async function showRecoveryKey(ctx, { tz }) {
+  const r = await askPassword(ctx, {
+    title: 'Show the recovery key again', submit: 'Show the key',
+    intro: h('p', { class: 'mv-intro' }, 'The server still keeps the key it made when it was set up, until you say it is saved. Type your password to see it once more.'),
+    run: (cred) => ctx.api.post('system/recovery-key/show', cred).catch((e) => {
+      if (e.code !== 'recovery_key_saved') throw e;
+      flash('The server deleted its copy already: the key was saved. If it is lost, make a new one.', { kind: 'info' });
+      return { gone: true };
+    }),
+  });
+  if (!r || r.gone || !ctx.alive()) return !!r?.gone;
+  return keyDialog(ctx, r.recovery_key, {
+    title: 'Your recovery key', file: { ms: ctx.api.now(), tz, why: 'shown again' },
+    intro: h('div', { class: 'mv-intro' }, h('p', null, 'Keep it in a password manager or on paper, ', h('b', null, 'away from the server'), '. Then tick below: the server deletes its copy, and nobody can show the key again.')),
+  });
+}
+
+/** "Make a new recovery key" (POST /system/recovery-key/new): the old one stops working. Resolves true once
+ * saved, 'unsaved' when the dialog closed without the tick, false when nothing was made. */
+export async function newRecoveryKey(ctx, { tz }) {
+  const r = await askPassword(ctx, {
+    title: 'Make a new recovery key', submit: 'Make a new key', danger: true,
+    intro: h('div', { class: 'mv-intro' },
+      h('p', null, 'For a key that was lost, or seen by someone it should not have been. ', h('b', null, 'The old key stops working at once.')),
+      h('p', null, 'Export files and copies of the data folder made before still open only with the old key: keep the old one as long as you keep those.')),
+    run: (cred) => ctx.api.post('system/recovery-key/new', cred),
+  });
+  if (!r || !ctx.alive()) return false;
+  flash('A new recovery key was made. The old one no longer works.');
+  // not ticked: the server keeps the new key's file, and Settings shows "Show the key again"
+  return (await keyDialog(ctx, r.recovery_key, {
+    title: 'Your new recovery key', file: { ms: r.made_ms || ctx.api.now(), tz, why: 'new key made' },
+    intro: h('div', { class: 'mv-intro' }, h('p', null, h('b', null, 'Shown only now.'), ' Keep it in a password manager or on paper, away from the server, then tick below.')),
+  })) || 'unsaved';
+}
+
+/** "I have saved it" without showing the key: for someone who saved it on the set-up page but never ticked. */
+export async function markKeySaved(ctx) {
+  const ok = await confirmDialog('Only if the SMRK- key is in a password manager or on paper, away from the server. The server then deletes its copy (RECOVERY-KEY.txt), and nobody can show the key again.',
+    { title: 'Have you saved the recovery key?', ok: 'Yes, delete the server\'s copy' });
+  if (!ok) return false;
+  try { await ctx.api.post('system/recovery-key/saved', {}); } catch (e) { flash(`The server could not delete its copy: ${errText(e)} Try again.`, { kind: 'error' }); return false; }
+  flash('Saved. The server deleted its copy of the recovery key.');
+  return true;
 }
 
 /** The panel. tz: the zone for times on the page. */
@@ -196,7 +305,7 @@ export function movePanel(ctx, { tz, zone }) {
         ` · ${count(p.files_done)} of ${count(p.files_total)} files`,
         p.round > 1 ? ` · round ${p.round}` : null,
         p.bytes_per_s ? ` · ${bytes(p.bytes_per_s)} per second` : null,
-        p.eta_s != null && p.bytes_per_s ? ` · about ${dur(p.eta_s * 1000)} to go` : null));
+        p.eta_s != null && p.bytes_per_s ? ` · ${etaText(p.eta_s)}` : null));
   }
   const line = (tone, head, ...text) => h('div', { class: ['mv-line', `mv-line--${tone}`] },
     h('span', { class: 'mv-line-ic' }, icon(tone === 'ok' ? 'check' : tone === 'warn' ? 'warn' : 'info')),

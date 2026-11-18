@@ -20,7 +20,7 @@ import { openDialog, confirmDialog } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { dateTime, date, agoEl, tzName, DASH } from '../core/fmt.js';
 import { timeColumn } from '../shared/csv.js';
-import { movePanel } from './settings-server-move.js';
+import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved } from './settings-server-move.js';
 
 export const id = 'settings-server';
 export const css = true;
@@ -217,17 +217,37 @@ export async function mount(ctx) {
 
   /* ---------------------------------------------------------------- the certificate, the recovery key and backups */
   const cert = S.notices.find((n) => n.code === 'certificate_expiring');
-  const keyUnsaved = S.notices.find((n) => n.code === 'recovery_key_unsaved');
+  let keyUnsaved = !!S.notices.find((n) => n.code === 'recovery_key_unsaved');
+  const keyBtn = (label, run, kind = '') => h('button', { class: ['btn', 'btn--sm', kind && `btn--${kind}`], type: 'button', onclick: async () => {
+    const r = await run(ctx, { tz });
+    if (!r || !ctx.alive()) return;
+    keyUnsaved = r === 'unsaved';
+    paintKey();
+  } }, label);
+  // the recovery key: no shell needed to save, show again or replace it
+  function keyRow() {
+    if (keyUnsaved) {
+      return checkRow('warn', 'The recovery key is not marked as saved yet',
+        h('span', null, 'Until you say it is saved, the server keeps a copy of it in its keys folder. ',
+          admin ? 'Show it again (your password first), keep it in a password manager or on paper away from the server, then tick "I have saved it": the server deletes its copy.'
+            : 'An admin can show it again here and mark it as saved.'),
+        admin ? h('div', { class: 'row ss-keyacts' }, keyBtn('Show the key again', showRecoveryKey, 'primary'), keyBtn('I have saved it already', markKeySaved), keyBtn('Make a new recovery key', newRecoveryKey, 'ghost')) : null);
+    }
+    return checkRow('ok', 'Recovery key',
+      h('span', null, 'Saved away from the server; the server keeps no copy. ',
+        admin ? 'Lost it, or someone saw it? Make a new one: the old one stops working at once, and export files and backups made before still need the old one.' : 'If it is lost, an admin can make a new one here.'),
+      admin ? h('div', { class: 'row ss-keyacts' }, keyBtn('Make a new recovery key', newRecoveryKey)) : null);
+  }
+  let keyEl = null;
+  function paintKey() { const n = keyRow(); if (keyEl) keyEl.replaceWith(n); keyEl = n; }
+  paintKey();
   const safety = panel({ title: 'Certificate, recovery key and backups', icon: 'lock', pad: true },
     h('ul', { class: 'ss-checks' },
       cert
         ? checkRow('warn', `The certificate expires ${cert.detail?.expires_ms ? date(cert.detail.expires_ms, tz) : 'soon'}${cert.detail?.days != null ? ` (in ${format(cert.detail.days, 'count')} days)` : ''}`,
           h('span', null, 'Make a new one before then: stop the container, delete ', mono('data/tls/cert.pem'), ' (or put your own ', mono('cert.pem'), ' and ', mono('key.pem'), ' there) and start it again. A new certificate has a new SHA-256: enter it again in each CAN Bridge.'))
         : checkRow('ok', 'Certificate', 'The server reports no problem with its certificate. It keeps the same SHA-256 across restarts, updates and moves.'),
-      keyUnsaved
-        ? checkRow('warn', 'The recovery key file is still on the server',
-          h('span', null, 'Copy the line that starts with ', mono('SMRK-'), ' from ', mono('keys/RECOVERY-KEY.txt'), ' somewhere safe away from the server (a password manager, paper), then delete the file. With the key file, it is the only way to open the data.'))
-        : checkRow('ok', 'Recovery key', h('span', null, 'Saved away from the server. To replace it (the old one stops working): ', mono('sentry-mate recovery-key new'), '.')),
+      keyEl,
       checkRow('ok', 'Everything is encrypted at rest',
         h('span', null, 'Logs, the database, tokens and the certificate\'s key are sealed. A backup is a copy of the data folder: it opens only with the key file (kept apart in ', mono('/keys'), ') or the recovery key, so keep those out of the same backup.'))));
 
