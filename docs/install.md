@@ -7,12 +7,14 @@ Bridge's uploads on port 10100 (HTTPS, TLS 1.3 only) and keeps everything in
 two folders. This guide covers a Linux server with Docker Compose and TrueNAS
 SCALE, then the CAN Bridge app, updates, backups, restoring and moving.
 
+Every command is in [commands.md](commands.md). The bridge app in detail is in
+[cars-and-bridge.md](cars-and-bridge.md).
+
 - [What you need](#what-you-need)
 - [The two folders](#the-two-folders)
 - [Docker Compose](#docker-compose)
 - [TrueNAS SCALE](#truenas-scale)
 - [The CAN Bridge app](#the-can-bridge-app)
-- [A new signing key](#a-new-signing-key)
 - [Updating](#updating)
 - [Backups](#backups)
 - [Restore](#restore)
@@ -30,10 +32,25 @@ SCALE, then the CAN Bridge app, updates, backups, restoring and moving.
 - About 1 GiB of free memory for a few seconds when the vault is made (the
   first start), for a restore and for a new recovery key: the recovery key is
   protected with Argon2id at 1 GiB. The rest of the time it needs very little.
-- The Screenmate CAN Bridge app on the car's Screenmate.
-
-It runs next to Sentry Six Manager on the same server: that one uses ports
-9000 and 10000, Sentry Mate 10100 (and 9100 later, for its web UI).
+  A container memory limit below that can make these steps fail.
+- No Rust and no clone of this repo: the image is published,
+  `ghcr.io/skittles-fivem/sentry-mate`, and you only download the compose
+  file. Internet is needed to pull the image and its updates. While it runs,
+  Sentry Mate makes no outgoing connections. Building the image yourself is
+  optional ([development.md](development.md#running-your-own-build)).
+- Disk: the plan measured about 0.23 MB a minute parked and awake, and about
+  0.76 MB a minute driving. That is roughly 30 to 100 GB a year for a car
+  awake 6 hours a day. Logs are kept; no command deletes them yet. A new
+  upload is refused while free space is under twice its size plus 2 GiB.
+- Logs: Sentry Mate takes up to 200,000 per car key. The bridge writes about
+  one log a minute while the car is awake, so that is about 18 months at 6
+  hours a day, and 4 to 5 months for a car awake all day (for example in
+  Sentry Mode). After that every new log is refused, and no command frees
+  room yet.
+- The Screenmate CAN Bridge app on the car's Screenmate, build 149 or later
+  ([The CAN Bridge app](cars-and-bridge.md#the-can-bridge-app)).
+- It can share the server with Sentry Six Manager
+  ([Ports and firewalls](#ports-and-firewalls)).
 
 ## The two folders
 
@@ -52,7 +69,8 @@ either.
 **Both must be mounted**, each with its own line under `volumes:`. Without
 one, Sentry Mate does not start, and the log says which line to add. A
 folder that is not mounted would be lost with the container at the next
-update, and the key file with it.
+update, and the key file with it. The image has no `VOLUME`, so nothing
+goes into a folder that would be lost with the container.
 
 **Both belong to the user Sentry Mate runs as**, and nobody else needs them:
 1000:1000 with Docker Compose (the image's own user), 568:568 on TrueNAS (its
@@ -60,12 +78,30 @@ apps user). A folder Docker makes because it was missing belongs to root;
 Sentry Mate then stops and says what to run
 ([When it does not start](#when-it-does-not-start)).
 
+**A new vault is made only when there is neither a vault nor a key file**,
+as on the first start. A data folder with no vault next to a keys folder
+with a key file (a wrong path, a disk that isn't there, a backup not put
+back) stops it: it never makes a new vault over a key file, which may open
+your data. Fix the path, or put the data back. To start over with no data
+on purpose, delete the key file.
+
+The compose file runs the image as uid 1000 (group 1000), with a read-only
+root and no capabilities, and publishes port 10100. The TrueNAS file does
+the same as 568:568.
+
 ## Docker Compose
 
 1. Make a folder and get the compose file:
 
    ```bash
-   mkdir sentry-mate && cd sentry-mate
+   mkdir sentry-mate
+   ```
+
+   ```bash
+   cd sentry-mate
+   ```
+
+   ```bash
    curl -fsSLO https://raw.githubusercontent.com/skittles-fivem/Sentry-Mate/main/docker-compose.yml
    ```
 
@@ -73,7 +109,13 @@ Sentry Mate then stops and says what to run
 
    ```bash
    mkdir -p data keys
+   ```
+
+   ```bash
    sudo chown 1000:1000 data keys
+   ```
+
+   ```bash
    sudo chmod 700 data keys
    ```
 
@@ -85,11 +127,16 @@ Sentry Mate then stops and says what to run
 
    ```bash
    docker compose up -d
+   ```
+
+   ```bash
    docker compose ps
    ```
 
-   After a few seconds the status says `(healthy)`. The log has the
-   certificate SHA-256:
+   The first start makes the vault. That takes a few seconds, with only the
+   version line in the log until it is done. Then the status says
+   `(healthy)`, and the log shows the upload address, the certificate
+   SHA-256 and the vault's id:
 
    ```bash
    docker logs sentry-mate
@@ -126,14 +173,18 @@ Sentry Mate then stops and says what to run
 
    Then fill in [the CAN Bridge app](#the-can-bridge-app).
 
+If it doesn't start, the log says why and what to do. For example `Sentry
+Mate runs as uid 1000 (group 1000) and can't write to the data folder /data:
+it belongs to uid 0 (group 0), root.` means the folders belong to root
+(Docker makes missing ones owned by root). Run the `chown` and `chmod` of
+step 2, then `docker compose restart`. The other messages are in
+[When it does not start](#when-it-does-not-start).
+
 If your user is not in the `docker` group, put `sudo` before the `docker`
 commands.
 
-To build the image yourself instead (in a clone of the repository), turn on
-the `build: .` line in `docker-compose.yml` and start it with
-`docker compose up -d --build`. Your build takes the published image's name,
-and `--version` shows no build number. A later `docker compose pull`
-replaces it with the published image.
+To build the image yourself instead, see
+[Running your own build](development.md#running-your-own-build).
 
 ## TrueNAS SCALE
 
@@ -151,6 +202,9 @@ On TrueNAS SCALE 24.10 or newer, install it as a custom app with
 
    ```bash
    sudo chown 568:568 /mnt/tank/apps/sentry-mate /mnt/tank/apps/sentry-mate-keys
+   ```
+
+   ```bash
    sudo chmod 700 /mnt/tank/apps/sentry-mate /mnt/tank/apps/sentry-mate-keys
    ```
 
@@ -184,100 +238,36 @@ On TrueNAS SCALE 24.10 or newer, install it as a custom app with
 
    Then fill in [the CAN Bridge app](#the-can-bridge-app).
 
-The `docker exec` and `docker logs` commands in this guide work the same
-way in *System → Shell*, with `sudo` before `docker`. The `docker compose`
-steps don't: TrueNAS has its own steps for them (*Stop* and *Start* the
-app, and the `docker run` restore in [Restore](#restore)). `init` is for
-Docker Compose only: on TrueNAS the vault is made on the first start.
+The `docker exec` and `docker logs` commands in this guide and in
+[commands.md](commands.md) work the same way in *System → Shell*, with
+`sudo` before `docker`. The recovery key file is in the keys dataset.
+
+The `docker compose` steps don't work there: there is no compose file in
+the shell's folder. TrueNAS has its own steps for them: *Stop* and *Start*
+the app, and the `docker run` restore in [Restore](#restore). Use the
+datasets' paths instead of `data/...` and `keys/...`.
+
+`init` is for Docker Compose only: on TrueNAS the vault is made on the
+first start.
 
 ## The CAN Bridge app
 
-On the Screenmate, open the CAN Bridge app. Under **Second Sentry Six
-Manager (optional)**, fill in what `token new` printed:
-
-| Field | What to put |
-| --- | --- |
-| Upload address | `https://<server>:10100/api/can/logs`, with the server's address on your network, for example `https://192.168.1.20:10100/api/can/logs`. If you changed the left port number in the compose file, use that number. |
-| Token | The line that starts with `smt_`. |
-| Certificate SHA-256 | The 64 hex digits. |
-
-Then *Apply & restart*. The bridge sends every finished log to Sentry Six
-Manager and to Sentry Mate, each on its own. While one of them can't be
-reached, the logs wait on the Screenmate (up to *Keep up to (GB)*). Without
-Sentry Six Manager, use the first section, **Sentry Six Manager (CAN log
-upload)**, the same way. It should work, but it is not tested yet. The
-bridge's messages say "Sentry Manager" in both
-sections.
-
-**Check it works.** First check that the server can be reached from the
-car's Wi-Fi: on a phone or laptop on that network, open
-`https://<server>:10100/api/can/logs/ping` and accept the certificate
-warning. An answer with `bad_token` means the address, the port and the
-firewall are right (the browser has no token). The upload address itself,
-without `/ping`, answers `Nothing here.`, and that is normal too.
-
-The bridge uploads a log once it is finished. After the first one,
-`token list` shows the car's key in place of `not tied to a car key yet`:
-
-```bash
-docker exec sentry-mate /sentry-mate token list
-```
-
-A token is tied to the car's key on its first upload: one token per car.
-For another car, make another token. To stop a token (its id is the first
-column of `token list`):
-
-```bash
-docker exec sentry-mate /sentry-mate token revoke <id>
-```
-
-The certificate SHA-256 again, any time:
-
-```bash
-docker exec sentry-mate /sentry-mate fingerprint
-```
-
-It stays the same across restarts, updates and moves: the certificate's key
-is in the data folder.
-
-## A new signing key
-
-The CAN Bridge signs every log with a key kept in the Screenmate. The first
-signed log ties the car to that key. Logs signed by another key are kept,
-but not used. That happens when the Screenmate makes a new key, or when
-someone else uploads with the car's token.
-
-See the keys of a car. The car key is the last column of `token list`:
-
-```bash
-docker exec sentry-mate /sentry-mate keys <car key>
-```
-
-It lists each key, how many logs it signed, when they came, and which key
-is trusted. A new key says `not trusted: its logs are kept, not used`.
-
-Then open the CAN Bridge app and look at **Log signing key**:
-
-- **It is the new key.** Trust it. Copy the key from the list:
-
-  ```bash
-  docker exec -it sentry-mate /sentry-mate keys trust <car key> <signing key>
-  ```
-
-  It says what will change. Type `yes` and press Enter. Its logs are used
-  from then on, and those it signed before too. The key trusted before
-  still counts for the logs that came before. Sentry Mate keeps running.
-
-- **It is not the new key.** Don't trust it: someone else signed those
-  logs. Revoke the car's token, make a new one and put it in the app
-  ([The CAN Bridge app](#the-can-bridge-app)).
+On the Screenmate, open the CAN Bridge app (build 149 or later). Under
+**Second Sentry Six Manager (optional)**, put the upload address, the token
+and the certificate SHA-256 that `token new` printed, then press
+**Apply & restart**. The fields, how to check it works and how the bridge
+uploads are in [cars-and-bridge.md](cars-and-bridge.md#the-can-bridge-app).
 
 ## Updating
 
 Docker Compose, in the folder with `docker-compose.yml`:
 
 ```bash
-docker compose pull && docker compose up -d
+docker compose pull
+```
+
+```bash
+docker compose up -d
 ```
 
 TrueNAS often keeps the copy of `latest` it already has, so fetch the new
@@ -312,8 +302,14 @@ On TrueNAS, *Edit* the app and change `latest` in the `image:` line.
 
 **Going back to an older version needs a backup of the data made before the
 update.** A newer version can store files in a newer way that an older one
-can't open (the README's Security part has the details). Back up the data
-before an update if you want to be able to go back.
+can't open ([No way back without a backup](security.md#no-way-back-without-a-backup)).
+Back up the data before an update if you want to be able to go back.
+
+- A start after a version that stored files in the clear seals them once.
+  Unfinished uploads stored in the clear are dropped; the bridge sends them
+  again.
+- Built from a clone instead: see
+  [Running your own build](development.md#running-your-own-build).
 
 ## Backups
 
@@ -323,23 +319,40 @@ for a clean copy:
 
 ```bash
 docker compose stop
+```
+
+```bash
 sudo tar -C data -cpf ~/sentry-mate-data-$(date +%F).tar .
+```
+
+```bash
 docker compose start
 ```
 
-Then copy that file off the server. On TrueNAS, give the data dataset a
-periodic snapshot task (*Data Protection → Periodic Snapshot Tasks*), and a
-replication or cloud sync task for a copy elsewhere. A snapshot is taken in
-one instant, like a power cut, which Sentry Mate handles, so the app can keep
-running. Leave the keys dataset out of those tasks (no recursive task on a
-dataset that holds both).
+Or copy the folder whole while it is stopped:
+`sudo cp -a data <backup folder>/`. Then copy the backup off the server.
+
+- The copy stays sealed. It opens with the key file or the recovery key,
+  and needs its own `vault.json`.
+- Keep the files' names and layout: each sealed file is bound to its path
+  inside the data folder. The folder as a whole can move.
+- Stopping drops the chunk being sent at that moment. What had arrived is
+  kept, and the bridge carries on from there.
+- There is no backup command yet.
+
+On TrueNAS, give the data dataset a periodic snapshot task (*Data
+Protection → Periodic Snapshot Tasks*), and a replication or cloud sync task
+for a copy elsewhere. A snapshot is taken in one instant, like a power cut,
+which Sentry Mate handles, so the app can keep running. Leave the keys
+dataset out of those tasks (no recursive task on a dataset that holds both).
 
 **The keys folder.** It needs no backup if you keep the recovery key: a
 restore makes a new key file. If you keep a copy anyway, keep it apart from
 the data backups (a USB stick in a drawer), never in the same backup.
 
-**The recovery key.** In a password manager or on paper. With a data backup,
-it is all you need to get everything back.
+**The recovery key.** In a password manager or on paper, apart from both the
+data backups and the key file. With a data backup, it is all you need to get
+everything back.
 
 A data backup opens with the key file or the recovery key it had when it
 was made:
@@ -368,12 +381,20 @@ Docker Compose, in the folder with `docker-compose.yml`:
 
 ```bash
 docker compose stop
+```
+
+```bash
 docker compose run --rm -it sentry-mate restore
-docker compose up -d
 ```
 
 It asks `Recovery key:`. Type or paste it, then press Enter. It answers
 `Restored: a new key file is in /keys.`
+
+Then start it:
+
+```bash
+docker compose up -d
+```
 
 TrueNAS: *Apps → Installed → sentry-mate → Stop*. Then, in *System →
 Shell*, with your two datasets' paths:
@@ -392,7 +413,13 @@ Docker Compose, in the folder with `docker-compose.yml`:
 
    ```bash
    docker compose stop
+   ```
+
+   ```bash
    sudo mv data data.old
+   ```
+
+   ```bash
    mkdir data
    ```
 
@@ -414,7 +441,13 @@ Docker Compose, in the folder with `docker-compose.yml`:
 
    ```bash
    sudo chown -R 1000:1000 data
+   ```
+
+   ```bash
    sudo chmod 700 data
+   ```
+
+   ```bash
    docker compose up -d
    ```
 
@@ -446,9 +479,21 @@ address, if the server's address changed.
 
    ```bash
    docker compose stop
+   ```
+
+   ```bash
    sudo tar -C data -cpf ~/sentry-mate-data.tar .
+   ```
+
+   ```bash
    sudo tar -C keys -cpf ~/sentry-mate-keys.tar .
+   ```
+
+   ```bash
    sudo chown "$(id -un)" ~/sentry-mate-data.tar ~/sentry-mate-keys.tar
+   ```
+
+   ```bash
    chmod 600 ~/sentry-mate-keys.tar
    ```
 
@@ -457,8 +502,8 @@ address, if the server's address changed.
 
 2. Copy the files into your home folder on the new server (`scp`, a USB
    stick). Carry the keys file apart from the data file (another USB stick,
-   or a separate `scp`), never in the same backup. To TrueNAS: copy them into an
-   SMB share on it (for example one at `/mnt/tank/share`), or turn on SSH
+   or a separate `scp`), never in the same backup. To TrueNAS: copy them
+   into an SMB share on it (for example one at `/mnt/tank/share`), or turn on SSH
    (*System → Services*) for `scp`. TrueNAS has SSH off at first and does
    not mount USB sticks.
 
@@ -469,9 +514,21 @@ address, if the server's address changed.
 
    ```bash
    sudo tar -C data -xpf ~/sentry-mate-data.tar
+   ```
+
+   ```bash
    sudo tar -C keys -xpf ~/sentry-mate-keys.tar
+   ```
+
+   ```bash
    sudo chown -R 1000:1000 data keys
+   ```
+
+   ```bash
    sudo chmod 700 data keys
+   ```
+
+   ```bash
    sudo ls data
    ```
 
@@ -481,10 +538,25 @@ address, if the server's address changed.
 
    ```bash
    sudo tar -C /mnt/tank/apps/sentry-mate -xpf /mnt/tank/share/sentry-mate-data.tar
+   ```
+
+   ```bash
    sudo tar -C /mnt/tank/apps/sentry-mate-keys -xpf /mnt/tank/share/sentry-mate-keys.tar
+   ```
+
+   ```bash
    sudo chown -R 568:568 /mnt/tank/apps/sentry-mate /mnt/tank/apps/sentry-mate-keys
+   ```
+
+   ```bash
    sudo chmod 700 /mnt/tank/apps/sentry-mate /mnt/tank/apps/sentry-mate-keys
+   ```
+
+   ```bash
    sudo rm /mnt/tank/share/sentry-mate-data.tar /mnt/tank/share/sentry-mate-keys.tar
+   ```
+
+   ```bash
    sudo ls /mnt/tank/apps/sentry-mate
    ```
 
@@ -495,7 +567,10 @@ address, if the server's address changed.
    `fingerprint` prints the same SHA-256 as the CAN Bridge app has, and
    `token list` shows your tokens. Then delete the `.tar` files on both
    servers (`rm ~/sentry-mate-data.tar ~/sentry-mate-keys.tar`), and leave
-   the old server stopped.
+   the old server stopped. If the server's address changed, change the
+   app's upload address and press **Apply & restart**.
+
+A one-step move (a move code, or an export file) is being built.
 
 ## Moving the folders on this server
 
@@ -509,10 +584,25 @@ Sentry Mate finds nothing to open and stops.
 
    ```bash
    docker exec sentry-mate /sentry-mate fingerprint
+   ```
+
+   ```bash
    docker compose stop
+   ```
+
+   ```bash
    sudo mkdir -p /mnt/disk2/sentry-mate-keys
+   ```
+
+   ```bash
    sudo cp -a keys/. /mnt/disk2/sentry-mate-keys/
+   ```
+
+   ```bash
    sudo chown -R 1000:1000 /mnt/disk2/sentry-mate-keys
+   ```
+
+   ```bash
    sudo chmod 700 /mnt/disk2/sentry-mate-keys
    ```
 
@@ -521,6 +611,9 @@ Sentry Mate finds nothing to open and stops.
 
    ```bash
    docker compose up -d
+   ```
+
+   ```bash
    docker exec sentry-mate /sentry-mate fingerprint
    ```
 
@@ -540,10 +633,12 @@ app, change the line marked `CHANGE` to the new path, and *Save*. Check
 | 10100/tcp | CAN Bridge uploads, HTTPS, TLS 1.3 only | Published: the Screenmate connects to it. |
 | 9100/tcp | The web UI | Kept for later: not built yet, nothing listens. |
 
-- Sentry Six Manager uses 9000 and 10000, so both run on one server.
+- Sentry Six Manager uses 9000 and 10000, so both run on one server
+  ([Running next to TeslaMate and Sentry Six Manager](cars-and-bridge.md#running-next-to-teslamate-and-sentry-six-manager)).
 - Another app already on 10100: change only the left number (for example
   `"10200:10100"`) and use it in the bridge's address. The address that
-  `token new` prints always shows 10100, the port inside the container.
+  `token new` prints shows the port inside the container (10100 unless
+  `SENTRY_MATE_UPLOAD_PORT` is set), not the host port.
 - Docker opens a published port on the server itself, on most servers even
   past `ufw`. A firewall between the car's Wi-Fi and the server (a separate
   network for cars and gadgets, say) must let TCP 10100 through to the
@@ -557,17 +652,9 @@ app, change the line marked `CHANGE` to the new path, and *Save*. Check
 
 ## Settings
 
-The compose and TrueNAS files set everything. These are the environment
-variables it reads:
-
-| Variable | What it does |
-| --- | --- |
-| `SENTRY_MATE_NAMES` | Names or addresses of the server for the certificate, comma separated (the OPTIONAL lines in both files). Read only when the certificate is made, on first start. The bridge pins the SHA-256 and does not check names, so it can stay off. |
-| `RUST_LOG` | How much it logs: `info` (the default), or `warn` for less. `warn` also hides the line with the certificate SHA-256; `fingerprint` still prints it. |
-| `SENTRY_MATE_DATA`, `SENTRY_MATE_KEYS`, `SENTRY_MATE_UPLOAD_PORT`, `SENTRY_MATE_BIND` | `/data`, `/keys`, `10100` and `0.0.0.0`. Leave them: change the folders in the volume lines and the port in the left number instead. |
-| `SENTRY_MATE_REQUIRE_MOUNTS` | `1` in the image: it starts only when the data and keys folders are each mounted from the server. Leave it. |
-
-Times in the log are UTC. It does not read `TZ`.
+The compose and TrueNAS files set everything. The environment variables it
+reads, and what each does, are in [Settings](commands.md#settings). Times in
+the log are UTC. It does not read `TZ`.
 
 ## When it does not start
 
@@ -599,7 +686,7 @@ What the bridge says, in its upload section:
 | The bridge says | What to do |
 | --- | --- |
 | `Sentry Manager not reachable` | A wrong address or port, the server or the container is off, or a firewall in between. |
-| `Sentry Manager's certificate doesn't match the SHA-256 entered here` | Copy the SHA-256 again (`fingerprint`). It changes only when the data folder is replaced by a new install's, or when `data/tls/cert.pem` was deleted or replaced (the README's [Ports and files](../README.md#ports-and-files)). |
+| `Sentry Manager's certificate doesn't match the SHA-256 entered here` | Copy the SHA-256 again (`fingerprint`). It changes only when the data folder is replaced by a new install's, or when `data/tls/cert.pem` was deleted or replaced ([Changing the certificate](commands.md#changing-the-certificate)). |
 | `Sentry Manager refused the token` | A typo, or the token was revoked: make a new one. |
 | `Sentry Manager answered 403 wrong_car` | That token is tied to another car: one token per car. |
 | `Sentry Manager doesn't know this address` | The address must end in `/api/can/logs`. |
