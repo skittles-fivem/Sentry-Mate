@@ -390,7 +390,12 @@ export async function mount(ctx) {
       ]);
     } catch (e) {
       if (my !== statsGen || !ctx.alive()) return;
-      for (const p of [totalsPanel, splitPanel, habitsPanel]) replace(p, h('p', { class: 'note warn' }, `The statistics could not be loaded: ${e.message}`));
+      const why = `The statistics could not be loaded: ${e.message}`;
+      replace(totalsPanel, head('stats', 'Costs and totals'), h('p', { class: 'note warn' }, why));
+      replace(splitPanel, head('plug', 'AC and DC'), h('p', { class: 'note warn' }, why));
+      replace(habitsPanel, head('battery', 'Charging habits'), h('p', { class: 'note warn' }, why));
+      // places and the curve do not need that answer: they load on their own
+      await Promise.all([paintPlaces(sp), paintCurve([], my)]);
       return;
     }
     if (my !== statsGen || !ctx.alive()) return;
@@ -685,7 +690,7 @@ export async function mount(ctx) {
 
   /* charging places: a map and two paged tables */
   async function paintPlaces(sp) {
-    const pp = { cars: sp.cars, from_ms: sp.from_ms, to_ms: sp.to_ms, places: sp.places, min_duration_min: sp.min_duration_min };
+    const pp = { cars: fixedCar ? fixedCar.id : sp.cars, from_ms: sp.from_ms, to_ms: sp.to_ms, places: sp.places, min_duration_min: sp.min_duration_min };
     const placeCell = (p) => (p.place ? h('a', { class: 'main place-link', href: state.buildUrl('places', { query: { place: p.place } }), title: `Edit the place ${p.label}` }, p.label)
       : h('a', { class: 'main place-link', href: state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }), title: 'Make this spot a saved place' }, p.label));
     const placeCol = (cv) => ({ key: 'label', label: 'Place', cover: cv, render: (p) => h('span', { class: 'cell-text' }, placeCell(p),
@@ -843,7 +848,7 @@ export async function mount(ctx) {
     pageHead({ eyebrow: scopeName, title: 'Charges', sub: [period.label, multi ? `days in ${tz.replace(/_/g, ' ')} time; each charge in its car’s time` : `times in ${tz.replace(/_/g, ' ')}`] }),
     filters, summary, table.el, incomplete.el,
     h('div', { class: 'stats-head' }, h('h2', { class: 'section-title' }, 'Charging statistics'), scopeLine),
-    h('div', { class: 'stats-grid' }, totalsPanel, splitPanel), habitsPanel, placesPanel, curvePanel);
+    h('div', { class: 'stats-grid' }, totalsPanel, splitPanel), habitsPanel, placesPanel, curvePanel, ...pops);
   paintSummary(null);
 
   try { await Promise.all([table.ready, incomplete.ready, loadStats()]); } catch (e) { ctx.fail(e); return; }

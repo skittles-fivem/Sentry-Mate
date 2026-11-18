@@ -257,6 +257,16 @@ export async function mount(ctx) {
   await breakdown.ready;
   if (!ctx.alive()) return;
   ctx.ready();
+  // ?edit=cost (the cost cell of the charges list): go straight to the cost editor
+  // (on the next frame: the router puts a new page at the top once mount returns)
+  if (ctx.query?.edit === 'cost') {
+    requestAnimationFrame(() => {
+      if (!ctx.alive()) return;
+      const sec = ctx.view.querySelector('#cost');
+      sec?.scrollIntoView({ block: 'start' });
+      sec?.querySelector('.cost-edit input, .cost-edit select, .cost-edit button')?.focus({ preventScroll: true });
+    });
+  }
 
   /* ---------- the map */
   (async () => {
