@@ -10,7 +10,7 @@
 // because host, port, TLS, pin and password are checked together.
 
 import { h, replace } from '../shared/dom.js';
-import { buildUrl } from '../shared/state.js';
+import { buildUrl, lastCar } from '../shared/state.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, panelLink, kv, tag, pill, note, csvButton, metric, figures } from '../core/page.js';
@@ -63,7 +63,7 @@ const VALUES = [
   ['mqtt.update-available', null, 'Update waiting', null, 'none', 'Only Tesla’s servers know', 'Left out.'],
   ['mqtt.update-version', null, 'Waiting update version', null, 'none', 'Only Tesla’s servers know', 'Left out; the software_changed event tells you afterwards.'],
   ['mqtt.download-perc', null, 'Update download %', '%', 'none', 'No progress on CAN', 'Left out.'],
-  ['mqtt.install-perc', 'installing', 'Update install %', '%', 'signal', 'Update status (0x343 VCRIGHT_OTAState)', 'No percentage on CAN: an installing true/false flag instead.'],
+  ['mqtt.install-perc', 'installing', 'Update install %', 'true / false', 'signal', 'Update status (0x343 VCRIGHT_OTAState)', 'No percentage on CAN: an installing true/false flag instead.'],
   ['mqtt.vin', null, 'VIN', null, 'never', 'Only the first 11 characters are ever kept', 'The VIN is never published, so a broker or Home Assistant never holds it.'],
   ['mqtt.model', null, 'Model', null, 'device', 'The VIN prefix', 'Model and year are the Home Assistant device model.'],
   ['mqtt.trim-badging', 'trim', 'Trim', null, 'logged', 'The VIN prefix (drive units, battery)', 'Shown in Settings: Cars; the car configuration message can confirm it.'],
@@ -205,7 +205,24 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
 
   const carList = cars?.items || [];
-  let carId = ctx.query.car && carList.some((c) => c.id === ctx.query.car) ? ctx.query.car : ctx.query.car || carList[0]?.id || null;
+  // the preview car: the address's, else the frame's last car, else the first in the person's own order
+  const findCar = async (id) => {
+    if (!id) return null;
+    const known = carList.find((c) => c.id === id);
+    if (known) return known;
+    try { return await ctx.api.get(`cars/${enc(id)}`); } catch (e) { if (e.name === 'AbortError') throw e; return null; }
+  };
+  let extraCar = null, carMissing = null;
+  try {
+    const wanted = ctx.query.car || null;
+    extraCar = await findCar(wanted);
+    if (wanted && !extraCar) carMissing = wanted;
+    if (!extraCar) extraCar = await findCar(lastCar());
+    if (!extraCar && carList.length) extraCar = (await ctx.api.page('cars', { sort: 'custom', limit: 1 }).catch(() => null))?.items?.[0] || carList[0];
+  } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
+  if (!ctx.alive()) return;
+  let carId = extraCar?.id || null;
+  if (carMissing) ctx.setQuery({ car: carId });
   let pv = null;
   async function loadPreview() {
     if (!carId) { pv = null; return; }
@@ -250,7 +267,7 @@ export async function mount(ctx) {
     ]);
     await loadPreview();
     if (!ctx.alive()) return;
-    paintHead(); paintBroker(); paintStatus(); paintTopics(); paintValues(); paintHa(); paintEntities(); paintNetwork(); paintEvents(false);
+    paintHead(); paintBroker(); paintStatus(); paintTopics(); paintValues(); paintHa(); paintEntities(); paintNetwork(); paintEventTopic(); paintEvents();
   }
 
   /* ---------- the head */
@@ -366,8 +383,14 @@ export async function mount(ctx) {
     let rows = [];
     try {
       const now = ctx.api.now();
-      const r = await ctx.api.get('audit', { from_ms: now - 90 * DAY, to_ms: now + 60_000, limit: 200 });
-      rows = (r.items || []).filter((e) => e.target === 'settings:mqtt').slice(0, 8);
+      // the audit list has no target filter: read pages until 8 broker rows are found or the 90 days run out
+      const p = ctx.api.pager('audit', { from_ms: now - 90 * DAY, to_ms: now + 60_000 }, { limit: 200 });
+      for (let i = 0; i < 50 && rows.length < 8 && !p.done; i++) {
+        const got = (await p.more()) || [];
+        if (!ctx.alive()) return;
+        rows = rows.concat(got.filter((e) => e.target === 'settings:mqtt'));
+      }
+      rows = rows.slice(0, 8);
     } catch (e) { if (e.name === 'AbortError') return; replace(logSlot, note('The broker log could not be read.')); return; }
     if (!ctx.alive()) return;
     replace(logSlot,
@@ -414,7 +437,8 @@ export async function mount(ctx) {
   const carSel = h('select', { class: 'select', 'aria-label': 'Car for the preview', onchange: () => pickCar(carSel.value) });
   const carSearch = h('input', { class: 'input si-car-search', type: 'search', placeholder: 'Find a car', 'aria-label': 'Find a car by name' });
   function fillCars(list) {
-    const items = list.some((c) => c.id === carId) || !carId ? list : [{ id: carId, name: pv?.name || carId }, ...list];
+    const cur = extraCar && extraCar.id === carId ? extraCar : { id: carId, name: pv?.name || carId };
+    const items = list.some((c) => c.id === carId) || !carId ? list : [cur, ...list];
     replace(carSel, items.map((c) => h('option', { value: c.id, selected: c.id === carId }, c.name || c.id)));
   }
   fillCars(carList);
@@ -430,12 +454,16 @@ export async function mount(ctx) {
   async function pickCar(next) {
     if (!next || next === carId) return;
     carId = next;
+    extraCar = carList.find((c) => c.id === next) || { id: next, name: carSel.selectedOptions[0]?.textContent || next };
+    replace(carNoteSlot);
     ctx.setQuery({ car: carId });
     await loadPreview();
     if (!ctx.alive()) return;
-    paintTopics(); paintValues(); paintHa(); paintEntities(); paintEvents(true);
+    paintTopics(); paintValues(); paintHa(); paintEntities(); paintEventTopic(); paintEvents();
+    await eventsTable?.ready;
   }
-  const carPicker = () => h('div', { class: 'si-car' }, h('label', { class: 'faint' }, 'Preview for'), carSel, carList.length >= 100 || (cars?.next) ? carSearch : null);
+  const carNoteSlot = h('div', { class: 'si-car-note' }, carMissing ? note(icon('info', 'ico--sm'), ` The car “${carMissing}” in the address does not exist or is not visible to this account, so the preview shows ${extraCar?.name || 'another car'}.`) : null);
+  const carPicker = () => h('div', { class: 'si-car' }, h('label', { class: 'faint' }, 'Preview for'), carSel, carList.length >= 100 || (cars?.next) ? carSearch : null, carNoteSlot);
 
   /* ---------- MQTT published values */
   const valuesSlot = h('div', { class: 'si-values' });
@@ -491,7 +519,7 @@ export async function mount(ctx) {
   /* ---------- Home Assistant discovery */
   const haSlot = h('div');
   function paintHa() {
-    const ha = cfg?.ha_discovery || { enabled: (pv?.ha_entities || []).length > 0, prefix: (pv?.ha_entities?.[0]?.config_topic || 'homeassistant/').split('/')[0], url: null };
+    const ha = cfg?.ha_discovery || { enabled: (pv?.ha_entities || []).length > 0, prefix: haPrefixOf(pv?.ha_entities?.[0]?.config_topic) || 'homeassistant', url: null };
     const ro = !cfg;
     const onSw = sw('si-ha-on', ha.enabled, 'Home Assistant discovery', async (on, input) => {
       if (await save({ ha_discovery: { enabled: on } }, on ? 'Discovery on' : 'Discovery off')) input.checked = cfg.ha_discovery.enabled;
@@ -577,11 +605,11 @@ export async function mount(ctx) {
     const name = slug(pv?.name || 'car');
     const eid = (key, domain = 'sensor') => {
       const e = ents.find((x) => x.state_topic.endsWith(`/${key}`));
-      return e ? `${e.config_topic.split('/')[1] || domain}.${name}_${slug(e.name)}` : null;
+      return e ? `${haDomainOf(e.config_topic) || domain}.${name}_${slug(e.name)}` : null;
     };
     const glance = ['soc', 'state', 'charging', 'gear', 'speed', 'range', 'inside_temp', 'updated'].map((k) => eid(k)).filter(Boolean);
-    const all = ents.filter((e) => !e.config_topic.includes('/event/') && !e.config_topic.includes('/device_tracker/')).map((e) => `${e.config_topic.split('/')[1]}.${name}_${slug(e.name)}`);
-    const tracker = ents.find((e) => e.config_topic.includes('/device_tracker/'));
+    const all = ents.filter((e) => !['event', 'device_tracker'].includes(haDomainOf(e.config_topic))).map((e) => `${haDomainOf(e.config_topic) || 'sensor'}.${name}_${slug(e.name)}`);
+    const tracker = ents.find((e) => haDomainOf(e.config_topic) === 'device_tracker');
     const yGlance = ['type: glance', `title: ${pv?.name || 'Car'}`, 'entities:', ...glance.map((x) => `  - ${x}`)].join('\n');
     const yMap = tracker ? ['type: map', 'dark_mode: true', 'hours_to_show: 24', 'entities:', `  - device_tracker.${name}_location`].join('\n') : '';
     const yList = ['type: entities', `title: ${pv?.name || 'Car'}`, 'entities:', ...all.map((x) => `  - ${x}`), ...(tracker ? ['  - entity: proximity.home', '    name: Distance to home'] : [])].join('\n');
@@ -604,9 +632,8 @@ export async function mount(ctx) {
   /* ---------- Events for automations */
   const eventsSlot = h('div', { class: 'si-events-list' });
   let eventsTable = null;
-  function paintEvents(reloadOnly) {
-    if (reloadOnly && eventsTable && carId) { eventsTable.reload(eventParams()); return; }
-    if (!carId) { replace(eventsSlot, emptyState({ icon: 'clock', title: 'No car yet', text: 'Events appear here once a car has uploaded logs.' })); return; }
+  function paintEvents() {
+    if (!carId) { eventsTable = null; replace(eventsSlot, emptyState({ icon: 'clock', title: 'No car yet', text: 'Events appear here once a car has uploaded logs.' })); return; }
     eventsTable = dataTable(ctx, {
       title: 'Recent events', icon: 'clock', path: `cars/${enc(carId)}/events`, params: eventParams(), csvName: `events-${carId}`, label: 'Recent events', limit: 12,
       note: 'The last 30 days, newest first, exactly as a subscriber to the event topic got them (positions only with location publishing on).',
@@ -631,12 +658,14 @@ export async function mount(ctx) {
   const recipe = (titleText, cid, uses, text, s) => h('div', { class: 'si-card', cover: cid },
     h('div', { class: 'si-card-head' }, h('h3', null, titleText), statusTag(s)),
     h('p', null, text), h('p', { class: 'setting-note' }, 'Uses ', uses.map((u, i) => [i ? ', ' : '', code(u)]), '.'));
+  const eventTopicSlot = h('span');
+  const paintEventTopic = () => replace(eventTopicSlot, code(`${ns()}/cars/${carId || 'c1'}/event`));
+  paintEventTopic();
   function eventsBody() {
-    const n = ns(), c = carId || 'c1';
     return [
       h('div', { class: 'si-two' },
         h('div', { cover: 'nr.overview' },
-          h('p', null, 'Automations should react to what happened, not to a value changing. Sentry Mate sends one message per event on ', code(`${n}/cars/${c}/event`), '. It is never retained, so a restart of the server, the broker or Home Assistant never fires an automation again. Home Assistant gets them as one event entity per car.'),
+          h('p', null, 'Automations should react to what happened, not to a value changing. Sentry Mate sends one message per event on ', eventTopicSlot, '. It is never retained, so a restart of the server, the broker or Home Assistant never fires an automation again. Home Assistant gets them as one event entity per car.'),
           h('p', { class: 'setting-note' }, 'Any tool that reads MQTT can use them: Home Assistant, Node-RED, a script. Sentry Mate only publishes; it never takes commands, and nothing here can control the car.'),
           h('div', { class: 'tbl-scroll' }, h('table', { class: 'tbl si-evt-types', 'aria-label': 'Event types' },
             h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'Event'), h('th', { scope: 'col' }, 'When'), h('th', { scope: 'col' }, 'Carries'))),
@@ -726,11 +755,15 @@ export async function mount(ctx) {
       brokerPanel, topicsPanel, valuesPanel, haPanel, entitiesPanel, eventsPanel, apiPanel, netPanel, worksPanel));
   paintHead(); paintBroker(); paintStatus(); paintTopics(); paintValues(); paintHa(); paintEntities();
   eventsPanel.append(...eventsBody());
-  paintEvents(false); paintNetwork();
+  paintEvents(); paintNetwork();
   await Promise.all([valuesTable?.ready, eventsTable?.ready, paintLog()].filter(Boolean));
   if (!ctx.alive()) return;
   ctx.ready();
 }
+
+// a discovery topic is <prefix>/<domain>/<node>/<key>/config, and the prefix may have several levels
+function haDomainOf(topic) { const p = String(topic || '').split('/'); return p.length >= 5 ? p[p.length - 4] : null; }
+function haPrefixOf(topic) { const p = String(topic || '').split('/'); return p.length >= 5 ? p.slice(0, -4).join('/') : null; }
 
 function slug(s) {
   return String(s || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'car';
