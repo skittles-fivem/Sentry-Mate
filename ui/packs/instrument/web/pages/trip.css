@@ -1,0 +1,117 @@
+/* Trip (pages/trip.js): the window and cars, the map beside the figures, time and energy, the strip,
+   battery and elevation, the drives and the charges. */
+
+.trip-page {
+  --t-driving: var(--st-driving); --t-ac: var(--c-charge); --t-dc: var(--warm-deep);
+  --t-awake: var(--st-parked); --t-b: var(--c-soc);
+}
+.trip-page > * + * { margin-top: var(--gap); }
+.trip-page .page-head { margin-top: 0; }
+
+/* window and cars */
+.trip-window { display: flex; flex-direction: column; gap: 0.75rem; }
+.trip-window-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; min-width: 0; }
+.trip-window-row .grow { flex: 1 1 0; }
+.trip-shortcuts { display: inline-flex; flex-wrap: wrap; gap: 0.375rem; }
+.trip-vs { display: inline-flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.trip-vs .select { min-width: 11rem; }
+.trip-vs .input--sm { width: 9rem; }
+.trip-window-text { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0.375rem; font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); min-width: 0; }
+.trip-window-text .ico { color: var(--text-3); }
+.trip-window .select { max-width: 22rem; }
+
+/* the map beside the figures */
+.trip-layout { display: grid; gap: var(--gap); grid-template-columns: minmax(0, 7fr) minmax(22rem, 5fr); }
+.trip-map { min-height: 34rem; }
+.trip-map-legend { display: flex; flex-direction: column; gap: 0.375rem; font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-2); }
+.trip-map-legend b { color: var(--text); font-weight: 600; margin-bottom: 0.125rem; }
+.trip-map-legend > span { display: inline-flex; align-items: center; gap: 0.5rem; }
+.trip-map-legend .route-pin { width: 1.125rem; height: 1.125rem; font-size: max(0.625rem, var(--fs-floor)); box-shadow: none; }
+.trip-dot { display: inline-block; width: 0.75rem; height: 0.75rem; margin: 0 0.1875rem; border-radius: 50%; border: 0.125rem solid var(--map-casing); background: var(--warm); }
+.trip-dot[data-kind="overnight"] { background: var(--st-asleep); }
+.trip-line { display: inline-block; width: 1.125rem; height: 0.25rem; border-radius: 0.125rem; background: var(--t-b); }
+.trip-readout { display: flex; flex-direction: column; gap: 0.125rem; font-size: max(0.78125rem, var(--fs-floor)); }
+.trip-hover { width: 1rem; height: 1rem; }
+.trip-hover::before { display: none; }
+
+.trip-figures { display: flex; flex-direction: column; }
+.trip-fig-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.125rem 1.25rem; }
+.trip-fig-grid > .metric:first-child { grid-column: 1 / -1; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
+.trip-fig-grid .metric { min-width: 0; }
+.trip-fig-grid .metric-value { font-size: 1.375rem; overflow-wrap: anywhere; }
+.trip-fig-grid > .metric:first-child .metric-value { font-size: 2.25rem; }
+.trip-page .money-stack { display: inline-flex; flex-direction: column; }
+.trip-page .money-stack .cur { font-size: max(0.6875rem, var(--fs-floor)); color: var(--text-3); }
+.trip-figures .note { margin-top: 1rem; }
+
+/* time spent and energy */
+.trip-pair { display: grid; gap: var(--gap); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.trip-split { display: flex; height: 1.25rem; border-radius: 0.5rem; overflow: hidden; background: var(--glass-3); margin: 0.25rem 0 1rem; }
+.trip-split > i { flex: 0 0 var(--w); min-width: 2px; border-right: 1px solid var(--panel-solid); }
+.trip-split > i:last-child { border-right: 0; }
+[data-tone="driving"] { --tc: var(--t-driving); }
+[data-tone="ac"] { --tc: var(--t-ac); }
+[data-tone="dc"] { --tc: var(--t-dc); }
+[data-tone="awake"] { --tc: var(--t-awake); }
+.trip-split > i, .trip-split-legend i { background: var(--tc); }
+.trip-split > i[data-tone="asleep"], .trip-split-legend i[data-tone="asleep"] { background: var(--asleep-fill); }
+.trip-split > i[data-tone="none"], .trip-split-legend i[data-tone="none"] { background: var(--nodata-fill); }
+.trip-split-legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 1.5rem; margin: 0 0 0.75rem; padding: 0; list-style: none; }
+.trip-split-legend li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto 3rem; align-items: center; gap: 0.5rem; font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); }
+.trip-split-legend li i { width: 0.75rem; height: 0.75rem; border-radius: 0.1875rem; }
+.trip-split-legend li b { color: var(--text); font-weight: 600; white-space: nowrap; }
+.trip-split-legend li .faint { text-align: right; }
+.trip-energy { margin: 0.25rem 0 0.75rem; padding: 0; list-style: none; gap: 0.75rem; }
+.trip-energy li { grid-template-columns: minmax(9rem, 14rem) minmax(0, 1fr) auto; }
+.trip-energy .hbar-label { display: flex; flex-direction: column; line-height: 1.3; white-space: normal; }
+.trip-energy .hbar-label b { color: var(--text); font-weight: 600; }
+.trip-energy .hbar-label small { font-size: max(0.6875rem, var(--fs-floor)); color: var(--text-3); }
+.trip-energy .hbar { height: 0.625rem; }
+.trip-energy li[data-tone="gross"] .hbar > i { background: var(--c-power); }
+.trip-energy li[data-tone="net"] .hbar > i { background: var(--live); }
+.trip-energy li[data-tone="ac"] .hbar > i { background: var(--t-ac); }
+.trip-energy li[data-tone="dc"] .hbar > i { background: var(--t-dc); opacity: 0.9; }
+.trip-energy .hbar-val { font-weight: 600; color: var(--text); white-space: nowrap; }
+
+/* side by side */
+.trip-compare-tbl tbody th[scope="row"] { font-weight: 500; font-size: max(0.8125rem, var(--fs-floor)); letter-spacing: 0; text-transform: none; color: var(--text-2); text-align: left; background: none; }
+.trip-compare-tbl td.is-better { color: var(--live); font-weight: 600; }
+.trip-compare-tbl thead a { color: var(--t-b); }
+
+/* battery and elevation */
+.trip-charts { padding: 1.125rem 1.25rem 0.875rem; }
+.trip-charts .panel-head .row { justify-content: flex-end; flex-wrap: wrap; }
+.trip-chart--batt { height: 12rem; }
+.trip-chart--elev { height: 9.5rem; }
+.chart-empty { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-3); }
+
+/* drives and charges */
+.trip-page .cell-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.trip-page .cell-text > * { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trip-page .cell-text .sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
+.trip-page .cell-num { align-items: flex-end; }
+.trip-table .col-place .cell-text { max-width: 16rem; }
+.trip-page .place-link:hover, .trip-page .cost-link:hover { color: var(--live); }
+.trip-page .cell-text > .cost-link { display: flex; flex-wrap: nowrap; justify-content: flex-end; align-items: center; gap: 0.25rem; overflow: visible; }
+.trip-page .cost-link .ico { color: var(--text-3); }
+.trip-page .cost-link.is-missing { color: var(--warm); }
+
+@container page (min-width: 140rem) {
+  .trip-map { min-height: 40rem; }
+  .trip-chart--batt { height: 14rem; }
+  .trip-chart--elev { height: 11rem; }
+  .trip-fig-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container page (max-width: 85.375rem) {
+  .trip-layout { grid-template-columns: minmax(0, 1fr) minmax(20rem, 1fr); }
+}
+@container page (max-width: 76rem) {
+  .trip-layout, .trip-pair { grid-template-columns: minmax(0, 1fr); }
+  .trip-map { min-height: 26rem; }
+}
+@container page (max-width: 50rem) {
+  .trip-split-legend { grid-template-columns: minmax(0, 1fr); }
+  .trip-fig-grid { grid-template-columns: minmax(0, 1fr); }
+  .trip-energy li { grid-template-columns: minmax(7rem, 1fr) minmax(0, 1fr) auto; }
+  .trip-window .select { max-width: 100%; }
+}
