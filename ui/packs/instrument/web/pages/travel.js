@@ -34,7 +34,8 @@ export const id = 'travel';
 export const css = true;
 
 // line colours for cars, in order (the legend names each car)
-const CAR_COLORS = ['--live', '--c-charge', '--c-power', '--c-soc', '--c-regen', '--warm', '--c-elev'];
+// (never --warm or --c-charge: the city and place markers are warm, and a car line must not look like them)
+const CAR_COLORS = ['--live', '--c-power', '--c-soc', '--c-regen', '--c-elev'];
 const CAP = 5000; // grouped rows loaded for the map, the rankings and the local tables
 const RANKS = [
   ['days', 'Days', 'Calendar days with at least one stop there (a day counts once per car)'],
@@ -44,12 +45,15 @@ const RANKS = [
 ];
 const iso = (ms) => (ms == null ? '' : new Date(ms).toISOString());
 const plural = (n, one, many = `${one}s`) => `${formatNumber(n)} ${n === 1 ? one : many}`;
+// the text search had focus when it reloaded the page: the new box takes the focus back
+let refocusSearch = false;
 
 export async function mount(ctx) {
   const { period } = ctx;
   const q = ctx.query;
   const f = { q: q.q || '', place: q.place || '', country: (q.country || '').toUpperCase(), region: q.region || '' };
   let city = q.city || null;
+  let cityPicked = !!q.city; // picked by the viewer (kept in the address), else the city with the most days
 
   /* ---------- which cars */
   let fleet = [];
@@ -85,8 +89,8 @@ export async function mount(ctx) {
     for (const k of Object.keys(p)) if (p[k] == null || p[k] === '') delete p[k];
     return p;
   };
-  const queryOf = () => ({ cars: chosen === 'all' ? null : viewCars.join(','), q: f.q || null, place: f.place || null, country: f.country || null, region: f.region || null, city: city || null });
-  const apply = () => { ctx.setQuery(queryOf()); ctx.reload(); };
+  const queryOf = () => ({ cars: chosen === 'all' ? null : viewCars.join(','), q: f.q || null, place: f.place || null, country: f.country || null, region: f.region || null, city: cityPicked ? city : null });
+  const apply = () => { refocusSearch = document.activeElement === textIn; ctx.setQuery(queryOf()); ctx.reload(); };
 
   async function all(path, p) {
     const out = [];
@@ -119,7 +123,12 @@ export async function mount(ctx) {
   regionOpts ||= regions;
   const byDays = (a, b) => (b.days - a.days) || (b.visits - a.visits) || compareText(a.label || '', b.label || '');
   cities.items.sort(byDays);
-  if (!city && cities.items.length) city = cities.items[0].key;
+  const topCity = () => cities.items[0]?.key || null;
+  if (city && !cities.items.some((c) => c.key === city)) {
+    // the filters no longer reach the picked city: back to the one with the most days
+    city = null; cityPicked = false; ctx.setQuery({ city: null });
+  }
+  if (!city) city = topCity();
   const cityRow = () => cities.items.find((c) => c.key === city) || null;
   const cityName = (key) => { const c = cities.items.find((x) => x.key === key); return c ? c.label : (key || '').split('/').pop(); };
   const citiesPer = new Map();
@@ -156,6 +165,7 @@ export async function mount(ctx) {
           const everyCar = !ids.length || ids.length === fleet.length;
           ctx.navigate(state.buildUrl('travel', { period: state.current().period, query: { ...queryOf(), city: null, cars: everyCar ? null : ids.join(',') } }));
         } }, 'Show')));
+    document.body.append(pop); // a popover must be in the document to open; the cleanup removes it
     const paintText = () => {
       const names = fleet.filter((c) => sel.has(c.id)).map((c) => c.name);
       text.textContent = names.length ? (names.length > 2 ? `${formatNumber(names.length)} cars` : names.join(', ')) : fleet.length === 1 ? fleet[0].name : 'Every car';
@@ -185,12 +195,22 @@ export async function mount(ctx) {
     title: 'The period of the whole page (the same picker as in the top bar). A stop belongs to it by its arrival; time spent is cut at the edges.' },
   icon('calendar', 'ico--sm'), period.label, icon('chev-d', 'ico--sm'));
   const textIn = h('input', { class: 'input', type: 'search', value: f.q, placeholder: 'Place, street, town', 'aria-label': 'Text in the place or address' });
-  let timer = 0;
-  textIn.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { f.q = textIn.value.trim(); apply(); }, 450); });
-  ctx.onCleanup(() => clearTimeout(timer));
+  // applied on Enter, on leaving the box or on clearing it, never mid-typing, so no keystroke is lost to a reload
+  const searchNow = () => { const v = textIn.value.trim(); if (v !== f.q) { f.q = v; apply(); } };
+  textIn.addEventListener('change', searchNow);
+  textIn.addEventListener('search', searchNow);
+  // places that share a name are told apart by where they are (else by their id)
+  const sameName = (p) => savedPlaces.filter((x) => x.name === p.name);
+  const whereOf = (p) => [p.address?.neighbourhood, p.address?.locality || p.address?.short].filter(Boolean).join(', ');
+  const placeOptText = (p) => {
+    const twins = sameName(p);
+    if (twins.length < 2) return p.name;
+    const w = whereOf(p);
+    return twins.some((x) => x !== p && whereOf(x) === w) || !w ? `${p.name} (${w ? `${w}, ` : ''}${p.id})` : `${p.name} (${w})`;
+  };
   const placeSel = h('select', { class: 'select', 'aria-label': 'Saved place', onchange: (e) => { f.place = e.target.value; apply(); } },
     h('option', { value: '' }, 'Any place'),
-    savedPlaces.map((p) => h('option', { value: p.id, selected: f.place === p.id }, p.name)),
+    savedPlaces.map((p) => h('option', { value: p.id, selected: f.place === p.id }, placeOptText(p))),
     f.place && !savedPlaces.some((p) => p.id === f.place) ? h('option', { value: f.place, selected: true }, `Place ${f.place}`) : null);
   const countrySel = h('select', { class: 'select', 'aria-label': 'Country', onchange: (e) => { f.country = e.target.value; f.region = ''; apply(); } },
     h('option', { value: '' }, 'Every country'),
@@ -202,21 +222,24 @@ export async function mount(ctx) {
   h('option', { value: '' }, 'Every region'),
   regionOpts.items.filter((r) => r.region).map((r) => h('option', { value: r.key, selected: !!f.region && f.region.toLowerCase() === r.region.toLowerCase() && (!f.country || f.country === r.country_code) },
     regionOpts.items.some((x) => x !== r && x.region === r.region) ? `${r.region} (${r.country_code})` : r.region)));
-  const cityChip = h('span', { class: 'tv-city-chip', cover: 'visited.state.selected_city', title: 'The city whose days are listed under “Days in a city”. Pick another on the map or in the city list; it stays in the address.' },
+  const cityChip = h('span', { class: 'tv-city-chip', cover: 'visited.state.selected_city', title: 'The city whose days are listed under “Days in a city”. Pick another on the map or in the city list; it stays in the address.' });
+  const paintChip = () => replace(cityChip,
     icon('pin', 'ico--sm'), h('span', { class: 'faint' }, 'Days of'), h('b', null, city ? cityName(city) : 'no city'),
-    q.city ? h('button', { class: 'btn btn--sm btn--ghost btn--icon', type: 'button', 'aria-label': 'Back to the city with the most days', title: 'Back to the city with the most days',
-      onclick: () => { city = null; ctx.setQuery({ city: null }); ctx.reload(); } }, icon('x', 'ico--sm')) : h('span', { class: 'faint' }, '(most days)'));
+    cityPicked ? h('button', { class: 'btn btn--sm btn--ghost btn--icon', type: 'button', 'aria-label': 'Back to the city with the most days', title: 'Back to the city with the most days',
+      onclick: () => setCity(topCity(), false) }, icon('x', 'ico--sm')) : city ? h('span', { class: 'faint' }, '(most days)') : null);
+  paintChip();
   const anyFilter = f.q || f.place || f.country || f.region;
   root.append(h('section', { class: 'panel panel-pad tv-filters', 'aria-label': 'What the page covers' },
     h('div', { class: 'filter-bar' },
       periodBtn, carPicker(),
-      h('label', { class: 'field field--search', cover: 'locations.filter.address', title: 'Keeps stops whose saved place name, street, neighbourhood, town, region or country contains this text.' }, icon('search'), textIn),
+      h('label', { class: 'field field--search', cover: 'locations.filter.address', title: 'Keeps stops whose saved place name, street, neighbourhood, town, region or country contains this text. Press Enter (or leave the box) to apply it.' }, icon('search'), textIn),
       h('span', { class: 'filter' }, icon('pin', 'ico--sm'), placeSel),
       h('span', { class: 'filter' }, icon('globe', 'ico--sm'), countrySel, regionSel),
       cityChip,
       anyFilter ? h('button', { class: 'btn btn--sm btn--ghost', type: 'button', onclick: () => { f.q = f.place = f.country = f.region = ''; apply(); } }, icon('x', 'ico--sm'), 'Clear filters') : null),
     h('p', { class: 'note' }, icon('info', 'ico--sm'),
       'Text, place, country and region narrow every figure, marker and list below. The route lines on the map follow only the cars and the period.')));
+  if (refocusSearch) { refocusSearch = false; textIn.focus(); const n = textIn.value.length; textIn.setSelectionRange(n, n); }
 
   /* ---------- the cars (one colour each, as on the map) */
   const carStrip = h('div', { class: 'tv-cars', cover: 'visited.section.car_header', 'aria-label': 'Cars on this page' },
@@ -289,11 +312,17 @@ export async function mount(ctx) {
 
   /* ---------- countries, rankings */
   const cityCount = (c) => citiesPer.get(c.country_code || '-') || 0;
-  const pickCity = (key) => {
+  // the city whose days are listed: picked by the viewer (kept in the address) or the default (most days)
+  function setCity(key, picked) {
     city = key;
-    ctx.setQuery({ city: key });
+    cityPicked = picked && !!key;
+    ctx.setQuery({ city: cityPicked ? key : null });
     paintDays();
-    replace(cityChip.querySelector('b'), cityName(key));
+    paintChip();
+    for (const b of root.querySelectorAll('.tv-city-btn')) b.classList.toggle('is-chosen', b.dataset.key === city);
+  }
+  const pickCity = (key) => {
+    setCity(key, true);
     daysSlot.scrollIntoView({ block: 'start', behavior: 'smooth' });
   };
   const filterCountry = (cc) => { f.country = cc; f.region = ''; apply(); };
@@ -369,7 +398,7 @@ export async function mount(ctx) {
     note: cities.more ? `The first ${formatNumber(CAP)} cities by stops; narrow the period or the filters for the rest.` : 'A city is its name with its region and country. Click one to list its days.',
     columns: [
       { key: 'label', label: 'City', sort: true, cover: ['visited.cities.city', 'visited.link.city_days'],
-        render: (r) => h('button', { class: ['link-btn', r.key === city && 'is-chosen'], type: 'button', title: `List the days in ${r.label}`, onclick: () => pickCity(r.key) }, r.label || DASH), csv: (r) => r.label },
+        render: (r) => h('button', { class: ['link-btn', 'tv-city-btn', r.key === city && 'is-chosen'], dataset: { key: r.key }, type: 'button', title: `List the days in ${r.label}`, onclick: () => pickCity(r.key) }, r.label || DASH), csv: (r) => r.label },
       { key: 'region', label: 'Region', sort: true, cover: 'visited.cities.region', render: (r) => r.region || DASH },
       { key: 'country', label: 'Country', sort: true, cover: 'visited.cities.country', render: (r) => r.country || r.country_code || DASH },
       { key: 'visits', label: 'Stops', num: true, sort: true, render: (r) => formatNumber(r.visits) },
@@ -412,8 +441,10 @@ export async function mount(ctx) {
         { key: 'date', label: 'Date', cover: ['visited.city_days.date', 'visited.link.day_drives'],
           render: (r) => h('a', { href: state.buildUrl('drives', { car: r.car, period: dayOf(r) }), title: `The drives of ${carName(r.car)} that day` }, date(r.first_ms, rowTz(r), { year: true })), csv: (r) => r.date },
         ...(multi ? [{ key: 'car', label: 'Car', render: (r) => carName(r.car), csv: (r) => carName(r.car) }] : []),
-        { key: 'first_ms', label: 'First seen', num: true, cover: 'visited.city_days.first_seen', title: 'Arrived in the city, or midnight when the car was already there', render: (r) => time(r.first_ms, rowTz(r)), csv: (r) => iso(r.first_ms) },
-        { key: 'last_ms', label: 'Last seen', num: true, cover: 'visited.city_days.last_seen', title: 'Left the city, or midnight when the car stayed', render: (r) => time(r.last_ms, rowTz(r)), csv: (r) => iso(r.last_ms) },
+        { key: 'first_ms', label: 'First seen', num: true, cover: 'visited.city_days.first_seen', title: 'Arrived in the city, or “start of day” when the car was already there at midnight',
+          render: (r) => (r.first_ms === dayOf(r).from ? h('span', { class: 'faint' }, 'start of day') : time(r.first_ms, rowTz(r))), csv: (r) => iso(r.first_ms) },
+        { key: 'last_ms', label: 'Last seen', num: true, cover: 'visited.city_days.last_seen', title: 'Left the city, or “end of day” when the car was still there at midnight',
+          render: (r) => (r.last_ms != null && r.last_ms >= dayOf(r).to ? h('span', { class: 'faint' }, 'end of day') : time(r.last_ms, rowTz(r))), csv: (r) => iso(r.last_ms) },
         { key: 'drives', label: 'Drives', num: true, cover: 'visited.city_days.drives', title: 'Drives that arrived in or left the city that day', render: (r) => countLink(r.drives.length, 'drives', r, 'The drives'), csv: (r) => r.drives.length },
         { key: 'charges', label: 'Charges', num: true, cover: 'visited.city_days.charges', render: (r) => countLink(r.charges.length, 'charges', r, 'The charges'), csv: (r) => r.charges.length },
         { key: 'places', label: 'Places', cls: 'tv-wrap', cover: 'visited.city_days.places', render: (r) => r.places.join(', '), csv: (r) => r.places.join('; ') },
