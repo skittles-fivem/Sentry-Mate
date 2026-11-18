@@ -72,25 +72,46 @@ def backup_cars(now, h):
 
 
 def import_report(cars, imported):
-    """The report of an import of `cars` (all of them when only checked; the matched ones once imported)."""
+def _car_tables(c):
+    """Rows one backup car brings, per table: (read, skipped by reason, cleared values by column)."""
+    d, ch = c["drives"], c["charges"]
+    return {
+        "cars": (1, {}, {}),
+        "drives": (d + d // 150, {"duplicate": d // 150}, {}),
+        "charging_processes": (ch + ch // 110, {"no_energy": ch // 110}, {"cost": 1 if ch else 0}),
+        "positions": (c["positions"] + d // 2, {"no_position": d // 2}, {"elevation": d // 30}),
+        "updates": (c["updates"], {}, {}),
+    }
+
+
+    """The report of an import of `cars` (all of them when only checked; the matched ones once imported).
+    Each table's figures are the sum of its cars' (geofences belong to no car); each car carries its own
+    read, imported and skipped counts (None for a car left out of a finished import: it was not counted)."""
     use = [c for c in cars if c["match"] != "leave_out"] if imported else cars
-    d = sum(c["drives"] for c in use)
-    ch = sum(c["charges"] for c in use)
-    pos = sum(c["positions"] for c in use)
-    tables = {}
-    for name, read, skipped, bad in (
-            ("cars", len(use), {}, {}),
-            ("drives", d + d // 150, {"duplicate": d // 150}, {}),
-            ("charging_processes", ch + ch // 110, {"no_energy": ch // 110}, {"cost": 1 if ch else 0}),
-            ("positions", pos + d // 2, {"no_position": d // 2}, {"elevation": d // 30}),
-            ("updates", sum(c["updates"] for c in use), {}, {}),
-            ("geofences", 6, {}, {})):
-        sk = sum(skipped.values())
-        tables[name] = {"read": read, "imported": (read - sk) if imported else 0, "skipped": skipped,
-                        "bad_values": {k: v for k, v in bad.items() if v}}
+    tables = {name: {"read": 0, "imported": 0, "skipped": {}, "bad_values": {}}
+              for name in ("cars", "drives", "charging_processes", "positions", "updates", "geofences")}
+    per_car = {}
+    for c in use:
+        own = {"read": 0, "imported": 0, "skipped": {}}
+        for name, (read, skipped, bad) in _car_tables(c).items():
+            t, sk = tables[name], sum(skipped.values())
+            t["read"] += read
+            t["imported"] += (read - sk) if imported else 0
+            own["read"] += read
+            own["imported"] += (read - sk) if imported else 0
+            for k, v in skipped.items():
+                if v:
+                    t["skipped"][k] = t["skipped"].get(k, 0) + v
+                    own["skipped"][k] = own["skipped"].get(k, 0) + v
+            for k, v in bad.items():
+                if v:
+                    t["bad_values"][k] = t["bad_values"].get(k, 0) + v
+        per_car[c["tm_car"]] = own
+    tables["geofences"].update(read=6, imported=6 if imported else 0)
     return {"tables": tables,
             "span": {"from_ms": min(c["first_ms"] for c in cars), "to_ms": max(c["last_ms"] for c in cars)},
-            "cars": [{"tm_car": c["tm_car"], "match": c["match"], "drives": c["drives"], "charges": c["charges"]}
+            "cars": [dict({"tm_car": c["tm_car"], "name": c["name"], "match": c["match"], "drives": c["drives"], "charges": c["charges"]},
+                          **(per_car.get(c["tm_car"]) or {"read": None, "imported": None, "skipped": None}))
                      for c in cars], "imported": imported}
 
 

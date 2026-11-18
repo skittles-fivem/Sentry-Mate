@@ -28,6 +28,9 @@ class Imports(ServerCase):
         self.assertEqual(t["updates"]["imported"], tm["updates"])
         for name, x in t.items():
             self.assertEqual(x["read"], x["imported"] + sum(x["skipped"].values()), name)
+        for car in im["report"]["cars"]:  # per car too, and the cars add up to the tables (geofences belong to none)
+            self.assertEqual(car["read"], car["imported"] + sum(car["skipped"].values()), car["tm_car"])
+        self.assertEqual(sum(x["read"] for x in im["report"]["cars"]), sum(x["read"] for n, x in t.items() if n != "geofences"))
         first = self.c.get("/api/v1/cars/c3/drives?source=teslamate&sort=start&dir=asc&limit=1")["items"][0]
         self.assertLessEqual(im["report"]["span"]["from_ms"], first["start_ms"])
         self.assertEqual(self.c.get("/api/v1/imports/im1/cars")["items"][0]["match"], "c3")
@@ -91,6 +94,7 @@ class Imports(ServerCase):
         self.assertTrue(rep["imported"])
         self.assertEqual(rep["tables"]["drives"]["imported"], cars[0]["drives"])  # the left-out car is not counted
         self.assertEqual(rep["tables"]["cars"]["imported"], 1)
+        self.assertEqual([x["read"] is None for x in rep["cars"]], [False, True])  # the left-out car is not counted
         self.assertEqual([x["id"] for x in c.get("/api/v1/imports")["items"]], [jid, "im1"])
         actions = [x["action"] for x in c.get("/api/v1/audit?limit=20")["items"]]
         for want in ("import.create", "import.uploaded", "import.cars", "import.start"):

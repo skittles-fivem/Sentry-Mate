@@ -12,6 +12,7 @@
 
 import { h, replace, setVars } from '../shared/dom.js';
 import { buildUrl } from '../shared/state.js';
+import { toIsoZoned } from '../shared/time.js';
 import { format } from '../shared/units.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, metric, figures, kv, tag, pill, note } from '../core/page.js';
@@ -82,6 +83,7 @@ function startWords(e) {
 }
 
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+const rowsOf = (o) => Object.values(o || {}).reduce((a, b) => a + b, 0);
 const pct = (a, b) => (b > 0 ? Math.max(0, Math.min(100, (a / b) * 100)) : 0);
 
 /* ====================================================================== the page */
@@ -107,7 +109,7 @@ export async function mount(ctx) {
     return;
   }
 
-  const S = { jobs: [], cars: [], carInfo: new Map(), job: null, match: [], matchErr: null, overlaps: [] };
+  const S = { jobs: [], cars: [], job: null, match: [], matchErr: null, overlaps: [] };
   const up = { file: null, active: false, paused: false, error: null, startedAt: 0, sentAt0: 0 };
 
   async function loadJobs() { S.jobs = await ctx.api.list('imports', { limit: 100 }).all({ max: 1000 }); }
@@ -409,7 +411,7 @@ export async function mount(ctx) {
       { key: 'vin_prefix', label: 'VIN prefix', sort: true, render: (c) => h('span', { class: 'mono' }, c.vin_prefix) },
       { key: 'drives', label: 'Drives', num: true, sort: true, render: (c) => num(c.drives) },
       { key: 'charges', label: 'Charges', num: true, sort: true, render: (c) => num(c.charges) },
-      { key: 'first_ms', label: 'History', sort: true, render: (c) => `${date(c.first_ms, tz)} – ${date(c.last_ms, tz)}`, csv: (c) => `${c.first_ms}-${c.last_ms}` },
+      { key: 'first_ms', label: 'History', sort: true, render: (c) => `${date(c.first_ms, tz)} – ${date(c.last_ms, tz)}`, csv: false },
       { key: 'match', label: 'Goes to', csv: (c) => c.match ?? 'not chosen', render: (c) => {
         const taken = new Set(S.match.filter((x) => x.tm_car !== c.tm_car && x.match && x.match !== 'new' && x.match !== 'leave_out').map((x) => x.match));
         const sel = h('select', { class: 'input select im-select', 'aria-label': `Where ${c.name}'s history goes`, disabled: S.job?.status !== 'ready' && S.job?.status !== 'checking',
@@ -424,6 +426,17 @@ export async function mount(ctx) {
           c.match == null ? tag('not chosen', 'warm') : null);
       } },
     ],
+    csv: { columns: [
+      { label: 'TeslaMate car number', value: (c) => c.tm_car },
+      { label: 'In the backup', value: (c) => c.name },
+      { label: 'VIN prefix', value: (c) => c.vin_prefix },
+      { label: 'Drives (count)', value: (c) => c.drives },
+      { label: 'Charges (count)', value: (c) => c.charges },
+      { label: `History from (ISO 8601, ${tz})`, value: (c) => toIsoZoned(c.first_ms, tz) },
+      { label: `History to (ISO 8601, ${tz})`, value: (c) => toIsoZoned(c.last_ms, tz) },
+      { label: 'Goes to', value: (c) => (c.match === 'new' ? 'a new car' : c.match === 'leave_out' ? 'left out' : c.match ? carName(c.match) : 'not chosen') },
+      { label: 'Goes to (car id)', value: (c) => c.match ?? '' },
+    ] },
     empty: () => emptyState({ icon: 'car', title: 'No cars to match yet', text: 'The cars in the file are known once the whole file is uploaded.' }),
   });
   const matchWrap = h('div', { class: 'im-match' }, matchTable.el);
@@ -448,6 +461,17 @@ export async function mount(ctx) {
       { key: 'bad', label: 'Values cleared', render: (r) => (r.bad.length ? r.bad.map(([col, n]) => h('span', { class: 'im-badval' }, h('span', { class: 'mono' }, col), ` ${num(n)}`)) : h('span', { class: 'faint' }, 'none')),
         csv: (r) => r.bad.map(([c, n]) => `${c}:${n}`).join('; ') },
     ],
+    csv: { get columns() {
+      const done = !!S.report?.imported;
+      return [
+        { label: 'Table (TeslaMate name)', value: (r) => r.name },
+        { label: 'Table', value: (r) => tableName(r.name) },
+        { label: 'Read (rows)', value: (r) => r.read },
+        done ? { label: 'Imported (rows)', value: (r) => r.imported } : { label: 'To import (rows, not stored yet)', value: (r) => r.would },
+        { label: 'Skipped (rows)', value: (r) => r.skipped },
+        { label: 'Values cleared (column: rows)', value: (r) => r.bad.map(([c, n]) => `${c}: ${n}`).join('; ') },
+      ];
+    } },
     empty: () => emptyState({ icon: 'book', title: 'No report yet', text: 'The report appears once the whole file has been checked.' }),
   });
   const reasonsTable = dataTable(ctx, {
@@ -457,9 +481,50 @@ export async function mount(ctx) {
       { key: 'table', label: 'Table', sort: true, render: (r) => tableName(r.table), csv: (r) => r.table },
       { key: 'reason', label: 'Reason', sort: true, render: (r) => h('span', null, h('b', null, reasonWords(r.reason)[0]), h('span', { class: 'im-tdesc' }, reasonWords(r.reason)[1])), csv: (r) => reasonWords(r.reason)[0] },
       { key: 'code', label: 'Code', render: (r) => h('span', { class: 'mono faint' }, r.reason), csv: (r) => r.reason },
-      { key: 'n', label: 'Rows', num: true, sort: true, render: (r) => num(r.n) },
+      { key: 'n', label: 'Rows', num: true, sort: true, render: (r) => num(r.n), csv: { label: 'Skipped (rows)', value: (r) => r.n } },
     ],
     empty: () => emptyState({ icon: 'check', title: 'No row was skipped', text: 'Every row of the file passed its checks.' }),
+  });
+  // per car: rows read, imported (or to import) and skipped over every table, so a skipped count leads to a car
+  const goesTo = (m) => (m === 'new' ? 'a new car' : m === 'leave_out' ? 'left out' : m ? carName(m) : 'not matched yet');
+  const carsTable = dataTable(ctx, {
+    title: 'Rows per car', icon: 'car', rows: [], csvName: 'import-report-cars', label: 'Rows read, imported and skipped per imported car',
+    cover: 'web.import.rejected-count',
+    note: 'Each car\'s rows over every table. Places (geofences) belong to no car, so they count only in Rows per table.',
+    sort: { key: 'tm_car', dir: 'asc' },
+    columns: [
+      { key: 'tm_car', label: 'In the backup', sort: true, render: (c) => h('span', { class: 'row im-car' }, h('b', null, c.name || `Car ${c.tm_car}`), h('span', { class: 'mono faint' }, `#${c.tm_car}`)) },
+      { key: 'match', label: 'Went to', sort: true, value: (c) => goesTo(c.match), render: (c) => (c.match && c.match !== 'new' && c.match !== 'leave_out'
+        ? h('a', { class: 'link', href: buildUrl('car', { car: c.match }) }, carName(c.match))
+        : h('span', { class: c.match === 'leave_out' ? 'faint' : c.match ? null : 'warn' }, goesTo(c.match))) },
+      { key: 'read', label: 'Read', num: true, sort: true, render: (c) => (c.read == null ? h('span', { class: 'faint', title: 'Left out: its rows were not counted' }, 'not counted') : num(c.read)) },
+      { key: 'imported', label: 'Imported', num: true, sort: true, value: (c) => (c.read == null ? null : S.report?.imported ? c.imported : c.read - rowsOf(c.skipped)),
+        render: (c) => (c.read == null ? h('span', { class: 'faint' }, DASH) : S.report?.imported ? num(c.imported) : h('span', { class: 'faint', title: 'From the check: what the import would store' }, num(c.read - rowsOf(c.skipped)), ' to import')) },
+      { key: 'skipped', label: 'Skipped', num: true, sort: true, value: (c) => (c.skipped ? rowsOf(c.skipped) : null),
+        render: (c) => (c.skipped == null ? h('span', { class: 'faint' }, DASH) : rowsOf(c.skipped) ? h('span', { class: 'warn' }, num(rowsOf(c.skipped))) : h('span', { class: 'faint' }, '0')) },
+      { key: 'why', label: 'Why skipped', render: (c) => {
+        const e = Object.entries(c.skipped || {}).filter(([, n]) => n);
+        return e.length ? h('span', { class: 'im-whys' }, e.map(([k, n]) => h('span', { class: 'im-badval', title: reasonWords(k)[1] }, reasonWords(k)[0], ` ${num(n)}`))) : h('span', { class: 'faint' }, c.skipped ? 'none' : DASH);
+      } },
+      { key: 'drives', label: 'Drives', num: true, sort: true, render: (c) => num(c.drives) },
+      { key: 'charges', label: 'Charges', num: true, sort: true, render: (c) => num(c.charges) },
+    ],
+    csv: { get columns() {
+      const done = !!S.report?.imported;
+      return [
+        { label: 'TeslaMate car number', value: (c) => c.tm_car },
+        { label: 'In the backup', value: (c) => c.name || '' },
+        { label: 'Went to', value: (c) => goesTo(c.match) },
+        { label: 'Went to (car id)', value: (c) => (c.match && c.match !== 'new' && c.match !== 'leave_out' ? c.match : '') },
+        { label: 'Read (rows; empty when left out)', value: (c) => c.read },
+        done ? { label: 'Imported (rows)', value: (c) => c.imported } : { label: 'To import (rows, not stored yet)', value: (c) => (c.read == null ? null : c.read - rowsOf(c.skipped)) },
+        { label: 'Skipped (rows)', value: (c) => (c.skipped ? rowsOf(c.skipped) : null) },
+        { label: 'Skipped by reason (reason: rows)', value: (c) => Object.entries(c.skipped || {}).map(([k, n]) => `${reasonWords(k)[0]}: ${n}`).join('; ') },
+        { label: 'Drives (count)', value: (c) => c.drives },
+        { label: 'Charges (count)', value: (c) => c.charges },
+      ];
+    } },
+    empty: () => emptyState({ icon: 'car', title: 'No cars in the report', text: 'The report lists each car of the backup once the whole file has been checked.' }),
   });
   function paintReport() {
     const j = S.job, rep = j?.report || null;
@@ -467,11 +532,11 @@ export async function mount(ctx) {
     if (!rep) {
       replace(reportBox, emptyState({ icon: 'book', title: j ? 'No report yet' : 'No import yet', text: j ? 'The report appears once the whole file has been checked (pass 1).' : 'Each import gets a report: rows read, imported and skipped per table, and why.' }));
       skipBox.hidden = true;
-      tablesTable.setRows([]); reasonsTable.setRows([]);
-      reportTables.hidden = true;
+      tablesTable.setRows([]); reasonsTable.setRows([]); carsTable.setRows([]);
+      reportTables.hidden = true; carsWrap.hidden = true;
       return;
     }
-    reportTables.hidden = false;
+    reportTables.hidden = false; carsWrap.hidden = !(rep.cars || []).length;
     const names = Object.keys(rep.tables || {});
     const rows = names.map((name, i) => {
       const t = rep.tables[name];
@@ -480,9 +545,6 @@ export async function mount(ctx) {
     });
     const reasons = names.flatMap((name) => Object.entries(rep.tables[name].skipped || {}).map(([reason, n]) => ({ table: name, reason, n })));
     const tot = rows.reduce((a, r) => ({ read: a.read + r.read, imp: a.imp + (rep.imported ? r.imported : r.would), sk: a.sk + r.skipped, bad: a.bad + r.bad.reduce((x, [, n]) => x + n, 0) }), { read: 0, imp: 0, sk: 0, bad: 0 });
-    const carsLine = (rep.cars || []).map((c) => h('li', null, h('b', null, `#${c.tm_car}`), ' → ',
-      c.match === 'new' ? 'a new car' : c.match === 'leave_out' ? h('span', { class: 'faint' }, 'left out') : c.match ? h('a', { class: 'link', href: buildUrl('car', { car: c.match }) }, carName(c.match)) : h('span', { class: 'warn' }, 'not matched yet'),
-      ` · ${num(c.drives)} drives, ${num(c.charges)} charges`));
     replace(reportBox,
       h('p', { class: 'im-report-what' }, rep.imported ? 'What the import stored.' : 'From the check: what the import will store. Nothing is stored yet.'),
       figures([
@@ -491,29 +553,29 @@ export async function mount(ctx) {
         metric('Rows skipped', num(tot.sk), null, { explain: tot.sk ? 'Each with its reason below' : 'None: every row passed' }),
         metric('Values cleared', num(tot.bad), null, { explain: 'A value out of range was left blank; the row was kept' }),
         metric('History from', rep.span ? date(rep.span.from_ms, tz) : null, null, { size: 'sm', why: 'The file holds no dated rows', explain: rep.span ? `to ${date(rep.span.to_ms, tz)}: ${dur(rep.span.to_ms - rep.span.from_ms)} of TeslaMate history` : null }),
-      ], 'im-figs'),
-      carsLine.length ? h('div', { class: 'im-report-cars' }, h('h3', null, 'Cars'), h('ul', null, carsLine)) : null);
+      ], 'im-figs'));
     skipBox.hidden = !tot.sk;
     replace(skipBox, icon('warn', 'ico--sm'), h('div', null,
       h('p', null, h('b', null, `${num(tot.sk)} rows ${rep.imported ? 'were' : 'will be'} skipped.`), ' Skipping a row did not stop the import; every other row is in.'),
       h('p', null, 'A drive or charge built around a skipped row can come out a little short (fewer track points, no energy figure). The report keeps only how many rows were skipped and why, never what they held, so it is still here after a restart.')));
     tablesTable.setRows(rows);
     reasonsTable.setRows(reasons);
+    carsTable.setRows(rep.cars || []);
   }
   const reportTables = h('div', { class: 'im-two' }, tablesTable.el, reasonsTable.el);
+  const carsWrap = h('div', { class: 'im-cars' }, carsTable.el);
   const reportPanel = panel({ title: 'Report', icon: 'book', cls: 'im-report-panel' }, reportBox, skipBox);
 
   /* ---------------------------------------------------------------- overlap with CAN history */
   async function loadOverlaps() {
-    // the cars an import brought history to (any number of imports and cars)
-    const ids = [...new Set(S.jobs.filter((j) => j.status === 'done').flatMap((j) => (j.report?.cars || []).map((c) => c.match))
-      .filter((m) => m && m !== 'new' && m !== 'leave_out'))];
-    const lists = await Promise.all(ids.map(async (cid) => {
+    // every car the admin sees (any number): imported history stays when its import record is removed,
+    // so the overlaps are read from the cars, never from the import records
+    S.overlapErr = null;
+    const lists = await Promise.all(S.cars.map(async (c) => {
       try {
-        if (!S.carInfo.has(cid)) S.carInfo.set(cid, await ctx.api.get(`cars/${enc(cid)}`));
-        const r = await ctx.api.list(`cars/${enc(cid)}/overlaps`, { limit: 200 }).all({ max: 5000 });
-        return r.map((o) => ({ ...o, car: cid }));
-      } catch { return []; }
+        const r = await ctx.api.list(`cars/${enc(c.id)}/overlaps`, { limit: 200 }).all({ max: 5000 });
+        return r.map((o) => ({ ...o, car: c.id }));
+      } catch (e) { if (e?.name !== 'AbortError') S.overlapErr = e; return []; }
     }));
     S.overlaps = lists.flat().sort((a, b) => b.start_ms - a.start_ms);
   }
@@ -531,24 +593,37 @@ export async function mount(ctx) {
     }
     overlapTable.setRows(S.overlaps);
   }
-  const zoneOf = (o) => S.carInfo.get(o.car)?.time_zone || tz;
+  const zoneOf = (o) => S.cars.find((c) => c.id === o.car)?.time_zone || tz;
   const side = (x) => (x ? `${num(x.drives)} drives, ${num(x.charges)} charges` : DASH);
+  // the Timeline is a car page: link a real car's (one with an overlap, else one an import brought history to, else the first)
+  const timelineSlot = h('span', { class: 'im-tl' });
+  function paintTimelineLink() {
+    const done = S.jobs.filter((j) => j.status === 'done').flatMap((j) => (j.report?.cars || []).map((c) => c.match));
+    const car = S.cars.find((c) => c.id === S.overlaps[0]?.car) || S.cars.find((c) => done.includes(c.id)) || S.cars[0];
+    replace(timelineSlot, car
+      ? h('a', { class: 'link', href: buildUrl('timeline', { car: car.id }) }, S.cars.length > 1 ? `Timeline of ${car.name}` : 'Timeline')
+      : 'Timeline of each car');
+  }
   const overlapTable = dataTable(ctx, {
     title: 'Spans with both histories', icon: 'timeline', rows: [], csvName: 'import-overlaps', label: 'Spans where imported and CAN history overlap',
     note: 'Where TeslaMate and the CAN Bridge both recorded the same time, only one side is shown on Drives, Charges, Timeline, Statistics and Travel: CAN at first, since it is measured. Neither side is deleted; switch a span to show the other.',
     sort: { key: 'start_ms', dir: 'desc' },
     columns: [
       { key: 'car', label: 'Car', sort: true, value: (o) => carName(o.car), render: (o) => h('b', null, carName(o.car)), csv: (o) => carName(o.car) },
-      { key: 'start_ms', label: 'From', sort: true, render: (o) => dateTime(o.start_ms, zoneOf(o)), csv: (o) => o.start_ms },
-      { key: 'end_ms', label: 'To', sort: true, render: (o) => dateTime(o.end_ms, zoneOf(o)), csv: (o) => o.end_ms },
-      { key: 'len', label: 'Length', num: true, sort: true, value: (o) => o.end_ms - o.start_ms, render: (o) => dur(o.end_ms - o.start_ms), csv: (o) => o.end_ms - o.start_ms },
-      { key: 'can', label: 'CAN has', render: (o) => side(o.can), csv: (o) => side(o.can) },
-      { key: 'teslamate', label: 'TeslaMate has', render: (o) => side(o.teslamate), csv: (o) => side(o.teslamate) },
-      { key: 'shown', label: 'Shown', sort: true, csv: (o) => o.shown, render: (o) => h('div', { class: 'seg im-seg', role: 'group', 'aria-label': `Which history is shown for ${carName(o.car)} from ${dateTime(o.start_ms, zoneOf(o))}` },
+      { key: 'start_ms', label: 'From', sort: true, render: (o) => dateTime(o.start_ms, zoneOf(o)), csv: { label: 'From (ISO 8601, car\'s time zone)', value: (o) => toIsoZoned(o.start_ms, zoneOf(o)) } },
+      { key: 'end_ms', label: 'To', sort: true, render: (o) => dateTime(o.end_ms, zoneOf(o)), csv: { label: 'To (ISO 8601, car\'s time zone)', value: (o) => toIsoZoned(o.end_ms, zoneOf(o)) } },
+      { key: 'len', label: 'Length', num: true, sort: true, value: (o) => o.end_ms - o.start_ms, render: (o) => dur(o.end_ms - o.start_ms), csv: { label: 'Length (s)', value: (o) => Math.round((o.end_ms - o.start_ms) / 1000) } },
+      { key: 'can', label: 'CAN has', render: (o) => side(o.can), csv: { label: 'CAN has (drives, charges)', value: (o) => side(o.can) } },
+      { key: 'teslamate', label: 'TeslaMate has', render: (o) => side(o.teslamate), csv: { label: 'TeslaMate has (drives, charges)', value: (o) => side(o.teslamate) } },
+      { key: 'shown', label: 'Shown', sort: true, csv: { label: 'Shown (can or teslamate)', value: (o) => o.shown }, render: (o) => h('div', { class: 'seg im-seg', role: 'group', 'aria-label': `Which history is shown for ${carName(o.car)} from ${dateTime(o.start_ms, zoneOf(o))}` },
         [['can', 'CAN'], ['teslamate', 'TeslaMate']].map(([v, l]) => h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': String(o.shown === v), onclick: () => flip(o, v) }, l))) },
       { key: 'go', label: 'See it', csv: false, render: (o) => h('a', { class: 'link nowrap', href: buildUrl('timeline', { car: o.car, period: { from: o.start_ms, to: o.end_ms } }) }, 'Timeline', icon('chev-r', 'ico--sm')) },
     ],
-    empty: () => emptyState({ icon: 'check', title: 'No overlap', text: S.jobs.some((j) => j.status === 'done') ? 'The imported history ends before the CAN Bridge started recording, so every span has one history only.' : 'Nothing has been imported yet, so there is nothing to overlap.' }),
+    empty: () => (S.overlapErr
+      ? emptyState({ icon: 'warn', warn: true, title: 'Overlaps could not be read', text: `${errorWords(S.overlapErr).text} Reload the page to try again.` })
+      : emptyState({ icon: 'check', title: 'No overlap', text: S.cars.length
+        ? `No span of ${S.cars.length === 1 ? 'the car' : `the ${num(S.cars.length)} cars`} has both imported and CAN history, so every span shows the one history it has. Imported history that ends before the CAN Bridge started recording never overlaps.`
+        : 'There is no car yet, so there is nothing to overlap.' })),
   });
   const overlapPanel = panel({ title: 'Overlap with CAN history', icon: 'timeline', cls: 'im-overlap', cover: ['web.import.docs-overlap', 'web.import.docs-backfill', 'faq.no-backfill'] },
     h('ul', { class: 'im-facts' },
@@ -558,7 +633,7 @@ export async function mount(ctx) {
         'A TeslaMate backup holds its own addresses and heights, so imported drives have them at once. A stop without an address gets one from the server\'s offline address lookup in the minutes after the import; it shows its coordinates until then.')),
       h('li', { cover: 'faq.no-backfill' }, icon('info', 'ico--sm'), h('div', null, h('b', null, 'Time nobody recorded cannot be fetched later. '),
         'Tesla keeps no history to download. The CAN Bridge keeps its logs and uploads them when it can, so its own gaps fill themselves; time before it, or a spell when nothing recorded, shows as unknown on the ',
-        h('a', { class: 'link', href: ctx.link('timeline') }, 'Timeline'), '. Only an import from another logger, such as TeslaMate, fills it.'))),
+        timelineSlot, '. Only an import from another logger, such as TeslaMate, fills it.'))),
     overlapTable.el);
 
   /* ---------------------------------------------------------------- every import */
@@ -569,10 +644,10 @@ export async function mount(ctx) {
     rowHref: (j) => buildUrl('import', { query: { import: j.id } }),
     columns: [
       { key: 'name', label: 'File', sort: true, render: (j) => h('span', { class: 'row im-car' }, h('span', { class: 'mono im-name' }, j.name), j.id === S.job?.id ? tag('shown above', 'live') : null), csv: (j) => j.name },
-      { key: 'status', label: 'State', sort: true, render: (j) => h('span', { class: ['im-st', `im-st--${STATUS[j.status]?.tone || 'plain'}`] }, STATUS[j.status]?.label || j.status), csv: (j) => j.status },
-      { key: 'bytes_total', label: 'Size', num: true, sort: true, render: (j) => bytes(j.bytes_total) },
-      { key: 'started_ms', label: 'Started', sort: true, render: (j) => dateTime(j.started_ms, tz), csv: (j) => j.started_ms },
-      { key: 'finished_ms', label: 'Finished', sort: true, render: (j) => (j.finished_ms ? agoEl(j.finished_ms, tz) : h('span', { class: 'faint' }, UNFINISHED.includes(j.status) ? 'not yet' : DASH)), csv: (j) => j.finished_ms ?? '' },
+      { key: 'status', label: 'State', sort: true, render: (j) => h('span', { class: ['im-st', `im-st--${STATUS[j.status]?.tone || 'plain'}`] }, STATUS[j.status]?.label || j.status), csv: { label: 'State', value: (j) => STATUS[j.status]?.label || j.status } },
+      { key: 'bytes_total', label: 'Size', num: true, sort: true, render: (j) => bytes(j.bytes_total), csv: { label: 'Size (bytes)', value: (j) => j.bytes_total } },
+      { key: 'started_ms', label: 'Started', sort: true, render: (j) => dateTime(j.started_ms, tz), csv: { label: `Started (ISO 8601, ${tz})`, value: (j) => toIsoZoned(j.started_ms, tz) } },
+      { key: 'finished_ms', label: 'Finished', sort: true, render: (j) => (j.finished_ms ? agoEl(j.finished_ms, tz) : h('span', { class: 'faint' }, UNFINISHED.includes(j.status) ? 'not yet' : DASH)), csv: { label: `Finished (ISO 8601, ${tz}; empty if not yet)`, value: (j) => toIsoZoned(j.finished_ms, tz) } },
     ],
     empty: () => emptyState({ icon: 'logs', title: 'No imports yet', text: 'Each file you upload is listed here with its state.' }),
   });
@@ -594,7 +669,7 @@ export async function mount(ctx) {
       setJob(fresh);
       lastRead = ctx.api.now();
       if (fresh.status !== was || ['checking', 'ready'].includes(fresh.status)) await loadMatch();
-      if (fresh.status === 'done' && was !== 'done') { await loadJobs(); pick(); await loadOverlaps(); flash('Import done. The history shows on every page, marked as imported.'); }
+      if (fresh.status === 'done' && was !== 'done') { await loadJobs(); S.cars = await ctx.api.list('cars', { limit: 500 }).all({ max: 10000 }); pick(); await loadOverlaps(); flash('Import done. The history shows on every page, marked as imported.'); }
       if (fresh.status === 'failed' && was !== 'failed') flash('The import failed; see Upload for why.', { kind: 'error' });
     } catch (e) {
       if (!ctx.alive()) return;
@@ -616,6 +691,7 @@ export async function mount(ctx) {
     paintSteps(); paintUpload(); paintProgress(); paintMatch(); paintReport();
     historyTable.setRows(S.jobs);
     overlapTable.setRows(S.overlaps);
+    paintTimelineLink();
     if (ageEl) replace(ageEl, lastRead ? h('span', { class: 'setting-note' }, 'read ', agoEl(lastRead, tz)) : null);
   }
 
@@ -629,6 +705,7 @@ export async function mount(ctx) {
       h('div', { class: 'im-col' }, progressPanel)),
     matchWrap,
     reportPanel,
+    carsWrap,
     reportTables,
     overlapPanel));
   paintAll();

@@ -82,9 +82,8 @@
 /* report */
 .im-report-what { color: var(--text-2); margin-bottom: 0.875rem; }
 .im-figs { margin-bottom: 0.25rem; }
-.im-report-cars { margin-top: 1rem; }
-.im-report-cars h3 { font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-3); font-weight: 600; margin-bottom: 0.375rem; }
-.im-report-cars ul { margin: 0; padding-left: 1.125rem; display: flex; flex-direction: column; gap: 0.25rem; color: var(--text-2); }
+.im-cars[hidden] { display: none; }
+.im-whys { display: inline-flex; flex-wrap: wrap; gap: 0.125rem 0; }
 .im-skip { display: flex; gap: 0.625rem; align-items: flex-start; margin-top: 1rem; padding: 0.875rem 1rem; border-radius: var(--radius-sm); border: 1px solid var(--warm-line); background: var(--warm-soft); }
 .im-skip[hidden] { display: none; }
 .im-skip > .ico { flex: none; color: var(--warm); margin-top: 0.1875rem; }
