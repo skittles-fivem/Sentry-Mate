@@ -187,7 +187,7 @@ function buildFooter() {
     cover: ['shell.footer.update_available', 'web.shell.update-footer'],
   }, icon('arrow-r'), h('span', null, 'A newer version is out'));
   const legal = h('span', { class: 'footer-legal', cover: ['shell.footer.legal', 'web.shell.legal-footer'] },
-    'Bundled parts keep their own licences: MapLibre GL JS (BSD-3-Clause), uPlot (MIT), Inter and JetBrains Mono (SIL Open Font License 1.1). ',
+    'Bundled parts keep their own licences: MapLibre GL JS (BSD-3-Clause), uPlot (MIT), Inter (SIL Open Font License 1.1) and JetBrains Mono (Apache-2.0). ',
     h('a', { href: '/help#licences' }, 'Licences and notices'), ' · ',
     h('a', { href: '/help#credits' }, 'Data credits'));
   replace($('#footer'), version, legal, h('span', { class: 'grow' }), update);

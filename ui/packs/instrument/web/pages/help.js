@@ -21,7 +21,7 @@ const BUNDLED = [
   { name: 'MapLibre GL JS', what: 'Draws the maps', licence: 'BSD-3-Clause', href: '/vendor/maplibre-gl/LICENSE.txt' },
   { name: 'uPlot', what: 'Draws the charts', licence: 'MIT', href: '/vendor/uplot/LICENSE.txt' },
   { name: 'Inter', what: 'Text font', licence: 'SIL Open Font License 1.1', href: '/fonts/LICENSE-Inter.txt' },
-  { name: 'JetBrains Mono', what: 'Font for figures and codes', licence: 'SIL Open Font License 1.1', href: '/fonts/LICENSE-JetBrainsMono.txt' },
+  { name: 'JetBrains Mono', what: 'Font for figures and codes', licence: 'Apache-2.0', href: '/fonts/LICENSE-JetBrainsMono.txt' },
 ];
 
 // Short answers in our own words. [question, answer, page, link text, words that also find it]
@@ -40,6 +40,39 @@ const QA = [
 
 const isOutside = (u) => /^https?:\/\//i.test(u || '');
 const outLink = (href, text) => h('a', { class: 'link', href, target: '_blank', rel: 'noopener noreferrer external' }, text, icon('ext', 'ico--sm'));
+
+const hostOf = (u) => { try { return new URL(String(u).replace(/[{}]/g, '')).hostname || null; } catch { return null; } };
+
+/**
+ * Where maps and addresses come from, read from the settings (admins only). Viewers who cannot read the
+ * settings get a sentence that claims neither.
+ */
+function lookupSentence(settings) {
+  if (!settings) return ['Where maps and addresses come from is set by an admin in the server settings.'];
+  const tilesOn = settings.tiles?.mode === 'online';
+  const geoOn = settings.geocode?.mode === 'online';
+  if (!tilesOn && !geoOn) return ['Maps and addresses come from data stored on this server; nothing is looked up on another site.'];
+  const parts = [];
+  if (tilesOn) parts.push(`Map tiles come from ${hostOf(settings.tiles.online_url) || 'an outside tile service'}`);
+  else parts.push('Map tiles come from data stored on this server');
+  if (geoOn) parts.push(`addresses are looked up at ${hostOf(settings.geocode.url) || 'an outside address service'}`);
+  else parts.push('addresses come from data stored on this server');
+  return [`${parts.join('; ')}. Change this in `, appLink('settings-integrations', 'Settings: Integrations'), '.'];
+}
+
+/**
+ * A link to the page an answer is about. Car pages need a car: with none chosen yet, use the only car if
+ * there is exactly one, else say that a car must be chosen first (the link then goes to All cars).
+ */
+function carLink(page, label, cars) {
+  let href = state.linkTo(page);
+  let text = `Open ${label}`;
+  if (href === state.buildUrl('fleet') && page !== 'fleet') {
+    if (cars && cars.length === 1) href = state.linkTo(page, { car: cars[0].id });
+    else text = `Choose a car, then open ${label}`;
+  }
+  return h('a', { class: 'link nowrap', href }, text, icon('chev-r', 'ico--sm'));
+}
 
 /** The notices as one plain text file: our own licence status, the bundled parts, the signal lists and the data credits. */
 function noticeText(about) {
@@ -68,12 +101,15 @@ function downloadText(filename, text) {
 }
 
 export async function mount(ctx) {
-  let about, notices, settings = null;
+  let about, notices, settings = null, cars = null;
+  const needCar = !(ctx.state.car ?? state.lastCar());
   try {
-    [about, notices, settings] = await Promise.all([
+    [about, notices, settings, cars] = await Promise.all([
       ctx.api.get('about', null, { maxAgeMs: 600000 }),
       ctx.api.get('notices').then((r) => r.items).catch(() => getNotices()),
       ctx.admin ? ctx.api.get('settings').catch(() => null) : Promise.resolve(null),
+      // Only when no car is chosen yet: with exactly one car, links to car pages can name it.
+      needCar ? ctx.api.get('cars', { limit: 2 }).then((r) => r.items || []).catch(() => null) : Promise.resolve(null),
     ]);
   } catch (e) { ctx.fail(e); return; }
   if (!ctx.alive()) return;
@@ -169,11 +205,11 @@ export async function mount(ctx) {
     credits.length
       ? h('ul', { class: 'licence-list' }, credits.map((c) => h('li', null, h('b', null, c.name), h('span', null, `${c.text}${c.licence ? ` · ${c.licence}` : ''}`))))
       : h('p', { class: 'note' }, 'This server uses no outside data that needs a credit.'),
-    h('p', { class: 'note' }, 'Car signals are decoded with the signal lists named under Licences. Maps and addresses come from data stored on this server; nothing is looked up on another site unless an admin turns that on.'));
+    h('p', { class: 'note' }, 'Car signals are decoded with the signal lists named under Licences. ', ...lookupSentence(settings)));
 
   // ---- Questions and answers, with a filter
   const items = QA.map(([q, a, page, label, words]) => {
-    const el = h('div', { class: 'qa-item' }, h('dt', null, q), h('dd', null, a, ' ', h('a', { class: 'link nowrap', href: state.linkTo(page) }, `Open ${label}`, icon('chev-r', 'ico--sm'))));
+    const el = h('div', { class: 'qa-item' }, h('dt', null, q), h('dd', null, a, ' ', carLink(page, label, cars)));
     return { el, hay: `${q} ${a} ${label} ${words}`.toLowerCase() };
   });
   const none = h('p', { class: 'note', hidden: true }, 'No answer matches those words. Try fewer words, or open the page finder with / to go straight to a page.');
