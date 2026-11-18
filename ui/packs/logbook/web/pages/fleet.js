@@ -67,25 +67,64 @@ export async function mount(ctx) {
       type: 'button', class: ['tally', `tally-${k}`], 'aria-pressed': String(st.state === k), dataset: { state: k },
       onclick: () => { st.state = k; syncTallies(); write(); reload(); },
     },
-    h('span', { class: 'tally-count' }, formatNumber(k === 'all' ? summary.cars : by[k] || 0)),
+    h('span', { class: 'tally-count', dataset: { count: k } }, formatNumber(k === 'all' ? summary.cars : by[k] || 0)),
     h('span', { class: 'tally-name' }, k === 'all' ? null : h('span', { class: ['state-dot', `state-${k}`], 'aria-hidden': 'true' }), name,
-      k === 'all' && summary.stale ? h('span', { class: 'tally-note' }, `${formatNumber(summary.stale)} stale`) : null,
+      k === 'all' ? h('span', { class: 'tally-note', dataset: { stale: '' } }, summary.stale ? `${formatNumber(summary.stale)} stale` : 'none stale') : null,
       k === 'unknown' ? h('span', { class: 'tally-note' }, 'no data') : null))));
+  function drawSummary(sm) {
+    const b = sm.by_state || {};
+    for (const el of tallies.querySelectorAll('[data-count]')) el.textContent = formatNumber(el.dataset.count === 'all' ? sm.cars : b[el.dataset.count] || 0);
+    const stale = tallies.querySelector('[data-stale]');
+    if (stale) stale.textContent = sm.stale ? `${formatNumber(sm.stale)} stale` : 'none stale';
+  }
   const syncTallies = () => tallies.querySelectorAll('.tally').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.state === st.state)));
 
-  // Attention: which car needs a look and why, each linked to the page that shows the cause.
-  const carNames = new Map();
+  // Attention: which car needs a look and why, each linked to the page that shows the cause. Times are in the
+  // car's own zone once the car is known (from the list, or one GET per car not on the first page).
+  const carInfo = new Map(); // car id -> { name, tz }
+  const attnItems = [...attention.items];
+  let attnNext = attention.next || null;
+  const attnList = h('ul', { class: 'attention-list' });
+  const attnCount = h('span', { class: 'label-note' });
+  const attnMore = h('button', { type: 'button', class: ['button', 'button-quiet', 'button-small', 'attention-more'], onclick: moreAttention }, 'Show more');
+  const attnEmpty = h('p', { class: 'note' }, 'Every car is uploading, its logs pass their checks, and no tyre, door or battery needs a look.');
   const attentionBox = h('section', { class: 'attention', 'aria-labelledby': 'attention-title' },
-    h('h2', { class: 'label', id: 'attention-title' }, 'Needs a look', h('span', { class: 'label-note' }, attention.items.length ? tn(attention.items.length, '{n} item', '{n} items') : 'nothing')),
-    attention.items.length
-      ? h('ul', { class: 'attention-list' }, attention.items.map((a) => {
-        const li = h('li', { class: 'attention-item', dataset: { car: a.car } },
-          h('span', { class: 'attention-car' }, a.car),
-          h('span', { class: 'attention-text' }, attentionText(a, zone)),
-          h('a', { class: 'link-arrow', href: state.buildUrl(ATTENTION_PAGE[a.code] || 'car', { car: a.car, period: ATTENTION_PAGE[a.code] === 'car' ? null : state.current().period }) }, 'See why', icon('arrowRight')));
-        return li;
-      }))
-      : h('p', { class: 'note' }, 'Every car is uploading, its logs pass their checks, and no tyre, door or battery needs a look.'));
+    h('h2', { class: 'label', id: 'attention-title' }, 'Needs a look', attnCount),
+    attnList, attnEmpty, attnMore);
+  function attentionRow(a) {
+    const info = carInfo.get(a.car);
+    const tz = info?.tz || zone;
+    const page = ATTENTION_PAGE[a.code] || 'car';
+    return h('li', { class: 'attention-item', dataset: { car: a.car } },
+      h('span', { class: 'attention-car' }, info?.name || a.car),
+      h('span', { class: 'attention-text' }, attentionText(a, tz),
+        a.since_ms ? h('span', { class: 'attention-since' }, ' Since ', ago(a.since_ms), '.') : null),
+      h('a', { class: 'link-arrow', href: state.buildUrl(page, { car: a.car, period: page === 'car' ? null : state.current().period }) }, 'See why', icon('arrowRight')));
+  }
+  function drawAttention() {
+    attnList.replaceChildren(...attnItems.map(attentionRow));
+    attnCount.textContent = attnItems.length ? `${tn(attnItems.length, '{n} item', '{n} items')}${attnNext ? ' shown, more below' : ''}` : 'nothing';
+    attnList.hidden = !attnItems.length;
+    attnEmpty.hidden = !!attnItems.length;
+    attnMore.hidden = !attnNext;
+  }
+  async function moreAttention() {
+    if (!attnNext) return;
+    attnMore.disabled = true;
+    try {
+      const r = await ctx.api.get('fleet/attention', { limit: 20, after: attnNext });
+      attnItems.push(...r.items); attnNext = r.next || null;
+      drawAttention(); learnCars();
+    } catch (err) { ctx.flash(`More cars could not be loaded: ${err.message || err}`, { kind: 'error' }); } finally { attnMore.disabled = false; }
+  }
+  function learnCars() {
+    for (const a of attnItems) {
+      if (carInfo.has(a.car)) continue;
+      carInfo.set(a.car, null);
+      ctx.api.get(api.apiPath`cars/${a.car}`).then((c) => { carInfo.set(c.id, { name: c.name, tz: c.time_zone }); drawAttention(); }).catch(() => {});
+    }
+  }
+  drawAttention();
 
   // Search and order.
   const search = h('input', { class: 'field-input', type: 'search', id: 'fleet-search', value: st.q, placeholder: 'Name, model or VIN prefix', autocomplete: 'off', spellcheck: 'false' });
@@ -137,14 +176,16 @@ export async function mount(ctx) {
     { key: 'state', label: 'State', cls: 'c-state', value: (c) => c.now?.state,
       cell: (c) => [stateMark(c.now?.state, { stale: !!c.now?.stale }), h('span', { class: 'cell-sub' }, sinceText(c))] },
     { key: 'soc', label: 'Battery', sort: 'soc', firstDir: 'desc', cls: 'c-battery', value: (c) => c.now?.soc_pct,
-      cell: (c) => [h('span', { class: 'batt-row' }, q(c.now?.soc_pct, 'percent'), batteryBar(c.now?.soc_pct, { cls: 'bar-cell' })),
-        h('span', { class: 'cell-sub' }, format(c.now?.range_km, 'range'), c.now?.range_km != null ? ' range' : '')] },
+      cell: (c) => [h('span', { class: 'batt-row' }, q(c.now?.soc_pct, 'percent', { why: blankWhy(c) }), c.now?.soc_pct != null ? batteryBar(c.now.soc_pct, { cls: 'bar-cell' }) : null),
+        h('span', { class: 'cell-sub' }, c.now?.range_km != null ? `${format(c.now.range_km, 'range')} range` : 'range not known')] },
     { key: 'place', label: 'Where', cls: 'c-where', value: (c) => c.now?.place?.name,
       cell: (c) => [h('span', { class: 'place' }, c.now?.place ? c.now.place.name : c.now?.state === 'driving' ? 'On the road' : 'No saved place'),
-        h('span', { class: 'cell-sub' }, c.time_zone ? c.time_zone.split('/').pop().replace(/_/g, ' ') : '')] },
+        h('span', { class: 'cell-sub' }, c.time_zone ? `${c.time_zone.split('/').pop().replace(/_/g, ' ')} time` : '')] },
     { key: 'plug', label: 'Charging', cls: 'c-plug', value: (c) => c.now?.charge_power_kw,
       cell: (c) => (c.now?.charge_power_kw != null ? [q(c.now.charge_power_kw, 'power'), h('span', { class: 'cell-sub' }, 'charging now')]
-        : c.now?.plugged ? [h('span', { class: 'plug-mark' }, icon('plug', 'icon icon-plug'), ' Plugged in')] : h('span', { class: 'nil' }, 'Not plugged in')) },
+        : c.now?.plugged ? [h('span', { class: 'plug-mark' }, icon('plug', 'icon icon-plug'), ' Plugged in'), c.now?.stale ? h('span', { class: 'cell-sub' }, 'last known') : null]
+          : c.now?.plugged == null ? [h('span', { class: 'nil' }, 'Not known'), h('span', { class: 'cell-sub' }, blankWhy(c))]
+            : [h('span', { class: 'nil' }, 'Not plugged in'), c.now?.stale ? h('span', { class: 'cell-sub' }, 'last known') : null]) },
     { key: 'last_activity', label: 'Data age', sort: 'last_activity', firstDir: 'desc', cls: 'c-seen', value: (c) => c.last_activity_ms,
       cell: (c) => [h('span', { class: 'seen-line' }, ago(c.now?.at_ms ?? c.last_activity_ms, { stale: !!c.now?.stale }), c.now?.stale ? flag('Stale', { kind: 'warn', title: 'No upload for more than an hour' }) : null),
         h('span', { class: 'cell-sub' }, c.now?.received_ms ? `received ${formatTime(c.now.received_ms, c.time_zone)}` : '')] },
@@ -155,6 +196,13 @@ export async function mount(ctx) {
           h('button', { type: 'button', class: 'icon-button', title: 'Move up', 'aria-label': `Move ${nameOf(c)} up`, onclick: () => move(c, -1) }, icon('chevronLeft', 'icon icon-up')),
           h('button', { type: 'button', class: 'icon-button', title: 'Move down', 'aria-label': `Move ${nameOf(c)} down`, onclick: () => move(c, 1) }, icon('chevronRight', 'icon icon-down'))] : null) },
   ];
+  /** Why a value is blank: a sleeping car sends nothing new; unknown means no log reached Sentry Mate. */
+  function blankWhy(c) {
+    const s = c.now?.state;
+    if (!c.now || s === 'unknown') return 'no data';
+    if (s === 'asleep') return 'asleep, not sent';
+    return 'not sent by this car';
+  }
   function sinceText(c) {
     const n = c.now || {};
     if (n.stale) return 'last known';
@@ -166,7 +214,7 @@ export async function mount(ctx) {
     path: 'cars', params: params(), limit: 50, columns, itemName: ['car', 'cars'], cls: 'fleet-ledger', label: 'Cars',
     cover: ['cars.list.cards', 'faq.null-panels', 'cars.list.live_refresh'],
     rowAttrs: (c) => ({ class: ['ledger-row', { 'is-stale': !!c.now?.stale, 'is-unknown': c.now?.state === 'unknown' }], dataset: { car: c.id } }),
-    onRows: (items) => { for (const c of items) carNames.set(c.id, c.name); nameAttention(); },
+    onRows: (items) => { for (const c of items) carInfo.set(c.id, { name: c.name, tz: c.time_zone }); drawAttention(); },
     empty: () => empty({
       title: st.q ? `No car matches “${st.q}”${st.state !== 'all' ? ` among ${stateLabel(st.state).toLowerCase()} cars` : ''}.` : `No car is ${stateLabel(st.state).toLowerCase()} right now.`,
       text: st.q ? 'Try part of a name, a model or a VIN prefix.' : 'Choose another state above to see more cars.',
@@ -175,12 +223,6 @@ export async function mount(ctx) {
   });
   function reload() { return table.reload(params(), { sort: null }); }
   function redrawRows() { table.redraw(); }
-  function nameAttention() {
-    for (const li of attentionBox.querySelectorAll('.attention-item')) {
-      const n = carNames.get(li.dataset.car);
-      if (n) li.querySelector('.attention-car').textContent = n;
-    }
-  }
 
   const asof = h('p', { class: 'asof' }, h('span', { class: 'asof-dot', 'aria-hidden': 'true' }), 'Live', h('span', { class: 'asof-note' }, 'values reach Sentry Mate about a minute after the car sends them'));
   ctx.main.append(
@@ -192,32 +234,34 @@ export async function mount(ctx) {
     table.el);
   await table.load();
   ctx.main.append(await missingCars(ctx));
-  // Car names for the attention list, when those cars are not on the first page.
-  for (const a of attention.items) if (!carNames.has(a.car)) ctx.api.get(api.apiPath`cars/${a.car}`).then((c) => { carNames.set(c.id, c.name); nameAttention(); }).catch(() => {});
+  // Names and zones for the attention list, when those cars are not on the first page.
+  learnCars();
 
   // Live: a car's row follows its `now` events; a car added, removed or renamed loads the list again.
-  let again = 0;
-  ctx.onCleanup(() => clearTimeout(again));
+  let again = 0, sumTimer = 0;
+  ctx.onCleanup(() => { clearTimeout(again); clearTimeout(sumTimer); });
+  // The totals follow the cars: a state change asks for the counts again (once per second at most).
+  function refreshSummary() {
+    clearTimeout(sumTimer);
+    sumTimer = setTimeout(() => ctx.api.get('fleet/summary').then(drawSummary).catch(() => {}), 1000);
+  }
   ctx.events(['now', 'fleet'], (ev) => {
-    if (ev.type === 'fleet') { clearTimeout(again); again = setTimeout(reload, 500); return; }
+    if (ev.type === 'fleet') { clearTimeout(again); again = setTimeout(reload, 500); refreshSummary(); return; }
     const d = ev.data || {};
     const car = table.items.find((c) => c.id === d.car);
     if (!car || !d.now) return;
     const n = d.now;
     const v = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : x);
     const now = { ...car.now };
-    if (n.state) now.state = n.state;
-    if (n.since_ms) now.since_ms = n.since_ms;
-    if (n.at_ms) now.at_ms = n.at_ms;
-    if (n.received_ms) now.received_ms = n.received_ms;
-    if ('stale' in n) now.stale = n.stale;
-    if (n.soc_pct) now.soc_pct = v(n.soc_pct);
-    if (n.range_km) now.range_km = v(n.range_km);
-    if (n.location && 'place' in n.location) now.place = n.location.place;
+    const before = now.state, staleBefore = !!now.stale;
+    for (const k of ['state', 'since_ms', 'at_ms', 'received_ms', 'stale', 'soc_pct', 'range_km']) if (k in n) now[k] = v(n[k]);
+    if (n.location && 'place' in n.location) now.place = v(n.location.place);
     if (n.charge) {
-      if (n.charge.plugged) now.plugged = v(n.charge.plugged);
-      if (n.charge.power_kw) now.charge_power_kw = now.state === 'charging' ? v(n.charge.power_kw) : null;
+      if ('plugged' in n.charge) now.plugged = v(n.charge.plugged);
+      if ('power_kw' in n.charge) now.charge_power_kw = v(n.charge.power_kw);
     }
+    if (now.state !== 'charging') now.charge_power_kw = null;
+    if (now.state !== before || !!now.stale !== staleBefore) refreshSummary();
     car.now = now;
     table.redrawRow(car);
   });
