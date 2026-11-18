@@ -54,7 +54,12 @@ export async function mount(ctx) {
     cars: (q.cars || '').split(',').map((s) => s.trim()).filter((s) => s && s !== cid).slice(0, 12),
   };
   let drivesCache = null;
-  const effParams = () => ({ ...ctx.params, min_distance_km: round3(toMetric(opt.minD, 'distance')), temp_group_c: round3(toMetric(opt.tgW, 'temperature_delta')) });
+  const groupC = () => round3(toMetric(opt.tgW, 'temperature_delta'));
+  const effParams = () => ({ ...ctx.params, min_distance_km: round3(toMetric(opt.minD, 'distance')), temp_group_c: groupC() });
+  // the API bins on exact multiples of the width it was sent and rounds the edges it returns to 0.1 °C
+  // (8.3, 11.1 for °F widths), so a drive's group is worked out from the width, never from those edges
+  const groupIndex = (tc) => Math.floor(tc / groupC());
+  const inGroup = (x, g) => x.outside_avg_c != null && groupIndex(x.outside_avg_c) === Math.round(g.temp_c / groupC());
 
   const [eff, temps] = await Promise.all([
     ctx.api.get(`${base}/efficiency`, effParams()),
@@ -86,7 +91,7 @@ export async function mount(ctx) {
       h('div', { class: 'filter', cover: 'ef.filter.min_distance', title: 'Drives shorter than this are left out of every efficiency figure on this page' }, h('span', { class: 'form-label' }, 'Shortest drive'), segMin),
       h('div', { class: 'filter', title: 'How wide each outside-temperature group is' }, h('span', { class: 'form-label' }, 'Temperature groups'), segT),
       carsBox),
-    h('p', { class: 'note ef-filter-note' }, `Drives count when they start in the period. The shortest-drive filter applies to the consumption figures and the table; temperatures below use every reading.`));
+    h('p', { class: 'note ef-filter-note' }, `Drives count when they start in the period. The shortest-drive filter applies to net consumption, logged distance, the table and the daily comparison; gross consumption and the parked share always take every drive, and temperatures below use every reading.`));
 
   /* ---------- slots */
   const consSlot = h('div', { class: 'ef-cons-body' });
@@ -158,19 +163,23 @@ export async function mount(ctx) {
     const minText = format(toMetric(opt.minD, 'distance'), 'distance', { digits: 0 });
     const why = d.drives ? 'Too little distance to divide by' : `No drive of at least ${minText} in this period`;
     const est = d.estimated_drives || 0;
+    // gross and the parked share cover every drive of the period, so they do not follow the filter
+    const all = d.all_drives || { drives: d.drives, distance_km: d.distance_km, energy_kwh: d.energy_kwh };
+    const used = (all.energy_kwh || 0) + (d.parked_kwh || 0);
+    const parkedShare = used > 0 ? (100 * (d.parked_kwh || 0)) / used : null;
     replace(consSlot,
       h('div', { class: 'ef-cons-figs' },
         metric('Net consumption', d.net_wh_per_km, 'efficiency', { size: 'lg', cover: 'ef.stat.consumption_net', why,
           explain: `Driving only: the ${format(d.energy_kwh, 'energy')} the pack gave while driving, regen already taken off, over the distance driven.` }),
         metric('Gross consumption', d.gross_wh_per_km, 'efficiency', { size: 'lg', cover: 'ef.stat.consumption_gross', why,
-          explain: `Everything: driving plus ${format(d.parked_kwh, 'energy')} used while parked (climate, Sentry, standby), over the same distance. From the pack’s own counters, exact for any period.` }),
+          explain: `Everything: the ${format(all.energy_kwh, 'energy')} of all ${n0(all.drives)} ${all.drives === 1 ? 'drive' : 'drives'} in the period plus ${format(d.parked_kwh, 'energy')} used while parked (climate, Sentry, standby), over all ${format(all.distance_km, 'distance')} driven. Short drives count here whatever the shortest-drive filter says. From the pack’s own counters, exact for any period.` }),
         metric('Logged distance', d.distance_km, 'distance', { cover: 'ef.stat.logged_distance',
           explain: `The ${n0(d.drives)} ${d.drives === 1 ? 'drive' : 'drives'} that started in this period and are at least ${minText} long.` }),
-        metric('Parked share', d.gross_wh_per_km && d.net_wh_per_km != null ? (1 - d.net_wh_per_km / d.gross_wh_per_km) * 100 : null, 'percent', { digits: 0,
-          why: 'Needs both figures', explain: 'Of all the energy used, the part used while the car stood still.' })),
+        metric('Parked share', parkedShare, 'percent', { digits: 0,
+          why: 'No energy used in this period', explain: 'Of all the energy used in the period (every drive plus parked), the part used while the car stood still.' })),
       est ? h('p', { class: 'note warn' }, tag('estimated', 'warm'), ` ${n0(est)} of the ${n0(d.drives)} drives are imported history: their energy is worked out from range and the energy factor, not measured.`) : null,
       h('div', { class: 'ef-cons-help', cover: 'ef.help.headline_stats' },
-        h('p', { class: 'note' }, icon('info', 'ico--sm'), ' Net shows how efficiently the car drives. Gross is what owning it costs in energy per distance; the gap between them is energy used parked. Both divide by the same logged distance.'),
+        h('p', { class: 'note' }, icon('info', 'ico--sm'), ` Net shows how efficiently the car drives: drives of at least ${minText}. Gross is what owning it costs in energy per distance: every drive and all parked energy, so the shortest-drive filter does not change it.`),
         h('p', { class: 'note', cover: 'faq.no-consumption' }, icon('check', 'ico--sm'), ` Nothing to wait for: consumption is measured from the first drive, with no charges needed to calibrate it. A blank figure means there was no drive of at least ${minText} in the period; pick a longer period or a shorter shortest drive.`)));
   }
 
@@ -265,8 +274,8 @@ export async function mount(ctx) {
         drivesCache = { key, items };
       }
       if (!ctx.alive() || opt.group !== g.temp_c) return;
-      const hi = g.temp_to_c ?? g.temp_c + toMetric(opt.tgW, 'temperature_delta');
-      const rows = drivesCache.items.filter((x) => x.outside_avg_c != null && x.outside_avg_c >= g.temp_c && x.outside_avg_c < hi);
+      const rows = drivesCache.items.filter((x) => inGroup(x, g));
+      const off = rows.length !== g.drives;
       const close = h('button', { class: 'btn btn--sm btn--ghost', type: 'button', onclick: () => openGroup(g, d), title: 'Close this list' }, icon('x', 'ico--sm'), 'Close');
       const t = dataTable(ctx, {
         title: `Drives at ${groupLabel(g)}`, icon: 'route', cls: 'ef-group', rows, side: close,
@@ -281,7 +290,7 @@ export async function mount(ctx) {
           { key: 'speed', label: 'Average speed', num: true, sort: true, value: (x) => x.speed_avg_kph, render: (x) => format(x.speed_avg_kph, 'speed') },
         ],
         empty: () => emptyState({ icon: 'route', title: 'No drives in this group', text: 'The list changed since the table was built. Reload the page.' }),
-        note: `${n0(rows.length)} ${rows.length === 1 ? 'drive' : 'drives'} whose average outside temperature was in this group. Open one for its route and charts.`,
+        note: `${n0(rows.length)} ${rows.length === 1 ? 'drive' : 'drives'} whose average outside temperature was in this group. Open one for its route and charts.${off ? ` The table counted ${n0(g.drives)}: drives were added or changed since it was built; reload the page to bring both up to date.` : ''}`,
       });
       replace(groupSlot, t.el);
     } catch (e) {
@@ -331,10 +340,13 @@ export async function mount(ctx) {
     if (!opt.cars.length) { replace(compareSlot); return; }
     const ids = [cid, ...opt.cars];
     replace(compareSlot, panel({ title: 'Compare cars', icon: 'car', cls: 'ef-compare' }, h('p', { class: 'faint' }, 'Loading the other cars…')));
-    const [cars, effs, cmp] = await Promise.all([
-      Promise.all(ids.map((i) => (i === cid ? Promise.resolve(car) : ctx.api.get(`cars/${enc(i)}`).catch(() => null)))),
-      Promise.all(ids.map((i) => ctx.api.get(`cars/${enc(i)}/efficiency`, effParams()).catch(() => null))),
-      ctx.api.get('compare', { cars: ids.join(','), metric: 'wh_per_km', ...ctx.params }).catch(() => null),
+    const cars = await Promise.all(ids.map((i) => (i === cid ? Promise.resolve(car) : ctx.api.get(`cars/${enc(i)}`).catch(() => null))));
+    if (!ctx.alive()) return;
+    // only the cars this account can open: /compare answers 404 for the whole request if one is hidden
+    const seen = ids.filter((i, k) => cars[k]?.name);
+    const [effs, cmp] = await Promise.all([
+      Promise.all(ids.map((i, k) => (cars[k]?.name ? ctx.api.get(`cars/${enc(i)}/efficiency`, effParams()).catch(() => null) : null))),
+      ctx.api.get('compare', { cars: seen.join(','), metric: 'wh_per_km', min_distance_km: effParams().min_distance_km, ...ctx.params }).catch((e) => ({ error: e })),
     ]);
     if (!ctx.alive()) return;
     const rows = ids.map((i, k) => ({ id: i, name: cars[k]?.name || null, color: CAR_COLORS[k % CAR_COLORS.length], e: effs[k] })).filter((r) => r.name);
@@ -352,7 +364,7 @@ export async function mount(ctx) {
         h('td', { class: 'is-num' }, format(r.e?.parked_kwh, 'energy')))))));
     const chartEl = h('div', { class: 'chart ef-compare-chart' });
     const readout = h('span', { class: 'faint ef-readout' }, 'Point at the chart for each car’s day.');
-    const series = (cmp?.series || []).map((s) => ({ ...s, color: rows.find((r) => r.id === s.car)?.color || '--text-3' })).filter((s) => rows.some((r) => r.id === s.car));
+    const series = (cmp.error ? [] : cmp.series || []).map((s) => ({ ...s, color: rows.find((r) => r.id === s.car)?.color || '--text-3' })).filter((s) => rows.some((r) => r.id === s.car));
     const xsSet = new Set(); series.forEach((s) => (s.t_ms || []).forEach((t) => xsSet.add(t)));
     const xsMs = [...xsSet].sort((a, b) => a - b);
     const cols = series.map((s) => { const m = new Map((s.t_ms || []).map((t, i) => [t, s.values[i]])); return xsMs.map((t) => (m.has(t) && m.get(t) != null ? convert(m.get(t), 'efficiency') : null)); });
@@ -364,9 +376,10 @@ export async function mount(ctx) {
     tbl,
     missing ? h('p', { class: 'note warn' }, `${missing} ${missing === 1 ? 'car' : 'cars'} could not be shown: hidden from this account or removed.`) : null,
     h('div', { class: 'chart-label' }, h('span', { class: 'name' }, 'Net consumption per day'), h('span', { class: 'chart-unit' }, unitLabel('efficiency')), readout),
-    xsMs.length ? chartEl : h('p', { class: 'faint' }, 'No day in this period has drives for these cars.'),
-    note('Same period and shortest drive for every car. A point is one day with drives (one ISO week for periods over 120 days). The lowest net consumption is marked.')));
-    if (!xsMs.length || !window.uPlot) return;
+    cmp.error ? errorState(cmp.error, { compact: true, home: false, retry: () => paintCompare() })
+      : xsMs.length ? chartEl : h('p', { class: 'faint' }, `No day in this period has drives of at least ${format(toMetric(opt.minD, 'distance'), 'distance', { digits: 0 })} for these cars.`),
+    note('Same period and shortest drive for every car, in the table and the daily line. A point is one day with drives (one ISO week for periods over 120 days). The lowest net consumption is marked.')));
+    if (cmp.error || !xsMs.length || !window.uPlot) return;
     const make = (width, height) => {
       const c = colors();
       return {
@@ -446,8 +459,9 @@ export async function mount(ctx) {
     });
     const at = h('span', { class: 'faint ef-readout' }, 'Point at the chart for the values at a time.');
     const tUnit = unitLabel('temperature');
-    const statsTbl = h('div', { class: 'tbl-scroll' }, h('table', { class: 'tbl tp-stats', 'aria-label': 'Lines in the chart: lowest, average, highest and last' },
-      h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'Line'), ['Lowest', 'Average', 'Highest', 'Last'].map((l) => h('th', { scope: 'col', class: 'is-num' }, l)))),
+    const bw = bucketWords(bms);
+    const statsTbl = h('div', { class: 'tbl-scroll' }, h('table', { class: 'tbl tp-stats', 'aria-label': `Lines in the chart, from ${bw} averages: lowest, average, highest and last` },
+      h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'Line'), [`Lowest ${bw} average`, 'Average', `Highest ${bw} average`, `Last ${bw} average`].map((l) => h('th', { scope: 'col', class: 'is-num' }, l)))),
       h('tbody', null, keys.map((k) => { const sv = stat(raw[k]); const last = [...raw[k]].reverse().find((x) => x != null);
         return h('tr', null, h('td', { class: 'ef-rowhead' }, h('i', { class: ['legend-swatch', k === 'setpoint' && 'is-dashed'], vars: { '--c': `var(${SERIES[k].color})` } }), SERIES[k].label),
           sv ? [h('td', { class: 'is-num' }, format(sv.min, 'temperature')), h('td', { class: 'is-num' }, format(sv.mean, 'temperature')), h('td', { class: 'is-num' }, format(sv.max, 'temperature')), h('td', { class: 'is-num' }, format(last, 'temperature'))]
@@ -457,7 +471,7 @@ export async function mount(ctx) {
       h('div', { class: 'tp-top' }, h('div', { class: 'legend', role: 'group', 'aria-label': 'Temperature lines' }, chips), at),
       plotEl,
       statsTbl,
-      h('p', { class: 'note' }, h('i', { class: 'k-asleep', 'aria-hidden': 'true' }), ' Asleep (blue) and ', h('i', { class: 'k-unknown', 'aria-hidden': 'true' }), ` unknown (grey) time: the car reads nothing then, so the lines break instead of guessing. The dashed set point is the driver’s climate setting, drawn only while climate runs${noSet ? ' (none in this period)' : ''}. Values are ${tUnit}, averaged per ${bucketWords(bms)}.`));
+      h('p', { class: 'note' }, h('i', { class: 'k-asleep', 'aria-hidden': 'true' }), ' Asleep (blue) and ', h('i', { class: 'k-unknown', 'aria-hidden': 'true' }), ` unknown (grey) time: the car reads nothing then, so the lines break instead of guessing. The dashed set point is the driver’s climate setting, drawn only while climate runs${noSet ? ' (none in this period)' : ''}. Values are ${tUnit}, averaged per ${bw}, so the table’s lowest and highest are of those averages: the single readings in the summary above reach further.`));
     const xs = ts.map((t) => t / 1000);
     const make = (width, height) => {
       const c = colors();
@@ -545,7 +559,12 @@ export async function mount(ctx) {
     const readout = h('span', { class: 'faint ef-readout' }, 'Point at a day for its figures.');
     const plotEl = h('div', { class: 'chart tp-day-chart', cover: ['tp.chart.daily_envelope', 'tp.chart.daily_coverage'] });
     replace(tDaySlot, h('div', { class: 'tp-top' }, h('span', { class: 'tp-figs' }, `${n0(days.length)} days`), readout), plotEl, help);
-    const xs = days.map((x) => (x.t_ms + DAY / 2) / 1000);
+    // each day sits in the middle of its part inside the plot, so today (still running) and a first day
+    // cut by the period start stay visible and can be pointed at
+    const xs = days.map((x, i) => {
+      const a = Math.max(x.t_ms, fromMs), b = Math.min(days[i + 1]?.t_ms ?? x.t_ms + DAY, toMs);
+      return (b > a ? (a + b) / 2 : x.t_ms + DAY / 2) / 1000;
+    });
     const T = (k) => days.map((x) => (x[k] == null ? null : convert(x[k], 'temperature')));
     const mn = T('min_c'), p15 = T('p15_c'), p85 = T('p85_c'), mx = T('max_c');
     const cov = days.map((x) => x.coverage_pct ?? 0);

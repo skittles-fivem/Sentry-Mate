@@ -354,6 +354,7 @@ METRICS = {"capacity": "kWh", "full_range": "km", "wh_per_km": "Wh/km", "odomete
 def compare(req):
     metric = req.enum("metric", tuple(METRICS), "capacity")
     a, b = req.period()
+    min_d = req.float_param("min_distance_km", 0.0, 0, 100000)  # wh_per_km only: shorter drives are left out
     car_ids = req.cars()
     end = min(b, req.now)
     series = []
@@ -374,6 +375,8 @@ def compare(req):
                     i = bk.index(d.start)
                     if i is not None:
                         x = cached_drive_row(req, h, d)
+                        if (x["distance_km"] or 0) < min_d:
+                            continue
                         acc[i][0] += x["energy_kwh"] or 0
                         acc[i][1] += x["distance_km"] or 0
                 for (ps_, _pe, _l), (e, km) in zip(ps, acc):

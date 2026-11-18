@@ -110,3 +110,46 @@ class Battery(ServerCase):
         self.assertGreater(d["missing_ms"]["asleep"], 0)
         legacy = self.c.get(f"/api/v1/cars/c3/temperatures?from_ms={NOW - 14 * DAY}")
         self.assertIsNone(legacy["cabin"]["avg_c"])
+
+    def test_efficiency_groups_match_drives_at_fahrenheit_widths(self):
+        # widths of 5, 10 and 20 °F are not whole tenths of a °C: the rounded edges must not decide the group
+        for car in ("c1", "c2", "c3"):
+            drives = self.walk(f"/api/v1/cars/{car}/drives?from_ms={NOW - 30 * DAY}&to_ms={NOW}&min_distance_km=1",
+                               limit=200)
+            for w in (2.778, 5.556, 11.111):
+                d = self.c.get(f"/api/v1/cars/{car}/efficiency?from_ms={NOW - 30 * DAY}&to_ms={NOW}"
+                               f"&min_distance_km=1&temp_group_c={w}")
+                for g in d["by_temperature"]:
+                    k = round(g["temp_c"] / w)
+                    n = sum(1 for x in drives if x["outside_avg_c"] is not None
+                            and (x["outside_avg_c"] // w) == k)
+                    self.assertEqual(n, g["drives"], (car, w, g["temp_c"]))
+
+    def test_gross_covers_every_drive(self):
+        q = f"from_ms={NOW - 30 * DAY}&to_ms={NOW}"
+        a = self.c.get(f"/api/v1/cars/c1/efficiency?{q}&min_distance_km=1")
+        b = self.c.get(f"/api/v1/cars/c1/efficiency?{q}&min_distance_km=10")
+        self.assertEqual(a["gross_wh_per_km"], b["gross_wh_per_km"])
+        self.assertEqual(a["all_drives"], b["all_drives"])
+        self.assertLess(b["drives"], b["all_drives"]["drives"])
+
+    def test_compare_min_distance(self):
+        q = f"cars=c1&metric=wh_per_km&from_ms={NOW - 30 * DAY}&to_ms={NOW}"
+        a = self.c.get(f"/api/v1/compare?{q}")["series"][0]
+        b = self.c.get(f"/api/v1/compare?{q}&min_distance_km=10")["series"][0]
+        self.assertNotEqual(list(zip(a["t_ms"], a["values"])), list(zip(b["t_ms"], b["values"])))
+
+    def test_temperature_extremes_hold_the_series(self):
+        for car in ("c1", "c2"):
+            for span in (DAY, 7 * DAY):
+                q = f"from_ms={NOW - span}&to_ms={NOW}"
+                t = self.c.get(f"/api/v1/cars/{car}/temperatures?{q}")
+                s = self.c.get(f"/api/v1/cars/{car}/series?fields=outside_c,cabin_c&max_points=800&{q}")
+                for f, k in (("outside_c", "outside"), ("cabin_c", "cabin")):
+                    v = [x for x in s["values"][f] if x is not None]
+                    if not v:
+                        continue
+                    self.assertLessEqual(t[k]["min_c"], min(v) + 0.05, (car, span, k))
+                    self.assertGreaterEqual(t[k]["max_c"], max(v) - 0.05, (car, span, k))
+                    self.assertLessEqual(min(x["min_c"] for x in t["daily"] if x["min_c"] is not None) if k == "outside"
+                                         else t[k]["min_c"], min(v) + 0.05)

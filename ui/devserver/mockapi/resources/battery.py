@@ -457,7 +457,8 @@ def get_efficiency(req):
     out = {"car": req.car, "time_zone": req.tz(), "from_ms": a, "to_ms": min(b, req.now), "temp_group_c": group,
            "min_distance_km": min_d}
     empty = {"net_wh_per_km": None, "gross_wh_per_km": None, "parked_kwh": 0.0, "distance_km": 0.0, "drives": 0,
-             "estimated_drives": 0, "by_temperature": [], "no_temperature": {"drives": 0, "distance_km": 0.0},
+             "estimated_drives": 0, "all_drives": {"drives": 0, "distance_km": 0.0, "energy_kwh": 0.0},
+             "by_temperature": [], "no_temperature": {"drives": 0, "distance_km": 0.0},
              "factor": {"rated_wh_per_km": None, "ideal_wh_per_km": None, "source": None, "readings": 0,
                         "as_of_ms": None}}
     if h is None:
@@ -465,10 +466,13 @@ def get_efficiency(req):
         return out
     car = h.car
     end = min(b, req.now)
-    rows = [cached_drive_row(req, h, d) for d in derive.shown_drives(h, a, end, req.now)]
-    rows = [x for x in rows if (x["distance_km"] or 0) >= min_d]
+    every = [cached_drive_row(req, h, d) for d in derive.shown_drives(h, a, end, req.now)]
+    rows = [x for x in every if (x["distance_km"] or 0) >= min_d]
     dist = sum(x["distance_km"] or 0 for x in rows)
     energy = sum(x["energy_kwh"] or 0 for x in rows)
+    # gross is what owning the car costs: every drive and all parked energy, whatever min_distance_km says
+    all_dist = sum(x["distance_km"] or 0 for x in every)
+    all_energy = sum(x["energy_kwh"] or 0 for x in every)
     lo = max(a, h.first_ms)
     parked = derive.standing_kwh(h, lo, end, req.now)
     groups = {}
@@ -498,7 +502,8 @@ def get_efficiency(req):
     over = (req.store.car_settings.get(car.id) or {}).get("efficiency_wh_per_km_override")
     out.update({
         "net_wh_per_km": r(energy / dist * 1000, 1) if dist > 0.1 else None,
-        "gross_wh_per_km": r((energy + parked) / dist * 1000, 1) if dist > 0.1 else None,
+        "gross_wh_per_km": r((all_energy + parked) / all_dist * 1000, 1) if all_dist > 0.1 else None,
+        "all_drives": {"drives": len(every), "distance_km": r(all_dist, 3), "energy_kwh": r(all_energy, 3)},
         "parked_kwh": r(parked, 3), "distance_km": r(dist, 3), "energy_kwh": r(energy, 3), "drives": len(rows),
         "estimated_drives": sum(1 for x in rows if x["energy_basis"] == "estimated"),
         "by_temperature": by_t, "no_temperature": no_t,
@@ -527,7 +532,7 @@ def get_temperatures(req):
     end = min(b, req.now)
     edges = local_midnights(lo, end, tz)  # the car's own days
     cols = S.build(h, ["outside_c", "cabin_c", "battery_c"], lo, end, 0, ["mean", "min", "max", "p15", "p85"],
-                   req.now, bucket=DAY, edges=edges) if end > lo else None
+                   req.now, bucket=DAY, edges=edges, sample_ms=60_000) if end > lo else None
     span = max(1, end - lo)
     asleep = unknown = 0
     awake_by_day = {}

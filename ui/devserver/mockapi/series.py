@@ -46,13 +46,15 @@ def pieces(h, a, b, now, source):
 
 
 def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, explicit_aggs=True, bucket=None,
-          align=None, edges=None):
+          align=None, edges=None, sample_ms=None):
     """Columns { t_ms, values, bucket_ms, coverage_pct, state } for [a, b).
 
     `bucket` fixes the bucket size (else the smallest nice one for max_points); `align` is a moment
     buckets start from (for example a local midnight), else buckets are aligned to UTC. `edges` gives
     the buckets outright (sorted starts plus the last end, for example local midnights, whose days are
-    23 or 25 hours long when the clocks change); `bucket` is then only the size the answer names."""
+    23 or 25 hours long when the clocks change); `bucket` is then only the size the answer names.
+    `sample_ms` caps the sampling step inside long buckets (else a quarter bucket), for answers whose
+    minima and maxima must hold every reading a finer series shows."""
     b = min(b, now)
     if b <= a or (edges is not None and len(edges) < 2):
         return {"t_ms": [], "values": {f: [] for f in fields}, "bucket_ms": bucket or 1000, "coverage_pct": [],
@@ -85,6 +87,8 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
             return a0 + (i + 1) * bucket
     # sampling step inside long buckets: a quarter of the shortest bucket
     quarter = (min(edges[i + 1] - edges[i] for i in range(n)) if edges is not None else bucket) // 4
+    if sample_ms:
+        quarter = min(quarter, sample_ms)
     peaks = bool(PEAK_FIELDS & set(fields))
     samples = [[] for _ in range(n)]  # (t, values)
     state_ms = [dict() for _ in range(n)]
