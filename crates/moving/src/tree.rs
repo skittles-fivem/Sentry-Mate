@@ -9,7 +9,8 @@
 //!   `*.sealing`, `*.to-v2`, `*.new`) and `db.restoring/`; an export file (`*.smexport`) at the top; and in an export
 //!   only, the public downloads (`geonames/`, `maps/`), which the new server can download again.
 //! - **Skipped and named**: links and anything that isn't a regular file or a folder, folders that can't be read
-//!   (`lost+found` at the root of an ext4 disk), and names off the rule (Synology's `@eaDir`). They stay where they
+//!   (`lost+found` at the root of an ext4 disk), files this server may not open (the callers that open files skip
+//!   those, see [`open_file`]), and names off the rule (Synology's `@eaDir`). They stay where they
 //!   are.
 //!
 //! **Walk order**: paths compared part by part, each part by its bytes, a part that is the start of another first.
@@ -160,11 +161,21 @@ pub struct Skips {
 }
 
 impl Skips {
-    fn add(&mut self, path: String, why: &'static str) {
+    /// Names a skipped entry (the first [`NAMED_SKIPS`]) and counts it.
+    pub fn add(&mut self, path: String, why: &'static str) {
         self.count += 1;
         if self.named.len() < NAMED_SKIPS {
             self.named.push(Skipped { path, why });
         }
+    }
+
+    /// Adds what another walk skipped.
+    pub fn merge(&mut self, other: Skips) {
+        let named = other.named.len() as u64;
+        for k in other.named {
+            self.add(k.path, k.why);
+        }
+        self.count += other.count.saturating_sub(named);
     }
 
     /// One line for a log: "lost+found (can't be read), @eaDir (name off the rule), ...".
@@ -174,6 +185,40 @@ impl Skips {
             s.push(format!("and {} more", self.count - self.named.len() as u64));
         }
         s.join(", ")
+    }
+}
+
+/// Why a file that can't be opened is skipped (as for a folder that can't be read).
+pub const UNREADABLE: &str = "can't be read";
+
+/// Opens a carried file to read it, not through a link. A file this server's user may not open (one made by root,
+/// mode 0600) answers `PermissionDenied`: the move's list, its digest and the export skip it and name it.
+pub fn open_file(p: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(test)]
+    if test_denied::is(p) {
+        return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut o, rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    o.open(p)
+}
+
+/// Files the tests make unopenable (the tests run as root, which opens everything).
+#[cfg(test)]
+pub(crate) mod test_denied {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static DENIED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    pub(crate) fn deny(p: &Path) {
+        DENIED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(p.to_path_buf());
+    }
+
+    pub(crate) fn is(p: &Path) -> bool {
+        DENIED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|d| d == p)
     }
 }
 
@@ -231,7 +276,7 @@ fn walk_dir<E: From<std::io::Error>>(
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == ErrorKind::PermissionDenied && !rel.is_empty() => {
-            skips.add(rel.to_string(), "can't be read");
+            skips.add(rel.to_string(), UNREADABLE);
             return Ok(ControlFlow::Continue(()));
         }
         Err(e) if e.kind() == ErrorKind::NotFound && !rel.is_empty() => return Ok(ControlFlow::Continue(())),

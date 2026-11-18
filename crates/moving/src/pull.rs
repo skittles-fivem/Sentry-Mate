@@ -562,6 +562,8 @@ pub fn begin(data: &Path, keys: &Path, address: &str, code: &str, opts: &Options
                 ));
             }
             crate::import::unused(data, keys).map_err(|e| Problem::new("not_empty", e.to_string(), false))?;
+            // before the code is used: a disk that rounds file times could never finish a move
+            exact_times(data)?;
             stage(data, keys, &address, &k, &claim).map_err(Problem::from)?;
         }
     }
@@ -578,6 +580,43 @@ pub fn begin(data: &Path, keys: &Path, address: &str, code: &str, opts: &Options
             Err(p)
         }
     }
+}
+
+/// A file time with microseconds, as the old server lists them.
+const PROBE_US: u64 = 1_700_000_000_123_457;
+
+/// Whether the disk under `dir` keeps a file time to the microsecond: a copy is matched to the old server's file by
+/// its length and time, so on a disk that rounds them (whole seconds: ext3, ext4 made with small inodes, FAT, exFAT,
+/// some network shares) every copied file looks changed, every round copies everything again and the move never
+/// finishes. `set` sets the time (the tests round it).
+fn keeps_exact_times(dir: &Path, set: impl Fn(&File, std::time::SystemTime) -> io::Result<()>) -> io::Result<bool> {
+    let p = dir.join(".moving-times.tmp");
+    let f = crate::export::create_private(&p)?;
+    let r = set(&f, std::time::UNIX_EPOCH + Duration::from_micros(PROBE_US))
+        .and_then(|()| f.sync_all())
+        .and_then(|()| std::fs::metadata(&p));
+    drop(f);
+    let _ = std::fs::remove_file(&p);
+    Ok(tree::mtime_us(&r?) == PROBE_US)
+}
+
+fn exact_times(data: &Path) -> Result<(), Problem> {
+    let r = std::fs::create_dir_all(data).and_then(|()| keeps_exact_times(data, |f, t| f.set_modified(t)));
+    match r {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(times_problem()),
+        Err(e) => Err(Problem::new("disk", format!("the data folder can't be written ({e})"), false)),
+    }
+}
+
+fn times_problem() -> Problem {
+    Problem::new(
+        "disk_times",
+        "this server's data folder is on a disk that keeps file times only roughly (to the second), so the move \
+         could never tell a copied file from a changed one. Put the data folder on a disk that keeps exact times \
+         (ZFS, as TrueNAS uses, or ext4, xfs, btrfs) and try again: the code still works",
+        false,
+    )
 }
 
 fn stage(data: &Path, keys: &Path, address: &Address, k: &crate::code::Keys, claim: &[u8; 16]) -> Result<(), Error> {
@@ -2069,6 +2108,24 @@ fn parse_list(b: &[u8], after: Option<&str>) -> Result<(Vec<Line>, End), String>
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// A disk that rounds file times (to the second) is found before the code is used, and refused with words the
+    /// owner can act on; this sandbox's disk keeps them exactly.
+    #[test]
+    fn a_disk_that_rounds_file_times_is_refused_before_the_claim() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(keeps_exact_times(d.path(), |f, t| f.set_modified(t)).unwrap());
+        let to_seconds = |f: &File, t: std::time::SystemTime| {
+            let s = t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+            f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(s))
+        };
+        assert!(!keeps_exact_times(d.path(), to_seconds).unwrap());
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 0, "the test file is gone");
+        exact_times(d.path()).unwrap();
+        let p = times_problem();
+        assert_eq!(p.code, "disk_times");
+        assert!(!p.retry && p.message.contains("ZFS"), "{}", p.message);
+    }
 
     /// The fetch threads save the state at once: every save works, and the state still opens after.
     #[test]

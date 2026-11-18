@@ -782,7 +782,7 @@ async fn begin_move(data: &Path, keys: &Path, from: &str, code: &str, opts: &Arc
         Ok(Err(p)) => {
             tracing::warn!("move: {}", p.message);
             tracing::warn!(
-                "move: nothing was moved; this server starts as a new one meanwhile (it has no data and no tokens). Fix the move code in SENTRY_MATE_MOVE_CODE and restart it."
+                "move: nothing was moved; this server starts as a new one meanwhile (it has no data and no tokens). Fix what the line above says (for a code: a new one in SENTRY_MATE_MOVE_CODE) and restart it."
             );
             false
         }

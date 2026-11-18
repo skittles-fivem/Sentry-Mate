@@ -3,8 +3,9 @@
 Status (2026-11-18): built, tested, and tried by hand with the binary: the export file, the import, the write gate
 and the snapshot (crates `gate` and `moving`), and the direct move (`moving::code`, `proto`, `old`, `pull`,
 `client`; the `move` commands, the two environment lines and `SENTRY_MATE_OFFER_MOVE` in `sentry-mate`). Not built:
-the web UI's `/api/v1` endpoints of section 6 (wave 2) and the Docker script of section 9. Revised after a design
-review and while building: see **Review notes** at the end. The owner's request: "Make sure there's a one click export so if we needed to migrate to
+the web UI's `/api/v1` endpoints of section 6 (wave 2). The Docker test of section 9 is `tools/move-e2e.sh`. Revised
+after a design review, while building, and after a review of the built move: see **Review notes** at the end. The
+owner's guide is `docs/moving.md`. The owner's request: "Make sure there's a one click export so if we needed to migrate to
 another server there's no 15 step in ssh to get it moved."
 
 There are two ways. Both carry everything: the logs exactly as stored, the upload tokens, the trust records, the TLS
@@ -173,7 +174,9 @@ new" check:
     downloads them again from the same source once places is wired in. The direct move does carry them.
 - **Skipped and named** in the log and in `move status` (both sides skip them the same way, so the digests still
   match): symbolic links and anything that isn't a regular file or a folder (Sentry Mate never makes them), folders
-  the server can't read (`lost+found` at the root of an ext4 disk, owned by root), and names that fail the rule
+  the server can't read (`lost+found` at the root of an ext4 disk, owned by root), files it may not open (one copied
+  in as root with mode 0600: the walk sees it, opening it is refused; the list, the digest and the export skip it
+  alike), and names that fail the rule
   (Synology's `@eaDir/`, a `notes (1).txt` someone left). They are left where they are.
 
 ### Walk order
@@ -396,14 +399,20 @@ per car) make each catch-up round small.
 4. **The old server checks** against the digest kept with the pause id. Different: `409 digest_mismatch` with its own
    count; it walks once more for a fresh digest (so a change made by something else during the pause is caught up
    with), the new server does another round, and the pause goes on. After five such rounds the new server lets the
-   pause end and catches up first. The same: it
+   pause end and catches up first. The same: under `.move/lock` it **reads the code record again**, and goes on only
+   if the move is still the one the request was let in for (the same code, claim and session, and the session not in
+   `cancelled.sealed`); a `move cancel` or `move code --replace` run meanwhile wins, and the finish answers `410
+   cancelled`. The pause must also still be the one asked about (`409 not_paused`). Then it
    **sets "moved" in memory first** (every writer that gets the gate from now on is refused), writes
    `.move/moved.sealed` (synced: this is the commit point), and **keeps the gate exclusive for as long as it is moved**
    (only undo lets go). Then it answers with:
    - `data_key`: the data key sealed with the wrap key (XChaCha20-Poly1305, a random nonce, associated data
      `sentry-mate move v1: data key` | key id | session);
    - `key_id` and `moved_ms`.
-   The pause becomes the moved state (2.6). Its log says "moved: the new server is switching; keep this server running
+   The pause becomes the moved state (2.6). The check, the commit and taking the hold are one step on a blocking
+   thread, under the pause's lock: a new server whose connection drops during the finish can't leave the old server
+   moved on disk but not in memory, and the ticker sees all of it or none. (Should that ever happen all the same, the
+   ticker takes the hold itself; it never takes a moved state for a cancel.) Its log says "moved: the new server is switching; keep this server running
    until it says done".
 5. **The new server** opens the data key, checks its key id, and **writes the answer into `.moving/state.sealed`,
    synced, with the state `switching`**, before it touches anything else. Then it switches (3.3), starts serving, and
@@ -412,9 +421,12 @@ per car) make each catch-up round small.
    server now".
 
 - **Timers**: the pause ends by itself when the new server sends nothing for 60 s, or after 15 minutes in all. A
-  finish or list request in progress stops both timers until it is answered, so a slow walk on a big HDD folder can't
-  end the pause under a finish. When the pause ends, the old server takes uploads again, and the new one catches up and
-  asks again.
+  finish, list or fetch in progress stops the 60 s timer until it is answered, so a slow walk on a big HDD folder can't
+  end the pause under a finish. The 15 minutes hold whatever is being answered. A fetch answer is sent a megabyte at a
+  time, and each piece must be taken within 60 s (`FETCH_STALL`): a new server that stops reading (its disk hangs,
+  its container is paused) has the answer stopped, and its end doesn't count as hearing from it, so the pause ends 60
+  s after the last piece it took. When the pause ends, the old server takes uploads again, and the new one catches up
+  and asks again.
 - A lost finish answer: the new server asks again and gets the same answer (rebuilt from `moved.sealed` and the
   session, a new nonce), also after a restart of the old server, and also weeks later.
 - **The old server is gone before the finish** (its disk failed, say): the new server holds most of the data and the
@@ -465,6 +477,13 @@ uploads in progress, no tokens, and once they are wired in, no cars, accounts or
   folder to import, nor what the carried rule skips. So a server started once without the two lines can still take a
   move: its own empty vault is set aside and removed at the switch, with the `RECOVERY-KEY.txt` it made (that key
   would open nothing; the log says so).
+- **The data folder's disk must keep exact file times.** A copy is matched to the old file by length and time (in
+  microseconds). A disk that rounds them (whole seconds: ext3, ext4 made with 128-byte inodes, FAT, exFAT, some
+  network shares) would make every copied file look changed, so the move could never finish. Before the claim (the
+  code is not used up) the new server sets a time with microseconds on a test file and reads it back. If it comes
+  back rounded, the move is refused with `disk_times`: "put the data folder on a disk that keeps exact times (ZFS, as
+  TrueNAS uses, or ext4, xfs, btrfs)". Not taken: comparing times at the disk's precision, which would need the old
+  times kept beside every copied file for the digest.
 - The keys folder must be empty, or hold only that first start's key file. A key file that doesn't open the vault in
   this data folder is refused ("give the new server an empty keys folder"): it may belong to data elsewhere.
 - A data folder in use is never touched. With the two lines set, the server starts as usual and warns: "nothing was
@@ -818,7 +837,7 @@ Events (every stream above):
 |---|---|
 | `state` | `{ state, at_ms }`. New server: `connecting`, `copying`, `catching_up`, `finishing`, `switching`, `done`, `waiting` (the problem says why), `failed`. Old server: `offered`, `copying`, `paused`, `moved` (the new server is switching), `done` (it confirmed), `cancelled`. |
 | `progress` | `{ round, files_done, files_total, bytes_done, bytes_total, bytes_per_s, eta_s }`, at most once a second. |
-| `problem` | `{ code, message, retry_ms }`; `code` one of `address` (the address doesn't read), `unreachable`, `no_move`, `wrong_code` (a typo too: the message says which), `not_home_network`, `slow_down`, `code_used`, `code_expired`, `not_proven`, `too_old`, `not_empty`, `no_space`, `disk`, `bad_session`, `cancelled`, `changing_fast`, `skipped`. `message` is the log's line. `retry_ms` null when it waits for the person. |
+| `problem` | `{ code, message, retry_ms }`; `code` one of `address` (the address doesn't read), `unreachable`, `no_move`, `wrong_code` (a typo too: the message says which), `not_home_network`, `slow_down`, `code_used`, `code_expired`, `not_proven`, `too_old`, `not_empty`, `disk_times` (the new server's disk rounds file times), `no_space`, `disk`, `bad_session`, `cancelled`, `changing_fast`, `skipped`. `message` is the log's line. `retry_ms` null when it waits for the person. |
 | `done` | `{ at_ms, fingerprint, upload_address_hint, same_machine }` |
 
 What the web server calls for each (all built, in `moving`; the web server only wraps them):
@@ -891,13 +910,16 @@ port note when both ran on one machine).
 | Disk full on the new server | Checked before round 1 (total plus 2 GiB); a full disk later pauses the copy, checked every minute | How much is needed and free, and how to give up |
 | Disk full on the old server | Its own uploads fail as before (`507 no_space`). If it can't write the moved state, the finish fails, the pause ends by itself, the new server tries again | The old server's log says the disk is full |
 | The new server goes away mid-move | The old server keeps serving; a pause ends after 60 s; the session is dropped after 7 days | `move status` on the old: "a move to 192.168.1.30 started ..., not heard from since ..." |
-| Cancel on the old server while the new one finishes | One lock: whichever comes first wins. Cancel first: the new server gets `410` and keeps its copy. Finish first: cancel says "finished; use `move undo`" | One of those two lines |
+| Cancel on the old server while the new one finishes | One lock: whichever comes first wins. The commit reads the code record again under it, so a cancel or a new code made after the finish was let in still wins. Cancel first: the new server gets `410` and keeps its copy. Finish first: cancel says "finished; use `move undo`" | One of those two lines |
+| The new server stops reading a fetch in the pause | The answer is stopped after 60 s without a piece taken; the pause ends 60 s after the last piece; at most 15 minutes in all | "the pause ended (the new server went quiet); uploads go on" |
+| The new server's connection drops during the finish | The commit still finishes and is held; the new server asks again and gets the same answer | Nothing; it carries on |
+| The new server's disk rounds file times | Refused before the claim (the code still works) | "keeps file times only roughly ... ZFS, ext4, xfs, btrfs" |
 | `move cancel` on the new server after the switch | Refused | "the move is done; this server holds the data" |
 | The old server keeps changing fast | No pause; rounds a minute apart | "changes faster than this copy catches up" |
 | Both servers taking uploads | Can't happen through the move: the old one stops at the pause, the new one starts only after the old one wrote its moved state. Only `move undo` with the new one still running does it | The undo warning |
 | A second server on the same data folder | `.lock` is held: it waits | "another Sentry Mate uses this data folder ...: waiting until it stops" |
 | A file changed in place by something outside Sentry Mate | The digest of the last round catches a different length, time or file id | `digest_mismatch`, then another round |
-| A folder that can't be read, a name off the rule | Skipped on both sides, named | The skipped line |
+| A folder or a file that can't be read, a name off the rule | Skipped on both sides (the lists, the digest, the export), named. A file this server's user may not open (made by root, mode 0600) is one of them | The skipped line |
 | Same machine, port taken | The new app uses another host port for the move | The port note in the log |
 | Export download cut | Resumes with `Range` while the snapshot is there; after that, `404 export_gone` | The browser resumes; or "make a new export" |
 | Import: wrong recovery key | Refused before anything is written | "that recovery key doesn't open this file" |
@@ -923,7 +945,12 @@ Unit (in the new crates, and in `vault` and `ingest` for their parts):
   what was added; a growing file whose failed write was cut off and written again is copied whole again; one replaced
   (new file id) copied whole; a piece fetched for another version answered "changed"; a restart with a part file half
   fetched never trusts it; a removed file removed; temporary files, dot entries, links and `vault.json` never carried;
-  an unreadable folder and a name off the rule skipped and named on both sides; times kept.
+  an unreadable folder, a file that can't be opened and a name off the rule skipped and named on both sides (the
+  list, the digest and the export); times kept; a disk that rounds file times refused before the claim.
+- Old side, after the review: a cancel or a new code made while a finish is answered wins over its commit; a finish
+  whose pause ended is refused; a commit written but not held in memory is held by the ticker, and `move undo` still
+  reaches the running server; the 15 minutes end a pause whatever is busy, and a stalled fetch's end isn't "heard
+  from"; a fetch the new server stops reading lets the pause end (`tests/direct_move.rs`).
 - Walk order: `tokens/` beside `tokens.json`, and `a/`, `a.b`, `a-b`: the comparator, `after=`, the merge and both
   digests agree.
 - Consistency: trust folds, uploads finishing and tokens made during the rounds; after the last round under the pause,
@@ -1136,3 +1163,24 @@ Found while building the direct move (2026-11-18):
     no tokens, so nothing can upload to it) and says what to do; the next start with a new code moves.
 28. **axum's query parser and hyper's client would add crates.** The list's two query fields are read by hand, and the
     new server's client is a small blocking HTTP/1.1 client over rustls.
+
+Found by a review of the built move (2026-11-18), each checked against the code and fixed, with a test:
+
+29. **A cancel made during a finish was overridden.** The commit wrote the moved state from the code record the
+    request read when it was let in, so a `move cancel` or `move code --replace` landing between the two lost (and
+    the new code was removed). The commit reads the record again under `.move/lock` and refuses with `410 cancelled`
+    unless the same claim and session are still there and not cancelled (2.5 step 4).
+30. **A fetch the new server stopped reading held the pause for ever.** The answer counted as busy and busy stopped
+    both timers; with no write time-out, the old server answered every upload `503 moving` until the connection died.
+    Each megabyte must be taken within 60 s, the 15 minutes hold whatever is busy, and a stalled answer's end isn't
+    hearing from the new server (2.5 Timers).
+31. **A disk that rounds file times never finished a move.** Every copied file looked changed, every round fetched
+    everything, every digest differed, and the old server paused its uploads again every minute. The new server
+    checks its disk before the claim (3.1).
+32. **One file the old server's user can't open stopped the move and the export.** A root-owned 0600 file made every
+    list page that reached it fail with `500`, tried again for ever, and the export failed as a whole. Such a file is
+    skipped and named like an unreadable folder, in the list, the digest and the export alike (section 1).
+33. **The moved state on disk and in memory could disagree.** The finish wrote the commit on a blocking thread and
+    held the gate after the await: a dropped request or the ticker in between left the old server moved on disk but
+    not held, so a later `move undo` was never seen. The commit and the hold are one step under the pause's lock; the
+    ticker never takes a moved state for a cancel, and holds one it finds unheld (2.5 step 4).

@@ -64,6 +64,9 @@ pub const PAUSE_MOST: Duration = Duration::from_secs(15 * 60);
 pub const PAUSE_SETTLE: Duration = Duration::from_secs(2);
 /// How long a pause waits for the writes under way.
 pub const PAUSE_WAIT: Duration = Duration::from_secs(60);
+/// A fetch answer the new server reads nothing of for this long is stopped (its connection hangs: its disk, its
+/// container paused), so the pause's timers run again and a stuck connection can't hold the old server's uploads.
+pub const FETCH_STALL: Duration = PAUSE_QUIET;
 /// What the bridge is told to wait on a moved server.
 pub const MOVED_RETRY_S: u64 = 3600;
 /// The heads kept in memory at most (about 100 bytes each).
@@ -527,6 +530,10 @@ impl IntoResponse for Refusal {
     }
 }
 
+fn cancelled_refusal(why: &str, at_ms: u64) -> Refusal {
+    Refusal::new(410, "cancelled", format!("The move was cancelled on the old server ({why}).")).with("at_ms", at_ms)
+}
+
 fn not_found() -> Refusal {
     Refusal::new(404, "not_found", "Nothing here.")
 }
@@ -552,14 +559,6 @@ struct Head {
     whole: Option<u64>,
 }
 
-fn open_nofollow(p: &Path) -> io::Result<File> {
-    let mut o = std::fs::OpenOptions::new();
-    o.read(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut o, rustix::fs::OFlags::NOFOLLOW.bits() as i32);
-    o.open(p)
-}
-
 #[cfg(unix)]
 fn ids(md: &std::fs::Metadata) -> (u64, u64) {
     use std::os::unix::fs::MetadataExt;
@@ -580,7 +579,8 @@ struct Paused {
     digest: (u64, u64, String),
     started: Instant,
     last: Instant,
-    /// Requests being answered: while any is, the pause's timers don't run.
+    /// Requests being answered: while any is, the pause doesn't end for being quiet (it still ends after
+    /// [`PAUSE_MOST`]).
     busy: usize,
 }
 
@@ -701,12 +701,10 @@ impl Offer {
     fn pause_timers(&self) {
         let mut p = lock(&self.paused);
         let Some(x) = p.as_ref() else { return };
-        if x.busy > 0 {
-            return;
-        }
+        // the 15 minutes hold whatever is being answered; quiet counts only once nothing is
         let why = if x.started.elapsed() > PAUSE_MOST {
             "it lasted 15 minutes"
-        } else if x.last.elapsed() > PAUSE_QUIET {
+        } else if x.busy == 0 && x.last.elapsed() > PAUSE_QUIET {
             "the new server went quiet"
         } else {
             return;
@@ -722,16 +720,43 @@ impl Offer {
     }
 
     fn look_at_disk(&self, idle_check: bool) {
-        let moved_file = is_moved(&self.data);
-        if self.is_moved() && !moved_file {
-            // `move undo` from the command line
-            *lock(&self.hold) = None;
-            self.gate.reopen();
-            self.moved.send_replace(false);
-            tracing::warn!(
-                "move: undone: this server takes uploads again. If the new server also takes uploads, the two drift apart: stop it."
-            );
-            return;
+        {
+            // under the pause's lock, which a finish holds from its commit until the moved state is held: the moved
+            // file and the hold are both there or both not
+            let mut p = lock(&self.paused);
+            let (held, moved_file) = (self.is_moved(), is_moved(&self.data));
+            if held && !moved_file {
+                // `move undo` from the command line
+                *lock(&self.hold) = None;
+                self.gate.reopen();
+                self.moved.send_replace(false);
+                tracing::warn!(
+                    "move: undone: this server takes uploads again. If the new server also takes uploads, the two drift apart: stop it."
+                );
+                return;
+            }
+            if moved_file {
+                if !held {
+                    // moved on disk, not held here (a hold that couldn't be taken yet): never taken for a cancel
+                    let pause = p.take().and_then(|mut x| x._pause.take());
+                    drop(p);
+                    self.gate.close(moved_closed());
+                    let ok = match pause {
+                        Some(pause) => {
+                            *lock(&self.hold) = Some(pause);
+                            self.moved.send_replace(true);
+                            true
+                        }
+                        None => self.hold_moved().is_ok(),
+                    };
+                    if ok {
+                        tracing::info!(
+                            "move: this server's data moved: it takes no uploads and tells the CAN Bridge to try later. To take uploads here again: `move undo`"
+                        );
+                    }
+                }
+                return;
+            }
         }
         let code = read::<CodeRecord>(&self.data, &self.vault, CODE).ok().flatten();
         let session = code.as_ref().and_then(|c| c.claimed.as_ref()).map(|c| c.session_sha256.clone());
@@ -835,12 +860,7 @@ impl Offer {
         }
         if let Some(list) = read::<Vec<CancelledRecord>>(&self.data, &self.vault, CANCELLED)? {
             if let Some(c) = list.iter().rev().find(|c| c.session_sha256 == sh) {
-                return Err(Refusal::new(
-                    410,
-                    "cancelled",
-                    format!("The move was cancelled on the old server ({}).", c.why),
-                )
-                .with("at_ms", c.at_ms));
+                return Err(cancelled_refusal(&c.why, c.at_ms));
             }
         }
         if !is_moved(&self.data) && code.is_none() {
@@ -859,10 +879,12 @@ impl Offer {
         let x = p.as_mut().filter(|x| x.session == session)?;
         x.busy += 1;
         x.last = Instant::now();
-        Some((x.id.clone(), Busy(self.clone())))
+        Some((x.id.clone(), Busy { o: self.clone(), pause: x.id.clone(), stalled: false }))
     }
 
-    fn head(&self, f: &Found<'_>, need_whole: bool) -> io::Result<Option<Head>> {
+    /// A file's head. `None`: the file is gone, or this server may not open it (named in `skips` as "can't be
+    /// read"), so it is left out of the lists and the digest alike.
+    fn head(&self, f: &Found<'_>, need_whole: bool, skips: &mut Skips) -> io::Result<Option<Head>> {
         let key = (f.dev, f.ino);
         let cached = lock(&self.heads).get(&key).copied();
         if let Some(h) = cached {
@@ -870,9 +892,13 @@ impl Offer {
                 return Ok(Some(h));
             }
         }
-        let mut file = match open_nofollow(f.full) {
+        let mut file = match tree::open_file(f.full) {
             Ok(x) => x,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                skips.add(f.path.to_string(), tree::UNREADABLE);
+                return Ok(None);
+            }
             Err(e) => return Err(e),
         };
         let md = file.metadata()?;
@@ -904,8 +930,9 @@ impl Offer {
     fn digest(&self) -> Result<(u64, u64, String), Error> {
         let mut d = proto::Digest::default();
         let mut skips = Skips::default();
+        let mut unreadable = Skips::default();
         tree::walk(&self.data, Purpose::Move, &mut skips, |f| -> Result<ControlFlow<()>, Error> {
-            if let Some(h) = self.head(f, false)? {
+            if let Some(h) = self.head(f, false, &mut unreadable)? {
                 d.add(f.path, h.kind, h.len, h.mt, h.id.map(hex::encode).as_deref());
             }
             Ok(ControlFlow::Continue(()))
@@ -1058,12 +1085,13 @@ impl Offer {
         let (mut n, mut last, mut more) = (0usize, None::<String>, false);
         let whole = paused.is_some();
         let now = now_us();
+        let mut unreadable = Skips::default();
         tree::walk_from(&self.data, Purpose::Move, &mut skips, after, |f| -> Result<ControlFlow<()>, Error> {
             if n >= limit {
                 more = true;
                 return Ok(ControlFlow::Break(()));
             }
-            let Some(h) = self.head(f, !whole)? else { return Ok(ControlFlow::Continue(())) };
+            let Some(h) = self.head(f, !whole, &mut unreadable)? else { return Ok(ControlFlow::Continue(())) };
             let len = match (h.kind, whole) {
                 (Kind::Records, false) => h.whole.unwrap_or(h.len),
                 _ => h.len,
@@ -1081,6 +1109,7 @@ impl Offer {
             last = Some(f.path.to_string());
             Ok(ControlFlow::Continue(()))
         })?;
+        skips.merge(unreadable);
         let end = End {
             end: true,
             next: if more { last } else { None },
@@ -1131,10 +1160,11 @@ impl Offer {
             let read_at = now_us();
             let mut frame = Frame { p: w.p.clone(), from: w.from, count: 0, len_now: 0, mt: 0, read_at, flags: 0 };
             let opened = if tree::carried(&w.p, Purpose::Move) && w.to >= w.from && inside(&w.p) {
-                match open_nofollow(&self.data.join(&w.p)) {
+                match tree::open_file(&self.data.join(&w.p)) {
                     Ok(f) if f.metadata().is_ok_and(|m| m.is_file()) => Some(f),
                     Ok(_) => None,
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                    // gone, or not this server's to open (the list leaves it out): the copy drops it too
+                    Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => None,
                     Err(e) => return Err(e),
                 }
             } else {
@@ -1223,9 +1253,30 @@ impl Offer {
         }
     }
 
-    fn commit(&self, c: &CodeRecord, session: &[u8; 32]) -> Result<MovedRecord, Error> {
+    /// Writes that the data moved (the commit point), under the folder lock, only if the move is still the one the
+    /// request was authorized for: a `move cancel` or `move code --replace` run since is never overridden.
+    fn commit(&self, c: &CodeRecord, session: &[u8; 32]) -> Result<MovedRecord, Refusal> {
         let _l = lock_dir(&self.data)?;
-        let cl = c.claimed.as_ref().ok_or_else(|| other("no claim"))?;
+        let sh = proto::session_hash(session);
+        let cl = c.claimed.as_ref().ok_or_else(|| Refusal::server("a finish with no claim"))?;
+        let now = read::<CodeRecord>(&self.data, &self.vault, CODE)?;
+        let still = now.as_ref().is_some_and(|n| {
+            n.id == c.id
+                && n.claimed.as_ref().is_some_and(|ncl| {
+                    ncl.claim == cl.claim && proto::same(ncl.session_sha256.as_bytes(), sh.as_bytes())
+                })
+        });
+        let cancelled = read::<Vec<CancelledRecord>>(&self.data, &self.vault, CANCELLED)?
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .find(|x| x.session_sha256 == sh);
+        if let Some(x) = cancelled {
+            return Err(cancelled_refusal(&x.why, x.at_ms));
+        }
+        if !still || read::<MovedRecord>(&self.data, &self.vault, MOVED)?.is_some() {
+            return Err(cancelled_refusal("cancelled on the old server", now_ms()));
+        }
         let m = MovedRecord {
             v: 1,
             at_ms: now_ms(),
@@ -1245,6 +1296,55 @@ impl Offer {
         Ok(m)
     }
 
+    /// The whole finish, in one step nothing cancels (it runs on a blocking thread, which goes on when the new
+    /// server's request is dropped): the pause must still be this one; the gate closes, the commit is written, the
+    /// pause becomes the moved state's hold. Under the pause's lock throughout, so the ticker sees all or nothing.
+    fn commit_moved(&self, pause: &str, c: &CodeRecord, session: &[u8; 32]) -> Result<MovedRecord, Refusal> {
+        let sh = proto::session_hash(session);
+        let mut p = lock(&self.paused);
+        if !p.as_ref().is_some_and(|x| x.id == pause && x.session == sh) {
+            return Err(Refusal::new(409, "not_paused", "That pause ended: catch up and ask for one again."));
+        }
+        // moved in memory first (every writer that gets the gate from now on is refused), then on disk
+        self.gate.close(moved_closed());
+        let m = match self.commit(c, session) {
+            Ok(m) => m,
+            Err(e) => {
+                self.gate.reopen();
+                if e.status.is_server_error() {
+                    tracing::error!(
+                        "move: couldn't write that the data moved (is the disk full?); the move doesn't finish yet"
+                    );
+                } else {
+                    // the move was ended here meanwhile: so is its pause
+                    *p = None;
+                    tracing::info!("move: the pause ended (the move was cancelled here); uploads go on");
+                }
+                return Err(e);
+            }
+        };
+        let held = p.take().and_then(|mut x| x._pause.take());
+        let ok = match held {
+            Some(h) => {
+                *lock(&self.hold) = Some(h);
+                true
+            }
+            None => false,
+        };
+        drop(p);
+        if !ok {
+            // never so (a pause always holds the gate); the ticker takes the hold again if this fails
+            let _ = self.hold_moved();
+        }
+        self.moved.send_replace(true);
+        tracing::info!(
+            "move: moved: the data moved to {} on {}; it is switching now. Keep this server running until this log says done.",
+            m.to,
+            when(m.at_ms)
+        );
+        Ok(m)
+    }
+
     fn finish_answer(&self, m: &MovedRecord, session: &[u8; 32]) -> Result<FinishAnswer, Refusal> {
         let wrap =
             Zeroizing::new(hex_n::<32>(&m.wrap).ok_or_else(|| Refusal::server("a moved record that doesn't read"))?);
@@ -1254,13 +1354,29 @@ impl Offer {
 }
 
 /// A request being answered in a pause.
-struct Busy(Arc<Offer>);
+struct Busy {
+    o: Arc<Offer>,
+    pause: String,
+    /// The new server stopped reading the answer: its end doesn't count as hearing from it.
+    stalled: bool,
+}
+
+impl Busy {
+    /// The new server took a piece of the answer: it is heard from.
+    fn progress(&self) {
+        if let Some(x) = lock(&self.o.paused).as_mut().filter(|x| x.id == self.pause) {
+            x.last = Instant::now();
+        }
+    }
+}
 
 impl Drop for Busy {
     fn drop(&mut self) {
-        if let Some(x) = lock(&self.0.paused).as_mut() {
+        if let Some(x) = lock(&self.o.paused).as_mut().filter(|x| x.id == self.pause) {
             x.busy = x.busy.saturating_sub(1);
-            x.last = Instant::now();
+            if !self.stalled {
+                x.last = Instant::now();
+            }
         }
     }
 }
@@ -1409,14 +1525,40 @@ async fn fetch(o: Arc<Offer>, req: Request) -> Result<Response, Refusal> {
     }
     let busy = o.busy(&proto::session_hash(&session));
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(4);
+    let rt = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
-        let _busy = busy;
-        if let Err(e) = o.fetch_blocking(&r.want, |b| tx.blocking_send(Ok(b)).is_ok()) {
+        let mut busy = busy;
+        let mut stalled = false;
+        // each piece must be taken within FETCH_STALL: a new server that stops reading doesn't hold this thread,
+        // its file, or the pause
+        let r = o.fetch_blocking(&r.want, |b| match rt.block_on(tokio::time::timeout(FETCH_STALL, tx.send(Ok(b)))) {
+            Ok(Ok(())) => {
+                if let Some((_, b)) = &busy {
+                    b.progress();
+                }
+                true
+            }
+            Ok(Err(_)) => false,
+            Err(_) => {
+                stalled = true;
+                false
+            }
+        });
+        if stalled {
+            if let Some((_, b)) = busy.as_mut() {
+                b.stalled = true;
+            }
+            tracing::warn!(
+                "move: the new server read nothing of a fetch answer for {} s: the answer is stopped (it asks again)",
+                FETCH_STALL.as_secs()
+            );
+        } else if let Err(e) = r {
             if e.kind() != io::ErrorKind::BrokenPipe {
                 tracing::warn!("move: a fetch stopped part way: {e}");
             }
-            let _ = tx.blocking_send(Err(e));
+            let _ = tx.try_send(Err(e));
         }
+        drop(busy);
     });
     let mut res = Response::new(axum::body::Body::new(ChanBody(rx)));
     res.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
@@ -1500,31 +1642,15 @@ async fn finish(o: Arc<Offer>, req: Request) -> Result<Response, Refusal> {
         .with("files", fresh.0)
         .with("bytes", fresh.1));
     }
-    // the commit: moved in memory first (every writer that gets the gate from now on is refused), then on disk
-    o.gate.close(moved_closed());
+    // the commit, in one step that goes on if this request is dropped (see `commit_moved`)
     let o2 = o.clone();
-    let committed = blocking(move || o2.commit(&c, &session).map_err(Refusal::from)).await;
-    let m = match committed {
-        Ok(m) => m,
-        Err(e) => {
-            o.gate.reopen();
-            drop(busy);
-            tracing::error!(
-                "move: couldn't write that the data moved (is the disk full?); the move doesn't finish yet"
-            );
-            return Err(e);
-        }
-    };
-    // the pause becomes the moved state's hold
-    let held = lock(&o.paused).take().and_then(|mut p| p._pause.take());
-    *lock(&o.hold) = held;
-    drop(busy);
-    o.moved.send_replace(true);
-    tracing::info!(
-        "move: moved: the data moved to {} on {}; it is switching now. Keep this server running until this log says done.",
-        m.to,
-        when(m.at_ms)
-    );
+    let pause_id = r.pause.clone();
+    let m = blocking(move || {
+        let m = o2.commit_moved(&pause_id, &c, &session);
+        drop(busy);
+        m
+    })
+    .await?;
     json(o.finish_answer(&m, &session)?)
 }
 
@@ -1636,6 +1762,177 @@ mod tests {
         let committed = o.commit(&c, &session);
         assert!(committed.is_err(), "the commit wrote the moved state for a move the owner had cancelled");
         assert!(!is_moved(&data), "the old server now refuses uploads although `move cancel` said they go on");
+    }
+
+    /// An old server with a claimed code, as claim_blocking leaves it (the claim and the session).
+    #[allow(clippy::unwrap_used)]
+    fn claimed(dir: &Path) -> (PathBuf, Arc<Vault>, Arc<Offer>, CodeRecord, [u8; 32]) {
+        let (data, keys) = (dir.join("data"), dir.join("keys"));
+        std::fs::create_dir_all(&data).unwrap();
+        let (v, _) = Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+        let v = Arc::new(v);
+        let o = Offer::open(&data, v.clone(), gate::Gate::memory(), "0.4.1", &"ab".repeat(32)).unwrap();
+        make_code(&data, &v, false, false).unwrap();
+        let session = [7u8; 32];
+        let mut c: CodeRecord = read(&data, &v, CODE).unwrap().unwrap();
+        c.claimed = Some(Claimed {
+            claim: hex::encode([1u8; 16]),
+            session_sha256: proto::session_hash(&session),
+            from: "192.0.2.10".into(),
+            at_ms: now_ms(),
+            app: "0.4.1".into(),
+            last_seen_ms: now_ms(),
+            sent_bytes: 0,
+            files: 0,
+            bytes: 0,
+        });
+        write(&data, &v, CODE, &c).unwrap();
+        (data, v, o, c, session)
+    }
+
+    /// A pause in force for the session, as the pause route sets it.
+    #[allow(clippy::unwrap_used)]
+    fn paused_now(o: &Offer, session: &[u8; 32], started: Instant) -> String {
+        let held = o.gate.pause(PAUSE_WAIT).unwrap();
+        *lock(&o.paused) = Some(Paused {
+            id: "p1".into(),
+            session: proto::session_hash(session),
+            _pause: Some(held),
+            digest: (0, 0, String::new()),
+            started,
+            last: Instant::now(),
+            busy: 0,
+        });
+        "p1".into()
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_new_code_made_during_a_finish_is_kept_and_the_finish_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, v, o, c, session) = claimed(dir.path());
+        let pause = paused_now(&o, &session, Instant::now());
+        let made = make_code(&data, &v, false, true).unwrap();
+        let e = o.commit_moved(&pause, &c, &session).err().unwrap();
+        assert_eq!((e.status.as_u16(), e.code), (410, "cancelled"));
+        assert!(!is_moved(&data) && !o.is_moved());
+        assert!(o.gate.closed().is_none(), "the gate is open again: uploads go on");
+        assert!(lock(&o.paused).is_none(), "the cancelled move's pause ended with it");
+        let now: CodeRecord = read(&data, &v, CODE).unwrap().unwrap();
+        assert_eq!(now.id, made.id, "the new code is still there");
+        assert!(now.claimed.is_none());
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_finish_whose_pause_the_ticker_ended_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, _v, o, c, session) = claimed(dir.path());
+        let pause = paused_now(&o, &session, Instant::now());
+        o.end_pause("a test");
+        let e = o.commit_moved(&pause, &c, &session).err().unwrap();
+        assert_eq!(e.code, "not_paused");
+        assert!(!is_moved(&data) && !o.is_moved() && o.gate.closed().is_none());
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_finish_holds_the_moved_state_and_a_later_undo_is_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, v, o, c, session) = claimed(dir.path());
+        let pause = paused_now(&o, &session, Instant::now());
+        let rx = o.watch();
+        o.commit_moved(&pause, &c, &session).unwrap();
+        assert!(is_moved(&data) && o.is_moved() && *rx.borrow());
+        assert_eq!(o.gate.closed().map(|c| c.code), Some("moved"));
+        o.tick_now();
+        assert!(o.is_moved(), "the ticker keeps the moved state");
+        undo(&data, &v).unwrap().unwrap();
+        o.tick_now();
+        assert!(!o.is_moved() && o.gate.closed().is_none() && !*rx.borrow(), "`move undo` reopens the running server");
+    }
+
+    /// The commit was written but the moved state wasn't taken in memory (the finish request was dropped, the
+    /// ticker ran between): the ticker takes it, never as a cancel, so `move undo` still reaches the running server.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_commit_written_but_not_held_is_held_by_the_ticker_and_undo_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, v, o, c, session) = claimed(dir.path());
+        paused_now(&o, &session, Instant::now());
+        o.commit(&c, &session).unwrap();
+        assert!(is_moved(&data) && !o.is_moved());
+        o.tick_now();
+        assert!(o.is_moved(), "the ticker holds the moved state");
+        assert!(lock(&o.paused).is_none(), "the pause became the hold");
+        assert_eq!(o.gate.closed().map(|c| c.code), Some("moved"));
+        // the same with no pause left
+        let dir2 = tempfile::tempdir().unwrap();
+        let (data2, v2, o2, c2, session2) = claimed(dir2.path());
+        o2.commit(&c2, &session2).unwrap();
+        o2.tick_now();
+        assert!(o2.is_moved() && is_moved(&data2));
+        undo(&data2, &v2).unwrap().unwrap();
+        o2.tick_now();
+        assert!(!o2.is_moved() && o2.gate.closed().is_none());
+        undo(&data, &v).unwrap().unwrap();
+        o.tick_now();
+        assert!(!o.is_moved() && o.gate.closed().is_none());
+    }
+
+    /// A request that stays busy (a fetch the new server stopped reading) doesn't keep the pause past 15 minutes.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn the_15_minutes_hold_whatever_is_being_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_data, _v, o, _c, session) = claimed(dir.path());
+        let long_ago = Instant::now().checked_sub(PAUSE_MOST + Duration::from_secs(1)).unwrap();
+        paused_now(&o, &session, long_ago);
+        let busy = o.busy(&proto::session_hash(&session)).unwrap();
+        o.pause_timers();
+        assert!(lock(&o.paused).is_none(), "the pause ended at 15 minutes");
+        drop(busy);
+        // quiet, busy: kept; quiet, not busy: ended
+        paused_now(&o, &session, Instant::now());
+        let busy = o.busy(&proto::session_hash(&session)).unwrap();
+        lock(&o.paused).as_mut().unwrap().last = Instant::now().checked_sub(PAUSE_QUIET * 2).unwrap();
+        o.pause_timers();
+        assert!(lock(&o.paused).is_some());
+        let (_, mut b) = busy;
+        b.stalled = true;
+        drop(b);
+        o.pause_timers();
+        assert!(lock(&o.paused).is_none(), "a stalled answer's end doesn't count as hearing from the new server");
+    }
+
+    /// A carried file the server's user may not open (made by root, mode 0600) is skipped and named by the list,
+    /// left out of the digest the same way, and skipped by the export, instead of failing them.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_file_that_cant_be_opened_is_skipped_and_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, v, o, _c, _session) = claimed(dir.path());
+        std::fs::create_dir_all(data.join("can")).unwrap();
+        std::fs::write(data.join("can/a.log"), b"one").unwrap();
+        std::fs::write(data.join("can/b.log"), b"two").unwrap();
+        let before = o.digest().unwrap();
+        tree::test_denied::deny(&data.join("can/b.log"));
+        // a fresh server: no heads cached from before
+        let o = Offer::open(&data, v.clone(), gate::Gate::memory(), "0.4.1", &"ab".repeat(32)).unwrap();
+        let out = o.list_blocking(None, 1000, None).unwrap();
+        let lines: Vec<serde_json::Value> =
+            out.split(|b| *b == b'\n').filter(|l| !l.is_empty()).map(|l| serde_json::from_slice(l).unwrap()).collect();
+        let paths: Vec<&str> = lines.iter().filter_map(|l| l["p"].as_str()).collect();
+        assert!(paths.contains(&"can/a.log") && !paths.contains(&"can/b.log"), "{paths:?}");
+        let end = lines.last().unwrap();
+        assert_eq!(end["skipped"][0]["path"], "can/b.log", "{end}");
+        assert_eq!(end["skipped"][0]["why"], tree::UNREADABLE);
+        let after = o.digest().unwrap();
+        assert_eq!(after.0, before.0 - 1, "the digest leaves it out too");
+        // the export
+        let snap = crate::export::Snapshot::make(&data, &v, &gate::Gate::memory(), "0.4.1", PAUSE_WAIT).unwrap();
+        assert!(snap.skips().named.iter().any(|k| k.path == "can/b.log" && k.why == tree::UNREADABLE));
+        assert_eq!(snap.header().files, after.0);
     }
 
     #[test]

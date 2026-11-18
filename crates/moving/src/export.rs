@@ -138,14 +138,6 @@ pub(crate) fn create_private(path: &Path) -> io::Result<File> {
     o.open(path)
 }
 
-fn open_nofollow(path: &Path) -> io::Result<File> {
-    let mut o = std::fs::OpenOptions::new();
-    o.read(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut o, rustix::fs::OFlags::NOFOLLOW.bits() as i32);
-    o.open(path)
-}
-
 /// Reads up to `buf.len()` bytes (fewer only at the end of the file).
 pub(crate) fn read_up_to(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
     let mut got = 0;
@@ -315,7 +307,18 @@ fn take(
     let made_ms = now_ms();
     let mut last_dir: Option<PathBuf> = None;
     let mut enc = Vec::with_capacity(256);
+    let mut unreadable = Skips::default();
     tree::walk(data, Purpose::Export, &mut skips, |f| -> Result<ControlFlow<()>, Error> {
+        // a file this server may not open (made by root, say) is skipped and named, like a folder it can't read
+        let mut src = match tree::open_file(f.full) {
+            Ok(x) => x,
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                unreadable.add(f.path.to_string(), tree::UNREADABLE);
+                return Ok(ControlFlow::Continue(()));
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(ControlFlow::Continue(())),
+            Err(e) => return Err(e.into()),
+        };
         let dst = files_dir.join(f.path);
         if let Some(parent) = dst.parent() {
             if last_dir.as_deref() != Some(parent) {
@@ -323,7 +326,6 @@ fn take(
                 last_dir = Some(parent.to_path_buf());
             }
         }
-        let mut src = open_nofollow(f.full)?;
         let mut head = [0u8; vault::records::HEADER];
         let n = read_up_to(&mut src, &mut head)?;
         let kind = Kind::of(&head[..n]);
@@ -349,6 +351,7 @@ fn take(
         manifest += enc.len() as u64;
         Ok(ControlFlow::Continue(()))
     })?;
+    skips.merge(unreadable);
     drop(pause);
     let out = w.finish()?.into_inner().map_err(|e| e.into_error())?;
     out.sync_all()?;
