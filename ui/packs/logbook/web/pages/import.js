@@ -12,8 +12,8 @@
 // imports/{import}/cars, POST imports/{import}/start, GET / PATCH cars/{car}/overlaps, GET cars.
 //
 // Progress: there is no live event for an import, so while a job is being checked or imported (or
-// uploaded from another tab) the page reads that one job again every few seconds, and stops as soon
-// as the job is waiting, done or failed, or the page is left.
+// uploaded from another tab, or waits checked for its cars to be matched) the page reads that one job
+// again every few seconds, and stops as soon as the job is done or failed, or the page is left.
 
 import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -264,9 +264,33 @@ export async function mount(ctx) {
     up.active = false;
     up.ctl = null;
     if (!ctx.alive()) return;
-    if (off >= file.size && S.job?.status !== 'uploading') { up.file = null; flashNext('The whole file is up. The server is checking it now; you can leave this page.'); }
+    if (off < file.size || S.job?.status === 'uploading') {
+      // a pause or a break can leave a chunk the client gave up on but the server took: read where the
+      // server really is, so the bytes and the status shown are its own
+      paintAll();
+      await syncJob(job.id);
+      if (!ctx.alive() || up.active) return;
+    }
+    if (S.job?.id === job.id && S.job.status !== 'uploading') {
+      if (up.file) { up.file = null; up.error = null; flashNext('The whole file is up. The server is checking it now; you can leave this page.'); }
+      if (S.job.status === 'ready' && !S.match) loadMatch();
+    }
     paintAll();
     follow();
+  }
+  async function syncJob(jid) {
+    try {
+      const fresh = await ctx.api.get(api.apiPath`imports/${jid}`);
+      if (!ctx.alive()) return;
+      putJob(fresh);
+    } catch (e) {
+      if (!ctx.alive() || api.isAbort(e)) return;
+      if (e.code === 'no_such_import') {
+        S.jobs = S.jobs.filter((x) => x.id !== jid);
+        if (S.job?.id === jid) { up.file = null; S.match = null; pickJob(); }
+        ctx.flash('This upload was discarded, perhaps from another browser tab.', { kind: 'info' });
+      }
+    }
   }
   function flashNext(text) { ctx.flash(text, { kind: 'info' }); }
   function pauseUpload() { up.paused = true; up.ctl?.abort(); paintAll(); }
@@ -279,15 +303,22 @@ export async function mount(ctx) {
     const j = S.job;
     if (!j) return;
     const otherTabUpload = j.status === 'uploading' && !up.active && !up.file;
-    if (!MOVING.includes(j.status) && !otherTabUpload) return;
+    // a job waiting in 'ready' is read too (more slowly): another tab can match its cars or discard it
+    if (!MOVING.includes(j.status) && !otherTabUpload && j.status !== 'ready') return;
     pollTimer = setTimeout(async () => {
-      if (!ctx.alive()) return;
+      if (!ctx.alive() || S.job?.id !== j.id) return;
       try {
         const was = S.job?.status;
+        const wasToMatch = S.job?.cars_to_match;
         const fresh = await ctx.api.get(api.apiPath`imports/${j.id}`);
-        if (!ctx.alive()) return;
+        if (!ctx.alive() || S.job?.id !== j.id) return;
         putJob(fresh);
-        if (fresh.status !== was) {
+        if (fresh.status === 'ready' && was === 'ready' && fresh.cars_to_match !== wasToMatch) {
+          // matched (or changed) elsewhere: read the matches again and repaint Start
+          await loadMatch();
+          if (!ctx.alive()) return;
+          paintJob();
+        } else if (fresh.status !== was) {
           if (fresh.status === 'ready') ctx.flash('The file is checked. Match its cars, then start the import.', { kind: 'info' });
           if (fresh.status === 'done') { ctx.flash('The import is done. The history shows on every page.'); loadOverlaps(); }
           if (fresh.status === 'failed') ctx.flash('The import failed. The reason is on this page.', { kind: 'error' });
@@ -296,10 +327,20 @@ export async function mount(ctx) {
         } else paintProgress();
       } catch (e) {
         if (!ctx.alive() || api.isAbort(e)) return;
-        if (e.code === 'no_such_import') { S.jobs = S.jobs.filter((x) => x.id !== j.id); pickJob(); paintAll(); return; }
+        if (e.code === 'no_such_import') {
+          S.jobs = S.jobs.filter((x) => x.id !== j.id);
+          S.match = null;
+          if (ctx.query?.import === j.id) ctx.setQuery({ import: null });
+          pickJob();
+          if (S.job && ['checking', 'ready'].includes(S.job.status)) loadMatch();
+          ctx.flash('This import was discarded, perhaps from another browser tab.', { kind: 'info' });
+          paintAll();
+          follow();
+          return;
+        }
       }
       follow();
-    }, otherTabUpload ? POLL_MS * 2 : POLL_MS);
+    }, otherTabUpload || j.status === 'ready' ? POLL_MS * 2 : POLL_MS);
   }
 
   async function refreshJobs(pickRunning = false) {
@@ -539,6 +580,8 @@ export async function mount(ctx) {
     replace(failRegion, shown && j.status === 'failed' ? failedBox(j) : null);
     failRegion.hidden = !(shown && j.status === 'failed');
     if (shown) parts.push(progressBox);
+    // a refused file (or any other upload message) shows also while an import is unfinished
+    if (r) parts.push(upErr);
     parts.push(failRegion);
     if (shown) parts.push(matchBox);
 

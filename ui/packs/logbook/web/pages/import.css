@@ -114,3 +114,8 @@
   .im-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .im-drop { padding: 1.25rem 1rem; }
 }
+/* very wide: the two side notes sit next to each other and reach the right edge, like the report below */
+@container page (width >= 112.5rem) {
+  .im-side { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.75rem 2.5rem; }
+  .im-side > .im-aside-note { max-width: none; }
+}
