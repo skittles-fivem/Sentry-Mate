@@ -11,7 +11,8 @@
 .settings-divider { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 1rem; margin-top: 0.75rem; padding-top: 1.25rem; border-top: 1px dashed var(--line-3); }
 .settings-divider > span:first-child { font-family: var(--font-display); font-size: 1.25rem; font-weight: 600; }
 .saving-note { display: flex; align-items: center; gap: 0.375rem; margin: 0; }
-.seg[disabled] { opacity: 0.6; pointer-events: none; }
+.seg[aria-disabled="true"] { opacity: 0.6; }
+.seg[aria-disabled="true"] .seg-btn { cursor: default; }
 
 /* xwide: two panels side by side, each with its text above its control */
 @container page (min-width: 140rem) {

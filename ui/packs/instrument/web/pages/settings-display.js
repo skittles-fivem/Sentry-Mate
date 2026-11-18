@@ -4,7 +4,8 @@
 
 import { h, replace } from '../shared/dom.js';
 import { getUnits, format } from '../shared/units.js';
-import { isSupportedLocale } from '../shared/i18n.js';
+import { isSupportedLocale, onLocaleChange } from '../shared/i18n.js';
+import { formatDate } from '../shared/time.js';
 import { buildUrl } from '../shared/state.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel } from '../core/page.js';
@@ -28,12 +29,21 @@ const UNIT_WORDS = { km: 'km', mi: 'miles', c: '°C', f: '°F', bar: 'bar', psi:
 // a row: the label and its explanation on the left, the control on the right
 const setting = (title, text, control, cover = null) => h('div', { class: 'setting', cover }, h('div', null, h('h3', null, title), h('p', null, text)), h('div', { class: 'setting-control' }, control));
 
-// buttons for one choice; onPick(value) saves it. seg.set(value) shows another value (a change elsewhere).
-function choice(name, options, current, onPick) {
-  const mark = (v) => { for (const b of seg.children) { const on = b.dataset.v === String(v); b.setAttribute('aria-pressed', String(on)); b.setAttribute('aria-checked', String(on)); } };
+// buttons for one choice; onPick(value) saves it and returns false when the save failed, which puts
+// the stored value back. seg.set(value) shows another value (a change elsewhere). readOnly: the
+// buttons only show the value (disabled, so neither a click nor the keyboard changes them).
+function choice(name, options, current, onPick, { readOnly = false } = {}) {
+  let shown = String(current);
+  const mark = (v) => { for (const b of seg.children) { const on = b.dataset.v === String(v); b.setAttribute('aria-pressed', String(on)); b.setAttribute('aria-checked', String(on)); } shown = String(v); };
   const seg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': name },
-    options.map(([v, l]) => h('button', { class: 'seg-btn', type: 'button', role: 'radio', 'aria-checked': String(String(v) === String(current)), 'aria-pressed': String(String(v) === String(current)), dataset: { v: String(v) },
-      onclick: async () => { mark(v); await onPick(v); } }, l)));
+    options.map(([v, l]) => h('button', { class: 'seg-btn', type: 'button', role: 'radio', 'aria-checked': String(String(v) === String(current)), 'aria-pressed': String(String(v) === String(current)), dataset: { v: String(v) }, disabled: readOnly,
+      onclick: readOnly ? null : async () => {
+        const before = shown;
+        if (String(v) === before) return;
+        mark(v);
+        if ((await onPick(v)) === false && shown === String(v)) mark(before);
+      } }, l)));
+  if (readOnly) seg.setAttribute('aria-disabled', 'true');
   seg.set = mark;
   return seg;
 }
@@ -102,13 +112,23 @@ export async function mount(ctx) {
   const noteEl = h('p', { class: 'setting-note' }, sizeNote());
   ctx.onCleanup(onInterface((i) => { size.sync(i); follow.sync(i); pctIn.value = String(i.size); noteEl.textContent = sizeNote(); }));
   const theme = themeButtons();
-  ctx.onCleanup(onPrefs((pp) => theme.sync(pp)));
+  ctx.onCleanup(onPrefs((pp) => {
+    theme.sync(pp);
+    lang.value = pp?.language === 'en' ? 'en-US' : (pp?.language || 'auto');
+    packSel.value = pp?.ui_pack || 'instrument';
+    paintLangExample();
+  }));
+  ctx.onCleanup(onLocaleChange(() => { paintExample(); paintLangExample(); }));
   const browserLang = (navigator.languages && navigator.languages[0]) || navigator.language || 'unknown';
   const lang = h('select', { class: 'select', 'aria-label': 'Language and number style', onchange: (e) => savePref({ language: e.target.value }, 'Language') },
     LOCALES.map(([v, l]) => h('option', { value: v, selected: (p.language || 'auto') === v || (v === 'en-US' && p.language === 'en') }, v === 'auto' ? `${l} (${browserLang})` : l)));
   const packs = [['instrument', 'Instrument'], ['logbook', 'Logbook']];
   const packSel = h('select', { class: 'select', 'aria-label': 'UI pack', onchange: (e) => savePref({ ui_pack: e.target.value }, 'UI pack') },
     packs.map(([v, l]) => h('option', { value: v, selected: (p.ui_pack || 'instrument') === v }, l)));
+  // written with the app's own formatters, so it shows what the saved language really does
+  const langExample = h('p', { class: 'setting-note' });
+  const paintLangExample = () => replace(langExample, 'Example: ', h('b', null, format(1234.5, 'distance')), ', ', h('b', null, formatDate(ctx.api.now(), ctx.tz, { weekday: false, year: true })), '.');
+  paintLangExample();
   const look = panel({ title: 'Look and language', icon: 'monitor', side: h('span', { class: 'faint' }, 'Yours; follows you to every screen') },
     setting('Theme', 'Light, dark, or follow this device. It is saved with your account, so every browser you sign in on uses it, and it is set before the page is drawn, so there is no flash.',
       [theme.el, h('p', { class: 'setting-note' }, 'Every page, chart and map has both a light and a dark look; screenshots in the help show either.')], ['shell.theme', 'web.settings.general.theme', 'shots.theme-note']),
@@ -116,7 +136,7 @@ export async function mount(ctx) {
       [size.el, h('div', { class: 'row' }, h('label', { class: 'faint', for: 'set-size-pct' }, 'Any size:'), pctIn, h('span', { class: 'faint' }, '%')), sizeErr,
         h('div', { class: 'switch-row switch-row--inline' }, follow.el, h('label', { for: 'set-follow' }, 'Follow screen size')), noteEl]),
     setting('Language', 'The text is in English for now. This sets how numbers and dates are written. "This browser\'s language" follows the language your browser asks for; the app tells the browser which language the page is in.',
-      [lang, h('p', { class: 'setting-note' }, 'Example: ', h('b', null, format(1234.5, 'distance')), ', ', h('b', null, new Intl.DateTimeFormat(document.documentElement.lang || undefined, { dateStyle: 'medium', timeZone: ctx.tz }).format(ctx.api.now())), '.')],
+      [lang, langExample],
       ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation']),
     setting('UI pack', `The design of the whole app. ${about?.ui_pack?.name ? `This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Your choice is used the next time the app loads where the server offers that pack.`, packSel));
 
@@ -129,6 +149,12 @@ export async function mount(ctx) {
     bits.push(od.present === false ? 'Offline place names: not installed.' : `Offline place names: ${od.name || 'bundled'}${od.places ? `, ${od.places.toLocaleString()} places` : ''}${od.built_ms ? `, built ${ago(od.built_ms)}` : ''}.`);
     bits.push(` Cache: ${(geo.cache_size ?? 0).toLocaleString()} addresses already looked up.`);
     if (geo.online?.last_error) bits.push(` Last online error: ${geo.online.last_error}.`);
+    const retry = geo.online?.retry_ms;
+    if (retry != null && Number.isFinite(Number(retry))) {
+      // a time (ms since 1970) or, when small, a wait from now
+      const at = Number(retry) > 1e12 ? Number(retry) : ctx.api.now() + Number(retry);
+      bits.push(at <= ctx.api.now() ? ' Next try: at the next address needed.' : ` Next try ${ago(at)}.`);
+    }
     return h('p', { class: 'setting-note' }, icon(geo.online?.last_error ? 'warn' : 'check', 'ico--sm'), ' ', bits.join(''), ' ', h('a', { href: buildUrl('health'), class: 'panel-link' }, 'Address status in Data health ›'));
   }
   function tileStatus(t) {
@@ -145,15 +171,18 @@ export async function mount(ctx) {
         flash(`${what} saved.`);
         for (const f of fields) f.setError(null);
         [geo, maps] = await Promise.all([ctx.api.get('geocode/status').catch(() => geo), ctx.api.get('maps/config').catch(() => maps)]);
-        if (!ctx.alive()) return;
+        if (!ctx.alive()) return true;
         paintServer(); paintDefaults();
+        return true;
       } catch (e) {
-        if (e?.name === 'AbortError') return;
-        if (e.status === 409) { server = await ctx.api.get('settings'); paintServer(); paintDefaults(); flash('Someone else changed the settings; this page shows theirs now.', { kind: 'info' }); return; }
+        if (e?.name === 'AbortError') return false;
+        if (e.status === 409) { server = await ctx.api.get('settings').catch(() => server); if (ctx.alive()) { paintServer(); paintDefaults(); } flash('Someone else changed the settings; this page shows theirs now.', { kind: 'info' }); return false; }
         if (fields.length) showApiError({ fields, setMessage: (t) => t && flash(t, { kind: 'error' }) }, e); else flash(`Could not save: ${e.message}`, { kind: 'error' });
+        return false;
       }
     };
-    const disabled = (el) => { if (ro) el.setAttribute('disabled', ''); return el; };
+    // a server choice: read-only (buttons disabled) for anyone but an admin
+    const sChoice = (name, options, current, onPick) => choice(name, options, current, onPick, { readOnly: ro });
     const g = server.geocode || {}, t = server.tiles || {};
     const gUrl = field({ label: 'Address service (https)', name: 'gurl', path: 'geocode.url', value: g.url || '', hint: 'Only used when lookup is online. Positions are rounded first (below); the service never gets a VIN or a car name.', attrs: { placeholder: 'https://', disabled: ro } });
     const gRound = field({ label: 'Round positions to (m)', name: 'grnd', path: 'geocode.rounding_m', type: 'number', value: g.rounding_m, hint: 'metres, from 0 to 1000, before an online lookup', attrs: { min: '0', max: '1000', step: '1', disabled: ro } });
@@ -180,22 +209,22 @@ export async function mount(ctx) {
         panel({ title: 'Defaults for everyone', icon: 'server', side: ro ? h('span', { class: 'faint' }, 'Read only') : null },
           setting('Units', 'What an account sees until it picks its own units. Changing these updates everyone who has not chosen.',
             h('div', { class: 'row' },
-              disabled(choice('Default distance', [['km', 'km'], ['mi', 'mi']], server.units?.distance, (v) => patch({ units: { distance: v } }, 'Default distance unit'))),
-              disabled(choice('Default temperature', [['c', '°C'], ['f', '°F']], server.units?.temperature, (v) => patch({ units: { temperature: v } }, 'Default temperature unit'))),
-              disabled(choice('Default pressure', [['bar', 'bar'], ['psi', 'psi']], server.units?.pressure, (v) => patch({ units: { pressure: v } }, 'Default pressure unit'))))),
-          setting('Range', 'Rated or ideal, for accounts that have not chosen.', disabled(choice('Default range', [['rated', 'Rated'], ['ideal', 'Ideal']], server.range, (v) => patch({ range: v }, 'Default range')))),
+              sChoice('Default distance', [['km', 'km'], ['mi', 'mi']], server.units?.distance, (v) => patch({ units: { distance: v } }, 'Default distance unit')),
+              sChoice('Default temperature', [['c', '°C'], ['f', '°F']], server.units?.temperature, (v) => patch({ units: { temperature: v } }, 'Default temperature unit')),
+              sChoice('Default pressure', [['bar', 'bar'], ['psi', 'psi']], server.units?.pressure, (v) => patch({ units: { pressure: v } }, 'Default pressure unit')))),
+          setting('Range', 'Rated or ideal, for accounts that have not chosen.', sChoice('Default range', [['rated', 'Rated'], ['ideal', 'Ideal']], server.range, (v) => patch({ range: v }, 'Default range'))),
           h('p', { class: 'setting-note' }, 'A fresh server starts from the distance unit set on the car’s own screen, once its CAN Bridge has sent it.')),
         panel({ title: 'Addresses and maps', icon: 'globe', side: h('span', { class: 'faint' }, 'Private by default') },
           setting('Address lookup', 'Offline uses the place names bundled with Sentry Mate: nothing leaves the server. Online asks the service you name (for example your own address server or a proxy in front of one), with rounded positions, and keeps a cache.',
-            [disabled(choice('Address lookup', [['offline', 'Offline'], ['online', 'Online service']], g.mode, (v) => patch({ geocode: { mode: v } }, 'Address lookup', [gUrl]))),
+            [sChoice('Address lookup', [['offline', 'Offline'], ['online', 'Online service']], g.mode, (v) => patch({ geocode: { mode: v } }, 'Address lookup', [gUrl])),
               geoStatus(), gUrl.el, gRound.el], ['web.settings.general.address-lookup', 'docs.env.tesla-api.nominatim-proxy']),
           setting('Address language', 'Street and place names are written in this language where the data has it; otherwise in the local language.', gLang.el, ['web.settings.general.address-language', 'web.settings.general.address-language-error', 'web.settings.general.address-language-invalid']),
           setting('Map tiles', 'Offline tiles come from Sentry Mate itself. An online source is asked by each viewer’s browser for the map pictures, so it sees the map area; only turn it on if you accept that.',
-            [disabled(choice('Map tiles', [['offline', 'Offline'], ['online', 'Online source']], t.mode, (v) => patch({ tiles: { mode: v } }, 'Map tiles', [tUrl]))), tileStatus(t), tUrl.el, tAttr.el], 'web.shell.map-tiles'),
+            [sChoice('Map tiles', [['offline', 'Offline'], ['online', 'Online source']], t.mode, (v) => patch({ tiles: { mode: v } }, 'Map tiles', [tUrl])), tileStatus(t), tUrl.el, tAttr.el], 'web.shell.map-tiles'),
           setting('Outside links', 'Links that open another site in a new tab, only when the viewer clicks them.',
             h('div', { class: 'row' },
-              disabled(choice('Map links', [['false', 'No map links'], ['true', 'Map links']], String(!!server.outside_links?.maps), (v) => patch({ outside_links: { maps: v === 'true' } }, 'Map links'))),
-              disabled(choice('Release notes', [['false', 'No release notes'], ['true', 'Release notes']], String(!!server.outside_links?.release_notes), (v) => patch({ outside_links: { release_notes: v === 'true' } }, 'Release-notes links'))))))));
+              sChoice('Map links', [['false', 'No map links'], ['true', 'Map links']], String(!!server.outside_links?.maps), (v) => patch({ outside_links: { maps: v === 'true' } }, 'Map links')),
+              sChoice('Release notes', [['false', 'No release notes'], ['true', 'Release notes']], String(!!server.outside_links?.release_notes), (v) => patch({ outside_links: { release_notes: v === 'true' } }, 'Release-notes links')))))));
   }
   paintServer();
 
