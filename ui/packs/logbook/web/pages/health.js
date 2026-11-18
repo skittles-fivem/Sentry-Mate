@@ -159,7 +159,7 @@ function kindsTable(ctx, kinds, total, { parts, label }) {
     rows, label, itemName: ['kind', 'kinds'], sort: { key: 'bytes', dir: 'desc' }, cls: 'hl-kinds',
     cover: 'dbinfo.table.sizes',
     caption: 'As stored on disk: compressed and encrypted. Click a heading to sort.',
-    csv: { parts, columns: [{ label: 'What', value: (r) => r.label }, { label: 'Kind', value: (r) => r.kind }, column('On disk (bytes)', 'bytes'), column('Share (%)', 'share', null, { digits: 2 })] },
+    csv: { parts, columns: [{ label: 'What', value: (r) => r.label }, { label: 'Kind', value: (r) => r.kind }, column('On disk (bytes)', 'bytes'), column('Share', 'share', 'percent', { digits: 2 })] },
     columns: [
       { key: 'label', label: 'What it holds', th: true, sort: true, cover: 'dbinfo.sizes.table', value: (r) => r.label,
         cell: (r) => [h('span', { class: 'cell-main' }, r.label), KIND_TEXT[r.kind] ? h('span', { class: 'cell-sub hl-wrap' }, KIND_TEXT[r.kind]) : null] },
@@ -173,6 +173,47 @@ function kindsTable(ctx, kinds, total, { parts, label }) {
   const totalEl = h('div', { class: 'hl-total', cover: 'dbinfo.sizes.total' },
     h('span', { class: 'hl-total-name' }, 'All kinds together'), h('span', { class: 'hl-total-v' }, bytes(total)));
   return { table: t, el: h('div', { class: 'hl-kinds-box' }, t.el, totalEl) };
+}
+
+/** How long a rebuild took: milliseconds below one second, so a quick one never reads "0 s". */
+function tookText(tookMs) {
+  if (tookMs == null) return 'no time at all';
+  if (tookMs < 1000) return `${formatNumber(Math.max(0, Math.round(tookMs)))} ms`;
+  return formatDuration(tookMs, { seconds: true });
+}
+
+/**
+ * One section's loader that never takes the page down: an error is drawn in the section's own
+ * box with a Try again button. Only a car that does not exist (or may not be seen) is passed on,
+ * so the frame can say so for the whole page. Resolves true when the section drew its data.
+ */
+function guarded(ctx, eyebrow, onError, fn) {
+  const run = async () => {
+    try {
+      await fn();
+      return true;
+    } catch (e) {
+      if (!ctx.alive() || api.isAbort(e)) return false;
+      if (e && e.status === 404 && e.code === 'no_such_car') throw e;
+      onError(errorView(e, { retry: () => { run().catch(() => {}); }, eyebrow, title: 'This part could not be read; the rest of the page is fine.', home: false }), e);
+      return false;
+    }
+  };
+  return run;
+}
+
+/** Waits for every section; fails the page only when the car itself is not there. */
+async function settleAll(list) {
+  const out = await Promise.allSettled(list);
+  const gone = out.find((r) => r.status === 'rejected' && r.reason && r.reason.status === 404 && r.reason.code === 'no_such_car');
+  if (gone) throw gone.reason;
+  return out.filter((r) => r.status === 'rejected' || r.value === false).length;
+}
+
+/** The flash after Load again: says which parts could not be read instead of hiding them. */
+function reloadedFlash(ctx, failed) {
+  if (!failed) ctx.flash('Loaded again.', { kind: 'info' });
+  else ctx.flash(`Loaded again; ${failed === 1 ? 'one part' : `${formatNumber(failed)} parts`} could not be read and ${failed === 1 ? 'shows' : 'show'} why in place.`, { kind: 'error' });
 }
 
 /* ================================================================== mount */
@@ -220,10 +261,10 @@ async function mountCar(ctx) {
   ctx.main.append(section({ title: 'Is data arriving?', note: 'checked now, over the period', cover: 'faq.stopped-recording', cls: 'hl-block', id: 'hl-health',
     actions: h('a', { class: 'link-arrow', href: state.buildUrl('settings-cars', { car: cid }) }, 'Settings: Cars', icon('arrowRight')) }, healthBox));
 
-  async function loadHealth() {
+  const loadHealth = guarded(ctx, 'Could not check the data', (v) => replace(healthBox, v), async () => {
     const hl = await ctx.api.get(base('health'), ctx.params);
     if (ctx.alive()) drawHealth(hl);
-  }
+  });
 
   function drawHealth(hl) {
     const reasons = hl.reasons || [];
@@ -307,7 +348,7 @@ async function mountCar(ctx) {
     try {
       const r = await ctx.api.post(base('rebuild'), { ...ctx.params });
       if (!ctx.alive()) return;
-      ctx.flash(`Rebuilt from ${count(r.logs_read ?? 0, 'log')} in ${formatDuration(r.took_ms ?? 0, { seconds: true })}.`);
+      ctx.flash(`Rebuilt from ${count(r.logs_read ?? 0, 'log')} in ${tookText(r.took_ms)}.`);
       reloadAll(null).catch(() => {});
     } catch (e) {
       if (ctx.alive()) ctx.flash(`Not rebuilt: ${errorWords(e).text}`, { kind: 'error' });
@@ -338,7 +379,7 @@ async function mountCar(ctx) {
   ctx.main.append(section({ title: 'What is recorded', note: 'all time, not the period; from the car and imported', cls: 'hl-block', id: 'hl-totals' },
     totalsBox, h('h3', { class: 'hl-sub hl-sub-gap' }, 'Rows kept'), rowsBox));
 
-  async function loadTotals() {
+  const loadTotals = guarded(ctx, 'Could not load the totals', (v) => { replace(totalsBox, v); replace(rowsBox, note('The row counts come with the totals: press Try again above.')); }, async () => {
     const [all, can, tm, upd] = await Promise.all([
       ctx.api.get(base('totals'), { source: 'all' }),
       ctx.api.get(base('totals'), { source: 'can' }),
@@ -346,7 +387,7 @@ async function mountCar(ctx) {
       ctx.api.get(base('updates'), { limit: 1 }).catch(() => null),
     ]);
     if (ctx.alive()) drawTotals(all, can, tm, upd && upd.summary);
-  }
+  });
 
   const split = (a, b, kind) => `${format(a ?? 0, kind)} from the car, ${format(b ?? 0, kind)} imported.`;
 
@@ -355,7 +396,7 @@ async function mountCar(ctx) {
     const vs = VERSION_SOURCE[sm.current_version_source];
     replace(totalsBox, figures([
       figure('Logged distance', q(all.distance_km, 'distance'), `The sum of every recorded drive. ${split(can.distance_km, tm.distance_km, 'distance')}`, { cover: 'dbinfo.stat.logged_distance' }),
-      figure('Odometer', q(all.odometer_last_km, 'odometer', { why: 'not sent yet' }), all.odometer_last_ms != null ? `Last read ${when(all.odometer_last_ms, tz)}; the car sends it while awake.` : 'The car sends it while awake.', { cover: 'dbinfo.stat.odometer' }),
+      figure('Odometer', q(all.odometer_last_km, 'odometer', { why: 'not sent yet' }), all.odometer_last_km != null && all.odometer_last_ms != null ? `Last read ${when(all.odometer_last_ms, tz)}; the car sends it while awake.` : 'The car sends it while awake.', { cover: 'dbinfo.stat.odometer' }),
       figure('Not logged', q(all.not_logged_km, 'distance', { why: 'needs two readings' }), 'The odometer’s change since the first reading minus the logged distance: driving nobody recorded.'),
       figure('Drives', q(all.drives, 'count'), split(can.drives, tm.drives, 'count'), { cover: 'dbinfo.stat.drive_count' }),
       figure('Charges', q(all.charges, 'count'), split(can.charges, tm.charges, 'count'), { cover: 'dbinfo.stat.charge_count' }),
@@ -393,7 +434,7 @@ async function mountCar(ctx) {
   const storeBox = h('div', { class: 'hl-store' }, loadingBlock(4));
   ctx.main.append(section({ title: `What ${car.name || cid}’s data takes`, note: 'all time, on this server’s disk', cls: 'hl-block', id: 'hl-store' }, storeBox));
 
-  async function loadStorage() {
+  const loadStorage = guarded(ctx, 'Could not load the storage', (v) => replace(storeBox, v), async () => {
     const st = await ctx.api.get(base('storage'), { limit: 1 });
     if (!ctx.alive()) return;
     const k = kindsTable(ctx, st.kinds, st.total_bytes, { parts: [car.name || cid, 'storage by kind'], label: 'Storage by kind' });
@@ -412,8 +453,8 @@ async function mountCar(ctx) {
     replace(storeBox, h('div', { class: 'hl-store-cols' },
       h('div', null, h('h3', { class: 'hl-sub' }, 'By kind'), k.el),
       h('div', null, h('h3', { class: 'hl-sub' }, 'By day'), days.el)));
-    await Promise.all([k.table.load(), days.load()]);
-  }
+    await Promise.all([k.table.load(), days.load().catch(() => {})]);
+  });
 
   /* ---------------------------------------------------------------- signals */
 
@@ -449,14 +490,16 @@ async function mountCar(ctx) {
       text: signals.length ? `Nothing holds “${search.value.trim()}”. Clear the search to see all ${formatNumber(signals.length)}.` : 'Signals show once the first log of this car has been decoded.' }),
   });
 
-  const plotBox = h('div', { class: 'hl-plot' },
-    empty({ title: 'Choose a signal to draw.', text: 'Press Draw on a signal with values over time. It is drawn over the period in your units, with asleep and unknown time shaded apart and a break where nothing is known.' }));
+  const chooseEmpty = () => empty({ title: 'Choose a signal to draw.', text: 'Press Draw on a signal with values over time. It is drawn over the period in your units, with asleep and unknown time shaded apart and a break where nothing is known.' });
+  const plotBox = h('div', { class: 'hl-plot' }, chooseEmpty());
+  const sigErr = h('div', { class: 'hl-sig-err' });
 
   ctx.main.append(section({ title: 'Signals', note: 'every decoded signal of the newest log, with its name, unit and value names', cls: 'hl-block', id: 'hl-signals',
     actions: h('div', { class: 'field field-search hl-search' },
       h('label', { class: 'sr-only', for: 'hl-sig-search' }, 'Find a signal'),
       h('div', { class: 'field-control' }, h('span', { class: 'field-icon' }, icon('search')), search)) },
   h('p', { class: 'note hl-sig-info' }, sigInfo, 'Values are in your units; “as sent” is the value in the car’s own unit. A signal with named values (gear, charging status) shows its name and code.'),
+  sigErr,
   sigTable.el,
   h('h3', { class: 'hl-sub hl-sub-gap' }, 'A signal over the period'),
   plotBox));
@@ -474,10 +517,24 @@ async function mountCar(ctx) {
   search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => ctx.alive() && filterSignals(), 150); });
   ctx.onCleanup(() => clearTimeout(timer));
 
-  async function loadSignals() {
-    signals = await ctx.api.list(base('signals/latest'), {}, { limit: 500 }).all({ max: 20000 });
-    if (ctx.alive()) filterSignals();
-  }
+  const loadSignals = guarded(ctx, 'Could not load the signals', (v) => {
+    replace(sigErr, v);
+    sigTable.el.hidden = true;
+    if (chosen == null) replace(plotBox, empty({ title: 'Nothing to draw until the signals load.', text: 'Press Try again above; the chart works once the list of signals has been read.' }));
+  }, async () => {
+    const list = await ctx.api.list(base('signals/latest'), {}, { limit: 500 }).all({ max: 20000 });
+    if (!ctx.alive()) return;
+    signals = list;
+    replace(sigErr);
+    sigTable.el.hidden = false;
+    filterSignals();
+    if (!signals.some((s) => s.has_series)) {
+      chosen = null;
+      replace(plotBox, empty({ title: 'Nothing can be drawn yet.', text: signals.length
+        ? 'None of these signals has values over time: each keeps its newest value only.'
+        : 'A signal can be drawn over time once the first log of this car has been decoded.' }));
+    } else if (chosen == null) replace(plotBox, chooseEmpty());
+  });
 
   let chart = null;
   async function plot(s) {
@@ -539,9 +596,9 @@ async function mountCar(ctx) {
   async function reloadAll(btn) {
     if (btn) btn.disabled = true;
     try {
-      await Promise.all([loadHealth(), gapsTable.reload(), loadTotals(), loadStorage(), loadSignals()]);
+      const failed = await settleAll([loadHealth(), gapsTable.reload().then(() => true), loadTotals(), loadStorage(), loadSignals()]);
       aside.paint();
-      if (btn && ctx.alive()) ctx.flash('Loaded again.', { kind: 'info' });
+      if (btn && ctx.alive()) reloadedFlash(ctx, failed);
     } catch (e) {
       if (ctx.alive()) ctx.flash(`Not loaded: ${errorWords(e).text}`, { kind: 'error' });
     } finally { if (btn) btn.disabled = false; }
@@ -555,7 +612,7 @@ async function mountCar(ctx) {
     aside.paint();
   });
 
-  await Promise.all([loadHealth(), gapsTable.load(), loadTotals(), loadStorage(), loadSignals()]);
+  await settleAll([loadHealth(), gapsTable.load(), loadTotals(), loadStorage(), loadSignals()]);
   if (!ctx.alive()) return {};
   // start with the battery level drawn, so the chart is there before anything is chosen
   const first = signals.find((s) => s.series === 'soc_display' && s.has_series) || signals.find((s) => s.has_series);
@@ -586,7 +643,7 @@ async function mountSystem(ctx) {
   const storeBox = h('div', { class: 'hl-store' }, loadingBlock(5));
   ctx.main.append(section({ title: 'Storage', note: 'every car, imported history and offline maps, on this server’s disk', cover: 'dbinfo.section.database', cls: 'hl-block', id: 'hl-store' }, storeBox));
 
-  async function loadStorage() {
+  const loadStorage = guarded(ctx, 'Could not load the storage', (v) => replace(storeBox, v), async () => {
     if (!admin) { replace(storeBox, adminOnly('Server storage (total size, free space, growth)', 'dbinfo.stat.total_size')); return; }
     let st;
     try { st = await ctx.api.get('system/storage'); } catch (e) {
@@ -616,7 +673,7 @@ async function mountSystem(ctx) {
         h('div', null, h('h3', { class: 'hl-sub' }, 'By kind'), k.el),
         h('div', null, h('h3', { class: 'hl-sub' }, 'Added per day'), growthChart(growth))));
     await k.table.load();
-  }
+  });
 
   function growthChart(growth) {
     if (!growth.length) return empty({ title: 'No full day yet.', text: 'Growth shows after the first full day.' });
@@ -695,7 +752,7 @@ async function mountSystem(ctx) {
       note('It needs no sign-in and tells nothing about the cars or the data, so a monitor or the container’s health check may call it freely. The Docker image already checks it every 30 seconds.'));
   }
 
-  async function loadServer() {
+  const loadServer = guarded(ctx, 'Could not read the server’s health', (v) => replace(srvBox, v, h('div', { class: 'hl-cols' }, clockNote(), healthAddress())), async () => {
     if (!admin) { replace(srvBox, adminOnly('Server health (uptime, versions, memory, timings)'), h('div', { class: 'hl-cols' }, clockNote(), healthAddress())); return; }
     let sh, geo;
     try {
@@ -742,7 +799,7 @@ async function mountSystem(ctx) {
           ['This reading took', ms(sh.read_ms)],
         ]))),
       h('div', { class: 'hl-cols' }, clockNote(), healthAddress()));
-  }
+  });
 
   /* ---------------------------------------------------------------- API errors */
 
@@ -783,15 +840,15 @@ async function mountSystem(ctx) {
   async function reloadAll(btn) {
     if (btn) btn.disabled = true;
     try {
-      await Promise.all([loadStorage(), loadServer(), carTable.reload()]);
+      const failed = await settleAll([loadStorage(), loadServer(), carTable.reload().then(() => true)]);
       aside.paint();
-      if (btn && ctx.alive()) ctx.flash('Loaded again.', { kind: 'info' });
+      if (btn && ctx.alive()) reloadedFlash(ctx, failed);
     } catch (e) {
       if (ctx.alive()) ctx.flash(`Not loaded: ${errorWords(e).text}`, { kind: 'error' });
     } finally { if (btn) btn.disabled = false; }
   }
 
-  await Promise.all([loadStorage(), loadServer(), carTable.load(), errTable.load()]);
+  await settleAll([loadStorage(), loadServer(), carTable.load(), errTable.load()]);
   if (!ctx.alive()) return {};
   ctx.ready();
   return {};
