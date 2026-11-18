@@ -464,3 +464,46 @@ class SignalsLatestAndSeries(ServerCase):
             self.assertIn("has_series", x)
             st, _, _ = self.c.request("GET", f"/api/v1/cars/c1/signals?series={x['series']}")
             self.assertEqual(st, 200 if x["has_series"] else 400, x["series"])
+
+
+class CarTimeZoneChange(ServerCase):
+    """After an admin sets a car's time zone, everything grouped by local day or hour uses the new zone."""
+
+    def test_days_follow_the_new_zone(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        v = self.c.get("/api/v1/cars/c1")["version"]
+        self.c.json("PATCH", "/api/v1/cars/c1", {"version": v, "time_zone": "Asia/Tokyo"})
+        try:
+            tz = ZoneInfo("Asia/Tokyo")
+            days = self.c.get("/api/v1/visits/days?cars=c1&limit=200")["items"]
+            self.assertTrue(days)
+            for x in days:
+                self.assertEqual(x["date"], datetime.fromtimestamp(x["first_ms"] / 1000, tz).date().isoformat(), x)
+            visits = self.c.get("/api/v1/visits?cars=c1&limit=20")["items"]
+            self.assertEqual({x.get("time_zone", "Asia/Tokyo") for x in visits}, {"Asia/Tokyo"})
+            hm = self.c.get("/api/v1/cars/c1/charging-stats")["heatmap"]
+            charges = self.walk("/api/v1/cars/c1/charges", limit=500)
+            want = [[0] * 24 for _ in range(7)]
+            for ch in charges:
+                t = datetime.fromtimestamp(ch["start_ms"] / 1000, tz)
+                want[t.weekday()][t.hour] += 1
+            self.assertEqual(hm["start"], want)
+        finally:
+            v = self.c.get("/api/v1/cars/c1")["version"]
+            self.c.json("PATCH", "/api/v1/cars/c1", {"version": v, "time_zone": "America/Los_Angeles"})
+
+    def test_gpx_has_the_name_given(self):
+        import xml.dom.minidom
+        v = self.c.get("/api/v1/cars/c1")["version"]
+        self.c.json("PATCH", "/api/v1/cars/c1", {"version": v, "name": "Rosie <&> \"Y\""})
+        try:
+            d = self.c.get("/api/v1/cars/c1/drives?limit=2")["items"][1]["id"]
+            st, _, raw = self.c.request("GET", f"/api/v1/cars/c1/drives/{d}/track?format=gpx")
+            self.assertEqual(st, 200)
+            doc = xml.dom.minidom.parseString(raw)
+            name = doc.getElementsByTagName("trk")[0].getElementsByTagName("name")[0].firstChild.data
+            self.assertTrue(name.startswith('Rosie <&> "Y"'), name)
+        finally:
+            v = self.c.get("/api/v1/cars/c1")["version"]
+            self.c.json("PATCH", "/api/v1/cars/c1", {"version": v, "name": "Comet"})

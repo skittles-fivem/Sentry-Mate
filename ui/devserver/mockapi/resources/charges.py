@@ -245,7 +245,7 @@ def _stats_rows(req):
             x = cached_charge_row(req, h, c)
             if min_dur is not None and x["charging_ms"] < min_dur * MIN:
                 continue
-            x["_tz"] = h.car.time_zone
+            x["_tz"] = req.tz(h.car.id)
             rows.append(x)
     return car_ids, a, b, rows
 

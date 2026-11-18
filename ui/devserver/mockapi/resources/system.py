@@ -379,8 +379,8 @@ def _day_bytes(h, d, tz, kind, base, known, awake):
 
 def car_storage_days(req, h):
     """[(date, source, {kind: bytes})] for every local day of a car's history that has data."""
-    tz = h.car.time_zone
-    key = (derive.started(h, req.now),)
+    tz = req.tz(h.car.id)
+    key = (derive.started(h, req.now), tz)
     return derive.memo(req.app, f"storage:{h.car.id}", key, lambda: _storage_days(h, tz, req.now))
 
 

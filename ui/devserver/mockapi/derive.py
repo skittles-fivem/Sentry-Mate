@@ -101,7 +101,7 @@ def _build_visits(app, h, now):
     cur = None
     prev_drive = None
     shadow_of = {getattr(s, "tm_copy_of", None): s.id for s in h.shadow}
-    tz = h.car.time_zone
+    tz = app.store.car_meta(h.car.id)["time_zone"]
     for s in h.segs:
         if s.start > now:
             break

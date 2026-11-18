@@ -212,7 +212,7 @@ def get_track(req):
         parts = out
     name = f"drive-{d.id}"
     if fmt == "gpx":
-        return Response(200, _gpx(h, d, parts, ext), "application/gpx+xml; charset=utf-8",
+        return Response(200, _gpx(req.store.car_meta(req.car)["name"], d, parts, ext), "application/gpx+xml; charset=utf-8",
                         {"Content-Disposition": f'attachment; filename="{name}.gpx"'})
     if req.csv or fmt == "csv":
         req.csv = True
@@ -240,13 +240,13 @@ def _json(obj):
     return json_bytes(obj)
 
 
-def _gpx(h, d, parts, ext):
+def _gpx(car_name, d, parts, ext):
     from xml.sax.saxutils import escape
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
              '<gpx version="1.1" creator="Sentry Mate" xmlns="http://www.topografix.com/GPX/1/1" '
              'xmlns:sm="https://sentry-mate.invalid/gpx/1">',
-             f"<metadata><name>{escape(h.car.name)}: drive {d.id}</name><time>{iso_utc(d.start)}</time></metadata>",
-             f"<trk><name>{escape(h.car.name)} {iso_utc(d.start)}</name>"]
+             f"<metadata><name>{escape(car_name)}: drive {d.id}</name><time>{iso_utc(d.start)}</time></metadata>",
+             f"<trk><name>{escape(car_name)} {iso_utc(d.start)}</name>"]
     for p in parts:
         lines.append("<trkseg>")
         for q in p:
