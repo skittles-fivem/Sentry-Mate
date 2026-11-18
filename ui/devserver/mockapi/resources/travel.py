@@ -139,11 +139,14 @@ def summary(req):
                 cost[x["cost"]["currency"]] = cost.get(x["cost"]["currency"], 0.0) + x["cost"]["amount"]
             else:
                 unpriced += 1
+    first = min(vs, key=lambda v: v["arrived_ms"], default=None)
+    last = max(vs, key=lambda v: v["left_ms"] or req.now, default=None)
     return {
         "cars": car_ids, "visits": len(vs), "places": len(places), "cities": len(cities), "regions": len(regions),
         "countries": len(countries), "days": len(days),
-        "first_ms": min((v["arrived_ms"] for v in vs), default=None),
-        "last_ms": max(((v["left_ms"] or req.now) for v in vs), default=None),
+        "first_ms": first["arrived_ms"] if first else None,
+        "last_ms": (last["left_ms"] or req.now) if last else None,
+        "first_car": first["car"] if first else None, "last_car": last["car"] if last else None,
         "unnamed_stops": unnamed, "distance_km": r(dist, 3), "energy_added_kwh": r(added, 3),
         "energy_grid_kwh": r(grid_e, 3),
         "efficiency": {"value": r(100 * added_g / grid_e, 1) if grid_e else None, "charges_counted": counted},
@@ -189,7 +192,7 @@ def grouped(req, level):
             else:
                 lab = a.get("country") or a.get("country_code")
             g = groups[k] = {"key": k, "label": lab, "_lat": 0.0, "_lon": 0.0, "visits": 0, "_places": set(),
-                             "_days": set(), "dwell_ms": 0, "first_ms": None, "last_ms": None, "_cars": set(),
+                             "_days": set(), "dwell_ms": 0, "first_ms": None, "last_ms": None, "first_car": None, "last_car": None, "_cars": set(),
                              "locality": a.get("locality") if level in ("places", "cities") else None,
                              "region": a.get("region") if level != "countries" else None,
                              "country_code": a.get("country_code"), "country": a.get("country")}
@@ -205,8 +208,10 @@ def grouped(req, level):
             g["_days"].add((v["car"], d))
         g["dwell_ms"] += _dwell(v, f, req.now)
         left = v["left_ms"] if v["left_ms"] is not None else req.now
-        g["first_ms"] = v["arrived_ms"] if g["first_ms"] is None else min(g["first_ms"], v["arrived_ms"])
-        g["last_ms"] = left if g["last_ms"] is None else max(g["last_ms"], left)
+        if g["first_ms"] is None or v["arrived_ms"] < g["first_ms"]:
+            g["first_ms"], g["first_car"] = v["arrived_ms"], v["car"]
+        if g["last_ms"] is None or left > g["last_ms"]:
+            g["last_ms"], g["last_car"] = left, v["car"]
         g["_cars"].add(v["car"])
     rows = []
     for g in groups.values():

@@ -18,7 +18,7 @@
 
 import { h, replace } from '../shared/dom.js';
 import { format, formatMoney } from '../shared/units.js';
-import { formatDate, formatDateTime, formatTime, formatDuration, formatDayKey, dayStart, addDays, periodLabel } from '../shared/time.js';
+import { formatDate, formatDateTime, formatTime, formatDuration, formatDayKey, dayStart, addDays, periodLabel, toIsoZoned } from '../shared/time.js';
 import { formatNumber, compareText, tn } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import * as api from '../shared/api.js';
@@ -28,7 +28,7 @@ import { dataTable } from '../core/table.js';
 import { popover } from '../core/dialog.js';
 import { choice } from '../core/form.js';
 import { makeMap, boundsOf, coordsText } from '../core/map.js';
-import { zoneLabel } from '../core/format.js';
+import { zoneLabel, zoneShort } from '../core/format.js';
 import { placeLink } from '../core/journal.js';
 
 export const id = 'travel';
@@ -82,6 +82,12 @@ export async function mount(ctx) {
   const fileName = (...parts) => csvFilename(fileBase, 'travel', ...parts);
   const day = (ms, rz = tz) => (ms == null ? '—' : formatDate(ms, rz, { now, weekday: false, year: true }));
   const dayTime = (ms, rz = tz) => (ms == null ? '—' : formatDateTime(ms, rz, { now, weekday: false }));
+  // A group's first and last moments belong to one car each (first_car, last_car): shown in that car's zone.
+  const firstTz = (r) => (r && r.first_car ? carTz(r.first_car) : rowTz(r || {}));
+  const lastTz = (r) => (r && r.last_car ? carTz(r.last_car) : rowTz(r || {}));
+  // A date in a car's zone; when the cars' zones differ, the zone is named under it.
+  const dayIn = (ms, rz) => (ms == null ? '—' : zones.length > 1 ? h('span', { class: 'tv-dated' }, day(ms, rz), h('span', { class: 'tv-sub tv-zone' }, zoneShort(rz, ms))) : day(ms, rz));
+  const zonedColumn = (label, key, zoneOf) => ({ label, value: (r) => toIsoZoned(r[key], zoneOf(r)) });
 
   /* ---------------------------------------------------------------- head */
 
@@ -109,10 +115,19 @@ export async function mount(ctx) {
   const queryNow = () => ({ cars: all ? null : asked.join(','), q: f.q || null, place: f.place || null, country: f.country || null, region: f.region || null, city: cityPicked ? city : null });
   const applyFilters = () => { ctx.setQuery(queryNow()); loadAll().catch(() => {}); };
 
+  // The period's edges are in the viewer's zone (ctx.tz); every date and time below is in the zone of the car it
+  // belongs to. Say so whenever the two can differ, so a first stop on the day before the period is no surprise.
+  function zoneWhy() {
+    const own = zoneLabel(ctx.tz);
+    if (zones.length > 1) return `the period runs in ${own}; dates and times are in each car’s own zone, named next to each date`;
+    const z = zones[0] || ctx.tz;
+    if (z === ctx.tz) return `days and times in ${own}`;
+    return `the period runs in ${own}; dates and times are in ${viewCars.length === 1 ? `${carName(viewCars[0])}’s` : 'the cars’'} zone, ${zoneLabel(z)}, so the first stop can fall on the day before`;
+  }
   const periodLine = h('p', { class: 'tv-period', cover: ['locations.filter.time_range', 'visited.filter.time_range'] },
     h('span', { class: 'field-label' }, 'Period'),
-    h('span', { class: 'tv-period-text' }, periodLabel(ctx.period, tz, now)), sep(),
-    h('span', { class: 'tv-period-why' }, zones.length > 1 ? 'days counted in each car’s own time zone' : `days in ${zoneLabel(zones[0] || tz)}`, sep(),
+    h('span', { class: 'tv-period-text' }, periodLabel(ctx.period, ctx.tz, now)), sep(),
+    h('span', { class: 'tv-period-why' }, zoneWhy(), sep(),
       'a stop belongs to the period it began in; time spent is cut at the edges'),
     button('Change the period', { cls: 'button-small', iconName: 'calendar', onclick: () => document.querySelector('.period-trigger')?.click() }));
 
@@ -165,7 +180,7 @@ export async function mount(ctx) {
       { label: markMode === 'cities' ? 'City' : 'Place', value: (r) => r.label }, { label: 'Region', value: (r) => r.region }, { label: 'Country', value: (r) => r.country },
       { label: 'Latitude', value: (r) => r.lat }, { label: 'Longitude', value: (r) => r.lon },
       { label: 'Stops', value: (r) => r.visits }, { label: 'Days', value: (r) => r.days }, { label: 'Places', value: (r) => r.places },
-      { label: 'Time there (h)', value: (r) => Math.round(r.dwell_ms / 36000) / 100 }, timeColumn('First there', 'first_ms', tz), timeColumn('Last there', 'last_ms', tz),
+      { label: 'Time there (h)', value: (r) => Math.round(r.dwell_ms / 36000) / 100 }, zonedColumn('First there', 'first_ms', firstTz), zonedColumn('Last there', 'last_ms', lastTz),
     ]);
   }, null, 'Markers CSV');
   const tracksCsv = csvButton('routes', () => downloadCsv(fileName('routes'), trackRows(), [
@@ -239,11 +254,29 @@ export async function mount(ctx) {
   let savedPlaces = null;
   let data = { summary: null, countries: { items: [] }, cities: { items: [] }, regions: { items: [] }, places: { items: [] } };
 
+  // Every drive's route, fetched with the figures so a drive that ends while the page is open is drawn too.
+  let tracks = [];
+  let tracksNote = null;
+  async function loadTracks() {
+    try {
+      let r;
+      try { r = await ctx.api.get('tracks', { cars: carsParam, ...ctx.params, max_points: 30000 }); } catch (err) {
+        if (!(err && err.status === 400)) throw err;
+        r = await ctx.api.get('tracks', { cars: carsParam, ...ctx.params, max_points: 200000 });
+      }
+      const list = (r.drives || []).map((d) => ({ car: d.car, drive: d.drive, source: d.source, t: d.t_ms, coords: d.lon.map((x, i) => [x, d.lat[i]]), acc: d.accuracy_m }))
+        .map((d) => ({ ...d, coords: d.coords.filter((c) => c[0] != null && c[1] != null) })).filter((d) => d.coords.length > 1);
+      return { list, note: `${tn(list.length, '{n} drive', '{n} drives')}, simplified on the server to ${formatNumber(r.points || 0)} points` };
+    } catch (err) {
+      return { list: null, note: err && err.status === 400 ? 'Too many drives in this period to draw their routes; choose a shorter period. The markers still show every stop.' : 'The routes could not be loaded; the markers still show every stop.' };
+    }
+  }
+
   let gen = 0;
   async function loadAll(first = false) {
     const my = ++gen;
     const narrowed = f.country || f.region;
-    const [sumR, coR, ciR, reR, plR, savedR, coOptR, reOptR, perCarR] = await Promise.allSettled([
+    const [sumR, coR, ciR, reR, plR, savedR, coOptR, reOptR, perCarR, trR] = await Promise.allSettled([
       ctx.api.get('visits/summary', params()),
       allRows('visits/countries', params()),
       allRows('visits/cities', params()),
@@ -253,6 +286,7 @@ export async function mount(ctx) {
       narrowed ? allRows('visits/countries', params({ country: null, region: null })) : null,
       f.region ? allRows('visits/regions', params({ region: null })) : null,
       multi ? Promise.allSettled(viewCars.slice(0, MAX_CAR_ROWS).map((cid) => ctx.api.get('visits/summary', params({ cars: cid })))) : null,
+      loadTracks(),
     ]);
     if (my !== gen || !ctx.alive()) return;
     if (sumR.status === 'rejected') {
@@ -261,6 +295,12 @@ export async function mount(ctx) {
       return;
     }
     if (savedR.status === 'fulfilled') savedPlaces = savedR.value;
+    if (trR.status === 'fulfilled') {
+      // A failed reload keeps the routes already drawn; the note says they could not be loaded again.
+      if (trR.value.list) tracks = trR.value.list;
+      tracksNote = trR.value.note;
+      drawRoutes();
+    }
     const ok = (r) => (r.status === 'fulfilled' ? r.value : null);
     data = {
       summary: sumR.value,
@@ -310,6 +350,11 @@ export async function mount(ctx) {
 
   function drawCityLine() {
     const row = data.cities.items.find((c) => c.key === city);
+    if (data.cities.error && !city) {
+      replace(cityLine, h('span', { class: 'field-label' }, 'City for the day list'), ' ', h('span', { class: 'tv-lost-text' }, 'not loaded: the city list could not be loaded.'), ' ',
+        button('Try again', { cls: 'button-small', iconName: 'reset', onclick: () => loadAll().catch(() => {}) }));
+      return;
+    }
     if (!city) { replace(cityLine, h('span', { class: 'field-label' }, 'City for the day list'), ' No city in the period yet.'); return; }
     replace(cityLine, h('span', { class: 'field-label' }, 'City for the day list'), ' ',
       h('b', null, row ? row.label : cityOfKey(city)), row ? [' ', h('span', { class: 'tv-city-sub' }, [row.region, row.country].filter(Boolean).join(', '))] : null,
@@ -333,24 +378,31 @@ export async function mount(ctx) {
     const why = 'no stop in the period';
     const cost = moneyText(s.cost_by_currency);
     const eff = s.efficiency || {};
+    const notNarrowed = narrowed ? ' (the place filters narrow stops only, not charges)' : '';
     const driveNote = narrowed ? 'every drive of these cars in the period (the place filters narrow stops only)' : 'every drive of these cars in the period';
+    const fz = firstTz(s), lz = lastTz(s);
+    const whenNote = (ms, rz, cid) => [formatTime(ms, rz), ' ', zoneShort(rz, ms), multi && cid ? [sep(), carName(cid)] : null];
+    const unpriced = s.charges_without_cost ? tn(s.charges_without_cost, '{n} charge', '{n} charges') : '';
+    const costNote = cost
+      ? [mixed(s.cost_by_currency || []) ? 'each currency kept apart' : 'as charged', unpriced ? `; ${unpriced} without a cost left out` : '', notNarrowed]
+      : unpriced ? [`${unpriced}, none with a cost`, notNarrowed] : null;
     replace(figsBox,
       h('div', { class: 'figs tv-figs' },
         figure('Stops', q(s.visits ?? 0, 'count'), 'from arriving to leaving'),
-        figure('Places', q(none ? null : s.places, 'count', { why }), s.unnamed_stops ? `${tn(s.unnamed_stops, '{n} stop', '{n} stops')} at no saved place` : 'every stop was at a saved place', { cover: 'locations.stat.addresses' }),
+        figure('Places', q(none ? null : s.places, 'count', { why }), none ? null : s.unnamed_stops ? `${tn(s.unnamed_stops, '{n} stop', '{n} stops')} at no saved place` : 'every stop was at a saved place', { cover: 'locations.stat.addresses' }),
         figure('Cities', q(none ? null : s.cities, 'count', { why }), 'country, region and city together, so namesakes stay apart', { cover: ['locations.stat.cities', 'visited.stat.cities'] }),
         figure('Regions', q(none ? null : s.regions, 'count', { why }), 'states, provinces or the like', { cover: 'locations.stat.states' }),
         figure('Countries', q(none ? null : s.countries, 'count', { why }), 'by country code', { cover: ['locations.stat.countries', 'visited.stat.countries'] }),
         figure('Days out', q(none ? null : s.days, 'count', { why }), multi ? 'calendar days with a stop, counted per car in its own zone' : 'calendar days with a stop', { cover: 'visited.stat.days' }),
-        figure('First stop', none ? q(null, 'count', { why }) : day(s.first_ms), none ? null : formatTime(s.first_ms, tz), { cover: 'visited.stat.first_visit' }),
-        figure('Last stop', none ? q(null, 'count', { why }) : day(s.last_ms), none ? null : s.last_ms >= now - 60000 ? 'still there now' : formatTime(s.last_ms, tz), { cover: 'visited.stat.last_visit' })),
+        figure('First stop', none ? q(null, 'count', { why }) : day(s.first_ms, fz), none ? null : whenNote(s.first_ms, fz, s.first_car), { cover: 'visited.stat.first_visit' }),
+        figure('Last stop', none ? q(null, 'count', { why }) : day(s.last_ms, lz), none ? null : s.last_ms >= now - 60000 ? ['still there now', multi && s.last_car ? [sep(), carName(s.last_car)] : null] : whenNote(s.last_ms, lz, s.last_car), { cover: 'visited.stat.last_visit' })),
       h('div', { class: 'figs tv-figs tv-figs-2' },
         figure('Distance', q(s.distance_km, 'distance', { why: 'nothing driven' }), driveNote, { cover: 'visited.stat.distance' }),
-        figure('Energy added', q(s.energy_added_kwh, 'energy', { why: 'no charge' }), 'into the pack, over every charge in the period', { cover: 'visited.stat.energy_added' }),
-        figure('Energy drawn', q(s.energy_grid_kwh || null, 'energy', { why: 'no charge with a meter reading' }), eff.charges_counted ? `from the grid, over ${tn(eff.charges_counted, '{n} charge', '{n} charges')} with a meter reading` : 'from the grid; fast chargers send no meter reading', { cover: 'visited.stat.energy_drawn' }),
-        figure('Charging efficiency', q(eff.value, 'percent', { why: 'needs a charge with a meter reading' }), eff.value != null ? 'added ÷ drawn, over those same charges only' : null, { cover: 'visited.stat.charging_efficiency' }),
+        figure('Energy added', q(s.energy_added_kwh, 'energy', { why: 'no charge' }), `into the pack, over every charge in the period${notNarrowed}`, { cover: 'visited.stat.energy_added' }),
+        figure('Energy drawn', q(s.energy_grid_kwh || null, 'energy', { why: 'no charge with a meter reading' }), (eff.charges_counted ? `from the grid, over ${tn(eff.charges_counted, '{n} charge', '{n} charges')} with a meter reading` : 'from the grid; fast chargers send no meter reading') + notNarrowed, { cover: 'visited.stat.energy_drawn' }),
+        figure('Charging efficiency', q(eff.value, 'percent', { why: 'needs a charge with a meter reading' }), eff.value != null ? `added ÷ drawn, over those same charges only${notNarrowed}` : null, { cover: 'visited.stat.charging_efficiency' }),
         figure('Charging cost', cost ? h('span', { class: 'tv-money' }, cost) : q(null, 'money', { why: 'no priced charge' }),
-          [mixed(s.cost_by_currency || []) ? 'each currency kept apart' : 'as charged', s.charges_without_cost ? `; ${tn(s.charges_without_cost, '{n} charge', '{n} charges')} without a cost left out` : ''], { cover: 'visited.stat.charging_cost' })));
+          costNote, { cover: 'visited.stat.charging_cost' })));
   }
 
   function drawByCar(list) {
@@ -366,14 +418,14 @@ export async function mount(ctx) {
         { key: 'cities', label: 'Cities', num: true, sort: true, value: (r) => r.s?.cities, cell: (r) => (r.s ? q(r.s.cities, 'count') : '—') },
         { key: 'countries', label: 'Countries', num: true, sort: true, value: (r) => r.s?.countries, cell: (r) => (r.s ? q(r.s.countries, 'count') : '—') },
         { key: 'days', label: 'Days out', num: true, sort: true, value: (r) => r.s?.days, cell: (r) => (r.s ? q(r.s.days, 'count') : '—') },
-        { key: 'first', label: 'First stop', sort: true, value: (r) => r.s?.first_ms, cell: (r) => (r.s?.first_ms ? day(r.s.first_ms, carTz(r.car)) : '—') },
-        { key: 'last', label: 'Last stop', sort: true, value: (r) => r.s?.last_ms, cell: (r) => (r.s?.last_ms ? day(r.s.last_ms, carTz(r.car)) : '—') },
+        { key: 'first', label: 'First stop', sort: true, value: (r) => r.s?.first_ms, cell: (r) => (r.s?.first_ms ? dayIn(r.s.first_ms, carTz(r.car)) : '—') },
+        { key: 'last', label: 'Last stop', sort: true, value: (r) => r.s?.last_ms, cell: (r) => (r.s?.last_ms ? dayIn(r.s.last_ms, carTz(r.car)) : '—') },
         { key: 'dist', label: 'Distance', num: true, sort: true, value: (r) => r.s?.distance_km, cell: (r) => (r.s ? q(r.s.distance_km, 'distance') : '—') },
       ],
       csv: { filename: fileName('per car'), columns: [
         { label: 'Car', value: (r) => carName(r.car) }, { label: 'Stops', value: (r) => r.s?.visits }, { label: 'Places', value: (r) => r.s?.places },
         { label: 'Cities', value: (r) => r.s?.cities }, { label: 'Regions', value: (r) => r.s?.regions }, { label: 'Countries', value: (r) => r.s?.countries },
-        { label: 'Days out', value: (r) => r.s?.days }, timeColumn('First stop', (r) => r.s?.first_ms, tz), timeColumn('Last stop', (r) => r.s?.last_ms, tz),
+        { label: 'Days out', value: (r) => r.s?.days }, { label: 'First stop', value: (r) => toIsoZoned(r.s?.first_ms, carTz(r.car)) }, { label: 'Last stop', value: (r) => toIsoZoned(r.s?.last_ms, carTz(r.car)) },
         column('Distance', (r) => r.s?.distance_km, 'distance', { digits: 1 }),
       ] },
       cover: 'visited.section.car_header', cls: 'tv-bycar',
@@ -388,6 +440,8 @@ export async function mount(ctx) {
     const rows = data.countries.items;
     if (data.countries.error) { replace(countriesBox, errorView(data.countries.error, { retry: () => loadAll(), eyebrow: 'Could not load the countries' })); return; }
     const citiesIn = new Map();
+    const citiesLost = !!data.cities.error;
+    const cityCount = (r) => (citiesLost ? null : citiesIn.get(r.country_code || '-') || 0);
     for (const c of data.cities.items) citiesIn.set(c.country_code || '-', (citiesIn.get(c.country_code || '-') || 0) + 1);
     const t = dataTable(ctx, {
       rows, label: 'Countries', itemName: ['country', 'countries'], sort: { key: 'days', dir: 'desc' },
@@ -395,23 +449,23 @@ export async function mount(ctx) {
       columns: [
         { key: 'country', label: 'Country', th: true, sort: true, value: (r) => r.label, cover: 'visited.countries.country',
           cell: (r) => h('span', { class: 'cell-main' }, r.label || r.country_code || 'Unknown country', r.country_code ? h('span', { class: 'tv-code' }, r.country_code) : null) },
-        { key: 'cities', label: 'Cities', num: true, sort: true, value: (r) => citiesIn.get(r.country_code || '-') || 0, cover: 'visited.countries.cities', cell: (r) => q(citiesIn.get(r.country_code || '-') || 0, 'count') },
+        { key: 'cities', label: 'Cities', num: true, sort: true, value: cityCount, cover: 'visited.countries.cities', cell: (r) => (citiesLost ? h('span', { class: 'tv-sub', title: 'The city list could not be loaded; see the note above the table.' }, 'not loaded') : q(cityCount(r), 'count')) },
         { key: 'visits', label: 'Stops', num: true, sort: true, cell: (r) => q(r.visits, 'count') },
         { key: 'days', label: 'Days', num: true, sort: true, cover: 'visited.countries.days', cell: (r) => q(r.days, 'count') },
         { key: 'dwell_ms', label: 'Time there', num: true, sort: true, cell: (r) => formatDuration(r.dwell_ms) },
-        { key: 'first_ms', label: 'First', sort: true, cover: 'visited.countries.first_visit', cell: (r) => day(r.first_ms, rowTz(r)) },
-        { key: 'last_ms', label: 'Last', sort: true, cover: 'visited.countries.last_visit', cell: (r) => day(r.last_ms, rowTz(r)) },
+        { key: 'first_ms', label: 'First', sort: true, cover: 'visited.countries.first_visit', cell: (r) => dayIn(r.first_ms, firstTz(r)) },
+        { key: 'last_ms', label: 'Last', sort: true, cover: 'visited.countries.last_visit', cell: (r) => dayIn(r.last_ms, lastTz(r)) },
         { key: 'only', label: 'Narrow', cell: (r) => (r.country_code && f.country !== r.country_code ? h('button', { type: 'button', class: 'tv-row-link', onclick: () => { f.country = r.country_code; f.region = ''; applyFilters(); } }, 'Only here') : f.country === r.country_code ? h('span', { class: 'tv-sub' }, 'filtered') : null) },
       ],
       csv: { filename: fileName('countries'), columns: [
-        { label: 'Country', value: (r) => r.label }, { label: 'Country code', value: (r) => r.country_code }, { label: 'Cities', value: (r) => citiesIn.get(r.country_code || '-') || 0 },
+        { label: 'Country', value: (r) => r.label }, { label: 'Country code', value: (r) => r.country_code }, { label: 'Cities', value: cityCount },
         { label: 'Stops', value: (r) => r.visits }, { label: 'Places', value: (r) => r.places }, { label: 'Days', value: (r) => r.days },
-        { label: 'Time there (h)', value: (r) => Math.round(r.dwell_ms / 36000) / 100 }, timeColumn('First', 'first_ms', tz), timeColumn('Last', 'last_ms', tz),
+        { label: 'Time there (h)', value: (r) => Math.round(r.dwell_ms / 36000) / 100 }, zonedColumn('First', 'first_ms', firstTz), zonedColumn('Last', 'last_ms', lastTz),
         { label: 'Cars', value: (r) => (r.cars || []).map(carName).join('; ') },
       ] },
       cls: 'tv-countries-table',
     });
-    replace(countriesBox, t.el);
+    replace(countriesBox, citiesLost ? h('p', { class: 'note tv-lost' }, icon('info'), 'The city list could not be loaded, so the Cities column is left blank.', button('Try again', { cls: 'button-small', iconName: 'reset', onclick: () => loadAll().catch(() => {}) })) : null, t.el);
     t.load();
   }
 
@@ -427,7 +481,13 @@ export async function mount(ctx) {
     const pick = choice({ label: 'Rank by', name: 'travel-rank', value: rankBy, options: RANK_BY.map(([k, t]) => [k, t]), onchange: (v) => { rankBy = v; drawRanks(); } });
     const why = RANK_BY.find((x) => x[0] === rankBy)[2];
     const top = (list) => [...list].sort((a, b) => (b[rankBy] - a[rankBy]) || compareText(a.label || '', b.label || '')).slice(0, 10);
-    const chart = (name, list, cls, coverIds, sub) => {
+    const chart = (name, src, cls, coverIds, sub) => {
+      if (src.error) {
+        return h('figure', { class: ['tv-rank', cls], cover: coverIds },
+          h('figcaption', { class: 'tv-rank-head' }, h('span', { class: 'tv-rank-name' }, name)),
+          errorView(src.error, { retry: () => loadAll().catch(() => {}), eyebrow: `Could not load the ${name.toLowerCase()}`, title: `The ${name === 'Cities' ? 'city' : 'region'} list could not be loaded.`, home: false, cls: 'tv-rank-error' }));
+      }
+      const list = src.items;
       const rows = top(list).map((r, i) => ({ ...r, rank: i + 1 }));
       const max = Math.max(1, ...rows.map((r) => r[rankBy] || 0));
       const valueText = (r) => (rankBy === 'dwell_ms' ? formatDuration(r.dwell_ms) : formatNumber(r[rankBy]));
@@ -454,10 +514,11 @@ export async function mount(ctx) {
     replace(ranksBox,
       h('div', { class: 'tv-rank-tools' }, pick, h('p', { class: 'note tv-rank-why' }, `Ranked by ${why}.`)),
       h('div', { class: 'tv-rank-pair' },
-        chart('Cities', data.cities.items, 'tv-rank-cities', 'locations.chart.top_cities', (r) => r.country_code || ''),
-        chart('Regions', data.regions.items, 'tv-rank-regions', 'locations.chart.top_regions', (r) => r.country_code || '')),
+        chart('Cities', data.cities, 'tv-rank-cities', 'locations.chart.top_cities', (r) => r.country_code || ''),
+        chart('Regions', data.regions, 'tv-rank-regions', 'locations.chart.top_regions', (r) => r.country_code || '')),
       h('p', { class: 'note tv-rank-key', cover: 'locations.chart.rank_shading' },
-        h('span', { class: 'tv-key-chip tv-tier-1' }), h('span', { class: 'tv-key-chip tv-tier-2' }), h('span', { class: 'tv-key-chip tv-tier-3' }), h('span', { class: 'tv-key-chip tv-tier-4' }),
+        [['tv-key-cities', 'Cities'], ['tv-key-regions', 'Regions']].map(([c, n]) => h('span', { class: ['tv-key-set', c] },
+          [1, 2, 3, 4].map((i) => h('span', { class: ['tv-key-chip', `tv-tier-${i}`], 'aria-hidden': 'true' })), ` ${n}`)),
         ' Shade follows the bar: darkest for three quarters of the top count or more, then 40 %, 15 % and below. Each bar runs from zero to the top count and prints its value.'));
   }
 
@@ -467,7 +528,7 @@ export async function mount(ctx) {
   const tableFilter = { text: '', country: '', region: '' };
   function drawCities() {
     const src = level === 'cities' ? data.cities : data.regions;
-    if (src.error) { replace(citiesBox, errorView(src.error, { retry: () => loadAll(), eyebrow: 'Could not load the list' })); return; }
+    if (src.error) { replace(citiesBox, errorView(src.error, { retry: () => loadAll(), eyebrow: 'Could not load the list', title: `The ${level === 'cities' ? 'city' : 'region'} list could not be loaded.`, home: false })); return; }
     const levelChoice = choice({ label: 'Show', name: 'travel-level', value: level, options: [['cities', 'Cities'], ['regions', 'Regions']], onchange: (v) => { level = v; drawCities(); } });
     const findIn = h('input', { class: 'field-input', type: 'search', id: 'tv-find', placeholder: 'Find in this list', value: tableFilter.text, autocomplete: 'off' });
     const countries = [...new Set(src.items.map((r) => r.country).filter(Boolean))].sort(compareText);
@@ -492,8 +553,8 @@ export async function mount(ctx) {
       { key: 'places', label: 'Places', num: true, sort: true, cell: (r) => q(r.places, 'count') },
       { key: 'days', label: 'Days', num: true, sort: true, cover: level === 'cities' ? 'visited.cities.days' : null, cell: (r) => q(r.days, 'count') },
       { key: 'dwell_ms', label: 'Time there', num: true, sort: true, cell: (r) => formatDuration(r.dwell_ms) },
-      { key: 'first_ms', label: 'First', sort: true, cover: level === 'cities' ? 'visited.cities.first_visit' : null, cell: (r) => day(r.first_ms, rowTz(r)) },
-      { key: 'last_ms', label: 'Last', sort: true, cover: level === 'cities' ? 'visited.cities.last_visit' : null, cell: (r) => day(r.last_ms, rowTz(r)) },
+      { key: 'first_ms', label: 'First', sort: true, cover: level === 'cities' ? 'visited.cities.first_visit' : null, cell: (r) => dayIn(r.first_ms, firstTz(r)) },
+      { key: 'last_ms', label: 'Last', sort: true, cover: level === 'cities' ? 'visited.cities.last_visit' : null, cell: (r) => dayIn(r.last_ms, lastTz(r)) },
       multi ? { key: 'cars', label: 'Cars', value: (r) => (r.cars || []).length, cell: (r) => carsCell(r.cars) } : null,
     ].filter(Boolean);
     const t = dataTable(ctx, {
@@ -505,7 +566,7 @@ export async function mount(ctx) {
         { label: level === 'cities' ? 'City' : 'Region', value: (r) => r.label }, level === 'cities' ? { label: 'Region', value: (r) => r.region } : null,
         { label: 'Country', value: (r) => r.country }, { label: 'Country code', value: (r) => r.country_code }, { label: 'Key', value: (r) => r.key },
         { label: 'Stops', value: (r) => r.visits }, { label: 'Places', value: (r) => r.places }, { label: 'Days', value: (r) => r.days },
-        { label: 'Time there (h)', value: (r) => Math.round(r.dwell_ms / 36000) / 100 }, timeColumn('First', 'first_ms', tz), timeColumn('Last', 'last_ms', tz),
+        { label: 'Time there (h)', value: (r) => Math.round(r.dwell_ms / 36000) / 100 }, zonedColumn('First', 'first_ms', firstTz), zonedColumn('Last', 'last_ms', lastTz),
         { label: 'Latitude', value: (r) => r.lat }, { label: 'Longitude', value: (r) => r.lon }, { label: 'Cars', value: (r) => (r.cars || []).map(carName).join('; ') },
       ].filter(Boolean) },
       cls: 'tv-cities-table',
@@ -530,7 +591,8 @@ export async function mount(ctx) {
 
   async function drawDays() {
     const row = data.cities.items.find((c) => c.key === city);
-    replace(daysTitle, city ? `${row ? row.label : cityOfKey(city)}${row && row.region ? `, ${row.region}` : ''}` : 'pick a city');
+    replace(daysTitle, city ? `${row ? row.label : cityOfKey(city)}${row && row.region ? `, ${row.region}` : ''}` : data.cities.error ? 'the city list is not loaded' : 'pick a city');
+    if (!city && data.cities.error) { replace(daysBox, errorView(data.cities.error, { retry: () => loadAll(), eyebrow: 'Could not load the cities', title: 'The city list could not be loaded, so no city is chosen.', home: false })); return; }
     if (!city) { replace(daysBox, emptyStops()); return; }
     const dayLink = (r, page) => {
       const rz = rowTz(r);
@@ -585,7 +647,7 @@ export async function mount(ctx) {
         { key: 'visits', label: 'Stops', num: true, sort: true, cell: (r) => q(r.visits, 'count') },
         { key: 'days', label: 'Days', num: true, sort: true, cell: (r) => q(r.days, 'count') },
         { key: 'dwell_ms', label: 'Time there', num: true, sort: true, cover: 'locations.geofences.time', cell: (r) => formatDuration(r.dwell_ms) },
-        { key: 'last_ms', label: 'Last there', sort: true, cover: 'locations.addresses.updated_at', hint: 'Addresses are looked up live from the position, so they are always current; this is when a car was last there.', cell: (r) => day(r.last_ms, rowTz(r)) },
+        { key: 'last_ms', label: 'Last there', sort: true, cover: 'locations.addresses.updated_at', hint: 'Addresses are looked up live from the position, so they are always current; this is when a car was last there.', cell: (r) => dayIn(r.last_ms, lastTz(r)) },
         multi ? { key: 'cars', label: 'Cars', value: (r) => (r.cars || []).length, cell: (r) => carsCell(r.cars) } : null,
       ].filter(Boolean),
       csv: { filename: fileName('places'), columns: [
@@ -593,7 +655,7 @@ export async function mount(ctx) {
         { label: 'Neighbourhood', value: (r) => r.neighbourhood }, { label: 'City', value: (r) => r.locality }, { label: 'Region', value: (r) => r.region },
         { label: 'Country', value: (r) => r.country }, { label: 'Latitude', value: (r) => r.lat }, { label: 'Longitude', value: (r) => r.lon },
         { label: 'Stops', value: (r) => r.visits }, { label: 'Days', value: (r) => r.days }, { label: 'Time there (h)', value: (r) => Math.round(r.dwell_ms / 36000) / 100 },
-        timeColumn('First there', 'first_ms', tz), timeColumn('Last there', 'last_ms', tz), { label: 'Cars', value: (r) => (r.cars || []).map(carName).join('; ') },
+        zonedColumn('First there', 'first_ms', firstTz), zonedColumn('Last there', 'last_ms', lastTz), { label: 'Cars', value: (r) => (r.cars || []).map(carName).join('; ') },
       ] },
       cls: 'tv-places-table',
     });
@@ -630,22 +692,27 @@ export async function mount(ctx) {
 
   /* ---------------------------------------------------------------- the map */
 
-  let tracks = [];
-  let tracksNote = null;
-  try {
-    let r;
-    try { r = await ctx.api.get('tracks', { cars: carsParam, ...ctx.params, max_points: 30000 }); } catch (err) {
-      if (!(err && err.status === 400)) throw err;
-      r = await ctx.api.get('tracks', { cars: carsParam, ...ctx.params, max_points: 200000 });
-    }
-    tracks = (r.drives || []).map((d) => ({ car: d.car, drive: d.drive, source: d.source, t: d.t_ms, coords: d.lon.map((x, i) => [x, d.lat[i]]), acc: d.accuracy_m }))
-      .map((d) => ({ ...d, coords: d.coords.filter((c) => c[0] != null && c[1] != null) })).filter((d) => d.coords.length > 1);
-    tracksNote = `${tn(tracks.length, '{n} drive', '{n} drives')}, simplified on the server to ${formatNumber(r.points || 0)} points`;
-  } catch (err) {
-    if (ctx.signal.aborted) return {};
-    tracksNote = err && err.status === 400 ? 'Too many drives in this period to draw their routes; choose a shorter period. The markers still show every stop.' : 'The routes could not be loaded; the markers still show every stop.';
-  }
   const trackRows = () => tracks.flatMap((d) => d.coords.map((c, i) => ({ car: d.car, drive: d.drive, t: d.t[i], lat: c[1], lon: c[0], acc: d.acc ? d.acc[i] : null })));
+
+  // One GeoJSON source per car colour; a reload replaces the lines with setData.
+  let mapLoaded = false;
+  const routeSources = new Set();
+  function drawRoutes() {
+    if (!m || !mapLoaded) return;
+    const byCar = new Map();
+    for (const d of tracks) { const k = colourOf.get(d.car) ?? 'x'; if (!byCar.has(k)) byCar.set(k, []); byCar.get(k).push(d); }
+    const fc = (list) => ({ type: 'FeatureCollection', features: list.map((d) => ({ type: 'Feature', properties: { drive: d.drive }, geometry: { type: 'LineString', coordinates: d.coords } })) });
+    for (const [k, list] of byCar) {
+      const sid = `routes-${k}`;
+      if (routeSources.has(sid)) { m.map.getSource(sid).setData(fc(list)); continue; }
+      routeSources.add(sid);
+      m.map.addSource(sid, { type: 'geojson', data: fc(list) });
+      m.addLine({ id: `${sid}-casing`, source: sid, paint: { 'line-opacity': 0.85 } }, 5, '--paper');
+      m.addLine({ id: `${sid}-line`, source: sid, paint: { 'line-opacity': 0.9 } }, 2.4, k === 'x' ? '--ink-3' : CAR_TOKENS[k]);
+    }
+    const used = new Set([...byCar.keys()].map((k) => `routes-${k}`));
+    for (const sid of routeSources) if (!used.has(sid)) m.map.getSource(sid).setData(fc([]));
+  }
 
   const markRows = () => (markMode === 'cities' ? data.cities.items : data.places.items).filter((r) => r.lat != null && r.lon != null);
   let m = null;
@@ -667,7 +734,6 @@ export async function mount(ctx) {
     replace(readout, h('span', { class: 'readout-idle' }, s ? `${tn(markRows().length, markMode === 'cities' ? '{n} city' : '{n} place', markMode === 'cities' ? '{n} cities' : '{n} places')} on the map. Point at one for its figures.` : ''));
   }
   function showMark(r) {
-    const rz = rowTz(r);
     replace(readout, h('div', { class: 'tv-detail' },
       h('p', { class: 'tv-detail-name' }, r.label || 'Unnamed spot'),
       h('p', { class: 'tv-detail-where' }, [markMode === 'places' ? r.locality : null, r.region, r.country].filter(Boolean).join(', ') || coordsText([r.lon, r.lat])),
@@ -676,8 +742,8 @@ export async function mount(ctx) {
         h('dt', null, 'Stops'), h('dd', null, formatNumber(r.visits)),
         markMode === 'cities' ? [h('dt', null, 'Places'), h('dd', null, formatNumber(r.places))] : null,
         h('dt', null, 'Time there'), h('dd', null, formatDuration(r.dwell_ms)),
-        h('dt', null, 'First'), h('dd', null, day(r.first_ms, rz)),
-        h('dt', null, 'Last'), h('dd', null, day(r.last_ms, rz)),
+        h('dt', null, 'First'), h('dd', null, dayIn(r.first_ms, firstTz(r))),
+        h('dt', null, 'Last'), h('dd', null, dayIn(r.last_ms, lastTz(r))),
         multi ? [h('dt', null, 'Cars'), h('dd', null, (r.cars || []).map(carName).join(', '))] : null,
         h('dt', null, 'Position'), h('dd', null, coordsText([r.lon, r.lat]))),
       h('p', { class: 'tv-detail-act' }, markMode === 'cities' ? 'Choose the ring to list its days.' : r.place ? 'Choose the ring to open the place.' : 'Choose the ring to save this spot as a place.')));
@@ -706,7 +772,8 @@ export async function mount(ctx) {
     }
     idleReadout();
     const capped = markRows().length > MAX_MARKS;
-    replace(mapNote, tracksNote ? `${tracksNote}. ` : null, capped ? `The ${formatNumber(MAX_MARKS)} ${markMode} with the most stops are marked. ` : null,
+    const lost = (markMode === 'cities' ? data.cities : data.places).error;
+    replace(mapNote, tracksNote ? `${tracksNote}. ` : null, lost ? `The ${markMode} could not be loaded, so they are not marked; use Load again. ` : null, capped ? `The ${formatNumber(MAX_MARKS)} ${markMode} with the most stops are marked. ` : null,
       m.source ? (m.source.offline ? 'Map tiles from this server (offline).' : 'Map tiles from the online tile server the owner turned on.') : null);
     if (refit || !framed) {
       const pts = [...rows.map((r) => [r.lon, r.lat]), ...(f.q || f.place || f.country || f.region ? [] : tracks.flatMap((d) => [d.coords[0], d.coords[d.coords.length - 1]]))];
@@ -735,14 +802,8 @@ export async function mount(ctx) {
       await m.loaded;
       if (!ctx.alive()) return {};
       cover(mapBox, 'visited.map.base_map');
-      const byCar = new Map();
-      for (const d of tracks) { const k = colourOf.get(d.car) ?? 'x'; if (!byCar.has(k)) byCar.set(k, []); byCar.get(k).push(d); }
-      for (const [k, list] of byCar) {
-        const sid = `routes-${k}`;
-        m.map.addSource(sid, { type: 'geojson', data: { type: 'FeatureCollection', features: list.map((d) => ({ type: 'Feature', properties: { drive: d.drive }, geometry: { type: 'LineString', coordinates: d.coords } })) } });
-        m.addLine({ id: `${sid}-casing`, source: sid, paint: { 'line-opacity': 0.85 } }, 5, '--paper');
-        m.addLine({ id: `${sid}-line`, source: sid, paint: { 'line-opacity': 0.9 } }, 2.4, k === 'x' ? '--ink-3' : CAR_TOKENS[k]);
-      }
+      mapLoaded = true;
+      drawRoutes();
       framed = true;
       drawMarks();
     }
