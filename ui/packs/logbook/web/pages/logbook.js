@@ -25,6 +25,7 @@ import { dataTable } from '../core/table.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { field, form, choice, switchField } from '../core/form.js';
 import { zoneLabel } from '../core/format.js';
+import { spanHref } from '../core/period.js';
 
 export const id = 'logbook';
 export const css = true;
@@ -164,7 +165,8 @@ export async function mount(ctx) {
 
   const placeName = (pid) => (places.find((p) => p.id === pid) || {}).name || pid || 'anywhere';
   const ruleOf = (rid) => rules.find((r) => r.id === rid);
-  const timelineHref = (a, b) => state.buildUrl('timeline', { car: cid, period: { from: a - 10 * MINUTE, to: b + 10 * MINUTE } });
+  // The window rides as a one-off span (core/period.js), so the shared period, Back and the drive links keep the year.
+  const timelineHref = (a, b) => spanHref('timeline', { car: cid, from: a - 10 * MINUTE, to: b + 10 * MINUTE });
   const driveHref = (r) => state.buildUrl('drive', { car: cid, drive: r.drive, period: ctx.state.period });
 
   function whereCell(name, address) {
