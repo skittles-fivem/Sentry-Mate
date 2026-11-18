@@ -198,6 +198,9 @@ class Contract(ServerCase):
             ("POST", "/api/v1/cars/{car}/upload-tokens", lambda: (None, None, None)),
             ("DELETE", "/api/v1/cars/{car}/upload-tokens/{token}",
              lambda: (self.fill("/api/v1/cars/{car}/upload-tokens/{token}", token=ctx["token"]), None, None)),
+            ("POST", "/api/v1/upload-tokens", lambda: (None, None, None)),
+            ("DELETE", "/api/v1/upload-tokens/{token}",
+             lambda: (self.fill("/api/v1/upload-tokens/{token}", token=ctx["new_token"]), None, None)),
             ("PATCH", "/api/v1/can-keys/{key}", lambda: (None, {"preferred": False}, None)),
             ("PUT", "/api/v1/cars/{car}/drives/{drive}/purpose",
              lambda: (None, {"purpose": "business", "relation": "Contract test", "note": None}, None)),
@@ -292,6 +295,7 @@ class Contract(ServerCase):
             # remember what was made, for the calls that change or remove it
             if m == "POST" and st == 201:
                 key = {"/api/v1/accounts": "account", "/api/v1/cars/{car}/upload-tokens": "token",
+                       "/api/v1/upload-tokens": "new_token",
                        "/api/v1/cars/{car}/purpose-rules": "rule", "/api/v1/trips": "trip",
                        "/api/v1/places": "place", "/api/v1/imports": "import"}.get(pattern)
                 if key:

@@ -455,6 +455,34 @@ def revoke_token(req):
     return dict(t, car=req.car)
 
 
+def list_new_tokens(req):
+    rows = [dict(t, car=None) for t in req.store.new_car_tokens]
+    items, nxt = page(req, rows, key=lambda t: (t["created_ms"], t["id"]), reverse=True)
+    return {"items": items, "next": nxt}
+
+
+def create_new_token(req):
+    st = req.store
+    tok = {"id": st.new_id("t"), "created_ms": req.now, "revoked": False, "key": None, "last_upload_ms": None}
+    with st.lock:
+        st.new_car_tokens.append(tok)
+    st.record(req.account, "token.create", "server", "Made an upload token for a new car.")
+    out = dict(tok, car=None)
+    out["secret"] = "smu_" + secrets.token_urlsafe(24)
+    out["_created"] = True
+    return out
+
+
+def revoke_new_token(req):
+    t = next((x for x in req.store.new_car_tokens if x["id"] == req.params["token"]), None)
+    if t is None:
+        raise not_found("no_such_token", "There is no such upload token waiting for a new car.")
+    with req.store.lock:
+        t["revoked"] = True
+    req.store.record(req.account, "token.revoke", "server", f"Revoked upload token {t['id']} (for a new car).")
+    return dict(t, car=None)
+
+
 def list_keys(req):
     assigned = req.bool_param("assigned")
     st = req.store
@@ -513,6 +541,7 @@ def setup_status(req):
     acc = req.account
     cars = st.visible_car_count(acc)
     toks = [t for c, ts in st.tokens.items() if st.sees(acc, c) for t in ts if not t["revoked"]]
+    toks += [t for t in st.new_car_tokens if not t["revoked"]]
     used = [t["last_upload_ms"] for t in toks if t["last_upload_ms"]]
     first = min((t["created_ms"] for t in toks if t["last_upload_ms"]), default=None)
     waiting = [k for k in st.keys if k["car"] is None]
@@ -543,6 +572,8 @@ def register(router):
     router.add("/api/v1/cars/{car}/upload-tokens", GET=list_tokens, POST=create_token, admin=("GET", "POST"))
     router.add("/api/v1/cars/{car}/upload-tokens/{token}", GET=get_token, DELETE=revoke_token,
                admin=("GET", "DELETE"))
+    router.add("/api/v1/upload-tokens", GET=list_new_tokens, POST=create_new_token, admin=("GET", "POST"))
+    router.add("/api/v1/upload-tokens/{token}", DELETE=revoke_new_token, admin=("DELETE",))
     router.add("/api/v1/can-keys", GET=list_keys, admin=("GET",))
     router.add("/api/v1/can-keys/{key}", PATCH=patch_key, admin=("PATCH",))
     router.add("/api/v1/setup/status", GET=setup_status)

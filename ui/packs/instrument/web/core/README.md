@@ -90,6 +90,7 @@ page that was left cannot change the address any more (`ctx.setQuery` does nothi
 | `onCleanup(fn)`, `on(target, type, fn)`, `every(ms, fn)`, `events(types, fn)` | Clean-up, listeners, timers and live events that end with the page. |
 | `setTitle(...parts)` | The tab title: `setTitle('Drive Nov 15, 12:17 PM')` gives `Drive Nov 15, 12:17 PM · Comet · Sentry Mate`. |
 | `setCrumbs([{ label, href }])` | The breadcrumb in the top bar (the router sets a usual one). |
+| `frame.carChanged(car)` | (`core/frame.js`) After a page renamed a car or changed its time zone: the sidebar car card and the top-bar clock follow at once. |
 | `link(page, params)` | A link that carries the car and period (`state.linkTo`). |
 | `setQuery(patch)` | Puts filters in the address (`null` removes one) without rebuilding the page. |
 | `navigate(href)`, `reload()` | Go somewhere; build this page again (keeps the scroll). |

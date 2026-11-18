@@ -106,6 +106,21 @@ class TokensAndKeys(ServerCase):
         gone = self.c.json("DELETE", f"/api/v1/cars/c1/upload-tokens/{t['id']}")
         self.assertTrue(gone["revoked"])
 
+    def test_new_car_tokens(self):
+        self.assertEqual(self.c.get("/api/v1/upload-tokens")["items"], [])
+        import json
+        st, hd, raw = self.c.request("POST", "/api/v1/upload-tokens")
+        self.assertEqual(st, 201)
+        t = json.loads(raw)
+        self.assertTrue(t["secret"].startswith("smu_"))
+        self.assertIsNone(t["car"])
+        listed = self.c.get("/api/v1/upload-tokens")["items"]
+        self.assertEqual([x["id"] for x in listed], [t["id"]])
+        self.assertNotIn("secret", listed[0])
+        gone = self.c.json("DELETE", f"/api/v1/upload-tokens/{t['id']}")
+        self.assertTrue(gone["revoked"])
+        self.c.error("DELETE", "/api/v1/upload-tokens/nope", 404, "no_such_token")
+
     def test_keys(self):
         waiting = self.c.get("/api/v1/can-keys?assigned=false")["items"]
         self.assertEqual(len(waiting), 1)

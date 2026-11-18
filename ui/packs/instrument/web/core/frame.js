@@ -153,6 +153,15 @@ export function setCrumbs(list) {
   replace(els.crumbs, out);
 }
 
+/** A page changed a car (renamed it, moved its time zone): the sidebar card and the clock follow at once. */
+export function carChanged(car) {
+  if (!car || shown.car?.id !== car.id) return;
+  shown.car = { ...shown.car, ...car };
+  if (car.time_zone) shown.tz = car.time_zone;
+  tickClock();
+  showCarInSidebar(shown.car);
+}
+
 /** The usual breadcrumb for a page: All cars / car / page. */
 export function defaultCrumbs(s, info, car) {
   if (!info) return [{ label: 'Not found' }];

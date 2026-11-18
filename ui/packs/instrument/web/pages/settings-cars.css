@@ -52,6 +52,7 @@
 .sc-range-f { display: flex; flex-direction: column; gap: 0.25rem; }
 .sc-range-f .input { width: 11rem; }
 .sc-range-say { padding-bottom: 0.4375rem; font-size: max(0.78125rem, var(--fs-floor)); }
+.sc-range-say.is-bad { color: var(--warm); }
 .sc-range .btn { margin-bottom: 0.125rem; }
 
 @container page (min-width: 108rem) {

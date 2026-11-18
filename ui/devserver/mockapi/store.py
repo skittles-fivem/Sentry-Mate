@@ -58,6 +58,7 @@ class Store:
         self.car_over = {}  # car id -> {name, time_zone, config: {key: value}, version}
         self.car_settings = {}
         self.tokens = {}  # car id -> [token rows]
+        self.new_car_tokens = []  # upload tokens for a car that has not uploaded yet
         self.keys = []
         self.purposes = {}  # drive id -> {purpose, relation, note, at_ms}
         self.rules = {}  # car id -> [rules]
