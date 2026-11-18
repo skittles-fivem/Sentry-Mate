@@ -122,6 +122,12 @@ class TokensAndKeys(ServerCase):
         self.assertEqual(self.c.get("/api/v1/setup/status")["keys_waiting"], 0)
         self.c.json("PATCH", f"/api/v1/can-keys/{k['key']}", {"car": None})
 
+    def test_keys_of_one_car(self):
+        mine = self.c.get("/api/v1/can-keys?car=c1")["items"]
+        self.assertTrue(mine)
+        self.assertTrue(all(x["car"] == "c1" for x in mine))
+        self.c.error("GET", "/api/v1/can-keys?car=c42", 404, "no_such_car")
+
 
 class EmptyFleet(ServerCase):
     server_args = {"cars": 0}

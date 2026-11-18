@@ -461,6 +461,11 @@ def list_keys(req):
     rows = [k for k in st.keys if (k["car"] is None or st.sees(req.account, k["car"]))]
     if assigned is not None:
         rows = [k for k in rows if (k["car"] is not None) == assigned]
+    car = req.q("car")
+    if car:
+        if not req.ds.exists(car) or not st.sees(req.account, car):
+            raise not_found("no_such_car", "There is no such car.")
+        rows = [k for k in rows if k["car"] == car]
     items, nxt = page(req, rows, key=lambda k: (k["first_seen_ms"], k["key"]), reverse=True)
     return {"items": items, "next": nxt}
 

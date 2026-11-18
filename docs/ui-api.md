@@ -319,3 +319,4 @@ Points this document left open, decided while building the dev server (`ui/devse
 - `/setup/status` adds `fixes: [{ cause: "no_token" | "token_unused" | "key_waiting" | "logs_waiting_trust" | "import_running", link }]`.
 - `/cars/{car}/trip` also lists the `drives` and `charges` it counted.
 - In `/charging-stats`: `heatmap.start` and `heatmap.end` are 7 rows (Monday first) of 24 hours in the car's local time. A run is two or more charges, each starting within a day of the one before. `share_above_80_pct` is the share of charges that ended above 80 %; `share_below_20_pct` of those that started below 20 %.
+- `/can-keys` takes `car=` (the keys tied to that car; an unknown or hidden car gives `404 no_such_car`), so a page lists one car's keys without reading every key.
