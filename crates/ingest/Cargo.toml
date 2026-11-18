@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+gate = { path = "../gate" }
 trust = { path = "../trust" }
 logfmt = { path = "../logfmt" }
 vault = { path = "../vault" }

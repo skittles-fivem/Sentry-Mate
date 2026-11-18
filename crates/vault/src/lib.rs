@@ -17,6 +17,7 @@
 //! What this protects: data on a stolen or copied disk, or a backup. What it can't: a server someone has taken over
 //! while it runs (the key is in memory then). Losing both the key file and the recovery key loses the data, by design.
 
+pub mod chunks;
 pub mod records;
 pub mod stream;
 
@@ -29,6 +30,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, Zeroizing};
 
+pub use chunks::Chunks;
 pub use records::{Records, RecordsReader};
 pub use stream::{OpenReader, SealWriter, is_sealed, plaintext_len};
 
@@ -83,18 +85,49 @@ impl Kdf {
     pub const FAST_FOR_TESTS: Kdf = Kdf { m: 64, t: 1, p: 1 };
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Wrapped {
     nonce: String,
     ct: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct RecoverySlot {
+/// The data key wrapped by the recovery key, as `vault.json` holds it: what opens the data on a new machine. It is
+/// safe to carry (an export's header, a move's claim answer): it opens only with the recovery key, through Argon2id.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct RecoverySlot {
     salt: String,
     kdf: Kdf,
     #[serde(flatten)]
     wrapped: Wrapped,
+}
+
+impl RecoverySlot {
+    /// Its Argon2id settings (a slot from elsewhere is checked against bounds before it is used).
+    pub fn kdf(&self) -> Kdf {
+        self.kdf
+    }
+}
+
+/// A vault's recovery part: the key id and the recovery slot. With the recovery key it gives the data key
+/// ([`RecoveryPart::open`]), with no key file and nothing written.
+#[derive(Clone)]
+pub struct RecoveryPart {
+    pub key_id: String,
+    pub slot: RecoverySlot,
+}
+
+impl RecoveryPart {
+    /// The vault this part belongs to, opened with the recovery key (in memory only: nothing is written).
+    pub fn open(&self, recovery: &str) -> Result<Vault, Error> {
+        let r = decode_recovery(recovery).ok_or(Error::WrongRecoveryKey)?;
+        let salt = B64.decode(&self.slot.salt).map_err(|e| Error::BadVault(e.to_string()))?;
+        let rkek = recovery_kek(&r, &salt, self.slot.kdf)?;
+        let key = unwrap(&rkek, &self.slot.wrapped, RECOVERY_PURPOSE).ok_or(Error::WrongRecoveryKey)?;
+        if key_id(&key) != self.key_id {
+            return Err(Error::WrongRecoveryKey);
+        }
+        Ok(Vault { id: self.key_id.clone(), key })
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -317,6 +350,37 @@ impl Vault {
         Ok(Vault { id: vf.key_id, key })
     }
 
+    /// The recovery part of the vault in `data` (what an export or a move carries, so the data opens elsewhere with
+    /// the same recovery key).
+    pub fn recovery_part(data: &Path) -> Result<RecoveryPart, Error> {
+        let vf = read_vault(data)?;
+        Ok(RecoveryPart { key_id: vf.key_id, slot: vf.recovery })
+    }
+
+    /// Writes this vault somewhere else: a new key file in `keys`, then `data/vault.json` with the data key wrapped
+    /// by it and `part` as its recovery slot (the part must be this vault's). For a new server taking data in (an
+    /// import, a move): the data then opens there with its own key file, and with the same recovery key as before.
+    /// Refuses if `data` has a vault already.
+    pub fn install(&self, data: &Path, keys: &Path, part: &RecoveryPart) -> Result<(), Error> {
+        check_apart(data, keys)?;
+        if part.key_id != self.id {
+            return Err(Error::BadVault("that recovery part belongs to another data key".into()));
+        }
+        if data.join(VAULT_FILE).exists() {
+            return Err(Error::BadVault(format!("there is a vault in {} already", data.display())));
+        }
+        let kek = random::<32>()?;
+        let vf = VaultFile {
+            v: 1,
+            key_id: self.id.clone(),
+            key_file: wrap(&kek, &*self.key, KEY_FILE_PURPOSE)?,
+            recovery: part.slot.clone(),
+        };
+        write_private(&keys.join(KEY_FILE), &*kek)?;
+        write_vault(data, &vf)?;
+        Ok(())
+    }
+
     /// Replaces the recovery key (the old one stops working); the new one is returned once.
     pub fn new_recovery_key(&self, data: &Path, kdf: Kdf) -> Result<RecoveryKey, Error> {
         let mut vf = read_vault(data)?;
@@ -340,6 +404,12 @@ impl Vault {
         // 32 bytes is always a valid HKDF-SHA256 output length
         let _ = hk.expand(purpose, &mut *k);
         k
+    }
+
+    /// Seals and opens the chunks of one long stream, each on its own (see [`crate::chunks`]): for a stream made again from
+    /// any chunk on (an export read again from the middle) or read from any chunk on (an import carrying on).
+    pub fn chunks(&self, label: &str, id: &[u8; 16]) -> Chunks {
+        Chunks::new(self, label, id)
     }
 
     /// A writer that seals what is written to it (call `finish`).

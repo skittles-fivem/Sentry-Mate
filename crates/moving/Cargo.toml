@@ -1,0 +1,28 @@
+[package]
+name = "moving"
+description = "Moving a Sentry Mate data folder to another server: the walk, the export file (snapshot, writer, reader) and the import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+gate = { path = "../gate" }
+vault = { path = "../vault" }
+getrandom = { version = "0.3", features = ["std"] }
+hex = "0.4"
+rustix = { version = "1", features = ["fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+zeroize = "1"
+
+[dev-dependencies]
+bytes = "1"
+ingest = { path = "../ingest" }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

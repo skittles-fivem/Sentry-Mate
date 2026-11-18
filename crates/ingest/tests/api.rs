@@ -469,3 +469,68 @@ async fn a_car_that_cant_be_judged_is_reported_without_its_key() {
         assert!(!l.contains("abcdef123456"), "the car's key is in the server's log: {l}");
     }
 }
+
+/// Uploads go through the data folder's write gate: during a pause (an export's snapshot) they wait, then answer
+/// `503 moving` with `Retry-After`; one that waited while the gate was closed (a move's commit) is refused with the
+/// gate's answer and never answered `2xx`.
+#[tokio::test(flavor = "multi_thread")]
+async fn uploads_wait_at_the_write_gate_and_are_refused_once_it_closes() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let (v, _) = vault::Vault::create(&data, &dir.path().join("keys"), vault::Kdf::FAST_FOR_TESTS).unwrap();
+    let v = Arc::new(v);
+    let tokens = Tokens::open(data.join("tokens.json"), v.clone()).await.unwrap();
+    let (token, _) = tokens.create("Model Y").await.unwrap();
+    let store = Store::with_limits(data.join("can"), v, 0, 200_000, |_| u64::MAX);
+    let gate = gate::Gate::open(&data).unwrap();
+    let wait = std::time::Duration::from_millis(300);
+    let up = Uploads::with_gate(store.clone(), tokens, Judge::new(store), gate.clone(), wait);
+    let send = |bytes: Vec<u8>| {
+        let (up, token) = (up.clone(), token.clone());
+        async move {
+            let sha = hex::encode(Sha256::digest(&bytes));
+            let mut req = Request::builder()
+                .method("POST")
+                .uri(format!("/api/can/logs/{LOG}"))
+                .header("authorization", format!("Bearer {token}"))
+                .header("upload-offset", "0")
+                .header("upload-length", bytes.len().to_string())
+                .header("upload-sha256", sha)
+                .body(Body::from(bytes))
+                .unwrap();
+            req.extensions_mut().insert(Conn { tls: true, ip: IP });
+            let res = router(up).oneshot(req).await.unwrap();
+            let retry = res.headers().get("retry-after").map(|h| h.to_str().unwrap().to_string());
+            let status = res.status();
+            let b = res.into_body().collect().await.unwrap().to_bytes();
+            (status, serde_json::from_slice::<Value>(&b).unwrap_or(Value::Null), retry)
+        }
+    };
+    let bytes = vec![3u8; 1000];
+    // a pause holds the upload, which gives up after its wait
+    let pause = gate.pause(std::time::Duration::from_secs(1)).unwrap();
+    let (s, b, retry) = send(bytes.clone()).await;
+    assert_eq!(
+        (s, b["code"].as_str(), retry.as_deref()),
+        (StatusCode::SERVICE_UNAVAILABLE, Some("moving"), Some("60"))
+    );
+    drop(pause);
+    // a writer that waits while the gate closes is refused with the gate's answer
+    let pause = gate.pause(std::time::Duration::from_secs(1)).unwrap();
+    let waiting = tokio::spawn(send(bytes.clone()));
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    gate.close(gate::Closed { code: "moved", message: "moved away".into(), retry_after_s: 3600 });
+    drop(pause);
+    let (s, b, retry) = waiting.await.unwrap();
+    assert_eq!(
+        (s, b["code"].as_str(), retry.as_deref()),
+        (StatusCode::SERVICE_UNAVAILABLE, Some("moved"), Some("3600"))
+    );
+    assert!(!data.join("can/abcdef123456").join(LOG).exists(), "nothing was written");
+    // open again: the upload goes in
+    gate.reopen();
+    let (s, _, _) = send(bytes.clone()).await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert_eq!(gate.inside(), 0, "the pass was given back");
+}

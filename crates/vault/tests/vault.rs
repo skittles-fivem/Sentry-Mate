@@ -355,3 +355,47 @@ fn a_reader_while_a_writer_adds_sees_whole_records_only_and_harms_nothing() {
     assert_eq!(w.plain_len(), expected.len() as u64);
     assert_eq!(read_back(w.as_reader()).unwrap(), expected);
 }
+
+#[test]
+fn the_recovery_part_opens_the_data_elsewhere_with_a_key_file_of_its_own() {
+    let (t, data, keys) = dirs();
+    let (v, rk) = Vault::create(&data, &keys, Kdf::FAST_FOR_TESTS).unwrap();
+    let sealed = v.seal("can/abc/a.log.xz", b"a log").unwrap();
+    let part = Vault::recovery_part(&data).unwrap();
+    assert_eq!(part.key_id, v.key_id());
+    assert!(matches!(part.open("SMRK-0000"), Err(Error::WrongRecoveryKey)));
+    let (_, other) = Vault::create(&t.path().join("d2"), &t.path().join("k2"), Kdf::FAST_FOR_TESTS).unwrap();
+    assert!(matches!(part.open(other.as_str()), Err(Error::WrongRecoveryKey)), "another vault's key");
+    let opened = part.open(rk.as_str()).unwrap();
+    assert_eq!(&*opened.open_sealed("can/abc/a.log.xz", &sealed).unwrap(), b"a log");
+    // written somewhere new: a new key file, the same recovery slot
+    let (d3, k3) = (t.path().join("d3"), t.path().join("k3"));
+    std::fs::create_dir_all(&d3).unwrap();
+    opened.install(&d3, &k3, &part).unwrap();
+    assert_ne!(std::fs::read(k3.join(vault::KEY_FILE)).unwrap(), std::fs::read(keys.join(vault::KEY_FILE)).unwrap());
+    let back = Vault::open(&d3, &k3).unwrap();
+    assert_eq!(&*back.open_sealed("can/abc/a.log.xz", &sealed).unwrap(), b"a log");
+    assert!(matches!(Vault::open(&d3, &keys), Err(Error::WrongKeyFile)), "the old key file stays the old server's");
+    Vault::restore(&d3, &t.path().join("k4"), rk.as_str()).unwrap();
+    assert!(opened.install(&d3, &k3, &part).is_err(), "there is a vault there already");
+    let foreign = Vault::recovery_part(&t.path().join("d2")).unwrap();
+    assert!(opened.install(&t.path().join("d5"), &t.path().join("k5"), &foreign).is_err(), "another vault's part");
+}
+
+#[test]
+fn the_end_of_the_last_whole_record_is_found_from_the_lengths_alone() {
+    let (_t, data, keys) = dirs();
+    let (v, _) = Vault::create(&data, &keys, Kdf::FAST_FOR_TESTS).unwrap();
+    let p = data.join("j.records");
+    let mut r = v.records(&p, "j.records").unwrap();
+    r.append(&[1u8; 70_000]).unwrap();
+    r.append(b"two").unwrap();
+    let whole = std::fs::metadata(&p).unwrap().len();
+    let f = std::fs::File::open(&p).unwrap();
+    assert_eq!(vault::records::whole_end(&f).unwrap(), Some(whole));
+    std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(&[0, 0, 0, 50, 9, 9]).unwrap();
+    assert_eq!(vault::records::whole_end(&f).unwrap(), Some(whole), "a torn record after it");
+    let sealed = data.join("s");
+    v.write_file(&sealed, "s", b"x").unwrap();
+    assert_eq!(vault::records::whole_end(&std::fs::File::open(&sealed).unwrap()).unwrap(), None);
+}

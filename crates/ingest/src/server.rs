@@ -58,7 +58,8 @@ impl Identity {
             let made = rcgen::generate_simple_self_signed(sans).map_err(other)?;
             let pem = zeroize::Zeroizing::new(made.key_pair.serialize_pem());
             vault.write_file(&sealed, KEY_LABEL, pem.as_bytes()).map_err(other)?;
-            std::fs::write(&cert, made.cert.pem())?;
+            // whole or not at all, like every file of the data folder (a copy never sees half a certificate)
+            vault::write_private(&cert, made.cert.pem().as_bytes())?;
         }
         let chain = rustls_pemfile::certs(&mut std::io::BufReader::new(std::fs::File::open(&cert)?))
             .collect::<Result<Vec<_>, _>>()?;
@@ -115,11 +116,13 @@ fn take_slot(slots: &Arc<Mutex<Slots>>, ip: IpAddr) -> Option<Slot> {
     Some(Slot(slots.clone(), ip))
 }
 
-/// Serves `app` on `listener` over TLS until the task is dropped.
+/// Serves `app` on `listener` over TLS until this future is dropped, which also ends every connection it opened.
 pub async fn serve_tls(listener: TcpListener, tls: Arc<rustls::ServerConfig>, app: Router) -> std::io::Result<()> {
     let acceptor = tokio_rustls::TlsAcceptor::from(tls);
     let slots = Arc::new(Mutex::new(Slots::default()));
+    let mut conns = tokio::task::JoinSet::new();
     loop {
+        while conns.try_join_next().is_some() {}
         let (tcp, peer): (_, SocketAddr) = match listener.accept().await {
             Ok(x) => x,
             Err(e) => {
@@ -134,7 +137,7 @@ pub async fn serve_tls(listener: TcpListener, tls: Arc<rustls::ServerConfig>, ap
             continue;
         };
         let (acceptor, app) = (acceptor.clone(), app.clone());
-        tokio::spawn(async move {
+        conns.spawn(async move {
             let _slot = slot;
             let Ok(Ok(stream)) = tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await else {
                 return;

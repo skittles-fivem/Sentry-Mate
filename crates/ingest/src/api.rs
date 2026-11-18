@@ -130,8 +130,42 @@ pub struct Uploads {
     pub store: Store,
     pub tokens: Tokens,
     pub judge: Judge,
+    /// The data folder's write gate: every upload holds it while it writes (see the `gate` crate).
+    pub gate: gate::Gate,
+    /// How long an upload waits at the gate during a pause before it is answered `503 moving`.
+    gate_wait: Duration,
     bad_tokens: Mutex<Window>,
     per_token: Mutex<Window>,
+}
+
+/// How long an upload waits for a pause of the writes (an export's snapshot) before it is answered `503 moving`.
+pub const GATE_WAIT: Duration = Duration::from_secs(20);
+/// What the bridge is told to wait after a `503 moving`.
+pub const MOVING_RETRY_S: u64 = 60;
+
+/// Goes through the write gate, waiting at most `wait` for a pause to end: `503 moving` after that, or the gate's own
+/// answer when it is closed (`503 moved` on a server whose data moved away).
+pub async fn enter_gate(gate: &gate::Gate, wait: Duration) -> Result<gate::Pass, ApiError> {
+    let until = Instant::now() + wait;
+    loop {
+        match gate.try_enter() {
+            Ok(Some(pass)) => return Ok(pass),
+            Ok(None) | Err(gate::Refused::Busy) => {}
+            Err(gate::Refused::Closed(c)) => {
+                return Err(ApiError::new(503, c.code, c.message).retry_after(c.retry_after_s));
+            }
+            Err(gate::Refused::Io(e)) => return Err(ApiError::server(e)),
+        }
+        if Instant::now() >= until {
+            return Err(ApiError::new(
+                503,
+                "moving",
+                "This server is pausing uploads for a moment (a copy of its data is being taken); try again shortly.",
+            )
+            .retry_after(MOVING_RETRY_S));
+        }
+        tokio::time::sleep(gate::STEP * 4).await;
+    }
 }
 
 /// What the upload side holds in memory now: every one of these is bounded, whatever the number of cars.
@@ -158,11 +192,19 @@ fn lock_window(m: &Mutex<Window>) -> std::sync::MutexGuard<'_, Window> {
 }
 
 impl Uploads {
+    /// With a gate of this process only (tests; a server uses [`Uploads::with_gate`]).
     pub fn new(store: Store, tokens: Tokens, judge: Judge) -> Arc<Uploads> {
+        Uploads::with_gate(store, tokens, judge, gate::Gate::memory(), GATE_WAIT)
+    }
+
+    /// Uploads that go through the data folder's write gate, waiting at most `wait` at a pause.
+    pub fn with_gate(store: Store, tokens: Tokens, judge: Judge, gate: gate::Gate, wait: Duration) -> Arc<Uploads> {
         Arc::new(Uploads {
             store,
             tokens,
             judge,
+            gate,
+            gate_wait: wait,
             bad_tokens: Mutex::new(Window::new(MAX_BAD_TOKENS, MAX_TRACKED)),
             per_token: Mutex::new(Window::new(MAX_REQUESTS_PER_TOKEN, MAX_TRACKED)),
         })
@@ -302,22 +344,49 @@ async fn upload(AxState(up): St, Path(name): Path<String>, req: Request) -> Resu
     let body: Bytes = axum::body::to_bytes(req.into_body(), MAX_CHUNK as usize)
         .await
         .map_err(|_| ApiError::new(413, "chunk_too_large", format!("A chunk can be at most {MAX_CHUNK} bytes.")))?;
+    // the chunk has arrived: only now the gate (a slow network never holds it), for the tie, the chunk and the trust
+    // record together. The writes run in a task of their own that keeps the pass, so a request dropped part way (its
+    // time ran out) never leaves a write running outside the gate.
+    let pass = enter_gate(&up.gate, up.gate_wait).await?;
+    let task = {
+        let up = up.clone();
+        let vehicle_key = n.vehicle_key.to_string();
+        tokio::spawn(async move {
+            let _pass = pass;
+            write_chunk(&up, &token, &vehicle_key, &name, body, offset, length, &sha).await
+        })
+    };
+    let r = task.await.map_err(ApiError::server)??;
+    let code = if r.complete { StatusCode::CREATED } else { StatusCode::OK };
+    Ok((code, Json(r)).into_response())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn write_chunk(
+    up: &Uploads,
+    token: &Token,
+    vehicle_key: &str,
+    name: &str,
+    body: Bytes,
+    offset: u64,
+    length: u64,
+    sha: &str,
+) -> Result<crate::store::Received, ApiError> {
     // the first upload ties the token to this car key
     if token.vehicle_key.is_none() {
-        let bound = up.tokens.tie(&token, n.vehicle_key).await?;
-        if bound != n.vehicle_key {
+        let bound = up.tokens.tie(token, vehicle_key).await?;
+        if bound != vehicle_key {
             return Err(ApiError::new(403, "wrong_car", "This token is for another car's CAN Bridge."));
         }
     }
-    let r = up.store.receive(&name, body, offset, length, &sha).await?;
+    let r = up.store.receive(name, body, offset, length, sha).await?;
     if r.complete && !r.already {
-        if let Err(e) = up.judge.arrived(&name).await {
+        if let Err(e) = up.judge.arrived(name).await {
             // not the name: it holds the car's key, and the server's log is kept in the clear
             tracing::warn!("CAN upload: could not judge a log that arrived: {e}");
         }
     }
-    let code = if r.complete { StatusCode::CREATED } else { StatusCode::OK };
-    Ok((code, Json(r)).into_response())
+    Ok(r)
 }
 
 async fn not_found(req: Request) -> ApiError {

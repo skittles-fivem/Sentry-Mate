@@ -15,6 +15,8 @@
 //!   log candump FILE              a log file of either format as candump text
 //!   log check FILE [SIDECAR]      what its signature says
 //!   chain KEY                     the chain report of a car key's logs
+//!   export > FILE                 the whole server as one export file (opens elsewhere with the recovery key)
+//!   import FILE [--cancel]        a new server: bring an export file in (asks for the recovery key)
 //!   health                        exit 0 when the upload port answers (for Docker)
 
 mod migrate;
@@ -27,8 +29,14 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use vault::{Kdf, Vault};
+
+/// This version (an export or import says it, an import refuses an export from a newer one).
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// How long a command waits for a pause of the writes (an export's snapshot) to end, or a snapshot for the writes
+/// under way.
+const GATE_WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Parser)]
 #[command(name = "sentry-mate", version, about = "A car logger fed by the Screenmate CAN Bridge's uploads")]
@@ -80,6 +88,18 @@ enum Cmd {
     },
     /// The chain report of a car key's signed logs (JSON).
     Chain { key: String },
+    /// The whole server as one export file, to standard output: `docker exec <container> /sentry-mate export >
+    /// sentry-mate.smexport`. It opens on a new server with this server's recovery key.
+    Export,
+    /// On a new server: bring an export file in (put it in the data folder first). Asks for the recovery key, or
+    /// reads it from standard input. Run it again after a restart to carry on.
+    Import {
+        /// The export file, e.g. /data/sentry-mate-2026-11-17.smexport.
+        file: Option<PathBuf>,
+        /// Remove a half-done import instead (nothing else is touched).
+        #[arg(long)]
+        cancel: bool,
+    },
     /// Exit 0 when the upload port accepts connections.
     Health,
 }
@@ -181,6 +201,8 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         Cmd::Token { cmd } => {
             let v = Arc::new(Vault::open(&data, &keys)?);
+            // a token's files are part of the data folder: written through its gate, like the server's writes
+            let _pass = gate::Gate::open(&data)?.enter(GATE_WAIT)?;
             let tokens = Tokens::open(tokens_file(&data), v.clone()).await?;
             match cmd {
                 TokenCmd::New { car } => {
@@ -211,6 +233,7 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         Cmd::Fingerprint => {
             let v = Vault::open(&data, &keys)?;
+            let _pass = gate::Gate::open(&data)?.enter(GATE_WAIT)?;
             println!("{}", Identity::load_or_create(&tls_dir(&data), &[], &v)?.fingerprint());
         }
         Cmd::Log { cmd: LogCmd::Decode { name } } => {
@@ -242,6 +265,8 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let report = Judge::new(store).chain(&key).await;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
+        Cmd::Export => return export_cmd(&data, &keys),
+        Cmd::Import { file, cancel } => return import_cmd(&data, &keys, file.as_deref(), cancel).await,
         Cmd::Health => {
             let addr = format!("127.0.0.1:{}", cli.upload_port);
             let ok = tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect(&addr))
@@ -326,6 +351,198 @@ async fn serve(
     port: u16,
     names: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(data)?;
+    let _lock = take_server_lock(data).await?;
+    let gate = gate::Gate::open(data)?;
+    // before the vault is opened or made: what a crash left, and an import ready to switch to
+    moving::import::tidy(data, keys);
+    let mut refused: Option<String> = None;
+    loop {
+        if !carry_on_import(data, keys, &mut refused).await {
+            tracing::info!("stopping");
+            return Ok(());
+        }
+        let Instance { mut server, housekeeping } = start(data, keys, &gate, bind, port, names).await?;
+        let ready = import_ready(data.to_path_buf(), keys.to_path_buf(), refused.clone());
+        let switch = tokio::select! {
+            r = &mut server => {
+                housekeeping.abort();
+                r?;
+                return Ok(());
+            }
+            _ = shutdown() => false,
+            _ = ready => true,
+        };
+        if !switch {
+            housekeeping.abort();
+            tracing::info!("stopping");
+            return Ok(());
+        }
+        // an import was read and checked by `import` while this server ran: stop the writes, switch, start again
+        tracing::info!("import: the imported data is checked; this server stops its uploads and switches to it");
+        let g = gate.clone();
+        let pause = match tokio::task::spawn_blocking(move || g.pause(GATE_WAIT)).await? {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("import: the writes didn't stop in time ({e}); trying again");
+                housekeeping.abort();
+                continue;
+            }
+        };
+        gate.close(gate::Closed {
+            code: "moving",
+            message: "This server is switching to imported data; try again in a minute.".into(),
+            retry_after_s: ingest::api::MOVING_RETRY_S,
+        });
+        // the upload port and its connections end here (no write is under way: the pause waited for them)
+        drop(server);
+        housekeeping.abort();
+        let (d, k) = (data.to_path_buf(), keys.to_path_buf());
+        let done = tokio::task::spawn_blocking(move || moving::import::switch(&d, &k)).await?;
+        report_switch(data, keys, done, &mut refused);
+        drop(pause);
+        gate.reopen();
+    }
+}
+
+/// What one start of the server runs: the upload port and the housekeeping.
+struct Instance {
+    server: std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>,
+    housekeeping: tokio::task::JoinHandle<()>,
+}
+
+/// `.lock`: one server per data folder. Waits (and says so) while another holds it, rather than exiting into a
+/// restart loop.
+async fn take_server_lock(data: &Path) -> std::io::Result<gate::ServerLock> {
+    let mut said = false;
+    loop {
+        if let Some(lock) = gate::ServerLock::try_take(data)? {
+            return Ok(lock);
+        }
+        if !said {
+            tracing::warn!(
+                "another Sentry Mate uses this data folder (a second container on the same volume, or a command that needs it alone): waiting until it stops"
+            );
+            said = true;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+fn report_switch(
+    data: &Path,
+    keys: &Path,
+    done: Result<moving::Switched, moving::Error>,
+    refused: &mut Option<String>,
+) {
+    match done {
+        Ok(s) => {
+            tracing::info!(
+                "import: done: this server holds the data of the export made by Sentry Mate {} on {} ({} files, {})",
+                s.app,
+                moving::export::day_of(s.made_ms),
+                s.files,
+                moving::size(s.bytes)
+            );
+            tracing::info!(
+                "import: the CAN Bridge's token and certificate SHA-256 stay as they were; if this server has another address, change it in the CAN Bridge app. The old server's recovery key opens the data here too."
+            );
+            if s.replaced_first_start {
+                tracing::info!(
+                    "import: the vault this server made at its first start was replaced; its {} opened nothing and was removed",
+                    moving::import::RECOVERY_FILE
+                );
+            }
+        }
+        Err(e) => {
+            tracing::error!("import: the switch didn't happen: {e}");
+            if let moving::Pending::Ready { export_id } = moving::import::pending(data, keys) {
+                *refused = Some(export_id);
+            }
+        }
+    }
+}
+
+async fn pending_import(data: &Path, keys: &Path) -> moving::Pending {
+    let (d, k) = (data.to_path_buf(), keys.to_path_buf());
+    tokio::task::spawn_blocking(move || moving::import::pending(&d, &k)).await.unwrap_or(moving::Pending::None)
+}
+
+/// How long a server whose switch to an import didn't finish waits before it tries again.
+const SWITCH_AGAIN: Duration = Duration::from_secs(30);
+
+/// On start: an import that was ready, or whose switch a crash stopped, is switched to now. A switch that has begun
+/// is finished before anything else: the server never starts on a data folder switched half way (files of the
+/// import beside the vault of the first start). If it can't be finished (a full disk, say), the server waits and
+/// tries again. `false`: the server was told to stop meanwhile.
+async fn carry_on_import(data: &Path, keys: &Path, refused: &mut Option<String>) -> bool {
+    loop {
+        match pending_import(data, keys).await {
+            moving::Pending::None => return true,
+            moving::Pending::Ready { export_id } if refused.as_deref() == Some(export_id.as_str()) => return true,
+            moving::Pending::Ready { .. } | moving::Pending::Switching => {
+                tracing::info!("import: switching to the imported data");
+                let (d, k) = (data.to_path_buf(), keys.to_path_buf());
+                match tokio::task::spawn_blocking(move || moving::import::switch(&d, &k)).await {
+                    Ok(done) => report_switch(data, keys, done, refused),
+                    Err(e) => tracing::error!("import: the switch didn't run: {e}"),
+                }
+                if pending_import(data, keys).await != moving::Pending::Switching {
+                    return true;
+                }
+                tracing::warn!(
+                    "import: the switch to the imported data began and didn't finish; this server doesn't start on a half-switched data folder. Trying again in {} s",
+                    SWITCH_AGAIN.as_secs()
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(SWITCH_AGAIN) => {}
+                    _ = shutdown() => return false,
+                }
+            }
+            moving::Pending::Reading { percent } => {
+                tracing::warn!(
+                    "import: an import is half done ({percent} %): run `sentry-mate import FILE` again to carry it on, or `sentry-mate import --cancel` to remove it"
+                );
+                return true;
+            }
+            moving::Pending::Unreadable => {
+                tracing::warn!(
+                    "import: a half-done import is here and can't be read: remove it with `sentry-mate import --cancel`"
+                );
+                return true;
+            }
+        }
+    }
+}
+
+/// Resolves once an import has been read and checked by the `import` command (it looks every second).
+async fn import_ready(data: PathBuf, keys: PathBuf, refused: Option<String>) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if !data.join(moving::import::STAGING).exists() {
+            continue;
+        }
+        let (d, k) = (data.clone(), keys.clone());
+        if let Ok(moving::Pending::Ready { export_id }) =
+            tokio::task::spawn_blocking(move || moving::import::pending(&d, &k)).await
+        {
+            if refused.as_deref() != Some(export_id.as_str()) {
+                return;
+            }
+        }
+    }
+}
+
+async fn start(
+    data: &Path,
+    keys: &Path,
+    gate: &gate::Gate,
+    bind: &str,
+    port: u16,
+    names: &[String],
+) -> Result<Instance, Box<dyn std::error::Error>> {
+    // the start's own writes go through the gate too (an export's snapshot from the command line may be under way)
+    let pass = ingest::api::enter_gate(gate, GATE_WAIT).await?;
     std::fs::create_dir_all(can_dir(data))?;
     let (v, made) = Vault::open_or_create(data, keys, Kdf::STRONG)?;
     if let Some(rk) = made {
@@ -349,9 +566,10 @@ async fn serve(
     }
     let id = Identity::load_or_create(&tls_dir(data), names, &v)?;
     let tokens = Tokens::open(tokens_file(data), v.clone()).await?;
+    drop(pass);
     let any_token = tokens.has_any().await;
     let store = Store::new(can_dir(data), v.clone());
-    let up = Uploads::new(store.clone(), tokens, Judge::new(store));
+    let up = Uploads::with_gate(store.clone(), tokens, Judge::new(store), gate.clone(), ingest::api::GATE_WAIT);
     let listener = tokio::net::TcpListener::bind((bind, port)).await?;
     tracing::info!(
         "CAN Bridge uploads on https://{bind}:{port}/api/can/logs (TLS 1.3), certificate SHA-256 {}, vault {}",
@@ -363,13 +581,16 @@ async fn serve(
     }
 
     // logs whose sidecar never came are judged without it (only cars with logs waiting are looked at); unfinished
-    // uploads are dropped after two days (only the cars' `uploading/` folders are looked in)
+    // uploads are dropped after two days (only the cars' `uploading/` folders are looked in). Each through the gate.
     let housekeeping = up.clone();
-    tokio::spawn(async move {
+    let housekeeping = tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         let mut n: u64 = 0;
         loop {
             tick.tick().await;
+            let Ok(_pass) = ingest::api::enter_gate(&housekeeping.gate, ingest::api::GATE_WAIT).await else {
+                continue;
+            };
             if let Err(e) = housekeeping.judge.sweep().await {
                 tracing::warn!("judging waiting logs: {e}");
             }
@@ -382,13 +603,166 @@ async fn serve(
             n += 1;
         }
     });
+    let server = Box::pin(serve_tls(listener, id.tls_config()?, router(up)));
+    Ok(Instance { server, housekeeping })
+}
 
-    let server = serve_tls(listener, id.tls_config()?, router(up));
-    tokio::select! {
-        r = server => r?,
-        _ = shutdown() => tracing::info!("stopping"),
+fn export_cmd(data: &Path, keys: &Path) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        eprintln!("export writes the file to standard output: send it to a file, for example");
+        eprintln!("  docker exec <container> /sentry-mate export > sentry-mate.smexport");
+        eprintln!(
+            "(with docker compose: docker compose exec -T sentry-mate /sentry-mate export > sentry-mate.smexport)"
+        );
+        return Ok(ExitCode::FAILURE);
     }
-    Ok(())
+    let v = Vault::open(data, keys)?;
+    let g = gate::Gate::open(data)?;
+    eprintln!("export: taking a snapshot (uploads wait a few seconds) ...");
+    let snap = moving::Snapshot::make(data, &v, &g, VERSION, GATE_WAIT)?;
+    let h = snap.header();
+    eprintln!(
+        "export: snapshot taken: {} files, {}; writing {} ({})",
+        h.files,
+        moving::size(h.bytes),
+        snap.file_name(),
+        moving::size(snap.size())
+    );
+    if snap.skips().count > 0 {
+        eprintln!("export: {} entries were skipped (not carried): {}", snap.skips().count, snap.skips().summary());
+    }
+    let out = std::io::stdout();
+    let mut out = std::io::BufWriter::with_capacity(1 << 20, out.lock());
+    snap.write_to(&v, &mut out)?;
+    out.flush()?;
+    eprintln!(
+        "export: done. It opens on a new server with this server's recovery key (vault {}): put it in the new server's data folder and run `sentry-mate import /data/{}` there.",
+        v.key_id(),
+        snap.file_name()
+    );
+    eprintln!("export: it holds all the data, sealed; without the recovery key it opens for no one.");
+    Ok(ExitCode::SUCCESS)
+}
+
+fn read_recovery_key() -> Result<zeroize::Zeroizing<String>, Box<dyn std::error::Error>> {
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        eprint!("Recovery key of the server the export came from: ");
+    }
+    let mut line = zeroize::Zeroizing::new(String::new());
+    std::io::stdin().lock().read_line(&mut line)?;
+    if line.trim().is_empty() {
+        return Err(
+            "no recovery key given: run it with `docker exec -it` to type it, or send it on standard input".into()
+        );
+    }
+    Ok(line)
+}
+
+async fn import_cmd(
+    data: &Path,
+    keys: &Path,
+    file: Option<&Path>,
+    cancel: bool,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    use moving::import::Phase;
+    if cancel {
+        if moving::import::cancel(data, keys)? {
+            println!("import: the half-done import was removed (nothing else was touched)");
+        } else {
+            println!("import: there is no import here");
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let Some(file) = file else {
+        eprintln!("give the export file, for example: sentry-mate import /data/sentry-mate-2026-11-17.smexport");
+        return Ok(ExitCode::FAILURE);
+    };
+    let ex = moving::import::open_file(file, VERSION)?;
+    std::fs::create_dir_all(data)?;
+    let h = &ex.header;
+    eprintln!(
+        "import: an export made by Sentry Mate {} on {}: {} files, {}",
+        h.app,
+        moving::export::day_of(h.made_ms),
+        h.files,
+        moving::size(h.bytes)
+    );
+    let opts = moving::Options::new(VERSION);
+    let mut imp = match moving::import::resume(data, keys, &ex, &opts)? {
+        moving::Resume::Same(i) => {
+            let i = *i;
+            eprintln!(
+                "import: carrying on the import of this file ({} % read)",
+                i.progress().read * 100 / i.progress().size.max(1)
+            );
+            i
+        }
+        moving::Resume::Other(Phase::Ready) => return Err(moving::Error::OtherImport.into()),
+        moving::Resume::Other(Phase::Switching) => return Err(moving::Error::Switching.into()),
+        moving::Resume::None | moving::Resume::Other(Phase::Reading) => {
+            // a server in use is refused before the recovery key is asked for (it would be typed for nothing)
+            moving::import::unused(data, keys)?;
+            let key = read_recovery_key()?;
+            eprintln!("import: opening it with the recovery key (a few seconds) ...");
+            moving::import::begin(data, keys, &ex, &key, &opts)?
+        }
+    };
+    let mut last = Instant::now();
+    imp.run(|p| {
+        if last.elapsed() >= Duration::from_secs(5) {
+            eprintln!("import: {} % ({} of {} files)", p.read * 100 / p.size.max(1), p.files_done, p.files);
+            last = Instant::now();
+        }
+        std::ops::ControlFlow::Continue(())
+    })?;
+    drop(imp);
+    eprintln!("import: every file read and checked");
+    let done = |s: &moving::Switched| {
+        eprintln!("import: done: this server holds the data now ({} files, {}).", s.files, moving::size(s.bytes));
+        eprintln!(
+            "import: the CAN Bridge's token and certificate SHA-256 stay as they were; if this server has another address, change it in the CAN Bridge app."
+        );
+        eprintln!(
+            "import: the old server's recovery key opens the data here too. You can delete {} now.",
+            file.display()
+        );
+    };
+    match gate::ServerLock::try_take(data)? {
+        Some(lock) => {
+            let s = moving::import::switch(data, keys)?;
+            drop(lock);
+            done(&s);
+            eprintln!("import: start the server now.");
+        }
+        None => {
+            eprintln!("import: the server running here switches to it now (its uploads stop for a moment) ...");
+            let until = Instant::now() + Duration::from_secs(180);
+            while data.join(moving::import::STAGING).exists() {
+                if Instant::now() >= until {
+                    eprintln!(
+                        "import: the server hasn't switched yet (see its log): restart the app, and it switches as it starts"
+                    );
+                    return Ok(ExitCode::FAILURE);
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            let v = Vault::open(data, keys)?;
+            match moving::import::imported(data, &v) {
+                Some(id) if id == ex.header.id => {
+                    eprintln!("import: done: the server switched and serves the imported data.")
+                }
+                _ => {
+                    eprintln!("import: the import is gone but this server doesn't hold it: see the server's log");
+                    return Ok(ExitCode::FAILURE);
+                }
+            }
+            eprintln!(
+                "import: the CAN Bridge's token and certificate SHA-256 stay as they were; if this server has another address, change it in the CAN Bridge app. You can delete {} now.",
+                file.display()
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Ctrl-C or SIGTERM (`docker stop`).

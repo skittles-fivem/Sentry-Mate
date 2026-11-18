@@ -10,6 +10,8 @@ pub struct ApiError {
     pub code: &'static str,
     pub message: String,
     pub received: Option<u64>,
+    /// Seconds the client should wait before trying again (`Retry-After`), for a `503`.
+    pub retry_after: Option<u64>,
 }
 
 impl ApiError {
@@ -19,7 +21,13 @@ impl ApiError {
             code,
             message: message.into(),
             received: None,
+            retry_after: None,
         }
+    }
+
+    pub fn retry_after(mut self, seconds: u64) -> ApiError {
+        self.retry_after = Some(seconds);
+        self
     }
 
     pub fn received(mut self, n: u64) -> ApiError {
@@ -45,7 +53,11 @@ impl IntoResponse for ApiError {
         if let Some(r) = self.received {
             body["received"] = r.into();
         }
-        (self.status, axum::Json(body)).into_response()
+        let mut res = (self.status, axum::Json(body)).into_response();
+        if let Some(s) = self.retry_after {
+            res.headers_mut().insert(axum::http::header::RETRY_AFTER, axum::http::HeaderValue::from(s));
+        }
+        res
     }
 }
 

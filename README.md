@@ -22,6 +22,7 @@ program, and neither are the TeslaMate import and MQTT; the web UI is being buil
 | Places, geofences, charge costs with time-of-use rates, addresses offline or online | built, not wired in yet |
 | Accounts: admin and watch-only, per-car access, two-step sign-in, sessions, audit log | built, not wired in yet |
 | Encryption at rest (pure Rust): everything stored is sealed, key file + recovery key | done |
+| Moving to another server: one export file (opens with the recovery key), imported into a new server while it runs | done; the direct move with a move code is planned in [`docs/plans/move-server.md`](docs/plans/move-server.md) |
 | TeslaMate import from TeslaMate's own backup file (any number of cars, streamed, again later adds only what's new) | built, not wired in yet |
 | MQTT for Home Assistant (TLS only, discovery, any number of cars on one connection) | built, not wired in yet |
 | Web UI: UI packs, two designs as prototypes on made-up data in [`ui/`](ui/), maps; every TeslaMate tab gets a clearer page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) with the API in [`docs/ui-api.md`](docs/ui-api.md) | being built |
@@ -96,6 +97,27 @@ Replace the recovery key (the old one stops working):
 ```bash
 docker compose exec sentry-mate /sentry-mate recovery-key new
 ```
+
+### Move to another server
+
+One export file holds everything: the logs, uploads still arriving, the tokens, the trust records and the TLS key,
+all sealed as stored. It opens only with the recovery key, never with the file alone. Make it while the server runs
+(uploads wait a few seconds):
+
+```bash
+docker compose exec -T sentry-mate /sentry-mate export > sentry-mate.smexport
+```
+
+On the new server (empty `data` and `keys` folders, started once or not at all), put the file in its data folder,
+readable by the server's user, then:
+
+```bash
+docker compose exec sentry-mate /sentry-mate import /data/sentry-mate.smexport
+```
+
+It asks for the old server's recovery key, checks the whole file, and only then switches to it; a running server
+switches by itself. A stop part way is fine: run it again and it carries on. The CAN Bridge keeps its token and its
+certificate SHA-256: change only the server address, if it changed. The old recovery key opens the data there too.
 
 ## Security
 

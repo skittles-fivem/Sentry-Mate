@@ -689,6 +689,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+ "tempfile",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -883,6 +891,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "gate",
  "getrandom 0.3.4",
  "hex",
  "http-body-util",
@@ -1063,6 +1072,26 @@ name = "model"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "moving"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "gate",
+ "getrandom 0.3.4",
+ "hex",
+ "ingest",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "vault",
+ "zeroize",
 ]
 
 [[package]]
@@ -1523,9 +1552,11 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dbc",
+ "gate",
  "hex",
  "ingest",
  "logfmt",
+ "moving",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
@@ -2078,6 +2109,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "hkdf",
+ "hmac",
  "rustix",
  "serde",
  "serde_json",

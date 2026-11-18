@@ -129,6 +129,20 @@ pub fn record_lengths(head: &[u8]) -> Option<RangeInclusive<usize>> {
     Format::of(head).map(Format::lengths)
 }
 
+/// Where the last whole record of the records file `file` ends, from the record lengths alone (no key needed; a
+/// record counts once its last byte is in the file). `None`: not a records file, or shorter than its header. Bytes
+/// after that end are what a failed write or a crash left, or a record being written at this moment.
+pub fn whole_end(file: &File) -> io::Result<Option<u64>> {
+    let mut head = [0u8; HEADER];
+    let mut input = file;
+    input.seek(SeekFrom::Start(0))?;
+    if !read_whole(&mut input, &mut head)? {
+        return Ok(None);
+    }
+    let Some(format) = Format::of(&head) else { return Ok(None) };
+    Ok(Some(walk(file, format, HEADER as u64)?.2))
+}
+
 /// Where a format 1 file at `path` is written again in format 2 (`<name>.to-v2`). A crash while that runs can leave
 /// it behind; code that removes a records file other than through the vault removes this one too.
 pub fn converting_path(path: &Path) -> PathBuf {
