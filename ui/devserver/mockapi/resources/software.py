@@ -5,8 +5,9 @@ A version is only ever what someone said: imported from TeslaMate, typed by the 
 from another update with the same module build ids ("build_match"). An update seen only as
 changed build ids has `version: null`.
 """
-
 from __future__ import annotations
+
+import bisect
 
 import re
 
@@ -134,12 +135,22 @@ def warm(app):
     return cache
 
 
-def _syn_search_miss(app, syn, i, search):
-    """True when synthetic car c<i> cannot match `search` (name or version), from a cached index."""
+def _syn_matches(app, syn, search):
+    """Synthetic car numbers (from 4, ascending) whose name or version holds `search`, from the cached
+    index in one pass; the last few searches are kept so the next page is quick."""
     cache = warm(app)
+    memo = app.cache.setdefault("syn_version_hits", {})
+    hit = memo.get(search)
+    if hit is not None and hit[0] is syn:
+        return hit[1]
     names = syn.index()[2]
-    v = SYN_VERSIONS[cache[1][i - 4]][0]
-    return search not in names[i - 4] and (v is None or search not in v.lower())
+    vmatch = [v is not None and search in v.lower() for v, _src in SYN_VERSIONS]
+    ks = cache[1]
+    hit = [i for i, (nm, k) in enumerate(zip(names, ks), 4) if vmatch[k] or search in nm]
+    if len(memo) > 8:
+        memo.clear()
+    memo[search] = (syn, hit)
+    return hit
 
 
 def fleet_versions(req):
@@ -182,25 +193,35 @@ def fleet_versions(req):
                     break
                 out.append((n, row))
     else:
-        n = start
         total = ds.total_cars()
-        while n <= total:
-            cid = f"c{n}"
-            if cid in ds.featured or cid in st.car_over:
-                row = featured_row(cid)
-            elif search and _syn_search_miss(req.app, ds.synthetic, n, search):
-                n += 1
-                continue
-            else:
-                row = _syn_version(ds.synthetic, n)
-            if ok(row):
+        special = sorted(int(c[1:]) for c in set(ds.featured) | set(st.car_over)
+                         if c[1:].isdigit() and start <= int(c[1:]) <= total and ds.exists(c))
+        if search:
+            # synthetic cars that match, from one pass over the cached index (kept for the next page)
+            syn_hits = _syn_matches(req.app, ds.synthetic, search)
+            k0 = bisect.bisect_left(syn_hits, start)
+            cands = sorted(set(special) | set(n for n in syn_hits[k0:k0 + limit + 1 + len(special)]))
+        else:
+            cands = None
+        if cands is not None:
+            for n in cands:
+                cid = f"c{n}"
+                row = featured_row(cid) if (cid in ds.featured or cid in st.car_over) else _syn_version(ds.synthetic, n)
+                if ok(row):
+                    if len(out) == limit:
+                        more = True
+                        break
+                    out.append((n, row))
+        else:
+            n = start
+            while n <= total:
+                cid = f"c{n}"
+                row = featured_row(cid) if (cid in ds.featured or cid in st.car_over) else _syn_version(ds.synthetic, n)
                 if len(out) == limit:
                     more = True
                     break
                 out.append((n, row))
-            n += 1
-            if n - start > 2_000_000:
-                break
+                n += 1
     nxt = encode_cursor([out[-1][0]], fp) if more and out else None
     return {"items": [row for _, row in out], "next": nxt}
 

@@ -324,8 +324,6 @@ class SmallFleetFilters(ServerCase):
             self.c.json("PATCH", "/api/v1/me/preferences", {"pinned_cars": [], "car_order": []})
 
 
-__all__ = ["Running"]
-
 
 class AccountCarsChange(ServerCase):
     """Taking a car off a watch account, or giving one, reaches that account's open streams."""
@@ -363,3 +361,82 @@ class AccountCarsChange(ServerCase):
             hub.unsubscribe(s)
             v = self.c.get("/api/v1/accounts/a2")["version"]
             self.c.json("PATCH", "/api/v1/accounts/a2", {"version": v, "cars": ["c1"]})
+
+
+class FleetVersionsSearch(ServerCase):
+    """A search of the fleet's versions pages through exactly the cars that match, each once."""
+
+    server_args = {"cars": 3000}
+
+    def test_search_walk_matches_a_plain_filter(self):
+        every = self.walk("/api/v1/fleet/versions", limit=500)
+        self.assertEqual(len(every), 3000)
+        for q in ("2026.38", "willow", "c", "zzzz"):
+            want = [x["car"] for x in every if q in (x["version"] or "").lower() or q in x["name"].lower()]
+            got = [x["car"] for x in self.walk(f"/api/v1/fleet/versions?search={q}", limit=37)]
+            self.assertEqual(got, want, q)
+
+
+class ConcurrentWrites(ServerCase):
+    """Two changes sent at once with the same `version`: one wins, the other gets 409, never both 200."""
+
+    def test_same_version_at_once(self):
+        import sys
+        import threading
+        old = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)  # switch threads as often as possible, so a gap between check and change shows
+        self.addCleanup(sys.setswitchinterval, old)
+        for path, field in (("/api/v1/cars/c1", "name"), ("/api/v1/accounts/a2", "name"),
+                            ("/api/v1/places/p2", "name"), ("/api/v1/cars/c1/settings", "capacity_new_kwh")) * 3:
+            v = self.c.get(path)["version"]
+            got = []
+            go = threading.Barrier(24)
+
+            def one(i):
+                c = self.server.client()
+                c.cookie = self.c.cookie
+                go.wait()
+                st, _, _ = c.request("PATCH", path, {"version": v, field: f"Name {i}" if field == "name" else 70 + i})
+                got.append(st)
+
+            ts = [threading.Thread(target=one, args=(i,)) for i in range(24)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+            self.assertEqual(sorted(got), [200] + [409] * 23, path)
+            self.assertEqual(self.c.get(path)["version"], v + 1, path)
+
+
+class SlowReader(ServerCase):
+    """A stream whose reader falls far behind is ended (it reconnects and reloads), never left with holes."""
+
+    def test_full_queue_ends_the_stream(self):
+        hub = self.server.app.events
+        s = hub.subscribe({"account": self.server.app.store.accounts["a1"], "token": "slow"})
+        try:
+            for i in range(1005):
+                s.push("notice", {"n": i})
+            self.assertTrue(s.closed)
+            n = s.q.qsize()
+            s.push("notice", {"n": "late"})
+            self.assertEqual(s.q.qsize(), n)
+        finally:
+            hub.unsubscribe(s)
+
+    def test_sign_out_ends_the_stream_at_once(self):
+        import http.client
+        c = self.server.client()
+        st, _, _ = c.request("POST", "/api/v1/session", {"name": "watch", "password": "sentry-mate-dev"})
+        self.assertEqual(st, 200)
+        conn = http.client.HTTPConnection("127.0.0.1", self.server.port, timeout=10)
+        conn.request("GET", "/api/v1/events", headers={"Cookie": c.cookie})
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 200)
+        resp.fp.readline()
+        t = time.perf_counter()
+        c.request("DELETE", "/api/v1/session")
+        while resp.fp.readline():
+            pass
+        self.assertLess(time.perf_counter() - t, 3)
+        conn.close()

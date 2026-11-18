@@ -9,6 +9,7 @@ import mimetypes
 import os
 import socketserver
 import sys
+import threading
 import time
 import traceback
 from http.cookies import SimpleCookie
@@ -48,6 +49,9 @@ class App:
         self.build_s = time.monotonic() - t0
         self.store = Store(cfg, self.ds, self.clock)
         self.cache = {}
+        # One change at a time: a handler checks `version` and then changes the data, and two requests
+        # with the same version must not both pass the check.
+        self.write_lock = threading.Lock()
         if self.ds.synthetic.count:  # a large fleet: its search and attention indexes, before the first request
             resources.software.warm(self)
             resources.fleet.warm(self)
@@ -231,7 +235,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.sse(req, cookie)
             if app.cfg.latency_ms:
                 time.sleep(app.cfg.latency_ms / 1000)
-            res = route.handlers[m](req)
+            if m == "GET":
+                res = route.handlers[m](req)
+            else:
+                with app.write_lock:
+                    res = route.handlers[m](req)
             if req.set_cookie:
                 cookie = req.set_cookie
             if isinstance(res, Response):

@@ -47,10 +47,14 @@ class Stream:
         self.closed = False
 
     def push(self, event, data):
+        """Queue one event. A reader that fell 1000 events behind would miss a `now` delta and merge the
+        later ones into stale values, so its stream is ended instead: the page reconnects and loads again."""
+        if self.closed and event != "_close":
+            return
         try:
             self.q.put_nowait((event, data))
         except queue.Full:
-            pass
+            self.closed = True  # the reader is busy with the queue, so it sees `closed` at its next event
 
 
 class EventHub:
