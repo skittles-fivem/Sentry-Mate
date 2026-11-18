@@ -529,6 +529,7 @@ def _teslamate_copy(s, rnd):
         c.planned_end = c.end
         c.energy_full = s.energy_full * rnd.uniform(0.93, 1.07)
         c._pw = None
+        c._ps = None
     else:
         c.id = str(int(s.id) + 500_000)
         c.gaps = []

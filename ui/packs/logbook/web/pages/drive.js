@@ -9,13 +9,13 @@
 // the route; the climate strip follows the zoom.
 
 import { h, replace } from '../shared/dom.js';
-import { format, parts, convert, unitLabel, rangeField, rangeLabel } from '../shared/units.js';
+import { format, convert, unitLabel, rangeField, rangeValue, rangeLabel } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, dayKey } from '../shared/time.js';
 import { formatList } from '../shared/i18n.js';
 import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { pageHead, q, figure, icon, sep, empty, errorView, flag } from '../core/ui.js';
+import { pageHead, q, figure, icon, sep, empty, errorWords, flag, button } from '../core/ui.js';
 import { makeMap, boundsOf } from '../core/map.js';
 import { stackedCharts } from '../core/chart.js';
 import { placeLink } from '../core/journal.js';
@@ -26,7 +26,7 @@ export const id = 'drive';
 export const css = true;
 export const title = () => 'Drive';
 
-const FIELDS = ['speed_kph', 'power_kw', 'soc_pct', 'usable_soc_pct', 'range_km', 'ideal_range_km', 'battery_heat_kw',
+const FIELDS = ['speed_kph', 'power_kw', 'soc_pct', 'usable_soc_pct', 'range_km', 'ideal_range_km', 'energy_remaining_kwh', 'battery_heat_kw',
   'elevation_m', 'outside_c', 'cabin_c', 'setpoint_left_c', 'setpoint_right_c', 'climate', 'fan_level',
   'tyre_fl_kpa', 'tyre_fr_kpa', 'tyre_rl_kpa', 'tyre_rr_kpa', 'lat', 'lon', 'accuracy_m', 'odometer_km'].join(',');
 
@@ -39,7 +39,10 @@ const SETPOINT_WORDS = Object.freeze({ LO: 'LO (coldest: full cooling)', HI: 'HI
 const setText = (v) => (typeof v === 'string' ? SETPOINT_WORDS[v.toUpperCase()] || v : format(v, 'temperature'));
 const numOnly = (list) => (list || []).map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : null));
 const has = (list) => (list || []).some((v) => v != null);
-const TYRES = [['tyre_fl_kpa', 'Front left'], ['tyre_fr_kpa', 'Front right'], ['tyre_rl_kpa', 'Rear left'], ['tyre_rr_kpa', 'Rear right']];
+const TYRES = [['tyre_fl_kpa', 'Front left', 'FL'], ['tyre_fr_kpa', 'Front right', 'FR'], ['tyre_rl_kpa', 'Rear left', 'RL'], ['tyre_rr_kpa', 'Rear right', 'RR']];
+const DAY_MS = 86400000;
+// The speed bands' width: 10 of the person's unit (16.09344 km/h is 10 mph).
+const BAND_KPH = { 'km/h': 10, mph: 16.09344 };
 
 // Route colours: speed classes (in the person's unit) and power classes. Each class is a token and an opacity.
 const SPEED_STEPS = { 'km/h': [30, 60, 90, 120], mph: [20, 40, 60, 80] };
@@ -49,7 +52,8 @@ export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz;
   const base = api.apiPath`cars/${car.id}/drives/${ctx.driveId}`;
   let d;
-  try { d = await ctx.api.get(base); } catch (err) {
+  const bandKph = BAND_KPH[unitLabel('speed')] || 10;
+  try { d = await ctx.api.get(base, { speed_band_kph: bandKph }); } catch (err) {
     if (err && err.status === 404) {
       // An unknown drive, or one of a car this account may not see: the same answer, with the way back.
       ctx.main.append(pageHead({ eyebrow: h('nav', { class: 'crumbs', 'aria-label': 'Breadcrumb' }, h('a', { href: state.buildUrl('car', { car: car.id }) }, car.name)), title: 'No such drive' }),
@@ -66,14 +70,24 @@ export async function mount(ctx) {
   }
   const going = d.end_ms == null;
   const end = d.end_ms ?? api.now();
-  const [track, series, before, after] = await Promise.all([
-    ctx.api.get(`${base}/track`, { format: 'geojson', extensions: 'speed,power,accuracy' }).catch(() => null),
-    ctx.api.get(api.apiPath`cars/${car.id}/series`, { fields: FIELDS, from_ms: d.start_ms, to_ms: end + 1, max_points: 3000 }).catch((err) => ({ error: err })),
-    ctx.api.get(api.apiPath`cars/${car.id}/charges`, { to_ms: d.start_ms, limit: 1 }).catch(() => null),
-    going ? null : ctx.api.get(api.apiPath`cars/${car.id}/charges`, { from_ms: d.end_ms, sort: 'start', dir: 'asc', limit: 1 }).catch(() => null),
+  // A failed request is kept as { error }, never turned into "nothing recorded".
+  const kept = (p) => p.catch((err) => ({ error: err }));
+  const loadNear = () => Promise.all([
+    kept(ctx.api.get(api.apiPath`cars/${car.id}/charges`, { to_ms: d.start_ms, limit: 1 })),
+    going ? null : kept(ctx.api.get(api.apiPath`cars/${car.id}/charges`, { from_ms: d.end_ms, sort: 'start', dir: 'asc', limit: 1 })),
+  ]);
+  // The estimate's consumption: the server's (est_wh_per_km), else the 30 days of drives before this one.
+  const recent = d.est_wh_per_km != null ? null
+    : kept(ctx.api.get(api.apiPath`cars/${car.id}/drives`, { from_ms: d.start_ms - 30 * DAY_MS, to_ms: d.start_ms, limit: 1 }));
+  const [track, series, near, recentDrives] = await Promise.all([
+    kept(ctx.api.get(`${base}/track`, { format: 'geojson', extensions: 'speed,power,accuracy' })),
+    kept(ctx.api.get(api.apiPath`cars/${car.id}/series`, { fields: FIELDS, from_ms: d.start_ms, to_ms: end + 1, max_points: 3000 })),
+    loadNear(), recent,
   ]);
   if (!ctx.alive()) return {};
   const s = series && !series.error ? series : null;
+  const trackErr = track && track.error ? track.error : null;
+  const estWhKm = d.est_wh_per_km ?? (recentDrives && !recentDrives.error && recentDrives.summary ? recentDrives.summary.wh_per_km : null) ?? null;
   ctx.title(`${d.start.label} to ${d.end.label}`);
 
   /* ------------------------------------------------------------ head: breadcrumb, steps, places */
@@ -114,7 +128,16 @@ export async function mount(ctx) {
 
   /* ------------------------------------------------------------ figures: each blank one says why */
   const why = (cond, text) => (cond ? text : null);
-  const startRange = d[rangeField('start_range_km')] ?? d.start_range_km, endRange = d[rangeField('end_range_km')] ?? d.end_range_km;
+  // Range at the start and end in the person's choice. An answer without the ideal twins: the first and
+  // last ideal readings of the drive, else the rated figures named as rated (never rated called ideal).
+  const wantIdeal = rangeField('range_km') !== 'range_km';
+  let startRange = rangeValue(d, 'start_range_km'), endRange = rangeValue(d, 'end_range_km');
+  let rangeName = rangeLabel(), rangeHow = null;
+  if (wantIdeal && !('start_ideal_range_km' in d)) {
+    const iv = s && s.values.ideal_range_km ? s.values.ideal_range_km.filter((v) => v != null) : [];
+    if (iv.length) { startRange = iv[0]; endRange = iv[iv.length - 1]; rangeHow = 'first and last ideal readings'; }
+    else { rangeName = 'Rated range'; startRange = d.start_range_km; endRange = d.end_range_km; rangeHow = 'rated: no ideal range was sent for this drive'; }
+  }
   const stats = h('dl', { class: 'drive-stats', cover: ['dd.stat.odometer', 'dd.stat.drive_duration', 'dd.stat.distance', 'dd.stat.elevation_up', 'dd.stat.elevation_down', 'dd.stat.energy_net', 'dd.stat.energy_recovered', 'dd.stat.consumption_net', 'dd.stat.speed_avg', 'dd.empty_states'] },
     figure('Distance', q(d.distance_km, 'distance', { why: why(d.distance_km == null, 'no odometer readings') }),
       d.start_odometer_km != null ? `odometer ${format(d.start_odometer_km, 'odometer')} → ${going ? 'now ' : ''}${format(d.end_odometer_km, 'odometer', { why: 'not read at the end' })}` : 'odometer not read'),
@@ -128,16 +151,22 @@ export async function mount(ctx) {
     figure('Climate', q(d.hvac_kwh, 'energy', { why: why(d.hvac_kwh == null, 'not sent by this car') }), 'heating and cooling, part of the energy used'),
     figure('Battery', d.start_soc_pct != null || d.end_soc_pct != null ? `${format(d.start_soc_pct, 'percent')} → ${format(d.end_soc_pct, 'percent')}` : q(null, 'percent', { why: 'not recorded' }),
       d.start_soc_pct != null && d.end_soc_pct != null ? `${format(d.start_soc_pct - d.end_soc_pct, 'number', { digits: 1 })} points used` : null),
-    figure(rangeLabel(), startRange != null || endRange != null ? `${format(startRange, 'range')} → ${format(endRange, 'range')}` : q(null, 'range', { why: 'not recorded' }),
-      startRange != null && endRange != null ? `${format(startRange - endRange, 'range')} of range used` : null),
+    figure(rangeName, startRange != null || endRange != null ? `${format(startRange, 'range')} → ${format(endRange, 'range')}` : q(null, 'range', { why: 'not recorded' }),
+      [startRange != null && endRange != null ? `${format(startRange - endRange, 'range')} of range used` : null, rangeHow].filter(Boolean).join('; ') || null),
+    figure('Peak power', q(d.power_max_kw, 'power', { why: why(d.power_max_kw == null, 'no power readings') }),
+      d.power_min_kw != null ? ['strongest regen ', q(Math.abs(d.power_min_kw), 'power'), ' back into the pack'] : d.source === 'teslamate' ? 'regen not in imported history' : 'no regen recorded'),
     figure('Outside', q(d.outside_avg_c, 'temperature', { why: why(d.outside_avg_c == null, 'not recorded') }), d.cabin_avg_c != null ? `average; cabin ${format(d.cabin_avg_c, 'temperature')}` : 'average'));
 
   /* ------------------------------------------------------------ time in each speed band, with CSV */
-  const bands = (d.speed_bands || []).filter((b) => b.seconds > 0);
+  // Bands of 10 of the person's unit: the server's when it made them that wide (speed_band_kph), else
+  // worked out here from the speed readings, each counting for its bucket's time.
+  const bandSet = speedBands(d, s, bandKph);
+  const bands = bandSet.list, speedUnit = bandSet.unit;
   const bandTotal = bands.reduce((a, b) => a + b.seconds, 0);
-  const bandName = (b) => (b.to_kph == null ? `${format(b.from_kph, 'speed')} and over` : `${parts(b.from_kph, 'speed').number} to ${format(b.to_kph, 'speed')}`);
+  const num0 = (v) => format(v, 'number', { digits: 0 });
+  const bandName = (b) => (b.to == null ? `${num0(b.from)} ${speedUnit} and over` : `${num0(b.from)} to ${num0(b.to)} ${speedUnit}`);
   const bandsCsv = h('button', { type: 'button', class: 'button button-quiet button-small', onclick: () => downloadCsv(csvFilename(car.name, 'drive', dayKey(d.start_ms, tz), 'speed bands'), bands, [
-    column('From', 'from_kph', 'speed', { digits: 1 }), column('To', 'to_kph', 'speed', { digits: 1 }),
+    { label: `From (${speedUnit})`, value: (b) => b.from }, { label: `To (${speedUnit})`, value: (b) => b.to },
     { label: 'Seconds', value: (b) => Math.round(b.seconds * 10) / 10 }, { label: 'Share (%)', value: (b) => Math.round((b.seconds / bandTotal) * 1000) / 10 },
   ]) }, icon('download'), 'CSV');
   const bandsEl = h('section', { class: 'drive-bands', 'aria-labelledby': 'bands-title', cover: 'dd.chart.speed_histogram' },
@@ -148,7 +177,7 @@ export async function mount(ctx) {
         h('span', { class: 'band-bar', 'aria-hidden': 'true' }, h('span', { class: 'band-fill', vars: { '--w': `${((b.seconds / bandTotal) * 100).toFixed(2)}%` } })),
         h('span', { class: 'band-value' }, formatDuration(b.seconds * 1000), h('span', { class: 'band-share' }, format((b.seconds / bandTotal) * 100, 'percent', { digits: 0 }))))))
       : h('p', { class: 'note' }, d.source === 'teslamate' ? 'Imported drives keep no speed readings, so there are no bands.' : 'No speed readings were recorded for this drive.'),
-    bands.length ? h('p', { class: 'note' }, 'Every reading counts, standstill included; bands are 10 km/h wide.') : null);
+    bands.length ? h('p', { class: 'note' }, `Every reading counts, standstill included; bands are ${num0(bandSet.width)} ${speedUnit} wide${bandSet.local ? ', counted from the speed readings' : ''}.`) : null);
 
   /* ------------------------------------------------------------ charges before and after */
   const chargeItem = (c, word) => {
@@ -159,15 +188,30 @@ export async function mount(ctx) {
         `${where}, ${(c.kind || '').toUpperCase() || 'kind not known'}, `, q(c.energy_added_kwh, 'energy'),
         h('span', { class: 'near-when' }, `${formatDate(c.start_ms, tz, { now: api.now() })}, ${formatTime(c.start_ms, tz)}`)));
   };
+  const nearList = h('ul', { class: 'near-list' });
+  const drawNear = ([before, after]) => {
+    const failed = [before, after].find((x) => x && x.error);
+    if (failed) {
+      replace(nearList, h('li', { class: 'near-row is-error' }, partError(failed.error, 'Could not load the charges either side.', async (ev) => {
+        ev.currentTarget.disabled = true;
+        const again = await loadNear();
+        if (ctx.alive()) drawNear(again);
+      })));
+      return;
+    }
+    replace(nearList, chargeItem(before && before.items && before.items[0], 'Before'), chargeItem(after && after.items && after.items[0], 'After'));
+  };
+  drawNear(near);
   const nearEl = h('section', { class: 'drive-near', 'aria-labelledby': 'near-title' },
-    h('h2', { class: 'label', id: 'near-title' }, 'Charges either side'),
-    h('ul', { class: 'near-list' }, chargeItem(before && before.items && before.items[0], 'Before'), chargeItem(after && after.items && after.items[0], 'After')));
+    h('h2', { class: 'label', id: 'near-title' }, 'Charges either side'), nearList);
 
   /* ------------------------------------------------------------ export: GPX or GeoJSON, with extras */
   const extras = [['speed', 'Speed'], ['power', 'Power'], ['soc', 'Battery %']];
   const checks = extras.map(([k, t]) => h('label', { class: 'check' }, h('input', { type: 'checkbox', value: k }), t));
-  const gpx = h('a', { class: 'button button-small', download: '' }, icon('download'), 'GPX');
-  const geo = h('a', { class: 'button button-quiet button-small', download: '' }, icon('download'), 'GeoJSON');
+  // Named by the car and the drive's start in the car's zone: comet-drive-2026-11-15-1217.gpx
+  const fileStem = csvFilename(car.name, 'drive', dayKey(d.start_ms, tz), hhmm(d.start_ms, tz)).replace(/\.csv$/, '');
+  const gpx = h('a', { class: 'button button-small', download: `${fileStem}.gpx` }, icon('download'), 'GPX');
+  const geo = h('a', { class: 'button button-quiet button-small', download: `${fileStem}.geojson` }, icon('download'), 'GeoJSON');
   const setLinks = () => {
     const ext = ['accuracy', ...checks.map((c) => c.querySelector('input')).filter((i) => i.checked).map((i) => i.value)].join(',');
     gpx.setAttribute('href', ctx.api.url(`${base}/track`, { format: 'gpx', extensions: ext }));
@@ -177,7 +221,7 @@ export async function mount(ctx) {
   setLinks();
   const exportEl = h('section', { class: 'drive-export', 'aria-labelledby': 'export-title', cover: ['dd.export.gpx', 'web.drive-gpx.entry', 'web.drive-gpx.file', 'web.drive-gpx.point-coordinates', 'web.drive-gpx.point-elevation', 'web.drive-gpx.point-time', 'web.drive-gpx.not-found'] },
     h('h2', { class: 'label', id: 'export-title' }, 'Export the route'),
-    h('p', { class: 'note' }, 'Every point once a second with its time (UTC), position, elevation and GPS accuracy, one track segment per stretch without dropped data. Tick extras to add them.'),
+    h('p', { class: 'note' }, `Every point once a second with its time (UTC), position, elevation and GPS accuracy, one track segment per stretch without dropped data. Tick extras to add them. The file is named ${fileStem}, after the start in ${car.name}’s time zone.`),
     h('div', { class: 'checks' }, checks), h('div', { class: 'export-buttons' }, gpx, geo));
 
   /* ------------------------------------------------------------ the route map, coloured by speed or power */
@@ -236,6 +280,9 @@ export async function mount(ctx) {
       marker = new m.ml.Marker({ element: markerEl, anchor: 'center' }).setLngLat(all[0]).addTo(m.map);
       paintRoute();
     }
+  } else if (trackErr) {
+    replace(mapBox, partError(trackErr, 'Could not load the route.', () => remount()));
+    mapBox.classList.add('is-empty');
   } else {
     replace(mapBox, h('p', { class: 'map-note' }, d.source === 'teslamate' ? 'Imported drives keep no route.' : 'No route was recorded for this drive: the car sent no positions while it drove.'));
     mapBox.classList.add('is-empty');
@@ -245,7 +292,12 @@ export async function mount(ctx) {
   const V = s ? s.values : {};
   const val = (f, i) => (i != null && V[f] ? V[f][i] : null);
   const rf = rangeField('range_km');
+  // The range line is the person's choice when the readings have it; otherwise rated, and named so.
   const rangeVals = V[rf] && has(V[rf]) ? V[rf] : V.range_km;
+  const rangeLine = V[rf] && has(V[rf]) ? rangeLabel() : 'Rated range';
+  // Sentry Mate's own estimate: the energy left in the pack ÷ the consumption of the 30 days of drives before.
+  const estVals = estWhKm > 0 && has(V.energy_remaining_kwh) ? V.energy_remaining_kwh.map((e) => (e == null ? null : (e * 1000) / estWhKm)) : null;
+  const estNote = estVals ? ['energy left ÷ ', format(estWhKm, 'efficiency'), ' (the 30 days of drives before)'] : null;
   const climateVals = V.climate || [];
   const hasHeat = has(V.battery_heat_kw), hasClimate = has(climateVals), hasFan = has(V.fan_level);
   const hasSet = has(V.setpoint_left_c) || has(V.setpoint_right_c);
@@ -255,7 +307,8 @@ export async function mount(ctx) {
   // The readout: every value at the moment under the pointer, each with its unit.
   const reading = (name, value, cls = null) => h('div', { class: ['reading', cls] }, h('dt', null, name), h('dd', null, value));
   const showReadout = (i) => {
-    if (!s) { replace(readout, h('p', { class: 'readout-idle' }, 'No readings along this drive.')); return; }
+    // Without readings there is nothing to read out; the charts' place says why (failed or empty).
+    if (!s) { replace(readout); readout.hidden = true; return; }
     // Idle, the same readings are shown blank, so the readout keeps its height and the charts never move.
     const idle = i == null;
     const tyre = TYRES.map(([f]) => (idle ? null : val(f, i)));
@@ -268,7 +321,8 @@ export async function mount(ctx) {
         reading('Power', q(val('power_kw', i), 'power'), val('power_kw', i) < 0 ? 'is-regen' : null),
         reading('Battery', q(val('soc_pct', i), 'percent', { digits: 1 })),
         reading('Usable', q(val('usable_soc_pct', i), 'percent', { digits: 1 })),
-        reading(rangeLabel(), q(rangeVals && i != null ? rangeVals[i] : null, 'range')),
+        reading(rangeLine, q(rangeVals && i != null ? rangeVals[i] : null, 'range')),
+        estVals ? reading('Estimated range (from recent driving)', q(i != null ? estVals[i] : null, 'range')) : null,
         hasHeat ? reading('Battery heating', q(val('battery_heat_kw', i), 'power')) : null,
         reading('Outside', q(val('outside_c', i), 'temperature')),
         reading('Cabin', q(val('cabin_c', i), 'temperature')),
@@ -276,7 +330,7 @@ export async function mount(ctx) {
         hasSet ? reading('Set, passenger', setText(val('setpoint_right_c', i))) : null,
         hasClimate ? reading('Climate', CLIMATE[val('climate', i)] || (val('climate', i) == null ? '—' : String(val('climate', i)))) : null,
         hasFan ? reading('Fan', val('fan_level', i) == null ? '—' : val('fan_level', i) === 0 ? 'off' : `step ${format(val('fan_level', i), 'number', { digits: 0 })} of 10`) : null,
-        hasTyres ? reading('Tyres', tyre.every((v) => v == null) ? '—' : tyre.map((v) => format(v, 'pressure', { unit: false })).join(' · ') + ` ${unitLabel('pressure')}`) : null,
+        hasTyres ? reading('Tyres', tyre.every((v) => v == null) ? '—' : [TYRES.map(([, , ab], k) => [h('abbr', { class: 'tyre-ab', title: TYRES[k][1] }, ab), ' ', format(tyre[k], 'pressure', { unit: false })]).flatMap((x, k) => (k ? [' · ', x] : [x])), ` ${unitLabel('pressure')}`]) : null,
         reading('Elevation', q(val('elevation_m', i), 'length')),
         reading('GPS', val('accuracy_m', i) == null ? '—' : ['within ', q(val('accuracy_m', i), 'length')])));
   };
@@ -313,12 +367,53 @@ export async function mount(ctx) {
   };
   const climateKey = h('ul', { class: 'climate-key' }, Object.entries(CLIMATE).map(([k, t]) => h('li', null, h('span', { class: ['climate-swatch', `cl-${k}`], 'aria-hidden': 'true' }), t)));
 
+  // Under each chart's name: mean, lowest and highest in the window shown (the whole drive, or the zoom).
+  // A downsampled bucket's lowest and highest come from its .min and .max columns.
+  const pick = (f) => (typeof f === 'string' ? { mean: V[f], min: V[`${f}.min`] || V[f], max: V[`${f}.max`] || V[f] } : { mean: f, min: f, max: f });
+  const STATS = {
+    speed: [['', ['speed_kph'], 'speed']],
+    power: [['', ['power_kw'], 'power']],
+    soc: [['charge ', ['soc_pct'], 'percent'], has(V.usable_soc_pct) ? ['usable ', ['usable_soc_pct'], 'percent'] : null],
+    range: [[estVals ? `${rangeLine.toLowerCase()} ` : '', [V[rf] && has(V[rf]) ? rf : 'range_km'], 'range'], estVals ? ['estimated ', [estVals], 'range'] : null],
+    heat: [['', ['battery_heat_kw'], 'power']],
+    temp: [['outside ', ['outside_c'], 'temperature'], ['cabin ', ['cabin_c'], 'temperature']],
+    fan: [['', ['fan_level'], 'fan']],
+    tyres: [['all four ', TYRES.map(([f]) => f), 'pressure']],
+    elev: [['', ['elevation_m'], 'length']],
+  };
+  const statText = (v, kind) => (kind === 'fan' ? `step ${format(v, 'number', { digits: 1 })}` : format(v, kind));
+  const drawStats = (idx) => {
+    for (const [key, lines] of Object.entries(STATS)) {
+      const label = charts.querySelector(`.chart-${key} .chart-label`);
+      if (!label) continue;
+      let el = label.querySelector('.chart-stats');
+      if (!el) { el = h('span', { class: 'chart-stats' }); label.append(el); }
+      const out = lines.filter(Boolean).map(([name, fields, kind]) => {
+        let sum = 0, n = 0, lo = null, hi = null;
+        for (const f of fields) {
+          const c = pick(f);
+          for (const i of idx) {
+            const m = c.mean && c.mean[i], a = c.min && c.min[i], b = c.max && c.max[i];
+            if (typeof m === 'number') { sum += m; n++; }
+            if (typeof a === 'number' && (lo == null || a < lo)) lo = a;
+            if (typeof b === 'number' && (hi == null || b > hi)) hi = b;
+          }
+        }
+        const piece = (t) => h('span', { class: 'stat-piece' }, t);
+        return n ? h('span', { class: 'chart-stat' }, name ? h('span', { class: 'stat-name' }, name.trim()) : null,
+          piece(`mean ${statText(sum / n, kind)}`), ' · ', piece(`min ${statText(lo, kind)}`), ' · ', piece(`max ${statText(hi, kind)}`)) : null;
+      }).filter(Boolean);
+      replace(el, ...(out.length ? out : [h('span', { class: 'chart-stat' }, 'no readings in this window')]));
+    }
+  };
+
   // Zoom: the selected part's figures, worked out from the readings in it, and its stretch on the map.
   const onZoom = (from, to) => {
     const full = !s || (from <= s.t_ms[0] + 500 && to >= s.t_ms[s.t_ms.length - 1] - 500);
     resetBtn.disabled = full;
     if (s) drawStrip(full ? s.t_ms[0] : from, full ? s.t_ms[s.t_ms.length - 1] + s.bucket_ms : to);
     const idx = s ? s.t_ms.map((t, i) => (t >= from && t <= to ? i : -1)).filter((i) => i >= 0) : [];
+    if (s) drawStats(full ? s.t_ms.map((t, i) => i) : idx);
     const sel = m && m.map.getSource('sel');
     if (full || idx.length < 2) {
       replace(selected, h('p', { class: 'selected-idle' }, 'Selected part: drag across a chart to pick a stretch of the drive; its duration, distance, speed, energy and climb appear here.'));
@@ -343,12 +438,12 @@ export async function mount(ctx) {
       { key: 'speed', name: 'Speed', kind: 'speed', values: V.speed_kph, colour: '--accent', fill: '--chart-wash', floor: 0, ticks: 4 },
       { key: 'power', name: 'Power', kind: 'power', note: 'use above zero, regen below', values: V.power_kw, colour: '--ink-2', signed: true, ticks: 4 },
       { key: 'soc', name: 'Battery', kind: 'percent', note: has(V.usable_soc_pct) ? 'charge solid, usable dashed (a cold pack locks part away)' : 'this car does not send usable %', values: V.soc_pct, extra: [{ values: V.usable_soc_pct, colour: '--dusk', dash: true }], colour: '--ink', ticks: 4 },
-      { key: 'range', name: rangeLabel(), kind: 'range', values: rangeVals, colour: '--ink-2', ticks: 4 },
+      { key: 'range', name: estVals ? 'Range' : rangeLine, kind: 'range', note: estVals ? [`${rangeLine.toLowerCase()} solid; estimated dashed: `, ...estNote] : null, values: rangeVals, extra: estVals ? [{ values: estVals, colour: '--ochre', dash: true }] : [], colour: '--ink-2', ticks: 4 },
       hasHeat ? { key: 'heat', name: 'Battery heating', kind: 'power', note: 'power the pack spends warming itself; zero when not heating', values: V.battery_heat_kw, colour: '--rust', floor: 0, ticks: 2 } : null,
       { key: 'temp', name: 'Temperatures', kind: 'temperature', note: hasSet ? `outside blue, cabin ochre; set points dashed (driver ochre, passenger red)${setWords ? '; LO and HI leave a gap and are named in the readout' : ''}` : 'outside blue, cabin ochre',
         values: V.outside_c, colour: '--slate', extra: [{ values: V.cabin_c, colour: '--ochre' }, { values: numOnly(V.setpoint_left_c), colour: '--ochre', dash: true }, { values: numOnly(V.setpoint_right_c), colour: '--rust', dash: true }], ticks: 4 },
       hasFan ? { key: 'fan', name: 'Fan', unit: 'step, 0 to 10', note: '0 is off', values: V.fan_level, colour: '--ink-3', floor: 0, ticks: 2, digits: 0 } : null,
-      hasTyres ? { key: 'tyres', name: 'Tyres', kind: 'pressure', note: 'front solid, rear dashed', values: V.tyre_fl_kpa, extra: [{ values: V.tyre_fr_kpa, colour: '--ink-3' }, { values: V.tyre_rl_kpa, colour: '--ink-2', dash: true }, { values: V.tyre_rr_kpa, colour: '--ink-3', dash: true }], colour: '--ink-2', ticks: 3 } : null,
+      hasTyres ? { key: 'tyres', name: 'Tyres', kind: 'pressure', note: 'left grey, right ochre; front solid, rear dashed (FL, FR, RL, RR in the readout)', values: V.tyre_fl_kpa, extra: [{ values: V.tyre_fr_kpa, colour: '--ochre' }, { values: V.tyre_rl_kpa, colour: '--ink-2', dash: true }, { values: V.tyre_rr_kpa, colour: '--ochre', dash: true }], colour: '--ink-2', ticks: 3 } : null,
       { key: 'elev', name: 'Elevation', kind: 'length', note: 'the car’s own reading', values: V.elevation_m, colour: '--ink-3', fill: '--chart-sunk', ticks: 4 },
     ].filter(Boolean);
     const plotted = await stackedCharts(ctx, charts, { tz, t_ms: s.t_ms, states: s.state, rows, onHover, onZoom });
@@ -370,7 +465,9 @@ export async function mount(ctx) {
       column('Power', (r) => val('power_kw', r.i), 'power', { digits: 2 }),
       column('Battery', (r) => val('soc_pct', r.i), 'percent', { digits: 2 }),
       column('Usable battery', (r) => val('usable_soc_pct', r.i), 'percent', { digits: 2 }),
-      column(rangeLabel(), (r) => (rangeVals ? rangeVals[r.i] : null), 'range', { digits: 2 }),
+      column(rangeLine, (r) => (rangeVals ? rangeVals[r.i] : null), 'range', { digits: 2 }),
+      column('Estimated range (from recent driving)', (r) => (estVals ? estVals[r.i] : null), 'range', { digits: 2 }),
+      column('Energy left', (r) => val('energy_remaining_kwh', r.i), 'energy', { digits: 3 }),
       column('Battery heating', (r) => val('battery_heat_kw', r.i), 'power', { digits: 2 }),
       column('Outside', (r) => val('outside_c', r.i), 'temperature', { digits: 1 }),
       column('Cabin', (r) => val('cabin_c', r.i), 'temperature', { digits: 1 }),
@@ -385,11 +482,13 @@ export async function mount(ctx) {
       column('GPS accuracy', (r) => val('accuracy_m', r.i), 'length', { digits: 1 }),
     ]));
   } else if (series && series.error) {
-    replace(charts, errorView(series.error, { eyebrow: 'Readings', retry: () => remount() }));
+    replace(charts, partError(series.error, 'The readings for this drive could not be loaded, so there are no charts.', () => remount()));
     replace(selected);
+    selected.hidden = true;
   } else {
     replace(charts, empty({ title: 'No readings along this drive.', text: d.source === 'teslamate' ? 'Imported drives keep only their totals; the figures above are what there is.' : 'The log for this drive holds no samples. The Data health page shows whether its log arrived and passed its check.' }));
     replace(selected);
+    selected.hidden = true;
   }
 
   // What is missing, and why, under the charts.
@@ -499,4 +598,52 @@ function colourLayers(m, lines, legend, mode) {
     else if (by === 'power') replace(legend, key(POWER_LOOK, powerNames, 'sw-power'));
     else replace(legend, h('p', { class: 'route-plain' }, 'The route in one colour; the highlighted stretch is the part selected on the charts.'));
   };
+}
+
+/**
+ * Time in each speed band: { list: [{ from, to, seconds }], width, unit, local }, from and to in `unit`.
+ * The drive's own bands when the server made them `bandKph` wide (10 of the person's unit); else counted
+ * here from the speed readings (each reading stands for its bucket's time, `local`); with neither, the
+ * server's bands as they came, in km/h.
+ */
+function speedBands(d, s, bandKph) {
+  const unit = unitLabel('speed');
+  const own = (d.speed_bands || []).filter((b) => b.seconds > 0);
+  const served = d.speed_band_kph != null ? Math.abs(d.speed_band_kph - bandKph) < 0.01 : bandKph === 10;
+  if (served) {
+    const u = (v) => (v == null ? null : Math.round(convert(v, 'speed')));
+    return { list: own.map((b) => ({ from: u(b.from_kph), to: u(b.to_kph), seconds: b.seconds })), width: Math.round(convert(bandKph, 'speed')), unit, local: false };
+  }
+  if (!s || !has(s.values.speed_kph)) {
+    const w = d.speed_band_kph || 10;
+    return { list: own.map((b) => ({ from: b.from_kph, to: b.to_kph, seconds: b.seconds })), width: w, unit: 'km/h', local: false };
+  }
+  const w = Math.round(convert(bandKph, 'speed'));
+  const secs = {};
+  const step = (s.bucket_ms || 1000) / 1000;
+  s.values.speed_kph.forEach((v) => {
+    if (v == null) return;
+    const k = Math.floor(convert(v, 'speed') / w);
+    secs[k] = (secs[k] || 0) + step;
+  });
+  const list = Object.keys(secs).map(Number).sort((a, b) => a - b).map((k) => ({ from: k * w, to: (k + 1) * w, seconds: secs[k] }));
+  return { list, width: w, unit, local: true };
+}
+
+/** Hours and minutes in the car's zone, for a file name ("1217"). */
+function hhmm(ms, tz) {
+  const p = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(ms);
+  const get = (t) => (p.find((x) => x.type === t) || {}).value || '00';
+  return `${get('hour')}${get('minute')}`;
+}
+
+/** One part of the page that could not be loaded: what is missing, why, and Try again. */
+function partError(err, title, retry) {
+  const w = errorWords(err);
+  const st = err && err.status;
+  const text = st === 0 || st === 401 || st === 403 || st === 429 || st === 404 ? `${w.title} ${w.text}`
+    : `The server answered with an error${st ? ` (${st})` : ''}; the rest of the page is fine.`;
+  return h('div', { class: 'part-error', role: 'alert' },
+    h('p', { class: 'part-error-title' }, title), h('p', { class: 'note' }, text),
+    retry ? button('Try again', { onclick: retry, iconName: 'reset', kind: 'quiet' }) : null);
 }

@@ -233,6 +233,7 @@ class Drive(Seg):
         self.max_mode = (("LO" if out >= 17 else "HI" if out <= 13 else None)
                          if self.climate_on and h01("mx", car.id, seq) < 0.3 else None)
         self._pw = None
+        self._ps = None
 
     # --- kinematics at time t
     def kin(self, t):
@@ -269,6 +270,37 @@ class Drive(Seg):
         p = f * v
         p = p / 0.88 if p >= 0 else max(-75000.0, p * 0.72)
         return p / 1000 + self.aux_kw
+
+    def _power_scale(self):
+        """(k_use, k_regen): factors on the modelled power so that its 1 Hz readings add up to the drive's own
+        figures (net `energy_full`, regen `energy_full * regen_share`). Worked out once, when first needed, from
+        midpoints about 3 s apart in each stretch of steady acceleration (within a few % of the 1 Hz sum)."""
+        if self._ps is None:
+            use = back = 0.0
+            kt, kv, ks = self.kt, self.kv, self.ks
+            for k in range(len(kt) - 1):
+                dt = kt[k + 1] - kt[k]
+                if dt <= 0:
+                    continue
+                a = (kv[k + 1] - kv[k]) / dt
+                n = max(1, math.ceil(dt / 3))
+                step = dt / n
+                for j in range(n):
+                    u = (j + 0.5) * step
+                    e = self.power(max(0.0, kv[k] + a * u), a, ks[k] + kv[k] * u + a * u * u / 2) * step / 3600
+                    if e >= 0:
+                        use += e
+                    else:
+                        back -= e
+            regen = self.energy_full * self.regen_share if back > 0 else 0.0
+            self._ps = ((self.energy_full + regen) / use if use > 0 else 1.0, regen / back if back > 0 else 1.0)
+        return self._ps
+
+    def scaled_power(self, v, a, s):
+        """The power reading (kW) at speed v, acceleration a and distance s, in step with the drive's figures."""
+        p = self.power(v, a, s)
+        ku, kr = self._power_scale()
+        return p * ku if p >= 0 else p * kr
 
     def _power_peaks(self):
         if self._pw is None:
@@ -344,7 +376,7 @@ class Drive(Seg):
         ty = None if tm else tyres(car, t, out, min(1.0, tau / 900))
         vals.update({
             "speed_kph": round(v * 3.6, 2),
-            "power_kw": round(self.power(v, a, s), 2),
+            "power_kw": round(self.scaled_power(v, a, s), 2),
             "odometer_km": round(self.odo0 + s / 1000, 3),
             "outside_c": round(out, 1),
             "cabin_c": None if legacy and not tm else round(cabin, 1),
@@ -399,6 +431,9 @@ class Drive(Seg):
         if self.cut_ms is not None:
             gap_ms += self.planned_end - self.cut_ms
         (pmax, tmax), (pmin, tmin) = self._power_peaks()
+        ku, kr = self._power_scale()
+        pmax = pmax * ku if pmax >= 0 else pmax * kr
+        pmin = pmin * ku if pmin >= 0 else pmin * kr
         vmax = 0.0
         for k in range(len(self.kt)):
             if self.start + self.kt[k] * 1000 <= end:
