@@ -111,6 +111,9 @@ pub struct RebuildMark {
     pub from_ms: u64,
     pub to_ms: u64,
     pub started_ms: u64,
+    /// Whether the window was cleared (all of it): then carrying on only works on the logs not done again yet.
+    #[serde(default)]
+    pub cleared: bool,
 }
 
 /// A CAN key no car claims yet.

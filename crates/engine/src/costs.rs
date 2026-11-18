@@ -30,6 +30,37 @@ pub fn settle(
     Ok(Some(c))
 }
 
+/// Keeps the costs of a window's charges when it is rebuilt: a charge's id comes from its start, so a late log that
+/// moves the start (or new rules) gives it a new id. Each kept cost of an old charge that is gone goes to the new
+/// charge it overlaps most (a typed cost first, then the larger overlap), unless that one has a cost kept already;
+/// a cost with no new charge to go to stays where it was (the charge may come back).
+pub(crate) fn carry(e: &Engine, car: CarId, old: &[Charge], new: &[Charge]) -> Result<()> {
+    let db = &e.inner.db;
+    let new_ids: std::collections::HashSet<u64> = new.iter().map(|c| c.id).collect();
+    let overlap = |a: &Charge, b: &Charge| {
+        let (x, y) = (a.start_ms.max(b.start_ms), a.end_ms.max(a.start_ms + 1).min(b.end_ms.max(b.start_ms + 1)));
+        y.saturating_sub(x)
+    };
+    let mut moves: Vec<(bool, u64, &Charge, &Charge, CostEntry)> = Vec::new();
+    for o in old.iter().filter(|o| !new_ids.contains(&o.id) && o.source == Source::Can) {
+        let Some(kept) = records::cost(db, car, o.id, o.start_ms)? else { continue };
+        let best = new.iter().map(|n| (overlap(o, n), n)).filter(|(v, _)| *v > 0).max_by_key(|(v, _)| *v);
+        if let Some((v, n)) = best {
+            moves.push((kept.source != "manual", u64::MAX - v, o, n, kept));
+        }
+    }
+    moves.sort_by_key(|m| (m.0, m.1));
+    let mut taken = std::collections::HashSet::new();
+    for (_, _, o, n, kept) in moves {
+        if !taken.insert(n.id) || records::cost(db, car, n.id, n.start_ms)?.is_some() {
+            continue;
+        }
+        records::put_cost(db, car, n.id, n.start_ms, Some(kept))?;
+        records::put_cost(db, car, o.id, o.start_ms, None)?;
+    }
+    Ok(())
+}
+
 /// The cost at the place's price as it is now (nothing kept, nothing written).
 pub fn price_now(e: &Engine, ch: &Charge, curve: &[ChargePoint], car_tz: &str) -> Option<CostEntry> {
     let places = e.places();

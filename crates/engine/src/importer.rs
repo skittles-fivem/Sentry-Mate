@@ -38,8 +38,13 @@ pub enum Match {
 /// Stores an import's rows in the engine's db.
 pub struct DbSink<'a> {
     engine: &'a Engine,
-    /// TeslaMate car id → where it goes. A car not named here goes to the car with the same VIN prefix, else a new car.
+    /// TeslaMate car id → where it goes. A car not named here goes to the one car with the same VIN prefix (when no
+    /// other car of the backup has had it), a new car when no car has it, and is refused as unmatched when that is not
+    /// clear (two cars of the same model, year, plant and make share a prefix: only the serial tells them apart, and
+    /// a car keeps only the prefix). Name every car here to be sure.
     pub matches: HashMap<i64, Match>,
+    /// VIN prefixes matched by the prefix alone in this import, and the TeslaMate car each went with.
+    by_prefix: HashMap<String, i64>,
     /// The currency imported charge costs are in (TeslaMate keeps none).
     pub currency: Option<String>,
     pub reports: Vec<CarReport>,
@@ -56,6 +61,7 @@ impl<'a> DbSink<'a> {
         DbSink {
             engine,
             matches: HashMap::new(),
+            by_prefix: HashMap::new(),
             currency: None,
             reports: Vec::new(),
             made: Vec::new(),
@@ -102,18 +108,45 @@ impl import::Sink for DbSink<'_> {
         let m = match self.matches.get(&tm.tm_id) {
             Some(m) => *m,
             None => {
-                let prefix = tm.vin.as_ref().map(|v| v.vin_prefix.clone());
-                let mut found = None;
-                if let Some(p) = prefix.filter(|p| !p.is_empty()) {
-                    let page =
-                        db.fleet(&db::FleetQuery { search: Some(p.clone()), limit: 50, after: None }).map_err(err)?;
-                    found = page
-                        .cars
-                        .iter()
-                        .find(|e| e.car.vin.as_ref().is_some_and(|v| v.vin_prefix == p))
-                        .map(|e| e.car.id);
+                let prefix = tm.vin.as_ref().map(|v| v.vin_prefix.clone()).filter(|p| !p.is_empty());
+                match prefix {
+                    None => Match::New,
+                    Some(p) => {
+                        let unmatched = || {
+                            err(format!(
+                                "cars_unmatched: TeslaMate car {} shares its VIN prefix with another car; choose which \
+                                 car it is",
+                                tm.tm_id
+                            ))
+                        };
+                        if self.by_prefix.get(&p).is_some_and(|&other| other != tm.tm_id) {
+                            return Err(unmatched());
+                        }
+                        let mut q = db::FleetQuery { search: Some(p.clone()), limit: 50, after: None };
+                        let mut same = Vec::new();
+                        loop {
+                            let page = db.fleet(&q).map_err(err)?;
+                            same.extend(
+                                page.cars
+                                    .iter()
+                                    .filter(|e| e.car.vin.as_ref().is_some_and(|v| v.vin_prefix == p))
+                                    .map(|e| e.car.id),
+                            );
+                            match page.next {
+                                Some(n) => q.after = Some(n),
+                                None => break,
+                            }
+                        }
+                        match same.as_slice() {
+                            [] => Match::New,
+                            [one] => {
+                                self.by_prefix.insert(p, tm.tm_id);
+                                Match::Car(*one)
+                            }
+                            _ => return Err(unmatched()),
+                        }
+                    }
                 }
-                found.map_or(Match::New, Match::Car)
             }
         };
         let car = match m {
@@ -145,6 +178,9 @@ impl import::Sink for DbSink<'_> {
                     })
                     .map_err(err)?;
                 self.made.push(c.id);
+                if let Some(p) = tm.vin.as_ref().map(|v| v.vin_prefix.clone()).filter(|p| !p.is_empty()) {
+                    self.by_prefix.entry(p).or_insert(tm.tm_id);
+                }
                 self.engine.emit(Event::Fleet { car: c.id, change: "added", name: Some(name) });
                 c.id
             }

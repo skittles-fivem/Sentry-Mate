@@ -6,12 +6,15 @@
 //! 1. **Told.** `ingest`'s [`ingest::Judge`] tells the engine of every log whose trust record it writes
 //!    ([`Engine::listener`], given to [`ingest::Judge::on_judged`]), and the engine works on it in the background: a
 //!    bounded number of worker threads ([`Options::workers`]), one log of a car at a time, so uploads never wait on it.
-//! 2. **Its car.** The log's CAN key names the car ([`db::Db::car_for_key`]). A key no car claims makes a new car, or
-//!    waits for an admin ([`Options::new_keys`], [`Engine::assign_key`]).
+//! 2. **Its car.** The log's CAN key names the car ([`db::Db::car_for_key`]). A key no car claims goes to the only
+//!    car, makes the first, or waits for an admin ([`Options::new_keys`], [`Engine::assign_key`]).
 //! 3. **Decoded**, only if its check allows its data ([`ingest::judge::Record::usable`]): `logfmt` → `dbc` with the DBC
 //!    set the car's VIN calls for (looked for in the log's own frames, then its sidecar, while the car has none) →
 //!    one sample a second ([`timeline::read_log`]), written to the car's time series. A log whose check fails is never
-//!    used: it is a hole (unknown, never asleep).
+//!    used: it is a hole (unknown, never asleep), and one that stops being usable (a key distrusted, judged again, even
+//!    while the engine was down) has its data taken out. Where two keys of a car record at once, each second has one
+//!    source: the car's preferred key, else the verified log, else the one with fewer drops. A log whose frames name
+//!    another VIN than the car's (from frames) is left out.
 //! 4. **The window it changes** ([`timeline::rebuild_window`]): back and forward to the nearest settled span or idle
 //!    cut point, so a late or out-of-order log rebuilds only what it touches. The window's states, drives, charges and
 //!    charge points are built ([`timeline::build`]) and replace the CAN rows of the window
@@ -75,11 +78,12 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// What to do with a CAN key no car claims.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NewKeys {
-    /// Make a new car for it (named after its model and VIN prefix until someone names it): a token made for a new
-    /// car does this with its first log.
-    #[default]
+    /// Make a new car for it (named after its model and VIN prefix until someone names it), whatever cars there are.
     NewCar,
-    /// Give it to the car when there is exactly one, else wait for an admin.
+    /// Give it to the car when there is exactly one, make the first car when there is none, else wait for an admin
+    /// (Settings → Cars: "New CAN Bridge seen: which car?"). A new Screenmate, or the app reinstalled, on the only
+    /// car keeps its history in one car.
+    #[default]
     OnlyCarElseWait,
     /// Always wait for an admin ([`Engine::assign_key`]).
     Wait,
@@ -263,8 +267,9 @@ impl Engine {
     /// dirty windows, rebuilds under way), then compares every car's logs with what was recorded, then works on logs
     /// as they are told. Calling it again does nothing.
     pub fn start(&self) -> Result<()> {
-        let Some(rx) = lock(&self.inner.rx).take() else { return Ok(()) };
+        // the runtime first: taking the receiver and then failing would leave every later start a no-op
         let handle = tokio::runtime::Handle::try_current().map_err(|_| Error::NotStarted)?;
+        let Some(rx) = lock(&self.inner.rx).take() else { return Ok(()) };
         *lock(&self.inner.handle) = Some(handle.clone());
         let engine = self.clone();
         handle.spawn(async move { engine.run(rx).await });

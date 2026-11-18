@@ -170,11 +170,20 @@ impl Engine {
             {
                 let l = self.car_lock(car);
                 let _held = lock(&l);
-                let mark = RebuildMark { from_ms: st.from_ms, to_ms: st.to_ms, started_ms: st.started_ms };
+                let mut mark =
+                    RebuildMark { from_ms: st.from_ms, to_ms: st.to_ms, started_ms: st.started_ms, cleared: false };
                 records::put_rebuild_mark(db, car, Some(&mark))?;
                 self.clear_window(car, st.from_ms, st.to_ms)?;
+                mark.cleared = true;
+                records::put_rebuild_mark(db, car, Some(&mark))?;
             }
             self.reconcile_car(car, Some(st))?;
+            if st.cancelled() {
+                // the car's window is cleared: the logs this job did not reach are worked on now, in the background
+                // (only those: what it redid is kept)
+                self.send(crate::Work::Reconcile { car: Some(car) });
+                break;
+            }
         }
         Ok(())
     }
@@ -191,8 +200,8 @@ impl Engine {
         v
     }
 
-    /// Asks a running job to stop after the log it is on. The logs it did not reach are worked on by the next
-    /// [`Engine::reconcile`] (at the latest the next start). Whether there was such a job running.
+    /// Asks a running job to stop after the log it is on. The car it was on gets the logs it did not reach worked on
+    /// at once, as a comparison does (never cleared again); cars it did not start on are left as they were. Whether there was such a job running.
     pub fn cancel(&self, id: u64) -> bool {
         match lock(&self.inner.jobs).get(&id) {
             Some(s) if *lock(&s.status) == JobStatus::Running => {

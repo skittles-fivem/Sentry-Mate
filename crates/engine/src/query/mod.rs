@@ -168,7 +168,8 @@ pub struct List<T> {
 
 #[derive(Serialize, Deserialize)]
 struct CursorBody {
-    k: f64,
+    /// The sort key's bits ([`f64::to_bits`]): an unknown value sorts as -inf, which JSON has no number for.
+    k: u64,
     id: String,
     h: String,
 }
@@ -205,7 +206,7 @@ pub(crate) fn paginate<T>(
             if body.h != h {
                 return Err(bad());
             }
-            let at = (body.k, body.id);
+            let at = (f64::from_bits(body.k), body.id);
             rows.partition_point(|r| cmp(&key(r), &at) != std::cmp::Ordering::Greater)
         }
     };
@@ -215,7 +216,7 @@ pub(crate) fn paginate<T>(
     let next = match rest.last() {
         Some(last) if more => {
             let (k, id) = key(last);
-            let body = CursorBody { k, id, h };
+            let body = CursorBody { k: k.to_bits(), id, h };
             let raw =
                 serde_json::to_vec(&body).map_err(|e| QueryError::Engine(crate::Error::Damaged(e.to_string())))?;
             Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw))
@@ -447,6 +448,27 @@ mod tests {
         let other = paginate(rows, key, true, "b", &Paging { limit: Some(3), after: p2.next }, false);
         assert_eq!(other.unwrap_err().code(), "bad_input");
         assert_eq!(Paging { limit: Some(501), after: None }.limit().unwrap_err().code(), "bad_input");
+    }
+
+    #[test]
+    fn pages_go_on_past_rows_with_unknown_or_odd_keys() {
+        let keys = [f64::NEG_INFINITY, f64::NEG_INFINITY, 1.5, f64::INFINITY, -0.0, f64::NEG_INFINITY, 3.0];
+        let rows: Vec<(f64, String)> = keys.iter().enumerate().map(|(i, &k)| (k, format!("{i}"))).collect();
+        let key = |r: &(f64, String)| r.clone();
+        for desc in [true, false] {
+            let mut seen = Vec::new();
+            let mut after = None;
+            loop {
+                let p = paginate(rows.clone(), key, desc, "a", &Paging { limit: Some(2), after }, false).unwrap();
+                seen.extend(p.items.into_iter().map(|r| r.1));
+                match p.next {
+                    Some(n) => after = Some(n),
+                    None => break,
+                }
+            }
+            seen.sort();
+            assert_eq!(seen, (0..7).map(|i| i.to_string()).collect::<Vec<_>>(), "desc={desc}");
+        }
     }
 
     #[test]

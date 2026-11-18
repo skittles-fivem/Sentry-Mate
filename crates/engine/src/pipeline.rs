@@ -39,7 +39,7 @@ pub(crate) fn name_from_vin(v: &VinInfo) -> String {
     }
 }
 
-fn status_word(s: &ingest::judge::Status) -> &'static str {
+pub(crate) fn status_word(s: &ingest::judge::Status) -> &'static str {
     use ingest::judge::Status;
     match s {
         Status::Verified => "verified",
@@ -50,6 +50,36 @@ fn status_word(s: &ingest::judge::Status) -> &'static str {
     }
 }
 
+/// Whether a log's entry is still what working on it now would give: its check allows its data the same way (a key
+/// distrusted, a log judged again, or the owner's "use it anyway" all change that), and it was decoded with these
+/// rules and this DBC set.
+pub(crate) fn fresh(e: &LogEntry, r: &ingest::judge::Record, profile: &str) -> bool {
+    e.usable == r.usable() && e.status == status_word(&r.status) && e.rules == records::rules() && e.profile == profile
+}
+
+/// Where a log's data goes when it was left out: the span its sidecar names, else a minute from its name's start.
+fn side_span(side: &serde_json::Value, start: u64) -> (u64, u64) {
+    let f = timeline::LogFacts::from_sidecar(side);
+    if f.start_ms > 0 && f.end_ms > f.start_ms { (f.start_ms, f.end_ms) } else { (start, start + 60_000) }
+}
+
+/// How a log ranks as the one source of a span its key shares with another key's (lower first): the car's preferred
+/// key, else a verified log, else the one with fewer drops; then the key and the start, so the choice is the same
+/// every time.
+type Rank = (bool, bool, u32, String, u64);
+
+fn rank(c: &Car, key: &str, status: &str, dropped: u32, start: u64) -> Rank {
+    (c.preferred_key.as_deref() != Some(key), status != "verified", dropped, key.to_string(), start)
+}
+
+/// The samples a log decoded with, to write.
+pub(crate) struct Mine<'a> {
+    pub key: &'a str,
+    pub status: &'a str,
+    pub dropped: u32,
+    pub samples: &'a [Sample],
+}
+
 /// Merges `new` points into `old` by time (`new` wins), sorted.
 pub(crate) fn merge_points<P: db::Point>(old: Vec<P>, new: &[P]) -> Vec<P> {
     let mut by: std::collections::BTreeMap<u64, P> = old.into_iter().map(|p| (p.t_ms(), p)).collect();
@@ -57,6 +87,14 @@ pub(crate) fn merge_points<P: db::Point>(old: Vec<P>, new: &[P]) -> Vec<P> {
         by.insert(p.t_ms(), p.clone());
     }
     by.into_values().collect()
+}
+
+/// Whether a log's own frames name another car than the one whose VIN came from frames.
+fn other_vin(c: &Car, seen: Option<&VinInfo>) -> bool {
+    match (&c.vin, seen) {
+        (Some(have), Some(v)) => have.via != 0 && v.via != 0 && have.vin_prefix != v.vin_prefix,
+        _ => false,
+    }
 }
 
 /// All rows of a table of a car meeting `[from_ms, to_ms)`, oldest first.
@@ -94,6 +132,7 @@ impl Engine {
         let cars = db.fleet(&db::FleetQuery { search: None, limit: 2, after: None })?.cars;
         let take = match self.inner.opts.new_keys {
             NewKeys::NewCar => Some(None),
+            NewKeys::OnlyCarElseWait if cars.is_empty() => Some(None),
             NewKeys::OnlyCarElseWait if cars.len() == 1 => cars.first().map(|e| Some(e.car.id)),
             _ => None,
         };
@@ -119,6 +158,10 @@ impl Engine {
                 Ok(Some(id))
             }
             None => {
+                // counted from the key's records, so telling it again (or a restart) counts no log twice
+                let book = self.handle()?.block_on(self.inner.judge.book(key));
+                let waiting = book.logs.values().filter(|r| r.status != ingest::judge::Status::Waiting).count();
+                let newest = book.logs.values().map(|r| r.arrived_ms).max();
                 let mut w = records::waiting_keys(db)?;
                 let now = now_ms();
                 let e = w.entry(key.to_string()).or_insert(records::WaitingKey {
@@ -126,8 +169,8 @@ impl Engine {
                     last_upload_ms: now,
                     logs_waiting: 0,
                 });
-                e.last_upload_ms = now;
-                e.logs_waiting = e.logs_waiting.saturating_add(1);
+                e.last_upload_ms = newest.unwrap_or(now).max(e.last_upload_ms);
+                e.logs_waiting = waiting as u64;
                 records::put_waiting_keys(db, &w)?;
                 Ok(None)
             }
@@ -162,6 +205,7 @@ impl Engine {
         {
             let _one = lock(&self.inner.claim);
             let db = &self.inner.db;
+            db.car(car)?.ok_or(db::Error::NoSuchCar(car))?;
             if let Some(other) = db.car_for_key(key)?.filter(|&o| o != car)
                 && let Some(mut o) = db.car(other)?
             {
@@ -170,10 +214,69 @@ impl Engine {
                     o.preferred_key = None;
                 }
                 db.update_car(o)?;
+                // what the key's logs gave the car it leaves goes with it: its trips and positions are the other car's
+                let l = self.car_lock(other);
+                let _held = lock(&l);
+                self.drop_key(other, key)?;
             }
             self.add_key(car, key)?;
         }
         self.reconcile(Some(car));
+        Ok(())
+    }
+
+    /// Takes out of `car` everything one key's logs gave it (the car's lock held): their entries, their samples (the
+    /// car's other keys' come back where they shared seconds) and the windows they were in, rebuilt without them.
+    fn drop_key(&self, car: CarId, key: &str) -> Result<()> {
+        let db = &self.inner.db;
+        let Some(c) = db.car(car)? else { return Ok(()) };
+        let mut meta = records::meta(db, car)?;
+        let mut spans = Vec::new();
+        let mut sample_spans = Vec::new();
+        for d in meta.days.clone() {
+            let mut rec = records::day(db, car, d)?;
+            let before = rec.logs.len();
+            rec.logs.retain(|_, e| {
+                if e.key != key {
+                    return true;
+                }
+                spans.push(e.span());
+                match &e.outcome {
+                    Outcome::Decoded { samples_from_ms, samples_to_ms, .. } => {
+                        meta.decoded = meta.decoded.saturating_sub(1);
+                        if let (Some(a), Some(b)) = (samples_from_ms, samples_to_ms) {
+                            sample_spans.push((*a, *b));
+                        }
+                    }
+                    Outcome::Hole { .. } => meta.holes = meta.holes.saturating_sub(1),
+                }
+                false
+            });
+            if rec.logs.len() != before {
+                records::put_day(db, car, d, &rec)?;
+                if rec.logs.is_empty() && rec.cuts.is_empty() {
+                    meta.days.remove(&d);
+                }
+            }
+        }
+        if spans.is_empty() {
+            return Ok(());
+        }
+        records::put_meta(db, car, &meta)?;
+        let spans = join_spans(spans);
+        // noted dirty first: a crash part way rebuilds them on the next start
+        let mut dirty = records::dirty(db, car)?;
+        dirty.extend(spans.iter().copied());
+        records::put_dirty(db, car, &dirty)?;
+        for (a, b) in join_spans(sample_spans) {
+            self.write_samples(car, &c, "", a, b, None)?;
+        }
+        for &(a, b) in &spans {
+            self.rebuild_span(car, &mut meta, a, b)?;
+        }
+        let mut dirty = records::dirty(db, car)?;
+        dirty.retain(|s| !spans.contains(s));
+        records::put_dirty(db, car, &dirty)?;
         Ok(())
     }
 
@@ -198,17 +301,24 @@ impl Engine {
         let Some(mut c) = db.car(car)? else { return Ok(()) };
         let old = records::entry(db, car, name)?;
         let usable = record.usable();
+        let status = status_word(&record.status);
         if !force
             && let Some(e) = &old
-            && e.usable == usable
-            && e.rules == records::rules()
-            && e.profile == c.profile().dbc_name()
+            && fresh(e, &record, c.profile().dbc_name())
         {
             return Ok(());
         }
         let began = Instant::now();
         let read = |n: &str| rt.block_on(self.inner.store.read(n)).map_err(|e| Error::Store(e.to_string()));
         let mut profile_changed = false;
+        let old_samples = match &old {
+            Some(LogEntry {
+                outcome: Outcome::Decoded { samples_from_ms: Some(a), samples_to_ms: Some(b), .. },
+                ..
+            }) => Some((*a, *b)),
+            _ => None,
+        };
+        let mut wrote_samples = false;
         let outcome = if usable {
             match read(name)? {
                 None => Outcome::Hole { from_ms: start, to_ms: start + 60_000, reason: "not_stored".into() },
@@ -216,11 +326,21 @@ impl Engine {
                     let side: serde_json::Value = read(&format!("{name}.json"))?
                         .and_then(|b| serde_json::from_slice(&b).ok())
                         .unwrap_or_default();
-                    if c.vin.is_none()
-                        && let Some(v) = log_vin(&bytes).or_else(|| sidecar_vin(&side))
+                    // the VIN: from the log's own frames (signed with the log), else its sidecar while the car has
+                    // none; a VIN from a sidecar (`via` 0) gives way to one from frames
+                    let from_sidecar = c.vin.as_ref().is_none_or(|v| v.via == 0);
+                    let seen = if from_sidecar { log_vin(&bytes) } else { None };
+                    let seen = match seen {
+                        Some(v) => Some(v),
+                        None if c.vin.is_none() => sidecar_vin(&side),
+                        None => None,
+                    };
+                    if let Some(v) = seen
+                        && c.vin.as_ref() != Some(&v)
+                        && (c.vin.is_none() || v.via != 0)
                     {
                         let before = c.profile();
-                        if c.name == NEW_CAR_NAME {
+                        if c.name == NEW_CAR_NAME || c.vin.as_ref().is_some_and(|o| c.name == name_from_vin(o)) {
                             c.name = name_from_vin(&v);
                         }
                         c.vin = Some(v);
@@ -230,14 +350,23 @@ impl Engine {
                     }
                     let profile = dbc::Profile::from_name(c.profile().dbc_name());
                     match timeline::read_log(&bytes, &side, profile, self.inner.opts.sample) {
+                        Ok(r) if other_vin(&c, r.vin.as_ref()) => {
+                            tracing::warn!(
+                                "car {car}: log {name} names another car's VIN than the car's; it is left out"
+                            );
+                            let (a, b) = side_span(&side, start);
+                            Outcome::Hole { from_ms: a, to_ms: b, reason: "other_vin".into() }
+                        }
                         Ok(r) => {
                             let (from, to) = match (r.samples.first(), r.samples.last()) {
                                 (Some(a), Some(b)) => (Some(a.t_ms), Some(b.t_ms + 1000)),
                                 _ => (None, None),
                             };
                             if let (Some(a), Some(b)) = (from, to) {
-                                let had = db.read_points::<Sample>(car, Source::Can, a, b)?;
-                                db.write_points(car, Source::Can, a, b, &merge_points(had, &r.samples))?;
+                                let (a, b) = old_samples.map_or((a, b), |(x, y)| (a.min(x), b.max(y)));
+                                let mine = Mine { key, status, dropped: r.facts.dropped, samples: &r.samples };
+                                self.write_samples(car, &c, name, a, b, Some(mine))?;
+                                wrote_samples = true;
                             }
                             let n = u32::try_from(r.samples.len()).unwrap_or(u32::MAX);
                             self.note_now(car, &c, &r.samples)?;
@@ -252,18 +381,15 @@ impl Engine {
         } else {
             let side: serde_json::Value =
                 read(&format!("{name}.json"))?.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-            let f = timeline::LogFacts::from_sidecar(&side);
-            let (a, b) =
-                if f.start_ms > 0 && f.end_ms > f.start_ms { (f.start_ms, f.end_ms) } else { (start, start + 60_000) };
+            let (a, b) = side_span(&side, start);
             Outcome::Hole { from_ms: a, to_ms: b, reason: "failed_check".into() }
         };
-        // a log whose data was used before and is not now: its samples go
-        if let Some(LogEntry {
-            outcome: Outcome::Decoded { samples_from_ms: Some(a), samples_to_ms: Some(b), .. }, ..
-        }) = &old
-            && !matches!(outcome, Outcome::Decoded { .. })
+        // a log whose data was used before and is not now: its samples go, and the other logs' that share its
+        // seconds come back
+        if let Some((a, b)) = old_samples
+            && !wrote_samples
         {
-            db.write_points::<Sample>(car, Source::Can, *a, *b, &[])?;
+            self.write_samples(car, &c, name, a, b, None)?;
         }
         let decoded = matches!(outcome, Outcome::Decoded { .. });
         let entry = LogEntry {
@@ -272,7 +398,7 @@ impl Engine {
             profile: c.profile().dbc_name().to_string(),
             rules: records::rules(),
             usable,
-            status: status_word(&record.status).to_string(),
+            status: status.to_string(),
             reason: record.reason.clone(),
             done_ms: now_ms(),
         };
@@ -293,12 +419,15 @@ impl Engine {
         meta.days.insert(d);
         meta.first_ms = Some(meta.first_ms.map_or(span.0, |f| f.min(span.0)));
         meta.newest_ms = Some(meta.newest_ms.map_or(span.1, |n| n.max(span.1)));
-        if old.is_none() {
-            if decoded {
-                meta.decoded += 1;
-            } else {
-                meta.holes += 1;
-            }
+        match old.as_ref().map(|o| &o.outcome) {
+            Some(Outcome::Decoded { .. }) => meta.decoded = meta.decoded.saturating_sub(1),
+            Some(Outcome::Hole { .. }) => meta.holes = meta.holes.saturating_sub(1),
+            None => {}
+        }
+        if decoded {
+            meta.decoded += 1;
+        } else {
+            meta.holes += 1;
         }
         let counter = if decoded { &self.inner.counters.decoded } else { &self.inner.counters.left_out };
         counter.fetch_add(1, Ordering::Relaxed);
@@ -319,6 +448,93 @@ impl Engine {
             self.send(Work::Reconcile { car: Some(car) });
         }
         Ok(())
+    }
+
+    /// Writes the CAN samples of `[a, b)` after the log `me` was decoded (`mine`, its samples) or is no longer used
+    /// (`None`). Each second has one source: of the decoded logs covering it, the best ranked ([`rank`]), so two keys
+    /// recording at once never interleave, and a log taken out gives its seconds back to the others' samples. Only
+    /// when another key's log shares the span (or a log goes) are the other logs decoded again; logs of one key meet
+    /// at most on the second they share.
+    pub(crate) fn write_samples(
+        &self,
+        car: CarId,
+        c: &Car,
+        me: &str,
+        a: u64,
+        b: u64,
+        mine: Option<Mine<'_>>,
+    ) -> Result<()> {
+        if a >= b {
+            return Ok(());
+        }
+        let db = &self.inner.db;
+        let meta = records::meta(db, car)?;
+        // a log's samples can start a little before its span (frames queued before it opened)
+        let near = records::entries_between(db, car, &meta, a.saturating_sub(10 * 60_000), b.saturating_add(60_000))?;
+        let others: Vec<(String, LogEntry, (u64, u64))> = near
+            .into_iter()
+            .filter(|(n, _)| n != me)
+            .filter_map(|(n, e)| match &e.outcome {
+                Outcome::Decoded { samples_from_ms: Some(x), samples_to_ms: Some(y), .. } if *y > a && *x < b => {
+                    let s = (*x, *y);
+                    Some((n, e, s))
+                }
+                _ => None,
+            })
+            .collect();
+        if let Some(m) = &mine
+            && others.iter().all(|(_, e, _)| e.key == m.key)
+        {
+            let merged = if others.is_empty() {
+                m.samples.to_vec()
+            } else {
+                merge_points(db.read_points::<Sample>(car, Source::Can, a, b)?, m.samples)
+            };
+            db.write_points(car, Source::Can, a, b, &merged)?;
+            return Ok(());
+        }
+        let mut cands: Vec<(Rank, (u64, u64), Vec<Sample>)> = Vec::new();
+        if let Some(m) = &mine
+            && let (Some(x), Some(y)) = (m.samples.first(), m.samples.last())
+        {
+            let start = records::name_start_ms(me).unwrap_or(x.t_ms);
+            cands.push((rank(c, m.key, m.status, m.dropped, start), (x.t_ms, y.t_ms + 1000), m.samples.to_vec()));
+        }
+        for (n, e, span) in &others {
+            let Outcome::Decoded { facts, .. } = &e.outcome else { continue };
+            let Some(samples) = self.decode_samples(c, n)? else { continue };
+            let start = records::name_start_ms(n).unwrap_or(span.0);
+            cands.push((rank(c, &e.key, &e.status, facts.dropped, start), *span, samples));
+        }
+        // worst first: each better log takes its whole span over
+        cands.sort_by(|x, y| y.0.cmp(&x.0));
+        let mut by: std::collections::BTreeMap<u64, Sample> = std::collections::BTreeMap::new();
+        for (_, (x, y), samples) in cands {
+            let (x, y) = (x.max(a), y.min(b));
+            if x < y {
+                let drop: Vec<u64> = by.range(x..y).map(|(t, _)| *t).collect();
+                for t in drop {
+                    by.remove(&t);
+                }
+            }
+            for p in samples.into_iter().filter(|p| p.t_ms >= a && p.t_ms < b) {
+                by.insert(p.t_ms, p);
+            }
+        }
+        let points: Vec<Sample> = by.into_values().collect();
+        db.write_points(car, Source::Can, a, b, &points)?;
+        Ok(())
+    }
+
+    /// A stored log's samples, decoded again with the car's DBC set (`None` when it is gone or can't be read).
+    fn decode_samples(&self, c: &Car, name: &str) -> Result<Option<Vec<Sample>>> {
+        let rt = self.handle()?;
+        let read = |n: &str| rt.block_on(self.inner.store.read(n)).map_err(|e| Error::Store(e.to_string()));
+        let Some(bytes) = read(name)? else { return Ok(None) };
+        let side: serde_json::Value =
+            read(&format!("{name}.json"))?.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let profile = dbc::Profile::from_name(c.profile().dbc_name());
+        Ok(timeline::read_log(&bytes, &side, profile, self.inner.opts.sample).ok().map(|r| r.samples))
     }
 
     /// The car's newest values, from a log's samples (newer ones than those kept only).
@@ -412,6 +628,12 @@ impl Engine {
         points.sort_by_key(|p| p.t_ms);
         points.dedup_by_key(|p| p.t_ms);
         let newest = meta.newest_ms.unwrap_or(0);
+        // the costs the window's charges keep, carried to the charges they became
+        let old: Vec<Charge> = all_rows::<Charge>(db, car, from, to, Some(Source::Can))?
+            .into_iter()
+            .filter(|c| c.start_ms >= from && c.start_ms < to)
+            .collect();
+        crate::costs::carry(self, car, &old, &charges)?;
         for ch in &mut charges {
             ch.place = ch.position.as_ref().and_then(|p| places.place_at(p.lat, p.lon)).map(|p| p.id);
             let curve: Vec<ChargePoint> =
@@ -508,10 +730,14 @@ impl Engine {
         let rt = self.handle()?;
         let Some(c) = db.car(car)? else { return Ok(()) };
         // a rebuild cut off by a restart: its clearing again (it is the same every time), then its logs below
-        if let Some(m) = records::rebuild_mark(db, car)? {
+        if let Some(mut m) = records::rebuild_mark(db, car)?
+            && !m.cleared
+        {
             let l = self.car_lock(car);
             let _held = lock(&l);
             self.clear_window(car, m.from_ms, m.to_ms)?;
+            m.cleared = true;
+            records::put_rebuild_mark(db, car, Some(&m))?;
         }
         // windows a crash left between their writing and their rebuild
         {
@@ -526,7 +752,7 @@ impl Engine {
                 records::put_dirty(db, car, &[])?;
             }
         }
-        let mut todo: Vec<(u64, String, String)> = Vec::new();
+        let mut todo: Vec<(u64, String, String, ingest::judge::Record)> = Vec::new();
         for key in &c.vehicle_keys {
             let book = rt.block_on(self.inner.judge.book(key));
             for (name, r) in book.logs {
@@ -534,23 +760,22 @@ impl Engine {
                     continue;
                 }
                 let Some(start) = records::name_start_ms(&name) else { continue };
-                todo.push((start, key.clone(), name));
+                todo.push((start, key.clone(), name, r));
             }
         }
-        todo.sort();
+        todo.sort_by(|x, y| (x.0, &x.1, &x.2).cmp(&(y.0, &y.1, &y.2)));
         // only those not recorded the same way (read per day, so this is cheap)
         let mut day_cache: Option<(u32, records::DayRec)> = None;
         let profile = c.profile().dbc_name();
         let mut wanted = Vec::new();
-        for (start, key, name) in todo {
+        for (start, key, name, r) in todo {
             let d = records::day_of(start);
             if day_cache.as_ref().is_none_or(|(cd, _)| *cd != d) {
                 day_cache = Some((d, records::day(db, car, d)?));
             }
             let rec = day_cache.as_ref().map(|(_, r)| r);
-            let fresh = rec
-                .and_then(|r| r.logs.get(&name))
-                .is_some_and(|e| e.rules == records::rules() && e.profile == profile);
+            // also a log whose check changed while no one was told (a key distrusted, a log judged again)
+            let fresh = rec.and_then(|d| d.logs.get(&name)).is_some_and(|e| fresh(e, &r, profile));
             if !fresh {
                 wanted.push((key, name));
             }
@@ -592,11 +817,17 @@ impl Engine {
             .collect();
         for d in days {
             let mut rec = records::day(db, car, d)?;
-            let before = rec.logs.len();
-            rec.logs.retain(|name, _| records::name_start_ms(name).is_none_or(|s| s < from_ms || s >= to_ms));
-            let gone = (before - rec.logs.len()) as u64;
+            rec.logs.retain(|name, e| {
+                let keep = records::name_start_ms(name).is_none_or(|s| s < from_ms || s >= to_ms);
+                if !keep {
+                    match e.outcome {
+                        Outcome::Decoded { .. } => meta.decoded = meta.decoded.saturating_sub(1),
+                        Outcome::Hole { .. } => meta.holes = meta.holes.saturating_sub(1),
+                    }
+                }
+                keep
+            });
             rec.cuts.retain(|&c| c < from_ms || c >= to_ms);
-            meta.decoded = meta.decoded.saturating_sub(gone);
             records::put_day(db, car, d, &rec)?;
             if rec.logs.is_empty() && rec.cuts.is_empty() {
                 meta.days.remove(&d);
@@ -606,6 +837,20 @@ impl Engine {
         self.emit(Event::Rows { car, kinds: vec!["drives", "charges", "states", "visits"], from_ms, to_ms });
         Ok(())
     }
+}
+
+/// Spans joined where they meet or lie close (an hour apart), each at most a day long, so a key's many logs give a
+/// few windows to rebuild, none too large to hold.
+fn join_spans(mut spans: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    spans.sort_unstable();
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    for (a, b) in spans {
+        match out.last_mut() {
+            Some(l) if a <= l.1.saturating_add(3_600_000) && b.max(l.1) - l.0 <= DAY_MS => l.1 = l.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
 }
 
 /// Each value of `s` that is there over `to`.
