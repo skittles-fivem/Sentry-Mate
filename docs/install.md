@@ -44,9 +44,14 @@ It runs next to Sentry Six Manager on the same server: that one uses ports
 **Keep keys apart from data.** Give it its own folder, on another disk if
 you can, and never put it in the same backup as the data. With both, anyone
 can open the data. With the data alone, nobody can without the recovery key.
-Sentry Mate refuses a keys folder inside the data folder when it can see it,
-but it can't see it from inside the container when the keys folder on the
-server is inside the data folder: don't do that.
+Sentry Mate refuses a keys folder that is the data folder, or a folder right
+inside it on the server. It can't see one deeper inside: don't do that
+either.
+
+**Both must be mounted**, each with its own line under `volumes:`. Without
+one, Sentry Mate does not start, and the log says which line to add. A
+folder that is not mounted would be lost with the container at the next
+update, and the key file with it.
 
 **Both belong to the user Sentry Mate runs as**, and nobody else needs them:
 1000:1000 with Docker Compose (the image's own user), 568:568 on TrueNAS (its
@@ -523,6 +528,7 @@ variables it reads:
 | `SENTRY_MATE_NAMES` | Names or addresses of the server for the certificate, comma separated (the OPTIONAL lines in both files). Read only when the certificate is made, on first start. The bridge pins the SHA-256 and does not check names, so it can stay off. |
 | `RUST_LOG` | How much it logs: `info` (the default), or `warn` for less. `warn` also hides the line with the certificate SHA-256; `fingerprint` still prints it. |
 | `SENTRY_MATE_DATA`, `SENTRY_MATE_KEYS`, `SENTRY_MATE_UPLOAD_PORT`, `SENTRY_MATE_BIND` | `/data`, `/keys`, `10100` and `0.0.0.0`. Leave them: change the folders in the volume lines and the port in the left number instead. |
+| `SENTRY_MATE_REQUIRE_MOUNTS` | `1` in the image: it starts only when the data and keys folders are each mounted from the server. Leave it. |
 
 Times in the log are UTC. It does not read `TZ`.
 
@@ -537,6 +543,9 @@ stopping, `docker compose ps` shows `Restarting`.
 | `Sentry Mate runs as uid 1000 (group 1000) and can't write to the data folder /data: it belongs to uid 0 (group 0), root.` (and the same for the keys folder) | The folders belong to root: Docker made them because they were missing, or they were made with `sudo`. Docker Compose, in the folder with `docker-compose.yml`: `sudo chown 1000:1000 data keys && sudo chmod 700 data keys` (or the paths in your volume lines). TrueNAS: `sudo chown 568:568` and `sudo chmod 700` on the two datasets' paths. It starts again by itself within a minute, or run `docker compose restart`. |
 | `... it belongs to uid 1000 (group 1000).` and `Or run Sentry Mate as the folder's owner: user: "1000:1000"` | The folders come from an install that ran as another user (Docker Compose 1000, TrueNAS 568). Give them to the user it runs as now, with `sudo chown -R`. |
 | `Permission denied (os error 13)`, then `the data and keys folders and everything in them must belong to it` | Something inside the folders belongs to another user, most often after a move with a `chown` without `-R`. Run the `sudo chown -R` it gives. |
+| `the data folder /data and the keys folder /keys are not mounted` (or `the keys folder /keys is not mounted`, or the same for the data folder) | A volume line is missing, or its right side is not `:/data` or `:/keys`. Add the lines the log shows under `volumes:` (TrueNAS: with your datasets' paths), then `docker compose up -d` (TrueNAS: *Edit* the app, *Save*). Nothing was written. |
+| `the keys folder /keys is a folder inside the data folder on the server (it is /data/keys here)` | The keys line points into the data folder (TrueNAS: the keys dataset is inside the data dataset). Make a folder of its own next to the data one, copy what is in the old keys folder into it, and put its path in the keys line ([Moving the folders on this server](#moving-the-folders-on-this-server)). Then delete the old keys folder from the data folder. |
+| `the keys folder /keys and the data folder /data are the same folder of the server` | Both volume lines have the same path. Make a folder of its own for the keys, give it to the user (`sudo chown 1000:1000` and `sudo chmod 700`; TrueNAS: 568), and put its path in the keys line. If the data folder has `sentry-mate.key` in it, move that file into the new folder first (`sudo mv`), and `RECOVERY-KEY.txt` too if it is there. |
 | `the data folder /data is read-only` | The volume line ends in `:ro`: remove it. |
 | `the key file is missing: restore it with the recovery key` | The keys folder is empty: a wrong path in the keys line, a disk that isn't there, or the key file is lost. Fix the path, or [restore](#restore) (with Sentry Mate stopped: not with `docker exec`). |
 | `the keys folder has a key file (/keys/sentry-mate.key), but the data folder /data has no vault` | The data folder is empty or not the right one: a wrong path in the data line, a disk that isn't there, or a backup that didn't go in. Sentry Mate makes no new vault over a key file, which may open your data. Fix the path, or put the data back (`sudo ls data` must show `vault.json`). To start over with no data on purpose, delete the key file. |

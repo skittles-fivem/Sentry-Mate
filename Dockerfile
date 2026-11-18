@@ -3,9 +3,15 @@
 #   docker build -t ghcr.io/skittles-fivem/sentry-mate:latest .
 #
 # The same file builds for amd64 and arm64, each on a machine of its kind
-# (.github/workflows/image.yml). Data in /data (sealed), the key file in /keys
-# (a volume of its own). It runs as 1000:1000; TrueNAS runs it as its apps
-# user with user: "568:568". The folders must belong to that user.
+# (.github/workflows/image.yml). Data in /data (sealed), the key file in /keys.
+# It runs as 1000:1000; TrueNAS runs it as its apps user with user: "568:568".
+# The folders must belong to that user.
+#
+# Both folders must be mounted from the server. There is no VOLUME, and with
+# SENTRY_MATE_REQUIRE_MOUNTS=1 each command that uses them first checks that
+# each is a mount of its own: a folder left out of the compose file stops it
+# with the line to add, instead of being lost with the container (the key
+# file with it). The empty /data and /keys below are only where they go.
 
 # The manifests only, with empty sources: the layers that fetch and build
 # the dependencies are made again only when a Cargo.toml or Cargo.lock
@@ -46,10 +52,9 @@ COPY --from=build /src/target/release/sentry-mate /sentry-mate
 COPY --from=build --chown=1000:1000 /out/data /data
 COPY --from=build --chown=1000:1000 /out/keys /keys
 USER 1000:1000
-ENV SENTRY_MATE_DATA=/data SENTRY_MATE_KEYS=/keys
+ENV SENTRY_MATE_DATA=/data SENTRY_MATE_KEYS=/keys SENTRY_MATE_REQUIRE_MOUNTS=1
 # CAN Bridge uploads, HTTPS (TLS 1.3 only). (9100, the web UI, is not built yet.)
 EXPOSE 10100
-VOLUME ["/data", "/keys"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=2s CMD ["/sentry-mate", "health"]
 ARG BUILD_NUMBER=""
 ARG GIT_SHA=""

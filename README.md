@@ -406,15 +406,17 @@ Each is an environment variable (under `environment:` in `docker-compose.yml`) o
 | Variable | Flag | Default | What it is |
 |---|---|---|---|
 | `SENTRY_MATE_DATA` | `--data` | `/data` | The data folder. |
-| `SENTRY_MATE_KEYS` | `--keys` | `/keys` | The keys folder. Refused inside the data folder. |
+| `SENTRY_MATE_KEYS` | `--keys` | `/keys` | The keys folder. Refused inside the data folder, and when it is the data folder or a folder right inside it on the server (compared by device and inode, through the mounts). |
 | `SENTRY_MATE_UPLOAD_PORT` | `--upload-port` | `10100` | The upload port. Also the port `token new` prints and `health` checks. Change the port mapping with it. |
 | `SENTRY_MATE_BIND` | `--bind` (`serve`) | `0.0.0.0` | The address to listen on. `health` connects to 127.0.0.1, so in Docker keep the default: another address makes the container unhealthy. |
 | `SENTRY_MATE_NAMES` | `--names` (`serve`) | none | Names or addresses for the certificate, comma separated. Used only when the certificate is made. |
+| `SENTRY_MATE_REQUIRE_MOUNTS` | | not set (`1` in the image) | When set (not `0`): every command that uses the data and keys folders first checks, in `/proc/self/mountinfo`, that each is a mount of its own, and stops with the volume line to add if not. |
 | `RUST_LOG` | | `info` | How much to log, for example `debug`. The log goes to standard error. |
 
-The image sets `SENTRY_MATE_DATA` and `SENTRY_MATE_KEYS`. The certificate is normally made by the first `serve`;
-`token new` and `fingerprint` make it without names if it isn't there yet. `TZ` in the compose file is not used by
-the program yet.
+The image sets `SENTRY_MATE_DATA`, `SENTRY_MATE_KEYS` and `SENTRY_MATE_REQUIRE_MOUNTS`, and has no `VOLUME`: a
+folder left out of the compose file stops it at once instead of going into an anonymous volume. The certificate is
+normally made by the first `serve`; `token new` and `fingerprint` make it without names if it isn't there yet. `TZ`
+in the compose file is not used by the program yet.
 
 ## Ports and files
 

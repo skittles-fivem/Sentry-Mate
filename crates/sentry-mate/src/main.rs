@@ -139,7 +139,8 @@ async fn main() -> ExitCode {
         .init();
     let cli = Cli::parse();
     let (data, keys) = (cli.data.clone(), cli.keys.clone());
-    match run(cli).await {
+    let mounts = folders::mounts_required(std::env::var_os("SENTRY_MATE_REQUIRE_MOUNTS").as_deref());
+    match run(cli, mounts).await {
         Ok(code) => code,
         Err(e) => {
             eprintln!("sentry-mate: {e}");
@@ -182,19 +183,19 @@ fn needs(cmd: &Cmd) -> Option<(bool, bool)> {
     }
 }
 
-async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
+/// Runs a command. `mounts`: the data and keys folders must each be a mount of their own (`SENTRY_MATE_REQUIRE_MOUNTS`,
+/// set in the image), checked before any command that uses them.
+async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let (data, keys) = (cli.data, cli.keys);
-    if let Some((data_write, keys_write)) = needs(&cli.cmd) {
-        // both checked, so that both are named when both are wrong (two folders Docker made as root)
-        let mut wrong = Vec::new();
-        wrong.extend(folders::check(&data, "data", data_write).err());
-        // a keys folder inside the data folder is refused by the vault: not made here first
-        if !keys.starts_with(&data) {
-            wrong.extend(folders::check(&keys, "keys", keys_write).err());
-        }
-        if !wrong.is_empty() {
-            return Err(wrong.join("\n").into());
-        }
+    if let Some(writes) = needs(&cli.cmd) {
+        let mountinfo = mounts.then(|| std::fs::read_to_string(folders::MOUNTINFO)).transpose().map_err(|e| {
+            format!(
+                "can't read {} to check that the data and keys folders are mounted: {e} (SENTRY_MATE_REQUIRE_MOUNTS=0 \
+                 turns that check off)",
+                folders::MOUNTINFO
+            )
+        })?;
+        folders::check_all(&data, &keys, writes, mountinfo.as_deref())?;
     }
     match cli.cmd {
         Cmd::Serve { bind, names } => serve(&data, &keys, &bind, cli.upload_port, &names).await?,
@@ -469,9 +470,24 @@ mod tests {
         std::fs::write(&data, b"x").unwrap();
         std::fs::write(&keys, b"x").unwrap();
         let cli = Cli { data, keys, upload_port: 0, cmd: Cmd::Fingerprint };
-        let Err(e) = run(cli).await else { panic!("it ran") };
+        let Err(e) = run(cli, false).await else { panic!("it ran") };
         let said = e.to_string();
         assert!(said.contains("the data folder") && said.contains("the keys folder"), "{said}");
+    }
+
+    /// With the mounts required (the image), this process's own mounts are read: a temporary folder is no mount.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn with_the_mounts_required_folders_that_are_not_mounted_are_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        let cli = Cli { data: data.clone(), keys: keys.clone(), upload_port: 0, cmd: Cmd::Init };
+        let Err(e) = run(cli, true).await else { panic!("it ran") };
+        let said = e.to_string();
+        assert!(said.starts_with(&format!("the data folder {} and the keys folder", data.display())), "{said}");
+        assert!(said.contains("are not mounted"), "{said}");
+        // nothing made: no folder, no vault
+        assert!(!data.exists() && !keys.exists());
     }
 
     #[test]
@@ -495,5 +511,12 @@ mod tests {
         assert_eq!(needs(&Cmd::Log { cmd: LogCmd::Candump { file: PathBuf::from("x") } }), None);
         assert_eq!(needs(&Cmd::Serve { bind: String::new(), names: vec![] }), Some((true, true)));
         assert_eq!(needs(&Cmd::Chain { key: String::new() }), Some((false, false)));
+        // every command that writes is checked (and so, in the image, needs both folders mounted)
+        assert_eq!(needs(&Cmd::Init), Some((true, true)));
+        assert_eq!(needs(&Cmd::Restore), Some((true, true)));
+        assert_eq!(needs(&Cmd::RecoveryKey { cmd: RecoveryCmd::New }), Some((true, false)));
+        assert_eq!(needs(&Cmd::Token { cmd: TokenCmd::New { car: String::new() } }), Some((true, false)));
+        assert_eq!(needs(&Cmd::Token { cmd: TokenCmd::Revoke { id: String::new() } }), Some((true, false)));
+        assert_eq!(needs(&Cmd::Fingerprint), Some((true, false)));
     }
 }

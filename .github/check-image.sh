@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Checks a Sentry Mate image the way it is meant to run: no capabilities, a
 # read-only root, no-new-privileges, and fresh data and keys folders that
-# belong to the user it runs as. The Image workflow runs it on every image
-# before it is tagged; run it by hand the same way:
+# belong to the user it runs as. First it checks that folders it can't keep
+# are refused with what to do: one of root's, none mounted, the keys not
+# mounted, the keys inside the data on the server, the same folder at both.
+# The Image workflow runs it on every image before it is tagged; run it by
+# hand the same way:
 #
 #   .github/check-image.sh sentry-mate:check          (as the image's 1000:1000)
 #   .github/check-image.sh sentry-mate:check 568      (as 568:568, like TrueNAS)
@@ -41,6 +44,34 @@ start() {
     -v "$dir/data:/data" -v "$dir/keys:/keys" "$image" >/dev/null
 }
 
+# A start that must be refused: it stops with exit code 1, and its message
+# has each TEXT.  refused TEXT... -- [docker run options]
+refused() {
+  local texts=()
+  while [ "$1" != -- ]; do texts+=("$1"); shift; done
+  shift
+  docker run -d --name "$name" --cap-drop ALL --read-only --security-opt no-new-privileges:true \
+    "${user[@]}" "$@" "$image" >/dev/null
+  timeout 60 docker wait "$name" >/dev/null || fail "it did not stop within 60 s: it started"
+  said="$(docker logs "$name" 2>&1)"
+  echo "$said"
+  [ "$(docker inspect -f '{{.State.ExitCode}}' "$name")" = 1 ] || fail "it did not stop with exit code 1"
+  for t in "${texts[@]}"; do grep -qF -- "$t" <<<"$said" || fail "the message does not say: $t"; done
+  docker rm "$name" >/dev/null
+}
+
+# fresh, empty data and keys folders of the user given (UID[:GID])
+fresh() {
+  $sudo rm -rf "$dir/data" "$dir/keys"
+  mkdir -p "$dir/data" "$dir/keys"
+  $sudo chown "$1" "$dir/data" "$dir/keys"
+}
+
+# nothing in the folder (a refused start wrote nothing)
+empty() {
+  [ -z "$($sudo ls -A "$1")" ] || fail "something was written to $1: $($sudo ls -A "$1")"
+}
+
 healthy() {
   for _ in $(seq 1 90); do
     [ "$(docker inspect -f '{{.State.Running}}' "$name")" = true ] || fail "it stopped"
@@ -61,17 +92,38 @@ echo "$version"
 case "$version" in "sentry-mate "*"${EXPECT_VERSION:-}"*) ;; *) fail "--version shows no ${EXPECT_VERSION:-version}" ;; esac
 
 echo "== a data folder of root's: refused, with what to do"
-mkdir -p "$dir/data" "$dir/keys"
+fresh "$id:$id"
 $sudo chown 0:0 "$dir/data"
-$sudo chown "$id:$id" "$dir/keys"
-start
-docker wait "$name" >/dev/null
-said="$(docker logs "$name" 2>&1)"
+refused "runs as uid $id (group $id)" "sudo chown -R $id:$id" -- -v "$dir/data:/data" -v "$dir/keys:/keys"
+
+echo "== no folders mounted: refused, with the lines to add"
+refused "the data folder /data and the keys folder /keys are not mounted." \
+  "would be lost when the container is replaced" "  - ./data:/data" "  - ./keys:/keys" \
+  "  - /mnt/tank/apps/sentry-mate:/data" "  - /mnt/tank/apps/sentry-mate-keys:/keys" --
+# every command that opens the vault, not only serve
+if said="$(docker run --rm "${user[@]}" "$image" token list 2>&1)"; then fail "token list ran with nothing mounted"; fi
 echo "$said"
-[ "$(docker inspect -f '{{.State.ExitCode}}' "$name")" = 1 ] || fail "it did not stop with exit code 1"
-grep -qF "runs as uid $id (group $id)" <<<"$said" || fail "the message does not say who it runs as"
-grep -qF "sudo chown -R $id:$id" <<<"$said" || fail "the message does not give the command"
-docker rm "$name" >/dev/null
+grep -qF "are not mounted" <<<"$said" || fail "token list does not say the folders are not mounted"
+
+echo "== the keys folder not mounted: refused, nothing written to data"
+fresh "$id:$id"
+refused "the keys folder /keys is not mounted." "the data would then open only with the recovery key" \
+  "  - ./keys:/keys" "  - /mnt/tank/apps/sentry-mate-keys:/keys" -- -v "$dir/data:/data"
+empty "$dir/data"
+
+echo "== the keys folder inside the data folder on the server: refused"
+fresh "$id:$id"
+mkdir -p "$dir/data/keys"
+$sudo chown "$id:$id" "$dir/data/keys"
+refused "the keys folder /keys is a folder inside the data folder on the server (it is /data/keys here)" \
+  "The key file would be in every backup of the data" -- -v "$dir/data:/data" -v "$dir/data/keys:/keys"
+empty "$dir/data/keys"
+
+echo "== the same folder at both: refused"
+fresh "$id:$id"
+refused "the keys folder /keys and the data folder /data are the same folder of the server" \
+  -- -v "$dir/data:/data" -v "$dir/data:/keys"
+empty "$dir/data"
 $sudo rm -rf "$dir/data" "$dir/keys"
 
 echo "== first start: fresh folders that belong to $id"

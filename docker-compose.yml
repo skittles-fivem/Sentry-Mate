@@ -45,6 +45,8 @@ services:
 #    environment:
 #      SENTRY_MATE_NAMES: 192.168.1.20,server.local
 
+    # Both lines are needed. Without one it does not start, and the log says
+    # which: a folder not mounted would be lost with the container.
     volumes:
       # everything it stores, sealed: logs exactly as uploaded, tokens,
       # trust records, the certificate's key
