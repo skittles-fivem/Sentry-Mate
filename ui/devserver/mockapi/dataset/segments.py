@@ -228,6 +228,10 @@ class Drive(Seg):
         self.setpoint = 21.0 if h01("sp", car.id, start // 86_400_000) > 0.1 else 22.5
         # climate off on some mild drives; the pack heats itself on cold starts
         self.climate_on = not (12 <= out <= 24 and h01("ac", car.id, seq) < 0.3)
+        # on some warm or chilly starts the driver sets full cooling (LO) or full heat (HI) for the first
+        # minutes, and the cabin was still preconditioning as the car moved off
+        self.max_mode = (("LO" if out >= 17 else "HI" if out <= 13 else None)
+                         if self.climate_on and h01("mx", car.id, seq) < 0.3 else None)
         self._pw = None
 
     # --- kinematics at time t
@@ -345,7 +349,7 @@ class Drive(Seg):
             "outside_c": round(out, 1),
             "cabin_c": None if legacy and not tm else round(cabin, 1),
             "battery_c": None if tm else round(batt, 1),
-            "setpoint_left_c": None if legacy or tm else self.setpoint,
+            "setpoint_left_c": None if legacy or tm else (self.max_mode if self.max_mode and tau < 300 else self.setpoint),
             "setpoint_right_c": None if legacy or tm else self.setpoint,
             "elevation_m": round(ele, 1),
             "tyre_fl_kpa": ty[0] if ty else None, "tyre_fr_kpa": ty[1] if ty else None,
@@ -356,7 +360,8 @@ class Drive(Seg):
             "lv_v": None if tm else lv_volts(car, True),
             "battery_heat_kw": None if tm or legacy else round(
                 4.5 * clamp((15 - batt) / 5, 0.3, 1.0) if batt < 15 and self.outside < 10 else 0.0, 2),
-            "climate": None if tm or legacy else ("on" if self.climate_on else "off"),
+            "climate": None if tm or legacy else (
+                "precondition" if self.max_mode and tau < 90 else "on" if self.climate_on else "off"),
             "fan_level": None if tm or legacy else (
                 int(clamp(round(1 + abs(cabin - self.setpoint) * 0.6), 1, 10)) if self.climate_on else 0),
         })

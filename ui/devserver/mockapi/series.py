@@ -172,12 +172,14 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
 def _agg(ag, xs):
     if not xs:
         return None
-    if isinstance(xs[0][1], str):
-        return xs[-1][1] if ag == "last" else None
-    vs = [v for _, v in xs]
     if ag == "last":
         v = xs[-1][1]
-    elif ag == "min":
+        return round(v, 4) if isinstance(v, float) else v
+    # a word in a number field (a set point of LO or HI) counts only when the bucket holds nothing else
+    vs = [v for _, v in xs if not isinstance(v, str)]
+    if not vs:
+        return xs[-1][1]
+    if ag == "min":
         v = min(vs)
     elif ag == "max":
         v = max(vs)

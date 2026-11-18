@@ -5,8 +5,8 @@
 
 import * as state from '../shared/state.js';
 import { h, replace, setVars, cssVar } from '../shared/dom.js';
-import { format, convert, unitLabel, getUnits } from '../shared/units.js';
-import { formatTime, formatDate, formatDuration, zoneName, dayRange, dayKey } from '../shared/time.js';
+import { format, convert, unitLabel, getUnits, KM_PER_MI } from '../shared/units.js';
+import { formatTime, formatDate, formatDuration, zoneName, dayRange, dayKey, zonedParts } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import { icon } from '../core/icons.js';
@@ -26,14 +26,33 @@ const placeHref = (p) => (p?.place?.id ? state.buildUrl('places', { query: { pla
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 // the climate system's modes, in words, with the token its band is drawn in
 const CLIMATE = { off: ['Climate off', null], on: ['Climate on', '--live'], precondition: ['Preconditioning', '--warm'], overheat_protect: ['Overheat protection', '--danger'] };
-const setWord = (v) => (v === 'LO' ? 'LO (full heat)' : v === 'HI' ? 'HI (full cool)' : null);
+const setWord = (v) => (v === 'LO' ? 'LO (full cooling)' : v === 'HI' ? 'HI (full heat)' : null);
+// climb and descent the way the drive's own figures count them: only steps of 2 m or more
+const ELEV_STEP_M = 2;
+function climbDescent(el) {
+  let up = 0, down = 0, ref = el[0];
+  for (let i = 1; i < el.length; i++) {
+    const dlt = el[i] - ref;
+    if (dlt >= ELEV_STEP_M) { up += dlt; ref = el[i]; } else if (dlt <= -ELEV_STEP_M) { down -= dlt; ref = el[i]; }
+  }
+  return [up, down];
+}
+const AVG_HOW = 'distance ÷ time, stops included';
+// export files: <car>-drive-<YYYY-MM-DD-HHMM>, the start in the car's zone (the server names them the same way)
+const exportName = (carName, ms, tz) => {
+  const p = zonedParts(ms, tz);
+  const z = (n) => String(n).padStart(2, '0');
+  return `${String(carName).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'car'}-drive-${p.year}-${z(p.month)}-${z(p.day)}-${z(p.hour)}${z(p.minute)}`;
+};
 
 export async function mount(ctx) {
   const { car, tz } = ctx;
   const cid = car.id, did = ctx.state.drive;
   const base = `cars/${encodeURIComponent(cid)}/drives/${encodeURIComponent(did)}`;
+  // speed bands of 10 in the viewer's own unit: 10 km/h, or 10 mph (16.09344 km/h)
+  const mph = getUnits().distance === 'mi';
   let d;
-  try { d = await ctx.api.get(base); } catch (e) {
+  try { d = await ctx.api.get(base, { speed_band_kph: mph ? 10 * KM_PER_MI : 10 }); } catch (e) {
     if (e.status === 404) e.message = 'There is no drive with this number for this car. It may have been rebuilt under a new number; find it on Drives.';
     ctx.fail(e, { retry: null }); return;
   }
@@ -42,12 +61,28 @@ export async function mount(ctx) {
   const t0 = d.start_ms, t1 = d.end_ms ?? ctx.api.now();
   const ideal = getUnits().range === 'ideal';
   const rk = ideal ? 'ideal_range_km' : 'range_km';
-  const fields = ['speed_kph', 'power_kw', 'soc_pct', 'usable_soc_pct', rk, 'elevation_m', 'outside_c', 'cabin_c', 'setpoint_left_c', 'setpoint_right_c', 'odometer_km', 'tyre_fl_kpa', 'tyre_fr_kpa', 'tyre_rl_kpa', 'tyre_rr_kpa', 'lat', 'lon', 'accuracy_m', 'battery_heat_kw', 'climate', 'fan_level'];
+  const fields = ['speed_kph', 'power_kw', 'soc_pct', 'usable_soc_pct', rk, 'energy_remaining_kwh', 'elevation_m', 'outside_c', 'cabin_c', 'setpoint_left_c', 'setpoint_right_c', 'odometer_km', 'tyre_fl_kpa', 'tyre_fr_kpa', 'tyre_rl_kpa', 'tyre_rr_kpa', 'lat', 'lon', 'accuracy_m', 'battery_heat_kw', 'climate', 'fan_level'];
   const [series, track] = await Promise.all([
     ctx.api.get(`cars/${encodeURIComponent(cid)}/series`, { fields: fields.join(','), from_ms: t0, to_ms: t1 + 1000, max_points: 3600 }),
     ctx.api.get(`${base}/track`, { extensions: 'speed,power' }).catch(() => null),
   ]);
   if (!ctx.alive()) return;
+  // Sentry Mate's own range estimate: the energy left divided by the consumption of the 30 days before the drive
+  const estWh = d.est_wh_per_km;
+  series.values.est_range_km = (series.values.energy_remaining_kwh || []).map((e) => (e == null || !estWh ? null : (e * 1000) / estWh));
+  let repaintSel = null;
+  // a drive still going: build again when it ends, and keep the 'so far' figures moving meanwhile
+  if (live) {
+    ctx.events('rows', (ev) => { if (ev.data?.car === cid && (ev.data.kinds || []).includes('drives')) ctx.reload(); });
+    ctx.events('now', (ev) => {
+      const dr = ev.data?.car === cid ? ev.data.now?.drive : null;
+      if (!dr || (dr.drive_id != null && dr.drive_id !== did)) return;
+      if (dr.distance_km != null) d.distance_km = dr.distance_km;
+      if (dr.energy_kwh != null) d.energy_kwh = dr.energy_kwh;
+      paintFigures();
+      repaintSel?.();
+    });
+  }
 
   ctx.setTitle(`Drive ${formatDate(t0, tz, { weekday: false, year: false })}, ${formatTime(t0, tz)}`);
   ctx.setCrumbs([{ label: 'All cars', href: '/' }, { label: car.name, href: ctx.link('car') }, { label: 'Drives', href: ctx.link('drives') }, { label: `${formatDate(t0, tz, { year: false })}, ${formatTime(t0, tz)}` }]);
@@ -56,8 +91,9 @@ export async function mount(ctx) {
   const dayPeriod = dayRange(day, day, tz);
   const exp = { speed: true, power: false, soc: false, accuracy: true };
   const expUrl = (fmt) => ctx.api.url(`${base}/track`, { format: fmt, extensions: Object.keys(exp).filter((k) => exp[k]).join(',') || null });
-  const gpxA = h('a', { class: 'btn btn--sm', download: `${car.name}-drive-${day}.gpx`, href: expUrl('gpx'), cover: ['dd.export.gpx', 'web.drive-gpx.entry', 'web.drive-gpx.file', 'web.drive-gpx.point-coordinates', 'web.drive-gpx.point-elevation', 'web.drive-gpx.point-time', 'web.drive-gpx.not-found'] }, icon('download', 'ico--sm'), 'GPX');
-  const geoA = h('a', { class: 'btn btn--sm', download: `${car.name}-drive-${day}.geojson`, href: expUrl('geojson') }, icon('download', 'ico--sm'), 'GeoJSON');
+  const fileBase = exportName(car.name, t0, tz);
+  const gpxA = h('a', { class: 'btn btn--sm', download: `${fileBase}.gpx`, href: expUrl('gpx'), cover: ['dd.export.gpx', 'web.drive-gpx.entry', 'web.drive-gpx.file', 'web.drive-gpx.point-coordinates', 'web.drive-gpx.point-elevation', 'web.drive-gpx.point-time', 'web.drive-gpx.not-found'] }, icon('download', 'ico--sm'), 'GPX');
+  const geoA = h('a', { class: 'btn btn--sm', download: `${fileBase}.geojson`, href: expUrl('geojson') }, icon('download', 'ico--sm'), 'GeoJSON');
   const extras = h('span', { class: 'export-extras' }, h('span', { class: 'faint' }, 'With'),
     ['speed', 'power', 'soc', 'accuracy'].map((k) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: exp[k], onchange: (e) => { exp[k] = e.target.checked; gpxA.setAttribute('href', expUrl('gpx')); geoA.setAttribute('href', expUrl('geojson')); } }), { speed: 'speed', power: 'power', soc: 'battery %', accuracy: 'accuracy' }[k])));
 
@@ -76,22 +112,33 @@ export async function mount(ctx) {
 
   const why = live ? 'Still driving' : 'Not recorded';
   const est = d.energy_basis === 'estimated';
-  const stats = panel({ title: 'Figures', icon: 'stats', cls: 'stats-panel', side: live ? h('span', { class: 'faint' }, 'so far') : null, cover: 'dd.empty_states' },
-    h('div', { class: 'drive-figures' },
+  const figuresEl = h('div', { class: 'drive-figures' });
+  const paintFigures = () => {
+    const dur = live ? ctx.api.now() - t0 : d.duration_ms;
+    const avg = live ? (dur > 0 ? d.distance_km / (dur / 3.6e6) : null) : d.speed_avg_kph;
+    replace(figuresEl,
       metric('Distance', d.distance_km, 'distance', { cover: 'dd.stat.distance', explain: 'by odometer, 1 m steps' }),
-      metric('Duration', d.duration_ms, 'duration', { cover: 'dd.stat.drive_duration' }),
-      metric('Average speed', d.speed_avg_kph, 'speed', { cover: 'dd.stat.speed_avg', explain: `top ${format(d.speed_max_kph, 'speed')}` }),
+      metric('Duration', dur, 'duration', { cover: 'dd.stat.drive_duration' }),
+      metric('Average speed', avg, 'speed', { cover: 'dd.stat.speed_avg', explain: `${AVG_HOW}; top ${format(d.speed_max_kph, 'speed')}` }),
       metric('Energy used', d.energy_kwh, 'energy', { cover: 'dd.stat.energy_net', explain: est ? 'estimated (imported)' : 'measured at the pack, regen taken off', why }),
       metric('Regen', d.regen_kwh, 'energy', { cover: 'dd.stat.energy_recovered', explain: 'won back braking', why: est ? 'Not in imported history' : why }),
       metric('Consumption', d.wh_per_km, 'efficiency', { cover: 'dd.stat.consumption_net', explain: d.efficiency_pct != null ? `${format(d.efficiency_pct, 'percent')} of rated` : null, why: d.distance_km < 0.5 ? 'Too short to be reliable' : why }),
       metric('Climb', d.climb_m, 'length', { cover: 'dd.stat.elevation_up', explain: "the car's own elevation", sign: true }),
       metric('Descent', d.descent_m != null ? -d.descent_m : null, 'length', { cover: 'dd.stat.elevation_down' }),
       metric('Peak power', d.power_max_kw, 'power', { explain: d.power_min_kw != null ? `regen up to ${format(Math.abs(d.power_min_kw), 'power')}` : null }),
-      metric('Climate', d.hvac_kwh, 'energy', { explain: 'heating and cooling', why: 'Not sent by this car' })),
+      metric('Climate', d.hvac_kwh, 'energy', { explain: 'heating and cooling', why: 'Not sent by this car' }));
+  };
+  paintFigures();
+  // the battery strip names its range: rated, or ideal when the viewer chose ideal
+  const rangeWord = ideal ? 'ideal' : 'rated';
+  const r0 = ideal ? d.start_ideal_range_km : d.start_range_km;
+  const r1 = ideal ? d.end_ideal_range_km : d.end_range_km;
+  const stats = panel({ title: 'Figures', icon: 'stats', cls: 'stats-panel', side: live ? h('span', { class: 'faint' }, 'so far') : null, cover: 'dd.empty_states' },
+    figuresEl,
     h('div', { class: 'drive-soc' },
-      h('div', null, h('b', null, format(d.start_soc_pct, 'percent')), h('span', null, format(d.start_range_km, 'range'))),
+      h('div', null, h('b', null, format(d.start_soc_pct, 'percent')), h('span', null, `${format(r0, 'range')} ${rangeWord}`)),
       h('span', { class: 'bar' }, h('i', { vars: { '--w': `${clamp(d.end_soc_pct ?? 0, 0, 100)}%` } })),
-      h('div', { class: 'r' }, h('b', null, format(d.end_soc_pct, 'percent')), h('span', null, format(d.end_range_km, 'range')))),
+      h('div', { class: 'r' }, h('b', null, format(d.end_soc_pct, 'percent')), h('span', null, `${format(r1, 'range')} ${rangeWord}`))),
     h('dl', { class: 'drive-odo', cover: 'dd.stat.odometer' },
       h('dt', null, 'Odometer'), h('dd', null, `${format(d.start_odometer_km, 'odometer')} → ${format(d.end_odometer_km, 'odometer')}`),
       h('dt', null, 'Outside'), h('dd', null, format(d.outside_avg_c, 'temperature')),
@@ -100,6 +147,11 @@ export async function mount(ctx) {
       d.flags?.reduced_range ? [h('dt', null, 'Cold battery'), h('dd', { class: 'warn' }, 'part of the charge was locked')] : null,
       d.source === 'teslamate' ? [h('dt', null, 'Source'), h('dd', null, 'Imported from TeslaMate')] : null));
 
+  // a set point column: LO and HI stay words, numbers go to the viewer's unit
+  const setColumn = (label, key) => {
+    const c = column(label, key, 'temperature', { digits: 1 });
+    return { label: c.label, value: (row, i) => (typeof row[key] === 'string' ? row[key] : c.value(row, i)) };
+  };
   const selBox = h('div', { class: 'selection', cover: ['dd.stat.selected_duration', 'dd.control.zoom'] });
   const timeEl = h('span', { class: 'chart-time' });
   const resetBtn = h('button', { class: 'btn btn--sm', type: 'button', hidden: true }, icon('reset', 'ico--sm'), 'Whole drive');
@@ -111,7 +163,7 @@ export async function mount(ctx) {
       h('span', { class: 'hbar-label' }, `${formatNumber(convert(b.from_kph, 'speed'), { maximumFractionDigits: 0 })}–${format(b.to_kph, 'speed', { digits: 0 })}`),
       h('span', { class: 'hbar' }, h('i', { vars: { '--w': `${(b.seconds / maxBand) * 100}%` } })),
       h('span', { class: 'hbar-val' }, formatDuration(b.seconds * 1000))))) : h('p', { class: 'note' }, 'No speed recorded.'),
-    h('p', { class: 'note' }, 'Counted second by second.'));
+    h('p', { class: 'note' }, `Counted second by second, in bands of 10 ${unitLabel('speed')}.`));
 
   replace(ctx.view, h('div', { class: 'drive-page', cover: 'shots.drive-details' },
     pageHead({
@@ -123,6 +175,8 @@ export async function mount(ctx) {
       actions: [
         d.prev ? h('a', { class: 'btn btn--icon', href: state.buildUrl('drive', { car: cid, drive: d.prev }), 'aria-label': 'Previous drive', title: 'Previous drive' }, icon('chev-l')) : null,
         d.next ? h('a', { class: 'btn btn--icon', href: state.buildUrl('drive', { car: cid, drive: d.next }), 'aria-label': 'Next drive', title: 'Next drive' }, icon('chev-r')) : null,
+        d.prev_charge ? h('a', { class: 'btn', href: state.buildUrl('charge', { car: cid, charge: d.prev_charge }), title: 'The last charge before this drive' }, icon('plug'), 'Charge before') : null,
+        d.next_charge ? h('a', { class: 'btn', href: state.buildUrl('charge', { car: cid, charge: d.next_charge }), title: 'The first charge after this drive' }, icon('plug'), 'Charge after') : null,
         h('a', { class: 'btn', href: state.buildUrl('timeline', { car: cid, period: dayPeriod }) }, icon('timeline'), 'That day'),
         h('a', { class: 'btn', href: state.buildUrl('trip', { car: cid, period: { from: t0, to: d.end_ms ?? null } }) }, icon('flag'), 'As a trip'),
       ],
@@ -131,8 +185,8 @@ export async function mount(ctx) {
     h('section', { class: 'panel charts-panel', 'aria-label': 'Through the drive', cover: ['dd.chart.drive', 'dd.chart.drive.tooltip'] },
       h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('signals'), 'Through the drive'),
         h('span', { class: 'row' }, timeEl, h('span', { class: 'faint' }, 'Drag across a chart to zoom; double-click for the whole drive'), resetBtn,
-          csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'drive', day), series.t_ms.map((t, i) => Object.fromEntries([['t', t], ...fields.map((f) => [f, series.values[f]?.[i] ?? null])])),
-            [timeColumn('Time', 't', tz), column('Speed', 'speed_kph', 'speed'), column('Power', 'power_kw', 'power'), column('Battery', 'soc_pct', 'percent'), column('Usable', 'usable_soc_pct', 'percent'), column(ideal ? 'Ideal range' : 'Rated range', rk, 'range'), column('Elevation', 'elevation_m', 'length'), column('Outside', 'outside_c', 'temperature'), column('Cabin', 'cabin_c', 'temperature'), column('Set left', 'setpoint_left_c', 'temperature'), column('Set right', 'setpoint_right_c', 'temperature'), column('Climate', 'climate'), column('Fan step (0-10)', 'fan_level'), column('Battery heating', 'battery_heat_kw', 'power'), column('Odometer', 'odometer_km', 'odometer'), column('Latitude', 'lat'), column('Longitude', 'lon'), column('Accuracy', 'accuracy_m', 'length')]) }))),
+          csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'drive', day), series.t_ms.map((t, i) => Object.fromEntries([['t', t], ...[...fields, 'est_range_km'].map((f) => [f, series.values[f]?.[i] ?? null])])),
+            [timeColumn('Time', 't', tz), column('Speed', 'speed_kph', 'speed'), column('Power', 'power_kw', 'power'), column('Battery', 'soc_pct', 'percent'), column('Usable', 'usable_soc_pct', 'percent'), column(ideal ? 'Ideal range' : 'Rated range', rk, 'range'), column('Estimated range (Sentry Mate)', 'est_range_km', 'range'), column('Energy left', 'energy_remaining_kwh', 'energy'), column('Elevation', 'elevation_m', 'length'), column('Outside', 'outside_c', 'temperature'), column('Cabin', 'cabin_c', 'temperature'), setColumn('Set left', 'setpoint_left_c'), setColumn('Set right', 'setpoint_right_c'), column('Climate', 'climate'), column('Fan step (0-10)', 'fan_level'), column('Battery heating', 'battery_heat_kw', 'power'), column('Odometer', 'odometer_km', 'odometer'), column('Latitude', 'lat'), column('Longitude', 'lon'), column('Accuracy', 'accuracy_m', 'length')]) }))),
       selBox, chartsHost),
     h('div', { class: 'drive-lower' }, bandsEl,
       panel({ title: 'Export the route', icon: 'download' },
@@ -221,12 +275,15 @@ export async function mount(ctx) {
     { key: 'speed', name: 'Speed', unit: unitLabel('speed'), cover: 'dd.chart.drive.speed', series: [{ label: 'Speed', data: V('speed_kph', 'speed'), color: '--c-speed', area: true }], kind: 'speed' },
     { key: 'power', name: 'Battery power', unit: 'kW', cover: 'dd.chart.drive.power', split: true, series: [{ label: 'Power', data: V('power_kw'), color: '--c-power' }], kind: 'power', key2: 'regen below 0' },
     { key: 'soc', name: 'Battery', unit: '%', cover: 'dd.chart.drive.soc', series: [{ label: 'Battery', data: V('soc_pct'), color: '--c-soc' }, { label: 'Usable', data: V('usable_soc_pct'), color: '--c-power', dash: true }], kind: 'percent', digits: 1 },
-    { key: 'range', name: ideal ? 'Ideal range' : 'Rated range', unit: unitLabel('range'), cover: 'dd.chart.drive.range', series: [{ label: 'Range', data: V(rk, 'range'), color: '--live' }], kind: 'range' },
+    { key: 'range', name: ideal ? 'Ideal range' : 'Rated range', unit: unitLabel('range'), cover: 'dd.chart.drive.range', kind: 'range',
+      series: [{ label: ideal ? 'Ideal' : 'Rated', data: V(rk, 'range'), color: '--live' }, { label: 'Estimate', data: V('est_range_km', 'range'), color: '--warm', dash: true }],
+      note: estWh && known('energy_remaining_kwh') ? `The estimate is Sentry Mate's own: the energy left in the pack ÷ ${format(estWh, 'efficiency')}, the car's consumption over the 30 days before this drive.`
+        : d.source === 'teslamate' ? 'No estimate: imported history has no energy left in the pack.' : 'No estimate: this car does not send the energy left in the pack.' },
     { key: 'elev', name: 'Elevation', unit: unitLabel('length'), cover: 'dd.chart.elevation', series: [{ label: 'Elevation', data: V('elevation_m', 'length'), color: '--c-elev', area: true }], kind: 'length' },
     { key: 'temps', name: 'Climate', unit: unitLabel('temperature'), cover: ['dd.chart.temps.air', 'dd.chart.temps.setpoints'], kind: 'temperature', digits: 1,
       series: [{ label: 'Outside', data: V('outside_c', 'temperature'), color: '--c-power' }, { label: 'Cabin', data: V('cabin_c', 'temperature'), color: '--warm' },
         { label: 'Set left', data: V('setpoint_left_c', 'temperature'), raw: raw('setpoint_left_c'), color: '--c-soc', dash: true }, { label: 'Set right', data: V('setpoint_right_c', 'temperature'), raw: raw('setpoint_right_c'), color: '--c-elev', dash: true }],
-      note: known('setpoint_left_c') ? `Set points are the driver's and passenger's choices${setLo ? '; LO and HI (full heat, full cool) are named in the readout and leave a gap in the line' : ''}.` : 'This car does not send its set points, only the air temperatures.' },
+      note: known('setpoint_left_c') ? `Set points are the driver's and passenger's choices${setLo ? '; LO and HI (full cooling, full heat) are named in the readout and the CSV and leave a gap in the line' : ''}.` : 'This car does not send its set points, only the air temperatures.' },
     { key: 'hvac', name: 'Climate system', unit: 'fan step 0–10', cover: 'dd.chart.temps.climate_state', kind: null, digits: 0, bands: clim,
       series: [{ label: 'Fan', data: V('fan_level'), color: '--live', step: true }],
       keys: Object.entries(CLIMATE).filter(([k, [, c]]) => c && climSeen.includes(k)).map(([k, [l]]) => h('span', { class: 'key key--band', dataset: { climate: k } }, h('i'), l)),
@@ -237,7 +294,8 @@ export async function mount(ctx) {
       note: !heatVals.length ? 'This car does not send battery heating power.'
         : heatVals.some((v) => v > 0) ? `Power the pack spent warming itself: about ${format(heatKwh, 'energy')} on this drive, part of the energy used.`
           : 'The pack did not heat itself on this drive (0 kW all the way).' },
-    { key: 'tyres', name: 'Tyres', unit: unitLabel('pressure'), cover: 'dd.chart.tire_pressure', kind: 'pressure', digits: 2, series: tyreSeries, showX: true },
+    { key: 'tyres', name: 'Tyres', unit: unitLabel('pressure'), cover: 'dd.chart.tire_pressure', kind: 'pressure', digits: 2, series: tyreSeries, showX: true,
+      note: TYRES.some(([k]) => known(`tyre_${k}_kpa`)) ? null : d.source === 'teslamate' ? 'Not in imported history: these drives came without tyre pressures.' : 'This car does not send tyre pressures.' },
   ];
   const xMin = x[0], xMax = x[x.length - 1];
   const plots = [];
@@ -264,20 +322,24 @@ export async function mount(ctx) {
     const sp = idx.map((i) => series.values.speed_kph?.[i]).filter((v) => v != null);
     const odo = idx.map((i) => series.values.odometer_km?.[i]).filter((v) => v != null);
     const el = idx.map((i) => series.values.elevation_m?.[i]).filter((v) => v != null);
-    let up = 0, down = 0;
-    for (let i = 1; i < el.length; i++) { const dlt = el[i] - el[i - 1]; if (dlt > 0) up += dlt; else down -= dlt; }
     const zoomed = a > xMin + 1 || b < xMax - 1;
     resetBtn.hidden = !zoomed;
+    // not zoomed: the drive's own figures, so both boxes always agree
+    const [up, down] = el.length > 1 ? climbDescent(el) : [null, null];
+    const dur = zoomed ? (b - a) * 1000 : (live ? ctx.api.now() - t0 : d.duration_ms);
+    const dist = zoomed ? (odo.length > 1 ? odo[odo.length - 1] - odo[0] : null) : d.distance_km;
+    const avg = zoomed ? (dist != null && dur > 0 ? dist / (dur / 3.6e6) : null) : (live ? (dur > 0 ? d.distance_km / (dur / 3.6e6) : null) : d.speed_avg_kph);
     replace(selBox, h('span', { class: 'selection-title' }, zoomed ? `Selection ${formatTime(a * 1000, tz)} – ${formatTime(b * 1000, tz)}` : 'The whole drive'),
-      metric('Duration', (b - a) * 1000, 'duration', { size: 'sm' }),
-      metric('Distance', odo.length > 1 ? odo[odo.length - 1] - odo[0] : null, 'distance', { size: 'sm', why: 'No odometer here' }),
-      metric('Average speed', sp.length ? sp.reduce((s, v) => s + v, 0) / sp.length : null, 'speed', { size: 'sm', why: 'No speed here' }),
-      metric('Climb', el.length > 1 ? up : null, 'length', { size: 'sm', sign: true }),
-      metric('Descent', el.length > 1 ? -down : null, 'length', { size: 'sm' }));
+      metric('Duration', dur, 'duration', { size: 'sm' }),
+      metric('Distance', dist, 'distance', { size: 'sm', why: 'No odometer here' }),
+      metric('Average speed', avg, 'speed', { size: 'sm', explain: AVG_HOW, why: sp.length ? 'No odometer here' : 'No speed here' }),
+      metric('Climb', zoomed ? up : d.climb_m, 'length', { size: 'sm', sign: true, explain: zoomed ? `steps of ${format(ELEV_STEP_M, 'length')} or more` : null }),
+      metric('Descent', zoomed ? (down != null ? -down : null) : (d.descent_m != null ? -d.descent_m : null), 'length', { size: 'sm' }));
   }
   const zoomTo = (a, b) => { zoom = [a, b]; for (const p of plots) p.u?.setScale('x', { min: a, max: b }); paintSelection(); };
   resetBtn.addEventListener('click', () => zoomTo(xMin, xMax));
   paintSelection();
+  repaintSel = paintSelection;
 
   const splitGrad = (u, c1, c2, a) => {
     const { top, height } = u.bbox;

@@ -144,15 +144,52 @@ def get_drive(req):
     i = ids.index(d.id) if d.id in ids else None
     row["prev"] = ids[i - 1] if i else None
     row["next"] = ids[i + 1] if i is not None and i + 1 < len(ids) else None
-    bands = d.speed_bands(req.now if in_progress(d, req.now) else None)
-    row["speed_bands"] = [{"from_kph": k * 10, "to_kph": (k + 1) * 10, "seconds": round(v, 1)}
+    # bands of `speed_band_kph` (default 10; 16.09344 gives 10 mph bands)
+    w = req.float_param("speed_band_kph", 10.0, 1, 100)
+    bands = d.speed_bands(req.now if in_progress(d, req.now) else None, width=w)
+    row["speed_band_kph"] = w
+    row["speed_bands"] = [{"from_kph": r(k * w, 3), "to_kph": r((k + 1) * w, 3), "seconds": round(v, 1)}
                           for k, v in sorted(bands.items())]
+    # ideal range at the first and last sample with a value, as start_range_km and end_range_km are rated
+    end = min(req.now, d.data_end)
+    row["start_ideal_range_km"] = r(_first_value(d, "ideal_range_km", d.start, end, 1000), 1)
+    row["end_ideal_range_km"] = r(_first_value(d, "ideal_range_km", end, d.start, -1000), 1)
+    # the charges just before and just after the drive (ids), for links to them
+    ch = [x for x in h.charges if x.start <= req.now and h.shown(x)]
+    before = [x for x in ch if x.start < d.start]
+    after = [x for x in ch if x.start >= d.start]
+    row["prev_charge"] = before[-1].id if before else None
+    row["next_charge"] = None if in_progress(d, req.now) or not after else after[0].id
+    # the consumption Sentry Mate's range estimate uses: the 30 days of drives before this one
+    from ..live import avg_wh_per_km
+    row["est_wh_per_km"] = r(avg_wh_per_km(req.app, h, d.start), 1)
+    row["est_basis"] = "wh_per_km_30d"
     gaps = [{"start_ms": a, "end_ms": b, "kind": "dropped"} for a, b in d.drops]
     if d.cut_ms is not None:
         gaps.append({"start_ms": d.cut_ms, "end_ms": None, "kind": "no_log"})
     row["gaps"] = gaps
     row["rated_wh_per_km"] = h.car.rated_wh_per_km
     return row
+
+
+def _first_value(d, field, a, b, step):
+    """The first non-null `field` of the drive from a towards b (step ms, negative to go back)."""
+    t, n = a, 0
+    while (t <= b if step > 0 else t >= b) and n < 600:
+        v = d.values(t)
+        if v is not None and v.get(field) is not None:
+            return v[field]
+        t += step
+        n += 1
+    return None
+
+
+def track_filename(req, d):
+    """`<car>-drive-<YYYY-MM-DD-HHMM>` with the start in the car's zone (no extension)."""
+    import re
+    car = req.store.car_meta(req.car)["name"]
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", car).strip("-") or "car"
+    return f"{stem}-drive-{local_dt(d.start, req.tz()).strftime('%Y-%m-%d-%H%M')}"
 
 
 # ------------------------------------------------------------------ track
@@ -220,7 +257,7 @@ def get_track(req):
             xy = [((q["lon"]) * k, q["lat"] * 110_540) for q in p]
             out.append([p[i] for i in _rdp(xy, simplify)])
         parts = out
-    name = f"drive-{d.id}"
+    name = track_filename(req, d)
     if fmt == "gpx":
         return Response(200, _gpx(req.store.car_meta(req.car)["name"], d, parts, ext), "application/gpx+xml; charset=utf-8",
                         {"Content-Disposition": f'attachment; filename="{name}.gpx"'})
@@ -242,7 +279,7 @@ def get_track(req):
                       "geometry": {"type": "LineString", "coordinates": [[q["lon"], q["lat"], q["ele"]] for q in p]}})
     return Response(200, _json(
         {"type": "FeatureCollection", "car": h.car.id, "drive": d.id, "time_zone": req.tz(), "features": feats}),
-        "application/geo+json; charset=utf-8")
+        "application/geo+json; charset=utf-8", {"Content-Disposition": f'attachment; filename="{name}.geojson"'})
 
 
 def _json(obj):
