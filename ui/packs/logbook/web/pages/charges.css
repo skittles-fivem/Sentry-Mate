@@ -220,6 +220,7 @@
 .page-charges .ch-curve-car { min-width: 14rem; }
 .page-charges .ch-dot { fill: var(--t); r: 0.1875rem; opacity: 0.62; stroke: transparent; stroke-width: 0.5rem; }
 .page-charges .ch-dot.is-on { r: 0.3125rem; opacity: 1; stroke: var(--paper); stroke-width: 1.5px; }
+.page-charges .ch-median, .page-charges .ch-curve-hover, .page-charges .ch-curve-x, .page-charges .ch-curve-y { pointer-events: none; }
 .page-charges .ch-median { stroke: var(--ink); stroke-width: 0.15625rem; stroke-linecap: round; }
 .page-charges .ch-session-line { stroke: var(--ink-2); stroke-width: 1.5px; stroke-linecap: round; }
 

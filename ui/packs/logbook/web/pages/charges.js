@@ -430,7 +430,7 @@ export async function mount(ctx) {
     } catch (err) {
       if (my !== statsGen || ctx.signal.aborted) return;
       for (const b of [costsBox, splitBox, habitsBox]) replace(b, errorView(err, { eyebrow: 'Charging statistics', retry: () => loadStats() }));
-      throw err;
+      return;
     }
     if (my !== statsGen || !ctx.alive()) return;
     drawCosts(s);
@@ -449,7 +449,7 @@ export async function mount(ctx) {
     const c100 = s.cost_per_100km || {};
     const c100list = (c100.value || []).filter((x) => x.amount != null);
     const c100text = c100list.length ? c100list.map((x) => format({ amount: x.amount, currency: x.currency }, 'money_per_distance')).join(' + ') : null;
-    const c100node = c100list.length ? c100list.map((x, i) => { const pp = parts({ amount: x.amount, currency: x.currency }, 'money_per_distance'); return h('span', { class: 'q' }, i ? ' + ' : null, pp.number, mixed(c100list) ? ` ${x.currency}` : ''); }) : null;
+    const c100node = c100list.length ? c100list.map((x, i) => { const pp = parts({ amount: x.amount, currency: x.currency }, 'money_per_distance'); const q1 = h('span', { class: 'q' }, pp.number, mixed(c100list) ? ` ${x.currency}` : ''); return i ? [document.createTextNode(' + '), q1] : q1; }).flat() : null;
     const row = {
       count: s.count, energy: s.energy_added_kwh, total: moneyList(s.cost_by_currency), sc: moneyList(s.supercharger_cost), all: priceList(ppk.all), ac: priceList(ppk.ac), dc: priceList(ppk.dc),
       basis: ppk.basis, priced: ppk.priced, c100: c100text || '', method: c100.method, dist: c100.distance_km,
@@ -568,7 +568,14 @@ export async function mount(ctx) {
     }
     levelMap.addEventListener('mousemove', (e) => { const c = e.target.closest('[data-col]'); if (c && +c.dataset.col !== marked) mark(+c.dataset.col); });
     levelMap.addEventListener('mouseleave', () => { mark(null); hoverDelta(null); });
-    const sideChoice = choice({ label: 'Battery level at', name: 'charges-heat', value: f.heat, options: [['start', 'The start'], ['end', 'The end']], onchange: (v) => { f.heat = v; ctx.setQuery({ heat: v === 'end' ? 'end' : null }); drawLevels(); drawWeek(); } });
+    const sideChoice = choice({ label: 'Battery level at', name: 'charges-heat', value: f.heat, options: [['start', 'The start'], ['end', 'The end']], onchange: (v) => { f.heat = v; ctx.setQuery({ heat: v === 'end' ? 'end' : null }); drawLevels(); drawWeek(); sideTitles(); } });
+    const levelTitle = h('figcaption', { class: 'label' });
+    const weekTitle = h('h3', { class: 'label' });
+    const sideTitles = () => {
+      levelTitle.textContent = `Battery level at the ${f.heat === 'end' ? 'end' : 'start'} of each session, by ${unit}`;
+      weekTitle.textContent = `When sessions ${f.heat === 'end' ? 'end' : 'start'} in the week`;
+    };
+    sideTitles();
 
     // Each session from its start level to its end level, on the same time axis.
     const deltaMark = svg('rect', { class: 'ch-delta-mark', x: 0, y: 0, width: 0, height: '100%' });
@@ -681,7 +688,7 @@ export async function mount(ctx) {
       h('div', { class: 'ch-pair', cover: 'cs.control.shared_crosshair' },
         readout,
         h('figure', { class: 'ch-part', cover: 'cs.chart.heatmap' },
-          h('div', { class: 'ch-part-head' }, h('figcaption', { class: 'label' }, `Battery level at the ${f.heat === 'start' ? 'start' : 'end'} of each session, by ${unit}`), csvButton(`battery levels by ${unit}`, levelCsv)),
+          h('div', { class: 'ch-part-head' }, levelTitle, csvButton(`battery levels by ${unit}`, levelCsv)),
           h('div', { class: 'ch-levels-wrap' }, levelMap, levelAxis),
           h('p', { class: 'note' }, `Darker means more sessions in that band and ${unit}. The bands below 20 % and above ${upper} % are outside the daily band.`)),
         h('figure', { class: 'ch-part', cover: ['cs.chart.charge_delta', 'cs.chart.charge_delta.band'] },
@@ -700,7 +707,7 @@ export async function mount(ctx) {
           bandList(s.end_bands, 'end'),
           h('p', { class: 'note' }, `Where sessions ended. Amber bands are above the daily band (${upper} %).`)),
         h('div', { class: 'ch-part' },
-          h('div', { class: 'ch-part-head' }, h('h3', { class: 'label' }, `When sessions ${f.heat === 'start' ? 'start' : 'end'} in the week`), csvButton('when in the week', weekCsv)),
+          h('div', { class: 'ch-part-head' }, weekTitle, csvButton('when in the week', weekCsv)),
           week,
           h('p', { class: 'note' }, multi ? 'By the hour, in each car’s own local time.' : `By the hour, in ${zoneLabel(tz)}.`))),
       h('div', { class: 'ch-part ch-runs-part' },
@@ -833,7 +840,7 @@ export async function mount(ctx) {
     const graph = svg('svg', { class: 'ch-curve-svg', width: '100%', height: '100%', role: 'img', 'aria-label': `Charging power against battery level for ${tn(sessions.length, '{n} DC session', '{n} DC sessions')}, with the median` },
       yTicks.map((v) => svg('line', { class: 'ch-grid', x1: 0, x2: '100%', y1: p3(yOf(v)), y2: p3(yOf(v)) })),
       [20, 40, 60, 80].map((v) => svg('line', { class: 'ch-grid ch-grid-v', x1: p3(v), x2: p3(v), y1: 0, y2: '100%' })),
-      dots, segs(median, 'ch-median'), hoverG);
+      segs(median, 'ch-median'), dots, hoverG);
     const wrap = h('div', { class: 'ch-curve-area', cover: ['cs.chart.dc_curve_median', 'cs.link.dc_curve_details'] }, graph);
     let on = null;
     const show = (si, pi) => {
