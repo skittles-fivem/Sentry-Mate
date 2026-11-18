@@ -1079,6 +1079,7 @@ name = "moving"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "bytes",
  "chacha20poly1305",
  "gate",
@@ -1088,6 +1089,8 @@ dependencies = [
  "hmac",
  "http-body",
  "ingest",
+ "lzma-rs",
+ "p256",
  "rcgen",
  "rustix",
  "rustls",
@@ -1099,6 +1102,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "trust",
  "vault",
  "zeroize",
 ]

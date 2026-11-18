@@ -33,6 +33,10 @@ zeroize = "1"
 
 [dev-dependencies]
 ingest = { path = "../ingest" }
+trust = { path = "../trust" }
+base64 = "0.22"
+lzma-rs = "0.3"
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

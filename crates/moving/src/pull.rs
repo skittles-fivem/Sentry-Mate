@@ -755,6 +755,9 @@ struct Pull<'a> {
     opts: &'a Options,
     key: Zeroizing<[u8; 32]>,
     st: Mutex<State>,
+    /// Held while the state is sealed and written: the fetch threads save at once, and two writers of the one
+    /// `.tmp` file would rename it from under each other (or mix their bytes), or put an older state last.
+    saving: Mutex<()>,
     /// The last progress line logged.
     logged: Mutex<(Instant, u8)>,
     /// When this run's first copy began, and how much was copied then (for the time left).
@@ -810,6 +813,7 @@ impl<'a> Pull<'a> {
             opts,
             key,
             st: Mutex::new(st),
+            saving: Mutex::new(()),
             logged: Mutex::new((Instant::now(), 0)),
             began: Mutex::new(None),
         })
@@ -824,6 +828,7 @@ impl<'a> Pull<'a> {
     }
 
     fn save(&self) -> Result<(), Problem> {
+        let _one = lock(&self.saving);
         let b = seal_state(&self.key, &lock(&self.st)).map_err(Problem::from)?;
         write_in(&self.staging(), STATE, &b)
             .map_err(|e| if self.staging().exists() { Problem::io(e) } else { Problem::cancelled_here() })
@@ -2045,4 +2050,35 @@ fn parse_list(b: &[u8], after: Option<&str>) -> Result<(Vec<Line>, End), String>
         lines.push(l);
     }
     Err("a list cut short".into())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// The fetch threads save the state at once: every save works, and the state still opens after.
+    #[test]
+    fn saves_at_once_dont_trip_over_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&keys).unwrap();
+        let code = crate::code::MoveCode::random().unwrap();
+        stage(&data, &keys, &Address::parse("127.0.0.1").unwrap(), &code.keys(), &[7u8; 16]).unwrap();
+        let opts = Options::new("test");
+        let pull = Pull::open(&data, &keys, &opts).unwrap();
+        std::thread::scope(|s| {
+            for t in 0..8u64 {
+                let pull = &pull;
+                s.spawn(move || {
+                    for i in 0..40u64 {
+                        lock(&pull.st).progress.bytes_done = t * 1000 + i;
+                        pull.save().unwrap();
+                    }
+                });
+            }
+        });
+        assert!(load(&data, &keys).unwrap().is_some());
+    }
 }
