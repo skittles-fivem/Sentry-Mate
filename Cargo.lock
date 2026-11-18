@@ -522,6 +522,7 @@ dependencies = [
  "logfmt",
  "regex",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

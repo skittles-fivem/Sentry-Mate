@@ -9,6 +9,10 @@
 //!   latitude, longitude, accuracy), and only while no car bus has sent 0x04F for 2.5 s.
 //! - A signal name used by two messages gets the message id after it (`UI_cpuTemperature_353`): its series name.
 
+pub mod encode;
+
+pub use encode::{EncodeError, encode_message, encode_signal};
+
 use regex::Regex;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
