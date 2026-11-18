@@ -191,7 +191,8 @@ def notices(req):
 def release_notice(req):
     """The opt-in release notice: shown only while the owner has the release check on."""
     return {"code": "release_available", "level": "info", "message": "Sentry Mate 0.2.0 is out.",
-            "since_ms": req.app.cfg.now_ms - 2 * DAY, "fix_link": "/help"}
+            "since_ms": req.app.cfg.now_ms - 2 * DAY, "fix_link": "/help#about",
+            "detail": {"version": "0.2.0", "notes_url": "https://example.org/sentry-mate/releases/0.2.0"}}
 
 
 def about(req):
@@ -205,6 +206,7 @@ def about(req):
     return {
         "version": DEV_VERSION, "api_version": API_VERSION, "ui_pack": pack, "dev_server": True,
         "links": {"source": None, "docs": "/help"},
+        "licence": {"name": None, "url": None},
         "licences": [{"name": "model3dbc (Tesla Model 3 and Y signal list)", "licence": "MIT"},
                      {"name": "opendbc (Tesla signal lists)", "licence": "MIT"}],
         "data_credits": [{"name": "OpenStreetMap", "text": "Map data © OpenStreetMap contributors", "licence": "ODbL"},

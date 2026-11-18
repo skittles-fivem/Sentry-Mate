@@ -16,7 +16,7 @@ export const title = () => 'Help and about';
 /** Third-party files inside this pack, with their licences (the licence files sit next to them in web/). */
 const BUNDLED = [
   ['MapLibre GL JS', 'draws the maps', 'BSD-3-Clause', '/vendor/maplibre-gl/LICENSE.txt'],
-  ['uPlot', 'draws the charts', 'MIT', '/vendor/uplot/LICENSE'],
+  ['uPlot', 'draws the charts', 'MIT', '/vendor/uplot/LICENSE.txt'],
   ['Inter', 'typeface for text and labels', 'SIL Open Font License 1.1', '/fonts/LICENSE-Inter.txt'],
   ['Charter', 'typeface for titles and figures', 'Bitstream Charter licence', '/fonts/LICENSE-Charter.txt'],
 ];
@@ -82,7 +82,7 @@ export async function mount(ctx) {
       pack.api == null ? 'This pack names no API version.' : packMismatch
         ? h('span', { class: 'about-warn' }, `Made for API ${pack.api}, but the server speaks API ${about.api_version}: some parts may not work.`)
         : `Made for API ${pack.api}, the one this server speaks.`),
-    row('Newer release', releaseValue(release, settings), releaseNote(release, settings, admin, ctx), 'web.settings.about.update-available'),
+    row('Newer release', releaseValue(release, settings), releaseNote(release, settings, admin, ctx, links), 'web.settings.about.update-available'),
     row('Source code', links.source ? h('a', { href: links.source, ...outside }, 'Sentry Mate’s source code') : 'Not named',
       links.source ? 'Opens on another site.' : 'This server gives no address for its source code.', 'web.settings.about.source-link'),
     row('Documentation', docsLink(links.docs), links.docs ? (links.docs.startsWith('/') ? 'Short answers further down this page.' : 'Opens on another site.') : 'This server gives no address for its documentation.', 'web.settings.about.docs-link'));
@@ -90,7 +90,9 @@ export async function mount(ctx) {
   const credits = about.data_credits || [];
   const licenceBlock = h('section', { class: 'help-block', id: 'licence', 'aria-labelledby': 'licence-title', cover: ['web.legal.license', 'web.legal.notice'] },
     h('h2', { class: 'label', id: 'licence-title' }, 'Licences and notices'),
-    h('p', { class: 'note' }, 'The terms for Sentry Mate itself come with its source code. It is built on these parts, each under its own licence:'),
+    h('h3', { class: 'sublabel' }, 'Sentry Mate itself'),
+    ownLicence(about.licence || {}, links),
+    h('p', { class: 'note' }, 'It is built on these parts, each under its own licence:'),
     h('h3', { class: 'sublabel' }, 'In the server'),
     h('ul', { class: 'licence-list' },
       (about.licences || []).length ? about.licences.map((l) => h('li', null, h('span', null, l.name), h('span', { class: 'licence-name' }, l.licence || '—')))
@@ -145,12 +147,37 @@ function releaseValue(release, settings) {
   return settings.release_check && settings.release_check.enabled ? 'None: this is the newest' : 'Not checked';
 }
 
-function releaseNote(release, settings, admin, ctx) {
-  const where = h('a', { href: ctx.link('settings-display') }, 'Settings: Display and units');
-  if (release) return ['Noticed ', ago(release.since_ms), '. Update the server to get it; your data stays.'];
+function releaseNote(release, settings, admin, ctx, links) {
+  const where = () => h('a', { href: ctx.link('settings-display') }, 'Settings: Display and units');
+  if (release) {
+    const notesUrl = (release.detail && release.detail.notes_url) || links.source || null;
+    const allowed = !!(settings && settings.outside_links && settings.outside_links.release_notes);
+    let notes;
+    if (!settings) notes = 'The server did not say whether release-notes links are allowed, so none is shown.';
+    else if (!allowed) notes = ['Release-notes links are off, so what is new cannot be shown here. ', admin ? ['Turn them on in ', where(), '.'] : 'An admin can turn them on.'];
+    else if (!notesUrl) notes = 'The server gives no address for the release notes.';
+    else notes = [h('a', { href: notesUrl, ...outside }, 'Release notes'), ' say what is new; they open on another site.'];
+    return h('span', { class: 'release-note' },
+      h('span', null, 'Noticed ', ago(release.since_ms), '. Update the server to get it; your data stays.'),
+      h('span', null, notes),
+      admin ? h('span', null, 'Turn the release check off in ', where(), '.') : null);
+  }
   if (!settings) return 'The server did not say whether the release check is on.';
-  if (settings.release_check && settings.release_check.enabled) return ['The release check asks once a day for the newest version number and sends nothing else. ', admin ? ['Turn it off in ', where, '.'] : 'An admin can turn it off.'];
-  return ['The release check is off, so Sentry Mate asks no other server. ', admin ? ['Turn it on in ', where, '.'] : 'An admin can turn it on.'];
+  if (settings.release_check && settings.release_check.enabled) return ['The release check asks once a day for the newest version number and sends nothing else. ', admin ? ['Turn it off in ', where(), '.'] : 'An admin can turn it off.'];
+  return ['The release check is off, so Sentry Mate asks no other server. ', admin ? ['Turn it on in ', where(), '.'] : 'An admin can turn it on.'];
+}
+
+/** Sentry Mate's own licence (GET /api/v1/about `licence`), and where its full text is, if anywhere. */
+function ownLicence(licence, links) {
+  const text = licence.url
+    ? h('a', { href: licence.url, target: '_blank', rel: licence.url.startsWith('/') ? 'noopener' : outside.rel }, 'Read the full text')
+    : links.source ? h('a', { href: links.source, ...outside }, 'Its text comes with the source code') : null;
+  if (!licence.name) {
+    return h('p', { class: 'note own-licence' }, h('strong', null, 'Licence: not chosen yet. '),
+      'The project has not decided under which licence it is published, so there is no licence text to show here yet.');
+  }
+  return h('p', { class: 'note own-licence' }, h('strong', null, `Licence: ${licence.name}. `),
+    text || 'This server gives no address for its full text, and no source code address, so the text cannot be shown here.');
 }
 
 function docsLink(docs) {

@@ -239,7 +239,7 @@ function drawFooter() {
     h('p', { class: 'colophon-legal', cover: ['shell.footer.legal', 'web.shell.legal-footer'] },
       'Sentry Mate only reads from your cars. ', h('a', { href: '/help#licence' }, 'Licence and notices'), ' · ', h('a', { href: '/help' }, 'Help')),
     h('p', { class: ['colophon-update', { 'is-empty': !release }], cover: ['shell.footer.update_available', 'web.shell.update-footer'] },
-      release ? [h('span', { class: 'update-dot', 'aria-hidden': 'true' }), release.message, ' ', h('a', { href: release.fix_link || '/help' }, 'What is new')] : 'Release check off'),
+      release ? [h('span', { class: 'update-dot', 'aria-hidden': 'true' }), release.message, ' ', h('a', { href: release.fix_link || '/help' }, 'About this release')] : 'Release check off'),
     h('p', { class: 'colophon-credit' }, about && about.data_credits && about.data_credits[0] ? about.data_credits[0].text : 'Map data © OpenStreetMap contributors')));
 }
 

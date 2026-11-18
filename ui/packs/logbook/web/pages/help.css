@@ -53,3 +53,5 @@ a.licence-name { color: var(--ink-2); }
   .about-row dd { align-items: flex-start; text-align: left; }
   .help-jump { flex-wrap: wrap; }
 }
+.release-note { display: flex; flex-direction: column; gap: 0.25rem; }
+.own-licence strong { color: var(--ink); font-weight: 600; }

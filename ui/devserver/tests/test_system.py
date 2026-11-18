@@ -81,13 +81,15 @@ class Settings(ServerCase):
         v = self.c.get("/api/v1/settings")["version"]
         self.c.json("PATCH", "/api/v1/settings", {"version": v, "release_check": {"enabled": True},
                                                   "tiles": {"mode": "offline"}})
-        self.assertIn("release_available", {x["code"] for x in self.c.get("/api/v1/notices")["items"]})
+        r = {x["code"]: x for x in self.c.get("/api/v1/notices")["items"]}["release_available"]
+        self.assertTrue(r["detail"]["notes_url"].startswith("https://"))
         m = self.c.get("/api/v1/maps/config")
         self.assertEqual((m["tiles"]["mode"], m["tiles"]["online_template"]), ("offline", None))
         a = self.c.get("/api/v1/about")
         self.assertEqual(a["api_version"], "1")
         self.assertEqual(a["ui_pack"]["name"], "Instrument")
         self.assertTrue(a["licences"] and a["data_credits"])
+        self.assertEqual(a["licence"], {"name": None, "url": None})  # not chosen yet
 
 
 class Health(ServerCase):
