@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 
-from .helpers import NOW, ServerCase
+from .helpers import NOW, PACK, ServerCase
 
 CSP_START = "default-src 'self'; img-src 'self' data: blob: https://tile.openstreetmap.org"
 
@@ -181,14 +182,16 @@ class StaticAndHeaders(ServerCase):
         self.assertIn(b"<html", raw[:200].lower())
         st, hd, raw2 = self.c.request("GET", "/")
         self.assertEqual(raw, raw2)
-        st, hd, js = self.c.request("GET", "/app.js")
+        js_name = sorted(f for f in os.listdir(os.path.join(PACK, "web")) if f.endswith(".js"))[0]  # boot.js, app.js...
+        st, hd, js = self.c.request("GET", "/" + js_name)
         self.assertEqual(st, 200)
         self.assertTrue(hd["content-type"].startswith("text/javascript"))
+        self.assertNotEqual(js, raw)  # the file itself, not the index.html fallback
         st, hd, raw3 = self.c.request("GET", "/../../../etc/passwd")
         self.assertEqual(raw3, raw)  # never outside the pack
 
     def test_security_headers(self):
-        for path in ("/", "/api/v1/me", "/api/v1/nothing", "/app.js"):
+        for path in ("/", "/api/v1/me", "/api/v1/nothing", "/boot.js"):
             st, hd, _ = self.c.request("GET", path)
             self.assertTrue(hd["content-security-policy"].startswith(CSP_START), path)
             self.assertIn("frame-ancestors 'none'", hd["content-security-policy"])

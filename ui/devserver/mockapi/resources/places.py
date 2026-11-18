@@ -415,17 +415,25 @@ def _rows_event(req):
 def preview(req):
     st = req.store
     body = req.json()
+    for k in ("place", "id"):
+        if body.get(k) is not None and not isinstance(body[k], str):
+            raise bad_input({k: "Must be a place id."})
+    counts = place_counts(req)
+
+    def seen(p):  # a watch account previews only places its cars have used, like the list
+        return p if p is not None and _visible(req, p, counts) else None
+
     if body.get("delete") is True:
         bad = {k: "Unknown field." for k in body if k not in ("place", "delete")}
         if bad:
             raise bad_input(bad)
-        cur = placing.place_obj(req.app, body.get("place"))
+        cur = seen(placing.place_obj(req.app, body.get("place")))
         if cur is None:
             raise invalid({"place": "No such place."})
         tab = {k: v for k, v in st.places.items() if k != cur["id"]}
         summary, _ = effect(req, list(st.places.values()), list(tab.values()), [cur])
         return dict(summary, place=cur["id"], delete=True)
-    base = placing.place_obj(req.app, body.get("id")) if body.get("id") else None
+    base = seen(placing.place_obj(req.app, body.get("id"))) if body.get("id") else None
     if body.get("id") and base is None:
         raise invalid({"id": "No such place."})
     draft = check_place(req, body, base=base)

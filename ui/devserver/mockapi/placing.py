@@ -35,7 +35,7 @@ def all_places(app):
 
 
 def place_obj(app, pid):
-    if pid is None:
+    if not isinstance(pid, str):
         return None
     return app.store.places.get(pid)
 

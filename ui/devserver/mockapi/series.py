@@ -8,6 +8,7 @@ sample hold null; a parallel `state` column says why (asleep or unknown).
 
 from __future__ import annotations
 
+import bisect
 import math
 
 from .dataset.segments import SERIES_FIELDS
@@ -20,6 +21,7 @@ LAST_BY_DEFAULT = {"lat", "lon", "accuracy_m", "odometer_km", "heading_deg"}
 STATE_OF = {"driving": "driving", "charging": "charging", "online": "parked", "online_vehicle_bus_only": "parked",
             "updating": "parked", "asleep": "asleep", "unknown": "unknown"}
 STATE_RANK = ("driving", "charging", "parked", "asleep", "unknown")
+PEAK_FIELDS = {"power_kw", "speed_kph"}  # the fields a piece's peak moments are peaks of
 
 
 def nice_bucket(span_ms, max_points):
@@ -44,18 +46,40 @@ def pieces(h, a, b, now, source):
 
 
 def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, explicit_aggs=True, bucket=None,
-          align=None):
+          align=None, edges=None):
     """Columns { t_ms, values, bucket_ms, coverage_pct, state } for [a, b).
 
     `bucket` fixes the bucket size (else the smallest nice one for max_points); `align` is a moment
-    buckets start from (for example a local midnight), else buckets are aligned to UTC."""
+    buckets start from (for example a local midnight), else buckets are aligned to UTC. `edges` gives
+    the buckets outright (sorted starts plus the last end, for example local midnights, whose days are
+    23 or 25 hours long when the clocks change); `bucket` is then only the size the answer names."""
     b = min(b, now)
-    if b <= a:
+    if b <= a or (edges is not None and len(edges) < 2):
         return {"t_ms": [], "values": {f: [] for f in fields}, "bucket_ms": bucket or 1000, "coverage_pct": [],
                 "state": []}
-    bucket = bucket or nice_bucket(b - a, max_points)
-    a0 = a - a % bucket if align is None else align + ((a - align) // bucket) * bucket
-    n = int(math.ceil((b - a0) / bucket))
+    if edges is not None:
+        edges = list(edges)
+        a0, n = edges[0], len(edges) - 1
+        bucket = bucket or max(1, (edges[-1] - edges[0]) // n)
+
+        def idx(t):
+            return bisect.bisect_right(edges, t) - 1
+
+        def end_of(i):
+            return edges[i + 1]
+    else:
+        bucket = bucket or nice_bucket(b - a, max_points)
+        a0 = a - a % bucket if align is None else align + ((a - align) // bucket) * bucket
+        n = int(math.ceil((b - a0) / bucket))
+
+        def idx(t):
+            return (t - a0) // bucket
+
+        def end_of(i):
+            return a0 + (i + 1) * bucket
+    # sampling step inside long buckets: a quarter of the shortest bucket
+    quarter = (min(edges[i + 1] - edges[i] for i in range(n)) if edges is not None else bucket) // 4
+    peaks = bool(PEAK_FIELDS & set(fields))
     samples = [[] for _ in range(n)]  # (t, values)
     state_ms = [dict() for _ in range(n)]
     for s in pieces(h, a0, b, now, source):
@@ -68,9 +92,9 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
             if y <= x:
                 continue
             st = STATE_OF[kind]
-            i = (x - a0) // bucket
-            while x < y and i < n:
-                e = min(y, a0 + (i + 1) * bucket)
+            i = idx(x)
+            while x < y and 0 <= i < n:
+                e = min(y, end_of(i))
                 state_ms[i][st] = state_ms[i].get(st, 0) + (e - x)
                 x = e
                 i += 1
@@ -85,24 +109,25 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
                     t = max(t + 1000, sub[1])
                     continue
                 break
-            step = max(native, bucket // 4) if bucket > native else native
+            step = max(native, quarter) if quarter * 4 > native else native
             times.add(t - t % 1000)
             t = (t // step + 1) * step
         times.add(lo - lo % 1000 + (1000 if lo % 1000 else 0))
         times.add(hi - 1000 - (hi - 1000) % 1000)
-        for p in s.peak_times():
-            if p is not None and lo <= p < hi:
-                times.add(p)
+        if peaks:  # speed and power peaks; other fields gain nothing from them
+            for p in s.peak_times():
+                if p is not None and lo <= p < hi:
+                    times.add(p)
         for t in sorted(times):
             if t < lo or t >= hi:
                 continue
             v = value_fn(s, t) if value_fn else s.values(t)
             if v is None:
                 continue
-            i = (t - a0) // bucket
+            i = idx(t)
             if 0 <= i < n:
                 samples[i].append((t, v))
-    t_ms = [a0 + i * bucket for i in range(n)]
+    t_ms = edges[:-1] if edges is not None else [a0 + i * bucket for i in range(n)]
     want = list(aggs) if aggs else []
     default = not explicit_aggs
     values = {}
@@ -126,7 +151,7 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
     coverage = []
     states = []
     for i in range(n):
-        span = min(bucket, b - t_ms[i])
+        span = min(end_of(i), b) - t_ms[i]
         known = sum(v for k, v in state_ms[i].items() if k != "unknown")
         coverage.append(round(100 * known / span, 1) if span > 0 else 0.0)
         if state_ms[i]:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import bisect
 import secrets
 
-from ..conventions import decode_cursor, encode_cursor, nk, page
+from ..conventions import bad_cursor, decode_cursor, encode_cursor, nk, page
 from ..errors import bad_input, invalid, not_found
 from ..live import attention, list_item
 from ..util import valid_zone
@@ -95,27 +95,32 @@ def list_cars(req):
         reverse = soc_desc
     cands.sort(key=lambda x: x[0])
     keys = [k for k, _ in cands]
-    if ck is None:
-        pick = cands[::-1] if reverse else cands
-    elif not reverse:
-        pick = cands[bisect.bisect_right(keys, ck):]
-    else:
-        pick = cands[:bisect.bisect_left(keys, ck)][::-1]
-    # the synthetic cars, already in order
-    out = []
-    syn_iter = _syn_iter(req, sort, reverse, ck, search, states, special_set, soc_desc) if use_syn else iter(())
-    nxt_syn = next(syn_iter, None)
-    i = 0
-    while len(out) < limit + 1:
-        a = pick[i] if i < len(pick) else None
-        if a is None and nxt_syn is None:
-            break
-        if nxt_syn is None or (a is not None and ((a[0] < nxt_syn[0]) != reverse)):
-            out.append(a)
-            i += 1
+    try:
+        if ck is None:
+            pick = cands[::-1] if reverse else cands
+        elif not reverse:
+            pick = cands[bisect.bisect_right(keys, ck):]
         else:
-            out.append(nxt_syn)
-            nxt_syn = next(syn_iter, None)
+            pick = cands[:bisect.bisect_left(keys, ck)][::-1]
+        # the synthetic cars, already in order
+        out = []
+        syn_iter = _syn_iter(req, sort, reverse, ck, search, states, special_set, soc_desc) if use_syn else iter(())
+        nxt_syn = next(syn_iter, None)
+        i = 0
+        while len(out) < limit + 1:
+            a = pick[i] if i < len(pick) else None
+            if a is None and nxt_syn is None:
+                break
+            if nxt_syn is None or (a is not None and ((a[0] < nxt_syn[0]) != reverse)):
+                out.append(a)
+                i += 1
+            else:
+                out.append(nxt_syn)
+                nxt_syn = next(syn_iter, None)
+    except TypeError:
+        if ck is None:
+            raise
+        raise bad_cursor()  # a cursor made by hand whose key does not compare with this sort's keys
     more = len(out) > limit
     out = out[:limit]
     nxt = encode_cursor(out[-1][0], fp) if more and out else None
@@ -140,9 +145,13 @@ def _syn_key(syn, sort, i, soc_desc):
 def _syn_iter(req, sort, reverse, ck, search, states, special, soc_desc):
     """(key, item) for synthetic cars after the cursor, in order, filtered."""
     syn = req.ds.synthetic
-    if sort in ("name", "soc"):
-        order = syn.order("name" if sort == "name" else "soc")
-        at = lambda p: order[p]  # noqa: E731
+    key = "name" if sort == "name" else "soc" if sort == "soc" else "activity"
+    s = search.lower() if search else None
+    filtered = bool(s or states)
+    # the cars in order (only those that pass the filters, from a small cache: no scan of the fleet per page)
+    order = syn.filtered(key, s, states) if filtered else syn.order(key) if key != "activity" else None
+    if order is not None:
+        at = order.__getitem__
         m = len(order)
     else:
         at = lambda p: 4 + p  # noqa: E731
@@ -163,19 +172,12 @@ def _syn_iter(req, sort, reverse, ck, search, states, special, soc_desc):
             # step back over keys equal to the cursor
             while pos >= 0 and _syn_key(syn, sort, at(pos), soc_desc) >= ck:
                 pos -= 1
-    s = search.lower() if search else None
     step = -1 if reverse else 1
     while 0 <= pos < m:
         i = at(pos)
         pos += step
         cid = f"c{i}"
         if cid in special:
-            continue
-        if s and s not in syn.name(i).lower():
-            sm = syn.summary(i, req.now)
-            if s not in sm["model"].lower() and s not in sm["vin_prefix"].lower():
-                continue
-        if states and syn.state(i) not in states:
             continue
         it = syn.summary(i, req.now)
         it = {k: v for k, v in it.items() if not k.startswith("_")}
@@ -209,6 +211,28 @@ def fleet_summary(req):
     return {"cars": st.visible_car_count(acc), "by_state": by, "stale": stale}
 
 
+def _att_key(a):
+    """Newest first; one car can have the same code twice (two low tyres), so the tyre is in the key."""
+    return (a["since_ms"], -_num(a["car"]), a["code"], (a.get("detail") or {}).get("tyre") or "")
+
+
+def warm(app):
+    """The synthetic cars' attention items as sort keys, in order (built once: the fleet never changes)."""
+    syn = app.ds.synthetic
+    cache = app.cache.get("syn_attention")
+    if cache is None or cache[0] is not syn:
+        keys = sorted((since, -i, code, "") for since, i, code in syn.attention())
+        cache = app.cache["syn_attention"] = (syn, keys)
+    return cache[1]
+
+
+def _syn_attention_item(req, k):
+    from ..live import _synthetic_detail
+    i = -k[1]
+    sm = req.ds.synthetic.summary(i, req.now)
+    return {"car": f"c{i}", "code": k[2], "since_ms": k[0], "detail": _synthetic_detail(k[2], sm)}
+
+
 def fleet_attention(req):
     ds = req.ds
     acc = req.account
@@ -216,15 +240,27 @@ def fleet_attention(req):
     ids = list(ds.featured) if acc["cars"] == "all" else [c for c in acc["cars"] if ds.exists(c)]
     for cid in ids:
         rows += attention(req.app, cid, req.now)
-    if acc["cars"] == "all" and ds.synthetic.count:
-        for since, i, code in ds.synthetic.attention():
-            rows.append({"car": f"c{i}", "code": code, "since_ms": since, "_i": i})
-    items, nxt = page(req, rows, key=lambda a: (a["since_ms"], -_num(a["car"]), a["code"]), reverse=True)
-    for it in items:
-        if "_i" in it:
-            sm = ds.synthetic.summary(it.pop("_i"), req.now)
-            from ..live import _synthetic_detail
-            it["detail"] = _synthetic_detail(it["code"], sm)
+    if not (acc["cars"] == "all" and ds.synthetic.count):
+        items, nxt = page(req, rows, key=_att_key, reverse=True)
+        return {"items": items, "next": nxt}
+    # a large fleet: the synthetic items are a cached sorted list, so a page is two slices and a merge
+    skeys = warm(req.app)
+    fp = req.fingerprint()
+    ck = decode_cursor(req.q("after"), fp) if req.q("after") else None
+    lim = len(rows) + len(skeys) if req.csv else req.limit()  # CSV: every row (from `after` on)
+    try:
+        feat = sorted(((_att_key(a), a) for a in rows), key=lambda kv: kv[0])
+        if ck is not None:
+            feat = [kv for kv in feat if kv[0] < ck]
+        j = bisect.bisect_left(skeys, ck) if ck is not None else len(skeys)
+    except TypeError:
+        raise bad_cursor()
+    picked = feat[-(lim + 1):] + [(k, None) for k in skeys[max(0, j - lim - 1):j]]
+    picked.sort(key=lambda kv: kv[0], reverse=True)
+    more = len(picked) > lim
+    picked = picked[:lim]
+    items = [a if a is not None else _syn_attention_item(req, k) for k, a in picked]
+    nxt = encode_cursor(picked[-1][0], fp) if more and picked else None
     return {"items": items, "next": nxt}
 
 

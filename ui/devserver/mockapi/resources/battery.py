@@ -9,6 +9,7 @@ plus everything logged, with AC, DC and regen adding up exactly.
 
 from __future__ import annotations
 
+import bisect
 import datetime as dt
 import math
 
@@ -18,7 +19,7 @@ from ..conventions import page
 from ..errors import bad_input
 from ..live import now_object
 from ..placing import place_obj
-from ..util import DAY, HOUR, h01, local_date, local_ms, median, percentile, r
+from ..util import DAY, HOUR, h01, local_date, local_midnights, local_ms, median, percentile, r
 from .charges import cached_charge_row
 from .drives import cached_drive_row
 
@@ -58,15 +59,13 @@ def _new_range(req, h):
 
 
 def _charge_full(car, c):
-    """Full-pack energy worked out from one charge: energy added over the battery % it added, plus the buffer."""
+    """Full-pack energy worked out from one charge: energy added over the battery % it added, plus the buffer.
+    The same figures the Charges list shows (imported charges included), so a page can redo the sum."""
     f = c.figures()
-    dsoc = f["soc1"] - c.soc0
-    if dsoc < 10:
+    added, soc0, soc1 = r(f["added"], 3), r(c.soc0, 1), r(f["soc1"], 1)  # as the charge row shows them
+    if soc1 - soc0 < 10:
         return None
-    usable = f["added"] / dsoc * 100
-    if c.source == "teslamate":
-        usable *= 1 + (h01("tmcap", c.id) - 0.5) * 0.03
-    return usable + car.buffer_kwh
+    return added / (soc1 - soc0) * 100 + car.buffer_kwh
 
 
 def _chemistry(req, h):
@@ -299,27 +298,39 @@ def get_battery_level(req):
     car = h.car
     if car.chemistry == "lfp":
         band["high_pct"] = 100
-    align = local_ms(local_date(a, tz), 0, tz)
     if span / bucket > 20000:
         raise bad_input({"bucket": "Too many buckets for this period; use day."})
-    cols = S.build(h, ["soc_pct", "usable_soc_pct"], a, end, 0, ["mean"], req.now, bucket=bucket, align=align)
+    wdays = 7 if window == "7d" else 30
+    # day buckets are the car's own days (23 or 25 hours when the clocks change); hours start at local midnight
+    if bucket == DAY:
+        cols = S.build(h, ["soc_pct", "usable_soc_pct"], a, end, 0, ["mean"], req.now, bucket=DAY,
+                       edges=local_midnights(a, end, tz))
+    else:
+        cols = S.build(h, ["soc_pct", "usable_soc_pct"], a, end, 0, ["mean"], req.now, bucket=bucket,
+                       align=local_ms(local_date(a, tz), 0, tz))
     buckets = [{"t_ms": t, "soc_pct": r(s, 2), "usable_soc_pct": r(u, 2)}
                for t, s, u in zip(cols["t_ms"], cols["values"]["soc_pct"], cols["values"]["usable_soc_pct"])]
     # moving lines: a fixed window of daily means, ending at each bucket's day
-    wdays = 7 if window == "7d" else 30
     moving = {"mean": [], "median": [], "p7_5": [], "p92_5": []}
     if moving_on and buckets:
-        da = local_ms(local_date(a - wdays * DAY, tz), 0, tz)
-        daily = S.build(h, ["soc_pct"], da, end, 0, ["mean"], req.now, bucket=DAY, align=da)
-        dts, dvs = daily["t_ms"], daily["values"]["soc_pct"]
-        per_day = {}
-        for i, t in enumerate(dts):
+        dedges = local_midnights(local_ms(local_date(a, tz) - dt.timedelta(days=wdays), 0, tz), end, tz)
+        if bucket == DAY and dedges[-(len(buckets) + 1):] == cols["t_ms"] + [dedges[-1]]:
+            # the day buckets are the last days of the window's days: build only the days before them
+            head = S.build(h, ["soc_pct"], dedges[0], cols["t_ms"][0], 0, ["mean"], req.now, bucket=DAY,
+                           edges=dedges[:len(dedges) - len(buckets)])
+            dts = head["t_ms"] + cols["t_ms"]
+            dvs = head["values"]["soc_pct"] + cols["values"]["soc_pct"]
+        else:
+            daily = S.build(h, ["soc_pct"], dedges[0], end, 0, ["mean"], req.now, bucket=DAY, edges=dedges)
+            dts, dvs = daily["t_ms"], daily["values"]["soc_pct"]
+        per_day = []
+        for i in range(len(dts)):
             win = [v for v in dvs[max(0, i - wdays + 1):i + 1] if v is not None]
-            per_day[t] = (sum(win) / len(win), median(win), percentile(win, 0.075), percentile(win, 0.925)) \
-                if win else (None, None, None, None)
+            per_day.append((sum(win) / len(win), median(win), percentile(win, 0.075), percentile(win, 0.925))
+                           if win else (None, None, None, None))
         for bk in buckets:
-            dk = da + ((bk["t_ms"] - da) // DAY) * DAY
-            m = per_day.get(dk, (None, None, None, None))
+            j = bisect.bisect_right(dts, bk["t_ms"]) - 1
+            m = per_day[j] if 0 <= j < len(per_day) else (None, None, None, None)
             for name, v in zip(("mean", "median", "p7_5", "p92_5"), m):
                 moving[name].append(r(v, 2))
     # asleep and unknown spans
@@ -397,7 +408,11 @@ def get_projected_range(req):
     end = min(b, req.now)
     if bucket and (end - lo) / bucket > 20000:
         raise bad_input({"bucket": "Too many buckets for this period."})
-    cols = S.build(h, list(PR_FIELDS), lo, end, max_points, ["mean"], req.now, value_fn=_pr_values, bucket=bucket)
+    # day and week buckets are the car's own days and ISO weeks; hours and a number of ms are aligned to UTC
+    edges = local_midnights(lo, end, req.tz(), 7 if bname == "week" else 1) if bname in ("day", "week") \
+        and end > lo else None
+    cols = S.build(h, list(PR_FIELDS), lo, end, max_points, ["mean"], req.now, value_fn=_pr_values, bucket=bucket,
+                   edges=edges)
     out.update(cols)
     return out
 
@@ -512,9 +527,9 @@ def get_temperatures(req):
         return out
     lo = max(a, h.first_ms)
     end = min(b, req.now)
-    align = local_ms(local_date(lo, tz), 0, tz)
+    edges = local_midnights(lo, end, tz)  # the car's own days
     cols = S.build(h, ["outside_c", "cabin_c", "battery_c"], lo, end, 0, ["mean", "min", "max", "p15", "p85"],
-                   req.now, bucket=DAY, align=align) if end > lo else None
+                   req.now, bucket=DAY, edges=edges) if end > lo else None
     span = max(1, end - lo)
     asleep = unknown = 0
     awake_by_day = {}
@@ -529,9 +544,9 @@ def get_temperatures(req):
                 unknown += y - x
             else:  # temperatures are read while the car is awake
                 while x < y:
-                    k = align + ((x - align) // DAY) * DAY
-                    e = min(y, k + DAY)
-                    awake_by_day[k] = awake_by_day.get(k, 0) + (e - x)
+                    i = bisect.bisect_right(edges, x) - 1
+                    e = min(y, edges[i + 1])
+                    awake_by_day[edges[i]] = awake_by_day.get(edges[i], 0) + (e - x)
                     x = e
     known_pct = 100 * (span - asleep - unknown) / span
 
@@ -551,9 +566,9 @@ def get_temperatures(req):
     if cols is not None:
         v = cols["values"]
         for i, t in enumerate(cols["t_ms"]):
-            day_ms = min(DAY, end - t, t + DAY - lo)
+            day_ms = min(edges[i + 1], end) - max(t, lo)
             cov = r(100 * awake_by_day.get(t, 0) / day_ms, 1) if day_ms > 0 else 0.0
-            daily.append({"date": local_date(t + HOUR, tz).isoformat(), "t_ms": t, "min_c": v["outside_c.min"][i],
+            daily.append({"date": local_date(t, tz).isoformat(), "t_ms": t, "min_c": v["outside_c.min"][i],
                           "p15_c": r(v["outside_c.p15"][i], 1), "p85_c": r(v["outside_c.p85"][i], 1),
                           "max_c": v["outside_c.max"][i], "coverage_pct": cov})
     out.update({"outside": summary("outside_c"), "cabin": summary("cabin_c"), "battery": summary("battery_c"),

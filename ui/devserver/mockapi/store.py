@@ -245,6 +245,9 @@ class Store:
                     p["units"].update(v)
                 else:
                     p[k] = copy.deepcopy(v)
+            # only cars this person may see (the server's order names every car; an account's list can shrink)
+            for k in ("car_order", "pinned_cars"):
+                p[k] = [c for c in p[k] if self.ds.exists(c) and self.sees(account, c)]
             return p
 
     # ------------------------------------------------------------ cars

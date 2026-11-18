@@ -1,8 +1,9 @@
 """Light synthetic cars c4..cN for --cars N: summary-level data computed from the car's index.
 
 Nothing is stored per car. Activity ages grow with the index, so "last activity, newest first" is
-simply index order and paging needs no sort. Other sorts (name, battery) build one cached index
-the first time they are asked for.
+simply index order and paging needs no sort. Other sorts (name, battery), the search and state
+filters, the counts and the attention items come from cached indexes built once, when the server
+starts (warm()), so the first page of a large fleet is as fast as the next.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ MODELS = [  # model, trims, vin prefix stem (9 chars, made up), full range km, w
     ("Model X", ("Long Range", "Plaid"), "7SAXCBE20", 540, 9),
     ("Cybertruck", ("AWD", "Cyberbeast"), "7G2CEHED0", 510, 7),
 ]
+MODEL_WEIGHT = sum(m[4] for m in MODELS)
 YEAR_LETTER = {2019: "K", 2020: "L", 2021: "M", 2022: "N", 2023: "P", 2024: "R", 2025: "S", 2026: "T"}
 ZONES = ["America/Los_Angeles", "America/Chicago", "America/New_York", "America/Denver", "America/Phoenix"]
 DEPOTS = [("Depot 1", 37.7706, -122.3915), ("Depot 2", 37.6550, -122.1180), ("Depot 3", 37.7980, -122.3060),
@@ -39,13 +41,16 @@ class SyntheticFleet:
         self._sorted = {}
         self._counts = None
         self._attention = None
+        self._index = None
+        self._filtered = {}  # (order, search, states) -> car indexes that pass, in that order (a few kept)
 
     @property
     def count(self):
         return max(0, self.n - 3)
 
     def has(self, car_id):
-        if not car_id.startswith("c") or not car_id[1:].isdigit() or car_id[1:].startswith("0"):
+        if not isinstance(car_id, str) or not car_id.startswith("c") or not car_id[1:].isascii() \
+                or not car_id[1:].isdigit() or car_id[1:].startswith("0"):
             return False
         i = int(car_id[1:])
         return 4 <= i <= self.n
@@ -80,18 +85,23 @@ class SyntheticFleet:
             return "parked" if x < 0.15 else "asleep"
         return "unknown" if self.age_ms(i) > 7 * DAY else "asleep"
 
-    def summary(self, i, now_ms=None):
-        """The car list item for car c<i>."""
-        now_ms = self.now_ms if now_ms is None else now_ms
-        k = int(u01(i, self.salt + 3) * sum(m[4] for m in MODELS))
+    def ident(self, i):
+        """(model row, year, VIN prefix) of car c<i>."""
+        k = int(u01(i, self.salt + 3) * MODEL_WEIGHT)
         for m in MODELS:
             k -= m[4]
             if k < 0:
                 break
-        model, trims, stem, full_km, _w = m
         year = 2019 + int(u01(i, self.salt + 4) * 8)
-        if model == "Cybertruck":
+        if m[0] == "Cybertruck":
             year = max(year, 2024)
+        return m, year, f"{m[2]}{YEAR_LETTER.get(year, 'S')}F"
+
+    def summary(self, i, now_ms=None):
+        """The car list item for car c<i>."""
+        now_ms = self.now_ms if now_ms is None else now_ms
+        m, year, vin_prefix = self.ident(i)
+        model, trims, stem, full_km, _w = m
         trim = trims[int(u01(i, self.salt + 5) * len(trims))]
         tz = ZONES[int(u01(i, self.salt + 6) * len(ZONES))]
         st = self.state(i)
@@ -107,7 +117,7 @@ class SyntheticFleet:
         at_ms = last
         return {
             "id": f"c{i}", "name": self.name(i), "model": model, "year": year,
-            "vin_prefix": f"{stem}{YEAR_LETTER.get(year, 'S')}F", "trim": trim,
+            "vin_prefix": vin_prefix, "trim": trim,
             "profile": "tesla-sx-legacy" if model in ("Model S", "Model X") and year < 2021 else "tesla-3y",
             "time_zone": tz, "last_activity_ms": last,
             "now": {
@@ -141,44 +151,93 @@ class SyntheticFleet:
             codes.append("door_open_asleep")
         return codes
 
-    # --- cached orders for sorting a large fleet
+    # --- cached indexes for a large fleet (built once, at start: see warm())
+    def index(self):
+        """Per car from c4 (list position i - 4): (states, battery %, lower-case names, search texts), cached.
+        A search text is the name, model and VIN prefix, lower case, joined by NUL."""
+        with self._lock:
+            if self._index is None:
+                states, socs, names, texts = [], [], [], []
+                for i in range(4, self.n + 1):
+                    m, _year, vin = self.ident(i)
+                    name = self.name(i).lower()
+                    states.append(self.state(i))
+                    socs.append(self.soc(i))
+                    names.append(name)
+                    texts.append(f"{name}\0{m[0].lower()}\0{vin.lower()}")
+                self._index = (states, socs, names, texts)
+            return self._index
+
+    def filtered(self, key, search, states):
+        """Car indexes in `key` order ("activity", "name" or "soc") that pass the car list's `search`
+        (lower case) and `state` filters. The last few answers are kept, so the next page is quick too."""
+        k = (key, search or "", tuple(sorted(states or ())))
+        with self._lock:
+            hit = self._filtered.get(k)
+        if hit is not None:
+            return hit
+        st, _socs, _names, texts = self.index()
+        sts = set(states or ())
+        ok = [i for i, (a, t) in enumerate(zip(st, texts), 4)
+              if (not sts or a in sts) and (not search or search in t)]
+        if key != "activity":
+            if len(ok) > 2000:
+                keep = set(ok)
+                ok = [i for i in self.order(key) if i in keep]
+            else:
+                col = self.index()[2 if key == "name" else 1]
+                ok.sort(key=lambda i: (col[i - 4], i))
+        with self._lock:
+            if len(self._filtered) >= 16:
+                self._filtered.pop(next(iter(self._filtered)))
+            self._filtered[k] = ok
+        return ok
+
     def order(self, key):
         """Car indexes sorted by `name` or `soc` (ascending), cached."""
+        _st, socs, names, _texts = self.index()
         with self._lock:
             if key not in self._sorted:
                 idx = range(4, self.n + 1)
-                if key == "name":
-                    self._sorted[key] = sorted(idx, key=lambda i: (self.name(i).lower(), i))
-                else:
-                    self._sorted[key] = sorted(idx, key=lambda i: (self.soc(i), i))
+                col = names if key == "name" else socs
+                self._sorted[key] = sorted(idx, key=lambda i: (col[i - 4], i))
             return self._sorted[key]
 
+    def _stale(self, i, st):
+        return st == "unknown" or self.q(i) > 0.92
+
     def counts(self):
+        states, _socs, _names, _texts = self.index()
         with self._lock:
             if self._counts is None:
                 by = {"driving": 0, "charging": 0, "parked": 0, "asleep": 0, "unknown": 0}
                 stale = 0
-                for i in range(4, self.n + 1):
-                    st = self.state(i)
+                for i, st in enumerate(states, 4):
                     by[st] += 1
-                    if st == "unknown" or self.q(i) > 0.92:
+                    if self._stale(i, st):
                         stale += 1
                 self._counts = (by, stale)
             return self._counts
 
     def attention(self):
         """[(since_ms, car index, code)] for every synthetic car, cached."""
+        states, socs, _names, _texts = self.index()
         with self._lock:
             if self._attention is None:
                 out = []
-                for i in range(4, self.n + 1):
-                    st = self.state(i)
-                    soc = self.soc(i)
-                    stale = st == "unknown" or self.q(i) > 0.92
-                    codes = self.attention_codes(i, st, soc, stale)
+                for i, st in enumerate(states, 4):
+                    codes = self.attention_codes(i, st, socs[i - 4], self._stale(i, st))
                     if codes:
                         last = self.now_ms - self.age_ms(i)
                         for c in codes:
                             out.append((last, i, c))
                 self._attention = out
             return self._attention
+
+    def warm(self):
+        """Build every cached index now, so the first fleet page is as fast as the next."""
+        if self.count:
+            self.order("name")
+            self.order("soc")
+            self.counts()
+            self.attention()

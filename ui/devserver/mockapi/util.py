@@ -126,6 +126,19 @@ def day_start_ms(day: _dt.date, tz: str) -> int:
     return local_ms(day, 0, tz)
 
 
+def local_midnights(a: int, b: int, tz: str, days: int = 1) -> list:
+    """Local midnights from the one on or before `a` to the first at or after `b`: the edges of the car's
+    own days (23 or 25 hours long when the clocks change). `days=7` gives ISO weeks (Monday midnights)."""
+    d = local_date(a, tz)
+    if days == 7:
+        d -= _dt.timedelta(days=d.weekday())
+    out = [day_start_ms(d, tz)]
+    while out[-1] < b:
+        d = d + _dt.timedelta(days=days)
+        out.append(day_start_ms(d, tz))
+    return out
+
+
 def iso_utc(ms: int) -> str:
     return _dt.datetime.fromtimestamp(ms / 1000, tz=_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 

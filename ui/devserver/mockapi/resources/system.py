@@ -29,7 +29,10 @@ API_VERSION = "1"
 
 
 def get_settings(req):
-    return copy.deepcopy(req.store.server_settings)
+    out = copy.deepcopy(req.store.server_settings)
+    if req.account["cars"] != "all":  # the server's car order lists every car: show only the ones this account sees
+        out["car_order"] = [c for c in out["car_order"] if req.store.sees(req.account, c)]
+    return out
 
 
 UNITS = {"distance": ("km", "mi"), "temperature": ("c", "f"), "pressure": ("bar", "psi")}

@@ -323,6 +323,12 @@ def create_rule(req):
     for k in body:
         if k not in ("from_place", "to_place", "days", "purpose"):
             bad[k] = "Unknown field."
+    for k in ("from_place", "to_place"):
+        if k in body and body[k] is not None and not isinstance(body[k], str):
+            bad[k] = "Must be a place id or null."
+    for k in ("days", "purpose"):
+        if k in body and not isinstance(body[k], str):
+            bad[k] = "Must be text."
     if bad:
         raise bad_input(bad)
     for k in ("from_place", "to_place"):
@@ -606,6 +612,8 @@ def _trip_body(req, body, partial):
             bad[k] = "Must be epoch milliseconds."
     if "name" in body and not isinstance(body["name"], str):
         bad["name"] = "Must be text."
+    if "car" in body and not partial and not isinstance(body["car"], str):
+        bad["car"] = "Must be a car id."
     if not partial:
         for k in ("car", "from_ms", "to_ms", "name"):
             if k not in body:

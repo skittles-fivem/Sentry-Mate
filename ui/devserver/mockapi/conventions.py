@@ -234,6 +234,10 @@ def decode_cursor(s, fp):
     return key
 
 
+def bad_cursor():
+    return bad_input({"after": "Not a cursor this server gave out."})
+
+
 def page(req, rows, key, reverse=False, limit=None):
     """One page of `rows` sorted by `key(row)` (a tuple). Returns (items, next).
 
@@ -246,14 +250,17 @@ def page(req, rows, key, reverse=False, limit=None):
     keys = [k for k, _ in keyed]
     n = len(keyed)
     lim = n if req.csv else (limit or req.limit())
-    if not reverse:
-        i = bisect.bisect_right(keys, ck) if ck is not None else 0
-        chunk = keyed[i:i + lim]
-        more = i + lim < n
-    else:
-        j = bisect.bisect_left(keys, ck) if ck is not None else n
-        chunk = keyed[max(0, j - lim):j][::-1]
-        more = j - lim > 0
+    try:
+        if not reverse:
+            i = bisect.bisect_right(keys, ck) if ck is not None else 0
+            chunk = keyed[i:i + lim]
+            more = i + lim < n
+        else:
+            j = bisect.bisect_left(keys, ck) if ck is not None else n
+            chunk = keyed[max(0, j - lim):j][::-1]
+            more = j - lim > 0
+    except TypeError:  # a cursor whose key does not compare with this list's keys (made by hand)
+        raise bad_cursor()
     nxt = encode_cursor(chunk[-1][0], fp) if more and chunk else None
     return [r for _, r in chunk], nxt
 

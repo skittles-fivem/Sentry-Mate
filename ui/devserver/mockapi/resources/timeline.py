@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from ..conventions import page
+from ..errors import bad_input
 from ..live import delay_s
-from ..rows import timeline_row
+from ..placing import drive_pids, eff_pid, piece_pid, place_obj
+from ..rows import in_progress, timeline_row
 from ..util import DAY, r
 
 KINDS = ("drive", "charge", "parked", "gap", "update")
@@ -29,10 +31,22 @@ def _text(row):
     return " ".join(parts).lower()
 
 
+def _pids(app, s, now):
+    """The places a piece is at now (live matching, as its row shows them)."""
+    if s.kind == "drive":
+        a, b = drive_pids(app, s)
+        return (a, None if s.cut_ms is not None or in_progress(s, now) else b)
+    if s.kind == "gap":
+        return tuple(eff_pid(app, p[0], p[1], None) for p in (s.before, s.after) if p)
+    return (piece_pid(app, s),)
+
+
 def get_timeline(req):
     a, b = req.period()
     kinds = req.list_param("kinds", KINDS)
     place = req.q("place")
+    if place and place_obj(req.app, place) is None:
+        raise bad_input({"place": "Unknown place."})
     q = (req.q("q") or "").strip().lower()
     h = req.history()
     rows = []
@@ -46,8 +60,7 @@ def get_timeline(req):
                  and (not kinds or s.kind in kinds)]
         # cheap filters before building rows
         if place:
-            segs = [s for s in segs + extra if place in (getattr(s, "pid", None), getattr(s, "from_pid", None),
-                                                         getattr(s, "to_pid", None))]
+            segs = [s for s in segs + extra if place in _pids(req.app, s, req.now)]
             extra = []
         if not q:  # page the pieces first, then build only this page's rows
             chunk, nxt = page(req, segs + extra, key=lambda s: (s.start, s.kind), reverse=True)

@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 
 from .. import derive
-from ..conventions import decode_cursor, encode_cursor, page
+from ..conventions import bad_cursor, decode_cursor, encode_cursor, page
 from ..errors import bad_input, invalid, not_found
 from ..live import software_at, update_version
 from ..placing import drive_pids, piece_pid, place_obj
@@ -123,12 +123,33 @@ def _syn_version(syn, i):
             "build_changed_since": last if v is None else None, "last_update_ms": last}
 
 
+def warm(app):
+    """The synthetic cars' versions, as indexes into SYN_VERSIONS (for a fast search of a large fleet)."""
+    syn = app.ds.synthetic
+    cache = app.cache.get("syn_versions")
+    if cache is None or cache[0] is not syn:
+        from ..util import u01
+        ks = [int(u01(j, syn.salt + 21) * len(SYN_VERSIONS)) for j in range(4, syn.n + 1)]
+        cache = app.cache["syn_versions"] = (syn, ks)
+    return cache
+
+
+def _syn_search_miss(app, syn, i, search):
+    """True when synthetic car c<i> cannot match `search` (name or version), from a cached index."""
+    cache = warm(app)
+    names = syn.index()[2]
+    v = SYN_VERSIONS[cache[1][i - 4]][0]
+    return search not in names[i - 4] and (v is None or search not in v.lower())
+
+
 def fleet_versions(req):
     search = (req.q("search") or "").strip().lower()
     limit = req.limit()
     fp = req.fingerprint()
     after = req.q("after")
     ck = decode_cursor(after, fp) if after else None
+    if ck is not None and not (isinstance(ck, tuple) and len(ck) == 1 and type(ck[0]) is int):
+        raise bad_cursor()
     start = ck[0] + 1 if ck else 1
     st, ds = req.store, req.ds
     acc = req.account
@@ -167,6 +188,9 @@ def fleet_versions(req):
             cid = f"c{n}"
             if cid in ds.featured or cid in st.car_over:
                 row = featured_row(cid)
+            elif search and _syn_search_miss(req.app, ds.synthetic, n, search):
+                n += 1
+                continue
             else:
                 row = _syn_version(ds.synthetic, n)
             if ok(row):

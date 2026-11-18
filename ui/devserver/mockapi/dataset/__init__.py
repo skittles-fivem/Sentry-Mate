@@ -88,7 +88,7 @@ class Dataset:
         return list(self.featured)
 
     def exists(self, car_id):
-        return car_id in self.featured or self.synthetic.has(car_id)
+        return isinstance(car_id, str) and (car_id in self.featured or self.synthetic.has(car_id))
 
     def history(self, car_id):
         return self.featured.get(car_id)

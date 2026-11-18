@@ -41,9 +41,13 @@ class App:
         self.clock = Clock(cfg.now_ms, frozen=cfg.freeze_clock)
         t0 = time.monotonic()
         self.ds = Dataset(cfg)
+        self.ds.synthetic.warm()  # sorts, counts and search of a large fleet: built before the first request
         self.build_s = time.monotonic() - t0
         self.store = Store(cfg, self.ds, self.clock)
         self.cache = {}
+        if self.ds.synthetic.count:  # a large fleet: its search and attention indexes, before the first request
+            resources.software.warm(self)
+            resources.fleet.warm(self)
         self.events = EventHub(self)
         self.router = Router()
         resources.register_all(self.router)
@@ -180,8 +184,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 pass
 
     def read_body(self):
-        n = int(self.headers.get("Content-Length") or 0)
+        raw = (self.headers.get("Content-Length") or "0").strip()
+        if not raw.isascii() or not raw.isdigit():
+            self.close_connection = True  # the body cannot be skipped: do not read another request after it
+            raise bad_input({"Content-Length": "Must be a whole number of bytes."})
+        n = int(raw)
         if n > MAX_BODY:
+            self.close_connection = True
             raise ApiError(413, "too_large", "The body is larger than 1 MB.")
         return self.rfile.read(n) if n > 0 else b""
 
