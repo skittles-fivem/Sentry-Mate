@@ -4,8 +4,9 @@
 #
 #   tools/move-e2e.sh                  run it (as root, or a user who may run docker and chown)
 #   SKIP_BUILD=1 tools/move-e2e.sh     use the image sentry-mate:move-e2e as it is
-#   FAILURES=1 tools/move-e2e.sh       also: a wrong code, an expired code, a network cut and a restart of the new
-#                                      server part way, a new server with a full disk
+#   FAILURES=1 tools/move-e2e.sh       also: a wrong code, an expired code, a short network cut and restarts of both
+#                                      servers part way, a cut longer than the time-out, a new server with a full disk
+#                                      (about 9 more minutes)
 #   KEEP=1 tools/move-e2e.sh           leave the containers and folders for a look afterwards
 #
 # The image: Docker builds here may not reach crates.io, so the script copies the tracked files to $WORK/ctx, runs
@@ -31,6 +32,7 @@ die() { printf '   FAILED: %s\n' "$*"; exit 1; }
 teardown() {
   docker rm -f mve2e-old mve2e-new mve2e-third mve2e-x >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
+  umount "$WORK/s/x/data" 2>/dev/null || true
   rm -rf "$WORK/s"
 }
 cleanup() { [ "${KEEP:-}" = 1 ] || teardown; }
@@ -258,20 +260,44 @@ if [ "${FAILURES:-}" = 1 ]; then
   echo yes | sm old move undo > /dev/null 2>&1 || true
   waitlog old "move: undone" 30 > /dev/null || true
 
+  say "(c) a network cut longer than the new server's time-out (2 min)"
+  CODE=$(newcode)
+  folders x 568
+  start x 568 --cpus 0.01 -e SENTRY_MATE_MOVE_FROM=mve2e-old -e SENTRY_MATE_MOVE_CODE="$CODE"
+  waitlog x "proved the code" 120 > /dev/null || true
+  sleep 3
+  docker network disconnect "$NET" mve2e-x
+  sleep 170
+  docker network connect "$NET" mve2e-x
+  docker update --cpus "$(nproc)" mve2e-x > /dev/null
+  waitlog x "move: finished" 300 > /dev/null && ok "finished after a 3 minute cut" || bad "no finish after a long cut"
+  docker logs mve2e-x 2>&1 | grep -q "lost the connection" && ok "the new server said it lost the connection" \
+    || bad "the new server didn't notice the cut"
+  docker logs mve2e-x 2>&1 | grep -q "connected to the old server again" && ok "and that it connected again" \
+    || bad "no word of connecting again"
+  # progress lines read "copying: 48 % (18.5 MB of 38.3 MB, 20 of 54 files)": never more files done than there are
+  OVER=$(docker logs mve2e-x 2>&1 | sed -n 's/.*move: copying: .*, \([0-9]*\) of \([0-9]*\) files).*/\1 \2/p' \
+    | awk '$1 > $2' | head -1)
+  [ -z "$OVER" ] && ok "no file counted twice in the progress" || bad "the progress counts more files than there are: $OVER"
+  docker rm -f mve2e-x > /dev/null
+  echo yes | sm old move undo > /dev/null 2>&1 || true
+  waitlog old "move: undone" 30 > /dev/null || true
+
   say "(c) a new server with too small a disk (a 20 MB data folder), then a bigger one"
   CODE=$(newcode)
   folders x 568
-  docker run -d --name mve2e-x --network "$NET" --user 568:568 -v "$WORK/s/x/keys:/keys" \
-    --mount type=tmpfs,destination=/data,tmpfs-size=20m,tmpfs-mode=0777 \
-    -e SENTRY_MATE_MOVE_FROM=mve2e-old -e SENTRY_MATE_MOVE_CODE="$CODE" "$IMG" > /dev/null
+  # a 20 MB disk for the data folder, mounted here (the image has no mount program, so it grows from here too)
+  mount -t tmpfs -o size=20m,mode=0755,uid=568,gid=568 tmpfs "$WORK/s/x/data"
+  start x 568 -e SENTRY_MATE_MOVE_FROM=mve2e-old -e SENTRY_MATE_MOVE_CODE="$CODE"
   waitlog x "not enough space|disk is full" 120 > /dev/null && ok "the new server says its disk is too small" \
     || bad "a full disk: no clear message"
   [ "$(ping_code "$OLD")" = "200 -" ] && ok "old still takes uploads" || bad "old answers $(ping_code "$OLD")"
   # the owner gives it more room: the tmpfs grows in place
-  nsenter -t "$(docker inspect -f '{{.State.Pid}}' mve2e-x)" -m mount -o remount,size=3g /data
+  mount -o remount,size=3g "$WORK/s/x/data"
   waitlog x "move: finished" 150 > /dev/null && ok "with room, it carried on by itself and finished" \
     || bad "with room, it didn't carry on"
   docker rm -f mve2e-x > /dev/null
+  umount "$WORK/s/x/data"
 fi
 
 say "result"
