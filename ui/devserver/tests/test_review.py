@@ -507,3 +507,19 @@ class CarTimeZoneChange(ServerCase):
         finally:
             v = self.c.get("/api/v1/cars/c1")["version"]
             self.c.json("PATCH", "/api/v1/cars/c1", {"version": v, "name": "Comet"})
+
+
+class CsvFormulas(ServerCase):
+    """Text that a spreadsheet would run as a formula is written with a leading ' in CSV; numbers stay numbers."""
+
+    def test_formula_text_is_defused(self):
+        p = self.c.json("POST", "/api/v1/places", {"name": "=HYPERLINK(\"x\")", "lat": 37.7, "lon": -122.4},
+                        expect=201)
+        try:
+            st, _, raw = self.c.request("GET", "/api/v1/places?format=csv&limit=500")
+            rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+            mine = [r for r in rows if r["id"] == p["id"]][0]
+            self.assertEqual(mine["name"], "'=HYPERLINK(\"x\")")
+            self.assertEqual(mine["lon"], "-122.4")
+        finally:
+            self.c.json("DELETE", f"/api/v1/places/{p['id']}")

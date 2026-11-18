@@ -293,15 +293,26 @@ def _flatten(obj, prefix="", out=None):
     return out
 
 
+FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _text(s):
+    """Text that a spreadsheet would run as a formula (a name such as "=HYPERLINK(...)") starts with '."""
+    return "'" + s if s.startswith(FORMULA_START) else s
+
+
 def _cell(v):
     if v is None:
         return ""
     if isinstance(v, bool):
         return "true" if v else "false"
-    if isinstance(v, (int, float, str)):
+    if isinstance(v, (int, float)):
         return v
+    if isinstance(v, str):
+        return _text(v)
     if isinstance(v, list) and all(not isinstance(x, (dict, list)) for x in v):
-        return ";".join("" if x is None else str(x) for x in v)
+        joined = ";".join("" if x is None else str(x) for x in v)
+        return _text(joined) if any(isinstance(x, str) for x in v) else joined
     return json.dumps(v, separators=(",", ":"), ensure_ascii=False)
 
 

@@ -60,7 +60,7 @@ class Series(ServerCase):
         names = {x["series"] for x in d["items"]}
         self.assertIn("vehicle_speed", names)
         for x in d["items"]:
-            self.assertEqual(set(x), {"series", "message_id", "bus", "value", "unit", "value_name", "comment", "at_ms"})
+            self.assertEqual(set(x), {"series", "message_id", "bus", "value", "unit", "value_name", "comment", "at_ms", "has_series"})
             self.assertTrue(x["message_id"].startswith("0x"))
         gear = next(x for x in d["items"] if x["series"] == "gear")
         self.assertEqual(gear["value_name"], "D")
