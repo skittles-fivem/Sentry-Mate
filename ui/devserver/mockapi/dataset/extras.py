@@ -72,7 +72,6 @@ def backup_cars(now, h):
     ]
 
 
-def import_report(cars, imported):
 def _car_tables(c):
     """Rows one backup car brings, per table: (read, skipped by reason, cleared values by column)."""
     d, ch = c["drives"], c["charges"]
@@ -85,6 +84,7 @@ def _car_tables(c):
     }
 
 
+def import_report(cars, imported):
     """The report of an import of `cars` (all of them when only checked; the matched ones once imported).
     Each table's figures are the sum of its cars' (geofences belong to no car); each car carries its own
     read, imported and skipped counts (None for a car left out of a finished import: it was not counted)."""
