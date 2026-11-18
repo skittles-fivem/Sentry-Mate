@@ -10,13 +10,25 @@
 //! - [`import`]: an export file into a new server with the recovery key: checked before anything is used, carried on
 //!   after a restart, and switched into place in steps that can each run again.
 //!
-//! The direct move between two running servers (`docs/plans/move-server.md`) builds on the same walk and the same
-//! switch.
+//! The direct move between two running servers (`docs/plans/move-server.md`, section 2) builds on the same walk
+//! and the same switch:
+//!
+//! - [`code`]: the move code the owner copies from the old server to the new one.
+//! - [`proto`]: what the two servers say to each other on the upload port (`/api/move/v1/`).
+//! - [`old`]: the old server's side: the code, the claim, the lists and fetches, the pause, the finish, the moved
+//!   state.
+//! - [`pull`]: the new server's side: the claim, the copy rounds, the finish and the switch.
+//! - [`client`]: the new server's TLS 1.3 connection to the old one, pinned to its certificate.
 
+pub mod client;
+pub mod code;
 mod error;
 pub mod export;
 mod format;
 pub mod import;
+pub mod old;
+pub mod proto;
+pub mod pull;
 pub mod tree;
 
 pub use error::Error;

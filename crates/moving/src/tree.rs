@@ -66,6 +66,21 @@ impl Kind {
     }
 }
 
+/// The bytes a move reads of a file's head: the magic and the file id.
+pub const HEAD: usize = 22;
+
+/// A file's kind and file id from its first [`HEAD`] bytes, as a move names its versions: a sealed or records file
+/// shorter than its header has no file id, and counts as plain.
+pub fn head_kind(head: &[u8]) -> (Kind, Option<[u8; 16]>) {
+    let k = Kind::of(head);
+    if k == Kind::Plain || head.len() < HEAD {
+        return (Kind::Plain, None);
+    }
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&head[6..HEAD]);
+    (k, Some(id))
+}
+
 /// What the walk is for: an export leaves out the public downloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Purpose {
@@ -124,6 +139,10 @@ pub struct Found<'a> {
     pub len: u64,
     /// Its modification time, in microseconds since 1970.
     pub mtime_us: u64,
+    /// The file system's device and inode numbers (0 where there are none): what a cache of the files' heads is
+    /// keyed by.
+    pub dev: u64,
+    pub ino: u64,
 }
 
 /// An entry the walk skipped, and why.
@@ -171,9 +190,33 @@ pub fn walk<E: From<std::io::Error>>(
     data: &Path,
     purpose: Purpose,
     skips: &mut Skips,
+    each: impl FnMut(&Found<'_>) -> Result<ControlFlow<()>, E>,
+) -> Result<(), E> {
+    walk_from(data, purpose, skips, None, each)
+}
+
+/// [`walk`], only the files after `after` in walk order (a list served a page at a time). Folders wholly before it
+/// are not read at all; only those on its path are.
+pub fn walk_from<E: From<std::io::Error>>(
+    data: &Path,
+    purpose: Purpose,
+    skips: &mut Skips,
+    after: Option<&str>,
     mut each: impl FnMut(&Found<'_>) -> Result<ControlFlow<()>, E>,
 ) -> Result<(), E> {
-    walk_dir(data, "", purpose, skips, &mut each).map(|_| ())
+    let parts: Option<Vec<&str>> = after.map(|a| a.split('/').collect());
+    walk_dir(data, "", purpose, skips, parts.as_deref(), &mut each).map(|_| ())
+}
+
+#[cfg(unix)]
+fn ids(md: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (md.dev(), md.ino())
+}
+
+#[cfg(not(unix))]
+fn ids(_: &std::fs::Metadata) -> (u64, u64) {
+    (0, 0)
 }
 
 fn walk_dir<E: From<std::io::Error>>(
@@ -181,6 +224,7 @@ fn walk_dir<E: From<std::io::Error>>(
     rel: &str,
     purpose: Purpose,
     skips: &mut Skips,
+    after: Option<&[&str]>,
     each: &mut impl FnMut(&Found<'_>) -> Result<ControlFlow<()>, E>,
 ) -> Result<ControlFlow<()>, E> {
     use std::io::ErrorKind;
@@ -216,8 +260,18 @@ fn walk_dir<E: From<std::io::Error>>(
     entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let top = rel.is_empty();
     for (name, ft) in entries {
-        let path = if top { name.clone() } else { format!("{rel}/{name}") };
         let dir_like = ft.is_dir();
+        // only what comes after `after`: a folder on its path is walked from there on, one after it wholly
+        let mut inner = None;
+        if let Some(&[first, ref rest @ ..]) = after {
+            match name.as_str().cmp(first) {
+                Ordering::Less => continue,
+                Ordering::Equal if !dir_like => continue,
+                Ordering::Equal if !rest.is_empty() => inner = Some(rest),
+                _ => {}
+            }
+        }
+        let path = if top { name.clone() } else { format!("{rel}/{name}") };
         if never(top, &name, dir_like, purpose) {
             continue;
         }
@@ -227,7 +281,7 @@ fn walk_dir<E: From<std::io::Error>>(
         }
         let full = dir.join(&name);
         if dir_like {
-            if walk_dir(&full, &path, purpose, skips, each)?.is_break() {
+            if walk_dir(&full, &path, purpose, skips, inner, each)?.is_break() {
                 return Ok(ControlFlow::Break(()));
             }
         } else if ft.is_file() {
@@ -236,7 +290,8 @@ fn walk_dir<E: From<std::io::Error>>(
                 Err(e) if e.kind() == ErrorKind::NotFound => continue,
                 Err(e) => return Err(e.into()),
             };
-            let found = Found { path: &path, full: &full, len: md.len(), mtime_us: mtime_us(&md) };
+            let (dev, ino) = ids(&md);
+            let found = Found { path: &path, full: &full, len: md.len(), mtime_us: mtime_us(&md), dev, ino };
             if each(&found)?.is_break() {
                 return Ok(ControlFlow::Break(()));
             }
@@ -262,6 +317,40 @@ mod tests {
         // not the byte order of whole paths
         assert!("tokens.json" < "tokens/ff.key");
         assert_eq!(walk_cmp("tokens/ff.key", "tokens.json"), Ordering::Less);
+    }
+
+    #[test]
+    fn a_walk_from_any_path_gives_the_rest_in_walk_order() {
+        let d = tempfile::tempdir().unwrap();
+        let all = ["a", "a/x", "a/x/y", "a/z", "a-b", "a.b", "b", "tokens/00.json", "tokens/ff.key", "tokens.json"];
+        for p in all {
+            let full = d.path().join(p);
+            if all.iter().any(|q| q.starts_with(&format!("{p}/"))) {
+                std::fs::create_dir_all(&full).unwrap();
+            } else {
+                std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+                std::fs::write(&full, p).unwrap();
+            }
+        }
+        let files: Vec<&str> =
+            all.iter().copied().filter(|p| !all.iter().any(|q| q.starts_with(&format!("{p}/")))).collect();
+        let list = |after: Option<&str>| {
+            let mut out = Vec::new();
+            walk_from(d.path(), Purpose::Move, &mut Skips::default(), after, |f| -> std::io::Result<ControlFlow<()>> {
+                out.push(f.path.to_string());
+                Ok(ControlFlow::Continue(()))
+            })
+            .unwrap();
+            out
+        };
+        assert_eq!(list(None), files);
+        for (i, f) in files.iter().enumerate() {
+            assert_eq!(list(Some(f)), files[i + 1..], "after {f}");
+        }
+        // after a path that isn't there (removed since), or a folder's name
+        assert_eq!(list(Some("a/y")), ["a/z", "a-b", "a.b", "b", "tokens/00.json", "tokens/ff.key", "tokens.json"]);
+        assert_eq!(list(Some("tokens")), ["tokens/00.json", "tokens/ff.key", "tokens.json"]);
+        assert_eq!(list(Some("zzz")), Vec::<String>::new());
     }
 
     #[test]

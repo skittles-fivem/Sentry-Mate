@@ -48,7 +48,7 @@ const BEING_REMOVED: &str = ".importing.done";
 const STATE: &str = "state.sealed";
 const STATE_LABEL: &str = ".importing/state.sealed";
 const IMPORTED_LABEL: &str = ".move/imported.sealed";
-const STAGED: &str = "data";
+pub(crate) const STAGED: &str = "data";
 const REPLACED: &str = "replaced";
 const REPLACED_KEY: &str = "replaced.key";
 
@@ -69,7 +69,7 @@ impl Options {
     }
 }
 
-fn free_space(dir: &Path) -> u64 {
+pub(crate) fn free_space(dir: &Path) -> u64 {
     let mut d = dir.to_path_buf();
     loop {
         if let Ok(s) = rustix::fs::statvfs(&d) {
@@ -96,7 +96,7 @@ pub struct ExportFile {
     last: usize,
 }
 
-fn version(s: &str) -> Option<(u64, u64, u64)> {
+pub(crate) fn version(s: &str) -> Option<(u64, u64, u64)> {
     let core = s.split(['-', '+']).next()?;
     let mut it = core.split('.');
     let v = (it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next().unwrap_or("0").parse().ok()?);
@@ -318,25 +318,25 @@ fn chain(h: &[u8; 32], piece: &[u8]) -> [u8; 32] {
     s.finalize().into()
 }
 
-fn remove_all(p: &Path) -> io::Result<()> {
+pub(crate) fn remove_all(p: &Path) -> io::Result<()> {
     match std::fs::remove_dir_all(p) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
         _ => Ok(()),
     }
 }
 
-fn remove_file(p: &Path) -> io::Result<()> {
+pub(crate) fn remove_file(p: &Path) -> io::Result<()> {
     match std::fs::remove_file(p) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
         _ => Ok(()),
     }
 }
 
-fn exists(p: &Path) -> bool {
+pub(crate) fn exists(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok()
 }
 
-fn sync_dir(d: &Path) {
+pub(crate) fn sync_dir(d: &Path) {
     if let Ok(f) = File::open(d) {
         let _ = f.sync_all();
     }
@@ -940,7 +940,42 @@ pub fn switch_steps(data: &Path, keys: &Path, steps: u32) -> Result<Switched, Er
         }
         Phase::Switching => {}
     }
-    let staging = data.join(STAGING);
+    let note = ImportedNote {
+        export_id: st.export_id.clone(),
+        made_ms: st.made_ms,
+        app: st.app.clone(),
+        files: st.files,
+        bytes: st.bytes,
+        at_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64),
+    };
+    let note = serde_json::to_vec(&note).map_err(|e| Error::Io(io::Error::other(e.to_string())))?;
+    let replaced_first_start = bring_all_in(data, keys, STAGING, IMPORTED, &note, &v, &mut step)?;
+    Ok(Switched {
+        export_id: st.export_id,
+        made_ms: st.made_ms,
+        app: st.app,
+        files: st.files,
+        bytes: st.bytes,
+        replaced_first_start,
+    })
+}
+
+/// Steps 2 to 7 of a switch (`docs/plans/move-server.md`, 3.3), the same for an import and a move: each entry of
+/// `<staging>/data/` renamed into the data folder (a first start's of the same name set aside), then the staged
+/// `vault.json` and key file, the note `.move/<note_name>` written (sealed with the data vault now in place, or
+/// `fallback`, the same data key), a first start's recovery key file removed, and the staging folders removed.
+/// Every step can run again after a crash: an entry still in `<staging>/data/` hasn't been brought in. Returns
+/// whether a first start's vault was set aside.
+pub(crate) fn bring_all_in(
+    data: &Path,
+    keys: &Path,
+    staging_name: &str,
+    note_name: &str,
+    note: &[u8],
+    fallback: &Vault,
+    step: &mut dyn FnMut() -> Result<(), Error>,
+) -> Result<bool, Error> {
+    let staging = data.join(staging_name);
     let (staged, replaced) = (staging.join(STAGED), staging.join(REPLACED));
     std::fs::create_dir_all(&replaced)?;
     let mut names: Vec<String> = Vec::new();
@@ -957,22 +992,14 @@ pub fn switch_steps(data: &Path, keys: &Path, steps: u32) -> Result<Switched, Er
     bring_in(&staging.join(vault::VAULT_FILE), &data.join(vault::VAULT_FILE), &replaced.join(vault::VAULT_FILE))?;
     sync_dir(data);
     step()?;
-    let staged_keys = keys.join(STAGING);
+    let staged_keys = keys.join(staging_name);
     let key = keys.join(vault::KEY_FILE);
     bring_in(&staged_keys.join(vault::KEY_FILE), &key, &staged_keys.join(REPLACED_KEY))?;
     sync_dir(keys);
     step()?;
-    let v = Vault::open(data, keys).unwrap_or(v);
-    let note = ImportedNote {
-        export_id: st.export_id.clone(),
-        made_ms: st.made_ms,
-        app: st.app.clone(),
-        files: st.files,
-        bytes: st.bytes,
-        at_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64),
-    };
-    let note = serde_json::to_vec(&note).map_err(|e| Error::Io(io::Error::other(e.to_string())))?;
-    v.write_file(&data.join(NOTES).join(IMPORTED), IMPORTED_LABEL, &note)?;
+    let opened = Vault::open(data, keys);
+    let v = opened.as_ref().unwrap_or(fallback);
+    v.write_file(&data.join(NOTES).join(note_name), &format!("{NOTES}/{note_name}"), note)?;
     step()?;
     // the recovery key a first start wrote opens nothing now
     let replaced_first_start = exists(&staged_keys.join(REPLACED_KEY)) || exists(&replaced.join(vault::VAULT_FILE));
@@ -980,21 +1007,14 @@ pub fn switch_steps(data: &Path, keys: &Path, steps: u32) -> Result<Switched, Er
         remove_file(&keys.join(RECOVERY_FILE))?;
     }
     step()?;
-    let gone = data.join(BEING_REMOVED);
+    let gone = data.join(format!("{staging_name}.done"));
     remove_all(&gone)?;
     std::fs::rename(&staging, &gone)?;
     sync_dir(data);
     step()?;
     remove_all(&gone)?;
     remove_all(&staged_keys)?;
-    Ok(Switched {
-        export_id: st.export_id,
-        made_ms: st.made_ms,
-        app: st.app,
-        files: st.files,
-        bytes: st.bytes,
-        replaced_first_start,
-    })
+    Ok(replaced_first_start)
 }
 
 /// Whether this data folder took an import, and of which export (`.move/imported.sealed`).

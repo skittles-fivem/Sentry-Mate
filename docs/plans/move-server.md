@@ -1,9 +1,10 @@
 # Plan: moving to another server in one step
 
-Status (2026-11-18): the export file, the import, the write gate and the snapshot are built (crates `gate` and
-`moving`, the `export` and `import` commands, the gate in every write of `ingest` and `sentry-mate`), tested, and
-tried by hand with the binary. The direct move is designed, not built yet. Revised after a design review: see
-**Review notes** at the end. The owner's request: "Make sure there's a one click export so if we needed to migrate to
+Status (2026-11-18): built, tested, and tried by hand with the binary: the export file, the import, the write gate
+and the snapshot (crates `gate` and `moving`), and the direct move (`moving::code`, `proto`, `old`, `pull`,
+`client`; the `move` commands, the two environment lines and `SENTRY_MATE_OFFER_MOVE` in `sentry-mate`). Not built:
+the web UI's `/api/v1` endpoints of section 6 (wave 2) and the Docker script of section 9. Revised after a design
+review and while building: see **Review notes** at the end. The owner's request: "Make sure there's a one click export so if we needed to migrate to
 another server there's no 15 step in ssh to get it moved."
 
 There are two ways. Both carry everything: the logs exactly as stored, the upload tokens, the trust records, the TLS
@@ -65,23 +66,25 @@ data from an export file** on the first-run screen.
   seconds; nothing else stops.
 - **The move code**: 125 random bits in 30 symbols, valid 24 hours, used once, home network only by default. It holds
   no address and no certificate (shorter to type). The claim proves the code over the TLS connection itself, so a fake
-  server or someone in between learns nothing.
+  server or someone in between learns nothing. Its check is a CRC: every typo of one symbol is found.
 - **The data key travels last.** It leaves the old server only in the finish answer, wrapped with a key from the code,
   inside TLS 1.3. The recovery part (the data key wrapped by the recovery key, as in `vault.json` and an export's
   header) travels in the claim answer, so a half-done copy can always be opened with the recovery key. The key file
   never leaves the keys folder; the new server writes its own.
 - **Finish is automatic**: once caught up, the old server pauses, the last changes are copied, the old server confirms
   and records that it moved, the new one switches and says so. Nothing to press. The bridge's logs wait on the bridge
-  meanwhile.
+  meanwhile. Automatic is the safer choice: the pause lasts seconds, and the commit point is one file on the old
+  server, so no step is left for the owner to forget (a forgotten "finish" would leave two servers taking uploads).
 - **The new server must be new**: nothing of the owner's in its data folder. Only a first start's empty vault may be
   there, and it is replaced.
 - **Export**: a snapshot made with hard links in a pause of seconds, then read while the server runs. Its bytes are the
   same every time, so a cut download resumes. It opens with the recovery key only and never holds the key file.
 - **Versions**: the new server must run the same version or a newer one. An older one is refused before the code is
   used up.
-- **No new dependencies**: rustls with ring (already there), hyper's client side (already there), the vault's own
-  primitives (`hmac`, which `hkdf` already pulled in, now used by the vault directly), rustix (already there) for
-  the locks. No C code.
+- **No new dependencies**: rustls with ring (already there), the vault's own primitives (`hmac`, `hkdf`,
+  `chacha20poly1305`), rustix (already there) for the locks. The new server's client is a small blocking HTTP/1.1
+  client over rustls (`moving::client`): hyper's client side would have pulled in new crates. No C code, and
+  `Cargo.lock` gains no crate.
 
 ## 1. What is in the data folder
 
@@ -232,7 +235,9 @@ and `L` as 1). Case and spaces don't matter:
 
 - 1 symbol: the code's format (1).
 - 25 symbols: the secret, 125 random bits.
-- 4 symbols: a 20-bit check (from SHA-256 of the rest), so a typo is found before anything is sent.
+- 4 symbols: a 20-bit check, so a typo is found before anything is sent. It is a CRC (x^20 + x^3 + 1) over the 26
+  symbols before it, so every wrong symbol and every two symbols swapped side by side are found, always, not just
+  nearly always.
 
 It has no address and no certificate SHA-256 in it. The owner gives the address beside it (the UI asks for both), and
 the certificate is learned in the claim, proven by the code itself (2.3). That keeps the code short enough to type.
@@ -256,7 +261,10 @@ Rules:
   `accounts::net`). `move code --anywhere` (or `SENTRY_MATE_OFFER_MOVE=anywhere`) for a new server elsewhere, such as
   a rented server. This is a second fence; the code is the real one.
 - Kept on the old server in `.move/code.sealed` (sealed with the vault): the auth key, the wrap key, the code id, when
-  it expires. Never the code. (The auth key itself is needed: an HMAC can't be checked with only its key's SHA-256.)
+  it expires. Never the code, except one made by `SENTRY_MATE_OFFER_MOVE`: that one is printed in the log again on
+  every start until it is claimed (the log is the owner's only screen, and a restart would otherwise lose it). It is
+  dropped from the file at the claim. (The auth key itself is needed: an HMAC can't be checked with only its key's
+  SHA-256; and anyone who can read `code.sealed` holds the data key already.)
 - **Rate limits**: 10 wrong tries from one address (IPv6: its /64) in 10 minutes, then `429 slow_down`. 100 wrong
   tries in all, and the code stops working (the log says so; make a new one).
 - The code in the log (`SENTRY_MATE_OFFER_MOVE`): with no shell, the log is the only screen the owner has. That is
@@ -266,16 +274,19 @@ Rules:
 ### 2.2 The protocol on port 10100
 
 The move uses the upload port: the same TLS 1.3 server, the same connection guards (6 connections per address, a
-request at most 10 minutes). Its paths are under `/api/move/v1/`. With no code made, no move under way and no move
-done, every one of them answers `404 not_found` like any unknown path, so a scan learns nothing. Errors have the
-upload API's shape: `{ "error": "<words>", "code": "<code>" }`.
+request at most 10 minutes). Its paths are under `/api/move/v1/` (`moving::old::router`, merged into the upload API's
+router). With no code made, no move under way and no move done, every one of them answers `404 not_found` like any
+unknown path, and so does a wrong method, so a scan learns nothing. Errors have the upload API's shape: `{ "error":
+"<words>", "code": "<code>" }`, with more fields where the table says (`at_ms`, `from`, `app`, `expired_ms`,
+`files`, `bytes`). The upload paths of a moved server, and of one switching to an import, answer `503` with the
+gate's reason (`moved`, `moving`) and `Retry-After`: `ping` and `status` too, not only the chunks.
 
 | Path | Method | Proof | Body and answer |
 |---|---|---|---|
 | `/api/move/v1/claim` | POST | the code, bound to the connection (2.3) | `{ v: 1, claim, app, proof }` -> `{ session, server_proof, app, cert_sha256, files, bytes, recovery }` |
-| `/api/move/v1/list` | GET | session | `?after=<path>&limit=` (at most 20,000; `after` in walk order) -> lines of JSON, one per file, then `{ next, now_us, paused, skipped }` |
+| `/api/move/v1/list` | GET | session | `?after=<path>&limit=` (at most 20,000; `after` in walk order) -> lines of JSON, one per file, then `{ end: true, next, now_us, paused, skipped, skipped_count }` |
 | `/api/move/v1/fetch` | POST | session | `{ want: [{ p, from, to, v, tail? }] }` (at most 4,096) -> frames of bytes, at most 64 MiB |
-| `/api/move/v1/pause` | POST | session | -> `{ pause, until_ms }` once writes have stopped |
+| `/api/move/v1/pause` | POST | session | -> `{ pause, until_ms }` once writes have stopped; `503 busy` (Retry-After) when they didn't stop within a minute; `{ pause: "moved" }` on a moved server |
 | `/api/move/v1/finish` | POST | session | `{ pause, files, bytes, digest }` -> `{ moved_ms, key_id, data_key }` |
 | `/api/move/v1/switched` | POST | session | `{ at_ms }` -> `{ ok }`: the new server switched and serves; the old server may now say "done" |
 | `/api/move/v1/status` | GET | session | -> `{ state: "copying" \| "paused" \| "moved" \| "done", pause, moved_ms, switched_ms }` |
@@ -283,8 +294,10 @@ upload API's shape: `{ "error": "<words>", "code": "<code>" }`.
 
 A list line: `{ "p": "can/abc123/abc123_20261108T143000Z_1.log.xz", "k": "s", "len": 233006, "mt": 1794148261123456,
 "id": "<32 hex>" }`. `k` is `s` (sealed whole), `r` (records) or `p` (plain). Sealed and records lines have `id`, the
-file id. In the rounds before the pause, a records line's `len` is the end of its last whole record; in the paused
-round it is the file's whole length. Paths are in walk order (section 1), so the new server compares the list with its
+file id; a sealed or records file shorter than its 22-byte header counts as plain (it has no file id). In the rounds
+before the pause, a records line's `len` is the end of its last whole record; in the paused round, and on a moved
+server (whose lists say `paused: "moved"`), it is the file's whole length. The new server checks every line: a path
+the walk carries, in walk order, after `after`. Paths are in walk order (section 1), so the new server compares the list with its
 copy in one pass. About 120 bytes per file: a million files make about 120 MB per round, a second or two on a home
 network.
 
@@ -301,8 +314,9 @@ frame = 0x01 | varint path length | path | u64 from | u64 count | u64 length now
 end   = 0x00 | varint frames
 ```
 
-Wants a 64 MiB answer can't hold are left out and asked for again. So a request stays far inside the 10-minute limit
-even on a slow link, and big files come in pieces that can be resumed.
+Wants a 64 MiB answer can't hold are left out and asked for again, and the last one answered may come shorter than
+asked. A want asks for at most 16 MiB of a file. So a request stays far inside the 10-minute limit even on a slow
+link, and big files come in pieces that can be resumed.
 
 Session errors: `401 bad_session`, `410 cancelled` (the owner cancelled on the old server), `409 not_paused` (a
 finish without a pause in force), `409 digest_mismatch`.
@@ -370,15 +384,19 @@ per car) make each catch-up round small.
 1. **Pause.** The new server asks for the pause. The old server closes the door and takes the gate exclusively
    (waiting for writes under way), waits 2 seconds (so file times settle), and answers with a pause id. Uploads wait,
    then get `503 moving`. When the pause starts, the old server walks its tree once (stat only: the heads it read in
-   earlier rounds are kept in memory by inode, length and time) and keeps that walk's lines in a sealed temporary file
-   `.move/pause.list`, with their digest, under the pause id.
-2. **Last round.** The new server lists (served from that one walk) and fetches what changed since the round before,
-   whole files as stored. Nothing is writing now, so this round is exact.
+   earlier rounds are kept in memory by inode, length and time) and keeps that walk's digest in memory under the
+   pause id.
+2. **Last round.** The new server lists and fetches what changed since the round before, whole files as stored, and
+   compares file ids too. Nothing is writing now, so this round is exact. The lists are walked again (stat only, the
+   heads come from memory): nothing writes, so they give the same lines as the pause's walk. (Built this way instead
+   of a sealed `.move/pause.list`: same result, one file less.)
 3. **Finish.** The new server sends the number of files, their bytes and a digest: SHA-256 over
    `path \t kind \t length \t time \t file id \n` for every file it holds, in walk order (the file id is empty for
    plain files).
-4. **The old server checks** against the digest kept with the pause id; no second walk. Different: `409
-   digest_mismatch` with its own count; the new server does another round, and the pause goes on. The same: it
+4. **The old server checks** against the digest kept with the pause id. Different: `409 digest_mismatch` with its own
+   count; it walks once more for a fresh digest (so a change made by something else during the pause is caught up
+   with), the new server does another round, and the pause goes on. After five such rounds the new server lets the
+   pause end and catches up first. The same: it
    **sets "moved" in memory first** (every writer that gets the gate from now on is refused), writes
    `.move/moved.sealed` (synced: this is the commit point), and **keeps the gate exclusive for as long as it is moved**
    (only undo lets go). Then it answers with:
@@ -456,11 +474,17 @@ uploads in progress, no tokens, and once they are wired in, no cars, accounts or
 
 - Everything copied goes to `.moving/data/`, at the same paths, times kept. A half-moved folder never looks like a data
   folder.
-- At the claim the new server writes **its own new key file**, `<keys>/.moving/sentry-mate.key`, and next to its copy
-  a vault file `.moving/vault.json` with the recovery part from the claim. Its move state, `.moving/state.sealed`, is
-  sealed with that key file: the address, the old certificate's SHA-256, the session, the claim bytes, the keys from
-  the code, the recovery part, the round, the progress, what isn't settled (2.4), and once finishing, the finish
-  answer. A restart reads it and goes on. The old server's key file never leaves its keys folder.
+- Before the claim the new server makes **a key of its own for the move**, `<keys>/.moving/state.key`. Its move
+  state, `.moving/state.sealed`, is sealed with it (XChaCha20-Poly1305, a key from it by HKDF): the address, the old
+  certificate's SHA-256, the session, the claim bytes (saved before they are sent), the keys from the code, the
+  recovery part, the round, the progress, what isn't settled (2.4), the last problem, and once finishing, the finish
+  answer. A restart reads it and goes on. The vault itself (`.moving/vault.json` and `<keys>/.moving/sentry-mate.key`)
+  is written at the switch, from the finish answer, or by `move finish --recovery-key`: before the finish the new
+  server doesn't hold the data key, so there is nothing to wrap yet. The old server's key file never leaves its keys
+  folder.
+- `.moving/lock` is held shared while the copy writes and exclusively by `move cancel` and `move finish
+  --recovery-key`, so a cancel never removes the folder under a write, and a write never makes the folder again
+  after a cancel.
 - **The copy can always be opened with the recovery key**, from the first byte: even if the old server dies at 90 %,
   `move finish --recovery-key` opens what was copied.
 - The upload port stays closed until the switch. `sentry-mate health` answers healthy while a move runs, so Docker and
@@ -516,9 +540,13 @@ On start:
   two lines".
 - The data folder is in use: start as usual and warn (3.1).
 
-The new server never exits over a move problem, because Docker would restart it in a loop. It waits, says why in the
-log, and tries again where that can help (an unreachable server, a full disk). Where it can't (a wrong, used or expired
-code), it waits for the owner: a new code in the lines and a restart, or `move cancel`.
+The new server never exits over a move problem, because Docker would restart it in a loop. It says why in the log and
+tries again where that can help (an unreachable server, a full disk), with the upload port closed and `health`
+answering healthy. Where it can't (a wrong, used or expired code, a newer old server), it says what to do and then
+starts as usual meanwhile: a new server with no data and no tokens, so no bridge can upload to it. With a new code in
+the lines and a restart, it moves. It tries a failed code only once per start, so a wrong code isn't tried again and
+again. A move started by `move from` while the server runs is seen within a second: the server stops its upload
+port and runs the move.
 
 **Cancelled on the old server** (`410 cancelled`): the new server keeps `.moving/data/` and says so. It is removed only
 by `move cancel` on the new server. A later code, put in the lines, whose claim proves the same old certificate
@@ -732,7 +760,7 @@ Run with `docker exec <container> /sentry-mate ...` (or `docker compose exec sen
 | `move status` | either | What the move is doing: the code waiting, who is copying, how far, paused, moved (and when, to where), confirmed; what was skipped. |
 | `move cancel` | either | Old: the code stops working, a move not finished ends, a pause ends; after the move: "finished; use `move undo`". New, before `switching`: the move stops and what was copied is removed (the old server is told). New, from `switching` on: refused, "the move is done; this server holds the data". |
 | `move undo` | old | After a move: take uploads here again. Asks to type `yes` and warns about the new server. |
-| `move from ADDRESS CODE` | new | Brings the data here. Shows the progress; the server carries on if the command is closed. With no server running (`docker compose run --rm`), it does the whole move and exits. |
+| `move from ADDRESS CODE` | new | Brings the data here. With a server running, the command proves the code (so a typo or a wrong code shows at once), the server does the copy, and the command shows the progress; closing it doesn't stop the move. With no server running (`docker compose run --rm`), it does the whole move and exits; the server tells the old one it serves when it next starts. |
 | `move finish --recovery-key` | new | Last resort when the old server is gone: switches to what was copied, opened with the recovery key. Warns that the last changes may be missing. |
 | `export` | any | The whole server as one export file, to standard output (it refuses a terminal). With `docker compose exec`, add `-T` so the bytes aren't changed by a terminal: `docker compose exec -T sentry-mate /sentry-mate export > sentry-mate.smexport`. It takes the gate's pause itself, so it works while the server runs. (Built.) |
 | `import FILE [--cancel]` | new | Brings an export file in (put it in the data folder first, e.g. `/data/sentry-mate-2026-11-17.smexport`). Asks for the recovery key, like `restore` (so `docker exec -it`), or reads it from standard input. Run again after a restart to carry on. With a server running it waits for the server to switch (up to 3 minutes), else it switches itself. `--cancel` removes a half-done import (refused once switching). (Built.) |
@@ -750,10 +778,14 @@ On the new server (empty data and keys folders), set:
 or run there: sentry-mate move from <this server's address> <the code above>
 ```
 
-How the commands reach the running server: through files, as `token revoke` already does. A command writes a sealed
-request in `.move/` (or, for an import, the ready mark in `.importing/`) and the server looks for requests every
-second. `export` takes the write gate itself for the snapshot, so it needs nothing from the server. Commands that
-write hold the gate like the server's writers.
+How the commands reach the running server: through files, as `token revoke` already does. On the old server the
+commands change `.move/` themselves, under `.move/lock`, and the server reads those files on every request of the
+move and looks at them every few seconds (a cancel ends a pause, an undo opens the gate again). On the new server,
+`move from` stages `.moving/` and `move finish --recovery-key` leaves a mark there; the server looks every second.
+`export` takes the write gate itself for the snapshot, so it needs nothing from the server; on a moved server it
+needs no pause at all. Commands that write hold the gate like the server's writers and refuse on a moved server and
+on one a move is coming into; reading commands (`token list`, `fingerprint`) on a moved server read without the
+gate (the server holds it for good).
 
 ## 6. API for the UI (`/api/v1`)
 
@@ -786,8 +818,25 @@ Events (every stream above):
 |---|---|
 | `state` | `{ state, at_ms }`. New server: `connecting`, `copying`, `catching_up`, `finishing`, `switching`, `done`, `waiting` (the problem says why), `failed`. Old server: `offered`, `copying`, `paused`, `moved` (the new server is switching), `done` (it confirmed), `cancelled`. |
 | `progress` | `{ round, files_done, files_total, bytes_done, bytes_total, bytes_per_s, eta_s }`, at most once a second. |
-| `problem` | `{ code, message, retry_ms }`; `code` one of `unreachable`, `no_move`, `wrong_code`, `code_used`, `code_expired`, `not_proven`, `too_old`, `not_empty`, `no_space`, `cancelled`, `changing_fast`, `skipped`. `retry_ms` null when it waits for the person. |
+| `problem` | `{ code, message, retry_ms }`; `code` one of `address` (the address doesn't read), `unreachable`, `no_move`, `wrong_code` (a typo too: the message says which), `not_home_network`, `slow_down`, `code_used`, `code_expired`, `not_proven`, `too_old`, `not_empty`, `no_space`, `disk`, `bad_session`, `cancelled`, `changing_fast`, `skipped`. `message` is the log's line. `retry_ms` null when it waits for the person. |
 | `done` | `{ at_ms, fingerprint, upload_address_hint, same_machine }` |
+
+What the web server calls for each (all built, in `moving`; the web server only wraps them):
+
+- `GET /api/v1/move`: `old::status` (the code waiting or claimed, who copies, `sent_bytes` of `bytes`, moved and
+  confirmed), `pull::status` (a move coming in: phase, `Progress`, the last `Problem`, skipped), `pull::moved_in`
+  (where this server's data came from). `role` is `new` while `.moving/` is there, `old` with a code, a claim or a
+  moved state, else `none`.
+- `POST /api/v1/move/code`: `old::make_code` (`replace` maps to its flag; `409 move_under_way` is
+  `Error::MoveUnderWay`). `DELETE` and `POST /api/v1/move/cancel`: `old::cancel` (`409 finished` is
+  `Error::Finished`). `POST /api/v1/move/undo`: `old::undo`.
+- `POST /api/v1/setup/move`: `pull::begin` in a blocking task (its `Problem` gives the `400`/`409` answers), then
+  the server's own loop runs `pull::run`, as for `move from`. `DELETE`: `pull::cancel`. `POST
+  /api/v1/setup/move/finish`: `pull::force_finish`.
+- The events: the web server reads `pull::status` / `old::status` once a second and sends what changed (`state`,
+  `progress`, `problem`); `done` comes from `pull::Done` and the moved-in note. The `state` names map from
+  `pull::Phase` (`claiming` is `connecting`; `copying` with round 1 is `copying`, later rounds `catching_up`;
+  `switching`), and from the old side's code, claim, pause and moved state.
 
 Also:
 
@@ -910,16 +959,37 @@ Unit (in the new crates, and in `vault` and `ingest` for their parts):
   logs; an upload in progress finished on the new server; a switch that couldn't finish kept the server from
   starting until it could.
 
-In one process (two servers on loopback, each with its own folders):
+In one process (two servers on loopback, each with its own folders). Built, `crates/moving/tests/direct_move.rs`:
 
-- A whole move while a fake bridge uploads every second to the old server, then to the new one: every log arrives once,
-  nothing is lost or doubled, the bridge only ever sees `200`, `201` and `503`, unfinished uploads carry on.
-- A proxy between them that cuts connections at random; the old server stopped and started mid-copy and during the
-  pause; the new one killed at every step and started again.
-- Versions both ways (new older: refused and the code kept; new newer: moved).
+- A whole move while a test bridge uploads over TLS to the old server, then to the new one: everything acknowledged
+  arrives, the bridge only ever sees `200`, `201` and `503` (one came during the pause: it waited at the gate and was
+  told to try later, never `2xx` after the commit), the upload in progress finishes on the new server, the same
+  tokens, certificate SHA-256 and data key, the old server told "done" once.
+- Codes: none made (`no_move`, nothing staged), a typo (found before anything is sent), a wrong one (counted), an
+  older new server (refused, the code still works), the right one, a second new server with it (`code_used`, with
+  who and when), `move code` refused while a move is under way and `--replace` ending it (the first new server gets
+  `cancelled` and keeps its copy), an expired code, and a new code from the same server carrying on with the kept
+  copy to the end. Eleven wrong codes from one address: `slow_down`, ten counted.
+- A fake server that answers the claim: `not_proven`, nothing staged. After a claim, another server at the old
+  address (another certificate): no request reaches it, the problem is saved; the real old server back at its
+  address: the move carries on and finishes.
+- A proxy that cuts the first six connections part way, a 3 MB log and one bigger than a piece (17 MiB), the old
+  server restarted after the claim and again mid-copy, the new one stopped mid-copy and run again: every file the
+  same bytes and times.
+- The moved state across a restart: uploads `503 moved`, `move code` and `move cancel` refused, another process
+  can't get the gate, the new server's confirmation still arrives; `move undo` makes the running server take uploads
+  again, and it stays undone after a restart.
+
+- `move cancel` on the new server: the copy removed from the data and keys folders, the old server told (its move
+  ends, it takes uploads as before), the new server unused again.
+- The old server gone before the finish: `move finish --recovery-key` refuses a wrong key, then switches to what was
+  copied; the vault opens with the new key file and with the old recovery key; nothing is sent to the old server.
+
+Still to add here: a stop at every step of the move's switch (the import's switch has that test, and the move uses
+the same `bring_all_in`); a pause ended by its timers under a slow finish.
 
 **Two real servers in Docker** (a script, run before a release and by hand; it needs Docker and the image built from
-the tree):
+the tree; not written yet: the same steps were tried by hand with the binary, two servers on one machine):
 
 1. A Docker network; the old container runs as user 568:568 (TrueNAS) with a read-only root, `cap_drop: [ALL]` and
    `no-new-privileges`, as the compose file does. Make two tokens with `docker exec`.
@@ -954,20 +1024,18 @@ Afterwards the containers, volumes and test images are removed, and the build ca
    (`vault::chunks`, for an export read from any byte and an import carrying on); the end of a records file's last
    whole record, from its lengths only (`records::whole_end`).
 2. **gate** (built): the door and the gate, closing it, the server's `.lock`.
-3. **ingest** (the gate built in): every upload's tie, chunk and trust record in one pass, in a task of its own;
-   `503 moving` with `Retry-After` after 20 s, and the gate's own answer when it is closed (`503 moved` once the move
-   closes it); `cert.pem` written under a temporary name and renamed; the upload port's connections end with it (for
-   the switch in place). Still to do: the TLS exporter value in `Conn` (taken once after each handshake); a place for
-   the move routes in the router.
-4. **moving** (built: the walk, the export, the import): one place for the kinds, what is carried and walk order
-   (`tree`); the snapshot, the export writer and its reader from any byte (`export`); the import with its state, the
-   unused check, the switch, the clean-up a start does (`import`). Still to do: the code; the digest; the old side
-   (state in `.move/`, the `/api/move/v1` routes, pause and finish); the new side (the pull loop over hyper's client
-   and tokio-rustls with the pin, `.moving/`, the same switch).
-5. **sentry-mate** (built for the export and import): start-up order (`.lock`, the clean-up, `.importing/`, then the
-   vault), the start's own writes, the housekeeping and the token commands through the gate, the server switching in
-   place to an import a command marked ready, the `export` and `import` commands. Still to do: `.moving/`, the env
-   lines, `health` during a move, the move's commands and request files.
+3. **ingest** (built, the gate in): every upload's tie, chunk and trust record in one pass, in a task of its own;
+   `503 moving` with `Retry-After` after 20 s, and the gate's own answer when it is closed (`503 moved`, on every
+   upload path); `cert.pem` written under a temporary name and renamed; the upload port's connections end with it;
+   the TLS exporter value (`ingest::Exporter`, taken once after each handshake); the last call a closed gate refused
+   (`Uploads::last_refused`, for the hourly line).
+4. **moving** (built): the walk, the export, the import (`tree`, `export`, `import`); the code (`code`); the
+   protocol, proofs, frames and digest (`proto`); the old side (`old`: `.move/`, the routes, pause, finish, the moved
+   state, undo); the new side (`pull`: `.moving/`, the claim, the rounds, the finish, the same switch as the import,
+   `bring_all_in`); the client with the pin (`client`).
+5. **sentry-mate** (built): start-up order (`.lock`, the clean-up, `.importing/`, `.moving/`, then the vault), the
+   env lines and `SENTRY_MATE_OFFER_MOVE`, `health` during a move, the moved state (no housekeeping, writes refused),
+   `move code|status|cancel|undo|from|finish`, telling the old server after a move in.
 6. **Docs**: README (Move to another server, Export and import), the TrueNAS guide (the two lines, the same-machine
    port), the compose file comments.
 7. **Tests** of section 9, with the Docker script.
@@ -1027,7 +1095,7 @@ A design review (2026-11-17) found the problems below. Each was checked against 
 14. **On one machine the new app can't take port 10100.** Real. The tip, the log line and a Docker test step say to use
     another host port during the move (What the owner does, 3.5, section 9).
 
-Found while building (2026-11-17):
+Found while building the export (2026-11-17):
 
 15. **An export sealed with the chunk number as its nonce could seal two plaintexts with one nonce.** A growing file
     is linked into the snapshot; a writer whose append failed cuts what that write left and writes over it, inside
@@ -1042,3 +1110,29 @@ Found while building (2026-11-17):
     import's files beside it (and its housekeeping could then have written there). It finishes the switch first, or
     waits and tries again (3.3).
 19. **The move's part files: the order of "time, sync, rename" wasn't fixed.** It is now (2.4).
+
+Found while building the direct move (2026-11-18):
+
+20. **A check from SHA-256 finds a typo only nearly always.** A 20-bit hash lets one typo in a million through. The
+    code's check is a CRC instead: every wrong symbol and every swap of two side by side is found (2.1, tests in
+    `moving::code`).
+21. **A new server that lost the finish answer would never finish.** After a restart it catches up and asks for a
+    pause again, but a moved server has no pause to give, so its lists never said "paused" and the last round never
+    began. A moved server answers `pause` with `moved`, and its lists say `paused: "moved"` (nothing writes there):
+    the last round runs, and the finish gives the same answer again.
+22. **A records file's catch-up in pieces could end inside a record.** A 16 MiB piece, or the end of a 64 MiB answer,
+    can cut a record. Outside the pause the copy keeps whole records only (cut back to the last whole one) and goes
+    on from there; only bytes the old server listed as whole that aren't make it fetch the file whole again.
+23. **A network failure was taken for a disk failure.** Reading a fetch answer and writing the copy both fail with an
+    I/O error; told apart, a cut connection is tried again on a new one and a full disk waits for room.
+24. **A connection was thrown away after every fetch.** The answer's end frame came before the chunked body's end, so
+    the body was never read to its end. It is now, and a byte after the end frame is an error.
+25. **`token list` and `fingerprint` hung a minute on a moved server**, waiting for the gate it holds for good. On a
+    moved server they read without the gate (nothing writes there).
+26. **A cancel could make `.moving/` again.** A write racing `move cancel` would make the folders it writes into
+    again. The copy writes under `.moving/lock` (shared), the cancel removes the folder under it (exclusive), and the
+    state is written without making folders.
+27. **Waiting for the owner kept the new server down.** After a wrong or used code it now starts as usual (no data,
+    no tokens, so nothing can upload to it) and says what to do; the next start with a new code moves.
+28. **axum's query parser and hyper's client would add crates.** The list's two query fields are read by hand, and the
+    new server's client is a small blocking HTTP/1.1 client over rustls.

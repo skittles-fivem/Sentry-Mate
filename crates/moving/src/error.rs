@@ -51,6 +51,12 @@ pub enum Error {
     Unreadable,
     #[error("there is no import here ready to switch to")]
     NotReady,
+    #[error("{0}")]
+    Move(String),
+    #[error("{0}")]
+    MoveUnderWay(String),
+    #[error("{0}")]
+    Finished(String),
 }
 
 impl From<vault::Error> for Error {

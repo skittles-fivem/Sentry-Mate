@@ -22,7 +22,7 @@ program, and neither are the TeslaMate import and MQTT; the web UI is being buil
 | Places, geofences, charge costs with time-of-use rates, addresses offline or online | built, not wired in yet |
 | Accounts: admin and watch-only, per-car access, two-step sign-in, sessions, audit log | built, not wired in yet |
 | Encryption at rest (pure Rust): everything stored is sealed, key file + recovery key | done |
-| Moving to another server: one export file (opens with the recovery key), imported into a new server while it runs | done; the direct move with a move code is planned in [`docs/plans/move-server.md`](docs/plans/move-server.md) |
+| Moving to another server: a direct move with a one-time move code (two lines in the new server's compose file, no shell), or one export file (opens with the recovery key) | done, see [`docs/plans/move-server.md`](docs/plans/move-server.md) |
 | TeslaMate import from TeslaMate's own backup file (any number of cars, streamed, again later adds only what's new) | built, not wired in yet |
 | MQTT for Home Assistant (TLS only, discovery, any number of cars on one connection) | built, not wired in yet |
 | Web UI: UI packs, two designs as prototypes on made-up data in [`ui/`](ui/), maps; every TeslaMate tab gets a clearer page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) with the API in [`docs/ui-api.md`](docs/ui-api.md) | being built |
@@ -100,7 +100,42 @@ docker compose exec sentry-mate /sentry-mate recovery-key new
 
 ### Move to another server
 
-One export file holds everything: the logs, uploads still arriving, the tokens, the trust records and the TLS key,
+The new server pulls everything from the old one over the upload port, while the old one keeps taking uploads, then
+takes over by itself. The logs, uploads still arriving, the tokens, the trust records and the TLS key all move, so
+the CAN Bridge keeps its token and its certificate SHA-256.
+
+1. **On the old server, get a move code** (valid 24 hours, works once):
+
+   ```bash
+   docker compose exec sentry-mate /sentry-mate move code
+   ```
+
+   With no shell (TrueNAS): add `SENTRY_MATE_OFFER_MOVE=yes` to its environment, redeploy, and copy the code from
+   its log.
+
+2. **Install the new server with empty `data` and `keys` folders and two more lines**, then start it:
+
+   ```yaml
+       environment:
+         - SENTRY_MATE_MOVE_FROM=192.168.1.20
+         - SENTRY_MATE_MOVE_CODE=SMMV-1K3QX-7WD2M-ZP4HT-9BN6R-XC8VA-5JE0F
+   ```
+
+   (Made-up values: the old server's address as the CAN Bridge uses it, and the code from step 1.) Its log shows the
+   copy and ends with `move: finished`. The old server's log then says `move: done`: only then stop it.
+
+3. **If the new server has another address, change it in the CAN Bridge app.** Nothing else changes. The bridge keeps
+   its logs meanwhile and sends them once it reaches the new server.
+
+The two lines can stay; they are ignored once the move is done. The old server answers the bridge "moved, try later"
+and takes no more uploads; `move undo` there makes it take them again. `move status` shows what a move is doing on
+either server, `move cancel` stops it. On one machine (a new disk or pool), give the new app another host port for
+the move (`10101:10100`), then port 10100 back once the old app is stopped.
+
+The code proves itself over the TLS connection, so a fake server or someone in between learns nothing; the data key
+travels only at the end, wrapped with a key from the code, and the key file never leaves its folder.
+
+**Export file**, for when the two servers can't reach each other, or to keep a copy. One export file holds everything: the logs, uploads still arriving, the tokens, the trust records and the TLS key,
 all sealed as stored. It opens only with the recovery key, never with the file alone. Make it while the server runs
 (uploads wait a few seconds):
 

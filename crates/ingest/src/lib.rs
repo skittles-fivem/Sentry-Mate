@@ -14,7 +14,7 @@ pub mod server;
 pub mod store;
 pub mod tokens;
 
-pub use api::{Conn, Memory, Uploads, router};
+pub use api::{Conn, Exporter, Memory, RefusedCall, Uploads, router};
 pub use error::ApiError;
 pub use judge::Judge;
 pub use store::Store;

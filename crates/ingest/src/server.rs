@@ -2,7 +2,7 @@
 //! "TLS"): headers within 20 s, a request at most 10 minutes, at most 6 connections per address and 256 in all, a TLS
 //! handshake within 15 s.
 
-use crate::api::Conn;
+use crate::api::{Conn, EXPORTER_LABEL, Exporter};
 use axum::Router;
 use axum::response::IntoResponse;
 use hyper_util::rt::{TokioIo, TokioTimer};
@@ -143,9 +143,15 @@ pub async fn serve_tls(listener: TcpListener, tls: Arc<rustls::ServerConfig>, ap
                 return;
             };
             let conn = Conn { tls: true, ip };
+            // taken once after the handshake: what a move's claim binds its proofs to
+            let exporter =
+                stream.get_ref().1.export_keying_material([0u8; 32], EXPORTER_LABEL, None).ok().map(Exporter);
             let service =
                 hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
                     req.extensions_mut().insert(conn);
+                    if let Some(e) = exporter {
+                        req.extensions_mut().insert(e);
+                    }
                     let app = app.clone();
                     async move {
                         let req = req.map(axum::body::Body::new);

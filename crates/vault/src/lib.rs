@@ -110,7 +110,7 @@ impl RecoverySlot {
 
 /// A vault's recovery part: the key id and the recovery slot. With the recovery key it gives the data key
 /// ([`RecoveryPart::open`]), with no key file and nothing written.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RecoveryPart {
     pub key_id: String,
     pub slot: RecoverySlot,
@@ -129,6 +129,12 @@ impl RecoveryPart {
         Ok(Vault { id: self.key_id.clone(), key })
     }
 }
+
+/// The data key wrapped by a key of its own (XChaCha20-Poly1305, a random nonce, the purpose as associated data):
+/// what a move's finish answer carries, wrapped with a key from the move code, inside TLS.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct WrappedKey(Wrapped);
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct VaultFile {
@@ -395,6 +401,21 @@ impl Vault {
 
     pub fn key_id(&self) -> &str {
         &self.id
+    }
+
+    /// The data key wrapped with `kek` for `purpose` (a move hands it to the new server this way).
+    pub fn wrap_key(&self, kek: &[u8; 32], purpose: &[u8]) -> Result<WrappedKey, Error> {
+        Ok(WrappedKey(wrap(kek, &*self.key, purpose)?))
+    }
+
+    /// The vault whose data key `w` holds, opened with `kek` for `purpose`; its key id must be `key_id`. In memory
+    /// only: nothing is written (write it somewhere with [`Vault::install`]).
+    pub fn unwrap_key(kek: &[u8; 32], w: &WrappedKey, purpose: &[u8], key_id: &str) -> Result<Vault, Error> {
+        let key = unwrap(kek, &w.0, purpose).ok_or(Error::Damaged)?;
+        if self::key_id(&key) != key_id {
+            return Err(Error::Damaged);
+        }
+        Ok(Vault { id: key_id.to_string(), key })
     }
 
     /// The key of one file, from its random id.

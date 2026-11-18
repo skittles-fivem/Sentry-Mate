@@ -28,6 +28,15 @@ pub struct Conn {
     pub ip: IpAddr,
 }
 
+/// The TLS exporter value of a request's connection (RFC 8446 section 7.5, label [`EXPORTER_LABEL`], 32 bytes),
+/// set by the server on every request. The same at both ends of one TLS connection and different on any other: a
+/// move's claim binds its proofs to it, so someone in between gains nothing.
+#[derive(Clone, Copy)]
+pub struct Exporter(pub [u8; 32]);
+
+/// The exporter label of the move protocol.
+pub const EXPORTER_LABEL: &[u8] = b"EXPORTER-sentry-mate-move-v1";
+
 /// Wrong tokens from one address before it must wait, and requests per token, both per [`WINDOW`].
 pub const MAX_BAD_TOKENS: usize = 20;
 pub const MAX_REQUESTS_PER_TOKEN: usize = 1200;
@@ -136,6 +145,16 @@ pub struct Uploads {
     gate_wait: Duration,
     bad_tokens: Mutex<Window>,
     per_token: Mutex<Window>,
+    refused: Mutex<Option<RefusedCall>>,
+}
+
+/// The last call a closed gate refused (a bridge still sending to a server whose data moved away).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedCall {
+    pub at_ms: u64,
+    /// The car key its token is tied to.
+    pub car_key: Option<String>,
+    pub from: IpAddr,
 }
 
 /// How long an upload waits for a pause of the writes (an export's snapshot) before it is answered `503 moving`.
@@ -207,7 +226,13 @@ impl Uploads {
             gate_wait: wait,
             bad_tokens: Mutex::new(Window::new(MAX_BAD_TOKENS, MAX_TRACKED)),
             per_token: Mutex::new(Window::new(MAX_REQUESTS_PER_TOKEN, MAX_TRACKED)),
+            refused: Mutex::new(None),
         })
+    }
+
+    /// The last call the closed gate refused, if any.
+    pub fn last_refused(&self) -> Option<RefusedCall> {
+        self.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     pub fn memory(&self) -> Memory {
@@ -268,9 +293,23 @@ pub fn bad_token_count(up: &Uploads, ip: IpAddr) -> usize {
     lock_window(&up.bad_tokens).count(&who(ip), Instant::now())
 }
 
+/// A closed gate (a server whose data moved away, or one switching to an import) answers every upload path with
+/// its reason, so the bridge keeps its logs and tries again later.
+fn open_for_uploads(up: &Uploads, token: &Token, conn: Conn) -> Result<(), ApiError> {
+    match up.gate.closed() {
+        Some(c) => {
+            let call = RefusedCall { at_ms: crate::store::now_ms(), car_key: token.vehicle_key.clone(), from: conn.ip };
+            *up.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(call);
+            Err(ApiError::new(503, c.code, c.message).retry_after(c.retry_after_s))
+        }
+        None => Ok(()),
+    }
+}
+
 async fn ping(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, ApiError> {
     let conn = conn_of(req.extensions().get::<Conn>())?;
     let token = authorize(&up, req.headers(), conn).await?;
+    open_for_uploads(&up, &token, conn)?;
     Ok(Json(serde_json::json!({
         "ok": true,
         "api": 1,
@@ -290,6 +329,7 @@ struct StatusBody {
 async fn status(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, ApiError> {
     let conn = conn_of(req.extensions().get::<Conn>())?;
     let token = authorize(&up, req.headers(), conn).await?;
+    open_for_uploads(&up, &token, conn)?;
     let bad = || ApiError::new(400, "bad_request", "Send { \"names\": [...] } with up to 2000 names.");
     let body = axum::body::to_bytes(req.into_body(), 1 << 20).await.map_err(|_| bad())?;
     let StatusBody { names } = serde_json::from_slice(&body).map_err(|_| bad())?;
@@ -328,6 +368,7 @@ fn header_u64(h: &HeaderMap, name: &str) -> Option<u64> {
 async fn upload(AxState(up): St, Path(name): Path<String>, req: Request) -> Result<Response, ApiError> {
     let conn = conn_of(req.extensions().get::<Conn>())?;
     let token = authorize(&up, req.headers(), conn).await?;
+    open_for_uploads(&up, &token, conn)?;
     let n = trust::LogName::parse(&name)
         .ok_or_else(|| ApiError::new(400, "bad_name", "That is not a CAN Bridge log name."))?;
     if let Some(k) = &token.vehicle_key {

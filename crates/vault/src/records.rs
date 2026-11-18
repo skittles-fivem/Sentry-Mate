@@ -143,6 +143,20 @@ pub fn whole_end(file: &File) -> io::Result<Option<u64>> {
     Ok(Some(walk(file, format, HEADER as u64)?.2))
 }
 
+/// Like [`whole_end`], walking the record lengths from `from` on (the end of a whole record found before, so a
+/// file that grew is not walked again from its start). A `from` that isn't the end of a record gives a wrong
+/// answer, never a panic: the lengths read from there don't fit, and the end found is `from` or close to it.
+pub fn whole_end_from(file: &File, from: u64) -> io::Result<Option<u64>> {
+    let mut head = [0u8; HEADER];
+    let mut input = file;
+    input.seek(SeekFrom::Start(0))?;
+    if !read_whole(&mut input, &mut head)? {
+        return Ok(None);
+    }
+    let Some(format) = Format::of(&head) else { return Ok(None) };
+    Ok(Some(walk(file, format, from.max(HEADER as u64))?.2))
+}
+
 /// Where a format 1 file at `path` is written again in format 2 (`<name>.to-v2`). A crash while that runs can leave
 /// it behind; code that removes a records file other than through the vault removes this one too.
 pub fn converting_path(path: &Path) -> PathBuf {
