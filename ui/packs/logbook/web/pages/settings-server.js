@@ -116,13 +116,11 @@ export async function mount(ctx) {
       list.push(outcome('info', `This page came through port ${here.port}; the server listens on ${webPort}.`,
         'Something maps one to the other: a port line in the Docker compose file (left number outside, right number inside), or a reverse proxy. Both are fine. A proxy must pass every address unchanged from the root (the pages live at /, not under a sub-path), and the server reads the visitor’s address from X-Forwarded-For only when the proxy is a trusted one.'));
     }
-    // 4. the address the server writes into its own links
-    if (names.length) {
-      const pub = `${origin('https:', names[0], webPort || 443)}/`;
-      const same = pub === `${loc.origin}/`;
-      list.push(outcome(same ? 'ok' : 'info', `Links the server writes use ${pub}`,
-        same ? 'The same address as this page.'
-          : 'The first host name, with the web port. Links in notices and the Home Assistant device page use it, so it must be an address your other devices can open.'));
+    // 4. the address meant for links: only the name is known here, not the port other devices use,
+    //    so this is a condition to check, shown to admins (who see the server's ports), never a claim.
+    if (names.length && webPort != null) {
+      list.push(outcome('info', `Make sure ${names[0]} opens this server from your other devices.`,
+        'The first host name is the one meant for links to this server, such as those in notices. Use it with the port other devices reach the server through: the left number of the port line in the compose file, or the port of your reverse proxy. The server itself cannot see that port.'));
     }
     replace(addressBox, list);
   }
@@ -200,9 +198,8 @@ export async function mount(ctx) {
       certSteps));
 
   /* ---------------------------------------------------------------- ports */
-  const portRows = inbound.length ? inbound : [{ purpose: 'web', port: here.port, tls: here.proto === 'https:', seen: true }];
-  const portsTable = dataTable(ctx, {
-    rows: portRows, itemName: ['port', 'ports'], label: 'Ports the server listens on',
+  const portsTable = inbound.length ? dataTable(ctx, {
+    rows: inbound, itemName: ['port', 'ports'], label: 'Ports the server listens on',
     csv: { filename: 'sentry-mate-ports.csv' },
     columns: [
       { key: 'purpose', label: 'For', th: true, value: (p) => PURPOSE[p.purpose] || p.purpose,
@@ -211,12 +208,12 @@ export async function mount(ctx) {
       { key: 'tls', label: 'Encryption', value: (p) => (p.tls ? 'TLS 1.3' : 'none'),
         cell: (p) => (p.tls ? h('span', { class: 'ss-ok ss-nowrap' }, 'HTTPS, TLS 1.3') : h('span', { class: 'ss-warn' }, 'None')) },
     ],
-  });
+  }) : null;
   const portsSection = section({ title: 'Ports', cover: 'docs.env.web.port', cls: 'ss-ports' },
     note(inbound.length
       ? 'What the server listens on inside its container. Change one with the port line in the compose file: for another port outside, change only the left number.'
-      : `This page came through port ${here.port}. An admin sees the ports the server itself listens on.`),
-    portsTable.el);
+      : `This page’s address uses port ${here.port}. That is the port your browser connected to, which may belong to a port mapping or a reverse proxy rather than to the server. Only an admin sees the ports the server itself listens on.`),
+    portsTable ? portsTable.el : null);
 
   /* ---------------------------------------------------------------- how access works */
   const myCars = ctx.me && ctx.me.cars === 'all' ? null : ((ctx.me && ctx.me.cars) || []);
@@ -234,7 +231,7 @@ export async function mount(ctx) {
       h('dt', null, 'Passwords'), h('dd', null, 'Only over HTTPS. Five wrong tries for one name within a minute, or 30 from one address, and sign-in waits a minute.'),
       h('dt', null, 'Other sites'), h('dd', null, 'The session cookie is sent to this site only, and every change carries a header another site cannot add, so a page elsewhere cannot act in your name.'),
       h('dt', null, 'Uploads'), h('dd', null, 'A CAN Bridge never uses a person’s account: it uploads with its car’s own token, made in Settings: Cars.'),
-      h('dt', null, 'Audit log'), h('dd', null, 'Every sign-in and every change is recorded with who, when and what. Admins read it below.'),
+      h('dt', null, 'Audit log'), h('dd', null, 'Every sign-in and every change is recorded with who, when and what. ', admin ? 'Admins read it below.' : 'Only admins can read it.'),
       h('dt', null, 'At rest'), h('dd', null, 'Everything the server stores is encrypted, always.')));
 
   /* ---------------------------------------------------------------- certificate, recovery key, backups */
@@ -504,7 +501,7 @@ export async function mount(ctx) {
     accountsSection, sessionsSection, auditSection);
 
   try {
-    await Promise.all([portsTable.load(), sessionsTable.load(), accountsTable && accountsTable.load(), auditTable && auditTable.load()]);
+    await Promise.all([portsTable && portsTable.load(), sessionsTable.load(), accountsTable && accountsTable.load(), auditTable && auditTable.load()]);
   } catch (err) {
     if (!ctx.alive()) return undefined;
     throw err;

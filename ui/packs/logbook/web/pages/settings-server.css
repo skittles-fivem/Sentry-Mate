@@ -84,3 +84,9 @@
 .ss-check { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: var(--text-sm); }
 .ss-check .ss-quiet { color: var(--ink-3); }
 .page-settings-server .ss-nowrap { white-space: nowrap; }
+
+/* Narrow windows: a table that does not fit scrolls inside its own box, never the page. */
+@container page (width < 50rem) {
+  .page-settings-server .ledger-scroll { overflow-x: auto; }
+  .page-settings-server .ss-cars-col, .page-settings-server .ss-summary-col { min-width: 0; }
+}
