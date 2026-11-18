@@ -34,6 +34,7 @@ mod decode;
 mod folders;
 mod keys;
 mod migrate;
+mod seed;
 #[cfg(test)]
 mod testkit;
 
@@ -145,6 +146,35 @@ enum Cmd {
     },
     /// Exit 0 when the upload port accepts connections (or a move comes in, while it copies).
     Health,
+    /// Development only (not in the help): made-up cars for trying the server without anyone's car.
+    #[command(hide = true)]
+    Dev {
+        #[command(subcommand)]
+        cmd: DevCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum DevCmd {
+    /// Upload made-up cars' logs (signed, chained, sealed and judged like real uploads) into the data folder.
+    Seed {
+        #[arg(long, default_value_t = 3)]
+        days: u32,
+        #[arg(long, default_value_t = 1)]
+        cars: u32,
+        /// The same seed makes the same cars and logs.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// At most a frame a second per message (smaller, quicker).
+        #[arg(long)]
+        light: bool,
+        /// No trouble: no lost log, dropped frames, recording pause or app update.
+        #[arg(long)]
+        clean: bool,
+        /// Candump text logs (/1) instead of columns (/2).
+        #[arg(long)]
+        candump: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -333,6 +363,7 @@ fn needs(cmd: &Cmd) -> Option<(bool, bool)> {
         Cmd::Log { cmd: LogCmd::Export { .. } | LogCmd::Decode { .. } } | Cmd::Chain { .. } | Cmd::Keys { .. } => {
             Some((false, false))
         }
+        Cmd::Dev { cmd: DevCmd::Seed { .. } } => Some((true, false)),
         Cmd::Log { .. } | Cmd::Health => None,
     }
 }
@@ -481,6 +512,19 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
         Cmd::Export => return export_cmd(&data, &keys),
         Cmd::Import { file, cancel } => return import_cmd(&data, &keys, file.as_deref(), cancel).await,
         Cmd::Move { cmd } => return move_cmd(&data, &keys, cli.upload_port, cmd).await,
+        Cmd::Dev { cmd: DevCmd::Seed { days, cars, seed, light, clean, candump } } => {
+            let v = Arc::new(Vault::open(&data, &keys)?);
+            refuse_writes(&data, &v)?;
+            // the writes of an upload, through the data folder's gate
+            let _pass = gate::Gate::open(&data)?.enter(GATE_WAIT)?;
+            refuse_writes(&data, &v)?;
+            let store = Store::new(can_dir(&data), v.clone());
+            let judge = Judge::new(store.clone());
+            let tokens = Tokens::open(tokens_file(&data), v).await?;
+            let o = seed::Options { days, cars, seed, light, clean, candump };
+            seed::run(&store, &judge, &tokens, &o, &mut std::io::stdout()).await?;
+            println!("Made-up cars are in. A running server's engine finds them when it starts again.");
+        }
         Cmd::Health => {
             // a move coming in keeps the upload port closed until it switches: healthy meanwhile
             if data.join(moving::pull::STAGING).exists() {

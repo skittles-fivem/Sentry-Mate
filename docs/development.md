@@ -130,6 +130,7 @@ network delay. The previews load map tiles from `tile.openstreetmap.org`.
 | `accounts` | People and sign-in | not yet |
 | `import` | TeslaMate history | not yet |
 | `mqtt` | Home Assistant | not yet |
+| `synth` | Made-up CAN Bridge logs (signed, chained, both formats) for tests | only the hidden `dev seed` |
 | `sentry-mate` | The program | |
 
 ## Layout

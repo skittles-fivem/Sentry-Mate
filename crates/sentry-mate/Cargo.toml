@@ -20,10 +20,12 @@ moving = { path = "../moving" }
 ingest = { path = "../ingest" }
 logfmt = { path = "../logfmt" }
 model = { path = "../model" }
+synth = { path = "../synth" }
 timeline = { path = "../timeline" }
 trust = { path = "../trust" }
 vault = { path = "../vault" }
 zeroize = "1"
+bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 hex = "0.4"
 rustix = { version = "1", features = ["process"] }
