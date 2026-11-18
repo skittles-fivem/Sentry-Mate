@@ -73,8 +73,11 @@ fn sidecar(key: &str, i: u32, log: &[u8]) -> Vec<u8> {
     let b64 = base64::engine::general_purpose::STANDARD;
     let sk = signing_key(key);
     let der = sk.verifying_key().to_public_key_der().unwrap().as_bytes().to_vec();
-    let (prev_name, prev_sha) =
-        if i == 0 { ("-".to_string(), trust::GENESIS_SHA.to_string()) } else { (name(key, i - 1), sha(&self::log(key, i - 1))) };
+    let (prev_name, prev_sha) = if i == 0 {
+        ("-".to_string(), trust::GENESIS_SHA.to_string())
+    } else {
+        (name(key, i - 1), sha(&self::log(key, i - 1)))
+    };
     let n = name(key, i);
     let s = sha(log);
     let msg = trust::signed_message(key, &n, &s, log.len() as u64, u64::from(i), &prev_name, &prev_sha);

@@ -541,6 +541,22 @@ async fn cut_connections_and_restarts_of_both_servers_carry_on() {
     // the old server restarts after the claim: the session is kept
     o.stop();
     let o = run_server(&old.data, old.vault.clone(), port).await;
+    // the first copy never counts a file twice (a cut connection asks again only for what it didn't settle)
+    let over = Arc::new(Mutex::new(None::<(u64, u64)>));
+    let watch = {
+        let (d, k, over) = (data.clone(), keys.clone(), over.clone());
+        tokio::spawn(async move {
+            loop {
+                if let Ok(Some(s)) = pull::status(&d, &k) {
+                    let p = s.progress;
+                    if p.round == 1 && p.files_done > p.files_total {
+                        *over.lock().unwrap() = Some((p.files_done, p.files_total));
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+    };
     // the new server stops part way through the first copy (as a restart would), then carries on
     let o1 = opts();
     let stop = o1.stop.clone();
@@ -572,6 +588,8 @@ async fn cut_connections_and_restarts_of_both_servers_carry_on() {
     }
     assert!(*cuts.lock().unwrap() > 0, "the proxy cut connections");
     ptask.abort();
+    watch.abort();
+    assert_eq!(*over.lock().unwrap(), None, "files counted twice in the first copy (done, total)");
     let v = new_vault(&data, &keys);
     let store = Store::with_limits(data.join("can"), v, 0, 200_000, |_| u64::MAX);
     for (i, size) in [(40u32, 3_000_000usize), (41, 17 * 1024 * 1024 + 5)] {

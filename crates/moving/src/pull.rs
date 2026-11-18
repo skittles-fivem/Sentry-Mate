@@ -102,6 +102,10 @@ impl Problem {
             }
             NetError::Connect(_, io) => Problem::new("unreachable", format!("nothing answers at {addr} ({io})"), true),
             NetError::Resolve(h, io) => Problem::new("unreachable", format!("can't find {h} ({io})"), true),
+            NetError::Io(io) if matches!(io.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                Problem::new("unreachable", "lost the connection to the old server (no answer in time)", true)
+            }
+            NetError::Io(_) => Problem::new("unreachable", e.to_string(), true),
             _ => Problem::new("unreachable", format!("lost the connection to the old server ({e})"), true),
         }
     }
@@ -1732,8 +1736,15 @@ impl<'a> Pull<'a> {
         let mut done = Round::default();
         while !batch.is_empty() {
             self.check_stop()?;
-            let left = self.call(c, |c| {
-                let wants: Vec<Want> = batch.iter().map(|t| self.want(t)).collect();
+            // what this request settled survives a cut connection: the next try asks only for the rest
+            let mut left: Vec<Task> = Vec::new();
+            let mut answered = 0usize;
+            self.call(c, |c| {
+                let todo = &batch[answered..];
+                if todo.is_empty() {
+                    return Ok(());
+                }
+                let wants: Vec<Want> = todo.iter().map(|t| self.want(t)).collect();
                 let body = serde_json::to_vec(&proto::FetchRequest { want: wants.clone() }).unwrap_or_default();
                 let mut r = c.request(
                     "POST",
@@ -1744,13 +1755,12 @@ impl<'a> Pull<'a> {
                 if r.status != 200 {
                     return Err(refused(r));
                 }
-                let mut left = Vec::new();
                 let mut buf = Vec::with_capacity(2048);
-                let mut answered = 0usize;
+                let mut k = 0usize;
                 while let Some(f) = read_frame(&mut r, &mut buf)? {
-                    let i = answered;
-                    answered += 1;
-                    let (Some(t), Some(w)) = (batch.get(i), wants.get(i)) else {
+                    let i = k;
+                    k += 1;
+                    let (Some(t), Some(w)) = (todo.get(i), wants.get(i)) else {
                         return Err(Fail::Net(NetError::Protocol("more frames than wants".into())));
                     };
                     if f.p != w.p || f.from != w.from || f.count > w.to - w.from {
@@ -1762,17 +1772,20 @@ impl<'a> Pull<'a> {
                     self.check_stop()?;
                     let next = self.apply(&mut r, t, w, &f, paused, &mut done)?;
                     drop(lockf);
+                    answered += 1;
                     if let Some(next) = next {
                         left.push(next);
                     }
                 }
+                // the wants the answer left out are asked again
+                left.extend(todo.iter().skip(k).cloned());
+                answered = batch.len();
                 // nothing may follow the end; reading to it keeps the connection for the next request
                 let mut rest = [0u8; 64];
                 if r.read(&mut rest).map_err(|e| Fail::Net(NetError::Io(e)))? > 0 {
                     return Err(Fail::Net(NetError::Protocol("bytes after a fetch answer's end".into())));
                 }
-                left.extend(batch.iter().skip(answered).cloned());
-                Ok(left)
+                Ok(())
             })?;
             self.save()?;
             self.log_progress();
