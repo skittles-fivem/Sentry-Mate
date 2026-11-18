@@ -9,7 +9,9 @@
 //!   role, and every car a request names (the `{car}` in its path, `cars=` and `car=` in its query) checked against
 //!   the account's car list, all before a handler runs. Changes are admin-only unless the route is on the short list
 //!   a watch account may use, so a new route can't forget it. A hidden car and an unknown car give the same
-//!   `404 no_such_car`.
+//!   `404 no_such_car`. A car in a JSON body is read with [`JsonBody::car`] / [`JsonBody::cars_checked`], which
+//!   check it the same way (`422 invalid` on the field, the same for a hidden and an unknown car); never read a
+//!   car id from a body any other way.
 //! - **Extractors** ([`ctx`]): [`Viewer`] (the signed-in account), [`Admin`], [`CarParam`] (the checked car of the
 //!   path), [`CarsParam`] (`cars=`), [`Params`] (the query, with typed getters that answer `400 bad_input` with
 //!   `fields`), [`JsonBody`] (a JSON object of at most 1 MB).
@@ -133,6 +135,8 @@ pub struct Inner {
     pub setup_code_file: Option<PathBuf>,
     pub(crate) cursor_key: [u8; 32],
     pub(crate) rate: policy::RateLimit,
+    /// How long a request body may take to arrive ([`ctx::read_body`]).
+    pub(crate) body_timeout: std::time::Duration,
     services: HashMap<std::any::TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
@@ -155,6 +159,7 @@ pub struct Builder {
     tile_origins: Vec<String>,
     setup_code_file: Option<PathBuf>,
     requests_per_minute: u32,
+    body_timeout: std::time::Duration,
     services: HashMap<std::any::TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
@@ -200,6 +205,13 @@ impl Builder {
         self
     }
 
+    /// How long a JSON request body may take to arrive (default [`server::BODY_TIMEOUT`]; `408 timeout` and the
+    /// connection closed beyond). A pack upload has its own, longer limit ([`packs::UPLOAD_TIMEOUT`]).
+    pub fn body_timeout(mut self, d: std::time::Duration) -> Builder {
+        self.body_timeout = d;
+        self
+    }
+
     /// Hands the frame an engine part (one per type) that handlers read back with [`AppState::service`].
     pub fn service<T: Send + Sync + 'static>(mut self, s: Arc<T>) -> Builder {
         self.services.insert(std::any::TypeId::of::<T>(), s);
@@ -226,6 +238,7 @@ impl Builder {
             setup_code_file: self.setup_code_file,
             cursor_key: key,
             rate: policy::RateLimit::new(self.requests_per_minute),
+            body_timeout: self.body_timeout,
             services: self.services,
         })))
     }
@@ -245,6 +258,7 @@ impl AppState {
             tile_origins: vec![DEFAULT_TILE_ORIGIN.to_string()],
             setup_code_file: None,
             requests_per_minute: 1200,
+            body_timeout: server::BODY_TIMEOUT,
             services: HashMap::new(),
         }
     }

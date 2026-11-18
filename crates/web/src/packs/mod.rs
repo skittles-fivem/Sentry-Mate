@@ -9,7 +9,12 @@
 //!   pack's files with the same path, so a pack can change one stylesheet or the whole interface.
 //! - **Which one a browser gets**: the person's own choice (`ui_pack` in their preferences), else the one chosen for
 //!   everyone, else [`DEFAULT_PACK`]. `/original` shows the default built-in pack in that browser whatever was
-//!   chosen (a broken pack can't lock anyone out), until `/original/off`.
+//!   chosen (a broken pack can't lock anyone out), until `/original/off`. A pack made for another API version
+//!   (`api` in its `ui.json`) can be installed and downloaded but not chosen; one chosen before is passed over for
+//!   the default. A damaged list of packs or choice is put aside at start, and the server starts with the built-in
+//!   packs.
+//! - **Loaded** off the async threads, once for every request that waits for it, and kept among the last few used
+//!   ([`CACHED_PACKS`], [`CACHED_BYTES`]). A download's zip is built once per loaded pack and shared.
 //! - **Served** with a strict CSP (scripts and styles only from the pack's own files, no inline scripts, connections
 //!   and images only to the server and the tile server, `wasm-unsafe-eval` for packs written in Rust,
 //!   `frame-ancestors 'none'`), exact MIME types, `nosniff`, `ETag`s (`Cache-Control: no-cache`, `304` when
@@ -55,8 +60,13 @@ pub const MAX_ZIP_BYTES: usize = 50 << 20;
 pub const MAX_FILES: usize = 2000;
 /// Unpacked, all files together (a zip bomb stops here).
 pub const MAX_UNPACKED_BYTES: u64 = 200 << 20;
-/// Uploaded packs kept in memory at once.
+/// Uploaded packs kept in memory at once, at most.
 pub const CACHED_PACKS: usize = 4;
+/// Bytes of uploaded packs kept in memory at once, at most (their files, and their zip once one was downloaded);
+/// the pack used last is kept whatever its size.
+pub const CACHED_BYTES: u64 = 256 << 20;
+/// A pack upload's body arrives within this.
+pub const UPLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 /// The cookie `/original` sets.
 pub const ORIGINAL_COOKIE: &str = "__Host-sentry-mate-ui";
 const LABEL: &str = "web/ui-pack";
@@ -130,6 +140,11 @@ pub struct Meta {
 }
 
 impl Meta {
+    /// Whether this server speaks the API the pack was made for (else it can't be chosen).
+    pub fn supported(&self) -> bool {
+        self.api == crate::API_VERSION
+    }
+
     fn json(&self, chosen: &str) -> Value {
         json!({
             "id": self.id, "name": self.name, "description": self.description, "author": self.author,
@@ -164,6 +179,8 @@ pub struct Loaded {
     pub ui_json: Bytes,
     pub files: HashMap<String, PackFile>,
     pub base: Option<Arc<Loaded>>,
+    /// The pack as a zip (its own files), built the first time someone downloads it.
+    zip: std::sync::OnceLock<Bytes>,
 }
 
 impl Loaded {
@@ -177,7 +194,30 @@ impl Loaded {
                 Some((path, PackFile { bytes, etag, mime }))
             })
             .collect();
-        Loaded { meta, ui_json, files, base }
+        Loaded { meta, ui_json, files, base, zip: std::sync::OnceLock::new() }
+    }
+
+    /// The pack as a zip (`ui.json` and `web/`), built once and shared by every download of it.
+    pub fn zip(&self) -> Bytes {
+        self.zip
+            .get_or_init(|| {
+                let mut files: Vec<(String, &[u8])> = vec![("ui.json".into(), &self.ui_json[..])];
+                let mut names: Vec<&String> = self.files.keys().collect();
+                names.sort();
+                for n in names {
+                    if let Some(f) = self.files.get(n) {
+                        files.push((format!("web/{n}"), &f.bytes[..]));
+                    }
+                }
+                Bytes::from(zip::write(&files))
+            })
+            .clone()
+    }
+
+    /// The bytes it holds in memory (its own files, and its zip once built).
+    fn size(&self) -> u64 {
+        let files: u64 = self.files.values().map(|f| f.bytes.len() as u64).sum();
+        files + self.ui_json.len() as u64 + self.zip.get().map_or(0, |z| z.len() as u64)
     }
 
     /// A file of the pack, or of the pack under it.
@@ -199,6 +239,33 @@ pub struct Packs {
     index: RwLock<Index>,
     chosen: RwLock<String>,
     cache: Mutex<Vec<Arc<Loaded>>>,
+    /// A lock per pack being loaded: one load, shared by every request that waits for it.
+    loading: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    loads: std::sync::atomic::AtomicU64,
+}
+
+/// Drops the packs used longest ago until at most [`CACHED_PACKS`] and [`CACHED_BYTES`] are left (the last one
+/// stays).
+fn trim(c: &mut Vec<Arc<Loaded>>) {
+    while c.len() > 1 && (c.len() > CACHED_PACKS || c.iter().map(|l| l.size()).sum::<u64>() > CACHED_BYTES) {
+        c.remove(0);
+    }
+}
+
+/// Moves a damaged file aside (`<name>.damaged-<ms>`), so the server starts without it and it can still be looked at.
+fn put_aside(file: &std::path::Path, what: &str, e: &dyn std::fmt::Display) {
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let aside = file.with_file_name(format!("{name}.damaged-{ms}"));
+    match std::fs::rename(file, &aside) {
+        Ok(()) => tracing::error!(
+            "web: {what} can't be read ({e}); it was put aside as {} and the server starts with the built-in packs",
+            aside.display()
+        ),
+        Err(re) => tracing::error!(
+            "web: {what} can't be read ({e}) nor put aside ({re}); the server starts with the built-in packs"
+        ),
+    }
 }
 
 fn other(e: impl std::fmt::Display) -> std::io::Error {
@@ -237,13 +304,26 @@ impl Packs {
         if builtin.is_empty() {
             return Err(other("no built-in UI pack was embedded"));
         }
-        let index = match vault.read_file(&dir.join("index.sealed"), INDEX_LABEL).map_err(other)? {
-            Some(raw) => serde_json::from_slice(&raw).map_err(other)?,
-            None => Index::default(),
+        // a damaged list or choice is put aside: a broken pack can't keep the server from starting
+        let index_file = dir.join("index.sealed");
+        let index = match vault.read_file(&index_file, INDEX_LABEL).map_err(other).and_then(|raw| match raw {
+            Some(raw) => serde_json::from_slice::<Index>(&raw).map_err(other),
+            None => Ok(Index::default()),
+        }) {
+            Ok(i) => i,
+            Err(e) => {
+                put_aside(&index_file, "the list of uploaded UI packs", &e);
+                Index::default()
+            }
         };
-        let chosen = match vault.read_file(&dir.join("chosen.sealed"), CHOSEN_LABEL).map_err(other)? {
-            Some(raw) => String::from_utf8_lossy(&raw).trim().to_string(),
-            None => DEFAULT_PACK.to_string(),
+        let chosen_file = dir.join("chosen.sealed");
+        let chosen = match vault.read_file(&chosen_file, CHOSEN_LABEL) {
+            Ok(Some(raw)) => String::from_utf8_lossy(&raw).trim().to_string(),
+            Ok(None) => DEFAULT_PACK.to_string(),
+            Err(e) => {
+                put_aside(&chosen_file, "the UI pack chosen for everyone", &e);
+                DEFAULT_PACK.to_string()
+            }
         };
         let packs = Packs {
             dir,
@@ -252,8 +332,10 @@ impl Packs {
             index: RwLock::new(index),
             chosen: RwLock::new(chosen),
             cache: Mutex::new(Vec::new()),
+            loading: Mutex::new(HashMap::new()),
+            loads: std::sync::atomic::AtomicU64::new(0),
         };
-        if !packs.exists(&packs.chosen()) {
+        if !packs.usable(&packs.chosen()) {
             *packs.chosen.write().unwrap_or_else(|e| e.into_inner()) = packs.default_id();
         }
         Ok(packs)
@@ -298,6 +380,11 @@ impl Packs {
             || self.index.read().unwrap_or_else(|e| e.into_inner()).packs.iter().any(|m| m.id == id)
     }
 
+    /// Whether the pack exists and was made for the API this server speaks: what can be chosen and served.
+    pub fn usable(&self, id: &str) -> bool {
+        self.meta(id).is_some_and(|m| m.supported())
+    }
+
     /// The pack chosen for everyone.
     pub fn chosen(&self) -> String {
         self.chosen.read().unwrap_or_else(|e| e.into_inner()).clone()
@@ -320,19 +407,54 @@ impl Packs {
         self.dir.join(format!("{sha256}.pack"))
     }
 
-    /// A pack ready to serve (an uploaded one is read and opened when first used, then kept among the last few).
-    pub fn get(&self, id: &str) -> ApiResult<Arc<Loaded>> {
+    /// A pack already in memory (a built-in one, or an uploaded one in the cache), without reading anything.
+    pub fn cached(&self, id: &str) -> Option<Arc<Loaded>> {
         if let Some(b) = self.builtin.iter().find(|b| b.meta.id == id) {
-            return Ok(b.clone());
+            return Some(b.clone());
         }
-        {
-            let mut c = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(i) = c.iter().position(|l| l.meta.id == id) {
-                let l = c.remove(i);
-                c.push(l.clone());
-                return Ok(l);
-            }
+        let mut c = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let i = c.iter().position(|l| l.meta.id == id)?;
+        let l = c.remove(i);
+        c.push(l.clone());
+        Some(l)
+    }
+
+    /// A pack ready to serve (an uploaded one is read and opened when first used, then kept among the last few).
+    /// It may read and unpack a whole pack: call it off the async threads ([`AppState::blocking`]). Requests that
+    /// want the same pack while it loads wait for that one load.
+    pub fn get(&self, id: &str) -> ApiResult<Arc<Loaded>> {
+        if let Some(l) = self.cached(id) {
+            return Ok(l);
         }
+        let gate = self.loading.lock().unwrap_or_else(|e| e.into_inner()).entry(id.to_string()).or_default().clone();
+        let held = gate.lock().unwrap_or_else(|e| e.into_inner());
+        // loaded by the request this one waited for
+        let r = match self.cached(id) {
+            Some(l) => Ok(l),
+            None => self.load(id),
+        };
+        drop(held);
+        let mut loading = self.loading.lock().unwrap_or_else(|e| e.into_inner());
+        // the last one out (the map's and ours are the only references left) takes the lock away
+        if loading.get(id).is_some_and(|g| Arc::strong_count(g) <= 2) {
+            loading.remove(id);
+        }
+        r
+    }
+
+    /// Applies the cache's limits again (after a pack in it grew: its zip was built).
+    pub fn retrim(&self) {
+        trim(&mut self.cache.lock().unwrap_or_else(|e| e.into_inner()));
+    }
+
+    /// Times an uploaded pack was read from disk (for tests).
+    #[doc(hidden)]
+    pub fn loads(&self) -> u64 {
+        self.loads.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn load(&self, id: &str) -> ApiResult<Arc<Loaded>> {
+        self.loads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let meta = self
             .index
             .read()
@@ -351,9 +473,7 @@ impl Packs {
         let mut c = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         c.retain(|l| l.meta.id != id);
         c.push(loaded.clone());
-        while c.len() > CACHED_PACKS {
-            c.remove(0);
-        }
+        trim(&mut c);
         Ok(loaded)
     }
 
@@ -404,16 +524,28 @@ impl Packs {
         Ok(meta)
     }
 
-    /// Chooses the pack for everyone.
+    /// Chooses the pack for everyone (`422` on `pack` for a pack made for another API version).
     pub fn choose(&self, id: &str) -> ApiResult<()> {
-        if !self.exists(id) {
+        let Some(meta) = self.meta(id) else {
             return Err(ApiError::invalid("pack", "No such UI pack on this server."));
+        };
+        if !meta.supported() {
+            return Err(ApiError::invalid("pack", &unsupported(&meta)));
         }
         let mut c = self.chosen.write().unwrap_or_else(|e| e.into_inner());
         self.vault.write_file(&self.dir.join("chosen.sealed"), CHOSEN_LABEL, id.as_bytes())?;
         *c = id.to_string();
         Ok(())
     }
+}
+
+/// Why a pack can't be chosen.
+pub fn unsupported(m: &Meta) -> String {
+    format!(
+        "This pack was made for API version {}; this server speaks version {}. It can be downloaded, not chosen.",
+        m.api,
+        crate::API_VERSION
+    )
 }
 
 const MAGIC: &[u8] = b"SMPACK1\n";
@@ -582,20 +714,35 @@ pub fn check_zip(zip_bytes: &[u8]) -> ApiResult<Checked> {
     Ok(Checked { meta, ui_json: Bytes::from(ui_raw), files })
 }
 
-/// The pack a browser gets: `/original`'s, else the person's own, else the one for everyone.
+/// The id of the pack a browser gets: the person's own, else the one for everyone, else the default (each only
+/// when it can be served: [`Packs::usable`]).
+pub fn pick_id(app: &AppState, own: Option<&str>) -> String {
+    own.filter(|p| app.packs.usable(p)).map(str::to_string).unwrap_or_else(|| {
+        let chosen = app.packs.chosen();
+        if app.packs.usable(&chosen) { chosen } else { app.packs.default_id() }
+    })
+}
+
+/// The pack a browser gets: `/original`'s, else [`pick_id`]'s (the default when it can't be read). It may load a
+/// pack: call it off the async threads.
 pub fn pick(app: &AppState, original: bool, own: Option<&str>) -> Arc<Loaded> {
     if original {
         return app.packs.default_pack();
     }
-    let id = own.filter(|p| app.packs.exists(p)).map(str::to_string).unwrap_or_else(|| app.packs.chosen());
-    app.packs.get(&id).unwrap_or_else(|_| app.packs.default_pack())
+    app.packs.get(&pick_id(app, own)).unwrap_or_else(|_| app.packs.default_pack())
 }
 
-/// `ui_pack` of `/about`: the pack this account is served.
+/// `ui_pack` of `/about`: the pack this account is served (from the list, nothing is loaded).
 pub fn about_ui_pack(app: &AppState, v: Option<&Viewer>) -> Value {
     let own = v.and_then(|v| app.accounts.account(v.id())).and_then(|a| a.ui_pack);
-    let p = pick(app, false, own.as_deref());
-    json!({ "id": p.meta.id, "name": p.meta.name, "version": p.meta.version, "api": p.meta.api })
+    let id = pick_id(app, own.as_deref());
+    match app.packs.meta(&id) {
+        Some(m) => json!({ "id": m.id, "name": m.name, "version": m.version, "api": m.api }),
+        None => {
+            let p = app.packs.default_pack();
+            json!({ "id": p.meta.id, "name": p.meta.name, "version": p.meta.version, "api": p.meta.api })
+        }
+    }
 }
 
 pub fn routes() -> Router<AppState> {
@@ -623,7 +770,7 @@ async fn reconfirm(app: &AppState, v: &Viewer, body: Option<&JsonBody>, headers:
 async fn upload(State(app): State<AppState>, Admin(v): Admin, req: Request) -> ApiResult<Response> {
     let headers = req.headers().clone();
     reconfirm(&app, &v, None, &headers).await?;
-    let zip_bytes = crate::ctx::read_body(req, MAX_ZIP_BYTES).await?;
+    let zip_bytes = crate::ctx::read_body_within(req, MAX_ZIP_BYTES, UPLOAD_TIMEOUT).await?;
     let now = app.now();
     let meta = app
         .blocking(move |app| {
@@ -644,8 +791,10 @@ async fn choose(
 ) -> ApiResult<Json<Value>> {
     body.only(&["pack", "confirm_password", "code"])?;
     let id = body.req_str("pack")?.to_string();
-    if !app.packs.exists(&id) {
-        return Err(ApiError::invalid("pack", "No such UI pack on this server."));
+    match app.packs.meta(&id) {
+        None => return Err(ApiError::invalid("pack", "No such UI pack on this server.")),
+        Some(m) if !m.supported() => return Err(ApiError::invalid("pack", &unsupported(&m))),
+        Some(_) => {}
     }
     reconfirm(&app, &v, Some(&body), &headers).await?;
     let id2 = id.clone();
@@ -683,19 +832,14 @@ async fn remove(
 }
 
 async fn download(State(app): State<AppState>, _v: Viewer, Path(id): Path<String>) -> ApiResult<Response> {
-    let pack = app.blocking(move |app| app.packs.get(&id)).await?;
-    let id = pack.meta.id.clone();
-    let body = app
-        .blocking(move |_| {
-            let mut files: Vec<(String, &[u8])> = vec![("ui.json".into(), &pack.ui_json[..])];
-            let mut names: Vec<&String> = pack.files.keys().collect();
-            names.sort();
-            for n in names {
-                if let Some(f) = pack.files.get(n) {
-                    files.push((format!("web/{n}"), &f.bytes[..]));
-                }
-            }
-            Ok(zip::write(&files))
+    // one zip per loaded pack, built once and shared by every download of it
+    let (id, body) = app
+        .blocking(move |app| {
+            let pack = app.packs.get(&id)?;
+            let zip = pack.zip();
+            // a pack whose zip was just built now holds more: the cache counts it
+            app.packs.retrim();
+            Ok((pack.meta.id.clone(), zip))
         })
         .await?;
     let mut res = body.into_response();
@@ -761,16 +905,34 @@ pub async fn fallback(State(app): State<AppState>, req: Request) -> Response {
     }
     let headers = req.headers().clone();
     let conn = req.extensions().get::<Conn>().copied();
-    let own = match (conn, crate::policy::session_token(&headers)) {
-        (Some(c), Some(token)) if c.tls => {
-            let client = accounts::Client::new(c.ip, &crate::policy::device(&headers));
-            app.blocking(move |app| Ok(app.accounts.authenticate(&token, &client).ok().and_then(|s| s.account.ui_pack)))
-                .await
-                .unwrap_or(None)
+    let token = conn.filter(|c| c.tls).and(crate::policy::session_token(&headers));
+    let original = original(&headers);
+    if token.is_none() {
+        let ready = if original { Some(app.packs.default_pack()) } else { app.packs.cached(&pick_id(&app, None)) };
+        if let Some(pack) = ready {
+            return serve_file(&app, &pack, &path, &headers);
         }
-        _ => None,
-    };
-    let pack = pick(&app, original(&headers), own.as_deref());
+    }
+    let slot = req.extensions().get::<crate::server::ConnSlot>().cloned();
+    let (ip, device) = (conn.map(|c| c.ip), crate::policy::device(&headers));
+    // signing in and loading an uploaded pack both read files: off the async threads
+    let pack = app
+        .blocking(move |app| {
+            let own = match (token, ip) {
+                (Some(token), Some(ip)) => {
+                    let client = accounts::Client::new(ip, &device);
+                    let signed = app.accounts.authenticate(&token, &client).ok();
+                    if let (Some(_), Some(slot)) = (&signed, &slot) {
+                        slot.signed_in();
+                    }
+                    signed.and_then(|s| s.account.ui_pack)
+                }
+                _ => None,
+            };
+            Ok(pick(app, original, own.as_deref()))
+        })
+        .await
+        .unwrap_or_else(|_| app.packs.default_pack());
     serve_file(&app, &pack, &path, &headers)
 }
 
@@ -851,6 +1013,58 @@ mod tests {
         let (ui, back) = unpack(&pack_bytes(b"{}", &files)).unwrap();
         assert_eq!((&ui[..], back), (&b"{}"[..], files));
         assert!(unpack(b"SMPACK1\n\x05\x00ab").is_none());
+    }
+
+    #[test]
+    fn a_damaged_list_or_choice_is_put_aside_and_the_built_in_packs_serve() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::create_dir_all(&data).unwrap();
+        let (v, _) = Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+        let v = Arc::new(v);
+        let packs_dir = data.join("packs");
+        std::fs::create_dir_all(&packs_dir).unwrap();
+        std::fs::write(packs_dir.join("index.sealed"), b"not a sealed file").unwrap();
+        // sealed, but with another label (as after a mix-up of files)
+        v.write_file(&packs_dir.join("chosen.sealed"), "web/something-else", b"night-shift").unwrap();
+        let packs = Packs::open(packs_dir.clone(), v.clone()).unwrap();
+        assert_eq!(packs.chosen(), DEFAULT_PACK);
+        assert!(packs.list().iter().all(|m| m.builtin));
+        assert!(packs.default_pack().file("index.html").is_some());
+        let names: Vec<String> =
+            std::fs::read_dir(&packs_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into()).collect();
+        assert!(names.iter().any(|n| n.starts_with("index.sealed.damaged-")), "{names:?}");
+        assert!(names.iter().any(|n| n.starts_with("chosen.sealed.damaged-")), "{names:?}");
+        // and it opens again after that, as new
+        assert!(Packs::open(packs_dir, v).is_ok());
+    }
+
+    #[test]
+    fn the_cache_is_bounded_by_bytes() {
+        let meta = |id: &str| Meta {
+            id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            author: String::new(),
+            version: "1".into(),
+            api: 1,
+            builtin: false,
+            sha256: String::new(),
+            files: 1,
+            bytes: 0,
+            installed_ms: None,
+        };
+        let big = |id: &str| {
+            let files = vec![("index.html".to_string(), Bytes::from(vec![0u8; (CACHED_BYTES / 3 + 1) as usize]))];
+            Arc::new(Loaded::new(meta(id), Bytes::new(), files, None))
+        };
+        let mut c = vec![big("a"), big("b"), big("c")];
+        trim(&mut c);
+        let ids: Vec<&str> = c.iter().map(|l| l.meta.id.as_str()).collect();
+        assert_eq!(ids, ["b", "c"], "the oldest goes first");
+        let mut one = vec![big("x")];
+        trim(&mut one);
+        assert_eq!(one.len(), 1, "the last one stays");
     }
 
     #[test]

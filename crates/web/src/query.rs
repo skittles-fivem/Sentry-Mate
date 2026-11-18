@@ -191,12 +191,15 @@ impl Params {
         }
     }
 
-    /// What a cursor is bound to: the path and every filter, sort and order (sorted, so their order doesn't count).
+    /// What a cursor is bound to: the path and every filter, sort and order (sorted by name, so their order doesn't
+    /// count). Each name counts with the value [`Params::get`] gives it (the last one; an empty one counts as absent), the value
+    /// the handler filters on.
     fn digest(&self) -> [u8; 32] {
-        let mut pairs: Vec<&(String, String)> =
-            self.pairs.iter().filter(|(k, v)| !NOT_FILTERS.contains(&k.as_str()) && !v.is_empty()).collect();
-        pairs.sort();
-        pairs.dedup_by(|a, b| a.0 == b.0);
+        let mut names: Vec<&str> =
+            self.pairs.iter().map(|(k, _)| k.as_str()).filter(|k| !NOT_FILTERS.contains(k)).collect();
+        names.sort_unstable();
+        names.dedup();
+        let pairs: Vec<(&str, &str)> = names.into_iter().filter_map(|k| self.get(k).map(|v| (k, v))).collect();
         let mut h = Sha256::new();
         h.update(self.path.as_bytes());
         for (k, v) in pairs {
@@ -366,6 +369,10 @@ mod tests {
         let got: Option<(u64, String)> = read_cursor(&key, &with("state=parked&sort=start&limit=9")).unwrap();
         assert_eq!(got, Some((5, "x".into())));
         assert!(read_cursor::<(u64, String)>(&key, &with("sort=start&state=asleep")).is_err());
+        // a repeated filter counts with the value the handler reads (the last one)
+        assert!(read_cursor::<(u64, String)>(&key, &with("sort=start&state=parked&state=driving")).is_err());
+        assert!(read_cursor::<(u64, String)>(&key, &with("sort=start&state=asleep&state=parked")).is_ok());
+        assert!(read_cursor::<(u64, String)>(&key, &with("sort=start&state=parked&state=")).is_err());
         assert!(read_cursor::<(u64, String)>(&[8u8; 32], &with("sort=start&state=parked")).is_err());
         let forged = format!("{}.{}", B64.encode(br#"[9,"x"]"#), c.split_once('.').unwrap().1);
         let q2 = Params::parse("/api/v1/x", Some(&format!("sort=start&state=parked&after={forged}")), None).unwrap();

@@ -151,6 +151,7 @@ fn with_clear_cookie(mut res: Response) -> Response {
 /// The guard every `/api/v1` route runs behind (see the module's notes).
 pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Response {
     let (mut parts, body) = req.into_parts();
+    parts.extensions.insert(crate::ctx::BodyTimeout(app.body_timeout));
     let Some(conn) = parts.extensions.get::<crate::Conn>().copied().filter(|c| c.tls) else {
         return ApiError::new(403, "https_only", "Use HTTPS: this server only answers over TLS.").into_response();
     };
@@ -171,7 +172,12 @@ pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Res
         let t = Zeroizing::new(token);
         let t2 = t.clone();
         match app.blocking(move |app| Ok(app.accounts.authenticate(&t2, &client))).await {
-            Ok(Ok(signed)) => viewer = Some(Viewer::new(signed, t)),
+            Ok(Ok(signed)) => {
+                if let Some(slot) = parts.extensions.get::<crate::server::ConnSlot>() {
+                    slot.signed_in();
+                }
+                viewer = Some(Viewer::new(signed, t));
+            }
             Ok(Err(accounts::Error::TwoStepRequired)) if rule != Access::Public => {
                 return with_clear_cookie(ApiError::from(accounts::Error::TwoStepRequired).into_response());
             }
@@ -276,6 +282,18 @@ pub async fn method_not_allowed() -> Response {
     ApiError::new(405, "method_not_allowed", "This address does not answer that method.").into_response()
 }
 
+/// What counts as one address for the rate and the connection limits: an IPv4 address, or an IPv6 /64 (one
+/// subscriber's network: its hosts are free to pick any address in it).
+pub fn address_key(ip: IpAddr) -> IpAddr {
+    match accounts::net::canonical(ip) {
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            IpAddr::V6(std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
+        }
+        v4 => v4,
+    }
+}
+
 /// A request rate per address (an IPv6 /64 counts as one): a bucket of `burst` requests that fills at
 /// `per_minute`. At most [`RateLimit::MAX_TRACKED`] addresses are remembered (full buckets are forgotten first).
 pub struct RateLimit {
@@ -293,13 +311,7 @@ impl RateLimit {
     }
 
     fn key(ip: IpAddr) -> IpAddr {
-        match accounts::net::canonical(ip) {
-            IpAddr::V6(v6) => {
-                let s = v6.segments();
-                IpAddr::V6(std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
-            }
-            v4 => v4,
-        }
+        address_key(ip)
     }
 
     /// Takes one request; `Err(seconds to wait)` when the bucket is empty.

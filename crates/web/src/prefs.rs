@@ -16,7 +16,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use vault::Vault;
 
 const LABEL: &str = "web/prefs";
@@ -24,40 +24,71 @@ pub const MAX_CAR_ORDER: usize = 10_000;
 pub const MAX_PINNED: usize = 50;
 pub const THEMES: &[&str] = &["light", "dark", "device"];
 
-/// The preferences files.
+/// The preferences files. Every change runs under one lock ([`Prefs::update`]), so two changes at the same moment
+/// (two tabs, a slider) neither mix their bytes in the file nor lose each other's fields.
 pub struct Prefs {
     dir: PathBuf,
     vault: Arc<Vault>,
+    lock: Mutex<()>,
 }
 
 impl Prefs {
     pub fn open(dir: PathBuf, vault: Arc<Vault>) -> std::io::Result<Prefs> {
         std::fs::create_dir_all(&dir)?;
-        Ok(Prefs { dir, vault })
+        Ok(Prefs { dir, vault, lock: Mutex::new(()) })
     }
 
     fn path(&self, id: AccountId) -> PathBuf {
         self.dir.join(format!("{id}.sealed"))
     }
 
-    /// What the person chose (an empty object when nothing).
+    /// What the person chose (an empty object when nothing). A damaged file counts as nothing chosen (and is
+    /// replaced by the next change), so one bad file can't keep the person's preferences answering `500`.
     pub fn own(&self, id: AccountId) -> ApiResult<Map<String, Value>> {
-        match self.vault.read_file(&self.path(id), LABEL)? {
-            Some(raw) => match serde_json::from_slice(&raw)? {
-                Value::Object(m) => Ok(m),
-                _ => Ok(Map::new()),
-            },
-            None => Ok(Map::new()),
+        let raw = match self.vault.read_file(&self.path(id), LABEL) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return Ok(Map::new()),
+            Err(e @ (vault::Error::Damaged | vault::Error::NotSealed)) => {
+                tracing::error!("web: the preferences of account {id} can't be read ({e}); they start again empty");
+                return Ok(Map::new());
+            }
+            Err(e) => return Err(e.into()),
+        };
+        match serde_json::from_slice(&raw) {
+            Ok(Value::Object(m)) => Ok(m),
+            _ => Ok(Map::new()),
         }
     }
 
+    /// Replaces what the person chose.
     pub fn save(&self, id: AccountId, own: &Map<String, Value>) -> ApiResult<()> {
+        let _held = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.write(id, own)
+    }
+
+    fn write(&self, id: AccountId, own: &Map<String, Value>) -> ApiResult<()> {
         let plain = serde_json::to_vec(own)?;
         Ok(self.vault.write_file(&self.path(id), LABEL, &plain)?)
     }
 
+    /// Reads what the person chose, lets `change` change it, and keeps the result, all under the lock: the one way
+    /// to change preferences that keeps changes made at the same moment apart. `change` may do more work that must
+    /// not interleave with another change (the account's UI pack); an `Err` keeps nothing.
+    pub fn update<R>(
+        &self,
+        id: AccountId,
+        change: impl FnOnce(&mut Map<String, Value>) -> ApiResult<R>,
+    ) -> ApiResult<R> {
+        let _held = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut own = self.own(id)?;
+        let r = change(&mut own)?;
+        self.write(id, &own)?;
+        Ok(r)
+    }
+
     /// Forgets an account's choices (when it is removed).
     pub fn remove(&self, id: AccountId) -> ApiResult<()> {
+        let _held = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         match std::fs::remove_file(self.path(id)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
@@ -94,7 +125,7 @@ pub fn view(app: &AppState, id: AccountId, access: &CarAccess) -> ApiResult<Valu
         }
     }
     let pick = |k: &str, default: Value| own.get(k).cloned().unwrap_or(default);
-    let pack = app.accounts.account(id).and_then(|a| a.ui_pack).filter(|p| app.packs.exists(p));
+    let pack = app.accounts.account(id).and_then(|a| a.ui_pack).filter(|p| app.packs.usable(p));
     let order_default = Value::Array(d.car_order.iter().map(|c| Value::from(c.as_str())).collect());
     let order = own.get("car_order").cloned().unwrap_or(order_default);
     Ok(json!({
@@ -104,7 +135,7 @@ pub fn view(app: &AppState, id: AccountId, access: &CarAccess) -> ApiResult<Valu
         "language": pick("language", json!("auto")),
         "interface_size": pick("interface_size", json!(100)),
         "follow_screen": pick("follow_screen", json!(true)),
-        "ui_pack": pack.unwrap_or_else(|| app.packs.chosen()),
+        "ui_pack": pack.unwrap_or_else(|| crate::packs::pick_id(app, None)),
         "car_order": visible(app, access, Some(&order)),
         "pinned_cars": visible(app, access, own.get("pinned_cars")),
     }))
@@ -208,8 +239,11 @@ async fn patch_prefs(State(app): State<AppState>, v: Viewer, body: JsonBody) -> 
     if let Some(val) = body.get("ui_pack") {
         match val {
             Value::Null => pack_change = Some(None),
-            Value::String(p) if app.packs.exists(p) => pack_change = Some(Some(p.clone())),
-            Value::String(_) => rule.add("ui_pack", "No such UI pack on this server."),
+            Value::String(p) => match app.packs.meta(p) {
+                Some(m) if m.supported() => pack_change = Some(Some(p.clone())),
+                Some(m) => rule.add("ui_pack", &crate::packs::unsupported(&m)),
+                None => rule.add("ui_pack", "No such UI pack on this server."),
+            },
             _ => bad.add("ui_pack", "Must be a pack id, or null for the server's choice."),
         }
     }
@@ -223,36 +257,37 @@ async fn patch_prefs(State(app): State<AppState>, v: Viewer, body: JsonBody) -> 
     let prefs = app
         .blocking(move |app| {
             let id = viewer.id();
-            let mut own = app.prefs.own(id)?;
-            for (k, val) in body.0 {
-                match k.as_str() {
-                    "ui_pack" => {}
-                    "units" => {
-                        let mut u = own.get("units").and_then(Value::as_object).cloned().unwrap_or_default();
-                        if let Value::Object(m) = val {
-                            u.extend(m);
+            app.prefs.update(id, |own| {
+                for (k, val) in body.0 {
+                    match k.as_str() {
+                        "ui_pack" => {}
+                        "units" => {
+                            let mut u = own.get("units").and_then(Value::as_object).cloned().unwrap_or_default();
+                            if let Value::Object(m) = val {
+                                u.extend(m);
+                            }
+                            own.insert(k, Value::Object(u));
                         }
-                        own.insert(k, Value::Object(u));
-                    }
-                    "car_order" | "pinned_cars" => {
-                        let mut seen = std::collections::HashSet::new();
-                        let list: Vec<Value> = val
-                            .as_array()
-                            .map(|a| {
-                                a.iter().filter(|c| seen.insert(c.as_str().map(str::to_string))).cloned().collect()
-                            })
-                            .unwrap_or_default();
-                        own.insert(k, Value::Array(list));
-                    }
-                    _ => {
-                        own.insert(k, val);
+                        "car_order" | "pinned_cars" => {
+                            let mut seen = std::collections::HashSet::new();
+                            let list: Vec<Value> = val
+                                .as_array()
+                                .map(|a| {
+                                    a.iter().filter(|c| seen.insert(c.as_str().map(str::to_string))).cloned().collect()
+                                })
+                                .unwrap_or_default();
+                            own.insert(k, Value::Array(list));
+                        }
+                        _ => {
+                            own.insert(k, val);
+                        }
                     }
                 }
-            }
-            app.prefs.save(id, &own)?;
-            if let Some(p) = pack_change {
-                app.accounts.set_ui_pack(viewer.signed_in(), p.as_deref())?;
-            }
+                if let Some(p) = pack_change {
+                    app.accounts.set_ui_pack(viewer.signed_in(), p.as_deref())?;
+                }
+                Ok(())
+            })?;
             view(app, id, viewer.cars())
         })
         .await?;

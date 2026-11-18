@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used, clippy::result_large_err)]
 //! The web side end to end: a real TLS server (web::testkit) and an HTTPS client. Made-up names and cars only.
 
 use axum::Json;
@@ -20,10 +20,20 @@ fn probe() -> Router<AppState> {
     async fn change(v: Viewer) -> Json<Value> {
         Json(json!({ "who": v.name() }))
     }
+    // a watch-writable route that takes a car in its body, read the one way a handler may
+    async fn save_trip(
+        axum::extract::State(app): axum::extract::State<AppState>,
+        v: Viewer,
+        body: web::JsonBody,
+    ) -> web::ApiResult<Json<Value>> {
+        let car = body.car(&app, &v, "car")?;
+        let cars = body.cars_checked(&app, &v, "also")?;
+        Ok(Json(json!({ "who": v.name(), "car": car.map(ids::car), "also": cars.map(|c| c.map(|l| l.len())) })))
+    }
     Router::new()
         .route("/api/v1/cars/{car}/probe", get(car).post(change))
         .route("/api/v1/probe", get(cars))
-        .route("/api/v1/trips", axum::routing::post(change))
+        .route("/api/v1/trips", axum::routing::post(save_trip))
 }
 
 async fn server() -> TestServer {
@@ -219,6 +229,19 @@ async fn roles_and_hidden_cars() {
     }
     assert_eq!(watch.post("/api/v1/cars/c1/probe", json!({})).await.code().as_deref(), Some("not_allowed"));
     assert_eq!(watch.post("/api/v1/trips", json!({})).await.status, 200, "a watch account may save its trips");
+    // a car in a body is checked too: a hidden car and an unknown car look the same
+    let r = watch.post("/api/v1/trips", json!({ "car": "c1", "also": ["c1"] })).await;
+    assert_eq!(r.json(), json!({ "who": WATCH, "car": "c1", "also": 1 }));
+    let hidden = watch.post("/api/v1/trips", json!({ "car": "c2" })).await;
+    let unknown = watch.post("/api/v1/trips", json!({ "car": "c9" })).await;
+    assert_eq!((hidden.status, hidden.json()["error"]["fields"]["car"].is_string()), (422, true));
+    assert_eq!(hidden.json(), unknown.json());
+    assert_eq!(watch.post("/api/v1/trips", json!({ "car": 2 })).await.status, 400);
+    let hidden = watch.post("/api/v1/trips", json!({ "also": ["c1", "c2"] })).await;
+    assert_eq!(hidden.json(), watch.post("/api/v1/trips", json!({ "also": ["c9"] })).await.json());
+    assert_eq!(hidden.status, 422);
+    assert_eq!(watch.post("/api/v1/trips", json!({ "also": "all" })).await.json()["also"], Value::Null);
+    assert_eq!(admin.post("/api/v1/trips", json!({ "car": "c2" })).await.json()["car"], "c2");
     assert_eq!(watch.put("/api/v1/ui-packs/chosen", json!({ "pack": "logbook" })).await.status, 403);
 
     // the admin's list, a change with a stale version, a role change
@@ -532,4 +555,127 @@ async fn tls_1_3_only() {
     let mut out = Vec::new();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(3), tcp.read_to_end(&mut out)).await;
     assert!(!String::from_utf8_lossy(&out).contains("needs_setup"));
+}
+
+#[tokio::test]
+async fn preference_changes_at_the_same_moment_stay_apart() {
+    let s = server().await;
+    let admin = s.admin().await;
+    let sent: Vec<u64> = (0..20).map(|i| 60 + i).collect();
+    let mut tasks = Vec::new();
+    for (i, size) in sent.iter().copied().enumerate() {
+        let mut c = s.client();
+        c.cookies = admin.cookies.clone();
+        tasks.push(tokio::spawn(async move {
+            // every other one also sets its own field: none of them may be lost
+            let body = if i == 0 {
+                json!({ "interface_size": size, "theme": "dark" })
+            } else if i == 1 {
+                json!({ "interface_size": size, "language": "de-CH" })
+            } else {
+                json!({ "interface_size": size })
+            };
+            c.patch("/api/v1/me/preferences", body).await.status
+        }));
+    }
+    for t in tasks {
+        assert_eq!(t.await.unwrap(), 200);
+    }
+    let mut c = s.client();
+    c.cookies = admin.cookies.clone();
+    let r = c.get("/api/v1/me/preferences").await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let p = r.json();
+    assert!(sent.contains(&p["interface_size"].as_u64().unwrap()), "{p}");
+    assert_eq!((p["theme"].as_str(), p["language"].as_str()), (Some("dark"), Some("de-CH")));
+
+    // a damaged file (from before) counts as nothing chosen, and the next change replaces it
+    let dir = s.dir.path().join("data/web/prefs");
+    for e in std::fs::read_dir(&dir).unwrap() {
+        std::fs::write(e.unwrap().path(), b"damaged").unwrap();
+    }
+    let r = c.get("/api/v1/me/preferences").await;
+    assert_eq!((r.status, r.json()["interface_size"].as_u64()), (200, Some(100)), "{}", r.text());
+    let r = c.patch("/api/v1/me/preferences", json!({ "theme": "light" })).await;
+    assert_eq!((r.status, r.json()["theme"].as_str()), (200, Some("light")));
+}
+
+#[tokio::test]
+async fn a_body_sent_slowly_is_cut_off() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let cars: std::collections::HashSet<u32> = [1].into_iter().collect();
+    let s = TestServer::start_full(
+        move |b| b.cars(Arc::new(web::FixedCars(cars))).body_timeout(std::time::Duration::from_secs(1)),
+        Router::new(),
+    )
+    .await;
+    let tcp = tokio::net::TcpStream::connect(s.addr).await.unwrap();
+    let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+    let tls = tokio_rustls::TlsConnector::from(s.tls.clone()).connect(name, tcp).await.unwrap();
+    let (mut rd, mut wr) = tokio::io::split(tls);
+    let head = "POST /api/v1/session HTTP/1.1\r\nHost: localhost\r\nX-Sentry-Mate: 1\r\n\
+                Content-Type: application/json\r\nContent-Length: 100000\r\n\r\n{";
+    wr.write_all(head.as_bytes()).await.unwrap();
+    let started = std::time::Instant::now();
+    let writer = tokio::spawn(async move {
+        for _ in 0..60 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if wr.write_all(b" ").await.is_err() {
+                break;
+            }
+        }
+    });
+    let mut raw = Vec::new();
+    let read = tokio::time::timeout(std::time::Duration::from_secs(10), rd.read_to_end(&mut raw)).await;
+    assert!(read.is_ok(), "the connection was closed");
+    let text = String::from_utf8_lossy(&raw);
+    assert!(text.starts_with("HTTP/1.1 408"), "{text}");
+    assert!(text.to_ascii_lowercase().contains("connection: close"), "{text}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    writer.abort();
+}
+
+#[tokio::test]
+async fn a_pack_is_loaded_once_for_every_request_that_waits_for_it() {
+    let s = server().await;
+    let mut admin = s.admin().await;
+    let big = vec![b'a'; 1 << 20];
+    let zip =
+        pack_zip(&[("ui.json", UI), ("web/index.html", b"<!doctype html><title>Night</title>"), ("web/big.txt", &big)]);
+    let headers = [("Content-Type", "application/zip"), ("X-Sentry-Mate-Password", ADMIN_PASSWORD)];
+    assert_eq!(admin.request("POST", "/api/v1/ui-packs", Some(&zip), &headers).await.status, 201);
+    let before = s.app.packs.loads();
+    let mut tasks = Vec::new();
+    for _ in 0..12 {
+        let mut c = s.client();
+        c.cookies = admin.cookies.clone();
+        tasks.push(tokio::spawn(async move { c.get("/api/v1/ui-packs/night-shift/download").await }));
+    }
+    let mut zips = Vec::new();
+    for t in tasks {
+        let r = t.await.unwrap();
+        assert_eq!(r.status, 200);
+        zips.push(r.body);
+    }
+    assert_eq!(s.app.packs.loads() - before, 1, "one load for all of them");
+    assert!(zips.windows(2).all(|w| w[0] == w[1]));
+    assert_eq!(web::packs::check_zip(&zips[0]).unwrap().meta.id, "night-shift");
+}
+
+#[tokio::test]
+async fn a_pack_for_another_api_can_be_kept_but_not_chosen() {
+    let s = server().await;
+    let mut admin = s.admin().await;
+    let ui = br#"{"name":"Far Future","version":"9.0.0","api":2}"#;
+    let zip = pack_zip(&[("ui.json", ui), ("web/index.html", b"<!doctype html><title>Future</title>")]);
+    let headers = [("Content-Type", "application/zip"), ("X-Sentry-Mate-Password", ADMIN_PASSWORD)];
+    let r = admin.request("POST", "/api/v1/ui-packs", Some(&zip), &headers).await;
+    assert_eq!((r.status, r.json()["api_supported"].as_bool()), (201, Some(false)), "{}", r.text());
+    let r =
+        admin.put("/api/v1/ui-packs/chosen", json!({ "pack": "far-future", "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!((r.status, r.json()["error"]["fields"]["pack"].is_string()), (422, true), "{}", r.text());
+    let r = admin.patch("/api/v1/me/preferences", json!({ "ui_pack": "far-future" })).await;
+    assert_eq!((r.status, r.json()["error"]["fields"]["ui_pack"].is_string()), (422, true), "{}", r.text());
+    assert_eq!(admin.get("/api/v1/ui-packs/far-future/download").await.status, 200, "it can still be downloaded");
+    assert!(!s.client().get("/").await.text().contains("Future"));
 }

@@ -7,7 +7,9 @@
 //! - [`CarParam`]: the `{car}` of the path, checked: it exists and the account sees it.
 //! - [`CarsParam`]: `cars=` (and `car=`), checked the same way; `None` means every car the account sees.
 //! - [`JsonBody`]: a request's JSON object, at most [`crate::MAX_BODY`], with typed getters that answer
-//!   `400 bad_input` naming the field.
+//!   `400 bad_input` naming the field. The guard can't see into bodies: a car a body names is read with
+//!   [`JsonBody::car`] or [`JsonBody::cars_checked`], which check it against the account the same way (a hidden
+//!   and an unknown car both `422 invalid` on the field).
 //! - [`crate::Params`]: the query (see [`crate::query`]).
 
 use crate::error::{ApiError, ApiResult, Fields};
@@ -201,7 +203,11 @@ impl<S: Send + Sync> FromRequestParts<S> for CarsParam {
     }
 }
 
-/// A JSON object body (an empty body is `{}`), at most [`crate::MAX_BODY`].
+/// What a body's car that doesn't exist or is hidden gets (the same for both).
+const NO_SUCH_CAR: &str = "No such car.";
+
+/// A JSON object body (an empty body is `{}`), at most [`crate::MAX_BODY`]. Car ids in it are read with
+/// [`JsonBody::car`] / [`JsonBody::cars_checked`], which check them against the account.
 #[derive(Debug, Clone, Default)]
 pub struct JsonBody(pub Map<String, Value>);
 
@@ -214,8 +220,25 @@ impl<S: Send + Sync> FromRequest<S> for JsonBody {
     }
 }
 
-/// A request body of at most `limit` bytes (`413 too_large` beyond).
+/// How long a request's body may take to arrive ([`read_body`]); the guard sets it from
+/// [`crate::Builder::body_timeout`] on every API request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BodyTimeout(pub std::time::Duration);
+
+/// `408 timeout`, and the connection is closed after it (the rest of the body is never read).
+pub fn body_too_slow() -> ApiError {
+    ApiError::new(408, "timeout", "The request's body came too slowly.").header(http::header::CONNECTION, "close")
+}
+
+/// A request body of at most `limit` bytes (`413 too_large` beyond), arriving within the request's
+/// [`BodyTimeout`] (else [`crate::server::BODY_TIMEOUT`]; `408 timeout` and the connection closed beyond).
 pub async fn read_body(req: Request, limit: usize) -> ApiResult<bytes::Bytes> {
+    let within = req.extensions().get::<BodyTimeout>().map_or(crate::server::BODY_TIMEOUT, |t| t.0);
+    read_body_within(req, limit, within).await
+}
+
+/// [`read_body`] with its own time limit (a large upload).
+pub async fn read_body_within(req: Request, limit: usize, within: std::time::Duration) -> ApiResult<bytes::Bytes> {
     if let Some(len) = req.headers().get(http::header::CONTENT_LENGTH) {
         let n = len.to_str().ok().and_then(|s| ids::number(s.trim()));
         match n {
@@ -224,7 +247,10 @@ pub async fn read_body(req: Request, limit: usize) -> ApiResult<bytes::Bytes> {
             Some(_) => {}
         }
     }
-    axum::body::to_bytes(req.into_body(), limit).await.map_err(|_| ApiError::too_large(limit))
+    match tokio::time::timeout(within, axum::body::to_bytes(req.into_body(), limit)).await {
+        Ok(r) => r.map_err(|_| ApiError::too_large(limit)),
+        Err(_) => Err(body_too_slow()),
+    }
 }
 
 impl JsonBody {
@@ -317,7 +343,36 @@ impl JsonBody {
         self.u64("version")?.ok_or_else(|| Self::wrong("version", "Required: the version you loaded."))
     }
 
-    /// A list of car ids (`"all"` gives `None`). Ids that don't parse are `400`; whether they exist is the caller's.
+    /// A car of the body (`None` when absent or null), checked against the account: **the way to read a car id
+    /// from a body** (the guard checks only the path and the query). Not a car id: `400 bad_input`; a car that
+    /// doesn't exist and a car the account may not see give the same `422 invalid` on `key` ("No such car."), as
+    /// the other field errors of a body do.
+    pub fn car(&self, app: &AppState, v: &Viewer, key: &str) -> ApiResult<Option<CarId>> {
+        let Some(text) = self.str(key)? else { return Ok(None) };
+        let car = ids::parse_car(text).ok_or_else(|| Self::wrong(key, "Must be a car id."))?;
+        if v.sees_existing(app, car) { Ok(Some(car)) } else { Err(ApiError::invalid(key, NO_SUCH_CAR)) }
+    }
+
+    /// [`JsonBody::car`], required.
+    pub fn req_car(&self, app: &AppState, v: &Viewer, key: &str) -> ApiResult<CarId> {
+        self.car(app, v, key)?.ok_or_else(|| Self::wrong(key, "Required."))
+    }
+
+    /// A list of cars of the body (`"all"` gives `Some(None)`), each checked as [`JsonBody::car`] checks one: the
+    /// way to read car lists that name cars of the account.
+    pub fn cars_checked(&self, app: &AppState, v: &Viewer, key: &str) -> ApiResult<Option<Option<Vec<CarId>>>> {
+        let cars = self.cars(key)?;
+        if let Some(Some(list)) = &cars
+            && !list.iter().all(|c| v.sees_existing(app, *c))
+        {
+            return Err(ApiError::invalid(key, NO_SUCH_CAR));
+        }
+        Ok(cars)
+    }
+
+    /// A list of car ids (`"all"` gives `None`), **not checked**: ids that don't parse are `400`, nothing more.
+    /// Only for lists that are not about the account's own cars (an admin giving an account its car list); read
+    /// cars with [`JsonBody::car`] or [`JsonBody::cars_checked`] otherwise.
     pub fn cars(&self, key: &str) -> ApiResult<Option<Option<Vec<CarId>>>> {
         match self.0.get(key) {
             None => Ok(None),
