@@ -80,7 +80,10 @@ export function timelineRow(r, { car, tz, compact = false }) {
       pm.awake_vehicle_bus_only ? `vehicle bus only ${formatDuration(pm.awake_vehicle_bus_only)}` : null, pm.unknown ? `unknown ${formatDuration(pm.unknown)}` : null,
       r.energy_delta_kwh != null ? `${format(Math.abs(r.energy_delta_kwh), 'energy')} used${est ? ' (estimated)' : ''}` : null);
   } else if (r.kind === 'gap') {
-    title = [h('span', null, 'No data'), r.distance_km ? h('span', { class: 'tl-place' }, ` · moved ${format(r.distance_km, 'distance')}`) : null];
+    // where the gap began and, when the car moved, where it ended: both open the place editor
+    const a = placeLink(r.start), b = r.end ? placeLink(r.end) : null;
+    title = [a, a && b ? h('span', { class: 'tl-arrow', 'aria-hidden': 'true' }, ' → ') : null, b, a || b ? h('span', { class: 'tl-place' }, ' · ') : null,
+      h('span', null, 'No data'), r.distance_km ? h('span', { class: 'tl-place' }, ` · moved ${format(r.distance_km, 'distance')}`) : null];
     bits.push(GAP[r.gap_reason] || 'No data for this time.', r.distance_km ? 'The car moved, but no drive was recorded.' : null);
   } else {
     title = [h('span', null, 'Software update'), r.version ? h('span', { class: 'tl-place' }, ` · ${r.version}`) : null];
@@ -123,7 +126,8 @@ export async function mount(ctx) {
 
   const [states, act] = await Promise.all([
     ctx.api.get(`cars/${encodeURIComponent(cid)}/states`, { from_ms: from, to_ms: to, limit: 1 }),
-    ctx.api.get(`cars/${encodeURIComponent(cid)}/activity`, { from_ms: from, to_ms: to }),
+    // /activity defaults to the last 24 hours without a start: ask for the whole history when the period has none
+    ctx.api.get(`cars/${encodeURIComponent(cid)}/activity`, { from_ms: from ?? 0, to_ms: to }),
   ]);
   if (!ctx.alive()) return;
 
@@ -137,6 +141,8 @@ export async function mount(ctx) {
   ctx.api.page('places', { sort: 'visits' }, { limit: 100 }).then((pg) => {
     if (!ctx.alive()) return;
     placeSel.append(...pg.items.map((p) => h('option', { value: p.id, selected: p.id === placeId }, p.name)));
+    // a place from the link that is not in the list (removed, or past the first 100): show it, so the select and the list agree
+    if (placeId && !pg.items.some((p) => p.id === placeId)) placeSel.append(h('option', { value: placeId, selected: true, dataset: { fromLink: '1' } }, 'The place in the link'));
   }).catch(() => {});
   placeSel.addEventListener('change', () => { placeId = placeSel.value; reload(); });
   const textIn = h('input', { class: 'input', type: 'search', value: text, placeholder: 'Hide rows without this text', 'aria-label': 'Text filter', title: 'Only hides rows; it never changes the figures of the rows it keeps.' });
@@ -169,6 +175,7 @@ export async function mount(ctx) {
       h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Unknown'), h('span', { class: 'metric-value' }, format(share.unknown, 'percent')), h('span', { class: 'explain' }, 'no log, paused or failed check'))),
     h('p', { class: 'note' }, 'The shares overlap on purpose (parked time includes asleep time), so they need not add up to 100 %.'));
 
+  const stripFrom = from ?? (act.items?.[0]?.start_ms ?? to - 86400000);
   const stripCsv = csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'activity', period.label), act.items || [], [
     { label: 'State', value: (s) => (STRIP_KINDS[s.kind] || STRIP_KINDS.unknown).label },
     timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz),
@@ -176,7 +183,8 @@ export async function mount(ctx) {
     { label: 'Source', value: (s) => s.source || '' },
   ]) });
   const strip = panel({ title: 'What the car did', icon: 'timeline', cls: 'tl-panel', side: [stripCsv], cover: ['states.chart.states', 'states.chart.legend'] },
-    activityStrip(act.items || [], from ?? (act.items?.[0]?.start_ms ?? to - 86400000), to, { tz, now: ctx.api.now(), size: 'lg', kinds: ['driving', 'charging', 'online', 'online_vehicle_bus_only', 'asleep', 'updating', 'unknown'] }));
+    activityStrip(act.items || [], stripFrom, to, { tz, now: ctx.api.now(), size: 'lg', kinds: ['driving', 'charging', 'online', 'online_vehicle_bus_only', 'asleep', 'updating', 'unknown'] }),
+    from == null && act.items?.length ? h('p', { class: 'note' }, `The whole history, from the first data on ${formatDate(stripFrom, tz, { year: true })}.`) : null);
 
   // the list
   const list = h('div', { class: 'tl-list', role: 'list' });
@@ -202,9 +210,20 @@ export async function mount(ctx) {
       shown += items.length;
       foot.hidden = pager.done;
       count.textContent = `${formatNumber(shown)} ${shown === 1 ? 'entry' : 'entries'}${pager.done ? '' : ' so far'}`;
-      if (!shown) replace(list, emptyState({ icon: 'timeline', title: 'Nothing to show', text: text ? `No entry in this period contains "${text}".` : placeId ? 'Nothing happened at this place in the period.' : 'Nothing in this period. Pick a longer one.' }));
+      if (!shown) {
+        const names = [...kinds].map((k) => KIND[k].plural.toLowerCase());
+        const kindWords = names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names[0];
+        replace(list, emptyState({ icon: 'timeline', title: 'Nothing to show', text: text ? `No entry in this period contains "${text}".` : placeId ? 'Nothing happened at this place in the period.'
+          : kinds.size < 5 ? `No ${kindWords} in this period. Turn more kinds on above, or pick a longer period.` : 'Nothing in this period. Pick a longer one.' }));
+      }
     } catch (e) {
       if (my !== gen || e.name === 'AbortError') return;
+      if (e.status === 400 && e.fields?.place && placeId) {
+        // a link to a place that no longer exists: say so and offer to drop that filter
+        replace(list, emptyState({ icon: 'pin', warn: true, title: 'This place no longer exists', text: 'The link filters by a place that was removed or never existed, so nothing can be shown for it.',
+          action: h('button', { class: 'btn btn--sm', type: 'button', onclick: () => { placeId = ''; placeSel.querySelector('[data-from-link]')?.remove(); placeSel.value = ''; reload(); } }, 'Show every place') }));
+        return;
+      }
       const w = errorWords(e);
       replace(list, h('div', { class: 'empty', role: 'alert' }, h('h3', null, w.title), h('p', null, w.text)));
     } finally { more.disabled = false; }
