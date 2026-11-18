@@ -99,7 +99,7 @@ car, drive or charge always mounts again.
 | `alive()` | False once the page was left (check it after an `await` that is not through `ctx.api`). |
 | `onCleanup(fn)` | Run `fn` when the page is left. |
 | `title(...parts)` | Set the tab title (`ctx.title('Costco to Home')` gives `Costco to Home · Comet · Sentry Mate`). |
-| `setQuery(patch)` | Put the page's filters in the URL (`{ q: 'home', min: null }`, null removes one). The router does not react: the page has already updated itself. Back, forward or a link to other filters mount the page again, so read your filters from `ctx.query` in `mount`. |
+| `setQuery(patch)` | Put the page's filters in the URL (`{ q: 'home', min: null }`, null removes one). The router does not react: the page has already updated itself. Back, forward or a link to other filters mount the page again, so read your filters from `ctx.query` in `mount`. Once the page was left it does nothing (a late timer cannot change the next page's address); still clear your timers with `ctx.onCleanup`. |
 | `link(page, params)` | A link to another page that carries the car and the period (`ctx.link('drives')`). |
 | `go(href)` | Go to an address inside the app. |
 | `events(types, fn)` | Live events from `/api/v1/events` while the page is shown: `ctx.events(['now'], (ev) => …)`, `ev.data` is the event. |
@@ -342,9 +342,13 @@ names or `.page-<id>` (the router puts it on `<main>`), so they never touch anot
 
 ## Size and 4K
 
-- Effective size = Auto x Interface size. Auto follows the screen (1 up to 1440 x 900, rising to 1.45 at
-  3840 x 2160; "Follow screen size" off makes it 1); Interface size is the person's 75 to 200 %. Both live in
-  the person's preferences (`interface_size`, `follow_screen`) and in this browser's copy for the first paint.
+- Effective size = Auto x Interface size. Auto follows the screen, not the window
+  (`screen.width` x `screen.height` in CSS px): 1 up to 1440 x 810, rising in a straight line to 1.45 at
+  3840 x 2160 and capped there; the long and the short side both count (a portrait 4K screen grows like a
+  landscape one), and in Firefox, which reports the screen scaled by its page zoom, Auto is 1. Follow screen
+  size off makes Auto 1. Interface size is 75 to 200 % (whole numbers). This rule is the same in every pack. Both live in the person's preferences
+  (`interface_size`, `follow_screen`) and in this browser's copy for the first paint (`boot.js` and
+  `core/display.js` hold the same formula: change both together).
 - So: **rem for every size** (text, padding, boxes, map and chart heights). px only for hairlines (1px rules)
   and the 10 px floor (`max(10px, 0.75rem)`; use the `--small` style tokens).
 - SVG drawn in percentages of a box sized in rem scales by itself. Canvas (charts, maps) draws at

@@ -264,8 +264,6 @@ html { background: var(--bg-0); }
 body {
   container: page / inline-size;
   margin: 0;
-  /* below this the page scrolls sideways rather than squeezing (200% on a 1440 px laptop) */
-  min-width: 56rem;
   font-family: var(--font);
   font-size: 0.875rem;
   line-height: 1.45;
@@ -801,7 +799,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 .tl-axis span { position: absolute; left: var(--x); transform: translateX(-50%); white-space: nowrap; }
 .tl-axis span:first-child { transform: none; }
 .tl-axis span:last-child { transform: translateX(-100%); }
-.tl-legend { display: flex; gap: 1.125rem; margin-top: 0.625rem; font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-2); }
+.tl-legend { display: flex; flex-wrap: wrap; gap: 0.375rem 1.125rem; margin-top: 0.625rem; font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-2); }
 .tl-legend span { display: inline-flex; align-items: center; gap: 0.4375rem; }
 .tl-legend i { width: 0.75rem; height: 0.75rem; border-radius: 0.25rem; background: var(--dot); }
 .tl-legend i.tl-now-key { width: 0.125rem; height: 0.875rem; border-radius: 1px; background: var(--text); box-shadow: 0 0 0.375rem rgba(255, 255, 255, 0.5); }
@@ -1285,6 +1283,16 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
   .setting { grid-template-columns: minmax(0, 1fr); }
   .menu-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .loading-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* tight: under 50rem of window (200 % browser zoom on a 1280 to 1440 px laptop, 640 to 720 CSS px).
+   Nothing scrolls sideways: the menu is one column, a notice's fix button goes under its text. */
+@container page (max-width: 50rem) {
+  .menu-groups { grid-template-columns: minmax(0, 1fr); }
+  .notice { flex-wrap: wrap; row-gap: 0.375rem; }
+  .notice-text { flex: 1 1 14rem; }
+  .notice > .btn--icon { margin-left: auto; }
+  .period-btn { max-width: 10.5rem; }
 }
 
 /* a window too short for the sidebar: the nav scrolls under the account button, which stays in view */

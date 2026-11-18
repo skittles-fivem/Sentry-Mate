@@ -6,7 +6,7 @@
 
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { h, replace, cover } from '../shared/dom.js';
+import { h, replace, cover, safeUrl } from '../shared/dom.js';
 import { formatTime, zoneName } from '../shared/time.js';
 import { format } from '../shared/units.js';
 import { icon, brandMark } from './icons.js';
@@ -199,7 +199,7 @@ function showRelease(items) {
   u.hidden = !n;
   if (!n) return;
   u.querySelector('span').textContent = n.message || 'A newer version is out';
-  const link = n.detail?.url || n.fix_link || '/help';
+  const link = safeUrl(n.detail?.url) || safeUrl(n.fix_link) || '/help';
   u.setAttribute('href', link);
   if (link.startsWith('/')) { u.removeAttribute('target'); u.setAttribute('rel', 'noopener'); }
 }
@@ -249,8 +249,9 @@ function startEvents() {
 }
 let carTimer = 0;
 function refreshCar() {
-  clearTimeout(carTimer);
+  if (carTimer) return; // at most one refresh every 2 s, also while live values keep coming
   carTimer = setTimeout(async () => {
+    carTimer = 0;
     if (!shown.car) return;
     try { shown.car = await api.get(api.apiPath`cars/${shown.car.id}`); showCarInSidebar(shown.car); } catch { /* keep the last one */ }
   }, 2000);

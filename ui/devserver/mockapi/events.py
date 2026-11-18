@@ -104,6 +104,36 @@ class EventHub:
                 continue
             s.push(event, data)
 
+    def account_cars_changed(self, account, old, new, prefs):
+        """An account's car list changed: its streams get a `fleet` event per car added or removed (one
+        `{ car: null, change: "list_changed" }` when more than 100 changed) and its preferences again,
+        whose order and pins now list other cars. A car taken away starts from a whole `now` if it comes back."""
+        ds = self.app.ds
+
+        def ids(v):
+            if v != "all":
+                return set(v)
+            n = ds.total_cars()
+            return None if n > 1000 else {f"c{i}" for i in range(1, n + 1) if ds.exists(f"c{i}")}
+
+        a, b = ids(old), ids(new)
+        if a is not None and b is not None:
+            added, removed = sorted(b - a, key=lambda c: int(c[1:])), sorted(a - b, key=lambda c: int(c[1:]))
+            events = [{"car": c, "change": "added", "name": self.app.store.car_meta(c)["name"]} for c in added] + \
+                     [{"car": c, "change": "removed", "name": None} for c in removed]
+            if len(events) > 100:
+                events = [{"car": None, "change": "list_changed", "name": None}]
+        else:
+            events = [] if old == new else [{"car": None, "change": "list_changed", "name": None}]
+        with self.lock:
+            targets = [s for s in self.streams if s.session["account"]["id"] == account["id"]]
+        for s in targets:
+            s.sent_full = {c for c in s.sent_full if self.app.store.sees(account, c)}
+            for e in events:
+                s.push("fleet", e)
+            if events:
+                s.push("prefs", prefs)
+
     def end_session(self, token):
         with self.lock:
             targets = [s for s in self.streams if s.session.get("token") == token]

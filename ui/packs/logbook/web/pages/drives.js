@@ -44,6 +44,7 @@ export async function mount(ctx) {
     loadList();
   };
   qIn.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { f.q = qIn.value.trim(); changed(); }, 250); });
+  ctx.onCleanup(() => clearTimeout(timer));
   minIn.addEventListener('change', () => { const n = parseFloat(minIn.value); f.min = Number.isFinite(n) && n > 0 ? Math.round(toMetric(n, 'distance') * 1000) / 1000 : null; changed(); });
   srcSel.addEventListener('change', () => { f.source = srcSel.value; changed(); });
   sortSel.addEventListener('change', () => { f.sort = sortSel.value; changed(); });

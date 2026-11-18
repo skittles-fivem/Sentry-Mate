@@ -150,6 +150,10 @@
   .window-figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .flag-grid { grid-template-columns: repeat(2, auto minmax(0, 1fr)); }
 }
+/* tight: under 50rem of window (200 % browser zoom on a 1280 to 1440 px laptop): one panel per row */
+@container page (max-width: 50rem) {
+  .now-row:not(.now-row--3), .now-row--2 { grid-template-columns: minmax(0, 1fr); }
+}
 @container page (min-width: 140rem) {
   /* gauge | map | today's timeline side by side */
   .now-hero { grid-template-columns: minmax(24rem, 4.2fr) minmax(0, 7.6fr) minmax(24rem, 4.2fr); }

@@ -234,7 +234,7 @@ Points this document left open, decided while building the dev server (`ui/devse
 
 - Standard server-sent events: `event:` name, `id:` (a counter), `data:` JSON. The stream starts with `retry: 3000`. A comment line every 15 s keeps it open. There is no replay for `Last-Event-ID`; after a reconnect, load what you show again.
 - `now`: `{ car, now }`. The first one for a car on a stream carries the whole object; later ones carry only what changed, to be merged field by field. A `{ value, at_ms }` pair is always sent whole.
-- `rows`: `{ car, kinds, from_ms, to_ms }` when a drive, charge, parked spell or gap starts or ends. `fleet`: `{ car, change: "renamed" | "added" | "removed", name }`. `prefs`: the whole preferences object, to that person only. `notice`: one notice.
+- `rows`: `{ car, kinds, from_ms, to_ms }` when a drive, charge, parked spell or gap starts or ends. `fleet`: `{ car, change: "renamed" | "added" | "removed" | "list_changed", name }`. When an admin changes an account's car list, that account's streams get `added` or `removed` per car (`name` null on `removed`), or one `list_changed` with `car: null` when more than 100 changed, then a `prefs` event; a car given back starts again from a whole `now`. `prefs`: the whole preferences object, to that person only. `notice`: one notice.
 - A stream ends when its session ends (sign-out, account removed).
 
 ### Time series

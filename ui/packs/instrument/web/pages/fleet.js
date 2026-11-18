@@ -148,6 +148,7 @@ export async function mount(ctx) {
     paintBoard(lastSummary);
   };
   searchIn.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(apply, 250); });
+  ctx.onCleanup(() => clearTimeout(timer));
   stateSel.addEventListener('change', apply);
   sortSel.addEventListener('change', apply);
   ctx.onCleanup(() => clearTimeout(timer));

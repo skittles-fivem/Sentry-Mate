@@ -6,11 +6,12 @@
 //   html font-size = the browser's standard size (100%, 16 px unless the person changed it)
 //                    x --auto (Auto: follows the screen) x --ui-size (Interface size / 100)
 //
-// Auto is worked out from the screen's size in CSS pixels (screen.width x screen.height): 1 up to a
-// 1440 x 900 screen, rising in a straight line to 1.45 at 3840 x 2160, whichever of width and height
-// is nearer its start (an ultra-wide 3440 x 1440 gets the growth its height allows). The person's
-// "Follow screen size" switch (on by default) turns Auto off (1). Interface size is 75 to 200 %
-// (default 100). Both are stored with the person's preferences on the server (interface_size,
+// Auto is worked out from the screen's size in CSS pixels (screen.width x screen.height): 1 up to
+// 1440 x 810, rising in a straight line to 1.45 at 3840 x 2160 and capped there. The long and the short
+// side both count, so a portrait 4K screen grows like a landscape one and a 3440 x 1440 ultrawide like a
+// 2560 x 1440 screen. Firefox reports the screen scaled by its page zoom, so there Auto is 1. The person's
+// "Follow screen size" switch (on by default) turns Auto on; off, Auto is 1. Interface size is 75 to
+// 200 % (default 100). The rule is the same in every Sentry Mate pack. Both are stored with the person's preferences on the server (interface_size,
 // follow_screen); this browser keeps a copy so boot.js can size the very first paint. boot.js has the
 // same formula: change both together.
 //
@@ -25,12 +26,14 @@ export const SIZE_MIN = 75;
 export const SIZE_MAX = 200;
 const CACHE_KEY = 'logbook:size';
 
-/** Auto for a screen of w x h CSS px: 1 up to 1440 x 900, 1.45 at 3840 x 2160 and above. */
+const GECKO_ZOOMED_SCREEN = /\bFirefox\//.test(navigator.userAgent || '');
+
+/** Auto for a screen of w x h CSS px: 1 up to 1440 x 810, 1.45 at 3840 x 2160 and above (either way up). */
 export function autoFactor(w = window.screen && window.screen.width, h = window.screen && window.screen.height) {
+  if (GECKO_ZOOMED_SCREEN) return 1;
   if (!(w > 0) || !(h > 0)) return 1;
-  const fw = (w - 1440) / (3840 - 1440);
-  const fh = (h - 900) / (2160 - 900);
-  const f = Math.max(0, Math.min(1, Math.min(fw, fh)));
+  const long = Math.max(w, h), short = Math.min(w, h);
+  const f = Math.max(0, Math.min(1, Math.min((long - 1440) / 2400, (short - 810) / 1350)));
   return Math.round((1 + 0.45 * f) * 1000) / 1000;
 }
 

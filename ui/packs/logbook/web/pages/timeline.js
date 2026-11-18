@@ -96,6 +96,7 @@ export async function mount(ctx) {
   }));
   let timer = 0;
   qIn.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { text = qIn.value.trim(); ctx.setQuery({ q: text || null }); loadRows(); }, 250); });
+  ctx.onCleanup(() => clearTimeout(timer));
 
   let sideMap = null;
   async function drawAll(c) {

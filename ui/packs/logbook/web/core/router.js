@@ -111,13 +111,18 @@ function makeCtx(s, my, scope, cleanups) {
     /** The tab title: ctx.title('Costco to Home') -> 'Costco to Home · Comet · Sentry Mate'. */
     title: (...parts) => { if (my === token) setTitle(...parts, ctx.car ? ctx.car.name : null); },
     /** Change the page's own query parameters (filters); the page updates itself, the router does not. */
-    setQuery: (patch, opts) => { selfQuery = true; try { state.setQuery(patch, opts); } finally { selfQuery = false; } ctx.query = { ...state.current().query }; },
+    setQuery: (patch, opts) => {
+      if (my !== token) return; // a late timer of a page that was left must not change the next page's address
+      selfQuery = true;
+      try { state.setQuery(patch, opts); } finally { selfQuery = false; }
+      ctx.query = { ...state.current().query };
+    },
     /** A link to another page, carrying the car and the period. */
     link: (page, params) => state.linkTo(page, params),
     /** Go to another page inside the app. */
     go: (href, opts) => state.navigate(href, opts),
     /** Live events while the page is shown: ctx.events(['now'], (ev) => ...). */
-    events: (types, fn) => scope.events(fn, { types }),
+    events: (types, fn) => scope.events((ev) => { if (my === token) fn(ev); }, { types }),
     /** A short note after an action (core/flash.js). */
     flash,
     /** Mark an element as covering inventory items. */

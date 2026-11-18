@@ -325,3 +325,41 @@ class SmallFleetFilters(ServerCase):
 
 
 __all__ = ["Running"]
+
+
+class AccountCarsChange(ServerCase):
+    """Taking a car off a watch account, or giving one, reaches that account's open streams."""
+
+    def drain(self, s):
+        out = []
+        while not s.q.empty():
+            out.append(s.q.get_nowait())
+        return out
+
+    def test_streams_hear_of_cars_added_and_removed(self):
+        st, hub = self.server.app.store, self.server.app.events
+        acc = st.accounts["a2"]
+        self.assertEqual(acc["cars"], ["c1"])
+        s = hub.subscribe({"account": acc, "token": "test-stream"})
+        try:
+            hub.tick()
+            self.assertIn(("now", "c1"), [(e, d["car"]) for e, d in self.drain(s) if e == "now"])
+            v = self.c.get("/api/v1/accounts/a2")["version"]
+            self.c.json("PATCH", "/api/v1/accounts/a2", {"version": v, "cars": ["c2"]})
+            got = self.drain(s)
+            fleet = sorted((d["car"], d["change"]) for e, d in got if e == "fleet")
+            self.assertEqual(fleet, [("c1", "removed"), ("c2", "added")])
+            prefs = [d for e, d in got if e == "prefs"]
+            self.assertEqual(len(prefs), 1)
+            self.assertNotIn("c1", prefs[0]["car_order"])
+            # given back later, the car's first `now` on this stream is whole again, not a delta
+            v = self.c.get("/api/v1/accounts/a2")["version"]
+            self.c.json("PATCH", "/api/v1/accounts/a2", {"version": v, "cars": ["c1", "c2"]})
+            self.drain(s)
+            hub.tick()
+            first = [d["now"] for e, d in self.drain(s) if e == "now" and d["car"] == "c1"]
+            self.assertTrue(first and "state" in first[0] and "tyres_kpa" in first[0], first[:1])
+        finally:
+            hub.unsubscribe(s)
+            v = self.c.get("/api/v1/accounts/a2")["version"]
+            self.c.json("PATCH", "/api/v1/accounts/a2", {"version": v, "cars": ["c1"]})

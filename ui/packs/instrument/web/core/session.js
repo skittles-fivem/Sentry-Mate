@@ -37,11 +37,19 @@ export async function check() {
 
 export const status = () => known;
 
-/** A safe place to go after signing in: a path inside this app, never another site. */
+/**
+ * A safe place to go after signing in: a path inside this app, never another site. The address is read the
+ * way the browser reads it ('/\\host' and '/<tab>/host' are other sites to a browser), and only its path,
+ * query and hash on this origin are kept.
+ */
 export function safeNext(next) {
-  if (typeof next !== 'string' || !next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\')) return '/';
-  if (next.startsWith('/sign-in') || next.startsWith('/setup') || next.startsWith('/api/')) return '/';
-  return next;
+  if (typeof next !== 'string' || !next.startsWith('/')) return '/';
+  let u;
+  try { u = new URL(next, location.origin); } catch { return '/'; }
+  if (u.origin !== location.origin) return '/';
+  const path = u.pathname;
+  if (path.startsWith('//') || path === '/sign-in' || path === '/setup' || path.startsWith('/api/')) return '/';
+  return path + u.search + u.hash;
 }
 
 /**

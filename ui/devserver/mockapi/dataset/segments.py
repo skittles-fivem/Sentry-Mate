@@ -252,8 +252,8 @@ class Drive(Seg):
     def power(self, v, a, s):
         car = self.car
         if s < self.length_m - 25:
-            e1 = self.route.at(s)[2]
-            e2 = self.route.at(s + 20)[2]
+            e1 = self.route.elevation(s)
+            e2 = self.route.elevation(s + 20)
             grade = (e2 - e1) / 20
         else:
             grade = 0.0

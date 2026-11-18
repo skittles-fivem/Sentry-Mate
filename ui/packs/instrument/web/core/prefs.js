@@ -6,7 +6,7 @@
 
 import * as api from '../shared/api.js';
 import { setUnits } from '../shared/units.js';
-import { setLocale, getTextLanguage } from '../shared/i18n.js';
+import { setLocale } from '../shared/i18n.js';
 import { applyInterface, applyTheme } from './display.js';
 
 let me = null;
@@ -28,8 +28,7 @@ export function applyPrefs(p) {
   if (!p) return;
   prefs = p;
   setUnits(p);
-  setLocale(p.language || 'auto');
-  document.documentElement.lang = getTextLanguage();
+  setLocale(p.language || 'auto'); // also sets <html lang>: en-GB, or the language the text is really in
   if (p.theme) applyTheme(p.theme);
   if (p.interface_size != null || p.follow_screen != null) {
     applyInterface({ size: p.interface_size ?? undefined, follow: p.follow_screen ?? undefined });

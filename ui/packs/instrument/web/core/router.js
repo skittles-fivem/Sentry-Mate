@@ -25,7 +25,6 @@ import { getMe, getPrefs, isAdmin } from './prefs.js';
 const BARE = new Set(['sign-in', 'setup']);
 let mounted = null;      // { key, queryKey, ctx, instance, cleanups, scope, cssHref }
 let seq = 0;
-let ownQuery = false;
 let firstMount = true;
 
 const periodKey = (p) => (p ? JSON.stringify(p) : '');
@@ -50,11 +49,18 @@ function onState(s) {
   if (s !== state.current()) return; // a newer change is on its way
   if (mounted && mounted.key === routeKey(s)) {
     const qk = queryKey(s.query);
-    if (qk === mounted.queryKey) return;
+    if (qk === mounted.queryKey) return; // the same filters, or the page set them itself (ctx.setQuery)
     mounted.queryKey = qk;
-    if (ownQuery) { ownQuery = false; return; }
     const onQuery = mounted.instance?.onQuery || mounted.mod?.onQuery;
-    if (onQuery) { try { onQuery(s.query, mounted.ctx); } catch (e) { console.error(e); } return; }
+    if (onQuery) {
+      // back / forward between filters: the page updates itself, and is ready again once onQuery resolves
+      const m = mounted;
+      m.ctx.query = s.query;
+      m.ctx.state = s;
+      Promise.resolve().then(() => onQuery(s.query, m.ctx))
+        .then(() => { if (mounted === m) markReady(m.ctx.id); }, (e) => { if (mounted === m) m.ctx.fail(e); });
+      return;
+    }
   }
   const samePage = mounted && mounted.ctx?.id === s.page && mounted.ctx?.carId === s.car;
   mount(s, { keepScroll: samePage });
@@ -198,7 +204,16 @@ async function mount(s, { keepScroll = false } = {}) {
     setTitle(...parts) { docTitle(...parts, car?.name); },
     setCrumbs(list) { frame.setCrumbs(list); },
     link: (page, params) => state.linkTo(page, params),
-    setQuery(patch, opts) { ownQuery = true; return state.setQuery(patch, opts); },
+    // The page's own filters: the router knows them at once, so it does not build the page again; a page
+    // that was left changes nothing (a late timer must not write into the next page's address).
+    setQuery(patch, opts) {
+      if (!alive()) return state.current();
+      const next = state.setQuery(patch, opts);
+      rec.queryKey = queryKey(next.query);
+      ctx.query = next.query;
+      ctx.state = next;
+      return next;
+    },
     navigate: (href, opts) => state.navigate(href, opts),
     reload: () => mount(state.current(), { keepScroll: true }),
   };

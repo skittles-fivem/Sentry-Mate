@@ -287,9 +287,8 @@ export function mountFrame(opts) {
 
   // Live: notices and preferences changed elsewhere (another tab, an admin's server defaults).
   api.events((ev) => {
-    if (ev.type === 'notice' && ev.data) {
-      notices = notices.filter((n) => n.code !== ev.data.code).concat([ev.data]);
-      drawNotices();
+    if (ev.type === 'notice') {
+      loadNotices(); // the whole list again: a notice may also have gone (a certificate renewed)
     } else if (ev.type === 'prefs' && ev.data) {
       applyPrefs(ev.data);
     }

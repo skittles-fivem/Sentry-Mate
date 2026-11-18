@@ -42,6 +42,9 @@ class App:
         t0 = time.monotonic()
         self.ds = Dataset(cfg)
         self.ds.synthetic.warm()  # sorts, counts and search of a large fleet: built before the first request
+        for h in self.ds.featured.values():  # each drive's power peaks (the slow part of a drive row), once
+            for d in h.drives:
+                d._power_peaks()
         self.build_s = time.monotonic() - t0
         self.store = Store(cfg, self.ds, self.clock)
         self.cache = {}

@@ -67,8 +67,10 @@ and its default period are in `core/pages.js` (`PAGES`). The route is in `shared
 page ids and `sign-in` and `setup` are already registered; a new page only needs its module.
 
 When a page is mounted again: another page, car, drive, charge or period builds it again from scratch. A change of
-the query that the page made itself (`ctx.setQuery`) does not; a page can also export `onQuery(query)` to take
-back/forward query changes without a rebuild.
+the query that the page made itself (`ctx.setQuery`) does not; nor does a `ctx.setQuery` that changes nothing. Back,
+forward or a link to other filters of the same page build it again, unless the page exports `onQuery(query, ctx)`:
+then that takes the new query (`ctx.query` is already updated), and the page is ready again when it resolves. A
+page that was left cannot change the address any more (`ctx.setQuery` does nothing then).
 
 ## `ctx`
 
@@ -189,7 +191,8 @@ its field (`path` is the API's field path, `units.distance`) and the rest in the
 `agoEl(ms, tz)` (refreshed by the frame every 15 s), `statePill(state, { stale, lg })`, `stateLabel`, `STATES`,
 `TYRES`, `placeName(p)`, `carMeta(car)`.
 
-Every number shows its unit: use `format(value, kind)` / `quantity(value, kind)` from `shared/units.js` with the kind
+Every number shows its unit: use `format(value, kind)` from `shared/units.js` (text) or `quantity(value, kind)` from
+`shared/dom.js` (an element) with the kind
 named in the API field (`distance`, `energy`, `efficiency`, `pressure`, ...). The API is metric; never convert by hand.
 To read a typed value back (a filter in the person's units) use `toMetric(value, kind)`.
 
@@ -247,13 +250,17 @@ get more columns, not a narrow column in the middle.
 ## Sizes, tiers and 4K
 
 - The root font size is browser default x Auto x Interface size (set only in `app.css` "root size" and `boot.js`).
-  Auto is 1 up to about a 1440 px wide screen and rises to 1.45 on a 3840 x 2160 screen, when the person's Follow
-  screen size is on; Interface size is 75 to 200 %. Both are the person's preferences (`interface_size`,
-  `follow_screen`), cached in this browser only for the first paint.
+  Auto follows the screen, not the window
+  (`screen.width` x `screen.height` in CSS px): 1 up to 1440 x 810, rising in a straight line to 1.45 at
+  3840 x 2160 and capped there; the long and the short side both count (a portrait 4K screen grows like a
+  landscape one), and in Firefox, which reports the screen scaled by its page zoom, Auto is 1. Follow screen
+  size off makes Auto 1. Interface size is 75 to 200 % (whole numbers). This rule is the same in every pack. Both are the person's
+  preferences (`interface_size`, `follow_screen`), cached in this browser only for the first paint.
 - Every length is in rem (1 px hairlines aside). The smallest text is `max(<rem>, var(--fs-floor))`: never under 10 px.
-- Breakpoints are container queries on the page in rem, never px media queries: up to 76rem compact (icon sidebar),
-  up to 85.375rem narrow, the base design, from 108rem wide, from 140rem xwide. Put a page's tier rules in its own CSS
-  with `@container page (max-width: 85.375rem) { ... }`.
+- Breakpoints are container queries on the page in rem, never px media queries: up to 50rem tight (200 % browser
+  zoom on a 1280 to 1440 px laptop: one panel per row), up to 76rem compact (icon sidebar), up to 85.375rem narrow,
+  the base design, from 108rem wide, from 140rem xwide. Put a page's tier rules in its own CSS with
+  `@container page (max-width: 85.375rem) { ... }`. Check the tight tier with `--sizes 640x400,720x450`.
 - Canvases draw at `devicePixelRatio`: use `mountPlot` and `createMap`, and size what they draw with `rpx()`.
 - A table wider than its panel scrolls inside `.tbl-scroll`; nothing may make the page itself wider than the window.
 

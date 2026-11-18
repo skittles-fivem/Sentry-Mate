@@ -31,7 +31,7 @@ export async function mount(ctx) {
   }
   const code = field({ label: 'Set-up code', name: 'code', hint: 'Printed once in the server’s log when it started for the first time.', attrs: { autocomplete: 'off', required: true, spellcheck: 'false' } });
   const name = field({ label: 'Your name', name: 'name', hint: 'The name you will sign in with.', attrs: { autocomplete: 'username', required: true } });
-  const password = field({ label: 'Password', name: 'password', type: 'password', hint: 'At least 12 characters. A sentence of a few words is easy to remember.', attrs: { autocomplete: 'new-password', required: true } });
+  const password = field({ label: 'Password', name: 'password', type: 'password', hint: 'At least 10 characters. A sentence of a few words is easy to remember.', attrs: { autocomplete: 'new-password', required: true } });
   const again = field({ label: 'Password again', name: 'again', type: 'password', attrs: { autocomplete: 'new-password', required: true } });
   ctx.main.append(card(
     h('h1', { class: 'auth-title', id: 'auth-title' }, 'Set up Sentry Mate'),

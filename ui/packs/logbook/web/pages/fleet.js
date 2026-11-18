@@ -91,6 +91,7 @@ export async function mount(ctx) {
   const search = h('input', { class: 'field-input', type: 'search', id: 'fleet-search', value: st.q, placeholder: 'Name, model or VIN prefix', autocomplete: 'off', spellcheck: 'false' });
   let timer = 0;
   search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { st.q = search.value.trim(); write(); reload(); }, 200); });
+  ctx.onCleanup(() => clearTimeout(timer));
   const sortSel = h('select', { class: 'field-select', id: 'fleet-sort', cover: ['web.settings.general.car-order', 'faq.reorder-cars', 'cars.list.order'] },
     SORTS.map(([v, t]) => h('option', { value: v, selected: v === st.sort }, t)));
   sortSel.addEventListener('change', () => { st.sort = sortSel.value; write(); reload(); });
@@ -196,6 +197,7 @@ export async function mount(ctx) {
 
   // Live: a car's row follows its `now` events; a car added, removed or renamed loads the list again.
   let again = 0;
+  ctx.onCleanup(() => clearTimeout(again));
   ctx.events(['now', 'fleet'], (ev) => {
     if (ev.type === 'fleet') { clearTimeout(again); again = setTimeout(reload, 500); return; }
     const d = ev.data || {};

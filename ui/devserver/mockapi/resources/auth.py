@@ -383,6 +383,7 @@ def patch_account(req):
         raise invalid(errs)
     if body.get("role") == "watch" and a["role"] == "admin" and len(_admins(st)) == 1:
         raise conflict("last_admin", "This is the last admin account. Make another admin first.")
+    old_cars = a["cars"]
     with st.lock:
         if "name" in body:
             a["name"] = body["name"].strip()
@@ -398,6 +399,8 @@ def patch_account(req):
     changed = ", ".join(k for k in sorted(body) if k not in ("version", "password"))
     st.record(req.account, "account.update", f"account:{a['id']}",
               f"Changed the account {a['name']}: {changed or 'password'}.")
+    if cars is not None and cars != old_cars:
+        req.app.events.account_cars_changed(a, old_cars, cars, st.get_prefs(a))
     return account_view(a)
 
 

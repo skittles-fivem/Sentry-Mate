@@ -13,10 +13,20 @@ import { flash } from '../core/flash.js';
 export const id = 'sign-in';
 export const title = () => 'Sign in';
 
-/** Only an address inside the app: '/cars/c1' yes; '//elsewhere', 'https://…' and '/api/…' no. */
+/**
+ * Only an address inside the app: '/cars/c1' yes; '//elsewhere', 'https://…', '/api/…' no. It is read the way
+ * the browser reads it ('/\\host' and '/<tab>/host' are other sites to a browser), and only the path, query
+ * and hash on this origin are kept.
+ */
 export function safeNext(v) {
   const s = typeof v === 'string' ? v : '';
-  return /^\/(?!\/)/.test(s) && !s.startsWith('/api/') && !s.startsWith('/sign-in') && !s.startsWith('/setup') ? s : '/';
+  if (!s.startsWith('/')) return '/';
+  let u;
+  try { u = new URL(s, location.origin); } catch { return '/'; }
+  if (u.origin !== location.origin) return '/';
+  const path = u.pathname;
+  if (path.startsWith('//') || path.startsWith('/api/') || path === '/sign-in' || path === '/setup') return '/';
+  return path + u.search + u.hash;
 }
 
 function card(...children) {

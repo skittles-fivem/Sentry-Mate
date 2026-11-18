@@ -121,7 +121,8 @@ export async function makeMap(ctx, el, { center = null, zoom = 13, bounds = null
     if (map.getLayer('tiles')) for (const [k, v] of Object.entries(rasterPaint(isDark()))) map.setPaintProperty('tiles', k, v);
     for (const [id, l] of lines) if (map.getLayer(id)) map.setPaintProperty(id, 'line-color', cssVar(l.colour));
   });
-  ctx.onCleanup(() => { stopSize(); stopTheme(); map.remove(); });
+  let readyTimer = 0;
+  ctx.onCleanup(() => { clearTimeout(readyTimer); stopSize(); stopTheme(); map.remove(); });
   let failed = 0;
   map.on('error', (e) => {
     if (!(e && (e.tile || e.sourceId === 'tiles'))) return;
@@ -129,9 +130,9 @@ export async function makeMap(ctx, el, { center = null, zoom = 13, bounds = null
   });
   const ready = new Promise((resolve) => {
     let done = false;
-    const finish = () => { if (!done) { done = true; el.classList.remove('is-loading'); resolve(); } };
+    const finish = () => { clearTimeout(readyTimer); if (!done) { done = true; el.classList.remove('is-loading'); resolve(); } };
     map.once('idle', finish);
-    setTimeout(finish, 15000);
+    readyTimer = setTimeout(finish, 15000);
   });
   const loaded = new Promise((resolve) => { if (map.loaded()) resolve(); else map.once('load', resolve); });
   const pins = [];
