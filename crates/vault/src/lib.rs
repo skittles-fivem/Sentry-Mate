@@ -266,10 +266,21 @@ fn check_apart(data: &Path, keys: &Path) -> Result<(), Error> {
 }
 
 impl Vault {
-    /// Opens the vault in `data` with the key file in `keys`.
+    /// Opens the vault in `data` with the key file in `keys`. No vault but a key file: [`Error::KeyFileButNoVault`]
+    /// (the data folder is likely the wrong one), not [`Error::NoVault`].
     pub fn open(data: &Path, keys: &Path) -> Result<Vault, Error> {
         check_apart(data, keys)?;
-        let vf = read_vault(data)?;
+        let vf = match read_vault(data) {
+            Err(Error::NoVault) => {
+                let key = keys.join(KEY_FILE);
+                return Err(if there(&key)? {
+                    Error::KeyFileButNoVault { data: data.to_path_buf(), key }
+                } else {
+                    Error::NoVault
+                });
+            }
+            r => r?,
+        };
         let kek = read_key_file(keys)?;
         let key = unwrap(&kek, &vf.key_file, KEY_FILE_PURPOSE).ok_or(Error::WrongKeyFile)?;
         if key_id(&key) != vf.key_id {

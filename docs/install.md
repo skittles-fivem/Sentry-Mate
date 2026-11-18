@@ -184,8 +184,11 @@ On TrueNAS SCALE 24.10 or newer, install it as a custom app with
 
    Then fill in [the CAN Bridge app](#the-can-bridge-app).
 
-The other commands in this guide work the same way in *System → Shell*,
-with `sudo` before `docker`.
+The `docker exec` and `docker logs` commands in this guide work the same
+way in *System → Shell*, with `sudo` before `docker`. The `docker compose`
+steps don't: TrueNAS has its own steps for them (*Stop* and *Start* the
+app, and the `docker run` restore in [Restore](#restore)). `init` is for
+Docker Compose only: on TrueNAS the vault is made on the first start.
 
 ## The CAN Bridge app
 
@@ -202,7 +205,8 @@ Then *Apply & restart*. The bridge sends every finished log to Sentry Six
 Manager and to Sentry Mate, each on its own. While one of them can't be
 reached, the logs wait on the Screenmate (up to *Keep up to (GB)*). Without
 Sentry Six Manager, use the first section, **Sentry Six Manager (CAN log
-upload)**, the same way. The bridge's messages say "Sentry Manager" in both
+upload)**, the same way. It should work, but it is not tested yet. The
+bridge's messages say "Sentry Manager" in both
 sections.
 
 **Check it works.** First check that the server can be reached from the
@@ -595,7 +599,7 @@ What the bridge says, in its upload section:
 | The bridge says | What to do |
 | --- | --- |
 | `Sentry Manager not reachable` | A wrong address or port, the server or the container is off, or a firewall in between. |
-| `Sentry Manager's certificate doesn't match the SHA-256 entered here` | Copy the SHA-256 again (`fingerprint`). It changes only when the data folder is replaced by a new install's. |
+| `Sentry Manager's certificate doesn't match the SHA-256 entered here` | Copy the SHA-256 again (`fingerprint`). It changes only when the data folder is replaced by a new install's, or when `data/tls/cert.pem` was deleted or replaced (the README's [Ports and files](../README.md#ports-and-files)). |
 | `Sentry Manager refused the token` | A typo, or the token was revoked: make a new one. |
 | `Sentry Manager answered 403 wrong_car` | That token is tied to another car: one token per car. |
 | `Sentry Manager doesn't know this address` | The address must end in `/api/can/logs`. |

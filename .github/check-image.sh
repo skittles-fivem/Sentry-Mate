@@ -3,7 +3,8 @@
 # read-only root, no-new-privileges, and fresh data and keys folders that
 # belong to the user it runs as. First it checks that folders it can't keep
 # are refused with what to do: one of root's, none mounted, the keys not
-# mounted, the keys inside the data on the server, the same folder at both.
+# mounted, the keys inside the data on the server, a key file but no vault,
+# the same folder at both.
 # The Image workflow runs it on every image before it is tagged; run it by
 # hand the same way:
 #
@@ -121,11 +122,27 @@ empty "$dir/data"
 
 echo "== the keys folder inside the data folder on the server: refused"
 fresh "$id:$id"
-mkdir -p "$dir/data/keys"
+$sudo mkdir -p "$dir/data/keys"
 $sudo chown "$id:$id" "$dir/data/keys"
 refused "the keys folder /keys is a folder inside the data folder on the server (it is /data/keys here)" \
   "The key file would be in every backup of the data" -- -v "$dir/data:/data" -v "$dir/data/keys:/keys"
 empty "$dir/data/keys"
+
+echo "== an empty data folder with a key file in keys: refused, nothing written to data"
+fresh "$id:$id"
+echo old-key | $sudo tee "$dir/keys/sentry-mate.key" >/dev/null
+$sudo chown "$id:$id" "$dir/keys/sentry-mate.key"
+$sudo chmod 600 "$dir/keys/sentry-mate.key"
+refused "the keys folder has a key file (/keys/sentry-mate.key), but the data folder /data has no vault" \
+  "delete the key file" -- -v "$dir/data:/data" -v "$dir/keys:/keys"
+empty "$dir/data"
+# every command that opens the vault says so, not only serve
+if said="$(docker run --rm "${user[@]}" -v "$dir/data:/data" -v "$dir/keys:/keys" "$image" token list 2>&1)"; then
+  fail "token list ran with a key file but no vault"
+fi
+echo "$said"
+grep -qF "has a key file" <<<"$said" || fail "token list does not say the keys folder has a key file"
+empty "$dir/data"
 
 echo "== the same folder at both: refused"
 fresh "$id:$id"

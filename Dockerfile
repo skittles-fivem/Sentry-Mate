@@ -53,7 +53,9 @@ COPY --from=build /src/target/release/sentry-mate /sentry-mate
 # and the folder it makes for that is mode 755)
 COPY --from=build --chown=1000:1000 /out/ /
 USER 1000:1000
-ENV SENTRY_MATE_DATA=/data SENTRY_MATE_KEYS=/keys SENTRY_MATE_REQUIRE_MOUNTS=1
+# (/data and /keys are the defaults; not set here, or every usage message
+# would show --data and --keys as if they had to be given)
+ENV SENTRY_MATE_REQUIRE_MOUNTS=1
 # CAN Bridge uploads, HTTPS (TLS 1.3 only). (9100, the web UI, is not built yet.)
 EXPOSE 10100
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=2s CMD ["/sentry-mate", "health"]

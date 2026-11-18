@@ -116,8 +116,8 @@ pub async fn trust(
         )?;
         writeln!(
             err,
-            "Once it is trusted, its {} are used, and so are its logs after that.",
-            plural(k.signed, "log", "logs")
+            "Once it is trusted, its {} used, and so are its logs after that.",
+            plural(k.signed, "log is", "logs are")
         )?;
         if let Some(p) = &s.pin {
             writeln!(

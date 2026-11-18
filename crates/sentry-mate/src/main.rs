@@ -93,12 +93,11 @@ enum Cmd {
         key: String,
     },
     /// The signing keys a car key's logs name, and which one is trusted; `keys trust` trusts another.
-    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+    #[command(args_conflicts_with_subcommands = true)]
     Keys {
         #[command(subcommand)]
         cmd: Option<KeysCmd>,
         /// The car key (the last column of `token list`).
-        #[arg(required = true)]
         key: Option<String>,
     },
     /// Exit 0 when the upload port accepts connections.
@@ -169,6 +168,10 @@ fn tokens_file(data: &Path) -> PathBuf {
 
 const RECOVERY_FILE: &str = "RECOVERY-KEY.txt";
 
+/// What `keys` without a car key says.
+const KEYS_USAGE: &str = "sentry-mate: which car key? The car keys are the last column of `token list`.\n\nUsage: \
+                          sentry-mate keys <KEY>\n       sentry-mate keys trust <KEY> <SIGNING-KEY>";
+
 /// The version, and the image build's number, commit and date when it was given them (build.rs).
 const VERSION: &str = env!("SENTRY_MATE_VERSION");
 
@@ -181,12 +184,17 @@ async fn main() -> ExitCode {
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .init();
     let cli = Cli::parse();
+    if let Cmd::Keys { cmd: None, key: None } = cli.cmd {
+        // (not clap's own message: its usage line shows --data and --keys as if they had to be given)
+        eprintln!("{KEYS_USAGE}");
+        return ExitCode::from(2);
+    }
     let (data, keys) = (cli.data.clone(), cli.keys.clone());
     let mounts = folders::mounts_required(std::env::var_os("SENTRY_MATE_REQUIRE_MOUNTS").as_deref());
     match run(cli, mounts).await {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("sentry-mate: {e}");
+            eprintln!("sentry-mate: {}", said(&*e));
             if let Some(h) = folders::hint(&*e, &data, &keys) {
                 eprintln!("{h}");
             }
@@ -202,6 +210,14 @@ fn print_recovery(key: &vault::RecoveryKey) {
     println!("Recovery key (shown once; Sentry Mate does not keep it):\n\n  {}\n", key.as_str());
     println!("Write it down or put it in a password manager, away from this server. With the key file it is the only");
     println!("way to open your data on a new machine: lose both and the data can't be opened by anyone.");
+}
+
+/// An error as the owner reads it: an upload API error without its HTTP status and code.
+fn said(e: &(dyn std::error::Error + 'static)) -> String {
+    match e.downcast_ref::<ingest::ApiError>() {
+        Some(a) => a.message.clone(),
+        None => e.to_string(),
+    }
 }
 
 /// What to do when the key file is missing or wrong: the restore runs with Sentry Mate stopped, so not with
@@ -337,8 +353,11 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
                     keys::trust(&judge, &key, &signing_key, yes, &mut std::io::stdin().lock(), out, err).await
                 }
                 (None, Some(key)) => keys::list(&judge, &key, out, err).await,
-                // clap asks for one or the other
-                (None, None) => Ok(ExitCode::from(2)),
+                // main() stops before this
+                (None, None) => {
+                    writeln!(err, "{KEYS_USAGE}")?;
+                    Ok(ExitCode::from(2))
+                }
             };
         }
         Cmd::Health => {
@@ -352,10 +371,15 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
     Ok(ExitCode::SUCCESS)
 }
 
+/// A file's bytes; an error names the file.
+fn read_named(path: &Path) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| format!("can't read {}: {e}", path.display()))
+}
+
 fn log_cmd(cmd: LogCmd) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match cmd {
         LogCmd::Candump { file } => {
-            let bytes = std::fs::read(&file)?;
+            let bytes = read_named(&file)?;
             let out = std::io::stdout();
             let mut out = std::io::BufWriter::new(out.lock());
             let s = logfmt::read_log(&bytes, logfmt::Limits::default(), |l| {
@@ -367,9 +391,10 @@ fn log_cmd(cmd: LogCmd) -> Result<ExitCode, Box<dyn std::error::Error>> {
             eprintln!("{}: {} lines, {} long lines skipped{cut}", s.format.name(), s.lines, s.skipped_long_lines);
         }
         LogCmd::Check { file, sidecar } => {
-            let bytes = std::fs::read(&file)?;
+            let bytes = read_named(&file)?;
             let side_path = sidecar.unwrap_or_else(|| PathBuf::from(format!("{}.json", file.display())));
-            let side: serde_json::Value = serde_json::from_slice(&std::fs::read(&side_path)?)?;
+            let side: serde_json::Value = serde_json::from_slice(&read_named(&side_path)?)
+                .map_err(|e| format!("{} is not a sidecar (JSON): {e}", side_path.display()))?;
             let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let sha = hex::encode(Sha256::digest(&bytes));
             match trust::check(name, &sha, bytes.len() as u64, &side) {
@@ -401,8 +426,9 @@ async fn serve(
     names: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Sentry Mate {VERSION}");
-    std::fs::create_dir_all(can_dir(data))?;
     let (v, made) = Vault::open_or_create(data, keys, Kdf::STRONG)?;
+    // only once the vault opened: a start that is refused writes nothing
+    std::fs::create_dir_all(can_dir(data))?;
     if let Some(rk) = made {
         // not in the log (container logs are kept in the clear): in a file of the keys folder, for the owner to take
         let file = keys.join(RECOVERY_FILE);
@@ -547,7 +573,11 @@ mod tests {
         assert!(matches!(cli.cmd, Cmd::Keys { cmd: None, key: Some(k) } if k == "abcdef123456"));
         let cli = Cli::try_parse_from(["sentry-mate", "keys", "trust", "abcdef123456", "aa:bb", "--yes"]).unwrap();
         assert!(matches!(cli.cmd, Cmd::Keys { cmd: Some(KeysCmd::Trust { yes: true, .. }), key: None }));
-        assert!(Cli::try_parse_from(["sentry-mate", "keys"]).is_err());
+        // no car key: main() says which usage, not clap (its usage line would show --data and --keys as needed)
+        let cli = Cli::try_parse_from(["sentry-mate", "keys"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::Keys { cmd: None, key: None }));
+        assert!(KEYS_USAGE.contains("keys <KEY>") && !KEYS_USAGE.contains("--data"));
+        assert!(Cli::try_parse_from(["sentry-mate", "keys", "trust", "abcdef123456"]).is_err());
         let cli =
             Cli::try_parse_from(["sentry-mate", "log", "decode", "x", "--any", "--model", "tesla-sx-legacy"]).unwrap();
         let Cmd::Log { cmd: LogCmd::Decode { any: true, model, .. } } = cli.cmd else { panic!("not decode") };
@@ -565,6 +595,14 @@ mod tests {
         }
         let e: Box<dyn std::error::Error> = vault::Error::NoVault.into();
         assert_eq!(restore_hint(&*e), None);
+    }
+
+    #[test]
+    fn errors_read_plainly() {
+        let e: Box<dyn std::error::Error> = ingest::ApiError::new(400, "bad_name", "That is not a log name.").into();
+        assert_eq!(said(&*e), "That is not a log name.");
+        let e = read_named(Path::new("/no/such/file.log.xz")).unwrap_err();
+        assert!(e.starts_with("can't read /no/such/file.log.xz: "), "{e}");
     }
 
     #[test]

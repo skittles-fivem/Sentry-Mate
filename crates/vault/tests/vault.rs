@@ -115,6 +115,11 @@ fn a_new_vault_is_never_made_over_a_key_file_or_a_vault() {
         assert!(said.contains("has a key file") && said.contains("delete the key file"), "{said}");
     }
     assert!(matches!(Vault::create(&empty, &keys, Kdf::FAST_FOR_TESTS), Err(Error::KeyFileButNoVault { .. })));
+    // opening only (every command but serve) says the same, not just that there is no vault
+    assert!(matches!(Vault::open(&empty, &keys), Err(Error::KeyFileButNoVault { .. })));
+    let no_keys = t.path().join("no-keys");
+    std::fs::create_dir_all(&no_keys).unwrap();
+    assert!(matches!(Vault::open(&empty, &no_keys), Err(Error::NoVault)));
     assert!(!empty.join(vault::VAULT_FILE).exists());
     assert_eq!(std::fs::read(keys.join(vault::KEY_FILE)).unwrap(), key, "the key file was replaced");
     assert_eq!(std::fs::read(data.join(vault::VAULT_FILE)).unwrap(), vf);

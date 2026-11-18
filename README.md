@@ -256,9 +256,13 @@ The install guide's [TrueNAS SCALE](docs/install.md#truenas-scale) part has ever
   one). Give both to the apps user: `sudo chown 568:568` and `sudo chmod 700` on their paths, in *System → Shell*.
 - *Apps → Discover Apps →* the three dots *→ Install via YAML*. Name it `sentry-mate`, paste the file and change
   the two lines marked `CHANGE` to your datasets' paths.
-- The commands in this README work in *System → Shell* with `sudo` in front, for example
+- The `docker exec` commands in this README work in *System → Shell* with `sudo` in front, for example
   `sudo docker exec sentry-mate /sentry-mate token new --car "Model Y"`. The recovery key file is in the keys
   dataset.
+- The `docker compose` steps and the `data/...` and `keys/...` paths don't work there: there is no compose file in
+  the shell's folder. TrueNAS has its own steps: *Stop* and *Start* the app, and the `docker run` restore in the
+  install guide's [Restore](docs/install.md#restore). Use the datasets' paths instead of `data` and `keys`. `init`
+  is for Docker Compose only: on TrueNAS the vault is made on the first start.
 
 ### Updates
 
@@ -294,7 +298,8 @@ on TrueNAS in *System → Shell* with `sudo` in front. `init` and `restore` run 
 [docs/install.md](docs/install.md#restore)). `log check` runs in a container of its own (`docker run --rm`).
 
 Exit code 0 means it worked, 1 that it failed, 2 a usage error. The reason for a failure is on standard error, except
-`log check`, which prints it on standard output, and `health`, which prints nothing.
+for `health`, which prints nothing. `log check` prints its result, `failed: <reason>` included, on standard output;
+a file it can't read is on standard error.
 
 | Command | What it does |
 |---|---|
@@ -347,7 +352,8 @@ docker exec sentry-mate /sentry-mate chain <car key>
 
 It covers only logs signed by the key the car key is paired with, and names that key first (`signing_key`, as
 `keys` lists it). Then: count, first and last index, issues (`gap`, `duplicate`, `failed`, `mismatch`,
-`reordered`), restarts and segments. A car key with no signed logs gives an empty report with no `signing_key`. An
+`reordered`), restarts and segments. A car key with no signed logs gives an empty report, with `signing_key` set to
+`null`. An
 unknown or mistyped car key gives `no car key <key> here` and exit 1.
 
 ### Signing keys
@@ -441,8 +447,9 @@ argument). Mount the folder that holds them into a container of its own (it need
 docker run --rm -v ~/sentry-mate-logs:/check:ro ghcr.io/skittles-fivem/sentry-mate log check /check/<log name>
 ```
 
-It prints `signed and intact: key <fingerprint>, chain index <n>`, `not signed`, or `failed: <reason>` (exit 1). A
-missing sidecar gives only `No such file or directory`.
+It prints `signed and intact: key <fingerprint>, chain index <n>`, `not signed`, or `failed: <reason>` (exit 1), on
+standard output. A missing log or sidecar gives `sentry-mate: can't read <file>: No such file or directory (os error
+2)` on standard error (exit 1).
 
 ### The vault
 
@@ -505,7 +512,7 @@ a flag. The compose and TrueNAS files need none of them.
 | `SENTRY_MATE_REQUIRE_MOUNTS` | | not set (`1` in the image) | When set to anything but `0`, `false`, `no` or `off`: every command that uses the data and keys folders first checks, in `/proc/self/mountinfo`, that each is a mount of its own, and stops with the volume line to add if not. |
 | `RUST_LOG` | | `info` | How much to log, for example `debug`. The log goes to standard error. |
 
-The image sets `SENTRY_MATE_DATA`, `SENTRY_MATE_KEYS` and `SENTRY_MATE_REQUIRE_MOUNTS`, and has no `VOLUME`: a
+The image sets `SENTRY_MATE_REQUIRE_MOUNTS` (the folders are the defaults, `/data` and `/keys`), and has no `VOLUME`: a
 folder left out of the compose file stops it at once instead of going into an anonymous volume. The certificate is
 normally made by the first `serve`; `token new` and `fingerprint` make it without names if it isn't there yet. Times
 in the log are UTC: it does not read `TZ`.
