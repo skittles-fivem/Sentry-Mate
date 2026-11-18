@@ -16,7 +16,7 @@ import { formatNumber, tn } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column } from '../shared/csv.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { pageHead, q, figure, icon, empty, errorView, loadingBlock, sep, routeSketch, flag, button } from '../core/ui.js';
+import { pageHead, q, figure, icon, empty, errorView, errorWords, loadingBlock, sep, routeSketch, flag, button } from '../core/ui.js';
 import { makeMap, boundsOf } from '../core/map.js';
 import { confirmDialog, popover } from '../core/dialog.js';
 import { choice } from '../core/form.js';
@@ -58,12 +58,16 @@ export async function mount(ctx) {
   });
   const filtered = () => !!(f.q || f.places.length || f.min || f.speed || f.source || f.flags);
 
-  // The places the account may see (watch accounts: where their cars have been), for both pickers.
+  // The places the account may see (watch accounts: where their cars have been), for both pickers, with
+  // this car's counts (car=). When they cannot be loaded, the ids from the address are still sent: the API
+  // checks them itself, so a shared link never quietly shows unfiltered numbers.
   let places = [], placesFailed = false;
-  try { places = await ctx.api.list('places', { sort: 'name' }, { limit: 200 }).all({ max: 2000 }); } catch (err) { if (ctx.signal.aborted) throw err; placesFailed = true; }
-  const known = new Set(places.map((p) => p.id));
-  f.places = f.places.filter((x) => known.has(x));
-  f.exclude = f.exclude.filter((x) => known.has(x));
+  try { places = await ctx.api.list('places', { sort: 'name', car: car.id }, { limit: 200 }).all({ max: 2000 }); } catch (err) { if (ctx.signal.aborted) throw err; placesFailed = true; }
+  if (!placesFailed) {
+    const known = new Set(places.map((p) => p.id));
+    f.places = f.places.filter((x) => known.has(x));
+    f.exclude = f.exclude.filter((x) => known.has(x));
+  }
 
   /* ---------------------------------------------------------------- filters */
 
@@ -237,6 +241,20 @@ export async function mount(ctx) {
     const box = h('input', { type: 'checkbox', class: 'pick-box', id: `pick-${d.id}`, checked: picked.has(d.id), 'aria-label': `Add the drive from ${d.start.label} to ${d.end.label} to a trip` });
     box.addEventListener('change', () => { if (box.checked) picked.set(d.id, d); else picked.delete(d.id); drawPick(); });
     const startSoc = format(d.start_soc_pct, 'number', { digits: 0 });
+    const batt = d.start_soc_pct != null || d.end_soc_pct != null ? `${startSoc} → ${format(d.end_soc_pct, 'percent')}` : q(null, 'percent');
+    const energySub = d.energy_kwh == null ? '' : d.energy_basis === 'estimated' ? 'estimated' : 'measured';
+    // Every figure again as a labelled line under the route; CSS shows the ones whose column the width hides,
+    // so each value is on screen (once) at every width.
+    const fact = (k, name, ...val) => h('span', { class: `fact fact-${k}` }, h('span', { class: 'fact-name' }, name), ' ', h('span', { class: 'fact-value' }, ...val));
+    const facts = h('span', { class: 'cell-facts' },
+      fact('dist', 'Distance', q(d.distance_km, 'distance')),
+      fact('dur', 'Took', formatDuration(d.duration_ms)),
+      fact('batt', 'Battery', batt, ' start → end'),
+      fact('temp', 'Outside', q(d.outside_avg_c, 'temperature', { digits: 0 }), ' average'),
+      fact('speed', 'Speed', q(d.speed_avg_kph, 'speed'), ' average, top ', format(d.speed_max_kph, 'speed')),
+      fact('power', 'Power', q(d.power_max_kw, 'power', { digits: 0 }), ' peak'),
+      fact('energy', 'Energy', q(d.energy_kwh, 'energy', { why: 'no reading' }), energySub ? ` ${energySub}` : ''),
+      fact('eff', 'Consumption', q(d.wh_per_km, 'efficiency'), d.efficiency_pct != null ? `, ${format(d.efficiency_pct, 'percent', { digits: 0 })} of rated` : ''));
     return h('tr', { class: ['drive-row', { 'is-going': going, 'is-picked': picked.has(d.id) }], dataset: { id: d.id, href } },
       h('td', { class: 'c-pick' }, box),
       h('td', { class: 'c-time' }, `${formatTime(d.start_ms, tz)} – ${going ? 'now' : formatTime(d.end_ms, tz)}`,
@@ -251,14 +269,15 @@ export async function mount(ctx) {
               d.source === 'teslamate' ? [' ', flag('Imported', { kind: 'estimated' })] : null,
               going ? [' ', flag('In progress')] : null,
               d.flags && (d.flags.gap_ms || d.flags.lost_frames) ? [' ', flag(d.flags.gap_ms ? `Gap ${formatDuration(d.flags.gap_ms)}` : 'Lost frames', { kind: 'warn', title: 'Part of this drive has no data; its figures cover only the time with data' })] : null,
-              d.flags && d.flags.reduced_range ? [' ', flag('Cold battery', { title: 'Part of the battery was locked by the cold during this drive' })] : null)))),
+              d.flags && d.flags.reduced_range ? [' ', flag('Cold battery', { title: 'Part of the battery was locked by the cold during this drive' })] : null),
+            facts))),
       h('td', { class: 'c-num c-dist' }, q(d.distance_km, 'distance')),
       h('td', { class: 'c-num c-dur' }, formatDuration(d.duration_ms)),
-      h('td', { class: 'c-num c-batt' }, d.start_soc_pct != null || d.end_soc_pct != null ? `${startSoc} → ${format(d.end_soc_pct, 'percent')}` : q(null, 'percent'), h('span', { class: 'cell-sub' }, 'start → end')),
+      h('td', { class: 'c-num c-batt' }, batt, h('span', { class: 'cell-sub' }, 'start → end')),
       h('td', { class: 'c-num c-temp' }, q(d.outside_avg_c, 'temperature', { digits: 0 }), h('span', { class: 'cell-sub' }, 'average')),
       h('td', { class: 'c-num c-speed' }, q(d.speed_avg_kph, 'speed'), h('span', { class: 'cell-sub' }, 'top ', format(d.speed_max_kph, 'speed'))),
       h('td', { class: 'c-num c-power' }, q(d.power_max_kw, 'power', { digits: 0 }), h('span', { class: 'cell-sub' }, 'peak')),
-      h('td', { class: 'c-num c-energy' }, q(d.energy_kwh, 'energy', { why: 'no reading' }), h('span', { class: 'cell-sub' }, d.energy_kwh == null ? '' : d.energy_basis === 'estimated' ? 'estimated' : 'measured')),
+      h('td', { class: 'c-num c-energy' }, q(d.energy_kwh, 'energy', { why: 'no reading' }), h('span', { class: 'cell-sub' }, energySub)),
       h('td', { class: 'c-num c-eff' }, q(d.wh_per_km, 'efficiency'), h('span', { class: 'cell-sub' }, d.efficiency_pct != null ? `${format(d.efficiency_pct, 'percent', { digits: 0 })} of rated` : '')),
       h('td', { class: 'c-go' }, icon('chevronRight')));
   }
@@ -400,23 +419,30 @@ function placePicker(ctx, { id, places, failed, chosen, none, verb = null, side 
   ctx.onCleanup(() => clearTimeout(timer));
   const fire = () => { clearTimeout(timer); timer = setTimeout(() => onchange([...sel]), 350); };
   const names = () => [...sel].map((x) => byId.get(x)?.name).filter(Boolean);
-  const summary = () => { const n = names(); return n.length <= 2 ? n.join(' or ') : `${n[0]}, ${n[1]} or ${tn(n.length - 2, '{n} other place', '{n} other places')}`; };
+  const summary = () => {
+    const n = names();
+    if (!n.length && sel.size) return tn(sel.size, 'the place in the link', 'the {n} places in the link');
+    return n.length <= 2 ? n.join(' or ') : `${n[0]}, ${n[1]} or ${tn(n.length - 2, '{n} other place', '{n} other places')}`;
+  };
   function text() {
     const n = names();
-    trigger.textContent = failed ? 'Places could not be loaded' : !places.length ? 'No places saved yet' : !n.length ? none
+    trigger.textContent = failed ? (sel.size ? `${tn(sel.size, '{n} place', '{n} places')} from the link ${verb || 'applied'} (names could not be loaded)` : 'Places could not be loaded')
+      : !places.length ? 'No places saved yet' : !n.length ? none
       : (n.length === 1 ? n[0] : `${n[0]} and ${formatNumber(n.length - 1)} more`) + (verb ? ` ${verb}` : side && sideValue !== 'any' ? ` (${sideValue === 'start' ? 'start' : 'end'})` : '');
   }
   function draw() {
     const s = search.value.trim().toLowerCase();
-    const found = places.filter((p) => !s || p.name.toLowerCase().includes(s) || ((p.address && p.address.short) || '').toLowerCase().includes(s));
-    // Ticked places first, then by name; at most 60 shown (type to find the rest).
-    found.sort((a, b) => (sel.has(b.id) - sel.has(a.id)) || a.name.localeCompare(b.name));
+    const where = (p) => [p.address && p.address.short, p.address && p.address.locality].filter(Boolean).join(', ');
+    const found = places.filter((p) => !s || p.name.toLowerCase().includes(s) || where(p).toLowerCase().includes(s));
+    // Ticked places first, then this car's places, then by name; at most 60 shown (type to find the rest).
+    const mine = (p) => (p.counts && (p.counts.drives || p.counts.visits) ? 1 : 0);
+    found.sort((a, b) => (sel.has(b.id) - sel.has(a.id)) || (mine(b) - mine(a)) || a.name.localeCompare(b.name));
     replace(list, found.slice(0, 60).map((p) => {
       const box = h('input', { type: 'checkbox', id: `${id}-${p.id}`, checked: sel.has(p.id) });
       box.addEventListener('change', () => { if (box.checked) sel.add(p.id); else sel.delete(p.id); text(); fire(); });
       return h('li', null, h('label', { class: 'pick-item', for: `${id}-${p.id}` }, box,
-        h('span', { class: 'pick-name' }, p.name),
-        h('span', { class: 'pick-count' }, p.counts ? tn(p.counts.drives || 0, '{n} drive', '{n} drives') : '')));
+        h('span', { class: 'pick-text' }, h('span', { class: 'pick-name' }, p.name), where(p) ? h('span', { class: 'pick-where' }, where(p)) : null),
+        h('span', { class: 'pick-count' }, p.counts ? tn(p.counts.drives || 0, '{n} drive', '{n} drives') : '', h('span', { class: 'pick-count-of' }, `by ${ctx.car.name}`))));
     }));
     more.textContent = !found.length ? 'No place has that name.' : found.length > 60 ? `${formatNumber(found.length - 60)} more; type to narrow the list.` : '';
   }
@@ -440,15 +466,38 @@ function csvButton(label, onclick) {
   return h('button', { type: 'button', class: 'button button-quiet button-small csv-button', onclick, 'aria-label': `Download CSV: ${label}` }, icon('download'), 'CSV');
 }
 
+/** The error of one part of the page (the rest loaded): what failed, why, and Try again. */
+function partError(what, err, retry) {
+  const w = errorWords(err);
+  const why = err && err.status && ![0, 401, 403, 404, 429].includes(err.status) ? ((err && err.message) || String(err)) : `${w.title} ${w.text}`;
+  return h('div', { class: 'part-error', role: 'alert' },
+    h('p', { class: 'part-error-text' }, icon('warning'), h('span', null, `${what}: `, why)),
+    button('Try again', { onclick: retry, iconName: 'reset', cls: 'button-small' }));
+}
+
+/** Every local day of the period (from the API's first day when it sent a whole series), with no-drive days as 0. */
+function wholeDays(ctx, s) {
+  const tz = ctx.tz, now = api.now(), got = s.per_day || [];
+  const byDate = new Map(got.map((d) => [d.date, d]));
+  const p = ctx.period || {};
+  const end = Math.min(p.to_ms ?? now, now);
+  const last = dayKey(Math.max(end - 1, p.from_ms ?? -Infinity), tz);
+  const whole = got.length && s.days === got.length;
+  let k = whole ? got[0].date : p.from_ms != null ? dayKey(p.from_ms, tz) : (got[0] ? got[0].date : last);
+  const out = [];
+  for (let i = 0; k <= last && i < 40000; i++, k = addDays(k, 1)) out.push(byDate.get(k) || { date: k, count: 0, distance_km: 0, energy_kwh: 0 });
+  return out;
+}
+
 async function drawPatterns(ctx, box, exclude) {
   const car = ctx.car, tz = ctx.tz;
   let s;
   try {
     s = await ctx.api.get(api.apiPath`cars/${car.id}/drive-stats`, { ...ctx.params, exclude_places: exclude.length ? exclude.join(',') : undefined });
-  } catch (err) { if (!ctx.signal.aborted) replace(box, errorView(err, { eyebrow: 'Driving patterns', retry: () => drawPatterns(ctx, box, exclude) })); return; }
+  } catch (err) { if (!ctx.signal.aborted) replace(box, partError('The driving patterns could not be loaded', err, () => { replace(box, loadingBlock(4)); drawPatterns(ctx, box, exclude); })); return; }
   const span = periodLabel(ctx.period, tz, api.now());
   const file = (what) => csvFilename(car.name, what, span);
-  const days = s.per_day || [];
+  const days = wholeDays(ctx, s);
   const maxKm = Math.max(0.1, ...days.map((d) => d.distance_km || 0));
   const w = days.length ? 100 / days.length : 100;
   const bars = svg('svg', { class: 'by-day-svg', width: '100%', role: 'img', 'aria-label': `Distance per day: ${days.map((d) => `${d.date} ${format(d.distance_km, 'distance')}`).join(', ')}` },
@@ -528,7 +577,10 @@ async function drawMissing(ctx, box) {
   const car = ctx.car, tz = ctx.tz;
   const params = { ...ctx.params, flags: 'gap,in_progress' };
   let pg;
-  try { pg = await ctx.api.page(api.apiPath`cars/${car.id}/drives`, params, { limit: 20 }); } catch (err) { if (!ctx.signal.aborted) replace(box, errorView(err, { eyebrow: 'Drives with missing data', retry: () => drawMissing(ctx, box) })); return; }
+  try { pg = await ctx.api.page(api.apiPath`cars/${car.id}/drives`, params, { limit: 20 }); } catch (err) {
+    if (!ctx.signal.aborted) replace(box, h('div', { class: 'block-head' }, h('h2', { class: 'label' }, 'Drives with missing data')), partError('The drives with missing data could not be loaded', err, () => { replace(box, loadingBlock(3)); drawMissing(ctx, box); }));
+    return;
+  }
   const list = pg.items || [];
   const admin = ctx.me && ctx.me.role === 'admin';
   const rebuild = admin && list.length ? button('Rebuild these drives from the stored logs', {
@@ -548,7 +600,7 @@ async function drawMissing(ctx, box) {
     h('div', { class: 'block-head' }, h('h2', { class: 'label' }, 'Drives with missing data', h('span', { class: 'label-note' }, list.length ? (pg.next ? `the first ${formatNumber(list.length)}` : tn(list.length, '{n} drive', '{n} drives')) : 'none')),
       h('div', { class: 'block-actions' }, csv, rebuild)),
     h('p', { class: 'note', cover: 'drives.incomplete.note' }, 'A drive is listed here when it overlaps time with no data (a gap, lost frames) or is still going. Its figures cover only the time with data; a late log or a rebuild fills them in.'),
-    list.length ? h('table', { class: 'ledger-table missing-table', cover: ['drives.incomplete.table', 'drives.incomplete.id', 'drives.incomplete.start', 'drives.incomplete.end', 'drives.incomplete.distance', 'drives.incomplete.duration'] },
+    list.length ? h('div', { class: 'missing-scroll', role: 'region', 'aria-label': 'Drives with missing data', tabindex: '0' }, h('table', { class: 'ledger-table missing-table', cover: ['drives.incomplete.table', 'drives.incomplete.id', 'drives.incomplete.start', 'drives.incomplete.end', 'drives.incomplete.distance', 'drives.incomplete.duration'] },
       h('thead', null, h('tr', null, ['Drive', 'Start', 'End', 'Distance', 'Duration', 'What is missing'].map((t, i) => h('th', { scope: 'col', class: { num: i === 3 || i === 4 } }, t)))),
       h('tbody', null, list.map((d) => h('tr', null,
         h('td', null, h('a', { href: state.buildUrl('drive', { car: car.id, drive: d.id, period: ctx.state.period }) }, `${d.start.label} to ${d.end.label}`), h('span', { class: 'cell-sub' }, `Drive ${d.id}`)),
@@ -556,6 +608,6 @@ async function drawMissing(ctx, box) {
         h('td', null, d.end_ms ? formatTime(d.end_ms, tz) : 'still going'),
         h('td', { class: 'num' }, q(d.distance_km, 'distance')),
         h('td', { class: 'num' }, formatDuration(d.duration_ms)),
-        h('td', null, why(d))))))
+        h('td', null, why(d)))))))
       : h('p', { class: 'note-serif' }, 'Every drive in this period has all its data.'));
 }
