@@ -117,38 +117,58 @@ export async function mount(ctx) {
             ' connects it to a chat or home automation. A waiting update is not on the CAN bus, so there is no “update available” message.'))))));
 
   let rowsSeen = [];
-  function drawSummary(sm) {
+  // The car's newest update of all time (not only the period's), for the "Type the version" button of the summary.
+  let newestEver = null;
+  async function findNewest() {
+    if (!admin) return;
+    try {
+      const r = await ctx.api.get(path, { limit: 1 });
+      const u = r && r.items && r.items[0];
+      newestEver = u && u.until_ms == null && u.end_ms != null && u.source === 'can' ? u : null;
+    } catch { newestEver = null; }
+  }
+  function drawSummary(sm, failed = false) {
     sm = sm || {};
     const installing = rowsSeen.find((r) => r.end_ms == null);
-    const newest = rowsSeen.find((r) => r.until_ms == null && r.end_ms != null && r.source === 'can');
-    const v = sm.current_version;
-    const src = SOURCE[sm.current_version_source];
+    const newest = rowsSeen.find((r) => r.until_ms == null && r.end_ms != null && r.source === 'can') || newestEver;
     const changed = sm.build_changed_since != null;
+    const last = sm.current_version; // after a change, the version the car ran before it (no longer what it runs)
+    const v = changed ? null : last;
+    const src = SOURCE[sm.current_version_source];
+    const lastFrom = sm.current_version_since_ms != null ? formatDate(sm.current_version_since_ms, tz, { now, year: true }) : null;
     replace(nowBox,
       h('p', { class: 'sw-now-name' }, 'Version now'),
-      h('p', { class: ['sw-now-version', { 'is-unknown': !v }] }, v || 'Not known'),
+      h('p', { class: ['sw-now-version', { 'is-unknown': !v }] }, failed ? 'Could not load' : v || (changed ? 'Changed, not named yet' : 'Not known')),
       h('div', { class: 'sw-now-flags' },
         installing ? flag('Installing now', { kind: 'warn' }) : null,
         changed ? flag('Software changed', { kind: 'warn' }) : null,
         v && src ? flag(src[0], { title: src[1] }) : null),
-      h('dl', { class: 'sw-facts' },
-        fact('Where it came from', src ? src[1] : 'Nobody has said yet: not imported, not typed, and no other car on the same build.'),
-        fact('Running since', sm.current_version_since_ms != null ? formatDateTime(sm.current_version_since_ms, tz, { now }) : 'not known'),
-        changed ? fact('Software changed since', formatDateTime(sm.build_changed_since, tz, { now })) : null,
-        installing ? fact('Installing since', formatDateTime(installing.start_ms, tz, { now })) : null),
-      h('p', { class: 'note' }, changed
-        ? `The module builds changed after ${v || 'the last known version'} was recorded, so the car now runs a version nobody has named. ${admin ? 'Type it from the car’s screen.' : 'An admin can type it from the car’s screen.'}`
+      failed
+        ? h('p', { class: 'note' }, 'The update history could not be loaded, so the version and the figures are not shown. The list of every car below is loaded on its own.')
+        : h('dl', { class: 'sw-facts' },
+          changed
+            ? fact('Last known version', last
+              ? [last, src ? ` (${src[0].toLowerCase()})` : '', ', ran ', lastFrom ? `from ${lastFrom} ` : '', `to ${formatDate(sm.build_changed_since, tz, { now, year: true })}`]
+              : 'none: no version was ever named for this car')
+            : fact('Where it came from', src ? src[1] : 'Nobody has said yet: not imported, not typed, and no other car on the same build.'),
+          changed
+            ? fact('Running since', [formatDateTime(sm.build_changed_since, tz, { now }), h('span', { class: 'sw-faint' }, ' (when the module builds changed)')])
+            : fact('Running since', sm.current_version_since_ms != null ? formatDateTime(sm.current_version_since_ms, tz, { now }) : 'not known'),
+          installing ? fact('Installing since', formatDateTime(installing.start_ms, tz, { now })) : null),
+      failed ? null : h('p', { class: 'note' }, changed
+        ? `The module builds changed after ${last || 'the last known version'} was recorded, so the car now runs a version nobody has named. ${admin ? (newest ? 'Type it from the car’s screen.' : 'Type it from the car’s screen, on the newest update in the history below.') : 'An admin can type it from the car’s screen.'}`
         : v ? 'Sentry Mate never guesses a version; this one is what is written above.'
           : 'The version is known once a TeslaMate history is imported, an admin types it, or another car on the same build has one.'),
-      admin && changed && newest ? button('Type the version', { cls: 'button-small', iconName: 'settings', onclick: () => editVersion(newest) }) : null);
+      failed ? button('Try again', { cls: 'button-small', iconName: 'reset', onclick: () => reloadAll(false).catch(() => {}) }) : null,
+      !failed && admin && changed && newest ? button('Type the version', { cls: 'button-small', iconName: 'settings', onclick: () => editVersion(newest) }) : null);
     const n = sm.count ?? 0;
     replace(figsBox, h('div', { class: 'figs sw-figs' },
       figure('Updates', q(sm.count ?? null, 'count'),
         'Updates that started in the period: seen by the car (its update status or changed module builds) or imported.', { cover: 'updates.stat.count' }),
       figure('Typical time between updates',
         sm.median_gap_ms != null ? h('span', { class: 'sw-gap' }, formatDuration(sm.median_gap_ms), gapWords(sm.median_gap_ms) ? h('span', { class: 'sw-gap-words' }, gapWords(sm.median_gap_ms)) : null)
-          : q(null, 'duration', { why: n < 2 ? 'needs two updates in the period' : 'not known' }),
-        'The median of the gaps from the end of one update to the start of the next, for the updates in the period.', { cover: 'updates.stat.median_gap' })));
+          : q(null, 'duration', { why: failed ? 'not loaded' : n === 0 ? 'no update in the period' : 'the first update recorded has no previous one' }),
+        'The median of the gaps before each update in the period: from the end of the update before (which may be outside the period) to its start.', { cover: 'updates.stat.median_gap' })));
   }
   const fact = (name, value) => h('div', { class: 'sw-fact' }, h('dt', null, name), h('dd', null, value));
 
@@ -253,7 +273,7 @@ export async function mount(ctx) {
   const fleetTable = dataTable(ctx, {
     path: 'fleet/versions', params: ctx.query.q ? { search: ctx.query.q } : {}, limit: 50, cls: 'sw-fleet-table', label: 'Versions of every car',
     itemName: ['car', 'cars'],
-    caption: 'One row per car you may see. Search by name or version; Show more pages through any number of cars.',
+    caption: 'One row per car you may see. Search by name or version; Show more pages through any number of cars. Dates are in each car’s own time zone (point at one to see which).',
     rowAttrs: (r) => (r.car === cid ? { class: 'is-current' } : null),
     columns: [
       {
@@ -264,20 +284,23 @@ export async function mount(ctx) {
       },
       {
         key: 'version', label: 'Version now',
-        cell: (r) => (r.version
+        hint: 'The version each car runs now. After its module builds changed, the version is not known until someone names it; the one it ran before is shown below it.',
+        cell: (r) => (r.version && r.build_changed_since == null
           ? h('span', { class: 'sw-ver' }, h('span', { class: 'sw-ver-text' }, r.version), SOURCE[r.version_source] ? flag(SOURCE[r.version_source][0], { title: SOURCE[r.version_source][1] }) : null)
-          : h('span', { class: 'sw-ver is-unknown' }, h('span', { class: 'sw-ver-text' }, 'Not known'))),
+          : h('div', { class: 'cell-main' },
+            h('span', { class: 'sw-ver is-unknown' }, h('span', { class: 'sw-ver-text' }, r.build_changed_since != null ? 'Changed, not named yet' : 'Not known')),
+            r.version ? h('span', { class: 'cell-sub' }, `last known ${r.version}${SOURCE[r.version_source] ? ` (${SOURCE[r.version_source][0].toLowerCase()})` : ''}`) : null)),
         value: (r) => r.version,
       },
       {
         key: 'changed', label: 'Software changed since', hint: 'The module builds changed after the last known version: the version it runs now has no name yet.',
-        cell: (r) => (r.build_changed_since != null ? h('span', { class: 'sw-warn' }, formatDateTime(r.build_changed_since, tz, { now }))
+        cell: (r) => (r.build_changed_since != null ? h('span', { class: 'sw-warn', title: `In ${zoneLabel(r.time_zone || tz)}` }, formatDateTime(r.build_changed_since, r.time_zone || tz, { now }))
           : h('span', { class: 'sw-faint' }, 'no change since')),
         value: (r) => r.build_changed_since,
       },
       {
         key: 'last', label: 'Last update', num: true,
-        cell: (r) => (r.last_update_ms != null ? formatDate(r.last_update_ms, tz, { now, year: true }) : h('span', { class: 'sw-faint' }, 'none recorded')),
+        cell: (r) => (r.last_update_ms != null ? h('span', { title: `In ${zoneLabel(r.time_zone || tz)}` }, formatDate(r.last_update_ms, r.time_zone || tz, { now, year: true })) : h('span', { class: 'sw-faint' }, 'none recorded')),
         value: (r) => r.last_update_ms,
       },
     ],
@@ -346,7 +369,8 @@ export async function mount(ctx) {
   async function reloadAll(say) {
     reloadBtn.disabled = true;
     try {
-      await Promise.all([table.reload(), fleetTable.reload()]);
+      await Promise.all([table.reload(), fleetTable.reload(), findNewest()]);
+      if (ctx.alive() && !table.items?.length && !lastSummary) drawSummary(null, true);
       drawAsOf();
       if (say && ctx.alive()) ctx.flash('Loaded again.', { kind: 'info' });
     } finally { reloadBtn.disabled = false; }
@@ -361,9 +385,12 @@ export async function mount(ctx) {
   });
   ctx.onCleanup(() => clearTimeout(rowsTimer));
 
-  await Promise.all([table.load(), fleetTable.load().catch(() => {})]);
+  // Each list fails on its own: the table shows its error with Try again, and the other list stays.
+  let historyFailed = false;
+  await Promise.all([table.load().catch(() => { historyFailed = true; }), fleetTable.load().catch(() => {}), findNewest()]);
   if (!ctx.alive()) return {};
-  if (!lastSummary) drawSummary(null);
+  if (!lastSummary) drawSummary(null, historyFailed);
+  else if (newestEver) drawSummary(lastSummary);
   ctx.ready();
   return {};
 }

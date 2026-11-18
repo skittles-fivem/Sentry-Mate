@@ -124,7 +124,7 @@ This is the `/api/v1` the pages in [`parity/ui-parity.md`](parity/ui-parity.md) 
 | `/api/v1/tracks` | GET | `?cars=&from_ms=&to_ms=&max_points=` -> `{ drives: [{ car, drive, t_ms: [], lat: [], lon: [], accuracy_m: [] }] }`, simplified on the server | Travel, Trip |
 | `/api/v1/cars/{car}/updates` | GET | `?from_ms=&to_ms=&limit=&after=` -> `{ items: [{ id, start_ms, end_ms, duration_ms, since_previous_ms, version, version_source: "teslamate" \| "owner" \| "build_match" \| null, detected_by: "ota_status" \| "build_change" \| "teslamate", changed_modules: ["bms", "vcfront", "di_front", "di_rear", "fc"], charges, full_range_km, full_pack_kwh, source }], next, summary: { count, median_gap_ms, current_version, current_version_source, current_version_since_ms, build_changed_since } }` | Software, Timeline |
 | `/api/v1/cars/{car}/updates/{update}` | PATCH (admin) | `{ version }`; also remembers the build-id set for that version. | Software |
-| `/api/v1/fleet/versions` | GET | `?search=&limit=&after=` -> `{ items: [{ car, version, version_source, build_changed_since, last_update_ms }], next }` | Software |
+| `/api/v1/fleet/versions` | GET | `?search=&limit=&after=` -> `{ items: [{ car, version, version_source, build_changed_since, last_update_ms, time_zone }], next }` | Software |
 | `/api/v1/cars/{car}/events` | GET | `?types=drive_started,drive_ended,charge_started,charge_ended,software_changed,user_present&after=` -> the same JSON as the MQTT events, paged | Settings: Integrations |
 
 ## Places
@@ -330,3 +330,4 @@ Points this document left open, decided while building the dev server (`ui/devse
 - **`/places?car=`:** `counts` and `last_visit_ms` are that car's (an unknown or hidden car gives `404 no_such_car`); every place the account sees is still listed. `sort=drives` orders by drives (most first), then visits.
 - **`/cars` items carry `now.ideal_range_km`** beside `now.range_km` (rated), so a car list can show the range the person chose (`range: "ideal"` in `/me/preferences`) without one `/now` read per car.
 - **`POST /places/{place}/reprice`** also answers `example_rows` (up to 8, the same shape as the preview's: `{ kind: "charge", id, car, start_ms, change: "repriced" }`), so a page can link each example to its charge; `examples` stays as before.
+- **`/fleet/versions` items carry `time_zone`** (the car's own zone), so the list of every car can show each row's dates where that car is, not in the zone of the car being viewed.

@@ -103,7 +103,7 @@ def patch_update(req):
             if u.source == "can":  # remember this set of build ids: other cars on the same build get the version
                 st.builds[u.build_id] = {"version": v, "from_update": u.id}
     st.record(req.account, "update.version", f"update:{u.id}",
-              f"Set the software version of an update to {v}." if v else "Forgot the version of an update.")
+              f"Set the software version of an update to {v}." if v else "Forgot the version of an update.", car=req.car)
     req.app.events.publish("rows", {"car": req.car, "kinds": ["updates"], "from_ms": u.start, "to_ms": u.end},
                            car=req.car)
     return next(x for x in update_rows(req, h) if x["id"] == u.id) | {"time_zone": req.tz()}
@@ -223,7 +223,8 @@ def fleet_versions(req):
                 out.append((n, row))
                 n += 1
     nxt = encode_cursor([out[-1][0]], fp) if more and out else None
-    return {"items": [row for _, row in out], "next": nxt}
+    # each car's own time zone, so a list of many cars can show every row's times where that car is
+    return {"items": [row | {"time_zone": st.car_meta(row["car"])["time_zone"]} for _, row in out], "next": nxt}
 
 
 # ------------------------------------------------------------------ car events (as MQTT publishes them)

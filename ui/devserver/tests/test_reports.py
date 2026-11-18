@@ -149,6 +149,7 @@ class Software(ServerCase):
         self.assertEqual(now["software"]["version"], "2026.38.4")
         fv = self.c.get("/api/v1/fleet/versions")["items"]
         self.assertEqual(next(x for x in fv if x["car"] == "c2")["version"], "2026.38.4")
+        self.assertTrue(all(x["time_zone"] for x in fv))
         self.assertEqual(self.c.get("/api/v1/fleet/versions?search=2025.45")["items"][0]["car"], "c3")
         tm = self.c.get("/api/v1/cars/c3/updates")["items"]
         self.assertTrue(any(x["version_source"] == "teslamate" for x in tm))
