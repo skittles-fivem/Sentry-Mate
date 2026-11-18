@@ -31,9 +31,16 @@ pub struct EngineRun {
 }
 
 impl EngineRun {
-    /// An engine over the db in `data` and the logs in `store`. `run`: start its background work (not on a server
-    /// whose data moved away: nothing writes there).
-    pub fn open(data: &Path, v: Arc<Vault>, store: ingest::Store, run: bool) -> Result<EngineRun, Fail> {
+    /// An engine over the db in `data` and the logs in `store`, knowing the upload tokens (`tokens`: their car names
+    /// and the car each was made for tell a new car's logger from the only car's). `run`: start its background work
+    /// (not on a server whose data moved away: nothing writes there).
+    pub fn open(
+        data: &Path,
+        v: Arc<Vault>,
+        store: ingest::Store,
+        tokens: Option<Arc<ingest::Tokens>>,
+        run: bool,
+    ) -> Result<EngineRun, Fail> {
         let db = db::Db::open(data, v, db::Options::default())?;
         let mut opts = engine::Options::default();
         if let Some(tz) = std::env::var("TZ").ok().map(|s| s.trim().to_string()).filter(|s| engine::tz::is_zone(s)) {
@@ -41,6 +48,9 @@ impl EngineRun {
         }
         let workers = opts.workers;
         let engine = engine::Engine::new(db, store, opts);
+        if let Some(t) = tokens {
+            engine.set_tokens(t);
+        }
         if !run {
             return Ok(EngineRun { engine, rt: None });
         }

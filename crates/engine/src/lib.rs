@@ -6,8 +6,10 @@
 //! 1. **Told.** `ingest`'s [`ingest::Judge`] tells the engine of every log whose trust record it writes
 //!    ([`Engine::listener`], given to [`ingest::Judge::on_judged`]), and the engine works on it in the background: a
 //!    bounded number of worker threads ([`Options::workers`]), one log of a car at a time, so uploads never wait on it.
-//! 2. **Its car.** The log's CAN key names the car ([`db::Db::car_for_key`]). A key no car claims goes to the only
-//!    car, makes the first, or waits for an admin ([`Options::new_keys`], [`Engine::assign_key`]).
+//! 2. **Its car.** The log's CAN key names the car ([`db::Db::car_for_key`]). A key no car claims goes to the car its
+//!    token was made for, to the only car (unless its logs' frames name another VIN, or its token was made for
+//!    another car's name: then it makes a car of its own), makes the first, or waits for an admin
+//!    ([`Options::new_keys`], [`Engine::assign_key`]).
 //! 3. **Decoded**, only if its check allows its data ([`ingest::judge::Record::usable`]): `logfmt` → `dbc` with the DBC
 //!    set the car's VIN calls for (looked for in the log's own frames, then its sidecar, while the car has none) →
 //!    one sample a second ([`timeline::read_log`]), written to the car's time series. A log whose check fails is never
@@ -178,6 +180,8 @@ pub(crate) struct Inner {
     counters: Counters,
     last_error: Mutex<Option<String>>,
     handle: Mutex<Option<tokio::runtime::Handle>>,
+    /// The upload tokens (their car names tell a new car's logger from the only car's), when given.
+    tokens: std::sync::OnceLock<Arc<ingest::Tokens>>,
 }
 
 impl Inner {
@@ -220,6 +224,7 @@ impl Engine {
                 counters: Counters::default(),
                 last_error: Mutex::new(None),
                 handle: Mutex::new(None),
+                tokens: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -239,6 +244,18 @@ impl Engine {
 
     pub fn options(&self) -> &Options {
         &self.inner.opts
+    }
+
+    /// Gives the engine the upload tokens (before [`Engine::start`]): a new CAN key whose token was made for another
+    /// car's name, or on another car's page, gets that car, or one of its own, instead of the only car. The first
+    /// given stays.
+    pub fn set_tokens(&self, tokens: Arc<ingest::Tokens>) {
+        let _ = self.inner.tokens.set(tokens);
+    }
+
+    /// The upload tokens, when given ([`Engine::set_tokens`]).
+    pub fn tokens(&self) -> Option<&Arc<ingest::Tokens>> {
+        self.inner.tokens.get()
     }
 
     /// What to give [`ingest::Judge::on_judged`]: it notes the log and returns at once.

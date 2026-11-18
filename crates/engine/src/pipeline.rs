@@ -10,6 +10,9 @@ use std::time::Instant;
 /// The name a car made for a new CAN key carries until its VIN is seen (then it is named after its model).
 pub const NEW_CAR_NAME: &str = "New car";
 
+/// The logs of a new key looked in for its VIN before it is given to the only car.
+pub(crate) const VIN_LOGS: usize = 20;
+
 /// The VIN in a log's own frames.
 pub(crate) fn log_vin(log: &[u8]) -> Option<VinInfo> {
     let mut c = timeline::VinCollector::new();
@@ -57,10 +60,25 @@ pub(crate) fn fresh(e: &LogEntry, r: &ingest::judge::Record, profile: &str) -> b
     e.usable == r.usable() && e.status == status_word(&r.status) && e.rules == records::rules() && e.profile == profile
 }
 
-/// Where a log's data goes when it was left out: the span its sidecar names, else a minute from its name's start.
-fn side_span(side: &serde_json::Value, start: u64) -> (u64, u64) {
+/// How far before its name's start a left-out log's hole may begin, and how long after it it may end. A log holds a
+/// minute of frames (frames queued before it opened come a few seconds early); its sidecar's span is not signed.
+pub(crate) const HOLE_BEFORE_MS: u64 = 60_000;
+pub(crate) const HOLE_AFTER_MS: u64 = 3 * 60_000;
+
+/// Where a log's data goes when it was left out: the span its sidecar names (not signed, so held to a few minutes
+/// around its name's start), else a minute from its name's start; never past `newest` (the car's newest data) beyond
+/// its own minute. A forged sidecar can't turn days of the car's history unknown.
+pub(crate) fn side_span(side: &serde_json::Value, start: u64, newest: Option<u64>) -> (u64, u64) {
     let f = timeline::LogFacts::from_sidecar(side);
-    if f.start_ms > 0 && f.end_ms > f.start_ms { (f.start_ms, f.end_ms) } else { (start, start + 60_000) }
+    let minute = start.saturating_add(60_000);
+    let (a, b) = if f.start_ms > 0 && f.end_ms > f.start_ms {
+        let a = f.start_ms.clamp(start.saturating_sub(HOLE_BEFORE_MS), start);
+        (a, f.end_ms.clamp(a.saturating_add(1), start.saturating_add(HOLE_AFTER_MS)))
+    } else {
+        (start, minute)
+    };
+    let cap = newest.map_or(b, |n| n.max(minute));
+    (a, b.min(cap).max(a.saturating_add(1)))
 }
 
 /// How a log ranks as the one source of a span its key shares with another key's (lower first): the car's preferred
@@ -129,12 +147,30 @@ impl Engine {
         if let Some(c) = db.car_for_key(key)? {
             return Ok(Some(c));
         }
+        let held = records::waiting_keys(db)?.get(key).is_some_and(|w| w.held);
+        let token = if held { None } else { self.token_of(key)? };
+        // a token made on a car's page names its car
+        let named = match &token {
+            Some(t) => records::token_cars(db)?.get(&t.id).copied().filter(|&c| db.car(c).ok().flatten().is_some()),
+            None => None,
+        };
         let cars = db.fleet(&db::FleetQuery { search: None, limit: 2, after: None })?.cars;
         let take = match self.inner.opts.new_keys {
+            _ if held => None,
+            _ if named.is_some() => named.map(Some),
             NewKeys::NewCar => Some(None),
             NewKeys::OnlyCarElseWait if cars.is_empty() => Some(None),
-            NewKeys::OnlyCarElseWait if cars.len() == 1 => cars.first().map(|e| Some(e.car.id)),
-            _ => None,
+            NewKeys::OnlyCarElseWait if cars.len() == 1 => match cars.first() {
+                Some(e) if self.same_car(&e.car, key, token.as_ref())? => Some(Some(e.car.id)),
+                // another car's logger (another VIN, or a token made for another car): a car of its own
+                Some(_) => Some(None),
+                None => None,
+            },
+            NewKeys::OnlyCarElseWait => match &token {
+                Some(t) => self.car_by_token_name(&t.car)?.map(Some),
+                None => None,
+            },
+            NewKeys::Wait => None,
         };
         match take {
             Some(None) => {
@@ -168,6 +204,7 @@ impl Engine {
                     first_seen_ms: now,
                     last_upload_ms: now,
                     logs_waiting: 0,
+                    held: false,
                 });
                 e.last_upload_ms = newest.unwrap_or(now).max(e.last_upload_ms);
                 e.logs_waiting = waiting as u64;
@@ -175,6 +212,89 @@ impl Engine {
                 Ok(None)
             }
         }
+    }
+
+    /// The upload token tied to a CAN key (its first upload tied them), when the engine knows the tokens.
+    pub(crate) fn token_of(&self, key: &str) -> Result<Option<ingest::tokens::Token>> {
+        let Some(tokens) = self.tokens() else { return Ok(None) };
+        let list = self.handle()?.block_on(tokens.list());
+        Ok(list.into_iter().find(|t| t.vehicle_key.as_deref() == Some(key)))
+    }
+
+    /// The VIN in the frames of a key's first usable logs (the first [`VIN_LOGS`] looked at), when one names it.
+    pub(crate) fn key_vin(&self, key: &str) -> Result<Option<VinInfo>> {
+        let rt = self.handle()?;
+        let book = rt.block_on(self.inner.judge.book(key));
+        let mut names: Vec<(u64, String)> = book
+            .logs
+            .iter()
+            .filter(|(_, r)| r.usable())
+            .filter_map(|(n, _)| records::name_start_ms(n).map(|t| (t, n.clone())))
+            .collect();
+        names.sort();
+        for (_, name) in names.into_iter().take(VIN_LOGS) {
+            let bytes = rt.block_on(self.inner.store.read(&name)).map_err(|e| Error::Store(e.to_string()))?;
+            if let Some(v) = bytes.as_deref().and_then(|b| log_vin(b)) {
+                return Ok(Some(v));
+            }
+        }
+        Ok(None)
+    }
+
+    /// A car's VIN as its logs' frames give it: the car's own when it came from frames, else its keys' first logs'.
+    fn car_vin(&self, c: &Car) -> Result<Option<VinInfo>> {
+        if let Some(v) = c.vin.as_ref().filter(|v| v.via != 0) {
+            return Ok(Some(v.clone()));
+        }
+        for k in &c.vehicle_keys {
+            if let Some(v) = self.key_vin(k)? {
+                return Ok(Some(v));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Whether a key no car claims is the car's (a new Screenmate, or the app reinstalled, on the same car): not when
+    /// its token was made for another car's name than the car's tokens, nor when its logs' frames name another VIN.
+    fn same_car(&self, c: &Car, key: &str, token: Option<&ingest::tokens::Token>) -> Result<bool> {
+        if let (Some(t), Some(tokens)) = (token, self.tokens())
+            && !t.car.trim().is_empty()
+        {
+            let list = self.handle()?.block_on(tokens.list());
+            let names: Vec<&str> = list
+                .iter()
+                .filter(|o| o.vehicle_key.as_ref().is_some_and(|k| c.vehicle_keys.contains(k)))
+                .map(|o| o.car.trim())
+                .filter(|n| !n.is_empty())
+                .collect();
+            if !names.is_empty() && !names.iter().any(|n| n.eq_ignore_ascii_case(t.car.trim())) {
+                return Ok(false);
+            }
+        }
+        match (self.key_vin(key)?, self.car_vin(c)?) {
+            (Some(theirs), Some(ours)) => Ok(theirs.vin_prefix == ours.vin_prefix),
+            _ => Ok(true),
+        }
+    }
+
+    /// The one car, among several, whose keys' tokens carry this car name.
+    fn car_by_token_name(&self, name: &str) -> Result<Option<CarId>> {
+        let (name, Some(tokens)) = (name.trim(), self.tokens()) else { return Ok(None) };
+        if name.is_empty() {
+            return Ok(None);
+        }
+        let db = &self.inner.db;
+        let mut found: Vec<CarId> = Vec::new();
+        for t in self.handle()?.block_on(tokens.list()) {
+            if t.car.trim().eq_ignore_ascii_case(name)
+                && let Some(k) = &t.vehicle_key
+                && let Some(c) = db.car_for_key(k)?
+                && !found.contains(&c)
+            {
+                found.push(c);
+            }
+        }
+        Ok(if found.len() == 1 { found.first().copied() } else { None })
     }
 
     fn forget_waiting(&self, key: &str) -> Result<()> {
@@ -223,6 +343,60 @@ impl Engine {
         }
         self.reconcile(Some(car));
         Ok(())
+    }
+
+    /// Takes a CAN key from its car (what its logs gave the car goes with it); it then waits for an admin.
+    pub fn unassign_key(&self, key: &str) -> Result<()> {
+        let _one = lock(&self.inner.claim);
+        let db = &self.inner.db;
+        let Some(car) = db.car_for_key(key)? else { return Ok(()) };
+        if let Some(mut c) = db.car(car)? {
+            c.vehicle_keys.retain(|k| k != key);
+            if c.preferred_key.as_deref() == Some(key) {
+                c.preferred_key = None;
+            }
+            db.update_car(c)?;
+        }
+        {
+            let l = self.car_lock(car);
+            let _held = lock(&l);
+            self.drop_key(car, key)?;
+        }
+        let book = self.handle()?.block_on(self.inner.judge.book(key));
+        let now = now_ms();
+        let mut w = records::waiting_keys(db)?;
+        w.insert(
+            key.to_string(),
+            records::WaitingKey {
+                first_seen_ms: book.logs.values().map(|r| r.arrived_ms).min().unwrap_or(now),
+                last_upload_ms: book.logs.values().map(|r| r.arrived_ms).max().unwrap_or(now),
+                logs_waiting: book.logs.values().filter(|r| r.status != ingest::judge::Status::Waiting).count() as u64,
+                held: true,
+            },
+        );
+        records::put_waiting_keys(db, &w)?;
+        Ok(())
+    }
+
+    /// Makes `key` its car's preferred key (`true`), or no longer (`false`); the car's samples are written again so
+    /// each second's source follows it.
+    pub fn set_preferred(&self, key: &str, preferred: bool) -> Result<Option<CarId>> {
+        let db = &self.inner.db;
+        let Some(car) = db.car_for_key(key)? else { return Ok(None) };
+        let Some(mut c) = db.car(car)? else { return Ok(None) };
+        let was = c.preferred_key.clone();
+        if preferred {
+            c.preferred_key = Some(key.to_string());
+        } else if c.preferred_key.as_deref() == Some(key) {
+            c.preferred_key = None;
+        }
+        if c.preferred_key != was {
+            db.update_car(c)?;
+            if self.handle().is_ok() {
+                self.rebuild(crate::Scope::car(car))?;
+            }
+        }
+        Ok(Some(car))
     }
 
     /// Takes out of `car` everything one key's logs gave it (the car's lock held): their entries, their samples (the
@@ -354,7 +528,7 @@ impl Engine {
                             tracing::warn!(
                                 "car {car}: log {name} names another car's VIN than the car's; it is left out"
                             );
-                            let (a, b) = side_span(&side, start);
+                            let (a, b) = side_span(&side, start, records::meta(db, car)?.newest_ms);
                             Outcome::Hole { from_ms: a, to_ms: b, reason: "other_vin".into() }
                         }
                         Ok(r) => {
@@ -381,7 +555,7 @@ impl Engine {
         } else {
             let side: serde_json::Value =
                 read(&format!("{name}.json"))?.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-            let (a, b) = side_span(&side, start);
+            let (a, b) = side_span(&side, start, records::meta(db, car)?.newest_ms);
             Outcome::Hole { from_ms: a, to_ms: b, reason: "failed_check".into() }
         };
         // a log whose data was used before and is not now: its samples go, and the other logs' that share its
@@ -537,7 +711,9 @@ impl Engine {
         Ok(timeline::read_log(&bytes, &side, profile, self.inner.opts.sample).ok().map(|r| r.samples))
     }
 
-    /// The car's newest values, from a log's samples (newer ones than those kept only).
+    /// The car's newest values, from a log's samples (newer ones than those kept only). Each value keeps when it was
+    /// recorded ([`records::now_at`]); the charge's kind and power go once the newest second says the car is not
+    /// charging, or it drives.
     fn note_now(&self, car: CarId, c: &Car, samples: &[Sample]) -> Result<()> {
         let Some(last) = samples.last() else { return Ok(()) };
         let db = &self.inner.db;
@@ -547,17 +723,27 @@ impl Engine {
         }
         // each value from the newest second that has it, starting from what was kept
         let mut merged = kept.as_ref().map(|n| n.sample.clone()).unwrap_or_default();
+        let mut at = if kept.is_some() { records::now_at(db, car)? } else { Default::default() };
         for s in samples {
-            overlay(&mut merged, s);
+            overlay(&mut merged, s, &mut at);
         }
         merged.t_ms = last.t_ms;
         let driving = matches!(last.gear, Some(model::Gear::D | model::Gear::R | model::Gear::N))
             || last.speed_kmh.is_some_and(|v| v.abs() > 1.0);
+        // the newest word on charging: a value that old charge left must not look current
+        let not_charging = driving || merged.charging == Some(false);
+        if not_charging {
+            for f in CHARGE_FIELDS {
+                clear(&mut merged, f);
+                at.remove(*f);
+            }
+        }
         let place = match (merged.lat, merged.lon) {
             (Some(lat), Some(lon)) => self.places().place_at(lat, lon).map(|p| p.id),
             _ => None,
         };
         let now = Now { car, at_ms: last.t_ms, state: Some(model::State::Online), driving, sample: merged, place };
+        records::put_now_at(db, car, &at)?;
         db.set_now(now)?;
         let _ = c;
         Ok(())
@@ -853,10 +1039,22 @@ fn join_spans(mut spans: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     out
 }
 
-/// Each value of `s` that is there over `to`.
-fn overlay(to: &mut Sample, s: &Sample) {
+/// The values of a charge, cleared from the Now once the car is not charging (the charger's volts and amps stay:
+/// they read 0 then, at their own time).
+const CHARGE_FIELDS: &[&str] = &["charge_kind", "charge_power_kw"];
+
+fn clear(s: &mut Sample, field: &str) {
+    match field {
+        "charge_kind" => s.charge_kind = None,
+        "charge_power_kw" => s.charge_power_kw = None,
+        _ => {}
+    }
+}
+
+/// Each value of `s` that is there over `to`, noting when it was recorded in `at` (field name → ms).
+fn overlay(to: &mut Sample, s: &Sample, at: &mut std::collections::BTreeMap<String, u64>) {
     macro_rules! take {
-        ($($f:ident),*) => { $( if s.$f.is_some() { to.$f = s.$f; } )* };
+        ($($f:ident),*) => { $( if s.$f.is_some() { to.$f = s.$f; at.insert(stringify!($f).to_string(), s.t_ms); } )* };
     }
     take!(
         lat,
@@ -889,6 +1087,7 @@ fn overlay(to: &mut Sample, s: &Sample) {
     for i in 0..4 {
         if s.tpms_bar[i].is_some() {
             to.tpms_bar[i] = s.tpms_bar[i];
+            at.insert(format!("tpms_bar{i}"), s.t_ms);
         }
     }
 }

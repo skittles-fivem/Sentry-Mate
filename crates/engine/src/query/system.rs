@@ -259,6 +259,24 @@ pub struct UnknownSpan {
     pub reason: &'static str,
 }
 
+/// The check result of the car's newest judged log (logs still waiting for their sidecar are not judged yet).
+fn last_judged(e: &Engine, car: CarId, meta: &records::CarMeta) -> QResult<Option<LastTrust>> {
+    let db = e.db();
+    for &d in meta.days.iter().rev() {
+        let rec = records::day(db, car, d)?;
+        let newest = rec
+            .logs
+            .iter()
+            .filter(|(_, en)| en.status != "waiting")
+            .filter_map(|(n, en)| records::name_start_ms(n).map(|t| (t, n, en)))
+            .max_by(|x, y| (x.0, x.1).cmp(&(y.0, y.1)));
+        if let Some((t, _, en)) = newest {
+            return Ok(Some(LastTrust { result: en.status.clone(), reason: en.reason.clone(), log_start_ms: Some(t) }));
+        }
+    }
+    Ok(None)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Health {
     pub healthy: bool,
@@ -281,9 +299,11 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
     let c = car_of(e, car)?;
     let rt = e.handle()?;
     let now = now_ms();
-    let (a, b) = period.window(30 * 86_400_000, now)?;
     let db = e.db();
     let meta = records::meta(db, car)?;
+    // the last 30 days of the car's data (a car that stopped uploading still shows its last month)
+    let end = meta.newest_ms.map_or(now, |n| n.saturating_add(1).min(now));
+    let (a, b) = period.window(30 * 86_400_000, end)?;
     let mut keys = Vec::new();
     let mut waiting = 0u64;
     let mut chain_gaps = Vec::new();
@@ -302,37 +322,33 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
             device: None,
             logs_waiting: w,
         });
-        let chain = rt.block_on(e.judge().chain(key));
-        if let Ok(v) = serde_json::to_value(&chain.report)
-            && let Some(gaps) = v.get("gaps").and_then(|g| g.as_array())
-        {
-            chain_gaps.extend(gaps.iter().cloned());
+    }
+    for (x, y) in super::timeline::chain_gaps(e, car)? {
+        if y > a && x < b {
+            chain_gaps.push(serde_json::json!({ "from_ms": x, "to_ms": y }));
         }
     }
     let entries = records::entries_between(db, car, &meta, a, b)?;
     let mut dropped = Vec::new();
-    let mut last_trust = None;
-    for (name, en) in &entries {
+    let mut failed = false;
+    for (_, en) in &entries {
         if let Outcome::Decoded { facts, .. } = &en.outcome
             && facts.dropped > 0
         {
             let (x, y) = facts.span();
             dropped.push(Span { start_ms: x, end_ms: Some(y) });
         }
-        last_trust = Some(LastTrust {
-            result: en.status.clone(),
-            reason: en.reason.clone(),
-            log_start_ms: records::name_start_ms(name),
-        });
+        failed |= en.status == "failed" && !en.usable;
     }
+    let last_trust = last_judged(e, car, &meta)?;
+    let why = super::timeline::why_unknown(e, car, a, b)?;
     let mut unknown = Vec::new();
-    for s in all_rows::<StateRow>(db, car, a, b, Some(Source::Can))? {
-        if s.span.state == State::Unknown {
-            unknown.push(UnknownSpan {
-                start_ms: s.span.start_ms.max(a),
-                end_ms: Some(s.span.end_ms.min(b)),
-                reason: "no_log",
-            });
+    let spans = all_rows::<StateRow>(db, car, a, b, Some(Source::Can))?.into_iter().map(|r| r.span).collect();
+    for s in super::timeline::joined(spans) {
+        let (x, y) = (s.start_ms.max(a), s.end_ms.min(b));
+        if s.state == State::Unknown && y > x {
+            let (reason, _) = super::timeline::classify(&why, x, y);
+            unknown.push(UnknownSpan { start_ms: x, end_ms: Some(y), reason });
         }
     }
     let unknown_ms = unknown.iter().map(|u| u.end_ms.unwrap_or(b).saturating_sub(u.start_ms)).sum();
@@ -341,7 +357,7 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
     if last_seen.is_none_or(|t| now.saturating_sub(t) > 24 * super::now::STALE_MS) {
         reasons.push("upload_silence");
     }
-    if last_trust.as_ref().is_some_and(|t| t.result == "failed") {
+    if failed || last_trust.as_ref().is_some_and(|t| t.result == "failed") {
         reasons.push("trust_failed");
     }
     if waiting > 0 {

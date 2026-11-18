@@ -17,6 +17,7 @@ pub mod battery;
 pub mod charges;
 pub mod drives;
 pub mod fleet;
+pub mod keys;
 pub mod now;
 pub mod places;
 pub mod reports;

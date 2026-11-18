@@ -154,6 +154,19 @@ pub(crate) fn kind_word(k: ChargeKind) -> &'static str {
     }
 }
 
+/// Whether the car is plugged in, from its newest second only (`t`: when each value was recorded, `at`: the newest
+/// second): a charger kind or charging then says yes, driving says no; an older value says nothing.
+pub(crate) fn plugged_now(s: &Sample, driving: bool, t: &dyn Fn(&str) -> u64, at: u64) -> Option<bool> {
+    if driving {
+        return Some(false);
+    }
+    let fresh = |f: &str| t(f) >= at;
+    if s.charge_kind.is_some() && fresh("charge_kind") || s.charging == Some(true) && fresh("charging") {
+        return Some(true);
+    }
+    None
+}
+
 /// The car's Now.
 pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     let c = car_of(e, car)?;
@@ -164,6 +177,9 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     let now = now_ms();
     let s: Sample = n.as_ref().map(|n| n.sample.clone()).unwrap_or_default();
     let at = n.as_ref().map_or(0, |n| n.at_ms);
+    // each value at the time it was recorded (a value kept from an older log keeps its own time)
+    let times = records::now_at(db, car)?;
+    let t = |f: &str| times.get(f).copied().unwrap_or(at);
     // the span the car is in now, and since when
     let last_state = db
         .list::<StateRow>(car, &db::Query { source: Some(Source::Can), ..db::Query::default().limit(1) })?
@@ -190,10 +206,10 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     let places = e.places();
     let location = match (s.lat, s.lon) {
         (Some(lat), Some(lon)) => Some(Location {
-            lat: vf(Some(lat), 6, at),
-            lon: vf(Some(lon), 6, at),
-            accuracy_m: vf(s.gps_accuracy_m, 1, at),
-            elevation_m: vf(s.elevation_m, 0, at),
+            lat: vf(Some(lat), 6, t("lat")),
+            lon: vf(Some(lon), 6, t("lon")),
+            accuracy_m: vf(s.gps_accuracy_m, 1, t("gps_accuracy_m")),
+            elevation_m: vf(s.elevation_m, 0, t("elevation_m")),
             heading_deg: None,
             place: places.place_at(lat, lon).map(|p| PlaceBrief { id: place_ref(p.id), name: p.name.clone() }),
             address: None,
@@ -228,12 +244,12 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         None
     };
     let charge = ChargeNow {
-        status: v(s.charging.map(|c| if c { "charging" } else { "disconnected" }).filter(|_| s.charging.is_some()), at),
-        plugged: v(s.charge_kind.map(|_| true).or(if charging { Some(true) } else { None }), at),
-        kind: v(s.charge_kind.map(kind_word), at),
-        power_kw: vf(s.charge_power_kw, 1, at),
-        volts_v: vf(s.charger_voltage_v, 0, at),
-        amps_a: vf(s.charger_current_a, 1, at),
+        status: v(s.charging.map(|c| if c { "charging" } else { "disconnected" }), t("charging")),
+        plugged: plugged_now(&s, driving, &t, at).map(|p| V { value: p, at_ms: at }),
+        kind: v(s.charge_kind.map(kind_word), t("charge_kind")),
+        power_kw: vf(s.charge_power_kw, 1, t("charge_power_kw")),
+        volts_v: vf(s.charger_voltage_v, 0, t("charger_voltage_v")),
+        amps_a: vf(s.charger_current_a, 1, t("charger_current_a")),
         phases: None,
         pilot_a: None,
         limit_source: None,
@@ -259,26 +275,26 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         stale: received_ms.is_none_or(|rcv| now.saturating_sub(rcv) > STALE_MS),
         buses,
         driving,
-        gear: v(s.gear.map(gear_word), at),
-        speed_kph: vf(s.speed_kmh, 1, at),
-        power_kw: vf(s.battery_power_kw, 1, at),
-        soc_pct: vf(s.soc, 1, at),
-        soc_bms_pct: vf(s.soc_bms, 1, at),
+        gear: v(s.gear.map(gear_word), t("gear")),
+        speed_kph: vf(s.speed_kmh, 1, t("speed_kmh")),
+        power_kw: vf(s.battery_power_kw, 1, t("battery_power_kw")),
+        soc_pct: vf(s.soc, 1, t("soc")),
+        soc_bms_pct: vf(s.soc_bms, 1, t("soc_bms")),
         usable_soc_pct: None,
-        range_km: vf(s.range_km, 1, at),
-        ideal_range_km: vf(s.ideal_range_km, 1, at),
+        range_km: vf(s.range_km, 1, t("range_km")),
+        ideal_range_km: vf(s.ideal_range_km, 1, t("ideal_range_km")),
         est_range_km: None,
         est_basis: None,
-        energy_remaining_kwh: vf(s.energy_remaining_kwh, 2, at),
-        odometer_km: vf(s.odometer_km, 3, at),
-        outside_c: vf(s.outside_temp_c, 1, at),
-        cabin_c: vf(s.inside_temp_c, 1, at),
-        battery_c: vf(s.battery_temp_c, 1, at),
+        energy_remaining_kwh: vf(s.energy_remaining_kwh, 2, t("energy_remaining_kwh")),
+        odometer_km: vf(s.odometer_km, 3, t("odometer_km")),
+        outside_c: vf(s.outside_temp_c, 1, t("outside_temp_c")),
+        cabin_c: vf(s.inside_temp_c, 1, t("inside_temp_c")),
+        battery_c: vf(s.battery_temp_c, 1, t("battery_temp_c")),
         setpoint_left_c: None,
         setpoint_right_c: None,
-        lv_v: vf(s.lv_voltage_v, 2, at),
+        lv_v: vf(s.lv_voltage_v, 2, t("lv_voltage_v")),
         location,
-        tyres_kpa: s.tpms_bar.map(|b| v(kpa(b), at)),
+        tyres_kpa: [0, 1, 2, 3].map(|i| v(kpa(s.tpms_bar[i]), t(&format!("tpms_bar{i}")))),
         tyres_slots_mapped: false,
         tyre_recommended_kpa: None,
         flags: serde_json::json!({

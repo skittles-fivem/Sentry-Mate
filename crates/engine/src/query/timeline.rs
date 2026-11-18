@@ -145,6 +145,8 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
         .map(|s| s.span)
         .collect();
     let mut out = Vec::new();
+    // why the unknown spans are unknown, read once the first one is met
+    let mut why_cache: Option<QResult<Vec<Why>>> = None;
     // drives and charges, then what lies between them
     let mut pieces: Vec<(u64, u64, Option<Row>)> = Vec::new();
     for d in &drives {
@@ -269,6 +271,11 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             });
         };
         for (ga, gb) in unknowns {
+            let why = why_cache.get_or_insert_with(|| why_unknown(e, car, a.saturating_sub(7 * 86_400_000), b));
+            let gap_reason = match why {
+                Ok(w) => classify(w, ga, gb).0,
+                Err(_) => "no_log",
+            };
             push_parked(cur, ga, &mut out);
             out.push(Row {
                 id: format!("gap:{ga}"),
@@ -291,7 +298,7 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
                 reference: None,
                 parked_ms: Some(ParkedMs { unknown: gb - ga, ..ParkedMs::default() }),
                 awake_reasons: Vec::new(),
-                gap_reason: Some("no_log"),
+                gap_reason: Some(gap_reason),
                 source: "can",
                 version: None,
                 version_source: None,
@@ -605,16 +612,134 @@ pub struct GapRow {
     pub inside: Option<serde_json::Value>,
 }
 
+/// A span the car's records say has no usable data, and why: the timeline's word (`failed_check`, `dropped_frames`,
+/// `not_recorded`, `no_log`) and the gap's cause (`unknown`, `not_recorded`, `chain_gap`, `no_log`).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Why {
+    pub from_ms: u64,
+    pub to_ms: u64,
+    pub reason: &'static str,
+    pub cause: &'static str,
+}
+
+/// How close a reason must lie to an unknown span to be its reason (a pause ends where recording starts again; lost
+/// frames sit beside the span they leave unknown).
+const NEAR_MS: u64 = 2_000;
+
+/// The reasons the records keep for `[a, b)`: logs left out (failed their check, named another VIN, could not be
+/// read, or never stored), pauses in recording and lost frames of decoded logs, and gaps in each key's chain.
+pub(crate) fn why_unknown(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec<Why>> {
+    use crate::records::{self, Outcome};
+    let db = e.db();
+    let meta = records::meta(db, car)?;
+    let mut out = Vec::new();
+    for (_, en) in records::entries_between(db, car, &meta, a, b)? {
+        match &en.outcome {
+            Outcome::Hole { from_ms, to_ms, reason } => {
+                let (reason, cause) =
+                    if reason == "not_stored" { ("no_log", "no_log") } else { ("failed_check", "unknown") };
+                out.push(Why { from_ms: *from_ms, to_ms: *to_ms, reason, cause });
+            }
+            Outcome::Decoded { facts, .. } => {
+                for n in &facts.not_recorded {
+                    let from = n.paused_ms.map_or(n.at_ms.saturating_sub(1), |p| n.at_ms.saturating_sub(p));
+                    out.push(Why { from_ms: from, to_ms: n.at_ms, reason: "not_recorded", cause: "not_recorded" });
+                }
+                if facts.dropped > 0 {
+                    let (x, y) = facts.span();
+                    out.push(Why { from_ms: x, to_ms: y, reason: "dropped_frames", cause: "unknown" });
+                }
+            }
+        }
+    }
+    for (x, y) in chain_gaps(e, car)? {
+        if y > a && x < b {
+            out.push(Why { from_ms: x, to_ms: y, reason: "no_log", cause: "chain_gap" });
+        }
+    }
+    Ok(out)
+}
+
+/// The spans of each key's missing chain links: from the minute of the log before the gap to the start of the log
+/// after it.
+pub(crate) fn chain_gaps(e: &Engine, car: CarId) -> QResult<Vec<(u64, u64)>> {
+    let c = car_of(e, car)?;
+    let rt = e.handle()?;
+    let mut out = Vec::new();
+    for key in &c.vehicle_keys {
+        let chain = rt.block_on(e.judge().chain(key));
+        let gaps: Vec<(u64, u64)> = chain
+            .report
+            .issues
+            .iter()
+            .filter_map(|i| match i {
+                trust::ChainIssue::Gap { from, to, .. } => Some((*from, *to)),
+                _ => None,
+            })
+            .collect();
+        if gaps.is_empty() {
+            continue;
+        }
+        let book = rt.block_on(e.judge().book(key));
+        let at: std::collections::BTreeMap<u64, u64> = book
+            .logs
+            .iter()
+            .filter_map(|(n, r)| Some((r.link.as_ref()?.index, crate::records::name_start_ms(n)?)))
+            .collect();
+        for (from, to) in gaps {
+            let before = from.checked_sub(1).and_then(|i| at.get(&i)).map(|t| t + 60_000);
+            let after = to.checked_add(1).and_then(|i| at.get(&i)).copied();
+            if let (Some(x), Some(y)) = (before, after)
+                && y > x
+            {
+                out.push((x, y));
+            }
+        }
+    }
+    out.sort_unstable();
+    Ok(out)
+}
+
+/// Why `[x, y)` is unknown: the timeline's word and the gap's cause. A log that failed its check (or lost frames, or
+/// named another VIN) comes first, then a gap in the chain, then a pause in recording; else no log came.
+pub(crate) fn classify(why: &[Why], x: u64, y: u64) -> (&'static str, &'static str) {
+    let near = |w: &&Why| w.from_ms < y.saturating_add(NEAR_MS) && w.to_ms.saturating_add(NEAR_MS) > x;
+    let first = |reason: &str, cause: &str| why.iter().filter(near).find(|w| w.reason == reason && w.cause == cause);
+    let order = [
+        ("failed_check", "unknown"),
+        ("dropped_frames", "unknown"),
+        ("no_log", "chain_gap"),
+        ("not_recorded", "not_recorded"),
+    ];
+    for (reason, cause) in order {
+        if let Some(w) = first(reason, cause) {
+            return (w.reason, w.cause);
+        }
+    }
+    ("no_log", "no_log")
+}
+
 /// `/cars/{car}/gaps`: unknown spans of `GAP_MS` or more, newest first, with how far the odometer moved across.
 pub fn gaps(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult<Scoped<List<GapRow>>> {
     let c = car_of(e, car)?;
     let (a, b) = period.bounds()?;
     let drives = super::drives::rows(e, car, &Period::all(), Some(Source::Can))?;
     let mut items = Vec::new();
+    let why = why_unknown(e, car, a, b)?;
+    let charges: Vec<Charge> = all_rows(e.db(), car, a.saturating_sub(7 * 86_400_000), b, Some(Source::Can))?;
     for s in joined(all_rows::<StateRow>(e.db(), car, a, b, Some(Source::Can))?.into_iter().map(|r| r.span).collect()) {
         if s.state != State::Unknown || s.end_ms - s.start_ms < GAP_MS || s.start_ms < a {
             continue;
         }
+        let (gap_reason, cause) = classify(&why, s.start_ms, s.end_ms);
+        let inside = if cause == "chain_gap" {
+            charges
+                .iter()
+                .find(|c| c.start_ms <= s.start_ms && s.end_ms <= c.end_ms)
+                .map(|c| serde_json::json!({ "charge": c.id.to_string() }))
+        } else {
+            None
+        };
         let before = drives.iter().rev().find(|d| d.end_ms <= s.start_ms);
         let after = drives.iter().find(|d| d.start_ms >= s.end_ms);
         let jump =
@@ -632,10 +757,10 @@ pub fn gaps(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult
             odometer_jump_km: r(jump.filter(|j| *j > 0.05), 3),
             from_place: brief(before.and_then(|d| d.end.as_ref())),
             to_place: brief(after.and_then(|d| d.start.as_ref())),
-            cause: "no_log",
-            gap_reason: "no_log",
+            cause,
+            gap_reason,
             source: "can",
-            inside: None,
+            inside,
         });
     }
     let sig = format!("gaps|{car}|{}", period.sig());

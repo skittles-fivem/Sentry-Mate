@@ -12,6 +12,8 @@
 //! engine  car/<id>/rebuild      a rebuild of the car under way
 //! engine  car/<id>/costs/<mon>  the costs of the charges that start that month (UTC), kept across rebuilds
 //! engine  keys/waiting          CAN keys no car claims yet
+//! engine  tokens/cars           upload tokens made on a car's page, and that car
+//! engine  car/<id>/now_at       when each of the car's newest values was recorded
 //! ```
 
 use crate::Result;
@@ -25,7 +27,8 @@ use timeline::LogFacts;
 pub(crate) const NS: &str = "engine";
 
 /// The version of how logs are decoded here (with the timeline's rules): entries made by another are made again.
-pub const DECODE_VERSION: u32 = 1;
+/// 2: a left-out log's hole is held to a few minutes around its name's start (its sidecar's span is not signed).
+pub const DECODE_VERSION: u32 = 2;
 
 /// The version stamp an entry carries: this crate's decoding and the timeline's rules.
 pub(crate) fn rules() -> u32 {
@@ -122,6 +125,9 @@ pub struct WaitingKey {
     pub first_seen_ms: u64,
     pub last_upload_ms: u64,
     pub logs_waiting: u64,
+    /// An admin took it from its car: it waits for an admin, whatever [`crate::NewKeys`] says.
+    #[serde(default)]
+    pub held: bool,
 }
 
 /// What a charge cost, kept with the charge across rebuilds.
@@ -225,6 +231,24 @@ pub(crate) fn put_rebuild_mark(db: &Db, car: CarId, m: Option<&RebuildMark>) -> 
 
 pub(crate) fn waiting_keys(db: &Db) -> Result<BTreeMap<String, WaitingKey>> {
     Ok(get(db, NS, "keys/waiting")?.unwrap_or_default())
+}
+
+/// Upload tokens made on a car's page (token id → car): their key goes to that car.
+pub(crate) fn token_cars(db: &Db) -> Result<BTreeMap<String, CarId>> {
+    Ok(get(db, NS, "tokens/cars")?.unwrap_or_default())
+}
+
+pub(crate) fn put_token_cars(db: &Db, m: &BTreeMap<String, CarId>) -> Result<()> {
+    put(db, NS, "tokens/cars", m)
+}
+
+/// When each value of a car's Now was recorded (field → ms).
+pub(crate) fn now_at(db: &Db, car: CarId) -> Result<BTreeMap<String, u64>> {
+    Ok(get(db, NS, &format!("car/{car}/now_at"))?.unwrap_or_default())
+}
+
+pub(crate) fn put_now_at(db: &Db, car: CarId, m: &BTreeMap<String, u64>) -> Result<()> {
+    put(db, NS, &format!("car/{car}/now_at"), m)
 }
 
 pub(crate) fn put_waiting_keys(db: &Db, keys: &BTreeMap<String, WaitingKey>) -> Result<()> {

@@ -96,7 +96,8 @@ pub(crate) fn item(e: &Engine, x: &FleetEntry, now: u64) -> CarItem {
             range_km: r(s.and_then(|s| s.range_km), 1),
             ideal_range_km: r(s.and_then(|s| s.ideal_range_km), 1),
             place: place.map(|p| PlaceBrief { id: place_ref(p.id), name: p.name.clone() }),
-            plugged: s.and_then(|s| s.charge_kind).map(|_| true),
+            // (the Now keeps no charge kind or power once the car is not charging, so these are of the newest second)
+            plugged: n.and_then(|n| super::now::plugged_now(&n.sample, n.driving, &|_| n.at_ms, n.at_ms)),
             charge_power_kw: r(s.and_then(|s| s.charge_power_kw), 1),
         },
         attention: attention_of(x, now).into_iter().map(|(c, _)| c).collect(),

@@ -677,3 +677,179 @@ fn start_outside_a_runtime_can_be_tried_again() {
         assert_eq!(e.stats().failures, 0);
     });
 }
+
+/// A second made-up car (a Model 3; no real car's VIN).
+const VIN2: &[u8; 17] = b"XP73GCEK0RB000077";
+
+#[test]
+fn a_new_key_whose_logs_name_another_vin_gets_a_car_of_its_own() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let a = the_car(&k);
+        for i in 0..3u64 {
+            let (name, log, side) = minute_of(KEY2, i, DAY[i as usize], LON + 2.0, Some(VIN2));
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &side).await;
+        }
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        let b = k.db.car_for_key(KEY2).unwrap().expect("a car for the second key");
+        assert_ne!(a, b, "another car's logger is not the only car");
+        let cb = k.db.car(b).unwrap().unwrap();
+        assert_eq!(cb.vin.as_ref().map(|v| v.vin_prefix.as_str()), Some("XP73GCEK0RB"));
+        assert!(logs_of(&k.engine, b).iter().all(|l| l.decoded == "decoded"), "none of its logs is left out");
+        assert_eq!(drives(&k, b).len(), 1);
+        assert_eq!(drives(&k, a).len(), 1);
+    });
+}
+
+#[test]
+fn a_new_key_whose_token_names_another_car_gets_a_car_of_its_own() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::create_dir_all(&data).unwrap();
+        let (v, _) = vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+        let tokens = Arc::new(ingest::Tokens::open(data.join("tokens.json"), Arc::new(v)).await.unwrap());
+        let (_, t1) = tokens.create("My car").await.unwrap();
+        tokens.tie(&t1, KEY).await.unwrap();
+        let (_, t2) = tokens.create("Other car").await.unwrap();
+        tokens.tie(&t2, KEY2).await.unwrap();
+        let (_, t3) = tokens.create("my car").await.unwrap();
+        tokens.tie(&t3, KEY3).await.unwrap();
+        k.engine.set_tokens(tokens);
+        send(&k, 0).await;
+        k.engine.idle().await;
+        let a = the_car(&k);
+        // no VIN in their logs: only the tokens tell the cars apart
+        for (key, i) in [(KEY2, 1u64), (KEY3, 2)] {
+            let (name, log, side) = minute_of(key, i, DAY[i as usize], LON, None);
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &side).await;
+            k.engine.idle().await;
+        }
+        let b = k.db.car_for_key(KEY2).unwrap().expect("a car for the other token's key");
+        assert_ne!(a, b, "a token made for another car");
+        assert_eq!(k.db.car_for_key(KEY3).unwrap(), Some(a), "a token made for the same car's name");
+
+        // an admin moves the key back: it stays where it is put, and a key taken from its car waits
+        let change = query::keys::KeyChange { car: Some(Some(a)), preferred: None };
+        let row = tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], KEY2, &change)).unwrap();
+        assert_eq!(row.car.map(|c| c.0), Some(a));
+        k.engine.idle().await;
+        let change = query::keys::KeyChange { car: Some(None), preferred: None };
+        tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], KEY3, &change)).unwrap();
+        k.engine.reconcile(None);
+        k.engine.idle().await;
+        assert_eq!(k.db.car_for_key(KEY3).unwrap(), None, "a key an admin took from its car waits");
+        let waiting = tokio::task::block_in_place(|| {
+            query::keys::can_keys(&k.engine, &[a, b], Some(false), None, &Paging::default())
+        })
+        .unwrap();
+        assert_eq!(waiting.items.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), vec![KEY3]);
+        let missing = query::keys::KeyChange { car: Some(Some(a)), preferred: None };
+        let e = tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], "000000000000", &missing));
+        assert!(matches!(e, Err(query::QueryError::NotFound("no_such_key"))), "{e:?}");
+    });
+}
+
+#[test]
+fn failed_logs_are_unknown_for_their_own_minutes_whatever_their_sidecar_claims() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        let mut signer = synth::Signer::from_seed(b"engine test failed");
+        let last = 20u64;
+        let failed = 3..=15u64;
+        for i in 0..=last {
+            let what = match i {
+                0 => Minute::Drive,
+                i if i == last => Minute::Quiet,
+                _ => Minute::Parked,
+            };
+            let (name, mut log, side) = minute_of(KEY, i, what, LON, (i == 0).then_some(VIN));
+            let mut side: serde_json::Value = serde_json::from_slice(&side).unwrap();
+            side["integrity"] = signer.sign(KEY, &name, &log);
+            if failed.contains(&i) {
+                // not the file that was signed
+                log.push(0);
+            }
+            if i == 3 {
+                // an unsigned span claiming three days either side
+                side["start_wall_ms"] = serde_json::json!(T0_MS - 3 * 86_400_000);
+                side["end_wall_ms"] = serde_json::json!(T0_MS + 3 * 86_400_000);
+            }
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &serde_json::to_vec(&side).unwrap()).await;
+        }
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        let car = the_car(&k);
+        let logs = logs_of(&k.engine, car);
+        assert_eq!(logs.iter().filter(|l| l.result == "failed").count(), 13, "{logs:#?}");
+        let states = query::timeline::states(&k.engine, car, &Period::all(), &Paging::first(500)).unwrap().body.items;
+        let newest = T0_MS + (last + 1) * 60_000;
+        for s in &states {
+            assert!(s.start_ms >= T0_MS - 60_000, "nothing before the first log: {s:?}");
+            assert!(s.end_ms.is_none_or(|e| e <= newest + 60_000), "nothing past the newest data: {s:?}");
+            if s.state == "unknown" && s.end_ms.is_none_or(|e| e - s.start_ms > 60_000) {
+                assert!(s.start_ms >= T0_MS + 2 * 60_000, "{s:?}");
+                assert!(s.end_ms.is_some_and(|e| e <= T0_MS + 19 * 60_000), "{s:?}");
+            }
+        }
+        let gaps =
+            tokio::task::block_in_place(|| query::timeline::gaps(&k.engine, car, &Period::all(), &Paging::default()))
+                .unwrap()
+                .body
+                .items;
+        assert_eq!(gaps.len(), 1, "{gaps:#?}");
+        assert_eq!((gaps[0].cause, gaps[0].gap_reason), ("unknown", "failed_check"));
+        let h = tokio::task::block_in_place(|| query::system::health(&k.engine, car, &Period::all())).unwrap().body;
+        assert!(h.reasons.contains(&"trust_failed"), "{:?}", h.reasons);
+        assert!(h.unknown_ms >= 10 * 60_000, "{}", h.unknown_ms);
+        assert!(h.unknown_spans.iter().any(|u| u.reason == "failed_check"), "{:?}", h.unknown_spans);
+        let t = h.last_log_trust.expect("the newest judged log");
+        assert_eq!((t.result.as_str(), t.log_start_ms), ("verified", Some(T0_MS + last * 60_000)));
+    });
+}
+
+#[test]
+fn live_values_after_a_charge_are_not_the_charge_s_while_driving() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        let plan = [Minute::Drive, Minute::Parked, Minute::Charging, Minute::Charging];
+        for (i, what) in plan.iter().enumerate() {
+            let (name, log, side) = minute_of(KEY, i as u64, *what, LON, (i == 0).then_some(VIN));
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &side).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let n = query::now::now_view(&k.engine, car).unwrap();
+        assert_eq!(n.charge.plugged.map(|p| p.value), Some(true));
+        let (name, log, side) = minute_of(KEY, 4, Minute::Drive, LON, None);
+        upload(&k, &name, &log).await;
+        upload(&k, &format!("{name}.json"), &side).await;
+        k.engine.idle().await;
+        let n = query::now::now_view(&k.engine, car).unwrap();
+        assert_ne!(n.charge.plugged.map(|p| p.value), Some(true), "{:?}", n.charge);
+        assert!(n.charge.kind.is_none() && n.charge.power_kw.is_none(), "{:?}", n.charge);
+        let at = n.at_ms.unwrap();
+        assert!(n.speed_kph.is_some_and(|v| v.at_ms <= at));
+        // a value of the newest log carries its own time, never a later one
+        for v in [n.soc_pct, n.range_km, n.odometer_km].into_iter().flatten() {
+            assert!(v.at_ms <= at && v.at_ms + 60_000 > at, "{v:?} at {at}");
+        }
+        let list = query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default()).unwrap().items;
+        assert_ne!(list[0].now.plugged, Some(true));
+        assert_eq!(list[0].now.charge_power_kw, None);
+    });
+}
