@@ -1,0 +1,124 @@
+/* Sentry Mate, "Logbook" UI pack: Logbook. Loaded by the router with the page (pages/logbook.js).
+   Every rule starts with .page-logbook, so nothing here reaches another page. */
+
+.page-logbook {
+  --lb-business: var(--accent);
+  --lb-private: var(--slate);
+  --lb-commute: var(--ochre);
+  --lb-none: var(--ink-4);
+}
+
+/* ------------------------------------------------------------- head */
+.page-logbook .lb-title-car { font-style: italic; }
+.page-logbook .lb-head-aside { display: grid; justify-items: end; gap: 0.5rem; max-width: 24rem; }
+.page-logbook .lb-asof { font-size: var(--small-2); color: var(--ink-3); text-align: right; line-height: 1.45; margin: 0; }
+.page-logbook .lb-export-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
+/* ------------------------------------------------------------- filters */
+.page-logbook .lb-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.3fr); gap: 1rem 2.5rem; padding: 1.25rem 0 0.5rem; }
+.page-logbook .lb-filter { display: grid; gap: 0.3125rem; align-content: start; justify-items: start; }
+.page-logbook .lb-filter-value { font: 400 1.0625rem/1.3 var(--serif); color: var(--ink); margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.625rem; }
+.page-logbook .lb-vin { font-size: var(--small-2); color: var(--ink-3); }
+.page-logbook .lb-filter .field-hint { margin: 0; max-width: 34rem; }
+.page-logbook .lb-filter > .button { margin-top: 0.25rem; }
+.page-logbook .lb-filter-rows { gap: 0.5rem; }
+
+/* ------------------------------------------------------------- totals */
+.page-logbook .lb-purpose-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
+.page-logbook .lb-purpose-card {
+  display: grid; gap: 0.3125rem; align-content: start; justify-items: start; text-align: left;
+  padding: 0.875rem 1rem 1rem; background: var(--paper-raised); color: var(--ink);
+  border: 1px solid var(--rule); border-top: 0.1875rem solid var(--lb-c, var(--rule-strong)); border-radius: 0.25rem;
+  font: inherit; cursor: pointer;
+}
+.page-logbook .lb-purpose-card:hover { border-color: var(--rule-strong); border-top-color: var(--lb-c); }
+.page-logbook .lb-purpose-card:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: 0.125rem; }
+.page-logbook .lb-purpose-card.is-on { background: var(--accent-wash); border-color: var(--lb-c); }
+.page-logbook .lb-card-name { display: inline-flex; align-items: center; gap: 0.4375rem; font: 600 var(--micro)/1.3 var(--sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-2); }
+.page-logbook .lb-card-value { font: 400 1.75rem/1.15 var(--serif); font-variant-numeric: tabular-nums; }
+.page-logbook .lb-card-sub { font-size: var(--small-2); color: var(--ink-2); }
+.page-logbook .lb-card-note { font-size: var(--small-2); color: var(--ink-3); line-height: 1.45; }
+.page-logbook .lb-bar { display: block; width: 100%; height: 0.3125rem; background: var(--paper-sunk); border-radius: 0.25rem; overflow: hidden; margin: 0.125rem 0; }
+.page-logbook .lb-bar-fill { display: block; height: 100%; width: var(--w, 0%); background: var(--lb-c); }
+.page-logbook .lb-p-business { --lb-c: var(--lb-business); }
+.page-logbook .lb-p-private { --lb-c: var(--lb-private); }
+.page-logbook .lb-p-commute { --lb-c: var(--lb-commute); }
+.page-logbook .lb-p-none { --lb-c: var(--lb-none); }
+.page-logbook .lb-dot { display: inline-block; flex: none; width: 0.5625rem; height: 0.5625rem; border-radius: 50%; background: var(--lb-c); }
+.page-logbook .lb-p-none .lb-dot, .page-logbook .lb-p-none.lb-dot { background: transparent; box-shadow: inset 0 0 0 1px var(--ink-3); }
+.page-logbook .lb-check-figs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.page-logbook .lb-check-figs .fig-value { font-size: 1.5rem; }
+.page-logbook .lb-gap-total.is-warn { color: var(--rust); }
+.page-logbook .lb-of { font-size: 0.6em; color: var(--ink-3); }
+.page-logbook .lb-export-note { display: flex; gap: 0.5rem; align-items: flex-start; max-width: 62rem; margin: 0.75rem 0 0; }
+.page-logbook .lb-export-note .icon { flex: none; width: 1rem; height: 1rem; margin-top: 0.125rem; color: var(--accent); }
+
+/* ------------------------------------------------------------- the log */
+.page-logbook .lb-table td, .page-logbook .lb-table th { vertical-align: top; }
+.page-logbook .lb-table .cell-main { display: grid; justify-items: start; gap: 0.125rem; }
+.page-logbook .lb-table .num .cell-main { justify-items: end; }
+.page-logbook .lb-id { font-size: var(--micro); color: var(--ink-4); }
+.page-logbook .lb-where { min-width: 11rem; max-width: 18rem; white-space: normal; }
+.page-logbook .lb-where-main { font-family: var(--serif); font-size: 1rem; }
+.page-logbook .lb-dur { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.page-logbook .lb-purpose { display: inline-flex; align-items: center; gap: 0.375rem; font-weight: 500; white-space: nowrap; }
+.page-logbook .lb-purpose.lb-p-none { color: var(--ink-3); font-weight: 400; font-style: italic; }
+.page-logbook .lb-purpose-cell { min-width: 11rem; max-width: 20rem; white-space: normal; }
+.page-logbook .lb-relation { font-size: var(--small-2); color: var(--ink); }
+.page-logbook .lb-note { font-size: var(--small-2); color: var(--ink-2); font-style: italic; }
+.page-logbook .lb-gap { display: inline-flex; align-items: center; gap: 0.25rem; font-size: var(--small-2); color: var(--rust); white-space: nowrap; text-decoration-color: color-mix(in srgb, var(--rust) 40%, transparent); }
+.page-logbook .lb-gap .icon { width: 0.875rem; height: 0.875rem; }
+.page-logbook .lb-table tr.has-gap > * { box-shadow: inset 0 1px 0 var(--rust); }
+.page-logbook .lb-table tr.has-gap > :first-child { box-shadow: inset 0 1px 0 var(--rust), inset 0.1875rem 0 0 var(--rust); }
+.page-logbook .lb-table tr.is-live > * { background: var(--accent-wash); }
+.page-logbook .lb-edit { display: inline-flex; align-items: center; gap: 0.3125rem; font: 500 var(--small-2)/1.3 var(--sans); color: var(--accent); background: none; border: 0; padding: 0.125rem 0; cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 0.1875rem; }
+.page-logbook .lb-edit:hover { text-decoration-color: currentColor; }
+.page-logbook .lb-edit:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: 0.125rem; }
+.page-logbook .lb-edit .icon { width: 0.875rem; height: 0.875rem; }
+.page-logbook .lb-remove { color: var(--rust); text-decoration-color: color-mix(in srgb, var(--rust) 35%, transparent); }
+
+/* ------------------------------------------------------------- rules */
+.page-logbook .lb-rules-note { max-width: 62rem; margin: 0 0 1rem; }
+.page-logbook .lb-rules-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(16rem, 1fr); gap: 1.5rem 2.5rem; align-items: start; }
+.page-logbook .lb-rule-form { padding-left: 2.5rem; border-left: 1px solid var(--rule); display: grid; gap: 0.75rem; }
+.page-logbook .lb-rule-title { font: 600 var(--micro)/1.3 var(--sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); margin: 0; }
+.page-logbook .lb-rule-form .form { display: grid; gap: 0.75rem; }
+.page-logbook .lb-rule-form .field-select { width: 100%; }
+
+/* dialogs are outside <main>, so these are by class only */
+.lb-dialog-pick { margin: 0.75rem 0; }
+.lb-dialog-remove { margin: 1rem 0 0; padding-top: 0.75rem; border-top: 1px solid var(--rule); }
+
+/* ------------------------------------------------------------- tiers */
+@container page (width >= 112.5rem) {
+  .page-logbook .lb-rules-grid { grid-template-columns: minmax(0, 2.5fr) minmax(20rem, 1fr); }
+}
+@container page (width < 72rem) {
+  .page-logbook .lb-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .page-logbook .lb-filter-rows { grid-column: 1 / -1; }
+  .page-logbook .lb-purpose-grid, .page-logbook .lb-check-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .page-logbook .lb-rules-grid { grid-template-columns: minmax(0, 1fr); }
+  .page-logbook .lb-rule-form { padding-left: 0; border-left: 0; padding-top: 1.25rem; border-top: 1px solid var(--rule); }
+}
+@container page (width < 50rem) {
+  .page-logbook .lb-filters, .page-logbook .lb-purpose-grid, .page-logbook .lb-check-figs { grid-template-columns: minmax(0, 1fr); }
+  .page-logbook .lb-head-aside { justify-items: start; }
+  .page-logbook .lb-asof { text-align: left; }
+}
+
+/* ------------------------------------------------------------- table tools, fitting at 1440 */
+.page-logbook .sort-mark { font-size: max(10px, 0.75em); }
+.page-logbook .lb-table-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.25rem; margin-bottom: 0.25rem; }
+.page-logbook .lb-shown { flex: 1; margin: 0; font-size: var(--text-s); color: var(--ink-3); }
+.page-logbook .lb-more { display: flex; justify-content: center; gap: 0.75rem; padding-top: 1.125rem; }
+.page-logbook .lb-more[hidden] { display: none; }
+.page-logbook .lb-table .ledger-table tbody td, .page-logbook .lb-table .ledger-table tbody th,
+.page-logbook .lb-table .ledger-table thead th { padding-left: 0.5rem; padding-right: 0.5rem; }
+.page-logbook .lb-table .ledger-table thead th { white-space: normal; }
+@container page (width < 112.5rem) {
+  .page-logbook .lb-where { min-width: 8rem; max-width: 13rem; }
+  .page-logbook .lb-purpose-cell { min-width: 8rem; max-width: 14rem; }
+  .page-logbook .lb-gap { white-space: normal; }
+}
+.page-logbook .lb-table .ledger-count { display: none; }
+.page-logbook .lb-when { white-space: nowrap; }
