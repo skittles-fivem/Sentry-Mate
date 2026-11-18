@@ -15,7 +15,7 @@ import { formatList, formatNumber } from '../shared/i18n.js';
 import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { pageHead, q, figure, icon, sep, empty, errorView, flag, chip } from '../core/ui.js';
+import { pageHead, q, figure, icon, sep, empty, errorWords, flag, chip } from '../core/ui.js';
 import { makeMap, coordsText } from '../core/map.js';
 import { stackedCharts, niceStep } from '../core/chart.js';
 import { placeLink } from '../core/journal.js';
@@ -49,6 +49,13 @@ const COST_SOURCE = Object.freeze({
 });
 const MODE_WORDS = Object.freeze({ total: 'a total', per_kwh: 'a price per kWh', per_minute: 'a price per minute' });
 
+// A rate as entered: every decimal it has (up to MAX_RATE_DECIMALS), never fewer than the currency's own.
+const currencyDigits = (cur) => { try { return new Intl.NumberFormat('en', { style: 'currency', currency: cur }).resolvedOptions().minimumFractionDigits; } catch { return 2; } };
+function rateText(v, cur, kind) {
+  const dec = (String(Number(v.toFixed(MAX_RATE_DECIMALS))).split('.')[1] || '').length;
+  return format({ amount: v, currency: cur }, kind, { digits: Math.max(dec, currencyDigits(cur)) });
+}
+
 const has = (list) => (list || []).some((v) => v != null);
 const numOnly = (list) => (list || []).map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : null));
 
@@ -64,7 +71,8 @@ export async function mount(ctx) {
         empty({
           title: 'There is no charge with this number for this car.',
           text: 'It may have been rebuilt from the logs under a new number, or the link is wrong. Its cost cannot be entered here.',
-          action: h('a', { class: 'link-arrow', href: listUrl }, 'Find it on Charges', icon('arrowRight')),
+          action: h('a', { class: 'link-arrow', href: listUrl, cover: 'web.charge-cost.back' }, 'Find it on Charges', icon('arrowRight')),
+          cover: 'web.charge-cost.not-found',
         }));
       ctx.ready();
       return {};
@@ -128,6 +136,12 @@ export async function mount(ctx) {
   /* ------------------------------------------------------------ place and map */
   const pt = { place: c.place, lat: c.position && c.position.lat, lon: c.position && c.position.lon };
   const pl = placeLink(pt);
+  // the note under the map follows the cost, so it is drawn again when a cost is saved or removed
+  const mapFoot = h('p', { class: 'note map-foot' });
+  const drawMapFoot = () => replace(mapFoot, c.position && c.position.lat != null
+    ? [coordsText([c.position.lon, c.position.lat]), c.position.accuracy_m != null ? [', GPS within ', q(c.position.accuracy_m, 'length')] : null, mapCostNote(c)]
+    : ['No position was recorded for this charge', mapCostNote(c)]);
+  drawMapFoot();
   const mapBox = h('div', { class: 'map map-charge', role: 'region', 'aria-label': `Map of where the car charged: ${where}` });
   const placeEl = h('section', { class: 'charge-place', 'aria-labelledby': 'place-title', cover: ['cd.stat.location', 'cd.map.location', 'web.charge-cost.map', 'web.charge-cost.location'] },
     h('div', { class: 'side-head' }, h('h2', { class: 'label', id: 'place-title' }, 'Where'),
@@ -135,14 +149,12 @@ export async function mount(ctx) {
     h('p', { class: 'place-name' }, where, c.place && c.place.kind ? h('span', { class: 'place-kind' }, kindWord(c.place.kind)) : null),
     h('p', { class: 'place-addr' }, addressText(c) || 'No address: the position has no address in the offline lookup.'),
     mapBox,
-    h('p', { class: 'note map-foot' }, c.position && c.position.lat != null
-      ? [coordsText([c.position.lon, c.position.lat]), c.position.accuracy_m != null ? [', GPS within ', q(c.position.accuracy_m, 'length')] : null, c.place ? '. The place’s price sets the cost unless one is entered below.' : '. No place here, so no price: enter a cost below or name the place with a price.']
-      : 'No position was recorded for this charge.'));
+    mapFoot);
 
   /* ------------------------------------------------------------ the cost, with the editor */
   const costEl = h('section', { class: 'charge-cost', id: 'cost', 'aria-labelledby': 'cost-title' });
   const drawCost = () => replace(costEl, costView(ctx, c, { tz, car, listUrl, place, onSaved }));
-  function onSaved(next) { c = { ...c, ...next }; drawCost(); drawStats(); }
+  function onSaved(next) { c = { ...c, ...next }; drawCost(); drawStats(); drawMapFoot(); }
   drawCost();
 
   /* ------------------------------------------------------------ the drive before and after */
@@ -213,8 +225,14 @@ export async function mount(ctx) {
   const rangeName = 'Rated range'; // the curve keeps rated range only
 
   const reading = (name, value, cls = null) => h('div', { class: ['reading', cls] }, h('dt', null, name), h('dd', null, value));
+  const curveErr = curve && curve.error ? curve.error : null;
   const showReadout = (i) => {
-    if (!s) { replace(readout, h('p', { class: 'readout-idle' }, 'No readings during this charge.')); return; }
+    if (!s) {
+      replace(readout, curveErr
+        ? h('p', { class: 'readout-idle readout-error', role: 'alert' }, 'The readings could not be loaded, so there is nothing to point at. ', h('button', { type: 'button', class: 'button button-quiet button-small', onclick: () => remount() }, icon('reset'), 'Try again'))
+        : h('p', { class: 'readout-idle' }, 'No readings during this charge.'));
+      return;
+    }
     const idle = i == null;
     replace(readout,
       idle
@@ -358,8 +376,13 @@ export async function mount(ctx) {
       column('DC charger current', (r) => val('dc_amps_a', r.i), 'current', { digits: 1 }),
     ]));
   } else if (curve && curve.error) {
-    replace(chargeCharts, errorView(curve.error, { eyebrow: 'Readings', retry: () => remount() }));
-    replace(supplyCharts);
+    replace(chargeCharts, h('div', { class: 'empty empty-error', role: 'alert' },
+      h('p', { class: 'eyebrow' }, 'Readings'),
+      h('p', { class: 'empty-title' }, 'The readings could not be loaded.'),
+      h('p', { class: 'empty-text' }, `The figures above are fine; only this charge’s second-by-second readings failed (${curveWhy(curve.error)}). The charts, the CSV and the power curve need them.`),
+      h('p', { class: 'empty-action' }, h('button', { type: 'button', class: 'button button-quiet', onclick: () => remount() }, icon('reset'), 'Try again'))));
+    replace(supplyCharts, h('p', { class: 'note supply-empty' }, 'Supply readings could not be loaded either; they come with the readings above.'));
+    csvBtn.title = 'Nothing to download: the readings could not be loaded';
     replace(selected);
   } else {
     replace(chargeCharts, empty({ title: 'No readings during this charge.', text: c.source === 'teslamate' ? 'Imported charges keep only their totals; the figures above are what there is.' : 'The log for this charge holds no samples. The Data health page shows whether its log arrived and passed its check.' }));
@@ -375,7 +398,7 @@ export async function mount(ctx) {
   replace(notes, missing.map((t) => h('li', null, t)));
 
   /* ------------------------------------------------------------ the power curve */
-  replace(curveEl, powerCurve(ctx, c, s, typical, { car, where }));
+  replace(curveEl, powerCurve(ctx, c, s, typical, { car, where, error: curveErr }));
 
   if (m) await Promise.race([m.ready, new Promise((r) => setTimeout(r, 5000))]);
   ctx.ready();
@@ -396,8 +419,31 @@ function crumbs(car, listUrl, last, cover = null) {
     last ? [h('span', { class: 'crumb-sep', 'aria-hidden': 'true' }, '/'), h('span', { 'aria-current': 'page' }, last)] : null);
 }
 
+// Why the readings failed, in a few words for one section (not the whole-page wording).
+function curveWhy(err) {
+  const w = errorWords(err);
+  if (w.title !== 'This page could not be loaded.') return w.title.replace(/\.$/, '').toLowerCase();
+  return err && err.status ? `the server answered ${err.status}` : 'an error on the way';
+}
+
+// What the place's price does for this charge's cost, from how the cost was made.
+function mapCostNote(c) {
+  const src = c.cost && c.cost.source;
+  if (src === 'manual') return '. A cost was entered by hand, so the place’s price is not used.';
+  if (src === 'teslamate') return '. The cost was imported from TeslaMate, so the place’s price is not used.';
+  if (src === 'free_supercharging') return '. Supercharging was free for this car, so the place’s price is not used.';
+  if (src === 'tariff') return '. The place’s price sets the cost unless one is entered below.';
+  return c.place ? '. The place’s price would set the cost, but it has none: enter a cost below or give the place a price.' : '. No place here, so no price: enter a cost below or name the place with a price.';
+}
+
 const placeName = (c) => (c.place && c.place.name ? c.place.name : c.address && c.address.short ? c.address.short : 'Unnamed spot');
-const addressText = (c) => (c.address ? [c.address.short, c.address.locality, c.address.region].filter((x, i, a) => x && a.indexOf(x) === i).join(', ') : '');
+function addressText(c) {
+  const a = c.address;
+  if (!a) return '';
+  const parts = (a.short || '').split(',').map((x) => x.trim()).filter(Boolean);
+  for (const x of [a.locality, a.region]) if (x && !parts.includes(x)) parts.push(x);
+  return parts.join(', ');
+}
 const kindWord = (k) => ({ home: 'home', work: 'work', charger: 'charger', service: 'service centre', other: 'place' }[k] || k);
 
 /** 'DC · Supercharger V3' or 'AC · 1 phase, 32 A' as a chip. */
@@ -424,6 +470,10 @@ function chargeFigures(c, { tz, going, end }) {
   const socAdd = soc0 != null && soc1 != null ? soc1 - soc0 : null;
   const perPct = socAdd > 0.5 && c.energy_added_kwh != null ? c.energy_added_kwh / socAdd : null;
   const eff = c.efficiency_pct;
+  // while it charges, the second value is the latest one, not the end
+  const latestWord = going ? 'now ' : 'end ';
+  const latestNote = going ? h('span', { class: 'trio-word' }, ` now, ${formatTime(end, tz)}`) : null;
+  const toFull = c.to_full_kwh ?? c.energy_to_complete_kwh ?? null;
   return [
     figure('Charging time', formatDuration(c.charging_ms), [going ? `so far, up to ${formatTime(end, tz)}; ` : '', c.plugged_ms != null ? ['plugged in ', formatDuration(c.plugged_ms), ', first to last second of charging'] : 'first to last second of charging'], { cover: 'cd.stat.duration' }),
     figure('Energy added', q(c.energy_added_kwh, 'energy', { why: 'not recorded' }), imported ? 'into the pack; imported, estimated from range' : 'into the pack, measured at the pack (volts × amps)', { cover: 'cd.stat.energy_added' }),
@@ -434,15 +484,17 @@ function chargeFigures(c, { tz, going, end }) {
       dc ? 'needs the grid energy, which a fast charger does not send' : eff != null && eff > 100 ? [flag('Check', { kind: 'warn' }), ' above 100 %: a reading is off (often a three-phase line counted as one)'] : 'energy added ÷ energy drawn', { cover: 'cd.stat.efficiency' }),
     figure('Battery', h('span', { class: 'trio' },
       h('span', { cover: 'cd.stat.soc_start' }, h('span', { class: 'sr-only' }, 'start '), q(soc0, 'percent', { why: 'not recorded' })), h('span', { class: 'arrow', 'aria-hidden': 'true' }, ' → '),
-      h('span', { cover: 'cd.stat.soc_end' }, h('span', { class: 'sr-only' }, 'end '), q(soc1, 'percent', { why: 'not recorded' }))),
-    h('span', { cover: 'cd.stat.soc_added' }, socAdd != null ? [`+${format(socAdd, 'number', { digits: 1 })} points added`, perPct != null ? ['; ', format(perPct, 'energy', { digits: 2 }), ' per point'] : null] : 'points added: not known'), { cls: 'fig-trio' }),
+      h('span', { cover: 'cd.stat.soc_end' }, h('span', { class: 'sr-only' }, latestWord), q(soc1, 'percent', { why: 'not recorded' })), latestNote),
+    h('span', { cover: 'cd.stat.soc_added' }, socAdd != null ? [`+${format(socAdd, 'number', { digits: 1 })} points added${going ? ' so far' : ''}`, perPct != null ? ['; ', format(perPct, 'energy', { digits: 2 }), ' per point'] : null] : 'points added: not known'), { cls: 'fig-trio' }),
     figure(rLabel, h('span', { class: 'trio' },
       h('span', { cover: 'cd.stat.range_start' }, h('span', { class: 'sr-only' }, 'start '), q(r0, 'range', { why: 'not recorded' })), h('span', { class: 'arrow', 'aria-hidden': 'true' }, ' → '),
-      h('span', { cover: 'cd.stat.range_end' }, h('span', { class: 'sr-only' }, 'end '), q(r1, 'range', { why: 'not recorded' }))),
-    h('span', { cover: 'cd.stat.range_added' }, rAdd != null ? ['+', format(rAdd, 'range'), ' added', c.range_per_hour_km != null ? ['; ', format(c.range_per_hour_km, 'range_rate'), ' of charging'] : null] : 'range added: not known'), { cls: 'fig-trio' }),
+      h('span', { cover: 'cd.stat.range_end' }, h('span', { class: 'sr-only' }, latestWord), q(r1, 'range', { why: 'not recorded' })), latestNote && latestNote.cloneNode(true)),
+    h('span', { cover: 'cd.stat.range_added' }, rAdd != null ? ['+', format(rAdd, 'range'), going ? ' added so far' : ' added', c.range_per_hour_km != null ? ['; ', format(c.range_per_hour_km, 'range_rate'), ' of charging'] : null] : 'range added: not known'), { cls: 'fig-trio' }),
     figure('Average power', q(c.power_avg_kw, 'power', { why: 'not recorded' }), c.power_max_kw != null ? ['energy added ÷ charging time; peak ', format(c.power_max_kw, 'power')] : 'energy added ÷ charging time', { cover: 'cd.stat.avg_power' }),
     figure('Temperatures', h('span', { class: 'trio' }, q(c.outside_avg_c, 'temperature', { why: 'not recorded' }), h('span', { class: 'trio-word' }, ' outside')),
-      c.battery_avg_c != null ? ['average of every second; battery ', format(c.battery_avg_c, 'temperature')] : ['average of every second; battery: ', imported ? 'not in imported history' : 'not sent'], { cover: 'cd.stat.avg_temp' }),
+      [imported ? 'from the imported row' : 'average of every second', c.battery_avg_c != null ? ['; battery ', format(c.battery_avg_c, 'temperature')] : ['; battery: ', imported ? 'not in imported history' : 'not sent']], { cover: 'cd.stat.avg_temp' }),
+    figure(going ? 'Still to add' : 'Still to add when stopped', q(toFull, 'energy', { why: 'not sent yet' }),
+      toFull != null ? (going ? 'energy the battery still needs to reach its limit' : 'energy the battery still needed to reach its limit when charging stopped') : `what the battery ${going ? 'still needs' : 'still needed when charging stopped'} to reach its limit; the server does not send it for charges yet`),
     figure('Odometer', q(c.odometer_km, 'odometer', { why: 'not read' }), 'when it plugged in'),
   ];
 }
@@ -459,13 +511,13 @@ function costView(ctx, c, { tz, car, listUrl, place, onSaved }) {
     h('p', { class: 'fig-name' }, 'Cost'),
     h('p', { class: 'cost-amount' }, cost ? formatMoney(cost.amount, cost.currency) : q(null, 'money', { why: 'no price' })),
     h('p', { class: 'fig-note' }, cost ? COST_SOURCE[cost.source] || cost.source : c.place ? `${c.place.name} has no price, and none was entered.` : 'No place with a price here, and none was entered.'),
-    ppk && ppk.value != null && cur ? h('p', { class: 'fig-note' }, format({ amount: ppk.value, currency: cur }, 'price_energy'), ppk.basis === 'grid' ? ' over the energy drawn from the grid' : ' over the energy added to the pack (the grid side of a fast charger is not known)') : null,
+    ppk && ppk.value != null && cur ? h('p', { class: 'fig-note' }, rateText(ppk.value, cur, 'price_energy'), ppk.basis === 'grid' ? ' over the energy drawn from the grid' : c.kind === 'dc' ? ' over the energy added to the pack (the grid side of a fast charger is not known)' : ' over the energy added to the pack, as entered') : null,
     bd.gap_ms > 0 ? h('p', { class: 'fig-note' }, `${formatDuration(bd.gap_ms)} without data is priced from the energy at its ends.`) : null);
 
   const rows = (bd.parts || []).map((p) => ({ ...p }));
   if (bd.session_fee != null) rows.push({ rate: 'Session fee', per_kwh: null, per_minute: null, kwh: null, minutes: null, cost: bd.session_fee, fee: true });
   const money = (v) => (v == null || !cur ? '—' : formatMoney(v, cur));
-  const rate = (v, kind) => (v == null || !cur ? '—' : format({ amount: v, currency: cur }, kind));
+  const rate = (v, kind) => (v == null || !cur ? '—' : rateText(v, cur, kind));
   const table = rows.length ? dataTable(ctx, {
     rows, itemName: ['line', 'lines'], label: 'Cost breakdown',
     caption: ['Total ', money(bd.total ?? (cost && cost.amount)), bd.mode === 'tariff' ? '; each rate over the time it applied' : ''],
@@ -540,7 +592,7 @@ function costEditor(ctx, c, { tz, car, listUrl, place, onSaved }) {
     if (!Number.isFinite(v) || v < 0) { replace(preview, 'Not a cost: enter zero or more.'); return; }
     const total = totalFor(v);
     replace(preview, 'Saves ', h('b', null, formatMoney(Math.round(total * 100) / 100, cur)),
-      mode === 'total' ? ' as the total.' : mode === 'per_kwh' ? [' = ', format({ amount: v, currency: cur }, 'price_energy'), ' × ', format(kwhOf(basis), 'energy'), basis === 'grid' ? ' drawn.' : ' added.'] : [' = ', format({ amount: v, currency: cur }, 'price_time'), ' × ', `${formatNumber(Math.round(minutes * 10) / 10)} min charging.`]);
+      mode === 'total' ? ' as the total.' : mode === 'per_kwh' ? [' = ', rateText(v, cur, 'price_energy'), ' × ', format(kwhOf(basis), 'energy'), basis === 'grid' ? ' drawn.' : ' added.'] : [' = ', rateText(v, cur, 'price_time'), ' × ', `${formatNumber(Math.round(minutes * 10) / 10)} min charging.`]);
   }
   amount.control.addEventListener('input', sync);
   currency.control.addEventListener('change', sync);
@@ -592,7 +644,7 @@ function costEditor(ctx, c, { tz, car, listUrl, place, onSaved }) {
 }
 
 /** Power against battery %: this charge's readings, its average per point, and this car's typical DC curve. */
-function powerCurve(ctx, c, s, typical, { car, where }) {
+function powerCurve(ctx, c, s, typical, { car, where, error = null }) {
   const dc = c.kind === 'dc';
   const pts = [];
   if (s) {
@@ -605,7 +657,7 @@ function powerCurve(ctx, c, s, typical, { car, where }) {
   const med = dc && typical && typical.median ? typical.median.map((p) => ({ soc: p.soc_pct, kw: p.power_kw })).filter((p) => p.kw != null) : [];
   const sessions = dc && typical && typical.sessions ? typical.sessions.length : 0;
 
-  const csvBtn = h('button', { type: 'button', class: 'button button-quiet button-small', disabled: !avg.length, onclick: () => {
+  const csvBtn = h('button', { type: 'button', class: 'button button-quiet button-small', disabled: !avg.length, title: avg.length ? null : error ? 'Nothing to download: the readings could not be loaded' : 'Nothing to download: no curve', onclick: () => {
     const keys = [...new Set([...avg.map((p) => Math.floor(p.soc)), ...med.map((p) => Math.round(p.soc))])].sort((a, b) => a - b);
     downloadCsv(csvFilename(car.name, 'charge', where, dayKey(c.start_ms, ctx.tz), 'power curve'), keys.map((k) => ({ k })), [
       { label: 'Battery (%)', value: (r) => r.k },
@@ -616,7 +668,8 @@ function powerCurve(ctx, c, s, typical, { car, where }) {
   } }, icon('download'), 'Download CSV');
   const headEl = h('div', { class: 'block-head' }, h('h2', { class: 'label', id: 'curve-title' }, 'Power curve', h('span', { class: 'label-note' }, 'charging power against battery %')), h('div', { class: 'block-actions' }, csvBtn));
   if (!pts.length) {
-    return [headEl, h('p', { class: 'note curve-empty', cover: ['cd.chart.curve_points', 'cd.chart.curve_avg'] }, s ? 'No charging power was recorded, so there is no curve.' : 'No readings, so there is no curve.')];
+    return [headEl, h('p', { class: 'note curve-empty', cover: ['cd.chart.curve_points', 'cd.chart.curve_avg'] }, error ? ['The readings could not be loaded, so the curve cannot be drawn. ', h('button', { type: 'button', class: 'button button-quiet button-small', onclick: () => remount() }, icon('reset'), 'Try again')]
+      : s ? 'No charging power was recorded, so there is no curve.' : 'No readings, so there is no curve.')];
   }
 
   // the window: the charge's own span, widened to tens and to at least 30 points of battery

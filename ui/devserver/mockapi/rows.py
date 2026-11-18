@@ -171,8 +171,12 @@ def charge_cost(app, car_id, c, f, now, pricing=None):
         else:
             amount = over["amount"] * minutes
         cost = {"amount": round(amount, 2), "currency": over["currency"], "source": "manual"}
-        ppk = {"value": round(amount / kwh, 4), "basis": basis} if kwh else None
-        bd = {"parts": [{"rate": "Entered", "per_kwh": round(amount / kwh, 4) if kwh else None, "kwh": r(kwh, 3),
+        # an entered rate is given back exactly as entered (up to 5 decimals), not worked back from the total
+        per_kwh = over["amount"] if mode == "per_kwh" else (round(amount / kwh, 4) if kwh else None)
+        ppk = {"value": per_kwh, "basis": basis} if per_kwh is not None else None
+        bd = {"parts": [{"rate": "Entered", "per_kwh": per_kwh, "kwh": r(kwh, 3),
+                         "per_minute": over["amount"] if mode == "per_minute" else None,
+                         "minutes": r(minutes, 1) if mode == "per_minute" else None,
                          "cost": round(amount, 2)}], "session_fee": None, "total": round(amount, 2),
               "gap_ms": gap_ms, "mode": mode}
         return cost, ppk, bd

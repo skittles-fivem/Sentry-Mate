@@ -217,6 +217,7 @@ Points this document left open, decided while building the dev server (`ui/devse
 - **Power signs:** `power_kw` in `now` and in series is the pack's power: positive out of the pack (driving, heating), negative into it (charging, regenerating). Charge figures and the charge curve's `power_kw` are charging power, positive.
 - **Tyres** are always ordered front left, front right, rear left, rear right.
 - **Price per kWh:** basis `grid` is the cost over the grid energy (AC, by the meter). Basis `pack` is the cost over the energy added to the pack (fast charging, where the grid energy is unknown). `fast_charger.billed_kwh` is what the charger delivered (about the car's inlet energy).
+- **Entered rates come back as entered:** after `PUT .../cost` with `mode: "per_kwh"`, `price_per_kwh.value` and the breakdown's `per_kwh` are the amount sent (up to 5 decimals), not the total divided back; with `mode: "per_minute"` the breakdown's `per_minute` and `minutes` are the rate sent and the charging minutes. Only `cost.amount` and `total` are rounded (to 2 decimals).
 - **Attention items** carry `detail` as an object in metric units, for example `{ tyre, pressure_kpa, recommended_kpa }`, `{ last_upload_ms }`, `{ soc_pct }`, `{ door }`, `{ reason, log_start_ms }`, `{ last_data_ms }`. The page writes the sentence.
 - **Stale** means no upload for more than one hour.
 - **Saved trips** belong to the account that saved them; a watch account may save its own. Purposes and purpose rules change car data and need an admin.
