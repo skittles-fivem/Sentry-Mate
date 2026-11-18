@@ -80,6 +80,7 @@ export async function mount(ctx) {
     prBucket: ['hour', 'day', 'week'].includes(q.pr_bucket) ? q.pr_bucket : 'auto',
     minH: [0, 1, 3, 6, 12, 24].includes(Number(q.min_h)) ? Number(q.min_h) : 0,
   };
+  let first = null; // the car's first reading, for the All time period (see firstMs)
 
   const [bat, totals, settings, eff] = await Promise.all([
     ctx.api.get(`${base}/battery`),
@@ -88,8 +89,15 @@ export async function mount(ctx) {
     ctx.api.get(`${base}/efficiency`).catch(() => null),
   ]);
   if (!ctx.alive()) return;
-  const cap = bat.capacity || {}, rng = bat.range || {}, life = bat.lifetime || {};
-  const rangeWord = getUnits().range === 'ideal' ? 'ideal' : 'rated';
+  const cap = bat.capacity || {}, life = bat.lifetime || {};
+  // /battery sends rated range; with the ideal preference it is turned into ideal range by the two energy
+  // factors (the same energy over a smaller factor), and stays labelled rated when a factor is missing
+  const fr = eff?.factor || {};
+  const toIdeal = getUnits().range === 'ideal' && fr.rated_wh_per_km > 0 && fr.ideal_wh_per_km > 0 ? fr.rated_wh_per_km / fr.ideal_wh_per_km : null;
+  const rng0 = bat.range || {};
+  const rangeWord = toIdeal ? 'ideal' : 'rated';
+  const rk = (km) => (km == null ? km : toIdeal ? km * toIdeal : km);
+  const rng = { ...rng0, full_now_km: rk(rng0.full_now_km), full_now_from_energy_km: rk(rng0.full_now_from_energy_km), full_new_km: rk(rng0.full_new_km), lost_km: rk(rng0.lost_km) };
 
   /* ---------- the head */
   const periodBtn = (cv) => h('button', { class: 'btn btn--sm', type: 'button', cover: cv, title: 'Choose the period (shared by every page)', onclick: (e) => openPeriodPicker(e.currentTarget) },
@@ -141,13 +149,13 @@ export async function mount(ctx) {
     if (ev.data?.car !== cid) return;
     const d = ev.data.now || {};
     const v = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : undefined);
-    const live = { soc: v(d.soc_pct), usable: v(d.usable_soc_pct), kwh: v(d.energy_remaining_kwh), limit: d.charge?.limit_pct ?? undefined };
+    const live = { soc: v(d.soc_pct), usable: v(d.usable_soc_pct), kwh: v(d.energy_remaining_kwh), limit: v(d.charge?.limit_pct) };
     if (Object.values(live).some((x) => x != null)) paintNow(Object.fromEntries(Object.entries(live).filter(([, x]) => x != null)));
   });
 
   /* ---------- Capacity and health */
   const health = cap.health_pct, warranty = cap.warranty_pct;
-  const factor = eff?.factor ? (rangeWord === 'ideal' ? eff.factor.ideal_wh_per_km : eff.factor.rated_wh_per_km) : null;
+  const factor = eff?.factor ? (toIdeal ? fr.ideal_wh_per_km : fr.rated_wh_per_km) : null;
   const ring = healthRing(health, warranty);
   const notesEl = (bat.notes || []).filter((c) => NOTES[c]).map((c) => h('p', { class: ['note', 'bat-note', /cold|lfp/.test(c) && 'warn'] }, icon(/cold|lfp/.test(c) ? 'warn' : 'info', 'ico--sm'), NOTES[c]));
   const capPanel = panel({ title: 'Capacity and health', icon: 'battery', cls: 'bat-cap', cover: 'shots.battery-health' },
@@ -172,7 +180,7 @@ export async function mount(ctx) {
   /* ---------- Full-charge range */
   const rangePanel = panel({ title: 'Full-charge range', icon: 'gauge', cls: 'bat-range' },
     h('div', { class: 'range-figs' },
-      metric('At 100 % now', rng.full_now_km, 'range', { size: 'lg', cover: 'bh.ranges.max_now', explain: `The ${rangeWord} range the car would show at a full charge. From energy: ${format(rng.full_now_from_energy_km, 'range')}.`, why: 'Not enough readings' }),
+      metric('At 100 % now', rng.full_now_km, 'range', { size: 'lg', cover: 'bh.ranges.max_now', explain: `The ${rangeWord} range the car would show at a full charge${toIdeal ? ' (worked out from rated range with the two energy factors)' : ''}. From energy: ${format(rng.full_now_from_energy_km, 'range')}.`, why: 'Not enough readings' }),
       metric('At 100 % when new', rng.full_new_km, 'range', { cover: 'bh.ranges.max_new', explain: rng.new_source ? `Source: ${RANGE_SOURCE[rng.new_source] || rng.new_source}.` : null, why: 'Not known: type it under Reference values' }),
       metric('Range lost', rng.lost_km == null ? null : rng.lost_km, 'range', { cover: 'bh.ranges.lost', explain: rng.lost_km != null && rng.full_new_km ? `${formatNumber((rng.lost_km / rng.full_new_km) * 100, { maximumFractionDigits: 1 })} % of the range when new.` : 'When new minus now.', why: 'Needs a “when new” value' })),
     h('div', { class: 'range-bar', role: 'img', 'aria-label': `Range now ${format(rng.full_now_km, 'range')} of ${format(rng.full_new_km, 'range')} when new`,
@@ -253,7 +261,7 @@ export async function mount(ctx) {
             ['Odometer', format(t.odometer_last_km, 'odometer'), { cover: 'bh.drive.odometer', title: 'The car’s own odometer, last reading' }],
             ['Driven since logging began', format(mileage, 'distance'), { cover: 'bh.drive.mileage', title: 'Last odometer minus the first logged one' }],
             ['Logged in drives', h('a', { class: 'link', href: ctx.link('drives', { period: { preset: 'all' } }) }, format(t.distance_km, 'distance'), ` · ${n0(t.drives)} drives`), { cover: 'bh.drive.logged' }],
-            ['Not logged', t.not_logged_km ? h('a', { class: ['link', t.not_logged_km > 1 && 'warn'], href: state.buildUrl('health', { car: cid, query: { show: 'gaps' } }), title: 'See each gap' }, format(t.not_logged_km, 'distance'), ' · see the gaps') : format(t.not_logged_km, 'distance'), { cover: 'bh.drive.data_lost' }],
+            ['Not logged', t.not_logged_km ? h('a', { class: ['link', t.not_logged_km > 1 && 'warn'], href: state.buildUrl('health', { car: cid, period: { preset: 'all' } }), title: 'See each gap, over the whole life of the car' }, format(t.not_logged_km, 'distance'), ' · see the gaps') : format(t.not_logged_km, 'distance'), { cover: 'bh.drive.data_lost' }],
           ]),
           h('p', { class: 'note', cover: 'bh.drive.help' }, 'Not logged is distance the odometer moved while nothing was recorded (no log, a log that failed its check). Each gap is listed in Data health.')),
         h('div', { class: 'life-col' },
@@ -585,7 +593,7 @@ export async function mount(ctx) {
               const i = u.cursor.idx;
               if (i == null || u.cursor.left < 0) { b.vals.textContent = ''; return; }
               const fmt = (s, k) => (s.data[i] == null ? '—' : k === 'percent' ? pct(s.data[i], 1) : `${formatNumber(s.data[i], { maximumFractionDigits: k === 'temperature' ? 1 : 0 })} ${unitLabel(k)}`);
-              b.vals.replaceChildren(h('b', null, formatDate(ts[i], tz, { weekday: false })), ' · ', [...left.map((s) => `${s.label} ${fmt(s, 'range')}`), ...right.map((s) => `${s.label} ${fmt(s, cfg.right.kind)}`)].join(' · '));
+              b.vals.replaceChildren(h('b', null, (d.bucket_ms || DAY) < DAY ? formatDateTime(ts[i], tz, { now: now() }) : formatDate(ts[i], tz, { weekday: false })), ' · ', [...left.map((s) => `${s.label} ${fmt(s, 'range')}`), ...right.map((s) => `${s.label} ${fmt(s, cfg.right.kind)}`)].join(' · '));
             }],
           },
         };
@@ -621,30 +629,40 @@ export async function mount(ctx) {
     const params = () => ({ ...ctx.params, ...(opt.minH ? { min_hours: opt.minH } : {}) });
     const tripHref = (r) => state.buildUrl('trip', { car: cid, period: { from: r.start_ms, to: r.end_ms ?? now() } });
     const tlHref = (r) => state.buildUrl('timeline', { car: cid, period: { from: startOf(r.start_ms, 'day', tz), to: r.end_ms ?? now() } });
+    const columns = [
+      { key: 'start', label: 'Parked', cover: ['vd.col.start', 'vd.link.start_details'], render: (r) => h('span', { class: 'cell-text' },
+        h('a', { class: 'link', href: tripHref(r), title: 'Open exactly this span as a trip (battery and state charts)' }, formatDateTime(r.start_ms, tz, { now: now() })),
+        h('span', { class: 'sub' }, r.place?.name || r.address || 'Not a saved place')), csv: { label: 'Start', value: (r) => formatIso(r.start_ms) } },
+      { key: 'end', label: 'Until', cover: 'vd.col.end', render: (r) => h('span', { class: 'cell-text' }, r.end_ms == null ? h('span', { class: 'ok' }, 'Still parked') : h('span', null, startOf(r.end_ms, 'day', tz) === startOf(r.start_ms, 'day', tz) ? formatTime(r.end_ms, tz) : formatDateTime(r.end_ms, tz, { now: now() })),
+        h('a', { class: 'sub link', href: tlHref(r) }, 'Timeline')), csv: { label: 'End', value: (r) => formatIso(r.end_ms) } },
+      { key: 'length', label: 'Length', num: true, cover: 'vd.col.period', render: (r) => h('span', { class: ['nowrap', r.duration_ms >= 12 * 3600000 && 'is-long'] }, formatDuration(r.duration_ms)), csv: column('Length (h)', (r) => (r.duration_ms == null ? null : Math.round(r.duration_ms / 36000) / 100)) },
+      { key: 'standby', label: 'Asleep · awake', title: 'Time asleep (blue), awake and unknown (grey, no log)', cover: 'vd.col.standby', render: standbyCell,
+        csv: column('Asleep (%)', (r) => (r.duration_ms ? Math.round(((r.asleep_ms || 0) / r.duration_ms) * 1000) / 10 : null)) },
+      { key: 'energy', label: 'Energy lost', num: true, cover: 'vd.col.energy', render: (r) => h('span', { class: 'cell-text cell-num' }, format(r.energy_kwh, 'energy'), r.energy_method && r.energy_method !== 'counter' ? h('span', { class: 'sub' }, ENERGY_METHOD[r.energy_method] || r.energy_method) : null), csv: column('Energy lost', 'energy_kwh', 'energy') },
+      { key: 'power', label: 'Average power', num: true, cover: 'vd.col.avg_power', render: (r) => h('span', { class: 'cell-text cell-num' }, format(r.avg_power_w, 'power_w'), r.awake_avg_power_w != null ? h('span', { class: 'sub' }, `awake ${format(r.awake_avg_power_w, 'power_w')}`) : null), csv: column('Average power (W)', 'avg_power_w') },
+      { key: 'soc', label: 'Battery', num: true, cover: 'vd.col.soc_diff', render: (r) => h('span', { class: 'cell-text cell-num' }, signedPct(r.soc_start_pct, r.soc_end_pct), h('span', { class: 'sub' }, `${pct(r.soc_start_pct)} → ${pct(r.soc_end_pct)}`)), csv: column('Battery lost', (r) => (r.soc_start_pct == null || r.soc_end_pct == null ? null : Math.max(0, r.soc_start_pct - r.soc_end_pct)), 'percent', { digits: 2 }) },
+      { key: 'range', label: 'Range lost', title: 'Range lost, and below it range lost per hour parked', num: true, cover: 'vd.col.range_loss', render: (r) => h('span', { class: 'cell-text cell-num' }, format(r.range_lost_km, 'range', { digits: 1 }),
+        h('span', { class: 'sub', cover: 'vd.col.range_per_hour', title: 'Range lost per hour parked' }, `${format(r.range_lost_per_hour_km, 'range_rate', { digits: 2 })}`)),
+      csv: [column('Range lost', 'range_lost_km', 'range'), column('Range lost per hour', 'range_lost_per_hour_km', 'range_rate')] },
+      { key: 'why', label: 'Kept awake by', cover: 'vd.flag.cold', render: (r) => h('span', { class: 'why-cell' },
+        r.cold ? h('span', { class: 'tag tag--cold', title: `Coldest pack temperature ${format(r.battery_min_c, 'temperature')}: a cold pack reads lower and may keep itself warm` }, icon('thermo', 'ico--sm'), 'Cold pack') : null,
+        (r.awake_reasons || []).length ? (r.awake_reasons || []).map((x) => tag(REASONS[x] || x)) : h('span', { class: 'faint' }, r.awake_ms > 0 ? 'No reason sent' : 'Slept throughout')),
+      csv: { label: 'Awake reasons', value: (r) => [(r.cold ? 'cold pack' : null), ...(r.awake_reasons || []).map((x) => REASONS[x] || x)].filter(Boolean).join('; ') } },
+      ];
     const t = dataTable(ctx, {
       title: 'Parked drain', icon: 'park', path: `${base}/parked`, params: params(), cls: 'vd-table', csvName: 'parked-drain',
-      side: h('label', { class: 'vd-min' }, h('span', { class: 'faint' }, 'Show'), minSel),
+      // the CSV is built here from every spell (all pages), with readable times, the chosen units and reasons
+      csv: false,
+      side: h('span', { class: 'vd-side' }, h('label', { class: 'vd-min' }, h('span', { class: 'faint' }, 'Show'), minSel),
+        csvButton({ onClick: async () => {
+          const cols = columns.flatMap((c) => c.csv);
+          const all = (await collect(`${base}/parked`, params())).items;
+          downloadCsv(csvFilename(car.name, 'parked-drain', period.preset), all, [cols[0], column('Place', (r) => r.place?.name || r.address || ''), cols[1], cols[2], cols[3],
+            column('Unknown, no log (h)', (r) => (r.unknown_ms == null ? null : Math.round(r.unknown_ms / 36000) / 100)), ...cols.slice(4)]);
+        } })),
       cover: ['vd.table', 'shots.vampire-drain'],
       note: 'Each stay parked off a charger at one spot. Energy is measured at the pack (its own counters), so it shows small losses that whole battery % steps hide. Unknown time is never counted as asleep.',
-      columns: [
-        { key: 'start', label: 'Parked', cover: ['vd.col.start', 'vd.link.start_details'], render: (r) => h('span', { class: 'cell-text' },
-          h('a', { class: 'link', href: tripHref(r), title: 'Open exactly this span as a trip (battery and state charts)' }, formatDateTime(r.start_ms, tz, { now: now() })),
-          h('span', { class: 'sub' }, r.place?.name || r.address || 'Not a saved place')), csv: { label: 'Start', value: (r) => formatIso(r.start_ms) } },
-        { key: 'end', label: 'Until', cover: 'vd.col.end', render: (r) => h('span', { class: 'cell-text' }, r.end_ms == null ? h('span', { class: 'ok' }, 'Still parked') : h('span', null, startOf(r.end_ms, 'day', tz) === startOf(r.start_ms, 'day', tz) ? formatTime(r.end_ms, tz) : formatDateTime(r.end_ms, tz, { now: now() })),
-          h('a', { class: 'sub link', href: tlHref(r) }, 'Timeline')), csv: { label: 'End', value: (r) => formatIso(r.end_ms) } },
-        { key: 'length', label: 'Length', num: true, cover: 'vd.col.period', render: (r) => h('span', { class: ['nowrap', r.duration_ms >= 12 * 3600000 && 'is-long'] }, formatDuration(r.duration_ms)), csv: column('Length (h)', (r) => (r.duration_ms == null ? null : r.duration_ms / 3600000), null) },
-        { key: 'standby', label: 'Asleep · awake · unknown', cover: 'vd.col.standby', render: standbyCell,
-          csv: { label: 'Asleep (%)', value: (r) => (r.duration_ms ? Math.round((r.asleep_ms / r.duration_ms) * 1000) / 10 : null) } },
-        { key: 'energy', label: 'Energy lost', num: true, cover: 'vd.col.energy', render: (r) => h('span', { class: 'cell-text cell-num' }, format(r.energy_kwh, 'energy'), r.energy_method && r.energy_method !== 'counter' ? h('span', { class: 'sub' }, ENERGY_METHOD[r.energy_method] || r.energy_method) : null), csv: column('Energy lost', 'energy_kwh', 'energy') },
-        { key: 'power', label: 'Average power', num: true, cover: 'vd.col.avg_power', render: (r) => h('span', { class: 'cell-text cell-num' }, format(r.avg_power_w, 'power_w'), r.awake_avg_power_w != null ? h('span', { class: 'sub' }, `awake ${format(r.awake_avg_power_w, 'power_w')}`) : null), csv: column('Average power (W)', 'avg_power_w') },
-        { key: 'soc', label: 'Battery', num: true, cover: 'vd.col.soc_diff', render: (r) => h('span', { class: 'cell-text cell-num' }, signedPct(r.soc_start_pct, r.soc_end_pct), h('span', { class: 'sub' }, `${pct(r.soc_start_pct)} → ${pct(r.soc_end_pct)}`)), csv: column('Battery lost (%)', (r) => (r.soc_start_pct == null || r.soc_end_pct == null ? null : Math.max(0, r.soc_start_pct - r.soc_end_pct))) },
-        { key: 'range', label: 'Range lost', num: true, cover: 'vd.col.range_loss', render: (r) => format(r.range_lost_km, 'range', { digits: 1 }), csv: column('Range lost', 'range_lost_km', 'range') },
-        { key: 'rate', label: 'Range lost / hour', num: true, cover: 'vd.col.range_per_hour', render: (r) => format(r.range_lost_per_hour_km, 'range_rate', { digits: 2 }), csv: column('Range lost per hour', 'range_lost_per_hour_km', 'range_rate') },
-        { key: 'why', label: 'Kept awake by', cover: 'vd.flag.cold', render: (r) => h('span', { class: 'why-cell' },
-          r.cold ? h('span', { class: 'tag tag--cold', title: `Coldest pack temperature ${format(r.battery_min_c, 'temperature')}: a cold pack reads lower and may keep itself warm` }, icon('thermo', 'ico--sm'), 'Cold pack') : null,
-          (r.awake_reasons || []).length ? (r.awake_reasons || []).map((x) => tag(REASONS[x] || x)) : h('span', { class: 'faint' }, r.awake_ms > 0 ? 'No reason sent' : 'Slept throughout')),
-        csv: { label: 'Awake reasons', value: (r) => [(r.cold ? 'cold pack' : null), ...(r.awake_reasons || []).map((x) => REASONS[x] || x)].filter(Boolean).join('; ') } },
-      ],
+      columns,
       empty: () => emptyState({ icon: 'park', title: 'No parked spells in this period', text: opt.minH ? `None was at least ${opt.minH} h long. Choose Any length, or a longer period.` : 'The car did not stay parked off a charger in this period. Choose a longer period.' }),
       onPage: (pg) => { if (pg.summary) paintSummary(pg.summary); },
     });
@@ -684,7 +702,6 @@ export async function mount(ctx) {
   }
   // carry the last value through buckets where the car was asleep (never through unknown ones)
   function carry(a, asleep) { let last = null; return (a || []).map((v, i) => { if (v != null) { last = v; return v; } return asleep[i] ? last : (last = null); }); }
-  let first = null;
   async function firstMs() {
     if (first != null) return first;
     try { const pg = await ctx.api.get(`${base}/battery/capacity`, { group: 'month', limit: 1 }); first = pg.items?.[0]?.t_ms ?? now() - 365 * DAY; } catch { first = now() - 365 * DAY; }
