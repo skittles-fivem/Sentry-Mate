@@ -66,7 +66,7 @@ export function timelineRow(r, { car, tz, compact = false }) {
   let title, detail;
   const bits = [];
   if (r.kind === 'drive') {
-    title = [placeLink(r.start), h('span', { class: 'tl-arrow', 'aria-hidden': 'true' }, ' → '), r.end ? placeLink(r.end) : h('span', null, r.flags?.in_progress ? 'driving now' : '…')];
+    title = [placeLink(r.start), h('span', { class: 'tl-arrow', 'aria-hidden': 'true' }, ' → '), r.end && r.end_ms != null ? placeLink(r.end) : h('span', null, r.end_ms == null ? 'driving now' : '…')];
     bits.push(format(r.distance_km, 'distance'), r.energy_delta_kwh != null ? `${format(-r.energy_delta_kwh, 'energy')} used${est ? ' (estimated)' : ''}` : null);
   } else if (r.kind === 'charge') {
     title = [h('span', null, 'Charging at '), placeLink(r.start) || h('span', null, 'an unknown spot')];
@@ -148,11 +148,11 @@ export async function mount(ctx) {
   const cur = states.current || {};
   const summary = panel({ title: 'States', icon: 'park', cls: 'tl-summary' },
     h('div', { class: 'figures' },
-      h('div', { class: 'metric', cover: 'states.stat.current' }, h('span', { class: 'metric-label' }, 'Now'), h('span', { class: 'metric-value' }, cur.state === 'online' ? 'Online' : stateLabel(cur.state)), h('span', { class: 'explain' }, cur.since_ms ? `since ${when(cur.since_ms, tz)}` : '')),
+      h('div', { class: 'metric', cover: 'states.stat.current' }, h('span', { class: 'metric-label' }, 'Now'), h('span', { class: 'metric-value' }, cur.state === 'online' ? 'Awake' : stateLabel(cur.state)), h('span', { class: 'explain' }, cur.since_ms ? `since ${when(cur.since_ms, tz)}` : '')),
       h('div', { class: 'metric', cover: 'states.stat.last_change' }, h('span', { class: 'metric-label' }, 'Last change'), h('span', { class: 'metric-value metric-value--sm' }, states.last_change_ms ? when(states.last_change_ms, tz) : '—'), h('span', { class: 'explain' }, states.last_change_ms ? ago(states.last_change_ms) : '')),
       h('div', { class: 'metric', cover: 'states.stat.parked_pct' }, h('span', { class: 'metric-label' }, 'Parked'), h('span', { class: 'metric-value' }, format(share.parked, 'percent')), h('span', { class: 'explain' }, 'of the known time, not driving')),
       h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Asleep'), h('span', { class: 'metric-value' }, format(share.asleep, 'percent')), h('span', { class: 'explain' }, 'both buses quiet')),
-      h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Awake'), h('span', { class: 'metric-value' }, format(share.awake, 'percent')), h('span', { class: 'explain' }, 'online, driving included')),
+      h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Awake'), h('span', { class: 'metric-value' }, format(share.awake, 'percent')), h('span', { class: 'explain' }, 'driving included')),
       h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Unknown'), h('span', { class: 'metric-value' }, format(share.unknown, 'percent')), h('span', { class: 'explain' }, 'no log, paused or failed check'))),
     h('p', { class: 'note' }, 'The shares overlap on purpose (parked time includes asleep time), so they need not add up to 100 %.'));
 

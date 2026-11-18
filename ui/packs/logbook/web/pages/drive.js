@@ -38,7 +38,8 @@ export async function mount(ctx) {
   const step = (href, text, dir) => (href
     ? h('a', { class: 'button button-quiet', href }, dir < 0 ? icon('chevronLeft') : null, text, dir > 0 ? icon('chevronRight') : null)
     : h('span', { class: 'button button-quiet is-disabled', 'aria-disabled': 'true' }, dir < 0 ? icon('chevronLeft') : null, text, dir > 0 ? icon('chevronRight') : null));
-  const placeA = (p) => (placeLink(p) ? h('a', { href: placeLink(p), title: p.place ? 'Edit this place' : 'Name this place' }, p.label) : p.label);
+  // the end of a drive still going is where the car is now, not a place to name
+  const placeA = (p, still = false) => (!still && placeLink(p) ? h('a', { href: placeLink(p), title: p.place ? 'Edit this place' : 'Name this place' }, p.label) : p.label);
 
   const head = pageHead({
     eyebrow: h('nav', { class: 'crumbs', 'aria-label': 'Breadcrumb', cover: ['dd.context.drive', 'dd.filter.car'] },
@@ -47,7 +48,7 @@ export async function mount(ctx) {
       h('span', { 'aria-current': 'page' }, formatDate(d.start_ms, tz, { weekday: 'long', month: 'long', year: true }))),
     title: [d.start.label, h('span', { class: 'to' }, ' to '), d.end.label],
     deck: [`${formatTime(d.start_ms, tz)} – ${going ? 'now' : formatTime(d.end_ms, tz)}`, sep(), formatDuration(d.duration_ms), sep(),
-      placeA(d.start), ' to ', placeA(d.end),
+      placeA(d.start), ' to ', placeA(d.end, going),
       d.source === 'teslamate' ? [' ', flag('Imported', { kind: 'estimated' })] : null, going ? [' ', flag('In progress')] : null],
     aside: h('nav', { class: 'step-nav', 'aria-label': 'Other drives' },
       step(link(d.prev), 'Earlier', -1), step(link(d.next), 'Later', 1),
@@ -62,7 +63,7 @@ export async function mount(ctx) {
     figure('Distance', q(d.distance_km, 'distance'), `odometer ${format(d.start_odometer_km, 'odometer')} → ${format(d.end_odometer_km, 'odometer')}`),
     figure('Duration', formatDuration(d.duration_ms), going ? 'so far' : null),
     figure('Average speed', q(d.speed_avg_kph, 'speed'), `top ${format(d.speed_max_kph, 'speed')}`),
-    figure('Climb and descent', h('span', null, '↑ ', q(d.climb_m, 'length', { why: why(d.climb_m == null, 'no elevation recorded') }), ' ↓ ', q(d.descent_m, 'length'))),
+    figure('Climb and descent', h('span', null, h('span', { class: 'updown' }, '↑ ', q(d.climb_m, 'length', { why: why(d.climb_m == null, 'no elevation recorded') })), ' ', h('span', { class: 'updown' }, '↓ ', q(d.descent_m, 'length')))),
     figure('Energy used', q(d.energy_kwh, 'energy', { why: why(d.energy_kwh == null, 'no pack readings for this drive') }), d.energy_basis === 'estimated' ? 'estimated from range (imported)' : 'measured at the pack, regen taken off'),
     figure('Regenerated', q(d.regen_kwh, 'energy', { why: why(d.regen_kwh == null, d.source === 'teslamate' ? 'not in imported history' : 'not recorded') })),
     figure('Consumption', q(d.wh_per_km, 'efficiency', { why: why(d.wh_per_km == null, 'too short to be reliable') }), d.rated_wh_per_km ? `${format(d.efficiency_pct, 'percent')} of the rated ${format(d.rated_wh_per_km, 'efficiency')}` : null),

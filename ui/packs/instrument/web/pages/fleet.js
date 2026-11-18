@@ -148,7 +148,6 @@ export async function mount(ctx) {
     paintBoard(lastSummary);
   };
   searchIn.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(apply, 250); });
-  ctx.onCleanup(() => clearTimeout(timer));
   stateSel.addEventListener('change', apply);
   sortSel.addEventListener('change', apply);
   ctx.onCleanup(() => clearTimeout(timer));
@@ -199,12 +198,13 @@ export async function mount(ctx) {
       h('span', { class: 'sep', 'aria-hidden': 'true' }), h('span', null, `${formatNumber(s.by_state?.driving || 0)} driving now`),
       s.stale ? [h('span', { class: 'sep', 'aria-hidden': 'true' }), h('span', { class: 'sub-warn' }, icon('clock', 'ico--sm'), `${formatNumber(s.stale)} stale, last known state shown`)] : null,
       h('span', { class: 'sep', 'aria-hidden': 'true' }), h('span', null, 'Updates by itself'));
+    // attention: the cars that need a look, with the cause and the page that shows it, then set-up fixes
+    const fixes = (setup?.fixes || []).filter((f) => FIX[f.cause]);
+    // the count is the rows of the panel below ("8+" when more car items wait in the list)
     replace(headStats,
-      h('div', { class: 'head-stat' }, h('dt', null, 'Need a look'), h('dd', null, formatNumber(at.items.length + (at.next ? 1 : 0)), at.next ? '+' : '')),
+      h('div', { class: 'head-stat' }, h('dt', null, 'Need a look'), h('dd', null, formatNumber(at.items.length + fixes.length), at.next ? '+' : '')),
       h('div', { class: 'head-stat' }, h('dt', null, 'Charging now'), h('dd', null, formatNumber(s.by_state?.charging || 0))));
 
-    // attention: the cars that need a look, with the cause and the page that shows it
-    const fixes = (setup?.fixes || []).filter((f) => FIX[f.cause]);
     if (at.items.length || fixes.length) {
       const names = new Map();
       await Promise.all([...new Set(at.items.map((a) => a.car))].map(async (cid) => {

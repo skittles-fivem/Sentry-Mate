@@ -67,7 +67,7 @@ export async function mount(ctx) {
   const legend = h('div', { class: 'glass-card route-legend' },
     h('div', { class: 'route-end' }, h('span', { class: 'route-pin route-pin--a', 'aria-hidden': 'true' }, 'A'), h('div', null, h('b', null, placeA(d.start)), h('span', null, d.start?.address?.short || '')), h('time', null, formatTime(t0, tz))),
     h('div', { class: 'route-line', 'aria-hidden': 'true' }),
-    h('div', { class: 'route-end' }, h('span', { class: 'route-pin route-pin--b', 'aria-hidden': 'true' }, 'B'), h('div', null, h('b', null, d.end ? placeA(d.end) : 'Driving now'), h('span', null, d.end?.address?.short || '')), h('time', null, live ? 'now' : formatTime(t1, tz))));
+    h('div', { class: 'route-end' }, h('span', { class: 'route-pin route-pin--b', 'aria-hidden': 'true' }, 'B'), h('div', null, h('b', null, d.end && !live ? placeA(d.end) : (d.end?.label || 'Driving now')), h('span', null, d.end?.address?.short || '')), h('time', null, live ? 'now' : formatTime(t1, tz))));
   const mapPanel = h('section', { class: 'panel map-panel', 'aria-label': 'Route map', cover: 'dd.map.route' },
     mapEl, h('div', { class: 'map-overlay map-overlay--tl' }, legend), h('div', { class: 'map-overlay map-overlay--bl' }, readout), h('div', { class: 'map-overlay map-overlay--br' }, colourSeg));
 

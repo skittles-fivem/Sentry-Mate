@@ -125,7 +125,7 @@ export async function mount(ctx) {
       h('span', { class: 'sub' }, d.end_ms ? `to ${formatTime(d.end_ms, tz)}` : 'still driving')),
       csv: (d) => new Date(d.start_ms).toISOString() },
     { key: 'route', label: 'Route', cls: 'col-route', cover: ['drives.table.start', 'drives.table.destination', 'drives.table.link.geofence_start', 'drives.table.link.geofence_end'], render: (d) => h('span', { class: 'cell-text' },
-      h('span', { class: 'route' }, placeCell(d.start), h('span', { class: 'tl-arrow', 'aria-hidden': 'true' }, ' → '), d.end ? placeCell(d.end) : '…'),
+      h('span', { class: 'route' }, placeCell(d.start), h('span', { class: 'tl-arrow', 'aria-hidden': 'true' }, ' → '), d.end && d.end_ms != null ? placeCell(d.end) : h('span', null, d.end_ms == null ? 'driving now' : '…')),
       h('span', { class: 'sub' }, [d.start?.address?.short, d.end?.address?.short].filter(Boolean).join(' → '))), csv: (d) => `${placeLabel(d.start)} → ${placeLabel(d.end)}` },
     { key: 'duration', label: 'Time', num: true, sort: 'duration', cover: 'drives.table.duration', render: (d) => formatDuration(d.duration_ms) },
     { key: 'distance', label: 'Distance', num: true, sort: 'distance', cover: 'drives.table.distance', render: (d) => format(d.distance_km, 'distance') },
