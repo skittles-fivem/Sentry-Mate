@@ -49,8 +49,9 @@ RUN find crates -name '*.rs' -exec touch {} + \
 
 FROM scratch
 COPY --from=build /src/target/release/sentry-mate /sentry-mate
-COPY --from=build --chown=1000:1000 /out/data /data
-COPY --from=build --chown=1000:1000 /out/keys /keys
+# (/out/ whole, not each folder: COPY of a folder copies only what is in it,
+# and the folder it makes for that is mode 755)
+COPY --from=build --chown=1000:1000 /out/ /
 USER 1000:1000
 ENV SENTRY_MATE_DATA=/data SENTRY_MATE_KEYS=/keys SENTRY_MATE_REQUIRE_MOUNTS=1
 # CAN Bridge uploads, HTTPS (TLS 1.3 only). (9100, the web UI, is not built yet.)

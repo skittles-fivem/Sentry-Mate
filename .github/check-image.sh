@@ -24,7 +24,7 @@ if [ "$(id -u)" -ne 0 ]; then sudo=sudo; fi
 dir="$(mktemp -d)"
 
 cleanup() {
-  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker rm -f -v "$name" >/dev/null 2>&1 || true
   $sudo rm -rf "$dir"
 }
 trap cleanup EXIT
@@ -57,7 +57,7 @@ refused() {
   echo "$said"
   [ "$(docker inspect -f '{{.State.ExitCode}}' "$name")" = 1 ] || fail "it did not stop with exit code 1"
   for t in "${texts[@]}"; do grep -qF -- "$t" <<<"$said" || fail "the message does not say: $t"; done
-  docker rm "$name" >/dev/null
+  docker rm -v "$name" >/dev/null
 }
 
 # fresh, empty data and keys folders of the user given (UID[:GID])
@@ -90,6 +90,14 @@ echo "== $image as $id:$id"
 version="$(docker run --rm "$image" --version)"
 echo "$version"
 case "$version" in "sentry-mate "*"${EXPECT_VERSION:-}"*) ;; *) fail "--version shows no ${EXPECT_VERSION:-version}" ;; esac
+
+echo "== the image's own /data and /keys: 1000's, mode 700, no VOLUME"
+c="$(docker create "$image")"
+own="$(docker export "$c" | tar -tvf - | grep -E ' (data|keys)/$')"
+docker rm "$c" >/dev/null
+echo "$own"
+[ "$(grep -c '^drwx------ 1000/1000 ' <<<"$own")" = 2 ] || fail "/data and /keys are not 1000's with mode 700"
+[ "$(docker inspect -f '{{json .Config.Volumes}}' "$image")" = null ] || fail "the image has a VOLUME"
 
 echo "== a data folder of root's: refused, with what to do"
 fresh "$id:$id"
