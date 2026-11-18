@@ -44,7 +44,7 @@ const VALUES = [
   ['mqtt.state', 'state', 'State', 'text', 'published', 'The timeline', 'driving, charging, online, asleep or unknown. Unknown (no log, recording paused) is never called asleep.'],
   ['mqtt.since', 'since', 'State since', 'time', 'logged', 'Start of the current timeline span', 'Exact to the CAN frame, not to a poll.'],
   ['mqtt.healthy', 'healthy', 'Logger healthy', 'bool', 'logged', 'The Data health checks', 'False when no log came while the car was awake, the newest log failed its check, or frames were lost.'],
-  ['mqtt.version', 'version', 'Software version', null, 'none', 'No version text on CAN', 'Instead a software_changed event when the module build ids change, with the version you typed on the Software page.'],
+  ['mqtt.version', null, 'Software version', null, 'none', 'No version text on CAN', 'No version topic. Instead the software_changed event (Events below) is sent when the module build ids change, with the version you typed on the Software page.'],
   ['mqtt.update-available', null, 'Update waiting', null, 'none', 'Only Tesla’s servers know', 'Left out.'],
   ['mqtt.update-version', null, 'Version of the waiting update', null, 'none', 'Only Tesla’s servers know', 'Left out; software_changed tells you afterwards.'],
   ['mqtt.download-perc', null, 'Update download progress', 'pct', 'none', 'No progress on CAN', 'Left out.'],
@@ -219,7 +219,7 @@ function copyButton(ctx, textFn, label = 'Copy') {
 const csvButton = (onclick) => h('button', { type: 'button', class: 'button button-quiet button-small', dataset: { csv: '' }, onclick }, icon('download'), 'Download CSV');
 
 // A unit for a key of an event payload, from the payload's own units.
-function eventUnit(k, units) {
+function eventUnit(k, units, currency) {
   const u = units || {};
   if (/(^|_)(distance|range|odometer)($|_)/.test(k)) return u.distance || 'km';
   if (/speed/.test(k)) return u.speed || 'km/h';
@@ -230,12 +230,13 @@ function eventUnit(k, units) {
   if (/_kw$/.test(k)) return 'kW';
   if (/soc/.test(k)) return '%';
   if (/_min$/.test(k)) return 'min';
+  if (k === 'cost') return currency || u.currency || 'in the place’s currency';
   return '';
 }
 function payloadParts(p) {
   return Object.entries(p || {}).filter(([k]) => !['event_type', 'car', 'units'].includes(k)).map(([k, v]) => {
     const val = v == null ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v);
-    const unit = v == null || typeof v !== 'number' ? '' : eventUnit(k, p.units);
+    const unit = v == null || typeof v !== 'number' ? '' : eventUnit(k, p.units, p.currency);
     return `${k} ${val}${unit ? ` ${unit}` : ''}`;
   });
 }
@@ -366,7 +367,7 @@ export async function mount(ctx) {
       },
     });
     const hostF = field({ label: 'Host', name: 'host', value: cfg.host, cover: ['docs.env.mqtt.mqtt-host', 'docs.env.mqtt.mqtt-ipv6'],
-      hint: 'A name such as broker.local, or an IPv4 or IPv6 address. A name that resolves to IPv6 is used as such, so there is no separate IPv6 switch.',
+      hint: 'A name such as broker.local, or an IPv4 address. For an IPv6 broker give a name that resolves to its IPv6 address: it is used as such, so there is no separate IPv6 switch.',
       attrs: { autocomplete: 'off', spellcheck: 'false', placeholder: 'broker.local' } });
     const portF = field({ label: 'Port', name: 'port', type: 'number', value: cfg.port, cover: 'docs.env.mqtt.mqtt-port',
       hint: '8883 is the usual port for MQTT over TLS, 1883 without.', attrs: { min: '1', max: '65535', step: '1', inputmode: 'numeric' } });
@@ -465,8 +466,15 @@ export async function mount(ctx) {
     let rows = [];
     try {
       const now = api.now();
-      const r = await ctx.api.get('audit', { from_ms: now - 90 * DAY, to_ms: now + 60_000, limit: 200 });
-      rows = (r.items || []).filter((e) => e.target === 'settings:mqtt').slice(0, 8);
+      // The audit log has no target filter: read page after page until 8 MQTT rows are found or the
+      // whole 90 days have been read, so "nothing in 90 days" is only said once it is true.
+      const p = ctx.api.pager('audit', { from_ms: now - 90 * DAY, to_ms: now + 60_000 }, { limit: 200 });
+      while (!p.done && ctx.alive()) {
+        const got = await p.more();
+        rows = rows.concat((got || []).filter((e) => e.target === 'settings:mqtt'));
+        if (rows.length >= 8) break;
+      }
+      rows = rows.slice(0, 8);
     } catch (e) {
       if (api.isAbort(e)) return;
       replace(logSlot, h('p', { class: 'si-quiet' }, 'The broker log could not be read.'));
@@ -525,7 +533,7 @@ export async function mount(ctx) {
         rule('Car ids', ['Topics use the car’s id (', code(c), ' here), never its name or VIN, so renaming a car keeps every topic and automation working. The ids are listed in Settings: Cars.'], { cover: 'mqtt.note-car-id' }),
         rule('Missing values', 'A value the car did not send is not published at all: the broker keeps the last real value, and the updated topic says how old it is. Nothing is sent as 0 or as a made-up number.', { cover: 'mqtt.note-empty-values' }),
         rule('Units', `Payloads are text in the server’s units (now ${unitText('distance', units())}, ${unitText('temperature', units())}, ${unitText('pressure', units())}), set by an admin in Display and units. Power is always kW, energy kWh.`),
-        rule('At no saved place', cfg ? null : [`Published as “${(pv && (pv.messages || []).find((m) => m.topic.endsWith('/place')) || {}).payload ?? 'away'}” while the car is at no saved place. An admin sets the text.`], { cover: 'docs.env.core.default-geofence', extra: cfg ? [noPlace, locSw] : null })));
+        rule('At no saved place', cfg ? null : 'While the car is at no saved place, the place topic carries a text an admin sets here (it can be empty). The other topics are sent as usual.', { cover: 'docs.env.core.default-geofence', extra: cfg ? [noPlace, locSw] : null })));
   }
   const topicsSec = section({ title: 'MQTT topics and rules', note: 'how the values are laid out and sent', id: 'si-topics', cls: 'si-sec' }, topicsSlot);
 
