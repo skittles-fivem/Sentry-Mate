@@ -139,6 +139,8 @@ class Drives(ServerCase):
         self.assertEqual([r["seq"] for r in rows], list(range(1, len(rows) + 1)))
         self.assertEqual(set(d["totals_by_purpose"]), {"business", "private", "commute", "none"})
         self.assertEqual(sum(t["drives"] for t in d["totals_by_purpose"].values()), len(rows))
+        self.assertTrue(all(r["purpose_source"] in (None, "owner", "rule") for r in rows))
+        self.assertTrue(all((r["purpose"] is None) == (r["purpose_source"] is None) for r in rows))
         st, hd, raw = self.c.request("GET", f"/api/v1/cars/c1/logbook?from_ms={a}&format=csv")
         self.assertTrue(hd["content-type"].startswith("text/csv"))
         self.assertEqual(len(raw.decode("utf-8-sig").strip().splitlines()), len(rows) + 1)

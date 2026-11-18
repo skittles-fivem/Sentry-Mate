@@ -465,8 +465,10 @@ def logbook(req):
                 "distance_km": x["distance_km"], "start_address": x["start"]["address"]["short"],
                 "end_address": x["end"]["address"]["short"],
                 "start_place": (x["start"]["place"] or {}).get("name"), "end_place": (x["end"]["place"] or {}).get("name"),
+                "start_place_id": (x["start"]["place"] or {}).get("id"), "end_place_id": (x["end"]["place"] or {}).get("id"),
                 "duration_ms": x["duration_ms"], "purpose": p.get("value"), "relation": p.get("relation"),
-                "note": p.get("note"), "continuity_gap_km": gap,
+                "note": p.get("note"), "purpose_source": p.get("source"), "purpose_rule": p.get("rule"),
+                "in_progress": x["end_ms"] is None, "continuity_gap_km": gap,
             })
             t = totals[p.get("value") or "none"]
             t["drives"] += 1
