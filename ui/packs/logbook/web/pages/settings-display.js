@@ -130,5 +130,6 @@ export async function mount(ctx) {
     pageHead({ eyebrow: 'Settings', title: 'Display and units', deck: ctx.info.purpose }),
     mine, divider, serverBox);
   ctx.ready();
-  return {};
+  // Its own controls change the preferences: they follow onPrefs above; the page is not drawn again.
+  return { update: (c) => c.ready() };
 }

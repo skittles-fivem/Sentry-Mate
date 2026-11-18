@@ -11,7 +11,7 @@
 //   export const css = true;                       // optional: load pages/drives.css first
 //   export function title(ctx) { return 'Drives'; } // optional: the tab title's first part
 //   export async function mount(ctx) { ...; ctx.ready(); return { unmount() {}, update(ctx, why) {} }; }
-// update() is optional: without it a new period remounts the page. See core/README.md for ctx.
+// update() is optional: without it a new period mounts the page again. See core/README.md for ctx.
 
 import * as state from '../shared/state.js';
 import * as api from '../shared/api.js';
@@ -196,7 +196,9 @@ async function onState(s, prev) {
     if (queryChanged && selfQuery && !periodChanged) return; // the page changed its own filters
     if (!periodChanged && !queryChanged) return;
     const inst = current.instance;
-    if (inst && inst.update) {
+    // A new period: the page updates itself when it can. Other filters from the address (back, forward,
+    // a link) mount it again, so its controls show what the address says.
+    if (inst && inst.update && !queryChanged) {
       const c = current.ctx;
       c.state = s;
       c.query = { ...s.query };
@@ -206,7 +208,7 @@ async function onState(s, prev) {
         frame?.update({ page: c.id, info: c.info, car: c.car, tz: c.tz, period: c.period, carsCount });
       }
       unready();
-      try { await inst.update(c, { period: periodChanged, query: queryChanged }); } catch (err) { c.fail(err); }
+      try { await inst.update(c, { period: true }); } catch (err) { c.fail(err); }
       return;
     }
   }

@@ -7,7 +7,7 @@ installed from a zip in Settings (planned; see [docs/plans/rust-can-logger.md](.
 | Pack | Look |
 |---|---|
 | [`packs/instrument`](packs/instrument) | Dark first, a side bar grouped by task, a battery gauge, the map as the main view. Runs on `/api/v1`; how its pages are built: [`web/core/README.md`](packs/instrument/web/core/README.md) |
-| [`packs/logbook`](packs/logbook) | Paper and ink with a serif type, a night mode, the day told as a log |
+| [`packs/logbook`](packs/logbook) | Paper and ink with a serif type, a night mode, the day told as a log. Runs on `/api/v1` (preview: `python3 ui/devserver/serve.py --pack ui/packs/logbook`); how its pages are built: [`web/core/README.md`](packs/logbook/web/core/README.md) |
 
 **Status: being built.** Desktop first: a 1280 px laptop up to a native 4K screen, browser zoom 50 to 200 %, and an
 Interface size setting. The packs only talk to `/api/v1`; until the Sentry Mate server serves it, the dev API server

@@ -220,7 +220,8 @@ export async function mount(ctx) {
     table.redrawRow(car);
   });
   ctx.ready();
-  return { update: () => ctx.ready() };
+  // New units: the rows are drawn again in them (the page has no period).
+  return { update: (c) => { table.redraw(); c.ready(); } };
 }
 
 /** Why a car may be missing although others show: what waits in set-up (GET /api/v1/setup/status). */

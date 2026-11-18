@@ -90,7 +90,7 @@ function pickFollow(on) {
 
 function accountMenu() {
   const nameEl = h('span', { class: 'account-name' }, me ? me.name : 'Account');
-  const trigger = h('button', { type: 'button', class: 'account-trigger', 'aria-haspopup': 'dialog' }, icon('person'), nameEl);
+  const trigger = h('button', { type: 'button', class: 'account-trigger', 'aria-haspopup': 'dialog', 'aria-label': `Account: ${me ? me.name : ''}` }, icon('person'), nameEl);
   const admin = me && me.role === 'admin';
   const panel = h('div', { class: 'pop account-pop', id: 'account-pop', role: 'dialog', 'aria-label': 'Account' },
     h('p', { class: 'pop-title' }, 'Signed in'),
