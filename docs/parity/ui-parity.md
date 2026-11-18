@@ -712,7 +712,7 @@ Not on the CAN bus, and what Sentry Mate does instead:
 
 **Filters:** Period; Minimum distance; Temperature group width; Cars.
 
-**Drill-downs:** Temperature group -> Drives filtered to it; Charging temperature dot -> Charge detail.
+**Drill-downs:** Temperature group -> its drives, listed on this page under the table (each drive opens Drive detail; the Drives page has no temperature filter, so its link shows every drive of the period); Charging temperature dot -> Charge detail.
 
 **Sections**
 

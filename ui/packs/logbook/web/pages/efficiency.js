@@ -14,7 +14,7 @@
 
 import { h, replace, cover } from '../shared/dom.js';
 import { format, convert, toMetric, unitLabel, rangeLabel } from '../shared/units.js';
-import { formatDate, formatDateTime, formatDuration, periodLabel, dateFormat, dayKey } from '../shared/time.js';
+import { formatDate, formatDateTime, formatDuration, periodLabel, dateFormat, dayKey, buckets, zonedParts } from '../shared/time.js';
 import { formatNumber, tn } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import * as api from '../shared/api.js';
@@ -123,6 +123,7 @@ export async function mount(ctx) {
       const v = parseFloat(minIn.value);
       opt.minKm = Number.isFinite(v) && v >= 0 ? toMetric(v, 'distance') : 0;
       remember();
+      drivesCache = null; // loaded with the old shortest drive: a lower one needs drives it left out
       drawEfficiency().catch(() => {});
       drawCars().catch(() => {});
     }, 400);
@@ -248,7 +249,7 @@ export async function mount(ctx) {
     replace(tempBox,
       head('ef-bytemp-title', 'By outside temperature', `groups of ${groupOptions().find(([k]) => k === opt.group)?.[1] || ''}`),
       table.el,
-      h('p', { class: 'note' }, 'Cold drives use more: the cabin and the pack are heated, and cold tyres and air resist more. The bar shows each group against the warmest-to-coldest spread; the tick is the period’s average.'),
+      h('p', { class: 'note' }, 'Cold drives use more: the cabin and the pack are heated, and cold tyres and air resist more. The bar shows each group’s consumption against the highest group’s (a full bar); the tick is the period’s average.'),
       drill);
     table.load();
   }
@@ -293,7 +294,7 @@ export async function mount(ctx) {
     replace(drill,
       h('div', { class: 'ef-drill-head' },
         h('p', { class: 'ef-sub' }, `Drives at ${g.none ? 'no outside temperature' : groupText(g)}`),
-        h('a', { class: 'link-arrow', href: state.buildUrl('drives', { car: car.id, period: ctx.state.period, query: { min_distance_km: opt.minKm || null } }) }, 'Every drive of the period', icon('arrowRight')),
+        h('a', { class: 'link-arrow', href: state.buildUrl('drives', { car: car.id, period: ctx.state.period, query: { min_distance_km: opt.minKm || null } }) }, 'Every drive of the period, all temperatures', icon('arrowRight')),
         button('Close', { cls: 'button-small', iconName: 'close', onclick: () => openGroup(g, btn) })),
       t.el);
     t.load();
@@ -306,6 +307,11 @@ export async function mount(ctx) {
       { key: 'ideal', name: 'Ideal range', wh: f.ideal_wh_per_km, readings: f.readings, cover: ['ef.table.derived_ideal', 'ef.ideal.col.efficiency', 'ef.ideal.col.count'] },
     ];
     const mine = rangeLabel().toLowerCase().startsWith('ideal') ? rows[1] : rows[0];
+    // a factor with no reading in the period comes from earlier readings (or the owner typed it)
+    const earlier = f.source === 'owner' ? 'none in this period; the owner’s value is used' : 'none in this period; the factor comes from earlier readings';
+    const when = f.as_of_ms ? [' Latest reading ', formatDate(f.as_of_ms, tz, { now }), '.']
+      : num(mine.wh) && f.source !== 'owner' ? ' The date of the latest reading is not known.' : '';
+    const fromEarlier = f.readings === 0 && num(mine.wh) && f.source !== 'owner' ? ' No reading falls in this period, so the value comes from earlier ones.' : '';
     const real = num(e.net_wh_per_km) && num(mine.wh) ? (mine.wh / e.net_wh_per_km) * 100 : null;
     const table = dataTable(ctx, {
       rows, itemName: ['factor', 'factors'], label: 'Energy factors',
@@ -313,14 +319,16 @@ export async function mount(ctx) {
       columns: [
         { key: 'name', label: 'Range', th: true, value: (r) => r.name, cell: (r) => h('span', { class: 'cell-main' }, r.name, r === mine ? h('span', { class: 'cell-sub' }, 'the one you chose to see') : null) },
         { key: 'wh', label: 'Per distance of range', num: true, value: (r) => r.wh, cell: (r) => q(r.wh, 'efficiency', { why: 'no readings yet' }) },
-        { key: 'n', label: 'Readings', num: true, value: (r) => r.readings, cell: (r) => (num(r.readings) ? h('span', { class: 'cell-main' }, formatNumber(r.readings)) : q(null, 'count', { why: 'none' })) },
+        { key: 'n', label: 'Readings', num: true, value: (r) => r.readings, cell: (r) => (num(r.readings)
+          ? [h('span', { class: 'cell-main' }, formatNumber(r.readings)), r.readings === 0 && num(r.wh) ? h('span', { class: 'cell-sub' }, earlier) : null]
+          : q(null, 'count', { why: 'none' })) },
       ],
       rowAttrs: (r) => ({ cover: r.cover }),
     });
     replace(factorBox,
       head('ef-factor-title', 'Energy factor', 'a cross-check, not needed for the figures'),
       figures([figure(`${rangeLabel()} factor`, q(mine.wh, 'efficiency', { why: 'no readings yet' }),
-        [`How much energy one ${unitLabel('distance')} of ${rangeLabel().toLowerCase()} stands for: ${FACTOR_SOURCE[f.source] || 'not worked out yet'}.`, f.as_of_ms ? [' Latest reading ', formatDate(f.as_of_ms, tz, { now }), '.'] : ''],
+        [`How much energy one ${unitLabel('distance')} of ${rangeLabel().toLowerCase()} stands for: ${FACTOR_SOURCE[f.source] || 'not worked out yet'}.`, fromEarlier, when],
         { cls: 'fig-hero', cover: 'ef.stat.current_factor' })], { cls: 'ef-figs-1' }),
       table.el,
       h('p', { class: 'note' }, real != null
@@ -451,15 +459,24 @@ export async function mount(ctx) {
     cover(charts.querySelector('.chart-cabin'), 'tp.chart.inside');
   }
 
-  /** A small time axis for the hand-drawn charts: ticks on day starts, about six. */
-  function dayTicks(a, b) {
-    const span = b - a;
-    const fmt = dateFormat(tz, span > 200 * 86400000 ? { month: 'short', year: 'numeric' } : { month: 'short', day: 'numeric' });
-    const n = 6;
+  /**
+   * A small time axis for the hand-drawn charts: a tick on each shown day's local midnight (every Nth day,
+   * about six), labelled with that day. starts: the midnights, else those in [a, b); xOf: where a midnight
+   * sits, in % (default: by time from a to b). Returns [x %, label].
+   */
+  function dayTicks(a, b, starts, xOf = null) {
+    const span = Math.max(1, b - a);
+    const days = (starts || buckets(a, b, 'day', tz, { max: 20000 }).map((x) => x.start_ms)).filter((ms) => ms >= a && ms < b);
+    const long = span > 200 * 86400000;
+    const fmt = dateFormat(tz, long ? { month: 'short', year: 'numeric' } : { month: 'short', day: 'numeric' });
+    // long periods: ticks on the first day of a month; otherwise every Nth day
+    const pool = long ? days.filter((ms) => zonedParts(ms, tz).day === 1) : days;
+    const every = Math.max(1, Math.ceil(pool.length / 6));
     const out = [];
-    for (let i = 0; i <= n; i++) {
-      const ms = a + (span * i) / n;
-      out.push([p3(((ms - a) / span) * 100), fmt.format(ms)]);
+    for (let i = 0; i < pool.length; i += every) {
+      const x = xOf ? xOf(pool[i]) : ((pool[i] - a) / span) * 100;
+      if (x > 88 && out.length) break; // no room for a label at the right edge
+      out.push([p3(x), fmt.format(pool[i])]);
     }
     return out;
   }
@@ -514,7 +531,7 @@ export async function mount(ctx) {
         h('div', { class: 'ef-area' },
           splits.map((s) => h('span', { class: 'ef-gline', vars: { '--y': p3(yOf(s)) }, 'aria-hidden': 'true' })),
           cursor, dots),
-        h('div', { class: 'ef-x', 'aria-hidden': 'true' }, dayTicks(a, b).map(([x, t]) => h('span', { vars: { '--x': x } }, t)))));
+        h('div', { class: 'ef-x ef-x-days', 'aria-hidden': 'true' }, dayTicks(a, b).map(([x, t]) => h('span', { vars: { '--x': x } }, t)))));
   }
 
   function drawDaily() {
@@ -568,14 +585,16 @@ export async function mount(ctx) {
       const i = days.findIndex((x, j) => ms >= x.t_ms && (j === n - 1 || ms < days[j + 1].t_ms));
       if (i >= 0 && i !== onDay) hoverDay(i, false);
     });
-    const a = days[0].t_ms, b = days[n - 1].t_ms + 86400000;
+    // the axis ends with the last day shown; each day's tick sits at the left edge of its own column
+    const a = days[0].t_ms, b = days[n - 1].t_ms + 1;
+    const colOf = new Map(days.map((x, i) => [x.t_ms, i * w]));
     replace(dailyBox, headEl, tip,
       h('div', { class: 'ef-plot ef-plot-daily', cover: 'tp.chart.daily_envelope' },
         h('div', { class: 'ef-y', 'aria-hidden': 'true' }, splits.map((s) => h('span', { vars: { '--y': p3(yOf(toMetric(s, 'temperature'))) } }, `${formatNumber(s)} ${unitLabel('temperature')}`))),
         h('div', { class: 'ef-area' }, splits.map((s) => h('span', { class: 'ef-gline', vars: { '--y': p3(yOf(toMetric(s, 'temperature'))) }, 'aria-hidden': 'true' })), dayEls),
         h('div', { class: 'ef-y ef-y-cov', 'aria-hidden': 'true' }, h('span', { vars: { '--y': '0%' } }, '100 %'), h('span', { vars: { '--y': '100%' } }, '0 %')),
         h('div', { class: 'ef-covarea', cover: 'tp.chart.daily_coverage', role: 'img', 'aria-label': 'How much of each day had outside temperature data' }, covEls),
-        h('div', { class: 'ef-x', 'aria-hidden': 'true' }, dayTicks(a, b).map(([x, t]) => h('span', { vars: { '--x': x } }, t)))),
+        h('div', { class: 'ef-x ef-x-days', 'aria-hidden': 'true' }, dayTicks(a, b, days.map((x) => x.t_ms), (ms) => colOf.get(ms)).map(([x, t]) => h('span', { vars: { '--x': x } }, t)))),
       h('ul', { class: 'ef-key' },
         h('li', null, h('span', { class: 'ef-sw ef-sw-span', 'aria-hidden': 'true' }), 'lowest to highest of the day'),
         h('li', null, h('span', { class: 'ef-sw ef-sw-band', 'aria-hidden': 'true' }), 'typical band: 70 % of the readings fell here (15th to 85th percentile)'),
@@ -613,7 +632,7 @@ export async function mount(ctx) {
         ctx.api.get(api.apiPath`cars/${c.id}/efficiency`, { ...ctx.params, min_distance_km: opt.minKm }),
         ctx.api.get(api.apiPath`cars/${c.id}/temperatures`, ctx.params),
       ]);
-      return { id: c.id, name: c.name, model: c.model, year: c.year, eff: e.status === 'fulfilled' ? e.value : null, temp: t.status === 'fulfilled' ? t.value : null, err: e.status === 'rejected' };
+      return { id: c.id, name: c.name, model: c.model, year: c.year, eff: e.status === 'fulfilled' ? e.value : null, temp: t.status === 'fulfilled' ? t.value : null, err: e.status === 'rejected', tempErr: t.status === 'rejected' };
     }));
     if (!ctx.alive()) return;
     const table = dataTable(ctx, {
@@ -631,11 +650,11 @@ export async function mount(ctx) {
             h('a', { class: 'cell-main', href: state.buildUrl('efficiency', { car: r.id, period: ctx.state.period }), 'aria-current': r.id === car.id ? 'page' : null }, r.name)),
           h('span', { class: 'cell-sub' }, [r.model, r.year].filter(Boolean).join(' '), r.id === car.id ? ' · shown above' : '')] },
         { key: 'net', label: 'Net', num: true, sort: true, value: (r) => r.eff?.net_wh_per_km, cell: (r) => (r.err ? 'could not load' : q(r.eff?.net_wh_per_km, 'efficiency', { why: 'no drive' })) },
-        { key: 'gross', label: 'Gross', num: true, sort: true, value: (r) => r.eff?.gross_wh_per_km, cell: (r) => q(r.eff?.gross_wh_per_km, 'efficiency', { why: 'no drive' }) },
-        { key: 'dist', label: 'Logged distance', num: true, sort: true, value: (r) => r.eff?.distance_km, cell: (r) => [h('span', { class: 'cell-main' }, q(r.eff?.distance_km, 'distance')), h('span', { class: 'cell-sub' }, tn(r.eff?.drives || 0, '{n} drive', '{n} drives'))] },
-        { key: 'out', label: 'Outside', num: true, sort: true, value: (r) => r.temp?.outside?.avg_c, cell: (r) => [h('span', { class: 'cell-main' }, q(r.temp?.outside?.avg_c, 'temperature', { why: 'no reading' })), num(r.temp?.outside?.coverage_pct) ? h('span', { class: 'cell-sub' }, `average; data ${pctText(r.temp.outside.coverage_pct)}`) : null] },
-        { key: 'cabin', label: 'Cabin', num: true, sort: true, value: (r) => r.temp?.cabin?.avg_c, cell: (r) => q(r.temp?.cabin?.avg_c, 'temperature', { why: 'not sent' }) },
-        { key: 'bat', label: 'Battery', num: true, sort: true, value: (r) => r.temp?.battery?.avg_c, cell: (r) => q(r.temp?.battery?.avg_c, 'temperature', { why: 'not sent' }) },
+        { key: 'gross', label: 'Gross', num: true, sort: true, value: (r) => r.eff?.gross_wh_per_km, cell: (r) => (r.err ? 'could not load' : q(r.eff?.gross_wh_per_km, 'efficiency', { why: 'no drive' })) },
+        { key: 'dist', label: 'Logged distance', num: true, sort: true, value: (r) => r.eff?.distance_km, cell: (r) => (r.err ? 'could not load' : [h('span', { class: 'cell-main' }, q(r.eff?.distance_km, 'distance')), h('span', { class: 'cell-sub' }, tn(r.eff?.drives || 0, '{n} drive', '{n} drives'))]) },
+        { key: 'out', label: 'Outside', num: true, sort: true, value: (r) => r.temp?.outside?.avg_c, cell: (r) => (r.tempErr ? 'could not load' : [h('span', { class: 'cell-main' }, q(r.temp?.outside?.avg_c, 'temperature', { why: 'no reading' })), num(r.temp?.outside?.coverage_pct) ? h('span', { class: 'cell-sub' }, `average; data ${pctText(r.temp.outside.coverage_pct)}`) : null]) },
+        { key: 'cabin', label: 'Cabin', num: true, sort: true, value: (r) => r.temp?.cabin?.avg_c, cell: (r) => (r.tempErr ? 'could not load' : q(r.temp?.cabin?.avg_c, 'temperature', { why: 'not sent' })) },
+        { key: 'bat', label: 'Battery', num: true, sort: true, value: (r) => r.temp?.battery?.avg_c, cell: (r) => (r.tempErr ? 'could not load' : q(r.temp?.battery?.avg_c, 'temperature', { why: 'not sent' })) },
       ],
     });
     const chartBox = h('div', { class: 'charts ef-cmp-charts' });
