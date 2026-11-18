@@ -1,0 +1,121 @@
+/* Settings: Integrations (pages/settings-integrations.js). Panels stack; wide screens put two columns side by side. */
+.si-stack { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+.si-stack > * { min-width: 0; }
+.saving-note { display: flex; align-items: center; gap: 0.375rem; margin: 0; }
+
+/* the head and the jump bar */
+.si-head-status { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.si-jump { display: flex; flex-wrap: wrap; gap: 0.375rem; margin: 0 0 var(--gap); }
+
+/* two columns inside a panel */
+.si-two { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+.si-two > * { min-width: 0; }
+.si-side { display: flex; flex-direction: column; gap: 1.25rem; min-width: 0; }
+
+/* code bits */
+.si-code { font-family: var(--mono, ui-monospace, monospace); font-size: max(0.8125rem, var(--fs-floor)); padding: 0 0.25rem; border-radius: 0.25rem; background: var(--glass-2); overflow-wrap: anywhere; }
+.si-pre { margin: 0; padding: 0.75rem 0.875rem; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-sunken); font-family: var(--mono, ui-monospace, monospace); font-size: max(0.8125rem, var(--fs-floor)); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; }
+.si-pre--empty { font-family: inherit; color: var(--text-3); }
+
+/* the broker */
+.si-broker .setting { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
+.si-switch { margin-top: 0; padding: 0; justify-content: flex-start; }
+.si-form-wrap { display: flex; flex-direction: column; gap: 0.75rem; margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
+.si-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.875rem 1.25rem; }
+.si-form .form-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.si-form-wrap > .btn { align-self: flex-start; }
+.si-test-line { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; margin: 0; }
+.si-list { margin: 0.75rem 0 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: 0.375rem; color: var(--text-2); }
+.si-list b { color: var(--text); }
+
+.si-status { display: flex; flex-direction: column; gap: 0.875rem; padding: 0.875rem 1rem; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-sunken); }
+.si-status-top { display: flex; align-items: center; gap: 0.625rem; flex-wrap: wrap; }
+.si-status-top .btn { margin-left: auto; }
+.si-figs { gap: 1rem 1.75rem; }
+.si-last-error { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; margin: 0; }
+.si-last-error b { color: var(--text); }
+
+.si-log { display: flex; flex-direction: column; gap: 0.5rem; }
+.si-log-head { display: flex; align-items: center; gap: 0.625rem; flex-wrap: wrap; }
+.si-log-head h3, .si-client h3, .si-rule h3, .si-device h3, .si-card h3 { font-size: 0.9375rem; font-weight: 600; margin: 0; }
+.si-log-head .btn { margin-left: auto; }
+.si-log-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.si-log-list li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.75rem; padding: 0.4375rem 0; border-top: 1px solid var(--line); align-items: baseline; }
+.si-log-list li > span:nth-child(2) { overflow-wrap: anywhere; }
+.si-client { display: flex; flex-direction: column; gap: 0.375rem; }
+.si-client p { color: var(--text-2); margin: 0; }
+
+/* topics and rules */
+.si-tree { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
+.si-tree-row { display: grid; grid-template-columns: minmax(0, 24rem) minmax(0, 1fr); gap: 0.375rem 1.25rem; padding: 0.625rem 0.875rem; align-items: baseline; }
+.si-tree-row + .si-tree-row { border-top: 1px solid var(--line); }
+.si-tree-row > span { color: var(--text-2); }
+.si-rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr)); gap: var(--gap); margin-top: 1.25rem; }
+.si-rules--one { grid-template-columns: minmax(0, 1fr); }
+.si-rule { display: flex; flex-direction: column; gap: 0.375rem; min-width: 0; padding: 0.875rem 1rem; border-radius: var(--radius-sm); border: 1px solid var(--line); }
+.si-rule p { margin: 0; color: var(--text-2); }
+.si-rule--warn { border-color: var(--warm-line); background: var(--warm-soft); }
+.si-rule .si-switch { margin: 0.25rem 0; }
+.si-two .si-rule + .si-rule, .si-device + .si-rule { margin-top: var(--gap); }
+
+/* sections without a panel (a table panel sits inside) */
+.si-section { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; scroll-margin-top: 4rem; }
+.si-section-head { display: flex; align-items: center; gap: 0.75rem 1rem; flex-wrap: wrap; }
+.si-h2 { display: flex; align-items: center; gap: 0.5rem; font-size: 1.125rem; font-weight: 600; margin: 0; }
+.si-h3 { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 0.375rem; }
+.si-section > .note, .si-cards-wrap > .note { margin: 0; }
+.panel[id^="si-"] { scroll-margin-top: 4rem; }
+
+.si-car { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.si-car .select { min-width: 12rem; max-width: 100%; }
+.si-car-search { width: 12rem; max-width: 100%; }
+
+/* table cells */
+.si-wrap { white-space: normal; min-width: 14rem; max-width: 34rem; }
+.si-why { display: block; color: var(--text-3); font-size: max(0.78125rem, var(--fs-floor)); margin-top: 0.125rem; }
+.si-what { display: inline-block; min-width: 9rem; }
+.si-topics-cell, .si-payloads { display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; max-width: 22rem; }
+.si-payloads .mono { overflow-wrap: anywhere; }
+.si-json { overflow-wrap: anywhere; font-size: max(0.8125rem, var(--fs-floor)); }
+.si-evt-types { margin-top: 0.75rem; }
+.si-ents { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+
+/* Home Assistant */
+.si-device { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.875rem 1rem; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-sunken); }
+.si-device .kv { overflow-wrap: anywhere; }
+
+/* cards: dashboard cards, recipes, tools */
+.si-cards-wrap { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
+.si-cards-wrap > .si-h3 { margin-top: 0.5rem; }
+.si-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr)); gap: var(--gap); }
+.si-card { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; padding: 0.875rem 1rem; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--glass-1, var(--surface-sunken)); }
+.si-card p { margin: 0; color: var(--text-2); }
+.si-card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; }
+.si-events-list { min-width: 0; }
+
+@container page (min-width: 76rem) {
+  .si-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .si-form > .form-row--check, .si-form > [data-cover~="docs.env.mqtt.mqtt-tls-accept-invalid-certs"], .si-form > .form-msg { grid-column: 1 / -1; }
+}
+@container page (min-width: 108rem) {
+  .si-two { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 2rem; }
+}
+@container page (max-width: 50rem) {
+  .si-tree-row { grid-template-columns: minmax(0, 1fr); }
+  .si-log-list li { grid-template-columns: minmax(0, 1fr); gap: 0.125rem; }
+  .si-wrap { min-width: 11rem; }
+}
+
+/* fixes after the first look */
+.si-stack .tag, .si-stack .pill { white-space: nowrap; }
+.si-tree-row > .si-code { justify-self: start; }
+.si-code--long { overflow-wrap: normal; word-break: normal; }
+.si-legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr)); gap: 0.375rem 1.25rem; margin: 0; }
+.si-legend > div { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
+.si-legend dt { flex: none; }
+.si-legend dd { margin: 0; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); }
+.si-fold summary { cursor: pointer; list-style: none; }
+.si-fold summary::-webkit-details-marker { display: none; }
+.si-fold summary .faint { font-family: inherit; margin-left: 0.25rem; text-decoration: underline dotted; }
+.si-fold[open] summary .faint { display: none; }
+.si-fold > .si-json { display: block; margin-top: 0.25rem; }
