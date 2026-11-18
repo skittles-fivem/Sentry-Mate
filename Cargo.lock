@@ -599,6 +599,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "db",
+ "dbc",
+ "hex",
+ "import",
+ "ingest",
+ "logfmt",
+ "lzma-rs",
+ "model",
+ "places",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "timeline",
+ "tokio",
+ "tracing",
+ "trust",
+ "vault",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2158,41 +2186,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487"
 dependencies = [
  "wit-bindgen",
-]
-
-[[package]]
-name = "web"
-version = "0.1.0"
-dependencies = [
- "accounts",
- "axum",
- "base64 0.22.1",
- "bytes",
- "crc32fast",
- "flate2",
- "futures-core",
- "getrandom 0.3.4",
- "hex",
- "hmac",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "ingest",
- "model",
- "percent-encoding",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tower",
- "tracing",
- "vault",
- "web",
- "zeroize",
 ]
 
 [[package]]
