@@ -228,6 +228,7 @@ export async function mount(ctx) {
     const best = days.reduce((a, d) => (d.distance_km > (a?.distance_km ?? -1) ? d : a), null);
     const idle = () => replace(dailyRead, best ? ['busiest ', h('b', null, format(best.distance_km, 'distance'))] : 'no driving');
     idle();
+    dailyEl.hidden = !days.length;
     if (days.length) barChart(dailyEl, ctx, { t_ms: xs, values: days.map((d) => d.distance_km), kind: 'distance', tz: 'UTC', onCursor: (i) => { if (i == null) { idle(); return; } const d = days[i]; replace(dailyRead, `${formatDate(xs[i], 'UTC', { year: false })} · `, h('b', null, format(d.distance_km, 'distance')), ` · ${d.count} ${d.count === 1 ? 'drive' : 'drives'}`); } });
   }
 

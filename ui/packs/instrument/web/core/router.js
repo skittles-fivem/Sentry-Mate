@@ -53,7 +53,8 @@ function onState(s) {
     if (qk === mounted.queryKey) return;
     mounted.queryKey = qk;
     if (ownQuery) { ownQuery = false; return; }
-    if (mounted.instance?.onQuery) { try { mounted.instance.onQuery(s.query); } catch (e) { console.error(e); } return; }
+    const onQuery = mounted.instance?.onQuery || mounted.mod?.onQuery;
+    if (onQuery) { try { onQuery(s.query, mounted.ctx); } catch (e) { console.error(e); } return; }
   }
   const samePage = mounted && mounted.ctx?.id === s.page && mounted.ctx?.carId === s.car;
   mount(s, { keepScroll: samePage });
@@ -94,7 +95,7 @@ async function mount(s, { keepScroll = false } = {}) {
   const info = pageInfo(id);
   const scope = api.scope();
   const cleanups = [];
-  const rec = { key: routeKey(s), queryKey: queryKey(s.query), ctx: null, instance: null, cleanups, scope };
+  const rec = { key: routeKey(s), queryKey: queryKey(s.query), ctx: null, instance: null, mod: null, cleanups, scope };
   mounted = rec;
   const alive = () => mounted === rec && my === seq;
 
@@ -173,6 +174,7 @@ async function mount(s, { keepScroll = false } = {}) {
   }
   if (!alive()) return;
   dropCss(mod.css ? id : null);
+  rec.mod = mod;
 
   const ctx = {
     id, info, view, state: s, query: s.query, car, carId: s.car, tz, period,
