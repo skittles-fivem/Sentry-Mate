@@ -21,7 +21,8 @@ import { errorWords } from './states.js';
  *   onSort(sort),                      called when the person sorts by a header ({ key, dir })
  *   rowHref(row),                       a row opens this page
  *   empty(),                            what to show when there are no rows (say why)
- *   csv: true | false | { filename, columns: [{ label, value(row) }] }   (true: the server's CSV)
+ *   csv: true | false | { filename, columns: [{ label, value(row) }], all }   (true: the server's CSV;
+ *                                       an object: CSV from the columns' csv specs, all: every page of an API list)
  *   side,                               more elements in the bar (filters, a note)
  *   onPage(page),                       after each API page (the first holds summary or totals)
  *   cover,                              item ids for the table panel
@@ -118,10 +119,21 @@ export function dataTable(ctx, opts) {
       // a column's csv: false (left out), a function (the value), or a shared/csv.js column() (units in the header)
       const cols = csv.columns || columns.filter((c) => c.csv !== false)
         .map((c) => (c.csv && typeof c.csv === 'object' ? c.csv : { label: c.label, value: c.csv || ((r) => r[c.key]) }));
-      replace(csvSlot, csvButton({
-        onClick: () => downloadCsv(csv.filename || csvFilename(ctx.car?.name || 'sentry-mate', opts.csvName || opts.title || 'table'),
-          opts.rows ? sortedLocal() : loaded, cols),
-      }));
+      const name = () => csv.filename || csvFilename(ctx.car?.name || 'sentry-mate', opts.csvName || opts.title || 'table');
+      // csv.all on an API list: every row of the list (all pages, same filters and sort), not only the rows shown
+      const btn = csvButton({
+        onClick: async () => {
+          if (!(csv.all && opts.path)) { downloadCsv(name(), opts.rows ? sortedLocal() : loaded, cols); return; }
+          btn.disabled = true;
+          try {
+            const rows = done ? loaded : await ctx.api.list(opts.path, { ...params, ...sortParams() }, { limit: 500 }).all();
+            if (ctx.alive()) downloadCsv(name(), rows, cols);
+          } catch (e) {
+            if (ctx.alive() && e.name !== 'AbortError') opts.onError?.(e);
+          } finally { btn.disabled = false; }
+        },
+      });
+      replace(csvSlot, btn);
     }
   }
 

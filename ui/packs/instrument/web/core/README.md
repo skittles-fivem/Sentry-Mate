@@ -133,6 +133,8 @@ An API list is sorted by the server (`sort` is the API's sort name) and paged by
 local `rows` sort here (`sort: true`, `value(row)` for the sort value). Every table has a Download CSV button: the
 server's CSV for API lists (same filters and sort), else CSV built from the rows (`csv: false` leaves a column out;
 `csv: column('Distance', 'distance_km', 'distance')` from `shared/csv.js` names the unit in the header).
+An API list that should download readable columns instead of the server's file passes `csv: { all: true }`
+(every page of the list, built from the columns' `csv` specs; `csv: {}` takes only the rows shown).
 
 ### `core/chart.js`: charts on uPlot
 

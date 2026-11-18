@@ -83,7 +83,8 @@ export async function mount(ctx) {
       icon('calendar', 'ico--sm'), period.label, icon('chev-d', 'ico--sm')),
       h('button', { class: 'btn', type: 'button', cover: 'updates.filter.car', onclick: openCarSwitcher, title: 'Show another car on this page' },
         icon('car', 'ico--sm'), car.name, icon('chev-d', 'ico--sm')),
-      h('a', { class: 'btn btn--ghost', href: '#sw-fleet', title: 'Every car with the version it runs, in one list' }, icon('fleet', 'ico--sm'), 'Versions of every car')),
+      h('button', { class: 'btn btn--ghost', type: 'button', title: 'Every car with the version it runs, in one list (further down this page)',
+        onclick: () => fleetTable.el.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, icon('fleet', 'ico--sm'), 'Versions of every car')),
     h('p', { class: 'note' }, icon('live', 'ico--sm'), ' The lists reload by themselves when an update starts or ends; Reload is only for impatience. The version now does not depend on the period.'));
 
   /* ---------- summary */
@@ -102,16 +103,22 @@ export async function mount(ctx) {
     const installing = rows.find((r) => r.end_ms == null);
     const v = sm.current_version;
     const src = SOURCE[sm.current_version_source];
+    const changed = sm.build_changed_since != null; // the car runs software nobody has named yet
+    const at = (ms) => formatDateTime(ms, tz, { now: ctx.api.now() });
+    const since = sm.current_version_since_ms != null ? at(sm.current_version_since_ms) : null;
     replace(nowSlot,
       h('div', { class: 'sw-version' },
-        h('span', { class: ['sw-version-text', !v && 'is-unknown'] }, v || 'Not known'),
+        h('span', { class: ['sw-version-text', (!v || changed) && 'is-unknown'] }, changed ? 'Not named yet' : v || 'Not known'),
         installing ? pill('Installing now', { tone: 'warm', ic: 'clock' }) : null,
-        sm.build_changed_since != null ? pill('Software changed', { tone: 'warm', ic: 'warn' }) : null),
+        changed ? pill('Software changed', { tone: 'warm', ic: 'warn' }) : null),
       h('dl', { class: 'kv sw-kv' },
-        kvRow('Source', src ? h('span', { title: src[1] }, src[0]) : 'Nobody has said yet', 'info'),
-        kvRow('Running since', sm.current_version_since_ms != null ? formatDateTime(sm.current_version_since_ms, tz, { now: ctx.api.now() }) : DASH, 'clock'),
-        sm.build_changed_since != null ? kvRow('Software changed', formatDateTime(sm.build_changed_since, tz, { now: ctx.api.now() }), 'warn') : null,
-        installing ? kvRow('Installing since', formatDateTime(installing.start_ms, tz, { now: ctx.api.now() }), 'clock') : null),
+        changed ? kvRow('Last named version', v || 'none', 'chip') : null,
+        kvRow(changed ? 'Source of that name' : 'Source', src ? h('span', { title: src[1] }, src[0]) : 'Nobody has said yet', 'info'),
+        changed
+          ? kvRow('Named version ran', `${since ? `from ${since} ` : ''}to ${at(sm.build_changed_since)}`, 'clock')
+          : kvRow('Running since', since || DASH, 'clock'),
+        changed ? kvRow('Software changed', at(sm.build_changed_since), 'warn') : null,
+        installing ? kvRow('Installing since', at(installing.start_ms), 'clock') : null),
       h('p', { class: 'explain' }, sm.build_changed_since != null
         ? `The module builds changed after ${v || 'the last known version'} was recorded, so the car now runs a version nobody has named. ${admin ? 'Type it on the newest update below.' : 'An admin can type it on the newest update below.'}`
         : v ? `${src ? src[1] : ''} The car does not send its version text; Sentry Mate never guesses one.`
@@ -124,8 +131,8 @@ export async function mount(ctx) {
       }),
       metric('Typical time between updates', median != null ? formatDuration(median) : null, null, {
         cover: 'updates.stat.median_gap', size: 'lg',
-        why: (sm.count || 0) < 2 ? 'Needs two updates in the period.' : 'Not known.',
-        explain: 'The median of the gaps from the end of one update to the start of the next, both in the period.',
+        why: 'Needs an update in the period with one before it.',
+        explain: 'The median gap before each update that started in the period, measured from the end of the update before it (which may be earlier than the period).',
       }),
     ]));
   }
@@ -147,7 +154,7 @@ export async function mount(ctx) {
     const sub = r.version
       ? (r.changed_modules?.length ? `Changed: ${moduleNames(r.changed_modules).join(', ')}` : null)
       : r.changed_modules?.length ? `Changed: ${moduleNames(r.changed_modules).join(', ')}` : 'No module list';
-    return h('span', { class: 'cell-text' }, main, sub ? h('span', { class: 'sub' }, sub) : null,
+    return h('span', { class: 'cell-text' }, main, sub ? h('span', { class: 'sub sw-mods' }, sub) : null,
       admin && r.source === 'can' ? h('button', { class: 'btn btn--sm btn--ghost sw-edit', type: 'button', onclick: () => editVersion(r), title: 'Type the version this update installed' },
         icon('settings', 'ico--sm'), r.version ? 'Change version' : 'Type the version') : null);
   }
@@ -174,14 +181,16 @@ export async function mount(ctx) {
       csv: { label: 'After the previous (days)', value: (r) => (r.since_previous_ms == null ? '' : Math.round(r.since_previous_ms / 864000) / 100) },
     },
     {
-      key: 'version', label: 'Version', cover: 'updates.table.version', title: 'Imported, typed by the owner, or the same build as an update with a known version. Never guessed.',
+      key: 'version', label: 'Version', cls: 'sw-col-ver', cover: 'updates.table.version', title: 'Imported, typed by the owner, or the same build as an update with a known version. Never guessed.',
       render: versionCell,
       csv: { label: 'Version', value: (r) => r.version || '' },
     },
+    { key: 'modules', label: 'Changed modules', hidden: true, csv: { label: 'Changed modules', value: (r) => moduleNames(r.changed_modules).join('; ') } },
+    { key: 'vsource', label: 'Version from', hidden: true, csv: { label: 'Version from', value: (r) => (SOURCE[r.version_source] ? SOURCE[r.version_source][0] : '') } },
     {
       key: 'source', label: 'Found by', title: 'How Sentry Mate knows about this update',
       render: (r) => { const d = DETECTED[r.detected_by] || [r.detected_by, '']; return h('span', { class: 'cell-text', title: d[1] }, h('span', null, d[0]), h('span', { class: 'sub' }, r.source === 'teslamate' ? 'TeslaMate row' : 'From the car')); },
-      csv: { label: 'Found by', value: (r) => r.detected_by },
+      csv: { label: 'Found by', value: (r) => (DETECTED[r.detected_by] ? DETECTED[r.detected_by][0] : r.detected_by) },
     },
     {
       key: 'charges', label: 'Charges on it', num: true, cover: 'updates.table.charge_count', title: 'Charges that started while this version was installed, by exact time. Opens them.',
@@ -200,6 +209,9 @@ export async function mount(ctx) {
     },
   ];
 
+  // the download holds readable columns (units in the headers, dates in UTC), hidden ones included
+  const csvOf = (list) => list.filter((c) => c.csv).map((c) => (typeof c.csv === 'object' ? c.csv : { label: c.label, value: c.csv }));
+
   const notesNote = h('p', { class: 'note sw-notes', cover: 'updates.link.release_notes' }, icon(notesOn ? 'ext' : 'lock', 'ico--sm'), ' ',
     h('span', null, notesOn ? 'A known version links to its release notes on an outside site. Nothing is sent until you click one.'
       : `Release-notes links are off, so nothing leaves this server. ${admin ? 'Turn them on in ' : 'An admin can turn them on in '}`,
@@ -208,8 +220,8 @@ export async function mount(ctx) {
   let painted = false;
   const table = dataTable(ctx, {
     title: 'Update history', icon: 'chip', path, params: ctx.params, limit: 50, cls: 'sw-table', cover: 'updates.table',
-    csvName: 'software updates',
-    columns,
+    csvName: 'software updates', csv: { all: true, columns: csvOf(columns) },
+    columns: columns.filter((c) => !c.hidden),
     note: 'Newest first. Charges and range are what the car did while on each version: from the end of the update to the start of the next one (or now).',
     side: notesNote,
     empty: () => emptyState({
@@ -226,34 +238,40 @@ export async function mount(ctx) {
 
   /* ---------- versions of every car */
   const search = h('input', { class: 'input', type: 'search', placeholder: 'Find a car or version', 'aria-label': 'Find a car or version' });
+  const fleetColumns = [
+    {
+      key: 'car', label: 'Car',
+      render: (r) => h('a', { class: ['main', r.car === cid && 'is-current'], href: state.buildUrl('software', { car: r.car, period: state.current().period }), title: 'This car’s software page' }, r.name || r.car),
+      csv: { label: 'Car', value: (r) => r.name || r.car },
+    },
+    {
+      key: 'version', label: 'Version now',
+      title: 'Only a version someone named. After a build change the car runs software nobody has named yet; the last named version is shown under it.',
+      render: (r) => (r.build_changed_since != null
+        ? h('span', { class: 'cell-text' }, h('span', { class: 'sw-ver is-unknown' }, 'Not named yet'), h('span', { class: 'sub' }, r.version ? `last named ${r.version}` : 'none named before'))
+        : r.version ? h('span', { class: 'sw-ver' }, r.version, SOURCE[r.version_source] ? tag(SOURCE[r.version_source][0], 'plain') : null)
+          : h('span', { class: 'sw-ver is-unknown' }, 'Not known')),
+      csv: { label: 'Version now', value: (r) => (r.build_changed_since != null ? '' : r.version || '') },
+    },
+    { key: 'named', label: 'Last named version', hidden: true, csv: { label: 'Last named version', value: (r) => r.version || '' } },
+    {
+      key: 'changed', label: 'Software changed since',
+      title: 'The module builds changed after the last known version; the version it runs now has no name yet.',
+      render: (r) => (r.build_changed_since != null ? h('span', { class: 'warn' }, formatDateTime(r.build_changed_since, tz, { now: ctx.api.now() })) : h('span', { class: 'faint' }, 'no change since')),
+      csv: { label: 'Software changed since (UTC)', value: (r) => iso(r.build_changed_since) },
+    },
+    {
+      key: 'last', label: 'Last update', num: true,
+      render: (r) => (r.last_update_ms != null ? formatDate(r.last_update_ms, tz, { now: ctx.api.now(), year: true }) : h('span', { class: 'faint' }, 'none recorded')),
+      csv: { label: 'Last update (UTC)', value: (r) => iso(r.last_update_ms) },
+    },
+  ];
   const fleetTable = dataTable(ctx, {
     title: 'Versions of every car', icon: 'fleet', path: 'fleet/versions', params: {}, limit: 50, cls: 'sw-fleet', csvName: 'versions of every car',
+    csv: { all: true, columns: csvOf(fleetColumns) },
     side: h('label', { class: 'field field--search' }, search),
     note: 'One row per car you may see, in one list instead of a page per car. Search by name or version; Show more pages through any number of cars.',
-    columns: [
-      {
-        key: 'car', label: 'Car',
-        render: (r) => h('a', { class: ['main', r.car === cid && 'is-current'], href: state.buildUrl('software', { car: r.car, period: state.current().period }), title: 'This car’s software page' }, r.name || r.car),
-        csv: { label: 'Car', value: (r) => r.name || r.car },
-      },
-      {
-        key: 'version', label: 'Version now',
-        render: (r) => (r.version ? h('span', { class: 'sw-ver' }, r.version, SOURCE[r.version_source] ? tag(SOURCE[r.version_source][0], 'plain') : null)
-          : h('span', { class: 'sw-ver is-unknown' }, 'Not known')),
-        csv: { label: 'Version now', value: (r) => r.version || '' },
-      },
-      {
-        key: 'changed', label: 'Software changed since',
-        title: 'The module builds changed after the last known version; the version it runs now has no name yet.',
-        render: (r) => (r.build_changed_since != null ? h('span', { class: 'warn' }, formatDateTime(r.build_changed_since, tz, { now: ctx.api.now() })) : h('span', { class: 'faint' }, 'no change since')),
-        csv: { label: 'Software changed since (UTC)', value: (r) => iso(r.build_changed_since) },
-      },
-      {
-        key: 'last', label: 'Last update', num: true,
-        render: (r) => (r.last_update_ms != null ? formatDate(r.last_update_ms, tz, { now: ctx.api.now(), year: true }) : h('span', { class: 'faint' }, 'none recorded')),
-        csv: { label: 'Last update (UTC)', value: (r) => iso(r.last_update_ms) },
-      },
-    ],
+    columns: fleetColumns.filter((c) => !c.hidden),
     empty: () => emptyState({ icon: 'search', title: 'No car matches', text: search.value ? `No car name or version holds “${search.value}”. Clear the search to see every car.` : 'There is no car yet.' }),
   });
   fleetTable.el.id = 'sw-fleet';
@@ -281,6 +299,7 @@ export async function mount(ctx) {
         await ctx.api.patch(`${path}/${enc(r.id)}`, { version: v || null });
         flash(v ? `Saved: this update installed ${v}.` : 'The typed version is forgotten.');
         f.el.closest('dialog')?.close();
+        echoUntil = Date.now() + 5000; // the server's "rows" event for this change would load the lists a second time
         reloadAll(false);
       },
     });
@@ -291,6 +310,7 @@ export async function mount(ctx) {
     });
   }
 
+  let echoUntil = 0;
   async function reloadAll(say) {
     reloadBtn.disabled = true;
     try { await Promise.all([table.reload(), fleetTable.reload()]); if (say && ctx.alive()) flash('Loaded again.', { kind: 'info' }); } finally { reloadBtn.disabled = false; }
@@ -299,8 +319,9 @@ export async function mount(ctx) {
   ctx.events('rows', (ev) => {
     const d = ev?.data || {};
     if (!(d.kinds || []).includes('updates')) return;
-    if (d.car === cid) table.reload();
-    fleetTable.reload();
+    if (Date.now() < echoUntil) { echoUntil = 0; return; } // the echo of a version just saved here
+    if (d.car === cid) table.reload(null, { quiet: true });
+    fleetTable.reload(null, { quiet: true });
   });
 
   await table.ready;

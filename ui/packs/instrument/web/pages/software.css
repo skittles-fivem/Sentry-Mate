@@ -43,3 +43,11 @@
   .sw-version-text { font-size: 2.25rem; }
   .sw-fleet .field--search { width: 100%; }
 }
+
+/* the Version column: the module list wraps so all eight columns fit the panel */
+.sw-table .sw-col-ver { min-width: 12rem; max-width: 16rem; }
+/* long headers take two lines instead of widening their columns */
+.sw-table th { white-space: normal; line-height: 1.25; height: auto; padding-top: 0.5rem; padding-bottom: 0.5rem; }
+.sw-table th .tbl-sort { display: inline; }
+.sw-table th.is-num { max-width: 7.5rem; }
+.sw-page .sw-col-ver .cell-text > .sw-mods { white-space: normal; overflow-wrap: anywhere; }
