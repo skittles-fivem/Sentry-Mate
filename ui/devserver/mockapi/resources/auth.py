@@ -13,6 +13,7 @@ from ..store import DEV_SETUP_CODE, DEV_TWO_STEP_CODE
 _throttle_lock = threading.Lock()
 THROTTLE_TRIES = 5
 THROTTLE_WINDOW_S = 60
+THROTTLE_ADDRESS_TRIES = 30  # wrong tries from one address, whatever the names (trying many names at once)
 PENDING_S = 300
 
 
@@ -29,18 +30,26 @@ def me_view(a):
 # ------------------------------------------------------------------ throttle
 
 
-def _check_throttle(store, key):
+def _check_throttle(store, key, tries=THROTTLE_TRIES):
     now = time.monotonic()
     with _throttle_lock:
         fails = [t for t in store.throttle.get(key, []) if now - t < THROTTLE_WINDOW_S]
-        store.throttle[key] = fails
-        if len(fails) >= THROTTLE_TRIES:
+        if fails:
+            store.throttle[key] = fails
+        else:
+            store.throttle.pop(key, None)
+        if len(fails) >= tries:
             raise throttled(max(1, int(THROTTLE_WINDOW_S - (now - fails[0])) + 1))
 
 
-def _fail(store, key):
+def _fail(store, *keys):
+    now = time.monotonic()
     with _throttle_lock:
-        store.throttle.setdefault(key, []).append(time.monotonic())
+        if len(store.throttle) > 10_000:  # forget names whose tries are all old, so the table stays small
+            for k in [k for k, v in store.throttle.items() if not v or now - v[-1] >= THROTTLE_WINDOW_S]:
+                del store.throttle[k]
+        for key in keys:
+            store.throttle.setdefault(key, []).append(now)
 
 
 def _signed_in(req, account):
@@ -83,11 +92,13 @@ def post_session(req):
     st = req.store
     body = req.json()
     _types(body, {"name": str, "password": str})
-    key = body["name"].strip().lower()
+    key = "name:" + body["name"].strip().lower()
+    addr = "address:" + (req.client_ip or "")
+    _check_throttle(st, addr, THROTTLE_ADDRESS_TRIES)
     _check_throttle(st, key)
     a = st.account_by_name(body["name"].strip())
     if a is None or not secrets.compare_digest(a["password"], body["password"]):
-        _fail(st, key)
+        _fail(st, key, addr)
         raise ApiError(401, "wrong_credentials", "That name and password do not match an account.")
     if a.get("two_step"):
         token = "pend_" + secrets.token_urlsafe(16)

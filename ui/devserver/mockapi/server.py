@@ -228,6 +228,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             query = parse_qs(query_string, keep_blank_values=True)
             req = Req(app, m, path, query, self.headers, body, params, session)
             req.raw_cookie_token = self.cookie_value()
+            req.client_ip = self.client_address[0] if self.client_address else None
             if route.handlers[m] is resources.SSE:
                 if method == "HEAD":  # the headers only: a stream has no length to tell
                     return self.send(200, b"", "text/event-stream; charset=utf-8",

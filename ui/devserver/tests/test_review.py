@@ -523,3 +523,19 @@ class CsvFormulas(ServerCase):
             self.assertEqual(mine["lon"], "-122.4")
         finally:
             self.c.json("DELETE", f"/api/v1/places/{p['id']}")
+
+
+class SignInSpray(ServerCase):
+    """Wrong passwords spread over many names from one address are throttled too, not only per name."""
+
+    def test_many_names_one_address(self):
+        c = self.server.client()
+        codes = []
+        for i in range(40):
+            st, _, _ = c.request("POST", "/api/v1/session", {"name": f"guess{i}", "password": "nope"})
+            codes.append(st)
+        self.assertEqual(codes[:30], [401] * 30)
+        self.assertEqual(set(codes[30:]), {429})
+        self.server.app.store.throttle.clear()
+        st, _, _ = c.request("POST", "/api/v1/session", {"name": "admin", "password": "sentry-mate-dev"})
+        self.assertEqual(st, 200)
