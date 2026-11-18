@@ -29,6 +29,7 @@ SERIES_FIELDS = (
 CURVE_FIELDS = (
     "power_kw", "volts_v", "amps_a", "soc_pct", "usable_soc_pct", "battery_c", "range_km", "outside_c",
     "phases", "pilot_a", "ac_line_kw", "heater_kw", "dc_volts_v", "dc_amps_a",
+    "ac_volts_v", "ac_amps_a", "limit_source",
 )
 
 ID_BASE = 2 ** 53 + 1
@@ -674,6 +675,9 @@ class Charge(Seg):
             "pilot_a": self.amps_ac if ac and not tm else None,
             "ac_line_kw": round(p / self.eff + heater * 0, 2) if ac else None,
             "heater_kw": None if tm else round(heater, 2),
+            "ac_volts_v": round(self.volts_ac + 2.5 * math.sin(t / 1_400_000) + 0.8 * math.sin(t / 211_000), 1) if ac else None,
+            "ac_amps_a": round(min(self.amps_ac, p / self.eff * 1000 / (self.volts_ac * self.phases)), 1) if ac else None,
+            "limit_source": None if tm else "station",
             "dc_volts_v": None if ac else round(v + 2, 1),
             "dc_amps_a": None if ac else round(amps, 1),
             "_bv": bv, "_batt": batt,

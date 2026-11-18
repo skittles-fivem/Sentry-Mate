@@ -246,6 +246,7 @@ Points this document left open, decided while building the dev server (`ui/devse
 - `/signals` needs `series` (names from `/signals/latest`) and takes `max_points` (2 to 20000, default 2000). Rows of `/signals/latest` carry `has_series`: false for signals with named values (`gear`, `sentry_mode`, `charge_status`), which have a latest value only; asking `/signals` for them is 400.
 - Drive climate and battery heating are series fields too: `battery_heat_kw` (power the pack spends heating itself, kW; 0 when it is not heating), `climate` (`off`, `on`, `precondition`, `overheat_protect`; text, so its plain column is the last value of the bucket) and `fan_level` (blower step 0 to 10, 0 = off). Null where the car does not send them (older Model S and X, imported history).
 - The charge curve is 1 Hz up to `max_points` (default 4000); longer charges come at a coarser `step_ms`, which the answer states.
+- Charge curve fields: `power_kw`, `volts_v` and `amps_a` are the pack side (charging power positive). `ac_volts_v` and `ac_amps_a` are the AC line at the inlet (volts and amps of one phase; null on DC), `ac_line_kw` the AC line power, `dc_volts_v` and `dc_amps_a` the DC charger's output (null on AC), `heater_kw` the power the pack spends heating itself. `limit_source` names what sets the current the car may draw: `station` (the pilot), `cable`, `car` (its own maximum) or `setting` (the current set on the screen); null when the car does not say.
 
 ### Formats
 
