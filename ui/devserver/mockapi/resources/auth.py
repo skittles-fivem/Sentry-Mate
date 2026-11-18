@@ -13,6 +13,7 @@ from ..store import DEV_SETUP_CODE, DEV_TWO_STEP_CODE
 _throttle_lock = threading.Lock()
 THROTTLE_TRIES = 5
 THROTTLE_WINDOW_S = 60
+THROTTLE_SETUP_TRIES = 10  # wrong set-up codes from one address
 THROTTLE_ADDRESS_TRIES = 30  # wrong tries from one address, whatever the names (trying many names at once)
 PENDING_S = 300
 
@@ -73,7 +74,10 @@ def post_setup(req):
     _types(body, {"code": str, "name": str, "password": str})
     if not st.needs_setup:
         raise conflict("setup_done", "Set-up is already done. Sign in instead.")
-    if body["code"] != DEV_SETUP_CODE:
+    key = "setup:" + (req.client_ip or "")
+    _check_throttle(st, key, THROTTLE_SETUP_TRIES)
+    if not secrets.compare_digest(body["code"].strip().encode(), DEV_SETUP_CODE.encode()):
+        _fail(st, key)
         raise ApiError(403, "wrong_setup_code", "That set-up code is not right.")
     errs = _name_password_rules(st, body["name"], body["password"])
     if errs:

@@ -539,3 +539,18 @@ class SignInSpray(ServerCase):
         self.server.app.store.throttle.clear()
         st, _, _ = c.request("POST", "/api/v1/session", {"name": "admin", "password": "sentry-mate-dev"})
         self.assertEqual(st, 200)
+
+
+class SetupCodeGuessing(ServerCase):
+    """Guessing the one-time set-up code is throttled like a password."""
+
+    server_args = {"needs_setup": True}
+
+    def test_wrong_codes_are_throttled(self):
+        c = self.server.client()
+        codes = [c.request("POST", "/api/v1/setup", {"code": f"SETUP-{i:04d}", "name": "owner",
+                                                      "password": "a-long-password"})[0] for i in range(12)]
+        self.assertEqual(codes, [403] * 10 + [429] * 2)
+        self.server.app.store.throttle.clear()
+        d = c.json("POST", "/api/v1/setup", {"code": "SETUP-DEV-0000", "name": "owner", "password": "a-long-password"})
+        self.assertEqual(d["status"], "done")
