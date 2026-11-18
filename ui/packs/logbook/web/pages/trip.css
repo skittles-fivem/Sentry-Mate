@@ -92,6 +92,7 @@
 /* Charts. */
 .trip-readout { justify-content: flex-start; padding: 0.875rem 0 0.25rem; }
 .zoom-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 0.625rem 1rem; min-height: 2.5rem; padding: 0.25rem 0 0.75rem; }
+.readout-held { font-size: var(--small-2); color: var(--ink-3); font-style: italic; }
 .zoom-idle { font-size: var(--small-2); color: var(--ink-3); }
 .zoom-text { font-size: var(--text-sm); color: var(--ink-2); }
 .zoom-text b { font-weight: 600; color: var(--ink); }
@@ -104,6 +105,7 @@
 .place-link:hover { color: var(--accent); }
 .cost-link { color: var(--ink); }
 .cost-link.is-missing, .trip-charges .is-missing { color: var(--rust); }
+.cost-ro { white-space: nowrap; }
 .cost-edit { margin-left: 0.375rem; font: 500 var(--small-2) var(--sans); color: var(--accent); }
 .pw { padding: 0.0625rem 0.375rem; border-radius: 0.25rem; }
 .pw-slow { background: var(--paper-sunk); }

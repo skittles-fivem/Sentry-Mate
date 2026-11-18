@@ -41,12 +41,14 @@ const TIME_PARTS = [
   ['not_recorded', 'Not recorded', 'no log, a paused recording or a log that failed its check; never counted as sleep'],
 ];
 const COST_SOURCE = { tariff: 'place price', manual: 'typed in', free_supercharging: 'free Supercharging', teslamate: 'imported' };
-const h_mm = (ms) => { const m = Math.round((ms || 0) / 60000); return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`; };
+// Whole seconds first, then minutes: the same rounding as formatDuration, so the two lines of a cell agree.
+const h_mm = (ms) => { const m = Math.round(Math.round((ms || 0) / 1000) / 60); return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`; };
 const has = (list) => (list || []).some((v) => v != null);
 
 export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz, now = api.now();
-  const from = ctx.period && ctx.period.from_ms != null ? ctx.period.from_ms : 0;
+  const allTime = !(ctx.period && ctx.period.from_ms != null);
+  const from = allTime ? 0 : ctx.period.from_ms;
   const to = Math.min(ctx.period && ctx.period.to_ms != null ? ctx.period.to_ms : now, now);
   const win = { from_ms: from, to_ms: to };
   const vs = ctx.query.vs && ctx.query.vs !== car.id ? String(ctx.query.vs) : null;
@@ -54,11 +56,24 @@ export async function mount(ctx) {
   const link = (page, extra = {}) => state.buildUrl(page, { car: car.id, period: ctx.state.period, ...extra });
   const asTrip = (a, b) => state.buildUrl('trip', { car: car.id, period: { from: a, to: b }, query: vs ? { vs } : null });
 
+  // "Everything recorded" has no start of its own: the strip, the charts, their CSV and the zoom start at the
+  // car's first recorded moment (the start of its first activity segment, else its first drive), never 1970.
+  let first = from;
+  const actP = ctx.api.get(api.apiPath`cars/${car.id}/activity`, win);
+  const firstP = !allTime ? Promise.resolve(from) : actP.catch(() => null).then(async (a) => {
+    const seg = a && (a.items || []).find((x) => x.start_ms != null);
+    if (seg) return seg.start_ms;
+    try {
+      const d = await ctx.api.get(api.apiPath`cars/${car.id}/drives`, { limit: 1, sort: 'start', dir: 'asc' });
+      if (d.items && d.items.length) return d.items[0].start_ms;
+    } catch { /* fall back below */ }
+    return Math.max(0, to - 86400000);
+  }).then((x) => { first = Math.min(x, to - 60000); return first; });
   // Everything the page draws, at once; a part that fails shows its own error.
   const [tripR, actR, seriesR, savedR, carsR, lastR, vsR] = await Promise.allSettled([
     ctx.api.get(tripPath(car.id), win),
-    ctx.api.get(api.apiPath`cars/${car.id}/activity`, win),
-    ctx.api.get(api.apiPath`cars/${car.id}/series`, { ...win, fields: SERIES_FIELDS, max_points: 1500 }),
+    actP.then((a) => firstP.then((f) => (allTime && a ? { ...a, from_ms: f } : a))),
+    firstP.then((f) => ctx.api.get(api.apiPath`cars/${car.id}/series`, { from_ms: f, to_ms: to, fields: SERIES_FIELDS, max_points: 1500 })),
     ctx.api.get('trips', { car: car.id, limit: 100 }),
     ctx.api.get('cars', { sort: 'name', limit: 100 }),
     ctx.api.get(api.apiPath`cars/${car.id}/drives`, { limit: 3, sort: 'start', dir: 'desc' }),
@@ -95,7 +110,7 @@ export async function mount(ctx) {
   /* ------------------------------------------------------------ window and cars */
   const lastThree = lastR.status === 'fulfilled' ? lastR.value.items || [] : [];
   const today = dayKey(now, tz);
-  const dayIn = h('input', { class: 'field-input trip-day', type: 'date', id: 'trip-day', value: dayKey(from || now, tz), max: today });
+  const dayIn = h('input', { class: 'field-input trip-day', type: 'date', id: 'trip-day', value: dayKey(first || now, tz), max: today });
   dayIn.addEventListener('change', () => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dayIn.value)) return;
     const r = dayRange(dayIn.value, dayIn.value, tz);
@@ -229,7 +244,7 @@ export async function mount(ctx) {
 
   // Where the time went: one bar, every part with its share and an explanation.
   const totalMs = TIME_PARTS.reduce((a, [k]) => a + (t.time_ms[k] || 0), 0);
-  const timeCsv = button('Download CSV', { iconName: 'download', cls: 'button-small', onclick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(from || now, tz), 'time spent'), TIME_PARTS, [
+  const timeCsv = button('Download CSV', { iconName: 'download', cls: 'button-small', onclick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(first || now, tz), 'time spent'), TIME_PARTS, [
     { label: 'Part', value: (p) => p[1] }, { label: 'Minutes', value: (p) => Math.round(((t.time_ms[p[0]] || 0) / 60000) * 10) / 10 },
     { label: 'Share (%)', value: (p) => (totalMs ? Math.round(((t.time_ms[p[0]] || 0) / totalMs) * 1000) / 10 : null) },
   ]) });
@@ -252,7 +267,7 @@ export async function mount(ctx) {
     ['added_dc', 'Added on DC', t.energy_kwh.added_dc, 'into the pack'],
   ];
   const eMax = Math.max(0.001, ...E.map((e) => e[2] || 0));
-  const energyCsv = button('Download CSV', { iconName: 'download', cls: 'button-small', onclick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(from || now, tz), 'energy'), E, [
+  const energyCsv = button('Download CSV', { iconName: 'download', cls: 'button-small', onclick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(first || now, tz), 'energy'), E, [
     { label: 'Figure', value: (e) => e[1] }, column('Energy', (e) => e[2], 'energy', { digits: 3 }), { label: 'How', value: (e) => e[3] },
   ]) });
   const energyBlock = h('section', { class: 'trip-part trip-energy', 'aria-labelledby': 'te-title', cover: 'trip.chart.energy' },
@@ -289,7 +304,7 @@ export async function mount(ctx) {
         h('div', { class: 'block-head' }, h('h2', { class: 'label', id: 'tc-title' }, `Compared with ${otherName}`, h('span', { class: 'label-note' }, 'the same window, in this car’s zone')),
           h('div', { class: 'block-actions' },
             h('a', { class: 'button button-quiet button-small', href: state.buildUrl('trip', { car: vs, period: ctx.state.period, query: { vs: car.id } }) }, `Open ${otherName}’s trip`, icon('arrowRight')),
-            button('Download CSV', { iconName: 'download', cls: 'button-small', onclick: () => downloadCsv(csvFilename(car.name, otherName, 'trip', dayKey(from || now, tz)), R, [
+            button('Download CSV', { iconName: 'download', cls: 'button-small', onclick: () => downloadCsv(csvFilename(car.name, otherName, 'trip', dayKey(first || now, tz)), R, [
               { label: 'Figure', value: (r) => r[0] }, { label: 'Unit', value: (r) => unitOf(r[2]) },
               { label: car.name, value: (r) => csvVal(r[1], r[2], t) }, { label: otherName, value: (r) => csvVal(r[1], r[2], other) }]) }))),
         h('div', { class: 'ledger-scroll' }, tbl));
@@ -307,7 +322,7 @@ export async function mount(ctx) {
 
   /* ------------------------------------------------------------ activity strip */
   const act = actR.status === 'fulfilled' ? actR.value : null;
-  const stripCsv = act ? button('Download CSV', { iconName: 'download', cls: 'button-small', onclick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(from || now, tz), 'states'), act.items || [], [
+  const stripCsv = act ? button('Download CSV', { iconName: 'download', cls: 'button-small', onclick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(first || now, tz), 'states'), act.items || [], [
     { label: 'State', value: (s) => STRIP_NAMES[s.kind] || s.kind }, timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz),
     { label: 'Minutes', value: (s) => Math.round((((s.end_ms ?? now) - s.start_ms) / 60000) * 10) / 10 }, { label: 'Source', value: (s) => s.source },
   ]) }) : null;
@@ -372,7 +387,8 @@ export async function mount(ctx) {
     const sub = c.cost ? COST_SOURCE[c.cost.source] || c.cost.source : c.place ? 'the place has no price' : 'not a saved place';
     const href = link('charge', { charge: c.id, query: { edit: 'cost' } });
     return [admin ? h('a', { class: ['cell-main', 'cost-link', { 'is-missing': !c.cost }], href, title: c.cost ? 'Change the cost of this charge' : 'Set the cost of this charge' }, text, h('span', { class: 'cost-edit' }, c.cost ? 'change' : 'set'))
-      : h('span', { class: ['cell-main', { 'is-missing': !c.cost }] }, text), h('span', { class: 'cell-sub' }, sub)];
+      : h('a', { class: ['cell-main', 'cost-link', { 'is-missing': !c.cost }], href: link('charge', { charge: c.id }), title: 'Open the charge to see how its cost was worked out' }, text),
+    h('span', { class: 'cell-sub' }, sub), admin ? null : h('span', { class: 'cell-sub cost-ro' }, 'an admin can edit it')];
   };
   const drawnCell = (c) => (c.energy_grid_kwh != null ? [q(c.energy_grid_kwh, 'energy'), h('span', { class: 'cell-sub' }, 'grid, metered')]
     : c.dc_inlet_kwh != null ? [q(c.dc_inlet_kwh, 'energy'), h('span', { class: 'cell-sub' }, 'charger, at the inlet')]
@@ -381,7 +397,7 @@ export async function mount(ctx) {
     path: api.apiPath`cars/${car.id}/charges`, params: { ...win }, limit: 100, sort: { key: 'start', dir: 'asc' }, itemName: ['charge', 'charges'],
     label: 'Charges of the trip', cls: 'trip-charges',
     caption: admin ? 'In order. Open a charge for its curve; the cost opens its cost editor.' : 'In order. Open a charge for its curve and how its cost was worked out.',
-    cover: admin ? ['trip.charges.table', 'trip.charges.link.cost'] : ['trip.charges.table'],
+    cover: ['trip.charges.table', 'trip.charges.link.cost'],
     empty: () => empty({ title: 'No charge started in this window.', text: 'The car did not charge during the trip, or a charge started before it; pick a wider window to include it.' }),
     columns: [
       { key: 'start', label: 'Started', sort: 'start', th: true, firstDir: 'asc', cover: ['trip.charges.date', 'trip.charges.link.details'],
@@ -489,11 +505,26 @@ export async function mount(ctx) {
     const showReadout = (i) => {
       if (i == null) { replace(readout, h('span', { class: 'readout-idle' }, `${formatNumber(s.t_ms.length)} readings over the trip`)); return; }
       const st = s.state ? s.state[i] : null;
+      // Asleep: the value is held, as the charts draw it; take the last earlier reading, never across unknown time.
+      const read = (vals) => {
+        const v = vals ? vals[i] : null;
+        if (v != null || !vals) return { v, why: null };
+        if (st !== 'asleep') return { v: null, why: 'not recorded' };
+        for (let j = i - 1; j >= 0; j--) {
+          if (s.state && s.state[j] === 'unknown') return { v: null, why: 'asleep since before a gap' };
+          if (vals[j] != null) return { v: vals[j], why: 'held while asleep' };
+        }
+        return { v: null, why: 'asleep since before this window' };
+      };
+      const part = (name, vals, kind, opts) => {
+        const r = read(vals);
+        return h('span', null, `${name} `, h('b', null, format(r.v, kind, opts)), r.why ? h('span', { class: 'readout-held' }, ` ${r.why}`) : null);
+      };
       replace(readout, h('span', { class: 'readout-time' }, `${formatDate(s.t_ms[i], tz, { now, weekday: false })}, ${formatTime(s.t_ms[i], tz)}`),
         st ? h('span', null, st === 'unknown' ? 'not recorded' : st) : null,
-        h('span', null, 'Battery ', h('b', null, format(at('soc_pct', i), 'percent', { digits: 1 }))),
-        h('span', null, `${rangeLabel()} `, h('b', null, format(rangeVals ? rangeVals[i] : null, 'range'))),
-        h('span', null, 'Elevation ', h('b', null, format(at('elevation_m', i), 'length'))));
+        part('Battery', V.soc_pct, 'percent', { digits: 1 }),
+        part(rangeLabel(), rangeVals, 'range'),
+        part('Elevation', V.elevation_m, 'length'));
     };
     showReadout(null);
     const onHover = (i) => {
@@ -511,7 +542,7 @@ export async function mount(ctx) {
         replace(zoomBar, h('p', { class: 'zoom-idle' }, 'Point at a chart to read all three at that moment and see where the car was. Drag across a chart to pick a stretch; you can then make it the trip.'));
         return;
       }
-      const a2 = Math.max(from, Math.round(a / 60000) * 60000), b2 = Math.min(to, Math.round(b / 60000) * 60000);
+      const a2 = Math.max(first, Math.round(a / 60000) * 60000), b2 = Math.min(to, Math.round(b / 60000) * 60000);
       replace(zoomBar, h('p', { class: 'zoom-text' }, 'Picked ', h('b', null, `${formatDate(a2, tz, { now, weekday: false })}, ${formatTime(a2, tz)}`), ' to ', h('b', null, `${formatDate(b2, tz, { now, weekday: false })}, ${formatTime(b2, tz)}`), ` (${formatDuration(b2 - a2)}).`),
         h('a', { class: 'button button-small', href: asTrip(a2, b2) }, 'Make this the trip', icon('arrowRight')),
         button('Show the whole trip', { iconName: 'reset', cls: 'button-small', onclick: () => plotted && plotted.resetZoom() }));
@@ -524,7 +555,7 @@ export async function mount(ctx) {
     plotted = await stackedCharts(ctx, charts, { tz, t_ms: s.t_ms, states: s.state, rows, onHover, onZoom });
     if (!ctx.alive()) return {};
     charts.append(h('p', { class: 'note chart-foot' }, 'Lavender: asleep, the value is held (nothing changes while the car sleeps). Red: not recorded, the line breaks and nothing is carried across.'));
-    seriesCsv.addEventListener('click', () => downloadCsv(csvFilename(car.name, 'trip', dayKey(from || now, tz), 'battery and elevation'), s.t_ms.map((x, i) => ({ x, i })), [
+    seriesCsv.addEventListener('click', () => downloadCsv(csvFilename(car.name, 'trip', dayKey(first || now, tz), 'battery and elevation'), s.t_ms.map((x, i) => ({ x, i })), [
       timeColumn('Time', 'x', tz), { label: 'State', value: (r) => (s.state ? s.state[r.i] : null) },
       column('Battery', (r) => at('soc_pct', r.i), 'percent', { digits: 2 }), column(rangeLabel(), (r) => (rangeVals ? rangeVals[r.i] : null), 'range', { digits: 2 }),
       column('Elevation', (r) => at('elevation_m', r.i), 'length', { digits: 1 }),
