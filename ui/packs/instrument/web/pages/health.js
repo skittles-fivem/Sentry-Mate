@@ -27,7 +27,7 @@ import { confirmDialog } from '../core/dialog.js';
 import { flash } from '../core/flash.js';
 import { isAdmin } from '../core/prefs.js';
 import { timeChart, barChart } from '../core/chart.js';
-import { q, agoEl, statePill, DASH } from '../core/fmt.js';
+import { q, agoEl, statePill, stateLabel, DASH } from '../core/fmt.js';
 
 export const id = 'health';
 export const css = true;
@@ -36,6 +36,18 @@ export const title = (ctx) => (ctx.car ? 'Data health and storage' : 'Server and
 const enc = encodeURIComponent;
 const iso = (ms) => (ms == null ? '' : new Date(ms).toISOString());
 const bytes = (v) => format(v, 'bytes');
+// a time taken: under a second in ms (so a quick job never reads "0 s"), else as a duration
+const took = (ms) => (ms == null ? DASH : ms < 1000 ? `${formatNumber(Math.round(ms))} ms` : formatDuration(ms));
+// the period for resources that fall back to a short window without from_ms (health 30 days, signals 1 hour):
+// All time sends from_ms 0, so their figures cover the same window as the gaps list
+const fullPeriod = (params) => ({ ...params, from_ms: params?.from_ms ?? 0 });
+// "N km are in both" when the two sources overlap and the total counts the overlap once
+function overlapText(a, b, total, kind, noun) {
+  const both = (a ?? 0) + (b ?? 0) - (total ?? 0);
+  if (total == null || !(both > 0.5)) return '';
+  const n = kind === 'count' ? `${formatNumber(Math.round(both))} ${noun}` : format(both, kind);
+  return ` ${n} ${kind === 'count' && Math.round(both) === 1 ? 'is' : 'are'} in both and counted once in the total.`;
+}
 
 /* ------------------------------------------------------------------ words */
 
@@ -57,7 +69,7 @@ const REASONS = {
   },
   rebuild_pending: {
     title: 'Drives and charges are being rebuilt',
-    text: 'They are worked out again from the stored logs. The figures settle in a few seconds; nothing needs doing.',
+    text: 'They are worked out again from the stored logs. This page reads the figures again every few seconds until it is done; nothing needs doing.',
     fix: null, page: null,
   },
 };
@@ -209,10 +221,24 @@ async function mountCar(ctx) {
   const healthPanel = panel({ title: 'Is data arriving?', icon: 'pulse', cls: 'hl-health', cover: 'faq.stopped-recording',
     side: panelLink(state.buildUrl('settings-cars', { car: cid }), 'Settings: Cars') }, healthSlot);
 
+  // while a rebuild runs, read the health again every few seconds until it is done
+  let pendingTimer = null;
+  let wasPending = false;
+  ctx.onCleanup(() => clearTimeout(pendingTimer));
   async function loadHealth() {
-    const hl = await ctx.api.get(`${base}/health`, ctx.params);
+    const hl = await ctx.api.get(`${base}/health`, fullPeriod(ctx.params));
     if (!ctx.alive()) return;
     paintHealth(hl);
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+    if (hl.rebuild_pending) {
+      pendingTimer = setTimeout(() => { if (ctx.alive()) loadHealth().catch(() => {}); }, 3000);
+    } else if (wasPending) {
+      // the rebuild finished: the gaps and totals it changed are read again too
+      gapsTable.reload();
+      loadTotals().catch(() => {});
+    }
+    wasPending = !!hl.rebuild_pending;
   }
 
   function paintHealth(hl) {
@@ -293,7 +319,7 @@ async function mountCar(ctx) {
     try {
       const r = await ctx.api.post(`${base}/rebuild`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms });
       if (!ctx.alive()) return;
-      flash(`Rebuilt from ${formatNumber(r.logs_read ?? 0)} logs in ${formatDuration(r.took_ms ?? 0)}.`);
+      flash(`Rebuilt from ${formatNumber(r.logs_read ?? 0)} logs in ${took(r.took_ms ?? 0)}.`);
       reloadAll(false);
     } catch (e) {
       if (ctx.alive()) flash(errorWords(e).text, { kind: 'error' });
@@ -302,15 +328,15 @@ async function mountCar(ctx) {
 
   /* ---------- gaps */
   const gapsTable = dataTable(ctx, {
-    title: 'Gaps in the period', icon: 'timeline', path: `${base}/gaps`, params: ctx.params, cls: 'hl-gaps', csvName: 'gaps',
+    title: 'Gaps in the period', icon: 'timeline', path: `${base}/gaps`, params: ctx.params, cls: 'hl-gaps', csvName: `gaps ${period.preset || ''}`, csv: { all: true },
     note: 'Times with no usable data, newest first. A gap in which the odometer moved means a drive was not recorded. Open one on the timeline.',
     columns: [
       { key: 'start', label: 'From', render: (g) => h('a', { class: 'main', href: timelineAt(cid, g.start_ms, g.end_ms ?? ctx.api.now()), title: 'Open the timeline at this gap' }, when(ctx, g.start_ms)), csv: { label: 'From (UTC)', value: (g) => iso(g.start_ms) } },
       { key: 'dur', label: 'Lasted', num: true, render: (g) => (g.end_ms == null ? pill('Still open', { tone: 'warm' }) : formatDuration(g.end_ms - g.start_ms)), csv: { label: 'Lasted (minutes)', value: (g) => (g.end_ms == null ? '' : Math.round((g.end_ms - g.start_ms) / 600) / 100) } },
-      { key: 'cause', label: 'Cause', render: (g) => { const c = GAP_CAUSES[g.cause] || [g.cause, '']; return h('span', { class: 'cell-text', title: c[1] }, h('span', null, c[0]), g.gap_reason ? h('span', { class: 'sub' }, SPAN_REASONS[g.gap_reason] || g.gap_reason) : null); }, csv: { label: 'Cause', value: (g) => g.cause } },
+      { key: 'cause', label: 'Cause', render: (g) => { const c = GAP_CAUSES[g.cause] || [g.cause, '']; return h('span', { class: 'cell-text', title: c[1] }, h('span', null, c[0]), g.gap_reason ? h('span', { class: 'sub' }, SPAN_REASONS[g.gap_reason] || g.gap_reason) : null); }, csv: { label: 'Cause', value: (g) => [(GAP_CAUSES[g.cause] || [g.cause])[0], g.gap_reason ? SPAN_REASONS[g.gap_reason] || g.gap_reason : null].filter(Boolean).join(': ') } },
       { key: 'jump', label: 'Odometer moved', num: true, render: (g) => q(g.odometer_jump_km, 'distance', { why: 'not known' }), csv: column('Odometer moved', 'odometer_jump_km', 'distance') },
       { key: 'where', label: 'Where', render: (g) => h('span', { class: 'cell-text' }, g.from_place?.name || 'Unknown place', g.to_place && g.to_place.id !== g.from_place?.id ? h('span', { class: 'sub' }, `to ${g.to_place.name}`) : null), csv: { label: 'Where', value: (g) => g.from_place?.name || '' } },
-      { key: 'source', label: 'Source', render: (g) => SOURCE_NAMES[g.source] || g.source || DASH, csv: { label: 'Source', value: (g) => g.source } },
+      { key: 'source', label: 'Source', render: (g) => SOURCE_NAMES[g.source] || g.source || DASH, csv: { label: 'Source', value: (g) => SOURCE_NAMES[g.source] || g.source || '' } },
     ],
     empty: () => emptyState({ icon: 'check', title: 'No gaps in this period', text: 'Every moment is accounted for. Choose a longer period to look further back.' }),
   });
@@ -331,21 +357,21 @@ async function mountCar(ctx) {
     paintTotals(all, can, tm, upd?.summary || null);
   }
 
-  function split(a, b, kind) {
-    return `${format(a ?? 0, kind)} from the car, ${format(b ?? 0, kind)} imported.`;
+  function split(a, b, kind, total = null, noun = '') {
+    return `${format(a ?? 0, kind)} from the car, ${format(b ?? 0, kind)} imported.${overlapText(a, b, total, kind, noun)}`;
   }
 
   function paintTotals(all, can, tm, sm) {
     const vSrc = { teslamate: 'imported from TeslaMate', owner: 'typed by the owner', build_match: 'same module builds as a named update' };
     replace(totalsSlot, figures([
-      metric('Logged distance', all.distance_km, 'distance', { size: 'lg', cover: 'dbinfo.stat.logged_distance', explain: `The sum of every recorded drive. ${split(can.distance_km, tm.distance_km, 'distance')}` }),
+      metric('Logged distance', all.distance_km, 'distance', { size: 'lg', cover: 'dbinfo.stat.logged_distance', explain: `The sum of every recorded drive. ${split(can.distance_km, tm.distance_km, 'distance', all.distance_km)}` }),
       metric('Odometer', all.odometer_last_km, 'odometer', { size: 'lg', cover: 'dbinfo.stat.odometer', why: 'The car has not sent it yet.',
         explain: all.odometer_last_ms != null ? `Last read ${when(ctx, all.odometer_last_ms)}. The car sends it while driving.` : null }),
       metric('Not logged', all.not_logged_km, 'distance', { why: 'Needs two odometer readings.',
         explain: 'Odometer change since the first reading minus the logged distance: driving nobody recorded.' }),
-      metric('Drives', all.drives, 'count', { cover: 'dbinfo.stat.drive_count', explain: split(can.drives, tm.drives, 'count') }),
-      metric('Charges', all.charges, 'count', { cover: 'dbinfo.stat.charge_count', explain: split(can.charges, tm.charges, 'count') }),
-      metric('Software updates', all.updates, 'count', { cover: 'dbinfo.stat.update_count', explain: `${split(can.updates, tm.updates, 'count')} The car’s own updates are seen by its update status and changed module builds.` }),
+      metric('Drives', all.drives, 'count', { cover: 'dbinfo.stat.drive_count', explain: split(can.drives, tm.drives, 'count', all.drives, 'drives') }),
+      metric('Charges', all.charges, 'count', { cover: 'dbinfo.stat.charge_count', explain: split(can.charges, tm.charges, 'count', all.charges, 'charges') }),
+      metric('Software updates', all.updates, 'count', { cover: 'dbinfo.stat.update_count', explain: `${split(can.updates, tm.updates, 'count', all.updates, 'updates')} The car’s own updates are seen by its update status and changed module builds.` }),
       metric('Software version', sm?.current_version ? h('a', { class: 'link', href: state.buildUrl('software', { car: cid }) }, sm.current_version) : null, null, {
         cover: 'dbinfo.stat.current_version',
         why: 'Not known yet.',
@@ -382,12 +408,12 @@ async function mountCar(ctx) {
     const kt = kindsTable(ctx, st.kinds, st.total_bytes, { title: `What ${car.name}’s data takes`, csvName: 'storage by kind', coverIds: ['dbinfo.table.sizes'] });
     const labels = Object.fromEntries((st.kinds || []).map((k) => [k.kind, k.label]));
     const days = dataTable(ctx, {
-      title: 'By day', icon: 'calendar', path: `${base}/storage`, params: {}, limit: 40, cls: 'hl-days', csvName: 'storage by day',
+      title: 'By day', icon: 'calendar', path: `${base}/storage`, params: {}, limit: 40, cls: 'hl-days', csvName: 'storage by day', csv: { all: true },
       note: 'Newest first, only days with data. The days are the car’s own days.',
       columns: [
         { key: 'date', label: 'Day', render: (r) => h('a', { class: 'main', href: state.buildUrl('timeline', { car: cid, period: { from: dayStart(r.date, tz), to: dayStart(r.date, tz) + 24 * HOUR } }), title: 'Open this day on the timeline' }, formatDayKey(r.date)), csv: { label: 'Day', value: (r) => r.date } },
         { key: 'series', label: 'What', render: (r) => labels[r.series] || r.series, csv: { label: 'What', value: (r) => labels[r.series] || r.series } },
-        { key: 'source', label: 'Source', render: (r) => SOURCE_NAMES[r.source] || r.source, csv: { label: 'Source', value: (r) => r.source } },
+        { key: 'source', label: 'Source', render: (r) => SOURCE_NAMES[r.source] || r.source, csv: { label: 'Source', value: (r) => SOURCE_NAMES[r.source] || r.source } },
         { key: 'bytes', label: 'On disk', num: true, render: (r) => bytes(r.bytes), csv: { label: 'On disk (bytes)', value: (r) => r.bytes } },
       ],
       empty: () => emptyState({ icon: 'calendar', title: 'No stored days yet', text: 'A day shows here once a log for it has arrived.' }),
@@ -452,6 +478,17 @@ async function mountCar(ctx) {
     emptyState({ icon: 'stats', title: 'Choose a signal to plot', text: 'Press Plot on a signal with values over time. It is drawn over the period, in your units, with gaps where nothing is known.' }));
   const plotPanel = panel({ title: 'A signal over the period', icon: 'stats', cls: 'hl-plot-panel', side: sigInfo }, plotSlot);
 
+  // the signal over the period. All time has no start: a coarse read from the beginning finds the first
+  // recorded value, then the series is read from there (the API's own default would be the last hour only)
+  async function loadSignal(series) {
+    const get = (params, max) => ctx.api.get(`${base}/signals`, { series, ...params, max_points: max });
+    if (ctx.params?.from_ms != null) return get(ctx.params, 1500);
+    const coarse = await get(fullPeriod(ctx.params), 400);
+    const first = (coarse.values?.[series] || []).findIndex((v) => v != null);
+    if (first < 0) return coarse;
+    return get({ ...ctx.params, from_ms: coarse.t_ms[first] }, 1500);
+  }
+
   async function plot(s) {
     chosen = s.series;
     filterSignals();
@@ -460,7 +497,7 @@ async function mountCar(ctx) {
     replace(plotSlot, h('p', { class: 'note' }, `Loading ${s.comment || s.series}…`));
     let data;
     try {
-      data = await ctx.api.get(`${base}/signals`, { series: s.series, ...ctx.params, max_points: 1500 });
+      data = await loadSignal(s.series);
     } catch (e) {
       if (!ctx.alive() || chosen !== s.series) return;
       const w = errorWords(e);
@@ -480,7 +517,7 @@ async function mountCar(ctx) {
         h('div', { class: 'chart-label' }, h('span', { class: 'name' }, s.comment || s.series), h('span', { class: 'chart-unit' }, unitText), readout),
         csv),
       known ? box : emptyState({ icon: 'moon', title: 'Nothing recorded in this period', text: 'The car was asleep or not recording. Choose a longer period.' }),
-      h('p', { class: 'note' }, `Each point is the mean of ${formatDuration(data.bucket_ms || 0)}; the line breaks where nothing is known.`));
+      h('p', { class: 'note' }, `${ctx.params?.from_ms == null && data.t_ms?.length ? `All time: from the first recorded value, ${when(ctx, data.t_ms[0])}. ` : ''}Each point is the mean of ${formatDuration(data.bucket_ms || 0)}; the line breaks where nothing is known.`));
     if (!known) return;
     await timeChart(box, ctx, {
       tz, t_ms: data.t_ms, digits: kind === 'pressure' ? 2 : 1,
@@ -546,16 +583,21 @@ async function mountSystem(ctx) {
   });
   const root = h('div', { class: 'hl-page hl-system' });
 
-  const forbidden = (what) => cover(emptyState({ icon: 'lock', title: 'For admins only', text: `${what} (total size, free space, growth) is shown to admins. Your account sees the cars below.` }), 'dbinfo.stat.total_size');
+  const forbidden = (what, holds, coverId = null) => {
+    const el = emptyState({ icon: 'lock', title: 'For admins only', text: `${what} (${holds}) is shown to admins. Your account sees the cars below.` });
+    return coverId ? cover(el, coverId) : el;
+  };
+  const storageLocked = () => forbidden('Server storage', 'total size, free space, growth', 'dbinfo.stat.total_size');
+  const serverLocked = () => forbidden('Server health', 'uptime, versions, memory and timings');
 
   /* ---------- storage */
   const storeSlot = h('div', { class: 'hl-sys-store' });
   const storePanel = panel({ title: 'Storage', icon: 'server', cls: 'hl-store', cover: ['dbinfo.section.database'] }, storeSlot);
   async function loadStorage() {
-    if (!admin) { replace(storeSlot, forbidden('Server storage')); return; }
+    if (!admin) { replace(storeSlot, storageLocked()); return; }
     let st;
     try { st = await ctx.api.get('system/storage'); } catch (e) {
-      if (e.status === 403) { replace(storeSlot, forbidden('Server storage')); return; }
+      if (e.status === 403) { replace(storeSlot, storageLocked()); return; }
       throw e;
     }
     if (!ctx.alive()) return;
@@ -595,12 +637,12 @@ async function mountSystem(ctx) {
   const srvSlot = h('div', { class: 'hl-srv' });
   const srvPanel = panel({ title: 'Server health', icon: 'pulse', cls: 'hl-srv-panel' }, srvSlot);
   async function loadServer() {
-    if (!admin) { replace(srvSlot, forbidden('Server health'), clockNote(), healthAddr()); return; }
+    if (!admin) { replace(srvSlot, serverLocked(), clockNote(), healthAddr()); return; }
     let sh, geo;
     try {
       [sh, geo] = await Promise.all([ctx.api.get('system/health'), ctx.api.get('geocode/status').catch(() => null)]);
     } catch (e) {
-      if (e.status === 403) { replace(srvSlot, forbidden('Server health'), clockNote(), healthAddr()); return; }
+      if (e.status === 403) { replace(srvSlot, serverLocked(), clockNote(), healthAddr()); return; }
       throw e;
     }
     if (!ctx.alive()) return;
@@ -689,20 +731,20 @@ async function mountSystem(ctx) {
   /* ---------- every car */
   const carSearch = h('input', { class: 'input', type: 'search', placeholder: 'Find a car', 'aria-label': 'Find a car' });
   const carTable = dataTable(ctx, {
-    title: 'Every car', icon: 'fleet', path: 'cars', params: {}, limit: 50, cls: 'hl-cars', csvName: 'cars data status', cover: 'faq.stopped-recording',
+    title: 'Every car', icon: 'fleet', path: 'cars', params: {}, limit: 50, cls: 'hl-cars', csvName: 'cars data status', csv: { all: true }, cover: 'faq.stopped-recording',
     side: h('label', { class: 'field field--search' }, icon('search', 'ico--sm'), carSearch),
     sort: { key: 'name', dir: 'asc' },
     note: 'Each car you may see, paged for any number of cars. Open one for its gaps, keys, totals, storage and signals.',
     columns: [
       { key: 'name', label: 'Car', sort: 'name', render: (c) => h('a', { class: 'cell-text', href: state.buildUrl('health', { car: c.id }), title: 'This car’s data health' },
         h('span', { class: 'main' }, c.name || c.id), h('span', { class: 'sub' }, [c.model, c.year].filter(Boolean).join(' · '))), csv: { label: 'Car', value: (c) => c.name || c.id } },
-      { key: 'state', label: 'Now', render: (c) => statePill(c.now?.state || 'unknown', { stale: c.now?.stale }), csv: { label: 'Now', value: (c) => c.now?.state || 'unknown' } },
+      { key: 'state', label: 'Now', render: (c) => statePill(c.now?.state || 'unknown', { stale: c.now?.stale }), csv: { label: 'Now', value: (c) => stateLabel(c.now?.state || 'unknown') } },
       { key: 'last', label: 'Last data', num: true, sort: 'last_activity', render: (c) => (c.now?.received_ms != null ? agoEl(c.now.received_ms, c.time_zone) : h('span', { class: 'faint' }, 'none yet')), csv: { label: 'Last data (UTC)', value: (c) => iso(c.now?.received_ms) } },
       { key: 'status', label: 'Data', render: (c) => {
         const bad = (c.attention || []).filter((a) => a === 'upload_silence' || a === 'trust_failed');
         return bad.length ? h('span', { class: 'hl-flags' }, bad.map((a) => pill(REASONS[a].title, { tone: 'warm', ic: 'warn' })))
           : h('span', { class: 'ok with-icon' }, icon('check', 'ico--sm'), 'Arriving');
-      }, csv: { label: 'Data', value: (c) => (c.attention || []).filter((a) => a === 'upload_silence' || a === 'trust_failed').join(';') || 'ok' } },
+      }, csv: { label: 'Data', value: (c) => (c.attention || []).filter((a) => a === 'upload_silence' || a === 'trust_failed').map((a) => REASONS[a].title).join('; ') || 'Arriving' } },
     ],
     empty: () => emptyState({ icon: 'car', title: carSearch.value ? 'No car matches' : 'No car yet', text: carSearch.value ? `No car name holds “${carSearch.value}”.` : 'Add a car on Settings: Cars.' }),
   });
