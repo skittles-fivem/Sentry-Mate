@@ -68,9 +68,15 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
         def end_of(i):
             return edges[i + 1]
     else:
+        fixed = bucket is not None
         bucket = bucket or nice_bucket(b - a, max_points)
-        a0 = a - a % bucket if align is None else align + ((a - align) // bucket) * bucket
-        n = int(math.ceil((b - a0) / bucket))
+        while True:
+            a0 = a - a % bucket if align is None else align + ((a - align) // bucket) * bucket
+            n = int(math.ceil((b - a0) / bucket))
+            if fixed or n <= max(1, max_points):
+                break
+            # aligned buckets can start before `a` and need one more than max_points: take the next size
+            bucket = next((x for x in NICE if x > bucket), None) or (bucket // 86_400_000 + 1) * 86_400_000
 
         def idx(t):
             return (t - a0) // bucket

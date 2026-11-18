@@ -57,7 +57,7 @@ This is the `/api/v1` the pages in [`parity/ui-parity.md`](parity/ui-parity.md) 
 | Resource | Methods | Fields and notes | Pages |
 |---|---|---|---|
 | `/api/v1/cars/{car}/series` | GET | `?fields=soc_pct,usable_soc_pct,range_km,ideal_range_km,energy_remaining_kwh,speed_kph,power_kw,odometer_km,outside_c,cabin_c,battery_c,setpoint_left_c,elevation_m,tyre_fl_kpa,...,lat,lon,accuracy_m&from_ms=&to_ms=&max_points=&agg=last,min,max,mean,p15,p85&source=can\|teslamate\|all`. Columns: `{ t_ms: [], values: { field: [] }, bucket_ms, coverage_pct: [] }`. Downsampling keeps minima and maxima. `null` where there was no sample, and a parallel `state: []` (driving, charging, parked, asleep, unknown) so charts draw gaps instead of holding values. | Car overview, Drive detail, Trip, Battery, Efficiency and temperatures |
-| `/api/v1/cars/{car}/signals/latest` | GET | `?search=&limit=&after=` -> `{ items: [{ series, message_id: "0x243", bus, value, unit, value_name, comment, at_ms }], next }` from the newest log | Data health and storage |
+| `/api/v1/cars/{car}/signals/latest` | GET | `?search=&limit=&after=` -> `{ items: [{ series, message_id: "0x243", bus, value, unit, value_name, comment, at_ms, has_series }], next }` from the newest log | Data health and storage |
 | `/api/v1/cars/{car}/signals` | GET | `?series=a,b&from_ms=&to_ms=` -> columns; CSV available. | Data health and storage |
 
 ## Timeline and states
@@ -241,8 +241,9 @@ Points this document left open, decided while building the dev server (`ui/devse
 
 - `values` holds one column per field. With one `agg` (or none), the key is the field name. With several, every agg is also under `<field>.<agg>` and the plain key holds the first one.
 - Without `agg`, the plain column is the mean (the last value for `lat`, `lon`, `accuracy_m`, `odometer_km`, `heading_deg`), and when buckets are longer than 1 s, `<field>.min` and `<field>.max` come too. That is how downsampling keeps minima and maxima.
-- `max_points` is 2 to 20000, default 1000. Buckets are 1 s, 2 s, 5 s, 10 s, 15 s, 30 s, 1, 2, 5, 10, 15, 30 min, 1, 2, 3, 6, 12 h, 1, 2 or 7 days, aligned to UTC, the smallest that fits.
+- `max_points` is 2 to 20000, default 1000. Buckets are 1 s, 2 s, 5 s, 10 s, 15 s, 30 s, 1, 2, 5, 10, 15, 30 min, 1, 2, 3, 6, 12 h, 1, 2 or 7 days (beyond that, a whole number of days), aligned to UTC, the smallest that fits. The first bucket holds `from_ms`, so it can start before it; the answer still never holds more than `max_points` buckets.
 - `state` per bucket is the state that took most of it. `coverage_pct` is the share of the bucket with known data (asleep counts as known). A bucket with no sample is null in every column.
+- `/signals` needs `series` (names from `/signals/latest`) and takes `max_points` (2 to 20000, default 2000). Rows of `/signals/latest` carry `has_series`: false for signals with named values (`gear`, `sentry_mode`, `charge_status`), which have a latest value only; asking `/signals` for them is 400.
 - The charge curve is 1 Hz up to `max_points` (default 4000); longer charges come at a coarser `step_ms`, which the answer states.
 
 ### Formats

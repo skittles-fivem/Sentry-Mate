@@ -89,12 +89,12 @@ def signals_latest(req):
             if field == "odometer_km" and v is None and n.get("odometer_km"):
                 v = n["odometer_km"]["value"]
             rows.append({"series": name, "message_id": mid, "bus": bus, "value": v, "unit": unit, "value_name": None,
-                         "comment": comment, "at_ms": ts if v is not None else None})
+                         "comment": comment, "at_ms": ts if v is not None else None, "has_series": True})
         for name, mid, bus, unit, comment, names in ENUM_SIGNALS:
             v = _enum_value(name, n, seg)
             rows.append({"series": name, "message_id": mid, "bus": bus, "value": v, "unit": unit,
                          "value_name": names.get(v) if v is not None else None, "comment": comment,
-                         "at_ms": ts if v is not None else None})
+                         "at_ms": ts if v is not None else None, "has_series": False})
         if search:
             rows = [x for x in rows if search in x["series"] or search in x["comment"].lower()
                     or search in x["message_id"].lower()]

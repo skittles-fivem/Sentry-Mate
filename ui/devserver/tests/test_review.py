@@ -440,3 +440,27 @@ class SlowReader(ServerCase):
             pass
         self.assertLess(time.perf_counter() - t, 3)
         conn.close()
+
+
+class SeriesPointCount(ServerCase):
+    """Aligned buckets start before from_ms, yet a series never holds more points than max_points."""
+
+    def test_never_more_than_max_points(self):
+        from .helpers import DAY, NOW
+        for f, t, mp in ((NOW - 400 * DAY, NOW, 2), (NOW - 400 * DAY, NOW, 7), (NOW - 1_000_500, NOW, 1000),
+                         (NOW - 3 * DAY + 123, NOW, 3), (NOW - 30 * DAY - 7, NOW - 7, 720)):
+            d = self.c.get(f"/api/v1/cars/c1/series?fields=soc_pct,power_kw&from_ms={f}&to_ms={t}&max_points={mp}")
+            self.assertLessEqual(len(d["t_ms"]), mp, (f, t, mp, d["bucket_ms"]))
+            self.assertLessEqual(d["t_ms"][0], f)
+            self.assertGreater(d["t_ms"][0] + d["bucket_ms"], f)
+            self.assertGreater(d["t_ms"][-1] + d["bucket_ms"], t - 1)
+
+
+class SignalsLatestAndSeries(ServerCase):
+    def test_every_signal_marked_as_charted_can_be_charted(self):
+        rows = self.walk("/api/v1/cars/c1/signals/latest")
+        self.assertTrue(rows)
+        for x in rows:
+            self.assertIn("has_series", x)
+            st, _, _ = self.c.request("GET", f"/api/v1/cars/c1/signals?series={x['series']}")
+            self.assertEqual(st, 200 if x["has_series"] else 400, x["series"])
