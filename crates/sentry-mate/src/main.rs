@@ -12,13 +12,21 @@
 //!   token list | token revoke ID
 //!   fingerprint                   the certificate SHA-256 the app pins
 //!   log export NAME               a stored log or sidecar, unsealed, to standard output
+//!   log decode NAME               a stored log's signals as CSV: only a log its check allows (--any: any), with the
+//!                                 signal set from the car's VIN (--model 3y or sx-legacy: that one)
 //!   log candump FILE              a log file of either format as candump text
 //!   log check FILE [SIDECAR]      what its signature says
 //!   chain KEY                     the chain report of a car key's logs
+//!   keys KEY                      the signing keys a car key's logs name, and which one is trusted
+//!   keys trust KEY SIGNING-KEY    trust another signing key for a car key (asks first; --yes doesn't)
 //!   health                        exit 0 when the upload port answers (for Docker)
 
+mod decode;
 mod folders;
+mod keys;
 mod migrate;
+#[cfg(test)]
+mod testkit;
 
 use clap::{Parser, Subcommand};
 use ingest::server::{Identity, serve_tls, tls_dir};
@@ -79,8 +87,20 @@ enum Cmd {
         #[command(subcommand)]
         cmd: LogCmd,
     },
-    /// The chain report of a car key's signed logs (JSON).
-    Chain { key: String },
+    /// The chain report of a car key's signed logs (JSON), with the signing key it covers.
+    Chain {
+        /// The car key (the last column of `token list`).
+        key: String,
+    },
+    /// The signing keys a car key's logs name, and which one is trusted; `keys trust` trusts another.
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+    Keys {
+        #[command(subcommand)]
+        cmd: Option<KeysCmd>,
+        /// The car key (the last column of `token list`).
+        #[arg(required = true)]
+        key: Option<String>,
+    },
     /// Exit 0 when the upload port accepts connections.
     Health,
 }
@@ -105,11 +125,34 @@ enum TokenCmd {
 }
 
 #[derive(Subcommand)]
+enum KeysCmd {
+    /// Trust a signing key for a car key: the logs it signed are used from then on. Asks first.
+    Trust {
+        /// The car key (the last column of `token list`).
+        key: String,
+        /// The signing key, as `keys` lists it (the CAN Bridge app's "Log signing key").
+        signing_key: String,
+        /// Don't ask.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum LogCmd {
     /// A stored log or sidecar (by its name), unsealed, to standard output.
     Export { name: String },
     /// A stored log's decoded signals as CSV (each value when it changes): time, signal, value, unit, value name.
-    Decode { name: String },
+    /// Only a log whose check allows its data (verified or unsigned), unless --any.
+    Decode {
+        name: String,
+        /// Decode it whatever its check says (failed, could not sign, waiting, not checked yet).
+        #[arg(long)]
+        any: bool,
+        /// The signal set: auto (from the car's VIN, else Model 3/Y), 3y or sx-legacy.
+        #[arg(long, value_enum, default_value_t = decode::Model::Auto)]
+        model: decode::Model,
+    },
     /// A log file of either format as candump text.
     Candump { file: PathBuf },
     /// What a log file's signature says.
@@ -178,7 +221,10 @@ fn needs(cmd: &Cmd) -> Option<(bool, bool)> {
     match cmd {
         Cmd::Serve { .. } | Cmd::Init | Cmd::Restore => Some((true, true)),
         Cmd::RecoveryKey { .. } | Cmd::Token { .. } | Cmd::Fingerprint => Some((true, false)),
-        Cmd::Log { cmd: LogCmd::Export { .. } | LogCmd::Decode { .. } } | Cmd::Chain { .. } => Some((false, false)),
+        Cmd::Keys { cmd: Some(KeysCmd::Trust { .. }), .. } => Some((true, false)),
+        Cmd::Log { cmd: LogCmd::Export { .. } | LogCmd::Decode { .. } } | Cmd::Chain { .. } | Cmd::Keys { .. } => {
+            Some((false, false))
+        }
         Cmd::Log { .. } | Cmd::Health => None,
     }
 }
@@ -259,18 +305,11 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
             let v = Vault::open(&data, &keys)?;
             println!("{}", Identity::load_or_create(&tls_dir(&data), &[], &v)?.fingerprint());
         }
-        Cmd::Log { cmd: LogCmd::Decode { name } } => {
+        Cmd::Log { cmd: LogCmd::Decode { name, any, model } } => {
             let store = Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?));
-            let Some(log) = store.read(&name).await? else {
-                eprintln!("no stored log {name}");
-                return Ok(ExitCode::FAILURE);
-            };
-            let side = store
-                .read(&format!("{name}.json"))
-                .await?
-                .and_then(|b| serde_json::from_slice(&b).ok())
-                .unwrap_or_default();
-            decode_csv(&log, &side)?;
+            let judge = Judge::new(store.clone());
+            let out = std::io::stdout();
+            return decode::run(&store, &judge, &name, any, model, &mut out.lock(), &mut std::io::stderr()).await;
         }
         Cmd::Log { cmd: LogCmd::Export { name } } => {
             let store = Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?));
@@ -284,9 +323,23 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
         }
         Cmd::Log { cmd } => return log_cmd(cmd),
         Cmd::Chain { key } => {
-            let store = Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?));
-            let report = Judge::new(store).chain(&key).await;
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            let judge = Judge::new(Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?)));
+            if !judge.known(&key) {
+                return Ok(keys::unknown(&key, &mut std::io::stderr())?);
+            }
+            println!("{}", serde_json::to_string_pretty(&judge.chain(&key).await)?);
+        }
+        Cmd::Keys { cmd, key } => {
+            let judge = Judge::new(Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?)));
+            let (out, err) = (&mut std::io::stdout(), &mut std::io::stderr());
+            return match (cmd, key) {
+                (Some(KeysCmd::Trust { key, signing_key, yes }), _) => {
+                    keys::trust(&judge, &key, &signing_key, yes, &mut std::io::stdin().lock(), out, err).await
+                }
+                (None, Some(key)) => keys::list(&judge, &key, out, err).await,
+                // clap asks for one or the other
+                (None, None) => Ok(ExitCode::from(2)),
+            };
         }
         Cmd::Health => {
             let addr = format!("127.0.0.1:{}", cli.upload_port);
@@ -338,31 +391,6 @@ fn log_cmd(cmd: LogCmd) -> Result<ExitCode, Box<dyn std::error::Error>> {
         LogCmd::Export { .. } | LogCmd::Decode { .. } => {}
     }
     Ok(ExitCode::SUCCESS)
-}
-
-/// Decoded signals as CSV, a row when a value changes.
-fn decode_csv(log: &[u8], side: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
-    let mut d = dbc::Decoder::new(dbc::Profile::Tesla3Y, side);
-    let mut last: std::collections::HashMap<&'static str, f64> = std::collections::HashMap::new();
-    let out = std::io::stdout();
-    let mut out = std::io::BufWriter::new(out.lock());
-    writeln!(out, "timestamp_utc,signal,value,unit,value_name")?;
-    let mut err = None;
-    logfmt::read_log(log, logfmt::Limits::default(), |l| {
-        let logfmt::Line::Frame(f) = logfmt::Line::parse(l) else { return };
-        for (sig, v) in d.decode(&f) {
-            if last.insert(sig.series.as_str(), v) == Some(v) {
-                continue;
-            }
-            let name = sig.values.as_ref().and_then(|n| n.get(&(v as i64))).map(String::as_str).unwrap_or("");
-            let (s, us) = (f.time_us / 1_000_000, f.time_us % 1_000_000);
-            if let Err(e) = writeln!(out, "{s}.{us:06},{},{v},{},{name}", sig.series, sig.unit) {
-                err = Some(e);
-            }
-        }
-    })?;
-    out.flush()?;
-    err.map_or(Ok(()), |e| Err(e.into()))
 }
 
 async fn serve(
@@ -490,6 +518,45 @@ mod tests {
         assert!(!data.exists() && !keys.exists());
     }
 
+    /// `chain` for a car key with no logs here says so (exit 1) rather than print an empty report.
+    #[tokio::test]
+    async fn the_chain_of_an_unknown_car_key_fails() {
+        let k = testkit::kit();
+        let chain = |key: &str| Cli {
+            data: k.data.clone(),
+            keys: k.keys.clone(),
+            upload_port: 0,
+            cmd: Cmd::Chain { key: key.to_string() },
+        };
+        assert_eq!(run(chain("fedcba654321"), false).await.unwrap(), ExitCode::FAILURE);
+        assert_eq!(run(chain("../../etc"), false).await.unwrap(), ExitCode::FAILURE);
+        testkit::chain(&k, &testkit::new_key(), 0, 1, 0, testkit::genesis(), None).await;
+        assert_eq!(run(chain(testkit::CAR), false).await.unwrap(), ExitCode::SUCCESS);
+        let keys = Cli {
+            data: k.data.clone(),
+            keys: k.keys.clone(),
+            upload_port: 0,
+            cmd: Cmd::Keys { cmd: None, key: Some("fedcba654321".into()) },
+        };
+        assert_eq!(run(keys, false).await.unwrap(), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn the_command_line_takes_keys_and_keys_trust() {
+        let cli = Cli::try_parse_from(["sentry-mate", "keys", "abcdef123456"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::Keys { cmd: None, key: Some(k) } if k == "abcdef123456"));
+        let cli = Cli::try_parse_from(["sentry-mate", "keys", "trust", "abcdef123456", "aa:bb", "--yes"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::Keys { cmd: Some(KeysCmd::Trust { yes: true, .. }), key: None }));
+        assert!(Cli::try_parse_from(["sentry-mate", "keys"]).is_err());
+        let cli =
+            Cli::try_parse_from(["sentry-mate", "log", "decode", "x", "--any", "--model", "tesla-sx-legacy"]).unwrap();
+        let Cmd::Log { cmd: LogCmd::Decode { any: true, model, .. } } = cli.cmd else { panic!("not decode") };
+        assert_eq!(model, decode::Model::SxLegacy);
+        let cli = Cli::try_parse_from(["sentry-mate", "log", "decode", "x"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::Log { cmd: LogCmd::Decode { any: false, model: decode::Model::Auto, .. } }));
+        assert!(Cli::try_parse_from(["sentry-mate", "log", "decode", "x", "--model", "z"]).is_err());
+    }
+
     #[test]
     fn a_missing_or_wrong_key_file_says_how_to_restore() {
         for e in [vault::Error::NoKeyFile, vault::Error::WrongKeyFile] {
@@ -511,6 +578,9 @@ mod tests {
         assert_eq!(needs(&Cmd::Log { cmd: LogCmd::Candump { file: PathBuf::from("x") } }), None);
         assert_eq!(needs(&Cmd::Serve { bind: String::new(), names: vec![] }), Some((true, true)));
         assert_eq!(needs(&Cmd::Chain { key: String::new() }), Some((false, false)));
+        assert_eq!(needs(&Cmd::Keys { cmd: None, key: Some(String::new()) }), Some((false, false)));
+        let trust = KeysCmd::Trust { key: String::new(), signing_key: String::new(), yes: true };
+        assert_eq!(needs(&Cmd::Keys { cmd: Some(trust), key: None }), Some((true, false)));
         // every command that writes is checked (and so, in the image, needs both folders mounted)
         assert_eq!(needs(&Cmd::Init), Some((true, true)));
         assert_eq!(needs(&Cmd::Restore), Some((true, true)));

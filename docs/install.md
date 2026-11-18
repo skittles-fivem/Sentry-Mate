@@ -12,6 +12,7 @@ SCALE, then the CAN Bridge app, updates, backups, restoring and moving.
 - [Docker Compose](#docker-compose)
 - [TrueNAS SCALE](#truenas-scale)
 - [The CAN Bridge app](#the-can-bridge-app)
+- [A new signing key](#a-new-signing-key)
 - [Updating](#updating)
 - [Backups](#backups)
 - [Restore](#restore)
@@ -234,6 +235,38 @@ docker exec sentry-mate /sentry-mate fingerprint
 
 It stays the same across restarts, updates and moves: the certificate's key
 is in the data folder.
+
+## A new signing key
+
+The CAN Bridge signs every log with a key kept in the Screenmate. The first
+signed log ties the car to that key. Logs signed by another key are kept,
+but not used. That happens when the Screenmate makes a new key, or when
+someone else uploads with the car's token.
+
+See the keys of a car. The car key is the last column of `token list`:
+
+```bash
+docker exec sentry-mate /sentry-mate keys <car key>
+```
+
+It lists each key, how many logs it signed, when they came, and which key
+is trusted. A new key says `not trusted: its logs are kept, not used`.
+
+Then open the CAN Bridge app and look at **Log signing key**:
+
+- **It is the new key.** Trust it. Copy the key from the list:
+
+  ```bash
+  docker exec -it sentry-mate /sentry-mate keys trust <car key> <signing key>
+  ```
+
+  It says what will change. Type `yes` and press Enter. Its logs are used
+  from then on, and those it signed before too. The key trusted before
+  still counts for the logs that came before. Sentry Mate keeps running.
+
+- **It is not the new key.** Don't trust it: someone else signed those
+  logs. Revoke the car's token, make a new one and put it in the app
+  ([The CAN Bridge app](#the-can-bridge-app)).
 
 ## Updating
 

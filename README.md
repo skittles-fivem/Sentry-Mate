@@ -20,19 +20,19 @@ in [docs/plans/rust-can-logger.md](docs/plans/rust-can-logger.md).
 | Signature check, pairing with the car's key, chain report (gaps, swaps, restarts) | done |
 | Reading both log formats (candump text, columns) | done |
 | Encryption at rest (pure Rust): every file's contents sealed (not the names), key file + recovery key | done |
-| Command line: tokens, certificate, chain report, log export and decode, restore, recovery key | done |
+| Command line: tokens, certificate, chain report, signing keys, log export and decode, restore, recovery key | done |
 | Docker image: one static binary on `scratch`, non-root, health check; run read-only by the compose file | done; built from a clone, no published image yet |
-| Decoding signals (DBC sets per model, bus split, the Screenmate's GPS), same values as Sentry Six Manager | done; used only by `log decode`, always with the Model 3/Y set |
+| Decoding signals (DBC sets per model, bus split, the Screenmate's GPS), same values as Sentry Six Manager | done; used only by `log decode` |
 | Decoding each log as it arrives, after its check | planned |
-| Choosing the DBC set from the car's VIN | built, not wired in yet |
+| Choosing the DBC set from the car's VIN | done in `log decode` |
 | Drives, charges, states, positions, charge curves from the decoded signals; the car's model from its VIN | built, not wired in yet; not yet checked against real drives and charges |
 | Storage for everything worked out (sealed, compressed columns, any number of cars, backups) | built, not wired in yet |
 | Places, geofences, charge costs with time-of-use rates, addresses offline or online | built, not wired in yet |
 | Accounts: admin and watch-only, per-car access, two-step sign-in, sessions, audit log | built, not wired in yet; passkeys planned |
 | TeslaMate import from TeslaMate's own backup file (any number of cars, streamed, again later adds only what's new) | built, not wired in yet; a live connection to TeslaMate's database is planned |
 | MQTT for Home Assistant (TLS unless plain is turned on, never a password in the clear, discovery, any number of cars on one connection) | built, not wired in yet |
-| Trusting a new signing key for a car | in the library, no command yet |
-| Using a failed log anyway | not built |
+| Trusting a new signing key for a car | done (`keys trust`) |
+| Using a failed log anyway | only `log decode --any`, one log at a time |
 | Listing stored logs and their check results, deleting logs, a backup command | not built |
 | Web server and the `/api/v1` the pages need ([`docs/ui-api.md`](docs/ui-api.md)), on its own HTTPS port | planned |
 | Web UI: UI packs, two designs as prototypes on made-up data in [`ui/`](ui/), maps; every TeslaMate tab gets a page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) | being built |
@@ -69,6 +69,7 @@ Built and tested on separate working copies, waiting for a last check before the
 - Receive every log the CAN Bridge uploads and keep it sealed, exactly as uploaded.
 - See each upload token and the car key it is tied to (`token list`).
 - See a car key's chain report: gaps, failed logs, restarts (`chain`).
+- See which keys signed a car key's logs, and trust a new one (`keys`, `keys trust`).
 - Get a stored log back as uploaded (`log export`), or its decoded signals as CSV (`log decode`).
 - Turn a log file into candump text (`log candump`), or check its signature (`log check`).
 
@@ -260,9 +261,11 @@ which prints nothing.
 | `token list` | One line per token: id, car name, `in use` or `revoked`, the car key it is tied to. |
 | `token revoke ID` | Revokes a token. It stops working at its next request, with the server still running. |
 | `fingerprint` | Prints the certificate SHA-256 for the app. |
-| `chain KEY` | Prints a car key's chain report as JSON. |
+| `chain KEY` | Prints a car key's chain report as JSON. Exit 1 for a car key with no logs here. |
+| `keys KEY` | Lists the signing keys of a car key's logs, and which one is trusted. |
+| `keys trust KEY SIGNING-KEY` | Trusts another signing key for a car key. It asks first; `--yes` doesn't. |
 | `log export NAME` | Writes a stored log or sidecar, unsealed, to standard output. |
-| `log decode NAME` | Writes a stored log's decoded signals as CSV to standard output. |
+| `log decode NAME` | Writes a stored log's decoded signals as CSV to standard output. Only a verified or unsigned log, unless `--any`. `--model 3y` or `--model sx-legacy` picks the signal set. |
 | `log candump FILE` | Writes a plain log file of either format as candump text. |
 | `log check FILE [SIDECAR]` | Says what a plain log file's signature says. |
 | `health` | Exit 0 when the upload port accepts a TCP connection on 127.0.0.1. Docker's health check runs it. |
@@ -297,9 +300,33 @@ The car key is the last column of `token list`:
 docker compose exec sentry-mate /sentry-mate chain <car key>
 ```
 
-It covers only logs signed by the key the car key is paired with: count, first and last index, issues (`gap`,
-`duplicate`, `failed`, `mismatch`, `reordered`), restarts and segments. An unknown or mistyped car key gives an empty
-report, the same as a car key with no signed logs.
+It covers only logs signed by the key the car key is paired with, and names that key first (`signing_key`, as
+`keys` lists it). Then: count, first and last index, issues (`gap`, `duplicate`, `failed`, `mismatch`,
+`reordered`), restarts and segments. A car key with no signed logs gives an empty report with no `signing_key`. An
+unknown or mistyped car key gives `no car key <key> here` and exit 1.
+
+### Signing keys
+
+The CAN Bridge signs each log with a key kept in the Screenmate. The first signed log of a car key pairs it with that
+key. A log signed by another key is kept, marked failed, and not used. List the keys a car key's logs name:
+
+```bash
+docker compose exec sentry-mate /sentry-mate keys <car key>
+```
+
+Each key shows as the CAN Bridge app shows it under **Log signing key**, with how many logs it signed, when its
+first and last log came, and whether it is trusted.
+
+A new key can be right: the Screenmate's keystore made a new one. It can also be someone else's, who has the car's
+upload token. Compare it with **Log signing key** in the app first. Only if they match, trust it:
+
+```bash
+docker compose exec sentry-mate /sentry-mate keys trust <car key> <signing key>
+```
+
+It shows what will change and asks you to type `yes` (`--yes` skips that). Then the logs that key signed are used,
+and so are its later logs. The key trusted before stays trusted for the logs that came before; its later logs fail.
+It works with Sentry Mate running. Only a key that signed at least one of the car key's logs can be trusted.
 
 ### Logs
 
@@ -342,8 +369,14 @@ docker compose exec -T sentry-mate /sentry-mate log decode <log name> > ~/sentry
 ```
 
 The CSV columns are `timestamp_utc,signal,value,unit,value_name`, with a row each time a value changes.
-`timestamp_utc` is Unix seconds with six decimals. It always uses the Model 3/Y set (see
-[Supported cars](#supported-cars)), and it decodes a log whatever its check said.
+`timestamp_utc` is Unix seconds with six decimals. On standard error it says the log's check result and which signal
+set it used.
+
+- It decodes only a log whose check is `verified` or `unsigned`. For any other it says the result and stops (exit
+  1). `--any` decodes it anyway.
+- It picks the signal set from the car's VIN: from the log's own frames, else its sidecar, else the car key's 10
+  newest usable logs. Without a VIN it uses the Model 3/Y set. `--model 3y` or `--model sx-legacy` picks one (see
+  [Supported cars](#supported-cars)).
 
 `log candump` and `log check` read plain files, not the sealed store, and the container sees only `/data` and
 `/keys`. Give `log candump` the file on standard input:
@@ -454,7 +487,8 @@ The data folder (contents sealed unless said):
 | `tls/key.sealed` | Its private key. |
 | `can/<car key>/<name>.log.xz`, `<name>.log.xz.json` | The logs and sidecars, as uploaded. |
 | `can/<car key>/counts.json` | How many logs the car key has. |
-| `can/<car key>/trust.head`, `trust-<g>.records`, `trust-<g>.journal` | Each log's check result and the car key's pairing. |
+| `can/<car key>/trust.head`, `trust-<g>.records`, `trust-<g>.journal` | Each log's check result and the car key's pairing, with the keys trusted before. |
+| `can/<car key>/trust.lock` | Empty. The server and a command such as `keys trust` take turns with it. |
 | `can/<car key>/uploading/` | Uploads still arriving. |
 | `can/.waiting/` | Empty files naming the car keys with logs waiting for their sidecar. |
 
@@ -566,16 +600,17 @@ Every log is kept as uploaded, whatever its check says. Each gets one of these r
 
 | Result | When |
 |---|---|
-| verified | Signed by the key the car key is paired with. The first signed log pairs it. |
+| verified | Signed by the key the car key is paired with. The first signed log pairs it. A key trusted before keeps the logs that came while it was trusted. |
 | unsigned | Not signed, and the car key isn't paired yet. |
 | could not sign | Not signed, from a paired car key, and the bridge said why it couldn't sign. |
 | failed | A bad signature or sidecar, a changed file, not signed although the car key is paired, or signed by another key. |
 | waiting | The sidecar hasn't come. After 10 minutes the log is judged without it. |
 
-- No command lists each log's result yet. `chain` shows the paired key's failed logs and the gaps.
-- `log decode` does not look at the result.
-- A log signed by another key is marked failed, and that key is noted. The library can trust a new key, but no
-  command does yet.
+- No command lists each log's result yet. `chain` shows the paired key's failed logs and the gaps. `log decode`
+  says one log's result.
+- `log decode` decodes only `verified` and `unsigned` logs, unless `--any`.
+- A log signed by another key is marked failed. `keys` lists that key. Check it in the app, then trust it with
+  `keys trust` ([Signing keys](#signing-keys)): its logs are verified from then on.
 - A reinstalled bridge app or a new Screenmate has a new car key. Its uploads with the old token get
   `403 wrong_car`, so give it a new token. Its logs are kept under the new car key, which is paired by its own first
   signed log. Linking several car keys to one car is planned.
@@ -596,8 +631,8 @@ Every log is kept as uploaded, whatever its check says. Each gets one of these r
 | Model S and Model X from 2021 | `tesla-3y` | no |
 | Model S and Model X before 2021 | `tesla-sx-legacy` | no |
 
-Today the program decodes only with `tesla-3y` (`log decode`). Choosing the set from the VIN is built but not wired
-in, so an older S or X decodes with the wrong set for now. The DBC files and their sources are listed in
+Today only `log decode` decodes. It picks the set from the car's VIN (the log's own frames, its sidecar, or the car
+key's newest logs), else `tesla-3y`. `--model` picks one by hand. The DBC files and their sources are listed in
 [crates/dbc/files/README.md](crates/dbc/files/README.md).
 
 ## Security
@@ -608,7 +643,8 @@ in, so an older S or X decodes with the wrong set for now. The DBC files and the
   SHA-256 and tied to one car key on the first upload. Wrong tokens are rate limited per address; a right
   token is never refused because of wrong ones.
 - Every log's ECDSA P-256 signature is checked against the key the car key is paired with. A log signed by another
-  key is kept and marked failed; no command trusts a new key yet. Deleted, swapped or reordered logs show in the
+  key is kept and marked failed, and not used until the owner trusts that key (`keys trust`, after a `yes`). Only
+  a key that signed some of the car key's logs can be trusted. Deleted, swapped or reordered logs show in the
   chain.
 - **Encryption at rest, in Rust.** One random data key seals the contents of everything stored (logs, sidecars,
   uploads still arriving, trust records, tokens, the TLS key) with XChaCha20-Poly1305, in 64 KiB chunks, each file
@@ -715,8 +751,8 @@ cargo tree -e normal,build -i cc --depth 1
 | `vault` | Encryption at rest | yes |
 | `dbc` | Decodes signals | only `log decode` |
 | `ingest` | Upload API, storage, tokens, trust records, TLS server | yes |
-| `model` | The shared types | not yet |
-| `timeline` | States, drives, charges from the signals | not yet |
+| `model` | The shared types | only the signal set from the VIN |
+| `timeline` | States, drives, charges from the signals | only the VIN reader, in `log decode` |
 | `db` | Sealed storage for what the timeline works out | not yet |
 | `places` | Geofences, prices, addresses, map settings | not yet |
 | `accounts` | People and sign-in | not yet |

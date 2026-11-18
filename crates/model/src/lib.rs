@@ -79,19 +79,22 @@ pub struct Car {
     pub created_ms: u64,
 }
 
+impl VinInfo {
+    /// The DBC set this VIN calls for: a Model S or X from before the 2021 refresh (it sends its VIN in 0x508, or its
+    /// VIN says so) gets the legacy set, every other car the Model 3/Y set.
+    pub fn profile(&self) -> CarProfile {
+        let legacy_sx = matches!(self.model, Some('S') | Some('X')) && self.year.is_some_and(|y| y < 2021);
+        if self.via == 0x508 || legacy_sx { CarProfile::TeslaSxLegacy } else { CarProfile::Tesla3Y }
+    }
+}
+
 impl Car {
     /// The DBC set in use: the setting, else what the VIN says, else Model 3/Y.
     pub fn profile(&self) -> CarProfile {
         if let Some(p) = self.profile_setting {
             return p;
         }
-        match &self.vin {
-            Some(v) if v.via == 0x508 => CarProfile::TeslaSxLegacy,
-            Some(v) if matches!(v.model, Some('S') | Some('X')) && v.year.is_some_and(|y| y < 2021) => {
-                CarProfile::TeslaSxLegacy
-            }
-            _ => CarProfile::Tesla3Y,
-        }
+        self.vin.as_ref().map_or(CarProfile::Tesla3Y, VinInfo::profile)
     }
 }
 
@@ -361,4 +364,41 @@ pub struct Now {
     pub driving: bool,
     pub sample: Sample,
     pub place: Option<PlaceId>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vin(model: Option<char>, year: Option<u16>, via: u32) -> VinInfo {
+        VinInfo { vin_prefix: String::new(), model, year, plant: None, via }
+    }
+
+    #[test]
+    fn the_dbc_set_from_the_vin() {
+        assert_eq!(vin(Some('Y'), Some(2024), 0x405).profile(), CarProfile::Tesla3Y);
+        assert_eq!(vin(Some('3'), Some(2018), 0x405).profile(), CarProfile::Tesla3Y);
+        assert_eq!(vin(Some('S'), Some(2022), 0x405).profile(), CarProfile::Tesla3Y, "a refreshed Model S");
+        assert_eq!(vin(Some('S'), Some(2017), 0x508).profile(), CarProfile::TeslaSxLegacy);
+        assert_eq!(vin(Some('X'), Some(2019), 0).profile(), CarProfile::TeslaSxLegacy, "a VIN from a sidecar");
+        assert_eq!(vin(None, None, 0x508).profile(), CarProfile::TeslaSxLegacy, "0x508 is sent by legacy cars only");
+        assert_eq!(vin(None, None, 0).profile(), CarProfile::Tesla3Y);
+        let mut car = Car {
+            id: 1,
+            name: "test".into(),
+            vehicle_keys: vec![],
+            preferred_key: None,
+            vin: Some(vin(Some('S'), Some(2017), 0x508)),
+            profile_setting: None,
+            time_zone: "UTC".into(),
+            efficiency_wh_km: None,
+            created_ms: 0,
+        };
+        assert_eq!(car.profile(), CarProfile::TeslaSxLegacy);
+        car.profile_setting = Some(CarProfile::Tesla3Y);
+        assert_eq!(car.profile(), CarProfile::Tesla3Y, "the setting wins");
+        car.vin = None;
+        car.profile_setting = None;
+        assert_eq!(car.profile(), CarProfile::Tesla3Y);
+    }
 }
