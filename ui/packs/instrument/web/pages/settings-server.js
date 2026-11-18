@@ -1,5 +1,413 @@
-// settings-server: planned; see docs/parity/ui-parity.md for its sections.
-import { placeholder } from '../core/placeholder.js';
+// Settings: Server and access (/settings/server): who can sign in, what each account may see, and how
+// the server is reached. Every visitor gets: the check of the address in this browser against the
+// server's host names and port, how access works, and their own sessions (sign out one, all others, or
+// here). Admins also get the accounts (roles, car lists, two-step sign-in), the audit log (each entry
+// links to the item it changed), the host names for the certificate, the ports, and where the recovery
+// key and backups stand. Changes are saved through the API with the object's version; a short note
+// confirms each one.
+
+import { h, replace } from '../shared/dom.js';
+import * as state from '../shared/state.js';
+import { format } from '../shared/units.js';
+import { icon } from '../core/icons.js';
+import { pageHead, panel, kv, tag, pill, metric, figures } from '../core/page.js';
+import { dataTable } from '../core/table.js';
+import { field, form } from '../core/form.js';
+import { emptyState, errorWords } from '../core/states.js';
+import { flash } from '../core/flash.js';
+import { openDialog, confirmDialog } from '../core/dialog.js';
+import { signOut } from '../core/session.js';
+import { dateTime, date, agoEl, DASH } from '../core/fmt.js';
 
 export const id = 'settings-server';
-export const mount = placeholder();
+export const css = true;
+
+const enc = encodeURIComponent;
+const ROLE = { admin: 'Admin', watch: 'Watch-only' };
+const ROLE_TEXT = {
+  admin: 'Sees every car and every setting, and can change everything: accounts, cars, places, integrations, imports.',
+  watch: 'Sees only the cars on its list and can change only its own preferences and sessions.',
+};
+const PURPOSE = { web: 'Web pages and API', upload: 'CAN Bridge uploads' };
+const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : errorWords(e).text);
+
+// a row: the label and its explanation on the left, the control on the right (the app's .setting)
+const setting = (titleText, text, control, cv = null) => h('div', { class: 'setting', cover: cv },
+  h('div', null, h('h3', null, titleText), text ? h('p', null, text) : null), h('div', { class: 'setting-control' }, control));
+
+// one line of a check: ok, warn or info, a headline and the explanation under it
+const checkRow = (tone, head, text, action = null) => h('li', { class: ['ss-check', `ss-check--${tone}`] },
+  h('span', { class: 'ss-check-ic' }, icon(tone === 'ok' ? 'check' : tone === 'warn' ? 'warn' : 'info')),
+  h('div', null, h('p', { class: 'ss-check-head' }, head), h('p', { class: 'ss-check-text' }, text), action));
+
+const mono = (t) => h('code', { class: 'mono ss-code' }, t);
+
+/* ====================================================================== the page */
+
+export async function mount(ctx) {
+  const admin = ctx.admin;
+  const me = ctx.me || {};
+  const query = ctx.query || {};
+  const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [] };
+
+  async function loadAccounts() { S.accounts = admin ? await ctx.api.list('accounts', { limit: 500 }).all({ max: 5000 }) : []; }
+  async function loadSessions() { S.sessions = await ctx.api.list('me/sessions', { limit: 500 }).all({ max: 5000 }); }
+
+  try {
+    const [settings, network, notices, cars] = await Promise.all([
+      ctx.api.get('settings'),
+      admin ? ctx.api.get('network').catch(() => null) : null,
+      ctx.api.get('notices').catch(() => null),
+      admin ? ctx.api.list('cars', { limit: 500 }).all({ max: 5000 }) : [],
+      loadAccounts(),
+      loadSessions(),
+    ]);
+    Object.assign(S, { settings, network, notices: notices?.items || [], cars });
+  } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
+  if (!ctx.alive()) return;
+
+  const carName = new Map(S.cars.map((c) => [c.id, c.name]));
+  const tz = ctx.tz;
+
+  /* ---------------------------------------------------------------- how this server is reached */
+  const loc = globalThis.location;
+  const here = { https: loc.protocol === 'https:', host: loc.hostname.toLowerCase(), port: Number(loc.port || (loc.protocol === 'https:' ? 443 : 80)) };
+  const webIn = S.network?.inbound?.find((x) => x.purpose === 'web') || null;
+  const isLocal = here.host === 'localhost' || here.host === '127.0.0.1' || here.host === '::1' || here.host === '[::1]';
+
+  const hostingBox = h('div');
+  function paintHosting() {
+    const names = (S.settings.host_names || []).map((n) => n.toLowerCase());
+    const named = names.includes(here.host);
+    const rows = [];
+    rows.push(here.https
+      ? checkRow('ok', 'HTTPS', 'This page came over an encrypted connection, so the password you sign in with never travels in plain text.')
+      : checkRow('warn', 'Plain HTTP', `This page came over plain HTTP. Sentry Mate itself answers only HTTPS (TLS 1.3); plain HTTP means something else serves it${isLocal ? ' (on this machine: a development server)' : ', such as a proxy'}. Never type a password on a plain HTTP page that reaches over a network.`));
+    rows.push(named
+      ? checkRow('ok', `Host name ${here.host}`, 'This name is one of the certificate\'s names below, so the browser trusts the address without a warning (once it trusts the certificate).')
+      : checkRow('warn', `Host name ${here.host} is not on the certificate`,
+        `You opened Sentry Mate as ${here.host}, but the certificate names ${names.join(', ') || 'no host'}. Browsers warn about a name that is not on it. The CAN Bridge is not affected: it pins the certificate's SHA-256 and does not check names.`,
+        admin ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => addName(here.host) }, icon('plus', 'ico--sm'), `Add ${here.host} to the names`) : null));
+    if (webIn) {
+      rows.push(here.port === webIn.port
+        ? checkRow('ok', `Port ${here.port}`, `The same port the server listens on for the web pages (${webIn.port}).`)
+        : checkRow('info', `Port ${here.port}, server port ${webIn.port}`, `Your address uses port ${here.port}; the server listens on ${webIn.port} inside its container. A port mapping such as "${here.port}:${webIn.port}" in the compose file (or a proxy) joins the two. That is fine; it only matters when you write the address into another device.`));
+    } else {
+      rows.push(checkRow('info', `Port ${here.port}`, 'The port in your address. An admin sees the ports the server itself listens on.'));
+    }
+    rows.push(checkRow('ok', 'At the root of its address', `Sentry Mate always lives at / on its own host name or port, so links never need a path prefix. Behind a shared proxy, give it its own name (such as ${names[0] || 'sentry-mate.local'}) rather than a path.`));
+    rows.push(checkRow('ok', 'Works from any address', 'There is no list of allowed origins to keep in step: the session cookie is never sent by other sites (SameSite=Strict) and every change carries a header other sites cannot set, so the page works under each of its names.'));
+    replace(hostingBox, h('ul', { class: 'ss-checks' }, rows));
+  }
+
+  /* ---------------------------------------------------------------- host names for the certificate */
+  const namesBox = h('div', { class: 'ss-names' });
+  let draft = [...(S.settings.host_names || [])];
+  const nameInput = h('input', { class: 'input ss-name-input', type: 'text', placeholder: 'sentry-mate.local', 'aria-label': 'Host name to add', autocomplete: 'off', spellcheck: 'false', disabled: !admin,
+    onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); addDraft(); } } });
+  const nameErr = h('p', { class: 'form-error', hidden: true });
+  const saveNames = h('button', { class: 'btn btn--primary btn--sm', type: 'button', disabled: true, onclick: () => putNames(draft) }, 'Save host names');
+  function paintNames() {
+    const changed = JSON.stringify(draft) !== JSON.stringify(S.settings.host_names || []);
+    saveNames.disabled = !admin || !changed || !draft.length;
+    replace(namesBox,
+      h('ul', { class: 'ss-name-list', 'aria-label': 'Host names for the certificate' }, draft.map((n, i) => h('li', { class: 'ss-name' },
+        h('span', { class: 'mono' }, n),
+        n.toLowerCase() === here.host ? tag('this address', 'live') : null,
+        admin ? h('button', { class: 'btn btn--ghost btn--icon btn--sm', type: 'button', 'aria-label': `Remove ${n}`, disabled: draft.length <= 1,
+          title: draft.length <= 1 ? 'The certificate needs at least one name' : null,
+          onclick: () => { draft = draft.filter((_, j) => j !== i); paintNames(); } }, icon('x', 'ico--sm')) : null))),
+      admin ? h('div', { class: 'row ss-name-add' }, nameInput,
+        h('button', { class: 'btn btn--sm', type: 'button', onclick: addDraft }, icon('plus', 'ico--sm'), 'Add')) : null,
+      nameErr,
+      admin ? h('div', { class: 'row' }, saveNames, changed ? h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: () => { draft = [...S.settings.host_names]; paintNames(); } }, 'Undo changes') : null,
+        changed ? h('span', { class: 'setting-note' }, 'Not saved yet.') : null) : h('p', { class: 'setting-note' }, 'Only an admin can change them.'));
+  }
+  function addDraft() {
+    const v = nameInput.value.trim().toLowerCase();
+    nameErr.hidden = true;
+    if (!v) return;
+    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(v) || v.length > 253) {
+      replace(nameErr, icon('warn'), 'A host name has letters, digits, hyphens and dots, such as sentry-mate.local or an address such as 192.168.1.20.');
+      nameErr.hidden = false;
+      return;
+    }
+    if (!draft.includes(v)) draft.push(v);
+    if (draft.length > 10) { draft.pop(); replace(nameErr, icon('warn'), 'The certificate takes up to 10 names.'); nameErr.hidden = false; return; }
+    nameInput.value = '';
+    paintNames();
+  }
+  async function putNames(list) {
+    nameErr.hidden = true;
+    try {
+      S.settings = await ctx.api.patch('settings', { version: S.settings.version, host_names: list });
+      draft = [...S.settings.host_names];
+      flash('Host names saved. They go into the next certificate the server makes.');
+      paintNames(); paintHosting();
+    } catch (e) {
+      if (e.status === 409) {
+        S.settings = await ctx.api.get('settings'); draft = [...S.settings.host_names]; paintNames(); paintHosting();
+        flash('Someone else changed the server settings; this page shows theirs now. Try again.', { kind: 'info' });
+        return;
+      }
+      replace(nameErr, icon('warn'), errText(e)); nameErr.hidden = false;
+    }
+  }
+  function addName(n) { if (!draft.includes(n)) draft.push(n); putNames(draft); }
+
+  /* ---------------------------------------------------------------- ports */
+  const portRows = S.network?.inbound?.length
+    ? S.network.inbound.map((p) => [PURPOSE[p.purpose] || p.purpose, h('span', { class: 'ss-port' },
+      h('b', { class: 'mono' }, String(p.port)), p.tls ? pill('HTTPS, TLS 1.3', { tone: 'live', ic: 'lock' }) : pill('no TLS', { tone: 'warm', ic: 'warn' }))])
+    : [['Your address', h('span', { class: 'mono' }, String(here.port))]];
+  const portsPanel = panel({ title: 'Ports', icon: 'plug', pad: true, cover: 'docs.env.web.port' },
+    kv(portRows),
+    h('p', { class: 'note ss-gap' }, S.network
+      ? 'Both ports speak only HTTPS with TLS 1.3; there is no plain HTTP port to forget about. The upload port takes only CAN Bridge uploads with a car\'s upload token, and turns away wrong tokens after a few tries.'
+      : 'An admin sees which ports the server listens on.'),
+    h('p', { class: 'note' }, 'To use another port on the host, change only the left number of the port mapping in the compose or TrueNAS file (for example "10200:10100") and use that number in the address. The listening address stays 0.0.0.0 inside the container; the mapping decides what is reachable.'));
+
+  /* ---------------------------------------------------------------- the certificate, the recovery key and backups */
+  const cert = S.notices.find((n) => n.code === 'certificate_expiring');
+  const keyUnsaved = S.notices.find((n) => n.code === 'recovery_key_unsaved');
+  const safety = panel({ title: 'Certificate, recovery key and backups', icon: 'lock', pad: true },
+    h('ul', { class: 'ss-checks' },
+      cert
+        ? checkRow('warn', `The certificate expires ${cert.detail?.expires_ms ? date(cert.detail.expires_ms, tz) : 'soon'}${cert.detail?.days != null ? ` (in ${format(cert.detail.days, 'count')} days)` : ''}`,
+          h('span', null, 'Make a new one before then: stop the container, delete ', mono('data/tls/cert.pem'), ' (or put your own ', mono('cert.pem'), ' and ', mono('key.pem'), ' there) and start it again. A new certificate has a new SHA-256: enter it again in each CAN Bridge.'))
+        : checkRow('ok', 'Certificate', 'The server reports no problem with its certificate. It keeps the same SHA-256 across restarts, updates and moves.'),
+      keyUnsaved
+        ? checkRow('warn', 'The recovery key file is still on the server',
+          h('span', null, 'Copy the line that starts with ', mono('SMRK-'), ' from ', mono('keys/RECOVERY-KEY.txt'), ' somewhere safe away from the server (a password manager, paper), then delete the file. With the key file, it is the only way to open the data.'))
+        : checkRow('ok', 'Recovery key', h('span', null, 'Saved away from the server. To replace it (the old one stops working): ', mono('sentry-mate recovery-key new'), '.')),
+      checkRow('ok', 'Everything is encrypted at rest',
+        h('span', null, 'Logs, the database, tokens and the certificate\'s key are sealed. A backup is a copy of the data folder: it opens only with the key file (kept apart in ', mono('/keys'), ') or the recovery key, so keep those out of the same backup.'))));
+
+  /* ---------------------------------------------------------------- how access works */
+  const nAdmins = S.accounts.filter((a) => a.role === 'admin').length;
+  const accessPanel = panel({ title: 'How access works', icon: 'user', pad: true, cover: 'web.shell.access-model' },
+    h('p', { class: 'ss-you' }, 'You are signed in as ', h('b', null, me.name || DASH), ' ', pill(ROLE[me.role] || me.role || DASH, { tone: me.role === 'admin' ? 'warm' : 'plain' }),
+      ' ', me.cars === 'all' ? 'and see every car.' : `and see ${format(Array.isArray(me.cars) ? me.cars.length : 0, 'count')} ${Array.isArray(me.cars) && me.cars.length === 1 ? 'car' : 'cars'}.`),
+    admin ? figures([
+      metric('Accounts', S.accounts.length, 'count', { explain: 'Everyone who can sign in.', size: 'sm' }),
+      metric('Admins', nAdmins, 'count', { explain: 'At least one is always kept.', size: 'sm' }),
+      metric('Watch-only', S.accounts.length - nAdmins, 'count', { explain: 'See their cars, change nothing shared.', size: 'sm' }),
+      metric('Two-step required', S.accounts.filter((a) => a.two_step_required).length, 'count', { explain: 'A code after the password.', size: 'sm' }),
+    ], 'ss-figs') : null,
+    h('ul', { class: 'ss-rules' },
+      h('li', null, h('b', null, 'Nothing without signing in.'), ' Every page and every API call needs a session; there is no open view and no open API.'),
+      h('li', null, h('b', null, 'Two roles.'), ` Admin: ${ROLE_TEXT.admin} Watch-only: ${ROLE_TEXT.watch}`),
+      h('li', null, h('b', null, 'A car list per account.'), ' A car that is not on an account\'s list looks exactly like a car that does not exist: it is in no list, total, map or export.'),
+      h('li', null, h('b', null, 'Two-step sign-in.'), ' An account can be made to give a six-digit code from an authenticator app after its password.'),
+      h('li', null, h('b', null, 'Guessing is slowed down.'), ' Five wrong passwords for one name within a minute, or 30 from one address, and sign-in waits a minute.'),
+      h('li', null, h('b', null, 'Sessions you can see.'), ' A session lasts 30 days in its browser. Below you can end one, or every other one.'),
+      h('li', null, h('b', null, 'Cars never sign in.'), ' A CAN Bridge uploads with its car\'s own upload token on the upload port, made under ', h('a', { class: 'link', href: state.buildUrl('settings-cars') }, 'Settings: Cars'), '.'),
+      h('li', null, h('b', null, 'Every change is recorded.'), admin ? ' The audit log below says who changed what, and when.' : ' Admins can read who changed what, and when.')));
+
+  /* ---------------------------------------------------------------- accounts (admin) */
+  const carsText = (cars) => {
+    if (cars === 'all') return 'All cars';
+    if (!Array.isArray(cars) || !cars.length) return 'No cars';
+    const names = cars.map((c) => carName.get(c) || c);
+    return names.length > 3 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', ');
+  };
+  const focusAccount = query.account || null;
+  const accountsTable = admin ? dataTable(ctx, {
+    title: 'Accounts', icon: 'user', rows: S.accounts, label: 'Accounts that can sign in', csvName: 'accounts',
+    note: 'Everyone who can sign in, with what they may see. Edit an account to change its role, its cars, its password or two-step sign-in.',
+    side: h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: () => editAccount(null) }, icon('plus', 'ico--sm'), 'Add account'),
+    sort: { key: 'name', dir: 'asc' },
+    columns: [
+      { key: 'name', label: 'Name', sort: true, render: (a) => h('span', { class: 'row ss-acc' }, h('b', null, a.name),
+        a.id === me.id ? tag('you', 'live') : null, a.id === focusAccount ? tag('from the audit log', 'warm') : null) },
+      { key: 'role', label: 'Role', sort: true, render: (a) => pill(ROLE[a.role] || a.role, { tone: a.role === 'admin' ? 'warm' : 'plain' }), csv: (a) => ROLE[a.role] || a.role },
+      { key: 'cars', label: 'Cars it sees', value: (a) => (a.cars === 'all' ? -1 : a.cars.length), sort: true, render: (a) => carsText(a.cars), csv: (a) => (a.cars === 'all' ? 'all' : a.cars.map((c) => carName.get(c) || c).join('; ')) },
+      { key: 'two_step_required', label: 'Two-step sign-in', sort: true, render: (a) => (a.two_step_required ? h('span', { class: 'ok' }, 'Required') : h('span', { class: 'faint' }, 'Password only')), csv: (a) => (a.two_step_required ? 'required' : 'no') },
+      { key: 'created_ms', label: 'Made', sort: true, render: (a) => date(a.created_ms, tz), csv: (a) => a.created_ms },
+      { key: 'act', label: 'Change', csv: false, render: (a) => h('div', { class: 'row ss-acts' },
+        h('button', { class: 'btn btn--sm', type: 'button', onclick: () => editAccount(a) }, 'Edit'),
+        h('button', { class: 'btn btn--sm btn--ghost', type: 'button', disabled: a.id === me.id,
+          title: a.id === me.id ? 'You cannot remove the account you are signed in with' : null, onclick: () => removeAccount(a) }, 'Remove')) },
+    ],
+    empty: () => emptyState({ icon: 'user', title: 'No accounts', text: 'There is always at least one admin; this list is empty only while it loads.' }),
+  }) : null;
+  const goneNote = admin && focusAccount && !S.accounts.some((a) => a.id === focusAccount)
+    ? h('p', { class: 'note ss-gone' }, icon('info', 'ico--sm'), ' The account from the audit log entry has been removed since.') : null;
+
+  async function refreshAccounts() {
+    await loadAccounts();
+    if (!ctx.alive()) return;
+    accountsTable.setRows(S.accounts);
+  }
+
+  function carPicker(current) {
+    const all = field({ label: 'All cars, also cars that appear later', name: 'all_cars', type: 'checkbox', value: current === 'all' });
+    const chosen = new Set(current === 'all' ? [] : current || []);
+    const search = h('input', { class: 'input', type: 'search', placeholder: 'Find a car', 'aria-label': 'Find a car' });
+    const list = h('div', { class: 'ss-carlist', role: 'group', 'aria-label': 'Cars this account sees' });
+    const count = h('p', { class: 'form-hint' });
+    const paint = () => {
+      const q = search.value.trim().toLowerCase();
+      const shown = S.cars.filter((c) => !q || c.name.toLowerCase().includes(q) || (c.model || '').toLowerCase().includes(q));
+      replace(list, shown.length ? shown.map((c) => h('label', { class: 'check' },
+        h('input', { type: 'checkbox', checked: chosen.has(c.id), onchange: (e) => { if (e.target.checked) chosen.add(c.id); else chosen.delete(c.id); paintCount(); } }),
+        h('span', null, c.name, c.model ? h('span', { class: 'faint' }, ` · ${c.model}`) : null))) : h('p', { class: 'faint' }, S.cars.length ? 'No car matches.' : 'No cars yet.'));
+    };
+    const paintCount = () => { count.textContent = all.value() ? 'Sees every car, now and later.' : `${format(chosen.size, 'count')} of ${format(S.cars.length, 'count')} cars chosen.`; };
+    const box = h('div', { class: 'ss-carpick' }, search, list);
+    const toggle = () => { box.hidden = all.value(); paintCount(); };
+    all.input.addEventListener('change', toggle);
+    search.addEventListener('input', paint);
+    paint(); toggle();
+    const err = h('p', { class: 'form-error', hidden: true });
+    return {
+      el: h('div', { class: 'form-row' }, h('span', { class: 'form-label' }, 'Cars it sees'), all.el, box, count, err),
+      value: () => (all.value() ? 'all' : [...chosen]),
+      setError: (t) => { err.hidden = !t; if (t) replace(err, icon('warn'), t); else err.replaceChildren(); },
+    };
+  }
+
+  function editAccount(a) {
+    const isNew = !a;
+    const name = field({ label: 'Name', name: 'name', value: a?.name || '', required: true, hint: 'What they type to sign in. 1 to 64 characters.', attrs: { maxlength: 64, autocomplete: 'off' } });
+    const password = field({ label: isNew ? 'Password' : 'New password', name: 'password', type: 'password', required: isNew,
+      hint: isNew ? 'At least 10 characters. Tell it to them in person or over a channel you trust.' : 'Leave empty to keep the current password. At least 10 characters.',
+      attrs: { minlength: 10, autocomplete: 'new-password' } });
+    const role = field({ label: 'Role', name: 'role', type: 'select', value: a?.role || 'watch',
+      options: [['watch', `Watch-only: ${ROLE_TEXT.watch}`], ['admin', `Admin: ${ROLE_TEXT.admin}`]] });
+    const two = field({ label: 'Require two-step sign-in', name: 'two_step_required', type: 'checkbox', value: !!a?.two_step_required,
+      hint: 'After the password, a six-digit code from an authenticator app. Recommended for every admin.' });
+    const cars = carPicker(a ? a.cars : []);
+    const carsField = { name: 'cars', path: 'cars', input: { checkValidity: () => true, getAttribute: () => null, focus() {} }, setError: cars.setError, value: cars.value, el: cars.el };
+    const f = form({
+      fields: [name, password, role, carsField, two], submit: isNew ? 'Add account' : 'Save changes',
+      secondary: h('button', { class: 'btn btn--ghost', type: 'button', onclick: (e) => e.target.closest('dialog')?.close() }, 'Cancel'),
+      async onSubmit(v) {
+        const body = { name: v.name.trim(), role: v.role, cars: v.cars, two_step_required: v.two_step_required };
+        if (v.password) body.password = v.password;
+        try {
+          if (isNew) {
+            await ctx.api.post('accounts', body);
+            flash(`${body.name} can sign in now, as ${ROLE[body.role].toLowerCase()}.`);
+          } else {
+            await ctx.api.patch(`accounts/${enc(a.id)}`, { version: a.version, ...body });
+            flash(`${body.name} saved.`);
+          }
+        } catch (e) {
+          if (e.status === 409 && e.code === 'stale_version') {
+            await refreshAccounts();
+            f.setMessage('Someone else changed this account meanwhile. Close this, look at their change, and try again.');
+            return;
+          }
+          if (e.code === 'name_taken') { name.setError('That name is taken.'); return; }
+          if (e.code === 'last_admin') { role.setError('This is the last admin. Make another account an admin first.'); return; }
+          throw e;
+        }
+        f.el.closest('dialog')?.close();
+        await refreshAccounts();
+      },
+    });
+    openDialog({ title: isNew ? 'Add an account' : `Edit ${a.name}`, body: f.el, actions: [], wide: true });
+    name.input.focus();
+  }
+
+  async function removeAccount(a) {
+    const ok = await confirmDialog(`${a.name} can no longer sign in, and every session of theirs ends now. Their changes stay in the audit log.`, { title: `Remove ${a.name}?`, ok: 'Remove account', danger: true });
+    if (!ok) return;
+    try {
+      await ctx.api.del(`accounts/${enc(a.id)}`);
+      flash(`${a.name} was removed.`);
+      await refreshAccounts();
+    } catch (e) {
+      flash(e.code === 'last_admin' ? 'This is the last admin. Make another account an admin first.' : `Could not remove ${a.name}: ${errText(e)}`, { kind: 'error' });
+    }
+  }
+
+  /* ---------------------------------------------------------------- your sessions */
+  const focusSession = query.session || null;
+  const sessionsTable = dataTable(ctx, {
+    title: 'Your sessions', icon: 'monitor', rows: S.sessions, label: 'Where you are signed in', csvName: 'sessions',
+    note: 'Every browser where your account is signed in. End one you do not recognise, then change your password.',
+    side: h('button', { class: 'btn btn--sm', type: 'button', onclick: () => endOthers() }, icon('signout', 'ico--sm'), 'Sign out everywhere else'),
+    sort: { key: 'last_seen_ms', dir: 'desc' },
+    columns: [
+      { key: 'device', label: 'Browser', sort: true, render: (s) => h('span', { class: 'row ss-acc' }, s.device || 'Not reported',
+        s.this_one ? tag('this browser', 'live') : null, s.id === focusSession ? tag('from the audit log', 'warm') : null) },
+      { key: 'created_ms', label: 'Signed in', sort: true, render: (s) => dateTime(s.created_ms, tz), csv: (s) => s.created_ms },
+      { key: 'last_seen_ms', label: 'Last used', sort: true, render: (s) => (s.this_one ? 'Now' : agoEl(s.last_seen_ms, tz)), csv: (s) => s.last_seen_ms },
+      { key: 'act', label: 'End it', csv: false, render: (s) => h('button', { class: 'btn btn--sm', type: 'button', onclick: () => endSession(s) },
+        icon('signout', 'ico--sm'), s.this_one ? 'Sign out here' : 'Sign out') },
+    ],
+    empty: () => emptyState({ icon: 'check', title: 'No sessions', text: 'Only this browser is signed in.' }),
+  });
+  const sessionGone = focusSession && !S.sessions.some((s) => s.id === focusSession)
+    ? h('p', { class: 'note ss-gone' }, icon('info', 'ico--sm'), ' The session from the audit log entry has ended since.') : null;
+
+  async function refreshSessions() { await loadSessions(); if (ctx.alive()) sessionsTable.setRows(S.sessions); }
+  async function endSession(s) {
+    if (s.this_one) {
+      try { await signOut(); flash('Signed out.', { next: true }); state.navigate('/sign-in', { replace: true }); } catch (e) { flash(`Could not sign out: ${errText(e)}`, { kind: 'error' }); }
+      return;
+    }
+    try { await ctx.api.del(`me/sessions/${enc(s.id)}`); flash(`Signed out ${s.device || 'that browser'}.`); await refreshSessions(); } catch (e) { flash(`Could not end the session: ${errText(e)}`, { kind: 'error' }); }
+  }
+  async function endOthers() {
+    const others = S.sessions.filter((s) => !s.this_one).length;
+    if (!others) { flash('No other browser is signed in.', { kind: 'info' }); return; }
+    const ok = await confirmDialog(`${format(others, 'count')} other ${others === 1 ? 'browser is' : 'browsers are'} signed out now. This browser stays signed in.`, { title: 'Sign out everywhere else?', ok: 'Sign out the others' });
+    if (!ok) return;
+    try { const r = await ctx.api.del('me/sessions'); flash(`Signed out ${format(r?.ended ?? others, 'count')} other ${(r?.ended ?? others) === 1 ? 'session' : 'sessions'}.`); await refreshSessions(); } catch (e) { flash(`Could not sign out the others: ${errText(e)}`, { kind: 'error' }); }
+  }
+
+  /* ---------------------------------------------------------------- audit log (admin) */
+  const accountName = (aid) => S.accounts.find((a) => a.id === aid)?.name;
+  function target(t) {
+    const i = String(t || '').indexOf(':');
+    const kind = i < 0 ? t : t.slice(0, i);
+    const tid = i < 0 ? '' : t.slice(i + 1);
+    const a = (href, text) => h('a', { class: 'link', href }, text);
+    switch (kind) {
+      case 'account': return a(state.buildUrl('settings-server', { query: { account: tid } }), `Account ${accountName(tid) || tid}`);
+      case 'session': return a(state.buildUrl('settings-server', { query: { session: tid } }), 'A session');
+      case 'car': return carName.has(tid) ? a(state.buildUrl('settings-cars', { car: tid }), carName.get(tid)) : h('span', { class: 'faint' }, 'A car no longer here');
+      case 'settings': return tid === 'mqtt' ? a(state.buildUrl('settings-integrations'), 'MQTT settings') : a(state.buildUrl('settings-display'), 'Server defaults');
+      case 'place': return a(state.buildUrl('places', { query: { place: tid } }), 'A place');
+      case 'import': return a(state.buildUrl('import'), 'An import');
+      case 'key': return a(state.buildUrl('settings-cars'), `CAN Bridge key ${tid}`);
+      default: return h('span', { class: 'mono faint' }, t || DASH);
+    }
+  }
+  const auditTable = admin ? dataTable(ctx, {
+    title: 'Audit log', icon: 'book', path: 'audit', label: 'Who changed what', csvName: 'audit-log',
+    note: 'Every change and every sign-in, newest first. The item links to what was changed, where it still exists. Times are in the car\'s time zone.',
+    columns: [
+      { key: 'at_ms', label: 'When', render: (e) => dateTime(e.at_ms, tz), csv: (e) => e.at_ms },
+      { key: 'account', label: 'Who', render: (e) => (e.account ? h('b', null, e.account) : h('span', { class: 'faint' }, 'The server')) },
+      { key: 'action', label: 'Action', render: (e) => h('span', { class: 'mono ss-action' }, e.action) },
+      { key: 'target', label: 'Item', render: (e) => target(e.target), csv: (e) => e.target },
+      { key: 'summary', label: 'What happened', render: (e) => e.summary || DASH },
+    ],
+    empty: () => emptyState({ icon: 'book', title: 'Nothing recorded yet', text: 'Each sign-in and each change appears here as it happens.' }),
+  }) : null;
+
+  /* ---------------------------------------------------------------- the page */
+  paintHosting();
+  paintNames();
+  const hostPanel = panel({ title: 'How this server is reached', icon: 'globe', pad: true, cover: 'web.shell.hosting' },
+    h('p', { class: 'ss-addr' }, 'This page: ', h('span', { class: 'mono' }, `${loc.protocol}//${loc.host}/`)),
+    hostingBox);
+  const namesPanel = panel({ title: 'Host names for the certificate', icon: 'server', pad: true, cover: 'docs.env.web.virtual-host' },
+    setting('Names on the certificate', 'The names (or addresses) people and devices use to reach this server. The server puts them in the certificate it makes, so browsers accept those names. They are used when a certificate is made: to put a change in the running certificate, make a new one (see below).', namesBox));
+
+  replace(ctx.view,
+    pageHead({ title: ctx.info.title, purpose: ctx.info.purpose }),
+    h('div', { class: 'settings-stack ss' },
+      h('div', { class: 'ss-two' }, hostPanel, h('div', { class: 'ss-col' }, namesPanel, portsPanel)),
+      h('div', { class: 'ss-two' }, accessPanel, admin ? safety : null),
+      accountsTable ? [goneNote, accountsTable.el] : null,
+      sessionGone, sessionsTable.el,
+      auditTable ? auditTable.el : null));
+  if (auditTable) await auditTable.ready;
+  if (!ctx.alive()) return;
+  ctx.ready();
+}
