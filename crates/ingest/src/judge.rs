@@ -156,6 +156,21 @@ pub struct KeyChain {
     pub report: trust::ChainReport,
 }
 
+/// A log's record as it was just written: judged on arrival, by the sweep, judged again, or after its key was trusted.
+/// What [`Judge::on_judged`] is told (a log still waiting for its sidecar is not told).
+#[derive(Debug, Clone)]
+pub struct Judged {
+    /// The car key (`vehicleKey`) the log belongs to.
+    pub key: String,
+    /// The log's name (`<car key>_<UTC start>_<seq>.log.xz`).
+    pub name: String,
+    pub record: Record,
+}
+
+/// Told of every record [`Judge`] writes, once it is on disk (see [`Judge::on_judged`]). Called on a blocking thread
+/// while the key is held: it must be quick and never wait (send on a channel, set a flag).
+pub type OnJudged = Arc<dyn Fn(&Judged) + Send + Sync>;
+
 pub struct Judge {
     dir: PathBuf,
     store: Store,
@@ -163,6 +178,7 @@ pub struct Judge {
     locks: KeyLocks<tokio::sync::Mutex<()>>,
     wait_ms: u64,
     compact_after: usize,
+    on_judged: Option<OnJudged>,
 }
 
 fn io(e: crate::ApiError) -> std::io::Error {
@@ -204,7 +220,15 @@ impl Judge {
             locks: KeyLocks::new(),
             wait_ms: WAIT_MS,
             compact_after: COMPACT_AFTER,
+            on_judged: None,
         }
+    }
+
+    /// Tells `f` of every log's record once it is written (not of logs left waiting for their sidecar): what the
+    /// background decoding listens to. It changes nothing in how logs are judged.
+    pub fn on_judged(mut self, f: OnJudged) -> Judge {
+        self.on_judged = Some(f);
+        self
     }
 
     /// At most `heads` keys' heads in memory.
@@ -282,6 +306,19 @@ impl Judge {
         fold: Fold,
     ) -> std::io::Result<Head> {
         let (ledger, can, key, limit) = (self.ledger(key), self.dir.clone(), key.to_string(), self.compact_after);
+        let told: Vec<Judged> = match &self.on_judged {
+            Some(_) => changes
+                .iter()
+                .filter_map(|c| match c {
+                    Change::Log { name, record } if record.status != Status::Waiting => {
+                        Some(Judged { key: key.clone(), name: name.clone(), record: record.clone() })
+                    }
+                    _ => None,
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let on_judged = self.on_judged.clone();
         blocking(move || {
             let mut head = head;
             if !head.waiting.is_empty() && !head.marked {
@@ -301,6 +338,9 @@ impl Judge {
                 head.marked = false;
             }
             head.stamp = Some(ledger.stamp(head.generation)?);
+            if let Some(f) = &on_judged {
+                told.iter().for_each(|j| f(j));
+            }
             Ok(head)
         })
         .await

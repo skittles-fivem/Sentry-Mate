@@ -16,6 +16,6 @@ pub mod tokens;
 
 pub use api::{Conn, Exporter, Memory, RefusedCall, Uploads, router};
 pub use error::ApiError;
-pub use judge::Judge;
+pub use judge::{Judge, Judged, OnJudged};
 pub use store::Store;
 pub use tokens::Tokens;

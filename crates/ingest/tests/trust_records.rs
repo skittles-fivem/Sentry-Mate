@@ -412,3 +412,23 @@ async fn a_change_waits_while_another_process_holds_the_key() {
     let r = tokio::time::timeout(std::time::Duration::from_secs(10), waiting).await.unwrap().unwrap().unwrap();
     assert_eq!(r.unwrap().status, Status::Unsigned);
 }
+
+#[tokio::test]
+async fn every_written_record_is_told_once_it_is_on_disk_and_waiting_ones_are_not() {
+    let t = setup();
+    let told = Arc::new(std::sync::Mutex::new(Vec::<(String, String, Status)>::new()));
+    let sink = told.clone();
+    let judge = Judge::new(t.store.clone()).on_judged(Arc::new(move |j: &ingest::Judged| {
+        sink.lock().unwrap().push((j.key.clone(), j.name.clone(), j.record.status.clone()));
+    }));
+    let a = log_name(0);
+    assert_eq!(arrive(&t, &judge, &a, b"minute a").await.unwrap().status, Status::Waiting);
+    assert!(told.lock().unwrap().is_empty(), "a log waiting for its sidecar is not told");
+    arrive(&t, &judge, &format!("{a}.json"), br#"{"format":"canbridge-columns-xz/2"}"#).await.unwrap();
+    assert_eq!(*told.lock().unwrap(), vec![(KEY.to_string(), a.clone(), Status::Unsigned)]);
+    // told after it is written: the record is there to read
+    assert_eq!(judge.record(KEY, &a).await.unwrap().status, Status::Unsigned);
+    // judged again: told again
+    assert_eq!(judge.rejudge_all(KEY).await.unwrap(), 1);
+    assert_eq!(told.lock().unwrap().len(), 2);
+}
