@@ -9,13 +9,14 @@ import { h, replace, cover } from '../shared/dom.js';
 import { format } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, dayKey } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
+import { downloadCsv, timeColumn, csvFilename } from '../shared/csv.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, csvButton } from '../core/page.js';
-import { activityStrip } from '../core/strip.js';
+import { activityStrip, KINDS as STRIP_KINDS } from '../core/strip.js';
 import { openCarSwitcher } from '../core/carswitch.js';
 import { openPeriodPicker } from '../core/period.js';
 import { emptyState, errorWords } from '../core/states.js';
-import { when, ago, stateLabel } from '../core/fmt.js';
+import { when, ago, statePill } from '../core/fmt.js';
 
 export const id = 'timeline';
 export const css = true;
@@ -77,7 +78,7 @@ export function timelineRow(r, { car, tz, compact = false }) {
     const pm = r.parked_ms || {};
     bits.push(pm.asleep ? `asleep ${formatDuration(pm.asleep)}` : null, pm.awake ? `awake ${formatDuration(pm.awake)}` : null,
       pm.awake_vehicle_bus_only ? `vehicle bus only ${formatDuration(pm.awake_vehicle_bus_only)}` : null, pm.unknown ? `unknown ${formatDuration(pm.unknown)}` : null,
-      r.energy_delta_kwh != null ? `${format(Math.abs(r.energy_delta_kwh), 'energy')} used` : null);
+      r.energy_delta_kwh != null ? `${format(Math.abs(r.energy_delta_kwh), 'energy')} used${est ? ' (estimated)' : ''}` : null);
   } else if (r.kind === 'gap') {
     title = [h('span', null, 'No data'), r.distance_km ? h('span', { class: 'tl-place' }, ` · moved ${format(r.distance_km, 'distance')}`) : null];
     bits.push(GAP[r.gap_reason] || 'No data for this time.', r.distance_km ? 'The car moved, but no drive was recorded.' : null);
@@ -146,9 +147,21 @@ export async function mount(ctx) {
   // state summary
   const share = states.share_pct || {};
   const cur = states.current || {};
+  // Now: the car's own state (driving, charging, parked, asleep, unknown) from the live data, else /states
+  const nowSlot = h('span', { class: 'metric-value' });
+  const nowExplain = h('span', { class: 'explain' });
+  const live = { ...(car.now || {}) };
+  function paintNow() {
+    const st = live.state || (cur.state === 'online' ? 'parked' : cur.state) || 'unknown';
+    const since = live.since_ms ?? cur.since_ms;
+    replace(nowSlot, statePill(st, { lg: true, stale: !!live.stale }));
+    nowExplain.textContent = [since ? `since ${when(since, tz)}` : null, live.stale ? 'last known; no upload for over an hour' : null,
+      st === 'unknown' ? 'no recent log, so the state is not known (not the same as asleep)' : null].filter(Boolean).join(' · ');
+  }
+  paintNow();
   const summary = panel({ title: 'States', icon: 'park', cls: 'tl-summary' },
     h('div', { class: 'figures' },
-      h('div', { class: 'metric', cover: 'states.stat.current' }, h('span', { class: 'metric-label' }, 'Now'), h('span', { class: 'metric-value' }, cur.state === 'online' ? 'Awake' : stateLabel(cur.state)), h('span', { class: 'explain' }, cur.since_ms ? `since ${when(cur.since_ms, tz)}` : '')),
+      h('div', { class: 'metric', cover: 'states.stat.current' }, h('span', { class: 'metric-label' }, 'Now'), nowSlot, nowExplain),
       h('div', { class: 'metric', cover: 'states.stat.last_change' }, h('span', { class: 'metric-label' }, 'Last change'), h('span', { class: 'metric-value metric-value--sm' }, states.last_change_ms ? when(states.last_change_ms, tz) : '—'), h('span', { class: 'explain' }, states.last_change_ms ? ago(states.last_change_ms) : '')),
       h('div', { class: 'metric', cover: 'states.stat.parked_pct' }, h('span', { class: 'metric-label' }, 'Parked'), h('span', { class: 'metric-value' }, format(share.parked, 'percent')), h('span', { class: 'explain' }, 'of the known time, not driving')),
       h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Asleep'), h('span', { class: 'metric-value' }, format(share.asleep, 'percent')), h('span', { class: 'explain' }, 'both buses quiet')),
@@ -156,7 +169,13 @@ export async function mount(ctx) {
       h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Unknown'), h('span', { class: 'metric-value' }, format(share.unknown, 'percent')), h('span', { class: 'explain' }, 'no log, paused or failed check'))),
     h('p', { class: 'note' }, 'The shares overlap on purpose (parked time includes asleep time), so they need not add up to 100 %.'));
 
-  const strip = panel({ title: 'What the car did', icon: 'timeline', cls: 'tl-panel', cover: ['states.chart.states', 'states.chart.legend'] },
+  const stripCsv = csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'activity', period.label), act.items || [], [
+    { label: 'State', value: (s) => (STRIP_KINDS[s.kind] || STRIP_KINDS.unknown).label },
+    timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz),
+    { label: 'Duration (min)', value: (s) => (s.end_ms != null ? Math.round((s.end_ms - s.start_ms) / 60000) : null) },
+    { label: 'Source', value: (s) => s.source || '' },
+  ]) });
+  const strip = panel({ title: 'What the car did', icon: 'timeline', cls: 'tl-panel', side: [stripCsv], cover: ['states.chart.states', 'states.chart.legend'] },
     activityStrip(act.items || [], from ?? (act.items?.[0]?.start_ms ?? to - 86400000), to, { tz, now: ctx.api.now(), size: 'lg', kinds: ['driving', 'charging', 'online', 'online_vehicle_bus_only', 'asleep', 'updating', 'unknown'] }));
 
   // the list
@@ -196,7 +215,7 @@ export async function mount(ctx) {
     shown = 0; lastDay = null;
     ctx.setQuery({ kinds: kinds.size === 5 ? null : [...kinds].join(','), place: placeId || null, q: text || null });
     pager = ctx.api.pager(`cars/${encodeURIComponent(cid)}/timeline`, params(), { limit: 50 });
-    replace(csvSlot, csvButton({ href: ctx.api.csvUrl(`cars/${encodeURIComponent(cid)}/timeline`, params()), filename: `${car.name}-timeline.csv` }));
+    replace(csvSlot, csvButton({ href: ctx.api.csvUrl(`cars/${encodeURIComponent(cid)}/timeline`, params()), filename: csvFilename(car.name, 'timeline', period.label) }));
     list.replaceChildren(...Array.from({ length: 4 }, () => h('div', { class: 'tl-item tl-skel', 'aria-hidden': 'true' }, h('span', { class: 'skel skel--text' }), h('span'), h('span', { class: 'skel skel--text' }))));
     await loadMore(my);
   }
@@ -225,7 +244,7 @@ export async function mount(ctx) {
       'timeline.col.start', 'timeline.col.end', 'timeline.col.action', 'timeline.col.start_address', 'timeline.col.end_address', 'timeline.col.odometer', 'timeline.col.duration', 'timeline.col.distance', 'timeline.col.range', 'timeline.col.range_diff', 'timeline.col.energy_diff', 'timeline.col.soc', 'timeline.col.soc_diff', 'timeline.col.temp',
       'timeline.link.trip_span', 'timeline.link.slot_details', 'timeline.link.geofence_start', 'timeline.link.geofence_end', 'timeline.link.place_cells_other_rows'] },
     h('div', { class: 'tbl-bar' }, h('h2', { class: 'panel-title' }, icon('timeline'), 'Entries, newest first'), count, csvSlot),
-    h('p', { class: 'note tl-legend-note' }, 'A time opens that span as a trip. A kind opens the drive, charge or software page. A place name opens the place editor. A gap is never counted as parked time.'),
+    h('p', { class: 'note tl-legend-note' }, 'A time opens that span as a trip. A kind opens the drive, charge or software page. A place name opens the place editor. A gap is never counted as parked time. The text filter only hides rows; it never changes their figures.'),
     list, foot),
     help);
 
@@ -233,6 +252,7 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
   ctx.ready();
 
+  ctx.events('now', (ev) => { if (ev.data?.car !== cid || !ev.data.now) return; Object.assign(live, ev.data.now); paintNow(); });
   let rt = 0;
   ctx.events('rows', (ev) => { if (ev.data?.car !== cid) return; clearTimeout(rt); rt = setTimeout(() => { if (ctx.alive()) ctx.reload(); }, 2000); });
   ctx.onCleanup(() => clearTimeout(rt));
