@@ -141,7 +141,7 @@ as text (`h()` from `shared/dom.js`).
 | `icon(name)` | A line icon: `search chevronRight chevronLeft chevronDown arrowRight close plug reset download menu calendar person warning info check pin star settings`. Decorative; say the meaning in text. |
 | `loadingView()`, `loadingBlock(lines)` | The shimmering stand-ins (the router shows `loadingView` for the whole page). |
 | `empty({ title, text, action, cover })` | Nothing to show, and why: say which filter removed everything or what to do. Never a bare "No data". |
-| `errorView(err, { retry, eyebrow })`, `errorWords(err)` | The error state of a page or a part, in plain words per HTTP status, with "Try again". |
+| `errorView(err, { retry, eyebrow, title, home })`, `errorWords(err)` | The error state of a page or a part, in plain words per HTTP status, with "Try again". For a part, pass `title` (its own words when the error has none more specific) and `home: false` (no "Go to Fleet" link). |
 | `batteryBar(soc, { from, limit, cls })` | A thin battery bar (SVG with percentage widths). |
 | `routeSketch([[lon, lat], …], { cls })` | A route's shape as a small drawing, start ring and end dot. |
 | `plannedSections(list, { title, noteText })` | The page plan's sections for a part not built yet. |

@@ -174,19 +174,23 @@ export function errorWords(err) {
   if (s === 403) return { title: 'Your account may not do this.', text: 'Ask an admin if you need it.' };
   if (s === 0) return { title: 'The server does not answer.', text: 'Check the connection; the page tries again when you reload it.' };
   if (s === 429) return { title: 'Too many requests.', text: 'Wait a moment and try again.' };
-  return { title: 'This page could not be loaded.', text: (err && err.message) || String(err) };
+  return { title: 'This page could not be loaded.', text: (err && err.message) || String(err), generic: true };
 }
 
-/** The error state of a page or a part: errorView(err, { retry }). */
-export function errorView(err, { retry = null, cls = null, eyebrow = 'Could not load' } = {}) {
+/**
+ * The error state of a page or a part: errorView(err, { retry }). For a part of a page, pass its own
+ * wording as title (used when the error has no more specific words, e.g. 'The odometer could not be
+ * loaded.') and home: false to leave out the 'Go to Fleet' link.
+ */
+export function errorView(err, { retry = null, cls = null, eyebrow = 'Could not load', title = null, home = true } = {}) {
   const w = errorWords(err);
   return h('section', { class: ['empty', 'empty-error', cls], role: 'alert' },
     h('p', { class: 'eyebrow' }, eyebrow),
-    h('p', { class: 'empty-title' }, w.title),
+    h('p', { class: 'empty-title' }, title && w.generic ? title : w.title),
     h('p', { class: 'empty-text' }, w.text),
     h('p', { class: 'empty-action' },
       retry ? button('Try again', { onclick: retry, iconName: 'reset' }) : null,
-      ' ', h('a', { class: 'link-arrow', href: '/' }, 'Go to Fleet', icon('arrowRight'))));
+      home ? [' ', h('a', { class: 'link-arrow', href: '/' }, 'Go to Fleet', icon('arrowRight'))] : null));
 }
 
 /* ------------------------------------------------------------------ small drawings */

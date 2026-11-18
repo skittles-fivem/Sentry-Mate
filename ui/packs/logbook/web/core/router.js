@@ -86,9 +86,17 @@ function leave() {
   for (const f of c.cleanups.splice(0)) { try { f(); } catch (e) { console.error(e); } }
 }
 
+/** After a page's first render: scroll to the part a link's #id names, when the page has it. */
+function jumpToHash() {
+  let target = null;
+  try { const k = decodeURIComponent((window.location.hash || '').slice(1)); target = k ? document.getElementById(k) : null; } catch { target = null; }
+  if (target) target.scrollIntoView({ block: 'start' });
+}
+
 /** The context a page gets. Everything a page needs from the frame goes through it. */
 function makeCtx(s, my, scope, cleanups) {
   const id = s.page;
+  let jumped = false;
   const info = pageInfo(id);
   const ctx = {
     id, info, state: s, query: { ...s.query }, carId: s.car, driveId: s.drive, chargeId: s.charge,
@@ -96,8 +104,8 @@ function makeCtx(s, my, scope, cleanups) {
     api: scope, signal: scope.signal, main: main(), me,
     /** True while this page is still the one on screen. */
     alive: () => my === token,
-    /** The first render with data is done: data-ready = page id. */
-    ready: () => { if (my === token) ready(id); },
+    /** The first render with data is done: data-ready = page id. A link with #id lands on that part. */
+    ready: () => { if (my === token) { ready(id); if (!jumped) { jumped = true; jumpToHash(); } } },
     /** The page could not load: its error state, and data-ready = 'error:<id>'. */
     fail: (err) => {
       if (my !== token || api.isAbort(err)) return;

@@ -8,14 +8,16 @@
 //   GET /cars/{car}/drives?sort=distance&dir=desc&limit=1                  (the longest drive, a record)
 //   GET /cars                                                              (the car pick list)
 //
-// Periods follow each car's own time zone; a drive or charge belongs to the period it started in, so the
-// rows add up to the Drives and Charges lists of the same span. Money stays per currency. The grouping and
+// Periods follow each car's own time zone: with several cars, a calendar period ('This year', 'Last 7
+// days', dates picked in the calendar) is read in each car's zone, one request per zone, so 'This year'
+// is each car's own year. A drive or charge belongs to the period it started in, so the rows add up to
+// the Drives and Charges lists of the same span. Money stays per currency. The grouping and
 // the cars live in the address; the period is the frame's. Charts are SVG in percentages of boxes sized in
 // rem, so they stay sharp at any size, and every table and chart has its own CSV.
 
 import { h, svg, replace } from '../shared/dom.js';
 import { format, formatMoney, unitLabel, convert } from '../shared/units.js';
-import { formatDate, formatDuration, formatDayKey, formatDateRange, dateFormat, startOf, addPeriod, periodLabel, DAY } from '../shared/time.js';
+import { formatDate, formatDuration, formatDayKey, formatDateRange, dateFormat, startOf, addPeriod, periodLabel, resolvePeriod, periodParams, dayKey, dayStart, DAY } from '../shared/time.js';
 import { formatNumber, tn } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import * as api from '../shared/api.js';
@@ -50,6 +52,9 @@ const addMoney = (rows, key, f = 'amount') => {
 };
 // A blank consumption figure says why: no distance, or too little to divide by.
 const perKm = (kwh, km) => (km > 0.1 ? (kwh / km) * 1000 : null);
+/** Overhead: the share of all energy (gross) that did not go to driving, 1 - net / gross; 0 to 100 %. */
+const overheadOf = (r) => (r && r.net_wh_per_km != null && r.gross_wh_per_km > 0 ? Math.max(0, Math.min(100, (1 - r.net_wh_per_km / r.gross_wh_per_km) * 100)) : null);
+const CALENDAR_PRESETS = ['7d', '30d', 'year'];
 
 /** The automatic grouping when the address names none: days for a month or less, months up to three years, then years. */
 function autoGroup(period, now) {
@@ -78,6 +83,31 @@ export async function mount(ctx) {
   const scopeName = fixedCar ? fixedCar.name : all ? (fleet.length === 1 ? fleet[0].name : `All ${formatNumber(fleet.length)} cars`) : asked.length === 1 ? carName(asked[0]) : `${formatNumber(asked.length)} cars`;
   const statsPath = fixedCar ? api.apiPath`cars/${fixedCar.id}/statistics` : 'statistics';
   const colourOf = new Map(viewCars.map((cid, i) => [cid, i < MAX_LINES ? `st-c${i}` : 'st-cx']));
+
+  // The period's edges per time zone. One car: the frame's period, already in its zone. Several cars: a
+  // calendar period is read again in each car's own zone (its 'This year' starts on its own Jan 1), so no
+  // row is cut only because the zones differ; a rolling 24 hours or exact times stay the same moments.
+  const zoneOfCar = (cid) => (byId.get(cid) && byId.get(cid).time_zone) || tz;
+  const p0 = ctx.period;
+  const isDayEdge = (ms) => Number.isFinite(ms) && startOf(ms, 'day', tz) === ms;
+  const edgeMode = !multi || !p0 ? 'one' : CALENDAR_PRESETS.includes(p0.preset) ? 'calendar'
+    : p0.preset === 'custom' && (isDayEdge(p0.from_ms) || isDayEdge(p0.to_ms)) ? 'calendar' : p0.preset === 'all' ? 'all' : 'moments';
+  function edgesIn(zone) {
+    if (edgeMode !== 'calendar' || zone === tz) return { ...ctx.params };
+    if (CALENDAR_PRESETS.includes(p0.preset)) return periodParams(resolvePeriod({ preset: p0.preset }, { now, tz: zone }));
+    const out = { ...ctx.params };
+    if (isDayEdge(p0.from_ms)) out.from_ms = dayStart(dayKey(p0.from_ms, tz), zone);
+    if (isDayEdge(p0.to_ms)) out.to_ms = Math.min(dayStart(dayKey(p0.to_ms, tz), zone), Math.max(now, out.from_ms ?? now));
+    return out;
+  }
+  const zoneGroups = (() => {
+    if (!multi) return [{ zone: tz, cars: carsParam, ids: viewCars, params: { ...ctx.params } }];
+    const by = new Map();
+    for (const cid of viewCars) { const z = edgeMode === 'calendar' ? zoneOfCar(cid) : tz; if (!by.has(z)) by.set(z, []); by.get(z).push(cid); }
+    if (by.size === 1) { const [z] = [...by.keys()]; return [{ zone: z, cars: carsParam, ids: viewCars, params: edgesIn(z) }]; }
+    return [...by].map(([z, ids]) => ({ zone: z, cars: ids.join(','), ids, params: edgesIn(z) }));
+  })();
+  const paramsOf = (cid) => (zoneGroups.find((x) => x.ids.includes(cid)) || zoneGroups[0]).params;
 
   let group = GROUPS.some(([k]) => k === ctx.query.group) ? ctx.query.group : null;
   // Several cars: lines from zero by default (odometers of different cars differ by tens of thousands).
@@ -116,7 +146,10 @@ export async function mount(ctx) {
   const periodLine = h('p', { class: 'st-period', cover: ['statistics.control.time_range', 'mi.filter.time_range'] },
     h('span', { class: 'field-label' }, 'Period'),
     h('span', { class: 'st-period-text' }, periodLabel(ctx.period, tz, now)), sep(),
-    h('span', { class: 'st-period-why' }, multi ? 'each car’s days in its own zone' : `days in ${zoneLabel(tz)}`, sep(),
+    h('span', { class: 'st-period-why' }, !multi ? `days in ${zoneLabel(tz)}`
+      : edgeMode === 'calendar' ? 'its dates read in each car’s own zone, and each car’s rows in its zone'
+        : edgeMode === 'all' ? 'each car’s rows in its own zone'
+          : `the same moments for every car (times in ${zoneLabel(tz)}); each car’s rows in its own zone`, sep(),
       'a drive or charge counts in the period it started in; the first and last rows may be part periods'),
     button('Change the period', { cls: 'button-small', iconName: 'calendar', onclick: () => document.querySelector('.period-trigger')?.click() }));
 
@@ -157,24 +190,42 @@ export async function mount(ctx) {
 
   // Each load replaces what the one before it drew; a slower, older answer is dropped.
   let gen = 0;
-  async function loadAll(first = false) {
+  let shownGroup = null; // the grouping the totals, charts and milestones show now
+  const groupText = (g) => (g === 'all' ? 'the whole period as one row' : `by ${g === 'week' ? 'ISO week' : g}`);
+  const setTableNote = (g, extra = '') => {
+    const note = document.getElementById('st-table-note');
+    if (note) note.textContent = (g === 'all' ? 'the whole period, one row per car' : `one row per ${g === 'week' ? 'ISO week' : g}${multi ? ' and car' : ''}, newest first`) + extra;
+  };
+  // The rows of every zone group, newest first.
+  const statsRows = (period, max) => Promise.all(zoneGroups.map((zg) => ctx.api.list(statsPath, { ...zg.params, cars: zg.cars, period }, { limit: 500 }).all({ max })))
+    .then((lists) => lists.flat().sort((a, b) => b.period_start_ms - a.period_start_ms || String(a.car).localeCompare(String(b.car))));
+  /** The rows did not load: say so in the table, and mark what still shows another grouping as such. */
+  function rowsFailed(err, g) {
+    setTableNote(g, ' (could not be loaded)');
+    replace(tableBox, errorView(err, { retry: () => loadAll(), eyebrow: 'Could not load the statistics', title: 'The statistics could not be loaded.', home: false }));
+    for (const box of [totalsBox, mileBox, stonesBox]) {
+      box.querySelector(':scope > .st-stale-note')?.remove();
+      if (!box.childElementCount) continue;
+      box.classList.add('is-stale');
+      box.prepend(h('p', { class: 'st-stale-note', role: 'note' }, icon('warning'),
+        shownGroup && shownGroup !== g ? `Still from the previous grouping (${groupText(shownGroup)}): the ${g === 'all' ? 'whole period' : g === 'week' ? 'weeks' : `${g}s`} could not be loaded.` : 'Not brought up to date: the statistics could not be loaded.'));
+    }
+  }
+  async function loadAll() {
     const my = ++gen;
     const g = groupNow();
-    const base = { ...ctx.params, cars: carsParam };
     const mileGroup = g === 'all' ? autoGroup(ctx.period, now) === 'day' ? 'day' : 'month' : g;
     const lineCars = viewCars.slice(0, MAX_LINES);
     const [rowsR, wholeR, mileR, longR] = await Promise.allSettled([
-      ctx.api.list(statsPath, { ...base, period: g }, { limit: 500 }).all({ max: 20000 }),
-      g === 'all' ? null : ctx.api.list(statsPath, { ...base, period: 'all' }, { limit: 500 }).all({ max: 5000 }),
-      Promise.allSettled(lineCars.map((cid) => ctx.api.list(api.apiPath`cars/${cid}/mileage`, { ...ctx.params, group: mileGroup }, { limit: 500 }).all({ max: 5000 }))),
-      Promise.allSettled(viewCars.slice(0, MAX_DRIVE_LOOKUPS).map((cid) => ctx.api.get(api.apiPath`cars/${cid}/drives`, { ...ctx.params, sort: 'distance', dir: 'desc', limit: 1 }))),
+      statsRows(g, 20000),
+      g === 'all' ? null : statsRows('all', 5000),
+      Promise.allSettled(lineCars.map((cid) => ctx.api.list(api.apiPath`cars/${cid}/mileage`, { ...paramsOf(cid), group: mileGroup }, { limit: 500 }).all({ max: 5000 }))),
+      Promise.allSettled(viewCars.slice(0, MAX_DRIVE_LOOKUPS).map((cid) => ctx.api.get(api.apiPath`cars/${cid}/drives`, { ...paramsOf(cid), sort: 'distance', dir: 'desc', limit: 1 }))),
     ]);
     if (my !== gen || !ctx.alive()) return;
-    if (rowsR.status === 'rejected') {
-      if (first) throw rowsR.reason;
-      replace(tableBox, errorView(rowsR.reason, { retry: () => loadAll(), eyebrow: 'Could not load the statistics' }));
-      return;
-    }
+    if (rowsR.status === 'rejected') { if (!api.isAbort(rowsR.reason)) rowsFailed(rowsR.reason, g); return; }
+    for (const box of [totalsBox, mileBox, stonesBox]) box.classList.remove('is-stale');
+    shownGroup = g;
     const rows = rowsR.value;
     const whole = g === 'all' ? rows : wholeR.status === 'fulfilled' ? wholeR.value : null;
     const mileage = mileR.status === 'fulfilled' ? mileR.value.map((x, i) => ({ car: lineCars[i], items: x.status === 'fulfilled' ? x.value : null, error: x.status === 'rejected' ? x.reason : null })) : [];
@@ -189,7 +240,7 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- totals for the period */
 
   function drawTotals(whole, err) {
-    if (!whole) { replace(totalsBox, errorView(err, { retry: () => loadAll(), eyebrow: 'Could not load the totals' })); return; }
+    if (!whole) { replace(totalsBox, errorView(err, { retry: () => loadAll(), eyebrow: 'Could not load the totals', title: 'The totals for the period could not be loaded.', home: false })); return; }
     const km = sum(whole, (r) => r.distance_odometer_km), logged = sum(whole, (r) => r.distance_logged_km);
     const used = sum(whole, (r) => r.energy_used_kwh), standing = sum(whole, (r) => r.energy_standing_kwh);
     const drives = sum(whole, (r) => r.drives), charges = sum(whole, (r) => r.charges);
@@ -199,12 +250,12 @@ export async function mount(ctx) {
     const why = whole.length ? 'nothing driven' : 'no data in the period';
     replace(totalsBox, h('div', { class: 'figs st-totals', 'aria-label': 'Totals for the period' },
       figure('Distance', q(whole.length ? km : null, 'distance', { why }), whole.length ? [`by odometer; ${format(logged, 'distance')} on logged drives`, km - logged > 0.5 ? `, ${format(km - logged, 'distance')} in gaps` : ''] : null),
-      figure('Time driven', drives ? formatDuration(sum(whole, (r) => r.time_driven_ms)) : q(null, 'duration', { why: 'no drive' }), tn(drives, 'over {n} drive', 'over {n} drives')),
+      figure('Time driven', drives ? formatDuration(sum(whole, (r) => r.time_driven_ms)) : q(null, 'duration', { why: 'no drive' }), drives ? tn(drives, 'over {n} drive', 'over {n} drives') : null),
       figure('Energy added', q(charges ? sum(whole, (r) => r.energy_added_kwh) : null, 'energy', { why: 'no charge' }),
         charges ? `${tn(charges, '{n} charge', '{n} charges')}; ${format(sum(whole, (r) => r.energy_grid_kwh), 'energy')} metered from the grid (AC)` : 'into the pack'),
       figure('Cost', cost.length ? moneyText(cost) : q(null, 'money', { why: charges ? 'no charge has a price' : 'no charge' }), 'per currency, never added across'),
-      figure('Net consumption', q(perKm(used, logged), 'efficiency', { why }), `driving only: ${format(used, 'energy')} over ${format(logged, 'distance')} of logged drives`),
-      figure('Gross consumption', q(perKm(used + standing, logged), 'efficiency', { why }), `with ${format(standing, 'energy')} used while parked`),
+      figure('Net consumption', q(perKm(used, logged), 'efficiency', { why }), drives ? `driving only: ${format(used, 'energy')} over ${format(logged, 'distance')} of logged drives` : null),
+      figure('Gross consumption', q(perKm(used + standing, logged), 'efficiency', { why }), drives ? `with ${format(standing, 'energy')} used while parked` : null),
       figure('Recorded', recorded(span ? (100 * (span - unknown)) / span : null, unknown, 'no time in the period'),
         span ? `${formatDuration(unknown)} not recorded; ${tn(dropped, '{n} dropped stretch', '{n} dropped stretches')}` : null)));
   }
@@ -260,8 +311,7 @@ export async function mount(ctx) {
   const zeroText = (r, what) => h('span', { class: 'st-quiet' }, what);
 
   function drawTable(rows, g) {
-    const tableNote = document.getElementById('st-table-note');
-    if (tableNote) tableNote.textContent = g === 'all' ? 'the whole period, one row per car' : `one row per ${g === 'week' ? 'ISO week' : g}${multi ? ' and car' : ''}, newest first`;
+    setTableNote(g);
     const unitD = unitLabel('distance');
     const columns = [
       multi ? { key: 'car', label: 'Car', sort: true, cls: 'c-car', value: (r) => carName(r.car), cell: (r) => h('a', { class: 'st-car', href: state.buildUrl('car', { car: r.car }) }, h('span', { class: ['st-swatch', colourOf.get(r.car)] }), carName(r.car)) } : null,
@@ -283,14 +333,14 @@ export async function mount(ctx) {
       { key: 'gross', label: 'Gross', sort: true, num: true, cls: 'c-gross', cover: 'statistics.col.consumption_gross', hint: 'Driving plus everything used while parked, over the distance', value: (r) => r.gross_wh_per_km,
         cell: (r) => !r.drives ? h('span', null, zeroText(r, '—'), h('span', { class: 'cell-sub' }, r.energy_standing_kwh ? ['+', format(r.energy_standing_kwh, 'energy'), ' parked'] : '')) : h('span', null, q(r.gross_wh_per_km, 'efficiency', { why: 'too little distance' }),
           h('span', { class: 'cell-sub' }, r.energy_standing_kwh ? ['+', format(r.energy_standing_kwh, 'energy'), ' parked'] : ''),
-          h('span', { class: 'cell-sub st-fold st-fold-over' }, r.overhead_pct != null ? `${format(r.overhead_pct, 'percent', { digits: 0 })} overhead` : '')) },
-      { key: 'over', label: 'Overhead', sort: true, num: true, cls: 'c-over st-wide', cover: 'statistics.col.consumption_overhead', hint: 'How much more gross is than net: the share of energy that went to standing still', value: (r) => r.overhead_pct,
-        cell: (r) => !r.drives ? zeroText(r, '—') : h('span', null, q(r.overhead_pct, 'percent', { digits: 0, why: 'too little distance' }), h('span', { class: 'cell-sub' }, r.overhead_pct != null ? 'on top of net' : '')) },
+          h('span', { class: 'cell-sub st-fold st-fold-over' }, overheadOf(r) != null ? `${format(overheadOf(r), 'percent', { digits: 0 })} of it parked` : '')) },
+      { key: 'over', label: 'Overhead', sort: true, num: true, cls: 'c-over st-wide', cover: 'statistics.col.consumption_overhead', hint: 'The share of all the energy (gross) that did not go to driving but was used while parked: 1 − net ÷ gross, never above 100 %', value: overheadOf,
+        cell: (r) => !r.drives ? zeroText(r, '—') : h('span', null, q(overheadOf(r), 'percent', { digits: 0, why: 'too little distance' }), h('span', { class: 'cell-sub' }, overheadOf(r) != null ? 'of all energy, parked' : '')) },
       { key: 'charges', label: 'Charges', sort: true, num: true, cls: 'c-charges', cover: ['statistics.col.charges_count', 'statistics.link.charges'], hint: 'Charges that started in the period', value: (r) => r.charges,
         cell: (r) => h('span', null, r.charges ? h('a', { class: 'cell-main', href: linkFor('charges', r), title: 'These charges in the Charges list' }, formatNumber(r.charges)) : zeroText(r, 'none'),
           h('span', { class: 'cell-sub st-fold st-fold-each' }, r.energy_per_charge_kwh != null ? [format(r.energy_per_charge_kwh, 'energy'), ' each'] : '')) },
       { key: 'added', label: 'Added', sort: true, num: true, cls: 'c-added', cover: ['statistics.col.energy_used', 'statistics.link.charging_stats'], hint: 'Energy put into the pack by the charges, then the part metered from the grid', value: (r) => r.energy_added_kwh,
-        cell: (r) => h('span', null, r.charges ? h('a', { class: 'cell-main', href: linkFor('charges', r), title: 'Charging habits, costs and places for this period' }, q(r.energy_added_kwh, 'energy')) : zeroText(r, '—'),
+        cell: (r) => h('span', null, r.charges ? h('a', { class: 'cell-main', href: `${linkFor('charges', r)}#ch-costs-title`, title: 'The charging statistics of this period: costs and totals, then habits and places' }, q(r.energy_added_kwh, 'energy')) : zeroText(r, '—'),
           h('span', { class: 'cell-sub' }, r.energy_grid_kwh ? [format(r.energy_grid_kwh, 'energy'), ' from grid'] : r.charges ? 'grid not metered' : '')) },
       { key: 'each', label: 'Per charge', sort: true, num: true, cls: 'c-each st-wide', cover: 'statistics.col.avg_energy_per_charge', hint: 'Energy added over the number of charges', value: (r) => r.energy_per_charge_kwh,
         cell: (r) => (r.charges ? q(r.energy_per_charge_kwh, 'energy') : zeroText(r, '—')) },
@@ -315,7 +365,7 @@ export async function mount(ctx) {
       column('Distance by odometer', 'distance_odometer_km', 'distance'), column('Distance logged', 'distance_logged_km', 'distance'),
       column('Outside while driving', 'outside_avg_c', 'temperature'), column('Driving efficiency', 'driving_efficiency_pct', 'percent'),
       column('Energy driving', 'energy_used_kwh', 'energy'), column('Energy parked', 'energy_standing_kwh', 'energy'),
-      column('Net consumption', 'net_wh_per_km', 'efficiency'), column('Gross consumption', 'gross_wh_per_km', 'efficiency'), column('Overhead', 'overhead_pct', 'percent'),
+      column('Net consumption', 'net_wh_per_km', 'efficiency'), column('Gross consumption', 'gross_wh_per_km', 'efficiency'), column('Overhead (share of all energy used parked)', overheadOf, 'percent'),
       column('Charges', 'charges'), column('Energy added', 'energy_added_kwh', 'energy'), column('Energy from the grid', 'energy_grid_kwh', 'energy'),
       column('Energy per charge', 'energy_per_charge_kwh', 'energy'),
       column('Cost', money('cost_by_currency', 'amount')), column('Price per kWh', money('price_per_kwh', 'value')), column(`Cost per 100 ${unitD}`, (r) => (r.cost_per_100km || []).map((x) => `${round2(convert(x.amount, 'money_per_distance'))} ${x.currency}`).join(' + ')),
@@ -350,7 +400,7 @@ export async function mount(ctx) {
         column('Odometer at start', 'odometer_start_km', 'odometer'), column('Odometer at end', 'odometer_end_km', 'odometer'),
         column('Distance by odometer', 'distance_km', 'distance'), column('Logged', 'logged_km', 'distance'), column('Not logged', 'not_logged_km', 'distance')]);
     const odoSlot = h('div', { class: 'st-odo-slot' });
-    const drawOdo = () => replace(odoSlot, lines.length ? odoChart(lines, odoScale) : failed.length ? errorView(failed[0].error, { retry: () => loadAll(), eyebrow: 'Could not load the odometer' })
+    const drawOdo = () => replace(odoSlot, lines.length ? odoChart(lines, odoScale) : failed.length ? errorView(failed[0].error, { retry: () => loadAll(), eyebrow: 'Could not load the odometer', title: 'The odometer could not be loaded.', home: false })
       : empty({ title: 'No odometer reading in this period.', text: 'The odometer is read while the car is awake. Pick a longer period.' }));
     const scaleChoice = lines.length > 1 ? choice({
       label: 'Scale', labelHidden: true, name: 'statistics-odo-scale', value: odoScale, cls: 'st-scale',
@@ -405,7 +455,7 @@ export async function mount(ctx) {
     });
     parts.push(h('div', { class: 'st-chart-part st-percar', cover: 'mi.section.per_car' },
       h('div', { class: 'part-head' }, h('h3', { class: 'st-part-title' }, 'Each car', h('span', { class: 'st-part-note' }, 'distance in the period and where it is heading'))),
-      whole ? perCar.el : errorView(new Error('The totals did not load.'), { retry: () => loadAll(), eyebrow: 'Could not load the cars’ totals' })));
+      whole ? perCar.el : errorView(new Error('The totals did not load.'), { retry: () => loadAll(), eyebrow: 'Could not load the cars’ totals', title: 'The cars’ totals could not be loaded.', home: false })));
     replace(mileBox, h('div', { class: 'st-mile-grid' }, parts));
     if (whole) perCar.load();
   }
@@ -602,7 +652,7 @@ export async function mount(ctx) {
     return h('div', { class: 'st-chart' }, h('div', { class: 'st-chart-grid' }, yAxis, plot, h('span'), xAxis), readout);
   }
 
-  await loadAll(true);
+  await loadAll();
   ctx.ready();
   return {};
 }

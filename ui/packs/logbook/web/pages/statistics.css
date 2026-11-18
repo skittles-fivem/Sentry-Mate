@@ -169,3 +169,8 @@
   .page-statistics .st-readout, .page-statistics .st-key { padding-left: 0; }
 }
 .page-statistics .sort-mark { font-size: max(10px, 0.75em); }
+
+/* ------------------------------------------------------------- a part that did not follow the last reload */
+.page-statistics .is-stale > :not(.st-stale-note) { opacity: 0.45; }
+.page-statistics .st-stale-note { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.75rem; padding: 0.5rem 0.75rem; border-left: 2px solid var(--ochre); background: color-mix(in srgb, var(--ochre) 10%, transparent); font-size: var(--small-2); color: var(--ink); }
+.page-statistics .st-stale-note .icon { flex: none; width: 0.875rem; height: 0.875rem; color: var(--ochre); }
