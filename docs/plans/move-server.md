@@ -3,7 +3,8 @@
 Status (2026-11-18): built, tested, and tried by hand with the binary: the export file, the import, the write gate
 and the snapshot (crates `gate` and `moving`), and the direct move (`moving::code`, `proto`, `old`, `pull`,
 `client`; the `move` commands, the two environment lines and `SENTRY_MATE_OFFER_MOVE` in `sentry-mate`). Not built:
-the web UI's `/api/v1` endpoints of section 6 (wave 2). The Docker test of section 9 is `tools/move-e2e.sh`. Revised
+the web server that answers the `/api/v1` of section 6 (wave 2); its pages and API are designed and served by the
+dev server on made-up data. The Docker test of section 9 is `tools/move-e2e.sh`. Revised
 after a design review, while building, and after a review of the built move: see **Review notes** at the end. The
 owner's guide is `docs/moving.md`. The owner's request: "Make sure there's a one click export so if we needed to migrate to
 another server there's no 15 step in ssh to get it moved."
@@ -808,69 +809,57 @@ gate (the server holds it for good).
 
 ## 6. API for the UI (`/api/v1`)
 
-For the web server (wave 2) and the UI packs; to be merged into `docs/ui-api.md` when they are built. The conventions
-there apply (one error shape, CSRF on every change, audit log). Changes here are admin only and ask for the password
-(and the two-step code when it is on) again; the first-run ones take the one-time set-up code instead. Pages: Settings:
-Server and access (old server), First-run set-up (new server), Settings: Server and access (exports).
+The API is in `docs/ui-api.md`, "Moving and first-run setup" (the resources) and "Decisions" (the rules), and the
+dev server (`ui/devserver`, `mockapi/resources/moving.py`) answers all of it on made-up data. It replaced the
+draft that was here. What changed from the draft, on the owner's request "no docker commands for moving: just go to
+settings, then export":
 
-| Resource | Methods | Fields and notes | Pages |
-|---|---|---|---|
-| `/api/v1/move` | GET (admin) | `{ role: "none" \| "old" \| "new", state: "none" \| "offered" \| "copying" \| "paused" \| "moved" \| "done" \| "cancelled", code: { id, expires_ms, anywhere } \| null, peer: { address, app, claimed_ms, last_seen_ms } \| null, progress, moved: { at_ms, to_address, switched_ms } \| null, skipped: [{ path, why }] (at most 100), problem: { code, message, retry_ms } \| null }` | Settings: Server and access |
-| `/api/v1/move/code` | POST, DELETE (admin) | POST `{ password, two_step, anywhere, replace }` -> `201 { code, id, expires_ms, anywhere }`, the code shown once; `409 move_under_way` unless `replace: true`. DELETE revokes a code not claimed yet. | Settings: Server and access |
-| `/api/v1/move/cancel` | POST (admin) | Ends a move not finished. `409 { code: "finished" }` after a move: use undo. | Settings: Server and access |
-| `/api/v1/move/undo` | POST (admin) | `{ password, two_step, confirm: true }`. After a move: this server takes uploads again. | Settings: Server and access |
-| `/api/v1/move/events` | GET (server-sent events, admin) | Events below. | Settings: Server and access |
-| `/api/v1/setup/move` | POST, GET, DELETE | First run, no account yet: the one-time set-up code stands in for a session. POST `{ setup_code, address, code }` -> `202 { watch }`. `400` with `fields` (`address`, `code`: a typo), `409 not_empty`. GET and DELETE take `?watch=`; GET has the shape of `/api/v1/move`, DELETE cancels; from `switching` on DELETE answers `409 finished`. | First-run set-up |
-| `/api/v1/setup/move/finish` | POST | `?watch=`, `{ recovery_key, confirm: true }`: the last resort of section 5 (`move finish --recovery-key`). | First-run set-up |
-| `/api/v1/setup/move/events` | GET (server-sent events) | `?watch=`. The same events. After `done` the server serves the moved data; the accounts are the old server's, so the person signs in with their old account. | First-run set-up |
-| `/api/v1/exports` | POST, GET (admin) | POST `{ password, two_step }` -> `202 { id, state: "preparing" }`; the snapshot needs a pause of seconds (`503 busy` with `Retry-After` when a pause can't be had now). GET lists the snapshot there is (at most one). | Settings: Server and access |
-| `/api/v1/exports/{export}` | GET, DELETE (admin) | `{ id, state: "preparing" \| "ready" \| "sending" \| "sent" \| "expired" \| "failed", file_name, files, bytes, size, sent_bytes, made_ms, expires_ms, skipped, url }`. DELETE removes the snapshot. | Settings: Server and access |
-| `/api/v1/exports/{export}/file` | GET (admin) | The file: `application/octet-stream`, `Content-Disposition: attachment; filename="sentry-mate-2026-11-17.smexport"`, `Content-Length`, `ETag`, `Accept-Ranges: bytes`. `Range` (and `If-Range`) -> `206`. A snapshot no longer there -> `404 export_gone` (make a new one). A plain link works: the session cookie goes with it. | Settings: Server and access |
-| `/api/v1/exports/events` | GET (server-sent events, admin) | `state`, `progress` with `{ id, sent_bytes, size }`. | Settings: Server and access |
-| `/api/v1/setup/import` | POST | First run: `{ setup_code, recovery_key, header }` (`header`: the file's first 64 KiB, base64) -> `201 { id, watch, files, bytes, size, made_ms, app }`. `422 not_an_export`, `422 wrong_recovery_key`, `422 newer_version`, `409 not_empty`, `507 no_space`. Throttled like sign-in. A half-done import of the same export carries on: `200` with `received` (the boundary to send from). | First-run set-up |
-| `/api/v1/setup/import/{import}` | PATCH, GET, DELETE | `?watch=`. PATCH: one chunk (at most 16 MiB) with `Upload-Offset` and `Upload-Length` (no `Upload-SHA256`: the file checks itself) -> `{ received }`; `409 offset_mismatch { received }` gives the last saved boundary, after a restart too. GET: `{ state: "uploading" \| "checking" \| "ready" \| "switching" \| "done" \| "failed", received, size, files_done, files, problem }`. DELETE discards it (`409 finished` from `switching` on). | First-run set-up |
-| `/api/v1/setup/import/{import}/events` | GET (server-sent events) | `?watch=`. `state`, `progress`, `problem`, `done`. | First-run set-up |
+- The old server's calls are under `/api/v1/system/` (`/system/move`, `/system/move/undo`, `/system/exports`), beside
+  `/system/storage` and `/system/health`. A move code is `POST /system/move`; cancelling is `DELETE /system/move`.
+- The first-run calls take a **claim** instead of the set-up code in every body: `POST /setup/claim { setup_code }`
+  sets a cookie, and `/setup/fresh`, `/setup/move-here`, `/setup/restore` and `/setup/job` need it. A fresh server
+  has a third choice beside the two of the draft: **Start fresh** (the first admin and the recovery key, shown once).
+- Pages poll (`GET /setup/job`, `GET /system/move`, `GET /system/exports/{export}`) instead of the draft's event
+  streams: the set-up pages have no session, and the answers are small.
+- A restore sends `header` and `recovery_key` first, as the draft said, then chunks with `Upload-Offset`; a wrong
+  offset is `409 wrong_offset` (the import's name, not `offset_mismatch`).
+- Re-auth is the account's `password` (and `two_step` when it is on) in the body of `POST /system/move`,
+  `POST /system/move/undo` and `POST /system/exports`; the export's file is then a plain link.
 
-Events (every stream above):
+### From the web UI
 
-| Event | Data |
+What the web server (wave 2) calls for each, all built in `moving` (the web server wraps them, in a blocking task,
+and maps `moving::Error` and `pull::Problem` to the error codes of `docs/ui-api.md`):
+
+| Endpoint | `moving` and the server |
 |---|---|
-| `state` | `{ state, at_ms }`. New server: `connecting`, `copying`, `catching_up`, `finishing`, `switching`, `done`, `waiting` (the problem says why), `failed`. Old server: `offered`, `copying`, `paused`, `moved` (the new server is switching), `done` (it confirmed), `cancelled`. |
-| `progress` | `{ round, files_done, files_total, bytes_done, bytes_total, bytes_per_s, eta_s }`, at most once a second. |
-| `problem` | `{ code, message, retry_ms }`; `code` one of `address` (the address doesn't read), `unreachable`, `no_move`, `wrong_code` (a typo too: the message says which), `not_home_network`, `slow_down`, `code_used`, `code_expired`, `not_proven`, `too_old`, `not_empty`, `disk_times` (the new server's disk rounds file times), `no_space`, `disk`, `bad_session`, `cancelled`, `changing_fast`, `skipped`. `message` is the log's line. `retry_ms` null when it waits for the person. |
-| `done` | `{ at_ms, fingerprint, upload_address_hint, same_machine }` |
+| `GET /setup` | No account yet (the accounts store is empty) is `needs_setup`. `state`: `moving_here` while `pull::pending` is `Moving`, `restoring` while `import::pending` is not `None`, else `fresh`; `set_up` once there is an account. `job` from `GET /setup/job`. |
+| `POST /setup/claim` | New, not in `moving`: the set-up code, 60 random bits, made on the first start with no account, kept sealed in the data folder and printed in the log on every start until set-up is done; compared with `proto::same` (constant time); the sign-in throttle. The claim is a random token, kept in memory (a restart asks for the code again). |
+| `POST /setup/fresh` | The accounts crate makes the first admin. The recovery key is the one the vault made on the first start (`RECOVERY-KEY.txt`); the answer reads it from there. `POST /system/recovery-key/saved` deletes that file. |
+| `POST /setup/move-here` | `pull::begin(data, keys, from, code, opts)`; its `Problem` gives the answer before anything runs (`address` -> `400` on `from`, `wrong_code` with a typo -> `400` on `code`, `unreachable` -> `502 old_server_unreachable`, the old server's refusals -> `move_code_wrong`, `move_code_expired`, `move_code_used`, `move_too_old`, `move_not_home_network`, `move_not_offered`, `not_empty` -> `409`). Then the server's own loop runs `pull::run`, as for `move from` and `SENTRY_MATE_MOVE_CODE`. |
+| `POST /setup/move-here/finish` | `pull::force_finish(data, keys, recovery_key)`, then the switch on the next step of the loop. |
+| `GET /setup/job` (move here) | `pull::status`: `phase` (`claiming` -> `connecting`; `copying` with round 1 -> `copying`, later rounds -> `catching_up`, the pause and finish -> `finishing`; `switching`), `progress` (`pull::Progress`), `problem` (`pull::Problem`: `retry` true -> state `waiting`, false -> `stopped`), `skipped`; `pull::moved_in` and `pull::Done` for `result` (`same_machine` from `client::Address::is_this_machine`). |
+| `POST /setup/restore` | `import::unused` (the server is new), then the header: what `import::open_file` checks, read from the first 64 KiB (new: `open_file` reads a file today, the web server needs the same checks over bytes; `NotAnExport`, `NewerFormat`, `NewerApp` -> `not_an_export`, `export_too_new`), then the recovery key against the header (`WrongRecoveryKey`), then `import::begin` with the chunks fed as they arrive. A half-done import of the same export (`import::resume`) answers `200` with `received`. |
+| `PATCH /setup/restore` | Feeds the chunk to the running `Import`; `received` is the last sealed-chunk boundary saved in the import's state (`Import::progress`). `Damaged`, `CutShort`, `Malformed` -> `failed` with `export_damaged` / `export_cut_short`; `NoSpace` -> problem `no_space`. After the last byte `Import::run` ends `Ready`, then `import::switch` (state `switching`, `done`). |
+| `GET /setup/job` (restore) | `import::pending` and the import's `Progress` (`read`, `size`, `files_done`, `files`). |
+| `DELETE /setup/job` | `pull::cancel` (tells the old server) or `import::cancel`; both refuse from `switching` on (`409 finished`). |
+| `GET /system/move` | `old::status` (the code waiting or claimed, who copies, `sent_bytes` of `bytes`, the last cancel) and `old::moved_info` (`moved`, `switched_ms`). `state`: no code -> `none`; a code not claimed -> `offered` (or `expired` past `expires_ms`); claimed -> `copying`, `paused` while the gate is closed for the last round; `moved` from the moved record until `switched_ms`, then `done`. |
+| `POST /system/move` | `old::make_code(data, vault, anywhere, replace)`; `Error::MoveUnderWay` -> `409 move_under_way`, a moved server -> `409 moved`. The code text goes in the answer only (`Made::code`). |
+| `DELETE /system/move` | `old::cancel`: `Cancelled::Revoked` / `Ended` / `Nothing` -> `cancelled`; `Error::Finished` -> `409 finished`. |
+| `POST /system/move/undo` | `old::undo`; `None` -> `409 not_moved`. |
+| `POST /system/exports` | `export::Snapshot::make(data, vault, gate, app, wait)` in a blocking task (state `preparing` until it returns); `remove_unused_snapshots` first, so there is one at a time. |
+| `GET /system/exports/{export}/file` | `Snapshot::size` for `Content-Length`, `Snapshot::reader(vault, from)` for the bytes from any `Range` start, the export id as the `ETag`, `Snapshot::file_name` for the name. |
+| `DELETE /system/exports/{export}` | Drops the snapshot (its lock), then `remove_unused_snapshots`. |
 
-What the web server calls for each (all built, in `moving`; the web server only wraps them):
-
-- `GET /api/v1/move`: `old::status` (the code waiting or claimed, who copies, `sent_bytes` of `bytes`, moved and
-  confirmed), `pull::status` (a move coming in: phase, `Progress`, the last `Problem`, skipped), `pull::moved_in`
-  (where this server's data came from). `role` is `new` while `.moving/` is there, `old` with a code, a claim or a
-  moved state, else `none`.
-- `POST /api/v1/move/code`: `old::make_code` (`replace` maps to its flag; `409 move_under_way` is
-  `Error::MoveUnderWay`). `DELETE` and `POST /api/v1/move/cancel`: `old::cancel` (`409 finished` is
-  `Error::Finished`). `POST /api/v1/move/undo`: `old::undo`.
-- `POST /api/v1/setup/move`: `pull::begin` in a blocking task (its `Problem` gives the `400`/`409` answers), then
-  the server's own loop runs `pull::run`, as for `move from`. `DELETE`: `pull::cancel`. `POST
-  /api/v1/setup/move/finish`: `pull::force_finish`.
-- The events: the web server reads `pull::status` / `old::status` once a second and sends what changed (`state`,
-  `progress`, `problem`); `done` comes from `pull::Done` and the moved-in note. The `state` names map from
-  `pull::Phase` (`claiming` is `connecting`; `copying` with round 1 is `copying`, later rounds `catching_up`;
-  `switching`), and from the old side's code, claim, pause and moved state.
-
-Also:
-
-- `GET /api/v1/setup` gains `moving` and `importing` (true while one runs), so the first-run screen shows the progress
-  page after a reload.
-- `/api/v1/notices` gains `move_code_waiting` (a code is waiting until ...), `moving`, `moved` (this server's data
-  moved to ... on ...; it takes no uploads; until `done`: keep it running) and `bridge_still_sending`.
-- The audit log records: a code made or revoked, claimed (from where), the pause, the finish, the new server's
-  confirmation, a cancel, an undo, an export made and downloaded, an import done, a move received.
+Also: `/notices` adds `move_code_waiting`, `moving` and `moved` from `old::status`; a moved server answers `409
+moved` to changes, as `old::refuse_if_moved` does for the commands; the audit log records a code made or
+cancelled, a claim, the finish, an undo, an export made and downloaded, a restore and a move received.
 
 What the pages show: the old server's page shows the code large with a copy button and its expiry, then "Waiting for
 the new server", then a progress bar, then "Moved to 192.168.1.30: it is switching, keep this server on", then "Done:
-you can turn this server off" with **Take uploads here again**. The first-run screen asks for the address and the
-code, shows the progress, then "Done: sign in with your account from the old server", and the bridge note (with the
-port note when both ran on one machine).
+you can turn this server off" with **Undo the move**. The first-run screen asks for the set-up code, then offers
+the three choices; a move or restore shows its progress, then "Done: sign in with your account from the old server",
+and the bridge note (with the port note when both ran on one machine).
 
 ## 7. Versions
 

@@ -431,6 +431,7 @@ def create_token(req):
     st.record(req.account, "token.create", f"car:{req.car}", f"Made an upload token for {st.car_meta(req.car)['name']}.")
     out = dict(tok)
     out["secret"] = "smu_" + secrets.token_urlsafe(24)
+    out["app"] = bridge_fields(req, out["secret"])
     out["car"] = req.car
     out["_created"] = True
     return out
@@ -469,6 +470,7 @@ def create_new_token(req):
     st.record(req.account, "token.create", "server", "Made an upload token for a new car.")
     out = dict(tok, car=None)
     out["secret"] = "smu_" + secrets.token_urlsafe(24)
+    out["app"] = bridge_fields(req, out["secret"])
     out["_created"] = True
     return out
 
@@ -534,6 +536,11 @@ def patch_key(req):
     st.record(req.account, "key.update", f"key:{k['key']}",
               f"Key {k['key']}: car {k['car'] or 'none'}, preferred {'yes' if k['preferred'] else 'no'}.")
     return k
+
+
+def bridge_fields(req, secret):
+    from .integrations import bridge_fields as f
+    return f(req, secret)
 
 
 def setup_status(req):

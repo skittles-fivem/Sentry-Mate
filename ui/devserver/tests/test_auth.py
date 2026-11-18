@@ -42,14 +42,15 @@ class Setup(ServerCase):
 
     def test_first_admin(self):
         c = self.server.client()
-        self.assertEqual(c.get("/api/v1/setup"), {"needs_setup": True})
+        self.assertEqual(c.get("/api/v1/setup")["needs_setup"], True)
         c.error("POST", "/api/v1/setup", 403, "wrong_setup_code", body={"code": "nope", "name": "owner", "password": "x" * 12})
         e, _ = c.error("POST", "/api/v1/setup", 422, "invalid", body={"code": "SETUP-DEV-0000", "name": "owner", "password": "short"})
         self.assertIn("password", e["fields"])
         d = c.json("POST", "/api/v1/setup", {"code": "SETUP-DEV-0000", "name": "owner", "password": "a long password"})
         self.assertEqual(d["status"], "done")
+        self.assertRegex(d["recovery_key"], r"^SMRK-")
         self.assertEqual(c.get("/api/v1/me")["role"], "admin")
-        self.assertEqual(c.get("/api/v1/setup"), {"needs_setup": False})
+        self.assertEqual(c.get("/api/v1/setup")["needs_setup"], False)
         c.error("POST", "/api/v1/setup", 409, "setup_done", body={"code": "SETUP-DEV-0000", "name": "x", "password": "y" * 12})
 
 

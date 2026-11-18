@@ -25,7 +25,9 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--signed-out` | off | Starts with no session, to test the sign-in page. |
 | `--role admin\|watch` | `admin` | Who the automatic session is: `watch` sees only car `c1` and may not change car data. |
 | `--now-ms MS` | `1794850200000` | The virtual "now" at start (2026-11-16 17:30 UTC). It then moves with real time. |
-| `--needs-setup` | off | Starts with no accounts, to test the set-up page (code `SETUP-DEV-0000`). |
+| `--fresh` (or `--needs-setup`) | off | Starts as a fresh server: no accounts and nobody signed in, the first-run set-up page. The set-up code is `SETUP-DEV-0000`. See "First-run set-up and moving" below. |
+| `--move-state S` | `none` | Starts Settings: Server's "Move to another server" in state `S`: `offered`, `expired`, `copying`, `paused`, `moved` or `done` (screenshots; add `--freeze-clock` to hold it there). Not with `--fresh`. |
+| `--move-peer-after-s N` | `15` | A made-up new server (`192.168.1.30`) claims a waiting move code `N` seconds after it is made, then copies, pauses, switches and is done in about 17 s. `0`: never. |
 | `--freeze-clock` | off | Keeps "now" fixed (stable screenshots and tests). |
 | `--sse-interval-ms N` | `2000` | How often live values are pushed on `/api/v1/events`. |
 | `--verbose` | off | Logs every request to stderr. |
@@ -98,9 +100,57 @@ each piece's own seed and never stored, so a year of data answers in a few hundr
 | Integrations (MQTT settings, status, preview, test; outside connections) | done |
 | Server, settings and health (notices, maps, data health, rebuild, overlaps, storage) | done |
 | Import (resumable upload, check, car matching, import, report) | done |
+| Moving and first-run setup (claim, start fresh, move here, restore, move code, undo, export file) | done |
 | Deliberately absent (no car commands, no Tesla account, no SQL, no VIN serial) | absent: `404` |
 
 Decisions on points the API document left open are at the end of `docs/ui-api.md` ("Decisions").
+
+## First-run set-up and moving
+
+Everything runs on the virtual clock in a few seconds (frozen with `--freeze-clock`: tests move it on). Nothing is
+copied: the progress is worked out from the time.
+
+**A fresh server** (`--fresh`): `POST /api/v1/setup/claim { "setup_code": "SETUP-DEV-0000" }` first (the browser
+keeps the claim in the cookie `sentry-mate-setup`), then one of:
+
+- **Start fresh**: `POST /api/v1/setup/fresh { name, password }` makes the admin, signs it in and answers a made-up
+  recovery key (a new one each time).
+- **Move here**: `POST /api/v1/setup/move-here { from, code }`. The code must read (`SMMV-` and six groups of five
+  with a right check: take one from `POST /api/v1/system/move` on another dev server, or
+  `python3 -c "import sys; sys.path.insert(0, 'ui/devserver'); from mockapi.resources.moving import make_move_code; print(make_move_code()[0])"`).
+  The first label of the address picks what the made-up old server does:
+
+  | `from` | What happens |
+  |---|---|
+  | anything else, e.g. `192.168.1.20` | works: `connecting`, `copying`, `catching_up`, `finishing`, `switching`, `done` in about 12 s |
+  | `127.0.0.1` or `localhost` | works, and `result.same_machine` is true |
+  | `unreachable.example`, or any name ending in `.invalid` | `502 old_server_unreachable`, nothing starts |
+  | `wrong.example` | `422 move_code_wrong` |
+  | `expired.example` | `422 move_code_expired` |
+  | `used.example` | `409 move_code_used` |
+  | `newer.example` | `422 move_too_old` |
+  | `away.example` | `422 move_not_home_network` |
+  | `nomove.example` | `422 move_not_offered` |
+  | `flaky.example` | the connection drops at 40 % for 5 s (`waiting`, problem `unreachable`), then it carries on |
+  | `gone.example` | drops at 50 % and never comes back (`waiting`): try `POST /api/v1/setup/move-here/finish` |
+  | `cancel.example` | the old server cancels at 60 % (`stopped`, problem `cancelled`) |
+
+- **Restore**: `POST /api/v1/setup/restore { name, size, recovery_key, header }`, then PATCH the chunks. The old
+  server's recovery key is `SMRK-DEVK-EY00-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000`. The file must be
+  one a dev server made (Settings: Server, "Download export file", or `GET /api/v1/system/exports/{export}/file`):
+  any other gives `422 not_an_export`. A file whose name has `newer` in it gives `422 export_too_new`; one with
+  `broken` in it fails at 60 % of the upload (`failed`, problem `export_damaged`). After the last chunk:
+  `checking` (3 s), `switching` (1.5 s), `done`.
+
+After a move or a restore the server has the made-up accounts (`admin`, `watch`, `alex`, password
+`sentry-mate-dev`) and its dataset, and nobody is signed in.
+
+**A set-up server**: `POST /api/v1/system/move { password }` (the account's password: `sentry-mate-dev`; `alex` also
+sends `two_step: "000000"`) answers the move code once. After `--move-peer-after-s` the made-up new server claims it:
+`copying` (10 s, round 1, then round 2), `paused` (2 s), `moved` (2 s: the server takes no changes, `409 moved`),
+`done`. `POST /api/v1/system/move/undo { password, confirm: true }` takes it back. `POST /api/v1/system/exports
+{ password }` prepares a 4 MB made-up export file in 3 s; its `url` downloads it (with `Range`), and it restores
+on a `--fresh` dev server.
 
 ## Layout
 
@@ -118,7 +168,8 @@ mockapi/live.py          the "now" object, the car list item, attention items
 mockapi/series.py        bucketed series that keep minima and maxima
 mockapi/events.py        the event hub behind /api/v1/events
 mockapi/dataset/         places, cars, routes, the day-by-day simulator, pieces, synthetic cars, extras
-mockapi/resources/       one module per section of docs/ui-api.md (Reports is reports, travel and software)
+mockapi/resources/       one module per section of docs/ui-api.md (Reports is reports, travel and software;
+                         moving.py is first-run set-up, the move to another server and export files)
 tests/                   unittest; test_contract.py checks the server against docs/ui-api.md
 ```
 

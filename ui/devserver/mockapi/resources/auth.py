@@ -8,7 +8,7 @@ import time
 
 from ..conventions import page
 from ..errors import ApiError, bad_input, conflict, invalid, not_found, throttled
-from ..store import DEV_SETUP_CODE, DEV_TWO_STEP_CODE
+from ..store import DEV_TWO_STEP_CODE
 
 _throttle_lock = threading.Lock()
 THROTTLE_TRIES = 5
@@ -61,35 +61,7 @@ def _signed_in(req, account):
     return s
 
 
-# ------------------------------------------------------------------ setup and session
-
-
-def get_setup(req):
-    return {"needs_setup": req.store.needs_setup}
-
-
-def post_setup(req):
-    st = req.store
-    body = req.json()
-    _types(body, {"code": str, "name": str, "password": str})
-    if not st.needs_setup:
-        raise conflict("setup_done", "Set-up is already done. Sign in instead.")
-    key = "setup:" + (req.client_ip or "")
-    _check_throttle(st, key, THROTTLE_SETUP_TRIES)
-    if not secrets.compare_digest(body["code"].strip().encode(), DEV_SETUP_CODE.encode()):
-        _fail(st, key)
-        raise ApiError(403, "wrong_setup_code", "That set-up code is not right.")
-    errs = _name_password_rules(st, body["name"], body["password"])
-    if errs:
-        raise invalid(errs)
-    with st.lock:
-        a = {"id": "a1", "name": body["name"].strip(), "role": "admin", "cars": "all", "two_step_required": False,
-             "two_step": False, "password": body["password"], "created_ms": req.now, "version": 1}
-        st.accounts[a["id"]] = a
-        st.needs_setup = False
-    st.record(a, "setup.done", "account:a1", "Set up the first admin account.")
-    _signed_in(req, a)
-    return {"status": "done", "me": me_view(a)}
+# ------------------------------------------------------------------ session
 
 
 def post_session(req):
@@ -445,7 +417,7 @@ def get_audit(req):
 
 
 def register(router):
-    router.add("/api/v1/setup", GET=get_setup, POST=post_setup, public=("GET", "POST"))
+    # /api/v1/setup and the first-run set-up: resources/moving.py
     router.add("/api/v1/session", POST=post_session, DELETE=delete_session, public=("POST",))
     router.add("/api/v1/session/two-step", POST=post_two_step, public=("POST",))
     router.add("/api/v1/me", GET=get_me)

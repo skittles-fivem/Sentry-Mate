@@ -10,6 +10,7 @@ in the document.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import http.client
 import json
@@ -19,6 +20,12 @@ from . import apidoc
 from .helpers import NOW, Running, ServerCase
 
 DAY = 86_400_000
+# calls that work only on a fresh server (before set-up): SetupContract below covers them on a server of its own
+SETUP_ONLY = {("POST", "/api/v1/setup"), ("POST", "/api/v1/setup/claim"), ("POST", "/api/v1/setup/fresh"),
+              ("POST", "/api/v1/setup/move-here"), ("POST", "/api/v1/setup/move-here/finish"),
+              ("POST", "/api/v1/setup/restore"), ("PATCH", "/api/v1/setup/restore"), ("GET", "/api/v1/setup/job"),
+              ("DELETE", "/api/v1/setup/job")}
+DEV_KEY = "SMRK-DEVK-EY00-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000"
 VIN_RX = re.compile(r"[A-HJ-NPR-Z0-9]{17}")
 
 
@@ -47,7 +54,9 @@ class Contract(ServerCase):
             "update": c.get("/api/v1/cars/c1/updates")["items"][0]["id"],
             "place": "p1", "session": "s-older-1", "account": "a2", "token": "t12", "key": "cbk_5b2e9f13",
             "trip": "tr1", "rule": "r1", "import": "im1",
+            "export": c.json("POST", "/api/v1/system/exports", {"password": "sentry-mate-dev"}, expect=201)["id"],
         }
+        cls.server.app.store.exports[cls.ids["export"]]["made_ms"] -= 10_000  # prepared
         cls.bodies = []
 
     # ------------------------------------------------------------ helpers
@@ -119,13 +128,17 @@ class Contract(ServerCase):
         doc = self.documented()
         problems = []
         for (m, pattern), row in sorted(doc.items()):
-            if m != "GET":
+            if m != "GET" or (m, pattern) in SETUP_ONLY:
                 continue
             path = self.fill(pattern, **self.GET_IDS.get(pattern, {})) + self.GET_QUERY.get(pattern, "")
             if pattern == "/api/v1/events":
                 self.check_events(problems)
                 continue
             st, hd, raw, data = self.call("GET", path)
+            if pattern == "/api/v1/system/exports/{export}/file":
+                if st != 200 or hd.get("content-type") != "application/octet-stream" or not raw:
+                    problems.append(f"GET {path}: {st} {hd.get('content-type')}")
+                continue
             if pattern == "/health":
                 if st != 200 or raw:
                     problems.append(f"GET /health: {st} {raw[:80]!r}")
@@ -250,6 +263,15 @@ class Contract(ServerCase):
                       None, None)),
             ("DELETE", "/api/v1/imports/{import}",
              lambda: (self.fill("/api/v1/imports/{import}", **{"import": ctx["import"]}), None, None)),
+            ("POST", "/api/v1/system/recovery-key/saved", lambda: (None, None, None)),
+            ("POST", "/api/v1/system/exports", lambda: (None, {"password": "sentry-mate-dev"}, None)),
+            ("DELETE", "/api/v1/system/exports/{export}",
+             lambda: (self.fill("/api/v1/system/exports/{export}", export=ctx["export"]), None, None)),
+            # last of the changes: a moved server takes no other changes until the undo
+            ("POST", "/api/v1/system/move", lambda: (None, {"password": "sentry-mate-dev"}, None)),
+            ("POST", "/api/v1/system/move/undo",
+             lambda: (self.advance(40_000) or None, {"password": "sentry-mate-dev", "confirm": True}, None)),
+            ("DELETE", "/api/v1/system/move", lambda: (None, None, None)),
             ("DELETE", "/api/v1/me/sessions/{session}", lambda: (None, None, None)),
             # sign-in on a client of its own, so this test's session stays
             ("POST", "/api/v1/session", lambda: (None, {"name": "admin", "password": "sentry-mate-dev"}, "own")),
@@ -271,8 +293,8 @@ class Contract(ServerCase):
         writes = {(m, p) for (m, p) in doc if m != "GET"}
         recipes, new = self.recipes()
         have = {(m, p) for m, p, _ in recipes}
-        # POST /api/v1/setup works only before set-up: test_setup below covers it on a server of its own
-        lacking = sorted(writes - have - {("POST", "/api/v1/setup")})
+        # the set-up calls work only before set-up: SetupContract below covers them on a server of its own
+        lacking = sorted(writes - have - SETUP_ONLY)
         self.assertEqual(lacking, [], "documented writes without a recipe in test_contract.py")
         self.clients = {"own": self.server.client(), "own2": self.server.client()}
         problems = []
@@ -297,7 +319,8 @@ class Contract(ServerCase):
                 key = {"/api/v1/accounts": "account", "/api/v1/cars/{car}/upload-tokens": "token",
                        "/api/v1/upload-tokens": "new_token",
                        "/api/v1/cars/{car}/purpose-rules": "rule", "/api/v1/trips": "trip",
-                       "/api/v1/places": "place", "/api/v1/imports": "import"}.get(pattern)
+                       "/api/v1/places": "place", "/api/v1/imports": "import",
+                       "/api/v1/system/exports": "export"}.get(pattern)
                 if key:
                     new(key, data["id"])
             row = doc[(m, pattern)]
@@ -321,7 +344,8 @@ class Contract(ServerCase):
         for want in ("account.create", "account.update", "account.delete", "token.create", "token.revoke",
                      "drive.purpose", "purpose_rule.create", "trip.create", "charge.cost", "update.version",
                      "place.create", "place.update", "place.delete", "mqtt.update", "settings.update",
-                     "car.rebuild", "car.overlap", "import.create", "import.start", "import.discard"):
+                     "car.rebuild", "car.overlap", "import.create", "import.start", "import.discard",
+                     "export.create", "export.delete", "move.code", "move.undo", "recovery_key.saved"):
             self.assertIn(want, actions)
 
     # ------------------------------------------------------------ deliberately absent
@@ -349,4 +373,58 @@ class Setup(ServerCase):
         self.assertFalse(self.c.get("/api/v1/setup")["needs_setup"])
 
 
-__all__ = ["Contract", "Setup", "Running"]
+class SetupContract(ServerCase):
+    """The set-up calls on a fresh server: each answers, with the fields docs/ui-api.md names."""
+
+    server_args = {"needs_setup": True}
+
+    def test_setup_calls(self):
+        self.rows, types = apidoc.read()
+        doc = Contract.documented(self)  # the same reading of the tables
+        job_shape = types["SetupJob"]
+        c = self.server.client()
+        problems = []
+
+        def check(m, pattern, shape, data):
+            miss = apidoc.missing_fields(shape, data)
+            if miss:
+                problems.append(f"{m} {pattern}: lacks {', '.join(miss[:10])}")
+
+        d = c.get("/api/v1/setup")
+        check("GET", "/api/v1/setup", doc[("GET", "/api/v1/setup")].shape, d)
+        d = c.json("POST", "/api/v1/setup/claim", {"setup_code": "SETUP-DEV-0000"})
+        check("GET", "/api/v1/setup", doc[("GET", "/api/v1/setup")].shape, d)
+        from mockapi.resources.moving import EXPORT_MAGIC, make_move_code
+        j = c.json("POST", "/api/v1/setup/move-here", {"from": "gone.example", "code": make_move_code()[0]},
+                   expect=201)
+        check("POST", "/api/v1/setup/move-here", job_shape, j)
+        check("POST", "/api/v1/setup/move-here", doc[("POST", "/api/v1/setup/move-here")].writes.get("POST"), j)
+        self.server.app.clock.advance(60_000)
+        check("GET", "/api/v1/setup/job", job_shape, c.get("/api/v1/setup/job"))
+        j = c.json("POST", "/api/v1/setup/move-here/finish", {"recovery_key": DEV_KEY, "confirm": True})
+        check("POST", "/api/v1/setup/move-here/finish", job_shape, j)
+        # give that one up before it switches? it switches at once: start again on a new server below
+        fresh = Running(needs_setup=True)
+        try:
+            f = fresh.client()
+            f.json("POST", "/api/v1/setup/claim", {"setup_code": "SETUP-DEV-0000"})
+            data = EXPORT_MAGIC + b"x" * 5000
+            j = f.json("POST", "/api/v1/setup/restore", {"name": "a.smexport", "size": len(data),
+                                                         "recovery_key": DEV_KEY,
+                                                         "header": base64.b64encode(data).decode()}, expect=201)
+            check("POST", "/api/v1/setup/restore", doc[("POST", "/api/v1/setup/restore")].writes.get("POST"), j)
+            check("POST", "/api/v1/setup/restore", job_shape, j)
+            st, _hd, raw = f.request("PATCH", "/api/v1/setup/restore", data[:100],
+                                     headers={"Upload-Offset": "0", "Upload-Length": str(len(data)),
+                                              "Content-Type": "application/offset+octet-stream"})
+            self.assertEqual(st, 200, raw)
+            check("PATCH", "/api/v1/setup/restore", job_shape, json.loads(raw))
+            self.assertTrue(f.json("DELETE", "/api/v1/setup/job")["deleted"])
+            d = f.json("POST", "/api/v1/setup/fresh", {"name": "owner", "password": "a long password"}, expect=201)
+            check("POST", "/api/v1/setup/fresh", doc[("POST", "/api/v1/setup/fresh")].writes.get("POST"), d)
+        finally:
+            fresh.close()
+        self.assertEqual(problems, [], "\n".join(problems))
+
+
+__all__ = ["Contract", "Setup", "SetupContract", "Running"]

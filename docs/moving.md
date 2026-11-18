@@ -15,7 +15,82 @@ There are two ways:
 
 The addresses and codes below are made up. Use your own.
 
-## Before you start
+## From the web pages (no shell, no commands)
+
+**Coming with Sentry Mate's web server.** The pages and their API are designed and tried on made-up data
+(`docs/ui-api.md`, "Moving and first-run setup"); the server that serves them is not built yet. Until it is, use the
+command line below. The pages are on the HTTPS address of the server only: the set-up code, passwords, move codes
+and recovery keys never go over plain HTTP.
+
+### Which way to choose
+
+- **Move code**: both servers are on at the same time and can reach each other (the same home network, or the new
+  one can reach the old one's upload port). The old server keeps taking uploads while the new one copies, and the
+  new one takes over by itself at the end.
+- **Export file**: the servers can't reach each other, or the old one will be off, or you want a copy to keep. One
+  file with everything; it opens only with the recovery key and never holds the key file.
+
+### On the old server: make a move code
+
+1. Sign in as an admin. Open **Settings → Server and access → Move to another server**.
+2. Press **Make a move code** and type your password again. The code shows in large letters, with **Copy** and the
+   time it stops working: it works once, for 24 hours, and only from your home network unless you tick **from
+   anywhere**. It is shown this once; if you lose it, make a new one (the old one stops working).
+3. Keep the page open, or come back to it: once the new server uses the code, it shows what is being copied (how
+   much, how many files, which step). At the end it says **Moved to 192.168.1.30: you can turn this server off**.
+
+**Cancel the code** stops the code working, or ends a move that has not finished. The old server's data is never
+changed by a move, so cancelling is always safe.
+
+### On the new server: the first page
+
+Install Sentry Mate with empty `data` and `keys` folders and open its address. The first page asks for the
+**set-up code**: the server prints it in its log on every start until it is set up. On TrueNAS: **Apps**, the Sentry
+Mate app, **Logs**; look for the line `first-run set-up code: SETUP-...`. (With plain Docker: `docker logs
+sentry-mate`.) Only someone who can read the log has it, so whoever reaches a fresh server first can't take it over.
+
+Then choose one of three:
+
+- **Start fresh**: a new server with nothing in it. Make the admin account. The page then shows the **recovery key**
+  once, with **Copy** and **Download**: keep it in a password manager or on paper, away from the server. Tick **I have
+  saved it** to go on (the server then deletes its copy of the key file).
+- **Move here from another server**: type the old server's address (the one the CAN Bridge sends to, for example
+  `192.168.1.20`) and the move code. The page shows the copy as it goes. At the end, sign in with your account from
+  the old server: everything is there, accounts too.
+- **Restore from an export file**: choose the file and type the old server's recovery key. The key and the file are
+  checked before the upload starts; then the page shows the upload and the checks. At the end, sign in with your
+  account from the old server.
+
+**If it stops half way**: nothing of the old server is changed. A move that loses the connection tries again by
+itself and carries on where it stopped; the page says what it waits for. An upload that stopped (the browser was
+closed, the network dropped) carries on when you choose the same file again. If the old server is gone for good
+while a move copies, the page offers **Finish with the recovery key** (the last changes may be missing). **Give up**
+removes what was copied, and the page goes back to the three choices.
+
+### On the old server: download an export file
+
+**Settings → Server and access → Download export file**, and your password again. The server prepares the file in
+a few seconds (uploads wait for those seconds), then the browser downloads it; a cut download carries on. The file
+is kept for a day after the last download. On the new server, choose **Restore from an export file** on the first
+page.
+
+### Undo the move
+
+On the old server, **Settings → Server and access → Undo the move** (your password again). **Stop the new server
+first**: if both take uploads, they drift apart. The old server takes uploads again at once.
+
+### The CAN Bridge
+
+The new server makes upload tokens in **Settings → Cars**, and shows the three fields of the app's "Second Sentry
+Six Manager" section ready to copy: the server address, the token and the certificate SHA-256. After a move or a
+restore the bridge keeps its token and its certificate SHA-256; change only the server address, if it changed (see
+"In the CAN Bridge app" below).
+
+## From the command line
+
+Until the web server is built, this is the way. It does the same as the pages.
+
+### Before you start
 
 - The new server runs the **same version of Sentry Mate as the old one, or a newer one**. If it is older, the move
   says so and nothing is used up: update it and start it again.
@@ -26,7 +101,7 @@ The addresses and codes below are made up. Use your own.
 - Have the **recovery key** of the old server somewhere safe. A direct move doesn't ask for it, but the export file
   and the last resort below do.
 
-## Direct move on TrueNAS (Install via YAML)
+### Direct move on TrueNAS (Install via YAML)
 
 No shell is needed.
 
@@ -60,14 +135,14 @@ No shell is needed.
 6. **Tidy up (optional).** Remove `SENTRY_MATE_OFFER_MOVE` from the old app, and the two lines from the new app. They
    do nothing once the move is done.
 
-### Same machine, new disk or pool
+#### Same machine, new disk or pool
 
 The old app holds port 10100, so the new app can't have it during the move. Give the new app another host port for
 now, for example `10101:10100`, and use the machine's own address in `SENTRY_MATE_MOVE_FROM`. After the old server's
 log says `move: done`, stop the old app, set the new app's port back to `10100:10100` and redeploy. The CAN Bridge
 then needs no change at all.
 
-## Direct move with plain Docker or compose
+### Direct move with plain Docker or compose
 
 1. **Old server:**
 
@@ -90,7 +165,7 @@ then needs no change at all.
 
 `docker exec sentry-mate /sentry-mate move status` shows what a move is doing, on either server.
 
-## Export file
+### Export file
 
 1. **Old server:** make the file. It works while the server runs (uploads wait a few seconds).
 
@@ -132,7 +207,7 @@ Nothing is lost while you do it. The bridge keeps its logs and sends them once i
 - Commands that change data refuse there. Reading still works (`fingerprint`, `token list`, `export`).
 - Keep its folders for a while as a backup, then delete them.
 
-## Undo
+## Undo with a command
 
 On the old server:
 
@@ -145,7 +220,8 @@ drift apart. The old server's data was never changed by the move, so nothing els
 
 ## If it stops half way
 
-Most problems fix themselves. The new server never gives up on its own, and it tries again where that can help.
+The words below are the log's; the web pages show the same words, with what to do. Most problems fix themselves.
+The new server never gives up on its own, and it tries again where that can help.
 
 | What you see | What to do |
 |---|---|

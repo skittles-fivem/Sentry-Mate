@@ -119,7 +119,7 @@ class Throttle(ServerCase):
         c = self.server.client()
         c.error("GET", "/api/v1/me", 401, "not_signed_in")
         c.error("GET", "/api/v1/cars", 401, "not_signed_in")
-        self.assertEqual(c.get("/api/v1/setup"), {"needs_setup": False})
+        self.assertEqual(c.get("/api/v1/setup")["needs_setup"], False)
 
 
 class WatchRole(ServerCase):
