@@ -4,7 +4,8 @@
 // Data: GET /api/v1/cars/{car} (the car, with its configuration and sources), /cars/{car}/now (every value
 // with its own time; updated live by `now` events), /settings (whether outside map links are on), and for
 // the period: /cars/{car}/timeline, /activity, /series (battery % and range) and /trip (distance and
-// consumption). Latest drive and charge: the first item of /drives and /charges.
+// consumption). Latest drive and charge: the first item of /drives and /charges. Arrival time: the open
+// stop of /visits; whether the place is a service centre: its kind from /places/{place}.
 
 import { h, svg, replace } from '../shared/dom.js';
 import { format, parts, rangeLabel, rangeField, getUnits } from '../shared/units.js';
@@ -77,11 +78,41 @@ export async function mount(ctx) {
     return usual.get(place.id);
   }
 
+  // `now` names the place by id and name only; its kind (is it a service centre?) comes from /places.
+  const kinds = new Map();
+  function placeKind() {
+    const place = now.location && now.location.place;
+    if (!place) return null;
+    if (!kinds.has(place.id)) {
+      kinds.set(place.id, null);
+      ctx.api.get(api.apiPath`places/${place.id}`, null, { maxAgeMs: 300000 })
+        .then((p) => { kinds.set(place.id, p.kind || null); if (ctx.alive()) draw(); })
+        .catch(() => {});
+    }
+    return kinds.get(place.id);
+  }
+  // When the car arrived where it is: the open stop of /visits (left_ms null), not the start of the
+  // current state (a car that fell asleep at home arrived there earlier).
+  let visit = null;
+  const visitKey = () => `${now.location?.place?.id ?? ''}|${now.state}|${!!now.stale}`;
+  let visitFor = null;
+  function currentVisit() {
+    const key = visitKey();
+    if (visitFor !== key) {
+      visitFor = key;
+      visit = undefined;
+      ctx.api.page('visits', { cars: car.id }, { limit: 1 })
+        .then((r) => { if (visitFor !== key) return; const x = r.items[0]; visit = x && x.left_ms == null ? x : null; if (ctx.alive()) draw(); })
+        .catch(() => { if (visitFor === key) { visit = null; if (ctx.alive()) draw(); } });
+    }
+    return visit;
+  }
+
   const stateBox = h('div', { class: 'state-box' });
-  const drawState = () => replace(stateBox, stateLine(now, tz));
+  const drawState = () => replace(stateBox, stateLine(now, tz, placeKind()));
   function draw() {
     replace(head, header(car, now, tz));
-    replace(whereText, whereLines(now, tz, outsideMaps));
+    replace(whereText, whereLines(now, tz, outsideMaps, currentVisit()));
     drawState();
     replace(live, staleBanner(now, tz), h('p', { class: 'lede' }, lede(now, tz)), stateBox, hero(car, now, tz), vitals(car, now, tz), awake(now), statusFlags(now, tz), charging(now, tz, usualStart()), where, latest);
   }
@@ -278,7 +309,7 @@ const STATE_WHAT = {
   unknown: 'No recent data: not the same as asleep.',
 };
 
-function stateLine(now, tz) {
+function stateLine(now, tz, placeKind) {
   const st = now.state || 'unknown';
   const since = now.since_ms;
   const buses = now.buses || [];
@@ -287,7 +318,7 @@ function stateLine(now, tz) {
   const f = now.flags || {};
   const svc = v(f.service_mode);
   const place = now.location && now.location.place;
-  const atService = place && place.kind === 'service';
+  const atService = !!place && placeKind === 'service';
   const wasDriving = now.drive && now.drive.drive_id;
   let busNote = null;
   if ((now.stale || st === 'unknown') && wasDriving) busNote = 'Nothing has arrived since the middle of a drive: the drive stays open, timed from its start, until data comes again.';
@@ -369,13 +400,15 @@ function row(name, value, note = null, { cover = null, measured = null } = {}) {
 
 function vitals(car, now, tz) {
   const t = (x) => (at(x) ? formatDateTime(at(x), tz, { now: api.now(), seconds: true }) : null);
-  const sp = (x) => { const val = v(x); return typeof val === 'string' ? val : format(val, 'temperature'); };
+  const notSent = /legacy/.test(car.profile || '') ? 'not sent by this car' : 'not sent yet';
+  const sp = (x) => { const val = v(x); return typeof val === 'string' ? val : q(val, 'temperature'); };
+  const bothNil = v(now.setpoint_left_c) == null && v(now.setpoint_right_c) == null;
   const temps = h('section', { class: 'vital' }, h('h2', { class: 'label' }, 'Temperature'),
     h('dl', { class: 'spec' },
       row('Outside', q(v(now.outside_c), 'temperature'), null, { cover: ['summary.stat.outside_temp', 'overview.stat.outside_temp'], measured: t(now.outside_c) }),
-      row('Cabin', q(v(now.cabin_c), 'temperature', { why: car.profile === 'tesla-legacy' ? 'not sent by this car' : null }), null, { cover: ['summary.stat.inside_temp', 'overview.stat.inside_temp'], measured: t(now.cabin_c) }),
+      row('Cabin', q(v(now.cabin_c), 'temperature', { why: notSent }), null, { cover: ['summary.stat.inside_temp', 'overview.stat.inside_temp'], measured: t(now.cabin_c) }),
       row('Battery', q(v(now.battery_c), 'temperature'), null, { measured: t(now.battery_c) }),
-      row('Set points', h('span', null, sp(now.setpoint_left_c), ' / ', sp(now.setpoint_right_c)), 'driver / passenger', { cover: 'overview.stat.driver_temp', measured: t(now.setpoint_left_c) })));
+      row('Set points', bothNil ? q(null, 'temperature', { why: notSent }) : h('span', null, sp(now.setpoint_left_c), ' / ', sp(now.setpoint_right_c)), 'driver / passenger', { cover: 'overview.stat.driver_temp', measured: t(now.setpoint_left_c) })));
 
   const kpa = (now.tyres_kpa || []).map(v);
   const rec = v(now.tyre_recommended_kpa);
@@ -486,7 +519,7 @@ function charging(now, tz, usual) {
 
 /* ------------------------------------------------------------------ where */
 
-function whereLines(now, tz, outsideMaps) {
+function whereLines(now, tz, outsideMaps, visit) {
   const L = now.location || {};
   const lat = v(L.lat), lon = v(L.lon);
   const acc = v(L.accuracy_m), hd = v(L.heading_deg);
@@ -496,13 +529,25 @@ function whereLines(now, tz, outsideMaps) {
     h('h2', { class: 'label', id: 'where-title' }, title),
     h('p', { class: 'where-place' }, L.place ? L.place.name : a.short || '—'),
     h('p', { class: 'where-area' }, [L.place ? a.short : null, a.locality, a.region].filter((x, i, arr) => x && arr.indexOf(x) === i).join(', ')),
-    now.state !== 'driving' && now.since_ms ? h('p', { class: 'where-since' }, `Here since ${formatDateTime(now.since_ms, tz, { now: api.now() })}`, sep(), formatDuration(api.now() - now.since_ms)) : null,
+    sinceLine(now, tz, visit),
     hd != null ? h('p', { class: 'where-since' }, `Heading ${compass(hd)} (${Math.round(hd)}°)`) : null,
     lat != null ? h('p', { class: 'where-coords mono' }, coordsText([lon, lat]), acc != null ? ` ± ${format(acc, 'length')}` : '') : null,
     h('p', { class: 'where-ext', cover: 'summary.map.external_link' }, outsideMaps && lat != null
       ? h('a', { href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=16/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'external noopener noreferrer' }, 'Open on OpenStreetMap')
       : h('span', { class: 'note' }, 'Outside map links are off. An admin can turn them on in Settings: Display and units.')),
   ];
+}
+
+/** 'Here since' the arrival of the open stop; with no recent data, only when the car was last seen here. */
+function sinceLine(now, tz, visit) {
+  if (now.state === 'driving' && !now.stale) return null;
+  const opts = { now: api.now() };
+  if (now.stale || now.state === 'unknown') {
+    const last = now.at_ms;
+    return last ? h('p', { class: 'where-since' }, `Last seen here ${formatDateTime(last, tz, opts)}`, sep(), `${formatDuration(api.now() - last)} ago`) : null;
+  }
+  if (!visit) return null;
+  return h('p', { class: 'where-since' }, `Here since ${formatDateTime(visit.arrived_ms, tz, opts)}`, sep(), formatDuration(api.now() - visit.arrived_ms));
 }
 
 /* ------------------------------------------------------------------ latest drive and charge */
@@ -558,13 +603,14 @@ async function drawPeriod(ctx, aside, box) {
   // The aside: the period's figures and its entries, newest first.
   const t = trip.status === 'fulfilled' ? trip.value : null;
   const rows = tl.status === 'fulfilled' ? tl.value.items : [];
+  const noDrives = t && !(t.drives || []).length ? 'no drives in this period' : 'not enough data';
   replace(aside, 
     h('div', { class: 'today-head' }, h('p', { class: 'eyebrow' }, 'The period'), h('h2', { class: 'today-date' }, label)),
     t ? h('dl', { class: 'today-figs', cover: ['overview.stat.distance_logged', 'overview.stat.consumption_net', 'overview.stat.consumption_gross'] },
       figure('Distance', q(t.distance.drives_km, 'distance'), 'logged drives'),
       figure('Drives', String((t.drives || []).length)),
-      figure('Net consumption', q(t.wh_per_km.net, 'efficiency'), 'driving only'),
-      figure('Gross consumption', q(t.wh_per_km.gross, 'efficiency'), 'parked use included')) : errorView(trip.reason, { eyebrow: 'Figures' }),
+      figure('Net consumption', q(t.wh_per_km.net, 'efficiency', { why: noDrives }), 'driving only'),
+      figure('Gross consumption', q(t.wh_per_km.gross, 'efficiency', { why: noDrives }), 'parked use included')) : errorView(trip.reason, { eyebrow: 'Figures' }),
     rows.length ? h('ol', { class: 'tl' }, rows.map((r) => timelineRow(r, { car: car.id, tz, period: ctx.state.period }))) : empty({ title: 'Nothing recorded in this period.' }),
     h('a', { class: 'link-arrow', href: state.linkTo('timeline') }, rows.length >= 40 ? 'More on the timeline' : 'The period on the timeline', icon('arrowRight')));
 
