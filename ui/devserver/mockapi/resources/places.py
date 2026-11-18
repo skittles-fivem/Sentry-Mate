@@ -488,7 +488,7 @@ def reprice(req):
         raise invalid({"to_ms": "Must be after from_ms."})
     only = body.get("only_without_cost", False)
     dry = body.get("dry_run", False)
-    considered, changed, examples = 0, [], []
+    considered, changed, examples, example_rows = 0, [], [], []
     before, after = {}, {}
     snap = {"place": {k: pl[k] for k in ("id", "name", "kind", "time_zone")}, "price": copy.deepcopy(pl.get("price")),
             "at_ms": req.now}
@@ -515,6 +515,9 @@ def reprice(req):
                     changed.append(c.id)
                     if len(examples) < 5:
                         examples.append(c.id)
+                    if len(example_rows) < 8:
+                        example_rows.append({"kind": "charge", "id": c.id, "car": cid, "start_ms": c.start,
+                                             "change": "repriced"})
         if not dry:
             st.rev += 1
     if not dry:
@@ -524,7 +527,8 @@ def reprice(req):
     money = lambda d: [{"currency": k, "amount": round(v, 2)} for k, v in sorted(d.items())]  # noqa: E731
     return {"place": pl["id"], "from_ms": a, "to_ms": b, "only_without_cost": only, "dry_run": dry,
             "charges": considered, "repriced": len(changed), "unchanged": considered - len(changed),
-            "examples": examples, "cost_before": money(before), "cost_after": money(after)}
+            "examples": examples, "example_rows": example_rows, "cost_before": money(before),
+            "cost_after": money(after)}
 
 
 # ------------------------------------------------------------------ suggestions and the place at a point

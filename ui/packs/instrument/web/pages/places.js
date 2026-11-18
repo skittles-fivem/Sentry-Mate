@@ -49,8 +49,31 @@ const listUrl = (query = null) => state.buildUrl('places', { query });
 const editUrl = (pid) => state.buildUrl('places', { query: { place: pid } });
 const newUrl = (q = {}) => state.buildUrl('places', { query: { new: 1, ...q } });
 const kindLabel = (k) => KIND_LABEL[k] || 'Other';
+// a place's counts are all time, so the lists they open show all time too
+const ALL_TIME = { preset: 'all' };
+const chargesHref = (pid) => state.buildUrl('charges', { period: ALL_TIME, query: { cars: 'all', places: pid } });
+const drivesHref = (carId, pid) => state.buildUrl('drives', { car: carId, period: ALL_TIME, query: { places: pid } });
+
+/** Drives per car at each place (GET /places?car= for every car): Map place id -> [{ car, name, drives }], most first. */
+async function drivesByCar(ctx, cars) {
+  const out = new Map();
+  const lists = await Promise.all(cars.map((c) => ctx.api.list('places', { car: c.id, sort: 'drives' }, { max: 1000 }).all()
+    .then((rows) => [c, rows]).catch(() => [c, []])));
+  for (const [c, rows] of lists) {
+    for (const p of rows) {
+      const n = p.counts?.drives || 0;
+      if (!n) continue;
+      if (!out.has(p.id)) out.set(p.id, []);
+      out.get(p.id).push({ car: c.id, name: c.name, drives: n });
+    }
+  }
+  for (const v of out.values()) v.sort((a, b) => b.drives - a.drives || a.name.localeCompare(b.name));
+  return out;
+}
 const fix5 = (v) => (v == null ? DASH : Number(v).toFixed(5));
 const posText = (lat, lon) => `${fix5(lat)}, ${fix5(lon)}`;
+/** A first name for a suggested spot: its label, else its street, else its town. */
+const suggName = (s) => (s.address?.short || s.label || s.address?.locality || '').replace(/^near /i, '').slice(0, 64) || null;
 
 /* ------------------------------------------------------------------ geometry (metres on the earth) */
 
@@ -105,7 +128,27 @@ function effectFigures(e, { deleting = false } = {}) {
     metric(deleting ? 'Charges lose the name' : 'Charges lose a name', e.charges_unnamed ?? 0, 'count', { size: 'sm', explain: 'their cost stays as it is' }),
     deleting ? null : metric('Past charges a reprice would change', e.charges_repriced, 'count', { size: 'sm', explain: 'only if you reprice them; nothing changes by itself' }));
 }
-function examplesLine(e) {
+const CHANGE_WORD = { named: 'gains the name', unnamed: 'loses the name', repriced: 'would cost differently' };
+/** A few of the drives and charges a change touches, each a link with its date, car and change (example_rows);
+ *  bare ids only when the server sent no example_rows. done: the change was made (a reprice that ran). */
+function examplesLine(ctx, e, cars = [], { done = false } = {}) {
+  const rows = Array.isArray(e?.example_rows) ? e.example_rows.slice(0, 6) : [];
+  const byId = Object.fromEntries(cars.map((c) => [c.id, c]));
+  if (rows.length) {
+    return h('div', { class: 'pl-examples' },
+      h('p', { class: 'faint' }, done ? 'For example:' : 'For example (open one to see it as it is now):'),
+      h('ul', { class: 'pl-example-list' }, rows.map((x) => {
+        const c = byId[x.car];
+        const isDrive = x.kind === 'drive';
+        const href = isDrive ? state.buildUrl('drive', { car: x.car, drive: x.id }) : state.buildUrl('charge', { car: x.car, charge: x.id });
+        const when = x.start_ms != null ? dateTime(x.start_ms, c?.time_zone || ctx.tz) : 'time not known';
+        const change = done && x.change === 'repriced' ? 'repriced' : CHANGE_WORD[x.change] || x.change;
+        return h('li', null,
+          icon(isDrive ? 'route' : 'bolt', 'ico--sm'),
+          h('a', { class: 'link', href }, `${isDrive ? 'Drive' : 'Charge'} ${when}`),
+          h('span', { class: 'faint' }, ` · ${c?.name || x.car} · ${change}`));
+      })));
+  }
   const ids = (e?.examples || []).slice(0, 5);
   if (!ids.length) return null;
   return h('p', { class: 'pl-examples' }, h('span', { class: 'faint' }, 'Example drive and charge ids: '), ids.map((x, i) => [i ? ', ' : '', h('span', { class: 'mono' }, x)]));
@@ -133,6 +176,8 @@ async function mountList(ctx, q) {
   ]);
   if (!ctx.alive()) return;
   const carName = Object.fromEntries(cars.map((c) => [c.id, c.name]));
+  let byCar = await drivesByCar(ctx, cars);
+  if (!ctx.alive()) return;
 
   const countEl = h('span', null, 'Saved places');
   const newBtn = admin
@@ -193,7 +238,22 @@ async function mountList(ctx, q) {
     return parts.length ? h('span', { class: 'cell-text' }, h('span', null, parts[0]), parts.length > 1 ? h('span', { class: 'sub' }, parts.slice(1).join(' · ')) : null)
       : h('span', { class: 'faint' }, 'No price');
   };
-  const countLink = (n, href, what) => (n && href ? h('a', { class: 'link', href, title: `Open the ${what} at this place` }, formatNumber(n)) : h('span', { class: n ? null : 'faint' }, formatNumber(n || 0)));
+  // charges (every car), drives (by the cars that drove there) and stops, all time; each count opens its list
+  const historyCell = (p) => {
+    const nc = p.counts?.charges || 0, nd = p.counts?.drives || 0, nv = p.counts?.visits || 0;
+    const per = byCar.get(p.id) || [];
+    const charges = nc ? h('a', { class: 'link', href: chargesHref(p.id), title: 'Every charge here, every car, all time' }, plural(nc, 'charge', 'charges'))
+      : h('span', { class: 'faint' }, 'No charges');
+    let drives;
+    if (!nd) drives = h('span', { class: 'faint' }, 'No drives');
+    else if (per.length === 1) drives = h('a', { class: 'link', href: drivesHref(per[0].car, p.id), title: `${per[0].name}’s drives that start or end here, all time` }, plural(nd, 'drive', 'drives'), h('span', { class: 'faint' }, ` (${per[0].name})`));
+    else if (per.length) {
+      drives = h('span', null, `${plural(nd, 'drive', 'drives')}: `, per.slice(0, 3).map((x, i) => [i ? h('span', { class: 'faint' }, ', ') : null,
+        h('a', { class: 'link', href: drivesHref(x.car, p.id), title: `${x.name}’s drives that start or end here, all time` }, `${x.name} ${formatNumber(x.drives)}`)]),
+        per.length > 3 ? h('span', { class: 'faint' }, ` +${per.length - 3} more in the editor`) : null);
+    } else drives = h('span', null, plural(nd, 'drive', 'drives'));
+    return h('span', { class: 'pl-hist' }, charges, drives, h('span', { class: nv ? 'sub' : 'sub faint' }, nv ? plural(nv, 'stop', 'stops') : 'No stops'));
+  };
   const table = dataTable(ctx, {
     title: 'Saved places', icon: 'pin', path: 'places', params: params(), limit: 50, csvName: 'places',
     sort: { key: 'name', dir: 'asc' },
@@ -201,19 +261,22 @@ async function mountList(ctx, q) {
     noteCover: 'web.geofences.list.order',
     columns: [
       { key: 'name', label: 'Name', sort: 'name', firstDir: 'asc', cover: 'web.geofences.list.col-name', cls: 'col-name',
-        render: (p) => h('span', { class: 'cell-text' }, h('a', { class: 'pl-name', href: editUrl(p.id) }, p.name), h('span', { class: 'sub' }, p.address?.short || p.address?.locality || '')) },
-      { key: 'kind', label: 'Kind', render: (p) => h('span', { class: ['pl-kind', `pl-kind--${p.kind}`] }, icon(KIND_ICON[p.kind] || 'pin', 'ico--sm'), kindLabel(p.kind)) },
-      { key: 'position', label: 'Centre (lat / lon)', cover: 'web.geofences.list.col-position', render: (p) => h('span', { class: 'cell-text mono' }, h('span', null, fix5(p.lat)), h('span', null, fix5(p.lon))) },
-      { key: 'radius', label: `Radius (${unitLabel('length')})`, num: true, cover: 'web.geofences.list.col-radius', render: (p) => format(p.radius_m, 'length') },
-      { key: 'drives', label: 'Drives', num: true, title: 'Drives that start or end here', render: (p) => formatNumber(p.counts?.drives || 0) },
-      { key: 'charges', label: 'Charges', num: true, title: 'Charges here, every car', render: (p) => countLink(p.counts?.charges, state.buildUrl('charges', { query: { cars: 'all', places: p.id } }), 'charges') },
-      { key: 'visits', label: 'Visits', num: true, sort: 'visits', title: 'Stops inside the circle', render: (p) => formatNumber(p.counts?.visits || 0) },
+        title: 'The name, its kind and the street address of the centre',
+        render: (p) => h('span', { class: 'cell-text' }, h('a', { class: 'pl-name', href: editUrl(p.id) }, p.name),
+          h('span', { class: 'sub' }, h('span', { class: ['pl-kind', `pl-kind--${p.kind}`] }, icon(KIND_ICON[p.kind] || 'pin', 'ico--sm'), kindLabel(p.kind)),
+            (p.address?.short || p.address?.locality) ? ` · ${p.address.short || p.address.locality}` : null)) },
+      { key: 'circle', label: 'Circle', cover: ['web.geofences.list.col-position', 'web.geofences.list.col-radius'],
+        title: `The radius (${unitLabel('length')}) and the centre (latitude, longitude)`,
+        render: (p) => h('span', { class: 'cell-text' }, h('span', null, `${format(p.radius_m, 'length')} radius`), h('span', { class: 'sub mono' }, posText(p.lat, p.lon))) },
+      { key: 'history', label: 'History, all time', sort: 'visits', firstDir: 'desc', cls: 'col-hist',
+        title: 'Charges (every car), drives that start or end here (by car) and stops inside the circle, all time. Sorting puts the most stops first.',
+        render: historyCell },
       { key: 'last', label: 'Last visit', sort: 'last_visit', firstDir: 'desc', render: (p) => (p.last_visit_ms ? h('span', { class: 'cell-text' }, h('span', null, ago(p.last_visit_ms)), h('span', { class: 'sub' }, dateTime(p.last_visit_ms, p.time_zone || ctx.tz))) : h('span', { class: 'faint' }, 'Not visited')) },
-      { key: 'price', label: 'Charging price', render: priceCell },
-      { key: 'actions', label: 'Change', cls: 'col-actions', cover: ['web.geofences.list.edit', 'web.geofences.list.delete'],
+      { key: 'price', label: 'Price', title: 'The charging price here; a charge that ends here gets its cost from it', render: priceCell },
+      { key: 'actions', label: 'Change', cls: 'col-actions pl-sticky', cover: ['web.geofences.list.edit', 'web.geofences.list.delete'],
         render: (p) => h('span', { class: 'pl-actions' },
           h('a', { class: 'btn btn--sm', href: editUrl(p.id), cover: 'web.geofences.list.edit' }, admin ? 'Edit' : 'View'),
-          admin ? h('button', { class: 'btn btn--sm btn--ghost btn--danger', type: 'button', cover: ['web.geofences.list.delete', 'web.geofences.form.relabel-history'], 'aria-label': `Delete ${p.name}`, onclick: () => removePlace(ctx, p, () => reloadAll()) }, icon('x', 'ico--sm'), 'Delete') : null) },
+          admin ? h('button', { class: 'btn btn--sm btn--ghost btn--danger', type: 'button', cover: ['web.geofences.list.delete', 'web.geofences.form.relabel-history'], 'aria-label': `Delete ${p.name}`, onclick: () => removePlace(ctx, p, () => reloadAll(), cars) }, icon('x', 'ico--sm'), 'Delete') : null) },
     ],
     rowHref: (p) => editUrl(p.id),
     empty: () => (f.search || f.kind
@@ -297,7 +360,7 @@ async function mountList(ctx, q) {
       { key: 'dwell_ms', label: 'Time parked', num: true, sort: true, render: (s) => dur(s.dwell_ms), csv: (s) => Math.round((s.dwell_ms || 0) / 60000) + ' min' },
       { key: 'cars', label: 'Cars', render: (s) => (s.cars || []).map((c) => carName[c] || c).join(', '), csv: (s) => (s.cars || []).map((c) => carName[c] || c).join('; ') },
       { key: 'name', label: '', csv: false, cover: 'web.geofences.form.entry-from-dashboards',
-        render: (s) => (admin ? h('a', { class: 'btn btn--sm', href: newUrl({ lat: s.lat.toFixed(5), lon: s.lon.toFixed(5), radius: s.radius_m || R_NEW, from: 'suggestion' }) }, icon('plus', 'ico--sm'), 'Name it') : h('span', { class: 'faint' }, 'Admin only')) },
+        render: (s) => (admin ? h('a', { class: 'btn btn--sm', href: newUrl({ lat: s.lat.toFixed(5), lon: s.lon.toFixed(5), radius: s.radius_m || R_NEW, origin: 'suggestion', name: suggName(s), kind: KIND_LABEL[s.kind] ? s.kind : null }) }, icon('plus', 'ico--sm'), 'Name it') : h('span', { class: 'faint' }, 'Admin only')) },
     ],
     empty: () => emptyState({ icon: 'check', title: 'No suggestions', text: 'Every spot where the cars stop often already lies inside a saved place.' }),
   });
@@ -307,8 +370,11 @@ async function mountList(ctx, q) {
     h('div', { class: 'pl-lower' }, mapPanel, suggTable.el)));
 
   const reloadAll = () => { table.reload(params()); loadMap(); };
+  const refreshCounts = async () => { const b = await drivesByCar(ctx, cars); if (ctx.alive()) byCar = b; };
   let liveT = 0;
   ctx.events('rows', () => { clearTimeout(liveT); liveT = setTimeout(async () => {
+    await refreshCounts();
+    if (!ctx.alive()) return;
     table.reload(params());
     const s = await ctx.api.get('places/suggestions', { limit: 8 }).catch(() => null);
     if (s && ctx.alive()) suggTable.setRows(s.items || []);
@@ -331,7 +397,7 @@ const EDITOR_ITEMS = [
 ];
 
 /** Delete a place: first say what loses the name, then delete with the version that was shown. */
-async function removePlace(ctx, p, done) {
+async function removePlace(ctx, p, done, cars = []) {
   let eff = null;
   try { eff = await ctx.api.post('places/preview', { place: p.id, delete: true }); } catch { eff = null; }
   if (!ctx.alive()) return false;
@@ -339,7 +405,7 @@ async function removePlace(ctx, p, done) {
     title: `Delete ${p.name}?`,
     body: [
       h('p', null, `Drives, charges and stops inside the circle go back to their street address (or to another place whose circle holds them). Costs that charges already have stay as they are.`),
-      effectFigures(eff, { deleting: true }), examplesLine(eff),
+      effectFigures(eff, { deleting: true }), examplesLine(ctx, eff, cars),
       p.price ? h('p', { class: 'note' }, 'Its charging price goes too: charges that end here later get no cost from it.') : null,
     ],
     actions: [{ label: 'Keep it', value: false }, { label: 'Delete place', value: true, kind: 'danger' }],
@@ -388,7 +454,9 @@ async function mountEditor(ctx, q) {
   else if (q.lat != null && q.lon != null && Number.isFinite(qLat) && Number.isFinite(qLon) && Math.abs(qLat) <= 90 && Math.abs(qLon) <= 180) {
     const r = Number(q.radius);
     start = { lat: qLat, lon: qLon, radius_m: Number.isFinite(r) && r >= R_MIN && r <= R_MAX ? Math.round(r) : R_NEW };
-    startNote = q.from === 'suggestion' ? 'Starts at a suggested spot (the middle of the stops there).' : 'Starts at the spot you came from: the drive, charge or stop that had no place yet.';
+    startNote = q.origin === 'suggestion'
+      ? `Starts at a suggested spot: the middle of the stops there, with a ${format(start.radius_m, 'length')} circle${q.name ? ' and its address as a first name' : ''}. Change anything before saving.`
+      : 'Starts at the spot you came from: the drive, charge or stop that had no place yet.';
   } else {
     // the newest recorded position of any car this account sees
     for (const c of cars.slice(0, 5)) {
@@ -412,7 +480,7 @@ async function mountEditor(ctx, q) {
 
   /* ---------- the draft */
   const d = {
-    name: cur?.name ?? '', kind: cur?.kind ?? (q.kind && KIND_LABEL[q.kind] ? q.kind : 'other'),
+    name: cur?.name ?? (typeof q.name === 'string' ? q.name.slice(0, 64) : ''), kind: cur?.kind ?? (q.kind && KIND_LABEL[q.kind] ? q.kind : 'other'),
     lat: start.lat, lon: start.lon, radius_m: start.radius_m, time_zone: cur?.time_zone ?? '',
     priced: !!cur?.price,
     currency: cur?.price?.currency || usedCurrency,
@@ -420,6 +488,8 @@ async function mountEditor(ctx, q) {
     rates: (cur?.price?.rates || []).map((r) => ({ ...r })),
   };
   d.mode = d.per_minute != null && d.per_kwh != null ? 'both' : d.per_minute != null || (d.rates.length && d.rates.every((r) => r.per_minute != null && r.per_kwh == null)) ? 'minute' : 'kwh';
+  d.radiusTyped = null;   // the radius in the person's units as typed; null when it came from the map or the server
+  let lastR = d.radius_m; // the last valid radius, drawn while the field holds one that is not
   const others = placesAll.filter((p) => p.id !== cur?.id);
   let dirty = false;
   const lock = !admin;
@@ -569,9 +639,17 @@ async function mountEditor(ctx, q) {
 
   /* ---------- the effect on history (asked of the server after each change) */
   const effBody = h('div', { class: 'pl-effect-body', 'aria-live': 'polite' }, h('p', { class: 'faint' }, 'Working out what saving would change…'));
-  const drillLinks = cur ? h('p', { class: 'pl-drill' },
-    h('a', { class: 'link', href: state.buildUrl('charges', { query: { cars: 'all', places: cur.id } }) }, 'Charges here, every car'),
-    cars.slice(0, 4).map((c) => [h('span', { class: 'faint', 'aria-hidden': 'true' }, ' · '), h('a', { class: 'link', href: state.buildUrl('drives', { car: c.id, query: { places: cur.id } }) }, `${c.name}’s drives here`)])) : null;
+  // all time, like the counts; drives only for the cars that drove here
+  const drillLinks = cur ? h('p', { class: 'pl-drill' }, h('span', { class: 'faint' }, 'All time: ')) : null;
+  if (cur) {
+    const per = (cur.counts?.drives ? (await drivesByCar(ctx, cars)).get(cur.id) : null) || [];
+    if (!ctx.alive()) return;
+    const dot = () => h('span', { class: 'faint', 'aria-hidden': 'true' }, ' · ');
+    drillLinks.append(
+      cur.counts?.charges ? h('a', { class: 'link', href: chargesHref(cur.id) }, `${plural(cur.counts.charges, 'charge', 'charges')} here, every car`) : h('span', { class: 'faint' }, 'no charges here yet'),
+      ...(per.length ? per.flatMap((x) => [dot(), h('a', { class: 'link', href: drivesHref(x.car, cur.id) }, `${x.name}’s ${plural(x.drives, 'drive', 'drives')} here`)])
+        : [dot(), h('span', { class: 'faint' }, 'no drives start or end here yet')]));
+  }
   const effPanel = panel({ title: 'Effect on history', icon: 'timeline', cls: 'pl-effect', cover: 'web.geofences.form.relabel-history' },
     note('Names follow the place as it is now: saving renames every drive, charge and stop inside the circle, including those recorded before the place existed. Moving or shrinking it can take the name off some. Nothing below has changed yet.'),
     effBody, drillLinks);
@@ -594,7 +672,7 @@ async function mountEditor(ctx, q) {
     const none = !e.drives_named && !e.drives_unnamed && !e.charges_named && !(e.charges_unnamed) && !e.charges_repriced;
     replace(effBody, none
       ? h('p', { class: 'pl-ok' }, icon('check', 'ico--sm'), cur && !dirty ? 'Nothing to save: this is the place as it is now.' : 'Saving changes no name on any drive or charge, and no past charge would cost differently.')
-      : [effectFigures(e), examplesLine(e)]);
+      : [effectFigures(e), examplesLine(ctx, e, cars)]);
   }
 
   /* ---------- match rule and overlaps */
@@ -615,19 +693,27 @@ async function mountEditor(ctx, q) {
   /* ---------- the map with the circle */
   const mapEl = h('div', { class: 'map' });
   const mapCard = h('div', { class: 'glass-card pl-map-card' });
-  const paintMapCard = () => replace(mapCard, h('strong', null, `${format(d.radius_m, 'length')} radius`),
-    h('span', { class: 'faint' }, lock ? 'View only' : 'Drag the centre to move it, the dot on the edge to resize. A click on the map moves the centre there.'));
+  const radiusOk = () => Number.isFinite(d.radius_m) && d.radius_m >= R_MIN && d.radius_m <= R_MAX;
+  // the radius as the person typed it (their units), else as metres converted; while it is not valid, the last valid one
+  const radiusText = () => (d.radiusTyped != null ? `${formatNumber(d.radiusTyped)} ${L}` : format(d.radius_m, 'length'));
+  const paintMapCard = () => replace(mapCard,
+    radiusOk() ? h('strong', null, `${radiusText()} radius`)
+      : h('strong', { class: 'warn' }, `Radius not valid: shown at ${format(lastR, 'length')}`),
+    h('span', { class: 'faint' }, !radiusOk() ? `Type a radius from ${format(R_MIN, 'length')} to ${format(R_MAX, 'length')}.`
+      : lock ? 'View only' : 'Drag the centre to move it, the dot on the edge to resize. A click on the map moves the centre there.'));
   const mapPanel = h('section', { class: 'panel map-panel pl-edit-map', 'aria-label': 'The circle on the map', cover: 'web.geofences.form.position-map' },
     mapEl, h('div', { class: 'map-overlay map-overlay--tl' }, mapCard));
   let m = null, centreMk = null, edgeMk = null;
-  const edgeAt = () => [d.lon + d.radius_m / mPerDegLon(d.lat), d.lat];
+  const drawR = () => (radiusOk() ? d.radius_m : lastR);
+  const edgeAt = () => [d.lon + drawR() / mPerDegLon(d.lat), d.lat];
   function paintCircle({ refit = false } = {}) {
+    if (radiusOk()) lastR = d.radius_m;
     paintMapCard();
     if (!m || !m.map.getSource('draft')) return;
-    m.map.getSource('draft').setData({ type: 'FeatureCollection', features: [circleFeature({ id: 'draft', kind: d.kind, lat: d.lat, lon: d.lon, radius_m: d.radius_m })] });
+    m.map.getSource('draft').setData({ type: 'FeatureCollection', features: [circleFeature({ id: 'draft', kind: d.kind, lat: d.lat, lon: d.lon, radius_m: drawR() })] });
     centreMk?.setLngLat([d.lon, d.lat]);
     edgeMk?.setLngLat(edgeAt());
-    if (refit) m.frame(() => m.map.fitBounds(circleBounds(d.lat, d.lon, d.radius_m), { padding: { top: rpx(110), left: rpx(50), right: rpx(70), bottom: rpx(50) }, maxZoom: 18.5, duration: 0 }));
+    if (refit) m.frame(() => m.map.fitBounds(circleBounds(d.lat, d.lon, drawR()), { padding: { top: rpx(110), left: rpx(50), right: rpx(70), bottom: rpx(50) }, maxZoom: 18.5, duration: 0 }));
   }
   async function buildMap() {
     try { m = await createMap(mapEl, ctx, { center: [d.lon, d.lat], zoom: 16 }); } catch { replace(mapEl, mapFallback('The map could not be drawn in this browser. Type the centre and radius instead.')); return; }
@@ -660,6 +746,7 @@ async function mountEditor(ctx, q) {
   }
   function setRadius(r, { live = false } = {}) {
     d.radius_m = Math.min(R_MAX, Math.max(R_MIN, Math.round(r)));
+    d.radiusTyped = null;
     fRadius.input.value = String(toL(d.radius_m));
     fRadius.setError(null);
     paintCircle();
@@ -691,7 +778,8 @@ async function mountEditor(ctx, q) {
     };
   }
   function draftBody() {
-    const b = { name: d.name.trim(), kind: d.kind, lat: d.lat, lon: d.lon, radius_m: d.radius_m, price: priceBody2() };
+    // only the metres sent are rounded; the field and the map keep what was typed
+    const b = { name: d.name.trim(), kind: d.kind, lat: d.lat, lon: d.lon, radius_m: Math.round(d.radius_m), price: priceBody2() };
     if (d.time_zone) b.time_zone = d.time_zone;
     return b;
   }
@@ -744,7 +832,14 @@ async function mountEditor(ctx, q) {
   fName.input.addEventListener('input', () => { d.name = fName.input.value; setNames(); changed(); });
   fKind.input.addEventListener('change', () => { d.kind = fKind.input.value; changed(); });
   fZone.input.addEventListener('change', () => { d.time_zone = fZone.input.value; paintRates(); changed(); });
-  fRadius.input.addEventListener('input', () => { const v = fRadius.value(); if (v != null && Number.isFinite(v)) { const mtr = toMetric(v, 'length'); if (mtr >= R_MIN && mtr <= R_MAX) { d.radius_m = Math.round(mtr); paintCircle(); paintOverlaps(); } else d.radius_m = mtr; } else d.radius_m = NaN; changed(); });
+  fRadius.input.addEventListener('input', () => {
+    const v = fRadius.value();
+    d.radiusTyped = v != null && Number.isFinite(v) ? v : null;
+    d.radius_m = d.radiusTyped != null ? toMetric(v, 'length') : NaN;
+    if (radiusOk()) { fRadius.setError(null); paintOverlaps(); }
+    paintCircle();
+    changed();
+  });
   fRadius.input.addEventListener('change', () => paintCircle({ refit: true }));
   const onPos = () => { d.lat = fLat.value() ?? NaN; d.lon = fLon.value() ?? NaN; if (Number.isFinite(d.lat) && Number.isFinite(d.lon) && Math.abs(d.lat) <= 90 && Math.abs(d.lon) <= 180) { paintCircle(); paintOverlaps(); } changed(); };
   fLat.input.addEventListener('input', onPos); fLon.input.addEventListener('input', onPos);
@@ -847,7 +942,7 @@ async function mountEditor(ctx, q) {
           metric(done ? 'Repriced' : 'Would change', res.repriced, 'count', { size: 'sm', explain: `${formatNumber(res.unchanged)} keep the same cost` }),
           metric('Cost before', money(res.cost_before), null, { size: 'sm', explain: 'of these charges, per currency' }),
           metric(done ? 'Cost now' : 'Cost after', money(res.cost_after), null, { size: 'sm', explain: 'with the saved price, per currency' })),
-        examplesLine(res));
+        examplesLine(ctx, res, cars, { done }));
       show(r, false);
       if (dry || !r.repriced) { if (!dry && !r.repriced) flash('No charge in that span would change.', { kind: 'info' }); return; }
       const ok = await confirmDialog(`Reprice ${plural(r.repriced, 'past charge', 'past charges')} at ${cur.name} with today’s price? Their old costs are replaced. A cost typed by hand is never touched.`, { title: 'Reprice past charges?', ok: `Reprice ${formatNumber(r.repriced)}` });

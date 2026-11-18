@@ -25,7 +25,8 @@
 .places-page .cell-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
 .places-page .cell-text > * { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .places-page .cell-text .sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
-.places-page .col-name .cell-text { max-width: 16rem; }
+.places-page .col-name .cell-text { max-width: 13rem; }
+@container page (min-width: 108rem) { .places-page .col-name .cell-text { max-width: 18rem; } }
 .places-page .tbl td.col-actions { width: 1%; }
 .pl-name { font-weight: 600; color: var(--text); }
 .pl-name:hover { color: var(--live); }
@@ -36,6 +37,14 @@
 .pl-kind--charger { --kc: var(--c-charge); }
 .pl-kind--service { --kc: var(--warm); }
 .pl-actions { display: inline-flex; gap: 0.375rem; white-space: nowrap; }
+/* history: charges, drives by car and stops in one cell */
+.pl-hist { display: flex; flex-direction: column; gap: 0.125rem; line-height: 1.35; white-space: nowrap; }
+.pl-hist .sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
+.places-page .col-name .sub .pl-kind { gap: 0.25rem; color: inherit; }
+.places-page .col-name .sub .ico { width: 0.8125rem; height: 0.8125rem; }
+/* the Edit and Delete buttons stay in view when the table scrolls sideways */
+.places-page .tbl .pl-sticky { position: sticky; right: 0; background: var(--panel-solid); box-shadow: inset 1px 0 0 var(--line-2); }
+.places-page .tbl th.pl-sticky { z-index: 2; background: var(--panel-solid); }
 
 /* list: map and suggestions */
 .pl-lower { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: var(--gap); align-items: start; }
@@ -89,6 +98,10 @@
 .pl-effect-figs .metric { min-width: 0; }
 .pl-effect-figs .metric-value { overflow-wrap: anywhere; }
 .pl-examples { font-size: max(0.75rem, var(--fs-floor)); overflow-wrap: anywhere; }
+.pl-examples > p { margin-bottom: 0.25rem; }
+.pl-example-list { list-style: none; display: flex; flex-direction: column; gap: 0.1875rem; }
+.pl-example-list li { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
+.pl-example-list .ico { color: var(--text-3); flex: none; }
 .pl-drill { font-size: max(0.8125rem, var(--fs-floor)); line-height: 1.7; }
 .pl-reprice-row { align-items: end; }
 .pl-only { font-size: max(0.8125rem, var(--fs-floor)); padding-bottom: 0.5rem; }
