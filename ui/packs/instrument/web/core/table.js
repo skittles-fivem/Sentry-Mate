@@ -18,6 +18,7 @@ import { errorWords } from './states.js';
  *   rows,                               or rows the page already has (no paging)
  *   columns: [{ key, label, num, sort, render(row), csv(row), title, cls, cover }],
  *   sort: { key, dir: 'asc' | 'desc' }, the first order (key: a column key)
+ *   onSort(sort),                      called when the person sorts by a header ({ key, dir })
  *   rowHref(row),                       a row opens this page
  *   empty(),                            what to show when there are no rows (say why)
  *   csv: true | false | { filename, columns: [{ label, value(row) }] }   (true: the server's CSV)
@@ -75,6 +76,7 @@ export function dataTable(ctx, opts) {
     const dir = sort && sort.key === key ? (sort.dir === 'asc' ? 'desc' : 'asc') : (col.firstDir || (col.num ? 'desc' : 'asc'));
     sort = { key, dir };
     head();
+    opts.onSort?.({ ...sort });
     if (opts.rows) { renderLocal(); return; }
     load();
   }
@@ -192,6 +194,8 @@ export function dataTable(ctx, opts) {
     ready,
     /** Load again from the first page, with new filters if given. */
     reload(p) { if (p) params = { ...p }; if (opts.rows) renderLocal(); else return load(); return Promise.resolve(); },
+    /** Set the order shown in the header ({ key, dir } or null) without loading; reload() follows. */
+    setSortKey(next) { sort = next ? { ...next } : null; head(); },
     /** Change some filters (null removes one) and load again. */
     setParams(patch) {
       for (const [k, v] of Object.entries(patch)) { if (v == null || v === '') delete params[k]; else params[k] = v; }

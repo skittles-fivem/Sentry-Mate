@@ -55,6 +55,12 @@ export async function mount(ctx) {
   let sort = SORTS.some(([v]) => v === q.sort) ? q.sort : (pinned.length || (prefs.car_order || []).length ? 'custom' : 'last_activity');
   let stateFilter = ['driving', 'charging', 'parked', 'asleep', 'unknown'].includes(q.state) ? q.state : '';
   const search = q.search || '';
+  // the order: the Order menu picks what to sort by, a column header too (and flips the direction)
+  const FIRST_DIR = { custom: 'asc', name: 'asc', soc: 'desc', last_activity: 'desc' };
+  let dir = (q.dir === 'asc' || q.dir === 'desc') && sort !== 'custom' ? q.dir : FIRST_DIR[sort];
+  const COL_OF = { name: 'name', soc: 'soc', last_activity: 'age' };
+  const SORT_OF = { name: 'name', soc: 'soc', age: 'last_activity' };
+  const headSort = () => (COL_OF[sort] ? { key: COL_OF[sort], dir } : null);
 
   const sub = h('p', { class: 'page-sub' });
   const headStats = h('dl', { class: 'head-stats' });
@@ -63,14 +69,21 @@ export async function mount(ctx) {
   const empty = h('section', { class: 'panel', hidden: true, cover: ['cars.empty.title', 'cars.empty.hint'] });
 
   // the list
-  const params = () => ({ search: searchIn.value.trim() || null, state: stateFilter || null, sort, dir: sort === 'name' || sort === 'custom' ? 'asc' : 'desc' });
+  const params = () => ({ search: searchIn.value.trim() || null, state: stateFilter || null, sort, dir });
   const searchIn = h('input', { class: 'input', type: 'search', placeholder: 'Search name, model or VIN prefix', value: search, 'aria-label': 'Search cars' });
   const stateSel = h('select', { class: 'select', 'aria-label': 'State' },
     h('option', { value: '' }, 'All states'), Object.entries(STATES).map(([k, v]) => h('option', { value: k, selected: k === stateFilter }, v.label)));
   const sortSel = h('select', { class: 'select', 'aria-label': 'Order', cover: ['cars.list.order', 'faq.reorder-cars', 'web.settings.general.car-order'] },
     SORTS.map(([v, l]) => h('option', { value: v, selected: v === sort }, `Order: ${l}`)));
   const orderNote = h('span', { class: 'toolbar-note' });
-  const setOrderNote = () => { orderNote.textContent = sort === 'custom' ? 'Pinned cars first, in pin order; then by last activity.' : ''; };
+  const ORDER_NOTE = {
+    custom: 'Pinned cars first, in pin order; then by last activity. Pins are yours, other people keep their own.',
+    last_activity: 'Newest activity first.', name: 'A to Z by name.', soc: 'Highest battery first.',
+  };
+  const setOrderNote = () => {
+    const flipped = sort !== 'custom' && dir !== FIRST_DIR[sort];
+    orderNote.textContent = flipped ? { last_activity: 'Oldest activity first.', name: 'Z to A by name.', soc: 'Lowest battery first.' }[sort] : ORDER_NOTE[sort];
+  };
   setOrderNote();
 
   const pinBtn = (c) => {
@@ -103,14 +116,14 @@ export async function mount(ctx) {
   }
 
   const columns = [
-    { key: 'name', label: 'Car', render: (c) => h('span', { class: 'car-cell' },
+    { key: 'name', label: 'Car', sort: 'name', firstDir: 'asc', render: (c) => h('span', { class: 'car-cell' },
       h('a', { class: 'car-name main', href: state.linkTo('car', { car: c.id }) }, c.name || `Unnamed ${c.model || 'car'}`),
       h('span', { class: 'car-meta' }, carMeta(c), ' ', c.vin_prefix ? h('span', { class: 'key-chip', title: 'VIN prefix (the serial number is never stored)' }, c.vin_prefix) : null,
         !c.name && isAdmin() ? [' · ', h('a', { class: 'link', href: state.buildUrl('settings-cars', { car: c.id }) }, 'Name it')] : null)) },
     { key: 'state', label: 'State', render: (c) => h('span', { class: 'cell-since' },
       statePill(c.now?.state, { stale: c.now?.stale }),
       h('span', null, c.now?.since_ms ? `since ${when(c.now.since_ms, c.time_zone)}` : 'no data yet')) },
-    { key: 'soc', label: 'Battery', render: (c) => {
+    { key: 'soc', label: 'Battery', sort: 'soc', firstDir: 'desc', title: 'Battery charge and estimated range, last known value', render: (c) => {
       const soc = c.now?.soc_pct;
       const bar = h('span', { class: ['bar', soc != null && soc < 20 && 'bar--low', c.now?.stale && 'bar--muted'] }, h('i'));
       setVars(bar, { '--w': `${Math.max(0, Math.min(100, soc ?? 0))}%` });
@@ -121,7 +134,7 @@ export async function mount(ctx) {
       const what = n.state === 'charging' && n.charge_power_kw != null ? `Charging at ${format(n.charge_power_kw, 'power')}` : n.plugged ? 'Plugged in' : n.state === 'driving' ? 'On the road' : null;
       return h('span', { class: 'cell-place' }, h('b', null, n.place?.name || (n.state === 'driving' ? 'Driving' : 'No saved place')), what ? h('span', null, what) : null);
     } },
-    { key: 'age', label: 'Data', title: 'When the newest value was recorded. Logs arrive about a minute after the car records them; stale means no upload for over an hour.', render: (c) => {
+    { key: 'age', label: 'Data', sort: 'last_activity', firstDir: 'desc', title: 'When the newest value was recorded. Logs arrive about a minute after the car records them; stale means no upload for over an hour.', render: (c) => {
       const n = c.now || {};
       return h('span', { class: 'cell-since' },
         h('span', { class: ['age', n.stale ? 'age--stale' : n.state === 'driving' || n.state === 'charging' ? 'age--fresh' : 'age--old'] }, n.stale ? icon('clock') : null, n.at_ms ? agoEl(n.at_ms, c.time_zone) : 'no data'),
@@ -130,7 +143,13 @@ export async function mount(ctx) {
     { key: 'pin', label: 'Order', cls: 'col-pin', csv: false, render: pinBtn },
   ];
   const table = dataTable(ctx, {
-    title: 'Cars', icon: 'car', path: 'cars', params: params(), columns, limit: 50, csvName: 'cars',
+    title: 'Cars', icon: 'car', path: 'cars', params: params(), columns, limit: 50, csvName: 'cars', sort: headSort(),
+    onSort: (sNow) => {
+      sort = SORT_OF[sNow.key]; dir = sNow.dir;
+      sortSel.value = sort;
+      setOrderNote();
+      ctx.setQuery({ sort, dir: dir === FIRST_DIR[sort] ? null : dir });
+    },
     cover: ['cars.list.cards', 'cars.list.live_refresh', 'faq.null-panels'],
     rowHref: (c) => state.linkTo('car', { car: c.id }),
     empty: () => (searchIn.value.trim() || stateFilter
@@ -141,9 +160,10 @@ export async function mount(ctx) {
 
   let timer = 0;
   const apply = () => {
-    sort = sortSel.value; stateFilter = stateSel.value;
+    if (sortSel.value !== sort) { sort = sortSel.value; dir = FIRST_DIR[sort]; table.setSortKey(headSort()); }
+    stateFilter = stateSel.value;
     setOrderNote();
-    ctx.setQuery({ search: searchIn.value.trim() || null, state: stateFilter || null, sort: sortSel.value });
+    ctx.setQuery({ search: searchIn.value.trim() || null, state: stateFilter || null, sort, dir: dir === FIRST_DIR[sort] ? null : dir });
     table.reload(params());
     paintBoard(lastSummary);
   };
