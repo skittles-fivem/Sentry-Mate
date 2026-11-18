@@ -24,7 +24,7 @@ SERIES_FIELDS = (
     "soc_pct", "usable_soc_pct", "soc_bms_pct", "range_km", "ideal_range_km", "energy_remaining_kwh",
     "speed_kph", "power_kw", "odometer_km", "outside_c", "cabin_c", "battery_c", "setpoint_left_c",
     "setpoint_right_c", "elevation_m", "tyre_fl_kpa", "tyre_fr_kpa", "tyre_rl_kpa", "tyre_rr_kpa",
-    "lat", "lon", "accuracy_m", "heading_deg", "lv_v",
+    "lat", "lon", "accuracy_m", "heading_deg", "lv_v", "battery_heat_kw", "climate", "fan_level",
 )
 CURVE_FIELDS = (
     "power_kw", "volts_v", "amps_a", "soc_pct", "usable_soc_pct", "battery_c", "range_km", "outside_c",
@@ -225,6 +225,8 @@ class Drive(Seg):
         self.cabin0 = out + 4
         self.reduced_range = out < -5 and batt0 < 2
         self.setpoint = 21.0 if h01("sp", car.id, start // 86_400_000) > 0.1 else 22.5
+        # climate off on some mild drives; the pack heats itself on cold starts
+        self.climate_on = not (12 <= out <= 24 and h01("ac", car.id, seq) < 0.3)
         self._pw = None
 
     # --- kinematics at time t
@@ -351,6 +353,11 @@ class Drive(Seg):
             "accuracy_m": round(4 + 2.5 * (1 + math.sin(tau / 37)), 1),
             "heading_deg": round(heading, 1) if not legacy else None,
             "lv_v": None if tm else lv_volts(car, True),
+            "battery_heat_kw": None if tm or legacy else round(
+                4.5 * clamp((15 - batt) / 5, 0.3, 1.0) if batt < 15 and self.outside < 10 else 0.0, 2),
+            "climate": None if tm or legacy else ("on" if self.climate_on else "off"),
+            "fan_level": None if tm or legacy else (
+                int(clamp(round(1 + abs(cabin - self.setpoint) * 0.6), 1, 10)) if self.climate_on else 0),
         })
         return vals
 

@@ -24,6 +24,9 @@ const placeLabel = (p) => p?.place?.name || p?.label || p?.address?.short || '�
 const placeHref = (p) => (p?.place?.id ? state.buildUrl('places', { query: { place: p.place.id } })
   : p?.lat != null ? state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }) : null);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+// the climate system's modes, in words, with the token its band is drawn in
+const CLIMATE = { off: ['Climate off', null], on: ['Climate on', '--live'], precondition: ['Preconditioning', '--warm'], overheat_protect: ['Overheat protection', '--danger'] };
+const setWord = (v) => (v === 'LO' ? 'LO (full heat)' : v === 'HI' ? 'HI (full cool)' : null);
 
 export async function mount(ctx) {
   const { car, tz } = ctx;
@@ -39,7 +42,7 @@ export async function mount(ctx) {
   const t0 = d.start_ms, t1 = d.end_ms ?? ctx.api.now();
   const ideal = getUnits().range === 'ideal';
   const rk = ideal ? 'ideal_range_km' : 'range_km';
-  const fields = ['speed_kph', 'power_kw', 'soc_pct', 'usable_soc_pct', rk, 'elevation_m', 'outside_c', 'cabin_c', 'setpoint_left_c', 'setpoint_right_c', 'odometer_km', 'tyre_fl_kpa', 'tyre_fr_kpa', 'tyre_rl_kpa', 'tyre_rr_kpa', 'lat', 'lon', 'accuracy_m'];
+  const fields = ['speed_kph', 'power_kw', 'soc_pct', 'usable_soc_pct', rk, 'elevation_m', 'outside_c', 'cabin_c', 'setpoint_left_c', 'setpoint_right_c', 'odometer_km', 'tyre_fl_kpa', 'tyre_fr_kpa', 'tyre_rl_kpa', 'tyre_rr_kpa', 'lat', 'lon', 'accuracy_m', 'battery_heat_kw', 'climate', 'fan_level'];
   const [series, track] = await Promise.all([
     ctx.api.get(`cars/${encodeURIComponent(cid)}/series`, { fields: fields.join(','), from_ms: t0, to_ms: t1 + 1000, max_points: 3600 }),
     ctx.api.get(`${base}/track`, { extensions: 'speed,power' }).catch(() => null),
@@ -129,7 +132,7 @@ export async function mount(ctx) {
       h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('signals'), 'Through the drive'),
         h('span', { class: 'row' }, timeEl, h('span', { class: 'faint' }, 'Drag across a chart to zoom; double-click for the whole drive'), resetBtn,
           csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'drive', day), series.t_ms.map((t, i) => Object.fromEntries([['t', t], ...fields.map((f) => [f, series.values[f]?.[i] ?? null])])),
-            [timeColumn('Time', 't', tz), column('Speed', 'speed_kph', 'speed'), column('Power', 'power_kw', 'power'), column('Battery', 'soc_pct', 'percent'), column('Usable', 'usable_soc_pct', 'percent'), column(ideal ? 'Ideal range' : 'Rated range', rk, 'range'), column('Elevation', 'elevation_m', 'length'), column('Outside', 'outside_c', 'temperature'), column('Cabin', 'cabin_c', 'temperature'), column('Odometer', 'odometer_km', 'odometer'), column('Latitude', 'lat'), column('Longitude', 'lon'), column('Accuracy', 'accuracy_m', 'length')]) }))),
+            [timeColumn('Time', 't', tz), column('Speed', 'speed_kph', 'speed'), column('Power', 'power_kw', 'power'), column('Battery', 'soc_pct', 'percent'), column('Usable', 'usable_soc_pct', 'percent'), column(ideal ? 'Ideal range' : 'Rated range', rk, 'range'), column('Elevation', 'elevation_m', 'length'), column('Outside', 'outside_c', 'temperature'), column('Cabin', 'cabin_c', 'temperature'), column('Set left', 'setpoint_left_c', 'temperature'), column('Set right', 'setpoint_right_c', 'temperature'), column('Climate', 'climate'), column('Fan step (0-10)', 'fan_level'), column('Battery heating', 'battery_heat_kw', 'power'), column('Odometer', 'odometer_km', 'odometer'), column('Latitude', 'lat'), column('Longitude', 'lon'), column('Accuracy', 'accuracy_m', 'length')]) }))),
       selBox, chartsHost),
     h('div', { class: 'drive-lower' }, bandsEl,
       panel({ title: 'Export the route', icon: 'download' },
@@ -203,7 +206,16 @@ export async function mount(ctx) {
   await loadUPlot();
   if (!ctx.alive()) return;
   const x = series.t_ms.map((t) => t / 1000);
-  const V = (f, kind) => (series.values[f] || []).map((v) => (v == null ? null : kind ? convert(v, kind) : v));
+  const V = (f, kind) => (series.values[f] || []).map((v) => (v == null || typeof v !== 'number' ? null : kind ? convert(v, kind) : v));
+  const raw = (f) => series.values[f] || [];
+  const known = (f) => raw(f).some((v) => v != null);
+  const heatVals = raw('battery_heat_kw').filter((v) => v != null);
+  const heatKwh = heatVals.length ? series.t_ms.reduce((sum, t, i) => {
+    const v = series.values.battery_heat_kw[i]; const dt = i ? (t - series.t_ms[i - 1]) / 3.6e6 : 0;
+    return v == null || dt > 0.05 ? sum : sum + v * dt; }, 0) : null;
+  const clim = raw('climate');
+  const climSeen = [...new Set(clim.filter((v) => v != null))];
+  const setLo = ['setpoint_left_c', 'setpoint_right_c'].some((f) => raw(f).some((v) => typeof v === 'string'));
   const tyreSeries = TYRES.map(([k, l]) => ({ label: l, data: V(`tyre_${k}_kpa`, 'pressure'), color: { fl: '--c-speed', fr: '--c-power', rl: '--c-soc', rr: '--warm' }[k] }));
   const defs = [
     { key: 'speed', name: 'Speed', unit: unitLabel('speed'), cover: 'dd.chart.drive.speed', series: [{ label: 'Speed', data: V('speed_kph', 'speed'), color: '--c-speed', area: true }], kind: 'speed' },
@@ -213,7 +225,18 @@ export async function mount(ctx) {
     { key: 'elev', name: 'Elevation', unit: unitLabel('length'), cover: 'dd.chart.elevation', series: [{ label: 'Elevation', data: V('elevation_m', 'length'), color: '--c-elev', area: true }], kind: 'length' },
     { key: 'temps', name: 'Climate', unit: unitLabel('temperature'), cover: ['dd.chart.temps.air', 'dd.chart.temps.setpoints'], kind: 'temperature', digits: 1,
       series: [{ label: 'Outside', data: V('outside_c', 'temperature'), color: '--c-power' }, { label: 'Cabin', data: V('cabin_c', 'temperature'), color: '--warm' },
-        { label: 'Set left', data: V('setpoint_left_c', 'temperature'), color: '--c-soc', dash: true }, { label: 'Set right', data: V('setpoint_right_c', 'temperature'), color: '--c-elev', dash: true }] },
+        { label: 'Set left', data: V('setpoint_left_c', 'temperature'), raw: raw('setpoint_left_c'), color: '--c-soc', dash: true }, { label: 'Set right', data: V('setpoint_right_c', 'temperature'), raw: raw('setpoint_right_c'), color: '--c-elev', dash: true }],
+      note: known('setpoint_left_c') ? `Set points are the driver's and passenger's choices${setLo ? '; LO and HI (full heat, full cool) are named in the readout and leave a gap in the line' : ''}.` : 'This car does not send its set points, only the air temperatures.' },
+    { key: 'hvac', name: 'Climate system', unit: 'fan step 0–10', cover: 'dd.chart.temps.climate_state', kind: null, digits: 0, bands: clim,
+      series: [{ label: 'Fan', data: V('fan_level'), color: '--live', step: true }],
+      keys: Object.entries(CLIMATE).filter(([k, [, c]]) => c && climSeen.includes(k)).map(([k, [l]]) => h('span', { class: 'key key--band', dataset: { climate: k } }, h('i'), l)),
+      note: !known('climate') ? 'This car does not send the climate mode or fan step.'
+        : `Shaded while the climate system was on${climSeen.includes('precondition') ? ', warm while preconditioning' : ''}${climSeen.includes('overheat_protect') ? ', red for overheat protection' : ''}; the line is the fan step (0 is off).` },
+    { key: 'heat', name: 'Battery heating', unit: 'kW', cover: 'dd.chart.drive.battery_heater', kind: 'power', digits: 1,
+      series: [{ label: 'Heating', data: V('battery_heat_kw'), color: '--warm', area: true }],
+      note: !heatVals.length ? 'This car does not send battery heating power.'
+        : heatVals.some((v) => v > 0) ? `Power the pack spent warming itself: about ${format(heatKwh, 'energy')} on this drive, part of the energy used.`
+          : 'The pack did not heat itself on this drive (0 kW all the way).' },
     { key: 'tyres', name: 'Tyres', unit: unitLabel('pressure'), cover: 'dd.chart.tire_pressure', kind: 'pressure', digits: 2, series: tyreSeries, showX: true },
   ];
   const xMin = x[0], xMax = x[x.length - 1];
@@ -226,8 +249,8 @@ export async function mount(ctx) {
     const target = h('div', { class: 'chart' });
     const block = h('div', { class: 'chart-block', dataset: { series: df.key }, cover: df.cover },
       h('div', { class: 'chart-label' }, h('span', { class: 'name' }, df.name, h('span', { class: 'chart-unit' }, ` · ${df.unit}`)),
-        df.series.map((s) => h('span', { class: 'key' }, h('i', { vars: { '--c': `var(${s.color})` } }), s.label)), valEl),
-      target);
+        df.series.map((s) => h('span', { class: 'key' }, h('i', { vars: { '--c': `var(${s.color})` } }), s.label)), df.keys || null, valEl),
+      target, df.note ? h('p', { class: 'chart-note' }, df.note) : null);
     return { df, block, target, valEl };
   });
   replace(chartsHost, blocks.map((b) => b.block));
@@ -263,6 +286,27 @@ export async function mount(ctx) {
     g.addColorStop(0, hexA(c1, a)); g.addColorStop(f, hexA(c1, a)); g.addColorStop(f, hexA(c2, a)); g.addColorStop(1, hexA(c2, a));
     return g;
   };
+  // the climate mode as shaded bands behind the fan line, one run of the same mode at a time
+  function drawBands(u, modes) {
+    const { left, top, width, height } = u.bbox;
+    const cx = u.ctx;
+    cx.save();
+    cx.beginPath(); cx.rect(left, top, width, height); cx.clip();
+    let i = 0;
+    while (i < modes.length) {
+      let j = i;
+      while (j + 1 < modes.length && modes[j + 1] === modes[i]) j++;
+      const tok = CLIMATE[modes[i]]?.[1];
+      if (tok) {
+        const a = u.valToPos(x[i], 'x', true);
+        const b = u.valToPos(x[Math.min(j + 1, x.length - 1)], 'x', true);
+        cx.fillStyle = hexA(cssVar(tok), 0.16);
+        cx.fillRect(a, top, Math.max(1, b - a), height);
+      }
+      i = j + 1;
+    }
+    cx.restore();
+  }
   blocks.forEach(({ df, target }) => {
     const make = (width, height) => {
       const c = colors();
@@ -270,14 +314,15 @@ export async function mount(ctx) {
         width, height, padding: [rpx(10), rpx(14), df.showX ? 0 : rpx(6), 0], legend: { show: false },
         cursor: { sync: { key: `drive-${did}`, setSeries: false }, drag: { x: true, y: false, setScale: false }, points: { size: rpx(8), width: rpx(2), stroke: c.cursor } },
         select: { show: true },
-        scales: { x: { time: true }, y: { auto: true, range: df.key === 'speed' ? (u, a, b) => [0, Math.max(10, (b || 0) * 1.15)] : undefined } },
+        scales: { x: { time: true }, y: { auto: true, range: df.key === 'speed' ? (u, a, b) => [0, Math.max(10, (b || 0) * 1.15)] : df.key === 'hvac' ? () => [0, 10] : df.key === 'heat' ? (u, a, b) => [0, Math.max(1, (b || 0) * 1.15)] : undefined } },
         axes: [timeAxis(tz, { show: !!df.showX }), valueAxis({ size: 56, digits: df.digits ?? 0 })],
         series: [{}, ...df.series.map((s) => {
           const col = cssVar(s.color);
           if (df.split) return { label: s.label, stroke: (u) => splitGrad(u, col, cssVar('--c-regen'), 1), fill: (u) => splitGrad(u, col, cssVar('--c-regen'), 0.16), fillTo: () => 0, width: rpx(2), points: { show: false } };
-          return { label: s.label, stroke: col, width: rpx(s.dash ? 1.5 : 2), dash: s.dash ? [rpx(4), rpx(3)] : undefined, fill: s.area ? areaFill(col) : undefined, points: { show: false } };
+          return { label: s.label, stroke: col, width: rpx(s.dash ? 1.5 : 2), dash: s.dash ? [rpx(4), rpx(3)] : undefined, fill: s.area ? areaFill(col) : undefined, paths: s.step ? window.uPlot.paths.stepped({ align: 1 }) : undefined, points: { show: false } };
         })],
         hooks: {
+          drawClear: df.bands ? [(u) => drawBands(u, df.bands)] : [],
           setSelect: [(u) => {
             if (u.select.width < rpx(6)) return;
             const a = u.posToVal(u.select.left, 'x'), b = u.posToVal(u.select.left + u.select.width, 'x');
@@ -288,7 +333,11 @@ export async function mount(ctx) {
             const i = u.cursor.idx;
             if (i == null || u.cursor.left < 0) { timeEl.textContent = ''; idle(); hoverAt(null); return; }
             timeEl.textContent = formatTime(series.t_ms[i], tz, { seconds: true });
-            blocks.forEach(({ df: g, valEl }) => { valEl.textContent = g.series.map((s) => (s.data[i] == null ? '—' : formatNumber(s.data[i], { maximumFractionDigits: g.digits ?? 0 }))).join(' / ') + ` ${g.unit}`; });
+            blocks.forEach(({ df: g, valEl }) => {
+              const parts = g.series.map((s) => setWord(s.raw?.[i]) || (s.data[i] == null ? '—' : formatNumber(s.data[i], { maximumFractionDigits: g.digits ?? 0 })));
+              const mode = g.bands ? (CLIMATE[g.bands[i]]?.[0] || 'Climate unknown') : null;
+              valEl.textContent = (mode ? `${mode} · fan ` : '') + parts.join(' / ') + (g.bands ? '' : ` ${g.unit}`);
+            });
             hoverAt(i);
           }] : [],
         },

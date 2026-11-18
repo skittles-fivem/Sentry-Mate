@@ -37,3 +37,12 @@
 @container page (min-width: 140rem) {
   .drive-charts .chart { height: 10rem; }
 }
+
+/* climate bands and the line under a chart that says what it shows or why it is empty */
+.drive-charts .chart-block[data-series] .chart-label .key--band i { width: 0.75rem; height: 0.625rem; border-radius: 0.125rem; background: var(--live-soft); border: 1px solid var(--live-line); }
+.drive-charts .chart-block[data-series] .chart-label .key--band[data-climate="precondition"] i { background: var(--warm-soft); border-color: var(--warm-line); }
+.drive-charts .chart-block[data-series] .chart-label .key--band[data-climate="overheat_protect"] i { background: var(--danger-soft); border-color: var(--danger); }
+.chart-note { margin: 0.125rem 0 0.25rem 4rem; font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
+.drive-charts .chart-block[data-series="hvac"] .chart, .drive-charts .chart-block[data-series="heat"] .chart { height: 6rem; }
+.drive-lower .panel .note + .row { margin-top: 0.75rem; }
+.drive-lower .hbars + .note { margin-top: 0.75rem; }

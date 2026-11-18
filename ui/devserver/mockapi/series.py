@@ -17,7 +17,7 @@ from .util import percentile
 NICE = [1000, 2000, 5000, 10_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000,
         3_600_000, 7_200_000, 10_800_000, 21_600_000, 43_200_000, 86_400_000, 172_800_000, 604_800_000]
 AGGS = ("last", "min", "max", "mean", "p15", "p85")
-LAST_BY_DEFAULT = {"lat", "lon", "accuracy_m", "odometer_km", "heading_deg"}
+LAST_BY_DEFAULT = {"lat", "lon", "accuracy_m", "odometer_km", "heading_deg", "climate"}
 STATE_OF = {"driving": "driving", "charging": "charging", "online": "parked", "online_vehicle_bus_only": "parked",
             "updating": "parked", "asleep": "asleep", "unknown": "unknown"}
 STATE_RANK = ("driving", "charging", "parked", "asleep", "unknown")

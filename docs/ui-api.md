@@ -244,6 +244,7 @@ Points this document left open, decided while building the dev server (`ui/devse
 - `max_points` is 2 to 20000, default 1000. Buckets are 1 s, 2 s, 5 s, 10 s, 15 s, 30 s, 1, 2, 5, 10, 15, 30 min, 1, 2, 3, 6, 12 h, 1, 2 or 7 days (beyond that, a whole number of days), aligned to UTC, the smallest that fits. The first bucket holds `from_ms`, so it can start before it; the answer still never holds more than `max_points` buckets.
 - `state` per bucket is the state that took most of it. `coverage_pct` is the share of the bucket with known data (asleep counts as known). A bucket with no sample is null in every column.
 - `/signals` needs `series` (names from `/signals/latest`) and takes `max_points` (2 to 20000, default 2000). Rows of `/signals/latest` carry `has_series`: false for signals with named values (`gear`, `sentry_mode`, `charge_status`), which have a latest value only; asking `/signals` for them is 400.
+- Drive climate and battery heating are series fields too: `battery_heat_kw` (power the pack spends heating itself, kW; 0 when it is not heating), `climate` (`off`, `on`, `precondition`, `overheat_protect`; text, so its plain column is the last value of the bucket) and `fan_level` (blower step 0 to 10, 0 = off). Null where the car does not send them (older Model S and X, imported history).
 - The charge curve is 1 Hz up to `max_points` (default 4000); longer charges come at a coarser `step_ms`, which the answer states.
 
 ### Formats
@@ -273,8 +274,8 @@ Points this document left open, decided while building the dev server (`ui/devse
 - **Visit groups** (`/visits/places`, `cities`, `regions`, `countries`) carry `level` and the address parts of their level; `sort` is `visits` (default), `dwell`, `last` or `name`. `/visits/summary` adds `visits` and `cars`; `days` counts each car's days.
 - **`/tracks`:** `max_points` (2 to 200000, default 10000) is shared over the drives by duration, at least two points each, and the answer never holds more; too many drives for the points gives `400` on `max_points`. The answer adds `points` (the number sent) and each drive's `source`.
 - **`/updates`:** rows also carry `car`, `build_id` and `until_ms` (when the next update came; null for the current one). `detected_by: "build_change"` with `version: null` is an update seen only as changed module builds. PATCH `{ version }` takes `2026.38.4` style versions, or null to forget a typed version; the version then also names other updates with the same `build_id` (`version_source: "build_match"`).
-- **`/cars/{car}/events`:** rows are `{ id, type, at_ms, topic, retained, payload }`, newest first; `payload` is exactly what MQTT would publish, in the server's units, with positions only when location publishing is on. An unknown `types` value gives `400`.
 - **Timeline update rows** also carry `version` and `version_source` (as `/updates`; `version` null when the update was seen only as changed module builds), and the text filter `q` matches the version.
+- **`/cars/{car}/events`:** rows are `{ id, type, at_ms, topic, retained, payload }`, newest first; `payload` is exactly what MQTT would publish, in the server's units, with positions only when location publishing is on. An unknown `types` value gives `400`.
 
 ### Places
 
