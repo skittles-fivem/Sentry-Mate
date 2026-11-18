@@ -17,7 +17,8 @@ import { emptyState, errorWords } from '../core/states.js';
 import { flash } from '../core/flash.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
-import { dateTime, date, agoEl, DASH } from '../core/fmt.js';
+import { dateTime, date, agoEl, tzName, DASH } from '../core/fmt.js';
+import { timeColumn } from '../shared/csv.js';
 
 export const id = 'settings-server';
 export const css = true;
@@ -48,7 +49,7 @@ export async function mount(ctx) {
   const admin = ctx.admin;
   const me = ctx.me || {};
   const query = ctx.query || {};
-  const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [] };
+  const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [], trips: [] };
 
   async function loadAccounts() { S.accounts = admin ? await ctx.api.list('accounts', { limit: 500 }).all({ max: 5000 }) : []; }
   async function loadSessions() { S.sessions = await ctx.api.list('me/sessions', { limit: 500 }).all({ max: 5000 }); }
@@ -58,16 +59,23 @@ export async function mount(ctx) {
       ctx.api.get('settings'),
       admin ? ctx.api.get('network').catch(() => null) : null,
       ctx.api.get('notices').catch(() => null),
-      admin ? ctx.api.list('cars', { limit: 500 }).all({ max: 5000 }) : [],
+      ctx.api.list('cars', { sort: 'custom', limit: 500 }).all({ max: 5000 }).catch(() => []),
       loadAccounts(),
       loadSessions(),
+      admin ? ctx.api.list('trips', { limit: 500 }).all({ max: 5000 }).then((t) => { S.trips = t; }).catch(() => {}) : null,
     ]);
     Object.assign(S, { settings, network, notices: notices?.items || [], cars });
   } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
   if (!ctx.alive()) return;
 
   const carName = new Map(S.cars.map((c) => [c.id, c.name]));
-  const tz = ctx.tz;
+  // the zone the times on this page are in, named with them: the frame clock's (the last car's, else
+  // the first car's), else this browser's
+  const clockCar = S.cars.find((c) => c.id === state.lastCar()) || S.cars[0] || null;
+  const tz = clockCar?.time_zone || ctx.tz;
+  const zone = tzName(tz);
+  const zoneText = clockCar?.time_zone ? `${zone}, ${clockCar.name}'s time zone like the clock at the top` : `${zone}, this browser's time zone`;
+  const isoNote = `ISO 8601 with its UTC offset, ${tz}`;
 
   /* ---------------------------------------------------------------- how this server is reached */
   const loc = globalThis.location;
@@ -76,18 +84,28 @@ export async function mount(ctx) {
   const isLocal = here.host === 'localhost' || here.host === '127.0.0.1' || here.host === '::1' || here.host === '[::1]';
 
   const hostingBox = h('div');
+  // the names in the certificate the server runs with now (admins, from /network); saved host names
+  // only go into the next certificate the server makes
+  const certNames = Array.isArray(S.network?.certificate?.names) ? S.network.certificate.names.map((n) => n.toLowerCase()) : null;
   function paintHosting() {
-    const names = (S.settings.host_names || []).map((n) => n.toLowerCase());
+    const saved = (S.settings.host_names || []).map((n) => n.toLowerCase());
+    const names = certNames || saved;
     const named = names.includes(here.host);
+    const savedOnly = !named && saved.includes(here.host);
     const rows = [];
     rows.push(here.https
       ? checkRow('ok', 'HTTPS', 'This page came over an encrypted connection, so the password you sign in with never travels in plain text.')
       : checkRow('warn', 'Plain HTTP', `This page came over plain HTTP. Sentry Mate itself answers only HTTPS (TLS 1.3); plain HTTP means something else serves it${isLocal ? ' (on this machine: a development server)' : ', such as a proxy'}. Never type a password on a plain HTTP page that reaches over a network.`));
     rows.push(named
-      ? checkRow('ok', `Host name ${here.host}`, 'This name is one of the certificate\'s names below, so the browser trusts the address without a warning (once it trusts the certificate).')
-      : checkRow('warn', `Host name ${here.host} is not on the certificate`,
-        `You opened Sentry Mate as ${here.host}, but the certificate names ${names.join(', ') || 'no host'}. Browsers warn about a name that is not on it. The CAN Bridge is not affected: it pins the certificate's SHA-256 and does not check names.`,
-        admin ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => addName(here.host) }, icon('plus', 'ico--sm'), `Add ${here.host} to the names`) : null));
+      ? checkRow('ok', `Host name ${here.host}`, certNames
+        ? 'This name is in the certificate the server uses now, so the browser trusts the address without a warning (once it trusts the certificate).'
+        : 'This name is on the server\'s list of names for its certificate, so the browser trusts the address without a warning (once it trusts the certificate). An admin sees whether the certificate in use already has it.')
+      : savedOnly
+        ? checkRow('info', `Host name ${here.host} is saved, not yet in the certificate`,
+          `The name is on the list below, but the certificate the server uses now names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until the server makes a new certificate (see Certificate, recovery key and backups).`)
+        : checkRow('warn', `Host name ${here.host} is not on the certificate`,
+          `You opened Sentry Mate as ${here.host}, but the certificate names ${names.join(', ') || 'no host'}. Browsers warn about a name that is not on it. The CAN Bridge is not affected: it pins the certificate's SHA-256 and does not check names.`,
+          admin ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => addName(here.host) }, icon('plus', 'ico--sm'), `Add ${here.host} to the names`) : null));
     if (webIn) {
       rows.push(here.port === webIn.port
         ? checkRow('ok', `Port ${here.port}`, `The same port the server listens on for the web pages (${webIn.port}).`)
@@ -137,35 +155,63 @@ export async function mount(ctx) {
     nameInput.value = '';
     paintNames();
   }
-  async function putNames(list) {
+  // the person's unsaved edits (names added, names removed) put on top of another list
+  function mergeDraft(base, onto) {
+    const added = draft.filter((n) => !base.includes(n));
+    const removed = base.filter((n) => !draft.includes(n));
+    const out = onto.filter((n) => !removed.includes(n));
+    added.forEach((n) => { if (!out.includes(n)) out.push(n); });
+    return out.length ? out.slice(0, 10) : [...onto];
+  }
+  // list: the whole list to save. fromDraft: the list is the draft (a save of the panel); otherwise the
+  // draft keeps its unsaved edits on top of the saved list.
+  async function putNames(list, { fromDraft = true } = {}) {
     nameErr.hidden = true;
+    const before = [...(S.settings.host_names || [])];
     try {
       S.settings = await ctx.api.patch('settings', { version: S.settings.version, host_names: list });
-      draft = [...S.settings.host_names];
-      flash('Host names saved. They go into the next certificate the server makes.');
+      draft = fromDraft ? [...S.settings.host_names] : mergeDraft(before, S.settings.host_names);
+      flash('Host names saved. They go into the next certificate the server makes; the one in use keeps its names until then.');
       paintNames(); paintHosting();
     } catch (e) {
       if (e.status === 409) {
-        S.settings = await ctx.api.get('settings'); draft = [...S.settings.host_names]; paintNames(); paintHosting();
-        flash('Someone else changed the server settings; this page shows theirs now. Try again.', { kind: 'info' });
+        S.settings = await ctx.api.get('settings');
+        draft = mergeDraft(before, S.settings.host_names);
+        paintNames(); paintHosting();
+        flash(fromDraft
+          ? 'Someone else changed the server settings meanwhile. Your additions and removals are kept on top of their list below: check it and save again.'
+          : 'Someone else changed the server settings meanwhile; this page shows theirs now. Try again.', { kind: 'info' });
         return;
       }
       replace(nameErr, icon('warn'), errText(e)); nameErr.hidden = false;
     }
   }
-  function addName(n) { if (!draft.includes(n)) draft.push(n); putNames(draft); }
+  // the button in the check: saves only this name on top of the saved list, never the panel's unsaved edits
+  function addName(n) {
+    const saved = S.settings.host_names || [];
+    if (saved.includes(n)) return;
+    if (saved.length >= 10) { flash('The certificate takes up to 10 names. Remove one under Host names first.', { kind: 'error' }); return; }
+    putNames([...saved, n], { fromDraft: false });
+  }
 
   /* ---------------------------------------------------------------- ports */
   const portRows = S.network?.inbound?.length
     ? S.network.inbound.map((p) => [PURPOSE[p.purpose] || p.purpose, h('span', { class: 'ss-port' },
       h('b', { class: 'mono' }, String(p.port)), p.tls ? pill('HTTPS, TLS 1.3', { tone: 'live', ic: 'lock' }) : pill('no TLS', { tone: 'warm', ic: 'warn' }))])
     : [['Your address', h('span', { class: 'mono' }, String(here.port))]];
+  const upIn = S.network?.inbound?.find((x) => x.purpose === 'upload') || null;
+  const webPort = webIn ? webIn.port : null;
+  // the example mapping: the port in this address on the host, the web port inside the container
+  const hostPort = webPort != null && here.port !== webPort ? here.port : (webPort === 443 ? 8443 : 10443);
   const portsPanel = panel({ title: 'Ports', icon: 'plug', pad: true, cover: 'docs.env.web.port' },
     kv(portRows),
     h('p', { class: 'note ss-gap' }, S.network
-      ? 'Both ports speak only HTTPS with TLS 1.3; there is no plain HTTP port to forget about. The upload port takes only CAN Bridge uploads with a car\'s upload token, and turns away wrong tokens after a few tries.'
+      ? `${upIn ? 'Both ports speak' : 'The port speaks'} only HTTPS with TLS 1.3; there is no plain HTTP port to forget about.${upIn ? ` The upload port (${upIn.port}) takes only CAN Bridge uploads with a car's upload token, turns away wrong tokens after a few tries, and takes connections only while uploads are on: with uploads off it stays closed.` : ''}`
       : 'An admin sees which ports the server listens on.'),
-    h('p', { class: 'note' }, 'To use another port on the host, change only the left number of the port mapping in the compose or TrueNAS file (for example "10200:10100") and use that number in the address. The listening address stays 0.0.0.0 inside the container; the mapping decides what is reachable.'));
+    h('p', { class: 'note' }, webPort != null
+      ? ['To reach the web pages on another port of the host, change only the left number of the web port\'s mapping in the compose or TrueNAS file, for example ',
+        mono(`${hostPort}:${webPort}`), ` (host port ${hostPort}, web port ${webPort} inside the container), and use that number in the address.${upIn ? ` The upload port maps the same way, for example ${upIn.port}:${upIn.port}; a CAN Bridge then uses the left number.` : ''} The listening address stays 0.0.0.0 inside the container; the mapping decides what is reachable.`]
+      : 'To use another port on the host, change only the left number of the port mapping in the compose or TrueNAS file (host port:container port) and use that number in the address. The listening address stays 0.0.0.0 inside the container; the mapping decides what is reachable.'));
 
   /* ---------------------------------------------------------------- the certificate, the recovery key and backups */
   const cert = S.notices.find((n) => n.code === 'certificate_expiring');
@@ -223,7 +269,7 @@ export async function mount(ctx) {
       { key: 'role', label: 'Role', sort: true, render: (a) => pill(ROLE[a.role] || a.role, { tone: a.role === 'admin' ? 'warm' : 'plain' }), csv: (a) => ROLE[a.role] || a.role },
       { key: 'cars', label: 'Cars it sees', value: (a) => (a.cars === 'all' ? -1 : a.cars.length), sort: true, render: (a) => carsText(a.cars), csv: (a) => (a.cars === 'all' ? 'all' : a.cars.map((c) => carName.get(c) || c).join('; ')) },
       { key: 'two_step_required', label: 'Two-step sign-in', sort: true, render: (a) => (a.two_step_required ? h('span', { class: 'ok' }, 'Required') : h('span', { class: 'faint' }, 'Password only')), csv: (a) => (a.two_step_required ? 'required' : 'no') },
-      { key: 'created_ms', label: 'Made', sort: true, render: (a) => date(a.created_ms, tz), csv: (a) => a.created_ms },
+      { key: 'created_ms', label: `Made (${zone})`, sort: true, render: (a) => date(a.created_ms, tz), csv: timeColumn(`Made (${isoNote})`, 'created_ms', tz) },
       { key: 'act', label: 'Change', csv: false, render: (a) => h('div', { class: 'row ss-acts' },
         h('button', { class: 'btn btn--sm', type: 'button', onclick: () => editAccount(a) }, 'Edit'),
         h('button', { class: 'btn btn--sm btn--ghost', type: 'button', disabled: a.id === me.id,
@@ -327,14 +373,16 @@ export async function mount(ctx) {
   const focusSession = query.session || null;
   const sessionsTable = dataTable(ctx, {
     title: 'Your sessions', icon: 'monitor', rows: S.sessions, label: 'Where you are signed in', csvName: 'sessions',
-    note: 'Every browser where your account is signed in. End one you do not recognise, then change your password.',
+    note: admin
+      ? `Every browser where your account is signed in; times are in ${zoneText}. End one you do not recognise, then give your account a new password: Edit your account under Accounts above.`
+      : `Every browser where your account is signed in; times are in ${zoneText}. End one you do not recognise, then ask an admin to set a new password for your account.`,
     side: h('button', { class: 'btn btn--sm', type: 'button', onclick: () => endOthers() }, icon('signout', 'ico--sm'), 'Sign out everywhere else'),
     sort: { key: 'last_seen_ms', dir: 'desc' },
     columns: [
       { key: 'device', label: 'Browser', sort: true, render: (s) => h('span', { class: 'row ss-acc' }, s.device || 'Not reported',
         s.this_one ? tag('this browser', 'live') : null, s.id === focusSession ? tag('from the audit log', 'warm') : null) },
-      { key: 'created_ms', label: 'Signed in', sort: true, render: (s) => dateTime(s.created_ms, tz), csv: (s) => s.created_ms },
-      { key: 'last_seen_ms', label: 'Last used', sort: true, render: (s) => (s.this_one ? 'Now' : agoEl(s.last_seen_ms, tz)), csv: (s) => s.last_seen_ms },
+      { key: 'created_ms', label: `Signed in (${zone})`, sort: true, render: (s) => dateTime(s.created_ms, tz), csv: timeColumn(`Signed in (${isoNote})`, 'created_ms', tz) },
+      { key: 'last_seen_ms', label: 'Last used', sort: true, render: (s) => (s.this_one ? 'Now' : agoEl(s.last_seen_ms, tz)), csv: timeColumn(`Last used (${isoNote})`, 'last_seen_ms', tz) },
       { key: 'act', label: 'End it', csv: false, render: (s) => h('button', { class: 'btn btn--sm', type: 'button', onclick: () => endSession(s) },
         icon('signout', 'ico--sm'), s.this_one ? 'Sign out here' : 'Sign out') },
     ],
@@ -361,12 +409,26 @@ export async function mount(ctx) {
 
   /* ---------------------------------------------------------------- audit log (admin) */
   const accountName = (aid) => S.accounts.find((a) => a.id === aid)?.name;
-  function target(t) {
+  // the changed item: a link where it still exists, else readable words (never a raw key)
+  function target(t, car = null) {
     const i = String(t || '').indexOf(':');
     const kind = i < 0 ? t : t.slice(0, i);
     const tid = i < 0 ? '' : t.slice(i + 1);
     const a = (href, text) => h('a', { class: 'link', href }, text);
+    const plain = (text) => h('span', null, text);
+    const onCar = car && carName.has(car) ? ` of ${carName.get(car)}` : '';
     switch (kind) {
+      case 'drive': return car && carName.has(car) ? a(state.buildUrl('drive', { car, drive: tid }), `A drive${onCar}`) : plain('A drive');
+      case 'charge': return car && carName.has(car) ? a(state.buildUrl('charge', { car, charge: tid }), `A charge${onCar}`) : plain('A charge');
+      case 'update': return car && carName.has(car) ? a(state.buildUrl('software', { car }), `A software update${onCar}`) : plain('A software update');
+      case 'trip': {
+        const tr = S.trips.find((x) => x.id === tid);
+        const c = car || tr?.car;
+        if (!c || !carName.has(c)) return plain('A saved trip');
+        const text = tr?.name ? `Trip ${tr.name}` : `A saved trip of ${carName.get(c)}`;
+        return a(state.buildUrl('trip', { car: c, period: tr ? { from: tr.from_ms, to: tr.to_ms } : null }), text);
+      }
+      case 'server': return plain('The server');
       case 'account': return a(state.buildUrl('settings-server', { query: { account: tid } }), `Account ${accountName(tid) || tid}`);
       case 'session': return a(state.buildUrl('settings-server', { query: { session: tid } }), 'A session');
       case 'car': return carName.has(tid) ? a(state.buildUrl('settings-cars', { car: tid }), carName.get(tid)) : h('span', { class: 'faint' }, 'A car no longer here');
@@ -374,17 +436,17 @@ export async function mount(ctx) {
       case 'place': return a(state.buildUrl('places', { query: { place: tid } }), 'A place');
       case 'import': return a(state.buildUrl('import'), 'An import');
       case 'key': return a(state.buildUrl('settings-cars'), `CAN Bridge key ${tid}`);
-      default: return h('span', { class: 'mono faint' }, t || DASH);
+      default: return h('span', { class: 'faint' }, t ? 'Another item' : DASH);
     }
   }
   const auditTable = admin ? dataTable(ctx, {
     title: 'Audit log', icon: 'book', path: 'audit', label: 'Who changed what', csvName: 'audit-log',
-    note: 'Every change and every sign-in, newest first. The item links to what was changed, where it still exists. Times are in the car\'s time zone.',
+    note: `Every change and every sign-in, newest first. The item links to what was changed, where it still exists. Times are in ${zoneText}.`,
     columns: [
-      { key: 'at_ms', label: 'When', render: (e) => dateTime(e.at_ms, tz), csv: (e) => e.at_ms },
+      { key: 'at_ms', label: `When (${zone})`, render: (e) => dateTime(e.at_ms, tz) },
       { key: 'account', label: 'Who', render: (e) => (e.account ? h('b', null, e.account) : h('span', { class: 'faint' }, 'The server')) },
       { key: 'action', label: 'Action', render: (e) => h('span', { class: 'mono ss-action' }, e.action) },
-      { key: 'target', label: 'Item', render: (e) => target(e.target), csv: (e) => e.target },
+      { key: 'target', label: 'Item', render: (e) => target(e.target, e.car) },
       { key: 'summary', label: 'What happened', render: (e) => e.summary || DASH },
     ],
     empty: () => emptyState({ icon: 'book', title: 'Nothing recorded yet', text: 'Each sign-in and each change appears here as it happens.' }),

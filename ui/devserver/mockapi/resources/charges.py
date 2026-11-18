@@ -208,7 +208,7 @@ def put_cost(req):
         st.costs[c.id] = {"mode": body["mode"], "amount": float(body["amount"]), "currency": body["currency"],
                           "energy_basis": body.get("energy_basis")}
     st.record(req.account, "charge.cost", f"charge:{c.id}",
-              f"Entered a cost for a charge: {body['amount']} {body['currency']} ({body['mode']}).")
+              f"Entered a cost for a charge: {body['amount']} {body['currency']} ({body['mode']}).", car=req.car)
     return get_charge(req)
 
 
@@ -217,7 +217,7 @@ def delete_cost(req):
     st = req.store
     with st.lock:
         st.costs.pop(c.id, None)
-    st.record(req.account, "charge.cost", f"charge:{c.id}", "Removed the entered cost; the place price applies.")
+    st.record(req.account, "charge.cost", f"charge:{c.id}", "Removed the entered cost; the place price applies.", car=req.car)
     return get_charge(req)
 
 

@@ -334,6 +334,7 @@ def network(req):
              "last_used_ms": now - 6 * 3_600_000 if ss["release_check"]["enabled"] else None},
         ],
         "inbound": [{"purpose": "web", "port": 443, "tls": True}, {"purpose": "upload", "port": 8443, "tls": True}],
+        "certificate": {"names": list(req.store.cert_names)},
     }
 
 

@@ -32,6 +32,12 @@ DEFAULT_PREFS = {
 }
 
 
+def _audit_car(target, car):
+    if car:
+        return car
+    return target[4:] if isinstance(target, str) and target.startswith("car:") else None
+
+
 class Store:
     def __init__(self, cfg, ds, clock):
         self.cfg = cfg
@@ -76,6 +82,8 @@ class Store:
         from .dataset import extras
         self.notices = extras.notices(now)
         self.server_settings = extras.server_settings(now)
+        # the names in the certificate the server runs with: made at start, not changed by saving host_names
+        self.cert_names = list(self.server_settings["host_names"])
         self.mqtt = extras.mqtt(now)
         self.imports = extras.imports(now, ds.history("c3"))
         self.storage = extras.storage(now)
@@ -166,7 +174,8 @@ class Store:
             (now - 2 * HOUR, "admin", "session.start", "account:a1", "Signed in."),
         ]
         for at, who, action, target, summary in entries:
-            self.audit.append({"at_ms": at, "account": who, "action": action, "target": target, "summary": summary})
+            self.audit.append({"at_ms": at, "account": who, "action": action, "target": target,
+                               "car": _audit_car(target, None), "summary": summary})
 
     # ------------------------------------------------------------ ids, audit
     def new_id(self, prefix):
@@ -174,11 +183,14 @@ class Store:
             self.next_id += 1
             return f"{prefix}{self.next_id}"
 
-    def record(self, account, action, target, summary):
+    def record(self, account, action, target, summary, car=None):
+        """car: the car the changed item belongs to (a drive's, a charge's, a trip's, an update's car);
+        a car:<id> target is its own car."""
         with self.lock:
             self.rev += 1
             self.audit.append({"at_ms": self.clock.now(), "account": account["name"] if account else None,
-                               "action": action, "target": target, "summary": summary})
+                               "action": action, "target": target, "car": _audit_car(target, car),
+                               "summary": summary})
 
     # ------------------------------------------------------------ accounts and sessions
     def account_by_name(self, name):
