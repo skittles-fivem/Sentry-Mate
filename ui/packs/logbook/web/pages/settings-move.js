@@ -31,9 +31,9 @@ const WHY_CANCELLED = (w) => (w ? w.replace(/^./, (c) => c.toUpperCase()) : 'Can
  * dialog under its field. extra: more fields (elements) shown above the password. Resolves with run's
  * result, or null when closed.
  */
-function askPassword(ctx, { title, text, yes, danger = false, extra = [], run }) {
+export function askPassword(ctx, { title, text, yes, danger = false, extra = [], hint = 'It is asked again because this hands over all the data.', run }) {
   let twoStepShown = !!(ctx.me && ctx.me.two_step_required);
-  const pass = field({ label: 'Your password', name: 'password', type: 'password', hint: 'The one you sign in with. It is asked again because this hands over all the data.', attrs: { autocomplete: 'current-password', required: true } });
+  const pass = field({ label: 'Your password', name: 'password', type: 'password', hint: `The one you sign in with. ${hint}`, attrs: { autocomplete: 'current-password', required: true } });
   const two = field({ label: 'Two-step code', name: 'two_step', hint: 'The 6 digits from your authenticator app.', attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', maxlength: 6, spellcheck: 'false' } });
   two.hidden = !twoStepShown;
   let result = null;
@@ -173,6 +173,7 @@ export function moveBlock(ctx, { network = null } = {}) {
         h('p', null, 'This server takes uploads and changes again at once, with the data it had when it moved.'),
         h('p', null, h('strong', null, 'Stop the new server first. '), 'If both take uploads, they drift apart, and the new one’s uploads since the move are not here.')),
       yes: 'Undo the move', danger: true, extra: [sureField],
+      hint: 'It is asked again because this changes where the uploads go.',
       run: async (creds) => {
         if (!sure.checked) { throw Object.assign(new Error('Tick the box first.'), { fields: { stopped: 'Stop the new server first, then tick this.' } }); }
         try { return await ctx.api.post('system/move/undo', { ...creds, confirm: true }); } catch (err) {

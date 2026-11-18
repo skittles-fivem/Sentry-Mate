@@ -1,6 +1,6 @@
 // Sentry Mate, "Logbook" UI pack: parts that moving a server shares between the first-run set-up screen
 // (pages/setup.js) and Settings: Server and access (pages/settings-server.js): a code shown big with a Copy
-// button, the progress of a copy (bytes, files, which step), a text file handed to the browser, and the
+// button, the progress of a copy (bytes, cars, files, which step), a text file handed to the browser, and the
 // words for the problems a move or a restore can meet. Their styles are in app.css (.mv-*).
 
 import { h, replace } from '../shared/dom.js';
@@ -63,17 +63,21 @@ export function downloadUrl(href) {
 
 /**
  * The steps of a copy, the one now marked: steps is [[key, name, text]], current a key (or null), done
- * true once all of them are done.
+ * true once all of them are done. problem marks the current step as waiting; failed marks it as failed
+ * for good (a string: the words shown under it instead of the step's own, which tell how to go on).
  */
-export function stepList(steps, current, { done = false, problem = false } = {}) {
+export function stepList(steps, current, { done = false, problem = false, failed = null } = {}) {
   const at = steps.findIndex(([k]) => k === current);
   return h('ol', { class: 'mv-steps' }, steps.map(([k, name, text], i) => {
-    const st = done || (at >= 0 && i < at) ? 'done' : i === at ? (problem ? 'stuck' : 'now') : 'later';
+    const st = done || (at >= 0 && i < at) ? 'done' : i === at ? (failed || problem ? 'stuck' : 'now') : 'later';
+    const shown = st === 'stuck' && failed ? (typeof failed === 'string' ? failed : null) : text;
+    const gaveUp = st === 'stuck' && !!failed;
+    const said = st === 'done' ? ' (done)' : st === 'now' ? ' (now)' : st === 'stuck' && !gaveUp ? ' (waiting)' : '';
     return h('li', { class: ['mv-step', `mv-step-${st}`], 'aria-current': st === 'now' || st === 'stuck' ? 'step' : null },
       h('span', { class: 'mv-step-mark', 'aria-hidden': 'true' }, st === 'done' ? icon('check') : st === 'stuck' ? icon('warning') : String(i + 1)),
       h('span', { class: 'mv-step-body' },
-        h('span', { class: 'mv-step-name' }, name, h('span', { class: 'sr-only' }, st === 'done' ? ' (done)' : st === 'now' ? ' (now)' : st === 'stuck' ? ' (waiting)' : '')),
-        (st === 'now' || st === 'stuck') && text ? h('span', { class: 'mv-step-text' }, text) : null));
+        h('span', { class: 'mv-step-name' }, name, gaveUp ? h('span', { class: 'mv-step-failed' }, ' (failed)') : null, said ? h('span', { class: 'sr-only' }, said) : null),
+        (st === 'now' || st === 'stuck') && shown ? h('span', { class: 'mv-step-text' }, shown) : null));
   }));
 }
 
@@ -87,6 +91,7 @@ export function progressBar(p, { label = 'Copied' } = {}) {
   const bits = [];
   if (total) bits.push(`${bytes(done)} of ${bytes(total)}`);
   else if (done) bits.push(bytes(done));
+  if (p && p.cars_total) bits.push(`${format(p.cars_done || 0, 'count')} of ${format(p.cars_total, 'count')} ${p.cars_total === 1 ? 'car' : 'cars'}`);
   if (p && p.files_total) bits.push(`${format(p.files_done || 0, 'count')} of ${format(p.files_total, 'count')} files`);
   const speed = p && p.bytes_per_s ? `${bytes(p.bytes_per_s)}/s` : null;
   const eta = p ? etaWords(p.eta_s) : null;

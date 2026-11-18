@@ -133,7 +133,7 @@ keeps the claim in the cookie `sentry-mate-setup`), then one of:
   | `nomove.example` | `422 move_not_offered` |
   | `flaky.example` | the connection drops at 40 % for 5 s (`waiting`, problem `unreachable`), then it carries on |
   | `gone.example` | drops at 50 % and never comes back (`waiting`): try `POST /api/v1/setup/move-here/finish` |
-  | `cancel.example` | the old server cancels at 60 % (`stopped`, problem `cancelled`) |
+  | `cancel.example` | the old server cancels at 60 % (`stopped`, problem `cancelled`); `POST /api/v1/setup/move-here` again with the same address and a new code carries it on from there |
 
 - **Restore**: `POST /api/v1/setup/restore { name, size, recovery_key, header }`, then PATCH the chunks. The old
   server's recovery key is `SMRK-DEVK-EY00-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000`. The file must be

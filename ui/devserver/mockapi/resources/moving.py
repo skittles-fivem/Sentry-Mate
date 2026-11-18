@@ -39,6 +39,7 @@ MOVE_FILES = 52_318
 MOVE_BYTES = 18_431_260_672
 CATCH_FILES = 37
 CATCH_BYTES = 41_943_040
+MOVE_CARS = 3
 
 # the old server's side of a move, after the new server claimed the code (ms)
 OLD_COPY_MS = 10_000
@@ -153,7 +154,8 @@ def _same_key(a, b):
 
 
 def _norm_setup_code(text):
-    return re.sub(r"[\s]", "", text).upper()
+    """Case, spaces and dashes do not matter (docs/ui-api.md)."""
+    return re.sub(r"[\s-]", "", text).upper()
 
 
 def parse_address(text):
@@ -203,6 +205,7 @@ def seed(st, cfg, now):
     st.move = {"code": None, "moved": None, "cancelled": None, "undone_ms": None}
     st.exports = {}
     st.recovery_key_saved = False
+    st.recovery_key = DEV_RECOVERY_KEY  # what the made-up RECOVERY-KEY.txt holds until it is saved
     preset = getattr(cfg, "move_state", "none")
     if preset == "none" or cfg.needs_setup:
         return
@@ -294,8 +297,11 @@ def _old_phase(st, now):
 
 def _progress(round_, files_done, files_total, bytes_done, bytes_total, per_s):
     left = max(0, bytes_total - bytes_done) if bytes_total is not None else None
+    # the cars are copied one after the other: a car counts once all its files are over
+    cars_total = MOVE_CARS if files_total else None
+    cars_done = min(MOVE_CARS, int(MOVE_CARS * files_done / files_total)) if files_total else 0
     return {"round": round_, "files_done": int(files_done), "files_total": files_total, "bytes_done": int(bytes_done),
-            "bytes_total": bytes_total, "bytes_per_s": per_s,
+            "bytes_total": bytes_total, "cars_done": cars_done, "cars_total": cars_total, "bytes_per_s": per_s,
             "eta_s": int(left / per_s) if per_s and left is not None else None}
 
 
@@ -545,11 +551,48 @@ def export_file(req):
     return Response(status, part, "application/octet-stream", headers)
 
 
+def _key_file_there(st):
+    return any(n["code"] == "recovery_key_unsaved" for n in st.notices)
+
+
+def post_recovery_show(req):
+    """The recovery key file's key once more, behind the password: for a key page closed before "I have saved it"
+    was ticked. Only while the file is there; nothing shows the key after that."""
+    st = req.store
+    body = req.json(required=False)
+    _only(body, ("password", "two_step"))
+    _reauth(req, body)
+    if not _key_file_there(st):
+        raise conflict("recovery_key_saved", "The recovery key file is gone: it was deleted once the key was saved, "
+                                             "so nothing can show the key again. Use the copy you saved.")
+    st.record(req.account, "recovery_key.shown", "server", "Showed the recovery key from its file again.")
+    return {"recovery_key": st.recovery_key}
+
+
+def post_recovery_new(req):
+    """A new recovery key, shown this once (the old one stops working; exports and data backups made before still
+    need the old one). Like the first one, it waits in RECOVERY-KEY.txt until "I have saved it"."""
+    st = req.store
+    body = req.json(required=False)
+    _only(body, ("password", "two_step"))
+    _reauth(req, body)
+    with st.lock:
+        st.recovery_key = make_recovery_key()
+        st.recovery_key_saved = False
+        if not _key_file_there(st):
+            st.notices.append({"code": "recovery_key_unsaved", "level": "info",
+                               "message": "Save the vault recovery key file somewhere safe.", "since_ms": req.now,
+                               "fix_link": "/settings/server"})
+    st.record(req.account, "recovery_key.new", "server", "Made a new recovery key; the old one stopped working.")
+    return {"recovery_key": st.recovery_key, "made_ms": req.now, "_created": True}
+
+
 def post_recovery_saved(req):
     st = req.store
     with st.lock:
         st.notices = [n for n in st.notices if n["code"] != "recovery_key_unsaved"]
         st.recovery_key_saved = True
+        st.recovery_key = None
     st.record(req.account, "recovery_key.saved", "server", "Said the recovery key is saved; its file was removed.")
     return {"saved": True}
 
@@ -583,7 +626,8 @@ def _base(job):
 
 def _move_here_view(job, now):
     out = _base(job)
-    e = now - job["started_ms"]
+    clock0 = job.get("clock0_ms", job["started_ms"])  # moved on when a stopped move carries on
+    e = now - clock0
     sc = job.get("scenario")
     copy0 = NEW_CONNECT_MS
     per_s = int(MOVE_BYTES / (NEW_COPY_MS / 1000))
@@ -652,7 +696,7 @@ def _move_here_view(job, now):
         out["state"] = "switching"
     else:
         out["state"] = "done"
-        at = job["started_ms"] + NEW_CONNECT_MS + NEW_COPY_MS + NEW_CATCH_MS + NEW_FINISH_MS + NEW_SWITCH_MS
+        at = clock0 + NEW_CONNECT_MS + NEW_COPY_MS + NEW_CATCH_MS + NEW_FINISH_MS + NEW_SWITCH_MS
         out["result"] = _result(job, at + (FLAKY_DROP_MS if sc == "flaky" else 0), forced=False)
     return out
 
@@ -661,7 +705,7 @@ def _result(job, at, forced):
     host = (job.get("host") or "").lower()
     same = host in ("127.0.0.1", "localhost", "::1")
     return {"at_ms": at, "from": job.get("from"), "file_name": job.get("file_name"), "forced": forced,
-            "same_machine": same, "accounts": 3, "cars": 3,
+            "same_machine": same, "accounts": 3, "cars": MOVE_CARS,
             "cert_sha256": DEV_CERT_SHA256}
 
 
@@ -763,7 +807,7 @@ def _check_setup_code(req, code):
     st = req.store
     key = "setup:" + (getattr(req, "client_ip", None) or "")
     _check_throttle(st, key, THROTTLE_SETUP_TRIES)
-    if not secrets.compare_digest(_norm_setup_code(code).encode(), DEV_SETUP_CODE.encode()):
+    if not secrets.compare_digest(_norm_setup_code(code).encode(), _norm_setup_code(DEV_SETUP_CODE).encode()):
         _fail(st, key)
         raise ApiError(403, "wrong_setup_code", "That set-up code is not right. Copy it again from the server's log.")
 
@@ -807,7 +851,9 @@ def _first_admin(req, name, password):
                                "fix_link": "/settings/server"})
     st.record(a, "setup.done", "account:a1", "Set up the first admin account.")
     _signed_in(req, a)
-    return {"status": "done", "me": me_view(a), "recovery_key": make_recovery_key()}
+    with st.lock:
+        st.recovery_key = make_recovery_key()
+    return {"status": "done", "me": me_view(a), "recovery_key": st.recovery_key}
 
 
 def post_fresh(req):
@@ -854,9 +900,12 @@ def post_move_here(req):
                                  "(SMMV- and six groups of five)."})
     if bad == "newer":
         raise invalid({"code": "This move code was made by a newer Sentry Mate: update this server first."})
+    addr = _show_address(host, port)
+    resumed = _resume_move(req, addr)
+    if resumed is not None:
+        return resumed
     if _busy(st, req.now) is not None:
         raise conflict("setup_busy", "A move or a restore into this server is under way. Cancel it first.")
-    addr = _show_address(host, port)
     sc = _scenario(host)
     errors = {
         "unreachable": (502, "old_server_unreachable",
@@ -885,6 +934,31 @@ def post_move_here(req):
     out = job_view(job, req.now)
     out["_created"] = True
     return out
+
+
+RESUMABLE = ("cancelled", "bad_session", "not_proven")
+
+
+def _resume_move(req, addr):
+    """A move that stopped (cancelled on the old server, or its session ended) carries on with a new move code from
+    the same server: the same job, the copy so far kept. None when there is no such move."""
+    st = req.store
+    job = st.setup["job"]
+    if job is None or job["kind"] != "move_here":
+        return None
+    v = job_view(job, req.now)
+    if v["state"] != "stopped" or (v["problem"] or {}).get("code") not in RESUMABLE:
+        return None
+    if job["from"] != addr:
+        raise conflict("setup_busy", f"The move from {job['from']} stopped here and carries on with a new code from "
+                                     "that server. To move from another server, give that move up first.")
+    done = (v["progress"] or {}).get("bytes_done") or 0
+    with st.lock:  # the made-up copy carries on from where it stopped
+        job["scenario"] = None
+        job["clock0_ms"] = req.now - NEW_CONNECT_MS - -(-NEW_COPY_MS * done // MOVE_BYTES)
+        job["resumed_ms"] = req.now
+    st.record(None, "setup.move_resume", "server", f"Carried on moving the data here from {addr} with a new move code.")
+    return job_view(job, req.now)
 
 
 def post_move_finish(req):
@@ -1066,4 +1140,6 @@ def register(router):
     router.add("/api/v1/system/exports", GET=list_exports, POST=post_export, admin=("GET", "POST"))
     router.add("/api/v1/system/exports/{export}", GET=get_export, DELETE=delete_export, admin=("GET", "DELETE"))
     router.add("/api/v1/system/exports/{export}/file", GET=export_file, admin=("GET",))
+    router.add("/api/v1/system/recovery-key/show", POST=post_recovery_show, admin=("POST",))
+    router.add("/api/v1/system/recovery-key/new", POST=post_recovery_new, admin=("POST",))
     router.add("/api/v1/system/recovery-key/saved", POST=post_recovery_saved, admin=("POST",))

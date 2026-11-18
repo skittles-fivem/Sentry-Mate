@@ -63,6 +63,10 @@ class Fresh(ServerCase):
         c.error("GET", "/api/v1/setup/job", 401, "not_claimed")
         c.error("POST", "/api/v1/setup/claim", 403, "wrong_setup_code", body={"setup_code": "SETUP-DEV-9999"})
         c.error("POST", "/api/v1/setup/claim", 400, "bad_input", body={"code": SETUP_CODE})
+        # case, spaces and dashes do not matter (docs/ui-api.md, and the hint on the set-up page)
+        for typed in ("SETUP DEV 0000", "setupdev0000", "Setup-Dev 0000"):
+            self.assertTrue(self.server.client().json("POST", "/api/v1/setup/claim", {"setup_code": typed})["claimed"],
+                            typed)
         d = c.json("POST", "/api/v1/setup/claim", {"setup_code": " setup-dev-0000 "})
         self.assertTrue(d["claimed"])
         self.assertTrue(_setup_cookie(c))
@@ -83,8 +87,16 @@ class Fresh(ServerCase):
         notices = c2.get("/api/v1/notices")["items"]
         self.assertIn("recovery_key_unsaved", [n["code"] for n in notices])
         self.assertNotIn(d["recovery_key"], repr(c2.get("/api/v1/setup")) + repr(notices))
+        # a key page closed before the tick: Settings shows the file's key once more, behind the password
+        c2.error("POST", "/api/v1/system/recovery-key/show", 403, "wrong_password", body={})
+        c2.error("POST", "/api/v1/system/recovery-key/show", 403, "wrong_password", body={"password": "nope"})
+        self.assertEqual(c2.json("POST", "/api/v1/system/recovery-key/show", {"password": "a long password"}),
+                         {"recovery_key": d["recovery_key"]})
         self.assertEqual(c2.json("POST", "/api/v1/system/recovery-key/saved"), {"saved": True})
         self.assertNotIn("recovery_key_unsaved", [n["code"] for n in c2.get("/api/v1/notices")["items"]])
+        # the file is gone: nothing shows the key again
+        c2.error("POST", "/api/v1/system/recovery-key/show", 409, "recovery_key_saved",
+                 body={"password": "a long password"})
         # set up: every set-up call answers 409 setup_done
         for path, body in (("/api/v1/setup/claim", {"setup_code": SETUP_CODE}),
                            ("/api/v1/setup/fresh", {"name": "x", "password": "y" * 12}),
@@ -153,11 +165,14 @@ class MoveHere(FreshCase):
                 p = j["progress"]
                 self.assertEqual(p["round"], 1)
                 self.assertLessEqual(p["bytes_done"], p["bytes_total"])
+                self.assertEqual(p["cars_total"], 3)
+                self.assertLessEqual(p["cars_done"], p["cars_total"])
                 self.assertIsNotNone(p["eta_s"])
             if j["state"] == "done":
                 break
             self.advance(500)
         self.assertEqual(seen, ["connecting", "copying", "catching_up", "finishing", "switching", "done"])
+        self.assertEqual((j["progress"]["cars_done"], j["progress"]["cars_total"]), (3, 3))
         self.assertEqual(j["result"]["accounts"], 3)
         self.assertFalse(j["result"]["forced"])
         d = c.get("/api/v1/setup")
@@ -367,6 +382,7 @@ class OldServer(ServerCase):
         w.json("POST", "/api/v1/session", {"name": "watch", "password": PW})
         w.error("GET", "/api/v1/system/move", 403, "not_allowed")
         w.error("POST", "/api/v1/system/exports", 403, "not_allowed", body={"password": PW})
+        w.error("POST", "/api/v1/system/recovery-key/show", 403, "not_allowed", body={"password": PW})
 
 
 class TwoStepReauth(ServerCase):

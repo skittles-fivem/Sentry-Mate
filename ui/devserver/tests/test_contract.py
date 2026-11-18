@@ -263,6 +263,8 @@ class Contract(ServerCase):
                       None, None)),
             ("DELETE", "/api/v1/imports/{import}",
              lambda: (self.fill("/api/v1/imports/{import}", **{"import": ctx["import"]}), None, None)),
+            ("POST", "/api/v1/system/recovery-key/new", lambda: (None, {"password": "sentry-mate-dev"}, None)),
+            ("POST", "/api/v1/system/recovery-key/show", lambda: (None, {"password": "sentry-mate-dev"}, None)),
             ("POST", "/api/v1/system/recovery-key/saved", lambda: (None, None, None)),
             ("POST", "/api/v1/system/exports", lambda: (None, {"password": "sentry-mate-dev"}, None)),
             ("DELETE", "/api/v1/system/exports/{export}",
@@ -345,7 +347,7 @@ class Contract(ServerCase):
                      "drive.purpose", "purpose_rule.create", "trip.create", "charge.cost", "update.version",
                      "place.create", "place.update", "place.delete", "mqtt.update", "settings.update",
                      "car.rebuild", "car.overlap", "import.create", "import.start", "import.discard",
-                     "export.create", "export.delete", "move.code", "move.undo", "recovery_key.saved"):
+                     "export.create", "export.delete", "move.code", "move.undo", "recovery_key.new", "recovery_key.shown", "recovery_key.saved"):
             self.assertIn(want, actions)
 
     # ------------------------------------------------------------ deliberately absent

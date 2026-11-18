@@ -128,3 +128,11 @@
 .mv-tick input { flex: none; width: 1.125rem; height: 1.125rem; margin: 0.125rem 0 0; accent-color: var(--accent); }
 .mv-tick strong { color: var(--ink); font-weight: 600; }
 .dialog-text > p + p { margin-top: 0.5rem; }
+
+/* the recovery key shown again (a dialog: it sits outside the page) */
+.page-settings-server .ss-rk-actions { margin-top: 0.25rem; }
+.ss-rk-dialog .ss-rk-download { margin: 0.75rem 0; }
+.ss-rk-dialog .ss-rk-tick { align-items: flex-start; margin-top: 1rem; font-weight: 600; color: var(--ink); }
+.ss-rk-dialog .ss-rk-tick input { margin-top: 0.1875rem; flex: none; }
+.ss-rk-dialog .ss-rk-go { display: flex; justify-content: flex-end; margin-top: 0.75rem; }
+.ss-rk-dialog .ss-rk-note { color: var(--ink-3); font-size: var(--text-sm); margin-top: 0.5rem; }

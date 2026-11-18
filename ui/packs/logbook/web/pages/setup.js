@@ -112,9 +112,28 @@ export async function mount(ctx) {
   }
 
   /* ---------------------------------------------------------------- already set up */
-  function showSetUp() {
-    screen({ titleText: 'Set-up is done', lede: 'Sentry Mate already has its accounts. Sign in to use it.' },
-      h('p', { class: 'auth-actions' }, h('a', { class: 'button', href: '/sign-in' }, 'Sign in')));
+  async function showSetUp() {
+    // Signed in already (an admin who reloaded the key page, or any account opening /setup): no "Sign in".
+    let me = null;
+    try { me = await ctx.api.get('me'); } catch (err) { if (api.isAbort(err)) return; }
+    if (!me) {
+      screen({ titleText: 'Set-up is done', lede: 'Sentry Mate already has its accounts. Sign in to use it.' },
+        h('p', { class: 'auth-actions' }, h('a', { class: 'button', href: '/sign-in' }, 'Sign in')));
+      return;
+    }
+    let keyUnsaved = false;
+    if (me.role === 'admin') {
+      try {
+        const n = await ctx.api.get('notices');
+        keyUnsaved = ((n && n.items) || []).some((x) => x.code === 'recovery_key_unsaved');
+      } catch (err) { if (api.isAbort(err)) return; }
+    }
+    screen({ titleText: 'Set-up is done', lede: `Sentry Mate already has its accounts, and you are signed in as “${me.name}”.` },
+      keyUnsaved ? callout('warn', 'The recovery key is not saved yet.',
+        h('p', null, 'Nobody ticked “I have saved it”, so the server still keeps it in its keys folder. Settings, Server and access shows it once more after your password, with Copy and Download.')) : null,
+      h('p', { class: 'auth-actions su-actions' },
+        keyUnsaved ? h('a', { class: 'button', href: '/settings/server#recovery-key' }, 'Save the recovery key') : null,
+        h('a', { class: keyUnsaved ? 'button button-quiet' : 'button', href: '/' }, 'Go to Sentry Mate')));
   }
 
   /* ---------------------------------------------------------------- 1. the set-up code */
@@ -254,7 +273,7 @@ export async function mount(ctx) {
       h('label', { class: 'su-tick', for: 'su-saved' }, tick, h('span', null, 'I have saved the recovery key somewhere safe, away from this server.')),
       err,
       h('p', { class: 'su-go-row' }, go),
-      h('p', { class: 'su-quiet' }, 'Until you tick it, the server keeps a copy in its keys folder (RECOVERY-KEY.txt), so closing the page now loses nothing. Ticking it deletes that copy.'));
+      h('p', { class: 'su-quiet' }, 'Until you tick it, the server keeps a copy in its keys folder. If this page closes first, sign in and open Settings, Server and access: it shows the key once more (after your password) with the same Copy, Download and tick. Ticking it deletes the server’s copy.'));
   }
 
   /* ---------------------------------------------------------------- move here */
@@ -461,8 +480,12 @@ export async function mount(ctx) {
     if (st === 'waiting' || st === 'stopped') current = ROUND_STEP[Math.min(3, (p && p.round) || 0)];
     if (st === 'failed') current = 'uploading';
     const uploadStalled = restore && st === 'uploading' && !up.active;
-    parts.push(stepList(steps, current, { problem: st === 'waiting' || st === 'stopped' || st === 'failed' || uploadStalled }));
-    if (p && st !== 'connecting') parts.push(progressBar(restore && st === 'uploading' ? { ...p, bytes_done: job.received, bytes_total: job.size } : p, { label: restore ? 'Uploaded' : 'Copied' }));
+    parts.push(stepList(steps, current, {
+      problem: st === 'waiting' || st === 'stopped' || uploadStalled,
+      // a restore that failed for good: no "it carries on" under the step, the box below says what to do
+      failed: st === 'failed' ? 'The restore stopped here. Nothing of the file was kept.' : null,
+    }));
+    if (p && st !== 'connecting' && st !== 'failed') parts.push(progressBar(restore && st === 'uploading' ? { ...p, bytes_done: job.received, bytes_total: job.size } : p, { label: restore ? 'Uploaded' : 'Copied' }));
 
     // problems, and what to do
     if (st === 'waiting') {
@@ -586,7 +609,7 @@ export async function mount(ctx) {
         h('p', null, restore
           ? ['Everything from ', h('strong', { class: 'su-break' }, r.file_name || job.file_name || 'the export file'), ' is here: ']
           : ['Everything from ', h('strong', { class: 'mono su-break' }, r.from || job.from || 'the old server'), ' is here: '],
-        count(r.accounts || 0, 'account'), ', ', count(r.cars || 0, 'car'), r.at_ms ? [', since ', dateTime(r.at_ms, TZ)] : null, '.'),
+        count(r.accounts || 0, 'account'), ', ', count(r.cars || 0, 'car'), r.at_ms ? [', as it was at ', dateTime(r.at_ms, TZ)] : null, '.'),
         r.forced ? h('p', null, flag('Finished with the recovery key', { kind: 'warn' }), ' The last changes on the old server may be missing.') : null),
       h('h2', { class: 'su-h2' }, 'Next: sign in'),
       h('p', { class: 'su-text' }, 'Use your name and password from the old server: its accounts came along. Nobody is signed in yet.'),

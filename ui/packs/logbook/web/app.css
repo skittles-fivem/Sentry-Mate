@@ -814,6 +814,7 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
 .mv-step-now .mv-step-mark { background: var(--ink); border-color: var(--ink); color: var(--paper); }
 .mv-step-now .mv-step-name, .mv-step-stuck .mv-step-name { color: var(--ink); font-weight: 600; }
 .mv-step-stuck .mv-step-mark { background: var(--rust-wash); border-color: var(--rust); color: var(--rust); }
+.mv-step-failed { color: var(--rust); }
 
 .mv-bar-busy .mv-bar-fill { width: 30%; animation: mv-busy 1.4s ease-in-out infinite alternate; }
 @keyframes mv-busy { from { transform: translateX(-10%); } to { transform: translateX(240%); } }

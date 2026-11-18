@@ -53,7 +53,9 @@ Then choose one of three:
 
 - **Start fresh**: a new server with nothing in it. Make the admin account. The page then shows the **recovery key**
   once, with **Copy** and **Download**: keep it in a password manager or on paper, away from the server. Tick **I have
-  saved it** to go on (the server then deletes its copy of the key file).
+  saved it** to go on (the server then deletes its copy of the key file). Closed the page before the tick? Nothing is
+  lost: **Settings → Server and access** has **Show the key again** (your password first) until it is ticked, and
+  **Make a new recovery key** for a key lost later (the old one stops working; exports made before still need it).
 - **Move here from another server**: type the old server's address (the one the CAN Bridge sends to, for example
   `192.168.1.20`) and the move code. The page shows the copy as it goes. At the end, sign in with your account from
   the old server: everything is there, accounts too.
@@ -64,8 +66,10 @@ Then choose one of three:
 **If it stops half way**: nothing of the old server is changed. A move that loses the connection tries again by
 itself and carries on where it stopped; the page says what it waits for. An upload that stopped (the browser was
 closed, the network dropped) carries on when you choose the same file again. If the old server is gone for good
-while a move copies, the page offers **Finish with the recovery key** (the last changes may be missing). **Give up**
-removes what was copied, and the page goes back to the three choices.
+while a move copies, the page offers **Finish with what was copied**: it needs the old server's recovery key and a
+tick that the old server is gone for good (the last changes may be missing). A move cancelled on the old server stops
+and waits: make a new move code there, type it in **New move code from the old server** and press **Carry on**; what
+was copied is kept. **Give up** removes what was copied, and the page goes back to the three choices.
 
 ### On the old server: download an export file
 
