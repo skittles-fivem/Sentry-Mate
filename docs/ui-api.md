@@ -274,6 +274,7 @@ Points this document left open, decided while building the dev server (`ui/devse
 - **`/tracks`:** `max_points` (2 to 200000, default 10000) is shared over the drives by duration, at least two points each, and the answer never holds more; too many drives for the points gives `400` on `max_points`. The answer adds `points` (the number sent) and each drive's `source`.
 - **`/updates`:** rows also carry `car`, `build_id` and `until_ms` (when the next update came; null for the current one). `detected_by: "build_change"` with `version: null` is an update seen only as changed module builds. PATCH `{ version }` takes `2026.38.4` style versions, or null to forget a typed version; the version then also names other updates with the same `build_id` (`version_source: "build_match"`).
 - **`/cars/{car}/events`:** rows are `{ id, type, at_ms, topic, retained, payload }`, newest first; `payload` is exactly what MQTT would publish, in the server's units, with positions only when location publishing is on. An unknown `types` value gives `400`.
+- **Timeline update rows** also carry `version` and `version_source` (as `/updates`; `version` null when the update was seen only as changed module builds), and the text filter `q` matches the version.
 
 ### Places
 
