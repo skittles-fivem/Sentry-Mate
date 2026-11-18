@@ -3,7 +3,8 @@
 // server's host names and port, how access works, and their own sessions (sign out one, all others, or
 // here). Admins also get the accounts (roles, car lists, two-step sign-in), the audit log (each entry
 // links to the item it changed), the host names for the certificate, the ports, and where the recovery
-// key and backups stand. Changes are saved through the API with the object's version; a short note
+// key and backups stand, and the move to another server (a move code or an export file:
+// pages/settings-server-move.js). Changes are saved through the API with the object's version; a short note
 // confirms each one.
 
 import { h, replace } from '../shared/dom.js';
@@ -19,6 +20,7 @@ import { openDialog, confirmDialog } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { dateTime, date, agoEl, tzName, DASH } from '../core/fmt.js';
 import { timeColumn } from '../shared/csv.js';
+import { movePanel } from './settings-server-move.js';
 
 export const id = 'settings-server';
 export const css = true;
@@ -452,6 +454,9 @@ export async function mount(ctx) {
     empty: () => emptyState({ icon: 'book', title: 'Nothing recorded yet', text: 'Each sign-in and each change appears here as it happens.' }),
   }) : null;
 
+  /* ---------------------------------------------------------------- moving to another server (admin) */
+  const move = admin ? movePanel(ctx, { tz, zone: zoneText }) : null;
+
   /* ---------------------------------------------------------------- the page */
   paintHosting();
   paintNames();
@@ -466,10 +471,12 @@ export async function mount(ctx) {
     h('div', { class: 'settings-stack ss' },
       h('div', { class: 'ss-two' }, hostPanel, h('div', { class: 'ss-col' }, namesPanel, portsPanel)),
       h('div', { class: 'ss-two' }, accessPanel, admin ? safety : null),
+      move ? move.el : null,
       accountsTable ? [goneNote, accountsTable.el] : null,
       sessionGone, sessionsTable.el,
       auditTable ? auditTable.el : null));
   if (auditTable) await auditTable.ready;
+  if (move) await move.ready;
   if (!ctx.alive()) return;
   ctx.ready();
 }

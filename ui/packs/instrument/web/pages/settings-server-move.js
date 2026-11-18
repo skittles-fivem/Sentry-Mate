@@ -1,0 +1,376 @@
+// Settings: Server and access, "Move to another server" (admin only; part of pages/settings-server.js).
+// Two ways to take everything to a new Sentry Mate server, with no shell:
+//   - a move code (POST /system/move): both servers are on at once; the new one copies over the network,
+//     this one keeps taking uploads, and the new one takes over by itself. Shown once, big, with Copy.
+//     While it runs this panel polls GET /system/move once a second: who copies, how much, which step.
+//     Afterwards it says where the data went, with "Undo the move" (POST /system/move/undo).
+//   - an export file (POST /system/exports): one file with everything, for servers that can't reach each
+//     other, or to keep as a backup. It opens only with the recovery key and never holds the key file.
+// Making a code, undoing a move and making an export ask for the person's own password again.
+
+import { h, replace, setVars } from '../shared/dom.js';
+import { format } from '../shared/units.js';
+import { icon } from '../core/icons.js';
+import { panel, pill } from '../core/page.js';
+import { field, form } from '../core/form.js';
+import { errorWords } from '../core/states.js';
+import { flash } from '../core/flash.js';
+import { openDialog, confirmDialog } from '../core/dialog.js';
+import { dateTime, dur, ago, DASH } from '../core/fmt.js';
+
+const enc = encodeURIComponent;
+const bytes = (n) => (n == null ? DASH : format(n, 'bytes'));
+const count = (n) => (n == null ? DASH : format(n, 'count'));
+const pct = (a, b) => (a != null && b ? Math.max(0, Math.min(100, (a / b) * 100)) : 0);
+const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : e?.message || errorWords(e).text);
+const STAY = Symbol('stay');   // run() answers this to keep the dialog open
+const LIVE = new Set(['offered', 'copying', 'paused', 'moved']);
+
+/** A code split into its groups, so it wraps between groups and never inside one. */
+export function codeGroups(text, cls = 'mv-code') {
+  return h('p', { class: cls, 'aria-label': text.split('').join(' ') },
+    String(text).split('-').map((g, i, all) => h('span', { class: 'mv-group' }, g, i < all.length - 1 ? '-' : '')));
+}
+
+/** A Copy button for a text, with its own "Copied." line. */
+export function copyButton(text, label = 'Copy', { primary = false } = {}) {
+  const said = h('span', { class: 'mv-copied', 'aria-live': 'polite' });
+  const btn = h('button', { class: ['btn', primary && 'btn--primary'], type: 'button', onclick: async () => {
+    try { await navigator.clipboard.writeText(text); said.textContent = 'Copied.'; } catch { said.textContent = 'This browser did not let the page copy: select the text and copy it by hand.'; }
+  } }, icon('check', 'ico--sm'), label);
+  return h('span', { class: 'mv-copy' }, btn, said);
+}
+
+/**
+ * The person's own password again (and the two-step code when the account asks for one) before a dangerous
+ * action. run(credentials) does the call and returns its answer; the dialog stays open on a wrong password.
+ */
+function askPassword(ctx, { title, intro, submit, danger = false, extra = [], run }) {
+  const me = ctx.me || {};
+  const pass = field({ label: 'Your password', name: 'password', type: 'password', required: true,
+    hint: `The password you sign in with as ${me.name || 'this account'}.`, attrs: { autocomplete: 'current-password' } });
+  const two = field({ label: 'Code from your authenticator app', name: 'two_step', hint: 'Six digits. Codes change every 30 seconds.',
+    attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', maxlength: '8' } });
+  two.el.hidden = !me.two_step_required;
+  let result = null;
+  const f = form({
+    fields: [...extra, pass, two], submit,
+    secondary: h('button', { class: 'btn btn--ghost', type: 'button', onclick: (e) => e.target.closest('dialog')?.close() }, 'Cancel'),
+    async onSubmit(v) {
+      const cred = { password: v.password };
+      if (!two.el.hidden && v.two_step) cred.two_step = v.two_step.replace(/\s+/g, '');
+      try {
+        const r = await run(cred, v);
+        if (r === STAY) return;
+        result = r;
+      } catch (e) {
+        if (e.code === 'wrong_password') { pass.setError(e.fields?.password === 'Not your password.' ? 'That is not your password. Type the one you sign in with.' : 'Type your password to go on.'); pass.input.select(); return; }
+        if (e.code === 'wrong_two_step') { two.el.hidden = false; two.setError(v.two_step ? 'That code is not right. Type the one your authenticator app shows now.' : 'Your account has two-step sign-in: type the code from your authenticator app as well.'); two.input.focus(); return; }
+        if (e.status === 429) { f.setMessage(`Too many wrong passwords. Wait ${e.retryAfterMs ? Math.ceil(e.retryAfterMs / 1000) : 60} s, then try again.`); return; }
+        throw e;
+      }
+      f.el.closest('dialog')?.close();
+    },
+  });
+  if (danger) f.el.querySelector('button[type="submit"]')?.classList.replace('btn--primary', 'btn--danger');
+  const done = openDialog({ title, body: [intro, f.el], actions: [] });
+  pass.input.focus();
+  return done.then(() => result);
+}
+
+/** The panel. tz: the zone for times on the page. */
+export function movePanel(ctx, { tz, zone }) {
+  const S = { move: null, code: null, codeText: null, exp: null, err: null };
+  const moveBox = h('div', { class: 'mv-state', 'aria-live': 'polite' });
+  const expBox = h('div', { class: 'mv-export', 'aria-live': 'polite' });
+  const t = (ms) => (ms == null ? DASH : dateTime(ms, tz));
+
+  /* ---------------------------------------------------------------- polling */
+  let timer = null, expTimer = null;
+  ctx.onCleanup(() => { clearTimeout(timer); clearTimeout(expTimer); });
+  function schedule() {
+    clearTimeout(timer);
+    if (!S.move || !LIVE.has(S.move.state)) return;
+    timer = setTimeout(refresh, S.move.state === 'offered' ? 2000 : 1000);
+  }
+  async function refresh() {
+    try {
+      const m = await ctx.api.get('system/move');
+      if (!ctx.alive()) return;
+      setMove(m);
+      S.err = null;
+    } catch (e) {
+      if (!ctx.alive()) return;
+      S.err = e;
+    }
+    paintMove();
+    schedule();
+  }
+  function setMove(m) {
+    if (m.state === 'none' || m.state === 'expired' || (m.code && S.code && m.code.id !== S.code)) { S.codeText = null; S.code = null; }
+    S.move = m;
+  }
+
+  /* ---------------------------------------------------------------- actions */
+  async function makeCode() {
+    const busy = S.move && (S.move.state === 'copying' || S.move.state === 'paused');
+    if (busy && !(await confirmDialog(`${S.move.peer?.address || 'A new server'} is copying this server now. A new code ends that move: the copy there stops, and this server's data is not changed.`, { title: 'End the move under way?', ok: 'End it and make a new code', danger: true }))) return;
+    const anywhere = field({ label: 'From anywhere, not only from this home network', name: 'anywhere', type: 'checkbox', value: false,
+      hint: 'Leave it off when the new server is in the same house. Tick it for a new server somewhere else (another house, a rented server); it then needs to reach this server\'s upload port.' });
+    const r = await askPassword(ctx, {
+      title: 'Make a move code', submit: 'Make the code', extra: [anywhere],
+      intro: h('p', { class: 'mv-intro' }, 'The code lets one new Sentry Mate server copy everything from this one: logs, cars, accounts, upload tokens and the certificate. It works once, for 24 hours. ',
+        S.move?.state === 'offered' ? h('b', null, 'The code waiting now stops working.') : null),
+      run: (cred, v) => ctx.api.post('system/move', { ...cred, anywhere: !!v.anywhere, ...(busy ? { replace: true } : {}) }),
+    });
+    if (!r || !ctx.alive()) return;
+    S.codeText = r.move_code;
+    S.code = r.code?.id || null;
+    S.move = r;
+    paintMove(); schedule();
+    flash('Move code made. Type it on the new server\'s first page.');
+  }
+
+  async function cancelCode() {
+    const copying = S.move && (S.move.state === 'copying' || S.move.state === 'paused');
+    const ok = await confirmDialog(copying
+      ? `The move to ${S.move.peer?.address || 'the new server'} ends now. Nothing on this server changes; it keeps taking uploads. What the new server copied stays there: with a new code from this server it carries on from there.`
+      : 'The code stops working at once. Nothing on this server changes. You can make a new code at any time.',
+    { title: copying ? 'End the move?' : 'Cancel the move code?', ok: copying ? 'End the move' : 'Cancel the code', danger: true });
+    if (!ok) return;
+    try {
+      const r = await ctx.api.del('system/move');
+      if (!ctx.alive()) return;
+      setMove(r);
+      flash(r.cancelled === 'ended' ? 'The move was ended. This server keeps taking uploads.' : r.cancelled === 'revoked' ? 'The move code was cancelled: it no longer works.' : 'There was nothing to cancel.', { kind: 'info' });
+    } catch (e) {
+      flash(e.code === 'finished' ? 'Too late to cancel: the move finished, the new server holds the data. Use Undo the move instead.' : `Could not cancel: ${errText(e)}`, { kind: 'error' });
+      await refresh();
+      return;
+    }
+    paintMove(); schedule();
+  }
+
+  async function undo() {
+    const sure = field({ label: 'The new server is stopped, or I will stop it now', name: 'confirm', type: 'checkbox', value: false,
+      hint: 'If both servers take uploads, they drift apart: each gets only some of the logs.' });
+    const r = await askPassword(ctx, {
+      title: 'Undo the move', submit: 'Undo the move', danger: true, extra: [sure],
+      intro: h('div', { class: 'mv-intro' },
+        h('p', null, 'This server takes uploads again at once, as before the move. Its data is as it was when the move finished: what reached the new server since then is not here.'),
+        h('p', null, h('b', null, 'Stop the new server first'), ' (on TrueNAS: Apps, its Sentry Mate app, Stop).')),
+      run: (cred, v) => {
+        if (!v.confirm) { sure.setError('Tick this first: stop the new server before you undo.'); sure.input.focus(); return STAY; }
+        return ctx.api.post('system/move/undo', { ...cred, confirm: true });
+      },
+    });
+    if (!r || !ctx.alive()) return;
+    setMove(r);
+    paintMove(); schedule();
+    flash('The move was undone. This server takes uploads again.');
+  }
+
+  /* ---------------------------------------------------------------- painting the move */
+  const STEPS = [
+    ['offered', 'Code made', 'Waits for it'],
+    ['copying', 'Copying', 'Uploads go on'],
+    ['paused', 'Last round', 'Seconds'],
+    ['moved', 'Switching', 'Keep it on'],
+    ['done', 'Done', 'Turn it off'],
+  ];
+  function steps(state) {
+    const at = STEPS.findIndex(([k]) => k === state);
+    return h('ol', { class: 'mv-steps', 'aria-label': 'Steps of the move' }, STEPS.map(([k, l, sub], i) => {
+      const st = i < at || state === 'done' ? 'done' : i === at ? 'now' : 'later';
+      return h('li', { class: ['mv-step', `mv-step--${st}`], 'aria-current': st === 'now' ? 'step' : null },
+        h('span', { class: 'mv-step-n' }, st === 'done' ? icon('check', 'ico--sm') : String(i + 1)),
+        h('span', { class: 'mv-step-t' }, h('b', null, l), h('span', null, sub)));
+    }));
+  }
+  function progress(p, { label = 'Copied' } = {}) {
+    if (!p) return null;
+    const bar = h('div', { class: 'bar mv-bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(Math.round(pct(p.bytes_done, p.bytes_total))) }, h('i'));
+    setVars(bar, { '--w': `${pct(p.bytes_done, p.bytes_total).toFixed(1)}%` });
+    return h('div', { class: 'mv-progress' }, bar,
+      h('p', { class: 'mv-bar-text' }, h('b', null, bytes(p.bytes_done)), ` of ${bytes(p.bytes_total)} ${label.toLowerCase()} (${format(pct(p.bytes_done, p.bytes_total), 'number', { digits: 0 })} %)`,
+        ` · ${count(p.files_done)} of ${count(p.files_total)} files`,
+        p.round > 1 ? ` · round ${p.round}` : null,
+        p.bytes_per_s ? ` · ${bytes(p.bytes_per_s)} per second` : null,
+        p.eta_s != null && p.bytes_per_s ? ` · about ${dur(p.eta_s * 1000)} to go` : null));
+  }
+  const line = (tone, head, ...text) => h('div', { class: ['mv-line', `mv-line--${tone}`] },
+    h('span', { class: 'mv-line-ic' }, icon(tone === 'ok' ? 'check' : tone === 'warn' ? 'warn' : 'info')),
+    h('div', null, h('p', { class: 'mv-line-head' }, head), text.length ? h('p', { class: 'mv-line-text' }, text) : null));
+  const skippedNote = (list) => (list?.length ? h('p', { class: 'note' }, icon('info', 'ico--sm'), ` Not carried, because this server can't read ${list.length === 1 ? 'it' : 'them'}: `,
+    list.map((s, i) => [i ? ', ' : '', h('span', { class: 'mono' }, s.path)]), '.') : null);
+  const btn = (label, onclick, { kind = '', ic = null } = {}) => h('button', { class: ['btn', kind && `btn--${kind}`], type: 'button', onclick }, ic ? icon(ic, 'ico--sm') : null, label);
+
+  function paintMove() {
+    const m = S.move;
+    if (!m) { replace(moveBox, h('p', { class: 'faint' }, S.err ? `Could not read the move: ${errText(S.err)}` : 'Loading…')); return; }
+    const parts = [];
+    const c = m.code;
+    const where = c?.anywhere ? 'from anywhere' : 'only from this home network';
+    if (S.err) parts.push(h('p', { class: 'form-error' }, icon('warn'), `The page lost touch with the server (${errText(S.err)}). It keeps trying; the move itself goes on.`));
+    switch (m.state) {
+      case 'none':
+      case 'expired':
+        parts.push(m.state === 'expired'
+          ? line('info', 'The last move code expired unused', `It stopped working ${t(c?.expires_ms)}. Make a new one when the new server is ready.`)
+          : line('info', 'No move code waits', 'Make one when the new server is installed and shows its first page. Nothing changes here until a new server uses the code.'));
+        if (m.last_undone_ms) parts.push(h('p', { class: 'note' }, `A move was undone ${t(m.last_undone_ms)}; this server takes uploads.`));
+        else if (m.last_cancelled) parts.push(h('p', { class: 'note' }, `The last move was cancelled ${t(m.last_cancelled.at_ms)} (${m.last_cancelled.why}).`));
+        parts.push(h('div', { class: 'row mv-acts' }, btn('Make a move code', makeCode, { kind: 'primary', ic: 'share' })));
+        break;
+      case 'offered':
+        parts.push(steps('offered'));
+        if (S.codeText) {
+          parts.push(h('div', { class: 'mv-codebox' },
+            h('p', { class: 'mv-codebox-head' }, 'The move code'),
+            codeGroups(S.codeText),
+            h('div', { class: 'row mv-acts' }, copyButton(S.codeText, 'Copy the code', { primary: true })),
+            h('p', { class: 'mv-codebox-note' }, h('b', null, 'Shown only now.'), ` Works once, until ${t(c?.expires_ms)} (24 hours), ${where}. If you lose it, make a new one: this one then stops working.`)));
+        } else {
+          parts.push(line('info', `A move code is waiting (code ${c?.id || DASH})`,
+            `Made ${t(c?.made_ms)}, works until ${t(c?.expires_ms)}, ${where}. The code itself is shown only when it is made: if you don't have it any more, make a new one (this one then stops working).`));
+        }
+        parts.push(h('div', { class: 'mv-next' },
+          h('p', { class: 'mv-next-head' }, 'On the new server'),
+          h('ol', { class: 'mv-howto' },
+            h('li', null, 'Open its address. On the first page type its set-up code (from its log), then choose ', h('b', null, 'Move here from another server'), '.'),
+            h('li', null, 'Type this server\'s address, the one the CAN Bridge sends to, and the move code.'),
+            h('li', null, 'Keep this server on. This page shows the copy as it goes.'))),
+          c?.wrong_tries ? h('p', { class: 'form-error' }, icon('warn'), `${count(c.wrong_tries)} wrong ${c.wrong_tries === 1 ? 'try' : 'tries'} with a code against this server. If that was not you, cancel the code.`) : null);
+        parts.push(h('div', { class: 'row mv-acts' }, btn('Cancel the code', cancelCode, { ic: 'x' }), btn('Make a new code', makeCode, { kind: 'ghost', ic: 'reset' })));
+        break;
+      case 'copying':
+      case 'paused':
+        parts.push(steps(m.state));
+        parts.push(line('ok', m.state === 'paused' ? `Last round: ${m.peer?.address || 'the new server'} takes the last changes` : `${m.peer?.address || 'The new server'} is copying this server`,
+          m.state === 'paused' ? 'Uploads wait a few seconds so nothing is missed; the CAN Bridge sends them again by itself.' : 'This server keeps taking uploads meanwhile; the new server copies what arrives too.',
+          ` Started ${t(m.peer?.claimed_ms)}, last heard from ${m.peer?.last_seen_ms ? ago(m.peer.last_seen_ms) : DASH}${m.peer?.app ? `, Sentry Mate ${m.peer.app}` : ''}.`));
+        parts.push(progress(m.progress));
+        parts.push(h('p', { class: 'note' }, h('b', null, 'If it stops half way:'), ' nothing on this server changes. The new server tries again by itself and carries on where it stopped. Keep this server on until the move says Done.'));
+        parts.push(skippedNote(m.skipped));
+        parts.push(h('div', { class: 'row mv-acts' }, btn('End the move', cancelCode, { ic: 'x' })));
+        break;
+      case 'moved':
+      case 'done':
+        parts.push(steps(m.state));
+        parts.push(m.state === 'done'
+          ? line('ok', `Moved to ${m.moved?.to || 'the new server'}: you can turn this server off`, `The new server took over ${t(m.moved?.switched_ms || m.moved?.at_ms)}. This server takes no uploads and no changes any more; reading still works.`)
+          : line('warn', `Moving to ${m.moved?.to || 'the new server'}: keep this server on`, 'The new server is switching to the copy. This server takes no uploads or changes now. It says Done in a moment.'));
+        parts.push(h('div', { class: 'mv-next' },
+          h('p', { class: 'mv-next-head' }, 'What is left to do'),
+          h('ol', { class: 'mv-howto' },
+            h('li', null, 'Sign in on the new server with your account from here: accounts came along.'),
+            h('li', null, 'In the CAN Bridge app, under Second Sentry Six Manager, change only the server address to ', h('span', { class: 'mono' }, `https://${m.moved?.to || 'the-new-server'}:10100/api/can/logs`), '. Keep the token and the certificate SHA-256: they came along.'),
+            h('li', null, m.state === 'done' ? 'Turn this server off (on TrueNAS: Apps, this Sentry Mate app, Stop). Keep its folders until the new server has run a few days.' : 'Wait for Done before you turn this server off.'))));
+        parts.push(skippedNote(m.skipped));
+        parts.push(h('div', { class: 'mv-undo' },
+          h('p', null, h('b', null, 'Changed your mind?'), ' Undo the move: this server takes uploads again. Stop the new server first.'),
+          btn('Undo the move', undo, { kind: 'danger', ic: 'reset' })));
+        break;
+      default:
+        parts.push(line('info', `State: ${m.state}`));
+    }
+    replace(moveBox, parts);
+  }
+
+  /* ---------------------------------------------------------------- export file */
+  function scheduleExp() {
+    clearTimeout(expTimer);
+    if (S.exp?.state === 'preparing') expTimer = setTimeout(refreshExp, 1000);
+  }
+  async function refreshExp(autoDownload = false) {
+    try {
+      const e = S.exp ? await ctx.api.get(`system/exports/${enc(S.exp.id)}`) : null;
+      if (!ctx.alive()) return;
+      const was = S.exp?.state;
+      S.exp = e;
+      if (e && was === 'preparing' && e.state === 'ready' && (autoDownload || S.wantDownload)) { S.wantDownload = false; download(e); }
+    } catch (err) {
+      if (!ctx.alive()) return;
+      if (err.status === 404) S.exp = null; else S.expErr = err;
+    }
+    paintExp(); scheduleExp();
+  }
+  function download(e) {
+    if (!e?.url) return;
+    const a = h('a', { href: e.url, download: e.file_name || '', hidden: true });
+    document.body.append(a); a.click(); a.remove();
+    flash(`Downloading ${e.file_name}. Your browser shows where it goes.`);
+  }
+  async function makeExport() {
+    const r = await askPassword(ctx, {
+      title: 'Download an export file', submit: 'Make the file',
+      intro: h('div', { class: 'mv-intro' },
+        h('p', null, 'The server makes one file with everything in it, in a few seconds (uploads wait for those seconds), then your browser downloads it.'),
+        h('p', null, 'The file opens only with this server\'s ', h('b', null, 'recovery key'), ' (the SMRK- line you saved when it was set up). It never holds the key file, so without the recovery key it is useless to anyone who takes it.')),
+      // one being made already (another tab, another admin): follow that one
+      run: (cred) => ctx.api.post('system/exports', cred).catch(async (e) => {
+        if (e.code !== 'export_preparing') throw e;
+        return (await ctx.api.get('system/exports')).items?.[0] || null;
+      }),
+    });
+    if (!r || !ctx.alive()) return;
+    S.exp = r; S.expErr = null; S.wantDownload = true;
+    paintExp(); scheduleExp();
+  }
+  async function removeExport() {
+    if (!(await confirmDialog('The file is removed from this server. A copy you downloaded stays where you put it.', { title: 'Remove the export file?', ok: 'Remove it', danger: true }))) return;
+    try { await ctx.api.del(`system/exports/${enc(S.exp.id)}`); S.exp = null; flash('The export file was removed from the server.'); } catch (e) { flash(`Could not remove it: ${errText(e)}`, { kind: 'error' }); }
+    if (ctx.alive()) paintExp();
+  }
+  function paintExp() {
+    const e = S.exp;
+    const parts = [];
+    if (S.expErr) parts.push(h('p', { class: 'form-error' }, icon('warn'), `Could not read the export: ${errText(S.expErr)}`));
+    if (!e || e.state === 'expired') {
+      if (e?.state === 'expired') parts.push(h('p', { class: 'note' }, `The last export file (${e.file_name}) was removed ${t(e.expires_ms)}. Make a new one.`));
+      parts.push(h('div', { class: 'row mv-acts' }, btn('Download export file', makeExport, { kind: 'primary', ic: 'download' })));
+    } else if (e.state === 'preparing') {
+      parts.push(h('div', { class: 'mv-preparing' }, h('span', { class: 'mv-spin', 'aria-hidden': 'true' }), h('p', null, h('b', null, 'Making the file…'), ' a few seconds. The download starts by itself.')));
+    } else {
+      parts.push(h('div', { class: 'mv-file' },
+        h('p', { class: 'mv-file-name' }, icon('download', 'ico--sm'), h('span', { class: 'mono' }, e.file_name)),
+        h('p', { class: 'mv-file-meta' }, `${bytes(e.size)} · ${count(e.files)} files · made ${t(e.made_ms)} · kept until ${t(e.expires_ms)}`,
+          e.sent_bytes ? ` · ${bytes(e.sent_bytes)} downloaded so far` : null),
+        h('div', { class: 'row mv-acts' },
+          h('a', { class: 'btn btn--primary', href: e.url, download: e.file_name }, icon('download', 'ico--sm'), 'Download'),
+          btn('Make a new one', makeExport, { kind: 'ghost', ic: 'reset' }),
+          btn('Remove from the server', removeExport, { kind: 'ghost', ic: 'x' })),
+        skippedNote(e.skipped)));
+    }
+    parts.push(h('p', { class: 'note' }, h('b', null, 'On the new server:'), ' choose Restore from an export file on its first page, choose this file and type the recovery key. A cut download carries on when you press Download again.'));
+    replace(expBox, parts);
+  }
+
+  /* ---------------------------------------------------------------- the panel */
+  const el = panel({ title: 'Move to another server', icon: 'share', pad: true, id: 'move', cls: 'mv',
+    side: h('span', { class: 'faint' }, 'Admins only') },
+  h('p', { class: 'mv-lead' }, 'Take everything to a new Sentry Mate server: logs, cars, accounts, upload tokens and the certificate. No shell and no commands: start the new server with empty folders, then use one of these. ',
+    'The CAN Bridge keeps its token and its certificate SHA-256; at most its server address changes.'),
+  h('div', { class: 'mv-ways' },
+    h('section', { class: 'mv-way', 'aria-labelledby': 'mv-code-title' },
+      h('h3', { id: 'mv-code-title' }, icon('share', 'ico--sm'), 'With a move code'),
+      h('p', { class: 'mv-when' }, h('b', null, 'When:'), ' both servers are on at the same time and the new one can reach this one (the same home network, or tick from anywhere). This server keeps taking uploads while the new one copies, and the new one takes over by itself at the end.'),
+      moveBox),
+    h('section', { class: 'mv-way', 'aria-labelledby': 'mv-file-title' },
+      h('h3', { id: 'mv-file-title' }, icon('download', 'ico--sm'), 'With an export file'),
+      h('p', { class: 'mv-when' }, h('b', null, 'When:'), ' the two servers can\'t reach each other, this one will be off before the new one starts, or you want a copy to keep as a backup. One file with everything; uploads that arrive after it was made are not in it.'),
+      expBox)),
+  h('p', { class: 'note mv-safe' }, icon('lock', 'ico--sm'), ' Neither way changes this server\'s data. Codes, passwords and recovery keys travel only over HTTPS. Times are in ', zone, '.'));
+
+  async function load() {
+    try {
+      const [m, ex] = await Promise.all([ctx.api.get('system/move'), ctx.api.get('system/exports').catch(() => null)]);
+      if (!ctx.alive()) return;
+      setMove(m);
+      S.exp = ex?.items?.[0] || null;
+    } catch (e) { if (!ctx.alive()) return; S.err = e; }
+    paintMove(); paintExp(); schedule(); scheduleExp();
+  }
+  paintMove(); paintExp();
+  return { el, ready: load() };
+}
