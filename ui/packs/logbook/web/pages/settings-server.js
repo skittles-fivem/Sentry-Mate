@@ -16,6 +16,7 @@ import { dataTable } from '../core/table.js';
 import { field, form, choice, switchField, setFieldError } from '../core/form.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { dateTime, date, zoneLabel, count } from '../core/format.js';
+import { moveBlock } from './settings-move.js';
 
 export const id = 'settings-server';
 export const css = true;
@@ -255,11 +256,16 @@ export async function mount(ctx) {
     } else {
       list.push(outcome('ok', 'No recovery key file waits on the server.', 'Keep the recovery key apart from both the data backups and the key file. A new one: sentry-mate recovery-key new (the old one stops working).'));
     }
-    list.push(outcome('info', 'Back up the data folder like any folder.',
+    list.push(outcome('info', 'The easiest backup: an export file.',
+      'One file with everything, made and downloaded here (Move to another server, below). It opens only with the recovery key, so it can go anywhere.'));
+    list.push(outcome('info', 'Or back up the data folder like any folder.',
       'It is sealed, so the copy can go anywhere. Stop Sentry Mate for a clean copy, keep the files’ names and layout, and copy it off the server. On TrueNAS, a periodic snapshot of the data dataset works while the app runs. Never put the keys folder in the same backup.',
       h('span', null, mono('docker compose stop'), ' · ', mono('sudo tar -C data -cpf ~/sentry-mate-data.tar .'), ' · ', mono('docker compose start'))));
     safetySection = section({ title: 'Certificate, recovery key and backups', cover: 'web.shell.hosting', cls: 'ss-safety' }, h('ol', { class: 'ss-outcomes' }, list));
   }
+
+  /* ---------------------------------------------------------------- moving to another server (admin) */
+  const mover = admin ? moveBlock(ctx, { network }) : null;
 
   /* ---------------------------------------------------------------- accounts (admin) */
   let accountsTable = null;
@@ -498,16 +504,17 @@ export async function mount(ctx) {
     h('div', { class: 'ss-grid' },
       h('div', { class: 'ss-col' }, addressSection, namesSection, portsSection),
       h('div', { class: 'ss-col' }, accessSection, safetySection)),
-    accountsSection, sessionsSection, auditSection);
+    mover ? mover.el : null, accountsSection, sessionsSection, auditSection);
 
   try {
-    await Promise.all([portsTable && portsTable.load(), sessionsTable.load(), accountsTable && accountsTable.load(), auditTable && auditTable.load()]);
+    await Promise.all([portsTable && portsTable.load(), sessionsTable.load(), accountsTable && accountsTable.load(), auditTable && auditTable.load(), mover && mover.load()]);
   } catch (err) {
     if (!ctx.alive()) return undefined;
     throw err;
   }
   if (!ctx.alive()) return undefined;
   if (focusAccount) document.getElementById(`account-${focusAccount}`)?.scrollIntoView({ block: 'center' });
+  else if (location.hash === '#move') document.getElementById('move')?.scrollIntoView({ block: 'start' });
   ctx.ready();
   return {};
 }

@@ -63,14 +63,75 @@ function crumbs(car) {
 function howCarsAppear() {
   return h('ol', { class: 'sc-steps' },
     h('li', null, h('strong', null, 'Make an upload token. '),
-      'For the first car, run ', h('code', { class: 'mono' }, 'sentry-mate token new --car "Name"'),
-      ' on the server; it prints the token and the three fields for the app. Later cars can also get one here.'),
+      'An admin presses “Make an upload token” here (for a car not seen yet: under “Upload tokens for a new car”). It shows the three fields for the app, ready to copy: the server address, the token and the certificate SHA-256.'),
     h('li', null, h('strong', null, 'Enter it in the CAN Bridge app '),
       'on the Screenmate One (or another logger such as a Raspberry Pi), in its second upload section, then press Apply & restart.'),
     h('li', null, h('strong', null, 'Wait for the first log. '),
       'The car appears here by itself, with its model and year from the VIN prefix. No Tesla account is needed. Name it and set its time zone.'),
     h('li', null, h('strong', null, 'A second logger in the same car '),
       '(a new Screenmate, a reinstall, a Pi) uploads with a new key. It waits under “Keys waiting for a car” until you tie it to the car.'));
+}
+
+/**
+ * The three fields of the CAN Bridge app's "Second Sentry Six Manager" section for a token just made
+ * (POST .../upload-tokens answers them in `app`), each with a Copy button. The token is shown this once.
+ */
+async function tokenDialog(ctx, made, forWhat) {
+  const app = made.app || {};
+  const copied = h('span', { class: 'sc-copied', 'aria-live': 'polite' });
+  const copy = (what, text) => async () => {
+    try { await navigator.clipboard.writeText(text); copied.textContent = `${what} copied.`; } catch { copied.textContent = 'Copy did not work here: select the text and copy it.'; }
+  };
+  const row = (name, hint, value, cls = 'mono') => [
+    h('dt', null, name),
+    h('dd', null, value ? [h('code', { class: cls }, value), button('Copy', { cls: 'button-small', onclick: copy(name, value) })] : h('span', { class: 'cell-sub' }, 'The server did not send it: open Settings, Server and access.'),
+      hint ? h('span', { class: 'sc-token-hint' }, hint) : null)];
+  await openDialog({
+    title: `Upload token for ${forWhat}`,
+    wide: true,
+    body: h('div', { class: 'sc-token' },
+      h('p', { class: 'dialog-text' }, 'This is the only time the token is shown. Put these three into the CAN Bridge app now; if the token is lost, revoke it and make a new one.'),
+      h('dl', { class: 'sc-token-fields' },
+        row('Server address', 'Where the bridge sends its logs (the upload port).', app.address || null),
+        row('Token', 'The secret that lets this bridge upload.', app.token || made.secret || null, 'mono sc-secret'),
+        row('Certificate SHA-256', 'So the bridge knows it talks to this server and no other.', app.certificate_sha256 || null)),
+      copied,
+      h('ol', { class: 'sc-token-steps' },
+        h('li', null, 'On the Screenmate One (or the other logger), open the CAN Bridge app.'),
+        h('li', null, 'In its “Second Sentry Six Manager” section, fill in the three fields above.'),
+        h('li', null, 'Press Apply & restart. The token ties itself to the bridge’s key on the first upload.'))),
+    actions: [{ label: 'I have copied it', value: true, kind: 'primary' }],
+  });
+}
+
+/** Upload tokens for a car the server has not seen yet (GET / POST /upload-tokens): admins only. */
+function newCarTokens(ctx) {
+  const table = dataTable(ctx, {
+    path: 'upload-tokens', itemName: ['token', 'tokens'], label: 'Upload tokens for a new car',
+    columns: [
+      { key: 'id', label: 'Token', th: true, cell: (t) => [h('span', { class: 'cell-main mono' }, t.id), h('span', { class: 'cell-sub' }, `made ${formatDate(t.created_ms, ctx.tz, { weekday: false, now: api.now() })}`)] },
+      { key: 'status', label: 'State', cell: (t) => (t.revoked ? chip('Revoked') : chip('Waiting for the first upload', { kind: 'warn' })) },
+      { key: 'do', label: '', cell: (t) => (t.revoked ? '' : button('Revoke', { kind: 'quiet', cls: 'button-small', onclick: () => revoke(t) })) },
+    ],
+    empty: () => empty({ title: 'No token waits for a new car.', text: 'Make one with the button above, then enter it in the CAN Bridge app.' }),
+  });
+  async function make() {
+    let made;
+    try { made = await ctx.api.post('upload-tokens', {}); } catch (err) { ctx.flash(`No token made: ${err.message}`, { kind: 'error' }); return; }
+    await table.reload({});
+    await tokenDialog(ctx, made, 'a new car');
+  }
+  async function revoke(t) {
+    const ok = await confirmDialog({ title: `Revoke token ${t.id}?`, text: 'A CAN Bridge that uses it can no longer upload. This cannot be undone: make a new token to upload again.', yes: 'Revoke the token', danger: true });
+    if (!ok) return;
+    try { await ctx.api.del(api.apiPath`upload-tokens/${t.id}`); ctx.flash(`Token ${t.id} revoked.`); } catch (err) { ctx.flash(`Not revoked: ${err.message}`, { kind: 'error' }); }
+    await table.reload({});
+  }
+  const el = section({ title: 'Upload tokens for a new car', note: 'the first log with one makes the car', id: 'sc-new-tokens',
+    actions: button('Make an upload token', { kind: 'primary', iconName: 'plug', onclick: make }) },
+  note('For a car Sentry Mate has not seen yet. The first log sent with the token makes the car here, named after its model until you name it; the token then moves to that car’s page.'),
+  table.el);
+  return { el, load: () => table.load(), make };
 }
 
 /** The car list: every car the account sees, searched and paged by the server. */
@@ -229,6 +290,11 @@ async function mountIndex(ctx) {
       howCarsAppear(),
       fixes.length ? h('p', { class: 'note' }, `Now: ${fixes.map((f) => FIX_NOW[f.cause] || f.cause).join(' ')}`) : null);
     ctx.main.append(head, box);
+    if (admin) {
+      const nt = newCarTokens(ctx);
+      ctx.main.append(nt.el);
+      await nt.load();
+    }
     if (admin && status.keys_waiting) {
       const w = waitingTable(ctx, {});
       ctx.main.append(section({ title: 'Keys waiting for a car', note: 'they become a car once one is known' }, w.el));
@@ -244,12 +310,14 @@ async function mountIndex(ctx) {
       h('p', { class: 'sc-choose-title' }, 'Choose a car to change its settings.'),
       h('p', { class: 'sc-choose-text' }, 'Its name, its time zone, its battery chemistry, free Supercharging, and how its CAN Bridge is tied to it. The car picker at the top of the page also works here.')));
   let waiting = null;
+  let fresh = null;
   if (admin) {
+    fresh = newCarTokens(ctx);
     waiting = waitingTable(ctx, { onChange: () => waiting.reload() });
-    mainCol.append(section({ title: 'Keys waiting for a car', note: 'a CAN Bridge uploading with a key no car has yet' }, waiting.el));
+    mainCol.append(fresh.el, section({ title: 'Keys waiting for a car', note: 'a CAN Bridge uploading with a key no car has yet' }, waiting.el));
   }
   ctx.main.append(head, h('div', { class: 'sc-layout' }, rail.el, mainCol));
-  await Promise.all([rail.table.load(), waiting ? waiting.load() : null]);
+  await Promise.all([rail.table.load(), waiting ? waiting.load() : null, fresh ? fresh.load() : null]);
   ctx.ready();
   return {};
 }
@@ -419,31 +487,12 @@ async function mountCar(ctx) {
       catch (err) { ctx.flash(`Not saved: ${err.message}`, { kind: 'error' }); }
     }
     async function makeToken() {
-      let made, net = null;
+      let made;
       try {
-        [made, net] = await Promise.all([ctx.api.post(api.apiPath`cars/${car.id}/upload-tokens`, {}), ctx.api.get('network').catch(() => null)]);
+        made = await ctx.api.post(api.apiPath`cars/${car.id}/upload-tokens`, {});
       } catch (err) { ctx.flash(`No token made: ${err.message}`, { kind: 'error' }); return; }
       await refreshUploads();
-      const up = net && (net.inbound || []).find((x) => x.purpose === 'upload');
-      const address = `https://${location.hostname}${up && up.port ? `:${up.port}` : ''}/api/can/logs`;
-      const secret = h('code', { class: 'mono sc-secret' }, made.secret || '');
-      const copied = h('span', { class: 'sc-copied', 'aria-live': 'polite' });
-      const copy = (text) => async () => {
-        try { await navigator.clipboard.writeText(text); copied.textContent = 'Copied.'; } catch { copied.textContent = 'Copy did not work here: select the text and copy it.'; }
-      };
-      await openDialog({
-        title: `Upload token for ${car.name}`,
-        wide: true,
-        body: h('div', { class: 'sc-token' },
-          h('p', { class: 'dialog-text' }, 'This is the only time the token is shown. Put it into the CAN Bridge app now; if it is lost, revoke it and make a new one.'),
-          h('dl', { class: 'sc-token-fields' },
-            h('dt', null, 'Token'), h('dd', null, secret, button('Copy', { cls: 'button-small', iconName: 'check', onclick: copy(made.secret || '') })),
-            h('dt', null, 'Upload address'), h('dd', null, h('code', { class: 'mono' }, address), button('Copy', { cls: 'button-small', iconName: 'check', onclick: copy(address) })),
-            h('dt', null, 'Certificate SHA-256'), h('dd', null, 'Printed by ', h('code', { class: 'mono' }, 'sentry-mate fingerprint'), ' on the server.')),
-          copied,
-          h('p', { class: 'note' }, 'In the app, fill in its second upload section with these, then press Apply & restart. The token ties itself to the bridge’s key on the first upload.')),
-        actions: [{ label: 'I have copied it', value: true, kind: 'primary' }],
-      });
+      await tokenDialog(ctx, made, car.name);
     }
 
     function drawOutcome() {

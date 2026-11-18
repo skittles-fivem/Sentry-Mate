@@ -25,13 +25,13 @@ export function openDialog({ title, body = null, actions = [{ label: 'Close', va
         h('h2', { class: 'dialog-title', id: 'dialog-title' }, title),
         h('button', { type: 'button', class: 'dialog-close', 'aria-label': 'Close', onclick: () => close(null) }, icon('close'))),
       h('div', { class: 'dialog-body' }, content),
-      actions && actions.length ? h('div', { class: 'dialog-actions' }, actions.map((a) => h('button', {
+      ...(actions && actions.length ? [h('div', { class: 'dialog-actions' }, actions.map((a) => h('button', {
         type: 'button', class: ['button', a.kind && a.kind !== 'primary' ? `button-${a.kind}` : a.kind === 'primary' ? null : 'button-quiet'],
         onclick: async () => {
           if (a.onclick) { const keep = await a.onclick(close); if (keep === false) return; }
           close(a.value);
         },
-      }, a.label))) : null);
+      }, a.label)))] : []));
     dlg.addEventListener('click', (e) => { if (e.target === dlg) close(null); });
     dlg.addEventListener('close', () => { dlg.remove(); resolve(value); });
     if (signal) signal.addEventListener('abort', () => close(null), { once: true });
