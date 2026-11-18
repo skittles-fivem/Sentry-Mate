@@ -63,3 +63,8 @@
 @container page (max-width: 76rem) {
   .pattern-lists { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* the visible line under the filter bar: what the text box matches, what the basis means */
+.filter-bar .filters-hint { flex-basis: 100%; margin: 0; font-size: max(0.78125rem, var(--fs-floor)); line-height: 1.45; color: var(--text-3); }
+.excl-unused { margin-top: 0.625rem; font-size: max(0.75rem, var(--fs-floor)); }
+.patterns-empty .btn { margin-left: 0.5rem; }

@@ -24,6 +24,17 @@ class PlacesRead(ServerCase):
         self.c.error("GET", "/api/v1/places/p999", 404, "no_such_place")
         self.c.error("GET", "/api/v1/places?kind=castle", 400, "bad_input")
 
+    def test_counts_for_one_car(self):
+        rows = self.walk("/api/v1/places?car=c1&sort=drives", limit=100)
+        fleet = {x["id"]: x for x in self.walk("/api/v1/places", limit=100)}
+        self.assertEqual(len(rows), len(fleet))  # every place, this car's counts
+        drives = [x["counts"]["drives"] for x in rows]
+        self.assertEqual(drives, sorted(drives, reverse=True))
+        self.assertEqual(rows[0]["id"], "p1")
+        self.assertTrue(all(x["counts"]["drives"] <= fleet[x["id"]]["counts"]["drives"] for x in rows))
+        self.assertTrue(any(x["counts"]["drives"] < fleet[x["id"]]["counts"]["drives"] for x in rows))
+        self.c.error("GET", "/api/v1/places?car=c999", 404, "no_such_car")
+
     def test_nearest_centre_wins(self):
         # Home (60 m) sits inside Noe Valley (400 m): at Home's centre, Home wins and both are candidates
         d = self.c.get("/api/v1/places/at?lat=37.7508&lon=-122.433")

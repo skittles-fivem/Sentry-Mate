@@ -91,20 +91,29 @@ def _filtered(req, h):
             if q not in text:
                 continue
         if eff == "hill_corrected":
-            row["wh_per_km"] = r(row["_whkm_hill"], 1)
+            hill = row["_whkm_hill"]
+            row["wh_per_km"] = r(hill, 1)
+            # the efficiency score follows the same basis: rated consumption against the hill-corrected one
+            rated = h.car.rated_wh_per_km
+            row["efficiency_pct"] = r(rated / hill * 100, 1) if hill and hill > 0 else None
         rows.append(row)
     return rows
 
 
-def summary(rows):
+def summary(rows, eff="plain"):
     dist = sum(x["distance_km"] or 0 for x in rows)
     e_meas = sum(x["energy_kwh"] or 0 for x in rows if x["energy_basis"] == "measured")
     e_est = sum(x["energy_kwh"] or 0 for x in rows if x["energy_basis"] == "estimated")
     without = sum(1 for x in rows if x["energy_kwh"] is None)
     e = e_meas + e_est
+    basis_e = e
+    if eff == "hill_corrected":  # the climb taken off each drive, as in the rows
+        basis_e = sum(((x["_whkm_hill"] * (x["distance_km"] or 0) / 1000) if x.get("_whkm_hill") is not None
+                       else (x["energy_kwh"] or 0)) for x in rows)
     return {"count": len(rows), "distance_km": r(dist, 3), "duration_ms": sum(x["duration_ms"] for x in rows),
             "energy_kwh": r(e, 3), "energy_measured_kwh": r(e_meas, 3), "energy_estimated_kwh": r(e_est, 3),
-            "wh_per_km": r(e / dist * 1000, 1) if dist > 0.1 else None, "without_energy": without}
+            "wh_per_km": r(basis_e / dist * 1000, 1) if dist > 0.1 else None, "without_energy": without,
+            "efficiency": eff}
 
 
 def list_drives(req):
@@ -115,7 +124,8 @@ def list_drives(req):
     rows = _filtered(req, h) if h else []
     rev = d == "desc"
     items, nxt = page(req, rows, key=lambda x: (nk(SORTS[sort](x), rev), x["start_ms"], x["id"]), reverse=rev)
-    return {"car": req.car, "time_zone": req.tz(), "items": items, "next": nxt, "summary": summary(rows)}
+    eff = req.enum("efficiency", ("plain", "hill_corrected"), "plain")
+    return {"car": req.car, "time_zone": req.tz(), "items": items, "next": nxt, "summary": summary(rows, eff)}
 
 
 def _drive(req):
@@ -381,17 +391,41 @@ def drive_stats(req):
     a, b = req.period()
     excl = set(_place_ids(req, "exclude_places") or [])
     tz = req.tz()
+    end = min(b, req.now)
     empty = {"car": req.car, "time_zone": tz, "count": 0, "distance_km": 0.0, "energy_kwh": 0.0,
-             "median_distance_km": None, "per_day": [],
+             "median_distance_km": None, "per_day": [], "days": 0,
              "max_speed": {"period": None, "last_30d": None, "last_7d": None}, "speed_bands": [],
              "projection": {"per_month_km": None, "per_year_km": None, "basis_days": 0}, "top_destinations": []}
     if h is None:
         return empty
+
+    # every local day from the later of the period start and the car's first data to the period end (or now),
+    # days without driving as 0, so per_day is a whole daily series
+    per = {}
+    first = max(a, h.first_ms) if h.first_ms is not None else None
+    if first is not None and first < end:
+        day = local_dt(first, tz).date()
+        last = local_dt(end - 1, tz).date()
+        while day <= last:
+            k = day.isoformat()
+            per[k] = {"date": k, "count": 0, "distance_km": 0.0, "energy_kwh": 0.0}
+            day = day.fromordinal(day.toordinal() + 1)
+
+    # top speeds over the 30 and 7 days to the period end (or now), whatever the period and the places left out
+    def fastest_since(since):
+        best = None
+        for d in _drives(req, h, since, end):
+            x = cached_drive_row(req, h, d)
+            if x["speed_max_kph"] is not None and (best is None or x["speed_max_kph"] > best["kph"]):
+                best = {"kph": x["speed_max_kph"], "drive": d.id}
+        return best
+
+    windows = {"last_30d": fastest_since(end - 30 * DAY), "last_7d": fastest_since(end - 7 * DAY)}
     ds = [d for d in _drives(req, h, a, b) if not excl or not (set(drive_pids(req.app, d)) & excl)]
     if not ds:
-        return empty
+        return dict(empty, per_day=[per[k] for k in sorted(per)], days=len(per),
+                    max_speed={"period": None, **windows})
     rows = [(d, cached_drive_row(req, h, d)) for d in ds]
-    per = {}
     for d, x in rows:
         day = local_dt(d.start, tz).date().isoformat()
         p = per.setdefault(day, {"date": day, "count": 0, "distance_km": 0.0, "energy_kwh": 0.0})
@@ -402,23 +436,24 @@ def drive_stats(req):
         p["distance_km"] = r(p["distance_km"], 3)
         p["energy_kwh"] = r(p["energy_kwh"], 3)
 
-    def fastest(since):
-        best = None
-        for d, x in rows:
-            if d.start >= since and (best is None or x["speed_max_kph"] > best["kph"]):
-                best = {"kph": x["speed_max_kph"], "drive": d.id}
-        return best
+    best = None
+    for d, x in rows:
+        if x["speed_max_kph"] is not None and (best is None or x["speed_max_kph"] > best["kph"]):
+            best = {"kph": x["speed_max_kph"], "drive": d.id}
 
-    end = min(b, req.now)
     bands = {}
     for d, _x in rows:
         for k, v in d.speed_bands(req.now if in_progress(d, req.now) else None).items():
             bands[k] = bands.get(k, 0.0) + v
     tot = sum(bands.values()) or 1.0
     dist = sum(x["distance_km"] or 0 for _, x in rows)
-    span_days = max(1.0, (end - max(a, h.first_ms)) / DAY)
+    # the same calendar days as per_day, so the projection and a per-day rate agree
+    span_days = float(len(per)) if per else max(1.0, (end - max(a, h.first_ms)) / DAY)
     dest = {}
     for d, x in rows:
+        # a drive still going, or whose data stopped, has no destination yet
+        if x["end_ms"] is None or d.cut_ms is not None:
+            continue
         pid = (x["end"]["place"] or {}).get("id")
         key = pid or x["end"]["label"]
         e = dest.setdefault(key, {"place": pid, "label": x["end"]["label"], "count": 0})
@@ -428,8 +463,8 @@ def drive_stats(req):
         "car": req.car, "time_zone": tz, "count": len(rows), "distance_km": r(dist, 3),
         "energy_kwh": r(sum(x["energy_kwh"] or 0 for _, x in rows), 3),
         "median_distance_km": r(median([x["distance_km"] for _, x in rows]), 3),
-        "per_day": [per[k] for k in sorted(per)],
-        "max_speed": {"period": fastest(0), "last_30d": fastest(end - 30 * DAY), "last_7d": fastest(end - 7 * DAY)},
+        "per_day": [per[k] for k in sorted(per)], "days": len(per),
+        "max_speed": {"period": best, **windows},
         "speed_bands": [{"from_kph": k * 10, "to_kph": (k + 1) * 10, "seconds": round(v, 1),
                          "share_pct": r(100 * v / tot, 2)} for k, v in sorted(bands.items())],
         "projection": {"per_month_km": r(dist / span_days * 30.44, 1), "per_year_km": r(dist / span_days * 365.25, 0),

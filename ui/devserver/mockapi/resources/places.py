@@ -86,11 +86,22 @@ def _visible(req, p, counts):
     return bool(c and (c["drives"] or c["charges"] or c["visits"]))
 
 
+def _car_counts(req, cid):
+    key = (cid, req.store.places_rev, derive.started(req.ds.history(cid), req.now))
+    return derive.memo(req.app, "place_counts_car", key, lambda: _counts(req, (cid,)))
+
+
 def list_places(req):
     search = (req.q("search") or "").strip().lower()
     kind = req.enum("kind", KINDS)
-    sort = req.enum("sort", ("name", "visits", "last_visit", "created"), "name")
+    sort = req.enum("sort", ("name", "visits", "drives", "last_visit", "created"), "name")
     counts = place_counts(req)
+    car = req.q("car")
+    shown = counts
+    if car:  # counts, last visit and the order are that car's; every visible place is still listed
+        if not req.ds.exists(car) or not req.store.sees(req.account, car):
+            raise not_found("no_such_car", "There is no such car.")
+        shown = _car_counts(req, car)
     rows = []
     for p in placing.all_places(req.app):
         if not _visible(req, p, counts):
@@ -100,14 +111,18 @@ def list_places(req):
         if search and search not in " ".join(filter(None, [p["name"], p["address"].get("short"),
                                                             p["address"].get("locality")])).lower():
             continue
-        rows.append(view(req, p, counts))
+        rows.append(view(req, p, shown))
     n = lambda x: int(x["id"][1:])  # noqa: E731
     keyf = {"name": lambda x: (x["name"].lower(), n(x)),
             "visits": lambda x: (-x["counts"]["visits"], x["name"].lower(), n(x)),
+            "drives": lambda x: (-x["counts"]["drives"], -x["counts"]["visits"], x["name"].lower(), n(x)),
             "last_visit": lambda x: (-(x["last_visit_ms"] or 0), n(x)),
             "created": lambda x: (-(x["created_ms"] or 0), n(x))}[sort]
     items, nxt = page(req, rows, key=keyf)
-    return {"items": items, "next": nxt, "total": len(rows)}
+    out = {"items": items, "next": nxt, "total": len(rows)}
+    if car:
+        out["car"] = car
+    return out
 
 
 def _place(req):

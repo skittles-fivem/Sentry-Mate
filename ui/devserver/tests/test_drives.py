@@ -29,7 +29,7 @@ class Drives(ServerCase):
         self.assertEqual(s["count"], len(d["items"]))
         self.assertAlmostEqual(s["distance_km"], sum(x["distance_km"] for x in d["items"]), delta=0.05)
         self.assertEqual(set(s), {"count", "distance_km", "duration_ms", "energy_kwh", "energy_measured_kwh",
-                                  "energy_estimated_kwh", "wh_per_km", "without_energy"})
+                                  "energy_estimated_kwh", "wh_per_km", "without_energy", "efficiency"})
 
     def test_filters_and_sorts(self):
         base = f"/api/v1/cars/c1/drives?from_ms={NOW - 120 * 86_400_000}&limit=500"
@@ -48,8 +48,15 @@ class Drives(ServerCase):
         self.assertEqual(len(live), 1)
         cold = self.c.get("/api/v1/cars/c2/drives?flags=reduced_range&limit=500")["items"]
         self.assertTrue(cold)  # Chicago winter
-        hill = self.c.get(base + "&efficiency=hill_corrected")["items"]
-        self.assertEqual(len(hill), len(self.c.get(base)["items"]))
+        hill_ans = self.c.get(base + "&efficiency=hill_corrected")
+        hill = hill_ans["items"]
+        plain_ans = self.c.get(base)
+        self.assertEqual(len(hill), len(plain_ans["items"]))
+        # the efficiency score and the summary follow the chosen basis
+        self.assertNotEqual([x["efficiency_pct"] for x in hill], [x["efficiency_pct"] for x in plain_ans["items"]])
+        self.assertEqual(hill_ans["summary"]["efficiency"], "hill_corrected")
+        self.assertEqual(plain_ans["summary"]["efficiency"], "plain")
+        self.assertNotEqual(hill_ans["summary"]["wh_per_km"], plain_ans["summary"]["wh_per_km"])
         self.c.error("GET", base + "&places=p999", 400, "bad_input")
         self.c.error("GET", base + "&min_distance_km=-1", 400, "bad_input")
 
@@ -131,6 +138,19 @@ class Drives(ServerCase):
         self.assertEqual(sum(p["count"] for p in d["per_day"]), d["count"])
         ex = self.c.get(f"/api/v1/cars/c1/drive-stats?from_ms={NOW - 90 * 86_400_000}&exclude_places=p1")
         self.assertLess(ex["count"], d["count"])
+        # per_day is a whole daily series (days without driving as 0); days counts them
+        dates = [p["date"] for p in d["per_day"]]
+        self.assertEqual(len(dates), d["days"])
+        self.assertIn(len(dates), (90, 91))
+        self.assertEqual(dates, sorted(set(dates)))
+        self.assertTrue(any(p["count"] == 0 for p in d["per_day"]))
+        # the 30 and 7 day top speeds ignore the period and the places left out
+        week = self.c.get(f"/api/v1/cars/c1/drive-stats?from_ms={NOW - 7 * 86_400_000}&exclude_places=p1")
+        self.assertEqual(week["max_speed"]["last_30d"], d["max_speed"]["last_30d"])
+        self.assertEqual(week["max_speed"]["last_7d"], d["max_speed"]["last_7d"])
+        # a drive still going is not a destination
+        now = self.c.get("/api/v1/cars/c1/drive-stats?from_ms=" + str(NOW - 2 * 86_400_000))
+        self.assertTrue(all(x["label"] not in ("Driving now", "Data stopped here") for x in now["top_destinations"]))
 
     def test_logbook(self):
         a = NOW - 30 * 86_400_000
