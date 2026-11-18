@@ -552,6 +552,7 @@ async fn serve(
     env: &MoveEnv,
 ) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Sentry Mate {VERSION}");
+    refuse_key_file_over_empty_data(data, keys)?;
     std::fs::create_dir_all(data)?;
     let _lock = take_server_lock(data).await?;
     let gate = gate::Gate::open(data)?;
@@ -974,6 +975,20 @@ fn spawn_confirm(data: &Path, v: Arc<Vault>) -> Option<tokio::task::JoinHandle<(
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
     }))
+}
+
+/// A key file over an empty data folder: refused before the server's lock and gate files are made, so a refused
+/// start writes nothing. (An import or a move coming in keeps its state in the data folder: an empty one has none.)
+fn refuse_key_file_over_empty_data(data: &Path, keys: &Path) -> Result<(), vault::Error> {
+    let empty = match std::fs::read_dir(data) {
+        Ok(mut d) => d.next().is_none(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => return Err(e.into()),
+    };
+    match Vault::open(data, keys) {
+        Err(e @ vault::Error::KeyFileButNoVault { .. }) if empty => Err(e),
+        _ => Ok(()),
+    }
 }
 
 /// `.lock`: one server per data folder. Waits (and says so) while another holds it, rather than exiting into a
@@ -1849,6 +1864,18 @@ mod tests {
     /// A new server that takes data in (an import; a direct move ends with the same switch) writes a key file of its
     /// own. The folder checks pass on its empty folders, and the refusal of a new vault next to a key file doesn't stop
     /// it starting afterwards. A key file with no vault is still refused, by the vault and by the import.
+    #[tokio::test]
+    async fn a_key_file_over_an_empty_data_folder_is_refused_and_nothing_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let (d, k) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::create_dir_all(&k).unwrap();
+        std::fs::write(k.join("sentry-mate.key"), b"old-key").unwrap();
+        let e = serve(&d, &k, "127.0.0.1", 0, &[], &MoveEnv::default()).await.unwrap_err();
+        assert!(e.to_string().contains("has a key file"), "{e}");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0, "something was written to the data folder");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn an_import_into_an_empty_server_passes_the_checks_and_starts() {
         let dir = tempfile::tempdir().unwrap();
