@@ -302,8 +302,13 @@ def effect(req, old_places, new_places, focus):
     circles = [(p["lat"], p["lon"], p["radius_m"]) for p in focus if p]
     focus_ids = {p["id"] for p in focus if p}
     named, unnamed, c_named, c_unnamed, repriced = set(), set(), set(), set(), set()
-    affected, examples = [], []
+    affected, examples, example_rows = [], [], []
     st = req.store
+
+    def note(kind, rid, piece, h, change):
+        if len(example_rows) < 8 and not any(x["id"] == rid for x in example_rows):
+            example_rows.append({"kind": kind, "id": rid, "car": h.car.id, "start_ms": piece.start, "change": change})
+
     for kind, rid, lat, lon, base, piece, h in _points(req):
         la, lo = placing.stop_point(lat, lon, base)
         if not any(haversine_m(la, lo, a, b) <= rr + 1 for a, b, rr in circles):
@@ -320,6 +325,7 @@ def effect(req, old_places, new_places, focus):
                     unnamed.add(rid)
                 if len(examples) < 5 and rid not in examples:
                     examples.append(rid)
+                note("drive", rid, piece, h, "named" if aid in focus_ids else "unnamed")
             continue
         if moved:
             if aid in focus_ids:
@@ -328,6 +334,7 @@ def effect(req, old_places, new_places, focus):
                 c_unnamed.add(rid)
             if len(examples) < 5:
                 examples.append(rid)
+            note("charge", rid, piece, h, "named" if aid in focus_ids else "unnamed")
         if moved or (bid in focus_ids and (before or {}).get("price") != (after or {}).get("price")):
             affected.append(piece)
         if aid in focus_ids and st.costs.get(rid) is None and piece.source == "can" and piece.data_end <= req.now:
@@ -336,8 +343,11 @@ def effect(req, old_places, new_places, focus):
             new, _, _ = charge_cost(req.app, h.car.id, piece, f, req.now, pricing=(_pinfo(after), after.get("price")))
             if (cur or {}).get("amount") != (new or {}).get("amount"):
                 repriced.add(rid)
+                if not moved:
+                    note("charge", rid, piece, h, "repriced")
     return {"drives_named": len(named), "drives_unnamed": len(unnamed), "charges_named": len(c_named),
-            "charges_unnamed": len(c_unnamed), "charges_repriced": len(repriced), "examples": examples}, affected
+            "charges_unnamed": len(c_unnamed), "charges_repriced": len(repriced), "examples": examples,
+            "example_rows": example_rows}, affected
 
 
 def _apply(req, action, pid, new):
