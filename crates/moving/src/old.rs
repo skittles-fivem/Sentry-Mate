@@ -1602,6 +1602,42 @@ async fn end_session(o: Arc<Offer>, req: Request) -> Result<Response, Refusal> {
 mod tests {
     use super::*;
 
+    /// The owner runs `move cancel` (or `move code --replace`) on the old server while the new server's finish is
+    /// being answered: the finish read the claim before the cancel, and its commit must not write the moved state
+    /// (nor hand over the data key) for a move the owner just ended.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_cancel_made_during_a_finish_is_not_overridden_by_its_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::create_dir_all(&data).unwrap();
+        let (v, _) = Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+        let v = Arc::new(v);
+        let o = Offer::open(&data, v.clone(), gate::Gate::memory(), "0.4.1", &"ab".repeat(32)).unwrap();
+        make_code(&data, &v, false, false).unwrap();
+        // the claim, as claim_blocking writes it
+        let session = [7u8; 32];
+        let mut c: CodeRecord = read(&data, &v, CODE).unwrap().unwrap();
+        c.claimed = Some(Claimed {
+            claim: hex::encode([1u8; 16]),
+            session_sha256: proto::session_hash(&session),
+            from: "192.0.2.10".into(),
+            at_ms: now_ms(),
+            app: "0.4.1".into(),
+            last_seen_ms: now_ms(),
+            sent_bytes: 0,
+            files: 0,
+            bytes: 0,
+        });
+        write(&data, &v, CODE, &c).unwrap();
+        // the finish has authorized the request (it holds `c`) when the owner cancels
+        let what = cancel(&data, &v).unwrap();
+        assert_eq!(what, Cancelled::Ended { to: "192.0.2.10".into() });
+        let committed = o.commit(&c, &session);
+        assert!(committed.is_err(), "the commit wrote the moved state for a move the owner had cancelled");
+        assert!(!is_moved(&data), "the old server now refuses uploads although `move cancel` said they go on");
+    }
+
     #[test]
     fn the_home_network_rule() {
         for ip in [

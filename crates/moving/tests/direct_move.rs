@@ -717,3 +717,88 @@ async fn with_the_old_server_gone_the_copy_opens_with_the_recovery_key() {
     Vault::restore(&data, &keys, &old.recovery).unwrap();
     assert!(!moving::old::is_moved(&old.data), "the old server doesn't know");
 }
+
+/// A new server that stops reading a fetch answer under the pause (its disk hangs, its container is paused): the old
+/// server's fetch task waits forever on the full connection, the request counts as busy, so the pause's timers never
+/// run and the old server answers every upload `503 moving` for as long as that connection stays open, far past the
+/// 60 s quiet limit and the 15 minutes at most.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fetch_the_new_server_stops_reading_does_not_hold_the_pause_for_ever() {
+    use moving::proto::{self, ClaimAnswer, ClaimRequest, FetchRequest, PauseAnswer, StatusAnswer, Want};
+    let old = server();
+    // one big file: more than the channel and the socket buffers hold
+    let big = old.data.join("big.bin");
+    std::fs::write(&big, vec![0u8; 60 << 20]).unwrap();
+    let md = std::fs::metadata(&big).unwrap();
+    let (len, mt) = (md.len(), moving::tree::mtime_us(&md));
+    let o = run_server(&old.data, old.vault.clone(), 0).await;
+    let code = moving::code::MoveCode::parse(&code_of(&old)).unwrap();
+    let (addr, fp) = (Address { host: "127.0.0.1".into(), port: o.addr.port() }, o.fingerprint.clone());
+    let auth = *code.keys().auth;
+    // the claim and the pause, as the new server makes them
+    let session = blocking({
+        let addr = addr.clone();
+        move || {
+            let mut c = Client::any(addr);
+            let (_, exporter) = c.seen().unwrap();
+            let req = ClaimRequest {
+                v: 1,
+                claim: hex::encode([5u8; 16]),
+                app: APP.into(),
+                proof: hex::encode(proto::client_proof(&auth, &exporter)),
+            };
+            let body = serde_json::to_vec(&req).unwrap();
+            let r = c.request("POST", "/api/move/v1/claim", &[("Content-Type", "application/json")], &body).unwrap();
+            assert_eq!(r.status, 200);
+            r.json::<ClaimAnswer>().unwrap().session
+        }
+    })
+    .await;
+    let bearer = format!("Bearer {session}");
+    let (a2, f2, b2) = (addr.clone(), fp.clone(), bearer.clone());
+    let pause: PauseAnswer = blocking(move || {
+        let mut c = Client::pinned(a2, &f2).unwrap();
+        let r = c.request("POST", "/api/move/v1/pause", &[("Authorization", &b2)], b"").unwrap();
+        assert_eq!(r.status, 200);
+        r.json().unwrap()
+    })
+    .await;
+    assert!(!pause.pause.is_empty());
+    // a fetch of the big file whose answer is never read
+    let (a2, f2, b2) = (addr.clone(), fp.clone(), bearer.clone());
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let stalled = std::thread::spawn(move || {
+        let mut c = Client::pinned(a2, &f2).unwrap();
+        let want = Want { p: "big.bin".into(), from: 0, to: len, v: proto::plain_version(len, mt), tail: None };
+        let body = serde_json::to_vec(&FetchRequest { want: vec![want] }).unwrap();
+        let r = c
+            .request(
+                "POST",
+                "/api/move/v1/fetch",
+                &[("Authorization", &b2), ("Content-Type", "application/json")],
+                &body,
+            )
+            .unwrap();
+        assert_eq!(r.status, 200);
+        started_tx.send(()).unwrap();
+        // the new server hangs: the connection stays open, nothing is read
+        std::thread::sleep(Duration::from_secs(90));
+        drop(r);
+    });
+    started_rx.recv().unwrap();
+    // well past the 60 s quiet limit, with the ticker running
+    tokio::time::sleep(moving::old::PAUSE_QUIET + Duration::from_secs(8)).await;
+    let (a2, f2, b2) = (addr.clone(), fp.clone(), bearer.clone());
+    let st: StatusAnswer = blocking(move || {
+        let mut c = Client::pinned(a2, &f2).unwrap();
+        let r = c.request("GET", "/api/move/v1/status", &[("Authorization", &b2)], b"").unwrap();
+        r.json().unwrap()
+    })
+    .await;
+    assert_ne!(
+        st.state, "paused",
+        "the pause still holds the old server's uploads although the new server sent nothing for over a minute"
+    );
+    o.stop();
+    let _ = stalled.join();
+}
