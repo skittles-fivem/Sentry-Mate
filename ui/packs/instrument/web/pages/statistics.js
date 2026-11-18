@@ -19,7 +19,7 @@ import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, metric, csvButton } from '../core/page.js';
 import { dataTable } from '../core/table.js';
-import { emptyState, skel } from '../core/states.js';
+import { emptyState, errorState, skel } from '../core/states.js';
 import { loadUPlot, mountPlot, valueAxis, colors, hexA, chartFont } from '../core/chart.js';
 import { openPeriodPicker } from '../core/period.js';
 import { placePopover } from '../core/popover.js';
@@ -49,6 +49,8 @@ const moneyStack = (list) => stack((list || []).filter((x) => x.amount != null).
 const priceStack = (list) => stack((list || []).filter((x) => x.value != null).map((x) => [format({ amount: x.value, currency: x.currency }, 'price_energy'), x.currency]));
 const perDistStack = (list) => stack((list || []).filter((x) => x.amount != null).map((x) => [format({ amount: x.amount, currency: x.currency }, 'money_per_distance'), x.currency]));
 const moneyCsv = (list) => (list || []).map((x) => `${x.amount ?? x.value} ${x.currency}`).join('; ');
+// money per 100 km or mi: the number in the person's distance unit plus the currency (the unit is in the header)
+const perDistCsv = (list) => (list || []).filter((x) => x.amount != null).map((x) => `${Math.round(convert(x.amount, 'money_per_distance') * 10000) / 10000} ${x.currency}`).join('; ');
 
 // the grouping to use when the address names none: about 30 to 60 rows
 function defaultGroup(period) {
@@ -141,6 +143,7 @@ export async function mount(ctx) {
     });
     pop.addEventListener('toggle', (e) => btn.setAttribute('aria-expanded', String(e.newState === 'open')));
     paint();
+    document.body.append(pop); // a popover must be in the document to open; the cleanup removes it
     pops.push(pop);
     return btn;
   }
@@ -221,7 +224,7 @@ export async function mount(ctx) {
     { key: 'period', label: 'Period', sort: true, firstDir: 'desc', value: (r) => r.period_start_ms, cover: ['statistics.col.period', 'statistics.link.trip'], title: 'Open a period as a trip', render: periodCell, csv: (r) => r.label },
     { key: 'from', label: 'From', csv: (r) => iso(r.period_start_ms), render: null, cls: 'st-hide' },
     { key: 'time', label: 'Driving', num: true, sort: true, value: (r) => r.time_driven_ms, cover: 'statistics.col.time_driven', title: 'Time spent driving (drives that started in the period)',
-      render: (r) => (r.time_driven_ms ? formatDuration(r.time_driven_ms) : h('span', { class: 'faint' }, '—')), csv: (r) => (r.time_driven_ms == null ? null : Math.round(r.time_driven_ms / 60000)) },
+      render: (r) => (r.time_driven_ms ? formatDuration(r.time_driven_ms) : h('span', { class: 'faint' }, '—')), csv: { label: 'Driving (min)', value: (r) => (r.time_driven_ms == null ? null : Math.round(r.time_driven_ms / 60000)) } },
     { key: 'drives', label: 'Drives', num: true, sort: true, value: (r) => r.drives, cover: ['statistics.col.drives_count', 'statistics.link.drives'], title: 'Drives that started in the period; opens them on Drives',
       render: (r) => countLink(r.drives, 'drives', r, 'drives', 'statistics.link.drives'), csv: (r) => r.drives },
     { key: 'distance', label: 'Distance', num: true, sort: true, value: (r) => r.distance_odometer_km ?? r.distance_logged_km, cover: 'statistics.col.distance', title: 'By odometer, then the distance of the logged drives',
@@ -231,35 +234,35 @@ export async function mount(ctx) {
     { key: 'temp', label: 'Outside', num: true, sort: true, value: (r) => r.outside_avg_c, cover: 'statistics.col.avg_temp', title: 'Average outside temperature while driving, weighted by driving time',
       render: (r) => twoLine(format(r.outside_avg_c, 'temperature'), r.outside_avg_c != null ? 'while driving' : 'no drive'), csv: column('Outside while driving', 'outside_avg_c', 'temperature') },
     { key: 'eff', label: 'Efficiency', num: true, sort: true, value: (r) => r.driving_efficiency_pct, cover: 'statistics.col.driving_efficiency', title: 'The car’s rated consumption over the consumption measured while driving: above 100 % is better than rated',
-      render: (r) => (r.driving_efficiency_pct != null ? h('span', { class: ['st-eff', r.driving_efficiency_pct >= 100 && 'is-good'] }, pctText(r.driving_efficiency_pct, 0)) : h('span', { class: 'faint' }, '—')), csv: (r) => r.driving_efficiency_pct },
+      render: (r) => (r.driving_efficiency_pct != null ? h('span', { class: ['st-eff', r.driving_efficiency_pct >= 100 && 'is-good'] }, pctText(r.driving_efficiency_pct, 0)) : h('span', { class: 'faint' }, '—')), csv: { label: 'Efficiency (%)', value: (r) => r.driving_efficiency_pct } },
     { key: 'used', label: 'Energy used', num: true, sort: true, value: (r) => r.energy_used_kwh, cover: 'statistics.col.energy_used', title: 'Drawn from the pack while driving, then while parked (climate, Sentry, the car awake)',
       render: (r) => twoLine(format(r.energy_used_kwh, 'energy'), r.energy_standing_kwh != null ? `parked ${format(r.energy_standing_kwh, 'energy')}` : null),
       csv: column('Energy used driving', 'energy_used_kwh', 'energy') },
     { key: 'standing', label: 'Energy parked', csv: column('Energy used parked', 'energy_standing_kwh', 'energy'), cls: 'st-hide', render: null },
     { key: 'added', label: 'Energy added', num: true, sort: true, value: (r) => r.energy_added_kwh, cover: 'statistics.link.charging_stats', title: 'Into the pack by charging, then what AC charging took from the grid; opens the charging habits of the period',
       render: (r) => h('span', { class: 'cell-text cell-num' },
-        r.charges ? h('a', { class: 'main', href: linkFor('charges', r), cover: 'statistics.link.charging_stats', title: 'Charging habits and costs of this period' }, format(r.energy_added_kwh, 'energy')) : h('span', { class: 'main faint' }, format(r.energy_added_kwh, 'energy')),
+        r.charges ? h('a', { class: 'main', href: `${linkFor('charges', r)}#habits`, cover: 'statistics.link.charging_stats', title: 'Charging habits and costs of this period' }, format(r.energy_added_kwh, 'energy')) : h('span', { class: 'main faint' }, format(r.energy_added_kwh, 'energy')),
         r.energy_grid_kwh ? h('span', { class: 'sub' }, `grid ${format(r.energy_grid_kwh, 'energy')}`) : null),
       csv: column('Energy added', 'energy_added_kwh', 'energy') },
     { key: 'grid', label: 'Energy from grid', csv: column('Energy from grid (AC)', 'energy_grid_kwh', 'energy'), cls: 'st-hide', render: null },
     { key: 'charges', label: 'Charges', num: true, sort: true, value: (r) => r.charges, cover: ['statistics.col.charges_count', 'statistics.link.charges'], title: 'Charges that started in the period; opens them on Charges',
-      render: (r) => countLink(r.charges, 'charges', r, 'charges', 'statistics.link.charges'), csv: (r) => r.charges },
+      render: (r) => countLink(r.charges, 'charges', r, 'charges', 'statistics.link.charges'), csv: { label: 'Charges', value: (r) => r.charges } },
     { key: 'per_charge', label: 'Per charge', num: true, sort: true, value: (r) => r.energy_per_charge_kwh, cover: 'statistics.col.avg_energy_per_charge', title: 'Energy added per charge, on average',
       render: (r) => format(r.energy_per_charge_kwh, 'energy'), csv: column('Energy per charge', 'energy_per_charge_kwh', 'energy') },
     { key: 'cost', label: 'Cost', num: true, sort: true, value: (r) => r.cost_by_currency?.[0]?.amount ?? null, cover: 'statistics.col.costs', title: 'Charging costs, summed per currency (never added across currencies)',
-      render: (r) => moneyStack(r.cost_by_currency) || h('span', { class: 'faint' }, r.charges ? 'no price' : '—'), csv: (r) => moneyCsv(r.cost_by_currency) },
+      render: (r) => moneyStack(r.cost_by_currency) || h('span', { class: 'faint' }, r.charges ? 'no price' : '—'), csv: { label: 'Charging cost (amount and currency)', value: (r) => moneyCsv(r.cost_by_currency) } },
     { key: 'ppk', label: 'Per kWh', num: true, cover: 'statistics.col.cost_per_kwh', title: 'Cost over the energy it paid for: grid energy for AC, energy added for DC',
-      render: (r) => priceStack(r.price_per_kwh) || h('span', { class: 'faint' }, '—'), csv: (r) => moneyCsv(r.price_per_kwh) },
+      render: (r) => priceStack(r.price_per_kwh) || h('span', { class: 'faint' }, '—'), csv: { label: 'Price per kWh (amount and currency)', value: (r) => moneyCsv(r.price_per_kwh) } },
     { key: 'p100', label: `Per 100 ${unitLabel('distance')}`, num: true, cover: 'statistics.col.cost_per_distance', title: 'Charging cost over the logged distance',
-      render: (r) => perDistStack(r.cost_per_100km) || h('span', { class: 'faint' }, '—'), csv: (r) => (r.cost_per_100km || []).map((x) => `${format({ amount: x.amount, currency: x.currency }, 'money_per_distance')}`).join('; ') },
+      render: (r) => perDistStack(r.cost_per_100km) || h('span', { class: 'faint' }, '—'), csv: { label: `Cost per 100 ${unitLabel('distance')} (amount and currency)`, value: (r) => perDistCsv(r.cost_per_100km) } },
     { key: 'net', label: 'Net', num: true, sort: true, value: (r) => r.net_wh_per_km, cover: 'statistics.col.consumption_net', title: 'Net consumption: energy used while driving over the logged distance',
       render: (r) => format(r.net_wh_per_km, 'efficiency'), csv: column('Net consumption', 'net_wh_per_km', 'efficiency') },
     { key: 'gross', label: 'Gross', num: true, sort: true, value: (r) => r.gross_wh_per_km, cover: 'statistics.col.consumption_gross', title: 'Gross consumption: driving plus parked use, over the logged distance. Exact from the pack’s counters.',
       render: (r) => format(r.gross_wh_per_km, 'efficiency'), csv: column('Gross consumption', 'gross_wh_per_km', 'efficiency') },
     { key: 'overhead', label: 'Overhead', num: true, sort: true, value: (r) => r.overhead_pct, cover: 'statistics.col.consumption_overhead', title: 'How much parked use added on top of driving: gross over net, minus one',
-      render: (r) => twoLine(r.overhead_pct != null ? pctText(r.overhead_pct, 0) : '—', r.overhead_pct != null ? 'parked on top' : null), csv: (r) => r.overhead_pct },
+      render: (r) => twoLine(r.overhead_pct != null ? pctText(r.overhead_pct, 0) : '—', r.overhead_pct != null ? 'parked on top' : null), csv: { label: 'Overhead (%)', value: (r) => r.overhead_pct } },
     { key: 'data', label: 'Data', sort: true, value: (r) => r.completeness?.recorded_pct, cover: 'statistics.col.data_complete', title: 'How complete the logs are for this period',
-      render: completeCell, csv: (r) => r.completeness?.recorded_pct },
+      render: completeCell, csv: { label: 'Data recorded (%)', value: (r) => r.completeness?.recorded_pct } },
     { key: 'unknown', label: 'Unknown time (min)', cls: 'st-hide', render: null, csv: (r) => (r.completeness?.unknown_ms == null ? null : Math.round(r.completeness.unknown_ms / 60000)) },
     { key: 'dropped', label: 'Dropped stretches', cls: 'st-hide', render: null, csv: (r) => r.completeness?.dropped_stretches },
     { key: 'open', label: 'Open drive or charge', cls: 'st-hide', render: null, csv: (r) => [r.completeness?.open_drive && 'drive', r.completeness?.open_charge && 'charge'].filter(Boolean).join(' ') },
@@ -281,7 +284,12 @@ export async function mount(ctx) {
     } catch (e) {
       if (my !== gen || !ctx.alive()) return;
       if (my === 1) { ctx.fail(e, { retry: () => ctx.reload() }); return; }
-      replace(totalsSlot, panel({ title: 'Totals for the period', icon: 'stats' }, h('p', { class: 'note warn' }, `The statistics could not be loaded: ${e.message}`)));
+      // one error with a retry for the whole page: no rows of the old grouping stay under the new one
+      table = null;
+      replace(totalsSlot, panel({ title: 'Statistics', icon: 'stats' },
+        errorState(e, { retry: () => load(), home: false }),
+        h('p', { class: 'note st-fail-note' }, `The statistics per ${GROUP_NAME[group]} could not be loaded, so the totals, the table, the odometer and the milestones are not shown until they load.`)));
+      replace(tableSlot); replace(mileSlot); replace(milestonesSlot);
       return;
     }
     if (my !== gen || !ctx.alive()) return;
@@ -341,6 +349,7 @@ export async function mount(ctx) {
         if (amt && p.value) basis.set(p.currency, (basis.get(p.currency) || 0) + amt / p.value);
       }
     }
+    const tagCur = cost.size > 1 || basis.size > 1;
     const costList = [...cost].map(([currency, amount]) => ({ currency, amount: Math.round(amount * 100) / 100 }));
     const net = logged > 0.1 ? (used / logged) * 1000 : null;
     const gross = logged > 0.1 ? ((used + standing) / logged) * 1000 : null;
@@ -364,7 +373,7 @@ export async function mount(ctx) {
         metric('Gross consumption', gross, 'efficiency', { why: 'Not enough distance', explain: net && gross ? `with parked use: ${pctText(((gross - net) / net) * 100, 0)} on top of driving` : 'driving and parked energy over the logged distance' }),
         metric('Outside while driving', tMs ? tW / tMs : null, 'temperature', { why: 'No drive', explain: 'average, weighted by driving time' }),
         metric('Charging cost', costList.length ? moneyStack(costList) : null, null, { why: charges ? 'No charge has a price' : 'No charge', explain: costList.length
-          ? `per currency, never added across${[...basis].length ? `; ${[...basis].map(([c, b]) => format({ amount: cost.get(c) / b, currency: c }, 'price_energy')).join(', ')} on average` : ''}` : 'per currency' }),
+          ? `per currency, never added across${[...basis].length ? `; ${[...basis].map(([c, b]) => `${format({ amount: cost.get(c) / b, currency: c }, 'price_energy')}${tagCur ? ` ${c}` : ''}`).join(', ')} on average` : ''}` : 'per currency' }),
         metric('Data recorded', span ? (rec / span) * 100 : null, 'percent', { digits: 1, why: 'No data in this period', explain: [unknown ? `${formatDuration(unknown)} unknown` : 'no unknown time', dropped ? `${formatNumber(dropped)} dropped ${dropped === 1 ? 'stretch' : 'stretches'}` : null, open ? `${formatNumber(open)} still open` : null, imported ? `${formatNumber(imported)} imported rows (estimated energy)` : null].filter(Boolean).join(' · ') }))));
   }
 
@@ -399,6 +408,19 @@ export async function mount(ctx) {
   async function paintMileage(mileage) {
     const axis = axisOf(mileage);
     const cars = viewCars.filter((cid) => mileage.get(cid)?.items?.length);
+    const failedCars = viewCars.filter((cid) => mileage.get(cid) == null);
+    const retryMileage = async () => {
+      const my = gen;
+      replace(mileSlot, panel({ title: 'Odometer and mileage', icon: 'odo' }, h('div', { class: 'st-chart-skel' }, skel('block'))));
+      const m = await loadMileage();
+      if (my !== gen || !ctx.alive()) return;
+      await paintMileage(m);
+    };
+    const failNote = failedCars.length && axis.length
+      ? h('div', { class: 'note warn st-mile-fail', role: 'alert' }, icon('warn', 'ico--sm'),
+        h('span', null, `The odometer of ${failedCars.map(carName).join(', ')} could not be loaded, so ${failedCars.length === 1 ? 'it is' : 'they are'} missing from the charts. `),
+        h('button', { class: 'btn btn--sm', type: 'button', onclick: retryMileage }, icon('reset', 'ico--sm'), 'Try again'))
+      : null;
     const perCar = viewCars.map((cid) => {
       const m = mileage.get(cid);
       const items = m?.items || [];
@@ -457,11 +479,14 @@ export async function mount(ctx) {
             csvButton({ onClick: odoCsv })),
           distBox, readDist)),
       h('p', { class: 'note' }, `The odometer is read at the end of each ${GROUP_NAME[mileGroup()]}; the line breaks where there was no reading. Not-logged distance is driven while nothing was recorded (no log, a log that failed its check).${groupNote}`),
-    ] : [emptyState({ icon: 'odo', title: 'No odometer readings', text: `${scopeName} has no odometer reading in ${period.label.toLowerCase()}. Pick a longer period.` })];
+    ] : failedCars.length ? [h('div', { role: 'alert' }, emptyState({ icon: 'warn', warn: true, title: 'The odometer could not be loaded',
+      text: `The mileage of ${failedCars.map(carName).join(', ')} could not be loaded from the server, so there is nothing to show yet. The readings are not missing: try again.`,
+      action: h('button', { class: 'btn', type: 'button', onclick: retryMileage }, icon('reset'), 'Try again') }))]
+      : [emptyState({ icon: 'odo', title: 'No odometer readings', text: `${scopeName} has no odometer reading in ${period.label.toLowerCase()}. Pick a longer period.` })];
     replace(mileSlot, h('section', { class: 'panel panel-pad st-mileage', 'aria-label': 'Odometer and mileage', cover: 'mi.chart.odometer' },
       h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('odo'), 'Odometer and mileage'),
         h('span', { class: 'faint st-side' }, multi ? 'one line per car' : carName(viewCars[0]))),
-      body), perCarTable.el);
+      failNote, body), perCarTable.el);
     if (!axis.length) return;
 
     await loadUPlot();

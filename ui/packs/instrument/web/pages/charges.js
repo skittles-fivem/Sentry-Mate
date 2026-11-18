@@ -358,7 +358,7 @@ export async function mount(ctx) {
   const scopeLine = h('p', { class: 'stats-scope note' });
   const totalsPanel = h('section', { class: 'panel panel-pad', 'aria-label': 'Costs and totals' });
   const splitPanel = h('section', { class: 'panel panel-pad split-panel', 'aria-label': 'AC and DC split' });
-  const habitsPanel = h('section', { class: 'panel panel-pad habits', 'aria-label': 'Charging habits' });
+  const habitsPanel = h('section', { class: 'panel panel-pad habits', id: 'habits', 'aria-label': 'Charging habits' });
   const placesPanel = h('section', { class: 'panel panel-pad places-panel', 'aria-label': 'Charging places' });
   const curvePanel = h('section', { class: 'panel panel-pad curve-panel', 'aria-label': 'Fast-charging curve' });
   const head = (ic, title, ...side) => h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon(ic), title), h('span', { class: 'panel-side' }, side));

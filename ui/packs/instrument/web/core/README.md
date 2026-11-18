@@ -93,6 +93,7 @@ page that was left cannot change the address any more (`ctx.setQuery` does nothi
 | `link(page, params)` | A link that carries the car and period (`state.linkTo`). |
 | `setQuery(patch)` | Puts filters in the address (`null` removes one) without rebuilding the page. |
 | `navigate(href)`, `reload()` | Go somewhere; build this page again (keeps the scroll). |
+| `#id` in a link | After the page mounts, the router scrolls to the element with that id in the view (below the top bar): `/cars/c1/charges?…#habits`. Give a section an `id` for links to land on it. |
 
 Live data: `ctx.events('now', (ev) => ...)` gets `now` deltas (`ev.data = { car, now }`, merge field by field);
 `ctx.events('rows', ...)` fires when a drive, charge, parked spell or gap starts or ends (reload the page's lists).

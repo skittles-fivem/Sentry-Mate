@@ -89,3 +89,5 @@
   .st-totals .metric--lg { grid-column: auto; }
   .st-pick-pop { width: min(21rem, calc(100vw - 2rem)); }
 }
+.st-mileage .st-mile-fail { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 0 0 0.75rem; }
+.st-fail-note { text-align: center; margin: 0 0 0.5rem; }
