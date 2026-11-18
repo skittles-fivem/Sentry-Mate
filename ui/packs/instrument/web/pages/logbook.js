@@ -15,20 +15,22 @@ import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, metric, figures } from '../core/page.js';
 import { dataTable } from '../core/table.js';
-import { emptyState } from '../core/states.js';
+import { emptyState, skel } from '../core/states.js';
 import { openPeriodPicker } from '../core/period.js';
 import { openCarSwitcher } from '../core/carswitch.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { field, form, showApiError } from '../core/form.js';
 import { flash } from '../core/flash.js';
 import { isAdmin } from '../core/prefs.js';
-import { q, qt, DASH } from '../core/fmt.js';
+import { q, qt, unit, DASH } from '../core/fmt.js';
 
 export const id = 'logbook';
 export const css = true;
 
 const enc = encodeURIComponent;
 const GAP_KM = 0.05; // below 50 m the odometer and the logged start agree (rounding, a car moved in a car park)
+// The threshold in the chosen unit: 50 m, or about 160 ft with miles.
+const gapWords = () => (unit('distance') === 'mi' ? 'about 160 ft' : '50 m');
 
 const PURPOSES = {
   business: { label: 'Business', text: 'Work trips you can claim: customer visits, errands for an employer.' },
@@ -61,12 +63,12 @@ export async function mount(ctx) {
   /* ---------- head: the car, the period and the exports */
   const pdfLink = h('a', {
     class: 'btn', href: ctx.api.url(path, { ...ctx.params, format: 'pdf' }), download: `logbook-${cid}.pdf`,
-    title: 'A plain landscape table for a tax office: times in the car’s zone, the warnings about missing kilometres and the totals per purpose.',
+    title: 'A plain landscape table for a tax office: times in the car’s zone, the warnings about missing distance and the totals per purpose.',
   }, icon('download', 'ico--sm'), 'Download PDF');
   const head = pageHead({
     eyebrow: car.name, title: 'Logbook',
     sub: [period.label, `times in ${tz.replace(/_/g, ' ')}`, 'distances by odometer'],
-    purpose: 'Every drive of the period with its odometer readings, addresses and purpose, numbered for a tax or expense claim. The continuity check shows where kilometres were driven without a log, so the rows add up to the odometer.',
+    purpose: 'Every drive of the period with its odometer readings, addresses and purpose, numbered for a tax or expense claim. The continuity check shows where distance was driven without a log, so the rows add up to the odometer.',
     actions: [pdfLink],
   });
 
@@ -155,14 +157,14 @@ export async function mount(ctx) {
         metric('In the logbook', logged, 'distance', { digits: 1, explain: 'The sum of the drives’ distances (each end odometer minus its start).' }),
         metric('Not logged', missing, 'distance', {
           digits: 1, cls: gaps.length ? 'is-warn' : 'is-ok',
-          explain: gaps.length ? `${formatNumber(gaps.length)} ${gaps.length === 1 ? 'place' : 'places'} where the odometer moved between two drives with no log (more than 50 m).` : 'Every drive starts where the one before ended: the rows add up to the odometer.',
+          explain: gaps.length ? `${formatNumber(gaps.length)} ${gaps.length === 1 ? 'place' : 'places'} where the odometer moved between two drives with no log (more than ${gapWords()}).` : 'Every drive starts where the one before ended: the rows add up to the odometer.',
         }),
       ]),
       worst.length ? h('ul', { class: 'lb-gaps', 'aria-label': 'The largest missing stretches' }, worst.map((r) => h('li', null,
         icon('warn', 'ico--sm'),
         h('span', null, q(r.continuity_gap_km, 'distance', { digits: 1 }), ` before drive ${formatNumber(r.seq)}, ${formatDate(r.start_ms, tz, { year: true })}`),
         h('a', { class: 'panel-link', href: gapHref(r), title: 'What the timeline knows about this stretch' }, 'Timeline', icon('chev-r', 'ico--sm'))))) : null,
-      h('p', { class: 'note' }, 'Missing kilometres come from time without a log: the recorder was off, or the car drove before it was installed. They are flagged, never filled in, so the logbook stays truthful.'));
+      h('p', { class: 'note' }, 'Missing distance comes from time without a log: the recorder was off, or the car drove before it was installed. They are flagged, never filled in, so the logbook stays truthful.'));
   }
 
   /* ---------- the logbook table */
@@ -231,7 +233,7 @@ export async function mount(ctx) {
       render: purposeCell, csv: false,
     },
     {
-      key: 'continuity_gap_km', label: 'Continuity', num: true, sort: true, title: 'The continuity check: kilometres the odometer moved since the drive before, with no log. Opens the timeline at that time.',
+      key: 'continuity_gap_km', label: 'Continuity', num: true, sort: true, title: 'The continuity check: distance the odometer moved since the drive before, with no log. Opens the timeline at that time.',
       render: continuityCell, csv: false,
     },
   ];
@@ -248,19 +250,25 @@ export async function mount(ctx) {
     column('Not logged before', 'continuity_gap_km', 'distance', { digits: 3 }),
   ];
 
+  // Preset names read as words in a sentence ("in this year"); a custom range keeps its own capitals.
+  const periodWords = () => (period.preset && period.preset !== 'custom'
+    ? `in ${period.label.toLowerCase()}`
+    : `in this period (${period.label})`);
   const shownRows = () => (data?.rows || []).filter((r) => filter === 'all' || (r.purpose || 'none') === filter);
   const table = dataTable(ctx, {
     title: 'Drives', icon: 'route', rows: [], cls: 'lb-table', cover: 'dt.table', csvName: 'logbook',
     columns, sort: { key: 'seq', dir: 'asc' },
     csv: { columns: csvColumns },
     rowHref: (r) => state.buildUrl('drive', { car: cid, drive: r.drive }),
-    note: 'Oldest first, as a logbook is kept. Each row opens its drive; a place opens it in Places; a warning in the last column opens the timeline where kilometres went unlogged.',
-    empty: () => (data?.rows?.length
+    note: 'Oldest first, as a logbook is kept. Each row opens its drive; a place opens it in Places; a warning in the last column opens the timeline where distance went unlogged.',
+    empty: () => (data == null
+      ? h('div', { class: 'lb-loading', 'aria-busy': 'true', 'aria-label': 'Loading the drives' }, skel('text'), skel('text'), skel('text'))
+      : data.rows?.length
       ? emptyState({ icon: 'book', title: filter === 'none' ? 'Every drive has a purpose' : `No ${PURPOSES[filter].label.toLowerCase()} drives`, text: filter === 'none' ? `All ${formatNumber(data.rows.length)} drives of this period have a purpose. Choose All to see them.` : `None of the ${formatNumber(data.rows.length)} drives of this period is ${PURPOSES[filter].label.toLowerCase()}. Choose All to see them.` })
       : emptyState({
         icon: 'book', title: 'No drives in this period',
         text: period.preset === 'all' ? `Nothing has been recorded for ${car.name} yet. Drives show here once the car drives while recording, or after a TeslaMate import.`
-          : `${car.name} did not start a drive in ${period.label.toLowerCase()}. Choose another year or All time with the period button.`,
+          : `${car.name} did not start a drive ${periodWords()}. Choose another year or All time with the period button.`,
       })),
   });
 
@@ -315,9 +323,10 @@ export async function mount(ctx) {
     paintRules();
   }
 
-  replace(ctx.view, root);
   root.append(head, filters, h('div', { class: 'lb-summary' }, exportPanel, contPanel), table.el, rulesPanel);
 
+  // Fetch first: the router's loading skeleton stays up until the answer is in, so the page never
+  // claims "no drives" or "0 rows" while the request is still in flight.
   try {
     await Promise.all([loadLogbook(), loadRules()]);
   } catch (err) {
@@ -325,6 +334,7 @@ export async function mount(ctx) {
     return;
   }
   if (!ctx.alive()) return;
+  replace(ctx.view, root);
 
   /* ---------- editing (admin) */
   async function editPurpose(r) {

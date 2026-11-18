@@ -90,3 +90,6 @@
 .lb-table .tbl th, .lb-table .tbl td { padding-left: 0.625rem; padding-right: 0.625rem; }
 .lb-table .tbl th:first-child, .lb-table .tbl td:first-child { padding-left: 1.25rem; }
 .lb-table .tbl th:last-child, .lb-table .tbl td:last-child { padding-right: 1.25rem; }
+
+/* the table while a reload is in flight (the first load keeps the router skeleton up) */
+.lb-loading { display: grid; gap: 0.75rem; padding: 1.25rem; }
