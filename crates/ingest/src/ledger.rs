@@ -10,6 +10,8 @@
 //!                                 [Change, ...]
 //! <can>/<key>/trust.json          the format before this one (one sealed book, rewritten whole on every upload):
 //!                                 read once and moved into the files above
+//! <can>/<key>/trust.lock          empty: held (flock) by whoever reads or changes the files above, so the server and
+//!                                 an owner's command (`keys trust`) take turns
 //! <can>/.waiting/<key>            an empty file for each key with logs waiting for their sidecar, so the sweep
 //!                                 looks only at those keys (it names a car key, as the folder names do)
 //! ```
@@ -22,15 +24,19 @@
 //! is judged again). Changes that only make sense together (a new pin with every log judged again by it) don't go
 //! through the journal: they are folded straight into the next generation, all or nothing.
 //!
+//! Two processes can use a key's files: the server, and a command the owner runs next to it. Each takes the key's lock
+//! file first, and the head a process keeps in memory carries a stamp of the files ([`Stamp`]): when another process
+//! changed them since, the head is read again before it is used.
+//!
 //! When the journal is long it is folded into the next generation: `trust-<g+1>.records` is written (the old records
 //! merged with the journal, streamed in name order, so a key's history is never all in memory), then the head naming
 //! `g+1` (written whole or not at all: a temporary file renamed over it), then generation g's files are removed. A
 //! crash at any moment leaves either the old generation or the new one in force, never a mix.
 
-use crate::judge::{Book, Pin, Record, Status};
+use crate::judge::{Book, Former, Pin, Record, Status};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -44,6 +50,8 @@ pub(crate) const WAITING_DIR: &str = ".waiting";
 const WAITING_READY: &str = ".ready";
 /// A journal batch is at most one sealed record.
 const BATCH_LIMIT: usize = vault::stream::CHUNK;
+/// The file a process holds (flock) while it reads or changes a key's trust files.
+pub(crate) const LOCK_FILE: &str = "trust.lock";
 
 fn other(e: impl std::fmt::Display) -> io::Error {
     io::Error::other(e.to_string())
@@ -58,10 +66,37 @@ pub(crate) fn valid_key(key: &str) -> bool {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "t", rename_all = "kebab-case")]
 pub(crate) enum Change {
-    Log { name: String, record: Record },
-    Pin { pin: Option<Pin> },
-    NewKey { fingerprint: Option<String> },
-    Rules { v: u32 },
+    Log {
+        name: String,
+        record: Record,
+    },
+    Pin {
+        pin: Option<Pin>,
+    },
+    NewKey {
+        fingerprint: Option<String>,
+    },
+    Rules {
+        v: u32,
+    },
+    /// The keys trusted before the pin, each until the owner trusted another one.
+    Former {
+        former: Vec<Former>,
+    },
+}
+
+/// What a key's files were when a process last read or wrote them: the head file's size and first bytes (a sealed
+/// file starts with a random id, new on every write) and the journal's size and time. Another process that changed the
+/// files changed this too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Stamp {
+    head: Option<(u64, Vec<u8>)>,
+    journal: Option<(u64, Option<std::time::SystemTime>)>,
+}
+
+/// A key's lock file, held until dropped.
+pub(crate) struct Locked {
+    _file: Option<File>,
 }
 
 /// A key's trust state without its per-log records: all an upload needs, small, so this is what stays in memory.
@@ -71,6 +106,7 @@ pub(crate) struct Head {
     pub v: u32,
     pub pin: Option<Pin>,
     pub new_key: Option<String>,
+    pub former: Vec<Former>,
     /// Logs waiting for their sidecar, and when each arrived.
     pub waiting: BTreeMap<String, u64>,
     /// Logs the owner said to use anyway.
@@ -82,6 +118,8 @@ pub(crate) struct Head {
     pub damaged: bool,
     /// This process made sure the key's waiting marker is there.
     pub marked: bool,
+    /// The files as this head was read or last written (`None`: not known, read the head again).
+    pub stamp: Option<Stamp>,
 }
 
 impl Head {
@@ -91,11 +129,13 @@ impl Head {
             v: trust::RULES_VERSION,
             pin: None,
             new_key: None,
+            former: Vec::new(),
             waiting: BTreeMap::new(),
             overrides: BTreeSet::new(),
             journal_len: 0,
             damaged: false,
             marked: false,
+            stamp: None,
         }
     }
 
@@ -116,6 +156,7 @@ impl Head {
             Change::Pin { pin } => self.pin = pin.clone(),
             Change::NewKey { fingerprint } => self.new_key = fingerprint.clone(),
             Change::Rules { v } => self.v = *v,
+            Change::Former { former } => self.former = former.clone(),
         }
     }
 }
@@ -127,6 +168,8 @@ struct HeadFile {
     v: u32,
     pin: Option<Pin>,
     new_key: Option<String>,
+    #[serde(default)]
+    former: Vec<Former>,
     #[serde(default)]
     waiting: BTreeMap<String, u64>,
     #[serde(default)]
@@ -267,6 +310,57 @@ impl Ledger {
         self.file("trust.json")
     }
 
+    /// Takes the key's lock file, waiting while another process holds it. Made when it isn't there. None is needed
+    /// for a key with no folder (no logs: nothing to change), or for one that can't be written (a read-only copy of the
+    /// data) without a lock file.
+    pub(crate) fn lock(&self) -> io::Result<Locked> {
+        let dir = self.can.join(&self.key);
+        let path = dir.join(LOCK_FILE);
+        let mut o = std::fs::OpenOptions::new();
+        o.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        let f = match o.open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound && !dir.exists() => return Ok(Locked { _file: None }),
+            Err(e) if matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem) => {
+                match File::open(&path) {
+                    Ok(f) => f,
+                    Err(n) if n.kind() == io::ErrorKind::NotFound => return Ok(Locked { _file: None }),
+                    Err(_) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
+        loop {
+            match rustix::fs::flock(&f, rustix::fs::FlockOperation::LockExclusive) {
+                Ok(()) => return Ok(Locked { _file: Some(f) }),
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+
+    /// The files as they are now (the head of `generation` was read or written last).
+    pub(crate) fn stamp(&self, generation: u64) -> io::Result<Stamp> {
+        let head = match File::open(self.head_file().0) {
+            Ok(f) => {
+                let len = f.metadata()?.len();
+                let mut first = Vec::with_capacity(vault::stream::HEADER);
+                f.take(vault::stream::HEADER as u64).read_to_end(&mut first)?;
+                Some((len, first))
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        let journal = match std::fs::metadata(self.journal_file(generation).0) {
+            Ok(m) => Some((m.len(), m.modified().ok())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        Ok(Stamp { head, journal })
+    }
+
     /// The key's head: from its head file (or the format before, moved over now), plus its journal.
     pub(crate) fn load_head(&self) -> io::Result<Head> {
         let (path, label) = self.head_file();
@@ -288,6 +382,7 @@ impl Ledger {
                     v: f.v,
                     pin: f.pin,
                     new_key: f.new_key,
+                    former: f.former,
                     waiting: f.waiting,
                     overrides: f.overrides,
                     ..Head::new()
@@ -314,8 +409,14 @@ impl Ledger {
             return Ok(None);
         };
         let book: Book = serde_json::from_slice(&bytes).map_err(other)?;
-        let mut head =
-            Head { generation: 1, v: book.v, pin: book.pin.clone(), new_key: book.new_key.clone(), ..Head::new() };
+        let mut head = Head {
+            generation: 1,
+            v: book.v,
+            pin: book.pin.clone(),
+            new_key: book.new_key.clone(),
+            former: book.former.clone(),
+            ..Head::new()
+        };
         for (name, r) in &book.logs {
             head.apply(&Change::Log { name: name.clone(), record: r.clone() });
         }
@@ -343,6 +444,7 @@ impl Ledger {
             v: head.v,
             pin: head.pin.clone(),
             new_key: head.new_key.clone(),
+            former: head.former.clone(),
             waiting: head.waiting.clone(),
             overrides: head.overrides.clone(),
         };

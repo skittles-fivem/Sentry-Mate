@@ -3,7 +3,7 @@
 //! owner trusting another key. All keys and logs here are made up for the test.
 
 use base64::Engine;
-use ingest::judge::{Book, Pin, Record, Status};
+use ingest::judge::{Book, Pin, Record, Status, Trusted};
 use ingest::{Judge, Store};
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
 use p256::pkcs8::EncodePublicKey;
@@ -141,7 +141,8 @@ async fn the_journal_is_folded_into_generations_and_the_chain_reads_across_them(
 
     for judge in [judge, Judge::new(t.store.clone())] {
         let chain = judge.chain(KEY).await;
-        assert_eq!((chain.count, chain.issues.len()), (12, 0), "{chain:?}");
+        assert_eq!((chain.report.count, chain.report.issues.len()), (12, 0), "{chain:?}");
+        assert_eq!(chain.signing_key, Some(fp(&key)));
         let book = judge.book(KEY).await;
         assert_eq!(book.logs.len(), 12);
         assert_eq!(book.pin.unwrap().fingerprint, fp(&key));
@@ -152,7 +153,7 @@ async fn the_journal_is_folded_into_generations_and_the_chain_reads_across_them(
 }
 
 #[tokio::test]
-async fn the_owner_trusts_another_key_and_every_log_is_judged_again() {
+async fn the_owner_trusts_another_key_and_the_old_keys_logs_stay_verified() {
     let t = setup();
     let judge = Judge::new(t.store.clone()).compact_after(3);
     let first = SigningKey::random(&mut rand_core::OsRng);
@@ -162,7 +163,7 @@ async fn the_owner_trusts_another_key_and_every_log_is_judged_again() {
         arrive(&t, &judge, name, log).await;
         arrive(&t, &judge, &format!("{name}.json"), side).await;
     }
-    // a reinstalled bridge: a new key signs from here on
+    // the Screenmate's keystore made a new key: it signs from here on
     let mut b = chain_of(&second, 5);
     b.drain(..2);
     for (name, log, side) in &b {
@@ -171,18 +172,56 @@ async fn the_owner_trusts_another_key_and_every_log_is_judged_again() {
         assert_eq!((r.status, r.reason.as_deref()), (Status::Failed, Some("signed by another key")));
     }
     assert_eq!(judge.summary(KEY).await.unwrap().new_key, Some(fp(&second)));
-    judge.trust_key(KEY, &fp(&second)).await.unwrap();
+    let signers = judge.signers(KEY).await.unwrap();
+    let mut seen: Vec<_> = signers.keys.iter().map(|k| (k.fingerprint.clone(), k.signed, k.failed)).collect();
+    let mut want = vec![(fp(&first), 2, 0), (fp(&second), 3, 0)];
+    seen.sort();
+    want.sort();
+    assert_eq!(seen, want);
+    assert!(signers.keys.iter().all(|k| k.first_seen_ms <= k.last_seen_ms && k.first_seen_ms > 0));
+    assert_eq!(signers.pin.unwrap().fingerprint, fp(&first));
+
+    // only a key that signed some of the car key's logs can be trusted; the one trusted already is said so
+    let stranger = SigningKey::random(&mut rand_core::OsRng);
+    assert_eq!(judge.trust_key(KEY, &fp(&stranger)).await.unwrap(), Trusted::NotSeen);
+    assert_eq!(judge.trust_key(KEY, &fp(&first).to_uppercase()).await.unwrap(), Trusted::Already);
+    // typed without colons, in capitals: the key as the logs name it is kept
+    let typed = fp(&second).replace(':', "").to_uppercase();
+    let done = judge.trust_key(KEY, &typed).await.unwrap();
+    assert_eq!(done, Trusted::Now { fingerprint: fp(&second), verified: 3, before: Some(fp(&first)) });
     let book = Judge::new(t.store.clone()).book(KEY).await;
     assert_eq!(book.pin.as_ref().map(|p| (p.fingerprint.clone(), p.how.clone())), Some((fp(&second), "owner".into())));
-    assert_eq!(book.new_key, Some(fp(&first)), "the old key is now the other one, offered as the earlier code did");
-    for (name, ..) in &a {
-        assert_eq!(book.logs[name].status, Status::Failed, "{name}");
-    }
-    for (name, ..) in &b {
+    assert_eq!(book.new_key, None);
+    assert_eq!(book.former.iter().map(|f| f.fingerprint.clone()).collect::<Vec<_>>(), [fp(&first)]);
+    for (name, ..) in a.iter().chain(&b) {
         assert_eq!(book.logs[name].status, Status::Verified, "{name}");
     }
-    assert_eq!(judge.rejudge_all(KEY).await.unwrap(), 5);
+    let chain = judge.chain(KEY).await;
+    assert_eq!((chain.signing_key, chain.report.count), (Some(fp(&second)), 3), "the chain follows the new key");
+
+    // the old key signs again after that: not trusted any more, and offered
+    let late = log_name(10);
+    let side = signed(&first, &late, b"late minute", 2, (&a[1].0, &hex::encode(Sha256::digest(&a[1].1))));
+    arrive(&t, &judge, &late, b"late minute").await;
+    let r = arrive(&t, &judge, &format!("{late}.json"), &side).await.unwrap();
+    assert_eq!((r.status, r.reason.as_deref()), (Status::Failed, Some("signed by another key")));
+    assert_eq!(judge.summary(KEY).await.unwrap().new_key, Some(fp(&first)));
+
+    // judged again from scratch (newer rules), each log keeps what it was
+    assert_eq!(judge.rejudge_all(KEY).await.unwrap(), 6);
+    let again = Judge::new(t.store.clone()).book(KEY).await;
+    for (name, ..) in a.iter().chain(&b) {
+        assert_eq!(again.logs[name].status, Status::Verified, "{name}");
+    }
+    assert_eq!(again.logs[&late].status, Status::Failed);
     assert!(judge.rejudge_all("../escape").await.is_err(), "a key is never a path");
+
+    // trusting the first key again: all its logs count, the second key's stay verified as they came before
+    let done = judge.trust_key(KEY, &fp(&first)).await.unwrap();
+    assert_eq!(done, Trusted::Now { fingerprint: fp(&first), verified: 3, before: Some(fp(&second)) });
+    let book = Judge::new(t.store.clone()).book(KEY).await;
+    assert!(book.logs.values().all(|r| r.status == Status::Verified), "{book:?}");
+    assert_eq!(book.former.iter().map(|f| f.fingerprint.clone()).collect::<Vec<_>>(), [fp(&second)]);
 }
 
 #[tokio::test]
@@ -257,6 +296,7 @@ async fn trust_records_of_the_format_before_are_read_and_moved_over() {
         v: trust::RULES_VERSION,
         pin: Some(Pin { fingerprint: fp(&key), pinned_ms: 1, how: "first-signed-log".into() }),
         new_key: None,
+        former: vec![],
         logs: Default::default(),
     };
     book.logs.insert(done.0.clone(), old_rec(Status::Verified, Some(link), 1));
@@ -277,8 +317,8 @@ async fn trust_records_of_the_format_before_are_read_and_moved_over() {
     let read = judge.book(KEY).await;
     assert_eq!(serde_json::to_value(&read).unwrap(), serde_json::to_value(&book).unwrap(), "read as it was");
     assert!(!file.exists(), "the old file is gone once moved");
-    assert_eq!(car_files(&t), ["trust-1.records", "trust.head"]);
-    assert_eq!(judge.chain(KEY).await.count, 1);
+    assert_eq!(car_files(&t), ["trust-1.records", "trust.head", "trust.lock"]);
+    assert_eq!(judge.chain(KEY).await.report.count, 1);
 
     // the sweep finds both keys' waiting logs (the untouched one by its old file, once) and judges them
     assert_eq!(judge.sweep().await.unwrap(), 2);
@@ -296,5 +336,79 @@ async fn trust_records_of_the_format_before_are_read_and_moved_over() {
     let late = signed(&key, &waiting.0, &waiting.1, 1, (&done.0, &hex::encode(Sha256::digest(&done.1))));
     let r = arrive(&t, &judge, &format!("{}.json", waiting.0), &late).await.unwrap();
     assert_eq!((r.status, r.arrived_ms), (Status::Verified, 1));
-    assert_eq!(Judge::new(t.store.clone()).chain(KEY).await.count, 2);
+    assert_eq!(Judge::new(t.store.clone()).chain(KEY).await.report.count, 2);
+}
+
+/// The server keeps a key's head in memory; the owner's command (another process: here another `Judge`, with its
+/// own memory) trusts a key meanwhile. The server must see the change at its next use and lose none of it.
+#[tokio::test]
+async fn a_key_trusted_by_a_command_while_the_server_runs_is_seen_at_once() {
+    let t = setup();
+    let server = Judge::new(t.store.clone());
+    let first = SigningKey::random(&mut rand_core::OsRng);
+    let second = SigningKey::random(&mut rand_core::OsRng);
+    let a = chain_of(&first, 2);
+    for (name, log, side) in &a {
+        arrive(&t, &server, name, log).await;
+        arrive(&t, &server, &format!("{name}.json"), side).await;
+    }
+    let mut b = chain_of(&second, 6);
+    b.drain(..2);
+    for (name, log, side) in &b[..2] {
+        arrive(&t, &server, name, log).await;
+        arrive(&t, &server, &format!("{name}.json"), side).await;
+    }
+    assert_eq!(server.cached_heads(), 1);
+    assert_eq!(car_files(&t), ["trust-0.journal", "trust.lock"], "only a journal so far: generation 0");
+
+    let command = Judge::new(t.store.clone());
+    let done = command.trust_key(KEY, &fp(&second)).await.unwrap();
+    assert!(matches!(done, Trusted::Now { verified: 2, .. }), "{done:?}");
+    drop(command);
+
+    // the server's next upload is judged by the new pin, and written where the new generation reads it
+    let (name, log, side) = &b[2];
+    arrive(&t, &server, name, log).await;
+    let r = arrive(&t, &server, &format!("{name}.json"), side).await.unwrap();
+    assert_eq!(r.status, Status::Verified, "{r:?}");
+    assert_eq!(server.summary(KEY).await.unwrap().pin.unwrap().fingerprint, fp(&second));
+    // and a read of its own after another change by a command
+    let command = Judge::new(t.store.clone());
+    command.trust_key(KEY, &fp(&first)).await.unwrap();
+    assert_eq!(server.summary(KEY).await.unwrap().pin.unwrap().fingerprint, fp(&first));
+    let (name, log, side) = &b[3];
+    arrive(&t, &server, name, log).await;
+    arrive(&t, &server, &format!("{name}.json"), side).await;
+
+    let book = Judge::new(t.store.clone()).book(KEY).await;
+    assert_eq!(book.logs.len(), 6, "{:?}", book.logs.keys());
+    for (name, ..) in a.iter().chain(&b[..3]) {
+        assert_eq!(book.logs[name].status, Status::Verified, "{name}");
+    }
+    let r = &book.logs[&b[3].0];
+    assert_eq!(
+        (&r.status, r.reason.as_deref()),
+        (&Status::Failed, Some("signed by another key")),
+        "after the switch back"
+    );
+}
+
+/// While another process holds a key's lock file, a change to that key waits for it.
+#[tokio::test]
+async fn a_change_waits_while_another_process_holds_the_key() {
+    let t = setup();
+    let judge = Arc::new(Judge::new(t.store.clone()));
+    let a = log_name(0);
+    arrive(&t, &judge, &a, b"minute a").await;
+    store(&t, &format!("{a}.json"), br#"{"format":"canbridge-columns-xz/2"}"#).await;
+    let lock = std::fs::File::open(t.can.join(KEY).join("trust.lock")).unwrap();
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    let j = judge.clone();
+    let name = format!("{a}.json");
+    let waiting = tokio::spawn(async move { j.arrived(&name).await });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!waiting.is_finished(), "judged while another process held the key");
+    drop(lock);
+    let r = tokio::time::timeout(std::time::Duration::from_secs(10), waiting).await.unwrap().unwrap().unwrap();
+    assert_eq!(r.unwrap().status, Status::Unsigned);
 }

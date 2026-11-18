@@ -223,6 +223,7 @@ async fn a_car_with_fifty_thousand_logs_uploads_without_its_folder_being_read() 
     assert_eq!(up.store.clean_stale(ingest::store::STALE_PARTIAL_MS).await, 1);
     let cleaned = started.elapsed();
     assert_eq!(files_in(&up_dir), 0);
-    assert_eq!(files_in(&car), LOGS + 2 + 1 + 1 + 1 + 1, "logs, a sidecar, counts.json, uploading/, trust journal");
+    let other = LOGS + 2 + 1 + 1 + 1 + 1 + 1;
+    assert_eq!(files_in(&car), other, "logs, a sidecar, counts.json, uploading/, trust journal, its lock file");
     eprintln!("a car with {LOGS} logs: an upload took {first:?} (a new car: {fresh:?}); clean_stale {cleaned:?}");
 }
