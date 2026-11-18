@@ -44,17 +44,8 @@ in [docs/plans/rust-can-logger.md](docs/plans/rust-can-logger.md).
 
 ### In progress, not in this repository yet (paused 2026-11-18)
 
-Built and tested on separate working copies, waiting for a last check before they come here:
+Built on separate working copies, waiting for their last checks before they come here:
 
-- **Published image and install.** An image workflow that builds for amd64 and arm64, checks each image (no
-  capabilities, read-only root, TLS 1.3 only, as uid 1000 and 568) and only then publishes
-  `ghcr.io/skittles-fivem/sentry-mate` as `latest`, `build-N` and `sha-<commit>`. A compose file that pulls it, a
-  TrueNAS SCALE file for Install via YAML, and a step-by-step install guide. Done and tested in Docker; the last check
-  of the README and the image was cut short.
-- **Safety fixes.** A new vault is never made over an existing key file (a start with an empty or unmounted data
-  folder stops and says so). A forgotten mount, or a keys folder inside the data folder, stops with a plain message.
-  Folders Sentry Mate can't write to name the chown to run. `keys` and `keys trust` trust a new signing key;
-  `log decode` uses only trusted logs and the signal set from the car's VIN. Built and tested; same last check.
 - **Moving to another server in one step.** A one-time move code on the old server, and two lines in the new server's
   compose or TrueNAS file (address and code): the new server copies everything over the pinned TLS connection, keeps
   up with new uploads, then takes over, with the same certificate and tokens so the bridge keeps working. Also one
