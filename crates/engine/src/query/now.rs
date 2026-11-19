@@ -3,7 +3,6 @@
 
 use super::{Address, CarRef, PlaceBrief, QResult, car_of, kpa, place_ref, r};
 use crate::{Engine, now_ms, records};
-use db::StateRow;
 use model::{CarId, ChargeKind, Drive, Gear, Now, Sample, Source, State};
 use serde::Serialize;
 
@@ -181,29 +180,10 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     // each value at the time it was recorded (a value kept from an older log keeps its own time)
     let times = records::now_at(db, car)?;
     let t = |f: &str| times.get(f).copied().unwrap_or(at);
-    // the span the car is in now, and since when
-    let last_state = db
-        .list::<StateRow>(car, &db::Query { source: Some(Source::Can), ..db::Query::default().limit(1) })?
-        .items
-        .into_iter()
-        .next();
+    // the car's newest state spans, joined across the rows they are stored in (the newest row is often a stub at
+    // the end of the newest log)
+    let spans = super::timeline::newest_spans(e, car, 8)?;
     let state = state_word(n.as_ref());
-    let since_ms = last_state.as_ref().map(|s| s.span.start_ms);
-    let buses = last_state.as_ref().map_or_else(Vec::new, |s| {
-        let awake = s.span.state == State::Online;
-        vec![
-            Bus {
-                bus: "vehicle",
-                awake: awake && s.span.buses.iter().any(|b| b == "can0"),
-                at_ms: Some(s.span.end_ms),
-            },
-            Bus {
-                bus: "chassis",
-                awake: awake && s.span.buses.iter().any(|b| b == "can1"),
-                at_ms: Some(s.span.end_ms),
-            },
-        ]
-    });
     let places = e.places();
     let location = match (s.lat, s.lon) {
         (Some(lat), Some(lon)) => Some(Location {
@@ -234,15 +214,44 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         None
     };
     let charging = s.charging == Some(true);
-    let charge_id = if charging {
+    let current_charge = if charging {
         db.list::<model::Charge>(car, &db::Query { source: Some(Source::Can), ..db::Query::default().limit(1) })?
             .items
             .into_iter()
             .next()
             .filter(|ch| ch.end_ms + 300_000 >= at)
-            .map(|ch| ch.id.to_string())
     } else {
         None
+    };
+    let charge_start = current_charge.as_ref().map(|ch| ch.start_ms);
+    let charge_id = current_charge.map(|ch| ch.id.to_string());
+    // since when: the drive's or charge's start, else the newest span of the state the car is in
+    let want = match state {
+        "asleep" => Some(State::Asleep),
+        "unknown" => Some(State::Unknown),
+        "parked" => Some(State::Online),
+        _ => None,
+    };
+    let since_ms = match state {
+        "driving" => drive.as_ref().map(|d| d.start_ms),
+        "charging" => charge_start,
+        _ => None,
+    }
+    .or_else(|| want.and_then(|w| spans.iter().find(|s| s.state == w)).map(|s| s.start_ms))
+    .or_else(|| spans.first().map(|s| s.start_ms));
+    // the buses: those of the newest awake span while the car is awake, else none
+    let awake_now = matches!(state, "driving" | "charging" | "parked");
+    let online = spans.iter().find(|s| s.state == State::Online);
+    let buses = match (spans.first(), online) {
+        (None, _) => Vec::new(),
+        (Some(newest), online) => {
+            let on = |bus: &str| awake_now && online.is_some_and(|s| s.buses.iter().any(|b| b == bus));
+            let at = Some(if awake_now { online.map_or(newest.end_ms, |s| s.end_ms) } else { newest.end_ms });
+            vec![
+                Bus { bus: "vehicle", awake: on("can0"), at_ms: at },
+                Bus { bus: "chassis", awake: on("can1"), at_ms: at },
+            ]
+        }
     };
     let charge = ChargeNow {
         status: v(s.charging.map(|c| if c { "charging" } else { "disconnected" }), t("charging")),

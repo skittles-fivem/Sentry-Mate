@@ -37,8 +37,12 @@ pub const FIELDS: &[&str] = &[
     "charge_power_kw",
     "battery_heat_kw",
     "fan_level",
+    "climate",
+    "heading_deg",
 ];
 
+/// A field's value in a sample. The fields the samples do not hold yet (`usable_soc_pct`, the set points,
+/// `battery_heat_kw`, `fan_level`, `heading_deg`, and `climate`, whose column will be text) are null columns.
 fn get(s: &Sample, f: &str) -> Option<f64> {
     match f {
         "soc_pct" => s.soc,
@@ -66,9 +70,10 @@ fn get(s: &Sample, f: &str) -> Option<f64> {
     }
 }
 
-/// Fields whose plain column is the bucket's last value, not its mean.
+/// Fields whose plain column is the bucket's last value, not its mean (`climate` is text: only its last value means
+/// anything).
 fn last_by_default(f: &str) -> bool {
-    matches!(f, "lat" | "lon" | "accuracy_m" | "odometer_km" | "heading_deg")
+    matches!(f, "lat" | "lon" | "accuracy_m" | "odometer_km" | "heading_deg" | "climate")
 }
 
 const BUCKETS: &[u64] = &[

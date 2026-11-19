@@ -333,3 +333,189 @@ async fn timeline_states_activity_and_parked_of_a_decoded_day() {
         assert_eq!(code(&mut watch, &format!("/api/v1/cars/c2/{p}")).await, (404, Some("no_such_car".into())));
     }
 }
+
+/// The fixes of the live, series, signals, timeline, states and parked answers, each checked on the made-up day (its
+/// data ends in the past: the car has been silent since, as a parked car with no bridge is).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rows_are_whole_whatever_the_period_and_the_silent_car_has_a_current_row() {
+    let k = seeded().await;
+    let (car, from, to) = (k.car.clone(), k.from, k.to);
+    let mut admin = k.s.admin().await;
+    let tl = format!("/api/v1/cars/{car}/timeline");
+
+    // series: the fields the contract names are columns, null until the car sends them
+    let s = ok(
+        &mut admin,
+        &format!(
+            "/api/v1/cars/{car}/series?from_ms={from}&to_ms={to}&max_points=50&fields=outside_c,cabin_c,battery_c,setpoint_left_c,setpoint_right_c,climate,heading_deg"
+        ),
+    )
+    .await;
+    let n = s["t_ms"].as_array().unwrap().len();
+    for f in ["climate", "heading_deg"] {
+        let col = s["values"][f].as_array().unwrap_or_else(|| panic!("{f}: {s}"));
+        assert_eq!(col.len(), n, "{f}");
+        assert!(col.iter().all(Value::is_null), "{f}: {s}");
+        assert!(s["values"].get(format!("{f}.min")).is_none(), "{f} is a last-value field: {s}");
+    }
+    assert!(s["values"]["outside_c"].as_array().unwrap().iter().any(Value::is_number), "{s}");
+
+    // the timeline of the whole history: the newest row is the stretch still going (the car is silent: a gap to now)
+    let all = walk(&mut admin, &tl, 7, "id").await;
+    let top = &all[0];
+    assert!(["parked", "gap"].contains(&top["kind"].as_str().unwrap()), "{top}");
+    assert!(top["end_ms"].is_null(), "the current row goes on: {top}");
+    assert!(top["start_ms"].as_u64().unwrap() >= to - 86_400_000, "{top}");
+    for r in all[1..].iter().filter(|r| r["end_ms"].is_null()) {
+        assert_eq!(r["flags"]["in_progress"], json!(true), "only the current rows go on: {r}");
+    }
+    // pages of 7 hold what one page of 500 holds
+    let one = ok(&mut admin, &format!("{tl}?limit=500")).await;
+    let ids = |v: &[Value]| v.iter().map(|r| r["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(ids(&all), ids(one["items"].as_array().unwrap()));
+    // every parked and gap row is the same row in a period that holds only its start
+    let stretches: Vec<&Value> =
+        all.iter().filter(|r| ["parked", "gap"].contains(&r["kind"].as_str().unwrap())).collect();
+    assert!(stretches.len() >= 3, "{}", stretches.len());
+    for r in &stretches {
+        let a = r["start_ms"].as_u64().unwrap();
+        let got = ok(&mut admin, &format!("{tl}?from_ms={a}&to_ms={}&kinds=parked,gap", a + 1)).await;
+        let items = got["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{a}: {got}");
+        for f in ["id", "end_ms", "duration_ms", "parked_ms", "gap_reason", "soc_end_pct", "range_end_km"] {
+            if ["duration_ms", "parked_ms"].contains(&f) && r["end_ms"].is_null() {
+                continue;
+            }
+            assert_eq!(items[0][f], r[f], "{f} of {a}");
+        }
+    }
+    // parked rows carry the range and the energy of the stretch
+    let parked: Vec<&Value> = all.iter().filter(|r| r["kind"] == json!("parked")).collect();
+    assert!(parked.iter().any(|r| r["range_end_km"].is_number() && r["range_delta_km"].is_number()), "{parked:?}");
+    assert!(parked.iter().any(|r| r["energy_delta_kwh"].is_number()), "{parked:?}");
+    for r in &parked {
+        assert!(r["awake_reasons"].is_array(), "{r}");
+        if let Some(kwh) = r["energy_delta_kwh"].as_f64() {
+            assert!(kwh <= 0.0, "{r}");
+            assert!(["measured", "estimated"].contains(&r["energy_basis"].as_str().unwrap()), "{r}");
+        } else {
+            assert!(r["energy_basis"].is_null(), "{r}");
+        }
+    }
+    // kinds: spaces and empty parts are let be
+    let a = ok(&mut admin, &format!("{tl}?kinds=drive,charge&limit=500")).await;
+    for k in ["drive,,charge", "drive,%20charge", ",drive,charge,"] {
+        let b = ok(&mut admin, &format!("{tl}?kinds={k}&limit=500")).await;
+        assert_eq!(ids(a["items"].as_array().unwrap()), ids(b["items"].as_array().unwrap()), "{k}");
+    }
+    let r = admin.get(&format!("{tl}?kinds=drive,%20walk")).await;
+    assert_eq!((r.status, r.code()), (400, Some("bad_input".into())), "{}", r.text());
+
+    // states: a span keeps its own start, end and id in a period that starts inside it; only the car's newest span
+    // goes on, and `current` is the car's whatever the period
+    let st = format!("/api/v1/cars/{car}/states");
+    let whole = walk(&mut admin, &st, 50, "id").await;
+    let whole_cur = ok(&mut admin, &st).await;
+    let long = whole
+        .iter()
+        .filter(|s| s["end_ms"].is_u64())
+        .max_by_key(|s| s["end_ms"].as_u64().unwrap() - s["start_ms"].as_u64().unwrap())
+        .unwrap();
+    let (sa, sb) = (long["start_ms"].as_u64().unwrap(), long["end_ms"].as_u64().unwrap());
+    assert!(sb - sa > 10, "{long}");
+    let inside = ok(&mut admin, &format!("{st}?from_ms={}&to_ms={}&limit=500", sa + 1, sb - 1)).await;
+    assert!(inside["items"].as_array().unwrap().iter().all(|s| s["start_ms"].as_u64().unwrap() > sa), "{inside}");
+    let holds = ok(&mut admin, &format!("{st}?from_ms={sa}&to_ms={}&limit=500", sa + 1)).await;
+    let holds = holds["items"].as_array().unwrap();
+    assert_eq!(holds.len(), 1, "{holds:?}");
+    assert_eq!(&holds[0], long, "the same span: its own end too");
+    for v in [&inside, &whole_cur] {
+        assert_eq!(v["current"]["state"], whole_cur["current"]["state"], "{v}");
+        assert_eq!(v["current"]["since_ms"], whole_cur["current"]["since_ms"], "{v}");
+        assert_eq!(v["last_change_ms"], whole_cur["current"]["since_ms"], "{v}");
+    }
+    let newest = &whole[0];
+    assert_eq!(whole_cur["current"]["since_ms"], newest["start_ms"], "{whole_cur}");
+    assert!(whole[1..].iter().all(|s| s["end_ms"].is_u64()), "only the newest span goes on");
+    let past = ok(&mut admin, &format!("{st}?from_ms={from}&to_ms={}&limit=500", from + 6 * 3_600_000)).await;
+    assert!(past["items"].as_array().unwrap().iter().all(|s| s["end_ms"].is_u64()), "{past}");
+    for (i, x) in whole.iter().enumerate().skip(1) {
+        let (p, q) = (&whole[i - 1], x);
+        assert!(
+            !(q["end_ms"] == p["start_ms"] && q["state"] == p["state"] && q["buses"] == p["buses"]),
+            "touching spans of one state are one: {q} {p}"
+        );
+    }
+
+    // now: since when the car is in its state, and its buses, from its newest spans joined
+    let nv = ok(&mut admin, &format!("/api/v1/cars/{car}/now")).await;
+    let since = nv["since_ms"].as_u64().unwrap();
+    match nv["state"].as_str().unwrap() {
+        "driving" | "charging" => {}
+        word => {
+            let w = match word {
+                "parked" => "online",
+                other => other,
+            };
+            let span = whole.iter().find(|s| s["start_ms"] == json!(since)).unwrap_or_else(|| panic!("{nv}"));
+            assert_eq!(span["state"], json!(w), "{nv} {span}");
+        }
+    }
+    let buses = nv["buses"].as_array().unwrap();
+    assert_eq!(buses.len(), 2, "{nv}");
+    if !["driving", "charging", "parked"].contains(&nv["state"].as_str().unwrap()) {
+        assert!(buses.iter().all(|b| b["awake"] == json!(false)), "{nv}");
+    }
+
+    // parked spells: a past period ends at its edge, with the values there, never the car's values now
+    let pk = format!("/api/v1/cars/{car}/parked");
+    let mid = from + 12 * 3_600_000;
+    let half = ok(&mut admin, &format!("{pk}?from_ms={from}&to_ms={mid}&limit=500")).await;
+    let spells = half["items"].as_array().unwrap();
+    assert!(!spells.is_empty(), "{half}");
+    for x in spells {
+        assert!(x["end_ms"].as_u64().is_some_and(|e| e <= mid), "a past period has no spell going: {x}");
+    }
+    if let Some(cut) = spells.iter().find(|x| x["clipped"] == json!(true) && x["end_ms"] == json!(mid)) {
+        let whole_spell = walk(&mut admin, &format!("{pk}?limit=500"), 500, "id")
+            .await
+            .into_iter()
+            .find(|x| x["id"] == cut["id"])
+            .unwrap();
+        if whole_spell["energy_kwh"].is_number() && whole_spell["energy_method"] != json!("range") {
+            assert!(cut["energy_kwh"].is_number(), "a clipped spell reads its ends: {cut}");
+        }
+    }
+    // the whole history: the spell after the last drive or charge goes on, its unknown time out of the summary
+    let p = ok(&mut admin, &format!("{pk}?limit=500")).await;
+    let items = p["items"].as_array().unwrap();
+    let going: Vec<&Value> = items.iter().filter(|x| x["end_ms"].is_null()).collect();
+    assert!(going.len() <= 1, "{p}");
+    if let Some(g) = going.first() {
+        assert_eq!(&items[0], *g, "the spell going is the newest");
+        assert!(g["unknown_ms"].as_u64().unwrap() > 30 * 86_400_000, "months of no data are unknown: {g}");
+    }
+    let known: u64 = items
+        .iter()
+        .filter(|x| x["energy_kwh"].is_number())
+        .map(|x| x["duration_ms"].as_u64().unwrap() - x["unknown_ms"].as_u64().unwrap())
+        .sum();
+    let hours = p["summary"]["hours"].as_f64().unwrap();
+    assert!((hours - known as f64 / 3_600_000.0).abs() < 0.06, "{hours} {known}: {}", p["summary"]);
+    assert!(hours < 24.0 * 3.0, "unknown time is not counted: {}", p["summary"]);
+
+    // activity: the whole history in a bounded strip, in time order
+    let ac = ok(&mut admin, &format!("/api/v1/cars/{car}/activity?from_ms=0")).await;
+    let segs = ac["items"].as_array().unwrap();
+    assert!(!segs.is_empty() && segs.len() as u64 <= engine::query::timeline::STRIP_SEGMENTS + 50, "{}", segs.len());
+
+    // signals: a number whose DBC names only its SNA value is a series
+    let speed = ok(&mut admin, &format!("/api/v1/cars/{car}/signals/latest?search=DI_vehicleSpeed")).await;
+    let row = speed["items"].as_array().unwrap().iter().find(|x| x["series"] == json!("DI_vehicleSpeed")).cloned();
+    let row = row.unwrap_or_else(|| panic!("{speed}"));
+    assert_eq!(row["has_series"], json!(true), "{row}");
+    let at = row["at_ms"].as_u64().unwrap();
+    let sig = ok(&mut admin, &format!("/api/v1/cars/{car}/signals?series=DI_vehicleSpeed&to_ms={}", at + 1)).await;
+    let vals = sig["values"]["DI_vehicleSpeed"].as_array().unwrap();
+    assert!(vals.iter().filter_map(Value::as_f64).all(|v| v < 287.0), "no SNA in the buckets: {sig}");
+}

@@ -1,21 +1,30 @@
 //! `/cars/{car}/parked`: stays parked off a charger (vampire drain), newest first, clipped to the period.
 //!
-//! A spell runs from the end of a drive or charge to the start of the next one (the spell still going ends now). Its
-//! energy is the pack's own lifetime discharge counter across it where the car sends one (`counter`), else the
-//! pack's energy remaining (`bms_energy`), else the rated range lost at the car's consumption (`range`, imported
-//! history). Only the samples near a spell's ends are read for it, and the page's spells alone are read whole (for
-//! their temperatures and awake power).
+//! A spell runs from the end of a drive or charge to the start of the next one, wherever that lies (after the
+//! period too). Only a spell that no drive or charge follows at all is still going (`end_ms` null, it ends now), and
+//! none starts after a drive or charge still going. Its energy is the pack's own lifetime discharge counter across
+//! it where the car sends one (`counter`), else the pack's energy remaining (`bms_energy`), else the rated range lost
+//! at the car's consumption (`range`, imported history). The values at a spell's ends come from the drive or charge
+//! either side, or at a clipped edge from the sample nearest to it; only the days that hold those samples are read
+//! (each once), and the page's spells alone are read whole (for their temperatures and awake power). The summary
+//! counts the known time of the spells whose energy is known: unknown time (no data) is not time the drain is
+//! known for.
 
+use super::system::Shown;
 use super::{Paging, Period, PlaceBrief, QResult, Scoped, car_of, paginate, place_ref, r, scoped, source_word};
 use crate::Engine;
 use crate::pipeline::all_rows;
 use db::StateRow;
-use model::{CarId, Sample, Source};
+use model::{Car, CarId, Charge, Drive, Sample, Source};
 use serde::Serialize;
 
 const DAY: u64 = 86_400_000;
-/// How far into a spell its first reading, and before its end its last, may be.
-const END_READ_MS: u64 = 30 * 60_000;
+/// How many days with samples the nearest reading to an edge is looked for in, each way.
+const NEAR_DAYS: usize = 3;
+/// Days of sample columns a [`Sampler`] keeps.
+const KEEP_DAYS: usize = 4;
+/// How far outside a row the sample nearest to its edge may be (the drive or charge beside it).
+pub(crate) const EDGE_MS: u64 = DAY;
 /// A battery colder than this at its coldest makes the spell `cold` (the pack locks part of its energy).
 pub const COLD_C: f64 = 2.0;
 
@@ -69,19 +78,107 @@ pub struct Parked {
 }
 
 /// A drive or charge: what ends one spell and starts the next.
-struct Busy {
-    start: u64,
-    end: u64,
-    soc0: Option<f64>,
-    soc1: Option<f64>,
-    range0: Option<f64>,
-    range1: Option<f64>,
-    at: Option<model::Position>,
-    address: Option<String>,
-    source: Source,
+#[derive(Debug, Clone)]
+pub(crate) struct Busy {
+    pub start: u64,
+    pub end: u64,
+    pub soc0: Option<f64>,
+    pub soc1: Option<f64>,
+    pub range0: Option<f64>,
+    pub range1: Option<f64>,
+    pub at: Option<model::Position>,
+    pub address: Option<String>,
+    pub source: Source,
+    /// Still going (the car's current drive or charge).
+    pub live: bool,
 }
 
-/// Some fields of the car's samples in `[a, b)`, a day at a time; `f` gets each sample's time and values.
+fn of_drive(d: &Drive, live: Option<u64>) -> Busy {
+    Busy {
+        start: d.start_ms,
+        end: d.end_ms,
+        soc0: d.start_soc,
+        soc1: d.end_soc,
+        range0: d.start_range_km,
+        range1: d.end_range_km,
+        at: d.end.clone(),
+        address: d.end_address.clone(),
+        source: d.source,
+        live: live == Some(d.id),
+    }
+}
+
+fn of_charge(ch: &Charge, live: Option<u64>) -> Busy {
+    Busy {
+        start: ch.start_ms,
+        end: ch.end_ms,
+        soc0: ch.start_soc,
+        soc1: ch.end_soc,
+        range0: ch.start_range_km,
+        range1: ch.end_range_km,
+        at: ch.position.clone(),
+        address: ch.address.clone(),
+        source: ch.source,
+        live: live == Some(ch.id),
+    }
+}
+
+/// The first shown row of `car` in `[a, b)`, newest or oldest.
+fn first_of<T: db::Item>(e: &Engine, car: CarId, a: u64, b: u64, shown: &Shown, newest: bool) -> QResult<Option<T>> {
+    let mut out = None;
+    super::drives::each::<T>(e, car, a, b, None, shown, newest, |row| {
+        out = Some(row);
+        Ok(false)
+    })?;
+    Ok(out)
+}
+
+/// The start of the newest drive or charge that started before `a` (its spell may reach into the period).
+pub(crate) fn busy_start_before(e: &Engine, car: CarId, shown: &Shown, a: u64) -> QResult<Option<u64>> {
+    let d = first_of::<Drive>(e, car, 0, a, shown, true)?.map(|d| d.start_ms);
+    let c = first_of::<Charge>(e, car, 0, a, shown, true)?.map(|c| c.start_ms);
+    Ok(d.max(c))
+}
+
+/// The first drive or charge that starts at or after `b` (it ends the spell the period's last one starts).
+pub(crate) fn next_busy(e: &Engine, car: CarId, shown: &Shown, b: u64) -> QResult<Option<Result<Drive, Charge>>> {
+    if b == u64::MAX {
+        return Ok(None);
+    }
+    let d = first_of::<Drive>(e, car, b, u64::MAX, shown, false)?;
+    let c = first_of::<Charge>(e, car, b, u64::MAX, shown, false)?;
+    Ok(match (d, c) {
+        (Some(d), Some(c)) if c.start_ms < d.start_ms => Some(Err(c)),
+        (Some(d), _) => Some(Ok(d)),
+        (None, Some(c)) => Some(Err(c)),
+        (None, None) => None,
+    })
+}
+
+/// The drives and charges a period's spells lie between, oldest first: those starting in it, the last one before
+/// it, and the first one after it (`next`).
+fn busy_around(e: &Engine, c: &Car, a: u64, b: u64) -> QResult<(Vec<Busy>, Option<Busy>)> {
+    let car = c.id;
+    let shown = Shown::new(e, car, None)?;
+    let live_drive = super::drives::ctx(e, c)?.live;
+    let live_charge = super::charges::ctx(e, c)?.live;
+    let from = busy_start_before(e, car, &shown, a)?.unwrap_or(a).min(a);
+    let per = Period::new(Some(from), Some(b));
+    let mut busy: Vec<Busy> = super::drives::rows(e, car, &per, None)?
+        .iter()
+        .map(|d| of_drive(d, live_drive))
+        .chain(super::charges::rows(e, car, &per, None)?.iter().map(|ch| of_charge(ch, live_charge)))
+        .collect();
+    busy.sort_by_key(|x| x.start);
+    let next = next_busy(e, car, &shown, b)?.map(|n| match n {
+        Ok(d) => of_drive(&d, live_drive),
+        Err(ch) => of_charge(&ch, live_charge),
+    });
+    Ok((busy, next))
+}
+
+/// Some fields of the car's samples in `[a, b)`, a day at a time and only the days that have samples; `f` gets each
+/// sample's time and values.
 fn each(
     e: &Engine,
     car: CarId,
@@ -91,10 +188,12 @@ fn each(
     names: &[&str],
     mut f: impl FnMut(u64, &[Option<f64>]),
 ) -> QResult<()> {
-    let mut x = a;
     let mut row = vec![None; names.len()];
-    while x < b {
-        let y = (x / DAY + 1).saturating_mul(DAY).min(b);
+    for d in e.db().days::<Sample>(car, source)? {
+        let (x, y) = (d.start_ms.max(a), d.start_ms.saturating_add(DAY).min(b));
+        if y <= x {
+            continue;
+        }
         let cols = e.db().read_fields::<Sample>(car, source, x, y, names)?;
         for (i, &t) in cols.t_ms.iter().enumerate() {
             for (k, (_, col)) in cols.values.iter().enumerate() {
@@ -102,37 +201,151 @@ fn each(
             }
             f(t, &row);
         }
-        x = y;
     }
     Ok(())
 }
 
 /// One value per field asked for (null: none).
-type Row = Vec<Option<f64>>;
+pub(crate) type Row = Vec<Option<f64>>;
 
-/// The values of `names` nearest to `at` (each field its own), from the samples within [`END_READ_MS`] of it: at a
-/// spell's edge, the drive or charge beside it still has the reading.
-fn nearest(e: &Engine, car: CarId, source: Source, at: u64, names: &[&str]) -> QResult<Row> {
-    let mut best: Vec<Option<(u64, f64)>> = vec![None; names.len()];
-    each(e, car, source, at.saturating_sub(END_READ_MS), at.saturating_add(END_READ_MS), names, |t, row| {
-        let d = t.abs_diff(at);
-        for (k, v) in row.iter().enumerate() {
-            if let Some(v) = v
-                && best[k].is_none_or(|(bd, _)| d < bd)
-            {
-                best[k] = Some((d, *v));
+/// A day of some sample fields as columns.
+struct Cols {
+    t: Vec<u64>,
+    v: Vec<Vec<Option<f64>>>,
+}
+
+/// The values of some sample fields nearest to given times: each day of columns is read once (the last few are
+/// kept), and only days that have samples are looked at.
+pub(crate) struct Sampler<'a> {
+    e: &'a Engine,
+    car: CarId,
+    source: Source,
+    names: &'static [&'static str],
+    days: Vec<u64>,
+    cache: Vec<(u64, Cols)>,
+}
+
+impl<'a> Sampler<'a> {
+    pub(crate) fn new(e: &'a Engine, car: CarId, source: Source, names: &'static [&'static str]) -> QResult<Self> {
+        let mut days: Vec<u64> = e.db().days::<Sample>(car, source)?.into_iter().map(|d| d.start_ms).collect();
+        days.sort_unstable();
+        Ok(Sampler { e, car, source, names, days, cache: Vec::new() })
+    }
+
+    fn cols(&mut self, day: u64) -> QResult<usize> {
+        if let Some(i) = self.cache.iter().position(|(d, _)| *d == day) {
+            return Ok(i);
+        }
+        let f = self.e.db().read_fields::<Sample>(self.car, self.source, day, day.saturating_add(DAY), self.names)?;
+        let cols = Cols {
+            v: f.values
+                .into_iter()
+                .map(|(_, col)| col.into_iter().map(|x| x.filter(|v| v.is_finite())).collect())
+                .collect(),
+            t: f.t_ms,
+        };
+        if self.cache.len() >= KEEP_DAYS {
+            self.cache.remove(0);
+        }
+        self.cache.push((day, cols));
+        Ok(self.cache.len() - 1)
+    }
+
+    /// Each field's value at the sample nearest to `t` (before or after it) within `[lo, hi]`, looked for in the
+    /// [`NEAR_DAYS`] days with samples either way.
+    pub(crate) fn at(&mut self, t: u64, lo: u64, hi: u64) -> QResult<Row> {
+        let k = self.names.len();
+        let mut before: Vec<Option<(u64, f64)>> = vec![None; k];
+        let mut after: Vec<Option<(u64, f64)>> = vec![None; k];
+        // the days that may hold a sample at or before t (newest first), and at or after it (oldest first)
+        let n = self.days.partition_point(|&d| d <= t);
+        let back: Vec<u64> = self.days[..n].iter().rev().take(NEAR_DAYS).copied().collect();
+        let i = self.days.partition_point(|&d| d.saturating_add(DAY) <= t);
+        let on: Vec<u64> = self.days[i..].iter().take(NEAR_DAYS).copied().collect();
+        for d in back {
+            if d.saturating_add(DAY) <= lo || before.iter().all(Option::is_some) {
+                break;
+            }
+            let ci = self.cols(d)?;
+            let c = &self.cache[ci].1;
+            for idx in (0..c.t.len()).rev() {
+                let ts = c.t[idx];
+                if ts > t {
+                    continue;
+                }
+                if ts < lo {
+                    break;
+                }
+                for (f, slot) in before.iter_mut().enumerate() {
+                    if slot.is_none()
+                        && let Some(v) = c.v.get(f).and_then(|col| col.get(idx)).copied().flatten()
+                    {
+                        *slot = Some((ts, v));
+                    }
+                }
             }
         }
-    })?;
-    Ok(best.into_iter().map(|b| b.map(|(_, v)| v)).collect())
+        for d in on {
+            if d > hi || after.iter().all(Option::is_some) {
+                break;
+            }
+            let ci = self.cols(d)?;
+            let c = &self.cache[ci].1;
+            for idx in 0..c.t.len() {
+                let ts = c.t[idx];
+                if ts < t {
+                    continue;
+                }
+                if ts > hi {
+                    break;
+                }
+                for (f, slot) in after.iter_mut().enumerate() {
+                    if slot.is_none()
+                        && let Some(v) = c.v.get(f).and_then(|col| col.get(idx)).copied().flatten()
+                    {
+                        *slot = Some((ts, v));
+                    }
+                }
+            }
+        }
+        Ok(before
+            .into_iter()
+            .zip(after)
+            .map(|(x, y)| match (x, y) {
+                (Some((tx, vx)), Some((ty, vy))) => Some(if t - tx <= ty - t { vx } else { vy }),
+                (Some((_, v)), None) | (None, Some((_, v))) => Some(v),
+                (None, None) => None,
+            })
+            .collect())
+    }
 }
 
-/// The values of `names` at both ends of `[a, b)`.
-fn ends(e: &Engine, car: CarId, source: Source, a: u64, b: u64, names: &[&str]) -> QResult<(Row, Row)> {
-    Ok((nearest(e, car, source, a, names)?, nearest(e, car, source, b, names)?))
-}
+/// The fields a spell's energy and ends are read from: the pack's discharge counter, its energy remaining, the
+/// battery level and the rated range.
+pub(crate) const END_FIELDS: [&str; 4] = ["total_discharge_kwh", "energy_remaining_kwh", "soc", "range_km"];
 
-const END_FIELDS: [&str; 2] = ["total_discharge_kwh", "energy_remaining_kwh"];
+/// A spell's energy over `[x, y)` (kWh lost, positive) and how it was measured: the discharge counter, else the
+/// pack's energy remaining, at the samples nearest to the ends (`first` and `last`, as [`END_FIELDS`]); else the range
+/// lost at the car's rated consumption.
+pub(crate) fn energy_of(
+    first: Option<&Row>,
+    last: Option<&Row>,
+    range0: Option<f64>,
+    range1: Option<f64>,
+    rated_wh_km: Option<f64>,
+) -> (Option<f64>, &'static str) {
+    if let (Some(f), Some(l)) = (first, last) {
+        let at = |row: &Row, i: usize| row.get(i).copied().flatten();
+        if let Some(k) = at(f, 0).zip(at(l, 0)).map(|(d0, d1)| d1 - d0).filter(|k| *k >= 0.0) {
+            return (Some(k), "counter");
+        }
+        if let Some(k) = at(f, 1).zip(at(l, 1)).map(|(e0, e1)| e0 - e1) {
+            return (Some(k), "bms_energy");
+        }
+    }
+    let lost = range0.zip(range1).map(|(r0, r1)| r0 - r1);
+    (lost.zip(rated_wh_km).map(|(km, wh)| km * wh / 1000.0), "range")
+}
 
 /// `/cars/{car}/parked`: `min_hours` leaves out shorter spells (as clipped).
 pub fn parked(
@@ -146,50 +359,27 @@ pub fn parked(
     let (a, b) = period.bounds()?;
     let now = crate::now_ms();
     let b = b.min(now);
-    let wide = Period::new(Some(a.saturating_sub(30 * DAY)), Some(b));
-    let mut busy: Vec<Busy> = super::drives::rows(e, car, &wide, None)?
-        .into_iter()
-        .map(|d| Busy {
-            start: d.start_ms,
-            end: d.end_ms,
-            soc0: d.start_soc,
-            soc1: d.end_soc,
-            range0: d.start_range_km,
-            range1: d.end_range_km,
-            at: d.end.clone(),
-            address: d.end_address.clone(),
-            source: d.source,
-        })
-        .chain(super::charges::rows(e, car, &wide, None)?.into_iter().map(|ch| Busy {
-            start: ch.start_ms,
-            end: ch.end_ms,
-            soc0: ch.start_soc,
-            soc1: ch.end_soc,
-            range0: ch.start_range_km,
-            range1: ch.end_range_km,
-            at: ch.position.clone(),
-            address: ch.address.clone(),
-            source: ch.source,
-        }))
-        .collect();
-    busy.sort_by_key(|x| x.start);
-    // the spell still going: from the last drive or charge to now
-    let tail = busy.last().map(|l| l.end).filter(|&end| end < now);
-    let states: Vec<model::StateSpan> =
-        all_rows::<StateRow>(e.db(), car, a, b, Some(Source::Can))?.into_iter().map(|s| s.span).collect();
+    let (busy, next) = busy_around(e, &c, a, b)?;
+    let states: Vec<model::StateSpan> = if a < b {
+        all_rows::<StateRow>(e.db(), car, a, b, Some(Source::Can))?.into_iter().map(|s| s.span).collect()
+    } else {
+        Vec::new()
+    };
     let now_soc = e.db().entry(car)?.and_then(|x| x.summary.now).map(|n| n.sample);
     let places = e.places();
     let rated = c.efficiency_wh_km;
+    let mut sampler = Sampler::new(e, car, Source::Can, &END_FIELDS)?;
     let mut items = Vec::new();
+    // what known time the summary counts: that of the spells whose energy is known
+    let (mut known_ms, mut known_kwh) = (0u64, 0.0);
     for i in 0..busy.len() {
         let p = &busy[i];
-        let n = busy.get(i + 1);
+        let n = busy.get(i + 1).or(next.as_ref());
         let (s0, s1) = match n {
             Some(n) => (p.end, n.start),
-            None => match tail {
-                Some(t) => (t, now),
-                None => continue,
-            },
+            // no spell starts after a drive or charge still going
+            None if p.live => continue,
+            None => (p.end, now),
         };
         if s1 <= s0 || s1 <= a || s0 >= b {
             continue;
@@ -199,31 +389,30 @@ pub fn parked(
         if min_hours.is_some_and(|h| (dur as f64) < h * 3_600_000.0) {
             continue;
         }
-        let going = n.is_none();
+        // going: nothing follows it, and the period does not end before it does
+        let going = n.is_none() && y == s1;
         let sp = super::timeline::split(&states, x, y);
         let source = p.source;
-        // the ends: the drive or charge either side, or for a clipped spell the samples at the period's edges
-        let (soc0, range0) = (p.soc1, p.range1);
+        // the ends: the drive or charge either side, the car's values now for the spell still going, else (at a
+        // clipped edge) the sample nearest to it
+        let can = source == Source::Can;
+        let hi = n.map_or(now, |n| n.end);
+        let first = if can { Some(sampler.at(x, p.start, y)?) } else { None };
+        let last = if can { Some(sampler.at(y, x, hi)?) } else { None };
+        let edge = |row: &Option<Row>, k: usize| row.as_ref().and_then(|v| v.get(k).copied().flatten());
+        let (soc0, range0) = if x == s0 { (p.soc1, p.range1) } else { (edge(&first, 2), edge(&first, 3)) };
         let (soc1, range1) = match n {
-            Some(n) => (n.soc0, n.range0),
-            None => (now_soc.as_ref().and_then(|s| s.soc), now_soc.as_ref().and_then(|s| s.range_km)),
+            Some(n) if y == s1 => (n.soc0, n.range0),
+            None if going => (now_soc.as_ref().and_then(|s| s.soc), now_soc.as_ref().and_then(|s| s.range_km)),
+            _ => (edge(&last, 2), edge(&last, 3)),
         };
-        let (mut energy, mut method) = (None, "range");
-        if source == Source::Can {
-            let (first, last) = ends(e, car, Source::Can, x, y, &END_FIELDS)?;
-            let counter = first[0].zip(last[0]).map(|(d0, d1)| d1 - d0).filter(|k| *k >= 0.0);
-            let bms = first[1].zip(last[1]).map(|(e0, e1)| e0 - e1);
-            if let Some(k) = counter {
-                (energy, method) = (Some(k), "counter");
-            } else if let Some(k) = bms {
-                (energy, method) = (Some(k), "bms_energy");
-            }
-        }
+        let (energy, method) = energy_of(first.as_ref(), last.as_ref(), range0, range1, rated);
         let lost = range0.zip(range1).map(|(r0, r1)| r0 - r1);
-        if energy.is_none() {
-            energy = lost.zip(rated).map(|(km, wh)| km * wh / 1000.0);
-        }
         let hours = dur as f64 / 3_600_000.0;
+        if let Some(k) = energy {
+            known_ms += dur - sp.unknown.min(dur);
+            known_kwh += k;
+        }
         let place = p.at.as_ref().and_then(|pos| places.place_at(pos.lat, pos.lon));
         items.push(Spell {
             id: format!("parked:{s0}"),
@@ -251,18 +440,17 @@ pub fn parked(
             cold: None,
             place: place.map(|pl| PlaceBrief { id: place_ref(pl.id), name: pl.name.clone() }),
             address: p.address.clone(),
+            // the only reason the decoded signals give yet is charging, and a spell holds no charge
             awake_reasons: Vec::new(),
             source: source_word(source),
         });
     }
-    let total_kwh: f64 = items.iter().filter_map(|s| s.energy_kwh).sum();
-    let ms: u64 = items.iter().map(|s| s.duration_ms).sum();
-    let hours = ms as f64 / 3_600_000.0;
+    let hours = known_ms as f64 / 3_600_000.0;
     let summary = Summary {
         spells: items.len(),
-        energy_kwh: r(Some(total_kwh), 3),
+        energy_kwh: r(Some(known_kwh), 3),
         hours: r(Some(hours), 1),
-        kwh_per_day: r((ms > 3_600_000).then(|| total_kwh / hours * 24.0), 3),
+        kwh_per_day: r((known_ms > 3_600_000).then(|| known_kwh / hours * 24.0), 3),
         cost: None,
     };
     let sig = format!("parked|{car}|{}|{min_hours:?}", period.sig());
@@ -273,7 +461,7 @@ pub fn parked(
         if s.source != "can" {
             continue;
         }
-        let end = s.end_ms.unwrap_or(b);
+        let end = s.start_ms.saturating_add(s.duration_ms);
         let (mut bmin, mut out_sum, mut out_n, mut kw_sum, mut kw_n) = (None::<f64>, 0.0, 0u64, 0.0, 0u64);
         each(
             e,
@@ -303,4 +491,22 @@ pub fn parked(
         s.awake_avg_power_w = r((kw_n > 0).then(|| kw_sum / kw_n as f64 * 1000.0), 0);
     }
     Ok(scoped(&c, Parked { items: out, summary, next: page.next }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn energy_from_the_counter_then_the_pack_then_the_range() {
+        let row = |d: Option<f64>, e: Option<f64>| -> Row { vec![d, e, None, None] };
+        let (k, m) =
+            energy_of(Some(&row(Some(10.0), Some(50.0))), Some(&row(Some(10.5), Some(49.0))), None, None, None);
+        assert_eq!((k, m), (Some(0.5), "counter"));
+        let (k, m) = energy_of(Some(&row(None, Some(50.0))), Some(&row(None, Some(49.0))), None, None, None);
+        assert_eq!((k, m), (Some(1.0), "bms_energy"));
+        let (k, m) = energy_of(None, None, Some(300.0), Some(290.0), Some(150.0));
+        assert_eq!((k, m), (Some(1.5), "range"));
+        assert_eq!(energy_of(None, None, Some(300.0), None, Some(150.0)), (None, "range"));
+    }
 }

@@ -72,7 +72,9 @@ pub(crate) async fn answer<T: Serialize + Send + 'static>(
     crate::csv::answer(p, name, value)
 }
 
-/// A paged list: one page as JSON, or every matching row as CSV (paged through on the server, bounded).
+/// A paged list: one page as JSON, or every matching row as CSV. The CSV goes through the list once, page after
+/// page from each page's cursor (the engine reads each page from its cursor on, not the period again), and is
+/// refused (`422` on `to_ms`) when it would pass [`CSV_MAX_PAGES`] pages of 500 rows, never cut short silently.
 pub(crate) async fn list_answer<T: Serialize + Send + 'static>(
     app: &AppState,
     p: &Params,
@@ -90,16 +92,22 @@ pub(crate) async fn list_answer<T: Serialize + Send + 'static>(
             let mut all: Vec<Value> = Vec::new();
             let mut pg = q::Paging { limit: Some(q::MAX_LIMIT), after: None };
             for _ in 0..CSV_MAX_PAGES {
-                let v = serde_json::to_value(f(&e, &pg).map_err(failed)?).map_err(ApiError::server)?;
-                if let Some(Value::Array(rows)) = v.get("items") {
-                    all.extend(rows.iter().cloned());
+                let mut v = serde_json::to_value(f(&e, &pg).map_err(failed)?).map_err(ApiError::server)?;
+                if let Some(Value::Array(rows)) = v.get_mut("items") {
+                    all.append(rows);
                 }
                 match v.get("next").and_then(Value::as_str) {
                     Some(n) => pg.after = Some(n.to_string()),
-                    None => break,
+                    None => return Ok(all),
                 }
             }
-            Ok(all)
+            Err(ApiError::invalid(
+                "to_ms",
+                &format!(
+                    "The CSV would hold more than {} rows: choose a shorter period.",
+                    CSV_MAX_PAGES * q::MAX_LIMIT
+                ),
+            ))
         })
         .await?;
     Ok(crate::csv::response(name, crate::csv::rows(&items)))

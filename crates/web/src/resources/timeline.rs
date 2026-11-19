@@ -1,7 +1,7 @@
 //! Timeline and states: `/cars/{car}/timeline`, `/cars/{car}/states`, `/cars/{car}/activity`.
 //!
 //! Over the engine's [`engine::query::timeline`]: drives, charges, parked stretches, gaps and updates newest first;
-//! the car's state spans with the period's shares; the strip's segments clipped to the period.
+//! the car's state spans with the period's shares; the strip's segments clipped to the period (short ones folded, so a long period stays a bounded answer).
 
 use super::now::{answer, list_answer, period, text};
 use crate::{ApiResult, AppState, CarParam, Params};
@@ -35,5 +35,5 @@ async fn states(State(app): State<AppState>, CarParam(car): CarParam, p: Params)
 
 async fn activity(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
     let per = period(&p)?;
-    answer(&app, &p, "activity", move |e| q::timeline::activity(e, car, &per)).await
+    answer(&app, &p, "activity", move |e| q::timeline::activity_strip(e, car, &per, q::timeline::STRIP_SEGMENTS)).await
 }
