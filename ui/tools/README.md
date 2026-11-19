@@ -3,7 +3,7 @@
 | Tool | What it does |
 |---|---|
 | `sync_shared.py` | Copies the shared browser modules (`ui/shared/*.js`) into every pack's `web/shared/`. |
-| `check.js` | The page checker: opens a pack's pages in Chromium on the dev API server and reports what is wrong. |
+| `check.js` | The page checker: opens a pack's pages in Chromium on the dev API server (or a real server) and reports what is wrong. |
 
 ## The page checker
 
@@ -33,9 +33,44 @@ also on Ctrl-C and on errors. It needs Node and the Playwright that is already i
 | `--idle-timeout-ms N` | `10000` | How long to wait after that for the network to go quiet. |
 | `--jobs N` | `2` | Pages checked at the same time. |
 | `--car`, `--drive`, `--charge ID` | from the API | Open these instead. |
+| `--base URL` | none | Check against a running real server (`https://127.0.0.1:PORT`) instead of the dev server; see below. |
+| `--user NAME` | none | With `--base`: the account to sign in with. |
+| `--password PW`, `--password-file FILE` | `UI_CHECK_PASSWORD` | With `--base`: that account's password. |
 
 Exit code: `0` when every checked page passes, `1` when one fails, `2` for a usage error or when the dev
 server or the browser does not start.
+
+### Against the real server
+
+With `--base` the checker starts no dev server. It signs in to a real `sentry-mate serve` and checks the pages
+the server itself serves (the built-in packs embedded in the binary: rebuild it after changing a page).
+
+```bash
+node ui/tools/check.js --pack instrument --base https://127.0.0.1:PORT --user check-instrument --password-file pw.txt
+```
+
+- Use it only on a throwaway server with made-up data (`sentry-mate dev seed`, a build with the `dev-seed`
+  feature). The server's self-signed certificate is accepted for that origin and that run only: the Node requests
+  of the run trust it, and the browser windows ignore certificate errors while every other host stays blocked.
+- It signs in with `POST /api/v1/session` (an account without two-step sign-in), puts the session cookie in each
+  browser window, and makes the pack being checked that account's own UI pack (`PATCH /api/v1/me/preferences`
+  `ui_pack`). Two checkers can run at once with an account each (one per pack).
+- `sign-in` is opened without the session. It can only be checked for the pack the server shows signed-out
+  browsers (the pack chosen for everyone, else `instrument`); for another pack it fails with that reason.
+  `setup` is not in `all` and cannot be named: the server is set up already (check it on the dev server).
+- `--server-args` is for the dev server and is refused with `--base`.
+
+A script that builds the binary, seeds a fresh data folder, starts `serve`, makes the accounts and stops it all
+again does this:
+
+1. `cargo build -p sentry-mate --features dev-seed`, and a copy of the binary.
+2. `sentry-mate init`, then `sentry-mate dev seed --days 3 --cars 2`, with `SENTRY_MATE_DATA`, `SENTRY_MATE_KEYS`
+   (two folders), `SENTRY_MATE_REQUIRE_MOUNTS=0` and free `SENTRY_MATE_WEB_PORT` / `SENTRY_MATE_UPLOAD_PORT`.
+3. `sentry-mate serve --bind 127.0.0.1`, waiting for `GET /health`.
+4. `POST /api/v1/setup` with the code in `keys/SETUP-CODE.txt`, then `POST /api/v1/accounts` for an admin per
+   pack and a watch account (header `X-Sentry-Mate: 1` on every change).
+5. Waits until each car's `/health` has `logs_waiting` 0 and the car has drives and charges, prints the base URL,
+   the accounts and the password, and stops the server (and removes the folder) on Ctrl-C.
 
 ### Which pages it opens
 

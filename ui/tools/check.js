@@ -5,6 +5,7 @@
 //        [--out DIR] [--server-args "<dev server flags>"] [--json] [--allow-missing] [--full]
 //        [--fixture-matrix FILE] [--ready-timeout-ms N] [--idle-timeout-ms N] [--jobs N]
 //        [--car ID] [--drive ID] [--charge ID]
+//        [--base https://HOST:PORT --user NAME (--password PW | --password-file FILE)]
 //   node ui/tools/check.js --self-test
 //
 // It starts the dev API server (ui/devserver/serve.py) on a free port with the pack, opens every chosen
@@ -13,6 +14,8 @@
 // that are missing, marked on the wrong page or unknown; console errors; page errors; Content Security
 // Policy violations; failed /api requests; requests to other hosts; horizontal overflow; visible text
 // under 10 CSS px. It saves a screenshot of each. Exit code 0 only when every checked page passes.
+// With --base it starts no dev server: it signs in to a real `sentry-mate serve` (made-up data only),
+// accepting that server's self-signed certificate for this run only.
 // See ui/tools/README.md. Plain Node (CommonJS) plus Playwright; nothing else.
 
 'use strict';
@@ -21,6 +24,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
+const https = require('https');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
 
@@ -209,28 +213,81 @@ function startServer(packDir, args) {
   });
 }
 
-function getJson(origin, p, jar) {
+// One request to a server's API (the dev server over HTTP, a real server over HTTPS with its own certificate
+// accepted for this run only). Resolves { status, json, setCookies }.
+function apiRequest(server, method, p, body, cookie) {
   return new Promise((resolve, reject) => {
+    const u = new URL(server.origin + p);
+    const secure = u.protocol === 'https:';
     const headers = { Accept: 'application/json' };
-    if (jar.cookie) headers.Cookie = jar.cookie;
-    const req = http.get(origin + p, { headers, timeout: 30000 }, (res) => {
-      const set = res.headers['set-cookie'];
-      if (set && set.length) jar.cookie = set.map((c) => c.split(';')[0]).join('; ');
-      let body = '';
+    if (cookie) headers.Cookie = cookie;
+    let data = null;
+    if (body !== undefined) {
+      data = Buffer.from(JSON.stringify(body));
+      headers['Content-Type'] = 'application/json';
+      headers['Content-Length'] = data.length;
+    }
+    if (method !== 'GET' && method !== 'HEAD') headers['X-Sentry-Mate'] = '1'; // the server's CSRF header
+    const opts = { method, headers, timeout: 30000 };
+    if (secure) opts.rejectUnauthorized = !server.insecure;
+    const req = (secure ? https : http).request(u, opts, (res) => {
+      let text = '';
       res.setEncoding('utf8');
-      res.on('data', (d) => { body += d; });
+      res.on('data', (d) => { text += d; });
       res.on('end', () => {
         let json = null;
-        try { json = JSON.parse(body); } catch (_) { /* not JSON */ }
-        if (res.statusCode >= 400 || !json) {
-          const code = json && json.error && json.error.code ? ` ${json.error.code}` : '';
-          reject(new Error(`GET ${p} answered ${res.statusCode}${code}`));
-        } else resolve(json);
+        try { json = JSON.parse(text); } catch (_) { /* not JSON */ }
+        resolve({ status: res.statusCode, json, setCookies: res.headers['set-cookie'] || [] });
       });
     });
-    req.on('timeout', () => req.destroy(new Error(`GET ${p} took more than 30 s`)));
+    req.on('timeout', () => req.destroy(new Error(`${method} ${p} took more than 30 s`)));
     req.on('error', reject);
+    if (data) req.write(data);
+    req.end();
   });
+}
+
+async function getJson(server, p, jar) {
+  const r = await apiRequest(server, 'GET', p, undefined, jar.cookie || server.cookieHeader);
+  if (r.setCookies.length && !server.real) jar.cookie = r.setCookies.map((c) => c.split(';')[0]).join('; ');
+  if (r.status >= 400 || !r.json) {
+    const code = r.json && r.json.error && r.json.error.code ? ` ${r.json.error.code}` : '';
+    throw new Error(`GET ${p} answered ${r.status}${code}`);
+  }
+  return r.json;
+}
+
+// A real server (--base): signs in with the given account, makes the pack being checked that account's own
+// UI pack (PATCH /me/preferences ui_pack, so two checkers with two accounts can run at once), and returns the
+// server object the pages are opened on, with the session cookie for the browser.
+async function startReal(o, packId) {
+  let u;
+  try { u = new URL(o.base); } catch (_) { throw new UsageError(`--base ${o.base} is not a URL`); }
+  if (u.protocol !== 'https:') throw new UsageError('--base must be https:// (the server only takes passwords over HTTPS)');
+  const server = { origin: u.origin, host: u.host, args: [], real: true, insecure: true, cookies: [], cookieHeader: '', stop: async () => {} };
+  let r;
+  try {
+    r = await apiRequest(server, 'POST', '/api/v1/session', { name: o.user, password: o.password });
+  } catch (e) { throw new StartError(`the server at ${u.origin} did not answer: ${e.message}`); }
+  if (r.status !== 200) {
+    const code = r.json && r.json.error ? r.json.error.code : r.status;
+    throw new StartError(`signing in to ${u.origin} as ${o.user} failed (${code})`);
+  }
+  if (r.json && r.json.status === 'two_step_pending') throw new StartError(`the account ${o.user} needs a two-step code: use an account without two-step sign-in`);
+  for (const c of r.setCookies) {
+    const [pair] = c.split(';');
+    const i = pair.indexOf('=');
+    if (i > 0 && !/Max-Age=0/i.test(c)) server.cookies.push({ name: pair.slice(0, i), value: pair.slice(i + 1) });
+  }
+  if (!server.cookies.length) throw new StartError(`signing in to ${u.origin} set no session cookie`);
+  server.cookieHeader = server.cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+  const packs = await getJson(server, '/api/v1/ui-packs', {});
+  const ids = (packs.items || []).map((p) => p.id);
+  if (!ids.includes(packId)) throw new UsageError(`the server has no UI pack "${packId}" (it has ${ids.join(', ') || 'none'})`);
+  const set = await apiRequest(server, 'PATCH', '/api/v1/me/preferences', { ui_pack: packId }, server.cookieHeader);
+  if (set.status !== 200) throw new StartError(`choosing the UI pack ${packId} for ${o.user} failed (${set.json && set.json.error ? set.json.error.code : set.status})`);
+  server.servedSignedOut = packs.chosen || packs.default || null;
+  return server;
 }
 
 // {car} is the first car of GET /api/v1/cars; {drive} and {charge} that car's newest drive and charge
@@ -243,7 +300,7 @@ async function resolveIds(server, o, need) {
   const enc = encodeURIComponent;
   if (need.car && !ids.car) {
     try {
-      const cars = await getJson(server.origin, '/api/v1/cars?limit=1', jar);
+      const cars = await getJson(server, '/api/v1/cars?limit=1', jar);
       ids.car = cars.items && cars.items[0] ? String(cars.items[0].id) : null;
       if (!ids.car) problems.car = 'no car to open: GET /api/v1/cars lists none';
     } catch (e) { problems.car = `no car to open: ${e.message}`; }
@@ -253,7 +310,7 @@ async function resolveIds(server, o, need) {
     if (!ids.car) { problems[name] = problems.car || 'no car to open'; continue; }
     const p = `/api/v1/cars/${enc(ids.car)}/${list}?limit=1`;
     try {
-      const page = await getJson(server.origin, p, jar);
+      const page = await getJson(server, p, jar);
       ids[name] = page.items && page.items[0] ? String(page.items[0].id) : null;
       if (!ids[name]) problems[name] = `no ${name} to open: car ${ids.car} has none`;
     } catch (e) { problems[name] = `no ${name} to open: ${e.message}`; }
@@ -294,14 +351,17 @@ function slug(route) {
   return route.replace(/\{[^}]*\}/g, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'root';
 }
 
-function planPages(matrix, pagesOpt) {
+function planPages(matrix, pagesOpt, real) {
   const known = Object.keys(matrix.pages).filter((id) => id !== 'frame');
-  const all = [...known, ...Object.keys(FRAME_SCREENS)];
+  // a real server is set up already: its setup screen cannot be shown
+  const screens = Object.keys(FRAME_SCREENS).filter((id) => !(real && id === 'setup'));
+  const all = [...known, ...screens];
   const ids = pagesOpt === 'all' ? all : [...new Set(String(pagesOpt).split(',').map((s) => s.trim()).filter(Boolean))];
   if (!ids.length) throw new UsageError('--pages names no page');
   const entries = [];
   for (const id of ids) {
     if (id === 'frame') throw new UsageError('"frame" is checked on every page; name the pages to check');
+    if (real && id === 'setup') throw new UsageError('the setup screen needs a server that is not set up: check it on the dev server (no --base)');
     if (FRAME_SCREENS[id]) {
       const f = FRAME_SCREENS[id];
       entries.push({ id, key: id, route: f.route, mode: id, serverArgs: f.serverArgs, expect: f.expect, screen: true });
@@ -501,7 +561,12 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
   try {
     context = await browser.newContext({
       viewport: { width: size.w, height: size.h }, screen: { width: size.w, height: size.h }, deviceScaleFactor: 1,
+      // a real server's self-signed certificate, for this run (every other host is blocked or answered below)
+      ...(server.real ? { ignoreHTTPSErrors: true } : {}),
     });
+    if (server.real && server.cookies.length) {
+      await context.addCookies(server.cookies.map((c) => ({ name: c.name, value: c.value, url: origin + '/', secure: true, httpOnly: true, sameSite: 'Strict' })));
+    }
     // every host but the dev server: map tiles get a blank tile, anything else is recorded and blocked
     await context.route((u) => /^(https?|wss?):$/.test(u.protocol) && u.host !== server.host, (route) => {
       const req = route.request();
@@ -724,7 +789,7 @@ async function run(o) {
   const log = o.log || (() => {});
   const matrix = loadMatrix(o.matrixFile);
   const packName = path.basename(o.packDir);
-  const entries = planPages(matrix, o.pages);
+  const entries = planPages(matrix, o.pages, !!o.base);
   const outDir = path.join(o.out, packName);
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -732,11 +797,22 @@ async function run(o) {
   let browser = null;
   try {
     const modes = [...new Map(entries.map((e) => [e.mode, e.serverArgs])).entries()];
-    await Promise.all(modes.map(async ([mode, args]) => { servers[mode] = await startServer(o.packDir, [...o.serverArgs, ...args]); }));
+    if (o.base) {
+      // one real server for every page: the pages signed in, the sign-in screen without the session
+      const real = await startReal(o, packName);
+      for (const [mode] of modes) servers[mode] = mode === 'normal' ? real : { ...real, cookies: [], cookieHeader: '', stop: async () => {} };
+      for (const e of entries) {
+        if (e.id === 'sign-in' && real.servedSignedOut !== packName) {
+          e.problem = `the server shows pack ${real.servedSignedOut} to signed-out browsers, not ${packName}: the sign-in screen of ${packName} cannot be opened there`;
+        }
+      }
+    } else {
+      await Promise.all(modes.map(async ([mode, args]) => { servers[mode] = await startServer(o.packDir, [...o.serverArgs, ...args]); }));
+    }
     const need = {};
     for (const e of entries) if (e.mode === 'normal') for (const m of e.route.matchAll(/\{([a-z]+)\}/g)) need[m[1]] = true;
     const { ids, problems } = await resolveIds(servers.normal, o, need);
-    for (const e of entries) Object.assign(e, fillRoute(e.route, ids, problems));
+    for (const e of entries) if (!e.problem) Object.assign(e, fillRoute(e.route, ids, problems));
     log(`checking ${plural(entries.length, 'route')} of pack ${packName} at ${o.sizes.map((s) => s.label).join(', ')} on ${servers.normal ? servers.normal.origin : Object.values(servers)[0].origin}`);
 
     let chromium;
@@ -767,7 +843,7 @@ async function run(o) {
       pack: packName,
       packDir: rel(o.packDir),
       matrix: rel(matrix.file),
-      server: { origin: servers.normal ? servers.normal.origin : null, args: o.serverArgs },
+      server: { origin: servers.normal ? servers.normal.origin : o.base || null, args: o.serverArgs, real: !!o.base, user: o.base ? o.user : null },
       opened: ids,
       sizes: o.sizes.map((s) => s.label),
       out: outDir,
@@ -838,7 +914,7 @@ function formatReport(rep) {
   const L = [];
   L.push(`Page check of pack ${rep.pack} (${rep.packDir}), matrix ${rep.matrix}`);
   const opened = Object.entries(rep.opened).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(', ');
-  if (rep.server.origin) L.push(`Dev server ${rep.server.origin}${rep.server.args.length ? ` (${rep.server.args.join(' ')})` : ''}${opened ? `; opened ${opened}` : ''}`);
+  if (rep.server.origin) L.push(`${rep.server.real ? `Real server (signed in as ${rep.server.user})` : 'Dev server'} ${rep.server.origin}${rep.server.args.length ? ` (${rep.server.args.join(' ')})` : ''}${opened ? `; opened ${opened}` : ''}`);
   L.push(`Screenshots in ${rep.out}`);
   L.push('');
   let pass = 0, warn = 0;
@@ -963,6 +1039,10 @@ const HELP = `Usage: node ui/tools/check.js --pack <name or folder> [options]
   --idle-timeout-ms N    how long to wait for the network to go quiet after that (default 10000)
   --jobs N               pages checked at the same time (default 2)
   --car ID, --drive ID, --charge ID   open these instead of the first car and its newest drive and charge
+  --base URL             a real sentry-mate serve (https://127.0.0.1:PORT) instead of the dev server; its
+                         self-signed certificate is accepted for this run only (see ui/tools/README.md)
+  --user NAME            the account to sign in with on --base (the pack becomes its own UI pack)
+  --password PW, --password-file FILE   its password (or set UI_CHECK_PASSWORD)
   --self-test            check both fixtures in ui/tools/fixtures and assert the results
 
 Exit code 0 when every checked page passes, 1 when one fails, 2 on a usage or start-up error.
@@ -982,12 +1062,13 @@ function parseArgs(argv) {
   const o = {
     pack: null, pages: 'all', sizes: DEFAULT_SIZES, out: DEFAULT_OUT, serverArgs: '', json: false, allowMissing: false,
     full: false, fixtureMatrix: null, selfTest: false, readyTimeoutMs: '20000', idleTimeoutMs: '10000', jobs: '2',
-    car: null, drive: null, charge: null, help: false,
+    car: null, drive: null, charge: null, help: false, base: null, user: null, password: null, passwordFile: null,
   };
   const values = {
     '--pack': 'pack', '--pages': 'pages', '--sizes': 'sizes', '--out': 'out', '--server-args': 'serverArgs',
     '--fixture-matrix': 'fixtureMatrix', '--ready-timeout-ms': 'readyTimeoutMs', '--idle-timeout-ms': 'idleTimeoutMs',
     '--jobs': 'jobs', '--car': 'car', '--drive': 'drive', '--charge': 'charge',
+    '--base': 'base', '--user': 'user', '--password': 'password', '--password-file': 'passwordFile',
   };
   const flags = { '--json': 'json', '--allow-missing': 'allowMissing', '--full': 'full', '--self-test': 'selfTest', '--help': 'help', '-h': 'help' };
   for (let i = 0; i < argv.length; i++) {
@@ -1015,6 +1096,19 @@ function parseArgs(argv) {
   o.serverArgs = splitArgs(o.serverArgs);
   o.out = path.resolve(o.out);
   o.matrixFile = o.fixtureMatrix ? path.resolve(o.fixtureMatrix) : MATRIX_FILE;
+  if (o.base) {
+    if (o.selfTest) throw new UsageError('--self-test runs on the dev server; leave out --base');
+    if (o.serverArgs.length) throw new UsageError('--server-args is for the dev server; a real server (--base) takes none');
+    if (!o.user) throw new UsageError('--base needs --user (an account on that server)');
+    if (o.passwordFile) {
+      try { o.password = fs.readFileSync(path.resolve(o.passwordFile), 'utf8').replace(/\r?\n$/, ''); } catch (e) { throw new UsageError(`--password-file: ${e.message}`); }
+    }
+    if (!o.password) o.password = process.env.UI_CHECK_PASSWORD || null;
+    if (!o.password) throw new UsageError('--base needs --password, --password-file or UI_CHECK_PASSWORD');
+    o.base = o.base.replace(/\/+$/, '');
+  } else if (o.user || o.password || o.passwordFile) {
+    throw new UsageError('--user and --password are for a real server: give --base too');
+  }
   if (!o.help && !o.selfTest) {
     if (!o.pack) throw new UsageError('--pack is required (see --help)');
     const asDir = path.resolve(o.pack);
