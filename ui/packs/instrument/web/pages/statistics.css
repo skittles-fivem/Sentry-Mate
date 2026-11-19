@@ -91,3 +91,4 @@
 }
 .st-mileage .st-mile-fail { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 0 0 0.75rem; }
 .st-fail-note { text-align: center; margin: 0 0 0.5rem; }
+@container page (max-width: 36rem) { .st-stones { grid-template-columns: minmax(0, 1fr); } .st-filter { flex-wrap: wrap; max-width: 100%; } }

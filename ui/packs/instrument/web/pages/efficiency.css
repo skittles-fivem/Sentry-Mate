@@ -111,3 +111,4 @@
   .ef-cars-menu { left: 0; right: auto; }
   .ef-whcell .bar { display: none; }
 }
+@container page (max-width: 36rem) { .ef-filter-row > .filter { flex-wrap: wrap; max-width: 100%; } .ef-cars-menu { max-width: calc(100vw - 7.5rem); } }

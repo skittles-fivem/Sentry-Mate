@@ -169,3 +169,4 @@
   .life-cols, .cap-figs, .cl-shares { grid-template-columns: 1fr; }
   .bat-soc-val { font-size: 3rem; }
 }
+@container page (max-width: 36rem) { .cl-foot, .cl-shares { grid-template-columns: minmax(0, 1fr); } .cl-stats { display: block; overflow-x: auto; } }

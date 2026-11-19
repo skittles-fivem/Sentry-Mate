@@ -1310,3 +1310,15 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
   .menu-panel { width: min(84rem, calc(100vw - 3rem)); }
   .menu-groups { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
+
+/* a phone: page actions, filters, segmented choices and chart keys wrap instead of widening the page */
+@container page (max-width: 36rem) {
+  .page-head { flex-wrap: wrap; align-items: flex-start; }
+  .page-actions { flex: 1 1 100%; flex-wrap: wrap; }
+  .filter { flex-wrap: wrap; max-width: 100%; }
+  .filter .select, .filter select { max-width: 100%; }
+  .seg { flex-wrap: wrap; max-width: 100%; }
+  .chart-label { flex-wrap: wrap; row-gap: 0.25rem; padding-left: 0; }
+  .filter-bar .field--search { width: 100%; }
+  .kv dd { white-space: normal; }
+}

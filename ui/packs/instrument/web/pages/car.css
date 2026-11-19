@@ -169,3 +169,4 @@
   .now-row--3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .chart--batt { height: 18rem; }
 }
+@container page (max-width: 36rem) { .gauge-main { --g: 16rem; } }
