@@ -1364,7 +1364,8 @@ async fn start_web(
     hashing: accounts::Hashing,
 ) -> Result<Side, Box<dyn std::error::Error>> {
     let (d, k, v2, e2) = (data.to_path_buf(), keys.to_path_buf(), v.clone(), engine.engine.clone());
-    let app = tokio::task::spawn_blocking(move || site::web_state(&d, &k, v2, &e2, hashing))
+    let ports = web::resources::mqtt::Network { web_port: net.web, upload_port: net.upload };
+    let app = tokio::task::spawn_blocking(move || site::web_state(&d, &k, v2, &e2, hashing, Some(ports)))
         .await?
         .map_err(|e| e as Box<dyn std::error::Error>)?;
     let listener = tokio::net::TcpListener::bind((net.bind.as_str(), net.web)).await?;
@@ -1374,7 +1375,11 @@ async fn start_web(
         tokio::task::spawn_blocking(move || a2.announce_setup().map(|c| c.is_some()).map_err(|e| e.message))
             .await?
             .map_err(|e| format!("the setup code: {e}"))?;
-    let tasks = vec![site::forward(&engine.engine, app.events.clone()), site::spawn_upkeep(app.clone(), announced)];
+    let tasks = vec![
+        site::forward(&engine.engine, app.events.clone()),
+        site::spawn_upkeep(app.clone(), announced),
+        web::resources::mqtt::spawn(app.clone()),
+    ];
     let web = Box::pin(web::serve(listener, id.tls_config()?, web::router_with(app.clone(), api::routes())));
     Ok(Side { engine: Some(engine), web, app: Some(app), tasks })
 }

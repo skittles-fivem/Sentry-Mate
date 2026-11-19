@@ -695,3 +695,25 @@ async fn coalesces_2000_cars_while_the_broker_is_away() {
     assert_eq!(round2, cars as usize, "one changed value per car, nothing else");
     m.stop().await;
 }
+
+#[tokio::test]
+async fn the_test_button_publishes_one_message_and_says_why_not() {
+    let b = Broker::start(Tls::V13, None).await;
+    let s = settings(&b);
+    let p = mqtt::probe::probe(&s).await;
+    assert!(p.ok, "{p:?}");
+    assert_eq!(p.topic.as_deref(), Some("sentry-mate/test"));
+    assert!(p.latency_ms.is_some() && p.tls);
+    let got = b.got();
+    assert_eq!(got.len(), 1, "one message: {got:?}");
+    assert_eq!((got[0].topic.as_str(), got[0].retain), ("sentry-mate/test", false));
+    let hello = &b.hellos()[0];
+    assert_eq!(hello.client_id, "sentry-mate-test-test", "its own client id");
+    assert!(hello.will.is_none(), "no last will: the test never says offline");
+    // a wrong pin: nothing sent
+    let wrong = Settings { cert_sha256: Some("00".repeat(32)), ..settings(&b) };
+    let p = mqtt::probe::probe(&wrong).await;
+    assert_eq!(p.error, Some("pin_mismatch"), "{p:?}");
+    assert!(p.message.contains(&b.fingerprint), "{}", p.message);
+    assert_eq!(b.hellos().len(), 1);
+}

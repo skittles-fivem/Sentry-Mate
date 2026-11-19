@@ -70,7 +70,7 @@ pub(crate) struct PinnedVerifier {
 
 /// A refused pin, with the fingerprint the broker sent so the owner can compare.
 #[derive(Debug)]
-struct PinMismatch(String);
+pub(crate) struct PinMismatch(String);
 
 impl std::fmt::Display for PinMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

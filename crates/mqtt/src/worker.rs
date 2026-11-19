@@ -183,7 +183,7 @@ async fn drive(eventloop: &mut EventLoop, conn: &Conn, shared: &Shared, describe
 }
 
 /// The reason a connection failed, in words that say what to change where we can tell.
-fn explain(e: &rumqttc::ConnectionError) -> String {
+pub(crate) fn explain(e: &rumqttc::ConnectionError) -> String {
     use rumqttc::{ConnectReturnCode as Code, ConnectionError as E, TlsError};
     let tls = match e {
         E::Tls(TlsError::TLS(t)) => Some(t),

@@ -94,13 +94,16 @@ impl web::CarDirectory for EngineCars {
 }
 
 /// The web side's state: accounts and their audit log in the data folder, the web's own files in `web/`, the setup
-/// code beside the key file.
+/// code beside the key file, the ports the server listens on (for `/network`), and the MQTT publisher's side (for
+/// [`web::resources::mqtt::spawn`]). The server settings are applied at once (the preference defaults, the tile
+/// origins).
 pub fn web_state(
     data: &Path,
     keys: &Path,
     v: Arc<Vault>,
     engine: &engine::Engine,
     hashing: accounts::Hashing,
+    network: Option<web::resources::mqtt::Network>,
 ) -> Result<web::AppState, Fail> {
     let audit = Arc::new(accounts::Audit::open(data.join("audit"), v.clone(), accounts::system_clock())?);
     let options = accounts::Options { hashing, ..accounts::Options::default() };
@@ -116,7 +119,13 @@ pub fn web_state(
             data_dir: Some(data.to_path_buf()),
             certificate: Some(ingest::server::tls_dir(data).join("cert.pem")),
         }))
-        .build()?;
+        .service(Arc::new(web::resources::mqtt::Publisher::new()));
+    let app = match network {
+        Some(n) => app.service(Arc::new(n)),
+        None => app,
+    }
+    .build()?;
+    web::resources::settings::init(&app, engine).map_err(|e| e.message)?;
     Ok(app)
 }
 

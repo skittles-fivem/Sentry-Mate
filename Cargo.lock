@@ -2248,6 +2248,7 @@ dependencies = [
  "hyper-util",
  "ingest",
  "model",
+ "mqtt",
  "percent-encoding",
  "places",
  "rustls",

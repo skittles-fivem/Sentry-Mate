@@ -1,10 +1,682 @@
-//! Server settings: `/settings` (it also sets the frame's preference defaults with `AppState::set_defaults` and the tile origins with `AppState::set_tiles`), `/about` (with `packs::about_ui_pack`).
+//! Server settings: `GET`/`PATCH /api/v1/settings` (docs/ui-api.md, "Server, settings and health").
 //!
-//! Empty: the endpoint builder fills `routes()` (full paths, see the crate's notes on adding endpoints).
+//! The server's defaults (units, range, car order) that everyone's preferences start from, where addresses and map
+//! tiles come from, the release check, links to other sites, the proxy for what the server fetches itself, and the
+//! host names the next certificate is made for. Kept in the history's database (sealed with the vault) under the
+//! `server` setting; until a first change, every value is its default.
+//!
+//! The frame follows the settings at once: [`apply`] sets the preference defaults ([`AppState::set_defaults`],
+//! which pushes a `prefs` event to every open stream when they change) and the tile origins of the packs' CSP
+//! ([`AppState::set_tiles`]), at start ([`init`]) and after every change. A change of units also goes to the MQTT
+//! settings, so MQTT publishes (and `/cars/{car}/events` shows) values in the server's units.
+//!
+//! A PATCH carries `version` and only the parts that change (`{ units: { pressure: "psi" } }` keeps the other
+//! units); a wrong type is `400 bad_input`, a value that breaks a rule `422 invalid`, both by field (`units.distance`,
+//! `host_names.2`), a stale version `409 stale_version`. `car_order` only ever shows the cars the account sees; a
+//! change keeps the cars it doesn't see where they were (after the ones it sent).
 
-use crate::AppState;
-use axum::Router;
+use crate::ctx::target;
+use crate::units::{self, Defaults, Units};
+use crate::{ApiError, ApiResult, AppState, Fields, JsonBody, Viewer, ids};
+use axum::extract::State;
+use axum::routing::get;
+use axum::{Json, Router};
+use engine::Engine;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use std::sync::Mutex;
+
+/// The database setting the server settings are kept under.
+pub const KEY: &str = "server";
+
+/// One change of the server's or the MQTT settings at a time, so of two changes with the same version one wins and
+/// the other gets `409`.
+pub(crate) static CHANGES: Mutex<()> = Mutex::new(());
+
+pub const GEOCODE_MODES: &[&str] = &["offline", "online"];
+pub const TILE_MODES: &[&str] = &["offline", "online"];
+pub const DATASETS: &[&str] = &["cities1000", "cities500"];
+pub const MAX_HOST_NAMES: usize = 10;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Geocode {
+    /// `offline` (the GeoNames towns in the data folder) or `online` (an address service at `url`).
+    pub mode: String,
+    pub dataset: String,
+    pub url: Option<String>,
+    pub language: String,
+    /// Positions are rounded to this before an online lookup.
+    pub rounding_m: u32,
+}
+
+impl Default for Geocode {
+    fn default() -> Geocode {
+        Geocode {
+            mode: "offline".into(),
+            dataset: places::geocode::Dataset::default().name().into(),
+            url: None,
+            language: "en".into(),
+            rounding_m: 10,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Tiles {
+    /// `online` (the browsers load tiles from `online_url`) or `offline` (tiles from this server).
+    pub mode: String,
+    pub online_url: Option<String>,
+    pub attribution: String,
+    pub max_zoom: u8,
+}
+
+impl Default for Tiles {
+    fn default() -> Tiles {
+        Tiles {
+            mode: "online".into(),
+            online_url: Some(places::tiles::OSM_TILE_URL.into()),
+            attribution: places::tiles::OSM_TILE_CREDIT.into(),
+            max_zoom: 19,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReleaseCheck {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OutsideLinks {
+    pub maps: bool,
+    pub release_notes: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Outbound {
+    pub proxy: Option<String>,
+}
+
+/// The server settings as stored and answered (`car_order` filtered per account on the way out).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerSettings {
+    pub units: Units,
+    pub range: units::Range,
+    /// Car ids (`c<n>`).
+    pub car_order: Vec<String>,
+    pub geocode: Geocode,
+    pub tiles: Tiles,
+    pub release_check: ReleaseCheck,
+    pub outside_links: OutsideLinks,
+    pub outbound: Outbound,
+    /// The names the next certificate is made for (the one running now keeps its own: `/network`).
+    pub host_names: Vec<String>,
+    pub version: u64,
+}
+
+impl Default for ServerSettings {
+    fn default() -> ServerSettings {
+        ServerSettings {
+            units: Units::default(),
+            range: units::Range::default(),
+            car_order: Vec::new(),
+            geocode: Geocode::default(),
+            tiles: Tiles::default(),
+            release_check: ReleaseCheck::default(),
+            outside_links: OutsideLinks::default(),
+            outbound: Outbound::default(),
+            host_names: Vec::new(),
+            version: 1,
+        }
+    }
+}
+
+impl ServerSettings {
+    /// The preference defaults these give.
+    pub fn defaults(&self) -> Defaults {
+        Defaults { units: self.units, range: self.range, car_order: self.car_order.clone() }
+    }
+
+    /// The origins the pages may load map tiles from: the online tile server's (none while tiles are offline).
+    pub fn tile_origins(&self) -> Vec<String> {
+        match (self.tiles.mode.as_str(), self.tiles.online_url.as_deref()) {
+            ("online", Some(url)) => origin_of(url).into_iter().collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// `https://host[:port]` of an https address.
+pub fn origin_of(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let auth = &rest[..end];
+    (!auth.is_empty() && !auth.contains('@')).then(|| format!("https://{}", auth.to_ascii_lowercase()))
+}
+
+/// The host of an http(s) address.
+pub fn host_of(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let auth = &rest[..end];
+    let host = if let Some(v6) = auth.strip_prefix('[') {
+        v6.split_once(']').map_or(v6, |(h, _)| h)
+    } else {
+        auth.rsplit_once(':').map_or(auth, |(h, _)| h)
+    };
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+/// The saved settings (the defaults until a first change; `host_names` defaults to the names of the certificate
+/// the server runs with, so a first save keeps them).
+pub fn load(e: &Engine, cert_names: &[String]) -> ApiResult<ServerSettings> {
+    let saved = e.db().setting(KEY).map_err(|err| ApiError::server(format!("reading the server settings: {err}")))?;
+    match saved {
+        Some(v) => Ok(serde_json::from_value(v).unwrap_or_else(|err| {
+            tracing::error!("the server settings can't be read ({err}); the defaults apply until they are saved again");
+            ServerSettings::default()
+        })),
+        None => Ok(ServerSettings {
+            host_names: cert_names.iter().filter(|n| *n != "localhost").cloned().collect(),
+            ..ServerSettings::default()
+        }),
+    }
+}
+
+/// Makes the frame follow `s`: the preference defaults (pushing `prefs` events only when they changed) and the tile
+/// origins.
+pub fn apply(app: &AppState, s: &ServerSettings) {
+    let d = s.defaults();
+    if app.defaults() != d {
+        app.set_defaults(d);
+    }
+    app.set_tiles(s.tile_origins());
+}
+
+/// At start: the frame follows the saved settings (else the defaults).
+pub fn init(app: &AppState, e: &Engine) -> ApiResult<()> {
+    let s = load(e, &cert_names(app))?;
+    apply(app, &s);
+    Ok(())
+}
+
+/// The names in the certificate the server runs with now (empty when unknown).
+pub fn cert_names(app: &AppState) -> Vec<String> {
+    let Ok(src) = app.service::<super::notices::Sources>() else { return Vec::new() };
+    let Some(path) = src.certificate.as_ref() else { return Vec::new() };
+    std::fs::read_to_string(path).ok().map(|pem| san_names(&pem)).unwrap_or_default()
+}
 
 pub fn routes() -> Router<AppState> {
-    Router::new()
+    Router::new().route("/api/v1/settings", get(read).patch(change))
+}
+
+/// The settings as one account sees them: `car_order` lists only the cars it sees.
+fn view(app: &AppState, v: &Viewer, s: &ServerSettings) -> Value {
+    let mut out = serde_json::to_value(s).unwrap_or_else(|_| json!({}));
+    let order: Vec<Value> = s
+        .car_order
+        .iter()
+        .filter(|c| ids::parse_car(c).is_some_and(|id| v.sees_existing(app, id)))
+        .map(|c| Value::from(c.as_str()))
+        .collect();
+    out["car_order"] = Value::Array(order);
+    out
+}
+
+async fn read(State(app): State<AppState>, v: Viewer) -> ApiResult<Json<Value>> {
+    let e = app.service::<Engine>()?;
+    let s = app.blocking(move |app| load(&e, &cert_names(app))).await?;
+    Ok(Json(view(&app, &v, &s)))
+}
+
+async fn change(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiResult<Json<Value>> {
+    let e = app.service::<Engine>()?;
+    let who = v.clone();
+    let (before, after) = app
+        .blocking(move |app| {
+            let _one = CHANGES.lock().unwrap_or_else(|p| p.into_inner());
+            let cur = load(&e, &cert_names(app))?;
+            if body.version()? != cur.version {
+                return Err(ApiError::stale_version(cur.version));
+            }
+            let mut new = patched(app, &who, &cur, &body)?;
+            new.version = cur.version + 1;
+            let value = serde_json::to_value(&new)?;
+            e.db()
+                .set_setting(KEY, value)
+                .map_err(|err| ApiError::server(format!("saving the server settings: {err}")))?;
+            if new.units != cur.units {
+                super::mqtt::follow_units(app, &e, new.units)?;
+            }
+            Ok((cur, new))
+        })
+        .await?;
+    apply(&app, &after);
+    let mut changed: Vec<&str> = Vec::new();
+    for (k, same) in [
+        ("units", before.units == after.units),
+        ("range", before.range == after.range),
+        ("car order", before.car_order == after.car_order),
+        ("address lookup", before.geocode == after.geocode),
+        ("map tiles", before.tiles == after.tiles),
+        ("release check", before.release_check == after.release_check),
+        ("links to other sites", before.outside_links == after.outside_links),
+        ("proxy", before.outbound == after.outbound),
+        ("host names", before.host_names == after.host_names),
+    ] {
+        if !same {
+            changed.push(k);
+        }
+    }
+    let summary = if changed.is_empty() {
+        "Saved the server settings unchanged.".to_string()
+    } else {
+        format!("Changed the server settings: {}.", changed.join(", "))
+    };
+    v.audit(&app, "settings-changed", Some(&target("settings", None, "server")), &summary).await?;
+    Ok(Json(view(&app, &v, &after)))
+}
+
+// ---- reading a PATCH
+
+fn is_https_url(s: &str) -> bool {
+    s.len() <= 2048
+        && !s.chars().any(|c| c.is_whitespace() || c.is_control())
+        && origin_of(s).is_some_and(|o| host_ok(o.trim_start_matches("https://")))
+}
+
+/// `host[:port]`: a host name, an IPv4 address or a bracketed IPv6 address, and a port.
+fn host_ok(auth: &str) -> bool {
+    let (host, port) = if let Some(v6) = auth.strip_prefix('[') {
+        match v6.split_once(']') {
+            Some((h, rest)) => {
+                if h.parse::<std::net::Ipv6Addr>().is_err() {
+                    return false;
+                }
+                (None, rest.strip_prefix(':'))
+            }
+            None => return false,
+        }
+    } else {
+        match auth.rsplit_once(':') {
+            Some((h, p)) => (Some(h), Some(p)),
+            None => (Some(auth), None),
+        }
+    };
+    if let Some(p) = port
+        && !p.parse::<u16>().is_ok_and(|n| n > 0)
+    {
+        return false;
+    }
+    host.is_none_or(is_host_name)
+}
+
+/// A DNS name (labels of letters, digits and `-`, not at a label's ends) or an IPv4 address.
+pub fn is_host_name(h: &str) -> bool {
+    !h.is_empty()
+        && h.len() <= 253
+        && h.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+        })
+}
+
+/// `http://`, `https://` or `socks5://` with a host and an optional port, no name or password.
+fn is_proxy(s: &str) -> bool {
+    let Some((scheme, rest)) = s.split_once("://") else { return false };
+    if !matches!(scheme, "http" | "https" | "socks5") {
+        return false;
+    }
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    !rest.is_empty() && !rest.contains(['@', '/', '?', '#']) && host_ok(rest)
+}
+
+/// The sub-object `name` of the body (`400` on its unknown keys, and when it is not an object).
+fn part<'a>(body: &'a JsonBody, name: &str, keys: &[&str], bad: &mut Fields) -> Option<&'a Map<String, Value>> {
+    match body.get(name) {
+        None => None,
+        Some(Value::Object(m)) => {
+            for k in m.keys() {
+                if !keys.contains(&k.as_str()) {
+                    bad.add(&format!("{name}.{k}"), "Unknown field.");
+                }
+            }
+            Some(m)
+        }
+        Some(_) => {
+            bad.add(name, "Must be an object.");
+            None
+        }
+    }
+}
+
+fn word(
+    m: &Map<String, Value>,
+    at: &str,
+    k: &str,
+    allowed: &[&str],
+    bad: &mut Fields,
+    rule: &mut Fields,
+) -> Option<String> {
+    match m.get(k)? {
+        Value::String(s) if allowed.contains(&s.as_str()) => Some(s.clone()),
+        Value::String(_) => {
+            rule.add(&format!("{at}.{k}"), &format!("Must be one of: {}.", allowed.join(", ")));
+            None
+        }
+        _ => {
+            bad.add(&format!("{at}.{k}"), "Must be text.");
+            None
+        }
+    }
+}
+
+fn text(m: &Map<String, Value>, at: &str, k: &str, bad: &mut Fields) -> Option<String> {
+    match m.get(k)? {
+        Value::String(s) => Some(s.clone()),
+        _ => {
+            bad.add(&format!("{at}.{k}"), "Must be text.");
+            None
+        }
+    }
+}
+
+/// `Some(None)` for null.
+fn text_or_null(m: &Map<String, Value>, at: &str, k: &str, bad: &mut Fields) -> Option<Option<String>> {
+    match m.get(k)? {
+        Value::Null => Some(None),
+        Value::String(s) => Some(Some(s.clone())),
+        _ => {
+            bad.add(&format!("{at}.{k}"), "Must be text or null.");
+            None
+        }
+    }
+}
+
+fn flag(m: &Map<String, Value>, at: &str, k: &str, bad: &mut Fields) -> Option<bool> {
+    match m.get(k)? {
+        Value::Bool(b) => Some(*b),
+        _ => {
+            bad.add(&format!("{at}.{k}"), "Must be true or false.");
+            None
+        }
+    }
+}
+
+fn whole(m: &Map<String, Value>, at: &str, k: &str, bad: &mut Fields) -> Option<u64> {
+    let v = m.get(k)?;
+    let n = v.as_u64();
+    if n.is_none() {
+        bad.add(&format!("{at}.{k}"), "Must be a whole number.");
+    }
+    n
+}
+
+/// `cur` with the body's changes, every rule checked (`400`, then `422`, each naming its fields).
+fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) -> ApiResult<ServerSettings> {
+    let mut bad = Fields::new();
+    let mut rule = Fields::new();
+    let known = [
+        "version",
+        "units",
+        "range",
+        "car_order",
+        "geocode",
+        "tiles",
+        "release_check",
+        "outside_links",
+        "outbound",
+        "host_names",
+    ];
+    for k in body.0.keys() {
+        if !known.contains(&k.as_str()) {
+            bad.add(k, "Unknown field.");
+        }
+    }
+    let mut new = cur.clone();
+    if let Some(m) = part(body, "units", &["distance", "temperature", "pressure"], &mut bad) {
+        if let Some(w) = word(m, "units", "distance", units::DISTANCE, &mut bad, &mut rule) {
+            new.units.distance = if w == "mi" { units::Distance::Mi } else { units::Distance::Km };
+        }
+        if let Some(w) = word(m, "units", "temperature", units::TEMPERATURE, &mut bad, &mut rule) {
+            new.units.temperature = if w == "f" { units::Temperature::F } else { units::Temperature::C };
+        }
+        if let Some(w) = word(m, "units", "pressure", units::PRESSURE, &mut bad, &mut rule) {
+            new.units.pressure = if w == "psi" { units::Pressure::Psi } else { units::Pressure::Bar };
+        }
+    }
+    match body.get("range") {
+        None => {}
+        Some(Value::String(s)) if s == "rated" => new.range = units::Range::Rated,
+        Some(Value::String(s)) if s == "ideal" => new.range = units::Range::Ideal,
+        Some(Value::String(_)) => rule.add("range", "Must be rated or ideal."),
+        Some(_) => bad.add("range", "Must be text."),
+    }
+    if let Some(order) = body.get("car_order") {
+        match order
+            .as_array()
+            .and_then(|a| a.iter().map(|x| x.as_str().and_then(ids::parse_car)).collect::<Option<Vec<_>>>())
+        {
+            None => bad.add("car_order", "Must be a list of car ids."),
+            Some(list) if list.len() > crate::prefs::MAX_CAR_ORDER => {
+                rule.add("car_order", &format!("At most {} cars.", crate::prefs::MAX_CAR_ORDER));
+            }
+            Some(list) => {
+                // (the same answer for a hidden car and an unknown one)
+                if !list.iter().all(|c| v.sees_existing(app, *c)) {
+                    rule.add("car_order", "No such car.");
+                } else {
+                    let mut seen = std::collections::HashSet::new();
+                    let mut out: Vec<String> = list.into_iter().filter(|c| seen.insert(*c)).map(ids::car).collect();
+                    // the cars this account doesn't see keep their places after the ones it sent
+                    for c in &cur.car_order {
+                        if ids::parse_car(c).is_some_and(|id| !v.sees(id) && app.car_exists(id)) && !out.contains(c) {
+                            out.push(c.clone());
+                        }
+                    }
+                    new.car_order = out;
+                }
+            }
+        }
+    }
+    if let Some(m) = part(body, "geocode", &["mode", "dataset", "url", "language", "rounding_m"], &mut bad) {
+        if let Some(w) = word(m, "geocode", "mode", GEOCODE_MODES, &mut bad, &mut rule) {
+            new.geocode.mode = w;
+        }
+        if let Some(w) = word(m, "geocode", "dataset", DATASETS, &mut bad, &mut rule) {
+            new.geocode.dataset = w;
+        }
+        if let Some(u) = text_or_null(m, "geocode", "url", &mut bad) {
+            new.geocode.url = u.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        }
+        if let Some(l) = text(m, "geocode", "language", &mut bad) {
+            new.geocode.language = l.trim().to_string();
+        }
+        if let Some(n) = whole(m, "geocode", "rounding_m", &mut bad) {
+            new.geocode.rounding_m = u32::try_from(n.min(u64::from(u32::MAX))).unwrap_or(u32::MAX);
+        }
+    }
+    if let Some(m) = part(body, "tiles", &["mode", "online_url", "attribution", "max_zoom"], &mut bad) {
+        if let Some(w) = word(m, "tiles", "mode", TILE_MODES, &mut bad, &mut rule) {
+            new.tiles.mode = w;
+        }
+        if let Some(u) = text_or_null(m, "tiles", "online_url", &mut bad) {
+            new.tiles.online_url = u.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        }
+        if let Some(a) = text(m, "tiles", "attribution", &mut bad) {
+            new.tiles.attribution = a.trim().to_string();
+        }
+        if let Some(n) = whole(m, "tiles", "max_zoom", &mut bad) {
+            new.tiles.max_zoom = u8::try_from(n).unwrap_or(u8::MAX);
+        }
+    }
+    if let Some(m) = part(body, "release_check", &["enabled"], &mut bad)
+        && let Some(b) = flag(m, "release_check", "enabled", &mut bad)
+    {
+        new.release_check.enabled = b;
+    }
+    if let Some(m) = part(body, "outside_links", &["maps", "release_notes"], &mut bad) {
+        if let Some(b) = flag(m, "outside_links", "maps", &mut bad) {
+            new.outside_links.maps = b;
+        }
+        if let Some(b) = flag(m, "outside_links", "release_notes", &mut bad) {
+            new.outside_links.release_notes = b;
+        }
+    }
+    if let Some(m) = part(body, "outbound", &["proxy"], &mut bad)
+        && let Some(p) = text_or_null(m, "outbound", "proxy", &mut bad)
+    {
+        new.outbound.proxy = p.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    }
+    if let Some(h) = body.get("host_names") {
+        match h.as_array().and_then(|a| a.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()) {
+            None => bad.add("host_names", "Must be a list of host names."),
+            Some(list) if list.is_empty() || list.len() > MAX_HOST_NAMES => {
+                rule.add("host_names", &format!("1 to {MAX_HOST_NAMES} host names."));
+            }
+            Some(list) => {
+                let mut out: Vec<String> = Vec::new();
+                for (i, n) in list.iter().enumerate() {
+                    let n = n.trim().to_ascii_lowercase();
+                    if !is_host_name(&n) {
+                        rule.add(&format!("host_names.{i}"), "A host name such as sentry-mate.local.");
+                    } else if !out.contains(&n) {
+                        out.push(n);
+                    }
+                }
+                new.host_names = out;
+            }
+        }
+    }
+    bad.bad_input()?;
+    // the rules of the whole, after the parts
+    let g = &new.geocode;
+    if let Some(u) = &g.url
+        && !is_https_url(u)
+    {
+        rule.add("geocode.url", "An https:// address, or null.");
+    } else if g.mode == "online" && g.url.is_none() {
+        rule.add("geocode.url", "Online address lookup needs the https:// address of the service.");
+    }
+    if g.rounding_m > 1000 {
+        rule.add("geocode.rounding_m", "Must be between 0 and 1000 m.");
+    }
+    if !(2..=10).contains(&g.language.chars().count())
+        || !g.language.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        rule.add("geocode.language", "A language code such as en or de.");
+    }
+    let t = &new.tiles;
+    let template_ok = |u: &str| is_https_url(u) && ["{z}", "{x}", "{y}"].iter().all(|p| u.contains(p));
+    if let Some(u) = &t.online_url
+        && !template_ok(u)
+    {
+        rule.add("tiles.online_url", "An https:// tile address with {z}, {x} and {y}, or null.");
+    } else if t.mode == "online" && t.online_url.is_none() {
+        rule.add("tiles.online_url", "Online tiles need an https:// tile address with {z}, {x} and {y}.");
+    }
+    if !(1..=22).contains(&t.max_zoom) {
+        rule.add("tiles.max_zoom", "Must be between 1 and 22.");
+    }
+    if t.attribution.chars().count() > 300 {
+        rule.add("tiles.attribution", "At most 300 characters.");
+    }
+    if let Some(p) = &new.outbound.proxy
+        && !is_proxy(p)
+    {
+        rule.add(
+            "outbound.proxy",
+            "A proxy address such as http://proxy.lan:3128 (no name or password in it), or null.",
+        );
+    }
+    rule.invalid()?;
+    Ok(new)
+}
+
+// ---- the certificate's names
+
+fn tlv(b: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+    let (&tag, rest) = b.split_first()?;
+    let (&first, rest) = rest.split_first()?;
+    let (len, rest) = if first < 0x80 {
+        (usize::from(first), rest)
+    } else {
+        let n = usize::from(first & 0x7f);
+        if n == 0 || n > 4 || rest.len() < n {
+            return None;
+        }
+        (rest[..n].iter().fold(0usize, |a, &x| (a << 8) | usize::from(x)), &rest[n..])
+    };
+    (rest.len() >= len).then(|| (tag, &rest[..len], &rest[len..]))
+}
+
+/// The DNS names and IP addresses of the first certificate of a PEM file (its subject alternative names).
+pub fn san_names(pem: &str) -> Vec<String> {
+    use base64::Engine as _;
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    let Some(start) = pem.find(BEGIN).map(|i| i + BEGIN.len()) else { return Vec::new() };
+    let Some(end) = pem[start..].find("-----END CERTIFICATE-----").map(|i| start + i) else { return Vec::new() };
+    let b64: String = pem[start..end].chars().filter(|c| !c.is_whitespace()).collect();
+    let Ok(der) = base64::engine::general_purpose::STANDARD.decode(b64) else { return Vec::new() };
+    // the extension 2.5.29.17 (subjectAltName): its OID, an optional `critical`, then an OCTET STRING holding the
+    // SEQUENCE of names
+    const OID: &[u8] = &[0x06, 0x03, 0x55, 0x1d, 0x11];
+    let Some(at) = der.windows(OID.len()).position(|w| w == OID) else { return Vec::new() };
+    let mut rest = &der[at + OID.len()..];
+    if rest.first() == Some(&0x01) {
+        let Some((_, _, r)) = tlv(rest) else { return Vec::new() };
+        rest = r;
+    }
+    let Some((0x04, octets, _)) = tlv(rest) else { return Vec::new() };
+    let Some((0x30, mut names, _)) = tlv(octets) else { return Vec::new() };
+    let mut out = Vec::new();
+    while let Some((tag, v, r)) = tlv(names) {
+        names = r;
+        match tag {
+            0x82 => {
+                if let Ok(s) = std::str::from_utf8(v) {
+                    out.push(s.to_string());
+                }
+            }
+            0x87 if v.len() == 4 => out.push(std::net::Ipv4Addr::new(v[0], v[1], v[2], v[3]).to_string()),
+            0x87 if v.len() == 16 => {
+                let mut a = [0u8; 16];
+                a.copy_from_slice(v);
+                out.push(std::net::Ipv6Addr::from(a).to_string());
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn origins_hosts_and_proxies() {
+        assert_eq!(origin_of("https://Tile.Example.org/{z}/{x}/{y}.png").as_deref(), Some("https://tile.example.org"));
+        assert_eq!(origin_of("https://t.example:8443/a").as_deref(), Some("https://t.example:8443"));
+        assert_eq!(origin_of("http://t.example/a"), None);
+        assert_eq!(host_of("https://geo.example:443/x").as_deref(), Some("geo.example"));
+        assert_eq!(host_of("https://[::1]:8443/").as_deref(), Some("::1"));
+        assert!(is_proxy("http://proxy.lan:3128") && is_proxy("socks5://10.0.0.2") && is_proxy("https://p.example/"));
+        assert!(!is_proxy("ftp://p") && !is_proxy("http://user:pw@p") && !is_proxy("http://p/path"));
+        assert!(is_host_name("sentry-mate.local") && is_host_name("192.168.1.10"));
+        assert!(!is_host_name("-a.local") && !is_host_name("a..b") && !is_host_name("a b"));
+        let s = ServerSettings::default();
+        assert_eq!(s.tile_origins(), vec![crate::DEFAULT_TILE_ORIGIN.to_string()]);
+    }
 }

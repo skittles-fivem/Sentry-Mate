@@ -27,6 +27,7 @@
 mod cache;
 pub mod discovery;
 mod error;
+pub mod probe;
 mod queue;
 pub mod render;
 pub mod security;
