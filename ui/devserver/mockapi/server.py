@@ -22,13 +22,16 @@ from .dataset import Dataset
 from .errors import ApiError, bad_input, csrf, no_such_car, not_allowed, not_found, not_signed_in
 from .events import EventHub, frame
 from .router import Router
-from .store import COOKIE, COOKIE_SIGNED_OUT, Store
+from .store import COOKIE, COOKIE_SIGNED_OUT, SETUP_COOKIE, Store
 
 CSP = ("default-src 'self'; img-src 'self' data: blob: https://tile.openstreetmap.org; worker-src 'self' blob:; "
        "style-src 'self'; script-src 'self'; connect-src 'self' https://tile.openstreetmap.org; font-src 'self'; "
        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 CSRF_HEADER = "X-Sentry-Mate"
 MAX_BODY = 1 << 20
+# changes a moved server still takes: the move itself, export files, signing in and out
+MOVED_STILL_OPEN = ("/api/v1/system/move", "/api/v1/system/exports", "/api/v1/system/recovery-key",
+                    "/api/v1/session", "/api/v1/me/sessions", "/api/v1/me/preferences")
 TYPES = {".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
          ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8", ".svg": "image/svg+xml",
          ".json": "application/json; charset=utf-8", ".woff2": "font/woff2", ".woff": "font/woff",
@@ -142,7 +145,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send(e.status, json_bytes(e.body()), "application/json; charset=utf-8", headers, api=True)
 
     # ------------------------------------------------------------ sessions
-    def cookie_value(self):
+    def cookie_value(self, name=COOKIE):
         raw = self.headers.get("Cookie")
         if not raw:
             return None
@@ -151,7 +154,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             c.load(raw)
         except Exception:
             return None
-        m = c.get(COOKIE)
+        m = c.get(name)
         return m.value if m else None
 
     def session(self):
@@ -213,9 +216,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if m not in route.handlers:
                 allow = ", ".join(sorted(route.handlers))
                 raise ApiError(405, "method_not_allowed", f"{path} answers {allow}.", headers={"Allow": allow})
+            resources.moving.advance(app.store, app.clock.now())  # a move or restore here that finished
             session, cookie = self.session()
             if m != "GET" and self.headers.get(CSRF_HEADER) != "1":
                 raise csrf()
+            if m != "GET" and not path.startswith(MOVED_STILL_OPEN) and \
+                    resources.moving.refuses_changes(app.store, app.clock.now()):
+                raise ApiError(409, "moved", "This server's data moved to another server: it takes no changes. "
+                                             "Reading still works. To use it again: Settings, Server, Undo the move.")
             if m not in route.public and session is None:
                 raise not_signed_in()
             account = session["account"] if session else None
@@ -228,6 +236,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             query = parse_qs(query_string, keep_blank_values=True)
             req = Req(app, m, path, query, self.headers, body, params, session)
             req.raw_cookie_token = self.cookie_value()
+            req.setup_token = self.cookie_value(SETUP_COOKIE)  # the first-run claim (resources/moving.py)
             req.client_ip = self.client_address[0] if self.client_address else None
             if route.handlers[m] is resources.SSE:
                 if method == "HEAD":  # the headers only: a stream has no length to tell
@@ -322,6 +331,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
 def set_cookie(token):
     """The session cookie: HttpOnly and SameSite=Strict. Not Secure: the dev server is plain HTTP on 127.0.0.1."""
     return f"{COOKIE}={token}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Strict"
+
+
+def set_setup_cookie(token, max_age_s=3600):
+    """The first-run claim: HttpOnly, SameSite=Strict, an hour from its last use. The real server names it
+    __Host-sentry-mate-setup and adds Secure (HTTPS only)."""
+    return f"{SETUP_COOKIE}={token}; Path=/; Max-Age={max_age_s}; HttpOnly; SameSite=Strict"
+
+
+def clear_setup_cookie():
+    return f"{SETUP_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"
 
 
 def clear_cookie():

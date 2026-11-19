@@ -18,6 +18,7 @@ DEV_TWO_STEP_CODE = "000000"
 DEV_SETUP_CODE = "SETUP-DEV-0000"
 COOKIE = "sentry-mate"
 COOKIE_SIGNED_OUT = "out"
+SETUP_COOKIE = "sentry-mate-setup"
 
 DEFAULT_PREFS = {
     "units": {"distance": "km", "temperature": "c", "pressure": "bar"},
@@ -59,6 +60,9 @@ class Store:
         self.default_prefs = copy.deepcopy(DEFAULT_PREFS)
         self.default_prefs["ui_pack"] = pack_name
         self.needs_setup = cfg.needs_setup
+        # a server started fresh never signs anyone in by itself: after a move or a restore people sign in
+        # with the old server's accounts, after "Start fresh" the set-up signs the new admin in
+        self.fresh_start = cfg.needs_setup
         if not cfg.needs_setup:
             self._seed_accounts(now)
         self.car_over = {}  # car id -> {name, time_zone, config: {key: value}, version}
@@ -87,8 +91,14 @@ class Store:
         self.mqtt = extras.mqtt(now)
         self.imports = extras.imports(now, ds.history("c3"))
         self.storage = extras.storage(now)
+        from .resources import moving
+        moving.seed(self, cfg, now)  # first-run set-up, the move to another server, export files
 
     # ------------------------------------------------------------ seeding
+    def seed_accounts(self, now):
+        """The old server's accounts arrive (a move or a restore finished on a fresh server)."""
+        self._seed_accounts(now)
+
     def _seed_accounts(self, now):
         mk = lambda i, name, role, cars, two: {  # noqa: E731
             "id": i, "name": name, "role": role, "cars": cars, "two_step_required": two, "two_step": two,
@@ -228,7 +238,7 @@ class Store:
             return self.sessions.pop(token, None)
 
     def default_account(self):
-        if self.needs_setup:
+        if self.needs_setup or self.fresh_start:
             return None
         return self.accounts["a2" if self.cfg.role == "watch" else "a1"]
 

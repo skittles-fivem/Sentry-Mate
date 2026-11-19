@@ -54,21 +54,34 @@ function howCarsAppear(admin) {
     h('li', null, h('b', null, 'A second logger'), ' in the same car (a new Screenmate, a reinstall, a Pi) brings a new key. It waits under Keys waiting until it is tied to the car.'));
 }
 
-/** The dialog that shows a new token's secret, once. */
+/**
+ * The dialog that shows a new token, once: the three fields of the CAN Bridge app's "Second Sentry Six Manager"
+ * section (server address, token, certificate SHA-256), each with its own Copy button.
+ */
 async function showSecret(t, titleText, after) {
-  const secret = h('input', { class: 'input mono sc-secret', readonly: true, value: t.secret, 'aria-label': 'The new upload token', onfocus: (e) => e.target.select() });
-  const copied = h('span', { class: 'faint', 'aria-live': 'polite' });
-  await openDialog({
-    title: titleText,
-    body: [
-      h('p', null, 'Enter this in the CAN Bridge app, under Sentry Mate upload. ', h('b', null, 'It is shown only now:'), ' the server keeps only a check value, so nobody can read it back later. If it is lost, make a new one and revoke this one.'),
-      h('div', { class: 'row sc-secret-row' }, secret,
+  const app = t.app || { address: null, token: t.secret, certificate_sha256: null };
+  const row = (label, value, explain, secret = false) => {
+    const input = h('input', { class: 'input mono sc-secret', readonly: true, value: value || '', 'aria-label': label, onfocus: (e) => e.target.select() });
+    const said = h('span', { class: 'faint sc-copied', 'aria-live': 'polite' });
+    return h('div', { class: ['sc-app-row', secret && 'sc-app-row--secret'] },
+      h('p', { class: 'sc-app-label' }, label, secret ? tag('shown once', 'warm') : null),
+      value ? h('div', { class: 'row sc-secret-row' }, input,
         h('button', { class: 'btn btn--sm', type: 'button', onclick: async () => {
-          try { await navigator.clipboard.writeText(t.secret); copied.textContent = 'Copied.'; } catch { secret.select(); copied.textContent = 'Select and copy it by hand (Ctrl+C).'; }
-        } }, icon('check', 'ico--sm'), 'Copy'), copied),
+          try { await navigator.clipboard.writeText(value); said.textContent = 'Copied.'; } catch { input.select(); said.textContent = 'Select and copy it by hand (Ctrl+C).'; }
+        } }, icon('check', 'ico--sm'), 'Copy'), said) : h('p', { class: 'faint' }, 'Not known to this server: an admin sees it under Settings: Server and access.'),
+      h('p', { class: 'form-hint' }, explain));
+  };
+  await openDialog({
+    title: titleText, wide: true,
+    body: [
+      h('p', null, 'In the CAN Bridge app, open ', h('b', null, 'Second Sentry Six Manager'), ' and fill in these three fields. ', h('b', null, 'The token is shown only now:'), ' the server keeps only a check value, so nobody can read it back later. If it is lost, make a new one and revoke this one.'),
+      h('div', { class: 'sc-app' },
+        row('Server address', app.address, 'Where the app sends its logs: this server\'s upload port, over HTTPS.'),
+        row('Token', app.token || t.secret, 'Lets the app upload. Keep it like a password.', true),
+        row('Certificate SHA-256', app.certificate_sha256, 'The app trusts this server by this fingerprint, so it needs no certificate authority. It stays the same across restarts, updates and moves.')),
       h('p', { class: 'note' }, after),
     ],
-    actions: [{ label: 'I have copied it', value: true, kind: 'primary' }],
+    actions: [{ label: 'I have copied them', value: true, kind: 'primary' }],
   });
 }
 

@@ -10,6 +10,8 @@ import time
 
 # 2026-11-16T17:30:00Z: "now" at server start unless --now-ms says otherwise.
 DEFAULT_NOW_MS = 1_794_850_200_000
+# where --move-state starts the old server's side of a move (resources/moving.py)
+MOVE_STATES = ("none", "offered", "expired", "copying", "paused", "moved", "done")
 
 
 @dataclasses.dataclass
@@ -24,6 +26,8 @@ class Config:
     role: str = "admin"
     now_ms: int = DEFAULT_NOW_MS
     needs_setup: bool = False
+    move_state: str = "none"
+    move_peer_after_s: int = 15
     freeze_clock: bool = False
     sse_interval_ms: int = 2000
     verbose: bool = False
@@ -40,7 +44,12 @@ def parse_args(argv=None) -> Config:
     ap.add_argument("--signed-out", action="store_true", help="start with no session (test the sign-in page)")
     ap.add_argument("--role", choices=("admin", "watch"), default="admin")
     ap.add_argument("--now-ms", type=int, default=DEFAULT_NOW_MS, help="virtual 'now' at start (epoch ms)")
-    ap.add_argument("--needs-setup", action="store_true", help="start with no accounts (test the set-up page)")
+    ap.add_argument("--fresh", "--needs-setup", dest="needs_setup", action="store_true",
+                    help="start as a fresh server: no accounts, the first-run set-up page (code SETUP-DEV-0000)")
+    ap.add_argument("--move-state", choices=MOVE_STATES, default="none",
+                    help="start the 'move to another server' section in this state (screenshots)")
+    ap.add_argument("--move-peer-after-s", type=int, default=15,
+                    help="a made-up new server claims a waiting move code this many seconds after it is made (0: never)")
     ap.add_argument("--freeze-clock", action="store_true", help="keep 'now' fixed instead of advancing")
     ap.add_argument("--sse-interval-ms", type=int, default=2000, help="how often live values are pushed")
     ap.add_argument("--verbose", action="store_true", help="log every request to stderr")
@@ -49,10 +58,15 @@ def parse_args(argv=None) -> Config:
         ap.error("--cars must be between 0 and 5000000")
     if a.latency_ms < 0:
         ap.error("--latency-ms must be 0 or more")
+    if a.move_peer_after_s < 0:
+        ap.error("--move-peer-after-s must be 0 or more")
+    if a.needs_setup and a.move_state != "none":
+        ap.error("--move-state needs a server that is set up (not --fresh)")
     if not os.path.isdir(os.path.join(a.pack, "web")):
         ap.error(f"--pack {a.pack!r} has no web/ folder")
     return Config(pack=a.pack, host=a.host, port=a.port, cars=a.cars, latency_ms=a.latency_ms, seed=a.seed,
                   signed_out=a.signed_out, role=a.role, now_ms=a.now_ms, needs_setup=a.needs_setup,
+                  move_state=a.move_state, move_peer_after_s=a.move_peer_after_s,
                   freeze_clock=a.freeze_clock, sse_interval_ms=max(200, a.sse_interval_ms), verbose=a.verbose)
 
 

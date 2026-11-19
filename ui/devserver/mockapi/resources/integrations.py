@@ -14,6 +14,7 @@ import re
 from ..errors import bad_input, invalid
 from ..live import now_object
 from ..util import h01, iso_utc
+from .moving import DEV_CERT_SHA256
 
 HOST_RX = re.compile(r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
 PIN_RX = re.compile(r"[0-9A-Fa-f]{64}|([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}")
@@ -335,9 +336,21 @@ def network(req):
             {"purpose": "release_check", "host": "api.github.com", "enabled": bool(ss["release_check"]["enabled"]),
              "last_used_ms": now - 6 * 3_600_000 if ss["release_check"]["enabled"] else None},
         ],
-        "inbound": [{"purpose": "web", "port": 443, "tls": True}, {"purpose": "upload", "port": 8443, "tls": True}],
-        "certificate": {"names": list(req.store.cert_names)},
+        "inbound": [{"purpose": "web", "port": 443, "tls": True}, {"purpose": "upload", "port": 10100, "tls": True}],
+        "certificate": {"names": list(req.store.cert_names), "sha256": DEV_CERT_SHA256},
+        "upload_address": bridge_address(req),
     }
+
+
+def bridge_address(req):
+    """The address the CAN Bridge sends logs to: the server's first host name, the upload port."""
+    names = req.store.cert_names or ["sentry-mate.local"]
+    return f"https://{names[0]}:10100/api/can/logs"
+
+
+def bridge_fields(req, secret):
+    """The three fields of the CAN Bridge app's "Second Sentry Six Manager" section, for a new token."""
+    return {"address": bridge_address(req), "token": secret, "certificate_sha256": DEV_CERT_SHA256}
 
 
 def register(router):
