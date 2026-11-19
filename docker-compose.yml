@@ -1,10 +1,13 @@
 # Sentry Mate: receives the Screenmate CAN Bridge's logs on
-# https://<docker-host>:10100/api/can/logs (TLS 1.3 only).
+# https://<docker-host>:10100/api/can/logs (TLS 1.3 only), and serves the web
+# UI on https://<docker-host>:10101/ (the same certificate).
 #
 #   mkdir -p data keys
 #   sudo chown 1000:1000 data keys && sudo chmod 700 data keys
 #   docker compose up -d
-#   docker logs sentry-mate        (the certificate SHA-256)
+#   docker logs sentry-mate        (the certificate SHA-256, and on first
+#                                   start the one-time setup code for the
+#                                   web UI's first admin)
 #
 # On first start the recovery key is put in keys/RECOVERY-KEY.txt (not in the
 # log): copy it somewhere safe away from the server, then delete the file.
@@ -12,12 +15,14 @@
 #   sudo rm keys/RECOVERY-KEY.txt
 #
 # An upload token for the car (shown once, with what to fill in the CAN
-# Bridge app: the address, the token and the certificate SHA-256):
+# Bridge app: the address, the token and the certificate SHA-256), in the
+# web UI (Settings > Cars) or with:
 #   docker exec sentry-mate /sentry-mate token new --car "Model Y"
 #
 # Update:  docker compose pull && docker compose up -d
 #
-# Full steps (TrueNAS, backups, a new server, restore): docs/install.md
+# Full steps (TrueNAS, backups, restore): docs/install.md. A new server:
+# docs/moving.md (from the web UI or with commands).
 #
 # OPTIONAL lines start with # in the first column. To turn one on, delete only
 # that # (nothing else): the rest of the line is already lined up.
@@ -38,11 +43,11 @@ services:
       # 10100: change the left number, and use it in the bridge's address.
       - "10100:10100"
       # the web UI, HTTPS (TLS 1.3 only, the same certificate): open
-      # https://<this machine>:9100/ in a browser. Another app on 9100:
+      # https://<this machine>:10101/ in a browser. Another app on 10101:
       # change the left number. A host with a public IPv6 address: keep
-      # 9100 closed to it, or IPv6 visitors look like the home network
+      # 10101 closed to it, or IPv6 visitors look like the home network
       # (docs/security.md).
-      - "9100:9100"
+      - "10101:10101"
 
     # OPTIONAL: the names / addresses you reach the server by, for the
     # certificate. Read only when it is made, on first start; the bridge

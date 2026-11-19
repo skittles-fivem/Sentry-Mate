@@ -101,7 +101,7 @@ second table.
 
 ## Running next to TeslaMate and Sentry Six Manager
 
-- **Sentry Six Manager** uses ports 9000 (web) and 10000 (CAN uploads). Sentry Mate uses 10100, and 9100 for its web
+- **Sentry Six Manager** uses ports 9000 (web) and 10000 (CAN uploads). Sentry Mate uses 10100, and 10101 for its web
   UI, so both run on one server. Sentry Six Manager needs no change: the bridge sends to each on its
   own.
 - **TeslaMate**: Sentry Mate doesn't talk to TeslaMate, its database, Tesla or the car. Keep TeslaMate running as

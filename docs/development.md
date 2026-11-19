@@ -34,7 +34,7 @@ cargo clippy -p sentry-mate --all-targets --features dev-seed --locked -- -D war
 The second checks the hidden `dev seed` command, which only a build with the `dev-seed` feature has (made-up cars
 for development: `cargo run -p sentry-mate --features dev-seed -- --data DIR --keys DIR dev seed --days 3 --light`,
 into a data folder of its own). Then `serve` with the same `--data` and `--keys` decodes the made-up logs and shows
-them on the web port (`--web-port`, 9100); the setup code for the first admin is in the log and in the keys folder's
+them on the web port (`--web-port`, 10101); the setup code for the first admin is in the log and in the keys folder's
 `SETUP-CODE.txt`. The end-to-end test (`crates/sentry-mate/src/e2e.rs`) does the same in-process: seed, `serve` on
 free ports, setup, the cars, drives and charges, and the built-in pack with its CSP.
 

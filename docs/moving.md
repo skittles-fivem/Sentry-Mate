@@ -62,10 +62,10 @@ No shell is needed.
 
 ### Same machine, new disk or pool
 
-The old app holds port 10100, so the new app can't have it during the move. Give the new app another host port for
-now, for example `10101:10100`, and use the machine's own address in `SENTRY_MATE_MOVE_FROM`. After the old server's
-log says `move: done`, stop the old app, set the new app's port back to `10100:10100` and redeploy. The CAN Bridge
-then needs no change at all.
+The old app holds ports 10100 and 10101, so the new app can't have them during the move. Give the new app other host
+ports for now, for example `10200:10100` and `10201:10101`, and use the machine's own address in
+`SENTRY_MATE_MOVE_FROM`. After the old server's log says `move: done`, stop the old app, set the new app's ports back to
+`10100:10100` and `10101:10101` and redeploy. The CAN Bridge then needs no change at all.
 
 ## Direct move with plain Docker or compose
 

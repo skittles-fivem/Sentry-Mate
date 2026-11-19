@@ -372,7 +372,7 @@ services:
     image: ghcr.io/skittles-fivem/sentry-mate:latest   # name follows the final app name
     restart: unless-stopped
     ports:
-      - "9100:9100"     # web UI, HTTPS
+      - "10101:10101"     # web UI, HTTPS
       - "10100:10100"   # CAN Bridge uploads, HTTPS, closed while uploads are off
     volumes:
       - ./data:/data    # database, segments, raw logs (all encrypted)

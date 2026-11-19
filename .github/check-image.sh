@@ -13,14 +13,14 @@
 #
 # EXPECT_VERSION: text `--version` must show (the workflow: build-N, sha-...).
 # CHECK_PORT: the port on 127.0.0.1 it uses for uploads (10100); CHECK_WEB_PORT
-# the one for the web UI (9100).
+# the one for the web UI (10101).
 # Needs docker, curl, openssl, and sudo when not run as root.
 set -euo pipefail
 
 image="${1:?usage: check-image.sh IMAGE [UID]}"
 id="${2:-1000}"
 port="${CHECK_PORT:-10100}"
-web="${CHECK_WEB_PORT:-9100}"
+web="${CHECK_WEB_PORT:-10101}"
 name="sentry-mate-check-$$"
 sudo=""
 if [ "$(id -u)" -ne 0 ]; then sudo=sudo; fi
@@ -42,7 +42,7 @@ fail() {
 user=()
 if [ "$id" != 1000 ]; then user=(--user "$id:$id"); fi
 start() {
-  docker run -d --name "$name" -p "127.0.0.1:$port:10100" -p "127.0.0.1:$web:9100" --cap-drop ALL --read-only \
+  docker run -d --name "$name" -p "127.0.0.1:$port:10100" -p "127.0.0.1:$web:10101" --cap-drop ALL --read-only \
     --security-opt no-new-privileges:true "${user[@]}" \
     -v "$dir/data:/data" -v "$dir/keys:/keys" "$image" >/dev/null
 }

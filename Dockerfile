@@ -60,7 +60,7 @@ USER 1000:1000
 # would show --data and --keys as if they had to be given)
 ENV SENTRY_MATE_REQUIRE_MOUNTS=1
 # CAN Bridge uploads and the web UI, both HTTPS (TLS 1.3 only), one certificate
-EXPOSE 10100 9100
+EXPOSE 10100 10101
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=2s CMD ["/sentry-mate", "health"]
 ARG BUILD_NUMBER=""
 ARG GIT_SHA=""

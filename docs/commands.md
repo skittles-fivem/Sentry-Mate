@@ -23,14 +23,15 @@
 
 - Receive every log the CAN Bridge uploads and keep it sealed, exactly as uploaded.
 - Turn the checked logs into each car's history (drives, charges, states, the time series) in the background, and
-  read it in the web UI on port 9100 (see [The web UI](#the-web-ui)).
+  read it in the web UI on port 10101 (see [The web UI](#the-web-ui)). The web UI also changes the settings: places
+  and costs, car settings, upload tokens and car keys, accounts, MQTT, the TeslaMate import.
 - See each upload token and the car key it is tied to (`token list`).
 - See a car key's chain report: gaps, failed logs, restarts (`chain`).
 - See which keys signed a car key's logs, and trust a new one (`keys`, `keys trust`).
 - Get a stored log back as uploaded (`log export`), or its decoded signals as CSV (`log decode`).
 - Turn a log file into candump text (`log candump`), or check its signature (`log check`).
 - Move everything to another server in one step (`move code`, `move from`), or with one export file (`export`,
-  `import`). See [moving.md](moving.md).
+  `import`), from the commands or from the web pages. See [moving.md](moving.md).
 
 No command lists cars or logs yet (the web UI does). File and folder names are not sealed, so you find them on the host (see
 [Logs](#logs)).
@@ -273,9 +274,9 @@ The full guide, with TrueNAS and plain Docker, the CAN Bridge app, undo and what
 
 ## The web UI
 
-`serve` opens the web UI on port 9100 (`SENTRY_MATE_WEB_PORT`), HTTPS with TLS 1.3 only and the same certificate as
+`serve` opens the web UI on port 10101 (`SENTRY_MATE_WEB_PORT`), HTTPS with TLS 1.3 only and the same certificate as
 the upload port, so the browser warns once about a certificate it doesn't know: compare the SHA-256 it shows with
-`fingerprint`. Open `https://<server address>:9100/`.
+`fingerprint`. Open `https://<server address>:10101/`.
 
 - **First start**: with no account yet, the log shows a one-time setup code, and the same code is in
   `SETUP-CODE.txt` in the keys folder. Type it on the first page with the first admin's name and password. It is
@@ -284,9 +285,12 @@ the upload port, so the browser warns once about a certificate it doesn't know: 
 - **The history** is made from stored logs whose check allows their data, in the background: right after an upload,
   and on every start for logs not worked on yet (a first start over many logs takes a while; the pages fill in as
   it goes). A log whose check fails is never used.
-- **Read only today**: the pages read cars, the Now values, the timeline, drives, charges, battery, places, reports
-  and data health. Changes made from the pages (places, costs, car settings, tokens, MQTT, import) are not served yet
-  and answer `404`.
+- **What the pages do**: they read cars, the Now values, the timeline, drives, charges, battery, places, reports and
+  data health, and change places and costs, car settings, upload tokens and car keys (**Settings → Cars**), accounts,
+  server settings, MQTT and the TeslaMate import. Admin accounts change things; watch accounts only read their cars.
+- **Moving** from the pages: a move code or an export file on the old server, and "move here" on the new server's
+  first page ([moving.md](moving.md)). Restoring from an export file on the first page is not served yet: use
+  `import`.
 - A server whose data moved away serves no web UI: it runs on the new server.
 
 ## Health
@@ -307,7 +311,7 @@ a flag, except `SENTRY_MATE_TAG`, which goes in a `.env` file. The compose and T
 | `SENTRY_MATE_DATA` | `--data` | `/data` | The data folder. Leave it: change the folder in the volume line instead. |
 | `SENTRY_MATE_KEYS` | `--keys` | `/keys` | The keys folder. Refused inside the data folder, and when it is the data folder or a folder right inside it on the server (compared by device and inode, through the mounts). Leave it: change the folder in the volume line instead. |
 | `SENTRY_MATE_UPLOAD_PORT` | `--upload-port` | `10100` | The upload port. Also the port `token new` prints and `health` checks. Change the port mapping with it. For only another host port, leave it and change the left number of the port mapping. |
-| `SENTRY_MATE_WEB_PORT` | `--web-port` | `9100` | The web UI's port (HTTPS). `health` checks it too. Change the port mapping with it; for only another host port, leave it and change the left number of the port mapping. |
+| `SENTRY_MATE_WEB_PORT` | `--web-port` | `10101` | The web UI's port (HTTPS). `health` checks it too. Change the port mapping with it; for only another host port, leave it and change the left number of the port mapping. |
 | `SENTRY_MATE_BIND` | `--bind` (`serve`) | `0.0.0.0` | The address both ports listen on. `health` connects to 127.0.0.1, so in Docker keep the default: another address makes the container unhealthy. |
 | `SENTRY_MATE_NAMES` | `--names` (`serve`) | none | Names or addresses for the certificate, comma separated (the OPTIONAL lines in the compose and TrueNAS files). Used only when the certificate is made. The bridge pins the SHA-256 and does not check names, so it can stay off. |
 | `SENTRY_MATE_MOVE_FROM` | `--move-from` (`serve`) | none | A new server: the old server's address, as the CAN Bridge uses it (`192.168.1.20`, `nas.local:10100`). With `SENTRY_MATE_MOVE_CODE`, it brings the data in as it starts. Ignored once the move is done. See [moving.md](moving.md). |
@@ -328,7 +332,7 @@ in until it has its own; without it, UTC.
 | Port | What | State |
 |---|---|---|
 | 10100/tcp | CAN Bridge uploads: HTTPS, TLS 1.3 and HTTP/1.1 only | done |
-| 9100/tcp | Web UI and its `/api/v1`: HTTPS, TLS 1.3 and HTTP/1.1 only | done (reads; changes from the pages not yet) |
+| 10101/tcp | Web UI and its `/api/v1`: HTTPS, TLS 1.3 and HTTP/1.1 only | done |
 
 Firewalls, another host port and uploads from away from home: [Ports and firewalls](install.md#ports-and-firewalls).
 

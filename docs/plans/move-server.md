@@ -42,7 +42,7 @@ backup, then delete them. The recovery key stays the same.
 Tip: if the new server will end up with the old one's address (the address moves over), the bridge needs no change at
 all. **Same machine, new disk or pool**: the old app already holds port 10100, so the new app can't use it during the
 move (Docker and TrueNAS refuse: "port is already allocated"). Give the new app another host port for the move, for
-example `10101:10100`, and point `SENTRY_MATE_MOVE_FROM` at `127.0.0.1` or the machine's address. After `move:
+example `10200:10100`, and point `SENTRY_MATE_MOVE_FROM` at `127.0.0.1` or the machine's address. After `move:
 finished` and the old server's `move: done`, stop the old app and change the new app's port back to `10100:10100`.
 The bridge then needs no change. The new server's log says this when it moved from an address of its own machine.
 
@@ -1038,7 +1038,7 @@ the tree; not written yet: the same steps were tried by hand with the binary, tw
    removes the copy and tells the old server.
 10. A second image with a lower version number as the new server: refused, and the code still works with the right
     image.
-11. Same machine: the new container with `10101:10100` and `SENTRY_MATE_MOVE_FROM=127.0.0.1` (host network): the port
+11. Same machine: the new container with `10200:10100` and `SENTRY_MATE_MOVE_FROM=127.0.0.1` (host network): the port
     note in its log.
 
 Afterwards the containers, volumes and test images are removed, and the build cache pruned.

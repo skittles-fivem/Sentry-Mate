@@ -58,7 +58,7 @@ use vault::{Kdf, Vault};
 /// without the image build's part `--version` shows.
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The web UI's port by default (beside the upload port, 10100; Sentry Six Manager's are 9000 and 10000).
-const WEB_PORT: u16 = 9100;
+const WEB_PORT: u16 = web::PORT;
 /// How long a command waits for a pause of the writes (an export's snapshot) to end, or a snapshot for the writes
 /// under way.
 const GATE_WAIT: Duration = Duration::from_secs(60);
@@ -84,7 +84,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run the upload server until stopped.
+    /// Run the server until stopped: the upload port, the history and the web UI.
     Serve {
         /// Address to listen on.
         #[arg(long, env = "SENTRY_MATE_BIND", default_value = "0.0.0.0")]
@@ -154,7 +154,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: MoveCmd,
     },
-    /// Exit 0 when the upload port accepts connections (or a move comes in, while it copies).
+    /// Exit 0 when the upload port and the web port accept connections (or a move comes in, while it copies).
     Health,
     /// Development only (not in the help, and only in a build with the `dev-seed` feature): made-up cars for trying
     /// the server without anyone's car.
@@ -256,8 +256,11 @@ enum TokenCmd {
         #[arg(long = "key")]
         keys: Vec<String>,
     },
+    /// One line per token: id, car name, in use or revoked, the car key it is tied to.
     List,
+    /// Revoke a token; it stops working at its next request.
     Revoke {
+        /// The token's id (the first column of `token list`).
         id: String,
     },
 }

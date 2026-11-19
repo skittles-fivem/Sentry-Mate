@@ -3,8 +3,9 @@
 [← Back to the README](../README.md)
 
 Sentry Mate runs as one Docker container. It takes the Screenmate CAN
-Bridge's uploads on port 10100 (HTTPS, TLS 1.3 only) and keeps everything in
-two folders. This guide covers a Linux server with Docker Compose and TrueNAS
+Bridge's uploads on port 10100 (HTTPS, TLS 1.3 only), serves its web UI on
+port 10101 (HTTPS, the same certificate) and keeps everything in two
+folders. This guide covers a Linux server with Docker Compose and TrueNAS
 SCALE, then the CAN Bridge app, updates, backups, restoring and moving.
 
 Every command is in [commands.md](commands.md). The bridge app in detail is in
@@ -146,7 +147,7 @@ the same as 568:568.
    ... WARN sentry_mate: new vault made: its recovery key is in /keys/RECOVERY-KEY.txt — copy it somewhere safe off this server, then delete that file
    ... INFO sentry_mate: CAN Bridge uploads on https://0.0.0.0:10100/api/can/logs (TLS 1.3), certificate SHA-256 <64 hex digits>, vault <id>
    ... INFO sentry_mate: no upload token yet: make one with `docker exec sentry-mate /sentry-mate token new --car "My car"`
-   ... INFO sentry_mate: web UI on https://0.0.0.0:9100/ (TLS 1.3), the same certificate
+   ... INFO sentry_mate: web UI on https://0.0.0.0:10101/ (TLS 1.3), the same certificate
    ... WARN web: No account yet. Open the web page and set up the first admin with this one-time code (valid 24 hours, also in /keys/SETUP-CODE.txt): <code>
    ```
 
@@ -167,7 +168,8 @@ the same as 568:568.
    nobody can. Until the file is gone, the log says so at every start.
 
 5. Make an upload token for the car. It is shown once, with the address and
-   the certificate SHA-256 for the bridge:
+   the certificate SHA-256 for the bridge. You can also make it in the web UI
+   after step 6 (**Settings → Cars**), or with this command:
 
    ```bash
    docker exec sentry-mate /sentry-mate token new --car "Model Y"
@@ -175,7 +177,7 @@ the same as 568:568.
 
    Then fill in [the CAN Bridge app](#the-can-bridge-app).
 
-6. Open the web UI: `https://<this machine's address>:9100/`. The browser
+6. Open the web UI: `https://<this machine's address>:10101/`. The browser
    warns about the certificate once (it is the server's own): check that the
    SHA-256 it shows is the one in the log, then go on. On the first page,
    type the setup code from the log (or `sudo cat keys/SETUP-CODE.txt`)
@@ -239,7 +241,8 @@ On TrueNAS SCALE 24.10 or newer, install it as a custom app with
    sudo rm /mnt/tank/apps/sentry-mate-keys/RECOVERY-KEY.txt
    ```
 
-5. **Upload token** for the car, in *System → Shell*:
+5. **Upload token** for the car: in the web UI after step 6 (**Settings →
+   Cars**), or in *System → Shell*:
 
    ```bash
    sudo docker exec sentry-mate /sentry-mate token new --car "Model Y"
@@ -247,7 +250,7 @@ On TrueNAS SCALE 24.10 or newer, install it as a custom app with
 
    Then fill in [the CAN Bridge app](#the-can-bridge-app).
 
-6. **Web UI.** Open `https://<TrueNAS address>:9100/`, check the
+6. **Web UI.** Open `https://<TrueNAS address>:10101/`, check the
    certificate's SHA-256 against the log, and set up the first admin with
    the setup code from the log (or
    `sudo cat /mnt/tank/apps/sentry-mate-keys/SETUP-CODE.txt`).
@@ -483,8 +486,9 @@ run the TrueNAS restore above.
 ## Moving to a new server
 
 The easy way is [docs/moving.md](moving.md): a one-time move code on the old
-server and two lines on the new one (TrueNAS: no shell), or one export file
-that opens with the recovery key. The new server copies everything while the
+server, or one export file that opens with the recovery key. Both work from
+the web pages (Settings on the old server, the first page of the new one) or
+with two lines in the new server's settings (TrueNAS: no shell). The new server copies everything while the
 old one keeps taking uploads, then takes over by itself.
 
 The steps below are the manual way: stop the old server and copy its two
@@ -651,11 +655,11 @@ app, change the line marked `CHANGE` to the new path, and *Save*. Check
 | Port | What | |
 | --- | --- | --- |
 | 10100/tcp | CAN Bridge uploads, HTTPS, TLS 1.3 only | Published: the Screenmate connects to it. |
-| 9100/tcp | The web UI, HTTPS, TLS 1.3 only, the same certificate | Published: open it in a browser. |
+| 10101/tcp | The web UI, HTTPS, TLS 1.3 only, the same certificate | Published: open it in a browser. |
 
 - Sentry Six Manager uses 9000 and 10000, so both run on one server
   ([Running next to TeslaMate and Sentry Six Manager](cars-and-bridge.md#running-next-to-teslamate-and-sentry-six-manager)).
-- Another app already on 9100 or 10100: change only the left number (for example
+- Another app already on 10101 or 10100: change only the left number (for example
   `"10200:10100"`) and use it in the bridge's address. The address that
   `token new` prints shows the port inside the container (10100 unless
   `SENTRY_MATE_UPLOAD_PORT` is set), not the host port.
@@ -673,7 +677,7 @@ app, change the line marked `CHANGE` to the new path, and *Save*. Check
   address. On a server with a public IPv6 address, Docker passes a connection
   to that address on from its own bridge address (172.x.0.1), which looks like
   the home network: the "two-step sign-in from outside" rule then doesn't hold
-  for visitors over IPv6. Keep 9100 closed to IPv6 from the internet, or turn
+  for visitors over IPv6. Keep 10101 closed to IPv6 from the internet, or turn
   IPv6 on for the compose network ([security](security.md#security)).
 
 ## Settings
