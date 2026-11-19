@@ -8,7 +8,8 @@
 
 use super::now::{answer, list_answer, period, run};
 use crate::ctx::target;
-use crate::{ApiError, ApiResult, AppState, CarParam, Event, JsonBody, Params, Viewer, ids};
+use crate::query::MAX_MS;
+use crate::{ApiError, ApiResult, AppState, CarParam, JsonBody, Params, Viewer, ids};
 use axum::extract::State;
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -103,6 +104,11 @@ async fn rebuild(
 ) -> ApiResult<Json<Value>> {
     body.only(&["from_ms", "to_ms"])?;
     let (from, to) = (body.u64("from_ms")?, body.u64("to_ms")?);
+    for (field, t) in [("from_ms", from), ("to_ms", to)] {
+        if t.is_some_and(|t| t > MAX_MS) {
+            return Err(ApiError::invalid(field, "A time in ms since 1970, before the year 2100."));
+        }
+    }
     if let (Some(a), Some(b)) = (from, to) {
         if a >= b {
             return Err(ApiError::invalid("to_ms", "Must be after from_ms."));
@@ -138,14 +144,14 @@ async fn rebuild(
         )));
     }
     let kinds = ["drives", "charges", "states", "visits"];
-    let (a, b) = (now.from_ms, now.to_ms.min(app.now().max(now.from_ms + 1)));
+    let (a, b) = (now.from_ms, now.to_ms.min(app.now().max(now.from_ms.saturating_add(1))));
     let days = b.saturating_sub(a).div_ceil(86_400_000).max(1);
     let summary = match (from, to) {
         (None, None) => "Rebuilt drives, charges, states and visits from the stored logs (the whole history).".into(),
         _ => format!("Rebuilt drives, charges, states and visits from the stored logs ({days} days)."),
     };
+    // (the engine's rebuild tells the live stream of each window it made again: no second `rows` event here)
     v.audit(&app, "car-rebuild", Some(&target("car", Some(car), "")), &summary).await?;
-    app.events.publish(Event::Rows { car, kinds: kinds.iter().map(|k| k.to_string()).collect(), from_ms: a, to_ms: b });
     Ok(Json(json!({
         "car": ids::car(car),
         "job": now.id.to_string(),
@@ -192,16 +198,10 @@ async fn flip_overlap(
     .await?;
     let changed = out.get(0).cloned().unwrap_or(Value::Null);
     let mut list = out.get(1).cloned().unwrap_or_else(|| json!({}));
-    let (a, b) = (changed["start_ms"].as_u64().unwrap_or(0), changed["end_ms"].as_u64().unwrap_or(0));
     let side = if shown == "can" { "CAN" } else { "imported TeslaMate" };
     let summary = format!("Showing {side} history for an overlap of CAN and imported history.");
+    // (the engine's flip tells the live stream which rows changed: no second `rows` event here)
     v.audit(&app, "car-overlap", Some(&target("car", Some(car), "")), &summary).await?;
-    app.events.publish(Event::Rows {
-        car,
-        kinds: ["drives", "charges", "states", "visits"].iter().map(|k| k.to_string()).collect(),
-        from_ms: a,
-        to_ms: b,
-    });
     if let Value::Object(m) = &mut list {
         m.insert("changed".into(), changed);
     }
@@ -210,7 +210,8 @@ async fn flip_overlap(
 
 async fn car_storage(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
     let kinds = p.list("kinds", Some(&q::system::STORAGE_KINDS[..]), 4)?.map(|v| v.join(","));
-    list_answer(&app, &p, "storage", move |e, pg| q::system::storage(e, car, kinds.as_deref(), pg)).await
+    let per = period(&p)?;
+    list_answer(&app, &p, "storage", move |e, pg| q::system::storage(e, car, kinds.as_deref(), &per, pg)).await
 }
 
 /// Free bytes on the disk that holds `dir` (the nearest folder of it that exists), or `None` when it can't be read.

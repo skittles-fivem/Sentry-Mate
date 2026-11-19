@@ -12,7 +12,9 @@ use web::testkit::{Client, TestServer};
 
 struct Seeded {
     s: TestServer,
-    _engine: Engine,
+    engine: Engine,
+    db: db::Db,
+    data: std::path::PathBuf,
     car: String,
     id: CarId,
     from: u64,
@@ -96,7 +98,7 @@ async fn seeded() -> Seeded {
     db.upsert(id, &[imported_drive(id, at)]).unwrap();
     let (e2, d2) = (engine.clone(), db.clone());
     let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2))).await;
-    Seeded { s, _engine: engine, car: format!("c{id}"), id, from, _dir: dir }
+    Seeded { s, engine, db, data, car: format!("c{id}"), id, from, _dir: dir }
 }
 
 async fn ok(c: &mut Client, path: &str) -> Value {
@@ -329,4 +331,123 @@ async fn a_cars_logs_overlaps_and_a_rebuild() {
     assert!(rb["job"].is_string());
     let r = admin.post("/api/v1/cars/c999/rebuild", json!({})).await;
     assert_eq!((r.status, r.code()), (404, Some("no_such_car".into())));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bounds_streamed_pages_arrival_times_and_local_days() {
+    let k = seeded().await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    let mut watch = k.s.watch(&mut admin, &[k.id]).await;
+
+    // a rebuild's edges are times before 2100: never an overflow or a job for the year 584 million
+    for body in [
+        json!({ "from_ms": u64::MAX }),
+        json!({ "from_ms": 18_446_744_073_709_551_000u64 }),
+        json!({ "to_ms": 4_102_444_800_001u64 }),
+        json!({ "from_ms": 1, "to_ms": u64::MAX }),
+    ] {
+        let r = admin.post(&format!("/api/v1/cars/{car}/rebuild"), body.clone()).await;
+        assert_eq!((r.status, r.code()), (422, Some("invalid".into())), "{body}: {}", r.text());
+    }
+
+    // the logs page from the trust records a page at a time: small pages add up to the one big page, in its order
+    let all = ok(&mut admin, &format!("/api/v1/cars/{car}/logs?limit=500")).await;
+    let all: Vec<String> =
+        all["items"].as_array().unwrap().iter().map(|l| l["name"].as_str().unwrap().into()).collect();
+    assert!(all.len() > 20, "{}", all.len());
+    let paged = walk(&mut admin, &format!("/api/v1/cars/{car}/logs"), 5, |l| l["name"].as_str().unwrap().into()).await;
+    let paged: Vec<String> = paged.iter().map(|l| l["name"].as_str().unwrap().to_string()).collect();
+    assert_eq!(paged, all);
+    let first = ok(&mut admin, &format!("/api/v1/cars/{car}/logs?limit=3")).await;
+    let next = first["next"].as_str().unwrap();
+    let r = admin.get(&format!("/api/v1/cars/{car}/logs?limit=3&from_ms=1&after={next}")).await;
+    assert_eq!((r.status, r.code()), (400, Some("bad_input".into())), "another period's cursor: {}", r.text());
+    let r = admin.get(&format!("/api/v1/cars/{car}/logs?format=csv")).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.text().lines().count(), all.len() + 1, "every log in the CSV");
+
+    // the last upload is when the newest log arrived, the same figure for the car and its key
+    let logs = walk(&mut admin, &format!("/api/v1/cars/{car}/logs"), 500, |l| l["name"].as_str().unwrap().into()).await;
+    let arrived = logs.iter().map(|l| l["arrived_ms"].as_u64().unwrap()).max().unwrap();
+    let newest_start = logs.iter().map(|l| l["start_ms"].as_u64().unwrap()).max().unwrap();
+    let h = ok(&mut admin, &format!("/api/v1/cars/{car}/health?from_ms=0")).await;
+    assert_eq!(h["last_upload_ms"], json!(arrived), "{h}");
+    assert_eq!(h["keys"][0]["last_upload_ms"], json!(arrived), "{h}");
+    assert_ne!(h["last_upload_ms"], json!(newest_start), "not the time in a log's name");
+    // each list is capped, with its whole count beside it
+    for (list, total) in [
+        ("chain_gaps", "chain_gaps_total"),
+        ("dropped_frames", "dropped_frames_total"),
+        ("unknown_spans", "unknown_spans_total"),
+    ] {
+        let n = h[list].as_array().unwrap().len() as u64;
+        let t = h[total].as_u64().unwrap_or_else(|| panic!("{total}: {h}"));
+        assert!(n <= t && n <= engine::query::system::HEALTH_LIST_MAX as u64, "{list}: {h}");
+    }
+    assert!(h["unknown_spans_total"].as_u64().unwrap() > 0, "the seed's trouble leaves unknown spans: {h}");
+    let sum: u64 = h["unknown_spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["end_ms"].as_u64().unwrap() - u["start_ms"].as_u64().unwrap())
+        .sum();
+    assert_eq!(h["unknown_ms"].as_u64().unwrap(), sum, "{h}");
+
+    // an overlap is flipped by its start, and the rows event is sent once (by the engine; the handler adds none)
+    let o = ok(&mut admin, &format!("/api/v1/cars/{car}/overlaps")).await;
+    let start = o["items"][0]["start_ms"].as_u64().unwrap();
+    assert!(o["items"][0]["can"]["drives"].as_u64().unwrap() > 0, "the CAN side's drives counted: {o}");
+    let mut rx = k.engine.subscribe();
+    let events = {
+        let mut c = admin.clone();
+        tokio::spawn(async move { c.events_for(1_500).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let r =
+        admin.patch(&format!("/api/v1/cars/{car}/overlaps"), json!({ "start_ms": start, "shown": "teslamate" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["changed"]["start_ms"], json!(start));
+    let mut rows = 0;
+    while let Ok(ev) = rx.try_recv() {
+        if matches!(ev, engine::Event::Rows { car, .. } if car == k.id) {
+            rows += 1;
+        }
+    }
+    assert_eq!(rows, 1, "one rows event from the flip");
+    let stream = events.await.unwrap();
+    assert_eq!(stream.matches("event: rows").count(), 0, "the handler publishes none of its own: {stream}");
+    let r =
+        admin.patch(&format!("/api/v1/cars/{car}/overlaps"), json!({ "start_ms": start + 1, "shown": "can" })).await;
+    assert_eq!((r.status, r.code()), (404, Some("no_such_overlap".into())));
+
+    // storage: a log's day is the car's own day, and the period filters the days
+    let zone = "Pacific/Kiritimati";
+    let mut c = k.db.car(k.id).unwrap().unwrap();
+    c.time_zone = zone.into();
+    k.db.update_car(c).unwrap();
+    let st = walk(&mut admin, &format!("/api/v1/cars/{car}/storage?kinds=logs"), 500, |d| d["date"].to_string()).await;
+    let got: std::collections::BTreeSet<String> = st.iter().map(|d| d["date"].as_str().unwrap().to_string()).collect();
+    let want: std::collections::BTreeSet<String> =
+        logs.iter().map(|l| engine::tz::date_str(l["start_ms"].as_u64().unwrap(), engine::tz::zone(zone))).collect();
+    assert_eq!(got, want, "local days of {zone}");
+    let later = newest_start + 3 * 86_400_000;
+    let none = ok(&mut admin, &format!("/api/v1/cars/{car}/storage?from_ms={later}")).await;
+    assert_eq!(none["items"], json!([]), "{none}");
+    assert!(none["kinds"][0]["bytes"].as_u64().unwrap() > 0, "the kinds are of the whole history: {none}");
+    let r = admin.get(&format!("/api/v1/cars/{car}/storage?from_ms=5&to_ms=4")).await;
+    assert_eq!(r.status, 400);
+    assert_eq!(code(&mut watch, "/api/v1/cars/c999/storage").await.0, 404);
+
+    // an uploaded TeslaMate backup is its own kind, not the server's accounts and settings
+    let kind = |v: &Value, k: &str| {
+        v["kinds"].as_array().unwrap().iter().find(|x| x["kind"] == k).unwrap()["bytes"].as_u64().unwrap()
+    };
+    let before = ok(&mut admin, "/api/v1/system/storage").await;
+    let folder = k.data.join("web").join("imports").join("imtest");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("backup"), vec![7u8; 10_000]).unwrap();
+    let after = ok(&mut admin, "/api/v1/system/storage").await;
+    assert_eq!(kind(&after, "import_uploads"), kind(&before, "import_uploads") + 10_000, "{after}");
+    assert!(kind(&after, "server") < kind(&before, "server") + 10_000, "{after}");
 }

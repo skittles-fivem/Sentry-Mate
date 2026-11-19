@@ -27,7 +27,8 @@ pub struct BackupCar {
     pub charges: u64,
     pub first_ms: Option<u64>,
     pub last_ms: Option<u64>,
-    /// The car here with the same VIN prefix (the only one), else `None`.
+    /// The car here with the same VIN prefix (the only one, and suggested for no other car of the backup), else
+    /// `None`.
     pub suggested: Option<CarId>,
 }
 
@@ -251,10 +252,27 @@ pub fn report_json(r: &Report, reports: &[CarReport], cars: &[(BackupCar, Value)
     })
 }
 
+/// A car here is suggested for one car of the backup at most: two cars of the same model, year and plant share a VIN
+/// prefix, and both going into one car would mix two histories. When several share a suggestion, none keeps it.
+pub fn one_each(cars: &mut [BackupCar]) {
+    let mut n: HashMap<CarId, usize> = HashMap::new();
+    for c in cars.iter() {
+        if let Some(s) = c.suggested {
+            *n.entry(s).or_default() += 1;
+        }
+    }
+    for c in cars.iter_mut() {
+        if c.suggested.is_some_and(|s| n.get(&s).copied().unwrap_or(0) > 1) {
+            c.suggested = None;
+        }
+    }
+}
+
 /// Checks a whole backup: reads it as the import would and stores nothing.
 pub fn check<R: Read>(e: &Engine, open: impl FnMut() -> io::Result<R>) -> Result<Checked, import::Error> {
     let mut sink = CountSink { engine: e, stand_in: HashMap::new(), cars: Vec::new(), reports: Vec::new() };
     let report = import::import(open, &mut sink, &import::Options::default())?;
+    one_each(&mut sink.cars);
     let pairs: Vec<(BackupCar, Value)> = sink.cars.iter().map(|c| (c.clone(), Value::Null)).collect();
     let json = report_json(&report, &sink.reports, &pairs, false);
     Ok(Checked { cars: sink.cars, report: json })

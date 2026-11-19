@@ -672,6 +672,48 @@ impl Judge {
         .await
     }
 
+    /// A car key's newest `n` records among those `keep` takes, oldest first. They are read in name order (a key's
+    /// names sort by their start) and the walk ends at the first name `stop` names, so a page of a long history holds
+    /// at most `n` records, never the key's whole book.
+    pub async fn newest(
+        &self,
+        key: &str,
+        n: usize,
+        keep: impl Fn(&str, &Record) -> bool + Send + Sync + 'static,
+        stop: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) -> std::io::Result<Vec<(String, Record)>> {
+        self.read(key, move |l, h| {
+            let mut last = std::collections::VecDeque::with_capacity(n + 1);
+            l.for_each(h, |name, r| {
+                if stop(name) {
+                    return ControlFlow::Break(());
+                }
+                if n > 0 && keep(name, r) {
+                    if last.len() == n {
+                        last.pop_front();
+                    }
+                    last.push_back((name.to_string(), r.clone()));
+                }
+                ControlFlow::Continue(())
+            })?;
+            Ok(last.into_iter().collect())
+        })
+        .await
+    }
+
+    /// When a car key's newest log arrived (its upload), `None` before its first (each record read, none kept).
+    pub async fn last_arrived(&self, key: &str) -> std::io::Result<Option<u64>> {
+        self.read(key, |l, h| {
+            let mut last: Option<u64> = h.waiting.values().copied().max();
+            l.for_each(h, |_, r| {
+                last = last.max(Some(r.arrived_ms));
+                ControlFlow::Continue(())
+            })?;
+            Ok(last)
+        })
+        .await
+    }
+
     /// Reads a key's records with `f` (the key held). A process that doesn't take the lock file (an older version)
     /// may fold the journal at the same moment: a generation that vanished while being read is read again from the
     /// new head.

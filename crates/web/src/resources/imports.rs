@@ -54,6 +54,9 @@ pub fn routes() -> Router<AppState> {
 #[derive(Default)]
 pub struct Imports {
     state: Mutex<Jobs>,
+    /// One chunk of an upload at a time, per import: held from the offset check to the job's save, so a chunk sent
+    /// again while the first try is still being stored gets `409 wrong_offset`, never a half-written job.
+    chunks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 #[derive(Default)]
@@ -77,6 +80,16 @@ impl Imports {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Jobs> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The lock of one import's chunks (a discarded import's goes with it).
+    fn chunk_lock(&self, id: &str) -> Arc<Mutex<()>> {
+        let mut m = self.chunks.lock().unwrap_or_else(|e| e.into_inner());
+        m.entry(id.to_string()).or_default().clone()
+    }
+
+    fn forget_chunks(&self, id: &str) {
+        self.chunks.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     }
 }
 
@@ -376,6 +389,8 @@ async fn chunk(
         return Err(ApiError::bad_input("body", "Send the chunk's bytes."));
     }
     let (done, out) = with_jobs(&app, move |app, all| {
+        let one = all.chunk_lock(&id);
+        let _held = one.lock().unwrap_or_else(|e| e.into_inner());
         let j = job(all, &id)?;
         if j.status != "uploading" {
             return Err(ApiError::conflict(
@@ -547,12 +562,16 @@ fn spawn_check(app: &AppState, id: &str) -> ApiResult<()> {
 async fn discard(State(app): State<AppState>, Admin(v): Admin, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let id2 = id.clone();
     let (name, status) = with_jobs(&app, move |app, all| {
+        // a chunk being stored finishes first (it would put the job back)
+        let one = all.chunk_lock(&id2);
+        let _held = one.lock().unwrap_or_else(|e| e.into_inner());
         let mut st = all.lock();
         let j = st.jobs.remove(&id2).ok_or_else(|| ApiError::not_found("no_such_import"))?;
         if let Some(l) = st.live.remove(&id2) {
             l.stop.store(true, Ordering::Relaxed);
         }
         drop(st);
+        all.forget_chunks(&j.id);
         let _ = std::fs::remove_dir_all(folder(app, &j.id));
         Ok((j.name, j.status))
     })
@@ -713,6 +732,22 @@ async fn start(
                 "cars_unmatched",
                 "Match every imported car first (a car, new, or leave out).",
             ));
+        }
+        // one car here takes at most one imported car (as PUT /cars checks: a job matched before, or by an older
+        // server's suggestion, is checked again here)
+        let mut seen: HashMap<&str, i64> = HashMap::new();
+        for c in &j.cars {
+            if let Some(m) = c.matched.as_deref().filter(|m| *m != "new" && *m != "leave_out")
+                && let Some(other) = seen.insert(m, c.car.tm_car)
+            {
+                return Err(ApiError::conflict(
+                    "cars_unmatched",
+                    format!(
+                        "Car {m} is matched to imported cars {other} and {}: match each to a car of its own.",
+                        c.car.tm_car
+                    ),
+                ));
+            }
         }
         let mut m = im::Matches::default();
         for c in &j.cars {

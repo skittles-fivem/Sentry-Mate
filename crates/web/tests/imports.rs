@@ -269,3 +269,89 @@ async fn upload_check_match_import_and_discard() {
     let r = admin.post("/api/v1/imports", json!({ "bytes_total": 3 })).await;
     assert_eq!(r.status, 201, "{}", r.text());
 }
+
+/// Uploads `bytes` as one import in chunks of `step` and waits for its check.
+async fn upload(c: &mut Client, bytes: &[u8], step: usize) -> String {
+    let r = c.post("/api/v1/imports", json!({ "name": "twins.sql", "bytes_total": bytes.len() })).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let id = r.json()["id"].as_str().unwrap().to_string();
+    let mut off = 0;
+    while off < bytes.len() {
+        let part = &bytes[off..(off + step).min(bytes.len())];
+        let (o, l, sha) = (off.to_string(), bytes.len().to_string(), hex::encode(Sha256::digest(part)));
+        let r = c
+            .request(
+                "PATCH",
+                &format!("/api/v1/imports/{id}"),
+                Some(part),
+                &[("Upload-Offset", &o), ("Upload-Length", &l), ("Upload-SHA256", &sha)],
+            )
+            .await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        off += part.len();
+    }
+    id
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_imported_cars_never_go_into_one_and_chunks_take_turns() {
+    let k = kit().await;
+    let mut admin = k.s.admin().await;
+    let here = format!("c{}", k.car);
+
+    // the same chunk sent eight times at once: one is stored, the others hear where the upload is, none fails
+    let r = admin.post("/api/v1/imports", json!({ "name": "race.sql", "bytes_total": BACKUP.len() })).await;
+    let id = r.json()["id"].as_str().unwrap().to_string();
+    let part = &BACKUP[..BACKUP.len() / 3];
+    let mut tries = Vec::new();
+    for _ in 0..8 {
+        let (mut c, id, part) = (admin.clone(), id.clone(), part.to_vec());
+        tries.push(tokio::spawn(async move { chunk(&mut c, &id, 0, &part, None).await }));
+    }
+    let mut codes = Vec::new();
+    for t in tries {
+        let r = t.await.unwrap();
+        codes.push((r.status, r.code()));
+    }
+    assert_eq!(codes.iter().filter(|c| c.0 == 200).count(), 1, "{codes:?}");
+    assert!(codes.iter().all(|c| c.0 == 200 || *c == (409, Some("wrong_offset".into()))), "{codes:?}");
+    let j = admin.get(&format!("/api/v1/imports/{id}")).await.json();
+    assert_eq!(j["uploaded_bytes"], json!(part.len()), "{j}");
+    assert_eq!(admin.delete(&format!("/api/v1/imports/{id}"), json!({})).await.status, 200);
+
+    // a backup whose two cars share the car here's VIN prefix (same model, year and plant): neither is suggested
+    let twins = String::from_utf8(BACKUP.to_vec()).unwrap().replace("7SAYGDEE0PF000001", "5YJ3E1EA0KF000999");
+    let id = upload(&mut admin, twins.as_bytes(), 200_000).await;
+    let ready = wait_for(&mut admin, &id, "ready").await;
+    assert_eq!(ready["cars_to_match"], json!(2), "{ready}");
+    let cars = admin.get(&format!("/api/v1/imports/{id}/cars")).await.json();
+    let items = cars["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{cars}");
+    assert!(items.iter().all(|c| c["vin_prefix"] == "5YJ3E1EA0KF"), "{cars}");
+    assert!(items.iter().all(|c| c["suggested"].is_null() && c["match"].is_null()), "{cars}");
+    let r = admin.post(&format!("/api/v1/imports/{id}/start"), json!({})).await;
+    assert_eq!((r.status, r.code()), (409, Some("cars_unmatched".into())));
+    // both into the car here is refused; one there and one new imports
+    let (a, b) = (items[0]["tm_car"].clone(), items[1]["tm_car"].clone());
+    let r = admin
+        .put(
+            &format!("/api/v1/imports/{id}/cars"),
+            json!({ "items": [{ "tm_car": a, "match": here }, { "tm_car": b, "match": here }] }),
+        )
+        .await;
+    assert_eq!((r.status, r.code()), (422, Some("invalid".into())), "{}", r.text());
+    let r = admin
+        .put(
+            &format!("/api/v1/imports/{id}/cars"),
+            json!({ "items": [{ "tm_car": a, "match": here }, { "tm_car": b, "match": "new" }] }),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let r = admin.post(&format!("/api/v1/imports/{id}/start"), json!({})).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let done = wait_for(&mut admin, &id, "done").await;
+    let matched: Vec<&str> =
+        done["report"]["cars"].as_array().unwrap().iter().map(|c| c["match"].as_str().unwrap()).collect();
+    assert_eq!(matched.iter().filter(|m| **m == here).count(), 1, "{done}");
+    assert_eq!(engine::query::all_cars(&k.engine).unwrap().len(), 2);
+}
