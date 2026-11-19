@@ -31,15 +31,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/fleet/versions", get(fleet_versions))
         // live values, series, timeline
         .route("/api/v1/cars/{car}/gaps", get(gaps))
-        // charges
-        .route("/api/v1/charges", get(charges_all))
-        .route("/api/v1/cars/{car}/charges", get(charges_car))
-        .route("/api/v1/cars/{car}/charges/{charge}", get(charge))
-        .route("/api/v1/cars/{car}/charges/{charge}/curve", get(curve))
-        .route("/api/v1/charging-stats", get(charging_stats_all))
-        .route("/api/v1/cars/{car}/charging-stats", get(charging_stats_car))
-        .route("/api/v1/charging-stats/places", get(charging_places))
-        .route("/api/v1/cars/{car}/charging-stats/dc-curve", get(dc_curve))
+        // charges: web's charges module
         // battery and efficiency
         .route("/api/v1/cars/{car}/battery", get(battery))
         .route("/api/v1/cars/{car}/battery/capacity", get(capacity))
@@ -141,16 +133,6 @@ fn text(p: &Params, name: &str) -> ApiResult<Option<String>> {
     Ok(p.text(name, 200)?.map(str::to_string))
 }
 
-/// A comma list as the engine takes it (`a,b`), each part trimmed, at most 50.
-fn list(p: &Params, name: &str) -> ApiResult<Vec<String>> {
-    Ok(p.list(name, None, 50)?.unwrap_or_default())
-}
-
-/// The `{drive}`, `{charge}` or `{place}` of the path.
-fn id_of(path: &HashMap<String, String>, name: &str, code: &'static str) -> ApiResult<u64> {
-    path.get(name).and_then(|s| q::parse_id(s)).ok_or_else(|| ApiError::not_found(code))
-}
-
 async fn about(State(app): State<AppState>, v: Viewer) -> Json {
     axum::Json(serde_json::json!({
         "version": crate::VERSION,
@@ -182,90 +164,6 @@ async fn gaps(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -
 
 // ---- drives (the web crate serves drives, a drive, its track and purpose, purpose rules, drive stats, the
 // logbook, the trip and saved trips)
-
-// ---- charges
-
-fn charges_query(p: &Params) -> ApiResult<q::charges::ChargesQuery> {
-    Ok(q::charges::ChargesQuery {
-        period: period(p)?,
-        places: text(p, "places")?,
-        place_kind: text(p, "place_kind")?,
-        kind: text(p, "kind")?,
-        q: text(p, "q")?,
-        min_cost: p.float("min_cost", 0.0, 1e9)?,
-        include_unpriced: p.bool("include_unpriced")?,
-        min_duration_min: p.float("min_duration_min", 0.0, 1e6)?,
-        source: text(p, "source")?,
-        flags: text(p, "flags")?,
-        sort: text(p, "sort")?,
-        dir: text(p, "dir")?,
-    })
-}
-
-async fn charges_all(State(app): State<AppState>, v: Viewer, named: CarsParam, p: Params) -> ApiResult<Response> {
-    let (query, pg, access) = (charges_query(&p)?, paging(&p)?, v.cars().clone());
-    answer(&app, &p, "charges", move |e| q::charges::charges(e, &visible(e, &access, &named)?, &query, &pg)).await
-}
-
-async fn charges_car(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let (query, pg) = (charges_query(&p)?, paging(&p)?);
-    answer(&app, &p, "charges", move |e| q::charges::charges(e, &[car], &query, &pg)).await
-}
-
-async fn charge(
-    State(app): State<AppState>,
-    CarParam(car): CarParam,
-    Path(path): Path<HashMap<String, String>>,
-    p: Params,
-) -> ApiResult<Response> {
-    let id = id_of(&path, "charge", "no_such_charge")?;
-    answer(&app, &p, "charge", move |e| q::charges::charge(e, car, id)).await
-}
-
-async fn curve(
-    State(app): State<AppState>,
-    CarParam(car): CarParam,
-    Path(path): Path<HashMap<String, String>>,
-    p: Params,
-) -> ApiResult<Response> {
-    let id = id_of(&path, "charge", "no_such_charge")?;
-    let fields = list(&p, "fields")?;
-    let max = p.uint("max_points", 2, 100_000)?.map(|n| n as usize);
-    answer(&app, &p, "curve", move |e| {
-        let f: Vec<&str> = fields.iter().map(String::as_str).collect();
-        q::charges::curve(e, car, id, &f, max)
-    })
-    .await
-}
-
-async fn charging_stats_all(
-    State(app): State<AppState>,
-    v: Viewer,
-    named: CarsParam,
-    p: Params,
-) -> ApiResult<Response> {
-    let (query, access) = (charges_query(&p)?, v.cars().clone());
-    answer(&app, &p, "charging-stats", move |e| q::charges::charging_stats(e, &visible(e, &access, &named)?, &query))
-        .await
-}
-
-async fn charging_stats_car(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let query = charges_query(&p)?;
-    answer(&app, &p, "charging-stats", move |e| q::charges::charging_stats(e, &[car], &query)).await
-}
-
-async fn charging_places(State(app): State<AppState>, v: Viewer, named: CarsParam, p: Params) -> ApiResult<Response> {
-    let (query, pg, access, sort) = (charges_query(&p)?, paging(&p)?, v.cars().clone(), text(&p, "sort")?);
-    answer(&app, &p, "charging-places", move |e| {
-        q::charges::charging_places(e, &visible(e, &access, &named)?, &query, sort.as_deref(), &pg)
-    })
-    .await
-}
-
-async fn dc_curve(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let per = period(&p)?;
-    answer(&app, &p, "dc-curve", move |e| q::charges::dc_curve(e, car, &per)).await
-}
 
 // ---- battery and efficiency
 
