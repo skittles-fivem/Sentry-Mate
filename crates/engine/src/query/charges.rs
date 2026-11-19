@@ -61,9 +61,11 @@ pub struct ChargeView {
     pub start_ms: u64,
     pub end_ms: Option<u64>,
     pub charging_ms: u64,
-    pub plugged_ms: u64,
+    /// How long the cable was in: null until the plug-in span is decoded (the charging time is no stand-in for it).
+    pub plugged_ms: Option<u64>,
     /// `ac`, `dc` or null.
     pub kind: Option<&'static str>,
+    /// The fast charger's type, brand, class and billed energy: null while nothing about the charger is decoded.
     pub fast_charger: Option<serde_json::Value>,
     pub place: Option<ChargePlace>,
     pub address: Address,
@@ -96,22 +98,42 @@ pub(crate) struct Ctx {
     pub live: Option<u64>,
 }
 
+/// The charge still going: the newest CAN charge, when the car's newest snapshot says it is charging, that charge
+/// ends within 5 minutes of it, and the snapshot is fresh (the data has not stopped: no upload for longer than
+/// [`super::now::STALE_MS`] means the charge stopped where its data did, as `/cars` and `/gaps` say), and the
+/// engine has not settled it (the car's data goes on past it).
 pub(crate) fn ctx(e: &Engine, c: &Car) -> QResult<Ctx> {
-    let live =
-        e.db().entry(c.id)?.and_then(|x| x.summary.now).filter(|n| n.sample.charging == Some(true)).and_then(|n| {
-            e.db()
-                .list::<Charge>(c.id, &db::Query { source: Some(Source::Can), ..db::Query::default().limit(1) })
-                .ok()
-                .and_then(|p| p.items.into_iter().next())
-                .filter(|ch| ch.end_ms + 300_000 >= n.at_ms)
-                .map(|ch| ch.id)
-        });
+    let now = crate::now_ms();
+    let snap = e
+        .db()
+        .entry(c.id)?
+        .and_then(|x| x.summary.now)
+        .filter(|n| n.sample.charging == Some(true) && now.saturating_sub(n.at_ms) <= super::now::STALE_MS);
+    let live = match snap {
+        Some(n) => e
+            .db()
+            .list::<Charge>(c.id, &db::Query { source: Some(Source::Can), ..db::Query::default().limit(1) })?
+            .items
+            .into_iter()
+            .next()
+            .filter(|ch| ch.end_ms + 300_000 >= n.at_ms)
+            .map(|ch| costs::ended(e, c.id, &ch).map(|done| (!done).then_some(ch.id)))
+            .transpose()?
+            .flatten(),
+        None => None,
+    };
     Ok(Ctx { places: e.places(), live })
 }
 
 /// The cost a charge shows: kept, else from the place's price now (a charge still going), else the imported one.
 pub(crate) fn cost_of(e: &Engine, c: &Car, ch: &Charge) -> QResult<Option<CostEntry>> {
-    if let Some(k) = records::cost(e.db(), c.id, ch.id, ch.start_ms)? {
+    cost_live(e, c, ch, false)
+}
+
+/// [`cost_of`], for a charge known to be still going or not: one still going follows its place's price (only a typed
+/// cost holds), whatever cost was kept for it before.
+fn cost_live(e: &Engine, c: &Car, ch: &Charge, live: bool) -> QResult<Option<CostEntry>> {
+    if let Some(k) = records::cost(e.db(), c.id, ch.id, ch.start_ms)?.filter(|k| !live || k.source == "manual") {
         return Ok(Some(k));
     }
     if ch.source == Source::Can {
@@ -121,7 +143,7 @@ pub(crate) fn cost_of(e: &Engine, c: &Car, ch: &Charge) -> QResult<Option<CostEn
 }
 
 pub(crate) fn view(e: &Engine, c: &Car, ch: &Charge, x: &Ctx) -> QResult<ChargeView> {
-    let kept = cost_of(e, c, ch)?;
+    let kept = cost_live(e, c, ch, x.live == Some(ch.id))?;
     Ok(view_with(c, ch, x, kept.as_ref()))
 }
 
@@ -141,7 +163,9 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
     let grid = ch.energy_used_kwh;
     let added = ch.energy_added_kwh;
     let price_per_kwh = cost.as_ref().and_then(|cst| {
-        let (basis, kwh) = match grid {
+        // a typed cost is over the energy it was entered for; else the grid's where measured, else the pack's
+        let typed_basis = kept.filter(|k| k.source == "manual").and_then(|k| k.energy_basis.as_deref());
+        let (basis, kwh) = match grid.filter(|_| typed_basis != Some("pack")) {
             Some(g) => ("grid", g),
             None => ("pack", added?),
         };
@@ -154,7 +178,6 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
     });
     let hours = ms as f64 / 3_600_000.0;
     let range_added = ch.end_range_km.zip(ch.start_range_km).map(|(b, a)| b - a);
-    let dc = ch.kind == Some(ChargeKind::Dc);
     ChargeView {
         id: ch.id.to_string(),
         car: CarRef(c.id),
@@ -162,9 +185,9 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
         start_ms: ch.start_ms,
         end_ms: (!live).then_some(ch.end_ms),
         charging_ms: ms,
-        plugged_ms: ms,
+        plugged_ms: None,
         kind: ch.kind.map(kind_word),
-        fast_charger: dc.then(|| serde_json::json!({ "type": null, "brand": null, "class": null, "billed_kwh": null })),
+        fast_charger: None,
         place: place.map(|p| ChargePlace { id: place_ref(p.id), name: p.name.clone(), kind: x.places.kind_word(p) }),
         address: Address { short: ch.address.clone(), ..Address::default() },
         position: ch.position.as_ref().map(|p| Position {
@@ -407,7 +430,8 @@ struct Filter<'a> {
     places: Option<Vec<u32>>,
     needle: Option<String>,
     flags: Vec<&'a str>,
-    /// Whether rows are marked with the gaps inside them (the lists and their `flags=gap`; not the stats).
+    /// Whether every row is marked with the gaps inside it while the rows stream by (`flags=gap` needs it to choose
+    /// rows; without it a list marks only its page's rows, [`mark_gaps`], and the stats none).
     gaps: bool,
 }
 
@@ -431,7 +455,8 @@ impl<'a> Filter<'a> {
         }
         let places = super::drives::place_list(q.places.as_deref(), &e.places())?;
         let needle = q.q.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
-        Ok(Filter { q, source, places, needle, flags, gaps: true })
+        let gaps = flags.contains(&"gap");
+        Ok(Filter { q, source, places, needle, flags, gaps })
     }
 
     /// Whether a row can match before its view is made (its place and kind).
@@ -494,8 +519,8 @@ impl<'a> Filter<'a> {
     }
 }
 
-/// Calls `f` with the view of each charge of `cars` that matches the filters (newest or oldest first per car), its
-/// gaps marked. One car's holes are read once for the stretch its rows cover.
+/// Calls `f` with the view of each charge of `cars` that matches the filters (newest or oldest first per car). With
+/// [`Filter::gaps`] each is marked with its gaps, read a week of rows at a time ([`HoleWindow`]).
 fn each_view(
     e: &Engine,
     cars: &[CarId],
@@ -508,30 +533,16 @@ fn each_view(
         let c = car_of(e, car)?;
         let x = ctx(e, &c)?;
         let shown = Shown::new(e, car, flt.source)?;
-        let holes = if flt.gaps {
-            // the stretch the rows cover, for the holes (a cheap pass over the rows, no views)
-            let (mut lo, mut hi) = (u64::MAX, 0u64);
-            each::<Charge>(e, car, a, b, flt.source, &shown, true, |ch| {
-                lo = lo.min(ch.start_ms);
-                hi = hi.max(ch.end_ms.max(ch.start_ms + 1));
-                Ok(true)
-            })?;
-            if lo >= hi {
-                continue;
-            }
-            holes(e, &c, lo, hi)?
-        } else {
-            Vec::new()
-        };
+        let mut win = HoleWindow::default();
         let mut go = true;
         each::<Charge>(e, car, a, b, flt.source, &shown, newest_first, |ch| {
             if !flt.row_may(&ch, &x) {
                 return Ok(true);
             }
             let mut v = view(e, &c, &ch, &x)?;
-            let gaps = holes_in(&holes, ch.start_ms, ch.end_ms.max(ch.start_ms + 1));
-            v.has_gaps = !gaps.is_empty();
-            v.flags.gap_ms = covered_ms(&gaps);
+            if flt.gaps {
+                mark(&mut v, &win.of(e, &c, &ch)?);
+            }
             if !flt.matches(&v) {
                 return Ok(true);
             }
@@ -540,6 +551,71 @@ fn each_view(
         })?;
         if !go {
             break;
+        }
+    }
+    Ok(())
+}
+
+/// A charge's span for its gaps (at least 1 ms).
+fn span_of(ch: &Charge) -> (u64, u64) {
+    (ch.start_ms, ch.end_ms.max(ch.start_ms + 1))
+}
+
+/// Marks a view with the gaps inside its charge.
+fn mark(v: &mut ChargeView, gaps: &[Gap]) {
+    v.has_gaps = !gaps.is_empty();
+    v.flags.gap_ms = covered_ms(gaps);
+}
+
+/// The length of the stretch [`HoleWindow`] reads at once.
+const HOLE_WINDOW_MS: u64 = 7 * 86_400_000;
+
+/// The holes of one stretch of a car (a week, widened to the charge that needed it), read again only when a charge
+/// falls outside it: rows stream by in order, so each week's records are read about once.
+#[derive(Default)]
+struct HoleWindow {
+    at: Option<(u64, u64)>,
+    holes: Vec<Gap>,
+}
+
+impl HoleWindow {
+    fn of(&mut self, e: &Engine, c: &Car, ch: &Charge) -> QResult<Vec<Gap>> {
+        let (a, b) = span_of(ch);
+        if !self.at.is_some_and(|(x, y)| x <= a && b <= y) {
+            let lo = a - a % HOLE_WINDOW_MS;
+            let hi = b.max(lo.saturating_add(HOLE_WINDOW_MS));
+            self.holes = holes(e, c, lo, hi)?;
+            self.at = Some((lo, hi));
+        }
+        Ok(holes_in(&self.holes, a, b))
+    }
+}
+
+/// Marks a page's rows with their gaps: each car's holes read over its rows' spans, merged where they are within a
+/// day of each other, so a page costs about the records of the days it shows.
+fn mark_gaps(e: &Engine, rows: &mut [ChargeView]) -> QResult<()> {
+    let mut by_car: BTreeMap<CarId, Vec<usize>> = BTreeMap::new();
+    for (i, v) in rows.iter().enumerate() {
+        by_car.entry(v.car.0).or_default().push(i);
+    }
+    for (car, mut idx) in by_car {
+        let c = car_of(e, car)?;
+        let span = |v: &ChargeView| (v.start_ms, v.end_ms.unwrap_or(v.start_ms + v.charging_ms).max(v.start_ms + 1));
+        idx.sort_by_key(|&i| span(&rows[i]));
+        let mut k = 0;
+        while k < idx.len() {
+            let (lo, mut hi) = span(&rows[idx[k]]);
+            let mut j = k + 1;
+            while j < idx.len() && span(&rows[idx[j]]).0 <= hi.saturating_add(86_400_000) {
+                hi = hi.max(span(&rows[idx[j]]).1);
+                j += 1;
+            }
+            let found = holes(e, &c, lo, hi)?;
+            for &i in &idx[k..j] {
+                let (a, b) = span(&rows[i]);
+                mark(&mut rows[i], &holes_in(&found, a, b));
+            }
+            k = j;
         }
     }
     Ok(())
@@ -706,7 +782,10 @@ pub fn charges(e: &Engine, cars: &[CarId], q: &ChargesQuery, paging: &Paging) ->
         best.offer((sort_key(sort, &v), c.id, ch.id), v);
         Ok(true)
     })?;
-    let (items, last) = best.page();
+    let (mut items, last) = best.page();
+    if !flt.gaps {
+        mark_gaps(e, &mut items)?;
+    }
     let next = last.map(|l| make_cursor(&l, &sig)).transpose()?;
     Ok(ChargesPage {
         car: None,
@@ -792,18 +871,10 @@ pub fn charge(e: &Engine, car: CarId, id: u64) -> QResult<ChargeDetail> {
         }
         Ok(true)
     })?;
+    // the same gaps the lists mark (the records' and the chain's), so a charge reads alike in both
     let end = ch.end_ms.max(ch.start_ms + 1);
-    let curve = costs::curve_of(e, car, &ch)?;
-    let mut gaps = holes_in(&holes(e, &c, ch.start_ms, end)?, ch.start_ms, end);
-    // the curve's own holes the records don't explain
-    for w in curve.windows(2) {
-        let (a, b) = (w[0].t_ms + 1000, w[1].t_ms);
-        if w[1].t_ms.saturating_sub(w[0].t_ms) > 10_000 && !gaps.iter().any(|g| g.start_ms < b && g.end_ms > a) {
-            gaps.push(Gap { start_ms: a, end_ms: b, kind: "unknown" });
-        }
-    }
-    gaps.sort_by_key(|g| g.start_ms);
-    let kept = cost_of(e, &c, &ch)?;
+    let gaps = holes_in(&holes(e, &c, ch.start_ms, end)?, ch.start_ms, end);
+    let kept = cost_live(e, &c, &ch, x.live == Some(ch.id))?;
     let minutes = ch.end_ms.saturating_sub(ch.start_ms) as f64 / 60_000.0;
     let cost_breakdown = match &kept {
         Some(k) if k.source == "manual" => Breakdown {
@@ -874,8 +945,38 @@ pub struct Curve {
     /// `ac`, `dc` or null.
     pub kind: Option<&'static str>,
     pub t_ms: Vec<u64>,
-    pub values: BTreeMap<String, Vec<Option<f64>>>,
+    pub values: BTreeMap<String, Column>,
     pub step_ms: u64,
+}
+
+/// One field of a curve, a value (or null) per `t_ms`: numbers, or words (`limit_source`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum Column {
+    Numbers(Vec<Option<f64>>),
+    Words(Vec<Option<&'static str>>),
+}
+
+impl Column {
+    /// The column's length.
+    pub fn len(&self) -> usize {
+        match self {
+            Column::Numbers(v) => v.len(),
+            Column::Words(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The values of a column of numbers (none for words).
+    pub fn numbers(&self) -> &[Option<f64>] {
+        match self {
+            Column::Numbers(v) => v,
+            Column::Words(_) => &[],
+        }
+    }
 }
 
 /// Every field the curve takes. Those this server does not record yet come as a column of nulls.
@@ -896,7 +997,11 @@ pub const CURVE_FIELDS: &[&str] = &[
     "dc_amps_a",
     "ac_volts_v",
     "ac_amps_a",
+    "limit_source",
 ];
+
+/// The curve fields whose values are words, not numbers.
+const WORD_FIELDS: &[&str] = &["limit_source"];
 
 /// The fields asked for when none are named.
 const DEFAULT_CURVE_FIELDS: &[&str] = &["power_kw", "soc_pct", "volts_v", "amps_a", "battery_c"];
@@ -969,6 +1074,12 @@ pub fn curve(e: &Engine, car: CarId, id: u64, fields: &[&str], max_points: Optio
     let (ac, dc) = (ch.kind == Some(ChargeKind::Ac), ch.kind == Some(ChargeKind::Dc));
     let mut values = BTreeMap::new();
     for f in &fields {
+        if WORD_FIELDS.contains(f) {
+            // what sets the current (`station`, `cable`, `car`, `setting`): not decoded into the charge points yet,
+            // so null at every point, as for a car that does not say
+            values.insert((*f).to_string(), Column::Words(vec![None; picked.len()]));
+            continue;
+        }
         let col: Vec<Option<f64>> = if let Some(s) = sample_field(f) {
             let src = from_samples.get(s);
             (0..picked.len())
@@ -998,7 +1109,7 @@ pub fn curve(e: &Engine, car: CarId, id: u64, fields: &[&str], max_points: Optio
                 })
                 .collect()
         };
-        values.insert((*f).to_string(), col);
+        values.insert((*f).to_string(), Column::Numbers(col));
     }
     Ok(scoped(&c, Curve { charge: ch.id.to_string(), kind: ch.kind.map(kind_word), t_ms, values, step_ms: step }))
 }

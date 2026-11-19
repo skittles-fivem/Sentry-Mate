@@ -251,7 +251,7 @@ fn logs_become_a_drive_and_a_charge_and_late_logs_rebuild_the_same_history() {
         let curve =
             query::charges::curve(&a.engine, car, ch.id.parse().unwrap(), &["power_kw", "soc_pct"], None).unwrap();
         assert!(curve.body.t_ms.len() >= 100, "{}", curve.body.t_ms.len());
-        assert!(curve.body.values["power_kw"].iter().flatten().all(|p| (*p - 10.0).abs() < 0.5));
+        assert!(curve.body.values["power_kw"].numbers().iter().flatten().all(|p| (*p - 10.0).abs() < 0.5));
 
         // the car sleeps after the quiet log
         let states = query::timeline::states(&a.engine, car, &Period::all(), &Paging::first(500)).unwrap().body;

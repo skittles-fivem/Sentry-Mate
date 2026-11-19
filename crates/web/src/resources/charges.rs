@@ -113,9 +113,23 @@ async fn curve(
     .await
 }
 
-/// A currency code: three capital letters (ISO 4217).
+/// The currencies in use (ISO 4217's current codes, without funds, metals and the test and no-currency codes), sorted.
+const CURRENCIES: &[&str] = &[
+    "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN", "BAM", "BBD", "BDT", "BGN", "BHD", "BIF",
+    "BMD", "BND", "BOB", "BRL", "BSD", "BTN", "BWP", "BYN", "BZD", "CAD", "CDF", "CHF", "CLP", "CNY", "COP", "CRC",
+    "CUP", "CVE", "CZK", "DJF", "DKK", "DOP", "DZD", "EGP", "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL", "GHS",
+    "GIP", "GMD", "GNF", "GTQ", "GYD", "HKD", "HNL", "HTG", "HUF", "IDR", "ILS", "INR", "IQD", "IRR", "ISK", "JMD",
+    "JOD", "JPY", "KES", "KGS", "KHR", "KMF", "KPW", "KRW", "KWD", "KYD", "KZT", "LAK", "LBP", "LKR", "LRD", "LSL",
+    "LYD", "MAD", "MDL", "MGA", "MKD", "MMK", "MNT", "MOP", "MRU", "MUR", "MVR", "MWK", "MXN", "MYR", "MZN", "NAD",
+    "NGN", "NIO", "NOK", "NPR", "NZD", "OMR", "PAB", "PEN", "PGK", "PHP", "PKR", "PLN", "PYG", "QAR", "RON", "RSD",
+    "RUB", "RWF", "SAR", "SBD", "SCR", "SDG", "SEK", "SGD", "SHP", "SLE", "SOS", "SRD", "SSP", "STN", "SVC", "SYP",
+    "SZL", "THB", "TJS", "TMT", "TND", "TOP", "TRY", "TTD", "TWD", "TZS", "UAH", "UGX", "USD", "UYU", "UZS", "VES",
+    "VND", "VUV", "WST", "XAF", "XCD", "XCG", "XOF", "XPF", "YER", "ZAR", "ZMW", "ZWG",
+];
+
+/// A currency code in use (ISO 4217): `XXX`, `XTS` or any three letters will not do.
 fn currency_ok(s: &str) -> bool {
-    s.len() == 3 && s.bytes().all(|b| b.is_ascii_uppercase())
+    CURRENCIES.binary_search(&s).is_ok()
 }
 
 /// `PUT .../cost` `{ mode, amount, currency, energy_basis }`: a cost typed on the charge, kept across rebuilds and
@@ -175,7 +189,8 @@ async fn put_cost(
     Ok(Json(value))
 }
 
-/// `DELETE .../cost`: the typed cost taken off; the charge goes back to its place's price.
+/// `DELETE .../cost`: the typed cost taken off; the charge gets back the cost it kept before it. A charge without a
+/// typed cost is answered as it is, unchanged, and nothing goes to the audit log.
 async fn delete_cost(
     State(app): State<AppState>,
     v: Viewer,
@@ -183,13 +198,12 @@ async fn delete_cost(
     Path(path): Path<HashMap<String, String>>,
 ) -> ApiResult<Json<Value>> {
     let id = charge_id(&path)?;
-    let value = run(&app, move |e| {
-        costs::clear_manual(e, car, id)?;
-        q::charges::charge(e, car, id)
-    })
-    .await?;
-    let summary = "Removed the entered cost of a charge; the place's price applies.";
-    v.audit(&app, "charge-cost-removed", Some(&target("charge", Some(car), &id.to_string())), summary).await?;
+    let mut both = run(&app, move |e| Ok((costs::clear_manual(e, car, id)?, q::charges::charge(e, car, id)?))).await?;
+    let (removed, value) = (both[0] == Value::Bool(true), both[1].take());
+    if removed {
+        let summary = "Removed the entered cost of a charge; it has its own cost again.";
+        v.audit(&app, "charge-cost-removed", Some(&target("charge", Some(car), &id.to_string())), summary).await?;
+    }
     Ok(Json(value))
 }
 
@@ -216,4 +230,20 @@ async fn places(State(app): State<AppState>, v: Viewer, named: CarsParam, p: Par
 async fn dc_curve(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
     let (per, places) = (period(&p)?, text(&p, "places")?);
     answer(&app, &p, "dc-curve", move |e| q::charges::dc_curve(e, car, &per, places.as_deref())).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn currencies_are_sorted_and_only_real_codes_pass() {
+        assert!(CURRENCIES.windows(2).all(|w| w[0] < w[1]));
+        for ok in ["USD", "EUR", "NOK", "JPY", "CAD"] {
+            assert!(currency_ok(ok), "{ok}");
+        }
+        for bad in ["XXX", "XTS", "ABC", "usd", "EURO", ""] {
+            assert!(!currency_ok(bad), "{bad}");
+        }
+    }
 }

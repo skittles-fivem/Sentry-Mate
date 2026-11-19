@@ -361,7 +361,7 @@ async fn charges_lists_detail_curve_cost_and_stats_of_decoded_days() {
     assert_eq!(d2["cost"]["source"], "manual");
     assert_eq!(d2["cost"]["currency"], "NOK");
     assert_eq!(d2["price_per_kwh"]["value"], 0.12346, "{}", d2["price_per_kwh"]);
-    assert_eq!(d2["price_per_kwh"]["basis"], "grid", "the basis the price is over: the grid where known");
+    assert_eq!(d2["price_per_kwh"]["basis"], "pack", "the basis the price was entered over");
     assert_eq!(d2["cost_breakdown"]["mode"], "per_kwh");
     assert_eq!(d2["cost_breakdown"]["parts"][0]["per_kwh"], 0.12346);
     assert_eq!(
@@ -506,4 +506,116 @@ async fn charges_lists_detail_curve_cost_and_stats_of_decoded_days() {
     assert!(r.status == 403 || r.status == 404, "{}", r.status);
     let signed_out = k.s.client().get(&format!("/api/v1/cars/{a}/charges")).await;
     assert_eq!(signed_out.status, 401);
+}
+
+/// What the two packs ask of a charge's curve (Instrument `charge.js` FIELDS, Logbook `charge.js` CURVE_FIELDS).
+const INSTRUMENT_CURVE: &str = "power_kw,ac_line_kw,soc_pct,usable_soc_pct,range_km,battery_c,outside_c,heater_kw,\
+ac_volts_v,ac_amps_a,pilot_a,phases,limit_source,dc_volts_v,dc_amps_a,volts_v,amps_a";
+const LOGBOOK_CURVE: &str = "power_kw,volts_v,amps_a,soc_pct,usable_soc_pct,battery_c,range_km,outside_c,phases,\
+pilot_a,ac_line_kw,heater_kw,dc_volts_v,dc_amps_a,ac_volts_v,ac_amps_a,limit_source";
+
+fn removed_rows(audit: &Value) -> usize {
+    audit.to_string().matches("charge-cost-removed").count()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn costs_stay_put_typed_costs_come_off_cleanly_and_list_and_detail_agree() {
+    let k = seeded().await;
+    let a = k.cars[0].clone();
+    let mut admin = k.s.admin().await;
+    let home: u32 = k.home.trim_start_matches('p').parse().unwrap();
+
+    // the home charges keep their cost at the home's price, which then goes up
+    let r = engine::costs::reprice(&k._engine, home, &k.ids, None, None, false, false).unwrap();
+    assert!(r.repriced > 0, "{r:?}");
+    let mut place = k._engine.db().place(home).unwrap().unwrap();
+    place.price.as_mut().unwrap().per_kwh = 5.0;
+    k._engine.db().update_place(place).unwrap();
+    k._engine.places_changed();
+    let l = ok(&mut admin, &format!("/api/v1/cars/{a}/charges?places={}&kind=ac&limit=500", k.home)).await;
+    let ch = l["items"][0].clone();
+    let id = ch["id"].as_str().unwrap().to_string();
+    let kept = ch["cost"].clone();
+    assert_eq!(kept["source"], "tariff", "{ch}");
+    let d = ok(&mut admin, &format!("/api/v1/cars/{a}/charges/{id}")).await;
+    assert_eq!(d["cost"], kept, "costs stay put when the price changes");
+
+    // DELETE without a typed cost changes nothing and writes nothing to the audit log
+    let cost = format!("/api/v1/cars/{a}/charges/{id}/cost");
+    let before = removed_rows(&ok(&mut admin, "/api/v1/audit?limit=500").await);
+    let r = admin.delete(&cost, json!({})).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["cost"], kept, "not repriced at the price of today");
+    assert_eq!(ok(&mut admin, &format!("/api/v1/cars/{a}/charges/{id}")).await["cost"], kept);
+    assert_eq!(removed_rows(&ok(&mut admin, "/api/v1/audit?limit=500").await), before);
+
+    // a price typed over the pack's energy is over the pack's energy, a total too
+    let added = d["energy_added_kwh"].as_f64().unwrap();
+    assert!(d["energy_grid_kwh"].is_number(), "an AC charge with the grid measured: {d}");
+    let r =
+        admin.put(&cost, json!({ "mode": "per_kwh", "amount": 0.45, "currency": "EUR", "energy_basis": "pack" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let t = r.json();
+    assert_eq!(t["price_per_kwh"], json!({ "value": 0.45, "basis": "pack" }), "{t}");
+    assert_eq!(t["cost"]["amount"].as_f64().unwrap(), (0.45 * added * 100.0).round() / 100.0);
+    let r =
+        admin.put(&cost, json!({ "mode": "total", "amount": 3.0, "currency": "EUR", "energy_basis": "pack" })).await;
+    let t = r.json();
+    assert_eq!(t["price_per_kwh"]["basis"], "pack", "{t}");
+    assert_eq!(t["price_per_kwh"]["value"].as_f64().unwrap(), (3.0 / added * 10_000.0).round() / 10_000.0);
+    let r =
+        admin.put(&cost, json!({ "mode": "total", "amount": 3.0, "currency": "EUR", "energy_basis": "grid" })).await;
+    assert_eq!(r.json()["price_per_kwh"]["basis"], "grid");
+
+    // taking the typed cost off gives back the cost kept before it, not today's price; it is audited
+    let r = admin.delete(&cost, json!({})).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let back = r.json();
+    assert_eq!(back["cost"], kept, "{back}");
+    assert!(back["manual_cost"].is_null());
+    assert_eq!(removed_rows(&ok(&mut admin, "/api/v1/audit?limit=500").await), before + 1);
+
+    // a currency must be one in use
+    for bad in ["XXX", "XTS", "ABC"] {
+        let r = admin.put(&cost, json!({ "mode": "total", "amount": 1, "currency": bad })).await;
+        assert_eq!((r.status, r.code().as_deref()), (422, Some("invalid")), "{bad}: {}", r.text());
+        assert!(r.json()["error"]["fields"].get("currency").is_some(), "{}", r.text());
+    }
+    assert_eq!(ok(&mut admin, &format!("/api/v1/cars/{a}/charges/{id}")).await["cost"], kept);
+
+    // the curve answers both pages' field lists, limit_source a column of nulls (not decoded yet)
+    for fields in [INSTRUMENT_CURVE, LOGBOOK_CURVE] {
+        let cv = ok(&mut admin, &format!("/api/v1/cars/{a}/charges/{id}/curve?fields={fields}&max_points=4000")).await;
+        let n = cv["t_ms"].as_array().unwrap().len();
+        assert!(n > 0);
+        for f in fields.split(',') {
+            assert_eq!(cv["values"][f].as_array().map(Vec::len), Some(n), "{f}");
+        }
+        assert!(cv["values"]["limit_source"].as_array().unwrap().iter().all(Value::is_null));
+        assert!(cv["values"]["power_kw"].as_array().unwrap().iter().any(Value::is_number));
+        let csv = admin.get(&format!("/api/v1/cars/{a}/charges/{id}/curve?fields={fields}&format=csv")).await;
+        assert_eq!(csv.status, 200, "{}", csv.text());
+        assert!(csv.text().lines().next().unwrap().contains("limit_source"));
+    }
+
+    // list and detail read a charge alike: its gaps, nothing made up, nothing going on in data that stopped long ago
+    for car in &k.cars {
+        let all = ok(&mut admin, &format!("/api/v1/cars/{car}/charges?limit=500")).await;
+        let items = all["items"].as_array().unwrap();
+        for it in items {
+            let d = ok(&mut admin, &format!("/api/v1/cars/{car}/charges/{}", it["id"].as_str().unwrap())).await;
+            assert_eq!((&d["has_gaps"], &d["flags"]), (&it["has_gaps"], &it["flags"]), "{car}: {it}");
+            assert!(it["plugged_ms"].is_null() && it["fast_charger"].is_null(), "{it}");
+            assert!(it["end_ms"].is_u64() && it["flags"]["in_progress"] == false, "{it}");
+        }
+        let with_gaps: Vec<&Value> = items.iter().filter(|c| c["has_gaps"] == true).map(|c| &c["id"]).collect();
+        let flagged = ok(&mut admin, &format!("/api/v1/cars/{car}/charges?flags=gap&limit=500")).await;
+        let ids: Vec<&Value> = flagged["items"].as_array().unwrap().iter().map(|c| &c["id"]).collect();
+        assert_eq!(ids, with_gaps, "{car}");
+        // a page of one marks its row as the whole list does
+        let one = ok(&mut admin, &format!("/api/v1/cars/{car}/charges?limit=1&sort=energy")).await;
+        let row = &one["items"][0];
+        let same = items.iter().find(|c| c["id"] == row["id"]).unwrap();
+        assert_eq!((&row["has_gaps"], &row["flags"]), (&same["has_gaps"], &same["flags"]));
+    }
 }

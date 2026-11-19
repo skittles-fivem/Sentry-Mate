@@ -55,8 +55,13 @@ pub(crate) fn carry(e: &Engine, car: CarId, old: &[Charge], new: &[Charge]) -> R
         if !taken.insert(n.id) || records::cost(db, car, n.id, n.start_ms)?.is_some() {
             continue;
         }
+        let typed = kept.source == "manual";
         records::put_cost(db, car, n.id, n.start_ms, Some(kept))?;
         records::put_cost(db, car, o.id, o.start_ms, None)?;
+        if typed && let Some(before) = replaced(e, car, o.id)? {
+            put_replaced(e, car, n.id, Some(&before))?;
+            put_replaced(e, car, o.id, None)?;
+        }
     }
     Ok(())
 }
@@ -157,7 +162,9 @@ impl Mode {
 }
 
 /// A cost typed on a charge (`PUT .../cost`): kept across rebuilds and never repriced. `grid_basis`: the energy a
-/// per-kWh amount is over is the grid's (else the pack's).
+/// per-kWh amount is over is the grid's (else the pack's; the pack's too where the charge did not measure the grid's).
+/// The cost the charge kept before (its place's price when it ended, an imported one) is put aside, and comes back
+/// when the typed one is taken off ([`clear_manual`]).
 pub fn set_manual(
     e: &Engine,
     car: CarId,
@@ -172,7 +179,8 @@ pub fn set_manual(
     if !amount.is_finite() || amount < 0.0 {
         return Err(QueryError::invalid("amount", "a cost is a number of 0 or more"));
     }
-    let basis_kwh = if grid_basis { ch.energy_used_kwh.or(ch.energy_added_kwh) } else { ch.energy_added_kwh };
+    let grid_basis = grid_basis && ch.energy_used_kwh.is_some();
+    let basis_kwh = if grid_basis { ch.energy_used_kwh } else { ch.energy_added_kwh };
     let minutes = ch.end_ms.saturating_sub(ch.start_ms) as f64 / 60_000.0;
     let total = match mode {
         Mode::Total => amount,
@@ -192,6 +200,9 @@ pub fn set_manual(
         gap_ms: 0,
         at_ms: now_ms(),
     };
+    if let Some(before) = records::cost(db, car, charge, ch.start_ms)?.filter(|k| k.source != "manual") {
+        put_replaced(e, car, charge, Some(&before))?;
+    }
     records::put_cost(db, car, charge, ch.start_ms, Some(c.clone()))?;
     e.emit(crate::Event::Rows {
         car,
@@ -202,21 +213,58 @@ pub fn set_manual(
     Ok(c)
 }
 
-/// Takes a typed cost off: the charge goes back to its place's price (as it is now).
-pub fn clear_manual(e: &Engine, car: CarId, charge: u64) -> Result<Option<CostEntry>, QueryError> {
+/// Takes a typed cost off (`DELETE .../cost`), and answers whether there was one: a charge without one is left as it
+/// is (its kept cost stays put). The charge gets back the cost it kept before the typed one; without one (typed while
+/// it was going on), a charge that has ended is priced at its place's price as it is now, and an imported one shows
+/// its own again.
+pub fn clear_manual(e: &Engine, car: CarId, charge: u64) -> Result<bool, QueryError> {
     let db = &e.inner.db;
     let ch: Charge = db.get(car, charge)?.ok_or(QueryError::NotFound("no_such_charge"))?;
-    records::put_cost(db, car, charge, ch.start_ms, None)?;
-    let tz = db.car(car)?.map_or_else(|| "UTC".to_string(), |c| c.time_zone);
-    let curve = curve_of(e, car, &ch)?;
-    let c = settle(e, car, &ch, &curve, &tz, true)?;
+    if records::cost(db, car, charge, ch.start_ms)?.is_none_or(|k| k.source != "manual") {
+        return Ok(false);
+    }
+    let before = replaced(e, car, charge)?;
+    records::put_cost(db, car, charge, ch.start_ms, before)?;
+    put_replaced(e, car, charge, None)?;
+    if ch.source == Source::Can && records::cost(db, car, charge, ch.start_ms)?.is_none() && ended(e, car, &ch)? {
+        let tz = db.car(car)?.map_or_else(|| "UTC".to_string(), |c| c.time_zone);
+        let curve = curve_of(e, car, &ch)?;
+        settle(e, car, &ch, &curve, &tz, true)?;
+    }
     e.emit(crate::Event::Rows {
         car,
         kinds: vec!["charges"],
         from_ms: ch.start_ms,
         to_ms: ch.end_ms.max(ch.start_ms + 1),
     });
-    Ok(c)
+    Ok(true)
+}
+
+/// Whether a charge has ended the way the pipeline settles it: the car's data goes on past it by more than the gap
+/// that ends a charge.
+pub(crate) fn ended(e: &Engine, car: CarId, ch: &Charge) -> Result<bool> {
+    let newest = records::meta(&e.inner.db, car)?.newest_ms.unwrap_or(0);
+    Ok(newest > ch.end_ms + e.inner.opts.params.charge_gap_ms)
+}
+
+fn replaced_key(car: CarId, charge: u64) -> String {
+    format!("car/{car}/cost-before-typed/{charge}")
+}
+
+/// The cost a charge kept before a cost was typed on it.
+fn replaced(e: &Engine, car: CarId, charge: u64) -> Result<Option<CostEntry>> {
+    records::get(&e.inner.db, records::NS, &replaced_key(car, charge))
+}
+
+fn put_replaced(e: &Engine, car: CarId, charge: u64, c: Option<&CostEntry>) -> Result<()> {
+    let key = replaced_key(car, charge);
+    match c {
+        Some(c) => records::put(&e.inner.db, records::NS, &key, c),
+        None => {
+            e.inner.db.kv().delete(records::NS, &key)?;
+            Ok(())
+        }
+    }
 }
 
 pub(crate) fn curve_of(e: &Engine, car: CarId, ch: &Charge) -> Result<Vec<ChargePoint>> {
