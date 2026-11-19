@@ -101,6 +101,9 @@ export const GAP_WORDS = Object.freeze({
   no_log: 'no log arrived for this time', not_recorded: 'recording was paused', failed_check: 'the log failed its check', dropped_frames: 'frames were dropped',
 });
 
+// a drive's start or end as words: its label, else its saved place or short address (a spot with no address known,
+// out of the offline address list's reach, has none of them)
+export const endLabel = (e) => (e && (e.label || (e.place && e.place.name) || (e.address && e.address.short))) || 'Unnamed spot';
 const placeOf = (p) => (p ? (p.place && p.place.name) || p.label || (typeof p.address === 'string' ? p.address : p.address && p.address.short) || 'an unnamed spot' : 'an unknown place');
 const placeEl = (p) => h('span', { class: 'tl-place' }, placeOf(p));
 const seg = (parts) => parts.filter(Boolean).flatMap((m, i) => { const s = h('span', { class: 'tl-seg' }, m); return i ? [sep(), s] : [s]; });

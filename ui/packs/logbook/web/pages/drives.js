@@ -20,7 +20,7 @@ import { pageHead, q, figure, icon, empty, errorView, errorWords, loadingBlock, 
 import { makeMap, boundsOf } from '../core/map.js';
 import { confirmDialog, popover } from '../core/dialog.js';
 import { choice } from '../core/form.js';
-import { placeLink } from '../core/journal.js';
+import { placeLink, endLabel } from '../core/journal.js';
 
 export const id = 'drives';
 export const css = true;
@@ -238,7 +238,7 @@ export async function mount(ctx) {
   function row(d) {
     const href = state.buildUrl('drive', { car: car.id, drive: d.id, period: ctx.state.period });
     const going = d.end_ms == null;
-    const box = h('input', { type: 'checkbox', class: 'pick-box', id: `pick-${d.id}`, checked: picked.has(d.id), 'aria-label': `Add the drive from ${d.start.label} to ${d.end.label} to a trip` });
+    const box = h('input', { type: 'checkbox', class: 'pick-box', id: `pick-${d.id}`, checked: picked.has(d.id), 'aria-label': `Add the drive from ${endLabel(d.start)} to ${endLabel(d.end)} to a trip` });
     box.addEventListener('change', () => { if (box.checked) picked.set(d.id, d); else picked.delete(d.id); drawPick(); });
     const startSoc = format(d.start_soc_pct, 'number', { digits: 0 });
     const batt = d.start_soc_pct != null || d.end_soc_pct != null ? `${startSoc} → ${format(d.end_soc_pct, 'percent')}` : q(null, 'percent');
@@ -263,7 +263,7 @@ export async function mount(ctx) {
         h('div', { class: 'route-cell' },
           routeSketch(shapeOf(d), { cls: 'sketch row-sketch' }),
           h('div', null,
-            h('a', { class: 'route-name', href }, d.start.label, h('span', { class: 'to' }, ' to '), d.end.label),
+            h('a', { class: 'route-name', href }, endLabel(d.start), h('span', { class: 'to' }, ' to '), endLabel(d.end)),
             h('span', { class: 'cell-sub' },
               placeCell(d.start), going ? null : [h('span', { class: 'sep', 'aria-hidden': 'true' }, ' → '), placeCell(d.end)],
               d.source === 'teslamate' ? [' ', flag('Imported', { kind: 'estimated' })] : null,
@@ -603,7 +603,7 @@ async function drawMissing(ctx, box) {
     list.length ? h('div', { class: 'missing-scroll', role: 'region', 'aria-label': 'Drives with missing data', tabindex: '0' }, h('table', { class: 'ledger-table missing-table', cover: ['drives.incomplete.table', 'drives.incomplete.id', 'drives.incomplete.start', 'drives.incomplete.end', 'drives.incomplete.distance', 'drives.incomplete.duration'] },
       h('thead', null, h('tr', null, ['Drive', 'Start', 'End', 'Distance', 'Duration', 'What is missing'].map((t, i) => h('th', { scope: 'col', class: { num: i === 3 || i === 4 } }, t)))),
       h('tbody', null, list.map((d) => h('tr', null,
-        h('td', null, h('a', { href: state.buildUrl('drive', { car: car.id, drive: d.id, period: ctx.state.period }) }, `${d.start.label} to ${d.end.label}`), h('span', { class: 'cell-sub' }, `Drive ${d.id}`)),
+        h('td', null, h('a', { href: state.buildUrl('drive', { car: car.id, drive: d.id, period: ctx.state.period }) }, `${endLabel(d.start)} to ${endLabel(d.end)}`), h('span', { class: 'cell-sub' }, `Drive ${d.id}`)),
         h('td', null, `${formatDayKey(dayKey(d.start_ms, tz), { year: false })}, ${formatTime(d.start_ms, tz)}`),
         h('td', null, d.end_ms ? formatTime(d.end_ms, tz) : 'still going'),
         h('td', { class: 'num' }, q(d.distance_km, 'distance')),

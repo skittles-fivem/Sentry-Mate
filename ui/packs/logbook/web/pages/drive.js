@@ -18,7 +18,7 @@ import * as state from '../shared/state.js';
 import { pageHead, q, figure, icon, sep, empty, errorWords, flag, button } from '../core/ui.js';
 import { makeMap, boundsOf } from '../core/map.js';
 import { stackedCharts } from '../core/chart.js';
-import { placeLink } from '../core/journal.js';
+import { placeLink, endLabel } from '../core/journal.js';
 import { choice } from '../core/form.js';
 import { remount } from '../core/router.js';
 
@@ -88,7 +88,7 @@ export async function mount(ctx) {
   const s = series && !series.error ? series : null;
   const trackErr = track && track.error ? track.error : null;
   const estWhKm = d.est_wh_per_km ?? (recentDrives && !recentDrives.error && recentDrives.summary ? recentDrives.summary.wh_per_km : null) ?? null;
-  ctx.title(`${d.start.label} to ${d.end.label}`);
+  ctx.title(`${endLabel(d.start)} to ${endLabel(d.end)}`);
 
   /* ------------------------------------------------------------ head: breadcrumb, steps, places */
   const link = (did) => (did ? state.buildUrl('drive', { car: car.id, drive: did, period: ctx.state.period }) : null);
@@ -103,7 +103,7 @@ export async function mount(ctx) {
       h('a', { href: state.buildUrl('car', { car: car.id }) }, car.name), h('span', { class: 'crumb-sep', 'aria-hidden': 'true' }, '/'),
       h('a', { href: state.buildUrl('drives', { car: car.id, period: ctx.state.period }) }, 'Drives'), h('span', { class: 'crumb-sep', 'aria-hidden': 'true' }, '/'),
       h('span', { 'aria-current': 'page' }, formatDate(d.start_ms, tz, { weekday: 'long', month: 'long', year: true }))),
-    title: [d.start.label, h('span', { class: 'to' }, ' to '), d.end.label],
+    title: [endLabel(d.start), h('span', { class: 'to' }, ' to '), endLabel(d.end)],
     deck: [`${formatTime(d.start_ms, tz)} – ${going ? 'now' : formatTime(d.end_ms, tz)}`, sep(), formatDuration(d.duration_ms), sep(),
       placeA(d.start), ' to ', placeA(d.end, going),
       d.source === 'teslamate' ? [' ', flag('Imported', { kind: 'estimated', title: 'Imported from TeslaMate: totals only, energy estimated from range' })] : null,
@@ -228,7 +228,7 @@ export async function mount(ctx) {
   const lines = track && track.features ? track.features.filter((f) => f.geometry && f.geometry.coordinates.length) : [];
   const all = lines.flatMap((f) => f.geometry.coordinates.map((c) => [c[0], c[1]]));
   const acc = lines.flatMap((f) => (f.properties && f.properties.accuracy_m) || []).filter((v) => v != null).sort((a, b) => a - b);
-  const mapBox = h('div', { class: 'map map-drive', role: 'region', 'aria-label': `Map of the route from ${d.start.label} to ${d.end.label}` });
+  const mapBox = h('div', { class: 'map map-drive', role: 'region', 'aria-label': `Map of the route from ${endLabel(d.start)} to ${endLabel(d.end)}` });
   let colourBy = (ctx.query && ctx.query.colour) || 'plain';
   if (!['plain', 'speed', 'power'].includes(colourBy)) colourBy = 'plain';
   const legend = h('div', { class: 'route-legend', 'aria-live': 'polite' });
@@ -273,8 +273,8 @@ export async function mount(ctx) {
       m.map.addSource('sel', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } } });
       m.addLine({ id: 'sel-casing', source: 'sel' }, 10, '--paper');
       m.addLine({ id: 'sel-line', source: 'sel' }, 6, '--accent-strong');
-      m.addPin(all[0], d.start.label, 'pin-start');
-      if (!going) m.addPin(all[all.length - 1], d.end.label, 'pin-end');
+      m.addPin(all[0], endLabel(d.start), 'pin-start');
+      if (!going) m.addPin(all[all.length - 1], endLabel(d.end), 'pin-end');
       else m.addPin(all[all.length - 1], 'Now', 'pin-here');
       markerEl = h('div', { class: 'car-dot is-hidden' });
       marker = new m.ml.Marker({ element: markerEl, anchor: 'center' }).setLngLat(all[0]).addTo(m.map);
@@ -458,7 +458,7 @@ export async function mount(ctx) {
       if (anchor) anchor.after(stripRow); else charts.append(stripRow);
     }
     onZoom(s.t_ms[0], s.t_ms[s.t_ms.length - 1]);
-    csvBtn.addEventListener('click', () => downloadCsv(csvFilename(car.name, 'drive', d.start.label, 'to', d.end.label, dayKey(d.start_ms, tz)), s.t_ms.map((t, i) => ({ t, i })), [
+    csvBtn.addEventListener('click', () => downloadCsv(csvFilename(car.name, 'drive', endLabel(d.start), 'to', endLabel(d.end), dayKey(d.start_ms, tz)), s.t_ms.map((t, i) => ({ t, i })), [
       timeColumn('Time', 't', tz),
       { label: 'State', value: (r) => (s.state ? s.state[r.i] : null) },
       column('Speed', (r) => val('speed_kph', r.i), 'speed', { digits: 2 }),

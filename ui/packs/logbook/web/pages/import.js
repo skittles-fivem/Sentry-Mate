@@ -22,7 +22,7 @@ import { format } from '../shared/units.js';
 import { formatDateTime, formatDate, formatDuration } from '../shared/time.js';
 import { column, timeColumn } from '../shared/csv.js';
 import { pageHead, section, figure, figures, flag, button, icon, empty, errorView, errorWords } from '../core/ui.js';
-import { choice } from '../core/form.js';
+import { choice, field } from '../core/form.js';
 import { dataTable } from '../core/table.js';
 import { confirmDialog } from '../core/dialog.js';
 import { zoneShort } from '../core/format.js';
@@ -58,6 +58,8 @@ const TABLES = {
   geofences: ['Places', 'Named areas. They become places here where no place covers them yet.'],
   addresses: ['Addresses', 'Street addresses of the spots the cars stopped at.'],
   states: ['Car states', 'Online, asleep and offline spells.'],
+  car_settings: ['Car settings', 'Each car’s TeslaMate settings, such as free Supercharging.'],
+  charges: ['Charge readings', 'The readings taken during each charge: its power curve.'],
 };
 const tableName = (t) => TABLES[t]?.[0] || t.replace(/_/g, ' ');
 const tableNote = (t) => TABLES[t]?.[1] || 'A table of the backup.';
@@ -70,6 +72,15 @@ const REASONS = {
   bad_time: ['Time cannot be read', 'The row has no time, or one that is not a real date.'],
   other_car: ['For a car left out', 'The row belongs to a car you chose to leave out.'],
   out_of_range: ['Values out of range', 'Every value of the row failed its check (for example a negative distance).'],
+  // the codes the server's import gives
+  'already-imported': ['Imported before', 'An earlier import took this row (or left its car out for good), so it is not stored twice.'],
+  open: ['Not finished in the backup', 'A drive, charge, state or update that was still going when the backup was made. A later backup brings it in once it has an end.'],
+  'unknown-car': ['Car not in the backup', 'The row names a car the backup’s car list does not have.'],
+  'car-left-out': ['For a car left out', 'The row belongs to a car you chose to leave out.'],
+  'unknown-charge': ['Charge not in the backup', 'A charge reading whose charge the backup does not have, or did not keep.'],
+  'bad-value': ['A needed value cannot be read', 'A value the row needs is missing or unreadable; the blanks below say which.'],
+  'wrong-field-count': ['Broken row', 'The row does not have as many values as its table has columns.'],
+  'too-long': ['Row too long', 'The row is longer than any real TeslaMate row, so it is not read.'],
 };
 const BLANKS = {
   cost: ['Cost left blank', 'A cost that could not be read (no number, or no currency). The charge is kept with no cost; you can type one on its page.'],
@@ -126,7 +137,7 @@ export async function mount(ctx) {
     return {};
   }
 
-  const S = { jobs: [], cars: [], carsMore: false, job: null, match: null, matchErr: null, overlaps: new Map() };
+  const S = { jobs: [], cars: [], carsMore: false, job: null, match: null, matchErr: null, overlaps: new Map(), currency: '' };
   const up = { file: null, active: false, paused: false, error: null, t0: 0, b0: 0, ctl: null };
 
   const [jobs, carsPage] = await Promise.all([
@@ -532,7 +543,9 @@ export async function mount(ctx) {
     startErr.hidden = true;
     btn.disabled = true;
     try {
-      const j = await ctx.api.post(api.apiPath`imports/${S.job.id}/start`, {});
+      // TeslaMate keeps no currency: the one its charge costs and place prices are in, when the owner names it
+      const cur = String(S.currency || '').trim().toUpperCase();
+      const j = await ctx.api.post(api.apiPath`imports/${S.job.id}/start`, cur ? { currency: cur } : {});
       if (!ctx.alive()) return;
       putJob(j);
       ctx.flash('The import has started. You can leave this page; it carries on.', { kind: 'info' });
@@ -596,7 +609,11 @@ export async function mount(ctx) {
     if (!shown || j.status !== 'importing') {
       const btn = button('Start the import', { kind: 'primary', disabled: !can, cover: 'web.import.start' });
       btn.addEventListener('click', () => startImport(btn));
-      parts.push(h('div', { class: 'im-start' }, h('div', { class: 'im-start-row' }, btn, h('p', { class: 'im-quiet' }, why)), startErr));
+      const cur = field({ label: 'Currency of TeslaMate’s costs', name: 'currency', value: S.currency || '', cls: 'im-currency',
+        hint: 'A code such as EUR. TeslaMate does not store one; without it, imported charges keep no cost and its places no price.',
+        attrs: { maxlength: 3, autocomplete: 'off', spellcheck: 'false', disabled: !can, placeholder: 'EUR' } });
+      cur.control.addEventListener('input', () => { S.currency = cur.control.value; });
+      parts.push(h('div', { class: 'im-start' }, cur, h('div', { class: 'im-start-row' }, btn, h('p', { class: 'im-quiet' }, why)), startErr));
     }
     if (shown) {
       const discardBtn = button(j.status === 'done' ? 'Remove from the list' : 'Discard this import', { kind: 'danger', cls: 'button-small', onclick: () => discard(j), cover: 'web.import.discard' });
@@ -666,9 +683,9 @@ export async function mount(ctx) {
     const cars = (rep.cars || []).map((c) => ({ ...c, here: isCar(c.match) ? carName(c.match) : c.match === 'new' ? 'A new car' : c.match === 'leave_out' ? 'Left out' : 'Not matched' }));
     const cTable = cars.length ? dataTable(ctx, {
       rows: cars, itemName: ['car', 'cars'], label: 'Per car',
-      csv: { filename: `${fileName}-cars`, columns: [column('TeslaMate car', 'tm_car'), column('Car here', 'here'), column('Drives', 'drives', 'count'), column('Charges', 'charges', 'count')] },
+      csv: { filename: `${fileName}-cars`, columns: [column('TeslaMate car', 'tm_car'), column('Name', 'name'), column('Car here', 'here'), column('Drives', 'drives', 'count'), column('Charges', 'charges', 'count')] },
       columns: [
-        { key: 'tm', label: 'TeslaMate car', th: true, cell: (c) => `Car ${c.tm_car}`, value: (c) => c.tm_car },
+        { key: 'tm', label: 'TeslaMate car', th: true, cell: (c) => (c.name ? h('span', null, h('span', { class: 'cell-main' }, c.name), h('span', { class: 'cell-sub' }, `TeslaMate car ${c.tm_car}`)) : `Car ${c.tm_car}`), value: (c) => c.name || c.tm_car },
         { key: 'here', label: 'Car here', cell: (c) => (isCar(c.match) ? h('a', { href: state.buildUrl('timeline', { car: c.match, period: rep.span ? { from: rep.span.from_ms, to: rep.span.to_ms } : null }) }, c.here) : c.here), value: (c) => c.here },
         { key: 'drives', label: imported ? 'Drives imported' : 'Drives', num: true, cell: (c) => (c.match === 'leave_out' ? '—' : n(c.drives)), value: (c) => c.drives },
         { key: 'charges', label: imported ? 'Charges imported' : 'Charges', num: true, cell: (c) => (c.match === 'leave_out' ? '—' : n(c.charges)), value: (c) => c.charges },

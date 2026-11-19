@@ -17,7 +17,7 @@ import { pageHead, q, plus, figure, chip, icon, stateMark, empty, errorView, loa
 import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
 import { makeMap, coordsText, boundsOf } from '../core/map.js';
 import { stackedCharts, spansFromStates } from '../core/chart.js';
-import { activityStrip, timelineRow, AWAKE_WORDS } from '../core/journal.js';
+import { activityStrip, timelineRow, AWAKE_WORDS, endLabel } from '../core/journal.js';
 
 export const id = 'car';
 export const css = true;
@@ -561,7 +561,7 @@ function driveCard(car, d, track, tz) {
       h('p', { class: 'eyebrow' }, going ? 'This drive' : 'Latest drive', going ? h('span', { class: 'eyebrow-note' }, ' · in progress') : null),
       h('div', { class: 'entry-head' },
         h('div', { class: 'entry-head-text' },
-          h('h3', { class: 'entry-title' }, h('em', null, d.start.label), going ? null : [h('span', { class: 'to' }, ' to '), h('em', null, d.end.label)]),
+          h('h3', { class: 'entry-title' }, h('em', null, endLabel(d.start)), going ? null : [h('span', { class: 'to' }, ' to '), h('em', null, endLabel(d.end))]),
           h('p', { class: 'entry-when' }, `${formatDate(d.start_ms, tz, { now: api.now() })}, ${formatTime(d.start_ms, tz)} – ${going ? 'now' : formatTime(d.end_ms, tz)}`)),
         routeSketch(coords, { cls: 'sketch entry-sketch' })),
       h('dl', { class: 'entry-figs' },
@@ -755,7 +755,7 @@ async function drawCharging(ctx, block) {
   }
   const per = Math.max(60, Math.floor(1800 / list.length));
   const curves = await Promise.all(list.map((c) => ctx.api.get(api.apiPath`cars/${car.id}/charges/${c.id}/curve`,
-    { fields: 'power_kw,volts_v,amps_a,heater_kw,dc_volts_v,dc_amps_a', max_points: per }).catch(() => null)));
+    { fields: 'power_kw,heater_kw,ac_volts_v,ac_amps_a,dc_volts_v,dc_amps_a', max_points: per }).catch(() => null)));
   if (ctx.signal.aborted) return;
   const t = [], power = [], energy = [], volts = [], amps = [], heat = [], which = [];
   const gap = (ms) => { t.push(ms); power.push(null); energy.push(null); volts.push(null); amps.push(null); heat.push(null); which.push(null); };
@@ -772,8 +772,9 @@ async function drawCharging(ctx, block) {
       const p = V.power_kw[i];
       if (i > 0 && p != null && V.power_kw[i - 1] != null) e += ((p + V.power_kw[i - 1]) / 2) * ((ms - cv.t_ms[i - 1]) / 3600000);
       t.push(ms); power.push(p); energy.push(Math.round(e * 1000) / 1000);
-      volts.push(dc ? (V.dc_volts_v?.[i] ?? V.volts_v[i]) : V.volts_v[i]);
-      amps.push(dc ? (V.dc_amps_a?.[i] ?? V.amps_a[i]) : V.amps_a[i]);
+      // the supply side, as the notes say: the AC line at the inlet (one phase), or the DC charger's output
+      volts.push((dc ? V.dc_volts_v?.[i] : V.ac_volts_v?.[i]) ?? null);
+      amps.push((dc ? V.dc_amps_a?.[i] : V.ac_amps_a?.[i]) ?? null);
       heat.push(V.heater_kw ? V.heater_kw[i] : null);
       which.push(c.id);
     });
@@ -790,8 +791,8 @@ async function drawCharging(ctx, block) {
     rows: [
       { key: 'power', name: 'Power', kind: 'power', values: power, colour: '--ochre', fill: '--chart-ochre-wash', floor: 0, ticks: 4, note: 'into the battery' },
       { key: 'energy', name: 'Energy added', kind: 'energy', values: energy, colour: '--ink-2', floor: 0, ticks: 3, note: 'so far in each charge, from the power' },
-      { key: 'volts', name: 'Volts', kind: 'voltage', values: volts, colour: '--slate', floor: 0, ticks: 3, note: kinds.includes('dc') ? 'AC line; DC charger for DC' : 'AC line' },
-      { key: 'amps', name: 'Amps', kind: 'current', values: amps, colour: '--accent', floor: 0, ticks: 3, note: kinds.includes('dc') ? 'AC line; DC charger for DC' : 'AC line' },
+      { key: 'volts', name: 'Volts', kind: 'voltage', values: volts, colour: '--slate', floor: 0, ticks: 3, note: kinds.includes('dc') ? (kinds.includes('ac') ? 'AC line; DC charger for DC' : 'DC charger output') : 'AC line, one phase' },
+      { key: 'amps', name: 'Amps', kind: 'current', values: amps, colour: '--accent', floor: 0, ticks: 3, note: kinds.includes('dc') ? (kinds.includes('ac') ? 'AC line; DC charger for DC' : 'DC charger output') : 'AC line, per phase' },
       { key: 'heat', name: 'Battery heating', kind: 'power', values: heat, colour: '--rust', floor: 0, ticks: 2, note: 'zero when the heater is off' },
     ],
     extraCsv: [{ label: 'Charge id', value: (i) => which[i] }],

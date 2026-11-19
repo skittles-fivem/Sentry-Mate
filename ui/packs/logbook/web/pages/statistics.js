@@ -29,6 +29,9 @@ import { choice } from '../core/form.js';
 import { niceSplits } from '../core/chart.js';
 import { zoneLabel } from '../core/format.js';
 
+// a tick label near an end of the axis lines up with that end instead of centring on it (it would stick out)
+const edgeTick = (x) => (x > 94 ? 'is-end' : x < 6 ? 'is-start' : null);
+
 export const id = 'statistics';
 export const css = true;
 export const title = () => 'Statistics';
@@ -569,7 +572,7 @@ export async function mount(ctx) {
       svg('svg', { class: 'st-svg', width: '100%', height: '100%', role: 'img', 'aria-label': `${rel ? 'Distance since the start of the period' : 'Odometer'} over time for ${lines.map((m) => carName(m.car)).join(', ')}` },
         ticks.map((v) => svg('line', { class: 'st-grid', x1: '0%', x2: '100%', y1: p3(yOf(v)), y2: p3(yOf(v)) })), segs, cross, dots));
     const yAxis = h('div', { class: 'st-yaxis', 'aria-hidden': 'true' }, ticks.map((v) => h('span', { class: 'st-ytick', vars: { '--y': p3(100 - yOf(v)) } }, formatNumber(v))));
-    const xAxis = h('div', { class: 'st-xaxis', 'aria-hidden': 'true' }, timeTicks(t0, t1).map((t) => h('span', { class: 'st-xtick', vars: { '--x': p3(xOf(t.t)) } }, t.text)));
+    const xAxis = h('div', { class: 'st-xaxis', 'aria-hidden': 'true' }, timeTicks(t0, t1).map((t) => h('span', { class: ['st-xtick', edgeTick(xOf(t.t))], vars: { '--x': p3(xOf(t.t)) } }, t.text)));
     const readout = h('p', { class: 'st-readout', 'aria-live': 'polite' });
     const show = (t) => {
       const parts = lines.map((m) => {
@@ -632,7 +635,7 @@ export async function mount(ctx) {
         })));
     const yAxis = h('div', { class: 'st-yaxis', 'aria-hidden': 'true' }, ticks.map((v) => h('span', { class: 'st-ytick', vars: { '--y': p3((v / hi) * 100) } }, formatNumber(v))));
     const every = Math.max(1, Math.ceil(n / (byCar ? 12 : 8)));
-    const xAxis = h('div', { class: 'st-xaxis', 'aria-hidden': 'true' }, list.map((b, i) => (i % every === 0 ? h('span', { class: 'st-xtick', vars: { '--x': p3((i + 0.5) * slot) } }, b.short || b.name) : null)));
+    const xAxis = h('div', { class: 'st-xaxis', 'aria-hidden': 'true' }, list.map((b, i) => (i % every === 0 ? h('span', { class: ['st-xtick', edgeTick((i + 0.5) * slot)], vars: { '--x': p3((i + 0.5) * slot) } }, b.short || b.name) : null)));
     const readout = h('p', { class: 'st-readout', 'aria-live': 'polite' });
     const show = (i) => {
       const b = list[i];

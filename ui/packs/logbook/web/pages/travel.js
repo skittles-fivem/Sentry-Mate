@@ -50,6 +50,9 @@ const csvButton = (label, onclick, cover = null, text = 'Download CSV') => h('bu
 const mixed = (list) => new Set(list.map((x) => x.currency)).size > 1;
 const moneyText = (list) => { const l = (list || []).filter((x) => x && x.amount != null); return l.map((x) => formatMoney(x.amount, x.currency) + (mixed(l) ? ` ${x.currency}` : '')).join(' + '); };
 const cityOfKey = (key) => String(key || '').split('/').pop();
+// a city group's name: its label, else the city part of its key; a stop with no town known (out at sea, or no
+// address list for that area) groups under a key ending in "-", which is no name to show
+const cityName = (row, key) => (row && row.label) || (cityOfKey(key ?? (row && row.key)).replace(/^-$/, '') || 'Unknown town');
 
 export async function mount(ctx) {
   const now = api.now();
@@ -357,7 +360,7 @@ export async function mount(ctx) {
     }
     if (!city) { replace(cityLine, h('span', { class: 'field-label' }, 'City for the day list'), ' No city in the period yet.'); return; }
     replace(cityLine, h('span', { class: 'field-label' }, 'City for the day list'), ' ',
-      h('b', null, row ? row.label : cityOfKey(city)), row ? [' ', h('span', { class: 'tv-city-sub' }, [row.region, row.country].filter(Boolean).join(', '))] : null,
+      h('b', null, cityName(row, city)), row ? [' ', h('span', { class: 'tv-city-sub' }, [row.region, row.country].filter(Boolean).join(', '))] : null,
       cityPicked ? null : h('span', { class: 'tv-city-sub' }, ' · the city with the most days; pick another in the list or on the map'),
       cityPicked ? [' ', button('Back to the top city', { cls: 'button-small', iconName: 'close', onclick: () => { cityPicked = false; city = data.cities.items[0]?.key || null; ctx.setQuery({ city: null }); drawCityLine(); drawCities(); drawDays().catch(() => {}); } })] : null);
   }
@@ -376,6 +379,8 @@ export async function mount(ctx) {
     const narrowed = !!(f.q || f.place || f.country || f.region);
     const none = !s.visits;
     const why = 'no stop in the period';
+    // stops there, but none with a known address: the server cannot count cities, regions or countries
+    const whyArea = none ? why : 'no stop has a known address';
     const cost = moneyText(s.cost_by_currency);
     const eff = s.efficiency || {};
     const notNarrowed = narrowed ? ' (the place filters narrow stops only, not charges)' : '';
@@ -390,9 +395,9 @@ export async function mount(ctx) {
       h('div', { class: 'figs tv-figs' },
         figure('Stops', q(s.visits ?? 0, 'count'), 'from arriving to leaving'),
         figure('Places', q(none ? null : s.places, 'count', { why }), none ? null : s.unnamed_stops ? `${tn(s.unnamed_stops, '{n} stop', '{n} stops')} at no saved place` : 'every stop was at a saved place', { cover: 'locations.stat.addresses' }),
-        figure('Cities', q(none ? null : s.cities, 'count', { why }), 'country, region and city together, so namesakes stay apart', { cover: ['locations.stat.cities', 'visited.stat.cities'] }),
-        figure('Regions', q(none ? null : s.regions, 'count', { why }), 'states, provinces or the like', { cover: 'locations.stat.states' }),
-        figure('Countries', q(none ? null : s.countries, 'count', { why }), 'by country code', { cover: ['locations.stat.countries', 'visited.stat.countries'] }),
+        figure('Cities', q(none ? null : s.cities, 'count', { why: whyArea }), 'country, region and city together, so namesakes stay apart', { cover: ['locations.stat.cities', 'visited.stat.cities'] }),
+        figure('Regions', q(none ? null : s.regions, 'count', { why: whyArea }), 'states, provinces or the like', { cover: 'locations.stat.states' }),
+        figure('Countries', q(none ? null : s.countries, 'count', { why: whyArea }), 'by country code', { cover: ['locations.stat.countries', 'visited.stat.countries'] }),
         figure('Days out', q(none ? null : s.days, 'count', { why }), multi ? 'calendar days with a stop, counted per car in its own zone' : 'calendar days with a stop', { cover: 'visited.stat.days' }),
         figure('First stop', none ? q(null, 'count', { why }) : day(s.first_ms, fz), none ? null : whenNote(s.first_ms, fz, s.first_car), { cover: 'visited.stat.first_visit' }),
         figure('Last stop', none ? q(null, 'count', { why }) : day(s.last_ms, lz), none ? null : s.last_ms >= now - 60000 ? ['still there now', multi && s.last_car ? [sep(), carName(s.last_car)] : null] : whenNote(s.last_ms, lz, s.last_car), { cover: 'visited.stat.last_visit' })),
@@ -503,7 +508,7 @@ export async function mount(ctx) {
           const share = (r[rankBy] || 0) / max;
           const tier = share >= 0.75 ? 1 : share >= 0.4 ? 2 : share >= 0.15 ? 3 : 4;
           const label = name === 'Cities'
-            ? h('button', { type: 'button', class: 'tv-bar-name tv-row-link', onclick: () => pickCity(r.key), title: `List the days in ${r.label}` }, r.label || cityOfKey(r.key))
+            ? h('button', { type: 'button', class: 'tv-bar-name tv-row-link', onclick: () => pickCity(r.key), title: `List the days in ${cityName(r)}` }, cityName(r))
             : h('span', { class: 'tv-bar-name' }, r.label || 'Unknown region');
           return h('li', { class: ['tv-bar', `tv-tier-${tier}`] },
             h('span', { class: 'tv-bar-rank' }, String(i + 1)), label,
@@ -545,7 +550,7 @@ export async function mount(ctx) {
     const cityCols = [
       { key: 'label', label: level === 'cities' ? 'City' : 'Region', th: true, sort: true, cover: level === 'cities' ? ['visited.cities.city', 'visited.link.city_days'] : null,
         cell: (r) => (level === 'cities'
-          ? h('button', { type: 'button', class: ['tv-row-link', 'tv-city-pick', { 'is-on': r.key === city }], 'aria-pressed': String(r.key === city), onclick: () => pickCity(r.key), title: `List the days in ${r.label}` }, r.label || cityOfKey(r.key), r.key === city ? h('span', { class: 'tv-sub' }, ' · its days are listed below') : null)
+          ? h('button', { type: 'button', class: ['tv-row-link', 'tv-city-pick', { 'is-on': r.key === city }], 'aria-pressed': String(r.key === city), onclick: () => pickCity(r.key), title: `List the days in ${cityName(r)}` }, cityName(r), r.key === city ? h('span', { class: 'tv-sub' }, ' · its days are listed below') : null)
           : h('span', { class: 'cell-main' }, r.label || 'Unknown region')) },
       level === 'cities' ? { key: 'region', label: 'Region', sort: true, cover: 'visited.cities.region', cell: (r) => r.region || '—' } : null,
       { key: 'country', label: 'Country', sort: true, cover: level === 'cities' ? 'visited.cities.country' : null, cell: (r) => r.country || r.country_code || '—' },
@@ -591,7 +596,7 @@ export async function mount(ctx) {
 
   async function drawDays() {
     const row = data.cities.items.find((c) => c.key === city);
-    replace(daysTitle, city ? `${row ? row.label : cityOfKey(city)}${row && row.region ? `, ${row.region}` : ''}` : data.cities.error ? 'the city list is not loaded' : 'pick a city');
+    replace(daysTitle, city ? `${cityName(row, city)}${row && row.region ? `, ${row.region}` : ''}` : data.cities.error ? 'the city list is not loaded' : 'pick a city');
     if (!city && data.cities.error) { replace(daysBox, errorView(data.cities.error, { retry: () => loadAll(), eyebrow: 'Could not load the cities', title: 'The city list could not be loaded, so no city is chosen.', home: false })); return; }
     if (!city) { replace(daysBox, emptyStops()); return; }
     const dayLink = (r, page) => {

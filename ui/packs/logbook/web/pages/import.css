@@ -78,6 +78,7 @@
 .im-start { display: flex; flex-direction: column; gap: 0.625rem; padding-top: 1rem; border-top: 1px solid var(--rule); }
 .im-start-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
 .im-start-row .im-quiet { flex: 1 1 18rem; max-width: 60ch; }
+.im-currency { max-width: 22rem; }
 .im-discard { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
 
 /* side notes */
