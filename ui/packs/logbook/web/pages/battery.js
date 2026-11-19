@@ -324,19 +324,23 @@ export async function mount(ctx) {
       return;
     }
     if (my !== capGen || !ctx.alive()) return;
-    items = items.filter((r) => num(r.full_pack_kwh));
+    // a car that never names its buffer has charge readings of usable energy only: draw those, said so
+    const byFull = items.some((r) => num(r.full_pack_kwh));
+    const yKey = byFull ? 'full_pack_kwh' : 'usable_kwh';
+    items = items.filter((r) => num(r[yKey]));
     const c = (bat && bat.capacity) || {};
+    const newKwh = byFull && num(c.new_kwh) ? c.new_kwh : null;
     const xOf = (r) => (opt.axis === 'odometer' ? r.odometer_km : r.t_ms);
     const pts = items.filter((r) => num(xOf(r))).sort((a, b) => xOf(a) - xOf(b));
-    const idle = () => replace(read, h('span', { class: 'readout-idle' }, pts.length ? `${tn(pts.length, '{n} reading', '{n} readings')}, ${formatDate(pts[0].t_ms, tz, { weekday: false })} to ${formatDate(pts[pts.length - 1].t_ms, tz, { weekday: false })}. Point at a dot for its value.` : ''));
+    const idle = () => replace(read, h('span', { class: 'readout-idle' }, pts.length ? `${tn(pts.length, '{n} reading', '{n} readings')}, ${formatDate(pts[0].t_ms, tz, { weekday: false })} to ${formatDate(pts[pts.length - 1].t_ms, tz, { weekday: false })}.${byFull ? '' : ' The car names no buffer, so these are usable energy, not the full pack.'} Point at a dot for its value.` : ''));
     idle();
     capCsv.disabled = !pts.length;
     if (!pts.length) {
       replace(plot, empty({ title: 'No capacity readings yet.', text: opt.group === 'charge' ? 'A reading needs a finished charge that added at least 10 %. Choose Each day for the pack’s own daily readings.' : 'The pack sends its capacity while the car is awake; imported days have none.' }));
       return;
     }
-    const ys = pts.map((r) => r.full_pack_kwh);
-    const yMin0 = Math.min(...ys), yMax0 = Math.max(...ys, num(c.new_kwh) ? c.new_kwh : -Infinity);
+    const ys = pts.map((r) => r[yKey]);
+    const yMin0 = Math.min(...ys), yMax0 = Math.max(...ys, newKwh != null ? newKwh : -Infinity);
     const pad = Math.max(0.5, (yMax0 - yMin0) * 0.12);
     const yTicks = niceSplits(yMin0 - pad, yMax0 + pad, 4);
     const y0 = Math.min(yTicks[0], yMin0 - pad), y1 = Math.max(yTicks[yTicks.length - 1], yMax0 + pad);
@@ -351,10 +355,10 @@ export async function mount(ctx) {
     const slope = sxx > 0 ? sxy / sxx : 0;
     const line = (a, b, cls) => svg('line', { class: cls, x1: p3(X(a[0])), y1: p3(Y(a[1])), x2: p3(X(b[0])), y2: p3(Y(b[1])) });
     const hoverG = svg('g');
-    const graph = svg('svg', { class: 'bt-cap-svg', width: '100%', height: '100%', role: 'img', 'aria-label': `Full-pack capacity ${opt.axis === 'odometer' ? 'against odometer' : 'over time'}: ${tn(n, '{n} reading', '{n} readings')} from ${format(ys[0], 'energy')} to ${format(ys[n - 1], 'energy')}` },
+    const graph = svg('svg', { class: 'bt-cap-svg', width: '100%', height: '100%', role: 'img', 'aria-label': `${byFull ? 'Full-pack' : 'Usable'} capacity ${opt.axis === 'odometer' ? 'against odometer' : 'over time'}: ${tn(n, '{n} reading', '{n} readings')} from ${format(ys[0], 'energy')} to ${format(ys[n - 1], 'energy')}` },
       yTicks.map((v) => svg('line', { class: 'bt-gline', x1: 0, x2: '100%', y1: p3(Y(v)), y2: p3(Y(v)) })),
-      num(c.new_kwh) ? line([x0, c.new_kwh], [x1, c.new_kwh], 'bt-new-line') : null,
-      svg('g', { class: 'bt-dots' }, pts.map((r, i) => svg('circle', { class: ['bt-dot', { 'is-link': !!r.charge }], cx: p3(X(xOf(r))), cy: p3(Y(r.full_pack_kwh)), dataset: { i } }))),
+      newKwh != null ? line([x0, newKwh], [x1, newKwh], 'bt-new-line') : null,
+      svg('g', { class: 'bt-dots' }, pts.map((r, i) => svg('circle', { class: ['bt-dot', { 'is-link': !!r.charge }], cx: p3(X(xOf(r))), cy: p3(Y(r[yKey])), dataset: { i } }))),
       n > 2 ? med.slice(1).map((v, i) => line([xOf(pts[i]), med[i]], [xOf(pts[i + 1]), v], 'bt-median')) : null,
       n > 1 ? line([x0, my2 + slope * (x0 - mx)], [x1, my2 + slope * (x1 - mx)], 'bt-trend') : null,
       hoverG);
@@ -364,9 +368,9 @@ export async function mount(ctx) {
       const d = e.target.closest('circle[data-i]');
       if (!d) return;
       on = pts[+d.dataset.i];
-      replace(hoverG, svg('circle', { class: 'bt-dot is-on', cx: p3(X(xOf(on))), cy: p3(Y(on.full_pack_kwh)) }));
+      replace(hoverG, svg('circle', { class: 'bt-dot is-on', cx: p3(X(xOf(on))), cy: p3(Y(on[yKey])) }));
       replace(read, h('span', { class: 'readout-time' }, formatDate(on.t_ms, tz, { weekday: false })), ' ',
-        h('span', null, 'full pack ', h('b', null, format(on.full_pack_kwh, 'energy', { digits: 2 }))), ' ', h('span', null, 'usable ', h('b', null, format(on.usable_kwh, 'energy', { digits: 2 }))),
+        num(on.full_pack_kwh) ? [h('span', null, 'full pack ', h('b', null, format(on.full_pack_kwh, 'energy', { digits: 2 }))), ' '] : null, h('span', null, 'usable ', h('b', null, format(on.usable_kwh, 'energy', { digits: 2 }))),
         ' ', h('span', null, 'at ', h('b', null, format(on.odometer_km, 'odometer'))), on.readings ? ` (${tn(on.readings, '{n} day', '{n} days')})` : '', on.charge ? ' · click to open the charge' : '');
     });
     area.addEventListener('mouseleave', () => { on = null; replace(hoverG); idle(); });

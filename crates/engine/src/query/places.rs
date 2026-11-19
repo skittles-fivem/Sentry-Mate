@@ -197,10 +197,14 @@ fn drives_with_next(
     Ok(())
 }
 
-/// When the car's newest values were recorded (a stop with no drive after it lasts until then), else now.
+/// When the car was last heard of: its newest values, else the newest end of any of its rows (an imported car's
+/// history stops there), else 0. A stop with no drive after it lasts until then, and never past now: the server does
+/// not know where a car is after its history ends.
 fn last_seen(e: &Engine, car: CarId) -> QResult<u64> {
     let now = now_ms();
-    Ok(e.db().entry(car)?.and_then(|x| x.summary.now).map_or(now, |n| n.at_ms.min(now)))
+    let s = e.db().entry(car)?.map(|x| x.summary);
+    let at = s.and_then(|s| s.now.map(|n| n.at_ms).or(s.last_activity_ms)).unwrap_or(0);
+    Ok(at.min(now))
 }
 
 /// The id of the drive going on now.

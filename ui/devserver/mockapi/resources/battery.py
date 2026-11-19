@@ -120,7 +120,7 @@ def get_battery(req):
     if h is None:
         n = now_object(req.app, req.car, req.now)
         return {"car": req.car, "time_zone": tz, "as_of_ms": n.get("at_ms"),
-                "capacity": {k: None for k in ("full_pack_kwh", "buffer_kwh", "usable_kwh", "spread_kwh", "readings",
+                "capacity": {k: None for k in ("full_pack_kwh", "buffer_kwh", "usable_kwh", "basis", "spread_kwh", "readings",
                                                "new_kwh", "new_source", "difference_kwh", "degradation_pct",
                                                "health_pct", "warranty_pct")},
                 "range": {k: None for k in ("full_now_km", "full_now_from_energy_km", "full_new_km", "new_source",
@@ -159,6 +159,7 @@ def get_battery(req):
         "car": req.car, "time_zone": req.tz(), "as_of_ms": at,
         "capacity": {
             "full_pack_kwh": r(full, 2), "buffer_kwh": car.buffer_kwh, "usable_kwh": r(full - car.buffer_kwh, 2),
+            "basis": "pack",
             "spread_kwh": r(max(recent) - min(recent), 2), "readings": 30 * 24 * 12,
             "new_kwh": r(new_kwh, 2), "new_source": new_src, "difference_kwh": r(diff, 2),
             "degradation_pct": r(deg, 1), "health_pct": r(100 - deg, 1),
@@ -200,7 +201,7 @@ def get_capacity(req):
             if fp is None:
                 continue
             rows.append({"t_ms": c.data_end, "odometer_km": r(getattr(c, "odo", None), 1), "full_pack_kwh": r(fp, 2),
-                         "usable_kwh": r(fp - car.buffer_kwh, 2), "source": c.source, "method": "charge",
+                         "usable_kwh": r(fp - car.buffer_kwh, 2), "usable_basis": "charge", "source": c.source, "method": "charge",
                          "charge": c.id})
     else:
         lo = max(a, h.first_ms)
@@ -217,7 +218,8 @@ def get_capacity(req):
                     fp = bms_full(car, t)
                     o = derive.odo_at(h, t)
                     row = {"t_ms": t, "odometer_km": r(o, 1), "full_pack_kwh": r(fp, 2),
-                           "usable_kwh": r(fp - car.buffer_kwh, 2), "source": src, "method": "bms", "charge": None}
+                           "usable_kwh": r(fp - car.buffer_kwh, 2), "usable_basis": "buffer", "source": src, "method": "bms",
+                           "charge": None}
                     if src == "teslamate":  # imported history has no controller readings, only charges
                         row = None
                     if row:
@@ -230,7 +232,8 @@ def get_capacity(req):
             t = local_ms(dt.date(yy, mm, 1), 0, tz)
             fp = median([q["full_pack_kwh"] for q in rs])
             rows.append({"t_ms": t, "odometer_km": rs[-1]["odometer_km"], "full_pack_kwh": r(fp, 2),
-                         "usable_kwh": r(fp - car.buffer_kwh, 2), "source": "can", "method": "bms", "charge": None,
+                         "usable_kwh": r(fp - car.buffer_kwh, 2), "usable_basis": "buffer", "source": "can", "method": "bms",
+                         "charge": None,
                          "readings": len(rs)})
     trend = _trend(req, h, rows)
     if x == "odometer":
@@ -290,6 +293,7 @@ def get_battery_level(req):
            "window": window}
     if h is None:
         out.update({"buckets": [], "moving": {"mean": [], "median": [], "p7_5": [], "p92_5": []}, "spans": [],
+                    "spans_truncated": False,
                     "band": band, "charge_limit": [], "share_above_80_pct": None, "share_below_20_pct": None,
                     "stats": {"mean": None, "median": None, "min": None, "max": None}})
         return out
@@ -352,7 +356,7 @@ def get_battery_level(req):
             limits.append({"t_ms": c.start, "pct": tgt})
             limits.append({"t_ms": c.data_end, "pct": car.charge_limit})
     out.update({
-        "buckets": buckets, "moving": moving, "spans": spans, "band": band, "charge_limit": limits,
+        "buckets": buckets, "moving": moving, "spans": spans, "spans_truncated": False, "band": band, "charge_limit": limits,
         "share_above_80_pct": r(100 * sum(1 for v in vals if v > 80) / n, 1) if vals else None,
         "share_below_20_pct": r(100 * sum(1 for v in vals if v < 20) / n, 1) if vals else None,
         "stats": {"mean": r(sum(vals) / n, 2) if vals else None, "median": r(median(vals), 2),
@@ -457,7 +461,7 @@ def get_efficiency(req):
     out = {"car": req.car, "time_zone": req.tz(), "from_ms": a, "to_ms": min(b, req.now), "temp_group_c": group,
            "min_distance_km": min_d}
     empty = {"net_wh_per_km": None, "gross_wh_per_km": None, "parked_kwh": 0.0, "distance_km": 0.0, "drives": 0,
-             "estimated_drives": 0, "all_drives": {"drives": 0, "distance_km": 0.0, "energy_kwh": 0.0},
+             "without_energy": 0, "estimated_drives": 0, "all_drives": {"drives": 0, "distance_km": 0.0, "energy_kwh": 0.0},
              "by_temperature": [], "no_temperature": {"drives": 0, "distance_km": 0.0},
              "factor": {"rated_wh_per_km": None, "ideal_wh_per_km": None, "source": None, "readings": 0,
                         "as_of_ms": None}}
@@ -505,6 +509,7 @@ def get_efficiency(req):
         "gross_wh_per_km": r((all_energy + parked) / all_dist * 1000, 1) if all_dist > 0.1 else None,
         "all_drives": {"drives": len(every), "distance_km": r(all_dist, 3), "energy_kwh": r(all_energy, 3)},
         "parked_kwh": r(parked, 3), "distance_km": r(dist, 3), "energy_kwh": r(energy, 3), "drives": len(rows),
+        "without_energy": sum(1 for x in rows if x["energy_kwh"] is None),
         "estimated_drives": sum(1 for x in rows if x["energy_basis"] == "estimated"),
         "by_temperature": by_t, "no_temperature": no_t,
         "factor": {"rated_wh_per_km": over or car.rated_wh_per_km,

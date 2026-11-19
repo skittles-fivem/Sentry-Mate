@@ -98,6 +98,13 @@
   .order-tools { flex-wrap: wrap; }
 }
 
+/* a phone: the columns keep the width their words need and the table scrolls inside its frame (.ledger-scroll),
+   instead of a state, a battery figure and a time running into each other */
+@container page (width < 36rem) {
+  .fleet-ledger .ledger-table { min-width: 36rem; }
+  .fleet-ledger .c-state, .fleet-ledger .c-battery, .fleet-ledger .c-seen { overflow-wrap: anywhere; }
+}
+
 @container page (width >= 112.5rem) {
   .fleet-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); column-gap: 4rem; align-items: end; border-bottom: 1px solid var(--rule); }
   .fleet-top .page-head { border-bottom: 0; }

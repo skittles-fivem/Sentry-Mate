@@ -58,6 +58,8 @@ async fn kit() -> Kit {
         .unwrap();
     let store = ingest::Store::new(data.join("can"), v);
     let engine = Engine::new(db.clone(), store, engine::Options::default());
+    // started, so the charges' views (which read the drive going on) answer
+    engine.start().unwrap();
     let (e2, d2) = (engine.clone(), db.clone());
     let s = TestServer::start_with(move |b| {
         b.cars(Arc::new(EngineCars(d2)))
@@ -235,6 +237,17 @@ async fn upload_check_match_import_and_discard() {
     );
     assert!(sc["price"]["per_kwh"].is_null(), "{sc}");
     assert!(home["created_ms"].is_u64() && sc["created_ms"].is_u64(), "{items:?}");
+    // TeslaMate's charge costs came in the same currency
+    let mut costs = Vec::new();
+    for car in engine::query::all_cars(&k.engine).unwrap() {
+        let charges = admin.get(&format!("/api/v1/cars/c{car}/charges?from_ms=0&limit=100")).await;
+        assert_eq!(charges.status, 200, "{}", charges.text());
+        costs.extend(
+            charges.json()["items"].as_array().unwrap().iter().map(|c| c["cost"].clone()).filter(|c| !c.is_null()),
+        );
+    }
+    assert!(!costs.is_empty());
+    assert!(costs.iter().all(|c| c["currency"] == "EUR" && c["source"] == "teslamate"), "{costs:?}");
     // the history is there: the car here has imported drives, and a new car was made
     let drives = admin.get(&format!("/api/v1/cars/{here}/drives?source=teslamate")).await;
     assert_eq!(drives.status, 200, "{}", drives.text());
@@ -377,4 +390,33 @@ async fn two_imported_cars_never_go_into_one_and_chunks_take_turns() {
     let items = places["items"].as_array().unwrap();
     assert_eq!(items.len(), 2, "{places}");
     assert!(items.iter().all(|p| p["price"].is_null()), "{places}");
+    // nor do the charges' costs: an amount with no currency is no cost
+    let mut seen = 0;
+    for car in engine::query::all_cars(&k.engine).unwrap() {
+        let charges = admin.get(&format!("/api/v1/cars/c{car}/charges?from_ms=0&limit=100")).await;
+        assert_eq!(charges.status, 200, "{}", charges.text());
+        let charges = charges.json();
+        let list = charges["items"].as_array().unwrap();
+        seen += list.len();
+        assert!(list.iter().all(|c| c["cost"].is_null()), "{charges}");
+        assert_eq!(charges["totals"]["cost_by_currency"], json!([]), "{charges}");
+    }
+    assert!(seen > 0);
+    // these cars have only imported history (it ends in March 2024): their last stops end with it, not today
+    let before_2025 = 1_735_689_600_000_u64;
+    for p in items {
+        assert!(p["last_visit_ms"].as_u64().is_none_or(|t| t < before_2025), "{p}");
+    }
+    let sum = admin.get("/api/v1/visits/summary?cars=all&from_ms=0").await;
+    assert_eq!(sum.status, 200, "{}", sum.text());
+    let sum = sum.json();
+    assert!(sum["visits"].as_u64().unwrap() > 0, "{sum}");
+    assert!(sum["days"].as_u64().unwrap() <= 31, "{sum}");
+    assert!(sum["last_ms"].as_u64().unwrap() < before_2025, "{sum}");
+    let days = admin.get("/api/v1/visits/days?cars=all&from_ms=0").await.json();
+    let days = days["items"].as_array().unwrap();
+    assert!(!days.is_empty() && days.iter().all(|d| d["date"].as_str().unwrap() < "2025-01-01"), "{days:?}");
+    let visits = admin.get("/api/v1/visits?cars=all&from_ms=0").await.json();
+    let open: Vec<&Value> = visits["items"].as_array().unwrap().iter().filter(|v| v["left_ms"].is_null()).collect();
+    assert!(!open.is_empty(), "{visits}");
 }

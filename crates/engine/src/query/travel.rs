@@ -65,6 +65,10 @@ pub struct Visit {
     /// When each of `charges` started (to place it on its day).
     #[serde(skip)]
     pub(crate) charge_starts: Vec<u64>,
+    /// Where a stop with no drive after it ends for counting: null while the car can still report (it lasts until
+    /// now), else when its history stops (a car with only imported history: nothing is known after that).
+    #[serde(skip)]
+    pub(crate) open_until: Option<u64>,
     /// Time inside the stop with no data (up to now when the car's data stopped during it).
     pub unknown_ms: u64,
     pub source: &'static str,
@@ -178,6 +182,25 @@ struct Stops<'a> {
     live: Option<u64>,
     /// When the car's data stopped, if its newest state is unknown.
     still: Option<u64>,
+    /// When the history of a car with no CAN history stops (see [`Visit::open_until`]).
+    history_end: Option<u64>,
+}
+
+impl Visit {
+    /// When the stop ends for counting: when the car left, else when its history stops, else `now`.
+    fn end_or(&self, now: u64) -> u64 {
+        self.left_ms.or(self.open_until).unwrap_or(now).min(now)
+    }
+}
+
+/// When the history of a car with no CAN rows stops (its newest row's end); `None` for a car that has CAN history and
+/// so may still report.
+fn imported_history_end(e: &Engine, car: CarId) -> QResult<Option<u64>> {
+    let q = db::Query { source: Some(model::Source::Can), ..db::Query::default().limit(1) };
+    if !e.db().list::<StateRow>(car, &q)?.items.is_empty() || !e.db().list::<Drive>(car, &q)?.items.is_empty() {
+        return Ok(None);
+    }
+    Ok(e.db().entry(car)?.and_then(|x| x.summary.last_activity_ms))
 }
 
 impl<'a> Stops<'a> {
@@ -185,7 +208,8 @@ impl<'a> Stops<'a> {
         let c = car_of(e, car)?;
         let live = super::drives::ctx(e, &c)?.live;
         let still = still_unknown(e, car)?;
-        Ok(Stops { e, shown: Shown::new(e, car, None)?, places: e.places(), live, still, c })
+        let history_end = imported_history_end(e, car)?;
+        Ok(Stops { e, shown: Shown::new(e, car, None)?, places: e.places(), live, still, history_end, c })
     }
 
     /// The stop after drive `d` (until `next` starts), without its charges and unknown time ([`Stops::fill`]).
@@ -214,6 +238,7 @@ impl<'a> Stops<'a> {
             drive_out: next.map(|n| n.id.to_string()),
             charges: Vec::new(),
             charge_starts: Vec::new(),
+            open_until: if next.is_none() { self.history_end.map(|t| t.max(d.end_ms)) } else { None },
             unknown_ms: 0,
             source: source_word(d.source),
         })
@@ -222,7 +247,7 @@ impl<'a> Stops<'a> {
     /// A stop's charges (those that started in it) and its time with no data: the unknown states inside it, and,
     /// when the car's data stopped during it, the time from then on ([`still_unknown`]).
     fn fill(&self, v: &mut Visit) -> QResult<()> {
-        let (x, y) = (v.arrived_ms, v.left_ms.unwrap_or_else(crate::now_ms).max(v.arrived_ms));
+        let (x, y) = (v.arrived_ms, v.end_or(crate::now_ms()).max(v.arrived_ms));
         let (mut charges, mut starts) = (Vec::new(), Vec::new());
         each::<Charge>(self.e, self.c.id, x, y.max(x + 1), None, &self.shown, false, |ch| {
             charges.push(ch.id.to_string());
@@ -305,7 +330,7 @@ fn cursor_now(after: Option<&(f64, String)>) -> u64 {
 /// How long a stop lasted within `[a, b)` and up to now.
 fn dwell(v: &Visit, a: u64, b: u64, now: u64) -> u64 {
     let x = v.arrived_ms.max(a);
-    let y = v.left_ms.unwrap_or(now).min(b).min(now);
+    let y = v.end_or(now).min(b);
     y.saturating_sub(x)
 }
 
@@ -420,7 +445,7 @@ fn group_key(level: Level, v: &Visit) -> String {
 fn days_of(v: &Visit, now: u64) -> Vec<chrono::NaiveDate> {
     let z = tz::zone(&v.time_zone);
     let a = v.arrived_ms;
-    let b = v.left_ms.unwrap_or(now).max(a + 1);
+    let b = v.end_or(now).max(a + 1);
     let (d0, d1) = (tz::date(a, z), tz::date(b - 1, z));
     let mut out = Vec::new();
     let mut d = d0;
@@ -557,7 +582,7 @@ pub fn visit_groups(
                 acc.g.first_ms = v.arrived_ms;
                 acc.g.first_car = v.car;
             }
-            let left = v.left_ms.unwrap_or(now);
+            let left = v.end_or(now);
             if left > acc.g.last_ms {
                 acc.g.last_ms = left;
                 acc.g.last_car = v.car;
@@ -695,7 +720,7 @@ pub fn visits_summary(e: &Engine, cars: &[CarId], q: &VisitsQuery) -> QResult<Vi
             if first.is_none_or(|x| v.arrived_ms < x.0) {
                 first = Some((v.arrived_ms, v.car));
             }
-            let left = v.left_ms.unwrap_or(now);
+            let left = v.end_or(now);
             if last.is_none_or(|x| left > x.0) {
                 last = Some((left, v.car));
             }
@@ -799,7 +824,7 @@ pub fn visit_days(e: &Engine, cars: &[CarId], q: &VisitsQuery, paging: &Paging) 
                 }
                 let a = tz::start_of(*d, z);
                 let b = d.succ_opt().map_or(a + DAY, |n| tz::start_of(n, z));
-                let (x, y) = (a.max(v.arrived_ms), b.min(v.left_ms.unwrap_or(now)));
+                let (x, y) = (a.max(v.arrived_ms), b.min(v.end_or(now)));
                 if y <= x {
                     continue;
                 }

@@ -163,15 +163,9 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
     let live = x.live == Some(ch.id);
     let ms = ch.end_ms.saturating_sub(ch.start_ms);
     let place = ch.position.as_ref().and_then(|p| x.places.place_at(p.lat, p.lon));
-    let teslamate_cost = match (kept, ch.source, ch.cost) {
-        (None, Source::Teslamate, Some(amount)) => {
-            Some(Cost { amount, currency: String::new(), source: "teslamate".into() })
-        }
-        _ => None,
-    };
-    let cost = kept
-        .map(|k| Cost { amount: k.amount, currency: k.currency.clone(), source: k.source.clone() })
-        .or(teslamate_cost);
+    // an imported charge's TeslaMate cost is kept (as an entry) only in the currency the import was started with:
+    // without one, its amount alone could not be told apart from another currency's, so it shows no cost
+    let cost = kept.map(|k| Cost { amount: k.amount, currency: k.currency.clone(), source: k.source.clone() });
     let grid = ch.energy_used_kwh;
     let added = ch.energy_added_kwh;
     let price_per_kwh = cost.as_ref().and_then(|cst| {
@@ -928,16 +922,7 @@ pub fn charge(e: &Engine, car: CarId, id: u64) -> QResult<ChargeDetail> {
             gap_ms: k.gap_ms,
             mode: Some(k.source.clone()),
         },
-        None => match (ch.source, ch.cost) {
-            (Source::Teslamate, Some(amount)) => Breakdown {
-                parts: Vec::new(),
-                session_fee: None,
-                total: Some(amount),
-                gap_ms: 0,
-                mode: Some("teslamate".into()),
-            },
-            _ => Breakdown { parts: Vec::new(), session_fee: None, total: None, gap_ms: 0, mode: None },
-        },
+        None => Breakdown { parts: Vec::new(), session_fee: None, total: None, gap_ms: 0, mode: None },
     };
     let manual_cost = kept.as_ref().filter(|k| k.source == "manual").map(|k| ManualCost {
         mode: k.mode.clone(),
