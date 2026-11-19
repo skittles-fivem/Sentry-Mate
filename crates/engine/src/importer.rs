@@ -288,15 +288,44 @@ impl import::Sink for DbSink<'_> {
             }
             let mut p = p;
             p.radius_m = places::clamp_radius(p.radius_m);
+            // TeslaMate keeps no currency: its prices are in the one the import was started with, and without one a
+            // price could not be told apart from another currency's, so the place comes without it
+            p.price = match (p.price.take(), &self.currency) {
+                (Some(mut plan), Some(cur)) => {
+                    if plan.currency.is_empty() {
+                        plan.currency = cur.clone();
+                    }
+                    Some(plan)
+                }
+                (Some(plan), None) if !plan.currency.is_empty() => Some(plan),
+                _ => None,
+            };
+            // a price per minute is kept as one typed here is: a plan of no price per kWh, the minutes beside it
+            let mut price = None;
+            let per_minute = match (r.per_minute_price, &self.currency) {
+                (Some(m), Some(cur)) if p.price.is_none() => {
+                    p.price = Some(model::PricePlan {
+                        currency: cur.clone(),
+                        per_kwh: 0.0,
+                        rates: Vec::new(),
+                        session_fee: r.session_fee,
+                    });
+                    price = Some(crate::query::places::Price {
+                        currency: cur.clone(),
+                        per_kwh: None,
+                        per_minute: Some(m),
+                        rates: Vec::new(),
+                        session_fee: r.session_fee,
+                    });
+                    Some(m)
+                }
+                _ => None,
+            };
             let added = db.add_place(p).map_err(err)?;
-            if r.per_minute_price.is_some() {
-                let extra = crate::placing::PlaceExtra {
-                    per_minute: r.per_minute_price,
-                    created_ms: Some(now_ms()),
-                    ..Default::default()
-                };
-                crate::placing::set_extra(db, added.id, Some(&extra)).map_err(err)?;
-            }
+            // every imported place says when it came, as one made here does
+            let extra =
+                crate::placing::PlaceExtra { per_minute, price, created_ms: Some(now_ms()), ..Default::default() };
+            crate::placing::set_extra(db, added.id, Some(&extra)).map_err(err)?;
             self.places_added += 1;
         }
         self.engine.places_changed();

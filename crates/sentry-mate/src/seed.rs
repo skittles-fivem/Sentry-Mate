@@ -35,18 +35,43 @@ pub struct Options {
     pub candump: bool,
     /// Seed into a data folder that has real cars' tokens too.
     pub with_real_cars: bool,
+    /// The first day's UTC midnight (Unix ms); `None` is synth's own first day.
+    pub start_ms: Option<u64>,
+}
+
+/// `YYYY-MM-DD` as that day's UTC midnight in Unix ms (days from 1970 through the civil calendar), at the earliest
+/// 2000-01-01 and at the latest 2099-12-31.
+pub fn parse_day(s: &str) -> Result<u64, String> {
+    let bad = || format!("--start {s:?}: a day as YYYY-MM-DD, from 2000-01-01 to 2099-12-31");
+    let mut it = s.split('-');
+    let (Some(y), Some(m), Some(d), None) = (it.next(), it.next(), it.next(), it.next()) else { return Err(bad()) };
+    let num = |t: &str, len: usize| if t.len() == len { t.parse::<u64>().ok() } else { None };
+    let (Some(y), Some(m), Some(d)) = (num(y, 4), num(m, 2), num(d, 2)) else { return Err(bad()) };
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if !(2000..=2099).contains(&y) || !(1..=12).contains(&m) || d == 0 || d > month_days[(m - 1) as usize] {
+        return Err(bad());
+    }
+    let years: u64 = (1970..y).map(|yy| if yy % 4 == 0 && (yy % 100 != 0 || yy % 400 == 0) { 366 } else { 365 }).sum();
+    let days = years + month_days[..(m - 1) as usize].iter().sum::<u64>() + (d - 1);
+    Ok(days * 86_400_000)
 }
 
 impl Options {
     /// What decides a car's bytes besides its days, as its token's name records it.
     fn tag(&self) -> String {
-        format!(
+        let mut tag = format!(
             "synth {SYNTH_GENERATION}, seed {}, {}, {}, {}",
             self.seed,
             if self.light { "light" } else { "realistic" },
             if self.clean { "clean" } else { "trouble" },
             if self.candump { "candump" } else { "columns" }
-        )
+        );
+        // only a start of its own is recorded, so cars seeded before this option keep their names
+        if let Some(ms) = self.start_ms.filter(|ms| *ms != synth::DEFAULT_START_MS) {
+            tag.push_str(&format!(", from day {}", ms / 86_400_000));
+        }
+        tag
     }
 }
 
@@ -108,6 +133,10 @@ pub async fn run(
     let fleet: Vec<synth::Scenario> = synth::fleet(o.seed, o.cars.max(1), o.days.max(1))
         .into_iter()
         .map(|s| {
+            let s = match o.start_ms {
+                Some(ms) => s.start(ms),
+                None => s,
+            };
             s.rates(if o.light { synth::Rates::Light } else { synth::Rates::Realistic })
                 .with_trouble(!o.clean)
                 .formats(if o.candump { synth::Formats::Candump } else { synth::Formats::Columns })
@@ -197,8 +226,31 @@ mod tests {
         Tokens::open(kit.data.join("tokens.json"), v).await.unwrap()
     }
 
+    #[test]
+    fn start_days_are_utc_midnights() {
+        assert_eq!(parse_day("2026-03-02").unwrap(), synth::DEFAULT_START_MS);
+        assert_eq!(parse_day("2000-01-01").unwrap(), 946_684_800_000);
+        assert_eq!(parse_day("2024-02-29").unwrap(), 1_709_164_800_000);
+        assert_eq!(parse_day("2026-11-19").unwrap(), 1_795_046_400_000);
+        for bad in ["2023-02-29", "2026-13-01", "2026-1-01", "1999-12-31", "2100-01-01", "2026-03-02-1", "today", ""] {
+            assert!(parse_day(bad).is_err(), "{bad}");
+        }
+        let o = |start_ms| Options {
+            days: 1,
+            cars: 1,
+            seed: 1,
+            light: false,
+            clean: false,
+            candump: false,
+            with_real_cars: false,
+            start_ms,
+        };
+        assert_eq!(o(None).tag(), o(Some(synth::DEFAULT_START_MS)).tag());
+        assert!(o(Some(parse_day("2026-11-10").unwrap())).tag().ends_with(", from day 20767"));
+    }
+
     fn opts(days: u32, clean: bool) -> Options {
-        Options { days, cars: 1, seed: 9, light: true, clean, candump: false, with_real_cars: false }
+        Options { days, cars: 1, seed: 9, light: true, clean, candump: false, with_real_cars: false, start_ms: None }
     }
 
     async fn seed(kit: &crate::testkit::Kit, tokens: &Tokens, o: &Options) -> Result<String, String> {
@@ -279,7 +331,16 @@ mod tests {
         let kit = crate::testkit::kit();
         let tokens = tokens(&kit).await;
         tokens.create("My car").await.unwrap();
-        let o = Options { days: 1, cars: 1, seed: 9, light: true, clean: true, candump: false, with_real_cars: false };
+        let o = Options {
+            days: 1,
+            cars: 1,
+            seed: 9,
+            light: true,
+            clean: true,
+            candump: false,
+            with_real_cars: false,
+            start_ms: None,
+        };
         let e = seed(&kit, &tokens, &o).await.unwrap_err();
         assert!(e.contains("real car"), "{e}");
         assert_eq!(tokens.list().await.len(), 1);

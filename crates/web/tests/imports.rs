@@ -217,6 +217,24 @@ async fn upload_check_match_import_and_discard() {
     assert!(per_car.iter().all(|c| c["imported"].as_u64().unwrap() > 0), "{done}");
     let r = admin.post(&format!("/api/v1/imports/{id}/start"), json!({})).await;
     assert_eq!((r.status, r.code()), (409, Some("not_ready".into())));
+    // TeslaMate's geofences came as places, priced in the currency the import was started with: the price per kWh
+    // as a plan, the price per minute (with its fee) beside a plan of none per kWh; each says when it came
+    let places = admin.get("/api/v1/places?sort=name").await;
+    assert_eq!(places.status, 200, "{}", places.text());
+    let items = places.json()["items"].as_array().unwrap().clone();
+    let named = |n: &str| items.iter().find(|p| p["name"] == n).cloned().unwrap_or_else(|| panic!("{n}: {items:?}"));
+    let home = named("Home");
+    assert_eq!(home["price"]["currency"], "EUR", "{home}");
+    assert_eq!(home["price"]["per_kwh"], json!(0.25), "{home}");
+    let sc = named("Testville Supercharger");
+    assert_eq!(sc["price"]["currency"], "EUR", "{sc}");
+    assert_eq!(
+        (sc["price"]["per_minute"].clone(), sc["price"]["session_fee"].clone()),
+        (json!(0.1), json!(1.5)),
+        "{sc}"
+    );
+    assert!(sc["price"]["per_kwh"].is_null(), "{sc}");
+    assert!(home["created_ms"].is_u64() && sc["created_ms"].is_u64(), "{items:?}");
     // the history is there: the car here has imported drives, and a new car was made
     let drives = admin.get(&format!("/api/v1/cars/{here}/drives?source=teslamate")).await;
     assert_eq!(drives.status, 200, "{}", drives.text());
@@ -354,4 +372,9 @@ async fn two_imported_cars_never_go_into_one_and_chunks_take_turns() {
         done["report"]["cars"].as_array().unwrap().iter().map(|c| c["match"].as_str().unwrap()).collect();
     assert_eq!(matched.iter().filter(|m| **m == here).count(), 1, "{done}");
     assert_eq!(engine::query::all_cars(&k.engine).unwrap().len(), 2);
+    // started without a currency: the places come, their prices do not (no price without its currency)
+    let places = admin.get("/api/v1/places").await.json();
+    let items = places["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{places}");
+    assert!(items.iter().all(|p| p["price"].is_null()), "{places}");
 }

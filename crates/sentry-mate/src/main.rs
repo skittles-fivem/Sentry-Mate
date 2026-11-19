@@ -191,6 +191,10 @@ enum DevCmd {
         /// their logs: their signing keys come from a public seed).
         #[arg(long, env = "SENTRY_MATE_DEV")]
         with_real_cars: bool,
+        /// The first made-up day (YYYY-MM-DD, UTC), for example a few days ago so the pages' recent periods show
+        /// them; synth's own first day (2026-03-02) when left out.
+        #[arg(long, value_parser = seed::parse_day)]
+        start: Option<u64>,
     },
 }
 
@@ -532,13 +536,13 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
         Cmd::Import { file, cancel } => return import_cmd(&data, &keys, file.as_deref(), cancel).await,
         Cmd::Move { cmd } => return move_cmd(&data, &keys, cli.upload_port, cmd).await,
         #[cfg(feature = "dev-seed")]
-        Cmd::Dev { cmd: DevCmd::Seed { days, cars, seed, light, clean, candump, with_real_cars } } => {
+        Cmd::Dev { cmd: DevCmd::Seed { days, cars, seed, light, clean, candump, with_real_cars, start } } => {
             let v = Arc::new(Vault::open(&data, &keys)?);
             refuse_writes(&data, &v)?;
             let store = Store::new(can_dir(&data), v.clone());
             let judge = Judge::new(store.clone());
             let tokens = Tokens::open(tokens_file(&data), v.clone()).await?;
-            let o = seed::Options { days, cars, seed, light, clean, candump, with_real_cars };
+            let o = seed::Options { days, cars, seed, light, clean, candump, with_real_cars, start_ms: start };
             // each file's writes go through the data folder's gate, as an upload's chunk does (an export or a move
             // started meanwhile waits for one file, not for the whole run)
             let gate = gate::Gate::open(&data)?;

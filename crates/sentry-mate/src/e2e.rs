@@ -136,6 +136,7 @@ async fn a_seeded_server_shows_its_made_up_car_on_the_web_port() {
             clean: true,
             candump: false,
             with_real_cars: false,
+            start_ms: None,
         };
         let gate = gate::Gate::memory();
         let enter = || -> Result<gate::Pass, Box<dyn std::error::Error>> { Ok(gate.enter(GATE_WAIT)?) };
@@ -257,6 +258,7 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
             clean: true,
             candump: false,
             with_real_cars: false,
+            start_ms: None,
         };
         let gate = gate::Gate::memory();
         let enter = || -> Result<gate::Pass, Box<dyn std::error::Error>> { Ok(gate.enter(GATE_WAIT)?) };
