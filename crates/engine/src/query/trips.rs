@@ -95,6 +95,15 @@ pub struct Trip {
     /// The drives and charges counted (by start in the period), oldest first.
     pub drives: Vec<String>,
     pub charges: Vec<String>,
+    /// Whether `drives`, `charges` or `markers` stop at [`MAX_LISTED`] (the figures count everything).
+    pub truncated: bool,
+}
+
+/// Whether a list of `len` rows takes one more (else it is cut at [`MAX_LISTED`], and `truncated` says so).
+fn listed(len: usize, truncated: &mut bool) -> bool {
+    let room = len < MAX_LISTED;
+    *truncated |= !room;
+    room
 }
 
 /// A stop of more than this long that spans two local dates away from home is an overnight stop.
@@ -115,6 +124,7 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
     let mut markers: Vec<Marker> = Vec::new();
     let mut first: Option<DriveView> = None;
     let mut last: Option<DriveView> = None;
+    let mut truncated = false;
     each::<Drive>(e, car, a, end, None, &shown, false, |d| {
         let v = super::drives::view(&c, &d, &dx);
         km += v.distance_km.unwrap_or(0.0);
@@ -131,7 +141,7 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
             if d.start_ms.saturating_sub(stop_from) > OVERNIGHT_MS
                 && crate::tz::date(stop_from, tz) != crate::tz::date(d.start_ms, tz)
                 && !at_home
-                && markers.len() < MAX_LISTED
+                && listed(markers.len(), &mut truncated)
             {
                 markers.push(Marker {
                     kind: "overnight",
@@ -142,7 +152,7 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
                 });
             }
         }
-        if drives.len() < MAX_LISTED {
+        if listed(drives.len(), &mut truncated) {
             drives.push(v.id.clone());
         }
         if first.is_none() {
@@ -175,7 +185,7 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
             }
             None => unpriced += 1,
         }
-        if markers.len() < MAX_LISTED {
+        if listed(markers.len(), &mut truncated) {
             markers.push(Marker {
                 kind: "charge",
                 lat: v.position.as_ref().map(|p| p.lat),
@@ -184,7 +194,7 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
                 charge: Some(v.id.clone()),
             });
         }
-        if charges.len() < MAX_LISTED {
+        if listed(charges.len(), &mut truncated) {
             charges.push(v.id);
         }
         Ok(true)
@@ -203,8 +213,10 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
     // the time in each state, from the activity strip of the same period
     let mut time = TripTime::default();
     if end > a {
+        let mut covered = 0u64;
         for s in super::timeline::activity(e, car, &Period::new(Some(a), Some(end)))?.body.items {
-            let ms = s.end_ms.saturating_sub(s.start_ms);
+            let ms = s.end_ms.min(end).saturating_sub(s.start_ms.max(a));
+            covered += ms;
             let charge_kind = || {
                 s.reference
                     .as_ref()
@@ -221,6 +233,9 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
                 _ => time.parked_awake += ms,
             }
         }
+        // the strip stops at the data: the time before the first and after the last (and any other stretch it has
+        // nothing for) is not recorded, so the parts add up to the period
+        time.not_recorded += (end - a).saturating_sub(covered);
     }
     let parked_kwh = if end > a {
         super::parked::parked(e, car, &Period::new(Some(a), Some(end)), None, &Paging::first(1))?
@@ -269,6 +284,7 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
             markers,
             drives,
             charges,
+            truncated,
         },
     ))
 }

@@ -14,10 +14,21 @@ use std::collections::BinaryHeap;
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct DriveFlags {
     pub in_progress: bool,
+    /// How long the drive has no data (stretches of over [`GAP_MS`] between its samples where the records say logs
+    /// are missing, failed their check, paused or lost frames): the same in the list and the detail.
     pub gap_ms: u64,
-    pub lost_frames: u64,
-    pub reduced_range: bool,
+    /// How many frames were lost: `0` when the drive's logs lost none; null when they did (the bridge's `# dropped`
+    /// lines say frames were lost there, not how many) and for imported history.
+    pub lost_frames: Option<u64>,
+    /// Null: no signal read for it yet (the car's cold-locked part of the pack is not decoded).
+    pub reduced_range: Option<bool>,
+    /// Whether the drive's logs lost frames (`flags=gap` matches it).
+    #[serde(skip)]
+    pub frames_dropped: bool,
 }
+
+/// Samples further apart than this are a gap in a drive's data (and break its track).
+pub const GAP_MS: u64 = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DriveView {
@@ -59,13 +70,19 @@ pub struct DriveView {
 /// What a drive's row needs besides the drive.
 pub(crate) struct Ctx {
     pub places: std::sync::Arc<crate::placing::Places>,
-    /// The id of the drive going on now, if any.
+    /// The id of the drive going on now, if any (the car's newest values say it is driving, and are fresh).
     pub live: Option<u64>,
+    /// The drive the car's newest values say is going on, but whose data stopped: no values for over
+    /// [`super::now::STALE_MS`] (the bridge lost power or its connection mid-drive).
+    pub stopped: Option<u64>,
     pub rated_wh_per_km: Option<f64>,
+    pub now_ms: u64,
 }
 
 pub(crate) fn ctx(e: &Engine, c: &Car) -> QResult<Ctx> {
-    let live = e.db().entry(c.id)?.and_then(|x| x.summary.now).filter(|n| n.driving).and_then(|n| {
+    let now_ms = crate::now_ms();
+    let snap = e.db().entry(c.id)?.and_then(|x| x.summary.now).filter(|n| n.driving);
+    let newest = snap.as_ref().and_then(|n| {
         e.db()
             .list::<Drive>(c.id, &db::Query { source: Some(Source::Can), ..db::Query::default().limit(1) })
             .ok()
@@ -73,12 +90,16 @@ pub(crate) fn ctx(e: &Engine, c: &Car) -> QResult<Ctx> {
             .filter(|d| d.end_ms + 120_000 >= n.at_ms)
             .map(|d| d.id)
     });
-    Ok(Ctx { places: e.places(), live, rated_wh_per_km: c.efficiency_wh_km })
+    let fresh = snap.as_ref().is_some_and(|n| now_ms.saturating_sub(n.at_ms) <= super::now::STALE_MS);
+    let (live, stopped) = if fresh { (newest, None) } else { (None, newest) };
+    Ok(Ctx { places: e.places(), live, stopped, rated_wh_per_km: c.efficiency_wh_km, now_ms })
 }
 
 pub(crate) fn view(c: &Car, d: &Drive, x: &Ctx) -> DriveView {
     let live = x.live == Some(d.id);
-    let duration = d.end_ms.saturating_sub(d.start_ms);
+    let stopped = x.stopped == Some(d.id) || d.end.is_none();
+    // a drive going on lasts up to now
+    let duration = if live { x.now_ms.max(d.end_ms) } else { d.end_ms }.saturating_sub(d.start_ms);
     let whkm = d.efficiency_wh_km();
     let (sp, ep) = (d.start.as_ref(), d.end.as_ref());
     let tm = d.source == Source::Teslamate;
@@ -95,7 +116,7 @@ pub(crate) fn view(c: &Car, d: &Drive, x: &Ctx) -> DriveView {
             ep.map(|p| p.lat),
             ep.map(|p| p.lon),
             d.end_address.as_deref(),
-            (live || ep.is_none()).then_some(if live { "Driving now" } else { "Data stopped here" }),
+            (live || stopped).then_some(if live { "Driving now" } else { "Data stopped here" }),
         ),
         start_odometer_km: r(d.start_odometer_km, 3),
         end_odometer_km: r(d.end_odometer_km, 3),
@@ -119,6 +140,7 @@ pub(crate) fn view(c: &Car, d: &Drive, x: &Ctx) -> DriveView {
         descent_m: r(d.descent_m, 0),
         hvac_kwh: None,
         source: source_word(d.source),
+        // gaps and lost frames are marked by the list and the detail ([`Cover`])
         flags: DriveFlags { in_progress: live, ..DriveFlags::default() },
         purpose: None,
     }
@@ -166,15 +188,158 @@ pub struct DrivesPage {
 }
 
 pub(crate) fn place_list(s: Option<&str>, places: &crate::placing::Places) -> QResult<Option<Vec<u32>>> {
+    place_list_named(s, places, "places")
+}
+
+/// A comma list of place ids, each a saved place; a bad one is `400` on `field`.
+pub(crate) fn place_list_named(
+    s: Option<&str>,
+    places: &crate::placing::Places,
+    field: &str,
+) -> QResult<Option<Vec<u32>>> {
     let Some(s) = s.filter(|s| !s.is_empty()) else { return Ok(None) };
     let mut out = Vec::new();
     for p in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         let id = parse_place(p)
             .filter(|&id| places.get(id).is_some())
-            .ok_or_else(|| QueryError::bad("places", "no such place"))?;
+            .ok_or_else(|| QueryError::bad(field, "no such place"))?;
         out.push(id);
     }
     Ok(Some(out))
+}
+
+/// What a car's records say about its data over a stretch: where decoded logs have data (merged when less than
+/// [`GAP_MS`] apart), where they say it is missing (logs left out, pauses in recording) and which logs lost frames.
+/// Read a day of records at a time; only the merged spans are kept.
+pub(crate) struct Cover {
+    data: Vec<(u64, u64)>,
+    holes: Vec<(u64, u64)>,
+    dropped: Vec<(u64, u64)>,
+}
+
+/// Sorts spans and joins those less than `slack` apart.
+fn merge(v: &mut Vec<(u64, u64)>, slack: u64) {
+    v.retain(|(a, b)| b > a);
+    v.sort_unstable();
+    let mut out: Vec<(u64, u64)> = Vec::with_capacity(v.len());
+    for &(a, b) in v.iter() {
+        match out.last_mut() {
+            Some(l) if a <= l.1.saturating_add(slack) => l.1 = l.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    *v = out;
+}
+
+/// Whether merged spans meet `[a, b)`.
+fn meets(v: &[(u64, u64)], a: u64, b: u64) -> bool {
+    let i = v.partition_point(|&(_, y)| y <= a);
+    v.get(i).is_some_and(|&(x, _)| x < b)
+}
+
+impl Cover {
+    /// The records of `car` for `[a, b)`.
+    pub(crate) fn read(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Cover> {
+        use crate::records::{self, Outcome};
+        let mut c = Cover { data: Vec::new(), holes: Vec::new(), dropped: Vec::new() };
+        if a >= b {
+            return Ok(c);
+        }
+        let db = e.db();
+        let meta = records::meta(db, car)?;
+        let (lo, hi) = (records::day_of(a).saturating_sub(1), records::day_of(b.saturating_sub(1)));
+        for &day in meta.days.range(lo..=hi.max(lo)) {
+            for en in records::day(db, car, day)?.logs.into_values() {
+                let (x, y) = en.span();
+                if y < a || x >= b {
+                    continue;
+                }
+                match &en.outcome {
+                    Outcome::Hole { from_ms, to_ms, .. } => c.holes.push((*from_ms, *to_ms)),
+                    Outcome::Decoded { facts, .. } => {
+                        c.data.push((x, y.max(x + 1)));
+                        for n in &facts.not_recorded {
+                            let from = n.paused_ms.map_or(n.at_ms.saturating_sub(1), |p| n.at_ms.saturating_sub(p));
+                            c.holes.push((from, n.at_ms));
+                        }
+                        if facts.dropped > 0 {
+                            c.dropped.push((x, y.max(x + 1)));
+                        }
+                    }
+                }
+            }
+            // keep what is held small however long the stretch
+            if c.data.len() + c.holes.len() + c.dropped.len() > 4096 {
+                c.settle();
+            }
+        }
+        c.settle();
+        Ok(c)
+    }
+
+    fn settle(&mut self) {
+        merge(&mut self.data, GAP_MS);
+        merge(&mut self.holes, 0);
+        merge(&mut self.dropped, 0);
+    }
+
+    /// Whether decoded logs cover `[a, b)` whole (to within [`GAP_MS`] at each edge and between logs).
+    fn covers(&self, a: u64, b: u64) -> bool {
+        let i = self.data.partition_point(|&(_, y)| y.saturating_add(GAP_MS) < b);
+        self.data.get(i).is_some_and(|&(x, _)| x <= a.saturating_add(GAP_MS))
+    }
+
+    /// Whether the logs of `[a, b)` lost frames.
+    fn lost(&self, a: u64, b: u64) -> bool {
+        meets(&self.dropped, a, b)
+    }
+
+    /// Whether the records leave part of `[a, b)` without data, or say frames were lost in it.
+    fn doubtful(&self, a: u64, b: u64) -> bool {
+        !self.covers(a, b) || meets(&self.holes, a, b) || self.lost(a, b)
+    }
+}
+
+/// Marks a drive's gaps and lost frames on its row, and answers its gaps: the stretches of over [`GAP_MS`] between
+/// its samples, looked for only where the records doubt its data (a drive its logs cover whole, with no pause and no
+/// lost frame, has none). The list and the detail mark a drive alike. `times` are the drive's samples' times when
+/// they are at hand (else its time column is read). Imported history has no records: no gaps, lost frames null.
+pub(crate) fn mark_gaps(
+    e: &Engine,
+    d: &Drive,
+    cover: &Cover,
+    times: Option<&[u64]>,
+    v: &mut DriveView,
+) -> QResult<Vec<Gap>> {
+    if d.source != Source::Can {
+        return Ok(Vec::new());
+    }
+    let (a, b) = (d.start_ms, d.end_ms.max(d.start_ms) + 1);
+    let lost = cover.lost(a, b);
+    v.flags.frames_dropped = lost;
+    v.flags.lost_frames = (!lost).then_some(0);
+    if !cover.doubtful(a, b) {
+        return Ok(Vec::new());
+    }
+    let read;
+    let t: &[u64] = match times {
+        Some(t) => t,
+        None => {
+            read = e.db().read_fields::<Sample>(d.car, d.source, a, b, &["speed_kmh"])?.t_ms;
+            &read
+        }
+    };
+    let gaps: Vec<Gap> = t
+        .windows(2)
+        .filter(|w| w[1].saturating_sub(w[0]) > GAP_MS)
+        .map(|w| Gap {
+            start_ms: w[0] + 1000,
+            end_ms: w[1],
+            kind: if cover.lost(w[0], w[1] + 1) { "dropped" } else { "unknown" },
+        })
+        .collect();
+    v.flags.gap_ms = gaps.iter().map(|g| g.end_ms.saturating_sub(g.start_ms)).sum();
+    Ok(gaps)
 }
 
 /// The drives of a car in a period (by start), as shown (overlaps with imported history settled).
@@ -393,9 +558,9 @@ impl Filter {
         if !self.flags.is_empty() {
             let f = &v.flags;
             let any = self.flags.iter().any(|w| match w.as_str() {
-                "gap" => f.gap_ms > 0 || f.lost_frames > 0,
+                "gap" => f.gap_ms > 0 || f.frames_dropped || f.lost_frames.is_some_and(|n| n > 0),
                 "in_progress" => f.in_progress,
-                _ => f.reduced_range,
+                _ => f.reduced_range == Some(true),
             });
             if !any {
                 return false;
@@ -410,15 +575,22 @@ fn texts(w: &Where) -> [Option<&str>; 2] {
     [w.label.as_deref(), w.address.short.as_deref()]
 }
 
-/// Sets a row's `wh_per_km` and `efficiency_pct` on the hill-corrected basis: the climb's potential energy taken
-/// off (a 2 t car); null when that is not above 0.
-fn hill_corrected(v: &mut DriveView, d: &Drive, rated: Option<f64>) {
-    let climb_kwh = d.ascent_m.map(|m| 2000.0 * 9.81 * m / 3.6e6);
-    let w = d
-        .energy_used_kwh
-        .zip(d.distance_km)
-        .filter(|(_, km)| *km > 0.1)
-        .map(|(kwh, km)| (kwh - climb_kwh.unwrap_or(0.0)) * 1000.0 / km);
+/// The car's mass (kg) the hill-corrected basis needs. None is known yet: no signal the server decodes, no setting
+/// and no profile carries it, so the basis answers null rather than a guessed mass.
+fn mass_kg(_c: &Car) -> Option<f64> {
+    None
+}
+
+/// Sets a row's `wh_per_km` and `efficiency_pct` on the hill-corrected basis: the potential energy of the net climb
+/// (ascent less descent: what a descent gives back by regen) taken off, with the car's own mass; null when the mass,
+/// the climb or the energy is not known, or the result is not above 0.
+fn hill_corrected(v: &mut DriveView, d: &Drive, rated: Option<f64>, mass_kg: Option<f64>) {
+    let w = (|| {
+        let net_m = d.ascent_m? - d.descent_m?;
+        let km = d.distance_km.filter(|km| *km > 0.1)?;
+        let kwh = d.energy_used_kwh? - mass_kg? * 9.81 * net_m / 3.6e6;
+        Some(kwh * 1000.0 / km)
+    })();
     v.wh_per_km = r(w.filter(|w| *w > 0.0), 1);
     v.efficiency_pct = r(rated.zip(v.wh_per_km).map(|(rated, w)| rated / w * 100.0), 1);
 }
@@ -437,44 +609,87 @@ fn sort_key(sort: &str, v: &DriveView) -> (f64, String) {
     (k, v.id.clone())
 }
 
-/// `/cars/{car}/drives`: one pass over the period's drives (a page of the db at a time) that sums the summary and
-/// keeps only the page asked for.
-pub fn drives(e: &Engine, car: CarId, q: &DrivesQuery, paging: &Paging) -> QResult<Scoped<DrivesPage>> {
-    let c = car_of(e, car)?;
-    let x = ctx(e, &c)?;
+/// One pass over the period's drives (a page of the db at a time) for `/cars/{car}/drives`: each row that passes the
+/// filters, with its sort key, goes to `take`; the summary is summed on the way.
+fn pass(
+    e: &Engine,
+    c: &Car,
+    q: &DrivesQuery,
+    desc: bool,
+    mut take: impl FnMut((f64, String), DriveView),
+) -> QResult<DrivesSummary> {
+    let car = c.id;
+    let x = ctx(e, c)?;
     let f = Filter::new(q, &x.places)?;
+    let sort = sort_of(q)?;
+    let (a, b) = q.period.bounds()?;
+    let shown = Shown::new(e, car, f.source)?;
+    let mut purposes = super::logbook::Purposes::new(e, c)?;
+    let mut sum = Summer::new(f.hill);
+    let mass = mass_kg(c);
+    // the records of the stretch the rows can cover (a drive that starts in the period may end after it)
+    let cover = if f.source == Some(Source::Teslamate) {
+        Cover { data: Vec::new(), holes: Vec::new(), dropped: Vec::new() }
+    } else {
+        Cover::read(e, car, a.saturating_sub(GAP_MS), b.saturating_add(2 * 86_400_000))?
+    };
+    each::<Drive>(e, car, a, b, f.source, &shown, desc, |d| {
+        let mut v = view(c, &d, &x);
+        mark_gaps(e, &d, &cover, None, &mut v)?;
+        v.purpose = purposes.of(e, &d, &v)?;
+        if f.hill {
+            hill_corrected(&mut v, &d, x.rated_wh_per_km, mass);
+        }
+        if f.keeps(&v) {
+            sum.add(&v);
+            take(sort_key(sort, &v), v);
+        }
+        Ok(true)
+    })?;
+    Ok(sum.done())
+}
+
+fn sort_of(q: &DrivesQuery) -> QResult<&str> {
     let sort = q.sort.as_deref().filter(|s| !s.is_empty()).unwrap_or("start");
     if !["start", "distance", "duration", "energy", "wh_per_km", "speed_max"].contains(&sort) {
         return Err(QueryError::bad("sort", "start, distance, duration, energy, wh_per_km or speed_max"));
     }
+    Ok(sort)
+}
+
+/// `/cars/{car}/drives`: one pass over the period's drives that sums the summary and keeps only the page asked for.
+pub fn drives(e: &Engine, car: CarId, q: &DrivesQuery, paging: &Paging) -> QResult<Scoped<DrivesPage>> {
+    let c = car_of(e, car)?;
+    sort_of(q)?;
     let desc = super::parse_dir(q.dir.as_deref(), true)?;
     let limit = paging.limit()?;
     let sig = format!("drives|{car}|{}|{q:?}", q.period.sig());
     let mut best = Best::new(limit + 1, desc, super::read_after(paging, &sig)?);
-    let (a, b) = q.period.bounds()?;
-    let shown = Shown::new(e, car, f.source)?;
-    let mut purposes = super::logbook::Purposes::new(e, &c)?;
-    let mut sum = Summer::new(f.hill);
-    each::<Drive>(e, car, a, b, f.source, &shown, desc, |d| {
-        let mut v = view(&c, &d, &x);
-        v.purpose = purposes.of(e, &d, &v)?;
-        if f.hill {
-            hill_corrected(&mut v, &d, x.rated_wh_per_km);
-        }
-        if f.keeps(&v) {
-            sum.add(&v);
-            best.offer(sort_key(sort, &v), v);
-        }
-        Ok(true)
-    })?;
+    let summary = pass(e, &c, q, desc, |key, v| best.offer(key, v))?;
     let (items, next) = page_of(best, limit, &sig)?;
-    Ok(scoped(&c, DrivesPage { items, next, summary: sum.done() }))
+    Ok(scoped(&c, DrivesPage { items, next, summary }))
+}
+
+/// Every row of `/cars/{car}/drives` that passes the filters, in the list's order, each given to `f` (a CSV carries
+/// them all): one pass over the period's drives, not one per page. Only the matching rows are held, to be sorted.
+pub fn each_drive(e: &Engine, car: CarId, q: &DrivesQuery, mut f: impl FnMut(DriveView) -> QResult<()>) -> QResult<()> {
+    let c = car_of(e, car)?;
+    sort_of(q)?;
+    let desc = super::parse_dir(q.dir.as_deref(), true)?;
+    let mut rows: Vec<((f64, String), DriveView)> = Vec::new();
+    pass(e, &c, q, desc, |key, v| rows.push((key, v)))?;
+    rows.sort_by(|p, o| cmp_key(&p.0, &o.0, desc));
+    for (_, v) in rows {
+        f(v)?;
+    }
+    Ok(())
 }
 
 /// The drives summary, summed row by row.
 struct Summer {
     s: DrivesSummary,
-    km_with_energy: f64,
+    /// The distance and energy of the rows with a consumption on the basis asked (rows without one are left out).
+    km_with_wh: f64,
     basis_kwh: f64,
 }
 
@@ -492,7 +707,7 @@ impl Summer {
                 without_energy: 0,
                 efficiency: if hill { "hill_corrected" } else { "plain" },
             },
-            km_with_energy: 0.0,
+            km_with_wh: 0.0,
             basis_kwh: 0.0,
         }
     }
@@ -503,12 +718,14 @@ impl Summer {
         let km = v.distance_km.unwrap_or(0.0);
         s.distance_km += km;
         s.duration_ms += v.duration_ms;
+        // the basis of wh_per_km: the row's own consumption (hill corrected or not)
+        if let Some(w) = v.wh_per_km.filter(|_| km > 0.1) {
+            self.km_with_wh += km;
+            self.basis_kwh += w * km / 1000.0;
+        }
         match v.energy_kwh {
             Some(kwh) => {
                 s.energy_kwh += kwh;
-                self.km_with_energy += km;
-                // the basis of wh_per_km: the row's own (hill corrected or not)
-                self.basis_kwh += v.wh_per_km.filter(|_| km > 0.1).map_or(kwh, |w| w * km / 1000.0);
                 if v.energy_basis == "measured" {
                     s.energy_measured_kwh += kwh;
                 } else {
@@ -521,7 +738,7 @@ impl Summer {
 
     fn done(mut self) -> DrivesSummary {
         let s = &mut self.s;
-        s.wh_per_km = r((self.km_with_energy > 0.1).then(|| self.basis_kwh * 1000.0 / self.km_with_energy), 1);
+        s.wh_per_km = r((self.km_with_wh > 0.1).then(|| self.basis_kwh * 1000.0 / self.km_with_wh), 1);
         s.distance_km = r(Some(s.distance_km), 3).unwrap_or(0.0);
         s.energy_kwh = r(Some(s.energy_kwh), 3).unwrap_or(0.0);
         s.energy_measured_kwh = r(Some(s.energy_measured_kwh), 3).unwrap_or(0.0);
@@ -593,11 +810,18 @@ pub fn drive(e: &Engine, car: CarId, id: u64, speed_band_kph: Option<f64>) -> QR
     };
     let s = samples(e, car, &d)?;
     let mut bands: std::collections::BTreeMap<u64, u64> = Default::default();
-    let mut gaps = Vec::new();
+    // the energy back into the pack: the negative battery power over the drive (each sample's power held until the
+    // next, for GAP_MS at most)
+    let (mut regen, mut with_power) = (0.0, false);
     for w in s.windows(2) {
         let dt = w[1].t_ms.saturating_sub(w[0].t_ms);
-        if dt > 10_000 {
-            gaps.push(Gap { start_ms: w[0].t_ms + 1000, end_ms: w[1].t_ms, kind: "dropped" });
+        if let Some(p) = w[0].battery_power_kw.filter(|p| p.is_finite()) {
+            with_power = true;
+            if p < 0.0 {
+                regen += -p * dt.min(GAP_MS) as f64 / 3_600_000.0;
+            }
+        }
+        if dt > GAP_MS {
             continue;
         }
         if let Some(v) = w[0].speed_kmh.filter(|v| *v > 0.5) {
@@ -622,8 +846,13 @@ pub fn drive(e: &Engine, car: CarId, id: u64, speed_band_kph: Option<f64>) -> QR
         Ok(true)
     })?;
     let mut view = view(&c, &d, &x);
+    let cover = Cover::read(e, car, d.start_ms.saturating_sub(GAP_MS), d.end_ms.saturating_add(GAP_MS + 1))?;
+    let times: Vec<u64> = s.iter().map(|x| x.t_ms).collect();
+    let gaps = mark_gaps(e, &d, &cover, Some(&times), &mut view)?;
     view.purpose = super::logbook::Purposes::new(e, &c)?.of(e, &d, &view)?;
-    view.flags.gap_ms = gaps.iter().map(|g| g.end_ms - g.start_ms).sum();
+    if d.source == Source::Can && with_power {
+        view.regen_kwh = r(Some(regen), 3);
+    }
     Ok(DriveDetail {
         drive: view,
         prev,
@@ -682,7 +911,7 @@ pub fn track(e: &Engine, car: CarId, id: u64) -> QResult<Track> {
             power_kw: s.battery_power_kw,
             soc_pct: s.soc,
         };
-        if last_t.is_none_or(|t| s.t_ms.saturating_sub(t) > 10_000) || stretches.is_empty() {
+        if last_t.is_none_or(|t| s.t_ms.saturating_sub(t) > GAP_MS) || stretches.is_empty() {
             stretches.push(Vec::new());
         }
         if let Some(st) = stretches.last_mut() {
@@ -923,7 +1152,7 @@ pub fn drive_stats(
     let c = car_of(e, car)?;
     let x = ctx(e, &c)?;
     let tz = crate::tz::zone(&c.time_zone);
-    let exclude = place_list(exclude_places, &x.places)?.unwrap_or_default();
+    let exclude = place_list_named(exclude_places, &x.places, "exclude_places")?.unwrap_or_default();
     let (a, b) = period.bounds()?;
     let end = b.min(now_ms).max(a);
     let shown = Shown::new(e, car, None)?;
@@ -962,7 +1191,7 @@ pub fn drive_stats(
         p.distance_km += v.distance_km.unwrap_or(0.0);
         p.energy_kwh += v.energy_kwh.unwrap_or(0.0);
         // a drive still going, or whose data stopped, has no destination yet
-        if !v.flags.in_progress && d.end.is_some() {
+        if !v.flags.in_progress && d.end.is_some() && x.stopped != Some(d.id) {
             let key = v.end.place.as_ref().map(|p| p.id.clone()).or_else(|| v.end.label.clone());
             if let Some(key) = key {
                 let place = v.end.place.as_ref().map(|p| p.id.clone());

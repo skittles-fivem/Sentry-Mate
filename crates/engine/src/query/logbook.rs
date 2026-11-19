@@ -412,7 +412,13 @@ pub fn logbook(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Logboo
     for t in totals.values_mut() {
         t.distance_km = r(Some(t.distance_km), 3).unwrap_or(0.0);
     }
-    Ok(scoped(&c, Logbook { from_ms: a, to_ms: b, rows, totals_by_purpose: totals, truncated }))
+    // the period as it is: up to now at most; from its first drive when no start was given
+    let to_ms = b.min(crate::now_ms()).max(a);
+    let from_ms = match period.from_ms {
+        Some(_) => a,
+        None => rows.first().map_or(a, |x| x.start_ms.min(to_ms)),
+    };
+    Ok(scoped(&c, Logbook { from_ms, to_ms, rows, totals_by_purpose: totals, truncated }))
 }
 
 /// The logbook as a PDF (a plain table, landscape, times in the car's zone, the continuity warnings and the totals per

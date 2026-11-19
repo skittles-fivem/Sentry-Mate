@@ -147,20 +147,23 @@ fn drives_query(p: &Params) -> ApiResult<q::drives::DrivesQuery> {
 /// `/cars/{car}/drives?from_ms=&to_ms=&places=&place_side=&q=&min_distance_km=&min_avg_kph=&source=&flags=&efficiency=&sort=&dir=&limit=&after=`.
 async fn list(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
     let (query, first, csv) = (drives_query(&p)?, paging(&p)?, p.wants_csv()?);
-    let out = value(&app, move |e| {
-        let mut page = q::drives::drives(e, car, &query, &first)?;
-        if csv {
-            // every matching row: a page of 500 at a time
-            while let Some(after) = page.body.next.take() {
-                let more =
-                    q::drives::drives(e, car, &query, &q::Paging { limit: Some(q::MAX_LIMIT), after: Some(after) })?;
-                page.body.items.extend(more.body.items);
-                page.body.next = more.body.next;
-            }
-        }
-        Ok(page)
-    })
-    .await?;
+    if csv {
+        // every matching row, from one pass over the period (not one per page)
+        let rows = run(&app, move |e| {
+            let mut rows = Vec::new();
+            q::drives::each_drive(e, car, &query, |v| {
+                rows.push(
+                    serde_json::to_value(v).map_err(|x| QueryError::Engine(engine::Error::Damaged(x.to_string())))?,
+                );
+                Ok(())
+            })
+            .map_err(failed)?;
+            Ok(rows)
+        })
+        .await?;
+        return Ok(crate::csv::response("drives", crate::csv::rows(&rows)));
+    }
+    let out = value(&app, move |e| q::drives::drives(e, car, &query, &first)).await?;
     crate::csv::answer(&p, "drives", out)
 }
 
@@ -262,7 +265,8 @@ async fn delete_purpose(
 
 /// `GET /cars/{car}/purpose-rules?limit=&after=`, oldest first.
 async fn rules(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let pg = paging(&p)?;
+    // a CSV carries every rule (a car keeps at most MAX_RULES, under one page of MAX_LIMIT)
+    let pg = if p.wants_csv()? { q::Paging { limit: Some(q::MAX_LIMIT), after: None } } else { paging(&p)? };
     let out = value(&app, move |e| q::logbook::rules(e, car, &pg)).await?;
     crate::csv::answer(&p, "purpose-rules", out)
 }
