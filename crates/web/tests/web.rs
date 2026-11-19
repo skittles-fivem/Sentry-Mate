@@ -350,7 +350,8 @@ async fn packs_are_served_with_a_strict_policy() {
         assert!(csp.contains(part), "{csp}");
     }
     assert!(!csp.contains("unsafe-inline"), "{csp}");
-    assert!(csp.contains("https://tile.openstreetmap.org"), "{csp}");
+    // no outside host (tile server or any other) until an admin turns one on
+    assert!(!csp.contains("https://") && !csp.contains("openstreetmap"), "{csp}");
     assert_eq!(r.header("x-content-type-options"), Some("nosniff"));
     assert_eq!(r.header("x-frame-options"), Some("DENY"));
     let etag = r.header("etag").unwrap().to_string();

@@ -66,8 +66,10 @@ impl Default for Geocode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Tiles {
-    /// `online` (the browsers load tiles from `online_url`) or `offline` (tiles from this server).
+    /// `online` (the browsers load tiles from `online_url`) or `offline` (tiles from this server). `offline` until an
+    /// admin turns online tiles on: no browser asks an outside tile server before that.
     pub mode: String,
+    /// The outside tile server online mode uses (filled in as a suggestion only).
     pub online_url: Option<String>,
     pub attribution: String,
     pub max_zoom: u8,
@@ -76,7 +78,7 @@ pub struct Tiles {
 impl Default for Tiles {
     fn default() -> Tiles {
         Tiles {
-            mode: "online".into(),
+            mode: "offline".into(),
             online_url: Some(places::tiles::OSM_TILE_URL.into()),
             attribution: places::tiles::OSM_TILE_CREDIT.into(),
             max_zoom: 19,
@@ -712,7 +714,11 @@ mod tests {
         assert_eq!(cert_host_name("FD00:0:0::0001").as_deref(), Some("fd00::1"));
         assert_eq!(cert_host_name("[::1"), None);
         assert_eq!(cert_host_name("a b"), None);
-        let s = ServerSettings::default();
-        assert_eq!(s.tile_origins(), vec![crate::DEFAULT_TILE_ORIGIN.to_string()]);
+        // nothing outside until an admin turns online tiles on
+        let mut s = ServerSettings::default();
+        assert_eq!(s.tiles.mode, "offline");
+        assert!(s.tile_origins().is_empty());
+        s.tiles.mode = "online".into();
+        assert_eq!(s.tile_origins(), vec!["https://tile.openstreetmap.org".to_string()]);
     }
 }

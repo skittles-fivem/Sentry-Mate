@@ -55,6 +55,10 @@
   instead, so the key file that opens your data is never replaced.
 - Nothing leaves the server: while it runs, Sentry Mate makes no outgoing connections. The one exception is a new
   server during a move you started: it connects to the old server's upload port, and nowhere else.
+- The viewers' browsers load nothing from outside either. Map tiles are offline until an admin picks online tiles in
+  Settings; until then the pages' Content-Security-Policy names no outside host and every map draws the track on a
+  plain background. Online tiles send each viewer's browser to that one tile server, which then sees the viewer's
+  address and the tiles asked for (where the car drove and parked), so it stays off unless the owner chooses it.
 - **The move code** ([moving.md](moving.md)) is 125 random bits, works once, for 24 hours, and only from the home
   network unless made with `--anywhere`. Logs name it by a short id. Only the old server shows the code itself,
   when asked (`move code`, or in its log with `SENTRY_MATE_OFFER_MOVE`). The new server proves the code over the TLS

@@ -159,7 +159,7 @@ This is the `/api/v1` the pages in [`parity/ui-parity.md`](parity/ui-parity.md) 
 | Resource | Methods | Fields and notes | Pages |
 |---|---|---|---|
 | `/api/v1/settings` | GET, PATCH (admin) | Server defaults: `{ units, range, car_order, geocode: { mode: "offline" \| "online", dataset, url, language, rounding_m }, tiles: { mode, online_url, attribution, max_zoom }, release_check: { enabled }, outside_links: { maps, release_notes }, outbound: { proxy }, host_names, version }` | Settings: Display and units, Settings: Server and access |
-| `/api/v1/maps/config` | GET | `{ tiles: { mode, offline_url, online_template, attribution, max_zoom }, geocoding: { mode, credit, offline_data_present } }`; offline PMTiles are served by Sentry Mate. | Every map |
+| `/api/v1/maps/config` | GET | `{ tiles: { mode, offline_url, online_template, attribution, max_zoom }, geocoding: { mode, credit, offline_data_present } }`; offline PMTiles are served by Sentry Mate. The tiles are offline until an admin saves online tiles in the settings: a fresh server sends no browser to an outside tile server (the settings' online address is only a suggestion until then), the online template is null unless online, and the pages' CSP allows the online tile server's origin only while tiles are online. | Every map |
 | `/api/v1/geocode/status` | GET | `{ mode, offline_data, cache_size, online: { last_error, retry_ms } }` | Settings: Display and units, Data health and storage |
 | `/api/v1/notices` | GET | `{ items: [{ code, level, message, since_ms, fix_link }] }`: vault, certificate, recovery key file, opt-in release notice | App frame |
 | `/api/v1/about` | GET | `{ version, api_version, ui_pack: { name, version, api }, licences: [], data_credits: [] }` | Help and about |

@@ -167,9 +167,6 @@ pub struct Builder {
     services: HashMap<std::any::TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
-/// The tile server the built-in packs use until a setting says otherwise.
-pub const DEFAULT_TILE_ORIGIN: &str = "https://tile.openstreetmap.org";
-
 impl Builder {
     pub fn cars(mut self, cars: Arc<dyn CarDirectory>) -> Builder {
         self.cars = cars;
@@ -267,7 +264,8 @@ impl AppState {
             cars: Arc::new(NoCars),
             events: Events::new(),
             defaults: units::Defaults::default(),
-            tile_origins: vec![DEFAULT_TILE_ORIGIN.to_string()],
+            // no outside tile server until the settings turn one on
+            tile_origins: Vec::new(),
             setup_code_file: None,
             requests_per_minute: 1200,
             body_timeout: server::BODY_TIMEOUT,

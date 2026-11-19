@@ -304,7 +304,8 @@ The owner's existing TeslaMate data comes in, so history starts years before the
 ## Encryption at rest (owner: set once, extremely hard to break, 2026-11-16)
 
 Set up once on first start; after that the logger unlocks itself on every restart, with nothing to type.
-Stealing the disk, the data folder or a backup gives nothing readable.
+Stealing the disk, the data folder or a backup gives no readable contents. File and folder names, sizes and times are
+not sealed yet: they show each car key and when each car recorded (see docs/security.md, Privacy).
 
 - **Keys in layers.** One random 256-bit data key encrypts everything. It is never stored as it is: it is
   kept wrapped (encrypted) twice, and either wrapper opens it:

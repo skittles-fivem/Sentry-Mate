@@ -493,8 +493,9 @@ async fn maps_and_addresses_say_what_the_server_has() {
     // without the engine, the places routes are not ready; maps and addresses answer the default settings
     assert_eq!(admin.get("/api/v1/places").await.status, 503);
     let m = ok(&mut admin, "/api/v1/maps/config").await;
-    assert_eq!(m["tiles"]["mode"], "online", "the pages may load the default tile server: {m}");
-    assert!(m["tiles"]["online_template"].as_str().unwrap().contains("{z}"));
+    // a fresh server sends no browser to an outside tile server: offline until an admin turns online tiles on
+    assert_eq!(m["tiles"]["mode"], "offline", "{m}");
+    assert_eq!(m["tiles"]["online_template"], Value::Null, "{m}");
     has_keys(&m["tiles"], &["mode", "offline_url", "online_template", "attribution", "max_zoom"]);
     has_keys(&m["geocoding"], &["mode", "credit", "offline_data_present"]);
     let g = ok(&mut admin, "/api/v1/geocode/status").await;
@@ -509,7 +510,12 @@ async fn maps_and_addresses_follow_the_settings_at_once() {
     let k = seeded().await;
     let mut admin = k.s.admin().await;
     let m = ok(&mut admin, "/api/v1/maps/config").await;
-    assert_eq!((m["tiles"]["mode"].as_str(), m["tiles"]["max_zoom"].as_u64()), (Some("online"), Some(19)), "{m}");
+    assert_eq!((m["tiles"]["mode"].as_str(), m["tiles"]["max_zoom"].as_u64()), (Some("offline"), Some(19)), "{m}");
+    assert_eq!(m["tiles"]["online_template"], Value::Null, "{m}");
+    // the pages' policy names no outside host while tiles are offline
+    let csp = |r: &web::testkit::Res| r.header("content-security-policy").unwrap().to_string();
+    let before = csp(&admin.get("/").await);
+    assert!(!before.contains("https://"), "{before}");
     assert_eq!((m["geocoding"]["mode"].as_str(), m["geocoding"]["language"].as_str()), (Some("offline"), Some("en")));
     let v = ok(&mut admin, "/api/v1/settings").await["version"].as_u64().unwrap();
     let tiles = json!({ "mode": "online", "online_url": "https://tiles.example.org/{z}/{x}/{y}.png",
@@ -522,6 +528,8 @@ async fn maps_and_addresses_follow_the_settings_at_once() {
         (&json!("online"), &json!("https://tiles.example.org/{z}/{x}/{y}.png"), &json!("Example tiles"), &json!(17)),
         "{m}"
     );
+    let on = csp(&admin.get("/").await);
+    assert!(on.contains("https://tiles.example.org") && !on.contains("openstreetmap"), "{on}");
     // offline tiles: none served yet, so no address for them, and nothing online
     let r = admin.patch("/api/v1/settings", json!({ "version": v + 1, "tiles": { "mode": "offline" } })).await;
     assert_eq!(r.status, 200, "{}", r.text());
@@ -530,6 +538,8 @@ async fn maps_and_addresses_follow_the_settings_at_once() {
         (&m["tiles"]["mode"], &m["tiles"]["offline_url"], &m["tiles"]["online_template"]),
         (&json!("offline"), &Value::Null, &Value::Null)
     );
+    let off = csp(&admin.get("/").await);
+    assert!(!off.contains("https://"), "{off}");
 
     // addresses: the mode, service, language and rounding saved
     let g = ok(&mut admin, "/api/v1/geocode/status").await;

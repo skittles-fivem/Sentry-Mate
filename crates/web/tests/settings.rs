@@ -105,7 +105,7 @@ async fn server_settings() {
     assert_eq!(s["car_order"], json!([]));
     assert_eq!(s["geocode"]["mode"], "offline");
     assert_eq!(s["geocode"]["dataset"], "cities1000");
-    assert_eq!(s["tiles"]["mode"], "online");
+    assert_eq!(s["tiles"]["mode"], "offline", "no outside tile server until an admin picks one");
     assert!(s["tiles"]["online_url"].as_str().unwrap().contains("{z}"));
     assert_eq!(s["tiles"]["max_zoom"], 19);
     assert_eq!(s["release_check"], json!({ "enabled": false }));
@@ -197,11 +197,12 @@ async fn server_settings() {
     }
     assert_eq!(ok(&mut admin, "/api/v1/settings").await["version"], v2, "nothing saved");
 
-    // the tile origins of the packs' CSP follow the tile server; offline tiles: none
+    // the tile origins of the packs' CSP follow the tile server once an admin turns it on; offline tiles: none
+    assert!(t.s.app.tiles().is_empty(), "a fresh server lets the pages load no outside tiles");
     let r = admin
         .patch(
             "/api/v1/settings",
-            json!({ "version": v2, "tiles": { "online_url": "https://tiles.example.org:8443/{z}/{x}/{y}.png" }, "outbound": { "proxy": "socks5://proxy.lan:1080" }, "host_names": ["Car.Example", "car.example", "10.0.0.5"] }),
+            json!({ "version": v2, "tiles": { "mode": "online", "online_url": "https://tiles.example.org:8443/{z}/{x}/{y}.png" }, "outbound": { "proxy": "socks5://proxy.lan:1080" }, "host_names": ["Car.Example", "car.example", "10.0.0.5"] }),
         )
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
@@ -423,7 +424,11 @@ async fn network() {
     assert_eq!(purposes, ["geocoding", "tiles", "geonames_download", "mqtt", "release_check"]);
     let row = |p: &str| out.iter().find(|o| o["purpose"] == p).unwrap().clone();
     assert_eq!(row("geocoding")["enabled"], false, "address lookup is offline by default");
-    assert_eq!(row("tiles")["host"], "tile.openstreetmap.org");
+    assert_eq!(
+        row("tiles"),
+        json!({ "purpose": "tiles", "host": null, "enabled": false, "last_used_ms": null }),
+        "tiles are offline by default"
+    );
     assert_eq!(row("mqtt"), json!({ "purpose": "mqtt", "host": null, "enabled": false, "last_used_ms": null }));
     assert_eq!(
         n["inbound"],
