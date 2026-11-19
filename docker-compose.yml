@@ -39,7 +39,9 @@ services:
       - "10100:10100"
       # the web UI, HTTPS (TLS 1.3 only, the same certificate): open
       # https://<this machine>:9100/ in a browser. Another app on 9100:
-      # change the left number.
+      # change the left number. A host with a public IPv6 address: keep
+      # 9100 closed to it, or IPv6 visitors look like the home network
+      # (docs/security.md).
       - "9100:9100"
 
     # OPTIONAL: the names / addresses you reach the server by, for the

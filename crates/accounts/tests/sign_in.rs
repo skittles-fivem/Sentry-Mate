@@ -2,7 +2,7 @@
 
 mod common;
 
-use accounts::{Error, Hashing, IDLE_MS, NewAccount, Permission, Role, SESSION_MS, SignIn, TwoStepPolicy};
+use accounts::{Confirm, Error, Hashing, IDLE_MS, NewAccount, Permission, Role, SESSION_MS, SignIn, TwoStepPolicy};
 use common::*;
 use std::time::{Duration, Instant};
 
@@ -190,7 +190,8 @@ fn recovery_codes_work_once_each() {
     assert_eq!(env.acc.recovery_codes_left(&owner).unwrap(), 9);
     assert!(matches!(env.acc.finish_sign_in(&pending(), &codes[3], &c), Err(Error::WrongCode)), "used");
     // new codes replace the old ones
-    let fresh = env.acc.new_recovery_codes(&owner, OWNER_PASSWORD).unwrap();
+    assert!(matches!(env.acc.new_recovery_codes(&owner, OWNER_PASSWORD), Err(Error::WrongCode)), "needs a code");
+    let fresh = env.acc.new_recovery_codes(&owner, Confirm::new(OWNER_PASSWORD, Some(&codes[5]))).unwrap();
     assert!(matches!(env.acc.finish_sign_in(&pending(), &codes[4], &c), Err(Error::WrongCode)));
     env.acc.finish_sign_in(&pending(), &fresh[0], &c).unwrap();
     assert_eq!(env.acc.recovery_codes_left(&owner).unwrap(), 9);
@@ -211,8 +212,12 @@ fn two_step_can_be_required_from_outside_the_home_network() {
     let (owner_out_session, owner_out) = env.sign_in("owner", OWNER_PASSWORD, OUTSIDE);
     assert!(matches!(env.acc.set_two_step_policy(&owner_out, OWNER_PASSWORD, rule), Err(Error::TwoStepFirst)));
     env.acc.set_two_step_policy(&owner, OWNER_PASSWORD, rule).unwrap();
-    // without two-step: home only
-    assert!(matches!(env.acc.sign_in("guest", "a visitor passphrase", &client(OUTSIDE)), Err(Error::TwoStepRequired)));
+    // without two-step: home only; from outside the right password gets the answer a wrong one gets (it can't be
+    // used there, and the answer mustn't confirm a guess)
+    let right = env.acc.sign_in("guest", "a visitor passphrase", &client(OUTSIDE));
+    let wrong = env.acc.sign_in("guest", "not the passphrase", &client(OUTSIDE));
+    assert!(matches!(right, Err(Error::WrongCredentials)), "{:?}", right.err());
+    assert!(matches!(wrong, Err(Error::WrongCredentials)));
     env.sign_in("guest", "a visitor passphrase", "10.1.2.3");
     // a session made at home can't be taken outside: it ends on its first request from there
     assert!(matches!(env.acc.authenticate(&guest_home.token, &client(OUTSIDE)), Err(Error::TwoStepRequired)));
@@ -220,7 +225,7 @@ fn two_step_can_be_required_from_outside_the_home_network() {
     // nor one made outside before the rule
     assert!(matches!(env.acc.authenticate(&owner_out_session.token, &client(OUTSIDE)), Err(Error::TwoStepRequired)));
     // with two-step sign-in, outside is fine again
-    let (secret, _) = turn_on_two_step(&env, &owner, OWNER_PASSWORD);
+    let (secret, codes) = turn_on_two_step(&env, &owner, OWNER_PASSWORD);
     env.advance(30_000);
     let c = client(OUTSIDE);
     let SignIn::NeedCode { pending, .. } = env.acc.sign_in("owner", OWNER_PASSWORD, &c).unwrap() else { panic!() };
@@ -228,8 +233,9 @@ fn two_step_can_be_required_from_outside_the_home_network() {
     env.acc.authenticate(&ns.token, &c).unwrap();
     // and one's own can't be turned off from outside while the rule stands
     let me = env.acc.authenticate(&ns.token, &c).unwrap();
-    assert!(matches!(env.acc.disable_two_step(&me, OWNER_PASSWORD, me.account.id), Err(Error::TwoStepKept)));
-    env.acc.disable_two_step(&owner, OWNER_PASSWORD, owner.account.id).unwrap();
+    let with_code = Confirm::new(OWNER_PASSWORD, Some(&codes[0]));
+    assert!(matches!(env.acc.disable_two_step(&me, with_code, me.account.id), Err(Error::TwoStepKept)));
+    env.acc.disable_two_step(&owner, Confirm::new(OWNER_PASSWORD, Some(&codes[1])), owner.account.id).unwrap();
 }
 
 #[test]
@@ -240,11 +246,11 @@ fn two_step_can_be_required_for_everyone() {
     env.acc.create_account(&owner, OWNER_PASSWORD, n).unwrap();
     let rule = TwoStepPolicy { everyone: true, outside: false };
     assert!(matches!(env.acc.set_two_step_policy(&owner, OWNER_PASSWORD, rule), Err(Error::TwoStepFirst)));
-    turn_on_two_step(&env, &owner, OWNER_PASSWORD);
-    env.acc.set_two_step_policy(&owner, OWNER_PASSWORD, rule).unwrap();
+    let (_, owner_codes) = turn_on_two_step(&env, &owner, OWNER_PASSWORD);
+    env.acc.set_two_step_policy(&owner, Confirm::new(OWNER_PASSWORD, Some(&owner_codes[0])), rule).unwrap();
     assert_eq!(env.acc.two_step_policy(), rule);
-    // without it: from outside not at all, at home only to set it up
-    assert!(matches!(env.acc.sign_in("guest", "a visitor passphrase", &client(OUTSIDE)), Err(Error::TwoStepRequired)));
+    // without it: from outside not at all (answered as a wrong password), at home only to set it up
+    assert!(matches!(env.acc.sign_in("guest", "a visitor passphrase", &client(OUTSIDE)), Err(Error::WrongCredentials)));
     let (_, guest) = env.sign_in("guest", "a visitor passphrase", HOME);
     assert!(guest.two_step_setup_only);
     assert!(!guest.may(Permission::View) && guest.may(Permission::OwnAccount) && !guest.sees(1));
@@ -258,10 +264,10 @@ fn two_step_can_be_required_for_everyone() {
     assert!(!guest.two_step_setup_only && guest.may(Permission::View));
     // it can't be turned off by oneself while required; an admin can (a lost phone)
     assert!(matches!(
-        env.acc.disable_two_step(&guest, "a visitor passphrase", guest.account.id),
+        env.acc.disable_two_step(&guest, Confirm::new("a visitor passphrase", Some(&codes[1])), guest.account.id),
         Err(Error::TwoStepKept)
     ));
-    env.acc.disable_two_step(&owner, OWNER_PASSWORD, guest.account.id).unwrap();
+    env.acc.disable_two_step(&owner, Confirm::new(OWNER_PASSWORD, Some(&owner_codes[1])), guest.account.id).unwrap();
     assert!(!env.acc.account(guest.account.id).unwrap().two_step);
     assert!(matches!(env.acc.authenticate(&ns.token, &c), Err(Error::TwoStepRequired)));
 }
@@ -424,12 +430,13 @@ fn a_wrong_code_writes_nothing_and_one_code_sent_twice_at_once_signs_in_once() {
 fn a_new_password_ends_sign_ins_still_waiting_for_their_code() {
     let env = Env::new();
     let (_, owner) = env.owner();
-    let (secret, _) = turn_on_two_step(&env, &owner, OWNER_PASSWORD);
+    let (secret, codes) = turn_on_two_step(&env, &owner, OWNER_PASSWORD);
     env.advance(30_000);
     let c = client(OUTSIDE);
     // someone with the old password got as far as the code
     let SignIn::NeedCode { pending, .. } = env.acc.sign_in("owner", OWNER_PASSWORD, &c).unwrap() else { panic!() };
-    env.acc.set_password(&owner, OWNER_PASSWORD, owner.account.id, "a fresh long passphrase").unwrap();
+    let confirm = Confirm::new(OWNER_PASSWORD, Some(&codes[0]));
+    env.acc.set_password(&owner, confirm, owner.account.id, "a fresh long passphrase").unwrap();
     assert!(matches!(env.acc.finish_sign_in(&pending, &code_at(&secret, env.now()), &c), Err(Error::SignInExpired)));
 }
 

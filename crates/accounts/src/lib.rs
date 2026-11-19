@@ -3,7 +3,8 @@
 //! - **Accounts** ([`Accounts`]): a name, an argon2id password hash, a role ([`Role::Admin`] or
 //!   [`Role::WatchOnly`]), optionally a set of cars it is limited to (any size, checked in O(1)), and its own choice
 //!   of interface (UI pack). There is always at least one admin. Adding, changing or removing an account, or changing
-//!   a password or role, asks for the acting account's own password again.
+//!   a password or role, asks for the acting account's own password again, and its two-step code when that is on
+//!   ([`Confirm`]).
 //! - **First run**: with no account yet, the first admin can only be made with a one-time setup code
 //!   ([`Accounts::start_setup`]): random, written to a file the owner reads (e.g. `/keys/SETUP-CODE.txt`), used once,
 //!   valid for 24 hours. Whoever reaches the page first can't claim the server.
@@ -51,6 +52,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use store::{Cache, Files, Index, Loaded, Secrets, Slot, SlotState, Summary, TotpSetup, TotpState};
 use subtle::ConstantTimeEq;
@@ -78,6 +80,10 @@ pub const TWO_STEP_SETUP_MS: u64 = 15 * 60_000;
 /// The setup code for the first admin is valid this long.
 pub const SETUP_CODE_MS: u64 = 24 * 3600 * 1000;
 pub const MAX_NAME_CHARS: usize = 64;
+/// Sign-ins with a right password per account (home and outside counted apart) per minute, at most. Each takes one
+/// of the few hash slots, and a right password clears the failure count: so someone who knows a password can't keep
+/// the slots busy and the others out.
+pub const RIGHT_PASSWORDS_PER_MINUTE: u32 = 20;
 
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -196,6 +202,50 @@ pub struct SignedIn {
     hash: Hash,
 }
 
+/// The acting account's own password asked again before a change, and its two-step code (or a recovery code), which
+/// is needed too when that account has two-step sign-in on (each code works once). A bare `&str` is a password
+/// without a code.
+#[derive(Clone, Copy)]
+pub struct Confirm<'a> {
+    pub password: &'a str,
+    pub code: Option<&'a str>,
+    once: Option<&'a CodeOnce>,
+}
+
+/// For several changes made in one request with one [`Confirm`]: the first uses the code up, the ones after it in
+/// the same request ask for the password again but not for a second code (an authenticator shows one per 30 s).
+#[derive(Default)]
+pub struct CodeOnce(AtomicBool);
+
+impl<'a> Confirm<'a> {
+    pub fn new(password: &'a str, code: Option<&'a str>) -> Confirm<'a> {
+        Confirm { password, code, once: None }
+    }
+
+    /// One of several changes in one request (see [`CodeOnce`]).
+    pub fn in_request(password: &'a str, code: Option<&'a str>, once: &'a CodeOnce) -> Confirm<'a> {
+        Confirm { password, code, once: Some(once) }
+    }
+}
+
+impl<'a> From<&'a str> for Confirm<'a> {
+    fn from(password: &'a str) -> Confirm<'a> {
+        Confirm::new(password, None)
+    }
+}
+
+impl<'a> From<&'a String> for Confirm<'a> {
+    fn from(password: &'a String) -> Confirm<'a> {
+        Confirm::new(password, None)
+    }
+}
+
+impl<'a> From<&'a Zeroizing<String>> for Confirm<'a> {
+    fn from(password: &'a Zeroizing<String>) -> Confirm<'a> {
+        Confirm::new(password, None)
+    }
+}
+
 impl SignedIn {
     /// Whether this account may do this now.
     pub fn may(&self, p: Permission) -> bool {
@@ -262,6 +312,39 @@ struct Pending {
     key: String,
     until_ms: u64,
     tries: u32,
+    /// The password hash its password was checked against (see [`stamp`]).
+    stamp: Stamp,
+}
+
+/// A password hash as it was when a password was checked against it. Every hash has its own salt, so a new password
+/// (even the same one again) has another stamp: a sign-in whose stamp no longer matches was let through by a
+/// password that has changed since, and gets no session.
+type Stamp = [u8; 32];
+
+fn stamp(phc: &str) -> Stamp {
+    Sha256::digest(phc.as_bytes()).into()
+}
+
+/// How long a password check waits for another one of the same account name to end.
+const ONE_AT_A_TIME_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The account names being checked now (one hash at a time per name and place, see [`Accounts::one_at_a_time`]).
+#[derive(Default)]
+struct Checking {
+    names: Mutex<std::collections::HashSet<String>>,
+    freed: std::sync::Condvar,
+}
+
+struct CheckingPass<'a> {
+    checking: &'a Checking,
+    key: String,
+}
+
+impl Drop for CheckingPass<'_> {
+    fn drop(&mut self) {
+        lock(&self.checking.names).remove(&self.key);
+        self.checking.freed.notify_all();
+    }
 }
 
 enum CodeUsed {
@@ -285,6 +368,10 @@ pub struct Accounts {
     policy: RwLock<TwoStepPolicy>,
     audit: Arc<Audit>,
     setup_lock: Mutex<()>,
+    /// The throttle key (name and place) of each password being checked now.
+    checking: Checking,
+    /// Right passwords per throttle key in the current minute: (minute, count).
+    right: Mutex<HashMap<String, (u64, u32)>>,
 }
 
 fn name_key(name: &str) -> String {
@@ -401,6 +488,8 @@ impl Accounts {
             policy: RwLock::new(policy),
             audit,
             setup_lock: Mutex::new(()),
+            checking: Checking::default(),
+            right: Mutex::new(HashMap::new()),
         })
     }
 
@@ -632,11 +721,54 @@ impl Accounts {
 
     // ---- signing in
 
+    /// One password check at a time per account name and place: another for the same name waits for it (without
+    /// taking a hash slot), then [`Error::Busy`]. So one account (or someone typing its name) holds at most one of
+    /// the hash slots, however many tries it sends at once, and the others stay free for everyone else.
+    fn one_at_a_time(&self, key: &str) -> Result<CheckingPass<'_>> {
+        let names = lock(&self.checking.names);
+        let (mut names, timeout) = self
+            .checking
+            .freed
+            .wait_timeout_while(names, ONE_AT_A_TIME_WAIT, |n| n.contains(key))
+            .unwrap_or_else(|e| e.into_inner());
+        if timeout.timed_out() && names.contains(key) {
+            return Err(Error::Busy);
+        }
+        names.insert(key.to_string());
+        Ok(CheckingPass { checking: &self.checking, key: key.to_string() })
+    }
+
+    /// Refused while this name and place has had [`RIGHT_PASSWORDS_PER_MINUTE`] right passwords this minute (a right
+    /// password clears the failure count, so this is what keeps a loop of them from filling the hash slots).
+    fn right_check(&self, key: &str, now: u64) -> Result<()> {
+        match lock(&self.right).get(key) {
+            Some(&(minute, n)) if minute == now / 60_000 && n >= RIGHT_PASSWORDS_PER_MINUTE => {
+                Err(Error::Throttled { retry_after_s: (60_000 - now % 60_000).div_ceil(1000).max(1) })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn right_noted(&self, key: &str, now: u64) {
+        let minute = now / 60_000;
+        let mut m = lock(&self.right);
+        let e = m.entry(key.to_string()).or_insert((minute, 0));
+        if e.0 != minute {
+            *e = (minute, 0);
+        }
+        e.1 = e.1.saturating_add(1);
+    }
+
     /// Checks a name and password. Unknown names get exactly the answer a wrong password gets, after the same work.
+    /// So does a right password from where the two-step rules don't let that account in (it can't be used there,
+    /// and the answer mustn't confirm a guess).
     pub fn sign_in(&self, name: &str, password: &str, client: &Client) -> Result<SignIn> {
         let key = name_key(name);
         let keys = self.keys(&key, client);
-        self.throttle.check(&keys, self.now())?;
+        let now = self.now();
+        self.throttle.check(&keys, now)?;
+        self.right_check(&keys[1], now)?;
+        let one = self.one_at_a_time(&keys[1])?;
         let pass = self.hasher.gate.enter()?;
         self.throttle.begin(&keys, self.now())?;
         let found = self.index().find(&key).cloned();
@@ -657,47 +789,79 @@ impl Accounts {
             None => self.hasher.verify_dummy(password),
         };
         drop(pass);
-        let s = match found {
+        let s = match (found, phc) {
             // as it is now that the account's file has been read (see `repair_two_step_flag`)
-            Some(s) if ok => self.summary(s.id).unwrap_or(s),
-            Some(s) => {
+            (Some(s), Some(phc)) if ok => (self.summary(s.id).unwrap_or(s), phc),
+            (Some(s), _) => {
                 self.record(Some(&s.name), Some(client), "sign-in-failed", "wrong password")?;
                 return Err(Error::WrongCredentials);
             }
-            None => {
+            (None, _) => {
                 self.record(None, Some(client), "sign-in-failed", "no such account")?;
                 return Err(Error::WrongCredentials);
             }
         };
-        if phc.as_deref().is_some_and(|h| self.hasher.outdated(h)) {
+        let (s, mut phc) = s;
+        let setup_only = if two_step || s.two_step {
+            false
+        } else {
+            match self.two_step_gate(&s, client) {
+                Ok(v) => v,
+                Err(e) => {
+                    // counted as a failed try (it was counted when it began) and answered as a wrong password
+                    self.record(Some(&s.name), Some(client), "sign-in-refused", "two-step sign-in is required here")?;
+                    return Err(if matches!(e, Error::TwoStepRequired) { Error::WrongCredentials } else { e });
+                }
+            }
+        };
+        if self.hasher.outdated(&phc) {
             // made again with today's settings, now that the password is known to be right
             let fresh = {
                 let _pass = self.hasher.gate.enter()?;
-                self.hasher.hash(password)?
+                Zeroizing::new(self.hasher.hash(password)?)
             };
-            self.change_secrets(s.id, |sec| {
-                sec.password = fresh;
-                Ok(())
+            // only over the hash that was checked: a password changed meanwhile stays changed
+            let changed = self.change_secrets(s.id, |sec| {
+                if !bool::from(sec.password.as_bytes().ct_eq(phc.as_bytes())) {
+                    return Ok(false);
+                }
+                sec.password = fresh.to_string();
+                Ok(true)
             })?;
+            if !changed {
+                return Err(self.password_changed_meanwhile(&s, client));
+            }
+            phc = fresh;
         }
+        drop(one);
+        let checked = stamp(&phc);
         if two_step || s.two_step {
             // the password was right; the code has its own count (see `code_keys`)
+            let (pending, expires_ms) = match self.start_pending(&s, checked)? {
+                Some(p) => p,
+                None => return Err(self.password_changed_meanwhile(&s, client)),
+            };
             self.throttle.success(&keys);
-            let (pending, expires_ms) = self.start_pending(&s)?;
+            self.right_noted(&keys[1], now);
             return Ok(SignIn::NeedCode { pending, expires_ms });
         }
-        let setup_only = match self.two_step_gate(&s, client) {
-            Ok(v) => v,
-            Err(e) => {
-                self.record(Some(&s.name), Some(client), "sign-in-refused", "two-step sign-in is required here")?;
-                return Err(e);
-            }
+        let Some(ns) = self.new_session_checked(&s, client, checked)? else {
+            return Err(self.password_changed_meanwhile(&s, client));
         };
         self.throttle.success(&keys);
-        let ns = self.new_session(&s, client)?;
+        self.right_noted(&keys[1], now);
         let details = if setup_only { "only to set up two-step sign-in" } else { "" };
         self.record(Some(&s.name), Some(client), "sign-in", details)?;
         Ok(SignIn::Done(Box::new(ns)))
+    }
+
+    /// A sign-in whose password was right when checked but has been changed since: no session, the answer a wrong
+    /// password gets.
+    fn password_changed_meanwhile(&self, s: &Summary, client: &Client) -> Error {
+        if let Err(e) = self.record(Some(&s.name), Some(client), "sign-in-failed", "the password changed meanwhile") {
+            return e;
+        }
+        Error::WrongCredentials
     }
 
     /// For an account without two-step sign-in: refused when the rules require it here, else whether only its setup
@@ -713,31 +877,39 @@ impl Accounts {
         Ok(p.everyone)
     }
 
-    fn start_pending(&self, s: &Summary) -> Result<(Zeroizing<String>, u64)> {
+    /// A sign-in waiting for its code, made under the account's lock only while its password hash is still the one
+    /// checked (`None`: it changed meanwhile). A password change takes that lock to write the new hash and drops
+    /// the waiting sign-ins after: one made before is dropped, one after sees the new hash.
+    fn start_pending(&self, s: &Summary, checked: Stamp) -> Result<Option<(Zeroizing<String>, u64)>> {
         let raw = random::<32>()?;
         let token = Zeroizing::new(format!("smp_{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(*raw)));
         let h = pending_hash(&token).ok_or_else(|| error::corrupt("a new code token has the wrong shape"))?;
         let now = self.now();
         let until_ms = now + PENDING_MS;
-        let mut p = lock(&self.pending);
-        if p.len() >= MAX_PENDING {
-            p.retain(|_, v| v.until_ms > now);
-        }
-        if p.len() >= MAX_PENDING
-            && let Some(oldest) = p.iter().min_by_key(|(_, v)| v.until_ms).map(|(k, _)| *k)
-        {
-            p.remove(&oldest);
-        }
-        p.insert(h, Pending { account: s.id, key: s.key.clone(), until_ms, tries: 0 });
-        Ok((token, until_ms))
+        self.with_account(s.id, |l| {
+            if stamp(&l.secrets.password) != checked {
+                return Ok(None);
+            }
+            let mut p = lock(&self.pending);
+            if p.len() >= MAX_PENDING {
+                p.retain(|_, v| v.until_ms > now);
+            }
+            if p.len() >= MAX_PENDING
+                && let Some(oldest) = p.iter().min_by_key(|(_, v)| v.until_ms).map(|(k, _)| *k)
+            {
+                p.remove(&oldest);
+            }
+            p.insert(h, Pending { account: s.id, key: s.key.clone(), until_ms, tries: 0, stamp: checked });
+            Ok(Some((token, until_ms)))
+        })
     }
 
     /// The second step: the authenticator code (or a recovery code) for a sign-in whose password was right.
     pub fn finish_sign_in(&self, pending: &str, code: &str, client: &Client) -> Result<NewSession> {
         let now = self.now();
         let h = pending_hash(pending).ok_or(Error::SignInExpired)?;
-        let (account, key) = match lock(&self.pending).get(&h) {
-            Some(p) if p.until_ms > now => (p.account, p.key.clone()),
+        let (account, key, checked) = match lock(&self.pending).get(&h) {
+            Some(p) if p.until_ms > now => (p.account, p.key.clone(), p.stamp),
             _ => return Err(Error::SignInExpired),
         };
         let keys = self.code_keys(&key, client);
@@ -747,7 +919,11 @@ impl Accounts {
             Some(used) => {
                 lock(&self.pending).remove(&h);
                 self.throttle.success(&keys);
-                let ns = self.new_session(&s, client)?;
+                // the password that let it this far may have changed since
+                let Some(ns) = self.new_session_checked(&s, client, checked)? else {
+                    self.record(Some(&s.name), Some(client), "sign-in-failed", "the password changed meanwhile")?;
+                    return Err(Error::SignInExpired);
+                };
                 let how = match used {
                     CodeUsed::Totp => "with a two-step code".to_string(),
                     CodeUsed::Recovery { left } => format!("with a recovery code ({left} left)"),
@@ -814,9 +990,27 @@ impl Accounts {
     }
 
     fn new_session(&self, s: &Summary, client: &Client) -> Result<NewSession> {
-        let (token, _, session) = self.sessions.create(s.id, client.address, &client.device, self.now())?;
+        self.new_session_at(s, client, self.now())
+    }
+
+    fn new_session_at(&self, s: &Summary, client: &Client, now: u64) -> Result<NewSession> {
+        let (token, _, session) = self.sessions.create(s.id, client.address, &client.device, now)?;
         let csrf = csrf_token(&token);
         Ok(NewSession { token, csrf, session, account: s.view() })
+    }
+
+    /// A session for a sign-in whose password was checked against `checked`, made under the account's lock only
+    /// while that is still its hash (`None`: the password changed meanwhile). A password change writes the new hash
+    /// under that lock and ends the account's sessions after it, so a session is either made before (and ended) or
+    /// refused: none made with the old password outlives the change.
+    fn new_session_checked(&self, s: &Summary, client: &Client, checked: Stamp) -> Result<Option<NewSession>> {
+        let now = self.now();
+        self.with_account(s.id, |l| {
+            if stamp(&l.secrets.password) != checked {
+                return Ok(None);
+            }
+            self.new_session_at(s, client, now).map(Some)
+        })
     }
 
     /// The signed-in account of a request's cookie token. Notes the session as used (written in batches), ends it
@@ -896,47 +1090,54 @@ impl Accounts {
 
     // ---- asking for the password again
 
-    /// Checks the acting account's own password again (throttled like a sign-in); with `admin`, it must be an admin
-    /// whose two-step setup isn't pending.
-    fn confirm_actor(&self, by: &SignedIn, password: &str, admin: bool) -> Result<Summary> {
+    /// Checks the acting account's own password again (throttled like a sign-in), and its two-step code when that
+    /// is on (used up; once per request, see [`CodeOnce`]); with `admin`, it must be an admin whose two-step setup
+    /// isn't pending.
+    fn confirm_actor(&self, by: &SignedIn, confirm: Confirm<'_>, admin: bool) -> Result<Summary> {
         let s = self.summary(by.account.id).ok_or(Error::NotSignedIn)?;
         if admin && (s.role != Role::Admin || by.two_step_setup_only) {
             return Err(Error::NotAllowed);
         }
         let keys = self.keys(&s.key, &by.client);
         self.throttle.check(&keys, self.now())?;
+        // one at a time per account (no limit per minute: an admin's script may make many accounts)
+        let one = self.one_at_a_time(&keys[1])?;
         let pass = self.hasher.gate.enter()?;
         self.throttle.begin(&keys, self.now())?;
-        let phc = self.with_account(s.id, |l| Ok(Zeroizing::new(l.secrets.password.clone())))?;
-        let ok = self.hasher.verify(&phc, password);
+        let (phc, two_step) =
+            self.with_account(s.id, |l| Ok((Zeroizing::new(l.secrets.password.clone()), l.secrets.totp.is_some())))?;
+        let ok = self.hasher.verify(&phc, confirm.password);
         drop(pass);
+        drop(one);
         if !ok {
             self.record(Some(&s.name), Some(&by.client), "confirm-failed", "wrong password given again")?;
             return Err(Error::WrongPassword);
         }
         self.throttle.success(&keys);
+        let given = confirm.once.is_some_and(|o| o.0.load(Ordering::SeqCst));
+        if (two_step || s.two_step) && !given {
+            let keys = self.code_keys(&s.key, &by.client);
+            self.throttle.begin(&keys, self.now())?;
+            let used = match confirm.code {
+                Some(c) => self.use_code(&s, c, self.now())?,
+                None => None,
+            };
+            if used.is_none() {
+                self.record(Some(&s.name), Some(&by.client), "confirm-failed", "wrong two-step code")?;
+                return Err(Error::WrongCode);
+            }
+            self.throttle.success(&keys);
+            if let Some(o) = confirm.once {
+                o.0.store(true, Ordering::SeqCst);
+            }
+        }
         Ok(s)
     }
 
     /// Asks for the password again (and the two-step code, when it is on) before something sensitive elsewhere
     /// (the vault's recovery key, interfaces for everyone).
     pub fn confirm(&self, by: &SignedIn, password: &str, code: Option<&str>) -> Result<()> {
-        let s = self.confirm_actor(by, password, false)?;
-        if !s.two_step {
-            return Ok(());
-        }
-        let keys = self.code_keys(&s.key, &by.client);
-        self.throttle.begin(&keys, self.now())?;
-        let used = match code {
-            Some(c) => self.use_code(&s, c, self.now())?,
-            None => None,
-        };
-        if used.is_none() {
-            self.record(Some(&s.name), Some(&by.client), "confirm-failed", "wrong two-step code")?;
-            return Err(Error::WrongCode);
-        }
-        self.throttle.success(&keys);
-        Ok(())
+        self.confirm_actor(by, Confirm::new(password, code), false).map(|_| ())
     }
 
     // ---- accounts
@@ -961,8 +1162,13 @@ impl Accounts {
     }
 
     /// Adds an account (admins; their password again).
-    pub fn create_account(&self, by: &SignedIn, password: &str, new: NewAccount<'_>) -> Result<AccountView> {
-        let actor = self.confirm_actor(by, password, true)?;
+    pub fn create_account<'a>(
+        &self,
+        by: &SignedIn,
+        confirm: impl Into<Confirm<'a>>,
+        new: NewAccount<'_>,
+    ) -> Result<AccountView> {
+        let actor = self.confirm_actor(by, confirm.into(), true)?;
         let name = valid_name(new.name)?;
         check_password(&name, new.password)?;
         if self.index().by_key.contains_key(&name_key(&name)) {
@@ -979,8 +1185,8 @@ impl Accounts {
     }
 
     /// Removes an account and signs it out everywhere (admins; their password again). Never the last admin.
-    pub fn remove_account(&self, by: &SignedIn, password: &str, target: AccountId) -> Result<()> {
-        let actor = self.confirm_actor(by, password, true)?;
+    pub fn remove_account<'a>(&self, by: &SignedIn, confirm: impl Into<Confirm<'a>>, target: AccountId) -> Result<()> {
+        let actor = self.confirm_actor(by, confirm.into(), true)?;
         let slot = self.slot(target);
         let mut st = lock(&slot.state);
         let mut idx = self.index_mut();
@@ -1001,8 +1207,14 @@ impl Accounts {
     }
 
     /// Changes an account's role (admins; their password again). Never demotes the last admin.
-    pub fn set_role(&self, by: &SignedIn, password: &str, target: AccountId, role: Role) -> Result<()> {
-        let actor = self.confirm_actor(by, password, true)?;
+    pub fn set_role<'a>(
+        &self,
+        by: &SignedIn,
+        confirm: impl Into<Confirm<'a>>,
+        target: AccountId,
+        role: Role,
+    ) -> Result<()> {
+        let actor = self.confirm_actor(by, confirm.into(), true)?;
         let mut idx = self.index_mut();
         let mut s = idx.by_id.get(&target).cloned().ok_or(Error::NoSuchAccount)?;
         if s.role == role {
@@ -1020,9 +1232,15 @@ impl Accounts {
 
     /// Sets a new password: one's own (with the current password), or anyone's for an admin (with the admin's own).
     /// The account's other sessions are signed out; returns how many.
-    pub fn set_password(&self, by: &SignedIn, password: &str, target: AccountId, new_password: &str) -> Result<usize> {
+    pub fn set_password<'a>(
+        &self,
+        by: &SignedIn,
+        confirm: impl Into<Confirm<'a>>,
+        target: AccountId,
+        new_password: &str,
+    ) -> Result<usize> {
         let own = target == by.account.id;
-        let actor = self.confirm_actor(by, password, !own)?;
+        let actor = self.confirm_actor(by, confirm.into(), !own)?;
         let s = self.summary(target).ok_or(Error::NoSuchAccount)?;
         check_password(&s.name, new_password)?;
         let phc = {
@@ -1045,23 +1263,29 @@ impl Accounts {
     }
 
     /// Limits an account to some cars (`None`: all cars) (admins; their password again).
-    pub fn set_cars(&self, by: &SignedIn, password: &str, target: AccountId, cars: Option<Vec<CarId>>) -> Result<()> {
-        let actor = self.confirm_actor(by, password, true)?;
+    pub fn set_cars<'a>(
+        &self,
+        by: &SignedIn,
+        confirm: impl Into<Confirm<'a>>,
+        target: AccountId,
+        cars: Option<Vec<CarId>>,
+    ) -> Result<()> {
+        let actor = self.confirm_actor(by, confirm.into(), true)?;
         let access = CarAccess::from_list(cars);
         self.change_cars(&actor, by, target, |_| Ok(access))
     }
 
     /// Adds and removes cars from an account's list (admins; their password again), without sending the whole list.
     /// An account that sees all cars gets a list with [`Accounts::set_cars`] first.
-    pub fn update_cars(
+    pub fn update_cars<'a>(
         &self,
         by: &SignedIn,
-        password: &str,
+        confirm: impl Into<Confirm<'a>>,
         target: AccountId,
         add: &[CarId],
         remove: &[CarId],
     ) -> Result<()> {
-        let actor = self.confirm_actor(by, password, true)?;
+        let actor = self.confirm_actor(by, confirm.into(), true)?;
         self.change_cars(&actor, by, target, |cars| match cars {
             CarAccess::All => Err(Error::BadInput("This account sees every car: give it a list of cars first.")),
             CarAccess::Only(set) => {
@@ -1142,7 +1366,7 @@ impl Accounts {
     /// Turns two-step sign-in on with the first code from the app (and the password again); returns the recovery
     /// codes, shown once.
     pub fn confirm_two_step(&self, by: &SignedIn, password: &str, code: &str) -> Result<RecoveryCodes> {
-        let s = self.confirm_actor(by, password, false)?;
+        let s = self.confirm_actor(by, password.into(), false)?;
         if s.two_step {
             return Err(Error::TwoStepOn);
         }
@@ -1189,9 +1413,14 @@ impl Accounts {
 
     /// Turns two-step sign-in off: one's own (password again), or anyone's for an admin (e.g. a lost phone). One's
     /// own stays on while the rules require it.
-    pub fn disable_two_step(&self, by: &SignedIn, password: &str, target: AccountId) -> Result<()> {
+    pub fn disable_two_step<'a>(
+        &self,
+        by: &SignedIn,
+        confirm: impl Into<Confirm<'a>>,
+        target: AccountId,
+    ) -> Result<()> {
         let own = target == by.account.id;
-        let actor = self.confirm_actor(by, password, !own)?;
+        let actor = self.confirm_actor(by, confirm.into(), !own)?;
         let s = self.summary(target).ok_or(Error::NoSuchAccount)?;
         if !s.two_step {
             return Err(Error::TwoStepOff);
@@ -1214,8 +1443,8 @@ impl Accounts {
     }
 
     /// New recovery codes for one's own account (the old ones stop working), shown once.
-    pub fn new_recovery_codes(&self, by: &SignedIn, password: &str) -> Result<RecoveryCodes> {
-        let s = self.confirm_actor(by, password, false)?;
+    pub fn new_recovery_codes<'a>(&self, by: &SignedIn, confirm: impl Into<Confirm<'a>>) -> Result<RecoveryCodes> {
+        let s = self.confirm_actor(by, confirm.into(), false)?;
         if !s.two_step {
             return Err(Error::TwoStepOff);
         }
@@ -1241,8 +1470,13 @@ impl Accounts {
 
     /// Changes when two-step sign-in is required (admins; their password again). The acting admin needs it on
     /// first, so the rule can't lock them out.
-    pub fn set_two_step_policy(&self, by: &SignedIn, password: &str, policy: TwoStepPolicy) -> Result<()> {
-        let actor = self.confirm_actor(by, password, true)?;
+    pub fn set_two_step_policy<'a>(
+        &self,
+        by: &SignedIn,
+        confirm: impl Into<Confirm<'a>>,
+        policy: TwoStepPolicy,
+    ) -> Result<()> {
+        let actor = self.confirm_actor(by, confirm.into(), true)?;
         if !actor.two_step && (policy.everyone || (policy.outside && !by.client.local)) {
             return Err(Error::TwoStepFirst);
         }
@@ -1266,6 +1500,7 @@ impl Accounts {
         self.sessions.sweep(now);
         self.throttle.sweep(now);
         lock(&self.pending).retain(|_, p| p.until_ms > now);
+        lock(&self.right).retain(|_, (minute, _)| *minute == now / 60_000);
         Ok(())
     }
 

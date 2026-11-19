@@ -54,6 +54,24 @@
   it once the new server runs.
 - A move or an import goes only into a new server: empty data and keys folders, or only what a first start made
   there. A key file that opens other data is never replaced.
+- **Signing in to the web UI.** Passwords are argon2id hashes; failed tries wait longer each time, per address and
+  per account (home and outside counted apart); right passwords too are limited (20 sign-ins a minute per account,
+  one check at a time per account), so a loop of sign-ins can't keep the few password checks busy for everyone else.
+  A password change signs out every other session, even a sign-in that was still being checked with the old
+  password at that moment. With the "two-step from outside" rule, a right password of an account without two-step
+  sign-in gets, from outside, the answer a wrong one gets, so the internet can't learn that a guess was right.
+- **Changes ask again.** Every account and two-step change (a new account, a role, a password, a car list, turning
+  someone's two-step sign-in off, new recovery codes, the two-step rule) asks for the acting account's password and,
+  when it has two-step sign-in on, a code from the app or a recovery code: a browser left open plus a known password
+  isn't enough. When the rule changes, open live streams of accounts it cuts off end at once.
+- **What counts as the home network** is decided from the connection's address: loopback, the private ranges and
+  link-local. Behind Docker's published ports that address is only right for IPv4: a connection to the host's
+  **IPv6** address on a network without IPv6 (the compose file's default) is passed on by Docker's proxy from the
+  bridge's gateway (for example `172.18.0.1`), so every IPv6 visitor from the internet looks like the home network,
+  the "two-step from outside" rule doesn't hold for them, and their failed tries share one address. If the host has a
+  public IPv6 address, don't open the ports to it in the firewall, or turn IPv6 on for the compose network
+  (`enable_ipv6: true` with an IPv6 subnet) so the real address arrives. The same goes for a reverse proxy on the
+  same host: it is the address the server sees.
 - Sealing the key file to the host's TPM is optional, later.
 
 ## No way back without a backup

@@ -92,7 +92,8 @@ code is JavaScript, so nothing is copied; only the rules and the API, which SMO 
   Now and the MQTT topics are per car.
 - **People**: roles as in Sentry Manager: **Admin** (everything) and **Watch only** (sees drives,
   charges, maps, stats, exports; can't change settings, trust, tokens or delete; can't read logs). At
-  least one admin always; adding or changing an account asks for the password again. Two-step sign-in
+  least one admin always; adding or changing an account asks for the password again (and the two-step
+  code when the acting account has it on). Two-step sign-in
   (authenticator app) per account, and an option to require it from outside the home network. New
   here: an account can be limited to some cars (e.g. a family member sees only their car).
 - **Places and prices**: saved places with their own radius (50 m to 2 km, default 200 m), suggestions

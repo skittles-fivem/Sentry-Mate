@@ -10,7 +10,8 @@
 //! - When an admin changes an account's car list ([`Event::AccountCars`]), that account's streams get `fleet`
 //!   `added` / `removed` per car (or one `list_changed` with `car: null` when more than 100 changed, or when the
 //!   list was or becomes "every car"), then a `prefs` event.
-//! - A stream ends when its session ends (checked at once on [`Event::SessionsEnded`] and with every keep-alive),
+//! - A stream ends when its session ends, or when the two-step rules limit its account to setting up two-step
+//!   sign-in (checked at once on [`Event::SessionsEnded`] and [`Event::PolicyChanged`], and with every keep-alive),
 //!   and when it falls [`LAG_LIMIT`] events behind (it would miss a delta): the browser reconnects and loads again.
 
 use crate::ctx::Viewer;
@@ -64,8 +65,12 @@ pub enum Event {
     DefaultsChanged,
     /// An admin changed this account's car list (or role).
     AccountCars { account: AccountId },
-    /// Sessions of this account ended (signed out, revoked, password changed, account removed).
+    /// Sessions of this account ended (signed out, revoked, password changed, account removed), or its two-step
+    /// sign-in was turned off: its streams check their session again.
     SessionsEnded { account: AccountId },
+    /// The two-step rules changed: every stream checks its session again (one that is now limited to setting up
+    /// two-step sign-in, or not let in from where it is, ends).
+    PolicyChanged,
 }
 
 /// The broadcast of [`Event`]s (cheap to clone; every clone publishes into the same streams).
@@ -153,12 +158,16 @@ impl St {
         Some(frame("prefs", self.next_id(), &prefs))
     }
 
-    /// Signs the stream's session in again: `None` when it ended. Takes in the account's role and cars as now.
+    /// Signs the stream's session in again: `None` when it ended, or when it may now only set up two-step sign-in
+    /// (no car is shown to it then; the page reconnects and is told so). Takes in the account's role and cars as now.
     async fn recheck(&mut self) -> Option<CarAccess> {
         let token = zeroize::Zeroizing::new(self.v.token().to_string());
         let client = self.v.client().clone();
         let signed = self.app.blocking(move |app| Ok(app.accounts.authenticate(&token, &client).ok())).await.ok()??;
-        self.admin = signed.account.role == accounts::Role::Admin && !signed.two_step_setup_only;
+        if signed.two_step_setup_only {
+            return None;
+        }
+        self.admin = signed.account.role == accounts::Role::Admin;
         Some(signed.cars)
     }
 
@@ -208,6 +217,16 @@ impl St {
                 out.extend(self.prefs_frame().await);
                 out
             }
+            Event::PolicyChanged => match self.recheck().await {
+                Some(next) => {
+                    if next != self.access {
+                        self.whole_sent.clear();
+                    }
+                    self.access = next;
+                    vec![]
+                }
+                None => return Err(()),
+            },
             Event::SessionsEnded { account } if *account == me => match self.recheck().await {
                 Some(next) => {
                     self.access = next;

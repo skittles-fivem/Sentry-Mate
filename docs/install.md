@@ -669,6 +669,12 @@ app, change the line marked `CHANGE` to the new path, and *Save*. Check
   the server, or let the Screenmate reach home through a VPN. The port speaks
   only TLS 1.3, takes uploads only with a token in use, and slows down wrong
   tokens.
+- The web UI tells the home network from outside by the connection's
+  address. On a server with a public IPv6 address, Docker passes a connection
+  to that address on from its own bridge address (172.x.0.1), which looks like
+  the home network: the "two-step sign-in from outside" rule then doesn't hold
+  for visitors over IPv6. Keep 9100 closed to IPv6 from the internet, or turn
+  IPv6 on for the compose network ([security](security.md#security)).
 
 ## Settings
 

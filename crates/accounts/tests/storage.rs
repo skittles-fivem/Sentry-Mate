@@ -19,7 +19,7 @@ fn nothing_readable_is_kept_on_disk() {
         role: Role::WatchOnly,
         cars: Some((1000..1100).collect()),
     };
-    env.acc.create_account(&owner, OWNER_PASSWORD, n).unwrap();
+    env.acc.create_account(&owner, accounts::Confirm::new(OWNER_PASSWORD, Some(&codes[1])), n).unwrap();
     let (gran, _) = env.sign_in("grandmother", "knitting needles 1952", "192.168.1.66");
     env.acc.set_ui_pack(&owner, Some("plain-pack-x")).unwrap();
     env.acc.maintain().unwrap();

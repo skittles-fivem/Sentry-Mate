@@ -9,8 +9,11 @@
 //! | `DELETE /session` | signs this browser out |
 //! | `GET /me` | `{ id, name, role, cars, two_step, two_step_required, two_step_setup_only }` |
 //! | `GET`/`DELETE /me/sessions[/{session}]` | the account's signed-in browsers; `DELETE /me/sessions` ends every other one |
-//! | `PUT /me/password` | `{ password, new_password }`: the other sessions end |
+//! | `PUT /me/password` | `{ password, new_password, code }`: the other sessions end |
 //! | `GET`/`POST`/`DELETE /me/two-step`, `POST /me/two-step/confirm`, `POST /me/two-step/recovery-codes` | two-step sign-in |
+//!
+//! With two-step sign-in on, `PUT /me/password`, `DELETE /me/two-step` and `POST /me/two-step/recovery-codes` need
+//! a `code` (from the app, or a recovery code) as well as the password: without it or wrong `401 wrong_code`.
 //!
 //! The sign-in answers never say whether an account exists; tries are throttled by the accounts crate (per name and
 //! per address, home and outside counted apart). Every step is in the audit log (the accounts crate records it).
@@ -19,7 +22,7 @@ use crate::ctx::{JsonBody, Viewer, cars_json};
 use crate::error::{ApiError, ApiResult};
 use crate::events::Event;
 use crate::{AppState, Conn, ids};
-use accounts::{AccountView, CarAccess, Client, NewSession, Role, SignIn};
+use accounts::{AccountView, CarAccess, Client, Confirm, NewSession, Role, SignIn};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -215,15 +218,18 @@ async fn end_session(State(app): State<AppState>, v: Viewer, Path(id): Path<Stri
 }
 
 async fn change_password(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiResult<Json<Value>> {
-    body.only(&["password", "new_password"])?;
+    body.only(&["password", "new_password", "code"])?;
     let (old, new) = (body.req_str("password")?.to_string(), body.req_str("new_password")?.to_string());
+    let code = body.str("code")?.map(str::to_string);
     v.mark_audited();
     let v2 = v.clone();
     let n = app
         .blocking(move |app| {
-            app.accounts.set_password(v2.signed_in(), &old, v2.id(), &new).map_err(|e| match e {
-                accounts::Error::WeakPassword(why) => ApiError::invalid("new_password", why),
-                e => e.into(),
+            app.accounts.set_password(v2.signed_in(), Confirm::new(&old, code.as_deref()), v2.id(), &new).map_err(|e| {
+                match e {
+                    accounts::Error::WeakPassword(why) => ApiError::invalid("new_password", why),
+                    e => e.into(),
+                }
             })
         })
         .await?;
@@ -265,19 +271,28 @@ async fn two_step_confirm(State(app): State<AppState>, v: Viewer, body: JsonBody
 }
 
 async fn two_step_off(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiResult<Json<Value>> {
-    body.only(&["password"])?;
+    body.only(&["password", "code"])?;
     let password = body.req_str("password")?.to_string();
+    let code = body.str("code")?.map(str::to_string);
     v.mark_audited();
     let v2 = v.clone();
-    app.blocking(move |app| Ok(app.accounts.disable_two_step(v2.signed_in(), &password, v2.id())?)).await?;
+    app.blocking(move |app| {
+        Ok(app.accounts.disable_two_step(v2.signed_in(), Confirm::new(&password, code.as_deref()), v2.id())?)
+    })
+    .await?;
     Ok(Json(json!({ "enabled": false })))
 }
 
 async fn new_recovery_codes(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiResult<Json<Value>> {
-    body.only(&["password"])?;
+    body.only(&["password", "code"])?;
     let password = body.req_str("password")?.to_string();
+    let code = body.str("code")?.map(str::to_string);
     v.mark_audited();
     let v2 = v.clone();
-    let codes = app.blocking(move |app| Ok(app.accounts.new_recovery_codes(v2.signed_in(), &password)?)).await?;
+    let codes = app
+        .blocking(move |app| {
+            Ok(app.accounts.new_recovery_codes(v2.signed_in(), Confirm::new(&password, code.as_deref()))?)
+        })
+        .await?;
     Ok(Json(json!({ "recovery_codes": codes.as_slice() })))
 }

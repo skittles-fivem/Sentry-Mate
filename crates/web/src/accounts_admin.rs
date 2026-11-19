@@ -12,7 +12,9 @@
 //!
 //! An account is `{ id, name, role, cars, two_step, two_step_required, created_ms, version }`. Every change to an
 //! account asks for the acting admin's own password again (`confirm_password` in the body, or the
-//! `X-Sentry-Mate-Password` header): without it `403 password_needed`, a wrong one `403 wrong_password`. Account
+//! `X-Sentry-Mate-Password` header): without it `403 password_needed`, a wrong one `403 wrong_password`. When the
+//! acting admin has two-step sign-in on, a code from the app or a recovery code too (`code`, or the
+//! `X-Sentry-Mate-Code` header; used up, one per request): without it or wrong `401 wrong_code`. Account
 //! names can't be changed (remove the account and add it again). Two-step sign-in is required for everyone or from
 //! outside the home network ([`/two-step-policy`]), not per account: `two_step_required: true` on one account is
 //! `422`.
@@ -22,7 +24,7 @@ use crate::ctx::{Admin, JsonBody, cars_json, split_details};
 use crate::error::{ApiError, ApiResult, Fields};
 use crate::events::Event;
 use crate::{AppState, Params, ids};
-use accounts::{AccountId, AccountView, CarAccess, NewAccount, TwoStepPolicy};
+use accounts::{AccountId, AccountView, CarAccess, CodeOnce, Confirm, NewAccount, TwoStepPolicy};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -172,6 +174,7 @@ async fn create(
 ) -> ApiResult<Response> {
     body.only(&["name", "password", "role", "cars", "two_step_required", "confirm_password", "code"])?;
     let confirm = confirm_password(Some(&body), &headers)?;
+    let code = confirm_code(Some(&body), &headers)?;
     let name = body.req_str("name")?.to_string();
     let password = body.req_str("password")?.to_string();
     let role = body.req_str("role")?;
@@ -188,7 +191,7 @@ async fn create(
     let out = app
         .blocking(move |app| {
             let new = NewAccount { name: &name, password: &password, role, cars };
-            let a = app.accounts.create_account(v2.signed_in(), &confirm, new)?;
+            let a = app.accounts.create_account(v2.signed_in(), Confirm::new(&confirm, code.as_deref()), new)?;
             let cars = app.accounts.car_access(a.id)?;
             Ok(account_json(app, &a, &cars))
         })
@@ -220,6 +223,7 @@ async fn patch(
     f.invalid()?;
     // asked for only when something really changes (a page may send the unchanged role and cars along)
     let confirm = confirm_password(Some(&body), &headers);
+    let code = confirm_code(Some(&body), &headers)?;
     v.mark_audited();
     let v2 = v.clone();
     let (out, cars_changed, password_changed) = app
@@ -238,21 +242,24 @@ async fn patch(
                 || cars.as_ref().is_some_and(|c| CarAccess::from_list(c.clone()) != now_cars)
                 || password.is_some();
             let confirm = if changes { confirm? } else { Zeroizing::new(String::new()) };
+            // the code is used up by the first change; the others in this request ask for the password only
+            let once = CodeOnce::default();
+            let confirm = Confirm::in_request(&confirm, code.as_deref(), &once);
             let mut cars_changed = false;
             if let Some(r) = role
                 && r != a.role
             {
-                app.accounts.set_role(v2.signed_in(), &confirm, id, r)?;
+                app.accounts.set_role(v2.signed_in(), confirm, id, r)?;
                 cars_changed = true;
             }
             if let Some(c) = cars
                 && CarAccess::from_list(c.clone()) != now_cars
             {
-                app.accounts.set_cars(v2.signed_in(), &confirm, id, c)?;
+                app.accounts.set_cars(v2.signed_in(), confirm, id, c)?;
                 cars_changed = true;
             }
             if let Some(p) = &password {
-                app.accounts.set_password(v2.signed_in(), &confirm, id, p).map_err(|e| match e {
+                app.accounts.set_password(v2.signed_in(), confirm, id, p).map_err(|e| match e {
                     accounts::Error::WeakPassword(why) => ApiError::invalid("password", why),
                     e => e.into(),
                 })?;
@@ -280,10 +287,11 @@ async fn remove(
     let id = account_id(&id)?;
     body.only(&["confirm_password", "code", "version"])?;
     let confirm = confirm_password(Some(&body), &headers)?;
+    let code = confirm_code(Some(&body), &headers)?;
     v.mark_audited();
     let v2 = v.clone();
     app.blocking(move |app| {
-        app.accounts.remove_account(v2.signed_in(), &confirm, id)?;
+        app.accounts.remove_account(v2.signed_in(), Confirm::new(&confirm, code.as_deref()), id)?;
         app.prefs.remove(id)
     })
     .await?;
@@ -301,14 +309,19 @@ async fn two_step_off(
     let id = account_id(&id)?;
     body.only(&["confirm_password", "code"])?;
     let confirm = confirm_password(Some(&body), &headers)?;
+    let code = confirm_code(Some(&body), &headers)?;
     v.mark_audited();
     let v2 = v.clone();
-    app.blocking(move |app| {
-        app.accounts.disable_two_step(v2.signed_in(), &confirm, id)?;
-        let (a, cars) = load(app, id)?;
-        Ok(Json(account_json(app, &a, &cars)))
-    })
-    .await
+    let out = app
+        .blocking(move |app| {
+            app.accounts.disable_two_step(v2.signed_in(), Confirm::new(&confirm, code.as_deref()), id)?;
+            let (a, cars) = load(app, id)?;
+            Ok(Json(account_json(app, &a, &cars)))
+        })
+        .await?;
+    // its open streams check again whether the two-step rules still let it in
+    app.events.publish(Event::SessionsEnded { account: id });
+    Ok(out)
 }
 
 async fn get_policy(State(app): State<AppState>, Admin(_): Admin) -> Json<Value> {
@@ -329,9 +342,15 @@ async fn put_policy(
         outside: body.bool("outside")?.unwrap_or(now.outside),
     };
     let confirm = confirm_password(Some(&body), &headers)?;
+    let code = confirm_code(Some(&body), &headers)?;
     v.mark_audited();
     let v2 = v.clone();
-    app.blocking(move |app| Ok(app.accounts.set_two_step_policy(v2.signed_in(), &confirm, policy)?)).await?;
+    app.blocking(move |app| {
+        Ok(app.accounts.set_two_step_policy(v2.signed_in(), Confirm::new(&confirm, code.as_deref()), policy)?)
+    })
+    .await?;
+    // every open stream checks at once whether the new rule still lets its account in
+    app.events.publish(Event::PolicyChanged);
     Ok(Json(json!({ "everyone": policy.everyone, "outside": policy.outside })))
 }
 
