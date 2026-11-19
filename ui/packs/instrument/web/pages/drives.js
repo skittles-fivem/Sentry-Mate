@@ -13,6 +13,7 @@ import { format, toMetric, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, formatDayKey, isoWeek } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
+import { spotText } from '../core/fmt.js';
 import { pageHead, metric, tag, csvButton } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { emptyState } from '../core/states.js';
@@ -26,7 +27,7 @@ import { flash } from '../core/flash.js';
 export const id = 'drives';
 export const css = true;
 
-const placeLabel = (p) => p?.place?.name || p?.label || p?.address?.short || '—';
+const placeLabel = (p) => p?.place?.name || p?.label || p?.address?.short || spotText(p) || '—';
 const placeHref = (p) => (p?.place?.id ? state.buildUrl('places', { query: { place: p.place.id } })
   : p?.lat != null ? state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }) : null);
 const placeCell = (p, cover) => {

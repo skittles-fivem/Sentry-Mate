@@ -24,7 +24,7 @@ import { icon } from '../core/icons.js';
 import { pageHead, panel, metric, csvButton, tag } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { emptyState } from '../core/states.js';
-import { date, dateTime, time, dur, tzName, DASH } from '../core/fmt.js';
+import { date, dateTime, time, dur, tzName, DASH, spotText } from '../core/fmt.js';
 import { createMap, mapFallback, boundsOf, padClear } from '../core/map.js';
 import { openPeriodPicker } from '../core/period.js';
 import { placePopover } from '../core/popover.js';
@@ -130,7 +130,7 @@ export async function mount(ctx) {
   }
   if (!city) city = topCity();
   const cityRow = () => cities.items.find((c) => c.key === city) || null;
-  const cityName = (key) => { const c = cities.items.find((x) => x.key === key); return c ? c.label : (key || '').split('/').pop(); };
+  const cityName = (key) => { const c = cities.items.find((x) => x.key === key); const last = (key || '').split('/').pop(); return (c ? c.label || c.locality : null) || (last && last !== '-' ? last : null) || 'no known town'; };
   const citiesPer = new Map();
   for (const c of cities.items) citiesPer.set(c.country_code || '-', (citiesPer.get(c.country_code || '-') || 0) + 1);
 
@@ -467,7 +467,7 @@ export async function mount(ctx) {
         render: (r) => h('span', { class: 'cell-text' }, h('span', { class: 'main' }, dur((r.left_ms ?? ctx.api.now()) - r.arrived_ms)), r.unknown_ms ? h('span', { class: 'sub warn' }, `${dur(r.unknown_ms)} unknown`) : null),
         csv: column('Time there (h)', (r) => Math.round(((r.left_ms ?? ctx.api.now()) - r.arrived_ms) / 36e3) / 100) },
       { key: 'label', label: 'Place', cover: 'locations.last_visited.address',
-        render: (r) => h('span', { class: 'cell-text' }, h('a', { class: 'main', href: placeHref(r), title: r.place ? 'Open this saved place' : 'Save this spot as a place' }, r.label || r.address?.short || DASH),
+        render: (r) => h('span', { class: 'cell-text' }, h('a', { class: 'main', href: placeHref(r), title: r.place ? 'Open this saved place' : 'Save this spot as a place' }, r.label || r.address?.short || spotText(r) || DASH),
           r.place && r.address?.short ? h('span', { class: 'sub' }, r.address.short) : null), csv: (r) => r.label },
       { key: 'city', label: 'City', cover: 'locations.last_visited.city', render: (r) => r.address?.locality || DASH, csv: (r) => r.address?.locality },
       ...(multi ? [{ key: 'car', label: 'Car', render: (r) => carName(r.car), csv: (r) => carName(r.car) }] : []),
@@ -480,7 +480,7 @@ export async function mount(ctx) {
   /* ---------- places visited */
   const placeCell = (r) => h('span', { class: 'cell-text' },
     r.place ? h('a', { class: 'main', href: state.buildUrl('places', { query: { place: r.place.id } }), cover: 'locations.link.edit_geofence', title: 'Open this saved place in the place editor' }, r.place.name)
-      : h('span', { class: 'main' }, r.label || DASH),
+      : h('span', { class: 'main' }, r.label || spotText(r) || DASH),
     r.place ? h('span', { class: 'sub' }, [r.street, r.neighbourhood].filter(Boolean).join(', '))
       : h('a', { class: 'sub', href: state.buildUrl('places', { query: { lat: r.lat.toFixed(5), lon: r.lon.toFixed(5), new: 1 } }), cover: 'locations.link.new_geofence', title: 'Make a saved place at this spot' }, icon('plus', 'ico--sm'), 'Save as a place'));
   const placesTable = dataTable(ctx, {
@@ -523,7 +523,7 @@ export async function mount(ctx) {
   function hoverText(r) {
     const t = rowTz(r);
     replace(hoverCard,
-      h('div', { class: 'tv-hover-name' }, r.label || DASH),
+      h('div', { class: 'tv-hover-name' }, r.label || spotText(r) || DASH),
       h('div', { class: 'faint' }, [markMode === 'places' && r.locality, r.region, r.country].filter(Boolean).join(', ')),
       h('dl', { class: 'tv-hover-kv' },
         h('dt', null, 'Days'), h('dd', null, formatNumber(r.days)),

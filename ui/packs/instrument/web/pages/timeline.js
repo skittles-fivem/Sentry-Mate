@@ -16,7 +16,7 @@ import { activityStrip, KINDS as STRIP_KINDS } from '../core/strip.js';
 import { openCarSwitcher } from '../core/carswitch.js';
 import { openPeriodPicker } from '../core/period.js';
 import { emptyState, errorWords } from '../core/states.js';
-import { when, ago, statePill } from '../core/fmt.js';
+import { when, ago, statePill, spotText } from '../core/fmt.js';
 
 export const id = 'timeline';
 export const css = true;
@@ -40,7 +40,7 @@ const AWAKE_WORD = {
   door_open: 'a door open', accessory_power: 'accessory power',
 };
 
-const placeLabel = (p) => p?.place?.name || p?.label || (typeof p?.address === 'string' ? p.address : p?.address?.short) || null;
+const placeLabel = (p) => p?.place?.name || p?.label || (typeof p?.address === 'string' ? p.address : p?.address?.short) || spotText(p) || null;
 // the place editor for a point: an existing place opens for editing, else a new one starts there
 const placeHref = (p) => (p?.place?.id ? state.buildUrl('places', { query: { place: p.place.id } })
   : p?.lat != null ? state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }) : null);

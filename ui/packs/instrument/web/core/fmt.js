@@ -95,6 +95,12 @@ export function placeName(p) {
   if (typeof p === 'string') return p;
   return p.place?.name || p.label || (typeof p.address === 'string' ? p.address : p.address?.short) || null;
 }
+/** Where a point is when it has no place and no address (address lookup is off): its position, '0.3000, 0.2180'. */
+export function spotText(p) {
+  if (!p || typeof p !== 'object') return null;
+  const lat = p.lat ?? p.position?.lat, lon = p.lon ?? p.position?.lon;
+  return Number.isFinite(lat) && Number.isFinite(lon) ? `${lat.toFixed(4)}, ${lon.toFixed(4)}` : null;
+}
 /** The address line under a place name ('Sanchez St, Noe Valley'), or null when it would repeat the name. */
 export function placeDetail(p) {
   if (!p || typeof p !== 'object') return null;

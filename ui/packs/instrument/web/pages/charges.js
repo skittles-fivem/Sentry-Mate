@@ -14,6 +14,7 @@ import { format, formatMoney, formatMoneyList, unitLabel, rangeLabel } from '../
 import { formatTime, formatDate, formatDuration, buckets, bucketKey } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
+import { spotText } from '../core/fmt.js';
 import { pageHead, metric, csvButton } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { emptyState } from '../core/states.js';
@@ -41,7 +42,7 @@ const PLACE_KINDS = [['', 'Any kind of place'], ['home', 'Home'], ['work', 'Work
 const pxr = (u) => (u.width ? u.ctx.canvas.width / u.width : globalThis.devicePixelRatio || 1);
 const iso = (ms) => (ms == null ? '' : new Date(ms).toISOString());
 const pct = (v) => format(v, 'percent');
-const placeLabel = (c) => c?.place?.name || c?.label || c?.address?.short || '—';
+const placeLabel = (c) => c?.place?.name || c?.label || c?.address?.short || spotText(c) || '—';
 const placeHref = (c) => (c?.place?.id ? state.buildUrl('places', { query: { place: c.place.id } })
   : c?.position?.lat != null ? state.buildUrl('places', { query: { lat: c.position.lat.toFixed(5), lon: c.position.lon.toFixed(5), new: 1 } }) : null);
 // several currencies, one per line (never added together)

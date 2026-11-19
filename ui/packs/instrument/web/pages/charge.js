@@ -12,6 +12,7 @@ import { formatTime, formatDate, formatDuration, zoneName, dayRange, dayKey, DAY
 import { formatNumber } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import { icon } from '../core/icons.js';
+import { spotText } from '../core/fmt.js';
 import { pageHead, panel, metric, tag, csvButton, kv } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { field, form } from '../core/form.js';
@@ -41,7 +42,7 @@ const KIND_WORDS = { ac: 'AC charge', dc: 'Fast charge (DC)' };
 const FIELDS = ['power_kw', 'ac_line_kw', 'soc_pct', 'usable_soc_pct', 'range_km', 'battery_c', 'outside_c', 'heater_kw',
   'ac_volts_v', 'ac_amps_a', 'pilot_a', 'phases', 'limit_source', 'dc_volts_v', 'dc_amps_a', 'volts_v', 'amps_a'];
 
-const placeLabel = (c) => c.place?.name || c.address?.short || 'Unnamed spot';
+const placeLabel = (c) => c.place?.name || c.address?.short || spotText(c) || 'Unnamed spot';
 const placeHref = (c) => (c.place?.id ? state.buildUrl('places', { query: { place: c.place.id } })
   : c.position?.lat != null ? state.buildUrl('places', { query: { lat: c.position.lat.toFixed(5), lon: c.position.lon.toFixed(5), new: 1 } }) : null);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -172,7 +173,7 @@ export async function mount(ctx) {
     h('span', { class: 'eyebrow' }, c.place?.kind ? `${c.place.kind[0].toUpperCase()}${c.place.kind.slice(1)}` : 'Not a saved place'),
     h('b', null, pHref ? h('a', { href: pHref }, placeLabel(c)) : placeLabel(c)),
     c.address?.short && c.place ? h('span', null, c.address.short) : null,
-    h('span', { class: 'faint' }, c.position?.accuracy_m != null ? `GPS within ${format(c.position.accuracy_m, 'length')}` : 'No GPS fix'),
+    h('span', { class: 'faint' }, c.position?.accuracy_m != null ? `GPS within ${format(c.position.accuracy_m, 'length')}` : c.position?.lat != null ? spotText(c) : 'No GPS fix'),
     pHref ? h('a', { class: 'panel-link', href: pHref }, c.place ? 'Edit this place' : 'Save as a place', icon('chev-r', 'ico--sm')) : null);
   const mapPanel = h('section', { class: 'panel map-panel charge-map', 'aria-label': 'Where it charged', cover: ['cd.map.location', 'web.charge-cost.map'] },
     mapEl, h('div', { class: 'map-overlay map-overlay--tl' }, placeCard));

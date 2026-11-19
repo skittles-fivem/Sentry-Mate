@@ -13,6 +13,7 @@ import { formatTime, formatDate, formatDuration, formatDateRange, zoneName, dayK
 import { formatNumber } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import { icon } from '../core/icons.js';
+import { spotText } from '../core/fmt.js';
 import { pageHead, panel, metric, csvButton } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { emptyState } from '../core/states.js';
@@ -34,7 +35,7 @@ const enc = encodeURIComponent;
 const iso = (ms) => (ms == null ? '' : new Date(ms).toISOString());
 const pct = (v) => format(v, 'percent');
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const placeLabel = (p) => p?.place?.name || p?.label || p?.address?.short || '—';
+const placeLabel = (p) => p?.place?.name || p?.label || p?.address?.short || spotText(p) || '—';
 const pointHref = (p, lat, lon) => (p?.place?.id ? state.buildUrl('places', { query: { place: p.place.id } })
   : lat != null && lon != null ? state.buildUrl('places', { query: { lat: lat.toFixed(5), lon: lon.toFixed(5), new: 1 } }) : null);
 const COST_SOURCE = { tariff: 'place price', manual: 'typed by hand', free_supercharging: 'free Supercharging', teslamate: 'imported' };

@@ -14,13 +14,13 @@ import { pageHead, panel, metric, tag, csvButton } from '../core/page.js';
 import { createMap, routePin, boundsOf, padClear, mapFallback } from '../core/map.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA } from '../core/chart.js';
 import { rpx } from '../core/display.js';
-import { TYRES, val } from '../core/fmt.js';
+import { TYRES, val, spotText } from '../core/fmt.js';
 
 export const id = 'drive';
 export const css = true;
 export const title = () => 'Drive';
 
-const placeLabel = (p) => p?.place?.name || p?.label || p?.address?.short || '—';
+const placeLabel = (p) => p?.place?.name || p?.label || p?.address?.short || spotText(p) || '—';
 const placeHref = (p) => (p?.place?.id ? state.buildUrl('places', { query: { place: p.place.id } })
   : p?.lat != null ? state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }) : null);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));

@@ -4,7 +4,8 @@
 .tl-filters .field--search { width: 18rem; }
 .tl-summary { margin-bottom: var(--gap); }
 .tl-summary .figures { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-.metric-value--sm { font-size: 1.125rem; }
+@container page (max-width: 30rem) { .tl-summary .figures.figures { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.metric-value--sm { font-size: 1.125rem; white-space: normal; }
 .tl-rows { padding-bottom: 0.25rem; overflow: hidden; }
 .tl-rows .tbl-bar { border-bottom: 0; }
 .tl-legend-note { padding: 0 1.375rem 0.5rem; }

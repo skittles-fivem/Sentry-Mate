@@ -211,7 +211,7 @@ export async function mount(ctx) {
           h('div', { class: 'gauge-caption' }, `${ideal ? 'ideal' : 'rated'} range${n.stale ? ', last known' : ''}`))),
         h('div', { class: 'gauge-status' }, pills)),
       h('div', { class: 'gauge-stats' },
-        metric('Charge limit', limit, 'percent', { size: 'sm', cover: ['summary.stat.charge_limit', 'nr.dash.charge-limit'], why: 'Not plugged in' }),
+        metric('Charge limit', limit, 'percent', { size: 'sm', cover: ['summary.stat.charge_limit', 'nr.dash.charge-limit'], why: val(c.plugged) ? 'Not sent yet' : 'Not plugged in' }),
         metric('In the pack', val(n.energy_remaining_kwh), 'energy', { size: 'sm', explain: 'energy remaining' }),
         metric('Full charge', full, 'range', { size: 'sm', explain: 'range at 100 %' })),
       h('div', { class: 'gauge-est', cover: ['summary.stat.range_estimated', 'nr.dash.est-range'] },
@@ -223,8 +223,11 @@ export async function mount(ctx) {
   let map = null, marker = null, trailShown = false;
   function paintPlace() {
     const n = now, loc = n.location || {};
-    const placeName = loc.place?.name || loc.address?.short || (n.state === 'driving' ? 'On the road' : 'No position yet');
-    const detail = loc.place ? loc.address?.short : [loc.address?.locality, loc.address?.region].filter(Boolean).join(', ');
+    const plat = val(loc.lat), plon = val(loc.lon);
+    const known = plat != null && plon != null;
+    const placeName = loc.place?.name || loc.address?.short || (n.state === 'driving' ? 'On the road' : known ? 'Not a saved place' : 'No position yet');
+    const area = [loc.address?.locality, loc.address?.region].filter(Boolean).join(', ');
+    const detail = loc.place ? loc.address?.short : area || (known && !loc.address?.short ? `${plat.toFixed(5)}, ${plon.toFixed(5)}` : '');
     const c = n.charge || {};
     const rows = [];
     if (n.state === 'driving') {
@@ -355,7 +358,7 @@ export async function mount(ctx) {
     const vehicle = panel({ title: 'Vehicle', icon: 'car', cover: 'nr.dash.panel.car-status' },
       kv([
         ['Speed', aged(n.speed_kph, format(speedV, 'speed'), newest), { icon: 'steer', cover: 'summary.stat.speed', title: n.state === 'driving' ? 'Speed the car shows' : 'Standing still' }],
-        ['Power', aged(n.power_kw, h('span', null, format(powerV, 'power'), powerV != null && powerV < -0.05 ? h('span', { class: 'faint' }, n.state === 'charging' ? ' into the pack' : ' regen') : null), newest), { icon: 'bolt', title: 'Power out of the battery; below zero is regen or charging.' }],
+        ['Power', aged(n.power_kw, h('span', null, format(powerV, 'power'), powerV != null && powerV < -0.05 ? h('span', { class: 'faint' }, n.state === 'driving' || n.driving ? ' regen' : ' into the pack') : null), newest), { icon: 'bolt', title: 'Power out of the battery; below zero is regen or charging.' }],
         ['12 V battery', aged(n.lv_v, format(val(n.lv_v), 'voltage'), newest), { icon: 'battery' }],
         ['Odometer', h('a', { class: 'link', href: ctx.link('statistics'), title: 'Distance over time on Statistics' }, format(val(n.odometer_km), 'odometer')), { icon: 'odo', cover: ['summary.stat.odometer', 'overview.stat.odometer', 'overview.link.mileage'] }],
         ['Software', h('a', { class: 'link', href: ctx.link('software'), title: srcWord ? `Version ${srcWord}` : 'Software history' }, sw.version || 'not known'), { icon: 'chip', cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
