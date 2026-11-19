@@ -32,6 +32,10 @@ pub fn routes() -> Router<AppState> {
 
 /// The contract's error answer of a query's failure.
 pub(crate) fn failed(e: QueryError) -> ApiError {
+    // a log-decoding query whose request is gone: nobody reads the answer, and it is no server trouble to log
+    if q::decoding::cancelled() {
+        return ApiError::new(408, "timeout", "The request was dropped.");
+    }
     match e {
         QueryError::NoSuchCar => ApiError::no_such_car(),
         QueryError::NotFound(code) => ApiError::not_found(code),

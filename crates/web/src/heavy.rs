@@ -164,6 +164,15 @@ mod tests {
         assert!(h.per.lock().unwrap().is_empty(), "every place given back");
     }
 
+    #[test]
+    fn a_cancelled_query_is_not_logged_as_server_trouble() {
+        let gone = || engine::query::QueryError::Engine(engine::Error::Store("the request was dropped".into()));
+        assert_eq!(crate::resources::now::failed(gone()).status, 500);
+        let flag = Arc::new(AtomicBool::new(true));
+        let e = engine::query::decoding::with_cancel(flag, || crate::resources::now::failed(gone()));
+        assert_eq!(e.status, 408);
+    }
+
     #[tokio::test]
     async fn a_dropped_request_stops_its_work_and_holds_its_turn_until_the_work_ends() {
         let h = Heavy::new(1, Duration::from_millis(50));
