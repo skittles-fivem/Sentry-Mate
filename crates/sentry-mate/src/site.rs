@@ -119,7 +119,13 @@ pub fn web_state(
             data_dir: Some(data.to_path_buf()),
             certificate: Some(ingest::server::tls_dir(data).join("cert.pem")),
         }))
-        .service(Arc::new(web::resources::mqtt::Publisher::new()));
+        .service(Arc::new(web::resources::mqtt::Publisher::new()))
+        .service(Arc::new(web::resources::imports::Imports::new()))
+        .service(Arc::new(web::moving::MoveSite::new(
+            data.to_path_buf(),
+            keys.to_path_buf(),
+            env!("CARGO_PKG_VERSION"),
+        )));
     let app = match network {
         Some(n) => app.service(Arc::new(n)),
         None => app,

@@ -1,10 +1,781 @@
-//! TeslaMate imports: `/imports[/{import}[/cars|/start]]` (admin; chunk uploads need their own body limit).
+//! TeslaMate imports (docs/ui-api.md, "Import"): `/imports[/{import}[/cars|/start]]`, admin only (the guard's list).
 //!
-//! Empty: the endpoint builder fills `routes()` (full paths, see the crate's notes on adding endpoints).
+//! 1. **Upload**: `POST /imports` `{ name, bytes_total, compression? }` (or an `Upload-Length` header) answers 201
+//!    with the job, `upload_url` and `chunk_max_bytes`; each `PATCH /imports/{import}` is the next chunk
+//!    (`application/offset+octet-stream`, `Upload-Offset`, `Upload-Length`, `Upload-SHA256` in hex or base64). The
+//!    file is sealed with the vault as it arrives (`web/imports/<id>/backup`, sealed records), never stored in the
+//!    clear. A wrong offset is `409 wrong_offset` with the offset to send from; a chunk that is not its SHA-256 is
+//!    `422 checksum_mismatch`. One import at a time (`409 import_running`).
+//! 2. **Check** (pass 1, `checking`): once the last byte is in, the whole file is read as the import would read it,
+//!    storing nothing ([`engine::query::imports::check`]): its cars, what each brings, the report, and the car here
+//!    with the same VIN prefix (suggested, and matched at first). Then `ready`, or `failed` with `error`.
+//! 3. **Cars**: `GET /imports/{import}/cars`, `PUT` `{ items: [{ tm_car, match: car | "new" | "leave_out" }] }`.
+//! 4. **Start** (pass 2, `importing`): `POST /imports/{import}/start` `{ currency? }` (what TeslaMate's charge costs
+//!    are in; TeslaMate keeps none, so costs are taken only with it). Then `done` with the report, or `failed`.
+//!
+//! A job is kept sealed (`web/imports/<id>/job`); a restart picks up a check again, and an import cut off by one
+//! goes back to `ready` with the reason in `error` (running it again replaces what it stored, never doubles it).
+//! `DELETE` discards a job at any step (a running pass stops at its next read); history already imported stays.
 
-use crate::AppState;
-use axum::Router;
+use crate::ctx::{read_body, target};
+use crate::{Admin, ApiError, ApiResult, AppState, JsonBody, Params};
+use axum::extract::{Path, Request, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use engine::Engine;
+use engine::query::imports::{self as im, BackupCar};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap};
+use std::io::{self, Read};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// The largest chunk a PATCH may carry (just under the 1 MiB body limit).
+pub const CHUNK_MAX: usize = (1 << 20) - 1024;
+/// The largest backup taken.
+pub const MAX_FILE: u64 = 64 << 30;
+const COMPRESSIONS: [&str; 3] = ["plain", "gzip", "xz"];
+const UNFINISHED: [&str; 4] = ["uploading", "checking", "ready", "importing"];
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/api/v1/imports", get(list).post(create))
+        .route("/api/v1/imports/{import}", get(one).patch(chunk).delete(discard))
+        .route("/api/v1/imports/{import}/cars", get(cars).put(match_cars))
+        .route("/api/v1/imports/{import}/start", post(start))
+}
+
+/// The imports of this server (a service the program hands the frame; one per server).
+#[derive(Default)]
+pub struct Imports {
+    state: Mutex<Jobs>,
+}
+
+#[derive(Default)]
+struct Jobs {
+    loaded: bool,
+    jobs: BTreeMap<String, Job>,
+    live: HashMap<String, Live>,
+}
+
+/// A pass running now: the bytes it has read (both reads of the file) and its stop.
+#[derive(Clone)]
+struct Live {
+    read: Arc<AtomicU64>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Imports {
+    pub fn new() -> Imports {
+        Imports::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Jobs> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct JobError {
+    code: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CarRow {
+    car: BackupCar,
+    /// `c<n>`, `new`, `leave_out`, or `None` while not matched.
+    matched: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Job {
+    id: String,
+    name: String,
+    compression: String,
+    status: String,
+    pass: u8,
+    bytes_total: u64,
+    uploaded_bytes: u64,
+    /// `bytes_read` of the last pass that ended.
+    bytes_read: u64,
+    started_ms: u64,
+    checked_ms: Option<u64>,
+    finished_ms: Option<u64>,
+    error: Option<JobError>,
+    cars: Vec<CarRow>,
+    report: Option<Value>,
+}
+
+impl Job {
+    fn view(&self, live: Option<&Live>) -> Value {
+        let read = live.map_or(self.bytes_read, |l| (l.read.load(Ordering::Relaxed) / 2).min(self.bytes_total));
+        let cars_to_match: Value = if self.cars.is_empty() && matches!(self.status.as_str(), "uploading" | "checking") {
+            Value::Null
+        } else {
+            json!(self.cars.iter().filter(|c| c.matched.is_none()).count())
+        };
+        json!({
+            "id": self.id,
+            "name": self.name,
+            "compression": self.compression,
+            "status": self.status,
+            "pass": self.pass,
+            "bytes_read": read,
+            "bytes_total": self.bytes_total,
+            "uploaded_bytes": self.uploaded_bytes,
+            "started_ms": self.started_ms,
+            "checked_ms": self.checked_ms,
+            "finished_ms": self.finished_ms,
+            "error": self.error,
+            "report": self.report,
+            "cars_to_match": cars_to_match,
+        })
+    }
+
+    fn unfinished(&self) -> bool {
+        UNFINISHED.contains(&self.status.as_str())
+    }
+}
+
+fn folder(app: &AppState, id: &str) -> PathBuf {
+    app.dir.join("imports").join(id)
+}
+
+/// Labels are the files' paths under the data folder (the web side's folder is `<data>/web`).
+fn label(id: &str, file: &str) -> String {
+    format!("web/imports/{id}/{file}")
+}
+
+fn save(app: &AppState, j: &Job) -> ApiResult<()> {
+    let dir = folder(app, &j.id);
+    std::fs::create_dir_all(&dir).map_err(|e| ApiError::server(format!("the import's folder: {e}")))?;
+    let bytes = serde_json::to_vec(j).map_err(ApiError::server)?;
+    app.vault
+        .write_file(&dir.join("job"), &label(&j.id, "job"), &bytes)
+        .map_err(|e| ApiError::server(format!("saving the import: {e}")))
+}
+
+fn imports(app: &AppState) -> ApiResult<Arc<Imports>> {
+    app.service::<Imports>()
+}
+
+/// Reads the jobs from disk once (blocking): a check a restart cut off starts again, an import cut off goes back to
+/// `ready` with why.
+fn load(app: &AppState, all: &Imports) -> ApiResult<()> {
+    let mut again = Vec::new();
+    {
+        let mut st = all.lock();
+        if st.loaded {
+            return Ok(());
+        }
+        st.loaded = true;
+        let Ok(rd) = std::fs::read_dir(app.dir.join("imports")) else { return Ok(()) };
+        for d in rd.flatten() {
+            let id = d.file_name().to_string_lossy().into_owned();
+            let Ok(Some(raw)) = app.vault.read_file(&d.path().join("job"), &label(&id, "job")) else { continue };
+            let Ok(mut j) = serde_json::from_slice::<Job>(&raw) else { continue };
+            match j.status.as_str() {
+                "checking" => again.push(j.id.clone()),
+                "importing" => {
+                    j.status = "ready".into();
+                    j.pass = 1;
+                    j.error = Some(JobError {
+                        code: "interrupted".into(),
+                        message: "The server stopped during the import. Start it again: what it stored is replaced, \
+                                  not doubled."
+                            .into(),
+                    });
+                    save(app, &j)?;
+                }
+                _ => {}
+            }
+            st.jobs.insert(j.id.clone(), j);
+        }
+    }
+    for id in again {
+        spawn_check(app, &id)?;
+    }
+    Ok(())
+}
+
+/// A job by id (`404 no_such_import`).
+fn job(all: &Imports, id: &str) -> ApiResult<Job> {
+    all.lock().jobs.get(id).cloned().ok_or_else(|| ApiError::not_found("no_such_import"))
+}
+
+fn view_of(all: &Imports, j: &Job) -> Value {
+    let st = all.lock();
+    j.view(st.live.get(&j.id))
+}
+
+/// Runs account-free work off the async threads with the jobs loaded.
+async fn with_jobs<R: Send + 'static>(
+    app: &AppState,
+    f: impl FnOnce(&AppState, &Imports) -> ApiResult<R> + Send + 'static,
+) -> ApiResult<R> {
+    let all = imports(app)?;
+    app.blocking(move |app| {
+        load(app, &all)?;
+        f(app, &all)
+    })
+    .await
+}
+
+async fn list(State(app): State<AppState>, p: Params) -> ApiResult<Response> {
+    let rows = with_jobs(&app, |_, all| {
+        let st = all.lock();
+        let mut v: Vec<(u64, String, Value)> =
+            st.jobs.values().map(|j| (j.started_ms, j.id.clone(), j.view(st.live.get(&j.id)))).collect();
+        v.sort_by(|a, b| (b.0, &b.1).cmp(&(a.0, &a.1)));
+        Ok(v)
+    })
+    .await?;
+    if p.wants_csv()? {
+        let items: Vec<Value> = rows.into_iter().map(|r| r.2).collect();
+        return Ok(crate::csv::response("imports", crate::csv::rows(&items)));
+    }
+    let page = app.page(&p, rows, |r| (u64::MAX - r.0, r.1.clone()))?;
+    let items: Vec<Value> = page.items.into_iter().map(|r| r.2).collect();
+    Ok(Json(json!({ "items": items, "next": page.next })).into_response())
+}
+
+fn random_id() -> ApiResult<String> {
+    let mut b = [0u8; 6];
+    getrandom::fill(&mut b).map_err(|e| ApiError::server(format!("an id: {e}")))?;
+    Ok(format!("im{}", hex::encode(b)))
+}
+
+fn header_u64(h: &HeaderMap, name: &str) -> ApiResult<Option<u64>> {
+    match h.get(name) {
+        None => Ok(None),
+        Some(v) => v
+            .to_str()
+            .ok()
+            .and_then(|s| crate::ids::number(s.trim()))
+            .map(Some)
+            .ok_or_else(|| ApiError::bad_input(name, "Must be a whole number of bytes.")),
+    }
+}
+
+async fn create(
+    State(app): State<AppState>,
+    Admin(v): Admin,
+    headers: HeaderMap,
+    body: JsonBody,
+) -> ApiResult<Response> {
+    body.only(&["name", "bytes_total", "compression"])?;
+    let total = match body.u64("bytes_total")? {
+        Some(n) => n,
+        None => header_u64(&headers, "Upload-Length")?.ok_or_else(|| {
+            ApiError::bad_input("bytes_total", "Required: the size of the whole file in bytes (or Upload-Length).")
+        })?,
+    };
+    if !(1..=MAX_FILE).contains(&total) {
+        return Err(ApiError::invalid("bytes_total", "Between 1 byte and 64 GB."));
+    }
+    let name: String = body.str("name")?.unwrap_or("teslamate-backup.sql").trim().chars().take(200).collect();
+    let name = if name.is_empty() { "teslamate-backup.sql".to_string() } else { name };
+    let compression = match body.str("compression")? {
+        Some(c) => c.to_string(),
+        None if name.ends_with(".xz") => "xz".into(),
+        None if name.ends_with(".gz") => "gzip".into(),
+        None => "plain".into(),
+    };
+    if !COMPRESSIONS.contains(&compression.as_str()) {
+        return Err(ApiError::invalid("compression", "Must be plain, gzip or xz."));
+    }
+    let now = app.now();
+    let (n2, c2) = (name.clone(), compression.clone());
+    let made = with_jobs(&app, move |app, all| {
+        let mut st = all.lock();
+        if st.jobs.values().any(Job::unfinished) {
+            return Err(ApiError::conflict(
+                "import_running",
+                "Another import is not finished. Wait for it or discard it first.",
+            ));
+        }
+        let j = Job {
+            id: random_id()?,
+            name: n2,
+            compression: c2,
+            status: "uploading".into(),
+            pass: 0,
+            bytes_total: total,
+            uploaded_bytes: 0,
+            bytes_read: 0,
+            started_ms: now,
+            checked_ms: None,
+            finished_ms: None,
+            error: None,
+            cars: Vec::new(),
+            report: None,
+        };
+        save(app, &j)?;
+        st.jobs.insert(j.id.clone(), j.clone());
+        Ok(j)
+    })
+    .await?;
+    v.audit(&app, "import-created", Some(&target("import", None, &made.id)), &format!("Started uploading {name}."))
+        .await?;
+    let mut out = made.view(None);
+    if let Value::Object(m) = &mut out {
+        m.insert("upload_url".into(), json!(format!("/api/v1/imports/{}", made.id)));
+        m.insert("chunk_max_bytes".into(), json!(CHUNK_MAX));
+    }
+    Ok((StatusCode::CREATED, Json(out)).into_response())
+}
+
+async fn one(State(app): State<AppState>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    with_jobs(&app, move |_, all| {
+        let j = job(all, &id)?;
+        Ok(Json(view_of(all, &j)))
+    })
+    .await
+}
+
+/// `Upload-SHA256` in hex or base64.
+fn sha_header(h: &HeaderMap) -> ApiResult<[u8; 32]> {
+    let bad = || ApiError::bad_input("Upload-SHA256", "Required: the chunk's SHA-256 (hex or base64).");
+    let v = h.get("Upload-SHA256").and_then(|v| v.to_str().ok()).map(str::trim).ok_or_else(bad)?;
+    let raw = if v.len() == 64 {
+        hex::decode(v).map_err(|_| bad())?
+    } else {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.decode(v).map_err(|_| bad())?
+    };
+    raw.try_into().map_err(|_| bad())
+}
+
+/// `PATCH /imports/{import}`: the next chunk of the file.
+async fn chunk(
+    State(app): State<AppState>,
+    Admin(v): Admin,
+    Path(id): Path<String>,
+    req: Request,
+) -> ApiResult<Json<Value>> {
+    let headers = req.headers().clone();
+    let ct = headers.get(http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !ct.is_empty()
+        && !ct.starts_with("application/offset+octet-stream")
+        && !ct.starts_with("application/octet-stream")
+    {
+        return Err(ApiError::bad_input("Content-Type", "Send the chunk as application/offset+octet-stream."));
+    }
+    let offset = header_u64(&headers, "Upload-Offset")?
+        .ok_or_else(|| ApiError::bad_input("Upload-Offset", "Required: where this chunk starts, in bytes."))?;
+    let length = header_u64(&headers, "Upload-Length")?;
+    let want = sha_header(&headers)?;
+    let bytes = read_body(req, CHUNK_MAX).await?;
+    if bytes.is_empty() {
+        return Err(ApiError::bad_input("body", "Send the chunk's bytes."));
+    }
+    let (done, out) = with_jobs(&app, move |app, all| {
+        let j = job(all, &id)?;
+        if j.status != "uploading" {
+            return Err(ApiError::conflict(
+                "not_uploading",
+                format!("This import is {}; it takes no chunks.", j.status),
+            ));
+        }
+        if length.is_some_and(|l| l != j.bytes_total) {
+            return Err(ApiError::invalid("Upload-Length", &format!("This upload is {} bytes.", j.bytes_total)));
+        }
+        if offset != j.uploaded_bytes {
+            let at = j.uploaded_bytes;
+            return Err(ApiError::new(409, "wrong_offset", format!("The upload is at byte {at}; send from there."))
+                .with("offset", at)
+                .header(http::HeaderName::from_static("upload-offset"), &at.to_string()));
+        }
+        if Sha256::digest(&bytes).as_slice() != want {
+            return Err(ApiError::new(
+                422,
+                "checksum_mismatch",
+                "The chunk does not match its SHA-256. Send it again.",
+            )
+            .with_fields(Map::from_iter([("Upload-SHA256".to_string(), json!("Does not match the bytes sent."))])));
+        }
+        if offset + bytes.len() as u64 > j.bytes_total {
+            return Err(ApiError::invalid("body", "More bytes than the upload's length."));
+        }
+        let dir = folder(app, &j.id);
+        std::fs::create_dir_all(&dir).map_err(|e| ApiError::server(format!("the import's folder: {e}")))?;
+        let mut rec = app
+            .vault
+            .records(&dir.join("backup"), &label(&j.id, "backup"))
+            .map_err(|e| ApiError::server(format!("opening the upload: {e}")))?;
+        if rec.plain_len() != j.uploaded_bytes {
+            // what is on disk is what counts (a write the job's record missed)
+            let mut j = j;
+            j.uploaded_bytes = rec.plain_len();
+            save(app, &j)?;
+            let at = j.uploaded_bytes;
+            all.lock().jobs.insert(j.id.clone(), j);
+            return Err(ApiError::new(409, "wrong_offset", format!("The upload is at byte {at}; send from there."))
+                .with("offset", at)
+                .header(http::HeaderName::from_static("upload-offset"), &at.to_string()));
+        }
+        rec.append(&bytes).map_err(|e| ApiError::server(format!("storing the chunk: {e}")))?;
+        let mut j = j;
+        j.uploaded_bytes = rec.plain_len();
+        j.bytes_read = j.uploaded_bytes;
+        let done = j.uploaded_bytes == j.bytes_total;
+        if done {
+            j.status = "checking".into();
+            j.pass = 1;
+            j.bytes_read = 0;
+        }
+        save(app, &j)?;
+        all.lock().jobs.insert(j.id.clone(), j.clone());
+        if done {
+            spawn_check(app, &j.id)?;
+        }
+        let mut out = view_of(all, &j);
+        if let Value::Object(m) = &mut out {
+            m.insert("offset".into(), json!(j.uploaded_bytes));
+        }
+        Ok((done.then(|| j.id.clone()), out))
+    })
+    .await?;
+    if let Some(id) = done {
+        v.audit(&app, "import-uploaded", Some(&target("import", None, &id)), "Uploaded the whole file; checking it.")
+            .await?;
+    }
+    Ok(Json(out))
+}
+
+/// The uploaded file read back in order, from the sealed records (a thread reads them; at most a few records wait).
+struct Backup {
+    rx: std::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl Read for Backup {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        while self.pos >= self.buf.len() {
+            match self.rx.recv() {
+                Ok(Ok(b)) => {
+                    self.buf = b;
+                    self.pos = 0;
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = out.len().min(self.buf.len() - self.pos);
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+fn opener(app: &AppState, id: &str) -> impl FnMut() -> io::Result<Backup> + use<> {
+    let (vault, path, label) = (app.vault.clone(), folder(app, id).join("backup"), label(id, "backup"));
+    move || {
+        let mut r = vault.records_read(&path, &label).map_err(|e| io::Error::other(e.to_string()))?;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<Vec<u8>>>(4);
+        std::thread::Builder::new().name("import-read".into()).spawn(move || {
+            let r2 = r.read_all(|rec| tx.send(Ok(rec.to_vec())).map_err(|_| io::Error::other("the reader stopped")));
+            if let Err(e) = r2 {
+                let _ = tx.send(Err(e));
+            }
+        })?;
+        Ok(Backup { rx, buf: Vec::new(), pos: 0 })
+    }
+}
+
+/// Puts a finished pass's outcome into the job (unless it was discarded meanwhile).
+fn finish(app: &AppState, all: &Imports, id: &str, f: impl FnOnce(&mut Job)) {
+    let mut st = all.lock();
+    let read = st.live.remove(id).map(|l| l.read.load(Ordering::Relaxed) / 2);
+    if let Some(j) = st.jobs.get_mut(id) {
+        j.bytes_read = read.unwrap_or(j.bytes_read).min(j.bytes_total);
+        f(j);
+        if let Err(e) = save(app, j) {
+            tracing::warn!("import {id}: {}", e.message);
+        }
+    }
+}
+
+/// Starts the check of a whole upload in the background.
+fn spawn_check(app: &AppState, id: &str) -> ApiResult<()> {
+    let all = imports(app)?;
+    let e = app.service::<Engine>()?;
+    let live = Live { read: Arc::new(AtomicU64::new(0)), stop: Arc::new(AtomicBool::new(false)) };
+    all.lock().live.insert(id.to_string(), live.clone());
+    let (app, id) = (app.clone(), id.to_string());
+    tokio::task::spawn_blocking(move || {
+        let open = im::counted(opener(&app, &id), live.read.clone(), live.stop.clone());
+        let r = im::check(&e, open);
+        if live.stop.load(Ordering::Relaxed) {
+            all.lock().live.remove(&id);
+            return;
+        }
+        let now = app.now();
+        finish(&app, &all, &id, |j| match r {
+            Ok(c) => {
+                j.status = "ready".into();
+                j.checked_ms = Some(now);
+                j.bytes_read = j.bytes_total;
+                j.cars = c
+                    .cars
+                    .into_iter()
+                    .map(|car| {
+                        let matched = car.suggested.map(crate::ids::car);
+                        CarRow { car, matched }
+                    })
+                    .collect();
+                j.report = Some(c.report);
+            }
+            Err(err) => {
+                let (code, message) = im::error_of(&err);
+                j.status = "failed".into();
+                j.finished_ms = Some(now);
+                j.error = Some(JobError { code: code.into(), message });
+            }
+        });
+    });
+    Ok(())
+}
+
+async fn discard(State(app): State<AppState>, Admin(v): Admin, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    let id2 = id.clone();
+    let (name, status) = with_jobs(&app, move |app, all| {
+        let mut st = all.lock();
+        let j = st.jobs.remove(&id2).ok_or_else(|| ApiError::not_found("no_such_import"))?;
+        if let Some(l) = st.live.remove(&id2) {
+            l.stop.store(true, Ordering::Relaxed);
+        }
+        drop(st);
+        let _ = std::fs::remove_dir_all(folder(app, &j.id));
+        Ok((j.name, j.status))
+    })
+    .await?;
+    let summary = format!("Discarded the import {name} ({status}). History already imported stays.");
+    v.audit(&app, "import-discarded", Some(&target("import", None, &id)), &summary).await?;
+    Ok(Json(json!({ "deleted": true, "id": id, "status": status })))
+}
+
+fn car_rows(j: &Job) -> Vec<Value> {
+    j.cars
+        .iter()
+        .map(|c| {
+            json!({
+                "tm_car": c.car.tm_car.to_string(),
+                "name": c.car.name,
+                "vin_prefix": c.car.vin_prefix,
+                "drives": c.car.drives,
+                "charges": c.car.charges,
+                "first_ms": c.car.first_ms,
+                "last_ms": c.car.last_ms,
+                "match": c.matched,
+                "suggested": c.car.suggested.map(crate::ids::car),
+            })
+        })
+        .collect()
+}
+
+fn checked(j: &Job) -> ApiResult<()> {
+    if j.cars.is_empty() && matches!(j.status.as_str(), "uploading" | "checking") {
+        return Err(ApiError::conflict(
+            "not_checked",
+            "The cars are known once the whole file is uploaded and checked.",
+        ));
+    }
+    Ok(())
+}
+
+async fn cars(State(app): State<AppState>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    with_jobs(&app, move |_, all| {
+        let j = job(all, &id)?;
+        checked(&j)?;
+        Ok(Json(json!({ "import": j.id, "items": car_rows(&j), "next": null })))
+    })
+    .await
+}
+
+/// A TeslaMate car number, as text or a number.
+fn tm_car(v: Option<&Value>) -> Option<i64> {
+    match v? {
+        Value::String(s) => s.trim().parse().ok(),
+        Value::Number(n) => n.as_i64(),
+        _ => None,
+    }
+}
+
+/// `PUT /imports/{import}/cars` `{ items: [{ tm_car, match }] }`: changes only the cars it names.
+async fn match_cars(
+    State(app): State<AppState>,
+    Admin(v): Admin,
+    Path(id): Path<String>,
+    body: JsonBody,
+) -> ApiResult<Json<Value>> {
+    body.only(&["items"])?;
+    let Some(Value::Array(items)) = body.get("items") else {
+        return Err(ApiError::bad_input("items", "Send { items: [{ tm_car, match }] }."));
+    };
+    // each match, a car checked against the account as every car of a body is
+    let mut wanted: Vec<(i64, String)> = Vec::new();
+    for (i, x) in items.iter().enumerate() {
+        let Value::Object(m) = x else { return Err(ApiError::bad_input(&format!("items.{i}"), "Must be an object.")) };
+        let one = JsonBody(m.clone());
+        one.only(&["tm_car", "match"])
+            .map_err(|_| ApiError::bad_input(&format!("items.{i}"), "Only tm_car and match."))?;
+        let tm = tm_car(m.get("tm_car"))
+            .ok_or_else(|| ApiError::bad_input(&format!("items.{i}.tm_car"), "A TeslaMate car number."))?;
+        let word = match m.get("match") {
+            Some(Value::String(s)) if s == "new" || s == "leave_out" => s.clone(),
+            Some(Value::String(_)) => match one.car(&app, &v, "match") {
+                Ok(Some(c)) => crate::ids::car(c),
+                Ok(None) | Err(_) => {
+                    return Err(ApiError::invalid(&format!("items.{i}.match"), "A car id, \"new\" or \"leave_out\"."));
+                }
+            },
+            _ => return Err(ApiError::bad_input(&format!("items.{i}.match"), "A car id, \"new\" or \"leave_out\".")),
+        };
+        wanted.push((tm, word));
+    }
+    let summary = format!(
+        "Matched imported cars: {}.",
+        wanted.iter().map(|(t, m)| format!("{t} -> {m}")).collect::<Vec<_>>().join(", ")
+    );
+    let out = with_jobs(&app, move |app, all| {
+        let mut j = job(all, &id)?;
+        checked(&j)?;
+        if !matches!(j.status.as_str(), "checking" | "ready") {
+            return Err(ApiError::conflict(
+                "not_matchable",
+                format!("This import is {}; cars can't be matched now.", j.status),
+            ));
+        }
+        for (i, (tm, _)) in wanted.iter().enumerate() {
+            if !j.cars.iter().any(|c| c.car.tm_car == *tm) {
+                return Err(ApiError::invalid(&format!("items.{i}.tm_car"), "Not a car in this file."));
+            }
+        }
+        for (tm, m) in &wanted {
+            if let Some(c) = j.cars.iter_mut().find(|c| c.car.tm_car == *tm) {
+                c.matched = Some(m.clone());
+            }
+        }
+        // one car here takes at most one imported car
+        let mut seen: HashMap<&str, i64> = HashMap::new();
+        for c in &j.cars {
+            if let Some(m) = c.matched.as_deref().filter(|m| *m != "new" && *m != "leave_out")
+                && let Some(other) = seen.insert(m, c.car.tm_car)
+            {
+                let i = wanted.iter().position(|(t, _)| *t == c.car.tm_car || *t == other).unwrap_or(0);
+                return Err(ApiError::invalid(
+                    &format!("items.{i}.match"),
+                    &format!("Car {m} is already matched to imported car {other}."),
+                ));
+            }
+        }
+        save(app, &j)?;
+        all.lock().jobs.insert(j.id.clone(), j.clone());
+        Ok(json!({ "import": j.id, "items": car_rows(&j), "next": null }))
+    })
+    .await?;
+    let iid = out["import"].as_str().unwrap_or_default().to_string();
+    v.audit(&app, "import-cars", Some(&target("import", None, &iid)), &summary).await?;
+    Ok(Json(out))
+}
+
+/// `POST /imports/{import}/start` `{ currency? }`.
+async fn start(
+    State(app): State<AppState>,
+    Admin(v): Admin,
+    Path(id): Path<String>,
+    body: JsonBody,
+) -> ApiResult<Json<Value>> {
+    body.only(&["currency"])?;
+    let currency = body.str("currency")?.map(|c| c.trim().to_ascii_uppercase());
+    if currency.as_deref().is_some_and(|c| c.len() != 3 || !c.chars().all(|x| x.is_ascii_uppercase())) {
+        return Err(ApiError::invalid("currency", "A currency code such as EUR."));
+    }
+    let e = app.service::<Engine>()?;
+    let (out, name) = with_jobs(&app, move |app, all| {
+        let mut j = job(all, &id)?;
+        if j.status != "ready" {
+            return Err(ApiError::conflict(
+                "not_ready",
+                format!("This import is {}; it can start once the whole file is checked.", j.status),
+            ));
+        }
+        if j.cars.iter().any(|c| c.matched.is_none()) {
+            return Err(ApiError::conflict(
+                "cars_unmatched",
+                "Match every imported car first (a car, new, or leave out).",
+            ));
+        }
+        let mut m = im::Matches::default();
+        for c in &j.cars {
+            match c.matched.as_deref() {
+                Some("leave_out") => m.leave_out.push(c.car.tm_car),
+                Some("new") => {
+                    m.to.insert(c.car.tm_car, None);
+                }
+                Some(car) => {
+                    let id = crate::ids::parse_car(car).filter(|c| app.car_exists(*c)).ok_or_else(|| {
+                        ApiError::conflict(
+                            "cars_unmatched",
+                            format!("Car {car} is no longer here: match that car again."),
+                        )
+                    })?;
+                    m.to.insert(c.car.tm_car, Some(id));
+                }
+                None => {}
+            }
+        }
+        j.status = "importing".into();
+        j.pass = 2;
+        j.error = None;
+        j.bytes_read = 0;
+        save(app, &j)?;
+        let live = Live { read: Arc::new(AtomicU64::new(0)), stop: Arc::new(AtomicBool::new(false)) };
+        {
+            let mut st = all.lock();
+            st.jobs.insert(j.id.clone(), j.clone());
+            st.live.insert(j.id.clone(), live.clone());
+        }
+        let (app2, id2, all2) = (app.clone(), j.id.clone(), imports(app)?);
+        let tables_before = j.cars.clone();
+        tokio::task::spawn_blocking(move || {
+            let open = im::counted(opener(&app2, &id2), live.read.clone(), live.stop.clone());
+            let r = im::run(&e, open, &m, currency);
+            if live.stop.load(Ordering::Relaxed) {
+                all2.lock().live.remove(&id2);
+                return;
+            }
+            let now = app2.now();
+            finish(&app2, &all2, &id2, |j| match r {
+                Ok(done) => {
+                    j.status = "done".into();
+                    j.finished_ms = Some(now);
+                    j.bytes_read = j.bytes_total;
+                    let pairs: Vec<(BackupCar, Value)> =
+                        tables_before.iter().map(|c| (c.car.clone(), json!(c.matched))).collect();
+                    j.report = Some(im::report_json(&done.report, &done.cars, &pairs, true));
+                }
+                Err(err) => {
+                    let (code, message) = im::error_of(&err);
+                    j.status = "failed".into();
+                    j.finished_ms = Some(now);
+                    j.error = Some(JobError { code: code.into(), message });
+                }
+            });
+        });
+        let view = view_of(all, &j);
+        Ok((view, j.name))
+    })
+    .await?;
+    let iid = out["id"].as_str().unwrap_or_default().to_string();
+    v.audit(&app, "import-started", Some(&target("import", None, &iid)), &format!("Started importing {name}.")).await?;
+    Ok(Json(out))
 }

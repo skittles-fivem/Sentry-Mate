@@ -8,6 +8,8 @@ use crate::{Engine, now_ms};
 use db::StateRow;
 use model::{CarId, Source, State};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::Path;
 
 /// Which side of an overlap a span shows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -409,52 +411,203 @@ pub struct Storage {
     pub next: Option<String>,
 }
 
-/// `/cars/{car}/storage`: the bytes of its time series per day, newest first (`kinds=series,curves` filters them).
+/// Bytes of the files right in `dir` (not its folders); 0 when it can't be read.
+fn files_bytes(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    rd.flatten().filter_map(|f| f.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).sum()
+}
+
+/// Bytes of everything under `dir` (folders followed to `depth` levels; links never followed).
+pub fn tree_bytes(dir: &Path, depth: u32) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    let mut n = 0u64;
+    for f in rd.flatten() {
+        let Ok(t) = f.file_type() else { continue };
+        if t.is_file() {
+            n += f.metadata().map_or(0, |m| m.len());
+        } else if t.is_dir() && depth > 0 {
+            n += tree_bytes(&f.path(), depth - 1);
+        }
+    }
+    n
+}
+
+/// The data folder (the log store's parent: `<data>/can`).
+fn data_dir(e: &Engine) -> Option<&Path> {
+    e.store().dir().parent()
+}
+
+/// A car's stored CAN logs (sealed, with their sidecars), per UTC day of their start: `(date, bytes)`, and their total.
+/// One look at each file's size in the car's key folders; logs still arriving are not counted.
+fn log_days(e: &Engine, c: &model::Car) -> (BTreeMap<String, u64>, u64) {
+    let utc = crate::tz::zone("UTC");
+    let mut days: BTreeMap<String, u64> = BTreeMap::new();
+    let mut total = 0u64;
+    for key in &c.vehicle_keys {
+        let Ok(rd) = std::fs::read_dir(e.store().dir().join(key)) else { continue };
+        for f in rd.flatten() {
+            let Ok(m) = f.metadata() else { continue };
+            if !m.is_file() {
+                continue;
+            }
+            total += m.len();
+            let name = f.file_name();
+            let name = name.to_string_lossy();
+            let log = name.strip_suffix(".json").unwrap_or(&name);
+            if let Some(t) = records::name_start_ms(log) {
+                *days.entry(crate::tz::date_str(t, utc)).or_default() += m.len();
+            }
+        }
+    }
+    (days, total)
+}
+
+/// The kinds a car's data is kept as: `logs` (the CAN logs as uploaded, sealed), `series` (1 Hz samples), `curves`
+/// (charge curves) and `rows` (drives, charges, states, updates and the rest of the car's tables).
+pub const STORAGE_KINDS: [&str; 4] = ["logs", "series", "curves", "rows"];
+
+/// `/cars/{car}/storage`: the bytes per kind, and per day and kind (newest day first, only days with data; `kinds`
+/// filters the days). Imported days carry `source: "teslamate"`.
 pub fn storage(e: &Engine, car: CarId, kinds: Option<&str>, paging: &Paging) -> QResult<Scoped<Storage>> {
     let c = car_of(e, car)?;
     let db = e.db();
-    let want: Vec<&str> = kinds.map_or_else(|| vec!["series", "curves"], |k| k.split(',').collect());
+    let want: Vec<&str> = match kinds {
+        Some(k) => {
+            let v: Vec<&str> = k.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+            if let Some(bad) = v.iter().find(|k| !STORAGE_KINDS.contains(k)) {
+                return Err(QueryError::bad("kinds", &format!("{bad} is not one of logs, series, curves, rows")));
+            }
+            v
+        }
+        None => STORAGE_KINDS.to_vec(),
+    };
     let mut items = Vec::new();
     let (mut series_b, mut curves_b) = (0u64, 0u64);
     for source in [Source::Can, Source::Teslamate] {
         for d in db.days::<model::Sample>(car, source)? {
             series_b += d.bytes;
-            if want.contains(&"series") {
+            if want.contains(&"series") && d.bytes > 0 {
                 items.push(StorageDay {
-                    series: "samples",
+                    series: "series",
                     source: super::source_word(source),
-                    date: d.date.clone(),
+                    date: d.date,
                     bytes: d.bytes,
                 });
             }
         }
         for d in db.days::<model::ChargePoint>(car, source)? {
             curves_b += d.bytes;
-            if want.contains(&"curves") {
+            if want.contains(&"curves") && d.bytes > 0 {
                 items.push(StorageDay {
-                    series: "charge",
+                    series: "curves",
                     source: super::source_word(source),
-                    date: d.date.clone(),
+                    date: d.date,
                     bytes: d.bytes,
                 });
             }
         }
     }
-    let total = db.segment_bytes(car).unwrap_or(series_b + curves_b);
-    let sig = format!("storage|{car}|{kinds:?}");
-    let page = paginate(items, |d| (0.0, format!("{}|{}|{}", d.date, d.series, d.source)), true, &sig, paging, false)?;
-    Ok(scoped(
-        &c,
-        Storage {
-            kinds: vec![
-                Kind { kind: "series", label: "Samples", bytes: series_b },
-                Kind { kind: "curves", label: "Charge curves", bytes: curves_b },
-            ],
-            total_bytes: total,
-            items: page.items,
-            next: page.next,
-        },
-    ))
+    let (logs, logs_b) = log_days(e, &c);
+    if want.contains(&"logs") {
+        for (date, bytes) in logs {
+            items.push(StorageDay { series: "logs", source: "can", date, bytes });
+        }
+    }
+    let rows_b = data_dir(e).map_or(0, |d| files_bytes(&d.join("db").join("cars").join(car.to_string())));
+    let order = |s: &str| STORAGE_KINDS.iter().position(|k| *k == s).unwrap_or(9);
+    let sig = format!("storage|{car}|{want:?}");
+    let page = paginate(
+        items,
+        |d| (0.0, format!("{}|{}|{}", d.date, 9 - order(d.series), d.source)),
+        true,
+        &sig,
+        paging,
+        false,
+    )?;
+    let kinds = vec![
+        Kind { kind: "logs", label: "CAN logs (sealed)", bytes: logs_b },
+        Kind { kind: "series", label: "Time series", bytes: series_b },
+        Kind { kind: "curves", label: "Charge curves", bytes: curves_b },
+        Kind { kind: "rows", label: "Drives, charges, states", bytes: rows_b },
+    ];
+    let total = kinds.iter().map(|k| k.bytes).sum();
+    Ok(scoped(&c, Storage { kinds, total_bytes: total, items: page.items, next: page.next }))
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Growth {
+    pub date: String,
+    pub bytes: u64,
+}
+
+/// `/system/storage`, but for the free space (the web server adds it).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ServerStorage {
+    pub kinds: Vec<Kind>,
+    pub total_bytes: u64,
+    /// Bytes added on each of the last 30 full UTC days (CAN data of every car: logs, series, curves).
+    pub growth: Vec<Growth>,
+    pub growth_per_day_bytes: Option<u64>,
+}
+
+/// The server's stored data: every car's, imported history apart, the server's own files (accounts, settings,
+/// places, the fleet list) and the offline map tiles. One pass over each car's days; the per-day sums are kept only for the last 31 days.
+pub fn server_storage(e: &Engine, now_ms: u64) -> QResult<ServerStorage> {
+    let db = e.db();
+    let utc = crate::tz::zone("UTC");
+    let today = crate::tz::date_str(now_ms, utc);
+    let first = crate::tz::date_str(now_ms.saturating_sub(31 * 86_400_000), utc);
+    let mut growth: BTreeMap<String, u64> = BTreeMap::new();
+    let mut add = |date: &str, b: u64| {
+        if date >= first.as_str() && date < today.as_str() {
+            *growth.entry(date.to_string()).or_default() += b;
+        }
+    };
+    let (mut logs, mut series, mut rows, mut imported) = (0u64, 0u64, 0u64, 0u64);
+    let data = data_dir(e);
+    for car in super::all_cars(e)? {
+        let Some(c) = db.car(car)? else { continue };
+        let (days, total) = log_days(e, &c);
+        logs += total;
+        for (d, b) in &days {
+            add(d, *b);
+        }
+        for d in db
+            .days::<model::Sample>(car, Source::Can)?
+            .into_iter()
+            .chain(db.days::<model::ChargePoint>(car, Source::Can)?)
+        {
+            series += d.bytes;
+            add(&d.date, d.bytes);
+        }
+        for d in db
+            .days::<model::Sample>(car, Source::Teslamate)?
+            .into_iter()
+            .chain(db.days::<model::ChargePoint>(car, Source::Teslamate)?)
+        {
+            imported += d.bytes;
+        }
+        rows += data.map_or(0, |d| files_bytes(&d.join("db").join("cars").join(car.to_string())));
+    }
+    // the server's own: the fleet list, places, settings, the key/value store, accounts, the audit log, the web side
+    let own = data.map_or(0, |d| {
+        files_bytes(&d.join("db"))
+            + tree_bytes(&d.join("db").join("kv"), 4)
+            + ["accounts", "audit", "web"].iter().map(|x| tree_bytes(&d.join(x), 4)).sum::<u64>()
+    });
+    let kinds = vec![
+        Kind { kind: "logs", label: "CAN logs (sealed)", bytes: logs },
+        Kind { kind: "series", label: "Time series and charge curves", bytes: series },
+        Kind { kind: "rows", label: "Drives, charges, states", bytes: rows },
+        Kind { kind: "imported", label: "Imported from TeslaMate", bytes: imported },
+        Kind { kind: "server", label: "Accounts, settings and places", bytes: own },
+        Kind { kind: "tiles", label: "Offline map tiles", bytes: data.map_or(0, |d| tree_bytes(&d.join("maps"), 3)) },
+    ];
+    let total = kinds.iter().map(|k| k.bytes).sum();
+    let growth: Vec<Growth> = growth.into_iter().map(|(date, bytes)| Growth { date, bytes }).collect();
+    let growth: Vec<Growth> = growth.into_iter().rev().take(30).collect::<Vec<_>>().into_iter().rev().collect();
+    let per_day = (!growth.is_empty()).then(|| growth.iter().map(|g| g.bytes).sum::<u64>() / growth.len() as u64);
+    Ok(ServerStorage { kinds, total_bytes: total, growth, growth_per_day_bytes: per_day })
 }
 
 /// Engine figures for `/system/health`.

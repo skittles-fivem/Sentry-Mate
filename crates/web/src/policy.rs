@@ -81,7 +81,9 @@ pub fn access(method: &Method, pattern: &str) -> Access {
     let read = method == Method::GET || method == Method::HEAD;
     let public = matches!((m, p), ("GET" | "HEAD" | "POST", "/setup") | ("POST", "/session" | "/session/two-step"))
         || under(p, "/setup/move")
-        || under(p, "/setup/restore");
+        || under(p, "/setup/restore")
+        || matches!(p, "/setup/claim" | "/setup/fresh" | "/setup/job")
+        || under(p, "/setup/move-here");
     if public {
         return Access::Public;
     }

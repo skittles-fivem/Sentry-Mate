@@ -18,6 +18,7 @@ pub mod battery;
 pub mod charges;
 pub mod drives;
 pub mod fleet;
+pub mod imports;
 pub mod keys;
 pub mod logbook;
 pub mod now;

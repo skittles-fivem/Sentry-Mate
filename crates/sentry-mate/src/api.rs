@@ -20,25 +20,18 @@ use engine::query::{self as q, QueryError};
 use model::CarId;
 use serde::Serialize;
 use std::collections::HashMap;
-use web::query::MAX_MS;
 use web::{ApiError, ApiResult, AppState, CarParam, CarsParam, Fields, JsonBody, Params, Viewer};
 
 /// The routes, with their full paths.
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/about", get(about))
         // fleet and cars (the cars list, the fleet summary and attention, a car and its settings: web's fleet module)
         // live values, series, timeline
         // charges: web's charges module
         // battery and efficiency: web's battery and efficiency modules
         // reports, travel and software: web's statistics, travel and software modules
         // places: web's places module
-        // health and storage
-        .route("/api/v1/cars/{car}/health", get(health))
-        .route("/api/v1/cars/{car}/overlaps", get(overlaps))
-        .route("/api/v1/cars/{car}/storage", get(storage))
-        .route("/api/v1/cars/{car}/logs", get(logs))
-        .route("/api/v1/system/health", get(system_health))
+        // about, health, rebuild, overlaps, storage, a car's logs: web's system and logs modules
         // CAN Bridge keys and upload tokens (admins: the guard keeps them so)
         .route("/api/v1/can-keys", get(can_keys))
         .route("/api/v1/can-keys/{key}", patch(patch_key))
@@ -93,38 +86,10 @@ fn visible(e: &Engine, v: &accounts::CarAccess, named: &CarsParam) -> q::QResult
     }
 }
 
-/// `from_ms` and `to_ms` (each optional; the engine picks the default window of the resource).
-fn period(p: &Params) -> ApiResult<q::Period> {
-    let from = p.uint("from_ms", 0, MAX_MS)?;
-    let to = p.uint("to_ms", 0, MAX_MS)?;
-    if let (Some(a), Some(b)) = (from, to)
-        && a >= b
-    {
-        return Err(ApiError::bad_input("to_ms", "Must be after from_ms."));
-    }
-    Ok(q::Period::new(from, to))
-}
-
 fn paging(p: &Params) -> ApiResult<q::Paging> {
     let w = p.paging()?;
     Ok(q::Paging { limit: Some(w.limit), after: w.after })
 }
-
-fn text(p: &Params, name: &str) -> ApiResult<Option<String>> {
-    Ok(p.text(name, 200)?.map(str::to_string))
-}
-
-async fn about(State(app): State<AppState>, v: Viewer) -> Json {
-    axum::Json(serde_json::json!({
-        "version": crate::VERSION,
-        "api_version": web::API_VERSION,
-        "ui_pack": web::packs::about_ui_pack(&app, Some(&v)),
-        "licences": [],
-        "data_credits": [],
-    }))
-}
-
-type Json = axum::Json<serde_json::Value>;
 
 // ---- fleet and cars
 
@@ -141,33 +106,7 @@ type Json = axum::Json<serde_json::Value>;
 
 // ---- places (the web crate serves places, a place, the preview, reprice, suggestions and the place at a point)
 
-// ---- health and storage
-
-async fn health(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let per = period(&p)?;
-    answer(&app, &p, "health", move |e| q::system::health(e, car, &per)).await
-}
-
-async fn overlaps(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let pg = paging(&p)?;
-    answer(&app, &p, "overlaps", move |e| q::system::overlaps(e, car, &pg)).await
-}
-
-async fn storage(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let (kinds, pg) = (text(&p, "kinds")?, paging(&p)?);
-    answer(&app, &p, "storage", move |e| q::system::storage(e, car, kinds.as_deref(), &pg)).await
-}
-
-/// The car's stored logs (an admin's read: the guard keeps `/cars/{car}/logs` to admins).
-async fn logs(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let (per, pg) = (period(&p)?, paging(&p)?);
-    answer(&app, &p, "logs", move |e| q::system::logs(e, car, &per, &pg)).await
-}
-
-/// The server's health (an admin's read: the guard keeps `/system` to admins).
-async fn system_health(State(app): State<AppState>, p: Params) -> ApiResult<Response> {
-    answer(&app, &p, "system-health", move |e| Ok(q::system::system_health(e))).await
-}
+// ---- health and storage (the web crate serves about, health, rebuild, overlaps, storage and a car's logs)
 
 // ---- CAN Bridge keys and upload tokens
 
