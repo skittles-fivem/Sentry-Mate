@@ -69,7 +69,10 @@ code is JavaScript, so nothing is copied; only the rules and the API, which SMO 
   background, and what an older decoding wrote is taken out. Same idea for the timeline (drives and
   charges are stamped with the timeline rules' version and rebuilt when they change).
 - **Safe reading**: lines over 512 bytes skipped, a log that unpacks past 4 GB stopped there, columns
-  files refused on any bad count (SMO's spec), so a crafted file can't exhaust memory.
+  files refused on any bad count (SMO's spec) or past 8 million frames, and no log unpacks to more than 200
+  times its packed size (at least 1 MiB; real logs unpack to under 10 times): candump text is cut there; a
+  columns body is refused, which makes the log a hole, never decoded again. A columns decode holds the body and 9 bytes
+  per frame, so a crafted file can't exhaust memory.
 - **Audit log** for every trust, token, delete and setting change.
 
 ### Several cars (owner: yes, as Sentry Manager does it)

@@ -3,7 +3,10 @@
 //! A log is one xz stream holding either candump text (`canbridge-candump-xz/1`) or the same lines as columns
 //! (`canbridge-columns-xz/2`); both give the same lines, in the same order. Pure Rust, and bounded: a candump text
 //! log is read line by line as it unpacks and stopped at [`Limits::max_unpacked`]; a columns body is decoded whole
-//! but only up to [`Limits::max_columns_body`]; a line longer than [`Limits::max_line`] is skipped and counted.
+//! but only up to [`Limits::max_columns_body`] and [`Limits::max_frames`]; a line longer than [`Limits::max_line`] is
+//! skipped and counted. Neither unpacks to more than [`Limits::max_ratio`] times the packed size (at least
+//! [`RATIO_FLOOR`]): real logs unpack to under 10 times theirs, so a small file crafted to unpack to gigabytes of
+//! text, or to a columns body of millions of empty frames, costs no more than a real log of its size.
 
 pub mod columns;
 pub mod line;
@@ -16,6 +19,8 @@ pub const FORMAT_CANDUMP: &str = "canbridge-candump-xz/1";
 pub const FORMAT_COLUMNS: &str = "canbridge-columns-xz/2";
 /// The formats this reader takes, as a server's `ping` lists them.
 pub const FORMATS: [&str; 2] = [FORMAT_CANDUMP, FORMAT_COLUMNS];
+/// A log may always unpack to this much, whatever its packed size ([`Limits::max_ratio`]).
+pub const RATIO_FLOOR: u64 = 1 << 20;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -51,11 +56,34 @@ pub struct Limits {
     pub max_columns_body: u64,
     /// Longer lines are skipped.
     pub max_line: usize,
+    /// Unpacked bytes per packed byte at most (but never less than [`RATIO_FLOOR`] in all): candump text is cut
+    /// there (as at [`Limits::max_unpacked`]), a columns body over it refused.
+    pub max_ratio: u64,
+    /// A columns body holding more frames than this is refused.
+    pub max_frames: u64,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { max_unpacked: 4 << 30, max_columns_body: 64 << 20, max_line: 512 }
+        Limits {
+            max_unpacked: 4 << 30,
+            max_columns_body: 64 << 20,
+            max_line: 512,
+            max_ratio: 200,
+            max_frames: columns::MAX_FRAMES,
+        }
+    }
+}
+
+impl Limits {
+    /// These limits for a log of `packed` bytes: the unpack limits brought down to [`Limits::max_ratio`] of it.
+    fn for_packed(self, packed: usize) -> Limits {
+        let by_ratio = (packed as u64).saturating_mul(self.max_ratio).max(RATIO_FLOOR);
+        Limits {
+            max_unpacked: self.max_unpacked.min(by_ratio),
+            max_columns_body: self.max_columns_body.min(by_ratio),
+            ..self
+        }
     }
 }
 
@@ -65,7 +93,8 @@ pub struct Summary {
     pub format: Format,
     pub lines: u64,
     pub skipped_long_lines: u64,
-    /// A candump text log was cut at [`Limits::max_unpacked`].
+    /// A candump text log was cut at [`Limits::max_unpacked`] (or its ratio), or the caller stopped the read
+    /// ([`read_log_while`]).
     pub truncated: bool,
 }
 
@@ -76,7 +105,7 @@ enum Mode {
 }
 
 /// Receives the unpacked bytes: finds the format from the first bytes, splits text into lines as they come.
-struct Sink<'f, F: FnMut(&[u8])> {
+struct Sink<'f, F: FnMut(&[u8]) -> bool> {
     mode: Mode,
     limits: Limits,
     partial: Vec<u8>,
@@ -88,7 +117,7 @@ struct Sink<'f, F: FnMut(&[u8])> {
     on_line: &'f mut F,
 }
 
-impl<F: FnMut(&[u8])> Sink<'_, F> {
+impl<F: FnMut(&[u8]) -> bool> Sink<'_, F> {
     /// Text, up to the unpack limit: past it the rest is dropped and unpacking stops.
     fn text_limited(&mut self, buf: &[u8]) -> io::Result<()> {
         if self.truncated {
@@ -103,11 +132,17 @@ impl<F: FnMut(&[u8])> Sink<'_, F> {
         }
         self.total += buf.len() as u64;
         self.text(buf);
+        if self.truncated {
+            return Err(io::Error::other(Stop));
+        }
         Ok(())
     }
 
     fn text(&mut self, mut buf: &[u8]) {
         while let Some(nl) = buf.iter().position(|&c| c == b'\n') {
+            if self.truncated {
+                return;
+            }
             let piece = &buf[..nl];
             buf = &buf[nl + 1..];
             if self.skipping || self.partial.len() + piece.len() > self.limits.max_line {
@@ -137,11 +172,14 @@ impl<F: FnMut(&[u8])> Sink<'_, F> {
 
     fn line(&mut self, l: &[u8]) {
         let l = l.strip_suffix(b"\r").unwrap_or(l);
-        if l.is_empty() {
+        if l.is_empty() || self.truncated {
             return;
         }
         self.lines += 1;
-        (self.on_line)(l);
+        if !(self.on_line)(l) {
+            // the caller has what it needs: unpacking stops
+            self.truncated = true;
+        }
     }
 
     /// The first bytes decide: the columns magic, or text.
@@ -159,7 +197,7 @@ impl<F: FnMut(&[u8])> Sink<'_, F> {
     }
 }
 
-impl<F: FnMut(&[u8])> Write for Sink<'_, F> {
+impl<F: FnMut(&[u8]) -> bool> Write for Sink<'_, F> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match &mut self.mode {
             Mode::Detect(head) => {
@@ -196,6 +234,15 @@ impl std::error::Error for Stop {}
 
 /// Reads one `.log.xz` (either format) and calls `on_line` with every line, without its LF, in order.
 pub fn read_log(xz: &[u8], limits: Limits, mut on_line: impl FnMut(&[u8])) -> Result<Summary, Error> {
+    read_log_while(xz, limits, |l| {
+        on_line(l);
+        true
+    })
+}
+
+/// [`read_log`], stopping (unpacking no further) once `on_line` returns false; the summary is then `truncated`.
+pub fn read_log_while(xz: &[u8], limits: Limits, mut on_line: impl FnMut(&[u8]) -> bool) -> Result<Summary, Error> {
+    let limits = limits.for_packed(xz.len());
     let mut sink = Sink {
         mode: Mode::Detect(Vec::with_capacity(32)),
         limits,
@@ -228,15 +275,16 @@ pub fn read_log(xz: &[u8], limits: Limits, mut on_line: impl FnMut(&[u8])) -> Re
         Mode::Columns(body) => {
             let max = limits.max_line;
             let (mut lines, mut skipped) = (0u64, 0u64);
-            columns::decode(&body, |l| {
+            let whole = columns::decode_until(&body, limits.max_frames, |l| {
                 if l.len() > max {
                     skipped += 1;
                 } else if !l.is_empty() {
                     lines += 1;
-                    on_line(l);
+                    return on_line(l);
                 }
+                true
             })?;
-            return Ok(Summary { format: Format::Columns, lines, skipped_long_lines: skipped, truncated: false });
+            return Ok(Summary { format: Format::Columns, lines, skipped_long_lines: skipped, truncated: !whole });
         }
         _ => Format::Candump,
     };

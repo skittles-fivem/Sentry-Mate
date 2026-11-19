@@ -1,8 +1,10 @@
 //! The `canbridge-columns-xz/2` body (after xz): the same lines as a candump text log, kept as columns.
 //!
 //! Spec: SMO `docs/sentry-manager-format.md`, "Columns format". Decoding gives back exactly the candump text a
-//! `/1` log of the same frames holds, in the same order. Anything malformed is refused, and nothing is allocated
-//! beyond a small multiple of the body's size, so a crafted file can't exhaust memory.
+//! `/1` log of the same frames holds, in the same order. Anything malformed is refused. Decoding holds the body and
+//! 9 bytes per frame besides the frames' data (the times and keys are read again as the lines go out), and a body
+//! holds at most [`MAX_FRAMES`] frames (the caller can set fewer), so a crafted file can't exhaust memory: the body's
+//! own size is bounded by the caller (`crate::Limits`, also by how much it may unpack per packed byte).
 
 use crate::Error;
 
@@ -13,6 +15,9 @@ const MAX_KEY_BYTES: u64 = 64;
 const MAX_DATA: u8 = 64;
 const MAX_NOTE: u64 = 65_536;
 const MAX_TIME_US: i128 = 999_999_999_999_999_999;
+/// Frames one body may hold. The bridge closes a log at 48 MB of body, and a real frame takes 10 bytes or more
+/// (a time, a key, a length and its data), so a real log holds under 5 million.
+pub const MAX_FRAMES: u64 = 8_000_000;
 
 /// Whether `body` (an unpacked log) is a columns log.
 pub fn is_columns(body: &[u8]) -> bool {
@@ -63,6 +68,10 @@ impl<'a> Reader<'a> {
 
     fn count(&mut self, max: u64) -> Result<usize, Error> {
         let n = self.small()?;
+        self.count_of(n, max)
+    }
+
+    fn count_of(&self, n: u64, max: u64) -> Result<usize, Error> {
         if n > max {
             return Err(Error::Malformed("count out of range"));
         }
@@ -85,6 +94,35 @@ impl<'a> Reader<'a> {
 
 /// Decodes a whole columns body and calls `on_line` with each line (without its LF), in the original order.
 pub fn decode(body: &[u8], mut on_line: impl FnMut(&[u8])) -> Result<(), Error> {
+    decode_until(body, MAX_FRAMES, |l| {
+        on_line(l);
+        true
+    })
+    .map(|_| ())
+}
+
+/// One time of the times column: the running time `t` moved by the zigzag delta read, checked.
+fn next_time(r: &mut Reader<'_>, t: &mut i128) -> Result<u64, Error> {
+    let z = r.varint()?;
+    let half = i128::try_from(z >> 1).map_err(|_| Error::Malformed("time out of range"))?;
+    *t += if z & 1 == 1 { -(half + 1) } else { half };
+    if !(0..=MAX_TIME_US).contains(t) {
+        return Err(Error::Malformed("time out of range"));
+    }
+    Ok(*t as u64)
+}
+
+fn next_key(r: &mut Reader<'_>, key_count: usize) -> Result<usize, Error> {
+    let k = r.small()?;
+    if k >= key_count as u64 {
+        return Err(Error::Malformed("bad key index"));
+    }
+    Ok(k as usize)
+}
+
+/// [`decode`] with at most `max_frames` frames (more is refused before anything is allocated for them), stopping
+/// early when `on_line` returns false. `Ok(false)`: stopped early.
+pub fn decode_until(body: &[u8], max_frames: u64, mut on_line: impl FnMut(&[u8]) -> bool) -> Result<bool, Error> {
     if !is_columns(body) {
         return Err(Error::Malformed("not a columns log"));
     }
@@ -109,48 +147,44 @@ pub fn decode(body: &[u8], mut on_line: impl FnMut(&[u8])) -> Result<(), Error> 
     }
 
     // each frame takes at least 3 bytes (a time, a key, a length)
-    let frames = r.count((r.left() / 3) as u64)?;
+    let frames = r.small()?;
+    if frames > max_frames {
+        return Err(Error::Malformed("too many frames"));
+    }
+    let frames = r.count_of(frames, (r.left() / 3) as u64)?;
     if let Some(&(last, _)) = notes.last()
         && last > frames as u64
     {
         return Err(Error::Malformed("note after the last frame"));
     }
 
-    let mut times = Vec::with_capacity(frames);
+    // the times are checked now and read again as the lines go out
+    let times_at = r.pos;
     let mut t: i128 = 0;
     for _ in 0..frames {
-        let z = r.varint()?;
-        let half = i128::try_from(z >> 1).map_err(|_| Error::Malformed("time out of range"))?;
-        t += if z & 1 == 1 { -(half + 1) } else { half };
-        if !(0..=MAX_TIME_US).contains(&t) {
-            return Err(Error::Malformed("time out of range"));
-        }
-        times.push(t as u64);
+        next_time(&mut r, &mut t)?;
     }
 
-    let mut key_of = Vec::with_capacity(frames);
-    for _ in 0..frames {
-        let k = r.small()?;
-        if k >= key_count as u64 {
-            return Err(Error::Malformed("bad key index"));
-        }
-        key_of.push(k as usize);
-    }
-
-    // frames grouped by key, in their original order within each key
+    // the keys too: counted per key now, read again for the order and for the lines
+    let keys_at = r.pos;
     let mut start = vec![0usize; key_count + 1];
-    for &k in &key_of {
-        start[k + 1] += 1;
+    for _ in 0..frames {
+        start[next_key(&mut r, key_count)? + 1] += 1;
     }
     for k in 0..key_count {
         start[k + 1] += start[k];
     }
+
+    // frames grouped by key, in their original order within each key
     let mut fill = start[..key_count].to_vec();
-    let mut order = vec![0usize; frames];
-    for (f, &k) in key_of.iter().enumerate() {
-        order[fill[k]] = f;
+    let mut order = vec![0u32; frames];
+    let mut kr = Reader { body, pos: keys_at };
+    for f in 0..frames {
+        let k = next_key(&mut kr, key_count)?;
+        order[fill[k]] = u32::try_from(f).map_err(|_| Error::Malformed("too many frames"))?;
         fill[k] += 1;
     }
+    drop(fill);
 
     let mut lens = vec![0u8; frames];
     for &f in &order {
@@ -158,12 +192,12 @@ pub fn decode(body: &[u8], mut on_line: impl FnMut(&[u8])) -> Result<(), Error> 
         if n > MAX_DATA {
             return Err(Error::Malformed("data too long"));
         }
-        lens[f] = n;
+        lens[f as usize] = n;
     }
     let mut at = Vec::with_capacity(frames);
     let mut total = 0usize;
     for &n in &lens {
-        at.push(total);
+        at.push(u32::try_from(total).map_err(|_| Error::Malformed("data too long"))?);
         total += usize::from(n);
     }
     if total > r.left() {
@@ -172,11 +206,11 @@ pub fn decode(body: &[u8], mut on_line: impl FnMut(&[u8])) -> Result<(), Error> 
     let mut data = vec![0u8; total];
     for k in 0..key_count {
         let group = &order[start[k]..start[k + 1]];
-        let longest = group.iter().map(|&f| lens[f]).max().unwrap_or(0);
+        let longest = group.iter().map(|&f| lens[f as usize]).max().unwrap_or(0);
         for j in 0..longest {
             for &f in group {
-                if lens[f] > j {
-                    data[at[f] + usize::from(j)] = r.byte()?;
+                if lens[f as usize] > j {
+                    data[at[f as usize] as usize + usize::from(j)] = r.byte()?;
                 }
             }
         }
@@ -184,30 +218,39 @@ pub fn decode(body: &[u8], mut on_line: impl FnMut(&[u8])) -> Result<(), Error> 
     if r.left() != 0 {
         return Err(Error::Malformed("trailing bytes"));
     }
+    drop(order);
 
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut line = Vec::with_capacity(160);
     let mut note = 0usize;
+    let (mut tr, mut kr) = (Reader { body, pos: times_at }, Reader { body, pos: keys_at });
+    let mut t: i128 = 0;
     for f in 0..=frames {
         while note < notes.len() && notes[note].0 == f as u64 {
-            on_line(notes[note].1);
+            if !on_line(notes[note].1) {
+                return Ok(false);
+            }
             note += 1;
         }
         if f == frames {
             break;
         }
         line.clear();
-        let t = times[f];
+        let t = next_time(&mut tr, &mut t)?;
+        let k = next_key(&mut kr, key_count)?;
         line.push(b'(');
         line.extend_from_slice((t / 1_000_000).to_string().as_bytes());
         line.extend_from_slice(format!(".{:06}) ", t % 1_000_000).as_bytes());
-        line.extend_from_slice(keys[key_of[f]]);
+        line.extend_from_slice(keys[k]);
         line.push(b'#');
-        for &v in &data[at[f]..at[f] + usize::from(lens[f])] {
+        let a = at[f] as usize;
+        for &v in &data[a..a + usize::from(lens[f])] {
             line.push(HEX[usize::from(v >> 4)]);
             line.push(HEX[usize::from(v & 15)]);
         }
-        on_line(&line);
+        if !on_line(&line) {
+            return Ok(false);
+        }
     }
-    Ok(())
+    Ok(true)
 }
