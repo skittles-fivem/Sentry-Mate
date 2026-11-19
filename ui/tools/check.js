@@ -34,8 +34,9 @@ const REPO_DIR = path.dirname(UI_DIR);
 const SERVE_PY = path.join(UI_DIR, 'devserver', 'serve.py');
 const MATRIX_FILE = path.join(REPO_DIR, 'docs', 'parity', 'coverage-matrix.json');
 const FIXTURES_DIR = path.join(TOOLS_DIR, 'fixtures');
-const DEFAULT_OUT = process.env.UI_CHECK_OUT
-  || '/tmp/claude-0/-home-user/a21ca915-d66a-535e-bc49-94ea44f3d987/scratchpad/ui-build/check';
+// No fixed default folder: a fixed path under a shared temp folder could be made (or linked elsewhere) first by
+// another user. Without --out or UI_CHECK_OUT each run gets a new folder only this user can open (mkdtemp, 0700).
+const DEFAULT_OUT_PREFIX = path.join(os.tmpdir(), 'sentry-mate-ui-check-');
 const DEFAULT_SIZES = '1440x900,3840x2160';
 const TILE_HOST = 'tile.openstreetmap.org';
 const MIN_TEXT_PX = 10;
@@ -1029,7 +1030,7 @@ const HELP = `Usage: node ui/tools/check.js --pack <name or folder> [options]
   --pack NAME|DIR        a pack in ui/packs (instrument) or a pack folder with web/
   --pages LIST|all       page ids, comma separated (default all: every page of the matrix plus sign-in, setup)
   --sizes WxH,...        window sizes (default ${DEFAULT_SIZES})
-  --out DIR              screenshots go to DIR/<pack>/ (default ${DEFAULT_OUT}; or set UI_CHECK_OUT)
+  --out DIR              screenshots go to DIR/<pack>/ (default UI_CHECK_OUT, else a new private ${DEFAULT_OUT_PREFIX}XXXXXX)
   --server-args "..."    extra dev server flags, e.g. "--cars 200 --latency-ms 150"
   --json                 print one JSON object instead of the table
   --allow-missing        missing items only warn
@@ -1060,7 +1061,7 @@ function parseSizes(s) {
 
 function parseArgs(argv) {
   const o = {
-    pack: null, pages: 'all', sizes: DEFAULT_SIZES, out: DEFAULT_OUT, serverArgs: '', json: false, allowMissing: false,
+    pack: null, pages: 'all', sizes: DEFAULT_SIZES, out: null, serverArgs: '', json: false, allowMissing: false,
     full: false, fixtureMatrix: null, selfTest: false, readyTimeoutMs: '20000', idleTimeoutMs: '10000', jobs: '2',
     car: null, drive: null, charge: null, help: false, base: null, user: null, password: null, passwordFile: null,
   };
@@ -1094,7 +1095,6 @@ function parseArgs(argv) {
   }
   o.sizes = parseSizes(o.sizes);
   o.serverArgs = splitArgs(o.serverArgs);
-  o.out = path.resolve(o.out);
   o.matrixFile = o.fixtureMatrix ? path.resolve(o.fixtureMatrix) : MATRIX_FILE;
   if (o.base) {
     if (o.selfTest) throw new UsageError('--self-test runs on the dev server; leave out --base');
@@ -1117,6 +1117,9 @@ function parseArgs(argv) {
     else if (!o.pack.includes('/') && fs.existsSync(path.join(named, 'web'))) o.packDir = named;
     else throw new UsageError(`no pack "${o.pack}": give a name in ui/packs or a folder that has web/`);
   }
+  // (last: a run refused above makes no folder)
+  if (o.out === null) o.out = process.env.UI_CHECK_OUT || (o.help ? DEFAULT_OUT_PREFIX : fs.mkdtempSync(DEFAULT_OUT_PREFIX));
+  o.out = path.resolve(o.out);
   return o;
 }
 

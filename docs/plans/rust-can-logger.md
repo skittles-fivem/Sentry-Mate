@@ -267,7 +267,8 @@ Desktop layouts for every page now (phone layouts later; see Unlimited cars, des
   coordinate, over HTTPS, nothing else; addresses found online are cached so each place is asked once.
 - **Code**: `#![forbid(unsafe_code)]` in our crates, `cargo deny` + `cargo audit` in CI, fuzzing of
   `logfmt`, `dbc` and the upload parser, minimal Docker image (distroless/scratch, non-root, read-only
-  root filesystem), signed release images.
+  root filesystem), signed release images. The image workflow pins every action to a commit id and the base
+  image to a digest (Dependabot proposes bumps; `crates/sentry-mate/tests/repo_hygiene.rs` checks the pins).
 - Nothing in the logger can transmit on a CAN bus or talk to Tesla.
 
 ## Importing old TeslaMate history (owner: yes, 2026-11-16)
@@ -401,9 +402,9 @@ services:
 
 ## Findings from the first real log (2026-11-16)
 
-One log and its sidecar from the owner's car (SMO build 147, columns /2,
-232,920 bytes, 125,645 frames in 61.5 s). Analysed in a session's scratch space only; the log, VIN and
-position stay out of the repo.
+One log and its sidecar from a parked Model Y (columns /2, about a minute). Analysed in a session's
+scratch space only; the log, its name, the VIN, the position and the car's readings stay out of the repo
+(only rounded or relative figures here).
 
 - **Integrity**: SHA-256, length, key fingerprint and ECDSA signature all check.
   The `trust` crate's first test vector can be built the same way from a synthetic log.
@@ -411,9 +412,9 @@ position stay out of the repo.
   **can1 (chassis) was silent** and there was no gear or speed message (0x118 / 0x257). So "asleep" can't
   just mean "no frames": the timeline needs per-bus states (vehicle bus awake + chassis asleep = parked,
   awake, e.g. charging or keeping the battery warm).
-- **Battery % disagrees**: `UI_SOC` (0x33A) 71 %, while `SOCUI292` (0x292) says 100 % and `SOCave292`
-  99.6 %. Sentry Manager's `canNow` takes `SOCUI292` first, so its Battery stat may show 100 % here.
-  `UI_idealRange` 580 mi is also not believable (`UI_Range` 256 mi is). Before the timeline trusts
+- **Battery % disagrees**: `UI_SOC` (0x33A) is the screen's %, while `SOCUI292` (0x292) says 100 % and
+  `SOCave292` nearly that, far above it. Sentry Manager's `canNow` takes `SOCUI292` first, so its Battery
+  stat may show 100 % here. `UI_idealRange` (about twice `UI_Range`) is also not believable (`UI_Range` is). Before the timeline trusts
   any SOC or range signal, check them against the car's screen at several levels; likely a 0x292 layout
   change in newer firmware (a candidate for `override.dbc`), or 0x292 is relative to the charge limit.
   Reported here only; nothing changed in Sentry Manager.
@@ -456,7 +457,7 @@ position stay out of the repo.
 ## Progress
 
 - 2026-11-16: TeslaMate contents removed. Built and tested: `logfmt` (both log formats, decodes SMO's columns
-  fixture and a real build 147 log byte for byte like SMO's reference decoder, 0.06 s per one-minute log), `trust`
+  fixture and a real log byte for byte like SMO's reference decoder, 0.06 s per one-minute log), `trust`
   (signatures, pairing, chain report; verifies a real Screenmate signature), `ingest` (upload API, storage, tokens,
   trust records, TLS 1.3 server), the `sentry-mate` program and its Docker image (6.6 MB, `scratch`, non-root,
   read-only). A real log and sidecar uploaded end to end in chunks came out verified and paired. Phase 1 is done

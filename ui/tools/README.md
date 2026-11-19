@@ -23,7 +23,7 @@ also on Ctrl-C and on errors. It needs Node and the Playwright that is already i
 | `--pack NAME\|DIR` | (required) | A pack in `ui/packs` (`instrument`) or any folder with `web/`. |
 | `--pages LIST\|all` | `all` | Page ids, comma separated. `all` is every page of the matrix plus `sign-in` and `setup`. |
 | `--sizes WxH,...` | `1440x900,3840x2160` | Window sizes. |
-| `--out DIR` | the build scratch folder (or `UI_CHECK_OUT`) | Screenshots go to `DIR/<pack>/`. |
+| `--out DIR` | `UI_CHECK_OUT`, else a new private folder in the system temp folder (`sentry-mate-ui-check-XXXXXX`, made for the run) | Screenshots go to `DIR/<pack>/`. |
 | `--server-args "..."` | none | More dev server flags, e.g. `"--cars 200 --latency-ms 150 --role watch"`. |
 | `--json` | off | Print one JSON object instead of the table. Progress lines still go to stderr. |
 | `--allow-missing` | off | Missing items only warn; the page can still pass. |

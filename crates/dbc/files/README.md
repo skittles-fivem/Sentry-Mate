@@ -9,4 +9,4 @@ source keeps its own licence:
 | `model3y-opendbc.dbc` | messages model3dbc lacks, from [opendbc](https://github.com/commaai/opendbc) commit 27fa1c5, checked on a Model Y | MIT, `LICENSE-opendbc.txt` |
 | `opendbc-tesla_can.dbc`, `opendbc-tesla_powertrain.dbc` | opendbc, Model S/X before 2021 | MIT, `LICENSE-opendbc.txt` |
 | `sx-legacy.dbc` | messages Open Vehicle Monitoring System's Model S module reads | MIT, `LICENSE-ovms.txt` |
-| `override.dbc` | Sentry Six Manager: layouts that changed in newer Tesla firmware, checked on the owner's Model Y | the owner's own work |
+| `override.dbc` | Sentry Six Manager: layouts that changed in newer Tesla firmware, checked on a Model Y's logs | the owner's own work |

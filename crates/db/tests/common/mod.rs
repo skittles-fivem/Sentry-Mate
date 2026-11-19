@@ -1,7 +1,8 @@
 //! Synthetic but realistic car days for tests and measurements: 1 Hz samples shaped like a real car's (speed curves
 //! with stops, slowly moving SOC, noisy pack current, values quantized the way the car's DBC factors make them).
-//! Parked values come from the one real parked minute when it is on this machine (values only: no position, VIN or
-//! key is in it), else from built-in stand-ins. Positions are made up around an arbitrary point.
+//! Parked values come from a decoded parked minute when `SENTRY_MATE_PARKED_CSV` names one (a `sentry-mate log decode`
+//! file kept outside the repo: real car data is never committed), else from built-in stand-ins. Positions are made
+//! up around an arbitrary point.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use model::{ChargeKind, ChargePoint, Gear, Sample};
@@ -10,7 +11,8 @@ use std::collections::BTreeMap;
 pub const DAY_MS: u64 = 86_400_000;
 /// 2026-11-16 00:00 UTC.
 pub const DAY0: u64 = 1_794_787_200_000;
-pub const REAL_CSV: &str = "/home/user/agent-data/real-parked-minute.signals.csv";
+/// The variable naming a decoded parked minute to take parked values from (none set: the stand-ins).
+pub const PARKED_CSV_VAR: &str = "SENTRY_MATE_PARKED_CSV";
 
 pub struct Rng(u64);
 
@@ -50,7 +52,7 @@ pub struct RealParked {
 
 impl RealParked {
     pub fn load() -> Option<RealParked> {
-        let text = std::fs::read_to_string(REAL_CSV).ok()?;
+        let text = std::fs::read_to_string(std::env::var_os(PARKED_CSV_VAR)?).ok()?;
         let mut by: BTreeMap<String, Vec<(f64, f64)>> = BTreeMap::new();
         for line in text.lines().skip(1) {
             let mut f = line.split(',');
@@ -151,14 +153,14 @@ impl Car {
             let n = match real.and_then(|r| r.pool(name)) {
                 Some((pool, rate)) => Noisy::new(pool, rate.max(0.02)),
                 None => {
-                    // stand-ins shaped like the real minute
+                    // made-up stand-ins: round values, with the DBC steps and change rates of a parked car
                     let (base, step, factor, rate): (f64, f64, f64, f64) = match k {
                         "current" => (0.0, 0.1, 0.1, 0.6),
-                        "volt_noise" => (401.4, 0.01, 0.01, 0.5),
-                        "line_v" => (248.6, 0.0333, 0.0333, 0.9),
-                        "line_kw" => (0.8, 0.1, 0.1, 0.3),
-                        "line_a" => (4.0, 1.0, 1.0, 0.1),
-                        _ => (15.7, 0.000_544, 0.000_544, 0.9),
+                        "volt_noise" => (380.0, 0.01, 0.01, 0.5),
+                        "line_v" => (240.0, 0.0333, 0.0333, 0.9),
+                        "line_kw" => (0.7, 0.1, 0.1, 0.3),
+                        "line_a" => (3.0, 1.0, 1.0, 0.1),
+                        _ => (13.8, 0.000_544, 0.000_544, 0.9),
                     };
                     let pool = (0..9).map(|i| dbc(base + (i as f64 - 4.0) * step, factor, 0.0)).collect();
                     Noisy::new(pool, rate)
@@ -190,6 +192,12 @@ impl Car {
     fn parked(&mut self, k: &str) -> f64 {
         let rng = &mut self.rng;
         self.parked.iter_mut().find(|(n, _)| *n == k).map(|(_, n)| n.next(rng)).unwrap_or(0.0)
+    }
+
+    /// A parked value less the first one its pool has: how far it wandered.
+    fn parked_wander(&mut self, k: &str) -> f64 {
+        let rng = &mut self.rng;
+        self.parked.iter_mut().find(|(n, _)| *n == k).map(|(_, n)| n.next(rng) - n.pool[0]).unwrap_or(0.0)
     }
 
     fn sample(&mut self, t_ms: u64, mode: Mode, sec_in_mode: u32) -> (Sample, Option<ChargePoint>) {
@@ -244,9 +252,9 @@ impl Car {
             self.out_temp += self.rng.normal() * 0.002;
         }
         self.in_temp += (21.0 - self.in_temp) * 0.001;
-        // the pack's voltage follows SOC and sags with current; parked, it wanders as the real one did
+        // the pack's voltage follows SOC and sags with current; parked, it wanders around its pool's first value
         let wander = match mode {
-            Mode::ParkedAwake => self.parked("volt_noise") - 401.4,
+            Mode::ParkedAwake => self.parked_wander("volt_noise"),
             _ => self.rng.normal() * 0.02,
         };
         let volt = dbc(340.0 + self.soc * 0.75 - current * 0.04 + wander, 0.01, 0.0);

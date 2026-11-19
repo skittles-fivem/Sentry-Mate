@@ -86,8 +86,8 @@ pub(crate) const WANTED: &[(Field, &str, Kind)] = &[
     (F::Odometer, "Odometer3B6", Number(Q::Distance, 0.0, 5.0e6)),
     (F::Odometer, "Odometer5D8", Number(Q::Distance, 0.0, 5.0e6)),
     // the screen's battery %: UI_SOC (0x33A) on a Model 3/Y, SOCUI302 on a legacy S/X. 0x292's values are not
-    // used here: on the owner's car they read 100 % while the screen showed 71 % (see the plan's findings), so a
-    // fallback to them would make the % jump whenever UI_SOC is late
+    // used here: on a Model Y's logs they read about 100 % while the screen showed far less (see the plan's
+    // findings), so a fallback to them would make the % jump whenever UI_SOC is late
     (F::Soc, "UI_SOC", Number(Q::Percent, 0.0, 100.0)),
     (F::Soc, "SOCUI302", Number(Q::Percent, 0.0, 100.0)),
     (F::SocBms, "SOCave292", Number(Q::Percent, 0.0, 101.0)),
@@ -118,7 +118,7 @@ pub(crate) const WANTED: &[(Field, &str, Kind)] = &[
     (F::Charging, "PCS_hvChargeStatus", ChargingWhen(2.0)),
     // AC or DC: CP_evseChargeType (0x13D CP_chargeStatus) is the charge port's own word on what is plugged in:
     // NO_CHARGER_PRESENT, DC_CHARGER_PRESENT or AC_CHARGER_PRESENT. It is in the same message as the charge status
-    // read above, and it said AC_CHARGER_PRESENT on the owner's car plugged in at home. CP_evseChargeType_UI (0x21D)
+    // read above, and it said AC_CHARGER_PRESENT on a Model Y plugged into an AC charger. CP_evseChargeType_UI (0x21D)
     // is its copy for the screen. Not used: CP_type (the inlet's standard: US Tesla, IEC, GB, CCS; it names the
     // socket, not the current), CP_acChargeState (AC only), BMS_fcContactorRequest (a request for the fast-charge
     // contactors, not a state). When neither type signal is there, the sample builder falls back on what flows: a
