@@ -295,6 +295,68 @@ async fn a_token_belongs_to_one_car_after_its_first_upload() {
     assert_eq!(b["files"][LOG]["state"], "complete");
 }
 
+async fn put_as(t: &T, token: &str, name: &str, bytes: &[u8]) -> (StatusCode, Value) {
+    let sha = hex::encode(Sha256::digest(bytes));
+    let h = [("upload-offset", "0".to_string()), ("upload-length", bytes.len().to_string()), ("upload-sha256", sha)];
+    call(t, "POST", &format!("/api/can/logs/{name}"), Some(token), &h, bytes.to_vec(), true).await
+}
+
+async fn status_as(t: &T, token: &str, names: &[&str]) -> (StatusCode, Value) {
+    let body = serde_json::to_vec(&json!({ "names": names })).unwrap();
+    call(t, "POST", "/api/can/logs/status", Some(token), &[("content-type", "application/json".into())], body, true)
+        .await
+}
+
+#[tokio::test]
+async fn a_fresh_token_cannot_take_another_cars_key() {
+    let t = setup().await;
+    // the car's own token uploads: its key is in use from now on (and in every log name, so not a secret)
+    let (s, _) = put(&t, LOG, b"genuine", 0, b"genuine").await;
+    assert_eq!(s, StatusCode::CREATED);
+    // a token handed out for another car (never used) claims the car's key
+    let (attacker, a) = t.up.tokens.create("Another car").await.unwrap();
+    let squat = "abcdef123456_20261120T080000Z_1.log.xz";
+    let (s, b) = put_as(&t, &attacker, squat, b"junk").await;
+    assert_eq!((s, b["code"].as_str()), (StatusCode::FORBIDDEN, Some("wrong_car")));
+    assert!(!t.up.store.exists(squat), "nothing planted in the car's folder");
+    // it doesn't learn which of the car's logs exist
+    let (s, b) = status_as(&t, &attacker, &[LOG]).await;
+    assert_eq!((s, b["code"].as_str()), (StatusCode::FORBIDDEN, Some("wrong_car")));
+    // and it stays untied: not listed as the car's token
+    let (_, b) = call(&t, "GET", "/api/can/logs/ping", Some(&attacker), &[], vec![], true).await;
+    assert_eq!(b["vehicleKey"], Value::Null);
+    assert!(t.up.tokens.list().await.iter().any(|x| x.id == a.id && x.vehicle_key.is_none()));
+    // the genuine bridge still uploads that name
+    let (s, _) = put(&t, squat, b"real log", 0, b"real log").await;
+    assert_eq!(s, StatusCode::CREATED);
+
+    // a key another token is tied to, with no log here yet, is just as taken
+    let (other, o) = t.up.tokens.create("Second car").await.unwrap();
+    t.up.tokens.tie(&o, "0123456789ab").await.unwrap();
+    let _ = other;
+    let (s, b) = put_as(&t, &attacker, "0123456789ab_20261108T143000Z_1.log.xz", b"x").await;
+    assert_eq!((s, b["code"].as_str()), (StatusCode::FORBIDDEN, Some("wrong_car")));
+
+    // the fresh token still works for a car key no one uses yet
+    let (s, b) = status_as(&t, &attacker, &["fedcba654321_20261108T143000Z_1.log.xz"]).await;
+    assert_eq!(
+        (s, b["files"]["fedcba654321_20261108T143000Z_1.log.xz"]["state"].as_str()),
+        (StatusCode::OK, Some("missing"))
+    );
+    let (s, _) = put_as(&t, &attacker, "fedcba654321_20261108T143000Z_1.log.xz", b"mine").await;
+    assert_eq!(s, StatusCode::CREATED);
+
+    // a replacement token made for the car (the owner names its key) takes the key over
+    let (replacement, _) = t.up.tokens.create_for("Model Y", &["abcdef123456".to_string()]).await.unwrap();
+    let (s, b) = status_as(&t, &replacement, &[LOG]).await;
+    assert_eq!((s, b["files"][LOG]["state"].as_str()), (StatusCode::OK, Some("complete")));
+    let (s, _) = put_as(&t, &replacement, "abcdef123456_20261121T080000Z_1.log.xz", b"after").await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (_, b) = call(&t, "GET", "/api/can/logs/ping", Some(&replacement), &[], vec![], true).await;
+    assert_eq!(b["vehicleKey"], "abcdef123456");
+    assert!(t.up.tokens.create_for("Model Y", &["not a key".to_string()]).await.is_err());
+}
+
 #[tokio::test]
 async fn no_room_and_too_many_logs_are_refused() {
     let t = setup_with(|can, v| Store::with_limits(can, v, 1 << 30, 1, |_| 100 << 20)).await;
@@ -463,6 +525,9 @@ async fn a_car_that_cant_be_judged_is_reported_without_its_key() {
     let car = t.data.join("can/abcdef123456");
     std::fs::create_dir_all(&car).unwrap();
     std::fs::write(car.join("trust.head"), b"damaged, not sealed").unwrap();
+    // (the car's folder is there, so its key is in use: the car's own token is tied to it)
+    let tok = t.up.tokens.find(&t.token).await.unwrap();
+    t.up.tokens.tie(&tok, "abcdef123456").await.unwrap();
     let (s, _) = put(&t, LOG, b"a minute", 0, b"a minute").await;
     assert_eq!(s, StatusCode::CREATED);
     // and the sweep can't judge its waiting logs either

@@ -54,7 +54,7 @@ a file it can't read is on standard error.
 | `init` | Makes the vault now and prints the recovery key on screen, not into a file. Exit 1 if there is a vault or a key file already. |
 | `restore` | Reads the recovery key from standard input and writes a new key file. Run it with Sentry Mate stopped. |
 | `recovery-key new` | Prints a new recovery key. The old one stops working. |
-| `token new --car NAME` | Makes an upload token (shown once) and prints the three fields for the app. |
+| `token new --car NAME [--key KEY]` | Makes an upload token (shown once) and prints the three fields for the app. `--key` (repeatable) lets it take over a car key in use already: a replacement for that car's token. |
 | `token list` | One line per token: id, car name, `in use` or `revoked`, the car key it is tied to. |
 | `token revoke ID` | Revokes a token. It stops working at its next request, with the server still running. |
 | `fingerprint` | Prints the certificate SHA-256 for the app. |
@@ -86,6 +86,13 @@ docker exec sentry-mate /sentry-mate token new --car "Model Y"
 ```
 
 A new token works at once, with no restart. A token is tied to one car key on its first upload: one token per car.
+Its first upload may only take a car key no other token uses and with no logs here. To replace a car's lost or
+revoked token, name the car's key (the last column of `token list`), or make the token on the car's page in the web UI:
+
+```bash
+docker exec sentry-mate /sentry-mate token new --car "Model Y" --key <car key>
+```
+
 For another car, make another token. List them:
 
 ```bash

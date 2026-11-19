@@ -306,6 +306,10 @@ fn open_for_uploads(up: &Uploads, token: &Token, conn: Conn) -> Result<(), ApiEr
     }
 }
 
+fn wrong_car() -> ApiError {
+    ApiError::new(403, "wrong_car", "This token is for another car's CAN Bridge.")
+}
+
 async fn ping(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, ApiError> {
     let conn = conn_of(req.extensions().get::<Conn>())?;
     let token = authorize(&up, req.headers(), conn).await?;
@@ -346,6 +350,12 @@ async fn status(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>
                 "This token isn't tied to a car yet: ask about one car's files at a time.",
             ));
         }
+        // only about a car key its first upload could take: never about another car's logs
+        if let Some(k) = keys.into_iter().next()
+            && !up.tokens.may_claim(&token, k, up.judge.known(k)).await?
+        {
+            return Err(wrong_car());
+        }
     }
     let files: serde_json::Map<String, serde_json::Value> = up
         .store
@@ -374,7 +384,7 @@ async fn upload(AxState(up): St, Path(name): Path<String>, req: Request) -> Resu
     if let Some(k) = &token.vehicle_key
         && k != n.vehicle_key
     {
-        return Err(ApiError::new(403, "wrong_car", "This token is for another car's CAN Bridge."));
+        return Err(wrong_car());
     }
     let h = req.headers().clone();
     let offset = header_u64(&h, "upload-offset")
@@ -413,11 +423,12 @@ async fn write_chunk(
     length: u64,
     sha: &str,
 ) -> Result<crate::store::Received, ApiError> {
-    // the first upload ties the token to this car key
+    // the first upload ties the token to this car key, unless the key is another car's (another token's, or with
+    // logs here) and the token wasn't made for that car
     if token.vehicle_key.is_none() {
-        let bound = up.tokens.tie(token, vehicle_key).await?;
-        if bound != vehicle_key {
-            return Err(ApiError::new(403, "wrong_car", "This token is for another car's CAN Bridge."));
+        let bound = up.tokens.claim(token, vehicle_key, up.judge.known(vehicle_key)).await?;
+        if bound.as_deref() != Some(vehicle_key) {
+            return Err(wrong_car());
         }
     }
     let r = up.store.receive(name, body, offset, length, sha).await?;

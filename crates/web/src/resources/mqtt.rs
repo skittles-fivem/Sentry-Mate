@@ -321,6 +321,17 @@ fn field_of(e: &mqtt::Error) -> &'static str {
     }
 }
 
+/// Whether `host`, `port`, `tls` and `pin` name the broker the saved setting connects to (the same certificate pin, or
+/// none on both).
+fn same_broker(saved: &mqtt::Settings, host: &str, port: u16, tls: bool, pin: Option<&str>) -> bool {
+    let Ok(old) = mqtt::settings::parse_broker(&saved.broker, true) else { return false };
+    let norm = |p: Option<&str>| p.map(mqtt::security::normalize_fingerprint);
+    old.host.eq_ignore_ascii_case(host)
+        && old.port == port
+        && old.tls == tls
+        && norm(saved.cert_sha256.as_deref()) == norm(pin)
+}
+
 /// The new setting a PUT gives, every rule checked.
 fn replaced(cur: &Stored, body: &JsonBody) -> ApiResult<Stored> {
     let mut known: Vec<&str> = FIELDS.to_vec();
@@ -427,7 +438,16 @@ fn replaced(cur: &Stored, body: &JsonBody) -> ApiResult<Stored> {
     }
     let password = match password {
         Some(p) => p,
-        None => cur.settings.password.clone().filter(|p| !p.is_empty()),
+        None => {
+            let kept = cur.settings.password.clone().filter(|p| !p.is_empty());
+            // the saved password goes only to the broker it was typed for: a PUT that points it at another host,
+            // port, TLS setting or certificate pin must send it again (else an admin session could carry the owner's
+            // broker login, which no answer shows, to a broker of its own with the next test or publish)
+            if kept.is_some() && !same_broker(&cur.settings, &host, port, tls, pin.as_deref()) {
+                rule.add("password", "The broker changed: send its password again (or null for none).");
+            }
+            kept
+        }
     };
     if let Some(p) = &password {
         if !tls {

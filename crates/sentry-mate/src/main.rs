@@ -251,6 +251,10 @@ enum TokenCmd {
     New {
         #[arg(long)]
         car: String,
+        /// A car key it may take over although another token used it (a replacement for that car's lost or
+        /// revoked token; the last column of `token list`). Without it, only a car key no one uses yet.
+        #[arg(long = "key")]
+        keys: Vec<String>,
     },
     List,
     Revoke {
@@ -460,8 +464,8 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
             let _pass = pass?;
             let tokens = Tokens::open(tokens_file(&data), v.clone()).await?;
             match cmd {
-                TokenCmd::New { car } => {
-                    let (token, t) = tokens.create(&car).await?;
+                TokenCmd::New { car, keys } => {
+                    let (token, t) = tokens.create_for(&car, &keys).await?;
                     let fp = Identity::load_or_create(&tls_dir(&data), &[], &v)?.fingerprint();
                     println!("Token for {} (id {}), shown once:\n\n  {token}\n", t.car, t.id);
                     println!("In the CAN Bridge app, Second Sentry Six Manager:");
@@ -2127,7 +2131,10 @@ mod tests {
         assert_eq!(needs(&Cmd::Init), Some((true, true)));
         assert_eq!(needs(&Cmd::Restore), Some((true, true)));
         assert_eq!(needs(&Cmd::RecoveryKey { cmd: RecoveryCmd::New }), Some((true, false)));
-        assert_eq!(needs(&Cmd::Token { cmd: TokenCmd::New { car: String::new() } }), Some((true, false)));
+        assert_eq!(
+            needs(&Cmd::Token { cmd: TokenCmd::New { car: String::new(), keys: Vec::new() } }),
+            Some((true, false))
+        );
         assert_eq!(needs(&Cmd::Token { cmd: TokenCmd::Revoke { id: String::new() } }), Some((true, false)));
         assert_eq!(needs(&Cmd::Fingerprint), Some((true, false)));
         // the move: the old server writes in its data folder, a new one taking data in writes its own key file

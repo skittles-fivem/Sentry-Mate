@@ -189,7 +189,8 @@ async fn a_car_with_fifty_thousand_logs_uploads_without_its_folder_being_read() 
 
     // a restart: nothing in memory; uploads now read the count, never the folder
     let up = uploads(&t, LOGS + 2, 1000, CACHE).await;
-    let (token, _) = up.tokens.create("Big car").await.unwrap();
+    // (the car has logs here, so only a token made for its key may take it)
+    let (token, _) = up.tokens.create_for("Big car", &["bigcar".to_string()]).await.unwrap();
     let started = Instant::now();
     let (s, b) = put(&up, &token, "bigcar_20261109T000000Z_1.log.xz", &fake_log(1)).await;
     let first = started.elapsed();

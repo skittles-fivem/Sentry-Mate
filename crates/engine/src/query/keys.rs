@@ -252,12 +252,14 @@ pub fn create_token(e: &Engine, car: Option<CarId>) -> QResult<NewToken> {
     let Some(tokens) = e.tokens() else {
         return Err(QueryError::Engine(crate::Error::Store("the upload tokens are not open here".into())));
     };
-    let name = match car {
-        Some(c) => car_of(e, c)?.name,
-        None => String::new(),
+    // a car's token may take over that car's keys (a replacement token); any other key in use is refused at its
+    // first upload, so a token can't be pointed at another car's key
+    let (name, keys) = match car {
+        Some(c) => (car_of(e, c)?.name, e.db().car(c)?.map(|c| c.vehicle_keys).unwrap_or_default()),
+        None => (String::new(), Vec::new()),
     };
     let rt = e.handle()?;
-    let (secret, t) = rt.block_on(tokens.create(&name)).map_err(crate::Error::Io)?;
+    let (secret, t) = rt.block_on(tokens.create_for(&name, &keys)).map_err(crate::Error::Io)?;
     if let Some(c) = car {
         let _one = crate::lock(&e.inner.claim);
         let mut m = records::token_cars(e.db())?;

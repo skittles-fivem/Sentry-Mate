@@ -306,16 +306,25 @@ async fn mqtt_settings_status_preview_and_test() {
         (Some("broker.example"), Some(8883), Some(v1 + 1))
     );
     assert!(!r.text().contains("made-up-password"));
-    // left out: kept; turning TLS off with it saved is refused
+    // left out: kept for the same broker; turning TLS off with it saved is refused
     let mut b = mqtt_body(v1 + 1);
     b.as_object_mut().unwrap().remove("password");
+    b["namespace"] = json!("sentrymate2");
+    b["host"] = json!("BROKER.example");
+    let r = admin.put("/api/v1/settings/mqtt", b.clone()).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["password_set"], true);
+    b["namespace"] = json!("sentrymate");
+    b["version"] = json!(v1 + 2);
     b["pin_sha256"] = json!(vec!["AB"; 32].join(":"));
+    b["password"] = json!("made-up-password");
     let r = admin.put("/api/v1/settings/mqtt", b.clone()).await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["password_set"], true);
     assert_eq!(r.json()["pin_sha256"], vec!["AB"; 32].join(":"));
+    b.as_object_mut().unwrap().remove("password");
     let mut off = b.clone();
-    off["version"] = json!(v1 + 2);
+    off["version"] = json!(v1 + 3);
     off["tls"] = json!(false);
     off["pin_sha256"] = Value::Null;
     let r = admin.put("/api/v1/settings/mqtt", off.clone()).await;
@@ -328,7 +337,7 @@ async fn mqtt_settings_status_preview_and_test() {
     // a stale version
     let r = admin.put("/api/v1/settings/mqtt", mqtt_body(v1)).await;
     assert_eq!((r.status, r.code().as_deref()), (409, Some("stale_version")));
-    let r = admin.put("/api/v1/settings/mqtt", mqtt_body(v1 + 3)).await;
+    let r = admin.put("/api/v1/settings/mqtt", mqtt_body(v1 + 4)).await;
     assert_eq!(r.status, 200, "{}", r.text());
 
     // status: anyone signed in
@@ -432,6 +441,52 @@ async fn network() {
 
 /// With MQTT on, the publisher started by `serve` connects to the broker (here a listener that takes the
 /// connection and reads its first packet: an MQTT CONNECT).
+/// An admin session can't carry the saved broker password (write-only: no answer shows it) to a broker of its own:
+/// a PUT that changes the broker's host, port, TLS or certificate pin must send the password again.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_saved_mqtt_password_never_follows_a_new_broker() {
+    let t = seeded().await;
+    let mut admin = t.s.admin().await;
+    let v = ok(&mut admin, "/api/v1/settings/mqtt").await["version"].as_u64().unwrap();
+    let r = admin.put("/api/v1/settings/mqtt", mqtt_body(v)).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let v = v + 1;
+    let pin = "7d".repeat(32);
+    let attacks = [
+        json!({ "host": "127.0.0.1", "port": 18883, "pin_sha256": pin }),
+        json!({ "host": "attacker.example" }),
+        json!({ "port": 18883 }),
+        json!({ "pin_sha256": pin }),
+    ];
+    for change in attacks {
+        let mut b = mqtt_body(v);
+        b.as_object_mut().unwrap().remove("password");
+        for (k, x) in change.as_object().unwrap() {
+            b[k] = x.clone();
+        }
+        let r = admin.put("/api/v1/settings/mqtt", b).await;
+        assert_eq!((r.status, r.code().as_deref()), (422, Some("invalid")), "{change}: {}", r.text());
+        assert!(fields(&r).get("password").is_some(), "{change}: {}", r.text());
+    }
+    // nothing was saved: the test still goes to the broker the password was typed for
+    let m = ok(&mut admin, "/api/v1/settings/mqtt").await;
+    assert_eq!(
+        (m["host"].as_str(), m["port"].as_u64(), m["version"].as_u64()),
+        (Some("broker.example"), Some(8883), Some(v))
+    );
+    assert_eq!(m["pin_sha256"], Value::Null);
+    // sent again, the new broker is saved (or null: saved without one)
+    let mut b = mqtt_body(v);
+    b["host"] = json!("broker2.example");
+    b["password"] = json!("another-made-up-password");
+    assert_eq!(admin.put("/api/v1/settings/mqtt", b.clone()).await.status, 200);
+    b["version"] = json!(v + 1);
+    b["host"] = json!("broker3.example");
+    b["password"] = Value::Null;
+    let r = admin.put("/api/v1/settings/mqtt", b).await;
+    assert_eq!((r.status, r.json()["password_set"].clone()), (200, json!(false)), "{}", r.text());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn turning_mqtt_on_connects() {
     use tokio::io::AsyncReadExt;

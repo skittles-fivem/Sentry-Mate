@@ -49,6 +49,11 @@ struct Stored {
     car: String,
     created_ms: u64,
     revoked: bool,
+    /// Car keys this token may be tied to although they are already in use (another token's, or with logs here):
+    /// the keys of the car it was made for, so a replacement token takes over its car's key. Any other key in use is
+    /// refused at its first upload.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    may_take: Vec<String>,
 }
 
 /// What `<sha256>.key` holds.
@@ -85,6 +90,9 @@ pub struct Tokens {
     cache: Mutex<Lru<Cached>>,
     /// One write at a time per token (in this process).
     locks: KeyLocks<tokio::sync::Mutex<()>>,
+    /// One first-upload claim at a time ([`Tokens::claim`]), with the ties read so far (token hash → car key: a tie
+    /// is written once and never changes, so each is read once).
+    claims: tokio::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 const LEGACY_LABEL: &str = "tokens.json";
@@ -118,7 +126,14 @@ impl Tokens {
         let dir = legacy.with_extension("");
         let label = dir.file_name().and_then(|n| n.to_str()).unwrap_or("tokens").to_string();
         std::fs::create_dir_all(&dir)?;
-        let t = Tokens { dir, label, vault, cache: Mutex::new(Lru::new(CACHED_TOKENS)), locks: KeyLocks::new() };
+        let t = Tokens {
+            dir,
+            label,
+            vault,
+            cache: Mutex::new(Lru::new(CACHED_TOKENS)),
+            locks: KeyLocks::new(),
+            claims: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        };
         t.migrate(&legacy)?;
         Ok(t)
     }
@@ -148,7 +163,8 @@ impl Tokens {
         for t in old.tokens.into_iter().filter(|t| valid_hash(&t.hash)) {
             let (file, label) = self.file_of(&t.hash, "json");
             if !file.exists() {
-                let s = Stored { id: t.id, car: t.car, created_ms: t.created_ms, revoked: t.revoked };
+                let s =
+                    Stored { id: t.id, car: t.car, created_ms: t.created_ms, revoked: t.revoked, may_take: Vec::new() };
                 self.write(&file, &label, &s)?;
             }
             if let Some(k) = t.vehicle_key {
@@ -197,8 +213,15 @@ impl Tokens {
         })
     }
 
-    /// A new token for a car: returns it (shown once) and its record. There is no limit on how many.
+    /// A new token for a car: returns it (shown once) and its record. There is no limit on how many. Its first upload
+    /// may only take a car key no one uses yet ([`Tokens::claim`]); see [`Tokens::create_for`].
     pub async fn create(&self, car: &str) -> std::io::Result<(String, Token)> {
+        self.create_for(car, &[]).await
+    }
+
+    /// [`Tokens::create`] for a car that has keys already: its first upload may also take one of `keys` (a
+    /// replacement token for a car whose token was lost or revoked).
+    pub async fn create_for(&self, car: &str, keys: &[String]) -> std::io::Result<(String, Token)> {
         let mut raw = [0u8; 32];
         getrandom::fill(&mut raw).map_err(std::io::Error::other)?;
         let token = format!("{PREFIX}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw));
@@ -213,7 +236,13 @@ impl Tokens {
             revoked: false,
         };
         let (file, label) = self.file_of(&t.hash, "json");
-        let s = Stored { id: t.id.clone(), car: t.car.clone(), created_ms: t.created_ms, revoked: false };
+        if let Some(k) = keys.iter().find(|k| !crate::ledger::valid_key(k)) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("not a car key: {k:?}")));
+        }
+        let mut may_take = keys.to_vec();
+        may_take.sort();
+        may_take.dedup();
+        let s = Stored { id: t.id.clone(), car: t.car.clone(), created_ms: t.created_ms, revoked: false, may_take };
         self.write(&file, &label, &s)?;
         Ok((token, t))
     }
@@ -269,7 +298,93 @@ impl Tokens {
         (!token.revoked).then_some(token)
     }
 
-    /// Ties a token to a car key (its first upload). Returns the key it is tied to (an earlier one wins).
+    /// Ties a token to the car key of its first upload, unless that key is someone else's: one another token is tied
+    /// to (revoked or not), or one with logs here already (`in_use`, which the caller knows from the store), and the
+    /// token wasn't made for that key's car ([`Tokens::create_for`]). Otherwise a fresh token, handed out for another
+    /// car, could take over a car's key (car keys aren't secret: they are in every log name) and upload into its
+    /// history, ask about its logs, block its log names or pair its own signing key. Returns the key the token is
+    /// tied to (an earlier tie wins), or `None` when the key is refused.
+    pub async fn claim(&self, token: &Token, vehicle_key: &str, in_use: bool) -> std::io::Result<Option<String>> {
+        if !valid_hash(&token.hash) {
+            return Err(other("no such token"));
+        }
+        // one claim at a time in this process (only the server claims): two fresh tokens can't take one key at once
+        let mut ties = self.claims.lock().await;
+        if let Some(k) = self.read_tie(&token.hash)? {
+            return Ok(Some(k));
+        }
+        if !self.may_claim_locked(&mut ties, token, vehicle_key, in_use)? {
+            return Ok(None);
+        }
+        let k = self.tie(token, vehicle_key).await?;
+        ties.insert(token.hash.clone(), k.clone());
+        Ok(Some(k))
+    }
+
+    /// Whether [`Tokens::claim`] would tie `token` to `vehicle_key` (always so for the key it is tied to already).
+    pub async fn may_claim(&self, token: &Token, vehicle_key: &str, in_use: bool) -> std::io::Result<bool> {
+        if !valid_hash(&token.hash) {
+            return Err(other("no such token"));
+        }
+        let mut ties = self.claims.lock().await;
+        if let Some(k) = self.read_tie(&token.hash)? {
+            return Ok(k == vehicle_key);
+        }
+        self.may_claim_locked(&mut ties, token, vehicle_key, in_use)
+    }
+
+    fn may_claim_locked(
+        &self,
+        ties: &mut std::collections::HashMap<String, String>,
+        token: &Token,
+        vehicle_key: &str,
+        in_use: bool,
+    ) -> std::io::Result<bool> {
+        let (file, label) = self.file_of(&token.hash, "json");
+        let Some(bytes) = self.vault.read_file(&file, &label).map_err(other)? else {
+            return Err(other("no such token"));
+        };
+        let s: Stored = serde_json::from_slice(&bytes).map_err(other)?;
+        if s.may_take.iter().any(|k| k == vehicle_key) {
+            return Ok(true);
+        }
+        if in_use {
+            return Ok(false);
+        }
+        Ok(!self.tied_elsewhere(ties, &token.hash, vehicle_key)?)
+    }
+
+    /// Whether a token other than `hash` is tied to `vehicle_key`. Lists the folder (ties made by another process
+    /// count too) and reads only the ties not read before: only for a token's first upload.
+    fn tied_elsewhere(
+        &self,
+        ties: &mut std::collections::HashMap<String, String>,
+        hash: &str,
+        vehicle_key: &str,
+    ) -> std::io::Result<bool> {
+        for e in std::fs::read_dir(&self.dir)?.flatten() {
+            let name = e.file_name();
+            let Some(h) = name.to_str().and_then(|n| n.strip_suffix(".key")).filter(|h| valid_hash(h)) else {
+                continue;
+            };
+            if h == hash {
+                continue;
+            }
+            if !ties.contains_key(h) {
+                // a tie that can't be read might be this key's: refuse rather than share it
+                if let Some(k) = self.read_tie(h)? {
+                    ties.insert(h.to_string(), k);
+                }
+            }
+            if ties.get(h).is_some_and(|k| k == vehicle_key) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Ties a token to a car key, whoever else uses it (the owner's tools and tests; an upload goes through
+    /// [`Tokens::claim`]). Returns the key it is tied to (an earlier one wins).
     pub async fn tie(&self, token: &Token, vehicle_key: &str) -> std::io::Result<String> {
         if !valid_hash(&token.hash) {
             return Err(other("no such token"));
@@ -319,7 +434,11 @@ impl Tokens {
         let lock = self.locks.get(&t.hash);
         let _one = lock.lock().await;
         let (file, label) = self.file_of(&t.hash, "json");
-        let s = Stored { id: t.id, car: t.car, created_ms: t.created_ms, revoked: true };
+        let may_take = match self.vault.read_file(&file, &label).map_err(other)? {
+            Some(b) => serde_json::from_slice::<Stored>(&b).map_err(other)?.may_take,
+            None => Vec::new(),
+        };
+        let s = Stored { id: t.id, car: t.car, created_ms: t.created_ms, revoked: true, may_take };
         self.write(&file, &label, &s)?;
         self.cache.lock().unwrap_or_else(PoisonError::into_inner).remove(&t.hash);
         Ok(true)
@@ -444,7 +563,13 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(|| {
                 for _ in 0..100 {
-                    let st = Stored { id: t.id.clone(), car: t.car.clone(), created_ms: t.created_ms, revoked: false };
+                    let st = Stored {
+                        id: t.id.clone(),
+                        car: t.car.clone(),
+                        created_ms: t.created_ms,
+                        revoked: false,
+                        may_take: Vec::new(),
+                    };
                     cli.write(&json, &json_label, &st).unwrap();
                 }
             });

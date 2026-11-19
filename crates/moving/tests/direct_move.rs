@@ -174,7 +174,8 @@ impl Uploader {
 
 async fn token_for(s: &Server) -> String {
     let tokens = Tokens::open(s.data.join("tokens.json"), s.vault.clone()).await.unwrap();
-    tokens.create("Model Y test").await.unwrap().0
+    // a replacement for the car's token: the car's key has logs here, so only a token made for it may take it
+    tokens.create_for("Model Y test", &[KEY.to_string()]).await.unwrap().0
 }
 
 async fn token_list(data: &Path, v: Arc<Vault>) -> Vec<(String, String, bool, Option<String>)> {
