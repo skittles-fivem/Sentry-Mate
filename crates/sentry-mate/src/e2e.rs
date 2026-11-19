@@ -361,5 +361,81 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
     let r = c.get("/api/v1/setup/status").await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!((r.json()["cars"].clone(), r.json()["keys_waiting"].clone()), (json!(2), json!(0)), "{}", r.text());
+
+    // the audit log says which key went to which car and which token was made or revoked (by id and car), not just
+    // the route: moving a key redirects whose history a car's signed logs count for
+    let owner = items[0]["car"].as_str().unwrap().to_string();
+    let other = ids.iter().find(|i| **i != owner).unwrap().clone();
+    let r = c.request("PATCH", &format!("/api/v1/can-keys/{key}"), Some(json!({ "car": other }))).await;
+    assert_eq!((r.status, r.json()["car"].clone()), (200, json!(other)), "{}", r.text());
+    let r = c.request("PATCH", &format!("/api/v1/can-keys/{key}"), Some(json!({ "car": owner }))).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let r = c.request("POST", &format!("/api/v1/cars/{other}/upload-tokens"), None).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let tid = r.json()["id"].as_str().unwrap().to_string();
+    let r = c.request("DELETE", &format!("/api/v1/cars/{other}/upload-tokens/{tid}"), None).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let audit = c.get("/api/v1/audit?limit=200").await;
+    assert_eq!(audit.status, 200, "{}", audit.text());
+    let rows = audit.json()["items"].as_array().cloned().unwrap();
+    let has = |action: &str, target: String, car: &Value| {
+        rows.iter().any(|e| e["action"] == action && e["target"] == json!(target) && e["car"] == *car)
+    };
+    let (o, t) = (json!(owner), json!(other));
+    assert!(has("key-unassigned", format!("key:{owner}:{key}"), &o), "the car the key left: {rows:?}");
+    assert!(has("key-assigned", format!("key:{other}:{key}"), &t), "the car the key went to: {rows:?}");
+    assert!(has("key-assigned", format!("key:{owner}:{key}"), &o), "and back: {rows:?}");
+    assert!(has("key-preferred", format!("key:{owner}:{key}"), &o), "{rows:?}");
+    assert!(has("token-created", format!("token:{other}:{tid}"), &t), "{rows:?}");
+    assert!(has("token-revoked", format!("token:{other}:{tid}"), &t), "{rows:?}");
+    let new_id = made["id"].as_str().unwrap();
+    assert!(has("token-created", format!("token:{new_id}"), &Value::Null), "a new car's token: {rows:?}");
+    assert!(has("token-revoked", format!("token:{new_id}"), &Value::Null), "{rows:?}");
+    let moved = rows.iter().find(|e| e["action"] == "key-assigned" && e["car"] == t).unwrap();
+    assert!(moved["summary"].as_str().unwrap().contains(&format!("from {owner} to {other}")), "{moved}");
+    assert!(
+        !rows.iter().any(|e| e["summary"].as_str().is_some_and(|s| s.contains("{key}") || s.contains("{token}"))),
+        "no entry with only the route: {rows:?}"
+    );
+
+    // a watch account's set-up status speaks only of its own cars: not of a key no car has (another car's, here),
+    // nor of the tokens made for a new car
+    let r = c.request("PATCH", &format!("/api/v1/can-keys/{key}"), Some(json!({ "car": null }))).await;
+    assert_eq!((r.status, r.json()["car"].clone()), (200, Value::Null), "{}", r.text());
+    let r = c.request("POST", "/api/v1/upload-tokens", None).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let admin_status = c.get("/api/v1/setup/status").await.json();
+    assert_eq!(admin_status["keys_waiting"], json!(1), "{admin_status}");
+    assert!(admin_status["fixes"].as_array().unwrap().iter().any(|f| f["key"] == json!(key)), "{admin_status}");
+    let r = c
+        .request(
+            "POST",
+            "/api/v1/accounts",
+            Some(json!({ "name": "watcher", "password": "another correct horse battery", "role": "watch",
+                         "cars": [other], "confirm_password": "correct horse battery staple" })),
+        )
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let mut w = Client { port: web_port, tls: c.tls.clone(), cookie: None };
+    let r = w
+        .request(
+            "POST",
+            "/api/v1/session",
+            Some(json!({ "name": "watcher", "password": "another correct horse battery" })),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(w.get("/api/v1/can-keys").await.status, 403);
+    let ws = w.get("/api/v1/setup/status").await;
+    assert_eq!(ws.status, 200, "{}", ws.text());
+    let body = ws.json();
+    assert!(!ws.text().contains(&key), "the waiting key's id: {body}");
+    assert_eq!((body["cars"].clone(), body["keys_waiting"].clone()), (json!(1), json!(0)), "{body}");
+    assert!(!body["fixes"].as_array().unwrap().iter().any(|f| f["cause"] == "key_waiting"), "{body}");
+    assert!(
+        body["tokens"]["count"].as_u64() < admin_status["tokens"]["count"].as_u64(),
+        "only its own car's tokens: {body} {admin_status}"
+    );
+    assert!(body["tokens"]["count"].as_u64().unwrap() <= 1, "{body}");
     server.abort();
 }

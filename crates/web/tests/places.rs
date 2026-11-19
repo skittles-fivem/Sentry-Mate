@@ -430,6 +430,17 @@ async fn places_crud_preview_reprice_suggestions_and_at_over_decoded_days() {
     let r = watch.post("/api/v1/places/preview", json!({ "place": hid, "delete": true })).await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["delete"], true);
+    // a preview changes nothing, so it writes nothing to the audit log: a watch account sending it again and again
+    // can't flood the admins' log
+    let before = ok(&mut admin, "/api/v1/audit?limit=500").await["items"].as_array().unwrap().len();
+    for _ in 0..5 {
+        let r = watch.post("/api/v1/places/preview", json!({ "place": hid, "delete": true })).await;
+        assert_eq!(r.status, 200, "{}", r.text());
+    }
+    let audit = ok(&mut admin, "/api/v1/audit?limit=500").await;
+    let items = audit["items"].as_array().unwrap();
+    assert_eq!(items.len(), before, "{audit}");
+    assert!(!items.iter().any(|x| x["summary"].as_str().is_some_and(|s| s.contains("/places/preview"))), "{audit}");
     for (m, path) in [
         ("POST", "/api/v1/places".to_string()),
         ("PATCH", format!("/api/v1/places/{hid}")),

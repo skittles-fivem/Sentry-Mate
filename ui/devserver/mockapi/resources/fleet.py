@@ -541,10 +541,13 @@ def setup_status(req):
     acc = req.account
     cars = st.visible_car_count(acc)
     toks = [t for c, ts in st.tokens.items() if st.sees(acc, c) for t in ts if not t["revoked"]]
-    toks += [t for t in st.new_car_tokens if not t["revoked"]]
+    # a watch account hears only about its own cars: no new-car tokens, no keys waiting for a car
+    admin = req.is_admin
+    if admin:
+        toks += [t for t in st.new_car_tokens if not t["revoked"]]
     used = [t["last_upload_ms"] for t in toks if t["last_upload_ms"]]
     first = min((t["created_ms"] for t in toks if t["last_upload_ms"]), default=None)
-    waiting = [k for k in st.keys if k["car"] is None]
+    waiting = [k for k in st.keys if k["car"] is None] if admin else []
     trust = sum(k["logs_waiting"] for k in st.keys if k["car"] is not None and st.sees(acc, k["car"]))
     fixes = []
     if not toks:

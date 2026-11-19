@@ -304,10 +304,17 @@ pub struct SetupStatus {
     pub fixes: Vec<Fix>,
 }
 
-/// `/setup/status`: what a fleet with no history yet still needs (the cars of `visible`).
-pub fn setup_status(e: &Engine, visible: &[CarId]) -> QResult<SetupStatus> {
-    let live: Vec<(Token, Option<CarId>)> =
-        tokens(e)?.into_iter().filter(|(t, c)| !t.revoked && c.is_none_or(|c| visible.contains(&c))).collect();
+/// `/setup/status`: what a fleet with no history yet still needs (the cars of `visible`). An admin (`admin`) also
+/// hears about what belongs to no car yet: the tokens made for a new car and the keys waiting for a car. Anyone
+/// else hears only about its own cars (CAN Bridge keys and upload tokens are an admin's to read).
+pub fn setup_status(e: &Engine, visible: &[CarId], admin: bool) -> QResult<SetupStatus> {
+    let live: Vec<(Token, Option<CarId>)> = tokens(e)?
+        .into_iter()
+        .filter(|(t, c)| {
+            !t.revoked
+                && if admin { c.is_none_or(|c| visible.contains(&c)) } else { c.is_some_and(|c| visible.contains(&c)) }
+        })
+        .collect();
     let mut first_used: Option<u64> = None;
     let mut used = false;
     for (t, _) in &live {
@@ -317,7 +324,7 @@ pub fn setup_status(e: &Engine, visible: &[CarId]) -> QResult<SetupStatus> {
         }
     }
     let keys = all_keys(e, visible)?;
-    let waiting: Vec<&KeyRow> = keys.iter().filter(|k| k.car.is_none()).collect();
+    let waiting: Vec<&KeyRow> = keys.iter().filter(|k| admin && k.car.is_none()).collect();
     let trust: u64 = keys.iter().filter(|k| k.car.is_some()).map(|k| k.logs_waiting).sum();
     let mut fixes = Vec::new();
     if live.is_empty() {

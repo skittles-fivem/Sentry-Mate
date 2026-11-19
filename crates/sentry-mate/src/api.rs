@@ -20,6 +20,7 @@ use engine::query::{self as q, QueryError};
 use model::CarId;
 use serde::Serialize;
 use std::collections::HashMap;
+use web::ctx::target;
 use web::{ApiError, ApiResult, AppState, CarParam, CarsParam, Fields, JsonBody, Params, Viewer};
 
 /// The routes, with their full paths.
@@ -150,29 +151,100 @@ async fn patch_key(
     }
     bad.bad_input()?;
     let access = v.cars().clone();
-    answer(&app, &p, "can-key", move |e| {
-        let cars = visible(e, &access, &CarsParam(None))?;
-        q::keys::set_key(e, &cars, &key, &change)
-    })
-    .await
-}
-
-/// `201` with a token just made (its secret, shown once).
-async fn created<T: Serialize + Send + 'static>(
-    app: &AppState,
-    f: impl FnOnce(&Engine) -> q::QResult<T> + Send + 'static,
-) -> ApiResult<Response> {
     let e = app.service::<Engine>()?;
-    let value = app
+    let (value, was, now, id) = app
         .blocking(move |_| {
-            let t = f(&e).map_err(failed)?;
-            serde_json::to_value(t).map_err(ApiError::server)
+            let cars = visible(&e, &access, &CarsParam(None)).map_err(failed)?;
+            let was = e.db().car_for_key(&key).ok().flatten().filter(|c| cars.contains(c));
+            let row = q::keys::set_key(&e, &cars, &key, &change).map_err(failed)?;
+            let now = row.car.as_ref().map(|c| c.0);
+            Ok((serde_json::to_value(&row).map_err(ApiError::server)?, was, now, (key, change)))
         })
         .await?;
+    let (key, change) = id;
+    audit_key(&app, &v, &key, &change, was, now).await?;
+    web::csv::answer(&p, "can-key", value)
+}
+
+/// The audit entries of a key change: which key, the car it left and the car it went to (each car's own entry, so
+/// the log's car filter finds the move from either side), and the preferred mark.
+async fn audit_key(
+    app: &AppState,
+    v: &Viewer,
+    key: &str,
+    change: &q::keys::KeyChange,
+    was: Option<CarId>,
+    now: Option<CarId>,
+) -> ApiResult<()> {
+    let name = |c: Option<CarId>| c.map_or_else(|| "no car".to_string(), web::ids::car);
+    if change.car.is_some() && was != now {
+        let summary = format!("Moved the CAN Bridge key {key} from {} to {}.", name(was), name(now));
+        if let Some(old) = was {
+            v.audit(app, "key-unassigned", Some(&target("key", Some(old), key)), &summary).await?;
+        }
+        if now.is_some() {
+            v.audit(app, "key-assigned", Some(&target("key", now, key)), &summary).await?;
+        }
+    }
+    if let Some(p) = change.preferred {
+        let summary = if p {
+            format!("Made the CAN Bridge key {key} the preferred key of {}.", name(now))
+        } else {
+            format!("The CAN Bridge key {key} is no longer the preferred key of {}.", name(now))
+        };
+        v.audit(app, "key-preferred", Some(&target("key", now, key)), &summary).await?;
+    }
+    if change.car.is_some() && was == now && change.preferred.is_none() {
+        let summary = format!("Kept the CAN Bridge key {key} with {}.", name(now));
+        v.audit(app, "key-assigned", Some(&target("key", now, key)), &summary).await?;
+    }
+    Ok(())
+}
+
+/// A token's audit entry: which token, and its car (or a new car).
+async fn audit_token(app: &AppState, v: &Viewer, action: &str, car: Option<CarId>, id: &str) -> ApiResult<()> {
+    let whose = car.map_or_else(|| "a new car".to_string(), web::ids::car);
+    let summary = match action {
+        "token-created" => format!("Made the upload token {id} for {whose}."),
+        _ => format!("Revoked the upload token {id} of {whose}."),
+    };
+    v.audit(app, action, Some(&target("token", car, id)), &summary).await
+}
+
+/// `201` with a token just made (its secret, shown once), recorded in the audit log by its id and car.
+async fn created(
+    app: &AppState,
+    v: &Viewer,
+    car: Option<CarId>,
+    f: impl FnOnce(&Engine) -> q::QResult<q::keys::NewToken> + Send + 'static,
+) -> ApiResult<Response> {
+    let e = app.service::<Engine>()?;
+    let (value, id) = app
+        .blocking(move |_| {
+            let t = f(&e).map_err(failed)?;
+            let id = t.row.id.clone();
+            Ok((serde_json::to_value(t).map_err(ApiError::server)?, id))
+        })
+        .await?;
+    audit_token(app, v, "token-created", car, &id).await?;
     let mut r = axum::Json(value).into_response();
     *r.status_mut() = axum::http::StatusCode::CREATED;
     r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(r)
+}
+
+/// Revokes a token and records which one in the audit log.
+async fn revoked(app: &AppState, v: &Viewer, p: &Params, car: Option<CarId>, id: String) -> ApiResult<Response> {
+    let e = app.service::<Engine>()?;
+    let audit_id = id.clone();
+    let value = app
+        .blocking(move |_| {
+            let t = q::keys::revoke_token(&e, car, &id).map_err(failed)?;
+            serde_json::to_value(t).map_err(ApiError::server)
+        })
+        .await?;
+    audit_token(app, v, "token-revoked", car, &audit_id).await?;
+    web::csv::answer(p, "upload-token", value)
 }
 
 fn token_id(path: &HashMap<String, String>) -> ApiResult<String> {
@@ -187,17 +259,18 @@ async fn new_car_tokens(State(app): State<AppState>, p: Params) -> ApiResult<Res
     answer(&app, &p, "upload-tokens", move |e| q::keys::new_car_tokens(e, &pg)).await
 }
 
-async fn create_new_car_token(State(app): State<AppState>) -> ApiResult<Response> {
-    created(&app, |e| q::keys::create_token(e, None)).await
+async fn create_new_car_token(State(app): State<AppState>, v: Viewer) -> ApiResult<Response> {
+    created(&app, &v, None, |e| q::keys::create_token(e, None)).await
 }
 
 async fn revoke_new_car_token(
     State(app): State<AppState>,
+    v: Viewer,
     Path(path): Path<HashMap<String, String>>,
     p: Params,
 ) -> ApiResult<Response> {
     let id = token_id(&path)?;
-    answer(&app, &p, "upload-token", move |e| q::keys::revoke_token(e, None, &id)).await
+    revoked(&app, &v, &p, None, id).await
 }
 
 async fn car_tokens(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
@@ -205,8 +278,8 @@ async fn car_tokens(State(app): State<AppState>, CarParam(car): CarParam, p: Par
     answer(&app, &p, "upload-tokens", move |e| q::keys::car_tokens(e, car, &pg)).await
 }
 
-async fn create_car_token(State(app): State<AppState>, CarParam(car): CarParam) -> ApiResult<Response> {
-    created(&app, move |e| q::keys::create_token(e, Some(car))).await
+async fn create_car_token(State(app): State<AppState>, v: Viewer, CarParam(car): CarParam) -> ApiResult<Response> {
+    created(&app, &v, Some(car), move |e| q::keys::create_token(e, Some(car))).await
 }
 
 async fn car_token(
@@ -221,15 +294,18 @@ async fn car_token(
 
 async fn revoke_car_token(
     State(app): State<AppState>,
+    v: Viewer,
     CarParam(car): CarParam,
     Path(path): Path<HashMap<String, String>>,
     p: Params,
 ) -> ApiResult<Response> {
     let id = token_id(&path)?;
-    answer(&app, &p, "upload-token", move |e| q::keys::revoke_token(e, Some(car), &id)).await
+    revoked(&app, &v, &p, Some(car), id).await
 }
 
 async fn setup_status(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResult<Response> {
-    let access = v.cars().clone();
-    answer(&app, &p, "setup-status", move |e| q::keys::setup_status(e, &visible(e, &access, &CarsParam(None))?)).await
+    // a watch account hears only about its own cars: no key waiting for a car, no token made for a new car
+    let (access, admin) = (v.cars().clone(), v.is_admin());
+    answer(&app, &p, "setup-status", move |e| q::keys::setup_status(e, &visible(e, &access, &CarsParam(None))?, admin))
+        .await
 }

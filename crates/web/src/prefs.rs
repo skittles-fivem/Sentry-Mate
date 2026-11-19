@@ -15,6 +15,7 @@ use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::{Map, Value, json};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use vault::Vault;
@@ -30,12 +31,36 @@ pub struct Prefs {
     dir: PathBuf,
     vault: Arc<Vault>,
     lock: Mutex<()>,
+    /// Each account's last `preferences-changed` audit entry (its summary and when): the same change again within
+    /// [`AUDIT_MERGE_MS`] is not written again, so a slider or a script can't flood the audit log.
+    audited: Mutex<HashMap<AccountId, (String, u64)>>,
 }
+
+/// How long the same preferences change of one account counts as one audit entry.
+pub const AUDIT_MERGE_MS: u64 = 10 * 60 * 1000;
 
 impl Prefs {
     pub fn open(dir: PathBuf, vault: Arc<Vault>) -> std::io::Result<Prefs> {
         std::fs::create_dir_all(&dir)?;
-        Ok(Prefs { dir, vault, lock: Mutex::new(()) })
+        Ok(Prefs { dir, vault, lock: Mutex::new(()), audited: Mutex::new(HashMap::new()) })
+    }
+
+    /// Whether this change of the account's preferences needs its own audit entry (not the same as its last one, or
+    /// that one is older than [`AUDIT_MERGE_MS`]); remembers it when it does.
+    fn needs_audit(&self, id: AccountId, summary: &str, now_ms: u64) -> bool {
+        let mut m = self.audited.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((last, at)) = m.get(&id)
+            && last == summary
+            && now_ms.saturating_sub(*at) < AUDIT_MERGE_MS
+        {
+            return false;
+        }
+        // one entry per account (accounts are few), dropping the old ones should there be many
+        if m.len() >= 10_000 {
+            m.retain(|_, (_, at)| now_ms.saturating_sub(*at) < AUDIT_MERGE_MS);
+        }
+        m.insert(id, (summary.to_string(), now_ms));
+        true
     }
 
     fn path(&self, id: AccountId) -> PathBuf {
@@ -291,13 +316,12 @@ async fn patch_prefs(State(app): State<AppState>, v: Viewer, body: JsonBody) -> 
             view(app, id, viewer.cars())
         })
         .await?;
-    v.audit(
-        &app,
-        "preferences-changed",
-        Some(&format!("account:{}", ids::account(v.id()))),
-        &format!("Changed: {}.", changed.join(", ")),
-    )
-    .await?;
+    let summary = format!("Changed: {}.", changed.join(", "));
+    if app.prefs.needs_audit(v.id(), &summary, app.now()) {
+        v.audit(&app, "preferences-changed", Some(&format!("account:{}", ids::account(v.id()))), &summary).await?;
+    } else {
+        v.mark_audited();
+    }
     app.events.publish(Event::Prefs { account: v.id() });
     Ok(Json(prefs))
 }

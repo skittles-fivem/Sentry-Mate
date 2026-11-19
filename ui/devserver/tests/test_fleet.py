@@ -144,6 +144,18 @@ class TokensAndKeys(ServerCase):
         self.c.error("GET", "/api/v1/can-keys?car=c42", 404, "no_such_car")
 
 
+class WatchSetupStatus(ServerCase):
+    server_args = {"role": "watch"}
+
+    def test_only_its_own_cars(self):
+        # a key waiting for a car and the tokens for a new car are an admin's to read
+        self.c.error("GET", "/api/v1/can-keys", 403, "not_allowed")
+        st = self.c.get("/api/v1/setup/status")
+        self.assertEqual(st["keys_waiting"], 0)
+        self.assertNotIn("key_waiting", [f["cause"] for f in st["fixes"]])
+        self.assertFalse(any("key" in f for f in st["fixes"]))
+
+
 class EmptyFleet(ServerCase):
     server_args = {"cars": 0}
 

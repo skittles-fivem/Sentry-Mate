@@ -13,7 +13,10 @@
 - TLS 1.3 only on the upload port; plain HTTP and older TLS are refused. The certificate is self-signed and made on
   first start, its private key sealed in the vault; the app pins it by SHA-256.
 - Tokens are write-only: they can upload and ask which uploads arrived, nothing else. They are stored only as their
-  SHA-256 and tied to one car key on the first upload. Wrong tokens are rate limited per address; a right
+  SHA-256 and tied to one car key on the first upload. That first upload never takes a car key in use already
+  (another token is tied to it, or its logs are here), unless the token was made for that key's car (on the car's
+  page, or `token new --key`): car keys are in every log name, so they are not secret, and a token handed out for one
+  car could otherwise upload into another car's history, block its log names or pair its own signing key with it. Wrong tokens are rate limited per address; a right
   token is never refused because of wrong ones.
 - Every log's ECDSA P-256 signature is checked against the key the car key is paired with. A log signed by another
   key is kept and marked failed, and not used until the owner trusts that key (`keys trust`, after a `yes`). Only
@@ -54,6 +57,13 @@
   it once the new server runs.
 - A move or an import goes only into a new server: empty data and keys folders, or only what a first start made
   there. A key file that opens other data is never replaced.
+- **The audit log names what changed.** Moving a CAN Bridge key between cars (it decides whose history a car's signed
+  logs count for), marking it preferred, and making or revoking an upload token are each recorded with the key or
+  token id and the car (both cars for a move), so another admin can see which car's history was redirected. A
+  change that is not worded on its own is recorded with the ids of its request. A watch account can't fill the
+  log: the places preview writes nothing, and the same preferences change within 10 minutes is one entry.
+- A watch account's set-up status speaks only of its own cars: it never shows a CAN Bridge key waiting for a car,
+  nor counts the tokens made for a new car.
 - **Signing in to the web UI.** Passwords are argon2id hashes; failed tries wait longer each time, per address and
   per account (home and outside counted apart); right passwords too are limited (20 sign-ins a minute per account,
   one check at a time per account), so a loop of sign-ins can't keep the few password checks busy for everyone else.

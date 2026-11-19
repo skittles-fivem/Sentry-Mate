@@ -682,3 +682,28 @@ async fn a_pack_for_another_api_can_be_kept_but_not_chosen() {
     assert_eq!(admin.get("/api/v1/ui-packs/far-future/download").await.status, 200, "it can still be downloaded");
     assert!(!s.client().get("/").await.text().contains("Future"));
 }
+
+#[tokio::test]
+async fn the_same_preferences_change_again_and_again_is_one_audit_entry() {
+    let s = server().await;
+    let mut admin = s.admin().await;
+    let mut watch = s.watch(&mut admin, &[1]).await;
+    let count = |audit: &Value| {
+        audit["items"].as_array().unwrap().iter().filter(|e| e["action"] == "preferences-changed").count()
+    };
+    let before = count(&admin.get("/api/v1/audit?limit=500").await.json());
+    // a script (or a slider) sending the same change over and over: one entry, not one per request
+    for _ in 0..20 {
+        let r = watch.patch("/api/v1/me/preferences", json!({ "theme": "dark" })).await;
+        assert_eq!(r.status, 200, "{}", r.text());
+    }
+    let audit = admin.get("/api/v1/audit?limit=500").await.json();
+    assert_eq!(count(&audit), before + 1, "{audit}");
+    assert!(!audit["items"].as_array().unwrap().iter().any(|e| e["action"] == "change"), "{audit}");
+    // a different change is its own entry, and so is the same one once the merge window has passed
+    watch.patch("/api/v1/me/preferences", json!({ "units": { "distance": "mi" } })).await;
+    assert_eq!(count(&admin.get("/api/v1/audit?limit=500").await.json()), before + 2);
+    s.advance(web::prefs::AUDIT_MERGE_MS);
+    watch.patch("/api/v1/me/preferences", json!({ "units": { "distance": "mi" } })).await;
+    assert_eq!(count(&admin.get("/api/v1/audit?limit=500").await.json()), before + 3);
+}

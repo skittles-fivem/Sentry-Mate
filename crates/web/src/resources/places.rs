@@ -353,6 +353,8 @@ async fn preview(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiR
             None => pq::PreviewOf::New(Box::new(read_new(&body, &extra)?)),
         }
     };
+    // a preview changes nothing: no audit entry (a watch account may send it, and must not fill the admins' log)
+    v.mark_audited();
     let value = run(&app, move |e| pq::preview(e, &asker(e, &v)?, what)).await?;
     Ok(Json(value).into_response())
 }
