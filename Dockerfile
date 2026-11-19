@@ -17,7 +17,10 @@
 # the dependencies are made again only when a Cargo.toml or Cargo.lock
 # changes, not on a code change. (A .cargo/config.toml and a vendor/ folder
 # from `cargo vendor`, when there, are kept: a build with no network.)
-FROM rust:1-alpine AS manifests
+# The Rust image is pinned by digest (both stages): a moved tag on Docker Hub
+# can't change what builds the release. Dependabot (.github/dependabot.yml)
+# proposes a new digest; crates/sentry-mate/tests/repo_hygiene.rs checks it.
+FROM rust:1.100.0-alpine@sha256:8d0e82abfdf9a38071e07cabc5afba4ddbe077631a80e4e742a760c38beadc33 AS manifests
 WORKDIR /src
 COPY . .
 RUN for f in crates/*/src/lib.rs; do if [ -f "$f" ]; then : > "$f"; fi; done \
@@ -26,7 +29,7 @@ RUN for f in crates/*/src/lib.rs; do if [ -f "$f" ]; then : > "$f"; fi; done \
       ! -path './crates/*/src/lib.rs' ! -path './crates/*/src/main.rs' -delete \
  && find . -type d -empty -delete
 
-FROM rust:1-alpine AS build
+FROM rust:1.100.0-alpine@sha256:8d0e82abfdf9a38071e07cabc5afba4ddbe077631a80e4e742a760c38beadc33 AS build
 # (the Rust image has musl-dev and gcc already: nothing to fetch then)
 RUN apk info -e musl-dev >/dev/null || apk add --no-cache musl-dev
 WORKDIR /src

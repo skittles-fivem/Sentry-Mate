@@ -1,0 +1,14 @@
+# Proposes bumps for what the image build pins: the GitHub Actions in
+# .github/workflows (pinned to commit ids, the version in a comment) and the
+# Rust base image in the Dockerfile (pinned by digest). Each bump is a change
+# to review like any other before it reaches main.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

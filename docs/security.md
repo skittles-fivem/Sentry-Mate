@@ -45,6 +45,11 @@
   names, sizes and times are not sealed (see [Privacy](#privacy)).
 - Pure Rust where it matters (`unsafe` forbidden in this code, the xz reader included); files from the network are
   read with fixed limits. The image is one static binary on `scratch`.
+- **How the image is built.** The workflow that builds and publishes it (`.github/workflows/image.yml`, the only
+  one with a token that can push `latest`) runs each GitHub Action at a full commit id, never a tag or branch the
+  action's owner could move, and the Dockerfile builds on the Rust image pinned by digest. A taken-over action or
+  base image tag upstream can't change what goes into the image. Dependabot proposes new pins as changes to review,
+  and a test (`crates/sentry-mate/tests/repo_hygiene.rs`) fails on an unpinned action or image.
 - **The container.** The image runs as 1000:1000; the TrueNAS file runs it as TrueNAS's apps user, 568:568. The
   compose and TrueNAS files drop every capability, make the root read-only and set `no-new-privileges`, so it can
   write only to its two mounted folders.
