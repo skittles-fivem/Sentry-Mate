@@ -1,15 +1,213 @@
-//! `/statistics`, `/mileage`, `/totals`, `/updates`, `/fleet/versions`.
+//! `/statistics`, `/cars/{car}/mileage`, `/cars/{car}/totals`, `/cars/{car}/gaps` and `/compare`.
+//!
+//! Every figure is summed from the same drive and charge rows the lists show (overlaps with imported history settled
+//! by [`Shown`]), so a month here adds up to the Drives and Charges lists for that month. Periods are the car's own
+//! local days, ISO weeks, months and years ([`tz::period_of`]).
+//!
+//! Nothing here holds a whole history: a page of periods is worked out from the calendar first, and only the rows of
+//! that page's span are read, a db page at a time ([`super::drives::each`]); `/totals` streams every row through a
+//! few counters; `/gaps` reads the states newest first and stops once the page is full.
 
+use super::drives::{Best, each, page_of};
+use super::system::Shown;
 use super::{
-    CarRef, List, Money, Paging, Period, QResult, QueryError, Scoped, car_of, money, paginate, r, scoped, source_word,
+    CarRef, List, Money, Paging, Period, PlaceBrief, QResult, QueryError, Scoped, car_of, cmp_key, money, place_ref, r,
+    read_after, scoped,
 };
 use crate::Engine;
-use crate::pipeline::all_rows;
 use crate::tz::{self, Period as P};
-use db::UpdateRow;
-use model::{CarId, Source};
+use chrono_tz::Tz;
+use db::{StateRow, UpdateRow};
+use model::{Car, CarId, Charge, Drive, Source, State};
 use serde::Serialize;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
+
+const DAY: u64 = 86_400_000;
+/// A drive longer than this is not looked for before a period's start (a stop's arrival, an event's end).
+pub(crate) const LONGEST_DRIVE_MS: u64 = 2 * DAY;
+/// Periods one answer may hold at most (a `/compare` series, a page's walk back through the calendar).
+const MAX_SLOTS: usize = 20_000;
+
+// ---------------------------------------------------------------- shared helpers
+
+/// When the car's history starts: its first state, drive or charge.
+pub(crate) fn first_ms(e: &Engine, car: CarId) -> QResult<Option<u64>> {
+    fn oldest<T: db::Item>(e: &Engine, car: CarId) -> QResult<Option<u64>> {
+        let q = db::Query::default().oldest_first().limit(1);
+        Ok(e.db().list::<T>(car, &q)?.items.first().map(|t| t.start_ms()))
+    }
+    let all = [oldest::<StateRow>(e, car)?, oldest::<Drive>(e, car)?, oldest::<Charge>(e, car)?];
+    Ok(all.into_iter().flatten().min())
+}
+
+/// Calls `f` with every row of `car` that meets `[a, b)` (a row that began before `a` and goes on into it included),
+/// oldest first, a db page at a time; `f` answers whether to go on.
+pub(crate) fn overlapping<T: db::Item>(
+    e: &Engine,
+    car: CarId,
+    a: u64,
+    b: u64,
+    source: Option<Source>,
+    newest_first: bool,
+    mut f: impl FnMut(T) -> QResult<bool>,
+) -> QResult<()> {
+    if a >= b {
+        return Ok(());
+    }
+    let mut q = db::Query::between(a, b).limit(db::MAX_PAGE);
+    if !newest_first {
+        q = q.oldest_first();
+    }
+    q.source = source;
+    loop {
+        let page = e.db().list::<T>(car, &q)?;
+        for row in page.items {
+            if !f(row)? {
+                return Ok(());
+            }
+        }
+        match page.next {
+            Some(c) => q.after = Some(c),
+            None => return Ok(()),
+        }
+    }
+}
+
+/// The newest shown drive that started before `t` and ended by then (`ended`), or the newest that started before it.
+pub(crate) fn drive_before(e: &Engine, car: CarId, t: u64, shown: &Shown, ended: bool) -> QResult<Option<Drive>> {
+    let mut out = None;
+    each::<Drive>(e, car, 0, t, None, shown, true, |d| {
+        if !ended || d.end_ms <= t {
+            out = Some(d);
+            return Ok(false);
+        }
+        Ok(true)
+    })?;
+    Ok(out)
+}
+
+/// The oldest shown drive that started at or after `t`.
+pub(crate) fn drive_from(e: &Engine, car: CarId, t: u64, shown: &Shown) -> QResult<Option<Drive>> {
+    let mut out = None;
+    each::<Drive>(e, car, t, u64::MAX, None, shown, false, |d| {
+        out = Some(d);
+        Ok(false)
+    })?;
+    Ok(out)
+}
+
+/// The odometer at `t`: from the newest drive before it that knows one (across a drive going on at `t`, in step
+/// with its distance); before every such drive, the start of the first one after `t` that knows it.
+pub(crate) fn odometer_at(e: &Engine, car: CarId, t: u64, shown: &Shown) -> QResult<Option<f64>> {
+    let mut out = None;
+    each::<Drive>(e, car, 0, t.saturating_add(1), None, shown, true, |d| {
+        let v = if d.end_ms <= t {
+            d.end_odometer_km.or(d.start_odometer_km)
+        } else {
+            let part = (t - d.start_ms) as f64 / d.end_ms.saturating_sub(d.start_ms).max(1) as f64;
+            d.start_odometer_km.map(|s| s + d.distance_km.unwrap_or(0.0) * part.clamp(0.0, 1.0))
+        };
+        out = v;
+        Ok(v.is_none())
+    })?;
+    if out.is_none() {
+        // before the first drive that knows it: where that drive started (the history's start, mostly)
+        each::<Drive>(e, car, t, u64::MAX, None, shown, false, |d| {
+            out = d.start_odometer_km.or(d.end_odometer_km);
+            Ok(out.is_none())
+        })?;
+    }
+    Ok(out)
+}
+
+/// One period of a report: its start and end (clipped to the asked span) and its label.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Slot {
+    pub start: u64,
+    pub end: u64,
+    pub label: String,
+}
+
+/// The periods of `[lo, end)` newest first (`All`: the span as one), each clipped to it.
+pub(crate) fn slots_back(lo: u64, end: u64, p: P, zone: Tz) -> impl Iterator<Item = Slot> {
+    let mut cur = end;
+    let mut done = lo >= end;
+    std::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        if p == P::All {
+            done = true;
+            return Some(Slot { start: lo, end, label: "All".into() });
+        }
+        let (s, e, label) = tz::period_of(cur - 1, p, zone);
+        let slot = Slot { start: s.max(lo), end: e.min(end).min(cur), label };
+        if s <= lo || s >= cur {
+            done = true;
+        } else {
+            cur = s;
+        }
+        Some(slot)
+    })
+}
+
+/// The periods of `[lo, end)` oldest first.
+pub(crate) fn slots_forward(lo: u64, end: u64, p: P, zone: Tz) -> Vec<Slot> {
+    let mut v: Vec<Slot> = slots_back(lo, end, p, zone).take(MAX_SLOTS).collect();
+    v.reverse();
+    v
+}
+
+/// The slot holding `t`, of slots sorted oldest first.
+pub(crate) fn slot_of(slots: &[Slot], t: u64) -> Option<usize> {
+    let i = slots.partition_point(|s| s.start <= t).checked_sub(1)?;
+    (t < slots[i].end).then_some(i)
+}
+
+/// The span `[lo, end)` a car's report covers: from the asked start (or the history's) to the asked end (or now).
+fn span_of(e: &Engine, car: CarId, period: &Period) -> QResult<Option<(u64, u64)>> {
+    let (a, b) = period.bounds()?;
+    let Some(first) = first_ms(e, car)? else { return Ok(None) };
+    let (lo, end) = (a.max(first), b.min(crate::now_ms()));
+    Ok((lo < end).then_some((lo, end)))
+}
+
+fn median(mut v: Vec<f64>) -> Option<f64> {
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(f64::total_cmp);
+    let n = v.len();
+    Some(if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 })
+}
+
+/// When the car's data stopped, if its newest state is unknown (no data since: the time up to now is unknown).
+pub(crate) fn still_unknown(e: &Engine, car: CarId) -> QResult<Option<u64>> {
+    let q = db::Query { source: Some(Source::Can), ..db::Query::default().limit(1) };
+    let newest = e.db().list::<StateRow>(car, &q)?;
+    Ok(newest.items.first().filter(|s| s.span.state == State::Unknown).map(|s| s.span.start_ms))
+}
+
+// ---------------------------------------------------------------- /statistics
+
+/// What a statistics row says about its period's completeness.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Completeness {
+    pub recorded_pct: Option<f64>,
+    pub unknown_ms: u64,
+    pub dropped_stretches: u64,
+    pub open_drive: bool,
+    pub open_charge: bool,
+    pub teslamate_rows: u64,
+}
+
+/// A price in one currency.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PriceIn {
+    pub currency: String,
+    pub value: f64,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StatRow {
@@ -25,226 +223,407 @@ pub struct StatRow {
     pub outside_avg_c: Option<f64>,
     pub driving_efficiency_pct: Option<f64>,
     pub energy_used_kwh: f64,
+    /// Lost while parked (the parked spells that began in the period); null when no spell knows its energy.
     pub energy_standing_kwh: Option<f64>,
     pub energy_added_kwh: f64,
+    /// Null when the period has charges but none knows its grid energy.
     pub energy_grid_kwh: Option<f64>,
     pub charges: u64,
     pub energy_per_charge_kwh: Option<f64>,
     pub cost_by_currency: Vec<Money>,
-    pub price_per_kwh: Vec<serde_json::Value>,
+    pub price_per_kwh: Vec<PriceIn>,
     pub cost_per_100km: Vec<Money>,
     pub net_wh_per_km: Option<f64>,
     pub gross_wh_per_km: Option<f64>,
     pub overhead_pct: Option<f64>,
-    pub completeness: serde_json::Value,
+    pub completeness: Completeness,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Statistics {
+    /// `day`, `week`, `month`, `year` or `all`.
+    pub period: &'static str,
+    /// The cars asked for (the several-car answer only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cars: Option<Vec<CarRef>>,
+    pub items: Vec<StatRow>,
+    pub next: Option<String>,
 }
 
 #[derive(Default)]
 struct Acc {
-    start: u64,
-    end: u64,
-    label: String,
     driven_ms: u64,
     drives: u64,
     km: f64,
     kwh: f64,
-    odo_min: Option<f64>,
-    odo_max: Option<f64>,
-    temp_sum: f64,
-    temp_n: u64,
+    temp_w: f64,
+    temp_ms: u64,
     charges: u64,
     added: f64,
     grid: f64,
-    grid_n: u64,
+    grid_known: bool,
     cost: BTreeMap<String, f64>,
-    tm_rows: u64,
+    basis: BTreeMap<String, f64>,
+    stand: Option<f64>,
+    unknown_ms: u64,
+    dropped: u64,
+    open_drive: bool,
+    open_charge: bool,
+    tm: u64,
 }
 
-/// `/statistics` for the cars given: one row per car and period (day, week, month, year in the car's zone, or `all`),
-/// newest first, clipped to the period; drives and charges count by their start.
+fn period_kind(s: &str) -> QResult<(P, &'static str)> {
+    Ok(match s {
+        "day" => (P::Day, "day"),
+        "week" => (P::Week, "week"),
+        "month" => (P::Month, "month"),
+        "year" => (P::Year, "year"),
+        "all" => (P::All, "all"),
+        _ => return Err(QueryError::bad("period", "day, week, month, year or all")),
+    })
+}
+
+/// The statistics rows of one car's `slots` (sorted oldest first), from the rows of their span only.
+fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
+    let (Some(first), Some(last)) = (slots.first(), slots.last()) else { return Ok(Vec::new()) };
+    let (wa, wb) = (first.start, last.end);
+    let car = c.id;
+    let shown = Shown::new(e, car, None)?;
+    let mut acc: Vec<Acc> = slots.iter().map(|_| Acc::default()).collect();
+    let dx = super::drives::ctx(e, c)?;
+    each::<Drive>(e, car, wa, wb, None, &shown, false, |d| {
+        if let Some(i) = slot_of(slots, d.start_ms) {
+            let g = &mut acc[i];
+            let ms = d.end_ms.saturating_sub(d.start_ms);
+            g.drives += 1;
+            g.driven_ms += ms;
+            g.km += d.distance_km.unwrap_or(0.0);
+            g.kwh += d.energy_used_kwh.unwrap_or(0.0);
+            if let Some(t) = d.outside_temp_avg_c {
+                g.temp_w += t * ms.max(1) as f64;
+                g.temp_ms += ms.max(1);
+            }
+            g.open_drive |= dx.live == Some(d.id) || d.end.is_none();
+            g.tm += u64::from(d.source == Source::Teslamate);
+        }
+        Ok(true)
+    })?;
+    let cx = super::charges::ctx(e, c)?;
+    each::<Charge>(e, car, wa, wb, None, &shown, false, |ch| {
+        if let Some(i) = slot_of(slots, ch.start_ms) {
+            let v = super::charges::view(e, c, &ch, &cx)?;
+            let g = &mut acc[i];
+            g.charges += 1;
+            g.added += v.energy_added_kwh.unwrap_or(0.0);
+            if let Some(x) = v.energy_grid_kwh {
+                g.grid += x;
+                g.grid_known = true;
+            }
+            if let Some(cost) = &v.cost {
+                *g.cost.entry(cost.currency.clone()).or_default() += cost.amount;
+                if let Some(p) = &v.price_per_kwh {
+                    let basis =
+                        if p.basis == "grid" { v.energy_grid_kwh } else { v.dc_inlet_kwh.or(v.energy_added_kwh) };
+                    *g.basis.entry(cost.currency.clone()).or_default() += basis.unwrap_or(0.0);
+                }
+            }
+            g.open_charge |= v.flags.in_progress;
+            g.tm += u64::from(ch.source == Source::Teslamate);
+        }
+        Ok(true)
+    })?;
+    // unknown time, cut at the periods' edges (no data since the newest state: unknown up to now)
+    let still = still_unknown(e, car)?;
+    let now = crate::now_ms();
+    overlapping::<StateRow>(e, car, wa, wb, None, false, |s| {
+        if s.span.state == State::Unknown && still != Some(s.span.start_ms) {
+            let (mut x, y) = (s.span.start_ms.max(wa), s.span.end_ms.min(wb));
+            while x < y {
+                let Some(i) = slot_of(slots, x) else { break };
+                let to = y.min(slots[i].end);
+                acc[i].unknown_ms += to - x;
+                x = to;
+            }
+        }
+        Ok(true)
+    })?;
+    if let Some(t) = still {
+        let (mut x, y) = (t.max(wa), wb.min(now));
+        while x < y {
+            let Some(i) = slot_of(slots, x) else { break };
+            let to = y.min(slots[i].end);
+            acc[i].unknown_ms += to - x;
+            x = to;
+        }
+    }
+    // logs that lost frames
+    let meta = crate::records::meta(e.db(), car)?;
+    for (_, en) in crate::records::entries_between(e.db(), car, &meta, wa, wb)? {
+        if let crate::records::Outcome::Decoded { facts, .. } = &en.outcome
+            && facts.dropped > 0
+            && let Some(i) = slot_of(slots, facts.span().0.max(wa))
+        {
+            acc[i].dropped += 1;
+        }
+    }
+    // energy lost while parked, by the spell's start
+    let mut pg = Paging::first(super::MAX_LIMIT);
+    for _ in 0..1000 {
+        let page = super::parked::parked(e, car, &Period::new(Some(wa), Some(wb)), None, &pg)?;
+        for s in &page.body.items {
+            if let (Some(i), Some(kwh)) = (slot_of(slots, s.start_ms), s.energy_kwh) {
+                acc[i].stand = Some(acc[i].stand.unwrap_or(0.0) + kwh);
+            }
+        }
+        match page.body.next {
+            Some(n) => pg.after = Some(n),
+            None => break,
+        }
+    }
+    let mut rows = Vec::with_capacity(slots.len());
+    for (s, g) in slots.iter().zip(acc) {
+        let (o0, o1) = (odometer_at(e, car, s.start, &shown)?, odometer_at(e, car, s.end.saturating_sub(1), &shown)?);
+        let span = s.end.saturating_sub(s.start).max(1);
+        let net = (g.km > 0.1).then(|| g.kwh / g.km * 1000.0);
+        let gross = g.stand.filter(|_| g.km > 0.1).map(|st| (g.kwh + st) / g.km * 1000.0);
+        let price: Vec<PriceIn> = g
+            .cost
+            .iter()
+            .filter_map(|(cur, amt)| {
+                let b = g.basis.get(cur).copied().filter(|b| *b > 0.0)?;
+                Some(PriceIn { currency: cur.clone(), value: r(Some(amt / b), 4)? })
+            })
+            .collect();
+        let per100: Vec<Money> = if g.km > 1.0 {
+            g.cost
+                .iter()
+                .map(|(cur, amt)| Money { currency: cur.clone(), amount: (amt / g.km * 100.0 * 100.0).round() / 100.0 })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        rows.push(StatRow {
+            car: CarRef(car),
+            time_zone: c.time_zone.clone(),
+            period_start_ms: s.start,
+            period_end_ms: s.end,
+            label: s.label.clone(),
+            time_driven_ms: g.driven_ms,
+            drives: g.drives,
+            distance_odometer_km: r(o0.zip(o1).map(|(a, b)| (b - a).max(0.0)), 3),
+            distance_logged_km: r(Some(g.km), 3).unwrap_or(0.0),
+            outside_avg_c: r((g.temp_ms > 0).then(|| g.temp_w / g.temp_ms as f64), 1),
+            driving_efficiency_pct: r(c.efficiency_wh_km.zip(net).map(|(rated, n)| rated / n * 100.0), 1),
+            energy_used_kwh: r(Some(g.kwh), 3).unwrap_or(0.0),
+            energy_standing_kwh: r(g.stand, 3),
+            energy_added_kwh: r(Some(g.added), 3).unwrap_or(0.0),
+            energy_grid_kwh: if g.charges == 0 || g.grid_known { r(Some(g.grid), 3) } else { None },
+            charges: g.charges,
+            energy_per_charge_kwh: r((g.charges > 0).then(|| g.added / g.charges as f64), 3),
+            cost_by_currency: money(g.cost),
+            price_per_kwh: price,
+            cost_per_100km: per100,
+            net_wh_per_km: r(net, 1),
+            gross_wh_per_km: r(gross, 1),
+            overhead_pct: r(net.zip(gross).filter(|(n, _)| *n > 0.0).map(|(n, gr)| (gr - n) / n * 100.0), 1),
+            completeness: Completeness {
+                recorded_pct: r(Some(100.0 * span.saturating_sub(g.unknown_ms) as f64 / span as f64), 2),
+                unknown_ms: g.unknown_ms,
+                dropped_stretches: g.dropped,
+                open_drive: g.open_drive,
+                open_charge: g.open_charge,
+                teslamate_rows: g.tm,
+            },
+        });
+    }
+    Ok(rows)
+}
+
+/// `/statistics` for the cars given (the several-car answer names them): one row per car and period (day, ISO
+/// week, month, year in the car's zone, or `all`), newest first, clipped to the period and to the car's history;
+/// drives and charges count by their start. Only the page's periods are read.
 pub fn statistics(
     e: &Engine,
     cars: &[CarId],
-    period_kind: &str,
+    period_kind_s: &str,
     period: &Period,
     paging: &Paging,
-) -> QResult<List<StatRow>> {
-    let p = tz::Period::parse(period_kind).ok_or_else(|| QueryError::bad("period", "day, week, month, year or all"))?;
-    let (a, b) = period.bounds()?;
-    let mut rows = Vec::new();
+) -> QResult<Statistics> {
+    let (p, word) = period_kind(period_kind_s)?;
+    let limit = paging.limit()?;
+    let sig = format!("statistics|{cars:?}|{word}|{}", period.sig());
+    let after = read_after(paging, &sig)?;
+    let past = |k: &(f64, String)| after.as_ref().is_none_or(|a| cmp_key(k, a, true) == Ordering::Greater);
+    // the page's periods, from the calendar alone
+    let mut best: Best<(CarId, Slot)> = Best::new(limit + 1, true, after.clone());
+    let mut found = Vec::new();
     for &car in cars {
         let c = car_of(e, car)?;
-        let zone = tz::zone(&c.time_zone);
-        let mut by: BTreeMap<u64, Acc> = BTreeMap::new();
-        let mut slot = |t: u64| -> u64 {
-            let (s, en, label) = tz::period_of(t, p, zone);
-            let s2 = if p == P::All { a } else { s.max(a) };
-            let en2 = if p == P::All { b.min(crate::now_ms()) } else { en.min(b) };
-            by.entry(s2).or_insert_with(|| Acc { start: s2, end: en2, label, ..Acc::default() });
-            s2
-        };
-        let drives = super::drives::rows(e, car, period, None)?;
-        let charges = super::charges::rows(e, car, period, None)?;
-        let cx = super::charges::ctx(e, &c)?;
-        let mut keys_d = Vec::new();
-        for d in &drives {
-            keys_d.push(slot(d.start_ms));
-        }
-        let mut keys_c = Vec::new();
-        for ch in &charges {
-            keys_c.push(slot(ch.start_ms));
-        }
-        for (d, k) in drives.iter().zip(keys_d) {
-            let x = by.entry(k).or_default();
-            x.drives += 1;
-            x.driven_ms += d.end_ms.saturating_sub(d.start_ms);
-            x.km += d.distance_km.unwrap_or(0.0);
-            x.kwh += d.energy_used_kwh.unwrap_or(0.0);
-            for o in [d.start_odometer_km, d.end_odometer_km].into_iter().flatten() {
-                x.odo_min = Some(x.odo_min.map_or(o, |m: f64| m.min(o)));
-                x.odo_max = Some(x.odo_max.map_or(o, |m: f64| m.max(o)));
+        let Some((lo, end)) = span_of(e, car, period)? else { continue };
+        let mut n = 0;
+        for s in slots_back(lo, end, p, tz::zone(&c.time_zone)).take(MAX_SLOTS) {
+            let key = (s.start as f64, car.to_string());
+            if !past(&key) {
+                continue;
             }
-            if let Some(t) = d.outside_temp_avg_c {
-                x.temp_sum += t;
-                x.temp_n += 1;
+            best.offer(key, (car, s));
+            n += 1;
+            if n > limit {
+                break;
             }
-            x.tm_rows += u64::from(d.source == Source::Teslamate);
         }
-        for (ch, k) in charges.iter().zip(keys_c) {
-            let v = super::charges::view(e, &c, ch, &cx)?;
-            let x = by.entry(k).or_default();
-            x.charges += 1;
-            x.added += ch.energy_added_kwh.unwrap_or(0.0);
-            if let Some(g) = ch.energy_used_kwh {
-                x.grid += g;
-                x.grid_n += 1;
-            }
-            if let Some(cost) = v.cost {
-                *x.cost.entry(cost.currency).or_default() += cost.amount;
-            }
-            x.tm_rows += u64::from(ch.source == Source::Teslamate);
-        }
-        for x in by.into_values() {
-            let net = (x.km > 0.1).then(|| x.kwh * 1000.0 / x.km);
-            let per100: Vec<Money> = x
-                .cost
-                .iter()
-                .filter(|_| x.km > 0.1)
-                .map(|(cur, amt)| Money { currency: cur.clone(), amount: (amt / x.km * 100.0 * 100.0).round() / 100.0 })
-                .collect();
-            let ppk: Vec<serde_json::Value> = x
-                .cost
-                .iter()
-                .filter(|_| x.added > 0.0)
-                .map(|(cur, amt)| serde_json::json!({ "currency": cur, "value": r(Some(amt / if x.grid_n > 0 { x.grid } else { x.added }), 4) }))
-                .collect();
-            rows.push(StatRow {
-                car: CarRef(car),
-                time_zone: c.time_zone.clone(),
-                period_start_ms: x.start,
-                period_end_ms: x.end,
-                label: x.label,
-                time_driven_ms: x.driven_ms,
-                drives: x.drives,
-                distance_odometer_km: r(x.odo_max.zip(x.odo_min).map(|(h, l)| h - l), 3),
-                distance_logged_km: r(Some(x.km), 3).unwrap_or(0.0),
-                outside_avg_c: r((x.temp_n > 0).then(|| x.temp_sum / x.temp_n as f64), 1),
-                driving_efficiency_pct: r(c.efficiency_wh_km.zip(net).map(|(rt, n)| rt / n * 100.0), 1),
-                energy_used_kwh: r(Some(x.kwh), 3).unwrap_or(0.0),
-                energy_standing_kwh: None,
-                energy_added_kwh: r(Some(x.added), 3).unwrap_or(0.0),
-                energy_grid_kwh: r((x.grid_n > 0).then_some(x.grid), 3),
-                charges: x.charges,
-                energy_per_charge_kwh: r((x.charges > 0).then(|| x.added / x.charges as f64), 3),
-                cost_by_currency: money(x.cost.clone()),
-                price_per_kwh: ppk,
-                cost_per_100km: per100,
-                net_wh_per_km: r(net, 1),
-                gross_wh_per_km: r(net, 1),
-                overhead_pct: None,
-                completeness: serde_json::json!({
-                    "recorded_pct": null, "unknown_ms": null, "dropped_stretches": null,
-                    "open_drive": false, "open_charge": false, "teslamate_rows": x.tm_rows,
-                }),
-            });
-        }
+        found.push(c);
     }
-    let sig = format!("statistics|{cars:?}|{period_kind}|{}", period.sig());
-    paginate(rows, |row| (row.period_start_ms as f64, row.car.0.to_string()), true, &sig, paging, false)
+    let (page, next) = page_of(best, limit, &sig)?;
+    let mut items = Vec::with_capacity(page.len());
+    for c in &found {
+        let mut slots: Vec<Slot> = page.iter().filter(|(car, _)| *car == c.id).map(|(_, s)| s.clone()).collect();
+        slots.reverse();
+        items.extend(stat_rows(e, c, &slots)?);
+    }
+    items.sort_by(|a, b| {
+        cmp_key(
+            &(a.period_start_ms as f64, a.car.0.to_string()),
+            &(b.period_start_ms as f64, b.car.0.to_string()),
+            true,
+        )
+    });
+    Ok(Statistics { period: word, cars: Some(cars.iter().map(|&c| CarRef(c)).collect()), items, next })
 }
+
+/// `/cars/{car}/statistics`: [`statistics`] of one car, with its zone.
+pub fn car_statistics(
+    e: &Engine,
+    car: CarId,
+    period_kind_s: &str,
+    period: &Period,
+    paging: &Paging,
+) -> QResult<Scoped<Statistics>> {
+    let c = car_of(e, car)?;
+    let mut s = statistics(e, &[car], period_kind_s, period, paging)?;
+    s.cars = None;
+    Ok(scoped(&c, s))
+}
+
+// ---------------------------------------------------------------- /mileage
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MileageRow {
     pub period_start_ms: u64,
     pub period_end_ms: u64,
     pub label: String,
+    /// By the odometer.
     pub distance_km: Option<f64>,
     pub odometer_start_km: Option<f64>,
     pub odometer_end_km: Option<f64>,
+    /// What the drives logged.
     pub logged_km: f64,
+    /// What the car drove in gaps.
     pub not_logged_km: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Mileage {
-    pub items: Vec<MileageRow>,
-    pub projection: serde_json::Value,
+pub struct Projection {
+    pub km_per_year: Option<f64>,
+    pub basis_days: f64,
 }
 
-/// `/cars/{car}/mileage` (`group=day|week|month|year`, default month): by odometer, and what the drives logged.
-pub fn mileage(e: &Engine, car: CarId, period: &Period, group: Option<&str>) -> QResult<Scoped<Mileage>> {
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Mileage {
+    pub group: &'static str,
+    pub items: Vec<MileageRow>,
+    pub next: Option<String>,
+    pub projection: Projection,
+}
+
+/// `/cars/{car}/mileage` (`group=day|week|month|year`, default month): oldest first, by odometer and by what the
+/// drives logged; the projection is over the whole asked span (at least a week of it).
+pub fn mileage(
+    e: &Engine,
+    car: CarId,
+    period: &Period,
+    group: Option<&str>,
+    paging: &Paging,
+) -> QResult<Scoped<Mileage>> {
     let c = car_of(e, car)?;
-    let p = match group.unwrap_or("month") {
+    let (p, word) = match group.unwrap_or("month") {
         "all" => return Err(QueryError::bad("group", "day, week, month or year")),
-        g => tz::Period::parse(g).ok_or_else(|| QueryError::bad("group", "day, week, month or year"))?,
+        g => period_kind(g).map_err(|_| QueryError::bad("group", "day, week, month or year"))?,
     };
-    let zone = tz::zone(&c.time_zone);
-    let mut by: BTreeMap<u64, MileageRow> = BTreeMap::new();
-    for d in super::drives::rows(e, car, period, None)? {
-        let (s, en, label) = tz::period_of(d.start_ms, p, zone);
-        let row = by.entry(s).or_insert(MileageRow {
-            period_start_ms: s,
-            period_end_ms: en,
-            label,
-            distance_km: None,
-            odometer_start_km: None,
-            odometer_end_km: None,
-            logged_km: 0.0,
-            not_logged_km: None,
+    let limit = paging.limit()?;
+    let sig = format!("mileage|{car}|{word}|{}", period.sig());
+    let after = read_after(paging, &sig)?;
+    let shown = Shown::new(e, car, None)?;
+    let Some((lo, end)) = span_of(e, car, period)? else {
+        return Ok(scoped(
+            &c,
+            Mileage {
+                group: word,
+                items: Vec::new(),
+                next: None,
+                projection: Projection { km_per_year: None, basis_days: 0.0 },
+            },
+        ));
+    };
+    let all = slots_forward(lo, end, p, tz::zone(&c.time_zone));
+    let start = after.as_ref().map_or(0, |k| all.partition_point(|s| s.start as f64 <= k.0));
+    let page: Vec<Slot> = all.iter().skip(start).take(limit + 1).cloned().collect();
+    let more = page.len() > limit;
+    let page: Vec<Slot> = page.into_iter().take(limit).collect();
+    let mut logged = vec![0.0f64; page.len()];
+    if let (Some(f), Some(l)) = (page.first(), page.last()) {
+        each::<Drive>(e, car, f.start, l.end, None, &shown, false, |d| {
+            if let Some(i) = slot_of(&page, d.start_ms) {
+                logged[i] += d.distance_km.unwrap_or(0.0);
+            }
+            Ok(true)
+        })?;
+    }
+    let mut items = Vec::with_capacity(page.len());
+    for (s, km) in page.iter().zip(logged) {
+        let (o0, o1) = (odometer_at(e, car, s.start, &shown)?, odometer_at(e, car, s.end.saturating_sub(1), &shown)?);
+        let dist = r(o0.zip(o1).map(|(a, b)| (b - a).max(0.0)), 3);
+        items.push(MileageRow {
+            period_start_ms: s.start,
+            period_end_ms: s.end,
+            label: s.label.clone(),
+            distance_km: dist,
+            odometer_start_km: r(o0, 1),
+            odometer_end_km: r(o1, 1),
+            logged_km: r(Some(km), 3).unwrap_or(0.0),
+            not_logged_km: r(dist.map(|d| (d - km).max(0.0)), 3),
         });
-        row.logged_km += d.distance_km.unwrap_or(0.0);
-        if let Some(o) = d.start_odometer_km {
-            row.odometer_start_km = Some(row.odometer_start_km.map_or(o, |m| m.min(o)));
-        }
-        if let Some(o) = d.end_odometer_km {
-            row.odometer_end_km = Some(row.odometer_end_km.map_or(o, |m| m.max(o)));
-        }
     }
-    let mut items: Vec<MileageRow> = by.into_values().collect();
-    for row in &mut items {
-        row.distance_km = r(row.odometer_end_km.zip(row.odometer_start_km).map(|(b, a)| b - a), 3);
-        row.not_logged_km = r(row.distance_km.map(|d| (d - row.logged_km).max(0.0)), 3);
-        row.logged_km = r(Some(row.logged_km), 3).unwrap_or(0.0);
-    }
-    let first = items.first().map(|r| r.period_start_ms);
-    let last = items.last().map(|r| r.period_end_ms.min(crate::now_ms()));
-    let total: f64 = items.iter().filter_map(|r| r.distance_km).sum();
-    let days = first.zip(last).map(|(a, b)| b.saturating_sub(a) as f64 / 86_400_000.0).filter(|d| *d > 0.0);
-    items.reverse();
+    let next = match items.last() {
+        Some(last) if more => Some(super::make_after(&(last.period_start_ms as f64, String::new()), &sig)?),
+        _ => None,
+    };
+    let days = (end - lo) as f64 / DAY as f64;
+    let (o0, o1) = (odometer_at(e, car, lo, &shown)?, odometer_at(e, car, end.saturating_sub(1), &shown)?);
+    let km_per_year = o0.zip(o1).filter(|_| days >= 7.0).map(|(a, b)| (b - a).max(0.0) / days * 365.25);
     Ok(scoped(
         &c,
         Mileage {
+            group: word,
             items,
-            projection: serde_json::json!({
-                "km_per_year": r(days.map(|d| total / d * 365.25), 0),
-                "basis_days": days.map(|d| d.round()),
-            }),
+            next,
+            projection: Projection { km_per_year: r(km_per_year, 0), basis_days: r(Some(days), 1).unwrap_or(0.0) },
         },
     ))
 }
 
+// ---------------------------------------------------------------- /totals
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct KindTotal {
+    pub charges: u64,
+    pub kwh: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Totals {
+    /// `can`, `teslamate` or `all`.
+    pub source: &'static str,
     pub drives: u64,
     pub distance_km: f64,
     pub odometer_first_km: Option<f64>,
@@ -256,170 +635,422 @@ pub struct Totals {
     pub energy_grid_kwh: f64,
     pub grid_coverage_pct: Option<f64>,
     pub charging_efficiency_pct: Option<f64>,
-    pub ac: serde_json::Value,
-    pub dc: serde_json::Value,
+    pub ac: KindTotal,
+    pub dc: KindTotal,
     pub updates: u64,
 }
 
-/// `/cars/{car}/totals` (`source=can|teslamate|all`): the whole history's counts and totals from the fleet summary,
-/// with the odometer and the AC/DC split from the rows.
+/// `/cars/{car}/totals` (`source=can|teslamate|all`): the whole history's counts and totals, as the lists show the
+/// rows (an imported row inside CAN history counts once). Every row streams through a few counters.
 pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<Totals>> {
     let c = car_of(e, car)?;
     let src = super::parse_source(source)?;
-    let x = e.db().entry(car)?.ok_or(QueryError::NoSuchCar)?;
-    let t = &x.summary.tally;
-    let parts: Vec<&db::Totals> = match src {
-        Some(Source::Can) => vec![&t.can],
-        Some(Source::Teslamate) => vec![&t.teslamate],
-        None => vec![&t.can, &t.teslamate],
+    let word = match src {
+        Some(s) => super::source_word(s),
+        None => "all",
     };
-    let sum = |f: fn(&db::Totals) -> i64| parts.iter().map(|p| f(p)).sum::<i64>();
-    let drives = super::drives::rows(e, car, &Period::all(), src)?;
-    let charges = super::charges::rows(e, car, &Period::all(), src)?;
-    let first = drives.iter().find_map(|d| d.start_odometer_km);
-    let last = drives.iter().rev().find_map(|d| d.end_odometer_km.map(|o| (o, d.end_ms)));
-    let logged: f64 = drives.iter().filter_map(|d| d.distance_km).sum();
-    let kind = |k: model::ChargeKind| {
-        let v: Vec<&model::Charge> = charges.iter().filter(|ch| ch.kind == Some(k)).collect();
-        serde_json::json!({ "charges": v.len(), "kwh": r(Some(v.iter().filter_map(|ch| ch.energy_added_kwh).sum()), 3) })
-    };
-    let added = sum(|p| p.charge_added_wh) as f64 / 1000.0;
-    let grid = sum(|p| p.charge_used_wh) as f64 / 1000.0;
-    let with_grid = charges.iter().filter(|ch| ch.energy_used_kwh.is_some()).count();
-    let added_with_grid: f64 =
-        charges.iter().filter(|ch| ch.energy_used_kwh.is_some()).filter_map(|ch| ch.energy_added_kwh).sum();
+    let shown = Shown::new(e, car, src)?;
+    let dx = super::drives::ctx(e, &c)?;
+    let (mut drives, mut km) = (0u64, 0.0f64);
+    let (mut first, mut last): (Option<f64>, Option<(f64, u64)>) = (None, None);
+    each::<Drive>(e, car, 0, u64::MAX, src, &shown, false, |d| {
+        drives += 1;
+        km += d.distance_km.unwrap_or(0.0);
+        if first.is_none() {
+            first = d.start_odometer_km.or(d.end_odometer_km);
+        }
+        if let Some(o) = d.end_odometer_km.or(d.start_odometer_km) {
+            let at = if dx.live == Some(d.id) { crate::now_ms() } else { d.end_ms };
+            last = Some((o, at));
+        }
+        Ok(true)
+    })?;
+    let (mut charges, mut added, mut grid, mut added_with_grid, mut with_grid) = (0u64, 0.0, 0.0, 0.0, 0u64);
+    let (mut ac, mut dc) = (KindTotal { charges: 0, kwh: 0.0 }, KindTotal { charges: 0, kwh: 0.0 });
+    each::<Charge>(e, car, 0, u64::MAX, src, &shown, false, |ch| {
+        charges += 1;
+        let kwh = ch.energy_added_kwh.unwrap_or(0.0);
+        added += kwh;
+        if let Some(g) = ch.energy_used_kwh {
+            grid += g;
+            added_with_grid += kwh;
+            with_grid += 1;
+        }
+        match ch.kind {
+            Some(model::ChargeKind::Ac) => {
+                ac.charges += 1;
+                ac.kwh += kwh;
+            }
+            Some(model::ChargeKind::Dc) => {
+                dc.charges += 1;
+                dc.kwh += kwh;
+            }
+            None => {}
+        }
+        Ok(true)
+    })?;
+    // (no overlaps to settle: CAN logs give no updates, so every imported one counts)
+    let mut updates = 0u64;
+    overlapping::<UpdateRow>(e, car, 0, u64::MAX, src, false, |_| {
+        updates += 1;
+        Ok(true)
+    })?;
+    ac.kwh = r(Some(ac.kwh), 3).unwrap_or(0.0);
+    dc.kwh = r(Some(dc.kwh), 3).unwrap_or(0.0);
     Ok(scoped(
         &c,
         Totals {
-            drives: u64::try_from(sum(|p| p.drives)).unwrap_or(0),
-            distance_km: r(Some(sum(|p| p.distance_m) as f64 / 1000.0), 3).unwrap_or(0.0),
+            source: word,
+            drives,
+            distance_km: r(Some(km), 3).unwrap_or(0.0),
             odometer_first_km: r(first, 3),
             odometer_last_km: r(last.map(|l| l.0), 3),
             odometer_last_ms: last.map(|l| l.1),
-            not_logged_km: r(first.zip(last).map(|(f, l)| (l.0 - f - logged).max(0.0)), 3),
-            charges: u64::try_from(sum(|p| p.charges)).unwrap_or(0),
+            not_logged_km: r(first.zip(last).map(|(f, l)| (l.0 - f - km).max(0.0)), 3),
+            charges,
             energy_added_kwh: r(Some(added), 3).unwrap_or(0.0),
             energy_grid_kwh: r(Some(grid), 3).unwrap_or(0.0),
-            grid_coverage_pct: r((!charges.is_empty()).then(|| with_grid as f64 / charges.len() as f64 * 100.0), 1),
+            grid_coverage_pct: r((charges > 0).then(|| with_grid as f64 / charges as f64 * 100.0), 1),
             charging_efficiency_pct: r((grid > 0.0).then(|| added_with_grid / grid * 100.0), 1),
-            ac: kind(model::ChargeKind::Ac),
-            dc: kind(model::ChargeKind::Dc),
-            updates: u64::try_from(t.updates).unwrap_or(0),
+            ac,
+            dc,
+            updates,
         },
     ))
 }
 
+// ---------------------------------------------------------------- /gaps
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct UpdateView {
+pub struct GapRow {
     pub id: String,
-    pub car: CarRef,
     pub start_ms: u64,
     pub end_ms: Option<u64>,
-    pub until_ms: Option<u64>,
-    pub duration_ms: Option<u64>,
-    pub since_previous_ms: Option<u64>,
-    pub version: Option<String>,
-    pub version_source: Option<&'static str>,
-    pub detected_by: &'static str,
-    pub build_id: Option<String>,
-    pub changed_modules: Vec<String>,
-    pub charges: u64,
-    pub full_range_km: Option<f64>,
-    pub full_pack_kwh: Option<f64>,
+    pub duration_ms: u64,
+    /// How far the odometer moved across the gap (from the drive before to the drive after); null when unknown.
+    pub odometer_jump_km: Option<f64>,
+    pub from_place: Option<PlaceBrief>,
+    pub to_place: Option<PlaceBrief>,
+    /// `no_log`, `not_recorded`, `chain_gap`, `unknown`.
+    pub cause: &'static str,
+    /// The timeline's word: `no_log`, `not_recorded`, `failed_check`, `dropped_frames`.
+    pub gap_reason: &'static str,
     pub source: &'static str,
+    /// `{ charge }` for a log missing inside a charge.
+    pub inside: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Updates {
-    pub items: Vec<UpdateView>,
-    pub next: Option<String>,
-    pub summary: serde_json::Value,
+/// The reasons the records keep for `[a, b)` (as [`super::timeline::why_unknown`], with the chain gaps worked out
+/// once per answer).
+fn reasons(e: &Engine, car: CarId, a: u64, b: u64, chain: &[(u64, u64)]) -> QResult<Vec<super::timeline::Why>> {
+    use super::timeline::Why;
+    use crate::records::{self, Outcome};
+    let meta = records::meta(e.db(), car)?;
+    let mut out = Vec::new();
+    for (_, en) in records::entries_between(e.db(), car, &meta, a, b)? {
+        match &en.outcome {
+            Outcome::Hole { from_ms, to_ms, reason } => {
+                let (reason, cause) =
+                    if reason == "not_stored" { ("no_log", "no_log") } else { ("failed_check", "unknown") };
+                out.push(Why { from_ms: *from_ms, to_ms: *to_ms, reason, cause });
+            }
+            Outcome::Decoded { facts, .. } => {
+                for n in &facts.not_recorded {
+                    let from = n.paused_ms.map_or(n.at_ms.saturating_sub(1), |p| n.at_ms.saturating_sub(p));
+                    out.push(Why { from_ms: from, to_ms: n.at_ms, reason: "not_recorded", cause: "not_recorded" });
+                }
+                if facts.dropped > 0 {
+                    let (x, y) = facts.span();
+                    out.push(Why { from_ms: x, to_ms: y, reason: "dropped_frames", cause: "unknown" });
+                }
+            }
+        }
+    }
+    for &(x, y) in chain {
+        if y > a && x < b {
+            out.push(Why { from_ms: x, to_ms: y, reason: "no_log", cause: "chain_gap" });
+        }
+    }
+    Ok(out)
 }
 
-/// `/cars/{car}/updates`, newest first. (CAN logs give no firmware version yet, so updates come from imported
-/// history for now.)
-pub fn updates(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult<Scoped<Updates>> {
+/// `/cars/{car}/gaps`: unknown spans of ten minutes or more that start in the period, newest first (the one going on
+/// now, when the car's newest state is unknown, has `end_ms` null and its length up to now), with why (from
+/// the logs' records and each key's chain), how far the odometer moved across, and the places either side. The
+/// states are read newest first, and reading stops once the page is full.
+pub fn gaps(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult<Scoped<List<GapRow>>> {
     let c = car_of(e, car)?;
     let (a, b) = period.bounds()?;
-    let all: Vec<UpdateRow> = all_rows(e.db(), car, 0, u64::MAX, None)?;
-    let charges = super::charges::rows(e, car, &Period::all(), None)?;
-    let mut items = Vec::new();
-    for (i, u) in all.iter().enumerate() {
-        let up = &u.update;
-        let until = all.get(i + 1).map(|n| n.update.start_ms);
-        let since = i.checked_sub(1).and_then(|j| all.get(j)).map(|p| up.start_ms.saturating_sub(p.update.start_ms));
-        let n_charges =
-            charges.iter().filter(|ch| ch.start_ms >= up.start_ms && until.is_none_or(|t| ch.start_ms < t)).count();
-        let tm = up.source == Source::Teslamate;
-        items.push(UpdateView {
-            id: u.id.to_string(),
-            car: CarRef(car),
-            start_ms: up.start_ms,
-            end_ms: up.end_ms,
-            until_ms: until,
-            duration_ms: up.end_ms.map(|e| e.saturating_sub(up.start_ms)),
-            since_previous_ms: since,
-            version: Some(up.version.clone()).filter(|v| !v.is_empty()),
-            version_source: tm.then_some("teslamate"),
-            detected_by: if tm { "teslamate" } else { "build_change" },
-            build_id: None,
-            changed_modules: Vec::new(),
-            charges: n_charges as u64,
-            full_range_km: None,
-            full_pack_kwh: None,
-            source: source_word(up.source),
+    let limit = paging.limit()?;
+    let sig = format!("gaps|{car}|{}", period.sig());
+    let after = read_after(paging, &sig)?;
+    // a gap is a run of touching unknown spans; read newest first below the cursor's start (or the period's end)
+    let top = after.as_ref().map_or(b, |k| (k.0 as u64).min(b));
+    let mut runs: Vec<(u64, u64)> = Vec::new();
+    let mut cur: Option<(u64, u64)> = None;
+    // the car's newest state, when it is unknown: no data since (a gap still going, once it is long enough)
+    let still = still_unknown(e, car)?;
+    let holds_still = |run: (u64, u64)| still.is_some_and(|t| run.0 <= t && t <= run.1);
+    // the newest run may go on past the top: it is kept whatever its length until it is followed there
+    let keep = |run: (u64, u64), runs: &mut Vec<(u64, u64)>| {
+        let open = runs.is_empty() && (run.1 + 1_000 >= top || holds_still(run));
+        if run.0 >= a && run.0 < top && (open || run.1 - run.0 >= super::timeline::GAP_MS) {
+            runs.push(run);
+        }
+    };
+    overlapping::<StateRow>(e, car, a, top, Some(Source::Can), true, |s| {
+        let sp = &s.span;
+        if sp.state != State::Unknown {
+            if let Some(run) = cur.take() {
+                keep(run, &mut runs);
+            }
+            return Ok(runs.len() <= limit);
+        }
+        cur = match cur {
+            Some((x, y)) if sp.end_ms + 1_000 >= x => Some((sp.start_ms.min(x), y.max(sp.end_ms))),
+            Some(run) => {
+                keep(run, &mut runs);
+                Some((sp.start_ms, sp.end_ms))
+            }
+            None => Some((sp.start_ms, sp.end_ms)),
+        };
+        Ok(runs.len() <= limit)
+    })?;
+    if let Some(run) = cur.take() {
+        keep(run, &mut runs);
+    }
+    if let Some(first) = runs.first_mut()
+        && first.1 + 1_000 >= top
+    {
+        let mut y = first.1;
+        overlapping::<StateRow>(e, car, y, u64::MAX, Some(Source::Can), false, |s| {
+            if s.span.start_ms > y + 1_000 {
+                return Ok(false);
+            }
+            if s.span.state == State::Unknown {
+                y = y.max(s.span.end_ms);
+                return Ok(true);
+            }
+            Ok(s.span.end_ms <= y)
+        })?;
+        first.1 = y;
+    }
+    let now = crate::now_ms();
+    let mut going: Option<u64> = None;
+    if let Some(first) = runs.first_mut()
+        && holds_still(*first)
+    {
+        going = Some(first.0);
+        first.1 = first.1.max(now);
+    }
+    runs.retain(|run| run.1 - run.0 >= super::timeline::GAP_MS);
+    let more = runs.len() > limit;
+    runs.truncate(limit);
+    let chain = if runs.is_empty() { Vec::new() } else { super::timeline::chain_gaps(e, car)? };
+    let shown = Shown::new(e, car, Some(Source::Can))?;
+    let places = e.places();
+    let brief = |p: Option<&model::Position>| {
+        p.and_then(|p| places.place_at(p.lat, p.lon))
+            .map(|pl| PlaceBrief { id: place_ref(pl.id), name: pl.name.clone() })
+    };
+    let mut items = Vec::with_capacity(runs.len());
+    for (x, y) in runs {
+        let near = 2_000;
+        let why = reasons(e, car, x.saturating_sub(near), y.saturating_add(near), &chain)?;
+        let (gap_reason, cause) = super::timeline::classify(&why, x, y);
+        let inside = if cause == "chain_gap" {
+            let mut found = None;
+            overlapping::<Charge>(e, car, x, y, Some(Source::Can), false, |ch| {
+                if ch.start_ms <= x && y <= ch.end_ms {
+                    found = Some(serde_json::json!({ "charge": ch.id.to_string() }));
+                    return Ok(false);
+                }
+                Ok(true)
+            })?;
+            found
+        } else {
+            None
+        };
+        let before = drive_before(e, car, x, &shown, true)?;
+        let after_d = drive_from(e, car, y, &shown)?;
+        let jump = before
+            .as_ref()
+            .and_then(|d| d.end_odometer_km)
+            .zip(after_d.as_ref().and_then(|d| d.start_odometer_km))
+            .map(|(p, q)| (q - p).max(0.0));
+        items.push(GapRow {
+            id: format!("gap:{x}"),
+            start_ms: x,
+            end_ms: if going == Some(x) { None } else { Some(y) },
+            duration_ms: y - x,
+            odometer_jump_km: r(jump, 3),
+            from_place: brief(before.as_ref().and_then(|d| d.end.as_ref())),
+            to_place: brief(after_d.as_ref().and_then(|d| d.start.as_ref())),
+            cause,
+            gap_reason,
+            source: "can",
+            inside,
         });
     }
-    let mut gaps: Vec<u64> = items.iter().filter_map(|u| u.since_previous_ms).collect();
-    gaps.sort_unstable();
-    let current = items.last().cloned();
-    let summary = serde_json::json!({
-        "count": items.len(),
-        "median_gap_ms": gaps.get(gaps.len() / 2),
-        "current_version": current.as_ref().and_then(|u| u.version.clone()),
-        "current_version_source": current.as_ref().and_then(|u| u.version_source),
-        "current_version_since_ms": current.as_ref().map(|u| u.start_ms),
-        "build_changed_since": null,
-    });
-    items.retain(|u| u.start_ms >= a && u.start_ms < b);
-    let sig = format!("updates|{car}|{}", period.sig());
-    let page = paginate(items, |u| (u.start_ms as f64, u.id.clone()), true, &sig, paging, false)?;
-    Ok(scoped(&c, Updates { items: page.items, next: page.next, summary }))
+    let next = match items.last() {
+        Some(last) if more => Some(super::make_after(&(last.start_ms as f64, last.id.clone()), &sig)?),
+        _ => None,
+    };
+    Ok(scoped(&c, List { items, next, total: None }))
+}
+
+// ---------------------------------------------------------------- /compare
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Series {
+    pub car: CarRef,
+    pub name: String,
+    pub time_zone: String,
+    pub t_ms: Vec<u64>,
+    pub values: Vec<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct VersionRow {
-    pub car: CarRef,
-    pub version: Option<String>,
-    pub version_source: Option<&'static str>,
-    pub build_changed_since: Option<bool>,
-    pub last_update_ms: Option<u64>,
-    pub time_zone: String,
+pub struct Compare {
+    pub metric: &'static str,
+    pub unit: &'static str,
+    pub cars: Vec<CarRef>,
+    pub series: Vec<Series>,
 }
 
-/// `/fleet/versions`: each car's current software version.
-pub fn versions(e: &Engine, cars: &[CarId], search: Option<&str>, paging: &Paging) -> QResult<List<VersionRow>> {
-    let mut items = Vec::new();
-    let needle = search.map(str::to_lowercase).filter(|s| !s.is_empty());
+/// The rated range at 100 % a charge's end shows (from its end range and charge level), for ends at 20 % or more.
+pub(crate) fn full_range_of(ch: &Charge) -> Option<f64> {
+    let (km, soc) = (ch.end_range_km?, ch.end_soc?);
+    (soc >= 20.0 && km > 0.0).then(|| km / soc * 100.0)
+}
+
+/// `/compare?metric=capacity|full_range|wh_per_km|odometer`: one series per car, one point per local day with data,
+/// or per ISO week when the asked span is longer than 120 days. `capacity` is the usable kWh the battery page reads
+/// from charges (the median of a period's readings), `full_range` the rated range at 100 % at the end of a period's
+/// charges (their median), `wh_per_km` the period's drives of at least `min_distance_km`, `odometer` the odometer at
+/// the end of each period the car drove in.
+pub fn compare(
+    e: &Engine,
+    cars: &[CarId],
+    metric: Option<&str>,
+    period: &Period,
+    min_distance_km: Option<f64>,
+) -> QResult<Compare> {
+    let (metric, unit) = match metric.unwrap_or("capacity") {
+        "capacity" => ("capacity", "kWh"),
+        "full_range" => ("full_range", "km"),
+        "wh_per_km" => ("wh_per_km", "Wh/km"),
+        "odometer" => ("odometer", "km"),
+        _ => return Err(QueryError::bad("metric", "capacity, full_range, wh_per_km or odometer")),
+    };
+    period.bounds()?;
+    let min_d = min_distance_km.unwrap_or(0.0);
+    let mut series = Vec::with_capacity(cars.len());
     for &car in cars {
         let c = car_of(e, car)?;
-        let last: Option<UpdateRow> =
-            e.db().list::<UpdateRow>(car, &db::Query::default().limit(1))?.items.into_iter().next();
-        let row = VersionRow {
+        let mut s = Series {
             car: CarRef(car),
-            version: last.as_ref().map(|u| u.update.version.clone()).filter(|v| !v.is_empty()),
-            version_source: last.as_ref().filter(|u| u.update.source == Source::Teslamate).map(|_| "teslamate"),
-            build_changed_since: None,
-            last_update_ms: last.as_ref().map(|u| u.update.start_ms),
+            name: c.name.clone(),
             time_zone: c.time_zone.clone(),
+            t_ms: Vec::new(),
+            values: Vec::new(),
         };
-        if needle.as_ref().is_some_and(|n| {
-            !c.name.to_lowercase().contains(n) && !row.version.as_deref().is_some_and(|v| v.contains(n.as_str()))
-        }) {
-            continue;
+        if let Some((lo, end)) = span_of(e, car, period)? {
+            let p = if end - lo > 120 * DAY { P::Week } else { P::Day };
+            let slots = slots_forward(lo, end, p, tz::zone(&c.time_zone));
+            let shown = Shown::new(e, car, None)?;
+            let push = |s: &mut Series, i: usize, v: Option<f64>, d: i32| {
+                if let Some(v) = r(v, d) {
+                    s.t_ms.push(slots[i].start);
+                    s.values.push(v);
+                }
+            };
+            match metric {
+                "wh_per_km" | "odometer" => {
+                    let mut acc: Vec<(f64, f64, Option<f64>, bool)> = vec![(0.0, 0.0, None, false); slots.len()];
+                    each::<Drive>(e, car, lo, end, None, &shown, false, |d| {
+                        if let Some(i) = slot_of(&slots, d.start_ms) {
+                            let g = &mut acc[i];
+                            g.3 = true;
+                            if let Some(o) = d.end_odometer_km.or(d.start_odometer_km) {
+                                g.2 = Some(g.2.map_or(o, |x: f64| x.max(o)));
+                            }
+                            let km = d.distance_km.unwrap_or(0.0);
+                            if km >= min_d {
+                                g.0 += d.energy_used_kwh.unwrap_or(0.0);
+                                g.1 += km;
+                            }
+                        }
+                        Ok(true)
+                    })?;
+                    for (i, g) in acc.into_iter().enumerate() {
+                        if metric == "odometer" {
+                            push(&mut s, i, g.2.filter(|_| g.3), 1);
+                        } else {
+                            push(&mut s, i, (g.1 > 1.0).then(|| g.0 / g.1 * 1000.0), 1);
+                        }
+                    }
+                }
+                "full_range" => {
+                    let mut acc: Vec<Vec<f64>> = vec![Vec::new(); slots.len()];
+                    each::<Charge>(e, car, lo, end, None, &shown, false, |ch| {
+                        if let (Some(i), Some(v)) = (slot_of(&slots, ch.end_ms.min(end - 1)), full_range_of(&ch)) {
+                            acc[i].push(v);
+                        }
+                        Ok(true)
+                    })?;
+                    for (i, v) in acc.into_iter().enumerate() {
+                        push(&mut s, i, median(v), 1);
+                    }
+                }
+                _ => {
+                    let mut acc: Vec<Vec<f64>> = vec![Vec::new(); slots.len()];
+                    let mut pg = Paging::first(super::MAX_LIMIT);
+                    for _ in 0..200 {
+                        let cap = super::battery::capacity(e, car, &Period::new(Some(lo), Some(end)), None, None, &pg)?;
+                        for rd in &cap.body.items {
+                            if let (Some(i), Some(v)) = (slot_of(&slots, rd.t_ms), rd.usable_kwh) {
+                                acc[i].push(v);
+                            }
+                        }
+                        match cap.body.next {
+                            Some(n) => pg.after = Some(n),
+                            None => break,
+                        }
+                    }
+                    for (i, v) in acc.into_iter().enumerate() {
+                        push(&mut s, i, median(v), 2);
+                    }
+                }
+            }
         }
-        items.push(row);
+        series.push(s);
     }
-    let sig = format!("versions|{cars:?}|{search:?}");
-    paginate(items, |v| (v.last_update_ms.map_or(-1.0, |t| t as f64), v.car.0.to_string()), true, &sig, paging, false)
+    Ok(Compare { metric, unit, cars: cars.iter().map(|&c| CarRef(c)).collect(), series })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn slots_cover_the_span_newest_first_and_clipped() {
+        let zone = tz::zone("Europe/Berlin");
+        // 2026-03-30 10:00 UTC to 2026-05-02 10:00 UTC
+        let (lo, end) = (1_774_864_800_000, 1_777_716_000_000);
+        let back: Vec<Slot> = slots_back(lo, end, P::Month, zone).collect();
+        assert_eq!(back.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(), ["2026-05", "2026-04", "2026-03"]);
+        assert_eq!((back[0].end, back[2].start), (end, lo), "clipped to the span");
+        assert!(back.windows(2).all(|w| w[1].end == w[0].start), "touching");
+        let fwd = slots_forward(lo, end, P::Day, zone);
+        assert_eq!(fwd.len(), 34);
+        assert_eq!(slot_of(&fwd, lo), Some(0));
+        assert_eq!(slot_of(&fwd, end - 1), Some(33));
+        assert_eq!(slot_of(&fwd, end), None);
+        let all: Vec<Slot> = slots_back(lo, end, P::All, zone).collect();
+        assert_eq!(all, vec![Slot { start: lo, end, label: "All".into() }]);
+        assert!(slots_back(end, end, P::Day, zone).next().is_none());
+        assert_eq!(median(vec![3.0, 1.0, 2.0, 10.0]), Some(2.5));
+    }
 }

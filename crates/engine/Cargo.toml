@@ -16,6 +16,7 @@ import = { path = "../import" }
 ingest = { path = "../ingest" }
 logfmt = { path = "../logfmt" }
 model = { path = "../model" }
+mqtt = { path = "../mqtt" }
 places = { path = "../places" }
 timeline = { path = "../timeline" }
 trust = { path = "../trust" }

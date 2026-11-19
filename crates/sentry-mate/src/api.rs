@@ -28,21 +28,10 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/about", get(about))
         // fleet and cars (the cars list, the fleet summary and attention, a car and its settings: web's fleet module)
-        .route("/api/v1/fleet/versions", get(fleet_versions))
         // live values, series, timeline
-        .route("/api/v1/cars/{car}/gaps", get(gaps))
         // charges: web's charges module
         // battery and efficiency: web's battery and efficiency modules
-        // reports
-        .route("/api/v1/statistics", get(statistics_all))
-        .route("/api/v1/cars/{car}/statistics", get(statistics_car))
-        .route("/api/v1/cars/{car}/mileage", get(mileage))
-        .route("/api/v1/cars/{car}/totals", get(totals))
-        .route("/api/v1/cars/{car}/updates", get(updates))
-        .route("/api/v1/visits", get(visits))
-        .route("/api/v1/visits/summary", get(visits_summary))
-        .route("/api/v1/visits/places", get(visit_places))
-        .route("/api/v1/tracks", get(tracks))
+        // reports, travel and software: web's statistics, travel and software modules
         // places: web's places module
         // health and storage
         .route("/api/v1/cars/{car}/health", get(health))
@@ -139,20 +128,7 @@ type Json = axum::Json<serde_json::Value>;
 
 // ---- fleet and cars
 
-async fn fleet_versions(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResult<Response> {
-    let (pg, access, search) = (paging(&p)?, v.cars().clone(), text(&p, "search")?);
-    answer(&app, &p, "versions", move |e| {
-        q::reports::versions(e, &visible(e, &access, &CarsParam(None))?, search.as_deref(), &pg)
-    })
-    .await
-}
-
 // ---- live values, series, timeline (the web crate serves now, series, timeline, states and activity)
-
-async fn gaps(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let (per, pg) = (period(&p)?, paging(&p)?);
-    answer(&app, &p, "gaps", move |e| q::timeline::gaps(e, car, &per, &pg)).await
-}
 
 // ---- drives (the web crate serves drives, a drive, its track and purpose, purpose rules, drive stats, the
 // logbook, the trip and saved trips)
@@ -160,71 +136,8 @@ async fn gaps(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -
 // ---- battery and efficiency (the web crate serves battery, capacity, battery level, projected range, efficiency
 // and temperatures)
 
-// ---- reports
-
-fn stat_kind(p: &Params) -> ApiResult<&'static str> {
-    Ok(p.one_of("period", &["day", "week", "month", "year", "all"])?.unwrap_or("month"))
-}
-
-async fn statistics_all(State(app): State<AppState>, v: Viewer, named: CarsParam, p: Params) -> ApiResult<Response> {
-    let (kind, per, pg, access) = (stat_kind(&p)?, period(&p)?, paging(&p)?, v.cars().clone());
-    answer(&app, &p, "statistics", move |e| q::reports::statistics(e, &visible(e, &access, &named)?, kind, &per, &pg))
-        .await
-}
-
-async fn statistics_car(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let (kind, per, pg) = (stat_kind(&p)?, period(&p)?, paging(&p)?);
-    answer(&app, &p, "statistics", move |e| q::reports::statistics(e, &[car], kind, &per, &pg)).await
-}
-
-async fn mileage(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let (per, group) = (period(&p)?, text(&p, "group")?);
-    answer(&app, &p, "mileage", move |e| q::reports::mileage(e, car, &per, group.as_deref())).await
-}
-
-async fn totals(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let source = text(&p, "source")?;
-    answer(&app, &p, "totals", move |e| q::reports::totals(e, car, source.as_deref())).await
-}
-
-async fn updates(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let (per, pg) = (period(&p)?, paging(&p)?);
-    answer(&app, &p, "updates", move |e| q::reports::updates(e, car, &per, &pg)).await
-}
-
-fn visits_query(p: &Params) -> ApiResult<q::travel::VisitsQuery> {
-    Ok(q::travel::VisitsQuery {
-        period: period(p)?,
-        q: text(p, "q")?,
-        place: text(p, "place")?,
-        sort: text(p, "sort")?,
-    })
-}
-
-async fn visits(State(app): State<AppState>, v: Viewer, named: CarsParam, p: Params) -> ApiResult<Response> {
-    let (query, pg, access) = (visits_query(&p)?, paging(&p)?, v.cars().clone());
-    answer(&app, &p, "visits", move |e| q::travel::visits(e, &visible(e, &access, &named)?, &query, &pg)).await
-}
-
-async fn visits_summary(State(app): State<AppState>, v: Viewer, named: CarsParam, p: Params) -> ApiResult<Response> {
-    let (query, access) = (visits_query(&p)?, v.cars().clone());
-    answer(&app, &p, "visits-summary", move |e| q::travel::visits_summary(e, &visible(e, &access, &named)?, &query))
-        .await
-}
-
-async fn visit_places(State(app): State<AppState>, v: Viewer, named: CarsParam, p: Params) -> ApiResult<Response> {
-    let (query, pg, access) = (visits_query(&p)?, paging(&p)?, v.cars().clone());
-    let sort = query.sort.clone();
-    answer(&app, &p, "visit-places", move |e| {
-        q::travel::visit_places(e, &visible(e, &access, &named)?, &query, sort.as_deref(), &pg)
-    })
-    .await
-}
-
-async fn tracks(State(app): State<AppState>, v: Viewer, named: CarsParam, p: Params) -> ApiResult<Response> {
-    let (per, max, access) = (period(&p)?, p.uint("max_points", 2, 1_000_000)?, v.cars().clone());
-    answer(&app, &p, "tracks", move |e| q::travel::tracks(e, &visible(e, &access, &named)?, &per, max)).await
-}
+// ---- reports, travel and software (the web crate serves statistics, mileage, totals, gaps, compare, visits,
+// tracks, updates, the fleet's versions and events)
 
 // ---- places (the web crate serves places, a place, the preview, reprice, suggestions and the place at a point)
 

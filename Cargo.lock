@@ -614,6 +614,7 @@ dependencies = [
  "logfmt",
  "lzma-rs",
  "model",
+ "mqtt",
  "places",
  "serde",
  "serde_json",

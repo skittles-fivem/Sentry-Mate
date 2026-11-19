@@ -292,8 +292,11 @@ fn logs_become_a_drive_and_a_charge_and_late_logs_rebuild_the_same_history() {
         assert_eq!(series.body.bucket_ms, 10_000);
         assert!(series.body.values["speed_kph"][1].is_some_and(|v| (v - 36.0).abs() < 1.0));
         assert_eq!(series.body.state[1], Some("driving"));
-        let stats = query::reports::statistics(&a.engine, &[car], "day", &Period::all(), &Paging::default()).unwrap();
-        assert_eq!((stats.items[0].drives, stats.items[0].charges), (1, 1));
+        // (one row per day from the first data to now, newest first: the drive and the charge are on one of them)
+        let day1 = Period::new(Some(T0_MS), Some(T0_MS + 86_400_000));
+        let stats = query::reports::statistics(&a.engine, &[car], "day", &day1, &Paging::default()).unwrap();
+        let day = stats.items.iter().find(|d| d.drives > 0).unwrap();
+        assert_eq!((day.drives, day.charges), (1, 1));
 
         // the same logs, the charge's first minute last: the same history once it is in
         let b = kit();
