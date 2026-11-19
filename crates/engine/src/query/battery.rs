@@ -14,7 +14,7 @@
 //! Local days and weeks are the car's own ([`crate::tz`]): a day the clocks change is 23 or 25 hours long.
 
 use super::drives::each as each_row;
-use super::series::{Columns, bucket_for, coverage_and_state};
+use super::series::{Columns, bucket_for};
 use super::system::Shown;
 use super::{Paging, Period, QResult, QueryError, Scoped, car_of, r, scoped, source_word};
 use crate::Engine;
@@ -245,6 +245,10 @@ pub struct Reading {
     /// `charge` (energy added over the % it added) or `bms` (the pack's own reading).
     pub method: &'static str,
     pub charge: Option<String>,
+    /// What `usable_kwh` is: `charge` (measured over the charge), `buffer` (the full pack less the buffer the pack
+    /// named that day), `recent_buffer` (less the newest buffer the pack named on another day) or `full_pack` (no
+    /// buffer known: the full pack itself).
+    pub usable_basis: &'static str,
     /// Day readings a month's median is over (`group=month`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readings: Option<usize>,
@@ -266,19 +270,29 @@ fn charge_reading(ch: &Charge, buffer: Option<f64>) -> Option<Reading> {
         source: source_word(ch.source),
         method: "charge",
         charge: Some(ch.id.to_string()),
+        usable_basis: "charge",
         readings: None,
     })
 }
 
-fn pack_reading_row(p: &PackReading) -> Option<Reading> {
+/// A day's pack reading as a row: usable is the full pack less the day's buffer, else less `recent_buffer` (the
+/// newest one the pack named), else the full pack (`usable_basis` says which).
+fn pack_reading_row(p: &PackReading, recent_buffer: Option<f64>) -> Option<Reading> {
+    let full = p.full_pack_kwh?;
+    let (usable, basis) = match (p.buffer_kwh, recent_buffer) {
+        (Some(b), _) => (full - b, "buffer"),
+        (None, Some(b)) => (full - b, "recent_buffer"),
+        (None, None) => (full, "full_pack"),
+    };
     Some(Reading {
         t_ms: p.t_ms,
         odometer_km: r(p.odometer_km, 1),
-        full_pack_kwh: r(Some(p.full_pack_kwh?), 2),
-        usable_kwh: r(p.usable_kwh(), 2),
+        full_pack_kwh: r(Some(full), 2),
+        usable_kwh: r(Some(usable.max(0.0)), 2),
         source: "can",
         method: "bms",
         charge: None,
+        usable_basis: basis,
         readings: None,
     })
 }
@@ -380,39 +394,121 @@ fn local_edges(a: u64, b: u64, tz: Tz, step: u64) -> QResult<Vec<u64>> {
     Ok(out)
 }
 
-/// The rated consumption (Wh per km of rated range): the owner's, else the car's own (its energy over its range,
-/// from the newest values, or an imported factor). `(value, source, readings, as_of_ms)`.
-fn rated_factor(e: &Engine, c: &Car, s: &super::fleet::CarSettings, buffer: Option<f64>) -> QResult<Factor> {
-    if let Some(v) = s.efficiency_wh_per_km_override {
-        return Ok(Factor { rated: Some(v), ideal: None, source: Some("owner"), readings: 0, as_of_ms: None });
+/// Sample days the car's own rated consumption is taken over (newest first).
+const FACTOR_DAYS: usize = 14;
+
+/// One UTC day's sums of the car's energy over its range (kept per day in [`PACK_NS`], read again only when the day's
+/// samples change): `Σ energy/range` and `Σ 1/range` (so a buffer can be taken off afterwards), `Σ range/ideal`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct FactorDay {
+    stamp: String,
+    n: u64,
+    s_en: f64,
+    s_inv: f64,
+    s_ratio: f64,
+    n_ratio: u64,
+    last_ms: u64,
+}
+
+fn factor_day(e: &Engine, car: CarId, start_ms: u64, stamp: String) -> QResult<FactorDay> {
+    let key = format!("car/{car}/factor/{start_ms}");
+    if let Some(kept) = records::get::<FactorDay>(e.db(), PACK_NS, &key)?
+        && kept.stamp == stamp
+    {
+        return Ok(kept);
     }
-    let now = e.db().entry(c.id)?.and_then(|x| x.summary.now);
-    let derived = now.as_ref().and_then(|n| {
-        let smp = &n.sample;
-        let (en, rg) = (smp.energy_remaining_kwh?, smp.range_km?);
-        (rg > 30.0 && en > 1.0).then(|| ((en - buffer.unwrap_or(0.0)) * 1000.0 / rg, n.at_ms))
-    });
-    let ideal_ratio = now.as_ref().and_then(|n| {
-        let (rg, id) = (n.sample.range_km?, n.sample.ideal_range_km?);
-        (rg > 30.0 && id > 30.0).then(|| rg / id)
-    });
-    match (c.efficiency_wh_km, derived) {
-        (Some(v), _) => Ok(Factor {
+    let mut fd = FactorDay { stamp, ..FactorDay::default() };
+    for s in [Source::Can, Source::Teslamate] {
+        let cols = e.db().read_fields::<Sample>(
+            car,
+            s,
+            start_ms,
+            start_ms.saturating_add(DAY),
+            &["energy_remaining_kwh", "range_km", "ideal_range_km"],
+        )?;
+        let col = |k: usize, i: usize| {
+            cols.values.get(k).and_then(|c| c.1.get(i).copied().flatten()).filter(|v| v.is_finite())
+        };
+        for (i, &t) in cols.t_ms.iter().enumerate() {
+            let (en, rg, id) = (col(0, i), col(1, i), col(2, i));
+            if let (Some(en), Some(rg)) = (en, rg)
+                && rg > 30.0
+                && en > 1.0
+            {
+                fd.n += 1;
+                fd.s_en += en / rg;
+                fd.s_inv += 1.0 / rg;
+                fd.last_ms = fd.last_ms.max(t);
+            }
+            if let (Some(rg), Some(id)) = (rg, id)
+                && rg > 30.0
+                && id > 30.0
+            {
+                fd.n_ratio += 1;
+                fd.s_ratio += rg / id;
+            }
+        }
+    }
+    records::put(e.db(), PACK_NS, &key, &fd)?;
+    Ok(fd)
+}
+
+/// The rated consumption (Wh per km of rated range): the owner's, else an imported factor, else the car's own (its
+/// energy over its range, the median of the daily means of its last [`FACTOR_DAYS`] sample days, so it holds still
+/// between requests). `ideal` is the same per km of ideal range.
+fn rated_factor(e: &Engine, c: &Car, s: &super::fleet::CarSettings, buffer: Option<f64>) -> QResult<Factor> {
+    // the days the car has samples of, newest first, each with what its samples take on disk
+    let mut days: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
+    for (k, src) in [Source::Can, Source::Teslamate].into_iter().enumerate() {
+        for d in e.db().days::<Sample>(c.id, src)? {
+            let v = days.entry(d.start_ms).or_default();
+            if k == 0 { v.0 = d.bytes } else { v.1 = d.bytes }
+        }
+    }
+    let (mut rated, mut ratio, mut readings, mut as_of) = (Vec::new(), Vec::new(), 0u64, None);
+    for (&start, &(a, b)) in days.iter().rev().take(FACTOR_DAYS) {
+        let fd = factor_day(e, c.id, start, format!("{a}:{b}"))?;
+        if fd.n > 0 {
+            let w = (fd.s_en - buffer.unwrap_or(0.0) * fd.s_inv) / fd.n as f64 * 1000.0;
+            if w > 0.0 {
+                rated.push(w);
+                readings += fd.n;
+                as_of = as_of.max(Some(fd.last_ms));
+            }
+        }
+        if fd.n_ratio > 0 {
+            ratio.push(fd.s_ratio / fd.n_ratio as f64);
+        }
+    }
+    let ideal_ratio = median(ratio);
+    if let Some(v) = s.efficiency_wh_per_km_override {
+        return Ok(Factor {
+            rated: Some(v),
+            ideal: ideal_ratio.map(|k| v * k),
+            source: Some("owner"),
+            readings: 0,
+            as_of_ms: None,
+        });
+    }
+    if let Some(v) = c.efficiency_wh_km {
+        return Ok(Factor {
             rated: Some(v),
             ideal: ideal_ratio.map(|k| v * k),
             source: Some("energy_and_range"),
             readings: 0,
             as_of_ms: None,
-        }),
-        (None, Some((v, at))) => Ok(Factor {
+        });
+    }
+    Ok(match median(rated) {
+        Some(v) => Factor {
             rated: Some(v),
             ideal: ideal_ratio.map(|k| v * k),
             source: Some("energy_and_range"),
-            readings: 1,
-            as_of_ms: Some(at),
-        }),
-        (None, None) => Ok(Factor { rated: None, ideal: None, source: None, readings: 0, as_of_ms: None }),
-    }
+            readings,
+            as_of_ms: as_of,
+        },
+        None => Factor { rated: None, ideal: None, source: None, readings: 0, as_of_ms: None },
+    })
 }
 
 struct Factor {
@@ -433,7 +529,8 @@ fn history_start(e: &Engine, car: CarId, shown: &Shown) -> QResult<Option<(u64, 
     Ok(out)
 }
 
-/// The usable capacity when new and where it comes from: the owner's, the pack's readings of its first 30 days (a
+/// The usable capacity when new, where it comes from and whether it is the full pack (early readings without a
+/// buffer): the owner's, the pack's readings of its first 30 days (a
 /// history that starts with the car new), the first imported charges.
 fn new_capacity(
     e: &Engine,
@@ -441,9 +538,9 @@ fn new_capacity(
     s: &super::fleet::CarSettings,
     start: Option<(u64, bool)>,
     shown: &Shown,
-) -> QResult<(Option<f64>, Option<&'static str>)> {
+) -> QResult<(Option<f64>, Option<&'static str>, bool)> {
     if let Some(v) = s.capacity_new_kwh {
-        return Ok((Some(v), Some("owner")));
+        return Ok((Some(v), Some("owner"), false));
     }
     if let Some((t0, true)) = start {
         // usable (full pack less the buffer) where the pack names its buffer, else the full pack: `/battery` then
@@ -455,8 +552,11 @@ fn new_capacity(
                 full.extend(p.full_pack_kwh);
             }
         }
-        if let Some(m) = median(usable).or(median(full)) {
-            return Ok((Some(m), Some("early_bms")));
+        if let Some(m) = median(usable) {
+            return Ok((Some(m), Some("early_bms"), false));
+        }
+        if let Some(m) = median(full) {
+            return Ok((Some(m), Some("early_bms"), true));
         }
     }
     let mut imported = Vec::new();
@@ -467,9 +567,9 @@ fn new_capacity(
         Ok(imported.len() < 10)
     })?;
     if let Some(m) = median(imported) {
-        return Ok((Some(m), Some("imported_charges")));
+        return Ok((Some(m), Some("imported_charges"), false));
     }
-    Ok((None, None))
+    Ok((None, None, false))
 }
 
 /// The full-charge range when new: the owner's, else from the drives of the first 30 days of a history that starts
@@ -532,7 +632,8 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
     let smp = now.as_ref().map(|n| n.sample.clone()).unwrap_or_default();
     let packs = recent_packs(e, &c)?;
     let newest = packs.first().cloned();
-    let buffer = newest.as_ref().and_then(|p| p.buffer_kwh);
+    // the newest buffer the pack named in those days (not every reading names it)
+    let buffer = packs.iter().find_map(|p| p.buffer_kwh);
     // the charges' readings, newest first: the last five give a usable capacity where the pack sends none
     let live = live_charge(e, &c)?;
     let (mut charge_usable_v, mut imported, mut ac, mut dc, mut charges_n) = (Vec::new(), false, 0.0, 0.0, 0u64);
@@ -560,25 +661,36 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
         Ok(true)
     })?;
     let start = history_start(e, car, &shown)?;
-    let (new_kwh, new_source) = new_capacity(e, &c, &s, start, &shown)?;
+    let (new_kwh, new_source, new_is_full) = new_capacity(e, &c, &s, start, &shown)?;
     let (range_new, range_new_source) = new_range(e, car, &s, start, &shown)?;
     let factor = rated_factor(e, &c, &s, buffer)?;
 
-    let full = newest.as_ref().and_then(|p| p.full_pack_kwh);
-    let usable = newest.as_ref().and_then(PackReading::usable_kwh).or_else(|| median(charge_usable_v.clone()));
-    let full = full.or_else(|| usable.zip(buffer).map(|(u, b)| u + b));
+    // full and usable from one source: the pack's when a buffer is known, else the charges' (full = usable + the
+    // buffer when known); the pack's full pack alone when there is nothing else (usable then unknown)
+    let pack_full = newest.as_ref().and_then(|p| p.full_pack_kwh);
+    let charges_usable = median(charge_usable_v.clone());
+    let (full, usable, basis) = match (pack_full, buffer, charges_usable) {
+        (Some(f), Some(b), _) => (Some(f), Some((f - b).max(0.0)), Some("pack")),
+        (_, _, Some(u)) => (buffer.map(|b| u + b), Some(u), Some("charges")),
+        (Some(f), None, None) => (Some(f), None, Some("pack")),
+        (None, _, None) => (None, None, None),
+    };
+    // never more usable than the whole pack
+    let usable = match (usable, full) {
+        (Some(u), Some(f)) => Some(u.min(f)),
+        (u, _) => u,
+    };
     let fulls: Vec<f64> = packs.iter().filter_map(|p| p.full_pack_kwh).collect();
     let spread = (fulls.len() >= 2).then(|| {
         let (lo, hi) = fulls.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
         hi - lo
     });
-    let readings: u64 = packs.iter().map(|p| u64::from(p.readings)).sum::<u64>()
-        + if newest.is_none() { charge_usable_v.len() as u64 } else { 0 };
-    // the same basis as the value when new: the pack's usable, else its full pack (no buffer named), else the charges'
-    let now_basis = match (new_source, newest.as_ref()) {
-        (Some("early_bms"), Some(p)) if p.buffer_kwh.is_none() => p.full_pack_kwh,
-        _ => usable,
+    let readings: u64 = match basis {
+        Some("charges") => charge_usable_v.len() as u64,
+        _ => packs.iter().map(|p| u64::from(p.readings)).sum::<u64>(),
     };
+    // the same basis as the value when new: its full pack where the early readings named no buffer, else usable
+    let now_basis = if new_is_full { pack_full.or(full) } else { usable };
     let diff = new_kwh.zip(now_basis).map(|(n, u)| n - u);
     let degradation = diff.zip(new_kwh).filter(|(_, n)| *n > 0.0).map(|(d, n)| d / n * 100.0);
     let full_now = smp.range_km.zip(smp.soc).filter(|(_, soc)| *soc >= 5.0).map(|(rg, soc)| rg / soc * 100.0);
@@ -642,6 +754,7 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
             as_of_ms: now.as_ref().map(|n| n.at_ms).or(newest.as_ref().map(|p| p.t_ms)),
             capacity: json!({
                 "full_pack_kwh": r(full, 2), "buffer_kwh": r(buffer, 2), "usable_kwh": r(usable, 2),
+                "basis": basis,
                 "spread_kwh": r(spread, 2), "readings": has_history.then_some(readings),
                 "new_kwh": r(new_kwh, 2), "new_source": new_source,
                 "difference_kwh": r(diff, 2), "degradation_pct": r(degradation, 1),
@@ -683,38 +796,103 @@ pub struct Capacity {
     pub next: Option<String>,
 }
 
-/// The least-squares trend of readings `(odometer_km, usable_kwh, t_ms)` and, while the pack loses capacity, where
-/// the line meets the warranty threshold.
-fn trend(pts: &[(f64, f64, u64)], new_kwh: Option<f64>, warranty_pct: f64) -> Value {
-    let none = json!({ "slope_kwh_per_10000_km": null, "projection": null });
-    if pts.len() < 3 {
-        return none;
-    }
-    let (lo, hi) = pts.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
-    if hi - lo < 500.0 {
-        return none;
-    }
-    let n = pts.len() as f64;
-    let (mx, my) = (pts.iter().map(|p| p.0).sum::<f64>() / n, pts.iter().map(|p| p.1).sum::<f64>() / n);
-    let sxx: f64 = pts.iter().map(|p| (p.0 - mx).powi(2)).sum();
-    let sxy: f64 = pts.iter().map(|p| (p.0 - mx) * (p.1 - my)).sum();
-    if sxx <= 0.0 {
-        return none;
-    }
-    let slope = sxy / sxx;
-    let projection = new_kwh.filter(|_| slope < -1e-9).map(|nk| {
-        let target = nk * warranty_pct / 100.0;
-        let at_km = mx + (target - my) / slope;
-        let (t0, t1) = pts.iter().fold((u64::MAX, 0), |(a, b), p| (a.min(p.2), b.max(p.2)));
-        let km_per_ms = (hi - lo) / (t1.saturating_sub(t0).max(1)) as f64;
-        let t_at = (km_per_ms > 0.0).then(|| t1 as f64 + (at_km - hi) / km_per_ms).filter(|t| *t < 4.1e12);
-        json!({
-            "warranty_pct": warranty_pct, "full_pack_kwh_at_warranty": r(Some(target), 2),
-            "odometer_km": r(Some(at_km), 0), "t_ms": t_at.map(|t| t as u64), "method": "linear",
-        })
-    });
-    json!({ "slope_kwh_per_10000_km": r(Some(slope * 10_000.0), 3), "projection": projection })
+/// The least-squares trend of readings `(odometer_km, usable_kwh, t_ms)`, from running sums (nothing is held), and,
+/// while the pack loses capacity, where the line meets the warranty threshold.
+#[derive(Debug, Clone, Copy)]
+struct Trend {
+    n: f64,
+    sx: f64,
+    sy: f64,
+    sxx: f64,
+    sxy: f64,
+    lo: f64,
+    hi: f64,
+    t0: u64,
+    t1: u64,
 }
+
+impl Default for Trend {
+    fn default() -> Trend {
+        Trend { n: 0.0, sx: 0.0, sy: 0.0, sxx: 0.0, sxy: 0.0, lo: f64::MAX, hi: f64::MIN, t0: u64::MAX, t1: 0 }
+    }
+}
+
+impl Trend {
+    fn add(&mut self, x: f64, y: f64, t: u64) {
+        self.n += 1.0;
+        self.sx += x;
+        self.sy += y;
+        self.sxx += x * x;
+        self.sxy += x * y;
+        self.lo = self.lo.min(x);
+        self.hi = self.hi.max(x);
+        self.t0 = self.t0.min(t);
+        self.t1 = self.t1.max(t);
+    }
+
+    fn value(&self, new_kwh: Option<f64>, warranty_pct: f64) -> Value {
+        let none = json!({ "slope_kwh_per_10000_km": null, "projection": null });
+        if self.n < 3.0 || self.hi - self.lo < 500.0 {
+            return none;
+        }
+        let (mx, my) = (self.sx / self.n, self.sy / self.n);
+        let sxx = self.sxx - self.n * mx * mx;
+        let sxy = self.sxy - self.n * mx * my;
+        if sxx <= 0.0 {
+            return none;
+        }
+        let slope = sxy / sxx;
+        let projection = new_kwh.filter(|_| slope < -1e-9).map(|nk| {
+            let target = nk * warranty_pct / 100.0;
+            let at_km = mx + (target - my) / slope;
+            let km_per_ms = (self.hi - self.lo) / (self.t1.saturating_sub(self.t0).max(1)) as f64;
+            let t_at =
+                (km_per_ms > 0.0).then(|| self.t1 as f64 + (at_km - self.hi) / km_per_ms).filter(|t| *t < 4.1e12);
+            json!({
+                "warranty_pct": warranty_pct, "full_pack_kwh_at_warranty": r(Some(target), 2),
+                "odometer_km": r(Some(at_km), 0), "t_ms": t_at.map(|t| t as u64), "method": "linear",
+            })
+        });
+        json!({ "slope_kwh_per_10000_km": r(Some(slope * 10_000.0), 3), "projection": projection })
+    }
+}
+
+#[cfg(test)]
+fn trend(pts: &[(f64, f64, u64)], new_kwh: Option<f64>, warranty_pct: f64) -> Value {
+    let mut t = Trend::default();
+    for p in pts {
+        t.add(p.0, p.1, p.2);
+    }
+    t.value(new_kwh, warranty_pct)
+}
+
+/// The smallest `cap` rows after the cursor, in key order, whatever order they come in (bounded: nothing past `cap` is
+/// held).
+struct PageBuf<'a> {
+    rows: Vec<((f64, String), Reading)>,
+    cap: usize,
+    after: Option<&'a (f64, String)>,
+}
+
+impl PageBuf<'_> {
+    fn offer(&mut self, key: (f64, String), rd: Reading) {
+        if self.after.is_some_and(|k| super::cmp_key(&key, k, false).is_le()) {
+            return;
+        }
+        if self.rows.len() >= self.cap && self.rows.last().is_some_and(|(k, _)| super::cmp_key(&key, k, false).is_ge())
+        {
+            return;
+        }
+        let at = self.rows.partition_point(|(k, _)| super::cmp_key(k, &key, false).is_le());
+        self.rows.insert(at, (key, rd));
+        self.rows.truncate(self.cap);
+    }
+}
+
+/// Record days a `group=day` page looks at at most (it then answers a cursor at the last day looked at).
+const DAYS_PER_PAGE: usize = 60 + MAX_SPREAD_DAYS;
+/// The id part of a cursor that resumes a `group=day` list at a record day: `@<day>`.
+const RESUME: char = '@';
 
 /// `/cars/{car}/battery/capacity`: `group=charge` (default) one reading per finished charge that added at least
 /// 10 %; `day` the pack's own reading per awake day; `month` the median of those per local month. `x=time|odometer`
@@ -745,7 +923,7 @@ pub fn capacity(
     let s = super::fleet::settings_of(e, car)?;
     let shown = Shown::new(e, car, None)?;
     let start = history_start(e, car, &shown)?;
-    let (new_kwh, _) = new_capacity(e, &c, &s, start, &shown)?;
+    let (new_kwh, _, _) = new_capacity(e, &c, &s, start, &shown)?;
     let sig = format!("capacity|{car}|{}|{group}|{by_odo}", period.sig());
     let after = super::read_after(paging, &sig)?;
     let key_of = |rd: &Reading| -> (f64, String) {
@@ -753,64 +931,87 @@ pub fn capacity(
         (k, format!("{}:{}", rd.t_ms, rd.charge.clone().unwrap_or_default()))
     };
     let keep = |rd: &Reading| !by_odo || rd.odometer_km.is_some();
+    let buffer = recent_packs_newest_buffer(e, &c)?;
+    let mut resume: Option<String> = None;
     let (items, more, trend_v) = match group {
         "charge" => {
-            // every reading of the period (small: a few numbers each) for the trend; the page is cut from them
-            let buffer = recent_packs_newest_buffer(e, &c)?;
+            // the trend from running sums over every reading of the period; the page keeps the first `limit + 1`
+            // rows after the cursor
             let live = live_charge(e, &c)?;
-            let mut all = Vec::new();
+            let mut tr = Trend::default();
+            let mut page = PageBuf { rows: Vec::new(), cap: limit + 1, after: after.as_ref() };
             each_row::<Charge>(e, car, a, b, None, &shown, false, |ch| {
                 if Some(ch.id) != live
                     && let Some(rd) = charge_reading(&ch, buffer)
                 {
-                    all.push(rd);
+                    if let (Some(o), Some(u)) = (rd.odometer_km, rd.usable_kwh) {
+                        tr.add(o, u, rd.t_ms);
+                    }
+                    if keep(&rd) {
+                        page.offer(key_of(&rd), rd);
+                    }
                 }
                 Ok(true)
             })?;
-            let pts: Vec<(f64, f64, u64)> =
-                all.iter().filter_map(|rd| Some((rd.odometer_km?, rd.usable_kwh?, rd.t_ms))).collect();
-            let trend_v = trend(&pts, new_kwh, s.warranty_threshold_pct);
-            all.retain(keep);
-            all.sort_by(|p, q| super::cmp_key(&key_of(p), &key_of(q), false));
-            let start_at = match &after {
-                Some(k) => all.partition_point(|rd| super::cmp_key(&key_of(rd), k, false).is_le()),
-                None => 0,
-            };
-            let mut rest: Vec<Reading> = all.into_iter().skip(start_at).collect();
+            let mut rest: Vec<Reading> = page.rows.into_iter().map(|(_, rd)| rd).collect();
             let more = rest.len() > limit;
             rest.truncate(limit);
-            (rest, more, trend_v)
+            (rest, more, tr.value(new_kwh, s.warranty_threshold_pct))
         }
         _ => {
             let days = record_days(e, car, a, b)?;
             // the trend over the period's days, thinned evenly
-            let mut pts = Vec::new();
+            let mut tr = Trend::default();
             for d in thin(&days, MAX_SPREAD_DAYS) {
-                if let Some(rd) = day_pack(e, &c, d)?.as_ref().and_then(pack_reading_row)
+                if let Some(rd) = day_pack(e, &c, d)?.as_ref().and_then(|p| pack_reading_row(p, buffer))
                     && rd.t_ms >= a
                     && rd.t_ms < b
                     && let (Some(o), Some(u)) = (rd.odometer_km, rd.usable_kwh)
                 {
-                    pts.push((o, u, rd.t_ms));
+                    tr.add(o, u, rd.t_ms);
                 }
             }
-            let trend_v = trend(&pts, new_kwh, s.warranty_threshold_pct);
+            let trend_v = tr.value(new_kwh, s.warranty_threshold_pct);
             let tz = crate::tz::zone(&c.time_zone);
             if group == "day" {
-                // one per local day: the last reading of the day (days are read in time order, so the page is
-                // filled as they are read)
+                // one per local day: the last reading of the day. Days are read in time order from the cursor's
+                // (a day before it: a log can run past midnight), so the page is filled as they are read; a page
+                // looks at a bounded number of days and else answers a cursor at the last one looked at
+                let from_day = match &after {
+                    Some((_, id)) => match id.strip_prefix(RESUME) {
+                        Some(d) => {
+                            d.parse::<u32>().map_err(|_| QueryError::bad("after", "not a cursor of this list"))?
+                        }
+                        None => id
+                            .split(':')
+                            .next()
+                            .and_then(|t| t.parse::<u64>().ok())
+                            .map_or(0, |t| records::day_of(t).saturating_sub(1)),
+                    },
+                    None => 0,
+                };
+                let skip_key = after.as_ref().filter(|(_, id)| !id.starts_with(RESUME));
                 let mut by_day: BTreeMap<NaiveDate, Reading> = BTreeMap::new();
-                let mut decoded = 0usize;
-                for d in days {
-                    if by_day.len() > limit + 1 || decoded > limit + 60 + MAX_SPREAD_DAYS {
+                let mut last_day: Option<u32> = None;
+                let mut capped = false;
+                for (looked, d) in days.into_iter().filter(|&d| d >= from_day).enumerate() {
+                    if by_day.len() > limit + 1 {
                         break;
                     }
-                    let Some(rd) = day_pack(e, &c, d)?.as_ref().and_then(pack_reading_row) else { continue };
-                    decoded += 1;
+                    if looked >= limit + DAYS_PER_PAGE {
+                        capped = true;
+                        break;
+                    }
+                    last_day = Some(d);
+                    let Some(rd) = day_pack(e, &c, d)?.as_ref().and_then(|p| pack_reading_row(p, buffer)) else {
+                        continue;
+                    };
                     if rd.t_ms < a || rd.t_ms >= b || !keep(&rd) {
                         continue;
                     }
-                    if after.as_ref().is_some_and(|k| super::cmp_key(&key_of(&rd), k, false).is_le()) {
+                    if skip_key.is_some_and(|k| super::cmp_key(&key_of(&rd), k, false).is_le())
+                        || after.as_ref().is_some_and(|(k, id)| id.starts_with(RESUME) && key_of(&rd).0 <= *k)
+                    {
                         continue;
                     }
                     by_day.insert(crate::tz::date(rd.t_ms, tz), rd);
@@ -819,6 +1020,14 @@ pub fn capacity(
                 rest.sort_by(|p, q| super::cmp_key(&key_of(p), &key_of(q), false));
                 let more = rest.len() > limit;
                 rest.truncate(limit);
+                if capped && !more {
+                    // the work cap came before the page was full: go on after the last day looked at, from the
+                    // last row given (or where the cursor was)
+                    let k = rest.last().map(|rd| key_of(rd).0).or(after.as_ref().map(|k| k.0)).unwrap_or(-1.0);
+                    if let Some(d) = last_day {
+                        resume = Some(super::make_after(&(k, format!("{RESUME}{}", d + 1)), &sig)?);
+                    }
+                }
                 (rest, more, trend_v)
             } else {
                 let mut items: Vec<Reading> = Vec::new();
@@ -831,9 +1040,14 @@ pub fn capacity(
                     if items.len() > limit {
                         break;
                     }
+                    let t0 = NaiveDate::from_ymd_opt(y, m, 1).map_or(0, |d| crate::tz::start_of(d, tz));
+                    // months up to the cursor are not decoded again (by time, the key is the month's start)
+                    if !by_odo && after.as_ref().is_some_and(|k| (t0 as f64) < k.0) {
+                        continue;
+                    }
                     let mut v: Vec<Reading> = Vec::new();
                     for d in thin(&ds, MONTH_DAYS) {
-                        if let Some(rd) = day_pack(e, &c, d)?.as_ref().and_then(pack_reading_row)
+                        if let Some(rd) = day_pack(e, &c, d)?.as_ref().and_then(|p| pack_reading_row(p, buffer))
                             && rd.t_ms >= a
                             && rd.t_ms < b
                         {
@@ -843,7 +1057,11 @@ pub fn capacity(
                     if v.is_empty() {
                         continue;
                     }
-                    let t0 = NaiveDate::from_ymd_opt(y, m, 1).map_or(0, |d| crate::tz::start_of(d, tz));
+                    let basis = if v.iter().all(|x| x.usable_basis == v[0].usable_basis) {
+                        v[0].usable_basis
+                    } else {
+                        "recent_buffer"
+                    };
                     let rd = Reading {
                         t_ms: t0,
                         odometer_km: v.iter().rev().find_map(|x| x.odometer_km),
@@ -852,6 +1070,7 @@ pub fn capacity(
                         source: "can",
                         method: "bms",
                         charge: None,
+                        usable_basis: basis,
                         readings: Some(v.len()),
                     };
                     if !keep(&rd) || after.as_ref().is_some_and(|k| super::cmp_key(&key_of(&rd), k, false).is_le()) {
@@ -868,18 +1087,18 @@ pub fn capacity(
     };
     let next = match items.last() {
         Some(last) if more => Some(super::make_after(&key_of(last), &sig)?),
-        _ => None,
+        _ => resume,
     };
     let x_word = if by_odo { "odometer" } else { "time" };
     Ok(scoped(&c, Capacity { group, x: x_word, items, trend: trend_v, next }))
 }
 
-/// The buffer the newest pack reading names (looking back a few record days).
+/// The newest buffer the pack named (looking back at most [`RECENT_DAYS`] record days).
 fn recent_packs_newest_buffer(e: &Engine, c: &Car) -> QResult<Option<f64>> {
     let meta = records::meta(e.db(), c.id)?;
-    for &d in meta.days.iter().rev().take(5) {
-        if let Some(p) = day_pack(e, c, d)? {
-            return Ok(p.buffer_kwh);
+    for &d in meta.days.iter().rev().take(RECENT_DAYS) {
+        if let Some(b) = day_pack(e, c, d)?.and_then(|p| p.buffer_kwh) {
+            return Ok(Some(b));
         }
     }
     Ok(None)
@@ -937,6 +1156,8 @@ pub struct Level {
     pub buckets: Vec<LevelBucket>,
     pub moving: Moving,
     pub spans: Vec<Span>,
+    /// More spans than an answer holds (even leaving out those shorter than a bucket): the later ones are missing.
+    pub spans_truncated: bool,
     pub band: Value,
     pub charge_limit: Vec<LimitStep>,
     pub share_above_80_pct: Option<f64>,
@@ -944,13 +1165,16 @@ pub struct Level {
     pub stats: Value,
 }
 
-/// Spans of asleep and unknown in `[a, b)` (time no state span covers is unknown), touching ones joined.
+/// Spans an answer holds at most.
 const MAX_SPANS: usize = 10_000;
 
-fn sleep_spans(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec<Span>> {
+/// Spans of asleep and unknown in `[a, b)` (time no state span covers is unknown), touching ones joined, those
+/// shorter than `min_ms` (once joined) left out. `true` when spans were left out past [`MAX_SPANS`].
+fn sleep_spans(e: &Engine, car: CarId, a: u64, b: u64, min_ms: u64) -> QResult<(Vec<Span>, bool)> {
     let mut out: Vec<Span> = Vec::new();
     let mut at = a;
-    let push = |out: &mut Vec<Span>, state: &'static str, x: u64, y: u64| {
+    let mut cut = false;
+    let push = |out: &mut Vec<Span>, cut: &mut bool, state: &'static str, x: u64, y: u64| {
         if y <= x {
             return;
         }
@@ -959,8 +1183,16 @@ fn sleep_spans(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec<Span>> {
             && l.end_ms >= x
         {
             l.end_ms = l.end_ms.max(y);
-        } else if out.len() < MAX_SPANS {
+            return;
+        }
+        // the span before is done: too short, it goes
+        if out.last().is_some_and(|l| l.end_ms - l.start_ms < min_ms) {
+            out.pop();
+        }
+        if out.len() < MAX_SPANS {
             out.push(Span { state, start_ms: x, end_ms: y });
+        } else {
+            *cut = true;
         }
     };
     each_state(e, car, a, b, |s| {
@@ -969,19 +1201,22 @@ fn sleep_spans(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec<Span>> {
             return;
         }
         if x > at {
-            push(&mut out, "unknown", at, x);
+            push(&mut out, &mut cut, "unknown", at, x);
         }
         match s.state {
-            State::Asleep => push(&mut out, "asleep", x, y),
-            State::Unknown => push(&mut out, "unknown", x, y),
+            State::Asleep => push(&mut out, &mut cut, "asleep", x, y),
+            State::Unknown => push(&mut out, &mut cut, "unknown", x, y),
             State::Online => {}
         }
         at = at.max(y);
     })?;
     if at < b {
-        push(&mut out, "unknown", at, b);
+        push(&mut out, &mut cut, "unknown", at, b);
     }
-    Ok(out)
+    if out.last().is_some_and(|l| l.end_ms - l.start_ms < min_ms) {
+        out.pop();
+    }
+    Ok((out, cut))
 }
 
 /// `/cars/{car}/battery-level` (default the last 30 days).
@@ -1092,7 +1327,12 @@ pub fn battery_level(e: &Engine, car: CarId, q: &LevelQuery, now_ms: u64) -> QRe
             moving.p92_5.push(r(m[3], 2));
         }
     }
-    let spans = sleep_spans(e, car, a, end)?;
+    // every span; past the cap, again without those shorter than a bucket (they cannot cover one), and a flag when
+    // even that is too many
+    let (mut spans, mut spans_cut) = sleep_spans(e, car, a, end, 0)?;
+    if spans_cut {
+        (spans, spans_cut) = sleep_spans(e, car, a, end, bucket_ms)?;
+    }
     // the charge limit, a step line from the pack's daily readings
     let mut charge_limit: Vec<LimitStep> = Vec::new();
     for d in thin(&record_days(e, car, a, end)?, MAX_SPREAD_DAYS) {
@@ -1127,6 +1367,7 @@ pub fn battery_level(e: &Engine, car: CarId, q: &LevelQuery, now_ms: u64) -> QRe
             buckets,
             moving,
             spans,
+            spans_truncated: spans_cut,
             band,
             charge_limit,
             share_above_80_pct: above,
@@ -1199,10 +1440,10 @@ pub fn projected_range(e: &Engine, car: CarId, q: &RangeQuery, now_ms: u64) -> Q
     }
     let tz = crate::tz::zone(&c.time_zone);
     let local = matches!(q.bucket.as_deref(), Some("day") | Some("week"));
-    let (starts, w): (Vec<u64>, u64) = if local {
+    // the buckets' edges (one more than the buckets): local days and weeks are 23 to 25 hours a day long
+    let (edges, w): (Vec<u64>, u64) = if local {
         let step = if q.bucket.as_deref() == Some("week") { 7 } else { 1 };
-        let edges = local_edges(lo, end, tz, step)?;
-        (edges[..edges.len() - 1].to_vec(), step * DAY)
+        (local_edges(lo, end, tz, step)?, step * DAY)
     } else {
         let w = fixed.unwrap_or_else(|| bucket_for(lo, end, max));
         let first = lo / w * w;
@@ -1210,8 +1451,9 @@ pub fn projected_range(e: &Engine, car: CarId, q: &RangeQuery, now_ms: u64) -> Q
         if n > MAX_BUCKETS {
             return Err(QueryError::bad("bucket", "too many buckets for this period"));
         }
-        ((0..n).map(|i| first + i * w).collect(), w)
+        ((0..=n).map(|i| first + i * w).collect(), w)
     };
+    let starts: Vec<u64> = edges[..edges.len() - 1].to_vec();
     let s = super::fleet::settings_of(e, car)?;
     let buffer = recent_packs_newest_buffer(e, &c)?;
     let rated = rated_factor(e, &c, &s, buffer)?.rated;
@@ -1221,7 +1463,7 @@ pub fn projected_range(e: &Engine, car: CarId, q: &RangeQuery, now_ms: u64) -> Q
     let k = RANGE_FIELDS.len();
     let mut acc = vec![vec![(0.0f64, 0u64); k]; starts.len()];
     let mut bi = 0usize;
-    let edge = |i: usize| starts.get(i + 1).copied().unwrap_or_else(|| starts[i] + w);
+    let edge = |i: usize| edges[i + 1];
     each_sample(e, car, starts[0].min(lo), end, &names, |t, v| {
         if t < starts[0] {
             return;
@@ -1271,8 +1513,75 @@ pub fn projected_range(e: &Engine, car: CarId, q: &RangeQuery, now_ms: u64) -> Q
                 .collect(),
         );
     }
-    let (coverage_pct, state) = coverage_and_state(e, car, &starts, w, end, None)?;
+    let (coverage_pct, state) = coverage_streamed(e, car, &edges, end)?;
     Ok(scoped(&c, Columns { fields, t_ms: starts, values, bucket_ms: w, coverage_pct, state }))
+}
+
+/// Per bucket (`edges[i]..edges[i + 1]`, the last cut at `end`): the share with known data (asleep counts as known)
+/// and the state that took most of it, from the car's state spans, drives and charges, each streamed a page at a time
+/// into per-bucket sums (nothing but the sums is held).
+fn coverage_streamed(
+    e: &Engine,
+    car: CarId,
+    edges: &[u64],
+    end: u64,
+) -> QResult<(Vec<f64>, Vec<Option<&'static str>>)> {
+    let n = edges.len().saturating_sub(1);
+    if n == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let (first, last) = (edges[0], edges[n].min(end).max(edges[0]));
+    let bucket = |i: usize| (edges[i], edges[i + 1].min(end).max(edges[i]));
+    // online, asleep, unknown (state spans); driving, charging (rows)
+    let mut by = vec![[0u64; 5]; n];
+    let add = |x: u64, y: u64, k: usize, by: &mut Vec<[u64; 5]>| {
+        if y <= x {
+            return;
+        }
+        let mut i = edges.partition_point(|&m| m <= x).saturating_sub(1);
+        while i < n {
+            let (bx, bend) = bucket(i);
+            if bx >= y {
+                break;
+            }
+            by[i][k] += y.min(bend).saturating_sub(x.max(bx));
+            i += 1;
+        }
+    };
+    each_state(e, car, first, last, |s| {
+        let k = match s.state {
+            State::Online => 0,
+            State::Asleep => 1,
+            State::Unknown => 2,
+        };
+        add(s.start_ms, s.end_ms, k, &mut by);
+    })?;
+    let shown = Shown::new(e, car, None)?;
+    each_row::<Drive>(e, car, first.saturating_sub(DAY), last, None, &shown, false, |d| {
+        add(d.start_ms, d.end_ms, 3, &mut by);
+        Ok(true)
+    })?;
+    each_row::<Charge>(e, car, first.saturating_sub(7 * DAY), last, None, &shown, false, |ch| {
+        add(ch.start_ms, ch.end_ms, 4, &mut by);
+        Ok(true)
+    })?;
+    let words = ["driving", "charging", "parked", "asleep", "unknown"];
+    let mut coverage = Vec::with_capacity(n);
+    let mut state = Vec::with_capacity(n);
+    for (i, b) in by.iter().enumerate() {
+        let (bx, byy) = bucket(i);
+        let w = byy.saturating_sub(bx);
+        let (online, asleep, unknown, dr, ch) = (b[0], b[1], b[2], b[3], b[4]);
+        let known = online + asleep;
+        let busy = dr + ch;
+        let parked = online.saturating_sub(busy);
+        let unknown = unknown + w.saturating_sub(known.max(busy) + unknown);
+        let pct = if w == 0 { 0.0 } else { known.max(busy).min(w) as f64 / w as f64 * 100.0 };
+        coverage.push(r(Some(pct), 1).unwrap_or(0.0));
+        let v = [dr, ch, parked, asleep, unknown];
+        state.push(v.iter().enumerate().max_by_key(|(_, x)| **x).map(|(j, _)| words[j]).filter(|_| w > 0));
+    }
+    Ok((coverage, state))
 }
 
 // ---------------------------------------------------------------- /efficiency
@@ -1301,6 +1610,8 @@ pub struct Efficiency {
     pub distance_km: f64,
     pub energy_kwh: f64,
     pub drives: u64,
+    /// Drives of `drives` without energy (their distance is left out of the energy per km).
+    pub without_energy: u64,
     pub estimated_drives: u64,
     pub all_drives: Value,
     pub by_temperature: Vec<TempGroup>,
@@ -1328,24 +1639,31 @@ pub fn efficiency(
         return Err(QueryError::bad("temp_group_c", "1 to 20"));
     }
     let (a, b) = period.bounds()?;
-    let end = b.min(now_ms);
+    // a period that starts after now is empty (a browser clock a little ahead asks for one)
+    let end = b.min(now_ms).max(a);
     let shown = Shown::new(e, car, None)?;
-    let (mut all_n, mut all_km, mut all_kwh) = (0u64, 0.0, 0.0);
-    let (mut n, mut km, mut kwh, mut estimated) = (0u64, 0.0, 0.0, 0u64);
-    let mut groups: BTreeMap<i64, (u64, f64, f64, u64)> = BTreeMap::new();
+    // the energy per km counts only the distance of drives that have energy (a drive without it would add its
+    // distance at 0 kWh): `*_km_e`
+    let (mut all_n, mut all_km, mut all_kwh, mut all_km_e) = (0u64, 0.0, 0.0, 0.0);
+    let (mut n, mut km, mut kwh, mut km_e, mut estimated, mut without) = (0u64, 0.0, 0.0, 0.0, 0u64, 0u64);
+    let mut groups: BTreeMap<i64, (u64, f64, f64, u64, f64)> = BTreeMap::new();
     let (mut no_t, mut no_t_km) = (0u64, 0.0);
     let mut last_end: Option<u64> = None;
     each_row::<Drive>(e, car, a, end, None, &shown, false, |d| {
         let (dk, de) = (d.distance_km.unwrap_or(0.0), d.energy_used_kwh.unwrap_or(0.0));
+        let dk_e = if d.energy_used_kwh.is_some() { dk } else { 0.0 };
         all_n += 1;
         all_km += dk;
         all_kwh += de;
+        all_km_e += dk_e;
         if dk < min_km || d.distance_km.is_none() {
             return Ok(true);
         }
         n += 1;
         km += dk;
         kwh += de;
+        km_e += dk_e;
+        without += u64::from(d.energy_used_kwh.is_none());
         estimated += u64::from(d.source == Source::Teslamate);
         last_end = Some(d.end_ms);
         match d.outside_temp_avg_c {
@@ -1355,6 +1673,7 @@ pub fn efficiency(
                 gr.1 += dk;
                 gr.2 += de;
                 gr.3 += d.end_ms.saturating_sub(d.start_ms);
+                gr.4 += dk_e;
             }
             None => {
                 no_t += 1;
@@ -1366,12 +1685,18 @@ pub fn efficiency(
     let s = super::fleet::settings_of(e, car)?;
     let buffer = recent_packs_newest_buffer(e, &c)?;
     let f = rated_factor(e, &c, &s, buffer)?;
-    let parked = super::parked::parked(e, car, &Period::new(Some(a), Some(end)), None, &Paging::first(1))?;
-    let parked_kwh = parked.body.summary.energy_kwh;
+    let parked_kwh = if end > a {
+        super::parked::parked(e, car, &Period::new(Some(a), Some(end)), None, &Paging::first(1))?
+            .body
+            .summary
+            .energy_kwh
+    } else {
+        Some(0.0)
+    };
     let by_temperature = groups
         .into_iter()
-        .map(|(i, (cnt, dk, de, ms))| {
-            let w = (dk > 0.1).then(|| de * 1000.0 / dk);
+        .map(|(i, (cnt, dk, de, ms, dk_e))| {
+            let w = (dk_e > 0.1).then(|| de * 1000.0 / dk_e);
             TempGroup {
                 temp_c: r(Some(i as f64 * g), 1).unwrap_or(0.0),
                 temp_to_c: r(Some((i + 1) as f64 * g), 1).unwrap_or(0.0),
@@ -1391,19 +1716,23 @@ pub fn efficiency(
             to_ms: end,
             temp_group_c: g,
             min_distance_km: min_km,
-            net_wh_per_km: r((km > 0.1).then(|| kwh * 1000.0 / km), 1),
-            gross_wh_per_km: r((all_km > 0.1).then(|| (all_kwh + parked_kwh.unwrap_or(0.0)) * 1000.0 / all_km), 1),
-            parked_kwh: r(parked_kwh, 3),
+            net_wh_per_km: r((km_e > 0.1).then(|| kwh * 1000.0 / km_e), 1),
+            gross_wh_per_km: r((all_km_e > 0.1).then(|| (all_kwh + parked_kwh.unwrap_or(0.0)) * 1000.0 / all_km_e), 1),
+            // `+ 0.0` turns a rounded -0 into 0
+            parked_kwh: r(parked_kwh, 3).map(|v| v + 0.0),
             distance_km: r(Some(km), 3).unwrap_or(0.0),
             energy_kwh: r(Some(kwh), 3).unwrap_or(0.0),
             drives: n,
+            without_energy: without,
             estimated_drives: estimated,
             all_drives: json!({ "drives": all_n, "distance_km": r(Some(all_km), 3), "energy_kwh": r(Some(all_kwh), 3) }),
             by_temperature,
             no_temperature: json!({ "drives": no_t, "distance_km": r(Some(no_t_km), 3) }),
             factor: json!({
                 "rated_wh_per_km": r(f.rated, 1), "ideal_wh_per_km": r(f.ideal, 1), "source": f.source,
-                "readings": f.readings, "as_of_ms": f.as_of_ms.or(last_end),
+                "readings": f.readings,
+                // a typed value has no time
+                "as_of_ms": if f.source == Some("owner") { None } else { f.as_of_ms.or(last_end) },
             }),
         },
     ))
@@ -1618,6 +1947,44 @@ mod tests {
         assert_eq!(e[2] - e[1], 23 * HOUR);
         let w = local_edges(a, a + DAY, tz, 7).unwrap();
         assert_eq!(crate::tz::date(w[0], tz).weekday(), chrono::Weekday::Mon);
+    }
+
+    #[test]
+    fn a_page_keeps_the_first_rows_after_the_cursor_whatever_their_order() {
+        let rd = |t: u64| Reading {
+            t_ms: t,
+            odometer_km: None,
+            full_pack_kwh: None,
+            usable_kwh: None,
+            source: "can",
+            method: "charge",
+            charge: Some(t.to_string()),
+            usable_basis: "charge",
+            readings: None,
+        };
+        let key = |t: u64| (t as f64, format!("{t}:{t}"));
+        let after = key(3);
+        let mut p = PageBuf { rows: Vec::new(), cap: 3, after: Some(&after) };
+        for t in [9, 1, 5, 3, 4, 8, 6, 2, 7] {
+            p.offer(key(t), rd(t));
+        }
+        let got: Vec<u64> = p.rows.iter().map(|(_, r)| r.t_ms).collect();
+        assert_eq!(got, vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn a_day_without_a_buffer_takes_the_newest_one_else_the_full_pack() {
+        let p = PackReading { full_pack_kwh: Some(78.0), buffer_kwh: None, ..PackReading::default() };
+        let own = PackReading { buffer_kwh: Some(3.0), ..p.clone() };
+        assert_eq!(
+            pack_reading_row(&own, Some(2.0)).map(|r| (r.usable_kwh, r.usable_basis)),
+            Some((Some(75.0), "buffer"))
+        );
+        assert_eq!(
+            pack_reading_row(&p, Some(2.0)).map(|r| (r.usable_kwh, r.usable_basis)),
+            Some((Some(76.0), "recent_buffer"))
+        );
+        assert_eq!(pack_reading_row(&p, None).map(|r| (r.usable_kwh, r.usable_basis)), Some((Some(78.0), "full_pack")));
     }
 
     #[test]

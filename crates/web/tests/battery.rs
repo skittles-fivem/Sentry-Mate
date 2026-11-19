@@ -92,6 +92,7 @@ async fn battery_capacity_level_range_efficiency_and_temperatures_of_decoded_day
     assert_eq!(
         keys(cap),
         vec![
+            "basis",
             "buffer_kwh",
             "degradation_pct",
             "difference_kwh",
@@ -105,8 +106,12 @@ async fn battery_capacity_level_range_efficiency_and_temperatures_of_decoded_day
             "warranty_pct"
         ]
     );
-    let full = cap["full_pack_kwh"].as_f64().expect("the pack's full-pack reading");
-    assert!((40.0..120.0).contains(&full), "{cap}");
+    // the made-up pack names no buffer, and the car has a charge that added more than 10 %: full and usable both
+    // come from the charges, and with no buffer known the full pack is not put beside them
+    assert_eq!(cap["basis"], json!("charges"), "{cap}");
+    let usable = cap["usable_kwh"].as_f64().expect("the charges' usable capacity");
+    assert!((40.0..120.0).contains(&usable), "{cap}");
+    assert!(cap["full_pack_kwh"].is_null() && cap["buffer_kwh"].is_null(), "{cap}");
     assert!(cap["readings"].as_u64().unwrap() > 0, "{cap}");
     assert_eq!(cap["warranty_pct"], json!(70.0));
     // the history starts with the car about new (1200 km): the first 30 days' readings are the value when new
@@ -157,6 +162,9 @@ async fn battery_capacity_level_range_efficiency_and_temperatures_of_decoded_day
     for it in days {
         assert_eq!(it["method"], json!("bms"), "{it}");
         assert!(it["full_pack_kwh"].is_number() && it["charge"].is_null(), "{it}");
+        // no buffer named anywhere: usable is the full pack, and says so (the per-day line is not empty)
+        assert_eq!(it["usable_basis"], json!("full_pack"), "{it}");
+        assert_eq!(it["usable_kwh"], it["full_pack_kwh"], "{it}");
     }
     let p1 = ok(&mut admin, &format!("{base}?group=day&limit=1")).await;
     assert_eq!(p1["items"].as_array().unwrap().len(), 1);
@@ -169,6 +177,7 @@ async fn battery_capacity_level_range_efficiency_and_temperatures_of_decoded_day
     let month = ok(&mut admin, &format!("{base}?group=month")).await;
     let m = &month["items"][0];
     assert!(m["readings"].as_u64().unwrap() >= 1 && m["full_pack_kwh"].is_number(), "{month}");
+    assert!(m["usable_kwh"].is_number() && m["usable_basis"] == json!("full_pack"), "{month}");
     let odo = ok(&mut admin, &format!("{base}?group=day&x=odometer")).await;
     assert!(odo["items"].as_array().unwrap().iter().all(|i| i["odometer_km"].is_number()), "{odo}");
     assert_eq!(code(&mut admin, &format!("{base}?group=week")).await, (400, Some("bad_input".into())));
@@ -191,6 +200,7 @@ async fn battery_capacity_level_range_efficiency_and_temperatures_of_decoded_day
     }
     assert!(lv["stats"]["min"].as_f64().unwrap() <= lv["stats"]["max"].as_f64().unwrap());
     assert!(lv["share_above_80_pct"].is_number() && lv["band"]["high_pct"] == json!(80), "{lv}");
+    assert_eq!(lv["spans_truncated"], json!(false));
     let d =
         ok(&mut admin, &format!("/api/v1/cars/{car}/battery-level?from_ms={from}&to_ms={to}&bucket=day&moving=false"))
             .await;
@@ -216,6 +226,15 @@ async fn battery_capacity_level_range_efficiency_and_temperatures_of_decoded_day
     assert_eq!(pr["coverage_pct"].as_array().unwrap().len(), t.len());
     let pd = ok(&mut admin, &format!("/api/v1/cars/{car}/projected-range?from_ms={from}&to_ms={to}&bucket=day")).await;
     assert_eq!(pd["bucket_ms"], json!(86_400_000));
+    // the same request answers the same (the factor behind the energy column holds still)
+    let pd2 = ok(&mut admin, &format!("/api/v1/cars/{car}/projected-range?from_ms={from}&to_ms={to}&bucket=day")).await;
+    assert_eq!(pd, pd2);
+    let pdt = pd["t_ms"].as_array().unwrap();
+    for (i, cov) in pd["coverage_pct"].as_array().unwrap().iter().enumerate() {
+        assert!((0.0..=100.0).contains(&cov.as_f64().unwrap()), "{cov}");
+        assert!(pd["state"][i].is_string(), "{pd}");
+        let _ = &pdt[i];
+    }
     let r = admin.get(&format!("/api/v1/cars/{car}/projected-range?from_ms={from}&to_ms={to}&format=csv")).await;
     assert!(r.header("content-type").is_some_and(|t| t.starts_with("text/csv")), "{}", r.text());
     assert_eq!(code(&mut admin, &format!("/api/v1/cars/{car}/projected-range?bucket=fortnight")).await.0, 400);
@@ -234,6 +253,47 @@ async fn battery_capacity_level_range_efficiency_and_temperatures_of_decoded_day
     }
     assert_eq!(ef["factor"]["source"], json!("energy_and_range"));
     assert!(ef["factor"]["rated_wh_per_km"].is_number(), "{ef}");
+    // the factor comes from many readings and holds still between requests
+    assert!(ef["factor"]["readings"].as_u64().unwrap() > 1, "{ef}");
+    let ef2 = ok(&mut admin, &format!("/api/v1/cars/{car}/efficiency?from_ms={from}&to_ms={to}")).await;
+    assert_eq!(ef2["factor"], ef["factor"]);
+    assert!(ef["factor"]["ideal_wh_per_km"].is_number(), "{ef}");
+    // drives without energy are counted, their distance is left out of the energy per km
+    assert!(ef["without_energy"].is_u64(), "{ef}");
+    let (dkm, dkwh) = (ef["distance_km"].as_f64().unwrap(), ef["energy_kwh"].as_f64().unwrap());
+    if ef["without_energy"] == json!(0) {
+        assert!((ef["net_wh_per_km"].as_f64().unwrap() - dkwh * 1000.0 / dkm).abs() < 0.2, "{ef}");
+    }
+    // a period after now is empty, not an error; parked energy is never -0
+    for q in ["from_ms=4000000000000&to_ms=4100000000000", "from_ms=4000000000000", "to_ms=1"] {
+        let fu = ok(&mut admin, &format!("/api/v1/cars/{car}/efficiency?{q}")).await;
+        assert_eq!(fu["drives"], json!(0), "{q}: {fu}");
+        assert!(fu["net_wh_per_km"].is_null(), "{q}: {fu}");
+        assert_eq!(fu["parked_kwh"].to_string(), "0.0", "{q}: {fu}");
+    }
+    // the owner's factor: ideal follows the car's own range over ideal, and a typed value has no time
+    let st = ok(&mut admin, &format!("/api/v1/cars/{car}/settings")).await;
+    let r = admin
+        .patch(
+            &format!("/api/v1/cars/{car}/settings"),
+            json!({ "version": st["version"], "efficiency_wh_per_km_override": 140.0 }),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let ow = ok(&mut admin, &format!("/api/v1/cars/{car}/efficiency?from_ms={from}&to_ms={to}")).await;
+    assert_eq!(ow["factor"]["source"], json!("owner"));
+    assert_eq!(ow["factor"]["rated_wh_per_km"], json!(140.0));
+    let ideal = ow["factor"]["ideal_wh_per_km"].as_f64().expect("ideal from the car's ratio");
+    assert!(ideal > 100.0 && ideal < 140.0, "{ow}");
+    assert!(ow["factor"]["as_of_ms"].is_null(), "{ow}");
+    let st = ok(&mut admin, &format!("/api/v1/cars/{car}/settings")).await;
+    let r = admin
+        .patch(
+            &format!("/api/v1/cars/{car}/settings"),
+            json!({ "version": st["version"], "efficiency_wh_per_km_override": null }),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
     let far =
         ok(&mut admin, &format!("/api/v1/cars/{car}/efficiency?from_ms={from}&to_ms={to}&min_distance_km=10000")).await;
     assert_eq!(far["drives"], json!(0));
@@ -284,7 +344,7 @@ async fn battery_capacity_level_range_efficiency_and_temperatures_of_decoded_day
         .unwrap()
         .id;
     let wb = ok(&mut watch, &format!("/api/v1/cars/{car}/battery")).await;
-    assert_eq!(wb["capacity"]["full_pack_kwh"], b2["capacity"]["full_pack_kwh"]);
+    assert_eq!(wb["capacity"], b2["capacity"]);
     for path in ["battery", "battery/capacity", "battery-level", "projected-range", "efficiency", "temperatures"] {
         let unknown = code(&mut admin, &format!("/api/v1/cars/c999/{path}")).await;
         assert_eq!(unknown, (404, Some("no_such_car".into())), "{path}");
@@ -343,4 +403,67 @@ async fn a_car_without_history_answers_the_same_keys_with_null() {
     assert!(ef["net_wh_per_km"].is_null() && ef["drives"] == json!(0), "{ef}");
     let tp = ok(&mut admin, &format!("/api/v1/cars/{car}/temperatures")).await;
     assert!(tp["outside"]["min_c"].is_null() && tp["daily"] == json!([]), "{tp}");
+}
+
+/// More record days than a `group=day` page looks at (limit + 180): one short log a day of a made-up car over 240
+/// days. Paging one reading at a time reaches the newest day, and holds every day the whole list holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn day_readings_page_one_at_a_time_past_the_days_a_page_looks_at() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let (v, _) = vault::Vault::create(&data, &dir.path().join("keys"), vault::Kdf::FAST_FOR_TESTS).unwrap();
+    let v = Arc::new(v);
+    let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
+    let store = ingest::Store::with_limits(data.join("can"), v, 0, 2_000_000, |_| u64::MAX);
+    let engine = Engine::new(db.clone(), store.clone(), engine::Options { workers: 4, ..engine::Options::default() });
+    let judge = ingest::Judge::new(store.clone()).on_judged(engine.listener());
+    engine.start().unwrap();
+    // the first log of each of 240 days (a short run of the same made-up car started on each day, left unsigned:
+    // the runs do not chain)
+    let mut days = 0u64;
+    for i in 0..240u64 {
+        let sc = synth::Scenario::new(23)
+            .start(synth::DEFAULT_START_MS + i * 86_400_000)
+            .days(1)
+            .battery(70.0)
+            .odometer(1200.0 + i as f64 * 40.0)
+            .rates(synth::Rates::Light);
+        let Some(mut log) = sc.logs().next() else { continue };
+        if let Some(o) = log.sidecar.as_object_mut() {
+            o.remove("integrity");
+        }
+        days += 1;
+        put(&store, &judge, &log.name, &log.bytes).await;
+        put(&store, &judge, &log.sidecar_name(), &log.sidecar_bytes()).await;
+    }
+    assert!(days > 185, "{days} days");
+    engine.idle().await;
+    let cars = engine::query::all_cars(&engine).unwrap();
+    let (e2, d2) = (engine.clone(), db.clone());
+    let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2))).await;
+    let mut admin = s.admin().await;
+    let base = format!("/api/v1/cars/c{}/battery/capacity?group=day", cars[0]);
+    let whole = ok(&mut admin, &format!("{base}&limit=500")).await;
+    let all = whole["items"].as_array().unwrap().clone();
+    assert!(all.len() > 182, "{} days with readings", all.len());
+    assert!(whole["next"].is_null());
+    let mut paged: Vec<Value> = Vec::new();
+    let mut next: Option<String> = None;
+    for _ in 0..1000 {
+        let path = match &next {
+            Some(n) => format!("{base}&limit=1&after={n}"),
+            None => format!("{base}&limit=1"),
+        };
+        let p = ok(&mut admin, &path).await;
+        let items = p["items"].as_array().unwrap();
+        assert!(items.len() <= 1, "{p}");
+        paged.extend(items.iter().cloned());
+        match p["next"].as_str() {
+            Some(n) => next = Some(n.to_string()),
+            None => break,
+        }
+    }
+    assert_eq!(paged.len(), all.len(), "every day, the newest too");
+    assert_eq!(paged, all);
 }
