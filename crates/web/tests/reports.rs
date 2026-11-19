@@ -222,6 +222,9 @@ async fn statistics_mileage_totals_gaps_and_compare() {
     let all = ok(&mut admin, &format!("/api/v1/cars/{a}/statistics?period=all")).await;
     let row = &all["items"][0];
     assert_eq!((row["label"].as_str(), row["drives"].as_u64()), (Some("All"), Some(drives)));
+    // the logs that lost frames, counted a day's records at a time: the whole history's row adds up the days'
+    let dropped: u64 = days.iter().map(|d| d["completeness"]["dropped_stretches"].as_u64().unwrap()).sum();
+    assert_eq!(row["completeness"]["dropped_stretches"].as_u64(), Some(dropped), "{row}");
     let wk = ok(&mut admin, &format!("/api/v1/cars/{a}/statistics?period=week")).await;
     assert!(wk["items"][0]["label"].as_str().unwrap().contains("-W"), "{wk}");
     // paging goes through every day once; a cursor of other filters is refused

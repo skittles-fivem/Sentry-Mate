@@ -121,6 +121,23 @@ pub(crate) fn odometer_at(e: &Engine, car: CarId, t: u64, shown: &Shown) -> QRes
     Ok(out)
 }
 
+/// The odometer at the start and at the end of `[a, b)`, both null when no data came in it: the period starts once
+/// the car's data stopped (`still`, see [`still_unknown`]). A period the data stopped in ends where the data did.
+pub(crate) fn odometer_over(
+    e: &Engine,
+    car: CarId,
+    a: u64,
+    b: u64,
+    still: Option<u64>,
+    shown: &Shown,
+) -> QResult<(Option<f64>, Option<f64>)> {
+    let b = still.map_or(b, |t| b.min(t));
+    if b <= a {
+        return Ok((None, None));
+    }
+    Ok((odometer_at(e, car, a, shown)?, odometer_at(e, car, b - 1, shown)?))
+}
+
 /// One period of a report: its start and end (clipped to the asked span) and its label.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Slot {
@@ -356,14 +373,23 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
             x = to;
         }
     }
-    // logs that lost frames
+    // logs that lost frames, one day's records at a time (a log is kept under the day it starts; a day either side
+    // covers what spills over)
     let meta = crate::records::meta(e.db(), car)?;
-    for (_, en) in crate::records::entries_between(e.db(), car, &meta, wa, wb)? {
-        if let crate::records::Outcome::Decoded { facts, .. } = &en.outcome
-            && facts.dropped > 0
-            && let Some(i) = slot_of(slots, facts.span().0.max(wa))
-        {
-            acc[i].dropped += 1;
+    let (d0, d1) = (crate::records::day_of(wa).saturating_sub(1), crate::records::day_of(wb.saturating_sub(1).max(wa)));
+    for &d in meta.days.range(d0..=d1) {
+        for en in crate::records::day(e.db(), car, d)?.logs.values() {
+            if let crate::records::Outcome::Decoded { facts, .. } = &en.outcome
+                && facts.dropped > 0
+            {
+                let (x, y) = en.span();
+                if y >= wa
+                    && x < wb
+                    && let Some(i) = slot_of(slots, facts.span().0.max(wa))
+                {
+                    acc[i].dropped += 1;
+                }
+            }
         }
     }
     // energy lost while parked, by the spell's start
@@ -382,7 +408,7 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
     }
     let mut rows = Vec::with_capacity(slots.len());
     for (s, g) in slots.iter().zip(acc) {
-        let (o0, o1) = (odometer_at(e, car, s.start, &shown)?, odometer_at(e, car, s.end.saturating_sub(1), &shown)?);
+        let (o0, o1) = odometer_over(e, car, s.start, s.end, still, &shown)?;
         let span = s.end.saturating_sub(s.start).max(1);
         let net = (g.km > 0.1).then(|| g.kwh / g.km * 1000.0);
         let gross = g.stand.filter(|_| g.km > 0.1).map(|st| (g.kwh + st) / g.km * 1000.0);
@@ -537,7 +563,8 @@ pub struct Mileage {
 }
 
 /// `/cars/{car}/mileage` (`group=day|week|month|year`, default month): oldest first, by odometer and by what the
-/// drives logged; the projection is over the whole asked span (at least a week of it).
+/// drives logged; the odometer figures are null for a period that starts once the car's data stopped. The
+/// projection is over the recorded part of the asked span (up to where the data stopped; at least a week of it).
 pub fn mileage(
     e: &Engine,
     car: CarId,
@@ -579,9 +606,10 @@ pub fn mileage(
             Ok(true)
         })?;
     }
+    let still = still_unknown(e, car)?;
     let mut items = Vec::with_capacity(page.len());
     for (s, km) in page.iter().zip(logged) {
-        let (o0, o1) = (odometer_at(e, car, s.start, &shown)?, odometer_at(e, car, s.end.saturating_sub(1), &shown)?);
+        let (o0, o1) = odometer_over(e, car, s.start, s.end, still, &shown)?;
         let dist = r(o0.zip(o1).map(|(a, b)| (b - a).max(0.0)), 3);
         items.push(MileageRow {
             period_start_ms: s.start,
@@ -598,8 +626,10 @@ pub fn mileage(
         Some(last) if more => Some(super::make_after(&(last.period_start_ms as f64, String::new()), &sig)?),
         _ => None,
     };
-    let days = (end - lo) as f64 / DAY as f64;
-    let (o0, o1) = (odometer_at(e, car, lo, &shown)?, odometer_at(e, car, end.saturating_sub(1), &shown)?);
+    // over the recorded span only: from the start up to where the data stopped, if it has
+    let basis_end = still.map_or(end, |t| end.min(t)).max(lo);
+    let days = (basis_end - lo) as f64 / DAY as f64;
+    let (o0, o1) = odometer_over(e, car, lo, basis_end, None, &shown)?;
     let km_per_year = o0.zip(o1).filter(|_| days >= 7.0).map(|(a, b)| (b - a).max(0.0) / days * 365.25);
     Ok(scoped(
         &c,
@@ -774,6 +804,22 @@ fn reasons(e: &Engine, car: CarId, a: u64, b: u64, chain: &[(u64, u64)]) -> QRes
     Ok(out)
 }
 
+/// Where a run of unknown spans that reaches `y` ends, following the touching unknown spans after it.
+fn run_end_after(e: &Engine, car: CarId, y: u64) -> QResult<u64> {
+    let mut y = y;
+    overlapping::<StateRow>(e, car, y, u64::MAX, Some(Source::Can), false, |s| {
+        if s.span.start_ms > y + 1_000 {
+            return Ok(false);
+        }
+        if s.span.state == State::Unknown {
+            y = y.max(s.span.end_ms);
+            return Ok(true);
+        }
+        Ok(s.span.end_ms <= y)
+    })?;
+    Ok(y)
+}
+
 /// `/cars/{car}/gaps`: unknown spans of ten minutes or more that start in the period, newest first (the one going on
 /// now, when the car's newest state is unknown, has `end_ms` null and its length up to now), with why (from
 /// the logs' records and each key's chain), how far the odometer moved across, and the places either side. The
@@ -790,60 +836,55 @@ pub fn gaps(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult
     let mut cur: Option<(u64, u64)> = None;
     // the car's newest state, when it is unknown: no data since (a gap still going, once it is long enough)
     let still = still_unknown(e, car)?;
-    let holds_still = |run: (u64, u64)| still.is_some_and(|t| run.0 <= t && t <= run.1);
-    // the newest run may go on past the top: it is kept whatever its length until it is followed there
-    let keep = |run: (u64, u64), runs: &mut Vec<(u64, u64)>| {
-        let open = runs.is_empty() && (run.1 + 1_000 >= top || holds_still(run));
-        if run.0 >= a && run.0 < top && (open || run.1 - run.0 >= super::timeline::GAP_MS) {
+    let now = crate::now_ms();
+    // the newest run may go on past the top: it is followed there (and up to now when it holds the still-unknown
+    // newest state) before its length is judged, so a short one never takes a place on the page
+    let mut first_seen = false;
+    let mut going: Option<u64> = None;
+    let mut keep = |run: (u64, u64), runs: &mut Vec<(u64, u64)>| -> QResult<()> {
+        let newest = !first_seen;
+        first_seen = true;
+        if run.0 < a || run.0 >= top {
+            return Ok(());
+        }
+        let mut run = run;
+        if newest {
+            if run.1 + 1_000 >= top {
+                run.1 = run_end_after(e, car, run.1)?;
+            }
+            if still.is_some_and(|t| run.0 <= t && t <= run.1) {
+                going = Some(run.0);
+                run.1 = run.1.max(now);
+            }
+        }
+        if run.1 - run.0 >= super::timeline::GAP_MS {
             runs.push(run);
         }
+        Ok(())
     };
     overlapping::<StateRow>(e, car, a, top, Some(Source::Can), true, |s| {
         let sp = &s.span;
         if sp.state != State::Unknown {
             if let Some(run) = cur.take() {
-                keep(run, &mut runs);
+                keep(run, &mut runs)?;
             }
             return Ok(runs.len() <= limit);
         }
         cur = match cur {
             Some((x, y)) if sp.end_ms + 1_000 >= x => Some((sp.start_ms.min(x), y.max(sp.end_ms))),
             Some(run) => {
-                keep(run, &mut runs);
+                keep(run, &mut runs)?;
                 Some((sp.start_ms, sp.end_ms))
             }
             None => Some((sp.start_ms, sp.end_ms)),
         };
         Ok(runs.len() <= limit)
     })?;
-    if let Some(run) = cur.take() {
-        keep(run, &mut runs);
-    }
-    if let Some(first) = runs.first_mut()
-        && first.1 + 1_000 >= top
+    if runs.len() <= limit
+        && let Some(run) = cur.take()
     {
-        let mut y = first.1;
-        overlapping::<StateRow>(e, car, y, u64::MAX, Some(Source::Can), false, |s| {
-            if s.span.start_ms > y + 1_000 {
-                return Ok(false);
-            }
-            if s.span.state == State::Unknown {
-                y = y.max(s.span.end_ms);
-                return Ok(true);
-            }
-            Ok(s.span.end_ms <= y)
-        })?;
-        first.1 = y;
+        keep(run, &mut runs)?;
     }
-    let now = crate::now_ms();
-    let mut going: Option<u64> = None;
-    if let Some(first) = runs.first_mut()
-        && holds_still(*first)
-    {
-        going = Some(first.0);
-        first.1 = first.1.max(now);
-    }
-    runs.retain(|run| run.1 - run.0 >= super::timeline::GAP_MS);
     let more = runs.len() > limit;
     runs.truncate(limit);
     let chain = if runs.is_empty() { Vec::new() } else { super::timeline::chain_gaps(e, car)? };

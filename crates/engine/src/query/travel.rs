@@ -12,7 +12,7 @@
 //! every stop under one unknown key (`-`).
 
 use super::drives::{Best, each, page_of};
-use super::reports::{LONGEST_DRIVE_MS, drive_from, overlapping};
+use super::reports::{LONGEST_DRIVE_MS, drive_from, overlapping, still_unknown};
 use super::system::Shown;
 use super::{
     CarRef, Money, Paging, Period, PlaceBrief, QResult, QueryError, car_of, cmp_key, money, place_ref, r, read_after,
@@ -62,7 +62,10 @@ pub struct Visit {
     pub drive_in: Option<String>,
     pub drive_out: Option<String>,
     pub charges: Vec<String>,
-    /// Time inside the stop with no data.
+    /// When each of `charges` started (to place it on its day).
+    #[serde(skip)]
+    pub(crate) charge_starts: Vec<u64>,
+    /// Time inside the stop with no data (up to now when the car's data stopped during it).
     pub unknown_ms: u64,
     pub source: &'static str,
 }
@@ -132,13 +135,15 @@ impl Filter {
             return false;
         }
         let ad = &v.address;
-        if self.country.as_ref().is_some_and(|c| ad.country_code.as_deref().is_none_or(|x| x.to_lowercase() != *c)) {
+        // an unknown part matches `-`, the key its group row hands out
+        let part = |x: &Option<String>| x.as_deref().map_or_else(|| "-".to_string(), str::to_lowercase);
+        if self.country.as_ref().is_some_and(|c| part(&ad.country_code) != *c) {
             return false;
         }
-        if self.region.as_ref().is_some_and(|c| ad.region.as_deref().is_none_or(|x| x.to_lowercase() != *c)) {
+        if self.region.as_ref().is_some_and(|c| part(&ad.region) != *c) {
             return false;
         }
-        if self.city.as_ref().is_some_and(|c| v.city_key.as_ref() != Some(c)) {
+        if self.city.as_ref().is_some_and(|c| group_key(Level::City, v) != *c) {
             return false;
         }
         if let Some(n) = &self.needle {
@@ -171,13 +176,16 @@ struct Stops<'a> {
     shown: Shown,
     places: std::sync::Arc<crate::placing::Places>,
     live: Option<u64>,
+    /// When the car's data stopped, if its newest state is unknown.
+    still: Option<u64>,
 }
 
 impl<'a> Stops<'a> {
     fn new(e: &'a Engine, car: CarId) -> QResult<Stops<'a>> {
         let c = car_of(e, car)?;
         let live = super::drives::ctx(e, &c)?.live;
-        Ok(Stops { e, shown: Shown::new(e, car, None)?, places: e.places(), live, c })
+        let still = still_unknown(e, car)?;
+        Ok(Stops { e, shown: Shown::new(e, car, None)?, places: e.places(), live, still, c })
     }
 
     /// The stop after drive `d` (until `next` starts), without its charges and unknown time ([`Stops::fill`]).
@@ -205,27 +213,35 @@ impl<'a> Stops<'a> {
             drive_in: Some(d.id.to_string()),
             drive_out: next.map(|n| n.id.to_string()),
             charges: Vec::new(),
+            charge_starts: Vec::new(),
             unknown_ms: 0,
             source: source_word(d.source),
         })
     }
 
-    /// A stop's charges (those that started in it) and its time with no data.
+    /// A stop's charges (those that started in it) and its time with no data: the unknown states inside it, and,
+    /// when the car's data stopped during it, the time from then on ([`still_unknown`]).
     fn fill(&self, v: &mut Visit) -> QResult<()> {
         let (x, y) = (v.arrived_ms, v.left_ms.unwrap_or_else(crate::now_ms).max(v.arrived_ms));
-        let mut charges = Vec::new();
+        let (mut charges, mut starts) = (Vec::new(), Vec::new());
         each::<Charge>(self.e, self.c.id, x, y.max(x + 1), None, &self.shown, false, |ch| {
             charges.push(ch.id.to_string());
+            starts.push(ch.start_ms);
             Ok(charges.len() < 1000)
         })?;
         v.charges = charges;
+        v.charge_starts = starts;
+        let still = self.still;
         let mut unknown = 0;
         overlapping::<StateRow>(self.e, self.c.id, x, y, None, false, |s| {
-            if s.span.state == State::Unknown {
+            if s.span.state == State::Unknown && still != Some(s.span.start_ms) {
                 unknown += s.span.end_ms.min(y).saturating_sub(s.span.start_ms.max(x));
             }
             Ok(true)
         })?;
+        if let Some(t) = still {
+            unknown += y.saturating_sub(t.max(x));
+        }
         v.unknown_ms = unknown;
         Ok(())
     }
@@ -278,6 +294,14 @@ impl<'a> Stops<'a> {
     }
 }
 
+/// The `now` a list's first page measured with, from the cursor's row key (`<key>@<now>`), else now.
+fn cursor_now(after: Option<&(f64, String)>) -> u64 {
+    after
+        .and_then(|k| k.1.rsplit_once('@'))
+        .and_then(|(_, n)| n.parse::<u64>().ok())
+        .map_or_else(crate::now_ms, |n| n.min(crate::now_ms()))
+}
+
 /// How long a stop lasted within `[a, b)` and up to now.
 fn dwell(v: &Visit, a: u64, b: u64, now: u64) -> u64 {
     let x = v.arrived_ms.max(a);
@@ -305,10 +329,14 @@ pub fn visits(e: &Engine, cars: &[CarId], q: &VisitsQuery, paging: &Paging) -> Q
     };
     let sig = format!("visits|{cars:?}|{}|{sort}", q.sig());
     let after = read_after(paging, &sig)?;
-    let now = crate::now_ms();
+    // the stop going on now grows: by dwell, every page measures it up to the first page's now (kept in the cursor)
+    let now = cursor_now(after.as_ref());
     let key = |v: &Visit| -> (f64, String) {
-        let k = if by_dwell { dwell(v, f.a, f.b, now) as f64 } else { v.arrived_ms as f64 };
-        (k, v.id.clone())
+        if by_dwell {
+            (dwell(v, f.a, f.b, now) as f64, format!("{}@{now}", v.id))
+        } else {
+            (v.arrived_ms as f64, v.id.clone())
+        }
     };
     let past = |k: &(f64, String)| after.as_ref().is_none_or(|a| cmp_key(k, a, desc) == Ordering::Greater);
     let mut best: Best<(usize, Visit)> = Best::new(limit + 1, desc, after.clone());
@@ -466,7 +494,10 @@ pub fn visit_groups(
     if !["visits", "dwell", "last", "name"].contains(&s) {
         return Err(QueryError::bad("sort", "visits, dwell, last or name"));
     }
-    let now = crate::now_ms();
+    // every page measures the stop going on now up to the first page's now (kept in the cursor), so the keys of the
+    // `visits`, `dwell` and `last` orders do not move between pages
+    let sig = format!("visit-groups|{cars:?}|{}|{}|{s}", q.sig(), level.word());
+    let now = cursor_now(read_after(paging, &sig)?.as_ref());
     let mut by: BTreeMap<String, GroupAcc> = BTreeMap::new();
     for &car in cars {
         let st = Stops::new(e, car)?;
@@ -538,7 +569,7 @@ pub fn visit_groups(
         })?;
     }
     let places = e.places();
-    let mut rows: Vec<VisitGroup> = by
+    let rows: Vec<VisitGroup> = by
         .into_values()
         .map(|mut a| {
             let n = a.g.visits.max(1) as f64;
@@ -555,16 +586,15 @@ pub fn visit_groups(
             a.g
         })
         .collect();
-    let sig = format!("visit-groups|{cars:?}|{}|{}|{s}", q.sig(), level.word());
     let page = if s == "name" {
-        rows.sort_by(|x, y| {
-            let lx = x.label.as_deref().map(str::to_lowercase);
-            let ly = y.label.as_deref().map(str::to_lowercase);
-            lx.cmp(&ly).then_with(|| x.key.cmp(&y.key))
-        });
-        let ranked: Vec<(f64, VisitGroup)> = rows.into_iter().enumerate().map(|(i, g)| (i as f64, g)).collect();
-        let p = super::paginate(ranked, |(k, g)| (*k, g.key.clone()), false, &sig, paging, false)?;
-        super::List { items: p.items.into_iter().map(|(_, g)| g).collect(), next: p.next, total: None }
+        // keyed by the lowercased label (no label first), then the group's key: a group added between pages moves
+        // no other row
+        let name_key = |g: &VisitGroup| {
+            let label =
+                g.label.as_deref().map_or_else(|| "\u{0}".to_string(), |l| format!("\u{1}{}", l.to_lowercase()));
+            (0.0, format!("{label}\u{0}{}", g.key))
+        };
+        super::paginate(rows, name_key, false, &sig, paging, false)?
     } else {
         super::paginate(
             rows,
@@ -574,7 +604,7 @@ pub fn visit_groups(
                     "last" => g.last_ms as f64,
                     _ => g.visits as f64 + (g.dwell_ms as f64 / 1e14).min(0.999),
                 };
-                (k, g.key.clone())
+                (k, format!("{}@{now}", g.key))
             },
             true,
             &sig,
@@ -798,8 +828,9 @@ pub fn visit_days(e: &Engine, cars: &[CarId], q: &VisitsQuery, paging: &Paging) 
                 {
                     row.drives.push(dout.clone());
                 }
-                for ch in &v.charges {
-                    if !row.charges.contains(ch) {
+                // the charges that started that day
+                for (ch, at) in v.charges.iter().zip(&v.charge_starts) {
+                    if (a..b).contains(at) && !row.charges.contains(ch) {
                         row.charges.push(ch.clone());
                     }
                 }
