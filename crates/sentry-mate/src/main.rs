@@ -7,7 +7,7 @@
 //!   serve                         run the upload server (TLS 1.3) until stopped (makes the vault on first start)
 //!   init                          make the vault now and print the recovery key
 //!   restore                       new machine or lost key file: type the recovery key, a new key file is written
-//!   recovery-key new              replace the recovery key (the old one stops working)
+//!   recovery-key new              replace the recovery key (the old one stops working; the new one also goes in RECOVERY-KEY.txt)
 //!   token new --car NAME          make an upload token for a car (shown once)
 //!   token list | token revoke ID
 //!   fingerprint                   the certificate SHA-256 the app pins
@@ -241,7 +241,7 @@ struct MoveEnv {
 
 #[derive(Subcommand)]
 enum RecoveryCmd {
-    /// Make a new recovery key; the old one stops working.
+    /// Make a new recovery key; the old one stops working. It is printed and written to RECOVERY-KEY.txt.
     New,
 }
 
@@ -308,8 +308,6 @@ fn can_dir(data: &Path) -> PathBuf {
 fn tokens_file(data: &Path) -> PathBuf {
     data.join("tokens.json")
 }
-
-const RECOVERY_FILE: &str = "RECOVERY-KEY.txt";
 
 /// What `keys` without a car key says.
 const KEYS_USAGE: &str = "sentry-mate: which car key? The car keys are the last column of `token list`.\n\nUsage: \
@@ -379,7 +377,9 @@ fn restore_hint(e: &(dyn std::error::Error + 'static)) -> Option<&'static str> {
 fn needs(cmd: &Cmd) -> Option<(bool, bool)> {
     match cmd {
         Cmd::Serve { .. } | Cmd::Init | Cmd::Restore => Some((true, true)),
-        Cmd::RecoveryKey { .. } | Cmd::Token { .. } | Cmd::Fingerprint => Some((true, false)),
+        // a new recovery key waits in the keys folder's RECOVERY-KEY.txt, like the first one
+        Cmd::RecoveryKey { .. } => Some((true, true)),
+        Cmd::Token { .. } | Cmd::Fingerprint => Some((true, false)),
         Cmd::Keys { cmd: Some(KeysCmd::Trust { .. }), .. } => Some((true, false)),
         // an export's snapshot is made in the data folder; a move code, an undo and the old server's cancel write
         // there too
@@ -446,8 +446,12 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
             let v = Vault::open(&data, &keys)?;
             refuse_writes(&data, &v)?;
             let rk = v.new_recovery_key(&data, Kdf::STRONG)?;
+            let file = moving::import::write_recovery_file(&keys, &rk)?;
             print_recovery(&rk);
-            println!("The old recovery key no longer works.");
+            println!(
+                "The old recovery key no longer works. The new one is also in {} until you delete it.",
+                file.display()
+            );
         }
         Cmd::Token { cmd } => {
             let v = Arc::new(Vault::open(&data, &keys)?);
@@ -1272,16 +1276,15 @@ async fn start(
     std::fs::create_dir_all(can_dir(data))?;
     if let Some(rk) = made {
         // not in the log (container logs are kept in the clear): in a file of the keys folder, for the owner to take
-        let file = keys.join(RECOVERY_FILE);
-        vault::write_private(&file, format!("Sentry Mate recovery key:\n\n  {}\n\nCopy it somewhere safe away from this server (a password manager, paper), then delete this file.\n", rk.as_str()).as_bytes())?;
+        let file = moving::import::write_recovery_file(keys, &rk)?;
         tracing::warn!(
             "new vault made: its recovery key is in {} — copy it somewhere safe off this server, then delete that file",
             file.display()
         );
-    } else if keys.join(RECOVERY_FILE).exists() {
+    } else if keys.join(moving::import::RECOVERY_FILE).exists() {
         tracing::warn!(
             "{} is still there: copy the recovery key somewhere safe off this server, then delete it",
-            keys.join(RECOVERY_FILE).display()
+            keys.join(moving::import::RECOVERY_FILE).display()
         );
     }
     let v = Arc::new(v);
@@ -2148,7 +2151,7 @@ mod tests {
         // every command that writes is checked (and so, in the image, needs both folders mounted)
         assert_eq!(needs(&Cmd::Init), Some((true, true)));
         assert_eq!(needs(&Cmd::Restore), Some((true, true)));
-        assert_eq!(needs(&Cmd::RecoveryKey { cmd: RecoveryCmd::New }), Some((true, false)));
+        assert_eq!(needs(&Cmd::RecoveryKey { cmd: RecoveryCmd::New }), Some((true, true)));
         assert_eq!(
             needs(&Cmd::Token { cmd: TokenCmd::New { car: String::new(), keys: Vec::new() } }),
             Some((true, false))

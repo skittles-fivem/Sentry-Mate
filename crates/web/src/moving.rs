@@ -11,6 +11,7 @@
 //! | `POST /setup/fresh` | the claim | start fresh: the first admin, the recovery key once |
 //! | `POST /setup/move-here`, `POST /setup/move-here/finish` | the claim | a move into this server |
 //! | `GET`/`DELETE /setup/job` | the claim | the move under way here |
+//! | `POST /system/recovery-key/show`, `.../new`, `.../saved` | admin | the recovery key file ([`crate::recovery`]) |
 //! | `POST`/`PATCH /setup/restore` | public | `501 not_built` (an export file read from chunks needs the moving crate's header check over bytes) |
 //!
 //! The service [`MoveSite`] (the data and keys folders, the server's version) is handed over by the program; a
@@ -64,6 +65,10 @@ pub struct MoveSite {
     pub data: PathBuf,
     pub keys: PathBuf,
     pub app_version: String,
+    /// The Argon2id settings a new recovery key is made with ([`vault::Kdf::STRONG`]; tests use a fast one).
+    pub kdf: vault::Kdf,
+    /// A new recovery key is being made (one at a time: each takes 1 GiB for a few seconds).
+    pub(crate) making_key: std::sync::atomic::AtomicBool,
     state: Mutex<SiteState>,
 }
 
@@ -86,7 +91,25 @@ struct ExportSlot {
 
 impl MoveSite {
     pub fn new(data: PathBuf, keys: PathBuf, app_version: &str) -> MoveSite {
-        MoveSite { data, keys, app_version: app_version.to_string(), state: Mutex::new(SiteState::default()) }
+        MoveSite {
+            data,
+            keys,
+            app_version: app_version.to_string(),
+            kdf: vault::Kdf::STRONG,
+            making_key: std::sync::atomic::AtomicBool::new(false),
+            state: Mutex::new(SiteState::default()),
+        }
+    }
+
+    /// The same, making new recovery keys with `kdf` (tests: [`vault::Kdf::FAST_FOR_TESTS`]).
+    pub fn with_kdf(mut self, kdf: vault::Kdf) -> MoveSite {
+        self.kdf = kdf;
+        self
+    }
+
+    /// The recovery key file in the keys folder (`RECOVERY-KEY.txt`).
+    pub fn recovery_file(&self) -> PathBuf {
+        self.keys.join(moving::import::RECOVERY_FILE)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, SiteState> {
@@ -94,11 +117,11 @@ impl MoveSite {
     }
 }
 
-fn site(app: &AppState) -> ApiResult<Arc<MoveSite>> {
+pub(crate) fn site(app: &AppState) -> ApiResult<Arc<MoveSite>> {
     app.service::<MoveSite>()
 }
 
-fn moving_error(e: moving::Error) -> ApiError {
+pub(crate) fn moving_error(e: moving::Error) -> ApiError {
     match e {
         moving::Error::MoveUnderWay(m) => ApiError::conflict("move_under_way", m),
         moving::Error::Finished(m) => ApiError::conflict("finished", m),
@@ -113,7 +136,7 @@ fn moving_error(e: moving::Error) -> ApiError {
 
 /// The account's password again (and its two-step code when it has one on): `403 wrong_password` /
 /// `403 wrong_two_step` with `fields`.
-async fn confirm(app: &AppState, v: &crate::Viewer, body: &JsonBody) -> ApiResult<()> {
+pub(crate) async fn confirm(app: &AppState, v: &crate::Viewer, body: &JsonBody) -> ApiResult<()> {
     let password = body.req_str("password")?.to_string();
     let code = body.str("two_step")?.map(str::to_string);
     let v = v.clone();
@@ -589,7 +612,7 @@ async fn fresh(
     body.only(&["name", "password"])?;
     let (name, password) = (body.req_str("name")?.to_string(), body.req_str("password")?.to_string());
     let s = site(&app)?;
-    let recovery_file = s.keys.join(moving::import::RECOVERY_FILE);
+    let recovery_file = s.recovery_file();
     app.blocking(move |app| {
         let code = claimed(app, &s, &headers)?;
         if !matches!(moving::pull::pending(&s.data, &s.keys), moving::pull::Pending::None) {
@@ -600,15 +623,10 @@ async fn fresh(
         let ns = app.accounts.setup(&code, &name, &password, &client)?;
         s.lock().claim = None;
         // the key itself, from the file's text (it says what the key is for around it)
-        let recovery = std::fs::read_to_string(&recovery_file).ok().and_then(|t| {
-            t.split_whitespace().find(|w| w.starts_with("SMRK-")).map(str::to_string).or_else(|| {
-                let t = t.trim();
-                (!t.is_empty()).then(|| t.to_string())
-            })
-        });
+        let recovery = moving::import::recovery_from_file(&recovery_file);
         let cars = app.accounts.car_access(ns.account.id)?;
         let body = json!({ "status": "done", "me": crate::auth::me_json(app, &ns.account, &cars, local),
-                           "recovery_key": recovery });
+                           "recovery_key": recovery.as_ref().map(|k| k.as_str()) });
         let mut res = (StatusCode::CREATED, Json(body)).into_response();
         if let Ok(v) = HeaderValue::from_str(&ns.set_cookie()) {
             res.headers_mut().append(header::SET_COOKIE, v);

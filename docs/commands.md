@@ -54,7 +54,7 @@ a file it can't read is on standard error.
 | `serve` | Runs the server until stopped (the image's default): the upload port, the history (decoded in the background) and the web UI. Makes the vault on its first start. |
 | `init` | Makes the vault now and prints the recovery key on screen, not into a file. Exit 1 if there is a vault or a key file already. |
 | `restore` | Reads the recovery key from standard input and writes a new key file. Run it with Sentry Mate stopped. |
-| `recovery-key new` | Prints a new recovery key. The old one stops working. |
+| `recovery-key new` | Prints a new recovery key and writes it to `keys/RECOVERY-KEY.txt`. The old one stops working. |
 | `token new --car NAME [--key KEY]` | Makes an upload token (shown once) and prints the three fields for the app. `--key` (repeatable) lets it take over a car key in use already: a replacement for that car's token. |
 | `token list` | One line per token: id, car name, `in use` or `revoked`, the car key it is tied to. |
 | `token revoke ID` | Revokes a token. It stops working at its next request, with the server still running. |
@@ -254,8 +254,9 @@ Replace the recovery key (the old one stops working):
 docker exec sentry-mate /sentry-mate recovery-key new
 ```
 
-It prints the new key on screen, not in the log. It does not touch `keys/RECOVERY-KEY.txt`: if that file is still
-there, it holds the old key, which no longer works. Delete it.
+It prints the new key on screen, not in the log, and writes it to `keys/RECOVERY-KEY.txt` (in place of the old one,
+if that file was still there). Copy it somewhere safe, then delete the file. Settings: Server and access does the
+same from the web pages (password again), and its "I have saved it" tick deletes the file.
 
 `init`, `restore` and `recovery-key new` need about 1 GiB of free memory for a few seconds (Argon2id at 1 GiB).
 
@@ -388,7 +389,7 @@ The keys folder:
 | Path | What |
 |---|---|
 | `sentry-mate.key` | 32 random bytes that open the vault, readable only by the user it runs as (1000, or 568 on TrueNAS). |
-| `RECOVERY-KEY.txt` | The recovery key, written on the first start only. Delete it once copied. |
+| `RECOVERY-KEY.txt` | The recovery key, written on the first start and by a new recovery key. Delete it once copied (or tick "I have saved it" on the web page). |
 | `SETUP-CODE.txt` | The web UI's one-time setup code, while no account exists. Removed once the first admin exists. |
 | `.moving/`, `.importing/` | The key file a move or an import writes for this server, until it switches. |
 

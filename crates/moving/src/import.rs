@@ -41,8 +41,32 @@ pub const STAGING: &str = ".importing";
 /// Notes about where this server's data came from.
 pub const NOTES: &str = ".move";
 pub const IMPORTED: &str = "imported.sealed";
-/// The recovery key a first start wrote into the keys folder.
+/// The recovery key a first start (or a new recovery key) wrote into the keys folder, for the owner to take away.
 pub const RECOVERY_FILE: &str = "RECOVERY-KEY.txt";
+
+/// Writes `key` into the keys folder's [`RECOVERY_FILE`] (only the server's own user may read it), with a few words
+/// around it on what it is for. Returns the file's path.
+pub fn write_recovery_file(keys: &Path, key: &vault::RecoveryKey) -> io::Result<PathBuf> {
+    let file = keys.join(RECOVERY_FILE);
+    let text = zeroize::Zeroizing::new(format!(
+        "Sentry Mate recovery key:\n\n  {}\n\nCopy it somewhere safe away from this server (a password manager, \
+         paper), then delete this file.\n",
+        key.as_str()
+    ));
+    vault::write_private(&file, text.as_bytes())?;
+    Ok(file)
+}
+
+/// The recovery key in the file `path` ([`write_recovery_file`]'s): the `SMRK-` word, else the whole text when it
+/// holds only a key. `None` when there is no such file or it is empty.
+pub fn recovery_from_file(path: &Path) -> Option<zeroize::Zeroizing<String>> {
+    let t = zeroize::Zeroizing::new(std::fs::read_to_string(path).ok()?);
+    if let Some(w) = t.split_whitespace().find(|w| w.starts_with("SMRK-")) {
+        return Some(zeroize::Zeroizing::new(w.to_string()));
+    }
+    let t = t.trim();
+    (!t.is_empty()).then(|| zeroize::Zeroizing::new(t.to_string()))
+}
 const BEING_MADE: &str = ".importing.new";
 const BEING_REMOVED: &str = ".importing.done";
 const STATE: &str = "state.sealed";

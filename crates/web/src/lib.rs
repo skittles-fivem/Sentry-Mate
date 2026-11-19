@@ -60,6 +60,7 @@ pub mod packs;
 pub mod policy;
 pub mod prefs;
 pub mod query;
+pub mod recovery;
 pub mod resources;
 pub mod server;
 #[cfg(feature = "testkit")]
@@ -378,6 +379,7 @@ pub fn router_with(app: AppState, extra: Router<AppState>) -> Router {
         .merge(events::routes())
         .merge(packs::routes())
         .merge(moving::routes())
+        .merge(recovery::routes())
         .merge(resources::routes())
         .route_layer(axum::middleware::from_fn_with_state(app.clone(), policy::guard));
     Router::new()

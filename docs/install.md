@@ -381,7 +381,9 @@ was made:
   backups.
 
 To make a new recovery key (the old one stops working; the new one is shown
-once, in the terminal, not in the log):
+once, in the terminal, not in the log, and waits in `keys/RECOVERY-KEY.txt`
+until you delete it). Settings: Server and access does the same from the web
+pages:
 
 ```bash
 docker exec sentry-mate /sentry-mate recovery-key new

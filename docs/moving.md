@@ -17,10 +17,9 @@ The addresses and codes below are made up. Use your own.
 
 ## From the web pages (no shell, no commands)
 
-**Coming with Sentry Mate's web server.** The pages and their API are designed and tried on made-up data
-(`docs/ui-api.md`, "Moving and first-run setup"); the server that serves them is not built yet. Until it is, use the
-command line below. The pages are on the HTTPS address of the server only: the set-up code, passwords, move codes
-and recovery keys never go over plain HTTP.
+The pages and their API are in `docs/ui-api.md`, "Moving and first-run setup". Restoring from an export file on the
+new server's first page is not in the server yet: for that, use `import` (command line, below). The pages are on the
+HTTPS address of the server only: the set-up code, passwords, move codes and recovery keys never go over plain HTTP.
 
 ### Which way to choose
 
@@ -92,7 +91,7 @@ restore the bridge keeps its token and its certificate SHA-256; change only the 
 
 ## From the command line
 
-Until the web server is built, this is the way. It does the same as the pages.
+The same as the pages, for a server you reach with a shell (and the way to restore from an export file for now).
 
 ### Before you start
 

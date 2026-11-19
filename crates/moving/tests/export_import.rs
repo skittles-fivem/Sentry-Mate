@@ -530,3 +530,30 @@ fn a_made_up_manifest_is_refused() {
         assert!(matches!(e, moving::Error::Malformed(_)), "{what}: {e}");
     }
 }
+
+#[test]
+fn the_recovery_key_file_reads_back_its_key() {
+    let (_dir, data, keys) = empty();
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&keys).unwrap();
+    let (v, rk) = Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+    let file = moving::import::write_recovery_file(&keys, &rk).unwrap();
+    assert_eq!(file, keys.join(moving::import::RECOVERY_FILE));
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        text.starts_with("Sentry Mate recovery key:\n\n  SMRK-") && text.contains("then delete this file."),
+        "{text}"
+    );
+    assert_eq!(moving::import::recovery_from_file(&file).unwrap().as_str(), rk.as_str());
+    // a new key replaces the file's text
+    let rk2 = v.new_recovery_key(&data, vault::Kdf::FAST_FOR_TESTS).unwrap();
+    moving::import::write_recovery_file(&keys, &rk2).unwrap();
+    assert_eq!(moving::import::recovery_from_file(&file).unwrap().as_str(), rk2.as_str());
+    // a file holding only a key, an empty one, none
+    std::fs::write(&file, "  just-a-key \n").unwrap();
+    assert_eq!(moving::import::recovery_from_file(&file).unwrap().as_str(), "just-a-key");
+    std::fs::write(&file, " \n").unwrap();
+    assert!(moving::import::recovery_from_file(&file).is_none());
+    std::fs::remove_file(&file).unwrap();
+    assert!(moving::import::recovery_from_file(&file).is_none());
+}
