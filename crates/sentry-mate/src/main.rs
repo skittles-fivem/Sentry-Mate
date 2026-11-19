@@ -253,7 +253,8 @@ enum TokenCmd {
         car: String,
         /// A car key it may take over although another token used it (a replacement for that car's lost or
         /// revoked token; the last column of `token list`). Without it, only a car key no one uses yet.
-        #[arg(long = "key")]
+        // its own id: `keys` is the global --keys folder, and a clash panics when the command runs
+        #[arg(long = "key", id = "car_keys")]
         keys: Vec<String>,
     },
     /// One line per token: id, car name, in use or revoked, the car key it is tied to.
@@ -2025,6 +2026,20 @@ mod tests {
         let cli = Cli::try_parse_from(["sentry-mate", "log", "decode", "x"]).unwrap();
         assert!(matches!(cli.cmd, Cmd::Log { cmd: LogCmd::Decode { any: false, model: decode::Model::Auto, .. } }));
         assert!(Cli::try_parse_from(["sentry-mate", "log", "decode", "x", "--model", "z"]).is_err());
+    }
+
+    #[test]
+    fn the_command_line_is_consistent_and_token_new_takes_car_keys() {
+        // clap's own check of the definitions: two arguments with one id (the global --keys) fail here, not at run
+        <Cli as clap::CommandFactory>::command().debug_assert();
+        let cli =
+            Cli::try_parse_from(["sentry-mate", "token", "new", "--car", "Model Y", "--key", "abc", "--key", "def"])
+                .unwrap();
+        let Cmd::Token { cmd: TokenCmd::New { car, keys } } = cli.cmd else { panic!("not token new") };
+        assert_eq!((car.as_str(), keys), ("Model Y", vec!["abc".to_string(), "def".to_string()]));
+        let cli = Cli::try_parse_from(["sentry-mate", "--keys", "/k", "token", "new", "--car", "X"]).unwrap();
+        assert_eq!(cli.keys, PathBuf::from("/k"));
+        assert!(matches!(cli.cmd, Cmd::Token { cmd: TokenCmd::New { keys, .. } } if keys.is_empty()));
     }
 
     #[test]
