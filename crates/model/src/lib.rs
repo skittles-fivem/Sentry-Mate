@@ -321,13 +321,13 @@ pub struct Place {
     pub kind: PlaceKind,
     pub lat: f64,
     pub lon: f64,
-    /// 50 m to 2 km.
+    /// 10 m to 5 km.
     pub radius_m: f64,
     pub price: Option<PricePlan>,
 }
 
-pub const MIN_RADIUS_M: f64 = 50.0;
-pub const MAX_RADIUS_M: f64 = 2000.0;
+pub const MIN_RADIUS_M: f64 = 10.0;
+pub const MAX_RADIUS_M: f64 = 5000.0;
 pub const DEFAULT_RADIUS_M: f64 = 200.0;
 
 /// One price, or a time-of-use plan.

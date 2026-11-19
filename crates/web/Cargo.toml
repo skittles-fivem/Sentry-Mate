@@ -13,6 +13,7 @@ workspace = true
 accounts = { path = "../accounts" }
 engine = { path = "../engine" }
 model = { path = "../model" }
+places = { path = "../places" }
 vault = { path = "../vault" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
 base64 = "0.22"

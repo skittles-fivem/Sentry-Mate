@@ -43,11 +43,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/visits/summary", get(visits_summary))
         .route("/api/v1/visits/places", get(visit_places))
         .route("/api/v1/tracks", get(tracks))
-        // places
-        .route("/api/v1/places", get(places))
-        .route("/api/v1/places/suggestions", get(suggestions))
-        .route("/api/v1/places/at", get(place_at))
-        .route("/api/v1/places/{place}", get(place))
+        // places: web's places module
         // health and storage
         .route("/api/v1/cars/{car}/health", get(health))
         .route("/api/v1/cars/{car}/overlaps", get(overlaps))
@@ -230,44 +226,7 @@ async fn tracks(State(app): State<AppState>, v: Viewer, named: CarsParam, p: Par
     answer(&app, &p, "tracks", move |e| q::travel::tracks(e, &visible(e, &access, &named)?, &per, max)).await
 }
 
-// ---- places
-
-async fn places(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResult<Response> {
-    // `car=` is checked by the guard: counts for that car alone
-    let named = p.get("car").and_then(q::parse_car);
-    let query = q::places::PlacesQuery {
-        search: text(&p, "search")?,
-        kind: text(&p, "kind")?,
-        car: named,
-        sort: text(&p, "sort")?,
-    };
-    let (pg, access) = (paging(&p)?, v.cars().clone());
-    answer(&app, &p, "places", move |e| q::places::places(e, &visible(e, &access, &CarsParam(None))?, &query, &pg))
-        .await
-}
-
-async fn place(
-    State(app): State<AppState>,
-    v: Viewer,
-    Path(path): Path<HashMap<String, String>>,
-    p: Params,
-) -> ApiResult<Response> {
-    let id = path.get("place").and_then(|s| q::parse_place(s)).ok_or_else(|| ApiError::not_found("no_such_place"))?;
-    let access = v.cars().clone();
-    answer(&app, &p, "place", move |e| q::places::place(e, &visible(e, &access, &CarsParam(None))?, id)).await
-}
-
-async fn suggestions(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResult<Response> {
-    let (limit, access) = (p.uint("limit", 1, 500)?.map(|n| n as usize), v.cars().clone());
-    answer(&app, &p, "suggestions", move |e| q::places::suggestions(e, &visible(e, &access, &CarsParam(None))?, limit))
-        .await
-}
-
-async fn place_at(State(app): State<AppState>, p: Params) -> ApiResult<Response> {
-    let lat = p.float("lat", -90.0, 90.0)?.ok_or_else(|| ApiError::bad_input("lat", "Required."))?;
-    let lon = p.float("lon", -180.0, 180.0)?.ok_or_else(|| ApiError::bad_input("lon", "Required."))?;
-    answer(&app, &p, "place-at", move |e| q::places::at(e, lat, lon)).await
-}
+// ---- places (the web crate serves places, a place, the preview, reprice, suggestions and the place at a point)
 
 // ---- health and storage
 

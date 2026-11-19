@@ -63,14 +63,27 @@ pub(crate) fn carry(e: &Engine, car: CarId, old: &[Charge], new: &[Charge]) -> R
 
 /// The cost at the place's price as it is now (nothing kept, nothing written).
 pub fn price_now(e: &Engine, ch: &Charge, curve: &[ChargePoint], car_tz: &str) -> Option<CostEntry> {
-    let places = e.places();
+    price_in(&e.places(), ch, curve, car_tz)
+}
+
+/// The cost at the price of the place it is at among `places` (the saved ones, or a draft set for a preview).
+pub fn price_in(
+    places: &crate::placing::Places,
+    ch: &Charge,
+    curve: &[ChargePoint],
+    car_tz: &str,
+) -> Option<CostEntry> {
     let pos = ch.position.as_ref()?;
     let place = places.place_at(pos.lat, pos.lon)?;
     let plan = place.price.as_ref()?;
     let extra = places.extra(place.id);
     let tz = extra.and_then(|x| x.time_zone.as_deref()).unwrap_or(car_tz);
     let tariff = places::Tariff::new(plan, tz).or_else(|_| places::Tariff::new(plan, "UTC")).ok()?;
-    let per_minute = extra.and_then(|x| x.per_minute).unwrap_or(0.0);
+    // a rate's own price per minute (the rate in force when the charge started), else the place's
+    let rate_per_minute = tariff
+        .rate_at(ch.start_ms)
+        .and_then(|i| extra.and_then(|x| x.price.as_ref()).and_then(|p| p.rates.get(i)).and_then(|r| r.per_minute));
+    let per_minute = rate_per_minute.or(extra.and_then(|x| x.per_minute)).unwrap_or(0.0);
     let minutes = ch.end_ms.saturating_sub(ch.start_ms) as f64 / 60_000.0;
     let (total, parts, _fee, gap_ms) = if curve.len() >= 2 {
         let opts = places::CostOptions { grid_kwh: ch.energy_used_kwh, ..places::CostOptions::default() };

@@ -24,6 +24,10 @@ pub struct PlaceExtra {
     pub created_ms: Option<u64>,
     pub version: u64,
     pub address: Option<String>,
+    /// The price as the owner gave it (`/places` shape: a price per kWh may be left out, rates may carry a price
+    /// per minute); the model's plan is what charges are priced at.
+    #[serde(default)]
+    pub price: Option<crate::query::places::Price>,
 }
 
 /// The places, indexed for lookups.

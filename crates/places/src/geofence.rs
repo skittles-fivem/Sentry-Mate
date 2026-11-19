@@ -12,12 +12,12 @@ use crate::price::{PriceError, validate_plan};
 use model::{DEFAULT_RADIUS_M, MAX_RADIUS_M, MIN_RADIUS_M, Place, PlaceId};
 use std::collections::HashMap;
 
-/// A place's radius brought into 50 m to 2 km; a radius that isn't a number is the default 200 m.
+/// A place's radius brought into 10 m to 5 km; a radius that isn't a number is the default 200 m.
 pub fn clamp_radius(r: f64) -> f64 {
     if r.is_finite() { r.clamp(MIN_RADIUS_M, MAX_RADIUS_M) } else { DEFAULT_RADIUS_M }
 }
 
-/// A radius typed in Settings, in whole metres, or `None` when it is not 50 m to 2 km (so the form can say so
+/// A radius typed in Settings, in whole metres, or `None` when it is not 10 m to 5 km (so the form can say so
 /// instead of quietly saving another radius).
 pub fn clean_radius(r: f64) -> Option<f64> {
     let r = r.round();
@@ -30,13 +30,13 @@ pub enum PlaceError {
     Name,
     #[error("The position is not a latitude (-90 to 90) and longitude (-180 to 180).")]
     Position,
-    #[error("The radius is 50 m to 2 km.")]
+    #[error("The radius is 10 m to 5 km.")]
     Radius,
     #[error(transparent)]
     Price(#[from] PriceError),
 }
 
-/// Checks and tidies a place the owner saves: a plain name, a real position, a radius of 50 m to 2 km in whole
+/// Checks and tidies a place the owner saves: a plain name, a real position, a radius of 10 m to 5 km in whole
 /// metres, and a valid price plan.
 pub fn clean_place(p: &Place) -> Result<Place, PlaceError> {
     let name = p.name.trim();
@@ -61,7 +61,7 @@ pub struct PlaceIndex {
 }
 
 impl PlaceIndex {
-    /// Indexes the places. Radii are clamped to 50 m to 2 km; a place without a real position, or with an id
+    /// Indexes the places. Radii are clamped to 10 m to 5 km; a place without a real position, or with an id
     /// already seen, is left out (see [`PlaceIndex::skipped`]).
     pub fn new(places: impl IntoIterator<Item = Place>) -> PlaceIndex {
         let mut ix = PlaceIndex {
@@ -169,15 +169,15 @@ mod tests {
 
     #[test]
     fn radius_rules() {
-        assert_eq!(clamp_radius(10.0), MIN_RADIUS_M);
-        assert_eq!(clamp_radius(5000.0), MAX_RADIUS_M);
+        assert_eq!(clamp_radius(5.0), MIN_RADIUS_M);
+        assert_eq!(clamp_radius(9000.0), MAX_RADIUS_M);
         assert_eq!(clamp_radius(f64::NAN), DEFAULT_RADIUS_M);
         assert_eq!(clamp_radius(f64::INFINITY), DEFAULT_RADIUS_M);
         assert_eq!(clamp_radius(321.0), 321.0);
-        assert_eq!(clean_radius(49.4), None);
-        assert_eq!(clean_radius(49.6), Some(50.0));
-        assert_eq!(clean_radius(2000.4), Some(2000.0));
-        assert_eq!(clean_radius(2000.6), None);
+        assert_eq!(clean_radius(9.4), None);
+        assert_eq!(clean_radius(9.6), Some(10.0));
+        assert_eq!(clean_radius(5000.4), Some(5000.0));
+        assert_eq!(clean_radius(5000.6), None);
         assert_eq!(clean_radius(f64::NAN), None);
     }
 
@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(clean_place(&Place { name: "<b>".into(), ..place(1, 1.0, 2.0, 100.0) }), Err(PlaceError::Name));
         assert_eq!(clean_place(&Place { name: "x".repeat(61), ..place(1, 1.0, 2.0, 100.0) }), Err(PlaceError::Name));
         assert_eq!(clean_place(&place(1, 91.0, 2.0, 100.0)), Err(PlaceError::Position));
-        assert_eq!(clean_place(&place(1, 1.0, 2.0, 10.0)), Err(PlaceError::Radius));
+        assert_eq!(clean_place(&place(1, 1.0, 2.0, 5.0)), Err(PlaceError::Radius));
     }
 
     #[test]

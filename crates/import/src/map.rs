@@ -341,11 +341,11 @@ pub(crate) fn place(row: &Row<'_, '_>, id: i64, notes: &mut Vec<&'static str>) -
     let tm_radius_m = row.f64(Geo::radius);
     let radius_m = match tm_radius_m {
         Some(r) if r < MIN_RADIUS_M => {
-            notes.push("radius raised to 50 m");
+            notes.push("radius raised to 10 m");
             MIN_RADIUS_M
         }
         Some(r) if r > MAX_RADIUS_M => {
-            notes.push("radius lowered to 2 km");
+            notes.push("radius lowered to 5 km");
             MAX_RADIUS_M
         }
         Some(r) => r,

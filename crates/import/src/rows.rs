@@ -165,7 +165,7 @@ pub struct PlaceRow {
     pub per_minute_price: Option<f64>,
     /// TeslaMate's fee per charge here (also in `place.price` when there is one).
     pub session_fee: Option<f64>,
-    /// TeslaMate's radius, m (the place's is kept within 50 m to 2 km).
+    /// TeslaMate's radius, m (the place's is kept within 10 m to 5 km).
     pub tm_radius_m: Option<f64>,
 }
 

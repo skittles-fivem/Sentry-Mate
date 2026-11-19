@@ -183,12 +183,12 @@ fn two_cars_from_a_real_teslamate_backup() {
     );
     assert!(k.updates(20).is_empty());
 
-    // Geofences as places: the radius kept within 50 m to 2 km, prices with no currency (TeslaMate has none).
+    // Geofences as places: the radius kept within 10 m to 5 km, prices with no currency (TeslaMate has none).
     assert_eq!(k.places.len(), 2);
     let home = &k.places[0];
     assert_eq!(
         (home.tm_id, home.place.kind, home.place.radius_m, home.tm_radius_m),
-        (1, PlaceKind::Home, 50.0, Some(25.0))
+        (1, PlaceKind::Home, 25.0, Some(25.0))
     );
     let price = PricePlan { currency: String::new(), per_kwh: 0.25, rates: Vec::new(), session_fee: None };
     assert_eq!(home.place.price, Some(price));
@@ -222,7 +222,7 @@ fn two_cars_from_a_real_teslamate_backup() {
     assert_eq!(t(Table::States), (7, 5, 2));
     assert_eq!(t(Table::Updates), (2, 1, 1));
     assert_eq!(t(Table::Geofences), (2, 2, 0));
-    assert_eq!(r.table(Table::Geofences).notes["radius raised to 50 m"], 1);
+    assert_eq!(r.table(Table::Geofences).notes.get("radius raised to 10 m"), None, "25 m is kept");
     assert_eq!(r.table(Table::Drives).notes["energy estimated from rated range and efficiency"], 2);
     assert_eq!(r.skipped_tables["private.tokens"], "Tesla's tokens: never read");
     for other in ["public.settings", "public.schema_migrations", "public.import_runs"] {
@@ -361,8 +361,8 @@ fn an_older_teslamate_reads_too() {
     assert_eq!(d.end_ms, 1_682_935_500_500);
     assert_eq!(k.positions(30).len(), 2);
     assert_eq!(k.positions(30)[0].sample.t_ms, 1_682_935_200_500);
-    assert_eq!(k.places[0].place.radius_m, 2000.0);
-    assert_eq!(r.table(Table::Geofences).notes["radius lowered to 2 km"], 1);
+    assert_eq!(k.places[0].place.radius_m, 3000.0);
+    assert_eq!(r.table(Table::Geofences).notes.get("radius lowered to 5 km"), None, "3 km is kept");
     assert_eq!(k.updates(30)[0].update.version, "2023.12.1 0123456789ab");
     assert_eq!((r.table(Table::States).imported, r.table(Table::States).skipped(Skip::Open)), (1, 1));
 }

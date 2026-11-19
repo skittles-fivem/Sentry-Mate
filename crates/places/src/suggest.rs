@@ -53,6 +53,12 @@ pub struct Suggestion {
     pub last_ms: u64,
     /// The cars that stopped there, in id order.
     pub cars: Vec<CarId>,
+    /// How long the cars stayed there in all, ms (the stays given to [`Suggester::add_stay`]).
+    #[serde(default)]
+    pub dwell_ms: u64,
+    /// What the latest stop there was called (its address), if anything.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 struct Group {
@@ -63,6 +69,9 @@ struct Group {
     first_ms: u64,
     last_ms: u64,
     cars: Vec<CarId>,
+    dwell_ms: u64,
+    /// The label of the latest stop that had one, and when that stop was.
+    label: Option<(u64, String)>,
 }
 
 /// Builds suggestions from stops fed one at a time.
@@ -93,6 +102,12 @@ impl<'a> Suggester<'a> {
 
     /// One stop. Newest first gives the same groups as Sentry Six Manager; any order gives sensible ones.
     pub fn add(&mut self, s: &Spot) {
+        self.add_stay(s, 0, None);
+    }
+
+    /// One stop that lasted `dwell_ms`, with what it is called (its address), if known.
+    pub fn add_stay(&mut self, s: &Spot, dwell_ms: u64, label: Option<&str>) {
+        let label = label.map(str::trim).filter(|l| !l.is_empty());
         if !geo::is_valid(s.lat, s.lon) {
             self.invalid += 1;
             return;
@@ -112,7 +127,16 @@ impl<'a> Suggester<'a> {
         let Some((_, i)) = best else {
             let id = self.groups.len() as u32;
             self.grid.insert(&v, id);
-            self.groups.push(Group { sum: v, mid: v, visits: 1, first_ms: s.t_ms, last_ms: s.t_ms, cars: vec![s.car] });
+            self.groups.push(Group {
+                sum: v,
+                mid: v,
+                visits: 1,
+                first_ms: s.t_ms,
+                last_ms: s.t_ms,
+                cars: vec![s.car],
+                dwell_ms,
+                label: label.map(|l| (s.t_ms, l.to_string())),
+            });
             return;
         };
         let g = &mut self.groups[i as usize];
@@ -125,6 +149,12 @@ impl<'a> Suggester<'a> {
         g.visits += 1;
         g.first_ms = g.first_ms.min(s.t_ms);
         g.last_ms = g.last_ms.max(s.t_ms);
+        g.dwell_ms = g.dwell_ms.saturating_add(dwell_ms);
+        if let Some(l) = label
+            && g.label.as_ref().is_none_or(|(t, _)| s.t_ms >= *t)
+        {
+            g.label = Some((s.t_ms, l.to_string()));
+        }
         if let Err(at) = g.cars.binary_search(&s.car) {
             g.cars.insert(at, s.car);
         }
@@ -164,6 +194,8 @@ impl<'a> Suggester<'a> {
                     first_ms: g.first_ms,
                     last_ms: g.last_ms,
                     cars: g.cars,
+                    dwell_ms: g.dwell_ms,
+                    label: g.label.map(|(_, l)| l),
                 },
             ));
         }

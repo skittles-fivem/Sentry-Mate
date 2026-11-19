@@ -1,7 +1,7 @@
 //! Electricity prices and what a charge cost.
 //!
 //! The rules of Sentry Six Manager's `powerPrice.js`, for a [`model::PricePlan`]: one price per kWh, or time-of-use
-//! rates (days 0 = Monday … 6 = Sunday, `HH:MM` from and to, a rate whose `to` is before its `from` runs past
+//! rates (days 0 = Monday … 6 = Sunday, `HH:MM` from and to (`24:00` ends the day), a rate whose `to` is before its `from` runs past
 //! midnight and belongs to the day it starts), the first rate that matches wins, and the plan's own price covers
 //! every other hour. Rates follow the clock on the wall in the car's time zone, as utilities bill them: on the
 //! night clocks go back the hour from 01:00 to 02:00 happens twice and is charged twice at its rate; on the night
@@ -68,6 +68,11 @@ pub fn parse_hhmm(s: &str) -> Option<u16> {
     (h < 24 && m < 60).then_some(h * 60 + m)
 }
 
+/// The end of a rate: [`parse_hhmm`], or `24:00` for the end of the day (1440).
+pub fn parse_end_hhmm(s: &str) -> Option<u16> {
+    if s == "24:00" { Some(24 * 60) } else { parse_hhmm(s) }
+}
+
 /// An IANA time zone by name (`America/Chicago`).
 pub fn parse_time_zone(name: &str) -> Result<Tz, PriceError> {
     name.trim().parse::<Tz>().map_err(|_| PriceError::TimeZone(name.chars().take(64).collect()))
@@ -95,7 +100,7 @@ pub fn validate_plan(plan: &PricePlan) -> Result<PricePlan, PriceError> {
             return Err(PriceError::Name { rate: format!("Rate {}", i + 1) });
         }
         let price = money(r.per_kwh, &name)?;
-        let (Some(from), Some(to)) = (parse_hhmm(&r.from), parse_hhmm(&r.to)) else {
+        let (Some(from), Some(to)) = (parse_hhmm(&r.from), parse_end_hhmm(&r.to)) else {
             return Err(PriceError::Time { rate: name });
         };
         if from == to {
@@ -213,7 +218,7 @@ impl Tariff {
                 days: r.days.iter().fold(0u8, |m, &d| m | (1 << d)),
                 // Checked by validate_plan; 0 can't be reached.
                 from: parse_hhmm(&r.from).unwrap_or(0),
-                to: parse_hhmm(&r.to).unwrap_or(0),
+                to: parse_end_hhmm(&r.to).unwrap_or(0),
                 per_kwh: r.per_kwh,
                 name: r.name,
             })
