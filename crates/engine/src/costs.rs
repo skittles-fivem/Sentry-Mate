@@ -20,7 +20,14 @@ pub fn settle(
     ended: bool,
 ) -> Result<Option<CostEntry>> {
     let db = &e.inner.db;
-    if let Some(kept) = records::cost(db, car, ch.id, ch.start_ms)? {
+    let kept = records::cost(db, car, ch.id, ch.start_ms)?;
+    if ch.source == Source::Can
+        && kept.as_ref().is_none_or(|k| k.source != "manual")
+        && let Some(free) = free_now(e, ch, car_tz)
+    {
+        return Ok(Some(free));
+    }
+    if let Some(kept) = kept {
         return Ok(Some(kept));
     }
     if ended && kept_none(e, car, ch.id)? {
@@ -111,7 +118,53 @@ pub(crate) fn carry(e: &Engine, car: CarId, old: &[Charge], new: &[Charge]) -> R
 
 /// The cost at the place's price as it is now (nothing kept, nothing written).
 pub fn price_now(e: &Engine, ch: &Charge, curve: &[ChargePoint], car_tz: &str) -> Option<CostEntry> {
-    price_in(&e.places(), ch, curve, car_tz)
+    free_now(e, ch, car_tz).or_else(|| price_in(&e.places(), ch, curve, car_tz))
+}
+
+/// The free Supercharging cost of a charge, where the car's settings make it free ([`free_supercharging`]).
+pub(crate) fn free_now(e: &Engine, ch: &Charge, car_tz: &str) -> Option<CostEntry> {
+    free_supercharging(e, &e.places(), ch, car_tz)
+}
+
+/// A DC charge on a day the car's free Supercharging covers (its settings, days in the car's time zone) costs
+/// nothing. The charger's own name is not decoded, so a DC charge counts as Supercharging unless it is at a saved
+/// place with a price whose name does not say Supercharger (a priced third-party charger keeps its price). The zero
+/// is in the place's currency, else that of the first priced place; with no currency known at all it is left to
+/// the place price (none).
+fn free_supercharging(e: &Engine, places: &crate::placing::Places, ch: &Charge, car_tz: &str) -> Option<CostEntry> {
+    if ch.kind != Some(model::ChargeKind::Dc) {
+        return None;
+    }
+    let ranges = crate::query::fleet::settings_of(e, ch.car).ok()?.free_supercharging;
+    if ranges.is_empty() {
+        return None;
+    }
+    let day = crate::tz::date_str(ch.start_ms, crate::tz::zone(car_tz));
+    let covered = ranges.iter().any(|r| r.from_date <= day && r.to_date.as_ref().is_none_or(|t| day <= *t));
+    if !covered {
+        return None;
+    }
+    let here = ch.position.as_ref().and_then(|p| places.place_at(p.lat, p.lon));
+    let priced = here.and_then(|p| p.price.as_ref());
+    if let (Some(p), Some(_)) = (here, priced)
+        && !p.name.to_lowercase().contains("supercharger")
+    {
+        return None;
+    }
+    let currency = priced.or_else(|| places.all().iter().find_map(|p| p.price.as_ref())).map(|p| p.currency.clone())?;
+    Some(CostEntry {
+        amount: 0.0,
+        currency,
+        source: "free_supercharging".into(),
+        mode: None,
+        entered: None,
+        energy_basis: Some(if ch.energy_used_kwh.is_some() { "grid" } else { "pack" }.into()),
+        place: here.map(|p| p.id),
+        parts: Vec::new(),
+        session_fee: None,
+        gap_ms: 0,
+        at_ms: now_ms(),
+    })
 }
 
 /// The cost at the price of the place it is at among `places` (the saved ones, or a draft set for a preview).

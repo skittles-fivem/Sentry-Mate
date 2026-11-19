@@ -173,7 +173,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     let db = e.db();
     let n = db.entry(car)?.and_then(|x| x.summary.now);
     let meta = records::meta(db, car)?;
-    let received_ms = meta.last_done_ms;
+    let received_ms = meta.last_arrived_ms; // when the newest log arrived, as the fleet list says
     let now = now_ms();
     let s: Sample = n.as_ref().map(|n| n.sample.clone()).unwrap_or_default();
     let at = n.as_ref().map_or(0, |n| n.at_ms);

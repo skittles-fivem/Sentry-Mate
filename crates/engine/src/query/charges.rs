@@ -133,7 +133,15 @@ pub(crate) fn cost_of(e: &Engine, c: &Car, ch: &Charge) -> QResult<Option<CostEn
 /// [`cost_of`], for a charge known to be still going or not: one still going follows its place's price (only a typed
 /// cost holds), whatever cost was kept for it before.
 fn cost_live(e: &Engine, c: &Car, ch: &Charge, live: bool) -> QResult<Option<CostEntry>> {
-    if let Some(k) = records::cost(e.db(), c.id, ch.id, ch.start_ms)?.filter(|k| !live || k.source == "manual") {
+    let kept = records::cost(e.db(), c.id, ch.id, ch.start_ms)?;
+    // free Supercharging (the car's settings) wins over a place price, kept or not; only a typed cost holds
+    if ch.source == Source::Can
+        && kept.as_ref().is_none_or(|k| k.source != "manual")
+        && let Some(free) = costs::free_now(e, ch, &c.time_zone)
+    {
+        return Ok(Some(free));
+    }
+    if let Some(k) = kept.filter(|k| !live || k.source == "manual") {
         return Ok(Some(k));
     }
     if ch.source == Source::Can {

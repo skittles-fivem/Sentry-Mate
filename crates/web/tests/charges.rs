@@ -619,3 +619,62 @@ async fn costs_stay_put_typed_costs_come_off_cleanly_and_list_and_detail_agree()
         assert_eq!((&row["has_gaps"], &row["flags"]), (&same["has_gaps"], &same["flags"]));
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn free_supercharging_days_make_dc_charges_cost_nothing() {
+    let k = seeded().await;
+    let a = k.cars[0].clone();
+    let mut admin = k.s.admin().await;
+    let dc = ok(&mut admin, &format!("/api/v1/cars/{a}/charges?kind=dc&limit=500")).await;
+    let dcs = dc["items"].as_array().unwrap().clone();
+    assert!(!dcs.is_empty(), "the supercharger trip has a DC charge");
+    assert!(dcs.iter().all(|c| c["cost"]["source"] != "free_supercharging"), "nothing free before the setting");
+    let day = |ms: u64| {
+        let d = ms / 86_400_000;
+        // the synthetic cars are in UTC days well past 1970: civil date from days (Howard Hinnant's algorithm)
+        let z = d as i64 + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let dd = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        format!("{y:04}-{m:02}-{dd:02}")
+    };
+    let first = dcs.iter().map(|c| c["start_ms"].as_u64().unwrap()).min().unwrap();
+    let settings = ok(&mut admin, &format!("/api/v1/cars/{a}/settings")).await;
+    let tz = ok(&mut admin, &format!("/api/v1/cars/{a}")).await["time_zone"].as_str().unwrap_or("UTC").to_string();
+    assert_eq!(tz, "UTC", "the synthetic car keeps UTC days");
+    let r = admin
+        .patch(
+            &format!("/api/v1/cars/{a}/settings"),
+            json!({ "version": settings["version"], "free_supercharging": [{ "from_date": day(first), "to_date": day(first) }] }),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let after = ok(&mut admin, &format!("/api/v1/cars/{a}/charges?kind=dc&limit=500")).await;
+    for c in after["items"].as_array().unwrap() {
+        let free = day(c["start_ms"].as_u64().unwrap()) == day(first);
+        if free {
+            assert_eq!(c["cost"]["source"], "free_supercharging", "{c}");
+            assert_eq!(c["cost"]["amount"].as_f64(), Some(0.0), "{c}");
+            let id = c["id"].as_str().unwrap();
+            let d = ok(&mut admin, &format!("/api/v1/cars/{a}/charges/{id}")).await;
+            assert_eq!(d["cost"], c["cost"], "the detail agrees");
+        } else {
+            assert_ne!(c["cost"]["source"], "free_supercharging", "{c}");
+        }
+    }
+    // AC charges at home keep the place price
+    let ac = ok(&mut admin, &format!("/api/v1/cars/{a}/charges?kind=ac&places={}&limit=500", k.home)).await;
+    assert!(ac["items"].as_array().unwrap().iter().all(|c| c["cost"]["source"] == "tariff"), "{ac}");
+    // a typed cost still wins
+    let id = after["items"][0]["id"].as_str().unwrap().to_string();
+    let cost = format!("/api/v1/cars/{a}/charges/{id}/cost");
+    let r =
+        admin.put(&cost, json!({ "mode": "total", "amount": 3.5, "currency": "EUR", "energy_basis": "pack" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["cost"]["source"], "manual");
+}

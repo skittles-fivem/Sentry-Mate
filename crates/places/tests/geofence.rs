@@ -17,17 +17,17 @@ fn north(lat: f64, lon: f64, m: f64) -> (f64, f64) {
 }
 
 #[test]
-fn radius_is_clamped_to_50_m_and_2_km() {
-    let ix = PlaceIndex::new([place(1, 10.0, 20.0, 10.0), place(2, -30.0, 40.0, 9_000.0)]);
-    assert_eq!(ix.get(1).unwrap().radius_m, 50.0);
-    assert_eq!(ix.get(2).unwrap().radius_m, 2000.0);
-    let (a, b) = north(10.0, 20.0, 49.0);
+fn radius_is_clamped_to_10_m_and_5_km() {
+    let ix = PlaceIndex::new([place(1, 10.0, 20.0, 2.0), place(2, -30.0, 40.0, 9_000.0)]);
+    assert_eq!(ix.get(1).unwrap().radius_m, 10.0);
+    assert_eq!(ix.get(2).unwrap().radius_m, 5000.0);
+    let (a, b) = north(10.0, 20.0, 9.0);
     assert_eq!(ix.place_at(a, b).map(|p| p.id), Some(1));
-    let (a, b) = north(10.0, 20.0, 51.0);
+    let (a, b) = north(10.0, 20.0, 11.0);
     assert_eq!(ix.place_at(a, b), None);
-    let (a, b) = north(-30.0, 40.0, 1_999.0);
+    let (a, b) = north(-30.0, 40.0, 4_999.0);
     assert_eq!(ix.place_at(a, b).map(|p| p.id), Some(2));
-    let (a, b) = north(-30.0, 40.0, 2_001.0);
+    let (a, b) = north(-30.0, 40.0, 5_001.0);
     assert_eq!(ix.place_at(a, b), None);
 }
 

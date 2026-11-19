@@ -33,7 +33,7 @@ fn probe() -> Router<AppState> {
     Router::new()
         .route("/api/v1/cars/{car}/probe", get(car).post(change))
         .route("/api/v1/probe", get(cars))
-        .route("/api/v1/trips", axum::routing::post(save_trip))
+        .route("/api/v1/probe-trips", axum::routing::post(save_trip))
 }
 
 async fn server() -> TestServer {
@@ -228,20 +228,23 @@ async fn roles_and_hidden_cars() {
         assert_eq!((r.status, r.code().as_deref()), (403, Some("not_allowed")), "{path}");
     }
     assert_eq!(watch.post("/api/v1/cars/c1/probe", json!({})).await.code().as_deref(), Some("not_allowed"));
-    assert_eq!(watch.post("/api/v1/trips", json!({})).await.status, 200, "a watch account may save its trips");
+    // a watch account may save its trips (the real route): its body is checked, not refused as a change
+    let r = watch.post("/api/v1/trips", json!({})).await;
+    assert_eq!(r.code().as_deref(), Some("bad_input"), "a watch account may save its trips: {}", r.text());
     // a car in a body is checked too: a hidden car and an unknown car look the same
-    let r = watch.post("/api/v1/trips", json!({ "car": "c1", "also": ["c1"] })).await;
-    assert_eq!(r.json(), json!({ "who": WATCH, "car": "c1", "also": 1 }));
     let hidden = watch.post("/api/v1/trips", json!({ "car": "c2" })).await;
     let unknown = watch.post("/api/v1/trips", json!({ "car": "c9" })).await;
     assert_eq!((hidden.status, hidden.json()["error"]["fields"]["car"].is_string()), (422, true));
     assert_eq!(hidden.json(), unknown.json());
     assert_eq!(watch.post("/api/v1/trips", json!({ "car": 2 })).await.status, 400);
-    let hidden = watch.post("/api/v1/trips", json!({ "also": ["c1", "c2"] })).await;
-    assert_eq!(hidden.json(), watch.post("/api/v1/trips", json!({ "also": ["c9"] })).await.json());
-    assert_eq!(hidden.status, 422);
-    assert_eq!(watch.post("/api/v1/trips", json!({ "also": "all" })).await.json()["also"], Value::Null);
-    assert_eq!(admin.post("/api/v1/trips", json!({ "car": "c2" })).await.json()["car"], "c2");
+    // the probe (admin only, as every change outside the watch list) reads a car and a list of cars from a body
+    assert_eq!(watch.post("/api/v1/probe-trips", json!({})).await.code().as_deref(), Some("not_allowed"));
+    let r = admin.post("/api/v1/probe-trips", json!({ "car": "c1", "also": ["c1"] })).await;
+    assert_eq!(r.json(), json!({ "who": ADMIN, "car": "c1", "also": 1 }));
+    let r = admin.post("/api/v1/probe-trips", json!({ "also": ["c1", "c9"] })).await;
+    assert_eq!(r.status, 422);
+    assert_eq!(admin.post("/api/v1/probe-trips", json!({ "also": "all" })).await.json()["also"], Value::Null);
+    assert_eq!(admin.post("/api/v1/probe-trips", json!({ "car": "c2" })).await.json()["car"], "c2");
     assert_eq!(watch.put("/api/v1/ui-packs/chosen", json!({ "pack": "logbook" })).await.status, 403);
 
     // the admin's list, a change with a stale version, a role change
