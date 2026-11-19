@@ -599,7 +599,13 @@ async fn fresh(
         let local = client.local;
         let ns = app.accounts.setup(&code, &name, &password, &client)?;
         s.lock().claim = None;
-        let recovery = std::fs::read_to_string(&recovery_file).ok().map(|t| t.trim().to_string());
+        // the key itself, from the file's text (it says what the key is for around it)
+        let recovery = std::fs::read_to_string(&recovery_file).ok().and_then(|t| {
+            t.split_whitespace().find(|w| w.starts_with("SMRK-")).map(str::to_string).or_else(|| {
+                let t = t.trim();
+                (!t.is_empty()).then(|| t.to_string())
+            })
+        });
         let cars = app.accounts.car_access(ns.account.id)?;
         let body = json!({ "status": "done", "me": crate::auth::me_json(app, &ns.account, &cars, local),
                            "recovery_key": recovery });
@@ -676,7 +682,7 @@ async fn move_here(State(app): State<AppState>, headers: HeaderMap, body: JsonBo
         return Err(ApiError::bad_input("from", &e));
     }
     if let Err(e) = moving::code::MoveCode::parse(&code) {
-        return Err(ApiError::bad_input("code", &format!("The move code has a typo: {e}")));
+        return Err(ApiError::bad_input("code", &e.to_string()));
     }
     let s = site(&app)?;
     app.blocking(move |app| {
