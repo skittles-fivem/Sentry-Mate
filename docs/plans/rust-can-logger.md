@@ -52,8 +52,10 @@ code is JavaScript, so nothing is copied; only the rules and the API, which SMO 
   (`409 exists_different`), only added; resending the same bytes is a harmless `201 already`.
 - **Uploads**: same API, limits and errors (`maxChunk` 16 MiB, `maxFile` 1 GiB, `maxSidecar` 1 MiB,
   2,000 names per `status`), port of its own that is **closed while uploads are off**, every other path
-  `404`, `403 https_only` over plain HTTP. Same connection guards: headers within 20 s, a request at
-  most 10 min, 6 connections per address (256 in all), idle connection closed after 15 s.
+  `404`, `403 https_only` over plain HTTP. Connection guards: a TLS handshake and the headers within 10 s
+  each, a request at most 10 min, 6 connections per address (an IPv6 /64 is one address; 256 in all), idle
+  connection closed after 15 s. Connections that have not shown a valid token are closed oldest first to make room
+  (at most 192), so connections without a token can't keep the bridge out.
 - **A log's check** (judged when log and sidecar are both in): `verified` (paired key, bytes match),
   `failed` (kept, listed with the reason, never used unless the owner picks *Use anyway*, then marked
   in the UI wherever that data shows), `could not sign` (bridge said so; *use all* per key, password

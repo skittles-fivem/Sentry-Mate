@@ -12,6 +12,9 @@
 
 - TLS 1.3 only on the upload port; plain HTTP and older TLS are refused. The certificate is self-signed and made on
   first start, its private key sealed in the vault; the app pins it by SHA-256.
+- The upload port can't be filled without a token: connections are counted per address (an IPv6 /64 is one), the
+  TLS handshake and the headers must come within 10 s each, and a connection that has not shown a valid token is
+  closed, oldest first, to make room for a new one, so the CAN Bridge's uploads still get in.
 - Tokens are write-only: they can upload and ask which uploads arrived, nothing else. They are stored only as their
   SHA-256 and tied to one car key on the first upload. That first upload never takes a car key in use already
   (another token is tied to it, or its logs are here), unless the token was made for that key's car (on the car's

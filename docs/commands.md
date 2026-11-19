@@ -325,8 +325,11 @@ in until it has its own; without it, UTC.
 
 Firewalls, another host port and uploads from away from home: [Ports and firewalls](install.md#ports-and-firewalls).
 
-The upload port takes 6 connections per address and 256 in all. A TLS handshake must finish within 15 s, the
-headers within 20 s, a request within 10 minutes. Any other path than the upload API gets `404`. The protocol is
+The upload port takes 6 connections per address (an IPv6 /64 counts as one address) and 256 in all. A TLS
+handshake must finish within 10 s, the headers within 10 s, a request within 10 minutes. A connection counts as
+anonymous until a request on it is answered with success (it carried a valid token); at most 192 are, and a new one
+beyond closes the oldest anonymous one, so connections without a token can't keep the CAN Bridge out.
+Any other path than the upload API gets `404`. The protocol is
 Sentry Six Manager's [docs/can-bridge-api.md](https://github.com/skittles-fivem/Sentry-Manager/blob/main/docs/can-bridge-api.md).
 
 | Limit | Value |
