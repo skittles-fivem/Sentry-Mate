@@ -1,9 +1,10 @@
 //! Server settings: `GET`/`PATCH /api/v1/settings` (docs/ui-api.md, "Server, settings and health").
 //!
 //! The server's defaults (units, range, car order) that everyone's preferences start from, where addresses and map
-//! tiles come from, the release check, links to other sites, the proxy for what the server fetches itself, and the
-//! host names the next certificate is made for. Kept in the history's database (sealed with the vault) under the
-//! `server` setting; until a first change, every value is its default.
+//! tiles come from, the release check (none exists in this server yet: it stays off, and turning it on is `422`),
+//! links to other sites, the proxy for what the server fetches itself, and the host names the next certificate is
+//! made for (an empty list: the running certificate's names). Kept in the history's database (sealed with the vault)
+//! under the `server` setting; until a first change, every value is its default.
 //!
 //! The frame follows the settings at once: [`apply`] sets the preference defaults ([`AppState::set_defaults`],
 //! which pushes a `prefs` event to every open stream when they change) and the tile origins of the packs' CSP
@@ -182,11 +183,33 @@ pub fn load(e: &Engine, cert_names: &[String]) -> ApiResult<ServerSettings> {
             tracing::error!("the server settings can't be read ({err}); the defaults apply until they are saved again");
             ServerSettings::default()
         })),
-        None => Ok(ServerSettings {
-            host_names: cert_names.iter().filter(|n| *n != "localhost").cloned().collect(),
-            ..ServerSettings::default()
-        }),
+        None => Ok(ServerSettings { host_names: default_host_names(cert_names), ..ServerSettings::default() }),
     }
+    .map(|mut s| {
+        // (no release check exists yet, whatever an older version saved)
+        s.release_check.enabled = false;
+        // none saved: the default names
+        if s.host_names.is_empty() {
+            s.host_names = default_host_names(cert_names);
+        }
+        s
+    })
+}
+
+/// The names the next certificate is made for when none are saved: those of the running one, but `localhost`.
+fn default_host_names(cert_names: &[String]) -> Vec<String> {
+    cert_names.iter().filter(|n| *n != "localhost").cloned().collect()
+}
+
+/// A host name for the certificate: a DNS name, an IPv4 address or an IPv6 address (with or without brackets),
+/// written the way it is kept (lower case, IPv6 without brackets and compressed).
+fn cert_host_name(n: &str) -> Option<String> {
+    let n = n.trim().to_ascii_lowercase();
+    let bare = n.strip_prefix('[').and_then(|r| r.strip_suffix(']')).unwrap_or(&n);
+    if let Ok(v6) = bare.parse::<std::net::Ipv6Addr>() {
+        return Some(v6.to_string());
+    }
+    is_host_name(&n).then_some(n)
 }
 
 /// Makes the frame follow `s`: the preference defaults (pushing `prefs` events only when they changed) and the tile
@@ -255,10 +278,11 @@ async fn change(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiRe
             if new.units != cur.units {
                 super::mqtt::follow_units(app, &e, new.units)?;
             }
+            // still under the lock, so the frame follows the changes in the order they were saved
+            apply(app, &new);
             Ok((cur, new))
         })
         .await?;
-    apply(&app, &after);
     let mut changed: Vec<&str> = Vec::new();
     for (k, same) in [
         ("units", before.units == after.units),
@@ -523,7 +547,11 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
     if let Some(m) = part(body, "release_check", &["enabled"], &mut bad)
         && let Some(b) = flag(m, "release_check", "enabled", &mut bad)
     {
-        new.release_check.enabled = b;
+        // no release check exists in this server yet: it stays off rather than look on and never run
+        if b {
+            rule.add("release_check.enabled", "This server has no release check yet, so it stays off.");
+        }
+        new.release_check.enabled = false;
     }
     if let Some(m) = part(body, "outside_links", &["maps", "release_notes"], &mut bad) {
         if let Some(b) = flag(m, "outside_links", "maps", &mut bad) {
@@ -541,20 +569,23 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
     if let Some(h) = body.get("host_names") {
         match h.as_array().and_then(|a| a.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()) {
             None => bad.add("host_names", "Must be a list of host names."),
-            Some(list) if list.is_empty() || list.len() > MAX_HOST_NAMES => {
-                rule.add("host_names", &format!("1 to {MAX_HOST_NAMES} host names."));
+            Some(list) if list.len() > MAX_HOST_NAMES => {
+                rule.add("host_names", &format!("At most {MAX_HOST_NAMES} host names."));
             }
             Some(list) => {
+                // an empty list: the default names (those of the running certificate)
                 let mut out: Vec<String> = Vec::new();
                 for (i, n) in list.iter().enumerate() {
-                    let n = n.trim().to_ascii_lowercase();
-                    if !is_host_name(&n) {
-                        rule.add(&format!("host_names.{i}"), "A host name such as sentry-mate.local.");
-                    } else if !out.contains(&n) {
-                        out.push(n);
+                    match cert_host_name(n) {
+                        None => rule.add(
+                            &format!("host_names.{i}"),
+                            "A host name such as sentry-mate.local, or an IP address.",
+                        ),
+                        Some(n) if !out.contains(&n) => out.push(n),
+                        Some(_) => {}
                     }
                 }
-                new.host_names = out;
+                new.host_names = if out.is_empty() { default_host_names(&cert_names(app)) } else { out };
             }
         }
     }
@@ -676,6 +707,11 @@ mod tests {
         assert!(!is_proxy("ftp://p") && !is_proxy("http://user:pw@p") && !is_proxy("http://p/path"));
         assert!(is_host_name("sentry-mate.local") && is_host_name("192.168.1.10"));
         assert!(!is_host_name("-a.local") && !is_host_name("a..b") && !is_host_name("a b"));
+        assert_eq!(cert_host_name(" Sentry-Mate.LOCAL ").as_deref(), Some("sentry-mate.local"));
+        assert_eq!(cert_host_name("[::1]").as_deref(), Some("::1"));
+        assert_eq!(cert_host_name("FD00:0:0::0001").as_deref(), Some("fd00::1"));
+        assert_eq!(cert_host_name("[::1"), None);
+        assert_eq!(cert_host_name("a b"), None);
         let s = ServerSettings::default();
         assert_eq!(s.tile_origins(), vec![crate::DEFAULT_TILE_ORIGIN.to_string()]);
     }

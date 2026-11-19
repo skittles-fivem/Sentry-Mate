@@ -2253,6 +2253,7 @@ dependencies = [
  "mqtt",
  "percent-encoding",
  "places",
+ "rumqttc",
  "rustix",
  "rustls",
  "serde",

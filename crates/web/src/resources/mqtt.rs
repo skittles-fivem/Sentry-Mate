@@ -10,8 +10,14 @@
 //!   is the owner allowing plain MQTT), a pin only with TLS, and never a password without TLS. A PUT that breaks one
 //!   is `422 invalid` on the field to change.
 //! - **Publishing** ([`spawn`], started by `serve`): while MQTT is on, one connection publishes every car's newest
-//!   values as the engine records them (and once for every car at start); a car taken away is cleared from the
-//!   broker. A saved change restarts it with the new settings. Its counters answer `/status`.
+//!   values as the engine records them (and once for every car at start), and each drive and charge starting and
+//!   ending on the event topic, once, as the engine records it ([`engine::query::published`]: those of the last
+//!   [`RECENT_MS`], so a late upload still gives its events, a restart or a rebuild of old days none again). A saved
+//!   change restarts it with the new settings; when that turns Home Assistant discovery off or changes a prefix, what
+//!   the old layout left on the broker (discovery configs, retained values) is cleared first ([`mqtt::cleanup`]). The
+//!   engine reports no car going away yet (no car can be deleted), so nothing is cleared for one. Its counters answer
+//!   `/status`: `last_error` is always a code (`connection_refused`, `auth_failed`, `tls_failed`, `pin_mismatch`,
+//!   `timeout`, `invalid_settings`, `no_host`), `last_error_message` the words.
 //! - **The test** connects with the saved settings, publishes one message on `<prefix>/test` and disconnects; it
 //!   never touches the running connection.
 
@@ -35,6 +41,14 @@ pub const KEY: &str = "mqtt";
 pub const MAX_NO_PLACE_TEXT: usize = 40;
 /// How often the publisher's counters are looked at (for `last_used_ms` and `last_error_ms`).
 const TICK: Duration = Duration::from_secs(5);
+/// How far back drive and charge events are published: a day and a half covers a car away from the server's network
+/// all day (its logs upload when it is back). Older ones are never sent, so a rebuild of old days sends nothing.
+pub const RECENT_MS: u64 = 36 * 3_600_000;
+/// How long changed cars wait for the engine to be idle before their events go out anyway (an engine kept busy by
+/// many cars' uploads).
+const EVENTS_WAIT: Duration = Duration::from_secs(60);
+/// Event keys remembered per car (twice the most one look gives), so none is sent twice.
+const SENT_PER_CAR: usize = 2 * engine::query::published::MAX_EVENTS;
 
 /// The MQTT setting as stored: the crate's settings, and what only the pages use.
 #[derive(Clone, Serialize, Deserialize)]
@@ -67,7 +81,9 @@ pub struct Publisher {
 
 #[derive(Default, Clone)]
 struct Log {
+    /// A code (as `/test` answers them), with the words in `last_error_message`.
     last_error: Option<String>,
+    last_error_message: Option<String>,
     last_error_ms: Option<u64>,
     last_used_ms: Option<u64>,
     delivered: u64,
@@ -87,9 +103,10 @@ impl Publisher {
         self.log.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn error(&self, what: String, at_ms: u64) {
+    fn error(&self, code: &str, message: String, at_ms: u64) {
         let mut l = self.log();
-        l.last_error = Some(what);
+        l.last_error = Some(code.to_string());
+        l.last_error_message = Some(message);
         l.last_error_ms = Some(at_ms);
     }
 
@@ -105,7 +122,8 @@ impl Publisher {
         }
         if s.last_error != l.seen_error {
             if let Some(e) = &s.last_error {
-                l.last_error = Some(e.clone());
+                l.last_error = Some(s.last_error_code.unwrap_or("connection_refused").to_string());
+                l.last_error_message = Some(e.clone());
                 l.last_error_ms = Some(now_ms);
             }
             l.seen_error = s.last_error.clone();
@@ -489,6 +507,7 @@ async fn status(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Value
         "waiting": stats.as_ref().map_or(0, |x| x.states_waiting + x.events_waiting),
         "dropped": stats.as_ref().map_or(0, |x| x.states_dropped + x.events_dropped),
         "last_error": log.last_error,
+        "last_error_message": log.last_error_message,
         "last_error_ms": log.last_error_ms,
         "broker": (!host.is_empty()).then(|| if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") }),
         "tls": tls,
@@ -618,7 +637,7 @@ async fn test(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiResu
     let at_ms = app.now();
     let r = mqtt::probe::probe(&s.settings).await;
     if let (Some(code), Ok(p)) = (r.error, app.service::<Publisher>()) {
-        p.error(code.to_string(), at_ms);
+        p.error(code, r.message.clone(), at_ms);
     }
     let summary = match r.error {
         None => "Tested the MQTT broker: connected and published one test message.".to_string(),
@@ -669,7 +688,8 @@ async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Valu
             { "purpose": "tiles", "host": if tiles_online { tile_host } else { None }, "enabled": tiles_online, "last_used_ms": null },
             { "purpose": "geonames_download", "host": geonames, "enabled": false, "last_used_ms": null },
             { "purpose": "mqtt", "host": (!mqtt_host.is_empty()).then_some(mqtt_host), "enabled": m.settings.enabled, "last_used_ms": mqtt_used },
-            { "purpose": "release_check", "host": null, "enabled": ss.release_check.enabled, "last_used_ms": null },
+            // no release check exists in this server yet (`/settings` refuses turning it on)
+            { "purpose": "release_check", "host": null, "enabled": false, "last_used_ms": null },
         ],
         "inbound": inbound,
         "certificate": { "names": names },
@@ -702,13 +722,92 @@ async fn publish_all(e: &Engine, m: &Arc<mqtt::Mqtt>, no_place: &Arc<str>) {
     }
 }
 
+/// The drive and charge events already sent, per car (the newest [`SENT_PER_CAR`] keys of each).
+#[derive(Default)]
+struct SentEvents(std::collections::HashMap<CarId, std::collections::VecDeque<String>>);
+
+impl SentEvents {
+    fn has(&self, car: CarId, key: &str) -> bool {
+        self.0.get(&car).is_some_and(|k| k.iter().any(|x| x == key))
+    }
+
+    fn add(&mut self, car: CarId, key: String) {
+        let keys = self.0.entry(car).or_default();
+        if keys.len() >= SENT_PER_CAR {
+            keys.pop_front();
+        }
+        keys.push_back(key);
+    }
+}
+
+/// A car's drive and charge events of the last [`RECENT_MS`], oldest first (read off the async threads).
+async fn recent_events(e: &Engine, car: CarId, now_ms: u64) -> Vec<engine::query::published::Published> {
+    let e = e.clone();
+    let from = now_ms.saturating_sub(RECENT_MS);
+    let r = tokio::task::spawn_blocking(move || {
+        engine::query::published::drive_charge_events(&e, car, from, u64::MAX, engine::query::published::MAX_EVENTS)
+    })
+    .await;
+    match r {
+        Ok(Ok(v)) => v,
+        Ok(Err(err)) => {
+            tracing::debug!("MQTT: the events of car {car} not read: {err}");
+            Vec::new()
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Publishes the car's events not sent yet; with `quiet`, only notes them as sent (at start: those of the last
+/// [`RECENT_MS`] were sent before, or are no news any more).
+async fn publish_events(e: &Engine, m: &mqtt::Mqtt, car: CarId, sent: &mut SentEvents, now_ms: u64, quiet: bool) {
+    for p in recent_events(e, car, now_ms).await {
+        if sent.has(car, &p.key) {
+            continue;
+        }
+        if !quiet {
+            m.publish_event(p.event);
+        }
+        sent.add(car, p.key);
+    }
+}
+
+async fn cars_of(e: &Engine) -> Vec<CarId> {
+    let e = e.clone();
+    tokio::task::spawn_blocking(move || engine::query::all_cars(&e).unwrap_or_default()).await.unwrap_or_default()
+}
+
+/// Clears what publishing with `old` left on the broker that `new` doesn't take over (Home Assistant discovery
+/// turned off, a prefix changed), before the new publisher starts.
+async fn clean_up(app: &AppState, e: &Engine, p: &Publisher, old: &mqtt::Settings, new: &mqtt::Settings) {
+    let Some(what) = mqtt::cleanup::leftovers(old, new) else { return };
+    let cars = cars_of(e).await;
+    let msgs = match mqtt::cleanup::messages(old, &cars, what) {
+        Ok(m) => m,
+        Err(err) => {
+            tracing::warn!("MQTT: the old topics can't be cleared: {err}");
+            return;
+        }
+    };
+    match mqtt::cleanup::clear(old, msgs).await {
+        Ok(n) => tracing::info!("MQTT: cleared {n} retained topics the earlier settings left"),
+        Err((code, why)) => {
+            tracing::warn!("MQTT: the old topics were not cleared: {why}");
+            p.error(code, format!("Clearing what the earlier settings left: {why}"), app.now());
+        }
+    }
+}
+
 /// The publisher, for `serve`: while MQTT is on, every car's newest values go to the broker as the engine records
-/// them; a saved change of the settings starts it again with them. Needs the engine and a [`Publisher`] among the
-/// services (else it ends at once). Aborting the task closes the connection.
+/// them, and its drive and charge events once each; a saved change of the settings starts it again with them (after
+/// clearing what the old layout left). Needs the engine and a [`Publisher`] among the services (else it ends at
+/// once). Aborting the task closes the connection.
 pub fn spawn(app: AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let (Ok(e), Ok(p)) = (app.service::<Engine>(), app.service::<Publisher>()) else { return };
         let mut rx = e.subscribe();
+        // the settings the last publisher ran with
+        let mut prev: Option<mqtt::Settings> = None;
         loop {
             let e2 = e.clone();
             let loaded = tokio::task::spawn_blocking(move || -> ApiResult<Stored> {
@@ -721,25 +820,49 @@ pub fn spawn(app: AppState) -> tokio::task::JoinHandle<()> {
                 Ok(Ok(s)) => s,
                 _ => Stored::default(),
             };
+            if let Some(old) = prev.take() {
+                clean_up(&app, &e, &p, &old, &stored.settings).await;
+            }
             let no_place: Arc<str> = Arc::from(stored.no_place_text.as_str());
             let running = match mqtt::Mqtt::start(&stored.settings) {
                 Ok(m) => m.map(Arc::new),
                 Err(err) => {
                     tracing::warn!("MQTT not started: {err}");
-                    p.error(err.to_string(), app.now());
+                    p.error("invalid_settings", err.to_string(), app.now());
                     None
                 }
             };
             *p.live.lock().unwrap_or_else(|x| x.into_inner()) = running.as_ref().map_or_else(Weak::new, Arc::downgrade);
+            let mut sent = SentEvents::default();
+            // cars whose drives or charges changed, published once the engine has worked through what it was given
+            // (a late upload goes log by log: only its final rows go out)
+            let mut dirty: std::collections::BTreeSet<CarId> = std::collections::BTreeSet::new();
+            let mut dirty_since = std::time::Instant::now();
             if let Some(m) = &running {
+                prev = Some(stored.settings.clone());
                 tracing::info!("MQTT publishing to {}", m.stats().broker);
                 publish_all(&e, m, &no_place).await;
+                let now = app.now();
+                for car in cars_of(&e).await {
+                    publish_events(&e, m, car, &mut sent, now, true).await;
+                }
             }
             let mut tick = tokio::time::interval(TICK);
             loop {
                 tokio::select! {
                     () = p.restart.notified() => break,
-                    _ = tick.tick() => p.observe(app.now()),
+                    _ = tick.tick() => {
+                        p.observe(app.now());
+                        if let Some(m) = &running
+                            && !dirty.is_empty()
+                            && (e.queued() == 0 || dirty_since.elapsed() >= EVENTS_WAIT)
+                        {
+                            let now = app.now();
+                            for car in std::mem::take(&mut dirty) {
+                                publish_events(&e, m, car, &mut sent, now, false).await;
+                            }
+                        }
+                    }
                     ev = rx.recv() => {
                         let Some(m) = &running else {
                             if matches!(ev, Err(tokio::sync::broadcast::error::RecvError::Closed)) { return }
@@ -747,10 +870,29 @@ pub fn spawn(app: AppState) -> tokio::task::JoinHandle<()> {
                         };
                         match ev {
                             Ok(engine::Event::Now { car, .. }) => publish_car(&e, m, car, &no_place).await,
+                            Ok(engine::Event::Rows { car, kinds, .. }) if kinds.iter().any(|k| *k == "drives" || *k == "charges") => {
+                                if dirty.is_empty() {
+                                    dirty_since = std::time::Instant::now();
+                                }
+                                dirty.insert(car);
+                                if e.queued() == 0 {
+                                    let now = app.now();
+                                    for car in std::mem::take(&mut dirty) {
+                                        publish_events(&e, m, car, &mut sent, now, false).await;
+                                    }
+                                }
+                            }
+                            // (the engine sends no `removed` yet: no car can be deleted)
                             Ok(engine::Event::Fleet { car, change: "removed", .. }) => m.forget_car(car),
                             Ok(engine::Event::Fleet { car, .. }) => publish_car(&e, m, car, &no_place).await,
                             Ok(_) => {}
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => publish_all(&e, m, &no_place).await,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                publish_all(&e, m, &no_place).await;
+                                if dirty.is_empty() {
+                                    dirty_since = std::time::Instant::now();
+                                }
+                                dirty.extend(cars_of(&e).await);
+                            }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                         }
                     }

@@ -24,6 +24,7 @@ pub mod logbook;
 pub mod now;
 pub mod parked;
 pub mod places;
+pub mod published;
 pub mod reports;
 pub mod series;
 pub mod signals;

@@ -7,8 +7,9 @@
 //! values that changed since they were last sent on this connection go out again (a bounded cache of recent cars
 //! remembers what was sent; a car that fell out of it is just sent in full).
 //!
-//! On the wire: `<prefix>/cars/<car id>/<field>`, retained, QoS 1; events on `<prefix>/cars/<car id>/event`;
-//! `<prefix>/status` is `online`, with `offline` as the last will. Home Assistant discovery makes one device per car.
+//! On the wire: `<prefix>/cars/c<n>/<field>` (the car as the API names it), retained, QoS 1; events on
+//! `<prefix>/cars/c<n>/event`; `<prefix>/status` is `online`, with `offline` as the last will. Home Assistant discovery
+//! makes one device per car ([`cleanup`] clears what an earlier layout left).
 //!
 //! Security, as SMO's `MqttSecurity.kt`: TLS (`mqtts://`) with rustls, the broker trusted by webpki roots and its
 //! host name or by a pinned SHA-256 (self-signed brokers); plain `mqtt://` refused unless the owner allows it, and
@@ -25,6 +26,7 @@
 //! ```
 
 mod cache;
+pub mod cleanup;
 pub mod discovery;
 mod error;
 pub mod probe;
@@ -81,8 +83,11 @@ pub struct Stats {
     pub states_dropped: u64,
     /// Events lost because more waited than `limits.max_events`.
     pub events_dropped: u64,
-    /// Why the last connection failed or dropped, until one works.
+    /// Why the last connection failed or dropped, until one works, in words.
     pub last_error: Option<String>,
+    /// The same as a code: `connection_refused`, `auth_failed`, `tls_failed`, `pin_mismatch` or `timeout` (the codes
+    /// of [`probe::Probe::error`]).
+    pub last_error_code: Option<&'static str>,
 }
 
 impl Mqtt {
@@ -173,6 +178,7 @@ impl Mqtt {
             let q = self.shared.queue();
             (q.states_len(), q.events_len(), q.states_dropped, q.events_dropped)
         };
+        let last = self.shared.last_error().clone();
         Stats {
             broker: self.describe.clone(),
             connected: self.shared.connected.load(Ordering::SeqCst),
@@ -182,7 +188,8 @@ impl Mqtt {
             events_waiting,
             states_dropped,
             events_dropped,
-            last_error: self.shared.last_error().clone(),
+            last_error: last.as_ref().map(|(_, text)| text.clone()),
+            last_error_code: last.map(|(code, _)| code),
         }
     }
 
@@ -229,7 +236,7 @@ mod tests {
     fn preview_without_a_broker() {
         let layout = Layout::new(&Settings::default()).unwrap();
         let msgs = render::now_messages(&layout, &Now { car: 3, ..Now::default() }, None);
-        assert_eq!(msgs[0].topic, "sentry-mate/cars/3/state");
+        assert_eq!(msgs[0].topic, "sentry-mate/cars/c3/state");
     }
 
     #[test]

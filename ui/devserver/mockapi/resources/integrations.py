@@ -142,7 +142,8 @@ def mqtt_status(req):
     return {"enabled": on, "connected": bool(on and s["connected"]),
             "delivered": s["delivered"] + (ticks if on and s["connected"] else 0),
             "waiting": s["waiting"] if on else 0, "dropped": s["dropped"],
-            "last_error": s["last_error"], "last_error_ms": s["last_error_ms"],
+            "last_error": s["last_error"], "last_error_message": s.get("last_error_message"),
+            "last_error_ms": s["last_error_ms"],
             "broker": f"{m['host']}:{m['port']}" if m["host"] else None, "tls": m["tls"]}
 
 
@@ -291,6 +292,7 @@ def test(req):
                "message": f"{host}:{m['port']} refused the connection.", "latency_ms": None}
         with st.lock:
             m["status"]["last_error"] = "connection_refused"
+            m["status"]["last_error_message"] = res["message"]
             m["status"]["last_error_ms"] = t0
     elif m["tls"] and m["pin_sha256"] and m["pin_sha256"].lower().startswith("00"):
         res = {"ok": False, "error": "pin_mismatch",

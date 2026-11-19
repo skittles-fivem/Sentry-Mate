@@ -245,13 +245,13 @@ mod tests {
     fn battery_sensor() {
         let msgs = configs(&layout(false, Units::default()), 7, &info());
         assert!(msgs.iter().all(|m| m.retain && m.topic.starts_with("homeassistant/")));
-        let soc = json_of(find(&msgs, "homeassistant/sensor/sentry-mate_car7/soc/config"));
+        let soc = json_of(find(&msgs, "homeassistant/sensor/sentry-mate_c7/soc/config"));
         assert_eq!(
             soc,
             json!({
                 "name": "Battery",
-                "unique_id": "sentry-mate_car7_soc",
-                "state_topic": "sentry-mate/cars/7/soc",
+                "unique_id": "sentry-mate_c7_soc",
+                "state_topic": "sentry-mate/cars/c7/soc",
                 "availability_topic": "sentry-mate/status",
                 "payload_available": "online",
                 "payload_not_available": "offline",
@@ -260,7 +260,7 @@ mod tests {
                 "state_class": "measurement",
                 "unit_of_measurement": "%",
                 "device": {
-                    "identifiers": ["sentry-mate_car7"],
+                    "identifiers": ["sentry-mate_c7"],
                     "name": "Model Y",
                     "manufacturer": "Tesla",
                     "model": "Model Y 2022"
@@ -273,36 +273,36 @@ mod tests {
     #[test]
     fn kinds_of_entities() {
         let msgs = configs(&layout(false, Units::default()), 7, &info());
-        let driving = json_of(find(&msgs, "homeassistant/binary_sensor/sentry-mate_car7/driving/config"));
+        let driving = json_of(find(&msgs, "homeassistant/binary_sensor/sentry-mate_c7/driving/config"));
         assert_eq!((driving["payload_on"].as_str(), driving["payload_off"].as_str()), (Some("true"), Some("false")));
         assert_eq!(driving["device_class"], "moving");
-        let state = json_of(find(&msgs, "homeassistant/sensor/sentry-mate_car7/state/config"));
+        let state = json_of(find(&msgs, "homeassistant/sensor/sentry-mate_c7/state/config"));
         assert_eq!(state["device_class"], "enum");
         assert_eq!(state["options"], json!(["driving", "charging", "online", "asleep", "unknown"]));
-        let odo = json_of(find(&msgs, "homeassistant/sensor/sentry-mate_car7/odometer/config"));
+        let odo = json_of(find(&msgs, "homeassistant/sensor/sentry-mate_c7/odometer/config"));
         assert_eq!(
             (odo["state_class"].as_str(), odo["unit_of_measurement"].as_str()),
             (Some("total_increasing"), Some("km"))
         );
-        let updated = json_of(find(&msgs, "homeassistant/sensor/sentry-mate_car7/updated/config"));
+        let updated = json_of(find(&msgs, "homeassistant/sensor/sentry-mate_c7/updated/config"));
         assert_eq!(updated["device_class"], "timestamp");
         assert!(updated.get("state_class").is_none() && updated.get("unit_of_measurement").is_none());
         assert_eq!(updated["entity_category"], "diagnostic");
-        let place = json_of(find(&msgs, "homeassistant/sensor/sentry-mate_car7/place/config"));
+        let place = json_of(find(&msgs, "homeassistant/sensor/sentry-mate_c7/place/config"));
         assert!(place.get("device_class").is_none() && place.get("options").is_none());
-        let event = json_of(find(&msgs, "homeassistant/event/sentry-mate_car7/event/config"));
-        assert_eq!(event["state_topic"], "sentry-mate/cars/7/event");
+        let event = json_of(find(&msgs, "homeassistant/event/sentry-mate_c7/event/config"));
+        assert_eq!(event["state_topic"], "sentry-mate/cars/c7/event");
         assert_eq!(event["event_types"], json!(["drive_started", "drive_ended", "charge_started", "charge_ended"]));
     }
 
     #[test]
     fn tracker_only_with_location() {
         let off = configs(&layout(false, Units::default()), 7, &info());
-        let tracker = "homeassistant/device_tracker/sentry-mate_car7/location/config";
+        let tracker = "homeassistant/device_tracker/sentry-mate_c7/location/config";
         assert_eq!(find(&off, tracker).payload, "", "location off: any old tracker is removed");
         let on = configs(&layout(true, Units::default()), 7, &info());
         let t = json_of(find(&on, tracker));
-        assert_eq!(t["json_attributes_topic"], "sentry-mate/cars/7/location");
+        assert_eq!(t["json_attributes_topic"], "sentry-mate/cars/c7/location");
         assert_eq!(t["source_type"], "gps");
         assert!(off.iter().chain(&on).all(|m| !m.topic.contains("/latitude/") && !m.topic.contains("/longitude/")));
     }
@@ -335,7 +335,7 @@ mod tests {
                 assert!(topics.insert(m.topic.clone()), "{}", m.topic);
                 let v = json_of(&m);
                 assert!(ids.insert(v["unique_id"].as_str().unwrap().to_string()));
-                assert_eq!(v["device"]["identifiers"][0], format!("sentry-mate_car{car}"));
+                assert_eq!(v["device"]["identifiers"][0], format!("sentry-mate_c{car}"));
             }
         }
         // every value topic but the positions has an entity
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn unnamed_car_and_removal() {
         let msgs = configs(&layout(false, Units::default()), 3, &CarInfo::default());
-        let v = json_of(find(&msgs, "homeassistant/sensor/sentry-mate_car3/range/config"));
+        let v = json_of(find(&msgs, "homeassistant/sensor/sentry-mate_c3/range/config"));
         assert_eq!(v["device"]["name"], "Car 3");
         assert!(v["device"].get("model").is_none());
         let gone = removals(&layout(false, Units::default()), 3);

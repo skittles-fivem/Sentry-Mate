@@ -525,7 +525,7 @@ pub(crate) mod tests {
     fn values_and_topics() {
         let l = layout(false, Units::default());
         let msgs = now_messages(&l, &parked(7), Some("Home"));
-        assert!(msgs.iter().all(|m| m.retain && m.topic.starts_with("sentry-mate/cars/7/")));
+        assert!(msgs.iter().all(|m| m.retain && m.topic.starts_with("sentry-mate/cars/c7/")));
         let p = |k| payload(&msgs, k);
         assert_eq!(p("state").as_deref(), Some("online"));
         assert_eq!(p("driving").as_deref(), Some("false"));
@@ -671,7 +671,7 @@ pub(crate) mod tests {
         let km = layout(false, Units::default());
         let start =
             event_message(&km, &Event::DriveStarted { drive: Box::new(drive(3)), start_place: Some("Home".into()) });
-        assert_eq!((start.topic.as_str(), start.retain), ("sentry-mate/cars/3/event", false));
+        assert_eq!((start.topic.as_str(), start.retain), ("sentry-mate/cars/c3/event", false));
         let v: Value = serde_json::from_str(&start.payload).unwrap();
         assert_eq!(v["event_type"], "drive_started");
         assert_eq!((v["car"].as_u64(), v["drive"].as_u64()), (Some(3), Some(42)));
@@ -753,7 +753,7 @@ pub(crate) mod tests {
         assert_eq!((s["place"].as_str(), s["kind"].as_str()), (Some("Work"), Some("dc")));
         assert!(s.get("energy_added_kwh").is_none() && s.get("latitude").is_none());
         let msg = event_message(&l, &Event::ChargeEnded { charge: Box::new(charge), place: Some("Work".into()) });
-        assert_eq!(msg.topic, "sentry-mate/cars/5/event");
+        assert_eq!(msg.topic, "sentry-mate/cars/c5/event");
         let e: Value = serde_json::from_str(&msg.payload).unwrap();
         assert_eq!(e["event_type"], "charge_ended");
         assert_eq!(e["duration_min"], 120.0);

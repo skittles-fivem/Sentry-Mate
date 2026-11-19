@@ -51,6 +51,9 @@ db = { path = "../db" }
 web = { path = ".", features = ["testkit"] }
 http-body-util = "0.1"
 tempfile = "3"
+# a small MQTT broker in the publisher's tests (rumqttc's packet codec)
+rumqttc = { version = "0.25", default-features = false, features = ["use-rustls-no-provider"] }
+bytes = "1"
 
 [features]
 # web::testkit: a real TLS server on a temporary folder, for tests of the resource modules (and their callers)

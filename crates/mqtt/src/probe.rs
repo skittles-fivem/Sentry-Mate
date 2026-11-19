@@ -6,7 +6,6 @@
 use crate::render::iso_utc;
 use crate::security;
 use crate::settings::Settings;
-use crate::topics::Topics;
 use rumqttc::{AsyncClient, ConnectReturnCode, ConnectionError, MqttOptions, NetworkOptions, Packet, QoS, Transport};
 use std::time::{Duration, Instant};
 
@@ -35,8 +34,8 @@ fn failed(error: &'static str, message: impl Into<String>, tls: bool) -> Probe {
     Probe { ok: false, error: Some(error), message: message.into(), latency_ms: None, topic: None, tls }
 }
 
-/// Which of the page's error codes a failed connection is.
-fn classify(e: &ConnectionError) -> &'static str {
+/// Which of the page's error codes a failed connection is (the publisher's `last_error_code` too).
+pub(crate) fn classify(e: &ConnectionError) -> &'static str {
     use rumqttc::TlsError;
     let tls = match e {
         ConnectionError::Tls(TlsError::TLS(t)) => Some(Some(t)),
@@ -61,31 +60,43 @@ fn classify(e: &ConnectionError) -> &'static str {
     }
 }
 
-/// Tests `settings` (whether or not publishing is on). Never takes longer than the connect timeout plus a few seconds.
-pub async fn probe(settings: &Settings) -> Probe {
-    if settings.broker.trim().is_empty() {
-        return failed("no_host", "Set a broker host first.", true);
-    }
-    let checked = match settings.checked() {
-        Ok(c) => c,
-        Err(e) => return failed("invalid_settings", e.to_string(), true),
-    };
+/// The connection options for a one-off connection with `settings` (client id `<client id><suffix>`, no last
+/// will), with the broker as the page shows it and whether it uses TLS; else the error code, in words, and TLS.
+pub(crate) fn options(
+    settings: &Settings,
+    suffix: &str,
+) -> Result<(MqttOptions, crate::settings::Broker, bool), (&'static str, String, bool)> {
+    let checked = settings.checked().map_err(|e| ("invalid_settings", e.to_string(), true))?;
     let broker = checked.broker.clone();
     let tls = broker.tls;
-    let mut options = MqttOptions::new(format!("{}-test", settings.client_id), broker.host.clone(), broker.port);
+    let mut options = MqttOptions::new(format!("{}{suffix}", settings.client_id), broker.host.clone(), broker.port);
     options.set_keep_alive(Duration::from_secs(30)).set_clean_session(true);
     if let Some(user) = settings.username.as_deref().filter(|u| !u.is_empty()) {
         options.set_credentials(user, settings.password.clone().unwrap_or_default());
     }
     if tls {
-        match security::client_config(checked.pin, settings.allow_tls12) {
-            Ok(c) => {
-                options.set_transport(Transport::tls_with_config(rumqttc::TlsConfiguration::Rustls(c)));
-            }
-            Err(e) => return failed("tls_failed", e.to_string(), tls),
-        }
+        let c = security::client_config(checked.pin, settings.allow_tls12)
+            .map_err(|e| ("tls_failed", e.to_string(), tls))?;
+        options.set_transport(Transport::tls_with_config(rumqttc::TlsConfiguration::Rustls(c)));
     }
-    let topic = Topics::new(&settings.prefix, &settings.discovery_prefix).status().replace("/status", "/test");
+    Ok((options, broker, tls))
+}
+
+/// Where the test message goes: `<prefix>/test`, beside the connection's own `<prefix>/status`.
+fn test_topic(prefix: &str) -> String {
+    format!("{prefix}/test")
+}
+
+/// Tests `settings` (whether or not publishing is on). Never takes longer than the connect timeout plus a few seconds.
+pub async fn probe(settings: &Settings) -> Probe {
+    if settings.broker.trim().is_empty() {
+        return failed("no_host", "Set a broker host first.", true);
+    }
+    let (options, broker, tls) = match options(settings, "-test") {
+        Ok(o) => o,
+        Err((code, why, tls)) => return failed(code, why, tls),
+    };
+    let topic = test_topic(&settings.prefix);
     let (client, mut eventloop) = AsyncClient::new(options, 8);
     let mut net = NetworkOptions::new();
     let connect_s = u64::from(settings.limits.connect_timeout_s.max(1));
@@ -137,6 +148,13 @@ pub async fn probe(settings: &Settings) -> Probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_test_topic_is_the_prefix_and_test() {
+        assert_eq!(test_topic("sentry-mate"), "sentry-mate/test");
+        // a level named status inside the prefix stays as it is
+        assert_eq!(test_topic("a/status/b"), "a/status/b/test");
+    }
 
     #[tokio::test]
     async fn no_host_and_bad_settings_never_connect() {

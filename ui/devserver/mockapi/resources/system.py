@@ -10,6 +10,7 @@ rebuild is pending.
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 import os
 import re
@@ -111,14 +112,26 @@ def patch_settings(req):
         v = body["host_names"]
         if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
             bad["host_names"] = "Must be a list of host names."
-        elif not 1 <= len(v) <= 10:
-            rule["host_names"] = "1 to 10 host names."
+        elif len(v) > 10:
+            rule["host_names"] = "At most 10 host names."
         else:
+            # an empty list: the running certificate's names; IPv6 addresses are kept without brackets
+            out = []
             for i, x in enumerate(v):
+                x = x.strip().lower()
+                bare = x[1:-1] if x.startswith("[") and x.endswith("]") else x
+                try:
+                    out.append(str(ipaddress.IPv6Address(bare)))
+                    continue
+                except ValueError:
+                    pass
                 if not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*",
                                     x) or len(x) > 253:
-                    rule[f"host_names.{i}"] = "A host name such as sentry-mate.local."
-            new["host_names"] = list(dict.fromkeys(v))
+                    rule[f"host_names.{i}"] = "A host name such as sentry-mate.local, or an IP address."
+                else:
+                    out.append(x)
+            out = list(dict.fromkeys(out))
+            new["host_names"] = out or [n for n in st.cert_names if n != "localhost"]
     if bad:
         raise bad_input(bad)
     g, t = new["geocode"], new["tiles"]

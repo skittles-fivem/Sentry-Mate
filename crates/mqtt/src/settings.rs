@@ -34,7 +34,7 @@ pub struct Settings {
     pub password: Option<String>,
     /// The MQTT client id; one connection publishes for every car.
     pub client_id: String,
-    /// Topics are `<prefix>/cars/<car id>/<field>`; the connection's own `<prefix>/status` is `online`, or `offline`
+    /// Topics are `<prefix>/cars/c<n>/<field>`; the connection's own `<prefix>/status` is `online`, or `offline`
     /// (the last will) when the link drops.
     pub prefix: String,
     /// Latitude and longitude are published only when this is on (a separate opt-in from MQTT itself); while it is

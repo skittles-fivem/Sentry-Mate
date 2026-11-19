@@ -39,7 +39,8 @@ pub(crate) struct Shared {
     pub connected: AtomicBool,
     pub connects: AtomicU64,
     pub delivered: AtomicU64,
-    last_error: Mutex<Option<String>>,
+    /// Why the last connection failed or dropped: the page's code (as [`crate::probe`] gives it) and the words.
+    last_error: Mutex<Option<(&'static str, String)>>,
 }
 
 impl Shared {
@@ -59,7 +60,7 @@ impl Shared {
         self.queue.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub fn last_error(&self) -> MutexGuard<'_, Option<String>> {
+    pub fn last_error(&self) -> MutexGuard<'_, Option<(&'static str, String)>> {
         self.last_error.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -88,7 +89,7 @@ struct Conn {
 }
 
 enum Ended {
-    Lost(String),
+    Lost(&'static str, String),
     Closed,
 }
 
@@ -142,12 +143,12 @@ pub(crate) async fn run(shared: std::sync::Arc<Shared>, cfg: Config, mut stop: w
         shared.queue().requeue(unconfirmed);
         match ended {
             Ended::Closed => return,
-            Ended::Lost(e) => {
+            Ended::Lost(code, e) => {
                 if conn.up_since.get().is_some_and(|t| t.elapsed() >= STABLE_AFTER) {
                     delay = cfg.reconnect_min;
                 }
                 tracing::warn!("MQTT {}: {e}; trying again in {:.1} s", cfg.describe, delay.as_secs_f64());
-                *shared.last_error() = Some(e);
+                *shared.last_error() = Some((code, e));
                 tokio::select! {
                     () = tokio::time::sleep(delay) => {}
                     r = stop.changed() => if r.is_err() { return },
@@ -177,7 +178,7 @@ async fn drive(eventloop: &mut EventLoop, conn: &Conn, shared: &Shared, describe
             }
             Ok(rumqttc::Event::Outgoing(Outgoing::Disconnect)) => return Ended::Closed,
             Ok(_) => {}
-            Err(e) => return Ended::Lost(explain(&e)),
+            Err(e) => return Ended::Lost(crate::probe::classify(&e), explain(&e)),
         }
     }
 }
@@ -348,7 +349,7 @@ mod tests {
         let mut sent = Sent::default();
         let first = changed(&l, 7, &item(80.0), &mut sent);
         assert!(first.iter().any(|m| m.topic.starts_with("homeassistant/")), "discovery the first time");
-        assert!(first.iter().any(|m| m.topic == "sentry-mate/cars/7/soc"));
+        assert!(first.iter().any(|m| m.topic == "sentry-mate/cars/c7/soc"));
         assert!(changed(&l, 7, &item(80.0), &mut sent).is_empty(), "nothing new, nothing sent");
         let mut later = item(79.0);
         later.now.at_ms += 60_000;
@@ -370,12 +371,12 @@ mod tests {
         let _ = messages_for(&l, &Item::State(7, Pending::Now(Box::new(item(50.0)))), &mut cache);
         let msgs = messages_for(&l, &Item::State(7, Pending::Forget), &mut cache);
         assert!(msgs.iter().all(|m| m.payload.is_empty() && m.retain));
-        assert!(msgs.iter().any(|m| m.topic == "sentry-mate/cars/7/soc"));
-        assert!(msgs.iter().any(|m| m.topic == "homeassistant/sensor/sentry-mate_car7/soc/config"));
+        assert!(msgs.iter().any(|m| m.topic == "sentry-mate/cars/c7/soc"));
+        assert!(msgs.iter().any(|m| m.topic == "homeassistant/sensor/sentry-mate_c7/soc/config"));
         assert_eq!(cache.len(), 0);
         // and a car that comes back is sent in full
         let back = messages_for(&l, &Item::State(7, Pending::Now(Box::new(item(50.0)))), &mut cache);
-        assert!(back.iter().any(|m| m.topic == "sentry-mate/cars/7/soc"));
+        assert!(back.iter().any(|m| m.topic == "sentry-mate/cars/c7/soc"));
     }
 
     #[test]

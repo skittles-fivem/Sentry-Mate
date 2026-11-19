@@ -291,7 +291,7 @@ async fn publishes_over_pinned_tls() {
     m.publish_event(Event::DriveEnded { drive: Box::new(drive(1)), start_place: Some("Home".into()), end_place: None });
     wait_for("both cars and the event", || {
         let l = b.latest();
-        l.contains_key("sentry-mate/cars/2/soc") && l.contains_key("sentry-mate/cars/1/event")
+        l.contains_key("sentry-mate/cars/c2/soc") && l.contains_key("sentry-mate/cars/c1/event")
     })
     .await;
 
@@ -309,7 +309,7 @@ async fn publishes_over_pinned_tls() {
     let got = b.got();
     assert_eq!((got[0].topic.as_str(), got[0].payload.as_str(), got[0].retain), ("sentry-mate/status", "online", true));
     assert!(got.iter().all(|g| g.qos == QoS::AtLeastOnce), "QoS 1 throughout");
-    let event = got.iter().find(|g| g.topic == "sentry-mate/cars/1/event").unwrap();
+    let event = got.iter().find(|g| g.topic == "sentry-mate/cars/c1/event").unwrap();
     assert!(!event.retain, "events are moments, not retained");
     let v: serde_json::Value = serde_json::from_str(&event.payload).unwrap();
     assert_eq!((v["event_type"].as_str(), v["distance"].as_f64()), (Some("drive_ended"), Some(10.0)));
@@ -317,15 +317,14 @@ async fn publishes_over_pinned_tls() {
         assert!(g.retain, "{} is retained", g.topic);
     }
     let l = b.latest();
-    assert_eq!(l["sentry-mate/cars/1/soc"], "80.5");
-    assert_eq!(l["sentry-mate/cars/1/place"], "Home");
-    assert_eq!(l["sentry-mate/cars/1/state"], "online");
-    assert_eq!(l["sentry-mate/cars/1/latitude"], "", "location publishing is off");
+    assert_eq!(l["sentry-mate/cars/c1/soc"], "80.5");
+    assert_eq!(l["sentry-mate/cars/c1/place"], "Home");
+    assert_eq!(l["sentry-mate/cars/c1/state"], "online");
+    assert_eq!(l["sentry-mate/cars/c1/latitude"], "", "location publishing is off");
     assert!(got.iter().all(|g| !g.payload.contains("1.234567") && !g.payload.contains("2.345678")), "no position");
-    let config: serde_json::Value =
-        serde_json::from_str(&l["homeassistant/sensor/sentry-mate_car2/soc/config"]).unwrap();
+    let config: serde_json::Value = serde_json::from_str(&l["homeassistant/sensor/sentry-mate_c2/soc/config"]).unwrap();
     assert_eq!(config["device"]["name"], "Two");
-    assert_eq!(l["homeassistant/device_tracker/sentry-mate_car1/location/config"], "");
+    assert_eq!(l["homeassistant/device_tracker/sentry-mate_c1/location/config"], "");
 
     wait_for("acknowledgements", || m.stats().delivered as usize == b.got().len()).await;
     let s = m.stats();
@@ -337,10 +336,10 @@ async fn publishes_over_pinned_tls() {
     let before = b.got().len();
     m.publish_now(&info("One"), &now(1, 80.5), Some("Home"));
     m.publish_now(&info("One"), &now(1, 80.0), Some("Home"));
-    wait_for("the changed value", || b.latest()["sentry-mate/cars/1/soc"] == "80").await;
+    wait_for("the changed value", || b.latest()["sentry-mate/cars/c1/soc"] == "80").await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     let after: Vec<_> = b.got()[before..].iter().map(|g| g.topic.clone()).collect();
-    assert_eq!(after, ["sentry-mate/cars/1/soc"], "only what changed is sent again");
+    assert_eq!(after, ["sentry-mate/cars/c1/soc"], "only what changed is sent again");
 
     m.stop().await;
     wait_for("the clean disconnect", || b.log.lock().unwrap().disconnects > 0).await;
@@ -360,6 +359,7 @@ async fn wrong_pin_is_refused() {
     wait_for("a refused connection", || m.stats().last_error.is_some()).await;
     let err = m.stats().last_error.unwrap();
     assert!(err.contains("does not match the pinned SHA-256") && err.contains(&b.fingerprint), "{err}");
+    assert_eq!(m.stats().last_error_code, Some("pin_mismatch"));
     assert!(b.hellos().is_empty() && b.got().is_empty(), "nothing, not even the password, was sent");
     assert_eq!(m.stats().states_waiting, 1, "kept for when the setup is fixed");
     m.stop().await;
@@ -375,6 +375,7 @@ async fn without_a_pin_a_self_signed_broker_is_refused() {
     wait_for("a refused connection", || m.stats().last_error.is_some()).await;
     let err = m.stats().last_error.unwrap();
     assert!(err.contains("not from a public CA"), "{err}");
+    assert_eq!(m.stats().last_error_code, Some("tls_failed"));
     assert!(b.hellos().is_empty());
     m.stop().await;
 }
@@ -393,7 +394,7 @@ async fn tls_12_only_when_allowed() {
     s.allow_tls12 = true;
     let m = Mqtt::start(&s).unwrap().unwrap();
     m.publish_now(&info("One"), &now(1, 80.0), None);
-    wait_for("a TLS 1.2 connection", || b.latest().contains_key("sentry-mate/cars/1/soc")).await;
+    wait_for("a TLS 1.2 connection", || b.latest().contains_key("sentry-mate/cars/c1/soc")).await;
     m.stop().await;
 }
 
@@ -410,7 +411,7 @@ async fn plain_mqtt_only_when_allowed_and_never_with_a_password() {
     let m = Mqtt::start(&s).unwrap().unwrap();
     assert!(m.stats().broker.ends_with("(UNENCRYPTED)"));
     m.publish_now(&info("One"), &now(1, 80.0), None);
-    wait_for("a plain connection", || b.latest().contains_key("sentry-mate/cars/1/soc")).await;
+    wait_for("a plain connection", || b.latest().contains_key("sentry-mate/cars/c1/soc")).await;
     assert_eq!(b.hellos()[0].login, Some(("ha".into(), String::new())));
     m.stop().await;
 }
@@ -428,15 +429,15 @@ async fn off_and_filtered() {
     m.publish_now(&info("One"), &now(1, 80.0), None);
     m.publish_event(Event::DriveStarted { drive: Box::new(drive(1)), start_place: None });
     m.publish_now(&info("Two"), &now(2, 60.0), None);
-    wait_for("car 2", || b.latest().contains_key("sentry-mate/cars/2/soc")).await;
+    wait_for("car 2", || b.latest().contains_key("sentry-mate/cars/c2/soc")).await;
     m.forget_car(1);
-    wait_for("car 1 cleared", || b.latest().contains_key("sentry-mate/cars/1/soc")).await;
+    wait_for("car 1 cleared", || b.latest().contains_key("sentry-mate/cars/c1/soc")).await;
     let got = b.got();
     assert!(
-        got.iter().filter(|g| g.topic.starts_with("sentry-mate/cars/1/")).all(|g| g.payload.is_empty()),
+        got.iter().filter(|g| g.topic.starts_with("sentry-mate/cars/c1/")).all(|g| g.payload.is_empty()),
         "car 1 is only ever cleared"
     );
-    assert!(got.iter().any(|g| g.topic == "homeassistant/sensor/sentry-mate_car1/soc/config" && g.payload.is_empty()));
+    assert!(got.iter().any(|g| g.topic == "homeassistant/sensor/sentry-mate_c1/soc/config" && g.payload.is_empty()));
     assert!(!got.iter().any(|g| g.topic.starts_with("homeassistant/") && !g.payload.is_empty()), "discovery is off");
     m.stop().await;
 }
@@ -448,15 +449,15 @@ async fn location_when_turned_on() {
     s.publish_location = true;
     let m = Mqtt::start(&s).unwrap().unwrap();
     m.publish_now(&info("One"), &now(1, 80.0), None);
-    wait_for("the position", || b.latest().contains_key("sentry-mate/cars/1/location")).await;
+    wait_for("the position", || b.latest().contains_key("sentry-mate/cars/c1/location")).await;
     let l = b.latest();
     assert_eq!(
-        (l["sentry-mate/cars/1/latitude"].as_str(), l["sentry-mate/cars/1/longitude"].as_str()),
+        (l["sentry-mate/cars/c1/latitude"].as_str(), l["sentry-mate/cars/c1/longitude"].as_str()),
         ("1.234567", "2.345678")
     );
     let tracker: serde_json::Value =
-        serde_json::from_str(&l["homeassistant/device_tracker/sentry-mate_car1/location/config"]).unwrap();
-    assert_eq!(tracker["json_attributes_topic"], "sentry-mate/cars/1/location");
+        serde_json::from_str(&l["homeassistant/device_tracker/sentry-mate_c1/location/config"]).unwrap();
+    assert_eq!(tracker["json_attributes_topic"], "sentry-mate/cars/c1/location");
     m.stop().await;
 }
 
@@ -468,15 +469,16 @@ async fn unconfirmed_messages_are_sent_again_after_a_drop() {
     m.publish_now(&info("One"), &now(1, 80.0), None);
     m.publish_event(Event::DriveStarted { drive: Box::new(drive(1)), start_place: None });
     wait_for("the second connection's values", || {
-        b.got().iter().any(|g| g.conn == 1 && g.topic == "sentry-mate/cars/1/soc")
+        b.got().iter().any(|g| g.conn == 1 && g.topic == "sentry-mate/cars/c1/soc")
     })
     .await;
-    wait_for("the event, again", || b.got().iter().any(|g| g.conn == 1 && g.topic == "sentry-mate/cars/1/event")).await;
+    wait_for("the event, again", || b.got().iter().any(|g| g.conn == 1 && g.topic == "sentry-mate/cars/c1/event"))
+        .await;
     let got = b.got();
     assert!(got.iter().filter(|g| g.conn == 0).count() <= 5);
     let second: Vec<_> = got.iter().filter(|g| g.conn == 1).collect();
     assert_eq!(second[0].payload, "online");
-    assert!(second.iter().any(|g| g.topic == "homeassistant/sensor/sentry-mate_car1/soc/config"), "all of it again");
+    assert!(second.iter().any(|g| g.topic == "homeassistant/sensor/sentry-mate_c1/soc/config"), "all of it again");
     let s = m.stats();
     assert_eq!(s.connects, 2);
     assert_eq!(s.states_waiting + s.events_waiting, 0);
@@ -592,15 +594,14 @@ async fn names_too_long_for_a_packet_dont_stop_publishing() {
     m.publish_now(&info("Two"), &now(2, 60.0), None);
     wait_for("both cars and the event", || {
         let l = b.latest();
-        ["sentry-mate/cars/1/soc", "sentry-mate/cars/2/soc", "sentry-mate/cars/1/event"]
+        ["sentry-mate/cars/c1/soc", "sentry-mate/cars/c2/soc", "sentry-mate/cars/c1/event"]
             .iter()
             .all(|t| l.contains_key(*t))
     })
     .await;
     let l = b.latest();
-    assert_eq!(l["sentry-mate/cars/1/place"].len(), mqtt::render::MAX_NAME, "cut to fit");
-    let config: serde_json::Value =
-        serde_json::from_str(&l["homeassistant/sensor/sentry-mate_car1/soc/config"]).unwrap();
+    assert_eq!(l["sentry-mate/cars/c1/place"].len(), mqtt::render::MAX_NAME, "cut to fit");
+    let config: serde_json::Value = serde_json::from_str(&l["homeassistant/sensor/sentry-mate_c1/soc/config"]).unwrap();
     assert_eq!(config["device"]["name"].as_str().map(str::len), Some(mqtt::render::MAX_NAME));
     assert_eq!(m.stats().connects, 1, "the link never dropped");
     m.stop().await;
@@ -618,7 +619,7 @@ async fn going_through_many_cars_lets_other_tasks_run() {
         m.publish_now(&info("Car"), &now(car, 50.0), None);
     }
     // the last message of the last car is in and acknowledged: the publisher is idle, waiting for work
-    let last = format!("sentry-mate/cars/{}/location", cars - 1);
+    let last = format!("sentry-mate/cars/c{}/location", cars - 1);
     wait_for("every car", || {
         let got = b.got();
         got.iter().any(|g| g.topic == last) && m.stats().delivered as usize == got.len()
