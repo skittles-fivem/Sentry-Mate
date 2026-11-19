@@ -53,6 +53,7 @@ pub mod csv;
 pub mod ctx;
 pub mod error;
 pub mod events;
+pub mod heavy;
 pub mod ids;
 pub mod moving;
 pub mod packs;
@@ -137,6 +138,8 @@ pub struct Inner {
     pub(crate) rate: policy::RateLimit,
     /// How long a request body may take to arrive ([`ctx::read_body`]).
     pub(crate) body_timeout: std::time::Duration,
+    /// The answers that decode stored logs: a few at a time ([`heavy`]).
+    pub heavy: heavy::Heavy,
     services: HashMap<std::any::TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
@@ -160,6 +163,7 @@ pub struct Builder {
     setup_code_file: Option<PathBuf>,
     requests_per_minute: u32,
     body_timeout: std::time::Duration,
+    heavy: (usize, std::time::Duration),
     services: HashMap<std::any::TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
@@ -212,6 +216,13 @@ impl Builder {
         self
     }
 
+    /// Answers that decode stored logs running at once, and how long one more waits for its turn (default
+    /// [`heavy::RUNNING`], [`heavy::WAIT`]).
+    pub fn log_queries(mut self, running: usize, wait: std::time::Duration) -> Builder {
+        self.heavy = (running, wait);
+        self
+    }
+
     /// Hands the frame an engine part (one per type) that handlers read back with [`AppState::service`].
     pub fn service<T: Send + Sync + 'static>(mut self, s: Arc<T>) -> Builder {
         self.services.insert(std::any::TypeId::of::<T>(), s);
@@ -239,6 +250,7 @@ impl Builder {
             cursor_key: key,
             rate: policy::RateLimit::new(self.requests_per_minute),
             body_timeout: self.body_timeout,
+            heavy: heavy::Heavy::new(self.heavy.0, self.heavy.1),
             services: self.services,
         })))
     }
@@ -259,6 +271,7 @@ impl AppState {
             setup_code_file: None,
             requests_per_minute: 1200,
             body_timeout: server::BODY_TIMEOUT,
+            heavy: (heavy::RUNNING, heavy::WAIT),
             services: HashMap::new(),
         }
     }

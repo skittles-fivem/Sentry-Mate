@@ -2,12 +2,13 @@
 //! `/cars/{car}/signals/latest`, `/cars/{car}/signals`.
 //!
 //! Each handler turns the query into the engine's query types and runs the engine's query ([`engine::query`]) off the
-//! async threads; the guard has checked the car (a hidden car answers as an unknown one). The live `now` deltas come on
+//! async threads; the guard has checked the car (a hidden car answers as an unknown one). The signals decode stored
+//! logs while they answer: they run a few at a time, per account and for the server ([`crate::heavy`]). The live `now` deltas come on
 //! `/api/v1/events` from the engine's broadcast (the program forwards it to [`crate::Events`]). The helpers here are
 //! shared with the timeline and parked modules.
 
 use crate::query::MAX_MS;
-use crate::{ApiError, ApiResult, AppState, CarParam, Params};
+use crate::{ApiError, ApiResult, AppState, CarParam, Params, Viewer};
 use axum::Router;
 use axum::extract::State;
 use axum::response::Response;
@@ -51,12 +52,28 @@ pub(crate) async fn run<T: Serialize + Send + 'static>(
     app: &AppState,
     f: impl FnOnce(&Engine) -> q::QResult<T> + Send + 'static,
 ) -> ApiResult<Value> {
+    run_as(app, None, f).await
+}
+
+/// [`run`]; with a viewer, a query that decodes stored logs: in its turn ([`crate::heavy`]), stopped once its request
+/// is gone.
+async fn run_as<T: Serialize + Send + 'static>(
+    app: &AppState,
+    heavy: Option<&Viewer>,
+    f: impl FnOnce(&Engine) -> q::QResult<T> + Send + 'static,
+) -> ApiResult<Value> {
     let e = app.service::<Engine>()?;
-    app.blocking(move |_| {
+    let work = move || {
         let t = f(&e).map_err(failed)?;
         serde_json::to_value(t).map_err(ApiError::server)
-    })
-    .await
+    };
+    match heavy {
+        Some(v) => {
+            let turn = app.heavy.turn(v.id()).await?;
+            crate::heavy::blocking(turn, work).await
+        }
+        None => app.blocking(move |_| work()).await,
+    }
 }
 
 /// An answer that is one object, one whole list or columns: JSON, or CSV of its rows or columns when asked (one
@@ -67,8 +84,29 @@ pub(crate) async fn answer<T: Serialize + Send + 'static>(
     name: &str,
     f: impl FnOnce(&Engine) -> q::QResult<T> + Send + 'static,
 ) -> ApiResult<Response> {
+    answer_as(app, None, p, name, f).await
+}
+
+/// [`answer`] of a query that decodes stored logs ([`crate::heavy`]).
+pub(crate) async fn heavy_answer<T: Serialize + Send + 'static>(
+    app: &AppState,
+    v: &Viewer,
+    p: &Params,
+    name: &str,
+    f: impl FnOnce(&Engine) -> q::QResult<T> + Send + 'static,
+) -> ApiResult<Response> {
+    answer_as(app, Some(v), p, name, f).await
+}
+
+async fn answer_as<T: Serialize + Send + 'static>(
+    app: &AppState,
+    heavy: Option<&Viewer>,
+    p: &Params,
+    name: &str,
+    f: impl FnOnce(&Engine) -> q::QResult<T> + Send + 'static,
+) -> ApiResult<Response> {
     p.wants_csv()?;
-    let value = run(app, f).await?;
+    let value = run_as(app, heavy, f).await?;
     crate::csv::answer(p, name, value)
 }
 
@@ -81,35 +119,58 @@ pub(crate) async fn list_answer<T: Serialize + Send + 'static>(
     name: &str,
     f: impl Fn(&Engine, &q::Paging) -> q::QResult<T> + Send + 'static,
 ) -> ApiResult<Response> {
+    list_answer_as(app, None, p, name, f).await
+}
+
+/// [`list_answer`] of a query that decodes stored logs ([`crate::heavy`]).
+pub(crate) async fn heavy_list_answer<T: Serialize + Send + 'static>(
+    app: &AppState,
+    v: &Viewer,
+    p: &Params,
+    name: &str,
+    f: impl Fn(&Engine, &q::Paging) -> q::QResult<T> + Send + 'static,
+) -> ApiResult<Response> {
+    list_answer_as(app, Some(v), p, name, f).await
+}
+
+async fn list_answer_as<T: Serialize + Send + 'static>(
+    app: &AppState,
+    heavy: Option<&Viewer>,
+    p: &Params,
+    name: &str,
+    f: impl Fn(&Engine, &q::Paging) -> q::QResult<T> + Send + 'static,
+) -> ApiResult<Response> {
     if !p.wants_csv()? {
         let pg = paging(p)?;
-        let value = run(app, move |e| f(e, &pg)).await?;
+        let value = run_as(app, heavy, move |e| f(e, &pg)).await?;
         return crate::csv::answer(p, name, value);
     }
     let e = app.service::<Engine>()?;
-    let items = app
-        .blocking(move |_| {
-            let mut all: Vec<Value> = Vec::new();
-            let mut pg = q::Paging { limit: Some(q::MAX_LIMIT), after: None };
-            for _ in 0..CSV_MAX_PAGES {
-                let mut v = serde_json::to_value(f(&e, &pg).map_err(failed)?).map_err(ApiError::server)?;
-                if let Some(Value::Array(rows)) = v.get_mut("items") {
-                    all.append(rows);
-                }
-                match v.get("next").and_then(Value::as_str) {
-                    Some(n) => pg.after = Some(n.to_string()),
-                    None => return Ok(all),
-                }
+    let all_pages = move || {
+        let mut all: Vec<Value> = Vec::new();
+        let mut pg = q::Paging { limit: Some(q::MAX_LIMIT), after: None };
+        for _ in 0..CSV_MAX_PAGES {
+            let mut v = serde_json::to_value(f(&e, &pg).map_err(failed)?).map_err(ApiError::server)?;
+            if let Some(Value::Array(rows)) = v.get_mut("items") {
+                all.append(rows);
             }
-            Err(ApiError::invalid(
-                "to_ms",
-                &format!(
-                    "The CSV would hold more than {} rows: choose a shorter period.",
-                    CSV_MAX_PAGES * q::MAX_LIMIT
-                ),
-            ))
-        })
-        .await?;
+            match v.get("next").and_then(Value::as_str) {
+                Some(n) => pg.after = Some(n.to_string()),
+                None => return Ok(all),
+            }
+        }
+        Err(ApiError::invalid(
+            "to_ms",
+            &format!("The CSV would hold more than {} rows: choose a shorter period.", CSV_MAX_PAGES * q::MAX_LIMIT),
+        ))
+    };
+    let items = match heavy {
+        Some(v) => {
+            let turn = app.heavy.turn(v.id()).await?;
+            crate::heavy::blocking(turn, all_pages).await?
+        }
+        None => app.blocking(move |_| all_pages()).await?,
+    };
     Ok(crate::csv::response(name, crate::csv::rows(&items)))
 }
 
@@ -161,12 +222,17 @@ async fn series(State(app): State<AppState>, CarParam(car): CarParam, p: Params)
     answer(&app, &p, "series", move |e| q::series::series(e, car, &query, now_ms)).await
 }
 
-async fn signals_latest(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
+async fn signals_latest(
+    State(app): State<AppState>,
+    v: Viewer,
+    CarParam(car): CarParam,
+    p: Params,
+) -> ApiResult<Response> {
     let search = text(&p, "search")?;
-    list_answer(&app, &p, "signals", move |e, pg| q::signals::latest(e, car, search.as_deref(), pg)).await
+    heavy_list_answer(&app, &v, &p, "signals", move |e, pg| q::signals::latest(e, car, search.as_deref(), pg)).await
 }
 
-async fn signals(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
+async fn signals(State(app): State<AppState>, v: Viewer, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
     let per = period(&p)?;
     let query = q::signals::SignalsQuery {
         series: list(&p, "series", 20)?,
@@ -175,5 +241,5 @@ async fn signals(State(app): State<AppState>, CarParam(car): CarParam, p: Params
         max_points: p.uint("max_points", 2, 20_000)?,
     };
     let now_ms = app.now();
-    answer(&app, &p, "signals", move |e| q::signals::signals(e, car, &query, now_ms)).await
+    heavy_answer(&app, &v, &p, "signals", move |e| q::signals::signals(e, car, &query, now_ms)).await
 }

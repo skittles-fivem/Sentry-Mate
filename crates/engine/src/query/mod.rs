@@ -16,6 +16,7 @@
 pub mod awake;
 pub mod battery;
 pub mod charges;
+pub mod decoding;
 pub mod drives;
 pub mod fleet;
 pub mod imports;

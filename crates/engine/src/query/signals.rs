@@ -3,9 +3,11 @@
 //!
 //! The latest values come from the newest decoded log. A signal over a period is read from the logs of the period
 //! (each decoded again, frame by frame, into buckets as they stream past): at most [`MAX_LOGS`] of them per answer,
-//! spread evenly over the period when it holds more, so a long period is a thinner read, never an unbounded one.
+//! spread evenly over the period when it holds more, and at most [`decoding::MAX_DECODED_BYTES`] of their lines in
+//! all (shared out over the logs), so a long period is a thinner read, never an unbounded one. Both stop once their
+//! request is gone ([`decoding::with_cancel`]).
 
-use super::{List, Paging, QResult, QueryError, Scoped, car_of, make_after, r, read_after, scoped};
+use super::{List, Paging, QResult, QueryError, Scoped, car_of, decoding, make_after, r, read_after, scoped};
 use crate::Engine;
 use crate::records::{self, Outcome};
 use model::{CarId, Source};
@@ -46,20 +48,25 @@ fn profile_of(c: &model::Car) -> dbc::Profile {
     dbc::Profile::from_name(c.profile().dbc_name())
 }
 
-/// A stored log and its sidecar, decoded frame by frame: `f(time_ms, signal, value)`.
+/// A stored log and its sidecar, decoded frame by frame within `budget` bytes of lines: `f(time_ms, signal, value)`.
+/// The bytes of lines read (a log that cannot be read again gives what it gave before the trouble).
 fn decode_log(
     e: &Engine,
     profile: dbc::Profile,
     name: &str,
+    budget: u64,
     mut f: impl FnMut(u64, &'static dbc::Signal, f64),
-) -> QResult<bool> {
+) -> QResult<u64> {
+    if decoding::cancelled() {
+        return Err(decoding::stopped());
+    }
     let rt = e.handle()?;
     let read = |n: &str| rt.block_on(e.store().read(n)).map_err(|x| crate::Error::Store(x.to_string()));
-    let Some(bytes) = read(name)? else { return Ok(false) };
+    let Some(bytes) = read(name)? else { return Ok(0) };
     let side: serde_json::Value =
         read(&format!("{name}.json"))?.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let mut decoder = dbc::Decoder::new(profile, &side);
-    let res = logfmt::read_log(&bytes, logfmt::Limits::default(), |l| {
+    let done = decoding::read(&bytes, budget, |l| {
         if let logfmt::Line::Frame(fr) = logfmt::Line::parse(l) {
             let t = fr.time_us / 1000;
             for (sig, v) in decoder.decode(&fr) {
@@ -68,9 +75,8 @@ fn decode_log(
                 }
             }
         }
-    });
-    // a log that cannot be read again gives what it gave before the trouble
-    Ok(res.is_ok())
+    })?;
+    Ok(done)
 }
 
 /// The car's decoded logs meeting `[a, b)`, oldest first.
@@ -135,7 +141,7 @@ pub fn latest(e: &Engine, car: CarId, search: Option<&str>, paging: &Paging) -> 
     let profile = profile_of(&c);
     let mut last: HashMap<&'static str, (&'static dbc::Signal, f64, u64)> = HashMap::new();
     if let Some(name) = newest_log(e, car)? {
-        decode_log(e, profile, &name, |t, sig, v| {
+        decode_log(e, profile, &name, decoding::MAX_DECODED_BYTES, |t, sig, v| {
             last.insert(sig.series.as_str(), (sig, v, t));
         })?;
     }
@@ -254,8 +260,11 @@ pub fn signals(e: &Engine, car: CarId, q: &SignalsQuery, now_ms: u64) -> QResult
     } else {
         (0..MAX_LOGS).filter_map(|i| logs.get(i * logs.len() / MAX_LOGS)).collect()
     };
-    for (name, _) in &chosen {
-        decode_log(e, profile, name, |t, sig, v| {
+    // the lines' budget shared out over the logs: what one leaves unused goes to the ones after it
+    let mut left = decoding::MAX_DECODED_BYTES;
+    for (j, (name, _)) in chosen.iter().enumerate() {
+        let share = left / (chosen.len() - j) as u64;
+        left -= decode_log(e, profile, name, share, |t, sig, v| {
             if t < a || t >= b {
                 return;
             }

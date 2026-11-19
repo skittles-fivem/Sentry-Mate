@@ -46,6 +46,8 @@ const MAX_BUCKETS: u64 = 20_000;
 const MAX_DAYS: usize = 20_000;
 /// Logs of one day tried for a pack reading at most (newest first).
 const LOGS_PER_DAY: usize = 3;
+/// Bytes of lines read of one log for a pack reading at most (the pack's signals come every second or so).
+const PACK_LOG_BYTES: u64 = 256 << 20;
 
 // ---------------------------------------------------------------- the pack's own readings
 
@@ -113,8 +115,9 @@ fn decode_pack(e: &Engine, profile: dbc::Profile, name: &str) -> QResult<Option<
     let side: Value = read(&format!("{name}.json"))?.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let mut decoder = dbc::Decoder::new(profile, &side);
     let mut p = PackReading::default();
-    // a log that cannot be read to its end gives what it gave before the trouble
-    let _ = logfmt::read_log(&bytes, logfmt::Limits::default(), |l| {
+    // a log that cannot be read to its end gives what it gave before the trouble; a request that is gone stops it
+    // (and nothing is kept for the day)
+    super::decoding::read(&bytes, PACK_LOG_BYTES, |l| {
         if let logfmt::Line::Frame(fr) = logfmt::Line::parse(l) {
             let t = fr.time_us / 1000;
             for (sig, v) in decoder.decode(&fr) {
@@ -123,7 +126,7 @@ fn decode_pack(e: &Engine, profile: dbc::Profile, name: &str) -> QResult<Option<
                 }
             }
         }
-    });
+    })?;
     Ok(Some(p))
 }
 
