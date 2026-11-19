@@ -19,6 +19,8 @@ use crate::{Engine, costs, now_ms, tz};
 use model::{CarId, Charge, Drive, Place, PlaceId, PlaceKind, PricePlan, Source};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, Weak};
+use tokio::sync::broadcast;
 
 /// The kinds a place may be.
 pub const KINDS: &[&str] = &["home", "work", "charger", "service", "other"];
@@ -207,36 +209,135 @@ fn live_drive(e: &Engine, car: CarId) -> QResult<Option<u64>> {
     Ok(super::drives::ctx(e, &c)?.live)
 }
 
-/// Each place's drives, charges and visits (by the live match), and its last visit (when the car left, or now while
-/// it is still there), for the cars given.
-pub fn counts(e: &Engine, cars: &[CarId]) -> QResult<BTreeMap<PlaceId, (Counts, Option<u64>)>> {
-    let places = e.places();
-    let mut by: BTreeMap<PlaceId, (Counts, Option<u64>)> = BTreeMap::new();
+type ByPlace = BTreeMap<PlaceId, (Counts, Option<u64>)>;
+
+/// One car's counts against one set of places: `open` is the place of the car's last stop (and when it got there),
+/// whose last visit is "until the car's newest values", read when asked.
+struct CarCounts {
+    places: Arc<Places>,
+    live: Option<u64>,
+    by: ByPlace,
+    open: Option<(PlaceId, u64)>,
+}
+
+/// The counts worked out, per engine and car, kept until the places change (another [`Places`]), the drive going on
+/// changes, or the car's rows do (an `Event::Rows` or `Event::Fleet` for it; every car when events were missed).
+struct CountsCache {
+    engine: Weak<crate::Inner>,
+    events: broadcast::Receiver<crate::Event>,
+    cars: HashMap<CarId, Arc<CarCounts>>,
+    /// Bumped when a car's counts are dropped, so counts worked out from rows read before are not kept.
+    generation: HashMap<CarId, u64>,
+}
+
+static COUNTS: Mutex<Vec<CountsCache>> = Mutex::new(Vec::new());
+
+/// The cached counts of `car` if still good (`Err`: the generation to keep newly worked-out ones under).
+fn cached(e: &Engine, car: CarId, places: &Arc<Places>, live: Option<u64>) -> std::result::Result<Arc<CarCounts>, u64> {
+    let mut all = crate::lock(&COUNTS);
+    all.retain(|c| c.engine.strong_count() > 0);
+    let at = match all.iter().position(|c| std::ptr::eq(c.engine.as_ptr(), Arc::as_ptr(&e.inner))) {
+        Some(i) => i,
+        None => {
+            all.push(CountsCache {
+                engine: Arc::downgrade(&e.inner),
+                events: e.subscribe(),
+                cars: HashMap::new(),
+                generation: HashMap::new(),
+            });
+            all.len() - 1
+        }
+    };
+    let c = &mut all[at];
+    loop {
+        match c.events.try_recv() {
+            Ok(crate::Event::Rows { car, .. } | crate::Event::Fleet { car, .. }) => {
+                c.cars.remove(&car);
+                *c.generation.entry(car).or_default() += 1;
+            }
+            Ok(_) => {}
+            Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                c.cars.clear();
+                for g in c.generation.values_mut() {
+                    *g += 1;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let generation = c.generation.get(&car).copied().unwrap_or(0);
+    match c.cars.get(&car) {
+        Some(x) if Arc::ptr_eq(&x.places, places) && x.live == live => Ok(x.clone()),
+        _ => Err(generation),
+    }
+}
+
+fn keep_counts(e: &Engine, car: CarId, generation: u64, counts: Arc<CarCounts>) {
+    let mut all = crate::lock(&COUNTS);
+    if let Some(c) = all.iter_mut().find(|c| std::ptr::eq(c.engine.as_ptr(), Arc::as_ptr(&e.inner)))
+        && c.generation.get(&car).copied().unwrap_or(0) == generation
+    {
+        c.cars.insert(car, counts);
+    }
+}
+
+/// One car's counts, from the cache or worked out over its whole history (a page of rows at a time).
+fn car_counts(e: &Engine, car: CarId, places: &Arc<Places>) -> QResult<Arc<CarCounts>> {
+    let live = live_drive(e, car)?;
+    let generation = match cached(e, car, places, live) {
+        Ok(x) => return Ok(x),
+        Err(g) => g,
+    };
+    let mut by = ByPlace::new();
+    let mut open = None;
     let at = |p: Option<&model::Position>| p.and_then(|p| places.place_at(p.lat, p.lon)).map(|p| p.id);
+    let shown = Shown::new(e, car, None)?;
+    drives_with_next(e, car, &shown, |d, next| {
+        let s = at(d.start.as_ref());
+        let en = if live == Some(d.id) { None } else { at(d.end.as_ref()) };
+        for id in [s, en.filter(|x| Some(*x) != s)].into_iter().flatten() {
+            by.entry(id).or_default().0.drives += 1;
+        }
+        if let Some(id) = en {
+            let x = by.entry(id).or_default();
+            x.0.visits += 1;
+            match next {
+                Some(n) => x.1 = x.1.max(Some(n.start_ms.max(d.end_ms))),
+                None => open = Some((id, d.end_ms)),
+            }
+        }
+        Ok(())
+    })?;
+    each::<Charge>(e, car, 0, u64::MAX, None, &shown, false, |ch| {
+        if let Some(id) = at(ch.position.as_ref()) {
+            by.entry(id).or_default().0.charges += 1;
+        }
+        Ok(true)
+    })?;
+    let counts = Arc::new(CarCounts { places: places.clone(), live, by, open });
+    keep_counts(e, car, generation, counts.clone());
+    Ok(counts)
+}
+
+/// Each place's drives, charges and visits (by the live match), and its last visit (when the car left, or now while
+/// it is still there), for the cars given. Kept per car until its rows or the places change.
+pub fn counts(e: &Engine, cars: &[CarId]) -> QResult<ByPlace> {
+    let places = e.places();
+    let mut by = ByPlace::new();
     for &car in cars {
-        let shown = Shown::new(e, car, None)?;
-        let live = live_drive(e, car)?;
-        let seen = last_seen(e, car)?;
-        drives_with_next(e, car, &shown, |d, next| {
-            let s = at(d.start.as_ref());
-            let en = if live == Some(d.id) { None } else { at(d.end.as_ref()) };
-            for id in [s, en.filter(|x| Some(*x) != s)].into_iter().flatten() {
-                by.entry(id).or_default().0.drives += 1;
-            }
-            if let Some(id) = en {
-                let x = by.entry(id).or_default();
-                x.0.visits += 1;
-                let left = next.map_or(seen, |n| n.start_ms);
-                x.1 = x.1.max(Some(left.max(d.end_ms)));
-            }
-            Ok(())
-        })?;
-        each::<Charge>(e, car, 0, u64::MAX, None, &shown, false, |ch| {
-            if let Some(id) = at(ch.position.as_ref()) {
-                by.entry(id).or_default().0.charges += 1;
-            }
-            Ok(true)
-        })?;
+        let c = car_counts(e, car, &places)?;
+        for (id, (n, last)) in &c.by {
+            let x = by.entry(*id).or_default();
+            x.0.drives += n.drives;
+            x.0.charges += n.charges;
+            x.0.visits += n.visits;
+            x.1 = x.1.max(*last);
+        }
+        if let Some((id, arrived)) = c.open {
+            let seen = last_seen(e, car)?;
+            let x = by.entry(id).or_default();
+            x.1 = x.1.max(Some(seen.max(arrived)));
+        }
     }
     Ok(by)
 }
@@ -273,12 +374,16 @@ fn seen(who: &Asker, counts: &BTreeMap<PlaceId, (Counts, Option<u64>)>) -> Optio
 /// `/places`: every place the asker sees, with counts for their cars (or `q.car`'s alone).
 pub fn places(e: &Engine, who: &Asker, q: &PlacesQuery, paging: &Paging) -> QResult<List<PlaceView>> {
     let pl = e.places();
-    let all_counts = counts(e, &who.cars)?;
-    let shown_ids = seen(who, &all_counts);
-    let counts = match q.car {
-        Some(c) if who.cars.contains(&c) => counts(e, &[c])?,
-        Some(_) => return Err(QueryError::NoSuchCar),
-        None => all_counts,
+    if q.car.is_some_and(|c| !who.cars.contains(&c)) {
+        return Err(QueryError::NoSuchCar);
+    }
+    // an admin sees every place: the counts over every car are needed only for a watch account's places
+    let all_counts = if who.every_place && q.car.is_some() { None } else { Some(counts(e, &who.cars)?) };
+    let shown_ids = all_counts.as_ref().and_then(|c| seen(who, c));
+    let counts = match (q.car, all_counts) {
+        (Some(c), _) => counts(e, &[c])?,
+        (None, Some(all)) => all,
+        (None, None) => ByPlace::new(),
     };
     let needle = q.search.as_deref().map(str::trim).map(str::to_lowercase).filter(|s| !s.is_empty());
     let kind = q.kind.as_deref().filter(|k| !k.is_empty());
@@ -315,23 +420,38 @@ pub fn places(e: &Engine, who: &Asker, q: &PlacesQuery, paging: &Paging) -> QRes
         }
     };
     match sort {
-        "name" => {
-            let mut v = items;
-            v.sort_by(|a, b| {
-                a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| {
-                    let n = |s: &str| super::parse_place(s).unwrap_or(u32::MAX);
-                    n(&a.id).cmp(&n(&b.id))
-                })
-            });
-            let pos: Vec<(PlaceView, f64)> = v.into_iter().enumerate().map(|(i, x)| (x, i as f64)).collect();
-            let page = paginate(pos, |(x, k)| (*k, x.id.clone()), false, &sig, paging, true)?;
-            Ok(List { items: page.items.into_iter().map(|(x, _)| x).collect(), next: page.next, total: page.total })
-        }
+        "name" => by_name(items, &sig, paging),
         "visits" | "drives" | "last_visit" | "created" => {
             paginate(items, |v| (key(v), v.id.clone()), true, &sig, paging, true)
         }
         _ => Err(QueryError::bad("sort", "name, visits, drives, last_visit or created")),
     }
+}
+
+/// The places by name (any case), then by id, paged by the row's own name and id: a place added, renamed or removed
+/// between pages moves no other row.
+fn by_name(items: Vec<PlaceView>, sig: &str, paging: &Paging) -> QResult<List<PlaceView>> {
+    let limit = paging.limit()?;
+    let num = |id: &str| super::parse_place(id).unwrap_or(u32::MAX);
+    let mut v: Vec<(String, u32, PlaceView)> =
+        items.into_iter().map(|x| (x.name.to_lowercase(), num(&x.id), x)).collect();
+    v.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+    let total = v.len() as u64;
+    let start = match super::read_after(paging, sig)? {
+        None => 0,
+        Some((id, name)) => {
+            let id = id as u32;
+            v.partition_point(|x| (x.0.as_str(), x.1) <= (name.as_str(), id))
+        }
+    };
+    let mut rest: Vec<(String, u32, PlaceView)> = v.into_iter().skip(start).collect();
+    let more = rest.len() > limit;
+    rest.truncate(limit);
+    let next = match rest.last() {
+        Some(last) if more => Some(super::make_after(&(f64::from(last.1), last.0.clone()), sig)?),
+        _ => None,
+    };
+    Ok(List { items: rest.into_iter().map(|x| x.2).collect(), next, total: Some(total) })
 }
 
 /// One place with its counts over the asker's cars (`no_such_place` for one they don't see).
@@ -375,10 +495,12 @@ pub fn at(e: &Engine, who: &Asker, lat: f64, lon: f64) -> QResult<At> {
         return Err(QueryError::bad("lon", "-180 to 180"));
     }
     let pl = e.places();
-    let counts = counts(e, &who.cars)?;
+    let circles = pl.places_at(lat, lon);
+    // counts only where a circle holds the point (an admin's are needed only for the place it is at)
+    let counts = if circles.is_empty() { ByPlace::new() } else { counts(e, &who.cars)? };
     let ids = seen(who, &counts);
     let near: Vec<(&Place, f64)> =
-        pl.places_at(lat, lon).into_iter().filter(|(p, _)| ids.as_ref().is_none_or(|i| i.contains(&p.id))).collect();
+        circles.into_iter().filter(|(p, _)| ids.as_ref().is_none_or(|i| i.contains(&p.id))).collect();
     let candidates = near
         .iter()
         .map(|(p, d)| Candidate {
@@ -539,7 +661,12 @@ fn cost_pair(
             .is_some_and(|pr| !pr.rates.is_empty())
     };
     let curve = if tou(before) || tou(after) { costs::curve_of(e, car, ch)? } else { Vec::new() };
-    let now = kept.or_else(|| costs::price_in(before, ch, &curve, tz));
+    let now = match kept {
+        Some(k) => Some(k),
+        // it keeps having no cost
+        None if costs::kept_none(e, car, ch.id)? => None,
+        None => costs::price_in(before, ch, &curve, tz),
+    };
     Ok((now, costs::price_in(after, ch, &curve, tz)))
 }
 
@@ -630,7 +757,10 @@ fn effect(
             }
             if freeze && kept.is_none() && (moved || price_changed(b, a)) {
                 let curve = costs::curve_of(e, car, &ch)?;
-                costs::settle(e, car, &ch, &curve, &tz, true)?;
+                // the cost it shows now, kept; one with none keeps that it has none (only a reprice prices it)
+                if costs::settle(e, car, &ch, &curve, &tz, true)?.is_none() {
+                    costs::put_kept_none(e, car, ch.id, true)?;
+                }
             }
             Ok(true)
         })?;
@@ -767,10 +897,43 @@ fn price_rules(p: &Price, bad: &mut BTreeMap<String, String>) {
         if f.is_some() && f == t {
             add(&k("to"), "From and to are the same time.");
         }
+        if rt.per_kwh.is_none() && rt.per_minute.is_none() {
+            add(&k("per_kwh"), "Give the rate a price per kWh or per minute.");
+        }
+    }
+    // the hours no rate covers are at the place's own price: without one they would be free, not unknown
+    if p.per_kwh.is_none() && p.per_minute.is_none() && !p.rates.is_empty() && !rates_cover_week(&p.rates) {
+        add("price.per_kwh", "The rates leave some hours of the week out: give a price per kWh for those hours.");
     }
     if p.per_kwh.is_none() && p.per_minute.is_none() && p.rates.is_empty() && p.session_fee.is_none() {
         add("price", "Give a price per kWh, per minute, a rate or a session fee, or send null for no price.");
     }
+}
+
+/// Whether the rates (each well formed, else left out) cover every minute of the week.
+fn rates_cover_week(rates: &[Rate]) -> bool {
+    const DAY: usize = 1440;
+    let mut week = vec![false; 7 * DAY];
+    for rt in rates {
+        let (Some(days), Some(f), Some(t)) =
+            (parse_days(&rt.days), places::price::parse_hhmm(&rt.from), places::price::parse_end_hhmm(&rt.to))
+        else {
+            continue;
+        };
+        let (f, t) = (usize::from(f).min(DAY), usize::from(t).min(DAY));
+        for d in days {
+            let d = usize::from(d) % 7;
+            if f < t {
+                week[d * DAY + f..d * DAY + t].iter_mut().for_each(|m| *m = true);
+            } else {
+                // past midnight: on to the next day
+                week[d * DAY + f..(d + 1) * DAY].iter_mut().for_each(|m| *m = true);
+                let n = (d + 1) % 7;
+                week[n * DAY..n * DAY + t].iter_mut().for_each(|m| *m = true);
+            }
+        }
+    }
+    week.iter().all(|&m| m)
 }
 
 /// Checks a draft (`422` naming every field that breaks a rule).
@@ -1118,7 +1281,11 @@ pub fn reprice(
                 return Ok(true);
             }
             let curve = costs::curve_of(e, car, &ch)?;
-            let old = kept.clone().or_else(|| costs::price_in(&places, &ch, &curve, &tz));
+            let old = match &kept {
+                Some(k) => Some(k.clone()),
+                None if costs::kept_none(e, car, ch.id)? => None,
+                None => costs::price_in(&places, &ch, &curve, &tz),
+            };
             if only_without_cost && old.is_some() {
                 return Ok(true);
             }
@@ -1132,7 +1299,7 @@ pub fn reprice(
             if old.as_ref().map(|c| (c.amount, &c.currency)) == new.as_ref().map(|c| (c.amount, &c.currency)) {
                 out.unchanged += 1;
                 if !dry_run && kept.is_none() && new.is_some() {
-                    records::put_cost(e.db(), car, ch.id, ch.start_ms, new)?;
+                    costs::keep(e, car, &ch, new)?;
                 }
                 return Ok(true);
             }
@@ -1148,7 +1315,7 @@ pub fn reprice(
                 });
             }
             if !dry_run {
-                records::put_cost(e.db(), car, ch.id, ch.start_ms, new)?;
+                costs::keep(e, car, &ch, new)?;
                 changed_here = true;
             }
             Ok(true)
@@ -1229,6 +1396,45 @@ mod tests {
         assert_eq!(extra.price.unwrap().per_kwh, None, "given back as given");
         let t = places::Tariff::new(&PricePlan { ..plan_of_one_rate() }, "UTC").unwrap();
         assert_eq!(t.price_at(23 * 3_600_000 + 59 * 60_000), 0.1, "24:00 covers the day's last minute");
+    }
+
+    #[test]
+    fn rates_that_leave_hours_out_need_a_price_of_their_own() {
+        let rate = |name: &str, days: &str, from: &str, to: &str, per_kwh: Option<f64>| Rate {
+            name: name.into(),
+            per_kwh,
+            per_minute: None,
+            days: days.into(),
+            from: from.into(),
+            to: to.into(),
+        };
+        let draft = |per_kwh: Option<f64>, rates: Vec<Rate>| Draft {
+            name: "Home".into(),
+            kind: "home".into(),
+            lat: 1.0,
+            lon: 2.0,
+            radius_m: 100.0,
+            time_zone: None,
+            price: Some(Price { currency: "EUR".into(), per_kwh, per_minute: None, rates, session_fee: None }),
+        };
+        let weekdays = vec![
+            rate("Night", "mon-fri", "22:00", "06:00", Some(0.1)),
+            rate("Day", "all", "06:00", "22:00", Some(0.3)),
+        ];
+        let QueryError::Invalid { fields } = check(&draft(None, weekdays.clone())).unwrap_err() else { unreachable!() };
+        assert!(fields.contains_key("price.per_kwh"), "weekend nights are left out: {fields:?}");
+        check(&draft(Some(0.2), weekdays)).unwrap();
+        // every night (past midnight on to the next day) and every day: the whole week
+        let whole =
+            vec![rate("Night", "all", "22:00", "06:00", Some(0.1)), rate("Day", "all", "06:00", "22:00", Some(0.3))];
+        check(&draft(None, whole)).unwrap();
+        // a rate with no price at all
+        let QueryError::Invalid { fields } =
+            check(&draft(Some(0.2), vec![rate("Free", "all", "00:00", "06:00", None)])).unwrap_err()
+        else {
+            unreachable!()
+        };
+        assert!(fields.contains_key("price.rates.0.per_kwh"), "{fields:?}");
     }
 
     fn plan_of_one_rate() -> PricePlan {

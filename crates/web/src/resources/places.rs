@@ -8,9 +8,10 @@
 //! types are `400 bad_input`, rules (`radius_m` 10 to 5000, a known time zone, a price that has something in it, ...)
 //! `422 invalid`, both by field; a stale `version` is `409 stale_version`.
 //!
-//! `/maps/config` and `/geocode/status` answer what the server has: map tiles from the tile server the pages may load
-//! (the frame's tile origins, which `/settings` sets), and addresses from the offline data when it is in the data
-//! folder (no address lookup runs in this server yet, so nothing is cached and nothing is asked online).
+//! `/maps/config` and `/geocode/status` follow the saved `/settings` at once (tile mode, template, credit and zoom; the
+//! address mode, service, language and rounding), with what the server has: the offline address data when it is in
+//! the data folder, no offline tiles served yet (`offline_url` null), and no address lookup running yet (nothing
+//! cached, no online error).
 
 use super::now::{answer, failed, list_answer, run, text};
 use crate::ctx::target;
@@ -344,6 +345,8 @@ async fn preview(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiR
         pq::PreviewOf::Delete(id)
     } else {
         body.bool("delete")?;
+        // a version may come with a draft of an edit (a preview does not check it), but as a whole number
+        body.u64("version")?;
         let extra = ["id", "delete", "version"];
         match body_place(&body, "id")? {
             Some(id) => pq::PreviewOf::Edit(id, Box::new(read_patch(&body, &extra)?)),
@@ -384,11 +387,10 @@ async fn reprice(
 
 // ---- maps and addresses
 
-/// The tile servers the pages may load from: the frame's tile origins (`/settings` sets them).
-fn online_tiles(app: &AppState) -> Option<(String, &'static str, u8)> {
-    let origins = app.tiles();
-    let osm = origins.iter().any(|o| o == crate::DEFAULT_TILE_ORIGIN);
-    osm.then(|| (places::tiles::OSM_TILE_URL.to_string(), places::tiles::OSM_TILE_CREDIT, 19))
+/// The saved server settings (`/settings`), the defaults while there is no engine or nothing is saved.
+async fn saved_settings(app: &AppState) -> ApiResult<super::settings::ServerSettings> {
+    let Ok(e) = app.service::<Engine>() else { return Ok(super::settings::ServerSettings::default()) };
+    app.blocking(move |_| super::settings::load(&e, &[])).await
 }
 
 /// Whether the offline address data (GeoNames) is in the data folder.
@@ -399,32 +401,43 @@ fn offline_addresses(app: &AppState) -> bool {
 }
 
 async fn maps_config(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Value>> {
-    // offline tiles are not served by this server yet: online when the pages may load the tile server, else none
-    let tiles = match online_tiles(&app) {
-        Some((template, credit, zoom)) => json!({
-            "mode": "online", "offline_url": null, "online_template": template, "attribution": credit, "max_zoom": zoom,
-            "offline_data_present": false,
-        }),
-        None => json!({
-            "mode": "none", "offline_url": null, "online_template": null, "attribution": null, "max_zoom": null,
-            "offline_data_present": false,
-        }),
-    };
+    let st = saved_settings(&app).await?;
+    let t = &st.tiles;
+    // offline tiles are not served by this server yet: their address stays null in that mode
+    let online = t.mode == "online";
+    let tiles = json!({
+        "mode": t.mode,
+        "offline_url": null,
+        "online_template": if online { t.online_url.clone() } else { None },
+        "attribution": t.attribution,
+        "max_zoom": t.max_zoom,
+        "offline_data_present": false,
+    });
+    let g = &st.geocode;
+    let credit = if g.mode == "offline" { Some(places::geocode::GEONAMES_CREDIT) } else { None };
     Ok(Json(json!({
         "tiles": tiles,
         "geocoding": {
-            "mode": "offline", "credit": places::geocode::GEONAMES_CREDIT,
-            "offline_data_present": offline_addresses(&app), "language": null,
+            "mode": g.mode, "credit": credit, "offline_data_present": offline_addresses(&app), "language": g.language,
         },
     })))
 }
 
 async fn geocode_status(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Value>> {
+    let st = saved_settings(&app).await?;
+    let g = &st.geocode;
+    let online = g.mode == "online";
+    let present = offline_addresses(&app);
+    // no address lookup runs in this server yet: nothing is cached and no online lookup has failed
     Ok(Json(json!({
-        "mode": "offline",
-        "offline_data": { "present": offline_addresses(&app), "name": null, "places": null, "built_ms": null },
+        "mode": g.mode,
+        "offline_data": {
+            "present": present, "name": present.then(|| g.dataset.clone()), "places": null, "built_ms": null,
+        },
         "cache_size": 0,
-        "rounding_m": null,
-        "online": { "enabled": false, "url": null, "last_error": null, "retry_ms": null },
+        "rounding_m": g.rounding_m,
+        "online": {
+            "enabled": online, "url": if online { g.url.clone() } else { None }, "last_error": null, "retry_ms": null,
+        },
     })))
 }

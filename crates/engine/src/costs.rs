@@ -23,11 +23,41 @@ pub fn settle(
     if let Some(kept) = records::cost(db, car, ch.id, ch.start_ms)? {
         return Ok(Some(kept));
     }
+    if ended && kept_none(e, car, ch.id)? {
+        return Ok(None);
+    }
     let Some(c) = price_now(e, ch, curve, car_tz) else { return Ok(None) };
     if ended {
         records::put_cost(db, car, ch.id, ch.start_ms, Some(c.clone()))?;
     }
     Ok(Some(c))
+}
+
+fn none_key(car: CarId, charge: u64) -> String {
+    format!("car/{car}/cost-kept-none/{charge}")
+}
+
+/// Whether an ended charge keeps having no cost: it had none when a place change was saved over it (no place, or a
+/// place without a price), so a price given after it ended reaches it only through a reprice.
+pub(crate) fn kept_none(e: &Engine, car: CarId, charge: u64) -> Result<bool> {
+    Ok(records::get::<bool>(&e.inner.db, records::NS, &none_key(car, charge))?.unwrap_or(false))
+}
+
+pub(crate) fn put_kept_none(e: &Engine, car: CarId, charge: u64, on: bool) -> Result<()> {
+    let key = none_key(car, charge);
+    if on {
+        records::put(&e.inner.db, records::NS, &key, &true)
+    } else {
+        e.inner.db.kv().delete(records::NS, &key)?;
+        Ok(())
+    }
+}
+
+/// Keeps `c` as an ended charge's cost (a reprice), `None` keeping that it has none.
+pub(crate) fn keep(e: &Engine, car: CarId, ch: &Charge, c: Option<CostEntry>) -> Result<()> {
+    let none = c.is_none();
+    records::put_cost(&e.inner.db, car, ch.id, ch.start_ms, c)?;
+    put_kept_none(e, car, ch.id, none)
 }
 
 /// Keeps the costs of a window's charges when it is rebuilt: a charge's id comes from its start, so a late log that
@@ -61,6 +91,19 @@ pub(crate) fn carry(e: &Engine, car: CarId, old: &[Charge], new: &[Charge]) -> R
         if typed && let Some(before) = replaced(e, car, o.id)? {
             put_replaced(e, car, n.id, Some(&before))?;
             put_replaced(e, car, o.id, None)?;
+        }
+    }
+    // a kept "no cost" goes the same way, to a new charge with no cost of its own
+    for o in old.iter().filter(|o| !new_ids.contains(&o.id) && o.source == Source::Can) {
+        if !kept_none(e, car, o.id)? || records::cost(db, car, o.id, o.start_ms)?.is_some() {
+            continue;
+        }
+        let best = new.iter().map(|n| (overlap(o, n), n)).filter(|(v, _)| *v > 0).max_by_key(|(v, _)| *v);
+        if let Some((_, n)) = best
+            && records::cost(db, car, n.id, n.start_ms)?.is_none()
+        {
+            put_kept_none(e, car, n.id, true)?;
+            put_kept_none(e, car, o.id, false)?;
         }
     }
     Ok(())
@@ -350,7 +393,7 @@ pub fn reprice(
                 }));
             }
             if !dry_run {
-                records::put_cost(db, car, ch.id, ch.start_ms, new)?;
+                keep(e, car, &ch, new)?;
             }
         }
         if !dry_run && out.repriced > 0 {

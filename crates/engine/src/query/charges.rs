@@ -137,6 +137,10 @@ fn cost_live(e: &Engine, c: &Car, ch: &Charge, live: bool) -> QResult<Option<Cos
         return Ok(Some(k));
     }
     if ch.source == Source::Can {
+        // an ended charge that had no cost when a place change was saved keeps none until a reprice
+        if !live && costs::kept_none(e, c.id, ch.id)? {
+            return Ok(None);
+        }
         return Ok(costs::price_now(e, ch, &[], &c.time_zone));
     }
     Ok(None)

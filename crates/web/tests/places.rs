@@ -17,8 +17,12 @@ struct Seeded {
     _engine: Engine,
     cars: Vec<String>,
     ids: Vec<CarId>,
+    store: ingest::Store,
+    judge: ingest::Judge,
     _dir: tempfile::TempDir,
 }
+
+const SATURDAY_MS: u64 = synth::DEFAULT_START_MS + 5 * 86_400_000;
 
 struct EngineCars(db::Db);
 
@@ -38,7 +42,6 @@ async fn put(store: &ingest::Store, judge: &ingest::Judge, name: &str, bytes: &[
 /// Two made-up cars, two light days each (home charging at night; the first also drives to a supercharger), no
 /// places yet.
 async fn seeded() -> Seeded {
-    const SATURDAY_MS: u64 = synth::DEFAULT_START_MS + 5 * 86_400_000;
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
@@ -70,7 +73,7 @@ async fn seeded() -> Seeded {
     assert_eq!(ids.len(), 2, "{ids:?}");
     let (e2, d2) = (engine.clone(), db.clone());
     let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2))).await;
-    Seeded { s, _engine: engine, cars: ids.iter().map(|c| format!("c{c}")).collect(), ids, _dir: dir }
+    Seeded { s, _engine: engine, cars: ids.iter().map(|c| format!("c{c}")).collect(), ids, store, judge, _dir: dir }
 }
 
 async fn ok(c: &mut Client, path: &str) -> Value {
@@ -228,6 +231,20 @@ async fn places_crud_preview_reprice_suggestions_and_at_over_decoded_days() {
     let at_home: Vec<&Value> = after.iter().filter(|c| c["place"]["id"] == json!(hid)).collect();
     assert!(!at_home.is_empty(), "{after:?}");
     assert!(at_home.iter().all(|c| c["place"]["name"] == "Made-up home"));
+    // ...but costs stay put: the ended charges had no cost (no place) and keep none until a reprice
+    let ended_home: Vec<&&Value> = at_home.iter().filter(|c| !c["end_ms"].is_null()).collect();
+    assert!(!ended_home.is_empty());
+    assert!(ended_home.iter().all(|c| c["cost"].is_null()), "{ended_home:?}");
+    let r = admin.post(&format!("/api/v1/places/{hid}/reprice"), json!({ "only_without_cost": true })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(r.json()["repriced"].as_u64().unwrap() >= ended_home.len() as u64, "{}", r.text());
+    assert!(
+        charges(&mut admin, &a)
+            .await
+            .iter()
+            .filter(|c| c["place"]["id"] == json!(hid))
+            .all(|c| c["cost"]["currency"] == "EUR")
+    );
     // ...and the place at a point says so, by the nearest-centre rule
     let at = ok(&mut admin, &format!("/api/v1/places/at?lat={}&lon={}", synth::TOWN.lat, synth::TOWN.lon)).await;
     assert_eq!((&at["place"]["id"], &at["rule"]), (&json!(hid), &json!("nearest_centre")));
@@ -462,7 +479,7 @@ async fn places_crud_preview_reprice_suggestions_and_at_over_decoded_days() {
 async fn maps_and_addresses_say_what_the_server_has() {
     let s = TestServer::start(&[]).await;
     let mut admin = s.admin().await;
-    // without the engine, the places routes are not ready
+    // without the engine, the places routes are not ready; maps and addresses answer the default settings
     assert_eq!(admin.get("/api/v1/places").await.status, 503);
     let m = ok(&mut admin, "/api/v1/maps/config").await;
     assert_eq!(m["tiles"]["mode"], "online", "the pages may load the default tile server: {m}");
@@ -474,4 +491,242 @@ async fn maps_and_addresses_say_what_the_server_has() {
     assert_eq!(g["offline_data"]["present"], false);
     let mut anon = s.client();
     assert_eq!(anon.get("/api/v1/maps/config").await.status, 401);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn maps_and_addresses_follow_the_settings_at_once() {
+    let k = seeded().await;
+    let mut admin = k.s.admin().await;
+    let m = ok(&mut admin, "/api/v1/maps/config").await;
+    assert_eq!((m["tiles"]["mode"].as_str(), m["tiles"]["max_zoom"].as_u64()), (Some("online"), Some(19)), "{m}");
+    assert_eq!((m["geocoding"]["mode"].as_str(), m["geocoding"]["language"].as_str()), (Some("offline"), Some("en")));
+    let v = ok(&mut admin, "/api/v1/settings").await["version"].as_u64().unwrap();
+    let tiles = json!({ "mode": "online", "online_url": "https://tiles.example.org/{z}/{x}/{y}.png",
+                        "attribution": "Example tiles", "max_zoom": 17 });
+    let r = admin.patch("/api/v1/settings", json!({ "version": v, "tiles": tiles })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let m = ok(&mut admin, "/api/v1/maps/config").await;
+    assert_eq!(
+        (&m["tiles"]["mode"], &m["tiles"]["online_template"], &m["tiles"]["attribution"], &m["tiles"]["max_zoom"]),
+        (&json!("online"), &json!("https://tiles.example.org/{z}/{x}/{y}.png"), &json!("Example tiles"), &json!(17)),
+        "{m}"
+    );
+    // offline tiles: none served yet, so no address for them, and nothing online
+    let r = admin.patch("/api/v1/settings", json!({ "version": v + 1, "tiles": { "mode": "offline" } })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let m = ok(&mut admin, "/api/v1/maps/config").await;
+    assert_eq!(
+        (&m["tiles"]["mode"], &m["tiles"]["offline_url"], &m["tiles"]["online_template"]),
+        (&json!("offline"), &Value::Null, &Value::Null)
+    );
+
+    // addresses: the mode, service, language and rounding saved
+    let g = ok(&mut admin, "/api/v1/geocode/status").await;
+    assert_eq!(
+        (&g["mode"], &g["online"]["enabled"], &g["online"]["url"]),
+        (&json!("offline"), &json!(false), &Value::Null)
+    );
+    let geo = json!({ "mode": "online", "url": "https://geo.example.org/reverse", "language": "de", "rounding_m": 50 });
+    let r = admin.patch("/api/v1/settings", json!({ "version": v + 2, "geocode": geo })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let g = ok(&mut admin, "/api/v1/geocode/status").await;
+    assert_eq!(
+        (&g["mode"], &g["online"]["enabled"], &g["online"]["url"], &g["rounding_m"]),
+        (&json!("online"), &json!(true), &json!("https://geo.example.org/reverse"), &json!(50)),
+        "{g}"
+    );
+    assert_eq!((&g["cache_size"], &g["online"]["last_error"]), (&json!(0), &Value::Null));
+    let m = ok(&mut admin, "/api/v1/maps/config").await;
+    assert_eq!((&m["geocoding"]["mode"], &m["geocoding"]["language"]), (&json!("online"), &json!("de")));
+    let h = ok(&mut admin, "/api/v1/system/health").await;
+    assert_eq!(h["geocoder"]["mode"], g["mode"], "the health page's two sources agree: {h}");
+    // a watch account reads them too
+    let mut watch = k.s.watch(&mut admin, &[k.ids[0]]).await;
+    assert_eq!(ok(&mut watch, "/api/v1/geocode/status").await["mode"], "online");
+}
+
+/// A place over the home: its ended charges had no cost when it was saved.
+fn home_draft(price: Value) -> Value {
+    json!({ "name": "Made-up home", "kind": "home", "lat": synth::TOWN.lat, "lon": synth::TOWN.lon, "radius_m": 300,
+            "price": price })
+}
+
+/// The ended charges of a car at a place: `(id, cost)`.
+async fn ended_at(c: &mut Client, car: &str, place: &str) -> Vec<(String, Value)> {
+    charges(c, car)
+        .await
+        .iter()
+        .filter(|x| x["place"]["id"] == json!(place) && !x["end_ms"].is_null())
+        .map(|x| (x["id"].as_str().unwrap().to_string(), x["cost"].clone()))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_past_charge_without_a_cost_keeps_none_until_a_reprice() {
+    let k = seeded().await;
+    let a = k.cars[0].clone();
+    let mut admin = k.s.admin().await;
+
+    // the preview counts the past charges a reprice after saving would price
+    let price = json!({ "currency": "USD", "per_kwh": 0.5 });
+    let pv = admin.post("/api/v1/places/preview", home_draft(price.clone())).await.json();
+    assert!(pv["charges_repriced"].as_u64().unwrap() > 0, "{pv}");
+
+    // a new priced place over charges that ended without a cost: they keep none, in the list and the detail
+    let r = admin.post("/api/v1/places", home_draft(price)).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let hid = r.json()["id"].as_str().unwrap().to_string();
+    let ended = ended_at(&mut admin, &a, &hid).await;
+    assert!(!ended.is_empty());
+    assert!(ended.iter().all(|(_, c)| c.is_null()), "{ended:?}");
+    let (one, _) = &ended[0];
+    let d = ok(&mut admin, &format!("/api/v1/cars/{a}/charges/{one}")).await;
+    assert!(d["cost"].is_null(), "{d}");
+
+    // a price change on the place does not price them either
+    let r = admin
+        .patch(
+            &format!("/api/v1/places/{hid}"),
+            json!({ "version": 1, "price": { "currency": "USD", "per_kwh": 0.7 } }),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(ended_at(&mut admin, &a, &hid).await.iter().all(|(_, c)| c.is_null()));
+
+    // only a reprice gives them a cost, at the price of today; a dry run first changes nothing
+    let dry = admin.post(&format!("/api/v1/places/{hid}/reprice"), json!({ "dry_run": true })).await.json();
+    assert!(dry["repriced"].as_u64().unwrap() >= ended.len() as u64, "{dry}");
+    assert!(ended_at(&mut admin, &a, &hid).await.iter().all(|(_, c)| c.is_null()));
+    let r = admin.post(&format!("/api/v1/places/{hid}/reprice"), json!({ "only_without_cost": true })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let priced = ended_at(&mut admin, &a, &hid).await;
+    assert!(priced.iter().all(|(_, c)| c["currency"] == "USD" && c["source"] == "tariff"), "{priced:?}");
+    let d = ok(&mut admin, &format!("/api/v1/cars/{a}/charges/{one}")).await;
+    assert_eq!(d["cost"]["currency"], "USD", "{d}");
+
+    // a place without a price saved over them: they keep the cost they have (no "no cost" overwrites it)
+    let r = admin.request("DELETE", &format!("/api/v1/places/{hid}?version=2"), None, &[]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let still: Vec<Value> =
+        charges(&mut admin, &a).await.into_iter().filter(|c| c["cost"]["currency"] == "USD").collect();
+    assert_eq!(still.len(), priced.len());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paging_by_name_keys_on_the_name_not_the_position() {
+    let k = seeded().await;
+    let mut admin = k.s.admin().await;
+    let mut ids = Vec::new();
+    for (i, name) in ["Bravo", "charlie", "Delta", "echo"].iter().enumerate() {
+        let r = admin
+            .post("/api/v1/places", json!({ "name": name, "lat": -40.0 - i as f64, "lon": 120.0 + i as f64 }))
+            .await;
+        assert_eq!(r.status, 201, "{}", r.text());
+        ids.push(r.json()["id"].as_str().unwrap().to_string());
+    }
+    let names = |v: &Value| -> Vec<String> {
+        v["items"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap().to_string()).collect()
+    };
+    let p1 = ok(&mut admin, "/api/v1/places?limit=2").await;
+    assert_eq!(names(&p1), vec!["Bravo", "charlie"]);
+    let next = p1["next"].as_str().unwrap().to_string();
+    // a place added before the cursor, one removed before it and one renamed past it: no row repeats or is skipped
+    let r = admin.post("/api/v1/places", json!({ "name": "!!first", "lat": -50.0, "lon": 130.0 })).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let r = admin.request("DELETE", &format!("/api/v1/places/{}", ids[0]), None, &[]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let p2 = ok(&mut admin, &format!("/api/v1/places?limit=2&after={next}")).await;
+    assert_eq!(names(&p2), vec!["Delta", "echo"], "{p2}");
+    assert_eq!((p2["next"].clone(), p2["total"].as_u64()), (Value::Null, Some(4)));
+    // two places of one name: by id, across pages
+    let r = admin.post("/api/v1/places", json!({ "name": "DELTA", "lat": -51.0, "lon": 131.0 })).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let mut seen = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let path = match &after {
+            Some(c) => format!("/api/v1/places?limit=1&after={c}"),
+            None => "/api/v1/places?limit=1".to_string(),
+        };
+        let p = ok(&mut admin, &path).await;
+        seen.extend(p["items"].as_array().unwrap().iter().map(|x| x["id"].as_str().unwrap().to_string()));
+        match p["next"].as_str() {
+            Some(c) => after = Some(c.to_string()),
+            None => break,
+        }
+    }
+    let mut unique = seen.clone();
+    unique.dedup();
+    assert_eq!((seen.len(), unique.len()), (5, 5), "{seen:?}");
+    assert_eq!(code(&mut admin, "/api/v1/places?limit=1&after=bm9wZQ").await.0, 400);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn prices_that_leave_energy_unpriced_and_wrong_preview_versions_are_refused() {
+    let k = seeded().await;
+    let mut admin = k.s.admin().await;
+    let rates = json!([
+        { "name": "Night", "days": "mon-fri", "from": "22:00", "to": "06:00", "per_kwh": 0.1 },
+        { "name": "Day", "days": "all", "from": "06:00", "to": "22:00", "per_kwh": 0.3 }]);
+    let r = admin.post("/api/v1/places", home_draft(json!({ "currency": "EUR", "rates": rates }))).await;
+    assert_eq!((r.status, r.code().as_deref()), (422, Some("invalid")), "{}", r.text());
+    assert!(r.json()["error"]["fields"].get("price.per_kwh").is_some(), "{}", r.text());
+    let r = admin.post("/api/v1/places/preview", home_draft(json!({ "currency": "EUR", "rates": rates }))).await;
+    assert_eq!(r.status, 422, "the preview says the same: {}", r.text());
+    let no_price = json!([{ "name": "Free", "days": "all", "from": "00:00", "to": "06:00" }]);
+    let r =
+        admin.post("/api/v1/places", home_draft(json!({ "currency": "EUR", "per_kwh": 0.2, "rates": no_price }))).await;
+    assert_eq!(r.status, 422, "{}", r.text());
+    assert!(r.json()["error"]["fields"].get("price.rates.0.per_kwh").is_some(), "{}", r.text());
+    // with a price for the hours left out, or a price per minute, it is saved
+    let r =
+        admin.post("/api/v1/places", home_draft(json!({ "currency": "EUR", "per_kwh": 0.2, "rates": rates }))).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let hid = r.json()["id"].as_str().unwrap().to_string();
+
+    // a preview's version must be a whole number when it is sent
+    let r = admin.post("/api/v1/places/preview", json!({ "id": hid, "version": "abc" })).await;
+    assert_eq!((r.status, r.code().as_deref()), (400, Some("bad_input")), "{}", r.text());
+    assert!(r.json()["error"]["fields"].get("version").is_some(), "{}", r.text());
+    let r = admin.post("/api/v1/places/preview", json!({ "id": hid, "version": 1, "name": "Home" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn counts_follow_new_rows_and_every_way_of_asking_agrees() {
+    let k = seeded().await;
+    let (a, b) = (k.cars[0].clone(), k.cars[1].clone());
+    let mut admin = k.s.admin().await;
+    let r = admin.post("/api/v1/places", home_draft(Value::Null)).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let hid = r.json()["id"].as_str().unwrap().to_string();
+    let counts_of =
+        |l: &Value| l["items"].as_array().unwrap().iter().find(|p| p["id"] == json!(hid)).unwrap()["counts"].clone();
+    let all = ok(&mut admin, &format!("/api/v1/places/{hid}")).await["counts"].clone();
+    let ca = counts_of(&ok(&mut admin, &format!("/api/v1/places?car={a}")).await);
+    let cb = counts_of(&ok(&mut admin, &format!("/api/v1/places?car={b}")).await);
+    for f in ["drives", "charges", "visits"] {
+        assert_eq!(all[f].as_u64().unwrap(), ca[f].as_u64().unwrap() + cb[f].as_u64().unwrap(), "{f}");
+    }
+    let at = ok(&mut admin, &format!("/api/v1/places/at?lat={}&lon={}", synth::TOWN.lat, synth::TOWN.lon)).await;
+    assert_eq!(at["place"]["counts"], all);
+    assert_eq!(counts_of(&ok(&mut admin, "/api/v1/places").await), all, "asked again: the same");
+    let mut watch = k.s.watch(&mut admin, &[k.ids[1]]).await;
+    assert_eq!(counts_of(&ok(&mut watch, "/api/v1/places").await), cb);
+    let wat = ok(&mut watch, &format!("/api/v1/places/at?lat={}&lon={}", synth::TOWN.lat, synth::TOWN.lon)).await;
+    assert_eq!(wat["place"]["counts"], cb);
+
+    // a later day of car a arrives: its counts grow, car b's stay
+    let more = synth::Scenario::new(11).car(0).start(SATURDAY_MS + 2 * 86_400_000).days(1).rates(synth::Rates::Light);
+    for log in more.logs() {
+        put(&k.store, &k.judge, &log.name, &log.bytes).await;
+        put(&k.store, &k.judge, &log.sidecar_name(), &log.sidecar_bytes()).await;
+    }
+    k._engine.idle().await;
+    assert_eq!(engine::query::all_cars(&k._engine).unwrap().len(), 2, "the same car");
+    let ca2 = counts_of(&ok(&mut admin, &format!("/api/v1/places?car={a}")).await);
+    assert!(ca2["visits"].as_u64() > ca["visits"].as_u64(), "{ca} {ca2}");
+    assert_eq!(counts_of(&ok(&mut admin, &format!("/api/v1/places?car={b}")).await), cb);
+    let all2 = ok(&mut admin, &format!("/api/v1/places/{hid}")).await["counts"].clone();
+    assert_eq!(all2["visits"].as_u64().unwrap(), ca2["visits"].as_u64().unwrap() + cb["visits"].as_u64().unwrap());
 }
