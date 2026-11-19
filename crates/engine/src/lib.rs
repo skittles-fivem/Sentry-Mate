@@ -174,6 +174,9 @@ pub(crate) struct Inner {
     car_locks: Mutex<HashMap<CarId, Arc<Mutex<()>>>>,
     /// Making a car for a new key, one at a time.
     pub(crate) claim: Mutex<()>,
+    /// A change to a car's record (read, changed, written back), one at a time: held only around that, never while
+    /// taking another lock, so the pipeline (which holds a car's lock) and an admin's change can't undo each other.
+    pub(crate) car_record: Mutex<()>,
     pub(crate) places: RwLock<Option<Arc<placing::Places>>>,
     pub(crate) jobs: Mutex<HashMap<u64, Arc<jobs::JobState>>>,
     pub(crate) next_job: AtomicU64,
@@ -218,6 +221,7 @@ impl Engine {
                 rx: Mutex::new(Some(rx)),
                 car_locks: Mutex::new(HashMap::new()),
                 claim: Mutex::new(()),
+                car_record: Mutex::new(()),
                 places: RwLock::new(None),
                 jobs: Mutex::new(HashMap::new()),
                 next_job: AtomicU64::new(1),

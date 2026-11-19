@@ -106,6 +106,13 @@ pub struct CarMeta {
     /// When a log was last worked on, and how long it took (ms).
     pub last_done_ms: Option<u64>,
     pub last_took_ms: Option<u64>,
+    /// When the newest log worked on arrived (its upload, not when it was worked on: a re-decode keeps it).
+    #[serde(default)]
+    pub last_arrived_ms: Option<u64>,
+    /// When the car's newest state span began (it went online, to sleep...), kept as the timeline is rebuilt so the
+    /// fleet lists read it without opening the car.
+    #[serde(default)]
+    pub state_since_ms: Option<u64>,
 }
 
 /// A rebuild of a car under way (kept so a restart carries on with it).

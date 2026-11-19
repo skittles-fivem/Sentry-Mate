@@ -1,13 +1,12 @@
 //! `/cars`, `/fleet/summary`, `/fleet/attention`, `/cars/{car}` and `/cars/{car}/settings`: read from the fleet index
-//! (every car's record and small summary). Only the cars of the page answered read one more small thing each (when
-//! their newest state began, when their newest log was worked on); the summary and the attention list read nothing
-//! else. What an admin sets for a car (its name, time zone, typed build facts and settings) is kept in the db's
+//! (every car's record and small summary). Only the cars of the page answered read one more small thing each, their
+//! log records in the db's key/value store (when their newest state began, when their newest log arrived, whether it
+//! failed its check); the attention list reads the same for each car; no car's store is opened, and the summary
+//! reads nothing else. What an admin sets for a car (its name, time zone, typed build facts and settings) is kept in the db's
 //! sealed key/value store with a version each, so two changes sent with the same version can't both win.
 
 use super::now::{STALE_MS, state_word};
-use super::{
-    CarRef, List, Paging, PlaceBrief, QResult, QueryError, Scoped, car_of, kpa, paginate, place_ref, r, scoped,
-};
+use super::{CarRef, List, Paging, PlaceBrief, QResult, QueryError, Scoped, car_of, paginate, place_ref, r, scoped};
 use crate::{Engine, now_ms, records};
 use db::FleetEntry;
 use model::CarId;
@@ -46,34 +45,77 @@ pub struct CarItem {
     pub attention: Vec<&'static str>,
 }
 
-/// The attention codes a car's summary shows (`stopped_mid_drive`, `stopped_mid_charge`, `upload_silence`,
-/// `low_battery`, `tyre_low`).
-pub fn attention_of(e: &FleetEntry, now: u64) -> Vec<(&'static str, serde_json::Value)> {
-    let mut out = Vec::new();
-    let Some(n) = &e.summary.now else { return out };
-    let silent = now.saturating_sub(n.at_ms) > STALE_MS;
-    if silent && n.driving {
-        out.push(("stopped_mid_drive", serde_json::json!({ "last_data_ms": n.at_ms })));
-    } else if silent && n.sample.charging == Some(true) {
-        out.push(("stopped_mid_charge", serde_json::json!({ "last_data_ms": n.at_ms })));
-    }
-    if now.saturating_sub(n.at_ms) > 24 * STALE_MS {
-        out.push(("upload_silence", serde_json::json!({ "last_upload_ms": n.at_ms })));
-    }
-    if let Some(soc) = n.sample.soc.filter(|&s| s < 10.0) {
-        out.push(("low_battery", serde_json::json!({ "soc_pct": r(Some(soc), 1) })));
-    }
-    for (i, t) in n.sample.tpms_bar.iter().enumerate() {
-        if let Some(b) = t.filter(|&b| b > 0.3 && b < 2.2) {
-            let tyre = ["fl", "fr", "rl", "rr"][i];
-            out.push((
-                "tyre_low",
-                serde_json::json!({ "tyre": tyre, "pressure_kpa": kpa(Some(b)), "recommended_kpa": null }),
-            ));
-            break;
+/// One thing about a car its people should look at: its code, since when (null when the start isn't known), and its
+/// detail in metric units.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Noted {
+    pub code: &'static str,
+    pub since_ms: Option<u64>,
+    pub detail: serde_json::Value,
+}
+
+/// The newest log of the car whose check has been done (not waiting): its start, what the check said and why. Read
+/// from the newest day that has one (the db's small key/value records, not the car's store).
+fn last_judged(e: &Engine, car: CarId, meta: &records::CarMeta) -> QResult<Option<(u64, String, Option<String>)>> {
+    for &d in meta.days.iter().rev() {
+        let rec = records::day(e.db(), car, d)?;
+        let newest = rec
+            .logs
+            .iter()
+            .filter(|(_, en)| en.status != "waiting")
+            .filter_map(|(n, en)| records::name_start_ms(n).map(|t| (t, n, en)))
+            .max_by(|x, y| (x.0, x.1).cmp(&(y.0, y.1)));
+        if let Some((t, _, en)) = newest {
+            return Ok(Some((t, en.status.clone(), en.reason.clone())));
         }
     }
-    out
+    Ok(None)
+}
+
+/// What a car's people should look at (`stopped_mid_drive`, `stopped_mid_charge`, `upload_silence`, `trust_failed`,
+/// `low_battery`), from its fleet entry and its log records. `upload_silence` and `trust_failed` follow the rules of
+/// `/cars/{car}/health`: nothing new (its newest log's data, else its last upload) for a day, and its newest judged
+/// log failed its check. Not said yet: `tyre_low` (the car's recommended pressure isn't read, and a threshold the
+/// server picked is not the car's) and `door_open_asleep` (the Now keeps no doors).
+pub fn attention_of(e: &Engine, x: &FleetEntry, meta: &records::CarMeta, now: u64) -> QResult<Vec<Noted>> {
+    let mut out = Vec::new();
+    if let Some(n) = &x.summary.now {
+        let silent = now.saturating_sub(n.at_ms) > STALE_MS;
+        let detail = serde_json::json!({ "last_data_ms": n.at_ms });
+        if silent && n.driving {
+            out.push(Noted { code: "stopped_mid_drive", since_ms: Some(n.at_ms), detail });
+        } else if silent && n.sample.charging == Some(true) {
+            out.push(Noted { code: "stopped_mid_charge", since_ms: Some(n.at_ms), detail });
+        }
+    }
+    let last_seen = meta.newest_ms.or(meta.last_arrived_ms);
+    if last_seen.is_none_or(|t| now.saturating_sub(t) > 24 * STALE_MS) {
+        out.push(Noted {
+            code: "upload_silence",
+            since_ms: last_seen,
+            detail: serde_json::json!({ "last_upload_ms": meta.last_arrived_ms }),
+        });
+    }
+    if let Some((start, status, reason)) = last_judged(e, x.car.id, meta)?
+        && status == "failed"
+    {
+        out.push(Noted {
+            code: "trust_failed",
+            since_ms: Some(start),
+            detail: serde_json::json!({ "reason": reason, "log_start_ms": start }),
+        });
+    }
+    if let Some(n) = &x.summary.now
+        && let Some(soc) = n.sample.soc.filter(|&s| s < 10.0)
+    {
+        // (when it went low is not kept)
+        out.push(Noted {
+            code: "low_battery",
+            since_ms: None,
+            detail: serde_json::json!({ "soc_pct": r(Some(soc), 1) }),
+        });
+    }
+    Ok(out)
 }
 
 pub(crate) fn item(e: &Engine, x: &FleetEntry, now: u64) -> CarItem {
@@ -96,7 +138,7 @@ pub(crate) fn item(e: &Engine, x: &FleetEntry, now: u64) -> CarItem {
             state: state_word(n),
             since_ms: None,
             at_ms: n.map(|n| n.at_ms),
-            received_ms: n.map(|n| n.at_ms),
+            received_ms: None,
             stale: n.is_none_or(|n| now.saturating_sub(n.at_ms) > STALE_MS),
             soc_pct: r(s.and_then(|s| s.soc), 1),
             range_km: r(s.and_then(|s| s.range_km), 1),
@@ -106,7 +148,7 @@ pub(crate) fn item(e: &Engine, x: &FleetEntry, now: u64) -> CarItem {
             plugged: n.and_then(|n| super::now::plugged_now(&n.sample, n.driving, &|_| n.at_ms, n.at_ms)),
             charge_power_kw: r(s.and_then(|s| s.charge_power_kw), 1),
         },
-        attention: attention_of(x, now).into_iter().map(|(c, _)| c).collect(),
+        attention: Vec::new(),
     }
 }
 
@@ -145,7 +187,8 @@ pub fn cars(e: &Engine, visible: &[CarId], q: &CarsQuery, paging: &Paging) -> QR
     {
         return Err(QueryError::bad("state", "driving, charging, parked, asleep or unknown"));
     }
-    let items: Vec<CarItem> = entries(e, visible)?
+    let all = entries(e, visible)?;
+    let items: Vec<CarItem> = all
         .iter()
         .map(|x| item(e, x, now))
         .filter(|i| {
@@ -159,10 +202,14 @@ pub fn cars(e: &Engine, visible: &[CarId], q: &CarsQuery, paging: &Paging) -> QR
         .collect();
     let sort = q.sort.as_deref().unwrap_or("last_activity");
     let cheap_total = q.search.is_none() && q.state.is_none();
-    let sig = format!("cars|{:?}|{:?}|{sort}|{:?}", q.search, q.state, q.dir);
+    // a custom order's cursor is of that order: pins or the order changed between pages start the list again
+    let custom = if sort == "custom" { format!("{:?}|{:?}", q.pinned, q.order) } else { String::new() };
+    let sig = format!("cars|{:?}|{:?}|{sort}|{:?}|{custom}", q.search, q.state, q.dir);
     let mut page = cars_sorted(items, q, sort, &sig, paging, cheap_total)?;
     for i in &mut page.items {
-        fill_times(e, i)?;
+        if let Some(x) = all.iter().find(|x| x.car.id == i.id.0) {
+            fill_page(e, x, i, now)?;
+        }
     }
     Ok(page)
 }
@@ -265,9 +312,9 @@ pub fn attention(e: &Engine, visible: &[CarId], paging: &Paging) -> QResult<List
     let now = now_ms();
     let mut items = Vec::new();
     for x in entries(e, visible)? {
-        let since = x.summary.now.as_ref().map(|n| n.at_ms);
-        for (code, detail) in attention_of(&x, now) {
-            items.push(Attention { car: CarRef(x.car.id), code, since_ms: since, detail });
+        let meta = records::meta(e.db(), x.car.id)?;
+        for a in attention_of(e, &x, &meta, now)? {
+            items.push(Attention { car: CarRef(x.car.id), code: a.code, since_ms: a.since_ms, detail: a.detail });
         }
     }
     paginate(
@@ -314,8 +361,6 @@ pub struct CarDetail {
     pub config: BTreeMap<&'static str, Configured>,
     /// Goes up with every change an admin makes (for `PATCH` with `version`).
     pub version: u64,
-    pub keys: Vec<String>,
-    pub preferred_key: Option<String>,
     pub created_ms: u64,
 }
 
@@ -354,19 +399,13 @@ fn put_owner(e: &Engine, car: CarId, o: &Owner) -> QResult<()> {
     Ok(records::put(e.db(), NS, &owner_key(car), o)?)
 }
 
-/// The newest state span's start (when the car went online or to sleep) and when its newest log was worked on, as
-/// `/cars/{car}/now` gives them: read for the cars of one page only.
-fn fill_times(e: &Engine, i: &mut CarItem) -> QResult<()> {
-    let db = e.db();
-    let last = db
-        .list::<db::StateRow>(i.id.0, &db::Query { source: Some(model::Source::Can), ..db::Query::default().limit(1) })?
-        .items
-        .into_iter()
-        .next();
-    i.now.since_ms = last.map(|s| s.span.start_ms);
-    if let Some(t) = records::meta(db, i.id.0)?.last_done_ms {
-        i.now.received_ms = Some(t);
-    }
+/// What the cars of one page add to their list item, from the db's small per-car records (no car store is opened):
+/// when their newest state began, when their newest log arrived, and their attention codes.
+fn fill_page(e: &Engine, x: &FleetEntry, i: &mut CarItem, now: u64) -> QResult<()> {
+    let meta = records::meta(e.db(), i.id.0)?;
+    i.now.since_ms = meta.state_since_ms;
+    i.now.received_ms = meta.last_arrived_ms;
+    i.attention = attention_of(e, x, &meta, now)?.into_iter().map(|a| a.code).collect();
     Ok(())
 }
 
@@ -398,15 +437,8 @@ pub fn car(e: &Engine, car: CarId) -> QResult<CarDetail> {
     if let Some(t) = config.get("trim").and_then(|t| t.value.as_str()) {
         it.trim = Some(t.to_string());
     }
-    fill_times(e, &mut it)?;
-    Ok(CarDetail {
-        item: it,
-        config,
-        version: o.car_changes + 1,
-        keys: c.vehicle_keys.clone(),
-        preferred_key: c.preferred_key.clone(),
-        created_ms: c.created_ms,
-    })
+    fill_page(e, &x, &mut it, now_ms())?;
+    Ok(CarDetail { item: it, config, version: o.car_changes + 1, created_ms: c.created_ms })
 }
 
 /// A change made, or refused because it was sent with an old `version` (`409 stale_version` with the current one).
@@ -528,6 +560,8 @@ pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDeta
         Some(_) => errs.bad("config", "Must be an object."),
     }
     let _one = crate::lock(&e.inner.claim);
+    // the car's record is read and written back under its own lock (the pipeline's VIN and key changes take it too)
+    let record = crate::lock(&e.inner.car_record);
     let mut c = car_of(e, car)?;
     let mut o = owner(e, car)?;
     if errs.bad.is_empty()
@@ -553,6 +587,7 @@ pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDeta
     }
     o.car_changes += 1;
     e.db().update_car(c.clone())?;
+    drop(record);
     put_owner(e, car, &o)?;
     if renamed {
         e.emit(crate::Event::Fleet { car, change: "renamed", name: Some(c.name.clone()) });
@@ -761,6 +796,12 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
     let version = errs.head(body, &known);
     let chemistry = match body.get("battery_chemistry") {
         None => None,
+        Some(serde_json::Value::Object(m)) if m.keys().any(|k| k != "setting") => {
+            for k in m.keys().filter(|k| *k != "setting") {
+                errs.bad(&format!("battery_chemistry.{k}"), "Unknown field.");
+            }
+            None
+        }
         Some(serde_json::Value::Object(m)) => match m.get("setting") {
             Some(serde_json::Value::String(s)) if CHEMISTRIES.contains(&s.as_str()) => Some(s.clone()),
             Some(serde_json::Value::String(_)) => {
@@ -797,6 +838,8 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
         }
     };
     let _one = crate::lock(&e.inner.claim);
+    // the car's record is read and written back under its own lock (the pipeline's VIN and key changes take it too)
+    let record = crate::lock(&e.inner.car_record);
     let mut c = car_of(e, car)?;
     let mut o = owner(e, car)?;
     if errs.bad.is_empty()
@@ -842,6 +885,7 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
             e.db().update_car(c.clone())?;
         }
     }
+    drop(record);
     o.settings_changes += 1;
     put_owner(e, car, &o)?;
     Ok(Patched::Done(scoped(&c, settings_view(&o))))

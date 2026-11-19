@@ -161,6 +161,14 @@ async fn the_cars_list_pages_sorts_filters_and_hides_what_an_account_may_not_see
     let r = admin.patch("/api/v1/me/preferences", json!({ "pinned_cars": ["c3"], "car_order": ["c2"] })).await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(all_pages(&mut admin, "/api/v1/cars?sort=custom").await, ["c3", "c2", "c1"]);
+    // a cursor of the custom order is of that order: changed pins start the list again
+    let next = admin.get("/api/v1/cars?sort=custom&limit=1").await.json()["next"].as_str().unwrap().to_string();
+    assert_eq!(admin.get(&format!("/api/v1/cars?sort=custom&limit=1&after={next}")).await.status, 200);
+    let r = admin.patch("/api/v1/me/preferences", json!({ "pinned_cars": ["c1"] })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let r = admin.get(&format!("/api/v1/cars?sort=custom&limit=1&after={next}")).await;
+    assert_eq!((r.status, r.json()["error"]["fields"]["after"].is_string()), (400, true), "{}", r.text());
+    assert_eq!(all_pages(&mut admin, "/api/v1/cars?sort=custom").await, ["c1", "c2", "c3"]);
     // CSV: every row, not one page
     let r = admin.get("/api/v1/cars?format=csv&limit=1").await;
     assert_eq!(r.status, 200);
@@ -178,7 +186,9 @@ async fn the_cars_list_pages_sorts_filters_and_hides_what_an_account_may_not_see
         s,
         json!({ "cars": 1, "by_state": { "driving": 0, "charging": 1, "parked": 0, "asleep": 0, "unknown": 0 }, "stale": 0 })
     );
-    assert_eq!(watch.get("/api/v1/fleet/attention").await.json()["items"], json!([]));
+    // (no log of c2 ever arrived: it is silent, as its health says; nothing of the other cars shows)
+    let a = watch.get("/api/v1/fleet/attention").await.json();
+    assert!(a["items"].as_array().unwrap().iter().all(|i| i["car"] == json!("c2")), "{a}");
     drop(f.engine);
 }
 
@@ -194,13 +204,21 @@ async fn the_fleet_summary_and_attention_count_every_car() {
     let a = admin.get("/api/v1/fleet/attention").await;
     assert_eq!(a.status, 200, "{}", a.text());
     let items = a.json()["items"].as_array().cloned().unwrap();
-    let codes: Vec<&str> = items.iter().map(|i| i["code"].as_str().unwrap()).collect();
-    for want in ["upload_silence", "low_battery", "tyre_low"] {
-        assert!(codes.contains(&want), "{want}: {items:?}");
-    }
-    assert!(items.iter().all(|i| i["car"] == json!("c3") && i["since_ms"].is_u64() && i["detail"].is_object()));
-    let tyre = items.iter().find(|i| i["code"] == json!("tyre_low")).unwrap();
-    assert_eq!((tyre["detail"]["tyre"].clone(), tyre["detail"]["pressure_kpa"].clone()), (json!("rl"), json!(200.0)));
+    let of = |car: &str| -> Vec<&str> {
+        items.iter().filter(|i| i["car"] == json!(car)).map(|i| i["code"].as_str().unwrap()).collect()
+    };
+    // no log of these made-up cars ever arrived: each is silent (the rule of its health), c3's battery is low; a
+    // tyre is not said against a pressure the server picked (the car's recommended one isn't read)
+    assert_eq!((of("c1"), of("c2")), (vec!["upload_silence"], vec!["upload_silence"]), "{items:?}");
+    assert_eq!(of("c3"), ["upload_silence", "low_battery"], "{items:?}");
+    let silent = items.iter().find(|i| i["code"] == json!("upload_silence")).unwrap();
+    assert_eq!(
+        (silent["since_ms"].clone(), silent["detail"].clone()),
+        (json!(null), json!({ "last_upload_ms": null }))
+    );
+    // when the battery went low is not known: not "since just now"
+    let low = items.iter().find(|i| i["code"] == json!("low_battery")).unwrap();
+    assert_eq!((low["since_ms"].clone(), low["detail"].clone()), (json!(null), json!({ "soc_pct": 7.0 })));
     // pages of one hold each item once
     let mut seen = 0;
     let mut after = String::new();
@@ -224,6 +242,8 @@ async fn a_car_is_changed_with_its_version_by_an_admin_only() {
     assert_eq!(r.status, 200, "{}", r.text());
     let car = r.json();
     assert_eq!(car["version"], json!(1));
+    // the CAN Bridge keys are an admin's to read, at /can-keys: not in the car
+    assert!(car.get("keys").is_none() && car.get("preferred_key").is_none(), "{car}");
     assert_eq!(car["config"]["model"], json!({ "value": "Model Y", "source": "vin" }));
     assert_eq!(car["config"]["paint"], json!({ "value": null, "source": null }));
     for k in [
@@ -297,7 +317,9 @@ async fn a_car_is_changed_with_its_version_by_an_admin_only() {
 
     // a watch account may read its car but not change it, and a hidden car is unknown to it
     let mut watch = f.s.watch(&mut admin, &[1]).await;
-    assert_eq!(watch.get("/api/v1/cars/c1").await.json()["version"], json!(3));
+    let mine = watch.get("/api/v1/cars/c1").await.json();
+    assert_eq!(mine["version"], json!(3));
+    assert!(mine.get("keys").is_none() && mine.get("preferred_key").is_none(), "{mine}");
     assert_eq!(watch.patch("/api/v1/cars/c1", json!({ "version": 3, "name": "Mine" })).await.status, 403);
     // (a change is refused for the role before any car is looked at: a hidden car and an unknown one alike)
     let hidden = watch.patch("/api/v1/cars/c2", json!({ "version": 1, "name": "Mine" })).await;
@@ -369,6 +391,15 @@ async fn a_cars_settings_keep_their_rules_and_the_consumption_factor_reaches_the
         )
         .await;
     assert_eq!(r.status, 400, "{}", r.text());
+    // an unknown part of the chemistry is refused, named, like any unknown field
+    let r = admin
+        .patch(
+            "/api/v1/cars/c2/settings",
+            json!({ "version": 3, "battery_chemistry": { "setting": "auto", "extra": 1 } }),
+        )
+        .await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(r.json()["error"]["fields"]["battery_chemistry.extra"].is_string(), "{}", r.text());
     assert_eq!(admin.get("/api/v1/cars/c2/settings").await.json()["version"], json!(3), "nothing changed");
 
     let mut watch = f.s.watch(&mut admin, &[2]).await;
@@ -414,4 +445,116 @@ async fn notices_say_what_the_files_say() {
         (soon[0].code, soon[0].detail.clone()),
         ("certificate_expiring", Some(json!({ "expires_ms": after, "days": 3 })))
     );
+}
+
+struct EngineCars(db::Db);
+
+impl web::CarDirectory for EngineCars {
+    fn exists(&self, car: CarId) -> bool {
+        self.0.car(car).ok().flatten().is_some()
+    }
+}
+
+async fn put(store: &ingest::Store, judge: &ingest::Judge, name: &str, bytes: &[u8]) {
+    use sha2::Digest;
+    let sha = hex::encode(sha2::Sha256::digest(bytes));
+    let r = store.receive(name, bytes.to_vec().into(), 0, bytes.len() as u64, &sha).await.unwrap();
+    assert!(r.complete, "{name}");
+    judge.arrived(name).await.unwrap();
+}
+
+/// A made-up car's day of logs (synth: a made-up VIN, a public signing seed), uploaded and judged as an upload is,
+/// whose newest log is not the file that was signed: it fails its check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_fleet_follows_the_logs_rules_of_health_and_the_time_logs_arrived() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let (v, _) = vault::Vault::create(&data, &dir.path().join("keys"), vault::Kdf::FAST_FOR_TESTS).unwrap();
+    let v = Arc::new(v);
+    let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
+    let store = ingest::Store::with_limits(data.join("can"), v, 0, 200_000, |_| u64::MAX);
+    let engine = Engine::new(db.clone(), store.clone(), engine::Options { workers: 2, ..engine::Options::default() });
+    let judge = ingest::Judge::new(store.clone()).on_judged(engine.listener());
+    engine.start().unwrap();
+    let sc = synth::Scenario::new(5).days(1).rates(synth::Rates::Light);
+    let logs: Vec<_> = sc.logs().collect();
+    let sent_from = (accounts::system_clock())();
+    for (i, log) in logs.iter().enumerate() {
+        let mut bytes = log.bytes.clone();
+        if i + 1 == logs.len() {
+            bytes.push(0);
+        }
+        put(&store, &judge, &log.name, &bytes).await;
+        put(&store, &judge, &log.sidecar_name(), &log.sidecar_bytes()).await;
+    }
+    engine.idle().await;
+    let sent_to = (accounts::system_clock())();
+    assert_eq!(engine.stats().failures, 0, "{:?}", engine.stats().last_error);
+    let id = engine::query::all_cars(&engine).unwrap()[0];
+    let car = format!("c{id}");
+    let (e2, d2) = (engine.clone(), db.clone());
+    let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2))).await;
+    let mut admin = s.admin().await;
+
+    // the list's times: when the newest state began (as the car's Now says) and when its newest log arrived (not when
+    // it was decoded, nor when its data was recorded)
+    let list = admin.get("/api/v1/cars").await.json();
+    let item = &list["items"][0];
+    let now = admin.get(&format!("/api/v1/cars/{car}/now")).await.json();
+    assert!(item["now"]["since_ms"].is_u64(), "{item}");
+    assert_eq!(item["now"]["since_ms"], now["since_ms"], "{item} {now}");
+    let received = item["now"]["received_ms"].as_u64().unwrap();
+    assert!((sent_from..=sent_to).contains(&received), "{received} not in {sent_from}..{sent_to}");
+    // the made-up day is long past: silent by its data, with the real last upload said; its newest log failed
+    let codes: Vec<&str> = item["attention"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
+    assert!(codes.contains(&"upload_silence") && codes.contains(&"trust_failed"), "{item}");
+    let a = admin.get("/api/v1/fleet/attention").await.json();
+    let items = a["items"].as_array().unwrap();
+    let silent = items.iter().find(|i| i["code"] == json!("upload_silence")).unwrap();
+    assert_eq!(silent["detail"]["last_upload_ms"].as_u64(), Some(received), "{a}");
+    assert!(silent["since_ms"].as_u64().unwrap() < sent_from, "since its newest data: {a}");
+    // the car's health says the same, of the same log
+    let h = admin.get(&format!("/api/v1/cars/{car}/health")).await.json();
+    let reasons = h["reasons"].as_array().unwrap();
+    assert!(reasons.contains(&json!("upload_silence")) && reasons.contains(&json!("trust_failed")), "{h}");
+    assert_eq!(h["last_log_trust"]["result"], json!("failed"), "{h}");
+    let failed = items.iter().find(|i| i["code"] == json!("trust_failed")).unwrap();
+    assert_eq!(failed["detail"]["log_start_ms"], h["last_log_trust"]["log_start_ms"], "{a}");
+    assert!(failed["detail"]["log_start_ms"].is_u64() && failed["since_ms"] == failed["detail"]["log_start_ms"]);
+    assert!(failed["detail"].get("reason").is_some(), "{a}");
+    // the car itself carries the same times
+    let one = admin.get(&format!("/api/v1/cars/{car}")).await.json();
+    assert_eq!(
+        (one["now"]["received_ms"].as_u64(), one["now"]["since_ms"].clone()),
+        (Some(received), now["since_ms"].clone())
+    );
+}
+
+/// The preferred key changed (`PATCH /can-keys`) while an admin renames the car: neither change is lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_change_and_a_rename_at_once_both_stay() {
+    let f = fleet().await;
+    let mut c = f.engine.db().car(1).unwrap().unwrap();
+    c.vehicle_keys = vec!["made-up-key-a".into(), "made-up-key-b".into()];
+    f.engine.db().update_car(c).unwrap();
+    let mut admin = f.s.admin().await;
+    let e = f.engine.clone();
+    let flipper = std::thread::spawn(move || {
+        for i in 0..400 {
+            let key = if i % 2 == 0 { "made-up-key-a" } else { "made-up-key-b" };
+            e.set_preferred(key, true).unwrap();
+        }
+    });
+    let mut version = 1;
+    for i in 0..30 {
+        let r = admin.patch("/api/v1/cars/c1", json!({ "version": version, "name": format!("Blue {i}") })).await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        version = r.json()["version"].as_u64().unwrap();
+    }
+    flipper.join().unwrap();
+    let c = f.engine.db().car(1).unwrap().unwrap();
+    assert_eq!(c.name, "Blue 29", "the rename stays");
+    assert_eq!(c.preferred_key.as_deref(), Some("made-up-key-b"), "the key change stays");
+    assert_eq!(c.vehicle_keys.len(), 2);
 }

@@ -307,10 +307,13 @@ impl Engine {
 
     fn add_key(&self, car: CarId, key: &str) -> Result<()> {
         let db = &self.inner.db;
-        let mut c = db.car(car)?.ok_or(db::Error::NoSuchCar(car))?;
-        if !c.vehicle_keys.iter().any(|k| k == key) {
-            c.vehicle_keys.push(key.to_string());
-            db.update_car(c)?;
+        {
+            let _record = lock(&self.inner.car_record);
+            let mut c = db.car(car)?.ok_or(db::Error::NoSuchCar(car))?;
+            if !c.vehicle_keys.iter().any(|k| k == key) {
+                c.vehicle_keys.push(key.to_string());
+                db.update_car(c)?;
+            }
         }
         self.forget_waiting(key)
     }
@@ -329,11 +332,15 @@ impl Engine {
             if let Some(other) = db.car_for_key(key)?.filter(|&o| o != car)
                 && let Some(mut o) = db.car(other)?
             {
-                o.vehicle_keys.retain(|k| k != key);
-                if o.preferred_key.as_deref() == Some(key) {
-                    o.preferred_key = None;
+                {
+                    let _record = lock(&self.inner.car_record);
+                    o = db.car(other)?.unwrap_or(o);
+                    o.vehicle_keys.retain(|k| k != key);
+                    if o.preferred_key.as_deref() == Some(key) {
+                        o.preferred_key = None;
+                    }
+                    db.update_car(o)?;
                 }
-                db.update_car(o)?;
                 // what the key's logs gave the car it leaves goes with it: its trips and positions are the other car's
                 let l = self.car_lock(other);
                 let _held = lock(&l);
@@ -350,12 +357,15 @@ impl Engine {
         let _one = lock(&self.inner.claim);
         let db = &self.inner.db;
         let Some(car) = db.car_for_key(key)? else { return Ok(()) };
-        if let Some(mut c) = db.car(car)? {
-            c.vehicle_keys.retain(|k| k != key);
-            if c.preferred_key.as_deref() == Some(key) {
-                c.preferred_key = None;
+        {
+            let _record = lock(&self.inner.car_record);
+            if let Some(mut c) = db.car(car)? {
+                c.vehicle_keys.retain(|k| k != key);
+                if c.preferred_key.as_deref() == Some(key) {
+                    c.preferred_key = None;
+                }
+                db.update_car(c)?;
             }
-            db.update_car(c)?;
         }
         {
             let l = self.car_lock(car);
@@ -383,18 +393,23 @@ impl Engine {
     pub fn set_preferred(&self, key: &str, preferred: bool) -> Result<Option<CarId>> {
         let db = &self.inner.db;
         let Some(car) = db.car_for_key(key)? else { return Ok(None) };
-        let Some(mut c) = db.car(car)? else { return Ok(None) };
-        let was = c.preferred_key.clone();
-        if preferred {
-            c.preferred_key = Some(key.to_string());
-        } else if c.preferred_key.as_deref() == Some(key) {
-            c.preferred_key = None;
-        }
-        if c.preferred_key != was {
-            db.update_car(c)?;
-            if self.handle().is_ok() {
-                self.rebuild(crate::Scope::car(car))?;
+        let changed = {
+            let _record = lock(&self.inner.car_record);
+            let Some(mut c) = db.car(car)? else { return Ok(None) };
+            let was = c.preferred_key.clone();
+            if preferred {
+                c.preferred_key = Some(key.to_string());
+            } else if c.preferred_key.as_deref() == Some(key) {
+                c.preferred_key = None;
             }
+            let changed = c.preferred_key != was;
+            if changed {
+                db.update_car(c)?;
+            }
+            changed
+        };
+        if changed && self.handle().is_ok() {
+            self.rebuild(crate::Scope::car(car))?;
         }
         Ok(Some(car))
     }
@@ -480,6 +495,12 @@ impl Engine {
             && let Some(e) = &old
             && fresh(e, &record, c.profile().dbc_name())
         {
+            // (kept from before the arrival time was noted: noted once, then left)
+            let mut meta = records::meta(db, car)?;
+            if meta.last_arrived_ms.is_none_or(|t| t < record.arrived_ms) {
+                meta.last_arrived_ms = Some(record.arrived_ms);
+                records::put_meta(db, car, &meta)?;
+            }
             return Ok(());
         }
         let began = Instant::now();
@@ -513,13 +534,18 @@ impl Engine {
                         && c.vin.as_ref() != Some(&v)
                         && (c.vin.is_none() || v.via != 0)
                     {
-                        let before = c.profile();
-                        if c.name == NEW_CAR_NAME || c.vin.as_ref().is_some_and(|o| c.name == name_from_vin(o)) {
-                            c.name = name_from_vin(&v);
+                        // the record read again as it is now: only its VIN and its own name change, so an admin's
+                        // change made while this log was read stays
+                        let _record = lock(&self.inner.car_record);
+                        let Some(mut now) = db.car(car)? else { return Ok(()) };
+                        let before = now.profile();
+                        if now.name == NEW_CAR_NAME || now.vin.as_ref().is_some_and(|o| now.name == name_from_vin(o)) {
+                            now.name = name_from_vin(&v);
                         }
-                        c.vin = Some(v);
-                        profile_changed = c.profile() != before;
-                        db.update_car(c.clone())?;
+                        now.vin = Some(v);
+                        profile_changed = now.profile() != before;
+                        db.update_car(now.clone())?;
+                        c = now;
                         self.emit(Event::Fleet { car, change: "renamed", name: Some(c.name.clone()) });
                     }
                     let profile = dbc::Profile::from_name(c.profile().dbc_name());
@@ -609,6 +635,7 @@ impl Engine {
         self.inner.counters.decode_ms.fetch_add(took, Ordering::Relaxed);
         meta.last_done_ms = Some(now_ms());
         meta.last_took_ms = Some(took);
+        meta.last_arrived_ms = meta.last_arrived_ms.max(Some(record.arrived_ms));
         records::put_meta(db, car, &meta)?;
 
         self.rebuild_span(car, &mut meta, span.0, span.1)?;
@@ -833,6 +860,12 @@ impl Engine {
         db.replace_window::<StateRow>(car, from, to, &states)?;
         db.write_points::<ChargePoint>(car, Source::Can, from, to, &points)?;
         records::replace_cuts(db, car, meta, from, to, &t.cuts)?;
+        if let Some(last) = states.last()
+            && to > meta.newest_ms.unwrap_or(0)
+        {
+            // the window reaches the newest data: its last span is the car's state now
+            meta.state_since_ms = Some(last.span.start_ms);
+        }
         records::put_meta(db, car, meta)?;
         if let Some(last) = states.last() {
             // the car's state now: the last span's
