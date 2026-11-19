@@ -42,6 +42,8 @@ const STATUS = {
 // TeslaMate's table names, in words
 const TABLES = {
   cars: ['Cars', 'One row per car in the backup.'],
+  car_settings: ['Car settings', 'Per car: an LFP pack and free Supercharging. TeslaMate\'s polling settings are not kept.'],
+  charges: ['Charge points', 'Readings taken while a car charged (power, energy, range).'],
   drives: ['Drives', 'Trips from start to stop.'],
   charging_processes: ['Charges', 'Charging sessions with their energy and cost.'],
   positions: ['Track points', 'Positions recorded along the drives.'],
@@ -54,6 +56,14 @@ const tableName = (t) => TABLES[t]?.[0] || t.replace(/_/g, ' ');
 
 // why a row was skipped, in words, with what it means for the history
 const REASONS = {
+  'already-imported': ['Already imported', 'An earlier import stored this row (or left it out for good); it is not stored twice.'],
+  open: ['Still going', 'The drive, charge or spell had no end when the backup was made; a later backup brings it.'],
+  'unknown-car': ['Car not in the backup', 'The row names a car the backup\'s cars table does not have.'],
+  'car-left-out': ['For a car left out', 'The row belongs to an imported car you chose to leave out.'],
+  'unknown-charge': ['Charge not in the backup', 'A charge point whose charge is not in the backup, or was not kept.'],
+  'bad-value': ['A value cannot be read', 'A value the row needs is missing or unreadable; Values cleared names the column.'],
+  'wrong-field-count': ['Wrong number of fields', 'The row has not as many fields as the table has columns.'],
+  'too-long': ['Line too long', 'The row is longer than the server reads in one line.'],
   duplicate: ['Already in the file', 'The same row (same TeslaMate id) appears twice; the first copy is kept.'],
   no_energy: ['No energy figures', 'A charge that recorded no energy added; it would show as 0 kWh, so it is left out.'],
   no_position: ['No coordinates', 'A track point without a latitude or longitude; the drive keeps its other points.'],
@@ -61,7 +71,7 @@ const REASONS = {
   other_car: ['For a car left out', 'The row belongs to an imported car you chose to leave out.'],
   bad_values: ['Values out of range', 'Every value of the row failed its check (for example a negative distance).'],
 };
-const reasonWords = (code) => REASONS[code] || [code.replace(/_/g, ' '), 'Not one of the usual reasons; the code is the server\'s own.'];
+const reasonWords = (code) => REASONS[code] || [code.replace(/[_-]/g, ' '), 'Not one of the usual reasons; the code is the server\'s own.'];
 
 // why a check or an import failed, in words, and what to do
 const FAILURES = {
