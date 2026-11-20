@@ -660,6 +660,13 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .log-tail { margin: 0; white-space: pre-wrap; overflow-x: auto; font-size: var(--fs1); line-height: var(--lh1); }
 .break { overflow-wrap: anywhere; }
 
+/* statistics: the period switch line, milestones */
+.st-switch { display: flex; flex-wrap: wrap; align-items: flex-start; row-gap: var(--g2); margin-bottom: var(--g); line-height: var(--ctl); }
+.st-cars { margin-left: calc(var(--a2) * 2); display: inline-flex; flex-wrap: wrap; align-items: flex-start; }
+.chart-read + .chart-head { margin-top: calc(var(--g) * 2); }
+.stones { list-style: none; margin: 0 0 var(--g); padding: 0; }
+.stones > li { padding-block: var(--g2); border-bottom: 1px solid var(--rule); }
+
 /* ------------------------------------------------------------------ 7. states */
 .loading { color: var(--muted); padding-block: calc(var(--g) * 2); display: flex; align-items: center; gap: var(--a2); }
 .caret { display: inline-block; width: var(--a2); height: var(--tb2); background: var(--accent); vertical-align: top; animation: blink 1s steps(1) infinite; }
@@ -799,6 +806,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
   .ph-btn { min-height: 44px; line-height: 44px; }
   .kv { grid-template-columns: minmax(0, 1fr); }
   .drive-nav { white-space: pre-wrap; display: block; margin-left: 0; }
+  .st-cars { margin-left: 0; width: 100%; }
   .kv-row { grid-template-columns: calc(var(--a2) * 12) minmax(0, 1fr); }
   .fld, .bare-box .fld, .bare-box--wide .fld { grid-template-columns: minmax(0, 1fr); gap: var(--g2); }
   .fld-label { line-height: var(--lh2); }
