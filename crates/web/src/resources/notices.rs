@@ -3,7 +3,8 @@
 //! to other users of the machine), and the HTTPS certificate running out. Each is checked when asked (they are a few
 //! file reads), so a notice goes as soon as its cause is fixed.
 //!
-//! The program says where to look with a [`Sources`] service; without one there is nothing to say.
+//! The program says where to look with a [`Sources`] service; without one there is nothing to say. The move adds its
+//! own ([`move_notices`]): a move code waiting, a new server copying this one, the data moved away.
 
 use crate::{ApiResult, AppState};
 use axum::Router;
@@ -49,11 +50,64 @@ pub fn routes() -> Router<AppState> {
 
 async fn list(State(app): State<AppState>) -> ApiResult<axum::Json<Value>> {
     let now = app.now();
-    let items = match app.service::<Sources>() {
-        Ok(s) => app.blocking(move |_| Ok(notices(&s, now))).await?,
-        Err(_) => Vec::new(),
-    };
+    let src = app.service::<Sources>().ok();
+    let items = app
+        .blocking(move |app| {
+            let mut out = src.map(|s| notices(&s, now)).unwrap_or_default();
+            if let Ok(site) = crate::moving::site(app) {
+                let paused = app.service::<moving::old::Offer>().is_ok_and(|o| o.is_paused());
+                out.extend(move_notices(&site.data, &app.vault, now, paused));
+            }
+            Ok(out)
+        })
+        .await?;
     Ok(axum::Json(json!({ "items": items, "next": null })))
+}
+
+/// The notices of this server's side of a move: a move code waiting (`move_code_waiting`), a new server copying
+/// (`moving`), the data moved away (`moved`). `paused`: the uploads wait for the last round now.
+pub fn move_notices(data: &Path, vault: &vault::Vault, now_ms: u64, paused: bool) -> Vec<Notice> {
+    let Ok(st) = moving::old::status(data, vault) else { return Vec::new() };
+    let link = Some("/settings/server#move");
+    if let Some(m) = &st.moved {
+        let done = m.switched_ms.is_some();
+        let words = if done { "You can turn it off." } else { "Keep it on until the new server says it took over." };
+        return vec![Notice {
+            code: "moved",
+            level: "warning",
+            message: format!("This server's data moved to {}. It takes no uploads. {words}", m.to),
+            since_ms: Some(m.at_ms),
+            fix_link: link,
+            detail: Some(json!({ "to": m.to, "at_ms": m.at_ms, "switched_ms": m.switched_ms })),
+        }];
+    }
+    let Some(c) = &st.code else { return Vec::new() };
+    if let Some(cl) = &c.claimed {
+        let message = if paused {
+            format!("{} is copying the last changes of this server: uploads wait a few seconds. Keep it on.", cl.from)
+        } else {
+            format!("{} is copying this server. Keep it on.", cl.from)
+        };
+        return vec![Notice {
+            code: "moving",
+            level: "info",
+            message,
+            since_ms: Some(cl.at_ms),
+            fix_link: link,
+            detail: None,
+        }];
+    }
+    if c.expires_ms <= now_ms {
+        return Vec::new();
+    }
+    vec![Notice {
+        code: "move_code_waiting",
+        level: "info",
+        message: "A move code is waiting for the new server.".into(),
+        since_ms: Some(c.expires_ms.saturating_sub(moving::old::CODE_VALID_MS)),
+        fix_link: link,
+        detail: Some(json!({ "expires_ms": c.expires_ms })),
+    }]
 }
 
 fn modified_ms(p: &Path) -> Option<u64> {

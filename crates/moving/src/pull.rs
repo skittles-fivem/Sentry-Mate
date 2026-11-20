@@ -220,7 +220,34 @@ struct State {
     finish: Option<FinishRec>,
     #[serde(default)]
     installed: bool,
+    /// The move's own id, made by the first [`begin`] and kept when a stopped move carries on with a new code (the
+    /// web pages' SetupJob id). Empty in a state an older version wrote: the code id stands in.
+    #[serde(default)]
+    job_id: String,
+    /// The pause was had: the last round and the finish run.
+    #[serde(default)]
+    finishing: bool,
+    /// Top-level names a first start wrote that don't count as the owner's ([`Options::first_start_also`]).
+    #[serde(default)]
+    first_start_also: Vec<String>,
 }
+
+/// A new move's id: 8 random hex digits.
+fn new_job_id() -> String {
+    let mut b = [0u8; 4];
+    let _ = getrandom::fill(&mut b);
+    hex::encode(b)
+}
+
+impl State {
+    fn job_id(&self) -> String {
+        if self.job_id.is_empty() { self.code_id.clone() } else { self.job_id.clone() }
+    }
+}
+
+/// The problems after which a stopped move carries on with a new move code from the same old server (the copy so far
+/// kept): cancelled there, its session ended there, or the old server didn't prove itself.
+pub const CARRIES_ON: &[&str] = &["cancelled", "bad_session", "not_proven"];
 
 fn state_cipher(key: &[u8; 32]) -> XChaCha20Poly1305 {
     let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(b"sentry-mate move state v1"), key);
@@ -304,6 +331,8 @@ pub enum Pending {
         code_id: String,
         problem: Option<Problem>,
         cancelled: bool,
+        /// `move finish --recovery-key` (or the web's finish) asked for the switch: it runs at once.
+        forced: bool,
     },
     /// There, but its state can't be read.
     Unreadable,
@@ -324,6 +353,7 @@ pub fn pending(data: &Path, keys: &Path) -> Pending {
             code_id: st.code_id,
             problem: st.problem,
             cancelled: st.cancelled,
+            forced: data.join(STAGING).join(FORCED).exists(),
         },
         Err(_) => Pending::Unreadable,
     }
@@ -350,10 +380,20 @@ pub struct Status {
     pub skipped: Vec<proto::SkippedLine>,
     pub skipped_count: u64,
     pub started_ms: u64,
+    /// The move's id ([`begin`] makes it; kept when a stopped move carries on with a new code).
+    pub job_id: String,
+    /// The pause was had: the last round and the finish run.
+    pub finishing: bool,
+    /// A switch with the recovery key was asked for and waits to run.
+    pub forced: bool,
 }
 
 pub fn status(data: &Path, keys: &Path) -> Result<Option<Status>, Error> {
+    let forced = data.join(STAGING).join(FORCED).exists();
     Ok(load(data, keys)?.map(|(_, st)| Status {
+        job_id: st.job_id(),
+        finishing: st.finishing,
+        forced,
         phase: st.phase,
         from: st.address.to_string(),
         code_id: st.code_id,
@@ -402,7 +442,16 @@ pub struct Options {
     pub between_rounds: Duration,
     /// How long a request may wait for the old server's bytes.
     pub timeout: Duration,
+    /// Stop when the switch is next instead of switching (`Err` with the code [`SWITCH_NEXT`]): a running server
+    /// stops its web side first, then switches on its next start.
+    pub stop_before_switch: bool,
+    /// Top-level names in the data folder that count as a first start's too, not the owner's (a move begun from the
+    /// web pages: [`crate::import::WEB_FIRST_START`]); set aside at the switch. Kept in the move's state by [`begin`].
+    pub first_start_also: Vec<String>,
 }
+
+/// The problem code of a run told to stop before the switch ([`Options::stop_before_switch`]).
+pub const SWITCH_NEXT: &str = "switch_next";
 
 impl Options {
     pub fn new(app: &str) -> Options {
@@ -417,6 +466,8 @@ impl Options {
             retry_most: Duration::from_secs(60),
             between_rounds: Duration::from_secs(60),
             timeout: Duration::from_secs(120),
+            stop_before_switch: false,
+            first_start_also: Vec::new(),
         }
     }
 }
@@ -451,6 +502,12 @@ struct MovedInNote {
     bytes: u64,
     forced: bool,
     switched_sent: bool,
+    #[serde(default)]
+    job_id: String,
+    #[serde(default)]
+    started_ms: u64,
+    #[serde(default)]
+    same_machine: bool,
 }
 
 const MOVED_IN_LABEL: &str = ".move/moved-in.sealed";
@@ -467,6 +524,15 @@ pub struct MovedIn {
     pub moved_ms: u64,
     pub confirmed: bool,
     pub forced: bool,
+    /// The move's id (the code id for a note an older version wrote).
+    pub job_id: String,
+    pub started_ms: u64,
+    /// When the switch was made.
+    pub at_ms: u64,
+    /// The upload port's certificate SHA-256 (the old server's, which this one now uses).
+    pub cert_sha256: String,
+    /// The old server ran on this machine.
+    pub same_machine: bool,
 }
 
 /// The note of a move that brought this server's data (none if it didn't come by a move).
@@ -475,10 +541,15 @@ pub fn moved_in(data: &Path, vault: &Vault) -> Option<MovedIn> {
     let n: MovedInNote = serde_json::from_slice(&b).ok()?;
     Some(MovedIn {
         from: n.from.to_string(),
-        code_id: n.code_id,
+        code_id: n.code_id.clone(),
         moved_ms: n.moved_ms,
         confirmed: n.switched_sent,
         forced: n.forced,
+        job_id: if n.job_id.is_empty() { n.code_id.clone() } else { n.job_id },
+        started_ms: n.started_ms,
+        at_ms: n.at_ms,
+        cert_sha256: n.cert_sha256,
+        same_machine: n.same_machine,
     })
 }
 
@@ -534,7 +605,8 @@ pub fn begin(data: &Path, keys: &Path, address: &str, code: &str, opts: &Options
             if st.phase == Phase::Switching {
                 return Err(Problem::new("finished", "a move is switching here already", false));
             }
-            if st.phase == Phase::Copying && !st.cancelled {
+            let carries_on = st.problem.as_ref().is_some_and(|p| !p.retry && CARRIES_ON.contains(&p.code.as_str()));
+            if st.phase == Phase::Copying && !st.cancelled && !carries_on {
                 return Err(Problem::new(
                     "move_under_way",
                     format!("a move from {} is under way here; to start another: `move cancel` first", st.address),
@@ -551,6 +623,15 @@ pub fn begin(data: &Path, keys: &Path, address: &str, code: &str, opts: &Options
             st.claim = hex::encode(claim);
             st.cancelled = false;
             st.problem = None;
+            st.finishing = false;
+            if st.job_id.is_empty() {
+                st.job_id = new_job_id();
+            }
+            for a in &opts.first_start_also {
+                if !st.first_start_also.contains(a) {
+                    st.first_start_also.push(a.clone());
+                }
+            }
             write_in(&data.join(STAGING), STATE, &seal_state(&key, &st)?).map_err(Problem::io)?;
         }
         None => {
@@ -561,10 +642,11 @@ pub fn begin(data: &Path, keys: &Path, address: &str, code: &str, opts: &Options
                     false,
                 ));
             }
-            crate::import::unused(data, keys).map_err(|e| Problem::new("not_empty", e.to_string(), false))?;
+            crate::import::unused_but(data, keys, &opts.first_start_also)
+                .map_err(|e| Problem::new("not_empty", e.to_string(), false))?;
             // before the code is used: a disk that rounds file times could never finish a move
             exact_times(data)?;
-            stage(data, keys, &address, &k, &claim).map_err(Problem::from)?;
+            stage(data, keys, &address, &k, &claim, &opts.first_start_also).map_err(Problem::from)?;
         }
     }
     let pull = Pull::open(data, keys, opts).map_err(|e| Problem::new("unreadable", e.to_string(), false))?;
@@ -619,7 +701,14 @@ fn times_problem() -> Problem {
     )
 }
 
-fn stage(data: &Path, keys: &Path, address: &Address, k: &crate::code::Keys, claim: &[u8; 16]) -> Result<(), Error> {
+fn stage(
+    data: &Path,
+    keys: &Path,
+    address: &Address,
+    k: &crate::code::Keys,
+    claim: &[u8; 16],
+    also: &[String],
+) -> Result<(), Error> {
     let (made, made_keys) = (data.join(BEING_MADE), keys.join(BEING_MADE));
     crate::import::remove_all(&made)?;
     crate::import::remove_all(&made_keys)?;
@@ -651,6 +740,9 @@ fn stage(data: &Path, keys: &Path, address: &Address, k: &crate::code::Keys, cla
         skipped_count: 0,
         finish: None,
         installed: false,
+        job_id: new_job_id(),
+        finishing: false,
+        first_start_also: also.to_vec(),
     };
     write_in(&made, STATE, &seal_state(&key, &st)?)?;
     std::fs::File::create(made.join(LOCK))?;
@@ -749,7 +841,7 @@ pub fn run(data: &Path, keys: &Path, opts: &Options) -> Result<Done, Problem> {
     let pull = Pull::open(data, keys, opts).map_err(|e| Problem::new("unreadable", e.to_string(), false))?;
     let r = pull.run();
     match &r {
-        Err(p) if p.code == "stopped" => {
+        Err(p) if p.code == "stopped" || p.code == SWITCH_NEXT => {
             // what it was waiting for stays in the state, for `move status`
             let _ = pull.save();
         }
@@ -1129,6 +1221,11 @@ impl<'a> Pull<'a> {
         tracing::info!("move: {} files, {} to copy; {} free here", a.files, crate::size(a.bytes), crate::size(free));
         {
             let mut st = lock(&self.st);
+            // a copy kept from before counts as done so far (the page doesn't drop back to nothing)
+            let mut so_far = (st.progress.files_done, st.progress.bytes_done);
+            if st.kept_cert.is_none() {
+                so_far = (0, 0);
+            }
             if let Some(kept) = st.kept_cert.take() {
                 if !kept.eq_ignore_ascii_case(&a.cert_sha256) {
                     // another server: what was copied before isn't of its data
@@ -1141,6 +1238,7 @@ impl<'a> Pull<'a> {
                     st.parts.clear();
                     st.racy.clear();
                     st.refetch.clear();
+                    so_far = (0, 0);
                 } else {
                     tracing::info!("move: the same old server as before: carrying on with what was copied");
                 }
@@ -1156,8 +1254,13 @@ impl<'a> Pull<'a> {
             });
             st.phase = Phase::Copying;
             st.problem = None;
-            st.progress =
-                Progress { round: 0, files_done: 0, files_total: a.files, bytes_done: 0, bytes_total: a.bytes };
+            st.progress = Progress {
+                round: 0,
+                files_done: so_far.0.min(a.files),
+                files_total: a.files,
+                bytes_done: so_far.1.min(a.bytes),
+                bytes_total: a.bytes,
+            };
         }
         self.save()
     }
@@ -1168,6 +1271,9 @@ impl<'a> Pull<'a> {
             let step = match phase {
                 Phase::Claiming => self.claim_with_retries(),
                 Phase::Copying => self.copy_and_finish(),
+                Phase::Switching if self.opts.stop_before_switch => {
+                    return Err(Problem::new(SWITCH_NEXT, "the copy is done: switching to it", false));
+                }
                 Phase::Switching => return self.switch(),
             };
             match step {
@@ -1225,6 +1331,7 @@ impl<'a> Pull<'a> {
             });
             st.installed = true;
             st.phase = Phase::Switching;
+            st.finishing = false;
         }
         self.save()?;
         crate::import::remove_file(&staging.join(FORCED)).map_err(Problem::io)?;
@@ -1344,7 +1451,16 @@ impl<'a> Pull<'a> {
     /// The pause, the last round under it and the finish. `Ok(false)`: the pause couldn't be had or ended: catch up
     /// and ask again.
     fn finish_with_pause(&self, conns: &mut [Client]) -> Result<bool, Problem> {
-        crate::import::unused(&self.data, &self.keys)
+        let r = self.pause_and_finish(conns);
+        if !matches!(r, Ok(true)) && std::mem::take(&mut lock(&self.st).finishing) {
+            let _ = self.save();
+        }
+        r
+    }
+
+    fn pause_and_finish(&self, conns: &mut [Client]) -> Result<bool, Problem> {
+        let also = lock(&self.st).first_start_also.clone();
+        crate::import::unused_but(&self.data, &self.keys, &also)
             .map_err(|e| Problem::new("not_empty", format!("{e}; the move can't switch here"), false))?;
         tracing::info!("move: caught up; the old server pauses uploads for the last changes");
         let bearer = self.bearer();
@@ -1364,6 +1480,8 @@ impl<'a> Pull<'a> {
             self.sleep(Duration::from_secs(10).min(self.opts.between_rounds))?;
             return Ok(false);
         };
+        lock(&self.st).finishing = true;
+        self.save()?;
         let started = Instant::now();
         for _ in 0..5 {
             let r = match self.round(conns, Some(&pause.pause)) {
@@ -1447,6 +1565,7 @@ impl<'a> Pull<'a> {
             });
             st.phase = Phase::Switching;
             st.problem = None;
+            st.finishing = false;
         }
         // saved and synced before anything else is touched: from here the switch always finishes
         self.save()
@@ -1501,11 +1620,22 @@ impl<'a> Pull<'a> {
             bytes,
             forced: f.forced,
             switched_sent: false,
+            job_id: st.job_id(),
+            started_ms: st.started_ms,
+            same_machine,
         };
         let note = Zeroizing::new(serde_json::to_vec(&note).map_err(|e| Problem::new("disk", e.to_string(), false))?);
-        let replaced =
-            crate::import::bring_all_in(&self.data, &self.keys, STAGING, MOVED_IN, &note, &v, &[], &mut || Ok(()))
-                .map_err(Problem::from)?;
+        let replaced = crate::import::bring_all_in(
+            &self.data,
+            &self.keys,
+            STAGING,
+            MOVED_IN,
+            &note,
+            &v,
+            &st.first_start_also,
+            &mut || Ok(()),
+        )
+        .map_err(Problem::from)?;
         Ok(Done {
             from: st.address.to_string(),
             cert_sha256: c.cert_sha256,
@@ -2136,7 +2266,7 @@ mod tests {
         std::fs::create_dir_all(&data).unwrap();
         std::fs::create_dir_all(&keys).unwrap();
         let code = crate::code::MoveCode::random().unwrap();
-        stage(&data, &keys, &Address::parse("127.0.0.1").unwrap(), &code.keys(), &[7u8; 16]).unwrap();
+        stage(&data, &keys, &Address::parse("127.0.0.1").unwrap(), &code.keys(), &[7u8; 16], &[]).unwrap();
         let opts = Options::new("test");
         let pull = Pull::open(&data, &keys, &opts).unwrap();
         std::thread::scope(|s| {

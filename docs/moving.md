@@ -37,6 +37,9 @@ the server only: the set-up code, passwords, move codes and recovery keys never 
 3. Keep the page open, or come back to it: once the new server uses the code, it shows what is being copied (how
    much, how many files, which step). At the end it says **Moved to 192.168.1.30: you can turn this server off**.
 
+After the move the old server's pages stay up, read only: you can look at everything, sign in and out, download an
+export file and undo the move, but nothing else changes there (any change answers "moved").
+
 **Cancel the code** stops the code working, or ends a move that has not finished. The old server's data is never
 changed by a move, so cancelling is always safe.
 
@@ -55,8 +58,9 @@ Then choose one of three:
   lost: **Settings → Server and access** has **Show the key again** (your password first) until it is ticked, and
   **Make a new recovery key** for a key lost later (the old one stops working; exports made before still need it).
 - **Move here from another server**: type the old server's address (the one the CAN Bridge sends to, for example
-  `192.168.1.20`) and the move code. The page shows the copy as it goes. At the end, sign in with your account from
-  the old server: everything is there, accounts too.
+  `192.168.1.20`) and the move code. The page shows the copy as it goes (the server keeps its pages up while it
+  copies). At the end the server switches to the data and starts again by itself (a few seconds); then sign in with
+  your account from the old server: everything is there, accounts too.
 - **Restore from an export file**: choose the file and type the old server's recovery key. The key and the file are
   checked before the upload starts; then the page shows the upload and the checks. The server reads the file as it
   arrives, so it needs room for the data only, not for the file as well. At the end the server switches to the data
@@ -68,7 +72,8 @@ closed, the network dropped) carries on when you choose the same file again. If 
 while a move copies, the page offers **Finish with what was copied**: it needs the old server's recovery key and a
 tick that the old server is gone for good (the last changes may be missing). A move cancelled on the old server stops
 and waits: make a new move code there, type it in **New move code from the old server** and press **Carry on**; what
-was copied is kept. **Give up** removes what was copied, and the page goes back to the three choices.
+was copied is kept. The same goes for a move the old server no longer knows (its move was removed there) or one where
+the old server could not prove itself. Carrying on takes a code from the same old server only. **Give up** removes what was copied, and the page goes back to the three choices.
 
 ### On the old server: download an export file
 

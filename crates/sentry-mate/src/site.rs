@@ -94,9 +94,10 @@ impl web::CarDirectory for EngineCars {
 }
 
 /// The web side's state: accounts and their audit log in the data folder, the web's own files in `web/`, the setup
-/// code beside the key file, the ports the server listens on (for `/network`), and the MQTT publisher's side (for
-/// [`web::resources::mqtt::spawn`]). The server settings are applied at once (the preference defaults, the tile
+/// code beside the key file, the ports the server listens on (for `/network`), the move's side of the upload port
+/// (`offer`: whether its uploads are paused), and the MQTT publisher's side (for [`web::resources::mqtt::spawn`]). The server settings are applied at once (the preference defaults, the tile
 /// origins).
+#[allow(clippy::too_many_arguments)]
 pub fn web_state(
     data: &Path,
     keys: &Path,
@@ -105,6 +106,7 @@ pub fn web_state(
     hashing: accounts::Hashing,
     network: Option<web::resources::mqtt::Network>,
     claim: web::moving::ClaimKeep,
+    offer: Option<Arc<moving::old::Offer>>,
 ) -> Result<web::AppState, Fail> {
     let audit = Arc::new(accounts::Audit::open(data.join("audit"), v.clone(), accounts::system_clock())?);
     let options = accounts::Options { hashing, ..accounts::Options::default() };
@@ -128,6 +130,10 @@ pub fn web_state(
         ));
     let app = match network {
         Some(n) => app.service(Arc::new(n)),
+        None => app,
+    };
+    let app = match offer {
+        Some(o) => app.service(o),
         None => app,
     }
     .build()?;

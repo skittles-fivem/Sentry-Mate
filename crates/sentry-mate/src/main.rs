@@ -673,8 +673,9 @@ async fn serve(
         let was_moved = offer.is_moved();
         let ready = import_ready(data.to_path_buf(), keys.to_path_buf(), refused.clone());
         tokio::pin!(ready);
-        let incoming = move_incoming(data.to_path_buf(), keys.to_path_buf());
-        tokio::pin!(incoming);
+        // a move into this server runs here, with the web side up (its page shows how far it is)
+        let mut incoming = MoveRun::new();
+        let mut look = tokio::time::interval(Duration::from_secs(1));
         let mut hourly = tokio::time::interval(Duration::from_secs(3600));
         hourly.tick().await;
         let mut said_refused: Option<u64> = None;
@@ -691,32 +692,44 @@ async fn serve(
             tokio::select! {
                 r = &mut server => {
                     stop(&mut housekeeping);
+                    incoming.stop().await;
                     side.stop(site::ENGINE_STOP).await;
                     r?;
                     return Ok(());
                 }
                 r = &mut side.web => {
                     stop(&mut housekeeping);
+                    incoming.stop().await;
                     side.stop(site::ENGINE_STOP).await;
                     r?;
                     return Ok(());
                 }
                 _ = shutdown() => break Next::Stop,
                 _ = &mut ready => break Next::Import,
-                _ = &mut incoming => break Next::Restart,
+                _ = look.tick(), if !incoming.running() => {
+                    if incoming.look(data, keys).await {
+                        break Next::Restart;
+                    }
+                }
+                r = MoveRun::ended(&mut incoming.task) => {
+                    incoming.task = None;
+                    if incoming.after(r, data, keys, port).await {
+                        break Next::Restart;
+                    }
+                }
                 c = moved.changed() => {
                     if c.is_err() {
                         continue;
                     }
                     let now = *moved.borrow_and_update();
                     if now {
-                        // the data moved away: nothing writes here from now on (the history and the web side
-                        // included: the web port closes)
+                        // the data moved away: nothing writes here from now on (the history included); the web
+                        // side stays up, read only, to show the move and undo it
                         if let Some(h) = housekeeping.take() {
                             h.abort();
                         }
-                        side.stop(site::ENGINE_STOP_RESTART).await;
-                        tracing::info!("move: the web UI stops here; it runs on the new server");
+                        side.stop_engine(site::ENGINE_STOP_RESTART).await;
+                        tracing::info!("move: the data moved; the web UI here shows it, read only");
                     } else if was_moved || housekeeping.is_none() {
                         // `move undo`: this server takes uploads again, with its housekeeping
                         break Next::Restart;
@@ -735,6 +748,7 @@ async fn serve(
                 }
             }
         };
+        incoming.stop().await;
         match next {
             Next::Stop => {
                 stop(&mut housekeeping);
@@ -808,6 +822,13 @@ struct Side {
 }
 
 impl Side {
+    /// Stops the engine's background work only (its data stays readable for the web side).
+    async fn stop_engine(&mut self, wait: Duration) {
+        if let Some(e) = self.engine.as_mut() {
+            e.stop(wait).await;
+        }
+    }
+
     /// Stops the web port (its connections end) and then the engine (waiting at most `wait` for a log under way).
     async fn stop(&mut self, wait: Duration) {
         self.web = Box::pin(std::future::pending());
@@ -863,18 +884,112 @@ fn refuse_writes(data: &Path, v: &Vault) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-/// Resolves once a move was started here by `move from` while this server runs (it looks every second).
-async fn move_incoming(data: PathBuf, keys: PathBuf) {
-    loop {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        if !data.join(moving::pull::STAGING).exists() {
-            continue;
+type PullTask = tokio::task::JoinHandle<Result<moving::pull::Done, moving::pull::Problem>>;
+
+/// A move into this server, carried on while the server runs with its web side up (begun from the web page, by
+/// `move from`, by the two lines, or staged before a restart). It stops before the switch: the server then starts
+/// again, and the switch runs before anything else does.
+struct MoveRun {
+    task: Option<PullTask>,
+    stop: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// After a problem it tries again by itself, not before this.
+    not_before: tokio::time::Instant,
+}
+
+impl MoveRun {
+    fn new() -> MoveRun {
+        MoveRun { task: None, stop: None, not_before: tokio::time::Instant::now() }
+    }
+
+    fn running(&self) -> bool {
+        self.task.is_some()
+    }
+
+    /// Resolves when the run ends (never while there is none).
+    async fn ended(task: &mut Option<PullTask>) -> Result<Result<moving::pull::Done, moving::pull::Problem>, String> {
+        match task.as_mut() {
+            Some(t) => t.await.map_err(|e| e.to_string()),
+            None => std::future::pending().await,
         }
-        let (d, k) = (data.clone(), keys.clone());
-        if let Ok(p) = tokio::task::spawn_blocking(move || moving::pull::pending(&d, &k)).await
-            && pull_wanted(&p)
-        {
-            return;
+    }
+
+    /// Looks whether a staged move wants carrying on, and starts it. `true`: a switch waits (start again for it).
+    async fn look(&mut self, data: &Path, keys: &Path) -> bool {
+        if tokio::time::Instant::now() < self.not_before || !data.join(moving::pull::STAGING).exists() {
+            return false;
+        }
+        let (d, k) = (data.to_path_buf(), keys.to_path_buf());
+        let Ok(p) = tokio::task::spawn_blocking(move || moving::pull::pending(&d, &k)).await else { return false };
+        if let moving::pull::Pending::Moving { phase: moving::pull::Phase::Switching, .. } = &p {
+            return true;
+        }
+        if !pull_wanted(&p) {
+            return false;
+        }
+        if let moving::pull::Pending::Moving { from, code_id, percent, .. } = &p {
+            if *percent > 0 {
+                tracing::info!("move: carrying on the move from {from} (move code {code_id}; {percent} % was copied)");
+            } else {
+                tracing::info!("move: bringing the data from {from} (move code {code_id})");
+            }
+        }
+        let mut o = move_options();
+        o.stop_before_switch = true;
+        self.stop = Some(o.stop.clone());
+        let (d, k) = (data.to_path_buf(), keys.to_path_buf());
+        self.task = Some(tokio::task::spawn_blocking(move || moving::pull::run(&d, &k, &o)));
+        false
+    }
+
+    /// What a run that ended means. `true`: the copy is done (start again: the switch runs first).
+    async fn after(
+        &mut self,
+        r: Result<Result<moving::pull::Done, moving::pull::Problem>, String>,
+        data: &Path,
+        keys: &Path,
+        port: u16,
+    ) -> bool {
+        self.stop = None;
+        match r {
+            Ok(Ok(done)) => {
+                report_moved_in(&done, port);
+                true
+            }
+            Ok(Err(p)) if p.code == moving::pull::SWITCH_NEXT => {
+                tracing::info!("move: the copy is done; this server starts again to switch to it");
+                true
+            }
+            Ok(Err(p)) if p.code == "stopped" => false,
+            Ok(Err(p)) if p.code == "cancelled_here" => {
+                // `move cancel` removes the copy; what a stop part way left is removed here
+                let (d, k) = (data.to_path_buf(), keys.to_path_buf());
+                let _ = tokio::task::spawn_blocking(move || moving::pull::tidy(&d, &k)).await;
+                tracing::info!("move: the move was cancelled here; this server goes on as a new one");
+                false
+            }
+            Ok(Err(p)) => {
+                tracing::warn!("move: {}", p.message);
+                if p.retry {
+                    tracing::warn!("move: trying again in {} s", SWITCH_AGAIN.as_secs());
+                    self.not_before = tokio::time::Instant::now() + SWITCH_AGAIN;
+                }
+                false
+            }
+            Err(e) => {
+                tracing::warn!("move: the move stopped: {e}; trying again in {} s", SWITCH_AGAIN.as_secs());
+                self.not_before = tokio::time::Instant::now() + SWITCH_AGAIN;
+                false
+            }
+        }
+    }
+
+    /// Stops the run at its next step (it carries on from there on the next start).
+    async fn stop(&mut self) {
+        if let Some(s) = self.stop.take() {
+            s.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(t) = self.task.take() {
+            let _ = t.await;
         }
     }
 }
@@ -882,8 +997,10 @@ async fn move_incoming(data: PathBuf, keys: PathBuf) {
 /// Whether a staged move is one to carry on now (not one waiting for the owner).
 fn pull_wanted(p: &moving::pull::Pending) -> bool {
     match p {
-        moving::pull::Pending::Moving { phase, problem, cancelled, .. } => {
-            *phase == moving::pull::Phase::Switching || (!cancelled && problem.as_ref().is_none_or(|p| p.retry))
+        moving::pull::Pending::Moving { phase, problem, cancelled, forced, .. } => {
+            *phase == moving::pull::Phase::Switching
+                || *forced
+                || (!cancelled && problem.as_ref().is_none_or(|p| p.retry))
         }
         _ => false,
     }
@@ -893,9 +1010,10 @@ fn code_id(code: &str) -> Option<String> {
     moving::code::MoveCode::parse(code).ok().map(|c| c.keys().id)
 }
 
-/// On start, a move into this server: carried on if one is staged, started if the two lines are set and this
-/// server is new. Runs until the move is done and switched; a problem only the owner can solve is said in the log,
-/// and the server then starts as usual (it has no tokens, so nothing reaches it). `false`: told to stop meanwhile.
+/// On start, a move into this server: started if the two lines are set and this server is new, and switched to if
+/// its copy is done. The copy itself runs once the server is up ([`MoveRun`], the web side showing it); a problem
+/// only the owner can solve is said in the log, and the server starts as usual (it has no tokens, so nothing reaches
+/// it). `false`: told to stop meanwhile.
 async fn carry_on_move(data: &Path, keys: &Path, env: &MoveEnv, port: u16, tried: &mut Option<String>) -> bool {
     let opts = Arc::new(move_options());
     let mut just_begun = false;
@@ -961,6 +1079,11 @@ async fn carry_on_move(data: &Path, keys: &Path, env: &MoveEnv, port: u16, tried
                         return true;
                     }
                 }
+            }
+            moving::pull::Pending::Moving { phase, .. } if *phase != moving::pull::Phase::Switching => {
+                // the running server carries it on, with its web side up ([`MoveRun`])
+                let _ = just_begun;
+                return true;
             }
             moving::pull::Pending::Moving { from, code_id, percent, .. } => {
                 if just_begun {
@@ -1053,6 +1176,8 @@ async fn begin_move(data: &Path, keys: &Path, from: &str, code: &str, opts: &Arc
 fn move_options() -> moving::pull::Options {
     let mut o = moving::pull::Options::new(APP_VERSION);
     o.min_free = ingest::store::MIN_FREE;
+    // what the web side writes before there is an account isn't the owner's data
+    o.first_start_also = moving::import::WEB_FIRST_START.iter().map(|n| n.to_string()).collect();
     o
 }
 
@@ -1363,12 +1488,12 @@ async fn start(
     let ticker = offer.spawn_ticker();
     let app = router(up.clone()).merge(moving::old::router(offer.clone()));
     let server = Box::pin(serve_tls(listener, id.tls_config()?, app));
-    let side = if serving {
-        start_web(data, keys, &v, engine, &id, net, hashing, claim.clone()).await?
-    } else {
-        tracing::info!("the data moved away: no web UI here (it runs on the new server)");
-        Side { engine: Some(engine), web: Box::pin(std::future::pending()), app: None, tasks: Vec::new() }
-    };
+    if !serving {
+        tracing::info!(
+            "the data moved away: the web UI here shows the move, read only (the data is on the new server)"
+        );
+    }
+    let side = start_web(data, keys, &v, engine, &id, net, hashing, claim.clone(), offer.clone()).await?;
     let offer = Arc::new(OfferAndUploads { offer, uploads: up });
     Ok(Instance { server, housekeeping, offer, ticker, confirm, side })
 }
@@ -1384,12 +1509,14 @@ async fn start_web(
     net: &Net,
     hashing: accounts::Hashing,
     claim: web::moving::ClaimKeep,
+    offer: Arc<moving::old::Offer>,
 ) -> Result<Side, Box<dyn std::error::Error>> {
     let (d, k, v2, e2) = (data.to_path_buf(), keys.to_path_buf(), v.clone(), engine.engine.clone());
     let ports = web::resources::mqtt::Network { web_port: net.web, upload_port: net.upload };
-    let app = tokio::task::spawn_blocking(move || site::web_state(&d, &k, v2, &e2, hashing, Some(ports), claim))
-        .await?
-        .map_err(|e| e as Box<dyn std::error::Error>)?;
+    let app =
+        tokio::task::spawn_blocking(move || site::web_state(&d, &k, v2, &e2, hashing, Some(ports), claim, Some(offer)))
+            .await?
+            .map_err(|e| e as Box<dyn std::error::Error>)?;
     let listener = tokio::net::TcpListener::bind((net.bind.as_str(), net.web)).await?;
     tracing::info!("web UI on https://{}:{}/ (TLS 1.3), the same certificate", net.bind, net.web);
     let a2 = app.clone();

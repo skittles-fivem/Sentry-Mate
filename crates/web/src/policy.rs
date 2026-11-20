@@ -1,7 +1,8 @@
 //! Who may use which route, checked in one place for every `/api/v1` route before its handler runs.
 //!
 //! The order: TLS only (`403 https_only`), a request rate per address (`429 throttled`), the CSRF header on every
-//! change (`X-Sentry-Mate: 1`, else `403 csrf`; sign-in and setup too), the session (`401 not_signed_in`), an
+//! change (`X-Sentry-Mate: 1`, else `403 csrf`; sign-in and setup too), on a server whose data moved away every
+//! change but those of [`OPEN_WHEN_MOVED`] (`409 moved`), the session (`401 not_signed_in`), an
 //! account whose required two-step sign-in is not set up yet reaches only its own pages, the role (`403
 //! not_allowed`), and every car the request names: the `{car}` of the path, each car of `cars=`, and `car=`
 //! (`404 no_such_car`, the same for a car that doesn't exist and one the account may not see).
@@ -120,6 +121,24 @@ fn concrete_route<'a>(pattern: &str, params: impl Iterator<Item = (&'a str, &'a 
     out
 }
 
+/// The changes a server whose data moved away still takes (route patterns below `/api/v1`, and what is under them):
+/// the move itself (cancel, undo), export files, showing the recovery key and saying it is saved, signing in and out,
+/// and the person's own sessions and preferences. Every other change answers `409 moved`.
+pub const OPEN_WHEN_MOVED: &[&str] = &[
+    "/system/move",
+    "/system/exports",
+    "/system/recovery-key/show",
+    "/system/recovery-key/saved",
+    "/session",
+    "/me/sessions",
+    "/me/preferences",
+];
+
+fn open_when_moved(pattern: &str) -> bool {
+    let p = pattern.strip_prefix("/api/v1").unwrap_or(pattern);
+    OPEN_WHEN_MOVED.iter().any(|r| under(p, r))
+}
+
 fn is_change(m: &Method) -> bool {
     !matches!(*m, Method::GET | Method::HEAD | Method::OPTIONS)
 }
@@ -186,6 +205,17 @@ pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Res
     let rule = access(&method, &pattern);
     if is_change(&method) && parts.headers.get(CSRF_HEADER).and_then(|v| v.to_str().ok()) != Some("1") {
         return ApiError::csrf().into_response();
+    }
+    if is_change(&method)
+        && !open_when_moved(&pattern)
+        && crate::moving::site(&app).is_ok_and(|s| moving::old::is_moved(&s.data))
+    {
+        return ApiError::conflict(
+            "moved",
+            "This server's data moved to another server: it takes no changes. Reading still works. To use it again: \
+             Settings, Server, Undo the move.",
+        )
+        .into_response();
     }
     let token = session_token(&parts.headers);
     let mut viewer = None;

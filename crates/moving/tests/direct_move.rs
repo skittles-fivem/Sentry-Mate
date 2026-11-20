@@ -802,3 +802,85 @@ async fn a_fetch_the_new_server_stops_reading_does_not_hold_the_pause_for_ever()
     o.stop();
     let _ = stalled.join();
 }
+
+/// A move whose session the old server no longer knows (its move state was removed) stops with `bad_session`; a new
+/// code from the same old server carries it on with the same job id and the copy kept. A run told to stop before the
+/// switch leaves it for the next run, and the note after the switch keeps the job id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_move_that_lost_its_session_carries_on_with_a_new_code() {
+    let old = server();
+    fill(&old).await;
+    let o = run_server(&old.data, old.vault.clone(), 0).await;
+    let code = code_of(&old);
+    let (_d, data, keys) = empty();
+    let (d, k, a, c) = (data.clone(), keys.clone(), address(&o), code);
+    blocking(move || pull::begin(&d, &k, &a, &c, &opts())).await.unwrap();
+    let first = pull::status(&data, &keys).unwrap().unwrap();
+    assert_eq!(first.job_id.len(), 8);
+    assert_ne!(first.job_id, first.code_id);
+    // part of the copy, then stopped (as a server is)
+    let o1 = opts();
+    let stop = o1.stop.clone();
+    let (d, k) = (data.clone(), keys.clone());
+    let run = tokio::task::spawn_blocking(move || pull::run(&d, &k, &o1));
+    let t0 = Instant::now();
+    while pull::status(&data, &keys).unwrap().is_some_and(|s| s.progress.files_done < 3) {
+        assert!(t0.elapsed() < Duration::from_secs(30));
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    stop.store(true, Ordering::Relaxed);
+    let _ = run.await.unwrap();
+    let copied = pull::status(&data, &keys).unwrap().unwrap().progress.files_done;
+    assert!(copied >= 3);
+    // the old server forgets the move (its move state removed, a new code made): the next run stops with
+    // bad_session, waiting for the owner
+    std::fs::remove_file(old.data.join(moving::old::DIR).join("code.sealed")).unwrap();
+    let code = code_of(&old);
+    let (d, k) = (data.clone(), keys.clone());
+    let p = blocking(move || pull::run(&d, &k, &opts())).await.unwrap_err();
+    assert_eq!(p.code, "bad_session");
+    assert!(!p.retry);
+    let st = pull::status(&data, &keys).unwrap().unwrap();
+    assert_eq!(st.problem.as_ref().map(|p| p.code.as_str()), Some("bad_session"));
+    assert!(matches!(pull::pending(&data, &keys), pull::Pending::Moving { forced: false, .. }));
+    // a new code from the same server carries it on: the same job, the copy kept
+    let (d, k, a, c) = (data.clone(), keys.clone(), address(&o), code.clone());
+    blocking(move || pull::begin(&d, &k, &a, &c, &opts())).await.unwrap();
+    let st = pull::status(&data, &keys).unwrap().unwrap();
+    assert_eq!(st.job_id, first.job_id);
+    assert_eq!(st.started_ms, first.started_ms);
+    assert_ne!(st.code_id, first.code_id);
+    assert!(st.problem.is_none());
+    assert!(st.progress.files_done >= copied, "the copy is kept");
+    // the same code again changes nothing
+    let (d, k, a, c) = (data.clone(), keys.clone(), address(&o), code);
+    blocking(move || pull::begin(&d, &k, &a, &c, &opts())).await.unwrap();
+    // a run that stops before the switch
+    let mut o2 = opts();
+    o2.stop_before_switch = true;
+    let (d, k) = (data.clone(), keys.clone());
+    let p = blocking(move || pull::run(&d, &k, &o2)).await.unwrap_err();
+    assert_eq!(p.code, pull::SWITCH_NEXT);
+    let st = pull::status(&data, &keys).unwrap().unwrap();
+    assert_eq!(st.phase, pull::Phase::Switching);
+    assert!(st.problem.is_none(), "stopping before the switch is no problem");
+    assert!(!st.finishing);
+    let (d, k) = (data.clone(), keys.clone());
+    let done = blocking(move || pull::run(&d, &k, &opts())).await.unwrap();
+    assert!(done.same_machine && !done.forced);
+    let v = new_vault(&data, &keys);
+    let note = pull::moved_in(&data, &v).unwrap();
+    assert_eq!(note.job_id, first.job_id);
+    assert_eq!(note.started_ms, first.started_ms);
+    assert!(note.same_machine);
+    assert_eq!(note.cert_sha256, o.fingerprint);
+    // the old server: moved
+    let st = moving::old::status(&old.data, &old.vault).unwrap();
+    assert!(st.moved.is_some());
+    assert!(st.last_undone_ms.is_none());
+    let before = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    moving::old::undo(&old.data, &old.vault).unwrap().unwrap();
+    let st = moving::old::status(&old.data, &old.vault).unwrap();
+    assert!(st.last_undone_ms.is_some_and(|t| t >= before));
+    o.stop();
+}

@@ -386,6 +386,17 @@ pub struct OldStatus {
     pub code: Option<CodeInfo>,
     pub moved: Option<MovedInfo>,
     pub last_cancelled: Option<(u64, String)>,
+    /// When a move was last undone (`move undo`).
+    pub last_undone_ms: Option<u64>,
+}
+
+/// When a move was last undone: the newest `undone-<ms>.sealed` [`undo`] left.
+fn last_undone(data: &Path) -> Option<u64> {
+    std::fs::read_dir(data.join(DIR))
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str()?.strip_prefix("undone-")?.strip_suffix(".sealed")?.parse::<u64>().ok())
+        .max()
 }
 
 pub fn status(data: &Path, vault: &Vault) -> Result<OldStatus, Error> {
@@ -407,7 +418,31 @@ pub fn status(data: &Path, vault: &Vault) -> Result<OldStatus, Error> {
     let moved = read::<MovedRecord>(data, vault, MOVED)?.map(|m| MovedInfo::from(&m));
     let last_cancelled =
         read::<Vec<CancelledRecord>>(data, vault, CANCELLED)?.and_then(|l| l.last().map(|c| (c.at_ms, c.why.clone())));
-    Ok(OldStatus { code, moved, last_cancelled })
+    Ok(OldStatus { code, moved, last_cancelled, last_undone_ms: last_undone(data) })
+}
+
+/// Writes a moved state as a finished move leaves it, to `to`, switched or not (tests of what a moved server does:
+/// a real one needs two servers). Nothing else of a move is made.
+#[doc(hidden)]
+pub fn mark_moved_for_tests(data: &Path, vault: &Vault, to: &str, switched: bool) -> Result<(), Error> {
+    let _l = lock_dir(data)?;
+    let now = now_ms();
+    let m = MovedRecord {
+        v: 1,
+        at_ms: now,
+        to: to.to_string(),
+        code_id: "TESTS".into(),
+        claim: String::new(),
+        auth: String::new(),
+        wrap: String::new(),
+        session_sha256: String::new(),
+        key_id: vault.key_id().to_string(),
+        app: String::new(),
+        switched_ms: switched.then_some(now),
+    };
+    write(data, vault, MOVED, &m)?;
+    let _ = std::fs::remove_file(path(data, CODE));
+    Ok(())
 }
 
 /// Makes the waiting code expire now (tests).
@@ -666,6 +701,11 @@ impl Offer {
     /// Whether this server's data moved (it takes no uploads).
     pub fn is_moved(&self) -> bool {
         lock(&self.hold).is_some()
+    }
+
+    /// Whether the uploads are paused for the move's last round now.
+    pub fn is_paused(&self) -> bool {
+        lock(&self.paused).is_some()
     }
 
     /// Follows the moved state: `true` once moved, `false` again after `move undo`.

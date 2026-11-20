@@ -82,14 +82,45 @@ pub struct MoveSite {
 type Claim = (String, u64, Zeroizing<String>);
 
 /// Where the claim is held. The program makes one when it starts and hands it to each new web side
-/// ([`MoveSite::keeping_claim`]), so the browser that restored an export still holds its claim after the switch and
-/// can read the job's `done` and `result`.
+/// ([`MoveSite::keeping_claim`]), so the browser that restored an export or moved the data here still holds its claim
+/// after the switch and can read the job's `done` and `result`. The move's speed is kept here too.
 #[derive(Clone, Default)]
-pub struct ClaimKeep(Arc<Mutex<Option<Claim>>>);
+pub struct ClaimKeep(Arc<Mutex<Option<Claim>>>, Arc<Mutex<Option<Rate>>>);
+
+/// The move's speed: the last look at its bytes (job id, when, bytes done) and the speed it gave.
+struct Rate {
+    job: String,
+    at_ms: u64,
+    bytes: u64,
+    per_s: Option<u64>,
+}
+
+/// A speed is worked out from two looks at least this far apart.
+const RATE_MS: u64 = 2_000;
 
 impl ClaimKeep {
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<Claim>> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The bytes per second of the move `job` at `bytes` done (`None` until two looks were far enough apart).
+    fn speed(&self, job: &str, now: u64, bytes: u64) -> Option<u64> {
+        let mut r = self.1.lock().unwrap_or_else(|e| e.into_inner());
+        match r.as_mut() {
+            Some(x) if x.job == job && bytes >= x.bytes => {
+                let dt = now.saturating_sub(x.at_ms);
+                if dt >= RATE_MS {
+                    x.per_s = Some((bytes - x.bytes).saturating_mul(1000) / dt);
+                    x.at_ms = now;
+                    x.bytes = bytes;
+                }
+                x.per_s
+            }
+            _ => {
+                *r = Some(Rate { job: job.to_string(), at_ms: now, bytes, per_s: None });
+                None
+            }
+        }
     }
 }
 
@@ -252,6 +283,7 @@ fn old_view(s: &MoveSite, app: &AppState) -> ApiResult<Value> {
         (Some(m), _) if m.switched_ms.is_some() => "done",
         (Some(_), _) => "moved",
         (None, None) => "none",
+        (None, Some(c)) if c.claimed.is_some() && paused(app) => "paused",
         (None, Some(c)) if c.claimed.is_some() => "copying",
         (None, Some(c)) if c.expires_ms <= now => "expired",
         (None, Some(_)) => "offered",
@@ -272,8 +304,13 @@ fn old_view(s: &MoveSite, app: &AppState) -> ApiResult<Value> {
     let cancelled = st.last_cancelled.as_ref().map(|(at, why)| json!({ "at_ms": at, "why": why }));
     Ok(json!({
         "state": state, "code": code, "peer": peer, "progress": progress, "moved": moved,
-        "last_cancelled": cancelled, "last_undone_ms": null, "skipped": [], "problem": null,
+        "last_cancelled": cancelled, "last_undone_ms": st.last_undone_ms, "skipped": [], "problem": null,
     }))
+}
+
+/// The uploads are paused for the move's last round (the running server's [`moving::old::Offer`], when it has one).
+fn paused(app: &AppState) -> bool {
+    app.service::<moving::old::Offer>().is_ok_and(|o| o.is_paused())
 }
 
 async fn system_move(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Json<Value>> {
@@ -747,30 +784,53 @@ pub(crate) fn refuse_if_busy(s: &MoveSite) -> ApiResult<()> {
 
 /// The move or restore under way here as a SetupJob (`None`: there is none).
 pub(crate) fn job_view(app: &AppState, s: &MoveSite) -> ApiResult<Option<Value>> {
-    if let Some(job) = move_view(s)? {
+    if let Some(job) = move_view(app, s)? {
         return Ok(Some(job));
     }
-    crate::restore::job(app, s)
+    // a restore under way before a move that is done (a move from a server with no account leaves set-up open)
+    let restore = crate::restore::job(app, s)?;
+    if restore.as_ref().is_some_and(|j| j["state"] != "done") {
+        return Ok(restore);
+    }
+    if let Some(job) = moved_in_view(app) {
+        return Ok(Some(job));
+    }
+    Ok(restore)
+}
+
+/// The cars the data has (`None` without an engine).
+fn car_count(app: &AppState) -> Option<usize> {
+    app.service::<engine::Engine>().ok().and_then(|e| engine::query::all_cars(&e).ok()).map(|c| c.len())
 }
 
 /// The move under way here as a SetupJob (`None`: there is none).
-fn move_view(s: &MoveSite) -> ApiResult<Option<Value>> {
+fn move_view(app: &AppState, s: &MoveSite) -> ApiResult<Option<Value>> {
     let Some(st) = moving::pull::status(&s.data, &s.keys).map_err(moving_error)? else { return Ok(None) };
+    use moving::pull::Phase;
     let state = match (st.phase, &st.problem) {
-        (moving::pull::Phase::Switching, _) => "switching",
+        (Phase::Switching, _) => "switching",
+        (Phase::Copying, _) if st.forced => "switching",
         (_, Some(p)) if p.retry => "waiting",
         (_, Some(_)) => "stopped",
-        (moving::pull::Phase::Claiming, None) => "connecting",
-        (moving::pull::Phase::Copying, None) if st.progress.round <= 1 => "copying",
-        (moving::pull::Phase::Copying, None) => "catching_up",
+        (Phase::Claiming, None) => "connecting",
+        (Phase::Copying, None) if st.finishing => "finishing",
+        (Phase::Copying, None) if st.progress.round <= 1 => "copying",
+        (Phase::Copying, None) => "catching_up",
     };
     let p = &st.progress;
     let problem = st.problem.as_ref().map(
         |p| json!({ "code": p.code, "message": p.message, "retry_ms": if p.retry { Some(60_000) } else { None } }),
     );
     let skipped: Vec<Value> = st.skipped.iter().map(|k| json!({ "path": k.path, "why": k.why })).collect();
+    let per_s = if matches!(state, "copying" | "catching_up") {
+        s.claim.speed(&st.job_id, app.now(), p.bytes_done).filter(|r| *r > 0)
+    } else {
+        None
+    };
+    let eta = per_s.map(|r| p.bytes_total.saturating_sub(p.bytes_done) / r);
+    let total = (st.phase != Phase::Claiming).then_some(p.files_total);
     Ok(Some(json!({
-        "id": st.code_id,
+        "id": st.job_id,
         "kind": "move_here",
         "state": state,
         "started_ms": st.started_ms,
@@ -778,13 +838,36 @@ fn move_view(s: &MoveSite) -> ApiResult<Option<Value>> {
         "file_name": null,
         "size": null,
         "received": null,
-        "progress": { "round": p.round, "files_done": p.files_done, "files_total": p.files_total,
-                      "bytes_done": p.bytes_done, "bytes_total": p.bytes_total, "cars_done": null,
-                      "cars_total": null, "bytes_per_s": null, "eta_s": null },
+        "progress": { "round": p.round, "files_done": p.files_done, "files_total": total,
+                      "bytes_done": p.bytes_done, "bytes_total": total.map(|_| p.bytes_total), "cars_done": null,
+                      "cars_total": null, "bytes_per_s": per_s, "eta_s": eta },
         "problem": problem,
         "result": null,
         "skipped": skipped,
     })))
+}
+
+/// The move that brought this server's data, as a SetupJob that is `done` (`None`: the data didn't come by a move).
+fn moved_in_view(app: &AppState) -> Option<Value> {
+    let s = site(app).ok()?;
+    let n = moving::pull::moved_in(&s.data, &app.vault)?;
+    let result = json!({ "at_ms": n.at_ms, "from": n.from, "file_name": null, "forced": n.forced,
+                         "same_machine": n.same_machine, "accounts": app.accounts.count(), "cars": car_count(app),
+                         "cert_sha256": n.cert_sha256 });
+    Some(json!({
+        "id": n.job_id,
+        "kind": "move_here",
+        "state": "done",
+        "started_ms": (n.started_ms > 0).then_some(n.started_ms),
+        "from": n.from,
+        "file_name": null,
+        "size": null,
+        "received": null,
+        "progress": null,
+        "problem": null,
+        "result": result,
+        "skipped": [],
+    }))
 }
 
 /// The answers of `pull::begin`'s problems before anything runs.
@@ -807,34 +890,71 @@ fn begin_problem(p: moving::pull::Problem) -> ApiError {
 }
 
 /// `POST /setup/move-here` `{ from, code }`.
-async fn move_here(State(app): State<AppState>, headers: HeaderMap, body: JsonBody) -> ApiResult<Response> {
+async fn move_here(
+    State(app): State<AppState>,
+    Extension(conn): Extension<Conn>,
+    headers: HeaderMap,
+    body: JsonBody,
+) -> ApiResult<Response> {
     body.only(&["from", "code"])?;
     let (from, code) = (body.req_str("from")?.trim().to_string(), Zeroizing::new(body.req_str("code")?.to_string()));
     if from.starts_with("http://") {
         return Err(ApiError::bad_input("from", "Use the old server's address (https), not http://."));
     }
-    if let Err(e) = moving::client::Address::parse(&from) {
-        return Err(ApiError::bad_input("from", &e));
-    }
+    let addr = match moving::client::Address::parse(&from) {
+        Ok(a) => a.to_string(),
+        Err(e) => return Err(ApiError::bad_input("from", &e)),
+    };
     if let Err(e) = moving::code::MoveCode::parse(&code) {
         return Err(ApiError::bad_input("code", &e.to_string()));
     }
     let s = site(&app)?;
     app.blocking(move |app| {
         claimed(app, &s, &headers)?;
-        let had = job_view(app, &s)?;
-        let opts = moving::pull::Options::new(&s.app_version);
+        let had = moving::pull::status(&s.data, &s.keys).map_err(moving_error)?;
+        if let Some(h) = &had {
+            // a move that stopped carries on with a new code from the same old server only
+            if h.from != addr {
+                return Err(ApiError::conflict(
+                    "setup_busy",
+                    format!(
+                        "The move from {} stopped here and carries on with a new code from that server. To move from \
+                         another server, give that move up first.",
+                        h.from
+                    ),
+                ));
+            }
+        } else {
+            refuse_if_busy(&s)?;
+        }
+        let mut opts = moving::pull::Options::new(&s.app_version);
+        // the web side's own first-start files (no account yet) don't count as the owner's data
+        opts.first_start_also = moving::import::WEB_FIRST_START.iter().map(|n| n.to_string()).collect();
         moving::pull::begin(&s.data, &s.keys, &from, &code, &opts).map_err(begin_problem)?;
-        // the server's own loop runs the move from here (`pull::run`), as for `move from`
+        // the running server carries the move on from here (`pull::run`, with this web side up)
         let job = job_view(app, &s)?.unwrap_or(Value::Null);
-        let status = if had.is_some() { StatusCode::OK } else { StatusCode::CREATED };
+        let (status, what, summary) = if had.is_some() {
+            (
+                StatusCode::OK,
+                "setup-move-resumed",
+                format!("Carried on moving the data here from {addr} with a new move code."),
+            )
+        } else {
+            (StatusCode::CREATED, "setup-move-started", format!("Started moving the data here from {addr}."))
+        };
+        app.accounts.audit().record(None, Some(conn.ip), what, &summary)?;
         Ok((status, Json(job)).into_response())
     })
     .await
 }
 
 /// `POST /setup/move-here/finish` `{ recovery_key, confirm: true }`.
-async fn move_finish(State(app): State<AppState>, headers: HeaderMap, body: JsonBody) -> ApiResult<Json<Value>> {
+async fn move_finish(
+    State(app): State<AppState>,
+    Extension(conn): Extension<Conn>,
+    headers: HeaderMap,
+    body: JsonBody,
+) -> ApiResult<Json<Value>> {
     body.only(&["recovery_key", "confirm"])?;
     if body.bool("confirm")? != Some(true) {
         return Err(ApiError::bad_input("confirm", "Required: true (the last changes may be missing)."));
@@ -843,12 +963,36 @@ async fn move_finish(State(app): State<AppState>, headers: HeaderMap, body: Json
     let s = site(&app)?;
     app.blocking(move |app| {
         claimed(app, &s, &headers)?;
-        moving::pull::force_finish(&s.data, &s.keys, &key).map_err(|e| match e {
-            moving::Error::Vault(_) => {
-                ApiError::new(422, "wrong_recovery_key", "That recovery key doesn't open the copy.")
-            }
+        if moving::pull::status(&s.data, &s.keys).map_err(moving_error)?.is_none() {
+            return Err(ApiError::new(404, "no_such_job", "No move into this server is under way."));
+        }
+        // one try at a time (each takes up to 1 GiB), counted before it runs, like a restore's
+        let Some(work) = s.key_work() else {
+            return Err(ApiError::new(503, "busy", "A recovery key is being tried; try again in a few seconds.")
+                .header(header::RETRY_AFTER, "5"));
+        };
+        let tried = app.now();
+        s.key_try(conn.ip, tried)?;
+        let r = moving::pull::force_finish(&s.data, &s.keys, &key);
+        if !matches!(r, Err(moving::Error::Vault(_) | moving::Error::WrongRecoveryKey)) {
+            s.right_key(conn.ip, tried);
+        }
+        drop(work);
+        r.map_err(|e| match e {
+            moving::Error::Vault(_) | moving::Error::WrongRecoveryKey => ApiError::new(
+                422,
+                "wrong_recovery_key",
+                "That recovery key doesn't open the old server's data. Use the one the old server showed when it was set up.",
+            )
+            .with_fields(serde_json::Map::from_iter([("recovery_key".into(), json!("Doesn't open this data."))])),
             e => moving_error(e),
         })?;
+        app.accounts.audit().record(
+            None,
+            Some(conn.ip),
+            "setup-move-finished-forced",
+            "Finished the move with the recovery key (old server gone).",
+        )?;
         Ok(Json(job_view(app, &s)?.unwrap_or(Value::Null)))
     })
     .await
@@ -878,7 +1022,23 @@ async fn give_up_job(
         if job["kind"] == "restore" {
             crate::restore::give_up(app, &s, &job, conn.ip)?;
         } else {
+            if job["state"] == "done" {
+                return Err(ApiError::conflict("finished", "The move is done; this server holds the data."));
+            }
+            if job["state"] == "switching" {
+                return Err(ApiError::conflict(
+                    "finished",
+                    "It is switching to the copied data; it finishes by itself.",
+                ));
+            }
             moving::pull::cancel(&s.data, &s.keys).map_err(moving_error)?;
+            let from = job["from"].as_str().unwrap_or("the old server");
+            app.accounts.audit().record(
+                None,
+                Some(conn.ip),
+                "setup-move-cancelled",
+                &format!("Gave up moving the data here from {from}."),
+            )?;
         }
         Ok(Json(json!({ "deleted": true, "id": job["id"] })))
     })
