@@ -1,0 +1,70 @@
+/* Cluster: the car now as an instrument cluster, then the period. */
+
+.cl-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0; color: var(--ink-2); }
+.cl-sep { display: inline-flex; align-items: center; gap: 0.375rem; }
+.cl-sep::before { content: ""; width: 0.25rem; height: 0.25rem; margin: 0 0.75rem; border-radius: 50%; background: var(--mag); }
+.cl-status b { color: var(--ink); }
+.cl-live { display: flex; align-items: center; gap: 0.5rem; font-size: var(--fs-sm); color: var(--ink-2); }
+.cl-live .i { color: var(--grn); }
+
+.cl-dash .hud-body { display: grid; gap: 1.25rem; }
+.cl-cluster { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1fr); align-items: start; gap: 1.5rem; }
+.cl-dial { display: grid; justify-items: center; gap: 0.5rem; min-width: 0; }
+.cl-dial .gauge { width: 100%; max-width: 15rem; }
+.cl-dial--main { padding: 1rem; border-radius: var(--r); background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-hot), 0 0 1.5rem rgba(255, 63, 180, 0.15); }
+.cl-dial--main .gauge { max-width: 19rem; }
+.cl-dial--main .gauge-value { font-size: 2.75rem; }
+.cl-dial-how { font-size: var(--fs-xs); color: var(--ink-3); text-align: center; }
+.cl-fuel { display: grid; gap: 0.375rem; width: 100%; }
+.cl-ranges { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; width: 100%; margin-top: 0.25rem; }
+.cl-counters { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: start; gap: 1.5rem; padding-top: 1.25rem; box-shadow: inset 0 1px 0 var(--rule); }
+.cl-odo { display: grid; gap: 0.375rem; }
+.cl-odo-face { display: inline-flex; align-items: center; gap: 0.5rem; text-decoration: none; }
+.cl-odo-face:hover .odo-d { box-shadow: 0 0 0.5rem rgba(255, 63, 180, 0.6); }
+.cl-rack { grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); }
+.cl-rack .stat-value { font-size: 1.125rem; }
+.cl-lights { display: grid; gap: 0.75rem; padding-top: 1.25rem; box-shadow: inset 0 1px 0 var(--rule); }
+
+.cl-map-panel { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.cl-map-panel .hud-side { flex-wrap: wrap; justify-content: flex-end; }
+.cl-map { height: 24rem; margin: 0.75rem 1.25rem 0; }
+.cl-map-panel:fullscreen, .cl-map-panel.is-full { position: fixed; inset: 0; z-index: 70; border-radius: 0; }
+.cl-map-panel:fullscreen .cl-map, .cl-map-panel.is-full .cl-map { height: auto; }
+.cl-place { display: flex; align-items: flex-start; gap: 0.5rem; padding: 0.75rem 1.25rem 1rem; font-size: var(--fs-sm); }
+.cl-place > .i { height: 1lh; color: var(--mag); }
+
+.cl-awake { display: grid; gap: 0.625rem; margin-bottom: 0.75rem; }
+.cl-awake li { display: flex; align-items: flex-start; gap: 0.625rem; }
+.cl-awake li > div { display: grid; gap: 0.125rem; font-size: var(--fs-sm); color: var(--ink-2); }
+.cl-awake b { color: var(--ink); }
+.cl-awake-dot { flex: none; width: 0.625rem; height: 0.625rem; margin-top: 0.375rem; border-radius: 50%; background: var(--org); box-shadow: 0 0 0.5rem var(--org); }
+.cl-awake-none { display: flex; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.75rem; color: var(--ink-2); }
+.cl-awake-none .i { height: 1lh; color: var(--cyan); }
+
+.cl-tyres { display: grid; grid-template-columns: 1fr auto 1fr; grid-template-areas: "fl car fr" "rl car rr"; align-items: center; gap: 0.75rem 1rem; margin-bottom: 0.75rem; }
+.cl-tyre-car { grid-area: car; display: grid; place-items: center; width: 4rem; height: 6rem; border-radius: 1.25rem; color: var(--ink-3); box-shadow: inset 0 0 0 1px var(--ring-2); }
+.cl-tyre-car .i { transform: rotate(-90deg); }
+.cl-tyre { display: grid; gap: 0.125rem; padding: 0.5rem 0.75rem; border-radius: var(--r); background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); }
+.cl-tyre--fl { grid-area: fl; } .cl-tyre--fr { grid-area: fr; } .cl-tyre--rl { grid-area: rl; } .cl-tyre--rr { grid-area: rr; }
+.cl-tyre-v { font: 700 1.125rem/1.4 var(--display); }
+.cl-tyre.is-low { box-shadow: inset 0 0 0 1px var(--org), 0 0 0.75rem rgba(255, 138, 61, 0.35); }
+.cl-tyre.is-low .cl-tyre-v { color: var(--org-ink); }
+
+.cl-charge .rack { margin-bottom: 0.75rem; }
+.cl-chg-state { display: inline-flex; align-items: center; gap: 0.5rem; font-size: var(--fs-sm); color: var(--ink-2); }
+
+@container view (max-width: 62rem) {
+  .cl-cluster { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .cl-dial--main { grid-column: 1 / -1; order: -1; }
+  .cl-counters { grid-template-columns: minmax(0, 1fr); }
+}
+@container view (max-width: 40rem) {
+  .cl-cluster { gap: 1rem; }
+  .cl-ranges { grid-template-columns: minmax(0, 1fr); }
+  .cl-map { height: 18rem; margin: 0.75rem 1rem 0; }
+  .cl-tyres { grid-template-columns: 1fr 1fr; grid-template-areas: "fl fr" "rl rr"; }
+  .cl-tyre-car { display: none; }
+  .cl-sep::before { margin: 0 0.5rem; }
+}
+.cl-map-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.cl-tyre-k { font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); }

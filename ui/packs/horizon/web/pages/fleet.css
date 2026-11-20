@@ -1,0 +1,98 @@
+/* All cars: the garage. Warning lights per state, the cars that need a look, and a cartridge per car. */
+
+.gar-lights { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0.625rem; }
+.gar-light {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "ic txt" "sub sub"; align-items: center; gap: 0 0.625rem;
+  min-width: 0; padding: 0.75rem 0.875rem; border: 0; border-radius: var(--r); text-align: left; color: var(--ink-2);
+  background: var(--glass); box-shadow: inset 0 0 0 1px var(--ring-2); font: inherit; cursor: pointer;
+  --c: var(--st-unknown);
+}
+.gar-light[data-state="driving"] { --c: var(--st-driving); }
+.gar-light[data-state="charging"] { --c: var(--st-charging); }
+.gar-light[data-state="parked"] { --c: var(--st-parked); }
+.gar-light[data-state="asleep"] { --c: var(--st-asleep); }
+.gar-light--stale { --c: var(--org); cursor: default; }
+.gar-light:hover:not(.gar-light--stale) { box-shadow: inset 0 0 0 1px var(--c); }
+.gar-light[aria-pressed="true"] { box-shadow: inset 0 0 0 0.125rem var(--c), 0 0 1rem color-mix(in srgb, var(--c) 35%, transparent); }
+.gar-light-ic { grid-area: ic; display: grid; place-items: center; width: 2.5rem; height: 2.5rem; border-radius: 50%; color: var(--ink-3); box-shadow: inset 0 0 0 1px var(--ring-2); }
+.gar-light.is-lit .gar-light-ic { color: #120626; background: var(--c); box-shadow: 0 0 0.875rem var(--c); }
+.gar-light-txt { grid-area: txt; display: grid; min-width: 0; }
+.gar-light-n { font: 900 1.375rem/1.4 var(--display); color: var(--ink); }
+.gar-light-word { font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.14em; text-transform: uppercase; }
+.gar-light-sub { grid-area: sub; margin-top: 0.375rem; font-size: var(--fs-xs); color: var(--ink-3); }
+
+.gar-order { display: inline-flex; align-items: center; gap: 0.375rem; }
+.gar-dir .i { transform: rotate(90deg); }
+.gar-dir.is-up .i { transform: rotate(-90deg); }
+.gar-note-slot { flex: 1 1 16rem; }
+.gar-note-slot .ctl-cap { display: none; }
+.gar-order-note { display: flex; align-items: center; min-height: var(--ctl-sm); font-size: var(--fs-sm); color: var(--ink-3); }
+
+.attn { display: grid; }
+.attn-row { display: grid; grid-template-columns: auto minmax(6rem, 10rem) minmax(0, 1fr) auto auto; align-items: center; gap: 0.75rem; padding: 0.5rem 0; box-shadow: inset 0 -1px 0 var(--rule); }
+.attn-row:last-child { box-shadow: none; }
+.attn-light { display: grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: 50%; color: #1a0626; background: var(--org); box-shadow: 0 0 0.625rem var(--org); }
+.attn-row[data-tone="red"] .attn-light { background: var(--red); box-shadow: 0 0 0.625rem var(--red); }
+.attn-row[data-tone="cyan"] .attn-light { background: var(--cyan); box-shadow: 0 0 0.625rem var(--cyan); }
+.attn-car { font-weight: 700; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
+a.attn-car:hover { color: var(--mag-ink); }
+.attn-text { color: var(--ink-2); font-size: var(--fs-sm); }
+.attn-when { font: 400 var(--fs-xs)/1.4 var(--mono); color: var(--ink-3); white-space: nowrap; }
+
+.gar-bay { display: grid; grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr)); gap: var(--gap); }
+.gar-foot { display: flex; justify-content: center; margin-top: var(--gap); }
+.gar-none { grid-column: 1 / -1; }
+.gar-empty .state { padding-bottom: 1.5rem; }
+.gar-causes { display: grid; gap: 0.5rem; padding: 0 1.5rem 1.5rem; max-width: 44rem; margin: 0 auto; font-size: var(--fs-sm); color: var(--ink-2); }
+.gar-causes li { display: flex; align-items: flex-start; gap: 0.5rem; }
+.gar-causes .i { height: 1lh; color: var(--mag); }
+
+.bay-car {
+  position: relative; display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; padding: 1rem 1.125rem 0;
+  border-radius: var(--r); background: var(--glass); box-shadow: inset 0 0 0 1px var(--ring), var(--shade); overflow: hidden;
+  --c: var(--st-unknown);
+}
+.bay-car::before { content: ""; position: absolute; inset: 0 0 auto; height: 0.1875rem; background: var(--c); box-shadow: 0 0 0.75rem var(--c); }
+.bay-car[data-state="driving"] { --c: var(--st-driving); }
+.bay-car[data-state="charging"] { --c: var(--st-charging); }
+.bay-car[data-state="parked"] { --c: var(--st-parked); }
+.bay-car[data-state="asleep"] { --c: var(--st-asleep); }
+.bay-car.is-stale::before { opacity: 0.4; }
+.bay-car--skel { min-height: 16rem; padding: 1.25rem; gap: 1rem; }
+.bay-car-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-height: var(--ctl-sm); }
+.bay-car-state { display: inline-flex; align-items: center; gap: 0.5rem; font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-2); }
+.bay-car-pins { display: inline-flex; align-items: center; gap: 0.125rem; }
+.bay-car-move .i { transform: rotate(90deg); }
+.bay-car-pin.is-on { color: var(--mag); }
+.bay-car-name { display: block; min-width: 0; font: 900 1.5rem/1.4 var(--display); letter-spacing: 0.04em; text-decoration: none; }
+.bay-car-name .chrome { display: block; }
+.bay-car-name:hover .chrome { filter: drop-shadow(0 0 0.375rem rgba(255, 63, 180, 0.6)); }
+.bay-car-line { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; font-size: var(--fs-sm); color: var(--ink-2); }
+.bay-car-vin { padding: 0 0.375rem; border-radius: 0.125rem; background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); font: 400 var(--fs-xs)/1.5 var(--mono); color: var(--ink-3); }
+.bay-car-gauge { display: grid; gap: 0.5rem; padding: 0.75rem; border-radius: var(--r); background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); }
+.bay-car-soc { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
+.bay-car-soc-val { font: 900 1.75rem/1.4 var(--display); color: var(--ink); }
+.bay-car-soc-range { font: 400 var(--fs-sm)/1.5 var(--mono); color: var(--ink-2); white-space: nowrap; }
+.bay-car-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem 0.75rem; }
+.bay-car-facts > div { display: grid; gap: 0.125rem; min-width: 0; }
+.bay-car-facts dt { font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); }
+.bay-car-facts dd { font-size: var(--fs-sm); color: var(--ink); overflow-wrap: anywhere; }
+.bay-car-doing { display: flex; align-items: center; gap: 0.375rem; font-size: var(--fs-sm); color: var(--grn-ink); }
+.bay-car-open {
+  margin-top: auto !important; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-height: 2.75rem; margin: 0 -1.125rem; padding: 0 1.125rem;
+  box-shadow: inset 0 1px 0 var(--rule); color: var(--cyan-ink); text-decoration: none;
+  font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.16em; text-transform: uppercase;
+}
+.bay-car-open:hover { color: var(--on-hot); background: var(--hot); }
+
+@container view (max-width: 76rem) { .gar-lights { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container view (max-width: 40rem) {
+  .gar-lights { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gar-bay { grid-template-columns: minmax(0, 1fr); }
+  .attn-row { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "l car when" "l text text" ". go go"; }
+  .attn-light { grid-area: l; align-self: start; }
+  .attn-car { grid-area: car; }
+  .attn-text { grid-area: text; }
+  .attn-when { grid-area: when; }
+  .attn-row > .btn { grid-area: go; justify-self: start; }
+}
