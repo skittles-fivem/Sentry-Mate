@@ -455,3 +455,17 @@ fn the_end_of_the_last_whole_record_is_found_from_the_lengths_alone() {
     v.write_file(&sealed, "s", b"x").unwrap();
     assert_eq!(vault::records::whole_end(&std::fs::File::open(&sealed).unwrap()).unwrap(), None);
 }
+
+#[test]
+fn derived_keys_are_stable_per_purpose_and_vault() {
+    let (_t, data, keys) = dirs();
+    let (v, _) = Vault::create(&data, &keys, Kdf::FAST_FOR_TESTS).unwrap();
+    let a = v.derive_key(b"purpose a");
+    assert_eq!(*a, *v.derive_key(b"purpose a"));
+    assert_ne!(*a, *v.derive_key(b"purpose b"));
+    let again = Vault::open(&data, &keys).unwrap();
+    assert_eq!(*a, *again.derive_key(b"purpose a"));
+    let (_t2, data2, keys2) = dirs();
+    let (other, _) = Vault::create(&data2, &keys2, Kdf::FAST_FOR_TESTS).unwrap();
+    assert_ne!(*a, *other.derive_key(b"purpose a"));
+}
