@@ -263,3 +263,26 @@ async fn a_web_servers_first_start_files_are_set_aside() {
     moving::import::switch(&new.data, &new.keys).unwrap();
     assert_eq!(carried(&new.data), carried(&old.data), "the first start's accounts and audit went");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_account_made_while_it_was_read_stops_the_switch() {
+    let (old, file) = old_and_export().await;
+    let new = server();
+    let p = new.data.join("accounts/setup.sealed");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    new.vault.write_file(&p, "accounts/setup.sealed", b"a first start's").unwrap();
+    let ex = moving::ExportFile::from_head(head(&file), file.len() as u64, APP).unwrap();
+    let v = ex.open_key(&old.recovery).unwrap();
+    let mut o = opts();
+    o.first_start_also = moving::import::WEB_FIRST_START.iter().map(|s| s.to_string()).collect();
+    let mut imp = moving::import::begin_streamed(&new.data, &new.keys, &ex, v, Arc::new(o)).unwrap();
+    imp.feed(&file).unwrap();
+    drop(imp);
+    // the first admin, made on the web side while the file was read: not a first start's any more
+    let a = new.data.join("accounts/account-1.sealed");
+    new.vault.write_file(&a, "accounts/account-1", b"the first admin").unwrap();
+    let e = moving::import::switch(&new.data, &new.keys).unwrap_err();
+    assert!(matches!(e, moving::Error::InUse(_)), "{e}");
+    assert!(a.exists(), "the account stays");
+    assert!(matches!(moving::import::pending(&new.data, &new.keys), moving::Pending::Ready { .. }));
+}

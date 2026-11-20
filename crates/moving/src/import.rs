@@ -156,6 +156,10 @@ impl Options {
 /// vault, they would open with nothing after the switch; a new certificate is made at the next start).
 pub const WEB_FIRST_START: &[&str] = &["accounts", "audit", "tls", "migrated.json"];
 
+/// Files under a [`WEB_FIRST_START`] name that are the owner's all the same: an account made on the web side (it is
+/// no longer a first start, and the switch would set the account aside and remove it).
+const OWNERS_UNDER_FIRST_START: &[&str] = &["accounts/account-"];
+
 /// The options an import runs with: its own, or shared with whoever holds the import (a web upload keeps one open).
 pub enum Opts<'a> {
     Borrowed(&'a Options),
@@ -566,7 +570,8 @@ pub fn unused_but(data: &Path, keys: &Path, also: &[String]) -> Result<(), Error
     let mut skips = Skips::default();
     tree::walk(data, Purpose::Move, &mut skips, |f| -> Result<ControlFlow<()>, Error> {
         let top = f.path.split('/').next().unwrap_or("");
-        if first_start(f.path, f.len) || also.iter().any(|a| a == top) {
+        let owners = OWNERS_UNDER_FIRST_START.iter().any(|p| f.path.starts_with(p));
+        if first_start(f.path, f.len) || (also.iter().any(|a| a == top) && !owners) {
             return Ok(ControlFlow::Continue(()));
         }
         found = Some(f.path.to_string());

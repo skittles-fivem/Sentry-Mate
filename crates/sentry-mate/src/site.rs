@@ -104,6 +104,7 @@ pub fn web_state(
     engine: &engine::Engine,
     hashing: accounts::Hashing,
     network: Option<web::resources::mqtt::Network>,
+    claim: web::moving::ClaimKeep,
 ) -> Result<web::AppState, Fail> {
     let audit = Arc::new(accounts::Audit::open(data.join("audit"), v.clone(), accounts::system_clock())?);
     let options = accounts::Options { hashing, ..accounts::Options::default() };
@@ -121,11 +122,10 @@ pub fn web_state(
         }))
         .service(Arc::new(web::resources::mqtt::Publisher::new()))
         .service(Arc::new(web::resources::imports::Imports::new()))
-        .service(Arc::new(web::moving::MoveSite::new(
-            data.to_path_buf(),
-            keys.to_path_buf(),
-            env!("CARGO_PKG_VERSION"),
-        )));
+        .service(Arc::new(
+            web::moving::MoveSite::new(data.to_path_buf(), keys.to_path_buf(), env!("CARGO_PKG_VERSION"))
+                .keeping_claim(claim),
+        ));
     let app = match network {
         Some(n) => app.service(Arc::new(n)),
         None => app,

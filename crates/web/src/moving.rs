@@ -67,8 +67,10 @@ pub struct MoveSite {
     pub app_version: String,
     /// The Argon2id settings a new recovery key is made with ([`vault::Kdf::STRONG`]; tests use a fast one).
     pub kdf: vault::Kdf,
-    /// A new recovery key is being made (one at a time: each takes 1 GiB for a few seconds).
+    /// A recovery key is being made or tried (one Argon2id at a time: each takes up to 1 GiB for a few seconds).
     pub(crate) making_key: std::sync::atomic::AtomicBool,
+    /// The claim, kept by the program across the web side's restarts (a restore's switch starts it again).
+    claim: ClaimKeep,
     /// The restore being uploaded ([`crate::restore`]: one at a time).
     pub(crate) restore: crate::restore::Slot,
     /// The options a restore runs with (`None`: the usual ones for this version).
@@ -76,10 +78,23 @@ pub struct MoveSite {
     state: Mutex<SiteState>,
 }
 
+/// The claim: its token's SHA-256, its last use, and the set-up code it was made with (for the first admin).
+type Claim = (String, u64, Zeroizing<String>);
+
+/// Where the claim is held. The program makes one when it starts and hands it to each new web side
+/// ([`MoveSite::keeping_claim`]), so the browser that restored an export still holds its claim after the switch and
+/// can read the job's `done` and `result`.
+#[derive(Clone, Default)]
+pub struct ClaimKeep(Arc<Mutex<Option<Claim>>>);
+
+impl ClaimKeep {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Claim>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 #[derive(Default)]
 struct SiteState {
-    /// The claim: its token's SHA-256, its last use, and the set-up code it was made with (for the first admin).
-    claim: Option<(String, u64, Zeroizing<String>)>,
     wrong: HashMap<std::net::IpAddr, Vec<u64>>,
     /// Wrong recovery keys from each address (a restore's), the same way.
     wrong_keys: HashMap<std::net::IpAddr, Vec<u64>>,
@@ -103,10 +118,17 @@ impl MoveSite {
             app_version: app_version.to_string(),
             kdf: vault::Kdf::STRONG,
             making_key: std::sync::atomic::AtomicBool::new(false),
+            claim: ClaimKeep::default(),
             restore: crate::restore::Slot::default(),
             import_opts: None,
             state: Mutex::new(SiteState::default()),
         }
+    }
+
+    /// The same, holding the claim in `keep` (the program's, kept across restarts of the web side).
+    pub fn keeping_claim(mut self, keep: ClaimKeep) -> MoveSite {
+        self.claim = keep;
+        self
     }
 
     /// The same, restoring export files with `opts` (tests: no free space kept, small checkpoints).
@@ -126,8 +148,10 @@ impl MoveSite {
         Arc::new(o)
     }
 
-    /// `429 throttled` once [`MAX_WRONG_CODES`] wrong recovery keys came from `ip` in the last minute.
-    pub(crate) fn key_tries_left(&self, ip: std::net::IpAddr, now: u64) -> ApiResult<()> {
+    /// A recovery key try from `ip`, counted at once as a wrong one (checked and counted under one lock, so tries
+    /// sent at the same moment can't all pass): `429 throttled` once [`MAX_WRONG_CODES`] came in the last minute.
+    /// [`MoveSite::right_key`] takes the count back when the key opens.
+    pub(crate) fn key_try(&self, ip: std::net::IpAddr, now: u64) -> ApiResult<()> {
         let mut st = self.lock();
         let w = st.wrong_keys.entry(ip).or_default();
         w.retain(|t| now.saturating_sub(*t) < 60_000);
@@ -135,12 +159,25 @@ impl MoveSite {
             let wait = 60_000u64.saturating_sub(now.saturating_sub(w[0])).div_ceil(1000).max(1);
             return Err(ApiError::throttled(wait));
         }
+        w.push(now);
         Ok(())
     }
 
-    /// Counts a wrong recovery key from `ip`.
-    pub(crate) fn wrong_key(&self, ip: std::net::IpAddr, now: u64) {
-        self.lock().wrong_keys.entry(ip).or_default().push(now);
+    /// The try [`MoveSite::key_try`] counted at `now` was not a wrong key.
+    pub(crate) fn right_key(&self, ip: std::net::IpAddr, now: u64) {
+        let mut st = self.lock();
+        let w = st.wrong_keys.entry(ip).or_default();
+        if let Some(i) = w.iter().rposition(|t| *t == now) {
+            w.remove(i);
+        }
+    }
+
+    /// Holds the one Argon2id run (a recovery key made or tried) until dropped: `None` while another runs.
+    pub fn key_work(&self) -> Option<KeyWork<'_>> {
+        if self.making_key.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return None;
+        }
+        Some(KeyWork(self))
     }
 
     /// The same, making new recovery keys with `kdf` (tests: [`vault::Kdf::FAST_FOR_TESTS`]).
@@ -156,6 +193,15 @@ impl MoveSite {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, SiteState> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// The one Argon2id run ([`MoveSite::key_work`]).
+pub struct KeyWork<'a>(&'a MoveSite);
+
+impl Drop for KeyWork<'_> {
+    fn drop(&mut self) {
+        self.0.making_key.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -569,15 +615,21 @@ pub(crate) fn claimed(app: &AppState, s: &MoveSite, headers: &HeaderMap) -> ApiR
     if !app.accounts.needs_setup() {
         return Err(ApiError::conflict("setup_done", "This server is set up: sign in."));
     }
-    let token = cookie_of(headers, CLAIM_COOKIE);
+    holds_claim(app, s, headers)
+        .ok_or_else(|| ApiError::new(401, "not_claimed", "Type the set-up code from the server's log first."))
+}
+
+/// The claim this browser holds (renewed), set up or not.
+fn holds_claim(app: &AppState, s: &MoveSite, headers: &HeaderMap) -> Option<Zeroizing<String>> {
+    let token = cookie_of(headers, CLAIM_COOKIE)?;
     let now = app.now();
-    let mut st = s.lock();
-    match (&mut st.claim, token) {
-        (Some((h, last, code)), Some(t)) if same(h, &sha(&t)) && now < *last + CLAIM_MS => {
+    let mut held = s.claim.lock();
+    match held.as_mut() {
+        Some((h, last, code)) if same(h, &sha(&token)) && now < *last + CLAIM_MS => {
             *last = now;
-            Ok(code.clone())
+            Some(code.clone())
         }
-        _ => Err(ApiError::new(401, "not_claimed", "Type the set-up code from the server's log first.")),
+        _ => None,
     }
 }
 
@@ -598,9 +650,7 @@ fn setup_answer(app: &AppState, s: &MoveSite, holds: bool) -> Value {
     } else {
         "fresh"
     };
-    let st = s.lock();
-    let claim_expires = st.claim.as_ref().map(|(_, last, _)| last + CLAIM_MS);
-    drop(st);
+    let claim_expires = s.claim.lock().as_ref().map(|(_, last, _)| last + CLAIM_MS);
     let job = if holds { job_view(app, s).ok().flatten() } else { None };
     json!({ "needs_setup": app.accounts.needs_setup(), "state": state, "claimed": holds,
             "claim_expires_ms": if holds { claim_expires } else { None }, "job": job })
@@ -634,7 +684,7 @@ async fn claim(State(app): State<AppState>, Extension(conn): Extension<Conn>, bo
         let mut t = [0u8; 32];
         getrandom::fill(&mut t).map_err(|e| ApiError::server(format!("a claim: {e}")))?;
         let token = hex::encode(t);
-        s.lock().claim = Some((sha(&token), now, Zeroizing::new(on_file)));
+        *s.claim.lock() = Some((sha(&token), now, Zeroizing::new(on_file)));
         let mut res = Json(setup_answer(app, &s, true)).into_response();
         if let Ok(v) = HeaderValue::from_str(&claim_cookie(&token)) {
             res.headers_mut().append(header::SET_COOKIE, v);
@@ -657,16 +707,19 @@ async fn fresh(
     let recovery_file = s.recovery_file();
     app.blocking(move |app| {
         let code = claimed(app, &s, &headers)?;
-        if !matches!(moving::pull::pending(&s.data, &s.keys), moving::pull::Pending::None) {
-            return Err(ApiError::conflict("setup_busy", "A move here runs: give it up first."));
-        }
-        if !matches!(moving::import::pending(&s.data, &s.keys), moving::Pending::None) {
-            return Err(ApiError::conflict("setup_busy", "A restore runs: give it up first."));
-        }
+        refuse_if_busy(&s)?;
         let client = accounts::Client::new(conn.ip, &crate::policy::device(&headers));
         let local = client.local;
-        let ns = app.accounts.setup(&code, &name, &password, &client)?;
-        s.lock().claim = None;
+        let ns = match app.accounts.setup(&code, &name, &password, &client) {
+            Ok(ns) => ns,
+            // the code the claim was made with is gone (a restore's switch set it aside): claim again
+            Err(accounts::Error::WrongSetupCode | accounts::Error::SetupCodeExpired) => {
+                *s.claim.lock() = None;
+                return Err(ApiError::new(401, "not_claimed", "Type the set-up code from the server's log again."));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        *s.claim.lock() = None;
         // the key itself, from the file's text (it says what the key is for around it)
         let recovery = moving::import::recovery_from_file(&recovery_file);
         let cars = app.accounts.car_access(ns.account.id)?;
@@ -679,6 +732,17 @@ async fn fresh(
         Ok(res)
     })
     .await
+}
+
+/// `409 setup_busy` while a move or a restore into this server is under way (the first admin waits for it).
+pub(crate) fn refuse_if_busy(s: &MoveSite) -> ApiResult<()> {
+    if !matches!(moving::pull::pending(&s.data, &s.keys), moving::pull::Pending::None) {
+        return Err(ApiError::conflict("setup_busy", "A move here runs: give it up first."));
+    }
+    if !matches!(moving::import::pending(&s.data, &s.keys), moving::Pending::None) {
+        return Err(ApiError::conflict("setup_busy", "A restore runs: give it up first."));
+    }
+    Ok(())
 }
 
 /// The move or restore under way here as a SetupJob (`None`: there is none).
@@ -793,7 +857,10 @@ async fn move_finish(State(app): State<AppState>, headers: HeaderMap, body: Json
 async fn setup_job(State(app): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
     let s = site(&app)?;
     app.blocking(move |app| {
-        claimed(app, &s, &headers)?;
+        // once set up, still for the browser that holds the claim: the page shows the restore's `done` and `result`
+        if app.accounts.needs_setup() || holds_claim(app, &s, &headers).is_none() {
+            claimed(app, &s, &headers)?;
+        }
         job_view(app, &s)?.map(Json).ok_or_else(|| ApiError::not_found("no_such_job"))
     })
     .await
@@ -816,4 +883,30 @@ async fn give_up_job(
         Ok(Json(json!({ "deleted": true, "id": job["id"] })))
     })
     .await
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_key_try_is_counted_before_it_runs() {
+        let s = MoveSite::new(PathBuf::from("/nowhere/data"), PathBuf::from("/nowhere/keys"), "1.0.0");
+        let ip: std::net::IpAddr = [192, 0, 2, 7].into();
+        // tries sent at the same moment, none of them answered yet: the next one is throttled already
+        for _ in 0..MAX_WRONG_CODES {
+            s.key_try(ip, 1_000).unwrap();
+        }
+        assert_eq!(s.key_try(ip, 1_000).unwrap_err().code, "throttled");
+        // a key that opened is taken back
+        s.right_key(ip, 1_000);
+        s.key_try(ip, 1_000).unwrap();
+        assert!(s.key_try(ip, 61_000).is_ok(), "a minute later");
+        // one Argon2id at a time
+        let held = s.key_work().unwrap();
+        assert!(s.key_work().is_none());
+        drop(held);
+        assert!(s.key_work().is_some());
+    }
 }

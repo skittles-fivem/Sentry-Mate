@@ -108,6 +108,13 @@ async fn post_setup(
     let c = client(&conn, &headers);
     let local = c.local;
     app.blocking(move |app| {
+        // like `POST /setup/fresh`: no first admin while a move or a restore into this server is under way (its
+        // switch would set the new account aside)
+        if let Ok(s) = crate::moving::site(app)
+            && app.accounts.needs_setup()
+        {
+            crate::moving::refuse_if_busy(&s)?;
+        }
         let ns = app.accounts.setup(&code, &name, &password, &c)?;
         signed_in_answer(app, &ns, local)
     })

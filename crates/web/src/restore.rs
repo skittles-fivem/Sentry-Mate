@@ -309,11 +309,25 @@ pub(crate) async fn start(
         .blocking(move |app| {
             claimed(app, &s, &headers)?;
             let ex = moving::ExportFile::from_head(&head, size, &s.app_version).map_err(header_error)?.named(&name);
-            s.key_tries_left(conn.ip, app.now())?;
-            let opened = match ex.open_key(&key) {
+            // the Argon2id settings come from the file, not yet proven: no more than this server's own
+            if ex.header.recovery.kdf().m > vault::Kdf::STRONG.m.max(s.kdf.m) {
+                return Err(header_error(moving::Error::NotAnExport));
+            }
+            // one try at a time (each takes up to 1 GiB), counted before it runs
+            let Some(work) = s.key_work() else {
+                return Err(ApiError::new(503, "busy", "A recovery key is being tried; try again in a few seconds.")
+                    .header(http::header::RETRY_AFTER, "5"));
+            };
+            let tried = app.now();
+            s.key_try(conn.ip, tried)?;
+            let opened = ex.open_key(&key);
+            if !matches!(opened, Err(moving::Error::WrongRecoveryKey)) {
+                s.right_key(conn.ip, tried);
+            }
+            drop(work);
+            let opened = match opened {
                 Ok(v) => v,
                 Err(moving::Error::WrongRecoveryKey) => {
-                    s.wrong_key(conn.ip, app.now());
                     return Err(ApiError::new(
                         422,
                         "wrong_recovery_key",
@@ -412,6 +426,10 @@ pub(crate) async fn start(
 /// `PATCH /setup/restore`: the next chunk of the file.
 pub(crate) async fn chunk(State(app): State<AppState>, req: Request) -> ApiResult<Json<Value>> {
     let headers = req.headers().clone();
+    // the claim before anything of the request is read
+    let s = site(&app)?;
+    let (s2, h2) = (s.clone(), headers.clone());
+    app.blocking(move |app| claimed(app, &s2, &h2).map(|_| ())).await?;
     let ct = headers.get(http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
     if !ct.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("application/offset+octet-stream") {
         return Err(ApiError::bad_input("Content-Type", "Send the chunk as application/offset+octet-stream."));
@@ -424,7 +442,6 @@ pub(crate) async fn chunk(State(app): State<AppState>, req: Request) -> ApiResul
     if bytes.is_empty() {
         return Err(ApiError::bad_input("body", "Send the chunk's bytes."));
     }
-    let s = site(&app)?;
     app.blocking(move |app| {
         claimed(app, &s, &headers)?;
         let slot = &s.restore;
@@ -442,6 +459,13 @@ pub(crate) async fn chunk(State(app): State<AppState>, req: Request) -> ApiResul
             }
             return Err(ApiError::new(404, "no_such_job", "No restore is under way. Choose the file again."));
         };
+        if r.failed.is_none() && r.import.is_none() {
+            // a fault of this server while a chunk was stored (not the file's): the import was let go
+            return Err(ApiError::conflict(
+                "not_uploading",
+                "Storing the last chunk went wrong on this server: choose the same file again to carry on.",
+            ));
+        }
         let uploading =
             r.failed.is_none() && r.import.as_ref().is_some_and(|i| i.phase() == moving::import::Phase::Reading);
         if !uploading {

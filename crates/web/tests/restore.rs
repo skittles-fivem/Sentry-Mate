@@ -13,6 +13,9 @@ use web::testkit::{Client, TestServer};
 
 struct Kit {
     s: TestServer,
+    site: Arc<web::moving::MoveSite>,
+    /// The web side after the switch (from [`kit_after`]): its own server on the same folders and claim.
+    after: Option<TestServer>,
     data: PathBuf,
     keys: PathBuf,
     /// The made-up export file and the recovery key that opens it.
@@ -26,6 +29,16 @@ const URL: &str = "/api/v1/setup/restore";
 
 /// An empty new server (its move side on folders of its own) and an export of a made-up old server.
 async fn kit() -> Kit {
+    kit_with(web::moving::ClaimKeep::default(), false).await
+}
+
+/// The same, the claim kept by the program, and the web side it starts after the switch: a server of its own on the
+/// same folders and claim, whose data key the old server has (so the restored folder opens with it).
+async fn kit_after() -> Kit {
+    kit_with(web::moving::ClaimKeep::default(), true).await
+}
+
+async fn kit_with(keep: web::moving::ClaimKeep, later: bool) -> Kit {
     let dir = tempfile::tempdir().unwrap();
     let (data, keys) = (dir.path().join("new/data"), dir.path().join("new/keys"));
     std::fs::create_dir_all(&data).unwrap();
@@ -33,14 +46,30 @@ async fn kit() -> Kit {
     let mut opts = moving::Options::new(APP);
     opts.min_free = 0;
     opts.checkpoint = 1;
-    let site = Arc::new(web::moving::MoveSite::new(data.clone(), keys.clone(), APP).with_import_options(opts));
-    let s = TestServer::start_with(move |b| b.service(site)).await;
+    let after = if later {
+        let mut o = moving::Options::new(APP);
+        o.min_free = 0;
+        let site = Arc::new(
+            web::moving::MoveSite::new(data.clone(), keys.clone(), APP)
+                .with_import_options(o)
+                .keeping_claim(keep.clone()),
+        );
+        Some(TestServer::start_with(move |b| b.service(site)).await)
+    } else {
+        None
+    };
+    let site = Arc::new(
+        web::moving::MoveSite::new(data.clone(), keys.clone(), APP).with_import_options(opts).keeping_claim(keep),
+    );
+    let s2 = site.clone();
+    let s = TestServer::start_with(move |b| b.service(s2)).await;
+    let from = after.as_ref().unwrap_or(&s).dir.path().to_path_buf();
     // the old server: the test server's vault (copied), a recovery key of its own, and a few files
     let (od, ok) = (dir.path().join("old/data"), dir.path().join("old/keys"));
     std::fs::create_dir_all(&od).unwrap();
     std::fs::create_dir_all(&ok).unwrap();
-    std::fs::copy(s.dir.path().join("data").join(vault::VAULT_FILE), od.join(vault::VAULT_FILE)).unwrap();
-    std::fs::copy(s.dir.path().join("keys").join(vault::KEY_FILE), ok.join(vault::KEY_FILE)).unwrap();
+    std::fs::copy(from.join("data").join(vault::VAULT_FILE), od.join(vault::VAULT_FILE)).unwrap();
+    std::fs::copy(from.join("keys").join(vault::KEY_FILE), ok.join(vault::KEY_FILE)).unwrap();
     let v = vault::Vault::open(&od, &ok).unwrap();
     let recovery = v.new_recovery_key(&od, vault::Kdf::FAST_FOR_TESTS).unwrap().as_str().to_string();
     std::fs::create_dir_all(od.join("can")).unwrap();
@@ -52,7 +81,7 @@ async fn kit() -> Kit {
     std::fs::write(od.join("tls/cert.pem"), "-----BEGIN CERTIFICATE-----\nAAEC\n-----END CERTIFICATE-----\n").unwrap();
     v.write_file(&od.join("can/made-up"), "can/made-up", b"a made-up row").unwrap();
     let file = export_of(&od, &v, APP);
-    Kit { s, data, keys, file, recovery, _dir: dir }
+    Kit { s, site, after, data, keys, file, recovery, _dir: dir }
 }
 
 fn export_of(data: &std::path::Path, v: &vault::Vault, app: &str) -> Vec<u8> {
@@ -98,6 +127,11 @@ async fn the_file_and_the_key_are_checked_before_the_upload() {
     assert_eq!((r.status, r.code()), (401, Some("not_claimed".into())), "{}", r.text());
     let r = patch(&mut c, 0, b"x", &[]).await;
     assert_eq!((r.status, r.code()), (401, Some("not_claimed".into())));
+    // the claim before the chunk's headers and body
+    let r = c.request("PATCH", URL, Some(b"x"), &[("Content-Type", "text/plain")]).await;
+    assert_eq!((r.status, r.code()), (401, Some("not_claimed".into())), "{}", r.text());
+    let r = c.request("PATCH", URL, Some(b"x"), &[]).await;
+    assert_eq!((r.status, r.code()), (401, Some("not_claimed".into())), "{}", r.text());
     let mut c = claimed(&k).await;
     let r = patch(&mut c, 0, b"x", &[]).await;
     assert_eq!((r.status, r.code()), (404, Some("no_such_job".into())), "{}", r.text());
@@ -350,4 +384,121 @@ async fn after_a_restart_the_same_file_carries_on_from_a_chunk_boundary() {
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["state"], "checking", "{}", r.text());
     assert!(matches!(moving::import::pending(&k.data, &k.keys), moving::Pending::Ready { .. }));
+}
+
+/// The whole file in chunks of at most `CHUNK_MAX`.
+async fn upload_all(c: &mut Client, file: &[u8]) -> Value {
+    let mut at = 0usize;
+    let mut last = Value::Null;
+    while at < file.len() {
+        let end = (at + web::resources::imports::CHUNK_MAX).min(file.len());
+        let r = patch(c, at as u64, &file[at..end], &[]).await;
+        assert_eq!(r.status, 200, "at {at}: {}", r.text());
+        last = r.json();
+        at = end;
+    }
+    last
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_old_one_call_set_up_waits_for_a_restore() {
+    let k = kit().await;
+    let mut c = claimed(&k).await;
+    assert_eq!(c.post(URL, start_body(&k, "a.smexport")).await.status, 201);
+    // no claim: the set-up code, a name and a password in one call
+    let mut other = k.s.client();
+    let r = other
+        .post(
+            "/api/v1/setup",
+            json!({ "code": k.s.setup_code, "name": "someone", "password": "a long made-up password" }),
+        )
+        .await;
+    assert_eq!((r.status, r.code()), (409, Some("setup_busy".into())), "{}", r.text());
+    assert!(k.s.app.accounts.needs_setup(), "no account made");
+    // the restore goes on
+    let r = patch(&mut c, 0, &k.file[..1000], &[]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    // given up: the old call works again
+    assert_eq!(c.delete("/api/v1/setup/job", json!({})).await.status, 200);
+    k.s.admin().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_recovery_key_is_tried_at_a_time() {
+    let k = kit().await;
+    let mut c = claimed(&k).await;
+    let held = k.site.key_work().unwrap();
+    let r = c.post(URL, start_body(&k, "a.smexport")).await;
+    assert_eq!((r.status, r.code()), (503, Some("busy".into())), "{}", r.text());
+    assert!(r.header("retry-after").is_some());
+    drop(held);
+    // a header asking for more memory than this server's own keys use: refused before Argon2id runs
+    let n = u32::from_be_bytes(k.file[5..9].try_into().unwrap()) as usize;
+    let mut header: Value = serde_json::from_slice(&k.file[9..9 + n]).unwrap();
+    let m = header["recovery"]["kdf"]["m"].as_u64().unwrap();
+    assert!(m > 0, "{header}");
+    header["recovery"]["kdf"]["m"] = json!(vault::Kdf::STRONG.m * 4);
+    let h = serde_json::to_vec(&header).unwrap();
+    let mut big = k.file[..5].to_vec();
+    big.extend_from_slice(&(h.len() as u32).to_be_bytes());
+    big.extend_from_slice(&h);
+    big.extend_from_slice(&k.file[9 + n..]);
+    let b = json!({ "name": "a.smexport", "size": big.len(), "recovery_key": k.recovery, "header": head64(&big) });
+    let r = c.post(URL, b).await;
+    assert_eq!(r.status, 422, "{}", r.text());
+    // the right key, once nothing else runs
+    let r = c.post(URL, start_body(&k, "a.smexport")).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fault_of_this_server_while_storing_says_choose_the_file_again() {
+    let k = kit().await;
+    let mut c = claimed(&k).await;
+    assert_eq!(c.post(URL, start_body(&k, "a.smexport")).await.status, 201);
+    assert_eq!(patch(&mut c, 0, &k.file[..100_000], &[]).await.status, 200);
+    // the staged folder of the files still to come is a plain file now: the next file can't be made
+    let can = k.data.join(moving::import::STAGING).join("data/can");
+    assert!(can.is_dir());
+    let kept = k._dir.path().join("can-kept");
+    std::fs::rename(&can, &kept).unwrap();
+    std::fs::write(&can, b"in the way").unwrap();
+    let r = patch(&mut c, 100_000, &k.file[100_000..], &[]).await;
+    assert_eq!(r.status, 500, "{}", r.text());
+    let r = patch(&mut c, 100_000, &k.file[100_000..], &[]).await;
+    assert_eq!((r.status, r.code()), (409, Some("not_uploading".into())), "{}", r.text());
+    let m = r.json()["error"]["message"].as_str().unwrap_or("").to_string();
+    assert!(m.contains("choose the same file again") && !m.contains("is uploading"), "{m}");
+    // the same file again carries on
+    std::fs::remove_file(&can).unwrap();
+    std::fs::rename(&kept, &can).unwrap();
+    let r = c.post(URL, start_body(&k, "a.smexport")).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let from = r.json()["received"].as_u64().unwrap();
+    let r = patch(&mut c, from, &k.file[from as usize..], &[]).await;
+    assert_eq!((r.status, r.json()["state"].as_str()), (200, Some("checking")), "{}", r.text());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_the_switch_the_browser_that_restored_sees_done() {
+    let mut k = kit_after().await;
+    let mut c = claimed(&k).await;
+    assert_eq!(c.post(URL, start_body(&k, "a.smexport")).await.status, 201);
+    assert_eq!(upload_all(&mut c, &k.file).await["state"], "checking");
+    // the program's switch, and the web side started again: the claim is still this browser's
+    moving::import::switch(&k.data, &k.keys).unwrap();
+    let s2 = k.after.take().unwrap();
+    let mut c2 = s2.client();
+    c2.cookies = c.cookies.clone();
+    let j = c2.get("/api/v1/setup/job").await;
+    assert_eq!((j.status, j.json()["state"].as_str()), (200, Some("done")), "{}", j.text());
+    assert_eq!(j.json()["result"]["cert_sha256"], hex::encode(sha2::Sha256::digest([0u8, 1, 2])));
+    // the export brought accounts: still for this browser, for this call only
+    s2.admin().await;
+    let j = c2.get("/api/v1/setup/job").await;
+    assert_eq!((j.status, j.json()["state"].as_str()), (200, Some("done")), "{}", j.text());
+    let r = c2.delete("/api/v1/setup/job", json!({})).await;
+    assert_eq!((r.status, r.code()), (409, Some("setup_done".into())), "{}", r.text());
+    let r = s2.client().get("/api/v1/setup/job").await;
+    assert_eq!((r.status, r.code()), (409, Some("setup_done".into())), "{}", r.text());
 }

@@ -655,6 +655,8 @@ async fn serve(
     moving::pull::tidy(data, keys);
     let mut refused: Option<String> = None;
     let mut tried: Option<String> = None;
+    // the web pages' set-up claim, kept across the starts below (a restore's switch starts the web side again)
+    let claim = web::moving::ClaimKeep::default();
     loop {
         if !carry_on_import(data, keys, &mut refused).await {
             tracing::info!("stopping");
@@ -665,7 +667,7 @@ async fn serve(
             return Ok(());
         }
         let Instance { mut server, housekeeping, offer, ticker, confirm, mut side } =
-            start(data, keys, &gate, net, names, env, hashing).await?;
+            start(data, keys, &gate, net, names, env, hashing, &claim).await?;
         let mut housekeeping = Some(housekeeping);
         let mut moved = offer.watch();
         let was_moved = offer.is_moved();
@@ -1258,6 +1260,7 @@ async fn import_ready(data: PathBuf, keys: PathBuf, refused: Option<String>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start(
     data: &Path,
     keys: &Path,
@@ -1266,6 +1269,7 @@ async fn start(
     names: &[String],
     env: &MoveEnv,
     hashing: accounts::Hashing,
+    claim: &web::moving::ClaimKeep,
 ) -> Result<Instance, Box<dyn std::error::Error>> {
     let (bind, port) = (net.bind.as_str(), net.upload);
     let moved = moving::old::is_moved(data);
@@ -1360,7 +1364,7 @@ async fn start(
     let app = router(up.clone()).merge(moving::old::router(offer.clone()));
     let server = Box::pin(serve_tls(listener, id.tls_config()?, app));
     let side = if serving {
-        start_web(data, keys, &v, engine, &id, net, hashing).await?
+        start_web(data, keys, &v, engine, &id, net, hashing, claim.clone()).await?
     } else {
         tracing::info!("the data moved away: no web UI here (it runs on the new server)");
         Side { engine: Some(engine), web: Box::pin(std::future::pending()), app: None, tasks: Vec::new() }
@@ -1370,6 +1374,7 @@ async fn start(
 }
 
 /// The web port, over the engine (its cars, its live changes), with the certificate the upload port uses.
+#[allow(clippy::too_many_arguments)]
 async fn start_web(
     data: &Path,
     keys: &Path,
@@ -1378,10 +1383,11 @@ async fn start_web(
     id: &Identity,
     net: &Net,
     hashing: accounts::Hashing,
+    claim: web::moving::ClaimKeep,
 ) -> Result<Side, Box<dyn std::error::Error>> {
     let (d, k, v2, e2) = (data.to_path_buf(), keys.to_path_buf(), v.clone(), engine.engine.clone());
     let ports = web::resources::mqtt::Network { web_port: net.web, upload_port: net.upload };
-    let app = tokio::task::spawn_blocking(move || site::web_state(&d, &k, v2, &e2, hashing, Some(ports)))
+    let app = tokio::task::spawn_blocking(move || site::web_state(&d, &k, v2, &e2, hashing, Some(ports), claim))
         .await?
         .map_err(|e| e as Box<dyn std::error::Error>)?;
     let listener = tokio::net::TcpListener::bind((net.bind.as_str(), net.web)).await?;
