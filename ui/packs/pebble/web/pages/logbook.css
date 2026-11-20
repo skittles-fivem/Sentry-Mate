@@ -1,0 +1,11 @@
+/* Pebble: Logbook. A numbered tile per drive with both ends and the purpose chip. */
+.tl-list-start { padding: 0 var(--s1); }
+.lb-seq { display: grid; place-items: center; min-width: var(--row-ic); height: var(--row-ic); padding: 0 var(--s2); border-radius: var(--r-sm); background: var(--card-alt); font-size: var(--f14); line-height: var(--l14); font-weight: 800; font-variant-numeric: tabular-nums; flex: none; }
+.lb-ends { display: flex; flex-direction: column; gap: var(--s2); }
+.lb-end { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; column-gap: var(--s3); }
+.lb-dot { display: block; width: var(--dot); height: var(--dot); border-radius: 50%; background: var(--tone); align-self: center; }
+.lb-place { display: flex; flex-direction: column; font-size: var(--f16); line-height: var(--l16); font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
+.lb-odo { font-size: var(--f14); line-height: var(--l14); color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.lb-gap { display: flex; align-items: flex-start; gap: var(--s2); font-size: var(--f14); line-height: var(--l14); color: var(--sun); font-weight: 700; }
+.lb-gap .ic { width: var(--ic-sm); height: var(--ic-sm); flex: none; }
+.tile-stat.tone-sky .num-n { color: var(--sky); }

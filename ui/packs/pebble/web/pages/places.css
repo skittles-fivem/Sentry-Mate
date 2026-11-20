@@ -1,0 +1,22 @@
+/* Pebble: Places. The map of every place, a tile per place, the edit sheet. */
+.tl-list-start { height: 0; }
+.crumb { display: inline-flex; align-items: center; gap: var(--s2); font-size: var(--f14); line-height: var(--l14); font-weight: 700; color: var(--muted); }
+.crumb .ic { width: var(--ic-xs); height: var(--ic-xs); }
+.page-bar .crumb { height: var(--h-btn); padding: 0 var(--s2); }
+.place-tile { color: var(--text); }
+.place-tile .item-flags .chip { max-width: 100%; }
+.place-tile .item-flags .chip span { overflow: hidden; text-overflow: ellipsis; }
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s3); }
+.price-box { padding: var(--s4); border-radius: var(--r-card); background: var(--well); }
+.rates { display: flex; flex-direction: column; gap: var(--s2); }
+.rate-list { display: flex; flex-direction: column; gap: var(--s1); margin: 0; padding: 0; list-style: none; }
+.rate { display: flex; align-items: center; gap: var(--s2); padding: var(--s1) var(--s1) var(--s1) var(--s3); border-radius: var(--r-ctl); background: var(--card); }
+.rate-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.rate-new { padding: var(--s3); border-radius: var(--r-ctl); background: var(--card); }
+.effect:empty { display: none; }
+.effect { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s4); border-radius: var(--r-card); background: var(--teal-soft); font-size: var(--f14); line-height: var(--l14); }
+.effect-title { font-weight: 800; }
+.effect-list { margin: 0; padding-left: var(--s5); }
+.place-missing { padding: var(--s4); border-radius: var(--r-card); background: var(--sun-soft); }
+.sheet-crumb .ic { width: var(--ic-xs); height: var(--ic-xs); }
+.place-sheet .map { height: round(13rem, var(--e)); }

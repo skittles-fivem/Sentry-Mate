@@ -1,0 +1,25 @@
+/* Pebble: Fleet. One big tile per car: the ring on the left, the words on the right, the age and chips below. */
+.car-tile { justify-content: space-between; gap: var(--s4); color: var(--text); }
+.car-tile-main { display: flex; align-items: center; gap: var(--s5); min-width: 0; }
+.car-tile-text { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.car-tile-name { font-size: var(--f28); line-height: var(--l28); font-weight: 800; letter-spacing: -0.02em; overflow-wrap: anywhere; }
+.car-tile-model { font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+.car-tile-state { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); margin-top: var(--s1); font-size: var(--f14); line-height: var(--l14); }
+.car-tile-where { font-weight: 700; }
+.car-tile-state .state-word { display: none; }
+.car-tile-line { font-size: var(--f14); line-height: var(--l14); color: var(--muted); font-variant-numeric: tabular-nums; }
+.car-tile-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--card-alt); }
+.car-tile-age { display: inline-flex; align-items: center; gap: var(--s2); font-size: var(--f14); line-height: var(--l14); font-variant-numeric: tabular-nums; }
+.car-tile-age .ic { width: var(--ic-xs); height: var(--ic-xs); color: var(--muted); }
+.car-tile.is-stale .ring { color: var(--muted); }
+.live-chip { height: var(--h-btn); padding: 0 var(--s4); }
+.live-chip .dot { background: var(--teal); }
+.fix-list { display: flex; flex-direction: column; gap: var(--s3); margin: 0; padding: 0; list-style: none; }
+.fix { display: flex; align-items: flex-start; gap: var(--s3); }
+.fix .item-text { gap: var(--s1); }
+.fix-link { font-size: var(--f14); line-height: var(--l14); font-weight: 700; }
+.order-row { cursor: default; }
+.order-sheet .seg-field { margin-bottom: var(--s5); }
+html[data-form="phone"] .car-tile-main { gap: var(--s4); }
+html[data-form="phone"] .car-tile .ring { --ring: round(6.5rem, var(--e)); }
+html[data-form="phone"] .car-tile .ring-n { font-size: var(--f20); line-height: var(--l20); }
