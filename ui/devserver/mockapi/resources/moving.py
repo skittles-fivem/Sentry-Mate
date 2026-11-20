@@ -155,8 +155,11 @@ def _same_key(a, b):
 
 
 def _norm_setup_code(text):
-    """Case, spaces and dashes do not matter (docs/ui-api.md)."""
-    return re.sub(r"[\s-]", "", text).upper()
+    """Case, spaces, dashes and the SETUP- in front do not matter, and O, I and L read as 0, 1 and 1 (docs/ui-api.md;
+    accounts::normal_setup_code)."""
+    t = re.sub(r"[^0-9A-Za-z]", "", text).upper()
+    t = t[len("SETUP"):] if t.startswith("SETUP") else t
+    return t.translate(str.maketrans("OIL", "011"))
 
 
 def parse_address(text):
@@ -825,12 +828,14 @@ def get_setup(req):
             "claim_expires_ms": st.setup["claim"]["expires_ms"] if claimed else None, "job": job}
 
 
-def _check_setup_code(req, code):
-    from .auth import THROTTLE_SETUP_TRIES, _check_throttle, _fail
+def _check_setup_code(req, code, one_call=False):
+    """`one_call`: POST /setup, whose wrong codes the accounts throttle counts (5 from one address), apart from
+    /setup/claim's (10)."""
+    from .auth import THROTTLE_SETUP_TRIES, THROTTLE_TRIES, _check_throttle, _fail
     from ..store import DEV_SETUP_CODE
     st = req.store
-    key = "setup:" + (getattr(req, "client_ip", None) or "")
-    _check_throttle(st, key, THROTTLE_SETUP_TRIES)
+    key = ("setup-one:" if one_call else "setup:") + (getattr(req, "client_ip", None) or "")
+    _check_throttle(st, key, THROTTLE_TRIES if one_call else THROTTLE_SETUP_TRIES)
     if not secrets.compare_digest(_norm_setup_code(code).encode(), _norm_setup_code(DEV_SETUP_CODE).encode()):
         _fail(st, key)
         raise ApiError(403, "wrong_setup_code", "That set-up code is not right. Copy it again from the server's log.")
@@ -855,18 +860,25 @@ def post_claim(req):
     return get_setup(req)
 
 
-def _first_admin(req, name, password):
-    from .auth import _name_password_rules, _signed_in, me_view
-    st = req.store
-    errs = _name_password_rules(st, name, password)
+def _password_rules(req, name, password):
+    from .auth import _name_password_rules
+    errs = _name_password_rules(req.store, name, password)
     if errs:
         raise invalid(errs)
+
+
+def _first_admin(req, name, password, end_claim=True):
+    """`end_claim`: POST /setup/fresh ends the claim; POST /setup leaves it (it may be another browser's)."""
+    from .auth import _signed_in, me_view
+    st = req.store
+    _password_rules(req, name, password)
     with st.lock:
         a = {"id": "a1", "name": name.strip(), "role": "admin", "cars": "all", "two_step_required": False,
              "two_step": False, "password": password, "created_ms": req.now, "version": 1}
         st.accounts[a["id"]] = a
         st.needs_setup = False
-        st.setup["claim"] = None
+        if end_claim:
+            st.setup["claim"] = None
         st.setup["job"] = None
         st.recovery_key_saved = False
         if not any(n["code"] == "recovery_key_unsaved" for n in st.notices):
@@ -901,13 +913,16 @@ def post_setup_legacy(req):
     from .auth import _types
     st = req.store
     body = req.json()
+    _only(body, ("code", "name", "password"))
     _types(body, {"code": str, "name": str, "password": str})
     if not st.needs_setup:
         raise conflict("setup_done", "Set-up is already done. Sign in instead.")
-    _check_setup_code(req, body["code"])
+    # the real server's order: the name and password, then the code, then a move or a restore that runs
+    _password_rules(req, body["name"], body["password"])
+    _check_setup_code(req, body["code"], one_call=True)
     if _busy(st, req.now) is not None:
         raise conflict("setup_busy", "A move or a restore into this server is under way. Cancel it first.")
-    return _first_admin(req, body["name"], body["password"])
+    return _first_admin(req, body["name"], body["password"], end_claim=False)
 
 
 def post_move_here(req):

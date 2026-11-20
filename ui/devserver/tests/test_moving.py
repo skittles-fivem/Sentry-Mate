@@ -119,6 +119,55 @@ class Throttle(ServerCase):
         self.assertIn("retry-after", hd)
 
 
+class OneCallSetUp(ServerCase):
+    """POST /api/v1/setup answers like the real server (crates/web auth.rs post_setup, accounts::Accounts::setup).
+    Each test has a fresh server of its own (they set it up and use up tries)."""
+
+    @classmethod
+    def setUpClass(cls):
+        pass
+
+    @classmethod
+    def tearDownClass(cls):
+        pass
+
+    def setUp(self):
+        self.server = Running(needs_setup=True)
+        self.addCleanup(self.server.close)
+
+    def body(self, **kw):
+        return {"code": SETUP_CODE, "name": "owner", "password": "a long password", **kw}
+
+    def test_the_code_reads_like_the_real_one(self):
+        # the SETUP- in front does not matter, nor O/I/L for 0/1
+        for typed in ("DEV-0000", "dev 0000", "SETUP-DEV-OOOO"):
+            self.assertTrue(self.server.client().json("POST", "/api/v1/setup/claim", {"setup_code": typed})["claimed"],
+                            typed)
+
+    def test_unknown_fields_a_weak_password_and_the_claim(self):
+        c = _claimed(self.server)
+        other = self.server.client()
+        other.error("POST", "/api/v1/setup", 400, "bad_input", body=self.body(role="admin"))
+        other.error("POST", "/api/v1/setup", 422, "invalid", body=self.body(password="short"))
+        d = other.json("POST", "/api/v1/setup", self.body(code="DEV-0000"))
+        self.assertEqual(d["status"], "done")
+        # the claim is left alone: it may be another browser's
+        self.assertEqual((c.get("/api/v1/setup")["claimed"], c.get("/api/v1/setup")["state"]), (True, "set_up"))
+
+    def test_five_wrong_codes_then_429_counted_apart_from_the_claim(self):
+        c = self.server.client()
+        codes = [c.request("POST", "/api/v1/setup", self.body(code="SETUP-0000-0000"))[0] for _ in range(6)]
+        self.assertEqual(codes, [403] * 5 + [429])
+        c.error("POST", "/api/v1/setup/claim", 403, "wrong_setup_code", body={"setup_code": "0000"})
+
+    def test_a_wrong_code_is_wrong_while_a_move_runs(self):
+        c = _claimed(self.server)
+        c.json("POST", "/api/v1/setup/move-here", {"from": "192.168.1.20", "code": _code()}, expect=201)
+        other = self.server.client()
+        other.error("POST", "/api/v1/setup", 403, "wrong_setup_code", body=self.body(code="nope"))
+        other.error("POST", "/api/v1/setup", 409, "setup_busy", body=self.body())
+
+
 class FreshCase(ServerCase):
     server_args = {"needs_setup": True}
 

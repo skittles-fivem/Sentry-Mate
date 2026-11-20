@@ -29,16 +29,48 @@ const URL: &str = "/api/v1/setup/restore";
 
 /// An empty new server (its move side on folders of its own) and an export of a made-up old server.
 async fn kit() -> Kit {
-    kit_with(web::moving::ClaimKeep::default(), false).await
+    kit_with(web::moving::ClaimKeep::default(), false, None).await
+}
+
+/// A test's stop at one of the move side's named points ([`web::moving::MoveSite::with_pause`]): the server waits
+/// there until [`Stop::go`].
+struct Stop {
+    hit: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<()>>,
+    go: std::sync::mpsc::Sender<()>,
+}
+
+type Hook = Arc<dyn Fn(&str) + Send + Sync>;
+
+fn stop_at(at: &'static str) -> (Arc<Stop>, Hook) {
+    let (hit_tx, hit_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let go_rx = std::sync::Mutex::new(go_rx);
+    let hook: Hook = Arc::new(move |point: &str| {
+        if point == at {
+            hit_tx.send(()).unwrap();
+            go_rx.lock().unwrap().recv().unwrap();
+        }
+    });
+    (Arc::new(Stop { hit: tokio::sync::Mutex::new(hit_rx), go: go_tx }), hook)
+}
+
+impl Stop {
+    async fn reached(&self) {
+        tokio::time::timeout(std::time::Duration::from_secs(60), self.hit.lock().await.recv()).await.unwrap().unwrap();
+    }
+
+    fn go(&self) {
+        self.go.send(()).unwrap();
+    }
 }
 
 /// The same, the claim kept by the program, and the web side it starts after the switch: a server of its own on the
 /// same folders and claim, whose data key the old server has (so the restored folder opens with it).
 async fn kit_after() -> Kit {
-    kit_with(web::moving::ClaimKeep::default(), true).await
+    kit_with(web::moving::ClaimKeep::default(), true, None).await
 }
 
-async fn kit_with(keep: web::moving::ClaimKeep, later: bool) -> Kit {
+async fn kit_with(keep: web::moving::ClaimKeep, later: bool, pause: Option<Hook>) -> Kit {
     let dir = tempfile::tempdir().unwrap();
     let (data, keys) = (dir.path().join("new/data"), dir.path().join("new/keys"));
     std::fs::create_dir_all(&data).unwrap();
@@ -58,9 +90,12 @@ async fn kit_with(keep: web::moving::ClaimKeep, later: bool) -> Kit {
     } else {
         None
     };
-    let site = Arc::new(
-        web::moving::MoveSite::new(data.clone(), keys.clone(), APP).with_import_options(opts).keeping_claim(keep),
-    );
+    let mut site =
+        web::moving::MoveSite::new(data.clone(), keys.clone(), APP).with_import_options(opts).keeping_claim(keep);
+    if let Some(p) = pause {
+        site = site.with_pause(move |at| p(at));
+    }
+    let site = Arc::new(site);
     let s2 = site.clone();
     let s = TestServer::start_with(move |b| b.service(s2)).await;
     let from = after.as_ref().unwrap_or(&s).dir.path().to_path_buf();
@@ -415,6 +450,14 @@ async fn the_old_one_call_set_up_waits_for_a_restore() {
     let g = c.get("/api/v1/setup").await.json();
     assert_eq!((g["state"].as_str(), g["claimed"].as_bool()), (Some("restoring"), Some(true)), "{g}");
     assert_eq!((g["job"]["kind"].as_str(), g["job"]["state"].as_str()), (Some("restore"), Some("uploading")), "{g}");
+    // a wrong code is a wrong code while a restore runs too (and counted)
+    let r = other
+        .post(
+            "/api/v1/setup",
+            json!({ "code": "SETUP-0000-0000", "name": "someone", "password": "a long made-up password" }),
+        )
+        .await;
+    assert_eq!((r.status, r.code()), (403, Some("wrong_setup_code".into())), "{}", r.text());
     // no claim: the set-up code, a name and a password in one call
     let r = other
         .post(
@@ -510,4 +553,54 @@ async fn after_the_switch_the_browser_that_restored_sees_done() {
     assert_eq!((r.status, r.code()), (409, Some("setup_done".into())), "{}", r.text());
     let r = s2.client().get("/api/v1/setup/job").await;
     assert_eq!((r.status, r.code()), (409, Some("setup_done".into())), "{}", r.text());
+}
+
+const SETUP_URL: &str = "/api/v1/setup";
+
+fn setup_body(k: &Kit) -> Value {
+    json!({ "code": k.s.setup_code, "name": "someone", "password": "a long made-up password" })
+}
+
+/// No restore half done on a server that is set up: the first admin is made while a restore's key is checked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_first_admin_made_while_a_key_is_checked_stops_the_restore() {
+    let (stop, hook) = stop_at("restore-key-opened");
+    let k = kit_with(web::moving::ClaimKeep::default(), false, Some(hook)).await;
+    let mut c = claimed(&k).await;
+    let body = start_body(&k, "a.smexport");
+    let restore = tokio::spawn(async move { c.post(URL, body).await });
+    stop.reached().await;
+    let r = k.s.client().post(SETUP_URL, setup_body(&k)).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    stop.go();
+    let r = restore.await.unwrap();
+    assert_eq!((r.status, r.code()), (409, Some("setup_done".into())), "{}", r.text());
+    assert!(matches!(moving::import::pending(&k.data, &k.keys), moving::Pending::None), "nothing staged");
+}
+
+/// The other way round: a restore begun while the first admin's password is hashed waits, then sees it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restore_begun_while_the_first_admin_is_made_waits_and_stops() {
+    let (stop, hook) = stop_at("setup-ready");
+    let k = kit_with(web::moving::ClaimKeep::default(), false, Some(hook)).await;
+    let mut c = claimed(&k).await;
+    let mut other = k.s.client();
+    let body = setup_body(&k);
+    let setup = tokio::spawn(async move { other.post(SETUP_URL, body).await });
+    stop.reached().await;
+    let body = start_body(&k, "a.smexport");
+    let mut restore = tokio::spawn(async move { c.post(URL, body).await });
+    // the restore waits for the first admin (its key check takes a moment with the test's fast settings)
+    let early = tokio::time::timeout(std::time::Duration::from_secs(3), &mut restore).await;
+    assert!(
+        early.is_err(),
+        "the restore went on while the first admin was made: {:?}",
+        early.map(|r| r.unwrap().text())
+    );
+    stop.go();
+    let r = setup.await.unwrap();
+    assert_eq!(r.status, 200, "{}", r.text());
+    let r = restore.await.unwrap();
+    assert_eq!((r.status, r.code()), (409, Some("setup_done".into())), "{}", r.text());
+    assert!(matches!(moving::import::pending(&k.data, &k.keys), moving::Pending::None), "nothing staged");
 }

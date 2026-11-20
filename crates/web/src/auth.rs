@@ -118,13 +118,18 @@ async fn post_setup(
     app.blocking(move |app| {
         // like `POST /setup/fresh`: no first admin while a move or a restore into this server is under way (its
         // switch would set the new account aside)
+        // the code first (a wrong one is a wrong one, and counted, while a move or a restore runs too), then a
+        // move or a restore that runs. The gate is held until the account is made: none begins in between.
         let site = crate::moving::site(app).ok();
-        if let Some(s) = &site
-            && app.accounts.needs_setup()
-        {
-            crate::moving::refuse_if_busy(s)?;
-        }
-        let ns = app.accounts.setup(&code, &name, &password, &c)?;
+        let gate = site.as_ref().map(|s| s.setup_gate());
+        let ns = app.accounts.setup_when(&code, &name, &password, &c, || -> ApiResult<()> {
+            if let Some(s) = &site {
+                crate::moving::refuse_if_busy(s)?;
+                s.paused("setup-ready");
+            }
+            Ok(())
+        })?;
+        drop(gate);
         // like `POST /setup/fresh`: the recovery key is shown this once (from its file). A claim is left alone: it
         // may be another browser's, which still reads its restore's result.
         let recovery = site.as_ref().and_then(|s| moving::import::recovery_from_file(&s.recovery_file()));

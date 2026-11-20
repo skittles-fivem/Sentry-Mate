@@ -78,7 +78,14 @@ pub struct MoveSite {
     /// The options a restore runs with (`None`: the usual ones for this version).
     import_opts: Option<Arc<moving::Options>>,
     state: Mutex<SiteState>,
+    /// Held while the first admin is made and while a move or a restore is begun ([`MoveSite::setup_gate`]).
+    setup_gate: Mutex<()>,
+    /// Tests: called at named points (see [`MoveSite::with_pause`]).
+    pause: Option<Pause>,
 }
+
+/// A test's hook ([`MoveSite::with_pause`]).
+type Pause = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// The claim: its token's SHA-256, its last use, and the set-up code it was made with (for the first admin).
 type Claim = (String, u64, Zeroizing<String>);
@@ -165,7 +172,31 @@ impl MoveSite {
             restore: crate::restore::Slot::default(),
             import_opts: None,
             state: Mutex::new(SiteState::default()),
+            setup_gate: Mutex::new(()),
+            pause: None,
         }
+    }
+
+    /// Tests only: `f` is called (on a blocking thread, so it may wait) at these points: `restore-key-opened` (a
+    /// restore's recovery key opened its file, nothing begun yet) and `setup-ready` (`POST /setup`: the code is right
+    /// and nothing runs, the password not yet hashed).
+    #[doc(hidden)]
+    pub fn with_pause(mut self, f: impl Fn(&str) + Send + Sync + 'static) -> MoveSite {
+        self.pause = Some(Arc::new(f));
+        self
+    }
+
+    pub(crate) fn paused(&self, at: &str) {
+        if let Some(f) = &self.pause {
+            f(at);
+        }
+    }
+
+    /// One at a time: the first admin made (from its busy check to its account), or a move or a restore begun (from
+    /// its `needs_setup` check to its files on disk). Without it a restore could begin while the first admin is made,
+    /// and be left half done on a server that is set up, where the web pages can't carry it on or give it up.
+    pub(crate) fn setup_gate(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.setup_gate.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The same, holding the claim in `keep` (the program's, kept across restarts of the web side).
@@ -789,6 +820,7 @@ async fn fresh(
     let s = site(&app)?;
     let recovery_file = s.recovery_file();
     app.blocking(move |app| {
+        let _gate = s.setup_gate();
         let code = claimed(app, &s, &headers)?;
         refuse_if_busy(&s)?;
         let client = accounts::Client::new(conn.ip, &crate::policy::device(&headers));
@@ -956,6 +988,8 @@ async fn move_here(
     }
     let s = site(&app)?;
     app.blocking(move |app| {
+        // held until the move's files are on disk: no first admin is made in between
+        let gate = s.setup_gate();
         claimed(app, &s, &headers)?;
         let had = moving::pull::status(&s.data, &s.keys).map_err(moving_error)?;
         if let Some(h) = &had {
@@ -977,6 +1011,7 @@ async fn move_here(
         // the web side's own first-start files (no account yet) don't count as the owner's data
         opts.first_start_also = moving::import::WEB_FIRST_START.iter().map(|n| n.to_string()).collect();
         moving::pull::begin(&s.data, &s.keys, &from, &code, &opts).map_err(begin_problem)?;
+        drop(gate);
         // the running server carries the move on from here (`pull::run`, with this web side up)
         let job = job_view(app, &s)?.unwrap_or(Value::Null);
         let (status, what, summary) = if had.is_some() {

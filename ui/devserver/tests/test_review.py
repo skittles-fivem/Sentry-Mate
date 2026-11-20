@@ -549,8 +549,9 @@ class SetupCodeGuessing(ServerCase):
     def test_wrong_codes_are_throttled(self):
         c = self.server.client()
         codes = [c.request("POST", "/api/v1/setup", {"code": f"SETUP-{i:04d}", "name": "owner",
-                                                      "password": "a-long-password"})[0] for i in range(12)]
-        self.assertEqual(codes, [403] * 10 + [429] * 2)
+                                                      "password": "a-long-password"})[0] for i in range(7)]
+        # the accounts throttle, as on the real server: five wrong codes from one address
+        self.assertEqual(codes, [403] * 5 + [429] * 2)
         self.server.app.store.throttle.clear()
         d = c.json("POST", "/api/v1/setup", {"code": "SETUP-DEV-0000", "name": "owner", "password": "a-long-password"})
         self.assertEqual(d["status"], "done")

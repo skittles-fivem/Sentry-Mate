@@ -339,6 +339,11 @@ pub(crate) async fn start(
                 Err(moving::Error::Vault(_)) => return Err(header_error(moving::Error::NotAnExport)),
                 Err(e) => return Err(ApiError::server(format!("opening an export's key: {e}"))),
             };
+            s.paused("restore-key-opened");
+            // the key check takes long: from here to the restore's files on disk, no first admin is made, and one
+            // made meanwhile is seen (the claim is checked again)
+            let _gate = s.setup_gate();
+            claimed(app, &s, &headers)?;
             let busy = || {
                 ApiError::conflict("setup_busy", "A move or a restore into this server is under way. Cancel it first.")
             };

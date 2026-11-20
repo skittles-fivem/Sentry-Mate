@@ -629,10 +629,23 @@ impl Accounts {
 
     /// Makes the first admin with the setup code, and signs them in.
     pub fn setup(&self, code: &str, name: &str, password: &str, client: &Client) -> Result<NewSession> {
+        self.setup_when(code, name, password, client, || Ok(()))
+    }
+
+    /// The same, asking `ready` once the code is known to be right and before the password is hashed: its error is
+    /// the answer (say, a move or a restore runs), and the right code is not counted as a wrong try.
+    pub fn setup_when<E: From<Error>>(
+        &self,
+        code: &str,
+        name: &str,
+        password: &str,
+        client: &Client,
+        ready: impl FnOnce() -> std::result::Result<(), E>,
+    ) -> std::result::Result<NewSession, E> {
         let keys = vec![format!("ip:{}", net::throttle_key(client.address))];
         self.throttle.check(&keys, self.now())?;
         if !self.needs_setup() {
-            return Err(Error::SetupDone);
+            return Err(Error::SetupDone.into());
         }
         let name = valid_name(name)?;
         check_password(&name, password)?;
@@ -642,6 +655,10 @@ impl Accounts {
             if matches!(e, Error::WrongSetupCode) {
                 self.record(None, Some(client), "setup-code-wrong", "")?;
             }
+            return Err(e.into());
+        }
+        if let Err(e) = ready() {
+            self.throttle.success(&keys);
             return Err(e);
         }
         let phc = {
@@ -652,7 +669,7 @@ impl Accounts {
         // the same code at the same moment make one admin
         let one = lock(&self.setup_lock);
         if !self.needs_setup() {
-            return Err(Error::SetupDone);
+            return Err(Error::SetupDone.into());
         }
         let state = self.check_setup_code(&given)?;
         // the code is used up before the account exists: a crash in between leaves no code that works twice
