@@ -130,12 +130,12 @@ Then open `http://127.0.0.1:8000/`. The pages load map tiles from `tile.openstre
 | `model` | The shared types | yes |
 | `timeline` | States, drives, charges from the signals | yes, through the engine |
 | `db` | Sealed storage for what the timeline works out | yes |
-| `places` | Geofences, prices, addresses, map settings | yes, through the engine (no way to make places from the pages yet) |
+| `places` | Geofences, prices, addresses, map settings | yes, through the engine and the web server (Places page) |
 | `accounts` | People and sign-in | yes, through the web server |
-| `import` | TeslaMate history | not yet (the engine has its importer; the import routes are not served) |
+| `import` | TeslaMate history | yes, through the engine (the web UI's import page) |
 | `engine` | Checked logs into each car's history in the background, and the read side of `/api/v1` | yes |
 | `web` | The web port: UI packs, sign-in, accounts, preferences, the live stream, the frame every `/api/v1` route shares | yes |
-| `mqtt` | Home Assistant | not yet |
+| `mqtt` | Home Assistant | yes, through the engine and the web server |
 | `synth` | Made-up CAN Bridge logs (signed, chained, both formats) for tests | only the hidden `dev seed`, in a build with `--features dev-seed` (never the image) |
 | `sentry-mate` | The program: `serve` runs the upload port, the engine and the web port together (`src/site.rs`); the `/api/v1` reads over the engine are in `src/api.rs` | |
 

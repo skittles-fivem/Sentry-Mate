@@ -364,10 +364,13 @@ export async function mount(ctx) {
       bar != null ? h('div', { class: ['bar', 'im-bar', st === 'done' && 'bar--muted'], vars: { '--w': `${bar.toFixed(1)}%` } }, h('i')) : null,
       detail ? h('p', { class: 'im-stage-detail' }, detail) : null);
   }
+  // what a restart or a closed page does to an import: shown before one starts too
+  const restartNote = () => h('p', { class: 'note im-restart', cover: 'web.import.restart-note' }, icon('info', 'ico--sm'),
+    ' Safe to leave: you can close this page or the browser while it runs. If the server restarts, an upload goes on from the last chunk it has once you choose the file again; a check starts over (nothing was stored); an import is run again from the file, and rows that are already in are recognised by their TeslaMate id, so nothing is stored twice.');
   function paintProgress() {
     const j = S.job;
     if (!j) {
-      replace(progBox, emptyState({ icon: 'upload', title: 'No import yet', text: 'Choose a TeslaMate backup file under Upload. Its upload, check and import show here as they run.' }));
+      replace(progBox, emptyState({ icon: 'upload', title: 'No import yet', text: 'Choose a TeslaMate backup file under Upload. Its upload, check and import show here as they run.' }), restartNote());
       return;
     }
     const s = j.status, failedAt = s === 'failed' ? (j.checked_ms ? 'import' : 'check') : null;
@@ -389,8 +392,7 @@ export async function mount(ctx) {
         stageRow('Upload', 'The file goes to the server in chunks.', up1, up1 === 'done' ? `${bytes(j.bytes_total)} uploaded` : null, up1 === 'now' ? pct(j.uploaded_bytes, j.bytes_total) : null),
         stageRow('Check (pass 1)', 'Every row is read and checked; nothing is stored.', ck, read(ck) || (ck === 'done' ? `Checked ${j.checked_ms ? dateTime(j.checked_ms, tz) : ''}` : null), ck === 'now' ? pct(j.bytes_read, j.bytes_total) : null),
         stageRow('Import (pass 2)', 'The rows are stored and the timeline is built again for the matched cars.', im, read(im) || (im === 'done' ? `Done ${dateTime(j.finished_ms, tz)}` : im === 'skipped' ? 'Not run: the check failed.' : null), im === 'now' ? pct(j.bytes_read, j.bytes_total) : null)),
-      h('p', { class: 'note im-restart', cover: 'web.import.restart-note' }, icon('info', 'ico--sm'),
-        ' Safe to leave: you can close this page or the browser while it runs. If the server restarts, an upload goes on from the last chunk it has once you choose the file again; a check starts over (nothing was stored); an import is run again from the file, and rows that are already in are recognised by their TeslaMate id, so nothing is stored twice.'));
+      restartNote());
   }
   const progressPanel = panel({ title: 'Progress', icon: 'pulse', side: h('span', { class: 'im-age' }) }, progBox);
 

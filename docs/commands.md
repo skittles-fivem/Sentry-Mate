@@ -289,9 +289,8 @@ the upload port, so the browser warns once about a certificate it doesn't know: 
 - **What the pages do**: they read cars, the Now values, the timeline, drives, charges, battery, places, reports and
   data health, and change places and costs, car settings, upload tokens and car keys (**Settings → Cars**), accounts,
   server settings, MQTT and the TeslaMate import. Admin accounts change things; watch accounts only read their cars.
-- **Moving** from the pages: a move code or an export file on the old server, and "move here" on the new server's
-  first page ([moving.md](moving.md)). Restoring from an export file on the first page is not served yet: use
-  `import`.
+- **Moving** from the pages: a move code or an export file on the old server, and "move here" or "restore from an
+  export file" on the new server's first page ([moving.md](moving.md)).
 - A server whose data moved away serves no web UI: it runs on the new server.
 
 ## Health

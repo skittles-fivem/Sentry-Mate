@@ -609,5 +609,5 @@ async function drawMissing(ctx, box) {
         h('td', { class: 'num' }, q(d.distance_km, 'distance')),
         h('td', { class: 'num' }, formatDuration(d.duration_ms)),
         h('td', null, why(d)))))))
-      : h('p', { class: 'note-serif' }, 'Every drive in this period has all its data.'));
+      : h('p', { class: 'note-serif', cover: ['drives.incomplete.table', 'drives.incomplete.id', 'drives.incomplete.start', 'drives.incomplete.end', 'drives.incomplete.distance', 'drives.incomplete.duration'] }, 'Every drive in this period has all its data. One that misses some would be listed here with its start, end, distance and duration.'));
 }

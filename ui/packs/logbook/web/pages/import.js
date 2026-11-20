@@ -631,7 +631,7 @@ export async function mount(ctx) {
   function paintReport() {
     const j = S.job?.report ? S.job : S.jobs.find((x) => x.report && x.status === 'done');
     if (!j || !j.report) {
-      replace(reportBox, empty({ title: 'No report yet.', text: 'A report shows here once a file is checked: rows read per table, rows imported, and why any row was skipped.' }));
+      replace(reportBox, empty({ title: 'No report yet.', text: 'A report shows here once a file is checked: rows read per table, rows imported, how many rows were skipped and why.', cover: ['web.import.rejected-count', 'web.import.rejected.col-reason'] }));
       return;
     }
     const rep = j.report;
@@ -789,7 +789,7 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- earlier imports */
   const historyBox = h('div', { class: 'im-history' });
   function paintHistory() {
-    if (!S.jobs.length) { replace(historyBox, empty({ title: 'No import yet.', text: 'Uploaded files and their reports are listed here, newest first.' })); return; }
+    if (!S.jobs.length) { replace(historyBox, empty({ title: 'No import yet.', text: 'Uploaded files and their reports are listed here, newest first, each with its status and a button to discard it.', cover: ['web.import.files.col-status', 'web.import.discard'] })); return; }
     const t = dataTable(ctx, {
       rows: S.jobs, itemName: ['import', 'imports'], label: 'Imports',
       csv: { filename: 'imports', columns: [column('File', 'name'), column('Status', 'status'), column('Size', 'bytes_total', 'bytes'), timeColumn('Began', 'started_ms', tz), timeColumn('Finished', 'finished_ms', tz)] },

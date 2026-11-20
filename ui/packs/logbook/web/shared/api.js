@@ -131,11 +131,14 @@ function anySignal(signals) {
   return c.signal;
 }
 
+/** The reads that decode stored logs (they take turns on the server). */
+const HEAVY_PATH = /^\/cars\/[^/]+\/(signals(\/latest)?|battery(\/capacity)?|battery-level|projected-range|efficiency)$/;
+
 /**
  * A client. The module's own exports use one made with the defaults; tests and special pages can make
  * their own. Options: base ('/api/v1'), fetch, EventSource, timers (setTimeout, clearTimeout), random,
  * localNow, timeoutMs (30000 for reads; writes get twice that), retry429Ms (the longest Retry-After a
- * read waits for once by itself, 10000).
+ * read waits for once by itself, 10000), heavyMax (reads that decode stored logs sent at once, 2).
  */
 export function createClient(options = {}) {
   const base = (options.base ?? API_BASE).replace(/\/+$/, '');
@@ -148,6 +151,26 @@ export function createClient(options = {}) {
   const readTimeoutMs = options.timeoutMs ?? 30000;
   const retry429Ms = options.retry429Ms ?? 10000;
   const clock = createServerClock(localNow);
+  // Reads that decode stored logs take turns on the server: at most 4 per account running or waiting, one
+  // more is 429 at once (docs/ui-api.md, "Answers that decode stored logs take turns"). A page that asks for
+  // several at once (a chart per car) sends at most heavyMax of them, so two open pages fit.
+  const heavyMax = options.heavyMax ?? 2;
+  const heavy = { running: 0, waiting: [] };
+  function heavyTurn(signal) {
+    if (heavy.running < heavyMax) { heavy.running++; return Promise.resolve(); }
+    return new Promise((resolve, reject) => {
+      const w = { resolve, reject, signal, onAbort: null };
+      w.onAbort = () => { heavy.waiting.splice(heavy.waiting.indexOf(w), 1); reject(abortError(signal)); };
+      signal?.addEventListener('abort', w.onAbort, { once: true });
+      heavy.waiting.push(w);
+    });
+  }
+  function heavyDone() {
+    const w = heavy.waiting.shift();
+    if (!w) { heavy.running--; return; }
+    w.signal?.removeEventListener('abort', w.onAbort);
+    w.resolve();
+  }
 
   const listeners = new Map(); // type -> Set(fn)
   function on(type, fn) {
@@ -206,7 +229,13 @@ export function createClient(options = {}) {
   }
 
   // One HTTP exchange; signal is the request's own (shared requests have one per group of callers).
-  async function exchange(method, path, { params, body, headers = {}, signal, accept = 'json', timeoutMs }) {
+  async function exchange(method, path, opts) {
+    if (method !== 'GET' || !HEAVY_PATH.test(url(path).slice(base.length))) return exchangeNow(method, path, opts);
+    if (opts.signal?.aborted) throw abortError(opts.signal);
+    await heavyTurn(opts.signal);
+    try { return await exchangeNow(method, path, opts); } finally { heavyDone(); }
+  }
+  async function exchangeNow(method, path, { params, body, headers = {}, signal, accept = 'json', timeoutMs }) {
     const href = url(path, params);
     const h = { ...headers };
     if (accept === 'json' && !('Accept' in h)) h.Accept = 'application/json';

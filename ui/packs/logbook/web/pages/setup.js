@@ -50,6 +50,8 @@ const RESTORE_STEPS = [
   ['done', 'Done', null],
 ];
 const ROUND_STEP = ['connecting', 'copying', 'catching_up', 'finishing'];
+/** A move stopped for one of these carries on with a new code from the same old server (the copy so far kept). */
+const RESUMABLE = new Set(['cancelled', 'bad_session', 'not_proven']);
 
 /** What each refusal of a move here means, and what to do (the server's own words follow). */
 const MOVE_REFUSED = {
@@ -494,10 +496,14 @@ export async function mount(ctx) {
         prob && prob.message ? h('p', { class: 'su-log' }, 'The server says: ', h('q', null, prob.message)) : null,
         prob && prob.retry_ms ? h('p', { class: 'su-quiet' }, `Next try in about ${secs(prob.retry_ms)} seconds.`) : null));
     } else if (st === 'stopped') {
+      const resumable = !restore && RESUMABLE.has(prob && prob.code);
       const w = PROBLEM[prob && prob.code] || [prob ? prob.message : 'The move stopped.', 'It waits for you.'];
-      parts.push(callout('bad', w[0], h('p', null, w[1]),
+      parts.push(callout('bad', w[0], resumable ? null : h('p', null, w[1]),
         prob && prob.message && prob.code !== 'cancelled' ? h('p', { class: 'su-log' }, 'The server says: ', h('q', null, prob.message)) : null,
-        h('p', null, 'To move after all: make a new move code on the old server, give up here, then choose “Move here” again with the new code.')));
+        resumable
+          ? h('p', null, 'What was copied so far stays here. Make a new move code on the old server and type it below: the move carries on from where it stopped.')
+          : h('p', null, 'To move after all: make a new move code on the old server, give up here, then choose “Move here” again with the new code.')));
+      if (resumable) parts.push(carryOn(job));
     } else if (st === 'failed') {
       const w = PROBLEM[prob && prob.code] || [prob ? prob.message : 'The restore failed.', 'Nothing of it was kept.'];
       parts.push(callout('bad', w[0], h('p', null, w[1]), prob && prob.message ? h('p', { class: 'su-log' }, 'The server says: ', h('q', null, prob.message)) : null));
@@ -538,7 +544,11 @@ export async function mount(ctx) {
           h('li', null, 'Give up: what was copied here is removed, and the page comes back to the three choices.'),
           h('li', null, 'After the switch, the old server takes no more uploads and says where its data went. Undo the move there if you need it back.'))));
     }
-    // keep a form the person is typing in (the last-resort key) across a redraw
+    // keep a form the person is typing in (the new code, the last-resort key) across a redraw
+    const carry = jobBox.querySelector('.su-carry');
+    if (carry && parts.some((x) => x.classList && x.classList.contains('su-carry'))) {
+      parts[parts.findIndex((x) => x.classList && x.classList.contains('su-carry'))] = carry;
+    }
     const open = jobBox.querySelector('.su-finish');
     if (open && open.open && parts.some((x) => x.classList && x.classList.contains('su-finish'))) {
       const i = parts.findIndex((x) => x.classList && x.classList.contains('su-finish'));
@@ -567,6 +577,37 @@ export async function mount(ctx) {
         timer = setTimeout(() => schedule(job, 0), 3000);
       }
     }, ms);
+  }
+
+  /** A move stopped for the person (cancelled on the old server, its session ended): a new code carries it on. */
+  function carryOn(job) {
+    const code = field({ label: 'New move code', name: 'code', hint: `Make it on ${job.from || 'the old server'}: Settings, Server and access, Move to another server, Make a move code. Case and spaces do not matter.`,
+      attrs: { autocomplete: 'off', required: true, spellcheck: 'false', autocapitalize: 'characters', class: 'field-input mono su-code-input' } });
+    const f = form({
+      fields: [code], submitLabel: 'Carry on', busyLabel: 'Reaching the old server…',
+      onsubmit: async (v) => {
+        const c = String(v.code || '').trim();
+        if (!c) throw Object.assign(new Error('Type the new move code.'), { fields: { code: 'Type the move code.' } });
+        if (!/^\s*SMMV[-\s]*/i.test(c) || c.replace(/[^0-9A-Za-z]/g, '').length !== 34) throw Object.assign(new Error('Check the code.'), { fields: { code: 'A move code is SMMV- and six groups of five letters and digits. Check for a missing group.' } });
+        let next;
+        try {
+          next = await ctx.api.post('setup/move-here', { from: job.from, code: c });
+        } catch (err) {
+          if (claimLost(err)) return;
+          if (err && err.code === 'setup_busy') { flash('The move is not stopped any more (perhaps another device carried it on).'); drawJob(await ctx.api.get('setup/job')); return; }
+          const r = err && MOVE_REFUSED[err.code];
+          if (r) throw Object.assign(new Error(`${r[1]} ${r[2]}`), { fields: r[0] === 'code' ? { code: `${r[1]} ${r[2]}` } : {} });
+          throw err;
+        }
+        flash('Carrying on with the move: what was copied before is kept.');
+        jobBox.querySelector('.su-carry')?.remove();
+        drawJob(next);
+      },
+    });
+    return h('div', { class: ['su-where', 'su-carry'] },
+      h('h2', { class: 'su-h2' }, 'Carry on with a new move code'),
+      h('p', { class: 'su-quiet' }, `What was copied here (${bytes(job.progress && job.progress.bytes_done)}) is kept. With a new code from the same server, the move goes on from there: nothing is copied twice.`),
+      f);
   }
 
   function finishWithKey(job) {

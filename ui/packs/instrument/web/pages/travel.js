@@ -487,7 +487,7 @@ export async function mount(ctx) {
     title: 'Places visited', icon: 'home', rows: placesG.items, csvName: 'travel-places', cover: ['locations.table.addresses', 'locations.table.geofences'], cls: 'tv-tbl',
     note: `${placesG.more ? `The first ${formatNumber(CAP)} places by stops. ` : ''}Stops grouped by saved place, else by position (about 150 m), never by address text, so one spot is never listed twice. Saved places link to their editor; an unnamed spot can be saved as a place.`,
     columns: [
-      { key: 'label', label: 'Place', sort: true, cover: ['locations.addresses.name', 'locations.geofences.name'], render: placeCell, csv: (r) => r.label },
+      { key: 'label', label: 'Place', sort: true, cover: ['locations.addresses.name', 'locations.geofences.name', 'locations.link.new_geofence', 'locations.link.edit_geofence'], render: placeCell, csv: (r) => r.label },
       { key: 'kind', label: 'Kind', sort: true, value: (r) => (r.place ? 0 : 1), render: (r) => (r.place ? tag('Saved place', 'live') : tag('Spot')), csv: (r) => (r.place ? 'saved place' : 'spot') },
       { key: 'neighbourhood', label: 'Neighbourhood', sort: true, cover: 'locations.addresses.neighbourhood', render: (r) => r.neighbourhood || DASH },
       { key: 'locality', label: 'City', sort: true, cover: 'locations.addresses.city', render: (r) => r.locality || DASH },

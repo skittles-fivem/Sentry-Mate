@@ -95,7 +95,7 @@ export function askPassword(ctx, { title, intro, submit, danger = false, extra =
         if (r === STAY) return;
         result = r;
       } catch (e) {
-        if (e.code === 'wrong_password') { pass.setError(e.fields?.password === 'Not your password.' ? 'That is not your password. Type the one you sign in with.' : 'Type your password to go on.'); pass.input.select(); return; }
+        if (e.code === 'wrong_password') { pass.setError(v.password ? 'That is not your password. Type the one you sign in with.' : 'Type your password to go on.'); pass.input.select(); return; }
         if (e.code === 'wrong_two_step') { two.el.hidden = false; two.setError(v.two_step ? 'That code is not right. Type the one your authenticator app shows now.' : 'Your account has two-step sign-in: type the code from your authenticator app as well.'); two.input.focus(); return; }
         if (e.status === 429) { f.setMessage(`Too many wrong passwords. Wait ${e.retryAfterMs ? Math.ceil(e.retryAfterMs / 1000) : 60} s, then try again.`); return; }
         throw e;

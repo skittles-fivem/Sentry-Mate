@@ -337,3 +337,42 @@ test('live events stop with the page scope', () => {
   page.abort();
   assert.equal(FakeEventSource.all[0].closed, true);
 });
+
+test('reads that decode stored logs go at most two at a time; others are not held up; a cancelled wait leaves', async () => {
+  const open = [];
+  const f = fakeFetch((url, init) => {
+    if (!/battery|signals|efficiency|projected/.test(url)) return json(200, { ok: url });
+    const d = deferred();
+    open.push({ url, d });
+    init.signal.addEventListener('abort', () => d.reject(new DOMException('aborted', 'AbortError')), { once: true });
+    return d.promise;
+  });
+  const api = createClient({ fetch: f, timeoutMs: 0 });
+  const heavy = (p) => f.calls.filter((c) => c.url.includes(p)).length;
+  const a = api.get('cars/c1/battery');
+  const b = api.get('cars/c1/battery-level', { bucket: 'day' });
+  const c = api.get('cars/c2/battery');
+  const ctl = new AbortController();
+  const d = api.get('cars/c2/signals', {}, { signal: ctl.signal });
+  const e = api.get('cars/c3/efficiency');
+  await tick();
+  assert.equal(open.length, 2, 'two sent');
+  assert.equal(heavy('/cars/c2/'), 0, 'the third and fourth wait');
+  assert.deepEqual(await api.get('cars/c1/drives'), { ok: '/api/v1/cars/c1/drives' }, 'a light read goes at once');
+  ctl.abort();
+  await assert.rejects(d, (x) => isAbort(x));
+  open[0].d.resolve(json(200, { n: 1 }));
+  assert.deepEqual(await a, { n: 1 });
+  await tick();
+  assert.equal(open.length, 3, 'the next one in line went');
+  assert.ok(open[2].url.startsWith('/api/v1/cars/c2/battery'));
+  open[1].d.resolve(json(200, { n: 2 }));
+  open[2].d.resolve(json(200, { n: 3 }));
+  assert.deepEqual(await b, { n: 2 });
+  assert.deepEqual(await c, { n: 3 });
+  await tick();
+  assert.equal(heavy('/signals'), 0, 'the cancelled one was never sent');
+  assert.equal(open.length, 4);
+  open[3].d.resolve(json(200, { n: 4 }));
+  assert.deepEqual(await e, { n: 4 });
+});

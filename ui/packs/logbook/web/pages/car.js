@@ -185,7 +185,8 @@ function header(car, now, tz) {
     title: h('span', { cover: 'summary.header.name' }, car.name || 'Unnamed car'),
     deck: h('span', { class: 'car-line' },
       h('span', { cover: 'summary.header.model', title: car.vin_prefix ? `Model and year from the VIN prefix ${car.vin_prefix}` : null }, [car.year, car.model].filter(Boolean).join(' ')),
-      trim ? [sep(), h('span', { cover: 'summary.header.trim', title: `Trim ${src(trim.source)}` }, trim.value, h('span', { class: 'source-note' }, ` (${src(trim.source)})`))] : null,
+      trim ? [sep(), h('span', { cover: 'summary.header.trim', title: `Trim ${src(trim.source)}` }, trim.value, h('span', { class: 'source-note' }, ` (${src(trim.source)})`))]
+        : [sep(), h('span', { cover: 'summary.header.trim', class: 'source-note' }, 'trim not known yet')],
       cfg.paint && cfg.paint.value ? [sep(), cfg.paint.value] : null,
       sep(), h('span', { class: 'mono' }, car.vin_prefix || car.id)),
     cls: 'car-head',

@@ -347,7 +347,7 @@ export async function mount(ctx) {
         h('span', { cover: ['cd.chart.phases', 'cd.chart.pilot_current'] }, 'AC phases in use: none, and no pilot current: a fast charger feeds the pack with direct current, so there is no AC line to count phases on and no station pilot signal. '),
         c.fast_charger && c.fast_charger.billed_kwh != null ? ['The charger reports ', format(c.fast_charger.billed_kwh, 'energy'), ' delivered at the car’s inlet.'] : null);
     } else {
-      replace(supplyNote, hasPhases ? null : h('span', null, 'This car does not say how many phases it uses. '),
+      replace(supplyNote, hasPhases ? null : h('span', { cover: 'cd.chart.phases' }, 'This car does not say how many phases it uses. '),
         hasPilot ? null : h('span', null, 'No station pilot current was recorded. '),
         acVolts ? null : h('span', null, 'Line voltage is not recorded for this charge; the charger’s pack-side volts are in the CSV. '));
     }

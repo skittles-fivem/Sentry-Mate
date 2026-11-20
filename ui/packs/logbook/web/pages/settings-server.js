@@ -250,82 +250,108 @@ export async function mount(ctx) {
     } else {
       list.push(outcome('ok', 'The certificate is not close to expiring.', 'A notice appears here and at the top of every page a few weeks before it does.'));
     }
-    const keySaved = () => outcome('ok', 'No recovery key file waits on the server.',
-      'Keep the recovery key apart from the data backups and the keys folder. The server cannot show it again: use the copy you saved.',
-      h('span', { class: 'ss-quiet' }, 'With a shell, a new key can be made (the old one then stops working): ', mono('sentry-mate recovery-key new'), '.'));
-    if (rk) {
-      const rkItem = outcome('warn', 'The recovery key is not saved yet.',
+    // the recovery key: one list item, drawn again as it changes (saved, shown again, a new one made)
+    let rkUnsaved = !!rk;
+    const keyItem = () => (rkUnsaved
+      ? outcome('warn', 'The recovery key is not saved yet.',
         'Nobody ticked “I have saved it”, so the server still keeps the key in its keys folder. With the keys folder it is the only way to open the data: lose both and nobody can. Show it once more, keep it somewhere safe away from the server (a password manager, paper), then tick that you saved it: the server then deletes its copy.',
         h('span', { class: 'ss-actions ss-rk-actions' },
           button('Show the recovery key', { kind: 'primary', onclick: () => showRecoveryKey() }),
-          button('I saved it already', { onclick: () => savedAlready() })));
-      list.push(rkItem);
-      const done = () => { rkItem.replaceWith(keySaved()); };
-      async function markSaved() {
-        await ctx.api.post('system/recovery-key/saved', {});
-        done();
-      }
-      async function savedAlready() {
-        const ok = await confirmDialog({
-          title: 'You saved the recovery key already?',
-          text: 'The server then deletes its copy, and nothing can show the key again. Say yes only if you have it somewhere safe (from the set-up page, or from “Show the recovery key”).',
-          yes: 'Yes, I have it',
-        });
-        if (!ok) return;
-        try { await markSaved(); } catch (err) { await openDialog({ title: 'The server did not hear it', body: h('p', { class: 'dialog-text' }, `${errText(err)} Try again in a moment. The key file stays on the server meanwhile.`) }); }
-      }
-      async function showRecoveryKey() {
-        const out = await askPassword(ctx, {
-          title: 'Show the recovery key',
-          text: h('div', { class: 'dialog-text' },
-            h('p', null, 'The key the server keeps until someone ticks “I have saved it”. Make sure nobody looks over your shoulder.')),
-          yes: 'Show the key',
-          hint: 'It is asked again because this key opens all the data.',
-          run: async (creds) => {
-            try { return await ctx.api.post('system/recovery-key/show', creds); } catch (err) {
-              if (err && err.code === 'recovery_key_saved') return { gone: true };
-              throw err;
+          button('I saved it already', { onclick: () => savedAlready() }),
+          button('Make a new recovery key', { onclick: () => newRecoveryKey() })))
+      : outcome('ok', 'No recovery key file waits on the server.',
+        'Keep the recovery key apart from the data backups and the keys folder. The server cannot show it again: use the copy you saved. Lost it? Make a new one here: the old one then stops working.',
+        h('span', { class: 'ss-actions ss-rk-actions' }, button('Make a new recovery key', { onclick: () => newRecoveryKey() }))));
+    let rkEl = keyItem();
+    list.push(rkEl);
+    const redrawKey = () => { const n = keyItem(); rkEl.replaceWith(n); rkEl = n; };
+    async function markSaved() {
+      await ctx.api.post('system/recovery-key/saved', {});
+      rkUnsaved = false;
+      redrawKey();
+    }
+    async function savedAlready() {
+      const ok = await confirmDialog({
+        title: 'You saved the recovery key already?',
+        text: 'The server then deletes its copy, and nothing can show the key again. Say yes only if you have it somewhere safe (from the set-up page, or from “Show the recovery key”).',
+        yes: 'Yes, I have it',
+      });
+      if (!ok) return;
+      try { await markSaved(); } catch (err) { await openDialog({ title: 'The server did not hear it', body: h('p', { class: 'dialog-text' }, `${errText(err)} Try again in a moment. The key file stays on the server meanwhile.`) }); }
+    }
+    async function showRecoveryKey() {
+      const out = await askPassword(ctx, {
+        title: 'Show the recovery key',
+        text: h('div', { class: 'dialog-text' },
+          h('p', null, 'The key the server keeps until someone ticks “I have saved it”. Make sure nobody looks over your shoulder.')),
+        yes: 'Show the key',
+        hint: 'It is asked again because this key opens all the data.',
+        run: async (creds) => {
+          try { return await ctx.api.post('system/recovery-key/show', creds); } catch (err) {
+            if (err && err.code === 'recovery_key_saved') return { gone: true };
+            throw err;
+          }
+        },
+      });
+      if (!out) return;
+      if (out.gone) { rkUnsaved = false; redrawKey(); return; }
+      await keyDialog(out.recovery_key, { title: 'Save the recovery key', why: 'shown again' });
+    }
+    async function newRecoveryKey() {
+      const out = await askPassword(ctx, {
+        title: 'Make a new recovery key',
+        text: h('div', { class: 'dialog-text' },
+          h('p', null, 'The new key is shown once. The old one stops working at once: keep it only for export files and backups made before now, which still open with the old key alone.'),
+          h('p', null, 'Make one when the old key is lost, or when someone you no longer trust has seen it.')),
+        yes: 'Make the new key', danger: true,
+        hint: 'It is asked again because this key opens all the data.',
+        run: async (creds) => {
+          try { return await ctx.api.post('system/recovery-key/new', creds); } catch (err) {
+            if (err && err.code === 'moved') throw new Error('This server has moved: make the new key on the new server.');
+            if (err && err.code === 'setup_busy') throw new Error('A move or an import comes in now. Make the new key once it is done.');
+            if (err && err.status === 503) throw new Error(`The server is busy with another key. Wait ${Math.ceil((err.retryAfterMs || 5000) / 1000)} seconds, then try again.`);
+            throw err;
+          }
+        },
+      });
+      if (!out) return;
+      rkUnsaved = true;
+      redrawKey();
+      await keyDialog(out.recovery_key, { title: 'Your new recovery key', why: 'new key made' });
+    }
+    async function keyDialog(key, { title, why }) {
+      const fileText = [
+        'Sentry Mate recovery key', '', key, '',
+        `Saved ${new Date(api.now()).toISOString().slice(0, 10)} from ${window.location.host} (${why}).`,
+        'Keep it away from the server and its backups: in a password manager, or on paper.',
+        'It opens this server\'s data and its export files. Lose it together with the keys folder, and nobody can.', '',
+      ].join('\n');
+      const tick = h('input', { type: 'checkbox', id: 'ss-rk-saved' });
+      const err = h('p', { class: 'form-error', role: 'alert', hidden: true });
+      const go = button('Done', { kind: 'primary', disabled: true });
+      tick.addEventListener('change', () => { go.disabled = !tick.checked; });
+      await openDialog({
+        title, actions: [], cls: 'ss-rk-dialog',
+        body: (close) => {
+          go.addEventListener('click', async () => {
+            go.disabled = true; err.hidden = true;
+            try { await markSaved(); } catch (e) {
+              err.textContent = `The server did not hear it: ${errText(e)} Try again in a moment. The key stays valid either way.`;
+              err.hidden = false; go.disabled = false; return;
             }
-          },
-        });
-        if (!out) return;
-        if (out.gone) { done(); return; }
-        const key = out.recovery_key;
-        const fileText = [
-          'Sentry Mate recovery key', '', key, '',
-          `Saved ${new Date(api.now()).toISOString().slice(0, 10)} from ${window.location.host}.`,
-          'Keep it away from the server and its backups: in a password manager, or on paper.',
-          'It opens this server\'s data and its export files. Lose it together with the keys folder, and nobody can.', '',
-        ].join('\n');
-        const tick = h('input', { type: 'checkbox', id: 'ss-rk-saved' });
-        const err = h('p', { class: 'form-error', role: 'alert', hidden: true });
-        const go = button('Done', { kind: 'primary', disabled: true });
-        tick.addEventListener('change', () => { go.disabled = !tick.checked; });
-        await openDialog({
-          title: 'Save the recovery key', actions: [], cls: 'ss-rk-dialog',
-          body: (close) => {
-            go.addEventListener('click', async () => {
-              go.disabled = true; err.hidden = true;
-              try { await markSaved(); } catch (e) {
-                err.textContent = `The server did not hear it: ${errText(e)} Try again in a moment. The key stays valid either way.`;
-                err.hidden = false; go.disabled = false; return;
-              }
-              close('saved');
-            });
-            return [
-              bigCode(key, { label: 'Recovery key' }),
-              h('p', { class: 'ss-rk-download' }, button('Download as a file', { iconName: 'download', onclick: () => downloadText('sentry-mate-recovery-key.txt', fileText) })),
-              h('p', { class: 'dialog-text' }, 'Keep it in a password manager or on paper, away from the server and its backups. It opens the data when the keys folder is lost, and it opens export files on a new server.'),
-              h('label', { class: 'ss-check ss-rk-tick', for: 'ss-rk-saved' }, tick, h('span', null, 'I have saved the recovery key somewhere safe, away from this server.')),
-              err,
-              h('p', { class: 'ss-rk-go' }, go),
-              h('p', { class: 'dialog-text ss-rk-note' }, 'Closing this without the tick keeps the server’s copy: you can show it here again. Ticking it deletes that copy.'),
-            ];
-          },
-        });
-      }
-    } else {
-      list.push(keySaved());
+            close('saved');
+          });
+          return [
+            bigCode(key, { label: 'Recovery key' }),
+            h('p', { class: 'ss-rk-download' }, button('Download as a file', { iconName: 'download', onclick: () => downloadText('sentry-mate-recovery-key.txt', fileText) })),
+            h('p', { class: 'dialog-text' }, 'Keep it in a password manager or on paper, away from the server and its backups. It opens the data when the keys folder is lost, and it opens export files on a new server.'),
+            h('label', { class: 'ss-check ss-rk-tick', for: 'ss-rk-saved' }, tick, h('span', null, 'I have saved the recovery key somewhere safe, away from this server.')),
+            err,
+            h('p', { class: 'ss-rk-go' }, go),
+            h('p', { class: 'dialog-text ss-rk-note' }, 'Closing this without the tick keeps the server’s copy: you can show it here again. Ticking it deletes that copy.'),
+          ];
+        },
+      });
     }
     list.push(outcome('info', 'The easiest backup: an export file.',
       'One file with everything, made and downloaded here (Move to another server, below). It opens only with the recovery key, so it can go anywhere.'));
