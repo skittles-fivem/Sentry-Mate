@@ -52,6 +52,11 @@ pages/<id>.js  one module per page id, plus sign-in and setup; pages/<id>.css wh
 | `ui.js` | `head(ctx)` (the header line), `section`, `kv`, `btn`, `actions`, `note`, `link`, `textBar`, `paint`, `centreUpDown`. |
 | `fmt.js` | `num(value, kind)` (number with its unit muted), `numText`, `time`, `date`, `dateTime`, `when`, `dur`, `ago`, `range`, `slug`, `stateWord`, `tag`. |
 | `bare.js` | The sign-in and set-up box: centred both ways on whole pixels; `canSendSecrets()` and the plain-HTTP line. |
+| `table.js` | `table(ctx, opts)`: dense text tables from an API list (server sort and paging, csv) or local rows, a totals row, `data-row` rows, the two-line phone rows (`ph: 'main' \| 'sub' \| 'num'`); `cellBar(frac, cells)`. |
+| `chart.js` | uPlot: `loadUPlot`, `plot(el, ctx, make, data, { onCursor })`, `line(label, n)` (series n: c1 solid, c2 / c3 dashed), `timeAxis(tz)`, `valueAxis(fmt)`, `cursor(syncKey)`, `readout()`, `chartOrNote`. |
+| `map.js` | MapLibre in a flat grey style: `createMap` / `safeMap(el, ctx, opts)` with `line`, `points`, `circle`, `marker`, `fit`, `frame`. |
+| `strip.js` | `stateStrip(ctx, items, from, to, tz)`: the state strip, one character per cell. |
+| `filterline.js` | `filterLine({ keys, value, onApply })`: 'filter> from:2026-10 min:10km place:home'; `parseFilter`, `dateSpan`, `numberOf`. |
 | `placeholder.js` | A page a later batch builds: the header line and what it will show. |
 
 ## A page module
@@ -119,6 +124,8 @@ Rules that keep it pixel-exact:
 - Lengths are `calc(var(--g) * n)` or another token, never rem, em or fractions. 1 px rules only.
 - Text is JetBrains Mono at a size where one character is a whole px wide, so text columns line up. Bordered
   boxes around text (`.btn`, `.key`, `.toast`) round their width up with `calc-size()`.
+- Tables share no free width out: one column (`grow`, else the first `wrap-cell`) takes it, so column edges stay
+  on whole pixels. A field in a row has a width in characters, not `auto`.
 - Line heights are the font's text box plus an even number of px: text sits exactly in the middle of a line, and
   a chip or button whose line height equals its height is centred up and down.
 - Centring a box uses `round(down, ..., 1px)` (`.wrap`, `.page`, dialogs, `.bare-box`); a box of unknown height
@@ -141,7 +148,8 @@ State words are text in brackets: `stateWord('driving')` gives `[driving]` in th
 
 ## Phone (up to 860 px wide)
 
-The command bar is a search field at the bottom above the safe area (with the car and the account), the link row
+The page scrolls inside `#scroller` (notices, view, footer) between the link row at the top and the command bar at
+the bottom; neither bar ever covers the page. The command bar is a search field at the bottom above the safe area (with the car and the account), the link row
 scrolls sideways, `key: value` blocks are one column, tap targets are 44 px high. Tables must collapse to two-line
 rows (main value left, secondary muted under it, number right); charts are full width and 180 px tall. Nothing
 may make the page wider than the window.

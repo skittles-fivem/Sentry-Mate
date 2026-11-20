@@ -205,12 +205,15 @@ async function mount(s, { keepScroll = false } = {}) {
   if (!alive()) return;
   if (!keepScroll) {
     window.scrollTo(0, 0);
+    document.getElementById('scroller')?.scrollTo?.(0, 0);   // phones scroll inside it
     if (!first) view.focus({ preventScroll: true });
   }
   const target = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
   if (target && view.contains(target)) {
     const bar = document.getElementById('top')?.getBoundingClientRect().bottom || 0;
-    window.scrollTo(0, Math.max(0, Math.round(target.getBoundingClientRect().top + window.scrollY - bar - 8)));
+    const sc = document.getElementById('scroller');
+    if (sc && sc.scrollHeight > sc.clientHeight && getComputedStyle(sc).overflowY !== 'visible') target.scrollIntoView({ block: 'start' });
+    else window.scrollTo(0, Math.max(0, Math.round(target.getBoundingClientRect().top + window.scrollY - bar - 8)));
     target.classList.add('is-target');
   }
   first = false;
