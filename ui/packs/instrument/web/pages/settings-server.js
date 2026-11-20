@@ -16,7 +16,7 @@ import { dataTable } from '../core/table.js';
 import { field, form } from '../core/form.js';
 import { emptyState, errorWords } from '../core/states.js';
 import { flash } from '../core/flash.js';
-import { openDialog, confirmDialog } from '../core/dialog.js';
+import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { dateTime, date, agoEl, tzName, DASH } from '../core/fmt.js';
 import { timeColumn } from '../shared/csv.js';
@@ -339,8 +339,8 @@ export async function mount(ctx) {
     const isNew = !a;
     const name = field({ label: 'Name', name: 'name', value: a?.name || '', required: true, hint: 'What they type to sign in. 1 to 64 characters.', attrs: { maxlength: 64, autocomplete: 'off' } });
     const password = field({ label: isNew ? 'Password' : 'New password', name: 'password', type: 'password', required: isNew,
-      hint: isNew ? 'At least 10 characters. Tell it to them in person or over a channel you trust.' : 'Leave empty to keep the current password. At least 10 characters.',
-      attrs: { minlength: 10, autocomplete: 'new-password' } });
+      hint: isNew ? 'Tell it to them in person or over a channel you trust.' : 'Leave empty to keep the current password.',
+      attrs: { autocomplete: 'new-password' } });
     const role = field({ label: 'Role', name: 'role', type: 'select', value: a?.role || 'watch',
       options: [['watch', `Watch-only: ${ROLE_TEXT.watch}`], ['admin', `Admin: ${ROLE_TEXT.admin}`]] });
     const two = field({ label: 'Require two-step sign-in', name: 'two_step_required', type: 'checkbox', value: !!a?.two_step_required,
@@ -352,7 +352,10 @@ export async function mount(ctx) {
       secondary: h('button', { class: 'btn btn--ghost', type: 'button', onclick: (e) => e.target.closest('dialog')?.close() }, 'Cancel'),
       async onSubmit(v) {
         const body = { name: v.name.trim(), role: v.role, cars: v.cars, two_step_required: v.two_step_required };
-        if (v.password) body.password = v.password;
+        if (v.password) {
+          if (!(await passwordOk(body.name, v.password, password.input))) return;
+          body.password = v.password;
+        }
         try {
           if (isNew) {
             await ctx.api.post('accounts', body);

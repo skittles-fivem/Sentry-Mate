@@ -61,7 +61,7 @@ async fn setup_sign_in_and_out() {
 
     let r = c.post("/api/v1/setup", json!({ "code": "ABCDE-FGHJK", "name": ADMIN, "password": ADMIN_PASSWORD })).await;
     assert_eq!((r.status, r.code().as_deref()), (403, Some("wrong_setup_code")));
-    let r = c.post("/api/v1/setup", json!({ "code": s.setup_code, "name": ADMIN, "password": "short" })).await;
+    let r = c.post("/api/v1/setup", json!({ "code": s.setup_code, "name": ADMIN, "password": "" })).await;
     assert_eq!((r.status, r.code().as_deref()), (422, Some("invalid")));
     assert!(r.json()["error"]["fields"]["password"].is_string());
     let r = c.post("/api/v1/setup", json!({ "code": s.setup_code, "name": ADMIN, "password": ADMIN_PASSWORD })).await;

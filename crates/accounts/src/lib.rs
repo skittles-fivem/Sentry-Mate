@@ -38,7 +38,7 @@ pub use audit::{Audit, Entry, Page};
 pub use error::{Error, Result};
 pub use model::CarId;
 pub use net::{is_local, parse_address};
-pub use password::{Hashing, MIN_PASSWORD_CHARS, check_password};
+pub use password::{Hashing, check_password, password_advice};
 pub use role::{CarAccess, Permission, Role};
 pub use sessions::{
     COOKIE, COOKIE_ATTRIBUTES, CSRF_HEADER, IDLE_MS, SESSION_MS, SessionView, clear_cookie, csrf_matches, csrf_token,

@@ -286,8 +286,11 @@ def _name_password_rules(st, name, password, exclude=None):
             other = st.account_by_name(n)
             if other is not None and other["id"] != exclude:
                 errs["name"] = "That name is taken."
-    if password is not None and len(password) < 10:
-        errs["password"] = "At least 10 characters."
+    # like the real server: only an empty or a huge password is refused; the pages warn about weak ones
+    if password is not None and not password:
+        errs["password"] = "Type a password."
+    elif password is not None and len(password.encode()) > 1024:
+        errs["password"] = "That password is too long (at most 1,024 bytes)."
     return errs
 
 

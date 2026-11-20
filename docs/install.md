@@ -181,8 +181,9 @@ the same as 568:568.
    warns about the certificate once (it is the server's own): check that the
    SHA-256 it shows is the one in the log, then go on. On the first page,
    type the setup code from the log (or `sudo cat keys/SETUP-CODE.txt`)
-   with a name and password for the first admin. See
-   [The web UI](commands.md#the-web-ui).
+   with a name and password for the first admin. Any password that isn't
+   empty is taken; the page warns when one is easy to guess and lets you
+   use it anyway. See [The web UI](commands.md#the-web-ui).
 
 If it doesn't start, the log says why and what to do. For example `Sentry
 Mate runs as uid 1000 (group 1000) and can't write to the data folder /data:

@@ -78,7 +78,7 @@ class Fresh(ServerCase):
         c2 = _claimed(self.server)
         self.assertFalse(c.get("/api/v1/setup")["claimed"])
         self.assertTrue(c2.get("/api/v1/setup")["claimed"])
-        e, _ = c2.error("POST", "/api/v1/setup/fresh", 422, "invalid", body={"name": "owner", "password": "short"})
+        e, _ = c2.error("POST", "/api/v1/setup/fresh", 422, "invalid", body={"name": "owner", "password": ""})
         self.assertIn("password", e["fields"])
         d = c2.json("POST", "/api/v1/setup/fresh", {"name": "owner", "password": "a long password"}, expect=201)
         self.assertEqual(d["status"], "done")
@@ -144,12 +144,13 @@ class OneCallSetUp(ServerCase):
             self.assertTrue(self.server.client().json("POST", "/api/v1/setup/claim", {"setup_code": typed})["claimed"],
                             typed)
 
-    def test_unknown_fields_a_weak_password_and_the_claim(self):
+    def test_unknown_fields_an_empty_password_and_the_claim(self):
         c = _claimed(self.server)
         other = self.server.client()
         other.error("POST", "/api/v1/setup", 400, "bad_input", body=self.body(role="admin"))
-        other.error("POST", "/api/v1/setup", 422, "invalid", body=self.body(password="short"))
-        d = other.json("POST", "/api/v1/setup", self.body(code="DEV-0000"))
+        other.error("POST", "/api/v1/setup", 422, "invalid", body=self.body(password=""))
+        # a weak one is the owner's choice: the page warns, the server takes it
+        d = other.json("POST", "/api/v1/setup", self.body(code="DEV-0000", name="owner", password="owner1"))
         self.assertEqual(d["status"], "done")
         # the claim is left alone: it may be another browser's
         self.assertEqual((c.get("/api/v1/setup")["claimed"], c.get("/api/v1/setup")["state"]), (True, "set_up"))

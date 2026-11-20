@@ -126,7 +126,9 @@ docker logs sentry-mate 2>&1 | grep 'first-run set-up code'
 ```
 
 Type it on the first page, with a name and password for the first admin. The code is valid 24 hours; the server
-makes a new one while nobody has set it up. More: [The web UI](docs/commands.md#the-web-ui).
+makes a new one while nobody has set it up. Any password that isn't empty is taken: the page says when one is easy
+to guess (short, close to the name, very common) and lets you use it anyway. Argon2id hashes, the sign-in throttles,
+HTTPS only and optional two-step sign-in keep it out of reach from outside ([docs/security.md](docs/security.md)). More: [The web UI](docs/commands.md#the-web-ui).
 
 **Moving.** To move to another server, use a move code or an export file: [docs/moving.md](docs/moving.md). It works
 from the web pages (Settings, and the first page of the new server: move here, or restore from an export file) or

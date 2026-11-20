@@ -2,7 +2,7 @@
 
 mod common;
 
-use accounts::{Error, NewAccount, Permission, Role, SETUP_CODE_MS, check_password};
+use accounts::{Error, NewAccount, Permission, Role, SETUP_CODE_MS, check_password, password_advice};
 use common::*;
 
 fn family(env: &Env, by: &accounts::SignedIn) -> accounts::AccountView {
@@ -42,8 +42,8 @@ fn the_first_admin_needs_the_setup_code_once() {
         env.acc.setup("SETUP-AAAA-BBBB-CCCC-DDDD-EEEE", "owner", OWNER_PASSWORD, &c),
         Err(Error::WrongSetupCode)
     ));
-    // a weak password doesn't use the code up
-    assert!(matches!(env.acc.setup(&made.code, "owner", "short", &c), Err(Error::WeakPassword(_))));
+    // a refused password doesn't use the code up
+    assert!(matches!(env.acc.setup(&made.code, "owner", "", &c), Err(Error::WeakPassword(_))));
     assert!(matches!(env.acc.setup(&made.code, "bad name!", OWNER_PASSWORD, &c), Err(Error::BadInput(_))));
     // typed in lower case, without dashes
     let typed = made.code.to_lowercase().replace('-', " ");
@@ -174,28 +174,53 @@ fn changes_ask_for_the_acting_admins_password_again() {
 
 #[test]
 fn password_rules() {
-    assert!(matches!(check_password("ann", "short"), Err(Error::WeakPassword(_))));
-    assert!(matches!(check_password("ann", "elevenchars"), Err(Error::WeakPassword(_))));
-    assert!(check_password("ann", "twelve chars").is_ok());
-    // the account name, in any case, doesn't count toward the 12 characters
-    assert!(matches!(check_password("mechanic99", "Mechanic99"), Err(Error::WeakPassword(_))));
-    assert!(matches!(check_password("mechanic99", "my-mechanic99-pass"), Err(Error::WeakPassword(_))));
-    assert!(matches!(check_password("owner", "OWNER2024!!x"), Err(Error::WeakPassword(_))));
-    assert!(check_password("owner", "owner of a red car").is_ok(), "12 characters besides the name");
-    assert!(check_password("ann", "channel surfing").is_ok(), "a short name inside a word is fine");
-    assert!(matches!(check_password("longaccountname", "longaccountname"), Err(Error::WeakPassword(_))));
-    // common ones, and a common word with digits
-    for p in ["password1234", "123456789012", "qwertyuiop12", "Password123!", "Sentrymate2026", "Tesla1234567"] {
-        assert!(matches!(check_password("ann", p), Err(Error::WeakPassword(_))), "{p}");
-    }
-    // the same piece over and over
-    for p in ["aaaaaaaaaaaa", "abababababab", "abcdabcdabcd"] {
-        assert!(matches!(check_password("ann", p), Err(Error::WeakPassword(_))), "{p}");
-    }
+    // only an empty password and a huge one are refused; weak ones are the person's choice
+    assert!(matches!(check_password("ann", ""), Err(Error::WeakPassword(_))));
     assert!(matches!(check_password("ann", &"x1".repeat(600)), Err(Error::WeakPassword(_))), "too long");
-    // passphrases with spaces and any letters are welcome
-    assert!(check_password("ann", "  löwe bär fuchs  ").is_ok());
-    assert!(check_password("ann", "correct horse battery").is_ok());
+    assert!(check_password("ann", &"x".repeat(1024)).is_ok(), "1,024 bytes is still fine");
+    for p in ["a", "short", "owner", "owner1", "password1234", "aaaaaaaaaaaa", " "] {
+        assert!(check_password("owner", p).is_ok(), "{p}");
+    }
+}
+
+#[test]
+fn password_advice_lists_the_reasons() {
+    const SHORT: &str = "It's shorter than 12 characters.";
+    const NAME: &str = "It's close to the account name.";
+    const COMMON: &str = "It's one of the most common passwords.";
+    const REPEATS: &str = "It repeats itself.";
+    // the same cases as ui/shared/tests/password.test.js
+    let cases: &[(&str, &str, &[&str])] = &[
+        ("ann", "", &[]),
+        ("ann", "short", &[SHORT]),
+        ("ann", "elevenchars", &[SHORT]),
+        ("ann", "twelve chars", &[]),
+        ("owner", "owner1", &[SHORT, NAME]),
+        ("owner", "owner", &[SHORT, NAME]),
+        ("mechanic99", "Mechanic99", &[SHORT, NAME]),
+        ("mechanic99", "my-mechanic99-pass", &[NAME]),
+        ("owner", "OWNER2024!!x", &[NAME]),
+        ("owner", "owner of a red car", &[]),
+        ("ann", "channel surfing", &[]),
+        ("al", "alpha", &[SHORT]),
+        ("longaccountname", "longaccountname", &[NAME]),
+        ("ann", "password1234", &[COMMON]),
+        ("ann", "123456789012", &[COMMON]),
+        ("ann", "qwertyuiop12", &[COMMON]),
+        ("ann", "Password123!", &[COMMON]),
+        ("ann", "Sentrymate2026", &[COMMON]),
+        ("ann", "Tesla1234567", &[COMMON]),
+        ("ann", "password", &[SHORT, COMMON]),
+        ("ann", "aaaaaaaaaaaa", &[REPEATS]),
+        ("ann", "abababababab", &[REPEATS]),
+        ("ann", "abcdabcdabcd", &[REPEATS]),
+        ("ann", "111111111111", &[COMMON, REPEATS]),
+        ("ann", "  löwe bär fuchs  ", &[]),
+        ("ann", "correct horse battery", &[]),
+    ];
+    for (name, password, want) in cases {
+        assert_eq!(password_advice(name, password), *want, "{name} / {password}");
+    }
 }
 
 #[test]
@@ -207,10 +232,7 @@ fn changing_ones_own_password_needs_the_old_one_and_signs_out_other_devices() {
         env.acc.set_password(&owner, "the wrong old password", owner.account.id, "a new long passphrase"),
         Err(Error::WrongPassword)
     ));
-    assert!(matches!(
-        env.acc.set_password(&owner, OWNER_PASSWORD, owner.account.id, "owner"),
-        Err(Error::WeakPassword(_))
-    ));
+    assert!(matches!(env.acc.set_password(&owner, OWNER_PASSWORD, owner.account.id, ""), Err(Error::WeakPassword(_))));
     let n = env.acc.set_password(&owner, OWNER_PASSWORD, owner.account.id, "a new long passphrase").unwrap();
     assert_eq!(n, 1, "the other device");
     assert!(matches!(env.acc.authenticate(&other.token, &client(HOME)), Err(Error::NotSignedIn)));

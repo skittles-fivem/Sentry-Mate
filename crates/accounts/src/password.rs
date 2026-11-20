@@ -1,4 +1,5 @@
-//! Passwords: what is accepted, and how they are kept (argon2id hashes only).
+//! Passwords: what is accepted (anything but empty or huge), advice on weak ones, and how they are kept (argon2id
+//! hashes only).
 //!
 //! Argon2id at 64 MiB and 3 passes makes each guess cost a lot of memory and time, so a stolen hash (already sealed
 //! by the vault) is still out of reach for guessing. That same cost is why at most a few hashes run at once
@@ -11,7 +12,6 @@ use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 use zeroize::Zeroizing;
 
-pub const MIN_PASSWORD_CHARS: usize = 12;
 /// Longer passwords are refused before hashing (hashing cost grows with length only a little, but there is no reason
 /// to accept megabytes).
 pub const MAX_PASSWORD_BYTES: usize = 1024;
@@ -32,7 +32,7 @@ impl Hashing {
     pub const FAST_FOR_TESTS: Hashing = Hashing { m_kib: 64, t: 1, p: 1 };
 }
 
-/// Passwords too common to accept even at 12 characters or more (compared ignoring case).
+/// Passwords too common to be safe even at 12 characters or more (compared ignoring case).
 const COMMON: &[&str] = &[
     "123456789012",
     "1234567890123",
@@ -90,7 +90,7 @@ const COMMON: &[&str] = &[
     "teslatesla12",
 ];
 
-/// Words that, followed only by digits and symbols, make a password too easy to guess ("Password123!").
+/// Words that, followed only by digits and symbols, make a password easy to guess ("Password123!").
 const COMMON_WORDS: &[&str] = &[
     "password",
     "passw0rd",
@@ -125,33 +125,55 @@ fn repeats(lower: &[char]) -> bool {
     })
 }
 
-/// Checks a new password for an account: at least 12 characters besides the account name, not one of the most common
-/// passwords (or a common word with digits after it), not one short piece repeated. Spaces count and nothing is
-/// trimmed: a passphrase is welcome.
-pub fn check_password(account_name: &str, password: &str) -> Result<()> {
+/// Checks a new password for an account. Only an empty password and one over [`MAX_PASSWORD_BYTES`] are refused:
+/// whoever sets a password chooses it, and the pages show [`password_advice`] first so they choose knowingly.
+/// Argon2id, the sign-in throttles, HTTPS only and the optional two-step sign-in keep a weak one out of reach
+/// of anyone guessing from outside.
+pub fn check_password(_account_name: &str, password: &str) -> Result<()> {
+    if password.is_empty() {
+        return Err(Error::WeakPassword("Type a password."));
+    }
     if password.len() > MAX_PASSWORD_BYTES {
         return Err(Error::WeakPassword("That password is too long (at most 1,024 bytes)."));
     }
+    Ok(())
+}
+
+/// Characters a password should have besides the account name (advice only).
+const ADVISED_CHARS: usize = 12;
+
+/// Why a password would be easy to guess, as short sentences; empty when there is nothing to say. Advice only: the
+/// pages show it and let the person use the password anyway. The same reasons, in the same words, as
+/// `ui/shared/password.js`. Spaces count and nothing is trimmed: a passphrase is welcome.
+pub fn password_advice(account_name: &str, password: &str) -> Vec<&'static str> {
+    let mut why = Vec::new();
+    if password.is_empty() {
+        return why;
+    }
     let chars: Vec<char> = password.to_lowercase().chars().collect();
-    if password.chars().count() < MIN_PASSWORD_CHARS {
-        return Err(Error::WeakPassword("Use at least 12 characters."));
-    }
     let lower: String = chars.iter().collect();
-    // the account name doesn't count toward the length: "owner2024!!" is refused, an unrelated passphrase that
-    // happens to hold a short name ("ann" in "channel surfing") is not
+    // the account name doesn't count toward the length: "owner2024!!" is close to the name, an unrelated
+    // passphrase that happens to hold a short name ("ann" in "channel surfing") is not
     let name = account_name.trim().to_lowercase();
-    let rest = if name.chars().count() >= 3 { lower.replace(&name, "") } else { lower.clone() };
-    if !name.is_empty() && (lower == name || rest.chars().count() < MIN_PASSWORD_CHARS) {
-        return Err(Error::WeakPassword("The account name doesn't count: use 12 characters besides it."));
+    let close = !name.is_empty()
+        && (lower == name
+            || (name.chars().count() >= 3
+                && lower.contains(&name)
+                && lower.replace(&name, "").chars().count() < ADVISED_CHARS));
+    if chars.len() < ADVISED_CHARS {
+        why.push("It's shorter than 12 characters.");
     }
-    if repeats(&chars) {
-        return Err(Error::WeakPassword("That password repeats itself: use something less regular."));
+    if close {
+        why.push("It's close to the account name.");
     }
     let stripped = lower.trim_end_matches(|c: char| c.is_ascii_digit() || c.is_ascii_punctuation() || c == ' ');
     if COMMON.contains(&lower.as_str()) || COMMON_WORDS.contains(&stripped) {
-        return Err(Error::WeakPassword("That password is too common: pick another."));
+        why.push("It's one of the most common passwords.");
     }
-    Ok(())
+    if repeats(&chars) {
+        why.push("It repeats itself.");
+    }
+    why
 }
 
 /// At most `max` hashes at once; others wait their turn for a while, then get [`Error::Busy`].

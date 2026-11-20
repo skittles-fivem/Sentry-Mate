@@ -18,7 +18,7 @@
 import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { field, form } from '../core/form.js';
-import { confirmDialog } from '../core/dialog.js';
+import { confirmDialog, passwordOk } from '../core/dialog.js';
 import { button, icon, flag } from '../core/ui.js';
 import { flash } from '../core/flash.js';
 import { dateTime, browserZone, count } from '../core/format.js';
@@ -206,15 +206,16 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- start fresh */
   function showFresh() {
     const name = field({ label: 'Your name', name: 'name', hint: 'The name you sign in with. Admins can add more people later, each with their own list of cars.', attrs: { autocomplete: 'username', required: true, maxlength: 64 } });
-    const password = field({ label: 'Password', name: 'password', type: 'password', hint: 'At least 10 characters. A sentence of a few words is easy to remember and hard to guess.', attrs: { autocomplete: 'new-password', required: true } });
+    const password = field({ label: 'Password', name: 'password', type: 'password', hint: 'A sentence of a few words is easy to remember and hard to guess.', attrs: { autocomplete: 'new-password', required: true } });
     const again = field({ label: 'Password again', name: 'again', type: 'password', attrs: { autocomplete: 'new-password', required: true } });
     const f = form({
       fields: [name, password, again], submitLabel: 'Make the account', busyLabel: 'Setting up…',
       onsubmit: async (v) => {
         const n = String(v.name || '').trim();
         if (!n) throw Object.assign(new Error('Type a name.'), { fields: { name: 'Type the name you will sign in with.' } });
-        if ((v.password || '').length < 10) throw Object.assign(new Error('Check the password.'), { fields: { password: 'At least 10 characters.' } });
+        if (!v.password) throw Object.assign(new Error('Check the password.'), { fields: { password: 'Type a password.' } });
         if (v.password !== v.again) throw Object.assign(new Error('The two passwords differ.'), { fields: { again: 'This is not the same as the password above.' } });
+        if (!(await passwordOk(n, v.password, password.control))) return;
         let res;
         try {
           res = await ctx.api.post('setup/fresh', { name: n, password: v.password });

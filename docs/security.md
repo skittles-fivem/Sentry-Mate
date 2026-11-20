@@ -89,6 +89,13 @@
   A password change signs out every other session, even a sign-in that was still being checked with the old
   password at that moment. With the "two-step from outside" rule, a right password of an account without two-step
   sign-in gets, from outside, the answer a wrong one gets, so the internet can't learn that a guess was right.
+- **Passwords are the person's choice.** The server refuses only an empty password and one over 1,024 bytes, for
+  every account, the first admin included: no length rule, nothing about the account name. The pages check a new
+  password first (shorter than 12 characters, close to the account name, one of the most common, repeating itself)
+  and, when one of those holds, say why in a pop-up with "Use it anyway" and "Change it". A weak password is still
+  hard to use from outside: argon2id makes each guess slow, the throttles above stop a guessing loop after a few
+  tries, the web UI is HTTPS only (a password never crosses the network in the clear), and two-step sign-in (or the
+  "two-step from outside" rule) puts a code from an app after the password.
 - **Changes ask again.** Every account and two-step change (a new account, a role, a password, a car list, turning
   someone's two-step sign-in off, new recovery codes, the two-step rule) asks for the acting account's password and,
   when it has two-step sign-in on, a code from the app or a recovery code: a browser left open plus a known password

@@ -182,7 +182,7 @@ async fn the_claim_a_move_here_refused_and_starting_fresh() {
     assert_eq!((r.status, r.code()), (502, Some("old_server_unreachable".into())), "{}", r.text());
 
     // start fresh: the first admin, signed in, and the recovery key once
-    let r = c.post("/api/v1/setup/fresh", json!({ "name": ADMIN, "password": "short" })).await;
+    let r = c.post("/api/v1/setup/fresh", json!({ "name": ADMIN, "password": "" })).await;
     assert_eq!(r.status, 422, "{}", r.text());
     let r = c.post("/api/v1/setup/fresh", json!({ "name": ADMIN, "password": ADMIN_PASSWORD })).await;
     assert_eq!(r.status, 201, "{}", r.text());

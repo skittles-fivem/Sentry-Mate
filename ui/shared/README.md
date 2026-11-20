@@ -31,6 +31,7 @@ node --test ui/shared/tests/
 | [`i18n.js`](i18n.js) | `t()` with the English text as key; the locale for numbers and dates; `<html lang>` |
 | [`csv.js`](csv.js) | CSV built in the browser, for chart data that has no list resource |
 | [`dom.js`](dom.js) | `h()` and other safe DOM helpers; coverage marks; the readiness signal |
+| [`password.js`](password.js) | `passwordAdvice(name, password)`: why a new password is easy to guess, in the server's words; pages warn with it and let the person go on |
 
 ### api.js
 

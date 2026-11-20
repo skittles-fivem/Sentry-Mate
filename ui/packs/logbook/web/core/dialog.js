@@ -7,6 +7,7 @@
 
 import { h } from '../shared/dom.js';
 import { icon } from './ui.js';
+import { passwordAdvice } from '../shared/password.js';
 
 /**
  * A modal dialog. body: nodes (or a function (close) -> nodes). actions: [{ label, value, kind, onclick }]
@@ -17,12 +18,14 @@ import { icon } from './ui.js';
 export function openDialog({ title, body = null, actions = [{ label: 'Close', value: null }], cls = null, wide = false, cover = null, signal = null, initialFocus = null } = {}) {
   return new Promise((resolve) => {
     let value = null;
-    const dlg = h('dialog', { class: ['dialog', cls, { 'dialog-wide': wide }], 'aria-labelledby': 'dialog-title', cover });
+    // a unique title id: a dialog may open over another (the password advice over the account form)
+    const titleId = `dialog-title-${Math.random().toString(36).slice(2, 8)}`;
+    const dlg = h('dialog', { class: ['dialog', cls, { 'dialog-wide': wide }], 'aria-labelledby': titleId, cover });
     const close = (v = null) => { value = v; if (dlg.open) dlg.close(); };
     const content = typeof body === 'function' ? body(close) : body;
     dlg.append(
       h('div', { class: 'dialog-head' },
-        h('h2', { class: 'dialog-title', id: 'dialog-title' }, title),
+        h('h2', { class: 'dialog-title', id: titleId }, title),
         h('button', { type: 'button', class: 'dialog-close', 'aria-label': 'Close', onclick: () => close(null) }, icon('close'))),
       h('div', { class: 'dialog-body' }, content),
       ...(actions && actions.length ? [h('div', { class: 'dialog-actions' }, actions.map((a) => h('button', {
@@ -49,6 +52,25 @@ export function confirmDialog({ title, text = null, yes = 'Yes', no = 'Cancel', 
     body: text ? h('p', { class: 'dialog-text' }, text) : null,
     actions: [{ label: no, value: false, kind: 'quiet' }, { label: yes, value: true, kind: danger ? 'danger' : 'primary' }],
   }).then((v) => v === true);
+}
+
+/**
+ * Before a new password is sent: when passwordAdvice has reasons, say why it is easy to guess and let the person
+ * choose. Resolves true to send it (no advice, or "Use it anyway"); false for "Change it" or Esc, with the focus
+ * back in the password field. The server takes any password that is not empty.
+ */
+export async function passwordOk(name, password, input = null) {
+  const why = passwordAdvice(name, password);
+  if (!why.length) return true;
+  const v = await openDialog({
+    title: 'This password is easy to guess', cls: 'dialog-advice',
+    body: [h('ul', { class: 'dialog-list' }, why.map((t) => h('li', null, t))), h('p', { class: 'dialog-text' }, 'You can still use it.')],
+    actions: [{ label: 'Use it anyway', value: true, kind: 'quiet' }, { label: 'Change it', value: false, kind: 'primary' }],
+    initialFocus: '.dialog-actions button:last-child',
+  });
+  if (v === true) return true;
+  if (input && typeof input.focus === 'function') { input.focus(); input.select?.(); }
+  return false;
 }
 
 /**

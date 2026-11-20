@@ -14,7 +14,7 @@ import * as state from '../shared/state.js';
 import { pageHead, section, empty, ago, flag, button, icon, note, sep } from '../core/ui.js';
 import { dataTable } from '../core/table.js';
 import { field, form, choice, switchField, setFieldError } from '../core/form.js';
-import { openDialog, confirmDialog } from '../core/dialog.js';
+import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { dateTime, date, zoneLabel, count } from '../core/format.js';
 import { moveBlock, askPassword } from './settings-move.js';
 import { bigCode, downloadText } from './move-parts.js';
@@ -422,7 +422,7 @@ export async function mount(ctx) {
     let role = a ? a.role : 'watch';
     let twoStep = a ? a.two_step_required : false;
     const name = field({ label: 'Name', name: 'name', value: a ? a.name : '', hint: 'What the person types to sign in.', attrs: { required: true, maxlength: 64, autocomplete: 'off' } });
-    const pass = field({ label: isNew ? 'Password' : 'New password', name: 'password', type: 'password', hint: isNew ? 'At least 10 characters. Tell it to the person yourself.' : 'Leave empty to keep the current one. At least 10 characters.', attrs: { autocomplete: 'new-password', minlength: 10 } });
+    const pass = field({ label: isNew ? 'Password' : 'New password', name: 'password', type: 'password', hint: isNew ? 'Tell it to the person yourself.' : 'Leave empty to keep the current one.', attrs: { autocomplete: 'new-password' } });
     const roleNote = h('p', { class: 'field-hint' }, ROLE_TEXT[role]);
     const rolePick = h('div', { class: 'field', dataset: { field: 'role' } },
       choice({ label: 'Role', name: 'role', value: role, options: [['watch', 'Watch only'], ['admin', 'Admin']], onchange: (v) => { role = v; roleNote.textContent = ROLE_TEXT[v]; } }),
@@ -438,11 +438,12 @@ export async function mount(ctx) {
         fields: [name, pass, rolePick, picker.el, two], submitLabel: isNew ? 'Make the account' : 'Save the account',
         onsubmit: async (v) => {
           const body = { name: v.name.trim(), role, cars: picker.value(), two_step_required: twoStep };
+          if (!body.name) throw Object.assign(new Error('Check the name.'), { fields: { name: 'Type a name.' } });
           if (isNew || v.password) {
-            if (!v.password || v.password.length < 10) throw Object.assign(new Error('Check the password.'), { fields: { password: 'At least 10 characters.' } });
+            if (!v.password) throw Object.assign(new Error('Check the password.'), { fields: { password: 'Type a password.' } });
+            if (!(await passwordOk(body.name, v.password, pass.control))) return;
             body.password = v.password;
           }
-          if (!body.name) throw Object.assign(new Error('Check the name.'), { fields: { name: 'Type a name.' } });
           try {
             if (isNew) await ctx.api.post('accounts', body);
             else await ctx.api.patch(api.apiPath`accounts/${a.id}`, { version: a.version, ...body });
