@@ -5,7 +5,7 @@
 // rows, a "Show more" button for paged lists, place words and links, and the words for awake reasons and gaps.
 
 import { h } from '../shared/dom.js';
-import { format } from '../shared/units.js';
+import { format, formatMoney } from '../shared/units.js';
 import { formatNumber } from '../shared/i18n.js';
 import { dayKey, formatDayKey, formatTime, formatDuration, addDays, daysBetween, startOf, addPeriod, zonedParts, dateFormat } from '../shared/time.js';
 import * as api from '../shared/api.js';
@@ -236,3 +236,45 @@ export function filterBar(ctx, { carCover = null, periodCover = null, cls = null
     icon('calendar'), rangeText(ctx.period, ctx.tz)) : null;
   return h('div', { class: ['page-bar', 'w-full', cls] }, carB, perB, ...extra.flat().filter(Boolean));
 }
+
+/* ------------------------------------------------------------------ money, split bars, checks */
+
+/**
+ * Money in one or more currencies, one per line, never added across: money([{ amount, currency }], { size }). With
+ * more than one currency each line names its code. An empty list is a dash (with why, when given).
+ */
+export function money(list, { size = 'm', why = null, cover = null, kind = 'money', key = 'amount' } = {}) {
+  const items = (list || []).filter((x) => x && x[key] != null);
+  if (!items.length) return num(null, 'number', { size, why, cover });
+  const fmt = (x) => (kind === 'money' ? formatMoney(x[key], x.currency) : format({ amount: x[key], currency: x.currency }, kind));
+  return h('span', { class: ['num', `num-${size}`, 'money'], cover },
+    items.map((x) => h('span', { class: 'num-n' }, fmt(x), items.length > 1 ? h('span', { class: 'money-cur' }, ` ${x.currency}`) : null)));
+}
+
+/** A bar split in parts with its key: splitBar({ label, total, parts: [{ name, value, text, tone }], cover }). */
+export function splitBar({ label, total = null, parts = [], cover = null } = {}) {
+  const sum = parts.reduce((a, p) => a + (p.value || 0), 0);
+  const share = (p) => (sum > 0 ? (p.value || 0) / sum : 0);
+  return h('div', { class: 'split', cover },
+    h('div', { class: 'split-head' }, h('span', null, label), total != null ? h('b', null, total) : null),
+    h('div', { class: 'split-bar', role: 'img', 'aria-label': `${label}: ${parts.map((p) => `${p.name} ${Math.round(share(p) * 100)} %`).join(', ')}` },
+      parts.map((p) => { const el = h('span', { class: ['split-part', `tone-${p.tone || 'c1'}`] }); el.style.setProperty('--v', share(p).toFixed(4)); return el; })),
+    h('ul', { class: 'split-key' }, parts.map((p) => h('li', null, h('span', { class: ['split-sw', `tone-${p.tone || 'c1'}`], 'aria-hidden': 'true' }),
+      p.name, h('b', null, p.text ?? ''), sum > 0 ? `${Math.round(share(p) * 100)} %` : '—'))));
+}
+
+/** One check with a status word and its dot: checkRow({ name, sub, word, level: 'ok' | 'warn' | 'bad' | 'off', cover }). */
+export function checkRow({ name, sub = null, word, level = 'ok', cover = null, side = null } = {}) {
+  return h('li', { class: ['check', `is-${level}`], cover },
+    h('span', { class: 'check-dot', 'aria-hidden': 'true' }),
+    h('span', { class: 'check-text' }, h('span', { class: 'check-name' }, name), sub ? h('span', { class: 'check-sub' }, sub) : null),
+    side || h('span', { class: 'check-word' }, word));
+}
+
+/** A heading across the grid with a line under it: sectionHead(title, text, { cover }). */
+export function sectionHead(title, text = null, { cover = null } = {}) {
+  return h('div', { class: 'section-head w-full', cover }, h('h2', { class: 'section-title' }, title), text ? h('p', { class: 'note' }, text) : null);
+}
+
+/** A few labelled numbers in a tile: nums([[label, node, cover]]). */
+export const nums = (rows) => h('div', { class: 'tile-nums' }, rows.filter(Boolean).map(([k, val, c]) => h('div', { cover: c || null }, h('span', { class: 'hero-k' }, k), val)));
