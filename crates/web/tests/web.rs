@@ -527,8 +527,8 @@ async fn errors_and_methods() {
     });
     let p = admin.get("/api/v1/me/preferences").await.json();
     assert_eq!(p["units"], json!({ "distance": "mi", "temperature": "c", "pressure": "psi" }));
-    // the move parts of setup are stubs for now
-    assert_eq!(admin.post("/api/v1/setup/restore", json!({})).await.code().as_deref(), Some("not_built"));
+    // a restore checks its fields (the rest is in tests/restore.rs)
+    assert_eq!(admin.post("/api/v1/setup/restore", json!({})).await.code().as_deref(), Some("bad_input"));
 }
 
 #[tokio::test]

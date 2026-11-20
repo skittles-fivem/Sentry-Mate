@@ -1,10 +1,12 @@
 //! Importing an export file into a new server: nothing in the data folder is touched until every byte has been
 //! checked, and a half-done import is never mistaken for a complete one.
 //!
-//! 1. **The header** ([`open_file`]): the magic, a known format, an app version no newer than this one, Argon2id
-//!    settings within bounds, and the file's length equal to its `size`.
+//! 1. **The header** ([`open_file`], or [`ExportFile::from_head`] for a file that arrives in pieces, a browser's
+//!    upload): the magic, a known format, an app version no newer than this one, Argon2id settings within bounds,
+//!    and the file's length equal to its `size`.
 //! 2. **The recovery key** ([`begin`]): it must open the header's recovery part (the data key), and the first and
-//!    last chunks must open with it. Wrong: refused, nothing written.
+//!    last chunks must open with it. Wrong: refused, nothing written. A file in pieces ([`begin_streamed`]) has its
+//!    first and last chunks checked as they arrive ([`Import::feed`]): wrong, and the import is removed.
 //! 3. **The target is new** ([`unused`]): nothing of the owner's in the data folder; the keys folder empty, or with
 //!    only a first start's key file.
 //! 4. **A staging vault**: `<data>/.importing/` with a new key file in `<keys>/.importing/`, and a sealed state
@@ -130,11 +132,55 @@ pub struct Options {
     /// The files are synced and the place reached saved after about this many bytes.
     pub checkpoint: u64,
     pub free_bytes: Box<dyn Fn(&Path) -> u64 + Send + Sync>,
+    /// Top-level names in the data folder that a first start made here besides the usual ones, and so don't count as
+    /// the owner's (the web side's [`WEB_FIRST_START`] on a server with no account yet). Kept with the import: the
+    /// switch sets them aside too, so nothing sealed with the first start's vault is left beside the imported data.
+    pub first_start_also: Vec<String>,
 }
 
 impl Options {
     pub fn new(app: &str) -> Options {
-        Options { app: app.to_string(), min_free: 2 << 30, checkpoint: 256 << 20, free_bytes: Box::new(free_space) }
+        Options {
+            app: app.to_string(),
+            min_free: 2 << 30,
+            checkpoint: 256 << 20,
+            free_bytes: Box::new(free_space),
+            first_start_also: Vec::new(),
+        }
+    }
+}
+
+/// What a running server writes before it is set up (no account yet) that an import or a move from the web pages
+/// may replace ([`Options::first_start_also`]): the web side's set-up code state and audit log, and the first
+/// start's certificate and migration note (set aside too when the export has none: sealed with the first start's
+/// vault, they would open with nothing after the switch; a new certificate is made at the next start).
+pub const WEB_FIRST_START: &[&str] = &["accounts", "audit", "tls", "migrated.json"];
+
+/// The options an import runs with: its own, or shared with whoever holds the import (a web upload keeps one open).
+pub enum Opts<'a> {
+    Borrowed(&'a Options),
+    Shared(std::sync::Arc<Options>),
+}
+
+impl std::ops::Deref for Opts<'_> {
+    type Target = Options;
+    fn deref(&self) -> &Options {
+        match self {
+            Opts::Borrowed(o) => o,
+            Opts::Shared(o) => o,
+        }
+    }
+}
+
+impl<'a> From<&'a Options> for Opts<'a> {
+    fn from(o: &'a Options) -> Opts<'a> {
+        Opts::Borrowed(o)
+    }
+}
+
+impl From<std::sync::Arc<Options>> for Opts<'_> {
+    fn from(o: std::sync::Arc<Options>) -> Self {
+        Opts::Shared(o)
     }
 }
 
@@ -150,12 +196,18 @@ pub(crate) fn free_space(dir: &Path) -> u64 {
     }
 }
 
-/// An export file whose header has been checked ([`open_file`]).
+/// An export file whose header has been checked ([`open_file`], or [`ExportFile::from_head`] for one that arrives
+/// in pieces).
 #[derive(Clone)]
 pub struct ExportFile {
+    /// Where it is read from (empty for one made [`ExportFile::from_head`]: its bytes are [`Import::feed`]).
     pub path: PathBuf,
     pub header: Header,
+    /// The file's name, as the owner chose it (kept with the import, to show).
+    pub name: String,
     id: [u8; 16],
+    /// The file's first bytes up to the body: the magic, the header's length and the header.
+    prefix: Vec<u8>,
     prefix_len: u64,
     /// SHA-256 of the file's first bytes up to the body (hex): names this export file.
     prefix_sha256: String,
@@ -186,26 +238,37 @@ pub fn open_file(path: &Path, app: &str) -> Result<ExportFile, Error> {
     // the path in the message: a file copied in by another user may not be readable by the server's
     let mut f = File::open(path).map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
     let len = f.metadata()?.len();
-    let mut head = [0u8; 9];
+    let mut head = vec![0u8; 9 + MAX_HEADER];
     let n = read_up_to(&mut f, &mut head)?;
-    if n < 5 || !head.starts_with(b"SMEX") {
+    head.truncate(n);
+    let mut ex = check_head(&head, len, app, n as u64 == len)?;
+    ex.path = path.to_path_buf();
+    ex.name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(ex)
+}
+
+/// The header checks over the file's first bytes `head` (`whole`: they are all of it), for a file of `len` bytes.
+fn check_head(head: &[u8], len: u64, app: &str, whole: bool) -> Result<ExportFile, Error> {
+    // a header that doesn't fit in `head`: cut short when `head` is the whole file, else too long to be one
+    let short = |need: u64| if whole { Error::CutShort { need, have: len } } else { malformed("a header too long") };
+    if head.len() < 5 || !head.starts_with(b"SMEX") {
         return Err(Error::NotAnExport);
     }
     if &head[..5] != MAGIC {
         return Err(Error::NewerFormat(u32::from(head[4])));
     }
-    if n < 9 {
-        return Err(Error::CutShort { need: 9, have: len });
+    if head.len() < 9 {
+        return Err(short(9));
     }
     let hlen = u32::from_be_bytes([head[5], head[6], head[7], head[8]]) as usize;
     if hlen > MAX_HEADER {
         return Err(malformed("a header too long"));
     }
-    let mut json = vec![0u8; hlen];
-    if read_up_to(&mut f, &mut json)? < hlen {
-        return Err(Error::CutShort { need: 9 + hlen as u64, have: len });
+    if head.len() < 9 + hlen {
+        return Err(short(9 + hlen as u64));
     }
-    let header: Header = serde_json::from_slice(&json).map_err(|e| malformed(format!("its header: {e}")))?;
+    let prefix = head[..9 + hlen].to_vec();
+    let header: Header = serde_json::from_slice(&prefix[9..]).map_err(|e| malformed(format!("its header: {e}")))?;
     if header.format > FORMAT {
         return Err(Error::NewerFormat(header.format));
     }
@@ -233,15 +296,15 @@ pub fn open_file(path: &Path, app: &str) -> Result<ExportFile, Error> {
     if len > header.size {
         return Err(malformed("longer than its header says"));
     }
-    let mut prefix = head.to_vec();
-    prefix.extend_from_slice(&json);
     let (chunks, last) = vault::chunks::chunks_of(len - prefix.len() as u64).ok_or_else(|| malformed("its size"))?;
     Ok(ExportFile {
-        path: path.to_path_buf(),
+        path: PathBuf::new(),
+        name: String::new(),
         id,
         prefix_len: prefix.len() as u64,
         prefix_sha256: hex::encode(Sha256::digest(&prefix)),
         label: body_label(&prefix),
+        prefix,
         len,
         chunks,
         last,
@@ -250,6 +313,47 @@ pub fn open_file(path: &Path, app: &str) -> Result<ExportFile, Error> {
 }
 
 impl ExportFile {
+    /// Checks the header of an export file that arrives in pieces (a browser's upload), from its first bytes `head`
+    /// (up to 64 KiB, or all of it when smaller) and its whole length `size`: the same checks as [`open_file`].
+    /// Nothing is read or written; [`begin_streamed`] takes it on, and [`Import::feed`] the bytes.
+    pub fn from_head(head: &[u8], size: u64, app: &str) -> Result<ExportFile, Error> {
+        if head.len() as u64 > size {
+            return Err(malformed("more bytes than its size"));
+        }
+        check_head(head, size, app, head.len() as u64 == size)
+    }
+
+    /// The same, with the name the owner gave the file (kept with the import, to show).
+    pub fn named(mut self, name: &str) -> ExportFile {
+        self.name = name.to_string();
+        self
+    }
+
+    /// Opens the header's recovery part with `recovery` (Argon2id: a second or so), for [`begin_streamed`].
+    /// [`Error::WrongRecoveryKey`] when it doesn't open it; nothing is written.
+    pub fn open_key(&self, recovery: &str) -> Result<Vault, Error> {
+        Ok(self.part().open(recovery)?)
+    }
+
+    fn part(&self) -> vault::RecoveryPart {
+        vault::RecoveryPart { key_id: self.header.key_id.clone(), slot: self.header.recovery.clone() }
+    }
+
+    /// The whole file's length.
+    pub fn size(&self) -> u64 {
+        self.len
+    }
+
+    /// SHA-256 of the file's first bytes up to the body (hex): names this export file.
+    pub fn prefix_sha256(&self) -> &str {
+        &self.prefix_sha256
+    }
+
+    /// Where the body starts.
+    pub fn prefix_len(&self) -> u64 {
+        self.prefix_len
+    }
+
     fn chunk_len(&self, c: u64) -> usize {
         if c + 1 == self.chunks { self.last + vault::chunks::OVERHEAD } else { SEALED_CHUNK as usize }
     }
@@ -348,6 +452,18 @@ struct State {
     next_chunk: u64,
     plain_done: u64,
     parser: Parser,
+    /// Where the body starts in the file (states saved before it was kept: 0).
+    #[serde(default)]
+    prefix_len: u64,
+    /// The file's name, as the owner chose it.
+    #[serde(default)]
+    name: String,
+    /// When the import began (ms since 1970).
+    #[serde(default)]
+    started_ms: u64,
+    /// [`Options::first_start_also`] when it began: the switch sets them aside.
+    #[serde(default)]
+    first_start_also: Vec<String>,
 }
 
 /// How far an import is.
@@ -377,7 +493,15 @@ pub struct Import<'a> {
     chunks: vault::Chunks,
     file: ExportFile,
     state: State,
-    opts: &'a Options,
+    opts: Opts<'a>,
+    /// The staged files being written (opened at the first chunk).
+    sink: Option<Sink>,
+    /// Plaintext bytes since the last saved place.
+    since: u64,
+    /// The bytes of the sealed chunk not yet whole ([`Import::feed`]; in memory only).
+    partial: Vec<u8>,
+    /// Bytes of the file taken so far ([`Import::feed`]); after a restart, the last saved chunk boundary.
+    at: u64,
 }
 
 fn chain(h: &[u8; 32], piece: &[u8]) -> [u8; 32] {
@@ -430,13 +554,19 @@ fn what(path: &str) -> String {
 /// Whether a server can take data in: nothing of the owner's in `data` (a first start's own files don't count, nor
 /// what the rule of [`crate::tree`] skips), and in `keys` no key file other than one that opens `data`'s vault.
 pub fn unused(data: &Path, keys: &Path) -> Result<(), Error> {
+    unused_but(data, keys, &[])
+}
+
+/// [`unused`], with the top-level names `also` counted as a first start's too ([`Options::first_start_also`]).
+pub fn unused_but(data: &Path, keys: &Path, also: &[String]) -> Result<(), Error> {
     if !data.exists() {
         return Ok(());
     }
     let mut found = None;
     let mut skips = Skips::default();
     tree::walk(data, Purpose::Move, &mut skips, |f| -> Result<ControlFlow<()>, Error> {
-        if first_start(f.path, f.len) {
+        let top = f.path.split('/').next().unwrap_or("");
+        if first_start(f.path, f.len) || also.iter().any(|a| a == top) {
             return Ok(ControlFlow::Continue(()));
         }
         found = Some(f.path.to_string());
@@ -557,14 +687,14 @@ pub enum Resume<'a> {
 }
 
 /// Carries on a half-done import of `file`, if there is one (no recovery key needed).
-pub fn resume<'a>(data: &Path, keys: &Path, file: &ExportFile, opts: &'a Options) -> Result<Resume<'a>, Error> {
+pub fn resume<'a>(data: &Path, keys: &Path, file: &ExportFile, opts: impl Into<Opts<'a>>) -> Result<Resume<'a>, Error> {
     let Some((vault, state)) = open_state(data, keys)? else { return Ok(Resume::None) };
     if state.export_id != file.header.id || state.prefix_sha256 != file.prefix_sha256 || state.file_len != file.len {
         return Ok(Resume::Other(state.phase));
     }
     let chunks = vault.chunks(&file.label, &file.id);
-    let (data, keys) = (data.to_path_buf(), keys.to_path_buf());
-    Ok(Resume::Same(Box::new(Import { data, keys, vault, chunks, file: file.clone(), state, opts })))
+    let at = file.chunk_at(state.next_chunk).min(file.len);
+    Ok(Resume::Same(Box::new(Import::new(data, keys, vault, chunks, file, state, opts.into(), at))))
 }
 
 /// Starts an import of `file`, opened with `recovery` (the recovery key that was in use when it was made). Refused,
@@ -575,15 +705,37 @@ pub fn begin<'a>(
     keys: &Path,
     file: &ExportFile,
     recovery: &str,
-    opts: &'a Options,
+    opts: impl Into<Opts<'a>>,
 ) -> Result<Import<'a>, Error> {
-    let part = vault::RecoveryPart { key_id: file.header.key_id.clone(), slot: file.header.recovery.clone() };
-    let vault = part.open(recovery)?;
+    let vault = file.open_key(recovery)?;
     let chunks = vault.chunks(&file.label, &file.id);
     // an edited header, or one from another export, doesn't fit the body: found before anything is written
     file.check_chunk(&chunks, 0)?;
     file.check_chunk(&chunks, file.chunks - 1)?;
-    unused(data, keys)?;
+    stage(data, keys, file, vault, opts.into())
+}
+
+/// Starts an import of `file` ([`ExportFile::from_head`]) whose bytes arrive in pieces ([`Import::feed`]), with
+/// `opened`, its recovery part opened by [`ExportFile::open_key`]. The same checks as [`begin`], except that the
+/// first and last chunks are checked as they arrive: a wrong one removes the import.
+pub fn begin_streamed<'a>(
+    data: &Path,
+    keys: &Path,
+    file: &ExportFile,
+    opened: Vault,
+    opts: impl Into<Opts<'a>>,
+) -> Result<Import<'a>, Error> {
+    if opened.key_id() != file.header.key_id {
+        return Err(Error::WrongRecoveryKey);
+    }
+    stage(data, keys, file, opened, opts.into())
+}
+
+/// The staging folder of a new import of `file`, made with `vault` (the export's data key).
+fn stage<'a>(data: &Path, keys: &Path, file: &ExportFile, vault: Vault, opts: Opts<'a>) -> Result<Import<'a>, Error> {
+    let part = file.part();
+    let chunks = vault.chunks(&file.label, &file.id);
+    unused_but(data, keys, &opts.first_start_also)?;
     match open_state(data, keys) {
         Ok(Some((_, st))) if st.phase != Phase::Reading => {
             return Err(if st.phase == Phase::Switching { Error::Switching } else { Error::OtherImport });
@@ -612,14 +764,21 @@ pub fn begin<'a>(
         next_chunk: 0,
         plain_done: 0,
         parser: Parser::default(),
+        prefix_len: file.prefix_len,
+        name: file.name.clone(),
+        started_ms: now_ms(),
+        first_start_also: opts.first_start_also.clone(),
     };
     save_state(&vault, &made, &state)?;
     std::fs::rename(&made_keys, keys.join(STAGING))?;
     std::fs::rename(&made, data.join(STAGING))?;
     sync_dir(data);
     sync_dir(keys);
-    let (data, keys) = (data.to_path_buf(), keys.to_path_buf());
-    Ok(Import { data, keys, vault, chunks, file: file.clone(), state, opts })
+    Ok(Import::new(data, keys, vault, chunks, file, state, opts, 0))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
 fn save_state(vault: &Vault, staging: &Path, state: &State) -> Result<(), Error> {
@@ -855,13 +1014,38 @@ impl Parser {
     }
 }
 
+impl<'a> Import<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        data: &Path,
+        keys: &Path,
+        vault: Vault,
+        chunks: vault::Chunks,
+        file: &ExportFile,
+        state: State,
+        opts: Opts<'a>,
+        at: u64,
+    ) -> Import<'a> {
+        Import {
+            data: data.to_path_buf(),
+            keys: keys.to_path_buf(),
+            vault,
+            chunks,
+            file: file.clone(),
+            state,
+            opts,
+            sink: None,
+            since: 0,
+            partial: Vec::new(),
+            at,
+        }
+    }
+}
+
 impl Import<'_> {
     pub fn progress(&self) -> Progress {
-        let p = &self.state.parser;
-        let files_done = if p.section == Section::Files { p.i - u64::from(p.cur.is_some()) } else { 0 };
-        let files_done = if matches!(p.section, Section::End | Section::Done) { p.count } else { files_done };
         Progress {
-            files_done,
+            files_done: files_done(&self.state.parser),
             files: self.state.files,
             read: self.file.prefix_len + self.state.next_chunk * SEALED_CHUNK,
             size: self.file.len,
@@ -873,8 +1057,33 @@ impl Import<'_> {
         self.state.phase
     }
 
+    /// The export file being imported.
+    pub fn file(&self) -> &ExportFile {
+        &self.file
+    }
+
+    /// Bytes of the file taken so far by [`Import::feed`]: the next byte to send. After a restart ([`resume`]) it
+    /// is the last saved sealed-chunk boundary, a little before the last byte sent.
+    pub fn received(&self) -> u64 {
+        self.at
+    }
+
     fn save(&self) -> Result<(), Error> {
         save_state(&self.vault, &self.data.join(STAGING), &self.state)
+    }
+
+    /// A fault of the file itself (damaged, cut, a bad entry) or too little space removes the half-done import:
+    /// running it again can't help.
+    fn or_discard<T>(&mut self, r: Result<T, Error>) -> Result<T, Error> {
+        match r {
+            Err(e) if e.is_the_file() || matches!(e, Error::NoSpace { .. }) => {
+                self.sink = None;
+                self.partial = Vec::new();
+                let _ = discard(&self.data, &self.keys);
+                Err(e)
+            }
+            r => r,
+        }
     }
 
     /// Reads and checks the rest of the body into the staging folder. `each` is called after every chunk with how
@@ -884,54 +1093,163 @@ impl Import<'_> {
         if self.state.phase != Phase::Reading {
             return Ok(Outcome::Ready);
         }
-        match self.read_body(each) {
-            Err(e) if e.is_the_file() || matches!(e, Error::NoSpace { .. }) => {
-                let _ = discard(&self.data, &self.keys);
-                Err(e)
-            }
-            r => r,
-        }
+        let r = self.read_body(each);
+        self.or_discard(r)
     }
 
     fn read_body(&mut self, mut each: impl FnMut(&Progress) -> ControlFlow<()>) -> Result<Outcome, Error> {
-        let root = self.data.join(STAGING).join(STAGED);
-        let mut sink = Sink { root, file: None, last_dir: None };
-        if let Some(cur) = &self.state.parser.cur {
-            sink.reopen(&cur.entry.path, cur.written)?;
-        }
         let mut f = File::open(&self.file.path)?;
         f.seek(SeekFrom::Start(self.file.chunk_at(self.state.next_chunk)))?;
         let mut buf = vec![0u8; SEALED_CHUNK as usize];
-        let mut since = 0u64;
         for c in self.state.next_chunk..self.file.chunks {
-            let (last, len, at) = (c + 1 == self.file.chunks, self.file.chunk_len(c), self.file.chunk_at(c));
+            let len = self.file.chunk_len(c);
             if read_up_to(&mut f, &mut buf[..len])? < len {
                 return Err(Error::CutShort { need: self.file.len, have: f.metadata()?.len() });
             }
-            let plain = self.chunks.open(c, last, &buf[..len]).map_err(|_| Error::Damaged(at))?;
-            debug_assert!(plain.len() <= CHUNK);
-            self.state.parser.feed(&plain, &mut sink, self.opts)?;
-            self.state.next_chunk = c + 1;
-            self.state.plain_done += plain.len() as u64;
-            since += plain.len() as u64;
-            if since >= self.opts.checkpoint && !last {
-                // the files on disk first, then the place reached
-                sink.sync()?;
-                self.save()?;
-                since = 0;
-            }
+            self.feed_chunk(c, &buf[..len])?;
             if each(&self.progress()).is_break() {
                 return Ok(Outcome::Stopped);
             }
         }
+        self.finish_body()
+    }
+
+    /// Takes the next bytes of the file, from [`Import::received`] on (an upload's chunk, of any length): each
+    /// sealed chunk is opened and read as soon as it is whole, so nothing is stored twice; the bytes of one not yet
+    /// whole wait in memory. The first chunk is checked when it arrives (a wrong key or an edited header is found
+    /// there), the last at the end; after the last byte the import is [`Phase::Ready`]. A fault of the file or too
+    /// little space removes the import, as [`Import::run`] does.
+    pub fn feed(&mut self, bytes: &[u8]) -> Result<Progress, Error> {
+        if self.state.phase != Phase::Reading {
+            return Err(malformed("bytes after its end"));
+        }
+        let r = self.feed_bytes(bytes);
+        self.or_discard(r)?;
+        Ok(self.progress())
+    }
+
+    fn feed_bytes(&mut self, mut b: &[u8]) -> Result<(), Error> {
+        let plen = self.file.prefix_len;
+        if self.at < plen && !b.is_empty() {
+            // the header again, as the file has it: it must be the one the import was begun with
+            let from = self.at as usize;
+            let take = ((plen - self.at) as usize).min(b.len());
+            if b[..take] != self.file.prefix[from..from + take] {
+                return Err(Error::Damaged(self.at));
+            }
+            self.at += take as u64;
+            b = &b[take..];
+        }
+        while !b.is_empty() {
+            let c = self.state.next_chunk;
+            if c >= self.file.chunks {
+                return Err(malformed("longer than its header says"));
+            }
+            let len = self.file.chunk_len(c);
+            let take = (len - self.partial.len()).min(b.len());
+            self.partial.extend_from_slice(&b[..take]);
+            self.at += take as u64;
+            b = &b[take..];
+            if self.partial.len() == len {
+                let whole = std::mem::take(&mut self.partial);
+                self.feed_chunk(c, &whole)?;
+                self.partial = whole;
+                self.partial.clear();
+            }
+        }
+        if self.state.next_chunk == self.file.chunks {
+            self.partial = Vec::new();
+            self.finish_body()?;
+        }
+        Ok(())
+    }
+
+    /// Opens sealed chunk `c` (its bytes `sealed`), reads it into the staging folder, and saves the place reached
+    /// every [`Options::checkpoint`] bytes.
+    fn feed_chunk(&mut self, c: u64, sealed: &[u8]) -> Result<(), Error> {
+        let (last, at) = (c + 1 == self.file.chunks, self.file.chunk_at(c));
+        if self.sink.is_none() {
+            let root = self.data.join(STAGING).join(STAGED);
+            let mut sink = Sink { root, file: None, last_dir: None };
+            if let Some(cur) = &self.state.parser.cur {
+                sink.reopen(&cur.entry.path, cur.written)?;
+            }
+            self.sink = Some(sink);
+        }
+        let plain = self.chunks.open(c, last, sealed).map_err(|_| Error::Damaged(at))?;
+        debug_assert!(plain.len() <= CHUNK);
+        let Some(sink) = self.sink.as_mut() else { return Err(Error::Io(io::Error::other("no staging open"))) };
+        self.state.parser.feed(&plain, sink, &self.opts)?;
+        self.state.next_chunk = c + 1;
+        self.state.plain_done += plain.len() as u64;
+        self.at = self.at.max(self.file.chunk_at(c + 1).min(self.file.len));
+        self.since += plain.len() as u64;
+        if self.since >= self.opts.checkpoint && !last {
+            // the files on disk first, then the place reached
+            sink.sync()?;
+            self.save()?;
+            self.since = 0;
+        }
+        Ok(())
+    }
+
+    /// After the last chunk: the end checked, the files on disk, and the state `ready`.
+    fn finish_body(&mut self) -> Result<Outcome, Error> {
         if self.state.parser.section != Section::Done {
             return Err(Error::Malformed("it ends too soon".into()));
         }
-        sink.sync()?;
+        if let Some(sink) = self.sink.as_mut() {
+            sink.sync()?;
+        }
+        self.sink = None;
         self.state.phase = Phase::Ready;
         self.save()?;
         Ok(Outcome::Ready)
     }
+}
+
+fn files_done(p: &Parser) -> u64 {
+    match p.section {
+        Section::Files => p.i - u64::from(p.cur.is_some()),
+        Section::End | Section::Done => p.count,
+        _ => 0,
+    }
+}
+
+/// An import staged here, as its saved state says ([`staged`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Staged {
+    pub export_id: String,
+    /// The file's name, as the owner chose it.
+    pub name: String,
+    pub phase: Phase,
+    /// The export file's length.
+    pub size: u64,
+    pub files: u64,
+    pub files_done: u64,
+    /// Bytes of the file read and saved: the last sealed-chunk boundary reached.
+    pub received: u64,
+    pub started_ms: u64,
+}
+
+/// The import staged here, if any (`None` too when its state can't be read: [`pending`] says so).
+pub fn staged(data: &Path, keys: &Path) -> Option<Staged> {
+    let (_, st) = open_state(data, keys).ok()??;
+    let received = if st.phase == Phase::Reading {
+        (st.prefix_len + st.next_chunk * SEALED_CHUNK).min(st.file_len)
+    } else {
+        st.file_len
+    };
+    Some(Staged {
+        files_done: files_done(&st.parser),
+        export_id: st.export_id,
+        name: st.name,
+        phase: st.phase,
+        size: st.file_len,
+        files: st.files,
+        received,
+        started_ms: st.started_ms,
+    })
 }
 
 impl Progress {
@@ -957,6 +1275,11 @@ pub struct Switched {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ImportedNote {
     export_id: String,
+    #[serde(default)]
+    name: String,
+    /// The export file's length.
+    #[serde(default)]
+    size: u64,
     made_ms: u64,
     app: String,
     files: u64,
@@ -1002,7 +1325,7 @@ pub fn switch_steps(data: &Path, keys: &Path, steps: u32) -> Result<Switched, Er
     match st.phase {
         Phase::Reading => return Err(Error::NotReady),
         Phase::Ready => {
-            unused(data, keys)?;
+            unused_but(data, keys, &st.first_start_also)?;
             st.phase = Phase::Switching;
             save_state(&v, &data.join(STAGING), &st)?;
             step()?;
@@ -1011,6 +1334,8 @@ pub fn switch_steps(data: &Path, keys: &Path, steps: u32) -> Result<Switched, Er
     }
     let note = ImportedNote {
         export_id: st.export_id.clone(),
+        name: st.name.clone(),
+        size: st.file_len,
         made_ms: st.made_ms,
         app: st.app.clone(),
         files: st.files,
@@ -1018,7 +1343,7 @@ pub fn switch_steps(data: &Path, keys: &Path, steps: u32) -> Result<Switched, Er
         at_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64),
     };
     let note = serde_json::to_vec(&note).map_err(|e| Error::Io(io::Error::other(e.to_string())))?;
-    let replaced_first_start = bring_all_in(data, keys, STAGING, IMPORTED, &note, &v, &mut step)?;
+    let replaced_first_start = bring_all_in(data, keys, STAGING, IMPORTED, &note, &v, &st.first_start_also, &mut step)?;
     Ok(Switched {
         export_id: st.export_id,
         made_ms: st.made_ms,
@@ -1033,8 +1358,10 @@ pub fn switch_steps(data: &Path, keys: &Path, steps: u32) -> Result<Switched, Er
 /// `<staging>/data/` renamed into the data folder (a first start's of the same name set aside), then the staged
 /// `vault.json` and key file, the note `.move/<note_name>` written (sealed with the data vault now in place, or
 /// `fallback`, the same data key), a first start's recovery key file removed, and the staging folders removed.
-/// Every step can run again after a crash: an entry still in `<staging>/data/` hasn't been brought in. Returns
-/// whether a first start's vault was set aside.
+/// Every step can run again after a crash: an entry still in `<staging>/data/` hasn't been brought in. `aside`: more
+/// top-level names a first start made ([`Options::first_start_also`]), set aside even when nothing replaces them.
+/// Returns whether a first start's vault was set aside.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn bring_all_in(
     data: &Path,
     keys: &Path,
@@ -1042,11 +1369,18 @@ pub(crate) fn bring_all_in(
     note_name: &str,
     note: &[u8],
     fallback: &Vault,
+    aside: &[String],
     step: &mut dyn FnMut() -> Result<(), Error>,
 ) -> Result<bool, Error> {
     let staging = data.join(staging_name);
     let (staged, replaced) = (staging.join(STAGED), staging.join(REPLACED));
     std::fs::create_dir_all(&replaced)?;
+    // sealed with the first start's vault: they would open with nothing once the imported vault is in place
+    for name in aside.iter().filter(|n| tree::carried(n, Purpose::Move) && !n.contains('/')) {
+        if exists(&data.join(name)) && !exists(&staged.join(name)) && !exists(&replaced.join(name)) {
+            std::fs::rename(data.join(name), replaced.join(name))?;
+        }
+    }
     let mut names: Vec<String> = Vec::new();
     for e in std::fs::read_dir(&staged).into_iter().flatten() {
         names.push(e?.file_name().to_string_lossy().into_owned());
@@ -1088,6 +1422,37 @@ pub(crate) fn bring_all_in(
 
 /// Whether this data folder took an import, and of which export (`.move/imported.sealed`).
 pub fn imported(data: &Path, vault: &Vault) -> Option<String> {
+    imported_note(data, vault).map(|n| n.export_id)
+}
+
+/// What [`imported_note`] says of the import this data folder took.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Imported {
+    pub export_id: String,
+    /// The export file's name, as the owner chose it (empty when the note doesn't say).
+    pub name: String,
+    /// The export file's length (0 when the note doesn't say).
+    pub size: u64,
+    pub made_ms: u64,
+    pub app: String,
+    pub files: u64,
+    pub bytes: u64,
+    /// When the switch wrote the note.
+    pub at_ms: u64,
+}
+
+/// The import this data folder took (`.move/imported.sealed`), if any.
+pub fn imported_note(data: &Path, vault: &Vault) -> Option<Imported> {
     let b = vault.read_file(&data.join(NOTES).join(IMPORTED), IMPORTED_LABEL).ok()??;
-    serde_json::from_slice::<ImportedNote>(&b).ok().map(|n| n.export_id)
+    let n = serde_json::from_slice::<ImportedNote>(&b).ok()?;
+    Some(Imported {
+        export_id: n.export_id,
+        name: n.name,
+        size: n.size,
+        made_ms: n.made_ms,
+        app: n.app,
+        files: n.files,
+        bytes: n.bytes,
+        at_ms: n.at_ms,
+    })
 }

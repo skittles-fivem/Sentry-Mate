@@ -129,8 +129,8 @@ Type it on the first page, with a name and password for the first admin. The cod
 makes a new one while nobody has set it up. More: [The web UI](docs/commands.md#the-web-ui).
 
 **Moving.** To move to another server, use a move code or an export file: [docs/moving.md](docs/moving.md). It works
-from the web pages (Settings, and the first page of the new server) or with the `move` and `export` commands.
-Restoring from an export file on the first page is not served yet; use the `import` command for that.
+from the web pages (Settings, and the first page of the new server: move here, or restore from an export file) or
+with the `move`, `export` and `import` commands.
 
 - [`ui/README.md`](ui/README.md): the two packs, Instrument and Logbook, built into the server. To preview them on
   made-up data: [Previewing the UI packs](docs/development.md#previewing-the-ui-packs).
@@ -145,7 +145,7 @@ From the plan's phases and progress:
 
 1. Check the timeline by hand against real drives and charges.
 2. Every page in both designs, checked item by item against TeslaMate, on desktop and phone.
-3. Restoring from an export file on the first page; a live connection to TeslaMate's database for the import.
+3. A live connection to TeslaMate's database for the import.
 4. First release: the docs, a licence and the final name.
 
 Open questions: two battery % signals disagree (0x33A and 0x292) and need checking against the car's screen. A
@@ -185,7 +185,7 @@ cars for tests), and the program, `sentry-mate`.
 | Storage for the history (sealed, compressed columns, any number of cars), rebuilt from the logs if lost | done |
 | Web server on its own HTTPS port (10101, TLS 1.3, the same certificate): the built-in UI packs with a strict CSP, sign-in with a one-time setup code for the first admin, accounts (admin and watch-only, per-car access, two-step sign-in, audit log), live changes as server-sent events, the reads of [`docs/ui-api.md`](docs/ui-api.md) over the history and its changes | done |
 | From the web UI: places, geofences and charge costs with time-of-use rates, car settings, upload tokens and car keys, server settings, MQTT, the TeslaMate import, UI packs | done |
-| Moving from the web UI: a move code or an export file on the old server, "move here" on the new server's first page | done; restoring from an export file on the first page is not served yet (`import` does it) |
+| Moving from the web UI: a move code or an export file on the old server, "move here" or "restore from an export file" on the new server's first page (the file read as it uploads, nothing stored twice) | done |
 | Map tiles: none from outside until an admin turns online tiles on | done |
 | Using a failed log anyway | only `log decode --any`, one log at a time |
 | TeslaMate import from TeslaMate's own backup file, uploaded in the web UI (any number of cars, streamed, again later adds only what's new) | done; a live connection to TeslaMate's database is planned |
@@ -194,7 +194,6 @@ cars for tests), and the program, `sentry-mate`.
 | **Being built here** | |
 | Web UI: two designs in [`ui/`](ui/), built into the server; every TeslaMate tab gets a page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) | being built: every page in both designs, checked item by item, with screenshots |
 | **Not built yet** | |
-| Restoring from an export file on the new server's first page | planned (`import` does it today) |
 | A command that lists stored logs (a car's logs and their check results are in the web UI), deleting logs, a backup command | not built |
 | Passkeys | planned |
 | `cargo deny` and `cargo audit`, fuzzing in CI | planned |

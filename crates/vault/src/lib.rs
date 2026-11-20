@@ -174,6 +174,12 @@ impl NewRecoveryKey {
 }
 
 impl RecoveryKey {
+    /// Whether `text` reads as a recovery key (`SMRK-` and 13 groups of 4; case, spaces and dashes don't matter):
+    /// what a form checks before the slow Argon2id step. Says nothing of which vault it opens.
+    pub fn reads(text: &str) -> bool {
+        decode_recovery(text).is_some()
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

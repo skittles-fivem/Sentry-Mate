@@ -264,7 +264,7 @@ fn random_id() -> ApiResult<String> {
     Ok(format!("im{}", hex::encode(b)))
 }
 
-fn header_u64(h: &HeaderMap, name: &str) -> ApiResult<Option<u64>> {
+pub(crate) fn header_u64(h: &HeaderMap, name: &str) -> ApiResult<Option<u64>> {
     match h.get(name) {
         None => Ok(None),
         Some(v) => v
@@ -354,15 +354,24 @@ async fn one(State(app): State<AppState>, Path(id): Path<String>) -> ApiResult<J
 
 /// `Upload-SHA256` in hex or base64.
 fn sha_header(h: &HeaderMap) -> ApiResult<[u8; 32]> {
-    let bad = || ApiError::bad_input("Upload-SHA256", "Required: the chunk's SHA-256 (hex or base64).");
-    let v = h.get("Upload-SHA256").and_then(|v| v.to_str().ok()).map(str::trim).ok_or_else(bad)?;
+    match sha_header_opt(h) {
+        Ok(Some(sha)) => Ok(sha),
+        _ => Err(ApiError::bad_input("Upload-SHA256", "Required: the chunk's SHA-256 (hex or base64).")),
+    }
+}
+
+/// `Upload-SHA256` in hex or base64, when it is sent.
+pub(crate) fn sha_header_opt(h: &HeaderMap) -> ApiResult<Option<[u8; 32]>> {
+    let bad = || ApiError::bad_input("Upload-SHA256", "The chunk's SHA-256, hex or base64.");
+    let Some(v) = h.get("Upload-SHA256") else { return Ok(None) };
+    let v = v.to_str().map_err(|_| bad())?.trim();
     let raw = if v.len() == 64 {
         hex::decode(v).map_err(|_| bad())?
     } else {
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.decode(v).map_err(|_| bad())?
     };
-    raw.try_into().map_err(|_| bad())
+    raw.try_into().map(Some).map_err(|_| bad())
 }
 
 /// `PATCH /imports/{import}`: the next chunk of the file.

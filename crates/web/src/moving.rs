@@ -10,14 +10,14 @@
 //! | `POST /setup/claim` | public, no account yet | the one-time set-up code: the claim cookie |
 //! | `POST /setup/fresh` | the claim | start fresh: the first admin, the recovery key once |
 //! | `POST /setup/move-here`, `POST /setup/move-here/finish` | the claim | a move into this server |
-//! | `GET`/`DELETE /setup/job` | the claim | the move under way here |
+//! | `GET`/`DELETE /setup/job` | the claim | the move or restore under way here |
 //! | `POST /system/recovery-key/show`, `.../new`, `.../saved` | admin | the recovery key file ([`crate::recovery`]) |
-//! | `POST`/`PATCH /setup/restore` | public | `501 not_built` (an export file read from chunks needs the moving crate's header check over bytes) |
+//! | `POST`/`PATCH /setup/restore` | the claim | a restore from an export file, uploaded in chunks ([`crate::restore`]) |
 //!
 //! The service [`MoveSite`] (the data and keys folders, the server's version) is handed over by the program; a
 //! server without it answers `503 not_ready`.
 
-use crate::ctx::{MaybeViewer, target};
+use crate::ctx::target;
 use crate::error::{ApiError, ApiResult};
 use crate::server::Conn;
 use crate::{Admin, AppState, JsonBody};
@@ -46,7 +46,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/setup/move-here", post(move_here))
         .route("/api/v1/setup/move-here/finish", post(move_finish))
         .route("/api/v1/setup/job", get(setup_job).delete(give_up_job))
-        .route("/api/v1/setup/restore", post(setup_restore).patch(setup_restore))
+        .route("/api/v1/setup/restore", post(crate::restore::start).patch(crate::restore::chunk))
 }
 
 /// The claim cookie (`__Host-`: the real server is HTTPS only).
@@ -69,6 +69,10 @@ pub struct MoveSite {
     pub kdf: vault::Kdf,
     /// A new recovery key is being made (one at a time: each takes 1 GiB for a few seconds).
     pub(crate) making_key: std::sync::atomic::AtomicBool,
+    /// The restore being uploaded ([`crate::restore`]: one at a time).
+    pub(crate) restore: crate::restore::Slot,
+    /// The options a restore runs with (`None`: the usual ones for this version).
+    import_opts: Option<Arc<moving::Options>>,
     state: Mutex<SiteState>,
 }
 
@@ -77,6 +81,8 @@ struct SiteState {
     /// The claim: its token's SHA-256, its last use, and the set-up code it was made with (for the first admin).
     claim: Option<(String, u64, Zeroizing<String>)>,
     wrong: HashMap<std::net::IpAddr, Vec<u64>>,
+    /// Wrong recovery keys from each address (a restore's), the same way.
+    wrong_keys: HashMap<std::net::IpAddr, Vec<u64>>,
     export: Option<ExportSlot>,
 }
 
@@ -97,8 +103,44 @@ impl MoveSite {
             app_version: app_version.to_string(),
             kdf: vault::Kdf::STRONG,
             making_key: std::sync::atomic::AtomicBool::new(false),
+            restore: crate::restore::Slot::default(),
+            import_opts: None,
             state: Mutex::new(SiteState::default()),
         }
+    }
+
+    /// The same, restoring export files with `opts` (tests: no free space kept, small checkpoints).
+    pub fn with_import_options(mut self, opts: moving::Options) -> MoveSite {
+        self.import_opts = Some(Arc::new(opts));
+        self
+    }
+
+    /// The options a restore from the web pages runs with: the web side's own first-start files (no account yet)
+    /// don't count as the owner's data, and are set aside at the switch.
+    pub(crate) fn import_options(&self) -> Arc<moving::Options> {
+        if let Some(o) = &self.import_opts {
+            return o.clone();
+        }
+        let mut o = moving::Options::new(&self.app_version);
+        o.first_start_also = moving::import::WEB_FIRST_START.iter().map(|s| s.to_string()).collect();
+        Arc::new(o)
+    }
+
+    /// `429 throttled` once [`MAX_WRONG_CODES`] wrong recovery keys came from `ip` in the last minute.
+    pub(crate) fn key_tries_left(&self, ip: std::net::IpAddr, now: u64) -> ApiResult<()> {
+        let mut st = self.lock();
+        let w = st.wrong_keys.entry(ip).or_default();
+        w.retain(|t| now.saturating_sub(*t) < 60_000);
+        if w.len() >= MAX_WRONG_CODES {
+            let wait = 60_000u64.saturating_sub(now.saturating_sub(w[0])).div_ceil(1000).max(1);
+            return Err(ApiError::throttled(wait));
+        }
+        Ok(())
+    }
+
+    /// Counts a wrong recovery key from `ip`.
+    pub(crate) fn wrong_key(&self, ip: std::net::IpAddr, now: u64) {
+        self.lock().wrong_keys.entry(ip).or_default().push(now);
     }
 
     /// The same, making new recovery keys with `kdf` (tests: [`vault::Kdf::FAST_FOR_TESTS`]).
@@ -523,7 +565,7 @@ fn cookie_of(headers: &HeaderMap, name: &str) -> Option<String> {
 
 /// The claim this browser holds (renewed), with its set-up code: `401 not_claimed` without one, `409 setup_done`
 /// once there is an account.
-fn claimed(app: &AppState, s: &MoveSite, headers: &HeaderMap) -> ApiResult<Zeroizing<String>> {
+pub(crate) fn claimed(app: &AppState, s: &MoveSite, headers: &HeaderMap) -> ApiResult<Zeroizing<String>> {
     if !app.accounts.needs_setup() {
         return Err(ApiError::conflict("setup_done", "This server is set up: sign in."));
     }
@@ -618,6 +660,9 @@ async fn fresh(
         if !matches!(moving::pull::pending(&s.data, &s.keys), moving::pull::Pending::None) {
             return Err(ApiError::conflict("setup_busy", "A move here runs: give it up first."));
         }
+        if !matches!(moving::import::pending(&s.data, &s.keys), moving::Pending::None) {
+            return Err(ApiError::conflict("setup_busy", "A restore runs: give it up first."));
+        }
         let client = accounts::Client::new(conn.ip, &crate::policy::device(&headers));
         let local = client.local;
         let ns = app.accounts.setup(&code, &name, &password, &client)?;
@@ -636,8 +681,16 @@ async fn fresh(
     .await
 }
 
+/// The move or restore under way here as a SetupJob (`None`: there is none).
+pub(crate) fn job_view(app: &AppState, s: &MoveSite) -> ApiResult<Option<Value>> {
+    if let Some(job) = move_view(s)? {
+        return Ok(Some(job));
+    }
+    crate::restore::job(app, s)
+}
+
 /// The move under way here as a SetupJob (`None`: there is none).
-fn job_view(_app: &AppState, s: &MoveSite) -> ApiResult<Option<Value>> {
+fn move_view(s: &MoveSite) -> ApiResult<Option<Value>> {
     let Some(st) = moving::pull::status(&s.data, &s.keys).map_err(moving_error)? else { return Ok(None) };
     let state = match (st.phase, &st.problem) {
         (moving::pull::Phase::Switching, _) => "switching",
@@ -746,19 +799,21 @@ async fn setup_job(State(app): State<AppState>, headers: HeaderMap) -> ApiResult
     .await
 }
 
-async fn give_up_job(State(app): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+async fn give_up_job(
+    State(app): State<AppState>,
+    Extension(conn): Extension<Conn>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Value>> {
     let s = site(&app)?;
     app.blocking(move |app| {
         claimed(app, &s, &headers)?;
         let job = job_view(app, &s)?.ok_or_else(|| ApiError::not_found("no_such_job"))?;
-        moving::pull::cancel(&s.data, &s.keys).map_err(moving_error)?;
+        if job["kind"] == "restore" {
+            crate::restore::give_up(app, &s, &job, conn.ip)?;
+        } else {
+            moving::pull::cancel(&s.data, &s.keys).map_err(moving_error)?;
+        }
         Ok(Json(json!({ "deleted": true, "id": job["id"] })))
     })
     .await
-}
-
-// STUB: an export file read from its chunks as they arrive needs the moving crate's header checks over bytes
-// (`import::open_file` reads a file today).
-async fn setup_restore(MaybeViewer(_): MaybeViewer) -> ApiResult<()> {
-    Err(ApiError::not_built("Restoring from an export file"))
 }

@@ -62,6 +62,7 @@ pub mod prefs;
 pub mod query;
 pub mod recovery;
 pub mod resources;
+pub mod restore;
 pub mod server;
 #[cfg(feature = "testkit")]
 pub mod testkit;

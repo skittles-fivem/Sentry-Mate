@@ -17,9 +17,8 @@ The addresses and codes below are made up. Use your own.
 
 ## From the web pages (no shell, no commands)
 
-The pages and their API are in `docs/ui-api.md`, "Moving and first-run setup". Restoring from an export file on the
-new server's first page is not in the server yet: for that, use `import` (command line, below). The pages are on the
-HTTPS address of the server only: the set-up code, passwords, move codes and recovery keys never go over plain HTTP.
+The pages and their API are in `docs/ui-api.md`, "Moving and first-run setup". The pages are on the HTTPS address of
+the server only: the set-up code, passwords, move codes and recovery keys never go over plain HTTP.
 
 ### Which way to choose
 
@@ -59,8 +58,9 @@ Then choose one of three:
   `192.168.1.20`) and the move code. The page shows the copy as it goes. At the end, sign in with your account from
   the old server: everything is there, accounts too.
 - **Restore from an export file**: choose the file and type the old server's recovery key. The key and the file are
-  checked before the upload starts; then the page shows the upload and the checks. At the end, sign in with your
-  account from the old server.
+  checked before the upload starts; then the page shows the upload and the checks. The server reads the file as it
+  arrives, so it needs room for the data only, not for the file as well. At the end the server switches to the data
+  and starts again by itself (a few seconds); then sign in with your account from the old server.
 
 **If it stops half way**: nothing of the old server is changed. A move that loses the connection tries again by
 itself and carries on where it stopped; the page says what it waits for. An upload that stopped (the browser was
@@ -91,7 +91,7 @@ restore the bridge keeps its token and its certificate SHA-256; change only the 
 
 ## From the command line
 
-The same as the pages, for a server you reach with a shell (and the way to restore from an export file for now).
+The same as the pages, for a server you reach with a shell.
 
 ### Before you start
 

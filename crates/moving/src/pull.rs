@@ -1504,7 +1504,7 @@ impl<'a> Pull<'a> {
         };
         let note = Zeroizing::new(serde_json::to_vec(&note).map_err(|e| Problem::new("disk", e.to_string(), false))?);
         let replaced =
-            crate::import::bring_all_in(&self.data, &self.keys, STAGING, MOVED_IN, &note, &v, &mut || Ok(()))
+            crate::import::bring_all_in(&self.data, &self.keys, STAGING, MOVED_IN, &note, &v, &[], &mut || Ok(()))
                 .map_err(Problem::from)?;
         Ok(Done {
             from: st.address.to_string(),

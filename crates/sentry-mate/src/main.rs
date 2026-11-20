@@ -1227,7 +1227,7 @@ async fn carry_on_import(data: &Path, keys: &Path, refused: &mut Option<String>)
             }
             moving::Pending::Reading { percent } => {
                 tracing::warn!(
-                    "import: an import is half done ({percent} %): run `sentry-mate import FILE` again to carry it on, or `sentry-mate import --cancel` to remove it"
+                    "import: an import is half done ({percent} %): choose the same file again on the web page (or run `sentry-mate import FILE` again) to carry it on, or give it up there (or `sentry-mate import --cancel`)"
                 );
                 return true;
             }
