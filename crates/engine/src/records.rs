@@ -14,6 +14,10 @@
 //! engine  keys/waiting          CAN keys no car claims yet
 //! engine  tokens/cars           upload tokens made on a car's page, and that car
 //! engine  car/<id>/now_at       when each of the car's newest values was recorded
+//! engine  car/<id>/now_from     which of the car's newest values came from the Tesla API (the rest are SMO's)
+//! engine  car/<id>/api/<day>    what the Tesla API saw of the car's state that UTC day (spans, clipped to the day)
+//! engine  car/<id>/api_dirty    Tesla API data stored but not yet built into the timeline
+//! engine  car/<id>/api_meta     the Tesla API's newest values beside the samples (version, settings, charger)
 //! ```
 
 use crate::Result;
@@ -113,6 +117,14 @@ pub struct CarMeta {
     /// fleet lists read it without opening the car.
     #[serde(default)]
     pub state_since_ms: Option<u64>,
+    /// Days (since 1970, UTC) with Tesla API state spans.
+    #[serde(default)]
+    pub api_days: BTreeSet<u32>,
+    /// The newest Tesla API data (when it was recorded) and when it came.
+    #[serde(default)]
+    pub api_last_ms: Option<u64>,
+    #[serde(default)]
+    pub api_received_ms: Option<u64>,
 }
 
 /// A rebuild of a car under way (kept so a restart carries on with it).
@@ -383,4 +395,165 @@ pub(crate) fn replace_cuts(
         }
     }
     Ok(())
+}
+
+/// Which of a car's newest values came from the Tesla API (field → input; a field not here is SMO's).
+pub(crate) fn now_from(db: &Db, car: CarId) -> Result<BTreeMap<String, model::Input>> {
+    Ok(get(db, NS, &format!("car/{car}/now_from"))?.unwrap_or_default())
+}
+
+pub(crate) fn put_now_from(db: &Db, car: CarId, m: &BTreeMap<String, model::Input>) -> Result<()> {
+    let key = format!("car/{car}/now_from");
+    if m.is_empty() {
+        db.kv().delete(NS, &key)?;
+        return Ok(());
+    }
+    put(db, NS, &key, m)
+}
+
+/// The Tesla API's state spans of one UTC day.
+pub(crate) fn api_day(db: &Db, car: CarId, d: u32) -> Result<Vec<timeline::ApiSpan>> {
+    Ok(get(db, NS, &format!("car/{car}/api/{d}"))?.unwrap_or_default())
+}
+
+pub(crate) fn put_api_day(db: &Db, car: CarId, d: u32, spans: &[timeline::ApiSpan]) -> Result<()> {
+    let key = format!("car/{car}/api/{d}");
+    if spans.is_empty() {
+        db.kv().delete(NS, &key)?;
+        return Ok(());
+    }
+    put(db, NS, &key, &spans)
+}
+
+/// Lays `new` over `old`: where they meet, `new`'s state wins, except that the vehicle list's "online" never takes
+/// the place of a stretch the car's values came in; spans of one state that meet or overlap are joined. Sorted, no
+/// overlaps.
+pub(crate) fn lay_api(old: &[timeline::ApiSpan], new: &timeline::ApiSpan) -> Vec<timeline::ApiSpan> {
+    let mut out = lay_one(old, new);
+    if new.state == timeline::ApiState::Online && !new.data {
+        let kept: Vec<timeline::ApiSpan> = old
+            .iter()
+            .filter(|o| o.state == timeline::ApiState::Online && o.data)
+            .filter(|o| o.end_ms > new.start_ms && o.start_ms < new.end_ms)
+            .copied()
+            .collect();
+        for k in kept {
+            out = lay_one(&out, &k);
+        }
+    }
+    out
+}
+
+fn lay_one(old: &[timeline::ApiSpan], new: &timeline::ApiSpan) -> Vec<timeline::ApiSpan> {
+    let mut out: Vec<timeline::ApiSpan> = Vec::with_capacity(old.len() + 2);
+    let same = |a: &timeline::ApiSpan| a.state == new.state && a.data == new.data;
+    for o in old {
+        if o.end_ms <= new.start_ms || o.start_ms >= new.end_ms || same(o) {
+            out.push(*o);
+            continue;
+        }
+        // the parts of another state outside `new`
+        if o.start_ms < new.start_ms {
+            out.push(timeline::ApiSpan { end_ms: new.start_ms, ..*o });
+        }
+        if o.end_ms > new.end_ms {
+            out.push(timeline::ApiSpan { start_ms: new.end_ms, ..*o });
+        }
+    }
+    out.push(*new);
+    out.sort_by_key(|a| (a.start_ms, a.end_ms));
+    let mut joined: Vec<timeline::ApiSpan> = Vec::with_capacity(out.len());
+    for a in out {
+        match joined.last_mut() {
+            Some(l) if l.state == a.state && l.data == a.data && a.start_ms <= l.end_ms => {
+                l.end_ms = l.end_ms.max(a.end_ms)
+            }
+            _ => joined.push(a),
+        }
+    }
+    joined
+}
+
+/// The Tesla API's state spans that meet `[from_ms, to_ms)`, clipped to it, sorted.
+pub(crate) fn api_between(
+    db: &Db,
+    car: CarId,
+    meta: &CarMeta,
+    from_ms: u64,
+    to_ms: u64,
+) -> Result<Vec<timeline::ApiSpan>> {
+    let mut out = Vec::new();
+    for &d in meta.api_days.range(day_of(from_ms)..=day_of(to_ms.saturating_sub(1).max(from_ms))) {
+        for a in api_day(db, car, d)? {
+            let (x, y) = (a.start_ms.max(from_ms), a.end_ms.min(to_ms));
+            if y > x {
+                out.push(timeline::ApiSpan { start_ms: x, end_ms: y, ..a });
+            }
+        }
+    }
+    out.sort_by_key(|a| (a.start_ms, a.end_ms));
+    Ok(out)
+}
+
+pub(crate) fn api_dirty(db: &Db, car: CarId) -> Result<Vec<(u64, u64)>> {
+    Ok(get(db, NS, &format!("car/{car}/api_dirty"))?.unwrap_or_default())
+}
+
+pub(crate) fn put_api_dirty(db: &Db, car: CarId, spans: &[(u64, u64)]) -> Result<()> {
+    let key = format!("car/{car}/api_dirty");
+    if spans.is_empty() {
+        db.kv().delete(NS, &key)?;
+        return Ok(());
+    }
+    put(db, NS, &key, &spans)
+}
+
+/// The Tesla API's newest values beside its samples, and the software version it last named.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ApiMetaRec {
+    #[serde(default)]
+    pub meta: tesla::ApiMeta,
+    /// The version the API last named, and the last time it named it.
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub version_seen_ms: Option<u64>,
+}
+
+pub(crate) fn api_meta(db: &Db, car: CarId) -> Result<ApiMetaRec> {
+    Ok(get(db, NS, &format!("car/{car}/api_meta"))?.unwrap_or_default())
+}
+
+pub(crate) fn put_api_meta(db: &Db, car: CarId, m: &ApiMetaRec) -> Result<()> {
+    put(db, NS, &format!("car/{car}/api_meta"), m)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use timeline::{ApiSpan, ApiState};
+
+    fn sp(a: u64, b: u64, state: ApiState, data: bool) -> ApiSpan {
+        ApiSpan { start_ms: a, end_ms: b, state, data }
+    }
+
+    #[test]
+    fn api_spans_are_laid_newest_first_and_joined() {
+        let mut v = lay_api(&[], &sp(0, 10, ApiState::Asleep, false));
+        v = lay_api(&v, &sp(10, 20, ApiState::Asleep, false));
+        assert_eq!(v, vec![sp(0, 20, ApiState::Asleep, false)]);
+        v = lay_api(&v, &sp(15, 30, ApiState::Online, true));
+        assert_eq!(v, vec![sp(0, 15, ApiState::Asleep, false), sp(15, 30, ApiState::Online, true)]);
+        // the vehicle list's online over it keeps where the car's values came
+        v = lay_api(&v, &sp(12, 40, ApiState::Online, false));
+        assert_eq!(
+            v,
+            vec![
+                sp(0, 12, ApiState::Asleep, false),
+                sp(12, 15, ApiState::Online, false),
+                sp(15, 30, ApiState::Online, true),
+                sp(30, 40, ApiState::Online, false),
+            ]
+        );
+    }
 }

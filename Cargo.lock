@@ -638,6 +638,7 @@ dependencies = [
  "sha2 0.10.9",
  "synth",
  "tempfile",
+ "tesla",
  "thiserror",
  "timeline",
  "tokio",

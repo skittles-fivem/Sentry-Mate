@@ -52,8 +52,14 @@ pub struct CarItem {
 fn car_origins(x: &FleetEntry) -> Vec<model::Origin> {
     let t = &x.summary.tally;
     let mut out = Vec::new();
-    if !x.car.vehicle_keys.is_empty() || x.summary.now.is_some() || t.can.drives + t.can.charges > 0 {
+    let inputs = x.car.inputs;
+    // (a car recorded before inputs were kept: SMO, the only live input there was)
+    let older = inputs.is_empty() && (x.summary.now.is_some() || t.can.drives + t.can.charges > 0);
+    if inputs.contains(model::Input::Smo) || !x.car.vehicle_keys.is_empty() || older {
         out.push(model::Origin::Smo);
+    }
+    if inputs.contains(model::Input::TeslaApi) {
+        out.push(model::Origin::TeslaApi);
     }
     if t.teslamate.drives + t.teslamate.charges > 0 {
         out.push(model::Origin::Import(model::ImportSite::Teslamate));
@@ -436,7 +442,7 @@ fn put_owner(e: &Engine, car: CarId, o: &Owner) -> QResult<()> {
 fn fill_page(e: &Engine, x: &FleetEntry, i: &mut CarItem, now: u64) -> QResult<()> {
     let meta = records::meta(e.db(), i.id.0)?;
     i.now.since_ms = meta.state_since_ms;
-    i.now.received_ms = meta.last_arrived_ms;
+    i.now.received_ms = meta.last_arrived_ms.max(meta.api_received_ms);
     i.attention = attention_of(e, x, &meta, now)?.into_iter().map(|a| a.code).collect();
     Ok(())
 }
@@ -455,13 +461,28 @@ pub fn car(e: &Engine, car: CarId) -> QResult<CarDetail> {
     config.insert("model", vin(v.and_then(|v| v.model).map(|m| format!("Model {m}").into())));
     config.insert("year", vin(v.and_then(|v| v.year).map(Into::into)));
     config.insert("plant", vin(v.and_then(|v| v.plant).map(|p| p.to_string().into())));
+    // what the Tesla API says of the car's build, where an admin typed nothing
+    let api = records::api_meta(e.db(), car)?.meta;
+    let api_value = |k: &str| -> Option<serde_json::Value> {
+        let text = |v: &Option<String>| v.clone().map(serde_json::Value::from);
+        match k {
+            "trim" => text(&api.trim_badging),
+            "wheel" => text(&api.wheel_type),
+            "paint" => text(&api.exterior_color),
+            "roof" => text(&api.roof_color),
+            "spoiler" => text(&api.spoiler_type),
+            "right_hand_drive" => api.right_hand_drive.map(serde_json::Value::from),
+            _ => None,
+        }
+    };
     for &k in CONFIG_KEYS {
         let typed = o.config.get(k).filter(|v| !v.is_null());
         config.insert(
             k,
-            match typed {
-                Some(value) => Configured::new(value.clone(), Some("owner")),
-                None => Configured::new(serde_json::Value::Null, None),
+            match (typed, api_value(k)) {
+                (Some(value), _) => Configured::new(value.clone(), Some("owner")),
+                (None, Some(value)) => Configured::new(value, Some("tesla_api")),
+                (None, None) => Configured::new(serde_json::Value::Null, None),
             },
         );
     }

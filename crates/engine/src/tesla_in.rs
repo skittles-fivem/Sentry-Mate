@@ -1,0 +1,395 @@
+//! The Tesla API as a second live input. The `tesla` crate's poller hands the engine what it read ([`TeslaSink`]);
+//! the engine keeps it apart from SMO's data (its own sample stream, `tesla-api`, and its own state spans) and builds
+//! the timeline from both at once ([`timeline::fuse`]): one drive seen by both inputs is one row naming both, SMO's
+//! values win where it has them, and the API's fill what SMO did not send or the time SMO was offline.
+//!
+//! 1. **Stored first** ([`Engine::api_points`], in the background): the samples to the car's `tesla-api` stream, what
+//!    the API saw of the car's state to day records, the span noted as waiting to be built, the car's Now.
+//! 2. **Built** at most every [`crate::Options::api_rebuild_ms`] per car (a car polled every half minute, or streaming
+//!    while driving, is not rebuilt for every reading): the windows the new data falls in, through the same rebuild a
+//!    late SMO log uses. Imported rows are never touched.
+//! 3. **Values beside the samples** ([`Engine::api_meta`]): the software version (a change is an update row), the car's
+//!    build (trim, paint, wheels: `config` with source `tesla_api`), the charge limit and the car's flags for Now.
+//!
+//! A car for a Tesla vehicle is one an admin picked ([`Engine::suggest_car`] names the one car with the same VIN
+//! prefix), or a new one ([`Engine::api_new_car`]). Restart-safe: what is stored and not built yet is built on the
+//! next start.
+
+use crate::pipeline::{NEW_CAR_NAME, join_spans, merge_points, name_from_vin};
+use crate::records;
+use crate::{Engine, Event, Result, Work, lock, now_ms};
+use db::UpdateRow;
+use model::{Car, CarId, Gear, Input, Inputs, Sample, Source, Stream, Update, VinInfo};
+use timeline::{ApiSpan, ApiState};
+
+/// API samples this close are one stretch the car was seen awake in (ms): polled every minute while parked.
+const SEEN_JOIN_MS: u64 = 150_000;
+
+/// SMO's newest log came this recently: SMO is live for the car, the API is polled less (ms).
+pub const SMO_LIVE_MS: u64 = 5 * 60_000;
+
+/// What the poller saw of the car's state, as the timeline takes it.
+pub fn span_of(f: &tesla::ApiFact) -> ApiSpan {
+    let state = match f.state {
+        tesla::ApiState::Online => ApiState::Online,
+        tesla::ApiState::Asleep => ApiState::Asleep,
+        tesla::ApiState::Offline => ApiState::Offline,
+    };
+    // one look counts for its second
+    ApiSpan { start_ms: f.start_ms, end_ms: f.end_ms.max(f.start_ms.saturating_add(1000)), state, data: false }
+}
+
+/// The API's samples as the timeline takes them: on whole seconds, one per second, and parked when the car answered
+/// with no gear and no speed (the API sends no gear while parked).
+fn normalize(mut samples: Vec<Sample>) -> Vec<Sample> {
+    for s in &mut samples {
+        s.t_ms -= s.t_ms % 1000;
+        if s.gear.is_none() && s.speed_kmh.is_none() && (s.lat.is_some() || s.odometer_km.is_some()) {
+            s.gear = Some(Gear::P);
+        }
+    }
+    samples.sort_by_key(|s| s.t_ms);
+    let mut out: Vec<Sample> = Vec::with_capacity(samples.len());
+    for s in samples {
+        match out.last_mut() {
+            Some(l) if l.t_ms == s.t_ms => *l = s,
+            _ => out.push(s),
+        }
+    }
+    out
+}
+
+/// The stretches the API's samples show the car awake in (its values came).
+fn seen(samples: &[Sample]) -> Vec<ApiSpan> {
+    let mut out: Vec<ApiSpan> = Vec::new();
+    for s in samples {
+        let end = s.t_ms + 1000;
+        match out.last_mut() {
+            Some(l) if s.t_ms <= l.end_ms.saturating_add(SEEN_JOIN_MS) => l.end_ms = l.end_ms.max(end),
+            _ => out.push(ApiSpan { start_ms: s.t_ms, end_ms: end, state: ApiState::Online, data: true }),
+        }
+    }
+    out
+}
+
+/// The engine as the `tesla` crate's poller sees it.
+#[derive(Clone)]
+pub struct TeslaSink {
+    pub engine: Engine,
+}
+
+impl tesla::Sink for TeslaSink {
+    fn new_car(&self, car: &tesla::NewCar) -> std::result::Result<CarId, tesla::SinkError> {
+        self.engine.api_new_car(car).map_err(|e| tesla::SinkError(e.to_string()))
+    }
+
+    fn points(
+        &self,
+        car: CarId,
+        samples: &[Sample],
+        facts: &[tesla::ApiFact],
+    ) -> std::result::Result<(), tesla::SinkError> {
+        self.engine.api_points(car, samples.to_vec(), facts.iter().map(span_of).collect());
+        Ok(())
+    }
+
+    fn meta(&self, car: CarId, meta: &tesla::ApiMeta) -> std::result::Result<(), tesla::SinkError> {
+        self.engine.api_meta(car, meta.clone());
+        Ok(())
+    }
+
+    fn smo_live(&self, car: CarId) -> bool {
+        self.engine.smo_live(car)
+    }
+}
+
+impl Engine {
+    /// The Tesla API's samples and what it saw of the car's state: stored and built into the timeline in the
+    /// background; returns at once.
+    pub fn api_points(&self, car: CarId, samples: Vec<Sample>, facts: Vec<ApiSpan>) {
+        if samples.is_empty() && facts.is_empty() {
+            return;
+        }
+        self.send(Work::ApiData { car, samples, facts });
+    }
+
+    /// The Tesla API's values beside its samples: kept in the background; returns at once.
+    pub fn api_meta(&self, car: CarId, meta: tesla::ApiMeta) {
+        self.send(Work::ApiMeta { car, meta: Box::new(meta) });
+    }
+
+    /// Whether SMO sends live data for the car (its newest log came in the last few minutes).
+    pub fn smo_live(&self, car: CarId) -> bool {
+        records::meta(&self.inner.db, car)
+            .ok()
+            .and_then(|m| m.last_arrived_ms)
+            .is_some_and(|t| now_ms().saturating_sub(t) <= SMO_LIVE_MS)
+    }
+
+    /// The car a Tesla vehicle with this VIN prefix most likely is: the one car with that prefix, if exactly one has
+    /// it. Only a suggestion: an admin confirms it.
+    pub fn suggest_car(&self, vin_prefix: &str) -> Result<Option<CarId>> {
+        if vin_prefix.is_empty() {
+            return Ok(None);
+        }
+        let db = &self.inner.db;
+        let mut found = Vec::new();
+        let mut q = db::FleetQuery { search: None, limit: 500, after: None };
+        loop {
+            let page = db.fleet(&q)?;
+            found.extend(
+                page.cars
+                    .iter()
+                    .filter(|e| e.car.vin.as_ref().is_some_and(|v| v.vin_prefix == vin_prefix))
+                    .map(|e| e.car.id),
+            );
+            match page.next {
+                Some(n) => q.after = Some(n),
+                None => break,
+            }
+        }
+        Ok(if found.len() == 1 { found.first().copied() } else { None })
+    }
+
+    /// Makes a car for a Tesla vehicle an admin chose to add as a new car: named after the vehicle's name in the
+    /// Tesla app, else its model and VIN prefix. Its VIN prefix counts as told, not read from its frames, so a VIN SMO
+    /// reads from the car's own frames later wins.
+    pub fn api_new_car(&self, new: &tesla::NewCar) -> Result<CarId> {
+        let _one = lock(&self.inner.claim);
+        let vin = new.vin_prefix.as_ref().filter(|p| !p.is_empty()).map(|p| VinInfo {
+            vin_prefix: p.clone(),
+            model: new.model,
+            year: new.year,
+            plant: p.chars().nth(10),
+            via: 0,
+        });
+        let name = new
+            .display_name
+            .as_deref()
+            .map(|n| n.trim().chars().filter(|c| !c.is_control()).take(64).collect::<String>())
+            .filter(|n| !n.is_empty())
+            .or_else(|| vin.as_ref().map(name_from_vin))
+            .unwrap_or_else(|| NEW_CAR_NAME.to_string());
+        let car = self.inner.db.create_car(Car {
+            id: 0,
+            name: name.clone(),
+            vehicle_keys: Vec::new(),
+            preferred_key: None,
+            vin,
+            profile_setting: None,
+            time_zone: self.inner.opts.default_time_zone.clone(),
+            efficiency_wh_km: None,
+            created_ms: now_ms(),
+            inputs: Inputs::TESLA_API,
+        })?;
+        self.emit(Event::Fleet { car: car.id, change: "added", name: Some(name) });
+        Ok(car.id)
+    }
+
+    /// Stores what the API sent (the car's lock held by the caller), then has it built.
+    pub(crate) fn work_api_data(&self, car: CarId, samples: Vec<Sample>, facts: Vec<ApiSpan>) -> Result<()> {
+        {
+            let l = self.car_lock(car);
+            let _held = lock(&l);
+            self.api_store(car, samples, facts)?;
+        }
+        self.schedule_api(car);
+        Ok(())
+    }
+
+    fn api_store(&self, car: CarId, samples: Vec<Sample>, facts: Vec<ApiSpan>) -> Result<()> {
+        let db = &self.inner.db;
+        let Some(c) = db.car(car)? else { return Ok(()) };
+        let samples = normalize(samples);
+        let mut spans: Vec<ApiSpan> = facts.into_iter().filter(|f| f.end_ms > f.start_ms).collect();
+        spans.extend(seen(&samples));
+        if samples.is_empty() && spans.is_empty() {
+            return Ok(());
+        }
+        let a = spans.iter().map(|s| s.start_ms).chain(samples.first().map(|s| s.t_ms)).min().unwrap_or(0);
+        let b = spans.iter().map(|s| s.end_ms).chain(samples.last().map(|s| s.t_ms + 1000)).max().unwrap_or(a + 1);
+        if let (Some(x), Some(y)) = (samples.first(), samples.last()) {
+            let (x, y) = (x.t_ms, y.t_ms + 1000);
+            let old = db.read_points::<Sample>(car, Stream::TeslaApi, x, y)?;
+            db.write_points(car, Stream::TeslaApi, x, y, &merge_points(old, &samples))?;
+        }
+        let mut meta = records::meta(db, car)?;
+        for sp in &spans {
+            let mut d = records::day_of(sp.start_ms);
+            while d <= records::day_of(sp.end_ms - 1) {
+                let (lo, hi) = (u64::from(d) * records::DAY_MS, (u64::from(d) + 1) * records::DAY_MS);
+                let part = ApiSpan { start_ms: sp.start_ms.max(lo), end_ms: sp.end_ms.min(hi), ..*sp };
+                let laid = records::lay_api(&records::api_day(db, car, d)?, &part);
+                records::put_api_day(db, car, d, &laid)?;
+                meta.api_days.insert(d);
+                d += 1;
+            }
+        }
+        meta.first_ms = Some(meta.first_ms.map_or(a, |f| f.min(a)));
+        meta.newest_ms = Some(meta.newest_ms.map_or(b, |n| n.max(b)));
+        if let Some(l) = samples.last() {
+            meta.api_last_ms = meta.api_last_ms.max(Some(l.t_ms));
+        }
+        meta.api_received_ms = Some(now_ms());
+        records::put_meta(db, car, &meta)?;
+        let mut dirty = records::api_dirty(db, car)?;
+        dirty.push((a, b));
+        records::put_api_dirty(db, car, &join_spans(dirty))?;
+        if !c.inputs.contains(Input::TeslaApi) {
+            let _record = lock(&self.inner.car_record);
+            if let Some(mut now) = db.car(car)? {
+                now.inputs.insert(Input::TeslaApi);
+                db.update_car(now)?;
+                self.emit(Event::Fleet { car, change: "inputs", name: None });
+            }
+        }
+        if !samples.is_empty() {
+            self.note_now_from(car, &samples, Input::TeslaApi)?;
+        }
+        Ok(())
+    }
+
+    /// Has the car's stored API data built: now, or once [`crate::Options::api_rebuild_ms`] has passed since the
+    /// last build. One build waits at a time per car.
+    fn schedule_api(&self, car: CarId) {
+        if !lock(&self.inner.api_pending).insert(car) {
+            return;
+        }
+        let last = lock(&self.inner.api_built).get(&car).copied();
+        let wait = last.map_or(0, |l| l.saturating_add(self.inner.opts.api_rebuild_ms).saturating_sub(now_ms()));
+        match self.handle() {
+            Ok(h) if wait > 0 => {
+                self.inner.outstanding_add();
+                let e = self.clone();
+                h.spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+                    if e.inner.tx.send(Work::ApiBuild { car }).is_err() {
+                        e.inner.outstanding_sub();
+                    }
+                });
+            }
+            _ => self.send(Work::ApiBuild { car }),
+        }
+    }
+
+    /// Builds the car's API data that waits into its timeline.
+    pub(crate) fn work_api_build(&self, car: CarId) -> Result<()> {
+        lock(&self.inner.api_pending).remove(&car);
+        lock(&self.inner.api_built).insert(car, now_ms());
+        let l = self.car_lock(car);
+        let _held = lock(&l);
+        self.api_build_locked(car)
+    }
+
+    /// The car's lock held.
+    pub(crate) fn api_build_locked(&self, car: CarId) -> Result<()> {
+        let db = &self.inner.db;
+        let dirty = records::api_dirty(db, car)?;
+        if dirty.is_empty() || db.car(car)?.is_none() {
+            return Ok(());
+        }
+        let mut meta = records::meta(db, car)?;
+        for (a, b) in join_spans(dirty) {
+            self.rebuild_span(car, &mut meta, a, b)?;
+        }
+        records::put_api_dirty(db, car, &[])
+    }
+
+    /// The span of the car's API data, when it has some: what a rebuild of the car builds again from it.
+    pub(crate) fn api_span(&self, car: CarId) -> Result<Option<(u64, u64)>> {
+        let meta = records::meta(&self.inner.db, car)?;
+        match (meta.api_days.first(), meta.api_days.last()) {
+            (Some(&a), Some(&b)) => Ok(Some((u64::from(a) * records::DAY_MS, (u64::from(b) + 1) * records::DAY_MS))),
+            _ => Ok(None),
+        }
+    }
+
+    /// Keeps the API's values beside its samples: a new software version is an update row, a car still called "New
+    /// car" takes the name it has in the Tesla app, and the rest is kept for the car's `config` and Now.
+    pub(crate) fn work_api_meta(&self, car: CarId, meta: tesla::ApiMeta) -> Result<()> {
+        let l = self.car_lock(car);
+        let _held = lock(&l);
+        let db = &self.inner.db;
+        if db.car(car)?.is_none() {
+            return Ok(());
+        }
+        let mut rec = records::api_meta(db, car)?;
+        if meta.at_ms < rec.meta.at_ms {
+            return Ok(());
+        }
+        if let Some(v) = meta.car_version.as_ref().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+            match rec.version.clone() {
+                Some(old) if old == v => {}
+                Some(_) => {
+                    // installed after the last time the old one was named, by now
+                    let start = rec.version_seen_ms.map_or(meta.at_ms, |t| t.saturating_add(1000)).min(meta.at_ms);
+                    self.put_api_update(car, start, Some(meta.at_ms), &v)?;
+                }
+                None => {
+                    // the first version the API names: the car's current one, unless the car already has updates
+                    let any = db.list::<UpdateRow>(car, &db::Query::default().limit(1))?.items.into_iter().next();
+                    if any.is_none() {
+                        self.put_api_update(car, meta.at_ms, Some(meta.at_ms), &v)?;
+                    }
+                }
+            }
+            rec.version = Some(v);
+            rec.version_seen_ms = Some(meta.at_ms);
+        }
+        if let Some(name) = meta.display_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            let _record = lock(&self.inner.car_record);
+            if let Some(mut c) = db.car(car)?
+                && c.name == NEW_CAR_NAME
+            {
+                c.name = name.chars().filter(|c| !c.is_control()).take(64).collect();
+                let n = c.name.clone();
+                db.update_car(c)?;
+                self.emit(Event::Fleet { car, change: "renamed", name: Some(n) });
+            }
+        }
+        rec.meta = meta;
+        records::put_api_meta(db, car, &rec)?;
+        if let Ok(now) = crate::query::now::now_view(self, car) {
+            self.emit(Event::Now { car, now: Box::new(now) });
+        }
+        Ok(())
+    }
+
+    fn put_api_update(&self, car: CarId, start_ms: u64, end_ms: Option<u64>, version: &str) -> Result<()> {
+        let db = &self.inner.db;
+        let id = timeline::drive_id(car, start_ms);
+        let (a, b) = (start_ms, start_ms + 1);
+        let mut rows: Vec<UpdateRow> = crate::pipeline::all_rows::<UpdateRow>(db, car, a, b, Some(Source::Live))?
+            .into_iter()
+            .filter(|u| (a..b).contains(&u.update.start_ms) && u.id != id)
+            .collect();
+        rows.push(UpdateRow {
+            id,
+            update: Update {
+                car,
+                start_ms,
+                end_ms,
+                version: version.to_string(),
+                source: Source::Live,
+                inputs: Inputs::TESLA_API,
+            },
+        });
+        rows.sort_by_key(|u| (u.update.start_ms, u.id));
+        db.replace_window::<UpdateRow>(car, a, b, &rows)?;
+        self.emit(Event::Rows { car, kinds: vec!["updates"], from_ms: a, to_ms: b });
+        Ok(())
+    }
+
+    /// A drive's or a stretch's live samples: SMO's and the API's fused, as the timeline was built from.
+    pub(crate) fn live_samples(&self, car: CarId, from_ms: u64, to_ms: u64) -> Result<Vec<Sample>> {
+        let db = &self.inner.db;
+        let p = &self.inner.opts.fuse;
+        let smo = db.read_points::<Sample>(car, Stream::Smo, from_ms, to_ms)?;
+        let m = p.margin_ms();
+        let api =
+            db.read_points::<Sample>(car, Stream::TeslaApi, from_ms.saturating_sub(m), to_ms.saturating_add(m))?;
+        let mut f = timeline::fuse(&smo, &api, p);
+        f.samples.retain(|s| s.t_ms >= from_ms && s.t_ms < to_ms);
+        Ok(f.samples)
+    }
+}

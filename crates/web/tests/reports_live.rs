@@ -40,6 +40,7 @@ fn car(name: &str) -> model::Car {
         time_zone: "UTC".into(),
         efficiency_wh_km: None,
         created_ms: 0,
+        inputs: Default::default(),
     }
 }
 

@@ -168,3 +168,81 @@ pub fn is_settled(span: &StateSpan, params: &Params) -> bool {
         State::Online => false,
     }
 }
+
+/// What the Tesla API saw over a stretch, strongest first.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Seen {
+    /// The car's values came (vehicle data, the stream): it was awake.
+    Data,
+    Online,
+    Asleep,
+}
+
+/// The states with what the Tesla API saw laid over them. SMO's frames (online) always stand. Where SMO says unknown
+/// (no log, a hole, a pause), the API's online gives online and its asleep gives asleep (an offline car stays
+/// unknown). Where SMO says asleep only because no frames came after a quiet log, the car's values coming from the API
+/// say it was awake after all: online. Spans the API gave name it in their `inputs`. `unknown_inputs`: what an unknown
+/// span left names (a car with no SMO data names the API).
+pub(crate) fn with_api(spans: Vec<StateSpan>, api: &[crate::ApiSpan], unknown_inputs: model::Inputs) -> Vec<StateSpan> {
+    use crate::ApiState;
+    let mut api: Vec<&crate::ApiSpan> =
+        api.iter().filter(|a| a.end_ms > a.start_ms && a.state != ApiState::Offline).collect();
+    if api.is_empty() && unknown_inputs == model::Inputs::SMO {
+        return spans;
+    }
+    api.sort_by_key(|a| (a.start_ms, a.end_ms));
+    let mut out: Vec<StateSpan> = Vec::with_capacity(spans.len());
+    let mut push = |s: StateSpan| {
+        if s.end_ms <= s.start_ms {
+            return;
+        }
+        if let Some(l) = out.last_mut()
+            && l.state == s.state
+            && l.buses == s.buses
+            && l.inputs == s.inputs
+            && l.end_ms == s.start_ms
+        {
+            l.end_ms = s.end_ms;
+            return;
+        }
+        out.push(s);
+    };
+    for span in spans {
+        if span.state == State::Online {
+            push(span);
+            continue;
+        }
+        let upto = api.partition_point(|a| a.start_ms < span.end_ms);
+        let over: Vec<&crate::ApiSpan> = api[..upto].iter().copied().filter(|a| a.end_ms > span.start_ms).collect();
+        let mut pts = vec![span.start_ms, span.end_ms];
+        for a in &over {
+            pts.push(a.start_ms.max(span.start_ms));
+            pts.push(a.end_ms.min(span.end_ms));
+        }
+        pts.sort_unstable();
+        pts.dedup();
+        for w in pts.windows(2) {
+            let (x, y) = (w[0], w[1]);
+            let seen = over
+                .iter()
+                .filter(|a| a.start_ms <= x && a.end_ms >= y)
+                .map(|a| match a.state {
+                    ApiState::Online if a.data => Seen::Data,
+                    ApiState::Online => Seen::Online,
+                    _ => Seen::Asleep,
+                })
+                .min();
+            let api_in = model::Inputs::TESLA_API;
+            let (state, inputs) = match (span.state, seen) {
+                (State::Asleep, Some(Seen::Data)) => (State::Online, api_in),
+                (State::Asleep, _) => (State::Asleep, span.inputs),
+                (_, Some(Seen::Data | Seen::Online)) => (State::Online, api_in),
+                (_, Some(Seen::Asleep)) => (State::Asleep, api_in),
+                (_, None) => (State::Unknown, unknown_inputs),
+            };
+            let buses = if state == span.state { span.buses.clone() } else { Vec::new() };
+            push(StateSpan { start_ms: x, end_ms: y, state, inputs, buses, ..span.clone() });
+        }
+    }
+    out
+}

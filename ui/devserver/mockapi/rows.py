@@ -93,7 +93,9 @@ def drive_row(app, h, d, now):
         "speed_avg_kph": r(dist / (duration / 3_600_000), 1) if duration > 0 else None,
         "speed_max_kph": r(f["vmax"], 1),
         "power_max_kw": r(f["pmax"], 1), "power_min_kw": None if tm else r(f["pmin"], 1),
-        "energy_kwh": r(energy, 3), "energy_basis": "estimated" if tm else "measured",
+        # (the Tesla API alone: its power read every few seconds to a minute, summed)
+        "energy_kwh": r(energy, 3),
+        "energy_basis": "estimated" if tm or getattr(d, "inputs", None) == ["tesla_api"] else "measured",
         "regen_kwh": None if tm else r(f["regen"], 3),
         "wh_per_km": r(whkm, 1),
         "efficiency_pct": r(car.rated_wh_per_km / whkm * 100, 1) if whkm else None,
@@ -308,7 +310,9 @@ def timeline_row(app, h, s, now):
             "odometer_km": c["odometer_km"], "distance_km": None, "duration_ms": c["charging_ms"],
             "soc_end_pct": c["end_soc_pct"], "soc_delta_pct": r(c["end_soc_pct"] - c["start_soc_pct"], 1),
             "range_end_km": c["end_range_km"], "range_delta_km": c["range_added_km"],
-            "energy_delta_kwh": c["energy_added_kwh"], "energy_basis": "measured" if s.source == "can" else "estimated",
+            "energy_delta_kwh": c["energy_added_kwh"], "energy_basis": (
+                "measured" if s.source == "can" and getattr(s, "inputs", None) != ["tesla_api"] else "estimated"
+            ),
             "outside_avg_c": c["outside_avg_c"], "cost": c["cost"], "ref": {"charge": s.id},
             "awake_reasons": ["charging"], "flags": c["flags"],
         })

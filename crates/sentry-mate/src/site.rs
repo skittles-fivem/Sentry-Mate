@@ -230,6 +230,7 @@ fn translate(
                 "added" => web::FleetChange::Added,
                 "removed" => web::FleetChange::Removed,
                 "renamed" => web::FleetChange::Renamed,
+                "inputs" => web::FleetChange::Inputs,
                 _ => web::FleetChange::ListChanged,
             };
             if change == web::FleetChange::Removed {

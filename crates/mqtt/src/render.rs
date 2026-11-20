@@ -842,6 +842,7 @@ pub(crate) mod tests {
             time_zone: "UTC".into(),
             efficiency_wh_km: None,
             created_ms: 0,
+            inputs: Default::default(),
         };
         assert_eq!(CarInfo::of(&car), CarInfo { name: "Family car".into(), model: None });
         car.vin = Some(model::VinInfo {

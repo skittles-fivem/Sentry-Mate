@@ -389,6 +389,7 @@ pub fn new_car(name: &str, keys: &[&str]) -> model::Car {
         time_zone: "UTC".into(),
         efficiency_wh_km: None,
         created_ms: DAY0,
+        inputs: Default::default(),
     }
 }
 

@@ -14,7 +14,7 @@
 use crate::charges;
 use crate::drives;
 use crate::facts::LogFacts;
-use crate::states::{is_settled, states};
+use crate::states::{is_settled, states, with_api};
 use model::{CarId, Charge, ChargeId, ChargePoint, Drive, DriveId, Position, Sample, StateSpan};
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +53,31 @@ pub struct Params {
     pub max_hold_ms: u64,
     /// GPS steps faster than this are a bad fix (km/h).
     pub max_gps_kmh: f64,
+    /// Where the samples come from the Tesla API alone (one every few seconds to a minute): a drive ends once the car
+    /// has been parked this long (ms), and a sample counts across a gap this long at most in sums (ms).
+    #[serde(default = "api_park_ms")]
+    pub api_park_ms: u64,
+    #[serde(default = "api_max_hold_ms")]
+    pub api_max_hold_ms: u64,
+}
+
+fn api_park_ms() -> u64 {
+    150_000
+}
+
+fn api_max_hold_ms() -> u64 {
+    90_000
+}
+
+impl Params {
+    /// The thresholds for rows with seconds from the Tesla API alone.
+    pub fn for_api(&self) -> Params {
+        Params {
+            park_ms: self.park_ms.max(self.api_park_ms),
+            max_hold_ms: self.max_hold_ms.max(self.api_max_hold_ms),
+            ..*self
+        }
+    }
 }
 
 impl Default for Params {
@@ -67,6 +92,8 @@ impl Default for Params {
             join_ms: 5_000,
             max_hold_ms: 10_000,
             max_gps_kmh: 300.0,
+            api_park_ms: api_park_ms(),
+            api_max_hold_ms: api_max_hold_ms(),
         }
     }
 }
@@ -87,6 +114,11 @@ pub struct Input<'a> {
     pub logs: &'a [LogFacts],
     /// Spans known to have no usable data (a log that failed its check, a gap in the chain): unknown, never asleep.
     pub holes: &'a [(u64, u64)],
+    /// What the Tesla API saw of the car's state ([`crate::ApiSpan`]), any order: fills what SMO does not know.
+    pub api: &'a [crate::ApiSpan],
+    /// The seconds of `samples` that are not SMO's alone ([`crate::Fused::marks`], sorted): the rows made from them
+    /// name the Tesla API. Empty: every second is SMO's.
+    pub marks: &'a [(u64, model::Inputs)],
 }
 
 /// Frames lost in a log (`# dropped` lines), for marking what overlaps it.
@@ -232,7 +264,12 @@ fn pieces(spans: &[StateSpan], from_ms: u64, to_ms: u64, params: &Params) -> Vec
 pub fn build(input: &Input<'_>, params: &Params) -> Timeline {
     let (car, from_ms, to_ms) = (input.car, input.from_ms, input.to_ms);
     let logs: Vec<&LogFacts> = input.logs.iter().collect();
-    let mut t = Timeline { states: states(car, from_ms, to_ms, &logs, input.holes, params), ..Timeline::default() };
+    let smo = states(car, from_ms, to_ms, &logs, input.holes, params);
+    // a window with only the API's data names the API on the unknown spans it leaves
+    let api_only =
+        input.logs.is_empty() && input.holes.is_empty() && (!input.api.is_empty() || !input.marks.is_empty());
+    let unknown_inputs = if api_only { model::Inputs::TESLA_API } else { model::Inputs::SMO };
+    let mut t = Timeline { states: with_api(smo, input.api, unknown_inputs), ..Timeline::default() };
     let samples = sorted(input.samples, from_ms, to_ms);
 
     // the pieces between settled spans, cut again at their idle cut points
@@ -258,22 +295,41 @@ pub fn build(input: &Input<'_>, params: &Params) -> Timeline {
         if seg.is_empty() {
             continue;
         }
-        let found = drives::find(seg, params);
+        let marks = input.marks;
+        let api: Vec<bool> = if marks.is_empty() {
+            Vec::new()
+        } else {
+            seg.iter().map(|s| crate::fuse::inputs_at(marks, s.t_ms) == model::Inputs::TESLA_API).collect()
+        };
+        // the thresholds of rows with seconds from the API alone, and the inputs of a row's seconds
+        let params_of = |i: usize, j: usize| if api[i..=j].contains(&true) { params.for_api() } else { *params };
+        let params_of = |i: usize, j: usize| if api.is_empty() { *params } else { params_of(i, j) };
+        let inputs_of = |i: usize, j: usize| -> model::Inputs {
+            if marks.is_empty() {
+                return model::Inputs::SMO;
+            }
+            seg[i..=j].iter().fold(model::Inputs::NONE, |acc, s| acc.union(crate::fuse::inputs_at(marks, s.t_ms)))
+        };
+        let found = drives::find(seg, &api, params);
         let kept: Vec<(usize, usize)> = found
             .iter()
             .copied()
-            .filter(|&(i, j)| match drives::make(car, &seg[i..=j], i.checked_sub(1).map(|k| seg[k]), params) {
-                Some(d) => {
-                    t.drives.push(d);
-                    true
+            .filter(|&(i, j)| {
+                match drives::make(car, &seg[i..=j], i.checked_sub(1).map(|k| seg[k]), &params_of(i, j)) {
+                    Some(mut d) => {
+                        d.inputs = inputs_of(i, j);
+                        t.drives.push(d);
+                        true
+                    }
+                    None => false,
                 }
-                None => false,
             })
             .collect();
         for (i, j) in charges::find(seg, &found, params) {
             // where the car is: samples since the last drive that ended before the charge
             let since = found.iter().filter(|&&(_, e)| e < i).map(|&(_, e)| e + 1).max().unwrap_or(0);
-            if let Some(c) = charges::make(car, &seg[i..=j], &seg[since..i], params) {
+            if let Some(mut c) = charges::make(car, &seg[i..=j], &seg[since..i], &params_of(i, j)) {
+                c.inputs = inputs_of(i, j);
                 t.charge_points.extend(charges::points(&seg[i..=j]).into_iter().map(|p| (c.id, p)));
                 t.charges.push(c);
             }

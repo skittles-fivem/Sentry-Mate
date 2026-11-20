@@ -127,7 +127,8 @@ pub(crate) fn view(c: &Car, d: &Drive, x: &Ctx) -> DriveView {
         power_max_kw: r(d.power_max_kw, 1),
         power_min_kw: r(d.power_min_kw, 1),
         energy_kwh: r(d.energy_used_kwh, 3),
-        energy_basis: if tm { "estimated" } else { "measured" },
+        // the Tesla API alone: its power, read every few seconds to a minute, summed
+        energy_basis: if tm || d.inputs == model::Inputs::TESLA_API { "estimated" } else { "measured" },
         regen_kwh: None,
         wh_per_km: r(whkm, 1),
         efficiency_pct: r(x.rated_wh_per_km.zip(whkm).filter(|(_, w)| *w > 0.0).map(|(rated, w)| rated / w * 100.0), 1),
@@ -790,7 +791,12 @@ pub struct DriveDetail {
 
 /// The samples of a drive (its own source's), in time order.
 pub(crate) fn samples(e: &Engine, car: CarId, d: &Drive) -> QResult<Vec<Sample>> {
-    Ok(e.db().read_points::<Sample>(car, d.source, d.start_ms, d.end_ms.max(d.start_ms) + 1)?)
+    let to = d.end_ms.max(d.start_ms) + 1;
+    if d.source == Source::Live {
+        // SMO's and the Tesla API's, made one as the drive was built from
+        return Ok(e.live_samples(car, d.start_ms, to)?);
+    }
+    Ok(e.db().read_points::<Sample>(car, d.source, d.start_ms, to)?)
 }
 
 /// `/cars/{car}/drives/{drive}`; `speed_band_kph` is 1 to 100 (default 10).

@@ -45,6 +45,8 @@ pub enum FleetChange {
     Removed,
     Renamed,
     ListChanged,
+    /// The car has data from a new live input (its first Tesla API reading, its first SMO log).
+    Inputs,
 }
 
 /// Something the open pages should hear about.

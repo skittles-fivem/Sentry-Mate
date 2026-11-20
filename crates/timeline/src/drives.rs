@@ -12,7 +12,10 @@ pub(crate) fn moving(s: &Sample) -> bool {
 
 /// The drives of a run of samples (sorted, nothing settled in between) as index ranges `[first, last]`: from the
 /// first second out of P to the last.
-pub(crate) fn find(seg: &[&Sample], params: &Params) -> Vec<(usize, usize)> {
+/// `api[i]`: the second came from the Tesla API alone (its samples are far apart: a drive waits
+/// [`Params::api_park_ms`] for it to end there); empty when none did.
+pub(crate) fn find(seg: &[&Sample], api: &[bool], params: &Params) -> Vec<(usize, usize)> {
+    let sparse = |i: usize| api.get(i).copied().unwrap_or(false);
     let mut out = Vec::new();
     let mut open: Option<(usize, usize)> = None;
     for (i, s) in seg.iter().enumerate() {
@@ -22,7 +25,9 @@ pub(crate) fn find(seg: &[&Sample], params: &Params) -> Vec<(usize, usize)> {
             Some((_, last)) if moving(s) => *last = i,
             Some((first, last)) => {
                 let parked_since = seg[*last].t_ms + 1000;
-                if s.t_ms.saturating_sub(parked_since) >= params.park_ms {
+                let park =
+                    if sparse(*last) || sparse(i) { params.park_ms.max(params.api_park_ms) } else { params.park_ms };
+                if s.t_ms.saturating_sub(parked_since) >= park {
                     out.push((*first, *last));
                     open = None;
                 }

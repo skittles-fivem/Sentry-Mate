@@ -18,6 +18,7 @@ logfmt = { path = "../logfmt" }
 model = { path = "../model" }
 mqtt = { path = "../mqtt" }
 places = { path = "../places" }
+tesla = { path = "../tesla" }
 timeline = { path = "../timeline" }
 trust = { path = "../trust" }
 base64 = "0.22"

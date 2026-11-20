@@ -340,6 +340,7 @@ async fn battery_capacity_level_range_efficiency_and_temperatures_of_decoded_day
             time_zone: "UTC".into(),
             efficiency_wh_km: None,
             created_ms: 0,
+            inputs: Default::default(),
         })
         .unwrap()
         .id;
@@ -381,6 +382,7 @@ async fn a_car_without_history_answers_the_same_keys_with_null() {
             time_zone: "UTC".into(),
             efficiency_wh_km: None,
             created_ms: 0,
+            inputs: Default::default(),
         })
         .unwrap()
         .id;

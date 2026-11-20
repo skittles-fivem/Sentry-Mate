@@ -392,7 +392,11 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             range_end_km: v.end_range_km,
             range_delta_km: v.range_added_km,
             energy_delta_kwh: v.energy_added_kwh,
-            energy_basis: Some(if ch.source == Source::Live { "measured" } else { "estimated" }),
+            energy_basis: Some(if ch.source == Source::Live && ch.inputs != model::Inputs::TESLA_API {
+                "measured"
+            } else {
+                "estimated"
+            }),
             outside_avg_c: v.outside_avg_c,
             cost: v.cost.clone(),
             reference: Some(serde_json::json!({ "charge": v.id })),

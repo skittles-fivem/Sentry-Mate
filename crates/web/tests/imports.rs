@@ -54,6 +54,7 @@ async fn kit() -> Kit {
             time_zone: "Europe/Amsterdam".into(),
             efficiency_wh_km: None,
             created_ms: 1_790_000_000_000,
+            inputs: Default::default(),
         })
         .unwrap();
     let store = ingest::Store::new(data.join("can"), v);

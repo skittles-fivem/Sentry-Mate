@@ -331,6 +331,9 @@ pub struct Car {
     /// Wh per km at the wheels used for range figures, when known.
     pub efficiency_wh_km: Option<f64>,
     pub created_ms: u64,
+    /// The live inputs the car has had data from (empty on older records: SMO, when it has CAN keys).
+    #[serde(default, skip_serializing_if = "Inputs::is_empty")]
+    pub inputs: Inputs,
 }
 
 impl VinInfo {
@@ -659,6 +662,7 @@ mod tests {
             time_zone: "UTC".into(),
             efficiency_wh_km: None,
             created_ms: 0,
+            inputs: Default::default(),
         };
         assert_eq!(car.profile(), CarProfile::TeslaSxLegacy);
         car.profile_setting = Some(CarProfile::Tesla3Y);

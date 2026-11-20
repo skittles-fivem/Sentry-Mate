@@ -29,9 +29,13 @@ impl<T: Serialize> Serialize for V<T> {
     }
 }
 
-/// A value of the car's newest values (SMO's: the only live input whose values are kept for Now yet).
-fn v<T>(x: Option<T>, at: u64) -> Option<V<T>> {
-    x.map(|value| V { value, at_ms: at, origin: model::Origin::Smo })
+/// When a value was recorded and which input sent it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct At(pub u64, pub model::Origin);
+
+/// A value of the car's newest values.
+fn v<T>(x: Option<T>, at: At) -> Option<V<T>> {
+    x.map(|value| V { value, at_ms: at.0, origin: at.1 })
 }
 
 /// A live input with when its newest value was recorded.
@@ -42,7 +46,7 @@ pub struct InputNow {
     pub last_ms: Option<u64>,
 }
 
-fn vf(x: Option<f64>, d: i32, at: u64) -> Option<V<f64>> {
+fn vf(x: Option<f64>, d: i32, at: At) -> Option<V<f64>> {
     v(r(x, d), at)
 }
 
@@ -198,13 +202,22 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     let db = e.db();
     let n = db.entry(car)?.and_then(|x| x.summary.now);
     let meta = records::meta(db, car)?;
-    let received_ms = meta.last_arrived_ms; // when the newest log arrived, as the fleet list says
+    // when the newest data arrived: SMO's newest log, or the Tesla API's newest reading
+    let received_ms = meta.last_arrived_ms.max(meta.api_received_ms);
     let now = now_ms();
     let s: Sample = n.as_ref().map(|n| n.sample.clone()).unwrap_or_default();
     let at = n.as_ref().map_or(0, |n| n.at_ms);
     // each value at the time it was recorded (a value kept from an older log keeps its own time)
     let times = records::now_at(db, car)?;
-    let t = |f: &str| times.get(f).copied().unwrap_or(at);
+    let from = records::now_from(db, car)?;
+    let origin = |f: &str| from.get(f).map_or(model::Origin::Smo, |i| model::Origin::from(*i));
+    let t = |f: &str| At(times.get(f).copied().unwrap_or(at), origin(f));
+    let tm = |f: &str| t(f).0;
+    // the Tesla API's newest values beside its samples (charge limit, flags), while they are the car's newest
+    let api = records::api_meta(db, car)?;
+    let api_at = At(api.meta.at_ms, model::Origin::TeslaApi);
+    let api_fresh = api.meta.at_ms > 0 && api.meta.at_ms + STALE_MS >= at;
+    let m = api_fresh.then_some(&api.meta);
     // the car's newest state spans, joined across the rows they are stored in (the newest row is often a stub at
     // the end of the newest log)
     let spans = super::timeline::newest_spans(e, car, 8)?;
@@ -216,7 +229,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
             lon: vf(Some(lon), 6, t("lon")),
             accuracy_m: vf(s.gps_accuracy_m, 1, t("gps_accuracy_m")),
             elevation_m: vf(s.elevation_m, 0, t("elevation_m")),
-            heading_deg: None,
+            heading_deg: m.and_then(|m| vf(m.heading_deg, 0, api_at)),
             place: places.place_at(lat, lon).map(|p| PlaceBrief { id: place_ref(p.id), name: p.name.clone() }),
             address: None,
         }),
@@ -280,7 +293,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     };
     let charge = ChargeNow {
         status: v(s.charging.map(|c| if c { "charging" } else { "disconnected" }), t("charging")),
-        plugged: plugged_now(&s, driving, &t, at).map(|p| V { value: p, at_ms: at, origin: model::Origin::Smo }),
+        plugged: plugged_now(&s, driving, &tm, at).map(|p| V { value: p, at_ms: at, origin: origin("charging") }),
         kind: v(s.charge_kind.map(kind_word), t("charge_kind")),
         power_kw: vf(s.charge_power_kw, 1, t("charge_power_kw")),
         volts_v: vf(s.charger_voltage_v, 0, t("charger_voltage_v")),
@@ -288,10 +301,10 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         phases: None,
         pilot_a: None,
         limit_source: None,
-        added_kwh: None,
-        limit_pct: None,
+        added_kwh: m.filter(|_| charging).and_then(|m| vf(m.charge_energy_added_kwh, 2, api_at)),
+        limit_pct: m.and_then(|m| vf(m.charge_limit_soc, 0, api_at)),
         to_full_kwh: None,
-        to_full_min: None,
+        to_full_min: m.filter(|_| charging).and_then(|m| vf(m.minutes_to_full_charge, 0, api_at)),
         finish_ms: None,
         charge_id,
     };
@@ -328,10 +341,24 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         received_ms,
         delay_s: received_ms.zip(n.as_ref().map(|n| n.at_ms)).map(|(rcv, a)| rcv.saturating_sub(a) as f64 / 1000.0),
         stale: received_ms.is_none_or(|rcv| now.saturating_sub(rcv) > STALE_MS),
-        inputs: n
-            .as_ref()
-            .map(|n| vec![InputNow { input: model::Origin::Smo.into(), last_ms: Some(n.at_ms) }])
-            .unwrap_or_default(),
+        inputs: {
+            // each live input with its newest value: SMO's from its values in the Now, the API's from its newest
+            // reading
+            let smo_last = times
+                .iter()
+                .filter(|(f, _)| !from.contains_key(f.as_str()))
+                .map(|(_, t)| *t)
+                .max()
+                .or_else(|| n.as_ref().filter(|_| times.is_empty()).map(|n| n.at_ms));
+            let mut v = Vec::new();
+            if let Some(t) = smo_last.filter(|_| n.is_some()) {
+                v.push(InputNow { input: model::Origin::Smo.into(), last_ms: Some(t) });
+            }
+            if let Some(t) = meta.api_last_ms {
+                v.push(InputNow { input: model::Origin::TeslaApi.into(), last_ms: Some(t) });
+            }
+            v
+        },
         buses,
         driving,
         gear: v(s.gear.map(gear_word), t("gear")),
@@ -339,7 +366,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         power_kw: vf(s.battery_power_kw, 1, t("battery_power_kw")),
         soc_pct: vf(s.soc, 1, t("soc")),
         soc_bms_pct: vf(s.soc_bms, 1, t("soc_bms")),
-        usable_soc_pct: None,
+        usable_soc_pct: m.and_then(|m| vf(m.usable_battery_level, 1, api_at)),
         range_km: vf(s.range_km, 1, t("range_km")),
         ideal_range_km: vf(s.ideal_range_km, 1, t("ideal_range_km")),
         est_range_km: vf(est_range, 1, t("energy_remaining_kwh")),
@@ -357,8 +384,15 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         tyres_slots_mapped: false,
         tyre_recommended_kpa: None,
         flags: serde_json::json!({
-            "sentry": null, "sentry_event_guess": null, "service_mode": null, "user_present": null,
-            "keep_climate": null, "climate": null, "battery_preconditioning": null, "keep_warm": null,
+            "sentry": m.and_then(|m| v(m.sentry_mode, api_at)), "sentry_event_guess": null, "service_mode": null,
+            "user_present": m.and_then(|m| v(m.user_present, api_at)),
+            "keep_climate": m.and_then(|m| v(m.climate_keeper_mode.clone(), api_at)),
+            "climate": m.and_then(|m| v(m.climate_on.map(|on| match (on, m.preconditioning) {
+                (true, Some(true)) => "precondition",
+                (true, _) => "on",
+                (false, _) => "off",
+            }), api_at)),
+            "battery_preconditioning": m.and_then(|m| v(m.preconditioning, api_at)), "keep_warm": null,
             "accessory_power": null, "parking_brake": null, "reduced_range": null,
             "doors": { "fl": null, "fr": null, "rl": null, "rr": null }, "trunk": null, "frunk": null,
             "liftgate_deg": null, "charge_port_open": null, "display_on": null,
@@ -368,7 +402,15 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         awake_reasons: reasons,
         software: Software {
             version: update.as_ref().map(|u| u.version.clone()).filter(|v| !v.is_empty()),
-            version_source: update.as_ref().filter(|u| u.source == Source::Teslamate).map(|_| "teslamate"),
+            version_source: update.as_ref().and_then(|u| {
+                if u.source == Source::Teslamate {
+                    Some("teslamate")
+                } else if u.inputs.contains(model::Input::TeslaApi) {
+                    Some("tesla_api")
+                } else {
+                    None
+                }
+            }),
             version_since_ms: update.as_ref().map(|u| u.end_ms.unwrap_or(u.start_ms)),
             changed_since_ms: None,
         },

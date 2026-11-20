@@ -110,7 +110,15 @@ fn version_of(e: &Engine, car: CarId, u: &UpdateRow) -> QResult<(Option<String>,
         return Ok((Some(t.version), Some("owner")));
     }
     let v = Some(u.update.version.trim().to_string()).filter(|v| !v.is_empty());
-    let src = v.as_ref().map(|_| if u.update.source == Source::Teslamate { "teslamate" } else { "owner" });
+    let src = v.as_ref().map(|_| {
+        if u.update.source == Source::Teslamate {
+            "teslamate"
+        } else if u.update.inputs.contains(model::Input::TeslaApi) {
+            "tesla_api"
+        } else {
+            "owner"
+        }
+    });
     Ok((v, src))
 }
 
@@ -150,7 +158,13 @@ fn view(e: &Engine, c: &Car, all: &[UpdateRow], i: usize, shown: &Shown) -> QRes
         since_previous_ms: prev_end.map(|p| up.start_ms.saturating_sub(p)),
         version,
         version_source,
-        detected_by: if tm { "teslamate" } else { "ota_status" },
+        detected_by: if tm {
+            "teslamate"
+        } else if up.inputs.contains(model::Input::TeslaApi) {
+            "tesla_api"
+        } else {
+            "ota_status"
+        },
         build_id: None,
         changed_modules: Vec::new(),
         charges,

@@ -518,7 +518,7 @@ fn a_typed_cost_stays_when_a_late_log_moves_the_charge_start() {
         let after = charges(&k, car);
         assert_eq!(after.len(), 1);
         assert!(after[0].start_ms < cs[0].start_ms, "the charge starts a minute earlier now");
-        assert_ne!(after[0].id, cs[0].id);
+        assert_eq!(after[0].id, cs[0].id, "the charge keeps its id, so what points at it stays");
         let cost = after[0].cost.as_ref().expect("the typed cost");
         assert_eq!((cost.amount, cost.currency.as_str(), cost.source.as_str()), (4.2, "EUR", "manual"));
     });
@@ -545,6 +545,7 @@ fn a_key_moved_to_another_car_takes_its_history_with_it() {
                 time_zone: "UTC".into(),
                 efficiency_wh_km: None,
                 created_ms: 0,
+                inputs: Default::default(),
             })
             .unwrap()
             .id;
@@ -580,6 +581,7 @@ fn a_new_key_goes_to_the_only_car_and_waits_when_there_are_several() {
             time_zone: "UTC".into(),
             efficiency_wh_km: None,
             created_ms: 0,
+            inputs: Default::default(),
         };
         k.db.create_car(other).unwrap();
         for i in 0..2 {

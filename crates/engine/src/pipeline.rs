@@ -3,7 +3,7 @@
 use crate::records::{self, CarMeta, DAY_MS, LogEntry, Outcome};
 use crate::{Engine, Error, Event, NewKeys, Result, Work, lock, now_ms};
 use db::{Query, StateRow};
-use model::{Car, CarId, Charge, ChargePoint, Drive, Now, Sample, Source, StateSpan, VinInfo};
+use model::{Car, CarId, Charge, ChargePoint, Drive, Input, Now, Sample, Source, StateSpan, Stream, VinInfo};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -184,6 +184,7 @@ impl Engine {
                     time_zone: self.inner.opts.default_time_zone.clone(),
                     efficiency_wh_km: None,
                     created_ms: now_ms(),
+                    inputs: model::Inputs::SMO,
                 })?;
                 self.forget_waiting(key)?;
                 self.emit(Event::Fleet { car: car.id, change: "added", name: Some(car.name.clone()) });
@@ -569,7 +570,15 @@ impl Engine {
                                 wrote_samples = true;
                             }
                             let n = u32::try_from(r.samples.len()).unwrap_or(u32::MAX);
-                            self.note_now(car, &c, &r.samples)?;
+                            self.note_now_from(car, &r.samples, Input::Smo)?;
+                            if !c.inputs.contains(Input::Smo) {
+                                let _record = lock(&self.inner.car_record);
+                                if let Some(mut now) = db.car(car)? {
+                                    now.inputs.insert(Input::Smo);
+                                    db.update_car(now.clone())?;
+                                    c = now;
+                                }
+                            }
                             Outcome::Decoded { facts: r.facts, samples_from_ms: from, samples_to_ms: to, samples: n }
                         }
                         Err(e) => {
@@ -689,9 +698,9 @@ impl Engine {
             let merged = if others.is_empty() {
                 m.samples.to_vec()
             } else {
-                merge_points(db.read_points::<Sample>(car, Source::Live, a, b)?, m.samples)
+                merge_points(db.read_points::<Sample>(car, Stream::Smo, a, b)?, m.samples)
             };
-            db.write_points(car, Source::Live, a, b, &merged)?;
+            db.write_points(car, Stream::Smo, a, b, &merged)?;
             return Ok(());
         }
         let mut cands: Vec<(Rank, (u64, u64), Vec<Sample>)> = Vec::new();
@@ -723,7 +732,7 @@ impl Engine {
             }
         }
         let points: Vec<Sample> = by.into_values().collect();
-        db.write_points(car, Source::Live, a, b, &points)?;
+        db.write_points(car, Stream::Smo, a, b, &points)?;
         Ok(())
     }
 
@@ -738,41 +747,49 @@ impl Engine {
         Ok(timeline::read_log(&bytes, &side, profile, self.inner.opts.sample).ok().map(|r| r.samples))
     }
 
-    /// The car's newest values, from a log's samples (newer ones than those kept only). Each value keeps when it was
-    /// recorded ([`records::now_at`]); the charge's kind and power go once the newest second says the car is not
-    /// charging, or it drives.
-    fn note_now(&self, car: CarId, c: &Car, samples: &[Sample]) -> Result<()> {
+    /// The car's newest values, from an input's samples. Each value keeps when it was recorded
+    /// ([`records::now_at`]) and which input sent it ([`records::now_from`]); of two inputs the newer value wins, but
+    /// for the fast values (speed, power, gear, position) an SMO value beats the API's for a minute (the API's time
+    /// lags). The charge's kind and power go once the newest values say the car is not charging, or it drives.
+    pub(crate) fn note_now_from(&self, car: CarId, samples: &[Sample], input: Input) -> Result<()> {
         let Some(last) = samples.last() else { return Ok(()) };
         let db = &self.inner.db;
         let kept = db.entry(car)?.and_then(|e| e.summary.now);
-        if kept.as_ref().is_some_and(|n| n.at_ms > last.t_ms) {
+        let mut from = records::now_from(db, car)?;
+        if input == Input::Smo && from.is_empty() && kept.as_ref().is_some_and(|n| n.at_ms > last.t_ms) {
+            // SMO alone, and an older log than what is kept
             return Ok(());
         }
         // each value from the newest second that has it, starting from what was kept
         let mut merged = kept.as_ref().map(|n| n.sample.clone()).unwrap_or_default();
         let mut at = if kept.is_some() { records::now_at(db, car)? } else { Default::default() };
-        for s in samples {
-            overlay(&mut merged, s, &mut at);
+        if kept.is_none() {
+            from.clear();
         }
-        merged.t_ms = last.t_ms;
-        let driving = matches!(last.gear, Some(model::Gear::D | model::Gear::R | model::Gear::N))
-            || last.speed_kmh.is_some_and(|v| v.abs() > 1.0);
+        for s in samples {
+            overlay(&mut merged, s, &mut at, &mut from, input);
+        }
+        let at_ms = kept.as_ref().map_or(last.t_ms, |n| n.at_ms.max(last.t_ms));
+        merged.t_ms = at_ms;
+        let driving = matches!(merged.gear, Some(model::Gear::D | model::Gear::R | model::Gear::N))
+            || merged.speed_kmh.is_some_and(|v| v.abs() > 1.0);
         // the newest word on charging: a value that old charge left must not look current
         let not_charging = driving || merged.charging == Some(false);
         if not_charging {
             for f in CHARGE_FIELDS {
                 clear(&mut merged, f);
                 at.remove(*f);
+                from.remove(*f);
             }
         }
         let place = match (merged.lat, merged.lon) {
             (Some(lat), Some(lon)) => self.places().place_at(lat, lon).map(|p| p.id),
             _ => None,
         };
-        let now = Now { car, at_ms: last.t_ms, state: Some(model::State::Online), driving, sample: merged, place };
+        let now = Now { car, at_ms, state: Some(model::State::Online), driving, sample: merged, place };
         records::put_now_at(db, car, &at)?;
+        records::put_now_from(db, car, &from)?;
         db.set_now(now)?;
-        let _ = c;
         Ok(())
     }
 
@@ -816,8 +833,30 @@ impl Engine {
         }
         logs.sort_by_key(|f| f.span());
         logs.dedup();
-        let samples = db.read_points::<Sample>(car, Source::Live, from, to)?;
-        let input = timeline::Input { car, from_ms: from, to_ms: to, samples: &samples, logs: &logs, holes: &holes };
+        // SMO's samples and the Tesla API's, made one (the API's read a margin around the window, so a second inside
+        // it fuses as in a longer one)
+        let fp = &self.inner.opts.fuse;
+        let smo = db.read_points::<Sample>(car, Stream::Smo, from, to)?;
+        let api = db.read_points::<Sample>(
+            car,
+            Stream::TeslaApi,
+            from.saturating_sub(fp.margin_ms()),
+            to.saturating_add(fp.margin_ms()),
+        )?;
+        let mut fused = timeline::fuse(&smo, &api, fp);
+        fused.samples.retain(|s| s.t_ms >= from && s.t_ms < to);
+        fused.marks.retain(|m| m.0 >= from && m.0 < to);
+        let seen = records::api_between(db, car, meta, from, to)?;
+        let input = timeline::Input {
+            car,
+            from_ms: from,
+            to_ms: to,
+            samples: &fused.samples,
+            logs: &logs,
+            holes: &holes,
+            api: &seen,
+            marks: &fused.marks,
+        };
         let t = timeline::build(&input, p);
         self.write_timeline(car, meta, from, to, t)?;
         self.inner.counters.windows.fetch_add(1, Ordering::Relaxed);
@@ -826,9 +865,45 @@ impl Engine {
         Ok((from, to))
     }
 
-    fn write_timeline(&self, car: CarId, meta: &mut CarMeta, from: u64, to: u64, t: timeline::Timeline) -> Result<()> {
+    fn write_timeline(
+        &self,
+        car: CarId,
+        meta: &mut CarMeta,
+        from: u64,
+        to: u64,
+        mut t: timeline::Timeline,
+    ) -> Result<()> {
         let db = &self.inner.db;
         let places = self.places();
+        // a drive or charge that was already there (seen first by one input, then by the other, or by a late log)
+        // keeps its id, so what points at it (purpose, notes, costs) stays with it
+        let in_window = |s: u64| s >= from && s < to;
+        let old_drives: Vec<(u64, u64, u64)> = all_rows::<Drive>(db, car, from, to, Some(Source::Live))?
+            .into_iter()
+            .filter(|d| in_window(d.start_ms))
+            .map(|d| (d.id, d.start_ms, d.end_ms))
+            .collect();
+        let spans: Vec<(u64, u64)> = t.drives.iter().map(|d| (d.start_ms, d.end_ms)).collect();
+        let ids: Vec<u64> = t.drives.iter().map(|d| d.id).collect();
+        for (d, id) in t.drives.iter_mut().zip(carry_ids(&old_drives, &ids, &spans)) {
+            d.id = id;
+        }
+        let old_charges: Vec<(u64, u64, u64)> = all_rows::<Charge>(db, car, from, to, Some(Source::Live))?
+            .into_iter()
+            .filter(|c| in_window(c.start_ms))
+            .map(|c| (c.id, c.start_ms, c.end_ms))
+            .collect();
+        let spans: Vec<(u64, u64)> = t.charges.iter().map(|c| (c.start_ms, c.end_ms)).collect();
+        let new_ids: Vec<u64> = t.charges.iter().map(|c| c.id).collect();
+        let carried = carry_ids(&old_charges, &new_ids, &spans);
+        for (c, id) in t.charges.iter_mut().zip(&carried) {
+            c.id = *id;
+        }
+        for (cid, _) in &mut t.charge_points {
+            if let Some(i) = new_ids.iter().position(|x| x == cid) {
+                *cid = carried[i];
+            }
+        }
         let mut drives: Vec<Drive> = t.drives;
         for d in &mut drives {
             d.start_place = d.start.as_ref().and_then(|p| places.place_at(p.lat, p.lon)).map(|p| p.id);
@@ -1017,6 +1092,12 @@ impl Engine {
                 j.step(self, Some(car));
             }
         }
+        // Tesla API data stored and not built yet (a restart, or a rebuild of the car)
+        {
+            let l = self.car_lock(car);
+            let _held = lock(&l);
+            self.api_build_locked(car)?;
+        }
         if job.is_none_or(|j| !j.cancelled()) {
             records::put_rebuild_mark(db, car, None)?;
         }
@@ -1027,8 +1108,27 @@ impl Engine {
     /// it, so they are worked on again. Imported rows stay.
     pub(crate) fn clear_window(&self, car: CarId, from_ms: u64, to_ms: u64) -> Result<()> {
         let db = &self.inner.db;
+        // software updates the Tesla API named are not made again from logs: they stay
+        let api_updates: Vec<db::UpdateRow> = all_rows::<db::UpdateRow>(db, car, from_ms, to_ms, Some(Source::Live))?
+            .into_iter()
+            .filter(|u| {
+                u.update.inputs.contains(Input::TeslaApi) && u.update.start_ms >= from_ms && u.update.start_ms < to_ms
+            })
+            .collect();
         db.delete_window(car, from_ms, to_ms)?;
+        if !api_updates.is_empty() {
+            db.replace_window::<db::UpdateRow>(car, from_ms, to_ms, &api_updates)?;
+        }
         let mut meta = records::meta(db, car)?;
+        // the Tesla API's data in the window is built again from what is stored
+        if let Some((a, b)) = self.api_span(car)? {
+            let (a, b) = (a.max(from_ms), b.min(to_ms));
+            if b > a {
+                let mut dirty = records::api_dirty(db, car)?;
+                dirty.push((a, b));
+                records::put_api_dirty(db, car, &join_spans(dirty))?;
+            }
+        }
         let days: Vec<u32> = meta
             .days
             .range(records::day_of(from_ms)..=records::day_of(to_ms.saturating_sub(1).max(from_ms)))
@@ -1060,7 +1160,7 @@ impl Engine {
 
 /// Spans joined where they meet or lie close (an hour apart), each at most a day long, so a key's many logs give a
 /// few windows to rebuild, none too large to hold.
-fn join_spans(mut spans: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+pub(crate) fn join_spans(mut spans: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     spans.sort_unstable();
     let mut out: Vec<(u64, u64)> = Vec::new();
     for (a, b) in spans {
@@ -1084,10 +1184,56 @@ fn clear(s: &mut Sample, field: &str) {
     }
 }
 
-/// Each value of `s` that is there over `to`, noting when it was recorded in `at` (field name → ms).
-fn overlay(to: &mut Sample, s: &Sample, at: &mut std::collections::BTreeMap<String, u64>) {
+/// Values whose SMO reading beats a newer API one for a minute: the API's times lag behind the car.
+const FAST_FIELDS: &[&str] = &["lat", "lon", "gps_accuracy_m", "elevation_m", "speed_kmh", "gear", "battery_power_kw"];
+
+/// How long an SMO value of a fast field beats a newer API value (ms).
+const SMO_FAST_WINS_MS: u64 = 60_000;
+
+/// Whether `input`'s value of `field` recorded at `t` replaces the kept one.
+fn newer(
+    field: &str,
+    t: u64,
+    input: Input,
+    at: &std::collections::BTreeMap<String, u64>,
+    from: &std::collections::BTreeMap<String, Input>,
+) -> bool {
+    let Some(&kept) = at.get(field) else { return true };
+    let kept_from = from.get(field).copied().unwrap_or(Input::Smo);
+    if kept_from != input && FAST_FIELDS.contains(&field) {
+        return match input {
+            Input::Smo => t.saturating_add(SMO_FAST_WINS_MS) >= kept,
+            Input::TeslaApi => t > kept.saturating_add(SMO_FAST_WINS_MS),
+        };
+    }
+    t >= kept
+}
+
+/// Each value of `s` that is there and newer over `to`, noting when it was recorded in `at` (field name → ms) and
+/// which input sent it in `from` (only the API's are noted).
+fn overlay(
+    to: &mut Sample,
+    s: &Sample,
+    at: &mut std::collections::BTreeMap<String, u64>,
+    from: &mut std::collections::BTreeMap<String, Input>,
+    input: Input,
+) {
+    let note = |field: &str,
+                at: &mut std::collections::BTreeMap<String, u64>,
+                from: &mut std::collections::BTreeMap<String, Input>| {
+        at.insert(field.to_string(), s.t_ms);
+        match input {
+            Input::Smo => from.remove(field),
+            other => from.insert(field.to_string(), other),
+        };
+    };
     macro_rules! take {
-        ($($f:ident),*) => { $( if s.$f.is_some() { to.$f = s.$f; at.insert(stringify!($f).to_string(), s.t_ms); } )* };
+        ($($f:ident),*) => { $(
+            if s.$f.is_some() && newer(stringify!($f), s.t_ms, input, at, from) {
+                to.$f = s.$f;
+                note(stringify!($f), at, from);
+            }
+        )* };
     }
     take!(
         lat,
@@ -1118,9 +1264,39 @@ fn overlay(to: &mut Sample, s: &Sample, at: &mut std::collections::BTreeMap<Stri
         lv_voltage_v
     );
     for i in 0..4 {
-        if s.tpms_bar[i].is_some() {
+        let f = format!("tpms_bar{i}");
+        if s.tpms_bar[i].is_some() && newer(&f, s.t_ms, input, at, from) {
             to.tpms_bar[i] = s.tpms_bar[i];
-            at.insert(format!("tpms_bar{i}"), s.t_ms);
+            note(&f, at, from);
         }
     }
+}
+
+/// The ids the window's new rows (`new_ids`, spans `new`) take: a row with the id of an old one keeps it; else the
+/// first old row (`(id, start, end)`, oldest first) of the same UTC day that it overlaps and no other row took; else
+/// its own.
+pub(crate) fn carry_ids(old: &[(u64, u64, u64)], new_ids: &[u64], new: &[(u64, u64)]) -> Vec<u64> {
+    let mut old: Vec<(u64, u64, u64)> = old.to_vec();
+    old.sort_by_key(|o| (o.1, o.0));
+    let mut taken: std::collections::HashSet<u64> =
+        new_ids.iter().copied().filter(|id| old.iter().any(|o| o.0 == *id)).collect();
+    let mut out = Vec::with_capacity(new_ids.len());
+    for (&id, &(a, b)) in new_ids.iter().zip(new) {
+        if old.iter().any(|o| o.0 == id) {
+            out.push(id);
+            continue;
+        }
+        let day = records::day_of(a);
+        let hit = old.iter().find(|o| {
+            !taken.contains(&o.0) && records::day_of(o.1) == day && o.1 < b.max(a + 1) && a < o.2.max(o.1 + 1)
+        });
+        match hit {
+            Some(o) => {
+                taken.insert(o.0);
+                out.push(o.0);
+            }
+            None => out.push(id),
+        }
+    }
+    out
 }
