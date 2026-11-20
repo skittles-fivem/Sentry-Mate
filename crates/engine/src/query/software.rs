@@ -71,7 +71,8 @@ pub struct UpdateView {
     pub full_range_km: Option<f64>,
     /// The pack's own reading (CAN updates only).
     pub full_pack_kwh: Option<f64>,
-    pub source: &'static str,
+    #[serde(flatten)]
+    pub from: super::Sources,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -155,7 +156,7 @@ fn view(e: &Engine, c: &Car, all: &[UpdateRow], i: usize, shown: &Shown) -> QRes
         charges,
         full_range_km: r(full_range, 1),
         full_pack_kwh: None,
-        source: super::source_word(up.source),
+        from: super::Sources::of(up.source, up.inputs),
     })
 }
 

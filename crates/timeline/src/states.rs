@@ -120,7 +120,15 @@ pub(crate) fn states(
             last.end_ms = end;
             return;
         }
-        spans.push(StateSpan { car, state, start_ms: start, end_ms: end, buses, source: Source::Can });
+        spans.push(StateSpan {
+            car,
+            state,
+            start_ms: start,
+            end_ms: end,
+            buses,
+            source: Source::Live,
+            inputs: model::Inputs::SMO,
+        });
     };
     let (mut cur, mut online_now, mut asleep, mut unknown) = (from_ms, None, 0i64, 0i64);
     let mut i = 0;

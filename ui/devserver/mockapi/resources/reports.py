@@ -18,6 +18,7 @@ from ..util import DAY, local_date, local_ms, r
 from .battery import bms_full
 from .charges import cached_charge_row
 from .drives import cached_drive_row
+from .. import sources as S
 
 KINDS = ("day", "week", "month", "year", "all")
 
@@ -264,9 +265,9 @@ def mileage(req):
 
 
 def totals(req):
-    source = req.enum("source", ("can", "teslamate", "all"), "all")
+    source = S.canon(req.enum("source", S.FILTER_WORDS, "all"))
     h = req.history()
-    out = {"car": req.car, "time_zone": req.tz(), "source": source}
+    out = {"car": req.car, "time_zone": req.tz(), "source": source, "sources": S.filter_refs(source)}
     if h is None:
         from ..live import list_item
         it = list_item(req.app, req.car, req.now)
@@ -294,7 +295,7 @@ def _totals(req, h, source):
     added_grid = sum(x["energy_added_kwh"] or 0 for x in with_grid)
     ac = [x for x in crows if x["kind"] == "ac"]
     dc = [x for x in crows if x["kind"] == "dc"]
-    ups = [u for u in h.updates if u.start <= req.now and (source == "all" or u.source == source)]
+    ups = [u for u in h.updates if u.start <= req.now and S.keeps(source, u.source, u.inputs)]
     return {
         "drives": len(drows), "distance_km": r(dist, 3), "odometer_first_km": first, "odometer_last_km": last,
         "odometer_last_ms": last_ms,
@@ -326,7 +327,7 @@ def gap_rows(req, h):
                          "duration_ms": (req.now if live else s.end) - s.start,
                          "odometer_jump_km": r(s.odo_jump, 3) if s.odo_jump else 0.0,
                          "from_place": ref(place_obj(req.app, fp)), "to_place": ref(place_obj(req.app, tp)),
-                         "cause": CAUSE[s.reason], "gap_reason": s.reason, "source": s.source, "inside": None})
+                         "cause": CAUSE[s.reason], "gap_reason": s.reason, **S.of_seg(s), "inside": None})
         elif s.kind == "charge":
             for a, b, k in s.gaps or []:
                 if k == "chain" and a <= req.now:
@@ -334,7 +335,7 @@ def gap_rows(req, h):
                     rows.append({"id": f"gap:{a}", "start_ms": a, "end_ms": b, "duration_ms": b - a,
                                  "odometer_jump_km": 0.0, "from_place": ref(place_obj(req.app, pid)),
                                  "to_place": ref(place_obj(req.app, pid)), "cause": "chain_gap",
-                                 "gap_reason": "chain_gap", "source": s.source, "inside": {"charge": s.id}})
+                                 "gap_reason": "chain_gap", **S.of_seg(s), "inside": {"charge": s.id}})
     return rows
 
 

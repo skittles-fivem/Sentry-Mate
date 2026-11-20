@@ -15,6 +15,7 @@ import bisect
 import hashlib
 import math
 
+from ..sources import inputs_for
 from ..util import HOUR, MIN, clamp, h01, haversine_m
 from . import places as P
 from . import routes as R
@@ -157,6 +158,8 @@ class Seg:
         self.start = int(start)
         self.end = int(end)
         self.source = source
+        # the live inputs that saw it (empty for an imported piece), see mockapi/sources.py
+        self.inputs = inputs_for(car, self.start, getattr(car, "now_day_index", None)) if source == "can" else []
 
     def state_at(self, t):
         return "unknown"

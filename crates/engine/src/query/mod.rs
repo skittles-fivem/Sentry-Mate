@@ -340,21 +340,139 @@ pub(crate) fn kpa(bar: Option<f64>) -> Option<f64> {
     r(bar.map(|b| b * 100.0), 1)
 }
 
-/// `source` as the API writes it.
-pub(crate) fn source_word(s: model::Source) -> &'static str {
-    match s {
-        model::Source::Can => "can",
-        model::Source::Teslamate => "teslamate",
+/// One origin as the API writes it: `{ kind: "smo" | "tesla_api" | "import", site?, label }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceRef {
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<&'static str>,
+    pub label: String,
+}
+
+impl From<model::Origin> for SourceRef {
+    fn from(o: model::Origin) -> SourceRef {
+        SourceRef { kind: o.kind(), site: o.site().map(model::ImportSite::word), label: o.label() }
     }
 }
 
-/// `source=can|teslamate|all` (absent: all).
-pub fn parse_source(s: Option<&str>) -> QResult<Option<model::Source>> {
+/// The list of origins (`sources`), for a value or a car.
+pub(crate) fn source_refs(origins: &[model::Origin]) -> Vec<SourceRef> {
+    origins.iter().copied().map(SourceRef::from).collect()
+}
+
+/// Where a row came from, flattened into the row: `source` (the old word), `sources` (never empty) and
+/// `source_label` ("Data from SMO and the Tesla API").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Sources {
+    pub source: &'static str,
+    pub sources: Vec<SourceRef>,
+    pub source_label: String,
+}
+
+impl Sources {
+    /// A row of `source` from `inputs` (empty: an older live row, SMO).
+    pub(crate) fn of(source: model::Source, inputs: model::Inputs) -> Sources {
+        Sources::from_origins(&model::Origin::of_row(source, inputs))
+    }
+
+    /// A row of `source` whose inputs are not kept (spans made from several rows): SMO for live rows.
+    pub(crate) fn family(source: model::Source) -> Sources {
+        Sources::of(source, model::Inputs::NONE)
+    }
+
+    pub(crate) fn from_origins(origins: &[model::Origin]) -> Sources {
+        let imported = origins.iter().any(|o| o.site().is_some());
+        let smo = origins.contains(&model::Origin::Smo);
+        let source = if smo {
+            "can"
+        } else if imported {
+            "teslamate"
+        } else if origins.contains(&model::Origin::TeslaApi) {
+            "tesla_api"
+        } else {
+            "can"
+        };
+        Sources { source, sources: source_refs(origins), source_label: model::Origin::label_of(origins) }
+    }
+
+    /// The row family these sources belong to (imports apart from live rows).
+    pub(crate) fn is_imported(&self) -> bool {
+        self.sources.iter().any(|s| s.kind == "import")
+    }
+}
+
+/// What `source=` asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceFilter {
+    /// Every live row, whatever input gave it (not a `source=` word: used inside the engine).
+    Live,
+    /// Live rows with SMO data (`smo`, old word `can`).
+    Smo,
+    /// Live rows with Tesla API data (`tesla_api`).
+    TeslaApi,
+    /// Imported rows, from any site or one (`import`, `import:teslamate`, old word `teslamate`).
+    Import(Option<model::ImportSite>),
+}
+
+impl SourceFilter {
+    /// The row family the filter reads.
+    pub fn family(self) -> model::Source {
+        match self {
+            SourceFilter::Live | SourceFilter::Smo | SourceFilter::TeslaApi => model::Source::Live,
+            SourceFilter::Import(_) => model::Source::Teslamate,
+        }
+    }
+
+    /// Whether a row of `source` from `inputs` matches.
+    pub fn keeps(self, source: model::Source, inputs: model::Inputs) -> bool {
+        match self {
+            SourceFilter::Import(site) => {
+                source == model::Source::Teslamate && site.is_none_or(|s| s == model::ImportSite::Teslamate)
+            }
+            SourceFilter::Live => source == model::Source::Live,
+            SourceFilter::Smo => {
+                source == model::Source::Live && (inputs.is_empty() || inputs.contains(model::Input::Smo))
+            }
+            SourceFilter::TeslaApi => source == model::Source::Live && inputs.contains(model::Input::TeslaApi),
+        }
+    }
+
+    /// The stream a series reads.
+    pub fn stream(self) -> model::Stream {
+        match self {
+            SourceFilter::Live | SourceFilter::Smo => model::Stream::Smo,
+            SourceFilter::TeslaApi => model::Stream::TeslaApi,
+            SourceFilter::Import(_) => model::Stream::Teslamate,
+        }
+    }
+}
+
+/// A filter as answers echo it: its word and the origins it reads.
+pub(crate) fn filter_words(f: Option<SourceFilter>) -> (String, Vec<SourceRef>) {
+    use model::{ImportSite, Origin};
+    let (word, origins) = match f {
+        None => ("all".to_string(), vec![Origin::Smo, Origin::TeslaApi, Origin::Import(ImportSite::Teslamate)]),
+        Some(SourceFilter::Live) => ("live".into(), vec![Origin::Smo, Origin::TeslaApi]),
+        Some(SourceFilter::Smo) => ("smo".into(), vec![Origin::Smo]),
+        Some(SourceFilter::TeslaApi) => ("tesla_api".into(), vec![Origin::TeslaApi]),
+        Some(SourceFilter::Import(None)) => ("import".into(), vec![Origin::Import(ImportSite::Teslamate)]),
+        Some(SourceFilter::Import(Some(s))) => (Origin::Import(s).word(), vec![Origin::Import(s)]),
+    };
+    (word, source_refs(&origins))
+}
+
+/// `source=smo|tesla_api|import|import:teslamate|all`, and the old words `can` (SMO) and `teslamate` (absent: all).
+pub fn parse_source(s: Option<&str>) -> QResult<Option<SourceFilter>> {
     match s {
         None | Some("all") | Some("") => Ok(None),
-        Some("can") => Ok(Some(model::Source::Can)),
-        Some("teslamate") => Ok(Some(model::Source::Teslamate)),
-        Some(_) => Err(QueryError::bad("source", "can, teslamate or all")),
+        Some("smo") | Some("can") => Ok(Some(SourceFilter::Smo)),
+        Some("tesla_api") => Ok(Some(SourceFilter::TeslaApi)),
+        Some("import") => Ok(Some(SourceFilter::Import(None))),
+        Some("teslamate") => Ok(Some(SourceFilter::Import(Some(model::ImportSite::Teslamate)))),
+        Some(w) => match w.strip_prefix("import:").and_then(model::ImportSite::from_word) {
+            Some(site) => Ok(Some(SourceFilter::Import(Some(site)))),
+            None => Err(QueryError::bad("source", "smo, tesla_api, import, import:teslamate or all")),
+        },
     }
 }
 
@@ -463,6 +581,54 @@ pub(crate) fn money(by: BTreeMap<String, f64>) -> Vec<Money> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    use model::{ImportSite, Input, Inputs, Source};
+
+    #[test]
+    fn source_words_and_their_old_spellings() {
+        assert_eq!(super::parse_source(Some("can")).unwrap(), super::parse_source(Some("smo")).unwrap());
+        assert_eq!(
+            super::parse_source(Some("teslamate")).unwrap(),
+            Some(super::SourceFilter::Import(Some(ImportSite::Teslamate)))
+        );
+        assert_eq!(super::parse_source(Some("import")).unwrap(), Some(super::SourceFilter::Import(None)));
+        assert_eq!(super::parse_source(Some("all")).unwrap(), None);
+        assert!(super::parse_source(Some("import:tessie")).is_err());
+        assert!(super::parse_source(Some("fleet_api")).is_err());
+        let api = super::SourceFilter::TeslaApi;
+        assert!(api.keeps(Source::Live, Inputs::BOTH));
+        assert!(!api.keeps(Source::Live, Inputs::NONE), "an older live row is SMO's");
+        assert!(super::SourceFilter::Smo.keeps(Source::Live, Inputs::NONE));
+        assert!(!super::SourceFilter::Smo.keeps(Source::Live, Inputs::from(Input::TeslaApi)));
+        assert!(!super::SourceFilter::Smo.keeps(Source::Teslamate, Inputs::NONE));
+    }
+
+    #[test]
+    fn a_row_names_its_sources_and_keeps_the_old_word() {
+        let both = super::Sources::of(Source::Live, Inputs::BOTH);
+        assert_eq!(both.source, "can");
+        assert_eq!(both.source_label, "Data from SMO and the Tesla API");
+        let v = serde_json::to_value(&both).unwrap();
+        assert_eq!(
+            v["sources"],
+            serde_json::json!([
+                { "kind": "smo", "label": "Data from SMO" },
+                { "kind": "tesla_api", "label": "Data from the Tesla API" },
+            ])
+        );
+        assert_eq!(super::Sources::of(Source::Live, Inputs::TESLA_API).source, "tesla_api");
+        let tm = serde_json::to_value(super::Sources::family(Source::Teslamate)).unwrap();
+        assert_eq!(tm["source"], "teslamate");
+        assert_eq!(
+            tm["sources"][0],
+            serde_json::json!({ "kind": "import", "site": "teslamate", "label": "Imported from TeslaMate" })
+        );
+        assert_eq!(super::filter_words(None).0, "all");
+        assert_eq!(
+            super::filter_words(Some(super::SourceFilter::Import(Some(ImportSite::Teslamate)))).0,
+            "import:teslamate"
+        );
+    }
 
     #[test]
     fn pages_follow_the_cursor_and_refuse_one_from_other_filters() {

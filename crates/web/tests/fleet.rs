@@ -244,8 +244,15 @@ async fn a_car_is_changed_with_its_version_by_an_admin_only() {
     assert_eq!(car["version"], json!(1));
     // the CAN Bridge keys are an admin's to read, at /can-keys: not in the car
     assert!(car.get("keys").is_none() && car.get("preferred_key").is_none(), "{car}");
-    assert_eq!(car["config"]["model"], json!({ "value": "Model Y", "source": "vin" }));
-    assert_eq!(car["config"]["paint"], json!({ "value": null, "source": null }));
+    assert_eq!(
+        car["config"]["model"],
+        json!({
+            "value": "Model Y",
+            "source": "vin",
+            "sources": [{ "kind": "smo", "label": "Data from SMO" }],
+        })
+    );
+    assert_eq!(car["config"]["paint"], json!({ "value": null, "source": null, "sources": [] }));
     for k in [
         "trim",
         "drivetrain",
@@ -271,8 +278,8 @@ async fn a_car_is_changed_with_its_version_by_an_admin_only() {
         (c["name"].clone(), c["time_zone"].clone(), c["version"].clone()),
         (json!("Blue Y"), json!("America/Chicago"), json!(2))
     );
-    assert_eq!(c["config"]["paint"], json!({ "value": "Deep blue", "source": "owner" }));
-    assert_eq!(c["config"]["right_hand_drive"], json!({ "value": false, "source": "owner" }));
+    assert_eq!(c["config"]["paint"], json!({ "value": "Deep blue", "source": "owner", "sources": [] }));
+    assert_eq!(c["config"]["right_hand_drive"], json!({ "value": false, "source": "owner", "sources": [] }));
     assert_eq!(admin.get("/api/v1/cars").await.json()["items"][0]["name"], json!("Blue Y"));
     // a stale version changes nothing and says the current one
     let r = admin.patch("/api/v1/cars/c1", json!({ "version": 1, "name": "Other" })).await;
@@ -282,7 +289,7 @@ async fn a_car_is_changed_with_its_version_by_an_admin_only() {
     );
     // forgetting a typed value
     let r = admin.patch("/api/v1/cars/c1", json!({ "version": 2, "config": { "paint": null } })).await;
-    assert_eq!(r.json()["config"]["paint"], json!({ "value": null, "source": null }), "{}", r.text());
+    assert_eq!(r.json()["config"]["paint"], json!({ "value": null, "source": null, "sources": [] }), "{}", r.text());
     // wrong types are 400, broken rules 422, each named
     let r = admin.patch("/api/v1/cars/c1", json!({ "version": 3, "name": 5, "colour": "x" })).await;
     assert_eq!(r.status, 400, "{}", r.text());

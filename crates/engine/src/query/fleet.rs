@@ -43,6 +43,22 @@ pub struct CarItem {
     pub last_activity_ms: Option<u64>,
     pub now: CarNow,
     pub attention: Vec<&'static str>,
+    /// What the car has data from: its live inputs and its imports (empty for a car with no data yet).
+    pub sources: Vec<super::SourceRef>,
+    pub source_label: String,
+}
+
+/// The inputs and imports a car has data from, from its fleet entry (no car store is opened).
+fn car_origins(x: &FleetEntry) -> Vec<model::Origin> {
+    let t = &x.summary.tally;
+    let mut out = Vec::new();
+    if !x.car.vehicle_keys.is_empty() || x.summary.now.is_some() || t.can.drives + t.can.charges > 0 {
+        out.push(model::Origin::Smo);
+    }
+    if t.teslamate.drives + t.teslamate.charges > 0 {
+        out.push(model::Origin::Import(model::ImportSite::Teslamate));
+    }
+    out
 }
 
 /// One thing about a car its people should look at: its code, since when (null when the start isn't known), and its
@@ -134,6 +150,8 @@ pub(crate) fn item(e: &Engine, x: &FleetEntry, now: u64) -> CarItem {
         profile: c.profile().dbc_name(),
         time_zone: c.time_zone.clone(),
         last_activity_ms: x.summary.last_activity_ms,
+        sources: super::source_refs(&car_origins(x)),
+        source_label: model::Origin::label_of(&car_origins(x)),
         now: CarNow {
             state: state_word(n),
             since_ms: None,
@@ -333,6 +351,20 @@ pub struct Configured {
     pub value: serde_json::Value,
     /// `can`, `vin`, `owner`, `teslamate`.
     pub source: Option<&'static str>,
+    /// The input it was read from (a VIN comes from SMO's frames); empty when an admin typed it or it is unknown.
+    pub sources: Vec<super::SourceRef>,
+}
+
+impl Configured {
+    fn new(value: serde_json::Value, source: Option<&'static str>) -> Configured {
+        let origin = match source {
+            Some("can" | "vin") => Some(model::Origin::Smo),
+            Some("tesla_api") => Some(model::Origin::TeslaApi),
+            Some("teslamate") => Some(model::Origin::Import(model::ImportSite::Teslamate)),
+            _ => None,
+        };
+        Configured { value, source, sources: origin.into_iter().map(super::SourceRef::from).collect() }
+    }
 }
 
 /// The build facts `config` names, each of which an admin may set (`PATCH /cars/{car}` with `config`).
@@ -416,8 +448,8 @@ pub fn car(e: &Engine, car: CarId) -> QResult<CarDetail> {
     let c = &x.car;
     let mut config: BTreeMap<&'static str, Configured> = BTreeMap::new();
     let vin = |v: Option<serde_json::Value>| match v {
-        Some(value) => Configured { value, source: Some("vin") },
-        None => Configured { value: serde_json::Value::Null, source: None },
+        Some(value) => Configured::new(value, Some("vin")),
+        None => Configured::new(serde_json::Value::Null, None),
     };
     let v = c.vin.as_ref();
     config.insert("model", vin(v.and_then(|v| v.model).map(|m| format!("Model {m}").into())));
@@ -428,8 +460,8 @@ pub fn car(e: &Engine, car: CarId) -> QResult<CarDetail> {
         config.insert(
             k,
             match typed {
-                Some(value) => Configured { value: value.clone(), source: Some("owner") },
-                None => Configured { value: serde_json::Value::Null, source: None },
+                Some(value) => Configured::new(value.clone(), Some("owner")),
+                None => Configured::new(serde_json::Value::Null, None),
             },
         );
     }

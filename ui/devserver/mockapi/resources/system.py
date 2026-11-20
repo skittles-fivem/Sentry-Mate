@@ -20,6 +20,7 @@ from ..conventions import page
 from ..errors import bad_input, invalid, not_found
 from ..live import now_object
 from ..util import DAY, HOUR, MIN, date_str, h01, local_date, r
+from .. import sources as SRC
 from .reports import gap_rows
 
 DEV_VERSION = "0.1.0-dev"
@@ -338,11 +339,12 @@ def rebuild(req):
 def _overlap_view(h, i, o, now):
     can = [s for s in h.drives + h.charges if s.source == "can" and o["start_ms"] <= s.start < o["end_ms"]]
     tm = [s for s in h.shadow if o["start_ms"] <= s.start < o["end_ms"]]
+    live = {"drives": sum(1 for s in can if s.kind == "drive"), "charges": sum(1 for s in can if s.kind == "charge")}
+    imported = {"drives": sum(1 for s in tm if s.kind == "drive"), "charges": sum(1 for s in tm if s.kind == "charge")}
     return {"id": f"overlap:{o['start_ms']}", "start_ms": o["start_ms"], "end_ms": o["end_ms"], "shown": o["shown"],
-            "can": {"drives": sum(1 for s in can if s.kind == "drive"),
-                    "charges": sum(1 for s in can if s.kind == "charge")},
-            "teslamate": {"drives": sum(1 for s in tm if s.kind == "drive"),
-                          "charges": sum(1 for s in tm if s.kind == "charge")}}
+            "shown_source": "live" if o["shown"] == "can" else "import:teslamate",
+            "live": live, "imported": imported, "can": dict(live), "teslamate": dict(imported),
+            "sources": [SRC.ref("smo"), SRC.ref("import", "teslamate")]}
 
 
 def get_overlaps(req):
@@ -357,13 +359,14 @@ def patch_overlap(req):
     body = req.json()
     bad = {k: "Unknown field." for k in body if k not in ("id", "start_ms", "shown")}
     if "shown" not in body:
-        bad["shown"] = "Required: can or teslamate."
+        bad["shown"] = "Required: live or import:teslamate."
     if "id" not in body and "start_ms" not in body:
         bad["id"] = "Name the overlap by its id (or start_ms)."
     if bad:
         raise bad_input(bad)
-    if body["shown"] not in ("can", "teslamate"):
-        raise invalid({"shown": "Must be can or teslamate."})
+    shown = {"live": "can", "can": "can", "import:teslamate": "teslamate", "teslamate": "teslamate"}.get(body["shown"])
+    if shown is None:
+        raise invalid({"shown": "Must be live or import:teslamate (or the old words can, teslamate)."})
     target = None
     for i, o in enumerate(h.overlaps if h else []):
         if body.get("id") == f"overlap:{o['start_ms']}" or body.get("start_ms") == o["start_ms"]:
@@ -373,9 +376,9 @@ def patch_overlap(req):
     i, o = target
     st = req.store
     with st.lock:
-        o["shown"] = body["shown"]
+        o["shown"] = shown
     st.record(req.account, "car.overlap", f"car:{req.car}",
-              f"Showing {'CAN' if body['shown'] == 'can' else 'imported TeslaMate'} history from "
+              f"Showing {'live (SMO)' if shown == 'can' else 'imported TeslaMate'} history from "
               f"{date_str(o['start_ms'], req.tz())} to {date_str(o['end_ms'], req.tz())}.")
     req.app.events.publish("rows", {"car": req.car, "kinds": ["drives", "charges", "states", "visits"],
                                     "from_ms": o["start_ms"], "to_ms": o["end_ms"]}, car=req.car)
@@ -424,7 +427,8 @@ def car_storage(req):
             if lo <= d <= hi:
                 for kind, b_ in per.items():
                     if not kinds_q or kind in kinds_q:
-                        rows.append({"series": kind, "source": src, "date": d, "bytes": b_})
+                        rows.append({"series": kind, "source": src, "date": d, "bytes": b_,
+                                     "sources": SRC.refs_of(src, None)})
     elif req.ds.exists(req.car):
         tot = dict(SYNTHETIC_BYTES)
     items, nxt = page(req, rows, key=lambda x: (x["date"], x["series"]), reverse=True)

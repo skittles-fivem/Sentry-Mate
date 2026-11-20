@@ -17,21 +17,21 @@ fn windows_round_trip_across_days_and_restarts() {
     let all = samples(start, 3 * 3600);
     for minute in all.chunks(60) {
         let (from, to) = (minute[0].t_ms, minute[0].t_ms + 60_000);
-        t.db.write_points(car, Source::Can, from, to, minute).unwrap();
+        t.db.write_points(car, Source::Live, from, to, minute).unwrap();
     }
-    let back: Vec<Sample> = t.db.read_points(car, Source::Can, 0, u64::MAX).unwrap();
+    let back: Vec<Sample> = t.db.read_points(car, Source::Live, 0, u64::MAX).unwrap();
     assert_eq!(back, all);
-    let days = t.db.days::<Sample>(car, Source::Can).unwrap();
+    let days = t.db.days::<Sample>(car, Source::Live).unwrap();
     assert_eq!(days.iter().map(|d| d.date.as_str()).collect::<Vec<_>>(), ["2026-11-16", "2026-11-17"]);
     assert!(days.iter().all(|d| d.bytes > 0));
     // a window in the middle, read back alone
-    let mid: Vec<Sample> = t.db.read_points(car, Source::Can, start + 3_000_000, start + 3_010_000).unwrap();
+    let mid: Vec<Sample> = t.db.read_points(car, Source::Live, start + 3_000_000, start + 3_010_000).unwrap();
     assert_eq!(mid, all[3000..3010]);
     t.reopen(Options::default());
-    assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap(), all);
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap(), all);
     // nothing in the other source or the other series
     assert!(t.db.read_points::<Sample>(car, Source::Teslamate, 0, u64::MAX).unwrap().is_empty());
-    assert!(t.db.read_points::<ChargePoint>(car, Source::Can, 0, u64::MAX).unwrap().is_empty());
+    assert!(t.db.read_points::<ChargePoint>(car, Source::Live, 0, u64::MAX).unwrap().is_empty());
 }
 
 #[test]
@@ -39,7 +39,7 @@ fn writing_a_window_replaces_only_that_window() {
     let t = test_db(Options::default());
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
     let day = samples(DAY0, 600);
-    t.db.write_points(car, Source::Can, DAY0, DAY0 + DAY_MS, &day).unwrap();
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + DAY_MS, &day).unwrap();
     // rebuild 100 s in the middle with half as many points
     let (from, to) = (DAY0 + 200_000, DAY0 + 300_000);
     let mut new = samples(from, 50);
@@ -47,23 +47,23 @@ fn writing_a_window_replaces_only_that_window() {
         s.t_ms = from + (s.t_ms - from) * 2;
         s.soc = Some(55.0);
     }
-    t.db.write_points(car, Source::Can, from, to, &new).unwrap();
-    let back: Vec<Sample> = t.db.read_points(car, Source::Can, DAY0, DAY0 + DAY_MS).unwrap();
+    t.db.write_points(car, Source::Live, from, to, &new).unwrap();
+    let back: Vec<Sample> = t.db.read_points(car, Source::Live, DAY0, DAY0 + DAY_MS).unwrap();
     assert_eq!(back.len(), 600 - 100 + 50);
     assert_eq!(&back[..200], &day[..200]);
     assert_eq!(&back[200..250], &new[..]);
     assert_eq!(&back[250..], &day[300..]);
     // points must be inside their window and in order
-    assert!(t.db.write_points(car, Source::Can, from, to, &samples(to, 1)).is_err());
+    assert!(t.db.write_points(car, Source::Live, from, to, &samples(to, 1)).is_err());
     let mut twisted = samples(from, 3);
     twisted.swap(0, 1);
-    assert!(t.db.write_points(car, Source::Can, from, to, &twisted).is_err());
+    assert!(t.db.write_points(car, Source::Live, from, to, &twisted).is_err());
     // TeslaMate points are their own series: a CAN window delete leaves them
     let tm = samples(DAY0 + 1_000, 30);
     t.db.write_points(car, Source::Teslamate, DAY0, DAY0 + DAY_MS, &tm).unwrap();
     t.db.delete_window(car, DAY0, DAY0 + DAY_MS).unwrap();
-    assert!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap().is_empty());
-    assert!(t.db.days::<Sample>(car, Source::Can).unwrap().is_empty(), "an emptied day leaves no files");
+    assert!(t.db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap().is_empty());
+    assert!(t.db.days::<Sample>(car, Source::Live).unwrap().is_empty(), "an emptied day leaves no files");
     assert_eq!(t.db.read_points::<Sample>(car, Source::Teslamate, 0, u64::MAX).unwrap(), tm);
 }
 
@@ -72,15 +72,15 @@ fn fields_read_as_columns_match_the_points() {
     let t = test_db(Options::default());
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
     let (day, curve) = day(Shape::Driving, DAY0, 11, None);
-    t.db.write_points(car, Source::Can, DAY0, DAY0 + DAY_MS, &day).unwrap();
-    t.db.write_points(car, Source::Can, DAY0, DAY0 + DAY_MS, &curve).unwrap();
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + DAY_MS, &day).unwrap();
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + DAY_MS, &curve).unwrap();
     // one more window still in the journal: read from the points then
     let extra = samples(DAY0 + DAY_MS + 5_000, 20);
-    t.db.write_points(car, Source::Can, DAY0 + DAY_MS, DAY0 + DAY_MS + 60_000, &extra).unwrap();
+    t.db.write_points(car, Source::Live, DAY0 + DAY_MS, DAY0 + DAY_MS + 60_000, &extra).unwrap();
     let names = ["speed_kmh", "battery_power_kw", "gear", "tpms_rr_bar"];
     let (from, to) = (DAY0 + 7 * 3_600_000, DAY0 + DAY_MS + 3_600_000);
-    let f = t.db.read_fields::<Sample>(car, Source::Can, from, to, &names).unwrap();
-    let pts: Vec<Sample> = t.db.read_points(car, Source::Can, from, to).unwrap();
+    let f = t.db.read_fields::<Sample>(car, Source::Live, from, to, &names).unwrap();
+    let pts: Vec<Sample> = t.db.read_points(car, Source::Live, from, to).unwrap();
     assert_eq!(f.t_ms, pts.iter().map(|p| p.t_ms).collect::<Vec<_>>());
     assert_eq!(f.values[0].1, pts.iter().map(|p| p.speed_kmh).collect::<Vec<_>>());
     assert_eq!(f.values[1].1, pts.iter().map(|p| p.battery_power_kw).collect::<Vec<_>>());
@@ -92,9 +92,9 @@ fn fields_read_as_columns_match_the_points() {
     };
     assert_eq!(f.values[2].1, pts.iter().map(|p| p.gear.map(code)).collect::<Vec<_>>());
     assert_eq!(f.values[3].1, pts.iter().map(|p| p.tpms_bar[3]).collect::<Vec<_>>());
-    let cp = t.db.read_fields::<ChargePoint>(car, Source::Can, 0, u64::MAX, &["power_kw"]).unwrap();
+    let cp = t.db.read_fields::<ChargePoint>(car, Source::Live, 0, u64::MAX, &["power_kw"]).unwrap();
     assert_eq!(cp.len(), curve.len());
-    assert!(t.db.read_fields::<Sample>(car, Source::Can, 0, u64::MAX, &["nope"]).is_err());
+    assert!(t.db.read_fields::<Sample>(car, Source::Live, 0, u64::MAX, &["nope"]).is_err());
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn settling_packs_finished_days_cold_and_keeps_every_point() {
     for d in 0..3u64 {
         let pts = samples(DAY0 + d * DAY_MS + 3_600_000, 1200);
         for w in pts.chunks(120) {
-            t.db.write_points(car, Source::Can, w[0].t_ms, w[0].t_ms + 120_000, w).unwrap();
+            t.db.write_points(car, Source::Live, w[0].t_ms, w[0].t_ms + 120_000, w).unwrap();
         }
         all.extend(pts);
     }
@@ -120,12 +120,12 @@ fn settling_packs_finished_days_cold_and_keeps_every_point() {
     // settled again: nothing to do; a late write to a settled day makes it settle again
     assert_eq!(t.db.settle(car, DAY0 + 2 * DAY_MS).unwrap().days, 0);
     let late = samples(DAY0 + 600_000, 10);
-    t.db.write_points(car, Source::Can, DAY0 + 600_000, DAY0 + 700_000, &late).unwrap();
+    t.db.write_points(car, Source::Live, DAY0 + 600_000, DAY0 + 700_000, &late).unwrap();
     assert_eq!(t.db.settle(car, DAY0 + 2 * DAY_MS).unwrap().days, 1);
     t.reopen(Options::default());
     let mut want = late.clone();
     want.extend(all);
-    assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap(), want);
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap(), want);
 }
 
 #[test]
@@ -151,8 +151,8 @@ fn a_window_of_everything_touches_only_the_days_there_are() {
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
     for d in [0u64, 3, 400] {
         let t0 = DAY0 + d * DAY_MS;
-        t.db.write_points(car, Source::Can, t0, t0 + 60_000, &samples(t0, 60)).unwrap();
-        t.db.write_points(car, Source::Can, t0, t0 + 60_000, &charge_points(t0, 30)).unwrap();
+        t.db.write_points(car, Source::Live, t0, t0 + 60_000, &samples(t0, 60)).unwrap();
+        t.db.write_points(car, Source::Live, t0, t0 + 60_000, &charge_points(t0, 30)).unwrap();
     }
     t.db.write_points(car, Source::Teslamate, DAY0, DAY0 + 60_000, &samples(DAY0, 60)).unwrap();
     // a rebuild of everything: once a step per day of 0..u64::MAX (it never ended) and an overflow past the
@@ -160,19 +160,19 @@ fn a_window_of_everything_touches_only_the_days_there_are() {
     let start = std::time::Instant::now();
     t.db.delete_window(car, 0, u64::MAX).unwrap();
     assert!(start.elapsed().as_secs() < 10, "{:?}", start.elapsed());
-    assert!(t.db.days::<Sample>(car, Source::Can).unwrap().is_empty());
-    assert!(t.db.days::<ChargePoint>(car, Source::Can).unwrap().is_empty());
+    assert!(t.db.days::<Sample>(car, Source::Live).unwrap().is_empty());
+    assert!(t.db.days::<ChargePoint>(car, Source::Live).unwrap().is_empty());
     assert_eq!(t.db.read_points::<Sample>(car, Source::Teslamate, 0, u64::MAX).unwrap().len(), 60);
     // writing into a window of everything: the points' days are written, nothing else is visited
     let pts = samples(DAY0 + 7 * DAY_MS, 10);
-    t.db.write_points(car, Source::Can, 0, u64::MAX, &pts).unwrap();
-    assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap(), pts);
-    assert_eq!(t.db.days::<Sample>(car, Source::Can).unwrap().len(), 1);
+    t.db.write_points(car, Source::Live, 0, u64::MAX, &pts).unwrap();
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap(), pts);
+    assert_eq!(t.db.days::<Sample>(car, Source::Live).unwrap().len(), 1);
     // points past the year 9999 would go into a day no listing finds: refused
     let far = db::END_MS + 5 * DAY_MS;
-    assert!(t.db.write_points(car, Source::Can, far, far + 60_000, &samples(far, 10)).is_err());
-    assert!(t.db.write_points::<Sample>(car, Source::Can, far, far + 60_000, &[]).is_ok());
-    assert!(t.db.read_points::<Sample>(car, Source::Can, far, u64::MAX).unwrap().is_empty());
+    assert!(t.db.write_points(car, Source::Live, far, far + 60_000, &samples(far, 10)).is_err());
+    assert!(t.db.write_points::<Sample>(car, Source::Live, far, far + 60_000, &[]).is_ok());
+    assert!(t.db.read_points::<Sample>(car, Source::Live, far, u64::MAX).unwrap().is_empty());
 }
 
 fn charge_points(t0: u64, n: u64) -> Vec<ChargePoint> {

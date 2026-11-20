@@ -22,6 +22,7 @@ from ..placing import place_obj
 from ..util import DAY, HOUR, h01, local_date, local_midnights, local_ms, median, percentile, r
 from .charges import cached_charge_row
 from .drives import cached_drive_row
+from .. import sources as SRC
 
 
 def _v(w):
@@ -201,7 +202,7 @@ def get_capacity(req):
             if fp is None:
                 continue
             rows.append({"t_ms": c.data_end, "odometer_km": r(getattr(c, "odo", None), 1), "full_pack_kwh": r(fp, 2),
-                         "usable_kwh": r(fp - car.buffer_kwh, 2), "usable_basis": "charge", "source": c.source, "method": "charge",
+                         "usable_kwh": r(fp - car.buffer_kwh, 2), "usable_basis": "charge", **SRC.of_seg(c), "method": "charge",
                          "charge": c.id})
     else:
         lo = max(a, h.first_ms)
@@ -218,8 +219,8 @@ def get_capacity(req):
                     fp = bms_full(car, t)
                     o = derive.odo_at(h, t)
                     row = {"t_ms": t, "odometer_km": r(o, 1), "full_pack_kwh": r(fp, 2),
-                           "usable_kwh": r(fp - car.buffer_kwh, 2), "usable_basis": "buffer", "source": src, "method": "bms",
-                           "charge": None}
+                           "usable_kwh": r(fp - car.buffer_kwh, 2), "usable_basis": "buffer", **SRC.fields(src, getattr(s, "inputs", None)),
+                           "method": "bms", "charge": None}
                     if src == "teslamate":  # imported history has no controller readings, only charges
                         row = None
                     if row:
@@ -232,8 +233,8 @@ def get_capacity(req):
             t = local_ms(dt.date(yy, mm, 1), 0, tz)
             fp = median([q["full_pack_kwh"] for q in rs])
             rows.append({"t_ms": t, "odometer_km": rs[-1]["odometer_km"], "full_pack_kwh": r(fp, 2),
-                         "usable_kwh": r(fp - car.buffer_kwh, 2), "usable_basis": "buffer", "source": "can", "method": "bms",
-                         "charge": None,
+                         "usable_kwh": r(fp - car.buffer_kwh, 2), "usable_basis": "buffer", "method": "bms", "charge": None,
+                         **SRC.fields("can", sorted({x["kind"] for q in rs for x in q["sources"]})),
                          "readings": len(rs)})
     trend = _trend(req, h, rows)
     if x == "odometer":
@@ -502,7 +503,7 @@ def get_efficiency(req):
                      "range_efficiency_pct": r(car.rated_wh_per_km / whkm * 100, 1) if whkm else None,
                      "avg_kph": r(g["distance_km"] / (g["ms"] / HOUR), 1) if g["ms"] > 0 else None})
     no_t["distance_km"] = r(no_t["distance_km"], 3)
-    readings = sum(1 for x in rows if x["source"] == "can")
+    readings = sum(1 for x in rows if x["source"] != "teslamate")
     over = (req.store.car_settings.get(car.id) or {}).get("efficiency_wh_per_km_override")
     out.update({
         "net_wh_per_km": r(energy / dist * 1000, 1) if dist > 0.1 else None,

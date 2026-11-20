@@ -8,6 +8,7 @@ from ..live import delay_s
 from ..placing import drive_pids, eff_pid, piece_pid, place_obj
 from ..rows import in_progress, timeline_row
 from ..util import DAY, r
+from .. import sources as S
 
 KINDS = ("drive", "charge", "parked", "gap", "update")
 ACT_STATE = {"driving": ("online", ("vehicle", "chassis")), "charging": ("online", ("vehicle", "chassis")),
@@ -96,11 +97,11 @@ def _states(h, a, b, now):
                 continue
             st, buses = ACT_STATE[kind]
             if out and out[-1]["state"] == st and tuple(out[-1]["buses"]) == buses and out[-1]["end_ms"] == x \
-                    and out[-1]["source"] == s.source:
+                    and out[-1]["sources"] == S.of_seg(s)["sources"]:
                 out[-1]["end_ms"] = y
             else:
                 out.append({"id": f"state:{x}", "state": st, "start_ms": x, "end_ms": y, "buses": list(buses),
-                            "source": s.source})
+                            **S.of_seg(s)})
     return out
 
 
@@ -161,7 +162,7 @@ def get_activity(req):
                 if items and items[-1]["kind"] == kind and items[-1]["end_ms"] == x and items[-1]["ref"] == ref:
                     items[-1]["end_ms"] = y
                 else:
-                    items.append({"kind": kind, "start_ms": x, "end_ms": y, "ref": ref, "source": s.source})
+                    items.append({"kind": kind, "start_ms": x, "end_ms": y, "ref": ref, **S.of_seg(s)})
     return {"car": req.car, "time_zone": req.tz(), "from_ms": a, "to_ms": min(b, req.now), "items": items,
             "next": None}
 

@@ -7,6 +7,7 @@ carries its own `at_ms`: while the car sleeps, values keep the time they were la
 from __future__ import annotations
 
 from . import placing
+from . import sources as S
 from .util import DAY, HOUR, MIN, r
 
 FLEET_STATE = {"drive": "driving", "charge": "charging", "update": "parked", "gap": "unknown"}
@@ -98,7 +99,34 @@ def avg_wh_per_km(app, h, t):
 
 
 def now_object(app, car_id, t):
-    """The live "now" object for a car at virtual time t."""
+    """The live "now" object for a car at virtual time t: every value names its input (`sources`), and `inputs`
+    lists the car's live inputs with each one's newest value."""
+    obj = _now_object(app, car_id, t)
+
+    def mark(x, key=None):
+        if isinstance(x, dict):
+            if set(x) == {"value", "at_ms"}:
+                x["sources"] = [S.value_ref(car_id, key)]
+                return
+            for k, v in x.items():
+                mark(v, k)
+        elif isinstance(x, list):
+            for v in x:
+                mark(v, key)
+
+    for k, v in obj.items():
+        mark(v, k)
+    at = obj.get("at_ms")
+    inputs = []
+    if at is not None:
+        inputs.append({**S.ref("smo"), "last_ms": at})
+        if car_id in ("c1", "c2"):
+            inputs.append({**S.ref("tesla_api"), "last_ms": at - 45_000})
+    obj["inputs"] = inputs
+    return obj
+
+
+def _now_object(app, car_id, t):
     h = app.ds.history(car_id)
     meta = app.store.car_meta(car_id)
     if h is None:
@@ -322,6 +350,8 @@ def list_item(app, car_id, t):
         sm = {k: v for k, v in sm.items() if not k.startswith("_")}
         sm["name"] = meta["name"]
         sm["time_zone"] = meta["time_zone"]
+        sm["sources"] = [S.ref("smo")]
+        sm["source_label"] = S.label_of(sm["sources"])
         return sm
     n = now_object(app, car_id, t)
     pl = n.get("location", {}).get("place") if n.get("location") else None
@@ -339,7 +369,14 @@ def list_item(app, car_id, t):
             "charge_power_kw": _v(ch.get("power_kw")) if _v(ch.get("status")) == "charging" else None,
         },
         "attention": [a["code"] for a in attention(app, car_id, t, n)],
+        **_car_sources(h, car_id),
     }
+
+
+def _car_sources(h, car_id):
+    has_import = any(s.source == "teslamate" for s in h.segs) or bool(getattr(h, "shadow", None))
+    refs = S.car_refs(car_id, True, has_import)
+    return {"sources": refs, "source_label": S.label_of(refs)}
 
 
 def _v(w):

@@ -234,7 +234,7 @@ fn logs_become_a_drive_and_a_charge_and_late_logs_rebuild_the_same_history() {
         let d = &ds[0];
         assert!((d.distance_km.unwrap() - 0.5).abs() < 0.06, "{d:?}");
         assert!(d.energy_kwh.unwrap() > 0.1, "{d:?}");
-        assert_eq!(d.source, "can");
+        assert_eq!(d.from.source, "can");
         assert!(d.start.lat.is_some());
         let detail = query::drives::drive(&a.engine, car, d.id.parse().unwrap(), None).unwrap();
         assert!(detail.speed_bands.iter().any(|b| b.from_kph == 30.0 && b.seconds > 40), "{:?}", detail.speed_bands);
@@ -373,6 +373,7 @@ fn a_restart_carries_on_and_decodes_nothing_twice_and_a_rebuild_keeps_imported_r
             ascent_m: None,
             descent_m: None,
             source: Source::Teslamate,
+            inputs: model::Inputs::NONE,
             rules_version: 0,
         };
         let row = import::DriveRow { tm_id: 7, drive: tm, tm: Default::default() };
@@ -386,7 +387,7 @@ fn a_restart_carries_on_and_decodes_nothing_twice_and_a_rebuild_keeps_imported_r
         assert_eq!(done.done, 5);
         let all = query::drives::drives(&again, car, &Default::default(), &Paging::default()).unwrap().body.items;
         assert_eq!(all.len(), 2, "the CAN drive and the imported one");
-        assert!(all.iter().any(|d| d.source == "teslamate" && d.distance_km == Some(10.0)));
+        assert!(all.iter().any(|d| d.from.source == "teslamate" && d.distance_km == Some(10.0)));
         let can_only = query::drives::DrivesQuery { source: Some("can".into()), ..Default::default() };
         let can = query::drives::drives(&again, car, &can_only, &Paging::default()).unwrap().body.items;
         assert_eq!(

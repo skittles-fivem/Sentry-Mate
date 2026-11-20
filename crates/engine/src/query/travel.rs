@@ -16,7 +16,6 @@ use super::reports::{LONGEST_DRIVE_MS, drive_from, overlapping, still_unknown};
 use super::system::Shown;
 use super::{
     CarRef, Money, Paging, Period, PlaceBrief, QResult, QueryError, car_of, cmp_key, money, place_ref, r, read_after,
-    source_word,
 };
 use crate::Engine;
 use crate::tz;
@@ -71,7 +70,8 @@ pub struct Visit {
     pub(crate) open_until: Option<u64>,
     /// Time inside the stop with no data (up to now when the car's data stopped during it).
     pub unknown_ms: u64,
-    pub source: &'static str,
+    #[serde(flatten)]
+    pub from: super::Sources,
 }
 
 /// `/visits` filters (the groups and days take the same).
@@ -196,7 +196,7 @@ impl Visit {
 /// When the history of a car with no CAN rows stops (its newest row's end); `None` for a car that has CAN history and
 /// so may still report.
 fn imported_history_end(e: &Engine, car: CarId) -> QResult<Option<u64>> {
-    let q = db::Query { source: Some(model::Source::Can), ..db::Query::default().limit(1) };
+    let q = db::Query { source: Some(model::Source::Live), ..db::Query::default().limit(1) };
     if !e.db().list::<StateRow>(car, &q)?.items.is_empty() || !e.db().list::<Drive>(car, &q)?.items.is_empty() {
         return Ok(None);
     }
@@ -240,7 +240,7 @@ impl<'a> Stops<'a> {
             charge_starts: Vec::new(),
             open_until: if next.is_none() { self.history_end.map(|t| t.max(d.end_ms)) } else { None },
             unknown_ms: 0,
-            source: source_word(d.source),
+            from: super::Sources::of(d.source, d.inputs),
         })
     }
 
@@ -896,7 +896,8 @@ pub fn visit_days(e: &Engine, cars: &[CarId], q: &VisitsQuery, paging: &Paging) 
 pub struct DriveTrack {
     pub car: CarRef,
     pub drive: String,
-    pub source: &'static str,
+    #[serde(flatten)]
+    pub from: super::Sources,
     pub t_ms: Vec<u64>,
     pub lat: Vec<f64>,
     pub lon: Vec<f64>,
@@ -966,7 +967,7 @@ pub fn tracks(e: &Engine, cars: &[CarId], period: &Period, max_points: Option<u6
         out.push(DriveTrack {
             car: CarRef(car),
             drive: id.to_string(),
-            source: source_word(source),
+            from: super::Sources::family(source),
             t_ms: picked.iter().map(|p| p.t_ms).collect(),
             lat: picked.iter().map(|p| r(Some(p.lat), 6).unwrap_or(p.lat)).collect(),
             lon: picked.iter().map(|p| r(Some(p.lon), 6).unwrap_or(p.lon)).collect(),

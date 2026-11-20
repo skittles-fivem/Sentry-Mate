@@ -32,8 +32,8 @@ fn cars_keys_and_removal() {
     b2.name = "Model 3 (Pi)".into();
     t.db.update_car(b2.clone()).unwrap();
     assert_eq!(t.db.car_for_key("key-pi").unwrap(), Some(b.id));
-    t.db.upsert(b.id, &[drive(b.id, 1, DAY0, 30, 9.0, Source::Can)]).unwrap();
-    t.db.write_points(b.id, Source::Can, DAY0, DAY0 + DAY_MS, &samples(DAY0, 10)).unwrap();
+    t.db.upsert(b.id, &[drive(b.id, 1, DAY0, 30, 9.0, Source::Live)]).unwrap();
+    t.db.write_points(b.id, Source::Live, DAY0, DAY0 + DAY_MS, &samples(DAY0, 10)).unwrap();
     t.reopen(Options::default());
     assert_eq!(t.db.car(b.id).unwrap(), Some(b2));
     // removing a car removes all of it, and its id is never given again
@@ -55,7 +55,7 @@ fn the_fleet_is_searched_and_paged_by_last_activity() {
     for i in 0..30u64 {
         let car = t.db.create_car(new_car(&format!("Car {i:02}"), &[&format!("bridge-{i:02}-xyz")])).unwrap().id;
         if i % 3 != 0 {
-            t.db.upsert(car, &[drive(car, 1, DAY0 + i * H, 30, 5.0, Source::Can)]).unwrap();
+            t.db.upsert(car, &[drive(car, 1, DAY0 + i * H, 30, 5.0, Source::Live)]).unwrap();
         }
         ids.push(car);
     }
@@ -148,13 +148,13 @@ fn a_backup_restores_everything_with_the_same_vault_only() {
     let t = test_db(opts.clone());
     let a = t.db.create_car(new_car("Model Y", &["k-a"])).unwrap().id;
     let b = t.db.create_car(new_car("Model 3", &["k-b"])).unwrap().id;
-    let drives: Vec<Drive> = (0..50).map(|i| drive(a, i, DAY0 + i * H, 30, 3.0, Source::Can)).collect();
+    let drives: Vec<Drive> = (0..50).map(|i| drive(a, i, DAY0 + i * H, 30, 3.0, Source::Live)).collect();
     t.db.upsert(a, &drives).unwrap();
     t.db.settle(a, 0).unwrap();
     t.db.upsert(a, &[drive(a, 99, DAY0 + 99 * H, 30, 3.0, Source::Teslamate)]).unwrap();
     let (day, _) = day(Shape::Driving, DAY0, 5, None);
-    t.db.write_points(a, Source::Can, DAY0, DAY0 + DAY_MS, &day).unwrap();
-    t.db.write_points(b, Source::Can, DAY0 + 60_000, DAY0 + 120_000, &samples(DAY0 + 60_000, 60)).unwrap();
+    t.db.write_points(a, Source::Live, DAY0, DAY0 + DAY_MS, &day).unwrap();
+    t.db.write_points(b, Source::Live, DAY0 + 60_000, DAY0 + 120_000, &samples(DAY0 + 60_000, 60)).unwrap();
     t.db.set_setting("units", serde_json::json!("km")).unwrap();
     t.db.kv().put("geocode", "x", b"y").unwrap();
     let out = t.dir.path().join("backup.smdb");
@@ -175,8 +175,8 @@ fn a_backup_restores_everything_with_the_same_vault_only() {
     let db2 = db::Db::open(&data2, v2.clone(), opts.clone()).unwrap();
     let q = Query::default().limit(1000);
     assert_eq!(db2.list::<Drive>(a, &q).unwrap(), t.db.list::<Drive>(a, &q).unwrap());
-    assert_eq!(db2.read_points::<Sample>(a, Source::Can, 0, u64::MAX).unwrap(), day);
-    assert_eq!(db2.read_points::<Sample>(b, Source::Can, 0, u64::MAX).unwrap().len(), 60);
+    assert_eq!(db2.read_points::<Sample>(a, Source::Live, 0, u64::MAX).unwrap(), day);
+    assert_eq!(db2.read_points::<Sample>(b, Source::Live, 0, u64::MAX).unwrap().len(), 60);
     assert_eq!(db2.entry(a).unwrap(), t.db.entry(a).unwrap());
     assert_eq!(db2.setting("units").unwrap(), Some(serde_json::json!("km")));
     assert_eq!(db2.kv().get("geocode", "x").unwrap().as_deref(), Some(&b"y"[..]));

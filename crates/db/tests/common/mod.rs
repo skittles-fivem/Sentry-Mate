@@ -420,6 +420,7 @@ pub fn drive(car: model::CarId, id: u64, start_ms: u64, minutes: u64, km: f64, s
         ascent_m: None,
         descent_m: None,
         source,
+        inputs: model::Inputs::NONE,
         rules_version: 1,
     }
 }
@@ -452,6 +453,7 @@ pub fn charge(
         battery_temp_avg_c: None,
         cost: None,
         source,
+        inputs: model::Inputs::NONE,
         rules_version: 1,
     }
 }
@@ -464,7 +466,18 @@ pub fn state(
     s: model::State,
     source: model::Source,
 ) -> db::StateRow {
-    db::StateRow { id, span: model::StateSpan { car, state: s, start_ms, end_ms, buses: vec!["can0".into()], source } }
+    db::StateRow {
+        id,
+        span: model::StateSpan {
+            car,
+            state: s,
+            start_ms,
+            end_ms,
+            buses: vec!["can0".into()],
+            source,
+            inputs: model::Inputs::NONE,
+        },
+    }
 }
 
 /// Every file under a folder, temporary ones included.

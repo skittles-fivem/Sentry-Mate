@@ -14,6 +14,7 @@ from ..conventions import bad_cursor, decode_cursor, encode_cursor, nk, page
 from ..errors import bad_input, invalid, not_found
 from ..live import attention, list_item
 from ..util import valid_zone
+from .. import sources as SRC
 
 STATES = ("driving", "charging", "parked", "asleep", "unknown")
 SORTS = ("last_activity", "name", "soc", "custom")
@@ -256,12 +257,20 @@ def fleet_attention(req):
     return {"items": items, "next": nxt}
 
 
+def config_value(c):
+    """A config value with the input it was read from (`sources`; empty when typed by an admin or unknown)."""
+    src = c.get("source")
+    refs = ([SRC.ref("smo")] if src in ("can", "vin") else [SRC.ref("tesla_api")] if src == "tesla_api"
+            else [SRC.ref("import", "teslamate")] if src == "teslamate" else [])
+    return {"value": c.get("value"), "source": src, "sources": refs}
+
+
 def car_detail(req, cid=None):
     cid = cid or req.car
     st = req.store
     it = list_item(req.app, cid, req.now)
     meta = st.car_meta(cid)
-    it["config"] = {k: meta["config"].get(k, {"value": None, "source": None}) for k in CONFIG_KEYS}
+    it["config"] = {k: config_value(meta["config"].get(k, {"value": None, "source": None})) for k in CONFIG_KEYS}
     it["version"] = meta["version"]
     return it
 

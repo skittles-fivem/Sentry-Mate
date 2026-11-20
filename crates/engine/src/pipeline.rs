@@ -689,9 +689,9 @@ impl Engine {
             let merged = if others.is_empty() {
                 m.samples.to_vec()
             } else {
-                merge_points(db.read_points::<Sample>(car, Source::Can, a, b)?, m.samples)
+                merge_points(db.read_points::<Sample>(car, Source::Live, a, b)?, m.samples)
             };
-            db.write_points(car, Source::Can, a, b, &merged)?;
+            db.write_points(car, Source::Live, a, b, &merged)?;
             return Ok(());
         }
         let mut cands: Vec<(Rank, (u64, u64), Vec<Sample>)> = Vec::new();
@@ -723,7 +723,7 @@ impl Engine {
             }
         }
         let points: Vec<Sample> = by.into_values().collect();
-        db.write_points(car, Source::Can, a, b, &points)?;
+        db.write_points(car, Source::Live, a, b, &points)?;
         Ok(())
     }
 
@@ -785,7 +785,7 @@ impl Engine {
         let (from, to) = loop {
             let (lo, hi) = (a.saturating_sub(look), b.saturating_add(look));
             let spans: Vec<StateSpan> =
-                all_rows::<StateRow>(db, car, lo, hi, Some(Source::Can))?.into_iter().map(|r| r.span).collect();
+                all_rows::<StateRow>(db, car, lo, hi, Some(Source::Live))?.into_iter().map(|r| r.span).collect();
             let cuts = records::cuts_between(db, car, meta, lo, hi)?;
             let w = timeline::rebuild_window(&spans, &cuts, a, b, p);
             let more_before = w.from_ms == 0 && meta.first_ms.is_some_and(|f| f < lo);
@@ -816,7 +816,7 @@ impl Engine {
         }
         logs.sort_by_key(|f| f.span());
         logs.dedup();
-        let samples = db.read_points::<Sample>(car, Source::Can, from, to)?;
+        let samples = db.read_points::<Sample>(car, Source::Live, from, to)?;
         let input = timeline::Input { car, from_ms: from, to_ms: to, samples: &samples, logs: &logs, holes: &holes };
         let t = timeline::build(&input, p);
         self.write_timeline(car, meta, from, to, t)?;
@@ -842,7 +842,7 @@ impl Engine {
         points.dedup_by_key(|p| p.t_ms);
         let newest = meta.newest_ms.unwrap_or(0);
         // the costs the window's charges keep, carried to the charges they became
-        let old: Vec<Charge> = all_rows::<Charge>(db, car, from, to, Some(Source::Can))?
+        let old: Vec<Charge> = all_rows::<Charge>(db, car, from, to, Some(Source::Live))?
             .into_iter()
             .filter(|c| c.start_ms >= from && c.start_ms < to)
             .collect();
@@ -858,7 +858,7 @@ impl Engine {
         db.replace_window::<Drive>(car, from, to, &drives)?;
         db.replace_window::<Charge>(car, from, to, &charges)?;
         db.replace_window::<StateRow>(car, from, to, &states)?;
-        db.write_points::<ChargePoint>(car, Source::Can, from, to, &points)?;
+        db.write_points::<ChargePoint>(car, Source::Live, from, to, &points)?;
         records::replace_cuts(db, car, meta, from, to, &t.cuts)?;
         if let Some(last) = states.last()
             && to > meta.newest_ms.unwrap_or(0)

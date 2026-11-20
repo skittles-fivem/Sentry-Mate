@@ -64,6 +64,7 @@ fn imported_drive(car: CarId, start_ms: u64) -> model::Drive {
         ascent_m: None,
         descent_m: None,
         source: Source::Teslamate,
+        inputs: model::Inputs::NONE,
         rules_version: 0,
     }
 }

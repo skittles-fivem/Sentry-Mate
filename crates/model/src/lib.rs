@@ -13,15 +13,269 @@ pub type DriveId = u64;
 pub type ChargeId = u64;
 pub type PlaceId = u32;
 
-/// Where a piece of history came from.
+/// The row family a piece of history belongs to: what the engine builds from live inputs (and may rebuild), or what
+/// an import brought in (never touched by a rebuild). Which live input gave a row is in its `inputs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
 pub enum Source {
-    /// Worked out from CAN Bridge logs.
+    /// Worked out by the engine from live inputs (SMO logs, the Tesla API). Stored as `can`, the word older servers
+    /// wrote.
     #[default]
-    Can,
+    #[serde(rename = "can")]
+    Live,
     /// Brought in from a TeslaMate backup (Tesla API data: a point every few seconds, unsigned).
+    #[serde(rename = "teslamate")]
     Teslamate,
+}
+
+/// A live input: where the engine's own history comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Input {
+    /// SMO, the Screenmate CAN Bridge: signed CAN logs.
+    Smo,
+    /// The Tesla Owner API, polled by this server.
+    TeslaApi,
+}
+
+impl Input {
+    pub const ALL: [Input; 2] = [Input::Smo, Input::TeslaApi];
+
+    fn bit(self) -> u8 {
+        match self {
+            Input::Smo => 1,
+            Input::TeslaApi => 2,
+        }
+    }
+}
+
+/// A set of live inputs (stored as a list of words, `["smo", "tesla_api"]`). Empty on rows written before inputs were
+/// kept: a live row then counts as SMO, the only live input there was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Inputs(u8);
+
+impl Inputs {
+    pub const NONE: Inputs = Inputs(0);
+    pub const SMO: Inputs = Inputs(1);
+    pub const TESLA_API: Inputs = Inputs(2);
+    pub const BOTH: Inputs = Inputs(3);
+
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn contains(self, i: Input) -> bool {
+        self.0 & i.bit() != 0
+    }
+
+    pub fn insert(&mut self, i: Input) {
+        self.0 |= i.bit();
+    }
+
+    pub fn union(self, o: Inputs) -> Inputs {
+        Inputs(self.0 | o.0)
+    }
+
+    /// In a fixed order: SMO first.
+    pub fn iter(self) -> impl Iterator<Item = Input> {
+        Input::ALL.into_iter().filter(move |i| self.contains(*i))
+    }
+}
+
+impl From<Input> for Inputs {
+    fn from(i: Input) -> Inputs {
+        Inputs(i.bit())
+    }
+}
+
+impl FromIterator<Input> for Inputs {
+    fn from_iter<T: IntoIterator<Item = Input>>(it: T) -> Inputs {
+        let mut s = Inputs::NONE;
+        for i in it {
+            s.insert(i);
+        }
+        s
+    }
+}
+
+impl Serialize for Inputs {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(self.iter())
+    }
+}
+
+impl<'de> Deserialize<'de> for Inputs {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Inputs, D::Error> {
+        Ok(Vec::<Input>::deserialize(d)?.into_iter().collect())
+    }
+}
+
+/// A site history can be imported from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportSite {
+    Teslamate,
+}
+
+impl ImportSite {
+    /// The word the API writes (`site`).
+    pub fn word(self) -> &'static str {
+        match self {
+            ImportSite::Teslamate => "teslamate",
+        }
+    }
+
+    /// The site's name as people know it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ImportSite::Teslamate => "TeslaMate",
+        }
+    }
+
+    pub fn from_word(w: &str) -> Option<ImportSite> {
+        match w {
+            "teslamate" => Some(ImportSite::Teslamate),
+            _ => None,
+        }
+    }
+}
+
+/// Where a row or a value came from, as the API names it: SMO, the Tesla API, or an import from a site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Origin {
+    Smo,
+    TeslaApi,
+    Import(ImportSite),
+}
+
+impl Origin {
+    /// `smo`, `tesla_api` or `import`.
+    pub fn kind(self) -> &'static str {
+        match self {
+            Origin::Smo => "smo",
+            Origin::TeslaApi => "tesla_api",
+            Origin::Import(_) => "import",
+        }
+    }
+
+    /// The site of an import.
+    pub fn site(self) -> Option<ImportSite> {
+        match self {
+            Origin::Import(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// One word for filters and CSV: `smo`, `tesla_api`, `import:teslamate`.
+    pub fn word(self) -> String {
+        match self {
+            Origin::Import(s) => format!("import:{}", s.word()),
+            o => o.kind().to_string(),
+        }
+    }
+
+    /// A short label a page can show: "Data from SMO", "Data from the Tesla API", "Imported from TeslaMate".
+    pub fn label(self) -> String {
+        match self {
+            Origin::Smo => "Data from SMO".into(),
+            Origin::TeslaApi => "Data from the Tesla API".into(),
+            Origin::Import(s) => format!("Imported from {}", s.name()),
+        }
+    }
+
+    fn short(self) -> String {
+        match self {
+            Origin::Smo => "SMO".into(),
+            Origin::TeslaApi => "the Tesla API".into(),
+            Origin::Import(s) => s.name().into(),
+        }
+    }
+
+    /// The origins of a row: its live inputs (SMO for an older live row that names none), or its import.
+    pub fn of_row(source: Source, inputs: Inputs) -> Vec<Origin> {
+        match source {
+            Source::Teslamate => vec![Origin::Import(ImportSite::Teslamate)],
+            Source::Live if inputs.is_empty() => vec![Origin::Smo],
+            Source::Live => inputs.iter().map(Origin::from).collect(),
+        }
+    }
+
+    /// One label for several origins: "Data from SMO and the Tesla API", "Data from SMO; imported from TeslaMate".
+    pub fn label_of(origins: &[Origin]) -> String {
+        let live: Vec<String> = origins.iter().filter(|o| o.site().is_none()).map(|o| o.short()).collect();
+        let imported: Vec<String> = origins.iter().filter(|o| o.site().is_some()).map(|o| o.short()).collect();
+        let and = |v: &[String]| match v {
+            [] => String::new(),
+            [one] => one.clone(),
+            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        };
+        match (live.is_empty(), imported.is_empty()) {
+            (true, true) => "No data yet".into(),
+            (false, true) => format!("Data from {}", and(&live)),
+            (true, false) => format!("Imported from {}", and(&imported)),
+            (false, false) => format!("Data from {}; imported from {}", and(&live), and(&imported)),
+        }
+    }
+}
+
+impl From<Input> for Origin {
+    fn from(i: Input) -> Origin {
+        match i {
+            Input::Smo => Origin::Smo,
+            Input::TeslaApi => Origin::TeslaApi,
+        }
+    }
+}
+
+/// Where a time series is stored: one stream per input, and one for imports. Points of different streams never mix
+/// on disk; reads fuse them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Stream {
+    /// From SMO logs (dir `can`, as older servers wrote it).
+    Smo,
+    /// From the Tesla API (dir `tesla-api`).
+    TeslaApi,
+    /// From a TeslaMate import (dir `teslamate`).
+    Teslamate,
+}
+
+impl Stream {
+    pub const ALL: [Stream; 3] = [Stream::Smo, Stream::TeslaApi, Stream::Teslamate];
+
+    /// The series directory's suffix.
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            Stream::Smo => "can",
+            Stream::TeslaApi => "tesla-api",
+            Stream::Teslamate => "teslamate",
+        }
+    }
+
+    pub fn origin(self) -> Origin {
+        match self {
+            Stream::Smo => Origin::Smo,
+            Stream::TeslaApi => Origin::TeslaApi,
+            Stream::Teslamate => Origin::Import(ImportSite::Teslamate),
+        }
+    }
+}
+
+/// A row family reads its own stream: live rows the SMO stream (the Tesla API's is named on its own), imports theirs.
+impl From<Source> for Stream {
+    fn from(s: Source) -> Stream {
+        match s {
+            Source::Live => Stream::Smo,
+            Source::Teslamate => Stream::Teslamate,
+        }
+    }
+}
+
+impl From<Input> for Stream {
+    fn from(i: Input) -> Stream {
+        match i {
+            Input::Smo => Stream::Smo,
+            Input::TeslaApi => Stream::TeslaApi,
+        }
+    }
 }
 
 /// The DBC set a car is decoded with (`dbc::Profile` by name).
@@ -182,6 +436,9 @@ pub struct StateSpan {
     /// parked car kept awake (charging, keeping the pack warm).
     pub buses: Vec<String>,
     pub source: Source,
+    /// The live inputs that gave it (empty on older rows: SMO). Imported rows leave it empty.
+    #[serde(default, skip_serializing_if = "Inputs::is_empty")]
+    pub inputs: Inputs,
 }
 
 /// A point of a drive's track or of the car parked: a [`Sample`] reduced to what maps and charts need.
@@ -231,6 +488,9 @@ pub struct Drive {
     pub ascent_m: Option<f64>,
     pub descent_m: Option<f64>,
     pub source: Source,
+    /// The live inputs that gave it (empty on older rows: SMO). Imported rows leave it empty.
+    #[serde(default, skip_serializing_if = "Inputs::is_empty")]
+    pub inputs: Inputs,
     /// The timeline rules that made it; a drive made by older rules is made again.
     pub rules_version: u32,
 }
@@ -273,6 +533,9 @@ pub struct Charge {
     /// In the place's currency, at the price of each moment.
     pub cost: Option<f64>,
     pub source: Source,
+    /// The live inputs that gave it (empty on older rows: SMO). Imported rows leave it empty.
+    #[serde(default, skip_serializing_if = "Inputs::is_empty")]
+    pub inputs: Inputs,
     pub rules_version: u32,
 }
 
@@ -302,6 +565,9 @@ pub struct Update {
     pub end_ms: Option<u64>,
     pub version: String,
     pub source: Source,
+    /// The live inputs that gave it (empty on older rows: SMO). Imported rows leave it empty.
+    #[serde(default, skip_serializing_if = "Inputs::is_empty")]
+    pub inputs: Inputs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -400,5 +666,48 @@ mod tests {
         car.vin = None;
         car.profile_setting = None;
         assert_eq!(car.profile(), CarProfile::Tesla3Y);
+    }
+
+    #[test]
+    fn inputs_read_and_write_as_words() {
+        let both: Inputs = [Input::TeslaApi, Input::Smo].into_iter().collect();
+        assert_eq!(both, Inputs::BOTH);
+        assert_eq!(serde_json::to_string(&both).unwrap(), r#"["smo","tesla_api"]"#);
+        assert_eq!(serde_json::from_str::<Inputs>(r#"["tesla_api"]"#).unwrap(), Inputs::TESLA_API);
+        assert!(Inputs::NONE.is_empty());
+        assert!(serde_json::from_str::<Inputs>(r#"["fleet_api"]"#).is_err(), "an unknown input is refused");
+    }
+
+    #[test]
+    fn source_keeps_its_stored_words() {
+        assert_eq!(serde_json::to_string(&Source::Live).unwrap(), r#""can""#);
+        assert_eq!(serde_json::from_str::<Source>(r#""teslamate""#).unwrap(), Source::Teslamate);
+        assert_eq!(Stream::from(Source::Live).dir_name(), "can");
+        assert_eq!(Stream::TeslaApi.dir_name(), "tesla-api");
+    }
+
+    #[test]
+    fn a_row_written_before_inputs_reads_as_smo() {
+        let old = r#"{"car":1,"start_ms":5,"end_ms":null,"version":"2026.38.4","source":"can"}"#;
+        let u: Update = serde_json::from_str(old).unwrap();
+        assert!(u.inputs.is_empty());
+        assert_eq!(Origin::of_row(u.source, u.inputs), vec![Origin::Smo]);
+        assert_eq!(serde_json::to_string(&u).unwrap(), old, "an empty set is not written");
+        assert_eq!(Origin::of_row(Source::Teslamate, Inputs::NONE), vec![Origin::Import(ImportSite::Teslamate)]);
+        assert_eq!(Origin::of_row(Source::Live, Inputs::BOTH), vec![Origin::Smo, Origin::TeslaApi]);
+    }
+
+    #[test]
+    fn labels() {
+        assert_eq!(Origin::Smo.label(), "Data from SMO");
+        assert_eq!(Origin::TeslaApi.label(), "Data from the Tesla API");
+        assert_eq!(Origin::Import(ImportSite::Teslamate).label(), "Imported from TeslaMate");
+        assert_eq!(Origin::label_of(&[Origin::Smo, Origin::TeslaApi]), "Data from SMO and the Tesla API");
+        assert_eq!(
+            Origin::label_of(&[Origin::Smo, Origin::Import(ImportSite::Teslamate)]),
+            "Data from SMO; imported from TeslaMate"
+        );
+        assert_eq!(Origin::label_of(&[]), "No data yet");
+        assert_eq!(Origin::Import(ImportSite::Teslamate).word(), "import:teslamate");
     }
 }

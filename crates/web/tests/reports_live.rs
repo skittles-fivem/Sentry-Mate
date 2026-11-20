@@ -46,7 +46,15 @@ fn car(name: &str) -> model::Car {
 fn state(car: CarId, state: State, start_ms: u64, end_ms: u64) -> db::StateRow {
     db::StateRow {
         id: start_ms,
-        span: StateSpan { car, state, start_ms, end_ms, buses: vec!["can0".into()], source: Source::Can },
+        span: StateSpan {
+            car,
+            state,
+            start_ms,
+            end_ms,
+            buses: vec!["can0".into()],
+            source: Source::Live,
+            inputs: model::Inputs::NONE,
+        },
     }
 }
 
@@ -83,7 +91,8 @@ fn drive(car: CarId, start_ms: u64, mins: u64, from: f64, to: f64, odo: f64, km:
         inside_temp_avg_c: Some(21.0),
         ascent_m: None,
         descent_m: None,
-        source: Source::Can,
+        source: Source::Live,
+        inputs: model::Inputs::NONE,
         rules_version: 1,
     }
 }
@@ -108,7 +117,8 @@ fn charge(car: CarId, start_ms: u64, end_ms: u64, k: f64) -> Charge {
         outside_temp_avg_c: None,
         battery_temp_avg_c: None,
         cost: None,
-        source: Source::Can,
+        source: Source::Live,
+        inputs: model::Inputs::NONE,
         rules_version: 1,
     }
 }

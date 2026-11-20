@@ -52,19 +52,26 @@ fn nothing_is_stored_in_the_clear() {
     .map(|s| s.to_string())
     .collect();
     let car = t.db.create_car(new_car(&markers[0], &[&markers[1]])).unwrap().id;
-    let mut d = drive(car, 1, DAY0, 30, 12.5, Source::Can);
+    let mut d = drive(car, 1, DAY0, 30, 12.5, Source::Live);
     d.start_address = Some(markers[2].clone());
     t.db.upsert(car, &[d]).unwrap();
     t.db.upsert(car, &[charge(car, 1, DAY0 + H, 60, 20.0, Source::Teslamate)]).unwrap();
-    t.db.upsert(car, &[state(car, 1, DAY0, DAY0 + H, State::Online, Source::Can)]).unwrap();
-    let u = model::Update { car, start_ms: DAY0, end_ms: None, version: markers[3].clone(), source: Source::Can };
+    t.db.upsert(car, &[state(car, 1, DAY0, DAY0 + H, State::Online, Source::Live)]).unwrap();
+    let u = model::Update {
+        car,
+        start_ms: DAY0,
+        end_ms: None,
+        version: markers[3].clone(),
+        source: Source::Live,
+        inputs: model::Inputs::NONE,
+    };
     t.db.upsert(car, &[db::UpdateRow { id: 1, update: u }]).unwrap();
     let mut pts = samples(DAY0, 600);
     for p in &mut pts {
         p.lat = Some(12.345_678_9);
     }
-    t.db.write_points(car, Source::Can, DAY0, DAY0 + DAY_MS, &pts).unwrap();
-    t.db.write_points(car, Source::Can, DAY0 + DAY_MS, DAY0 + DAY_MS + 60_000, &samples(DAY0 + DAY_MS, 60)).unwrap();
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + DAY_MS, &pts).unwrap();
+    t.db.write_points(car, Source::Live, DAY0 + DAY_MS, DAY0 + DAY_MS + 60_000, &samples(DAY0 + DAY_MS, 60)).unwrap();
     t.db.set_now(model::Now { car, at_ms: DAY0, sample: pts[0].clone(), ..Default::default() }).unwrap();
     let place = model::Place {
         id: 0,
@@ -79,7 +86,7 @@ fn nothing_is_stored_in_the_clear() {
     t.db.set_setting(&markers[5], serde_json::json!(markers[6])).unwrap();
     t.db.kv().put(&markers[7], &markers[8], markers[9].as_bytes()).unwrap();
     // a crash leaves a temporary file behind: it must be sealed too
-    t.db.upsert(car, &[drive(car, 2, DAY0 + 2 * H, 30, 1.0, Source::Can)]).unwrap();
+    t.db.upsert(car, &[drive(car, 2, DAY0 + 2 * H, 30, 1.0, Source::Live)]).unwrap();
     t.db.crash_at(Some(Crash::BeforeRename));
     assert!(t.db.settle(car, DAY0 + 2 * DAY_MS).is_err());
     t.db.backup_to_file(&t.data.join("backup.smdb")).unwrap();
@@ -103,7 +110,7 @@ fn nothing_is_stored_in_the_clear() {
 fn a_crash_before_a_rename_leaves_the_old_data() {
     let mut t = test_db(quiet());
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
-    let drives: Vec<Drive> = (0..20).map(|i| drive(car, i, DAY0 + i * H, 30, 2.0, Source::Can)).collect();
+    let drives: Vec<Drive> = (0..20).map(|i| drive(car, i, DAY0 + i * H, 30, 2.0, Source::Live)).collect();
     t.db.upsert(car, &drives).unwrap();
     let dir = t.data.join("db/cars").join(car.to_string());
     // folding the journal into a snapshot stops before the rename
@@ -116,11 +123,11 @@ fn a_crash_before_a_rename_leaves_the_old_data() {
     assert!(!tmp.exists(), "cleaned up when the table was next read");
     // a whole day being replaced
     let day1 = samples(DAY0, 100);
-    t.db.write_points(car, Source::Can, DAY0, DAY0 + DAY_MS, &day1).unwrap();
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + DAY_MS, &day1).unwrap();
     t.db.crash_at(Some(Crash::BeforeRename));
-    assert!(t.db.write_points(car, Source::Can, DAY0, DAY0 + DAY_MS, &samples(DAY0 + 5, 7)).is_err());
+    assert!(t.db.write_points(car, Source::Live, DAY0, DAY0 + DAY_MS, &samples(DAY0 + 5, 7)).is_err());
     t.reopen(quiet());
-    assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap(), day1);
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap(), day1);
     // a key/value
     t.db.kv().put("ns", "k", b"old").unwrap();
     t.db.crash_at(Some(Crash::BeforeRename));
@@ -134,7 +141,7 @@ fn a_crash_before_a_rename_leaves_the_old_data() {
 fn a_crash_while_folding_keeps_everything() {
     let mut t = test_db(quiet());
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
-    let drives: Vec<Drive> = (0..20).map(|i| drive(car, i, DAY0 + i * H, 30, 2.0, Source::Can)).collect();
+    let drives: Vec<Drive> = (0..20).map(|i| drive(car, i, DAY0 + i * H, 30, 2.0, Source::Live)).collect();
     t.db.upsert(car, &drives[..10]).unwrap();
     t.db.settle(car, 0).unwrap();
     t.db.upsert(car, &drives[10..]).unwrap();
@@ -152,16 +159,16 @@ fn a_crash_while_folding_keeps_everything() {
     // the same for a segment day folded while being written
     let pts = samples(DAY0 + 1000, 600);
     for w in pts.chunks(60) {
-        t.db.write_points(car, Source::Can, w[0].t_ms, w[0].t_ms + 60_000, w).unwrap();
+        t.db.write_points(car, Source::Live, w[0].t_ms, w[0].t_ms + 60_000, w).unwrap();
     }
     t.db.crash_at(Some(Crash::BeforeJournalRemoved));
     assert!(t.db.settle(car, DAY0 + DAY_MS).is_err());
     t.reopen(quiet());
-    assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap(), pts);
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap(), pts);
     // the crash came after the cold snapshot was in place: nothing is left to pack
     assert!(!t.data.join("db/cars").join(car.to_string()).join("seg/samples.can/2026-11-16.log").exists());
     assert_eq!(t.db.settle(car, DAY0 + DAY_MS).unwrap().days, 0);
-    assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap(), pts);
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap(), pts);
 }
 
 #[test]
@@ -169,7 +176,7 @@ fn a_half_written_entry_is_dropped_and_the_rest_kept() {
     let mut t = test_db(quiet());
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
     for i in 0..5 {
-        t.db.upsert(car, &[drive(car, i, DAY0 + i * H, 30, 2.0, Source::Can)]).unwrap();
+        t.db.upsert(car, &[drive(car, i, DAY0 + i * H, 30, 2.0, Source::Live)]).unwrap();
     }
     let log = t.data.join("db/cars").join(car.to_string()).join("drives.log");
     // a crash while an entry was being written: its record is torn
@@ -178,7 +185,7 @@ fn a_half_written_entry_is_dropped_and_the_rest_kept() {
     drop(f);
     t.reopen(quiet());
     assert_eq!(t.db.count::<Drive>(car).unwrap(), 5);
-    t.db.upsert(car, &[drive(car, 9, DAY0 + 9 * H, 30, 2.0, Source::Can)]).unwrap();
+    t.db.upsert(car, &[drive(car, 9, DAY0 + 9 * H, 30, 2.0, Source::Live)]).unwrap();
     t.reopen(quiet());
     assert_eq!(t.db.count::<Drive>(car).unwrap(), 6);
 }
@@ -189,7 +196,7 @@ fn reading_a_day_leaves_its_journal_as_it_is_and_the_next_write_carries_on() {
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
     let pts = samples(DAY0 + 1000, 180);
     for w in pts[..120].chunks(60) {
-        t.db.write_points(car, Source::Can, w[0].t_ms, w[0].t_ms + 60_000, w).unwrap();
+        t.db.write_points(car, Source::Live, w[0].t_ms, w[0].t_ms + 60_000, w).unwrap();
     }
     let log = t.data.join("db/cars").join(car.to_string()).join("seg/samples.can/2026-11-16.log");
     // a crash while an entry was being written: its record is torn
@@ -198,22 +205,22 @@ fn reading_a_day_leaves_its_journal_as_it_is_and_the_next_write_carries_on() {
     drop(f);
     let before = std::fs::read(&log).unwrap();
     // readers see the whole entries and leave the file alone (opened read-only: never cut or changed)
-    assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap(), pts[..120]);
-    assert_eq!(t.db.read_fields::<Sample>(car, Source::Can, 0, u64::MAX, &["soc"]).unwrap().t_ms.len(), 120);
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap(), pts[..120]);
+    assert_eq!(t.db.read_fields::<Sample>(car, Source::Live, 0, u64::MAX, &["soc"]).unwrap().t_ms.len(), 120);
     assert_eq!(std::fs::read(&log).unwrap(), before);
     // the next write cuts the torn record off first, then adds its own
     let w = &pts[120..];
-    t.db.write_points(car, Source::Can, w[0].t_ms, w[0].t_ms + 60_000, w).unwrap();
+    t.db.write_points(car, Source::Live, w[0].t_ms, w[0].t_ms + 60_000, w).unwrap();
     assert!(std::fs::read(&log).unwrap().starts_with(&before[..before.len() - 9]));
-    assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap(), pts);
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap(), pts);
 }
 
 #[test]
 fn copies_left_while_journals_were_written_in_the_newer_format_are_not_kept() {
     let mut t = test_db(quiet());
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
-    t.db.upsert(car, &[drive(car, 1, DAY0, 30, 2.0, Source::Can)]).unwrap();
-    t.db.write_points(car, Source::Can, DAY0, DAY0 + 60_000, &samples(DAY0, 60)).unwrap();
+    t.db.upsert(car, &[drive(car, 1, DAY0, 30, 2.0, Source::Live)]).unwrap();
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + 60_000, &samples(DAY0, 60)).unwrap();
     let before = t.db.backup_to_file(&t.dir.path().join("before.smdb")).unwrap();
     // a crash while the vault wrote these journals again in its newer format (each journal is still whole)
     let dir = t.data.join("db/cars").join(car.to_string());
@@ -229,7 +236,7 @@ fn copies_left_while_journals_were_written_in_the_newer_format_are_not_kept() {
     // removed when their journal is next opened or read
     t.reopen(quiet());
     assert_eq!(t.db.list::<Drive>(car, &Query::default()).unwrap().items.len(), 1);
-    assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap().len(), 60);
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap().len(), 60);
     for c in &copies {
         assert!(!c.exists(), "{} was left", c.display());
     }
@@ -240,13 +247,13 @@ fn damaged_files_are_reported_not_emptied() {
     let mut t = test_db(quiet());
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
     let other = t.db.create_car(new_car("Model 3", &[])).unwrap().id;
-    let drives: Vec<Drive> = (0..200).map(|i| drive(car, i, DAY0 + i * H, 30, 2.0, Source::Can)).collect();
+    let drives: Vec<Drive> = (0..200).map(|i| drive(car, i, DAY0 + i * H, 30, 2.0, Source::Live)).collect();
     t.db.upsert(car, &drives[..100]).unwrap();
     t.db.settle(car, 0).unwrap();
     for d in &drives[100..110] {
         t.db.upsert(car, std::slice::from_ref(d)).unwrap();
     }
-    t.db.write_points(car, Source::Can, DAY0, DAY0 + DAY_MS, &samples(DAY0, 3000)).unwrap();
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + DAY_MS, &samples(DAY0, 3000)).unwrap();
     let dir = t.data.join("db/cars").join(car.to_string());
     let (snap, log) = (dir.join("drives.snap"), dir.join("drives.log"));
     let day = dir.join("seg/samples.can/2026-11-16.snap");
@@ -287,8 +294,8 @@ fn damaged_files_are_reported_not_emptied() {
     // a segment day
     flip(&day, day0.len() / 2);
     let db = t.try_reopen(quiet()).unwrap();
-    damaged_in(db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap_err(), "2026-11-16.snap");
-    damaged_in(db.read_fields::<Sample>(car, Source::Can, 0, u64::MAX, &["soc"]).unwrap_err(), "2026-11-16.snap");
+    damaged_in(db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap_err(), "2026-11-16.snap");
+    damaged_in(db.read_fields::<Sample>(car, Source::Live, 0, u64::MAX, &["soc"]).unwrap_err(), "2026-11-16.snap");
     std::fs::write(&day, &day0).unwrap();
     // the fleet: the db doesn't open
     t.db.settle(car, 0).unwrap();
@@ -339,7 +346,7 @@ fn files_of_another_version_are_reported() {
     let label = format!("db/cars/{car}/seg/samples.can/2026-11-16.snap");
     std::fs::write(seg.join("2026-11-16.snap"), t.vault.seal(&label, &plain).unwrap()).unwrap();
     assert!(matches!(
-        t.db.read_points::<Sample>(car, Source::Can, DAY0, DAY0 + DAY_MS),
+        t.db.read_points::<Sample>(car, Source::Live, DAY0, DAY0 + DAY_MS),
         Err(Error::Version { found: 2, .. })
     ));
 }
@@ -348,9 +355,9 @@ fn files_of_another_version_are_reported() {
 fn a_lost_table_file_is_reported_not_read_as_empty() {
     let mut t = test_db(quiet());
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
-    let drives: Vec<Drive> = (0..10).map(|i| drive(car, i, DAY0 + i * H, 30, 2.0, Source::Can)).collect();
+    let drives: Vec<Drive> = (0..10).map(|i| drive(car, i, DAY0 + i * H, 30, 2.0, Source::Live)).collect();
     t.db.upsert(car, &drives).unwrap();
-    t.db.upsert(car, &[state(car, 1, DAY0, DAY0 + H, State::Online, Source::Can)]).unwrap();
+    t.db.upsert(car, &[state(car, 1, DAY0, DAY0 + H, State::Online, Source::Live)]).unwrap();
     // folded: the snapshot is the only file the drives have
     t.db.settle(car, 0).unwrap();
     let dir = t.data.join("db/cars").join(car.to_string());
@@ -359,14 +366,14 @@ fn a_lost_table_file_is_reported_not_read_as_empty() {
     t.reopen(quiet());
     // it used to read as no drives, and the summary was "mended" to match, hiding the loss for good
     damaged_in(t.db.list::<Drive>(car, &Query::default()).unwrap_err(), "drives.snap");
-    damaged_in(t.db.upsert(car, &[drive(car, 50, DAY0, 1, 1.0, Source::Can)]).unwrap_err(), "drives.snap");
+    damaged_in(t.db.upsert(car, &[drive(car, 50, DAY0, 1, 1.0, Source::Live)]).unwrap_err(), "drives.snap");
     assert_eq!(t.db.entry(car).unwrap().unwrap().summary.tally.can.drives, 10, "the summary still says so");
     // the car's other tables are fine, and a table never written is empty, not lost
     assert_eq!(t.db.count::<StateRow>(car).unwrap(), 1);
     assert_eq!(t.db.count::<model::Charge>(car).unwrap(), 0);
     // emptying a table is not a loss
     let other = t.db.create_car(new_car("Model 3", &[])).unwrap().id;
-    t.db.upsert(other, &[drive(other, 1, DAY0, 30, 2.0, Source::Can)]).unwrap();
+    t.db.upsert(other, &[drive(other, 1, DAY0, 30, 2.0, Source::Live)]).unwrap();
     t.db.delete::<Drive>(other, &[1]).unwrap();
     t.db.settle(other, 0).unwrap();
     t.reopen(quiet());
@@ -377,7 +384,7 @@ fn a_lost_table_file_is_reported_not_read_as_empty() {
 fn a_lost_fleet_is_reported_and_no_car_inherits_another_cars_folder() {
     let mut t = test_db(quiet());
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
-    t.db.upsert(car, &[drive(car, 1, DAY0, 30, 2.0, Source::Can)]).unwrap();
+    t.db.upsert(car, &[drive(car, 1, DAY0, 30, 2.0, Source::Live)]).unwrap();
     t.db.settle(car, 0).unwrap();
     let fleet = t.data.join("db/fleet.log");
     let saved = std::fs::read(&fleet).unwrap();
@@ -398,9 +405,9 @@ fn every_file_is_owner_only() {
     use std::os::unix::fs::PermissionsExt;
     let t = test_db(quiet());
     let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
-    t.db.upsert(car, &[drive(car, 1, DAY0, 30, 2.0, Source::Can)]).unwrap();
-    t.db.write_points(car, Source::Can, DAY0, DAY0 + 60_000, &samples(DAY0, 60)).unwrap();
-    t.db.write_points(car, Source::Can, DAY0 + DAY_MS, DAY0 + 2 * DAY_MS, &samples(DAY0 + DAY_MS, 60)).unwrap();
+    t.db.upsert(car, &[drive(car, 1, DAY0, 30, 2.0, Source::Live)]).unwrap();
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + 60_000, &samples(DAY0, 60)).unwrap();
+    t.db.write_points(car, Source::Live, DAY0 + DAY_MS, DAY0 + 2 * DAY_MS, &samples(DAY0 + DAY_MS, 60)).unwrap();
     t.db.kv().put("ns", "k", b"v").unwrap();
     let files = all_files(&t.data.join("db"));
     assert!(files.iter().any(|f| f.extension().is_some_and(|x| x == "log")));

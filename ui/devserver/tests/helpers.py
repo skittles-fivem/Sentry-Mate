@@ -121,9 +121,12 @@ class ServerCase(unittest.TestCase):
                 return items
 
     def assertWrapped(self, v, msg=""):
-        """A live value: null, or { value, at_ms }."""
+        """A live value: null, or { value, at_ms, sources } with the one input that sent it."""
         if v is None:
             return
         self.assertIsInstance(v, dict, msg)
-        self.assertEqual(set(v), {"value", "at_ms"}, msg)
+        self.assertEqual(set(v), {"value", "at_ms", "sources"}, msg)
         self.assertIsInstance(v["at_ms"], int, msg)
+        self.assertEqual(len(v["sources"]), 1, msg)
+        self.assertIn(v["sources"][0]["kind"], ("smo", "tesla_api"), msg)
+        self.assertTrue(v["sources"][0]["label"].startswith("Data from"), msg)

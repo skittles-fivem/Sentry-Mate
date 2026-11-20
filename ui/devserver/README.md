@@ -66,6 +66,11 @@ start after the virtual clock are not shown yet, and the piece the clock is in i
 | `c3` Atlas | Model S 2017, 90D, old (legacy) CAN profile, `America/Los_Angeles` | East Bay. 16 months imported from TeslaMate (`source: "teslamate"`, estimated energy) that overlap 5 days of CAN rows, free Supercharging, fewer decoded signals (no tyres, no set points). Its CAN Bridge went quiet about 55 hours before "now": the last log failed its check. |
 | `c4`..`cN` | synthetic | Names, models, states and battery from the car's index only; lists elsewhere are empty but valid. |
 
+Where each row came from (`sources`, `source_label`, see `mockapi/sources.py`): `c1` has SMO and the Tesla API
+(most rows SMO, a fifth seen by both, a few by the API alone, and an afternoon two days before "now" when SMO was
+offline and only the API saw the car); `c2` has both on every live row; `c3` has SMO and its TeslaMate import; the
+synthetic cars have SMO. Only the labels differ: the made-up data is the same.
+
 Also present: places that overlap (Work and the Mission Bay Supercharger, Home and Noe Valley), charges with
 and without cost, two software changes per car (one known only as "software changed"), awake, asleep and
 vehicle-bus-only spells, attention items, upload tokens, a CAN Bridge key waiting to be assigned, an audit log,

@@ -15,6 +15,7 @@ import math
 from . import placing
 from .rows import in_progress
 from .util import DAY, local_date, local_ms
+from . import sources as S
 
 # ------------------------------------------------------------------ caching
 
@@ -132,7 +133,7 @@ def _build_visits(app, h, now):
             cur = {"id": f"{h.car.id}-{s.start}", "car": h.car.id, "time_zone": tz, "arrived_ms": s.start,
                    "left_ms": None, "lat": round(s.lat, 6), "lon": round(s.lon, 6), "accuracy_m": 5.0,
                    "pid": pid, "address": addr, "drive_in": din, "drive_out": None, "charges": [],
-                   "source": s.source, "unknown_ms": 0}
+                   **S.of_seg(s), "unknown_ms": 0}
         if s.kind == "charge":
             cur["charges"].append(s.id if h.shown(s) else shadow_of.get(s.id, s.id))
         prev_drive = None
@@ -288,7 +289,7 @@ def spell_row(app, h, sp, a, b, now):
         "battery_min_c": None if tm or batt_min is None else _r(batt_min, 1),
         "outside_avg_c": _r(sum(o * w for o, w in outs) / ow, 1),
         "cold": bool(cold), "place": placing.ref(pl), "address": addr["short"],
-        "awake_reasons": reasons, "source": s0.source,
+        "awake_reasons": reasons, **S.of_seg(s0),
     }
 
 

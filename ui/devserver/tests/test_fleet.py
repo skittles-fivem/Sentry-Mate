@@ -5,7 +5,7 @@ from __future__ import annotations
 from .helpers import ServerCase
 
 ITEM = {"id", "name", "model", "year", "vin_prefix", "trim", "profile", "time_zone", "last_activity_ms", "now",
-        "attention"}
+        "attention", "sources", "source_label"}
 NOW_KEYS = {"state", "since_ms", "at_ms", "received_ms", "stale", "soc_pct", "range_km", "ideal_range_km", "place", "plugged",
             "charge_power_kw"}
 
@@ -63,11 +63,14 @@ class Cars(ServerCase):
         self.assertTrue(ITEM <= set(d))
         self.assertIn("version", d)
         for k, v in d["config"].items():
-            self.assertEqual(set(v), {"value", "source"}, k)
+            self.assertEqual(set(v), {"value", "source", "sources"}, k)
         self.assertEqual(d["config"]["paint"]["source"], "can")
+        self.assertEqual([x["kind"] for x in d["config"]["paint"]["sources"]], ["smo"])
+        self.assertEqual([x["kind"] for x in d["sources"]], ["smo", "tesla_api"])
+        self.assertEqual(d["source_label"], "Data from SMO and the Tesla API")
         up = self.c.json("PATCH", "/api/v1/cars/c1", {"version": d["version"], "config": {"paint": "Ultra Red"},
                                                        "time_zone": "America/Denver"})
-        self.assertEqual(up["config"]["paint"], {"value": "Ultra Red", "source": "owner"})
+        self.assertEqual(up["config"]["paint"], {"value": "Ultra Red", "source": "owner", "sources": []})
         self.assertEqual(up["time_zone"], "America/Denver")
         self.assertEqual(self.c.get("/api/v1/cars/c1/now")["time_zone"], "America/Denver")
         self.c.error("PATCH", "/api/v1/cars/c1", 422, "invalid", body={"version": up["version"], "time_zone": "Mars/Base"})

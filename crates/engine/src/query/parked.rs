@@ -11,7 +11,7 @@
 //! known for.
 
 use super::system::Shown;
-use super::{Paging, Period, PlaceBrief, QResult, Scoped, car_of, paginate, place_ref, r, scoped, source_word};
+use super::{Paging, Period, PlaceBrief, QResult, Scoped, car_of, paginate, place_ref, r, scoped};
 use crate::Engine;
 use crate::pipeline::all_rows;
 use db::StateRow;
@@ -58,7 +58,8 @@ pub struct Spell {
     pub place: Option<PlaceBrief>,
     pub address: Option<String>,
     pub awake_reasons: Vec<&'static str>,
-    pub source: &'static str,
+    #[serde(flatten)]
+    pub from: super::Sources,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -361,14 +362,14 @@ pub fn parked(
     let b = b.min(now);
     let (busy, next) = busy_around(e, &c, a, b)?;
     let states: Vec<model::StateSpan> = if a < b {
-        all_rows::<StateRow>(e.db(), car, a, b, Some(Source::Can))?.into_iter().map(|s| s.span).collect()
+        all_rows::<StateRow>(e.db(), car, a, b, Some(Source::Live))?.into_iter().map(|s| s.span).collect()
     } else {
         Vec::new()
     };
     let now_soc = e.db().entry(car)?.and_then(|x| x.summary.now).map(|n| n.sample);
     let places = e.places();
     let rated = c.efficiency_wh_km;
-    let mut sampler = Sampler::new(e, car, Source::Can, &END_FIELDS)?;
+    let mut sampler = Sampler::new(e, car, Source::Live, &END_FIELDS)?;
     let mut items = Vec::new();
     // what known time the summary counts: that of the spells whose energy is known
     let (mut known_ms, mut known_kwh) = (0u64, 0.0);
@@ -395,7 +396,7 @@ pub fn parked(
         let source = p.source;
         // the ends: the drive or charge either side, the car's values now for the spell still going, else (at a
         // clipped edge) the sample nearest to it
-        let can = source == Source::Can;
+        let can = source == Source::Live;
         let hi = n.map_or(now, |n| n.end);
         let first = if can { Some(sampler.at(x, p.start, y)?) } else { None };
         let last = if can { Some(sampler.at(y, x, hi)?) } else { None };
@@ -442,7 +443,7 @@ pub fn parked(
             address: p.address.clone(),
             // the only reason the decoded signals give yet is charging, and a spell holds no charge
             awake_reasons: Vec::new(),
-            source: source_word(source),
+            from: super::Sources::family(source),
         });
     }
     let hours = known_ms as f64 / 3_600_000.0;
@@ -458,7 +459,7 @@ pub fn parked(
     let mut out = page.items;
     // the page's spells read whole: battery and outside temperatures, the pack's power while awake
     for s in &mut out {
-        if s.source != "can" {
+        if s.from.is_imported() {
             continue;
         }
         let end = s.start_ms.saturating_add(s.duration_ms);
@@ -466,7 +467,7 @@ pub fn parked(
         each(
             e,
             car,
-            Source::Can,
+            Source::Live,
             s.start_ms,
             end,
             &["battery_temp_c", "outside_temp_c", "battery_power_kw"],

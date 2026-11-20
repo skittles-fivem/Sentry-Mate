@@ -661,7 +661,8 @@ pub(crate) mod tests {
             inside_temp_avg_c: None,
             ascent_m: Some(120.0),
             descent_m: Some(80.0),
-            source: model::Source::Can,
+            source: model::Source::Live,
+            inputs: model::Inputs::NONE,
             rules_version: 1,
         }
     }
@@ -739,7 +740,8 @@ pub(crate) mod tests {
             outside_temp_avg_c: None,
             battery_temp_avg_c: Some(40.0),
             cost: Some(12.3456),
-            source: model::Source::Can,
+            source: model::Source::Live,
+            inputs: model::Inputs::NONE,
             rules_version: 1,
         };
         let l = layout(false, Units::default());
@@ -800,7 +802,8 @@ pub(crate) mod tests {
             outside_temp_avg_c: None,
             battery_temp_avg_c: None,
             cost: None,
-            source: model::Source::Can,
+            source: model::Source::Live,
+            inputs: model::Inputs::NONE,
             rules_version: 1,
         };
         let p = || Some(long.clone());

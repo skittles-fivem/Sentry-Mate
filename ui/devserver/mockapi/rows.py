@@ -10,6 +10,7 @@ import datetime as dt
 
 from . import placing
 from .util import DAY, MIN, local_dt, local_hour, r
+from . import sources as S
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -102,7 +103,7 @@ def drive_row(app, h, d, now):
         "cabin_avg_c": None if legacy and not tm else r((d.cabin0 + d.setpoint * 3) / 4, 1),
         "climb_m": r(f["climb"], 0), "descent_m": r(f["descent"], 0),
         "hvac_kwh": None if tm else r(f["hvac"], 3),
-        "source": d.source,
+        **S.of_seg(d),
         "flags": {"in_progress": live, "gap_ms": int(f["gap_ms"]), "lost_frames": lost,
                   "reduced_range": bool(d.reduced_range)},
         "purpose": purpose_of(app, car.id, d, meta["time_zone"]),
@@ -264,7 +265,7 @@ def charge_row(app, h, c, now, with_breakdown=False):
         "range_per_hour_km": r(f["range_added"] / hours, 1) if hours > 0.01 else None,
         "power_max_kw": r(f["pmax"], 1), "power_avg_kw": r(f["pavg"], 1),
         "outside_avg_c": r(c.outside, 1), "battery_avg_c": None if tm else r(f["batt_avg"], 1),
-        "source": c.source, "has_gaps": bool(c.gaps) or c.cut_ms is not None,
+        **S.of_seg(c), "has_gaps": bool(c.gaps) or c.cut_ms is not None,
         "flags": {"in_progress": live, "gap_ms": int(f["gap_ms"])},
     }
     if with_breakdown:
@@ -284,7 +285,7 @@ def _tl_point(app, lat, lon, pid=None):
 def timeline_row(app, h, s, now):
     car = h.car
     live = in_progress(s, now)
-    base = {"id": f"{s.kind}:{s.start}", "kind": s.kind, "start_ms": s.start, "source": s.source,
+    base = {"id": f"{s.kind}:{s.start}", "kind": s.kind, "start_ms": s.start, **S.of_seg(s),
             "cost": None, "ref": None, "parked_ms": None, "awake_reasons": [], "gap_reason": None,
             "energy_basis": None}
     if s.kind == "drive":

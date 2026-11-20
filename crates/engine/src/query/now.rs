@@ -9,14 +9,37 @@ use serde::Serialize;
 /// No upload for longer than this: stale.
 pub const STALE_MS: u64 = 3_600_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+/// A value read from the car: `{ value, at_ms, sources: [{ kind, label }] }`.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct V<T> {
     pub value: T,
     pub at_ms: u64,
+    /// The input that sent it.
+    pub origin: model::Origin,
 }
 
+impl<T: Serialize> Serialize for V<T> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("V", 3)?;
+        st.serialize_field("value", &self.value)?;
+        st.serialize_field("at_ms", &self.at_ms)?;
+        st.serialize_field("sources", &[super::SourceRef::from(self.origin)])?;
+        st.end()
+    }
+}
+
+/// A value of the car's newest values (SMO's: the only live input whose values are kept for Now yet).
 fn v<T>(x: Option<T>, at: u64) -> Option<V<T>> {
-    x.map(|value| V { value, at_ms: at })
+    x.map(|value| V { value, at_ms: at, origin: model::Origin::Smo })
+}
+
+/// A live input with when its newest value was recorded.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct InputNow {
+    #[serde(flatten)]
+    pub input: super::SourceRef,
+    pub last_ms: Option<u64>,
 }
 
 fn vf(x: Option<f64>, d: i32, at: u64) -> Option<V<f64>> {
@@ -93,6 +116,8 @@ pub struct NowView {
     pub received_ms: Option<u64>,
     pub delay_s: Option<f64>,
     pub stale: bool,
+    /// The live inputs these values came from, with each one's newest value.
+    pub inputs: Vec<InputNow>,
     pub buses: Vec<Bus>,
     pub driving: bool,
     pub gear: Option<V<&'static str>>,
@@ -199,7 +224,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     };
     let driving = n.as_ref().is_some_and(|n| n.driving);
     let drive = if driving {
-        db.list::<Drive>(car, &db::Query { source: Some(Source::Can), ..db::Query::default().limit(1) })?
+        db.list::<Drive>(car, &db::Query { source: Some(Source::Live), ..db::Query::default().limit(1) })?
             .items
             .into_iter()
             .next()
@@ -215,7 +240,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     };
     let charging = s.charging == Some(true);
     let current_charge = if charging {
-        db.list::<model::Charge>(car, &db::Query { source: Some(Source::Can), ..db::Query::default().limit(1) })?
+        db.list::<model::Charge>(car, &db::Query { source: Some(Source::Live), ..db::Query::default().limit(1) })?
             .items
             .into_iter()
             .next()
@@ -255,7 +280,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     };
     let charge = ChargeNow {
         status: v(s.charging.map(|c| if c { "charging" } else { "disconnected" }), t("charging")),
-        plugged: plugged_now(&s, driving, &t, at).map(|p| V { value: p, at_ms: at }),
+        plugged: plugged_now(&s, driving, &t, at).map(|p| V { value: p, at_ms: at, origin: model::Origin::Smo }),
         kind: v(s.charge_kind.map(kind_word), t("charge_kind")),
         power_kw: vf(s.charge_power_kw, 1, t("charge_power_kw")),
         volts_v: vf(s.charger_voltage_v, 0, t("charger_voltage_v")),
@@ -303,6 +328,10 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         received_ms,
         delay_s: received_ms.zip(n.as_ref().map(|n| n.at_ms)).map(|(rcv, a)| rcv.saturating_sub(a) as f64 / 1000.0),
         stale: received_ms.is_none_or(|rcv| now.saturating_sub(rcv) > STALE_MS),
+        inputs: n
+            .as_ref()
+            .map(|n| vec![InputNow { input: model::Origin::Smo.into(), last_ms: Some(n.at_ms) }])
+            .unwrap_or_default(),
         buses,
         driving,
         gear: v(s.gear.map(gear_word), t("gear")),

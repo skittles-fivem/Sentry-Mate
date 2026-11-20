@@ -4,6 +4,7 @@ breakdown, the 1 Hz curve, manual costs, charging stats, stats per place and the
 
 from __future__ import annotations
 
+from .. import sources as S
 from ..conventions import nk, page
 from ..dataset.segments import CURVE_FIELDS
 from ..errors import bad_input, invalid, not_found
@@ -55,7 +56,7 @@ def _filtered(req, car_ids):
     min_cost = req.float_param("min_cost", None, 0, 1e9)
     incl_unpriced = req.bool_param("include_unpriced", False)
     min_dur = req.float_param("min_duration_min", None, 0, 100000)
-    source = req.enum("source", ("can", "teslamate", "all"), "all")
+    source = S.canon(req.enum("source", S.FILTER_WORDS, "all"))
     flags = req.list_param("flags", ("gap", "in_progress"))
     rows = []
     for cid in car_ids:

@@ -93,6 +93,7 @@ async fn seeded() -> Seeded {
                 end_ms: Some(START - 20 * 86_400_000 + 1_800_000),
                 version: "2026.2.1".into(),
                 source: model::Source::Teslamate,
+                inputs: model::Inputs::NONE,
             },
         },
         db::UpdateRow {
@@ -103,6 +104,7 @@ async fn seeded() -> Seeded {
                 end_ms: Some(START + 86_400_000 + 5_400_000),
                 version: String::new(),
                 source: model::Source::Teslamate,
+                inputs: model::Inputs::NONE,
             },
         },
     ];

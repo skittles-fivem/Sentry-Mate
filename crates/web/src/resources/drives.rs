@@ -134,7 +134,7 @@ fn drives_query(p: &Params) -> ApiResult<q::drives::DrivesQuery> {
         q: text(p, "q")?,
         min_distance_km: p.float("min_distance_km", 0.0, 1e6)?,
         min_avg_kph: p.float("min_avg_kph", 0.0, 1e3)?,
-        source: p.one_of("source", &["can", "teslamate", "all"])?.map(str::to_string),
+        source: p.source()?.map(str::to_string),
         flags: words(p, "flags", &["gap", "in_progress", "reduced_range"])?,
         efficiency: p.one_of("efficiency", &["plain", "hill_corrected"])?.map(str::to_string),
         sort: p

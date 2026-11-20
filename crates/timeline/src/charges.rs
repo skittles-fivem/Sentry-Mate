@@ -91,7 +91,8 @@ pub(crate) fn make(car: CarId, s: &[&Sample], before: &[&Sample], params: &Param
         outside_temp_avg_c: mean(s.iter().filter_map(|x| x.outside_temp_c)),
         battery_temp_avg_c: mean(s.iter().filter_map(|x| x.battery_temp_c)),
         cost: None,
-        source: Source::Can,
+        source: Source::Live,
+        inputs: model::Inputs::SMO,
         rules_version: RULES_VERSION,
     })
 }

@@ -185,8 +185,8 @@ async fn flip_overlap(
         (None, Some(t)) => format!("overlap:{t}"),
         (None, None) => return Err(ApiError::bad_input("id", "Name the overlap by its id (or start_ms).")),
     };
-    if shown != "can" && shown != "teslamate" {
-        return Err(ApiError::invalid("shown", "Must be can or teslamate."));
+    if !["live", "can", "import:teslamate", "teslamate"].contains(&shown.as_str()) {
+        return Err(ApiError::invalid("shown", "Must be live or import:teslamate (or the old words can, teslamate)."));
     }
     let paging = super::now::paging(&p)?;
     let s2 = shown.clone();
@@ -198,8 +198,8 @@ async fn flip_overlap(
     .await?;
     let changed = out.get(0).cloned().unwrap_or(Value::Null);
     let mut list = out.get(1).cloned().unwrap_or_else(|| json!({}));
-    let side = if shown == "can" { "CAN" } else { "imported TeslaMate" };
-    let summary = format!("Showing {side} history for an overlap of CAN and imported history.");
+    let side = if shown == "can" || shown == "live" { "live (SMO)" } else { "imported TeslaMate" };
+    let summary = format!("Showing {side} history for an overlap of live and imported history.");
     // (the engine's flip tells the live stream which rows changed: no second `rows` event here)
     v.audit(&app, "car-overlap", Some(&target("car", Some(car), "")), &summary).await?;
     if let Value::Object(m) = &mut list {

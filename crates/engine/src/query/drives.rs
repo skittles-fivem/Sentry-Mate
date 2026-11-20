@@ -3,7 +3,7 @@
 use super::system::Shown;
 use super::{
     CarRef, Paging, Period, QResult, QueryError, Scoped, Where, car_of, cmp_key, make_after, parse_place, r, scoped,
-    source_word, where_of,
+    where_of,
 };
 use crate::Engine;
 use crate::pipeline::all_rows;
@@ -62,7 +62,8 @@ pub struct DriveView {
     pub climb_m: Option<f64>,
     pub descent_m: Option<f64>,
     pub hvac_kwh: Option<f64>,
-    pub source: &'static str,
+    #[serde(flatten)]
+    pub from: super::Sources,
     pub flags: DriveFlags,
     pub purpose: Option<serde_json::Value>,
 }
@@ -84,7 +85,7 @@ pub(crate) fn ctx(e: &Engine, c: &Car) -> QResult<Ctx> {
     let snap = e.db().entry(c.id)?.and_then(|x| x.summary.now).filter(|n| n.driving);
     let newest = snap.as_ref().and_then(|n| {
         e.db()
-            .list::<Drive>(c.id, &db::Query { source: Some(Source::Can), ..db::Query::default().limit(1) })
+            .list::<Drive>(c.id, &db::Query { source: Some(Source::Live), ..db::Query::default().limit(1) })
             .ok()
             .and_then(|p| p.items.into_iter().next())
             .filter(|d| d.end_ms + 120_000 >= n.at_ms)
@@ -139,7 +140,7 @@ pub(crate) fn view(c: &Car, d: &Drive, x: &Ctx) -> DriveView {
         climb_m: r(d.ascent_m, 0),
         descent_m: r(d.descent_m, 0),
         hvac_kwh: None,
-        source: source_word(d.source),
+        from: super::Sources::of(d.source, d.inputs),
         // gaps and lost frames are marked by the list and the detail ([`Cover`])
         flags: DriveFlags { in_progress: live, ..DriveFlags::default() },
         purpose: None,
@@ -311,7 +312,7 @@ pub(crate) fn mark_gaps(
     times: Option<&[u64]>,
     v: &mut DriveView,
 ) -> QResult<Vec<Gap>> {
-    if d.source != Source::Can {
+    if d.source != Source::Live {
         return Ok(Vec::new());
     }
     let (a, b) = (d.start_ms, d.end_ms.max(d.start_ms) + 1);
@@ -343,11 +344,19 @@ pub(crate) fn mark_gaps(
 }
 
 /// The drives of a car in a period (by start), as shown (overlaps with imported history settled).
-pub(crate) fn rows(e: &Engine, car: CarId, period: &Period, source: Option<Source>) -> QResult<Vec<Drive>> {
+pub(crate) fn rows(
+    e: &Engine,
+    car: CarId,
+    period: &Period,
+    source: Option<super::SourceFilter>,
+) -> QResult<Vec<Drive>> {
     let (a, b) = period.bounds()?;
-    let all: Vec<Drive> = all_rows(e.db(), car, a, b, source)?;
+    let all: Vec<Drive> = all_rows(e.db(), car, a, b, source.map(super::SourceFilter::family))?;
     let shown = Shown::new(e, car, source)?;
-    Ok(all.into_iter().filter(|d| d.start_ms >= a && d.start_ms < b && shown.keep(d.source, d.start_ms)).collect())
+    Ok(all
+        .into_iter()
+        .filter(|d| d.start_ms >= a && d.start_ms < b && shown.keep(d.source, d.inputs, d.start_ms))
+        .collect())
 }
 
 /// Calls `f` with each row of `car` whose start is in `[a, b)` and that is shown (overlaps with imported history
@@ -359,7 +368,7 @@ pub(crate) fn each<T: db::Item>(
     car: CarId,
     a: u64,
     b: u64,
-    source: Option<Source>,
+    source: Option<super::SourceFilter>,
     shown: &Shown,
     newest_first: bool,
     mut f: impl FnMut(T) -> QResult<bool>,
@@ -371,12 +380,12 @@ pub(crate) fn each<T: db::Item>(
     if !newest_first {
         q = q.oldest_first();
     }
-    q.source = source;
+    q.source = source.map(super::SourceFilter::family);
     loop {
         let page = e.db().list::<T>(car, &q)?;
         for row in page.items {
             let (start, src) = (row.start_ms(), row.source());
-            if start >= a && start < b && shown.keep(src, start) && !f(row)? {
+            if start >= a && start < b && shown.keep(src, row.inputs(), start) && !f(row)? {
                 return Ok(());
             }
         }
@@ -481,7 +490,7 @@ pub(crate) fn page_of<T>(best: Best<T>, limit: usize, sig: &str) -> QResult<(Vec
 
 /// What `/cars/{car}/drives` filters with, checked.
 struct Filter {
-    source: Option<Source>,
+    source: Option<super::SourceFilter>,
     side: &'static str,
     hill: bool,
     flags: Vec<String>,
@@ -628,7 +637,7 @@ fn pass(
     let mut sum = Summer::new(f.hill);
     let mass = mass_kg(c);
     // the records of the stretch the rows can cover (a drive that starts in the period may end after it)
-    let cover = if f.source == Some(Source::Teslamate) {
+    let cover = if f.source.is_some_and(|s| s.family() == Source::Teslamate) {
         Cover { data: Vec::new(), holes: Vec::new(), dropped: Vec::new() }
     } else {
         Cover::read(e, car, a.saturating_sub(GAP_MS), b.saturating_add(2 * 86_400_000))?
@@ -850,7 +859,7 @@ pub fn drive(e: &Engine, car: CarId, id: u64, speed_band_kph: Option<f64>) -> QR
     let times: Vec<u64> = s.iter().map(|x| x.t_ms).collect();
     let gaps = mark_gaps(e, &d, &cover, Some(&times), &mut view)?;
     view.purpose = super::logbook::Purposes::new(e, &c)?.of(e, &d, &view)?;
-    if d.source == Source::Can && with_power {
+    if d.source == Source::Live && with_power {
         view.regen_kwh = r(Some(regen), 3);
     }
     Ok(DriveDetail {

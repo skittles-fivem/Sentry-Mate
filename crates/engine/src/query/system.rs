@@ -1,11 +1,11 @@
 //! Overlaps between imported and CAN history, a car's logs and their check results, `/cars/{car}/health`,
 //! `/cars/{car}/storage`, and the engine's own figures for `/system/health`.
 
-use super::{List, Paging, Period, QResult, QueryError, Scoped, car_of, paginate, scoped};
+use super::{List, Paging, Period, QResult, QueryError, Scoped, SourceFilter, car_of, paginate, scoped};
 use crate::records::{self, NS, Outcome};
 use crate::{Engine, now_ms};
 use db::StateRow;
-use model::{CarId, Source, State};
+use model::{CarId, Inputs, Source, State};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -26,13 +26,13 @@ fn flips(e: &Engine, car: CarId) -> QResult<Vec<Flip>> {
 /// Whether a row is shown: with `source=all` an imported row inside CAN history is hidden (CAN wins), unless that
 /// overlap was flipped to show the imported side.
 pub(crate) struct Shown {
-    filter: Option<Source>,
+    filter: Option<SourceFilter>,
     coverage: Vec<(u64, u64)>,
     flips: Vec<Flip>,
 }
 
 impl Shown {
-    pub(crate) fn new(e: &Engine, car: CarId, filter: Option<Source>) -> QResult<Shown> {
+    pub(crate) fn new(e: &Engine, car: CarId, filter: Option<SourceFilter>) -> QResult<Shown> {
         let imported = e.db().entry(car)?.is_some_and(|x| {
             let t = &x.summary.tally.teslamate;
             t.drives > 0 || t.charges > 0 || x.summary.tally.states > 0 && t.drives + t.charges > 0
@@ -43,13 +43,14 @@ impl Shown {
         Ok(Shown { filter, coverage: imported_coverage(e, car)?, flips: flips(e, car)? })
     }
 
-    pub(crate) fn keep(&self, source: Source, t: u64) -> bool {
+    /// Whether a row of `source` from `inputs`, starting at `t`, is shown.
+    pub(crate) fn keep(&self, source: Source, inputs: Inputs, t: u64) -> bool {
         if let Some(f) = self.filter {
-            return source == f;
+            return f.keeps(source, inputs);
         }
         let flipped = self.flips.iter().find(|f| f.start_ms <= t && t < f.end_ms).map(|f| f.shown.as_str());
         match source {
-            Source::Can => flipped != Some("teslamate"),
+            Source::Live => flipped != Some("teslamate"),
             Source::Teslamate => {
                 let i = self.coverage.partition_point(|s| s.1 <= t);
                 let covered = self.coverage.get(i).is_some_and(|s| s.0 <= t);
@@ -70,9 +71,35 @@ pub struct Overlap {
     pub id: String,
     pub start_ms: u64,
     pub end_ms: u64,
+    /// `can` or `teslamate` (the old words, kept for one release).
     pub shown: String,
+    /// `live` or `import:teslamate`.
+    pub shown_source: String,
+    /// The live side's counts (`can` is the same, kept for one release).
+    pub live: Counts,
+    /// The imported side's counts (`teslamate` is the same, kept for one release).
+    pub imported: Counts,
     pub can: Counts,
     pub teslamate: Counts,
+    /// The two sides, live first.
+    pub sources: Vec<super::SourceRef>,
+}
+
+impl Overlap {
+    fn settle_words(&mut self) {
+        self.shown_source = if self.shown == "teslamate" { "import:teslamate" } else { "live" }.to_string();
+        self.live = self.can.clone();
+        self.imported = self.teslamate.clone();
+    }
+}
+
+/// `shown` as a PATCH may write it: `live` or `can`, `import:teslamate` or `teslamate`. Answers the old word.
+fn shown_word(w: &str) -> Option<&'static str> {
+    match w {
+        "live" | "can" | "smo" => Some("can"),
+        "import:teslamate" | "teslamate" | "import" => Some("teslamate"),
+        _ => None,
+    }
 }
 
 /// The spans the CAN history covers (online or asleep) over `[from, to)`, joined: the state rows stream past a page at
@@ -83,7 +110,7 @@ fn can_coverage(e: &Engine, car: CarId, from: u64, to: u64) -> QResult<Vec<(u64,
         return Ok(out);
     }
     let mut q = db::Query::between(from, to).oldest_first().limit(db::MAX_PAGE);
-    q.source = Some(Source::Can);
+    q.source = Some(Source::Live);
     loop {
         let page = e.db().list::<StateRow>(car, &q)?;
         for s in &page.items {
@@ -174,17 +201,22 @@ fn overlaps_of(e: &Engine, car: CarId, spans: &[(u64, u64)], fl: &[Flip]) -> QRe
             start_ms: a,
             end_ms: b,
             shown,
+            shown_source: String::new(),
+            live: Counts::default(),
+            imported: Counts::default(),
             can: Counts::default(),
             teslamate: tm,
+            sources: super::source_refs(&[model::Origin::Smo, model::Origin::Import(model::ImportSite::Teslamate)]),
         });
     }
     // the CAN side counted over the overlaps only
     can_d.truncate(held.len());
     can_c.truncate(held.len());
-    count_into::<model::Drive>(e, car, Source::Can, &held, &mut can_d)?;
-    count_into::<model::Charge>(e, car, Source::Can, &held, &mut can_c)?;
+    count_into::<model::Drive>(e, car, Source::Live, &held, &mut can_d)?;
+    count_into::<model::Charge>(e, car, Source::Live, &held, &mut can_c)?;
     for (i, o) in items.iter_mut().enumerate() {
         o.can = Counts { drives: can_d.get(i).copied().unwrap_or(0), charges: can_c.get(i).copied().unwrap_or(0) };
+        o.settle_words();
     }
     Ok(items)
 }
@@ -209,9 +241,9 @@ pub fn overlaps(e: &Engine, car: CarId, paging: &Paging) -> QResult<Scoped<List<
 
 /// Flips an overlap (`PATCH /cars/{car}/overlaps` with `{ id, shown }`), found by its start wherever it is in the list.
 pub fn set_overlap(e: &Engine, car: CarId, id: &str, shown: &str) -> QResult<Overlap> {
-    if shown != "can" && shown != "teslamate" {
-        return Err(QueryError::invalid("shown", "can or teslamate"));
-    }
+    let Some(shown) = shown_word(shown) else {
+        return Err(QueryError::invalid("shown", "live or import:teslamate (old words: can, teslamate)"));
+    };
     car_of(e, car)?;
     let none = || QueryError::NotFound("no_such_overlap");
     let start: u64 = id.strip_prefix("overlap:").and_then(|t| t.parse().ok()).ok_or_else(none)?;
@@ -224,6 +256,7 @@ pub fn set_overlap(e: &Engine, car: CarId, id: &str, shown: &str) -> QResult<Ove
     }
     records::put(e.db(), NS, &format!("car/{car}/overlaps"), &fl)?;
     o.shown = shown.to_string();
+    o.settle_words();
     e.emit(crate::Event::Rows {
         car,
         kinds: vec!["drives", "charges", "states", "visits"],
@@ -510,7 +543,7 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
     let mut unknown = Newest::new();
     let mut unknown_ms = 0u64;
     if a < b {
-        super::timeline::each_span(e, car, a, Some(Source::Can), |s| {
+        super::timeline::each_span(e, car, a, Some(Source::Live), |s| {
             if s.start_ms >= b {
                 return Ok(false);
             }
@@ -572,7 +605,9 @@ pub struct Kind {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StorageDay {
     pub series: &'static str,
+    /// The old word (`can`, `tesla_api`, `teslamate`), kept for one release.
     pub source: &'static str,
+    pub sources: Vec<super::SourceRef>,
     pub date: String,
     pub bytes: u64,
 }
@@ -668,24 +703,32 @@ pub fn storage(
     };
     let mut items = Vec::new();
     let (mut series_b, mut curves_b) = (0u64, 0u64);
-    for source in [Source::Can, Source::Teslamate] {
-        for d in db.days::<model::Sample>(car, source)? {
+    for stream in model::Stream::ALL {
+        let word = match stream {
+            model::Stream::Smo => "can",
+            model::Stream::TeslaApi => "tesla_api",
+            model::Stream::Teslamate => "teslamate",
+        };
+        let sources = || super::source_refs(&[stream.origin()]);
+        for d in db.days::<model::Sample>(car, stream)? {
             series_b += d.bytes;
             if want.contains(&"series") && d.bytes > 0 && meets(&d) {
                 items.push(StorageDay {
                     series: "series",
-                    source: super::source_word(source),
+                    source: word,
+                    sources: sources(),
                     date: d.date,
                     bytes: d.bytes,
                 });
             }
         }
-        for d in db.days::<model::ChargePoint>(car, source)? {
+        for d in db.days::<model::ChargePoint>(car, stream)? {
             curves_b += d.bytes;
             if want.contains(&"curves") && d.bytes > 0 && meets(&d) {
                 items.push(StorageDay {
                     series: "curves",
-                    source: super::source_word(source),
+                    source: word,
+                    sources: sources(),
                     date: d.date,
                     bytes: d.bytes,
                 });
@@ -695,7 +738,13 @@ pub fn storage(
     let (logs, logs_b) = log_days(e, &c, tz, a, b);
     if want.contains(&"logs") {
         for (date, bytes) in logs {
-            items.push(StorageDay { series: "logs", source: "can", date, bytes });
+            items.push(StorageDay {
+                series: "logs",
+                source: "can",
+                sources: super::source_refs(&[model::Origin::Smo]),
+                date,
+                bytes,
+            });
         }
     }
     let rows_b = data_dir(e).map_or(0, |d| files_bytes(&d.join("db").join("cars").join(car.to_string())));
@@ -758,9 +807,9 @@ pub fn server_storage(e: &Engine, now_ms: u64) -> QResult<ServerStorage> {
             add(d, *b);
         }
         for d in db
-            .days::<model::Sample>(car, Source::Can)?
+            .days::<model::Sample>(car, Source::Live)?
             .into_iter()
-            .chain(db.days::<model::ChargePoint>(car, Source::Can)?)
+            .chain(db.days::<model::ChargePoint>(car, Source::Live)?)
         {
             series += d.bytes;
             add(&d.date, d.bytes);

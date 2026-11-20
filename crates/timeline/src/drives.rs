@@ -82,7 +82,8 @@ pub(crate) fn make(car: CarId, s: &[&Sample], prev: Option<&Sample>, params: &Pa
         inside_temp_avg_c: mean(s.iter().filter_map(|x| x.inside_temp_c)),
         ascent_m,
         descent_m,
-        source: Source::Can,
+        source: Source::Live,
+        inputs: model::Inputs::SMO,
         rules_version: RULES_VERSION,
     })
 }
