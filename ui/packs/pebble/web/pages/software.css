@@ -1,0 +1,15 @@
+/* Pebble: Software. The version now, one tile per update. */
+.sw-hero { gap: var(--s4); }
+.sw-now { display: flex; flex-direction: column; gap: var(--s2); }
+.sw-ver-big { font-size: var(--f44); line-height: var(--l44); font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.sw-ver-big.is-unknown { color: var(--muted); }
+.sw-list-start > .section-head { padding-left: var(--s1); padding-right: var(--s1); }
+.sw-ver { display: inline-flex; align-items: center; gap: var(--s2); font-variant-numeric: tabular-nums; color: var(--text); text-decoration: none; }
+a.sw-ver { color: var(--coral); }
+a.sw-ver:hover { text-decoration: underline; }
+a.sw-ver .ic { width: var(--ic-sm); height: var(--ic-sm); }
+.sw-ver.is-unknown { color: var(--muted); }
+.sw-nums { grid-template-columns: repeat(auto-fill, minmax(min(100%, round(8rem, var(--e))), 1fr)); gap: var(--s3) var(--s4); }
+.sw-link { font-size: var(--f16); line-height: var(--l16); font-weight: 800; color: var(--coral); text-decoration: none; font-variant-numeric: tabular-nums; }
+a.sw-link:hover { text-decoration: underline; }
+.sw-link.is-zero { color: var(--muted); }

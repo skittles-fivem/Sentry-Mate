@@ -867,7 +867,7 @@ html[data-form="phone"] .brand-name { font-size: var(--f14); line-height: var(--
 .fpill[aria-pressed="true"]:not([aria-checked]) { background: var(--coral-soft); color: var(--coral); box-shadow: none; }
 .fpill[aria-pressed="true"] .ic { color: inherit; }
 /* list pages keep their order: no tile moves up past a day header */
-.bento:is(.page-timeline, .page-drives, .page-trip, .page-logbook, .page-places, .page-travel, .page-charges, .page-software, .page-statistics) { grid-auto-flow: row; }
+.bento:is(.page-timeline, .page-drives, .page-trip, .page-logbook, .page-places, .page-travel, .page-charges, .page-software, .page-statistics, .page-health) { grid-auto-flow: row; }
 .contents { display: contents; }
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3); flex-wrap: wrap; padding: var(--s4) var(--s1) 0; }
 .section-title { font-size: var(--f28); line-height: var(--l28); font-weight: 800; letter-spacing: -0.02em; }
@@ -918,3 +918,8 @@ html[data-form="phone"] .brand-name { font-size: var(--f14); line-height: var(--
 .sub-head { font-size: var(--f20); line-height: var(--l20); font-weight: 800; }
 .tile-nums { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, round(9rem, var(--e))), 1fr)); gap: var(--s4); }
 .tile-nums > div { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+
+/* a link at the right of a tile's head: "Car settings >" on one line */
+.tile-link { display: inline-flex; align-items: center; gap: var(--s1); min-height: var(--h-sm); font-size: var(--f14); line-height: var(--l14); font-weight: 800; color: var(--coral); text-decoration: none; white-space: nowrap; }
+.tile-link:hover { text-decoration: underline; }
+.tile-link .ic { width: var(--ic-sm); height: var(--ic-sm); }
