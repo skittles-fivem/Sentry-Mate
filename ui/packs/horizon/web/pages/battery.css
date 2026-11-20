@@ -66,3 +66,4 @@
 }
 .bt-ref .form { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); align-items: start; gap: 1rem 1.5rem; }
 .bt-ref .form > .form-msg, .bt-ref .form > .form-acts { grid-column: 1 / -1; }
+.bt-acdc-key > span, .bt-band-key > span { line-height: normal; }

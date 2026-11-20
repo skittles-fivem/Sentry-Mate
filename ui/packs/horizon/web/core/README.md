@@ -112,6 +112,13 @@ A page that exports `onQuery(query, ctx)` takes back and forward between its own
 | Logbook | The pit log: numbered drives with purposes, totals per purpose, rules, CSV and PDF |
 | Travel | The world tour: counters, map, cities and regions ranked like a chart show, countries, cities, days in a city, places, stops |
 | Places | The preset bank (the list) and the tuner (the editor) with map, overlaps, prices, effect on history and repricing |
+| Charges | The charging log: trip counters, sessions, missing data; costs, AC and DC, a battery-level heat grid and start-to-end bars on one cursor, level bands, week grid, places map, fast-charge curve |
+| Charge | The charger display: battery fuel gauge from start to end, charge computer, map, synced traces with zoom, the supply, power against battery %, the cost meter and its editor |
+| Battery | The pack cluster: fuel gauge with the everyday band, health dial, capacities and range, lifetime odometer, reference values, capacity history; charge level, projected range and parked drain for the period |
+| Efficiency | Economy dials for net and gross, the energy factor, groups by outside temperature with their drives, another car alongside; temperatures, history, charges and each day |
+| Statistics | Rows per day, week, month or year with sum counters, odometer and distance charts, each car, and milestones as lamps |
+| Software | The version on an LCD face, update counters, the update history (admins name a version) and every car's version |
+| Data health | A car's warning lights, fixes, keys, gaps, what is recorded, storage and signals; on /system the server's storage, cars, health and API errors |
 
 ## Looks and tokens
 
