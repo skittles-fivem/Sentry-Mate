@@ -1,0 +1,7 @@
+{
+  "name": "Checker fixture: pixel",
+  "description": "Pixel check fixtures for ui/tools/check.js --pixel: fleet is right, drives is off by 1 px. Test data only.",
+  "author": "Sentry Mate",
+  "version": "0.0.1",
+  "api": 1
+}

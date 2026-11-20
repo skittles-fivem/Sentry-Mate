@@ -4,7 +4,7 @@
 //   node ui/tools/check.js --pack instrument [--pages fleet,car,...|all] [--sizes 1440x900,3840x2160]
 //        [--out DIR] [--server-args "<dev server flags>"] [--json] [--allow-missing] [--full]
 //        [--fixture-matrix FILE] [--ready-timeout-ms N] [--idle-timeout-ms N] [--jobs N]
-//        [--car ID] [--drive ID] [--charge ID]
+//        [--car ID] [--drive ID] [--charge ID] [--pixel]
 //        [--base https://HOST:PORT --user NAME (--password PW | --password-file FILE)]
 //   node ui/tools/check.js --self-test
 //
@@ -14,6 +14,9 @@
 // that are missing, marked on the wrong page or unknown; console errors; page errors; Content Security
 // Policy violations; failed /api requests; requests to other hosts; horizontal overflow; visible text
 // under 10 CSS px. It saves a screenshot of each. Exit code 0 only when every checked page passes.
+// With --pixel it also measures whether the page is pixel centred and correct (ui/tools/pixel.js): text and
+// icons off centre, rows and columns that just miss, borders off device pixels, text cut off, sticking out,
+// overlapping or hidden, sideways scroll; and saves a screenshot with the bad boxes outlined.
 // With --base it starts no dev server: it signs in to a real `sentry-mate serve` (made-up data only),
 // accepting that server's self-signed certificate for this run only.
 // See ui/tools/README.md. Plain Node (CommonJS) plus Playwright; nothing else.
@@ -27,6 +30,7 @@ const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
+const { pixelChecks, pixelOutline, pixelOutlineRemove } = require('./pixel');
 
 const TOOLS_DIR = __dirname;
 const UI_DIR = path.dirname(TOOLS_DIR);
@@ -44,6 +48,10 @@ const OTHER_ID_GRACE_MS = 2000; // a data-ready value of another page, unchanged
 const QUIET_MS = 500; // "network idle": no request in flight for this long
 const UNREAD_BODY_MS = 1500; // Chromium never finishes a fetch whose body the page does not read
 const LIST_CAP = 100; // entries kept per list and size; the rest are counted
+// --pixel: off centre, or rows that miss, by more than PIXEL_TOL CSS px; near misses up to PIXEL_NEAR px
+// (more than that is taken as meant); a border edge more than PIXEL_FRAC device px off a whole device pixel
+const PIXEL = { tol: 0.5, near: 3, fracTol: 0.05, maxFindings: LIST_CAP };
+const PIXEL_LINES = 15; // pixel findings listed per size in the readable report
 
 // Page id -> routes (contract 3). A page with two routes (health) is loaded at both; its own items
 // may sit on either one, the frame items must be on each.
@@ -540,7 +548,7 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
   const res = {
     size: size.label, ready: { ok: false, value: null, ms: null, landed: null, reason: null },
     missing: [], foreign: [], unknown: [], console: [], pageErrors: [], csp: [], apiFailures: [], outside: [],
-    overflow: null, smallText: null, shot: null, fullShot: null, tiles: 0, notes: [], loadError: null,
+    overflow: null, smallText: null, pixel: null, shot: null, fullShot: null, tiles: 0, notes: [], loadError: null,
     _tokens: new Set(), _dropped: {},
   };
   if (entry.problem) { res.loadError = entry.problem; res.ready.reason = 'not_loaded'; return finish(); }
@@ -561,7 +569,7 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
 
   try {
     context = await browser.newContext({
-      viewport: { width: size.w, height: size.h }, screen: { width: size.w, height: size.h }, deviceScaleFactor: 1,
+      viewport: { width: size.w, height: size.h }, screen: { width: size.w, height: size.h }, deviceScaleFactor: size.scale,
       // a real server's self-signed certificate, for this run (every other host is blocked or answered below)
       ...(server.real ? { ignoreHTTPSErrors: true } : {}),
     });
@@ -701,6 +709,14 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
     } catch (e) {
       res.notes.push(`could not measure the page: ${clip(e.message.split('\n')[0], 200)}`);
     }
+    if (o.pixel) {
+      try {
+        res.pixel = await within(60000, page.evaluate(pixelChecks, PIXEL), 'measuring pixels');
+        res.pixel.shot = null;
+      } catch (e) {
+        res.notes.push(`could not measure pixels: ${clip(e.message.split('\n')[0], 200)}`);
+      }
+    }
 
     // screenshots
     const base = path.join(outDir, `${entry.key}-${size.label}`);
@@ -708,6 +724,15 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
       await page.screenshot({ path: base + '.png', animations: 'disabled', caret: 'hide', timeout: 20000 });
       res.shot = base + '.png';
     } catch (e) { res.notes.push(`no screenshot: ${clip(e.message.split('\n')[0], 200)}`); }
+    if (res.pixel && res.pixel.findings.length) {
+      // the whole page with every listed finding outlined and numbered as in the list
+      try {
+        await within(10000, page.evaluate(pixelOutline, res.pixel.findings.map((f) => ({ n: f.n, kind: f.kind, ...f.box }))), 'outlining');
+        await page.screenshot({ path: base + '-pixel.png', fullPage: true, animations: 'disabled', caret: 'hide', timeout: 30000 });
+        res.pixel.shot = base + '-pixel.png';
+        await within(10000, page.evaluate(pixelOutlineRemove), 'removing the outlines').catch(() => {});
+      } catch (e) { res.notes.push(`no outlined screenshot: ${clip(e.message.split('\n')[0], 200)}`); }
+    }
     if (o.full && sizeIndex === 0) {
       try {
         await page.screenshot({ path: base + '-full.png', fullPage: true, animations: 'disabled', caret: 'hide', timeout: 30000 });
@@ -743,6 +768,7 @@ function failures(r, o) {
   for (const k of ['foreign', 'unknown', 'console', 'pageErrors', 'csp', 'apiFailures', 'outside']) if (r[k].length) f.push(k);
   if (r.overflow && (r.overflow.document || r.overflow.count)) f.push('overflow');
   if (r.smallText && r.smallText.count) f.push('smallText');
+  if (o.pixel && (!r.pixel || r.pixel.count)) f.push('pixel');
   return f;
 }
 
@@ -849,6 +875,7 @@ async function run(o) {
       sizes: o.sizes.map((s) => s.label),
       out: outDir,
       allowMissing: !!o.allowMissing,
+      pixel: !!o.pixel,
       pages,
       pass: pages.every((p) => p.pass),
     };
@@ -874,6 +901,7 @@ const COLUMNS = [
   ['overflow', (s) => (!s.overflow ? '?' : s.overflow.document || s.overflow.count ? 'yes' : 'no')],
   ['small text', (s) => (!s.smallText ? '?' : s.smallText.count)],
 ];
+const PIXEL_COLUMN = ['pixel', (s) => (!s.pixel ? '?' : s.pixel.count)];
 
 const listOf = (arr, n, f = String) => arr.slice(0, n).map(f).join(', ') + (arr.length > n ? `, and ${arr.length - n} more` : '');
 
@@ -906,6 +934,11 @@ function details(s, pageId) {
   if (s.overflow && s.overflow.document) d.push(`overflow: the page is ${s.overflow.scrollWidth} px wide in a ${s.overflow.clientWidth} px window`);
   if (s.overflow && s.overflow.count) d.push(`overflow: ${plural(s.overflow.count, 'element')} cut by the window edge: ${listOf(s.overflow.elements, 3, (e) => `${e.selector} (${e.left} to ${e.right} px)`)}`);
   if (s.smallText && s.smallText.count) d.push(`small text: ${plural(s.smallText.count, 'text')} under ${MIN_TEXT_PX} px; smallest: ${s.smallText.smallest.map((t) => `${t.px} px ${t.selector} "${clip(t.text, 30)}"`).join('; ')}`);
+  if (s.pixel && s.pixel.count) {
+    d.push(`pixel: ${plural(s.pixel.count, 'problem')}${s.pixel.shot ? `, outlined in ${rel(s.pixel.shot)}` : ''}`);
+    for (const f of s.pixel.findings.slice(0, PIXEL_LINES)) d.push(`pixel: ${f.kind} ${f.selector}: ${f.what}`);
+    if (s.pixel.count > PIXEL_LINES) d.push(`pixel: and ${s.pixel.count - PIXEL_LINES} more${s.pixel.count > s.pixel.findings.length ? ` (${s.pixel.findings.length} in --json)` : ' (all in --json)'}`);
+  }
   for (const n of s.notes) d.push(`note: ${n}`);
   if (s.dropped) d.push(`not listed: ${Object.entries(s.dropped).map(([k, n]) => `${n} more ${k}`).join(', ')}`);
   return d;
@@ -924,8 +957,9 @@ function formatReport(rep) {
     if (p.pass) pass++;
     if (warned) warn++;
     L.push(`${p.pass ? (warned ? 'WARN' : 'PASS') : 'FAIL'}  ${p.id}  ${p.url}`);
-    const rows = [COLUMNS.map(([h]) => h), ...p.sizes.map((s) => COLUMNS.map(([, f]) => String(f(s))))];
-    const widths = COLUMNS.map((_, i) => Math.max(...rows.map((r) => r[i].length)));
+    const cols = rep.pixel ? [...COLUMNS, PIXEL_COLUMN] : COLUMNS;
+    const rows = [cols.map(([h]) => h), ...p.sizes.map((s) => cols.map(([, f]) => String(f(s))))];
+    const widths = cols.map((_, i) => Math.max(...rows.map((r) => r[i].length)));
     for (const r of rows) L.push('  ' + r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd());
     // detail lines, once for the sizes that share them
     const bySize = p.sizes.map((s) => details({ ...s, url: p.url }, p.id));
@@ -1012,14 +1046,49 @@ async function selfTest(o) {
   expect('a missing item fails without --allow-missing', !strict.pass && strict.pages[0].sizes[0].missing.join() === 'fx.fleet.extra');
   expect('a missing item only warns with --allow-missing', lenient.pass && /WARN {2}fleet/.test(formatReport(lenient)));
 
+  // --pixel: the same cases right (fleet) and off by 1 px (drives), at scale 1 and on a phone at scale 3
+  const px = await run({
+    ...common, packDir: path.join(FIXTURES_DIR, 'pack-pixel'), pages: 'fleet,drives', sizes: parseSizes('1280x800,390x844@3'),
+    full: false, pixel: true,
+  });
+  expect('390x844@3 is a phone size at device scale 3', px.sizes[1] === '390x844@3' && px.pages[0].sizes[1].pixel && px.pages[0].sizes[1].pixel.dpr === 3);
+  const good = find(px, 'fleet'), off = find(px, 'drives');
+  expect('pixel: the right cases pass with --pixel', good && good.pass);
+  for (const s of good ? good.sizes : []) expect(`pixel: nothing reported on the right cases at ${s.size}${s.pixel && s.pixel.count ? ` (got: ${s.pixel.findings.map((f) => `${f.kind} ${f.selector}`).join('; ')})` : ''}`, s.pixel && s.pixel.count === 0 && !s.pixel.shot);
+  expect('pixel: the cases off by 1 px fail', off && !off.pass && every(off, (s) => s.fails.includes('pixel')));
+  const has = (s, kind, part, lo, hi) => s.pixel && s.pixel.findings.some((f) => f.kind === kind && f.selector.includes(part) && (lo == null || (f.by >= lo && f.by <= hi)));
+  const want = [
+    ['text 1 px right of centre (text-align)', 'centre', 'badge.bad', 0.9, 1.1],
+    ['button text 1 px below centre', 'centre', 'chip.bad', 0.9, 1.1],
+    ['icon 1 px low in a flex box', 'centre', 'svg.glyph', 0.9, 1.1],
+    ['initials 1 px left in a flex box', 'centre', 'avatar.bad', 0.9, 1.1],
+    ['centred text 1 px left of a 2 px spacer', 'centre', 'empty.bad', 0.9, 1.1],
+    ['a field 1 px lower in a row', 'row', 'f-select', 0.9, 1.1],
+    ['a table cell 1 px lower', 'row', 'td.c2', 0.9, 1.1],
+    ['a stacked block 2 px in', 'column', 'div.s2', 1.9, 2.1],
+    ['a border on a half pixel', 'fraction', 'frac.bad'],
+    ['a 1 px line on a half pixel', 'fraction', 'rule.bad'],
+    ['text cut off', 'clip', 'clipbox.bad'],
+    ['text sticking out of its box', 'overflow', 'over.bad'],
+    ['text on text', 'overlap', 'labels.bad'],
+    ['text under an opaque box', 'hidden', 'covered'],
+    ['sideways scroll', 'scroll', 'html'],
+  ];
+  for (const [what, kind, part, lo, hi] of want) expect(`pixel: ${what} reported (${kind})`, every(off, (s) => has(s, kind, part, lo, hi)));
+  expect('pixel: nothing right is reported on the bad page', every(off, (s) => s.pixel.findings.every((f) => !/\.ok\b|\bstretch\b|tight|sr-only/.test(f.selector))));
+  expect('pixel: an outlined screenshot of the problems', every(off, (s) => s.pixel.shot && fs.existsSync(s.pixel.shot)));
+  expect('pixel: the report lists kind, selector and by how much', /pixel: centre [^\n]*badge\.bad: text (0\.9|1\.0)\d px right of the centre/.test(formatReport(px)));
+  expect('pixel: no pixel column or check without --pixel', ok.pages.every((p) => p.sizes.every((s) => s.pixel === null)) && !/ pixel\n/.test(formatReport(ok)));
+
   const failed = checks.filter((c) => !c.ok);
   const L = checks.map((c) => `${c.ok ? 'ok  ' : 'FAIL'}  ${c.what}`);
   L.push('', failed.length ? `self-test failed: ${failed.length} of ${checks.length} checks` : `self-test passed: ${checks.length} checks`);
   if (failed.length) {
     L.push('', 'pack-bad report:', formatReport(bad));
     if (!ok.pass) L.push('pack-ok report:', formatReport(ok));
+    L.push('pack-pixel report:', formatReport(px));
   }
-  return { pass: failed.length === 0, text: L.join('\n') + '\n', reports: { ok, bad } };
+  return { pass: failed.length === 0, text: L.join('\n') + '\n', reports: { ok, bad, pixel: px } };
 }
 
 // ------------------------------------------------------------------ command line
@@ -1029,7 +1098,7 @@ const HELP = `Usage: node ui/tools/check.js --pack <name or folder> [options]
 
   --pack NAME|DIR        a pack in ui/packs (instrument) or a pack folder with web/
   --pages LIST|all       page ids, comma separated (default all: every page of the matrix plus sign-in, setup)
-  --sizes WxH,...        window sizes (default ${DEFAULT_SIZES})
+  --sizes WxH[@S],...    window sizes, @S a device scale (390x844@3 is a phone; default ${DEFAULT_SIZES})
   --out DIR              screenshots go to DIR/<pack>/ (default UI_CHECK_OUT, else a new private ${DEFAULT_OUT_PREFIX}XXXXXX)
   --server-args "..."    extra dev server flags, e.g. "--cars 200 --latency-ms 150"
   --json                 print one JSON object instead of the table
@@ -1040,20 +1109,25 @@ const HELP = `Usage: node ui/tools/check.js --pack <name or folder> [options]
   --idle-timeout-ms N    how long to wait for the network to go quiet after that (default 10000)
   --jobs N               pages checked at the same time (default 2)
   --car ID, --drive ID, --charge ID   open these instead of the first car and its newest drive and charge
+  --pixel                also check that the page is pixel centred and correct (off-centre text and icons, rows
+                         and columns that just miss, borders off device pixels, cut, sticking out, overlapping or
+                         hidden text, sideways scroll), with an outlined screenshot of the problems
   --base URL             a real sentry-mate serve (https://127.0.0.1:PORT) instead of the dev server; its
                          self-signed certificate is accepted for this run only (see ui/tools/README.md)
   --user NAME            the account to sign in with on --base (the pack becomes its own UI pack)
   --password PW, --password-file FILE   its password (or set UI_CHECK_PASSWORD)
-  --self-test            check both fixtures in ui/tools/fixtures and assert the results
+  --self-test            check the fixtures in ui/tools/fixtures and assert the results
 
 Exit code 0 when every checked page passes, 1 when one fails, 2 on a usage or start-up error.
 `;
 
 function parseSizes(s) {
   const sizes = String(s).split(',').map((x) => x.trim()).filter(Boolean).map((x) => {
-    const m = /^(\d{2,5})x(\d{2,5})$/.exec(x);
-    if (!m) throw new UsageError(`bad size "${x}": use WIDTHxHEIGHT, e.g. 1440x900`);
-    return { w: +m[1], h: +m[2], label: `${+m[1]}x${+m[2]}` };
+    const m = /^(\d{2,5})x(\d{2,5})(?:@(\d+(?:\.\d+)?))?$/.exec(x);
+    if (!m) throw new UsageError(`bad size "${x}": use WIDTHxHEIGHT or WIDTHxHEIGHT@SCALE, e.g. 1440x900 or 390x844@3`);
+    const scale = m[3] === undefined ? 1 : +m[3];
+    if (!(scale >= 1 && scale <= 4)) throw new UsageError(`bad size "${x}": the device scale must be 1 to 4`);
+    return { w: +m[1], h: +m[2], scale, label: `${+m[1]}x${+m[2]}${scale !== 1 ? '@' + scale : ''}` };
   });
   if (!sizes.length) throw new UsageError('--sizes names no size');
   return sizes;
@@ -1062,7 +1136,7 @@ function parseSizes(s) {
 function parseArgs(argv) {
   const o = {
     pack: null, pages: 'all', sizes: DEFAULT_SIZES, out: null, serverArgs: '', json: false, allowMissing: false,
-    full: false, fixtureMatrix: null, selfTest: false, readyTimeoutMs: '20000', idleTimeoutMs: '10000', jobs: '2',
+    full: false, pixel: false, fixtureMatrix: null, selfTest: false, readyTimeoutMs: '20000', idleTimeoutMs: '10000', jobs: '2',
     car: null, drive: null, charge: null, help: false, base: null, user: null, password: null, passwordFile: null,
   };
   const values = {
@@ -1071,7 +1145,7 @@ function parseArgs(argv) {
     '--jobs': 'jobs', '--car': 'car', '--drive': 'drive', '--charge': 'charge',
     '--base': 'base', '--user': 'user', '--password': 'password', '--password-file': 'passwordFile',
   };
-  const flags = { '--json': 'json', '--allow-missing': 'allowMissing', '--full': 'full', '--self-test': 'selfTest', '--help': 'help', '-h': 'help' };
+  const flags = { '--json': 'json', '--allow-missing': 'allowMissing', '--full': 'full', '--pixel': 'pixel', '--self-test': 'selfTest', '--help': 'help', '-h': 'help' };
   for (let i = 0; i < argv.length; i++) {
     let a = argv[i];
     let v;
@@ -1133,7 +1207,7 @@ async function main() {
   o.log = (line) => process.stderr.write(line + '\n');
   if (o.selfTest) {
     const r = await selfTest(o);
-    if (o.json) process.stdout.write(JSON.stringify({ pass: r.pass, ok: r.reports.ok, bad: r.reports.bad }, null, 2) + '\n');
+    if (o.json) process.stdout.write(JSON.stringify({ pass: r.pass, ok: r.reports.ok, bad: r.reports.bad, pixel: r.reports.pixel }, null, 2) + '\n');
     else process.stdout.write(r.text);
     return r.pass ? 0 : 1;
   }

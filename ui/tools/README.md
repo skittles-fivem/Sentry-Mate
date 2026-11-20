@@ -11,23 +11,25 @@
 node ui/tools/check.js --pack instrument                       # every page, at 1440x900 and 3840x2160
 node ui/tools/check.js --pack instrument --pages fleet,drives --sizes 1280x800
 node ui/tools/check.js --pack instrument --allow-missing --json > report.json
+node ui/tools/check.js --pack instrument --pixel --sizes 1440x900,3840x2160,390x844@3   # pixel centred and correct?
 node ui/tools/check.js --self-test                             # checks the checker
 ```
 
 It starts the dev API server (`ui/devserver/serve.py --pack <pack> --port 0`) and opens each page in a new
-Chromium window of each size, at device scale 1. When it is done it stops the server and the browser,
+Chromium window of each size, at device scale 1 unless the size names another (`390x844@3`). When it is done it stops the server and the browser,
 also on Ctrl-C and on errors. It needs Node and the Playwright that is already installed; nothing else.
 
 | Option | Default | What it does |
 |---|---|---|
 | `--pack NAME\|DIR` | (required) | A pack in `ui/packs` (`instrument`) or any folder with `web/`. |
 | `--pages LIST\|all` | `all` | Page ids, comma separated. `all` is every page of the matrix plus `sign-in` and `setup`. |
-| `--sizes WxH,...` | `1440x900,3840x2160` | Window sizes. |
+| `--sizes WxH[@S],...` | `1440x900,3840x2160` | Window sizes. `@S` is the device scale (1 to 4): `390x844@3` is a phone, `1440x900@2` a laptop screen at scale 2. |
 | `--out DIR` | `UI_CHECK_OUT`, else a new private folder in the system temp folder (`sentry-mate-ui-check-XXXXXX`, made for the run) | Screenshots go to `DIR/<pack>/`. |
 | `--server-args "..."` | none | More dev server flags, e.g. `"--cars 200 --latency-ms 150 --role watch"`. |
 | `--json` | off | Print one JSON object instead of the table. Progress lines still go to stderr. |
 | `--allow-missing` | off | Missing items only warn; the page can still pass. |
 | `--full` | off | Also a full-page screenshot at the first size. |
+| `--pixel` | off | Also the pixel checks (below): fails a page that is not pixel centred and correct, and saves a screenshot with the problems outlined. |
 | `--fixture-matrix FILE` | `docs/parity/coverage-matrix.json` | Another coverage matrix (the fixtures use `fixtures/matrix.json`). |
 | `--ready-timeout-ms N` | `20000` | How long to wait for the page to say it is ready. |
 | `--idle-timeout-ms N` | `10000` | How long to wait after that for the network to go quiet. |
@@ -103,6 +105,8 @@ Each page and size is checked in a fresh browser window, then gets a screenshot.
 | **overflow** | The page is wider than the window (`scrollWidth > clientWidth + 1`), or an element is cut by the left or right edge of the window. An element inside a box that hides or scrolls its overflow only counts if that box is cut. |
 | **small text** | Visible text is smaller than 10 CSS px: the computed font size, scaled by an SVG `viewBox` or a shrinking transform. The 5 smallest are listed with a selector. Hidden, transparent and off-page text is left out. |
 
+| **pixel** | Only with `--pixel`: a pixel check found a problem (see "Pixel checks"). |
+
 Under the table, lines explain each problem; a line shared by every size is printed once as `all sizes:`.
 `note:` lines are warnings that do not fail the page: the network still busy at the end, or a script, style
 sheet, font or image that came back as the pack's `index.html` (a missing file or a relative path that the
@@ -125,11 +129,14 @@ Status per page: **PASS**, **WARN** (passes, with missing items under `--allow-m
       apiFailures: [{ method, url, status, code, error? }], outside: [{ url, method, type }],
       overflow: { document, scrollWidth, clientWidth, count, elements: [{ selector, left, right, width }] },
       smallText: { count, smallest: [{ px, selector, text }] },
+      pixel: null | { count, dpr, elements, texts, ms, shot,
+        findings: [{ n, kind, selector, what, by, box: { x, y, w, h } }] },
       shot, fullShot, tiles, covered, notes: [text], ms, dropped? }] }] }
 ```
 
 `fails` names the checks that failed (`load`, `ready`, `missing`, `foreign`, `unknown`, `console`,
-`pageErrors`, `csp`, `apiFailures`, `outside`, `overflow`, `smallText`). `covered` is the number of distinct
+`pageErrors`, `csp`, `apiFailures`, `outside`, `overflow`, `smallText`, and `pixel` with `--pixel`). The report
+also has `pixel: true|false`. `pixel` per size is `null` without `--pixel`. `covered` is the number of distinct
 `data-cover` ids found. Lists keep 100 entries; `dropped` counts the rest.
 
 ### What it cannot see
@@ -141,10 +148,53 @@ Status per page: **PASS**, **WARN** (passes, with missing items under `--allow-m
 - Chromium never finishes a request whose body the page does not read, so such a request stops counting
   as open 1.5 s after its answer arrives.
 
+### Pixel checks (`--pixel`)
+
+With `--pixel` the checker measures each page in the browser (`pixel.js`), after the other checks, and lists
+every problem with the element (a selector), what is wrong and by how much in CSS px (`by`). A page with any
+problem fails. Measuring takes a few milliseconds on a normal page and about 2 s on a page of 40,000 elements.
+Then it outlines each listed problem on the page, with its number and kind, takes a full-page screenshot
+(`<page>-<size>-pixel.png`, in `pixel.shot`) and removes the outlines again. The readable report shows the first
+15 problems per size; `--json` has up to 100 (`count` has them all).
+
+"Off" means more than 0.5 CSS px. Layout works in 1/64 px, so 0.5 itself passes.
+
+| Kind | Reported when |
+|---|---|
+| `centre` | Text or an icon is off the centre of the box that centres it. Boxes that centre: a box with `text-align: center` that holds only inline content (buttons, badges, chips, table cells, empty states), checked line by line across; a flex box with `justify-content: center` (the items together, along the row) or `align-items` / `align-self: center` (each item, across the row); a grid of one cell with one child centred by `justify-*` / `align-*` / `place-*`. The box is the inside of the borders when you can see it (a background, a border all round or a shadow), else the content box. Up and down is only checked for a box you can see with one line in it, at most about twice the text's height. |
+| `row` | Items in one row (flex row items, grid items, table cells, inline blocks and form fields side by side) whose tops, centres, bottoms and baselines all miss the item before by more than 0.5 px and at least one by no more than 3 px. More than 3 px is taken as meant. Table cells compare what is in them. |
+| `column` | Blocks stacked one under the other in one parent whose left edges differ by more than 0.5 and up to 3 px, when their centres and right edges do not line up either (centred or right-aligned blocks are meant). |
+| `fraction` | A border, or a 1 px line (a box at most 1.5 px thick with a background), has an edge or a width off a whole device pixel by more than 0.05 device px: `getBoundingClientRect() * devicePixelRatio`. Checked at the scale of the size; add a size at `@2` to check scale 2. Turned (rotated) boxes are left out. |
+| `clip` | Text cut off by a box that hides its overflow (`hidden` or `clip`), partly: text cut off completely is taken as hidden on purpose. Cut with `text-overflow: ellipsis` or `-webkit-line-clamp` is meant and not reported; nor is text in a 1 px box or under `clip` / `clip-path` (screen reader text), nor text in a box that scrolls. |
+| `overflow` | Text sticks out of its own box (its nearest block, inline-block, flex item or cell) when that box lets it show. |
+| `overlap` | Text on other text, or on an icon (`svg`, `img` or `canvas` up to 64 x 64 px), by more than 1 x 1 px. |
+| `hidden` | Text under another element: `elementFromPoint` at three points of each line finds something on top that you can see (a background at least half opaque, an image, an icon, a form field). Only in the window. |
+| `scroll` | The page scrolls sideways. |
+
+How text is measured:
+
+- Text is the box of its words from `Range.getClientRects` (the text box of the font: ascent to descent), with
+  the spaces left out, so a space at a line end never counts. Inline elements with a background, border or
+  side padding count with those.
+- Up and down, text is centred when its text box is centred in the box. CSS puts the text box in the middle of
+  its line, but Chromium rounds the space above it down to a whole pixel: with a line height whose difference
+  from the text box is odd, text sits 0.5 px high (passes); with a line height like `1.2` on an 11 px font it can
+  sit about 0.6 to 1 px high, and is reported. Whole-pixel line heights avoid it.
+- A text box taller than its line height counts as the line height high for overlaps; for cutting and
+  sticking out up and down its extra height is slack (the glyphs still fit the line).
+- Baselines (for `row`) are the bottom of the first word's text box less the font's descent (from canvas
+  `measureText`, rounded to device pixels like the layout).
+- An icon is the box of the element (`svg`, `img`, an inline block without text).
+
+What it cannot see: a `::before` or `::after` in the flow (a box with one is not checked for centring), text drawn
+on a canvas or in an SVG, the inside of an icon's drawing, anything under an element with `pointer-events: none`
+or text with it (for `hidden`), a bar that is `fixed` or `sticky` on top of text (the page scrolls under it; not
+reported), and where a designer moved something on purpose by a pixel or two to look right.
+
 ## Fixtures and the self-test
 
-`fixtures/pack-ok` and `fixtures/pack-bad` are tiny packs on the dev server, with their own small matrix
-(`fixtures/matrix.json`). The ok pack passes every check, with a map tile, an open event stream and an
+`fixtures/pack-ok`, `fixtures/pack-bad` and `fixtures/pack-pixel` are tiny packs on the dev server, with their
+own small matrix (`fixtures/matrix.json`). The ok pack passes every check, with a map tile, an open event stream and an
 expected `401` on the sign-in page. The bad pack breaks each check on purpose (its `app.js` lists which page
 breaks which). Check one by hand:
 
@@ -153,6 +203,15 @@ node ui/tools/check.js --pack ui/tools/fixtures/pack-bad --fixture-matrix ui/too
   --pages fleet,drives,drive,charge,health,sign-in,setup --ready-timeout-ms 3000
 ```
 
-`node ui/tools/check.js --self-test` checks both packs at two sizes and asserts that the ok pack passes
+`fixtures/pack-pixel` has the same small cases twice: right on `fleet`, off on purpose (mostly by 1 px) on
+`drives`; its `app.js` and `app.css` say which case breaks what. Every size in it is a whole pixel.
+
+```bash
+node ui/tools/check.js --pack ui/tools/fixtures/pack-pixel --fixture-matrix ui/tools/fixtures/matrix.json \
+  --pages fleet,drives --sizes 1280x800,390x844@3 --pixel
+```
+
+`node ui/tools/check.js --self-test` checks the ok and bad packs at two sizes and asserts that the ok pack passes
 and the bad one reports every kind of failure, then that `--allow-missing` turns a missing item into a
-warning. It prints one line per assertion and exits `0` when all hold.
+warning, then checks the pixel pack with `--pixel` at 1280x800 and at 390x844@3 and asserts that the right
+cases report nothing and each case off by 1 px is found, with how much. It prints one line per assertion and exits `0` when all hold.
