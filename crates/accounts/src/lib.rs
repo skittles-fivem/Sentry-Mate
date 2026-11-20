@@ -405,11 +405,17 @@ fn valid_pack(id: &str) -> Result<String> {
 
 const SETUP_SYMBOLS: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-fn normalize_setup_code(typed: &str) -> String {
-    typed
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .map(|c| match c.to_ascii_uppercase() {
+/// What the setup code is printed with in front (`SETUP-XXXX-...`): it may be typed or left out.
+pub const SETUP_PREFIX: &str = "SETUP";
+
+/// The setup code as typed, in the form it is checked in: case, spaces, dashes and the [`SETUP_PREFIX`] in front
+/// don't matter, and `O`, `I` and `L` read as `0` and `1`. (The code itself never has a `U`, so a code can't start
+/// with `SETUP`.)
+pub fn normal_setup_code(typed: &str) -> String {
+    let text: String = typed.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).collect();
+    let text = text.strip_prefix(SETUP_PREFIX).unwrap_or(&text);
+    text.chars()
+        .map(|c| match c {
             'O' => '0',
             'I' | 'L' => '1',
             c => c,
@@ -608,9 +614,10 @@ impl Accounts {
         }
         let raw = random::<20>()?;
         let symbols: String = raw.iter().map(|b| SETUP_SYMBOLS[usize::from(b & 31)] as char).collect();
-        let code = Zeroizing::new(
-            symbols.as_bytes().chunks(5).map(|c| String::from_utf8_lossy(c).into_owned()).collect::<Vec<_>>().join("-"),
-        );
+        // SETUP-XXXX-XXXX-XXXX-XXXX-XXXX (only the 20 symbols count)
+        let groups = symbols.as_bytes().chunks(4).map(|c| String::from_utf8_lossy(c).into_owned());
+        let code =
+            Zeroizing::new(std::iter::once(SETUP_PREFIX.to_string()).chain(groups).collect::<Vec<_>>().join("-"));
         let expires_ms = self.now() + SETUP_CODE_MS;
         vault::write_private(code_file, format!("{}\n", code.as_str()).as_bytes())?;
         let state = SetupState { sha256: sha256_hex(&symbols), expires_ms, file: code_file.to_path_buf() };
@@ -630,7 +637,7 @@ impl Accounts {
         let name = valid_name(name)?;
         check_password(&name, password)?;
         self.throttle.begin(&keys, self.now())?;
-        let given = sha256_hex(&normalize_setup_code(code));
+        let given = sha256_hex(&normal_setup_code(code));
         if let Err(e) = self.check_setup_code(&given) {
             if matches!(e, Error::WrongSetupCode) {
                 self.record(None, Some(client), "setup-code-wrong", "")?;

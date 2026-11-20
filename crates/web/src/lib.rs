@@ -333,8 +333,8 @@ impl AppState {
         let file = self.setup_code_file.clone().unwrap_or_else(|| self.dir.join("SETUP-CODE.txt"));
         let code = self.accounts.start_setup(&file)?;
         tracing::warn!(
-            "No account yet. Open the web page and set up the first admin with this one-time code (valid 24 hours, \
-             also in {}): {}",
+            "No account yet: open the web page and type this one-time code there (valid 24 hours, also in {}). \
+             first-run set-up code: {}",
             file.display(),
             code.code.as_str()
         );

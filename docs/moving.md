@@ -79,8 +79,8 @@ the old server could not prove itself. Carrying on takes a code from the same ol
 
 **Settings → Server and access → Download export file**, and your password again. The server prepares the file in
 a few seconds (uploads wait for those seconds), then the browser downloads it; a cut download carries on. The file
-is kept for a day after the last download. On the new server, choose **Restore from an export file** on the first
-page.
+is kept for a day after it was made or last downloaded, and a week at most. On the new server, choose **Restore
+from an export file** on the first page.
 
 ### Undo the move
 

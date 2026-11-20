@@ -49,7 +49,10 @@ fn cookie_header(r: &web::testkit::Res) -> Vec<&str> {
 async fn setup_sign_in_and_out() {
     let s = server().await;
     let mut c = s.client();
-    assert_eq!(c.get("/api/v1/setup").await.json(), json!({ "needs_setup": true }));
+    // no move side here: only fresh or set up, never a claim or a job
+    let fresh =
+        json!({ "needs_setup": true, "state": "fresh", "claimed": false, "claim_expires_ms": null, "job": null });
+    assert_eq!(c.get("/api/v1/setup").await.json(), fresh);
     assert_eq!(c.get("/api/v1/me").await.code().as_deref(), Some("not_signed_in"));
     // the code printed in the log, and the file the owner reads
     assert!(!s.setup_code.is_empty());
@@ -63,7 +66,9 @@ async fn setup_sign_in_and_out() {
     assert!(r.json()["error"]["fields"]["password"].is_string());
     let r = c.post("/api/v1/setup", json!({ "code": s.setup_code, "name": ADMIN, "password": ADMIN_PASSWORD })).await;
     assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["status"], "done");
     assert_eq!(r.json()["me"]["role"], "admin");
+    assert_eq!(r.json().get("recovery_key"), Some(&serde_json::Value::Null), "no move side: no key file to read");
     let set = cookie_header(&r);
     assert!(
         set.iter().any(|c| c.starts_with("__Host-sentry-mate=sms_")
@@ -73,7 +78,9 @@ async fn setup_sign_in_and_out() {
             && c.contains("Path=/")),
         "{set:?}"
     );
-    assert_eq!(c.get("/api/v1/setup").await.json(), json!({ "needs_setup": false }));
+    let done =
+        json!({ "needs_setup": false, "state": "set_up", "claimed": false, "claim_expires_ms": null, "job": null });
+    assert_eq!(c.get("/api/v1/setup").await.json(), done);
     let r =
         c.post("/api/v1/setup", json!({ "code": s.setup_code, "name": "second", "password": ADMIN_PASSWORD })).await;
     assert_eq!(r.code().as_deref(), Some("setup_done"));

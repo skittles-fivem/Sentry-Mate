@@ -148,7 +148,7 @@ the same as 568:568.
    ... INFO sentry_mate: CAN Bridge uploads on https://0.0.0.0:10100/api/can/logs (TLS 1.3), certificate SHA-256 <64 hex digits>, vault <id>
    ... INFO sentry_mate: no upload token yet: make one with `docker exec sentry-mate /sentry-mate token new --car "My car"`
    ... INFO sentry_mate: web UI on https://0.0.0.0:10101/ (TLS 1.3), the same certificate
-   ... WARN web: No account yet. Open the web page and set up the first admin with this one-time code (valid 24 hours, also in /keys/SETUP-CODE.txt): <code>
+   ... WARN web: No account yet: open the web page and type this one-time code there (valid 24 hours, also in /keys/SETUP-CODE.txt). first-run set-up code: SETUP-<code>
    ```
 
 4. Take the recovery key:

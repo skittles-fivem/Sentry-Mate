@@ -405,8 +405,17 @@ async fn the_old_one_call_set_up_waits_for_a_restore() {
     let k = kit().await;
     let mut c = claimed(&k).await;
     assert_eq!(c.post(URL, start_body(&k, "a.smexport")).await.status, 201);
-    // no claim: the set-up code, a name and a password in one call
+    // GET /setup says a restore runs: to every browser, with the job only for the one that holds the claim
     let mut other = k.s.client();
+    let g = other.get("/api/v1/setup").await.json();
+    assert_eq!(
+        g,
+        json!({ "needs_setup": true, "state": "restoring", "claimed": false, "claim_expires_ms": null, "job": null })
+    );
+    let g = c.get("/api/v1/setup").await.json();
+    assert_eq!((g["state"].as_str(), g["claimed"].as_bool()), (Some("restoring"), Some(true)), "{g}");
+    assert_eq!((g["job"]["kind"].as_str(), g["job"]["state"].as_str()), (Some("restore"), Some("uploading")), "{g}");
+    // no claim: the set-up code, a name and a password in one call
     let r = other
         .post(
             "/api/v1/setup",

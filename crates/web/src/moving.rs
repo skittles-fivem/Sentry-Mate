@@ -55,8 +55,10 @@ pub const CLAIM_COOKIE: &str = "__Host-sentry-mate-setup";
 pub const CLAIM_MS: u64 = 3_600_000;
 /// Wrong set-up codes from one address in a minute before `429`.
 pub const MAX_WRONG_CODES: usize = 10;
-/// An export file is kept this long after it was made.
+/// An export file is kept this long after it was made or last downloaded ...
 pub const EXPORT_KEPT_MS: u64 = 24 * 3_600_000;
+/// ... and never longer than this after it was made.
+pub const EXPORT_KEPT_MOST_MS: u64 = 7 * EXPORT_KEPT_MS;
 /// The pause of an export's snapshot waits at most this long for the writes under way.
 pub const EXPORT_WAIT: Duration = Duration::from_secs(30);
 
@@ -139,6 +141,16 @@ struct ExportSlot {
     snapshot: Option<Arc<moving::Snapshot>>,
     error: Option<String>,
     sent_bytes: u64,
+    /// When a download of it last started.
+    last_download_ms: Option<u64>,
+}
+
+impl ExportSlot {
+    /// When the file goes: a day after it was made or last downloaded, a week after it was made at most.
+    fn expires_ms(&self) -> u64 {
+        let from = self.last_download_ms.unwrap_or(0).max(self.made_ms);
+        (from + EXPORT_KEPT_MS).min(self.made_ms + EXPORT_KEPT_MOST_MS)
+    }
 }
 
 impl MoveSite {
@@ -389,8 +401,9 @@ async fn undo_move(State(app): State<AppState>, Admin(v): Admin, body: JsonBody)
 // ---------------------------------------------------------------- export files
 
 fn export_view(e: &ExportSlot, now: u64) -> Value {
-    let expires = e.made_ms + EXPORT_KEPT_MS;
+    let expires = e.expires_ms();
     let state = match (&e.snapshot, &e.error) {
+        (_, Some(err)) if err == EXPIRED => "expired",
         (_, Some(_)) => "failed",
         (None, None) => "preparing",
         (Some(_), None) if now >= expires => "expired",
@@ -414,14 +427,17 @@ fn export_view(e: &ExportSlot, now: u64) -> Value {
     })
 }
 
+/// The `error` of an export file that was kept its time.
+const EXPIRED: &str = "expired";
+
 /// Drops an expired snapshot (its folder goes with it).
 fn tidy_export(st: &mut SiteState, now: u64) {
     if let Some(e) = &mut st.export
         && e.snapshot.is_some()
-        && now >= e.made_ms + EXPORT_KEPT_MS
+        && now >= e.expires_ms()
     {
         e.snapshot = None;
-        e.error = Some("expired".into());
+        e.error = Some(EXPIRED.into());
     }
 }
 
@@ -448,7 +464,14 @@ async fn make_export(State(app): State<AppState>, Admin(v): Admin, body: JsonBod
             return Err(ApiError::conflict("export_preparing", "An export file is being made; wait for it."));
         }
         // the one there was goes (its snapshot is removed when the last download of it ends)
-        st.export = Some(ExportSlot { id: id.clone(), made_ms: now, snapshot: None, error: None, sent_bytes: 0 });
+        st.export = Some(ExportSlot {
+            id: id.clone(),
+            made_ms: now,
+            snapshot: None,
+            error: None,
+            sent_bytes: 0,
+            last_download_ms: None,
+        });
     }
     let (s2, app2, id2) = (s.clone(), app.clone(), id.clone());
     tokio::task::spawn_blocking(move || {
@@ -544,7 +567,10 @@ async fn export_file(
         tidy_export(&mut st, now);
         let e = st.export.as_mut().filter(|e| e.id == id).ok_or_else(|| ApiError::not_found("export_gone"))?;
         match (&e.snapshot, &e.error) {
-            (Some(snap), None) => snap.clone(),
+            (Some(snap), None) => {
+                e.last_download_ms = Some(now);
+                snap.clone()
+            }
             (None, None) => return Err(ApiError::conflict("not_ready", "The export file is still being made.")),
             _ => return Err(ApiError::not_found("export_gone")),
         }
@@ -629,9 +655,9 @@ fn sha(text: &str) -> String {
     hex::encode(Sha256::digest(text.as_bytes()))
 }
 
-/// The set-up code as typed: case, spaces and dashes don't matter.
+/// The set-up code as typed: case, spaces, dashes and the `SETUP-` in front don't matter (the accounts crate's rule).
 fn normal_code(text: &str) -> String {
-    text.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).collect()
+    accounts::normal_setup_code(text)
 }
 
 /// Equal in constant time (both are SHA-256 hex digests of the same length).
@@ -674,11 +700,24 @@ fn claim_cookie(token: &str) -> String {
     format!("{CLAIM_COOKIE}={token}; Max-Age={}; Path=/; Secure; HttpOnly; SameSite=Strict", CLAIM_MS / 1000)
 }
 
-/// The `/setup` answer of a browser (the claim's).
-fn setup_answer(app: &AppState, s: &MoveSite, holds: bool) -> Value {
+/// Whether this browser holds the claim, without renewing it (`GET /setup` only looks).
+pub(crate) fn holds_claim_now(app: &AppState, s: &MoveSite, headers: &HeaderMap) -> bool {
+    let Some(token) = cookie_of(headers, CLAIM_COOKIE) else { return false };
+    let now = app.now();
+    matches!(s.claim.lock().as_ref(), Some((h, last, _)) if same(h, &sha(&token)) && now < *last + CLAIM_MS)
+}
+
+/// The `/setup` answer of a browser (`holds`: it holds the claim).
+pub(crate) fn setup_answer(app: &AppState, s: &MoveSite, holds: bool) -> Value {
+    let needs_setup = app.accounts.needs_setup();
     let moving_here = matches!(moving::pull::pending(&s.data, &s.keys), moving::pull::Pending::Moving { .. });
-    let restoring = !matches!(moving::import::pending(&s.data, &s.keys), moving::Pending::None);
-    let state = if !app.accounts.needs_setup() {
+    // a restore staged on disk, or one the web page runs (uploading, checking, switching)
+    let restoring = !matches!(moving::import::pending(&s.data, &s.keys), moving::Pending::None)
+        || crate::restore::job(app, s)
+            .ok()
+            .flatten()
+            .is_some_and(|j| matches!(j["state"].as_str(), Some("uploading" | "checking" | "switching")));
+    let state = if !needs_setup {
         "set_up"
     } else if moving_here {
         "moving_here"
@@ -689,8 +728,15 @@ fn setup_answer(app: &AppState, s: &MoveSite, holds: bool) -> Value {
     };
     let claim_expires = s.claim.lock().as_ref().map(|(_, last, _)| last + CLAIM_MS);
     let job = if holds { job_view(app, s).ok().flatten() } else { None };
-    json!({ "needs_setup": app.accounts.needs_setup(), "state": state, "claimed": holds,
+    json!({ "needs_setup": needs_setup, "state": state, "claimed": holds,
             "claim_expires_ms": if holds { claim_expires } else { None }, "job": job })
+}
+
+/// The `/setup` answer of a server with no [`MoveSite`] (no move or restore can run): only fresh or set up.
+pub(crate) fn plain_setup_answer(app: &AppState) -> Value {
+    let needs_setup = app.accounts.needs_setup();
+    json!({ "needs_setup": needs_setup, "state": if needs_setup { "fresh" } else { "set_up" }, "claimed": false,
+            "claim_expires_ms": null, "job": null })
 }
 
 /// `POST /setup/claim` `{ setup_code }`.

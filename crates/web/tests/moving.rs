@@ -208,3 +208,113 @@ async fn ten_wrong_set_up_codes_wait() {
     assert_eq!(r.status, 429, "{}", r.text());
     assert!(r.header("retry-after").is_some());
 }
+
+/// Waits for the export file `id` to be made.
+async fn ready_export(admin: &mut web::testkit::Client, id: &str) -> serde_json::Value {
+    for _ in 0..400 {
+        let one = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+        if one["state"] != "preparing" {
+            return one;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("the export file was not made");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_export_file_is_kept_a_day_after_the_last_download_and_a_week_at_most() {
+    const DAY: u64 = web::moving::EXPORT_KEPT_MS;
+    let k = kit().await;
+    let mut admin = k.s.admin().await;
+    let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let id = r.json()["id"].as_str().unwrap().to_string();
+    let one = ready_export(&mut admin, &id).await;
+    assert_eq!(one["state"], "ready", "{one}");
+    let made = one["made_ms"].as_u64().unwrap();
+    assert_eq!(one["expires_ms"].as_u64(), Some(made + DAY), "not downloaded yet: a day from when it was made");
+    let url = one["url"].as_str().unwrap().to_string();
+    // each download keeps it a day from then, never past a week from when it was made
+    let step = DAY - 3_600_000;
+    for i in 1..=8u64 {
+        k.s.advance(step);
+        let r = admin.request("GET", &url, None, &[("Range", "bytes=0-9")]).await;
+        assert_eq!(r.status, 206, "{}", r.text());
+        let one = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+        assert_eq!(one["state"], "ready", "{one}");
+        let want = (made + i * step + DAY).min(made + web::moving::EXPORT_KEPT_MOST_MS);
+        assert_eq!(one["expires_ms"].as_u64(), Some(want), "download {i}: {one}");
+        if want == made + web::moving::EXPORT_KEPT_MOST_MS {
+            break;
+        }
+    }
+    let one = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+    assert_eq!(one["expires_ms"].as_u64(), Some(made + web::moving::EXPORT_KEPT_MOST_MS), "{one}");
+    k.s.advance(DAY);
+    let one = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+    assert_eq!(one["state"], "expired", "kept its time: expired, not failed: {one}");
+    assert!(one["url"].is_null() && one["expires_ms"].is_null(), "{one}");
+    assert_eq!(admin.get(&url).await.code(), Some("export_gone".into()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn get_setup_shows_the_claim_and_the_old_one_call_set_up_shows_the_recovery_key() {
+    let k = kit().await;
+    std::fs::write(k.keys.join(moving::import::RECOVERY_FILE), "MADE-UP-RECOVERY-KEY\n").unwrap();
+    // the code as the log prints it: SETUP- and five groups of four
+    let code = k.s.setup_code.clone();
+    assert!(code.starts_with("SETUP-") && code.len() == 30, "{code}");
+    let mut c = k.s.client();
+    let fresh =
+        json!({ "needs_setup": true, "state": "fresh", "claimed": false, "claim_expires_ms": null, "job": null });
+    assert_eq!(c.get("/api/v1/setup").await.json(), fresh);
+    // a cookie that is not the claim's
+    let mut forged = k.s.client();
+    forged.cookies.push((web::moving::CLAIM_COOKIE.to_string(), "0".repeat(64)));
+    assert_eq!(forged.get("/api/v1/setup").await.json(), fresh);
+
+    // the code without SETUP- in front, in lower case, works too
+    let bare = code["SETUP-".len()..].to_lowercase();
+    let r = c.post("/api/v1/setup/claim", json!({ "setup_code": bare })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let expires = r.json()["claim_expires_ms"].as_u64().unwrap();
+    k.s.advance(600_000);
+    // GET /setup looks without renewing the claim
+    let g = c.get("/api/v1/setup").await.json();
+    assert_eq!(g["claimed"], json!(true), "{g}");
+    assert_eq!(g["state"], "fresh");
+    assert_eq!(g["claim_expires_ms"].as_u64(), Some(expires), "not renewed: {g}");
+    assert!(g.get("job").is_some_and(serde_json::Value::is_null), "no move or restore: {g}");
+    assert_eq!(k.s.client().get("/api/v1/setup").await.json(), fresh, "another browser holds no claim");
+    // an hour past its last use: gone
+    k.s.advance(web::moving::CLAIM_MS);
+    assert_eq!(c.get("/api/v1/setup").await.json(), fresh);
+
+    // the old one-call set-up: checked input, the code as typed, the recovery key once
+    let r = c.post("/api/v1/setup", json!({ "code": code, "name": ADMIN })).await;
+    assert_eq!((r.status, r.code()), (400, Some("bad_input".into())), "{}", r.text());
+    let r = c.post("/api/v1/setup", json!({ "code": code, "name": ADMIN, "password": ADMIN_PASSWORD, "x": 1 })).await;
+    assert_eq!((r.status, r.code()), (400, Some("bad_input".into())), "{}", r.text());
+    let r = c.post("/api/v1/setup", json!({ "code": 5, "name": ADMIN, "password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    let r = c
+        .post(
+            "/api/v1/setup",
+            json!({ "code": "SETUP-AAAA-BBBB-CCCC-DDDD-EEEE", "name": ADMIN, "password": ADMIN_PASSWORD }),
+        )
+        .await;
+    assert_eq!((r.status, r.code()), (403, Some("wrong_setup_code".into())));
+    let typed = code.to_lowercase().replace('-', " ");
+    let r = c.post("/api/v1/setup", json!({ "code": typed, "name": ADMIN, "password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let f = r.json();
+    assert_eq!(f["status"], "done");
+    assert_eq!(f["me"]["name"], ADMIN);
+    assert_eq!(f["recovery_key"], "MADE-UP-RECOVERY-KEY");
+    assert_eq!(c.get("/api/v1/me").await.status, 200, "signed in at once");
+    let done =
+        json!({ "needs_setup": false, "state": "set_up", "claimed": false, "claim_expires_ms": null, "job": null });
+    assert_eq!(c.get("/api/v1/setup").await.json(), done);
+    let r = c.post("/api/v1/setup", json!({ "code": code, "name": "second", "password": ADMIN_PASSWORD })).await;
+    assert_eq!((r.status, r.code()), (409, Some("setup_done".into())));
+}

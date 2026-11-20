@@ -2,8 +2,8 @@
 //!
 //! | Route | |
 //! |---|---|
-//! | `GET /setup` | `{ needs_setup }` |
-//! | `POST /setup` | `{ code, name, password }`: the first admin, with the one-time setup code from the log; signs in |
+//! | `GET /setup` | `{ needs_setup, state, claimed, claim_expires_ms, job }` ([`crate::moving`]) |
+//! | `POST /setup` | `{ code, name, password }`: the first admin, with the one-time setup code from the log; signs in and shows the recovery key once |
 //! | `POST /session` | `{ name, password }` -> `{ status: "done", me }` or `{ status: "two_step_pending", pending, expires_ms }` |
 //! | `POST /session/two-step` | `{ pending, code }`: an authenticator code or a recovery code -> `{ status: "done", me }` |
 //! | `DELETE /session` | signs this browser out |
@@ -91,9 +91,17 @@ fn signed_in_answer(app: &AppState, ns: &NewSession, local: bool) -> ApiResult<R
     Ok(with_cookie(Json(body).into_response(), &ns.set_cookie()))
 }
 
-async fn get_setup(State(app): State<AppState>) -> Json<Value> {
-    // the move here and restore choices of a fresh server join this answer with crate::moving (being written)
-    Json(json!({ "needs_setup": app.accounts.needs_setup() }))
+async fn get_setup(State(app): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    app.blocking(move |app| {
+        Ok(Json(match crate::moving::site(app) {
+            Ok(s) => {
+                let holds = crate::moving::holds_claim_now(app, &s, &headers);
+                crate::moving::setup_answer(app, &s, holds)
+            }
+            Err(_) => crate::moving::plain_setup_answer(app),
+        }))
+    })
+    .await
 }
 
 async fn post_setup(
@@ -110,13 +118,20 @@ async fn post_setup(
     app.blocking(move |app| {
         // like `POST /setup/fresh`: no first admin while a move or a restore into this server is under way (its
         // switch would set the new account aside)
-        if let Ok(s) = crate::moving::site(app)
+        let site = crate::moving::site(app).ok();
+        if let Some(s) = &site
             && app.accounts.needs_setup()
         {
-            crate::moving::refuse_if_busy(&s)?;
+            crate::moving::refuse_if_busy(s)?;
         }
         let ns = app.accounts.setup(&code, &name, &password, &c)?;
-        signed_in_answer(app, &ns, local)
+        // like `POST /setup/fresh`: the recovery key is shown this once (from its file). A claim is left alone: it
+        // may be another browser's, which still reads its restore's result.
+        let recovery = site.as_ref().and_then(|s| moving::import::recovery_from_file(&s.recovery_file()));
+        let cars = app.accounts.car_access(ns.account.id)?;
+        let body = json!({ "status": "done", "me": me_json(app, &ns.account, &cars, local),
+                           "recovery_key": recovery.as_ref().map(|k| k.as_str()) });
+        Ok(with_cookie(Json(body).into_response(), &ns.set_cookie()))
     })
     .await
 }

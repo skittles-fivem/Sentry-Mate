@@ -26,7 +26,12 @@ fn the_first_admin_needs_the_setup_code_once() {
     assert_eq!(made.expires_ms, T0 + SETUP_CODE_MS);
     let written = std::fs::read_to_string(&file).unwrap();
     assert_eq!(written.trim(), made.code.as_str());
-    assert_eq!(made.code.len(), 23, "XXXXX-XXXXX-XXXXX-XXXXX");
+    assert_eq!(made.code.len(), 30, "SETUP-XXXX-XXXX-XXXX-XXXX-XXXX");
+    assert!(made.code.starts_with("SETUP-"));
+    // the SETUP in front may be left out, and O, I and L read as 0 and 1
+    let bare = &made.code["SETUP-".len()..];
+    assert_eq!(accounts::normal_setup_code(&made.code), accounts::normal_setup_code(bare));
+    assert_eq!(accounts::normal_setup_code("setup-o1il-x"), "0111X");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -34,7 +39,7 @@ fn the_first_admin_needs_the_setup_code_once() {
     }
     let c = client(OUTSIDE);
     assert!(matches!(
-        env.acc.setup("AAAAA-BBBBB-CCCCC-DDDDD", "owner", OWNER_PASSWORD, &c),
+        env.acc.setup("SETUP-AAAA-BBBB-CCCC-DDDD-EEEE", "owner", OWNER_PASSWORD, &c),
         Err(Error::WrongSetupCode)
     ));
     // a weak password doesn't use the code up

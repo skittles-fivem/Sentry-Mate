@@ -122,7 +122,7 @@ browser warns once: check that the SHA-256 it shows is the one in the log.
 in the keys folder:
 
 ```bash
-docker logs sentry-mate 2>&1 | grep 'one-time code'
+docker logs sentry-mate 2>&1 | grep 'first-run set-up code'
 ```
 
 Type it on the first page, with a name and password for the first admin. The code is valid 24 hours; the server
