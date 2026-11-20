@@ -24,7 +24,8 @@
 }
 
 /* ------------------------------------------------------------------ page stack */
-.page { display: grid; gap: var(--gap); min-width: 0; }
+.page { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap); min-width: 0; }
+.page > * { min-width: 0; }
 .cols { display: grid; gap: var(--gap); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
 .cols--wide { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
 .cols--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -289,3 +290,5 @@ details.fold > .fold-body { padding: 0 1.25rem 1.25rem; }
 .trk td.is-act { vertical-align: middle; width: 1%; white-space: nowrap; }
 .odo-d { line-height: normal; }
 .key, button.key { line-height: 1.5; }
+/* a search box in a panel head keeps the head on one line */
+.hud-side .ctl-search { width: min(18rem, 100%); min-width: 0; }
