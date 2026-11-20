@@ -9,6 +9,9 @@
 //!
 //! These three answers and `POST /setup/fresh` are the only ones that carry a recovery key. The `recovery_key_unsaved`
 //! notice follows the file by itself ([`crate::resources::notices`]).
+//!
+//! A new key goes into the file first and into the vault after, so a failed write changes nothing: the old key still
+//! works and the file still holds it ([`moving::import::new_recovery_key`]).
 
 use crate::error::{ApiError, ApiResult};
 use crate::moving::{MoveSite, confirm, moving_error, site};
@@ -79,13 +82,9 @@ async fn new_key(State(app): State<AppState>, Admin(v): Admin, body: JsonBody) -
                 return Err(ApiError::conflict("setup_busy", "A move or an import runs here: wait until it is done."));
             }
             let _one = Making::take(&s)?;
-            let rk = app
-                .vault
-                .new_recovery_key(&s.data, s.kdf)
-                .map_err(|e| ApiError::server(format!("a new recovery key: {e}")))?;
-            // the old key no longer opens anything: the file must hold the new one (it is shown from there again)
-            moving::import::write_recovery_file(&s.keys, &rk)
-                .map_err(|e| ApiError::server(format!("the recovery key file: {e}")))?;
+            // the file first, then the vault: a failed write leaves the old key working and the file holding it
+            let (rk, _) = moving::import::new_recovery_key(&app.vault, &s.data, &s.keys, s.kdf)
+                .map_err(|e| ApiError::server(e.to_string()))?;
             Ok(rk)
         })
         .await?;

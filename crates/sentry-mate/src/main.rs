@@ -442,17 +442,7 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
                 v.key_id()
             );
         }
-        Cmd::RecoveryKey { cmd: RecoveryCmd::New } => {
-            let v = Vault::open(&data, &keys)?;
-            refuse_writes(&data, &v)?;
-            let rk = v.new_recovery_key(&data, Kdf::STRONG)?;
-            let file = moving::import::write_recovery_file(&keys, &rk)?;
-            print_recovery(&rk);
-            println!(
-                "The old recovery key no longer works. The new one is also in {} until you delete it.",
-                file.display()
-            );
-        }
+        Cmd::RecoveryKey { cmd: RecoveryCmd::New } => recovery_key_new(&data, &keys, Kdf::STRONG)?,
         Cmd::Token { cmd } => {
             let v = Arc::new(Vault::open(&data, &keys)?);
             if !matches!(cmd, TokenCmd::List) {
@@ -849,6 +839,17 @@ impl OfferAndUploads {
     fn last_refused(&self) -> Option<ingest::RefusedCall> {
         self.uploads.last_refused()
     }
+}
+
+/// `recovery-key new`: the file first, then the vault, so a failed write leaves the old key working (the error says
+/// so) and nothing holds a key that doesn't open the vault.
+fn recovery_key_new(data: &Path, keys: &Path, kdf: Kdf) -> Result<(), Box<dyn std::error::Error>> {
+    let v = Vault::open(data, keys)?;
+    refuse_writes(data, &v)?;
+    let (rk, file) = moving::import::new_recovery_key(&v, data, keys, kdf)?;
+    print_recovery(&rk);
+    println!("The old recovery key no longer works. The new one is also in {} until you delete it.", file.display());
+    Ok(())
 }
 
 /// Commands that change the data refuse on a server whose data moved away, and on one a move is coming into.
@@ -1984,6 +1985,28 @@ mod tests {
         assert!(said.contains("are not mounted"), "{said}");
         // nothing made: no folder, no vault
         assert!(!data.exists() && !keys.exists());
+    }
+
+    /// `recovery-key new` whose key file can't be written ends with an error and leaves the old key working.
+    #[test]
+    fn a_new_recovery_key_that_cannot_be_saved_keeps_the_old_one() {
+        let k = testkit::kit();
+        let v = Vault::open(&k.data, &k.keys).unwrap();
+        let first = v.new_recovery_key(&k.data, Kdf::FAST_FOR_TESTS).unwrap();
+        let before = std::fs::read(k.data.join(vault::VAULT_FILE)).unwrap();
+        std::fs::create_dir(k.keys.join("RECOVERY-KEY.tmp")).unwrap();
+        let said = recovery_key_new(&k.data, &k.keys, Kdf::FAST_FOR_TESTS).err().unwrap().to_string();
+        assert!(said.contains("the old recovery key still works"), "{said}");
+        assert!(std::fs::read(k.data.join(vault::VAULT_FILE)).unwrap() == before, "the vault file is the same");
+        let t = tempfile::tempdir().unwrap();
+        let (d, ks) = (t.path().join("d"), t.path().join("k"));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::copy(k.data.join(vault::VAULT_FILE), d.join(vault::VAULT_FILE)).unwrap();
+        assert!(Vault::restore(&d, &ks, first.as_str()).is_ok(), "the old key still opens the vault");
+        // once it can be written, the new key is in the file
+        std::fs::remove_dir(k.keys.join("RECOVERY-KEY.tmp")).unwrap();
+        recovery_key_new(&k.data, &k.keys, Kdf::FAST_FOR_TESTS).unwrap();
+        assert!(k.keys.join(moving::import::RECOVERY_FILE).exists());
     }
 
     /// `chain` for a car key with no logs here says so (exit 1) rather than print an empty report.

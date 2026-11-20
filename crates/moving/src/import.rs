@@ -57,6 +57,51 @@ pub fn write_recovery_file(keys: &Path, key: &vault::RecoveryKey) -> io::Result<
     Ok(file)
 }
 
+/// Why [`new_recovery_key`] made no new key.
+#[derive(Debug, thiserror::Error)]
+pub enum NewKeyError {
+    #[error("the recovery key file can't be written ({0}): nothing changed, the old recovery key still works")]
+    File(io::Error),
+    #[error("the vault file can't take the new recovery key ({0}): nothing changed, the old recovery key still works")]
+    Vault(vault::Error),
+    #[error(
+        "the vault file can't take the new recovery key ({0}): the old recovery key still works, but {RECOVERY_FILE} \
+         now holds a key that doesn't, and it can't be put back ({1}): delete that file"
+    )]
+    FileLeft(vault::Error, io::Error),
+}
+
+/// A new recovery key for `vault` (the old one stops working), written to the keys folder's [`RECOVERY_FILE`] first
+/// and only then into `data/vault.json`: when either write fails, the old key still opens the vault and the file
+/// holds a key that opens it. Returns the key and the file's path.
+pub fn new_recovery_key(
+    vault: &Vault,
+    data: &Path,
+    keys: &Path,
+    kdf: vault::Kdf,
+) -> Result<(vault::RecoveryKey, PathBuf), NewKeyError> {
+    let new = vault.make_recovery_key(kdf).map_err(NewKeyError::Vault)?;
+    let path = keys.join(RECOVERY_FILE);
+    let old = match std::fs::read(&path) {
+        Ok(b) => Some(zeroize::Zeroizing::new(b)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(NewKeyError::File(e)),
+    };
+    let file = write_recovery_file(keys, new.key()).map_err(NewKeyError::File)?;
+    if let Err(e) = vault.set_recovery_key(data, &new) {
+        // the file must not hold a key that doesn't open the vault
+        let back = match &old {
+            Some(b) => vault::write_private(&file, b),
+            None => std::fs::remove_file(&file),
+        };
+        return Err(match back {
+            Ok(()) => NewKeyError::Vault(e),
+            Err(b) => NewKeyError::FileLeft(e, b),
+        });
+    }
+    Ok((new.into_key(), file))
+}
+
 /// The recovery key in the file `path` ([`write_recovery_file`]'s): the `SMRK-` word, else the whole text when it
 /// holds only a key. `None` when there is no such file or it is empty.
 pub fn recovery_from_file(path: &Path) -> Option<zeroize::Zeroizing<String>> {

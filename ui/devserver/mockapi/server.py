@@ -30,8 +30,10 @@ CSP = ("default-src 'self'; img-src 'self' data: blob: https://tile.openstreetma
 CSRF_HEADER = "X-Sentry-Mate"
 MAX_BODY = 1 << 20
 # changes a moved server still takes: the move itself, export files, signing in and out
-MOVED_STILL_OPEN = ("/api/v1/system/move", "/api/v1/system/exports", "/api/v1/system/recovery-key",
-                    "/api/v1/session", "/api/v1/me/sessions", "/api/v1/me/preferences")
+# (and the recovery key file: shown again, or removed once saved; a new key is refused, as on the real server)
+MOVED_STILL_OPEN = ("/api/v1/system/move", "/api/v1/system/exports", "/api/v1/system/recovery-key/show",
+                    "/api/v1/system/recovery-key/saved", "/api/v1/session", "/api/v1/me/sessions",
+                    "/api/v1/me/preferences")
 TYPES = {".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
          ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8", ".svg": "image/svg+xml",
          ".json": "application/json; charset=utf-8", ".woff2": "font/woff2", ".woff": "font/woff",
@@ -245,7 +247,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.sse(req, cookie)
             if app.cfg.latency_ms:
                 time.sleep(app.cfg.latency_ms / 1000)
-            if m == "GET":
+            if m == "GET" or getattr(route.handlers[m], "own_locks", False):
+                # (a handler that takes its own locks: one that waits, like a new recovery key being made)
                 res = route.handlers[m](req)
             else:
                 with app.write_lock:

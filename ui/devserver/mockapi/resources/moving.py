@@ -20,6 +20,7 @@ import hashlib
 import json
 import re
 import secrets
+import threading
 import time
 
 from ..conventions import Response
@@ -569,26 +570,49 @@ def post_recovery_show(req):
     return {"recovery_key": st.recovery_key}
 
 
+# one new key at a time, as on the real server (each takes 1 GiB for a few seconds there): a second one meanwhile
+# answers 503 busy
+_MAKING_KEY = threading.Lock()
+MAKE_KEY_S = 0.3
+
+
 def post_recovery_new(req):
     """A new recovery key, shown this once (the old one stops working; exports and data backups made before still
-    need the old one). Like the first one, it waits in RECOVERY-KEY.txt until "I have saved it"."""
+    need the old one). Like the first one, it waits in RECOVERY-KEY.txt until "I have saved it". A moved server
+    refuses it in the server's own check (409 moved)."""
     st = req.store
     body = req.json(required=False)
     _only(body, ("password", "two_step"))
     _reauth(req, body)
+    if _busy(st, req.now) is not None:
+        raise conflict("setup_busy", "A move or an import runs here: wait until it is done.")
+    if not _MAKING_KEY.acquire(blocking=False):
+        raise ApiError(503, "busy", "A new recovery key is being made; try again in a minute.",
+                       headers={"Retry-After": "30"})
+    try:
+        time.sleep(MAKE_KEY_S)
+        key = make_recovery_key()
+    finally:
+        _MAKING_KEY.release()
     with st.lock:
-        st.recovery_key = make_recovery_key()
+        st.recovery_key = key
         st.recovery_key_saved = False
         if not _key_file_there(st):
             st.notices.append({"code": "recovery_key_unsaved", "level": "info",
                                "message": "Save the vault recovery key file somewhere safe.", "since_ms": req.now,
                                "fix_link": "/settings/server"})
     st.record(req.account, "recovery_key.new", "server", "Made a new recovery key; the old one stopped working.")
-    return {"recovery_key": st.recovery_key, "made_ms": req.now, "_created": True}
+    return {"recovery_key": key, "made_ms": req.now, "_created": True}
+
+
+# not under the server's one-change-at-a-time lock: a second new key meanwhile must see the first one being made
+post_recovery_new.own_locks = True
 
 
 def post_recovery_saved(req):
+    """"I have saved it": the file is removed (none is fine). No body, or {}."""
     st = req.store
+    _only(req.json(required=False), ())
     with st.lock:
         st.notices = [n for n in st.notices if n["code"] != "recovery_key_unsaved"]
         st.recovery_key_saved = True

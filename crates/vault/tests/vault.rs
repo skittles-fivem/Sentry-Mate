@@ -96,6 +96,25 @@ fn the_recovery_key_restores_a_lost_key_file() {
 }
 
 #[test]
+fn a_made_recovery_key_works_only_once_set() {
+    let (_t, data, keys) = dirs();
+    let (v, first) = Vault::create(&data, &keys, Kdf::FAST_FOR_TESTS).unwrap();
+    let before = std::fs::read(data.join(vault::VAULT_FILE)).unwrap();
+    let new = v.make_recovery_key(Kdf::FAST_FOR_TESTS).unwrap();
+    assert_eq!(std::fs::read(data.join(vault::VAULT_FILE)).unwrap(), before, "nothing written yet");
+    assert!(Vault::restore(&data, &keys, first.as_str()).is_ok(), "the old key still works");
+    assert!(matches!(Vault::restore(&data, &keys, new.key().as_str()), Err(Error::WrongRecoveryKey)));
+    v.set_recovery_key(&data, &new).unwrap();
+    assert!(matches!(Vault::restore(&data, &keys, first.as_str()), Err(Error::WrongRecoveryKey)));
+    assert!(Vault::restore(&data, &keys, new.into_key().as_str()).is_ok());
+    // another vault's new key is refused
+    let (_t2, data2, keys2) = dirs();
+    let (other, _) = Vault::create(&data2, &keys2, Kdf::FAST_FOR_TESTS).unwrap();
+    let theirs = other.make_recovery_key(Kdf::FAST_FOR_TESTS).unwrap();
+    assert!(v.set_recovery_key(&data, &theirs).is_err());
+}
+
+#[test]
 fn a_new_vault_is_never_made_over_a_key_file_or_a_vault() {
     let (t, data, keys) = dirs();
     let (v, _) = Vault::create(&data, &keys, Kdf::FAST_FOR_TESTS).unwrap();

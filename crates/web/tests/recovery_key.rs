@@ -194,6 +194,35 @@ async fn a_new_key_waits_for_a_move_and_asks_for_the_two_step_code() {
     assert!(opens(&k, r.json()["recovery_key"].as_str().unwrap()));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_file_that_cannot_be_written_leaves_the_old_key_working() {
+    let k = kit().await;
+    let file = k.keys.join(moving::import::RECOVERY_FILE);
+    let mut admin = k.s.admin().await;
+    let pw = json!({ "password": ADMIN_PASSWORD });
+    let vault_before = std::fs::read(k.data.join(vault::VAULT_FILE)).unwrap();
+
+    // the file's temp file is a folder: the file can't be written, so the vault keeps its key
+    let tmp = k.keys.join("RECOVERY-KEY.tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    let r = admin.post("/api/v1/system/recovery-key/new", pw.clone()).await;
+    assert_eq!((r.status, r.code()), (500, Some("server_error".into())), "{}", r.text());
+    assert!(std::fs::read(k.data.join(vault::VAULT_FILE)).unwrap() == vault_before, "the vault file is the same");
+    assert!(opens(&k, &k.first_key), "the old key still opens the vault");
+    let r = admin.post("/api/v1/system/recovery-key/show", pw.clone()).await;
+    assert_eq!((r.status, r.json()), (200, json!({ "recovery_key": k.first_key })), "{}", r.text());
+    assert_eq!(codes(&admin.get("/api/v1/notices").await.json()), ["recovery_key_unsaved"]);
+    assert!(!audit(&mut admin).await.contains("recovery-key-new"));
+
+    // once it can be written, a new key works as before
+    std::fs::remove_dir(&tmp).unwrap();
+    let r = admin.post("/api/v1/system/recovery-key/new", pw.clone()).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let new_key = r.json()["recovery_key"].as_str().unwrap().to_string();
+    assert_eq!(moving::import::recovery_from_file(&file).unwrap().as_str(), new_key);
+    assert!(opens(&k, &new_key) && !opens(&k, &k.first_key));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wrong_passwords_are_throttled_like_sign_in() {
     let k = kit().await;

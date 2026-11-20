@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
+import threading
 
-from .helpers import Running, ServerCase
+from .helpers import NOW, Running, ServerCase
 
 PW = "sentry-mate-dev"
 SETUP_CODE = "SETUP-DEV-0000"
@@ -444,6 +446,66 @@ class Presets(ServerCase):
         g = self.c.get("/api/v1/system/move")
         self.assertEqual(g["state"], "moved")
         self.assertEqual(g["moved"]["to"], "192.168.1.30")
+
+
+class RecoveryKeyLikeTheServer(ServerCase):
+    """/system/recovery-key answers as the real server's (crates/web/src/recovery.rs)."""
+
+    def test_saved_takes_no_fields(self):
+        e, _ = self.c.error("POST", "/api/v1/system/recovery-key/saved", 400, "bad_input", body={"a": 1})
+        self.assertEqual(e["fields"], {"a": "Unknown field."})
+        self.assertEqual(self.c.json("POST", "/api/v1/system/recovery-key/saved", {}), {"saved": True})
+        self.assertEqual(self.c.json("POST", "/api/v1/system/recovery-key/saved"), {"saved": True})
+
+    def test_one_new_key_at_a_time(self):
+        out = []
+
+        def one():
+            c = self.server.client()
+            c.json("POST", "/api/v1/session", {"name": "alex", "password": PW})
+            out.append(c)
+        for _ in range(3):
+            one()
+        answers = []
+
+        def new(c):
+            answers.append(c.request("POST", "/api/v1/system/recovery-key/new", {"password": PW}))
+        ts = [threading.Thread(target=new, args=(c,)) for c in out]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        got = sorted(st for st, _, _ in answers)
+        self.assertEqual(got[0], 201, got)
+        self.assertIn(503, got)
+        for st, hd, raw in answers:
+            if st == 503:
+                self.assertEqual(json.loads(raw)["error"]["code"], "busy")
+                self.assertEqual(hd.get("retry-after"), "30")
+
+    def test_no_new_key_while_an_import_runs(self):
+        st = self.server.app.store
+        with st.lock:
+            st.setup["job"] = {"id": "job-test", "kind": "restore", "started_ms": NOW, "from": None,
+                               "file_name": "x.smexport", "size": 1000, "received": 0, "uploaded_ms": None,
+                               "failed": None}
+        try:
+            self.c.error("POST", "/api/v1/system/recovery-key/new", 409, "setup_busy", body={"password": PW})
+        finally:
+            with st.lock:
+                st.setup["job"] = None
+        self.c.json("POST", "/api/v1/system/recovery-key/new", {"password": PW}, expect=201)
+
+
+class RecoveryKeyMoved(ServerCase):
+    server_args = {"move_state": "moved"}
+
+    def test_a_moved_server_makes_no_new_key(self):
+        self.c.error("POST", "/api/v1/system/recovery-key/new", 409, "moved", body={"password": PW})
+        # the file is still shown and removed
+        st, _, _ = self.c.request("POST", "/api/v1/system/recovery-key/show", {"password": PW})
+        self.assertIn(st, (200, 409))
+        self.assertEqual(self.c.json("POST", "/api/v1/system/recovery-key/saved"), {"saved": True})
 
 
 class Bridge(ServerCase):

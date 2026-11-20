@@ -156,6 +156,23 @@ struct VaultFile {
 /// A recovery key as shown to the owner: 32 random bytes in base32, in groups of four.
 pub struct RecoveryKey(Zeroizing<String>);
 
+/// A recovery key made but not yet in the vault file ([`Vault::make_recovery_key`]).
+pub struct NewRecoveryKey {
+    key: RecoveryKey,
+    key_id: String,
+    slot: RecoverySlot,
+}
+
+impl NewRecoveryKey {
+    pub fn key(&self) -> &RecoveryKey {
+        &self.key
+    }
+
+    pub fn into_key(self) -> RecoveryKey {
+        self.key
+    }
+}
+
 impl RecoveryKey {
     pub fn as_str(&self) -> &str {
         &self.0
@@ -418,14 +435,34 @@ impl Vault {
 
     /// Replaces the recovery key (the old one stops working); the new one is returned once.
     pub fn new_recovery_key(&self, data: &Path, kdf: Kdf) -> Result<RecoveryKey, Error> {
-        let mut vf = read_vault(data)?;
+        let new = self.make_recovery_key(kdf)?;
+        self.set_recovery_key(data, &new)?;
+        Ok(new.key)
+    }
+
+    /// A new recovery key for this vault, in memory only: nothing is written, and the old key keeps working until
+    /// [`Vault::set_recovery_key`]. So the key can be put somewhere safe first.
+    pub fn make_recovery_key(&self, kdf: Kdf) -> Result<NewRecoveryKey, Error> {
         let recovery = random::<32>()?;
         let salt = random::<16>()?;
         let rkek = recovery_kek(&recovery, &*salt, kdf)?;
-        vf.recovery =
-            RecoverySlot { salt: B64.encode(*salt), kdf, wrapped: wrap(&rkek, &*self.key, RECOVERY_PURPOSE)? };
-        write_vault(data, &vf)?;
-        Ok(RecoveryKey(Zeroizing::new(encode_recovery(&recovery))))
+        let slot = RecoverySlot { salt: B64.encode(*salt), kdf, wrapped: wrap(&rkek, &*self.key, RECOVERY_PURPOSE)? };
+        Ok(NewRecoveryKey {
+            key: RecoveryKey(Zeroizing::new(encode_recovery(&recovery))),
+            key_id: self.id.clone(),
+            slot,
+        })
+    }
+
+    /// Puts `new` (from [`Vault::make_recovery_key`]) into `data/vault.json`: from then on it opens the vault, and the
+    /// old key no longer does.
+    pub fn set_recovery_key(&self, data: &Path, new: &NewRecoveryKey) -> Result<(), Error> {
+        let mut vf = read_vault(data)?;
+        if new.key_id != self.id || vf.key_id != self.id {
+            return Err(Error::BadVault("that recovery key belongs to another data key".into()));
+        }
+        vf.recovery = new.slot.clone();
+        write_vault(data, &vf)
     }
 
     pub fn key_id(&self) -> &str {
