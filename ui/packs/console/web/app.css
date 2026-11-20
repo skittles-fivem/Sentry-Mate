@@ -619,7 +619,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 
 /* a box of mono output */
 .pl-rule { white-space: normal; }
-.mono-box { border: 1px solid var(--rule); border-radius: 2px; padding: var(--g); background: var(--panel); white-space: pre-wrap; overflow-wrap: anywhere; }
+.mono-box { margin: 0; font-family: inherit; font-size: var(--fs2); line-height: var(--lh2); border: 1px solid var(--rule); border-radius: 2px; padding: var(--g); background: var(--panel); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* sparklines inside a text line: 12 characters wide, one line high */
 .spark, .spark-slot { display: inline-block; vertical-align: top; width: calc(var(--a2) * 12); height: var(--lh2); }
@@ -651,6 +651,14 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .tone--text { color: var(--text); }
 .sec--group { margin-bottom: var(--g); }
 .sec--group > .sec-head .sec-title { font-size: var(--fs3); line-height: var(--lh3); }
+
+/* health and system: the verdict line, fixes, log tails */
+.hl-verdict { margin: 0 0 var(--g); }
+.hl-fixes { list-style: none; margin: 0 0 var(--g); padding: 0; }
+.hl-fixes > li { padding-block: var(--g2); }
+.kv + .tbl-sec, .kv + .sec { margin-top: calc(var(--g) * 2); }
+.log-tail { margin: 0; white-space: pre-wrap; overflow-x: auto; font-size: var(--fs1); line-height: var(--lh1); }
+.break { overflow-wrap: anywhere; }
 
 /* ------------------------------------------------------------------ 7. states */
 .loading { color: var(--muted); padding-block: calc(var(--g) * 2); display: flex; align-items: center; gap: var(--a2); }
