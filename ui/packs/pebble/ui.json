@@ -1,0 +1,7 @@
+{
+  "name": "Pebble",
+  "description": "Soft, friendly and touch first: rounded tiles in a bento grid, a floating dock at the bottom on every screen, sheets that slide up, and calm light and dark colours. From a 390 px phone to a native 4K screen, with an Interface size setting. Runs on /api/v1.",
+  "author": "Sentry Mate",
+  "version": "0.1.0",
+  "api": 1
+}
