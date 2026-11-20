@@ -149,6 +149,11 @@ async fn a_stopped_move_carries_on_and_finishes_with_the_recovery_key() {
     let j = c.get("/api/v1/setup/job").await.json();
     assert_eq!((j["state"].as_str(), j["problem"]["code"].as_str()), (Some("stopped"), Some("cancelled")), "{j}");
     assert_eq!(j["id"], json!(id));
+    // nothing was copied: no switch to an empty copy (the old server still serves)
+    assert_eq!((j["progress"]["bytes_done"].as_u64(), j["progress"]["files_done"].as_u64()), (Some(0), Some(0)), "{j}");
+    let r = c.post("/api/v1/setup/move-here/finish", json!({ "recovery_key": old.recovery, "confirm": true })).await;
+    assert_eq!((r.status, r.code()), (409, Some("not_ready".into())), "{}", r.text());
+    assert!(matches!(moving::pull::pending(&k.data, &k.keys), moving::pull::Pending::Moving { forced: false, .. }));
 
     // another old server: give that move up first
     let r = c.post("/api/v1/setup/move-here", json!({ "from": "127.0.0.2:10100", "code": new_code(&old) })).await;
@@ -160,6 +165,33 @@ async fn a_stopped_move_carries_on_and_finishes_with_the_recovery_key() {
     assert_eq!((j["id"].clone(), j["started_ms"].clone()), (json!(id), started), "{j}");
     assert!(j["problem"].is_null(), "{j}");
 
+    // the copy runs, the old server answers: it finishes by itself, no finish with the recovery key
+    let (d, ks) = (k.data.clone(), k.keys.clone());
+    let run = tokio::task::spawn_blocking(move || {
+        let mut o = pull_opts();
+        o.stop_before_switch = true;
+        moving::pull::run(&d, &ks, &o)
+    });
+    let t0 = std::time::Instant::now();
+    while moving::pull::status(&k.data, &k.keys).unwrap().is_some_and(|s| s.progress.files_done == 0) {
+        assert!(t0.elapsed() < Duration::from_secs(30));
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let r = c.post("/api/v1/setup/move-here/finish", json!({ "recovery_key": old.recovery, "confirm": true })).await;
+    assert_eq!((r.status, r.code()), (409, Some("not_ready".into())), "{}", r.text());
+    // then cancelled on the old server part way: stopped, with something copied
+    moving::old::cancel(&old.data, &old.vault).unwrap();
+    assert_eq!(run.await.unwrap().unwrap_err().code, "cancelled");
+    let j = c.get("/api/v1/setup/job").await.json();
+    assert_eq!((j["state"].as_str(), j["problem"]["code"].as_str()), (Some("stopped"), Some("cancelled")), "{j}");
+    assert!(j["progress"]["files_done"].as_u64().is_some_and(|n| n > 0), "{j}");
+
+    // a key that doesn't read: 400, not counted as a try
+    for _ in 0..=web::moving::MAX_WRONG_CODES {
+        let r = c.post("/api/v1/setup/move-here/finish", json!({ "recovery_key": "garbage", "confirm": true })).await;
+        assert_eq!((r.status, r.code()), (400, Some("bad_input".into())), "{}", r.text());
+        assert!(r.json()["error"]["fields"]["recovery_key"].is_string(), "{}", r.text());
+    }
     // the old server is gone for good: finished with its recovery key
     let wrong = "SMRK-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000";
     for _ in 0..web::moving::MAX_WRONG_CODES {
@@ -224,10 +256,14 @@ async fn a_moved_server_reads_but_takes_no_changes() {
     let r = admin.post("/api/v1/system/move", json!({ "password": ADMIN_PASSWORD })).await;
     assert_eq!(r.status, 201, "{}", r.text());
     let expires = r.json()["code"]["expires_ms"].clone();
-    let n = watch.get("/api/v1/notices").await.json();
+    let n = admin.get("/api/v1/notices").await.json();
     let w = notice(&n, "move_code_waiting").unwrap_or_else(|| panic!("{n}"));
     assert_eq!(w["detail"], json!({ "expires_ms": expires }));
     assert_eq!(w["level"], "info");
+    // the move is an admin's to read, like /system/move
+    assert_eq!(watch.get("/api/v1/system/move").await.status, 403);
+    let n = watch.get("/api/v1/notices").await.json();
+    assert!(notice(&n, "move_code_waiting").is_none(), "{n}");
 
     // moved: the new server is switching
     let v = k.s.app.vault.clone();
@@ -239,6 +275,8 @@ async fn a_moved_server_reads_but_takes_no_changes() {
     assert_eq!(mv["detail"]["to"], "192.0.2.5:10100");
     assert!(mv["detail"]["switched_ms"].is_null() && mv["detail"]["at_ms"].is_u64(), "{mv}");
     assert!(notice(&n, "move_code_waiting").is_none(), "{n}");
+    let n = watch.get("/api/v1/notices").await.json();
+    assert!(notice(&n, "moved").is_none() && notice(&n, "moving").is_none(), "{n}");
 
     // every change answers 409 moved, for every role, reading still works
     for (method, path, body) in [
@@ -286,4 +324,24 @@ async fn a_moved_server_reads_but_takes_no_changes() {
     let r = admin.patch("/api/v1/settings", json!({})).await;
     assert_ne!(r.code(), Some("moved".into()), "{}", r.text());
     assert!(audit_codes(&k).contains("move-undone"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_moved_in_server_gives_the_certificate_it_serves() {
+    use sha2::Digest as _;
+    let k = kit(false).await;
+    let mut c = k.s.client();
+    assert_eq!(c.post("/api/v1/setup/claim", json!({ "setup_code": k.s.setup_code })).await.status, 200);
+    // a forced switch to a copy with no tls folder: the server made a new certificate at start
+    std::fs::create_dir_all(k.data.join("tls")).unwrap();
+    std::fs::write(k.data.join("tls/cert.pem"), "-----BEGIN CERTIFICATE-----\nAAEC\n-----END CERTIFICATE-----\n")
+        .unwrap();
+    let from = moving::client::Address { host: "192.0.2.5".into(), port: 10100 };
+    let old_cert = "08".repeat(32);
+    moving::pull::mark_moved_in_for_tests(&k.data, &k.s.app.vault, from, &old_cert, true).unwrap();
+    let j = c.get("/api/v1/setup/job").await;
+    assert_eq!((j.status, j.json()["state"].as_str()), (200, Some("done")), "{}", j.text());
+    let res = &j.json()["result"];
+    assert_eq!(res["forced"], true, "{res}");
+    assert_eq!(res["cert_sha256"], hex::encode(sha2::Sha256::digest([0u8, 1, 2])), "{res}");
 }

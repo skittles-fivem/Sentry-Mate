@@ -45,6 +45,8 @@ const LOCK: &str = "lock";
 const FORCED: &str = "forced";
 /// Put there by `move cancel` before it waits for the lock: the copy stops at its next step.
 const CANCELLING: &str = "cancelling";
+/// Held (flock, shared) by [`run`] for as long as it runs: `move finish --recovery-key` sees a copy under way.
+const RUNNING: &str = "running";
 const PARTS: &str = "part";
 /// The note a move leaves on the new server (`.move/moved-in.sealed`).
 pub const MOVED_IN: &str = "moved-in.sealed";
@@ -529,7 +531,8 @@ pub struct MovedIn {
     pub started_ms: u64,
     /// When the switch was made.
     pub at_ms: u64,
-    /// The upload port's certificate SHA-256 (the old server's, which this one now uses).
+    /// The old server's upload certificate SHA-256, as the claim had it (this server serves the one in its `tls`
+    /// folder: the same after a full copy, a new one made at start when the copy had none).
     pub cert_sha256: String,
     /// The old server ran on this machine.
     pub same_machine: bool,
@@ -551,6 +554,38 @@ pub fn moved_in(data: &Path, vault: &Vault) -> Option<MovedIn> {
         cert_sha256: n.cert_sha256,
         same_machine: n.same_machine,
     })
+}
+
+/// Writes the note a switch leaves, from `from` with the old server's certificate `cert_sha256` (tests of what a
+/// moved-in server shows: a real one needs two servers). Nothing else of a move is made.
+#[doc(hidden)]
+pub fn mark_moved_in_for_tests(
+    data: &Path,
+    vault: &Vault,
+    from: Address,
+    cert_sha256: &str,
+    forced: bool,
+) -> Result<(), Error> {
+    let now = now_ms();
+    let n = MovedInNote {
+        from,
+        cert_sha256: cert_sha256.to_string(),
+        session: String::new(),
+        code_id: "TESTS".into(),
+        moved_ms: now,
+        at_ms: now,
+        files: 0,
+        bytes: 0,
+        forced,
+        switched_sent: forced,
+        job_id: "0badc0de".into(),
+        started_ms: now,
+        same_machine: true,
+    };
+    let b = Zeroizing::new(serde_json::to_vec(&n).map_err(|e| Error::Move(e.to_string()))?);
+    std::fs::create_dir_all(data.join(crate::import::NOTES))?;
+    vault.write_file(&moved_in_path(data), MOVED_IN_LABEL, &b)?;
+    Ok(())
 }
 
 /// Tells the old server this one serves the data now (`switched`), once, after the switch. `Ok(true)`: told now;
@@ -819,6 +854,17 @@ pub fn force_finish(data: &Path, keys: &Path, recovery: &str) -> Result<(), Erro
     let Some(c) = &st.claimed else {
         return Err(Error::Move("nothing was copied yet: the old server never took the code".into()));
     };
+    if st.progress.bytes_done == 0 && st.progress.files_done == 0 {
+        return Err(Error::Move("nothing was copied yet: there is nothing to switch to".into()));
+    }
+    // a copy that runs with no problem is not stopped: the old server is up and it finishes by itself
+    if st.problem.is_none() && copy_runs(data) {
+        return Err(Error::Move(
+            "the copy is under way and the old server answers: it finishes by itself (finish with the recovery key \
+             only when the old server is gone for good)"
+                .into(),
+        ));
+    }
     let part: vault::RecoveryPart =
         serde_json::from_str(&c.recovery).map_err(|e| Error::Move(format!("the recovery part doesn't read: {e}")))?;
     let v = part.open(recovery)?;
@@ -833,13 +879,23 @@ pub fn force_finish(data: &Path, keys: &Path, recovery: &str) -> Result<(), Erro
     Ok(())
 }
 
+/// Whether a [`run`] holds the move staged here now.
+fn copy_runs(data: &Path) -> bool {
+    let Ok(f) = File::open(data.join(STAGING).join(RUNNING)) else { return false };
+    flock(&f, FlockOperation::NonBlockingLockExclusive).is_err()
+}
+
 /// Carries on the move staged here until it is done and switched: the claim (if it wasn't taken yet), the copy
 /// rounds, the pause and the last round, the finish, the switch. It tries again by itself after network problems,
 /// a restart of either server and a full disk; a problem only the owner can solve (a wrong, used or expired code,
 /// a cancel on the old server) ends it with that problem, saved in the state.
 pub fn run(data: &Path, keys: &Path, opts: &Options) -> Result<Done, Problem> {
     let pull = Pull::open(data, keys, opts).map_err(|e| Problem::new("unreadable", e.to_string(), false))?;
+    // held until this returns (the staging folder may be gone by then: the handle stays good)
+    let running = File::create(data.join(STAGING).join(RUNNING)).map_err(Problem::io)?;
+    flock(&running, FlockOperation::LockShared).map_err(|e| Problem::io(e.into()))?;
     let r = pull.run();
+    drop(running);
     match &r {
         Err(p) if p.code == "stopped" || p.code == SWITCH_NEXT => {
             // what it was waiting for stays in the state, for `move status`

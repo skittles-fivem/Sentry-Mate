@@ -173,7 +173,7 @@ fn result_of(app: &AppState, s: &crate::moving::MoveSite, n: &moving::import::Im
 }
 
 /// SHA-256 of the upload port's certificate (`tls/cert.pem`, the first one in it), lowercase hex.
-fn cert_sha256(data: &std::path::Path) -> Option<String> {
+pub(crate) fn cert_sha256(data: &std::path::Path) -> Option<String> {
     use base64::Engine as _;
     let pem = std::fs::read_to_string(data.join("tls").join("cert.pem")).ok()?;
     let body = pem.split("-----BEGIN CERTIFICATE-----").nth(1)?.split("-----END CERTIFICATE-----").next()?;

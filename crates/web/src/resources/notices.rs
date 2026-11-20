@@ -48,13 +48,16 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/api/v1/notices", get(list))
 }
 
-async fn list(State(app): State<AppState>) -> ApiResult<axum::Json<Value>> {
+async fn list(State(app): State<AppState>, v: crate::Viewer) -> ApiResult<axum::Json<Value>> {
     let now = app.now();
     let src = app.service::<Sources>().ok();
     let items = app
         .blocking(move |app| {
             let mut out = src.map(|s| notices(&s, now)).unwrap_or_default();
-            if let Ok(site) = crate::moving::site(app) {
+            // the move is for admins only, like `/system/move`: its codes, addresses and times
+            if v.is_admin()
+                && let Ok(site) = crate::moving::site(app)
+            {
                 let paused = app.service::<moving::old::Offer>().is_ok_and(|o| o.is_paused());
                 out.extend(move_notices(&site.data, &app.vault, now, paused));
             }

@@ -198,8 +198,10 @@ def notices(req):
         items.append(n)
     if req.store.server_settings["release_check"]["enabled"]:
         items.append(release_notice(req))
-    from .moving import move_notices
-    items += move_notices(req)
+    # the move is an admin's to read, like /system/move
+    if req.is_admin:
+        from .moving import move_notices
+        items += move_notices(req)
     return {"items": items, "next": None}
 
 

@@ -853,7 +853,7 @@ fn moved_in_view(app: &AppState) -> Option<Value> {
     let n = moving::pull::moved_in(&s.data, &app.vault)?;
     let result = json!({ "at_ms": n.at_ms, "from": n.from, "file_name": null, "forced": n.forced,
                          "same_machine": n.same_machine, "accounts": app.accounts.count(), "cars": car_count(app),
-                         "cert_sha256": n.cert_sha256 });
+                         "cert_sha256": crate::restore::cert_sha256(&s.data) });
     Some(json!({
         "id": n.job_id,
         "kind": "move_here",
@@ -963,8 +963,24 @@ async fn move_finish(
     let s = site(&app)?;
     app.blocking(move |app| {
         claimed(app, &s, &headers)?;
-        if moving::pull::status(&s.data, &s.keys).map_err(moving_error)?.is_none() {
+        let Some(st) = moving::pull::status(&s.data, &s.keys).map_err(moving_error)? else {
             return Err(ApiError::new(404, "no_such_job", "No move into this server is under way."));
+        };
+        // only a copy that stopped part way (`waiting` or `stopped`), with something copied
+        let stopped = st.problem.is_some() && !st.forced && st.phase != moving::pull::Phase::Switching;
+        let copied = st.cert_sha256.is_some() && (st.progress.bytes_done > 0 || st.progress.files_done > 0);
+        if !stopped || !copied {
+            return Err(ApiError::conflict(
+                "not_ready",
+                "Finish with the recovery key only when the old server is gone for good and the copy has stopped \
+                 part way with something copied.",
+            ));
+        }
+        if !vault::RecoveryKey::reads(&key) {
+            return Err(ApiError::bad_input(
+                "recovery_key",
+                "This doesn't read as a recovery key: SMRK- and 13 groups of 4. Check for a missing group.",
+            ));
         }
         // one try at a time (each takes up to 1 GiB), counted before it runs, like a restore's
         let Some(work) = s.key_work() else {
@@ -974,12 +990,12 @@ async fn move_finish(
         let tried = app.now();
         s.key_try(conn.ip, tried)?;
         let r = moving::pull::force_finish(&s.data, &s.keys, &key);
-        if !matches!(r, Err(moving::Error::Vault(_) | moving::Error::WrongRecoveryKey)) {
+        if !matches!(r, Err(moving::Error::WrongRecoveryKey)) {
             s.right_key(conn.ip, tried);
         }
         drop(work);
         r.map_err(|e| match e {
-            moving::Error::Vault(_) | moving::Error::WrongRecoveryKey => ApiError::new(
+            moving::Error::WrongRecoveryKey => ApiError::new(
                 422,
                 "wrong_recovery_key",
                 "That recovery key doesn't open the old server's data. Use the one the old server showed when it was set up.",

@@ -682,6 +682,10 @@ async fn with_the_old_server_gone_the_copy_opens_with_the_recovery_key() {
     let (_d, data, keys) = empty();
     let (d, k, a, c) = (data.clone(), keys.clone(), address(&o), code);
     blocking(move || pull::begin(&d, &k, &a, &c, &opts())).await.unwrap();
+    // claimed, nothing copied yet: nothing to switch to
+    let e = pull::force_finish(&data, &keys, &old.recovery).unwrap_err();
+    assert!(e.to_string().contains("nothing was copied"), "{e}");
+    assert!(matches!(pull::pending(&data, &keys), pull::Pending::Moving { forced: false, .. }));
     // one round copied, then the old server dies before the finish
     let o1 = opts();
     let stop = o1.stop.clone();
@@ -692,6 +696,10 @@ async fn with_the_old_server_gone_the_copy_opens_with_the_recovery_key() {
         assert!(t0.elapsed() < Duration::from_secs(30));
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    // the copy runs and the old server answers: it finishes by itself, no switch part way
+    let e = pull::force_finish(&data, &keys, &old.recovery).unwrap_err();
+    assert!(e.to_string().contains("under way"), "{e}");
+    assert!(matches!(pull::pending(&data, &keys), pull::Pending::Moving { forced: false, .. }));
     o.stop();
     tokio::time::sleep(Duration::from_millis(300)).await;
     stop.store(true, Ordering::Relaxed);

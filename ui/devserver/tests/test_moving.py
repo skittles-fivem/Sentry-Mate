@@ -385,6 +385,10 @@ class OldServer(ServerCase):
         w.error("GET", "/api/v1/system/move", 403, "not_allowed")
         w.error("POST", "/api/v1/system/exports", 403, "not_allowed", body={"password": PW})
         w.error("POST", "/api/v1/system/recovery-key/show", 403, "not_allowed", body={"password": PW})
+        # the move's notices are an admin's to read too
+        self.c.json("POST", "/api/v1/system/move", {"password": PW}, expect=201)
+        self.assertIn("move_code_waiting", [n["code"] for n in self.c.get("/api/v1/notices")["items"]])
+        self.assertNotIn("move_code_waiting", [n["code"] for n in w.get("/api/v1/notices")["items"]])
 
 
 class TwoStepReauth(ServerCase):
