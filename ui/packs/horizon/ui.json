@@ -1,0 +1,7 @@
+{
+  "name": "Horizon",
+  "description": "A synthwave dashboard: neon HUD panels over a dusk sky, a striped setting sun and a grid floor that runs to the horizon. Pages are tuned like a car radio from a dashboard strip; car pages read like an instrument cluster with gauges, trip counters and warning lights. Works from a phone to a native 4K screen, with an Interface size setting. Runs on /api/v1.",
+  "author": "Sentry Mate",
+  "version": "0.1.0",
+  "api": 1
+}

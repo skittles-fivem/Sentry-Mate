@@ -1096,7 +1096,7 @@ async function selfTest(o) {
 const HELP = `Usage: node ui/tools/check.js --pack <name or folder> [options]
        node ui/tools/check.js --self-test
 
-  --pack NAME|DIR        a pack in ui/packs (instrument) or a pack folder with web/
+  --pack NAME|DIR        a pack in ui/packs (instrument, logbook, horizon) or a pack folder with web/
   --pages LIST|all       page ids, comma separated (default all: every page of the matrix plus sign-in, setup)
   --sizes WxH[@S],...    window sizes, @S a device scale (390x844@3 is a phone; default ${DEFAULT_SIZES})
   --out DIR              screenshots go to DIR/<pack>/ (default UI_CHECK_OUT, else a new private ${DEFAULT_OUT_PREFIX}XXXXXX)

@@ -8,6 +8,7 @@ installed from a zip in Settings (planned; see [docs/plans/rust-can-logger.md](.
 |---|---|
 | [`packs/instrument`](packs/instrument) | Dark first, a side bar grouped by task, a battery gauge, the map as the main view. Runs on `/api/v1`; how its pages are built: [`web/core/README.md`](packs/instrument/web/core/README.md) |
 | [`packs/logbook`](packs/logbook) | Paper and ink with a serif type, a night mode, the day told as a log. Runs on `/api/v1` (preview: `python3 ui/devserver/serve.py --pack ui/packs/logbook`); how its pages are built: [`web/core/README.md`](packs/logbook/web/core/README.md) |
+| [`packs/horizon`](packs/horizon) | Synthwave: neon HUD panels over a dusk sky, a striped sun and a moving grid floor; pages tuned like a car radio, car pages as an instrument cluster. Runs on `/api/v1`; how it is built: [`web/core/README.md`](packs/horizon/web/core/README.md) |
 
 **Status: being built.** Desktop first: a 1280 px laptop up to a native 4K screen, browser zoom 50 to 200 %, and an
 Interface size setting. The packs only talk to `/api/v1`; until the Sentry Mate server serves it, the dev API server
@@ -27,5 +28,5 @@ Rules every pack follows: a strict Content Security Policy (scripts, styles and 
 tiles from the configured tile server), no outside requests, metric units in the API with the person's units applied
 in the page.
 
-Bundled third-party files keep their licences next to them: MapLibre GL JS (BSD-3-Clause), uPlot (MIT), Inter and
-JetBrains Mono (SIL Open Font License 1.1), Bitstream Charter (Bitstream's free licence).
+Bundled third-party files keep their licences next to them: MapLibre GL JS (BSD-3-Clause), uPlot (MIT), Inter, Orbitron,
+Chakra Petch and JetBrains Mono (SIL Open Font License 1.1), Bitstream Charter (Bitstream's free licence).

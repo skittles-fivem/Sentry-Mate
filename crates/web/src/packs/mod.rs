@@ -1,6 +1,6 @@
 //! UI packs: the interface the browser runs (docs/plans/rust-can-logger.md, "UI packs").
 //!
-//! - **Built in**: `instrument` and `logbook`, embedded in the binary ([`builtin`]). [`DEFAULT_PACK`] is the one
+//! - **Built in**: `instrument`, `logbook` and `horizon`, embedded in the binary ([`builtin`]). [`DEFAULT_PACK`] is the one
 //!   served until an admin chooses another for everyone.
 //! - **Uploaded** (admins, their password and two-step code again): a `.zip` with `ui.json` and `web/` (one folder
 //!   around them is fine), checked before anything is kept ([`check_zip`]): at most 50 MB and 2,000 files, no
