@@ -1,0 +1,7 @@
+{
+  "name": "Console",
+  "description": "Keyboard-first operator console: flat, sharp and monospace, dense tables and key: value blocks, a command bar with the route as a path and a fuzzy command list (Ctrl+K). Dark and light. Desktop from a 1280 px laptop to a native 4K screen, browser zoom 50 to 200 %, and a 390 px phone. Runs on /api/v1.",
+  "author": "Sentry Mate",
+  "version": "0.1.0",
+  "api": 1
+}
