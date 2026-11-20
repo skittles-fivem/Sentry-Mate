@@ -96,3 +96,5 @@ a.attn-car:hover { color: var(--mag-ink); }
   .attn-when { grid-area: when; }
   .attn-row > .btn { grid-area: go; justify-self: start; }
 }
+.gar-order-note { line-height: normal; }
+.bay-car-line { align-items: baseline; }

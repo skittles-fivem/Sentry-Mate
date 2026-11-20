@@ -140,7 +140,7 @@ export async function mount(ctx) {
   const effMeter = (d) => {
     const v = d.efficiency_pct;
     if (v == null) return '—';
-    return h('span', { class: 'dv-eff' }, h('span', { class: 'dv-eff-bar', 'aria-hidden': 'true' }, h('i', { vars: { '--w': `${Math.max(4, Math.min(100, v)).toFixed(1)}%` } })), h('span', null, format(v, 'percent')));
+    return h('span', { class: 'dv-eff' }, h('span', null, format(v, 'percent')), h('span', { class: 'dv-eff-bar', 'aria-hidden': 'true' }, h('i', { vars: { '--w': `${Math.max(4, Math.min(100, v)).toFixed(1)}%` } })));
   };
   const list = tracks(ctx, {
     title: 'Playlist', icon: 'route', path, params: apiParams(), limit: 25, csvName: 'drives', sort: { key: 'start', dir: 'desc' },

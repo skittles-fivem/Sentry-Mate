@@ -21,6 +21,7 @@ app.css           tokens (Dusk and Daybreak), base, components: HUD panels, plat
                   choices, tags, states, dialogs, popovers, toasts, gauges
 frame.css         the sky, the dashboard strip and radio, band menus, the console row, notices, footer,
                   the phone tuner and Quick knob, the sign-in and set-up screens, the tiers
+kit.css           parts of data pages: control deck, track lists, figures, counters, bars, strip, charts, maps
 core/             the frame and the helpers (below)
 pages/<id>.js     one module per page id, plus sign-in and setup; pages/<id>.css when a page needs its own rules
 shared/           copies of ui/shared/*.js (edit those, then python3 ui/tools/sync_shared.py)
@@ -48,6 +49,11 @@ vendor/           MapLibre GL JS and uPlot, loaded only by pages that draw maps 
 | `core/states.js` | `loadingDeck`, `state`, `emptyState`, `errorState`, `errorWords`, `offlineState`, `signedOutState`, `statePanel` |
 | `core/gauges.js` | Cluster parts: `dial` (speedometer style), `fuel` (fuel style), `odo` (trip counter digits), `lights` (warning lights) |
 | `core/fmt.js` | `q`, `qt`, `num`, `money`, `val`, `time`, `date`, `dateTime`, `when`, `dur`, `ago`, `agoEl`, `zone`, `stateWord`, `carLine`, `carStatus`, `placeName` |
+| `core/kit.js` | Parts of data pages: `controls`/`slot` (the control deck), `periodBtn`, `carBtn`, `select`, `search`, `csvBtn`, `placeLabel`/`placeHref`/`placeLink`/`route`, `rack`/`stat` (figures), `counters` (trip counters), `eq` (equaliser bars), `spark`, `band` (numbered section head), `sourceTag`, `plural` |
+| `core/tracks.js` | `tracks(ctx, opts)`: the track list (table) from an API list or local rows, sort, Load more, CSV; cards on phones |
+| `core/strip.js` | `strip(items, from, to, opts)`: the activity strip (one SVG), with its marks and key |
+| `core/chart.js` | uPlot: `scope()` (traces on a time axis, synced cursor, drag to zoom), `columns()` (bars per bucket), `well()` |
+| `core/map.js` | MapLibre: `createMap()`, `addTrace()` (neon route), `pin()`, `boundsOf()`, `pad()`, `mapFallback()` |
 | `core/placeholder.js` | The page shown until a page is built |
 
 ## The frame
@@ -92,6 +98,20 @@ started is cancelled when the page is left), `me`, `prefs`, `admin`, `alive()`, 
 `onCleanup(fn)`, `on(target, type, fn)`, `every(ms, fn)`, `events(types, fn)` (live `now` and `rows` events; never
 poll), `setTitle(...)`, `link(page, params)`, `setQuery(patch)`, `navigate(href)`, `reload()`, `carChanged(car)`.
 A page that exports `onQuery(query, ctx)` takes back and forward between its own filters without being built again.
+
+## The pages built so far
+
+| Page | Its picture |
+|---|---|
+| All cars | The garage: warning lights per state that filter it, the cars that need a look, a cartridge per car with its own charge gauge |
+| Cluster | The car now: speedometer, battery dial with fuel gauge and ranges, power meter, odometer, warning lights, map, tyres, charging; then the period |
+| Timeline | State meters, the activity strip, and the tape of entries with a side per day |
+| Drives | The playlist: drives as numbered tracks, summary counters, driving patterns, drives with missing data |
+| Drive | The replay: night map, trip computer, synced traces with drag to zoom, speed bands, GPX and GeoJSON |
+| Trip | The trip computer for any window, a second car riding along, time and energy, route, traces, drives and charges |
+| Logbook | The pit log: numbered drives with purposes, totals per purpose, rules, CSV and PDF |
+| Travel | The world tour: counters, map, cities and regions ranked like a chart show, countries, cities, days in a city, places, stops |
+| Places | The preset bank (the list) and the tuner (the editor) with map, overlaps, prices, effect on history and repricing |
 
 ## Looks and tokens
 
