@@ -85,7 +85,7 @@ const zooming = new Set();
 
 /**
  * A chart in `body`: timeChart(ctx, body, { tz, t_ms, series: [{ key, name, kind, values, tone: 'c1' | 'c2' | 'c3',
- * axis: 'left' | 'right', fill, dashed, floor, signed, digits, unit, cover }], states, spans, sync, onCursor(i),
+ * axis: 'left' | 'right', fill, dashed, points (dots only), floor, signed, digits, unit, cover }], states, spans, sync, onCursor(i),
  * onZoom(from_ms, to_ms), cover, label }) -> Promise<{ plot, reset(), destroy() } | null>.
  */
 export async function timeChart(ctx, body, { tz, t_ms, series, states = null, spans = [], sync = null, onCursor = null, onZoom = null, cover = null, label = 'Chart', yBand = null, short = false }) {
@@ -162,7 +162,8 @@ export async function timeChart(ctx, body, { tz, t_ms, series, states = null, sp
     const ser = [{}, ...lines.map((l) => {
       const c = cssVar(`--${l.tone || 'c1'}`);
       return {
-        scale: l.axis, show: l.shown, stroke: c, width: 2 * k, dash: l.dashed ? [5 * k, 4 * k] : undefined, points: { show: false },
+        scale: l.axis, show: l.shown, stroke: c, width: l.points ? 0 : 2 * k, dash: l.dashed ? [5 * k, 4 * k] : undefined,
+        points: l.points ? { show: true, size: 7 * k, stroke: c, fill: c, width: 0 } : { show: false }, paths: l.points ? () => null : undefined,
         fill: l.fill ? cssVar(`--${l.tone || 'c1'}-wash`) : undefined, spanGaps: false,
       };
     })];
