@@ -662,9 +662,15 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 
 /* statistics: the period switch line, milestones */
 .st-switch { display: flex; flex-wrap: wrap; align-items: flex-start; row-gap: var(--g2); margin-bottom: var(--g); line-height: var(--ctl); }
-.st-switch > .muted:first-child { margin-right: var(--a2); }
+.st-switch > .muted:first-child { margin-right: var(--a2); flex: none; width: calc-size(fit-content, round(up, size, 1px)); }
 .st-cars { margin-left: calc(var(--a2) * 2); display: inline-flex; flex-wrap: wrap; align-items: flex-start; }
 .chart-read + .chart-head { margin-top: calc(var(--g) * 2); }
+.ruler { white-space: pre; letter-spacing: 0; }
+.ruler-on { color: var(--accent); }
+.ruler-band { color: var(--muted); }
+.ruler-off { color: var(--rule-2); }
+.ruler-warn { color: var(--warn); font-weight: 600; }
+.frm--narrow .fld-box > .in { width: calc(var(--a2) * 12 + var(--g) * 2 + 2px); max-width: 100%; }
 .stones { list-style: none; margin: 0 0 var(--g); padding: 0; }
 .stones > li { padding-block: var(--g2); border-bottom: 1px solid var(--rule); }
 
