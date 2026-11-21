@@ -628,7 +628,8 @@ export async function mount(ctx) {
       const max = Math.max(1, ...g.flat());
       week.setAttribute('aria-label', `When in the week sessions ${f.heat}, by weekday and hour`);
       const cells = [h('span')];
-      for (let hr = 0; hr < 24; hr++) cells.push(h('span', { class: 'ch-week-x' }, hr % 6 === 0 ? formatTime(Date.UTC(2026, 0, 5, hr), 'UTC') : ''));
+      // one label per six hours, over the six columns it names
+      for (let hr = 0; hr < 24; hr += 6) cells.push(h('span', { class: 'ch-week-x' }, formatTime(Date.UTC(2026, 0, 5, hr), 'UTC')));
       for (let d = 0; d < 7; d++) {
         cells.push(h('span', { class: 'ch-week-y' }, DAYS[d].slice(0, 3)));
         for (let hr = 0; hr < 24; hr++) {

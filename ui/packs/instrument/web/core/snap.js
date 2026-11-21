@@ -140,6 +140,72 @@ function centrePlan(row) {
   return out;
 }
 
+// the first baseline of a cell's words, as the eye sees it: the bottom of the first word less the font's descent
+const canvas = document.createElement('canvas').getContext('2d');
+const descents = new Map();
+function firstWord(cell) {
+  const w = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  for (let n = w.nextNode(), k = 0; n && k < 50; n = w.nextNode(), k++) {
+    const m = /\S+/.exec(n.nodeValue);
+    if (!m || !n.parentElement) continue;
+    range.setStart(n, m.index);
+    range.setEnd(n, m.index + m[0].length);
+    const q = range.getClientRects()[0];
+    if (!q || !q.height) continue;
+    const s = getComputedStyle(n.parentElement);
+    const f = `${s.fontStyle} ${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+    if (!descents.has(f)) { canvas.font = f; descents.set(f, canvas.measureText('Hg').fontBoundingBoxDescent || 0); }
+    const r = devicePixelRatio || 1;
+    return { node: n, base: q.bottom - Math.round(descents.get(f) * r) / r };
+  }
+  return null;
+}
+
+// a row's cells on one baseline: a box in a cell whose words stand a pixel or so off the baseline most cells
+// share (a pill or a dot beside a word sets its own baseline) moves by whole pixels
+function baselinePlan(row) {
+  const cells = Array.from(row.cells).filter((c) => getComputedStyle(c).verticalAlign === 'baseline');
+  if (cells.length < 2) return [];
+  const bs = [];
+  for (const c of cells) { const f = firstWord(c); if (f) bs.push([c, f]); }
+  const count = new Map();
+  for (const [, f] of bs) { const k = Math.round(f.base); count.set(k, (count.get(k) || 0) + 1); }
+  let ref = null, most = 0;
+  for (const [k, n] of count) if (n > most) { most = n; ref = k; }
+  if (ref == null || most < 2) return [];
+  // the words of a cell that stands on the common baseline: what a box alone in a cell lines up with
+  const refCell = bs.find(([, f]) => Math.round(f.base) === ref);
+  const refBox = refCell && contentBox(refCell[0], {});
+  const out = [];
+  for (const [c, f] of bs) {
+    let d = Math.round(ref - f.base);
+    if (Math.abs(ref - f.base) <= 0.5) continue;
+    // the cell's own child that holds the first word (words straight in the cell cannot move)
+    let box = f.node.parentElement;
+    while (box && box.parentElement !== c) box = box.parentElement;
+    if (!box || box === c) continue;
+    if (Math.abs(d) > 3) {
+      // a box (a button, a pill) whose words sit higher inside it: its edges or its middle meet the line's
+      if (c.children.length !== 1 || !refBox || refBox.top == null) continue;
+      const bs2 = getComputedStyle(box);
+      if (bs2.backgroundColor === 'rgba(0, 0, 0, 0)' && bs2.borderTopStyle === 'none') continue; // only a box you can see
+      const b = box.getBoundingClientRect();
+      const tries = [refBox.bottom - b.bottom, refBox.top - b.top, (refBox.top + refBox.bottom - b.top - b.bottom) / 2];
+      d = null;
+      for (const t of tries) { const k = Math.round(t); if (Math.abs(k) <= 3 && Math.abs(t - k) <= 0.5 && (d == null || Math.abs(k) < Math.abs(d))) d = k; }
+      if (!d) continue;
+    }
+    if (!d) continue;
+    const s = getComputedStyle(box);
+    if (s.translate !== 'none' || s.position !== 'static') continue;
+    out.push(() => {
+      if (s.display === 'inline') { put(box, 'position', 'relative'); put(box, 'top', `${d}px`); } else put(box, 'translate', `0 ${d}px`);
+    });
+  }
+  return out;
+}
+
 // boxes that can carry a size, and the ones left alone: maps and charts draw their own boxes
 const BOXES = new Set(['block', 'inline-block', 'flex', 'inline-flex', 'grid', 'inline-grid', 'flow-root', 'list-item']);
 const NOT_BOXES = '.maplibregl-map, .uplot, [data-nosnap]';
@@ -274,7 +340,7 @@ export function snapAll() {
   }
   for (const [row, h] of odd) put(row, 'height', `${h}px`);
   // then cells centred up and down whose content misses the row's common centre by a pixel or so move by that much
-  const shifts = rows.flatMap(centrePlan);
+  const shifts = rows.flatMap((row) => [...centrePlan(row), ...baselinePlan(row)]);
   for (const run of shifts) run();
   // and again, for boxes around a table that grew
   for (let i = 0; i < 2; i++) if (!boxPass(boxes)) break;

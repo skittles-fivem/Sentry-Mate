@@ -57,8 +57,8 @@
 .drives-body { margin-top: round(1.25rem, var(--e)); }
 .drives-list { margin-top: round(0.25rem, var(--e)); }
 .drives { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-variant-numeric: tabular-nums; }
-.drives .c-time { width: round(9.5rem, var(--e)); } .drives .c-route { width: auto; } .drives .c-dist { width: round(6.5rem, var(--e)); } .drives .c-dur { width: round(6.5rem, var(--e)); }
-.drives .c-batt { width: round(7rem, var(--e)); } .drives .c-temp { width: round(5.5rem, var(--e)); } .drives .c-speed { width: round(6.5rem, var(--e)); } .drives .c-power { width: round(6rem, var(--e)); }
+.drives .c-time { width: round(10.5rem, var(--e)); } .drives .c-route { width: auto; } .drives .c-dist { width: round(6.5rem, var(--e)); } .drives .c-dur { width: round(6.5rem, var(--e)); }
+.drives .c-batt { width: round(7rem, var(--e)); } .drives .c-temp { width: round(5.5rem, var(--e)); } .drives .c-speed { width: round(7rem, var(--e)); } .drives .c-power { width: round(6rem, var(--e)); }
 .drives .c-energy { width: round(6.5rem, var(--e)); } .drives .c-eff { width: round(7.5rem, var(--e)); } .drives .c-go { width: round(2rem, var(--e)); }
 /* Columns only wide screens have room for; their values show in the facts line under the route instead. */
 .drives .c-temp, .drives .c-power, .drives .c-batt { display: none; }

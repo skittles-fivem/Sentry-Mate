@@ -79,10 +79,10 @@
 .page-travel .tv-map-side { display: grid; gap: round(1.25rem, var(--e)); }
 .page-travel .tv-map-side .tv-sub-title { margin-top: 0; }
 .page-travel .tv-key { display: grid; gap: round(0.5rem, var(--e)); font-size: var(--text-s); color: var(--ink-2); --LH: round(calc(1.45 * 1em), 2px); }
-.page-travel .tv-key li { display: grid; grid-template-columns: round(1.5rem, var(--e)) minmax(0, 1fr); align-items: start; gap: round(0.5rem, var(--e)); }
+.page-travel .tv-key li { display: grid; grid-template-columns: round(1.5rem, var(--e)) minmax(0, 1fr); align-items: center; gap: round(0.5rem, var(--e)); }
 .page-travel .tv-key-car { grid-template-columns: round(1.5rem, var(--e)) minmax(0, 1fr); padding-left: round(0.375rem, var(--e)); }
-.page-travel .tv-key-line { width: round(1.5rem, var(--e)); height: round(0.1875rem, var(--e)); margin-top: round(0.5rem, var(--e)); border-radius: round(0.125rem, var(--e)); background: var(--accent); }
-.page-travel .tv-key-dot { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); margin: calc((var(--LH) - round(0.875rem, var(--e))) / 2) 0 0 round(0.3125rem, var(--e)); border-radius: 50%; border: round(0.125rem, var(--e)) solid var(--ink); background: color-mix(in srgb, var(--paper) 60%, transparent); }
+.page-travel .tv-key-line { width: round(1.5rem, var(--e)); height: round(0.1875rem, var(--e)); margin-top: 0; border-radius: round(0.125rem, var(--e)); background: var(--accent); }
+.page-travel .tv-key-dot { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); margin: 0 0 0 round(0.3125rem, var(--e)); border-radius: 50%; border: round(0.125rem, var(--e)) solid var(--ink); background: color-mix(in srgb, var(--paper) 60%, transparent); }
 .page-travel .tv-key-hint { color: var(--ink-3); padding-left: round(0.25rem, var(--e)); }
 .page-travel .tv-key-hint .icon { width: round(1rem, var(--e)); height: round(1rem, var(--e)); }
 .page-travel .tv-readout { justify-content: flex-start; display: block; border-top: 1px solid var(--rule); padding-top: round(0.875rem, var(--e)); min-height: round(12rem, var(--e)); }

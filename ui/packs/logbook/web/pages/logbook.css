@@ -52,7 +52,7 @@
 .page-logbook .lb-gap-total.is-warn { color: var(--rust); }
 .page-logbook .lb-of { font-size: 0.6em; color: var(--ink-3); }
 .page-logbook .lb-export-note { display: flex; gap: round(0.5rem, var(--e)); align-items: flex-start; max-width: round(62rem, var(--e)); margin: round(0.75rem, var(--e)) 0 0; }
-.page-logbook .lb-export-note .icon { flex: none; width: round(1rem, var(--e)); height: round(1rem, var(--e)); margin-top: round(0.125rem, var(--e)); color: var(--accent); }
+.page-logbook .lb-export-note .icon { flex: none; width: round(1rem, var(--e)); height: 1lh; color: var(--accent); }
 
 /* ------------------------------------------------------------- the log */
 .page-logbook .lb-table td, .page-logbook .lb-table th { vertical-align: baseline; }

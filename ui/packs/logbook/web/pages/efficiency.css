@@ -2,7 +2,7 @@
 
 .page-efficiency .ef-sub { font: 600 var(--micro-2) var(--sans); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-2); }
 .page-efficiency .ef-sub .label-note { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: round(0.5rem, var(--e)); }
-.page-efficiency .ef-sub-head { display: flex; align-items: baseline; justify-content: space-between; gap: round(1rem, var(--e)); padding: round(1.25rem, var(--e)) 0 round(0.5rem, var(--e)); }
+.page-efficiency .ef-sub-head { display: flex; align-items: center; justify-content: space-between; gap: round(1rem, var(--e)); padding: round(1.25rem, var(--e)) 0 round(0.5rem, var(--e)); }
 .page-efficiency .ef-unknown { color: var(--rust); }
 
 /* filters */
@@ -32,7 +32,7 @@
 .page-efficiency .fig-hero .fig-note { font-size: var(--small-2); margin-top: round(0.625rem, var(--e)); max-width: 42ch; }
 .page-efficiency .fig-hero .fig-note .q { font-weight: 600; color: var(--ink-2); }
 .page-efficiency .ef-why, .page-efficiency .ef-help { display: flex; gap: round(0.5rem, var(--e)); align-items: flex-start; margin-top: round(0.875rem, var(--e)); max-width: 92ch; }
-.page-efficiency .ef-why .icon, .page-efficiency .ef-help .icon { flex: none; width: round(1rem, var(--e)); height: round(1rem, var(--e)); color: var(--ink-3); margin-top: round(0.125rem, var(--e)); }
+.page-efficiency .ef-why .icon, .page-efficiency .ef-help .icon { flex: none; width: round(1rem, var(--e)); height: 1lh; color: var(--ink-3); } /* one line high: the drawing sits on the first line */
 
 .page-efficiency .ef-grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); column-gap: round(3rem, var(--e)); align-items: start; }
 .page-efficiency .ef-grid > .block { min-width: 0; }

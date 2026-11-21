@@ -196,7 +196,7 @@
 .page-charges .ch-band-row.is-low .ch-band-name { color: var(--rust); }
 .page-charges .ch-band-count { color: var(--ink-3); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .page-charges .ch-week { display: grid; grid-template-columns: round(2.25rem, var(--e)) repeat(24, minmax(0, 1fr)); grid-template-rows: round(1rem, var(--e)) repeat(7, round(1.0625rem, var(--e))); gap: 1px; }
-.page-charges .ch-week-x { font-size: var(--micro); color: var(--ink-3); white-space: nowrap; overflow: visible; }
+.page-charges .ch-week-x { grid-column: span 6; font-size: var(--micro); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .page-charges .ch-week-y { font-size: var(--micro); color: var(--ink-3); align-self: center; }
 .page-charges .ch-runs-part { padding-top: round(2rem, var(--e)); }
 .page-charges .ch-runs-part > .note { margin: round(0.375rem, var(--e)) 0 0; }
