@@ -6,12 +6,12 @@
 .page-charges .ch-fill-ac { fill: var(--ch-ac); }
 .page-charges .ch-fill-dc { fill: var(--ch-dc); }
 .page-charges .ch-fill-unknown { fill: var(--ch-unknown); }
-.page-charges .ch-swatch { display: inline-block; width: 0.75rem; height: 0.75rem; border-radius: 0.125rem; flex: none; vertical-align: -0.0625rem; }
+.page-charges .ch-swatch { display: inline-block; width: round(0.75rem, var(--e)); height: round(0.75rem, var(--e)); border-radius: round(0.125rem, var(--e)); flex: none; vertical-align: round(-0.0625rem, var(--e)); }
 .page-charges .ch-swatch-ac { background: var(--ch-ac); }
 .page-charges .ch-swatch-dc { background: var(--ch-dc); }
 .page-charges .ch-swatch-unknown { background: var(--ch-unknown); }
 .page-charges .ch-swatch-band { background: var(--chart-wash); box-shadow: inset 0 0 0 1px var(--accent); }
-.page-charges .ch-swatch-median { height: 0.1875rem; width: 1.25rem; background: var(--ink); border-radius: 0; vertical-align: 0.1875rem; }
+.page-charges .ch-swatch-median { height: round(0.1875rem, var(--e)); width: round(1.25rem, var(--e)); background: var(--ink); border-radius: 0; vertical-align: round(0.1875rem, var(--e)); }
 .page-charges .ch-t0 { --t: color-mix(in srgb, var(--dusk) 100%, var(--accent)); }
 .page-charges .ch-t1 { --t: color-mix(in srgb, var(--dusk) 45%, var(--accent)); }
 .page-charges .ch-t2 { --t: var(--accent); }
@@ -21,212 +21,212 @@
 .page-charges .ch-swatch.ch-t0, .page-charges .ch-swatch.ch-t1, .page-charges .ch-swatch.ch-t2, .page-charges .ch-swatch.ch-t3, .page-charges .ch-swatch.ch-t4 { background: var(--t); border-radius: 50%; }
 
 /* ------------------------------------------------------------- filters */
-.page-charges .ch-filters { padding: 1.25rem 0 1.25rem; display: grid; gap: 1.125rem; }
-.page-charges .ch-period { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.5rem 0.875rem; font-size: var(--text-sm); color: var(--ink-2); }
+.page-charges .ch-filters { padding: round(1.25rem, var(--e)) 0 round(1.25rem, var(--e)); display: grid; gap: round(1.125rem, var(--e)); }
+.page-charges .ch-period { display: flex; align-items: baseline; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); }
 .page-charges .ch-period .button { align-self: center; }
-.page-charges .ch-filter-row { display: flex; align-items: flex-start; gap: 1rem 1.5rem; flex-wrap: wrap; }
-.page-charges .ch-f-cars, .page-charges .ch-f-places { flex: 0 1 15rem; min-width: 12rem; }
-.page-charges .ch-f-pkind .field-select { min-width: 12rem; }
-.page-charges .ch-f-search { flex: 1 1 18rem; max-width: 26rem; }
-.page-charges .ch-filter-narrow { padding-top: 1rem; border-top: 1px solid var(--rule); }
-.page-charges .ch-filter-narrow .choice { display: grid; gap: 0.375rem; justify-items: start; }
-.page-charges .ch-num { width: 6.5rem; }
-.page-charges .ch-inline { display: flex; align-items: center; gap: 0.5rem; }
+.page-charges .ch-filter-row { display: flex; align-items: flex-start; gap: round(1rem, var(--e)) round(1.5rem, var(--e)); flex-wrap: wrap; }
+.page-charges .ch-f-cars, .page-charges .ch-f-places { flex: 0 1 round(15rem, var(--e)); min-width: round(12rem, var(--e)); }
+.page-charges .ch-f-pkind .field-select { min-width: round(12rem, var(--e)); }
+.page-charges .ch-f-search { flex: 1 1 round(18rem, var(--e)); max-width: round(26rem, var(--e)); }
+.page-charges .ch-filter-narrow { padding-top: round(1rem, var(--e)); border-top: 1px solid var(--rule); }
+.page-charges .ch-filter-narrow .choice { display: grid; gap: round(0.375rem, var(--e)); justify-items: start; }
+.page-charges .ch-num { width: round(6.5rem, var(--e)); }
+.page-charges .ch-inline { display: flex; align-items: center; gap: round(0.5rem, var(--e)); }
 .page-charges .ch-unit { font-size: var(--small-2); color: var(--ink-3); white-space: nowrap; }
-.page-charges .ch-check-label { display: inline-flex; align-items: center; gap: 0.4375rem; font-size: var(--small-2); color: var(--ink-2); cursor: pointer; }
-.page-charges .ch-check { width: 0.9375rem; height: 0.9375rem; margin: 0; accent-color: var(--accent); }
+.page-charges .ch-check-label { display: inline-flex; align-items: center; gap: round(0.4375rem, var(--e)); font-size: var(--small-2); color: var(--ink-2); cursor: pointer; }
+.page-charges .ch-check { width: round(0.9375rem, var(--e)); height: round(0.9375rem, var(--e)); margin: 0; accent-color: var(--accent); }
 .page-charges .ch-clear { margin-left: auto; align-self: flex-end; }
 .page-charges .ch-clear .button[hidden] { display: none; }
 
 /* The pick lists (core/dialog.js popover). */
 .page-charges .ch-pick-trigger { width: 100%; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .page-charges .ch-pick-trigger:disabled { color: var(--ink-3); cursor: default; }
-.page-charges .ch-pick-pop { left: 0; width: 21rem; display: grid; gap: 0.625rem; }
+.page-charges .ch-pick-pop { left: 0; width: round(21rem, var(--e)); display: grid; gap: round(0.625rem, var(--e)); }
 .page-charges .ch-pick-pop:focus { outline: none; }
 .page-charges .ch-pick-search { width: 100%; }
-.page-charges .ch-pick-list { max-height: 16rem; overflow-y: auto; margin: 0 -0.25rem; }
-.page-charges .ch-pick-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.625rem; padding: 0.375rem 0.25rem; border-radius: 0.25rem; cursor: pointer; }
+.page-charges .ch-pick-list { max-height: round(16rem, var(--e)); overflow-y: auto; margin: 0 round(-0.25rem, var(--e)); }
+.page-charges .ch-pick-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: round(0.625rem, var(--e)); padding: round(0.375rem, var(--e)) round(0.25rem, var(--e)); border-radius: round(0.25rem, var(--e)); cursor: pointer; }
 .page-charges .ch-pick-item:hover { background: var(--paper-sunk); }
-.page-charges .ch-pick-item input { width: 1rem; height: 1rem; margin: 0; accent-color: var(--accent); }
-.page-charges .ch-pick-name { font-family: var(--serif); font-size: 1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.page-charges .ch-pick-item input { width: round(1rem, var(--e)); height: round(1rem, var(--e)); margin: 0; accent-color: var(--accent); }
+.page-charges .ch-pick-name { font-family: var(--serif); font-size: round(1rem, 1px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .page-charges .ch-pick-sub, .page-charges .ch-pick-more { color: var(--ink-3); font-size: var(--small-2); white-space: nowrap; }
 .page-charges .ch-pick-more:empty { display: none; }
-.page-charges .ch-pick-foot { display: flex; justify-content: space-between; gap: 0.75rem; padding-top: 0.625rem; border-top: 1px solid var(--rule); }
+.page-charges .ch-pick-foot { display: flex; justify-content: space-between; gap: round(0.75rem, var(--e)); padding-top: round(0.625rem, var(--e)); border-top: 1px solid var(--rule); }
 
 /* ------------------------------------------------------------- totals */
-.page-charges .ch-totals { grid-template-columns: 1.2fr repeat(5, minmax(0, 1fr)); min-height: 6.5rem; }
-.page-charges .ch-totals .fig-value { font-size: 1.625rem; }
-.page-charges .ch-totals-span { font: 400 1.125rem/1.3 var(--serif); margin-top: 0.375rem; }
+.page-charges .ch-totals { grid-template-columns: 1.2fr repeat(5, minmax(0, 1fr)); min-height: round(6.5rem, var(--e)); }
+.page-charges .ch-totals .fig-value { font-size: round(1.625rem, 1px); }
+.page-charges .ch-totals-span { font: 400 round(1.125rem, 1px) var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); margin-top: round(0.375rem, var(--e)); }
 
 /* ------------------------------------------------------------- the session list */
-.page-charges .ch-sessions { padding-top: 1.5rem; }
-.page-charges .ch-list-help { margin-bottom: 0.5rem; max-width: 92ch; }
+.page-charges .ch-sessions { padding-top: round(1.5rem, var(--e)); }
+.page-charges .ch-list-help { margin-bottom: round(0.5rem, var(--e)); max-width: 92ch; }
 .page-charges .ch-list .ledger-table { table-layout: fixed; }
-.page-charges .ch-list .ledger-table thead th, .page-charges .ch-list .ledger-table tbody > tr > * { padding-left: 0.4375rem; padding-right: 0.4375rem; }
+.page-charges .ch-list .ledger-table thead th, .page-charges .ch-list .ledger-table tbody > tr > * { padding-left: round(0.4375rem, var(--e)); padding-right: round(0.4375rem, var(--e)); }
 .page-charges .ch-list .ledger-table thead th:first-child, .page-charges .ch-list .ledger-table tbody > tr > :first-child { padding-left: 0; }
 .page-charges .ch-list .ledger-table thead th:last-child, .page-charges .ch-list .ledger-table tbody > tr > :last-child { padding-right: 0; }
-.page-charges .ch-list tbody td, .page-charges .ch-list tbody th { font-size: 0.875rem; }
-.page-charges .ch-list .c-car { width: 5.5rem; }
-.page-charges .ch-list .c-start { width: 8.75rem; }
+.page-charges .ch-list tbody td, .page-charges .ch-list tbody th { font-size: round(0.875rem, 1px); }
+.page-charges .ch-list .c-car { width: round(5.5rem, var(--e)); }
+.page-charges .ch-list .c-start { width: round(8.75rem, var(--e)); }
 .page-charges .ch-list .c-place { width: auto; }
-.page-charges .ch-list .c-kind { width: 6rem; }
-.page-charges .ch-list .c-dur { width: 7.5rem; }
-.page-charges .ch-list .c-added { width: 7rem; }
-.page-charges .ch-list .c-grid { width: 7.5rem; }
-.page-charges .ch-list .c-cost { width: 8.75rem; }
-.page-charges .ch-list .c-power { width: 6rem; }
-.page-charges .ch-list .c-rate { width: 6rem; }
-.page-charges .ch-list .c-soc { width: 7.5rem; }
-.page-charges .ch-list .c-temp { width: 6rem; }
-.page-charges .ch-list .c-odo { width: 6.5rem; }
+.page-charges .ch-list .c-kind { width: round(6rem, var(--e)); }
+.page-charges .ch-list .c-dur { width: round(7.5rem, var(--e)); }
+.page-charges .ch-list .c-added { width: round(7rem, var(--e)); }
+.page-charges .ch-list .c-grid { width: round(7.5rem, var(--e)); }
+.page-charges .ch-list .c-cost { width: round(8.75rem, var(--e)); }
+.page-charges .ch-list .c-power { width: round(6rem, var(--e)); }
+.page-charges .ch-list .c-rate { width: round(6rem, var(--e)); }
+.page-charges .ch-list .c-soc { width: round(7.5rem, var(--e)); }
+.page-charges .ch-list .c-temp { width: round(6rem, var(--e)); }
+.page-charges .ch-list .c-odo { width: round(6.5rem, var(--e)); }
 /* The per-hour and odometer columns fold into the Added and Start cells where there is no room for them. */
 .page-charges .ch-list .c-rate, .page-charges .ch-list .c-odo { display: none; }
 .page-charges .ch-fold-odo, .page-charges .ch-fold-rate { display: block; }
-.page-charges .ch-start { font-size: 0.96875rem; }
-.page-charges .ch-place { font: 400 1rem/1.3 var(--serif); color: var(--ink); text-decoration: none; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.page-charges .ch-start { font-size: round(0.96875rem, 1px); }
+.page-charges .ch-place { font: 400 round(1rem, 1px) var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); text-decoration: none; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .page-charges a.ch-place:hover { text-decoration: underline; text-decoration-color: var(--rule-strong); }
 .page-charges .ch-list .cell-sub { overflow-wrap: anywhere; }
-.page-charges .ch-list .cell-sub .flag { vertical-align: 0.0625rem; }
+.page-charges .ch-list .cell-sub .flag { vertical-align: round(0.0625rem, var(--e)); }
 .page-charges .ch-row.is-going > * { background: var(--ochre-wash); }
 .page-charges .ch-quiet { color: var(--ink-3); }
-.page-charges .ch-kind { display: inline-block; padding: 0 0.4375rem; border-radius: 0.1875rem; font: 600 var(--micro)/1.25rem var(--sans); letter-spacing: 0.06em; text-transform: uppercase; color: var(--paper); background: var(--ch-unknown); }
+.page-charges .ch-kind { display: inline-block; padding: 0 round(0.4375rem, var(--e)); border-radius: round(0.1875rem, var(--e)); font: 600 var(--micro) var(--sans); --LH: round(1.25rem, 2px); line-height: var(--LH); letter-spacing: 0.06em; text-transform: uppercase; color: var(--paper); background: var(--ch-unknown); }
 .page-charges .ch-kind-ac { background: var(--ch-ac); }
 .page-charges .ch-kind-dc { background: var(--ch-dc); }
 .page-charges .ch-kind-unknown { background: transparent; color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--ink-4); }
-.page-charges .ch-cost-button { display: inline-flex; align-items: center; gap: 0.3125rem; border: 0; padding: 0; background: none; font: inherit; color: var(--ink); cursor: pointer; text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 0.1875rem; }
-.page-charges .ch-cost-button .icon { width: 0.8125rem; height: 0.8125rem; color: var(--ink-4); }
+.page-charges .ch-cost-button { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); border: 0; padding: 0; background: none; font: inherit; line-height: var(--LH); color: var(--ink); cursor: pointer; text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 0.1875rem; }
+.page-charges .ch-cost-button .icon { width: round(0.8125rem, var(--e)); height: round(0.8125rem, var(--e)); color: var(--ink-4); }
 .page-charges .ch-cost-button:hover .icon, .page-charges .ch-cost-button:hover { color: var(--accent); }
 .page-charges .ch-cost-button.is-missing, .page-charges .ch-cost-link.is-missing { color: var(--ink-3); font-style: italic; }
 .page-charges .ch-cost-link { color: var(--ink); }
-.page-charges .ch-soc { display: flex; flex-direction: column; align-items: flex-end; gap: 0.3125rem; white-space: nowrap; }
-.page-charges .ch-socbar { display: block; width: 100%; max-width: 6.5rem; height: 0.375rem; }
+.page-charges .ch-soc { display: flex; flex-direction: column; align-items: flex-end; gap: round(0.3125rem, var(--e)); white-space: nowrap; }
+.page-charges .ch-socbar { display: block; width: 100%; max-width: round(6.5rem, var(--e)); height: round(0.375rem, var(--e)); }
 .page-charges .ch-socbar-track { fill: var(--paper-sunk); }
 .page-charges .ch-socbar-had { fill: var(--rule-strong); }
 .page-charges .ch-socbar-added { fill: var(--ochre); }
 
 /* ------------------------------------------------------------- missing data */
-.page-charges .ch-missing-note { margin: 0.75rem 0; }
+.page-charges .ch-missing-note { margin: round(0.75rem, var(--e)) 0; }
 .page-charges .ch-missing-table .cell-sub { display: block; }
-.page-charges .ch-missing-table td, .page-charges .ch-missing-table th { font-size: 0.875rem; }
-.page-charges .ch-where { color: var(--ink-2); max-width: 26rem; }
-.page-charges .ch-csv { height: 1.75rem; padding: 0 0.5rem; gap: 0.3125rem; }
+.page-charges .ch-missing-table td, .page-charges .ch-missing-table th { font-size: round(0.875rem, 1px); }
+.page-charges .ch-where { color: var(--ink-2); max-width: round(26rem, var(--e)); }
+.page-charges .ch-csv { height: round(1.75rem, var(--e)); padding: 0 round(0.5rem, var(--e)); gap: round(0.3125rem, var(--e)); }
 
 /* ------------------------------------------------------------- statistics */
-.page-charges .ch-stats { margin-top: 3rem; padding-top: 1.75rem; border-top: 3px double var(--rule-strong); }
-.page-charges .ch-stats-title { font: 400 1.875rem/1.2 var(--serif); color: var(--ink); }
-.page-charges .ch-stats-note { margin-top: 0.375rem; }
-.page-charges .ch-stats-row { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 0 3rem; }
-.page-charges .ch-cost-figs { grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 0; margin-top: 0.25rem; }
+.page-charges .ch-stats { margin-top: round(3rem, var(--e)); padding-top: round(1.75rem, var(--e)); border-top: 3px double var(--rule-strong); }
+.page-charges .ch-stats-title { font: 400 round(1.875rem, 1px) var(--serif); --LH: round(calc(1.2 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
+.page-charges .ch-stats-note { margin-top: round(0.375rem, var(--e)); }
+.page-charges .ch-stats-row { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 0 round(3rem, var(--e)); }
+.page-charges .ch-cost-figs { grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 0; margin-top: round(0.25rem, var(--e)); }
 .page-charges .ch-cost-figs > .fig:nth-child(4n + 1) { border-left: 0; padding-left: 0; }
 .page-charges .ch-cost-figs > .fig:nth-child(n + 5) { border-top: 1px solid var(--rule); }
-.page-charges .ch-cost-figs .fig-value { font-size: 1.3125rem; }
-.page-charges .ch-after-figs { margin-top: 0.75rem; }
+.page-charges .ch-cost-figs .fig-value { font-size: round(1.3125rem, 1px); }
+.page-charges .ch-after-figs { margin-top: round(0.75rem, var(--e)); }
 
-.page-charges .ch-split-grid { display: grid; gap: 1.5rem; padding-top: 1rem; }
-.page-charges .ch-split-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+.page-charges .ch-split-grid { display: grid; gap: round(1.5rem, var(--e)); padding-top: round(1rem, var(--e)); }
+.page-charges .ch-split-head { display: flex; align-items: baseline; justify-content: space-between; gap: round(1rem, var(--e)); }
 .page-charges .ch-split-name { font-size: var(--text-sm); color: var(--ink-2); font-weight: 500; }
-.page-charges .ch-split-total { font: 400 1.3125rem var(--serif); }
-.page-charges .ch-split-svg { display: block; height: 0.875rem; margin: 0.5rem 0 0.625rem; }
+.page-charges .ch-split-total { font: 400 round(1.3125rem, 1px) var(--serif); --LH: normal; line-height: var(--LH); }
+.page-charges .ch-split-svg { display: block; height: round(0.875rem, var(--e)); margin: round(0.5rem, var(--e)) 0 round(0.625rem, var(--e)); }
 .page-charges .ch-split-track { fill: var(--paper-sunk); }
-.page-charges .ch-split-key { display: grid; gap: 0.25rem; }
-.page-charges .ch-split-key li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto 3rem; align-items: center; gap: 0.5rem; font-size: var(--text-s); }
+.page-charges .ch-split-key { display: grid; gap: round(0.25rem, var(--e)); }
+.page-charges .ch-split-key li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto round(3rem, var(--e)); align-items: center; gap: round(0.5rem, var(--e)); font-size: var(--text-s); }
 .page-charges .ch-split-kind { color: var(--ink-2); }
 .page-charges .ch-split-val { font-variant-numeric: tabular-nums; }
 .page-charges .ch-split-share { color: var(--ink-3); text-align: right; font-variant-numeric: tabular-nums; }
 
 /* Charging habits */
-.page-charges .ch-habits-top { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 1.5rem 3rem; padding-top: 1rem; align-items: start; }
+.page-charges .ch-habits-top { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: round(1.5rem, var(--e)) round(3rem, var(--e)); padding-top: round(1rem, var(--e)); align-items: start; }
 .page-charges .ch-habit-figs { grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 0; }
-.page-charges .ch-habit-figs .fig-value { font-size: 1.3125rem; }
-.page-charges .ch-habit-controls { display: flex; flex-wrap: wrap; gap: 1rem 2rem; align-items: flex-start; }
-.page-charges .ch-habit-controls .field { flex: 1 1 14rem; align-items: flex-start; }
-.page-charges .ch-habit-controls .choice { display: grid; gap: 0.375rem; }
-.page-charges .ch-window { font: 400 1rem/1.3 var(--serif); }
-.page-charges .ch-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.75rem 3rem; padding-top: 1.5rem; }
+.page-charges .ch-habit-figs .fig-value { font-size: round(1.3125rem, 1px); }
+.page-charges .ch-habit-controls { display: flex; flex-wrap: wrap; gap: round(1rem, var(--e)) round(2rem, var(--e)); align-items: flex-start; }
+.page-charges .ch-habit-controls .field { flex: 1 1 round(14rem, var(--e)); align-items: flex-start; }
+.page-charges .ch-habit-controls .choice { display: grid; gap: round(0.375rem, var(--e)); }
+.page-charges .ch-window { font: 400 round(1rem, 1px) var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); }
+.page-charges .ch-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: round(0.75rem, var(--e)) round(3rem, var(--e)); padding-top: round(1.5rem, var(--e)); }
 .page-charges .ch-pair > .ch-readout { grid-column: 1 / -1; }
-.page-charges .ch-readout { display: block; text-align: left; min-height: 1.5rem; }
-.page-charges .ch-readout strong { font: 400 1.0625rem var(--serif); color: var(--ink); }
+.page-charges .ch-readout { display: block; text-align: left; min-height: round(1.5rem, var(--e)); }
+.page-charges .ch-readout strong { font: 400 round(1.0625rem, 1px) var(--serif); --LH: normal; line-height: var(--LH); color: var(--ink); }
 .page-charges .ch-part { min-width: 0; }
-.page-charges .ch-part-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.625rem; }
+.page-charges .ch-part-head { display: flex; align-items: center; justify-content: space-between; gap: round(0.75rem, var(--e)); margin-bottom: round(0.625rem, var(--e)); }
 .page-charges .ch-part-head .label { margin: 0; }
-.page-charges .ch-part .note { margin-top: 0.625rem; font-size: var(--small-2); }
-.page-charges .ch-key { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; font-size: var(--small-2); color: var(--ink-3); margin-bottom: 0.625rem; }
-.page-charges .ch-key li { display: inline-flex; align-items: center; gap: 0.375rem; }
-.page-charges .ch-temp-key { gap: 0.625rem; }
-.page-charges .ch-temp-step { display: inline-flex; align-items: center; gap: 0.25rem; }
+.page-charges .ch-part .note { margin-top: round(0.625rem, var(--e)); font-size: var(--small-2); }
+.page-charges .ch-key { display: flex; flex-wrap: wrap; gap: round(0.25rem, var(--e)) round(1rem, var(--e)); font-size: var(--small-2); color: var(--ink-3); margin-bottom: round(0.625rem, var(--e)); }
+.page-charges .ch-key li { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); }
+.page-charges .ch-temp-key { gap: round(0.625rem, var(--e)); }
+.page-charges .ch-temp-step { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); }
 
-.page-charges .ch-cell { display: block; min-height: 0.5rem; background: var(--paper-sunk); border-radius: 0.0625rem; }
+.page-charges .ch-cell { display: block; min-height: round(0.5rem, var(--e)); background: var(--paper-sunk); border-radius: round(0.0625rem, var(--e)); }
 .page-charges .ch-cell.has-n { background: color-mix(in srgb, var(--ochre) calc(18% + var(--a) * 82%), var(--paper)); }
 .page-charges .ch-cell.has-n.is-end { background: color-mix(in srgb, var(--accent) calc(18% + var(--a) * 82%), var(--paper)); }
 .page-charges .ch-cell.is-marked { box-shadow: inset 0 0 0 1px var(--ink); }
-.page-charges .ch-levels-wrap { --y-w: 4.5rem; }
-.page-charges .ch-levels { display: grid; grid-template-columns: var(--y-w) repeat(var(--n), minmax(0, 1fr)); grid-template-rows: repeat(10, 1.25rem); gap: 1px; }
+.page-charges .ch-levels-wrap { --y-w: round(4.5rem, var(--e)); }
+.page-charges .ch-levels { display: grid; grid-template-columns: var(--y-w) repeat(var(--n), minmax(0, 1fr)); grid-template-rows: repeat(10, round(1.25rem, var(--e))); gap: 1px; }
 .page-charges .ch-levels .ch-cell.is-over:not(.has-n), .page-charges .ch-levels .ch-cell.is-under:not(.has-n) { background: color-mix(in srgb, var(--rust) 6%, var(--paper-sunk)); }
 .page-charges .ch-levels-y { font-size: var(--micro); color: var(--ink-3); align-self: center; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.page-charges .ch-levels-axis { display: grid; grid-template-columns: var(--y-w) repeat(var(--n), minmax(0, 1fr)); margin-top: 0.375rem; height: 1rem; }
+.page-charges .ch-levels-axis { display: grid; grid-template-columns: var(--y-w) repeat(var(--n), minmax(0, 1fr)); margin-top: round(0.375rem, var(--e)); height: round(1rem, var(--e)); }
 .page-charges .ch-levels-x { grid-row: 1; grid-column: var(--c) / span var(--s); font-size: var(--micro); color: var(--ink-3); white-space: nowrap; }
 .page-charges .ch-levels-wrap .ch-levels-axis { grid-template-columns: var(--y-w) repeat(var(--n), minmax(0, 1fr)); }
 
-.page-charges .ch-delta { display: grid; grid-template-columns: 3rem minmax(0, 1fr); grid-template-rows: 13.75rem 1.5rem; column-gap: 0.5rem; }
+.page-charges .ch-delta { display: grid; grid-template-columns: round(3rem, var(--e)) minmax(0, 1fr); grid-template-rows: round(13.75rem, var(--e)) round(1.5rem, var(--e)); column-gap: round(0.5rem, var(--e)); }
 .page-charges .ch-delta-y { position: relative; }
 .page-charges .ch-delta-y span, .page-charges .ch-curve-y span { position: absolute; right: 0; top: var(--y); transform: translateY(-50%); font-size: var(--micro); color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .page-charges .ch-delta-plot { position: relative; cursor: pointer; box-shadow: inset 0 -1px 0 var(--rule-strong); }
 .page-charges .ch-delta-svg, .page-charges .ch-curve-svg { display: block; overflow: visible; }
 .page-charges .ch-delta-x, .page-charges .ch-curve-x { grid-column: 2; position: relative; }
-.page-charges .ch-delta-x span, .page-charges .ch-curve-x span { position: absolute; left: var(--x); top: 0.375rem; font-size: var(--micro); color: var(--ink-3); white-space: nowrap; }
+.page-charges .ch-delta-x span, .page-charges .ch-curve-x span { position: absolute; left: var(--x); top: round(0.375rem, var(--e)); font-size: var(--micro); color: var(--ink-3); white-space: nowrap; }
 .page-charges .ch-curve-x span { transform: translateX(-50%); }
 .page-charges .ch-curve-x span:first-child { transform: none; }
 .page-charges .ch-curve-x span:last-child { transform: translateX(-100%); }
 .page-charges .ch-band { fill: var(--chart-wash); }
 .page-charges .ch-grid { stroke: var(--rule); stroke-width: 1px; }
-.page-charges .ch-grid.is-band { stroke: var(--accent); stroke-dasharray: 0.25rem 0.25rem; opacity: 0.7; }
+.page-charges .ch-grid.is-band { stroke: var(--accent); stroke-dasharray: round(0.25rem, var(--e)) round(0.25rem, var(--e)); opacity: 0.7; }
 .page-charges .ch-delta-bar { opacity: 0.85; }
 .page-charges .ch-delta-mark { fill: var(--chart-sunk); }
 .page-charges .ch-delta-cross { stroke: var(--ink); stroke-width: 1px; }
 
-.page-charges .ch-habit-lists { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.5rem 3rem; padding-top: 2rem; }
-.page-charges .ch-bands { display: grid; gap: 0.1875rem; }
-.page-charges .ch-band-row { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr) 6.5rem; align-items: center; gap: 0.75rem; font-size: var(--text-s); }
+.page-charges .ch-habit-lists { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: round(1.5rem, var(--e)) round(3rem, var(--e)); padding-top: round(2rem, var(--e)); }
+.page-charges .ch-bands { display: grid; gap: round(0.1875rem, var(--e)); }
+.page-charges .ch-band-row { display: grid; grid-template-columns: round(5.5rem, var(--e)) minmax(0, 1fr) round(6.5rem, var(--e)); align-items: center; gap: round(0.75rem, var(--e)); font-size: var(--text-s); }
 .page-charges .ch-band-name { color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.page-charges .ch-band-svg { display: block; height: 0.5rem; }
+.page-charges .ch-band-svg { display: block; height: round(0.5rem, var(--e)); }
 .page-charges .ch-band-fill { fill: var(--ochre); }
 .page-charges .ch-band-row.is-high .ch-band-fill { fill: color-mix(in srgb, var(--ochre) 55%, var(--rust)); }
 .page-charges .ch-band-row.is-high .ch-band-name { color: color-mix(in srgb, var(--ochre) 55%, var(--rust)); }
 .page-charges .ch-band-row.is-low .ch-band-fill { fill: var(--rust); }
 .page-charges .ch-band-row.is-low .ch-band-name { color: var(--rust); }
 .page-charges .ch-band-count { color: var(--ink-3); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.page-charges .ch-week { display: grid; grid-template-columns: 2.25rem repeat(24, minmax(0, 1fr)); grid-template-rows: 1rem repeat(7, 1.0625rem); gap: 1px; }
+.page-charges .ch-week { display: grid; grid-template-columns: round(2.25rem, var(--e)) repeat(24, minmax(0, 1fr)); grid-template-rows: round(1rem, var(--e)) repeat(7, round(1.0625rem, var(--e))); gap: 1px; }
 .page-charges .ch-week-x { font-size: var(--micro); color: var(--ink-3); white-space: nowrap; overflow: visible; }
 .page-charges .ch-week-y { font-size: var(--micro); color: var(--ink-3); align-self: center; }
-.page-charges .ch-runs-part { padding-top: 2rem; }
-.page-charges .ch-runs-part > .note { margin: 0.375rem 0 0; }
+.page-charges .ch-runs-part { padding-top: round(2rem, var(--e)); }
+.page-charges .ch-runs-part > .note { margin: round(0.375rem, var(--e)) 0 0; }
 
 /* Charging places */
-.page-charges .ch-places-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 1.5rem 3rem; padding-top: 1rem; align-items: start; }
-.page-charges .ch-map { height: 26rem; margin-top: 0.5rem; }
+.page-charges .ch-places-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: round(1.5rem, var(--e)) round(3rem, var(--e)); padding-top: round(1rem, var(--e)); align-items: start; }
+.page-charges .ch-map { height: round(26rem, var(--e)); margin-top: round(0.5rem, var(--e)); }
 .page-charges .ch-map canvas.is-pointing { cursor: pointer; }
 .page-charges .ch-map-read { display: block; text-align: left; }
-.page-charges .ch-map-read strong { font: 400 1.0625rem var(--serif); color: var(--ink); }
-.page-charges .ch-map-part .note { margin-top: 0.625rem; font-size: var(--small-2); }
-.page-charges .ch-place-tables { display: grid; gap: 1.75rem; }
-.page-charges .ch-place-table tbody td, .page-charges .ch-place-table tbody th { font-size: 0.875rem; }
+.page-charges .ch-map-read strong { font: 400 round(1.0625rem, 1px) var(--serif); --LH: normal; line-height: var(--LH); color: var(--ink); }
+.page-charges .ch-map-part .note { margin-top: round(0.625rem, var(--e)); font-size: var(--small-2); }
+.page-charges .ch-place-tables { display: grid; gap: round(1.75rem, var(--e)); }
+.page-charges .ch-place-table tbody td, .page-charges .ch-place-table tbody th { font-size: round(0.875rem, 1px); }
 
 /* Fast-charging curve */
-.page-charges .ch-curve .ch-key { padding-top: 1rem; }
-.page-charges .ch-curve-plot { display: grid; grid-template-columns: 4rem minmax(0, 1fr); grid-template-rows: 22rem 1.5rem; column-gap: 0.5rem; margin-top: 0.5rem; }
+.page-charges .ch-curve .ch-key { padding-top: round(1rem, var(--e)); }
+.page-charges .ch-curve-plot { display: grid; grid-template-columns: round(4rem, var(--e)) minmax(0, 1fr); grid-template-rows: round(22rem, var(--e)) round(1.5rem, var(--e)); column-gap: round(0.5rem, var(--e)); margin-top: round(0.5rem, var(--e)); }
 .page-charges .ch-curve-plot > .empty, .page-charges .ch-curve-plot > .loading, .page-charges .ch-curve-plot > .empty-error { grid-column: 1 / -1; grid-row: 1 / -1; }
 .page-charges .ch-curve-y { position: relative; }
 .page-charges .ch-curve-area { position: relative; box-shadow: inset 0 -1px 0 var(--rule-strong), inset 1px 0 0 var(--rule-strong); cursor: crosshair; }
-.page-charges .ch-curve-car { min-width: 14rem; }
-.page-charges .ch-dot { fill: var(--t); r: 0.1875rem; opacity: 0.62; stroke: transparent; stroke-width: 0.5rem; }
-.page-charges .ch-dot.is-on { r: 0.3125rem; opacity: 1; stroke: var(--paper); stroke-width: 1.5px; }
+.page-charges .ch-curve-car { min-width: round(14rem, var(--e)); }
+.page-charges .ch-dot { fill: var(--t); r: round(0.1875rem, var(--e)); opacity: 0.62; stroke: transparent; stroke-width: round(0.5rem, var(--e)); }
+.page-charges .ch-dot.is-on { r: round(0.3125rem, var(--e)); opacity: 1; stroke: var(--paper); stroke-width: 1.5px; }
 .page-charges .ch-median, .page-charges .ch-curve-hover, .page-charges .ch-curve-x, .page-charges .ch-curve-y { pointer-events: none; }
-.page-charges .ch-median { stroke: var(--ink); stroke-width: 0.15625rem; stroke-linecap: round; }
+.page-charges .ch-median { stroke: var(--ink); stroke-width: round(0.15625rem, var(--e)); stroke-linecap: round; }
 .page-charges .ch-session-line { stroke: var(--ink-2); stroke-width: 1.5px; stroke-linecap: round; }
 
 /* ------------------------------------------------------------- tiers */
 @container page (width < 112.5rem) {
-  .page-charges .ch-list .c-temp { width: 5.5rem; }
+  .page-charges .ch-list .c-temp { width: round(5.5rem, var(--e)); }
 }
 
 @container page (width < 72rem) {
@@ -237,21 +237,21 @@
   .page-charges .ch-stats-row, .page-charges .ch-habits-top, .page-charges .ch-pair, .page-charges .ch-places-grid { grid-template-columns: minmax(0, 1fr); }
   .page-charges .ch-habit-lists { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .page-charges .ch-cost-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .page-charges .ch-cost-figs > .fig:nth-child(n) { border-left: 1px solid var(--rule); padding-left: 1.125rem; border-top: 0; }
+  .page-charges .ch-cost-figs > .fig:nth-child(n) { border-left: 1px solid var(--rule); padding-left: round(1.125rem, var(--e)); border-top: 0; }
   .page-charges .ch-cost-figs > .fig:nth-child(2n + 1) { border-left: 0; padding-left: 0; }
   .page-charges .ch-cost-figs > .fig:nth-child(n + 3) { border-top: 1px solid var(--rule); }
 }
 
 @container page (width < 50rem) {
   .page-charges .ch-list .ledger-scroll { overflow-x: auto; }
-  .page-charges .ch-list .ledger-table { min-width: 46rem; }
+  .page-charges .ch-list .ledger-table { min-width: round(46rem, var(--e)); }
   .page-charges .ch-list .c-grid, .page-charges .ch-list .c-soc { display: none; }
   .page-charges .ch-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .page-charges .ch-totals > .fig:nth-child(n) { border-left: 0; padding-left: 0; border-top: 1px solid var(--rule); }
   .page-charges .ch-f-cars, .page-charges .ch-f-places, .page-charges .ch-f-search { flex: 1 1 100%; max-width: none; }
   .page-charges .ch-habit-lists, .page-charges .ch-habit-figs, .page-charges .ch-cost-figs { grid-template-columns: minmax(0, 1fr); }
   .page-charges .ch-cost-figs > .fig:nth-child(n), .page-charges .ch-habit-figs > .fig:nth-child(n) { border-left: 0; padding-left: 0; border-top: 1px solid var(--rule); }
-  .page-charges .ch-pick-pop { width: min(21rem, 100cqw); }
+  .page-charges .ch-pick-pop { width: min(round(21rem, var(--e)), 100cqw); }
   .page-charges .ch-clear { margin-left: 0; }
   .page-charges .ch-missing .ledger-scroll { overflow-x: auto; }
 }
@@ -259,19 +259,19 @@
 @container page (width >= 112.5rem) {
   .page-charges .ch-list .c-rate { display: table-cell; }
   .page-charges .ch-fold-rate { display: none; }
-  .page-charges .ch-delta { grid-template-rows: 16rem 1.5rem; }
-  .page-charges .ch-levels { grid-template-rows: repeat(10, 1.5rem); }
-  .page-charges .ch-map { height: 32rem; }
-  .page-charges .ch-curve-plot { grid-template-rows: 26rem 1.5rem; }
+  .page-charges .ch-delta { grid-template-rows: round(16rem, var(--e)) round(1.5rem, var(--e)); }
+  .page-charges .ch-levels { grid-template-rows: repeat(10, round(1.5rem, var(--e))); }
+  .page-charges .ch-map { height: round(32rem, var(--e)); }
+  .page-charges .ch-curve-plot { grid-template-rows: round(26rem, var(--e)) round(1.5rem, var(--e)); }
 }
 
 @container page (width >= 150rem) {
   .page-charges .ch-list .c-odo { display: table-cell; }
   .page-charges .ch-fold-odo { display: none; }
 }
-.page-charges .sort-mark { font-size: max(10px, 0.75em); }
+.page-charges .sort-mark { font-size: max(10px, round(0.75em, 1px)); }
 
 .page-charges .ch-nowrap { white-space: nowrap; }
-.page-charges .ch-f-small .field-select { min-width: 9.5rem; }
-.page-charges .ch-num { width: 5.5rem; }
+.page-charges .ch-f-small .field-select { min-width: round(9.5rem, var(--e)); }
+.page-charges .ch-num { width: round(5.5rem, var(--e)); }
 .page-charges .ch-delta-x span.is-end { transform: translateX(-100%); }

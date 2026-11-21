@@ -1,48 +1,48 @@
 /* Drive detail (pages/drive.js): the map beside the figures, the charts below, speed bands and export. */
-.drive-layout { display: grid; gap: var(--gap); grid-template-columns: minmax(0, 8fr) minmax(21rem, 4fr); margin-bottom: var(--gap); }
-.drive-layout > .map-panel { min-height: 32.5rem; }
+.drive-layout { display: grid; gap: var(--gap); grid-template-columns: minmax(0, 8fr) minmax(round(21rem, var(--e)), 4fr); margin-bottom: var(--gap); }
+.drive-layout > .map-panel { min-height: round(32.5rem, var(--e)); }
 .stats-panel { display: flex; flex-direction: column; }
-.drive-figures { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem 1rem; }
-.drive-figures .metric-value { font-size: 1.375rem; }
-.drive-soc { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 0.875rem; margin-top: 1.125rem; padding-top: 1rem; border-top: 1px solid var(--line); }
-.drive-soc > div { display: flex; flex-direction: column; line-height: 1.25; }
+.drive-figures { display: grid; grid-template-columns: 1fr 1fr; gap: round(1rem, var(--e)) round(1rem, var(--e)); }
+.drive-figures .metric-value { font-size: round(1.375rem, 1px); }
+.drive-soc { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: round(0.875rem, var(--e)); margin-top: round(1.125rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
+.drive-soc > div { display: flex; flex-direction: column; --LH: round(calc(1.25 * 1em), 2px); }
 .drive-soc > div.r { text-align: right; }
-.drive-soc b { font-family: var(--font-display); font-weight: 500; font-size: 1.375rem; }
-.drive-soc span { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
-.drive-soc .bar { height: 0.5rem; }
-.drive-odo { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.375rem 1rem; margin: 1rem 0 0; padding-top: 0.875rem; border-top: 1px solid var(--line); font-size: max(0.8125rem, var(--fs-floor)); }
+.drive-soc b { font-family: var(--font-display); font-weight: 500; font-size: round(1.375rem, 1px); }
+.drive-soc span { font-size: max(round(0.75rem, 1px), var(--fs-floor)); color: var(--text-3); }
+.drive-soc .bar { height: round(0.5rem, var(--e)); }
+.drive-odo { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: round(0.375rem, var(--e)) round(1rem, var(--e)); margin: round(1rem, var(--e)) 0 0; padding-top: round(0.875rem, var(--e)); border-top: 1px solid var(--line); font-size: max(round(0.8125rem, 1px), var(--fs-floor)); }
 .drive-odo dt { color: var(--text-3); }
 .drive-odo dd { margin: 0; text-align: right; }
-.route-colour { background: var(--surface-ctrl); backdrop-filter: blur(0.75rem); }
-.hover-marker { width: 1rem; height: 1rem; }
+.route-colour { background: var(--surface-ctrl); backdrop-filter: blur(round(0.75rem, var(--e))); }
+.hover-marker { width: round(1rem, var(--e)); height: round(1rem, var(--e)); }
 .hover-marker::before { display: none; }
 
-.charts-panel { padding: 1.125rem 1.25rem 0.875rem; margin-bottom: var(--gap); }
+.charts-panel { padding: round(1.125rem, var(--e)) round(1.25rem, var(--e)) round(0.875rem, var(--e)); margin-bottom: var(--gap); }
 .charts-panel .panel-head .row { justify-content: flex-end; }
-.selection { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.75rem 1.75rem; padding: 0.25rem 0 0.875rem; border-bottom: 1px solid var(--line); }
-.selection-title { flex-basis: 100%; font-size: max(0.75rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
-.drive-charts .chart { height: 8.5rem; }
-.drive-charts .chart-block[data-series="soc"] .chart, .drive-charts .chart-block[data-series="range"] .chart { height: 6.5rem; }
-.drive-charts .chart-block[data-series="tyres"] .chart { height: 9rem; }
+.selection { display: flex; flex-wrap: wrap; align-items: flex-end; gap: round(0.75rem, var(--e)) round(1.75rem, var(--e)); padding: round(0.25rem, var(--e)) 0 round(0.875rem, var(--e)); border-bottom: 1px solid var(--line); }
+.selection-title { flex-basis: 100%; font-size: max(round(0.75rem, 1px), var(--fs-floor)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+.drive-charts .chart { height: round(8.5rem, var(--e)); }
+.drive-charts .chart-block[data-series="soc"] .chart, .drive-charts .chart-block[data-series="range"] .chart { height: round(6.5rem, var(--e)); }
+.drive-charts .chart-block[data-series="tyres"] .chart { height: round(9rem, var(--e)); }
 .drive-lower { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: var(--gap); }
-.export-extras { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; margin-top: 0.875rem; font-size: max(0.8125rem, var(--fs-floor)); }
+.export-extras { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); margin-top: round(0.875rem, var(--e)); font-size: max(round(0.8125rem, 1px), var(--fs-floor)); }
 
 @container page (max-width: 85.375rem) {
-  .drive-layout { grid-template-columns: minmax(0, 7fr) minmax(19rem, 5fr); }
+  .drive-layout { grid-template-columns: minmax(0, 7fr) minmax(round(19rem, var(--e)), 5fr); }
 }
 @container page (max-width: 76rem) {
   .drive-layout, .drive-lower { grid-template-columns: minmax(0, 1fr); }
-  .drive-layout > .map-panel { min-height: 26rem; }
+  .drive-layout > .map-panel { min-height: round(26rem, var(--e)); }
 }
 @container page (min-width: 140rem) {
-  .drive-charts .chart { height: 10rem; }
+  .drive-charts .chart { height: round(10rem, var(--e)); }
 }
 
 /* climate bands and the line under a chart that says what it shows or why it is empty */
-.drive-charts .chart-block[data-series] .chart-label .key--band i { width: 0.75rem; height: 0.625rem; border-radius: 0.125rem; background: var(--live-soft); border: 1px solid var(--live-line); }
+.drive-charts .chart-block[data-series] .chart-label .key--band i { width: round(0.75rem, var(--e)); height: round(0.625rem, var(--e)); border-radius: round(0.125rem, var(--e)); background: var(--live-soft); border: 1px solid var(--live-line); }
 .drive-charts .chart-block[data-series] .chart-label .key--band[data-climate="precondition"] i { background: var(--warm-soft); border-color: var(--warm-line); }
 .drive-charts .chart-block[data-series] .chart-label .key--band[data-climate="overheat_protect"] i { background: var(--danger-soft); border-color: var(--danger); }
-.chart-note { margin: 0.125rem 0 0.25rem 4rem; font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
-.drive-charts .chart-block[data-series="hvac"] .chart, .drive-charts .chart-block[data-series="heat"] .chart { height: 6rem; }
-.drive-lower .panel .note + .row { margin-top: 0.75rem; }
-.drive-lower .hbars + .note { margin-top: 0.75rem; }
+.chart-note { margin: round(0.125rem, var(--e)) 0 round(0.25rem, var(--e)) round(4rem, var(--e)); font-size: max(round(0.75rem, 1px), var(--fs-floor)); color: var(--text-3); }
+.drive-charts .chart-block[data-series="hvac"] .chart, .drive-charts .chart-block[data-series="heat"] .chart { height: round(6rem, var(--e)); }
+.drive-lower .panel .note + .row { margin-top: round(0.75rem, var(--e)); }
+.drive-lower .hbars + .note { margin-top: round(0.75rem, var(--e)); }
