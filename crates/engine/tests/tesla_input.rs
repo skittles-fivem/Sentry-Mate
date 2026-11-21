@@ -347,6 +347,42 @@ fn one_drive_seen_by_both_is_one_row_with_both_sources_and_keeps_its_id() {
 }
 
 #[test]
+fn series_of_a_drive_seen_by_both_is_fused_not_summed() {
+    rt().block_on(async {
+        let k = kit();
+        let trip = Trip { a: 70, b: 250 };
+        for i in 0..5 {
+            send_smo(&k, i, trip).await;
+        }
+        k.engine.idle().await;
+        let car = k.db.car_for_key(KEY).unwrap().unwrap();
+        // the API's position lags and its speed differs: every second, beside SMO's
+        let mut api = api_readings(0, 300, 1, trip);
+        for s in &mut api {
+            s.lat = s.lat.map(|x| x + 0.01);
+            s.speed_kmh = s.speed_kmh.map(|_| 50.0);
+        }
+        k.engine.api_points(car, api, vec![online(0, 300)]);
+        k.engine.idle().await;
+        let q = query::series::SeriesQuery {
+            fields: vec!["lat".into(), "speed_kph".into()],
+            from_ms: Some(T0 + 100_000),
+            to_ms: Some(T0 + 110_000),
+            max_points: Some(10),
+            ..Default::default()
+        };
+        let c = query::series::series(&k.engine, car, &q, T0 + 400_000).unwrap().body;
+        assert_eq!(c.bucket_ms, 1000);
+        for v in &c.values["lat"] {
+            assert!((v.unwrap() - LAT).abs() < 1e-6, "SMO's position inside SMO's coverage: {:?}", c.values["lat"]);
+        }
+        for v in &c.values["speed_kph"] {
+            assert!((v.unwrap() - 36.0).abs() < 0.5, "SMO's speed, not a mean with the API's: {:?}", c.values);
+        }
+    });
+}
+
+#[test]
 fn smo_offline_in_the_middle_of_a_drive_the_api_fills_the_gap() {
     rt().block_on(async {
         let k = kit();

@@ -10,7 +10,7 @@
 //! | `letting_sleep` | online and idle for 10 min with nothing keeping it awake | no `vehicle_data` for 21 min, only the list; then one look, and back to waiting if still idle |
 //! | `charging` | charging | `vehicle_data` every 30 s |
 //! | `driving` | gear D, R or N, or moving | the streaming socket, and `vehicle_data` every 60 s (30 s without a stream) |
-//! | `backoff` | errors | 429: Tesla's wait (at least 60 s, else 5 min); 5xx and network: 30 s doubling to 15 min |
+//! | `backoff` | errors, or the daily cap | 429: Tesla's wait (at least 60 s, else 5 min); 5xx and network: 30 s doubling to 15 min |
 //!
 //! When SMO sends live CAN for the car, `vehicle_data` drops to every 5 min while online and no stream is opened.
 //! At most one request a second and 3,000 a day per account (then nothing until midnight UTC). The access token
@@ -308,6 +308,8 @@ pub struct Poller<T: Tesla, S: Sink, St: Streamer> {
     token_lifetime_ms: Option<u64>,
     /// The pacing as last saved.
     saved_pacing: Pacing,
+    /// The time of the last tick, for the status.
+    now_ms: u64,
 }
 
 impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
@@ -352,6 +354,7 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
             last_ok_written_ms: 0,
             token_lifetime_ms: pacing.token_lifetime_ms,
             saved_pacing: pacing,
+            now_ms: 0,
         };
         p.rebuild_cars();
         Ok(p)
@@ -370,15 +373,30 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
                 .map(|c| CarStatus {
                     vehicle: c.vehicle.clone(),
                     car: c.car,
-                    mode: if self.idle() { Mode::Off } else { c.mode },
+                    mode: self.mode_of(c),
                     car_state: c.state,
                     last_poll_ms: c.last_poll_ms,
-                    next_poll_ms: if self.idle() { None } else { c.data_due().or(Some(self.list_next_ms)) },
+                    next_poll_ms: match self.mode_of(c) {
+                        Mode::Off => None,
+                        Mode::Backoff => Some(self.backoff_until_ms),
+                        _ => c.data_due().or(Some(self.list_next_ms)),
+                    },
                     last_data_ms: c.last_data_ms,
                     streaming: c.stream.is_some(),
                     last_error: c.last_error.clone(),
                 })
                 .collect(),
+        }
+    }
+
+    /// What is done for the car now: while the account waits after errors (or for the daily cap), `backoff`.
+    fn mode_of(&self, c: &CarPoll) -> Mode {
+        if self.idle() {
+            Mode::Off
+        } else if c.car.is_some() && self.now_ms < self.backoff_until_ms {
+            Mode::Backoff
+        } else {
+            c.mode
         }
     }
 
@@ -620,6 +638,7 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
 
     /// Does what is due at `now_ms`; returns when to come back. `None`: the account is gone, stop.
     pub async fn tick(&mut self, now_ms: u64) -> Option<u64> {
+        self.now_ms = now_ms;
         let next = self.tick_inner(now_ms).await;
         if next.is_some() {
             self.save_pacing();

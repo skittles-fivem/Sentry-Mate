@@ -270,7 +270,23 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     for day in days {
         let (x, y) = (day.max(a), day.saturating_add(DAY).min(b));
         let mut chunk: Vec<Sample> = Vec::new();
+        // SMO's and the API's seconds fused as the timeline is (inside SMO's coverage SMO's second, no API second
+        // beside it), never summed
+        let live = streams.contains(&model::Stream::Smo) && streams.contains(&model::Stream::TeslaApi);
+        if live {
+            let (pts, smo, api) = e.live_fused(car, x, y)?;
+            if smo {
+                gave.insert(model::Stream::Smo.origin());
+            }
+            if api {
+                gave.insert(model::Stream::TeslaApi.origin());
+            }
+            chunk.extend(pts);
+        }
         for &s in &streams {
+            if live && matches!(s, model::Stream::Smo | model::Stream::TeslaApi) {
+                continue;
+            }
             let pts = e.db().read_points::<Sample>(car, s, x, y)?;
             if !pts.is_empty() {
                 gave.insert(s.origin());

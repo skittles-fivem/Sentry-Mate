@@ -1273,8 +1273,8 @@ fn overlay(
 }
 
 /// The ids the window's new rows (`new_ids`, spans `new`) take: a row with the id of an old one keeps it; else the
-/// first old row (`(id, start, end)`, oldest first) of the same UTC day that it overlaps and no other row took; else
-/// its own.
+/// first old row (`(id, start, end)`, oldest first) that it overlaps and no other row took (on any day: a start
+/// may move across midnight); else its own.
 pub(crate) fn carry_ids(old: &[(u64, u64, u64)], new_ids: &[u64], new: &[(u64, u64)]) -> Vec<u64> {
     let mut old: Vec<(u64, u64, u64)> = old.to_vec();
     old.sort_by_key(|o| (o.1, o.0));
@@ -1286,10 +1286,8 @@ pub(crate) fn carry_ids(old: &[(u64, u64, u64)], new_ids: &[u64], new: &[(u64, u
             out.push(id);
             continue;
         }
-        let day = records::day_of(a);
-        let hit = old.iter().find(|o| {
-            !taken.contains(&o.0) && records::day_of(o.1) == day && o.1 < b.max(a + 1) && a < o.2.max(o.1 + 1)
-        });
+        // overlapping is enough: the other input may move the start across midnight
+        let hit = old.iter().find(|o| !taken.contains(&o.0) && o.1 < b.max(a + 1) && a < o.2.max(o.1 + 1));
         match hit {
             Some(o) => {
                 taken.insert(o.0);
@@ -1299,4 +1297,18 @@ pub(crate) fn carry_ids(old: &[(u64, u64, u64)], new_ids: &[u64], new: &[(u64, u
         }
     }
     out
+}
+
+#[cfg(test)]
+mod carry_tests {
+    use super::carry_ids;
+
+    #[test]
+    fn a_start_moved_across_midnight_keeps_the_id() {
+        // 2026-01-02T00:00:00Z
+        let d = 1_767_312_000_000;
+        assert_eq!(carry_ids(&[(11, d + 20_000, d + 600_000)], &[22], &[(d - 10_000, d + 600_000)]), vec![11]);
+        // no overlap: its own id
+        assert_eq!(carry_ids(&[(11, d + 20_000, d + 600_000)], &[22], &[(d - 90_000, d - 30_000)]), vec![22]);
+    }
 }

@@ -167,6 +167,9 @@ class Tesla(ServerCase):
                                                           "confirm_password": PW})
         self.assertEqual(a["status"], "paused")
         self.assertTrue(all(c["mode"] == "off" for c in a["cars"]))
+        # as on the server: the account's task keeps going (idle) while it is paused
+        self.assertTrue(a["running"])
+        self.assertTrue(self.c.get(BASE + "/accounts/ta1")["running"])
         a = self.c.json("PATCH", BASE + "/accounts/ta1", {"version": a["version"], "paused": False,
                                                           "location": "never", "confirm_password": PW})
         self.assertEqual((a["status"], a["location"]), ("ok", "never"))
@@ -194,6 +197,7 @@ class Tesla(ServerCase):
         a = self.c.get(BASE + "/accounts/ta1")
         self.assertEqual(a["status"], "sign_in_needed")
         self.assertTrue(all(c["mode"] == "off" for c in a["cars"]))
+        self.assertTrue(a["running"])
         sys = [x for x in self.audit() if x["action"] == "tesla-sign-in-needed"]
         self.assertEqual(sys[0]["account"], None)  # written in the server's name
         # a new refresh token fixes it
@@ -205,6 +209,22 @@ class Tesla(ServerCase):
         self.assertEqual(a["status"], "ok")
         self.assertNotIn("tesla_sign_in_needed", {n["code"] for n in self.c.get("/api/v1/notices")["items"]})
         self.assertIn("tesla-token-replaced", [x["action"] for x in self.audit()])
+
+
+    def test_8_an_account_in_error_backs_off(self):
+        t = self.server.app.store.tesla
+        a = t["accounts"]["ta1"]
+        a["state"] = "error"
+        a["last_error"] = {"code": "forbidden", "message": "Tesla refuses this account's requests", "at_ms": 1}
+        got = self.c.get(BASE + "/accounts/ta1")
+        want = ["off" if c["match"] in (None, "leave_out") else "backoff" for c in got["cars"]]
+        self.assertIn("backoff", want)
+        self.assertEqual([c["mode"] for c in got["cars"]], want)
+        self.assertTrue(got["running"])
+        st = [s for s in self.c.get(BASE + "/status")["items"] if s["account"] == "ta1"]
+        self.assertEqual({s["mode"] for s in st if s["car"]}, {"backoff"})
+        a["last_error"] = {"code": "endpoint_gone", "message": "closed", "at_ms": 1}
+        self.assertEqual({c["mode"] for c in self.c.get(BASE + "/accounts/ta1")["cars"]}, {"off"})
 
 
 class TeslaWatch(ServerCase):

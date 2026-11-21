@@ -157,8 +157,12 @@ def _status_word(a):
 
 def _mode(req, a, c):
     """What the server does for the car now: from the made-up car's own state on the virtual clock."""
-    if a["paused"] or a["state"] in ("sign_in_needed", "error") or c["match"] in (None, "leave_out"):
+    if a["paused"] or a["state"] == "sign_in_needed" or c["match"] in (None, "leave_out"):
         return "off", "unknown"
+    if a["state"] == "error":
+        # the server waits after Tesla's errors (an hour after a 403); a closed endpoint is not asked again at all
+        gone = (a["last_error"] or {}).get("code") == "endpoint_gone"
+        return ("off" if gone else "backoff"), "unknown"
     if c["match"] == "new" or req.ds.history(c["match"]) is None:
         return "watching_list", "asleep"
     from ..live import now_object
@@ -200,7 +204,7 @@ def account_view(req, a):
     return {
         "id": a["id"], "label": a["label"], "region": a["region"], "redirect": a["redirect"],
         "hosts": list(HOSTS[a["region"]]), "added_ms": a["added_ms"], "status": _status_word(a),
-        "paused": a["paused"], "location": a["location"], "running": _status_word(a) in ("ok", "checking"),
+        "paused": a["paused"], "location": a["location"], "running": True,
         "last_ok_ms": a["last_ok_ms"], "last_error": a["last_error"], "polls_today": _polls_today(req, a),
         "cars": [car_view(req, a, c) for c in a["cars"]], "version": a["version"],
     }
