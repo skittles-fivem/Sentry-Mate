@@ -41,7 +41,8 @@ pub const EXPORTER_LABEL: &[u8] = b"EXPORTER-sentry-mate-move-v1";
 /// stored does not count against its token: the bridge sends a request per file (a log and its sidecar), so after a
 /// few days away from home its backlog alone is more than this, and the upload would go on at this pace (a file a
 /// second) after a fast start. What a stored chunk costs is bounded already (one request per file at a time, the
-/// logs per car, the free disk). Pings, status questions, refused chunks and files that were already here count.
+/// logs per car, the free disk; an empty chunk is refused). Pings, status questions, refused chunks, files that were
+/// already here and sidecars that arrive with no log of their name stored (the logs per car don't bound those) count.
 pub const MAX_BAD_TOKENS: usize = 20;
 pub const MAX_REQUESTS_PER_TOKEN: usize = 1200;
 pub const WINDOW: Duration = Duration::from_secs(600);
@@ -423,7 +424,9 @@ async fn upload(AxState(up): St, Path(name): Path<String>, req: Request) -> Resu
         })
     };
     let r = task.await.map_err(ApiError::server)??;
-    if !r.already {
+    // given back only for a chunk that added bytes, and not for a sidecar with no log here (not bounded by the logs
+    // per car)
+    if !r.already && r.received > offset && !r.orphan {
         lock_window(&up.per_token).give_back(&token_id);
     }
     let code = if r.complete { StatusCode::CREATED } else { StatusCode::OK };

@@ -132,6 +132,48 @@ async fn stored_chunks_do_not_use_up_the_token_s_requests() {
 }
 
 #[tokio::test]
+async fn empty_chunks_are_refused_and_count() {
+    let t = setup().await;
+    let bytes = [7u8; 100];
+    let mut last = (StatusCode::OK, Value::Null);
+    for _ in 0..=ingest::api::MAX_REQUESTS_PER_TOKEN {
+        last = put(&t, LOG, &bytes, 0, &[]).await;
+        if last.0 != StatusCode::BAD_REQUEST {
+            break;
+        }
+        assert_eq!(last.1["code"].as_str(), Some("empty_chunk"), "{}", last.1);
+    }
+    assert_eq!(last.0, StatusCode::TOO_MANY_REQUESTS, "{}", last.1);
+}
+
+#[tokio::test]
+async fn sidecars_with_no_log_here_count() {
+    let t = setup().await;
+    let body = br#"{"x":1}"#;
+    let mut last = (StatusCode::OK, Value::Null);
+    for i in 0..ingest::api::MAX_REQUESTS_PER_TOKEN + 10 {
+        last = put(&t, &format!("abcdef123456_20261108T143000Z_{i}.log.xz.json"), body, 0, body).await;
+        if last.0 != StatusCode::CREATED {
+            break;
+        }
+    }
+    assert_eq!(last.0, StatusCode::TOO_MANY_REQUESTS, "{}", last.1);
+}
+
+#[tokio::test]
+async fn a_sidecar_after_its_log_does_not_count() {
+    let t = setup().await;
+    let body = br#"{"x":1}"#;
+    for i in 0..ingest::api::MAX_REQUESTS_PER_TOKEN / 2 + 10 {
+        let log = format!("abcdef123456_20261108T143000Z_{i}.log.xz");
+        let (s, b) = put(&t, &log, &[i as u8; 10], 0, &[i as u8; 10]).await;
+        assert_eq!(s, StatusCode::CREATED, "log {i}: {b}");
+        let (s, b) = put(&t, &format!("{log}.json"), body, 0, body).await;
+        assert_eq!(s, StatusCode::CREATED, "sidecar {i}: {b}");
+    }
+}
+
+#[tokio::test]
 async fn a_log_uploads_in_chunks_and_resumes() {
     let t = setup().await;
     let bytes: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();

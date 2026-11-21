@@ -353,7 +353,7 @@ Sentry Six Manager's [docs/can-bridge-api.md](https://github.com/skittles-fivem/
 | Logs per car key | 200,000, then `507 car_full` (no command deletes logs yet) |
 | Free disk | a new upload needs twice its size plus 2 GiB free, else `507 no_space` |
 | Wrong tokens | 20 per address per 10 minutes (IPv6: per /64), then `429` |
-| Requests per token | 1200 per 10 minutes, then `429` (a chunk that is stored does not count) |
+| Requests per token | 1200 per 10 minutes, then `429` (a chunk that is stored does not count, unless it finishes a sidecar whose log is not here; an empty chunk is refused with `400 empty_chunk`) |
 
 A log whose sidecar hasn't come after 10 minutes is judged without it (checked every minute).
 
