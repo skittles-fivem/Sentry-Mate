@@ -17,7 +17,7 @@ import { editLines } from '../core/kvedit.js';
 import { empty, errorWords } from '../core/states.js';
 import { tag, dateTime, date, ago, dur, DASH } from '../core/fmt.js';
 import { toast } from '../core/toast.js';
-import { openDialog, confirmDialog } from '../core/dialog.js';
+import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { askPassword, copyBtn, codeOut, downloadKey, showOnce, STAY } from '../core/secret.js';
 
@@ -361,7 +361,7 @@ export async function mount(ctx) {
   function editAccount(a) {
     const isNew = !a;
     const name = field({ label: 'name', name: 'name', value: a?.name || '', required: true, hint: 'What they type to sign in. 1 to 64 characters.', attrs: { maxlength: 64, autocomplete: 'off' } });
-    const password = field({ label: isNew ? 'password' : 'new password', name: 'password', type: 'password', required: isNew, hint: isNew ? 'At least 10 characters.' : 'Empty keeps the password. At least 10 characters.', attrs: { minlength: 10, autocomplete: 'new-password' } });
+    const password = field({ label: isNew ? 'password' : 'new password', name: 'password', type: 'password', required: isNew, hint: isNew ? 'Tell it to them in person or over a channel you trust.' : 'Empty keeps the password.', attrs: { autocomplete: 'new-password' } });
     const role = field({ label: 'role', name: 'role', type: 'select', value: a?.role || 'watch', options: [['watch', 'watch: sees its cars, changes nothing shared'], ['admin', 'admin: every car and setting']] });
     const two = field({ label: 'require two-step sign-in', name: 'two_step_required', type: 'checkbox', value: !!a?.two_step_required });
     const allCars = field({ label: 'every car, also cars that appear later', name: 'all_cars', type: 'checkbox', value: a?.cars === 'all' });
@@ -376,7 +376,10 @@ export async function mount(ctx) {
       secondary: h('button', { class: 'btn', type: 'button', onclick: () => d.close() }, 'cancel'),
       async onSubmit(v) {
         const body = { name: v.name.trim(), role: v.role, cars: v.all_cars ? 'all' : [...chosen], two_step_required: v.two_step_required };
-        if (v.password) body.password = v.password;
+        if (v.password) {
+          if (!(await passwordOk(body.name, v.password, password.input))) return;
+          body.password = v.password;
+        }
         try {
           if (isNew) await ctx.api.post('accounts', body); else await ctx.api.patch(`accounts/${enc(a.id)}`, { version: a.version, ...body });
         } catch (e) {

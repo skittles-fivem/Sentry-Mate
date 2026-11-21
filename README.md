@@ -134,8 +134,9 @@ HTTPS only and optional two-step sign-in keep it out of reach from outside ([doc
 from the web pages (Settings, and the first page of the new server: move here, or restore from an export file) or
 with the `move`, `export` and `import` commands.
 
-- [`ui/README.md`](ui/README.md): the two packs, Instrument and Logbook, built into the server. To preview them on
-  made-up data: [Previewing the UI packs](docs/development.md#previewing-the-ui-packs).
+- [`ui/README.md`](ui/README.md): the five packs built into the server: Instrument (dark glass, the default),
+  Logbook (paper and ink), Horizon (neon and a dusk sky), Console (keyboard first, monospace) and Pebble (soft
+  tiles, touch first). To preview them on made-up data: [Previewing the UI packs](docs/development.md#previewing-the-ui-packs).
 - [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md): every TeslaMate tab (51 tabs, 1161 items) placed on 23
   Sentry Mate pages, described in our own words. [`docs/parity/coverage-matrix.json`](docs/parity/coverage-matrix.json)
   is the same, machine-readable.
@@ -194,7 +195,7 @@ cars for tests), and the program, `sentry-mate`.
 | MQTT for Home Assistant (TLS unless plain is turned on, never a password in the clear, discovery, any number of cars on one connection), set up in the web UI | done |
 | A dev API server that answers [`docs/ui-api.md`](docs/ui-api.md) on made-up data, shared browser modules, and a page checker that loads every page at laptop and 4K sizes against [`docs/parity/coverage-matrix.json`](docs/parity/coverage-matrix.json) | done |
 | **Being built here** | |
-| Web UI: two designs in [`ui/`](ui/), built into the server; every TeslaMate tab gets a page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) | being built: every page in both designs, checked item by item, with screenshots |
+| Web UI: five designs in [`ui/`](ui/), built into the server; every TeslaMate tab gets a page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) | being built: every page in all five designs, checked item by item, with screenshots |
 | **Not built yet** | |
 | A command that lists stored logs (a car's logs and their check results are in the web UI), deleting logs, a backup command | not built |
 | Passkeys | planned |
@@ -207,8 +208,8 @@ No licence has been chosen yet; the repo has no LICENSE file. Bundled third-part
 
 - DBC files from model3dbc, opendbc and Open Vehicle Monitoring System's Model S module: MIT. `override.dbc` is from
   Sentry Six Manager. See [crates/dbc/files/README.md](crates/dbc/files/README.md).
-- In the UI packs: MapLibre GL JS 6.18.0 (BSD-3-Clause), uPlot 1.6.32 (MIT), Inter (SIL Open Font License 1.1),
-  JetBrains Mono (Apache License 2.0, per its bundled licence file), Bitstream Charter (Bitstream's free licence).
+- In the UI packs: MapLibre GL JS 6.18.0 (BSD-3-Clause), uPlot 1.6.32 (MIT), Inter, Orbitron, Chakra Petch, IBM Plex Sans and
+  Manrope (SIL Open Font License 1.1), JetBrains Mono (Apache License 2.0, per its bundled licence file), Bitstream Charter (Bitstream's free licence).
 
 Sentry Mate is written from scratch and copies no code from TeslaMate; it is not affiliated with TeslaMate, Tesla,
 or Screenmate.

@@ -811,6 +811,8 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .dlg-body { padding: calc(var(--g) * 2); }
 .dlg-acts { padding: 0 calc(var(--g) * 2) calc(var(--g) * 2); }
 .dlg-text { max-width: 70ch; }
+.dlg-list { max-width: 70ch; margin: 0 0 var(--g); padding-left: calc(var(--g) * 2); list-style: none; }
+.dlg-list li::before { content: '- '; color: var(--accent); }
 .dlg--palette, .dlg--pick { --dw: round(down, min(calc(var(--a2) * 96), calc(100vw - 2 * var(--gut))), 1px); }
 .dlg--account, .dlg--keys, .dlg--period { --dw: round(down, min(calc(var(--a2) * 72), calc(100vw - 2 * var(--gut))), 1px); }
 

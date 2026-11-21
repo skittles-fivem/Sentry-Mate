@@ -16,7 +16,7 @@ import { dayKey } from '../shared/time.js';
 import { field, form } from '../core/form.js';
 import * as session from '../core/session.js';
 import { toast } from '../core/toast.js';
-import { confirmDialog } from '../core/dialog.js';
+import { confirmDialog, passwordOk } from '../core/dialog.js';
 import { errorWords } from '../core/states.js';
 import { tag, dateTime, dur, DASH } from '../core/fmt.js';
 import { textBar } from '../core/ui.js';
@@ -140,12 +140,13 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- start fresh */
   function freshStep() {
     const name = field({ label: 'user', name: 'name', required: true, hint: '1 to 64 characters; you type it every time you sign in.', attrs: { autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', maxlength: '64' } });
-    const pass = field({ label: 'password', name: 'password', type: 'password', required: true, hint: 'At least 10 characters. A few words in a row are easy to remember and hard to guess.', attrs: { autocomplete: 'new-password', minlength: '10' } });
+    const pass = field({ label: 'password', name: 'password', type: 'password', required: true, hint: 'A few words in a row are easy to remember and hard to guess.', attrs: { autocomplete: 'new-password' } });
     const again = field({ label: 'again', name: 'again', type: 'password', required: true, attrs: { autocomplete: 'new-password' } });
     const f = guard(form({
       fields: [name, pass, again], submit: 'make the admin account', secondary: back(),
       async onSubmit(v) {
         if (v.password !== v.again) { again.setError('The two passwords are not the same.'); again.input.focus(); return; }
+        if (!(await passwordOk(v.name.trim(), v.password, pass.input))) return;
         let r;
         try {
           r = await ctx.api.post('setup/fresh', { name: v.name.trim(), password: v.password });

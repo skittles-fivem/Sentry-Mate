@@ -418,6 +418,8 @@ dialog.dlg::backdrop { background: rgba(4, 1, 18, 0.62); -webkit-backdrop-filter
 .dlg-title { flex: 1 1 auto; min-width: 0; font: 700 var(--fs-lg)/1.4 var(--display); letter-spacing: 0.06em; }
 .dlg-body { display: grid; gap: 1rem; padding: 1.25rem; }
 .dlg-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.625rem; padding: 0 1.25rem 1.25rem; }
+.dlg-list { display: grid; gap: 0.375rem; margin: 0; padding-left: 1.25rem; list-style: disc; }
+.dlg-list li::marker { color: var(--yel); }
 .pop {
   position: fixed; inset: auto; margin: 0; padding: 0; border: 0; min-width: 16rem; max-width: calc(100vw - 1rem); max-height: calc(100dvh - 1rem); overflow: auto;
   color: var(--ink); background: var(--glass-solid); border-radius: var(--r);

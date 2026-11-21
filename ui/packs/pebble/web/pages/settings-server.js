@@ -17,7 +17,7 @@ import * as state from '../shared/state.js';
 import { formatDateTime, formatDate } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { tile, btn, linkBtn, chip, note, icon, ago } from '../core/ui.js';
-import { openSheet, confirmSheet } from '../core/sheet.js';
+import { openSheet, confirmSheet, passwordOk } from '../core/sheet.js';
 import { field, form, segmented } from '../core/form.js';
 import { toggle } from '../core/form.js';
 import { checkRow, sectionHead, moreButton } from '../core/bits.js';
@@ -389,7 +389,7 @@ export async function mount(ctx) {
       title: isNew ? 'Add an account' : `Edit ${a.name}`,
       body: (close) => {
         const name = field({ label: 'Name', name: 'name', value: a ? a.name : '', hint: 'What they type to sign in. 1 to 64 characters.', attrs: { maxlength: '64', autocomplete: 'off', 'data-autofocus': '' } });
-        const pw = field({ label: isNew ? 'Password' : 'New password', name: 'password', type: 'password', hint: isNew ? 'At least 10 characters. Tell it to them in person.' : 'Leave empty to keep it. At least 10 characters.', attrs: { autocomplete: 'new-password' } });
+        const pw = field({ label: isNew ? 'Password' : 'New password', name: 'password', type: 'password', hint: isNew ? 'Tell it to them in person.' : 'Leave empty to keep it.', attrs: { autocomplete: 'new-password' } });
         const role = segmented({ label: 'Role', name: 'role', value: a ? a.role : 'watch', options: [['watch', 'Watch only'], ['admin', 'Admin']] });
         let roleNow = a ? a.role : 'watch';
         role.addEventListener('click', () => { roleNow = role.querySelector('[aria-checked="true"]')?.dataset.value || roleNow; });
@@ -403,7 +403,10 @@ export async function mount(ctx) {
           submitLabel: isNew ? 'Add account' : 'Save changes',
           onsubmit: async (v) => {
             const body = { name: (v.name || '').trim(), role: roleNow, cars: pick.value(), two_step_required: two.input.checked, confirm_password: v.confirm_password };
-            if (v.password) body.password = v.password;
+            if (v.password) {
+              if (!(await passwordOk(body.name, v.password, pw.control))) return;
+              body.password = v.password;
+            }
             if (v.code) body.code = v.code;
             try {
               if (isNew) await ctx.api.post('accounts', body); else await ctx.api.patch(api.apiPath`accounts/${a.id}`, { version: a.version, ...body });

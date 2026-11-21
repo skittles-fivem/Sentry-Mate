@@ -16,7 +16,7 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--pack DIR` | (required) | The UI pack; its `web/` folder is served at `/`. |
+| `--pack DIR` | (required) | The UI pack; its `web/` folder is served at `/`. The built-in ones: `ui/packs/instrument`, `logbook`, `horizon`, `console`, `pebble`. |
 | `--host` | `127.0.0.1` | Address to listen on. |
 | `--port` | `8000` | `0` picks a free port (read it from the printed line). |
 | `--cars N` | `3` | Fleet size. 1 to 3 are the featured cars; above 3 adds light synthetic cars `c4`..`cN`; `0` is an empty fleet. A large fleet's sort, search and attention indexes are built before the server listens (about 1.5 s for 200000 cars). |

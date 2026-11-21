@@ -15,7 +15,7 @@ import { counters, band } from '../core/kit.js';
 import { tracks } from '../core/tracks.js';
 import { field, form } from '../core/form.js';
 import { emptyState } from '../core/states.js';
-import { openDialog, confirmDialog, toast } from '../core/layer.js';
+import { openDialog, confirmDialog, toast, passwordOk } from '../core/layer.js';
 import { signOut } from '../core/session.js';
 import { dateTime, date, agoEl, zone, DASH } from '../core/fmt.js';
 import { chan, recLamp, presets, errText, code, sig, checkLine } from '../core/setting.js';
@@ -236,7 +236,7 @@ export async function mount(ctx) {
     const isNew = !a;
     const name = field({ label: 'Name', name: 'name', value: a?.name || '', required: true, hint: 'What they type to sign in. 1 to 64 characters.', attrs: { maxlength: '64', autocomplete: 'off' } });
     const password = field({ label: isNew ? 'Password' : 'New password', name: 'password', type: 'password', required: isNew,
-      hint: isNew ? 'At least 10 characters. Tell it to them in person or over a channel you trust.' : 'Empty keeps the current password. At least 10 characters.', attrs: { minlength: '10', autocomplete: 'new-password' } });
+      hint: isNew ? 'Tell it to them in person or over a channel you trust.' : 'Empty keeps the current password.', attrs: { autocomplete: 'new-password' } });
     const role = field({ label: 'Role', name: 'role', type: 'select', value: a?.role || 'watch', options: [['watch', 'Watch only'], ['admin', 'Admin']],
       hint: `Watch only ${ROLE_TEXT.watch} Admin ${ROLE_TEXT.admin}` });
     const two = field({ label: 'Require two-step sign-in', name: 'two_step_required', type: 'checkbox', value: !!a?.two_step_required, hint: 'After the password, a six-digit code from an authenticator app. Wise for every admin.' });
@@ -246,7 +246,10 @@ export async function mount(ctx) {
       fields: [name, password, role, cars, two], submit: isNew ? 'Add account' : 'Save changes', secondary: btn('Cancel', () => d?.close(), { kind: 'ghost' }),
       async onSubmit(v) {
         const body = { name: v.name.trim(), role: v.role, cars: v.cars, two_step_required: v.two_step_required };
-        if (v.password) body.password = v.password;
+        if (v.password) {
+          if (!(await passwordOk(body.name, v.password, password.input))) return;
+          body.password = v.password;
+        }
         try {
           if (isNew) await ctx.api.post('accounts', body); else await ctx.api.patch(`accounts/${enc(a.id)}`, { version: a.version, ...body });
           rec.saved(isNew ? 'Account' : body.name, isNew ? `${body.name} can sign in now, as ${ROLE[body.role].toLowerCase()}.` : `${body.name} saved.`);

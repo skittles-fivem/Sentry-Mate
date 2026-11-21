@@ -115,6 +115,7 @@ python3 ui/devserver/serve.py --pack ui/packs/instrument --port 8000
 ```
 
 Then open `http://127.0.0.1:8000/`. The pages load map tiles from `tile.openstreetmap.org`.
+Swap `instrument` for `logbook`, `horizon`, `console` or `pebble` to preview another of the five built-in packs.
 
 ## Crates
 

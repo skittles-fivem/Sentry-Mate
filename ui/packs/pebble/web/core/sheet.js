@@ -10,6 +10,7 @@
 //   const ok = await confirmSheet({ title, text, yes: 'Give up', danger: true });
 
 import { h } from '../shared/dom.js';
+import { passwordAdvice } from '../shared/password.js';
 import { icon, btn } from './ui.js';
 
 let seq = 0;
@@ -95,6 +96,24 @@ export function confirmSheet({ title, text = null, yes = 'Yes', no = 'Cancel', d
     body: text ? h('p', { class: 'sheet-text' }, text) : null,
     actions: [{ label: no, value: false, kind: 'soft' }, { label: yes, value: true, kind: danger ? 'danger' : 'primary' }],
   }).then((v) => v === true);
+}
+
+/**
+ * Before a new password is sent: when passwordAdvice has reasons, say why it is easy to guess and let the person
+ * choose. Resolves true to send it (no advice, or "Use it anyway"); false for "Change it" or Esc, with the focus
+ * back in the password field. The server takes any password that is not empty.
+ */
+export async function passwordOk(name, password, input = null) {
+  const why = passwordAdvice(name, password);
+  if (!why.length) return true;
+  const v = await openSheet({
+    title: 'This password is easy to guess', center: true, cls: 'confirm-sheet advice-sheet',
+    body: [h('ul', { class: 'sheet-list' }, why.map((t) => h('li', null, t))), h('p', { class: 'sheet-text' }, 'You can still use it.')],
+    actions: [{ label: 'Use it anyway', value: true, kind: 'soft' }, { label: 'Change it', value: false, kind: 'primary' }],
+  });
+  if (v === true) return true;
+  if (input && typeof input.focus === 'function') { input.focus(); input.select?.(); }
+  return false;
 }
 
 /** A row of a sheet list: sheetRow({ href | onclick, icon, name, sub, current, cover, tone }). */

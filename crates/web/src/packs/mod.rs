@@ -1,7 +1,7 @@
 //! UI packs: the interface the browser runs (docs/plans/rust-can-logger.md, "UI packs").
 //!
-//! - **Built in**: `instrument`, `logbook` and `horizon`, embedded in the binary ([`builtin`]). [`DEFAULT_PACK`] is the one
-//!   served until an admin chooses another for everyone.
+//! - **Built in**: `instrument`, `logbook`, `horizon`, `console` and `pebble`, embedded in the binary ([`builtin`]).
+//!   [`DEFAULT_PACK`] (`instrument`) is the one served until an admin chooses another for everyone.
 //! - **Uploaded** (admins, their password and two-step code again): a `.zip` with `ui.json` and `web/` (one folder
 //!   around them is fine), checked before anything is kept ([`check_zip`]): at most 50 MB and 2,000 files, no
 //!   absolute paths, no `..`, no links, safe names only, web file types only, a `web/index.html`, and a `ui.json`
@@ -1070,7 +1070,12 @@ mod tests {
     #[test]
     fn builtin_packs_are_embedded_without_dev_files() {
         let ids: Vec<&str> = builtin::PACKS.iter().map(|p| p.id).collect();
-        assert!(ids.contains(&"instrument") && ids.contains(&"logbook"), "{ids:?}");
+        assert_eq!(
+            ids,
+            ["console", "horizon", "instrument", "logbook", "pebble"],
+            "every built-in pack, in name order"
+        );
+        assert!(ids.contains(&DEFAULT_PACK));
         for p in builtin::PACKS {
             assert!(p.files.iter().any(|(n, _)| *n == "index.html"));
             assert!(p.files.iter().all(|(n, _)| !n.ends_with("README.md") && !n.contains("mock")), "{}", p.id);

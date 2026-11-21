@@ -186,7 +186,8 @@ looks and works in the browser. So a pack you upload can do everything the built
   places, prices, settings, accounts, and a live stream (server-sent events) for the Now page. Cookies carry the
   session; every change needs the CSRF header. A pack made for an older `api` keeps working while that version
   is served; the UI shows a note when a pack targets a version the server no longer has.
-- **Built in**: two packs (the two designs shown to the owner; the owner picks the default) and **Download the
+- **Built in**: five packs (Instrument, the default, Logbook, Horizon, Console and Pebble; an admin picks the one
+  for everyone) and **Download the
   built-in pack to start from**.
 - **Choosing**: Settings → Interface, for everyone (admins), and each person can pick their own on their Account
   page. A switch applies at once.
@@ -207,7 +208,7 @@ looks and works in the browser. So a pack you upload can do everything the built
   file still on the server, a vault or certificate problem, an update that matters), from `/api/v1/notices`, which
   packs should show too.
 
-The two built-in packs are plain HTML, CSS and JavaScript with no build step, so anyone can open the downloaded pack
+The built-in packs are plain HTML, CSS and JavaScript with no build step, so anyone can open the downloaded pack
 and change it. Charts use uPlot (MIT) and maps MapLibre GL with PMTiles (BSD-3), all inside the pack.
 
 ## The UI (one app, every page)

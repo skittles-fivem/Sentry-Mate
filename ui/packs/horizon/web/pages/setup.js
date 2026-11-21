@@ -18,7 +18,7 @@ import { format } from '../shared/units.js';
 import { dayKey } from '../shared/time.js';
 import { icon, hud, btn, callout, bar } from '../core/ui.js';
 import { field, form } from '../core/form.js';
-import { toast, confirmDialog } from '../core/layer.js';
+import { toast, confirmDialog, passwordOk } from '../core/layer.js';
 import { errorWords } from '../core/states.js';
 import { dateTime, dur, DASH } from '../core/fmt.js';
 import * as session from '../core/session.js';
@@ -164,13 +164,14 @@ export async function mount(ctx) {
   function freshStep() {
     const name = field({ label: 'Your sign-in name', name: 'name', required: true, hint: '1 to 64 characters. You type it each time you sign in.',
       attrs: { autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', maxlength: '64' } });
-    const pass = field({ label: 'Password', name: 'password', type: 'password', required: true, hint: 'At least 10 characters. A few words in a row are easy to remember and hard to guess.',
-      attrs: { autocomplete: 'new-password', minlength: '10' } });
+    const pass = field({ label: 'Password', name: 'password', type: 'password', required: true, hint: 'A few words in a row are easy to remember and hard to guess.',
+      attrs: { autocomplete: 'new-password' } });
     const again = field({ label: 'Password again', name: 'again', type: 'password', required: true, attrs: { autocomplete: 'new-password' } });
     const f = form({
       fields: [name, pass, again], submit: 'Make the admin account', secondary: back(),
       async onSubmit(v) {
         if (v.password !== v.again) { again.setError('The two passwords are not the same.'); again.input.focus(); return; }
+        if (!(await passwordOk(v.name.trim(), v.password, pass.input))) return;
         let r;
         try { r = await ctx.api.post('setup/fresh', { name: v.name.trim(), password: v.password }); } catch (e) {
           if (e.code === 'setup_busy') { toast('A move or a restore into this server is under way. Give it up first.', { kind: 'info' }); await loadJob(); return; }

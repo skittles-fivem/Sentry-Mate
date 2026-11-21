@@ -21,7 +21,7 @@ also on Ctrl-C and on errors. It needs Node and the Playwright that is already i
 
 | Option | Default | What it does |
 |---|---|---|
-| `--pack NAME\|DIR` | (required) | A pack in `ui/packs` (`instrument`, `logbook`, `pebble`) or any folder with `web/`. |
+| `--pack NAME\|DIR` | (required) | A pack in `ui/packs` (`instrument`, `logbook`, `horizon`, `console`, `pebble`) or any folder with `web/`. |
 | `--pages LIST\|all` | `all` | Page ids, comma separated. `all` is every page of the matrix plus `sign-in` and `setup`. |
 | `--sizes WxH[@S],...` | `1440x900,3840x2160` | Window sizes. `@S` is the device scale (1 to 4): `390x844@3` is a phone, `1440x900@2` a laptop screen at scale 2. |
 | `--out DIR` | `UI_CHECK_OUT`, else a new private folder in the system temp folder (`sentry-mate-ui-check-XXXXXX`, made for the run) | Screenshots go to `DIR/<pack>/`. |

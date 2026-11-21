@@ -3,6 +3,7 @@
 
 import { h, replace } from '../shared/dom.js';
 import { icon, btn, place } from './ui.js';
+import { passwordAdvice } from '../shared/password.js';
 
 /* ------------------------------------------------------------------ dialogs */
 
@@ -31,6 +32,30 @@ export function confirmDialog(text, { title = 'Are you sure?', ok = 'Go on', can
       actions: [btn(cancel, () => d.close(), { kind: 'ghost' }), btn(ok, () => { yes = true; d.close(); }, { kind: danger ? 'danger' : 'go' })],
       onClose: () => resolve(yes),
     });
+  });
+}
+
+/**
+ * Before a new password is sent: when passwordAdvice has reasons, say why it is easy to guess and let the person
+ * choose. Resolves true to send it (no advice, or "Use it anyway"); false for "Change it" or Esc, with the focus
+ * back in the password field. The server takes any password that is not empty.
+ */
+export function passwordOk(name, password, input = null) {
+  const why = passwordAdvice(name, password);
+  if (!why.length) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let yes = false;
+    const change = btn('Change it', () => d.close(), { kind: 'go' });
+    const d = openDialog({
+      title: 'This password is easy to guess', cls: 'dlg--advice',
+      body: [h('ul', { class: 'dlg-list' }, why.map((t) => h('li', null, t))), h('p', null, 'You can still use it.')],
+      actions: [btn('Use it anyway', () => { yes = true; d.close(); }, { kind: 'ghost' }), change],
+      onClose: () => {
+        resolve(yes);
+        if (!yes && input && typeof input.focus === 'function') setTimeout(() => { input.focus(); input.select?.(); }, 0);
+      },
+    });
+    change.focus();
   });
 }
 
