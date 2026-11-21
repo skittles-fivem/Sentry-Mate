@@ -288,9 +288,9 @@ async function mountCar(ctx) {
     });
     const cfg = c.config || {};
     const facts = [
-      ['Model and year', h('span', { class: 'flagline' }, carLine(c) || DASH, tag('From VIN'))],
+      ['Model and year', h('span', { class: 'tagline' }, carLine(c) || DASH, tag('From VIN'))],
       ['VIN start', c.vin_prefix ? code(c.vin_prefix) : DASH],
-      ...FACTS.filter(([k]) => cfg[k]?.value != null).map(([k, l]) => [l, h('span', { class: 'flagline' }, yesNo(cfg[k].value), srcTag(cfg[k].source))]),
+      ...FACTS.filter(([k]) => cfg[k]?.value != null).map(([k, l]) => [l, h('span', { class: 'tagline' }, yesNo(cfg[k].value), srcTag(cfg[k].source))]),
     ];
     const missing = FACTS.filter(([k]) => cfg[k]?.value == null).map(([, l]) => l.toLowerCase());
     replace(slots.car, hud({ title: 'The car', icon: 'car', id: 'sc-car', side: c.profile ? tag(`CAN profile ${c.profile}`, 'cyan') : null },

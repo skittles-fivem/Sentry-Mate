@@ -352,8 +352,8 @@ details.fold > .fold-body { padding: 0 1.25rem 1.25rem; }
 .lcd-note { font-size: var(--fs-xs); color: var(--radio-ink-2); }
 
 /* signal lights */
-.sig { display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600; white-space: nowrap; }
-.sig-led { width: 0.625rem; height: 0.625rem; border-radius: 50%; flex: none; background: var(--st-unknown); }
+.sig { display: inline-flex; align-items: baseline; gap: 0.5rem; font-weight: 600; white-space: nowrap; }
+.sig-led { align-self: center; width: 0.625rem; height: 0.625rem; border-radius: 50%; flex: none; background: var(--st-unknown); }
 .sig--ok .sig-led, .sig--live .sig-led { background: var(--grn); box-shadow: 0 0 0.5rem var(--grn); }
 .sig--warn .sig-led { background: var(--org); box-shadow: 0 0 0.5rem var(--org); }
 .sig--bad .sig-led { background: var(--red); box-shadow: 0 0 0.5rem var(--red); }
@@ -398,8 +398,10 @@ details.fold > .fold-body { padding: 0 1.25rem 1.25rem; }
 /* the jump deck under a set-up plate: presets and the saving note */
 .jump { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem 1.5rem; padding: 0.75rem 1rem; }
 .jump-note { max-width: 38rem; }
-/* a row with a button in it centres every cell on the button, so text and controls share one middle line */
-.trk tr:has(td .btn, td .seg) > td { vertical-align: middle; }
+/* an action cell whose buttons have words sits on the row's baseline with the text beside it */
+.trk td.is-act:has(.btn > span) { vertical-align: baseline; }
+/* words with tags after them: one inline line, the tags on the text's baseline */
+.tagline > .tag, .tagline > .mono { margin-inline-start: 0.5rem; }
 .trk td.is-act .row { flex-wrap: nowrap; justify-content: flex-end; }
 .chan-ctl > .btn, .chan-ctl > .tog, .chan-ctl > .copy { justify-self: start; }
 @container view (max-width: 40rem) {

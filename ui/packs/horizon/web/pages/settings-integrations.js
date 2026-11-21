@@ -538,7 +538,7 @@ export async function mount(ctx) {
     const fold = (p) => {
       const parts = Object.entries(p || {}).filter(([k]) => !['event_type', 'car', 'units'].includes(k)).map(([k, v]) => `${k}: ${v == null ? '—' : typeof v === 'object' ? JSON.stringify(v) : v}`);
       if (parts.length <= 4) return h('span', { class: 'mono si-json' }, parts.join(' · '));
-      return h('details', { class: 'si-fold' }, h('summary', { class: 'mono si-json' }, parts.slice(0, 4).join(' · '), h('span', { class: 'faint' }, ` +${parts.length - 4} more`)), h('span', { class: 'mono si-json' }, parts.slice(4).join(' · ')));
+      return h('span', { class: 'mono si-json', title: parts.join('\n') }, parts.slice(0, 4).join(' · '), h('span', { class: 'faint' }, ` +${parts.length - 4} more (CSV has all)`));
     };
     eventsList = tracks(ctx, {
       title: 'Recent events', icon: 'clock', path: `cars/${enc(car.id)}/events`, params: { from_ms: now - 30 * DAY, to_ms: now + 60_000, types: EVENTS.map((e) => e[0]).join(',') }, limit: 12,

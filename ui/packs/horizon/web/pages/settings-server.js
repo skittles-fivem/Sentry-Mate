@@ -192,7 +192,7 @@ export async function mount(ctx) {
     side: btn('Add account', () => editAccount(null), { kind: 'go', icon: 'plus', sm: true }),
     sort: { key: 'name', dir: 'asc' },
     columns: [
-      { key: 'name', label: 'Name', lead: true, sort: true, render: (a) => h('span', { class: 'flagline' }, h('b', null, a.name), a.id === me.id ? tag('You', 'cyan') : null, a.id === focusAccount ? tag('From the audit log', 'org') : null) },
+      { key: 'name', label: 'Name', lead: true, sort: true, render: (a) => h('span', { class: 'tagline' }, h('b', null, a.name), a.id === me.id ? tag('You', 'cyan') : null, a.id === focusAccount ? tag('From the audit log', 'org') : null) },
       { key: 'role', label: 'Role', sort: true, render: (a) => tag(ROLE[a.role] || a.role, a.role === 'admin' ? 'mag' : null), csv: (a) => ROLE[a.role] || a.role },
       { key: 'cars', label: 'Cars it sees', sort: true, value: (a) => (a.cars === 'all' ? -1 : a.cars.length), render: (a) => carsText(a.cars), csv: (a) => (a.cars === 'all' ? 'all' : a.cars.map((c) => carName.get(c) || c).join('; ')) },
       { key: 'two_step_required', label: 'Two-step sign-in', sort: true, render: (a) => (a.two_step_required ? sig('ok', 'Required') : sig('off', 'Password only')), csv: (a) => (a.two_step_required ? 'required' : 'no') },
@@ -278,7 +278,7 @@ export async function mount(ctx) {
     side: btn('Sign out everywhere else', endOthers, { icon: 'signout', sm: true }),
     sort: { key: 'last_seen_ms', dir: 'desc' },
     columns: [
-      { key: 'device', label: 'Browser', lead: true, sort: true, render: (s) => h('span', { class: 'flagline' }, s.device || 'Not reported', s.this_one ? tag('This browser', 'cyan') : null, s.id === focusSession ? tag('From the audit log', 'org') : null) },
+      { key: 'device', label: 'Browser', lead: true, sort: true, render: (s) => h('span', { class: 'tagline' }, s.device || 'Not reported', s.this_one ? tag('This browser', 'cyan') : null, s.id === focusSession ? tag('From the audit log', 'org') : null) },
       { key: 'created_ms', label: `Signed in (${zn})`, sort: true, render: (s) => dateTime(s.created_ms, tz), csv: timeColumn(`Signed in (${isoNote})`, 'created_ms', tz) },
       { key: 'last_seen_ms', label: 'Last used', sort: true, render: (s) => (s.this_one ? 'Now' : agoEl(s.last_seen_ms)), csv: timeColumn(`Last used (${isoNote})`, 'last_seen_ms', tz) },
       { key: 'act', label: '', cls: 'is-act', csv: false, render: (s) => btn(s.this_one ? 'Sign out here' : 'Sign out', () => endSession(s), { icon: 'signout', sm: true }) },

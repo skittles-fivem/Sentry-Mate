@@ -79,7 +79,7 @@ export async function mount(ctx) {
   const mismatch = pack.api != null && about.api_version != null && String(pack.api) !== String(about.api_version);
 
   /* ---------- release notice */
-  const releaseSlot = h('div', { class: 'stack' });
+  const releaseSlot = h('div', { class: 'hp-dd' });
   const paintRelease = (items) => {
     const n = (items || []).find((x) => x.code === 'release_available');
     const on = settings?.release_check?.enabled;
@@ -100,13 +100,13 @@ export async function mount(ctx) {
         h('span', { class: 'hp-face-v' }, about.version || '—'),
         h('span', { class: 'hp-face-s' }, `API v${about.api_version ?? '?'} · ${pack.name || 'Horizon'} ${pack.version || ''}`.trim())),
       kv([
-        ['Version', h('span', { class: 'flagline' }, code(about.version || '—'), about.dev_server ? tag('Dev server, made-up data', 'org') : null), { cover: 'web.settings.about.version' }],
+        ['Version', h('span', { class: 'tagline' }, code(about.version || '—'), about.dev_server ? tag('Dev server, made-up data', 'org') : null), { cover: 'web.settings.about.version' }],
         ['API', h('span', null, code(`/api/v${about.api_version ?? '?'}`), ' · what UI packs talk to')],
         ['UI pack', h('span', { class: mismatch ? 'warn' : null }, `${pack.name || '—'} ${pack.version || ''}`.trim(), mismatch ? ` · made for API ${pack.api}, but the server speaks API ${about.api_version}: some pages may not work.` : ` · made for API ${pack.api ?? about.api_version}, which this server speaks.`)],
         ['Newer release', releaseSlot, { cover: 'web.settings.about.update-available' }],
-        ['Source code', h('span', { class: 'stack' }, source ? outLink(source, source.replace(/^https?:\/\//i, '')) : h('span', null, 'Not published yet'), h('span', { class: 'chan-hint' }, source ? 'Opens in a new tab.' : 'The public address goes here once the code is published.')), { cover: 'web.settings.about.source-link' }],
-        ['Guides', h('span', { class: 'stack' }, outside(docs) ? outLink(docs, 'Documentation site') : h('a', { class: 'plc', href: '#qa' }, 'Questions and answers below'),
-          h('span', { class: 'chan-hint' }, outside(docs) ? 'Install, upgrade and the API for UI packs. Opens in a new tab.' : source ? 'Guides for install, upgrade and UI packs are in the docs folder of the source code.' : 'The written guides come with the source code once it is published.')), { cover: 'web.settings.about.docs-link' }],
+        ['Source code', h('div', { class: 'hp-dd' }, source ? outLink(source, source.replace(/^https?:\/\//i, '')) : h('span', null, 'Not published yet'), h('p', { class: 'chan-hint' }, source ? 'Opens in a new tab.' : 'The public address goes here once the code is published.')), { cover: 'web.settings.about.source-link' }],
+        ['Guides', h('div', { class: 'hp-dd' }, outside(docs) ? outLink(docs, 'Documentation site') : h('a', { class: 'plc', href: '#qa' }, 'Questions and answers below'),
+          h('p', { class: 'chan-hint' }, outside(docs) ? 'Install, upgrade and the API for UI packs. Opens in a new tab.' : source ? 'Guides for install, upgrade and UI packs are in the docs folder of the source code.' : 'The written guides come with the source code once it is published.')), { cover: 'web.settings.about.docs-link' }],
       ])));
 
   /* ---------- licences */
