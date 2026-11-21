@@ -13,6 +13,7 @@ workspace = true
 accounts = { path = "../accounts" }
 engine = { path = "../engine" }
 gate = { path = "../gate" }
+import = { path = "../import" }
 model = { path = "../model" }
 moving = { path = "../moving" }
 mqtt = { path = "../mqtt" }

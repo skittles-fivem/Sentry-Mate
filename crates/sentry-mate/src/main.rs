@@ -1504,7 +1504,7 @@ async fn start(
         );
     }
     let renewer = Arc::new(site::Renewer { live, offer: Some(offer.clone()), gate: gate.clone() });
-    let side = start_web(data, keys, &v, engine, renewer, net, hashing, claim.clone(), offer.clone()).await?;
+    let side = start_web(data, keys, &v, engine, renewer, net, hashing, claim.clone(), offer.clone(), gate).await?;
     let offer = Arc::new(OfferAndUploads { offer, uploads: up });
     Ok(Instance { server, housekeeping, offer, ticker, confirm, side })
 }
@@ -1521,6 +1521,7 @@ async fn start_web(
     hashing: accounts::Hashing,
     claim: web::moving::ClaimKeep,
     offer: Arc<moving::old::Offer>,
+    gate: &gate::Gate,
 ) -> Result<Side, Box<dyn std::error::Error>> {
     let moved = offer.is_moved();
     let (d, k, v2, e2) = (data.to_path_buf(), keys.to_path_buf(), v.clone(), engine.engine.clone());
@@ -1532,6 +1533,10 @@ async fn start_web(
     })
     .await?
     .map_err(|e| e as Box<dyn std::error::Error>)?;
+    // a CAN export's logs are stored through the data folder's gate, as uploads are
+    if let Ok(im) = app.service::<web::resources::imports::Imports>() {
+        im.set_gate(gate.clone());
+    }
     let listener = tokio::net::TcpListener::bind((net.bind.as_str(), net.web)).await?;
     tracing::info!("web UI on https://{}:{}/ (TLS 1.3), the same certificate", net.bind, net.web);
     let a2 = app.clone();

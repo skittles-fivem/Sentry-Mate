@@ -13,7 +13,7 @@ import.
 **Status: early.** It receives the bridge's logs, stores them sealed and checks each one's signature. Each checked
 log is decoded in the background into the car's history (states, drives, charges, positions). The web UI on its own
 HTTPS port (10101) shows that history and changes the settings: places and costs, car settings, upload tokens and car
-keys, accounts, MQTT, Tesla accounts and the TeslaMate import. The history is not yet checked against real drives and charges. All of
+keys, accounts, MQTT, Tesla accounts, the TeslaMate import and the import of Sentry Six Manager's CAN logs. The history is not yet checked against real drives and charges. All of
 it: [Status in detail](#status-in-detail).
 
 ## Contents
@@ -23,7 +23,7 @@ it: [Status in detail](#status-in-detail).
 | [docs/install.md](docs/install.md) | What you need, Docker Compose and TrueNAS step by step, updates, backups, restore, moving, ports and firewalls, when it does not start |
 | [docs/commands.md](docs/commands.md) | Every command, the settings (environment variables and flags), ports and limits, the files it keeps, changing the certificate |
 | [docs/moving.md](docs/moving.md) | Moving to another server in one step: a move code (TrueNAS: two lines), or one export file; the CAN Bridge app, undo, when it stops half way |
-| [docs/cars-and-bridge.md](docs/cars-and-bridge.md) | Supported cars, setting up the CAN Bridge app, running next to TeslaMate and Sentry Six Manager |
+| [docs/cars-and-bridge.md](docs/cars-and-bridge.md) | Supported cars, setting up the CAN Bridge app, running next to TeslaMate and Sentry Six Manager, bringing in the logs Sentry Six Manager already has |
 | [docs/security.md](docs/security.md) | Security, privacy, when a log fails its check, a new signing key |
 | [docs/development.md](docs/development.md) | Building, the gates, CI and the image check, the crates and the layout |
 | [ui/README.md](ui/README.md) | The UI packs |
@@ -197,6 +197,7 @@ cars for tests), and the program, `sentry-mate`.
 | Map tiles: none from outside until an admin turns online tiles on | done |
 | Using a failed log anyway | only `log decode --any`, one log at a time |
 | TeslaMate import from TeslaMate's own backup file, uploaded in the web UI (any number of cars, streamed, again later adds only what's new) | done; a live connection to TeslaMate's database is planned |
+| Import of the CAN Bridge logs Sentry Six Manager already has, from its CAN export bundle (`.zip`), uploaded in the web UI: each log checked (signature, pairing, chain) and stored as if the bridge had uploaded it, refused when unsigned or changed, never twice ([how](docs/cars-and-bridge.md#bringing-in-the-logs-sentry-six-manager-already-has)) | done; not yet tried on a real export |
 | MQTT for Home Assistant (TLS unless plain is turned on, never a password in the clear, discovery, any number of cars on one connection), set up in the web UI | done |
 | A dev API server that answers [`docs/ui-api.md`](docs/ui-api.md) on made-up data, shared browser modules, and a page checker that loads every page at laptop and 4K sizes against [`docs/parity/coverage-matrix.json`](docs/parity/coverage-matrix.json) | done |
 | **Being built here** | |

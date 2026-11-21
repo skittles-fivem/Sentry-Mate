@@ -318,103 +318,101 @@ impl<R: Read> ZipStream<R> {
     }
 
     fn read_in(&mut self, c: &mut Current, out: &mut [u8]) -> Result<usize, ZipError> {
-        {
-            if c.done {
-                return Ok(0);
+        if c.done {
+            return Ok(0);
+        }
+        let n = match &mut c.mode {
+            Mode::Known(left) => {
+                if *left == 0 {
+                    0
+                } else {
+                    let have = self.some()?;
+                    if have == 0 {
+                        return Err(bad(format!("{}: cut short", c.name)));
+                    }
+                    let k = have.min(out.len()).min((*left).min(usize::MAX as u64) as usize);
+                    out[..k].copy_from_slice(&self.buf[self.lo..self.lo + k]);
+                    self.consume(k);
+                    *left -= k as u64;
+                    k
+                }
             }
-            let n = match &mut c.mode {
-                Mode::Known(left) => {
-                    if *left == 0 {
-                        0
-                    } else {
-                        let have = self.some()?;
-                        if have == 0 {
-                            return Err(bad(format!("{}: cut short", c.name)));
+            Mode::Scan => {
+                // data up to the first descriptor signature in the buffer is the entry's; at a signature, the
+                // descriptor is the end only if it names what came before it
+                let have = self.fill(24)?;
+                let at = memchr::memmem::find(&self.buf[self.lo..self.hi], b"PK\x07\x08");
+                match at {
+                    Some(0) => {
+                        if self.descriptor_ends(c)? {
+                            0
+                        } else {
+                            let k = 4.min(out.len());
+                            out[..k].copy_from_slice(&self.buf[self.lo..self.lo + k]);
+                            self.consume(k);
+                            k
                         }
-                        let k = have.min(out.len()).min((*left).min(usize::MAX as u64) as usize);
+                    }
+                    Some(i) => {
+                        let k = i.min(out.len());
                         out[..k].copy_from_slice(&self.buf[self.lo..self.lo + k]);
                         self.consume(k);
-                        *left -= k as u64;
+                        k
+                    }
+                    None => {
+                        if have < 4 {
+                            return Err(bad(format!("{}: cut short (no end of its data)", c.name)));
+                        }
+                        // a signature may start in the last three bytes
+                        let k = (have - 3).min(out.len());
+                        out[..k].copy_from_slice(&self.buf[self.lo..self.lo + k]);
+                        self.consume(k);
                         k
                     }
                 }
-                Mode::Scan => {
-                    // data up to the first descriptor signature in the buffer is the entry's; at a signature, the
-                    // descriptor is the end only if it names what came before it
-                    let have = self.fill(24)?;
-                    let at = memchr::memmem::find(&self.buf[self.lo..self.hi], b"PK\x07\x08");
-                    match at {
-                        Some(0) => {
-                            if self.descriptor_ends(c)? {
-                                0
-                            } else {
-                                let k = 4.min(out.len());
-                                out[..k].copy_from_slice(&self.buf[self.lo..self.lo + k]);
-                                self.consume(k);
-                                k
-                            }
-                        }
-                        Some(i) => {
-                            let k = i.min(out.len());
-                            out[..k].copy_from_slice(&self.buf[self.lo..self.lo + k]);
-                            self.consume(k);
-                            k
-                        }
-                        None => {
-                            if have < 4 {
-                                return Err(bad(format!("{}: cut short (no end of its data)", c.name)));
-                            }
-                            // a signature may start in the last three bytes
-                            let k = (have - 3).min(out.len());
-                            out[..k].copy_from_slice(&self.buf[self.lo..self.lo + k]);
-                            self.consume(k);
-                            k
-                        }
+            }
+            Mode::Deflate(d) => {
+                let have = self.some()?;
+                let (before_in, before_out) = (d.total_in(), d.total_out());
+                let st = d
+                    .decompress(&self.buf[self.lo..self.lo + have], out, flate2::FlushDecompress::None)
+                    .map_err(|e| bad(format!("{}: {e}", c.name)))?;
+                let used = (d.total_in() - before_in) as usize;
+                let made = (d.total_out() - before_out) as usize;
+                self.consume(used);
+                c.taken += used as u64;
+                if st == flate2::Status::StreamEnd {
+                    if made > 0 {
+                        c.crc.update(&out[..made]);
+                        c.got += made as u64;
                     }
-                }
-                Mode::Deflate(d) => {
-                    let have = self.some()?;
-                    let (before_in, before_out) = (d.total_in(), d.total_out());
-                    let st = d
-                        .decompress(&self.buf[self.lo..self.lo + have], out, flate2::FlushDecompress::None)
-                        .map_err(|e| bad(format!("{}: {e}", c.name)))?;
-                    let used = (d.total_in() - before_in) as usize;
-                    let made = (d.total_out() - before_out) as usize;
-                    self.consume(used);
-                    c.taken += used as u64;
-                    if st == flate2::Status::StreamEnd {
-                        if made > 0 {
-                            c.crc.update(&out[..made]);
-                            c.got += made as u64;
-                        }
-                        self.end_of(c)?;
-                        return Ok(made);
-                    }
-                    if made == 0 && used == 0 {
-                        if have == 0 {
-                            return Err(bad(format!("{}: cut short", c.name)));
-                        }
-                        return Err(bad(format!("{}: its deflate data stops making progress", c.name)));
-                    }
-                    made
-                }
-            };
-            if n == 0 {
-                if matches!(c.mode, Mode::Known(_)) {
                     self.end_of(c)?;
-                } else {
-                    // Scan: the descriptor was taken in descriptor_ends
-                    self.check(c)?;
+                    return Ok(made);
                 }
-                return Ok(0);
+                if made == 0 && used == 0 {
+                    if have == 0 {
+                        return Err(bad(format!("{}: cut short", c.name)));
+                    }
+                    return Err(bad(format!("{}: its deflate data stops making progress", c.name)));
+                }
+                made
             }
-            c.crc.update(&out[..n]);
-            c.got += n as u64;
-            if !matches!(c.mode, Mode::Deflate(_)) {
-                c.taken += n as u64;
+        };
+        if n == 0 {
+            if matches!(c.mode, Mode::Known(_)) {
+                self.end_of(c)?;
+            } else {
+                // Scan: the descriptor was taken in descriptor_ends
+                self.check(c)?;
             }
-            return Ok(n);
+            return Ok(0);
         }
+        c.crc.update(&out[..n]);
+        c.got += n as u64;
+        if !matches!(c.mode, Mode::Deflate(_)) {
+            c.taken += n as u64;
+        }
+        Ok(n)
     }
 
     /// At a descriptor signature in a stored entry of unknown size: whether this descriptor ends it (then taken).

@@ -394,7 +394,12 @@ fn an_import_stopped_part_way_carries_on_where_it_stopped() {
         let zip = bundle(&logs, false);
         let stop = Arc::new(AtomicBool::new(false));
         // stopped once about half the zip is read
-        let r = StopAfter { inner: io::Cursor::new(zip.clone()), read: AtomicU64::new(0), after: zip.len() as u64 / 2, stop: stop.clone() };
+        let r = StopAfter {
+            inner: io::Cursor::new(zip.clone()),
+            read: AtomicU64::new(0),
+            after: zip.len() as u64 / 2,
+            stop: stop.clone(),
+        };
         let (k2, s2) = (k.clone(), stop.clone());
         let e = blocking(move || can_import::run(&k2.engine, r, &k2.pass(s2))).await.unwrap_err();
         assert_eq!(can_import::error_of(&e).0, "stopped", "{e}");

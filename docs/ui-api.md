@@ -194,9 +194,9 @@ The Tesla API input: this server signs in to a Tesla account and reads its cars 
 
 | Resource | Methods | Fields and notes | Pages |
 |---|---|---|---|
-| `/api/v1/imports` | GET, POST (admin) | GET lists the imports (newest first, same fields as one import). POST starts a resumable upload of a TeslaMate backup (plain, gzip or xz). | Import |
-| `/api/v1/imports/{import}` | PATCH, GET, DELETE (admin) | PATCH sends a chunk with `Upload-Offset`, `Upload-Length`, `Upload-SHA256`. GET -> `{ status: "uploading" \| "checking" \| "importing" \| "done" \| "failed", pass, bytes_read, bytes_total, error: { code, message }, report: { tables: { name: { read, imported, skipped: { reason: n }, bad_values: { column: n } } }, span } }`. DELETE discards. | Import |
-| `/api/v1/imports/{import}/cars` | GET, PUT (admin) | `[{ tm_car, vin_prefix, match: car \| "new" \| "leave_out" }]` | Import |
+| `/api/v1/imports` | GET, POST (admin) | GET lists the imports (newest first, same fields as one import). POST starts a resumable upload of a TeslaMate backup (plain, gzip or xz) or of Sentry Six Manager's CAN export (`.zip`). | Import |
+| `/api/v1/imports/{import}` | PATCH, GET, DELETE (admin) | PATCH sends a chunk with `Upload-Offset`, `Upload-Length`, `Upload-SHA256`. GET -> `{ status: "uploading" \| "checking" \| "importing" \| "done" \| "failed", kind: "teslamate" \| "sentry_manager_can" \| null, pass, bytes_read, bytes_total, error: { code, message }, report: { tables: { name: { read, imported, skipped: { reason: n }, bad_values: { column: n } } }, span } }` (a TeslaMate backup's report; a CAN export's report is described under "Sentry Six Manager's CAN export" below). DELETE discards. | Import |
+| `/api/v1/imports/{import}/cars` | GET, PUT (admin) | `[{ tm_car, vin_prefix, match: car \| "new" \| "leave_out" }]` (always empty for a CAN export) | Import |
 | `/api/v1/imports/{import}/start` | POST (admin) | `{ currency? }` (a code such as `EUR`: what TeslaMate's costs and place prices are in; it keeps none). Starts the import after the whole file has been checked. | Import |
 
 ## Moving and first-run setup
@@ -371,7 +371,54 @@ Points this document left open, decided while building the dev server (`ui/devse
 - **Cars:** GET `/imports/{import}/cars` answers `{ import, items: [{ tm_car, name, vin_prefix, drives, charges, first_ms, last_ms, match, suggested }], next }` once the whole file is uploaded (`409 not_checked` before). A car here with the same VIN prefix is suggested and matched at first, unless that car is suggested for another car of the backup too (cars of the same model, year and plant share the prefix): then none of them is. PUT `{ items: [{ tm_car, match }] }` changes only the cars it names; one car here takes at most one imported car.
 - **Currency:** TeslaMate stores no currency. Imported charge costs and geofence prices take the `currency` sent with Start; without one, imported charges keep no cost and imported places no price. A per-minute geofence price becomes a place price with `per_minute` (and its `session_fee`) and no `per_kwh`.
 - **Start** needs `ready` and every car matched, each car here to one imported car at most (`409 not_ready`, `409 cars_unmatched`). Chunks of one upload are stored one at a time: a chunk sent again while the first try is still being stored gets `409 wrong_offset`. The report counts only cars not left out. DELETE discards the job (history already imported stays). `/setup/status` sets `import_running` while an import is unfinished, with a fix `{ cause: "import_running", link, import }`.
-- **Report per car:** `report.cars` is `[{ tm_car, name, match, drives, charges, read, imported, skipped: { reason: n } }]` and `report.imported` says whether the rows are stored yet. `read`, `imported` and `skipped` count that car's rows over every table (`imported` is 0 until the import ran; read minus skipped is what it would store). Each table's figures in `report.tables` are the sum of its cars', plus rows that belong to no car (`geofences`). A car left out of a finished import has `read`, `imported` and `skipped` null: it was not counted. The `skipped` reason codes are `already-imported`, `open` (still going when the backup was made), `unknown-car`, `car-left-out`, `unknown-charge`, `bad-value` (`bad_values` names the column), `wrong-field-count` and `too-long`.
+- **Report per car (TeslaMate):** `report.cars` is `[{ tm_car, name, match, drives, charges, read, imported, skipped: { reason: n } }]` and `report.imported` says whether the rows are stored yet. `read`, `imported` and `skipped` count that car's rows over every table (`imported` is 0 until the import ran; read minus skipped is what it would store). Each table's figures in `report.tables` are the sum of its cars', plus rows that belong to no car (`geofences`). A car left out of a finished import has `read`, `imported` and `skipped` null: it was not counted. The `skipped` reason codes are `already-imported`, `open` (still going when the backup was made), `unknown-car`, `car-left-out`, `unknown-charge`, `bad-value` (`bad_values` names the column), `wrong-field-count` and `too-long`.
+
+#### Sentry Six Manager's CAN export
+
+The same upload takes the `.zip` that Sentry Six Manager's `GET /api/can/export/bundle?key=&from=&to=` streams
+(its Nerd panel: Logs + ids.csv): each log of that car key exactly as the CAN Bridge uploaded and signed it
+(`<key>/<name>.log.xz`, its sidecar `<key>/<name>.log.xz.json`), with `candump=1` a candump text copy
+(`<key>/<name>.log`, not signed: skipped and counted), then `ids.csv` and `manifest.json` (`{ vehicleKey, from, to,
+madeAt, logs, ids, note }`). A name ending in `.zip` (or `compression: "zip"`) sets `compression` to `zip`; the
+kind comes from the file itself once it is in: a file that starts like a zip is read as a CAN export (`kind:
+"sentry_manager_can"`), anything else as a TeslaMate backup (`kind: "teslamate"`). `kind` is null until the check.
+
+- **What happens to each log:** what a live upload gets. Before anything is stored, the log is checked against its
+  sidecar's signature and against the signing key its car key is paired with (a key never seen before is paired
+  with the first signed log, as on its first upload). Only a log that is signed and unchanged since is stored; it
+  then goes into the same store (its size limits, the car's log count, the free space, the whole file's SHA-256),
+  is judged by the same judge (signature, pairing, hash chain) and decoded by the same engine, so its rows are the
+  car's own CAN data (`source: "can"`), not imported rows. A car key a car has goes to that car; a new one is
+  handled as a new key's first upload is (a new car, the only car, or waiting on Settings: Cars, by the server's
+  setting for new keys). Stored logs go through the data folder's write gate, as uploads do.
+- **Never doubled:** a log already here (the same name and SHA-256) is counted in `already_here`, not stored again
+  (its sidecar is added when only the sidecar was missing). Stopping part way (DELETE, a restart: the job goes back
+  to `ready` with `error.code: "interrupted"`) loses nothing; starting it again (or importing the same zip again)
+  skips what is here.
+- **No cars to match:** `cars_to_match` is 0 once checked, `/cars` answers `items: []`, and Start takes no body
+  fields that matter (`currency` is ignored).
+- **Report** (`report.kind: "sentry_manager_can"`, `report.imported` false after the check, true after the import):
+  - `logs: { read, imported, to_import, already_here, refused, sidecars_added, bytes }` (`to_import` from the check,
+    `imported` from the import);
+  - `refused: { reason: n }` and `refused_logs: [{ name, reason, message }]` (the first 100). Reasons: `unsigned`
+    (no CAN Bridge signature), `failed_check` (changed since it was signed, or signed for another log name or car
+    key), `signed_by_another_key` (not the key this car key is paired with: trust the new key on Settings: Cars
+    first), `no_sidecar`, `bad_sidecar`, `different_file_here` (another log of that name is here), `being_uploaded`
+    (an upload of it is under way), `too_large`, `car_full`. A refused log is never stored;
+  - `cars: [{ key, logs, imported, already_here, refused, first_ms, last_ms, car, car_name, status, other_signing_keys,
+    chain: { signing_key, count, first, last, issues, restarts }, chain_gaps, chain_forks }]` per car key. `status`:
+    `car` (goes to `car`), `new_key` (after the check: no car has it yet), `waiting` (an admin chooses on Settings:
+    Cars), `working` (still being decoded when the report was made). `chain` is the key's hash chain after the
+    import as Settings: CAN Bridge keys reports it for uploads (from the check: the zip's own signed logs); a gap or a
+    fork shows there as it does for live uploads;
+  - `span: { from_ms, to_ms }` (the logs' start times), `manifest: { vehicle_key, from, to, made_at, logs }` (null
+    when the zip has none), `files: { entries, candump_text, ids_csv, sidecars_without_log, other }`, `warnings`.
+- **Failures** (`error.code`): `not_a_can_export` (a zip with no `manifest.json` naming a car key and no CAN
+  Bridge log), `unreadable` (not a zip, a damaged entry (each entry's CRC-32 is checked), encrypted, or packed with
+  a method other than stored or deflate), `read_failed`, `store_failed` (for example no free space: logs stored
+  before stay), `stopped`.
+- **Memory:** the zip is read once per pass as a stream, never whole: at most one log (in memory up to 16 MB,
+  beyond that sealed to a spool file under the import's folder, removed after) and a few sidecars at a time.
 
 ### Moving and first-run setup
 

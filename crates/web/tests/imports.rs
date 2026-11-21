@@ -135,7 +135,7 @@ async fn upload_check_match_import_and_discard() {
     assert_eq!((r.status, r.code()), (400, Some("bad_input".into())));
     let r = admin.post("/api/v1/imports", json!({ "bytes_total": 0 })).await;
     assert_eq!(r.status, 422);
-    let r = admin.post("/api/v1/imports", json!({ "bytes_total": 5, "compression": "zip" })).await;
+    let r = admin.post("/api/v1/imports", json!({ "bytes_total": 5, "compression": "bzip2" })).await;
     assert_eq!(r.status, 422);
 
     // the upload

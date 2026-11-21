@@ -511,7 +511,12 @@ impl<R: Read> Walk<'_, '_, R> {
                 if let Some(k) = self.t.keys.get_mut(&key) {
                     k.other_keys.insert(l.key_fingerprint.clone());
                 }
-                self.t.refuse(&key, &name, "signed_by_another_key", format!("{r}: not the key this car is paired with"));
+                self.t.refuse(
+                    &key,
+                    &name,
+                    "signed_by_another_key",
+                    format!("{r}: not the key this car is paired with"),
+                );
                 return Ok(());
             }
             (Verdict::Failed(r), _) => {
@@ -601,10 +606,10 @@ impl<R: Read> Walk<'_, '_, R> {
             return refused(x);
         }
         r?;
-        if !chunk.is_empty() || offset < len {
-            if let Err(x) = rt.block_on(e.store().receive(&name, chunk.into(), offset, len, &sha)) {
-                return refused(x);
-            }
+        if (!chunk.is_empty() || offset < len)
+            && let Err(x) = rt.block_on(e.store().receive(&name, chunk.into(), offset, len, &sha))
+        {
+            return refused(x);
         }
         Ok(Ok(()))
     }
@@ -689,12 +694,14 @@ fn car_rows(e: &Engine, t: &Tally, imported: bool) -> Vec<Value> {
                              "last": c.last, "issues": c.issues.iter().take(50).collect::<Vec<_>>(),
                              "restarts": c.restarts.len() }))
             };
-            let gaps = chain.as_ref().and_then(|c| c["issues"].as_array()).map_or(0, |i| {
-                i.iter().filter(|x| x["kind"] == "gap").count()
-            });
-            let forks = chain.as_ref().and_then(|c| c["issues"].as_array()).map_or(0, |i| {
-                i.iter().filter(|x| x["kind"] == "duplicate").count()
-            });
+            let gaps = chain
+                .as_ref()
+                .and_then(|c| c["issues"].as_array())
+                .map_or(0, |i| i.iter().filter(|x| x["kind"] == "gap").count());
+            let forks = chain
+                .as_ref()
+                .and_then(|c| c["issues"].as_array())
+                .map_or(0, |i| i.iter().filter(|x| x["kind"] == "duplicate").count());
             json!({
                 "key": key,
                 "logs": k.logs,

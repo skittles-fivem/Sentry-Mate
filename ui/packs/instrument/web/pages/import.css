@@ -82,7 +82,7 @@
 /* report */
 .im-report-what { color: var(--text-2); margin-bottom: 0.875rem; }
 .im-figs { margin-bottom: 0.25rem; }
-.im-cars[hidden] { display: none; }
+.im-cars[hidden], .im-can[hidden] { display: none; }
 .im-whys { display: inline-flex; flex-wrap: wrap; gap: 0.125rem 0; }
 .im-skip { display: flex; gap: 0.625rem; align-items: flex-start; margin-top: 1rem; padding: 0.875rem 1rem; border-radius: var(--radius-sm); border: 1px solid var(--warm-line); background: var(--warm-soft); }
 .im-skip[hidden] { display: none; }
