@@ -13,10 +13,16 @@
 
 import { h } from '../shared/dom.js';
 
-export const SOURCE_FILTER = [['', 'Every source'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['import', 'Imported']];
+export const SOURCE_FILTER = [['', 'Every source'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['import', 'Imported'], ['import:teslamate', 'Imported from TeslaMate']];
 // the old filter words still work on the server: read them from an old address as the new ones
-export const filterWord = (v) => ({ can: 'smo', teslamate: 'import' }[v] ?? v ?? '');
-export const FILTER_WORDS = { smo: 'SMO data only', tesla_api: 'Tesla API data only', import: 'imported history only' };
+export const filterWord = (v) => ({ can: 'smo', teslamate: 'import:teslamate', all: '' }[v] ?? v ?? '');
+export const FILTER_WORDS = { smo: 'SMO data only', tesla_api: 'Tesla API data only', import: 'imported history only', 'import:teslamate': 'history imported from TeslaMate only' };
+/** The options of a source select, with the value in use always among them (so the select never hides a filter). */
+export function sourceOptions(v) {
+  if (!v || SOURCE_FILTER.some(([x]) => x === v)) return SOURCE_FILTER;
+  const site = /^import:(.+)$/.exec(v)?.[1];
+  return [...SOURCE_FILTER, [v, site ? `Imported from ${site}` : v]];
+}
 
 const SHORT = { smo: 'SMO', tesla_api: 'Tesla API', import: 'Imported' };
 const LABEL = { smo: 'Data from SMO', tesla_api: 'Data from the Tesla API', import: 'Imported' };

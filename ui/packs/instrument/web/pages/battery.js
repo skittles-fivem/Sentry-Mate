@@ -29,6 +29,8 @@ import { field, form, showApiError } from '../core/form.js';
 import { flash } from '../core/flash.js';
 import { rpx } from '../core/display.js';
 import { srcMark, srcText, srcShort } from '../core/source.js';
+const LIFE_KINDS = ['smo', 'tesla_api', 'import'];
+const LIFE_WORDS = { smo: 'SMO', tesla_api: 'the Tesla API', import: 'imported history' };
 
 export const id = 'battery';
 export const css = true;
@@ -83,13 +85,16 @@ export async function mount(ctx) {
   };
   let first = null; // the car's first reading, for the All time period (see firstMs)
 
-  const [bat, totals, settings, eff] = await Promise.all([
+  const [bat, totals, settings, eff, ...bySrc] = await Promise.all([
     ctx.api.get(`${base}/battery`),
     ctx.api.get(`${base}/totals`).catch(() => null),
     ctx.api.get(`${base}/settings`).catch(() => null),
     ctx.api.get(`${base}/efficiency`).catch(() => null),
+    // which inputs gave drives or charges at all: /totals names the inputs the filter takes, not the ones that gave rows
+    ...LIFE_KINDS.map((k) => ctx.api.get(`${base}/totals`, { source: k }).catch(() => null)),
   ]);
   if (!ctx.alive()) return;
+  const lifeKinds = LIFE_KINDS.filter((k, i) => bySrc[i] && ((bySrc[i].drives || 0) + (bySrc[i].charges || 0)) > 0);
   const cap = bat.capacity || {}, life = bat.lifetime || {};
   // /battery sends rated range; with the ideal preference it is turned into ideal range by the two energy
   // factors (the same energy over a smaller factor), and stays labelled rated when a factor is missing
@@ -236,6 +241,15 @@ export async function mount(ctx) {
 
   /* ================================================================ sections */
 
+  // "Drives and charges counted from SMO and the Tesla API.": only the inputs that gave this car rows
+  function lifeSource() {
+    if (!lifeKinds.length) return null;
+    const list = lifeKinds.map((k) => (totals?.sources || []).find((x) => x.kind === k) || { kind: k });
+    const words = lifeKinds.map((k) => LIFE_WORDS[k]);
+    const line = words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}` : words[0];
+    return h('p', { class: 'note life-src' }, 'Drives and charges counted from ', srcMark({ sources: list, source_label: `${line}.` }));
+  }
+
   function lifetimePanel() {
     const t = totals || {};
     const mileage = t.odometer_last_km != null && t.odometer_first_km != null ? t.odometer_last_km - t.odometer_first_km : null;
@@ -255,7 +269,7 @@ export async function mount(ctx) {
       h('p', { class: 'note' }, `From the pack’s own lifetime counters (${life.basis || 'pack counters'}), so it covers years before logging too. Out of the pack: ${format(life.drive_kwh, 'energy')} driving, ${format(life.standing_kwh, 'energy')} while parked.`));
 
     return panel({ title: 'Lifetime totals', icon: 'odo', cls: 'bat-life' },
-      totals?.sources?.length ? h('p', { class: 'note life-src' }, 'Drives and charges counted from: ', srcMark(totals)) : null,
+      lifeSource(),
       h('div', { class: 'life-cols' },
         h('div', { class: 'life-col' },
           h('h3', { class: 'life-h' }, icon('route', 'ico--sm'), 'Driving', h('a', { class: 'panel-link', href: ctx.link('statistics'), cover: 'bh.drive.link_stats' }, 'Statistics', icon('chev-r', 'ico--sm'))),

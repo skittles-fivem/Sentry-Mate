@@ -25,7 +25,7 @@ import { placePopover } from '../core/popover.js';
 import { isAdmin } from '../core/prefs.js';
 import { flash } from '../core/flash.js';
 import { rpx } from '../core/display.js';
-import { srcMark, SOURCE_FILTER, filterWord } from '../core/source.js';
+import { srcMark, sourceOptions, filterWord } from '../core/source.js';
 
 export const id = 'charges';
 export const css = true;
@@ -196,7 +196,7 @@ export async function mount(ctx) {
   const costIn = h('input', { class: 'input input--sm', type: 'number', min: '0', step: '0.01', value: f.min_cost, 'aria-label': 'Lowest cost' });
   const unpricedIn = h('input', { type: 'checkbox', checked: f.unpriced, 'aria-label': 'Keep charges without a price' });
   const durIn = h('input', { class: 'input input--sm', type: 'number', min: '0', step: '1', value: f.min_dur, 'aria-label': 'Shortest charging time (minutes)' });
-  const sourceSel = h('select', { class: 'select', 'aria-label': 'Source' }, SOURCE_FILTER.map(([v, l]) => h('option', { value: v, selected: f.source === v }, l)));
+  const sourceSel = h('select', { class: 'select', 'aria-label': 'Source' }, sourceOptions(f.source).map(([v, l]) => h('option', { value: v, selected: f.source === v }, l)));
   const flagSel = h('select', { class: 'select', 'aria-label': 'Missing data' }, [['', 'Every charge'], ['gap', 'With missing data'], ['in_progress', 'Under way'], ['gap,in_progress', 'Missing data or under way']].map(([v, l]) => h('option', { value: v, selected: f.flags === v }, l)));
 
   let timer = 0;

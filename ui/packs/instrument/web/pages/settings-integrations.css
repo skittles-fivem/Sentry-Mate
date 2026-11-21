@@ -153,6 +153,8 @@
 .ta-account > .kv { grid-template-columns: repeat(auto-fit, minmax(min(100%, round(16rem, var(--e))), 1fr)); }
 .ta-cars { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); min-width: 0; }
 .ta-cars > p { margin: 0; }
+.ta-match-warn { display: flex; align-items: baseline; gap: round(0.375rem, var(--e)); }
+.ta-match-warn .ico { flex: none; align-self: center; }
 .ta-cars-head { display: flex; align-items: center; justify-content: space-between; gap: round(0.75rem, var(--e)); min-height: round(1.875rem, var(--e)); }
 .ta-match { display: flex; align-items: center; gap: round(0.375rem, var(--e)) round(0.5rem, var(--e)); flex-wrap: wrap; }
 .ta-match .select { min-width: round(12rem, var(--e)); max-width: 100%; }
@@ -166,7 +168,8 @@
   .ta-tbl thead { display: none; }
   .ta-tbl, .ta-tbl tbody, .ta-tbl tr, .ta-tbl td { display: block; width: 100%; }
   .ta-tbl tr { padding: round(0.75rem, var(--e)) 0; border-top: 1px solid var(--line); }
-  .ta-tbl td { padding: round(0.25rem, var(--e)) round(0.25rem, var(--e)); border: 0; text-align: left; }
+  .ta-tbl td, .ta-tbl td:first-child { box-sizing: border-box; height: auto; padding: round(0.25rem, var(--e)) 0; border: 0; text-align: left; }
+  .ta-tbl .cell-text, .ta-tbl .cell-text .sub { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
   .ta-tbl td.num { text-align: left; }
   .ta-match .select { width: 100%; min-width: 0; }
   .ta-cars .tbl-scroll { overflow: visible; }

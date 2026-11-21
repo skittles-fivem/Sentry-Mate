@@ -381,12 +381,15 @@ async function mountCar(ctx) {
   }
 
   // by input: a row SMO and the Tesla API both saw counts under each, so the parts can add up to more than the whole
+  // imported parts only for a car that has imported history at all
+  let hasImport = false;
   function split(a, api, b, kind, total = null, noun = '') {
-    const parts = [`${format(a ?? 0, kind)} with SMO data`, api ? `${format(api, kind)} with Tesla API data` : null, `${format(b ?? 0, kind)} imported`].filter(Boolean);
-    return `${parts.join(', ')}.${api ? ' A row both live inputs saw counts under each.' : overlapText(a, b, total, kind, noun)}`;
+    const parts = [`${format(a ?? 0, kind)} with SMO data`, api ? `${format(api, kind)} with Tesla API data` : null, hasImport ? `${format(b ?? 0, kind)} imported` : null].filter(Boolean);
+    return `${parts.join(', ')}.${api ? ' A row both live inputs saw counts under each.' : hasImport ? overlapText(a, b, total, kind, noun) : ''}`;
   }
 
   function paintTotals(all, can, apiT, tm, sm) {
+    hasImport = ((tm?.drives || 0) + (tm?.charges || 0) + (tm?.updates || 0)) > 0;
     const vSrc = { teslamate: 'imported from TeslaMate', tesla_api: 'read from the Tesla API', owner: 'typed by the owner', build_match: 'same module builds as a named update' };
     replace(totalsSlot, figures([
       metric('Logged distance', all.distance_km, 'distance', { size: 'lg', cover: 'dbinfo.stat.logged_distance', explain: `The sum of every recorded drive. ${split(can.distance_km, apiT.distance_km, tm.distance_km, 'distance', all.distance_km)}` }),
@@ -414,14 +417,14 @@ async function mountCar(ctx) {
     const counts = dataTable(ctx, {
       title: 'Rows kept', icon: 'book', rows, cls: 'hl-counts', csvName: 'rows kept', cover: 'dbinfo.table.row_counts',
       sort: { key: 'total', dir: 'desc' },
-      note: 'Exact counts, kept up to date as rows change (nothing is counted again on load). A row SMO and the Tesla API both saw counts in both columns; where imported and live history overlap, both are counted, and Shown is what the other pages list (one side).',
+      note: `Exact counts, kept up to date as rows change (nothing is counted again on load). A row SMO and the Tesla API both saw counts in both columns${hasImport ? '; where imported and live history overlap, both are counted, and Shown is what the other pages list (one side)' : ''}.`,
       columns: [
         { key: 'kind', label: 'Kind', sort: true, cover: 'dbinfo.rows.table_name', value: (r) => r.kind, render: (r) => h('span', { class: 'cell-text' }, h('span', { class: 'main' }, r.kind), h('span', { class: 'sub' }, r.what)), csv: { label: 'Kind', value: (r) => r.kind } },
         { key: 'can', label: 'SMO', num: true, sort: true, render: (r) => formatNumber(r.can ?? 0) },
         { key: 'api', label: 'Tesla API', num: true, sort: true, render: (r) => formatNumber(r.api ?? 0) },
-        { key: 'teslamate', label: 'Imported', num: true, sort: true, render: (r) => formatNumber(r.teslamate ?? 0) },
+        hasImport ? { key: 'teslamate', label: 'Imported', num: true, sort: true, render: (r) => formatNumber(r.teslamate ?? 0) } : null,
         { key: 'total', label: 'Shown', num: true, sort: true, cover: 'dbinfo.rows.row_count', render: (r) => h('b', null, formatNumber(r.total)) },
-      ],
+      ].filter(Boolean),
     });
     replace(countsSlot, counts.el);
   }

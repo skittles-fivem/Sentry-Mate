@@ -19,9 +19,15 @@ function sessionEnded() {
   const here = location.pathname + location.search;
   state.navigate(`/sign-in?next=${encodeURIComponent(here)}`, { replace: true });
 }
-api.on('unauthorized', ({ path } = {}) => {
+api.on('unauthorized', ({ method, path } = {}) => {
   const p = String(path || '').replace(/^\/?(api\/v1\/)?/, '');
   if (p.startsWith('session') || p.startsWith('setup')) return; // a wrong password is not a lost session
+  // A change that asks for the password and two-step code again answers 401 wrong_code for a missing or
+  // wrong code, with the session still there: ask the server before going to sign-in.
+  if (method && method !== 'GET' && method !== 'HEAD') {
+    api.get('me', null, { maxAgeMs: 0 }).then(() => {}, (e) => { if (e?.status === 401) sessionEnded(); });
+    return;
+  }
   sessionEnded();
 });
 api.on('events', (info) => { if (info?.state === 'signed_out') sessionEnded(); });

@@ -24,7 +24,7 @@ import { openPeriodPicker } from '../core/period.js';
 import { placePopover } from '../core/popover.js';
 import { isAdmin } from '../core/prefs.js';
 import { flash } from '../core/flash.js';
-import { srcMark, SOURCE_FILTER, filterWord, FILTER_WORDS } from '../core/source.js';
+import { srcMark, sourceOptions, filterWord, FILTER_WORDS } from '../core/source.js';
 
 export const id = 'drives';
 export const css = true;
@@ -80,7 +80,7 @@ export async function mount(ctx) {
   const textIn = h('input', { class: 'input', type: 'search', value: f.q, placeholder: 'Start or destination', 'aria-label': 'Text in the start or destination (place name or address)' });
   const distIn = h('input', { class: 'input input--sm', type: 'number', min: '0', step: '0.1', value: f.min_distance, 'aria-label': `Shortest drive (${unitLabel('distance')})` });
   const speedIn = h('input', { class: 'input input--sm', type: 'number', min: '0', step: '1', value: f.min_speed, 'aria-label': `Lowest average speed (${unitLabel('speed')})` });
-  const sourceSel = h('select', { class: 'select', 'aria-label': 'Source' }, SOURCE_FILTER.map(([v, l]) => h('option', { value: v, selected: f.source === v }, l)));
+  const sourceSel = h('select', { class: 'select', 'aria-label': 'Source' }, sourceOptions(f.source).map(([v, l]) => h('option', { value: v, selected: f.source === v }, l)));
   const flagSel = h('select', { class: 'select', 'aria-label': 'Flags' }, [['', 'Every drive'], ['gap', 'With a gap'], ['in_progress', 'In progress'], ['reduced_range', 'Cold battery']].map(([v, l]) => h('option', { value: v, selected: f.flags === v }, l)));
   const effSel = h('select', { class: 'select', 'aria-label': 'Basis for consumption and efficiency' },
     [['plain', 'Efficiency: plain'], ['hill_corrected', 'Efficiency: hill corrected']].map(([v, l]) => h('option', { value: v, selected: f.efficiency === v }, l)));

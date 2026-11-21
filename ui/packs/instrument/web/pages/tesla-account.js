@@ -18,11 +18,18 @@ import { kv, tag, pill, note, metric, figures } from '../core/page.js';
 import { field } from '../core/form.js';
 import { emptyState, errorWords } from '../core/states.js';
 import { flash } from '../core/flash.js';
-import { dateTime, ago, num, dur, time } from '../core/fmt.js';
+import { dateTime, ago, num, dur, time, tzName } from '../core/fmt.js';
 import { askPassword } from './settings-server-move.js';
 
 const enc = encodeURIComponent;
 const BASE = 'integrations/tesla';
+// Account times (added, last error, last good answer) are shown on this computer's clock, with the zone
+// named: an account belongs to no car, so the last car's zone would make the same time read differently.
+const LOCAL = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+const at = (ms) => `${dateTime(ms, LOCAL)} ${tzName(LOCAL)}`;
+// Sign-ins started here and not finished: the server has no call that ends one, and at most five are open,
+// so a closed dialog's sign-in is used again by the next press (kept while it has two minutes left).
+const openSignIns = new Map();
 
 /* ---------------------------------------------------------------------- words */
 
@@ -61,8 +68,8 @@ const ERROR_WORDS = {
   car_taken: 'One of these cars is already matched to a vehicle of another Tesla account here. Leave it out there first, or pick another car.',
   too_many_sign_ins: 'Five sign-ins are open already. Finish one, or wait up to ten minutes for them to run out.',
   no_such_sign_in: 'This sign-in ran out (it lasts ten minutes) or was used already. Close this and start a new one.',
-  no_such_tesla_account: 'This Tesla account is not here any more: another admin may have removed it. The page shows the accounts there are now.',
-  version_conflict: 'Someone else changed this Tesla account a moment ago. The page shows their change now; make yours again.',
+  no_such_tesla_account: 'This Tesla account is not here any more: another admin may have removed it. Nothing was changed; the page now shows the accounts there are.',
+  version_conflict: 'Someone else changed this a moment ago, so nothing was saved. The page now shows their change: make yours again if it is still needed.',
 };
 // last_error codes on an account or the whole input
 const LAST_ERROR_WORDS = {
@@ -90,6 +97,12 @@ function words(e) {
   if (e.fields) { delete e.fields.confirm_password; delete e.fields.code; if (!Object.keys(e.fields).length) e.fields = null; }
   return e;
 }
+// the account changed or went away since the page read it: the dialog closes and the page reads it again
+const isStale = (e) => e && (e.code === 'no_such_tesla_account' || (e.status === 409 && !ERROR_WORDS[e.code]) || e.code === 'version_conflict');
+/** run() for askPassword: our words for the error; a stale page closes the dialog with { stale: words }. */
+const guarded = (fn) => async (...a) => {
+  try { return await fn(...a); } catch (e) { words(e); if (isStale(e)) return { stale: e.message }; throw e; }
+};
 const withPw = (cred, body = {}) => ({ ...body, confirm_password: cred.password, ...(cred.two_step ? { code: cred.two_step } : {}) });
 const code = (t) => h('code', { class: 'si-code' }, t);
 const secs = (s) => (s == null ? '—' : s >= 120 && s % 60 === 0 ? `${num(s / 60)} min` : `${num(s)} s`);
@@ -136,10 +149,33 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     paint();
   }
   const reload = async (msg) => { if (msg) flash(msg); await load(); };
+  /** After a dialog: nothing on cancel; the page read again with the right words when it was stale. */
+  const after = async (r, msg) => {
+    if (!r) return;
+    if (r.stale) { flash(r.stale, { kind: 'info' }); await load(); return; }
+    await reload(typeof msg === 'function' ? msg(r) : msg);
+  };
+
+  // matched: cars matched to a car here or a new one; read: those the server reads now (not paused, mode not off)
+  function carCounts() {
+    let matched = 0, read = 0;
+    for (const a of accounts) {
+      for (const c of carRows[a.id]?.items || []) {
+        if (c.match == null || c.match === 'leave_out') continue;
+        matched++;
+        if (!a.paused && c.mode && c.mode !== 'off') read++;
+      }
+    }
+    return { matched, read };
+  }
+  const cars_ = (n) => `${num(n)} ${n === 1 ? 'car' : 'cars'}`;
 
   function paint() {
+    const { matched, read } = carCounts();
     replace(headPill, !ov.enabled ? pill('Off until an account is added', { lg: true })
-      : ov.cars ? pill(`Reading ${ov.cars} ${ov.cars === 1 ? 'car' : 'cars'}`, { tone: 'live', lg: true }) : pill('No car matched yet', { tone: 'warm', lg: true }));
+      : read ? pill(`Reading ${cars_(read)}`, { tone: 'live', lg: true })
+        : matched && accounts.every((a) => a.paused) ? pill('Paused: no car is read', { lg: true })
+          : matched ? pill('No car is read now', { tone: 'warm', lg: true }) : pill('No car matched yet', { tone: 'warm', lg: true }));
     replace(body,
       h('div', { class: 'ta-grid' }, statusPanel(), addPanel()),
       accounts.length ? accounts.map(accountPanel) : null);
@@ -148,18 +184,20 @@ export function teslaSection(ctx, { cars = [] } = {}) {
   /* ---------- the input as a whole: state, hosts, pace */
   function statusPanel() {
     const p = ov.polls || {};
+    const { matched, read } = carCounts();
+    const paused = accounts.filter((a) => a.paused).length;
     const cap = (p.daily_cap || 3000) * Math.max(1, ov.accounts || 0);
     const paceSeg = h('div', { class: 'seg', role: 'group', 'aria-label': 'How often Tesla is asked' },
       PACE.map(([v, l]) => h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': String(ov.poll === v), onclick: () => setPace(v) }, l)));
     return h('div', { class: 'panel panel-pad ta-status' },
       h('div', { class: 'panel-head' }, h('h3', { class: 'panel-title' }, icon('pulse'), 'Status')),
       figures([
-        metric('State', ov.enabled ? 'On' : 'Off', null, { size: 'sm', explain: ov.enabled ? `${num(ov.accounts)} ${ov.accounts === 1 ? 'account' : 'accounts'}, ${num(ov.cars)} ${ov.cars === 1 ? 'car' : 'cars'} read.` : 'Off until an account is added: no connection to Tesla is made.' }),
+        metric('State', ov.enabled ? 'On' : 'Off', null, { size: 'sm', explain: ov.enabled ? `${num(ov.accounts)} ${ov.accounts === 1 ? 'account' : 'accounts'}${paused ? ` (${num(paused)} paused)` : ''}, ${read ? `${cars_(read)} read` : 'no car read now'}${matched > read ? `, ${num(matched)} matched` : ''}.` : 'Off until an account is added: no connection to Tesla is made.' }),
         metric('Requests today', ov.polls_today, 'number', { size: 'sm', digits: 0, explain: ov.enabled ? `Of at most ${num(cap)} (3,000 a day per account).` : 'None: there is no account.' }),
         metric('Connections set up', ov.clients_built, 'number', { size: 'sm', digits: 0, explain: 'To Tesla, since the server started.' }),
       ], 'si-figs'),
       ov.last_error ? h('p', { class: 'si-last-error warn' }, icon('warn', 'ico--sm'), ' Last error: ', h('b', null, lastErrorText(ov.last_error)),
-        ov.last_error.at_ms ? `, ${dateTime(ov.last_error.at_ms, ctx.tz)} (${ago(ov.last_error.at_ms)})` : '', '.') : h('p', { class: 'si-last-error faint' }, icon('check', 'ico--sm'), ' No error.'),
+        ov.last_error.at_ms ? `, ${at(ov.last_error.at_ms)} (${ago(ov.last_error.at_ms)})` : '', '.') : h('p', { class: 'si-last-error faint' }, icon('check', 'ico--sm'), ' No error.'),
       h('div', { class: 'ta-hosts' }, h('span', { class: 'metric-label' }, 'Tesla hosts it talks to'),
         ov.hosts?.length ? h('ul', { class: 'ta-host-list' }, ov.hosts.map((x) => h('li', null, code(x))))
           : h('p', { class: 'faint' }, 'None while there is no account. Once one is added: Tesla\'s sign-in host, its Owner API and (outside China) its live stream, all over HTTPS.')),
@@ -176,9 +214,9 @@ export function teslaSection(ctx, { cars = [] } = {}) {
       title: `Pace: ${PACE.find((x) => x[0] === v)[1]}`,
       intro: h('p', { class: 'note' }, 'How often the server reads each car from the Tesla API. A faster pace gives finer drives and charges from the API, and uses more of the 3,000 requests a day.'),
       submit: 'Change the pace',
-      run: async (cred) => { try { return await ctx.api.patch(BASE, withPw(cred, { version: ov.version, poll: v })); } catch (e) { throw words(e); } },
+      run: guarded((cred) => ctx.api.patch(BASE, withPw(cred, { version: ov.version, poll: v }))),
     });
-    if (r) await reload('How often Tesla is asked: saved.');
+    await after(r, 'How often Tesla is asked: saved.');
   }
 
   /* ---------- adding an account */
@@ -202,12 +240,17 @@ export function teslaSection(ctx, { cars = [] } = {}) {
   }
 
   async function signIn(btn, region, redirect) {
-    btn.disabled = true;
-    let s;
-    try { s = await ctx.api.post(`${BASE}/sign-in`, { region, redirect }); } catch (e) {
-      if (e?.name !== 'AbortError') flash(`Could not start the sign-in: ${words(e).message}`, { kind: 'error' });
-      return;
-    } finally { btn.disabled = false; }
+    const key = `${region}|${redirect}`;
+    let s = openSignIns.get(key);
+    if (s && s.expires_ms - ctx.api.now() < 120_000) { openSignIns.delete(key); s = null; }
+    if (!s) {
+      btn.disabled = true;
+      try { s = await ctx.api.post(`${BASE}/sign-in`, { region, redirect }); } catch (e) {
+        if (e?.name !== 'AbortError') flash(`Could not start the sign-in: ${words(e).message}`, { kind: 'error' });
+        return;
+      } finally { btn.disabled = false; }
+      openSignIns.set(key, s);
+    }
     if (!ctx.alive()) return;
     const endsOn = redirect === 'void' ? `https://auth.tesla.${region === 'china' ? 'cn' : 'com'}/void/callback?code=…` : 'tesla://auth/callback?code=…';
     const label = field({ label: 'Name for this account', name: 'label', required: true, value: 'Tesla account', hint: 'Your own name for it, shown on this page. Not the account\'s e-mail.', attrs: { maxlength: '64', autocomplete: 'off' } });
@@ -219,14 +262,18 @@ export function teslaSection(ctx, { cars = [] } = {}) {
         h('li', null, h('b', null, 'Open Tesla\'s page'), ' and sign in there. Tesla\'s own page asks for your Tesla password and code; this server never sees them. ', openBtn),
         h('li', null, h('b', null, 'The last page will not load.'), ' That is expected: Tesla ends on an address that starts ', code(endsOn.split('?')[0]), ', which a browser cannot open. The browser may show an error, or seem to do nothing; the address is still in its address bar.'),
         h('li', null, h('b', null, 'Copy that whole address'), ' from the address bar and paste it below, with your own Sentry Mate password.')),
-      h('p', { class: 'note ta-expiry' }, icon('clock', 'ico--sm'), ` This sign-in lasts ten minutes, until ${time(s.expires_ms, Intl.DateTimeFormat().resolvedOptions().timeZone)} on this computer's clock, and works once.`));
+      h('p', { class: 'note ta-expiry' }, icon('clock', 'ico--sm'), ` This sign-in lasts ten minutes, until ${time(s.expires_ms, LOCAL)} on this computer's clock, and works once.`));
     const r = await askPassword(ctx, {
       title: 'Sign in at Tesla', intro, submit: 'Add the account', extra: [label, pasted],
       run: async (cred, v) => {
-        try { return await ctx.api.post(`${BASE}/sign-in/${enc(s.sign_in)}`, withPw(cred, { pasted_url: v.pasted_url.trim(), label: v.label.trim() })); } catch (e) { throw words(e); }
+        try {
+          const a = await ctx.api.post(`${BASE}/sign-in/${enc(s.sign_in)}`, withPw(cred, { pasted_url: v.pasted_url.trim(), label: v.label.trim() }));
+          openSignIns.delete(key);
+          return a;
+        } catch (e) { if (e?.code === 'no_such_sign_in') openSignIns.delete(key); throw words(e); }
       },
     });
-    if (r) await reload(`${r.label} added. Match its cars below to start reading them.`);
+    await after(r, `${r?.label} added. Match its cars below to start reading them.`);
   }
 
   async function addByToken(region) {
@@ -236,9 +283,9 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     const r = await askPassword(ctx, {
       title: 'Add a Tesla account by refresh token', submit: 'Check with Tesla and add', extra: [label, reg, tok],
       intro: h('p', { class: 'note' }, 'Only paste a token of your own Tesla account. Anyone with it can read the account\'s cars, so it never leaves this server and no page shows it.'),
-      run: async (cred, v) => { try { return await ctx.api.post(`${BASE}/accounts`, withPw(cred, { label: v.label.trim(), region: v.region, refresh_token: v.refresh_token.trim() })); } catch (e) { throw words(e); } },
+      run: guarded((cred, v) => ctx.api.post(`${BASE}/accounts`, withPw(cred, { label: v.label.trim(), region: v.region, refresh_token: v.refresh_token.trim() }))),
     });
-    if (r) await reload(`${r.label} added. Match its cars below to start reading them.`);
+    await after(r, `${r?.label} added. Match its cars below to start reading them.`);
   }
 
   /* ---------- one account */
@@ -248,10 +295,9 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     const patch = (title, intro, submit, bodyOf, extra = [], msg = 'Saved.', danger = false) => async () => {
       const r = await askPassword(ctx, {
         title, intro: intro ? h('p', { class: 'note' }, intro) : null, submit, extra, danger,
-        run: async (cred, v) => { try { return await ctx.api.patch(`${BASE}/accounts/${enc(a.id)}`, withPw(cred, { version: a.version, ...bodyOf(v) })); } catch (e) { throw words(e); } },
+        run: guarded((cred, v) => ctx.api.patch(`${BASE}/accounts/${enc(a.id)}`, withPw(cred, { version: a.version, ...bodyOf(v) }))),
       });
-      if (r) await reload(msg);
-      else if (r === null) { /* cancelled */ }
+      await after(r, msg);
     };
     const pauseBtn = h('button', { class: 'btn btn--sm', type: 'button', onclick: patch(a.paused ? `Resume ${a.label}?` : `Pause ${a.label}?`,
       a.paused ? 'Its matched cars are read again from now on.' : 'Its cars are not read until you resume it. Nothing is asked of Tesla meanwhile; the history already stored stays.',
@@ -268,9 +314,9 @@ export function teslaSection(ctx, { cars = [] } = {}) {
       const r = await askPassword(ctx, {
         title: `Remove ${a.label}?`, danger: true, submit: 'Remove the account',
         intro: h('p', { class: 'note' }, 'Reading stops at once and the sealed file with its tokens is deleted. The history already stored from it stays, marked as data from the Tesla API.'),
-        run: async (cred) => { try { return await ctx.api.send('DELETE', `${BASE}/accounts/${enc(a.id)}`, withPw(cred)); } catch (e) { throw words(e); } },
+        run: guarded((cred) => ctx.api.send('DELETE', `${BASE}/accounts/${enc(a.id)}`, withPw(cred))),
       });
-      if (r) await reload(`${a.label} removed. Its history stays.`);
+      await after(r, `${a.label} removed. Its history stays.`);
     } }, icon('x', 'ico--sm'), 'Remove');
 
     const locSeg = h('div', { class: 'seg', role: 'group', 'aria-label': `When ${a.label}'s car positions are asked for` },
@@ -283,9 +329,9 @@ export function teslaSection(ctx, { cars = [] } = {}) {
         h('div', { class: 'row ta-acc-acts' }, pauseBtn, tokenBtn, renameBtn, removeBtn)),
       st[2] ? h('p', { class: ['setting-note', a.status === 'sign_in_needed' || a.status === 'error' ? 'warn' : null] }, st[2]) : null,
       kv([
-        ['Added', dateTime(a.added_ms, ctx.tz), { icon: 'calendar' }],
-        ['Last good answer', a.last_ok_ms ? h('span', { title: dateTime(a.last_ok_ms, ctx.tz) }, ago(a.last_ok_ms)) : h('span', { class: 'faint' }, 'none yet'), { icon: 'check' }],
-        ['Last error', err ? h('span', { class: 'warn' }, lastErrorText(err), err.message && LAST_ERROR_WORDS[err.code] ? h('span', { class: 'faint' }, ` (${err.message})`) : null, err.at_ms ? `, ${ago(err.at_ms)}` : '') : h('span', { class: 'faint' }, 'none'), { icon: 'warn' }],
+        ['Added', at(a.added_ms), { icon: 'calendar' }],
+        ['Last good answer', a.last_ok_ms ? h('span', { title: at(a.last_ok_ms) }, ago(a.last_ok_ms)) : h('span', { class: 'faint' }, 'none yet'), { icon: 'check' }],
+        ['Last error', err ? h('span', { class: 'warn' }, lastErrorText(err), err.message && LAST_ERROR_WORDS[err.code] ? h('span', { class: 'faint' }, ` (${err.message})`) : null, err.at_ms ? h('span', { title: at(err.at_ms) }, `, ${ago(err.at_ms)}`) : '') : h('span', { class: 'faint' }, 'none'), { icon: 'warn' }],
         ['Requests today', `${num(a.polls_today ?? 0)} of 3,000`, { icon: 'pulse' }],
         ['Hosts', h('span', { class: 'ta-inline-hosts' }, (a.hosts || []).map((x) => code(x))), { icon: 'globe' }],
       ]),
@@ -300,26 +346,54 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     const data = carRows[a.id] || { items: a.cars || [], version: a.version };
     const items = data.items || [];
     if (!items.length) return emptyState({ icon: 'car', title: 'No cars on this account', text: 'Tesla lists no car for this account. A car added to it at Tesla shows here within a few minutes.' });
-    const opts = [['', 'Not decided (not read)'], ...cars.map((c) => [c.id, c.name]), ['new', 'A new car'], ['leave_out', 'Leave out (not read)']];
+    // cars here another Tesla account already reads: the server refuses them (car_taken), so they are not offered
+    const takenBy = new Map();
+    for (const o of accounts) {
+      if (o.id === a.id) continue;
+      for (const c of carRows[o.id]?.items || []) if (c.match && c.match !== 'new' && c.match !== 'leave_out') takenBy.set(c.match, o.label);
+    }
+    const opts = [['', 'Not decided (not read)'], ...cars.map((c) => [c.id, takenBy.has(c.id) ? `${c.name} (read through ${takenBy.get(c.id)})` : c.name, takenBy.has(c.id)]), ['new', 'A new car'], ['leave_out', 'Leave out (not read)']];
     const sels = new Map();
     const saveBtn = h('button', { class: 'btn btn--primary btn--sm', type: 'button', hidden: true }, icon('check', 'ico--sm'), 'Save matches');
+    const problem = h('p', { class: 'warn ta-match-warn', role: 'alert', hidden: true });
     const changed = () => items.filter((c) => (sels.get(c.vehicle).value || null) !== (c.match ?? null));
-    const sync = () => { saveBtn.hidden = !changed().length; };
+    // one car here takes one Tesla vehicle: two vehicles of this account on one car would both feed it
+    const doubled = () => {
+      const seen = new Map();
+      for (const c of items) {
+        const v = sels.get(c.vehicle).value;
+        if (!v || v === 'new' || v === 'leave_out') continue;
+        seen.set(v, [...(seen.get(v) || []), c]);
+      }
+      return [...seen].filter(([, list]) => list.length > 1);
+    };
+    const sync = () => {
+      const dup = doubled();
+      const bad = new Set(dup.flatMap(([, list]) => list.map((c) => c.vehicle)));
+      for (const [veh, sel] of sels) { sel.classList.toggle('is-invalid', bad.has(veh)); sel.setAttribute('aria-invalid', String(bad.has(veh))); }
+      replace(problem, dup.length ? [icon('warn', 'ico--sm'), ' ', dup.map(([car, list]) => `${list.map((c) => c.display_name || c.vehicle).join(' and ')} are both matched to ${carName(car)}.`).join(' '), ' One car here takes one Tesla car: pick another car, A new car, or Leave out.'] : null);
+      problem.hidden = !dup.length;
+      saveBtn.hidden = !changed().length;
+      saveBtn.disabled = !!dup.length;
+    };
     saveBtn.addEventListener('click', async () => {
       const ch = changed();
-      if (!ch.length) return;
+      if (!ch.length || doubled().length) return;
       const r = await askPassword(ctx, {
         title: `Match the cars of ${a.label}`, submit: 'Save matches',
         intro: h('ul', { class: 'si-list' }, ch.map((c) => { const v = sels.get(c.vehicle).value; return h('li', null, h('b', null, c.display_name || c.vehicle), ': ', v === 'new' ? 'a new car here, read from now on' : v === 'leave_out' ? 'left out, not read' : !v ? 'not decided, not read' : `${carName(v)}, read from now on`); })),
-        run: async (cred) => { try { return await ctx.api.put(`${BASE}/accounts/${enc(a.id)}/cars`, withPw(cred, { version: data.version ?? a.version, items: ch.map((c) => ({ vehicle: c.vehicle, match: sels.get(c.vehicle).value || null })) })); } catch (e) { throw words(e); } },
+        run: guarded((cred) => ctx.api.put(`${BASE}/accounts/${enc(a.id)}/cars`, withPw(cred, { version: data.version ?? a.version, items: ch.map((c) => ({ vehicle: c.vehicle, match: sels.get(c.vehicle).value || null })) }))),
       });
-      if (r) await reload('Matches saved.');
+      await after(r, 'Matches saved.');
     });
     const rows = items.map((c) => {
       const sv = status.find((s) => s.account === a.id && s.vehicle === c.vehicle) || {};
       const pre = c.match ?? c.suggested ?? '';
       const known = opts.some(([v]) => v === pre) ? opts : [...opts, [pre, carName(pre)]];
-      const sel = h('select', { class: 'select', 'aria-label': `Sentry Mate car for ${c.display_name || c.vehicle}` }, known.map(([v, l]) => h('option', { value: v, selected: v === pre }, l)));
+      // a suggestion another account already reads is not taken over: the picker starts at Not decided
+      const start = c.match == null && takenBy.has(pre) ? '' : pre;
+      const sel = h('select', { class: 'select', 'aria-label': `Sentry Mate car for ${c.display_name || c.vehicle}` },
+        known.map(([v, l, taken]) => h('option', { value: v, selected: v === start, disabled: taken && v !== c.match ? true : null }, l)));
       sel.addEventListener('change', sync);
       sels.set(c.vehicle, sel);
       const mode = CAR_MODE[c.mode] || [c.mode, ''];
@@ -327,15 +401,16 @@ export function teslaSection(ctx, { cars = [] } = {}) {
       const tz = cars.find((x) => x.id === c.match)?.time_zone || ctx.tz;
       return h('tr', null,
         h('td', null, h('span', { class: 'cell-text' }, h('b', null, c.display_name || 'No name at Tesla'), h('span', { class: 'sub' }, [c.year, c.model].filter(Boolean).join(' '), ' · ', h('span', { class: 'mono' }, c.vin_prefix || '—')))),
-        h('td', null, h('div', { class: 'ta-match' }, sel, c.match == null && c.suggested ? tag('Suggested: same VIN prefix', 'live') : null)),
+        h('td', null, h('div', { class: 'ta-match' }, sel, c.match == null && c.suggested && !takenBy.has(c.suggested) ? tag('Suggested: same VIN prefix', 'live') : null)),
         h('td', null, h('span', { class: 'ta-cell-label' }, 'Tesla says: '), CAR_STATE[c.state] || c.state || '—'),
         h('td', null, h('span', { class: 'cell-text', title: mode[1] }, h('span', null, mode[0], sv.streaming ? ' · live stream' : ''),
           c.mode === 'backoff' && next ? h('span', { class: 'sub warn' }, `Next try ${time(next, tz)} (in ${dur(Math.max(0, next - ctx.api.now()))})`)
             : next && c.mode !== 'off' ? h('span', { class: 'sub' }, `Next read ${time(next, tz)}`) : h('span', { class: 'sub' }, mode[1]))),
-        h('td', { class: 'num' }, sv.last_data_ms ? h('span', { title: dateTime(sv.last_data_ms, tz) }, h('span', { class: 'ta-cell-label' }, 'Last data '), ago(sv.last_data_ms)) : h('span', { class: 'faint' }, '—')));
+        h('td', { class: 'num' }, sv.last_data_ms ? h('span', { title: dateTime(sv.last_data_ms, tz) }, h('span', { class: 'ta-cell-label' }, 'Last data '), ago(sv.last_data_ms)) : h('span', null, h('span', { class: 'ta-cell-label' }, 'Last data '), h('span', { class: 'faint' }, 'none yet'))));
     });
     return h('div', { class: 'ta-cars' },
       h('div', { class: 'ta-cars-head' }, h('span', { class: 'metric-label' }, `Its cars (${items.length})`), saveBtn),
+      problem,
       h('div', { class: 'tbl-scroll' }, h('table', { class: 'tbl ta-tbl' },
         h('thead', null, h('tr', null, ['Car at Tesla', 'Sentry Mate car', 'Tesla says', 'What the server does', 'Last data'].map((t, i) => h('th', { class: i === 4 ? 'num' : null, scope: 'col' }, t)))),
         h('tbody', null, rows))),

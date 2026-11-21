@@ -105,7 +105,8 @@ export function askPassword(ctx, { title, intro, submit, danger = false, extra =
   });
   if (danger) f.el.querySelector('button[type="submit"]')?.classList.replace('btn--primary', 'btn--danger');
   const done = openDialog({ title, body: [intro, f.el], actions: [] });
-  pass.input.focus();
+  // focused without scrolling: a long intro (steps to follow) stays in view from its first line
+  pass.input.focus({ preventScroll: true });
   return done.then(() => result);
 }
 
