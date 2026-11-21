@@ -30,7 +30,7 @@ const count = (n) => (n == null ? DASH : format(n, 'count'));
 const pct = (a, b) => (a != null && b ? Math.max(0, Math.min(100, (a / b) * 100)) : 0);
 const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : e?.message || errorWords(e).text);
 const ROLE = { admin: 'admin', watch: 'watch' };
-const PURPOSE = { web: 'web pages and api', upload: 'can bridge uploads' };
+const PURPOSE = { web: 'web and api', upload: 'uploads' };
 const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 const LIVE = new Set(['offered', 'copying', 'paused', 'moved']);
 

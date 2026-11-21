@@ -724,6 +724,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .run { display: grid; grid-template-columns: calc(var(--a2) * 3) calc(var(--a2) * 10) minmax(0, 1fr) auto; column-gap: var(--g); align-items: start; padding-block: var(--g2); border-bottom: 1px solid var(--rule); }
 .run-n, .run-tag { line-height: var(--ctl); }
 .run-n { color: var(--muted); }
+.sec-head + .runs, .sec-head + div > .runs:first-child, .sec-head + .ke-list, .sec-head + div > .ke-list:first-child, .sec-head + .ln-list, .sec-head + div > .ln-list:first-child { border-top: 0; }
 .run-body { min-width: 0; display: flex; flex-direction: column; gap: var(--g2); }
 .run-head { line-height: var(--ctl); }
 .run--now .run-head { color: var(--accent); }
@@ -770,7 +771,8 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
   .ke-show { padding-left: 0; line-height: var(--lh2); }
   .ke-in { border-color: var(--rule-2); background: var(--bg); }
   .ke-box { max-width: none; }
-  .run { grid-template-columns: calc(var(--a2) * 3) minmax(0, 1fr); }
+  .run { grid-template-columns: calc(var(--a2) * 3) minmax(0, 1fr); row-gap: var(--g2); }
+  .run-n, .run-tag, .run-head { line-height: var(--lh2); }
   .run-tag { grid-column: 2; grid-row: 1; justify-self: end; }
   .run-body { grid-column: 1 / -1; grid-row: 2; }
   .run-acts { grid-column: 1 / -1; grid-row: 3; justify-content: flex-start; }
