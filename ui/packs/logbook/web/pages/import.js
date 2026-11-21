@@ -24,6 +24,7 @@ import { format } from '../shared/units.js';
 import { formatDateTime, formatDate, formatDuration } from '../shared/time.js';
 import { column, timeColumn } from '../shared/csv.js';
 import { pageHead, section, figure, figures, flag, button, icon, empty, errorView, errorWords } from '../core/ui.js';
+import { labelOf } from '../core/sources.js';
 import { choice, field } from '../core/form.js';
 import { dataTable } from '../core/table.js';
 import { confirmDialog } from '../core/dialog.js';
@@ -803,7 +804,7 @@ export async function mount(ctx) {
     rTable?.load();
   }
 
-  /* ---------------------------------------------------------------- overlap with CAN history */
+  /* ---------------------------------------------------------------- overlap with live history */
   const overlapBox = h('div', { class: 'im-overlaps' });
   function overlapCars() {
     const ids = new Set();
@@ -824,17 +825,23 @@ export async function mount(ctx) {
     if (ctx.alive()) paintOverlaps();
   }
 
+  // the side shown: the new shown_source (live | import:teslamate), else the old shown word
+  // which live inputs the span's live side has (its sources less the import)
+  const liveLabel = (r) => { const l = (r.sources || []).filter((x) => x.kind !== 'import'); return l.length ? labelOf(l) : 'Data from SMO'; };
+  const shownOf = (r) => r.shown_source || (r.shown === 'teslamate' ? 'import:teslamate' : 'live');
+  const liveOf = (r) => r.live || r.can || {};
+  const importedOf = (r) => r.imported || r.teslamate || {};
   async function flip(cid, row, value, ch) {
     try {
       const ans = await ctx.api.patch(api.apiPath`cars/${cid}/overlaps`, { id: row.id, shown: value });
       if (!ctx.alive()) return;
       const o = S.overlaps.get(cid);
-      if (ans?.items) o.items = ans.items; else row.shown = value;
-      ctx.flash(value === 'can' ? 'This span now shows the CAN Bridge history.' : 'This span now shows the imported TeslaMate history.');
+      if (ans?.items) o.items = ans.items; else row.shown_source = value;
+      ctx.flash(value === 'live' ? 'This span now shows the live history (SMO and the Tesla API).' : 'This span now shows the imported TeslaMate history.');
       paintOverlaps();
     } catch (e) {
       if (!ctx.alive() || api.isAbort(e)) return;
-      ch.set(row.shown);
+      ch.set(shownOf(row));
       ctx.flash('Not switched: ' + errorWords(e).text, { kind: 'error' });
     }
   }
@@ -842,7 +849,7 @@ export async function mount(ctx) {
   function paintOverlaps() {
     const ids = overlapCars();
     const parts = [];
-    if (!ids.length) parts.push(empty({ title: 'No imported history overlaps CAN history.', text: 'Once an import is done, any span where both an imported and a CAN Bridge history exist shows here, with a switch for which one to show.' }));
+    if (!ids.length) parts.push(empty({ title: 'No imported history overlaps live history.', text: 'Once an import is done, any span where both an imported history and live history (from SMO or the Tesla API) exist shows here, with a switch for which one to show.' }));
     for (const cid of ids) {
       const o = S.overlaps.get(cid);
       if (!o) { parts.push(h('p', { class: 'note' }, `Reading ${carName(cid)}…`)); continue; }
@@ -850,24 +857,24 @@ export async function mount(ctx) {
       const z = zoneShort(ztz);
       parts.push(h('h3', { class: 'im-sub' }, carName(cid), h('span', { class: 'label-note' }, `times in ${z}`)));
       if (o.err) { parts.push(errorView(o.err, { retry: loadOverlaps, eyebrow: 'Overlaps' })); continue; }
-      if (!o.items.length) { parts.push(empty({ title: 'No overlap for this car.', text: 'Its imported history ends before its CAN Bridge history begins, so every span has one source.' })); continue; }
+      if (!o.items.length) { parts.push(empty({ title: 'No overlap for this car.', text: 'Its imported history ends before its live history begins, so every span has one source.' })); continue; }
       const t = dataTable(ctx, {
         rows: o.items, itemName: ['span', 'spans'], label: `Overlaps of ${carName(cid)}`,
-        csv: { filename: `overlaps-${cid}`, columns: [timeColumn('Start', 'start_ms', ztz), timeColumn('End', 'end_ms', ztz), column('CAN drives', 'can_drives', 'count'), column('CAN charges', 'can_charges', 'count'), column('Imported drives', 'tm_drives', 'count'), column('Imported charges', 'tm_charges', 'count'), column('Shown', 'shown')] },
+        csv: { filename: `overlaps-${cid}`, columns: [timeColumn('Start', 'start_ms', ztz), timeColumn('End', 'end_ms', ztz), column('Live drives', 'can_drives', 'count'), column('Live charges', 'can_charges', 'count'), column('Imported drives', 'tm_drives', 'count'), column('Imported charges', 'tm_charges', 'count'), { label: 'Live from', value: (r) => liveLabel(r) }, { label: 'Shown', value: (r) => shownOf(r) }] },
         columns: [
           { key: 'span', label: 'Span', th: true, cell: (r) => h('span', null, h('span', { class: 'cell-main' }, `${formatDate(r.start_ms, ztz, { weekday: false, year: true })} to ${formatDate(r.end_ms, ztz, { weekday: false, year: true })}`), h('span', { class: 'cell-sub' }, formatDuration(r.end_ms - r.start_ms, { style: 'long' }))), value: (r) => r.start_ms },
-          { key: 'can', label: 'CAN Bridge', num: true, cell: (r) => `${n(r.can?.drives ?? 0)} drives · ${n(r.can?.charges ?? 0)} charges`, value: (r) => r.can?.drives },
-          { key: 'tm', label: 'Imported', num: true, cell: (r) => `${n(r.teslamate?.drives ?? 0)} drives · ${n(r.teslamate?.charges ?? 0)} charges`, value: (r) => r.teslamate?.drives },
+          { key: 'can', label: 'Live', num: true, cell: (r) => h('span', null, h('span', { class: 'cell-main' }, `${n(liveOf(r).drives ?? 0)} drives · ${n(liveOf(r).charges ?? 0)} charges`), h('span', { class: 'cell-sub' }, liveLabel(r))), value: (r) => liveOf(r).drives },
+          { key: 'tm', label: 'Imported', num: true, cell: (r) => h('span', null, h('span', { class: 'cell-main' }, `${n(importedOf(r).drives ?? 0)} drives · ${n(importedOf(r).charges ?? 0)} charges`), h('span', { class: 'cell-sub' }, 'Imported from TeslaMate')), value: (r) => importedOf(r).drives },
           {
             key: 'shown', label: 'Shown', cell: (r) => {
-              const ch = choice({ name: `Shown for ${r.id}`, value: r.shown, options: [['can', 'CAN Bridge'], ['teslamate', 'Imported']], onchange: (v) => flip(cid, r, v, ch) });
+              const ch = choice({ name: `Shown for ${r.id}`, value: shownOf(r), options: [['live', 'Live'], ['import:teslamate', 'Imported']], onchange: (v) => flip(cid, r, v, ch) });
               return ch;
-            }, value: (r) => r.shown,
+            }, value: (r) => shownOf(r),
           },
           { key: 'see', label: 'See it', cell: (r) => h('a', { class: 'link-arrow', href: state.buildUrl('timeline', { car: cid, period: { from: r.start_ms, to: r.end_ms } }) }, 'Timeline', icon('arrowRight')), value: () => null },
         ],
       });
-      for (const r of o.items) Object.assign(r, { can_drives: r.can?.drives, can_charges: r.can?.charges, tm_drives: r.teslamate?.drives, tm_charges: r.teslamate?.charges });
+      for (const r of o.items) Object.assign(r, { can_drives: liveOf(r).drives, can_charges: liveOf(r).charges, tm_drives: importedOf(r).drives, tm_charges: importedOf(r).charges });
       parts.push(t.el);
       t.load();
     }
@@ -875,7 +882,7 @@ export async function mount(ctx) {
   }
 
   const overlapWords = h('div', { class: 'im-overlap-words' },
-    h('p', { cover: 'web.import.docs-overlap' }, 'Imported history is kept whole, also where it covers the same time as the CAN Bridge. For each such span the CAN Bridge history is shown at first, because it is exact to the frame; the imported rows are hidden, never deleted. Switch a span to “Imported” and Drives, Charges, the Timeline, Statistics and Travel show that side for it instead.'),
+    h('p', { cover: 'web.import.docs-overlap' }, 'Imported history is kept whole, also where it covers the same time as live history (SMO or the Tesla API). For each such span the live history is shown at first; the imported rows are hidden, never deleted. Switch a span to “Imported” and Drives, Charges, the Timeline, Statistics and Travel show that side for it instead.'),
     h('p', { cover: 'web.import.docs-backfill' }, 'TeslaMate’s backup carries its own addresses and places, so imported drives and charges keep their street names. Spots it had no address for are filled in by the server’s address lookup after the import, a few at a time, so a big import can show some plain coordinates for a while.'),
     h('p', { cover: 'faq.no-backfill' }, 'Time the CAN Bridge missed is not lost the way a cloud logger’s is: the bridge keeps its logs and sends them late, so most gaps fill by themselves. Time nothing recorded shows as Unknown, never as asleep. An import fills only the time before the CAN Bridge, or spans another logger recorded; Tesla keeps no history that could be fetched.'));
 
@@ -923,7 +930,7 @@ export async function mount(ctx) {
     section({ title: 'Upload and import', note: 'Admins only · over HTTPS', cls: 'im-sec' },
       h('div', { class: 'im-two' }, jobBox, h('aside', { class: 'im-side' }, howTo, restartNote))),
     section({ title: 'Report', note: 'Counts and reasons only: no row values or positions', cls: 'im-sec' }, reportBox),
-    section({ title: 'Overlap with CAN history', cls: 'im-sec' }, h('div', { class: 'im-two im-two-even' }, overlapWords, overlapBox)),
+    section({ title: 'Overlap with live history', cls: 'im-sec' }, h('div', { class: 'im-two im-two-even' }, overlapWords, overlapBox)),
     section({ title: 'Imports', note: 'Newest first', cls: 'im-sec' }, historyBox));
 
   if (S.job && ['checking', 'ready'].includes(S.job.status)) await loadMatch();

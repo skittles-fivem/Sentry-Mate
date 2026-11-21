@@ -24,6 +24,7 @@ import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { pageHead, q, figure, icon, empty, errorView, flag, button, sep, loadingBlock, cover } from '../core/ui.js';
+import { sourceMark, sourceLabel, isImported } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
 import { popover } from '../core/dialog.js';
 import { choice } from '../core/form.js';
@@ -682,8 +683,8 @@ export async function mount(ctx) {
           r.unknown_ms ? h('span', { class: 'cell-sub tv-unknown' }, `${formatDuration(r.unknown_ms)} not recorded`) : null) },
         { key: 'place', label: 'Place', cover: 'locations.last_visited.address', cls: 'tv-wrap',
           cell: (r) => { const href = placeLink(r); return h('span', { class: 'cell-main' }, href ? h('a', { href, title: r.place ? 'Open the saved place' : 'Save this spot as a place' }, r.label || 'Unnamed spot') : (r.label || 'Unnamed spot'),
-            r.source === 'teslamate' ? [' ', flag('Imported', { kind: 'estimated', title: 'From the TeslaMate import' })] : null,
-            h('span', { class: 'cell-sub' }, r.place ? (r.address?.short || '') : 'no saved place')); } },
+            isImported(r) ? [' ', flag('Imported', { kind: 'estimated', title: sourceLabel(r) })] : null,
+            h('span', { class: 'cell-sub' }, r.place ? (r.address?.short || '') : 'no saved place'), sourceMark(r, { block: true, short: true })); } },
         { key: 'city', label: 'City', cover: 'locations.last_visited.city', cell: (r) => (r.address?.locality || r.address?.neighbourhood || '—') },
         { key: 'country', label: 'Country', cell: (r) => r.address?.country_code || '—' },
         multi ? { key: 'car', label: 'Car', cell: (r) => carsCell([r.car]) } : null,

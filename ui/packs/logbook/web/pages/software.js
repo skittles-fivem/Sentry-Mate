@@ -18,6 +18,7 @@ import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { pageHead, q, figure, icon, empty, flag, button, sep, loadingBlock } from '../core/ui.js';
+import { sourceMark, hasSmo, isImported } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
 import { openDialog } from '../core/dialog.js';
 import { field, form } from '../core/form.js';
@@ -32,6 +33,7 @@ const VERSION_RX = /^\d{4}\.\d{1,2}(\.\d{1,3}){0,2}$/;
 /** Where a version came from: [short name, the sentence that explains it]. */
 const SOURCE = {
   teslamate: ['Imported', 'Imported from TeslaMate with the version text it recorded.'],
+  tesla_api: ['Tesla API', 'The Tesla API named the version the car runs.'],
   owner: ['Typed by an admin', 'An admin typed this version from the car’s screen.'],
   build_match: ['Same build', 'Another update with exactly the same module builds has this version.'],
 };
@@ -40,6 +42,7 @@ const DETECTED = {
   ota_status: ['Update status', 'The car reported that it was installing an update.'],
   build_change: ['Module builds changed', 'The build ids its modules send on the vehicle bus changed.'],
   teslamate: ['Imported', 'A row of the imported TeslaMate history.'],
+  tesla_api: ['Tesla API', 'The Tesla API reported a new version.'],
 };
 /** The modules whose build ids are compared. */
 const MODULES = {
@@ -124,13 +127,13 @@ export async function mount(ctx) {
     try {
       const r = await ctx.api.get(path, { limit: 1 });
       const u = r && r.items && r.items[0];
-      newestEver = u && u.until_ms == null && u.end_ms != null && u.source === 'can' ? u : null;
+      newestEver = u && u.until_ms == null && u.end_ms != null && hasSmo(u) ? u : null;
     } catch { newestEver = null; }
   }
   function drawSummary(sm, failed = false) {
     sm = sm || {};
     const installing = rowsSeen.find((r) => r.end_ms == null);
-    const newest = rowsSeen.find((r) => r.until_ms == null && r.end_ms != null && r.source === 'can') || newestEver;
+    const newest = rowsSeen.find((r) => r.until_ms == null && r.end_ms != null && hasSmo(r)) || newestEver;
     const changed = sm.build_changed_since != null;
     const last = sm.current_version; // after a change, the version the car ran before it (no longer what it runs)
     const v = changed ? null : last;
@@ -187,10 +190,10 @@ export async function mount(ctx) {
           : h('span', { class: 'sw-ver-text' }, r.version),
         src ? flag(src[0], { title: src[1] }) : null)
       : h('span', { class: 'sw-ver is-unknown' }, h('span', { class: 'sw-ver-text' }, 'Build changed'), flag('version not known', { kind: 'warn' }));
-    const mods = r.changed_modules && r.changed_modules.length ? `Changed: ${moduleNames(r.changed_modules)}` : r.source === 'teslamate' ? 'Imported row: no module list' : null;
+    const mods = r.changed_modules && r.changed_modules.length ? `Changed: ${moduleNames(r.changed_modules)}` : isImported(r) ? 'Imported row: no module list' : null;
     return h('div', { class: 'cell-main sw-ver-cell' }, main,
       mods ? h('span', { class: 'cell-sub' }, mods) : null,
-      admin && r.source === 'can' && r.end_ms != null
+      admin && hasSmo(r) && r.end_ms != null
         ? h('button', { type: 'button', class: 'sw-edit', onclick: () => editVersion(r), title: 'Type the version this update installed, from the car’s screen' },
           icon('settings'), r.version && r.version_source === 'owner' ? 'Change the version' : 'Type the version')
         : null);
@@ -224,7 +227,7 @@ export async function mount(ctx) {
     },
     {
       key: 'found', label: 'Found by', hint: 'How Sentry Mate knows about this update, and where the row comes from.',
-      cell: (r) => { const d = DETECTED[r.detected_by] || [r.detected_by, '']; return h('div', { class: 'cell-main', title: d[1] }, d[0], h('span', { class: 'cell-sub' }, r.source === 'teslamate' ? flag('Imported', { kind: 'estimated' }) : 'From the car')); },
+      cell: (r) => { const d = DETECTED[r.detected_by] || [r.detected_by, '']; return h('div', { class: 'cell-main', title: d[1] }, d[0], h('span', { class: 'cell-sub' }, isImported(r) ? [flag('Imported', { kind: 'estimated' }), ' '] : null, sourceMark(r, { short: true }))); },
       value: (r) => r.detected_by,
     },
     {
@@ -240,7 +243,7 @@ export async function mount(ctx) {
     },
     {
       key: 'pack', label: 'Full pack', num: true, hint: 'Full-pack energy the battery management system reported while on this version. Imported rows have no such reading.',
-      cell: (r) => (r.full_pack_kwh == null ? h('span', { class: 'sw-faint' }, r.source === 'teslamate' ? 'not measured (imported)' : 'no reading') : q(r.full_pack_kwh, 'energy')),
+      cell: (r) => (r.full_pack_kwh == null ? h('span', { class: 'sw-faint' }, isImported(r) ? 'not measured (imported)' : 'no reading') : q(r.full_pack_kwh, 'energy')),
       value: (r) => r.full_pack_kwh,
     },
   ];

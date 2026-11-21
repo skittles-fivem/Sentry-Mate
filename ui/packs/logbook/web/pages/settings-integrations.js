@@ -20,6 +20,7 @@ import { pageHead, section, figure, figures, chip, flag, pageLink, button, icon,
 import { field, form, setFieldError, switchField, choice } from '../core/form.js';
 import { dataTable } from '../core/table.js';
 import { confirmDialog } from '../core/dialog.js';
+import { teslaPart, showTeslaHash } from './integrations-tesla.js';
 
 export const id = 'settings-integrations';
 export const css = true;
@@ -164,6 +165,7 @@ const NET_PURPOSE = {
   geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
   mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
   release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-display'],
+  tesla: ['Tesla API', 'Only while a Tesla account is added (Tesla account, on this page): signs in and reads its cars, never sends a command.', null],
   upload: ['CAN Bridge uploads', 'The car’s CAN Bridge sends its logs here.', null],
   web: ['This app and the API', 'Browsers, phone apps and scripts.', null],
 };
@@ -327,6 +329,13 @@ export async function mount(ctx) {
     paintAll();
   }
 
+  /* ---------------- the Tesla account (its own module) */
+  const tesla = teslaPart(ctx);
+  const teslaLoad = tesla.load();
+  const onHash = () => showTeslaHash();
+  window.addEventListener('hashchange', onHash);
+  ctx.onCleanup(() => window.removeEventListener('hashchange', onHash));
+
   /* ---------------- the head */
   const headStatus = h('div', { class: 'si-head-status' });
   function paintHead() {
@@ -337,7 +346,7 @@ export async function mount(ctx) {
           : chip('Not connected', { kind: 'warn', iconName: 'warning' }),
       h('p', { class: 'si-head-note' }, status.enabled ? `${format(status.delivered, 'count')} messages delivered since the server started` : 'Nothing leaves the server until publishing is on'));
   }
-  const JUMPS = [['si-broker', 'Broker'], ['si-topics', 'Topics'], ['si-values', 'Values'], ['si-ha', 'Home Assistant'], ['si-events', 'Events'], ['si-api', 'API'], ['si-network', 'Network'], ['si-works', 'Works with']];
+  const JUMPS = [['tesla', 'Tesla account'], ['si-broker', 'Broker'], ['si-topics', 'Topics'], ['si-values', 'Values'], ['si-ha', 'Home Assistant'], ['si-events', 'Events'], ['si-api', 'API'], ['si-network', 'Network'], ['si-works', 'Works with']];
   const jumpNav = h('nav', { class: 'si-jump', 'aria-label': 'Parts of this page' },
     h('span', { class: 'si-jump-label' }, 'On this page'),
     JUMPS.map(([target, label]) => h('button', { type: 'button', class: 'si-jump-link', onclick: () => { const t = document.getElementById(target); if (t) { t.scrollIntoView({ block: 'start' }); t.querySelector('h2')?.focus?.(); } } }, label)));
@@ -878,14 +887,14 @@ export async function mount(ctx) {
         { key: 'host', label: 'Host or port', cell: (r) => (r.port != null ? h('span', null, code(`port ${r.port}`), r.tls ? ', TLS' : ', no TLS') : r.host ? code(r.host) : h('span', { class: 'si-quiet' }, 'not set')) },
         { key: 'enabled', label: 'State', sort: true, cell: (r) => (r.enabled ? chip(r.dir === 'in' ? 'Open' : 'On', { kind: 'on' }) : chip('Off')), value: (r) => (r.enabled ? 1 : 0) },
         { key: 'last', label: 'Last used', sort: true, cell: (r) => (r.last_used_ms ? ago(r.last_used_ms) : h('span', { class: 'si-quiet' }, r.dir === 'in' ? 'always listening' : 'never')), value: (r) => r.last_used_ms },
-        { key: 'change', label: 'Change it', cell: (r) => ((NET_PURPOSE[r.purpose] || [])[2] ? pageLink('Settings', NET_PURPOSE[r.purpose][2], {}, { arrow: true }) : h('span', { class: 'si-quiet' }, r.purpose === 'mqtt' ? 'on this page' : '—')), value: () => '' },
+        { key: 'change', label: 'Change it', cell: (r) => ((NET_PURPOSE[r.purpose] || [])[2] ? pageLink('Settings', NET_PURPOSE[r.purpose][2], {}, { arrow: true }) : h('span', { class: 'si-quiet' }, r.purpose === 'mqtt' || r.purpose === 'tesla' ? 'on this page' : '—')), value: () => '' },
       ],
     });
     t.load();
     replace(netSlot, t.el);
   }
   const netSec = section({ title: 'Network use', note: 'for a firewall: every connection the server makes or takes', id: 'si-network', cls: 'si-sec', cover: 'faq.network-flows' },
-    h('p', { class: 'si-lead' }, 'Sentry Mate needs no Tesla account and no cloud: the car’s CAN Bridge uploads to it, and everything else stays off until an admin turns it on.'), netSlot);
+    h('p', { class: 'si-lead' }, 'Sentry Mate needs no Tesla account and no cloud: the car’s SMO (its CAN Bridge) uploads to it, and everything else, the Tesla API input included, stays off until an admin turns it on.'), netSlot);
 
   /* ================================================================ works with */
   const worksSlot = h('div');
@@ -909,11 +918,14 @@ export async function mount(ctx) {
     paintLog();
   }
   ctx.main.append(
-    pageHead({ eyebrow: 'Settings', title: 'Integrations', deck: `${ctx.info.purpose} Nothing leaves this server until publishing is on, and the VIN is never sent.`, aside: headStatus }),
+    pageHead({ eyebrow: 'Settings', title: 'Integrations', deck: `${ctx.info.purpose} Nothing leaves this server until an admin turns it on, and the VIN is never sent.`, aside: headStatus }),
     jumpNav,
     h('p', { class: 'si-saving' }, icon('info'), ' Switches and single fields save at once and a short note confirms it; the broker connection saves with its button.'),
-    brokerSec, topicsSec, valuesSec, haSec, entSec, eventsSec, apiSec, netSec, worksSec);
+    tesla.el, brokerSec, topicsSec, valuesSec, haSec, entSec, eventsSec, apiSec, netSec, worksSec);
   paintAll();
+  await teslaLoad;
+  if (!ctx.alive()) return {};
+  showTeslaHash();
   ctx.ready();
   return {};
 }

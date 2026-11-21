@@ -26,6 +26,7 @@ import { dataTable } from '../core/table.js';
 import { stackedCharts, spansFromStates, niceSplits } from '../core/chart.js';
 import { field, form, choice, switchField, setFieldError } from '../core/form.js';
 import { AWAKE_WORDS } from '../core/journal.js';
+import { sourceMark, sourceLabel, sourcesOf, labelOf } from '../core/sources.js';
 import { zoneLabel } from '../core/format.js';
 
 export const id = 'battery';
@@ -302,7 +303,7 @@ export async function mount(ctx) {
     const csv = () => downloadCsv(csvFilename(car.name, 'battery capacity', opt.group), items, [
       timeColumn('Time', 't_ms', tz), column('Odometer', 'odometer_km', 'odometer', { digits: 1 }), column('Full pack', 'full_pack_kwh', 'energy', { digits: 2 }),
       column('Usable', 'usable_kwh', 'energy', { digits: 2 }), { label: 'Method', value: (r) => r.method }, { label: 'Readings', value: (r) => r.readings ?? '' },
-      { label: 'Charge', value: (r) => r.charge || '' }, { label: 'Source', value: (r) => r.source }]);
+      { label: 'Charge', value: (r) => r.charge || '' }, { label: 'Data from', value: (r) => sourceLabel(r) }]);
     const capCsv = csvButton('capacity readings', csv);
     capCsv.disabled = true;
     replace(capBox,
@@ -332,7 +333,8 @@ export async function mount(ctx) {
     const newKwh = byFull && num(c.new_kwh) ? c.new_kwh : null;
     const xOf = (r) => (opt.axis === 'odometer' ? r.odometer_km : r.t_ms);
     const pts = items.filter((r) => num(xOf(r))).sort((a, b) => xOf(a) - xOf(b));
-    const idle = () => replace(read, h('span', { class: 'readout-idle' }, pts.length ? `${tn(pts.length, '{n} reading', '{n} readings')}, ${formatDate(pts[0].t_ms, tz, { weekday: false })} to ${formatDate(pts[pts.length - 1].t_ms, tz, { weekday: false })}.${byFull ? '' : ' The car names no buffer, so these are usable energy, not the full pack.'} Point at a dot for its value.` : ''));
+    const allSrc = labelOf(pts.flatMap((r) => sourcesOf(r)));
+    const idle = () => replace(read, h('span', { class: 'readout-idle' }, pts.length ? `${tn(pts.length, '{n} reading', '{n} readings')}, ${formatDate(pts[0].t_ms, tz, { weekday: false })} to ${formatDate(pts[pts.length - 1].t_ms, tz, { weekday: false })}; ${allSrc.replace(/^D/, 'd').replace(/^I/, 'i')}.${byFull ? '' : ' The car names no buffer, so these are usable energy, not the full pack.'} Point at a dot for its value.` : ''));
     idle();
     capCsv.disabled = !pts.length;
     if (!pts.length) {
@@ -371,7 +373,7 @@ export async function mount(ctx) {
       replace(hoverG, svg('circle', { class: 'bt-dot is-on', cx: p3(X(xOf(on))), cy: p3(Y(on[yKey])) }));
       replace(read, h('span', { class: 'readout-time' }, formatDate(on.t_ms, tz, { weekday: false })), ' ',
         num(on.full_pack_kwh) ? [h('span', null, 'full pack ', h('b', null, format(on.full_pack_kwh, 'energy', { digits: 2 }))), ' '] : null, h('span', null, 'usable ', h('b', null, format(on.usable_kwh, 'energy', { digits: 2 }))),
-        ' ', h('span', null, 'at ', h('b', null, format(on.odometer_km, 'odometer'))), on.readings ? ` (${tn(on.readings, '{n} day', '{n} days')})` : '', on.charge ? ' · click to open the charge' : '');
+        ' ', h('span', null, 'at ', h('b', null, format(on.odometer_km, 'odometer'))), on.readings ? ` (${tn(on.readings, '{n} day', '{n} days')})` : '', on.charge ? ' · click to open the charge' : '', ' ', sourceMark(on, { short: true }));
     });
     area.addEventListener('mouseleave', () => { on = null; replace(hoverG); idle(); });
     area.addEventListener('click', () => { if (on && on.charge) ctx.go(state.buildUrl('charge', { car: car.id, charge: on.charge, period: ctx.state.period })); });
@@ -415,7 +417,7 @@ export async function mount(ctx) {
     const splitCsv = () => downloadCsv(csvFilename(car.name, 'battery energy in'), parts.map(([k, name, v]) => ({ k, name, v, share: total ? (v / total) * 100 : null })),
       [{ label: 'Kind', value: (r) => r.name }, column('Energy', 'v', 'energy', { digits: 1 }), column('Share', 'share', 'percent', { digits: 1 })]);
     replace(lifeBox,
-      head('bt-life-title', 'Lifetime totals', 'whole history'),
+      head('bt-life-title', 'Lifetime totals', Array.isArray(T.sources) && T.sources.length ? `whole history; ${labelOf(T.sources).replace(/^D/, 'd').replace(/^I/, 'i')}` : 'whole history'),
       h('div', { class: 'bt-life-grid' },
         h('div', { class: 'bt-life-col' },
           h('h3', { class: 'bt-sub' }, 'Driving', pageLink2('Driving statistics', 'statistics', 'bh.drive.link_stats')),

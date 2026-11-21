@@ -14,6 +14,7 @@ import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { isValidZone, formatDate, formatDateTime, formatTime, dayKey, formatDayKey } from '../shared/time.js';
 import { pageHead, section, empty, errorView, ago, chip, flag, button, icon, stateMark, note, sep } from '../core/ui.js';
+import { labelOf } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
 import { field, setFieldError, choice } from '../core/form.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
@@ -26,7 +27,9 @@ export const title = () => 'Settings: Cars';
 
 const CHEM = { auto: 'Automatic', lfp: 'LFP', nca_nmc: 'NCA / NMC' };
 const CHEM_LONG = { lfp: 'LFP (lithium iron phosphate)', nca_nmc: 'NCA / NMC (nickel based)' };
-const SOURCE = { can: 'From the car (CAN)', vin: 'From the VIN', owner: 'Typed by an admin', teslamate: 'From a TeslaMate import' };
+const SOURCE = { can: 'From SMO (the car’s CAN bus)', vin: 'From the VIN', owner: 'Typed by an admin', teslamate: 'From a TeslaMate import', tesla_api: 'From the Tesla API' };
+/** A config value's origin: its sources in words (none: an admin typed it), else the old source word. */
+const fromWords = (x) => (!x ? null : Array.isArray(x.sources) ? (x.sources.length ? labelOf(x.sources) : (x.source === 'vin' ? SOURCE.vin : SOURCE.owner)) : SOURCE[x.source] || x.source || null);
 const CONFIG_ROWS = [
   ['trim', 'Trim'], ['drivetrain', 'Drivetrain'], ['performance_package', 'Performance package'], ['pack_kwh_code', 'Pack size code'],
   ['wheel', 'Wheels'], ['paint', 'Paint'], ['roof', 'Roof'], ['spoiler', 'Spoiler'], ['right_hand_drive', 'Right-hand drive'],
@@ -286,7 +289,7 @@ async function mountIndex(ctx) {
     const fixes = (status.fixes || []).filter((f) => f.cause !== 'import_running');
     const box = h('section', { class: 'empty sc-empty', cover: 'web.settings.car.empty-state' },
       h('p', { class: 'empty-title' }, 'No car yet.'),
-      h('p', { class: 'empty-text' }, 'Sentry Mate needs no Tesla account. A car appears here when its CAN Bridge uploads its first log; you name it then.'),
+      h('p', { class: 'empty-text' }, 'A car appears here when its SMO (CAN Bridge) uploads its first log, or once a Tesla account is added in Settings: Integrations and its car matched; you name it then.'),
       howCarsAppear(),
       fixes.length ? h('p', { class: 'note' }, `Now: ${fixes.map((f) => FIX_NOW[f.cause] || f.cause).join(' ')}`) : null);
     ctx.main.append(head, box);
@@ -414,13 +417,13 @@ async function mountCar(ctx) {
   nameField.control.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); nameField.control.blur(); } });
 
   const cfg = car.config || {};
-  const configRows = CONFIG_ROWS.map(([k, label]) => ({ key: k, label, value: cfg[k] ? cfg[k].value : null, source: cfg[k] ? cfg[k].source : null }));
+  const configRows = CONFIG_ROWS.map(([k, label]) => ({ key: k, label, value: cfg[k] ? cfg[k].value : null, source: fromWords(cfg[k]) }));
   const configTable = dataTable(ctx, {
     rows: configRows, itemName: ['detail', 'details'], label: 'What the car reports about itself',
     columns: [
       { key: 'label', label: 'Detail', th: true, cell: (r) => r.label, value: (r) => r.label },
       { key: 'value', label: 'Value', cell: (r) => (r.value == null ? h('span', { class: 'is-missing' }, 'not sent yet') : yesNo(r.value)), value: (r) => yesNo(r.value) },
-      { key: 'source', label: 'From', cell: (r) => (r.source ? h('span', { class: 'cell-sub' }, SOURCE[r.source] || r.source) : '—'), value: (r) => (r.source ? SOURCE[r.source] || r.source : '') },
+      { key: 'source', label: 'From', cell: (r) => (r.source ? h('span', { class: 'cell-sub' }, r.source) : '—'), value: (r) => r.source || '' },
     ],
     csv: { filename: `${car.name || car.id}-car-details.csv` },
   });
@@ -724,7 +727,7 @@ async function mountCar(ctx) {
       h('div', { class: 'sc-stack' },
         h('p', { class: 'sc-hint' }, icon('info', 'icon sc-hint-icon'), ' What the car says about Supercharging: ', access && access.value != null
           ? h('strong', null, yesNo(access.value)) : h('span', { class: 'is-missing' }, 'not sent yet'),
-        access && access.source ? h('span', { class: 'sc-quiet' }, ` (${SOURCE[access.source] || access.source})`) : null,
+        fromWords(access) ? h('span', { class: 'sc-quiet' }, ` (${fromWords(access)})`) : null,
         '. The car does not say since when, so the dates are yours.'),
         fsBox)),
     h('p', { class: 'sc-more' }, h('a', { class: 'link-arrow', href: ctx.link('charges') }, 'Charges and their cost', icon('arrowRight'))));

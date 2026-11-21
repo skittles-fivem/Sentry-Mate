@@ -27,6 +27,7 @@ import { dataTable } from '../core/table.js';
 import { confirmDialog } from '../core/dialog.js';
 import { stackedCharts } from '../core/chart.js';
 import { zoneLabel, count } from '../core/format.js';
+import { sourceMark } from '../core/sources.js';
 
 export const id = 'health';
 export const css = true;
@@ -90,9 +91,8 @@ const KIND_TEXT = {
   places: 'Places, prices and settings.',
   geocode: 'Addresses already looked up, so each is looked up once.',
 };
-const SOURCE = { can: 'From the car', teslamate: 'Imported' };
 const VERSION_SOURCE = {
-  teslamate: 'imported from TeslaMate', owner: 'typed by an admin', build_match: 'the same module builds as a named update',
+  teslamate: 'imported from TeslaMate', tesla_api: 'the Tesla API', owner: 'typed by an admin', build_match: 'the same module builds as a named update',
 };
 
 /** A signal's unit (as its DBC names it) -> the kind of shared/units.js, so it follows the person's units. */
@@ -366,41 +366,72 @@ async function mountCar(ctx) {
       { key: 'cause', label: 'Cause', cell: (g) => { const c = GAP_CAUSES[g.cause] || [g.cause || 'Not known', '']; return [h('span', null, c[0]), h('span', { class: 'cell-sub' }, g.gap_reason ? SPAN_REASONS[g.gap_reason] || g.gap_reason : c[1])]; } },
       { key: 'jump', label: 'Odometer moved', num: true, cell: (g) => q(g.odometer_jump_km, 'distance', { why: 'not known' }) },
       { key: 'where', label: 'Where', cell: (g) => [h('span', null, g.from_place?.name || 'No known place'), g.to_place && g.to_place.id !== g.from_place?.id ? h('span', { class: 'cell-sub' }, `to ${g.to_place.name}`) : null] },
-      { key: 'source', label: 'Source', cell: (g) => SOURCE[g.source] || g.source || DASH },
+      { key: 'source', label: 'Data from', cell: (g) => sourceMark(g, { short: true }) || DASH },
     ],
     empty: () => empty({ title: 'No gap in this period.', text: 'Every moment is accounted for. Choose a longer period to look further back.' }),
   });
   ctx.main.append(section({ title: 'Gaps in the period', note: 'time with no usable data', cls: 'hl-block', id: 'hl-gaps' }, gapsTable.el));
 
+  /* ---------------------------------------------------------------- the Tesla API input for this car */
+
+  const TESLA_MODE = {
+    off: 'Off: not matched, left out, or its account is paused', watching_list: 'Watching the car list (asleep or offline; never woken)',
+    online_idle: 'Awake, idle: read at the parked pace', letting_sleep: 'Letting it sleep (left alone so it can fall asleep)',
+    charging: 'Charging: read at the charging pace', driving: 'Driving: read at the driving pace', backoff: 'Waiting after errors from Tesla',
+  };
+  const teslaBox = h('div', { class: 'hl-tesla' });
+  const teslaLink = () => h('a', { class: 'link-arrow', href: `${state.buildUrl('settings-integrations')}#tesla` }, 'Tesla account settings', icon('arrowRight'));
+  const loadTesla = guarded(ctx, 'Could not read the Tesla API input', (v) => replace(teslaBox, v), async () => {
+    if (!admin) { replace(teslaBox, note('What the server asks of the Tesla API for this car is shown to admins.')); return; }
+    const st = await ctx.api.get('integrations/tesla/status');
+    if (!ctx.alive()) return;
+    const mine = (st.items || []).filter((x) => x.car === cid);
+    if (!mine.length) {
+      replace(teslaBox, note(['This car is not read from a Tesla account: its data comes from SMO', (car.sources || []).some((x) => x.kind === 'import') ? ' and an import' : '', '. ', teslaLink()]));
+      return;
+    }
+    replace(teslaBox, ...mine.map((x) => facts([
+      ['Now', TESLA_MODE[x.mode] || x.mode, x.mode === 'backoff' && x.next_poll_ms ? `Nothing is asked until ${formatTime(x.next_poll_ms, tz)}.` : null],
+      ['Tesla says', { online: 'Online', asleep: 'Asleep', offline: 'Offline' }[x.car_state] || 'Not known', x.streaming ? 'Tesla’s live stream runs beside the reads.' : null],
+      ['Last asked', x.last_poll_ms ? ago(x.last_poll_ms) : 'not yet', x.next_poll_ms ? `Next at ${formatTime(x.next_poll_ms, tz)}.` : null],
+      ['Newest data', x.last_data_ms ? ago(x.last_data_ms) : 'none yet'],
+      ['Requests today', formatNumber(x.polls_today || 0), 'For its whole Tesla account.'],
+      ['Last error', x.last_error ? (x.last_error.message || x.last_error.code) : 'None'],
+    ], { cls: 'hl-tesla-facts' })), h('p', { class: 'hl-tesla-link' }, teslaLink()));
+  });
+  ctx.main.append(section({ title: 'Tesla API input', note: 'the second live input, beside SMO', cls: 'hl-block', id: 'hl-tesla' }, teslaBox));
+
   /* ---------------------------------------------------------------- totals and rows kept */
 
   const totalsBox = h('div', { class: 'hl-totals' }, loadingBlock(3));
   const rowsBox = h('div', { class: 'hl-rows' });
-  ctx.main.append(section({ title: 'What is recorded', note: 'all time, not the period; from the car and imported', cls: 'hl-block', id: 'hl-totals' },
+  ctx.main.append(section({ title: 'What is recorded', note: 'all time, not the period; from SMO, the Tesla API and imports', cls: 'hl-block', id: 'hl-totals' },
     totalsBox, h('h3', { class: 'hl-sub hl-sub-gap' }, 'Rows kept'), rowsBox));
 
   const loadTotals = guarded(ctx, 'Could not load the totals', (v) => { replace(totalsBox, v); replace(rowsBox, note('The row counts come with the totals: press Try again above.')); }, async () => {
-    const [all, can, tm, upd] = await Promise.all([
+    const [all, can, ta, tm, upd] = await Promise.all([
       ctx.api.get(base('totals'), { source: 'all' }),
-      ctx.api.get(base('totals'), { source: 'can' }),
-      ctx.api.get(base('totals'), { source: 'teslamate' }),
+      ctx.api.get(base('totals'), { source: 'smo' }),
+      ctx.api.get(base('totals'), { source: 'tesla_api' }),
+      ctx.api.get(base('totals'), { source: 'import' }),
       ctx.api.get(base('updates'), { limit: 1 }).catch(() => null),
     ]);
-    if (ctx.alive()) drawTotals(all, can, tm, upd && upd.summary);
+    if (ctx.alive()) drawTotals(all, can, ta, tm, upd && upd.summary);
   });
 
-  const split = (a, b, kind) => `${format(a ?? 0, kind)} from the car, ${format(b ?? 0, kind)} imported.`;
+  // a row seen by SMO and the Tesla API counts on both sides
+  const split = (a, t, b, kind) => `${format(a ?? 0, kind)} with data from SMO, ${format(t ?? 0, kind)} from the Tesla API, ${format(b ?? 0, kind)} imported.`;
 
-  function drawTotals(all, can, tm, sm) {
+  function drawTotals(all, can, ta, tm, sm) {
     sm = sm || {};
     const vs = VERSION_SOURCE[sm.current_version_source];
     replace(totalsBox, figures([
-      figure('Logged distance', q(all.distance_km, 'distance'), `The sum of every recorded drive. ${split(can.distance_km, tm.distance_km, 'distance')}`, { cover: 'dbinfo.stat.logged_distance' }),
+      figure('Logged distance', q(all.distance_km, 'distance'), `The sum of every recorded drive. ${split(can.distance_km, ta.distance_km, tm.distance_km, 'distance')}`, { cover: 'dbinfo.stat.logged_distance' }),
       figure('Odometer', q(all.odometer_last_km, 'odometer', { why: 'not sent yet' }), all.odometer_last_km != null && all.odometer_last_ms != null ? `Last read ${when(all.odometer_last_ms, tz)}; the car sends it while awake.` : 'The car sends it while awake.', { cover: 'dbinfo.stat.odometer' }),
       figure('Not logged', q(all.not_logged_km, 'distance', { why: 'needs two readings' }), 'The odometer’s change since the first reading minus the logged distance: driving nobody recorded.'),
-      figure('Drives', q(all.drives, 'count'), split(can.drives, tm.drives, 'count'), { cover: 'dbinfo.stat.drive_count' }),
-      figure('Charges', q(all.charges, 'count'), split(can.charges, tm.charges, 'count'), { cover: 'dbinfo.stat.charge_count' }),
-      figure('Software updates', q(all.updates, 'count'), `${split(can.updates, tm.updates, 'count')} The car’s own are seen by its update status and by changed module builds.`, { cover: 'dbinfo.stat.update_count' }),
+      figure('Drives', q(all.drives, 'count'), split(can.drives, ta.drives, tm.drives, 'count'), { cover: 'dbinfo.stat.drive_count' }),
+      figure('Charges', q(all.charges, 'count'), split(can.charges, ta.charges, tm.charges, 'count'), { cover: 'dbinfo.stat.charge_count' }),
+      figure('Software updates', q(all.updates, 'count'), `${split(can.updates, ta.updates, tm.updates, 'count')} The car’s own are seen by its update status and by changed module builds.`, { cover: 'dbinfo.stat.update_count' }),
       figure('Software version', sm.current_version ? h('a', { href: ctx.link('software') }, sm.current_version) : h('span', { class: 'hl-unknown' }, 'Not known'),
         sm.current_version
           ? `${vs ? `From ${vs}` : 'Known'}${sm.current_version_since_ms != null ? `, since ${when(sm.current_version_since_ms, tz)}` : ''}.${sm.build_changed_since != null ? ' The software changed after that and the new version has no name yet.' : ''}`
@@ -409,18 +440,19 @@ async function mountCar(ctx) {
     ], { cls: 'hl-tot-figs' }));
 
     const rows = [
-      { kind: 'Drives', what: 'One row per drive, start to end', can: can.drives, teslamate: tm.drives, page: 'drives' },
-      { kind: 'Charges', what: 'One row per charge, with its curve kept apart', can: can.charges, teslamate: tm.charges, page: 'charges' },
-      { kind: 'Software updates', what: 'One row per update', can: can.updates, teslamate: tm.updates, page: 'software' },
-    ].map((r) => ({ ...r, total: (r.can || 0) + (r.teslamate || 0) }));
+      { kind: 'Drives', what: 'One row per drive, start to end', can: can.drives, api: ta.drives, teslamate: tm.drives, total: all.drives, page: 'drives' },
+      { kind: 'Charges', what: 'One row per charge, with its curve kept apart', can: can.charges, api: ta.charges, teslamate: tm.charges, total: all.charges, page: 'charges' },
+      { kind: 'Software updates', what: 'One row per update', can: can.updates, api: ta.updates, teslamate: tm.updates, total: all.updates, page: 'software' },
+    ];
     const t = dataTable(ctx, {
       rows, itemName: ['kind of row', 'kinds of row'], sort: { key: 'total', dir: 'desc' }, cls: 'hl-counts', label: 'Rows kept',
       cover: 'dbinfo.table.row_counts',
-      caption: 'Exact counts, kept up to date as rows change. Where imported and car history overlap, both are counted here; the lists show one side.',
-      csv: { parts: [car.name || cid, 'rows kept'], columns: [{ label: 'Kind', value: (r) => r.kind }, column('From the car', 'can'), column('Imported', 'teslamate'), column('Rows', 'total')] },
+      caption: 'Exact counts, kept up to date as rows change. A row SMO and the Tesla API both saw counts in both columns; where imported and live history overlap, both are counted here and the lists show one side.',
+      csv: { parts: [car.name || cid, 'rows kept'], columns: [{ label: 'Kind', value: (r) => r.kind }, column('Data from SMO', 'can'), column('Data from the Tesla API', 'api'), column('Imported', 'teslamate'), column('Rows', 'total')] },
       columns: [
         { key: 'kind', label: 'Kind', th: true, sort: true, cover: 'dbinfo.rows.table_name', value: (r) => r.kind, cell: (r) => [h('a', { class: 'cell-main', href: ctx.link(r.page) }, r.kind), h('span', { class: 'cell-sub' }, r.what)] },
-        { key: 'can', label: 'From the car', num: true, sort: true, cell: (r) => q(r.can ?? 0, 'count') },
+        { key: 'can', label: 'SMO', num: true, sort: true, hint: 'Rows with data from SMO', cell: (r) => q(r.can ?? 0, 'count') },
+        { key: 'api', label: 'Tesla API', num: true, sort: true, hint: 'Rows with data from the Tesla API', cell: (r) => q(r.api ?? 0, 'count') },
         { key: 'teslamate', label: 'Imported', num: true, sort: true, cell: (r) => q(r.teslamate ?? 0, 'count') },
         { key: 'total', label: 'Rows', num: true, sort: true, cover: 'dbinfo.rows.row_count', cell: (r) => h('b', null, q(r.total, 'count')) },
       ],
@@ -445,7 +477,7 @@ async function mountCar(ctx) {
       columns: [
         { key: 'date', label: 'Day', th: true, cell: (r) => h('a', { class: 'cell-main', href: state.buildUrl('timeline', { car: cid, period: { from: dayStart(r.date, tz), to: dayStart(r.date, tz) + DAY } }), title: 'Open this day on the timeline' }, formatDayKey(r.date)) },
         { key: 'series', label: 'What', cell: (r) => labels[r.series] || r.series },
-        { key: 'source', label: 'Source', cell: (r) => SOURCE[r.source] || r.source },
+        { key: 'source', label: 'Data from', cell: (r) => sourceMark(r, { short: true }) || DASH },
         { key: 'bytes', label: 'On disk', num: true, cell: (r) => bytes(r.bytes) },
       ],
       empty: () => empty({ title: 'No stored day yet.', text: 'A day shows here once a log for it has arrived.' }),
@@ -596,7 +628,7 @@ async function mountCar(ctx) {
   async function reloadAll(btn) {
     if (btn) btn.disabled = true;
     try {
-      const failed = await settleAll([loadHealth(), gapsTable.reload().then(() => true), loadTotals(), loadStorage(), loadSignals()]);
+      const failed = await settleAll([loadHealth(), gapsTable.reload().then(() => true), loadTesla(), loadTotals(), loadStorage(), loadSignals()]);
       aside.paint();
       if (btn && ctx.alive()) reloadedFlash(ctx, failed);
     } catch (e) {
@@ -612,7 +644,7 @@ async function mountCar(ctx) {
     aside.paint();
   });
 
-  await settleAll([loadHealth(), gapsTable.load(), loadTotals(), loadStorage(), loadSignals()]);
+  await settleAll([loadHealth(), gapsTable.load(), loadTesla(), loadTotals(), loadStorage(), loadSignals()]);
   if (!ctx.alive()) return {};
   // start with the battery level drawn, so the chart is there before anything is chosen
   const first = signals.find((s) => s.series === 'soc_display' && s.has_series) || signals.find((s) => s.has_series);
@@ -777,6 +809,10 @@ async function mountSystem(ctx) {
           ['Timeline rules', h('span', { class: 'mono' }, String(v.timeline_rules ?? DASH)), 'When they change, drives and states are rebuilt from the logs.'],
           ['Import mapping', h('span', { class: 'mono' }, String(v.import_mapping ?? DASH)), 'How imported TeslaMate rows are read.'],
           ['Last housekeeping', sh.housekeeping_last_ms != null ? ago(sh.housekeeping_last_ms) : 'not yet', 'Checks, compaction and the daily storage figure.'],
+          sh.tesla ? ['Tesla API input', sh.tesla.accounts ? `${formatNumber(sh.tesla.accounts)} ${sh.tesla.accounts === 1 ? 'account' : 'accounts'}, ${formatNumber(sh.tesla.cars ?? 0)} ${sh.tesla.cars === 1 ? 'car' : 'cars'} read` : 'Off: no Tesla account',
+            [sh.tesla.accounts ? `${formatNumber(sh.tesla.requests_today ?? 0)} requests to Tesla today. ` : 'No connection to Tesla is made until an account is added. ',
+              sh.tesla.last_error ? `Last error: ${sh.tesla.last_error.message || sh.tesla.last_error.code}. ` : '',
+              h('a', { href: `${state.buildUrl('settings-integrations')}#tesla` }, 'Tesla account')]] : null,
         ])),
         h('div', null, h('h3', { class: 'hl-sub' }, 'Memory and caches'),
           h('div', { class: 'hl-mem' },

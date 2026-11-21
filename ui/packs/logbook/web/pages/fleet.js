@@ -12,6 +12,7 @@ import { formatTime, formatDate, dayKey } from '../shared/time.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { pageHead, stateMark, stateLabel, ago, batteryBar, icon, empty, flag, sep, q, errorWords, button } from '../core/ui.js';
+import { sourceMark } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
 import { currentPrefs } from '../core/prefs.js';
 import { savePref } from '../core/frame.js';
@@ -238,6 +239,7 @@ export async function mount(ctx) {
       cell: (c) => [
         h('a', { class: 'cell-main car-name', href: state.buildUrl('car', { car: c.id, period: null }) }, nameOf(c)),
         h('span', { class: 'cell-sub' }, [c.year, c.model, c.trim].filter(Boolean).join(' '), sep(), h('span', { class: 'mono' }, c.vin_prefix || c.id)),
+        sourceMark(c, { block: true, short: true, cls: 'fleet-src' }),
         c.name ? null : h('span', { class: 'cell-sub' }, h('a', { href: state.buildUrl('settings-cars', { car: c.id }) }, 'Give it a name'))] },
     { key: 'state', label: 'State', cls: 'c-state', value: (c) => c.now?.state,
       cell: (c) => [stateMark(c.now?.state, { stale: !!c.now?.stale }), h('span', { class: 'cell-sub' }, sinceText(c))] },
@@ -333,11 +335,13 @@ export async function mount(ctx) {
     const v = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : x);
     const now = { ...car.now };
     const before = now.state, staleBefore = !!now.stale;
-    for (const k of ['state', 'since_ms', 'at_ms', 'received_ms', 'stale', 'soc_pct', 'range_km', 'ideal_range_km']) if (k in n) now[k] = v(n[k]);
+    // a pair that comes with only a newer at_ms kept its value: leave it as it is
+    const has = (o, k) => k in o && !(o[k] && typeof o[k] === 'object' && !Array.isArray(o[k]) && !('value' in o[k]));
+    for (const k of ['state', 'since_ms', 'at_ms', 'received_ms', 'stale', 'soc_pct', 'range_km', 'ideal_range_km']) if (has(n, k)) now[k] = v(n[k]);
     if (n.location && 'place' in n.location) now.place = v(n.location.place);
     if (n.charge) {
-      if ('plugged' in n.charge) now.plugged = v(n.charge.plugged);
-      if ('power_kw' in n.charge) now.charge_power_kw = v(n.charge.power_kw);
+      if (has(n.charge, 'plugged')) now.plugged = v(n.charge.plugged);
+      if (has(n.charge, 'power_kw')) now.charge_power_kw = v(n.charge.power_kw);
     }
     if (now.state !== 'charging') now.charge_power_kw = null;
     if (now.state !== before || !!now.stale !== staleBefore) refreshSummary();
@@ -376,7 +380,7 @@ function fixList(fixes, isAdmin) {
 function loadStatus(ctx, box, draw) {
   const run = () => {
     box.replaceChildren(h('p', { class: 'note' }, 'Checking set-up…'));
-    return ctx.api.get('setup/status').then((s) => box.replaceChildren(...[].concat(draw((s && s.fixes) || []))),
+    return ctx.api.get('setup/status').then((s) => box.replaceChildren(...[].concat(draw((s && s.fixes) || [], s || {}))),
       (err) => { if (!ctx.signal.aborted) box.replaceChildren(partError(err, 'Could not check why a car might be missing', run)); });
   };
   box.done = run();
@@ -389,10 +393,19 @@ function missingCars(ctx, isAdmin) {
     : h('p', { class: 'note-serif' }, 'Nothing is waiting: every upload token was used and every CAN Bridge key belongs to a car.')));
   const el = h('section', { class: 'block missing-cars', 'aria-labelledby': 'missing-title', cover: ['cars.empty.title', 'cars.empty.hint'] },
     h('div', { class: 'block-head' }, h('h2', { class: 'label', id: 'missing-title' }, 'Missing a car?')),
-    h('p', { class: 'note' }, 'A car appears here when its CAN Bridge uploads its first log; you name it afterwards.'),
+    h('p', { class: 'note' }, 'A car appears here when its SMO (CAN Bridge) uploads its first log, or once a Tesla account is added and its car matched (Settings: Integrations); you name it afterwards.'),
     status);
   el.done = status.done;
   return el;
+}
+
+/** The Tesla account as another way in: how many are added, and where to add or match one. */
+function teslaLine(s, isAdmin) {
+  const n = s && s.tesla_accounts;
+  if (n == null) return isAdmin ? null : h('p', { class: 'empty-text fleet-tesla' }, 'An admin can also add a Tesla account, so the cars are read from the Tesla API.');
+  if (n > 0) return h('p', { class: 'empty-text fleet-tesla' }, `${n === 1 ? 'One Tesla account is' : `${n} Tesla accounts are`} added: a car shows once it is matched there. `,
+    isAdmin ? h('a', { class: 'link-arrow', href: '/settings/integrations#tesla' }, 'Match its cars', icon('arrowRight')) : null);
+  return isAdmin ? h('p', { class: 'empty-action fleet-tesla' }, h('a', { class: 'button button-quiet', href: '/settings/integrations#tesla' }, 'Or add a Tesla account in Settings: Integrations')) : null;
 }
 
 /** No car shows: say exactly why, and link the fix (for an admin). */
@@ -402,10 +415,11 @@ async function emptyFleet(ctx, isAdmin) {
     pageHead({ eyebrow: 'The register', title: 'Fleet', deck: 'No car shows yet.' }),
     h('section', { class: 'empty fleet-empty', cover: ['cars.empty.title', 'cars.empty.hint'] },
       h('p', { class: 'empty-title' }, 'No car is being logged yet.'),
-      h('p', { class: 'empty-text' }, 'A car appears here when its CAN Bridge uploads its first log. You name it afterwards.'),
-      loadStatus(ctx, status, (fixes) => (fixes.length ? fixList(fixes, isAdmin)
+      h('p', { class: 'empty-text' }, 'A car appears here when its SMO (CAN Bridge) uploads its first log, or, as a second way, when a Tesla account is added and its car matched: then the Tesla API is read for it. You name it afterwards.'),
+      loadStatus(ctx, status, (fixes, s) => [fixes.length ? fixList(fixes, isAdmin)
         : isAdmin ? h('p', { class: 'empty-action' }, h('a', { class: 'button', href: '/settings/cars' }, 'Make an upload token in Settings: Cars'))
-          : h('p', { class: 'empty-text' }, 'Ask an admin of this Sentry Mate to make an upload token for the car.')))));
+          : h('p', { class: 'empty-text' }, 'Ask an admin of this Sentry Mate to make an upload token for the car.'),
+        teslaLine(s, isAdmin)])));
   await status.done;
   ctx.ready();
   return {};

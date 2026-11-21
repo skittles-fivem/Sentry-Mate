@@ -15,6 +15,7 @@ import { downloadCsv, column, timeColumn } from '../shared/csv.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { pageHead, q, plus, figure, icon, empty, errorView, loadingBlock, button, stateLabel, flag, sep } from '../core/ui.js';
+import { sourceMark, sourceLabel, isImported, teslaOnly, ESTIMATED_WHY } from '../core/sources.js';
 import { activityStrip, placeLink, AWAKE_WORDS, GAP_WORDS, STRIP_NAMES } from '../core/journal.js';
 import { makeMap, boundsOf } from '../core/map.js';
 import { zoneLabel } from '../core/format.js';
@@ -59,7 +60,7 @@ const ROW_COVERS = ['timeline.table', 'projects.dash', 'shots.timeline', 'shots.
   'timeline.col.soc_diff', 'timeline.col.temp',
   'timeline.link.trip_span', 'timeline.link.slot_details', 'timeline.link.geofence_start', 'timeline.link.geofence_end', 'timeline.link.place_cells_other_rows'];
 
-const VERSION_SOURCE = { teslamate: 'from the import', owner: 'typed by the owner', build_match: 'matched by its build' };
+const VERSION_SOURCE = { teslamate: 'from the import', tesla_api: 'by the Tesla API', owner: 'typed by the owner', build_match: 'matched by its build' };
 
 export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz;
@@ -210,7 +211,7 @@ export async function mount(ctx) {
       timeColumn('Start', 'start_ms', tz),
       timeColumn('End', (s) => s.end_ms, tz),
       column('Minutes', (s) => ((s.end_ms ?? now) - s.start_ms) / 60000, null),
-      { label: 'Source', value: (s) => s.source || '' },
+      { label: 'Data from', value: (s) => sourceLabel(s) },
     ]);
   });
 
@@ -425,7 +426,7 @@ function entry(r, { car, tz, now, period }) {
   const going = r.end_ms == null;
   const end = r.end_ms ?? now;
   const len = r.duration_ms ?? end - r.start_ms;
-  const estimated = r.energy_basis === 'estimated' ? flag('Estimated', { kind: 'estimated' }) : null;
+  const estimated = r.energy_basis === 'estimated' ? flag('Estimated', { kind: 'estimated', title: teslaOnly(r) ? ESTIMATED_WHY : 'Worked out, not measured at the pack' }) : null;
   let cls = r.kind, detail = null, title = [], figs = [], extra = [];
 
   if (r.kind === 'drive') {
@@ -503,10 +504,11 @@ function entry(r, { car, tz, now, period }) {
       h('span', { class: 'tl-end' }, endTime ? `to ${endTime}` : [h('span', { class: 'tl-end-day' }, `to ${formatDate(r.end_ms, tz, { weekday: false, now })},`), formatTime(r.end_ms, tz)])),
     h('div', { class: 'tl-mark', 'aria-hidden': 'true' }),
     h('div', { class: 'tl-body' },
-      h('p', { class: 'tl-kind' }, KIND_WORD[r.kind] || r.kind, going ? ', still going' : '', r.source === 'teslamate' ? [' ', flag('Imported')] : null),
+      h('p', { class: 'tl-kind' }, KIND_WORD[r.kind] || r.kind, going ? ', still going' : '', isImported(r) ? [' ', flag('Imported')] : null),
       h('p', { class: 'tl-title' }, title),
       h('dl', { class: 'tl-figs' }, figs.filter(Boolean)),
       extra,
+      sourceMark(r, { block: true, cls: 'tl-src' }),
       h('p', { class: 'tl-links' },
         detail ? h('span', { class: 'tl-detail', cover: 'timeline.link.slot_details' }, detail) : null,
         h('a', { href: tripHref, cover: 'timeline.link.trip_span' }, 'Trip for this span'))));

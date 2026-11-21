@@ -19,6 +19,7 @@ import { pageHead, q, figure, icon, sep, empty, errorWords, flag, chip } from '.
 import { makeMap, coordsText } from '../core/map.js';
 import { stackedCharts, niceStep } from '../core/chart.js';
 import { placeLink } from '../core/journal.js';
+import { sourceMark, sourceLabel, isImported, isEstimated, ESTIMATED_WHY } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
 import { field, form, choice, setFieldError } from '../core/form.js';
 import { confirmDialog } from '../core/dialog.js';
@@ -108,9 +109,11 @@ export async function mount(ctx) {
     title: where,
     deck: [`${formatTime(c.start_ms, tz)} – ${going ? 'now' : formatTime(c.end_ms, tz)}`, sep(), formatDuration(c.charging_ms), ' charging', sep(),
       kindChip(c),
-      c.source === 'teslamate' ? [' ', flag('Imported', { kind: 'estimated', title: 'Imported from TeslaMate: totals and a coarse curve' })] : null,
+      isImported(c) ? [' ', flag('Imported', { kind: 'estimated', title: `${sourceLabel(c)}: totals and a coarse curve` })] : null,
+      !isImported(c) && isEstimated(c) ? [' ', flag('Estimated', { kind: 'estimated', title: ESTIMATED_WHY })] : null,
       going ? [' ', flag('In progress', { title: 'Figures up to now' })] : null,
-      c.has_gaps ? [' ', flag('Data missing', { kind: 'warn', title: 'Part of this charge has no data; see the notes under the charts' })] : null],
+      c.has_gaps ? [' ', flag('Data missing', { kind: 'warn', title: 'Part of this charge has no data; see the notes under the charts' })] : null,
+      sourceMark(c, { block: true, cls: 'charge-head-src' })],
     aside: h('nav', { class: 'step-nav', 'aria-label': 'Other charges' },
       step(link(c.prev), 'Earlier', -1), step(link(c.next), 'Later', 1),
       h('a', { class: 'button button-quiet', href: asTrip, title: 'This charge’s span on the Trip page' }, 'As a trip')),
@@ -188,7 +191,7 @@ export async function mount(ctx) {
       costEl),
     h('div', { class: 'charge-col charge-col-b' },
     h('section', { class: 'along', 'aria-labelledby': 'along-title' },
-      h('div', { class: 'along-head' }, h('h2', { class: 'label', id: 'along-title' }, 'During the charge', h('span', { class: 'label-note' }, s ? (s.step_ms > 1000 ? `one reading per ${formatDuration(s.step_ms)}` : 'one reading a second') : null)),
+      h('div', { class: 'along-head' }, h('h2', { class: 'label', id: 'along-title' }, 'During the charge', h('span', { class: 'label-note' }, s ? [s.step_ms > 1000 ? `one reading per ${formatDuration(s.step_ms)}` : 'one reading a second', (s.sources && s.sources.length) || s.source_label ? `; ${sourceLabel(s)}` : ''] : null)),
         h('div', { class: 'along-actions' }, resetBtn, csvBtn)),
       readout, selected,
       h('h3', { class: 'chart-group' }, 'Battery, power and temperatures'), chargeCharts,
@@ -385,7 +388,7 @@ export async function mount(ctx) {
     csvBtn.title = 'Nothing to download: the readings could not be loaded';
     replace(selected);
   } else {
-    replace(chargeCharts, empty({ title: 'No readings during this charge.', text: c.source === 'teslamate' ? 'Imported charges keep only their totals; the figures above are what there is.' : 'The log for this charge holds no samples. The Data health page shows whether its log arrived and passed its check.' }));
+    replace(chargeCharts, empty({ title: 'No readings during this charge.', text: isImported(c) ? 'Imported charges keep only their totals; the figures above are what there is.' : 'The log for this charge holds no samples. The Data health page shows whether its log arrived and passed its check.' }));
     replace(supplyCharts);
     replace(selected);
   }
@@ -460,7 +463,7 @@ function kindChip(c) {
 /** The figures of the charge; each blank one says why. */
 function chargeFigures(c, { tz, going, end }) {
   const dc = c.kind === 'dc';
-  const imported = c.source === 'teslamate';
+  const imported = isImported(c);
   // rated or ideal: the charge keeps rated range only, so say which one is shown
   const rk = (f) => { const k = rangeField(f); return c[k] != null ? k : f; };
   const rLabel = rangeField('start_range_km') !== 'start_range_km' && c[rangeField('start_range_km')] == null ? 'Rated range' : rangeLabel();
@@ -476,7 +479,7 @@ function chargeFigures(c, { tz, going, end }) {
   const toFull = c.to_full_kwh ?? c.energy_to_complete_kwh ?? null;
   return [
     figure('Charging time', formatDuration(c.charging_ms), [going ? `so far, up to ${formatTime(end, tz)}; ` : '', c.plugged_ms != null ? ['plugged in ', formatDuration(c.plugged_ms), ', first to last second of charging'] : 'first to last second of charging'], { cover: 'cd.stat.duration' }),
-    figure('Energy added', q(c.energy_added_kwh, 'energy', { why: 'not recorded' }), imported ? 'into the pack; imported, estimated from range' : 'into the pack, measured at the pack (volts × amps)', { cover: 'cd.stat.energy_added' }),
+    figure('Energy added', q(c.energy_added_kwh, 'energy', { why: 'not recorded' }), imported ? 'into the pack; imported, estimated from range' : isEstimated(c) ? 'into the pack; estimated from the Tesla API’s power readings' : 'into the pack, measured at the pack (volts × amps)', { cover: 'cd.stat.energy_added' }),
     dc
       ? figure('Energy drawn', q(null, 'energy', { why: 'unknown on DC' }), c.dc_inlet_kwh != null ? ['a fast charger’s grid side is out of sight; ', format(c.dc_inlet_kwh, 'energy'), ' reached the car’s inlet', c.fast_charger && c.fast_charger.billed_kwh != null ? [', billed ', format(c.fast_charger.billed_kwh, 'energy')] : ''] : 'a fast charger’s grid side is out of sight', { cover: 'cd.stat.energy_used' })
       : figure('Energy drawn', q(c.energy_grid_kwh, 'energy', { why: imported ? 'not in the imported row' : 'the car did not report it' }), c.losses_kwh != null ? ['from the AC line; ', format(c.losses_kwh, 'energy'), ' lost on the way in'] : 'from the AC line, by the car’s charger', { cover: 'cd.stat.energy_used' }),

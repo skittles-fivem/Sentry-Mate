@@ -218,12 +218,18 @@ function drawNotices() {
     h('div', { class: 'wrap notice-row' },
       icon(n.level === 'info' ? 'info' : 'warning', 'icon notice-icon'),
       h('p', { class: 'notice-text' }, n.message),
-      n.fix_link ? h('a', { class: 'notice-fix', href: n.fix_link }, fixWords(n.fix_link), icon('arrowRight')) : null,
+      n.fix_link ? h('a', { class: 'notice-fix', href: fixHref(n) }, /^tesla_/.test(n.code || '') ? 'Open the Tesla account' : fixWords(n.fix_link), icon('arrowRight')) : null,
       h('button', { type: 'button', class: 'notice-close', 'aria-label': 'Hide this notice for now', onclick: () => {
         try { const s = dismissed(); s.add(`${n.code}:${n.since_ms}`); sessionStorage.setItem(DISMISS_KEY, JSON.stringify([...s])); } catch { /* fine */ }
         drawNotices();
       } }, icon('close'))))));
   drawFooter();
+}
+/** A Tesla account's notice opens that account on Settings: Integrations (#tesla-<id>). */
+function fixHref(n) {
+  const acc = n && n.detail && n.detail.account;
+  if (/^tesla_/.test(n.code || '') && acc && /^[A-Za-z0-9_-]+$/.test(acc)) return `${String(n.fix_link).split('#')[0]}#tesla-${acc}`;
+  return n.fix_link;
 }
 function fixWords(link) {
   const page = state.parseUrl(link).page;

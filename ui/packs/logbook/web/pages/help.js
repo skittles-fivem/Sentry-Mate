@@ -41,7 +41,7 @@ const QA = [
     admin: { you: 'Make an upload token for the car in Settings: Cars, enter it in the CAN Bridge app, then trust the key it sends.', watch: 'An admin makes the upload token and trusts the key.' },
     page: 'settings-cars' },
   { id: 'q-estimated', q: 'Why is a figure marked estimated?',
-    a: 'Figures from the CAN bus are measured: energy is volts times amps from the pack. History imported from TeslaMate carries no such signals, so its energy and costs are worked out and marked estimated, and the rows say where they came from.',
+    a: 'Figures from SMO (the car’s CAN bus) are measured: energy is volts times amps from the pack. A drive or charge only the Tesla API saw has its energy summed from the power Tesla reports every few seconds to a minute, and history imported from TeslaMate carries no such signals at all; both are marked estimated, and every row says where it came from (Data from SMO, Data from the Tesla API, Imported from TeslaMate).',
     page: 'import' },
   { id: 'q-units', q: 'How do I change units, range or the size of the text?',
     a: 'Use Aa in the masthead for the quick choices, or Settings: Display and units for all of them. Your choices are yours; an admin sets the defaults for new accounts.',
@@ -53,7 +53,7 @@ const QA = [
     a: 'Every table and chart has a Download CSV button. The file holds every row that matches the period and filters, not only the rows on screen, and its column names carry the units.',
     page: 'drives' },
   { id: 'q-car', q: 'Does Sentry Mate ever talk to the car or to Tesla?',
-    a: 'No. It only reads what the CAN Bridge recorded. It never wakes the car, sends commands or signs in to a Tesla account, and it asks nothing of other servers unless an admin turns that on in Settings: Integrations.',
+    a: 'Out of the box, no: it only reads what SMO (the CAN Bridge) recorded. An admin may add a Tesla account in Settings: Integrations; then the server also reads its cars from the Tesla API, as a second input. Even then it never wakes a car or sends it a command, and it asks nothing of other servers unless an admin turns that on.',
     page: 'settings-integrations' },
 ];
 

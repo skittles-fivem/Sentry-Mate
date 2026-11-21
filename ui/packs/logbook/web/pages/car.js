@@ -18,6 +18,7 @@ import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
 import { makeMap, coordsText, boundsOf } from '../core/map.js';
 import { stackedCharts, spansFromStates } from '../core/chart.js';
 import { activityStrip, timelineRow, AWAKE_WORDS, endLabel } from '../core/journal.js';
+import { sourceMark, valueMark, inputsLine, labelOf } from '../core/sources.js';
 
 export const id = 'car';
 export const css = true;
@@ -26,12 +27,14 @@ export const title = () => 'Car overview';
 const v = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : x ?? null);
 const at = (x) => (x && typeof x === 'object' ? x.at_ms ?? null : null);
 const isPair = (x) => x && typeof x === 'object' && !Array.isArray(x) && 'value' in x;
-/** Merge a `now` event (only what changed) into the object: { value, at_ms } pairs are replaced whole. */
+/** Merge a `now` event (only what changed) into the object: { value, at_ms, sources } pairs are replaced whole, or only their time when the value did not change. */
 export function mergeNow(base, delta) {
   const out = { ...base };
   for (const [k, d] of Object.entries(delta || {})) {
     const b = out[k];
     if (d && typeof d === 'object' && !Array.isArray(d) && !isPair(d) && b && typeof b === 'object' && !Array.isArray(b) && !isPair(b)) out[k] = mergeNow(b, d);
+    // a pair carries only what changed: a newer at_ms keeps the value, a new value without sources keeps the input
+    else if (d && typeof d === 'object' && !Array.isArray(d) && isPair(b)) out[k] = { ...b, ...d };
     else out[k] = d;
   }
   return out;
@@ -177,7 +180,8 @@ export async function mount(ctx) {
 function header(car, now, tz) {
   const cfg = car.config || {};
   const trim = cfg.trim && cfg.trim.value ? cfg.trim : null;
-  const src = (s) => ({ can: 'from the car', vin: 'from the VIN', owner: 'typed by the owner', teslamate: 'imported' }[s] || s);
+  const src = (s, list) => (Array.isArray(list) && list.length ? labelOf(list).replace(/^Data from/, 'from').replace(/^Imported/, 'imported')
+    : ({ can: 'from SMO', vin: 'from the VIN', owner: 'typed by the owner', teslamate: 'imported from TeslaMate', tesla_api: 'from the Tesla API' }[s] || s));
   const stale = !!now.stale;
   const sameDay = now.at_ms && dayKey(now.at_ms, tz) === dayKey(api.now(), tz);
   return pageHead({
@@ -185,10 +189,11 @@ function header(car, now, tz) {
     title: h('span', { cover: 'summary.header.name' }, car.name || 'Unnamed car'),
     deck: h('span', { class: 'car-line' },
       h('span', { cover: 'summary.header.model', title: car.vin_prefix ? `Model and year from the VIN prefix ${car.vin_prefix}` : null }, [car.year, car.model].filter(Boolean).join(' ')),
-      trim ? [sep(), h('span', { cover: 'summary.header.trim', title: `Trim ${src(trim.source)}` }, trim.value, h('span', { class: 'source-note' }, ` (${src(trim.source)})`))]
+      trim ? [sep(), h('span', { cover: 'summary.header.trim', title: `Trim ${src(trim.source, trim.sources)}` }, trim.value, h('span', { class: 'source-note' }, ` (${src(trim.source, trim.sources)})`))]
         : [sep(), h('span', { cover: 'summary.header.trim', class: 'source-note' }, 'trim not known yet')],
       cfg.paint && cfg.paint.value ? [sep(), cfg.paint.value] : null,
-      sep(), h('span', { class: 'mono' }, car.vin_prefix || car.id)),
+      sep(), h('span', { class: 'mono' }, car.vin_prefix || car.id),
+      sourceMark(car, { block: true, cls: 'car-src' })),
     cls: 'car-head',
     cover: ['shots.web-interface'],
     aside: h('div', { class: ['freshness', { 'is-stale': stale }], cover: ['summary.data.live_push', 'summary.data.restored_values', 'nr.dash.last-update', 'summary.data.prefs_snapshot'] },
@@ -196,7 +201,8 @@ function header(car, now, tz) {
       h('p', { class: 'freshness-note' }, now.at_ms == null ? 'Nothing received yet.'
         : sameDay ? `Measured ${formatTime(now.at_ms, tz, { seconds: true })}, received ${formatTime(now.received_ms, tz, { seconds: true })}${now.delay_s != null ? ` (${now.delay_s} s later)` : ''}`
           : `Last report ${formatDateTime(now.at_ms, tz, { now: api.now() })}`),
-      h('p', { class: 'freshness-note' }, 'Values usually arrive about 75 s after the car sends them; each shows its own time on hover.')),
+      inputsLine(now.inputs, { cls: 'freshness-inputs' }),
+      h('p', { class: 'freshness-note' }, 'Values usually arrive about 75 s after the car sends them; each shows its own time on hover and the input that sent it.')),
   });
 }
 
@@ -245,16 +251,16 @@ function hero(car, now, tz) {
   const full = range != null && soc ? (range / soc) * 100 : null;
   const timeOf = (x) => (at(x) ? `measured ${formatTime(at(x), tz, { seconds: true })}` : null);
   const figs = [
-    figure('Battery', q(soc, 'percent'), usable != null && soc != null && Math.abs(usable - soc) >= 1 ? `${format(usable, 'percent')} usable; the cold battery locks part of it` : v(ch.plugged) ? CHARGE_WORDS[v(ch.status)] || 'plugged in' : 'charge level', { cls: 'fig-hero', cover: ['summary.stat.soc', 'overview.stat.battery_level'] }),
-    figure(rangeLabel(), q(range, 'range'), full != null ? `${format(full, 'range')} at a full charge` : null, { cls: 'fig-hero', cover: ['summary.stat.range_preferred', 'overview.stat.range'] }),
+    figure('Battery', q(soc, 'percent'), [usable != null && soc != null && Math.abs(usable - soc) >= 1 ? `${format(usable, 'percent')} usable; the cold battery locks part of it` : v(ch.plugged) ? CHARGE_WORDS[v(ch.status)] || 'plugged in' : 'charge level', valueMark(now.soc_pct)], { cls: 'fig-hero', cover: ['summary.stat.soc', 'overview.stat.battery_level'] }),
+    figure(rangeLabel(), q(range, 'range'), [full != null ? `${format(full, 'range')} at a full charge` : null, valueMark(now[rf] || now.range_km)], { cls: 'fig-hero', cover: ['summary.stat.range_preferred', 'overview.stat.range'] }),
   ];
   if (now.state === 'driving' && !now.stale) {
     const pw = v(now.power_kw);
-    figs.push(figure('Speed', q(v(now.speed_kph), 'speed'), pw != null ? `${pw < 0 ? 'regenerating' : 'drawing'} ${format(Math.abs(pw), 'power')}` : null, { cls: 'fig-hero', cover: 'summary.stat.speed' }));
+    figs.push(figure('Speed', q(v(now.speed_kph), 'speed'), [pw != null ? `${pw < 0 ? 'regenerating' : 'drawing'} ${format(Math.abs(pw), 'power')}` : null, valueMark(now.speed_kph)], { cls: 'fig-hero', cover: 'summary.stat.speed' }));
   } else if (now.state === 'charging' && !now.stale) {
-    figs.push(figure('Charging at', q(v(ch.power_kw), 'power'), [v(ch.kind) ? v(ch.kind).toUpperCase() : null, v(ch.volts_v) != null ? format(v(ch.volts_v), 'voltage') : null, v(ch.amps_a) != null ? format(v(ch.amps_a), 'current') : null].filter(Boolean).join(' · '), { cls: 'fig-hero', cover: ['summary.stat.charger_power', 'overview.stat.charging_power', 'nr.dash.charging-power'] }));
+    figs.push(figure('Charging at', q(v(ch.power_kw), 'power'), [[v(ch.kind) ? v(ch.kind).toUpperCase() : null, v(ch.volts_v) != null ? format(v(ch.volts_v), 'voltage') : null, v(ch.amps_a) != null ? format(v(ch.amps_a), 'current') : null].filter(Boolean).join(' · '), valueMark(ch.power_kw)], { cls: 'fig-hero', cover: ['summary.stat.charger_power', 'overview.stat.charging_power', 'nr.dash.charging-power'] }));
   } else {
-    figs.push(figure('Energy stored', q(v(now.energy_remaining_kwh), 'energy'), 'from the battery’s own reading', { cls: 'fig-hero' }));
+    figs.push(figure('Energy stored', q(v(now.energy_remaining_kwh), 'energy'), ['from the battery’s own reading', valueMark(now.energy_remaining_kwh)], { cls: 'fig-hero' }));
   }
   const limit = v(ch.limit_pct);
   const charging = now.state === 'charging' && !now.stale;
@@ -353,7 +359,7 @@ function statusFlags(now, tz) {
   const t = (x) => (at(x) ? `Measured ${formatDateTime(at(x), tz, { now: api.now(), seconds: true })}` : null);
   const soc = v(now.soc_pct), usable = v(now.usable_soc_pct);
   const item = (name, value, x, { cover = null, warn = false, on = false, note = null } = {}) => h('li', { class: ['flag-item', { 'is-warn': warn, 'is-on': on }], cover, title: t(x) },
-    h('span', { class: 'flag-name' }, name), h('span', { class: 'flag-value' }, value, note ? h('span', { class: 'spec-note' }, note) : null));
+    h('span', { class: 'flag-name' }, name), h('span', { class: 'flag-value' }, value, valueMark(x), note ? h('span', { class: 'spec-note' }, note) : null));
   const climate = v(f.climate);
   const keep = v(f.keep_climate);
   return h('section', { class: ['status-flags', { 'is-stale': !!now.stale }], 'aria-labelledby': 'flags-title' },
@@ -394,9 +400,9 @@ function usualFrom(items, tz, place) {
 
 /* ------------------------------------------------------------------ temperatures, tyres, the car */
 
-function row(name, value, note = null, { cover = null, measured = null } = {}) {
+function row(name, value, note = null, { cover = null, measured = null, src = null } = {}) {
   return h('div', { class: 'spec-row', cover, title: measured ? `Measured ${measured}` : null },
-    h('dt', null, name), h('dd', null, value, note ? h('span', { class: 'spec-note' }, note) : null));
+    h('dt', null, name), h('dd', null, value, valueMark(src), note ? h('span', { class: 'spec-note' }, note) : null));
 }
 
 function vitals(car, now, tz) {
@@ -406,10 +412,10 @@ function vitals(car, now, tz) {
   const bothNil = v(now.setpoint_left_c) == null && v(now.setpoint_right_c) == null;
   const temps = h('section', { class: 'vital' }, h('h2', { class: 'label' }, 'Temperature'),
     h('dl', { class: 'spec' },
-      row('Outside', q(v(now.outside_c), 'temperature'), null, { cover: ['summary.stat.outside_temp', 'overview.stat.outside_temp'], measured: t(now.outside_c) }),
-      row('Cabin', q(v(now.cabin_c), 'temperature', { why: notSent }), null, { cover: ['summary.stat.inside_temp', 'overview.stat.inside_temp'], measured: t(now.cabin_c) }),
-      row('Battery', q(v(now.battery_c), 'temperature'), null, { measured: t(now.battery_c) }),
-      row('Set points', bothNil ? q(null, 'temperature', { why: notSent }) : h('span', null, sp(now.setpoint_left_c), ' / ', sp(now.setpoint_right_c)), 'driver / passenger', { cover: 'overview.stat.driver_temp', measured: t(now.setpoint_left_c) })));
+      row('Outside', q(v(now.outside_c), 'temperature'), null, { cover: ['summary.stat.outside_temp', 'overview.stat.outside_temp'], measured: t(now.outside_c), src: now.outside_c }),
+      row('Cabin', q(v(now.cabin_c), 'temperature', { why: notSent }), null, { cover: ['summary.stat.inside_temp', 'overview.stat.inside_temp'], measured: t(now.cabin_c), src: now.cabin_c }),
+      row('Battery', q(v(now.battery_c), 'temperature'), null, { measured: t(now.battery_c), src: now.battery_c }),
+      row('Set points', bothNil ? q(null, 'temperature', { why: notSent }) : h('span', null, sp(now.setpoint_left_c), ' / ', sp(now.setpoint_right_c)), 'driver / passenger', { cover: 'overview.stat.driver_temp', measured: t(now.setpoint_left_c), src: now.setpoint_left_c })));
 
   const kpa = (now.tyres_kpa || []).map(v);
   const rec = v(now.tyre_recommended_kpa);
@@ -433,14 +439,14 @@ function vitals(car, now, tz) {
       rec != null ? ` · ${format(rec, 'pressure')} recommended by the car` : ''));
 
   const sw = now.software || {};
-  const swSrc = { teslamate: 'imported', owner: 'typed by the owner', build_match: 'matched by build' }[sw.version_source] || null;
+  const swSrc = { teslamate: 'imported', tesla_api: 'from the Tesla API', owner: 'typed by the owner', build_match: 'matched by build' }[sw.version_source] || null;
   const ideal = v(now.ideal_range_km);
   const carSpec = h('section', { class: 'vital' }, h('h2', { class: 'label' }, 'The car'),
     h('dl', { class: 'spec' },
-      row('Speed', q(v(now.speed_kph), 'speed'), v(now.gear) ? `gear ${v(now.gear)}` : null, { cover: 'summary.stat.speed', measured: t(now.speed_kph) }),
-      row('12 V battery', q(v(now.lv_v), 'voltage', { digits: 1 }), null, { measured: t(now.lv_v) }),
-      row(h('a', { href: state.linkTo('statistics'), cover: 'overview.link.mileage' }, 'Odometer'), q(v(now.odometer_km), 'odometer'), null, { cover: ['summary.stat.odometer', 'overview.stat.odometer'], measured: t(now.odometer_km) }),
-      row('Ideal range', q(ideal, 'range'), null, { cover: 'nr.dash.ideal-range', measured: t(now.ideal_range_km) }),
+      row('Speed', q(v(now.speed_kph), 'speed'), v(now.gear) ? `gear ${v(now.gear)}` : null, { cover: 'summary.stat.speed', measured: t(now.speed_kph), src: now.speed_kph }),
+      row('12 V battery', q(v(now.lv_v), 'voltage', { digits: 1 }), null, { measured: t(now.lv_v), src: now.lv_v }),
+      row(h('a', { href: state.linkTo('statistics'), cover: 'overview.link.mileage' }, 'Odometer'), q(v(now.odometer_km), 'odometer'), null, { cover: ['summary.stat.odometer', 'overview.stat.odometer'], measured: t(now.odometer_km), src: now.odometer_km }),
+      row('Ideal range', q(ideal, 'range'), null, { cover: 'nr.dash.ideal-range', measured: t(now.ideal_range_km), src: now.ideal_range_km }),
       row('Estimated range', q(v(now.est_range_km), 'range'), 'Sentry Mate’s: energy left over the last 30 days’ use', { cover: ['summary.stat.range_estimated', 'nr.dash.est-range'] }),
       row(h('a', { href: state.linkTo('software'), cover: 'overview.link.updates' }, 'Software'),
         sw.version ? h('span', { class: 'mono' }, sw.version) : h('span', { class: 'nil' }, 'unknown'),
@@ -511,7 +517,7 @@ function charging(now, tz, usual) {
   return h('section', { class: ['charging-now', { 'is-idle': !plugged && !on, 'is-stale': !!now.stale }], 'aria-labelledby': 'charging-title', cover: 'nr.dash.panel.charge-status' },
     h('h2', { class: 'label', id: 'charging-title' }, on ? 'Charging now' : 'Charging',
       ch.charge_id ? h('a', { class: 'label-note', href: state.buildUrl('charge', { car: state.current().car, charge: ch.charge_id }) }, 'Open this charge') : null),
-    h('dl', { class: 'charge-grid' }, rows.map(([n, val, cover, x]) => h('div', { class: 'charge-cell', cover, title: measured(x) }, h('dt', { class: 'fig-name' }, n), h('dd', { class: 'charge-value' }, val)))),
+    h('dl', { class: 'charge-grid' }, rows.map(([n, val, cover, x]) => h('div', { class: 'charge-cell', cover, title: measured(x) }, h('dt', { class: 'fig-name' }, n), h('dd', { class: 'charge-value' }, val, valueMark(x))))),
     h('p', { class: 'note' }, on
       ? 'Time to full and the finish time come from the car’s own estimate; the finish time is in the car’s time zone.'
       : plugged ? 'Plugged in and not charging. The car does not send its charging schedule, so the start shown is the usual one at this place.'
@@ -532,7 +538,7 @@ function whereLines(now, tz, outsideMaps, visit) {
     h('p', { class: 'where-area' }, [L.place ? a.short : null, a.locality, a.region].filter((x, i, arr) => x && arr.indexOf(x) === i).join(', ')),
     sinceLine(now, tz, visit),
     hd != null ? h('p', { class: 'where-since' }, `Heading ${compass(hd)} (${Math.round(hd)}°)`) : null,
-    lat != null ? h('p', { class: 'where-coords mono' }, coordsText([lon, lat]), acc != null ? ` ± ${format(acc, 'length')}` : '') : null,
+    lat != null ? h('p', { class: 'where-coords' }, h('span', { class: 'mono' }, coordsText([lon, lat]), acc != null ? ` ± ${format(acc, 'length')}` : ''), valueMark(L.lat)) : null,
     h('p', { class: 'where-ext', cover: 'summary.map.external_link' }, outsideMaps && lat != null
       ? h('a', { href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=16/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'external noopener noreferrer' }, 'Open on OpenStreetMap')
       : h('span', { class: 'note' }, 'Outside map links are off. An admin can turn them on in Settings: Display and units.')),
@@ -652,6 +658,8 @@ async function drawPeriod(ctx, aside, box) {
       ],
       extraCsv: [{ label: 'State', value: (i) => states[i] }],
     }));
+    const sm = sourceMark(s, { block: true, cls: 'chart-src', prefix: 'Readings: ' });
+    if (sm) battery.el.append(sm);
   } else {
     battery.fill(series.status === 'rejected' ? errorView(series.reason, { eyebrow: 'Battery' }) : empty({ title: 'No battery readings in this period.', text: 'Choose a longer period, or look at the Timeline for when data last arrived.' }));
   }
@@ -784,11 +792,13 @@ async function drawCharging(ctx, block) {
   if (to > t[t.length - 1] + 60000) gap(to);
   const kinds = [...new Set(list.map((c) => c.kind).filter(Boolean))];
   const more = res.next ? ` Only the latest ${list.length} charges are drawn; the Charges page lists every one.` : '';
+  const allSrc = list.flatMap((c) => (Array.isArray(c.sources) ? c.sources : []));
+  const srcLine = allSrc.length ? ` ${labelOf(allSrc)}.` : '';
   await block.draw({
     t_ms: t, states: null, spans: [],
     fit: [Math.min(...list.map((c) => c.start_ms)) - 300000, Math.min(Math.max(...list.map((c) => c.end_ms ?? api.now())), api.now()) + 300000],
     fitLabel: list.length === 1 ? 'Zoom to the charge' : 'Zoom to the charges',
-    idle: `${list.length} ${list.length === 1 ? 'charge' : 'charges'} (${kinds.map((k) => k.toUpperCase()).join(' and ') || 'kind not known'}). Hover for the values; drag to zoom, double-click to zoom out.${more}`,
+    idle: `${list.length} ${list.length === 1 ? 'charge' : 'charges'} (${kinds.map((k) => k.toUpperCase()).join(' and ') || 'kind not known'}). Hover for the values; drag to zoom, double-click to zoom out.${srcLine}${more}`,
     rows: [
       { key: 'power', name: 'Power', kind: 'power', values: power, colour: '--ochre', fill: '--chart-ochre-wash', floor: 0, ticks: 4, note: 'into the battery' },
       { key: 'energy', name: 'Energy added', kind: 'energy', values: energy, colour: '--ink-2', floor: 0, ticks: 3, note: 'so far in each charge, from the power' },

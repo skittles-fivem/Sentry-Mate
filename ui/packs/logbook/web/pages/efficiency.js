@@ -20,6 +20,7 @@ import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { pageHead, q, figure, figures, icon, empty, errorView, loadingBlock, flag, button, sep } from '../core/ui.js';
+import { sourceLabel } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
 import { stackedCharts, spansFromStates, niceSplits, niceStep } from '../core/chart.js';
 import { choice } from '../core/form.js';
@@ -190,7 +191,7 @@ export async function mount(ctx) {
           { cls: 'fig-hero', cover: 'ef.stat.consumption_gross' }),
         figure('Logged distance', q(e.distance_km, 'distance', { why: 'no drive' }),
           [tn(e.drives || 0, '{n} drive', '{n} drives'), minText, ', added up from the recorded drives. Distance driven while nothing was logged is not in it.',
-            e.estimated_drives ? [' ', flag(`${e.estimated_drives} estimated`, { kind: 'estimated' }), ' imported drives carry estimated energy.'] : ''],
+            e.estimated_drives ? [' ', flag(`${e.estimated_drives} estimated`, { kind: 'estimated' }), ' drives carry estimated energy (imported, or seen by the Tesla API alone).'] : ''],
           { cls: 'fig-hero', cover: 'ef.stat.logged_distance' }),
       ], { cls: 'ef-figs', cover: 'ef.help.headline_stats' }),
       h('p', { class: 'note ef-why', cover: 'faq.no-consumption' }, icon('info'),
@@ -434,7 +435,7 @@ export async function mount(ctx) {
     const setL = (v.setpoint_left_c || []).map((x, i) => (climateOn(i) ? x : null));
     const setR = (v.setpoint_right_c || []).map((x, i) => (climateOn(i) ? x : null));
     const states = d.state || null;
-    const idle = () => replace(readout, h('span', { class: 'readout-idle' }, `${tn(d.t_ms.length, '{n} point', '{n} points')}, one per ${formatDuration(d.bucket_ms || 3600000)}. Point at a chart for every value at that moment; drag to zoom, double-click to zoom out.`));
+    const idle = () => replace(readout, h('span', { class: 'readout-idle' }, `${tn(d.t_ms.length, '{n} point', '{n} points')}, one per ${formatDuration(d.bucket_ms || 3600000)}${(d.sources && d.sources.length) || d.source_label ? `; ${sourceLabel(d).replace(/^D/, 'd').replace(/^I/, 'i')}` : ''}. Point at a chart for every value at that moment; drag to zoom, double-click to zoom out.`));
     idle();
     const CLIMATE = { on: 'climate on', precondition: 'preconditioning', overheat_protect: 'overheat protection' };
     plotsRef = await stackedCharts(ctx, charts, {

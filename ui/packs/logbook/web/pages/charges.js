@@ -26,6 +26,7 @@ import { makeMap, boundsOf } from '../core/map.js';
 import { openDialog, confirmDialog, popover } from '../core/dialog.js';
 import { choice } from '../core/form.js';
 import { placeLink } from '../core/journal.js';
+import { SOURCE_FILTER, sourceFilter, SOURCE_WHY, sourceMark, sourceLabel, isImported, isEstimated, ESTIMATED_WHY } from '../core/sources.js';
 import { zoneLabel } from '../core/format.js';
 import { display } from '../core/display.js';
 import { onTheme } from '../core/prefs.js';
@@ -43,7 +44,7 @@ const KIND_WHY = {
 const COST_SOURCE = { tariff: 'place price', manual: 'typed in', free_supercharging: 'free Supercharging', teslamate: 'imported' };
 const PLACE_KINDS = [['', 'Any kind of place'], ['home', 'Home'], ['work', 'Work'], ['charger', 'Public charger'], ['service', 'Service centre'], ['other', 'Other saved place'], ['none', 'Not a saved place']];
 const TYPES = [['', 'All'], ['ac', 'AC'], ['dc', 'DC'], ['unknown', 'Unknown']];
-const SOURCES = [['', 'All sources'], ['can', 'CAN Bridge only'], ['teslamate', 'Imported only']];
+const SOURCES = SOURCE_FILTER;
 const FLAGS = [['', 'Every charge'], ['gap', 'With missing data'], ['in_progress', 'Under way'], ['gap,in_progress', 'Missing data or under way']];
 const CURRENCIES = ['USD', 'CAD', 'EUR', 'GBP', 'NOK', 'SEK', 'DKK', 'CHF', 'AUD', 'NZD', 'JPY', 'CNY'];
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -88,7 +89,7 @@ export async function mount(ctx) {
   const f = {
     places: idList(ctx.query.places), place_kind: oneOf(PLACE_KINDS, ctx.query.place_kind), kind: oneOf(TYPES, ctx.query.kind), q: ctx.query.q || '',
     min_cost: posNum(ctx.query.min_cost), unpriced: ctx.query.unpriced === '1', min_dur: posNum(ctx.query.min_dur),
-    source: oneOf(SOURCES, ctx.query.source), flags: oneOf(FLAGS, ctx.query.flags), heat: ctx.query.heat === 'end' ? 'end' : 'start',
+    source: sourceFilter(ctx.query.source), flags: oneOf(FLAGS, ctx.query.flags), heat: ctx.query.heat === 'end' ? 'end' : 'start',
   };
   let places = [], placesFailed = false;
   try { places = await ctx.api.list('places', { sort: 'name' }, { limit: 200 }).all({ max: 2000 }); } catch (err) { if (ctx.signal.aborted) throw err; placesFailed = true; }
@@ -240,9 +241,11 @@ export async function mount(ctx) {
       h('a', { class: 'cell-main ch-start', href: state.buildUrl('charge', { car: c.car, charge: c.id, period: ctx.state.period }) },
         `${formatDate(c.start_ms, zoneOf(c), { weekday: false, now: api.now() })}, ${formatTime(c.start_ms, zoneOf(c))}`),
       h('span', { class: 'cell-sub' }, c.end_ms == null ? 'charging now' : `to ${formatTime(c.end_ms, zoneOf(c))}`,
-        c.source === 'teslamate' ? [' ', flag('Imported', { kind: 'estimated', title: 'Imported from TeslaMate: energy is estimated' })] : null,
+        isImported(c) ? [' ', flag('Imported', { kind: 'estimated', title: `${sourceLabel(c)}: energy is estimated` })] : null,
+        !isImported(c) && isEstimated(c) ? [' ', flag('Estimated', { kind: 'estimated', title: ESTIMATED_WHY })] : null,
         c.has_gaps ? [' ', flag('Gap', { kind: 'warn', title: `No data for ${formatDuration((c.flags && c.flags.gap_ms) || 0)} inside this charge` })] : null),
-      h('span', { class: 'cell-sub ch-fold-odo' }, 'odometer ', format(c.odometer_km, 'odometer'))) },
+      h('span', { class: 'cell-sub ch-fold-odo' }, 'odometer ', format(c.odometer_km, 'odometer')),
+      sourceMark(c, { block: true, short: true, cls: 'ch-src' })) },
     { key: 'place', label: 'Place', cls: 'c-place', cell: (c) => {
       const href = placeLink(pointOf(c));
       return h('span', null,
@@ -279,7 +282,7 @@ export async function mount(ctx) {
     if (f.q) bits.push(`matching “${f.q}”`);
     if (f.min_cost != null) bits.push(`costing at least ${formatNumber(f.min_cost)}${f.unpriced ? ' (or unpriced)' : ''}`);
     if (f.min_dur != null) bits.push(`charging ${formatNumber(f.min_dur)} min or longer`);
-    if (f.source) bits.push(f.source === 'can' ? 'from the CAN Bridge' : 'imported');
+    if (f.source) bits.push(SOURCE_WHY[f.source]);
     if (f.flags) bits.push(f.flags === 'gap' ? 'with missing data' : f.flags === 'in_progress' ? 'under way' : 'with missing data or under way');
     return bits;
   };

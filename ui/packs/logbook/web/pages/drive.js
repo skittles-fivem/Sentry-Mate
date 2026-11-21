@@ -19,6 +19,7 @@ import { pageHead, q, figure, icon, sep, empty, errorWords, flag, button } from 
 import { makeMap, boundsOf } from '../core/map.js';
 import { stackedCharts } from '../core/chart.js';
 import { placeLink, endLabel } from '../core/journal.js';
+import { sourceMark, sourceLabel, isImported, isEstimated, estimatedWhy, ESTIMATED_WHY } from '../core/sources.js';
 import { choice } from '../core/form.js';
 import { remount } from '../core/router.js';
 
@@ -106,9 +107,11 @@ export async function mount(ctx) {
     title: [endLabel(d.start), h('span', { class: 'to' }, ' to '), endLabel(d.end)],
     deck: [`${formatTime(d.start_ms, tz)} – ${going ? 'now' : formatTime(d.end_ms, tz)}`, sep(), formatDuration(d.duration_ms), sep(),
       placeA(d.start), ' to ', placeA(d.end, going),
-      d.source === 'teslamate' ? [' ', flag('Imported', { kind: 'estimated', title: 'Imported from TeslaMate: totals only, energy estimated from range' })] : null,
+      isImported(d) ? [' ', flag('Imported', { kind: 'estimated', title: `${sourceLabel(d)}: totals only, energy estimated from range` })] : null,
+      !isImported(d) && isEstimated(d) ? [' ', flag('Estimated', { kind: 'estimated', title: ESTIMATED_WHY })] : null,
       going ? [' ', flag('In progress', { title: 'Figures up to now' })] : null,
-      d.flags && d.flags.reduced_range ? [' ', flag('Reduced range', { kind: 'warn', title: 'The car limited its range during this drive' })] : null],
+      d.flags && d.flags.reduced_range ? [' ', flag('Reduced range', { kind: 'warn', title: 'The car limited its range during this drive' })] : null,
+      sourceMark(d, { block: true, cls: 'drive-head-src' })],
     aside: h('nav', { class: 'step-nav', 'aria-label': 'Other drives' },
       step(link(d.prev), 'Earlier', -1), step(link(d.next), 'Later', 1),
       h('a', { class: 'button button-quiet', href: asTrip, title: 'This drive’s span on the Trip page' }, 'As a trip')),
@@ -145,8 +148,8 @@ export async function mount(ctx) {
     figure('Average speed', q(d.speed_avg_kph, 'speed', { why: why(d.speed_avg_kph == null, 'no distance recorded') }), d.speed_max_kph != null ? `distance ÷ time; top ${format(d.speed_max_kph, 'speed')}` : 'distance ÷ time'),
     figure('Climb and descent', h('span', null, h('span', { class: 'updown' }, h('span', { 'aria-hidden': 'true' }, '↑ '), h('span', { class: 'sr-only' }, 'climb '), q(d.climb_m, 'length', { why: why(d.climb_m == null, 'no elevation recorded') })), ' ',
       h('span', { class: 'updown' }, h('span', { 'aria-hidden': 'true' }, '↓ '), h('span', { class: 'sr-only' }, 'descent '), q(d.descent_m, 'length', { why: why(d.descent_m == null, 'no elevation recorded') }))), 'the car’s own elevation'),
-    figure('Energy used', q(d.energy_kwh, 'energy', { why: why(d.energy_kwh == null, 'no pack readings for this drive') }), d.energy_basis === 'estimated' ? 'estimated from range (imported)' : 'net: measured at the pack, regen taken off'),
-    figure('Regenerated', q(d.regen_kwh, 'energy', { why: why(d.regen_kwh == null, d.source === 'teslamate' ? 'not in imported history' : 'not recorded') }), d.regen_kwh != null ? 'measured flowing back into the pack' : null),
+    figure('Energy used', q(d.energy_kwh, 'energy', { why: why(d.energy_kwh == null, 'no pack readings for this drive') }), isEstimated(d) ? `estimated: ${estimatedWhy(d)}` : 'net: measured at the pack, regen taken off'),
+    figure('Regenerated', q(d.regen_kwh, 'energy', { why: why(d.regen_kwh == null, isImported(d) ? 'not in imported history' : 'not recorded') }), d.regen_kwh != null ? 'measured flowing back into the pack' : null),
     figure('Consumption', q(d.wh_per_km, 'efficiency', { why: why(d.wh_per_km == null, d.distance_km != null && d.distance_km < 1 ? 'too short to be reliable' : 'no energy figure') }), d.rated_wh_per_km && d.efficiency_pct != null ? `net; ${format(d.efficiency_pct, 'percent')} of the rated ${format(d.rated_wh_per_km, 'efficiency')}` : 'net energy ÷ distance'),
     figure('Climate', q(d.hvac_kwh, 'energy', { why: why(d.hvac_kwh == null, 'not sent by this car') }), 'heating and cooling, part of the energy used'),
     figure('Battery', d.start_soc_pct != null || d.end_soc_pct != null ? `${format(d.start_soc_pct, 'percent')} → ${format(d.end_soc_pct, 'percent')}` : q(null, 'percent', { why: 'not recorded' }),
@@ -154,7 +157,7 @@ export async function mount(ctx) {
     figure(rangeName, startRange != null || endRange != null ? `${format(startRange, 'range')} → ${format(endRange, 'range')}` : q(null, 'range', { why: 'not recorded' }),
       [startRange != null && endRange != null ? `${format(startRange - endRange, 'range')} of range used` : null, rangeHow].filter(Boolean).join('; ') || null),
     figure('Peak power', q(d.power_max_kw, 'power', { why: why(d.power_max_kw == null, 'no power readings') }),
-      d.power_min_kw != null ? ['strongest regen ', q(Math.abs(d.power_min_kw), 'power'), ' back into the pack'] : d.source === 'teslamate' ? 'regen not in imported history' : 'no regen recorded'),
+      d.power_min_kw != null ? ['strongest regen ', q(Math.abs(d.power_min_kw), 'power'), ' back into the pack'] : isImported(d) ? 'regen not in imported history' : 'no regen recorded'),
     figure('Outside', q(d.outside_avg_c, 'temperature', { why: why(d.outside_avg_c == null, 'not recorded') }), d.cabin_avg_c != null ? `average; cabin ${format(d.cabin_avg_c, 'temperature')}` : 'average'));
 
   /* ------------------------------------------------------------ time in each speed band, with CSV */
@@ -176,7 +179,7 @@ export async function mount(ctx) {
         h('span', { class: 'band-name' }, bandName(b)),
         h('span', { class: 'band-bar', 'aria-hidden': 'true' }, h('span', { class: 'band-fill', vars: { '--w': `${((b.seconds / bandTotal) * 100).toFixed(2)}%` } })),
         h('span', { class: 'band-value' }, formatDuration(b.seconds * 1000), h('span', { class: 'band-share' }, format((b.seconds / bandTotal) * 100, 'percent', { digits: 0 }))))))
-      : h('p', { class: 'note' }, d.source === 'teslamate' ? 'Imported drives keep no speed readings, so there are no bands.' : 'No speed readings were recorded for this drive.'),
+      : h('p', { class: 'note' }, isImported(d) ? 'Imported drives keep no speed readings, so there are no bands.' : 'No speed readings were recorded for this drive.'),
     bands.length ? h('p', { class: 'note' }, `Every reading counts, standstill included; bands are ${num0(bandSet.width)} ${speedUnit} wide${bandSet.local ? ', counted from the speed readings' : ''}.`) : null);
 
   /* ------------------------------------------------------------ charges before and after */
@@ -255,7 +258,7 @@ export async function mount(ctx) {
       h('div', { class: 'drive-main' }, mapCol, h('div', { class: 'drive-under' }, bandsEl, h('div', { class: 'drive-under-side' }, nearEl, exportEl))),
       h('section', { class: 'drive-side', 'aria-label': 'Drive figures' }, stats)),
     h('section', { class: 'along', 'aria-labelledby': 'along-title' },
-      h('div', { class: 'along-head' }, h('h2', { class: 'label', id: 'along-title' }, 'Along the drive'), h('div', { class: 'along-actions' }, resetBtn, csvBtn)),
+      h('div', { class: 'along-head' }, h('h2', { class: 'label', id: 'along-title' }, 'Along the drive', s && s.t_ms && s.t_ms.length ? h('span', { class: 'label-note' }, sourceLabel(s)) : null), h('div', { class: 'along-actions' }, resetBtn, csvBtn)),
       readout, selected, charts, notes,
       h('p', { class: 'along-hint' }, 'Point at a chart to read every value at that moment and see where the car was on the map. Drag across a chart to zoom in; the figures under “Selected part” and the route highlight follow. Double-click a chart to zoom out.'))));
 
@@ -284,7 +287,7 @@ export async function mount(ctx) {
     replace(mapBox, partError(trackErr, 'Could not load the route.', () => remount()));
     mapBox.classList.add('is-empty');
   } else {
-    replace(mapBox, h('p', { class: 'map-note' }, d.source === 'teslamate' ? 'Imported drives keep no route.' : 'No route was recorded for this drive: the car sent no positions while it drove.'));
+    replace(mapBox, h('p', { class: 'map-note' }, isImported(d) ? 'Imported drives keep no route.' : 'No route was recorded for this drive: the car sent no positions while it drove.'));
     mapBox.classList.add('is-empty');
   }
 
@@ -486,7 +489,7 @@ export async function mount(ctx) {
     replace(selected);
     selected.hidden = true;
   } else {
-    replace(charts, empty({ title: 'No readings along this drive.', text: d.source === 'teslamate' ? 'Imported drives keep only their totals; the figures above are what there is.' : 'The log for this drive holds no samples. The Data health page shows whether its log arrived and passed its check.' }));
+    replace(charts, empty({ title: 'No readings along this drive.', text: isImported(d) ? 'Imported drives keep only their totals; the figures above are what there is.' : 'The log for this drive holds no samples. The Data health page shows whether its log arrived and passed its check.' }));
     replace(selected);
     selected.hidden = true;
   }

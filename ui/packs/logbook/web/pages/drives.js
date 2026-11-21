@@ -21,13 +21,14 @@ import { makeMap, boundsOf } from '../core/map.js';
 import { confirmDialog, popover } from '../core/dialog.js';
 import { choice } from '../core/form.js';
 import { placeLink, endLabel } from '../core/journal.js';
+import { SOURCE_FILTER, sourceFilter, SOURCE_WHY, sourceMark, isImported, teslaOnly, isEstimated, ESTIMATED_WHY } from '../core/sources.js';
 
 export const id = 'drives';
 export const css = true;
 export const title = () => 'Drives';
 
 const SORTS = [['start', 'Newest first'], ['distance', 'Longest first'], ['duration', 'Longest time first'], ['energy', 'Most energy first'], ['wh_per_km', 'Highest consumption first'], ['speed_max', 'Fastest first']];
-const SOURCES = [['', 'All sources'], ['can', 'CAN Bridge only'], ['teslamate', 'Imported only']];
+const SOURCES = SOURCE_FILTER;
 const FLAGS = [['', 'Every drive'], ['gap', 'With a gap in the data'], ['in_progress', 'Still going'], ['reduced_range', 'Cold battery (part locked)']];
 const SIDES = [['any', 'Start or end'], ['start', 'Start'], ['end', 'End']];
 const BASES = [['plain', 'As measured'], ['hill_corrected', 'Hill-corrected']];
@@ -45,7 +46,7 @@ export async function mount(ctx) {
     side: oneOf(SIDES, ctx.query.place_side, 'any'),
     min: num(ctx.query.min_distance_km),
     speed: num(ctx.query.min_avg_kph),
-    source: oneOf(SOURCES, ctx.query.source, ''),
+    source: sourceFilter(ctx.query.source),
     flags: oneOf(FLAGS, ctx.query.flags, ''),
     sort: oneOf(SORTS, ctx.query.sort, 'start'),
     basis: oneOf(BASES, ctx.query.efficiency, 'plain'),
@@ -230,7 +231,7 @@ export async function mount(ctx) {
       figure('Distance', q(s.distance_km, 'distance'), n ? `${format(n ? s.distance_km / n : null, 'distance')} a drive on average` : null),
       figure('Driving time', n ? formatDuration(s.duration_ms || 0) : q(null, 'duration', { why: 'no drive' }), n ? `${format(s.duration_ms ? (s.distance_km / (s.duration_ms / 3600000)) : null, 'speed')} on average` : null),
       figure('Energy used', q(n ? s.energy_kwh : null, 'energy', { why: 'no drive' }), !n ? null
-        : s.energy_estimated_kwh ? `${format(s.energy_measured_kwh, 'energy')} measured, ${format(s.energy_estimated_kwh, 'energy')} estimated (imported)`
+        : s.energy_estimated_kwh ? `${format(s.energy_measured_kwh, 'energy')} measured, ${format(s.energy_estimated_kwh, 'energy')} estimated (imported, or from the Tesla API alone)`
           : `measured at the pack on ${tn(measured, '{n} drive', '{n} drives')}${s.without_energy ? `; ${tn(s.without_energy, '{n} has', '{n} have')} no reading` : ''}`),
       figure('Consumption', q(s.wh_per_km, 'efficiency', { why: n ? 'too short to say' : 'no drive' }), 'energy used over distance driven, as measured'));
   }
@@ -242,7 +243,7 @@ export async function mount(ctx) {
     box.addEventListener('change', () => { if (box.checked) picked.set(d.id, d); else picked.delete(d.id); drawPick(); });
     const startSoc = format(d.start_soc_pct, 'number', { digits: 0 });
     const batt = d.start_soc_pct != null || d.end_soc_pct != null ? `${startSoc} → ${format(d.end_soc_pct, 'percent')}` : q(null, 'percent');
-    const energySub = d.energy_kwh == null ? '' : d.energy_basis === 'estimated' ? 'estimated' : 'measured';
+    const energySub = d.energy_kwh == null ? '' : isEstimated(d) ? 'estimated' : 'measured';
     // Every figure again as a labelled line under the route; CSS shows the ones whose column the width hides,
     // so each value is on screen (once) at every width.
     const fact = (k, name, ...val) => h('span', { class: `fact fact-${k}` }, h('span', { class: 'fact-name' }, name), ' ', h('span', { class: 'fact-value' }, ...val));
@@ -266,11 +267,12 @@ export async function mount(ctx) {
             h('a', { class: 'route-name', href }, endLabel(d.start), h('span', { class: 'to' }, ' to '), endLabel(d.end)),
             h('span', { class: 'cell-sub' },
               placeCell(d.start), going ? null : [h('span', { class: 'sep', 'aria-hidden': 'true' }, ' → '), placeCell(d.end)],
-              d.source === 'teslamate' ? [' ', flag('Imported', { kind: 'estimated' })] : null,
+              isImported(d) ? [' ', flag('Imported', { kind: 'estimated' })] : null,
+              teslaOnly(d) && isEstimated(d) ? [' ', flag('Estimated', { kind: 'estimated', title: ESTIMATED_WHY })] : null,
               going ? [' ', flag('In progress')] : null,
               d.flags && (d.flags.gap_ms || d.flags.lost_frames) ? [' ', flag(d.flags.gap_ms ? `Gap ${formatDuration(d.flags.gap_ms)}` : 'Lost frames', { kind: 'warn', title: 'Part of this drive has no data; its figures cover only the time with data' })] : null,
               d.flags && d.flags.reduced_range ? [' ', flag('Cold battery', { title: 'Part of the battery was locked by the cold during this drive' })] : null),
-            facts))),
+            facts, sourceMark(d, { block: true, cls: 'drive-src' })))),
       h('td', { class: 'c-num c-dist' }, q(d.distance_km, 'distance')),
       h('td', { class: 'c-num c-dur' }, formatDuration(d.duration_ms)),
       h('td', { class: 'c-num c-batt' }, batt, h('span', { class: 'cell-sub' }, 'start → end')),
@@ -292,7 +294,7 @@ export async function mount(ctx) {
     if (f.places.length) bits.push(`${f.side === 'start' ? 'starts at' : f.side === 'end' ? 'ends at' : 'starts or ends at'} ${placeFilter.summary()}`);
     if (f.min) bits.push(`is ${format(f.min, 'distance')} or longer`);
     if (f.speed) bits.push(`averages ${format(f.speed, 'speed')} or more`);
-    if (f.source) bits.push(f.source === 'can' ? 'comes from the CAN Bridge' : 'was imported');
+    if (f.source) bits.push(SOURCE_WHY[f.source]);
     if (f.flags) bits.push({ gap: 'has a gap in its data', in_progress: 'is still going', reduced_range: 'had a cold-locked battery' }[f.flags]);
     return bits;
   }

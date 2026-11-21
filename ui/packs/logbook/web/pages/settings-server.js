@@ -88,6 +88,15 @@ const origin = (proto, host, port) => `${proto}//${host}${port && !((proto === '
 
 /* ================================================================== the page */
 
+// Audit actions in words (the code stays beside them, for searching the log).
+const ACTION_WORDS = {
+  'tesla-account-added': 'Tesla account added', 'tesla-account-removed': 'Tesla account removed',
+  'tesla-account-paused': 'Tesla account paused', 'tesla-account-resumed': 'Tesla account resumed',
+  'tesla-account-changed': 'Tesla account changed', 'tesla-token-replaced': 'Tesla token replaced',
+  'tesla-car-matched': 'Tesla car matched', 'tesla-poll-changed': 'How often Tesla is asked changed',
+  'tesla-sign-in-needed': 'Tesla needs a new sign-in', 'tesla-account-error': 'Tesla refuses an account',
+};
+
 export async function mount(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
   const [settingsFirst, networkFirst, notices, cars] = await Promise.all([
@@ -660,8 +669,13 @@ export async function mount(ctx) {
         case 'key': return link(state.buildUrl('settings-cars'), `CAN Bridge key ${tid}`);
         case 'place': return link(state.buildUrl('places', { query: { place: tid } }), 'The place');
         case 'import': return link(state.buildUrl('import'), 'The import');
+        case 'tesla': {
+          const acc = tid.split(':')[0];
+          return link(`${state.buildUrl('settings-integrations')}#tesla${acc && acc !== 'settings' ? `-${acc}` : ''}`, acc ? `Tesla account ${acc}` : 'Tesla account');
+        }
         case 'settings': {
           if (tid === 'mqtt') return link(state.buildUrl('settings-integrations'), 'MQTT settings');
+          if (tid === 'tesla') return link(`${state.buildUrl('settings-integrations')}#tesla`, 'Tesla API settings');
           const names = /host_names/.test(summary || '');
           const other = /units|range|car_order|geocode|tiles|release_check|outside_links/.test(summary || '');
           return h('span', { class: 'ss-targets' },
@@ -686,7 +700,7 @@ export async function mount(ctx) {
       columns: [
         { key: 'at_ms', label: 'When', th: true, cell: (e) => h('span', null, h('span', { class: 'cell-main' }, dateTime(e.at_ms, tz)), h('span', { class: 'cell-sub' }, ago(e.at_ms))) },
         { key: 'account', label: 'Who', cell: (e) => (e.account ? h('span', null, e.account) : h('span', { class: 'ss-quiet' }, 'The server itself')) },
-        { key: 'summary', label: 'What happened', cls: 'ss-summary-col', cell: (e) => h('span', null, h('span', { class: 'cell-main' }, e.summary || '—'), h('span', { class: 'cell-sub mono' }, e.action)) },
+        { key: 'summary', label: 'What happened', cls: 'ss-summary-col', cell: (e) => h('span', null, h('span', { class: 'cell-main' }, e.summary || '—'), h('span', { class: 'cell-sub' }, ACTION_WORDS[e.action] ? [ACTION_WORDS[e.action], ' · '] : null, h('span', { class: 'mono' }, e.action))) },
         { key: 'target', label: 'Changed item', cell: (e) => target(e.target, e.summary), value: (e) => e.target },
       ],
       empty: () => empty({ title: 'Nothing recorded yet.', text: 'Each sign-in and each change appears here as it happens.' }),

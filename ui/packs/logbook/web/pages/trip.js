@@ -23,6 +23,7 @@ import { dataTable } from '../core/table.js';
 import { makeMap, boundsOf, coordsText } from '../core/map.js';
 import { stackedCharts } from '../core/chart.js';
 import { activityStrip, placeLink, STRIP_NAMES } from '../core/journal.js';
+import { sourceMark, sourceLabel, isImported, teslaOnly, ESTIMATED_WHY } from '../core/sources.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { zoneLabel } from '../core/format.js';
 import { remount } from '../core/router.js';
@@ -324,7 +325,7 @@ export async function mount(ctx) {
   const act = actR.status === 'fulfilled' ? actR.value : null;
   const stripCsv = act ? button('Download CSV', { iconName: 'download', cls: 'button-small', onclick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(first || now, tz), 'states'), act.items || [], [
     { label: 'State', value: (s) => STRIP_NAMES[s.kind] || s.kind }, timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz),
-    { label: 'Minutes', value: (s) => Math.round((((s.end_ms ?? now) - s.start_ms) / 60000) * 10) / 10 }, { label: 'Source', value: (s) => s.source },
+    { label: 'Minutes', value: (s) => Math.round((((s.end_ms ?? now) - s.start_ms) / 60000) * 10) / 10 }, { label: 'Data from', value: (s) => sourceLabel(s) },
   ]) }) : null;
   const stripBlock = h('section', { class: 'block trip-strip', 'aria-labelledby': 'ts-title', cover: 'trip.chart.states' },
     h('div', { class: 'block-head' }, h('h2', { class: 'label', id: 'ts-title' }, 'What the car was doing', h('span', { class: 'label-note' }, 'pick a drive or a charge to open it')), stripCsv),
@@ -340,7 +341,7 @@ export async function mount(ctx) {
   const seriesCsv = button('Download CSV', { iconName: 'download', cls: 'button-small', disabled: !s || !s.t_ms.length });
   const chartBlock = h('section', { class: 'block trip-battery', 'aria-labelledby': 'tb-title' },
     h('div', { class: 'block-head' }, h('h2', { class: 'label', id: 'tb-title' }, 'Battery and elevation',
-      h('span', { class: 'label-note' }, s && s.bucket_ms > 1000 ? `one value per ${formatDuration(s.bucket_ms)}, lowest and highest kept` : 'over the trip')), h('div', { class: 'block-actions' }, seriesCsv)),
+      h('span', { class: 'label-note' }, s && s.bucket_ms > 1000 ? `one value per ${formatDuration(s.bucket_ms)}, lowest and highest kept` : 'over the trip', s && s.t_ms && s.t_ms.length && ((s.sources && s.sources.length) || s.source_label) ? `; ${sourceLabel(s).replace(/^D/, 'd').replace(/^I/, 'i')}` : '')), h('div', { class: 'block-actions' }, seriesCsv)),
     readout, zoomBar, charts);
 
   /* ------------------------------------------------------------ the drives and the charges */
@@ -362,7 +363,7 @@ export async function mount(ctx) {
     columns: [
       { key: 'start', label: 'Started', sort: 'start', th: true, firstDir: 'asc', cover: ['trip.drives.date', 'trip.drives.link.details'],
         cell: (d) => [h('a', { class: 'cell-main', href: link('drive', { drive: d.id }), title: 'Open the drive' }, formatTime(d.start_ms, tz)),
-          h('span', { class: 'cell-sub' }, formatDate(d.start_ms, tz, { now })), d.source === 'teslamate' ? flag('Imported', { kind: 'estimated', title: 'Imported from TeslaMate: energy estimated from range' }) : null] },
+          h('span', { class: 'cell-sub' }, formatDate(d.start_ms, tz, { now })), isImported(d) ? flag('Imported', { kind: 'estimated', title: `${sourceLabel(d)}: energy estimated from range` }) : null, sourceMark(d, { block: true, short: true })] },
       { key: 'from', label: 'From', cover: ['trip.drives.start', 'trip.drives.link.geofence_start'], cell: (d) => placeCell(d.start) },
       { key: 'to', label: 'To', cover: ['trip.drives.destination', 'trip.drives.link.geofence_end'], cell: (d) => placeCell(d.end, d.end_ms == null) },
       { key: 'duration', label: 'Duration', sort: 'duration', num: true, cover: ['trip.drives.duration', 'trip.drives.link.duration_hint'], hint: 'Hours and minutes; the line under it is the same in minutes',
@@ -371,7 +372,7 @@ export async function mount(ctx) {
       { key: 'soc_start', label: 'Battery at start', num: true, cover: 'trip.drives.soc_start', cell: (d) => pct(d.start_soc_pct) },
       { key: 'soc_end', label: 'Battery at end', num: true, cover: 'trip.drives.soc_end', cell: (d) => (d.end_ms == null ? [pct(d.end_soc_pct), h('span', { class: 'cell-sub' }, 'now')] : pct(d.end_soc_pct)) },
       { key: 'wh', label: 'Consumption', sort: 'wh_per_km', num: true, cover: 'trip.drives.consumption', hint: 'Net energy ÷ distance; blank with the reason when it would be unreliable',
-        cell: (d) => (d.wh_per_km != null ? [q(d.wh_per_km, 'efficiency'), d.energy_basis === 'estimated' ? h('span', { class: 'cell-sub' }, 'estimated') : null] : q(null, 'efficiency', { why: consumptionWhy(d) })) },
+        cell: (d) => (d.wh_per_km != null ? [q(d.wh_per_km, 'efficiency'), d.energy_basis === 'estimated' ? h('span', { class: 'cell-sub', title: teslaOnly(d) ? ESTIMATED_WHY : null }, 'estimated') : null] : q(null, 'efficiency', { why: consumptionWhy(d) })) },
     ],
   });
 
@@ -402,7 +403,7 @@ export async function mount(ctx) {
     columns: [
       { key: 'start', label: 'Started', sort: 'start', th: true, firstDir: 'asc', cover: ['trip.charges.date', 'trip.charges.link.details'],
         cell: (c) => [h('a', { class: 'cell-main', href: link('charge', { charge: c.id }), title: 'Open the charge' }, formatTime(c.start_ms, tz)),
-          h('span', { class: 'cell-sub' }, `${formatDate(c.start_ms, tz, { now })}, ${(c.kind || '').toUpperCase() || 'kind not known'}`)] },
+          h('span', { class: 'cell-sub' }, `${formatDate(c.start_ms, tz, { now })}, ${(c.kind || '').toUpperCase() || 'kind not known'}`), sourceMark(c, { block: true, short: true })] },
       { key: 'place', label: 'Place', cover: ['trip.charges.location', 'trip.charges.link.geofence'],
         cell: (c) => placeCell({ ...c.position, place: c.place, address: c.address, label: (c.place && c.place.name) || (c.address && c.address.short) }) },
       { key: 'duration', label: 'Charging time', sort: 'duration', num: true, cover: 'trip.charges.duration',
