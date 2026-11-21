@@ -132,6 +132,8 @@ body { container: page / inline-size; }
   --LH: normal;
 }
 *, ::before, ::after { line-height: var(--LH); }
+/* what a closed <details> holds is not laid out at all (as browsers used to do), so nothing measures it */
+details:not([open]) > :not(summary) { display: none; }
 html { background: var(--paper); -webkit-text-size-adjust: 100%; }
 /* Keyboard focus never lands under the sticky masthead. */
 :root { --clear-top: calc(var(--masthead-h) + round(1rem, var(--e))); }
@@ -143,6 +145,7 @@ body {
   -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility;
 }
 h1, h2, h3, p, dl, dd, ol, ul, figure { margin: 0; }
+h4 { margin-block: round(1.33em, var(--e)); } /* the browser's own space, on whole px */
 ol, ul { padding: 0; list-style: none; }
 a { color: inherit; text-decoration-color: var(--rule-strong); text-underline-offset: 0.2em; text-decoration-thickness: 1px; }
 a:hover { text-decoration-color: currentColor; }
@@ -227,7 +230,7 @@ button { cursor: pointer; }
 /* Boxes around text are snapped to whole px wide: text is measured in fractions of a pixel, so its box would
    end between pixels and so would everything after it. calc-size() rounds the fitted width up (a browser
    without it keeps the fitted width). */
-.button, .chip, .tag, .kbd, .size-trigger, .account-trigger, .segmented-option, .nav-link, .brand, .shortcut { width: calc-size(fit-content, round(up, size, 1px)); }
+.button, .chip, .tag, .kbd, .size-trigger, .account-trigger, .segmented-option, .nav-link, .brand, .shortcut, .menu-toggle, .clock, .legend-item { width: calc-size(fit-content, round(up, size, 1px)); }
 
 .size-trigger, .account-trigger {
   display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); height: round(2rem, var(--e)); padding: 0 round(0.6875rem, var(--e)); border: 1px solid var(--rule-strong); border-radius: 999px;
@@ -775,6 +778,8 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
   .masthead-tools { margin-left: auto; }
   .switcher-trigger, .period-trigger { width: auto; flex: 1 1 round(14rem, var(--e)); }
   .masthead-slot { flex: 1 1 round(14rem, var(--e)); }
+  .masthead-slot > .pop-wrap { flex: 1 1 auto; min-width: 0; } /* the period box fills its slot, so it ends on a whole px */
+  .masthead-slot .period-trigger { width: 100%; }
   .nav-tabs, .nav-divider { display: none; }
   .pop { position: fixed; top: round(1rem, var(--e)); left: var(--gutter, round(1.5rem, var(--e))); right: var(--gutter, round(1.5rem, var(--e))); width: auto; max-height: calc(100vh - round(2rem, var(--e))); overflow-y: auto; }
   .menu-pop { left: var(--gutter, round(1.5rem, var(--e))); }
@@ -787,6 +792,12 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
 }
 
 @container page (width < 50rem) {
+  /* a notice: its words take the width, the fix goes on the line under them */
+  .notice-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; row-gap: round(0.25rem, var(--e)); padding: round(0.625rem, var(--e)) 0; }
+  .notice-row > .notice-icon { grid-column: 1; grid-row: 1; align-self: center; }
+  .notice-row > .notice-text { grid-column: 2; grid-row: 1; }
+  .notice-row > .notice-fix { grid-column: 2; grid-row: 2; justify-self: start; white-space: normal; }
+  .notice-row > .notice-close { grid-column: 3; grid-row: 1; }
   .brand-name { display: none; }
   .nav-quick { display: none; }
   .finder-input { width: 100%; }

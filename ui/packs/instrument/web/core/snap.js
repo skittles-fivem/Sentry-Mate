@@ -37,6 +37,7 @@ function tablePlan(t) {
   if (cells.some((c) => c.colSpan > 1)) return null;
   const ws = cells.map((c) => c.getBoundingClientRect().width);
   const tw = t.getBoundingClientRect().width;
+  if (!tw || ws.some((w) => !w)) return null;
   if (!ws.some(off) && !off(tw)) return null;
   const scrolls = t.parentElement && tw > t.parentElement.clientWidth + 0.5;
   let grow = 0;
@@ -71,6 +72,8 @@ export function snapAll() {
   snapped.clear();
   const grids = [], tables = [];
   for (const e of document.body.getElementsByTagName('*')) {
+    if (e.localName === 'details' && !e.open) continue; // its content is not laid out: left alone
+    if (e.closest('details:not([open]) > :not(summary)')) continue;
     if (e.localName === 'table') { tables.push(e); continue; }
     const d = getComputedStyle(e).display;
     if (d === 'grid' || d === 'inline-grid') grids.push(e);
@@ -103,6 +106,7 @@ export function watchTables() {
   }).observe(document.body, { childList: true, subtree: true });
   if ('ResizeObserver' in window) ro = new ResizeObserver(later);
   addEventListener('resize', later);
+  document.addEventListener('toggle', later, true); // a <details> opened or closed
   if (document.fonts) {
     document.fonts.ready.then(later);
     document.fonts.addEventListener?.('loadingdone', later);
