@@ -69,12 +69,12 @@ const CAN_REASONS = {
   no_sidecar: ['No sidecar', 'The zip has the log without its .log.xz.json beside it, which holds the signature.'],
   bad_sidecar: ['Sidecar unreadable', 'Its sidecar is not JSON, or over 1 MB.'],
   different_file_here: ['Another log of that name', 'A different log with the same name is already here; the one here is kept.'],
-  being_uploaded: ['Being uploaded', 'The CAN Bridge is uploading this log now (or an upload of it stopped part way); that upload brings it.'],
+  being_uploaded: ['Being uploaded', 'The CAN Bridge is uploading this log now; that upload brings it.'],
   too_large: ['Too large', 'A log can be at most 1 GB.'],
   car_full: ['Car full', 'The car already holds the most logs a car can keep.'],
 };
 const canReason = (code) => CAN_REASONS[code] || [String(code).replace(/[_-]/g, ' '), 'A reason the server gave by its code.'];
-const KEY_STATUS = { car: 'Goes to its car', new_key: 'A new car key', waiting: 'Waiting for an admin (Settings: Cars)', working: 'Being decoded' };
+const KEY_STATUS = { car: 'Goes to its car', new_car: 'A new car', only_car: 'The one car here', new_key: 'A new car key', waiting: 'Waiting for an admin (Settings: Cars)', working: 'Being decoded' };
 
 // TeslaMate's tables, in words
 const TABLES = {

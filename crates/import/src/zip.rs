@@ -9,7 +9,9 @@
 //! need both a 32-bit CRC and the size to agree by chance). Deflated entries end where their stream ends.
 //!
 //! Each entry's CRC-32 (and size, when known) is checked as its last byte is read: a damaged entry is an error, never
-//! data. Encrypted entries and other methods (bzip2, LZMA, zstd ...) are refused with what to do.
+//! data. A deflated entry that unpacks to more than [`MAX_RATIO`] times its packed size (past 16 MiB) is an error too
+//! (a zip bomb), as it is read, so moving past one costs no more than that. Encrypted entries and other methods
+//! (bzip2, LZMA, zstd ...) are refused with what to do.
 
 use std::io::{self, Read, Write};
 
@@ -20,6 +22,12 @@ const ZIP64_END: u32 = 0x0606_4b50;
 const DESCRIPTOR: u32 = 0x0807_4b50;
 const MAX32: u64 = 0xffff_ffff;
 const BUF: usize = 256 * 1024;
+/// The most a deflated entry may unpack to per packed byte. Deflate reaches about 1,030 at most (on runs of one byte);
+/// real files, the CAN Bridge's candump text included, stay far below. Past it the zip is refused: otherwise a small
+/// upload could make every pass inflate a thousand times its size.
+pub const MAX_RATIO: u64 = 100;
+/// Bytes a deflated entry may unpack to whatever its ratio (a small file of zeros is no bomb).
+const MAX_RATIO_FREE: u64 = 16 << 20;
 /// The longest name taken (a zip allows 65,535 bytes).
 pub const MAX_NAME: usize = 1024;
 
@@ -372,28 +380,48 @@ impl<R: Read> ZipStream<R> {
                 }
             }
             Mode::Deflate(d) => {
-                let have = self.some()?;
-                let (before_in, before_out) = (d.total_in(), d.total_out());
-                let st = d
-                    .decompress(&self.buf[self.lo..self.lo + have], out, flate2::FlushDecompress::None)
-                    .map_err(|e| bad(format!("{}: {e}", c.name)))?;
-                let used = (d.total_in() - before_in) as usize;
-                let made = (d.total_out() - before_out) as usize;
-                self.consume(used);
-                c.taken += used as u64;
-                if st == flate2::Status::StreamEnd {
+                // input taken with nothing made yet (a short read, a block header) is not the end: only the deflate
+                // stream's own end is, so read on until it makes bytes or ends
+                let made = loop {
+                    let have = self.some()?;
+                    let (before_in, before_out) = (d.total_in(), d.total_out());
+                    let st = d
+                        .decompress(&self.buf[self.lo..self.lo + have], out, flate2::FlushDecompress::None)
+                        .map_err(|e| bad(format!("{}: {e}", c.name)))?;
+                    let used = (d.total_in() - before_in) as usize;
+                    let made = (d.total_out() - before_out) as usize;
+                    self.consume(used);
+                    c.taken += used as u64;
+                    if st == flate2::Status::StreamEnd {
+                        if made > 0 {
+                            c.crc.update(&out[..made]);
+                            c.got += made as u64;
+                        }
+                        self.end_of(c)?;
+                        return Ok(made);
+                    }
                     if made > 0 {
-                        c.crc.update(&out[..made]);
-                        c.got += made as u64;
+                        break made;
                     }
-                    self.end_of(c)?;
-                    return Ok(made);
-                }
-                if made == 0 && used == 0 {
-                    if have == 0 {
-                        return Err(bad(format!("{}: cut short", c.name)));
+                    if used == 0 {
+                        if have == 0 {
+                            return Err(bad(format!("{}: cut short", c.name)));
+                        }
+                        if have >= BUF {
+                            return Err(bad(format!("{}: its deflate data stops making progress", c.name)));
+                        }
+                        // what is here may be too little to go on with: more, if the file has more
+                        if self.fill(have + 1)? <= have {
+                            return Err(bad(format!("{}: cut short", c.name)));
+                        }
                     }
-                    return Err(bad(format!("{}: its deflate data stops making progress", c.name)));
+                };
+                if c.got + made as u64 > MAX_RATIO_FREE.max(c.taken.saturating_mul(MAX_RATIO)) {
+                    return Err(bad(format!(
+                        "{}: it unpacks to more than {MAX_RATIO} times its packed size, which no real file does (a \
+                         zip bomb?)",
+                        c.name
+                    )));
                 }
                 made
             }
@@ -732,6 +760,120 @@ mod tests {
         let got = read_all(&zip).unwrap();
         assert_eq!(got.len(), 2);
         assert!(got.iter().all(|(_, d)| *d == data));
+    }
+
+    /// One deflated entry, its sizes and CRC in the header or in a descriptor after it, then the end record.
+    fn deflated(name: &str, data: &[u8], packed: &[u8], descriptor: bool) -> Vec<u8> {
+        let crc = crc32fast::hash(data);
+        let mut zip = Vec::new();
+        zip.extend_from_slice(&LOCAL.to_le_bytes());
+        zip.extend_from_slice(&20u16.to_le_bytes());
+        zip.extend_from_slice(&(if descriptor { 8u16 } else { 0 }).to_le_bytes());
+        zip.extend_from_slice(&8u16.to_le_bytes());
+        zip.extend_from_slice(&[0u8; 4]);
+        let (c, cs, us) = if descriptor { (0, 0, 0) } else { (crc, packed.len() as u32, data.len() as u32) };
+        zip.extend_from_slice(&c.to_le_bytes());
+        zip.extend_from_slice(&cs.to_le_bytes());
+        zip.extend_from_slice(&us.to_le_bytes());
+        zip.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        zip.extend_from_slice(&0u16.to_le_bytes());
+        zip.extend_from_slice(name.as_bytes());
+        zip.extend_from_slice(packed);
+        if descriptor {
+            zip.extend_from_slice(&DESCRIPTOR.to_le_bytes());
+            zip.extend_from_slice(&crc.to_le_bytes());
+            zip.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+            zip.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        }
+        zip.extend_from_slice(&EOCD.to_le_bytes());
+        zip.extend_from_slice(&[0u8; 18]);
+        zip
+    }
+
+    /// A reader that gives at most `n` bytes per read, as a pipe or a socket may.
+    struct Short<'a>(&'a [u8], usize);
+
+    impl Read for Short<'_> {
+        fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+            let n = b.len().min(self.1).min(self.0.len());
+            b[..n].copy_from_slice(&self.0[..n]);
+            self.0 = &self.0[n..];
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_deflated_entry_read_a_few_bytes_at_a_time_is_whole() {
+        use flate2::{Compression, write::DeflateEncoder};
+        let mut x = 1u64;
+        let data: Vec<u8> = (0..300_000)
+            .map(|i| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                if i % 3 == 0 { (x % 16) as u8 } else { b'a' + (i % 7) as u8 }
+            })
+            .collect();
+        let mut enc = DeflateEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(&data).unwrap();
+        let packed = enc.finish().unwrap();
+        for descriptor in [true, false] {
+            let zip = deflated("one.bin", &data, &packed, descriptor);
+            for n in [1usize, 3, 7, 1000, 65_536] {
+                let mut z = ZipStream::new(Short(&zip, n));
+                z.next_entry().unwrap().unwrap();
+                let mut v = Vec::new();
+                z.read_to_end(&mut v).unwrap_or_else(|e| panic!("descriptor {descriptor}, reads of {n}: {e}"));
+                assert!(v == data, "descriptor {descriptor}, reads of {n}: {} bytes", v.len());
+                assert!(z.next_entry().unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn a_zip_bomb_is_refused_as_it_is_read() {
+        use flate2::{Compression, write::DeflateEncoder};
+        // 256 MiB of zeros in about 260 KB; skipping past it (as the CAN import does with a file it doesn't use)
+        // stops once it is plainly a bomb, long before its end
+        let zeros = vec![0u8; 1 << 20];
+        let mut enc = DeflateEncoder::new(Vec::new(), Compression::best());
+        let mut crc = crc32fast::Hasher::new();
+        for _ in 0..256 {
+            enc.write_all(&zeros).unwrap();
+            crc.update(&zeros);
+        }
+        let packed = enc.finish().unwrap();
+        assert!(packed.len() < 300_000, "{}", packed.len());
+        let mut zip = deflated("k/notes.bin", &[], &packed, true);
+        // the descriptor written for no data: put in the real CRC and sizes
+        let at = zip.len() - 22 - 12;
+        zip[at..at + 4].copy_from_slice(&crc.finalize().to_le_bytes());
+        zip[at + 4..at + 8].copy_from_slice(&(packed.len() as u32).to_le_bytes());
+        zip[at + 8..at + 12].copy_from_slice(&(256u32 << 20).to_le_bytes());
+        let mut z = ZipStream::new(&zip[..]);
+        z.next_entry().unwrap().unwrap();
+        let e = z.next_entry().unwrap_err();
+        assert!(e.to_string().contains("zip bomb"), "{e}");
+        // read rather than skipped: the same, after at most the free 16 MiB plus 100 per packed byte
+        let mut z = ZipStream::new(&zip[..]);
+        z.next_entry().unwrap().unwrap();
+        let (mut got, mut b) = (0u64, vec![0u8; 1 << 16]);
+        let e = loop {
+            match z.read_entry(&mut b) {
+                Ok(0) => panic!("read to its end"),
+                Ok(n) => got += n as u64,
+                Err(e) => break e,
+            }
+        };
+        assert!(e.to_string().contains("zip bomb"), "{e}");
+        assert!(got <= (16 << 20) + 100 * packed.len() as u64 + (1 << 16), "{got}");
+        // a small file of zeros, or text that packs well, is no bomb
+        let small = vec![0u8; 8 << 20];
+        let mut enc = DeflateEncoder::new(Vec::new(), Compression::best());
+        enc.write_all(&small).unwrap();
+        let packed = enc.finish().unwrap();
+        let got = read_all(&deflated("zeros.bin", &small, &packed, false)).unwrap();
+        assert!(got[0].1 == small);
     }
 
     #[test]

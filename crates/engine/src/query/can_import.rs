@@ -13,8 +13,10 @@
 //! only a log signed and unchanged since (by the paired key, or the first signed log of a new key) is stored. A log
 //! that is unsigned, has no sidecar beside it, was changed, is signed for another car key or by another key is
 //! refused and counted with why; it is never stored. A log already here (the same name and SHA-256) is counted, not
-//! stored again; a different file under a name already here is refused. Stopping part way loses nothing: a run
-//! started again skips what is here.
+//! stored again; a different file under a name already here is refused. A sidecar for a log here without one is
+//! checked the same way before it is stored (one signed by another key is refused and counted). Stopping part way
+//! loses nothing: a run started again skips what is here and finishes a log left part way from where it stopped.
+//! The check counts as the run would: a log twice in the zip once, and the key's chain with the logs here.
 //!
 //! The zip is read once per pass, as a stream ([`import::zip::ZipStream`]), holding at most one log (up to
 //! [`ingest::store::MAX_CHUNK`] in memory, sealed to `spool` beyond) and a few sidecars that came before their logs.
@@ -25,7 +27,7 @@ use ingest::judge::{Judged, Status};
 use ingest::store::{MAX_CHUNK, MAX_FILE, MAX_SIDECAR, State};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -58,6 +60,9 @@ pub enum CanImportError {
     Store(String),
     #[error("{0}")]
     Stopped(String),
+    /// A fault in the import itself (it stopped: nothing stored by it is lost).
+    #[error("the import stopped on an internal error: {0}")]
+    Internal(String),
 }
 
 impl From<io::Error> for CanImportError {
@@ -74,8 +79,24 @@ pub fn error_of(e: &CanImportError) -> (&'static str, String) {
         CanImportError::NotCanExport => "not_a_can_export",
         CanImportError::Store(_) => "store_failed",
         CanImportError::Stopped(_) => "stopped",
+        CanImportError::Internal(_) => "internal_error",
     };
     (code, e.to_string())
+}
+
+/// Runs a pass so that a panic in it is an error of the pass ([`CanImportError::Internal`]), not a job left running.
+pub fn guarded<T>(f: impl FnOnce() -> Result<T, CanImportError>) -> Result<T, CanImportError> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(p) => {
+            let what = p
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| p.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "a panic".into());
+            Err(CanImportError::Internal(trust::one_line(&what, 200)))
+        }
+    }
 }
 
 /// How a pass goes.
@@ -247,6 +268,10 @@ struct Walk<'a, 'p, R> {
     pending: Option<Log>,
     early: VecDeque<(String, Vec<u8>)>,
     spool_n: u64,
+    /// The check: the logs it would store (name, SHA-256), so a log twice in the zip counts as the run counts it.
+    would_store: HashMap<String, String>,
+    /// The check: the logs here already whose sidecar it would add.
+    would_add_sidecar: HashSet<String>,
 }
 
 /// Reads one pass of a zip.
@@ -259,6 +284,8 @@ fn walk<R: Read>(e: &Engine, r: R, pass: &Pass<'_>) -> Result<Tally, CanImportEr
         pending: None,
         early: VecDeque::new(),
         spool_n: 0,
+        would_store: HashMap::new(),
+        would_add_sidecar: HashSet::new(),
     };
     let r = w.run();
     if let Some(mut p) = w.pending.take() {
@@ -382,17 +409,16 @@ impl<R: Read> Walk<'_, '_, R> {
             if n == 0 {
                 break;
             }
-            h.update(&b[..n]);
             len += n as u64;
             if len > MAX_FILE {
-                if !too_large {
-                    body.clear();
-                    body.keep = false;
-                }
+                // refused whatever it holds: not read on (moving to the next entry skips the rest)
+                body.clear();
+                body.keep = false;
                 too_large = true;
-            } else {
-                body.push(self.e, &b[..n])?;
+                break;
             }
+            h.update(&b[..n]);
+            body.push(self.e, &b[..n])?;
         }
         self.t.log_bytes += len;
         self.pending = Some(Log { name, sha: hex::encode(h.finalize()), len, too_large, body });
@@ -444,21 +470,19 @@ impl<R: Read> Walk<'_, '_, R> {
             self.t.refuse(&key, &name, "too_large", format!("a log can be at most {MAX_FILE} bytes"));
             return Ok(());
         }
-        // already here: the same file is counted, a different one refused
+        // already here (or, in the check, stored by this pass already): the same file is counted, a different one
+        // refused
         let had = rt.block_on(e.store().state_of(&name)).map_err(|x| CanImportError::Store(x.message))?;
-        if had.state == State::Partial {
-            self.t.refuse(
-                &key,
-                &name,
-                "being_uploaded",
-                "the CAN Bridge is uploading this log now (or an upload of it stopped part way): that upload brings it"
-                    .into(),
-            );
-            return Ok(());
-        }
-        if had.state == State::Complete {
-            let same = had.length == Some(log.len)
-                && rt.block_on(e.store().hash(&name)).map_err(|x| CanImportError::Store(x.message))?.0 == log.sha;
+        let would = if self.pass.store { None } else { self.would_store.get(&name).cloned() };
+        let here = match &would {
+            Some(sha) => Some(*sha == log.sha),
+            None if had.state == State::Complete => Some(
+                had.length == Some(log.len)
+                    && rt.block_on(e.store().hash(&name)).map_err(|x| CanImportError::Store(x.message))?.0 == log.sha,
+            ),
+            None => None,
+        };
+        if let Some(same) = here {
             if !same {
                 self.t.refuse(
                     &key,
@@ -468,87 +492,82 @@ impl<R: Read> Walk<'_, '_, R> {
                 );
                 return Ok(());
             }
-            self.t.already += 1;
-            if let Some(k) = self.t.keys.get_mut(&key) {
-                k.already += 1;
-            }
-            // its sidecar never came by upload: it comes now, and the log is judged again with it
-            if let Some(b) = side
-                && !e.store().exists(&side_name)
-                && serde_json::from_slice::<Value>(&b).is_ok()
-            {
-                self.t.sidecars_added += 1;
-                if self.pass.store {
-                    let _pass = self.enter()?;
-                    self.store_sidecar_and_judge(&key, &name, b)?;
+            // its sidecar never came by upload: it comes now, checked as any log's is, and the log is judged again
+            // with it
+            let side_here = would.is_some()
+                || e.store().exists(&side_name)
+                || (!self.pass.store && self.would_add_sidecar.contains(&name));
+            if let Some(b) = side.filter(|_| !side_here) {
+                match self.verify(&key, &name, log, &b)? {
+                    Ok(link) => {
+                        self.count_already(&key);
+                        self.t.sidecars_added += 1;
+                        if self.pass.store {
+                            let _pass = self.enter()?;
+                            self.store_sidecar_and_judge(&key, &name, b)?;
+                        } else {
+                            self.would_add_sidecar.insert(name.clone());
+                            if let Some(k) = self.t.keys.get_mut(&key) {
+                                k.links.push(trust::Entry { link, failed: None });
+                            }
+                        }
+                    }
+                    Err((code, why)) => self.t.refuse(
+                        &key,
+                        &name,
+                        code,
+                        format!("{why} (the log is here already without a sidecar: it stays so)"),
+                    ),
                 }
+                return Ok(());
             }
+            self.count_already(&key);
             return Ok(());
+        }
+        // an upload of it stopped part way: the import goes on from there (unless it is another file's upload)
+        let mut resume = 0;
+        if had.state == State::Partial {
+            if had.length != Some(log.len) {
+                self.t.refuse(&key, &name, "being_uploaded", BEING_UPLOADED.into());
+                return Ok(());
+            }
+            resume = had.received;
         }
         let Some(side_bytes) = side else {
             self.t.refuse(&key, &name, "no_sidecar", "no sidecar beside it in the zip: it is not signed".into());
             return Ok(());
         };
-        let Ok(side) = serde_json::from_slice::<Value>(&side_bytes) else {
-            self.t.refuse(&key, &name, "bad_sidecar", "its sidecar is not JSON".into());
-            return Ok(());
+        let link = match self.verify(&key, &name, log, &side_bytes)? {
+            Ok(link) => link,
+            Err((code, why)) => {
+                self.t.refuse(&key, &name, code, why);
+                return Ok(());
+            }
         };
-        let check = trust::check(&name, &log.sha, log.len, &side);
-        let pin = self.pin_of(&key)?;
-        let verdict = trust::judge(&check, pin.as_deref());
-        match (&verdict, &check) {
-            (Verdict::Verified, Check::Signed(l)) => {
-                if pin.is_none() {
-                    self.t.pins.insert(key.clone(), Some(l.key_fingerprint.clone()));
-                }
-                if !self.pass.store
-                    && let Some(k) = self.t.keys.get_mut(&key)
-                {
-                    k.links.push(trust::Entry { link: l.clone(), failed: None });
-                }
-            }
-            (Verdict::Failed(r), Check::Signed(l)) => {
-                if let Some(k) = self.t.keys.get_mut(&key) {
-                    k.other_keys.insert(l.key_fingerprint.clone());
-                }
-                self.t.refuse(
-                    &key,
-                    &name,
-                    "signed_by_another_key",
-                    format!("{r}: not the key this car is paired with"),
-                );
-                return Ok(());
-            }
-            (Verdict::Failed(r), _) => {
-                let code = if matches!(check, Check::NotSigned { .. }) { "unsigned" } else { "failed_check" };
-                self.t.refuse(&key, &name, code, r.clone());
-                return Ok(());
-            }
-            (Verdict::CouldNotSign(r), _) => {
-                self.t.refuse(&key, &name, "unsigned", r.clone());
-                return Ok(());
-            }
-            (Verdict::Unsigned, _) => {
-                self.t.refuse(&key, &name, "unsigned", "not signed by the CAN Bridge".into());
-                return Ok(());
-            }
-            (Verdict::Verified, _) => {
-                self.t.refuse(&key, &name, "failed_check", "no signature".into());
-                return Ok(());
-            }
-        }
         if !self.pass.store {
+            self.would_store.insert(name.clone(), log.sha.clone());
             self.t.imported += 1;
             if let Some(k) = self.t.keys.get_mut(&key) {
                 k.imported += 1;
+                k.links.push(trust::Entry { link, failed: None });
             }
             return Ok(());
         }
         // stored as an upload is: through the gate, the log in chunks, then its sidecar, then judged
         self.wait_for_engine()?;
         let _pass = self.enter()?;
-        match self.receive(log)? {
+        let mut stored = self.receive(log, resume)?;
+        if resume > 0 && matches!(&stored, Err((c, _)) if *c == "sha256_mismatch") {
+            // what had arrived was not this file's start: the store dropped it, so the whole file goes again
+            stored = self.receive(log, 0)?;
+        }
+        match stored {
             Ok(()) => {}
+            Err(("busy" | "offset_mismatch" | "length_changed", _)) => {
+                // an upload of it is under way after all
+                self.t.refuse(&key, &name, "being_uploaded", BEING_UPLOADED.into());
+                return Ok(());
+            }
             Err((code, why)) => {
                 self.t.refuse(&key, &name, code, why);
                 return Ok(());
@@ -566,9 +585,55 @@ impl<R: Read> Walk<'_, '_, R> {
         Ok(())
     }
 
-    /// Stores a log from its spool. `Err((code, why))`: the store refused it.
+    fn count_already(&mut self, key: &str) {
+        self.t.already += 1;
+        if let Some(k) = self.t.keys.get_mut(key) {
+            k.already += 1;
+        }
+    }
+
+    /// A log's sidecar checked as the judge will check it, against the key its car key is paired with: its link
+    /// when it is signed by that key (or, with no pairing yet, signed: this pass pairs that key), else why not.
     #[allow(clippy::type_complexity)]
-    fn receive(&mut self, log: &mut Log) -> Result<Result<(), (&'static str, String)>, CanImportError> {
+    fn verify(
+        &mut self,
+        key: &str,
+        name: &str,
+        log: &Log,
+        side_bytes: &[u8],
+    ) -> Result<Result<trust::Link, (&'static str, String)>, CanImportError> {
+        let Ok(side) = serde_json::from_slice::<Value>(side_bytes) else {
+            return Ok(Err(("bad_sidecar", "its sidecar is not JSON".into())));
+        };
+        let check = trust::check(name, &log.sha, log.len, &side);
+        let pin = self.pin_of(key)?;
+        let verdict = trust::judge(&check, pin.as_deref());
+        Ok(match (verdict, check) {
+            (Verdict::Verified, Check::Signed(l)) => {
+                if pin.is_none() {
+                    self.t.pins.insert(key.to_string(), Some(l.key_fingerprint.clone()));
+                }
+                Ok(l)
+            }
+            (Verdict::Failed(r), Check::Signed(l)) => {
+                if let Some(k) = self.t.keys.get_mut(key) {
+                    k.other_keys.insert(l.key_fingerprint.clone());
+                }
+                Err(("signed_by_another_key", format!("{r}: not the key this car is paired with")))
+            }
+            (Verdict::Failed(r), check) => {
+                Err((if matches!(check, Check::NotSigned { .. }) { "unsigned" } else { "failed_check" }, r))
+            }
+            (Verdict::CouldNotSign(r), _) => Err(("unsigned", r)),
+            (Verdict::Unsigned, _) => Err(("unsigned", "not signed by the CAN Bridge".into())),
+            (Verdict::Verified, _) => Err(("failed_check", "no signature".into())),
+        })
+    }
+
+    /// Stores a log from its spool, from byte `from` on (what an upload of it that stopped part way left). `Err((code,
+    /// why))`: the store refused it.
+    #[allow(clippy::type_complexity)]
+    fn receive(&mut self, log: &mut Log, from: u64) -> Result<Result<(), (&'static str, String)>, CanImportError> {
         let (e, rt) = (self.e, rt(self.e)?);
         let refused = |x: ingest::ApiError| -> Result<Result<(), (&'static str, String)>, CanImportError> {
             // no room stops the import (nothing after it would fit either); the rest is this log's own
@@ -580,16 +645,25 @@ impl<R: Read> Walk<'_, '_, R> {
         };
         let (name, len, sha) = (log.name.clone(), log.len, log.sha.clone());
         let Some(file) = log.body.file.as_mut() else {
-            let body = std::mem::take(&mut log.body.mem);
-            return match rt.block_on(e.store().receive(&name, body.into(), 0, len, &sha)) {
+            let at = (from as usize).min(log.body.mem.len());
+            let body = log.body.mem[at..].to_vec();
+            return match rt.block_on(e.store().receive(&name, body.into(), at as u64, len, &sha)) {
                 Ok(_) => Ok(Ok(())),
                 Err(x) => refused(x),
             };
         };
         let mut chunk: Vec<u8> = Vec::with_capacity(MAX_CHUNK as usize);
-        let mut offset = 0u64;
+        let mut offset = from;
+        let mut seen = 0u64;
         let mut failed: Option<ingest::ApiError> = None;
         let r = file.read_all(|piece| {
+            // the bytes before `from` are here already
+            let skip = from.saturating_sub(seen).min(piece.len() as u64) as usize;
+            seen += piece.len() as u64;
+            let piece = &piece[skip..];
+            if piece.is_empty() {
+                return Ok(());
+            }
             chunk.extend_from_slice(piece);
             if chunk.len() as u64 >= MAX_CHUNK - 64 * 1024 {
                 let body = std::mem::replace(&mut chunk, Vec::with_capacity(MAX_CHUNK as usize));
@@ -661,39 +735,82 @@ impl<R: Read> Walk<'_, '_, R> {
     }
 }
 
+/// Why a log an upload is bringing now is left to it.
+const BEING_UPLOADED: &str = "the CAN Bridge is uploading this log now (or an upload of another file of this \
+                              name stopped part way): that upload brings it";
+
 fn key_of(name: &str) -> String {
     LogName::parse(name).map(|n| n.vehicle_key.to_string()).unwrap_or_default()
 }
 
+/// A key this import brought logs of that no upload token is tied to: its logs are here now, so a token made for no
+/// car is refused at its first upload of that key (a fresh token may not take a key with logs here: car keys are not
+/// secret). The bridge's token has to be made on the key's car's page, which may take over that car's keys.
+fn token_hints(e: &Engine, t: &mut Tally) {
+    let tied: BTreeSet<String> = match (e.tokens(), e.handle()) {
+        (Some(tokens), Ok(h)) => h.block_on(tokens.list()).into_iter().filter_map(|t| t.vehicle_key).collect(),
+        _ => BTreeSet::new(),
+    };
+    let keys: Vec<String> =
+        t.keys.iter().filter(|(k, v)| v.imported > 0 && !tied.contains(*k)).map(|(k, _)| k.clone()).collect();
+    for key in keys {
+        t.warn(format!(
+            "No upload token is tied to car key {key} yet. Its logs are here now, so make the CAN Bridge's token \
+             on its car (Settings → Cars: that car's upload tokens, or token new --car NAME --key {key}), not under \
+             upload tokens for a new car: such a token is refused at its first upload of a car key with logs here"
+        ));
+    }
+}
+
 /// Where each car key goes: its car, or what happens to a key no car has.
+/// Where the check expects a key no car has to go, as [`Engine::car_of_key`] decides at its first log (the import
+/// has no token: a token made on a car's page names its car only for uploads): `("new_car", None)`, `("only_car",
+/// Some(car))` (the one car, unless the key's VIN turns out to be another car's) or `("waiting", None)` (an admin
+/// chooses on Settings → Cars).
+fn new_key_goes(
+    e: &Engine,
+    key: &str,
+    waiting: &BTreeMap<String, crate::records::WaitingKey>,
+) -> (&'static str, Option<model::CarId>) {
+    if waiting.get(key).is_some_and(|w| w.held) {
+        return ("waiting", None);
+    }
+    let cars =
+        e.db().fleet(&db::FleetQuery { search: None, limit: 2, after: None }).map(|f| f.cars).unwrap_or_default();
+    match e.options().new_keys {
+        crate::NewKeys::NewCar => ("new_car", None),
+        crate::NewKeys::OnlyCarElseWait if cars.is_empty() => ("new_car", None),
+        crate::NewKeys::OnlyCarElseWait if cars.len() == 1 => ("only_car", cars.first().map(|c| c.car.id)),
+        crate::NewKeys::OnlyCarElseWait | crate::NewKeys::Wait => ("waiting", None),
+    }
+}
+
 fn car_rows(e: &Engine, t: &Tally, imported: bool) -> Vec<Value> {
     let waiting = crate::records::waiting_keys(e.db()).unwrap_or_default();
     let rt = e.handle().ok();
     t.keys
         .iter()
         .map(|(key, k)| {
-            let car = e.db().car_for_key(key).ok().flatten();
-            let name = car.and_then(|c| e.db().car(c).ok().flatten()).map(|c| c.name);
+            let mut car = e.db().car_for_key(key).ok().flatten();
             let status = match (car, imported) {
                 (Some(_), _) => "car",
                 (None, true) if waiting.contains_key(key) => "waiting",
                 (None, true) => "working",
-                (None, false) => "new_key",
+                (None, false) => {
+                    let (status, to) = new_key_goes(e, key, &waiting);
+                    car = to;
+                    status
+                }
             };
-            let chain = if imported {
-                rt.as_ref().map(|h| h.block_on(e.judge().chain(key))).map(|c| {
-                    json!({ "signing_key": c.signing_key, "count": c.report.count, "first": c.report.first,
-                            "last": c.report.last, "issues": c.report.issues.iter().take(50).collect::<Vec<_>>(),
-                            "restarts": c.report.restarts.len() })
-                })
-            } else {
-                let mut links = k.links.clone();
-                links.sort_by_key(|x| x.link.index);
-                let c = trust::chain(&links);
-                Some(json!({ "signing_key": t.pins.get(key).cloned().flatten(), "count": c.count, "first": c.first,
-                             "last": c.last, "issues": c.issues.iter().take(50).collect::<Vec<_>>(),
-                             "restarts": c.restarts.len() }))
-            };
+            let name = car.and_then(|c| e.db().car(c).ok().flatten()).map(|c| c.name);
+            // the key's whole chain as it is here, with (for the check) the zip's logs it would add
+            let extra = if imported { Vec::new() } else { k.links.clone() };
+            let pin = t.pins.get(key).cloned().flatten();
+            let chain = rt.as_ref().map(|h| h.block_on(e.judge().chain_with(key, pin.as_deref(), extra))).map(|c| {
+                json!({ "signing_key": c.signing_key, "count": c.report.count, "first": c.report.first,
+                        "last": c.report.last, "issues": c.report.issues.iter().take(50).collect::<Vec<_>>(),
+                        "restarts": c.report.restarts.len() })
+            });
             let gaps = chain
                 .as_ref()
                 .and_then(|c| c["issues"].as_array())
@@ -766,12 +883,13 @@ pub fn check<R: Read>(e: &Engine, r: R, pass: &Pass<'_>) -> Result<Value, CanImp
 /// work through them, so the report names each key's car.
 pub fn run<R: Read>(e: &Engine, r: R, pass: &Pass<'_>) -> Result<Value, CanImportError> {
     let p = Pass { store: true, spool: pass.spool.clone(), gate: pass.gate, stop: pass.stop.clone() };
-    let t = walk(e, r, &p)?;
+    let mut t = walk(e, r, &p)?;
     let _ = std::fs::remove_dir_all(&p.spool);
     let until = Instant::now() + SETTLE;
     while e.queued() > 0 && Instant::now() < until && !p.stop.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(20));
     }
+    token_hints(e, &mut t);
     Ok(report(e, &t, true))
 }
 
@@ -779,6 +897,15 @@ pub fn run<R: Read>(e: &Engine, r: R, pass: &Pass<'_>) -> Result<Value, CanImpor
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn a_panic_in_a_pass_is_its_error() {
+        let r: Result<(), _> = guarded(|| panic!("boom"));
+        let e = r.unwrap_err();
+        assert_eq!(error_of(&e).0, "internal_error");
+        assert!(e.to_string().contains("boom"), "{e}");
+        assert_eq!(guarded(|| Ok(7)).unwrap(), 7);
+    }
 
     #[test]
     fn entries_are_told_apart_by_their_names() {
@@ -791,5 +918,8 @@ mod tests {
         assert!(matches!(kind_of("a/"), Kind::Folder));
         assert!(matches!(kind_of("notes.txt"), Kind::Other));
         assert!(matches!(kind_of(&format!("{k}/x.log")), Kind::Other));
+        // a name a zip may carry, with a character wider than a byte where the time is: not a log, and no panic
+        assert!(matches!(kind_of(&format!("{k}/{k}_202\u{e9}108T143000Z_1.log.xz")), Kind::Other));
+        assert!(matches!(kind_of(&format!("{k}/{k}_20261\u{e9}8T143000Z_1.log")), Kind::Other));
     }
 }

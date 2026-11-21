@@ -575,7 +575,7 @@ fn opener(app: &AppState, id: &str) -> impl FnMut() -> io::Result<Backup> + use<
 /// Puts a finished pass's outcome into the job (unless it was discarded meanwhile).
 fn finish(app: &AppState, all: &Imports, id: &str, f: impl FnOnce(&mut Job)) {
     let mut st = all.lock();
-    let read = st.live.remove(id).map(|l| l.read.load(Ordering::Relaxed) / 2);
+    let read = st.live.remove(id).map(|l| l.read.load(Ordering::Relaxed) / l.reads.max(1));
     if let Some(j) = st.jobs.get_mut(id) {
         j.bytes_read = read.unwrap_or(j.bytes_read).min(j.bytes_total);
         f(j);
@@ -629,7 +629,9 @@ fn spawn_check(app: &AppState, id: &str) -> ApiResult<()> {
                 }
                 let mut open = im::counted(opener(&app, &id), live.read.clone(), live.stop.clone());
                 let pass = can::Pass { store: false, spool: spool_of(&app, &id), gate: None, stop: live.stop.clone() };
-                Outcome::Can(open().map_err(can::CanImportError::from).and_then(|r| can::check(&e, r, &pass)))
+                Outcome::Can(can::guarded(|| {
+                    open().map_err(can::CanImportError::from).and_then(|r| can::check(&e, r, &pass))
+                }))
             }
             Ok(_) if compression == "zip" => Outcome::Failed(
                 "unreadable",
@@ -974,7 +976,7 @@ fn start_can(app: &AppState, all: &Imports, e: Arc<Engine>, mut j: Job) -> ApiRe
         let pass =
             can::Pass { store: true, spool: spool_of(&app2, &id2), gate: gate.as_ref(), stop: live.stop.clone() };
         let mut open = im::counted(opener(&app2, &id2), live.read.clone(), live.stop.clone());
-        let r = open().map_err(can::CanImportError::from).and_then(|r| can::run(&e, r, &pass));
+        let r = can::guarded(|| open().map_err(can::CanImportError::from).and_then(|r| can::run(&e, r, &pass)));
         let _ = std::fs::remove_dir_all(spool_of(&app2, &id2));
         if live.stop.load(Ordering::Relaxed) {
             // discarded: its folder went with it (unless the spool came back meanwhile: then it goes now)

@@ -173,8 +173,29 @@ async fn a_zip_that_is_not_a_can_export_and_a_zip_that_is_not_a_zip_fail_clearly
     let f = wait_for(&mut admin, &id, "failed").await;
     assert_eq!(f["error"]["code"], "not_a_can_export", "{f}");
     assert!(f["error"]["message"].as_str().unwrap().contains("CAN export bundle"), "{f}");
+    // the check read it all, once
+    assert_eq!(f["bytes_read"], junk.len(), "{f}");
     let id = upload(&mut admin, "named.zip", b"-- this is SQL, not a zip\n", 1 << 20).await;
     let f = wait_for(&mut admin, &id, "failed").await;
     assert_eq!(f["error"]["code"], "unreadable", "{f}");
     assert!(f["error"]["message"].as_str().unwrap().contains("not a zip"), "{f}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_entry_name_with_a_wide_character_is_no_log_and_blocks_nothing() {
+    let k = kit().await;
+    let mut admin = k.s.admin().await;
+    let mut z = ManagerZip::new(Vec::new());
+    z.entry(&format!("{KEY}/{KEY}_202\u{e9}108T143000Z_1.log.xz"), b"x").unwrap();
+    z.entry("manifest.json", br#"{"vehicleKey":"abcdef012345","logs":[]}"#).unwrap();
+    let odd = z.finish().unwrap();
+    let id = upload(&mut admin, "odd.zip", &odd, 1 << 20).await;
+    // checked (it is no log: an other file), not stuck in the check
+    let ready = wait_for(&mut admin, &id, "ready").await;
+    assert_eq!(ready["report"]["logs"]["read"], 0, "{ready}");
+    assert_eq!(ready["report"]["files"]["other"], 1, "{ready}");
+    let d = admin.delete(&format!("/api/v1/imports/{id}"), json!({})).await;
+    assert_eq!(d.status, 200, "{}", d.text());
+    let r = admin.post("/api/v1/imports", json!({ "name": "next.zip", "bytes_total": 10 })).await;
+    assert_eq!(r.status, 201, "{}", r.text());
 }

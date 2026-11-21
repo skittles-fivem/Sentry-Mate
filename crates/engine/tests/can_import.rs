@@ -133,12 +133,17 @@ struct Log {
 
 /// The day's logs, signed in order by the bridge key made from `seed`.
 fn day(seed: &[u8]) -> Vec<Log> {
+    day_of(KEY, seed)
+}
+
+/// The same, of car key `key`.
+fn day_of(key: &str, seed: &[u8]) -> Vec<Log> {
     let mut signer = synth::Signer::from_seed(seed);
     (0..DAY.len() as u64)
         .map(|i| {
             let what = DAY[i as usize];
             let t = text(i, what);
-            let name = format!("{KEY}_20260101T00{i:02}00Z_{}.log.xz", i + 1);
+            let name = format!("{key}_20260101T00{i:02}00Z_{}.log.xz", i + 1);
             let mut xz = Vec::new();
             lzma_rs::xz_compress(&mut t.as_bytes(), &mut xz).unwrap();
             let start = T0_MS + i * 60_000;
@@ -147,7 +152,7 @@ fn day(seed: &[u8]) -> Vec<Log> {
                 "start_wall_ms": start,
                 "end_wall_ms": start + 60_000,
                 "closed_because": if matches!(what, Minute::Quiet) { "quiet" } else { "rotate" },
-                "integrity": signer.sign(KEY, &name, &xz),
+                "integrity": signer.sign(key, &name, &xz),
             });
             Log { name, xz, side, text: t }
         })
@@ -259,7 +264,9 @@ fn a_manager_export_becomes_drives_and_charges_and_importing_it_again_doubles_no
         assert_eq!(c["manifest"]["vehicle_key"], KEY);
         assert_eq!(c["manifest"]["logs"], 6);
         assert_eq!(c["cars"][0]["key"], KEY);
-        assert_eq!(c["cars"][0]["status"], "new_key");
+        // no car here yet: a new car is made for it
+        assert_eq!(c["cars"][0]["status"], "new_car");
+        assert_eq!(c["cars"][0]["car"], Value::Null);
         assert_eq!(c["cars"][0]["chain"]["count"], 6);
         assert!(!k.store.exists(&logs[0].name), "the check stored a log");
 
@@ -434,6 +441,9 @@ fn a_new_key_waits_for_an_admin_when_the_server_says_so() {
         engine.start().unwrap();
         let k = Arc::new(Kit { dir, store, engine, db });
         let zip = bundle(&day(b"can import wait"), false);
+        let (k2, z) = (k.clone(), zip.clone());
+        let c = blocking(move || check(&k2, z)).await.unwrap();
+        assert_eq!(c["cars"][0]["status"], "waiting", "{:#}", c["cars"][0]);
         let k2 = k.clone();
         let r = blocking(move || run(&k2, zip)).await.unwrap();
         k.engine.idle().await;
@@ -441,5 +451,186 @@ fn a_new_key_waits_for_an_admin_when_the_server_says_so() {
         assert_eq!(r["cars"][0]["status"], "waiting", "{:#}", r["cars"][0]);
         assert_eq!(r["cars"][0]["car"], Value::Null);
         assert!(k.db.car_for_key(KEY).unwrap().is_none());
+    });
+}
+
+/// A zip of exactly these entries (and a manifest), for zips a tool other than the Manager might make.
+fn zip_of(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut z = ManagerZip::new(Vec::new());
+    for (n, d) in entries {
+        z.entry(n, d).unwrap();
+    }
+    z.entry("manifest.json", json!({ "vehicleKey": KEY, "logs": [] }).to_string().as_bytes()).unwrap();
+    z.finish().unwrap()
+}
+
+/// A log and its sidecar, as zip entries.
+fn pair(l: &Log) -> Vec<(String, Vec<u8>)> {
+    let key = l.name.split('_').next().unwrap();
+    vec![
+        (format!("{key}/{}", l.name), l.xz.clone()),
+        (format!("{key}/{}.json", l.name), serde_json::to_vec(&l.side).unwrap()),
+    ]
+}
+
+fn sha(b: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(b))
+}
+
+#[test]
+fn a_log_twice_in_the_zip_counts_in_the_check_as_the_import_counts_it() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = Arc::new(kit());
+        let logs = day(b"can import twice");
+        let mut e: Vec<_> = logs.iter().flat_map(pair).collect();
+        e.extend(logs.iter().flat_map(pair));
+        // and a different file under a name already in the zip
+        let mut other = pair(&logs[1]);
+        other[0].1[10] ^= 1;
+        e.extend(other);
+        let zip = zip_of(&e);
+        let (k2, z2) = (k.clone(), zip.clone());
+        let c = blocking(move || check(&k2, z2)).await.unwrap();
+        let (k2, z2) = (k.clone(), zip.clone());
+        let r = blocking(move || run(&k2, z2)).await.unwrap();
+        k.engine.idle().await;
+        assert_eq!(r["logs"]["imported"], 6, "{r:#}");
+        assert_eq!(r["logs"]["already_here"], 6);
+        assert_eq!(r["refused"]["different_file_here"], 1);
+        assert_eq!(c["logs"]["to_import"], 6, "{c:#}");
+        assert_eq!(c["logs"]["already_here"], 6);
+        assert_eq!(c["refused"], r["refused"]);
+        assert_eq!(c["cars"][0]["chain_forks"], 0, "{:#}", c["cars"][0]);
+        assert_eq!(c["cars"][0]["chain"]["count"], 6);
+    });
+}
+
+#[test]
+fn the_check_counts_the_logs_here_in_the_chain() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = Arc::new(kit());
+        let logs = day(b"can import some here");
+        let some: Vec<_> = [1usize, 3, 5].iter().flat_map(|&i| pair(&logs[i])).collect();
+        let (k2, z) = (k.clone(), zip_of(&some));
+        blocking(move || run(&k2, z)).await.unwrap();
+        k.engine.idle().await;
+        let zip = zip_of(&logs.iter().flat_map(pair).collect::<Vec<_>>());
+        let (k2, z2) = (k.clone(), zip.clone());
+        let c = blocking(move || check(&k2, z2)).await.unwrap();
+        let (k2, z2) = (k.clone(), zip.clone());
+        let r = blocking(move || run(&k2, z2)).await.unwrap();
+        k.engine.idle().await;
+        assert_eq!(c["logs"]["to_import"], 3, "{c:#}");
+        assert_eq!(c["logs"]["already_here"], 3);
+        assert_eq!(r["cars"][0]["chain_gaps"], 0, "{:#}", r["cars"][0]);
+        assert_eq!(c["cars"][0]["chain_gaps"], 0, "{:#}", c["cars"][0]);
+        assert_eq!(c["cars"][0]["chain"]["count"], 6);
+        assert_eq!(c["cars"][0]["chain"], r["cars"][0]["chain"]);
+        // the import went to the car made by the first one, as the check said
+        assert_eq!(c["cars"][0]["status"], "car");
+    });
+}
+
+#[test]
+fn a_sidecar_for_a_log_here_is_checked_and_one_signed_by_another_key_refused() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = Arc::new(kit());
+        let logs = day(b"can import pinned");
+        // log 0 imported: the car key is paired with the bridge's key
+        let (k2, z) = (k.clone(), zip_of(&pair(&logs[0])));
+        blocking(move || run(&k2, z)).await.unwrap();
+        k.engine.idle().await;
+        // logs 1 and 2 came by upload, their sidecars never did
+        for l in &logs[1..3] {
+            k.store.receive(&l.name, l.xz.clone().into(), 0, l.xz.len() as u64, &sha(&l.xz)).await.unwrap();
+        }
+        // the zip brings log 1 with a sidecar signed by someone else's key, log 2 with its own
+        let mut other = synth::Signer::from_seed(b"someone else");
+        let mut side = logs[1].side.clone();
+        side["integrity"] = other.sign(KEY, &logs[1].name, &logs[1].xz);
+        let mut e = vec![
+            (format!("{KEY}/{}", logs[1].name), logs[1].xz.clone()),
+            (format!("{KEY}/{}.json", logs[1].name), serde_json::to_vec(&side).unwrap()),
+        ];
+        e.extend(pair(&logs[2]));
+        let zip = zip_of(&e);
+        let (k2, z) = (k.clone(), zip.clone());
+        let c = blocking(move || check(&k2, z)).await.unwrap();
+        let (k2, z) = (k.clone(), zip.clone());
+        let r = blocking(move || run(&k2, z)).await.unwrap();
+        k.engine.idle().await;
+        for rep in [&c, &r] {
+            assert_eq!(rep["refused"]["signed_by_another_key"], 1, "{rep:#}");
+            assert_eq!(rep["logs"]["sidecars_added"], 1);
+            assert_eq!(rep["logs"]["already_here"], 1);
+            assert_eq!(rep["cars"][0]["other_signing_keys"], json!([other.fingerprint()]));
+        }
+        assert!(!k.store.exists(&format!("{}.json", logs[1].name)), "the foreign sidecar was stored");
+        assert!(k.store.exists(&format!("{}.json", logs[2].name)));
+        let s = k.engine.judge().summary(KEY).await.unwrap();
+        assert_eq!(s.new_key, None, "a new-key notice from a refused sidecar");
+        let rec = k.engine.judge().record(KEY, &logs[2].name).await.unwrap();
+        assert_eq!(rec.status, ingest::judge::Status::Verified);
+    });
+}
+
+#[test]
+fn a_log_an_upload_left_part_way_is_imported_from_where_it_stopped() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = Arc::new(kit());
+        let logs = day(b"can import partial");
+        // what an upload (or an import) stopped between two chunks leaves
+        let l = &logs[0];
+        let half = l.xz.len() / 2;
+        k.store.receive(&l.name, l.xz[..half].to_vec().into(), 0, l.xz.len() as u64, &sha(&l.xz)).await.unwrap();
+        // and one whose start is not this file's (another file of the same length and name)
+        let l3 = &logs[3];
+        let mut wrong = l3.xz.clone();
+        wrong[0] ^= 1;
+        k.store.receive(&l3.name, wrong[..100].to_vec().into(), 0, l3.xz.len() as u64, &sha(&l3.xz)).await.unwrap();
+        let zip = zip_of(&logs.iter().flat_map(pair).collect::<Vec<_>>());
+        let (k2, z2) = (k.clone(), zip.clone());
+        let c = blocking(move || check(&k2, z2)).await.unwrap();
+        assert_eq!(c["logs"]["to_import"], 6, "{c:#}");
+        let (k2, z2) = (k.clone(), zip.clone());
+        let r = blocking(move || run(&k2, z2)).await.unwrap();
+        k.engine.idle().await;
+        assert_eq!(r["logs"]["imported"], 6, "{r:#}");
+        assert_eq!(r["logs"]["refused"], 0);
+        for l in [&logs[0], &logs[3]] {
+            assert_eq!(k.store.hash(&l.name).await.unwrap().0, sha(&l.xz), "{}", l.name);
+        }
+        assert_eq!(r["cars"][0]["chain_gaps"], 0, "{:#}", r["cars"][0]);
+    });
+}
+
+#[test]
+fn the_check_says_which_car_a_new_key_goes_to_and_the_import_names_the_token_to_make() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = Arc::new(kit());
+        let (k2, z) = (k.clone(), bundle(&day(b"can import first car"), false));
+        let r = blocking(move || run(&k2, z)).await.unwrap();
+        k.engine.idle().await;
+        let car = k.db.car_for_key(KEY).unwrap().unwrap();
+        let warned = r["warnings"].as_array().unwrap().iter().any(|w| {
+            let w = w.as_str().unwrap();
+            w.contains(KEY) && w.contains("token") && w.contains("that car's upload tokens")
+        });
+        assert!(warned, "{:#}", r["warnings"]);
+        // another car key while there is one car: it goes to that car (unless its VIN is another car's)
+        let other = "0123456789ab";
+        let zip = zip_of(&day_of(other, b"can import second key").iter().flat_map(pair).collect::<Vec<_>>());
+        let (k2, z) = (k.clone(), zip);
+        let c = blocking(move || check(&k2, z)).await.unwrap();
+        let row = c["cars"].as_array().unwrap().iter().find(|r| r["key"] == other).unwrap().clone();
+        assert_eq!(row["status"], "only_car", "{row:#}");
+        assert_eq!(row["car"], format!("c{car}"));
+        assert!(row["car_name"].is_string());
     });
 }

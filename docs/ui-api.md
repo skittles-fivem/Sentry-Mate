@@ -404,19 +404,25 @@ kind comes from the file itself once it is in: a file that starts like a zip is 
     (no CAN Bridge signature), `failed_check` (changed since it was signed, or signed for another log name or car
     key), `signed_by_another_key` (not the key this car key is paired with: trust the new key on Settings: Cars
     first), `no_sidecar`, `bad_sidecar`, `different_file_here` (another log of that name is here), `being_uploaded`
-    (an upload of it is under way), `too_large`, `car_full`. A refused log is never stored;
+    (an upload of it is under way; an upload that stopped part way is finished from where it stopped instead),
+    `too_large`, `car_full`. A refused log is never stored. A log here already without its sidecar takes the zip's
+    sidecar only if it passes the same check (`sidecars_added`); else it is counted refused, with its reason, and
+    stays as it is. The check counts as the import would: a log twice in the zip once (then `already_here`);
   - `cars: [{ key, logs, imported, already_here, refused, first_ms, last_ms, car, car_name, status, other_signing_keys,
     chain: { signing_key, count, first, last, issues, restarts }, chain_gaps, chain_forks }]` per car key. `status`:
-    `car` (goes to `car`), `new_key` (after the check: no car has it yet), `waiting` (an admin chooses on Settings:
-    Cars), `working` (still being decoded when the report was made). `chain` is the key's hash chain after the
-    import as Settings: CAN Bridge keys reports it for uploads (from the check: the zip's own signed logs); a gap or a
-    fork shows there as it does for live uploads;
+    `car` (goes to `car`), `new_car` (the check: no car has it, a new car is made for it), `only_car` (the check: it
+    goes to the one car here, `car`, unless its VIN turns out to be another car's), `waiting` (an admin chooses on
+    Settings: Cars), `working` (still being decoded when the report was made). `chain` is the key's hash chain after
+    the import as Settings: CAN Bridge keys reports it for uploads (from the check: the logs here with the zip's
+    signed logs it would add); a gap or a fork shows there as it does for live uploads;
   - `span: { from_ms, to_ms }` (the logs' start times), `manifest: { vehicle_key, from, to, made_at, logs }` (null
-    when the zip has none), `files: { entries, candump_text, ids_csv, sidecars_without_log, other }`, `warnings`.
+    when the zip has none), `files: { entries, candump_text, ids_csv, sidecars_without_log, other }`, `warnings`
+    (after the import, also one per car key no upload token is tied to: make the bridge's token on that car);
 - **Failures** (`error.code`): `not_a_can_export` (a zip with no `manifest.json` naming a car key and no CAN
   Bridge log), `unreadable` (not a zip, a damaged entry (each entry's CRC-32 is checked), encrypted, or packed with
-  a method other than stored or deflate), `read_failed`, `store_failed` (for example no free space: logs stored
-  before stay), `stopped`.
+  a method other than stored or deflate, or a deflated entry that unpacks to over 100 times its size past 16 MiB: a
+  zip bomb), `read_failed`, `store_failed` (for example no free space: logs stored before stay), `stopped`,
+  `internal_error` (a fault in the import itself; logs stored before stay).
 - **Memory:** the zip is read once per pass as a stream, never whole: at most one log (in memory up to 16 MB,
   beyond that sealed to a spool file under the import's folder, removed after) and a few sidecars at a time.
 

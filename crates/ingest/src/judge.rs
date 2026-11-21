@@ -784,25 +784,53 @@ impl Judge {
 
     /// The chain report of a key's signed logs by its paired key, and which key that is.
     pub async fn chain(&self, key: &str) -> KeyChain {
-        self.read(key, |l, h| {
-            let Some(pin) = &h.pin else {
-                return Ok(KeyChain::default());
-            };
-            let mut entries: Vec<Entry> = Vec::new();
-            l.for_each(h, |_, r| {
-                let Some(link) = r.link.as_ref() else { return ControlFlow::Continue(()) };
-                if trust::same_fingerprint(&link.key_fingerprint, &pin.fingerprint) {
-                    match r.status {
-                        Status::Verified => entries.push(Entry { link: link.clone(), failed: None }),
-                        Status::Failed => entries.push(Entry { link: link.clone(), failed: r.reason.clone() }),
-                        _ => {}
+        self.chain_with(key, None, Vec::new()).await
+    }
+
+    /// The chain report [`Judge::chain`] would give once the logs of `extra` are here too: for a check of logs not
+    /// stored yet. `pin`: the key a key not paired yet would be paired with. A log here with its chain fields counts
+    /// once, from its record (an `extra` of the same name is left out).
+    pub async fn chain_with(&self, key: &str, pin: Option<&str>, extra: Vec<Entry>) -> KeyChain {
+        let extra = Arc::new(extra);
+        let given = pin.map(str::to_string);
+        let (x, g) = (extra.clone(), given.clone());
+        let of_pin = |pin: &str, x: &[Entry], skip: &std::collections::HashSet<String>| -> Vec<Entry> {
+            x.iter()
+                .filter(|e| same_fingerprint(&e.link.key_fingerprint, pin) && !skip.contains(&e.link.name))
+                .cloned()
+                .collect()
+        };
+        let r = self
+            .read(key, move |l, h| {
+                let Some(pin) = h.pin.as_ref().map(|p| p.fingerprint.clone()).or_else(|| g.clone()) else {
+                    return Ok(KeyChain::default());
+                };
+                let mut entries: Vec<Entry> = Vec::new();
+                let mut linked = std::collections::HashSet::new();
+                l.for_each(h, |name, r| {
+                    let Some(link) = r.link.as_ref() else { return ControlFlow::Continue(()) };
+                    linked.insert(name.to_string());
+                    if trust::same_fingerprint(&link.key_fingerprint, &pin) {
+                        match r.status {
+                            Status::Verified => entries.push(Entry { link: link.clone(), failed: None }),
+                            Status::Failed => entries.push(Entry { link: link.clone(), failed: r.reason.clone() }),
+                            _ => {}
+                        }
                     }
-                }
-                ControlFlow::Continue(())
-            })?;
-            Ok(KeyChain { signing_key: Some(pin.fingerprint.clone()), report: trust::chain(&entries) })
-        })
-        .await
-        .unwrap_or_default()
+                    ControlFlow::Continue(())
+                })?;
+                entries.extend(of_pin(&pin, &x, &linked));
+                Ok(KeyChain { signing_key: Some(pin), report: trust::chain(&entries) })
+            })
+            .await;
+        match (r, given) {
+            (Ok(c), _) => c,
+            // a key with nothing here yet: the extra logs alone
+            (Err(_), Some(pin)) if !extra.is_empty() => {
+                let entries = of_pin(&pin, &extra, &Default::default());
+                KeyChain { signing_key: Some(pin), report: trust::chain(&entries) }
+            }
+            (Err(_), _) => KeyChain::default(),
+        }
     }
 }

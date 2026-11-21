@@ -123,7 +123,7 @@ bridge had uploaded them:
    unpack or zip it again). It uploads in chunks over HTTPS and can stop and go on.
 3. **The check** reads the whole zip and stores nothing. Its report says how many logs it would import, how many are
    here already (the bridge uploaded them to both servers) and how many it would refuse and why, per car key, and
-   which car each key goes to.
+   which car each key goes to: its car, a new car, the only car here, or waiting for an admin.
 4. **Start the import.** Each log is checked as an upload is (the signature, the signing key paired with the car key,
    the hash chain), stored and decoded into the car's history. A key a car has goes to that car; a new key goes
    where a new key's first upload would (Settings → Cars). The rows are the car's own CAN data, not "imported"
@@ -131,6 +131,12 @@ bridge had uploaded them:
 
 What it never does: store a log that is not signed by the car's CAN Bridge, or changed since it was signed (those
 are refused and counted, with why), or store a log twice (a log already here, by name and SHA-256, is skipped).
-Stopping it part way loses nothing: start it again, or import the same zip again later, and what is here is skipped.
-A gap or fork in a key's chain shows on Settings → Cars as it does for uploads. The details:
+Stopping it part way loses nothing: start it again, or import the same zip again later, and what is here is skipped
+(a log it was storing when it stopped goes on from where it stopped).
+A gap or fork in a key's chain shows on Settings → Cars as it does for uploads.
+
+Once a key's logs are imported, the bridge's upload token for it must be made on its car: on Settings → Cars,
+that car's upload tokens (or `token new --car NAME --key <car key>`). A token made for a new car may not take a car
+key with logs here (car keys are not secret), so its first upload is refused with `wrong_car`. The import's report
+says so for each key no token is tied to yet. The details:
 [`docs/ui-api.md`](ui-api.md#sentry-six-managers-can-export).
