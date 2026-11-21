@@ -14,6 +14,7 @@ import re
 from ..errors import bad_input, invalid
 from ..live import now_object
 from ..util import h01, iso_utc
+from . import tesla
 from .moving import DEV_CERT_SHA256
 
 HOST_RX = re.compile(r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
@@ -335,7 +336,7 @@ def network(req):
              "last_used_ms": now - 1500 if m["enabled"] else None},
             {"purpose": "release_check", "host": "api.github.com", "enabled": bool(ss["release_check"]["enabled"]),
              "last_used_ms": now - 6 * 3_600_000 if ss["release_check"]["enabled"] else None},
-        ],
+        ] + tesla.network_rows(req),
         "inbound": [{"purpose": "web", "port": 443, "tls": True}, {"purpose": "upload", "port": 10100, "tls": True}],
         "certificate": {"names": list(req.store.cert_names), "sha256": DEV_CERT_SHA256},
         "upload_address": bridge_address(req),

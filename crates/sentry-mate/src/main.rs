@@ -819,11 +819,16 @@ struct Side {
     web: std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>,
     app: Option<web::AppState>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// The Tesla API input's pollers (running only when a Tesla account exists).
+    tesla: Option<Arc<web::resources::tesla::TeslaService>>,
 }
 
 impl Side {
     /// Stops the engine's background work only (its data stays readable for the web side).
     async fn stop_engine(&mut self, wait: Duration) {
+        if let Some(t) = &self.tesla {
+            t.stop();
+        }
         if let Some(e) = self.engine.as_mut() {
             e.stop(wait).await;
         }
@@ -832,6 +837,9 @@ impl Side {
     /// Stops the web port (its connections end) and then the engine (waiting at most `wait` for a log under way).
     async fn stop(&mut self, wait: Duration) {
         self.web = Box::pin(std::future::pending());
+        if let Some(t) = self.tesla.take() {
+            t.stop();
+        }
         for t in self.tasks.drain(..) {
             t.abort();
         }
@@ -1511,6 +1519,7 @@ async fn start_web(
     claim: web::moving::ClaimKeep,
     offer: Arc<moving::old::Offer>,
 ) -> Result<Side, Box<dyn std::error::Error>> {
+    let moved = offer.is_moved();
     let (d, k, v2, e2) = (data.to_path_buf(), keys.to_path_buf(), v.clone(), engine.engine.clone());
     let ports = web::resources::mqtt::Network { web_port: net.web, upload_port: net.upload };
     let app =
@@ -1529,8 +1538,20 @@ async fn start_web(
         site::spawn_upkeep(app.clone(), announced),
         web::resources::mqtt::spawn(app.clone()),
     ];
+    // the Tesla API input reads cars only on a server that serves its data (not after a move away), and only for an
+    // account an admin added: with none, nothing is started and nothing connects to Tesla
+    let tesla = app.service::<web::resources::tesla::TeslaService>().ok();
+    if let Some(t) = &tesla
+        && !moved
+    {
+        t.start();
+        let n = t.accounts().len();
+        if n > 0 {
+            tracing::info!("Tesla API: reading the cars of {n} Tesla account(s)");
+        }
+    }
     let web = Box::pin(web::serve(listener, id.tls_config()?, web::router_with(app.clone(), api::routes())));
-    Ok(Side { engine: Some(engine), web, app: Some(app), tasks })
+    Ok(Side { engine: Some(engine), web, app: Some(app), tasks, tesla })
 }
 
 /// `SENTRY_MATE_OFFER_MOVE`: keeps a move code ready and prints it in the log (with no shell, the log is the only

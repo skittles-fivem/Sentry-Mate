@@ -222,6 +222,7 @@ pub fn apply(app: &AppState, s: &ServerSettings) {
         app.set_defaults(d);
     }
     app.set_tiles(s.tile_origins());
+    super::tesla::follow_proxy(app, s.outbound.proxy.as_deref());
 }
 
 /// At start: the frame follows the saved settings (else the defaults).

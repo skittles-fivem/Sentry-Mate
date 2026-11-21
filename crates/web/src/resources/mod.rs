@@ -21,6 +21,7 @@ pub mod settings;
 pub mod software;
 pub mod statistics;
 pub mod system;
+pub mod tesla;
 pub mod timeline;
 pub mod tokens;
 pub mod travel;
@@ -46,4 +47,5 @@ pub fn routes() -> Router<AppState> {
         .merge(system::routes())
         .merge(notices::routes())
         .merge(tokens::routes())
+        .merge(tesla::routes())
 }

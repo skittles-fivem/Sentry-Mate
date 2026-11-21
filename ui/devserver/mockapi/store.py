@@ -93,6 +93,8 @@ class Store:
         self.storage = extras.storage(now)
         from .resources import moving
         moving.seed(self, cfg, now)  # first-run set-up, the move to another server, export files
+        from .resources import tesla
+        tesla.seed(self, now)  # the Tesla API input: one account, its cars
 
     # ------------------------------------------------------------ seeding
     def seed_accounts(self, now):

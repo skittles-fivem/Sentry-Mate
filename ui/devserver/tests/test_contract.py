@@ -53,7 +53,7 @@ class Contract(ServerCase):
             "charge": c.get("/api/v1/cars/c1/charges?limit=3")["items"][1]["id"],
             "update": c.get("/api/v1/cars/c1/updates")["items"][0]["id"],
             "place": "p1", "session": "s-older-1", "account": "a2", "token": "t12", "key": "cbk_5b2e9f13",
-            "trip": "tr1", "rule": "r1", "import": "im1",
+            "trip": "tr1", "rule": "r1", "import": "im1", "tesla_account": "ta1", "sign_in": "si0",
             "export": c.json("POST", "/api/v1/system/exports", {"password": "sentry-mate-dev"}, expect=201)["id"],
         }
         cls.server.app.store.exports[cls.ids["export"]]["made_ms"] -= 10_000  # prepared
@@ -263,6 +263,24 @@ class Contract(ServerCase):
                       None, None)),
             ("DELETE", "/api/v1/imports/{import}",
              lambda: (self.fill("/api/v1/imports/{import}", **{"import": ctx["import"]}), None, None)),
+            ("PATCH", "/api/v1/integrations/tesla",
+             lambda: (None, {"version": c.get("/api/v1/integrations/tesla")["version"], "poll": "gentle",
+                             "confirm_password": "sentry-mate-dev"}, None)),
+            ("POST", "/api/v1/integrations/tesla/sign-in", lambda: (None, {"region": "global"}, None)),
+            ("POST", "/api/v1/integrations/tesla/sign-in/{sign_in}", lambda: self.tesla_finish()),
+            ("POST", "/api/v1/integrations/tesla/accounts",
+             lambda: (None, {"label": "Contract account", "refresh_token": "made-up-refresh-token",
+                             "confirm_password": "sentry-mate-dev"}, None)),
+            ("PATCH", "/api/v1/integrations/tesla/accounts/{tesla_account}",
+             lambda: (None, {"version": c.get("/api/v1/integrations/tesla/accounts/ta1")["version"],
+                             "label": "Family", "confirm_password": "sentry-mate-dev"}, None)),
+            ("PUT", "/api/v1/integrations/tesla/accounts/{tesla_account}/cars",
+             lambda: (None, {"version": c.get("/api/v1/integrations/tesla/accounts/ta1")["version"],
+                             "items": [{"vehicle": "tv3", "match": "leave_out"}],
+                             "confirm_password": "sentry-mate-dev"}, None)),
+            ("DELETE", "/api/v1/integrations/tesla/accounts/{tesla_account}",
+             lambda: (self.fill("/api/v1/integrations/tesla/accounts/{tesla_account}",
+                                tesla_account=ctx["tesla_account"]), {"confirm_password": "sentry-mate-dev"}, None)),
             ("POST", "/api/v1/system/recovery-key/new", lambda: (None, {"password": "sentry-mate-dev"}, None)),
             ("POST", "/api/v1/system/recovery-key/show", lambda: (None, {"password": "sentry-mate-dev"}, None)),
             ("POST", "/api/v1/system/recovery-key/saved", lambda: (None, None, None)),
@@ -281,6 +299,15 @@ class Contract(ServerCase):
             ("POST", "/api/v1/session/two-step", lambda: (None, self.two_step_body(), "own2")),
             ("DELETE", "/api/v1/me/sessions", lambda: (None, None, None)),
         ], new
+
+    def tesla_finish(self):
+        """A sign-in of its own, finished with the address Tesla's page would end on."""
+        from urllib.parse import parse_qs, urlsplit
+        s = self.c.json("POST", "/api/v1/integrations/tesla/sign-in", {}, expect=201)
+        state = parse_qs(urlsplit(s["url"]).query)["state"][0]
+        path = self.fill("/api/v1/integrations/tesla/sign-in/{sign_in}", sign_in=s["sign_in"])
+        return path, {"pasted_url": f"tesla://auth/callback?code=made-up-code&state={state}",
+                      "label": "Signed in", "confirm_password": "sentry-mate-dev"}, None
 
     def advance(self, ms):
         self.server.app.clock.advance(ms)
@@ -322,7 +349,8 @@ class Contract(ServerCase):
                        "/api/v1/upload-tokens": "new_token",
                        "/api/v1/cars/{car}/purpose-rules": "rule", "/api/v1/trips": "trip",
                        "/api/v1/places": "place", "/api/v1/imports": "import",
-                       "/api/v1/system/exports": "export"}.get(pattern)
+                       "/api/v1/system/exports": "export",
+                       "/api/v1/integrations/tesla/accounts": "tesla_account"}.get(pattern)
                 if key:
                     new(key, data["id"])
             row = doc[(m, pattern)]
@@ -347,7 +375,9 @@ class Contract(ServerCase):
                      "drive.purpose", "purpose_rule.create", "trip.create", "charge.cost", "update.version",
                      "place.create", "place.update", "place.delete", "mqtt.update", "settings.update",
                      "car.rebuild", "car.overlap", "import.create", "import.start", "import.discard",
-                     "export.create", "export.delete", "move.code", "move.undo", "recovery_key.new", "recovery_key.shown", "recovery_key.saved"):
+                     "export.create", "export.delete", "move.code", "move.undo", "recovery_key.new", "recovery_key.shown", "recovery_key.saved",
+                     "tesla-poll-changed", "tesla-account-added", "tesla-account-changed", "tesla-car-matched",
+                     "tesla-account-removed"):
             self.assertIn(want, actions)
 
     # ------------------------------------------------------------ deliberately absent
@@ -359,9 +389,12 @@ class Contract(ServerCase):
                         ("GET", "/api/v1/sql"), ("POST", "/api/v1/sql"), ("GET", "/api/v1/db/indexes"),
                         ("GET", "/api/v1/cars/c1/vin")):
             self.c.error(m, path, 404, "not_found")
-        words = re.compile(r"/(wake|commands?|tesla|vehicles|sql|db|vin|tokens/tesla)(/|$)")
+        words = re.compile(r"/(wake|wake_up|commands?|vehicles|sql|db|vin|tokens?)(/|$)")
         for r in self.server.app.router.routes:
             self.assertIsNone(words.search(r.pattern), r.pattern)
+            # the Tesla API input lives under /integrations/tesla only (its accounts, the sign-in, status)
+            if "tesla" in r.pattern:
+                self.assertTrue(r.pattern.startswith("/api/v1/integrations/tesla"), r.pattern)
 
 
 class Setup(ServerCase):

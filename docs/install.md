@@ -16,6 +16,7 @@ Every command is in [commands.md](commands.md). The bridge app in detail is in
 - [Docker Compose](#docker-compose)
 - [TrueNAS SCALE](#truenas-scale)
 - [The CAN Bridge app](#the-can-bridge-app)
+- [Add a Tesla account](#add-a-tesla-account)
 - [Updating](#updating)
 - [Backups](#backups)
 - [Restore](#restore)
@@ -37,7 +38,9 @@ Every command is in [commands.md](commands.md). The bridge app in detail is in
 - No Rust and no clone of this repo: the image is published,
   `ghcr.io/skittles-fivem/sentry-mate`, and you only download the compose
   file. Internet is needed to pull the image and its updates. While it runs,
-  Sentry Mate makes no outgoing connections. Building the image yourself is
+  Sentry Mate makes no outgoing connections unless an admin turns one on
+  (MQTT, a Tesla account, a move: [security](security.md#security)).
+  Building the image yourself is
   optional ([development.md](development.md#running-your-own-build)).
 - Disk: the plan measured about 0.23 MB a minute parked and awake, and about
   0.76 MB a minute driving. That is roughly 30 to 100 GB a year for a car
@@ -50,6 +53,8 @@ Every command is in [commands.md](commands.md). The bridge app in detail is in
   room yet.
 - The Screenmate CAN Bridge app on the car's Screenmate, build 149 or later
   ([The CAN Bridge app](cars-and-bridge.md#the-can-bridge-app)).
+- Optional: a Tesla account, for reading the cars from Tesla's API as well
+  ([Add a Tesla account](#add-a-tesla-account)).
 - It can share the server with Sentry Six Manager
   ([Ports and firewalls](#ports-and-firewalls)).
 
@@ -275,6 +280,53 @@ On the Screenmate, open the CAN Bridge app (build 149 or later). Under
 and the certificate SHA-256 that `token new` printed, then press
 **Apply & restart**. The fields, how to check it works and how the bridge
 uploads are in [cars-and-bridge.md](cars-and-bridge.md#the-can-bridge-app).
+
+## Add a Tesla account
+
+Optional. With a Tesla account added, the server also reads your cars from
+Tesla's Owner API (the unofficial API Tesla's own app uses): for a car with
+no Screenmate, and for what SMO does not see (the charge limit, the software
+version, the charger's brand). Where SMO and the Tesla API both have data,
+the two make one history; every drive, charge and value says which it came
+from. Nothing connects to Tesla until you add an account.
+
+You need an admin account on Sentry Mate, and the server must be able to
+reach `auth.tesla.com`, `owner-api.teslamotors.com` and
+`streaming.vn.teslamotors.com` on port 443 (for a China account,
+`auth.tesla.cn` and `owner-api.vn.cloud.tesla.cn`). A proxy for outgoing
+connections is set in Settings (`outbound.proxy`).
+
+**Sign in at Tesla** (the usual way):
+
+1. In the web UI, open **Settings → Integrations → Tesla** and press
+   **Sign in at Tesla**. Tesla's own sign-in page opens in a new tab.
+2. Sign in there with your Tesla e-mail, password and two-step code. Sentry
+   Mate never sees them.
+3. The page ends on an address that does not load (it starts with
+   `tesla://auth/callback?code=`). Copy that whole address from the address
+   bar, paste it into Sentry Mate and press **Add**, with your own Sentry
+   Mate password again. Do it within ten minutes.
+
+**Or paste a refresh token** you already have from another tool: **Settings
+→ Integrations → Tesla → Add with a refresh token**.
+
+Either way the server checks it with Tesla before it keeps anything. Then:
+
+4. Match each car of the account: to a car Sentry Mate already has (the one
+   with the same VIN prefix is suggested), to a new car, or leave it out. A
+   car is read only once it is matched.
+5. Pick how often it asks: `normal` (the default), `often` or `gentle`. A car
+   that is asleep is never woken; only the list of cars is read then.
+
+To stop for a while, pause the account; to stop for good, remove it. Removing
+deletes its sealed tokens; the history already stored stays. Also sign the
+server out at Tesla (your Tesla account's security settings). If Tesla stops
+taking the sign-in (after a password change, for example), a notice says so:
+sign in again. What is sent, and where: [security](security.md#the-tesla-api-input).
+
+The built-in designs are still getting their Tesla page. Until yours has it,
+the same steps are API calls, listed in
+[ui-api.md](ui-api.md#integrations-tesla).
 
 ## Updating
 
@@ -660,6 +712,9 @@ app, change the line marked `CHANGE` to the new path, and *Save*. Check
 | 10100/tcp | CAN Bridge uploads, HTTPS, TLS 1.3 only | Published: the Screenmate connects to it. |
 | 10101/tcp | The web UI, HTTPS, TLS 1.3 only, the same certificate | Published: open it in a browser. |
 
+- Outgoing: none unless you turn one on. With a Tesla account, HTTPS (443)
+  to Tesla's hosts ([Add a Tesla account](#add-a-tesla-account)); with
+  MQTT, the broker's port.
 - Sentry Six Manager uses 9000 and 10000, so both run on one server
   ([Running next to TeslaMate and Sentry Six Manager](cars-and-bridge.md#running-next-to-teslamate-and-sentry-six-manager)).
 - Another app already on 10101 or 10100: change only the left number (for example

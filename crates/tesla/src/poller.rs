@@ -84,7 +84,7 @@ pub enum Mode {
 }
 
 /// The timing, ms (and the daily cap).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cadence {
     pub list_ms: u64,
     pub idle_ms: u64,
@@ -128,6 +128,59 @@ impl Default for Cadence {
             refused_retry_ms: 60 * 60_000,
             stream_drain_ms: 5_000,
             fact_join_ms: 5 * 60_000,
+        }
+    }
+}
+
+/// How often the server asks, as an admin chooses it (`/integrations/tesla` `poll`). Only the reads of a car that is
+/// awake change; letting the car sleep, the caps and the back-off stay as they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Pace {
+    /// Half the waits of `normal` (more requests: still at most 3,000 a day).
+    Often,
+    #[default]
+    Normal,
+    /// Fewer requests: parked every 5 min, charging every 2 min, driving every minute, the list every 2 min.
+    Gentle,
+}
+
+impl Pace {
+    pub const ALL: [Pace; 3] = [Pace::Often, Pace::Normal, Pace::Gentle];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Pace::Often => "often",
+            Pace::Normal => "normal",
+            Pace::Gentle => "gentle",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Pace> {
+        Pace::ALL.into_iter().find(|p| p.word() == s)
+    }
+
+    /// The cadence of this pace.
+    pub fn cadence(self) -> Cadence {
+        let n = Cadence::default();
+        match self {
+            Pace::Normal => n,
+            Pace::Often => Cadence {
+                list_ms: 30_000,
+                idle_ms: 30_000,
+                charging_ms: 15_000,
+                driving_ms: 15_000,
+                driving_streaming_ms: 30_000,
+                ..n
+            },
+            Pace::Gentle => Cadence {
+                list_ms: 120_000,
+                idle_ms: 5 * 60_000,
+                charging_ms: 120_000,
+                driving_ms: 60_000,
+                driving_streaming_ms: 120_000,
+                ..n
+            },
         }
     }
 }

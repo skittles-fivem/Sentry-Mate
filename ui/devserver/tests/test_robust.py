@@ -29,7 +29,8 @@ class Robust(ServerCase):
         ids = {"car": self.car, "drive": drives[0]["id"] if drives else "9007199254740993",
                "charge": charges[0]["id"] if charges else "9007199254740993", "place": "p1",
                "session": "s-older-1", "account": "a2", "token": "t12", "key": "cbk_5b2e9f13", "trip": "tr1",
-               "rule": "r1", "import": "im1", "update": "1", "export": "ex1"}
+               "rule": "r1", "import": "im1", "update": "1", "export": "ex1", "tesla_account": "ta1",
+               "sign_in": "si0"}
         out = set()
         for r in rows:
             if "GET" in r.methods:

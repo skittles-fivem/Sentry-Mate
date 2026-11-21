@@ -1,14 +1,19 @@
 # Sentry Mate
 
-A self-hosted car logger for Teslas, fed by the **Screenmate CAN Bridge**. The bridge app records the car's own CAN
-bus and uploads the logs. Sentry Mate is meant to do what TeslaMate does, from those logs instead of Tesla's API: no
-Tesla account, nothing that wakes the car, one Rust program in one small Docker image, no database or dashboard
-containers.
+A self-hosted car logger for Teslas, fed by the **Screenmate CAN Bridge** (SMO). The bridge app records the car's
+own CAN bus and uploads the logs. Sentry Mate is meant to do what TeslaMate does, from those logs: nothing that wakes
+the car, one Rust program in one small Docker image, no database or dashboard containers.
+
+Two more inputs are optional. **The Tesla API:** an admin can add a Tesla account, and the server then reads the cars
+from Tesla's Owner API too, for cars without SMO or for what SMO does not see. It is off until an account is added,
+talks only to Tesla, and never wakes a car ([Add a Tesla account](docs/install.md#add-a-tesla-account)). **An
+import** of TeslaMate's history. Every drive, charge and value says where it came from: SMO, the Tesla API, or an
+import.
 
 **Status: early.** It receives the bridge's logs, stores them sealed and checks each one's signature. Each checked
 log is decoded in the background into the car's history (states, drives, charges, positions). The web UI on its own
 HTTPS port (10101) shows that history and changes the settings: places and costs, car settings, upload tokens and car
-keys, accounts, MQTT and the TeslaMate import. The history is not yet checked against real drives and charges. All of
+keys, accounts, MQTT, Tesla accounts and the TeslaMate import. The history is not yet checked against real drives and charges. All of
 it: [Status in detail](#status-in-detail).
 
 ## Contents
@@ -160,7 +165,7 @@ Rust 1.88 or newer, edition 2024. The gates CI runs, what each crate does, CI, t
 
 Crates: `logfmt` (reads the logs), `trust` (signatures, chain), `vault` (encryption at rest), `dbc` (signals),
 `ingest` (upload API, storage), `gate` and `moving` (export, import, move), `model`, `timeline`, `db`, `engine` (the
-history from the logs), `places`, `accounts`, `import`, `mqtt`, `web` (the web UI and `/api/v1`), `synth` (made-up
+history from the logs), `places`, `accounts`, `import`, `mqtt`, `tesla` (the Tesla Owner API input), `web` (the web UI and `/api/v1`), `synth` (made-up
 cars for tests), and the program, `sentry-mate`.
 
 ## Status in detail
@@ -186,7 +191,8 @@ cars for tests), and the program, `sentry-mate`.
 | Each checked log decoded in the background into the car's history (states, drives, charges, positions, charge curves), late and out-of-order logs rebuilding only what they touch, picked up again after a restart; a failed log never used | done; not yet checked against real drives and charges |
 | Storage for the history (sealed, compressed columns, any number of cars), rebuilt from the logs if lost | done |
 | Web server on its own HTTPS port (10101, TLS 1.3, the same certificate): the built-in UI packs with a strict CSP, sign-in with a one-time setup code for the first admin, accounts (admin and watch-only, per-car access, two-step sign-in, audit log), live changes as server-sent events, the reads of [`docs/ui-api.md`](docs/ui-api.md) over the history and its changes | done |
-| From the web UI: places, geofences and charge costs with time-of-use rates, car settings, upload tokens and car keys, server settings, MQTT, the TeslaMate import, UI packs | done |
+| From the web UI: places, geofences and charge costs with time-of-use rates, car settings, upload tokens and car keys, server settings, MQTT, Tesla accounts, the TeslaMate import, UI packs | done |
+| The Tesla Owner API as a second live input: off until an admin adds a Tesla account (sign in on Tesla's page, or a refresh token), tokens sealed, read-only, lets the car sleep, merged with SMO into one history, every row saying where it came from | done; tested against a made-up Tesla server, not yet against a real account |
 | Moving from the web UI: a move code or an export file on the old server, "move here" or "restore from an export file" on the new server's first page (the file read as it uploads, nothing stored twice) | done |
 | Map tiles: none from outside until an admin turns online tiles on | done |
 | Using a failed log anyway | only `log decode --any`, one log at a time |

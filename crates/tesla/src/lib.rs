@@ -23,7 +23,8 @@ pub use convert::{Activity, ApiMeta, Reading};
 pub use hosts::{Endpoints, Region};
 pub use http::{Http, HttpError, Proxy};
 pub use poller::{
-    AccountStatus, ApiFact, ApiState, Cadence, CarStatus, Clock, Mode, NewCar, Poller, Sink, SinkError, SystemClock,
+    AccountStatus, ApiFact, ApiState, Cadence, CarStatus, Clock, Mode, NewCar, Pace, Poller, Sink, SinkError,
+    SystemClock,
 };
 pub use secret::{FullVin, Secret};
 pub use store::{Account, AccountCar, AccountState, Credentials, ErrorInfo, Location, Match, Store, StoreError};
@@ -156,7 +157,7 @@ struct Task {
 struct Inner<S: Sink> {
     store: Store,
     sink: Arc<S>,
-    opts: Options,
+    opts: std::sync::RwLock<Options>,
     tasks: Mutex<HashMap<String, Task>>,
     sign_ins: Mutex<HashMap<String, (Region, SignIn)>>,
     clients: AtomicUsize,
@@ -189,7 +190,7 @@ impl<S: Sink> Service<S> {
             inner: Arc::new(Inner {
                 store: Store::new(data, vault),
                 sink,
-                opts,
+                opts: std::sync::RwLock::new(opts),
                 tasks: Mutex::new(HashMap::new()),
                 sign_ins: Mutex::new(HashMap::new()),
                 clients: AtomicUsize::new(0),
@@ -199,6 +200,46 @@ impl<S: Sink> Service<S> {
 
     pub fn store(&self) -> &Store {
         &self.inner.store
+    }
+
+    fn opts(&self) -> Options {
+        self.inner.opts.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// The cadence the pollers use now.
+    pub fn cadence(&self) -> Cadence {
+        self.opts().cadence
+    }
+
+    /// A new proxy or cadence (a settings change): every running poller starts again with it, on a new client (the
+    /// proxy is part of the connection). Accounts that are not running stay so.
+    pub fn reconfigure(&self, proxy: Option<Proxy>, cadence: Cadence) {
+        {
+            let mut o = self.inner.opts.write().unwrap_or_else(|p| p.into_inner());
+            if o.proxy == proxy && o.cadence == cadence {
+                return;
+            }
+            o.proxy = proxy;
+            o.cadence = cadence;
+        }
+        let running: Vec<String> = lock(&self.inner.tasks).keys().cloned().collect();
+        for id in running {
+            if let Err(e) = self.spawn(&id, None) {
+                tracing::warn!(account = %id, error = %e, "a Tesla account could not be started again");
+            }
+        }
+    }
+
+    /// Sign-ins started and not finished or run out yet.
+    pub fn open_sign_ins(&self, now_ms: u64) -> usize {
+        let mut open = lock(&self.inner.sign_ins);
+        open.retain(|_, (_, s)| s.expires_ms() >= now_ms);
+        open.len()
+    }
+
+    /// Whether a poller runs for the account.
+    pub fn running(&self, id: &str) -> bool {
+        lock(&self.inner.tasks).contains_key(id)
     }
 
     /// Starts a poller for every stored account (call inside the server's runtime). With no account: nothing.
@@ -223,8 +264,8 @@ impl<S: Sink> Service<S> {
     }
 
     fn client(&self, region: Region) -> Result<Arc<Http>, ServiceError> {
-        let e = (self.inner.opts.endpoints)(region);
-        let http = Http::new(e, self.inner.opts.proxy.clone()).map_err(ServiceError::Http)?;
+        let opts = self.opts();
+        let http = Http::new((opts.endpoints)(region), opts.proxy).map_err(ServiceError::Http)?;
         self.inner.clients.fetch_add(1, Ordering::Relaxed);
         Ok(Arc::new(http))
     }
@@ -235,14 +276,15 @@ impl<S: Sink> Service<S> {
             Some(h) => h,
             None => self.client(account.region)?,
         };
-        let streamer = WsStreamer { http: http.clone(), timing: self.inner.opts.stream.clone() };
+        let opts = self.opts();
+        let streamer = WsStreamer { http: http.clone(), timing: opts.stream };
         let poller = Poller::new(
             self.inner.store.clone(),
             id,
             Client::new(http),
             self.inner.sink.clone(),
             streamer,
-            self.inner.opts.cadence.clone(),
+            opts.cadence,
         )?;
         let wake = Arc::new(Notify::new());
         let status = Arc::new(Mutex::new(Some(poller.status())));
@@ -262,7 +304,7 @@ impl<S: Sink> Service<S> {
     /// Every host the stored accounts may connect to (empty when there is no account).
     pub fn hosts(&self) -> Vec<String> {
         let mut h: Vec<String> =
-            self.accounts().iter().flat_map(|a| (self.inner.opts.endpoints)(a.region).hosts()).collect();
+            self.accounts().iter().flat_map(|a| (self.opts().endpoints)(a.region).hosts()).collect();
         h.sort();
         h.dedup();
         h
@@ -314,7 +356,7 @@ impl<S: Sink> Service<S> {
         if open.len() >= MAX_SIGN_INS {
             return Err(ServiceError::TooManySignIns);
         }
-        let e = (self.inner.opts.endpoints)(region);
+        let e = (self.opts().endpoints)(region);
         let (s, url) = SignIn::start(&e, redirect, now_ms).map_err(ServiceError::Auth)?;
         let mut idb = [0u8; 12];
         getrandom::fill(&mut idb).map_err(|_| ServiceError::Auth(AuthError::BadAnswer))?;
@@ -335,7 +377,7 @@ impl<S: Sink> Service<S> {
         let (region, mut s) = {
             let mut open = lock(&self.inner.sign_ins);
             let Some((region, s)) = open.get(id) else { return Err(ServiceError::NoSuchSignIn) };
-            let e = (self.inner.opts.endpoints)(*region);
+            let e = (self.opts().endpoints)(*region);
             // A bad paste leaves the sign-in open for another try; a good one takes it.
             s.code_from(&e, pasted, now_ms).map_err(ServiceError::Auth)?;
             open.remove(id).ok_or(ServiceError::NoSuchSignIn)?

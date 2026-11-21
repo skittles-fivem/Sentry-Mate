@@ -110,8 +110,14 @@ pub fn web_state(
 ) -> Result<web::AppState, Fail> {
     let audit = Arc::new(accounts::Audit::open(data.join("audit"), v.clone(), accounts::system_clock())?);
     let options = accounts::Options { hashing, ..accounts::Options::default() };
-    let acc = Arc::new(accounts::Accounts::open(data.join("accounts"), v.clone(), audit, options)?);
+    let acc = Arc::new(accounts::Accounts::open(data.join("accounts"), v.clone(), audit.clone(), options)?);
+    // the Tesla API input: builds nothing that talks to the network (the start starts its pollers, none without an
+    // account)
+    let events = web::Events::new();
+    let tesla = Arc::new(web::resources::tesla::service(data, v.clone(), engine, audit, events.clone()));
     let app = web::AppState::builder(acc, v, data.join("web"))
+        .events(events)
+        .service(tesla)
         .setup_code_file(keys.join(SETUP_FILE))
         .cars(Arc::new(EngineCars(engine.db().clone())))
         .service(Arc::new(engine.clone()))

@@ -294,6 +294,7 @@ async fn system_health(State(app): State<AppState>, p: Params) -> ApiResult<Resp
             "last_error": sh.engine.last_error,
         },
         "geocoder": geocode.map(|m| json!({ "mode": m, "cache_size": null, "hits_pct": null })),
+        "tesla": super::tesla::health(&app),
         "housekeeping_last_ms": null,
         "timings_ms": timings,
     });

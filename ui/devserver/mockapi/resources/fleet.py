@@ -579,7 +579,9 @@ def setup_status(req):
     if running:
         fixes.append({"cause": "import_running", "link": "/settings/import", "import": running["id"]})
     return {"cars": cars, "tokens": {"count": len(toks), "first_used_ms": first}, "keys_waiting": len(waiting),
-            "logs_waiting_trust": trust, "import_running": running is not None, "fixes": fixes}
+            "logs_waiting_trust": trust, "import_running": running is not None,
+            # the Tesla accounts are an admin's to read
+            "tesla_accounts": len(st.tesla["accounts"]) if admin else None, "fixes": fixes}
 
 
 def register(router):

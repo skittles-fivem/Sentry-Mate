@@ -700,17 +700,20 @@ async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Valu
         inbound.push(json!({ "purpose": "web", "port": n.web_port, "tls": true }));
         inbound.push(json!({ "purpose": "upload", "port": n.upload_port, "tls": true }));
     }
+    let tesla = super::tesla::network_rows(&app);
+    let mut outbound = vec![
+        // no address lookup runs online in this server yet: listed, never used
+        json!({ "purpose": "geocoding", "host": geo_host, "enabled": ss.geocode.mode == "online" && geo_host.is_some(), "last_used_ms": null }),
+        // the viewers' browsers load the tiles, not the server
+        json!({ "purpose": "tiles", "host": if tiles_online { tile_host } else { None }, "enabled": tiles_online, "last_used_ms": null }),
+        json!({ "purpose": "geonames_download", "host": geonames, "enabled": false, "last_used_ms": null }),
+        json!({ "purpose": "mqtt", "host": (!mqtt_host.is_empty()).then_some(mqtt_host), "enabled": m.settings.enabled, "last_used_ms": mqtt_used }),
+        // no release check exists in this server yet (`/settings` refuses turning it on)
+        json!({ "purpose": "release_check", "host": null, "enabled": false, "last_used_ms": null }),
+    ];
+    outbound.extend(tesla);
     Ok(Json(json!({
-        "outbound": [
-            // no address lookup runs online in this server yet: listed, never used
-            { "purpose": "geocoding", "host": geo_host, "enabled": ss.geocode.mode == "online" && geo_host.is_some(), "last_used_ms": null },
-            // the viewers' browsers load the tiles, not the server
-            { "purpose": "tiles", "host": if tiles_online { tile_host } else { None }, "enabled": tiles_online, "last_used_ms": null },
-            { "purpose": "geonames_download", "host": geonames, "enabled": false, "last_used_ms": null },
-            { "purpose": "mqtt", "host": (!mqtt_host.is_empty()).then_some(mqtt_host), "enabled": m.settings.enabled, "last_used_ms": mqtt_used },
-            // no release check exists in this server yet (`/settings` refuses turning it on)
-            { "purpose": "release_check", "host": null, "enabled": false, "last_used_ms": null },
-        ],
+        "outbound": outbound,
         "inbound": inbound,
         "certificate": { "names": names },
     })))

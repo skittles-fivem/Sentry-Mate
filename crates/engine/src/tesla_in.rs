@@ -72,10 +72,21 @@ fn seen(samples: &[Sample]) -> Vec<ApiSpan> {
     out
 }
 
+/// Told when a Tesla account's state changes (it needs a new sign-in, Tesla refuses it): the web side writes the
+/// audit entry and the notice.
+pub type AccountHook = std::sync::Arc<dyn Fn(&tesla::Account) + Send + Sync>;
+
 /// The engine as the `tesla` crate's poller sees it.
 #[derive(Clone)]
 pub struct TeslaSink {
     pub engine: Engine,
+    pub on_account: Option<AccountHook>,
+}
+
+impl TeslaSink {
+    pub fn new(engine: Engine) -> TeslaSink {
+        TeslaSink { engine, on_account: None }
+    }
 }
 
 impl tesla::Sink for TeslaSink {
@@ -100,6 +111,12 @@ impl tesla::Sink for TeslaSink {
 
     fn smo_live(&self, car: CarId) -> bool {
         self.engine.smo_live(car)
+    }
+
+    fn account_changed(&self, account: &tesla::Account) {
+        if let Some(h) = &self.on_account {
+            h(account);
+        }
     }
 }
 

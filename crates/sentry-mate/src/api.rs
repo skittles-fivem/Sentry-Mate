@@ -306,6 +306,15 @@ async fn revoke_car_token(
 async fn setup_status(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResult<Response> {
     // a watch account hears only about its own cars: no key waiting for a car, no token made for a new car
     let (access, admin) = (v.cars().clone(), v.is_admin());
-    answer(&app, &p, "setup-status", move |e| q::keys::setup_status(e, &visible(e, &access, &CarsParam(None))?, admin))
-        .await
+    // the Tesla accounts are for admins only (a watch account gets null)
+    let tesla = admin.then(|| web::resources::tesla::account_count(&app));
+    answer(&app, &p, "setup-status", move |e| {
+        let st = q::keys::setup_status(e, &visible(e, &access, &CarsParam(None))?, admin)?;
+        let mut v = serde_json::to_value(st).unwrap_or(serde_json::Value::Null);
+        if let serde_json::Value::Object(m) = &mut v {
+            m.insert("tesla_accounts".into(), serde_json::json!(tesla));
+        }
+        Ok(v)
+    })
+    .await
 }

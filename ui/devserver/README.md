@@ -75,7 +75,8 @@ Also present: places that overlap (Work and the Mission Bay Supercharger, Home a
 and without cost, two software changes per car (one known only as "software changed"), awake, asleep and
 vehicle-bus-only spells, attention items, upload tokens, a CAN Bridge key waiting to be assigned, an audit log,
 saved trips and purpose rules, 40 places (some with prices by time of day), server and MQTT settings, notices (a
-certificate that expires in 12 days, an unsaved recovery key), the finished import that brought `c3`'s TeslaMate
+certificate that expires in 12 days, an unsaved recovery key), a Tesla account (`ta1`, reading `c1` and `c2`, a third
+car not matched; every change asks for the password `sentry-mate-dev` again), the finished import that brought `c3`'s TeslaMate
 history in (its report counts exactly what `c3` holds), and storage figures that add up from the cars to the server.
 Seeds that are not car history are in `mockapi/dataset/extras.py`.
 
@@ -103,10 +104,11 @@ each piece's own seed and never stored, so a year of data answers in a few hundr
 | Reports (statistics, mileage, totals, gaps, compare, stops and Travel, tracks, software, car events) | done |
 | Places (preview of a change, reprice, suggestions, the place at a point) | done |
 | Integrations (MQTT settings, status, preview, test; outside connections) | done |
+| Integrations: Tesla (accounts, sign-in at Tesla with a pasted address, refresh token, cars, pause, poll setting, status; nothing leaves the dev server) | done |
 | Server, settings and health (notices, maps, data health, rebuild, overlaps, storage) | done |
 | Import (resumable upload, check, car matching, import, report) | done |
 | Moving and first-run setup (claim, start fresh, move here, restore, move code, undo, export file) | done |
-| Deliberately absent (no car commands, no Tesla account, no SQL, no VIN serial) | absent: `404` |
+| Deliberately absent (no car commands, no wake, no Tesla token, no SQL, no VIN serial) | absent: `404` |
 
 Decisions on points the API document left open are at the end of `docs/ui-api.md` ("Decisions").
 
@@ -174,7 +176,10 @@ mockapi/series.py        bucketed series that keep minima and maxima
 mockapi/events.py        the event hub behind /api/v1/events
 mockapi/dataset/         places, cars, routes, the day-by-day simulator, pieces, synthetic cars, extras
 mockapi/resources/       one module per section of docs/ui-api.md (Reports is reports, travel and software;
-                         moving.py is first-run set-up, the move to another server and export files)
+                         moving.py is first-run set-up, the move to another server and export files;
+                         tesla.py is the Tesla API input: a made-up account `ta1` with c1, c2 and one car not
+                         matched; a refresh token starting `refused` or `unreachable` plays Tesla saying no or
+                         being down)
 tests/                   unittest; test_contract.py checks the server against docs/ui-api.md
 ```
 

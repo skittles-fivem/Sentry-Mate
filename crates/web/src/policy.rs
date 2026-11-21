@@ -13,7 +13,7 @@
 //! - **Own account** (open even before a required two-step sign-in is set up): `/me` and everything under it,
 //!   `DELETE /session`.
 //! - **Reading** is for every signed-in account, except [`ADMIN_READS`] (accounts, the audit log, upload tokens,
-//!   CAN Bridge keys, `settings/mqtt`, `network`, `system/*`, imports, logs, the two-step rule).
+//!   CAN Bridge keys, `settings/mqtt`, `network`, `system/*`, imports, logs, the two-step rule, `integrations/*`).
 //! - **Changing** is for admins, except [`WATCH_WRITES`] (saved trips, the places preview, the pack list's own
 //!   choice): a route nobody listed is admin-only, so a new route can't forget it.
 //!
@@ -62,6 +62,7 @@ pub const ADMIN_READS: &[&str] = &[
     "/imports",
     "/logs",
     "/cars/{car}/logs",
+    "/integrations",
 ];
 
 /// Reads only an admin may make, of exactly these routes (not what is under them).
