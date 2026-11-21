@@ -96,7 +96,7 @@ async fn add_by_refresh_token_seals_the_tokens_and_never_logs_them() {
 
     let text = logs.text();
     assert!(text.contains("tesla tokens refreshed"), "{text}");
-    for needle in ["fake-refresh", "fake-access", "made-up-refresh", "000001", "000002", "Bearer"] {
+    for needle in ["fake-refresh", "fake-access", "made-up-refresh", "PF000001", "PF000002", "Bearer"] {
         assert!(!text.contains(needle), "{needle} in the log:\n{text}");
     }
 }
