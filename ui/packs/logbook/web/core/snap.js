@@ -155,9 +155,16 @@ function firstWord(cell) {
     if (!q || !q.height) continue;
     const s = getComputedStyle(n.parentElement);
     const f = `${s.fontStyle} ${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
-    if (!descents.has(f)) { canvas.font = f; descents.set(f, canvas.measureText('Hg').fontBoundingBoxDescent || 0); }
+    let descent = descents.get(f);
+    if (descent == null) {
+      canvas.font = f;
+      descent = canvas.measureText('Hg').fontBoundingBoxDescent || 0;
+      // kept only once the face has loaded: before that the canvas measures the fallback font, whose descent
+      // would put this cell's baseline a pixel off for good (the snap runs again when the fonts have loaded)
+      if (!document.fonts || document.fonts.check(f)) descents.set(f, descent);
+    }
     const r = devicePixelRatio || 1;
-    return { node: n, base: q.bottom - Math.round(descents.get(f) * r) / r };
+    return { node: n, base: q.bottom - Math.round(descent * r) / r };
   }
   return null;
 }

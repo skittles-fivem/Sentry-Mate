@@ -16,7 +16,6 @@
 /* ------------------------------------------------------------- filters */
 .page-statistics .st-filters { padding: round(1.25rem, var(--e)) 0; display: grid; gap: round(1.125rem, var(--e)); }
 .page-statistics .st-period { display: flex; align-items: baseline; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); }
-.page-statistics .st-period .button { align-self: center; }
 .page-statistics .st-period-text { font: 400 1.0625rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
 .page-statistics .st-period-why { color: var(--ink-3); font-size: var(--small-2); }
 .page-statistics .st-filter-row { display: grid; grid-template-columns: auto minmax(round(13rem, var(--e)), round(17rem, var(--e))) minmax(0, 1fr); gap: round(1rem, var(--e)) round(2rem, var(--e)); align-items: start; }
@@ -104,6 +103,10 @@
 .page-statistics .st-xtick { position: absolute; top: round(0.3125rem, var(--e)); left: var(--x); transform: translateX(-50%); font-size: var(--micro-2); color: var(--ink-3); white-space: nowrap; }
 .page-statistics .st-xtick.is-end { transform: translateX(-100%); }
 .page-statistics .st-xtick.is-start { transform: none; }
+/* seven dates (start, five between, end) need about 30 rem; a narrower axis labels every other one (start, a third,
+   two thirds, end) */
+.page-statistics .st-xaxis-time { container-type: inline-size; }
+@container (width < 30rem) { .page-statistics .st-xaxis-time > .st-xtick:nth-child(even) { display: none; } }
 .page-statistics .st-readout { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.25rem, var(--e)) round(1rem, var(--e)); min-height: round(1.5rem, var(--e)); font-size: var(--text-s); color: var(--ink-2); padding-left: round(4rem, var(--e)); }
 .page-statistics .st-readout-when { font-family: var(--serif); color: var(--ink); }
 .page-statistics .st-readout-item { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); white-space: nowrap; }

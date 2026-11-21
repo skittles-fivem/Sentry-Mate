@@ -133,7 +133,7 @@ body { container: page / inline-size; }
 }
 *, ::before, ::after { line-height: var(--LH); }
 /* what a closed <details> holds is not laid out at all (as browsers used to do), so nothing measures it */
-details:not([open]) > :not(summary) { display: none; }
+details:not([open]) > :not(summary) { display: none !important; }
 html { background: var(--paper); -webkit-text-size-adjust: 100%; }
 /* Keyboard focus never lands under the sticky masthead. */
 :root { --clear-top: calc(var(--masthead-h) + round(1rem, var(--e))); }
@@ -363,7 +363,7 @@ html.is-auth .main { min-height: 100vh; display: flex; align-items: flex-start; 
 .auth-title { font: 400 2.25rem var(--serif); --LH: round(calc(1.1 * 1em), 2px); line-height: var(--LH); letter-spacing: -0.01em; }
 .auth-text { color: var(--ink-2); margin: round(0.625rem, var(--e)) 0 round(1.5rem, var(--e)); }
 .auth .form { padding-top: round(1.25rem, var(--e)); border-top: 1px solid var(--ink); }
-.auth .form-actions .button { flex: 1; justify-content: center; height: round(2.5rem, var(--e)); }
+.auth .form-actions .button { flex: 1; justify-content: center; --btn-h: round(2.5rem, var(--e)); }
 .auth-actions { margin-top: round(1rem, var(--e)); }
 .auth-foot { font-size: var(--text-s); color: var(--ink-3); margin-top: round(1.5rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--rule); }
 
@@ -409,8 +409,10 @@ html.is-auth .main { min-height: 100vh; display: flex; align-items: flex-start; 
 .figs > .fig { padding: round(1rem, var(--e)) round(1.125rem, var(--e)) round(1.0625rem, var(--e)); border-left: 1px solid var(--rule); }
 .figs > .fig:first-child { border-left: 0; padding-left: 0; }
 
-.state { display: inline-flex; align-items: center; gap: round(0.4375rem, var(--e)); font-weight: 500; color: var(--ink); white-space: nowrap; }
-.state-dot { width: round(0.5rem, var(--e)); height: round(0.5rem, var(--e)); border-radius: 50%; flex: none; background: var(--slate); display: inline-block; }
+/* Text with a dot or an icon before it (.state, .link-arrow and the like) is baseline aligned, the dot or icon centred:
+   the box's baseline is then its text's, so it lines up with the text beside it in a table row. */
+.state { display: inline-flex; align-items: baseline; gap: round(0.4375rem, var(--e)); font-weight: 500; color: var(--ink); white-space: nowrap; }
+.state-dot { align-self: center; width: round(0.5rem, var(--e)); height: round(0.5rem, var(--e)); border-radius: 50%; flex: none; background: var(--slate); display: inline-block; }
 .state-dot.state-driving, .state-driving .state-dot { background: var(--accent); }
 .state-dot.state-charging, .state-charging .state-dot { background: var(--ochre); }
 .state-dot.state-parked, .state-parked .state-dot, .state-dot.state-online, .state-online .state-dot { background: var(--slate); }
@@ -442,16 +444,18 @@ html.is-auth .main { min-height: 100vh; display: flex; align-items: flex-start; 
 .src-inputs .src { font-size: inherit; line-height: inherit; color: var(--ink-2); }
 .src-age { color: var(--ink-3); }
 .chips { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
-.chip { display: inline-flex; align-items: center; white-space: nowrap; gap: round(0.375rem, var(--e)); height: round(1.625rem, var(--e)); padding: 0 round(0.625rem, var(--e)); border: 1px solid var(--rule-strong); border-radius: 999px; font-size: var(--small-2); font-weight: 500; color: var(--ink-2); }
-.chip .icon { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); }
+/* baseline aligned (the icon centred) with the padding that centres one line, so a chip's baseline is its text's and
+   it lines up with the text beside it in a table row */
+.chip { display: inline-flex; align-items: baseline; white-space: nowrap; gap: round(0.375rem, var(--e)); height: round(1.625rem, var(--e)); padding: max(0px, (round(1.625rem, var(--e)) - 2px - 1lh) / 2) round(0.625rem, var(--e)); border: 1px solid var(--rule-strong); border-radius: 999px; font-size: var(--small-2); font-weight: 500; color: var(--ink-2); }
+.chip .icon { align-self: center; width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); }
 .chip-plug { border-color: var(--ochre); color: var(--ochre); }
 .chip-warn { border-color: var(--rust); color: var(--rust); }
 .chip-on { border-color: var(--accent); color: var(--accent); }
 .tag { display: inline-block; margin-left: round(0.625rem, var(--e)); padding: 0 round(0.375rem, var(--e)); border-radius: round(0.1875rem, var(--e)); background: var(--accent-wash); color: var(--accent-strong); font: 600 var(--micro) var(--sans); --LH: round(1.0625rem, 2px); line-height: var(--LH); letter-spacing: 0.07em; text-transform: uppercase; vertical-align: round(0.125rem, var(--e)); }
 
-.link-arrow { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); font-size: var(--text-sm); font-weight: 500; color: var(--ink-2); text-decoration: none; }
+.link-arrow { display: inline-flex; align-items: baseline; gap: round(0.375rem, var(--e)); font-size: var(--text-sm); font-weight: 500; color: var(--ink-2); text-decoration: none; }
 .link-arrow:hover { color: var(--accent); }
-.link-arrow .icon { width: round(0.9375rem, var(--e)); height: round(0.9375rem, var(--e)); }
+.link-arrow .icon { align-self: center; width: round(0.9375rem, var(--e)); height: round(0.9375rem, var(--e)); }
 .crumbs { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); align-items: baseline; font: 600 var(--micro-2) var(--sans); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-3); }
 .crumbs a { color: var(--ink-2); text-decoration: none; }
 .crumbs a:hover { color: var(--accent); text-decoration: underline; }
@@ -460,8 +464,11 @@ html.is-auth .main { min-height: 100vh; display: flex; align-items: flex-start; 
 
 /* ------------------------------------------------------------- controls -- */
 
+/* A button is --btn-h high, its text baseline aligned (its icons centred) inside the padding that centres one line:
+   the button's baseline is then its text's, so it lines up with the text beside it in a row. */
 .button {
-  display: inline-flex; align-items: center; gap: round(0.4375rem, var(--e)); height: round(2.25rem, var(--e)); padding: 0 round(0.875rem, var(--e));
+  --btn-h: round(2.25rem, var(--e));
+  display: inline-flex; align-items: baseline; gap: round(0.4375rem, var(--e)); height: var(--btn-h); padding: max(0px, (var(--btn-h) - 2px - 1lh) / 2) round(0.875rem, var(--e));
   border: 1px solid var(--ink); border-radius: round(0.375rem, var(--e)); background: var(--ink); color: var(--paper);
   font-size: var(--text-sm); font-weight: 500; text-decoration: none; white-space: nowrap;
 }
@@ -470,7 +477,8 @@ html.is-auth .main { min-height: 100vh; display: flex; align-items: flex-start; 
 .button-quiet:hover { background: var(--paper-raised); border-color: var(--ink-3); }
 .button-danger { background: var(--rust); border-color: var(--rust); color: var(--paper); }
 .button-danger:hover { background: var(--ink); border-color: var(--ink); }
-.button-small { height: round(2rem, var(--e)); padding: 0 round(0.75rem, var(--e)); font-size: var(--text-s); }
+.button-small { --btn-h: round(2rem, var(--e)); padding-inline: round(0.75rem, var(--e)); font-size: var(--text-s); }
+.button > :is(svg, img, :empty) { align-self: center; }
 .button:disabled, .button.is-disabled { color: var(--ink-4); border-color: var(--rule); background: transparent; cursor: default; }
 
 .segmented { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: round(0.375rem, var(--e)); overflow: hidden; }
@@ -821,6 +829,7 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
   .page-title { font-size: 2.5rem; }
   .menu-groups { grid-template-columns: minmax(0, 1fr); }
   .chart-row { grid-template-columns: round(6rem, var(--e)) minmax(0, 1fr); }
+  .chart-name { font-size: 0.9375rem; } /* a long name ("Temperatures") fits the narrow label column */
   .figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .figs > .fig:nth-child(odd) { border-left: 0; padding-left: 0; }
   .figs > .fig:nth-child(n + 3) { border-top: 1px solid var(--rule); }

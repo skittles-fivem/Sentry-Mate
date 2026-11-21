@@ -572,7 +572,7 @@ export async function mount(ctx) {
       svg('svg', { class: 'st-svg', width: '100%', height: '100%', role: 'img', 'aria-label': `${rel ? 'Distance since the start of the period' : 'Odometer'} over time for ${lines.map((m) => carName(m.car)).join(', ')}` },
         ticks.map((v) => svg('line', { class: 'st-grid', x1: '0%', x2: '100%', y1: p3(yOf(v)), y2: p3(yOf(v)) })), segs, cross, dots));
     const yAxis = h('div', { class: 'st-yaxis', 'aria-hidden': 'true' }, ticks.map((v) => h('span', { class: 'st-ytick', vars: { '--y': p3(100 - yOf(v)) } }, formatNumber(v))));
-    const xAxis = h('div', { class: 'st-xaxis', 'aria-hidden': 'true' }, timeTicks(t0, t1).map((t) => h('span', { class: ['st-xtick', edgeTick(xOf(t.t))], vars: { '--x': p3(xOf(t.t)) } }, t.text)));
+    const xAxis = h('div', { class: 'st-xaxis st-xaxis-time', 'aria-hidden': 'true' }, timeTicks(t0, t1).map((t) => h('span', { class: ['st-xtick', edgeTick(xOf(t.t))], vars: { '--x': p3(xOf(t.t)) } }, t.text)));
     const readout = h('p', { class: 'st-readout', 'aria-live': 'polite' });
     const show = (t) => {
       const parts = lines.map((m) => {
@@ -604,7 +604,7 @@ export async function mount(ctx) {
   function timeTicks(t0, t1) {
     const span = t1 - t0;
     if (!(span > 0)) return [{ t: t0, text: formatDate(t0, tz, { weekday: false, year: true }) }];
-    const n = 5;
+    const n = 6; // seven dates; a narrow axis labels every other one, which still spaces them evenly (statistics.css)
     const out = [];
     const long = span > 300 * DAY;
     for (let i = 0; i <= n; i++) {

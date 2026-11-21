@@ -21,8 +21,16 @@
 .page-travel .tv-row-link { font: inherit; line-height: var(--LH); color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-align: left; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 0.1875rem; }
 .page-travel .tv-row-link:hover { text-decoration-color: currentColor; }
 .page-travel .tv-row-link:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: round(0.125rem, var(--e)); }
+/* a block (not the inline-block a button is), so a city's name that wraps puts its first line, not its last, on the
+   row's baseline */
+.page-travel .tv-city-pick { display: block; width: fit-content; max-width: 100%; }
 .page-travel .tv-city-pick.is-on { color: var(--ink); font-weight: 600; text-decoration: none; }
 .page-travel .tv-saved { display: inline-flex; color: var(--accent); margin-right: round(0.3125rem, var(--e)); vertical-align: round(-0.125rem, var(--e)); }
+/* a saved place's pin hangs in the margin, centred on the first line, so a long name wraps under itself and never
+   leaves the pin alone on the first line */
+.page-travel .tv-has-pin { position: relative; padding-left: round(1.1875rem, var(--e)); }
+.page-travel .tv-has-pin > .tv-saved { position: absolute; left: 0; top: calc((1lh - round(0.875rem, var(--e))) / 2); margin: 0; }
+.page-travel .tv-has-pin > .cell-sub { margin-left: round(-1.1875rem, var(--e)); }
 .page-travel .tv-saved .icon { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); }
 .page-travel .tv-sub-title { font: 600 var(--micro) var(--sans); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); margin: round(1.25rem, var(--e)) 0 round(0.5rem, var(--e)); }
 

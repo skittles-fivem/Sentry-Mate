@@ -25,7 +25,7 @@
 .page-places .pl-kind { font-size: var(--text-s); color: var(--ink-2); white-space: nowrap; }
 .page-places .pl-kind-home { color: var(--accent-strong); }
 .page-places .pl-kind-charger { color: var(--ochre); }
-.page-places .pl-price { font-size: var(--text-s); color: var(--ink-2); max-width: round(18rem, var(--e)); display: inline-block; }
+.page-places .pl-price { font-size: var(--text-s); color: var(--ink-2); max-width: round(18rem, var(--e)); display: block; }
 .page-places .pl-use { display: inline-flex; flex-wrap: wrap; gap: 0 round(0.25rem, var(--e)); font-size: var(--text-s); align-items: baseline; max-width: round(16rem, var(--e)); }
 .page-places .pl-use a { color: var(--ink); }
 .page-places .pl-use .cell-sub { flex-basis: 100%; }

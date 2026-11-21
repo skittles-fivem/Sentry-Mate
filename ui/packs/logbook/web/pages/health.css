@@ -83,7 +83,7 @@
 /* growth bars: SVG in percentages of a box sized in rem */
 .page-health .hl-growth { display: grid; gap: round(0.5rem, var(--e)); }
 .page-health .hl-plot-head { display: flex; justify-content: space-between; align-items: center; gap: round(1rem, var(--e)); flex-wrap: wrap; min-height: round(2.25rem, var(--e)); }
-.page-health .hl-plot-head .readout { justify-content: flex-start; min-height: 0; } /* as high as its line: the head centres it beside the button */
+.page-health .hl-plot-head .readout { justify-content: flex-start; min-height: 0; margin-top: 0; } /* as high as its line: the head centres it beside the button */
 .page-health .hl-growth-plot { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: round(0.625rem, var(--e)); border-top: 1px solid var(--ink); padding-top: round(0.75rem, var(--e)); }
 .page-health .hl-growth-axis { display: flex; flex-direction: column; justify-content: space-between; text-align: right; font-size: var(--micro); color: var(--ink-3); height: round(12rem, var(--e)); font-variant-numeric: tabular-nums; }
 .page-health .hl-growth-box { height: round(12rem, var(--e)); border-bottom: 1px solid var(--rule-strong); background: linear-gradient(to bottom, var(--rule) 1px, transparent 1px) 0 0 / 100% 50%; }
@@ -107,7 +107,8 @@
 
 /* ------------------------------------------------------------- the server */
 .page-health .hl-chips { display: flex; flex-wrap: wrap; gap: round(0.375rem, var(--e)); }
-.page-health .hl-arriving { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); font-size: var(--text-sm); }
+.page-health .hl-arriving > :is(svg, :empty) { align-self: center; }
+.page-health .hl-arriving { display: inline-flex; align-items: baseline; gap: round(0.375rem, var(--e)); font-size: var(--text-sm); }
 .page-health .hl-arriving .icon { width: round(0.9375rem, var(--e)); height: round(0.9375rem, var(--e)); }
 .page-health .hl-srv { display: grid; gap: round(2rem, var(--e)); padding-top: round(1rem, var(--e)); }
 .page-health .hl-srv-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: round(1.5rem, var(--e)) round(2.5rem, var(--e)); align-items: start; }

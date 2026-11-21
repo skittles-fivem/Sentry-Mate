@@ -152,8 +152,8 @@
 .page-charges .ch-part .note { margin-top: round(0.625rem, var(--e)); font-size: var(--small-2); }
 .page-charges .ch-key { display: flex; flex-wrap: wrap; gap: round(0.25rem, var(--e)) round(1rem, var(--e)); font-size: var(--small-2); color: var(--ink-3); margin-bottom: round(0.625rem, var(--e)); }
 .page-charges .ch-key li { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); }
-.page-charges .ch-temp-key { gap: round(0.625rem, var(--e)); }
-.page-charges .ch-temp-step { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); }
+.page-charges .ch-temp-key { gap: round(0.25rem, var(--e)) round(0.625rem, var(--e)); flex-wrap: wrap; } /* the steps wrap as wholes */
+.page-charges .ch-temp-step { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); white-space: nowrap; }
 
 .page-charges .ch-cell { display: block; min-height: round(0.5rem, var(--e)); background: var(--paper-sunk); border-radius: round(0.0625rem, var(--e)); }
 .page-charges .ch-cell.has-n { background: color-mix(in srgb, var(--ochre) calc(18% + var(--a) * 82%), var(--paper)); }
@@ -275,3 +275,6 @@
 .page-charges .ch-f-small .field-select { min-width: round(9.5rem, var(--e)); }
 .page-charges .ch-num { width: round(5.5rem, var(--e)); }
 .page-charges .ch-delta-x span.is-end { transform: translateX(-100%); }
+/* up to eight dates under the bars need about 26 rem; a narrower axis labels every other one */
+.page-charges .ch-delta-x { container-type: inline-size; }
+@container (width < 26rem) { .page-charges .ch-delta-x > span:nth-child(even) { display: none; } }

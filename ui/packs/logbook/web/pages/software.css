@@ -33,7 +33,8 @@
 .page-software .sw-gap { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: round(0.25rem, var(--e)) round(0.625rem, var(--e)); }
 .page-software .sw-gap-words { font: 400 var(--text-sm) var(--sans); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink-3); }
 .page-software .sw-notify, .page-software .sw-notes { display: flex; gap: round(0.5rem, var(--e)); align-items: flex-start; max-width: round(62rem, var(--e)); margin: 0; }
-.page-software .sw-notify .icon, .page-software .sw-notes .icon { flex: none; width: round(1rem, var(--e)); height: round(1rem, var(--e)); margin-top: round(0.125rem, var(--e)); color: var(--accent); }
+/* the icon's box is one line high (its drawing centred in it), so it starts level with the text beside it */
+.page-software .sw-notify .icon, .page-software .sw-notes .icon { flex: none; width: round(1rem, var(--e)); height: max(1lh, round(1rem, var(--e))); color: var(--accent); }
 .page-software .sw-notes { margin-bottom: round(0.75rem, var(--e)); }
 
 /* ------------------------------------------------------------- tables */
@@ -41,10 +42,10 @@
 .page-software .sw-ver-text, .page-software .sw-ver a { font-family: var(--serif); font-size: 1rem; font-variant-numeric: tabular-nums; }
 .page-software .sw-ver.is-unknown .sw-ver-text { color: var(--rust); font-style: italic; }
 .page-software .sw-ver-cell { display: grid; justify-items: start; gap: round(0.1875rem, var(--e)); min-width: round(14rem, var(--e)); white-space: normal; }
-.page-software .sw-edit { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); font: 500 var(--small-2) var(--sans); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--accent); background: none; border: 0; padding: round(0.125rem, var(--e)) 0; cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 0.1875rem; }
+.page-software .sw-edit { display: inline-flex; align-items: baseline; gap: round(0.3125rem, var(--e)); font: 500 var(--small-2) var(--sans); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--accent); background: none; border: 0; padding: round(0.125rem, var(--e)) 0; cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 0.1875rem; }
 .page-software .sw-edit:hover { text-decoration-color: currentColor; }
 .page-software .sw-edit:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: round(0.125rem, var(--e)); }
-.page-software .sw-edit .icon { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); }
+.page-software .sw-edit .icon { align-self: center; width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); }
 .page-software .sw-faint { color: var(--ink-3); font-size: var(--small-2); }
 .page-software .sw-warn { color: var(--rust); }
 .page-software .sw-fleet-table tr.is-current > * { background: var(--accent-wash); }

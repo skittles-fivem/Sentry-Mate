@@ -246,7 +246,8 @@ export async function mount(ctx) {
   const namesSection = section({ title: 'Host names for the certificate', cover: 'docs.env.web.virtual-host', cls: 'ss-names-block' },
     note('The names and addresses people and devices use to reach this server. They go into the HTTPS certificate the server makes, so browsers accept those names, and the first one is the address the server puts in links to itself.'),
     namesList,
-    admin ? h('div', { class: 'ss-add' }, addField, button('Add', { onclick: addName, cls: 'ss-add-btn' })) : null,
+    // the Add button sits in the field's row, beside the input (centred on it), with the hint below both
+    admin ? h('div', { class: 'ss-add' }, (addField.querySelector('.field-control').append(button('Add', { onclick: addName, cls: 'ss-add-btn' })), addField)) : null,
     admin ? h('div', { class: 'ss-save' }, saveBtn, undoBtn, namesNote) : h('p', { class: 'ss-state' }, 'Only an admin can change the names.'),
     h('details', { class: 'ss-details' },
       h('summary', null, 'Put a change into the certificate'),

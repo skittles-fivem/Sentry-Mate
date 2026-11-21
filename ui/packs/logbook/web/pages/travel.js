@@ -643,7 +643,7 @@ export async function mount(ctx) {
           cell: (r) => {
             const href = placeLink({ place: r.place, lat: r.lat, lon: r.lon });
             const act = !href ? null : r.place ? h('a', { class: 'tv-row-link', href }, isAdmin ? 'Edit the place' : 'See the place') : isAdmin ? h('a', { class: 'tv-row-link', href }, 'Save as a place') : null;
-            return h('span', { class: 'cell-main' }, r.place ? h('span', { class: 'tv-saved', title: 'A saved place' }, icon('pin')) : null, r.label || 'Unnamed spot',
+            return h('span', { class: r.place ? 'cell-main tv-has-pin' : 'cell-main' }, r.place ? h('span', { class: 'tv-saved', title: 'A saved place' }, icon('pin')) : null, r.label || 'Unnamed spot',
               h('span', { class: 'cell-sub' }, r.place ? 'saved place' : coordsText([r.lon, r.lat]), act ? [sep(), act] : null));
           } },
         { key: 'street', label: 'Street and neighbourhood', sort: true, cover: 'locations.addresses.neighbourhood', cls: 'tv-wrap',

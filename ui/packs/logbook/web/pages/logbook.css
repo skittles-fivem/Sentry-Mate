@@ -67,15 +67,15 @@
 .page-logbook .lb-purpose-cell { min-width: round(11rem, var(--e)); max-width: round(20rem, var(--e)); white-space: normal; }
 .page-logbook .lb-relation { font-size: var(--small-2); color: var(--ink); }
 .page-logbook .lb-note { font-size: var(--small-2); color: var(--ink-2); font-style: italic; }
-.page-logbook .lb-gap { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); font-size: var(--small-2); color: var(--rust); white-space: nowrap; text-decoration-color: color-mix(in srgb, var(--rust) 40%, transparent); }
-.page-logbook .lb-gap .icon { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); }
+.page-logbook .lb-gap { display: inline-flex; align-items: baseline; gap: round(0.25rem, var(--e)); font-size: var(--small-2); color: var(--rust); white-space: nowrap; text-decoration-color: color-mix(in srgb, var(--rust) 40%, transparent); }
+.page-logbook .lb-gap .icon { align-self: center; width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); }
 .page-logbook .lb-table tr.has-gap > * { box-shadow: inset 0 1px 0 var(--rust); }
 .page-logbook .lb-table tr.has-gap > :first-child { box-shadow: inset 0 1px 0 var(--rust), inset round(0.1875rem, var(--e)) 0 0 var(--rust); }
 .page-logbook .lb-table tr.is-live > * { background: var(--accent-wash); }
-.page-logbook .lb-edit { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); font: 500 var(--small-2) var(--sans); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--accent); background: none; border: 0; padding: round(0.125rem, var(--e)) 0; cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 0.1875rem; }
+.page-logbook .lb-edit { display: inline-flex; align-items: baseline; gap: round(0.3125rem, var(--e)); font: 500 var(--small-2) var(--sans); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--accent); background: none; border: 0; padding: round(0.125rem, var(--e)) 0; cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 0.1875rem; }
 .page-logbook .lb-edit:hover { text-decoration-color: currentColor; }
 .page-logbook .lb-edit:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: round(0.125rem, var(--e)); }
-.page-logbook .lb-edit .icon { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); }
+.page-logbook .lb-edit .icon { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); align-self: center; }
 .page-logbook .lb-remove { color: var(--rust); text-decoration-color: color-mix(in srgb, var(--rust) 35%, transparent); }
 
 /* ------------------------------------------------------------- rules */
