@@ -284,7 +284,7 @@ fn a_manager_export_becomes_drives_and_charges_and_importing_it_again_doubles_no
         assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
         let ds = drives(&k, car);
         assert_eq!(ds.len(), 1, "{ds:#?}");
-        assert_eq!(ds[0].source, "can", "the car's own CAN data, not an import's");
+        assert_eq!(ds[0].from.source, "can", "the car's own CAN data, not an import's");
         assert!((ds[0].distance_km.unwrap() - 0.5).abs() < 0.06, "{:?}", ds[0]);
         assert_eq!(charges(&k, car).len(), 1);
         let rec = k.engine.judge().record(KEY, &logs[0].name).await.unwrap();
