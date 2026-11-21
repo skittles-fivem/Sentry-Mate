@@ -20,6 +20,7 @@ import { toast } from '../core/toast.js';
 import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { askPassword, copyBtn, codeOut, downloadKey, showOnce, STAY } from '../core/secret.js';
+import { teslaAccountHref } from './tesla.js';
 
 export const id = 'settings-server';
 export const title = () => 'Settings: server';
@@ -32,6 +33,13 @@ const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : e?.messa
 const ROLE = { admin: 'admin', watch: 'watch' };
 const PURPOSE = { web: 'web and api', upload: 'uploads' };
 const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
+// audit actions this page words (the rest show as the server names them)
+const ACTION = {
+  'tesla-account-added': 'tesla account added', 'tesla-account-removed': 'tesla account removed', 'tesla-account-paused': 'tesla account paused',
+  'tesla-account-resumed': 'tesla account resumed', 'tesla-account-changed': 'tesla account changed', 'tesla-token-replaced': 'tesla token replaced',
+  'tesla-car-matched': 'tesla car matched', 'tesla-poll-changed': 'tesla pace changed', 'tesla-sign-in-needed': 'tesla: sign in again',
+  'tesla-account-error': 'tesla account error', 'certificate-made': 'new certificate made',
+};
 const LIVE = new Set(['offered', 'copying', 'paused', 'moved']);
 
 /** A list of '[tag] text' lines. */
@@ -73,7 +81,11 @@ export async function mount(ctx) {
   const here = { https: loc.protocol === 'https:', host: loc.hostname.toLowerCase(), port: Number(loc.port || (loc.protocol === 'https:' ? 443 : 80)) };
   const webIn = S.network?.inbound?.find((x) => x.purpose === 'web') || null;
   const upIn = S.network?.inbound?.find((x) => x.purpose === 'upload') || null;
-  const certNames = Array.isArray(S.network?.certificate?.names) ? S.network.certificate.names.map((n) => n.toLowerCase()) : null;
+  let certNames = null;
+  const readCert = () => { certNames = Array.isArray(S.network?.certificate?.names) ? S.network.certificate.names.map((n) => n.toLowerCase()) : null; };
+  readCert();
+  // the owner's own certificate (a cert.pem and key.pem put in data/tls): the server never makes one in its place
+  const certOwn = () => !!S.network?.certificate?.own;
   const hostSlot = h('div');
   function paintHosting() {
     const saved = (S.settings?.host_names || []).map((n) => n.toLowerCase());
@@ -166,8 +178,9 @@ export async function mount(ctx) {
   function paintKey() {
     replace(keySlot, runs([
       cert ? ['todo', `certificate: expires ${cert.detail?.expires_ms ? date(cert.detail.expires_ms, tz) : 'soon'}${cert.detail?.days != null ? ` (in ${count(cert.detail.days)} days)` : ''}`,
-        'Stop the container, delete data/tls/cert.pem (or put your own cert.pem and key.pem there) and start it again. A new certificate has a new SHA-256: type it into each CAN Bridge again.']
-        : ['ok', 'certificate', 'No problem reported. It keeps the same SHA-256 across restarts, updates and moves.'],
+        certOwn() ? 'It is your own certificate, so the server cannot make a new one: renew it where you got it, put the new cert.pem and key.pem in data/tls and start the container again. A new certificate has a new SHA-256: type it into each CAN Bridge again.'
+          : 'Make a new one before then (above). A new certificate has a new SHA-256: type it into each CAN Bridge again.']
+        : ['ok', 'certificate', 'No problem reported. It keeps the same SHA-256 across restarts, updates and moves, until a new one is made.'],
       keyUnsaved
         ? ['todo', 'recovery key: not marked as saved', 'Until you say it is saved, the server keeps a copy in its keys folder. Show it again, keep it away from the server, then tick "I have saved it".',
           admin ? [btn('show again', showKey, { kind: 'primary' }), btn('saved already', markSaved), btn('make new', newKey, { kind: 'quiet' })] : null]
@@ -176,6 +189,55 @@ export async function mount(ctx) {
     ]));
   }
   paintKey();
+
+  // the certificate in use: its SHA-256, its names and the CAN Bridge's upload address, each to copy, and a new
+  // one made here (no shell, no restart); never for the owner's own certificate
+  const certSlot = h('div');
+  const shaText = (v) => String(v || '').toUpperCase();
+  function paintCert() {
+    const c = S.network?.certificate || null;
+    if (!admin) { replace(certSlot, note('An admin sees the certificate\'s SHA-256 and the CAN Bridge upload address, and can make a new certificate.')); return; }
+    replace(certSlot,
+      c || S.network?.upload_address ? kv([
+        c?.sha256 ? ['sha-256', h('span', { class: 'hc' }, h('span', { class: 'cert-sha' }, shaText(c.sha256)), h('span', { class: 'acts' }, copyBtn(shaText(c.sha256))))] : null,
+        c?.names?.length ? ['names in it', c.names.join(', ')] : null,
+        S.network?.upload_address ? ['upload address', h('span', { class: 'hc' }, h('span', { class: 'cert-sha' }, S.network.upload_address), h('span', { class: 'acts' }, copyBtn(S.network.upload_address)))] : null,
+        ['made by', certOwn() ? [tag('own', 'muted'), ' you: the cert.pem and key.pem in data/tls'] : [tag('server', 'muted'), ' this server']],
+      ], { cols: 1 }) : note('The server did not say which certificate it runs with.'),
+      c?.sha256 ? note('The CAN Bridge app needs this SHA-256 (and the upload address) in its upload settings.') : null,
+      certOwn()
+        ? note('This is your own certificate, so the server never replaces it. To change it, put the new cert.pem and key.pem in data/tls and start the container again. For a certificate the server makes instead, delete data/tls/cert.pem and start it again.')
+        : h('div', { class: 'acts cert-acts' }, btn('make a new certificate', makeCertificate)));
+  }
+  const nextNames = () => ['localhost', ...((S.settings?.host_names) || []).filter((n) => n.toLowerCase() !== 'localhost')];
+  async function makeCertificate() {
+    const out = await askPassword(ctx, {
+      title: 'make a new certificate', submit: 'make a new certificate', danger: true,
+      intro: h('div', { class: 'hc' },
+        h('p', null, 'The server makes a new certificate and uses it at once on both ports, without a restart. Before you go on:'),
+        lines([
+          [tag('sha-256', 'warn'), 'It changes. Each CAN Bridge app refuses this server until you type the new SHA-256 into its upload settings.'],
+          [tag('browsers', 'warn'), 'They ask again to accept the new certificate, on every device that opens these pages.'],
+          [tag('names', 'muted'), [nextNames().join(', '), h('span', { class: 'muted' }, 'Change them under host names first, if one is missing.')]],
+        ])),
+      run: (cred) => ctx.api.post('network/certificate', cred).catch((e) => {
+        if (e.status === 409) e.message = { own_certificate: 'This server runs with your own certificate; it never replaces it.', move_under_way: 'A move is under way: a new server pins this certificate. Finish or end the move first.', setup_busy: 'A move or a restore into this server runs now. Try again when it is done.', moved: 'The data moved to another server; this one makes no new certificate.' }[e.code] || e.message;
+        throw e;
+      }),
+    });
+    if (!out || !ctx.alive()) return;
+    try { S.network = await ctx.api.get('network'); } catch { S.network = { ...(S.network || {}), certificate: { names: out.names, sha256: out.sha256, own: false }, upload_address: out.upload_address }; }
+    if (!ctx.alive()) return;
+    readCert(); paintCert(); paintHosting();
+    await showOnce({
+      title: 'the new certificate is in use',
+      body: h('div', { class: 'hc' },
+        h('p', null, 'Type this SHA-256 into each CAN Bridge app\'s upload settings now: until then it refuses this server.'),
+        h('div', { class: 'box' }, h('p', { class: 'cert-sha' }, shaText(out.sha256)), h('div', { class: 'acts' }, copyBtn(shaText(out.sha256), 'copy', { primary: true }))),
+        note('Reload this page to accept the new certificate in this browser.')),
+    });
+  }
+  paintCert();
 
   /* ---------------------------------------------------------------- moving (admin) */
   const M = { move: null, codeText: null, codeId: null, err: null, exp: null, expErr: null, want: false };
@@ -440,7 +502,8 @@ export async function mount(ctx) {
       case 'place': return link(state.buildUrl('places', { query: { place: tid } }), 'a place');
       case 'import': return link(state.buildUrl('import'), 'an import');
       case 'key': return link(state.buildUrl('settings-cars'), `key ${tid}`);
-      case 'server': return 'the server';
+      case 'server': return tid === 'certificate' ? 'the certificate' : 'the server';
+      case 'tesla': { const acc = tid.split(':')[0]; return acc ? link(teslaAccountHref(acc), `tesla account ${acc}`) : link(`${state.buildUrl('settings-integrations')}#tesla`, 'the tesla input'); }
       default: return tg || null;
     }
   }
@@ -450,7 +513,7 @@ export async function mount(ctx) {
     columns: [
       { key: 'at_ms', label: 'when', ph: 'sub', render: (e) => dateTime(e.at_ms, tz) },
       { key: 'account', label: 'who', ph: 'num', render: (e) => e.account || h('span', { class: 'muted' }, 'server') },
-      { key: 'action', label: 'action', ph: 'main' },
+      { key: 'action', label: 'action', ph: 'main', render: (e) => (ACTION[e.action] ? h('span', { title: e.action }, ACTION[e.action]) : e.action) },
       { key: 'target', label: 'item', render: (e) => target(e.target, e.car) },
       { key: 'summary', label: 'what happened', grow: true, ph: 'sub', render: (e) => e.summary || null },
     ],
@@ -472,7 +535,7 @@ export async function mount(ctx) {
     section({ title: 'this address', cover: 'web.shell.hosting', side: h('span', { class: 'muted' }, `${loc.protocol}//${loc.host}/`) }, hostSlot),
     names ? section({ title: 'host names' }, names.el) : null,
     ports,
-    section({ title: 'certificate and recovery key' }, keySlot),
+    section({ title: 'certificate and recovery key', id: 'certificate-in-use' }, certSlot, keySlot),
     access,
     moving,
     accounts?.el,

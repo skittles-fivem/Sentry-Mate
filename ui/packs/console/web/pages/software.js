@@ -17,13 +17,14 @@ import { empty } from '../core/states.js';
 import { field, form } from '../core/form.js';
 import { openDialog } from '../core/dialog.js';
 import { toast } from '../core/toast.js';
+import { src, srcText } from '../core/source.js';
 
 export const id = 'software';
 export const title = () => 'Software';
 
 const enc = encodeURIComponent;
-const SOURCE = { teslamate: 'imported', owner: 'typed', build_match: 'same build' };
-const FOUND = { ota_status: 'update status', build_change: 'module builds', teslamate: 'imported' };
+const SOURCE = { teslamate: 'imported', tesla_api: 'tesla api', owner: 'typed', build_match: 'same build' };
+const FOUND = { ota_status: 'update status', build_change: 'module builds', teslamate: 'imported', tesla_api: 'tesla api' };
 const MODULES = { bms: 'bms', vcfront: 'front body', di_front: 'front motor', di_rear: 'rear motor', fc: 'fast charge' };
 const mods = (list) => (list || []).map((m) => MODULES[m] || m).join(', ');
 const none = (t) => h('span', { class: 'muted' }, t);
@@ -100,6 +101,7 @@ export async function mount(ctx) {
         render: (r) => (r.charges ? link(state.buildUrl('charges', { car: cid, period: onVersion(r) }), formatNumber(r.charges)) : formatNumber(r.charges ?? 0)) },
       { key: 'range', label: 'range 100%', num: true, cover: 'updates.table.avg_range', render: (r) => num(r.full_range_km, 'range') },
       { key: 'pack', label: 'full pack', num: true, render: (r) => (r.full_pack_kwh == null ? none('not measured') : num(r.full_pack_kwh, 'energy')) },
+      { key: 'from', label: 'data', title: 'where the data came from: smo, api (the Tesla API), imp (imported)', render: (r) => src(r), value: (r) => srcText(r) },
     ],
     empty: () => empty('no updates in this range', ctx.period.preset === 'all' ? 'an update shows once the car installs one while recording, or with an imported history' : 'choose a longer range; all shows every update'),
     onPage: (pg) => { if (!ctx.alive()) return; painted = true; paintNow(pg.summary, updates.rows()); },

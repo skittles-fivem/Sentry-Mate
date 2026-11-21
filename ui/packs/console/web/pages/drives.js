@@ -20,12 +20,13 @@ import { filterLine, dateSpan, numberOf } from '../core/filterline.js';
 import { placeLink } from './timeline.js';
 import { isAdmin } from '../core/prefs.js';
 import { toast } from '../core/toast.js';
+import { src, est as estTag, srcText, sourceWord, SOURCE_KEY } from '../core/source.js';
 
 export const id = 'drives';
 
 const KEYS = {
   from: 'start of the range (2026, 2026-10, 2026-10-03)', to: 'end of the range', min: 'shortest drive (min:10km)', speed: 'lowest average speed',
-  place: 'a place at the start or end', at: 'start | end', source: 'can | imported', flag: 'gap | live | cold', eff: 'plain | hill', not: 'places left out of the patterns',
+  place: 'a place at the start or end', at: 'start | end', source: SOURCE_KEY, flag: 'gap | live | cold', eff: 'plain | hill', not: 'places left out of the patterns',
 };
 
 export async function mount(ctx) {
@@ -50,7 +51,7 @@ export async function mount(ctx) {
       q: [p.text, k.place && !pl.length ? k.place : null].filter(Boolean).join(' ') || null,
       min_distance_km: numberOf(k.min) != null ? +toMetric(numberOf(k.min), 'distance').toFixed(3) : null,
       min_avg_kph: numberOf(k.speed) != null ? +toMetric(numberOf(k.speed), 'speed').toFixed(2) : null,
-      source: k.source === 'can' ? 'can' : k.source === 'imported' ? 'teslamate' : null,
+      source: sourceWord(k.source),
       flags: fl,
       efficiency: String(k.eff || '').startsWith('hill') ? 'hill_corrected' : 'plain',
     };
@@ -107,13 +108,14 @@ export async function mount(ctx) {
     { key: 'speed_max', label: 'top', num: true, sort: 'speed_max', cover: 'drives.table.speed_max', render: (d) => num(d.speed_max_kph, 'speed') },
     { key: 'power', label: 'peak', num: true, cover: 'drives.table.power_max', title: 'highest power out of the battery', render: (d) => num(d.power_max_kw, 'power') },
     { key: 'energy', label: 'energy', num: true, sort: 'energy', cover: 'drives.table.energy', ph: 'num',
-      render: (d) => h('span', null, num(d.energy_kwh, 'energy'), d.energy_basis === 'estimated' ? h('span', { class: 'tone--warn' }, ' est') : null),
+      render: (d) => h('span', null, num(d.energy_kwh, 'energy'), estTag(d)),
       total: (pg) => (sum(pg) ? num(sum(pg).energy_kwh, 'energy') : null) },
     { key: 'wh', label: 'use', num: true, sort: 'wh_per_km', cover: 'drives.table.consumption', title: 'consumption on the basis chosen with eff:', render: (d) => num(d.wh_per_km, 'efficiency'), total: (pg) => (sum(pg) ? num(sum(pg).wh_per_km, 'efficiency') : null) },
     { key: 'eff', label: 'eff', cover: 'drives.table.efficiency', title: 'rated consumption against this drive’s (100 % = as rated)',
       render: (d) => (d.efficiency_pct == null ? null : h('span', { class: 'nowrap' }, cellBar(d.efficiency_pct / 100, 8, d.efficiency_pct >= 90 ? 'accent' : 'text'), ' ', h('span', { class: 'eff-n' }, format(d.efficiency_pct, 'percent')))) },
-    { key: 'flags', label: 'flags', cover: 'drives.table.reduced_range', title: 'cold: cold battery; gap: data missing; live: still driving; imp: imported',
-      render: (d) => [d.flags?.reduced_range ? tag('cold', 'warn') : null, d.flags?.gap_ms ? tag('gap', 'bad') : null, d.flags?.in_progress ? tag('live', 'accent') : null, d.source && d.source !== 'can' ? tag('imp', 'muted') : null].filter(Boolean) },
+    { key: 'flags', label: 'flags', cover: 'drives.table.reduced_range', title: 'cold: cold battery; gap: data missing; live: still driving',
+      render: (d) => [d.flags?.reduced_range ? tag('cold', 'warn') : null, d.flags?.gap_ms ? tag('gap', 'bad') : null, d.flags?.in_progress ? tag('live', 'accent') : null].filter(Boolean) },
+    { key: 'from', label: 'data', title: 'where the data came from: smo (the CAN Bridge), api (the Tesla API), imp (imported)', ph: 'sub', render: (d) => src(d), value: (d) => srcText(d) },
   ];
   const list = table(ctx, {
     title: 'drives', path, params, limit: 50, columns, sort: { key: 'start', dir: 'desc' }, csvName: 'drives',

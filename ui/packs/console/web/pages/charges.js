@@ -4,7 +4,7 @@
 // the charging statistics (GET .../charging-stats, charging-stats/places, .../charging-stats/dc-curve) as
 // key: value lines, text bars, text heat maps and two uPlot charts.
 //
-// filter> place:home kind:dc at:charger cost:5 unpriced dur:10 source:can flag:gap words
+// filter> place:home kind:dc at:charger cost:5 unpriced dur:10 source:smo flag:gap words
 //   place a saved place (names, comma), kind ac | dc | unknown, at the kind of place, cost the lowest
 //   cost (unpriced keeps those without a price too), dur the shortest charging time in minutes, source,
 //   flag, free words: text in the place or address.
@@ -28,6 +28,7 @@ import { rpx } from '../core/display.js';
 import { isAdmin } from '../core/prefs.js';
 import { toast } from '../core/toast.js';
 import { placeLink } from './timeline.js';
+import { src, est as estTag, srcText, sourceWord, SOURCE_KEY } from '../core/source.js';
 
 export const id = 'charges';
 
@@ -37,7 +38,7 @@ export const KIND_TONE = { ac: 'accent', dc: 'warn', unknown: 'muted' };
 const COST_SOURCE = { tariff: 'place price', manual: 'typed', free_supercharging: 'free', teslamate: 'imported' };
 const KEYS = {
   place: 'saved places (place:home,work)', kind: 'ac | dc | unknown', at: 'home | work | charger | service | other | none',
-  cost: 'lowest cost (cost:5)', unpriced: 'with cost: keep charges with no price', dur: 'shortest charging time in min', source: 'can | imported', flag: 'gap | live',
+  cost: 'lowest cost (cost:5)', unpriced: 'with cost: keep charges with no price', dur: 'shortest charging time in min', source: SOURCE_KEY, flag: 'gap | live',
 };
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
@@ -88,7 +89,7 @@ export async function mount(ctx) {
       kind: ['ac', 'dc', 'unknown'].includes(String(k.kind || '').toLowerCase()) ? String(k.kind).toLowerCase() : null,
       q: [p.text, k.place && !pl.length ? k.place : null].filter(Boolean).join(' ') || null,
       min_cost: numberOf(k.cost), unpriced: k.unpriced != null && !/^(no|0|false)$/i.test(k.unpriced),
-      min_dur: numberOf(k.dur), source: k.source === 'can' ? 'can' : k.source === 'imported' ? 'teslamate' : null,
+      min_dur: numberOf(k.dur), source: sourceWord(k.source),
       flags: { gap: 'gap', live: 'in_progress' }[String(k.flag || '').toLowerCase()] || null,
     };
   };
@@ -171,7 +172,7 @@ export async function mount(ctx) {
     { key: 'place', label: 'place', cls: 'wrap-cell', ph: 'sub', cover: ['charges.table.location', 'charges.link.geofence'], render: (c) => placeLink(c) || '—' },
     { key: 'kind', label: 'type', ph: 'sub', cover: 'charges.table.type', render: kindTag },
     { key: 'duration', label: 'time', num: true, sort: 'duration', cover: 'charges.table.duration', title: 'time charging (plugged-in waiting left out)', ph: 'sub', render: (c) => formatDuration(c.charging_ms) },
-    { key: 'added', label: 'added', num: true, sort: 'energy', cover: 'charges.table.energy_added', ph: 'num', render: (c) => num(c.energy_added_kwh, 'energy'), total: (pg) => (sum(pg) ? num(sum(pg).energy_added_kwh, 'energy') : null) },
+    { key: 'added', label: 'added', num: true, sort: 'energy', cover: 'charges.table.energy_added', ph: 'num', render: (c) => h('span', null, num(c.energy_added_kwh, 'energy'), estTag(c)), total: (pg) => (sum(pg) ? num(sum(pg).energy_added_kwh, 'energy') : null) },
     { key: 'grid', label: 'used', num: true, cover: 'charges.table.energy_used', title: 'ac: from the grid, measured; dc: delivered at the inlet',
       render: (c) => (c.energy_grid_kwh != null ? num(c.energy_grid_kwh, 'energy') : c.dc_inlet_kwh != null ? h('span', { title: 'delivered at the inlet; the grid side of a fast charger is not measured' }, num(c.dc_inlet_kwh, 'energy'), none(' in')) : null),
       total: (pg) => (sum(pg)?.energy_grid_known ? num(sum(pg).energy_grid_kwh, 'energy') : null) },
@@ -187,8 +188,9 @@ export async function mount(ctx) {
     { key: 'soc', label: 'soc', num: true, sort: 'end_soc', ph: 'sub', cover: ['charges.table.start_soc', 'charges.table.end_soc'], render: (c) => h('span', { class: 'nowrap' }, pct(c.start_soc_pct), h('span', { class: 'arrow' }, '->'), pct(c.end_soc_pct)) },
     { key: 'temp', label: 'out', num: true, cover: 'charges.table.temp', title: 'average outside temperature (battery in the tooltip)', render: (c) => h('span', { title: c.battery_avg_c != null ? `battery ${format(c.battery_avg_c, 'temperature')}` : null }, num(c.outside_avg_c, 'temperature')) },
     { key: 'odo', label: 'odo', num: true, cover: 'charges.table.odometer', render: (c) => num(c.odometer_km, 'odometer') },
-    { key: 'flags', label: 'flags', title: 'gap: data missing; live: charging now; imp: imported',
-      render: (c) => [c.has_gaps ? tag('gap', 'bad') : null, c.flags?.in_progress || c.end_ms == null ? tag('live', 'warn') : null, c.source && c.source !== 'can' ? tag('imp', 'muted') : null].filter(Boolean) },
+    { key: 'flags', label: 'flags', title: 'gap: data missing; live: charging now',
+      render: (c) => [c.has_gaps ? tag('gap', 'bad') : null, c.flags?.in_progress || c.end_ms == null ? tag('live', 'warn') : null].filter(Boolean) },
+    { key: 'from', label: 'data', title: 'where the data came from: smo (the CAN Bridge), api (the Tesla API), imp (imported)', ph: 'sub', render: (c) => src(c), value: (c) => srcText(c) },
   ].filter(Boolean);
   const list = table(ctx, {
     title: 'charges', path: listPath, params: listParams(), limit: 25, columns, sort: { key: 'start', dir: 'desc' }, csvName: 'charges',

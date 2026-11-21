@@ -13,6 +13,7 @@ import { table } from '../core/table.js';
 import { empty } from '../core/states.js';
 import { getPrefs, savePrefs, isAdmin } from '../core/prefs.js';
 import { toast } from '../core/toast.js';
+import { src, srcText } from '../core/source.js';
 
 export const id = 'fleet';
 export const title = () => 'Fleet';
@@ -87,6 +88,7 @@ export async function mount(ctx) {
     { key: 'odo', label: 'odometer', num: true, render: (c) => (odo.has(c.id) ? num(odo.get(c.id), 'odometer') : null) },
     { key: 'place', label: 'place', ph: 'sub', render: (c) => placeText(c) },
     { key: 'seen', label: 'last seen', ph: 'sub', title: 'When the newest value was recorded', render: (c) => (c.now?.at_ms ? h('span', { class: c.now.stale ? 'tone--warn' : null, title: when(c.now.at_ms, c.time_zone) }, ago(c.now.at_ms)) : 'no data') },
+    { key: 'from', label: 'data', title: 'what the car has data from: smo (the CAN Bridge), api (the Tesla API), imp (imported)', render: (c) => src(c), value: (c) => srcText(c) },
     { key: 'pin', label: 'pin', render: pinCell },
   ];
   const list = table(ctx, {
@@ -166,7 +168,10 @@ export async function mount(ctx) {
     const none = !(s.cars > 0);
     emptyBox.hidden = !none;
     replace(emptyBox, section({ title: 'no cars' },
-      empty('no car to show yet', isAdmin() ? 'a car appears here when its CAN Bridge uploads its first log' : 'your account may not see any car yet: ask an admin to add one'),
+      empty('no car to show yet', isAdmin() ? 'a car appears here when its CAN Bridge (SMO) uploads its first log, or when a car of a Tesla account is matched to a new car here' : 'your account may not see any car yet: ask an admin to add one'),
+      isAdmin() ? h('p', { class: 'note' }, setup?.tesla_accounts
+        ? [`${formatNumber(setup.tesla_accounts)} tesla ${setup.tesla_accounts === 1 ? 'account is' : 'accounts are'} added: match its cars to start reading them. `, link(`${state.buildUrl('settings-integrations')}#tesla`, 'tesla account')]
+        : ['another way in: add a tesla account, and the server reads its cars from the tesla api as well (optional; off until you add one). ', link(`${state.buildUrl('settings-integrations')}#tesla`, 'add a tesla account')]) : null,
       fixes.length ? kv(fixes.map((f) => [f.cause.replace(/_/g, ' '), FIX[f.cause]]), { cols: 1 }) : null,
       isAdmin() && !fixes.length ? link(state.buildUrl('settings-cars'), 'settings / cars') : null));
   }

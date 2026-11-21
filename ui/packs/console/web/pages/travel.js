@@ -15,6 +15,7 @@ import { table, cellBar } from '../core/table.js';
 import { safeMap } from '../core/map.js';
 import { empty } from '../core/states.js';
 import { filterLine } from '../core/filterline.js';
+import { src, srcText } from '../core/source.js';
 
 export const id = 'travel';
 
@@ -213,6 +214,7 @@ export async function mount(ctx) {
       { key: 'address', label: 'address', cls: 'wrap-cell', ph: 'sub', cover: 'locations.last_visited.address', render: (r) => (r.place ? h('a', { class: 'lnk-plain', href: state.buildUrl('places', { query: { place: r.place.id } }) }, r.label) : r.address?.short || r.label) },
       { key: 'city', label: 'city', ph: 'sub', cover: 'locations.last_visited.city', render: (r) => r.address?.locality },
       { key: 'stay', label: 'stayed', num: true, ph: 'num', render: (r) => (r.left_ms ? formatDuration(r.left_ms - r.arrived_ms) : h('span', { class: 'tone--accent' }, 'still there')) },
+      { key: 'from', label: 'data', title: 'where the data came from: smo, api (the Tesla API), imp (imported)', render: (r) => src(r), value: (r) => srcText(r) },
     ],
     empty: () => empty('no stop in this range'),
   });

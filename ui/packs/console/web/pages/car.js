@@ -18,11 +18,13 @@ import { safeMap } from '../core/map.js';
 import { chartOrNote, line, timeAxis, valueAxis, cursor, readout } from '../core/chart.js';
 import { rpx } from '../core/display.js';
 import { stateStrip } from '../core/strip.js';
+import { src, via, inputsLine } from '../core/source.js';
 
 export const id = 'car';
 export const title = () => 'Overview';
 
-const val = (p) => (p && typeof p === 'object' && 'value' in p ? p.value : p ?? null);
+// a live value is { value, at_ms, sources }; an event may bring only a newer time for it ({ at_ms })
+const val = (p) => (p && typeof p === 'object' ? ('value' in p ? p.value : null) : p ?? null);
 const at = (p) => (p && typeof p === 'object' ? p.at_ms ?? null : null);
 
 const AWAKE = {
@@ -57,6 +59,7 @@ export async function mount(ctx) {
   if (btns[0]) cover(btns[0], 'overview.control.time_range');
   if (btns[1]) cover(btns[1], 'overview.filter.car');
   const sub = h('p', { class: 'subline' });
+  const inputsEl = h('div', { class: 'src-car' });
   const staleLine = h('p', { class: 'staleline', role: 'status', cover: ['summary.state.drive_offline', 'summary.data.restored_values'] });
   const nowBlock = h('div');
   const mapEl = h('div', { class: 'map map--sm', role: 'img', 'aria-label': `Map: where ${car.name} is` });
@@ -66,7 +69,7 @@ export async function mount(ctx) {
   const periodBlock = h('div');
 
   replace(ctx.view, h('div', { class: 'page', dataset: { page: 'car' }, cover: ['shots.web-interface', 'shots.overview'] },
-    hd, sub, staleLine, nowBlock,
+    hd, sub, inputsEl, staleLine, nowBlock,
     h('div', { class: 'cols2' },
       section({ title: 'where', cover: ['summary.map.position', 'summary.map.attribution', 'summary.map.zoom'] }, mapEl, mapTools),
       h('div', null, chargeBlock, whyBlock)),
@@ -75,7 +78,7 @@ export async function mount(ctx) {
   /* ---------- the lines at the top */
   function paintSub() {
     const n = now, trim = car.config?.trim;
-    const trimSrc = { can: 'from the car', vin: 'from the VIN', owner: 'typed by the owner', teslamate: 'imported' }[trim?.source];
+    const trimSrc = { can: 'from SMO', smo: 'from SMO', vin: 'from the VIN', owner: 'typed by the owner', teslamate: 'imported', tesla_api: 'from the Tesla API' }[trim?.source];
     replace(sub,
       h('span', { cover: 'summary.stat.status' }, stateWord(n.state, { stale: n.stale }), ' since ', n.since_ms ? when(n.since_ms, tz) : '—',
         n.since_ms ? h('span', { class: 'muted' }, ` (${dur(Math.max(0, ctx.api.now() - n.since_ms))})`) : null),
@@ -84,6 +87,9 @@ export async function mount(ctx) {
       h('span', { class: 'sep', 'aria-hidden': 'true' }, '\u00a0| '),
       h('span', { cover: 'summary.header.trim' }, trim?.value ? [trim.value, trimSrc ? h('span', { class: 'muted' }, ` (${trimSrc})`) : null] : h('span', { class: 'muted' }, 'trim not known yet')),
       car.vin_prefix ? [h('span', { class: 'sep', 'aria-hidden': 'true' }, '\u00a0| '), h('span', { class: 'muted', title: 'Only the VIN prefix is stored' }, 'vin '), car.vin_prefix] : null);
+    // the live inputs (SMO, the Tesla API) with each one's newest value, and every input its history has
+    const hist = src(car, { full: true });
+    replace(inputsEl, inputsLine(n.inputs), hist ? h('p', { class: 'src-line src-line--car' }, h('span', { class: 'src-inputs-k' }, 'history '), hist) : null);
     const midDrive = n.state === 'driving' && n.stale;
     const show = n.stale || n.state === 'unknown';
     staleLine.hidden = !show;
@@ -93,11 +99,13 @@ export async function mount(ctx) {
   }
 
   /* ---------- ## now */
+  // a value older than the snapshot shows its age; one the Tesla API sent says [api] after it
   const aged = (pair, content) => {
     const t = at(pair);
     const old = t && now.at_ms && now.at_ms - t > 10 * 60000;
-    return old ? [content, h('span', { class: 'muted' }, ` (${ago(t)})`)] : content;
+    return [content, old ? h('span', { class: 'muted' }, ` (${ago(t)})`) : null, via(pair)];
   };
+  const by = (pair, content) => (content == null ? null : [content, via(pair)]);
   const yes = (pair, on = 'open', off = 'closed', warn = true) => { const v = val(pair); return v == null ? null : v ? (warn ? h('span', { class: 'tone--warn' }, on) : on) : off; };
   function paintNow() {
     const n = now, f = n.flags || {}, c = n.charge || {}, loc = n.location || {};
@@ -114,7 +122,7 @@ export async function mount(ctx) {
       .concat(val(f.trunk) ? ['trunk'] : [], val(f.frunk) ? ['frunk'] : [], val(f.liftgate_deg) ? ['liftgate'] : []);
     const doorsKnown = ['fl', 'fr', 'rl', 'rr'].some((k) => val(doors[k]) != null);
     const sw = n.software || {};
-    const swSrc = { teslamate: 'imported', owner: 'typed by the owner', build_match: 'matched by module builds' }[sw.version_source];
+    const swSrc = { teslamate: 'imported', tesla_api: 'from the Tesla API', owner: 'typed by the owner', build_match: 'matched by module builds' }[sw.version_source];
     const band = soc == null ? null : soc < 20 ? 'low' : soc > 80 ? 'high' : 'normal';
     replace(nowBlock, section({ title: 'now', cover: 'nr.dash.panel.car-status', side: h('span', { class: 'muted', cover: ['nr.dash.last-update', 'summary.data.live_push'], title: n.at_ms ? `recorded ${formatDateTime(n.at_ms, tz)}` : null }, 'newest ', n.at_ms ? ago(n.at_ms) : '—', ', updates by itself') },
       kv([
@@ -123,34 +131,34 @@ export async function mount(ctx) {
         ['battery', aged(n.soc_pct, h('span', { class: 'soc-cell' }, textBar(soc, { cells: 20, tone: band === 'low' ? 'bad' : n.stale ? 'text' : 'accent' }), num(soc, 'percent'),
           band ? h('span', { class: 'muted', title: 'bands: under 20 %, 20 to 80 %, over 80 %' }, ` ${band}`) : null)),
         { cover: ['overview.stat.battery_level', 'nr.dash.battery-level', 'nr.dash.battery-level.bands', 'summary.stat.soc'] }],
-        ['usable', usable != null && soc != null && Math.abs(usable - soc) >= 0.5 ? h('span', { class: 'tone--warn' }, num(usable, 'percent')) : num(usable, 'percent')],
+        ['usable', by(n.usable_soc_pct, usable != null && soc != null && Math.abs(usable - soc) >= 0.5 ? h('span', { class: 'tone--warn' }, num(usable, 'percent')) : num(usable, 'percent'))],
         [`${ideal ? 'ideal' : 'rated'} range`, aged(rangePair, num(val(rangePair), 'range')), { cover: ['summary.stat.range_preferred', 'overview.stat.range', 'nr.dash.ideal-range'] }],
-        ['est. range', [num(val(n.est_range_km), 'range'), h('span', { class: 'muted' }, n.est_basis === 'wh_per_km_30d' ? ' at 30 d use' : ' at recent use')], { cover: ['summary.stat.range_estimated', 'nr.dash.est-range'] }],
-        ['in the pack', num(val(n.energy_remaining_kwh), 'energy')],
-        ['odometer', h('a', { class: 'lnk-plain', href: ctx.link('statistics'), title: 'distance over time on statistics' }, num(val(n.odometer_km), 'odometer')), { cover: ['summary.stat.odometer', 'overview.stat.odometer', 'overview.link.mileage'] }],
+        ['est. range', [num(val(n.est_range_km), 'range'), via(n.est_range_km), h('span', { class: 'muted' }, n.est_basis === 'wh_per_km_30d' ? ' at 30 d use' : ' at recent use')], { cover: ['summary.stat.range_estimated', 'nr.dash.est-range'] }],
+        ['in the pack', aged(n.energy_remaining_kwh, num(val(n.energy_remaining_kwh), 'energy'))],
+        ['odometer', by(n.odometer_km, h('a', { class: 'lnk-plain', href: ctx.link('statistics'), title: 'distance over time on statistics' }, num(val(n.odometer_km), 'odometer'))), { cover: ['summary.stat.odometer', 'overview.stat.odometer', 'overview.link.mileage'] }],
         ['outside', aged(n.outside_c, num(val(n.outside_c), 'temperature')), { cover: ['summary.stat.outside_temp', 'overview.stat.outside_temp'] }],
         ['inside', aged(n.cabin_c, val(n.cabin_c) == null ? h('span', { class: 'muted' }, 'not sent by this car') : num(val(n.cabin_c), 'temperature')), { cover: ['summary.stat.inside_temp', 'overview.stat.inside_temp'] }],
         ['climate set', setp(n.setpoint_left_c) == null && setp(n.setpoint_right_c) == null ? h('span', { class: 'muted' }, val(f.climate) === 'off' ? 'none while climate is off' : 'not sent')
           : [setp(n.setpoint_left_c) ?? '—', h('span', { class: 'muted' }, ' left  '), setp(n.setpoint_right_c) ?? '—', h('span', { class: 'muted' }, ' right')], { cover: 'overview.stat.driver_temp' }],
-        ['battery temp', num(val(n.battery_c), 'temperature')],
-        ['climate', CLIMATE[val(f.climate)] || null, { cover: 'summary.flag.preconditioning' }],
-        ['keep climate', KEEP[val(f.keep_climate)] || null, { cover: 'summary.flag.dog_mode' }],
+        ['battery temp', aged(n.battery_c, num(val(n.battery_c), 'temperature'))],
+        ['climate', by(f.climate, CLIMATE[val(f.climate)] || null), { cover: 'summary.flag.preconditioning' }],
+        ['keep climate', by(f.keep_climate, KEEP[val(f.keep_climate)] || null), { cover: 'summary.flag.dog_mode' }],
         ['locked', h('span', { class: 'muted' }, 'not on the CAN bus'), { cover: ['summary.flag.lock', 'summary.flag.windows_open'] }],
         ['doors', !doorsKnown ? null : openOnes.length ? h('span', { class: 'tone--warn' }, `open: ${openOnes.join(', ')}`) : 'all closed', { cover: 'summary.flag.doors_open' }],
-        ['sentry', yes(f.sentry, 'on', 'off'), { cover: 'summary.flag.sentry_mode' }],
+        ['sentry', by(f.sentry, yes(f.sentry, 'on', 'off')), { cover: 'summary.flag.sentry_mode' }],
         ['sentry event', val(f.sentry_event_guess) ? h('span', { class: 'tone--warn' }, 'likely (a guess)') : 'none seen', { cover: 'summary.flag.sentry_recording' }],
-        ['someone inside', val(f.user_present) == null ? null : val(f.user_present) ? 'yes' : 'no', { cover: 'summary.flag.driver_present' }],
-        ['cable', yes(c.plugged, 'plugged in', 'unplugged'), { cover: 'summary.flag.plugged_in' }],
+        ['someone inside', val(f.user_present) == null ? null : by(f.user_present, val(f.user_present) ? 'yes' : 'no'), { cover: 'summary.flag.driver_present' }],
+        ['cable', by(c.plugged, yes(c.plugged, 'plugged in', 'unplugged')), { cover: 'summary.flag.plugged_in' }],
         ['cold battery', val(f.reduced_range) == null ? null : val(f.reduced_range) ? h('span', { class: 'tone--warn' }, 'range reduced') : 'no', { cover: 'summary.flag.reduced_range' }],
         ['service mode', val(f.service_mode) == null ? null : val(f.service_mode) ? h('span', { class: 'tone--warn' }, loc.place ? `on, at ${loc.place.name}` : 'on') : 'off', { cover: ['summary.flag.service_mode', 'summary.state.in_service'] }],
         ['tyres fl fr', [tyre(0), '  ', tyre(1)], { cover: 'summary.flag.tire_pressure_warning' }],
         ['tyres rl rr', [tyre(2), '  ', tyre(3), rec != null ? h('span', { class: 'muted' }, ` rec ${format(rec, 'pressure')}`) : null]],
-        ['12 v battery', num(val(n.lv_v), 'voltage')],
+        ['12 v battery', aged(n.lv_v, num(val(n.lv_v), 'voltage'))],
         ['software', [h('a', { class: 'lnk-plain', href: ctx.link('software') }, sw.version || 'not known'), swSrc ? h('span', { class: 'muted' }, ` (${swSrc})`) : null], { cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
         ['update seen', sw.changed_since_ms ? h('span', { class: 'tone--warn' }, `builds changed ${when(sw.changed_since_ms, tz)}`) : h('span', { class: 'muted' }, 'no change seen'), { cover: 'summary.flag.software_update' }],
         ['log received', n.received_ms ? ago(n.received_ms) : null],
       ]),
-      note(`Logs arrive about ${n.delay_s ? (n.delay_s < 120 ? `${Math.round(n.delay_s)} s` : dur(n.delay_s * 1000)) : '75 s'} after the car records them; a value older than that shows its own age. Values in your units (${unitLabel('distance')}, ${unitLabel('temperature')}, ${unitLabel('pressure')}). `,
+      note(h('span', { class: 'src' }, h('span', { class: 'src-b' }, '[', h('span', { class: 'src-k src-k--tesla_api' }, 'api'), ']')), ' after a value: the Tesla API sent it; the rest came from SMO. ', `Logs arrive about ${n.delay_s ? (n.delay_s < 120 ? `${Math.round(n.delay_s)} s` : dur(n.delay_s * 1000)) : '75 s'} after the car records them; a value older than that shows its own age. Values in your units (${unitLabel('distance')}, ${unitLabel('temperature')}, ${unitLabel('pressure')}). `,
         h('a', { class: 'lnk', href: ctx.link('health'), cover: 'summary.data.prefs_snapshot' }, 'every signal'))));
   }
 
@@ -164,12 +172,12 @@ export async function mount(ctx) {
       side: chg.charge_id ? link(ctx.link('charge', { charge: chg.charge_id }), 'open') : link(ctx.link('charges'), 'charges') },
     kv([
       ['status', [CHARGE_STATUS[val(chg.status)] || (plugged ? 'plugged in' : 'not plugged in'), val(chg.kind) ? h('span', { class: 'muted' }, ` ${String(val(chg.kind)).toUpperCase()}`) : null]],
-      ['power', charging ? num(val(chg.power_kw), 'power') : not('not charging'), { cover: ['summary.stat.charger_power', 'nr.dash.charging-power', 'overview.stat.charging_power'] }],
+      ['power', charging ? by(chg.power_kw, num(val(chg.power_kw), 'power')) : not('not charging'), { cover: ['summary.stat.charger_power', 'nr.dash.charging-power', 'overview.stat.charging_power'] }],
       ['volts', charging ? num(val(chg.volts_v), 'voltage') : not('not charging'), { cover: 'overview.stat.ac_voltage' }],
       ['amps', charging ? [num(val(chg.amps_a), 'current'), val(chg.phases) ? h('span', { class: 'muted' }, ` ${val(chg.phases)} ph`) : null] : not('not charging'), { cover: 'nr.dash.charging-current' }],
-      ['added', val(chg.added_kwh) != null ? num(val(chg.added_kwh), 'energy') : not('no charge under way'), { cover: 'summary.stat.energy_added' }],
-      ['limit', val(chg.limit_pct) != null ? num(val(chg.limit_pct), 'percent') : not(plugged ? 'not sent yet' : 'not plugged in'), { cover: ['summary.stat.charge_limit', 'nr.dash.charge-limit'] }],
-      ['to full', val(chg.to_full_min) != null ? dur(val(chg.to_full_min) * 60000) : not(charging ? 'not known yet' : 'no charge under way'), { cover: ['summary.stat.remaining_time', 'nr.dash.time-to-full'] }],
+      ['added', val(chg.added_kwh) != null ? by(chg.added_kwh, num(val(chg.added_kwh), 'energy')) : not('no charge under way'), { cover: 'summary.stat.energy_added' }],
+      ['limit', val(chg.limit_pct) != null ? by(chg.limit_pct, num(val(chg.limit_pct), 'percent')) : not(plugged ? 'not sent yet' : 'not plugged in'), { cover: ['summary.stat.charge_limit', 'nr.dash.charge-limit'] }],
+      ['to full', val(chg.to_full_min) != null ? by(chg.to_full_min, dur(val(chg.to_full_min) * 60000)) : not(charging ? 'not known yet' : 'no charge under way'), { cover: ['summary.stat.remaining_time', 'nr.dash.time-to-full'] }],
       ['done at', chg.finish_ms ? when(chg.finish_ms, tz) : not(charging ? 'not known yet' : 'no charge under way'), { cover: 'summary.stat.expected_finish' }],
       ['scheduled', not('not on the CAN bus')],
     ], { cols: 1 })));
@@ -263,13 +271,13 @@ export async function mount(ctx) {
           h('div', { class: 'ln ln--last', dataset: { row: '', href: lastD ? ctx.link('drive', { drive: lastD.id }) : null } },
             h('span', { class: 'ln-t' }, lastD ? formatTime(lastD.start_ms, tz) : ''), h('span', { class: 'ln-tag' }, tag('drive', 'drive')),
             h('span', { class: 'ln-what' }, lastD ? [h('span', { class: 'muted' }, 'last drive '), h('a', { class: 'lnk-plain', href: ctx.link('drive', { drive: lastD.id }) }, `${date(lastD.start_ms, tz)}  ${placeOf(lastD.start)} -> ${placeOf(lastD.end)}`)] : h('span', { class: 'muted' }, '-- no drive yet --')),
-            h('span', { class: 'ln-num' }, lastD ? num(lastD.distance_km, 'distance') : null)),
+            h('span', { class: 'ln-num' }, lastD ? [num(lastD.distance_km, 'distance'), ' ', src(lastD)] : null)),
           h('div', { class: 'ln ln--last', dataset: { row: '', href: lastC ? ctx.link('charge', { charge: lastC.id }) : null } },
             h('span', { class: 'ln-t' }, lastC ? formatTime(lastC.start_ms, tz) : ''), h('span', { class: 'ln-tag' }, tag('charge', 'charge')),
             h('span', { class: 'ln-what' }, lastC ? [h('span', { class: 'muted' }, 'last charge '), h('a', { class: 'lnk-plain', href: ctx.link('charge', { charge: lastC.id }) }, `${date(lastC.start_ms, tz)}  ${lastC.place?.name || lastC.address?.short || '—'}`)] : h('span', { class: 'muted' }, '-- no charge yet --')),
-            h('span', { class: 'ln-num' }, lastC ? num(lastC.energy_added_kwh, 'energy') : null)))),
+            h('span', { class: 'ln-num' }, lastC ? [num(lastC.energy_added_kwh, 'energy'), ' ', src(lastC)] : null)))),
       section({ title: 'battery', cover: ['overview.chart.charge_level', 'overview.control.shared_crosshair', 'overview.chart.legend_toggle'],
-        side: link(ctx.link('battery'), 'battery', { cover: 'overview.link.charge_level' }) },
+        side: [src(series), ' ', link(ctx.link('battery'), 'battery', { cover: 'overview.link.charge_level' })] },
       h('div', { class: 'chart-head' }, h('span', { class: 'chart-key' }, keyBtn('soc %', 1, () => battPlot, 1), keyBtn(`${rk === 'ideal_range_km' ? 'ideal' : 'rated'} range ${unitLabel('range')}`, 2, () => battPlot, 2))),
       battEl, battRead.el),
       section({ title: 'charging', cover: ['overview.chart.charging_details.power', 'overview.chart.charging_details.energy', 'overview.chart.charging_details.ac_current', 'overview.chart.charging_details.ac_voltage', 'overview.chart.charging_details.battery_heater'],

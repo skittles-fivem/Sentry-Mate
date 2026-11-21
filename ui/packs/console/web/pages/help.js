@@ -32,7 +32,7 @@ const QA = [
   ['Where do I change units, or rated against ideal range?', 'Each person picks units and the range once; every page then uses them. The server keeps metric values, so changing units never changes your data.', 'settings-display', 'settings/display'],
   ['How do I pick the dates a page shows?', 'The range on the right of the header line. It works in the car\'s own time zone and stays when you change page or car.', 'statistics', 'statistics'],
   ['Can I take my data out?', 'Yes. Tables have a csv link that uses your units, and drives can be saved as GPX tracks.', 'drives', 'drives'],
-  ['Can I bring my TeslaMate history?', 'Yes. An admin imports a TeslaMate backup. Imported rows are marked as imported, and where they overlap with CAN data you choose which is shown.', 'import', 'import'],
+  ['Can I bring my TeslaMate history?', 'Yes. An admin imports a TeslaMate backup. Imported rows say imported from TeslaMate, and where they overlap with live data (SMO or the Tesla API) you choose which is shown.', 'import', 'import'],
   ['How do I move to another server?', 'Make a move code in settings/server and type it on the new server\'s first page, or download an export file and restore it there with the recovery key. No shell is needed.', 'settings-server', 'settings/server'],
 ];
 

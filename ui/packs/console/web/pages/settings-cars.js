@@ -20,6 +20,7 @@ import { toast } from '../core/toast.js';
 import { confirmDialog } from '../core/dialog.js';
 import { copyBtn, showOnce } from '../core/secret.js';
 import { openCarSwitcher } from '../core/carswitch.js';
+import { src } from '../core/source.js';
 
 export const id = 'settings-cars';
 export const title = (ctx) => (ctx.car ? `Settings: ${ctx.car.name || 'car'}` : 'Settings: cars');
@@ -31,7 +32,9 @@ const CHEM_WORDS = { lfp: 'LFP (iron phosphate)', nca_nmc: 'NCA / NMC (nickel)' 
 const CONFIG = [['trim', 'trim'], ['drivetrain', 'drivetrain'], ['performance_package', 'performance'], ['pack_kwh_code', 'pack code'], ['wheel', 'wheels'],
   ['paint', 'paint'], ['roof', 'roof'], ['spoiler', 'spoiler'], ['right_hand_drive', 'right-hand drive'], ['map_region', 'map region'], ['supercharging_access', 'supercharging']];
 const yesNo = (v) => (v === true ? 'yes' : v === false ? 'no' : String(v));
-const srcTag = (s) => (SOURCE[s] ? tag(SOURCE[s][0], SOURCE[s][1]) : null);
+const oldTag = (s) => (SOURCE[s] ? tag(SOURCE[s][0], SOURCE[s][1]) : null);
+// a config value { value, source, sources }: where it came from; empty sources: an admin typed it
+const srcTag = (v) => (Array.isArray(v?.sources) ? src(v, { typed: 'typed by an admin' }) : oldTag(v?.source));
 const meta = (c) => [c.model, c.year].filter(Boolean).join(' ');
 const errMsg = (e) => saveError(e);
 
@@ -223,7 +226,7 @@ async function mountCar(ctx) {
       kv([
         ['model', [meta(c) || DASH, ' ', tag('vin', 'muted')]],
         ['vin prefix', c.vin_prefix || DASH],
-        ...CONFIG.filter(([k]) => cfg[k]?.value != null).map(([k, l]) => [l, [yesNo(cfg[k].value), ' ', srcTag(cfg[k].source)]]),
+        ...CONFIG.filter(([k]) => cfg[k]?.value != null).map(([k, l]) => [l, [yesNo(cfg[k].value), ' ', srcTag(cfg[k])]]),
       ]),
       h('p', { class: 'note' }, 'Read from the car\'s build message on its bus; model and year from the VIN prefix. Each value says where it came from: ',
         tag('can', 'accent'), ' ', tag('vin', 'muted'), ' ', tag('typed', 'warn'), ' ', tag('imported', 'muted'), '.', missing.length ? ` Not reported: ${missing.join(', ')}.` : ''),
@@ -418,7 +421,7 @@ async function mountCar(ctx) {
     rows();
     replace(slots.free, section({ title: 'free supercharging', cover: 'web.settings.car.free-supercharging', side: ro ? null : btn('add a range', () => { ranges = [...ranges, { from_date: null, to_date: null }]; rows(); }) },
       h('p', { class: 'note' }, 'Supercharger sessions that start on a free day cost nothing; sessions outside keep their own cost. Days are the car\'s days, in its time zone. ',
-        access?.value != null ? ['The car reports supercharging access: ', String(access.value), ' ', srcTag(access.source), '. That says what it may do now, not since when.'] : 'The car has not reported its supercharging access yet.'),
+        access?.value != null ? ['The car reports supercharging access: ', String(access.value), ' ', srcTag(access), '. That says what it may do now, not since when.'] : 'The car has not reported its supercharging access yet.'),
       box, msg));
   }
 

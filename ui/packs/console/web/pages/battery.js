@@ -22,6 +22,7 @@ import { loadUPlot, plot, line, timeAxis, valueAxis, cursor, readout, colors, he
 import { field, form } from '../core/form.js';
 import { toast } from '../core/toast.js';
 import { rpx } from '../core/display.js';
+import { src, srcText } from '../core/source.js';
 
 export const id = 'battery';
 export const title = () => 'Battery';
@@ -262,7 +263,7 @@ export async function mount(ctx) {
     replace(capSlot, rows,
       h('div', { class: 'chart-head' }, h('b', null, 'usable capacity'), h('span', null, 'kWh'), h('span', { class: 'chart-key' },
         h('span', { class: 'chart-key-i chart-key-i--2' }, `. ${opt.capGroup}`), h('span', { class: 'chart-key-i chart-key-i--1' }, '-- monthly median'), h('span', { class: 'chart-key-i chart-key-i--3' }, '- - trend'),
-        newKwh != null ? h('span', { class: 'chart-key-i muted' }, `.. new ${format(newKwh, 'energy')}`) : null)),
+        newKwh != null ? h('span', { class: 'chart-key-i muted' }, `.. new ${format(newKwh, 'energy')}`) : null), src(mergedSources(items))),
       box, rd.el,
       note(slope == null ? 'not enough readings for a trend yet.' : slope >= 0 ? 'the pack is not losing capacity at the moment.' : `trend: ${format(Math.abs(slope) / convert(1, 'distance'), 'energy')} less per ${formatNumber(10000)} ${unitLabel('distance')}.`,
         proj ? ` at this rate it reaches the ${pct(proj.warranty_pct)} warranty line at about ${format(proj.odometer_km, 'odometer')}, around ${formatDate(proj.t_ms, tz, { weekday: false })}. a straight line is rough: packs lose more early.` : '',
@@ -285,10 +286,17 @@ export async function mount(ctx) {
     }), [xs, y1, y2, y3], {
       onCursor: (i) => {
         const p = i == null ? null : all[i];
-        rd.show(!p || p.s !== 1 ? null : [['at', formatDate(p.it.t_ms, tz, { weekday: false })], ['odometer', format(p.it.odometer_km, 'odometer')], ['usable', format(p.it.usable_kwh, 'energy')], ['full pack', format(p.it.full_pack_kwh, 'energy')], p.it.charge ? ['', 'click to open the charge'] : null].filter(Boolean));
+        rd.show(!p || p.s !== 1 ? null : [['at', formatDate(p.it.t_ms, tz, { weekday: false })], ['odometer', format(p.it.odometer_km, 'odometer')], ['usable', format(p.it.usable_kwh, 'energy')], ['full pack', format(p.it.full_pack_kwh, 'energy')], srcText(p.it) ? ['from', srcText(p.it).replace(/^Data from /, '')] : null, p.it.charge ? ['', 'click to open the charge'] : null].filter(Boolean));
       },
       onBuild: (u) => u.over.addEventListener('click', () => { const i = u.cursor.idx; const it = i != null ? all[i]?.it : null; if (it?.charge) ctx.navigate(state.buildUrl('charge', { car: cid, charge: it.charge })); }),
     });
+  }
+  // every input the readings came from, SMO first (for the chart's mark)
+  function mergedSources(items) {
+    const seen = new Map();
+    for (const it of items) for (const x of it.sources || []) seen.set(`${x.kind}:${x.site || ''}`, x);
+    const order = { smo: 0, tesla_api: 1, import: 2 };
+    return { sources: [...seen.values()].sort((a, b) => (order[a.kind] ?? 3) - (order[b.kind] ?? 3)) };
   }
   function paintMonths(items) {
     // health against the same base as the headline figure (usable now over its health), so they agree
@@ -306,6 +314,7 @@ export async function mount(ctx) {
         { key: 'health', label: 'health', num: true, sort: true, value: (r) => r.health, render: (r) => (r.health != null ? pct(r.health, 1) : null) },
         { key: 'bar', label: '', grow: true, render: (r) => (r.health != null ? cellBar((r.health - 70) / 30, 20, warranty != null && r.health < warranty ? 'bad' : 'accent') : null) },
         { key: 'odo', label: 'odometer', num: true, render: (r) => num(r.odometer_km, 'odometer') },
+        { key: 'from', label: 'data', title: 'where the readings came from: smo, api (the Tesla API), imp (imported)', render: (r) => src(r), value: (r) => srcText(r) },
       ],
       empty: () => empty('no monthly readings yet'),
     });
@@ -492,6 +501,7 @@ export async function mount(ctx) {
         { key: 'rph', label: '/hour', num: true, cover: 'vd.col.range_per_hour', render: (r) => num(r.range_lost_per_hour_km, 'range_rate', { digits: 2 }) },
         { key: 'why', label: 'awake by', grow: true, cover: 'vd.flag.cold', render: (r) => [r.cold ? [tag('cold', 'warn'), ' '] : null,
           (r.awake_reasons || []).length ? (r.awake_reasons || []).map((x) => REASONS[x] || x).join(', ') : none(r.awake_ms > 0 ? 'no reason sent' : 'slept')] },
+        { key: 'from', label: 'data', title: 'where the data came from: smo, api (the Tesla API), imp (imported)', render: (r) => src(r), value: (r) => srcText(r) },
       ],
       empty: () => empty('no parked spells in this range', opt.minH ? `none was at least ${opt.minH} h; pick any length or a longer range` : 'pick a longer range'),
       onPage: (pg) => { const s = pg.summary; if (s) replace(sumEl, kv([

@@ -13,6 +13,7 @@ import { head, section, kv, note } from '../core/ui.js';
 import { num, stateWord, when, ago, tag } from '../core/fmt.js';
 import { stateStrip } from '../core/strip.js';
 import { empty, loadingLine, errorWords } from '../core/states.js';
+import { src, isEstimated } from '../core/source.js';
 
 export const id = 'timeline';
 
@@ -51,7 +52,7 @@ export function eventLine(r, { car, tz }) {
   const tripHref = state.buildUrl('trip', { car, period: { from: r.start_ms, to: r.end_ms ?? null } });
   const detailHref = r.ref?.drive ? state.buildUrl('drive', { car, drive: r.ref.drive }) : r.ref?.charge ? state.buildUrl('charge', { car, charge: r.ref.charge })
     : r.kind === 'update' ? state.buildUrl('software', { car }) : null;
-  const est = r.energy_basis === 'estimated' ? ' est.' : '';
+  const est = isEstimated(r) ? ' est.' : '';
   const arrow = h('span', { class: 'arrow' }, ' -> ');
   let what;
   const bits = [];
@@ -79,7 +80,8 @@ export function eventLine(r, { car, tz }) {
   if (r.range_end_km != null && r.kind !== 'gap') bits.push(`range ${format(r.range_end_km, 'range')}${r.range_delta_km != null && r.kind !== 'charge' ? ` (${sign(r.range_delta_km, 'range')})` : ''}`);
   if (r.outside_avg_c != null) bits.push(`${format(r.outside_avg_c, 'temperature')} out`);
   if (r.odometer_km != null) bits.push(`odo ${format(r.odometer_km, 'odometer')}`);
-  if (r.source === 'teslamate') bits.push('imported');
+  // where it came from: [smo] [api] [imp], the full line in its title
+  bits.push(src(r));
   const end = r.end_ms;
   const numCell = r.kind === 'drive' ? num(r.distance_km, 'distance') : r.kind === 'charge' && r.energy_delta_kwh != null ? num(r.energy_delta_kwh, 'energy') : null;
   return h('div', { class: ['ln', 'ln--ev', `ln--${k.tone}`], dataset: { row: '', href: detailHref || tripHref } },
@@ -104,11 +106,13 @@ export async function mount(ctx) {
   let placeId = q.place || '';
   let text = q.q || '';
 
-  let states, act;
+  let states, act, overlaps;
   try {
-    [states, act] = await Promise.all([
+    [states, act, overlaps] = await Promise.all([
       ctx.api.get(`cars/${enc}/states`, { from_ms: from, to_ms: to, limit: 1 }),
       ctx.api.get(`cars/${enc}/activity`, { from_ms: from ?? 0, to_ms: to }),
+      // spans where imported and live history both exist: only one side is listed for each
+      ctx.api.get(`cars/${enc}/overlaps`).then((o) => (o.items || []).filter((x) => x.start_ms < to && (from == null || x.end_ms > from))).catch(() => []),
     ]);
   } catch (e) { ctx.fail(e); return; }
   if (!ctx.alive()) return;
@@ -191,6 +195,18 @@ export async function mount(ctx) {
     await loadMore(my);
   }
 
+  // what the marks mean, and the overlaps in the range (where only one side is listed)
+  function srcNote() {
+    const key = (kind, label, site) => src({ sources: [{ kind, label, ...(site ? { site } : {}) }] });
+    return [
+      h('p', { class: 'note' }, 'data from: ', key('smo', 'Data from SMO'), ' smo (the CAN Bridge)  ', key('tesla_api', 'Data from the Tesla API'), ' the tesla api  ',
+        key('import', 'Imported from TeslaMate', 'teslamate'), ' imported', car.sources?.length ? h('span', { class: 'muted' }, `. ${car.name} has: `) : null, car.sources?.length ? src(car) : null),
+      overlaps.length ? h('p', { class: 'note tone--warn' }, tag('overlap', 'warn'), ' ',
+        overlaps.map((o, i) => [i ? '; ' : '', `${formatDate(o.start_ms, tz, { year: false })} ${formatTime(o.start_ms, tz)} to ${formatDate(o.end_ms, tz, { year: false })} ${formatTime(o.end_ms, tz)}: ${(o.shown_source || (o.shown === 'teslamate' ? 'import:teslamate' : 'live')) === 'live' ? 'live' : 'imported'} history is listed (both exist)`]),
+        '. ', h('a', { class: 'lnk', href: `${state.buildUrl('import')}#overlaps` }, 'choose in import')) : null,
+    ];
+  }
+
   const stripFrom = from ?? (act.items?.[0]?.start_ms ?? to - 86400000);
   replace(ctx.view, h('div', { class: 'page', dataset: { page: 'timeline' }, cover: ['shots.states', 'shots.timeline'] },
     hd,
@@ -210,14 +226,14 @@ export async function mount(ctx) {
       'timeline.col.start', 'timeline.col.end', 'timeline.col.action', 'timeline.col.start_address', 'timeline.col.end_address', 'timeline.col.odometer', 'timeline.col.duration', 'timeline.col.distance', 'timeline.col.range', 'timeline.col.range_diff', 'timeline.col.energy_diff', 'timeline.col.soc', 'timeline.col.soc_diff', 'timeline.col.temp',
       'timeline.link.trip_span', 'timeline.link.slot_details', 'timeline.link.geofence_start', 'timeline.link.geofence_end', 'timeline.link.place_cells_other_rows'] },
     note('newest first. A time opens that span as a trip; a [tag] opens the drive, charge or software page; a place opens the place editor. A gap is never counted as parked time; the text filter only hides rows.'),
-    list, foot),
+    srcNote(), list, foot),
     section({ title: 'why a car stays awake' },
       kv([
         ['normal', 'After a drive the car stays awake for a while, then both buses go quiet and the line turns to [park] asleep. Short awake spells while parked are normal (the car checks its 12 V battery).', { cover: 'faq.no-sleep.log-timeline' }],
         ['the strip', 'A long run of - while parked means something kept the car awake; the [park] line says what.', { cover: 'faq.no-sleep.state-image' }],
         ['accessory', 'With accessory power kept on, the car stays awake even with nothing plugged in.', { cover: 'faq.no-sleep.accessory' }],
         ['older S / X', 'Cars with the older media computer sleep less deeply and wake more often.', { cover: 'faq.no-sleep.mcu1' }],
-        ['other apps', 'Sentry Mate only listens, so it never keeps the car awake. An app that asks Tesla’s servers for data can wake it.', { cover: 'faq.no-sleep.other-loggers' }],
+        ['other apps', 'Sentry Mate only listens to the car, and its own Tesla API reading never wakes it (an asleep car only shows in the car list). Another app that asks Tesla’s servers for data can wake it.', { cover: 'faq.no-sleep.other-loggers' }],
       ], { cols: 1, cls: 'kv--prose' }))));
 
   await reload();

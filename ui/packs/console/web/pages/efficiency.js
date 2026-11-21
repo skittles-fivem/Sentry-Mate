@@ -20,6 +20,7 @@ import { table, cellBar } from '../core/table.js';
 import { empty, loadingLine, errorBlock } from '../core/states.js';
 import { loadUPlot, plot, line, timeAxis, valueAxis, cursor, readout, colors, hexA } from '../core/chart.js';
 import { rpx } from '../core/display.js';
+import { src, est as estTag } from '../core/source.js';
 
 export const id = 'efficiency';
 export const title = () => 'Efficiency';
@@ -120,7 +121,7 @@ export async function mount(ctx) {
       ['gross', d.gross_wh_per_km != null ? [num(d.gross_wh_per_km, 'efficiency'), none(`  every drive plus ${format(d.parked_kwh, 'energy')} parked`)] : none(why), { cover: 'ef.stat.consumption_gross' }],
       ['logged distance', [num(d.distance_km, 'distance'), none(`  ${n0(d.drives)} drives of at least ${minText}`)], { cover: 'ef.stat.logged_distance' }],
       ['parked share', parked != null ? [cellBar(parked / 100, 20, 'warn'), ' ', pct(parked)] : none('no energy used')],
-      d.estimated_drives ? ['estimated', [tag('warn', 'warn'), ` ${n0(d.estimated_drives)} of ${n0(d.drives)} drives are imported: their energy is worked out, not measured`], { tone: 'warn' }] : null,
+      d.estimated_drives ? ['estimated', [tag('warn', 'warn'), ` ${n0(d.estimated_drives)} of ${n0(d.drives)} drives are estimated (imported, or from the Tesla API alone): their energy is worked out, not measured`], { tone: 'warn' }] : null,
     ]),
     h('p', { class: 'note', cover: 'ef.help.headline_stats' }, `net is how efficiently the car drives (drives of at least ${minText}). gross is what owning it costs per distance: every drive and all parked energy, so the filter does not change it.`),
     h('p', { class: 'note', cover: 'faq.no-consumption' }, `nothing to wait for: consumption is measured from the first drive, no charges needed to calibrate. a blank figure means no drive of at least ${minText} in the range.`));
@@ -187,7 +188,7 @@ export async function mount(ctx) {
         { key: 'route', label: 'from -> to', grow: true, ph: 'sub', render: (x) => `${x.start?.label || x.start?.place || 'a spot'} -> ${x.end?.label || x.end?.place || 'a spot'}` },
         { key: 'temp', label: 'outside', num: true, sort: true, value: (x) => x.outside_avg_c, render: (x) => num(x.outside_avg_c, 'temperature') },
         { key: 'dist', label: 'distance', num: true, sort: true, value: (x) => x.distance_km, render: (x) => num(x.distance_km, 'distance') },
-        { key: 'wh', label: 'consumption', num: true, sort: true, ph: 'num', value: (x) => x.wh_per_km, render: (x) => [num(x.wh_per_km, 'efficiency'), x.energy_basis === 'estimated' ? [' ', tag('est', 'warn')] : null] },
+        { key: 'wh', label: 'consumption', num: true, sort: true, ph: 'num', value: (x) => x.wh_per_km, render: (x) => [num(x.wh_per_km, 'efficiency'), estTag(x)] },
         { key: 'speed', label: 'avg speed', num: true, sort: true, value: (x) => x.speed_avg_kph, render: (x) => num(x.speed_avg_kph, 'speed') },
       ],
       empty: () => empty('no drives in this band', 'the list changed since the table was built; reload'),
@@ -360,7 +361,7 @@ export async function mount(ctx) {
     replace(histSlot,
       h('div', { class: 'chart-head' }, h('b', null, 'temperatures'), h('span', null, tUnit), h('span', { class: 'chart-key' },
         h('span', { class: 'chart-key-i chart-key-i--1', cover: 'tp.chart.outside' }, '-- outside'), h('span', { class: 'chart-key-i chart-key-i--2', cover: 'tp.chart.inside' }, '- - cabin'),
-        h('span', { class: 'chart-key-i chart-key-i--3' }, '. . battery'), h('span', { class: 'chart-key-i muted', cover: 'tp.chart.setpoint' }, '_ set point'))),
+        h('span', { class: 'chart-key-i chart-key-i--3' }, '. . battery'), h('span', { class: 'chart-key-i muted', cover: 'tp.chart.setpoint' }, '_ set point')), src(d)),
       box, rd.el,
       note(`shaded: asleep (light) and unknown (darker) time; the lines break there instead of guessing. the set point is drawn only while climate runs${raw.setpoint.some((x) => x != null) ? '' : ' (not in this range)'}.`));
     const c = colors();

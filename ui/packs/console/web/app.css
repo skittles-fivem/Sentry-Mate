@@ -783,6 +783,41 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
   .yaml { white-space: pre-wrap; overflow-wrap: anywhere; }
 }
 
+/* where data came from: [smo] [api] [imp] (core/source.js); muted brackets, each input in its own colour */
+.src { white-space: nowrap; color: var(--muted); position: relative; }
+.src-b { white-space: nowrap; }
+.src-t { white-space: normal; margin-left: var(--a2); }
+.src-k--smo { color: var(--accent); }
+.src-k--tesla_api { color: var(--c2); }
+.src-k--import { color: var(--text); }
+.src-k--typed { color: var(--warn); }
+.src-plus { color: var(--muted); }
+.src--via { margin-left: var(--a2); }
+.src-est { margin-left: var(--a2); }
+.src-line { color: var(--muted); margin-top: var(--g2); }
+.page > .src-line { margin-bottom: calc(var(--g) * 2); }
+.src-line > .src { white-space: normal; }
+.src-car { margin-top: var(--g2); margin-bottom: calc(var(--g) * 2); }
+.src-car > .src-line--car { margin-top: 0; }
+.src-line--car .src-inputs-k { margin-right: var(--a2); }
+.src-inputs { display: flex; flex-wrap: wrap; column-gap: calc(var(--a2) * 3); row-gap: 0; color: var(--text); }
+.src-inputs-k { color: var(--muted); }
+.src-in { white-space: nowrap; }
+.src-in > .src-b { margin-right: 0; }
+.tesla-acc { border-top: 1px solid var(--rule); padding-top: var(--g); margin-top: calc(var(--g) * 2); }
+.tesla-acc-head { display: flex; flex-wrap: wrap; gap: var(--g); align-items: baseline; }
+.tesla-acc-head > h3 { font-size: var(--fs2); line-height: var(--lh2); }
+.tesla-steps { display: flex; flex-direction: column; gap: var(--g2); counter-reset: step; }
+.tesla-steps > li { display: grid; grid-template-columns: calc(var(--a2) * 4) minmax(0, 1fr); }
+.tesla-steps > li::before { counter-increment: step; content: counter(step) '.'; color: var(--accent); }
+.tesla-cars-head { display: flex; flex-wrap: wrap; gap: var(--g); align-items: center; justify-content: space-between; margin-top: var(--g); }
+.tesla-cars-head > .sub-title { padding-block: 0; }
+/* a whole-pixel width, so the match picker after it starts on a whole pixel */
+.tbl .tesla-car-col { width: calc(var(--a2) * 36); min-width: calc(var(--a2) * 36); max-width: calc(var(--a2) * 36); white-space: normal; }
+.tesla-sel.in--cell { width: calc(var(--a2) * 30); max-width: 100%; }
+.tesla-hosts { display: flex; flex-wrap: wrap; column-gap: calc(var(--a2) * 2); }
+.cert-sha { overflow-wrap: anywhere; word-break: break-all; }
+
 /* ------------------------------------------------------------------ 7. states */
 .loading { color: var(--muted); padding-block: calc(var(--g) * 2); display: flex; align-items: center; gap: var(--a2); }
 .caret { display: inline-block; width: var(--a2); height: var(--tb2); background: var(--accent); vertical-align: top; animation: blink 1s steps(1) infinite; }

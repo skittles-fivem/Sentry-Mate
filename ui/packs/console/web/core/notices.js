@@ -14,6 +14,13 @@ const subs = new Set();
 const hidden = () => { try { return new Set(JSON.parse(sessionStorage.getItem(HIDDEN_KEY) || '[]')); } catch { return new Set(); } };
 const hide = (code) => { try { const s = hidden(); s.add(code); sessionStorage.setItem(HIDDEN_KEY, JSON.stringify([...s])); } catch { /* fine */ } };
 
+// a Tesla account's notice (admins only) links to that account's block on settings/integrations
+const TESLA = new Set(['tesla_sign_in_needed', 'tesla_account_error']);
+function fixOf(n) {
+  if (TESLA.has(n.code)) return `${String(n.fix_link || '/settings/integrations').split('#')[0]}#tesla${n.detail?.account ? `-${encodeURIComponent(n.detail.account)}` : ''}`;
+  return n.fix_link || null;
+}
+
 export const getNotices = () => items;
 export function onNotices(f) { subs.add(f); return () => subs.delete(f); }
 
@@ -26,7 +33,7 @@ function render() {
     return h('div', { class: ['ntc', `ntc--${tone}`], role: tone === 'info' ? 'status' : 'alert' },
       h('span', { class: `tag tag--${tone}` }, `[${tone}]`),
       h('span', { class: 'ntc-text' }, n.message || n.code),
-      n.fix_link ? h('a', { class: 'lnk', href: n.fix_link }, `fix: ${String(n.fix_link).replace(/^\//, '').split(/[?#]/)[0]}`) : null,
+      fixOf(n) ? h('a', { class: 'lnk', href: fixOf(n) }, TESLA.has(n.code) ? 'fix: tesla account' : `fix: ${String(n.fix_link).replace(/^\//, '').split(/[?#]/)[0]}`) : null,
       tone === 'info' ? h('button', { class: 'ntc-x', type: 'button', 'aria-label': 'Hide this notice for now', onclick: () => { hide(n.code); render(); } }, 'hide') : null);
   });
   if (offline) {

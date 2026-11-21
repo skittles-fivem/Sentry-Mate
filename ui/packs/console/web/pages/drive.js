@@ -16,6 +16,7 @@ import { table, cellBar } from '../core/table.js';
 import { empty } from '../core/states.js';
 import { rpx } from '../core/display.js';
 import { placeLink } from './timeline.js';
+import { src, est as estTag, apiOnly, EST_WHY } from '../core/source.js';
 
 export const id = 'drive';
 export const title = () => 'Drive';
@@ -74,8 +75,8 @@ export async function mount(ctx) {
       st('time', formatDuration(dur), 'dd.stat.drive_duration'),
       st('avg', m(avg, 'speed'), 'dd.stat.speed_avg'),
       st('top', m(d.speed_max_kph, 'speed')),
-      st('energy', [m(d.energy_kwh, 'energy'), est ? h('span', { class: 'tone--warn' }, ' est') : null], 'dd.stat.energy_net'),
-      st('regen', m(d.regen_kwh, 'energy', est ? 'not in imported history' : why), 'dd.stat.energy_recovered'),
+      st('energy', [m(d.energy_kwh, 'energy'), estTag(d)], 'dd.stat.energy_net'),
+      st('regen', m(d.regen_kwh, 'energy', est ? (apiOnly(d) ? 'not from the Tesla API' : 'not in imported history') : why), 'dd.stat.energy_recovered'),
       st('use', [m(d.wh_per_km, 'efficiency', d.distance_km < 0.5 ? 'too short' : why), d.efficiency_pct != null ? h('span', { class: 'muted' }, ` ${format(d.efficiency_pct, 'percent')} of rated`) : null], 'dd.stat.consumption_net'),
       st('peak', [m(d.power_max_kw, 'power'), d.power_min_kw != null ? h('span', { class: 'muted' }, ` regen ${format(Math.abs(d.power_min_kw), 'power')}`) : null]),
       st('climb', m(d.climb_m, 'length'), 'dd.stat.elevation_up'),
@@ -211,10 +212,11 @@ export async function mount(ctx) {
   replace(ctx.view, h('div', { class: 'page', dataset: { page: 'drive' }, cover: 'shots.drive-details' },
     hd,
     h('p', { class: 'subline' }, placeLink(d.start) || '—', h('span', { class: 'arrow' }, ' -> '), d.end && !live ? placeLink(d.end) || '—' : h('span', { class: 'tone--accent' }, 'driving now'),
-      d.flags?.reduced_range ? [' ', tag('cold battery', 'warn')] : null, d.flags?.gap_ms ? [' ', tag(`gap ${formatDuration(d.flags.gap_ms)}`, 'bad')] : null, d.source !== 'can' ? [' ', tag('imported', 'muted')] : null, '   ', nav),
+      d.flags?.reduced_range ? [' ', tag('cold battery', 'warn')] : null, d.flags?.gap_ms ? [' ', tag(`gap ${formatDuration(d.flags.gap_ms)}`, 'bad')] : null, '   ', nav),
+    h('p', { class: 'src-line' }, src(d, { full: true }), est && apiOnly(d) ? h('span', { class: 'muted' }, `. ${EST_WHY}`) : null),
     section({ title: 'figures', cover: 'dd.empty_states', side: live ? h('span', { class: 'tone--accent' }, 'so far') : null }, statsEl),
     section({ title: 'route', cover: 'dd.map.route', side: [h('span', { class: 'muted' }, 'export '), gpxA, geoA, expKeys] }, mapEl),
-    section({ title: 'through the drive', cover: ['dd.chart.drive', 'dd.chart.drive.tooltip'] }, selLine, panesEl, read.el),
+    section({ title: 'through the drive', cover: ['dd.chart.drive', 'dd.chart.drive.tooltip'], side: src(series) }, selLine, panesEl, read.el),
     bandsEl,
     section({ title: 'samples' }, samplesBtn, samplesSlot)));
 

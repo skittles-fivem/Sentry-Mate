@@ -15,6 +15,7 @@ import { table, cellBar } from '../core/table.js';
 import { safeMap } from '../core/map.js';
 import { loadUPlot, plot, line, timeAxis, valueAxis, cursor, readout } from '../core/chart.js';
 import { stateStrip } from '../core/strip.js';
+import { src, srcText, est as estTag } from '../core/source.js';
 import { empty } from '../core/states.js';
 import { rpx } from '../core/display.js';
 import { placeLink } from './timeline.js';
@@ -134,13 +135,14 @@ export async function mount(ctx) {
       { key: 'soc', label: 'soc', num: true, cover: ['trip.drives.soc_start', 'trip.drives.soc_end', 'trip.charges.soc_start', 'trip.charges.soc_end'],
         render: (l) => { const x = l.d || l.c; return h('span', null, format(x.start_soc_pct, 'percent'), h('span', { class: 'arrow' }, '->'), format(x.end_soc_pct, 'percent')); } },
       { key: 'use', label: 'use', num: true, cover: 'trip.drives.consumption', render: (l) => (l.kind === 'drive' ? num(l.d.wh_per_km, 'efficiency') : false) },
-      { key: 'added', label: 'added', num: true, ph: 'num', cover: 'trip.charges.energy_added', render: (l) => (l.kind === 'charge' ? num(l.c.energy_added_kwh, 'energy') : false), total: () => num(sumOf((l) => l.c?.energy_added_kwh), 'energy') },
+      { key: 'added', label: 'added', num: true, ph: 'num', cover: 'trip.charges.energy_added', render: (l) => (l.kind === 'charge' ? [num(l.c.energy_added_kwh, 'energy'), estTag(l.c)] : false), total: () => num(sumOf((l) => l.c?.energy_added_kwh), 'energy') },
       { key: 'grid', label: 'grid', num: true, cover: 'trip.charges.energy_used', title: 'energy drawn, losses included (ac only)', render: (l) => (l.kind === 'charge' ? num(l.c.energy_grid_kwh, 'energy') : false) },
       { key: 'power', label: 'avg kW', num: true, cover: 'trip.charges.power_avg', render: (l) => (l.kind === 'charge' ? num(l.c.power_avg_kw, 'power') : false) },
       { key: 'range', label: 'range+', num: true, cover: 'trip.charges.range_added', render: (l) => (l.kind === 'charge' ? num(l.c.range_added_km, 'range') : false) },
       { key: 'cost', label: 'cost', num: true, cover: ['trip.charges.cost', 'trip.charges.link.cost'],
         render: (l) => (l.kind === 'charge' ? (l.c.cost ? format(l.c.cost.amount, 'money', { currency: l.c.cost.currency }) : h('a', { class: 'lnk', href: legHref(l), title: 'set a price for this charge' }, 'set')) : false),
         total: () => money(cost.by_currency) },
+      { key: 'from', label: 'data', title: 'where the data came from: smo, api (the Tesla API), imp (imported)', render: (l) => src(l.d || l.c), value: (l) => srcText(l.d || l.c) },
     ],
     empty: () => empty('no drives or charges in this range', 'pick a wider range or a shortcut above'),
   });
@@ -164,7 +166,7 @@ export async function mount(ctx) {
     legsT.el,
     section({ title: 'route', cover: 'trip.map.route', side: h('span', { class: 'muted' }, `${formatNumber(nD)} drives, ${formatNumber(nC)} charges; square: a charge`) }, mapEl),
     section({ title: 'states', cover: 'trip.chart.states' }, stateStrip(ctx, act.items || [], from, to, tz)),
-    section({ title: 'battery and elevation', cover: 'trip.control.zoom' },
+    section({ title: 'battery and elevation', cover: 'trip.control.zoom', side: series ? src(series) : null },
       h('div', { class: 'pane', cover: ['trip.chart.battery.soc', 'trip.chart.battery.range'] }, h('div', { class: 'chart-head' }, h('b', null, 'battery'), h('span', null, `% / ${unitLabel('range')}`),
         h('span', { class: 'chart-key' }, h('span', { class: 'chart-key-i chart-key-i--1' }, '── soc'), h('span', { class: 'chart-key-i chart-key-i--2' }, `┄┄ ${rk === 'ideal_range_km' ? 'ideal' : 'rated'}`))), battEl),
       h('div', { class: 'pane', cover: 'trip.chart.elevation' }, h('div', { class: 'chart-head' }, h('b', null, 'elevation'), h('span', null, unitLabel('length'))), elevEl),

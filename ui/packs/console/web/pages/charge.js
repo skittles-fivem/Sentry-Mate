@@ -22,6 +22,7 @@ import { rpx } from '../core/display.js';
 import { toast } from '../core/toast.js';
 import { placeLink } from './timeline.js';
 import { KIND, KIND_TONE } from './charges.js';
+import { src, est as estTag, kindsOf, apiOnly, isEstimated, EST_WHY } from '../core/source.js';
 
 export const id = 'charge';
 export const title = () => 'Charge';
@@ -50,7 +51,7 @@ export async function mount(ctx) {
   const live = !!c.flags?.in_progress || c.end_ms == null;
   const t0 = c.start_ms, t1 = c.end_ms ?? ctx.api.now();
   const dc = c.kind === 'dc', ac = c.kind === 'ac';
-  const imported = c.source === 'teslamate';
+  const imported = kindsOf(c).length > 0 && kindsOf(c).every((k) => k === 'import');
   const [curve, place, before, typical] = await Promise.all([
     ctx.api.get(`${base}/curve`, { fields: FIELDS.join(','), max_points: 4000 }).catch(() => null),
     c.place?.id ? ctx.api.get(`places/${enc(c.place.id)}`).catch(() => null) : null,
@@ -79,10 +80,11 @@ export async function mount(ctx) {
     h('a', { class: 'lnk-plain', href: ctx.link('charges'), cover: 'web.charge-cost.back', title: 'back to the charges' }, '< charges'), '  ',
     placeLink(c) || '—', ' ', tag(KIND[c.kind] || '?', KIND_TONE[c.kind] || 'muted'),
     c.fast_charger ? none(` ${[c.fast_charger.type === 'supercharger' ? 'supercharger' : c.fast_charger.brand || 'fast charger', c.fast_charger.class].filter(Boolean).join(' ').toLowerCase()}`) : null,
-    live ? [' ', tag('charging now', 'warn')] : null, c.has_gaps ? [' ', tag(`gap ${formatDuration(c.flags?.gap_ms || 0)}`, 'bad')] : null, imported ? [' ', tag('imported', 'muted')] : null, nav);
+    live ? [' ', tag('charging now', 'warn')] : null, c.has_gaps ? [' ', tag(`gap ${formatDuration(c.flags?.gap_ms || 0)}`, 'bad')] : null, nav);
+  const srcLine = h('p', { class: 'src-line' }, src(c, { full: true }), isEstimated(c) && apiOnly(c) ? none(`. ${EST_WHY}`) : null);
 
   /* ---------- figures */
-  const why = live ? 'still charging' : imported ? 'not in imported history' : 'not recorded';
+  const why = live ? 'still charging' : imported ? 'not in imported history' : apiOnly(c) ? 'not from the tesla api' : 'not recorded';
   const m = (v, kind, w = why) => (v == null ? none(w) : num(v, kind));
   const gridKwh = c.energy_grid_kwh;
   const socAdded = c.start_soc_pct != null && c.end_soc_pct != null ? c.end_soc_pct - c.start_soc_pct : null;
@@ -92,7 +94,7 @@ export async function mount(ctx) {
     ['when', h('span', { cover: 'web.charge-cost.dates' }, `${formatTime(t0, tz)} - ${live ? 'now' : formatTime(t1, tz)} ${zone}`)],
     ['charging', h('span', { cover: 'web.charge-cost.duration' }, formatDuration(c.charging_ms), c.plugged_ms != null ? none(` plugged ${formatDuration(c.plugged_ms)}`) : null), { cover: 'cd.stat.duration' }],
     ['place', h('span', { cover: 'web.charge-cost.location' }, placeLink(c) || '—', c.place && c.address?.short ? none(` ${c.address.short}`) : null), { cover: 'cd.stat.location' }],
-    ['added', h('span', { cover: 'web.charge-cost.energy' }, m(c.energy_added_kwh, 'energy'), none(' into the pack')), { cover: 'cd.stat.energy_added' }],
+    ['added', h('span', { cover: 'web.charge-cost.energy' }, m(c.energy_added_kwh, 'energy'), estTag(c), none(' into the pack')), { cover: 'cd.stat.energy_added' }],
     [ac ? 'drawn' : dc ? 'delivered' : 'drawn', ac ? [m(gridKwh, 'energy'), gridKwh != null ? none(` from the line, ${format(c.losses_kwh, 'energy')} lost`) : null]
       : dc ? [m(c.dc_inlet_kwh, 'energy'), none(c.fast_charger?.billed_kwh != null ? ` at the inlet; billed ${format(c.fast_charger.billed_kwh, 'energy')}` : ' at the inlet; the grid side is not sent')] : none('unknown whether ac or dc'), { cover: 'cd.stat.energy_used' }],
     ['efficiency', c.efficiency_pct != null ? [pct(c.efficiency_pct), none(' added over drawn')] : none(dc ? 'unknown for dc: a fast charger’s grid side is not measured' : why), { cover: 'cd.stat.efficiency' }],
@@ -214,12 +216,12 @@ export async function mount(ctx) {
   } }, 'show the samples');
 
   replace(ctx.view, h('div', { class: 'page', dataset: { page: 'charge' }, cover: 'shots.charge-details' },
-    hd, subline,
+    hd, subline, srcLine,
     h('div', { class: 'cols2' },
       section({ title: 'figures', side: live ? h('span', { class: 'tone--warn' }, 'so far') : null }, figures),
       section({ title: 'where', cover: ['cd.map.location', 'web.charge-cost.map'] }, mapEl,
         c.position?.lat != null ? note(`${c.address?.short || 'a spot'}${c.position.accuracy_m != null ? `, within ${format(c.position.accuracy_m, 'length')}` : ''}`) : null)),
-    section({ title: 'through the charge', cover: 'cd.chart.timeline' }, t.length ? [selLine, panesEl, read.el] : empty('no samples recorded for this charge', imported ? 'imported history has the totals only' : null)),
+    section({ title: 'through the charge', cover: 'cd.chart.timeline', side: curve ? src(curve) : null }, t.length ? [selLine, panesEl, read.el] : empty('no samples recorded for this charge', imported ? 'imported history has the totals only' : null)),
     section({ title: 'power against battery', cover: ['cd.chart.curve_points', 'cd.chart.curve_avg'] },
       h('div', { class: 'chart-head' }, h('b', null, 'power into the pack'), h('span', null, 'kW by %'),
         h('span', { class: 'chart-key' }, h('span', { class: 'chart-key-i chart-key-i--2' }, '. samples'), h('span', { class: 'chart-key-i chart-key-i--1' }, '-- mean'), dc ? h('span', { class: 'chart-key-i chart-key-i--3' }, '- - usual') : null)),
