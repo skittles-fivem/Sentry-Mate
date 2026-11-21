@@ -2,9 +2,9 @@
 //
 // A grid shares its free width out among its fr columns, and a table among its columns, in fractions of a
 // pixel, so every column edge after the first can land between two pixels, and with it every border, button
-// and line in the columns. snapAll() puts each column edge on a whole px: every column is rounded up to a
-// whole px and the widest gives back the difference, so the total width stays the same and no column gets
-// narrower than what is in it.
+// and line in the columns. snapAll() puts each column edge on a whole px with the same total width: a grid's
+// columns are rounded up and its widest gives back the difference, a table's are rounded and its widest
+// takes what is left over.
 //
 // It runs again when the page adds or changes content, when a snapped box changes size and when the fonts
 // have loaded. Each run first takes its own widths off again, so the CSS (its tiers and container queries)
@@ -32,9 +32,9 @@ function gridPlan(g) {
   return () => g.style.setProperty('grid-template-columns', out.map((w) => `${w}px`).join(' '));
 }
 
-// table: each column gets its width rounded up to a whole px and the widest takes what is left over (a table
-// wider than its box keeps all its rounded widths); the table gets the sum as its width and a fixed layout,
-// so it has nothing left to share out
+// table: each column gets its width rounded to a whole px and the widest takes what is left over (a table
+// wider than its box keeps all its widths, rounded up); the table gets the sum as its width and a fixed
+// layout, so it has nothing left to share out
 function tablePlan(t) {
   const row = (t.tHead && t.tHead.rows[0]) || t.rows[0];
   if (!row || row.cells.length < 2) return null;
@@ -47,7 +47,9 @@ function tablePlan(t) {
   const scrolls = t.parentElement && tw > t.parentElement.clientWidth + 0.5;
   let grow = 0;
   ws.forEach((w, i) => { if (w > ws[grow]) grow = i; });
-  const px = ws.map((w) => Math.ceil(w - 0.01)); // rounded up: no column gets narrower than what is in it
+  // to the nearest px (a column with no room to spare loses half a pixel at most); in a table wider than its box,
+  // up, so no column gets narrower than what is in it
+  const px = ws.map((w) => (scrolls ? Math.ceil(w - 0.01) : Math.round(w)));
   const total = scrolls ? px.reduce((a, b) => a + b, 0) : Math.round(tw);
   if (!scrolls) px[grow] = total - px.reduce((a, b, i) => (i === grow ? a : a + b), 0);
   const sets = cells.map((c, i) => {
