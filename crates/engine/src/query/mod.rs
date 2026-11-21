@@ -19,6 +19,7 @@ pub mod can_import;
 pub mod charges;
 pub mod decoding;
 pub mod drives;
+pub mod firmware;
 pub mod fleet;
 pub mod imports;
 pub mod keys;

@@ -60,6 +60,12 @@ pub struct Row {
     pub flags: Option<serde_json::Value>,
     pub version: Option<String>,
     pub version_source: Option<&'static str>,
+    /// An update row found from the modules' firmware fingerprints: `fingerprint`, with the modules it changed
+    /// (`bms`, `vcfront` ...); left out on every other row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detected_by: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_modules: Option<Vec<String>>,
 }
 
 fn point(w: &super::Where) -> Point {
@@ -192,6 +198,8 @@ fn stretch_rows(
             flags: None,
             version: None,
             version_source: None,
+            detected_by: None,
+            changed_modules: None,
         });
     };
     let mut cur = x;
@@ -227,6 +235,8 @@ fn stretch_rows(
             flags: None,
             version: None,
             version_source: None,
+            detected_by: None,
+            changed_modules: None,
         });
         cur = gb;
     }
@@ -366,6 +376,8 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             flags: serde_json::to_value(&v.flags).ok(),
             version: None,
             version_source: None,
+            detected_by: None,
+            changed_modules: None,
         }
     };
     let charge_row = |ch: &Charge| -> QResult<Row> {
@@ -407,6 +419,8 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             flags: serde_json::to_value(&v.flags).ok(),
             version: None,
             version_source: None,
+            detected_by: None,
+            changed_modules: None,
         })
     };
     let mut pieces: Vec<Piece> = Vec::new();
@@ -498,8 +512,14 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
         }
     }
     out.extend(pieces.into_iter().map(|p| p.2));
+    let fw = crate::firmware::history(db, car)?;
     for u in all_rows::<UpdateRow>(db, car, a, b, None)? {
         let up = &u.update;
+        let ev = fw.events.iter().find(|ev| crate::firmware::is_fingerprint(u.id) && ev.id == u.id);
+        let fw_name = match ev {
+            Some(ev) => crate::firmware::name_of(db, car, ev)?,
+            None => None,
+        };
         out.push(Row {
             id: format!("update:{}", up.start_ms),
             kind: "update",
@@ -524,8 +544,18 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             gap_reason: None,
             from: super::Sources::of(up.source, up.inputs),
             flags: None,
-            version: Some(up.version.clone()).filter(|v| !v.is_empty()),
-            version_source: up.source.site().map(model::ImportSite::word),
+            version: match ev {
+                Some(_) => fw_name.as_ref().map(|n| n.0.clone()),
+                None => Some(up.version.clone()).filter(|v| !v.is_empty()),
+            },
+            version_source: match (ev, &fw_name) {
+                (Some(_), Some((_, "auto"))) => Some("build_match"),
+                (Some(_), Some(_)) => Some("owner"),
+                (Some(_), None) => None,
+                (None, _) => up.source.site().map(model::ImportSite::word),
+            },
+            detected_by: ev.map(|_| "fingerprint"),
+            changed_modules: ev.map(super::firmware::modules_of),
         });
     }
     out.retain(|row| row.start_ms >= a && row.start_ms < b);
