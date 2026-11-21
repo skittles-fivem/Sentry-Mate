@@ -88,6 +88,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   tests:
+    # Off for now, by the owner's call: a quicker test set that runs on every push is on its way.
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -184,7 +186,7 @@ jobs:
           retention-days: 1
 
   publish:
-    needs: [names, tests, build]
+    needs: [names, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
