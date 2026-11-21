@@ -136,3 +136,8 @@
   .pl-edit-map { min-height: round(38rem, var(--e)); }
   .pl-map-panel { min-height: round(32rem, var(--e)); }
 }
+
+/* a phone: the table scrolls sideways with its actions last, so a sticky actions column would sit on the names */
+@container page (max-width: 50rem) {
+  .places-page .tbl .pl-sticky { position: static; box-shadow: none; }
+}
