@@ -34,6 +34,8 @@ struct World {
     /// The store, to check a new refresh token is saved before its access token is used.
     store: Option<Store>,
     stored_before_use: bool,
+    /// The access token's lifetime Tesla answers (default 8 h).
+    expires_in_s: Option<u64>,
 }
 
 #[derive(Clone, Default)]
@@ -108,7 +110,7 @@ impl Tesla for FakeTesla {
         Ok(Tokens {
             access: Secret::new(w.valid_access.clone()),
             refresh: Some(Secret::new(w.valid_refresh.clone())),
-            expires_in_s: 8 * 3600,
+            expires_in_s: w.expires_in_s.unwrap_or(8 * 3600),
         })
     }
 }
@@ -129,6 +131,8 @@ impl Streamer for FakeStreams {
 }
 
 struct Rig {
+    #[allow(dead_code)]
+    cadence: tesla::Cadence,
     _t: tempfile::TempDir,
     store: Store,
     tesla: FakeTesla,
@@ -183,11 +187,24 @@ fn rig(matched: Option<Match>, cadence: tesla::Cadence) -> Rig {
     });
     let sink = Arc::new(MemSink::default());
     let streams = FakeStreams::default();
-    let p = Poller::new(store.clone(), "ta1", tesla.clone(), sink.clone(), streams.clone(), cadence).unwrap();
-    Rig { _t: t, store, tesla, sink, streams, p, now: T0 }
+    let p = Poller::new(store.clone(), "ta1", tesla.clone(), sink.clone(), streams.clone(), cadence.clone()).unwrap();
+    Rig { cadence, _t: t, store, tesla, sink, streams, p, now: T0 }
 }
 
 impl Rig {
+    /// A new poller for the same account, as after a restart or a settings change.
+    fn restart(&mut self) {
+        self.p = Poller::new(
+            self.store.clone(),
+            "ta1",
+            self.tesla.clone(),
+            self.sink.clone(),
+            self.streams.clone(),
+            self.cadence.clone(),
+        )
+        .unwrap();
+    }
+
     /// Runs the poller on the virtual clock until `until` (ms after T0).
     async fn run(&mut self, until: u64) {
         let end = T0 + until;
@@ -475,4 +492,70 @@ async fn a_refused_stream_refreshes_once_then_polling_goes_on_alone() {
     let looks = r.tesla.calls("data+location");
     let late: Vec<u64> = looks.iter().copied().filter(|t| *t > T0 + 4 * MIN).collect();
     assert!(late.windows(2).all(|w| w[1] - w[0] == 30_000), "{late:?}");
+}
+
+#[tokio::test]
+async fn a_short_lived_token_is_not_refreshed_over_and_over() {
+    let mut r = rig(Some(Match::Car { car: 7 }), tesla::Cadence::default());
+    // Tesla gives five-minute tokens, and the one held now is about to end.
+    r.tesla.set(|w| w.expires_in_s = Some(300));
+    r.store.update("ta1", None, |_, c| c.access_expires_ms = T0 + MIN).unwrap();
+    r.restart();
+    r.run(10 * MIN).await;
+    let refreshes = r.tesla.calls("refresh").len();
+    let lists = r.tesla.calls("list").len();
+    // One at once, then one near the end of each five-minute token.
+    assert!(refreshes <= 4, "{refreshes} refreshes in 10 min");
+    assert!(lists >= 8, "{lists} lists in 10 min");
+    // The token in use never ran out.
+    let c = r.store.credentials("ta1").unwrap();
+    assert!(c.access_expires_ms > r.now);
+}
+
+#[tokio::test]
+async fn tesla_s_wait_outlives_a_restart() {
+    let mut r = rig(Some(Match::Car { car: 7 }), tesla::Cadence::default());
+    r.tesla.set(|w| w.list_errors.push_back(ApiError::RateLimited { retry_after_s: Some(3600) }));
+    r.run(1000).await;
+    assert_eq!(r.tesla.calls("list").len(), 1);
+    // The poller starts again (a new proxy, a new pace, a restart): Tesla's hour still holds.
+    r.restart();
+    r.run(59 * MIN).await;
+    assert_eq!(r.tesla.calls("list").len(), 1, "asked again inside Tesla's wait");
+    r.run(60 * MIN + 30_000).await;
+    assert_eq!(r.tesla.calls("list").len(), 2);
+    // Saving the pacing on each request does not change the account's version an admin edits with.
+    let v = r.store.get("ta1").unwrap().version;
+    r.run(65 * MIN).await;
+    assert!(r.tesla.calls("list").len() >= 6);
+    assert_eq!(r.store.get("ta1").unwrap().version, v);
+}
+
+#[tokio::test]
+async fn a_closed_endpoint_and_the_daily_cap_outlive_a_restart() {
+    let cadence = tesla::Cadence { daily_cap: 5, ..tesla::Cadence::default() };
+    let mut r = rig(Some(Match::Car { car: 7 }), cadence);
+    r.run(30 * MIN).await;
+    assert_eq!(r.tesla.calls("list").len(), 5);
+    r.restart();
+    r.run(60 * MIN).await;
+    assert_eq!(r.tesla.calls("list").len(), 5, "the daily count was forgotten");
+
+    let mut r = rig(Some(Match::Car { car: 7 }), tesla::Cadence::default());
+    r.tesla.set(|w| w.list_errors.push_back(ApiError::EndpointGone));
+    r.run(5 * MIN).await;
+    assert_eq!(r.tesla.calls("list").len(), 1);
+    r.restart();
+    r.run(3 * 3_600_000).await;
+    assert_eq!(r.tesla.calls("list").len(), 1, "asked a closed endpoint again");
+}
+
+#[tokio::test]
+async fn a_huge_retry_after_neither_panics_nor_drops_the_wait() {
+    let mut r = rig(Some(Match::Car { car: 7 }), tesla::Cadence::default());
+    r.tesla.set(|w| w.list_errors.push_back(ApiError::RateLimited { retry_after_s: Some(u64::MAX) }));
+    let next = r.p.tick(T0).await.unwrap();
+    assert!(next >= T0 + 3_600_000, "no wait: {}", next.saturating_sub(T0));
+    r.run(3 * 3_600_000).await;
+    assert_eq!(r.tesla.calls("list").len(), 1);
 }

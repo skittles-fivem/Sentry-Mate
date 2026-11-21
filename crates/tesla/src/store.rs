@@ -152,10 +152,36 @@ struct TokensFile {
     access_expires_ms: u64,
 }
 
+/// The poller's own pacing, kept across a restart and a settings change so that a wait Tesla asked for, the daily
+/// count and a closed endpoint are not forgotten. Not part of [`Account`]: nothing outside the poller needs it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pacing {
+    /// No request before this (a back-off, Tesla's wait, or midnight after the daily cap).
+    #[serde(default)]
+    pub backoff_until_ms: u64,
+    #[serde(default)]
+    pub backoff_step: u32,
+    /// Tesla closed the endpoint: no requests until an admin gives a new token.
+    #[serde(default)]
+    pub gone: bool,
+    /// The UTC day (ms / 86,400,000) `polls_today` counts.
+    #[serde(default)]
+    pub day: u64,
+    #[serde(default)]
+    pub polls_today: u64,
+    #[serde(default)]
+    pub last_request_ms: Option<u64>,
+    /// How long the last access token Tesla gave lasted.
+    #[serde(default)]
+    pub token_lifetime_ms: Option<u64>,
+}
+
 #[derive(Serialize, Deserialize)]
 struct AccountFile {
     account: Account,
     tokens: TokensFile,
+    #[serde(default)]
+    pacing: Pacing,
 }
 
 const DIR: &str = "tesla/accounts";
@@ -232,10 +258,29 @@ impl Store {
     }
 
     fn write(&self, f: &AccountFile) -> Result<(), StoreError> {
-        let plain = Zeroizing::new(serde_json::to_vec(f).map_err(|_| StoreError::Damaged)?);
-        self.inner.vault.write_file(&self.path(&f.account.id), &label(&f.account.id), &plain)?;
+        self.write_quiet(f)?;
         self.inner.generation.fetch_add(1, Ordering::AcqRel);
         Ok(())
+    }
+
+    /// Writes without moving the generation (the poller's pacing: no one else needs to read it again).
+    fn write_quiet(&self, f: &AccountFile) -> Result<(), StoreError> {
+        let plain = Zeroizing::new(serde_json::to_vec(f).map_err(|_| StoreError::Damaged)?);
+        self.inner.vault.write_file(&self.path(&f.account.id), &label(&f.account.id), &plain)?;
+        Ok(())
+    }
+
+    /// The poller's saved pacing (default when never saved).
+    pub fn pacing(&self, id: &str) -> Result<Pacing, StoreError> {
+        Ok(self.read(id)?.pacing)
+    }
+
+    /// Saves the poller's pacing. Changes neither the account's version nor the generation.
+    pub fn set_pacing(&self, id: &str, pacing: &Pacing) -> Result<(), StoreError> {
+        let _g = self.inner.lock.lock().unwrap_or_else(|p| p.into_inner());
+        let mut f = self.read(id)?;
+        f.pacing = pacing.clone();
+        self.write_quiet(&f)
     }
 
     pub fn get(&self, id: &str) -> Result<Account, StoreError> {
@@ -271,7 +316,7 @@ impl Store {
         let next = self.ids().iter().filter_map(|i| i[2..].parse::<u64>().ok()).max().unwrap_or(0) + 1;
         account.id = format!("ta{next}");
         account.version = 1;
-        self.write(&AccountFile { account: account.clone(), tokens: tokens_file(creds) })?;
+        self.write(&AccountFile { account: account.clone(), tokens: tokens_file(creds), pacing: Pacing::default() })?;
         Ok(account)
     }
 
@@ -297,7 +342,7 @@ impl Store {
         let out = change(&mut account, &mut creds);
         account.id = id.to_string();
         account.version += 1;
-        self.write(&AccountFile { account: account.clone(), tokens: tokens_file(&creds) })?;
+        self.write(&AccountFile { account: account.clone(), tokens: tokens_file(&creds), pacing: f.pacing })?;
         Ok((account, out))
     }
 

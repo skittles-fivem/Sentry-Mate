@@ -14,17 +14,24 @@
 //!
 //! When SMO sends live CAN for the car, `vehicle_data` drops to every 5 min while online and no stream is opened.
 //! At most one request a second and 3,000 a day per account (then nothing until midnight UTC). The access token
-//! is refreshed when under 30 min are left, and once on a 401; a refused refresh stops the account until an admin
-//! signs in again. The new refresh token is stored before the new access token is used.
+//! is refreshed when under 30 min (or a quarter of a short token's life) are left, and once on a 401; a refused
+//! refresh stops the account until an admin signs in again. The new refresh token is stored before the new access
+//! token is used. The back-off, Tesla's wait (at most 24 h), a closed endpoint and the day's count are saved with
+//! the account, so a restart or a settings change does not start asking again early.
 
 use crate::api::{ApiError, CarState, Tesla, Vehicle};
 use crate::auth::AuthError;
 use crate::convert::{self, ApiMeta, Reading};
-use crate::store::{Account, AccountCar, AccountState, Credentials, ErrorInfo, Location, Match, Store, StoreError};
+use crate::store::{
+    Account, AccountCar, AccountState, Credentials, ErrorInfo, Location, Match, Pacing, Store, StoreError,
+};
 use crate::stream::{StreamHandle, Streamer};
 use model::{CarId, Sample};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+/// The longest wait taken from Tesla's `retry-after` (a larger one is read as this).
+pub const MAX_WAIT_MS: u64 = 24 * 3_600_000;
 
 /// Where the poller's data goes (the engine implements it).
 pub trait Sink: Send + Sync + 'static {
@@ -297,6 +304,10 @@ pub struct Poller<T: Tesla, S: Sink, St: Streamer> {
     last_ok_ms: Option<u64>,
     last_error: Option<ErrorInfo>,
     last_ok_written_ms: u64,
+    /// How long the last access token lasted (to refresh a short-lived one only near its end).
+    token_lifetime_ms: Option<u64>,
+    /// The pacing as last saved.
+    saved_pacing: Pacing,
 }
 
 impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
@@ -311,6 +322,11 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
         let generation = store.generation();
         let account = store.get(id)?;
         let creds = store.credentials(id)?;
+        let pacing = match store.pacing(id) {
+            Ok(p) => p,
+            Err(StoreError::NotFound) => return Err(StoreError::NotFound),
+            Err(_) => Pacing::default(),
+        };
         let mut p = Poller {
             id: id.to_string(),
             store,
@@ -325,15 +341,17 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
             generation,
             cars: Vec::new(),
             list_next_ms: 0,
-            backoff_until_ms: 0,
-            backoff_step: 0,
-            day: 0,
-            polls_today: 0,
-            last_request_ms: None,
+            backoff_until_ms: pacing.backoff_until_ms,
+            backoff_step: pacing.backoff_step,
+            day: pacing.day,
+            polls_today: pacing.polls_today,
+            last_request_ms: pacing.last_request_ms,
             force_refresh: false,
             unauthorized_once: false,
-            gone: false,
+            gone: pacing.gone,
             last_ok_written_ms: 0,
+            token_lifetime_ms: pacing.token_lifetime_ms,
+            saved_pacing: pacing,
         };
         p.rebuild_cars();
         Ok(p)
@@ -410,6 +428,7 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
                 if new_token && self.account.state != AccountState::SignInNeeded {
                     // The admin pasted a new token: start over.
                     self.backoff_until_ms = 0;
+                    self.backoff_step = 0;
                     self.unauthorized_once = false;
                     if self.last_error.as_ref().is_some_and(|e| e.code == "endpoint_gone") {
                         self.gone = false;
@@ -448,8 +467,9 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
         }) {
             Ok((a, ())) => {
                 self.last_ok_written_ms = now_ms;
+                // The generation is left behind on purpose: an admin's change (a new match, a new token) made while
+                // a request was out is read again, and the cars rebuilt, by the next tick's sync.
                 self.account = a;
-                self.generation = self.store.generation();
                 if changed {
                     tracing::info!(account = %self.id, state = ?state, "tesla account state");
                     self.sink.account_changed(&self.account);
@@ -465,7 +485,7 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
             self.backoff_step += 1;
             w.min(self.cadence.backoff_max_ms)
         });
-        self.backoff_until_ms = now_ms + wait;
+        self.backoff_until_ms = now_ms.saturating_add(wait.min(MAX_WAIT_MS));
         self.backoff_until_ms
     }
 
@@ -567,8 +587,47 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
         }
     }
 
+    fn pacing(&self) -> Pacing {
+        Pacing {
+            backoff_until_ms: self.backoff_until_ms,
+            backoff_step: self.backoff_step,
+            gone: self.gone,
+            day: self.day,
+            polls_today: self.polls_today,
+            last_request_ms: self.last_request_ms,
+            token_lifetime_ms: self.token_lifetime_ms,
+        }
+    }
+
+    /// Saves the pacing when it changed, so a restart or a settings change keeps Tesla's waits and the caps.
+    fn save_pacing(&mut self) {
+        let p = self.pacing();
+        if p == self.saved_pacing {
+            return;
+        }
+        match self.store.set_pacing(&self.id, &p) {
+            Ok(()) => self.saved_pacing = p,
+            Err(StoreError::NotFound) => {}
+            Err(e) => tracing::warn!(account = %self.id, error = %e, "the Tesla poller's pacing could not be saved"),
+        }
+    }
+
+    /// When the access token counts as expiring: 30 min before its end, or a quarter of its life for a short one
+    /// (else a token that lasts under 30 min would be refreshed again at once, over and over).
+    fn token_margin_ms(&self) -> u64 {
+        self.token_lifetime_ms.map_or(self.cadence.refresh_before_ms, |l| self.cadence.refresh_before_ms.min(l / 4))
+    }
+
     /// Does what is due at `now_ms`; returns when to come back. `None`: the account is gone, stop.
     pub async fn tick(&mut self, now_ms: u64) -> Option<u64> {
+        let next = self.tick_inner(now_ms).await;
+        if next.is_some() {
+            self.save_pacing();
+        }
+        next
+    }
+
+    async fn tick_inner(&mut self, now_ms: u64) -> Option<u64> {
         if !self.sync() {
             return None;
         }
@@ -598,7 +657,7 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
         // The access token first.
         let need_token = self.force_refresh
             || self.creds.access.is_none()
-            || self.creds.access_expires_ms <= now_ms + self.cadence.refresh_before_ms;
+            || self.creds.access_expires_ms <= now_ms.saturating_add(self.token_margin_ms());
         if need_token {
             if let Err(t) = self.gate(now_ms) {
                 return soonest(t);
@@ -651,15 +710,16 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
                 let new = Credentials {
                     refresh: t.refresh.unwrap_or_else(|| self.creds.refresh.clone()),
                     access: Some(t.access),
-                    access_expires_ms: now_ms + t.expires_in_s * 1000,
+                    access_expires_ms: now_ms.saturating_add(t.expires_in_s.saturating_mul(1000)),
                 };
                 // Stored before it is used: the old refresh token is spent now.
                 let saved = self.store.update(&self.id, None, |_, c| *c = new.clone());
                 match saved {
                     Ok((a, ())) => {
+                        // Generation left behind: the next sync reads again what an admin changed meanwhile.
                         self.account = a;
-                        self.generation = self.store.generation();
                         self.creds = new;
+                        self.token_lifetime_ms = Some(t.expires_in_s.saturating_mul(1000));
                         self.force_refresh = false;
                         self.backoff_step = 0;
                         Ok(())
@@ -702,7 +762,7 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
     fn rate_wait(&self, retry_after_s: Option<u64>) -> u64 {
         retry_after_s
             .map_or(self.cadence.rate_limit_default_ms, |s| s.saturating_mul(1000))
-            .max(self.cadence.rate_limit_min_ms)
+            .clamp(self.cadence.rate_limit_min_ms, MAX_WAIT_MS.max(self.cadence.rate_limit_min_ms))
     }
 
     fn note_error(&mut self, e: ErrorInfo) {
@@ -749,7 +809,9 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
 
     async fn list(&mut self, now_ms: u64) -> Result<(), u64> {
         let Some(access) = self.creds.access.clone() else { return Err(now_ms + self.cadence.min_gap_ms) };
-        let list = match self.tesla.products(&access).await {
+        let answer = self.tesla.products(&access).await;
+        self.drain_streams();
+        let list = match answer {
             Ok(l) => l,
             Err(e) => return Err(self.api_error(&e, now_ms)),
         };
@@ -821,7 +883,10 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
         };
         let id = c.tesla_id.clone();
         self.cars[i].last_poll_ms = Some(now_ms);
-        let v = match self.tesla.vehicle_data(&access, &id, location).await {
+        let answer = self.tesla.vehicle_data(&access, &id, location).await;
+        // What the stream sent while the request was out goes in before the stream can be closed.
+        self.drain_streams();
+        let v = match answer {
             Ok(v) => v,
             Err(ApiError::Unavailable) => {
                 // Asleep, offline or a weak signal: never woken; the list tells when it is back.
