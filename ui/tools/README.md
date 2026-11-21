@@ -167,7 +167,7 @@ Then it outlines each listed problem on the page, with its number and kind, take
 | `fraction` | A border, or a 1 px line (a box at most 1.5 px thick with a background), has an edge or a width off a whole device pixel by more than 0.05 device px: `getBoundingClientRect() * devicePixelRatio`. Checked at the scale of the size; add a size at `@2` to check scale 2. Turned (rotated) boxes are left out. |
 | `clip` | Text cut off by a box that hides its overflow (`hidden` or `clip`), partly: text cut off completely is taken as hidden on purpose. Cut with `text-overflow: ellipsis` or `-webkit-line-clamp` is meant and not reported; nor is text in a 1 px box or under `clip` / `clip-path` (screen reader text), nor text in a box that scrolls. |
 | `overflow` | Text sticks out of its own box (its nearest block, inline-block, flex item or cell) when that box lets it show. |
-| `overlap` | Text on other text, or on an icon (`svg`, `img` or `canvas` up to 64 x 64 px), by more than 1 x 1 px. |
+| `overlap` | Text on other text, or on an icon (`svg`, `img` or `canvas` up to 64 x 64 px), by more than 1 x 1 px. Text in a fixed or sticky bar (a dock, a top bar) over the page is not counted: the page scrolls under it. |
 | `hidden` | Text under another element: `elementFromPoint` at three points of each line finds something on top that you can see (a background at least half opaque, an image, an icon, a form field). Only in the window. |
 | `scroll` | The page scrolls sideways. |
 

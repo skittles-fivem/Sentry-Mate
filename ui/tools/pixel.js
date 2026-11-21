@@ -460,6 +460,20 @@ function pixelChecks({ tol, near, fracTol, maxFindings }) {
     }
   };
   textBoxes.forEach((x, i) => cells(x.q, (k) => { let l = grid.get(k); if (!l) { l = []; grid.set(k, l); } l.push(i); }));
+  // a fixed or sticky bar the page scrolls under (a dock, a top bar) is its own layer: its text over the page's is not
+  // an overlap, the same as for the "under" test below
+  const layers = new Map();
+  const layer = (e) => {
+    if (layers.has(e)) return layers.get(e);
+    let l = null;
+    for (let x = e; x && x !== document.body; x = x.parentElement) {
+      const p = cs(x).position;
+      if (p === 'fixed' || p === 'sticky') { l = x; break; }
+    }
+    layers.set(e, l);
+    return l;
+  };
+  const apart = (a, b) => layer(a) !== layer(b);
   const inter = (a, b) => ({ w: Math.min(a.right, b.right) - Math.max(a.left, b.left), h: Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) });
   const home = (a, b, gx, gy) => Math.floor(Math.max(a.left, b.left) / CELL) === gx && Math.floor(Math.max(a.top, b.top) / CELL) === gy;
   for (const [key, list] of grid) {
@@ -468,7 +482,7 @@ function pixelChecks({ tol, near, fracTol, maxFindings }) {
       const A = textBoxes[list[i]];
       for (let j = i + 1; j < list.length; j++) {
         const B = textBoxes[list[j]];
-        if (A.n === B.n || A.t === B.t) continue;
+        if (A.n === B.n || A.t === B.t || apart(A.t, B.t)) continue;
         const x = inter(A.q, B.q);
         if (x.w > 1 && x.h > 1 && home(A.q, B.q, gx, gy)) add('overlap', B.t, `text overlaps the text of ${sel(A.t)} by ${f2(Math.min(x.w, x.h))} px`, Math.min(x.w, x.h), B.q);
       }
@@ -482,7 +496,7 @@ function pixelChecks({ tol, near, fracTol, maxFindings }) {
         if (done.has(i)) continue;
         done.add(i);
         const x = textBoxes[i];
-        if (ic.contains(x.t) || x.t.contains(ic)) continue;
+        if (ic.contains(x.t) || x.t.contains(ic) || apart(x.t, ic)) continue;
         const o = inter(x.q, ir);
         if (o.w > 1 && o.h > 1) add('overlap', x.t, `text overlaps ${sel(ic)} by ${f2(Math.min(o.w, o.h))} px`, Math.min(o.w, o.h), x.q);
       }
