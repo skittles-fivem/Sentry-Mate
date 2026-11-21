@@ -44,6 +44,15 @@
 .im-job-row > .row-text { flex: 1 1 round(12rem, var(--e)); }
 .im-job-row > .row-side { flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
 
+/* a car key in the report: on a narrow tile its status chip goes on its own line, the facts keep the width */
+.im-key-row { flex-wrap: wrap; }
+.im-key-row > .row-text { flex: 1 1 round(14rem, var(--e)); }
+.im-key-row > .row-side { margin-left: auto; }
+/* refused logs: the name keeps a readable width; on a narrow tile the reason goes under it */
+.im-refused-logs .log-row { display: flex; flex-wrap: wrap; justify-content: space-between; column-gap: var(--s3); }
+.im-refused-logs .log-k { flex: 1 1 round(18rem, var(--e)); min-width: 0; }
+.im-refused-logs .log-v { flex: 0 1 auto; text-align: left; }
+
 /* the report's numbers */
 .im-report .tile-nums { padding: var(--s2) 0; }
 .im-report-of { font-size: var(--f14); line-height: var(--l14); color: var(--muted); overflow-wrap: anywhere; }

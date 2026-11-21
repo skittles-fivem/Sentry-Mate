@@ -106,6 +106,10 @@ export function form({ fields = [], submitLabel = 'Save', busyLabel = 'Saving…
     }
   });
   el.clearErrors = clearErrors;
+  /** Show the submit button idle while onsubmit waits on the person (a question sheet), busy again after. */
+  el.setBusy = (on) => {
+    if (on) { el.setAttribute('aria-busy', 'true'); label.textContent = busyLabel; } else { el.removeAttribute('aria-busy'); label.textContent = submitLabel; }
+  };
   el.submitButton = submit;
   return el;
 }

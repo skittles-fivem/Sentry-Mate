@@ -81,7 +81,7 @@ export function openSheet({ title, body = null, actions = [], cls = null, center
     s.body.append(...[].concat(typeof body === 'function' ? body(close) : body).filter(Boolean));
     if (actions.length) {
       s.body.append(h('div', { class: 'sheet-actions' }, actions.map((a) => btn(a.label, {
-        kind: a.kind || 'soft',
+        kind: a.kind || 'soft', attrs: a.autofocus ? { 'data-autofocus': '' } : {},
         onclick: async () => { if (a.onclick) { const keep = await a.onclick(close); if (keep === false) return; } close(a.value ?? null); },
       }))));
     }
@@ -106,12 +106,15 @@ export function confirmSheet({ title, text = null, yes = 'Yes', no = 'Cancel', d
 export async function passwordOk(name, password, input = null) {
   const why = passwordAdvice(name, password);
   if (!why.length) return true;
+  // nothing is sent while the question is open: the form behind does not say Saving…
+  const owner = input && typeof input.closest === 'function' ? input.closest('form') : null;
+  owner?.setBusy?.(false);
   const v = await openSheet({
     title: 'This password is easy to guess', center: true, cls: 'confirm-sheet advice-sheet',
     body: [h('ul', { class: 'sheet-list' }, why.map((t) => h('li', null, t))), h('p', { class: 'sheet-text' }, 'You can still use it.')],
-    actions: [{ label: 'Use it anyway', value: true, kind: 'soft' }, { label: 'Change it', value: false, kind: 'primary' }],
+    actions: [{ label: 'Use it anyway', value: true, kind: 'soft' }, { label: 'Change it', value: false, kind: 'primary', autofocus: true }],
   });
-  if (v === true) return true;
+  if (v === true) { owner?.setBusy?.(true); return true; }
   if (input && typeof input.focus === 'function') { input.focus(); input.select?.(); }
   return false;
 }

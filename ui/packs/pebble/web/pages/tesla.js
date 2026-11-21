@@ -29,6 +29,10 @@ import { group, infoRow, pickRow, said, askPassword, tick } from '../core/settin
 
 const enc = encodeURIComponent;
 const BASE = 'integrations/tesla';
+// Sign-ins started here and not finished, by region and redirect: the server has no call that ends one and keeps
+// at most five open, so a sheet closed without finishing leaves its sign-in for the next press (while it has
+// two minutes left).
+const openSignIns = new Map();
 
 /* ---------------------------------------------------------------------- words */
 
@@ -63,12 +67,15 @@ const REGION = [['global', 'Global (tesla.com)'], ['china', 'China (tesla.cn)']]
 const ERROR_WORDS = {
   tesla_refused: 'Tesla said no to this sign-in or token: it may have run out, been used already, or the Tesla password changed since. Sign in at Tesla again, or paste a new refresh token.',
   tesla_unreachable: 'Tesla could not be reached, or answered with an error. Nothing was kept. Try again in a few minutes.',
+  // the same two on a pasted sign-in address: Tesla has used up that sign-in, so the sheet starts a new one
+  signin_refused: 'Tesla said no to this sign-in: it may have run out at Tesla, or been used already. That sign-in is used up.',
+  signin_unreachable: 'Tesla could not be reached, or answered with an error, and nothing was kept. That sign-in is used up.',
   account_exists: 'The cars of this Tesla account are already read through another Tesla account here. Replace that account’s token instead, or remove it first.',
   car_taken: 'One of these cars is already matched to a car of another Tesla account here. Leave it out there first, or pick another car.',
   too_many_sign_ins: 'Five sign-ins are open already. Finish one, or wait up to ten minutes for them to run out.',
   no_such_sign_in: 'This sign-in ran out (it lasts ten minutes) or was used already. Close this and start a new one.',
-  no_such_tesla_account: 'This Tesla account is not here any more: another admin may have removed it. The page shows the accounts there are now.',
-  version_conflict: 'Someone else changed this Tesla account a moment ago. The page shows their change now; make yours again.',
+  no_such_tesla_account: 'This Tesla account is not here any more: another admin may have removed it. Nothing was changed; the page now shows the accounts there are.',
+  version_conflict: 'Someone else changed this a moment ago, so nothing was saved. The page now shows their change: make yours again if it is still needed.',
 };
 // last_error codes of an account, a car or the whole input
 const LAST_ERROR_WORDS = {
@@ -95,11 +102,19 @@ function words(e) {
   if (e.fields) {
     const f = { ...e.fields };
     delete f.confirm_password; delete f.code;
-    if (f.pasted_url) f.pasted_url = `${String(f.pasted_url).replace(/\.$/, '')}. It is in the address bar of Tesla’s last page and starts tesla:// (or https://auth.tesla…/void/callback).`;
+    // where to find the address helps only when what was pasted is not that address
+    if (f.pasted_url && /another sign-in/i.test(String(f.pasted_url))) f.pasted_url = 'This address is from another sign-in. Open Tesla’s page with the button above, sign in, and paste the address it ends on.';
+    else if (f.pasted_url && !/start a new/i.test(String(f.pasted_url))) f.pasted_url = `${String(f.pasted_url).replace(/\.$/, '')}. It is in the address bar of Tesla’s last page and starts tesla:// (or https://auth.tesla…/void/callback).`;
     e.fields = Object.keys(f).length ? f : null;
   }
   return e;
 }
+// the account or the input changed, or the account went away, since the page read it
+const isStale = (e) => !!e && (e.code === 'no_such_tesla_account' || e.code === 'version_conflict' || e.code === 'stale_version' || (e.status === 409 && !ERROR_WORDS[e.code]));
+/** run() for askPassword: our words on an error; a stale page closes the sheet with { stale: words } instead. */
+const guarded = (fn) => async (...a) => {
+  try { return await fn(...a); } catch (e) { words(e); if (isStale(e)) return { stale: e.message }; throw e; }
+};
 const withPw = (cred, body = {}) => ({ ...body, confirm_password: cred.password, ...(cred.two_step ? { code: cred.two_step } : {}) });
 const mono = (t) => h('code', { class: 'set-mono' }, t);
 const secs = (s) => (s == null ? '—' : s >= 120 && s % 60 === 0 ? `${formatNumber(s / 60)} min` : `${formatNumber(s)} s`);
@@ -145,6 +160,13 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
     el.replaceChildren(head(), statusTile(), paceTile(), ...accounts.flatMap((a) => [accountTile(a), carsTile(a)]), addTile());
   }
   const reload = async (msg) => { if (msg) ctx.toast(msg); await load(); };
+  /** After a password sheet: nothing when closed; a stale page is read again, with why; else msg and read again. */
+  const after = async (r, msg) => {
+    if (!r) return false;
+    if (r.stale) { ctx.toast(r.stale, { kind: 'info' }); await load(); return true; }
+    await reload(typeof msg === 'function' ? msg(r) : msg);
+    return true;
+  };
 
   /* ---------- the input as a whole */
   function statusTile() {
@@ -186,10 +208,9 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
     const r = await askPassword(ctx, {
       title: `Pace: ${PACE.find((x) => x[0] === v)[1]}`, yes: 'Change the pace', hint: HINT,
       text: 'How often the server reads each car from the Tesla API.',
-      run: async (cred) => { try { return await ctx.api.patch(BASE, withPw(cred, { version: ov.version, poll: v })); } catch (e) { throw words(e); } },
+      run: guarded((cred) => ctx.api.patch(BASE, withPw(cred, { version: ov.version, poll: v }))),
     });
-    if (r) await reload(`Pace saved: ${PACE.find((x) => x[0] === v)[1].toLowerCase()}.`);
-    else seg.set(ov.poll);
+    if (!(await after(r, `Pace saved: ${PACE.find((x) => x[0] === v)[1].toLowerCase()}.`))) seg.set(ov.poll);
   }
 
   /* ---------- adding an account */
@@ -209,10 +230,22 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
       note('A new account’s cars are not read until you match each one to a car here, to a new car, or leave it out.'));
   }
 
+  /** A sign-in for this region and redirect: the one still open from an earlier press, else a new one. */
+  async function startSignIn(region, redirect, { fresh = false } = {}) {
+    const key = `${region}|${redirect}`;
+    const open = openSignIns.get(key);
+    if (!fresh && open && open.expires_ms - ctx.api.now() > 120000) return open;
+    openSignIns.delete(key);
+    const s = await ctx.api.post(`${BASE}/sign-in`, { region, redirect });
+    openSignIns.set(key, s);
+    return s;
+  }
+
   async function signIn(b, region, redirect) {
+    const key = `${region}|${redirect}`;
     b.disabled = true;
     let s;
-    try { s = await ctx.api.post(`${BASE}/sign-in`, { region, redirect }); } catch (e) {
+    try { s = await startSignIn(region, redirect); } catch (e) {
       if (e?.name !== 'AbortError') ctx.toast(`Could not start the sign-in: ${words(e).message || errorWords(e).text}`, { kind: 'error' });
       return;
     } finally { b.disabled = false; }
@@ -222,18 +255,45 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
     const label = field({ label: 'Name', name: 'label', value: 'Tesla account', hint: 'Your own name for it, shown on this page. Not the account’s e-mail.', attrs: { maxlength: '64', autocomplete: 'off', required: true } });
     const pasted = field({ label: 'The address Tesla’s page ended on', name: 'pasted_url', type: 'textarea', hint: `The whole address, starting ${endsOn}`, attrs: { spellcheck: 'false', autocomplete: 'off', rows: '3', required: true, placeholder: `${endsOn}?code=…` } });
     const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const openLink = h('a', { class: 'btn btn-primary', href: s.url, target: '_blank', rel: 'noopener noreferrer external' }, icon('external'), h('span', { class: 'btn-text' }, 'Open Tesla’s sign-in page'));
+    const lasts = h('span', null);
+    const showLasts = () => { lasts.textContent = `This sign-in lasts until ${formatTime(s.expires_ms, localZone)} on this device’s clock (ten minutes from its start), and works once.`; };
+    showLasts();
     const steps = h('div', { class: 'tesla-steps' },
       h('ol', { class: 'set-list' },
         h('li', null, h('b', null, 'Open Tesla’s page'), ' and sign in there. Tesla’s own page asks for your Tesla password (and its code); this server never sees them.'),
         h('li', null, h('b', null, 'The last page will not load.'), ' That is expected: Tesla ends on an address that starts ', mono(endsOn), redirect === 'void' ? ', a blank page.' : ', which a browser cannot open. It may show an error or seem to do nothing; the address is still in the address bar.'),
         h('li', null, h('b', null, 'Copy that whole address'), ' and paste it below, with your own Sentry Mate password.')),
-      h('a', { class: 'btn btn-primary', href: s.url, target: '_blank', rel: 'noopener noreferrer external' }, icon('external'), h('span', { class: 'btn-text' }, 'Open Tesla’s sign-in page')),
-      said('warn', `This sign-in lasts ten minutes, until ${formatTime(s.expires_ms, localZone)} on this device’s clock, and works once.`));
+      openLink,
+      said('warn', lasts));
+    // Tesla refused or could not be reached on a pasted address: that sign-in is used up, so a new one is
+    // started here and the sheet stays open for it
+    async function startAgain(why) {
+      openSignIns.delete(key);
+      try { s = await startSignIn(region, redirect, { fresh: true }); } catch (e2) {
+        throw new Error(`${why} A new sign-in could not be started (${words(e2).message || errorWords(e2).text}): close this and press Sign in at Tesla again later.`);
+      }
+      openLink.href = s.url;
+      showLasts();
+      const ta = pasted.querySelector('textarea');
+      if (ta) ta.value = '';
+      const again = `${why} A new sign-in is ready: open Tesla’s page again with the button above, sign in, and paste the new address here.`;
+      throw Object.assign(new Error(again), { fields: { pasted_url: again } });
+    }
     const r = await askPassword(ctx, {
       title: 'Sign in at Tesla', text: steps, yes: 'Add the account', extra: [label, pasted], hint: HINT,
       run: async (cred, v) => {
         if (!String(v.pasted_url || '').trim()) throw Object.assign(new Error('Paste the address first.'), { fields: { pasted_url: `Paste the whole address, starting ${endsOn}.` } });
-        try { return await ctx.api.post(`${BASE}/sign-in/${enc(s.sign_in)}`, withPw(cred, { pasted_url: v.pasted_url.trim(), label: String(v.label || '').trim() || undefined })); } catch (e) { throw words(e); }
+        try {
+          const a = await ctx.api.post(`${BASE}/sign-in/${enc(s.sign_in)}`, withPw(cred, { pasted_url: v.pasted_url.trim(), label: String(v.label || '').trim() || undefined }));
+          openSignIns.delete(key);
+          return a;
+        } catch (e) {
+          if (e?.code === 'tesla_refused') return startAgain(ERROR_WORDS.signin_refused);
+          if (e?.code === 'tesla_unreachable') return startAgain(ERROR_WORDS.signin_unreachable);
+          if (e?.code === 'no_such_sign_in') return startAgain('This sign-in ran out (it lasts ten minutes) or was used already.');
+          throw words(e);
+        }
       },
     });
     if (r) await reload(`${r.label || 'The account'} added. Match its cars below to start reading them.`);
@@ -254,7 +314,7 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
         try { return await ctx.api.post(`${BASE}/accounts`, withPw(cred, { label: v.label.trim(), region: v.region, refresh_token: v.refresh_token.trim() })); } catch (e) { throw words(e); }
       },
     });
-    if (r) await reload(`${r.label || 'The account'} added. Match its cars below to start reading them.`);
+    await after(r, (x) => `${x.label || 'The account'} added. Match its cars below to start reading them.`);
   }
 
   /* ---------- one account */
@@ -264,9 +324,9 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
     const patch = async ({ title, text = null, yes, body, extra = [], msg = 'Saved.', danger = false }) => {
       const r = await askPassword(ctx, {
         title, text, yes, extra, danger, hint: HINT,
-        run: async (cred, v) => { try { return await ctx.api.patch(`${BASE}/accounts/${enc(a.id)}`, withPw(cred, { version: a.version, ...body(v) })); } catch (e) { throw words(e); } },
+        run: guarded((cred, v) => ctx.api.patch(`${BASE}/accounts/${enc(a.id)}`, withPw(cred, { version: a.version, ...body(v) }))),
       });
-      if (r) await reload(msg);
+      await after(r, msg);
       return r;
     };
     const pause = btn(a.paused ? 'Resume' : 'Pause', { kind: a.paused ? 'primary' : 'soft', icon: a.paused ? 'refresh' : 'minus', onclick: () => patch({
@@ -287,9 +347,10 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
       const r = await askPassword(ctx, {
         title: `Remove ${a.label}?`, danger: true, yes: 'Remove the account', hint: HINT,
         text: 'Reading stops at once and the sealed file with its tokens is deleted. The history already stored from it stays, marked as data from the Tesla API.',
-        run: async (cred) => { try { return await ctx.api.del(`${BASE}/accounts/${enc(a.id)}`, { headers: { 'X-Sentry-Mate-Password': cred.password, ...(cred.two_step ? { 'X-Sentry-Mate-Code': cred.two_step } : {}) } }); } catch (e) { throw words(e); } },
+        // a 204 answers null: true stands for done
+        run: guarded(async (cred) => (await ctx.api.del(`${BASE}/accounts/${enc(a.id)}`, { headers: { 'X-Sentry-Mate-Password': cred.password, ...(cred.two_step ? { 'X-Sentry-Mate-Code': cred.two_step } : {}) } })) ?? true),
       });
-      if (r) await reload(`${a.label} removed. Its history stays.`);
+      await after(r, `${a.label} removed. Its history stays.`);
     } });
     const loc = pickRow({
       name: 'Ask for the position', sub: 'Shows an icon in the car',
@@ -304,7 +365,7 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
     return tile({ w: 2, title: a.label, icon: 'person', id: `tesla-${a.id}`, cls: 'tesla-acc', side: chip(st[0], { tone: st[1] }) },
       st[2] ? said(sevBad ? 'warn' : a.status === 'ok' ? 'ok' : 'info', st[2]) : null,
       facts([
-        ['Status', `${st[0]}${a.running ? ', running' : ''}`],
+        ['Status', st[0]],
         ['Region', a.region === 'china' ? 'China (tesla.cn)' : 'Global (tesla.com)'],
         ['Added', formatDateTime(a.added_ms, ctx.tz, { now: ctx.api.now() })],
         ['Last good answer', a.last_ok_ms ? ago(a.last_ok_ms) : 'None yet'],
@@ -321,12 +382,44 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
   function carsTile(a) {
     const data = carRows[a.id] || { items: a.cars || [], version: a.version };
     const items = data.items || [];
-    const opts = [['', 'Not decided', 'Not read until you choose'], ...cars.map((c) => [c.id, c.name || c.id, 'Read into this car']), ['new', 'A new car', 'A new car is made for it here'], ['leave_out', 'Leave out', 'Never read']];
-    const picked = new Map(items.map((c) => [c.vehicle, c.match ?? c.suggested ?? '']));
+    // cars here another Tesla account reads already: the server refuses them (car_taken)
+    const takenBy = new Map();
+    for (const o of accounts) {
+      if (o.id === a.id) continue;
+      for (const c of (carRows[o.id] && carRows[o.id].items) || []) if (c.match && c.match !== 'new' && c.match !== 'leave_out') takenBy.set(c.match, o.label);
+    }
+    const isCar = (v) => !!v && v !== 'new' && v !== 'leave_out';
+    const nameOf = (c) => c.display_name || c.vehicle;
+    // a suggestion another account reads already is not taken over: it starts at Not decided
+    const picked = new Map(items.map((c) => [c.vehicle, c.match ?? (takenBy.has(c.suggested) ? '' : c.suggested) ?? '']));
     const changed = () => items.filter((c) => (picked.get(c.vehicle) || null) !== (c.match ?? null));
+    // one car here takes one Tesla car: two cars of this account on one car here would both read into it
+    const doubled = () => {
+      const by = new Map();
+      for (const c of items) { const v = picked.get(c.vehicle); if (isCar(v)) by.set(v, [...(by.get(v) || []), c]); }
+      return [...by].filter(([, list]) => list.length > 1);
+    };
+    const optsFor = (c) => [['', 'Not decided', 'Not read until you choose'],
+      ...cars.map((x) => {
+        const other = items.find((o) => o.vehicle !== c.vehicle && picked.get(o.vehicle) === x.id);
+        return [x.id, x.name || x.id, takenBy.has(x.id) ? `Read through ${takenBy.get(x.id)} already: leave it out there first`
+          : other ? `Picked for the Tesla car ${nameOf(other)} already: one car here takes one Tesla car` : 'Read into this car'];
+      }),
+      ['new', 'A new car', 'A new car is made for it here'], ['leave_out', 'Leave out', 'Never read']];
+    const optLists = new Map();
     const save = btn('Save the matches', { kind: 'primary', icon: 'check', onclick: () => saveMatches() });
     const pending = h('p', { class: 'note' });
-    const sync = () => { const n = changed().length; save.hidden = !n; pending.textContent = n ? `${n} ${n === 1 ? 'change' : 'changes'} not saved yet.` : ''; };
+    const problem = h('div', { class: 'tesla-dup', role: 'alert', hidden: true });
+    const sync = () => {
+      const n = changed().length;
+      const dup = doubled();
+      for (const c of items) { const list = optLists.get(c.vehicle); if (list) list.splice(0, list.length, ...optsFor(c)); }
+      problem.replaceChildren(...(dup.length ? [said('warn', dup.map(([car, list]) => `${list.map(nameOf).join(' and ')} are both matched to ${carName(car)}.`).join(' '), ' One car here takes one Tesla car: pick another car, A new car, or Leave out.')] : []));
+      problem.hidden = !dup.length;
+      save.hidden = !n;
+      save.disabled = !!dup.length;
+      pending.textContent = n ? `${n} ${n === 1 ? 'change' : 'changes'} not saved yet.` : '';
+    };
     const statusOf = (c) => status.find((s) => s.account === a.id && s.vehicle === c.vehicle) || {};
     const zoneOf = () => ctx.tz;
     const modeText = (c) => {
@@ -341,12 +434,14 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
     };
     const rows = items.map((c) => {
       const sugg = c.match == null && c.suggested;
-      const known = opts.some(([v]) => v === picked.get(c.vehicle)) ? opts : [...opts, [picked.get(c.vehicle), carName(picked.get(c.vehicle))]];
+      const known = optsFor(c);
+      if (!known.some(([v]) => v === picked.get(c.vehicle))) known.push([picked.get(c.vehicle), carName(picked.get(c.vehicle))]);
+      optLists.set(c.vehicle, known);
       const m = CAR_MODE[c.mode] || ['', ''];
       return h('div', { class: 'tesla-car' },
         pickRow({
           name: c.display_name || 'No name at Tesla',
-          sub: [[c.year, c.model].filter(Boolean).join(' '), c.vin_prefix ? ` · ${c.vin_prefix}` : '', ` · Tesla says ${CAR_STATE[c.state] || c.state || 'not known'}`, sugg ? ` · Suggested: ${carName(c.suggested)}, same VIN prefix` : ''],
+          sub: [[c.year, c.model].filter(Boolean).join(' '), c.vin_prefix ? ` · ${c.vin_prefix}` : '', ` · Tesla says ${CAR_STATE[c.state] || c.state || 'not known'}`, sugg && !takenBy.has(c.suggested) ? ` · Suggested: ${carName(c.suggested)}, same VIN prefix` : ''],
           value: picked.get(c.vehicle), options: known, sheetTitle: `Car for ${c.display_name || c.vehicle}`,
           sheetNote: 'A car is read only once it is matched to a car here or to a new car. Saved with Save the matches.',
           onpick: (v) => { picked.set(c.vehicle, v); sync(); },
@@ -357,18 +452,19 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
     });
     async function saveMatches() {
       const ch = changed();
-      if (!ch.length) return;
+      if (!ch.length || doubled().length) return;
       const r = await askPassword(ctx, {
         title: `Match the cars of ${a.label}`, yes: 'Save the matches', hint: HINT,
         text: h('ul', { class: 'set-list' }, ch.map((c) => { const v = picked.get(c.vehicle); return h('li', null, h('b', null, c.display_name || c.vehicle), ': ', v === 'new' ? 'a new car here, read from now on' : v === 'leave_out' ? 'left out, not read' : !v ? 'not decided, not read' : `${carName(v)}, read from now on`); })),
-        run: async (cred) => { try { return await ctx.api.put(`${BASE}/accounts/${enc(a.id)}/cars`, withPw(cred, { version: data.version ?? a.version, items: ch.map((c) => ({ vehicle: c.vehicle, match: picked.get(c.vehicle) || null })) })); } catch (e) { throw words(e); } },
+        run: guarded((cred) => ctx.api.put(`${BASE}/accounts/${enc(a.id)}/cars`, withPw(cred, { version: data.version ?? a.version, items: ch.map((c) => ({ vehicle: c.vehicle, match: picked.get(c.vehicle) || null })) }))),
       });
-      if (r) await reload('Matches saved.');
+      await after(r, 'Matches saved.');
     }
     sync();
     return tile({ w: 2, title: `Cars of ${a.label}`, icon: 'car', side: chip(`${formatNumber(items.length)} at Tesla`, { tone: 'muted' }) },
       items.length ? h('div', { class: 'rows' }, h('div', { class: 'rows-list' }, rows))
         : said('info', 'Tesla lists no car for this account. A car added to it at Tesla shows here within a few minutes.'),
+      problem,
       note('Pick the car each one is read into. A suggestion has the same VIN prefix as a car here; it is not saved until you press Save the matches.'),
       h('div', { class: 'form-actions' }, save, pending));
   }

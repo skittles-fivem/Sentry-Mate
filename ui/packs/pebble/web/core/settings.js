@@ -98,6 +98,7 @@ export function askPassword(ctx, { title, text = null, yes, danger = false, extr
         onsubmit: async (v) => {
           if (!v.password) throw Object.assign(new Error('Type your password.'), { fields: { password: 'Type your own password.' } });
           const creds = { password: v.password };
+          if (twoShown && !String(v.two_step || '').trim()) throw Object.assign(new Error('Type the two-step code as well.'), { fields: { two_step: 'Type the 6 digits your authenticator app shows now.' } });
           if (twoShown && v.two_step) creds.two_step = String(v.two_step).replace(/\s+/g, '');
           let r;
           try {

@@ -41,10 +41,21 @@ async function start() {
   ]);
   const carsCount = cars && typeof cars.total === 'number' ? cars.total : null;
   const frame = mountFrame({ me, about, carsCount });
-  api.on('unauthorized', () => {
+  const ended = () => {
     if (AUTH_SCREENS.includes(pageNow())) return;
     toast('Your session ended. Sign in again to go on.', { kind: 'info', next: true });
     location.assign(`/sign-in?next=${encodeURIComponent(here())}`);
+  };
+  api.on('unauthorized', ({ method } = {}) => {
+    if (AUTH_SCREENS.includes(pageNow())) return;
+    // A change that asks for the password and two-step code again can answer 401 for a missing or wrong code
+    // while the session is still there: ask the server before going to the sign-in screen.
+    if (method && method !== 'GET' && method !== 'HEAD') {
+      // (a 401 on this GET comes back here and goes to the sign-in screen)
+      api.get('me', null, { maxAgeMs: 0 }).catch(() => {});
+      return;
+    }
+    ended();
   });
   startRouter({ frame, me, carsCount });
 }

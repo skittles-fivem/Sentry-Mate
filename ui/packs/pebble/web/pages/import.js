@@ -545,7 +545,6 @@ export async function mount(ctx) {
       const code = j.error && j.error.code;
       failRegion.replaceChildren(callout('bad', j.checked_ms ? 'The import stopped part way.' : 'The file did not pass its check.',
         h('p', null, FAILURES[code] || (j.error && j.error.message) || 'The server gave no reason.'),
-        j.error && j.error.message && FAILURES[code] ? h('p', { class: 'set-mono' }, `${code}: ${j.error.message}`) : null,
         h('p', null, j.checked_ms ? (isCan(j) ? 'Logs already stored stay, checked and signed. Start a new import of the same zip to bring the rest: what is here is skipped.' : 'Rows already stored stay. Discard this import, then upload the file again: rows already in are skipped.') : 'Nothing from this file was stored. Discard this import, then upload a good file.')));
       failRegion.hidden = false;
     } else { failRegion.replaceChildren(); failRegion.hidden = true; }
@@ -665,7 +664,7 @@ export async function mount(ctx) {
         const st = KEY_STATUS[k.status] || [String(k.status || '').replace(/_/g, ' '), 'muted'];
         const gaps = (k.chain_gaps || 0) + (k.chain_forks || 0);
         return infoRow({
-          icon: 'key', tone: st[1], name: h('code', { class: 'set-mono' }, k.key),
+          icon: 'key', tone: st[1], name: h('code', { class: 'set-mono' }, k.key), cls: 'im-key-row',
           sub: [`${count(k.logs)} logs`, imported ? `${count(k.imported)} stored` : `${count(Math.max(0, k.logs - k.already_here - k.refused))} to store`,
             k.already_here ? `${count(k.already_here)} here already` : null, k.refused ? `${count(k.refused)} refused` : null,
             k.car ? `goes to ${k.car_name || carName(k.car)}` : null, k.first_ms ? `${day(k.first_ms)} to ${day(k.last_ms)}` : null,
@@ -677,7 +676,7 @@ export async function mount(ctx) {
     const refusedT = tile({ w: 2, title: 'Why logs were refused', icon: 'warning', cover: 'web.import.rejected.col-reason' },
       refused.length ? group(null, refused.map(([code, n]) => infoRow({ icon: 'minus', tone: 'sun', name: canReason(code)[0], sub: canReason(code)[1], side: h('span', { class: 'im-n' }, count(n)) })))
         : said('ok', 'No log was refused: every log of the zip is signed by its car’s CAN Bridge and unchanged since.'),
-      (rep.refused_logs || []).length ? h('div', { class: 'log', role: 'list' }, rep.refused_logs.slice(0, 100).map((x) => h('div', { class: 'log-row', role: 'listitem' }, h('span', { class: 'log-k' }, x.name), h('span', { class: 'log-v' }, canReason(x.reason)[0])))) : null,
+      (rep.refused_logs || []).length ? h('div', { class: 'log im-refused-logs', role: 'list' }, rep.refused_logs.slice(0, 100).map((x) => h('div', { class: 'log-row', role: 'listitem' }, h('span', { class: 'log-k' }, x.name), h('span', { class: 'log-v' }, canReason(x.reason)[0])))) : null,
       refused.length ? note('A refused log is never stored.') : null);
     const f = rep.files || {};
     const filesT = tile({ w: 2, title: 'In the zip', icon: 'file' },
