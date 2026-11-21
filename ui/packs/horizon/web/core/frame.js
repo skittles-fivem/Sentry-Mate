@@ -223,7 +223,7 @@ function buildFoot() {
   E.update = h('a', { class: 'foot-update', hidden: true, target: '_blank', rel: 'noopener noreferrer external', cover: ['shell.footer.update_available', 'web.shell.update-footer'] },
     icon('arrow-r', 'i--sm'), h('span', null, 'A newer version is out'));
   const legal = h('span', { class: 'foot-legal', cover: ['shell.footer.legal', 'web.shell.legal-footer'] },
-    'Bundled parts keep their own licences: MapLibre GL JS (BSD-3-Clause), uPlot (MIT), Orbitron and Chakra Petch (SIL Open Font License 1.1), JetBrains Mono (SIL Open Font License 1.1). ',
+    'Bundled parts keep their own licences: MapLibre GL JS (BSD-3-Clause), uPlot (MIT), Orbitron and Chakra Petch (SIL Open Font License 1.1), JetBrains Mono (Apache-2.0). ',
     h('a', { href: '/help#licences' }, 'Licences'), ' · ', h('a', { href: '/help#credits' }, 'Data credits'));
   replace($('foot'), h('div', { class: 'foot-box' }, E.ver, legal, E.update));
 }

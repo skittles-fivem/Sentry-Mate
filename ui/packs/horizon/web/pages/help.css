@@ -1,0 +1,25 @@
+/* Help and about: the version face, the parts list, the answers. */
+.hp-about { display: grid; gap: 1.25rem; }
+.hp-face { display: grid; justify-items: center; gap: 0.25rem; padding: 1.25rem 1rem; border-radius: var(--r); background: var(--radio-face); text-align: center;
+  box-shadow: inset 0 0 0 1px rgba(61, 240, 255, 0.5), inset 0 0 1.5rem rgba(61, 240, 255, 0.16); }
+.hp-face-l { font: 700 var(--fs-xs)/1.2 var(--display); letter-spacing: 0.3em; text-transform: uppercase; color: var(--radio-ink-2); }
+.hp-face-v { font: 400 2.25rem/1.2 var(--mono); color: #dffcff; text-shadow: 0 0 0.75rem rgba(61, 240, 255, 0.6); overflow-wrap: anywhere; }
+.hp-face-s { font: 400 var(--fs-sm)/1.5 var(--mono); color: #a9c9d6; }
+.hp-own { display: grid; gap: 0.25rem; padding: 0.75rem 1rem; border-radius: var(--r); background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); }
+.hp-parts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto auto; column-gap: 1rem; }
+.hp-part { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; row-gap: 0.25rem; align-items: center; min-height: 2.75rem; padding: 0.375rem 0; box-shadow: inset 0 -1px 0 var(--rule); }
+.hp-part > .tag { justify-self: start; }
+.hp-part:last-child { box-shadow: none; }
+.hp-part-n { font-weight: 700; }
+.hp-part-u { font-size: var(--fs-sm); color: var(--ink-2); }
+.hp-qas { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 26rem), 1fr)); gap: 0.75rem; }
+.hp-qa { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.75rem; align-items: start; padding: 0.875rem 1rem; border-radius: var(--r); background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); }
+.hp-qa-n { display: inline-grid; place-items: center; min-width: 2rem; height: 1.5rem; padding: 0 0.25rem; border-radius: 0.125rem; background: var(--digits-bg); color: #9ff7ff; font: 400 var(--fs-xs)/normal var(--mono); }
+.hp-qa-body { display: grid; gap: 0.375rem; justify-items: start; min-width: 0; }
+.hp-qa-q { font: 700 var(--fs)/1.5 var(--sans); }
+.hp-qa-a { font-size: var(--fs-sm); color: var(--ink-2); }
+@container view (max-width: 40rem) {
+  .hp-parts { grid-template-columns: minmax(0, 1fr); }
+  .hp-part { grid-template-columns: minmax(0, 1fr) auto; column-gap: 1rem; }
+  .hp-part-u { grid-column: 1 / -1; grid-row: 2; }
+}
