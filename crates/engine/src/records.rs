@@ -18,6 +18,8 @@
 //! engine  car/<id>/api/<day>    what the Tesla API saw of the car's state that UTC day (spans, clipped to the day)
 //! engine  car/<id>/api_dirty    Tesla API data stored but not yet built into the timeline
 //! engine  car/<id>/api_meta     the Tesla API's newest values beside the samples (version, settings, charger)
+//! engine  car/<id>/fw/...       the firmware fingerprints of the car's logs, their history and the updates found
+//!                               from them ([`crate::firmware`])
 //! ```
 
 use crate::Result;
@@ -32,7 +34,8 @@ pub(crate) const NS: &str = "engine";
 
 /// The version of how logs are decoded here (with the timeline's rules): entries made by another are made again.
 /// 2: a left-out log's hole is held to a few minutes around its name's start (its sidecar's span is not signed).
-pub const DECODE_VERSION: u32 = 2;
+/// 3: each log's firmware fingerprints are kept ([`crate::firmware`]): older logs are read again for them.
+pub const DECODE_VERSION: u32 = 3;
 
 /// The version stamp an entry carries: this crate's decoding and the timeline's rules.
 pub(crate) fn rules() -> u32 {

@@ -43,6 +43,7 @@
 //! the car's time zone), with its paging, filters and sorting.
 
 pub mod costs;
+pub mod firmware;
 pub mod importer;
 pub mod jobs;
 mod pipeline;

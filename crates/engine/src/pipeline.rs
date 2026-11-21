@@ -423,13 +423,15 @@ impl Engine {
         let mut meta = records::meta(db, car)?;
         let mut spans = Vec::new();
         let mut sample_spans = Vec::new();
+        let mut names = Vec::new();
         for d in meta.days.clone() {
             let mut rec = records::day(db, car, d)?;
             let before = rec.logs.len();
-            rec.logs.retain(|_, e| {
+            rec.logs.retain(|name, e| {
                 if e.key != key {
                     return true;
                 }
+                names.push(name.clone());
                 spans.push(e.span());
                 match &e.outcome {
                     Outcome::Decoded { samples_from_ms, samples_to_ms, .. } => {
@@ -453,6 +455,7 @@ impl Engine {
             return Ok(());
         }
         records::put_meta(db, car, &meta)?;
+        self.fw_forget(car, &names)?;
         let spans = join_spans(spans);
         // noted dirty first: a crash part way rebuilds them on the next start
         let mut dirty = records::dirty(db, car)?;
@@ -515,6 +518,7 @@ impl Engine {
             _ => None,
         };
         let mut wrote_samples = false;
+        let mut firmware: Option<(timeline::LogFirmware, bool)> = None;
         let outcome = if usable {
             match read(name)? {
                 None => Outcome::Hole { from_ms: start, to_ms: start + 60_000, reason: "not_stored".into() },
@@ -559,6 +563,7 @@ impl Engine {
                             Outcome::Hole { from_ms: a, to_ms: b, reason: "other_vin".into() }
                         }
                         Ok(r) => {
+                            firmware = Some((r.firmware.clone(), r.facts.closed == timeline::Closed::Quiet));
                             let (from, to) = match (r.samples.first(), r.samples.last()) {
                                 (Some(a), Some(b)) => (Some(a.t_ms), Some(b.t_ms + 1000)),
                                 _ => (None, None),
@@ -624,6 +629,7 @@ impl Engine {
         let mut rec = records::day(db, car, d)?;
         rec.logs.insert(name.to_string(), entry);
         records::put_day(db, car, d, &rec)?;
+        self.fw_note_log(car, name, firmware.as_ref().map(|(f, q)| (f, *q)))?;
         let mut meta = records::meta(db, car)?;
         meta.days.insert(d);
         meta.first_ms = Some(meta.first_ms.map_or(span.0, |f| f.min(span.0)));
@@ -1134,11 +1140,13 @@ impl Engine {
             .range(records::day_of(from_ms)..=records::day_of(to_ms.saturating_sub(1).max(from_ms)))
             .copied()
             .collect();
+        let mut names = Vec::new();
         for d in days {
             let mut rec = records::day(db, car, d)?;
             rec.logs.retain(|name, e| {
                 let keep = records::name_start_ms(name).is_none_or(|s| s < from_ms || s >= to_ms);
                 if !keep {
+                    names.push(name.clone());
                     match e.outcome {
                         Outcome::Decoded { .. } => meta.decoded = meta.decoded.saturating_sub(1),
                         Outcome::Hole { .. } => meta.holes = meta.holes.saturating_sub(1),
@@ -1153,6 +1161,10 @@ impl Engine {
             }
         }
         records::put_meta(db, car, &meta)?;
+        // the fingerprints of those logs go too, and the updates found from them are found again (the rows in the
+        // window went with the window)
+        self.fw_forget(car, &names)?;
+        self.fw_sync_rows(car, &crate::firmware::history(db, car)?)?;
         self.emit(Event::Rows { car, kinds: vec!["drives", "charges", "states", "visits"], from_ms, to_ms });
         Ok(())
     }

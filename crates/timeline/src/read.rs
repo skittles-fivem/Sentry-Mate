@@ -1,6 +1,8 @@
-//! One stored log, read whole: its samples, its facts and the VIN, in one pass over its lines.
+//! One stored log, read whole: its samples, its facts, the VIN and the firmware fingerprints, in one pass over its
+//! lines.
 
 use crate::facts::{FactsCollector, LogFacts};
+use crate::firmware::{FirmwareCollector, LogFirmware};
 use crate::sample::{SampleBuilder, SampleParams};
 use model::{Sample, VinInfo};
 
@@ -16,6 +18,8 @@ pub struct LogRead {
     pub samples: Vec<Sample>,
     pub facts: LogFacts,
     pub vin: Option<VinInfo>,
+    /// The firmware fingerprints its vehicle-bus frames carried, and the bridge's hint lines.
+    pub firmware: LogFirmware,
 }
 
 /// Reads a `.log.xz` (either format) with its sidecar: decodes it with the car's DBC set (the sidecar's bus map
@@ -30,6 +34,7 @@ pub fn read_log(
     let mut decoder = dbc::Decoder::new(profile, sidecar);
     let mut builder = SampleBuilder::new(profile, params);
     let mut facts = FactsCollector::new(LogFacts::from_sidecar(sidecar));
+    let mut firmware = FirmwareCollector::new();
     logfmt::read_log(xz, logfmt::Limits::default(), |l| {
         let line = logfmt::Line::parse(l);
         if let logfmt::Line::Frame(f) = &line
@@ -38,7 +43,8 @@ pub fn read_log(
             builder.feed(&mut decoder, f);
         }
         facts.line(&line);
+        firmware.line(&line);
     })?;
     let (samples, vin) = builder.finish();
-    Ok(LogRead { samples, facts: facts.finish(), vin })
+    Ok(LogRead { samples, facts: facts.finish(), vin, firmware: firmware.finish() })
 }

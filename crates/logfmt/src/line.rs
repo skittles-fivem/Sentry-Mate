@@ -79,6 +79,10 @@ pub enum Line<'a> {
     },
     /// `# rolled over …` (two servers: old logs removed on the bridge).
     RolledOver(&'a str),
+    /// `# firmware changed: …` (the text after the colon): the bridge saw a module's firmware fingerprint change, e.g.
+    /// `Battery management (0x300), BMS_appCrc 920f4248 -> 1a2b3c4d`. A hint only: the reader's own decode of the
+    /// frames is what counts.
+    FirmwareChanged(&'a str),
     /// Any other comment: ignored, kept for display.
     Comment(&'a str),
     /// Not a frame in the exact form and not a comment.
@@ -197,6 +201,8 @@ impl<'a> Line<'a> {
             Line::NotRecorded { paused_s: rest.split_whitespace().next().and_then(|n| n.parse().ok()), text }
         } else if text.starts_with("rolled over") {
             Line::RolledOver(text)
+        } else if let Some(rest) = text.strip_prefix("firmware changed:") {
+            Line::FirmwareChanged(rest.trim())
         } else {
             Line::Comment(text)
         }
