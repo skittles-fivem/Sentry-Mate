@@ -71,34 +71,34 @@ function stableInit(arg) {
 
   // ---- helpers shared by the watchers
   const SKIP_TAGS = new Set(['script', 'style', 'link', 'meta', 'template', 'noscript', 'title', 'head', 'option', 'br', 'wbr', 'source', 'track', 'param']);
-  const ignoredRoot = (e) => e.closest('svg, canvas, .maplibregl-map, [data-sm-pixel-outline], [data-sm-stable-outline], [data-stable-ignore]');
-  function part(e) {
-    let s = e.localName;
-    if (e.id) return s + '#' + CSS.escape(e.id);
-    const c = (e.getAttribute('class') || '').trim().split(/\s+/)[0];
-    if (c) s += '.' + CSS.escape(c);
-    const p = e.parentElement;
-    if (p) {
-      let n = 0, i = 0;
-      for (const x of p.children) { if (x.localName === e.localName) { n++; if (x === e) i = n; } }
-      if (n > 1) s += ':nth-of-type(' + i + ')';
-    }
-    return s;
-  }
-  // the key of an element: its path from body (tag, id or first class, place among its kind)
-  const keyCache = new WeakMap();
-  let keyGen = 0;
-  function key(e) {
-    const c = keyCache.get(e);
-    if (c && c.gen === keyGen) return c.k;
-    const parts = [];
-    for (let x = e; x && x.nodeType === 1 && x !== document.documentElement; x = x.parentElement) {
-      parts.unshift(part(x));
-      if (x.id) break;
-    }
-    const k = parts.join(' > ');
-    keyCache.set(e, { gen: keyGen, k });
-    return k;
+  const ignoredRoot = (e) => e.localName === 'svg' || e.localName === 'canvas' || e.classList.contains('maplibregl-map')
+    || e.hasAttribute('data-sm-pixel-outline') || e.hasAttribute('data-sm-stable-outline') || e.hasAttribute('data-stable-ignore');
+  // Walks body top-down and gives each element its key: its path from body (tag, id or first class, place among
+  // its kind), built from the parent's key so a long list costs one pass. visit(e, key) returns false to skip
+  // the element's children.
+  function walk(visit) {
+    const body = document.body;
+    if (!body) return;
+    const rec = (parent, pkey) => {
+      const kids = parent.children;
+      let totals = null;
+      if (kids.length > 1) { totals = new Map(); for (const c of kids) totals.set(c.localName, (totals.get(c.localName) || 0) + 1); }
+      const seen = new Map();
+      for (const c of kids) {
+        const t = c.localName;
+        if (SKIP_TAGS.has(t)) continue;
+        const i = (seen.get(t) || 0) + 1;
+        seen.set(t, i);
+        let k;
+        if (c.id) k = t + '#' + CSS.escape(c.id);
+        else {
+          const cls = (c.getAttribute('class') || '').trim().split(/\s+/)[0];
+          k = pkey + ' > ' + t + (cls ? '.' + CSS.escape(cls) : '') + (totals && totals.get(t) > 1 ? ':nth-of-type(' + i + ')' : '');
+        }
+        if (visit(c, k) !== false) rec(c, k);
+      }
+    };
+    rec(body, 'body');
   }
   // a short readable selector, as check.js shows them
   function sel(e) {
@@ -124,34 +124,32 @@ function stableInit(arg) {
   S.sel = sel;
   const short = (k) => k.split(' > ').slice(-4).join(' > ');
   const PLACEHOLDER = /^(?:[—–\-−…?·.]+|loading\b.*|loading…|n\/a|unknown|waiting\b.*|fetching\b.*|updating\b.*|refreshing\b.*|no\s.*|nothing\b.*|none\b.*|not\s+(?:yet|available|known)\b.*|empty\b.*)$/i;
-  const visible = (e) => {
-    if (typeof e.checkVisibility === 'function') { if (!e.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return false; }
+  // What is watched: the window and three more window heights below it (what you see and scroll to soon), so a
+  // page of tens of thousands of rows costs no more than its first screens. 'in', 'out' (outside the band:
+  // its children are skipped too) or 'hidden'.
+  const where = (e) => {
+    if (typeof e.checkVisibility === 'function' && !e.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return 'hidden';
     const r = e.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
+    if (!(r.width > 0 && r.height > 0)) return 'hidden';
+    const vh = innerHeight;
+    return r.bottom < -vh || r.top > 4 * vh ? 'out' : 'in';
   };
 
   // all visible elements and placeholder texts, by key (for flicker)
   function snapshot() {
-    keyGen++;
     const out = new Map();
-    const body = document.body;
-    if (!body) return out;
-    const stack = Array.from(body.children).reverse();
-    while (stack.length) {
-      const e = stack.pop();
-      const tag = e.localName;
-      if (SKIP_TAGS.has(tag) || e.hasAttribute('data-sm-pixel-outline') || e.hasAttribute('data-sm-stable-outline') || e.hasAttribute('data-stable-ignore')) continue;
-      if (!visible(e)) continue;
-      const k = key(e);
+    walk((e, k) => {
+      const w = where(e);
+      if (w !== 'in') return w === 'hidden' && getComputedStyle(e).display === 'contents';
       out.set(k, e);
-      if (tag === 'svg' || tag === 'canvas' || (e.classList && e.classList.contains('maplibregl-map'))) continue;
+      if (ignoredRoot(e)) return false;
       // placeholder text in this element's own text nodes
       let text = '';
       for (const n of e.childNodes) if (n.nodeType === 3) text += n.nodeValue;
       text = text.trim().replace(/\s+/g, ' ');
       if (text && PLACEHOLDER.test(text)) out.set(k + ' ::placeholder', e);
-      for (let i = e.children.length - 1; i >= 0; i--) stack.push(e.children[i]);
-    }
+      return true;
+    });
     return out;
   }
 
@@ -163,20 +161,19 @@ function stableInit(arg) {
   }
   const BLOCKISH = /^(block|flex|grid|table|list-item|flow-root|table-row|table-row-group|table-header-group|table-footer-group|inline-block|inline-flex|inline-grid)$/;
   function blocks(limit) {
-    keyGen++;
     const out = new Map();
-    const body = document.body;
-    if (!body) return out;
-    for (const e of body.querySelectorAll('*')) {
-      if (out.size >= limit) break;
-      if (!(e instanceof HTMLElement) || SKIP_TAGS.has(e.localName) || ignoredRoot(e)) continue;
-      if (e.offsetParent === null && getComputedStyle(e).position !== 'fixed') continue; // display none, or fixed
-      const w = e.offsetWidth, h = e.offsetHeight;
-      if (w < 40 || h < 8) continue;
+    walk((e, k) => {
+      if (out.size >= limit || ignoredRoot(e) || !(e instanceof HTMLElement)) return false;
       const cs = getComputedStyle(e);
-      if (!BLOCKISH.test(cs.display) || cs.visibility !== 'visible') continue;
-      out.set(key(e), { e, top: layoutTop(e), h, fixed: cs.position === 'fixed' || cs.position === 'sticky' });
-    }
+      if (cs.display === 'none') return false;
+      const r = e.getBoundingClientRect();
+      if (r.height > 0 && (r.bottom < -innerHeight || r.top > 4 * innerHeight)) return false;
+      const w = e.offsetWidth, h = e.offsetHeight;
+      if (w >= 40 && h >= 8 && BLOCKISH.test(cs.display) && cs.visibility === 'visible') {
+        out.set(k, { e, top: layoutTop(e), h, fixed: cs.position === 'fixed' || cs.position === 'sticky' });
+      }
+      return true;
+    });
     return out;
   }
 
@@ -192,7 +189,10 @@ function stableInit(arg) {
     const toggles = new Map(); // key -> { sel, times, first, at: [ms] }
     const moves = new Map(); // key -> { sel, times, max, at, cause }
     const late = new Map(); // key -> { sel, h, at, pushed }
-    S.watch = { toggles, moves, late, frames: 0, snapMs: 0, samples: 0, sampleMs: 0 };
+    // The watch may not slow the page down: a snapshot or sample that took c ms waits at least 3c ms before the
+    // next one (a big page is then looked at less often; `cost` in the result says how often).
+    S.watch = { toggles, moves, late, frames: 0, snapMs: 0, snapMaxMs: 0, samples: 0, sampleMs: 0, sampleMaxMs: 0 };
+    let nextSnap = 0;
     let prevSnap = snapshot();
     let dirty = false;
     const mo = new MutationObserver(() => { dirty = true; });
@@ -200,7 +200,7 @@ function stableInit(arg) {
     S.mo = mo;
     const frame = () => {
       if (S.stopped) return;
-      if (dirty) {
+      if (dirty && now() >= nextSnap) {
         dirty = false;
         const t0 = now();
         const snap = snapshot();
@@ -217,14 +217,17 @@ function stableInit(arg) {
         for (const [k, e] of snap) if (!prevSnap.has(k)) note(k, e, 'appeared');
         for (const [k, e] of prevSnap) if (!snap.has(k)) note(k, e, 'went away');
         prevSnap = snap;
-        S.watch.snapMs += now() - t0;
+        const c = now() - t0;
+        S.watch.snapMs += c;
+        S.watch.snapMaxMs = Math.max(S.watch.snapMaxMs, c);
+        nextSnap = now() + (c > 8 ? 3 * c : 0);
       }
       requestAnimationFrame(frame);
     };
     requestAnimationFrame(frame);
 
     let prev = blocks(LIMIT);
-    S.sampler = setInterval(() => {
+    const sample = () => {
       if (S.stopped) return;
       const t0 = now();
       const cur = blocks(LIMIT);
@@ -240,6 +243,7 @@ function stableInit(arg) {
       }
       if (moved.length) {
         const movedKeys = new Map(moved.map((m) => [m.k, m]));
+        let listed = 0;
         // what changed before them: new blocks, blocks that grew or shrank, blocks that went away
         const changed = [];
         for (const [k, b] of cur) {
@@ -258,7 +262,7 @@ function stableInit(arg) {
             if (pm && Math.abs(pm.dy - m.dy) <= 1) { skip = true; break; }
             if (pk.lastIndexOf(' > ') < 0) break;
           }
-          if (skip) continue;
+          if (skip || ++listed > 200) continue;
           // the cause: the last changed block that ends above it and is not its ancestor
           let cause = null;
           for (const c of changed) {
@@ -281,8 +285,12 @@ function stableInit(arg) {
         }
       }
       prev = cur;
-      S.watch.sampleMs += now() - t0;
-    }, 250);
+      const c = now() - t0;
+      S.watch.sampleMs += c;
+      S.watch.sampleMaxMs = Math.max(S.watch.sampleMaxMs, c);
+      S.sampler = setTimeout(sample, Math.max(250, 4 * c));
+    };
+    S.sampler = setTimeout(sample, 250);
   }
   S.start = start;
 
@@ -306,7 +314,7 @@ function stableCollect(arg) {
   if (!S) return { error: 'the stability watch was not installed' };
   if (!S.started) S.start(); // ready came before the watch could see it: start now (late)
   S.stopped = true;
-  clearInterval(S.sampler);
+  clearTimeout(S.sampler);
   if (S.mo) S.mo.disconnect();
   const max = (arg && arg.maxList) || 100;
   const W = S.watch;
@@ -374,7 +382,7 @@ function stableCollect(arg) {
     toggling: toggling.slice(0, max), togglingCount: toggling.length,
     late: late.slice(0, max),
     events, eventCount: total,
-    cost: { frames: W.frames, snapMs: Math.round(W.snapMs), samples: W.samples, sampleMs: Math.round(W.sampleMs) },
+    cost: { frames: W.frames, snapMs: Math.round(W.snapMs), snapMaxMs: Math.round(W.snapMaxMs), samples: W.samples, sampleMs: Math.round(W.sampleMs), sampleMaxMs: Math.round(W.sampleMaxMs) },
     boxes,
   };
 }

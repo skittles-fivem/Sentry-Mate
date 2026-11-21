@@ -219,6 +219,10 @@ long after it is ready (`data-ready`) and measures in the page (`stable.js`, ins
 
 Left out on purpose: whatever is inside `svg`, `canvas` and a MapLibre map (`.maplibregl-map`), which redraw by design,
 and an element marked `data-stable-ignore`. Text that only changes its value (a speed, "3 min ago") is not a flicker.
+Moved blocks and flicker are watched in the window and the three window heights below it (what you see and scroll
+to soon), so a page of thousands of rows costs no more than its first screens. The watch must not slow the page
+down: a look that took `c` ms waits `3c` ms (flicker) or `4c` ms (moves, at least 250 ms) before the next one, and a
+`note:` says so when a big page was looked at less often (`cost` in `--json` has the times).
 
 **The pace of updates.** With `--stable` the dev server is started with `--rows-every-s 10`: besides the live values it
 always sends every 2 s (`now` events), every car gets a `rows` event every 10 s as if a drive or charge had started

@@ -743,6 +743,9 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
           res.stable.outlined = await shot(base + '-outlined.png', true);
           await within(10000, page.evaluate(stableOutlineRemove), 'removing the outlines').catch(() => {});
         }
+        if (st.cost && (st.cost.snapMaxMs > 30 || st.cost.sampleMaxMs > 60)) {
+          res.notes.push(`a big page: the watch looked at it every ${Math.round(3 * st.cost.snapMaxMs)} ms at most for flicker and every ${Math.round(Math.max(250, 4 * st.cost.sampleMaxMs))} ms for moves, so short flashes can be missed`);
+        }
         if (st.noShiftApi) res.notes.push('this browser has no layout-shift entries: only moved blocks were measured');
         if (!st.eventCount && !watch.api) res.notes.push(`nothing was updated during the ${o.stableSeconds} s watch (no event and no /api request)`);
       } catch (e) {
