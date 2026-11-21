@@ -2,15 +2,15 @@
 //! within 10 s, a request at most 10 minutes.
 //!
 //! Connections are counted per address, an IPv4 address or an IPv6 /64 ([`address_key`], as the web port and the
-//! wrong-token window count them). A connection counts as anonymous until a request on it is answered with success
-//! (it carried a valid token). The rule:
+//! wrong-token window count them). A connection counts as anonymous until a request on it shows a valid token (as
+//! soon as the token is checked, before its body is read, so an upload in flight is never anonymous). The rule:
 //!
 //! - From one address at most [`MAX_PER_ADDRESS`] (32) connections, anonymous or not: the CAN Bridge uploads up to
 //!   16 logs at once, each on a new connection, and keeps finished ones open a while (keep-alive), so 16 plus as
 //!   many again for the connections it is about to drop and the ping and status requests alongside.
 //! - Of them at most [`MAX_ANONYMOUS_PER_ADDRESS`] (6) anonymous ones, unless the address is a car's: a connection
 //!   with a valid token is open from it, or closed less than [`CAR_MEMORY`] (30 minutes) ago. A car's new
-//!   connections start anonymous too (each proves nothing until its request is answered), so on a car's address
+//!   connections start anonymous too (each proves nothing until its request's token is checked), so on a car's address
 //!   they may use all 32. A stranger never shows a token, so its address never becomes a car's and it gets 6. (A
 //!   stranger behind the same address as a car, such as a mobile network's shared address, gets the car's 32: still
 //!   bounded, and the cap below closes its oldest anonymous connections first.)
@@ -19,15 +19,17 @@
 //!   and 320 stay for cars' own (ten bridges at 32).
 //!
 //! A refused connection is not dropped silently: its TLS handshake is finished and its request answered
-//! `503 too_many_connections` with `Retry-After: 5` (at most [`MAX_REFUSING`] at once, [`MAX_REFUSING_PER_ADDRESS`]
-//! from one address; beyond that it is closed unanswered and a warning logged). The first refusal per address per
-//! minute is logged with the address's open counts.
+//! `503 too_many_connections` with `Retry-After: 5` as soon as its headers are in, without reading its body (an
+//! `Expect: 100-continue` client is told before it sends any; another one's body is read for at most [`LINGER`], up
+//! to [`LINGER_BYTES`], after the answer, so the answer is not lost to a reset). A refusal takes at most
+//! [`REFUSAL_TIMEOUT`] in all. At most [`MAX_REFUSING`] are answered at once, [`MAX_REFUSING_PER_ADDRESS`] from one
+//! address: a new one beyond closes an earlier refusal instead, the address's own oldest if it has that many, else the
+//! oldest of the address with the most, so no address can fill them and keep another's answer out (a warning is
+//! logged). The first refusal per address per minute is logged with the address's open counts.
 
-use crate::api::{Conn, EXPORTER_LABEL, Exporter};
-use crate::store::MAX_CHUNK;
+use crate::api::{Conn, EXPORTER_LABEL, Exporter, TokenShown};
 use axum::Router;
 use axum::response::IntoResponse;
-use http_body_util::BodyExt;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -56,8 +58,13 @@ pub const MAX_ANONYMOUS: usize = 192;
 /// Refused connections answered `503` at once, at most, in all and from one address.
 pub const MAX_REFUSING: usize = 32;
 pub const MAX_REFUSING_PER_ADDRESS: usize = 16;
-/// How long answering a refused connection may take, handshake and draining its request included.
-pub const REFUSAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long answering a refused connection may take in all: the handshake, the request's headers, the answer and
+/// the linger after it.
+pub const REFUSAL_TIMEOUT: Duration = Duration::from_secs(15);
+/// After a refusal's answer is sent (and the connection closed for writing), how long, and how much, of what the
+/// client still sends is read and thrown away, so the client can read the answer before the connection is reset.
+pub const LINGER: Duration = Duration::from_secs(2);
+pub const LINGER_BYTES: usize = 1 << 20;
 /// The `Retry-After` of a `503 too_many_connections`, in seconds.
 pub const RETRY_AFTER: u64 = 5;
 const LOG_EVERY: Duration = Duration::from_secs(60);
@@ -413,8 +420,8 @@ struct Slots {
     next: u64,
     /// Addresses a connection with a valid token came from, and until when they count as a car's.
     cars: HashMap<IpAddr, Instant>,
-    /// Refused connections being answered now, in all.
-    refusing: usize,
+    /// Refused connections being answered now (oldest first): from where, and what closes each.
+    refusals: BTreeMap<u64, (IpAddr, Arc<Notify>)>,
     /// When a refusal from an address was last logged: answered (`true`) or closed unanswered (`false`).
     logged: HashMap<(IpAddr, bool), Instant>,
 }
@@ -540,49 +547,84 @@ fn take_slot(slots: &Arc<Mutex<Slots>>, ip: IpAddr) -> Result<(Arc<Slot>, Arc<No
 /// A refused connection being answered `503`.
 struct Refusing {
     slots: Arc<Mutex<Slots>>,
-    key: IpAddr,
+    seq: u64,
+}
+
+impl Slots {
+    /// Forgets the refusal `seq` (closed to make room, or done), if it is still counted.
+    fn end_refusal(&mut self, seq: u64) -> Option<(IpAddr, Arc<Notify>)> {
+        let (key, close) = self.refusals.remove(&seq)?;
+        if let Some(p) = self.per.get_mut(&key) {
+            p.refusing = p.refusing.saturating_sub(1);
+        }
+        self.tidy(key);
+        Some((key, close))
+    }
 }
 
 impl Drop for Refusing {
     fn drop(&mut self) {
         let mut s = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-        s.refusing = s.refusing.saturating_sub(1);
-        if let Some(p) = s.per.get_mut(&self.key) {
-            p.refusing = p.refusing.saturating_sub(1);
-        }
-        s.tidy(self.key);
+        s.end_refusal(self.seq);
     }
 }
 
-/// Room to answer a refused connection from `key`, or `None`: [`MAX_REFUSING`] are answered now, or
-/// [`MAX_REFUSING_PER_ADDRESS`] from this address (it is closed unanswered then).
-fn take_refusal(slots: &Arc<Mutex<Slots>>, key: IpAddr) -> Option<Refusing> {
+/// Room to answer a refused connection from `key`, what tells it to close, and the address of an earlier refusal
+/// closed to make room, if one was: the address's own oldest when it has [`MAX_REFUSING_PER_ADDRESS`], else, when
+/// [`MAX_REFUSING`] are answered now, the oldest of the address answered most (so one that has fewer always gets in).
+fn take_refusal(slots: &Arc<Mutex<Slots>>, key: IpAddr) -> (Refusing, Arc<Notify>, Option<IpAddr>) {
     let mut s = slots.lock().unwrap_or_else(|e| e.into_inner());
-    if s.refusing >= MAX_REFUSING || s.per.get(&key).is_some_and(|p| p.refusing >= MAX_REFUSING_PER_ADDRESS) {
-        return None;
-    }
-    s.refusing += 1;
+    let refusing = |s: &Slots, k: &IpAddr| s.per.get(k).map_or(0, |p| p.refusing);
+    let victim = if refusing(&s, &key) >= MAX_REFUSING_PER_ADDRESS {
+        s.refusals.iter().find(|(_, (k, _))| *k == key).map(|(&seq, _)| seq)
+    } else if s.refusals.len() >= MAX_REFUSING {
+        // oldest first, so the first one seen of each address is its oldest
+        let mut best: Option<(usize, u64)> = None;
+        for (&seq, (k, _)) in &s.refusals {
+            let n = refusing(&s, k);
+            if best.is_none_or(|(most, _)| n > most) {
+                best = Some((n, seq));
+            }
+        }
+        best.map(|(_, seq)| seq)
+    } else {
+        None
+    };
+    let closed = victim.and_then(|seq| s.end_refusal(seq)).map(|(k, close)| {
+        close.notify_one();
+        k
+    });
+    let seq = s.next;
+    s.next += 1;
+    let close = Arc::new(Notify::new());
+    s.refusals.insert(seq, (key, close.clone()));
     s.per.entry(key).or_default().refusing += 1;
-    Some(Refusing { slots: slots.clone(), key })
+    (Refusing { slots: slots.clone(), seq }, close, closed)
 }
 
-/// Logs a refusal, the first per address per minute: at info when it is answered `503`, as a warning when it is
-/// closed unanswered.
-fn log_refusal(slots: &Arc<Mutex<Slots>>, r: &Refused, answered: bool) {
+/// Whether to log about `key` now: the first time per address per minute, for answered refusals (`true`) and for
+/// earlier refusals closed to make room (`false`) each.
+fn log_now(slots: &Arc<Mutex<Slots>>, key: IpAddr, answered: bool) -> bool {
     let now = Instant::now();
-    {
-        let mut s = slots.lock().unwrap_or_else(|e| e.into_inner());
-        let k = (r.key, answered);
-        if s.logged.get(&k).is_some_and(|&t| now.duration_since(t) < LOG_EVERY) {
-            return;
-        }
-        if s.logged.len() >= 1024 {
-            s.logged.retain(|_, t| now.duration_since(*t) < LOG_EVERY);
-        }
-        if s.logged.len() >= 4096 {
-            return;
-        }
-        s.logged.insert(k, now);
+    let mut s = slots.lock().unwrap_or_else(|e| e.into_inner());
+    let k = (key, answered);
+    if s.logged.get(&k).is_some_and(|&t| now.duration_since(t) < LOG_EVERY) {
+        return false;
+    }
+    if s.logged.len() >= 1024 {
+        s.logged.retain(|_, t| now.duration_since(*t) < LOG_EVERY);
+    }
+    if s.logged.len() >= 4096 {
+        return false;
+    }
+    s.logged.insert(k, now);
+    true
+}
+
+/// Logs a refusal at info, the first per address per minute.
+fn log_refusal(slots: &Arc<Mutex<Slots>>, r: &Refused) {
+    if !log_now(slots, r.key, true) {
+        return;
     }
     let why = match r.limit {
         Limit::PerAddress => format!("{MAX_PER_ADDRESS} connections are open from it"),
@@ -596,44 +638,40 @@ fn log_refusal(slots: &Arc<Mutex<Slots>>, r: &Refused, answered: bool) {
         "{} open from it ({} without a valid token yet, a car's address: {car}), {total} in all",
         open.all, open.anonymous
     );
-    if answered {
-        tracing::info!(
-            "CAN upload port: refused a connection from {key}: {why}; {counts}; answered 503 too_many_connections \
-             (logged once a minute per address)"
-        );
-    } else {
-        tracing::warn!(
-            "CAN upload port: closed a connection from {key} unanswered: {why}, and {} refusals are being answered \
-             already; {counts} (logged once a minute per address)",
-            open.refusing
-        );
-    }
+    tracing::info!(
+        "CAN upload port: refused a connection from {key}: {why}; {counts}; answered 503 too_many_connections \
+         (logged once a minute per address)"
+    );
 }
 
-/// Reads what a refused request sends, up to a chunk and a bit, so the client is done sending when it reads the
-/// answer (an answer closed on a body still coming is often reset before the client reads it).
-async fn drain(mut body: hyper::body::Incoming) {
-    let mut left = MAX_CHUNK + (1 << 20);
-    while left > 0 {
-        match body.frame().await {
-            Some(Ok(f)) => {
-                if let Some(d) = f.data_ref() {
-                    left = left.saturating_sub(d.len() as u64);
-                }
-            }
-            _ => break,
-        }
+/// Logs, as a warning and the first per address per minute, that an earlier refusal from `closed` was closed
+/// (perhaps before its answer) to make room for one from `key`.
+fn log_refusal_closed(slots: &Arc<Mutex<Slots>>, closed: IpAddr, key: IpAddr) {
+    if !log_now(slots, closed, false) {
+        return;
     }
+    let (from_it, all) = {
+        let s = slots.lock().unwrap_or_else(|e| e.into_inner());
+        (s.per.get(&closed).map_or(0, |p| p.refusing), s.refusals.len())
+    };
+    tracing::warn!(
+        "CAN upload port: closed an earlier refused connection from {closed}, perhaps unanswered, to answer one from \
+         {key}: {from_it} refusals from it are being answered, {all} in all (at most {MAX_REFUSING_PER_ADDRESS} from \
+         one address, {MAX_REFUSING} in all; logged once a minute per address)"
+    );
 }
 
 /// Finishes the TLS handshake of a refused connection and answers its request `503 too_many_connections` with
-/// `Retry-After`, then closes it.
+/// `Retry-After` as soon as its headers are in, without reading its body (so a client that sent
+/// `Expect: 100-continue` is told before it sends any). Then it closes the connection for writing and reads what
+/// the client still sends for at most [`LINGER`], up to [`LINGER_BYTES`], throwing it away: closing on unread bytes
+/// would reset the connection, and a reset can lose the answer before the client reads it.
 async fn answer_busy(acceptor: tokio_rustls::TlsAcceptor, tcp: tokio::net::TcpStream) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let Ok(Ok(stream)) = tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await else {
         return;
     };
-    let service = hyper::service::service_fn(|req: hyper::Request<hyper::body::Incoming>| async move {
-        drain(req.into_body()).await;
+    let service = hyper::service::service_fn(|_req: hyper::Request<hyper::body::Incoming>| async move {
         let e = crate::error::ApiError::new(
             503,
             "too_many_connections",
@@ -644,7 +682,26 @@ async fn answer_busy(acceptor: tokio_rustls::TlsAcceptor, tcp: tokio::net::TcpSt
     });
     let mut http = hyper::server::conn::http1::Builder::new();
     http.timer(TokioTimer::new()).header_read_timeout(HEADER_TIMEOUT).keep_alive(false);
-    let _ = http.serve_connection(TokioIo::new(stream), service).await;
+    let Ok(parts) = http.serve_connection(TokioIo::new(stream), service).without_shutdown().await else {
+        return;
+    };
+    let mut stream = parts.io.into_inner();
+    // the answer is out: close_notify, then the TCP FIN
+    if stream.shutdown().await.is_err() {
+        return;
+    }
+    let (mut tcp, _) = stream.into_inner();
+    let mut buf = vec![0u8; 16 * 1024];
+    let mut left = LINGER_BYTES;
+    let _ = tokio::time::timeout(LINGER, async {
+        while left > 0 {
+            match tcp.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => left = left.saturating_sub(n),
+            }
+        }
+    })
+    .await;
 }
 
 /// Serves `app` on `listener` over TLS until this future is dropped, which also ends every connection it opened.
@@ -666,20 +723,19 @@ pub async fn serve_tls(listener: TcpListener, tls: Arc<rustls::ServerConfig>, ap
         let (slot, close) = match take_slot(&slots, ip) {
             Ok(x) => x,
             Err(r) => {
-                match take_refusal(&slots, r.key) {
-                    Some(refusing) => {
-                        log_refusal(&slots, &r, true);
-                        let acceptor = acceptor.clone();
-                        conns.spawn(async move {
-                            let _refusing = refusing;
-                            let _ = tokio::time::timeout(REFUSAL_TIMEOUT, answer_busy(acceptor, tcp)).await;
-                        });
-                    }
-                    None => {
-                        log_refusal(&slots, &r, false);
-                        drop(tcp);
-                    }
+                let (refusing, close, closed) = take_refusal(&slots, r.key);
+                log_refusal(&slots, &r);
+                if let Some(c) = closed {
+                    log_refusal_closed(&slots, c, r.key);
                 }
+                let acceptor = acceptor.clone();
+                conns.spawn(async move {
+                    let _refusing = refusing;
+                    tokio::select! {
+                        _ = tokio::time::timeout(REFUSAL_TIMEOUT, answer_busy(acceptor, tcp)) => {}
+                        () = close.notified() => {}
+                    }
+                });
                 continue;
             }
         };
@@ -689,26 +745,27 @@ pub async fn serve_tls(listener: TcpListener, tls: Arc<rustls::ServerConfig>, ap
                 return;
             };
             let conn = Conn { tls: true, ip };
+            // the token of a request on it was checked: the connection is no longer anonymous, from then on (an
+            // upload in flight is never closed to make room)
+            let shown = TokenShown(Arc::new({
+                let slot = slot.clone();
+                move || slot.authorized()
+            }));
             // taken once after the handshake: what a move's claim binds its proofs to
             let exporter =
                 stream.get_ref().1.export_keying_material([0u8; 32], EXPORTER_LABEL, None).ok().map(Exporter);
             let service =
                 hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
                     req.extensions_mut().insert(conn);
+                    req.extensions_mut().insert(shown.clone());
                     if let Some(e) = exporter {
                         req.extensions_mut().insert(e);
                     }
-                    let (app, slot) = (app.clone(), slot.clone());
+                    let app = app.clone();
                     async move {
                         let req = req.map(axum::body::Body::new);
                         match tokio::time::timeout(REQUEST_TIMEOUT, app.oneshot(req)).await {
-                            Ok(r) => {
-                                // only a request with a valid token is answered with success
-                                if r.as_ref().is_ok_and(|r| r.status().is_success()) {
-                                    slot.authorized();
-                                }
-                                r
-                            }
+                            Ok(r) => r,
                             Err(_) => Ok(crate::error::ApiError::new(408, "timeout", "The request took too long.")
                                 .into_response()),
                         }
@@ -818,21 +875,57 @@ mod tests {
         assert_eq!(s.anonymous.len(), MAX_ANONYMOUS_PER_ADDRESS);
     }
 
-    #[test]
-    fn refusals_answered_at_once_are_bounded() {
+    #[tokio::test]
+    async fn refusals_answered_at_once_are_bounded_and_no_address_fills_them() {
         let slots = Arc::new(Mutex::new(Slots::default()));
-        let a = ip("203.0.113.1");
-        let mut held: Vec<_> = (0..MAX_REFUSING_PER_ADDRESS).map(|_| take_refusal(&slots, a).unwrap()).collect();
-        assert!(take_refusal(&slots, a).is_none(), "per address");
-        let mut i = 2;
-        while held.len() < MAX_REFUSING {
-            held.push(take_refusal(&slots, ip(&format!("203.0.113.{i}"))).unwrap());
-            i += 1;
+        let (a, b, c) = (ip("203.0.113.1"), ip("203.0.113.2"), ip("198.51.100.200"));
+        let told = |n: &Arc<Notify>| {
+            let n = n.clone();
+            async move { tokio::time::timeout(Duration::from_millis(20), n.notified()).await.is_ok() }
+        };
+        // one address: at most 16, a 17th closes its own oldest
+        let mut held = Vec::new();
+        for _ in 0..MAX_REFUSING_PER_ADDRESS {
+            let (r, close, closed) = take_refusal(&slots, a);
+            assert_eq!(closed, None);
+            held.push((r, close));
         }
-        assert!(take_refusal(&slots, ip("198.51.100.200")).is_none(), "in all");
+        let (r, close, closed) = take_refusal(&slots, a);
+        assert_eq!(closed, Some(a));
+        assert!(told(&held[0].1).await, "its oldest was told to close");
+        assert!(!told(&held[1].1).await);
+        assert_eq!(slots.lock().unwrap().per[&a].refusing, MAX_REFUSING_PER_ADDRESS);
+        held.push((r, close));
+        // a second address fills the rest
+        while slots.lock().unwrap().refusals.len() < MAX_REFUSING {
+            let (r, close, closed) = take_refusal(&slots, b);
+            assert_eq!(closed, None);
+            held.push((r, close));
+        }
+        // a third address (a car before its token) still gets answered: one of theirs is closed instead
+        let (mine, my_close, closed) = take_refusal(&slots, c);
+        assert!(closed == Some(a) || closed == Some(b), "{closed:?}");
+        {
+            let s = slots.lock().unwrap();
+            assert_eq!(s.refusals.len(), MAX_REFUSING);
+            assert_eq!(s.per[&c].refusing, 1);
+        }
+        // more from both of them never close the third's: they close each other's (or their own)
+        for i in 0..100 {
+            let (r, close, closed) = take_refusal(&slots, if i % 2 == 0 { a } else { b });
+            assert!(closed.is_some_and(|k| k != c), "{closed:?}");
+            held.push((r, close));
+        }
+        assert!(!told(&my_close).await);
+        {
+            let s = slots.lock().unwrap();
+            assert_eq!(s.refusals.len(), MAX_REFUSING);
+            assert_eq!(s.per[&c].refusing, 1);
+        }
+        drop(mine);
         held.clear();
         let s = slots.lock().unwrap();
-        assert_eq!(s.refusing, 0);
+        assert!(s.refusals.is_empty());
         assert!(s.per.is_empty());
     }
 

@@ -337,16 +337,21 @@ in until it has its own; without it, UTC.
 Firewalls, another host port and uploads from away from home: [Ports and firewalls](install.md#ports-and-firewalls).
 
 Connections to the upload port are counted per address (an IPv6 /64 counts as one address). A connection counts as
-anonymous until a request on it is answered with success (it carried a valid token). An address is a car's while a
-connection with a valid token is open from it, and for 30 minutes after the last one closes. A car's address may
-have 32 connections open, and its new connections (anonymous until answered) may use all of them. Any other address
-may have 6 anonymous connections. In all, the port takes 512 connections, at most 192 of them anonymous: a new one
-beyond closes the oldest anonymous one, so connections without a token can't keep a car out.
+anonymous until a request on it shows a valid token (as soon as the token is checked, before an upload's body
+arrives). An address is a car's while a connection with a valid token is open from it, and for 30 minutes after the
+last one closes. A car's address may have 32 connections open, and its new connections (anonymous until their
+token is checked) may use all of them. Any other address may have 6 anonymous connections. In all, the port takes
+512 connections, at most 192 of them anonymous: a new one beyond closes the oldest anonymous one, so connections
+without a token can't keep a car out or cut its uploads in flight.
 
-A connection over a limit is not cut off: the server finishes the TLS handshake, reads the request and answers
-`503 too_many_connections` with `Retry-After: 5`, then closes it (beyond 32 such answers at once, or 16 from one
-address, it closes the connection unanswered). The first refusal per address per minute is logged with that
-address's open counts. Before a car's first request with a valid token (its first ping after a start, or after 30
+A connection over a limit is not closed unanswered: the server finishes the TLS handshake and answers
+`503 too_many_connections` with `Retry-After: 5` as soon as the request's headers are in, without reading its body
+(a client that sends `Expect: 100-continue` gets it before sending any body). It then closes the connection,
+reading what the client still sends for 2 s (up to 1 MiB) first so the answer isn't lost to a reset; a large body
+still being sent then is cut. A refusal takes at most 15 s in all. At most 32 are answered at once, 16 from one
+address: a new one beyond closes an earlier refusal instead (the address's own oldest, or the oldest of the address
+with the most), so no address can use them all up, and a warning is logged. The first refusal per address per
+minute is logged with that address's open counts. Before a car's first request with a valid token (its first ping after a start, or after 30
 minutes without one), its address gets 6 like any other, so the first few of many uploads at once can get `503`.
 
 Any other path than the upload API gets `404`. The protocol is

@@ -34,6 +34,11 @@ pub struct Conn {
 #[derive(Clone, Copy)]
 pub struct Exporter(pub [u8; 32]);
 
+/// Set on every request by the server: called once the request's token is checked and valid, before its body is
+/// read, so the connection stops counting as anonymous while its upload is still coming.
+#[derive(Clone)]
+pub struct TokenShown(pub Arc<dyn Fn() + Send + Sync>);
+
 /// The exporter label of the move protocol.
 pub const EXPORTER_LABEL: &[u8] = b"EXPORTER-sentry-mate-move-v1";
 
@@ -273,7 +278,20 @@ fn conn_of(req_conn: Option<&Conn>) -> Result<Conn, ApiError> {
 }
 
 /// The token's record, or why not.
-async fn authorize(up: &Uploads, headers: &HeaderMap, conn: Conn) -> Result<Token, ApiError> {
+async fn authorize(
+    up: &Uploads,
+    headers: &HeaderMap,
+    shown: Option<TokenShown>,
+    conn: Conn,
+) -> Result<Token, ApiError> {
+    let token = check_token(up, headers, conn).await?;
+    if let Some(TokenShown(shown)) = shown {
+        shown();
+    }
+    Ok(token)
+}
+
+async fn check_token(up: &Uploads, headers: &HeaderMap, conn: Conn) -> Result<Token, ApiError> {
     let now = Instant::now();
     let given = headers
         .get("authorization")
@@ -327,7 +345,7 @@ fn wrong_car() -> ApiError {
 
 async fn ping(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, ApiError> {
     let conn = conn_of(req.extensions().get::<Conn>())?;
-    let token = authorize(&up, req.headers(), conn).await?;
+    let token = authorize(&up, req.headers(), req.extensions().get::<TokenShown>().cloned(), conn).await?;
     open_for_uploads(&up, &token, conn)?;
     Ok(Json(serde_json::json!({
         "ok": true,
@@ -347,7 +365,7 @@ struct StatusBody {
 
 async fn status(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, ApiError> {
     let conn = conn_of(req.extensions().get::<Conn>())?;
-    let token = authorize(&up, req.headers(), conn).await?;
+    let token = authorize(&up, req.headers(), req.extensions().get::<TokenShown>().cloned(), conn).await?;
     open_for_uploads(&up, &token, conn)?;
     let bad = || ApiError::new(400, "bad_request", "Send { \"names\": [...] } with up to 2000 names.");
     let body = axum::body::to_bytes(req.into_body(), 1 << 20).await.map_err(|_| bad())?;
@@ -392,7 +410,7 @@ fn header_u64(h: &HeaderMap, name: &str) -> Option<u64> {
 
 async fn upload(AxState(up): St, Path(name): Path<String>, req: Request) -> Result<Response, ApiError> {
     let conn = conn_of(req.extensions().get::<Conn>())?;
-    let token = authorize(&up, req.headers(), conn).await?;
+    let token = authorize(&up, req.headers(), req.extensions().get::<TokenShown>().cloned(), conn).await?;
     open_for_uploads(&up, &token, conn)?;
     let n = trust::LogName::parse(&name)
         .ok_or_else(|| ApiError::new(400, "bad_name", "That is not a CAN Bridge log name."))?;

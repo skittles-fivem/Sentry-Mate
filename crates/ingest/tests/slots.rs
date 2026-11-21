@@ -2,12 +2,15 @@
 //! The upload port can't be filled by connections that never show a token: they are closed, oldest first, to make
 //! room, so the CAN Bridge's upload still gets in.
 
-use ingest::server::{Identity, MAX_ANONYMOUS_PER_ADDRESS, MAX_CONNECTIONS, MAX_PER_ADDRESS, serve_tls};
+use ingest::server::{
+    Identity, LINGER, MAX_ANONYMOUS, MAX_ANONYMOUS_PER_ADDRESS, MAX_CONNECTIONS, MAX_PER_ADDRESS, MAX_REFUSING,
+    MAX_REFUSING_PER_ADDRESS, serve_tls,
+};
 use ingest::{Judge, Store, Tokens, Uploads, router};
 use rustls::pki_types::ServerName;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn connector(id: &Identity) -> tokio_rustls::TlsConnector {
@@ -192,7 +195,7 @@ async fn a_bridges_16_uploads_at_once_all_get_in_and_the_33rd_connection_is_told
     assert!(head.contains("retry-after: 5\r\n"), "{head}");
     assert!(head.contains("connection: close"), "{head}");
     assert!(body.contains("\"code\":\"too_many_connections\""), "{body}");
-    // an upload refused this way is told so after its body is read, not reset part way
+    // an upload refused this way (a small one, sent whole before reading) still reads its answer, not a reset
     drop(extra);
     let (status, _) = upload(&srv, 20).await.unwrap();
     assert!(status.starts_with("http/1.1 503"), "{status}");
@@ -238,4 +241,172 @@ async fn before_any_token_an_address_gets_6_and_the_rest_are_told_to_wait() {
     let mut s = open_from(Ipv4Addr::LOCALHOST, srv.addr, &srv.tls).await.unwrap();
     let (status, _, _) = ask(&mut s, &ping(&srv.token), b"").await.unwrap();
     assert!(status.starts_with("http/1.1 200"), "{status}");
+}
+
+/// The head of an upload of `len` bytes that sends no hash check worth anything (it is refused before that).
+fn upload_head(srv: &Server, i: usize, len: usize, extra: &str) -> String {
+    format!(
+        "POST /api/can/logs/abcdef123456_20261108T1431{i:02}Z_1.log.xz HTTP/1.1\r\nHost: localhost\r\nAuthorization: \
+         Bearer {}\r\nUpload-Offset: 0\r\nUpload-Length: {len}\r\nUpload-Sha256: {}\r\nContent-Length: {len}\r\n{extra}\r\n",
+        srv.token,
+        "0".repeat(64)
+    )
+}
+
+/// Reads an answer's head, or the error that ended the connection first.
+async fn read_head(s: &mut Tls) -> std::io::Result<String> {
+    let mut got = Vec::new();
+    let mut b = [0u8; 4096];
+    loop {
+        if got.windows(4).any(|w| w == b"\r\n\r\n") {
+            return Ok(String::from_utf8_lossy(&got).into_owned());
+        }
+        let n = s.read(&mut b).await?;
+        if n == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        got.extend_from_slice(&b[..n]);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_16_mib_upload_is_answered_at_once_not_after_its_body() {
+    let srv = start().await;
+    let a = Ipv4Addr::new(127, 0, 0, 9);
+    let mut held = Vec::new();
+    for _ in 0..MAX_ANONYMOUS_PER_ADDRESS {
+        held.push(open_from(a, srv.addr, &srv.tls).await.unwrap());
+    }
+    let len = 16usize << 20;
+
+    // with Expect: 100-continue the answer comes before any of the body is sent
+    let mut s = open_from(a, srv.addr, &srv.tls).await.unwrap();
+    s.write_all(upload_head(&srv, 1, len, "Expect: 100-continue\r\n").as_bytes()).await.unwrap();
+    let t = Instant::now();
+    let head = tokio::time::timeout(Duration::from_secs(5), read_head(&mut s)).await.unwrap().unwrap();
+    assert!(head.starts_with("HTTP/1.1 503"), "{head}");
+    assert!(head.to_ascii_lowercase().contains("retry-after: 5\r\n"), "{head}");
+    assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+
+    // without it, a slow link (20 KB every 100 ms) reading as it sends gets the answer after the headers, at once,
+    // not after 16 MiB
+    let s = open_from(a, srv.addr, &srv.tls).await.unwrap();
+    let (mut rd, mut wr) = tokio::io::split(s);
+    wr.write_all(upload_head(&srv, 2, len, "").as_bytes()).await.unwrap();
+    let t = Instant::now();
+    let sender = tokio::spawn(async move {
+        let chunk = [1u8; 20_000];
+        let mut sent = 0usize;
+        while sent < len {
+            if wr.write_all(&chunk).await.is_err() {
+                break;
+            }
+            sent += chunk.len();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        sent
+    });
+    let mut got = Vec::new();
+    let mut b = [0u8; 4096];
+    let answer = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match rd.read(&mut b).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => got.extend_from_slice(&b[..n]),
+            }
+        }
+    })
+    .await;
+    assert!(answer.is_ok(), "the connection stayed open past the linger");
+    let text = String::from_utf8_lossy(&got);
+    assert!(text.starts_with("HTTP/1.1 503") && text.contains("too_many_connections"), "{text}");
+    assert!(t.elapsed() < LINGER + Duration::from_secs(2), "{:?}", t.elapsed());
+    // the sender is stopped soon (closed after the linger), far short of the whole piece
+    let sent = tokio::time::timeout(Duration::from_secs(10), sender).await.unwrap().unwrap();
+    assert!(sent < 4 << 20, "{sent}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn strangers_holding_refusals_cannot_keep_a_cars_refusal_unanswered() {
+    let srv = start().await;
+    let mut held = Vec::new();
+    // two addresses hold 6 connections each and then as many refused ones as they may, each trickling a body
+    for a in [Ipv4Addr::new(127, 0, 0, 20), Ipv4Addr::new(127, 0, 0, 21)] {
+        for _ in 0..MAX_ANONYMOUS_PER_ADDRESS {
+            held.push(open_from(a, srv.addr, &srv.tls).await.unwrap());
+        }
+        for _ in 0..MAX_REFUSING_PER_ADDRESS + 4 {
+            if let Ok(mut s) = open_from(a, srv.addr, &srv.tls).await {
+                let _ =
+                    s.write_all(b"POST /api/can/logs/x HTTP/1.1\r\nHost: x\r\nContent-Length: 1000000\r\n\r\nab").await;
+                held.push(s);
+            }
+        }
+    }
+    const { assert!(2 * MAX_REFUSING_PER_ADDRESS >= MAX_REFUSING) };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // the car, before its token: 6 get in, and the rest are each answered 503, never closed unanswered
+    let car = Ipv4Addr::LOCALHOST;
+    for _ in 0..MAX_ANONYMOUS_PER_ADDRESS {
+        held.push(open_from(car, srv.addr, &srv.tls).await.unwrap());
+    }
+    for _ in 0..10 {
+        let mut s = open_from(car, srv.addr, &srv.tls).await.expect("closed before the TLS handshake");
+        let (status, head, _) = ask(&mut s, &ping(&srv.token), b"").await.expect("closed unanswered");
+        assert!(status.starts_with("http/1.1 503") && head.contains("retry-after: 5"), "{status}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_anonymous_flood_never_cuts_a_cars_uploads_in_flight() {
+    let srv = start().await;
+    let mut p = open_from(Ipv4Addr::LOCALHOST, srv.addr, &srv.tls).await.unwrap();
+    let (status, _, _) = ask(&mut p, &ping(&srv.token), b"").await.unwrap();
+    assert!(status.starts_with("http/1.1 200"), "{status}");
+    // 16 uploads in flight: headers and the first 4 KB of 1 MiB each
+    let mut ups = Vec::new();
+    for i in 0..16 {
+        let mut u = open_from(Ipv4Addr::LOCALHOST, srv.addr, &srv.tls).await.unwrap();
+        u.write_all(upload_head(&srv, i, 1 << 20, "").as_bytes()).await.unwrap();
+        u.write_all(&[7u8; 4096]).await.unwrap();
+        ups.push(u);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // anonymous connections from many addresses, more than the port keeps: they close each other's, oldest first
+    let mut held = Vec::new();
+    let mut n = 0u32;
+    while held.len() < MAX_ANONYMOUS + 64 {
+        let a = Ipv4Addr::new(127, 1, (n / 200) as u8, (n % 200 + 1) as u8);
+        for _ in 0..MAX_ANONYMOUS_PER_ADDRESS {
+            if let Ok(s) = open_from(a, srv.addr, &srv.tls).await {
+                held.push(s);
+            }
+        }
+        n += 1;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut cut = 0;
+    for u in &mut ups {
+        let mut ok = true;
+        for _ in 0..64 {
+            if u.write_all(&[7u8; 4096]).await.is_err() {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            let mut b = [0u8; 1];
+            if let Ok(Ok(0) | Err(_)) = tokio::time::timeout(Duration::from_millis(300), u.read(&mut b)).await {
+                ok = false;
+            }
+        }
+        if !ok {
+            cut += 1;
+        }
+    }
+    assert_eq!(cut, 0, "{cut} of 16 uploads in flight were cut by {} anonymous connections", held.len());
+    // the first of the flood were closed to make room instead
+    let mut b = [0u8; 1];
+    let first = tokio::time::timeout(Duration::from_secs(2), held[0].read(&mut b)).await;
+    assert!(matches!(first, Ok(Ok(0) | Err(_))), "{first:?}");
 }

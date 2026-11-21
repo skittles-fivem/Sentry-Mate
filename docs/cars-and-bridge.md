@@ -94,10 +94,15 @@ second table.
   up to 16 MiB. Sentry Mate takes 32 connections from a car's address (one that showed a valid token in the last 30
   minutes) and 6 from any other, so 16 at once fits with room for keep-alive. Before the bridge's first request with
   its token (after a start, or 30 minutes without one), its address gets 6 like a stranger's: start with a ping.
-- **Over a limit**, Sentry Mate does not cut the connection: it answers `503` with the code
-  `too_many_connections` and `Retry-After: 5`. The bridge should wait that long and send fewer at once. Its log line
-  `connection closed while sending ... at 0 of N KB` came from older Sentry Mate versions, which closed connections
-  over 6 per address without an answer. Ports and limits: [commands.md](commands.md#ports-and-limits).
+- **Over a limit**, Sentry Mate answers `503` with the code `too_many_connections` and `Retry-After: 5` as soon as
+  the request's headers are in, without reading its body. The bridge should wait that long and send fewer at once.
+  With `Expect: 100-continue` on each upload the bridge gets that answer before it sends any of the piece. Without
+  it, Sentry Mate reads what keeps coming for 2 s after the answer and then closes the connection, so a large piece
+  sent before the bridge reads the answer is cut a few seconds in (`connection closed while sending ... at X of N
+  KB`, quickly, and with little sent for nothing). The same line `at 0 of N KB` came from older Sentry Mate
+  versions, which closed connections over 6 per address without an answer. Each upload stops counting against the
+  6 as soon as its token is checked, before its body arrives, so connections without a token can't cut an upload in
+  flight. Ports and limits: [commands.md](commands.md#ports-and-limits).
 - **Upload only on Wi-Fi**, in the app's **Sentry Six Manager (CAN log upload)** section, holds uploads to Sentry
   Mate too.
 - Sentry Mate accepts both log formats, so the bridge keeps writing the smaller columns format. It writes that
