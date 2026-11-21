@@ -96,14 +96,14 @@ async function mountGarage(ctx) {
   const list = noCars ? null : tracks(ctx, {
     title: 'Every car', icon: 'car', path: 'cars', params: { sort: 'custom' }, label: 'Cars and their settings', csvName: 'cars', csv: { all: true },
     note: 'In your own car order. Open a car to change its settings.',
-    side: search('', (v) => { findText = v; list.reload({ sort: 'custom', search: v || null }); }, { placeholder: 'Find a car by name, model or VIN start', ctx }),
+    side: search('', (v) => { findText = v; list.reload({ sort: 'custom', search: v || null }); }, { placeholder: 'Find a car', label: 'Find a car by name, model or VIN start', ctx }),
     rowHref: (c) => state.buildUrl('settings-cars', { car: c.id }),
     columns: [
       { key: 'name', label: 'Car', lead: true, render: (c) => h('a', { class: 'cell-main', href: state.buildUrl('settings-cars', { car: c.id }) }, c.name), csv: (c) => c.name },
       { key: 'model', label: 'Model and year', render: (c) => carLine(c) || DASH, csv: (c) => carLine(c) },
       { key: 'vin', label: 'VIN start', render: (c) => (c.vin_prefix ? code(c.vin_prefix) : DASH), csv: (c) => c.vin_prefix || '' },
       { key: 'tz', label: 'Time zone', render: (c) => c.time_zone || DASH, csv: (c) => c.time_zone || '' },
-      { key: 'now', label: 'Now', render: (c) => sig(c.now?.state === 'unknown' || !c.now?.state ? 'off' : c.now?.stale ? 'warn' : 'ok', c.now?.stale ? `Last known: ${stateWord(c.now?.state).toLowerCase()}` : stateWord(c.now?.state)), csv: (c) => c.now?.state || 'unknown' },
+      { key: 'now', label: 'Now', render: (c) => sig(c.now?.state === 'unknown' || !c.now?.state ? 'off' : c.now?.stale ? 'warn' : 'ok', c.now?.stale && c.now?.state && c.now.state !== 'unknown' ? `Last known: ${stateWord(c.now.state).toLowerCase()}` : stateWord(c.now?.state)), csv: (c) => c.now?.state || 'unknown' },
       { key: 'last', label: 'Last upload', num: true, render: (c) => (c.now?.received_ms ? agoEl(c.now.received_ms) : h('span', { class: 'faint' }, 'Never')), csv: (c) => (c.now?.received_ms ? new Date(c.now.received_ms).toISOString() : '') },
     ],
     empty: () => emptyState({ icon: 'search', title: findText ? 'No car matches' : 'No car yet', text: findText ? 'Search looks at the name, the model and the VIN start. Clear it to see every car.' : 'A car appears when its CAN Bridge uploads its first log.' }),

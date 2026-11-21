@@ -31,7 +31,6 @@
 .sc-light--bad .sc-light-led { background: var(--red); box-shadow: 0 0 0.625rem var(--red); }
 
 .sc-secret { display: grid; gap: 0.5rem; }
-.dlg--wide { width: min(46rem, calc(100vw - 2rem)); }
 
 .sc-clock { display: grid; justify-items: center; gap: 0.25rem; margin-bottom: 1rem; padding: 1rem; border-radius: var(--r); background: var(--radio-face);
   box-shadow: inset 0 0 0 1px rgba(61, 240, 255, 0.5), inset 0 0 1.25rem rgba(61, 240, 255, 0.16); text-align: center; }
