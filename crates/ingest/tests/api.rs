@@ -109,6 +109,28 @@ async fn plain_http_wrong_tokens_and_unknown_paths() {
     assert_eq!((s, b["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
 }
 
+/// Stored chunks don't count against the token's requests: a bridge with a backlog of more files than that (a few
+/// days away from home) goes on at full speed instead of a file a second after a fast start. Everything else still
+/// counts.
+#[tokio::test]
+async fn stored_chunks_do_not_use_up_the_token_s_requests() {
+    let t = setup().await;
+    let n = ingest::api::MAX_REQUESTS_PER_TOKEN + 50;
+    let bytes: Vec<u8> = (0..n + 10).map(|i| (i % 251) as u8).collect();
+    for off in 0..n {
+        let (s, b) = put(&t, LOG, &bytes, off, &bytes[off..off + 1]).await;
+        assert_eq!((s, b["received"].as_u64()), (StatusCode::OK, Some(off as u64 + 1)), "chunk {off}: {b}");
+    }
+    // a refused chunk counts, and so do pings
+    let (s, _) = put(&t, LOG, &bytes, 0, &bytes[..1]).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let mut last = StatusCode::OK;
+    for _ in 0..ingest::api::MAX_REQUESTS_PER_TOKEN {
+        last = call(&t, "GET", "/api/can/logs/ping", Some(&t.token), &[], vec![], true).await.0;
+    }
+    assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
+}
+
 #[tokio::test]
 async fn a_log_uploads_in_chunks_and_resumes() {
     let t = setup().await;

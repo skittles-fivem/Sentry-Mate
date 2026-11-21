@@ -191,6 +191,18 @@ fn with_clear_cookie(mut res: Response) -> Response {
     res
 }
 
+/// The routes that take an upload's chunks (`PATCH`). A chunk that was stored gives back the request it took from
+/// its address's rate: an upload sends one request per chunk (about 1 MB), so on a fast network a big file would
+/// otherwise empty the bucket after its first few hundred MB and go on at the rate's pace, a chunk at a time, every
+/// refused chunk sent again in full. What a chunk costs the server is bounded already (one at a time per upload, and
+/// only an admin's upload or a restore whose recovery key was checked gets one stored); a refused chunk, or any other
+/// request, still counts.
+pub const UPLOAD_CHUNK_ROUTES: [&str; 2] = ["/api/v1/imports/{import}", "/api/v1/setup/restore"];
+
+fn stored_chunk(method: &Method, pattern: &str, res: &Response) -> bool {
+    method == Method::PATCH && res.status().is_success() && UPLOAD_CHUNK_ROUTES.contains(&pattern)
+}
+
 /// The guard every `/api/v1` route runs behind (see the module's notes).
 pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Response {
     let (mut parts, body) = req.into_parts();
@@ -246,6 +258,9 @@ pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Res
         } else {
             ApiError::not_signed_in().into_response()
         };
+        if stored_chunk(&method, &pattern, &res) {
+            app.rate.give_back(conn.ip);
+        }
         return if stale_cookie { with_clear_cookie(res) } else { res };
     };
     if v.two_step_setup_only() && !matches!(rule, Access::Public | Access::OwnAccount) {
@@ -295,6 +310,9 @@ pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Res
     }
     parts.extensions.insert(v.clone());
     let res = next.run(Request::from_parts(parts, body)).await;
+    if stored_chunk(&method, &pattern, &res) {
+        app.rate.give_back(conn.ip);
+    }
     if is_change(&method) && res.status().is_success() && !v.audited() {
         v.mark_audited();
         let summary = format!("{method} {route}");
@@ -392,6 +410,15 @@ impl RateLimit {
         }
         *e = (tokens - 1.0, now);
         Ok(())
+    }
+
+    /// Gives back the request [`RateLimit::check`] took (for a request that should not count, see
+    /// [`UPLOAD_CHUNK_ROUTES`]); never more than a full bucket.
+    pub fn give_back(&self, ip: IpAddr) {
+        let mut b = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = b.get_mut(&Self::key(ip)) {
+            e.0 = (e.0 + 1.0).min(self.burst);
+        }
     }
 }
 

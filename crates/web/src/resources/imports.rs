@@ -55,8 +55,13 @@ pub fn routes() -> Router<AppState> {
 pub struct Imports {
     state: Mutex<Jobs>,
     /// One chunk of an upload at a time, per import: held from the offset check to the job's save, so a chunk sent
-    /// again while the first try is still being stored gets `409 wrong_offset`, never a half-written job.
-    chunks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// again while the first try is still being stored gets `409 wrong_offset`, never a half-written job. It holds
+    /// the upload's file, opened to add to it once and kept open between chunks: opening it walks every record
+    /// already there, so opening it per chunk made each chunk cost more than the one before (an upload that started
+    /// fast got slower and slower as the file grew).
+    chunks: Mutex<HashMap<String, Arc<Mutex<Option<vault::Records>>>>>,
+    /// Times an upload's file was opened to add to it (tests: once per upload, not once per chunk).
+    upload_opens: AtomicU64,
 }
 
 #[derive(Default)]
@@ -82,14 +87,20 @@ impl Imports {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The lock of one import's chunks (a discarded import's goes with it).
-    fn chunk_lock(&self, id: &str) -> Arc<Mutex<()>> {
+    /// The lock of one import's chunks, with its file once opened (a discarded import's goes with it).
+    fn chunk_lock(&self, id: &str) -> Arc<Mutex<Option<vault::Records>>> {
         let mut m = self.chunks.lock().unwrap_or_else(|e| e.into_inner());
         m.entry(id.to_string()).or_default().clone()
     }
 
     fn forget_chunks(&self, id: &str) {
         self.chunks.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
+
+    /// Times an upload's file has been opened to add to it since the server started (once per upload, again only
+    /// after a restart or a failed write).
+    pub fn upload_opens(&self) -> u64 {
+        self.upload_opens.load(Ordering::Relaxed)
     }
 }
 
@@ -399,7 +410,7 @@ async fn chunk(
     }
     let (done, out) = with_jobs(&app, move |app, all| {
         let one = all.chunk_lock(&id);
-        let _held = one.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = one.lock().unwrap_or_else(|e| e.into_inner());
         let j = job(all, &id)?;
         if j.status != "uploading" {
             return Err(ApiError::conflict(
@@ -427,12 +438,19 @@ async fn chunk(
         if offset + bytes.len() as u64 > j.bytes_total {
             return Err(ApiError::invalid("body", "More bytes than the upload's length."));
         }
-        let dir = folder(app, &j.id);
-        std::fs::create_dir_all(&dir).map_err(|e| ApiError::server(format!("the import's folder: {e}")))?;
-        let mut rec = app
-            .vault
-            .records(&dir.join("backup"), &label(&j.id, "backup"))
-            .map_err(|e| ApiError::server(format!("opening the upload: {e}")))?;
+        let rec = match &mut *held {
+            Some(rec) => rec,
+            slot => {
+                let dir = folder(app, &j.id);
+                std::fs::create_dir_all(&dir).map_err(|e| ApiError::server(format!("the import's folder: {e}")))?;
+                all.upload_opens.fetch_add(1, Ordering::Relaxed);
+                let rec = app
+                    .vault
+                    .records(&dir.join("backup"), &label(&j.id, "backup"))
+                    .map_err(|e| ApiError::server(format!("opening the upload: {e}")))?;
+                slot.insert(rec)
+            }
+        };
         if rec.plain_len() != j.uploaded_bytes {
             // what is on disk is what counts (a write the job's record missed)
             let mut j = j;
@@ -444,7 +462,11 @@ async fn chunk(
                 .with("offset", at)
                 .header(http::HeaderName::from_static("upload-offset"), &at.to_string()));
         }
-        rec.append(&bytes).map_err(|e| ApiError::server(format!("storing the chunk: {e}")))?;
+        if let Err(e) = rec.append(&bytes) {
+            // opened again for the next chunk, which cuts off whatever this write left
+            *held = None;
+            return Err(ApiError::server(format!("storing the chunk: {e}")));
+        }
         let mut j = j;
         j.uploaded_bytes = rec.plain_len();
         j.bytes_read = j.uploaded_bytes;
@@ -453,6 +475,8 @@ async fn chunk(
             j.status = "checking".into();
             j.pass = 1;
             j.bytes_read = 0;
+            // the check reads the file on its own; no more chunks come
+            *held = None;
         }
         save(app, &j)?;
         all.lock().jobs.insert(j.id.clone(), j.clone());
@@ -573,13 +597,14 @@ async fn discard(State(app): State<AppState>, Admin(v): Admin, Path(id): Path<St
     let (name, status) = with_jobs(&app, move |app, all| {
         // a chunk being stored finishes first (it would put the job back)
         let one = all.chunk_lock(&id2);
-        let _held = one.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = one.lock().unwrap_or_else(|e| e.into_inner());
         let mut st = all.lock();
         let j = st.jobs.remove(&id2).ok_or_else(|| ApiError::not_found("no_such_import"))?;
         if let Some(l) = st.live.remove(&id2) {
             l.stop.store(true, Ordering::Relaxed);
         }
         drop(st);
+        *held = None;
         all.forget_chunks(&j.id);
         let _ = std::fs::remove_dir_all(folder(app, &j.id));
         Ok((j.name, j.status))
