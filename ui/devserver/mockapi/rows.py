@@ -352,6 +352,8 @@ def timeline_row(app, h, s, now):
         "soc_delta_pct": 0.0, "range_end_km": None, "range_delta_km": None, "energy_delta_kwh": None,
         "outside_avg_c": None, "ref": {"update": s.id}, "version": s.version, "version_source": s.version_source,
     })
+    if s.source == "can" and s.detected_by == "fingerprint":  # found from the modules' firmware fingerprints
+        base.update({"detected_by": "fingerprint", "changed_modules": list(s.changed_modules)})
     return base
 
 

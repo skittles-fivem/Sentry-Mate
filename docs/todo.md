@@ -20,15 +20,22 @@ the [README](../README.md).
 
 ## Next
 
-1. Check the timeline by hand against real drives and charges.
+1. **Car firmware panel and update marker in each design:** the "Car firmware" panel (each module's fingerprints and
+   when they were first seen, from `/cars/{car}/firmware`), and the "Tesla update installed" marker on the timeline
+   and the Software page with the changed modules and a box to type the version (the server side is done).
 2. Vehicle info on each design's car page (the server's `vehicle` facts with their sources, disagreements and unknown
    codes), and check the gateway configuration (`0x7FF`) and the LFP brick count on a real log (until then the brick count is not read for the chemistry).
+2. Check the timeline by hand against real drives and charges.
 3. Every page in all five designs, checked item by item against TeslaMate, on desktop and phone.
 4. A live connection to TeslaMate's database for the import.
 5. First release: the docs, a licence and the final name.
 
-Open questions: two battery % signals disagree (0x33A and 0x292) and need checking against the car's screen. A
-firmware-version signal for software updates is still to be found.
+Open questions: two battery % signals disagree (0x33A and 0x292) and need checking against the car's screen.
+
+Answered: Tesla's version number (2025.x) is not on CAN, but the modules' firmware fingerprints are (CRCs and git
+hashes in 0x300, 0x301, 0x335 and 0x656 on the vehicle bus): the server decodes them and finds the updates from them
+(done, server side; the version is what the owner types, and names later updates to the same fingerprints by itself).
+Still to check on the owner's car: which fields change at a real update.
 
 ## Not built yet
 

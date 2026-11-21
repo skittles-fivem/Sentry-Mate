@@ -83,7 +83,7 @@ def featured_specs():
                 "pack_kwh_code": ("78", "can"), "wheel": ("19 in Gemini", "can"), "paint": ("Stealth Grey", "can"),
                 "roof": ("Glass", "can"), "spoiler": ("None", "can"), "right_hand_drive": (False, "can"),
                 "map_region": ("North America", "can"), "supercharging_access": ("Paid", "can")},
-        updates=[(-286, "2026.2.6", "owner", "build_change"), (-49, "2026.32.5", "build_match", "build_change")],
+        updates=[(-286, "2026.2.6", "owner", "fingerprint"), (-49, "2026.32.5", "build_match", "fingerprint")],
         first_version=("2025.26.7", "owner"),
         special={"road_trip": (-137, -133), "holiday": (-238, -230)},
         gaps=[  # (days before now, local hour, minutes, reason, mode)
@@ -108,7 +108,7 @@ def featured_specs():
                 "pack_kwh_code": ("60", "can"), "wheel": ("18 in Aero", "can"), "paint": ("Pearl White", "owner"),
                 "roof": ("Glass", "can"), "spoiler": ("None", "can"), "right_hand_drive": (False, "can"),
                 "map_region": ("North America", "can"), "supercharging_access": ("Paid", "can")},
-        updates=[(-341, "2025.44.25", "owner", "build_change"), (-17, None, None, "build_change")],
+        updates=[(-341, "2025.44.25", "owner", "fingerprint"), (-17, None, None, "fingerprint")],
         first_version=("2025.32.6", "owner"),
         special={"road_trip": (-95, -90), "leak_start": -21},
         gaps=[
@@ -133,7 +133,7 @@ def featured_specs():
                 "map_region": ("North America", "teslamate"), "supercharging_access": ("Free", "owner")},
         updates=[(-860, "2024.20.9", "teslamate", "teslamate"), (-800, "2024.32.7", "teslamate", "teslamate"),
                  (-625, "2025.8.3", "teslamate", "teslamate"), (-511, "2025.20.6", "teslamate", "teslamate"),
-                 (-308, "2025.45.8", "build_match", "build_change")],
+                 (-308, "2025.45.8", "build_match", "fingerprint")],
         first_version=("2024.14.11", "teslamate"),
         special={"can_from": -398, "teslamate_until": -393, "silent_from_h": 55.0},
         gaps=[
