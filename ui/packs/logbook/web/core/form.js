@@ -53,12 +53,14 @@ export function setFieldError(fieldEl, text) {
 }
 
 /**
- * Wire a form: form({ fields: [field elements], submitLabel, onsubmit(values, formEl) -> Promise, cover }).
- * values are the controls' values by name (numbers for type number, booleans for checkboxes). The promise
+ * Wire a form: form({ fields: [field elements], submitLabel, check(values) -> Promise<bool>, onsubmit(values,
+ * formEl) -> Promise, cover }). check (optional) runs first, with the button disabled but keeping its label (it
+ * may ask the person something, as the weak-password pop-up does); false stops there. Then the button reads
+ * busyLabel while onsubmit sends. Either may reject; values are the controls' values by name (numbers for type number, booleans for checkboxes). The promise
  * may reject with an ApiError: its fields go under their fields (a path that names no field goes to the
  * top line), other errors to the top line. Returns the <form>; el.reset() clears the errors.
  */
-export function form({ fields = [], submitLabel = 'Save', onsubmit, extra = null, cover = null, cls = null, busyLabel = 'Saving…' } = {}) {
+export function form({ fields = [], submitLabel = 'Save', check = null, onsubmit, extra = null, cover = null, cls = null, busyLabel = 'Saving…' } = {}) {
   const top = h('p', { class: 'form-error', role: 'alert', hidden: true });
   const submit = h('button', { type: 'submit', class: 'button' }, submitLabel);
   const el = h('form', { class: ['form', cls], cover, novalidate: true }, top, fields, extra, h('div', { class: 'form-actions' }, submit));
@@ -77,8 +79,10 @@ export function form({ fields = [], submitLabel = 'Save', onsubmit, extra = null
     }
     submit.disabled = true;
     const label = submit.textContent;
-    submit.textContent = busyLabel;
     try {
+      // nothing is sent while check runs (a pop-up may be open over the form), so the label stays
+      if (check && !(await check(values, el))) return;
+      submit.textContent = busyLabel;
       await onsubmit(values, el);
     } catch (err) {
       const map = byName();

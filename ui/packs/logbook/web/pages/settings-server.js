@@ -436,14 +436,16 @@ export async function mount(ctx) {
       title: isNew ? 'New account' : `Edit ${a.name}`, wide: true, actions: [],
       body: (close) => form({
         fields: [name, pass, rolePick, picker.el, two], submitLabel: isNew ? 'Make the account' : 'Save the account',
+        check: async (v) => {
+          const n = v.name.trim();
+          if (!n) throw Object.assign(new Error('Check the name.'), { fields: { name: 'Type a name.' } });
+          if (!isNew && !v.password) return true;
+          if (!v.password) throw Object.assign(new Error('Check the password.'), { fields: { password: 'Type a password.' } });
+          return passwordOk(n, v.password, pass.control);
+        },
         onsubmit: async (v) => {
           const body = { name: v.name.trim(), role, cars: picker.value(), two_step_required: twoStep };
-          if (!body.name) throw Object.assign(new Error('Check the name.'), { fields: { name: 'Type a name.' } });
-          if (isNew || v.password) {
-            if (!v.password) throw Object.assign(new Error('Check the password.'), { fields: { password: 'Type a password.' } });
-            if (!(await passwordOk(body.name, v.password, pass.control))) return;
-            body.password = v.password;
-          }
+          if (v.password) body.password = v.password;
           try {
             if (isNew) await ctx.api.post('accounts', body);
             else await ctx.api.patch(api.apiPath`accounts/${a.id}`, { version: a.version, ...body });

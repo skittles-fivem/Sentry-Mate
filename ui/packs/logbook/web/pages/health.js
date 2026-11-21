@@ -122,7 +122,7 @@ const API_ERRORS = [
   [409, 'stale_version', 'Someone changed it first. The answer carries the current version: load it and try again.'],
   [409, 'import_running', 'Another import is not finished yet.'],
   [413, 'too_large', 'The body is over 1 MB.'],
-  [422, 'invalid', 'Well formed but against a rule (an unknown time zone, a password too short); fields names each one.'],
+  [422, 'invalid', 'Well formed but against a rule (an unknown time zone, an empty password); fields names each one.'],
   [429, 'throttled', 'Too many tries. Retry-After says how many seconds to wait.'],
   [500, 'server_error', 'Something broke on the server. Nothing was changed.'],
 ];

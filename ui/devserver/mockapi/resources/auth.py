@@ -363,6 +363,9 @@ def patch_account(req):
     if "name" in body and not isinstance(body["name"], str) or "password" in body and not isinstance(
             body["password"], str):
         raise bad_input({"name" if "name" in body else "password": "Wrong type."})
+    if body.get("password") == "":
+        # like the real server: an empty password means "keep the current one"
+        body = {k: v for k, v in body.items() if k != "password"}
     errs.update(_name_password_rules(st, body.get("name"), body.get("password"), exclude=a["id"]))
     if "role" in body and body["role"] not in ("admin", "watch"):
         errs["role"] = "Must be admin or watch."
@@ -385,6 +388,8 @@ def patch_account(req):
             a["two_step_required"] = body["two_step_required"]
         if "password" in body:
             a["password"] = body["password"]
+        if set(body) == {"version"}:
+            return account_view(a)
         a["version"] += 1
     changed = ", ".join(k for k in sorted(body) if k not in ("version", "password"))
     st.record(req.account, "account.update", f"account:{a['id']}",

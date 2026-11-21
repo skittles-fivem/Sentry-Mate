@@ -210,12 +210,15 @@ export async function mount(ctx) {
     const again = field({ label: 'Password again', name: 'again', type: 'password', attrs: { autocomplete: 'new-password', required: true } });
     const f = form({
       fields: [name, password, again], submitLabel: 'Make the account', busyLabel: 'Setting up…',
-      onsubmit: async (v) => {
+      check: async (v) => {
         const n = String(v.name || '').trim();
         if (!n) throw Object.assign(new Error('Type a name.'), { fields: { name: 'Type the name you will sign in with.' } });
         if (!v.password) throw Object.assign(new Error('Check the password.'), { fields: { password: 'Type a password.' } });
         if (v.password !== v.again) throw Object.assign(new Error('The two passwords differ.'), { fields: { again: 'This is not the same as the password above.' } });
-        if (!(await passwordOk(n, v.password, password.control))) return;
+        return passwordOk(n, v.password, password.control);
+      },
+      onsubmit: async (v) => {
+        const n = String(v.name || '').trim();
         let res;
         try {
           res = await ctx.api.post('setup/fresh', { name: n, password: v.password });

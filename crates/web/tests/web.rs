@@ -274,6 +274,24 @@ async fn roles_and_hidden_cars() {
         .await;
     assert_eq!((r.status, &r.json()["cars"]), (200, &json!(["c1", "c2"])), "{}", r.text());
     assert_eq!(watch.get("/api/v1/cars/c2/probe").await.status, 200, "the list is read afresh");
+    // an empty password keeps the current one (the account and its sign-ins stay); a huge one is refused
+    let v = r.json()["version"].clone();
+    let same = admin
+        .patch(
+            &format!("/api/v1/accounts/{id}"),
+            json!({ "version": v, "password": "", "confirm_password": ADMIN_PASSWORD }),
+        )
+        .await;
+    assert_eq!((same.status, &same.json()["version"]), (200, &v), "{}", same.text());
+    assert_eq!(watch.get("/api/v1/me").await.status, 200, "an empty password changes nothing");
+    let long = admin
+        .patch(
+            &format!("/api/v1/accounts/{id}"),
+            json!({ "version": v, "password": "x".repeat(1025), "confirm_password": ADMIN_PASSWORD }),
+        )
+        .await;
+    assert_eq!((long.status, long.json()["error"]["fields"]["password"].is_string()), (422, true), "{}", long.text());
+    assert_eq!(watch.get("/api/v1/me").await.status, 200);
     let r = admin
         .patch(
             &format!("/api/v1/accounts/{id}"),

@@ -75,6 +75,12 @@ class Accounts(ServerCase):
         up = c.json("PATCH", f"/api/v1/accounts/{new['id']}", {"version": new["version"], "cars": "all"})
         self.assertEqual((up["cars"], up["version"]), ("all", new["version"] + 1))
         c.error("PATCH", f"/api/v1/accounts/{new['id']}", 409, "stale_version", body={"version": new["version"], "cars": []})
+        # an empty password keeps the current one, as on the real server; a huge one is refused
+        same = c.json("PATCH", f"/api/v1/accounts/{new['id']}", {"version": up["version"], "password": ""})
+        self.assertEqual(same["version"], up["version"])
+        e, _ = c.error("PATCH", f"/api/v1/accounts/{new['id']}", 422, "invalid",
+                       body={"version": up["version"], "password": "x" * 1025})
+        self.assertIn("password", e["fields"])
         # the new account can sign in
         g = self.server.client()
         g.cookie = "sentry-mate=out"
