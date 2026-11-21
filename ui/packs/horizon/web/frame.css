@@ -167,7 +167,7 @@ html[data-sky="off"] .sky-stars { opacity: 0.35; }
 }
 .cart:hover { box-shadow: inset 0 0 0 1px var(--cyan), var(--glow-cyan); }
 .cart > .i { color: var(--cyan); }
-.cart-text { display: grid; gap: 0.0625rem; min-width: 0; }
+.cart-text { flex: 1 1 auto; display: grid; gap: 0.0625rem; min-width: 0; }
 .cart-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; line-height: 1.2; }
 .cart-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); line-height: 1.2; color: var(--ink-3); }
 .dial { display: flex; align-items: center; gap: 0.25rem; padding: 0.25rem; border-radius: var(--r); background: var(--glass); box-shadow: inset 0 0 0 1px var(--ring), var(--shade); }
@@ -317,6 +317,14 @@ mark { background: rgba(255, 63, 180, 0.3); color: inherit; border-radius: 0.125
   .dial { flex: 1 1 14rem; }
   .dial-btn { flex: 1 1 auto; }
   .notices, .foot { padding-left: calc(0.75rem + var(--safe-l)); padding-right: calc(0.75rem + var(--safe-r)); }
+  /* narrow: the button sits under the text, in the text's column, with the close cross at the end of that row */
+  .notice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; }
+  .notice > .notice-text { grid-column: 2 / -1; }
+  .notice > a.btn { grid-column: 2; justify-self: start; }
+  .notice > button.btn { grid-column: 3; }
+  .notice > a.btn + button.btn { grid-row: 2; }
+  .notice > .notice-text + button.btn { grid-row: 1; grid-column: 3; }
+  .notice:has(.notice-text + button.btn) > .notice-text { grid-column: 2; }
   .view { --gutter: 0.75rem; --gap: 0.75rem; }
 }
 @container app (max-width: 26rem) {
@@ -330,9 +338,6 @@ html[data-screen="bare"] .dash, html[data-screen="bare"] .tuner, html[data-scree
 html[data-screen="bare"] .notices, html[data-screen="bare"] .foot { display: none; }
 html[data-screen="bare"] .view { width: 100%; max-width: none; min-height: 100vh; min-height: 100dvh; align-content: center; justify-items: center;
   padding: calc(1.5rem + var(--safe-t)) calc(1rem + var(--safe-r)) calc(1.5rem + var(--safe-b)) calc(1rem + var(--safe-l)); }
-@container view (min-width: 62rem) {
-  .gate { justify-self: start; margin-left: max(6vw, 2.5rem); }
-}
 .gate { width: min(28rem, 100%); display: grid; gap: 1.125rem; padding: 1.75rem 1.625rem 1.375rem; background: var(--glass-2); }
 .gate--wide { width: min(46rem, 100%); }
 .gate-brand { display: flex; align-items: center; gap: 0.75rem; }

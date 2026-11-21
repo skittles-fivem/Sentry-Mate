@@ -169,7 +169,14 @@ async function mount(s, { keepScroll = false } = {}) {
     on(target, type, f, o) { const off = on(target, type, f, o); cleanups.push(off); return off; },
     every(ms, f) { const t = setInterval(() => { if (alive()) f(); }, ms); cleanups.push(() => clearInterval(t)); return t; },
     events(types, f) { return scope.events((ev) => { if (alive()) f(ev); }, { types: [].concat(types) }); },
-    ready() { if (!alive()) return; view.removeAttribute('aria-busy'); markReady(id); },
+    // ready only once the bundled fonts are in: the page is then drawn as it will stay (no swap after it)
+    ready() {
+      if (!alive()) return;
+      view.removeAttribute('aria-busy');
+      const done = () => { if (alive()) markReady(id); };
+      const fonts = document.fonts?.ready;
+      if (fonts) fonts.then(done, done); else done();
+    },
     fail(err, o = {}) { if (api.isAbort(err) || !alive()) return; console.warn(err); showError(err, o.retry === undefined ? undefined : o.retry); },
     setTitle(...parts) { docTitle(...parts, car?.name); },
     link: (page, params) => state.linkTo(page, params),

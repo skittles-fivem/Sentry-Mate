@@ -372,6 +372,10 @@ textarea.input { min-height: 6rem; resize: vertical; }
 @container view (max-width: 40rem) {
   .span-3, .span-4 { grid-column: span 12 !important; }
   .plate-title { font-size: 1.5rem; }
+  /* narrow: page tools start at the left edge like the text, never alone at the right of an empty row */
+  .plate-tools { margin-left: 0; }
+  /* a choice that wraps fills each row, so no row ends in a ragged gap */
+  .seg-btn { flex: 1 1 auto; }
 }
 
 /* ------------------------------------------------------------------ states */
