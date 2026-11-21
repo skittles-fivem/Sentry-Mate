@@ -57,7 +57,8 @@ pages/<id>.js  one module per page id, plus sign-in and setup; pages/<id>.css wh
 | `map.js` | MapLibre in a flat grey style: `createMap` / `safeMap(el, ctx, opts)` with `line`, `points`, `circle`, `marker`, `fit`, `frame`. |
 | `strip.js` | `stateStrip(ctx, items, from, to, tz)`: the state strip, one character per cell. |
 | `filterline.js` | `filterLine({ keys, value, onApply })`: 'filter> from:2026-10 min:10km place:home'; `parseFilter`, `dateSpan`, `numberOf`. |
-| `placeholder.js` | A page a later batch builds: the header line and what it will show. |
+| `kvedit.js` | Settings as `key = value` lines: `editLines(specs)`, `editGroup({ save })` (lines saved together), `saveError`. A value is text until focused; Enter saves, Esc undoes, a choice is a row of keys. |
+| `secret.js` | Things shown once: `copyBtn`, `codeOut`, `downloadText`, `downloadKey`, `askPassword(ctx, ...)` (the password again before a dangerous action), `showOnce`. |
 
 ## A page module
 

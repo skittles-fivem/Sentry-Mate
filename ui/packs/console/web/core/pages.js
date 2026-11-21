@@ -8,7 +8,7 @@
 //   period   the default period when the address and the tab have none; null: the page has no period
 //   parent   the list a detail page belongs to
 //   go       the second key of a "g <key>" shortcut
-//   desc     one line in the command list and on pages not built yet
+//   desc     one line in the command list
 //   words    more words the command list matches
 
 export const PAGES = Object.freeze([

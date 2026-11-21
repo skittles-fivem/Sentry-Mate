@@ -1,5 +1,433 @@
-// settings-cars: built in a later batch; for now its header line and what it will show.
-import { placeholder } from '../core/placeholder.js';
+// settings/cars and settings/cars/{car}: per-car keys as 'key = value' lines, and how each car's CAN Bridge
+// is tied to it.
+// Without a car: every car the account sees, upload tokens for a car not here yet, keys waiting for a car,
+// and how a car appears. With a car: name and what the car reports (each value with its source), upload
+// tokens and CAN Bridge keys with the outcome of the uploads, time zone, battery chemistry, reference values
+// and free Supercharging as dated ranges. Every line saves on its own (PATCH with the object's version).
+// API: GET/PATCH cars/{car}, cars/{car}/settings; cars/{car}/upload-tokens, upload-tokens, can-keys (admin).
+
+import * as state from '../shared/state.js';
+import { h, replace } from '../shared/dom.js';
+import { invalidate } from '../shared/api.js';
+import { isValidZone } from '../shared/time.js';
+import { convert, toMetric, unitLabel, format } from '../shared/units.js';
+import { head, paint, section, note, link, btn, kv } from '../core/ui.js';
+import { table } from '../core/table.js';
+import { editLines, saveError } from '../core/kvedit.js';
+import { empty } from '../core/states.js';
+import { tag, stateWord, dateTime, date, time, ago, DASH } from '../core/fmt.js';
+import { toast } from '../core/toast.js';
+import { confirmDialog } from '../core/dialog.js';
+import { copyBtn, showOnce } from '../core/secret.js';
+import { openCarSwitcher } from '../core/carswitch.js';
 
 export const id = 'settings-cars';
-export const mount = placeholder();
+export const title = (ctx) => (ctx.car ? `Settings: ${ctx.car.name || 'car'}` : 'Settings: cars');
+
+const enc = encodeURIComponent;
+const SOURCE = { can: ['can', 'accent'], vin: ['vin', 'muted'], owner: ['typed', 'warn'], teslamate: ['imported', 'muted'], tesla_api: ['tesla api', 'muted'] };
+const CHEM = [['auto', 'auto'], ['lfp', 'lfp'], ['nca_nmc', 'nca/nmc']];
+const CHEM_WORDS = { lfp: 'LFP (iron phosphate)', nca_nmc: 'NCA / NMC (nickel)' };
+const CONFIG = [['trim', 'trim'], ['drivetrain', 'drivetrain'], ['performance_package', 'performance'], ['pack_kwh_code', 'pack code'], ['wheel', 'wheels'],
+  ['paint', 'paint'], ['roof', 'roof'], ['spoiler', 'spoiler'], ['right_hand_drive', 'right-hand drive'], ['map_region', 'map region'], ['supercharging_access', 'supercharging']];
+const yesNo = (v) => (v === true ? 'yes' : v === false ? 'no' : String(v));
+const srcTag = (s) => (SOURCE[s] ? tag(SOURCE[s][0], SOURCE[s][1]) : null);
+const meta = (c) => [c.model, c.year].filter(Boolean).join(' ');
+const errMsg = (e) => saveError(e);
+
+function howCarsAppear(admin) {
+  return h('ol', { class: 'howto' }, [
+    'Install the CAN Bridge app on the Screenmate One in the car (or another logger, such as a Raspberry Pi).',
+    admin ? 'Make an upload token here and type it into the app. It is shown once.' : 'Type an upload token into the app. An admin makes one on this page.',
+    'Wait for the first log: the car appears by itself, with its model and year from the VIN prefix. Name it and set its time zone.',
+    'A second logger in the same car brings a new key. It waits under keys waiting until it is tied to the car.',
+  ].map((t, i) => h('li', null, h('span', { class: 'howto-n' }, `${i + 1}.`), h('span', null, t))));
+}
+
+/** The token, once: the three fields of the CAN Bridge app's "Second Sentry Six Manager" section. */
+function showToken(t, heading, after) {
+  const app = t.app || { address: null, token: t.secret, certificate_sha256: null };
+  const line = (k, v, why) => h('div', { class: 'hc' },
+    h('p', null, h('span', { class: 'muted' }, `${k}: `), v ? h('span', { class: 'break' }, v) : h('span', { class: 'muted' }, 'not known to this server')),
+    v ? h('div', { class: 'acts' }, copyBtn(v, `copy ${k}`)) : null, h('p', { class: 'fld-hint' }, why));
+  return showOnce({
+    title: heading, okLabel: 'I have copied them',
+    body: h('div', { class: 'hc' },
+      h('p', null, 'In the CAN Bridge app open ', h('b', null, 'Second Sentry Six Manager'), ' and fill in these three fields. ', tag('shown once', 'warn'), ' the server keeps only a check value.'),
+      h('div', { class: 'box hc' },
+        line('address', app.address, 'Where the app sends its logs: this server\'s upload port, over HTTPS.'),
+        line('token', app.token || t.secret, 'Lets the app upload. Keep it like a password.'),
+        line('certificate sha-256', app.certificate_sha256, 'The app trusts this server by it. It stays the same across restarts, updates and moves.')),
+      note(after)),
+  });
+}
+
+const tokenState = (t) => (t.revoked ? tag('revoked', 'muted') : t.last_upload_ms ? tag('in use', 'ok') : tag('not used yet', 'warn'));
+
+export async function mount(ctx) { return ctx.car ? mountCar(ctx) : mountIndex(ctx); }
+
+/* ---------------------------------------------------------------- settings/cars */
+async function mountIndex(ctx) {
+  const admin = ctx.admin;
+  const [status, waiting, fresh] = await Promise.all([
+    ctx.api.get('setup/status').catch(() => null),
+    admin ? ctx.api.get('can-keys', { assigned: 'false', limit: 100 }).catch(() => null) : null,
+    admin ? ctx.api.get('upload-tokens', { limit: 100 }).catch(() => null) : null,
+  ]);
+  if (!ctx.alive()) return;
+  const noCars = status?.cars === 0;
+  const tz = ctx.tz;
+  const cars = noCars ? null : table(ctx, {
+    title: 'cars', path: 'cars', params: { sort: 'custom' }, csvName: 'cars', label: 'Cars and their settings',
+    rowHref: (c) => state.buildUrl('settings-cars', { car: c.id }),
+    columns: [
+      { key: 'name', label: 'car', ph: 'main', render: (c) => link(state.buildUrl('settings-cars', { car: c.id }), c.name || c.id) },
+      { key: 'model', label: 'model', ph: 'sub', render: (c) => meta(c) || null },
+      { key: 'vin_prefix', label: 'vin prefix', render: (c) => c.vin_prefix || null },
+      { key: 'time_zone', label: 'time zone', ph: 'sub', render: (c) => c.time_zone || null },
+      { key: 'state', label: 'now', ph: 'num', render: (c) => stateWord(c.now?.state, { stale: c.now?.stale }) },
+      { key: 'last', label: 'last upload', grow: true, render: (c) => (c.now?.received_ms ? ago(c.now.received_ms) : 'never') },
+    ],
+    empty: () => empty('no car matches'),
+  });
+  const tokens = admin ? newCarTokens(ctx, fresh?.items || [], noCars) : null;
+  const keys = admin ? waitingTable(ctx, waiting?.items || [], null, () => ctx.reload(), tz) : null;
+  paint(ctx, head(ctx, { title: 'Settings: cars' }),
+    h('p', { class: 'note', cover: 'web.settings.car.autosave' }, admin ? 'Open a car to change its keys: each line saves with Enter, Esc undoes.' : 'Car settings are changed by an admin; you can read them here.'),
+    noCars ? section({ title: 'no cars yet', cover: 'web.settings.car.empty-state' }, empty('no cars yet', 'Sentry Mate needs no Tesla account: a car appears when its CAN Bridge uploads its first log.'), howCarsAppear(admin)) : null,
+    cars?.el, tokens?.el, keys?.el,
+    noCars ? null : section({ title: 'how a car appears', cover: 'web.settings.car.empty-state' }, howCarsAppear(admin)));
+  await Promise.all([cars?.ready, tokens?.ready, keys?.ready].filter(Boolean));
+  if (ctx.alive()) ctx.ready();
+}
+
+function newCarTokens(ctx, rows, noCars) {
+  let list = rows;
+  const t = table(ctx, {
+    title: 'tokens for a new car', id: 'tokens', rows: list, csv: false, label: 'Upload tokens for a car that has not uploaded yet',
+    note: noCars ? 'Make a token and type it into the CAN Bridge app: the first log sent with it makes the car here.' : 'For a car not here yet. For a car already here, make the token on its own page so the logs go to that car.',
+    side: btn('make token', () => make(), { kind: 'primary' }),
+    sort: { key: 'created', dir: 'desc' },
+    columns: [
+      { key: 'id', label: 'token', ph: 'main' },
+      { key: 'created', label: 'made', ph: 'sub', value: (x) => x.created_ms, sort: true, render: (x) => dateTime(x.created_ms, ctx.tz) },
+      { key: 'state', label: 'state', ph: 'num', grow: true, render: tokenState },
+      { key: 'act', label: '', render: (x) => (x.revoked ? false : btn('revoke', () => revoke(x), { kind: 'danger' })), ph: 'num' },
+    ],
+    empty: () => empty('no token waits for a new car', 'Press make token when a new car joins.'),
+  });
+  async function reload(fallback) { list = (await ctx.api.get('upload-tokens', { limit: 100 }).catch(() => null))?.items || fallback; if (ctx.alive()) t.setRows(list); }
+  async function make() {
+    let tok;
+    try { tok = await ctx.api.post('upload-tokens', {}); } catch (e) { toast(`Could not make a token: ${errMsg(e)}`, { kind: 'error' }); return; }
+    await showToken(tok, 'upload token for a new car', 'The first log sent with it makes the car here, named after its model until you name it. The token then moves to that car\'s page.');
+    await reload([tok, ...list]);
+  }
+  async function revoke(x) {
+    if (!(await confirmDialog(`Revoke token ${x.id}? A logger that has it can no longer bring a car in with it.`, { title: 'revoke the token?', ok: 'revoke', danger: true }))) return;
+    try { await ctx.api.del(`upload-tokens/${enc(x.id)}`); toast(`Token ${x.id} revoked.`); await reload(list); } catch (e) { toast(`Could not revoke: ${errMsg(e)}`, { kind: 'error' }); }
+  }
+  return t;
+}
+
+function waitingTable(ctx, rows, car, after, tz) {
+  const assign = async (k, preferred) => {
+    try {
+      await ctx.api.patch(`can-keys/${enc(k.key)}`, preferred ? { car: car.id, preferred: true } : { car: car.id });
+      toast(`Key ${k.key} is tied to ${car.name}${preferred ? ' and preferred' : ''}. Its waiting logs are being read.`);
+      after();
+    } catch (e) { toast(`Could not assign the key: ${errMsg(e)}`, { kind: 'error' }); }
+  };
+  return table(ctx, {
+    title: 'keys waiting for a car', rows, csv: false, label: 'CAN Bridge keys waiting to be tied to a car',
+    note: car ? `These keys uploaded logs but are tied to no car; their logs wait, unread. Tie one to ${car.name} only if it records this car.`
+      : 'These keys uploaded logs but are tied to no car; their logs wait, unread. Open the car a key records to tie it there.',
+    sort: { key: 'first', dir: 'desc' },
+    columns: [
+      { key: 'key', label: 'key', ph: 'main' },
+      { key: 'device', label: 'device', ph: 'sub', render: (k) => k.device || 'not reported' },
+      { key: 'first', label: 'first upload', sort: true, value: (k) => k.first_seen_ms, render: (k) => dateTime(k.first_seen_ms, tz) },
+      { key: 'last', label: 'last upload', ph: 'sub', sort: true, value: (k) => k.last_upload_ms, render: (k) => (k.last_upload_ms ? ago(k.last_upload_ms) : 'never') },
+      { key: 'logs_waiting', label: 'logs', num: true, ph: 'num', render: (k) => format(k.logs_waiting ?? 0, 'count') },
+      { key: 'act', label: '', grow: true, render: (k) => (car ? h('div', { class: 'acts' }, btn(`tie to ${car.name}`, () => assign(k, false), { kind: 'primary' }), btn('tie and prefer', () => assign(k, true)))
+        : h('span', { class: 'muted' }, 'open its car to tie it')) },
+    ],
+    empty: () => empty('no keys waiting', 'Every CAN Bridge that uploaded is tied to a car.'),
+  });
+}
+
+/* ---------------------------------------------------------------- settings/cars/{car} */
+async function mountCar(ctx) {
+  const admin = ctx.admin;
+  const ro = !admin;
+  const cid = ctx.car.id;
+  const S = {};
+  async function load() {
+    const [car, settings, tokens, keys, waiting, health, battery, cars] = await Promise.all([
+      ctx.api.get(`cars/${enc(cid)}`),
+      ctx.api.get(`cars/${enc(cid)}/settings`),
+      admin ? ctx.api.get(`cars/${enc(cid)}/upload-tokens`, { limit: 100 }).catch(() => null) : null,
+      admin ? ctx.api.get('can-keys', { car: cid, limit: 100 }).catch(() => null) : null,
+      admin ? ctx.api.get('can-keys', { assigned: 'false', limit: 100 }).catch(() => null) : null,
+      ctx.api.get(`cars/${enc(cid)}/health`).catch(() => null),
+      ctx.api.get(`cars/${enc(cid)}/battery`).catch(() => null),
+      ctx.api.page('cars', { sort: 'custom' }, { limit: 8 }).catch(() => null),
+    ]);
+    Object.assign(S, { car, settings, tokens: tokens?.items || [], keys: keys?.items || [], waiting: waiting?.items || [], health, battery, cars: cars?.items || [], more: !!cars?.next });
+  }
+  await load();
+  if (!ctx.alive()) return;
+  const tz = () => S.car.time_zone || ctx.tz;
+
+  // saves of one object go one after the other, each with the version the one before got back
+  const queue = { car: Promise.resolve(), settings: Promise.resolve() };
+  const serial = (k, fn) => { const run = queue[k].then(fn); queue[k] = run.catch(() => {}); return run; };
+  const stale = async () => { await load().catch(() => {}); if (ctx.alive()) repaint(); return new Error('Someone else changed this first; the page shows their change now. Try again.'); };
+  const patchCar = (body) => serial('car', async () => {
+    try { S.car = await ctx.api.patch(`cars/${enc(cid)}`, { version: S.car.version, ...body }); } catch (e) { if (e.status === 409) throw await stale(); throw e; }
+    invalidate('cars');
+    Object.assign(ctx.car, { name: S.car.name, time_zone: S.car.time_zone });
+  });
+  const patchSettings = (body) => serial('settings', async () => {
+    try { S.settings = await ctx.api.patch(`cars/${enc(cid)}/settings`, { version: S.settings.version, ...body }); } catch (e) { if (e.status === 409) throw await stale(); throw e; }
+  });
+
+  const slots = { top: h('div'), car: h('div'), uploads: h('div'), tz: h('div'), battery: h('div'), refs: h('div'), free: h('div') };
+  function repaint() { paintTop(); paintCar(); paintUploads(); paintTz(); paintBattery(); paintRefs(); paintFree(); }
+
+  /* ---- where this is, and the other cars */
+  function paintTop() {
+    const c = S.car;
+    const list = S.cars.some((x) => x.id === cid) ? S.cars.map((x) => (x.id === cid ? { ...x, name: c.name } : x)) : [c, ...S.cars.slice(0, 7)];
+    replace(slots.top,
+      h('p', { class: 'trail', cover: 'web.settings.car.breadcrumb' }, link(state.buildUrl('settings-cars'), 'settings/cars'), ' / ', h('span', null, c.name || cid),
+        h('span', { class: 'muted' }, `  ${[meta(c), c.vin_prefix ? `vin ${c.vin_prefix}` : null, `times in ${tz()}`].filter(Boolean).join(' · ')}`)),
+      h('div', { class: 'carline', cover: 'web.settings.car.car-switcher', role: 'group', 'aria-label': 'Whose settings' },
+        h('span', { class: 'muted' }, 'car:'),
+        list.map((x) => h('a', { class: 'key', href: state.buildUrl('settings-cars', { car: x.id }), 'aria-pressed': String(x.id === cid), 'aria-current': x.id === cid ? 'page' : null }, x.name || x.id)),
+        S.more ? btn('find another car', () => openCarSwitcher()) : null));
+  }
+
+  /* ---- name and what the car reports */
+  function paintCar() {
+    const c = S.car, cfg = c.config || {};
+    const lines = editLines([
+      { key: 'name', id: 'name', type: 'text', value: c.name || '', readOnly: ro, attrs: { maxlength: '64' },
+        help: 'Sentry Mate never reads a name from Tesla: you name the car. Shown in every list and the tab title.',
+        parse: (t) => (t.trim() ? { value: t.trim() } : { error: 'a car needs a name, 1 to 64 characters' }),
+        save: async (v) => { await patchCar({ name: v }); paintTop(); } },
+    ]);
+    const missing = CONFIG.filter(([k]) => cfg[k]?.value == null).map(([, l]) => l);
+    replace(slots.car, section({ title: 'car', side: h('span', { class: 'muted' }, c.profile ? `can profile ${c.profile}` : '') },
+      lines.el,
+      kv([
+        ['model', [meta(c) || DASH, ' ', tag('vin', 'muted')]],
+        ['vin prefix', c.vin_prefix || DASH],
+        ...CONFIG.filter(([k]) => cfg[k]?.value != null).map(([k, l]) => [l, [yesNo(cfg[k].value), ' ', srcTag(cfg[k].source)]]),
+      ]),
+      h('p', { class: 'note' }, 'Read from the car\'s build message on its bus; model and year from the VIN prefix. Each value says where it came from: ',
+        tag('can', 'accent'), ' ', tag('vin', 'muted'), ' ', tag('typed', 'warn'), ' ', tag('imported', 'muted'), '.', missing.length ? ` Not reported: ${missing.join(', ')}.` : ''),
+      h('p', { class: 'note', cover: 'web.settings.car.empty-state' }, 'A new car appears by itself once its CAN Bridge has uploaded its first log; no Tesla account is involved. ', link(state.buildUrl('settings-cars'), 'how a car appears'), '.')));
+  }
+
+  /* ---- uploads: what happened, tokens, keys, keys waiting */
+  function outcome() {
+    const hl = S.health, c = S.car;
+    const last = hl?.last_upload_ms ?? c.now?.received_ms ?? null;
+    const trust = hl?.last_log_trust?.result || null;
+    const active = S.tokens.filter((t) => !t.revoked);
+    const pref = S.keys.find((k) => k.preferred);
+    let t, text;
+    if (!last) { t = tag('todo', 'warn'); text = active.length ? 'No log has arrived for this car yet. A token exists: check the CAN Bridge app has it and can reach this server.' : 'No log has arrived yet. Make an upload token below and type it into the CAN Bridge app.'; }
+    else if (c.now?.stale) { t = tag('quiet', 'warn'); text = `The last log arrived ${ago(last)} (${dateTime(last, tz())}). A parked car with its logger off sends nothing; a logger without network catches up later.`; }
+    else { t = tag('ok', 'ok'); text = `Uploading: the last log arrived ${ago(last)}.`; }
+    const more = [
+      trust === 'verified' ? 'Its signature matches a key tied to this car.' : trust === 'unsigned' ? 'It carried no signature: kept, marked unsigned.' : trust === 'failed' ? 'It failed its check and was not used.' : null,
+      pref ? `Preferred key: ${pref.key}${pref.device ? ` (${pref.device})` : ''}.` : null,
+      S.waiting.length ? `${S.waiting.length} key${S.waiting.length === 1 ? '' : 's'} waiting for a car below.` : null,
+      hl?.logs_waiting ? `${hl.logs_waiting} logs wait to be checked.` : null,
+    ].filter(Boolean).join(' ');
+    return h('ul', { class: 'ln-list', cover: 'faq.car-missing.outcomes', role: 'status' },
+      h('li', null, t, h('span', { class: 'ln-list-t' }, text, more ? h('span', { class: 'muted' }, more) : null, link(state.buildUrl('health', { car: cid }), 'upload status in health'))));
+  }
+  async function makeToken() {
+    let t;
+    try { t = await ctx.api.post(`cars/${enc(cid)}/upload-tokens`, {}); } catch (e) { toast(`Could not make a token: ${errMsg(e)}`, { kind: 'error' }); return; }
+    await showToken(t, `upload token for ${S.car.name}`, 'The first log sent with it ties the CAN Bridge key to this car.');
+    S.tokens = (await ctx.api.get(`cars/${enc(cid)}/upload-tokens`, { limit: 100 }).catch(() => null))?.items || [t, ...S.tokens];
+    if (ctx.alive()) paintUploads();
+  }
+  async function revokeToken(t) {
+    if (!(await confirmDialog(`Revoke token ${t.id}? Logs sent with it are refused from now on; logs already here stay.`, { title: 'revoke the token?', ok: 'revoke', danger: true }))) return;
+    try { const r = await ctx.api.del(`cars/${enc(cid)}/upload-tokens/${enc(t.id)}`); S.tokens = S.tokens.map((x) => (x.id === t.id ? { ...x, ...r } : x)); toast(`Token ${t.id} revoked.`); paintUploads(); } catch (e) { toast(`Could not revoke: ${errMsg(e)}`, { kind: 'error' }); }
+  }
+  async function keyChange(k, body, done) {
+    try { await ctx.api.patch(`can-keys/${enc(k.key)}`, body); toast(done); await load(); if (ctx.alive()) paintUploads(); } catch (e) { toast(`Could not change the key: ${errMsg(e)}`, { kind: 'error' }); }
+  }
+  let uploadTables = [];
+  function paintUploads() {
+    const z = tz();
+    if (ro) {
+      replace(slots.uploads, section({ title: 'uploads', id: 'tokens' }, outcome(), note('Upload tokens and CAN Bridge keys are shown to admins only: a token lets a logger send data for this car.')));
+      uploadTables = [];
+      return;
+    }
+    const tokens = table(ctx, {
+      title: 'upload tokens', id: 'tokens', rows: S.tokens, csv: false, label: 'Upload tokens of this car',
+      note: 'A token lets a CAN Bridge upload logs for this car. Each is shown once, when made. Revoking one refuses its uploads from then on; past logs stay.',
+      side: btn('make token', makeToken, { kind: 'primary' }),
+      sort: { key: 'created', dir: 'desc' },
+      columns: [
+        { key: 'id', label: 'token', ph: 'main' },
+        { key: 'created', label: 'made', sort: true, ph: 'sub', value: (t) => t.created_ms, render: (t) => dateTime(t.created_ms, z) },
+        { key: 'state', label: 'state', ph: 'num', render: tokenState },
+        { key: 'key', label: 'key it brought', ph: 'sub', render: (t) => t.key || h('span', { class: 'muted' }, t.revoked ? DASH : 'none yet') },
+        { key: 'last', label: 'last upload', sort: true, value: (t) => t.last_upload_ms, render: (t) => (t.last_upload_ms ? ago(t.last_upload_ms) : 'never') },
+        { key: 'act', label: '', grow: true, render: (t) => (t.revoked ? false : btn('revoke', () => revokeToken(t), { kind: 'danger' })) },
+      ],
+      empty: () => empty('no upload tokens', 'Without a token no CAN Bridge can upload for this car.'),
+    });
+    const keys = table(ctx, {
+      title: 'can bridge keys', rows: S.keys, csv: false, label: 'CAN Bridge keys tied to this car',
+      note: 'Each logger signs its logs with its own key. When two record the same time, the preferred key\'s log is used and the other is kept.',
+      sort: { key: 'last', dir: 'desc' },
+      columns: [
+        { key: 'key', label: 'key', ph: 'main' },
+        { key: 'device', label: 'device', ph: 'sub', render: (k) => k.device || 'not reported' },
+        { key: 'first', label: 'first upload', sort: true, value: (k) => k.first_seen_ms, render: (k) => dateTime(k.first_seen_ms, z) },
+        { key: 'last', label: 'last upload', sort: true, ph: 'sub', value: (k) => k.last_upload_ms, render: (k) => (k.last_upload_ms ? ago(k.last_upload_ms) : 'never') },
+        { key: 'logs_waiting', label: 'logs waiting', num: true, render: (k) => format(k.logs_waiting ?? 0, 'count') },
+        { key: 'preferred', label: 'preferred', ph: 'num', render: (k) => (k.preferred ? tag('preferred', 'ok') : btn('prefer', () => keyChange(k, { preferred: true }, `Key ${k.key} is preferred now.`))) },
+        { key: 'act', label: '', grow: true, render: (k) => btn('untie', async () => {
+          if (await confirmDialog(`Untie key ${k.key} from ${S.car.name}? Its new logs wait under keys waiting until it is tied again. Logs already read stay.`, { title: 'untie the key?', ok: 'untie', danger: true })) keyChange(k, { car: null }, `Key ${k.key} is untied.`);
+        }, { kind: 'quiet' }) },
+      ],
+      empty: () => empty('no key tied to this car', 'The first log sent with this car\'s token ties its key here.'),
+    });
+    const waiting = waitingTable(ctx, S.waiting, S.car, async () => { await load(); if (ctx.alive()) paintUploads(); }, z);
+    uploadTables = [tokens, keys, waiting];
+    replace(slots.uploads, section({ title: 'uploads', side: h('span', { class: 'muted' }, 'admins only') }, outcome()), tokens.el, keys.el, waiting.el);
+  }
+
+  /* ---- time zone */
+  const ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+  function paintTz() {
+    const z = S.car.time_zone || '';
+    const listId = `sc-zones-${cid}`;
+    const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
+    const now = ctx.api.now();
+    const lines = editLines([
+      { key: 'time_zone', id: 'time-zone', type: 'text', value: z, readOnly: ro, cover: 'docs.env.core.tz', attrs: { list: listId },
+        parse: (t) => (isValidZone(t.trim()) ? { value: t.trim() } : { error: 'not a time zone this browser knows: pick one from the list, such as Europe/Amsterdam' }),
+        help: [`Days, ISO weeks, months, statistics and prices by time of day use this zone, wherever the server runs. A change regroups the whole history at once; nothing is lost. Now there: ${time(now, z || ctx.tz)}, ${date(now, z || ctx.tz)}.`],
+        after: browserZone && browserZone !== z && !ro ? btn(`use ${browserZone}`, async () => {
+          try { await patchCar({ time_zone: browserZone }); toast(`Time zone saved: ${browserZone}.`); repaint(); } catch (e) { toast(errMsg(e), { kind: 'error' }); }
+        }) : null,
+        save: async (v) => { await patchCar({ time_zone: v }); paintTop(); } },
+    ]);
+    replace(slots.tz, section({ title: 'time zone' }, lines.el, h('datalist', { id: listId }, ZONES.map((x) => h('option', { value: x })))));
+  }
+
+  /* ---- battery chemistry */
+  function paintBattery() {
+    const bc = S.settings.battery_chemistry || { setting: 'auto' };
+    const b = S.battery;
+    const eff = bc.setting === 'auto' ? bc.detected : bc.setting;
+    const lines = editLines([
+      { key: 'battery_chemistry', type: 'choice', value: bc.setting, options: CHEM, readOnly: ro, cover: 'web.settings.car.lfp-battery',
+        help: 'LFP packs like a full charge now and then and read flat in the middle; nickel packs (NCA, NMC) last longer kept lower. Battery and charges use this for their advice. Auto follows the evidence.',
+        save: async (v) => { await patchSettings({ battery_chemistry: { setting: v } }); paintBattery(); } },
+    ]);
+    replace(slots.battery, section({ title: 'battery' }, lines.el, kv([
+      ['in use', eff ? `${CHEM_WORDS[eff]}${bc.setting === 'auto' ? ' (auto)' : ' (set by hand)'}` : 'not known yet'],
+      ['detected', bc.detected ? CHEM_WORDS[bc.detected] : 'not yet: a few charges and some driving are needed'],
+      bc.evidence ? ['evidence', bc.evidence] : null,
+      b?.brick_spread_v != null ? ['cell spread now', format(b.brick_spread_v, 'voltage', { digits: 3 })] : null,
+      b?.capacity?.full_pack_kwh != null ? ['full pack', format(b.capacity.full_pack_kwh, 'energy')] : null,
+      bc.setting !== 'auto' && bc.detected && bc.detected !== bc.setting ? ['note', `the car's data suggests ${CHEM_WORDS[bc.detected]}`, { tone: 'warn' }] : null,
+    ])));
+  }
+
+  /* ---- reference values */
+  function paintRefs() {
+    const s = S.settings;
+    const shown = (v, kind) => (v == null ? '' : String(Math.round(convert(v, kind) * 10) / 10));
+    const num = (k, label, kind, unit, lo, hi, help, required = false) => {
+      const l = kind ? Math.ceil(convert(lo, kind) * 10) / 10 : lo, u = kind ? Math.floor(convert(hi, kind) * 10) / 10 : hi;
+      return { key: k, type: 'number', value: kind ? shown(s[k], kind) : s[k], toText: (v) => (v == null ? '' : String(v)), unit, cls: 'ke--short', readOnly: ro,
+        help: `${help} ${l} to ${u} ${unit}${required ? '' : ', or empty'}.`,
+        parse: (t) => {
+          if (t.trim() === '') return required ? { error: `a number from ${l} to ${u}` } : { value: null };
+          const n = Number(t);
+          return Number.isFinite(n) && n >= l && n <= u ? { value: n } : { error: `a number from ${l} to ${u}${required ? '' : ', or empty'}` };
+        },
+        save: async (v) => { await patchSettings({ [k]: v == null ? null : kind ? Math.round(toMetric(v, kind) * 10) / 10 : v }); return undefined; },
+        label };
+    };
+    const lines = editLines([
+      num('capacity_new_kwh', 'capacity when new', null, 'kWh', 10, 250, 'Empty: taken from the pack\'s first readings.'),
+      num('full_range_new_km', 'full range when new', 'distance', unitLabel('distance'), 100, 1500, 'Empty: taken from the first 30 days.'),
+      num('warranty_threshold_pct', 'warranty threshold', null, '%', 50, 95, 'The share of the capacity when new the warranty promises.', true),
+      num('efficiency_wh_per_km_override', 'consumption factor', 'efficiency', unitLabel('efficiency'), 60, 500, 'Turns range into energy on efficiency. Empty: worked out from energy and range.'),
+      { key: 'software_version_typed', type: 'text', value: s.software_version_typed || '', readOnly: ro, attrs: { placeholder: '2026.38.4' },
+        help: 'Only for a car whose bus does not send it. Marked as typed on software. Empty: what the car reports.',
+        save: (v) => patchSettings({ software_version_typed: v }) },
+    ]);
+    replace(slots.refs, section({ title: 'reference values', side: h('span', { class: 'muted' }, 'empty means worked out') }, lines.el,
+      note('Battery health compares today\'s capacity and range with these; without them it uses the earliest readings and says so.')));
+  }
+
+  /* ---- free Supercharging as dated ranges */
+  function paintFree() {
+    let ranges = (S.settings.free_supercharging || []).map((r) => ({ ...r }));
+    const access = S.car.config?.supercharging_access;
+    const box = h('div', { class: 'ke-list' });
+    const msg = h('p', { class: 'ke-msg', role: 'alert', hidden: true });
+    const say = (t) => { msg.hidden = !t; replace(msg, t || ''); };
+    const days = (a, b) => { const [y1, m1, d1] = a.split('-').map(Number), [y2, m2, d2] = b.split('-').map(Number); return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000) + 1; };
+    function problem(rows) {
+      for (const [i, r] of rows.entries()) {
+        if (!r.from_date && r.to_date) return `range ${i + 1}: give the first free day`;
+        if (r.from_date && r.to_date && r.to_date < r.from_date) return `range ${i + 1}: the last day is before the first day`;
+      }
+      const o = rows.map((r, i) => ({ ...r, i })).filter((r) => r.from_date).sort((a, b) => (a.from_date < b.from_date ? -1 : 1));
+      for (let j = 1; j < o.length; j++) if (!o[j - 1].to_date || o[j].from_date <= o[j - 1].to_date) return `ranges ${o[j - 1].i + 1} and ${o[j].i + 1} share days; a day can be in one range only`;
+      return null;
+    }
+    async function save(rows) {
+      const bad = problem(rows);
+      if (bad) { say(bad); return; }
+      say(null);
+      try {
+        await patchSettings({ free_supercharging: rows.filter((r) => r.from_date).map((r) => ({ from_date: r.from_date, to_date: r.to_date || null })) });
+        toast('Free Supercharging saved.');
+      } catch (e) { say(errMsg(e)); }
+    }
+    function rows() {
+      replace(box, ranges.length ? ranges.map((r, i) => {
+        const from = h('input', { class: 'in in--date', type: 'date', value: r.from_date || '', disabled: ro, 'aria-label': `range ${i + 1}: first day` });
+        const to = h('input', { class: 'in in--date', type: 'date', value: r.to_date || '', disabled: ro, 'aria-label': `range ${i + 1}: last day, empty for no end` });
+        const len = h('span', { class: 'muted' }, !r.from_date ? 'new range' : r.to_date ? (r.to_date < r.from_date ? 'last day before first' : `${days(r.from_date, r.to_date)} days`) : 'no end');
+        const change = () => { ranges[i] = { from_date: from.value || null, to_date: to.value || null }; save(ranges); rows(); };
+        from.addEventListener('change', change); to.addEventListener('change', change);
+        return h('div', { class: 'ke', dataset: { row: '' } }, h('span', { class: 'ke-k' }, `free[${i + 1}]`), h('span', { class: 'ke-eq' }, '='),
+          h('div', { class: 'ke-v range-line' }, from, h('span', { class: 'muted' }, '..'), to, len),
+          h('span', { class: 'ke-side' }, ro ? null : btn('remove', () => { const had = ranges[i]?.from_date; ranges = ranges.filter((_, j) => j !== i); rows(); if (had) save(ranges); }, { kind: 'quiet' })));
+      }) : empty('no free ranges', 'Every Supercharger session keeps the price it was billed or priced at.'));
+    }
+    rows();
+    replace(slots.free, section({ title: 'free supercharging', cover: 'web.settings.car.free-supercharging', side: ro ? null : btn('add a range', () => { ranges = [...ranges, { from_date: null, to_date: null }]; rows(); }) },
+      h('p', { class: 'note' }, 'Supercharger sessions that start on a free day cost nothing; sessions outside keep their own cost. Days are the car\'s days, in its time zone. ',
+        access?.value != null ? ['The car reports supercharging access: ', String(access.value), ' ', srcTag(access.source), '. That says what it may do now, not since when.'] : 'The car has not reported its supercharging access yet.'),
+      box, msg));
+  }
+
+  repaint();
+  paint(ctx, head(ctx, { title: 'Settings: car' }),
+    slots.top,
+    h('p', { class: 'note', cover: 'web.settings.car.autosave' }, ro ? 'These settings are changed by an admin; you can read them here.' : 'Each line saves on its own: Enter saves, Esc undoes. There is no save button for the page.'),
+    slots.car, slots.tz, slots.battery, slots.refs, slots.free, slots.uploads);
+  ctx.events(['fleet'], (ev) => { if (ev.data?.car === cid && ev.data?.change === 'renamed' && ev.data.name !== S.car.name) load().then(() => { if (ctx.alive()) repaint(); }).catch(() => {}); });
+  await Promise.all(uploadTables.map((t) => t.ready));
+  if (ctx.alive()) ctx.ready();
+}

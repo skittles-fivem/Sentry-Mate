@@ -45,6 +45,8 @@ function openRow() {
   if (!r) return false;
   const href = r.dataset.href || r.querySelector('a[href]')?.getAttribute('href');
   if (href) { state.navigate(href); return true; }
+  const edit = r.querySelector('[data-focus]');   // a settings line: Enter goes into its value
+  if (edit) { (edit.matches('input') ? edit : edit.querySelector('[aria-pressed="true"]') || edit.querySelector('button'))?.focus(); return true; }
   r.querySelector('button')?.click();
   return true;
 }
