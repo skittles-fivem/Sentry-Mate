@@ -28,7 +28,7 @@ const STATUS = {
   checking: ['Checking', null, 'Just added: waiting for Tesla’s first answer.'],
   ok: ['Reading', 'on', 'Tesla answers; the matched cars are read.'],
   paused: ['Paused', null, 'Nothing is asked of Tesla for this account until it is resumed.'],
-  sign_in_needed: ['Sign in again', 'warn', 'Tesla stopped taking this account’s sign-in. Its cars are not read, and nothing is asked of Tesla, until it gets a new token.'],
+  sign_in_needed: ['Sign in again', 'warn', 'Tesla stopped taking this account’s sign-in. Its cars are not read, and nothing is asked of Tesla, until you sign in at Tesla again or give it a new token.'],
   error: ['Error', 'warn', 'Tesla refuses this account for now; see the last error.'],
 };
 const MODE = {
@@ -112,6 +112,7 @@ export function askAgain(ctx, { title, text = null, yes, extra = [], run, danger
         fields: [...extra, pass, two], submitLabel: yes, busyLabel: 'Asking…', cls: danger ? 'mv-form-danger' : null,
         onsubmit: async (v) => {
           if (!v.confirm_password) throw Object.assign(new Error('Type your password.'), { fields: { confirm_password: 'Type your own password.' } });
+          if (twoShown && !String(v.code || '').trim()) throw Object.assign(new Error('Type your two-step code as well.'), { fields: { code: 'Type the 6-digit code from your authenticator app, or a recovery code.' } });
           const creds = { confirm_password: v.confirm_password };
           if (twoShown && v.code) creds.code = String(v.code).trim();
           try {
@@ -171,7 +172,25 @@ export function teslaPart(ctx) {
     }
     if (ctx.alive()) draw();
   }
-  async function again() { await load(); }
+  /**
+   * Read everything again and draw it. focusKey names the control that opened the dialog (data-tf): the
+   * redraw replaces it, so the new one gets the keyboard focus back (else the account, else the part), but
+   * only when focus was left on nothing (the dialog's opener went away with the redraw).
+   */
+  async function again(focusKey = null, fallbackId = null) {
+    await load();
+    if (!ctx.alive() || !focusKey) return;
+    const a = document.activeElement;
+    if (a && a !== document.body && document.contains(a)) return;
+    let t = slot.querySelector(`[data-tf="${CSS.escape(focusKey)}"]`);
+    if (t && !t.matches('button, select, input, textarea, a[href]')) t = t.querySelector('[role="radio"][tabindex="0"]') || t.querySelector('button');
+    if (!t && fallbackId) t = document.getElementById(fallbackId);
+    if (!t) { t = el; if (!t.hasAttribute('tabindex')) t.setAttribute('tabindex', '-1'); }
+    t.focus({ preventScroll: true });
+    if (!isInView(t)) t.scrollIntoView({ block: 'nearest' });
+  }
+  const isInView = (t) => { const r = t.getBoundingClientRect(); return r.bottom > 0 && r.top < innerHeight; };
+  const tf = (node, key) => { node.dataset.tf = key; return node; };
   const flashDone = (text) => ctx.flash(text);
 
   /* ---------------- drawing */
@@ -205,7 +224,7 @@ export function teslaPart(ctx) {
           run: (creds) => ctx.api.patch('integrations/tesla', { version: over.version, poll: v, ...creds }),
         });
         if (out) { flashDone('How often Tesla is asked was changed.'); } else pace.set(over.poll);
-        await again();
+        await again('pace');
       },
     });
     const paceRows = [
@@ -229,7 +248,7 @@ export function teslaPart(ctx) {
             : h('p', { class: 'si-quiet' }, 'None: with no account the server talks to no Tesla host. Adding one uses auth.tesla.com, owner-api.teslamotors.com and streaming.vn.teslamotors.com (Tesla’s China hosts for a China account).')),
         h('div', null,
           h('h3', { class: 'si-sub' }, 'How often', h('span', { class: 'label-note' }, `“${(PACE.find(([k]) => k === over.poll) || [0, over.poll])[1]}” now`)),
-          pace,
+          tf(pace, 'pace'),
           h('dl', { class: 'tesla-pace' }, paceRows.map(([n, s]) => h('div', { class: 'tesla-pace-row' }, h('dt', null, n), h('dd', null, s == null ? '—' : `every ${sec(s)}`)))),
           h('p', { class: 'si-quiet' }, 'A car that is asleep is never woken: only the list of cars is read. An awake car with nothing going on is left alone for 21 minutes after 10 quiet ones so it can fall asleep.'))));
   }
@@ -247,9 +266,10 @@ export function teslaPart(ctx) {
           yes: a.paused ? 'Resume' : 'Pause',
         });
         if (out) flashDone(a.paused ? `${a.label} reads its cars again.` : `${a.label} is paused.`);
-        await again();
+        await again(`pause-${a.id}`, `tesla-${a.id}`);
       },
     });
+    tf(pauseBtn, `pause-${a.id}`);
     const renameBtn = button('Rename', {
       onclick: async () => {
         const out = await askAgain(ctx, {
@@ -258,11 +278,12 @@ export function teslaPart(ctx) {
           run: (creds, v) => ctx.api.patch(api.apiPath`integrations/tesla/accounts/${a.id}`, { version: a.version, label: v.label, ...creds }),
         });
         if (out) flashDone(`Renamed to ${out.label}.`);
-        await again();
+        await again(`rename-${a.id}`, `tesla-${a.id}`);
       },
     });
+    tf(renameBtn, `rename-${a.id}`);
     const tokenBtn = button('Replace the token', {
-      kind: a.status === 'sign_in_needed' ? 'primary' : 'quiet', onclick: async () => {
+      kind: 'quiet', onclick: async () => {
         const out = await askAgain(ctx, {
           title: `A new refresh token for ${a.label}`, yes: 'Check it with Tesla and keep it',
           text: 'Paste a Tesla refresh token from another tool (for the same Tesla account). The server checks it with Tesla before anything is kept, and never shows it again.',
@@ -273,9 +294,10 @@ export function teslaPart(ctx) {
           },
         });
         if (out) flashDone(`${a.label} has a new token; its cars are read again.`);
-        await again();
+        await again(`token-${a.id}`, `tesla-${a.id}`);
       },
     });
+    tf(tokenBtn, `token-${a.id}`);
     const removeBtn = button('Remove', {
       kind: 'danger', onclick: async () => {
         const out = await askAgain(ctx, {
@@ -284,9 +306,37 @@ export function teslaPart(ctx) {
           run: (creds) => ctx.api.del(api.apiPath`integrations/tesla/accounts/${a.id}`, { headers: { 'X-Sentry-Mate-Password': creds.confirm_password, ...(creds.code ? { 'X-Sentry-Mate-Code': creds.code } : {}) } }),
         });
         if (out) flashDone(`${a.label} was removed.`);
-        await again();
+        // removed: its card is gone, so focus goes to the part
+        await again(`remove-${a.id}`, `tesla-${a.id}`);
       },
     });
+    tf(removeBtn, `remove-${a.id}`);
+    // Signing in at Tesla again: the server keeps one account per Tesla account and a sign-in always adds
+    // one, so this one is removed first (its history stays) and a sign-in is started in its region, named as
+    // it was. Its cars are matched again afterwards.
+    const reSignBtn = a.status === 'sign_in_needed' ? tf(button('Sign in at Tesla again', {
+      kind: 'primary', onclick: async () => {
+        const out = await askAgain(ctx, {
+          title: `Sign in at Tesla again for ${a.label}?`, yes: 'Remove it and start a sign-in',
+          text: h('div', { class: 'dialog-text' },
+            h('p', null, 'A Tesla sign-in always adds an account here, and the same Tesla account can be here only once. So this removes ', h('strong', null, a.label), ' first (its sealed tokens are deleted; the history already stored stays) and then starts a sign-in at Tesla for the same region.'),
+            h('p', null, 'Finish it within ten minutes, under “Add another Tesla account”, then choose its cars again under “Its cars”. To keep the account and its matches instead, use “Replace the token” with a refresh token from another tool.')),
+          run: (creds) => ctx.api.del(api.apiPath`integrations/tesla/accounts/${a.id}`, { headers: { 'X-Sentry-Mate-Password': creds.confirm_password, ...(creds.code ? { 'X-Sentry-Mate-Code': creds.code } : {}) } }),
+        });
+        if (!out) { await again(`resign-${a.id}`, `tesla-${a.id}`); return; }
+        let started = null;
+        try { started = await ctx.api.post('integrations/tesla/sign-in', { region: a.region || 'global' }); } catch (e) {
+          if (api.isAbort(e)) return;
+          ctx.flash(`${a.label} was removed, but a sign-in could not be started: ${teslaErrorText(e)} Start one under “Add a Tesla account”.`, { kind: 'error' });
+        }
+        if (started) { signIn = { ...started, region: a.region || 'global', label: a.label }; flashDone(`${a.label} was removed. Sign in at Tesla now, then paste the address its page ends on.`); }
+        await again();
+        const go = document.querySelector('#tesla-steps a[href]') || document.getElementById('tesla-steps') || el;
+        if (!go.matches('a[href]') && !go.hasAttribute('tabindex')) go.setAttribute('tabindex', '-1');
+        go.focus({ preventScroll: true });
+        (document.getElementById('tesla-steps') || go).scrollIntoView({ block: 'start' });
+      },
+    }), `resign-${a.id}`) : null;
     const loc = choice({
       label: 'Ask for the car’s position', name: `loc-${a.id}`, value: a.location, options: LOCATION,
       onchange: async (v) => {
@@ -297,9 +347,10 @@ export function teslaPart(ctx) {
           yes: 'Change it',
         });
         if (out) flashDone('When the position is asked for was changed.'); else loc.set(a.location);
-        await again();
+        await again(`loc-${a.id}`, `tesla-${a.id}`);
       },
     });
+    tf(loc, `loc-${a.id}`);
     const err = a.last_error;
     const facts = [
       ['Status', h('span', null, chip(st[0], { kind: st[1] }), h('span', { class: 'tesla-fact-note' }, st[2]))],
@@ -315,8 +366,8 @@ export function teslaPart(ctx) {
         h('div', null,
           h('p', { class: 'eyebrow' }, `Tesla account ${a.id}`),
           h('h3', { class: 'tesla-account-name' }, a.label)),
-        h('div', { class: 'tesla-actions' }, pauseBtn, renameBtn, tokenBtn, removeBtn)),
-      a.status === 'sign_in_needed' ? h('p', { class: 'tesla-alert' }, icon('warning'), 'Tesla stopped taking this account’s sign-in. Give it a new refresh token (Replace the token): its cars are read again once Tesla takes it.') : null,
+        h('div', { class: 'tesla-actions' }, reSignBtn, pauseBtn, renameBtn, tokenBtn, removeBtn)),
+      a.status === 'sign_in_needed' ? h('p', { class: 'tesla-alert' }, icon('warning'), 'Tesla stopped taking this account’s sign-in. Sign in at Tesla again (the account is added afresh and its cars are matched again), or keep it as it is with a new refresh token from another tool (Replace the token). Its cars are read again once Tesla takes it.') : null,
       a.status === 'error' ? h('p', { class: 'tesla-alert' }, icon('warning'), `Tesla refuses this account for now: ${err ? LAST_ERROR[err.code] || err.message : 'no reason given'}. The server tries again by itself; a new token helps when the sign-in is the cause.`) : null,
       h('dl', { class: 'tesla-facts' }, facts.map(([n, v]) => h('div', { class: 'tesla-fact' }, h('dt', null, n), h('dd', null, v)))),
       h('div', { class: 'tesla-loc' }, loc, h('p', { class: 'si-quiet' }, LOCATION_WHY[a.location] || '', ' Asking for the position shows a “location shared” icon in the car while it is asked.')),
@@ -328,8 +379,34 @@ export function teslaPart(ctx) {
     const list = a.cars || [];
     const chosen = new Map(list.map((c) => [c.vehicle, c.match ?? c.suggested ?? '']));
     const statusOf = (v) => status.find((s) => s.account === a.id && s.vehicle === v) || null;
-    const save = button('Save the matches', {
+    // cars here another Tesla account already reads into: the server refuses them (car_taken), so they are
+    // not offered; one car here is fed by one Tesla car at most
+    const takenBy = new Map();
+    for (const o of accounts) if (o.id !== a.id) for (const c of o.cars || []) if (c.match && c.match !== 'new' && c.match !== 'leave_out') takenBy.set(c.match, o.label);
+    const isCar = (v) => !!v && v !== 'new' && v !== 'leave_out';
+    const nameOf = (c) => c.display_name || c.vehicle;
+    const selects = new Map();
+    const warn = h('p', { class: 'tesla-alert', role: 'alert', hidden: true });
+    /** Tesla cars of this account matched to the same car here: [[car id, [Tesla car, ...]], ...]. */
+    function doubles() {
+      const by = new Map();
+      for (const c of list) { const v = chosen.get(c.vehicle); if (isCar(v)) by.set(v, [...(by.get(v) || []), c]); }
+      return [...by].filter(([, cs]) => cs.length > 1);
+    }
+    function showDoubles() {
+      const d = doubles();
+      for (const sel of selects.values()) sel.removeAttribute('aria-invalid');
+      if (!d.length) { warn.hidden = true; replace(warn); return d; }
+      for (const [, cs] of d) for (const c of cs) selects.get(c.vehicle)?.setAttribute('aria-invalid', 'true');
+      replace(warn, icon('warning'), h('span', null, d.map(([cid, cs]) => `Tesla’s ${cs.map(nameOf).join(' and ')} are both matched to ${carName(cid)} here.`).join(' '),
+        ' One car here is read from one Tesla car only: choose another car, a new car or Leave it out for all but one.'));
+      warn.hidden = false;
+      return d;
+    }
+    const save = tf(button('Save the matches', {
       kind: 'primary', onclick: async () => {
+        const d = showDoubles();
+        if (d.length) { selects.get(d[0][1][1].vehicle)?.focus(); return; }
         const items = list.map((c) => ({ vehicle: c.vehicle, match: chosen.get(c.vehicle) || null }));
         const changes = items.filter((x) => x.match !== (list.find((c) => c.vehicle === x.vehicle).match ?? null));
         if (!changes.length) { ctx.flash('Nothing changed in the matches.', { kind: 'info' }); return; }
@@ -339,40 +416,47 @@ export function teslaPart(ctx) {
           run: (creds) => ctx.api.put(api.apiPath`integrations/tesla/accounts/${a.id}/cars`, { version: a.version, items: changes, ...creds }),
         });
         if (out) flashDone('The matches were saved.');
-        await again();
+        await again(`save-${a.id}`, `tesla-${a.id}`);
       },
-    });
+    }), `save-${a.id}`);
     const picker = (c) => {
-      const sel = h('select', { class: 'field-select tesla-match', 'aria-label': `Match ${c.display_name || c.vehicle}` },
+      const mine = chosen.get(c.vehicle) || '';
+      const sel = h('select', { class: 'field-select tesla-match', 'aria-label': `Match ${nameOf(c)}` },
         h('option', { value: '' }, 'Not decided: not read'),
-        h('optgroup', { label: 'A car here' }, cars.map((x) => h('option', { value: x.id }, `${x.name}${c.suggested === x.id ? ' (suggested)' : ''}`))),
+        h('optgroup', { label: 'A car here' }, cars.map((x) => {
+          const other = takenBy.get(x.id);
+          return h('option', { value: x.id, disabled: !!other && mine !== x.id }, `${x.name}${c.suggested === x.id ? ' (suggested)' : ''}${other ? ` (read through ${other})` : ''}`);
+        })),
         h('option', { value: 'new' }, 'A new car'),
         h('option', { value: 'leave_out' }, 'Leave it out'));
-      sel.value = chosen.get(c.vehicle) || '';
-      sel.addEventListener('change', () => { chosen.set(c.vehicle, sel.value); });
-      return sel;
+      sel.value = mine;
+      sel.addEventListener('change', () => { chosen.set(c.vehicle, sel.value); showDoubles(); });
+      selects.set(c.vehicle, sel);
+      return h('span', { class: 'tesla-cell' }, h('span', { class: 'tesla-cell-label', 'aria-hidden': 'true' }, 'Is the car'), sel);
     };
+    const labelled = (label, v) => h('span', { class: 'tesla-cell' }, h('span', { class: 'tesla-cell-label', 'aria-hidden': 'true' }, label), v);
     const modeCell = (c) => {
       const m = MODE[c.mode] || [c.mode, ''];
       const s = statusOf(c.vehicle);
-      return h('span', null, h('span', { class: 'cell-main', title: m[1] }, m[0]),
+      return labelled('What the server does', h('span', null, h('span', { class: 'cell-main', title: m[1] }, m[0]),
         h('span', { class: 'cell-sub' }, c.mode === 'backoff' && s && s.next_poll_ms ? `next try ${formatTime(s.next_poll_ms, tz)} (${formatDuration(Math.max(0, s.next_poll_ms - api.now()))} from now)`
           : c.match == null && c.suggested ? `Not read yet. Suggested: ${carName(c.suggested)}, the same VIN prefix; save the matches to read it.`
-            : c.match == null ? 'Not read until you choose which car it is.' : m[1]));
+            : c.match == null ? 'Not read until you choose which car it is.' : m[1])));
     };
     const t = dataTable(ctx, {
-      rows: list, itemName: ['car', 'cars'], label: `Cars of ${a.label}`, csv: false,
+      rows: list, itemName: ['car', 'cars'], label: `Cars of ${a.label}`, csv: false, cls: 'tesla-cars-table',
       caption: 'Tesla’s cars on this account; choose which car here each one is',
       columns: [
-        { key: 'name', label: 'Tesla’s name', th: true, cell: (c) => h('span', null, h('span', { class: 'cell-main' }, c.display_name || c.vehicle), h('span', { class: 'cell-sub' }, [c.year, c.model].filter(Boolean).join(' '), ' · ', h('span', { class: 'mono' }, c.vin_prefix || '')) ) },
+        { key: 'name', label: 'Tesla’s name', th: true, cls: 'tesla-c-name', cell: (c) => h('span', null, h('span', { class: 'cell-main' }, nameOf(c)), h('span', { class: 'cell-sub' }, [c.year, c.model].filter(Boolean).join(' '), ' · ', h('span', { class: 'mono' }, c.vin_prefix || '')) ) },
         { key: 'match', label: 'Is the car', cls: 'tesla-c-match', cell: picker },
-        { key: 'state', label: 'Tesla says', cell: (c) => CAR_STATE[c.state] || c.state || '—' },
-        { key: 'mode', label: 'What the server does', cls: 'si-wrap', cell: modeCell },
+        { key: 'state', label: 'Tesla says', cls: 'tesla-c-state', cell: (c) => labelled('Tesla says', CAR_STATE[c.state] || c.state || '—') },
+        { key: 'mode', label: 'What the server does', cls: 'si-wrap tesla-c-mode', cell: modeCell },
       ],
       empty: () => empty({ title: 'Tesla lists no car on this account.' }),
     });
     t.load?.();
-    return h('div', { class: 'tesla-cars' }, h('div', { class: 'si-sub-head' }, h('h4', { class: 'tesla-cars-title' }, 'Its cars'), list.length ? save : null), t.el);
+    showDoubles();
+    return h('div', { class: 'tesla-cars' }, h('div', { class: 'si-sub-head' }, h('h4', { class: 'tesla-cars-title' }, 'Its cars'), list.length ? save : null), warn, t.el);
   }
 
   /* ---------------- adding an account */
@@ -386,6 +470,7 @@ export function teslaPart(ctx) {
           signIn = { ...r, region: region.control.value };
           draw();
           document.getElementById('tesla-steps')?.scrollIntoView({ block: 'nearest' });
+          document.querySelector('#tesla-steps a[href]')?.focus({ preventScroll: true });
         } catch (e) {
           if (!api.isAbort(e)) ctx.flash(`Could not start a sign-in: ${teslaErrorText(e)}`, { kind: 'error' });
           start.disabled = false;
@@ -409,14 +494,14 @@ export function teslaPart(ctx) {
               text: 'The server checks the address with Tesla and reads the list of cars before anything is kept.',
               extra: [
                 field({ label: 'The address Tesla’s page ended on', name: 'pasted_url', type: 'textarea', hint: 'Starts with tesla://auth/callback?code=. It did not load: that is fine.', attrs: { rows: 3, spellcheck: 'false', autocomplete: 'off', required: true } }),
-                field({ label: 'A name for this account', name: 'label', value: 'Tesla account', hint: 'Your own name for it, such as “Family account”. Never the e-mail.', attrs: { maxlength: 64 } }),
+                field({ label: 'A name for this account', name: 'label', value: signIn.label || 'Tesla account', hint: 'Your own name for it, such as “Family account”. Never the e-mail.', attrs: { maxlength: 64 } }),
               ],
               run: (creds, v) => {
                 if (!String(v.pasted_url || '').trim()) throw Object.assign(new Error('Paste the address.'), { fields: { pasted_url: 'Paste the whole address Tesla’s page ended on.' } });
                 return ctx.api.post(api.apiPath`integrations/tesla/sign-in/${signIn.sign_in}`, { pasted_url: String(v.pasted_url).trim(), label: v.label || undefined, ...creds });
               },
             });
-            if (out) { signIn = null; flashDone(`${out.label} was added. Choose which cars to read under “Its cars”.`); await again(); location.hash = `#tesla-${out.id}`; document.getElementById(`tesla-${out.id}`)?.focus(); }
+            if (out) { signIn = null; flashDone(`${out.label} was added. Choose which cars to read under “Its cars”.`); await again(); location.hash = `#tesla-${out.id}`; document.getElementById(`tesla-${out.id}`)?.focus({ preventScroll: true }); }
           },
         }))) : null;
     const tokenBtn = button('Add with a refresh token', {
@@ -434,7 +519,7 @@ export function teslaPart(ctx) {
             return ctx.api.post('integrations/tesla/accounts', { label: v.label, region: v.region, refresh_token: String(v.refresh_token).trim(), ...creds });
           },
         });
-        if (out) { flashDone(`${out.label} was added. Choose which cars to read under “Its cars”.`); await again(); }
+        if (out) { flashDone(`${out.label} was added. Choose which cars to read under “Its cars”.`); await again(); location.hash = `#tesla-${out.id}`; document.getElementById(`tesla-${out.id}`)?.focus({ preventScroll: true }); }
       },
     });
     return h('div', { class: 'tesla-add' },
@@ -480,6 +565,8 @@ export function showTeslaHash() {
   if (!/^tesla(-|$)/.test(id)) return;
   const t = document.getElementById(id) || document.getElementById('tesla');
   if (!t) return;
+  // the account (tabindex -1) or the part gets the focus, so a keyboard user carries on from there
+  if (!t.hasAttribute('tabindex')) t.setAttribute('tabindex', '-1');
+  t.focus({ preventScroll: true });
   t.scrollIntoView({ block: 'start' });
-  if (t.tabIndex >= 0) t.focus({ preventScroll: true });
 }

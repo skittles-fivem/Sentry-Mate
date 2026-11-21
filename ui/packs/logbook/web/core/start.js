@@ -42,8 +42,15 @@ async function start() {
     loadPrefs().catch(() => null),
   ]);
   const frame = mountFrame({ me, about });
-  api.on('unauthorized', () => {
+  api.on('unauthorized', ({ method } = {}) => {
     if (AUTH_SCREENS.includes(pageNow())) return;
+    // A change that asks for the password and two-step code again answers 401 wrong_code for a missing or
+    // wrong code while the session is still there: the server is asked first, and only a 401 on that read
+    // (which comes back here as a GET) goes to the sign-in screen. The dialog keeps the change meanwhile.
+    if (method && method !== 'GET' && method !== 'HEAD') {
+      api.get('me', null, { maxAgeMs: 0 }).catch(() => {});
+      return;
+    }
     location.assign(`/sign-in?next=${encodeURIComponent(here())}`);
   });
   startRouter({ frame, me, carsCount: cars && typeof cars.total === 'number' ? cars.total : null });

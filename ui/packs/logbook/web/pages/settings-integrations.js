@@ -925,7 +925,9 @@ export async function mount(ctx) {
   paintAll();
   await teslaLoad;
   if (!ctx.alive()) return {};
-  showTeslaHash();
+  // after the router has put focus on the page (it does so once mount returns), so the account keeps it
+  const hashT = setTimeout(() => { if (ctx.alive()) showTeslaHash(); }, 0);
+  ctx.onCleanup(() => clearTimeout(hashT));
   ctx.ready();
   return {};
 }

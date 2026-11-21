@@ -29,6 +29,9 @@ import { AWAKE_WORDS } from '../core/journal.js';
 import { sourceMark, sourceLabel, sourcesOf, labelOf } from '../core/sources.js';
 import { zoneLabel } from '../core/format.js';
 
+// the inputs the Lifetime totals heading may name (each asked for on its own, see drawLife)
+const LIFE_KINDS = ['smo', 'tesla_api', 'import'];
+
 export const id = 'battery';
 export const css = true;
 export const title = () => 'Battery';
@@ -395,14 +398,24 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- lifetime totals */
 
   async function drawLife() {
-    const [t, g] = await Promise.allSettled([
+    const [t, g, ...bySrc] = await Promise.allSettled([
       ctx.api.get(api.apiPath`cars/${car.id}/totals`),
       ctx.api.list(api.apiPath`cars/${car.id}/gaps`, {}, { limit: 200 }).all({ max: 2000 }),
+      // which inputs gave this car drives or charges at all: /totals' own sources name every input the
+      // filter takes, not the ones that gave rows, so each is asked on its own
+      ...LIFE_KINDS.map((k) => ctx.api.get(api.apiPath`cars/${car.id}/totals`, { source: k })),
     ]);
     if (!ctx.alive()) return;
     const L = (bat && bat.lifetime) || {};
     if (t.status === 'rejected') { replace(lifeBox, head('bt-life-title', 'Lifetime totals'), errorView(t.reason, { eyebrow: 'Lifetime totals', retry: () => drawLife() })); return; }
     const T = t.value;
+    // only the inputs that gave rows, with the site of an import from /totals' own list (else unnamed)
+    const lifeFrom = LIFE_KINDS.flatMap((k, i) => {
+      const r = bySrc[i];
+      if (r.status !== 'fulfilled' || !r.value || ((r.value.drives || 0) + (r.value.charges || 0)) <= 0) return [];
+      const named = [...(r.value.sources || []), ...(Array.isArray(T.sources) ? T.sources : [])].filter((x) => x && x.kind === k);
+      return named.length ? named : [{ kind: k }];
+    });
     const since = num(T.odometer_last_km) && num(T.odometer_first_km) ? T.odometer_last_km - T.odometer_first_km : null;
     const jumps = g.status === 'fulfilled' ? g.value.filter((x) => num(x.odometer_jump_km) && x.odometer_jump_km > 0.05) : [];
     const gapList = g.status === 'rejected' ? h('p', { class: 'note' }, 'The gap list could not be loaded.')
@@ -417,7 +430,7 @@ export async function mount(ctx) {
     const splitCsv = () => downloadCsv(csvFilename(car.name, 'battery energy in'), parts.map(([k, name, v]) => ({ k, name, v, share: total ? (v / total) * 100 : null })),
       [{ label: 'Kind', value: (r) => r.name }, column('Energy', 'v', 'energy', { digits: 1 }), column('Share', 'share', 'percent', { digits: 1 })]);
     replace(lifeBox,
-      head('bt-life-title', 'Lifetime totals', Array.isArray(T.sources) && T.sources.length ? `whole history; ${labelOf(T.sources).replace(/^D/, 'd').replace(/^I/, 'i')}` : 'whole history'),
+      head('bt-life-title', 'Lifetime totals', lifeFrom.length ? `whole history; ${labelOf(lifeFrom).replace(/^D/, 'd').replace(/^I/, 'i')}` : 'whole history'),
       h('div', { class: 'bt-life-grid' },
         h('div', { class: 'bt-life-col' },
           h('h3', { class: 'bt-sub' }, 'Driving', pageLink2('Driving statistics', 'statistics', 'bh.drive.link_stats')),

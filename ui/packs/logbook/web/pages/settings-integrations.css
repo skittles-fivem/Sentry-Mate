@@ -150,7 +150,8 @@
 .tesla-pace dt { color: var(--ink-3); }
 .tesla-pace dd { color: var(--ink); font-variant-numeric: tabular-nums; margin: 0; }
 .tesla-accounts { display: flex; flex-direction: column; gap: round(2rem, var(--e)); }
-.tesla-account { border-top: 2px solid var(--ink); padding-top: round(1rem, var(--e)); scroll-margin-top: round(6rem, var(--e)); }
+/* clear of the sticky masthead and its nav (--clear-top), like every other place focus or a link lands */
+.tesla-account { border-top: 2px solid var(--ink); padding-top: round(1rem, var(--e)); scroll-margin-top: var(--clear-top); }
 .tesla-account:focus { outline: none; }
 .tesla-account:focus-visible { outline: 2px solid var(--accent); outline-offset: round(0.5rem, var(--e)); }
 .tesla-account.is-sign_in_needed, .tesla-account.is-error { border-top-color: var(--rust); }
@@ -188,6 +189,24 @@
   .tesla-account-head { align-items: flex-start; }
   .tesla-match { min-width: 0; width: 100%; }
 }
+.tesla-cell-label { display: none; }
+.tesla-cars > .tesla-alert { margin-top: round(0.75rem, var(--e)); }
+.tesla-match[aria-invalid="true"] { border-color: var(--rust); box-shadow: 0 0 0 1px var(--rust); }
+/* At phone width each Tesla car is a short card: its name, then the match picker at full width (the main
+   control, never cut), then what Tesla says and what the server does, each under its own small label. */
+@container page (width < 40rem) {
+  .tesla-cars-table .ledger-scroll { overflow: visible; }
+  .tesla-cars-table .ledger-table, .tesla-cars-table .ledger-table tbody { display: block; width: 100%; }
+  .tesla-cars-table .ledger-table thead { display: none; }
+  .tesla-cars-table .ledger-table tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: round(0.625rem, var(--e)) round(1rem, var(--e)); padding: round(0.875rem, var(--e)) 0; border-top: 1px solid var(--rule); }
+  .tesla-cars-table .ledger-table tr > * { display: block; padding: 0; border: 0; height: auto; text-align: left; min-width: 0; white-space: normal; position: static; }
+  .tesla-cars-table .tesla-c-name, .tesla-cars-table .tesla-c-match { grid-column: 1 / -1; }
+  .tesla-cars-table .tesla-cell { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); min-width: 0; }
+  .tesla-cars-table .tesla-cell-label { display: block; font: 600 var(--micro) var(--sans); --LH: round(calc(1.2 * 1em), 2px); line-height: var(--LH); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+  .tesla-cars-table .tesla-match { width: 100%; min-width: 0; }
+  .tesla-cars-table .cell-main, .tesla-cars-table .cell-sub { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+}
 .tesla .choice { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); }
 .tesla-way-name { margin: 0; }
 .tesla-dialog .dialog-text { margin-bottom: round(1rem, var(--e)); }
+.tesla-dialog div.dialog-text > p + p { margin-top: round(0.625rem, var(--e)); }
