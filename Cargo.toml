@@ -16,6 +16,11 @@ unwrap_used = "deny"
 expect_used = "warn"
 panic = "warn"
 
+# Tests and debug builds: the dependencies (crypto, argon2, xz, hashing, TLS) built with optimisation, so the tests
+# run in minutes instead of most of an hour; the workspace's own code stays at opt-level 0 with its checks.
+[profile.dev.package."*"]
+opt-level = 2
+
 [profile.release]
 lto = true
 codegen-units = 1
