@@ -42,8 +42,10 @@ export const STAY = Symbol('stay');   // run() answers this to keep the dialog o
 /**
  * The person's own password again (and the two-step code when the account has it) before a dangerous action.
  * run(credentials, values) makes the call; a wrong password keeps the dialog open. Resolves the answer, or null.
+ * focus: the element to start on instead of the password field (for a dialog whose first step comes before it);
+ * the dialog then opens at its top. onOpen(dialog, form) runs once it is open.
  */
-export function askPassword(ctx, { title, intro, submit, danger = false, extra = [], run }) {
+export function askPassword(ctx, { title, intro, submit, danger = false, extra = [], run, focus = null, onOpen = null }) {
   const me = ctx.me || {};
   const pass = field({ label: 'password', name: 'password', type: 'password', required: true,
     hint: `The password you sign in with as ${me.name || 'this account'}.`, attrs: { autocomplete: 'current-password' } });
@@ -73,7 +75,8 @@ export function askPassword(ctx, { title, intro, submit, danger = false, extra =
       },
     });
     d = openDialog({ title, body: [intro, f.el], onClose: () => resolve(result) });
-    pass.input.focus();
+    if (focus) { focus.focus({ preventScroll: true }); d.el.scrollTop = 0; } else pass.input.focus();
+    onOpen?.(d, f);
   });
 }
 

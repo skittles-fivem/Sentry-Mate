@@ -40,6 +40,10 @@ const REASONS = {
 };
 const CAN = 'sentry_manager_can';
 const isCan = (j) => j?.kind === CAN || j?.report?.kind === CAN;
+// a zip is never a TeslaMate backup: it has no cars to match, also while it is checked (its kind is known after)
+const isZip = (j) => isCan(j) || j?.compression === 'zip' || /\.zip$/i.test(j?.name || '');
+// a zip the check refused: not a CAN export, or not a zip at all
+const NOT_CAN = new Set(['not_a_can_export', 'unreadable']);
 // why a log of a CAN export was refused
 const CAN_REASONS = {
   unsigned: ['not signed', 'no valid CAN Bridge signature, so nothing shows it came from the car'],
@@ -53,7 +57,7 @@ const CAN_REASONS = {
   car_full: ['car full', 'the car already holds the most logs a car keeps'],
 };
 const canReason = (c) => CAN_REASONS[c] || [String(c).replace(/[_-]/g, ' '), 'the server\'s own reason'];
-const KEY_STATUS = { car: ['its car', 'ok'], new_car: ['a new car', 'warn'], only_car: ['the one car here', 'ok'], waiting: ['waiting for an admin', 'warn'], working: ['being decoded', 'running'] };
+const KEY_STATUS = { car: ['its car', 'ok'], new_car: ['a new car', 'warn'], new_key: ['new key: a new car', 'warn'], only_car: ['the one car here', 'ok'], waiting: ['waiting for an admin', 'warn'], working: ['being decoded', 'running'] };
 const FAILURES = {
   not_a_backup: 'The file is not a TeslaMate backup. Make one with TeslaMate\'s database backup (a pg_dump), plain or gzip or xz, and upload that.',
   mixed_cars: 'The file holds rows for cars it does not describe. Make a fresh, whole backup and try again.',
@@ -206,7 +210,7 @@ export async function mount(ctx) {
   const progSlot = h('div', { cover: 'web.import.files.col-status' });
   function paintSteps() {
     const j = S.job, s = j?.status;
-    const can = isCan(j);
+    const can = isZip(j);
     const unmatched = can ? 0 : S.match.filter((c) => c.match == null).length;
     const failedAt = s === 'failed' ? (j.checked_ms ? 'import' : 'check') : null;
     const T = (w, tone) => tag(w, tone);
@@ -216,9 +220,11 @@ export async function mount(ctx) {
       match: !j || ['uploading', 'checking'].includes(s) || failedAt ? 'later' : s === 'ready' ? (unmatched ? 'todo' : 'ok') : 'ok',
       run: !j || ['uploading', 'checking'].includes(s) ? 'later' : s === 'ready' ? (unmatched ? 'later' : 'todo') : s === 'importing' ? 'running' : s === 'done' ? 'ok' : failedAt === 'import' ? 'bad' : 'later',
     };
-    const tags = { ok: T('ok', 'ok'), todo: T('todo', 'warn'), running: T('running', 'running'), later: T('later', 'muted'), bad: T('bad', 'bad') };
+    // a new tag per step: one element can sit in one place only
+    const TAGS = { ok: ['ok', 'ok'], todo: ['todo', 'warn'], running: ['running', 'running'], later: ['later', 'muted'], bad: ['bad', 'bad'] };
+    const tagOf = (k) => T(...(TAGS[k] || TAGS.later));
     const step = (n, k, headText, text, acts, extra = null) => h('li', { class: ['run', st[k] === 'todo' || st[k] === 'running' ? 'run--now' : st[k] === 'later' ? 'run--later' : null], dataset: { row: '' } },
-      h('span', { class: 'run-n' }, `${n}.`), h('span', { class: 'run-tag' }, tags[st[k]]),
+      h('span', { class: 'run-n' }, `${n}.`), h('span', { class: 'run-tag' }, tagOf(st[k])),
       h('div', { class: 'run-body' }, h('p', { class: 'run-head' }, headText), h('p', { class: 'run-text' }, text), extra), h('div', { class: 'run-acts' }, acts));
     const canStart = s === 'ready' && !unmatched;
     replace(stepsSlot, h('ol', { class: 'runs' },
@@ -227,7 +233,7 @@ export async function mount(ctx) {
         [(!j || !UNFINISHED.includes(s) || (s === 'uploading' && !up.active)) ? choose : null, upErr]),
       step(2, 'check', 'check', can ? 'Pass 1: every log of the zip is read and its signature checked, as an upload\'s is. Nothing is stored yet.' : 'Pass 1: every row is read and checked. Nothing is stored yet; a failed check stores nothing.', null,
         failedAt ? h('div', { class: 'errbox-line', cover: 'web.import.run-error', role: 'alert' }, tag('bad', 'bad'), ` ${failedAt === 'check' ? 'the check found a problem' : 'the import failed'}: ${FAILURES[j.error?.code] || j.error?.message || 'the server gave no reason'}`,
-          FAILURES[j.error?.code] && j.error?.message ? h('span', { class: 'muted' }, ` (the server says: ${j.error.message})`) : null, h('span', { class: 'muted' }, can ? ' Logs stored before stay (they are signed and checked); running it again skips them.' : ' Nothing from this file was stored. Discard it, then choose a good file.'))
+          FAILURES[j.error?.code] && j.error?.message ? h('span', { class: 'muted' }, ` (the server says: ${j.error.message})`) : null, h('span', { class: 'muted' }, failedAt === 'import' && can ? ' Logs stored before stay (they are signed and checked); running it again skips them.' : failedAt === 'import' ? ' Rows stored before stay; running it again skips them.' : ' Nothing from this file was stored. Discard it, then choose a good file.'))
           : h('span', { cover: 'web.import.run-error', class: 'muted' }, 'If the check or the import fails, why is said here in plain words.')),
       step(3, 'match', 'match the cars', can ? 'Nothing to match: each log goes to the car its car key belongs to (a new key as its first upload would, by settings/cars).' : unmatched ? `${unmatched} imported car${unmatched === 1 ? '' : 's'} still need a choice below.` : 'Each car of the backup goes to a car here, a new car, or is left out.', null),
       step(4, 'run', 'import', s === 'done' ? `Done ${dateTime(j.finished_ms, tz)}; it took ${dur(j.finished_ms - j.started_ms)}. ${can ? ' The logs are in as the car\'s own SMO data; drives and charges are built from them.' : ' The history shows on every page, marked as imported.'}` : can ? 'Pass 2: each log is stored and checked as if the CAN Bridge had uploaded it, then decoded.' : 'Pass 2: the rows are stored and the timeline is built again for the matched cars.',
@@ -243,6 +249,7 @@ export async function mount(ctx) {
     if (s === 'uploading') { doneB = j.uploaded_bytes ?? 0; what = up.active ? 'uploading' : up.paused ? 'paused' : 'stopped'; }
     else if (s === 'checking' || s === 'importing') doneB = j.bytes_read ?? 0;
     else if (s !== 'failed') doneB = of;
+    else doneB = j.checked_ms ? (j.bytes_read ?? of) : of;   // the whole file went up; a failed check read it all
     const p = pct(doneB, of);
     const secs = (Date.now() - up.t0) / 1000;
     const rate = s === 'uploading' && up.active && secs > 1 ? (doneB - up.b0) / secs : null;
@@ -250,7 +257,7 @@ export async function mount(ctx) {
       `${what.padEnd(9)} `, textBar(p, { tone: s === 'failed' ? 'bad' : 'accent' }), ` ${format(p, 'number', { digits: 0 }).padStart(3)} %  ${bytes(doneB)} of ${bytes(of)}`,
       rate ? `  ${bytes(rate)}/s, about ${dur(((of - doneB) / rate) * 1000)} left` : '',
       `\nfile      ${j.name}${j.compression && j.compression !== 'plain' ? ` (${j.compression})` : ''}`,
-      `\nkind      ${isCan(j) ? 'Sentry Six Manager CAN export' : j.kind === 'teslamate' ? 'TeslaMate backup' : 'known once checked'}`,
+      `\nkind      ${s === 'failed' && NOT_CAN.has(j.error?.code) ? (j.error.code === 'unreadable' ? 'not a zip that can be read' : 'a zip, not a Sentry Six Manager CAN export') : isCan(j) ? 'Sentry Six Manager CAN export' : j.kind === 'teslamate' ? 'TeslaMate backup' : isZip(j) ? 'a zip: a CAN export once checked' : 'known once checked'}`,
       `\nstarted   ${dateTime(j.started_ms, tz)}`, j.checked_ms ? `\nchecked   ${dateTime(j.checked_ms, tz)}` : '', j.finished_ms ? `\nfinished  ${dateTime(j.finished_ms, tz)}` : '',
       s === 'uploading' && !up.active ? `\nThe server has the first ${bytes(j.uploaded_bytes)}. Choose the same file again to go on from there.` : ''));
   }
@@ -259,7 +266,7 @@ export async function mount(ctx) {
   async function loadMatch() {
     S.match = [];
     const j = S.job;
-    if (!j || isCan(j) || !['checking', 'ready'].includes(j.status)) return;
+    if (!j || isZip(j) || !['checking', 'ready'].includes(j.status)) return;
     try { S.match = (await ctx.api.get(`imports/${enc(j.id)}/cars`)).items || []; } catch { S.match = []; }
   }
   async function setMatch(c, value) {
@@ -333,7 +340,7 @@ export async function mount(ctx) {
       { key: 'logs', label: 'logs', num: true, render: (k) => nf(k.logs) },
       { key: 'imp', label: 'imported', num: true, ph: 'num', render: (k) => (S.rep?.imported ? nf(k.imported) : h('span', { class: 'muted' }, `${nf((k.logs || 0) - (k.already_here || 0) - (k.refused || 0))} to import`)) },
       { key: 'already_here', label: 'here already', num: true, render: (k) => nf(k.already_here) },
-      { key: 'refused', label: 'refused', num: true, ph: 'sub', render: (k) => (k.refused ? h('span', { class: 'tone--warn' }, nf(k.refused)) : h('span', { class: 'muted' }, '0')) },
+      { key: 'refused', label: 'refused', num: true, ph: 'sub', render: (k) => [h('span', { class: 'ph-k' }, 'refused '), k.refused ? h('span', { class: 'tone--warn' }, nf(k.refused)) : h('span', { class: 'muted' }, '0')] },
       { key: 'chain', label: 'chain', grow: true, render: (k) => (k.chain_gaps || k.chain_forks
         ? h('span', { class: 'tone--warn', title: 'As for live uploads: a gap is a log the chain names that is not here; a fork two logs at one place' }, [k.chain_gaps ? `${nf(k.chain_gaps)} gap${k.chain_gaps === 1 ? '' : 's'}` : null, k.chain_forks ? `${nf(k.chain_forks)} fork${k.chain_forks === 1 ? '' : 's'}` : null].filter(Boolean).join(', '))
         : h('span', { class: 'muted' }, 'whole')) },
@@ -493,7 +500,7 @@ export async function mount(ctx) {
   });
   function paintAll() {
     paintSteps(); paintProgress(); paintReport();
-    const show = S.job && !isCan(S.job) && ['checking', 'ready'].includes(S.job.status);
+    const show = S.job && !isZip(S.job) && ['checking', 'ready'].includes(S.job.status);
     matchT.el.hidden = !show;
     if (show) matchT.setRows(S.match);
     historyT.setRows(S.jobs);

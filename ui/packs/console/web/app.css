@@ -342,7 +342,7 @@ a.key { text-decoration: none; }
 .in--date { width: calc(var(--a2) * 18); }
 .in--wide { width: 100%; }
 select.in { appearance: none; padding-right: calc(var(--g) * 3); background-image: none; }
-.chk { width: var(--a2); height: var(--a2); margin: 0; accent-color: var(--accent); flex: none; }
+.chk { --chk: max(16px, round(calc(var(--lh2) * 0.8), 1px)); width: var(--chk); height: var(--chk); margin: 0; accent-color: var(--accent); flex: none; }
 
 /* forms as lines: 'label: [input]' */
 .frm { display: flex; flex-direction: column; gap: var(--g); }
@@ -353,7 +353,10 @@ select.in { appearance: none; padding-right: calc(var(--g) * 3); background-imag
 .fld-err, .frm-msg { color: var(--bad); }
 .fld-err::before, .frm-msg::before { content: '! '; }
 .fld--check { display: block; }
-.fld-checkline { display: flex; gap: var(--g); align-items: center; cursor: pointer; }
+/* the box sits on the first line of its words, also when they wrap */
+.fld-checkline { display: flex; gap: var(--g); align-items: flex-start; cursor: pointer; }
+.fld-checkline > .chk { margin-top: max(0px, round(down, calc((var(--lh2) - var(--chk)) / 2), 1px)); }
+.fld-checkline > span { min-width: 0; }
 .frm > .acts { margin-top: var(--g); }
 
 /* pick lists: car switcher and command list */
@@ -425,6 +428,9 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .tbl tbody tr.is-sel > :first-child { color: var(--accent); }
 .tbl tfoot td { border-top: 1px solid var(--rule-2); border-bottom: 0; font-weight: 600; }
 .tbl-ph { display: none; }
+/* words a phone row needs because it has no column heads */
+.ph-k { display: none; }
+.tbl-ph .ph-k { display: inline; color: var(--muted); }
 .tbl-more { padding-top: var(--g); }
 .tbl-sortline { display: none; }
 .tbl-csv:empty { display: none; }
@@ -464,6 +470,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .filt .in { flex: 1 1 auto; min-width: 0; }
 .filt-help { color: var(--muted); font-size: var(--fs1); line-height: var(--lh1); margin: 0 0 var(--g); }
 .filt-on { display: flex; flex-wrap: wrap; gap: 0 calc(var(--g) * 2); margin: 0 0 var(--g); }
+.filt-why { flex-basis: 100%; }
 
 /* a line of stats: 'distance 14.7 km   time 12 min ...' */
 .stats { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--g2) calc(var(--g) * 3); padding-block: var(--g2); }
@@ -814,9 +821,14 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .tesla-cars-head > .sub-title { padding-block: 0; }
 /* a whole-pixel width, so the match picker after it starts on a whole pixel */
 .tbl .tesla-car-col { width: calc(var(--a2) * 36); min-width: calc(var(--a2) * 36); max-width: calc(var(--a2) * 36); white-space: normal; }
-.tesla-sel.in--cell { width: calc(var(--a2) * 30); max-width: 100%; }
+/* at least 24 px to tap; in a desktop row it reaches over the cell's padding so the row keeps its height */
+.tesla-sel.in--cell { --sh: max(24px, var(--lh2)); width: calc(var(--a2) * 30); max-width: 100%; height: var(--sh); line-height: calc(var(--sh) - 2px); margin-block: calc((var(--lh2) - var(--sh)) / 2); }
+.tbl-ph .tesla-sel.in--cell { --sh: var(--ctl); margin-block: 0; }
+.tesla-dupe { margin-top: var(--g2); }
+.tesla-void { margin-top: var(--g); }
 .tesla-hosts { display: flex; flex-wrap: wrap; column-gap: calc(var(--a2) * 2); }
-.cert-sha { overflow-wrap: anywhere; word-break: break-all; }
+/* breaks only where the text has a <wbr> (after a colon or a slash), or a long name with none where it must */
+.cert-sha { word-break: normal; overflow-wrap: break-word; }
 
 /* ------------------------------------------------------------------ 7. states */
 .loading { color: var(--muted); padding-block: calc(var(--g) * 2); display: flex; align-items: center; gap: var(--a2); }
@@ -969,6 +981,8 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
   .pal-path { display: none; }
   .bare { min-height: 0; padding-top: calc(var(--g) * 2); }
   .key, .btn { min-width: 44px; }
+  .chk { --chk: 24px; }
+  .fld-checkline { min-height: 44px; padding-block: 10px; }
   .am-row { grid-template-columns: minmax(0, 1fr); gap: var(--g2); }
   .am-k { line-height: var(--lh2); }
   .tbl thead, .tbl td:not(.tbl-ph) { display: none; }

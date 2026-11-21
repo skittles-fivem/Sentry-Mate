@@ -11,6 +11,7 @@
 //   inputsLine(inputs)        the car's live inputs: 'live inputs  [smo] 1 min ago  [api] 2 min ago'
 //   via(value)                '[api]' after a live value the Tesla API sent ({ value, at_ms, sources }), else null
 //   sourceWord(v)             a filter word (smo, api, tesla, imported, can, teslamate) -> the API's source= value
+//   sourceCheck(v)            null for a known source word, else why it is left out (filterLine's check)
 
 import { h } from '../shared/dom.js';
 import { formatRelative } from '../shared/time.js';
@@ -102,7 +103,9 @@ export function sourceWord(v) {
   if (w === 'api' || w === 'tesla' || w === 'tesla_api' || w === 'tesla-api') return 'tesla_api';
   if (w === 'imported' || w === 'import' || w === 'imp') return 'import';
   if (w === 'teslamate' || w === 'import:teslamate') return 'import:teslamate';
-  if (w === 'all') return null;
   return null;
 }
+const SOURCE_WORDS = new Set(['smo', 'can', 'api', 'tesla', 'tesla_api', 'tesla-api', 'imported', 'import', 'imp', 'teslamate', 'import:teslamate', 'all']);
+/** For filterLine's check: null for a word sourceWord knows (or all), else why it is not taken. */
+export const sourceCheck = (v) => (SOURCE_WORDS.has(String(v || '').toLowerCase()) ? null : `not a source this page knows: smo, api, imported or all. It is left out, so every source is listed.`);
 export const SOURCE_KEY = 'smo | api | imported';

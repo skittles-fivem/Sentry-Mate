@@ -29,6 +29,13 @@ const enc = encodeURIComponent;
 const bytes = (n) => (n == null ? DASH : format(n, 'bytes'));
 const count = (n) => (n == null ? DASH : format(n, 'count'));
 const pct = (a, b) => (a != null && b ? Math.max(0, Math.min(100, (a / b) * 100)) : 0);
+// the acting admin's own password (and two-step code) for an account change: the headers the API takes
+// (X-Sentry-Mate-Password, X-Sentry-Mate-Code), or confirm_password and code in the body for a password a header
+// cannot hold (characters outside printable ASCII). -> [body, { headers }]
+const ASCII = /^[\x20-\x7e]*$/;
+const withCred = (cred, body) => (ASCII.test(cred.password) && ASCII.test(cred.two_step || '')
+  ? [body, { headers: { 'X-Sentry-Mate-Password': cred.password, ...(cred.two_step ? { 'X-Sentry-Mate-Code': cred.two_step } : {}) } }]
+  : [{ ...(body || {}), confirm_password: cred.password, ...(cred.two_step ? { code: cred.two_step } : {}) }, {}]);
 const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : e?.message || errorWords(e).text);
 const ROLE = { admin: 'admin', watch: 'watch' };
 const PURPOSE = { web: 'web and api', upload: 'uploads' };
@@ -194,21 +201,32 @@ export async function mount(ctx) {
   // one made here (no shell, no restart); never for the owner's own certificate
   const certSlot = h('div');
   const shaText = (v) => String(v || '').toUpperCase();
+  // a SHA-256 or an address that wraps only after a colon or a slash, never inside a hex pair or a port
+  const breakAfter = (t) => String(t).split(/(?<=[:/])/).flatMap((part, i) => (i ? [h('wbr'), part] : [part]));
+  // the move state: while a move code waits, a new server copies from here, or the data moved away, the server
+  // makes no new certificate (a new server pins this one), so the button is not offered then
+  let moveState = null;
+  const CERT_HELD = { offered: 'A move code is waiting: the new server pins this certificate.', copying: 'A new server copies from here and pins this certificate.',
+    paused: 'A stopped move pins this certificate until it is ended or carried on.', moved: 'The data moved to another server: this one makes no new certificate.',
+    done: 'The data moved to another server: this one makes no new certificate.' };
   function paintCert() {
     const c = S.network?.certificate || null;
     if (!admin) { replace(certSlot, note('An admin sees the certificate\'s SHA-256 and the CAN Bridge upload address, and can make a new certificate.')); return; }
     replace(certSlot,
       c || S.network?.upload_address ? kv([
-        c?.sha256 ? ['sha-256', h('span', { class: 'hc' }, h('span', { class: 'cert-sha' }, shaText(c.sha256)), h('span', { class: 'acts' }, copyBtn(shaText(c.sha256))))] : null,
+        c?.sha256 ? ['sha-256', h('span', { class: 'hc' }, h('span', { class: 'cert-sha' }, breakAfter(shaText(c.sha256))), h('span', { class: 'acts' }, copyBtn(shaText(c.sha256))))] : null,
         c?.names?.length ? ['names in it', c.names.join(', ')] : null,
-        S.network?.upload_address ? ['upload address', h('span', { class: 'hc' }, h('span', { class: 'cert-sha' }, S.network.upload_address), h('span', { class: 'acts' }, copyBtn(S.network.upload_address)))] : null,
+        S.network?.upload_address ? ['upload address', h('span', { class: 'hc' }, h('span', { class: 'cert-sha' }, breakAfter(S.network.upload_address)), h('span', { class: 'acts' }, copyBtn(S.network.upload_address)))] : null,
         ['made by', certOwn() ? [tag('own', 'muted'), ' you: the cert.pem and key.pem in data/tls'] : [tag('server', 'muted'), ' this server']],
       ], { cols: 1 }) : note('The server did not say which certificate it runs with.'),
       c?.sha256 ? note('The CAN Bridge app needs this SHA-256 (and the upload address) in its upload settings.') : null,
       certOwn()
         ? note('This is your own certificate, so the server never replaces it. To change it, put the new cert.pem and key.pem in data/tls and start the container again. For a certificate the server makes instead, delete data/tls/cert.pem and start it again.')
-        : h('div', { class: 'acts cert-acts' }, btn('make a new certificate', makeCertificate)));
+        : CERT_HELD[moveState]
+          ? h('p', { class: 'note' }, tag('held', 'muted'), ` ${CERT_HELD[moveState]} `, moveState === 'moved' || moveState === 'done' ? null : ['Finish or end the move (', link(`${state.buildUrl('settings-server')}#move`, 'move to another server'), ') to make a new certificate.'])
+          : h('div', { class: 'acts cert-acts' }, btn('make a new certificate', makeCertificate)));
   }
+  const certMove = (st) => { const was = !!CERT_HELD[moveState]; moveState = st || null; if (was !== !!CERT_HELD[moveState]) paintCert(); };
   const nextNames = () => ['localhost', ...((S.settings?.host_names) || []).filter((n) => n.toLowerCase() !== 'localhost')];
   async function makeCertificate() {
     const out = await askPassword(ctx, {
@@ -229,11 +247,13 @@ export async function mount(ctx) {
     try { S.network = await ctx.api.get('network'); } catch { S.network = { ...(S.network || {}), certificate: { names: out.names, sha256: out.sha256, own: false }, upload_address: out.upload_address }; }
     if (!ctx.alive()) return;
     readCert(); paintCert(); paintHosting();
+    // the button that opened this was painted again: the focus goes to the new one (and back to it after this)
+    certSlot.querySelector('.cert-acts .btn')?.focus({ preventScroll: true });
     await showOnce({
       title: 'the new certificate is in use',
       body: h('div', { class: 'hc' },
         h('p', null, 'Type this SHA-256 into each CAN Bridge app\'s upload settings now: until then it refuses this server.'),
-        h('div', { class: 'box' }, h('p', { class: 'cert-sha' }, shaText(out.sha256)), h('div', { class: 'acts' }, copyBtn(shaText(out.sha256), 'copy', { primary: true }))),
+        h('div', { class: 'box' }, h('p', { class: 'cert-sha' }, breakAfter(shaText(out.sha256))), h('div', { class: 'acts' }, copyBtn(shaText(out.sha256), 'copy', { primary: true }))),
         note('Reload this page to accept the new certificate in this browser.')),
     });
   }
@@ -253,6 +273,7 @@ export async function mount(ctx) {
   function setMove(m) {
     if (m.state === 'none' || m.state === 'expired' || (m.code && M.codeId && m.code.id !== M.codeId)) { M.codeText = null; M.codeId = null; }
     M.move = m;
+    certMove(m?.state);
   }
   async function makeCode() {
     const busy = M.move && (M.move.state === 'copying' || M.move.state === 'paused');
@@ -263,7 +284,7 @@ export async function mount(ctx) {
       intro: note('The code lets one new Sentry Mate server copy everything from this one: logs, cars, accounts, upload tokens and the certificate. It works once, for 24 hours.', M.move?.state === 'offered' ? ' The code waiting now stops working.' : ''),
       run: (cred, v) => ctx.api.post('system/move', { ...cred, anywhere: !!v.anywhere, ...(busy ? { replace: true } : {}) }) });
     if (!r || !ctx.alive()) return;
-    M.codeText = r.move_code; M.codeId = r.code?.id || null; M.move = r;
+    M.codeText = r.move_code; M.codeId = r.code?.id || null; M.move = r; certMove(r.state);
     paintMove(); schedule();
     toast('Move code made. Type it on the new server\'s first page.');
   }
@@ -442,11 +463,28 @@ export async function mount(ctx) {
           if (!(await passwordOk(body.name, v.password, password.input))) return;
           body.password = v.password;
         }
-        try {
-          if (isNew) await ctx.api.post('accounts', body); else await ctx.api.patch(`accounts/${enc(a.id)}`, { version: a.version, ...body });
-        } catch (e) {
-          if (e.code === 'name_taken') { name.setError('That name is taken.'); return; }
-          if (e.code === 'last_admin') { role.setError('This is the last admin. Make another account an admin first.'); return; }
+        // the acting admin's own password again (and the code with two-step sign-in), as every account change asks
+        const out = await askPassword(ctx, {
+          title: isNew ? `add ${body.name}` : `save ${a.name}`, submit: isNew ? 'add account' : 'save',
+          intro: note(isNew ? `${body.name} can sign in once it is added. Account changes ask for your own password again.` : 'Account changes ask for your own password again.'),
+          run: async (cred) => {
+            try {
+              if (isNew) await ctx.api.post('accounts', ...withCred(cred, body));
+              else await ctx.api.patch(`accounts/${enc(a.id)}`, ...withCred(cred, { version: a.version, ...body }));
+              return { ok: true };
+            } catch (e) {
+              if (['wrong_password', 'password_needed'].includes(e.code)) { e.code = 'wrong_password'; throw e; }
+              if (e.code === 'wrong_code' || e.code === 'wrong_two_step') { e.code = 'wrong_two_step'; throw e; }
+              if (e.status === 429) throw e;
+              return { err: e };   // shown in the account form, under its field
+            }
+          },
+        });
+        if (!out || !ctx.alive()) return;
+        const e = out.err;
+        if (e) {
+          if (e.code === 'name_taken') { name.setError('That name is taken.'); name.input.focus(); return; }
+          if (e.code === 'last_admin') { role.setError('This is the last admin. Make another account an admin first.'); role.input.focus(); return; }
           if (e.status === 409) { await refreshAccounts(); f.setMessage('Someone else changed this account first. Close, look at their change, and try again.'); return; }
           throw e;
         }
@@ -459,8 +497,21 @@ export async function mount(ctx) {
     name.input.focus();
   }
   async function removeAccount(a) {
-    if (!(await confirmDialog(`${a.name} can no longer sign in and every session of theirs ends now. Their changes stay in the audit log.`, { title: `remove ${a.name}?`, ok: 'remove', danger: true }))) return;
-    try { await ctx.api.del(`accounts/${enc(a.id)}`); toast(`${a.name} was removed.`); await refreshAccounts(); } catch (e) { toast(e.code === 'last_admin' ? 'This is the last admin. Make another account an admin first.' : `Could not remove: ${errText(e)}`, { kind: 'error' }); }
+    const out = await askPassword(ctx, {
+      title: `remove ${a.name}?`, submit: 'remove', danger: true,
+      intro: note(`${a.name} can no longer sign in and every session of theirs ends now. Their changes stay in the audit log.`),
+      run: async (cred) => {
+        try { await ctx.api.send('DELETE', `accounts/${enc(a.id)}`, ...withCred(cred, undefined)); return { ok: true }; } catch (e) {
+          if (['wrong_password', 'password_needed'].includes(e.code)) { e.code = 'wrong_password'; throw e; }
+          if (e.code === 'wrong_code' || e.code === 'wrong_two_step') { e.code = 'wrong_two_step'; throw e; }
+          if (e.status === 429) throw e;
+          return { err: e };
+        }
+      },
+    });
+    if (!out || !ctx.alive()) return;
+    if (out.err) { toast(out.err.code === 'last_admin' ? 'This is the last admin. Make another account an admin first.' : `Could not remove: ${errText(out.err)}`, { kind: 'error' }); return; }
+    toast(`${a.name} was removed.`); await refreshAccounts();
   }
 
   const sessions = table(ctx, {

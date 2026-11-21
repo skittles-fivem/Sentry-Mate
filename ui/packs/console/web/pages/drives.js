@@ -20,7 +20,7 @@ import { filterLine, dateSpan, numberOf } from '../core/filterline.js';
 import { placeLink } from './timeline.js';
 import { isAdmin } from '../core/prefs.js';
 import { toast } from '../core/toast.js';
-import { src, est as estTag, srcText, sourceWord, SOURCE_KEY } from '../core/source.js';
+import { src, est as estTag, srcText, sourceWord, sourceCheck, SOURCE_KEY } from '../core/source.js';
 
 export const id = 'drives';
 
@@ -57,7 +57,7 @@ export async function mount(ctx) {
     };
   };
   const fl = filterLine({
-    keys: KEYS, value: ctx.query.f || '', placeholder: 'from:2026-10 min:10km place:home', label: 'Filter the drives',
+    keys: KEYS, check: { source: sourceCheck }, value: ctx.query.f || '', placeholder: 'from:2026-10 min:10km place:home', label: 'Filter the drives',
     cover: ['drives.filter.geofence', 'drives.filter.location', 'drives.filter.min_distance', 'drives.filter.min_speed', 'drives.setting.efficiency_method', 'ds.filter.exclude_locations'],
     onApply: (p, raw) => {
       ctx.setQuery({ f: raw || null });
@@ -201,7 +201,7 @@ export async function mount(ctx) {
     hd, fl.el,
     h('p', { class: 'note filt-note', cover: ['drives.filter.location.hint', 'ds.filter.exclude_locations.hint'] },
       'Free words keep drives whose start or destination has them, in the place name or the address. not: leaves places such as home out of the patterns only. ',
-      'Energy is measured at the pack with regen taken off; est marks imported drives. ', link(ctx.link('trip'), 'this range as a trip')),
+      'Energy is measured at the pack with regen taken off; [est] marks a drive only the Tesla API saw: its energy is summed from its power readings, so it is estimated. ', link(ctx.link('trip'), 'this range as a trip')),
     summary, list.el, patterns, incomplete.el));
   paintSummary(null, 'loading');
 

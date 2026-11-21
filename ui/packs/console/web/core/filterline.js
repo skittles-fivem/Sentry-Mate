@@ -4,6 +4,7 @@
 //
 //   const f = filterLine({ keys: { min: 'shortest drive, e.g. min:10km', place: 'a place name' }, value, onApply(parsed) });
 //   f.el; f.set(text)
+//   check: { key: (value) => null | 'why it is not taken' } marks a value the page cannot use, with why
 //   parsed: { keys: { min: '10km', place: 'home' }, text: 'free words', bad: ['xyz:1'] }
 
 import { h, replace } from '../shared/dom.js';
@@ -38,12 +39,13 @@ export function dateSpan(v, tz) {
 /** A number with an optional unit: '10km' -> 10, '12.5' -> 12.5; null when it is not one. */
 export const numberOf = (v) => { const m = /^(-?\d+(?:[.,]\d+)?)/.exec(String(v || '')); return m ? parseFloat(m[1].replace(',', '.')) : null; };
 
-export function filterLine({ keys, value = '', placeholder = '', onApply, label = 'Filter', cover = null }) {
+export function filterLine({ keys, value = '', placeholder = '', onApply, label = 'Filter', cover = null, check = {} }) {
   const input = h('input', { class: 'in', type: 'search', value, placeholder, 'aria-label': label, spellcheck: 'false', autocomplete: 'off' });
   const on = h('div', { class: 'filt-on' });
   const help = h('p', { class: 'filt-help' }, Object.entries(keys).map(([k, what], i) => [i ? '   ' : null, h('span', { class: 'tone--accent' }, `${k}:`), ` ${what}`]));
   const show = (p) => replace(on,
-    Object.entries(p.keys).map(([k, v]) => h('span', { class: 'tag tag--accent' }, `[${k}:${v}]`)),
+    Object.entries(p.keys).map(([k, v]) => { const why = check[k]?.(v) || null; return h('span', { class: ['tag', why ? 'tag--bad' : 'tag--accent'], title: why }, why ? `[? ${k}:${v}]` : `[${k}:${v}]`); }),
+    Object.entries(p.keys).map(([k, v]) => { const why = check[k]?.(v) || null; return why ? h('span', { class: 'filt-why tone--bad', role: 'status' }, `${k}:${v} ${why}`) : null; }),
     p.text ? h('span', { class: 'tag' }, `["${p.text}"]`) : null,
     p.bad.map((b) => h('span', { class: 'tag tag--bad', title: 'not a key this page knows' }, `[? ${b}]`)));
   let timer = 0;

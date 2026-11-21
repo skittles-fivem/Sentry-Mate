@@ -228,9 +228,12 @@ async function mountCar(ctx) {
         ['vin prefix', c.vin_prefix || DASH],
         ...CONFIG.filter(([k]) => cfg[k]?.value != null).map(([k, l]) => [l, [yesNo(cfg[k].value), ' ', srcTag(cfg[k])]]),
       ]),
-      h('p', { class: 'note' }, 'Read from the car\'s build message on its bus; model and year from the VIN prefix. Each value says where it came from: ',
-        tag('can', 'accent'), ' ', tag('vin', 'muted'), ' ', tag('typed', 'warn'), ' ', tag('imported', 'muted'), '.', missing.length ? ` Not reported: ${missing.join(', ')}.` : ''),
-      h('p', { class: 'note', cover: 'web.settings.car.empty-state' }, 'A new car appears by itself once its CAN Bridge has uploaded its first log; no Tesla account is involved. ', link(state.buildUrl('settings-cars'), 'how a car appears'), '.')));
+      h('p', { class: 'note' }, 'Read from the car\'s build message on its bus, or from the Tesla API; model and year from the VIN prefix. Each value says where it came from: ',
+        src({ sources: [{ kind: 'smo', label: 'Data from SMO' }] }), ' SMO (the car\'s CAN Bridge), ', src({ sources: [{ kind: 'tesla_api', label: 'Data from the Tesla API' }] }), ' the Tesla API, ',
+        src({ sources: [{ kind: 'import', label: 'Imported' }] }), ' an import, ', src({ sources: [] }, { typed: 'typed by an admin' }), ' typed by an admin, ', tag('vin', 'muted'), ' the VIN prefix.',
+        missing.length ? ` Not reported: ${missing.join(', ')}.` : ''),
+      h('p', { class: 'note', cover: 'web.settings.car.empty-state' }, 'A new car appears by itself once its CAN Bridge has uploaded its first log, or when a vehicle of a Tesla account is matched to a new car under ',
+        link(`${state.buildUrl('settings-integrations')}#tesla`, 'settings/integrations'), '. ', link(state.buildUrl('settings-cars'), 'how a car appears'), '.')));
   }
 
   /* ---- uploads: what happened, tokens, keys, keys waiting */

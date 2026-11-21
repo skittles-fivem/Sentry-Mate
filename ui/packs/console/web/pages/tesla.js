@@ -89,7 +89,11 @@ function words(e) {
   else if (e.status === 409) e.message = ERROR_WORDS.version_conflict;
   if (e.fields) {
     delete e.fields.confirm_password; delete e.fields.code;
-    if (e.fields.pasted_url && e.code === 'invalid') e.fields.pasted_url = `${e.fields.pasted_url}. Paste the whole address from the address bar, starting tesla:// (or https://auth.tesla…/void/callback).`;
+    if (e.fields.pasted_url && e.code === 'invalid') {
+      const t = String(e.fields.pasted_url).trim().replace(/[.\s]+$/, '');
+      // an address of another sign-in needs a new sign-in (the dialog offers one), not a better paste
+      e.fields.pasted_url = /sign-in/i.test(t) ? `${t}.` : `${t}. Paste the whole address from the address bar, starting tesla:// (or https://auth.tesla…/void/callback).`;
+    }
     if (!Object.keys(e.fields).length) e.fields = null;
   }
   return e;
@@ -143,7 +147,31 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     paint();
     await Promise.all(tables.map((t) => t.ready)).catch(() => {});
   }
-  const reload = async (msg) => { if (msg) toast(msg); await load(); };
+  // the load in flight: a change waits for it before it puts the focus back
+  let pending = null;
+  const refresh = () => (pending = load().catch(() => {}));
+  const reload = async (msg) => { if (msg) toast(msg); await refresh(); };
+
+  // A change repaints the block, so the button that opened its dialog is gone when the dialog closes: the focus
+  // goes to the button with the same data-fk in the new paint, else to the first of the fallbacks there is.
+  const fk = (el, key) => { el.dataset.fk = key; return el; };
+  const shown = (el) => el && el.isConnected && !el.hidden && !el.disabled && (el.checkVisibility ? el.checkVisibility() : true);
+  function refocus(keys) {
+    const now = document.activeElement;
+    if (now && now !== document.body && now.isConnected) return;
+    for (const k of keys) {
+      const el = body.querySelector(`[data-fk="${CSS.escape(k)}"]`);
+      if (shown(el)) { el.focus({ preventScroll: true }); return; }
+    }
+  }
+  // run fn (it opens a dialog and may reload), then put the focus back on keys
+  const keep = (keys, fn) => async (...args) => {
+    try { return await fn(...args); } finally { await pending; if (ctx.alive()) refocus([...keys, 'tesla-top']); }
+  };
+  // a change refused because the page is behind: read everything again behind the dialog, so the page shows
+  // what is there now and a second try sends the new version
+  const stale = (e) => { if (e && (e.code === 'version_conflict' || e.code === 'no_such_tesla_account' || (e.status === 409 && !ERROR_WORDS[e.code]))) refresh(); return e; };
+  const fail = (e) => stale(words(e));
 
   function paint() {
     tables.length = 0;
@@ -157,9 +185,9 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     const p = ov.polls || {};
     const cap = (p.daily_cap || 3000) * Math.max(1, ov.accounts || 0);
     const pace = h('div', { class: 'keys', role: 'group', 'aria-label': 'How often Tesla is asked' },
-      PACE.map(([v, l]) => h('button', { class: 'key', type: 'button', 'aria-pressed': String(ov.poll === v), onclick: () => setPace(v) }, l)));
+      PACE.map(([v, l]) => h('button', { class: 'key', type: 'button', 'aria-pressed': String(ov.poll === v), dataset: { fk: `pace:${v}` }, onclick: keep([`pace:${v}`], () => setPace(v)) }, l)));
     return h('div', null,
-      h('p', { class: 'sub-title' }, 'status'),
+      h('p', { class: 'sub-title', tabindex: '-1', dataset: { fk: 'tesla-top' } }, 'status'),
       kv([
         ['state', ov.enabled ? [tag('on', 'ok'), ` ${formatNumber(ov.accounts)} ${ov.accounts === 1 ? 'account' : 'accounts'}, ${formatNumber(ov.cars)} ${ov.cars === 1 ? 'car' : 'cars'} read`]
           : [tag('off', 'muted'), ' off until an account is added: no connection to Tesla is made']],
@@ -186,7 +214,7 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     const r = await askPassword(ctx, {
       title: `pace: ${v}`, submit: 'change the pace',
       intro: note('How often the server reads each car from the Tesla API. A faster pace gives finer drives and charges from the API, and uses more of the 3,000 requests a day.'),
-      run: async (cred) => { try { return await ctx.api.patch(BASE, withPw(cred, { version: ov.version, poll: v })); } catch (e) { throw words(e); } },
+      run: async (cred) => { try { return await ctx.api.patch(BASE, withPw(cred, { version: ov.version, poll: v })); } catch (e) { throw fail(e); } },
     });
     if (r) await reload(`Pace saved: ${v}.`);
   }
@@ -203,19 +231,22 @@ export function teslaSection(ctx, { cars = [] } = {}) {
       h('div', { class: 'carline' }, h('span', { class: 'muted' }, 'region'), region),
       lines([
         [tag('sign in', 'accent'), [h('b', null, 'Sign in at Tesla. '), 'Opens Tesla\'s own sign-in page. Tesla\'s page asks for the Tesla password, the two-step code and any captcha: this server never sees them. Then you paste the address Tesla ends on.',
-          h('label', { class: 'fld-checkline', for: 'tesla-void' }, voidBox, h('span', null, 'end on Tesla\'s /void/callback page instead (for a browser that refuses tesla:// addresses)')),
-          h('div', { class: 'acts' }, btn('sign in at tesla', (e) => signIn(e.currentTarget, reg, voidBox.checked ? 'void' : 'app'), { kind: 'primary' }))]],
+          h('label', { class: 'fld-checkline tesla-void', for: 'tesla-void' }, voidBox, h('span', null, 'end on Tesla\'s /void/callback page instead (for a browser that refuses tesla:// addresses)')),
+          h('div', { class: 'acts' }, fk(btn('sign in at tesla', (e) => { const b = e.currentTarget; return keep(['signin'], () => signIn(b, reg, voidBox.checked ? 'void' : 'app'))(); }, { kind: 'primary' }), 'signin'))]],
         [tag('token', 'muted'), [h('b', null, 'Paste a refresh token. '), 'A Tesla refresh token from another tool. The server checks it with Tesla (one token refresh, one car list) before anything is kept, and never shows it again.',
-          h('div', { class: 'acts' }, btn('paste a refresh token', () => addByToken(reg)))]],
+          h('div', { class: 'acts' }, fk(btn('paste a refresh token', keep(['addtoken'], () => addByToken(reg))), 'addtoken'))]],
       ]),
       note('A new account\'s cars are not read until you match each one to a car here, to a new car, or leave it out.'));
   }
 
+  const startSignIn = (region, redirect) => ctx.api.post(`${BASE}/sign-in`, { region, redirect });
+  const startError = (e) => `Could not start the sign-in: ${words(e).message || errorWords(e).text}`;
+
   async function signIn(b, region, redirect) {
     b.disabled = true;
     let s;
-    try { s = await ctx.api.post(`${BASE}/sign-in`, { region, redirect }); } catch (e) {
-      if (e?.name !== 'AbortError') toast(`Could not start the sign-in: ${words(e).message || errorWords(e).text}`, { kind: 'error' });
+    try { s = await startSignIn(region, redirect); } catch (e) {
+      if (e?.name !== 'AbortError') toast(startError(e), { kind: 'error' });
       return;
     } finally { b.disabled = false; }
     if (!ctx.alive()) return;
@@ -224,16 +255,58 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     const label = field({ label: 'name', name: 'label', required: true, value: 'Tesla account', hint: 'Your own name for it, shown on this page. Not the account\'s e-mail.', attrs: { maxlength: '64', autocomplete: 'off' } });
     const pasted = field({ label: 'address', name: 'pasted_url', path: 'pasted_url', type: 'textarea', required: true,
       hint: `The whole address Tesla ended on, starting ${endsOn}`, attrs: { spellcheck: 'false', autocomplete: 'off', rows: '3', placeholder: `${endsOn}?code=...` } });
+    // A sign-in works once: after Tesla was asked with its code (Tesla refused it, or could not be reached) or
+    // once it ran out, only a new one goes on. The dialog starts it in place, with a new link to Tesla's page.
+    let used = false, frm = null;
+    const open = h('a', { class: 'btn btn--primary', href: s.url, target: '_blank', rel: 'noopener noreferrer external' }, 'open tesla\'s sign-in page');
+    const again = btn('start a new sign-in', () => restart());
+    again.hidden = true;
+    const said = h('p', { class: 'note', role: 'status', hidden: true });
+    const until = h('span');
+    const paintUntil = () => replace(until, ` This sign-in lasts ten minutes, until ${time(s.expires_ms, Intl.DateTimeFormat().resolvedOptions().timeZone)} on this computer's clock, and works once.`);
+    paintUntil();
+    const dead = (text) => {
+      used = true; again.hidden = false; open.hidden = true;
+      replace(said, tag('used up', 'warn'), ` ${text}`); said.hidden = false;
+    };
+    async function restart() {
+      again.disabled = true;
+      try { s = await startSignIn(region, redirect); } catch (e) {
+        if (e?.name !== 'AbortError') frm?.setMessage(startError(e));
+        return;
+      } finally { again.disabled = false; }
+      if (!ctx.alive()) return;
+      used = false; open.href = s.url; open.hidden = false; again.hidden = true;
+      paintUntil();
+      pasted.input.value = ''; pasted.setError(null); frm?.setMessage(null);
+      replace(said, tag('new', 'accent'), ' A new sign-in is open: open Tesla\'s page again, sign in, and paste the address it ends on.'); said.hidden = false;
+      open.focus();
+    }
     const intro = h('div', { class: 'hc' },
       h('ol', { class: 'tesla-steps' },
         h('li', null, h('span', null, h('b', null, 'Open Tesla\'s page'), ' and sign in there. Tesla\'s own page asks for your Tesla password (and its code); this server never sees them. ',
-          h('a', { class: 'btn btn--primary', href: s.url, target: '_blank', rel: 'noopener noreferrer external' }, 'open tesla\'s sign-in page'))),
+          h('span', { class: 'acts' }, open, again))),
         h('li', null, h('span', null, h('b', null, 'The last page will not load.'), ' That is expected: Tesla ends on an address that starts ', code(endsOn), redirect === 'void' ? ', a blank page.' : ', which a browser cannot open. It may show an error or seem to do nothing; the address is still in the address bar.')),
         h('li', null, h('span', null, h('b', null, 'Copy that whole address'), ' and paste it below, with your own Sentry Mate password.'))),
-      h('p', { class: 'note' }, tag('10 min', 'warn'), ` This sign-in lasts ten minutes, until ${time(s.expires_ms, Intl.DateTimeFormat().resolvedOptions().timeZone)} on this computer's clock, and works once.`));
+      said,
+      h('p', { class: 'note' }, tag('10 min', 'warn'), until));
+    const USED_UP = {
+      tesla_unreachable: 'Tesla could not be reached, or answered with an error. Nothing was kept, and this sign-in is used up: press start a new sign-in, open Tesla\'s page again and paste the new address.',
+      tesla_refused: 'Tesla said no to this sign-in: its code may have run out or been used already. Nothing was kept, and this sign-in is used up: press start a new sign-in and sign in at Tesla again.',
+      no_such_sign_in: 'This sign-in ran out (it lasts ten minutes) or was used already. Press start a new sign-in, open Tesla\'s page again and paste the new address.',
+    };
     const r = await askPassword(ctx, {
-      title: 'sign in at tesla', intro, submit: 'add the account', extra: [label, pasted],
-      run: async (cred, v) => { try { return await ctx.api.post(`${BASE}/sign-in/${enc(s.sign_in)}`, withPw(cred, { pasted_url: v.pasted_url.trim(), label: v.label.trim() })); } catch (e) { throw words(e); } },
+      title: 'sign in at tesla', intro, submit: 'add the account', extra: [label, pasted], focus: open,
+      onOpen: (d, f) => { frm = f; },
+      run: async (cred, v) => {
+        if (used) { again.focus(); throw new Error('This sign-in is used up. Press start a new sign-in first, then open Tesla\'s page again.'); }
+        try { return await ctx.api.post(`${BASE}/sign-in/${enc(s.sign_in)}`, withPw(cred, { pasted_url: v.pasted_url.trim(), label: v.label.trim() })); } catch (e) {
+          words(e);
+          if (USED_UP[e.code]) { e.message = USED_UP[e.code]; dead(e.code === 'no_such_sign_in' ? 'This sign-in ran out or was used.' : 'Tesla was asked with this sign-in\'s code, so it works no more.'); }
+          else if (e.code === 'invalid' && /sign-in/i.test(e.fields?.pasted_url || '')) { again.hidden = false; }
+          throw e;
+        }
+      },
     });
     if (r) await reload(`${r.label || 'The account'} added. Match its cars below to start reading them.`);
   }
@@ -245,7 +318,7 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     const r = await askPassword(ctx, {
       title: 'add a tesla account by refresh token', submit: 'check with tesla and add', extra: [label, reg, tok],
       intro: note('Only paste a token of your own Tesla account. Anyone with it can read the account\'s cars, so it never leaves this server and no page shows it.'),
-      run: async (cred, v) => { try { return await ctx.api.post(`${BASE}/accounts`, withPw(cred, { label: v.label.trim(), region: v.region, refresh_token: v.refresh_token.trim() })); } catch (e) { throw words(e); } },
+      run: async (cred, v) => { try { return await ctx.api.post(`${BASE}/accounts`, withPw(cred, { label: v.label.trim(), region: v.region, refresh_token: v.refresh_token.trim() })); } catch (e) { throw fail(e); } },
     });
     if (r) await reload(`${r.label || 'The account'} added. Match its cars below to start reading them.`);
   }
@@ -254,38 +327,43 @@ export function teslaSection(ctx, { cars = [] } = {}) {
   function accountBlock(a) {
     const st = ACCOUNT_STATUS[a.status] || [a.status, 'muted', ''];
     const err = a.last_error;
+    // the account as the page has it now: after a refresh behind a dialog, its new version
+    const cur = () => accounts.find((x) => x.id === a.id) || a;
+    const K = (k) => `acc:${a.id}:${k}`;
+    const back = [`acc:${a.id}`];   // the account's heading, when the button is gone
     const patch = (title, intro, submit, bodyOf, extra = [], msg = 'Saved.', danger = false) => async () => {
       const r = await askPassword(ctx, {
         title, intro: intro ? note(intro) : null, submit, extra, danger,
-        run: async (cred, v) => { try { return await ctx.api.patch(`${BASE}/accounts/${enc(a.id)}`, withPw(cred, { version: a.version, ...bodyOf(v) })); } catch (e) { throw words(e); } },
+        run: async (cred, v) => { try { return await ctx.api.patch(`${BASE}/accounts/${enc(a.id)}`, withPw(cred, { version: cur().version, ...bodyOf(v) })); } catch (e) { throw fail(e); } },
       });
       if (r) await reload(msg);
     };
-    const pause = btn(a.paused ? 'resume' : 'pause', patch(a.paused ? `resume ${a.label}?` : `pause ${a.label}?`,
+    const pause = btn(a.paused ? 'resume' : 'pause', keep([K('pause'), ...back], patch(a.paused ? `resume ${a.label}?` : `pause ${a.label}?`,
       a.paused ? 'Its matched cars are read again from now on.' : 'Its cars are not read until you resume it. Nothing is asked of Tesla meanwhile; the history already stored stays.',
-      a.paused ? 'resume' : 'pause', () => ({ paused: !a.paused }), [], a.paused ? `${a.label} resumed.` : `${a.label} paused.`), { kind: a.paused ? 'primary' : '' });
-    const rename = btn('rename', () => {
+      a.paused ? 'resume' : 'pause', () => ({ paused: !a.paused }), [], a.paused ? `${a.label} resumed.` : `${a.label} paused.`)), { kind: a.paused ? 'primary' : '' });
+    const rename = btn('rename', keep([K('rename'), ...back], () => {
       const f = field({ label: 'name', name: 'label', required: true, value: a.label, attrs: { maxlength: '64', autocomplete: 'off' } });
       return patch(`rename ${a.label}`, null, 'rename', (v) => ({ label: v.label.trim() }), [f], 'Renamed.')();
-    }, { kind: 'quiet' });
-    const token = btn('replace token', () => {
+    }), { kind: 'quiet' });
+    const token = btn('replace token', keep([K('token'), ...back], () => {
       const f = field({ label: 'token', name: 'refresh_token', path: 'refresh_token', type: 'textarea', required: true, hint: 'Checked with Tesla before it replaces the old one.', attrs: { spellcheck: 'false', autocomplete: 'off', rows: '3' } });
       return patch(`new token for ${a.label}`, 'For an account Tesla stopped taking (sign in again), or a token you renewed elsewhere. The old token is deleted.', 'check with tesla and replace', (v) => ({ refresh_token: v.refresh_token.trim() }), [f], 'Token replaced and checked with Tesla.')();
-    }, { kind: a.status === 'sign_in_needed' ? 'primary' : '' });
-    const remove = btn('remove', async () => {
+    }), { kind: a.status === 'sign_in_needed' ? 'primary' : '' });
+    const remove = btn('remove', keep([K('remove'), ...back], async () => {
       const r = await askPassword(ctx, {
         title: `remove ${a.label}?`, danger: true, submit: 'remove the account',
         intro: note('Reading stops at once and the sealed file with its tokens is deleted. The history already stored from it stays, marked as data from the Tesla API.'),
-        run: async (cred) => { try { return await ctx.api.send('DELETE', `${BASE}/accounts/${enc(a.id)}`, withPw(cred)); } catch (e) { throw words(e); } },
+        run: async (cred) => { try { return await ctx.api.send('DELETE', `${BASE}/accounts/${enc(a.id)}`, withPw(cred)); } catch (e) { throw fail(e); } },
       });
       if (r) await reload(`${a.label} removed. Its history stays.`);
-    }, { kind: 'danger' });
+    }), { kind: 'danger' });
+    fk(pause, K('pause')); fk(rename, K('rename')); fk(token, K('token')); fk(remove, K('remove'));
     const loc = h('div', { class: 'keys', role: 'group', 'aria-label': `When the position of ${a.label}'s cars is asked for` },
-      LOCATION.map(([v, l, why]) => h('button', { class: 'key', type: 'button', title: why, 'aria-pressed': String(a.location === v),
-        onclick: () => (a.location === v ? null : patch(`position: ${l}?`, `${why} While the position is asked for, the car shows an icon on its screen that its location is shared.`, 'save', () => ({ location: v }), [], 'When the position is asked for: saved.')()) }, l)));
+      LOCATION.map(([v, l, why]) => h('button', { class: 'key', type: 'button', title: why, 'aria-pressed': String(a.location === v), dataset: { fk: K(`loc:${v}`) },
+        onclick: keep([K(`loc:${v}`), ...back], () => (a.location === v ? null : patch(`position: ${l}?`, `${why} While the position is asked for, the car shows an icon on its screen that its location is shared.`, 'save', () => ({ location: v }), [], 'When the position is asked for: saved.')())) }, l)));
 
     return h('div', { class: 'tesla-acc', id: `tesla-${a.id}` },
-      h('div', { class: 'tesla-acc-head' }, h('h3', null, a.label), tag(st[0], st[1]), h('span', { class: 'muted' }, a.region === 'china' ? 'china' : 'global')),
+      h('div', { class: 'tesla-acc-head' }, h('h3', { tabindex: '-1', dataset: { fk: `acc:${a.id}` } }, a.label), tag(st[0], st[1]), h('span', { class: 'muted' }, a.region === 'china' ? 'china' : 'global')),
       st[2] ? h('p', { class: ['note', a.status === 'sign_in_needed' || a.status === 'error' ? 'tone--warn' : null] }, st[2]) : null,
       kv([
         ['status', [tag(st[0], st[1]), a.running ? h('span', { class: 'muted' }, ' running') : null]],
@@ -309,10 +387,26 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     const opts = [['', 'not decided (not read)'], ...cars.map((c) => [c.id, c.name || c.id]), ['new', 'a new car'], ['leave_out', 'leave out (not read)']];
     // the choice of each car (the table draws a select per car for the desktop row and the phone row)
     const picked = new Map(items.map((c) => [c.vehicle, c.match ?? c.suggested ?? '']));
-    const save = btn('save matches', () => saveMatches(), { kind: 'primary' });
+    const K = (k) => `acc:${a.id}:${k}`;
+    const save = fk(btn('save matches', keep([K('save'), K('cars'), `acc:${a.id}`], () => saveMatches()), { kind: 'primary' }), K('save'));
     save.hidden = true;
     const changed = () => items.filter((c) => (picked.get(c.vehicle) || null) !== (c.match ?? null));
-    const sync = () => { save.hidden = !changed().length; };
+    const vName = (c) => c.display_name || c.vehicle;
+    // one Sentry Mate car takes one Tesla vehicle: two vehicles of this account on one car are refused here
+    // (the server refuses it across accounts, car_taken)
+    const dupes = () => {
+      const by = new Map();
+      for (const c of items) { const v = picked.get(c.vehicle); if (v && v !== 'new' && v !== 'leave_out') by.set(v, [...(by.get(v) || []), c]); }
+      return [...by].filter(([, l]) => l.length > 1);
+    };
+    const dupeMsg = h('p', { class: 'note tone--bad tesla-dupe', role: 'alert', hidden: true });
+    const sync = () => {
+      const d = dupes();
+      save.hidden = !changed().length;
+      save.disabled = !!d.length;
+      dupeMsg.hidden = !d.length;
+      replace(dupeMsg, d.length ? [tag('two on one', 'bad'), ` ${d.map(([car, l]) => `${l.map(vName).join(' and ')} are both matched to ${carName(car)}.`).join(' ')} One Sentry Mate car takes one Tesla vehicle: pick another car, a new car or leave out for one of them.`] : '');
+    };
     const select = (c) => {
       const pre = picked.get(c.vehicle);
       const known = opts.some(([v]) => v === pre) ? opts : [...opts, [pre, carName(pre)]];
@@ -323,11 +417,11 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     const sels = { get: (v) => ({ value: picked.get(v) }) };
     async function saveMatches() {
       const ch = changed();
-      if (!ch.length) return;
+      if (!ch.length || dupes().length) { sync(); return; }
       const r = await askPassword(ctx, {
         title: `match the cars of ${a.label}`, submit: 'save matches',
         intro: lines(ch.map((c) => { const v = sels.get(c.vehicle).value; return [tag(v === 'leave_out' || !v ? 'off' : 'read', v === 'leave_out' || !v ? 'muted' : 'ok'), [h('b', null, c.display_name || c.vehicle), ': ', v === 'new' ? 'a new car here, read from now on' : v === 'leave_out' ? 'left out, not read' : !v ? 'not decided, not read' : `${carName(v)}, read from now on`]]; })),
-        run: async (cred) => { try { return await ctx.api.put(`${BASE}/accounts/${enc(a.id)}/cars`, withPw(cred, { version: data.version ?? a.version, items: ch.map((c) => ({ vehicle: c.vehicle, match: sels.get(c.vehicle).value || null })) })); } catch (e) { throw words(e); } },
+        run: async (cred) => { try { return await ctx.api.put(`${BASE}/accounts/${enc(a.id)}/cars`, withPw(cred, { version: carRows[a.id]?.version ?? data.version ?? a.version, items: ch.map((c) => ({ vehicle: c.vehicle, match: sels.get(c.vehicle).value || null })) })); } catch (e) { throw fail(e); } },
       });
       if (r) await reload('Matches saved.');
     }
@@ -338,12 +432,12 @@ export function teslaSection(ctx, { cars = [] } = {}) {
       columns: [
         { key: 'car', label: 'car at tesla', ph: 'main', cls: 'tesla-car-col', render: (c) => [h('b', null, c.display_name || 'no name at Tesla'), h('span', { class: 'muted' }, ` ${[c.year, c.model].filter(Boolean).join(' ')} ${c.vin_prefix || ''}`)] },
         { key: 'match', label: 'sentry mate car', ph: 'sub', render: (c) => [select(c), c.match == null && c.suggested ? [' ', tag('suggested: same vin prefix', 'accent')] : null] },
-        { key: 'state', label: 'tesla says', ph: 'sub', render: (c) => CAR_STATE[c.state] || c.state || DASH },
+        { key: 'state', label: 'tesla says', ph: 'sub', render: (c) => [h('span', { class: 'ph-k' }, 'tesla says '), CAR_STATE[c.state] || c.state || DASH] },
         { key: 'mode', label: 'what the server does', grow: true, ph: 'sub', cls: 'wrap-cell', render: (c) => {
           const m = CAR_MODE[c.mode] || [c.mode, ''];
           const sv = statusOf(c);
           const next = sv.next_poll_ms ?? null;
-          return h('span', { title: m[1] }, m[0], sv.streaming ? h('span', { class: 'muted' }, ', live stream') : null,
+          return h('span', { title: m[1] }, h('span', { class: 'ph-k' }, 'server: '), m[0], sv.streaming ? h('span', { class: 'muted' }, ', live stream') : null,
             c.mode === 'backoff' && next ? h('span', { class: 'tone--warn' }, `; next try ${time(next, zoneOf(c))} (in ${dur(Math.max(0, next - ctx.api.now()))})`)
               : next && c.mode !== 'off' ? h('span', { class: 'muted' }, `; next read ${time(next, zoneOf(c))}`) : h('span', { class: 'muted' }, `: ${m[1].charAt(0).toLowerCase()}${m[1].slice(1)}`));
         } },
@@ -352,7 +446,8 @@ export function teslaSection(ctx, { cars = [] } = {}) {
       empty: () => h('div', { class: 'empty' }, h('p', { class: 'empty-line' }, '-- no cars on this account --'), h('p', { class: 'empty-hint' }, 'Tesla lists no car for this account. A car added to it at Tesla shows here within a few minutes.')),
     });
     tables.push(t);
-    return h('div', null, h('div', { class: 'tesla-cars-head' }, h('p', { class: 'sub-title' }, `its cars (${items.length})`), save), t.el, note('A car is read only once it is matched to a car here or to a new car. A suggestion has the same VIN prefix as a car here; it is not saved until you press save matches.'));
+    sync();
+    return h('div', null, h('div', { class: 'tesla-cars-head' }, h('p', { class: 'sub-title', tabindex: '-1', dataset: { fk: K('cars') } }, `its cars (${items.length})`), save), dupeMsg, t.el, note('A car is read only once it is matched to a car here or to a new car. A suggestion has the same VIN prefix as a car here; it is not saved until you press save matches.'));
   }
 
   return { el, side, load };

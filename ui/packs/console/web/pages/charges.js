@@ -28,7 +28,7 @@ import { rpx } from '../core/display.js';
 import { isAdmin } from '../core/prefs.js';
 import { toast } from '../core/toast.js';
 import { placeLink } from './timeline.js';
-import { src, est as estTag, srcText, sourceWord, SOURCE_KEY } from '../core/source.js';
+import { src, est as estTag, srcText, sourceWord, sourceCheck, SOURCE_KEY } from '../core/source.js';
 
 export const id = 'charges';
 
@@ -101,7 +101,7 @@ export async function mount(ctx) {
   });
   const statsParams = () => ({ ...base(), places: f.places, min_duration_min: f.min_dur });
   const fl = filterLine({
-    keys: KEYS, value: q.f || '', placeholder: 'place:home kind:dc dur:10', label: 'Filter the charges',
+    keys: KEYS, check: { source: sourceCheck }, value: q.f || '', placeholder: 'place:home kind:dc dur:10', label: 'Filter the charges',
     cover: ['charges.filter.geofence', 'charges.filter.location', 'charges.filter.charge_type', 'charges.filter.min_cost', 'charges.filter.min_duration', 'cs.filter.min_duration', 'cs.filter.geofence'],
     onApply: (p, raw) => {
       ctx.setQuery({ f: raw || null });
