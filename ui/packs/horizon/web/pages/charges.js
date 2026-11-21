@@ -16,7 +16,8 @@ import { format, formatMoney, unitLabel } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, buckets, bucketKey } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { icon, hud, plate, btn, seg, tag, note } from '../core/ui.js';
-import { controls, slot, periodBtn, select, search, counters, csvBtn, band, plural, eq, placeLabel, placeHref, sourceTag } from '../core/kit.js';
+import { controls, slot, periodBtn, select, search, counters, csvBtn, band, plural, eq, placeLabel, placeHref } from '../core/kit.js';
+import { srcChip, sourceLabel, estimated, SOURCE_FILTER, sourceParam } from '../core/sources.js';
 import { tracks } from '../core/tracks.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, tone, alpha, well } from '../core/chart.js';
 import { createMap, mapFallback, boundsOf, pad } from '../core/map.js';
@@ -67,7 +68,7 @@ export async function mount(ctx) {
   const zoneOf = (c) => c.time_zone || carById.get(c.car)?.time_zone || tz;
 
   /* ---------- filters (kept in the address) */
-  const f = { places: q.places || '', place_kind: q.place_kind || '', kind: q.kind || '', q: q.q || '', min_cost: q.min_cost || '', unpriced: q.unpriced === '1', min_dur: q.min_dur || '', source: q.source || '', flags: q.flags || '' };
+  const f = { places: q.places || '', place_kind: q.place_kind || '', kind: q.kind || '', q: q.q || '', min_cost: q.min_cost || '', unpriced: q.unpriced === '1', min_dur: q.min_dur || '', source: sourceParam(q.source), flags: q.flags || '' };
   const base = () => ({ ...ctx.params, cars: carsParam });
   const listParams = () => ({ ...base(), places: f.places || null, place_kind: f.place_kind || null, kind: f.kind || null, q: f.q || null, min_cost: f.min_cost !== '' ? f.min_cost : null,
     include_unpriced: f.min_cost !== '' && f.unpriced ? 'true' : null, min_duration_min: f.min_dur || null, source: f.source || null, flags: f.flags || null });
@@ -114,7 +115,7 @@ export async function mount(ctx) {
     slot('Text', search(f.q, (v) => set({ q: v }, 0, false), { placeholder: 'Place or address', ctx }), { wide: true, cover: 'charges.filter.location' }),
     slot('Cost at least', h('span', { class: 'ctl-in' }, numIn(f.min_cost, 'Lowest cost, in its currency', '0.01', (v) => set({ min_cost: v }, 350, false)), h('label', { class: 'check cs-check' }, unpricedIn, h('span', null, 'and unpriced'))), { cover: 'charges.filter.min_cost' }),
     slot('Charging at least (min)', numIn(f.min_dur, 'Shortest charging time in minutes', '1', (v) => set({ min_dur: v }, 350)), { cover: ['charges.filter.min_duration', 'cs.filter.min_duration'] }),
-    slot('Source', select([['', 'Every source'], ['can', 'CAN Bridge'], ['teslamate', 'Imported']], f.source, (v) => set({ source: v }, 0, false), { label: 'Source' })),
+    slot('Source', select(SOURCE_FILTER, f.source, (v) => set({ source: v }, 0, false), { label: 'Where the data came from' })),
     slot('Missing data', select([['', 'Every charge'], ['gap', 'With missing data'], ['in_progress', 'Under way'], ['gap,in_progress', 'Missing or under way']], f.flags, (v) => set({ flags: v }, 0, false), { label: 'Missing data' })));
 
   /* ---------- the totals of the list */
@@ -143,7 +144,7 @@ export async function mount(ctx) {
     { key: 'kind', label: 'Type', cover: 'charges.table.type', render: (c) => h('span', { class: 'cell' }, h('span', { class: ['tag', KIND_TONE[c.kind || 'unknown'] && `tag--${KIND_TONE[c.kind || 'unknown']}`], title: KIND_HELP[c.kind || 'unknown'] }, KIND[c.kind] || 'Unknown'),
       c.fast_charger ? h('span', { class: 'cell-sub' }, [c.fast_charger.type === 'supercharger' ? 'Supercharger' : c.fast_charger.brand || 'Fast charger', c.fast_charger.class].filter(Boolean).join(' ')) : null), csv: (c) => KIND[c.kind] || 'Unknown' },
     { key: 'duration', label: 'Charging', num: true, sort: 'duration', cover: 'charges.table.duration', render: (c) => h('span', { class: 'cell' }, formatDuration(c.charging_ms), c.plugged_ms != null ? h('span', { class: 'cell-sub' }, `plugged ${formatDuration(c.plugged_ms)}`) : null), csv: (c) => (c.charging_ms == null ? '' : Math.round(c.charging_ms / 60000)) },
-    { key: 'added', label: 'Added', num: true, sort: 'energy', cover: 'charges.table.energy_added', render: (c) => format(c.energy_added_kwh, 'energy'), csv: column('Energy added', 'energy_added_kwh', 'energy') },
+    { key: 'added', label: 'Added', num: true, sort: 'energy', cover: 'charges.table.energy_added', render: (c) => (estimated(c) ? h('span', { title: 'Estimated: summed from the Tesla API\'s power readings, or from the imported history' }, format(c.energy_added_kwh, 'energy'), h('span', { class: 'est' }, ' est.')) : format(c.energy_added_kwh, 'energy')), csv: column('Energy added', 'energy_added_kwh', 'energy') },
     { key: 'grid', label: 'From grid', num: true, cover: 'charges.table.energy_used', render: (c) => (c.energy_grid_kwh != null ? format(c.energy_grid_kwh, 'energy') : c.dc_inlet_kwh != null ? h('span', { class: 'cell' }, h('span', { class: 'faint' }, 'not measured'), h('span', { class: 'cell-sub' }, `${format(c.dc_inlet_kwh, 'energy')} at the inlet`)) : '—'), csv: column('Energy from grid', 'energy_grid_kwh', 'energy') },
     { key: 'eff', label: 'Efficiency', num: true, cover: 'charges.table.efficiency', render: (c) => (c.efficiency_pct != null ? h('span', { class: 'cs-eff', title: `Lost ${format(c.losses_kwh, 'energy')}` }, h('span', null, pct(c.efficiency_pct)), h('span', { class: 'cs-eff-bar', 'aria-hidden': 'true' }, h('i', { vars: { '--w': `${Math.max(4, Math.min(100, c.efficiency_pct)).toFixed(1)}%` } }))) : h('span', { class: 'faint' }, c.kind === 'dc' ? 'unknown (DC)' : '—')), csv: (c) => c.efficiency_pct },
     { key: 'cost', label: 'Cost', num: true, sort: 'cost', cover: ['charges.table.cost', 'charges.link.set_cost'], render: (c) => {
@@ -160,11 +161,12 @@ export async function mount(ctx) {
       h('span', { class: 'cs-soc-bar', 'aria-hidden': 'true', vars: { '--a': `${Math.max(0, Math.min(100, c.start_soc_pct ?? 0))}%`, '--b': `${Math.max(0, Math.min(100, c.end_soc_pct ?? c.start_soc_pct ?? 0))}%` } }, h('i'))), csv: (c) => `${c.start_soc_pct ?? ''} -> ${c.end_soc_pct ?? ''}` },
     { key: 'temp', label: 'Temps', num: true, cover: 'charges.table.temp', render: (c) => h('span', { class: 'cell' }, format(c.outside_avg_c, 'temperature'), h('span', { class: 'cell-sub' }, c.battery_avg_c != null ? `pack ${format(c.battery_avg_c, 'temperature')}` : 'pack —')), csv: column('Outside', 'outside_avg_c', 'temperature') },
     { key: 'odo', label: 'Odometer', num: true, cover: 'charges.table.odometer', render: (c) => format(c.odometer_km, 'odometer'), csv: column('Odometer', 'odometer_km', 'odometer') },
-    { key: 'flags', label: '', csv: false, render: (c) => h('span', { class: 'flagline' }, c.has_gaps ? h('span', { class: 'tag tag--org', title: 'Data missing inside this charge' }, 'Gap') : null, c.flags?.in_progress || c.end_ms == null ? tag('Live', 'grn') : null, sourceTag(c.source)) },
+    { key: 'flags', label: '', csv: false, render: (c) => h('span', { class: 'flagline' }, c.has_gaps ? h('span', { class: 'tag tag--org', title: 'Data missing inside this charge' }, 'Gap') : null, c.flags?.in_progress || c.end_ms == null ? tag('Live', 'grn') : null) },
+    { key: 'source', label: 'Source', render: (c) => srcChip(c), csv: (c) => sourceLabel(c) },
   ].filter(Boolean);
   const list = tracks(ctx, {
     title: 'Charging sessions', icon: 'bolt', path: listPath, params: listParams(), limit: 25, columns, sort: { key: 'start', dir: 'desc' }, csvName: 'charges', cover: 'charges.table', noteCover: 'charges.text.list_help', cls: 'cs-list',
-    note: 'The counters above add up exactly the listed charges. Energy added is measured at the pack; DC efficiency is unknown because a fast charger\'s grid side is not measured. Open a row for its curve and cost.',
+    note: 'The counters above add up exactly the listed charges. Energy added is measured at the pack by SMO (est. where only the Tesla API saw the charge, or it is imported); DC efficiency is unknown because a fast charger\'s grid side is not measured. Open a row for its curve and cost.',
     rowHref: (c) => state.buildUrl('charge', { car: c.car, charge: c.id }),
     onPage: (pg) => { if (pg.totals) paintSummary(pg.totals); },
     empty: () => emptyState({ icon: 'bolt', title: 'No charges', text: Object.values(queryOf()).some(Boolean) ? `No charge in ${period.label.toLowerCase()} passes every filter that is on. Clear some to see more.` : `${scopeName} did not charge in this period. Pick a longer period.` }),

@@ -11,7 +11,8 @@ import { format, getUnits, unitLabel, rangeLabel } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, formatDateRange, dayKey, dayRange, addDays, startOf } from '../shared/time.js';
 import { column } from '../shared/csv.js';
 import { icon, hud, plate, btn, linkBtn } from '../core/ui.js';
-import { controls, slot, select, periodBtn, carBtn, csvBtn, placeLink, stat, rack, counters, eq, plural, sourceTag } from '../core/kit.js';
+import { controls, slot, select, periodBtn, carBtn, csvBtn, placeLink, stat, rack, counters, eq, plural } from '../core/kit.js';
+import { srcChip, sourceLabel, estimated } from '../core/sources.js';
 import { tracks } from '../core/tracks.js';
 import { strip } from '../core/strip.js';
 import { scope, loadUPlot, well } from '../core/chart.js';
@@ -146,7 +147,7 @@ export async function mount(ctx) {
       { key: 'soc', label: 'Battery', num: true, cover: ['trip.drives.soc_start', 'trip.drives.soc_end'], render: (d) => `${format(d.start_soc_pct, 'percent')} → ${format(d.end_soc_pct, 'percent')}` },
       { key: 'wh', label: 'Consumption', num: true, sort: 'wh_per_km', cover: 'trip.drives.consumption', csv: column('Consumption', 'wh_per_km', 'efficiency'),
         render: (d) => (d.distance_km != null && d.distance_km < 0.5 ? h('span', { class: 'faint', title: 'Too short to be reliable' }, '—') : [format(d.wh_per_km, 'efficiency'), d.energy_basis === 'estimated' ? ' est.' : '']) },
-      { key: 'src', label: '', csv: false, render: (d) => sourceTag(d.source) },
+      { key: 'src', label: 'Source', render: (d) => srcChip(d), csv: (d) => sourceLabel(d) },
     ],
     empty: () => emptyState({ icon: 'route', title: 'No drive in this window', text: 'Pick a longer window, or one of the shortcuts above.' }),
   });
@@ -166,11 +167,12 @@ export async function mount(ctx) {
           const href = c.place?.id ? state.buildUrl('places', { query: { place: c.place.id } }) : state.buildUrl('charge', { car: cid, charge: c.id });
           return c.cost ? h('a', { href, title: `Cost from the ${COST[c.cost.source] || c.cost.source || 'price'}` }, format(c.cost, 'money')) : h('a', { class: 'faint', href, title: 'No price: give the place a price' }, 'no price');
         } },
-      { key: 'added', label: 'Added', num: true, sort: 'energy', cover: 'trip.charges.energy_added', csv: column('Added', 'energy_added_kwh', 'energy'), render: (c) => format(c.energy_added_kwh, 'energy') },
+      { key: 'added', label: 'Added', num: true, sort: 'energy', cover: 'trip.charges.energy_added', csv: column('Added', 'energy_added_kwh', 'energy'), render: (c) => (estimated(c) ? [format(c.energy_added_kwh, 'energy'), h('span', { class: 'est', title: 'Estimated' }, ' est.')] : format(c.energy_added_kwh, 'energy')) },
       { key: 'grid', label: 'From grid', num: true, cover: 'trip.charges.energy_used', title: 'Energy drawn, losses included (AC only)', csv: column('From grid', 'energy_grid_kwh', 'energy'), render: (c) => format(c.energy_grid_kwh, 'energy', { why: '' }) },
       { key: 'power', label: 'Avg power', num: true, cover: 'trip.charges.power_avg', csv: column('Average power', 'power_avg_kw', 'power'), render: (c) => format(c.power_avg_kw, 'power') },
       { key: 'range', label: 'Range added', num: true, cover: 'trip.charges.range_added', title: rangeLabel(), csv: column('Range added', 'range_added_km', 'range'), render: (c) => format(c.range_added_km, 'range') },
       { key: 'soc', label: 'Battery', num: true, sort: 'end_soc', cover: ['trip.charges.soc_start', 'trip.charges.soc_end'], render: (c) => `${format(c.start_soc_pct, 'percent')} → ${format(c.end_soc_pct, 'percent')}` },
+      { key: 'src', label: 'Source', render: (c) => srcChip(c), csv: (c) => sourceLabel(c) },
     ],
     empty: () => emptyState({ icon: 'bolt', title: 'No charge in this window', text: 'The car did not charge between these times.' }),
   });

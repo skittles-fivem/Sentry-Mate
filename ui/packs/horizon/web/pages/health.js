@@ -8,6 +8,8 @@
 //   health (admin), the /health address for container checks and the one error shape of the API.
 // API: cars/{car}/health, gaps, totals?source=, updates (summary), storage, signals/latest, signals;
 // POST cars/{car}/rebuild; system/storage, system/health, geocode/status, cars. "rows" events reload.
+// Admins also see what the server does for the car through the Tesla API (integrations/tesla/status), and the
+// whole server's Tesla input on /system. Rows say where their data came from (SMO, the Tesla API, imported).
 
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
@@ -24,6 +26,8 @@ import { emptyState, errorWords } from '../core/states.js';
 import { confirmDialog, toast } from '../core/layer.js';
 import { agoEl, stateWord, DASH } from '../core/fmt.js';
 import { isAdmin } from '../core/prefs.js';
+import { srcChip, sourceLabel } from '../core/sources.js';
+import { statusTable, requestsText, lastErrorText } from '../core/tesla.js';
 
 export const id = 'health';
 export const css = true;
@@ -55,7 +59,6 @@ const KIND_TEXT = {
   curves: 'Power, volts and amps of every charge, second by second.', rows: 'One row per drive, charge, state and stop.',
   imported: 'History brought in from TeslaMate.', tiles: 'Map tiles kept on this server.', places: 'Places, prices and settings.', geocode: 'Addresses already looked up.',
 };
-const SOURCE_NAMES = { can: 'From the car', teslamate: 'Imported' };
 const UNIT_KIND = { km: 'distance', 'km/h': 'speed', '°C': 'temperature', kPa: 'pressure', kWh: 'energy', kW: 'power', '%': 'percent', V: 'voltage', A: 'current', m: 'length' };
 const signalKind = (s) => (s.series === 'odometer' ? 'odometer' : UNIT_KIND[s.unit] || null);
 const COORD = new Set(['gps_latitude', 'gps_longitude']);
@@ -198,42 +201,66 @@ async function mountCar(ctx) {
       { key: 'cause', label: 'Cause', render: (g) => h('span', { class: 'cell' }, h('span', null, GAP_CAUSES[g.cause] || g.cause), g.gap_reason ? h('span', { class: 'cell-sub' }, SPAN_REASONS[g.gap_reason] || g.gap_reason) : null), csv: (g) => GAP_CAUSES[g.cause] || g.cause },
       { key: 'jump', label: 'Odometer moved', num: true, render: (g) => format(g.odometer_jump_km, 'distance'), csv: column('Odometer moved', 'odometer_jump_km', 'distance') },
       { key: 'where', label: 'Where', render: (g) => h('span', { class: 'cell' }, g.from_place?.name || 'Unknown place', g.to_place && g.to_place.id !== g.from_place?.id ? h('span', { class: 'cell-sub' }, `to ${g.to_place.name}`) : null), csv: (g) => g.from_place?.name || '' },
-      { key: 'source', label: 'Source', render: (g) => SOURCE_NAMES[g.source] || g.source || DASH, csv: (g) => g.source || '' },
+      { key: 'source', label: 'Source', render: (g) => srcChip(g) || DASH, csv: (g) => sourceLabel(g) },
     ],
     empty: () => emptyState({ icon: 'check', title: 'No gaps in this period', text: 'Every moment is accounted for. Pick a longer period to look further back.' }),
   });
+
+  /* ---------- the Tesla API input for this car (admins) */
+  const teslaSlot = h('div');
+  async function loadTesla() {
+    if (!admin) return;
+    let rows = [], accounts = [];
+    try {
+      [rows, accounts] = await Promise.all([ctx.api.list('integrations/tesla/status').all(), ctx.api.list('integrations/tesla/accounts').all().catch(() => [])]);
+    } catch (e) { if (e.name === 'AbortError') throw e; replace(teslaSlot, note('What the server does through the Tesla API could not be read.')); return; }
+    if (!ctx.alive()) return;
+    const mine = rows.filter((r) => r.car === cid);
+    if (!mine.length) {
+      replace(teslaSlot, h('p', { class: 'note hl-tesla-none' }, icon('antenna', 'i--sm'), h('span', null, `${car.name} is not read through the Tesla API: no car of a Tesla account is matched to it. `,
+        h('a', { class: 'plc', href: `${state.buildUrl('settings-integrations')}#tesla` }, accounts.length ? 'Match it under Tesla account' : 'Add a Tesla account'))));
+      return;
+    }
+    const label = (id) => accounts.find((a) => a.id === id)?.label || id;
+    const t = statusTable(ctx, mine, { carName: () => car.name, accountLabel: label, title: 'Tesla API: this car now', tz,
+      note: 'The second live input beside SMO. The server never wakes the car: while it sleeps only the account\'s car list is read.' });
+    replace(teslaSlot, t.el);
+    await t.ready;
+  }
 
   /* ---------- what is recorded */
   const totalsEl = h('div');
   const rowsSlot = h('div');
   async function loadTotals() {
-    const [all, can, tm, upd] = await Promise.all([
-      ctx.api.get(`${base}/totals`, { source: 'all' }), ctx.api.get(`${base}/totals`, { source: 'can' }), ctx.api.get(`${base}/totals`, { source: 'teslamate' }),
+    const [all, can, ta, tm, upd] = await Promise.all([
+      ctx.api.get(`${base}/totals`, { source: 'all' }), ctx.api.get(`${base}/totals`, { source: 'smo' }),
+      ctx.api.get(`${base}/totals`, { source: 'tesla_api' }), ctx.api.get(`${base}/totals`, { source: 'import' }),
       ctx.api.get(`${base}/updates`, { limit: 1 }).catch(() => null),
     ]);
     if (!ctx.alive()) return;
     const sm = upd?.summary || {};
-    const split = (a, b, kind) => `${format(a ?? 0, kind)} from the car, ${format(b ?? 0, kind)} imported`;
+    const split = (a, t, b, kind) => `${format(a ?? 0, kind)} from SMO, ${format(t ?? 0, kind)} from the Tesla API, ${format(b ?? 0, kind)} imported`;
     replace(totalsEl, counters([
-      { label: 'Logged distance', value: all.distance_km, kind: 'distance', cover: 'dbinfo.stat.logged_distance', how: split(can.distance_km, tm.distance_km, 'distance') },
+      { label: 'Logged distance', value: all.distance_km, kind: 'distance', cover: 'dbinfo.stat.logged_distance', how: split(can.distance_km, ta.distance_km, tm.distance_km, 'distance') },
       { label: 'Odometer', value: all.odometer_last_km, kind: 'odometer', cover: 'dbinfo.stat.odometer', how: all.odometer_last_ms != null ? `read ${when(ctx, all.odometer_last_ms)}` : 'not sent yet' },
       { label: 'Not logged', value: all.not_logged_km, kind: 'distance', how: 'driven while nothing was recorded' },
-      { label: 'Drives', value: all.drives, kind: 'count', cover: 'dbinfo.stat.drive_count', how: split(can.drives, tm.drives, 'count') },
-      { label: 'Charges', value: all.charges, kind: 'count', cover: 'dbinfo.stat.charge_count', how: split(can.charges, tm.charges, 'count') },
-      { label: 'Updates', value: all.updates, kind: 'count', cover: 'dbinfo.stat.update_count', how: split(can.updates, tm.updates, 'count') },
+      { label: 'Drives', value: all.drives, kind: 'count', cover: 'dbinfo.stat.drive_count', how: split(can.drives, ta.drives, tm.drives, 'count') },
+      { label: 'Charges', value: all.charges, kind: 'count', cover: 'dbinfo.stat.charge_count', how: split(can.charges, ta.charges, tm.charges, 'count') },
+      { label: 'Updates', value: all.updates, kind: 'count', cover: 'dbinfo.stat.update_count', how: split(can.updates, ta.updates, tm.updates, 'count') },
       { label: 'Version', text: sm.current_version || '—', cover: 'dbinfo.stat.current_version', how: sm.current_version ? (sm.build_changed_since != null ? 'changed since; the new one has no name' : 'the last named version') : 'never guessed: import, type or match it' },
     ]));
     const rows = [
-      { kind: 'Drives', what: 'One row per drive', can: can.drives, teslamate: tm.drives },
-      { kind: 'Charges', what: 'One row per charge', can: can.charges, teslamate: tm.charges },
-      { kind: 'Software updates', what: 'One row per update', can: can.updates, teslamate: tm.updates },
-    ].map((r) => ({ ...r, total: (r.can || 0) + (r.teslamate || 0) }));
+      { kind: 'Drives', what: 'One row per drive', can: can.drives, tesla: ta.drives, teslamate: tm.drives, total: all.drives },
+      { kind: 'Charges', what: 'One row per charge', can: can.charges, tesla: ta.charges, teslamate: tm.charges, total: all.charges },
+      { kind: 'Software updates', what: 'One row per update', can: can.updates, tesla: ta.updates, teslamate: tm.updates, total: all.updates },
+    ].map((r) => ({ ...r, total: r.total ?? (r.can || 0) + (r.tesla || 0) + (r.teslamate || 0) }));
     const t = tracks(ctx, {
       title: 'Rows kept', icon: 'book', rows, csvName: 'rows-kept', cover: 'dbinfo.table.row_counts', sort: { key: 'total', dir: 'desc' }, dense: true,
-      note: 'Exact counts, kept up to date as rows change. Where imported and car history overlap, both are counted here.',
+      note: 'Exact counts, kept up to date as rows change. A row SMO and the Tesla API both saw counts in both columns, once in Rows. Where imported and live history overlap, both are counted.',
       columns: [
         { key: 'kind', label: 'Kind', sort: true, lead: true, cover: 'dbinfo.rows.table_name', value: (r) => r.kind, render: (r) => h('span', { class: 'cell' }, h('span', { class: 'cell-main' }, r.kind), h('span', { class: 'cell-sub' }, r.what)) },
-        { key: 'can', label: 'From the car', num: true, sort: true, render: (r) => formatNumber(r.can ?? 0) },
+        { key: 'can', label: 'From SMO', num: true, sort: true, render: (r) => formatNumber(r.can ?? 0) },
+        { key: 'tesla', label: 'From the Tesla API', num: true, sort: true, render: (r) => formatNumber(r.tesla ?? 0) },
         { key: 'teslamate', label: 'Imported', num: true, sort: true, render: (r) => formatNumber(r.teslamate ?? 0) },
         { key: 'total', label: 'Rows', num: true, sort: true, cover: 'dbinfo.rows.row_count', render: (r) => h('b', null, formatNumber(r.total)) },
       ],
@@ -253,7 +280,7 @@ async function mountCar(ctx) {
       columns: [
         { key: 'date', label: 'Day', lead: true, render: (r) => h('a', { class: 'cell-main', href: state.buildUrl('timeline', { car: cid, period: { from: dayStart(r.date, tz), to: dayStart(r.date, tz) + 24 * HOUR } }) }, formatDayKey(r.date)), csv: (r) => r.date },
         { key: 'series', label: 'What', render: (r) => labels[r.series] || r.series, csv: (r) => r.series },
-        { key: 'source', label: 'Source', render: (r) => SOURCE_NAMES[r.source] || r.source, csv: (r) => r.source },
+        { key: 'source', label: 'Source', render: (r) => srcChip(r, { full: true }) || DASH, csv: (r) => sourceLabel(r) },
         { key: 'bytes', label: 'On disk', num: true, render: (r) => bytes(r.bytes), csv: (r) => r.bytes },
       ],
       empty: () => emptyState({ icon: 'calendar', title: 'No stored days yet', text: 'A day shows here once a log for it has arrived.' }),
@@ -333,7 +360,7 @@ async function mountCar(ctx) {
   async function reloadAll(say) {
     reloadBtn.disabled = true;
     try {
-      await Promise.all([loadHealth(), gaps.reload(), loadTotals(), loadStorage(), loadSignals()]);
+      await Promise.all([loadHealth(), gaps.reload(), loadTotals(), loadStorage(), loadSignals(), loadTesla()]);
       if (say && ctx.alive()) toast('Read again.', { kind: 'info' });
     } catch (e) { if (ctx.alive()) toast(errorWords(e).text, { kind: 'error' }); } finally { reloadBtn.disabled = false; }
   }
@@ -344,6 +371,7 @@ async function mountCar(ctx) {
     controls({ note: 'The period sets the gaps, unknown time and the signal chart. What is recorded and the storage are all time.' }, slot('Period', periodBtn(ctx))),
     hud({ title: 'Is data arriving?', icon: 'pulse', tone: 'cyan', cover: 'faq.stopped-recording', side: lightsEl }, healthBody),
     gaps.el,
+    teslaSlot,
     band(1, 'What is recorded', h('span', { class: 'trk-count' }, 'all time, not the period')),
     hud({ title: 'Trip counters', icon: 'stats' }, totalsEl), rowsSlot,
     band(2, 'Storage'),
@@ -357,7 +385,7 @@ async function mountCar(ctx) {
     loadHealth().catch(() => {}); gaps.reload(null, { quiet: true }); loadTotals().catch(() => {});
   });
 
-  try { await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), gaps.ready]); } catch (e) { if (ctx.alive()) ctx.fail(e); return; }
+  try { await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), loadTesla(), gaps.ready]); } catch (e) { if (ctx.alive()) ctx.fail(e); return; }
   if (ctx.alive()) ctx.ready();
 }
 
@@ -408,6 +436,26 @@ async function mountSystem(ctx) {
     h('h3', { class: 'hl-sub' }, 'Health address for container checks'),
     note(h('span', { class: 'mono' }, 'GET /health'), ' answers 200 with an empty body while the server is serving. It needs no sign-in and tells nothing about the cars or the data, so a monitor can call it freely.'),
     h('pre', { class: 'hl-pre' }, 'HEALTHCHECK --interval=30s CMD ["/sentry-mate", "health"]\n# or any monitor: GET https://<your server>/health  ->  200'));
+  const teslaLine = (t) => (!t || !t.accounts ? h('span', { class: 'faint' }, 'Off: no Tesla account')
+    : h('span', { class: 'cell' }, h('span', null, `${plural(t.accounts, 'account')}, ${plural(t.cars, 'car')} read`), h('span', { class: 'cell-sub' }, requestsText(t.requests_today)),
+      t.last_error ? h('span', { class: 'cell-sub warn' }, lastErrorText(t.last_error)) : null));
+  const teslaSlot = h('div');
+  async function loadTesla() {
+    if (!admin) return;
+    let rows = [], accounts = [], cars = [];
+    try {
+      [rows, accounts, cars] = await Promise.all([ctx.api.list('integrations/tesla/status').all(), ctx.api.list('integrations/tesla/accounts').all().catch(() => []), ctx.api.list('cars', { limit: 100 }).all({ max: 500 }).catch(() => [])]);
+    } catch (e) { if (e.name === 'AbortError') throw e; replace(teslaSlot, note('What the server does through the Tesla API could not be read.')); return; }
+    if (!ctx.alive()) return;
+    if (!accounts.length) {
+      replace(teslaSlot, h('p', { class: 'note' }, icon('antenna', 'i--sm'), h('span', null, 'The Tesla API input is off: no Tesla account is added, so the server makes no connection to Tesla. ',
+        h('a', { class: 'plc', href: `${state.buildUrl('settings-integrations')}#tesla` }, 'Tesla account'))));
+      return;
+    }
+    const t = statusTable(ctx, rows, { carName: (id) => cars.find((c) => c.id === id)?.name || id, accountLabel: (id) => accounts.find((a) => a.id === id)?.label || id, tz: ctx.tz });
+    replace(teslaSlot, t.el);
+    await t.ready;
+  }
   async function loadServer() {
     if (!admin) { replace(srvSlot, locked('Server health (uptime, versions, memory and timings)'), clockNote(), healthAddr()); return; }
     let sh, geo;
@@ -425,6 +473,7 @@ async function mountSystem(ctx) {
           ['Up for', sh.uptime_ms != null ? formatDuration(sh.uptime_ms) : DASH], ['Server version', h('span', { class: 'mono' }, v.server || DASH)], ['API version', h('span', { class: 'mono' }, v.api ?? DASH)],
           ['Storage format', h('span', { class: 'mono' }, v.db_format ?? DASH)], ['Timeline rules', h('span', { class: 'mono' }, v.timeline_rules ?? DASH)], ['Import mapping', h('span', { class: 'mono' }, v.import_mapping ?? DASH)],
           ['Last housekeeping', sh.housekeeping_last_ms != null ? agoEl(sh.housekeeping_last_ms) : 'not yet'],
+          ['Tesla API', teslaLine(sh.tesla)],
         ])),
         h('div', { class: 'stack' }, h('h3', { class: 'hl-sub' }, 'Memory and caches'),
           h('div', { class: 'hl-mem' }, h('span', { class: 'hl-mem-row' }, h('span', null, 'Upload memory'), h('span', { class: 'mono' }, `${bytes(mem.used_bytes)} of ${bytes(mem.limit_bytes)}`)),
@@ -484,7 +533,7 @@ async function mountSystem(ctx) {
   const reloadBtn = btn('Read again', () => reloadAll(true), { icon: 'arrow-r', kind: 'ghost', sm: true, cover: 'dbinfo.control.refresh' });
   async function reloadAll(say) {
     reloadBtn.disabled = true;
-    try { await Promise.all([loadStorage(), loadServer(), carList.reload()]); if (say && ctx.alive()) toast('Read again.', { kind: 'info' }); } catch (e) { if (ctx.alive()) toast(errorWords(e).text, { kind: 'error' }); } finally { reloadBtn.disabled = false; }
+    try { await Promise.all([loadStorage(), loadServer(), carList.reload(), loadTesla()]); if (say && ctx.alive()) toast('Read again.', { kind: 'info' }); } catch (e) { if (ctx.alive()) toast(errorWords(e).text, { kind: 'error' }); } finally { reloadBtn.disabled = false; }
   }
 
   replace(ctx.view, h('div', { class: 'page hl hl--sys' },
@@ -492,10 +541,11 @@ async function mountSystem(ctx) {
     hud({ title: 'Storage', icon: 'server', tone: 'cyan', cover: 'dbinfo.section.database' }, storeSlot),
     carList.el,
     hud({ title: 'Server health', icon: 'pulse' }, srvSlot),
+    teslaSlot,
     errList.el,
     h('p', { class: 'note', cover: ['nr.dash.state-table', 'nr.dash.state-table.parameter', 'nr.dash.state-table.value', 'nr.dash.state-table.sort-scroll'] }, icon('pulse', 'i--sm'),
       h('span', null, 'Every decoded signal of a car, with its value and a chart over time, is on that car\'s Data health page: open a car above.'))));
 
-  try { await Promise.all([loadStorage(), loadServer(), carList.ready]); } catch (e) { if (ctx.alive()) ctx.fail(e); return; }
+  try { await Promise.all([loadStorage(), loadServer(), carList.ready, loadTesla()]); } catch (e) { if (ctx.alive()) ctx.fail(e); return; }
   if (ctx.alive()) ctx.ready();
 }

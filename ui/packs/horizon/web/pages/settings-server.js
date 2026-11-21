@@ -18,8 +18,8 @@ import { emptyState } from '../core/states.js';
 import { openDialog, confirmDialog, toast, passwordOk } from '../core/layer.js';
 import { signOut } from '../core/session.js';
 import { dateTime, date, agoEl, zone, DASH } from '../core/fmt.js';
-import { chan, recLamp, presets, errText, code, sig, checkLine } from '../core/setting.js';
-import { movePanel, showKey, newKey, keySaved } from './server-move.js';
+import { chan, recLamp, presets, errText, code, sig, checkLine, copyBtn } from '../core/setting.js';
+import { movePanel, showKey, newKey, keySaved, askPassword } from './server-move.js';
 
 export const id = 'settings-server';
 export const css = true;
@@ -67,7 +67,8 @@ export async function mount(ctx) {
   const webIn = S.network?.inbound?.find((x) => x.purpose === 'web') || null;
   const upIn = S.network?.inbound?.find((x) => x.purpose === 'upload') || null;
   const local = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(here.host);
-  const certNames = Array.isArray(S.network?.certificate?.names) ? S.network.certificate.names.map((n) => n.toLowerCase()) : null;
+  const readCertNames = () => (Array.isArray(S.network?.certificate?.names) ? S.network.certificate.names.map((n) => n.toLowerCase()) : null);
+  let certNames = readCertNames();
   const reachSlot = h('ul', { class: 'chks' });
   function paintReach() {
     const saved = (S.settings.host_names || []).map((n) => n.toLowerCase());
@@ -176,6 +177,60 @@ export async function mount(ctx) {
         admin ? keyBtn('Make a new recovery key', newKey) : null));
   }
   paintKey();
+
+  // the certificate in use: its SHA-256 (in groups of four bytes), the names in it and the CAN Bridge's upload
+  // address, each with Copy; a new one made here unless it is the owner's own
+  const certOwn = () => !!S.network?.certificate?.own;
+  const shaFace = (sha) => h('code', { class: 'cd ss-sha', 'aria-label': `SHA-256 ${sha}` },
+    String(sha).split(':').reduce((g, b, i) => { if (i % 4 === 0) g.push([]); g[g.length - 1].push(b); return g; }, [])
+      .flatMap((g, i, all) => [h('span', { class: 'ss-sha-g' }, g.join(':') + (i < all.length - 1 ? ':' : '')), i < all.length - 1 ? h('wbr') : null]));
+  // an address that may break only after a slash or a colon, never inside a host name
+  const addrFace = (url) => h('code', { class: 'cd ss-url' },
+    String(url).split(/(?<=[/:])/).flatMap((part, i) => [i ? h('wbr') : null, h('span', { class: 'ss-url-p' }, part)]));
+  const certSlot = h('div', { class: 'ss-cert' });
+  function paintCert() {
+    const c = S.network?.certificate || null;
+    const facts = [];
+    if (c?.sha256) facts.push(h('div', { class: 'ss-fact' }, h('dt', null, 'SHA-256'), h('dd', null, shaFace(c.sha256), copyBtn(c.sha256))));
+    if (c?.names?.length) facts.push(h('div', { class: 'ss-fact' }, h('dt', null, 'Names in it'), h('dd', null, h('ul', { class: 'ss-cert-names', 'aria-label': 'Names in the certificate' }, c.names.map((n) => h('li', null, code(n)))), copyBtn(c.names.join(', ')))));
+    if (S.network?.upload_address) facts.push(h('div', { class: 'ss-fact' }, h('dt', null, 'CAN Bridge upload address'), h('dd', null, addrFace(S.network.upload_address), copyBtn(S.network.upload_address))));
+    replace(certSlot,
+      facts.length ? h('dl', { class: 'ss-facts' }, facts) : h('p', { class: 'chan-hint' }, 'The server did not say which certificate it uses.'),
+      c?.sha256 ? h('p', { class: 'ss-cert-need' }, icon('antenna', 'i--sm'), h('span', null, 'The CAN Bridge app needs this SHA-256 in its upload settings.')) : null,
+      certOwn()
+        ? h('p', { class: 'chan-hint' }, 'This is your own certificate (', code('cert.pem'), ' and ', code('key.pem'), ' in ', code('data/tls'), '): the server never replaces it. To change it, put the new pair there and start the container again.')
+        : h('div', { class: 'row' }, btn('Make a new certificate', () => makeCert(), { icon: 'reset', sm: true })));
+  }
+  const nextNames = () => ['localhost', ...((S.settings?.host_names) || []).filter((n) => String(n).toLowerCase() !== 'localhost')];
+  async function makeCert() {
+    const names = nextNames();
+    const out = await askPassword(ctx, {
+      title: 'Make a new certificate',
+      intro: h('div', { class: 'stack ss-newcert' },
+        h('p', null, 'The server makes a fresh certificate and serves it at once on the web and upload ports, with no restart.'),
+        h('ul', { class: 'chks' },
+          checkLine('warn', 'CAN Bridge uploads stop', 'The SHA-256 changes. Every CAN Bridge app refuses to upload here until its upload settings have the new SHA-256.'),
+          checkLine('info', 'Browsers ask again', 'Each device that opens these pages has to accept the new certificate once.'),
+          checkLine('info', 'Names in it', [names.map((n, i) => [i ? ', ' : '', code(n)]), '. Add a missing one under Host names for the certificate first.']))),
+      submit: 'Make a new certificate', danger: true,
+      run: (cred) => ctx.api.post('network/certificate', cred),
+    });
+    if (!out || !ctx.alive()) return;
+    try { S.network = await ctx.api.get('network'); } catch { S.network = { ...(S.network || {}), certificate: { names: out.names, sha256: out.sha256, own: false }, upload_address: out.upload_address }; }
+    if (!ctx.alive()) return;
+    certNames = readCertNames();
+    paintCert(); paintReach();
+    rec.light('Certificate');
+    const d = openDialog({
+      title: 'The new certificate is in use',
+      body: h('div', { class: 'stack' },
+        h('p', null, 'Put this SHA-256 in each CAN Bridge app\'s upload settings now; until then its uploads are refused.'),
+        h('div', { class: 'ss-fact' }, shaFace(out.sha256), copyBtn(out.sha256)),
+        h('p', { class: 'chan-hint' }, 'Reload this page to accept the new certificate in this browser.')),
+      actions: [btn('Done', () => d.close(), { kind: 'go' })],
+    });
+  }
+  paintCert();
 
   /* ---------------------------------------------------------------- accounts */
   const nAdmins = S.accounts.filter((a) => a.role === 'admin').length;
@@ -304,6 +359,14 @@ export async function mount(ctx) {
   }
 
   /* ---------------------------------------------------------------- audit log */
+  // the Tesla input's actions in words (others show as the server names them)
+  const ACTION = {
+    'tesla-account-added': 'Tesla account added', 'tesla-account-removed': 'Tesla account removed', 'tesla-account-paused': 'Tesla account paused',
+    'tesla-account-resumed': 'Tesla account resumed', 'tesla-account-changed': 'Tesla account changed', 'tesla-token-replaced': 'Tesla token replaced',
+    'tesla-car-matched': 'Tesla car matched', 'tesla-poll-changed': 'Tesla pace changed', 'tesla-sign-in-needed': 'Tesla needs a new sign-in',
+    'tesla-account-error': 'Tesla refuses an account',
+  };
+  const actionCell = (a) => (ACTION[a] ? h('span', { class: 'cell' }, h('span', { class: 'cell-main' }, ACTION[a]), h('span', { class: 'cell-sub' }, code(a))) : code(a));
   const accountNameOf = (aid) => S.accounts.find((a) => a.id === aid)?.name;
   function target(t, car = null) {
     const i = String(t || '').indexOf(':');
@@ -326,10 +389,14 @@ export async function mount(ctx) {
       case 'account': return a(state.buildUrl('settings-server', { query: { account: tid } }), `Account ${accountNameOf(tid) || tid}`);
       case 'session': return a(state.buildUrl('settings-server', { query: { session: tid } }), 'A session');
       case 'car': return carName.has(tid) ? a(state.buildUrl('settings-cars', { car: tid }), carName.get(tid)) : h('span', { class: 'faint' }, 'A car no longer here');
-      case 'settings': return tid === 'mqtt' ? a(state.buildUrl('settings-integrations'), 'MQTT settings') : a(state.buildUrl('settings-display'), 'Server defaults');
+      case 'settings': return tid === 'mqtt' ? a(state.buildUrl('settings-integrations'), 'MQTT settings') : tid === 'tesla' ? a(`${state.buildUrl('settings-integrations')}#tesla`, 'Tesla API settings') : a(state.buildUrl('settings-display'), 'Server defaults');
       case 'place': return a(state.buildUrl('places', { query: { place: tid } }), 'A place');
       case 'import': return a(state.buildUrl('import'), 'An import');
       case 'key': return a(state.buildUrl('settings-cars'), `CAN Bridge key ${tid}`);
+      case 'tesla': {
+        const acc = tid.split(':')[0];
+        return acc ? a(`${state.buildUrl('settings-integrations')}#tesla-${encodeURIComponent(acc)}`, tid.includes(':') ? 'A car of a Tesla account' : 'A Tesla account') : a(`${state.buildUrl('settings-integrations')}#tesla`, 'The Tesla API input');
+      }
       default: return h('span', { class: 'faint' }, t ? 'Another item' : DASH);
     }
   }
@@ -339,7 +406,7 @@ export async function mount(ctx) {
     columns: [
       { key: 'at', label: `When (${zn})`, render: (e) => h('span', { class: 'nowrap' }, dateTime(e.at_ms, tz)), csv: timeColumn(`When (${isoNote})`, 'at_ms', tz) },
       { key: 'who', label: 'Who', lead: true, render: (e) => (e.account ? h('b', null, e.account) : h('span', { class: 'faint' }, 'The server')), csv: (e) => e.account || 'server' },
-      { key: 'action', label: 'Action', render: (e) => code(e.action), csv: (e) => e.action },
+      { key: 'action', label: 'Action', render: (e) => actionCell(e.action), csv: (e) => e.action },
       { key: 'target', label: 'Item', render: (e) => target(e.target, e.car), csv: (e) => e.target },
       { key: 'summary', label: 'What happened', render: (e) => e.summary || DASH, csv: (e) => e.summary || '' },
     ],
@@ -400,9 +467,12 @@ export async function mount(ctx) {
     admin ? band(3, 'Safety and moving') : null,
     admin ? hud({ title: 'Certificate, recovery key and backups', icon: 'lock', id: 'ss-safety' },
       h('div', { class: 'stack' }, h('ul', { class: 'chks' },
-        cert ? checkLine('warn', `The certificate ends ${cert.detail?.expires_ms ? date(cert.detail.expires_ms, tz, { year: true }) : 'soon'}${cert.detail?.days != null ? ` (in ${format(cert.detail.days, 'count')} days)` : ''}`,
-          ['Make a new one before then: stop the container, delete ', code('data/tls/cert.pem'), ' (or put your own ', code('cert.pem'), ' and ', code('key.pem'), ' there) and start it again. A new certificate has a new SHA-256: type it again in each CAN Bridge.'])
-          : checkLine('ok', 'Certificate', 'The server reports no problem with its certificate. It keeps the same SHA-256 across restarts, updates and moves.')),
+        cert ? checkLine('warn', `The certificate expires ${cert.detail?.expires_ms ? date(cert.detail.expires_ms, tz, { year: true }) : 'soon'}${cert.detail?.days != null ? ` (in ${format(cert.detail.days, 'count')} days)` : ''}`,
+          certOwn()
+            ? ['After that browsers and CAN Bridges refuse to connect. It is your own certificate, so renew it where it came from, put the new ', code('cert.pem'), ' and ', code('key.pem'), ' in ', code('data/tls'), ' and start the container again. Its new SHA-256 then goes into each CAN Bridge.']
+            : 'Make a new one before then (below). Its new SHA-256 then goes into each CAN Bridge.')
+          : checkLine('ok', 'Certificate', 'The server reports no problem with its certificate. It keeps the same SHA-256 across restarts, updates and moves until you make a new one.')),
+        certSlot,
         keySlot,
         h('ul', { class: 'chks' }, checkLine('ok', 'Everything is encrypted at rest', ['Logs, the database, tokens and the certificate\'s key are sealed. A backup is a copy of the data folder: it opens only with the key file (kept apart in ', code('/keys'), ') or the recovery key, so keep those out of the same backup.'])))) : null,
     move ? move.el : null));

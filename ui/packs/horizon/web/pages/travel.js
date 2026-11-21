@@ -12,6 +12,7 @@ import { formatNumber, compareText } from '../shared/i18n.js';
 import { column } from '../shared/csv.js';
 import { icon, hud, plate, btn, seg } from '../core/ui.js';
 import { controls, slot, select, search, periodBtn, csvBtn, stat, rack, plural, band } from '../core/kit.js';
+import { srcChip, sourceLabel } from '../core/sources.js';
 import { tracks } from '../core/tracks.js';
 import { createMap, addTrace, boundsOf, pad, mapFallback } from '../core/map.js';
 import { rpx } from '../core/display.js';
@@ -215,6 +216,7 @@ export async function mount(ctx) {
       { key: 'label', label: 'Place', cover: 'locations.last_visited.address', render: (r) => placeCell({ ...r, street: r.address?.short }), csv: (r) => r.label },
       { key: 'city', label: 'City', cover: 'locations.last_visited.city', render: (r) => r.address?.locality || '—', csv: (r) => r.address?.locality },
       { key: 'stay', label: 'Stayed', num: true, render: (r) => (r.left_ms ? formatDuration(r.left_ms - r.arrived_ms) : 'still there'), csv: (r) => (r.left_ms ? Math.round((r.left_ms - r.arrived_ms) / 60000) : '') },
+      { key: 'src', label: 'Source', render: (r) => srcChip(r), csv: (r) => sourceLabel(r) },
     ],
     empty: () => emptyState({ icon: 'clock', title: 'No stop', text: 'No stop in this period.' }),
   });
@@ -257,7 +259,8 @@ export async function mount(ctx) {
   }
   if (!ctx.alive()) return;
   const lines = (tr?.drives || []).filter((d) => d.lat.length > 1).map((d) => ({ type: 'Feature', properties: { car: d.car }, geometry: { type: 'LineString', coordinates: d.lat.map((la, i) => [d.lon[i], la]) } }));
-  routeRead.textContent = tr ? `${plural(lines.length, 'drive')} · ${formatNumber(tr.points || 0)} positions` : 'Too many drives for one map: pick a shorter period or fewer cars.';
+  const trSrc = [...new Map((tr?.drives || []).flatMap((d) => d.sources || []).map((x) => [`${x.kind}:${x.site || ''}`, x])).values()];
+  replace(routeRead, tr ? `${plural(lines.length, 'drive')} · ${formatNumber(tr.points || 0)} positions ` : 'Too many drives for one map: pick a shorter period or fewer cars.', trSrc.length ? srcChip({ sources: trSrc }) : null);
   const pts = [...lines.flatMap((l) => [l.geometry.coordinates[0], l.geometry.coordinates[l.geometry.coordinates.length - 1]]), ...cities.filter((r) => r.lat != null).map((r) => [r.lon, r.lat])];
   if (!pts.length) { mapEl.append(mapFallback('No drive and no stop in this period, so there is nothing to map.')); return; }
   try { m = await createMap(mapEl, ctx, { bounds: boundsOf(pts) }); } catch { replace(mapEl, mapFallback()); return; }

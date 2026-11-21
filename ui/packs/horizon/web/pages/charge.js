@@ -15,6 +15,7 @@ import { formatDate, formatTime, formatDuration, zoneName, dayKey, dayRange, DAY
 import { formatNumber } from '../shared/i18n.js';
 import { icon, hud, plate, btn, linkBtn, tag, kv, note } from '../core/ui.js';
 import { counters, rack, stat, csvBtn, placeLink, placeLabel } from '../core/kit.js';
+import { srcChip, estTag, kindsOf, estimated } from '../core/sources.js';
 import { fuel } from '../core/gauges.js';
 import { tracks } from '../core/tracks.js';
 import { loadUPlot, mountPlot, scope, valueAxis, tone, alpha, chartFont, well } from '../core/chart.js';
@@ -50,7 +51,10 @@ export async function mount(ctx) {
   const live = !!c.flags?.in_progress || c.end_ms == null;
   const t0 = c.start_ms, t1 = c.end_ms ?? ctx.api.now();
   const dc = c.kind === 'dc', ac = c.kind === 'ac';
-  const imported = c.source === 'teslamate';
+  const kinds = kindsOf(c);
+  const imported = kinds.length ? !kinds.includes('smo') && kinds.includes('import') : c.source === 'teslamate';
+  const apiOnly = kinds.length === 1 && kinds[0] === 'tesla_api';
+  const estWord = estimated(c) || imported ? (apiOnly ? 'estimated from the Tesla API' : 'estimated (imported)') : null;
   const [curve, place, before, after, typical] = await Promise.all([
     ctx.api.get(`${base}/curve`, { fields: FIELDS.join(','), max_points: 4000 }).catch(() => null),
     c.place?.id ? ctx.api.get(`places/${enc(c.place.id)}`).catch(() => null) : null,
@@ -83,10 +87,10 @@ export async function mount(ctx) {
       live ? tag('Charging now', 'grn') : tag(dc ? 'Fast charge (DC)' : ac ? 'AC charge' : 'Charge', dc ? 'org' : 'cyan'),
       h('span', null, `${formatDate(t0, tz, { weekday: 'long', month: 'long' })}, ${formatTime(t0, tz)} to ${live ? 'now' : formatTime(t1, tz)} ${zn}`),
       h('span', null, format(c.energy_added_kwh, 'energy')), h('span', null, formatDuration(c.charging_ms)),
-      imported ? tag('Imported', 'org') : null) });
+      srcChip(c, { full: true }), estTag(c)) });
 
   /* ---------- the charge computer */
-  const why = live ? 'Still charging' : imported ? 'Not in imported history' : 'Not recorded';
+  const why = live ? 'Still charging' : imported ? 'Not in imported history' : apiOnly ? 'Not sent by the Tesla API' : 'Not recorded';
   const socA = c.start_soc_pct, socB = c.end_soc_pct;
   const socAdded = socA != null && socB != null ? socB - socA : null;
   const cells = 25;
@@ -98,20 +102,20 @@ export async function mount(ctx) {
     h('div', { class: 'cg-added', cover: ['cd.stat.soc_added', 'cd.stat.range_added'] }, h('b', null, format(socAdded, 'percent', { sign: true })), h('span', null, format(c.range_added_km, 'range', { sign: true })),
       c.energy_added_kwh && socAdded > 0 ? h('span', { class: 'faint' }, `${format(c.energy_added_kwh / socAdded, 'energy')} per %`) : null),
     h('div', { class: 'cg-end cg-end--r', cover: ['cd.stat.soc_end', 'cd.stat.range_end'] }, h('span', { class: 'stat-label' }, h('span', null, live ? 'Now' : 'End')), h('b', null, format(socB, 'percent')), h('span', null, format(c.end_range_km, 'range'))));
-  const drawn = ac ? { label: 'From the supply', value: c.energy_grid_kwh, kind: 'energy', how: imported ? 'estimated (imported)' : 'AC line volts × amps' }
+  const drawn = ac ? { label: 'From the supply', value: c.energy_grid_kwh, kind: 'energy', how: estWord || 'AC line volts × amps' }
     : dc ? { label: 'From the charger', value: c.dc_inlet_kwh, kind: 'energy', how: c.fast_charger?.billed_kwh != null ? `billed ${format(c.fast_charger.billed_kwh, 'energy')}` : 'at the inlet; grid side not sent' }
       : { label: 'From the supply', value: null, kind: 'energy', how: 'not known whether AC or DC' };
   const computer = hud({ title: 'Charge computer', icon: 'bolt', tone: 'cyan', side: live ? tag('so far', 'grn') : null },
     gauge, figures,
     rack([
       stat('Charging time', c.charging_ms, 'duration', { cover: 'cd.stat.duration', how: c.plugged_ms != null ? `plugged in ${formatDuration(c.plugged_ms)}` : 'first to last charging second' }),
-      stat('Energy added', c.energy_added_kwh, 'energy', { cover: 'cd.stat.energy_added', hot: true, how: imported ? 'estimated (imported)' : 'into the pack', why }),
+      stat('Energy added', c.energy_added_kwh, 'energy', { cover: 'cd.stat.energy_added', hot: true, how: estWord || 'into the pack', why }),
       stat(drawn.label, drawn.value, drawn.kind, { cover: 'cd.stat.energy_used', how: drawn.how, why }),
       stat('Efficiency', c.efficiency_pct, 'percent', { cover: 'cd.stat.efficiency', digits: 1, how: c.efficiency_pct != null ? `${format(c.losses_kwh, 'energy')} lost on the way` : null, why: dc ? 'DC: the charger\'s losses are not sent' : why }),
       stat('Average power', c.power_avg_kw, 'power', { cover: 'cd.stat.avg_power', how: c.power_max_kw != null ? `peak ${format(c.power_max_kw, 'power')}` : 'into the pack', why }),
       stat('Outside', c.outside_avg_c, 'temperature', { cover: 'cd.stat.avg_temp', how: c.battery_avg_c != null ? `battery ${format(c.battery_avg_c, 'temperature')}` : 'average', why }),
       stat('Range per hour', c.range_per_hour_km, 'range_rate', { how: 'range added per hour charging', why }),
-      stat('Odometer', c.odometer_km, 'odometer', { how: c.fast_charger ? [c.fast_charger.brand, c.fast_charger.type === 'supercharger' ? 'Supercharger' : c.fast_charger.type, c.fast_charger.class].filter(Boolean).join(' ') : imported ? 'imported' : 'from the CAN bus' }),
+      stat('Odometer', c.odometer_km, 'odometer', { how: c.fast_charger ? [c.fast_charger.brand, c.fast_charger.type === 'supercharger' ? 'Supercharger' : c.fast_charger.type, c.fast_charger.class].filter(Boolean).join(' ') : imported ? 'imported' : apiOnly ? 'from the Tesla API' : 'from SMO' }),
     ], { cls: 'cg-rack' }),
     c.flags?.gap_ms ? h('p', { class: 'note note--warn' }, icon('warn', 'i--sm'), h('span', null, `${formatDuration(c.flags.gap_ms)} without data inside this charge.`)) : null,
     note(`Battery % as the car's screen shows it; range is ${getUnits().range === 'ideal' ? 'rated range (charges keep rated range only)' : 'rated range'}.`));
@@ -143,12 +147,12 @@ export async function mount(ctx) {
       column('AC line voltage', 'ac_volts_v', 'voltage'), column('AC line current', 'ac_amps_a', 'current'), column('Pilot current', 'pilot_a', 'current'), column('Phases', 'phases'), column('Current set by', 'limit_source'),
       column('Charger voltage', 'dc_volts_v', 'voltage'), column('Charger current', 'dc_amps_a', 'current')] });
   const limits = [...new Set(col('limit_source').filter((v) => v != null))];
-  const tracesHud = hud({ title: 'Through the charge', icon: 'pulse', cover: 'cd.chart.timeline', side: [timeEl, resetBtn, csvCurve] },
+  const tracesHud = hud({ title: 'Through the charge', icon: 'pulse', cover: 'cd.chart.timeline', side: [curve ? srcChip(curve) : null, timeEl, resetBtn, csvCurve] },
     h('p', { class: 'note cg-hint' }, icon('info', 'i--sm'), h('span', null, 'Drag across a trace to zoom; double-click for the whole session.')),
     selBox,
     (c.gaps || []).length ? h('p', { class: 'note note--warn' }, icon('warn', 'i--sm'), h('span', null, `${c.gaps.length === 1 ? 'One stretch' : `${c.gaps.length} stretches`} without data: nothing is drawn across ${c.gaps.length === 1 ? 'it' : 'them'}.`)) : null,
     chargeHost,
-    note(curve?.step_ms > 1000 ? `One point every ${formatDuration(curve.step_ms)}${imported ? ' (imported history)' : ' (a long charge)'}.` : 'One point per second.'));
+    note(curve?.step_ms > 1000 ? `One point every ${formatDuration(curve.step_ms)}${imported ? ' (imported history)' : apiOnly ? ' (Tesla API readings)' : ' (a long charge)'}.` : 'One point per second.'));
   const supplyHud = hud({ title: dc ? 'The charger' : 'The supply', icon: 'plug' },
     note(ac ? `What the car took from the AC supply.${limits.length ? ` The current was set by ${limits.map((k) => LIMIT[k] || k).join(', then ')}.` : ' The car did not say what set the current.'}`
       : dc ? 'A fast charger turns AC into DC itself, so the car sees the charger\'s DC volts and amps, not the grid.' : 'This charge does not say whether it was AC or DC.'),

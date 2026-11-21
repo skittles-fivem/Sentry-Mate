@@ -1,4 +1,5 @@
-// The notices row: the server's notices (vault, certificate, recovery key file, move under way), each with
+// The notices row: the server's notices (vault, certificate, recovery key file, move under way, a Tesla account
+// that needs a sign-in or that Tesla refuses), each with
 // its cause and a link to the fix, plus an "offline" line while this browser has no network or the server
 // does not answer. Information notices can be put away for this tab. The opt-in release notice goes to the
 // footer instead (onNotices).
@@ -27,6 +28,13 @@ function fixText(link) {
   return 'How to fix it';
 }
 
+// a Tesla account's notice (admins only) opens that account on Settings: Integrations
+const TESLA = new Set(['tesla_sign_in_needed', 'tesla_account_error']);
+function fixOf(n) {
+  if (TESLA.has(n.code) && n.detail?.account) return `${(n.fix_link || '/settings/integrations').split('#')[0]}#tesla-${encodeURIComponent(n.detail.account)}`;
+  return n.fix_link || null;
+}
+
 function paint() {
   if (!box) return;
   const gone = away();
@@ -36,7 +44,7 @@ function paint() {
     return h('div', { class: 'notice', dataset: { level, code: n.code }, role: level === 'info' ? 'status' : 'alert' },
       icon(level === 'info' ? 'info' : 'warn'),
       h('span', { class: 'notice-text' }, n.message || n.code),
-      n.fix_link ? h('a', { class: 'btn btn--sm', href: n.fix_link }, h('span', null, fixText(n.fix_link)), icon('arrow-r', 'i--sm')) : null,
+      fixOf(n) ? h('a', { class: 'btn btn--sm', href: fixOf(n) }, h('span', null, TESLA.has(n.code) ? 'Open the Tesla account' : fixText(n.fix_link)), icon('arrow-r', 'i--sm')) : null,
       level === 'info' ? btn(null, () => { putAway(n.code); paint(); }, { kind: 'ghost', icon: 'x', sm: true, label: 'Put this notice away for now' }) : null);
   });
   if (offline) {

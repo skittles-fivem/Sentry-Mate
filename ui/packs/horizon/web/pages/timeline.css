@@ -48,3 +48,4 @@ a.tl-kind:hover { color: var(--mag-ink); text-decoration: underline; }
   .tl-dur { grid-area: dur; }
   .tl-day-head { padding: 0.625rem 1rem; }
 }
+.tl-src { margin: 0.125rem 0 0; display: flex; flex-wrap: wrap; gap: 0.375rem; }

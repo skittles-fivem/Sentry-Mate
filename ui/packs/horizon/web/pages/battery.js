@@ -15,6 +15,7 @@ import { formatDate, formatDateTime, formatTime, formatDuration, startOf, DAY } 
 import { formatNumber } from '../shared/i18n.js';
 import { icon, hud, plate, seg, note, tag, kv, bar, linkBtn } from '../core/ui.js';
 import { controls, slot, periodBtn, carBtn, select, counters, csvBtn, band, plural } from '../core/kit.js';
+import { srcChip, sourceLabel } from '../core/sources.js';
 import { dial, fuel, odo } from '../core/gauges.js';
 import { tracks } from '../core/tracks.js';
 import { loadUPlot, mountPlot, scope, timeAxis, valueAxis, tone, alpha, well } from '../core/chart.js';
@@ -217,7 +218,8 @@ export async function mount(ctx) {
     const [pts, med] = await Promise.all([collect(`${base}/battery/capacity`, { group: opt.capGroup, x: opt.capX }), ctx.api.get(`${base}/battery/capacity`, { group: 'month', x: opt.capX, limit: 500 })]);
     if (!ctx.alive()) return;
     const items = pts.items, trend = pts.trend || med.trend;
-    replace(capSide, sX.el, sG.el, csvBtn({ name: [car.name, 'battery-capacity', opt.capGroup], rows: items, columns: [timeColumn('Time', 't_ms', tz), column('Odometer', 'odometer_km', 'odometer'), column('Full pack', 'full_pack_kwh', 'energy'), column('Usable', 'usable_kwh', 'energy'), column('Method', 'method'), column('Charge', 'charge')] }));
+    const capSrc = [...new Map(items.flatMap((it) => it.sources || []).map((x) => [`${x.kind}:${x.site || ''}`, x])).values()];
+    replace(capSide, capSrc.length ? srcChip({ sources: capSrc }) : null, sX.el, sG.el, csvBtn({ name: [car.name, 'battery-capacity', opt.capGroup], rows: items, columns: [timeColumn('Time', 't_ms', tz), column('Odometer', 'odometer_km', 'odometer'), column('Full pack', 'full_pack_kwh', 'energy'), column('Usable', 'usable_kwh', 'energy'), column('Method', 'method'), column('Charge', 'charge'), { label: 'Source', value: (r) => sourceLabel(r) }] }));
     if (!items.length) { replace(capEl, emptyState({ icon: 'battery', title: 'No capacity readings yet', text: opt.capGroup === 'charge' ? 'A reading needs a finished charge that added at least 10 %. Try Per day for the pack\'s own readings.' : 'The pack reports its capacity while the car is awake; none is stored yet.' })); return; }
     const xOf = (it) => (opt.capX === 'odometer' ? (it.odometer_km == null ? null : convert(it.odometer_km, 'odometer')) : it.t_ms / 1000);
     const P = items.map((it) => ({ x: xOf(it), y: it.usable_kwh, it })).filter((p) => p.x != null && p.y != null);
@@ -429,6 +431,7 @@ export async function mount(ctx) {
       { key: 'power', label: 'Average power', num: true, cover: 'vd.col.avg_power', render: (r) => h('span', { class: 'cell' }, format(r.avg_power_w, 'power_w'), r.awake_avg_power_w != null ? h('span', { class: 'cell-sub' }, `awake ${format(r.awake_avg_power_w, 'power_w')}`) : null), csv: (r) => r.avg_power_w },
       { key: 'soc', label: 'Battery', num: true, cover: 'vd.col.soc_diff', render: (r) => h('span', { class: 'cell' }, r.soc_start_pct == null || r.soc_end_pct == null ? '—' : `−${pct(Math.max(0, r.soc_start_pct - r.soc_end_pct), 1)}`, h('span', { class: 'cell-sub' }, `${pct(r.soc_start_pct)} → ${pct(r.soc_end_pct)}`)), csv: (r) => (r.soc_start_pct == null || r.soc_end_pct == null ? '' : r.soc_start_pct - r.soc_end_pct) },
       { key: 'range', label: 'Range lost', num: true, cover: 'vd.col.range_loss', render: (r) => h('span', { class: 'cell' }, format(rk(r.range_lost_km), 'range', { digits: 1 }), h('span', { class: 'cell-sub', cover: 'vd.col.range_per_hour' }, `${format(rk(r.range_lost_per_hour_km), 'range_rate', { digits: 2 })}`)), csv: column('Range lost', 'range_lost_km', 'range') },
+      { key: 'src', label: 'Source', render: (r) => srcChip(r), csv: (r) => sourceLabel(r) },
       { key: 'why', label: 'Kept awake by', cover: 'vd.flag.cold', render: (r) => h('span', { class: 'flagline' },
         r.cold ? h('span', { class: 'tag tag--cyan', title: `Coldest pack temperature ${format(r.battery_min_c, 'temperature')}` }, 'Cold pack') : null,
         (r.awake_reasons || []).length ? r.awake_reasons.map((x) => tag(REASONS[x] || x)) : h('span', { class: 'faint' }, r.awake_ms > 0 ? 'no reason sent' : 'slept throughout')), csv: (r) => [r.cold ? 'cold pack' : null, ...(r.awake_reasons || [])].filter(Boolean).join('; ') },

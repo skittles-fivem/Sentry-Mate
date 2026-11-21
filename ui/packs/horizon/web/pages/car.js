@@ -2,7 +2,8 @@
 // Now: GET /cars/{car}/now (every value with its own time), then live `now` events merged field by field.
 // The cluster: a speedometer, the battery dial with its range and a fuel gauge, a power meter, trip counters
 // (odometer, temperatures, software, data age), warning lights for the car's modes and doors, the map,
-// why the car is awake, the tyres and charging now. The period (default 24 h): figures from /statistics,
+// why the car is awake, the tyres and charging now. Its live inputs (SMO, the Tesla API) are named with the
+// age of each one's newest value, and every value says which input sent it. The period (default 24 h): figures from /statistics,
 // the battery and charging charts on one cursor, and the activity strip. Rows events reload the period.
 
 import * as state from '../shared/state.js';
@@ -17,6 +18,7 @@ import { strip } from '../core/strip.js';
 import { scope, loadUPlot, well } from '../core/chart.js';
 import { createMap, pin, mapFallback } from '../core/map.js';
 import { val, stateWord, when, agoEl, dur, ago } from '../core/fmt.js';
+import { srcChip, valSrc, inputsLine, kindsOf } from '../core/sources.js';
 
 export const id = 'car';
 export const css = true;
@@ -93,16 +95,18 @@ export async function mount(ctx) {
     const st = now.state || 'unknown';
     replace(headLine,
       h('span', { cover: 'summary.header.model', title: 'Model and year come from the VIN start.' }, [car.model, car.year].filter(Boolean).join(' · ') || 'Model not known yet'),
-      trim?.value ? h('span', { class: 'cl-sep' }, h('span', { cover: 'summary.header.trim', title: `Trim, from ${trim.source === 'can' ? "the car's own configuration message" : trim.source === 'owner' ? 'the owner' : 'the VIN start'}` }, trim.value)) : h('span', { class: 'cl-sep' }, h('span', { cover: 'summary.header.trim', class: 'faint' }, 'Trim not sent yet')),
+      trim?.value ? h('span', { class: 'cl-sep' }, h('span', { cover: 'summary.header.trim', title: `Trim, from ${trim.source === 'can' ? "the car's own configuration message (SMO)" : trim.source === 'tesla_api' ? 'the Tesla API' : trim.source === 'owner' ? 'the owner' : trim.source === 'teslamate' ? 'the TeslaMate import' : 'the VIN start'}` }, trim.value)) : h('span', { class: 'cl-sep' }, h('span', { cover: 'summary.header.trim', class: 'faint' }, 'Trim not sent yet')),
+      srcChip(car) ? h('span', { class: 'cl-sep' }, srcChip(car, { full: true })) : null,
       h('span', { class: 'cl-sep cl-status', cover: 'summary.stat.status' }, lamp(st, { stale: !!now.stale }),
         h('b', null, now.stale && st !== 'unknown' ? `Last known: ${stateWord(st).toLowerCase()}` : stateWord(st)),
         now.since_ms ? h('span', null, ` since ${when(now.since_ms, tz)} (${dur(Math.max(0, ctx.api.now() - now.since_ms))})`) : null));
     const quiet = now.stale || st === 'unknown';
-    replace(dataLine, quiet
+    const viaApi = (now.inputs || []).some((i) => i.kind === 'tesla_api');
+    replace(dataLine, inputsLine(now.inputs, { cover: 'summary.data.live_push' }), quiet
       ? h('div', { class: 'callout callout--warn', role: 'status' }, icon('signal'), h('div', null,
         h('p', { class: 'callout-head' }, st === 'unknown' ? 'No recent log from this car' : 'Showing the last known values'),
-        h('p', { class: 'callout-text' }, `Nothing has arrived since ${now.at_ms ? ago(now.at_ms) : 'a long time'}. Every value below is the last one the car sent, with its age. The CAN Bridge may be off or out of range; a drive under way then shows as stopped until its logs arrive.`)))
-      : h('p', { class: 'cl-live' }, icon('live', 'i--sm'), h('span', null, 'Live: values arrive about a minute after the car records them and update here by themselves. Values from before a restart are kept until a new one comes.')));
+        h('p', { class: 'callout-text' }, `Nothing has arrived since ${now.at_ms ? ago(now.at_ms) : 'a long time'}. Every value below is the last one the car sent, with its age. ${viaApi ? 'Neither SMO nor the Tesla API has sent anything newer.' : 'SMO (the CAN Bridge) may be off or out of range; a drive under way then shows as stopped until its logs arrive.'}`)))
+      : h('p', { class: 'cl-live' }, icon('live', 'i--sm'), h('span', null, `Live: SMO values arrive about a minute after the car records them${viaApi ? ', Tesla API values as often as the server asks' : ''}, and update here by themselves. Each value names the input it came from. Values from before a restart are kept until a new one comes.`)));
   }
 
   /* ---------- the cluster: speed, battery, power */
@@ -118,36 +122,36 @@ export async function mount(ctx) {
     replace(clusterEl,
       h('div', { class: 'cl-dial', cover: 'summary.stat.speed' },
         dial({ value: speed, max: getUnits().distance === 'mi' ? 160.9344 : 160, kind: 'speed', label: 'Speed', ticks: 8, why: 'not sent' }),
-        h('p', { class: 'cl-dial-how' }, now.state === 'driving' ? `Gear ${val(now.gear) || '—'}` : 'Standing still')),
+        h('p', { class: 'cl-dial-how' }, now.state === 'driving' ? `Gear ${val(now.gear) || '—'}` : 'Standing still', valSrc(now.speed_kph))),
       h('div', { class: 'cl-dial cl-dial--main', cover: ['overview.stat.battery_level', 'nr.dash.battery-level', 'nr.dash.battery-level.bands', 'summary.stat.soc'] },
         dial({ value: soc, max: 100, kind: 'percent', label: 'Battery', ticks: 10, warm: lowTone, why: 'not sent' }),
         h('div', { class: 'cl-fuel' }, fuel({ fraction: soc == null ? null : soc / 100, cells: 20, label: 'Battery' }),
-          h('p', { class: 'cl-dial-how' }, `Level ${zones}: under 20 % shows orange, under 10 % red.${val(now.usable_soc_pct) != null && Math.abs(val(now.usable_soc_pct) - soc) >= 1 ? ` Usable ${format(val(now.usable_soc_pct), 'percent')}.` : ''}`)),
+          h('p', { class: 'cl-dial-how' }, `Level ${zones}: under 20 % shows orange, under 10 % red.${val(now.usable_soc_pct) != null && Math.abs(val(now.usable_soc_pct) - soc) >= 1 ? ` Usable ${format(val(now.usable_soc_pct), 'percent')}.` : ''}`, valSrc(now.soc_pct))),
         h('div', { class: 'cl-ranges' },
-          stat(ideal ? 'Ideal range' : 'Rated range', range, 'range', { cover: ['summary.stat.range_preferred', 'overview.stat.range', 'nr.dash.ideal-range'], how: 'as the car shows it' }),
+          stat(ideal ? 'Ideal range' : 'Rated range', range, 'range', { cover: ['summary.stat.range_preferred', 'overview.stat.range', 'nr.dash.ideal-range'], how: 'as the car shows it', src: valSrc(ideal ? now.ideal_range_km : now.range_km) }),
           stat('Sentry Mate estimate', est, 'range', { cover: ['summary.stat.range_estimated', 'nr.dash.est-range'], why: 'not enough driving yet',
             how: now.est_basis === 'wh_per_km_30d' ? 'energy left at your last 30 days of driving' : 'energy left at your consumption' }))),
       h('div', { class: 'cl-dial' },
         dial({ value: power == null ? null : Math.abs(power), max: 250, kind: 'power', label: power != null && power < 0 ? 'Regen' : 'Power', ticks: 10, warm: power != null && power < 0, why: 'not sent' }),
-        h('p', { class: 'cl-dial-how' }, power != null && power < 0 ? 'Energy going back into the battery' : 'Power the battery gives')));
+        h('p', { class: 'cl-dial-how' }, power != null && power < 0 ? 'Energy going back into the battery' : 'Power the battery gives', valSrc(now.power_kw))));
 
     const climate = val(now.flags?.climate);
     const setp = (x) => { const v = val(x); return v == null ? '—' : typeof v === 'string' ? v : format(v, 'temperature'); };
     const sw = now.software || {};
     replace(countersEl,
       h('div', { class: 'cl-odo', cover: ['summary.stat.odometer', 'overview.stat.odometer', 'overview.link.mileage'] },
-        h('span', { class: 'ctr-label' }, 'Odometer'),
+        h('span', { class: 'ctr-label' }, 'Odometer', valSrc(now.odometer_km)),
         h('a', { class: 'cl-odo-face', href: ctx.link('statistics'), title: 'Distance over time on Statistics' }, odo(val(now.odometer_km) == null ? '—' : format(val(now.odometer_km), 'odometer', { unit: false, digits: 1, grouping: false })), h('span', { class: 'ctr-unit' }, unitLabel('odometer')))),
       rack([
-        stat('Outside', val(now.outside_c), 'temperature', { icon: 'thermo', cover: ['summary.stat.outside_temp', 'overview.stat.outside_temp'], why: 'not sent' }),
-        stat('Cabin', val(now.cabin_c), 'temperature', { icon: 'thermo', cover: ['summary.stat.inside_temp', 'overview.stat.inside_temp', 'nr.dash.panel.car-status'], why: 'not sent' }),
+        stat('Outside', val(now.outside_c), 'temperature', { icon: 'thermo', cover: ['summary.stat.outside_temp', 'overview.stat.outside_temp'], why: 'not sent', src: valSrc(now.outside_c) }),
+        stat('Cabin', val(now.cabin_c), 'temperature', { icon: 'thermo', cover: ['summary.stat.inside_temp', 'overview.stat.inside_temp', 'nr.dash.panel.car-status'], why: 'not sent', src: valSrc(now.cabin_c) }),
         stat('Climate', climate === 'off' ? 'Off' : `${setp(now.setpoint_left_c)} · ${setp(now.setpoint_right_c)}`, null, { icon: 'sun', cover: 'overview.stat.driver_temp',
-          how: climate === 'off' ? 'no set point is sent while climate is off' : 'set point left · right' }),
+          how: climate === 'off' ? 'no set point is sent while climate is off' : 'set point left · right', src: valSrc(now.flags?.climate) }),
         stat('Software', h('a', { href: ctx.link('software') }, sw.version || 'not known'), null, { icon: 'chip', cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates', 'summary.flag.software_update'],
           how: sw.changed_since_ms ? `changed since ${when(sw.changed_since_ms, tz)}; the new version text is not known yet` : sw.version_since_ms ? `since ${formatDate(sw.version_since_ms, tz, { weekday: false })}` : 'no change seen' }),
-        stat('12 V battery', val(now.lv_v), 'voltage', { icon: 'battery', why: 'not sent' }),
+        stat('12 V battery', val(now.lv_v), 'voltage', { icon: 'battery', why: 'not sent', src: valSrc(now.lv_v) }),
         stat('Newest value', now.at_ms ? agoEl(now.at_ms) : null, null, { icon: 'live', cover: ['nr.dash.last-update', 'summary.data.live_push'], why: 'none yet',
-          how: now.at_ms ? `recorded ${formatDateTime(now.at_ms, tz)}, ${zoneName(now.at_ms, tz)}` : null }),
+          how: now.at_ms ? `recorded ${formatDateTime(now.at_ms, tz)}, ${zoneName(now.at_ms, tz)}${now.received_ms ? `; last data in ${ago(now.received_ms)}` : ''}` : null }),
         stat('Your units', h('a', { href: state.buildUrl('settings-display') }, `${unitLabel('distance')} · ${unitLabel('temperature')} · ${unitLabel('pressure')}`), null, { icon: 'sliders', cover: 'summary.data.prefs_snapshot',
           how: 'every value converts at once when you change them' }),
       ], { cls: 'cl-rack' }));
@@ -170,7 +174,15 @@ export async function mount(ctx) {
         { icon: 'door', text: doorsOpen.length ? `${doorsOpen.length} open` : 'Doors shut', on: doorsOpen.length > 0, tone: 'red', cover: 'summary.flag.doors_open', title: doorsOpen.length ? `Open: ${doorsOpen.join(', ')}` : 'Every door, the trunk and the frunk are shut' },
       ]),
       h('p', { class: 'note cl-lock-note', cover: ['summary.flag.lock', 'summary.flag.windows_open'] }, icon('info', 'i--sm'),
-        h('span', null, doorsOpen.length ? `Open now: ${doorsOpen.join(', ')}. ` : '', 'Locks and windows are not sent on the CAN bus, so they are not shown here; a lit light means the mode is on.')));
+        h('span', null, doorsOpen.length ? `Open now: ${doorsOpen.join(', ')}. ` : '', 'Locks and windows are not sent on the CAN bus, so they are not shown here; a lit light means the mode is on.',
+          flagSrc() ? [' Sentry, someone inside and climate ', flagSrc()] : null)));
+  }
+
+  // which input the flags that the Tesla API can send came from now
+  function flagSrc() {
+    const f = now.flags || {};
+    const api = ['sentry', 'user_present', 'keep_climate', 'climate', 'battery_preconditioning'].some((k) => kindsOf(f[k]).includes('tesla_api'));
+    return api ? h('span', null, 'come from ', valSrc({ sources: [{ kind: 'tesla_api', label: 'Data from the Tesla API' }] }), '.') : null;
   }
 
   /* ---------- the map */
@@ -198,7 +210,7 @@ export async function mount(ctx) {
       loc.place ? placeLink({ place: loc.place, lat: lat(), lon: lon() }) : lat() != null ? placeLink({ lat: lat(), lon: lon(), label: a?.short || 'This spot' }) : 'Position not known yet',
       a ? h('span', { class: 'faint' }, ` · ${[a.locality, a.region].filter(Boolean).join(', ')}`) : null,
       val(loc.accuracy_m) != null ? h('span', { class: 'faint' }, ` · within ${format(val(loc.accuracy_m), 'length')}`) : null,
-      at(loc.lat) ? h('span', { class: 'faint' }, ' · ', agoEl(at(loc.lat))) : null));
+      at(loc.lat) ? h('span', { class: 'faint' }, ' · ', agoEl(at(loc.lat))) : null, valSrc(loc.lat)));
   }
   async function mountMap() {
     if (lat() == null) { mapEl.append(mapFallback('No position has been recorded yet.')); return; }
@@ -227,7 +239,7 @@ export async function mount(ctx) {
     const rec = val(now.tyre_recommended_kpa);
     const ty = now.tyres_kpa || [];
     const low = ty.some((x) => val(x) != null && rec != null && val(x) < rec * 0.9);
-    replace(tyresEl, hud({ title: 'Tyres', icon: 'tyre', cover: 'summary.flag.tire_pressure_warning', side: low ? tag('Low', 'org') : ty.length ? tag('Fine', 'grn') : null },
+    replace(tyresEl, hud({ title: 'Tyres', icon: 'tyre', cover: 'summary.flag.tire_pressure_warning', side: [ty.length ? valSrc(ty.find((x) => x)) : null, low ? tag('Low', 'org') : ty.length ? tag('Fine', 'grn') : null] },
       ty.length ? h('div', { class: 'cl-tyres' }, h('div', { class: 'cl-tyre-car', 'aria-hidden': 'true' }, icon('car', 'i--xl')),
         TYRES.map(([k, w], i) => {
           const v = val(ty[i]);
@@ -248,16 +260,16 @@ export async function mount(ctx) {
       side: [h('span', { class: 'cl-chg-state' }, lamp(charging ? 'charging' : plugged ? 'parked' : 'unknown'), h('span', null, charging ? `Charging${kind ? ` (${kind.toUpperCase()})` : ''}` : plugged ? 'Plugged in, not charging' : 'Not plugged in')),
         c.charge_id ? linkBtn('This charge', state.buildUrl('charge', { car: cid, charge: c.charge_id }), { sm: true, kind: 'ghost', icon: 'arrow-r' }) : null] },
     rack([
-      stat('Power', val(c.power_kw), 'power', { hot: charging, why, cover: ['summary.stat.charger_power', 'nr.dash.charging-power', 'overview.stat.charging_power'] }),
+      stat('Power', val(c.power_kw), 'power', { hot: charging, why, src: valSrc(c.power_kw), cover: ['summary.stat.charger_power', 'nr.dash.charging-power', 'overview.stat.charging_power'] }),
       stat('Volts', val(c.volts_v), 'voltage', { why, cover: 'overview.stat.ac_voltage', how: kind === 'dc' ? "the charger's" : null }),
       stat('Amps', val(c.amps_a), 'current', { why, cover: 'nr.dash.charging-current', how: val(c.phases) ? `${val(c.phases)} ${val(c.phases) === 1 ? 'phase' : 'phases'}${val(c.pilot_a) ? `, cable allows ${val(c.pilot_a)} A` : ''}` : null }),
-      stat('Added', val(c.added_kwh), 'energy', { why: 'No charge under way', cover: 'summary.stat.energy_added' }),
-      stat('Charge limit', val(c.limit_pct), 'percent', { why: plugged ? 'Not sent yet' : 'Not plugged in', cover: ['summary.stat.charge_limit', 'nr.dash.charge-limit'], how: val(c.limit_pct) != null ? 'set on the car' : null }),
+      stat('Added', val(c.added_kwh), 'energy', { why: 'No charge under way', cover: 'summary.stat.energy_added', src: valSrc(c.added_kwh) }),
+      stat('Charge limit', val(c.limit_pct), 'percent', { why: plugged ? 'Not sent yet' : 'Not plugged in', cover: ['summary.stat.charge_limit', 'nr.dash.charge-limit'], how: val(c.limit_pct) != null ? 'set on the car' : null, src: valSrc(c.limit_pct) }),
       stat('Time to full', val(c.to_full_min) != null ? val(c.to_full_min) * 60000 : null, 'duration', { why: charging ? 'Not known yet' : 'No charge under way', cover: ['summary.stat.remaining_time', 'nr.dash.time-to-full'],
-        how: val(c.to_full_kwh) != null ? `${format(val(c.to_full_kwh), 'energy')} to go` : null }),
+        how: val(c.to_full_kwh) != null ? `${format(val(c.to_full_kwh), 'energy')} to go` : null, src: valSrc(c.to_full_min) }),
       stat('Done at', c.finish_ms ? when(c.finish_ms, tz) : null, null, { why: charging ? 'Not known yet' : 'No charge under way', cover: 'summary.stat.expected_finish', how: c.finish_ms ? `${zoneName(c.finish_ms, tz)}, the car's time` : null }),
     ]),
-    h('p', { class: 'note' }, icon('info', 'i--sm'), h('span', null, 'A charge timer set on the car is not sent on the CAN bus; a planned start shows here once the charge begins.'))));
+    h('p', { class: 'note' }, icon('info', 'i--sm'), h('span', null, 'A charge timer set on the car is not sent on the CAN bus; a planned start shows here once the charge begins. The charge limit, energy added and time to full can come from the Tesla API while it reads the car.'))));
   }
 
   /* ---------- the period */
@@ -329,7 +341,7 @@ export async function mount(ctx) {
       ])),
       h('div', { class: 'cols' },
         hud({ title: 'Battery', icon: 'battery', cover: ['overview.chart.charge_level', 'overview.control.shared_crosshair', 'overview.chart.legend_toggle'],
-          side: [csvBtn({ name: [car.name, 'battery'], rows: () => series.t_ms.map((t, i) => ({ t, soc: series.values.soc_pct?.[i], usable: series.values.usable_soc_pct?.[i], range: series.values[rk]?.[i] })),
+          side: [srcChip(series), csvBtn({ name: [car.name, 'battery'], rows: () => series.t_ms.map((t, i) => ({ t, soc: series.values.soc_pct?.[i], usable: series.values.usable_soc_pct?.[i], range: series.values[rk]?.[i] })),
             columns: [timeColumn('Time', 't', tz), column('Battery', 'soc', 'percent'), column('Usable', 'usable', 'percent'), column(ideal ? 'Ideal range' : 'Rated range', 'range', 'range')] }),
           linkBtn('Battery', ctx.link('battery'), { sm: true, kind: 'ghost', icon: 'arrow-r', cover: 'overview.link.charge_level' })] },
         h('div', { class: 'scope-head' }, battKeys, readBatt), battWell),

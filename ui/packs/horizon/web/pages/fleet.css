@@ -98,3 +98,4 @@ a.attn-car:hover { color: var(--mag-ink); }
 }
 .gar-order-note { line-height: normal; }
 .bay-car-line { align-items: baseline; }
+.bay-car-src { margin: 0; display: flex; }

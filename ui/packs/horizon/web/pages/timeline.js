@@ -14,6 +14,7 @@ import { controls, slot, select, search, periodBtn, carBtn, csvBtn, placeLink, s
 import { strip, KINDS as STRIP } from '../core/strip.js';
 import { emptyState, errorWords } from '../core/states.js';
 import { when, ago, stateWord } from '../core/fmt.js';
+import { srcChip, sourceLabel, kindsOf } from '../core/sources.js';
 
 export const id = 'timeline';
 export const css = true;
@@ -71,7 +72,9 @@ function entry(r, { car, tz }) {
   if (r.odometer_km != null) facts.push(`odometer ${format(r.odometer_km, 'odometer')}`);
   const awake = r.kind === 'parked' && r.awake_reasons?.length ? r.awake_reasons.map((x) => AWAKE[x] || x.replace(/_/g, ' ')) : null;
   const dur = r.duration_ms ?? (r.end_ms ? r.end_ms - r.start_ms : null);
-  return h('li', { class: ['tl-row', r.source === 'teslamate' && 'is-imported'], dataset: { tone: k.tone, kind: r.kind } },
+  const ks = kindsOf(r);
+  const importedOnly = ks.length ? !ks.includes('smo') && !ks.includes('tesla_api') : r.source === 'teslamate';
+  return h('li', { class: ['tl-row', importedOnly && 'is-imported'], dataset: { tone: k.tone, kind: r.kind } },
     h('a', { class: 'tl-when', href: trip, title: 'Open exactly this span as a trip' },
       h('span', { class: 'tl-t0' }, formatTime(r.start_ms, tz)), h('span', { class: 'tl-t1' }, r.end_ms ? formatTime(r.end_ms, tz) : 'now')),
     h('span', { class: 'tl-led', 'aria-hidden': 'true' }, icon(k.icon, 'i--sm')),
@@ -80,7 +83,7 @@ function entry(r, { car, tz }) {
         detail ? h('a', { class: 'tl-kind', href: detail, title: `Open the ${k.word.toLowerCase()}` }, k.word) : h('span', { class: 'tl-kind' }, k.word), what),
       h('p', { class: 'tl-facts' }, facts.filter(Boolean).join(' · ')),
       awake ? h('p', { class: 'tl-awake' }, `Kept awake by ${awake.join(', ')}`) : null,
-      r.source === 'teslamate' ? h('p', null, tag('Imported from TeslaMate', 'org')) : null),
+      h('p', { class: 'tl-src' }, srcChip(r))),
     h('span', { class: 'tl-dur' }, dur != null ? formatDuration(dur) : ''));
 }
 
@@ -152,7 +155,7 @@ export async function mount(ctx) {
     hud({ title: 'What the car did', icon: 'timeline', cover: ['states.chart.states', 'states.chart.legend'],
       side: csvBtn({ name: [car.name, 'activity', period.label], rows: () => act.items || [], columns: [
         { label: 'State', value: (s) => (STRIP[s.kind] || STRIP.unknown).word }, timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz),
-        { label: 'Minutes', value: (s) => (s.end_ms != null ? Math.round((s.end_ms - s.start_ms) / 60000) : null) }, { label: 'Source', value: (s) => s.source || '' }] }) },
+        { label: 'Minutes', value: (s) => (s.end_ms != null ? Math.round((s.end_ms - s.start_ms) / 60000) : null) }, { label: 'Source', value: (s) => sourceLabel(s) }] }) },
     strip(act.items || [], stripFrom, to, { tz, now: ctx.api.now(), tall: true }),
     from == null && act.items?.length ? h('p', { class: 'note' }, icon('info', 'i--sm'), h('span', null, `The whole history, from the first data on ${formatDate(stripFrom, tz, { year: true })}.`)) : null),
     hud({ title: 'Entries, newest first', icon: 'timeline', pad: false, side: [count, csvSlot], cls: 'tl-entries',

@@ -101,11 +101,11 @@ export function route(a, b, { open = 'driving now' } = {}) {
  */
 export const rack = (items, { cls, cover } = {}) => h('div', { class: ['rack', cls], cover }, items);
 
-/** One figure: stat('Distance', 12.3, 'distance', { how, why, cover, hot }). kind null: value as it is. */
+/** One figure: stat('Distance', 12.3, 'distance', { how, why, cover, hot, src }). kind null: value as it is; src: core/sources.js valSrc(). */
 export function stat(label, value, kind, o = {}) {
   const v = kind ? quantity(value, kind, { why: o.why, digits: o.digits, sign: o.sign }) : (value == null || value === '' ? quantity(null, 'number', { why: o.why }) : value);
   return h('div', { class: ['stat', o.hot && 'stat--hot', o.cls], cover: o.cover, title: o.title || null },
-    h('span', { class: 'stat-label' }, o.icon ? icon(o.icon, 'i--sm') : null, h('span', null, label)),
+    h('span', { class: 'stat-label' }, o.icon ? icon(o.icon, 'i--sm') : null, h('span', null, label), o.src || null),
     h('span', { class: 'stat-value' }, v),
     o.how ? h('span', { class: 'stat-how' }, o.how) : null);
 }
@@ -153,8 +153,6 @@ export function band(no, title, side) {
   return h('div', { class: 'band' }, h('span', { class: 'band-no' }, String(no).padStart(2, '0')), h('h2', { class: 'band-title' }, title), h('span', { class: 'band-rule', 'aria-hidden': 'true' }), side ? h('div', { class: 'band-side' }, side) : null);
 }
 
-/** A source tag for rows that did not come from the CAN Bridge. */
-export const sourceTag = (s) => (s && s !== 'can' ? h('span', { class: 'tag tag--org', title: 'Imported from TeslaMate: energy is estimated and points are sparser' }, 'Imported') : null);
 
 /** A share of the period for a state strip piece. */
 export const pct = (v) => format(v, 'percent');

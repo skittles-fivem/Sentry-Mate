@@ -11,6 +11,7 @@ import { icon, hud, plate, btn, linkBtn, lamp } from '../core/ui.js';
 import { fuel } from '../core/gauges.js';
 import { controls, slot, select, search, plural } from '../core/kit.js';
 import { emptyState, errorWords } from '../core/states.js';
+import { srcChip } from '../core/sources.js';
 import { STATES, stateWord, carLine, agoEl, ago, when } from '../core/fmt.js';
 import { getPrefs, savePrefs, isAdmin } from '../core/prefs.js';
 import { toast } from '../core/layer.js';
@@ -128,6 +129,7 @@ export async function mount(ctx) {
         h('div', null, h('dt', null, 'Where'), h('dd', { class: 'ell' }, n.place?.name || (st === 'driving' ? 'Driving' : 'No saved place'))),
         h('div', null, h('dt', null, st === 'unknown' ? 'State' : 'Since'), h('dd', null, n.since_ms ? when(n.since_ms, c.time_zone) : 'no data yet')),
         h('div', null, h('dt', null, 'Data'), h('dd', { class: ['ell', n.stale && 'warn'] }, n.at_ms ? agoEl(n.at_ms) : 'none yet'))),
+      srcChip(c) ? h('p', { class: 'bay-car-src' }, srcChip(c)) : null,
       doing ? h('p', { class: 'bay-car-doing' }, icon(st === 'charging' ? 'bolt' : st === 'driving' ? 'route' : 'plug', 'i--sm'), h('span', null, doing)) : null,
       h('a', { class: 'bay-car-open', href, 'aria-label': `Open the cluster of ${c.name || 'this car'}` }, h('span', null, 'Open cluster'), icon('arrow-r', 'i--sm')));
   }
@@ -229,10 +231,15 @@ export async function mount(ctx) {
 
     const cars = s.cars || 0;
     emptyEl.hidden = cars > 0;
+    const teslaN = setup?.tesla_accounts || 0;
     replace(emptyEl, hud({ cls: 'gar-empty', tone: 'cyan', pad: false }, emptyState({
       icon: 'car', title: 'No cars in the garage yet',
-      text: isAdmin() ? 'A car shows up here by itself when its CAN Bridge uploads its first log.' : 'Your account cannot see any car yet. Ask an admin to give it one.',
-      actions: isAdmin() ? linkBtn('Car settings', state.buildUrl('settings-cars'), { icon: 'sliders', kind: 'go' }) : null }),
+      text: isAdmin() ? (teslaN
+        ? `A car shows up here by itself when its CAN Bridge (SMO) uploads its first log, or once you match a car of the Tesla account${teslaN === 1 ? '' : 's'} already added to a car here or as a new car.`
+        : 'A car shows up here by itself when its CAN Bridge (SMO) uploads its first log. You can also add a Tesla account, so the server reads its cars from the Tesla API as a second live input.')
+        : 'Your account cannot see any car yet. Ask an admin to give it one.',
+      actions: isAdmin() ? [linkBtn('Car settings', state.buildUrl('settings-cars'), { icon: 'sliders', kind: 'go' }),
+        linkBtn(teslaN ? 'Match Tesla cars' : 'Add a Tesla account', `${state.buildUrl('settings-integrations')}#tesla`, { icon: 'key', kind: 'ghost' })] : null }),
     fixes.length ? h('ul', { class: 'gar-causes' }, fixes.map((f) => h('li', null, icon('chev-r', 'i--sm'), h('span', null, h('b', null, FIX[f.cause][0]), `: ${FIX[f.cause][1]} `, h('a', { href: f.link || '/settings/cars' }, 'Fix it'))))) : null));
   }
 

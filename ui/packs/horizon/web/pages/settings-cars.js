@@ -12,6 +12,7 @@ import { isValidZone } from '../shared/time.js';
 import { convert, toMetric, unitLabel, format } from '../shared/units.js';
 import { icon, hud, plate, btn, linkBtn, tag, kv, note, callout } from '../core/ui.js';
 import { search, plural } from '../core/kit.js';
+import { srcChip } from '../core/sources.js';
 import { tracks } from '../core/tracks.js';
 import { field } from '../core/form.js';
 import { emptyState } from '../core/states.js';
@@ -25,7 +26,7 @@ export const css = true;
 export const title = (ctx) => (ctx.car ? 'Car settings' : 'Car settings: every car');
 
 const enc = encodeURIComponent;
-const SOURCE = { can: ['From CAN', 'cyan'], vin: ['From VIN', null], owner: ['Typed', 'org'], teslamate: ['Imported', 'org'] };
+const SOURCE = { can: ['From SMO', 'cyan'], vin: ['From VIN', null], owner: ['Typed', 'org'], teslamate: ['Imported', 'org'], tesla_api: ['From the Tesla API', 'violet'] };
 const CHEM = [['auto', 'Automatic'], ['lfp', 'LFP'], ['nca_nmc', 'NCA / NMC']];
 const CHEM_WORD = { auto: 'Automatic', lfp: 'LFP (iron phosphate)', nca_nmc: 'NCA / NMC (nickel)' };
 const FACTS = [
@@ -290,13 +291,14 @@ async function mountCar(ctx) {
     const facts = [
       ['Model and year', h('span', { class: 'tagline' }, carLine(c) || DASH, tag('From VIN'))],
       ['VIN start', c.vin_prefix ? code(c.vin_prefix) : DASH],
+      ['Data from', srcChip(c, { full: true }) || h('span', { class: 'faint' }, 'No data yet')],
       ...FACTS.filter(([k]) => cfg[k]?.value != null).map(([k, l]) => [l, h('span', { class: 'tagline' }, yesNo(cfg[k].value), srcTag(cfg[k].source))]),
     ];
     const missing = FACTS.filter(([k]) => cfg[k]?.value == null).map(([, l]) => l.toLowerCase());
     replace(slots.car, hud({ title: 'The car', icon: 'car', id: 'sc-car', side: c.profile ? tag(`CAN profile ${c.profile}`, 'cyan') : null },
       h('div', { class: 'chans' },
         chan({ no: 1, title: 'Whose settings', text: 'Each car has its own settings; nothing here changes another car.' }, switcher,
-          h('p', { class: 'chan-hint', cover: 'web.settings.car.empty-state' }, 'A new car appears by itself once its CAN Bridge has uploaded its first log; no Tesla account is involved. ',
+          h('p', { class: 'chan-hint', cover: 'web.settings.car.empty-state' }, 'A new car appears by itself once its CAN Bridge has uploaded its first log, or once an admin matches a car of a Tesla account (Integrations) as a new car. ',
             h('a', { class: 'plc', href: state.buildUrl('settings-cars') }, 'How a car appears'), '.')),
         chan({ no: 2, title: 'Name', text: 'Sentry Mate never reads a name from Tesla: you name the car. Until then it shows its model and VIN start.' }, name.el),
         chan({ no: 3, title: 'What the car reports', text: `From the car's build message on the vehicle bus, with model and year from the VIN start.${missing.length ? ` Not reported yet: ${missing.join(', ')}.` : ''}` }, kv(facts)))));

@@ -19,6 +19,7 @@ import { tracks } from '../core/tracks.js';
 import { loadUPlot, mountPlot, scope, timeAxis, valueAxis, tone, alpha, well } from '../core/chart.js';
 import { rpx } from '../core/display.js';
 import { emptyState, errorState } from '../core/states.js';
+import { srcChip } from '../core/sources.js';
 
 export const id = 'efficiency';
 export const css = true;
@@ -266,7 +267,7 @@ export async function mount(ctx) {
         h('span', { class: 'keys' }, keys.map((k) => h('span', { class: 'key', cover: SERIES[k].cover }, h('i', { class: 'key-sw', vars: { '--c': `var(${SERIES[k].color})` } }), SERIES[k].label))), read),
       ts.length && keys.some((k) => raw[k].some((x) => x != null)) ? box : emptyState({ icon: 'thermo', title: 'No temperature readings in this period', text: 'The car was asleep or not logged the whole time. Pick a longer period.' }),
       note(`Averaged per ${formatNumber((d.bucket_ms || 60000) / 60000)} min; the lines break where the car read nothing. The set point shows only while climate runs.`));
-    replace(histSide, csvBtn({ name: [car.name, 'temperatures'], rows: () => ts.map((t, i) => ({ t_ms: t, outside: raw.outside[i], cabin: raw.cabin[i], battery: raw.battery[i], setpoint: raw.setpoint[i] })),
+    replace(histSide, srcChip(d), csvBtn({ name: [car.name, 'temperatures'], rows: () => ts.map((t, i) => ({ t_ms: t, outside: raw.outside[i], cabin: raw.cabin[i], battery: raw.battery[i], setpoint: raw.setpoint[i] })),
       columns: [timeColumn('Time', 't_ms', tz), column('Outside', 'outside', 'temperature'), column('Cabin', 'cabin', 'temperature'), column('Battery', 'battery', 'temperature'), column('Set point', 'setpoint', 'temperature')] }));
     if (!box.isConnected) return;
     await scope(box, ctx, { tz, t_ms: ts, sync, series: keys.map((k) => ({ label: SERIES[k].label, values: raw[k], kind: 'temperature', color: SERIES[k].color, dash: k === 'setpoint' ? [5, 4] : null, width: k === 'outside' ? 2.5 : 1.75 })), axes: { y: { digits: 0 } },

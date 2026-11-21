@@ -13,6 +13,7 @@ import { format } from '../shared/units.js';
 import { formatDate, formatDateTime, formatDuration, HOUR } from '../shared/time.js';
 import { icon, hud, plate, btn, tag, kv, note } from '../core/ui.js';
 import { controls, slot, periodBtn, carBtn, counters, search } from '../core/kit.js';
+import { srcChip, sourceLabel } from '../core/sources.js';
 import { tracks } from '../core/tracks.js';
 import { emptyState } from '../core/states.js';
 import { openDialog, toast } from '../core/layer.js';
@@ -28,8 +29,9 @@ const SOURCE = {
   teslamate: ['Imported', 'Named in the imported TeslaMate history.'],
   owner: ['Typed', 'Typed by an admin on this page.'],
   build_match: ['Same build', 'The same module builds as an update whose version is known.'],
+  tesla_api: ['Tesla API', 'Named by the Tesla API, which reports the version the car runs.'],
 };
-const DETECTED = { ota_status: 'update status', build_change: 'changed module builds', teslamate: 'imported' };
+const DETECTED = { ota_status: 'update status (SMO)', build_change: 'changed module builds (SMO)', teslamate: 'the TeslaMate import', tesla_api: 'the Tesla API' };
 const MODULES = { bms: 'battery', vcfront: 'front body', di_front: 'front motor', di_rear: 'rear motor', fc: 'fast charging' };
 const moduleNames = (list) => (list || []).map((m) => MODULES[m] || m);
 
@@ -126,6 +128,7 @@ export async function mount(ctx) {
       { key: 'charges', label: 'Charges on it', num: true, cover: 'updates.table.charge_count', render: (r) => (r.charges ? h('a', { class: 'plc', href: state.buildUrl('charges', { car: cid, period: onVersion(r) }) }, String(r.charges)) : '0'), csv: (r) => r.charges },
       { key: 'range', label: 'Range at 100 %', num: true, cover: 'updates.table.avg_range', render: (r) => format(r.full_range_km, 'range'), csv: column('Range at 100 %', 'full_range_km', 'range') },
       { key: 'pack', label: 'Full pack', num: true, render: (r) => (r.full_pack_kwh == null ? h('span', { class: 'faint' }, 'not measured') : format(r.full_pack_kwh, 'energy')), csv: column('Full pack', 'full_pack_kwh', 'energy') },
+      { key: 'src', label: 'Source', render: (r) => srcChip(r), csv: (r) => sourceLabel(r) },
     ],
     empty: () => emptyState({ icon: 'chip', title: 'No updates in this period', text: period?.preset === 'all' ? `Nothing is recorded for ${car.name} yet. An update shows once the car installs one while recording, or with an imported history.` : 'No update started in this period. All time shows every update.' }),
     onPage: (pg) => { if (!ctx.alive()) return; painted = true; paintSummary(pg.summary, list.rows()); },

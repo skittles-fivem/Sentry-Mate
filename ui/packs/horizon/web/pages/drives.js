@@ -12,7 +12,8 @@ import { format, toMetric, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, formatDayKey, isoWeek } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { icon, hud, plate, btn, linkBtn, tag } from '../core/ui.js';
-import { controls, slot, select, search, periodBtn, carBtn, csvBtn, route, stat, rack, counters, eq, spark, band, plural, sourceTag } from '../core/kit.js';
+import { controls, slot, select, search, periodBtn, carBtn, csvBtn, route, stat, rack, counters, eq, spark, band, plural } from '../core/kit.js';
+import { srcChip, sourceLabel, SOURCE_FILTER, SOURCE_ONLY, sourceParam } from '../core/sources.js';
 import { tracks } from '../core/tracks.js';
 import { columns as colChart, well } from '../core/chart.js';
 import { emptyState } from '../core/states.js';
@@ -29,7 +30,7 @@ export async function mount(ctx) {
   const q = ctx.query;
   const f = {
     places: q.places || '', place_side: q.place_side || 'any', q: q.q || '', min_distance: q.min_distance || '', min_speed: q.min_speed || '',
-    source: q.source || '', flags: q.flags || '', efficiency: q.efficiency || 'plain', exclude: q.exclude || '',
+    source: sourceParam(q.source), flags: q.flags || '', efficiency: q.efficiency || 'plain', exclude: q.exclude || '',
   };
   const hill = () => f.efficiency === 'hill_corrected';
   const apiParams = () => ({
@@ -97,7 +98,7 @@ export async function mount(ctx) {
     slot('Text', search(f.q, (v) => set({ q: v }), { placeholder: 'Start or destination', ctx }), { wide: true, cover: 'drives.filter.location' }),
     slot(`At least (${unitLabel('distance')})`, num(f.min_distance, `Shortest drive in ${unitLabel('distance')}`, (v) => set({ min_distance: v }, 350)), { cover: 'drives.filter.min_distance' }),
     slot(`Average at least (${unitLabel('speed')})`, num(f.min_speed, `Lowest average speed in ${unitLabel('speed')}`, (v) => set({ min_speed: v }, 350)), { cover: 'drives.filter.min_speed' }),
-    slot('Source', select([['', 'Every source'], ['can', 'CAN Bridge'], ['teslamate', 'Imported']], f.source, (v) => set({ source: v }), { label: 'Source' })),
+    slot('Source', select(SOURCE_FILTER, f.source, (v) => set({ source: v }), { label: 'Where the data came from' })),
     slot('Flags', select([['', 'Every drive'], ['gap', 'With a gap'], ['in_progress', 'In progress'], ['reduced_range', 'Cold battery']], f.flags, (v) => set({ flags: v }), { label: 'Flags' })),
     slot('Efficiency', select([['plain', 'Plain'], ['hill_corrected', 'Hill corrected']], f.efficiency, (v) => set({ efficiency: v }), { label: 'Basis for consumption and efficiency' }), { cover: 'drives.setting.efficiency_method' }),
     slot('Patterns', exclBtn, { cover: ['ds.filter.exclude_locations', 'ds.filter.exclude_locations.hint'] }));
@@ -113,7 +114,7 @@ export async function mount(ctx) {
       { label: 'Drives', value: st ? null : s.count ?? 0, kind: 'count', how: s.without_energy ? `${formatNumber(s.without_energy)} without energy` : 'all with energy' },
       { label: 'Distance', value: blank ? null : s.distance_km, kind: 'distance', digits: 1, cover: 'drives.summary.distance', how: 'the listed drives' },
       { label: 'Driving time', text: blank ? '—' : formatDuration(s.duration_ms), cover: 'drives.summary.duration', how: 'start to end of each' },
-      { label: 'Energy', value: blank ? null : s.energy_kwh, kind: 'energy', digits: 1, cover: 'drives.summary.energy', how: s.energy_estimated_kwh ? `${format(s.energy_estimated_kwh, 'energy')} of it estimated (imported)` : 'at the pack, regen off' },
+      { label: 'Energy', value: blank ? null : s.energy_kwh, kind: 'energy', digits: 1, cover: 'drives.summary.energy', how: s.energy_estimated_kwh ? `${format(s.energy_estimated_kwh, 'energy')} of it estimated (Tesla API or imported)` : 'at the pack, regen off' },
       { label: hillS ? 'Consumption, hill corrected' : 'Consumption', value: blank ? null : s.wh_per_km, kind: 'efficiency', cover: 'drives.summary.consumption', how: blank ? why : 'energy over distance' },
     ]));
   };
@@ -145,7 +146,7 @@ export async function mount(ctx) {
   const list = tracks(ctx, {
     title: 'Playlist', icon: 'route', path, params: apiParams(), limit: 25, csvName: 'drives', sort: { key: 'start', dir: 'desc' },
     cover: ['drives.table', 'drives.table.link.details', 'drives.empty_states'], side: pickBar,
-    note: 'Energy is measured at the battery pack, regen taken off; imported drives say estimated. Efficiency is the rated consumption against the drive\'s own (100 % = as rated). Tick drives to open them together as a trip.',
+    note: 'Energy is measured at the battery pack by SMO, regen taken off; drives seen only by the Tesla API, or imported, say est. (estimated). The Source column says where each drive came from. Efficiency is the rated consumption against the drive\'s own (100 % = as rated). Tick drives to open them together as a trip.',
     rowHref: (d) => state.buildUrl('drive', { car: cid, drive: d.id }),
     onPage: (pg) => { if (pg.summary) paintSummary(pg.summary); },
     onError: () => paintSummary(null, 'error'),
@@ -165,13 +166,14 @@ export async function mount(ctx) {
       { key: 'speed_max', label: 'Speed, avg · top', num: true, sort: 'speed_max', cover: ['drives.table.speed_avg', 'drives.table.speed_max'], csv: (d) => d.speed_max_kph,
         render: (d) => h('span', { class: 'cell' }, h('span', null, format(d.speed_avg_kph, 'speed')), h('span', { class: 'cell-sub' }, `top ${format(d.speed_max_kph, 'speed')}`)) },
       { key: 'power', label: 'Peak', num: true, cover: 'drives.table.power_max', title: 'Highest power taken from the battery', render: (d) => format(d.power_max_kw, 'power') },
-      { key: 'energy', label: 'Energy', num: true, sort: 'energy', cover: 'drives.table.energy', render: (d) => [format(d.energy_kwh, 'energy'), d.energy_basis === 'estimated' ? ' est.' : ''] },
+      { key: 'energy', label: 'Energy', num: true, sort: 'energy', cover: 'drives.table.energy', render: (d) => (d.energy_basis === 'estimated' ? h('span', { title: 'Estimated: summed from the Tesla API\'s power readings, or from the imported history' }, format(d.energy_kwh, 'energy'), h('span', { class: 'est' }, ' est.')) : format(d.energy_kwh, 'energy')), csv: (d) => d.energy_kwh },
       { key: 'wh', label: whHead, num: true, sort: 'wh_per_km', cover: 'drives.table.consumption', render: (d) => format(d.wh_per_km, 'efficiency') },
       { key: 'eff', label: effHead, cover: 'drives.table.efficiency', render: effMeter, csv: (d) => d.efficiency_pct },
       { key: 'flags', label: 'Flags', cover: 'drives.table.reduced_range', csv: false, render: (d) => h('span', { class: 'flagline' },
         d.flags?.reduced_range ? h('span', { class: 'tag tag--cyan', title: 'Cold battery: part of the charge was locked, so range and consumption read high' }, 'Cold') : null,
         d.flags?.gap_ms ? h('span', { class: 'tag tag--org', title: `Data missing for ${formatDuration(d.flags.gap_ms)}` }, 'Gap') : null,
-        d.flags?.in_progress ? tag('Live', 'grn') : null, sourceTag(d.source)) },
+        d.flags?.in_progress ? tag('Live', 'grn') : null) },
+      { key: 'source', label: 'Source', render: (d) => srcChip(d), csv: (d) => sourceLabel(d) },
     ],
     empty: () => {
       const on = activeFilters();
@@ -187,7 +189,7 @@ export async function mount(ctx) {
       f.q && `text "${f.q}"`,
       f.min_distance && `at least ${format(toMetric(+f.min_distance, 'distance'), 'distance')}`,
       f.min_speed && `average at least ${format(toMetric(+f.min_speed, 'speed'), 'speed')}`,
-      f.source && (f.source === 'can' ? 'CAN Bridge drives only' : 'imported drives only'),
+      f.source && `drives ${SOURCE_ONLY[f.source] || f.source}`,
       f.flags && ({ gap: 'with a gap', in_progress: 'in progress', reduced_range: 'cold battery' }[f.flags] || f.flags),
     ].filter(Boolean);
   }

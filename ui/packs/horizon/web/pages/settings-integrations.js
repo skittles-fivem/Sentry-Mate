@@ -5,6 +5,7 @@
 // value Sentry Mate publishes for a chosen car (its payload now, unit, status and where it comes from),
 // Home Assistant discovery with the device and every entity, dashboard cards to paste, the events automations
 // listen to with recent ones and ideas, the read API, every network connection, and other people's tools.
+// First of all the Tesla account (pages/settings-tesla.js): the Tesla API as a second live input beside SMO.
 //
 // Broker settings, the network list and the broker log are for admins; anyone reads the status, the preview and
 // the events of the cars they see. Switches and single fields save at once (PUT /settings/mqtt with the whole
@@ -21,6 +22,7 @@ import { emptyState } from '../core/states.js';
 import { confirmDialog, toast } from '../core/layer.js';
 import { dateTime, ago, num } from '../core/fmt.js';
 import { chan, hint, recLamp, presets, toggle, copyBtn, code, sig, errText } from '../core/setting.js';
+import { teslaSection } from './settings-tesla.js';
 
 export const id = 'settings-integrations';
 export const css = true;
@@ -161,6 +163,7 @@ const PURPOSE = {
   release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-server'],
   upload: ['CAN Bridge uploads', 'The car\'s CAN Bridge sends its logs here.', null],
   web: ['This app and the API', 'Browsers, apps and the API.', null],
+  tesla: ['Tesla API', 'Only once an admin adds a Tesla account (above): its sign-in, Owner API and live stream hosts.', null],
 };
 
 // in the server's units: a broker has one set of units for everyone
@@ -197,6 +200,7 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
   const rec = recLamp();
   const carList = cars?.items || [];
+  const tesla = teslaSection(ctx, { cars: carList });
 
   // the preview car: the address's, else the last car, else the first in the person's own order
   const wanted = ctx.query.car || null;
@@ -574,7 +578,7 @@ export async function mount(ctx) {
         { key: 'host', label: 'Host or port', render: (r) => (r.port != null ? code(`port ${r.port}${r.tls ? ', TLS' : ''}`) : r.host ? code(r.host, { long: true }) : h('span', { class: 'faint' }, 'not set')), csv: (r) => r.host || (r.port != null ? `port ${r.port}` : '') },
         { key: 'on', label: 'State', sort: true, value: (r) => (r.enabled ? 0 : 1), render: (r) => (r.enabled ? sig('ok', r.dir === 'in' ? 'Open' : 'On') : sig('off', 'Off')), csv: (r) => (r.enabled ? 'on' : 'off') },
         { key: 'last', label: 'Last used', num: true, sort: true, value: (r) => r.last_used_ms, render: (r) => (r.last_used_ms ? ago(r.last_used_ms) : h('span', { class: 'faint' }, r.dir === 'in' ? 'always listening' : 'never')), csv: (r) => (r.last_used_ms ? new Date(r.last_used_ms).toISOString() : '') },
-        { key: 'change', label: 'Change it', csv: false, render: (r) => (PURPOSE[r.purpose]?.[2] ? h('a', { class: 'plc', href: state.buildUrl(PURPOSE[r.purpose][2]) }, 'Settings') : h('span', { class: 'faint' }, r.purpose === 'mqtt' ? 'Above' : '—')) },
+        { key: 'change', label: 'Change it', csv: false, render: (r) => (PURPOSE[r.purpose]?.[2] ? h('a', { class: 'plc', href: state.buildUrl(PURPOSE[r.purpose][2]) }, 'Settings') : r.purpose === 'tesla' ? h('a', { class: 'plc', href: '#tesla' }, 'Tesla account') : h('span', { class: 'faint' }, r.purpose === 'mqtt' ? 'Above' : '—')) },
       ],
     }).el);
   }
@@ -588,10 +592,13 @@ export async function mount(ctx) {
   replace(ctx.view, h('div', { class: 'page si' },
     plate({ kicker: 'Set-up · integrations', title: 'Integrations', aim: ctx.info.aim, tools: rec.el }),
     h('section', { class: 'hud hud--plain jump', 'aria-label': 'Sections and saving' },
-      presets([['si-broker', 'Broker'], ['si-topics', 'Topics'], ['si-values', 'Values'], ['si-ha', 'Home Assistant'], ['si-events', 'Events'], ['si-api', 'API'], ['si-network', 'Network'], ['si-works', 'Works with']]),
+      presets([['tesla', 'Tesla account'], ['si-broker', 'Broker'], ['si-topics', 'Topics'], ['si-values', 'Values'], ['si-ha', 'Home Assistant'], ['si-events', 'Events'], ['si-api', 'API'], ['si-network', 'Network'], ['si-works', 'Works with']]),
       h('p', { class: 'note jump-note' }, icon('check', 'i--sm'), h('span', null, 'Switches and single fields save at once; the connection saves with its button. Nothing leaves the server until sending is on.'))),
 
-    band(1, 'Transmitter'),
+    band(1, 'Tesla API input'),
+    tesla.el,
+
+    band(2, 'Transmitter'),
     hud({ title: 'MQTT broker', icon: 'antenna', id: 'si-broker', side: tag(admin ? 'Admin' : 'Read only', admin ? 'mag' : 'org') },
       h('div', { class: 'si-broker' }, brokerSlot,
         h('div', { class: 'stack' }, airSlot, logSlot,
@@ -599,17 +606,17 @@ export async function mount(ctx) {
             h('p', { class: 'card-text' }, 'Node-RED, Home Assistant or any MQTT client uses the same broker. Subscribe to ', code(`${ns()}/cars/+/#`, { long: true }), ' for every car, or ', code(`${ns()}/cars/<car id>/#`, { long: true }), ' for one. Use TLS as here.'))))),
     hud({ title: 'Topics and rules', icon: 'route', id: 'si-topics' }, topicsSlot),
 
-    band(2, 'Values sent', h('label', { class: 'si-car-pick' }, h('span', { class: 'faint small' }, 'Preview for'), carSel)),
+    band(3, 'Values sent', h('label', { class: 'si-car-pick' }, h('span', { class: 'faint small' }, 'Preview for'), carSel)),
     h('section', { id: 'si-values', class: 'stack', 'aria-label': 'Values sent' },
       h('div', { class: 'hud hud--plain si-legend' }, h('p', { class: 'small' }, 'Every value Sentry Mate sends, before you turn anything on. The VIN is never one of them; the position only when you opt in.'),
         h('dl', { class: 'si-legend-list' }, ORDER.map((k) => h('div', null, h('dt', null, statusTag(k)), h('dd', null, STATUS[k][2]))))),
       valuesSlot),
 
-    band(3, 'Home Assistant'),
+    band(4, 'Home Assistant'),
     hud({ title: 'Home Assistant discovery', icon: 'home', id: 'si-ha' }, haSlot),
     entSlot,
 
-    band(4, 'Events'),
+    band(5, 'Events'),
     hud({ title: 'Events for automations', icon: 'pulse', id: 'si-events' },
       h('div', { class: 'stack' },
         h('div', { class: 'si-two' },
@@ -629,7 +636,7 @@ export async function mount(ctx) {
           idea('Time to full', 'nr.notify.time-to-full', ['time_to_full', 'charge_power', 'soc'], 'Progress while charging. Until time to full is decoded, charge power and battery level show it.', 'signal'),
           idea('Arrived, left', 'nr.notify.geofence', ['place', 'start_place', 'end_place'], 'A message when the car leaves one saved place or reaches another.', 'published')))),
 
-    band(5, 'Outside'),
+    band(6, 'Outside'),
     hud({ title: 'API access', icon: 'server', id: 'si-api' },
       h('div', { class: 'cards' },
         h('div', { class: 'card', cover: 'faq.public-api' }, h('p', { class: 'card-title' }, 'What you can build on'),
@@ -644,7 +651,7 @@ export async function mount(ctx) {
         h('div', { class: 'card', cover: 'projects.matedroid' }, h('p', { class: 'card-title' }, 'On a phone'),
           h('p', { class: 'card-text' }, 'This app works in a phone\'s browser and can be put on the home screen. A phone app of your own can use the same API.')))),
     h('section', { id: 'si-network', class: 'stack', 'aria-label': 'Network use', cover: 'faq.network-flows' },
-      h('div', { class: 'hud hud--plain si-legend' }, h('p', { class: 'small' }, 'Sentry Mate needs no Tesla account and no cloud: the car\'s CAN Bridge uploads to it, and everything else is off until you turn it on.')),
+      h('div', { class: 'hud hud--plain si-legend' }, h('p', { class: 'small' }, 'Sentry Mate needs no Tesla account and no cloud: the car\'s CAN Bridge uploads to it, and everything else is off until you turn it on. The Tesla API connects only once an admin adds a Tesla account.')),
       netSlot),
     hud({ title: 'Works with', icon: 'share', id: 'si-works' },
       h('div', { class: 'stack' },
@@ -656,7 +663,7 @@ export async function mount(ctx) {
           works('Smart mirrors and wall screens', 'projects.magic-mirror', 'A status tile on a mirror or wall screen, from MQTT or the API.', [code('soc'), ', ', code('range'), ', ', code('state'), ', ', code('updated'), '.']),
           works('Garage door openers', 'projects.geogdo', 'Openers that act on arrival and departure, by zone or saved place. Values are about 75 s late: good for closing behind you, late for opening.', [code('location'), ', ', code('place'), ' and drive events.']))))));
 
-  await Promise.all([valuesList?.ready, eventsList?.ready, paintLog()].filter(Boolean));
+  await Promise.all([valuesList?.ready, eventsList?.ready, paintLog(), tesla.load()].filter(Boolean));
   if (ctx.alive()) ctx.ready();
 }
 

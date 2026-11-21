@@ -11,7 +11,8 @@ import { formatTime, formatDate, formatDuration, zoneName, dayKey, dayRange, zon
 import { formatNumber } from '../shared/i18n.js';
 import { column, timeColumn, csvFilename } from '../shared/csv.js';
 import { icon, hud, plate, btn, linkBtn, tag } from '../core/ui.js';
-import { stat, rack, counters, eq, csvBtn, placeLabel, placeLink, sourceTag } from '../core/kit.js';
+import { stat, rack, counters, eq, csvBtn, placeLabel, placeLink } from '../core/kit.js';
+import { srcChip, estTag, kindsOf } from '../core/sources.js';
 import { scope, loadUPlot, well } from '../core/chart.js';
 import { createMap, addTrace, pin, boundsOf, pad, mapFallback } from '../core/map.js';
 
@@ -93,8 +94,8 @@ export async function mount(ctx) {
     ]),
     rack([
       stat('Average speed', d.speed_avg_kph, 'speed', { cover: 'dd.stat.speed_avg', how: `distance ÷ time, stops included; top ${format(d.speed_max_kph, 'speed')}`, why }),
-      stat('Energy used', d.energy_kwh, 'energy', { cover: 'dd.stat.energy_net', how: est ? 'estimated (imported)' : 'at the pack, regen taken off', why }),
-      stat('Regen', d.regen_kwh, 'energy', { cover: 'dd.stat.energy_recovered', how: 'won back braking', why: est ? 'Not in imported history' : why }),
+      stat('Energy used', d.energy_kwh, 'energy', { cover: 'dd.stat.energy_net', how: est ? (kindsOf(d).includes('tesla_api') ? 'estimated from the Tesla API\'s power readings' : 'estimated (imported)') : 'at the pack, regen taken off', why }),
+      stat('Regen', d.regen_kwh, 'energy', { cover: 'dd.stat.energy_recovered', how: 'won back braking', why: est ? 'Not in this drive\'s data' : why }),
       stat('Consumption', d.wh_per_km, 'efficiency', { cover: 'dd.stat.consumption_net', how: d.efficiency_pct != null ? `${format(d.efficiency_pct, 'percent')} of rated` : null, why: d.distance_km < 0.5 ? 'Too short to be reliable' : why }),
       stat('Climb', d.climb_m, 'length', { cover: 'dd.stat.elevation_up', sign: true, how: "the car's own elevation" }),
       stat('Descent', d.descent_m != null ? -d.descent_m : null, 'length', { cover: 'dd.stat.elevation_down' }),
@@ -107,7 +108,7 @@ export async function mount(ctx) {
       h('div', { class: 'dd-soc-end' }, h('b', null, format(d.end_soc_pct, 'percent')), h('span', null, `${format(r1, 'range')} ${ideal ? 'ideal' : 'rated'}`))),
     h('div', { class: 'flagline dd-flags' },
       d.flags?.gap_ms ? tag(`${formatDuration(d.flags.gap_ms)} without data`, 'org') : null,
-      d.flags?.reduced_range ? tag('Cold battery', 'cyan') : null, sourceTag(d.source),
+      d.flags?.reduced_range ? tag('Cold battery', 'cyan') : null, estTag(d),
       h('span', { class: 'faint small' }, `Outside ${format(d.outside_avg_c, 'temperature')} · cabin ${format(d.cabin_avg_c, 'temperature')}`)));
 
   replace(ctx.view, h('div', { class: 'page dd', cover: 'shots.drive-details' },
@@ -126,7 +127,7 @@ export async function mount(ctx) {
         h('span', { cover: 'dd.context.drive' }, `${formatTime(t0, tz)} – ${live ? 'now' : formatTime(t1, tz)} ${zoneName(t0, tz)}`),
         h('span', null, format(d.distance_km, 'distance')), h('span', null, formatDuration(d.duration_ms)),
         h('span', { cover: 'dd.filter.car' }, h('a', { href: ctx.link('car') }, car.name)),
-        live ? tag('Live', 'grn') : null),
+        live ? tag('Live', 'grn') : null, srcChip(d, { full: true })),
     }),
     h('div', { class: 'cols cols--wide dd-top' },
       hud({ title: 'Route', icon: 'route', pad: false, cover: 'dd.map.route', cls: 'dd-map-panel' },
@@ -136,7 +137,7 @@ export async function mount(ctx) {
           h('div', { class: 'dd-end' }, h('span', { class: 'pin pin--cyan' }, 'B'), h('div', null, h('b', null, d.end && !live ? placeLink(d.end) : (d.end?.label || 'Driving now')), h('span', null, d.end?.address?.short || '')), h('time', null, live ? 'now' : formatTime(t1, tz))))),
       figures),
     hud({ title: 'Through the drive', icon: 'pulse', cover: ['dd.chart.drive', 'dd.chart.drive.tooltip'],
-      side: [timeEl, resetBtn, csvBtn({ name: [car.name, 'drive', day], rows: () => series.t_ms.map((t, i) => Object.fromEntries([['t', t], ...[...fields, 'est_range_km'].map((k) => [k, V[k]?.[i] ?? null])])),
+      side: [srcChip(series), timeEl, resetBtn, csvBtn({ name: [car.name, 'drive', day], rows: () => series.t_ms.map((t, i) => Object.fromEntries([['t', t], ...[...fields, 'est_range_km'].map((k) => [k, V[k]?.[i] ?? null])])),
         columns: [timeColumn('Time', 't', tz), column('Speed', 'speed_kph', 'speed'), column('Power', 'power_kw', 'power'), column('Battery', 'soc_pct', 'percent'), column('Usable', 'usable_soc_pct', 'percent'),
           column(ideal ? 'Ideal range' : 'Rated range', rk, 'range'), column('Estimated range', 'est_range_km', 'range'), column('Elevation', 'elevation_m', 'length'), column('Outside', 'outside_c', 'temperature'),
           column('Cabin', 'cabin_c', 'temperature'), column('Set left', 'setpoint_left_c'), column('Set right', 'setpoint_right_c'), column('Climate', 'climate'), column('Fan', 'fan_level'),

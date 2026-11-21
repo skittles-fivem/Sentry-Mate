@@ -62,3 +62,61 @@
   .si-log-list li { grid-template-columns: minmax(0, 1fr); gap: 0.125rem; }
 }
 .si-evts .cd { justify-self: start; }
+
+/* the Tesla account (pages/settings-tesla.js): a receiver face for the input, a panel to add an account,
+   one HUD per account with its cars */
+.tz-intro { max-width: 70rem; font-size: var(--fs-sm); color: var(--ink-2); }
+.tz-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 1.25rem 1.5rem; align-items: start; }
+.tz-k { margin: 0; font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.16em; text-transform: uppercase; color: var(--cyan-ink); }
+.tz-dim { margin: 0; font-size: var(--fs-sm); color: var(--ink-3); }
+.tz-face { display: grid; gap: 1rem; min-width: 0; padding: 1rem 1.125rem; border-radius: var(--r); background: var(--radio-face); box-shadow: inset 0 0 0 1px rgba(61, 240, 255, 0.4); color: #d9f4ff; }
+.tz-face .tz-k { color: var(--radio-ink-2); }
+.tz-face .tz-dim { color: #a9c9d6; }
+.tz-face .cd { background: rgba(61, 240, 255, 0.1); box-shadow: inset 0 0 0 1px rgba(61, 240, 255, 0.3); color: var(--radio-ink); }
+.tz-read { display: flex; flex-wrap: wrap; gap: 0.75rem 2rem; }
+.tz-fig { display: grid; gap: 0.125rem; min-width: 0; }
+.tz-v { font: 700 1.5rem/1.3 var(--mono); color: var(--radio-ink); text-shadow: 0 0 0.5rem rgba(61, 240, 255, 0.5); font-variant-numeric: tabular-nums; }
+.tz-how { font-size: var(--fs-xs); color: #a9c9d6; }
+.tz-err, .tz-ok { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0; font-size: var(--fs-sm); }
+.tz-err { color: #ffd2b0; }
+.tz-ok { color: #b8ffe0; }
+.tz-err > .i, .tz-ok > .i, .tz-loc > .i { flex: none; height: 1lh; }
+.tz-block { display: grid; gap: 0.5rem; min-width: 0; }
+.tz-hosts { display: flex; flex-wrap: wrap; gap: 0.375rem; margin: 0; padding: 0; list-style: none; }
+.tz-pace-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; }
+.tz-pace { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); gap: 0.25rem 1.5rem; margin: 0; }
+.tz-pace > div { display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.25rem 0; box-shadow: inset 0 -1px 0 rgba(61, 240, 255, 0.16); font-size: var(--fs-sm); }
+.tz-pace dt { color: #c7e4ef; }
+.tz-pace dd { margin: 0; font-family: var(--mono); color: var(--radio-ink); white-space: nowrap; }
+.tz-add { display: grid; gap: 0.875rem; min-width: 0; }
+.tz-add-head { display: flex; align-items: center; gap: 0.5rem; margin: 0; font-weight: 700; }
+.tz-region { display: grid; gap: 0.375rem; max-width: 20rem; }
+.tz-way { display: grid; gap: 0.5rem; min-width: 0; padding: 0.875rem 1rem; border-radius: var(--r); background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); }
+.tz-void { font-size: var(--fs-sm); color: var(--ink-2); }
+.tz-acc-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem 2rem; align-items: start; }
+.tz-why { margin: 0; font-size: var(--fs-sm); color: var(--ink-2); }
+.tz-loc { display: flex; align-items: flex-start; gap: 0.5rem; }
+.tz-inline { display: inline-flex; flex-wrap: wrap; gap: 0.25rem 0.375rem; }
+.tz-acc .seg { flex-wrap: wrap; }
+.tz-cars { display: grid; gap: 0.625rem; min-width: 0; padding-top: 0.875rem; box-shadow: inset 0 1px 0 var(--rule); }
+.tz-cars-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; min-height: 2.25rem; }
+.tz-car-list { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+.tz-car { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.1fr); gap: 0.75rem 1.5rem; align-items: start; padding: 0.75rem 1rem; border-radius: var(--r); background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); }
+.tz-car-id, .tz-car-match, .tz-car-mode { display: grid; gap: 0.3125rem; min-width: 0; align-content: start; }
+.tz-car-name { display: flex; align-items: center; gap: 0.5rem; margin: 0; }
+.tz-car-name > .i { color: var(--cyan-ink); }
+.tz-sel { width: 100%; }
+.tz-sugg { font-size: var(--fs-xs); color: var(--ink-3); }
+.tz-car-mode .sig { white-space: normal; }
+.tz-list { display: grid; gap: 0.25rem; padding-left: 1.25rem; }
+.tz-step-list { display: grid; gap: 0.75rem; padding-left: 1.25rem; }
+.tz-step-list .btn { margin-top: 0.375rem; }
+@container view (max-width: 62rem) {
+  .tz-grid, .tz-acc-grid { grid-template-columns: minmax(0, 1fr); }
+  .tz-car { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .tz-car-mode { grid-column: 1 / -1; }
+}
+@container view (max-width: 40rem) {
+  .tz-car { grid-template-columns: minmax(0, 1fr); }
+  .tz-read { gap: 0.75rem 1.5rem; }
+}
