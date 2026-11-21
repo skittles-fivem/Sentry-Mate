@@ -43,7 +43,7 @@
 .soc-cell { display: inline-flex; flex-direction: column; gap: round(0.3125rem, var(--e)); }
 .soc-bar { position: relative; display: block; width: round(5.5rem, var(--e)); height: round(0.375rem, var(--e)); border-radius: 99px; background: var(--glass-3); overflow: hidden; }
 .soc-bar > i { position: absolute; top: 0; bottom: 0; left: var(--a); right: calc(100% - var(--b)); min-width: 2px; border-radius: inherit; background: var(--c-soc); }
-.charges-page .flag-icons { display: inline-flex; gap: round(0.375rem, var(--e)); align-items: center; color: var(--warm); }
+.charges-page .flag-icons { display: flex; gap: round(0.375rem, var(--e)); align-items: center; color: var(--warm); }
 .missing-table { margin-bottom: round(1.75rem, var(--e)); }
 
 /* statistics */

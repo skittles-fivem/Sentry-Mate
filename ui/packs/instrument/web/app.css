@@ -309,7 +309,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 .ico--sm { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); stroke-width: 1.9; }
 .ico--lg { width: round(1.375rem, var(--e)); height: round(1.375rem, var(--e)); }
 .num { font-variant-numeric: tabular-nums; }
-.mono { font-family: var(--font-mono); font-size: 0.92em; letter-spacing: 0.01em; }
+.mono { font-family: var(--font-mono); font-size: 0.92em; letter-spacing: 0.01em; line-height: inherit; } /* the line of the text around it */
 .muted { color: var(--text-2); }
 .faint { color: var(--text-3); }
 .nowrap { white-space: nowrap; }
@@ -865,9 +865,9 @@ ul { margin: 0; padding: 0; list-style: none; }
 a.tl-time:hover { color: var(--live); }
 .tl-day { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
 .tl-body .title { display: flex; align-items: baseline; gap: round(0.625rem, var(--e)); min-width: 0; }
-.tl-kind { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); flex: none; font-size: max(0.75rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3); border-radius: round(0.25rem, var(--e)); }
+.tl-kind { display: inline-flex; align-items: baseline; /* the word gives the baseline, the icon is centred */ gap: round(0.3125rem, var(--e)); flex: none; font-size: max(0.75rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3); border-radius: round(0.25rem, var(--e)); }
 a.tl-kind:hover { color: var(--live); }
-.tl-kind .ico { color: var(--dot, var(--text-3)); }
+.tl-kind .ico { color: var(--dot, var(--text-3)); align-self: center; }
 .tl-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-place-link { color: var(--text); border-radius: round(0.25rem, var(--e)); text-decoration: underline; text-decoration-color: var(--line-3); text-underline-offset: 0.1875rem; }
 .tl-place-link:hover { color: var(--live); text-decoration-color: var(--live-line); }
@@ -1132,7 +1132,8 @@ a.tl-kind:hover { color: var(--live); }
 .tbl th.is-num, .tbl td.is-num { text-align: right; }
 /* a pill or a button in a line of a cell sits at the top of its line, not on the text's baseline: the line is then
    as high as the pill, and the cell centres it on whole px */
-.tbl td :is(.pill, .btn, .tag, .key-chip) { vertical-align: top; }
+.tbl td :is(.pill, .btn, .tag, .key-chip),
+.tbl td > :is(.soc-cell, .eff, .ef-whcell, .pin-cell, .hl-flags, .im-whys, .pl-kind, .pl-actions, .cost-link, .lb-purpose, .flag-icons) { vertical-align: top; }
 /* a tag alone in a cell is a box of its own, so the cell centres it like a line of text */
 .tbl td > .tag:only-child { display: flex; }
 .tbl td.is-num > .tag:only-child { margin-left: auto; }

@@ -71,13 +71,19 @@ export function snapAll() {
   }
   snapped.clear();
   const grids = [], tables = [];
-  for (const e of document.body.getElementsByTagName('*')) {
-    if (e.localName === 'details' && !e.open) continue; // its content is not laid out: left alone
-    if (e.closest('details:not([open]) > :not(summary)')) continue;
-    if (e.localName === 'table') { tables.push(e); continue; }
-    const d = getComputedStyle(e).display;
-    if (d === 'grid' || d === 'inline-grid') grids.push(e);
-  }
+  // walk the page, but not into tables, pictures or closed <details> (a grid inside a table cell is left alone)
+  const w = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, {
+    acceptNode(e) {
+      if (e.localName === 'table') { tables.push(e); return NodeFilter.FILTER_REJECT; }
+      if (e.localName === 'svg' || e.localName === 'script' || e.localName === 'template') return NodeFilter.FILTER_REJECT;
+      if (e.localName === 'details' && !e.open) return NodeFilter.FILTER_REJECT; // its content is not laid out
+      const d = getComputedStyle(e).display;
+      if (d === 'none') return NodeFilter.FILTER_REJECT;
+      if (d === 'grid' || d === 'inline-grid') grids.push(e);
+      return NodeFilter.FILTER_SKIP;
+    },
+  });
+  w.nextNode(); // the filter does the work and finds no node to stop at
   // outer grids first: a grid inside another gets its width from the outer one's columns
   const levels = new Map();
   for (const g of grids) { const d = depth(g); if (!levels.has(d)) levels.set(d, []); levels.get(d).push(g); }
@@ -102,7 +108,8 @@ export function watchTables() {
   new MutationObserver((list) => {
     // elements added or taken away (a clock or a number that only changes its text does not count)
     const el = (ns) => { for (const n of ns) if (n.nodeType === 1) return true; return false; };
-    for (const m of list) if (el(m.addedNodes) || el(m.removedNodes)) { later(); return; }
+    // at once, in the same turn as the change: nothing can measure or paint the page in between
+    for (const m of list) if (el(m.addedNodes) || el(m.removedNodes)) { snapAll(); return; }
   }).observe(document.body, { childList: true, subtree: true });
   if ('ResizeObserver' in window) ro = new ResizeObserver(later);
   addEventListener('resize', later);
