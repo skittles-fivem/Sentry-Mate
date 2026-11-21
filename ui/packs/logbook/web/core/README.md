@@ -384,3 +384,21 @@ a drive, charge or parked spell started or ended, so a list can load again. The 
 - No period control of a page's own, no car picker of its own: the frame has them.
 - No `data-cover` for something the page does not really do; no frame items in a page.
 - No real data in examples or fixtures: made-up VINs end in a zeroed serial (`5YJ3E1EB0MF000002`).
+
+## Whole pixels
+
+Pages are checked with `node ui/tools/check.js --pixel` (see `ui/tools/README.md`). Keep them on whole pixels:
+
+- Lengths are `round(<n>rem, var(--e))`: `--e` is 1 px at the standard size, where the design's sizes are whole
+  px already, and 2 px at any other size, so a box centred in another lands on a whole px. Font sizes stay as
+  they are.
+- Line heights are set as `--LH`, never `line-height`: `--LH: round(calc(1.3 * 1em), 2px)` (a number) or
+  `--LH: round(1rem, 2px)` (a length). A rule in `app.css` makes `--LH` each element's line height, so a number
+  still follows each element's own font size. The `font` shorthand is followed by `line-height: var(--LH)`.
+- Bars, strips and marks placed by a fraction (`left: var(--x)`) round their edges: `round(var(--x), 1px)`.
+- `core/snap.js` keeps grid and table columns on whole px: it rounds each grid's `fr` columns and each table's
+  columns (the same total width) and runs again when the page adds or takes away elements, when text in a
+  table changes, when a snapped box changes size and when the fonts have loaded. Nothing to call from a page.
+- A box that sits in a line of text (an inline-flex pill or button) is a source of half pixels: in a table cell
+  give it `vertical-align: top` or make it a block; in a flex row with `align-items: baseline`, let the words
+  give the baseline and centre the icon with `align-self: center`.

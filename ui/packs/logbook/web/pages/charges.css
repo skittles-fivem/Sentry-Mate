@@ -271,7 +271,7 @@
 }
 .page-charges .sort-mark { font-size: max(10px, 0.75em); }
 
-.page-charges .ch-nowrap { white-space: nowrap; }
+.page-charges .ch-nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* a long "plugged" time in a narrow column ends in "…" instead of running into the next */
 .page-charges .ch-f-small .field-select { min-width: round(9.5rem, var(--e)); }
 .page-charges .ch-num { width: round(5.5rem, var(--e)); }
 .page-charges .ch-delta-x span.is-end { transform: translateX(-100%); }

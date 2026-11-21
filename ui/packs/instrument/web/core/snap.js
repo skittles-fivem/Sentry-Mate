@@ -106,11 +106,13 @@ function later() {
 /** Starts keeping grids and tables on whole pixels: call once at start. */
 export function watchTables() {
   new MutationObserver((list) => {
-    // elements added or taken away (a clock or a number that only changes its text does not count)
+    // elements added or taken away, or any text in a table changed (a wider number needs a wider column); a clock
+    // or a number elsewhere that only changes its text does not count
     const el = (ns) => { for (const n of ns) if (n.nodeType === 1) return true; return false; };
+    const inTable = (n) => { const e = n.nodeType === 1 ? n : n.parentElement; return !!(e && e.closest('table')); };
     // at once, in the same turn as the change: nothing can measure or paint the page in between
-    for (const m of list) if (el(m.addedNodes) || el(m.removedNodes)) { snapAll(); return; }
-  }).observe(document.body, { childList: true, subtree: true });
+    for (const m of list) if (el(m.addedNodes) || el(m.removedNodes) || inTable(m.target)) { snapAll(); return; }
+  }).observe(document.body, { childList: true, subtree: true, characterData: true });
   if ('ResizeObserver' in window) ro = new ResizeObserver(later);
   addEventListener('resize', later);
   document.addEventListener('toggle', later, true); // a <details> opened or closed
