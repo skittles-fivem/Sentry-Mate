@@ -401,3 +401,8 @@ details.fold > .fold-body { padding: 0 1.25rem 1.25rem; }
 /* a row with a button in it centres every cell on the button, so text and controls share one middle line */
 .trk tr:has(td .btn, td .seg) > td { vertical-align: middle; }
 .trk td.is-act .row { flex-wrap: nowrap; justify-content: flex-end; }
+.chan-ctl > .btn, .chan-ctl > .tog, .chan-ctl > .copy { justify-self: start; }
+@container view (max-width: 40rem) {
+  .trk td.is-act { width: auto; grid-column: 1 / -1; justify-items: start; white-space: normal; }
+  .trk td.is-act .row { justify-content: flex-start; flex-wrap: wrap; }
+}

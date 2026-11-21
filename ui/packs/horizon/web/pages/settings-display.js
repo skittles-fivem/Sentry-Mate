@@ -244,7 +244,8 @@ export async function mount(ctx) {
               hint('A new server starts from the distance unit set on the car\'s own screen, once its CAN Bridge has sent it.')),
             chan({ no: 12, title: 'Outside links', text: 'Links that open another site in a new tab, only when someone clicks them.' },
               pc('Map links', [['false', 'No map links'], ['true', 'Map links']], String(!!server.outside_links?.maps), (v) => save({ outside_links: { maps: v === 'true' } }, 'Map links')),
-              pc('Release notes', [['false', 'No release notes'], ['true', 'Release notes']], String(!!server.outside_links?.release_notes), (v) => save({ outside_links: { release_notes: v === 'true' } }, 'Release notes links'))))),
+              pc('Release notes', [['false', 'No release notes'], ['true', 'Release notes']], String(!!server.outside_links?.release_notes), (v) => save({ outside_links: { release_notes: v === 'true' } }, 'Release notes links')))),
+          h('p', { class: 'note sd-metric' }, icon('info', 'i--sm'), h('span', null, 'Server values are metric (', code('100 km'), ', ', code('20 °C'), ', ', code('290 kPa'), '); every page converts them for each person.'))),
         hud({ title: 'Addresses and maps', icon: 'globe', id: 'sd-maps', side: tag('Private by default', 'grn') },
           h('div', { class: 'chans' },
             chan({ no: 13, title: 'Address lookup', text: 'Offline uses the place names that come with Sentry Mate: nothing leaves the server. Online asks the service you name (your own address server, or a proxy in front of one) with rounded positions, and keeps a cache.', cover: ['web.settings.general.address-lookup', 'docs.env.tesla-api.nominatim-proxy'] },
@@ -263,8 +264,7 @@ export async function mount(ctx) {
         h('span', null, 'Every change saves at once; there is no Save button. The REC lamp lights and a short note confirms it.'))),
     band(1, 'Yours'),
     unitsPanel,
-    h('div', { class: 'cols' }, lookPanel, skyPanel),
-    serverSlot,
-    h('p', { class: 'note' }, icon('info', 'i--sm'), h('span', null, 'Server values are metric (', code('100 km'), ', ', code('20 °C'), ', ', code('290 kPa'), '); every page converts them for each person.'))));
+    lookPanel, skyPanel,
+    serverSlot));
   ctx.ready();
 }
