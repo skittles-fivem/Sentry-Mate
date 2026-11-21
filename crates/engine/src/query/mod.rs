@@ -14,6 +14,7 @@
 //! [`QueryError`] to the contract's error answers ([`QueryError::status`], [`QueryError::code`]).
 
 pub mod awake;
+pub mod can_import;
 pub mod battery;
 pub mod charges;
 pub mod decoding;
