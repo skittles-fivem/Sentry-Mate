@@ -336,16 +336,29 @@ in until it has its own; without it, UTC.
 
 Firewalls, another host port and uploads from away from home: [Ports and firewalls](install.md#ports-and-firewalls).
 
-The upload port takes 6 connections per address (an IPv6 /64 counts as one address) and 256 in all. A TLS
-handshake must finish within 10 s, the headers within 10 s, a request within 10 minutes. A connection counts as
-anonymous until a request on it is answered with success (it carried a valid token); at most 192 are, and a new one
-beyond closes the oldest anonymous one, so connections without a token can't keep the CAN Bridge out.
+Connections to the upload port are counted per address (an IPv6 /64 counts as one address). A connection counts as
+anonymous until a request on it is answered with success (it carried a valid token). An address is a car's while a
+connection with a valid token is open from it, and for 30 minutes after the last one closes. A car's address may
+have 32 connections open, and its new connections (anonymous until answered) may use all of them. Any other address
+may have 6 anonymous connections. In all, the port takes 512 connections, at most 192 of them anonymous: a new one
+beyond closes the oldest anonymous one, so connections without a token can't keep a car out.
+
+A connection over a limit is not cut off: the server finishes the TLS handshake, reads the request and answers
+`503 too_many_connections` with `Retry-After: 5`, then closes it (beyond 32 such answers at once, or 16 from one
+address, it closes the connection unanswered). The first refusal per address per minute is logged with that
+address's open counts. Before a car's first request with a valid token (its first ping after a start, or after 30
+minutes without one), its address gets 6 like any other, so the first few of many uploads at once can get `503`.
+
 Any other path than the upload API gets `404`. The protocol is
 Sentry Six Manager's [docs/can-bridge-api.md](https://github.com/skittles-fivem/Sentry-Manager/blob/main/docs/can-bridge-api.md).
 
 | Limit | Value |
 |---|---|
-| A chunk | 16 MiB |
+| Connections per address | 32 for a car's own (an address that showed a valid token in the last 30 minutes), 6 not yet authorized; then `503 too_many_connections` with `Retry-After: 5` |
+| Connections in all | 512, at most 192 not yet authorized |
+| Uploads at once from one bridge | 16 recommended (each on its own connection) |
+| TLS handshake, headers, request | 10 s, 10 s, 10 minutes |
+| A chunk (piece) | 16 MiB |
 | A log | 1 GiB |
 | A sidecar | 1 MiB |
 | Names in one status request | 2000 |

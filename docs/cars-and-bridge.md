@@ -90,6 +90,14 @@ second table.
 ## How the bridge uploads
 
 - The bridge sends every finished log to Sentry Mate as well as to Sentry Six Manager, each on its own.
+- **At once**: the bridge may upload up to 16 logs at once from one address, each on its own connection, in pieces
+  up to 16 MiB. Sentry Mate takes 32 connections from a car's address (one that showed a valid token in the last 30
+  minutes) and 6 from any other, so 16 at once fits with room for keep-alive. Before the bridge's first request with
+  its token (after a start, or 30 minutes without one), its address gets 6 like a stranger's: start with a ping.
+- **Over a limit**, Sentry Mate does not cut the connection: it answers `503` with the code
+  `too_many_connections` and `Retry-After: 5`. The bridge should wait that long and send fewer at once. Its log line
+  `connection closed while sending ... at 0 of N KB` came from older Sentry Mate versions, which closed connections
+  over 6 per address without an answer. Ports and limits: [commands.md](commands.md#ports-and-limits).
 - **Upload only on Wi-Fi**, in the app's **Sentry Six Manager (CAN log upload)** section, holds uploads to Sentry
   Mate too.
 - Sentry Mate accepts both log formats, so the bridge keeps writing the smaller columns format. It writes that

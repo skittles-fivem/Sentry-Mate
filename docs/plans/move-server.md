@@ -277,8 +277,8 @@ Rules:
 
 ### 2.2 The protocol on port 10100
 
-The move uses the upload port: the same TLS 1.3 server, the same connection guards (6 connections per address, a
-request at most 10 minutes). Its paths are under `/api/move/v1/` (`moving::old::router`, merged into the upload API's
+The move uses the upload port: the same TLS 1.3 server, the same connection guards (6 anonymous connections per address, 32
+once a request on one succeeded, a request at most 10 minutes). Its paths are under `/api/move/v1/` (`moving::old::router`, merged into the upload API's
 router). With no code made, no move under way and no move done, every one of them answers `404 not_found` like any
 unknown path, and so does a wrong method, so a scan learns nothing. Errors have the upload API's shape: `{ "error":
 "<words>", "code": "<code>" }`, with more fields where the table says (`at_ms`, `from`, `app`, `expired_ms`,
