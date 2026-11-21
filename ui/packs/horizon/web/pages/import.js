@@ -113,6 +113,8 @@ function startWords(e) {
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 const sum = (o) => Object.values(o || {}).reduce((a, b) => a + b, 0);
 const STEPS = [['choose', 'Choose'], ['uploading', 'Upload'], ['checking', 'Check'], ['ready', 'Match cars'], ['importing', 'Import'], ['done', 'Done']];
+// a CAN export has no cars to match: once checked it waits at Import
+const CAN_STEPS = STEPS.filter(([k]) => k !== 'ready');
 const ALL_ITEMS = ['web.import.start', 'web.import.discard', 'web.import.start-error', 'web.import.run-error', 'web.import.files.col-status', 'web.import.restart-note',
   'web.import.rejected-count', 'web.import.rejected.col-reason', 'web.import.docs-overlap', 'web.import.docs-backfill', 'faq.no-backfill'];
 
@@ -150,8 +152,10 @@ export async function mount(ctx) {
   const stepsSlot = h('div');
   function paintSteps() {
     const j = S.job;
-    const at = !j ? 0 : j.status === 'failed' ? (j.checked_ms ? 4 : 2) : STEPS.findIndex(([k]) => k === j.status);
-    replace(stepsSlot, lampSteps(STEPS, at, { failed: j?.status === 'failed', done: j?.status === 'done', label: 'Steps of an import' }));
+    const steps = isCan(j) ? CAN_STEPS : STEPS;
+    const k = !j ? 'choose' : j.status === 'failed' ? (j.checked_ms ? 'importing' : 'checking') : steps === CAN_STEPS && j.status === 'ready' ? 'importing' : j.status;
+    const at = Math.max(0, steps.findIndex(([x]) => x === k));
+    replace(stepsSlot, lampSteps(steps, at, { failed: j?.status === 'failed', done: j?.status === 'done', label: 'Steps of an import' }));
   }
   const fileInput = h('input', { class: 'im-file', type: 'file', accept: '.sql,.gz,.xz,.dump,.bak,.txt,.zip,application/sql,application/gzip,application/x-xz,application/zip', 'aria-label': 'TeslaMate backup or CAN export file',
     onchange: () => { const f = fileInput.files?.[0]; fileInput.value = ''; if (f) chose(f); } });
@@ -320,8 +324,13 @@ export async function mount(ctx) {
 
   /* ---------- the three passes */
   const passSlot = h('div', { class: 'stack', cover: 'web.import.files.col-status' });
-  const restartNote = () => h('p', { class: 'note', cover: 'web.import.restart-note' }, icon('info', 'i--sm'), h('span', null,
-    'Safe to leave: close this page or the browser while it runs. If the server restarts, an upload carries on from the last chunk it has once you choose the file again; a check starts over (nothing was stored); an import runs again from the file, and rows already in are known by their TeslaMate id, so nothing is stored twice.'));
+  // kind: 'can' (a CAN export), 'tm' (a TeslaMate backup) or null (not known yet)
+  const restartNote = (kind = null) => h('p', { class: 'note', cover: 'web.import.restart-note' }, icon('info', 'i--sm'), h('span', null,
+    'Safe to leave: close this page or the browser while it runs. If the server restarts, an upload carries on from the last chunk it has once you choose the file again; a check starts over (nothing was stored); an import runs again from the file, and ',
+    kind === 'can' ? 'logs already here are known by their name and SHA-256'
+      : kind === 'tm' ? 'rows already in are known by their TeslaMate id'
+        : 'what is already in is known (a TeslaMate row by its id, a CAN log by its name and SHA-256)',
+    ', so nothing is stored twice.'));
   function paintPasses() {
     const j = S.job;
     if (!j) { replace(passSlot, emptyState({ icon: 'upload', title: 'No import yet', text: 'Choose a TeslaMate backup or a CAN export. Its upload, check and import show here as they run.' }), restartNote()); return; }
@@ -349,7 +358,7 @@ export async function mount(ctx) {
         pass(1, 'Upload', 'The file goes to the server in chunks.', p1, p1 === 'done' ? `${bytes(j.bytes_total)} uploaded` : null, p1 === 'now' ? share(j.uploaded_bytes, j.bytes_total) : null),
         pass(2, 'Check', can ? 'Every log is checked against its signature and its car key; nothing is stored.' : 'Every row is read and checked; nothing is stored.', p2, read(p2) || (p2 === 'done' && j.checked_ms ? `Checked ${dateTime(j.checked_ms, tz)}` : null), p2 === 'now' ? share(j.bytes_read, j.bytes_total) : null),
         pass(3, 'Import', can ? 'The signed logs are stored and decoded like live uploads: they become the car\'s own SMO data.' : 'The rows are stored and the timeline is built again for the matched cars.', p3, read(p3) || (p3 === 'done' ? `Done ${dateTime(j.finished_ms, tz)}` : p3 === 'skip' ? 'Not run: the check failed.' : null), p3 === 'now' ? share(j.bytes_read, j.bytes_total) : null)),
-      restartNote());
+      restartNote(can ? 'can' : j.kind || j.report?.kind ? 'tm' : null));
   }
 
   /* ---------- matching the cars */

@@ -112,6 +112,8 @@ export function toast(text, { kind = 'ok', next = false, ms } = {}) {
     try { sessionStorage.setItem(KEY, JSON.stringify({ text, kind })); return; } catch { /* show it now instead */ }
   }
   if (!box) return;
+  // the same words again (a button pressed twice) replace the toast that says them, never stack under it
+  for (const o of [...box.children]) if (o.dataset.kind === kind && o.querySelector('.toast-text')?.textContent === String(text)) o.remove();
   const t = h('div', { class: 'toast', dataset: { kind }, role: kind === 'error' ? 'alert' : null },
     icon(kind === 'error' ? 'warn' : kind === 'info' ? 'info' : 'check'),
     h('span', { class: 'toast-text' }, text),
