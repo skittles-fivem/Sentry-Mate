@@ -460,7 +460,11 @@ impl<'s> Emit<'s> {
         report.cars_left_out = reports.iter().flatten().filter(|r| r.car.is_none()).count() as u64;
         for slot in std::mem::take(&mut self.routes.slots) {
             let Some(mut r) = reports.get_mut(slot.report).and_then(Option::take) else { continue };
-            let mut state = ImportState { version: slot.state.version, tables: Default::default() };
+            let mut state = ImportState {
+                version: slot.state.version,
+                tables: Default::default(),
+                teslafi: slot.state.teslafi.clone(),
+            };
             for (t, w) in Table::PER_CAR.into_iter().zip(slot.work) {
                 let old = slot.state.tables.get(&t);
                 let mismatch = w.other_database(old);

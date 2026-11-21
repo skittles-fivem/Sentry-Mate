@@ -51,7 +51,7 @@ impl Shown {
         let flipped = self.flips.iter().find(|f| f.start_ms <= t && t < f.end_ms).map(|f| f.shown.as_str());
         match source {
             Source::Live => flipped != Some("teslamate"),
-            Source::Teslamate => {
+            Source::Teslamate | Source::Teslafi => {
                 let i = self.coverage.partition_point(|s| s.1 <= t);
                 let covered = self.coverage.get(i).is_some_and(|s| s.0 <= t);
                 !covered || flipped == Some("teslamate")
@@ -73,7 +73,7 @@ pub struct Overlap {
     pub end_ms: u64,
     /// `can` or `teslamate` (the old words, kept for one release).
     pub shown: String,
-    /// `live` or `import:teslamate`.
+    /// `live`, or the imported side: `import:teslamate`, `import:teslafi` (`import` when both are in the span).
     pub shown_source: String,
     /// The live side's counts (`can` is the same, kept for one release).
     pub live: Counts,
@@ -87,17 +87,24 @@ pub struct Overlap {
 
 impl Overlap {
     fn settle_words(&mut self) {
-        self.shown_source = if self.shown == "teslamate" { "import:teslamate" } else { "live" }.to_string();
+        // the imported side by its site (`import:teslamate`, `import:teslafi`), `import` when both sites are in it
+        let sites: Vec<&str> = self.sources.iter().filter_map(|s| s.site).collect();
+        self.shown_source = match (self.shown == "teslamate", sites.as_slice()) {
+            (false, _) => "live".to_string(),
+            (true, [one]) => format!("import:{one}"),
+            (true, _) => "import".to_string(),
+        };
         self.live = self.can.clone();
         self.imported = self.teslamate.clone();
     }
 }
 
-/// `shown` as a PATCH may write it: `live` or `can`, `import:teslamate` or `teslamate`. Answers the old word.
+/// `shown` as a PATCH may write it: `live` or `can`, `import` (`import:teslamate`, `import:teslafi`) or `teslamate`.
+/// Answers the old word.
 fn shown_word(w: &str) -> Option<&'static str> {
     match w {
         "live" | "can" | "smo" => Some("can"),
-        "import:teslamate" | "teslamate" | "import" => Some("teslamate"),
+        "import:teslamate" | "import:teslafi" | "teslamate" | "import" => Some("teslamate"),
         _ => None,
     }
 }
@@ -148,14 +155,16 @@ fn imported_span(e: &Engine, car: CarId) -> QResult<Option<(u64, u64)>> {
     Ok(join(ends::<model::Drive>(e, car)?, ends::<model::Charge>(e, car)?))
 }
 
-/// Counts each row of a table (of one source) into the span its start falls in: one pass, oldest first and a page at
-/// a time, over the spans' reach, with a pointer that only moves forward.
+/// Counts each row of a table (of one source's family) into the span its start falls in: one pass, oldest first and a
+/// page at a time, over the spans' reach, with a pointer that only moves forward. `sites` gathers, per span, the
+/// import sites of the rows counted.
 fn count_into<T: db::Item>(
     e: &Engine,
     car: CarId,
     source: Source,
     spans: &[(u64, u64)],
     counts: &mut [u64],
+    sites: &mut [std::collections::BTreeSet<model::ImportSite>],
 ) -> QResult<()> {
     let (Some(first), Some(last)) = (spans.first(), spans.last()) else { return Ok(()) };
     let mut q = db::Query::between(first.0, last.1).oldest_first().limit(db::MAX_PAGE);
@@ -172,6 +181,9 @@ fn count_into<T: db::Item>(
                 && let Some(n) = counts.get_mut(i)
             {
                 *n += 1;
+                if let (Some(site), Some(set)) = (r.source().site(), sites.get_mut(i)) {
+                    set.insert(site);
+                }
             }
         }
         match page.next {
@@ -185,8 +197,9 @@ fn count_into<T: db::Item>(
 fn overlaps_of(e: &Engine, car: CarId, spans: &[(u64, u64)], fl: &[Flip]) -> QResult<Vec<Overlap>> {
     let n = spans.len();
     let (mut tm_d, mut tm_c, mut can_d, mut can_c) = (vec![0u64; n], vec![0u64; n], vec![0u64; n], vec![0u64; n]);
-    count_into::<model::Drive>(e, car, Source::Teslamate, spans, &mut tm_d)?;
-    count_into::<model::Charge>(e, car, Source::Teslamate, spans, &mut tm_c)?;
+    let mut sites = vec![std::collections::BTreeSet::new(); n];
+    count_into::<model::Drive>(e, car, Source::Teslamate, spans, &mut tm_d, &mut sites)?;
+    count_into::<model::Charge>(e, car, Source::Teslamate, spans, &mut tm_c, &mut sites)?;
     let mut items = Vec::new();
     let mut held: Vec<(u64, u64)> = Vec::new();
     for (i, &(a, b)) in spans.iter().enumerate() {
@@ -206,14 +219,18 @@ fn overlaps_of(e: &Engine, car: CarId, spans: &[(u64, u64)], fl: &[Flip]) -> QRe
             imported: Counts::default(),
             can: Counts::default(),
             teslamate: tm,
-            sources: super::source_refs(&[model::Origin::Smo, model::Origin::Import(model::ImportSite::Teslamate)]),
+            sources: super::source_refs(
+                &std::iter::once(model::Origin::Smo)
+                    .chain(sites.get(i).into_iter().flatten().map(|s| model::Origin::Import(*s)))
+                    .collect::<Vec<_>>(),
+            ),
         });
     }
     // the CAN side counted over the overlaps only
     can_d.truncate(held.len());
     can_c.truncate(held.len());
-    count_into::<model::Drive>(e, car, Source::Live, &held, &mut can_d)?;
-    count_into::<model::Charge>(e, car, Source::Live, &held, &mut can_c)?;
+    count_into::<model::Drive>(e, car, Source::Live, &held, &mut can_d, &mut [])?;
+    count_into::<model::Charge>(e, car, Source::Live, &held, &mut can_c, &mut [])?;
     for (i, o) in items.iter_mut().enumerate() {
         o.can = Counts { drives: can_d.get(i).copied().unwrap_or(0), charges: can_c.get(i).copied().unwrap_or(0) };
         o.settle_words();
@@ -708,6 +725,7 @@ pub fn storage(
             model::Stream::Smo => "can",
             model::Stream::TeslaApi => "tesla_api",
             model::Stream::Teslamate => "teslamate",
+            model::Stream::Teslafi => "teslafi",
         };
         let sources = || super::source_refs(&[stream.origin()]);
         for d in db.days::<model::Sample>(car, stream)? {
@@ -814,12 +832,12 @@ pub fn server_storage(e: &Engine, now_ms: u64) -> QResult<ServerStorage> {
             series += d.bytes;
             add(&d.date, d.bytes);
         }
-        for d in db
-            .days::<model::Sample>(car, Source::Teslamate)?
-            .into_iter()
-            .chain(db.days::<model::ChargePoint>(car, Source::Teslamate)?)
-        {
-            imported += d.bytes;
+        for stream in model::Stream::IMPORTED {
+            for d in
+                db.days::<model::Sample>(car, stream)?.into_iter().chain(db.days::<model::ChargePoint>(car, stream)?)
+            {
+                imported += d.bytes;
+            }
         }
         rows += data.map_or(0, |d| files_bytes(&d.join("db").join("cars").join(car.to_string())));
     }

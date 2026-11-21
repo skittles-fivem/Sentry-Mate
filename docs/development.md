@@ -133,7 +133,7 @@ Swap `instrument` for `logbook`, `horizon`, `console` or `pebble` to preview ano
 | `db` | Sealed storage for what the timeline works out | yes |
 | `places` | Geofences, prices, addresses, map settings | yes, through the engine and the web server (Places page) |
 | `accounts` | People and sign-in | yes, through the web server |
-| `import` | TeslaMate history | yes, through the engine (the web UI's import page) |
+| `import` | TeslaMate's backup and TeslaFi's data download | yes, through the engine (the web UI's import page) |
 | `engine` | Checked logs into each car's history in the background, and the read side of `/api/v1` | yes |
 | `web` | The web port: UI packs, sign-in, accounts, preferences, the live stream, the frame every `/api/v1` route shares | yes |
 | `mqtt` | Home Assistant | yes, through the engine and the web server |

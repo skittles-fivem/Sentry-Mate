@@ -3,7 +3,7 @@
 A self-hosted Tesla logger, like TeslaMate, fed by the **Screenmate CAN Bridge** (SMO): the car's own CAN data, so
 nothing ever wakes the car. One Rust program in one small Docker image: no database or dashboard containers.
 
-Optional extra inputs: a **Tesla account** (the Owner API, off until you add one) and **imports** from TeslaMate or
+Optional extra inputs: a **Tesla account** (the Owner API, off until you add one) and **imports** from TeslaMate, TeslaFi or
 Sentry Six Manager. Every drive, charge and value says where it came from.
 
 **Status: early.** [Progress](docs/status.md) · [To do](docs/todo.md)

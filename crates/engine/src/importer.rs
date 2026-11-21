@@ -1,10 +1,12 @@
-//! Imported TeslaMate history, stored beside the CAN-derived history and marked by source: [`DbSink`] is the
-//! [`import::Sink`] that puts an import's rows into the db as [`model::Source::Teslamate`]. A CAN rebuild only ever
-//! replaces CAN rows ([`db::Db::replace_window`]), so imported rows stay whatever is rebuilt.
+//! Imported history (TeslaMate's backup, TeslaFi's data download), stored beside the CAN-derived history and marked
+//! by source: [`DbSink`] is the [`import::Sink`] that puts an import's rows into the db as [`model::Source::Teslamate`]
+//! or [`model::Source::Teslafi`] (its points in that site's own stream). A CAN rebuild only ever replaces CAN rows
+//! ([`db::Db::replace_window`]), so imported rows stay whatever is rebuilt.
 //!
-//! Imported rows get ids of their own (the top bit set, then the car, then TeslaMate's id), so they never meet a CAN
-//! row's id and importing the same backup again replaces them in place. Each car's [`import::ImportState`] is kept so
-//! a newer backup adds only what is new.
+//! Imported rows get ids of their own (the top bit set, the next one for TeslaFi's, then the car, then the import's
+//! id: TeslaMate's, or a TeslaFi row's start in seconds), so they never meet a CAN row's id nor each other's, and
+//! importing the same file again replaces them in place. Each car's [`import::ImportState`] is kept so a newer backup
+//! or month adds only what is new.
 
 use crate::pipeline::merge_points;
 use crate::records::{self, NS};
@@ -16,9 +18,23 @@ use std::collections::{BTreeSet, HashMap};
 
 const TM_BIT: u64 = 1 << 63;
 
-/// The id an imported row gets.
+/// Set (with [`TM_BIT`]) on TeslaFi rows' ids. TeslaMate rows' ids hold the car in the bits below it (a car id past
+/// 2^22 would reach it; ids are given from 1 up).
+const TF_BIT: u64 = 1 << 62;
+
+/// The id an imported TeslaMate row gets.
 pub fn imported_id(car: CarId, tm_id: i64) -> u64 {
     TM_BIT | ((u64::from(car) & 0x7F_FFFF) << 40) | (u64::try_from(tm_id).unwrap_or(0) & 0xFF_FFFF_FFFF)
+}
+
+/// The id a row imported from `source` gets.
+pub fn imported_id_of(source: Source, car: CarId, id: i64) -> u64 {
+    match source {
+        Source::Teslafi => {
+            TM_BIT | TF_BIT | ((u64::from(car) & 0x3F_FFFF) << 40) | (u64::try_from(id).unwrap_or(0) & 0xFF_FFFF_FFFF)
+        }
+        _ => imported_id(car, id),
+    }
 }
 
 /// Whether an id is an imported row's.
@@ -54,6 +70,10 @@ pub struct DbSink<'a> {
     spans: HashMap<CarId, (u64, u64)>,
     pub places_added: usize,
     pub addresses_seen: usize,
+    /// The source the rows are stored as: [`Source::Teslamate`] (the default) or [`Source::Teslafi`].
+    pub source: Source,
+    /// Rows of earlier imports taken away (a TeslaFi drive over a month's end joined into one).
+    pub removed: usize,
 }
 
 impl<'a> DbSink<'a> {
@@ -69,7 +89,18 @@ impl<'a> DbSink<'a> {
             spans: HashMap::new(),
             places_added: 0,
             addresses_seen: 0,
+            source: Source::Teslamate,
+            removed: 0,
         }
+    }
+
+    /// A sink storing rows imported from TeslaFi.
+    pub fn teslafi(engine: &'a Engine) -> DbSink<'a> {
+        DbSink { source: Source::Teslafi, ..DbSink::new(engine) }
+    }
+
+    fn id(&self, car: CarId, id: i64) -> u64 {
+        imported_id_of(self.source, car, id)
     }
 
     fn widen(&mut self, car: CarId, a: u64, b: u64) {
@@ -198,9 +229,9 @@ impl import::Sink for DbSink<'_> {
                     .into_iter()
                     .map(|r| {
                         let mut d = r.drive;
-                        d.id = imported_id(car, r.tm_id);
+                        d.id = self.id(car, r.tm_id);
                         d.car = car;
-                        d.source = Source::Teslamate;
+                        d.source = self.source;
                         d
                     })
                     .collect();
@@ -213,14 +244,14 @@ impl import::Sink for DbSink<'_> {
                 let mut v = Vec::with_capacity(rows.len());
                 for r in rows {
                     let mut c = r.charge;
-                    c.id = imported_id(car, r.tm_id);
+                    c.id = self.id(car, r.tm_id);
                     c.car = car;
-                    c.source = Source::Teslamate;
+                    c.source = self.source;
                     if let (Some(amount), Some(cur)) = (c.cost, &self.currency) {
                         let entry = records::CostEntry {
                             amount,
                             currency: cur.clone(),
-                            source: "teslamate".into(),
+                            source: self.source.site().map_or("teslamate", model::ImportSite::word).into(),
                             mode: None,
                             entered: None,
                             energy_basis: None,
@@ -239,14 +270,14 @@ impl import::Sink for DbSink<'_> {
             }
             Batch::ChargePoints(rows) => {
                 let mut pts: Vec<ChargePoint> = rows.into_iter().map(|r| r.point).collect();
-                write_merged(db, car, &mut pts).map_err(err)?;
+                write_merged(db, car, self.source, &mut pts).map_err(err)?;
             }
             Batch::Positions(rows) => {
                 let mut pts: Vec<Sample> = rows.into_iter().map(|r| r.sample).collect();
                 if let (Some(a), Some(b)) = (pts.iter().map(|p| p.t_ms).min(), pts.iter().map(|p| p.t_ms).max()) {
                     self.widen(car, a, b);
                 }
-                write_merged(db, car, &mut pts).map_err(err)?;
+                write_merged(db, car, self.source, &mut pts).map_err(err)?;
             }
             Batch::States(rows) => {
                 let v: Vec<StateRow> = rows
@@ -254,8 +285,8 @@ impl import::Sink for DbSink<'_> {
                     .map(|r| {
                         let mut span = r.span;
                         span.car = car;
-                        span.source = Source::Teslamate;
-                        StateRow { id: imported_id(car, r.tm_id), span }
+                        span.source = self.source;
+                        StateRow { id: self.id(car, r.tm_id), span }
                     })
                     .collect();
                 db.upsert(car, &v).map_err(err)?;
@@ -266,14 +297,30 @@ impl import::Sink for DbSink<'_> {
                     .map(|r| {
                         let mut update = r.update;
                         update.car = car;
-                        update.source = Source::Teslamate;
-                        UpdateRow { id: imported_id(car, r.tm_id), update }
+                        update.source = self.source;
+                        UpdateRow { id: self.id(car, r.tm_id), update }
                     })
                     .collect();
                 db.upsert(car, &v).map_err(err)?;
             }
+            Batch::Removed(rows) => {
+                let ids = |t: import::Table| -> Vec<u64> {
+                    rows.iter().filter(|(x, _)| *x == t).map(|(_, id)| self.id(car, *id)).collect()
+                };
+                let mut n = 0;
+                n += db.delete::<model::Drive>(car, &ids(import::Table::Drives)).map_err(err)?;
+                n += db.delete::<model::Charge>(car, &ids(import::Table::ChargingProcesses)).map_err(err)?;
+                n += db.delete::<StateRow>(car, &ids(import::Table::States)).map_err(err)?;
+                n += db.delete::<UpdateRow>(car, &ids(import::Table::Updates)).map_err(err)?;
+                self.removed += n;
+                self.touched.insert(car);
+            }
         }
         Ok(())
+    }
+
+    fn time_zone(&mut self, car: CarId) -> Option<String> {
+        self.engine.inner.db.car(car).ok().flatten().map(|c| c.time_zone)
     }
 
     fn places(&mut self, rows: Vec<PlaceRow>) -> Result<(), SinkError> {
@@ -347,11 +394,11 @@ impl import::Sink for DbSink<'_> {
     }
 }
 
-/// Writes imported points over the points already there (by time), sorted.
-fn write_merged<P: db::Point>(db: &db::Db, car: CarId, pts: &mut [P]) -> db::Result<()> {
+/// Writes imported points over the points already there (by time, in the source's own stream), sorted.
+fn write_merged<P: db::Point>(db: &db::Db, car: CarId, source: Source, pts: &mut [P]) -> db::Result<()> {
     pts.sort_by_key(|p| p.t_ms());
     let (Some(a), Some(b)) = (pts.first().map(|p| p.t_ms()), pts.last().map(|p| p.t_ms() + 1)) else { return Ok(()) };
-    let had = db.read_points::<P>(car, Source::Teslamate, a, b)?;
+    let had = db.read_points::<P>(car, source, a, b)?;
     let merged = merge_points(had, pts);
-    db.write_points(car, Source::Teslamate, a, b, &merged)
+    db.write_points(car, source, a, b, &merged)
 }

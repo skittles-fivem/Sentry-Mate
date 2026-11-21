@@ -1,11 +1,15 @@
-"""Import (docs/ui-api.md, "Import"): a resumable upload of a TeslaMate backup or of Sentry Six
-Manager's CAN export (.zip), a check of the whole file, matching a backup's cars to cars here, the
-import itself and its report.
+"""Import (docs/ui-api.md, "Import"): a resumable upload of a TeslaMate backup, of TeslaFi's data
+download (its monthly CSVs) or of Sentry Six Manager's CAN export (.zip), a check of the whole file,
+matching a file's cars to cars here, the import itself and its report.
 
-The kind comes from the file's first bytes, as on the server: a zip ("PK\x03\x04") is a CAN export
-(`kind: "sentry_manager_can"`: no cars to match, its report counts logs), anything else a TeslaMate
-backup (`kind: "teslamate"`). A zip named with "photos" is not a CAN export; a file the upload calls
-`compression: "zip"` that does not start like one fails too.
+The kind comes from the file's first bytes, as on the server: a CSV whose header is TeslaFi's raw
+data (`data_id,Date,...`: plain, gzipped, or the first .csv of a zip) is TeslaFi's (`kind:
+"teslafi"`: one made-up car, "Blue Whale", that no car here has, so it must be matched; its report
+counts rows, drives, charges, the units and the time zone); TeslaFi's drives or charges list fails
+with `teslafi_summary`. Any other zip ("PK\x03\x04") is a CAN export (`kind: "sentry_manager_can"`:
+no cars to match, its report counts logs), anything else a TeslaMate backup (`kind: "teslamate"`).
+A zip named with "photos" is not a CAN export; a file the upload calls `compression: "zip"` that
+does not start like one fails too. A made-up TeslaFi file to upload: `mockapi/data/TeslaFi32023.csv`.
 
 The dev server keeps no bytes: each chunk is checked (offset, length, SHA-256) and counted. The
 check and the import then run on the virtual clock (about 6 s and 12 s), so a page can poll a job
@@ -20,6 +24,8 @@ import binascii
 import copy
 import hashlib
 import re
+import struct
+import zlib
 
 from ..conventions import page
 from ..dataset import extras
@@ -29,7 +35,12 @@ CHECK_MS = 6_000
 IMPORT_MS = 12_000
 MAX_FILE = 64 * 1024 ** 3
 COMPRESSIONS = ("plain", "gzip", "xz", "zip")
-KIND_TM, KIND_CAN = "teslamate", "sentry_manager_can"
+KIND_TM, KIND_CAN, KIND_TF = "teslamate", "sentry_manager_can", "teslafi"
+# columns of TeslaFi's raw data; a header with "Date" and four of these is TeslaFi's
+TF_MARKS = ("data_id", "shift_state", "charging_state", "battery_level", "odometer", "latitude", "longitude",
+            "state", "carstate", "battery_range", "car_version")
+TIME_ZONES = ("UTC", "Europe/Berlin", "Europe/London", "Europe/Amsterdam", "America/New_York", "America/Chicago",
+              "America/Denver", "America/Los_Angeles", "Asia/Tokyo", "Australia/Sydney", "Pacific/Auckland")
 ZIP_HEADS = (b"PK\x03\x04", b"PK\x05\x06")
 # the CAN export's made-up logs: c3's key, and a key no car has yet
 CAN_KEYS = (("cbk_c90a7716", 1440, 3), ("smo-new-0001", 60, 0))
@@ -42,11 +53,40 @@ def _job(req):
     return j
 
 
+def teslafi_sniff(head):
+    """What the start of an upload is: "raw" (TeslaFi's data), "summary" (its drives or charges list) or None."""
+    text = None
+    try:
+        if head[:2] == b"\x1f\x8b":
+            text = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(head, 1 << 16)
+        elif head[:4] == b"PK\x03\x04" and len(head) >= 30:
+            method, csize = struct.unpack("<H", head[8:10])[0], struct.unpack("<I", head[18:22])[0]
+            nlen, xlen = struct.unpack("<HH", head[26:30])
+            name = head[30:30 + nlen].decode("utf-8", "replace").lower()
+            if not name.endswith(".csv"):
+                return None
+            body = head[30 + nlen + xlen:]
+            text = zlib.decompressobj(-15).decompress(body, 1 << 16) if method == 8 else body[:csize or None]
+        else:
+            text = head
+    except (zlib.error, struct.error):
+        return None
+    line = text.decode("utf-8", "replace").lstrip("\ufeff").lstrip('"').splitlines()
+    names = [x.strip().strip('"').lower() for x in (line[0].split(",") if line else [])]
+    if "date" in names and sum(1 for m in TF_MARKS if m in names) >= 4:
+        return "raw"
+    if "start time" in names and "end time" in names and "data_id" not in names:
+        return "summary"
+    return None
+
+
 def _advance(req, j):
     """Move a job along the virtual clock."""
     with req.store.lock:
         now = req.now
-        if j["status"] == "checking" and now >= j["_check_done_ms"] and j.get("_zip") is not None:
+        if j["status"] == "checking" and now >= j["_check_done_ms"] and j.get("_tf"):
+            _advance_tf(req, j)
+        elif j["status"] == "checking" and now >= j["_check_done_ms"] and j.get("_zip") is not None:
             _advance_can(req, j)
         elif j["status"] == "checking" and now >= j["_check_done_ms"]:
             if "broken" in (j.get("name") or ""):
@@ -66,6 +106,8 @@ def _advance(req, j):
             j["finished_ms"] = j["_import_done_ms"]
             if j.get("kind") == KIND_CAN:
                 j["report"] = can_report(req, imported=True, again=j.get("_again", False))
+            elif j.get("kind") == KIND_TF:
+                j["report"] = extras.teslafi_report(j["cars"], True, j.get("teslafi") or {}, j.get("_again", False))
             else:
                 j["report"] = _report(req, j, imported=True)
         if j["status"] == "checking":
@@ -78,6 +120,23 @@ def _advance(req, j):
 
 def _report(req, j, imported):
     return extras.import_report(j["cars"], imported)
+
+
+def _advance_tf(req, j):
+    """The end of a TeslaFi file's check."""
+    done = j["_check_done_ms"]
+    j["kind"] = KIND_TF
+    if j["_tf"] == "summary":
+        j.update(status="failed", finished_ms=done, error={
+            "code": "teslafi_summary",
+            "message": "this is TeslaFi's list of drives or charges, which has no positions: upload the monthly "
+                       "files of Settings > Account > Advanced > Download TeslaFi Data instead"})
+        return
+    again = any(x.get("kind") == KIND_TF and x["status"] == "done" for x in req.store.imports.values())
+    j["_again"] = again
+    j.update(status="ready", bytes_read=j["bytes_total"], checked_ms=done,
+             report=extras.teslafi_report(j["cars"], False, {}, again))
+    j["pass"] = 1
 
 
 def _advance_can(req, j):
@@ -264,7 +323,8 @@ def patch_import(req):
     with st.lock:
         if j["uploaded_bytes"] == 0:
             zip_ = req.body[:4] in ZIP_HEADS
-            if zip_ or comp_says_zip(j):
+            j["_tf"] = teslafi_sniff(req.body)
+            if (zip_ or comp_says_zip(j)) and not j["_tf"]:
                 j["_zip"] = zip_
         j["uploaded_bytes"] += len(req.body)
         j["bytes_read"] = j["uploaded_bytes"]
@@ -274,7 +334,9 @@ def patch_import(req):
             j["bytes_read"] = 0
             j["_check_start_ms"] = req.now
             j["_check_done_ms"] = req.now + CHECK_MS
-            if j.get("_zip") is None:
+            if j.get("_tf") == "raw":
+                j["cars"] = [dict(c, match=_suggest(req, c)) for c in extras.teslafi_cars()]
+            elif j.get("_zip") is None and not j.get("_tf"):
                 j["cars"] = [dict(c, match=_suggest(req, c))
                              for c in extras.backup_cars(req.app.cfg.now_ms, req.ds.history("c3"))]
             st.rev += 1
@@ -364,11 +426,42 @@ def put_cars(req):
     return get_cars(req)
 
 
+def _start_body(req, j):
+    """`{ currency?, time_zone?, distance_unit?, temperature_unit? }` (the last three for TeslaFi only)."""
+    body = req.json(required=False) or {}
+    bad = {k: "Unknown field." for k in body if k not in ("currency", "time_zone", "distance_unit", "temperature_unit")}
+    if bad:
+        raise bad_input(bad)
+    rule = {}
+    cur = body.get("currency")
+    if cur is not None and not (isinstance(cur, str) and re.fullmatch(r"[A-Za-z]{3}", cur.strip())):
+        rule["currency"] = "A currency code such as EUR."
+    tz = body.get("time_zone")
+    if tz is not None and tz not in TIME_ZONES:
+        rule["time_zone"] = "An IANA time zone such as Europe/Berlin."
+    du = body.get("distance_unit")
+    if du is not None and du not in ("mi", "km"):
+        rule["distance_unit"] = "mi or km."
+    tu = body.get("temperature_unit")
+    if tu is not None and tu not in ("c", "f"):
+        rule["temperature_unit"] = "c or f."
+    if j.get("kind") != KIND_TF:
+        for k in ("time_zone", "distance_unit", "temperature_unit"):
+            if body.get(k) is not None:
+                rule[k] = "Only for a TeslaFi import."
+    if rule:
+        raise invalid(rule)
+    return {"time_zone": tz, "distance_unit": du, "temperature_unit": tu}
+
+
 def start(req):
     st = req.store
     j = _job(req)
     if j["status"] != "ready":
         raise conflict("not_ready", f"This import is {j['status']}; it can start once the whole file is checked.")
+    settings = _start_body(req, j)
+    if j.get("kind") == KIND_TF:
+        j["teslafi"] = settings
     if j.get("kind") != KIND_CAN and any(c["match"] is None for c in j["cars"]):
         raise conflict("cars_unmatched", "Match every imported car first (a car, new, or leave out).")
     with st.lock:

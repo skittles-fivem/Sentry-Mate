@@ -452,3 +452,66 @@ async fn bounds_streamed_pages_arrival_times_and_local_days() {
     assert_eq!(kind(&after, "import_uploads"), kind(&before, "import_uploads") + 10_000, "{after}");
     assert!(kind(&after, "server") < kind(&before, "server") + 10_000, "{after}");
 }
+
+/// TeslaFi rows inside SMO's history: hidden behind the live side at first, found by `source=import:teslafi`, named
+/// in the overlap beside TeslaMate's, shown once the overlap is flipped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_teslafi_import_overlaps_smo_like_a_teslamate_one() {
+    let k = seeded().await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    let first = tokio::task::block_in_place(|| {
+        engine::query::drives::drives(&k.engine, k.id, &Default::default(), &engine::query::Paging::first(1))
+            .unwrap()
+            .body
+            .items
+    });
+    let at = first[0].start_ms + 300_000;
+    let wall = |ms: u64| {
+        chrono::DateTime::from_timestamp_millis(ms as i64).unwrap().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string()
+    };
+    let mut csv = String::from(
+        "data_id,Date,state,shift_state,charging_state,latitude,longitude,speed,power,odometer,battery_level,battery_range,vin\n",
+    );
+    for i in 0..8u64 {
+        let (gear, speed) = if i == 0 || i == 7 { ("P", "None") } else { ("D", "30") };
+        csv.push_str(&format!(
+            "{},{},online,{gear},Disconnected,{:.4},-140.2,{speed},12,{:.2},70,200.0,5YJ3E1EA1PF000077\n",
+            100 + i,
+            wall(at + i * 60_000),
+            -30.5 + i as f64 * 0.004,
+            20_000.0 + i as f64 * 0.5
+        ));
+    }
+    let mut m = engine::query::imports::Matches::default();
+    m.to.insert(1, Some(k.id));
+    let s = engine::query::imports::TeslafiSettings { time_zone: Some("UTC".into()), ..Default::default() };
+    let done =
+        tokio::task::block_in_place(|| engine::query::imports::teslafi_run(&k.engine, csv.as_bytes(), &m, &s).unwrap());
+    assert_eq!(done.report.drives, 1, "{:?}", done.report);
+
+    let of = |v: &Value, site: &str| v["items"].as_array().unwrap().iter().filter(|d| d["source"] == site).count();
+    let shown = ok(&mut admin, &format!("/api/v1/cars/{car}/drives")).await;
+    assert_eq!((of(&shown, "teslafi"), of(&shown, "teslamate")), (0, 0), "SMO wins at first: {shown}");
+    let tf = ok(&mut admin, &format!("/api/v1/cars/{car}/drives?source=import:teslafi")).await;
+    assert_eq!(tf["items"].as_array().unwrap().len(), 1, "{tf}");
+    assert_eq!(tf["items"][0]["source_label"], "Imported from TeslaFi");
+    let imported = ok(&mut admin, &format!("/api/v1/cars/{car}/drives?source=import")).await;
+    assert_eq!((of(&imported, "teslafi"), of(&imported, "teslamate")), (1, 1), "{imported}");
+
+    let o = ok(&mut admin, &format!("/api/v1/cars/{car}/overlaps")).await;
+    let items = o["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{o}");
+    assert_eq!(items[0]["imported"]["drives"], json!(2), "{o}");
+    let sites: Vec<&str> = items[0]["sources"].as_array().unwrap().iter().filter_map(|s| s["site"].as_str()).collect();
+    assert_eq!(sites, ["teslamate", "teslafi"], "{o}");
+    let id = items[0]["id"].as_str().unwrap().to_string();
+    let r = admin.patch(&format!("/api/v1/cars/{car}/overlaps"), json!({ "id": id, "shown": "import:teslafi" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["items"][0]["shown_source"], "import", "both sites are in it");
+    let shown = ok(&mut admin, &format!("/api/v1/cars/{car}/drives")).await;
+    assert_eq!((of(&shown, "teslafi"), of(&shown, "teslamate")), (1, 1), "now the imported side: {shown}");
+    let fleet = ok(&mut admin, "/api/v1/cars").await;
+    let label = fleet["items"][0]["source_label"].as_str().unwrap().to_string();
+    assert!(label.contains("TeslaMate and TeslaFi"), "{label}");
+}

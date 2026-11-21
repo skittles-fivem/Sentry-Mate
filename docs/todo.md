@@ -12,6 +12,10 @@ the [README](../README.md).
 - **Horizon, Console and Pebble catch up:** the certificate SHA-256 with Copy and "Make a new certificate", the
   Sentry Six Manager CAN export import, and the weak-password warning (Instrument and Logbook have them).
 - **Logbook pixel clean** at laptop, 4K and phone sizes (Instrument is).
+- **The Import page in each design shows TeslaFi.** The server takes TeslaFi's data download (`kind: "teslafi"`:
+  its report, the time zone to confirm and the units to Start, `docs/ui-api.md`, "TeslaFi's data") and the dev
+  server serves it with a made-up file (`ui/devserver/mockapi/data/TeslaFi32023.csv`); a later step does the pages:
+  the time zone and units on the check's page, the report's rows, drives and charges, and "Imported from TeslaFi".
 - **CI in about 5 minutes** per push to main (tests in parallel shards, a build cache), down from 30-45.
 
 ## Next

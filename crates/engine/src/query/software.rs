@@ -15,7 +15,7 @@ use super::system::Shown;
 use super::{CarRef, List, Paging, Period, QResult, QueryError, Scoped, car_of, cmp_key, r, read_after, scoped};
 use crate::Engine;
 use db::UpdateRow;
-use model::{Car, CarId, Charge, Drive, Source};
+use model::{Car, CarId, Charge, Drive};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
@@ -111,8 +111,8 @@ fn version_of(e: &Engine, car: CarId, u: &UpdateRow) -> QResult<(Option<String>,
     }
     let v = Some(u.update.version.trim().to_string()).filter(|v| !v.is_empty());
     let src = v.as_ref().map(|_| {
-        if u.update.source == Source::Teslamate {
-            "teslamate"
+        if let Some(site) = u.update.source.site() {
+            site.word()
         } else if u.update.inputs.contains(model::Input::TeslaApi) {
             "tesla_api"
         } else {
@@ -147,7 +147,7 @@ fn view(e: &Engine, c: &Car, all: &[UpdateRow], i: usize, shown: &Shown) -> QRes
         n if n % 2 == 1 => Some(ranges[n / 2]),
         n => Some((ranges[n / 2 - 1] + ranges[n / 2]) / 2.0),
     };
-    let tm = up.source == Source::Teslamate;
+    let site = up.source.site();
     Ok(UpdateView {
         id: u.id.to_string(),
         car: CarRef(c.id),
@@ -158,8 +158,8 @@ fn view(e: &Engine, c: &Car, all: &[UpdateRow], i: usize, shown: &Shown) -> QRes
         since_previous_ms: prev_end.map(|p| up.start_ms.saturating_sub(p)),
         version,
         version_source,
-        detected_by: if tm {
-            "teslamate"
+        detected_by: if let Some(site) = site {
+            site.word()
         } else if up.inputs.contains(model::Input::TeslaApi) {
             "tesla_api"
         } else {

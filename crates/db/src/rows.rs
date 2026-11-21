@@ -50,6 +50,10 @@ fn milli(v: Option<f64>) -> i64 {
 }
 
 impl Totals {
+    pub fn is_zero(&self) -> bool {
+        *self == Totals::default()
+    }
+
     pub fn distance_km(&self) -> f64 {
         self.distance_m as f64 / 1000.0
     }
@@ -83,7 +87,11 @@ fn add(to: &mut i64, sign: i64, v: i64) {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tally {
     pub can: Totals,
+    /// Every imported row, whatever its site (the name is the stored word, from when TeslaMate was the only one).
     pub teslamate: Totals,
+    /// Of those, the rows imported from TeslaFi.
+    #[serde(default, skip_serializing_if = "Totals::is_zero")]
+    pub teslafi: Totals,
     pub states: i64,
     pub updates: i64,
 }
@@ -92,20 +100,36 @@ impl Tally {
     pub fn totals(&self, source: Source) -> &Totals {
         match source {
             Source::Live => &self.can,
-            Source::Teslamate => &self.teslamate,
+            // every imported row, whatever its site
+            Source::Teslamate | Source::Teslafi => &self.teslamate,
         }
     }
 
-    pub(crate) fn totals_mut(&mut self, source: Source) -> &mut Totals {
+    /// The totals a row of `source` counts in: its family's, and its site's when that is kept on its own.
+    pub(crate) fn totals_mut(&mut self, source: Source) -> (&mut Totals, Option<&mut Totals>) {
         match source {
-            Source::Live => &mut self.can,
-            Source::Teslamate => &mut self.teslamate,
+            Source::Live => (&mut self.can, None),
+            Source::Teslamate => (&mut self.teslamate, None),
+            Source::Teslafi => (&mut self.teslamate, Some(&mut self.teslafi)),
+        }
+    }
+
+    /// The totals of rows imported from `site`.
+    pub fn of_site(&self, site: model::ImportSite) -> Totals {
+        match site {
+            model::ImportSite::Teslafi => self.teslafi.clone(),
+            model::ImportSite::Teslamate => {
+                let mut t = self.teslamate.clone();
+                t.add(&self.teslafi, -1);
+                t
+            }
         }
     }
 
     pub(crate) fn add(&mut self, other: &Tally, sign: i64) {
         self.can.add(&other.can, sign);
         self.teslamate.add(&other.teslamate, sign);
+        self.teslafi.add(&other.teslafi, sign);
         add(&mut self.states, sign, other.states);
         add(&mut self.updates, sign, other.updates);
     }
@@ -144,6 +168,7 @@ impl Tally {
         Tally {
             can: pick(&self.can),
             teslamate: pick(&self.teslamate),
+            teslafi: pick(&self.teslafi),
             states: if table == Table::States { self.states } else { 0 },
             updates: if table == Table::Updates { self.updates } else { 0 },
         }
@@ -200,10 +225,12 @@ impl Item for Drive {
         self.inputs
     }
     fn tally(&self, t: &mut Tally, sign: i64) {
-        let x = t.totals_mut(self.source);
-        add(&mut x.drives, sign, 1);
-        add(&mut x.distance_m, sign, milli(self.distance_km));
-        add(&mut x.drive_energy_wh, sign, milli(self.energy_used_kwh));
+        let (a, b) = t.totals_mut(self.source);
+        for x in std::iter::once(a).chain(b) {
+            add(&mut x.drives, sign, 1);
+            add(&mut x.distance_m, sign, milli(self.distance_km));
+            add(&mut x.drive_energy_wh, sign, milli(self.energy_used_kwh));
+        }
     }
 }
 
@@ -228,10 +255,12 @@ impl Item for Charge {
         self.inputs
     }
     fn tally(&self, t: &mut Tally, sign: i64) {
-        let x = t.totals_mut(self.source);
-        add(&mut x.charges, sign, 1);
-        add(&mut x.charge_added_wh, sign, milli(self.energy_added_kwh));
-        add(&mut x.charge_used_wh, sign, milli(self.energy_used_kwh));
+        let (a, b) = t.totals_mut(self.source);
+        for x in std::iter::once(a).chain(b) {
+            add(&mut x.charges, sign, 1);
+            add(&mut x.charge_added_wh, sign, milli(self.energy_added_kwh));
+            add(&mut x.charge_used_wh, sign, milli(self.energy_used_kwh));
+        }
     }
 }
 
@@ -343,7 +372,7 @@ pub struct Query {
     pub limit: usize,
     /// Continue after this row (the `next` of the page before).
     pub after: Option<Cursor>,
-    /// Only rows from this source.
+    /// Only rows of this source's family ([`Source::family`]: every imported row for an imported source).
     pub source: Option<Source>,
 }
 

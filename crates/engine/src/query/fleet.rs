@@ -61,8 +61,11 @@ fn car_origins(x: &FleetEntry) -> Vec<model::Origin> {
     if inputs.contains(model::Input::TeslaApi) {
         out.push(model::Origin::TeslaApi);
     }
-    if t.teslamate.drives + t.teslamate.charges > 0 {
-        out.push(model::Origin::Import(model::ImportSite::Teslamate));
+    for site in model::ImportSite::ALL {
+        let s = t.of_site(site);
+        if s.drives + s.charges > 0 {
+            out.push(model::Origin::Import(site));
+        }
     }
     out
 }
@@ -355,7 +358,7 @@ pub fn attention(e: &Engine, visible: &[CarId], paging: &Paging) -> QResult<List
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Configured {
     pub value: serde_json::Value,
-    /// `can`, `vin`, `owner`, `teslamate`.
+    /// `can`, `vin`, `owner`, `teslamate`, `teslafi`.
     pub source: Option<&'static str>,
     /// The input it was read from (a VIN comes from SMO's frames); empty when an admin typed it or it is unknown.
     pub sources: Vec<super::SourceRef>,
@@ -366,7 +369,9 @@ impl Configured {
         let origin = match source {
             Some("can" | "vin") => Some(model::Origin::Smo),
             Some("tesla_api") => Some(model::Origin::TeslaApi),
-            Some("teslamate") => Some(model::Origin::Import(model::ImportSite::Teslamate)),
+            Some(w) if model::ImportSite::from_word(w).is_some() => {
+                model::ImportSite::from_word(w).map(model::Origin::Import)
+            }
             _ => None,
         };
         Configured { value, source, sources: origin.into_iter().map(super::SourceRef::from).collect() }

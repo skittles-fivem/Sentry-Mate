@@ -254,7 +254,7 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     let streams: Vec<model::Stream> = match source {
         None => model::Stream::ALL.to_vec(),
         Some(super::SourceFilter::Live) => vec![model::Stream::Smo, model::Stream::TeslaApi],
-        Some(f) => vec![f.stream()],
+        Some(f) => f.streams(),
     };
     // the streams that gave a point to the answer
     let mut gave = std::collections::BTreeSet::new();

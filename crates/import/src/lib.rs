@@ -32,6 +32,7 @@ pub mod report;
 pub mod rows;
 mod schema;
 pub mod state;
+pub mod teslafi;
 mod value;
 mod vin;
 pub mod zip;
@@ -66,6 +67,16 @@ pub enum Error {
     Utf16Be,
     #[error("no TeslaMate cars table in this file: is it TeslaMate's backup?")]
     NotTeslamate,
+    #[error(
+        "this is not TeslaFi's data: in TeslaFi use Settings > Account > Advanced > Download TeslaFi Data and upload \
+         the CSV files it gives (one, several in a .zip, or gzipped)"
+    )]
+    NotTeslafi,
+    #[error(
+        "this is TeslaFi's list of drives or charges, which has no positions: upload the monthly files of Settings > \
+         Account > Advanced > Download TeslaFi Data instead"
+    )]
+    TeslafiSummary,
     #[error("the backup is incomplete ({0}): it may have been cut short; make it again")]
     Incomplete(&'static str),
     #[error("the backup changed between its two reads")]

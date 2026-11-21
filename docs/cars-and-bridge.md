@@ -7,6 +7,7 @@
 - [Check it works](#check-it-works)
 - [How the bridge uploads](#how-the-bridge-uploads)
 - [Running next to TeslaMate and Sentry Six Manager](#running-next-to-teslamate-and-sentry-six-manager)
+- [Bringing in TeslaFi's history](#bringing-in-teslafis-history)
 - [Bringing in the logs Sentry Six Manager already has](#bringing-in-the-logs-sentry-six-manager-already-has)
 
 ## Supported cars
@@ -107,6 +108,32 @@ second table.
   own.
 - **TeslaMate**: Sentry Mate doesn't talk to TeslaMate, its database, Tesla or the car. Keep TeslaMate running as
   long as you like. Its history comes in from TeslaMate's own backup file: Settings → Import in the web UI.
+- **TeslaFi**: the same for TeslaFi's history, from the data TeslaFi lets you download
+  ([Bringing in TeslaFi's history](#bringing-in-teslafis-history)). Sentry Mate never contacts TeslaFi.
+
+## Bringing in TeslaFi's history
+
+TeslaFi keeps a poll of the car about once a minute. Its data download has them all, one file per month:
+
+1. **In TeslaFi**, open **Settings → Account → Advanced → Download TeslaFi Data**, pick a month and a year and press
+   Submit. TeslaFi gives one month at a time (`TeslaFi82019.csv` is August 2019). Do it for every month you want;
+   you can put all the files in one `.zip` (any order, any names), or upload them one at a time.
+2. **In Sentry Mate**, open **Settings → Import** as an admin and choose the `.csv` (or the `.zip`, or a file gzipped).
+   It uploads in chunks over HTTPS and can stop and go on.
+3. **The check** reads it all and stores nothing. Its report says how many rows it read and would use, and why it
+   would pass any over, the drives and charges it found, the date range, the car (matched to a car here by its VIN,
+   or a new one) and the units and time zone it read the file in. TeslaFi writes its times without a time zone:
+   check that the report's time zone is the one your TeslaFi account is set to (TeslaFi's Settings → Account), and
+   say otherwise when you start. The units are worked out from the file (miles or km, °F or °C); you can say
+   otherwise too.
+4. **Start the import.** Drives come from the gear, charges from the charging state, sleep from the car's state and
+   software updates from the version, all marked "Imported from TeslaFi". Where they meet SMO's or the Tesla API's
+   history, the live side is shown, as with a TeslaMate import (Settings → Cars → overlaps flips a span).
+
+Importing the same files again adds nothing; a later month, or the rest of a month downloaded before it ended, adds
+only what is new, and a drive over the end of a month becomes one drive once both months are in. TeslaFi's own
+drive and charge lists (Drives → Drive Search And Download) are refused: they have no positions. TeslaFi's costs,
+tags and notes are not in its monthly files, so they don't come over.
 
 ## Bringing in the logs Sentry Six Manager already has
 

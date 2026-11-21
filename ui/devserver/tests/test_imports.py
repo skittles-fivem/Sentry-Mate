@@ -5,6 +5,7 @@ report counts what was taken; one import at a time; a broken file fails its chec
 from __future__ import annotations
 
 import hashlib
+import os
 
 from .helpers import ServerCase
 
@@ -160,6 +161,68 @@ class Imports(ServerCase):
             self.server.app.clock.advance(7000)
             d = c.get(url)
             self.assertEqual((d["status"], d["error"]["code"]), ("failed", code), name)
+
+
+    def test_5_teslafi_data(self):
+        c = self.c
+        with open(os.path.join(os.path.dirname(__file__), "..", "mockapi", "data", "TeslaFi32023.csv"), "rb") as f:
+            data = f.read()
+        n = len(data)
+        job = c.json("POST", "/api/v1/imports", {"name": "TeslaFi32023.csv", "bytes_total": n}, expect=201)
+        url = f"/api/v1/imports/{job['id']}"
+        half = n // 2
+        c.json("PATCH", url, data[:half], headers=chunk(data[:half], 0, n))
+        c.json("PATCH", url, data[half:], headers=chunk(data[half:], half, n))
+        cars = c.get(f"{url}/cars")["items"]
+        self.assertEqual([(x["name"], x["vin_prefix"], x["match"]) for x in cars], [("Blue Whale", "5YJ3E1EA4PF", None)])
+        self.server.app.clock.advance(7000)
+        ready = c.get(url)
+        self.assertEqual((ready["status"], ready["kind"], ready["cars_to_match"]), ("ready", "teslafi", 1))
+        rep = ready["report"]
+        self.assertEqual((rep["kind"], rep["imported"], rep["files"]), ("teslafi", False, 1))
+        self.assertEqual(rep["rows"]["read"], rep["rows"]["used"] + sum(rep["rows"]["skipped"].values()))
+        self.assertEqual((rep["found"]["drives"], rep["found"]["charges"]), (2, 2))
+        self.assertTrue(rep["time_zone"]["asked"])
+        self.assertEqual(rep["units"]["distance"], "mi")
+        c.error("POST", f"{url}/start", 409, "cars_unmatched")
+        c.json("PUT", f"{url}/cars", {"items": [{"tm_car": 1, "match": "new"}]})
+        for body in ({"time_zone": "Mars/Olympus"}, {"distance_unit": "parsec"}, {"temperature_unit": "k"}):
+            c.error("POST", f"{url}/start", 422, "invalid", body=body)
+        c.error("POST", f"{url}/start", 400, "bad_input", body={"speed": 1})
+        started = c.json("POST", f"{url}/start", {"time_zone": "Europe/Berlin", "distance_unit": "km"})
+        self.assertEqual(started["status"], "importing")
+        self.server.app.clock.advance(12_500)
+        done = c.get(url)["report"]
+        self.assertTrue(done["imported"])
+        self.assertEqual(done["tables"]["drives"]["imported"], 2)
+        self.assertEqual(done["time_zone"]["name"], "Europe/Berlin")
+        self.assertEqual((done["units"]["distance"], done["units"]["distance_from"]), ("km", "setting"))
+        # the same file again: every row was imported already
+        job = c.json("POST", "/api/v1/imports", {"name": "again.csv", "bytes_total": n}, expect=201)
+        url = f"/api/v1/imports/{job['id']}"
+        c.json("PATCH", url, data, headers=chunk(data, 0, n))
+        self.server.app.clock.advance(7000)
+        again = c.get(url)["report"]
+        self.assertEqual(again["rows"]["used"], 0)
+        self.assertEqual(again["rows"]["skipped"], {"already_imported": again["rows"]["read"]})
+        c.json("DELETE", url)
+        # TeslaFi's drives list is refused with why; a TeslaMate backup takes no time zone
+        drives = b'Date,"Start Time","End Time","Driving Time","Kilometers Driven"\n2023-03-04,10:15,10:45,0:30,31\n'
+        job = c.json("POST", "/api/v1/imports", {"name": "drives.csv", "bytes_total": len(drives)}, expect=201)
+        url = f"/api/v1/imports/{job['id']}"
+        c.json("PATCH", url, drives, headers=chunk(drives, 0, len(drives)))
+        self.server.app.clock.advance(7000)
+        d = c.get(url)
+        self.assertEqual((d["status"], d["kind"], d["error"]["code"]), ("failed", "teslafi", "teslafi_summary"))
+        c.json("DELETE", url)
+        sql = b"-- made-up TeslaMate backup\n" * 4
+        job = c.json("POST", "/api/v1/imports", {"name": "b.sql", "bytes_total": len(sql)}, expect=201)
+        url = f"/api/v1/imports/{job['id']}"
+        c.json("PATCH", url, sql, headers=chunk(sql, 0, len(sql)))
+        self.server.app.clock.advance(7000)
+        c.json("PUT", f"{url}/cars", {"items": [{"tm_car": 2, "match": "leave_out"}]})
+        c.error("POST", f"{url}/start", 422, "invalid", body={"time_zone": "UTC"})
+        c.json("DELETE", url)
 
 
 class WatchImports(ServerCase):

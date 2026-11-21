@@ -525,7 +525,7 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             from: super::Sources::of(up.source, up.inputs),
             flags: None,
             version: Some(up.version.clone()).filter(|v| !v.is_empty()),
-            version_source: (up.source == Source::Teslamate).then_some("teslamate"),
+            version_source: up.source.site().map(model::ImportSite::word),
         });
     }
     out.retain(|row| row.start_ms >= a && row.start_ms < b);
@@ -867,7 +867,7 @@ pub fn activity(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Activ
         let kind = match s.state {
             State::Asleep => "asleep",
             State::Unknown => "unknown",
-            State::Online if s.buses.iter().any(|x| x == "can1") || s.source == Source::Teslamate => "online",
+            State::Online if s.buses.iter().any(|x| x == "can1") || s.source.is_imported() => "online",
             State::Online => "online_vehicle_bus_only",
         };
         // the span with the drives and charges taken out

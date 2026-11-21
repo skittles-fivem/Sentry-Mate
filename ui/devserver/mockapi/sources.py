@@ -13,12 +13,12 @@ from __future__ import annotations
 
 from .util import DAY, h01
 
-SITES = {"teslamate": "TeslaMate"}
+SITES = {"teslamate": "TeslaMate", "teslafi": "TeslaFi"}
 SHORT = {"smo": "SMO", "tesla_api": "the Tesla API"}
 LABEL = {"smo": "Data from SMO", "tesla_api": "Data from the Tesla API"}
 
 # the words `source=` takes; `can` and `teslamate` are the old ones
-FILTER_WORDS = ("smo", "tesla_api", "import", "import:teslamate", "all", "can", "teslamate")
+FILTER_WORDS = ("smo", "tesla_api", "import", "import:teslamate", "import:teslafi", "all", "can", "teslamate")
 
 
 def ref(kind, site=None):

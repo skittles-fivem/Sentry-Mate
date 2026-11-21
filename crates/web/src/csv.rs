@@ -28,7 +28,7 @@ fn flatten(prefix: &str, v: &Value, out: &mut Vec<(String, String)>) {
 
 fn plain(v: &Value) -> String {
     match v {
-        // an origin in `sources`: `smo`, `tesla_api`, `import:teslamate`
+        // an origin in `sources`: `smo`, `tesla_api`, `import:teslamate`, `import:teslafi`
         Value::Object(m) if m.get("kind").is_some_and(Value::is_string) && m.contains_key("label") => {
             let kind = m.get("kind").and_then(Value::as_str).unwrap_or("");
             match m.get("site").and_then(Value::as_str) {

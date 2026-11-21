@@ -2,7 +2,7 @@
 //!
 //! Answers are `Serialize` types whose field names, units and shapes are the contract's: metric units named in the
 //! field (`_km`, `_kwh`, `_kpa`, ...), times in ms UTC, ids as strings (cars `c<n>`, places `p<n>`, drives and charges
-//! decimal), `null` for unknown (never 0), `source: "can" | "teslamate"`. Car-scoped answers carry `car` and
+//! decimal), `null` for unknown (never 0), `source: "can" | "tesla_api" | "teslamate" | "teslafi"`. Car-scoped answers carry `car` and
 //! `time_zone` ([`Scoped`]). Lists are paged by an opaque cursor ([`Paging`], [`List`]) that is tied to the filters
 //! and sort it was made with: sent with others it is refused (`400` on `after`).
 //!
@@ -384,10 +384,11 @@ impl Sources {
     pub(crate) fn from_origins(origins: &[model::Origin]) -> Sources {
         let imported = origins.iter().any(|o| o.site().is_some());
         let smo = origins.contains(&model::Origin::Smo);
+        let site = origins.iter().find_map(|o| o.site());
         let source = if smo {
             "can"
-        } else if imported {
-            "teslamate"
+        } else if let Some(site) = site.filter(|_| imported) {
+            site.word()
         } else if origins.contains(&model::Origin::TeslaApi) {
             "tesla_api"
         } else {
@@ -411,7 +412,7 @@ pub enum SourceFilter {
     Smo,
     /// Live rows with Tesla API data (`tesla_api`).
     TeslaApi,
-    /// Imported rows, from any site or one (`import`, `import:teslamate`, old word `teslamate`).
+    /// Imported rows, from any site or one (`import`, `import:teslamate`, `import:teslafi`, old word `teslamate`).
     Import(Option<model::ImportSite>),
 }
 
@@ -427,9 +428,7 @@ impl SourceFilter {
     /// Whether a row of `source` from `inputs` matches.
     pub fn keeps(self, source: model::Source, inputs: model::Inputs) -> bool {
         match self {
-            SourceFilter::Import(site) => {
-                source == model::Source::Teslamate && site.is_none_or(|s| s == model::ImportSite::Teslamate)
-            }
+            SourceFilter::Import(site) => source.is_imported() && site.is_none_or(|s| source.site() == Some(s)),
             SourceFilter::Live => source == model::Source::Live,
             SourceFilter::Smo => {
                 source == model::Source::Live && (inputs.is_empty() || inputs.contains(model::Input::Smo))
@@ -438,12 +437,14 @@ impl SourceFilter {
         }
     }
 
-    /// The stream a series reads.
-    pub fn stream(self) -> model::Stream {
+    /// The streams a series reads.
+    pub fn streams(self) -> Vec<model::Stream> {
         match self {
-            SourceFilter::Live | SourceFilter::Smo => model::Stream::Smo,
-            SourceFilter::TeslaApi => model::Stream::TeslaApi,
-            SourceFilter::Import(_) => model::Stream::Teslamate,
+            SourceFilter::Live => vec![model::Stream::Smo, model::Stream::TeslaApi],
+            SourceFilter::Smo => vec![model::Stream::Smo],
+            SourceFilter::TeslaApi => vec![model::Stream::TeslaApi],
+            SourceFilter::Import(None) => model::Stream::IMPORTED.to_vec(),
+            SourceFilter::Import(Some(site)) => vec![model::Stream::of_site(site)],
         }
     }
 }
@@ -452,17 +453,27 @@ impl SourceFilter {
 pub(crate) fn filter_words(f: Option<SourceFilter>) -> (String, Vec<SourceRef>) {
     use model::{ImportSite, Origin};
     let (word, origins) = match f {
-        None => ("all".to_string(), vec![Origin::Smo, Origin::TeslaApi, Origin::Import(ImportSite::Teslamate)]),
+        None => (
+            "all".to_string(),
+            vec![
+                Origin::Smo,
+                Origin::TeslaApi,
+                Origin::Import(ImportSite::Teslamate),
+                Origin::Import(ImportSite::Teslafi),
+            ],
+        ),
         Some(SourceFilter::Live) => ("live".into(), vec![Origin::Smo, Origin::TeslaApi]),
         Some(SourceFilter::Smo) => ("smo".into(), vec![Origin::Smo]),
         Some(SourceFilter::TeslaApi) => ("tesla_api".into(), vec![Origin::TeslaApi]),
-        Some(SourceFilter::Import(None)) => ("import".into(), vec![Origin::Import(ImportSite::Teslamate)]),
+        Some(SourceFilter::Import(None)) => {
+            ("import".into(), ImportSite::ALL.into_iter().map(Origin::Import).collect())
+        }
         Some(SourceFilter::Import(Some(s))) => (Origin::Import(s).word(), vec![Origin::Import(s)]),
     };
     (word, source_refs(&origins))
 }
 
-/// `source=smo|tesla_api|import|import:teslamate|all`, and the old words `can` (SMO) and `teslamate` (absent: all).
+/// `source=smo|tesla_api|import|import:teslamate|import:teslafi|all`, and the old words `can` (SMO) and `teslamate` (absent: all).
 pub fn parse_source(s: Option<&str>) -> QResult<Option<SourceFilter>> {
     match s {
         None | Some("all") | Some("") => Ok(None),
@@ -472,7 +483,7 @@ pub fn parse_source(s: Option<&str>) -> QResult<Option<SourceFilter>> {
         Some("teslamate") => Ok(Some(SourceFilter::Import(Some(model::ImportSite::Teslamate)))),
         Some(w) => match w.strip_prefix("import:").and_then(model::ImportSite::from_word) {
             Some(site) => Ok(Some(SourceFilter::Import(Some(site)))),
-            None => Err(QueryError::bad("source", "smo, tesla_api, import, import:teslamate or all")),
+            None => Err(QueryError::bad("source", "smo, tesla_api, import, import:teslamate, import:teslafi or all")),
         },
     }
 }

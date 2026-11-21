@@ -118,7 +118,7 @@ impl Tally {
         self.skipped[why.ix()] += 1;
     }
 
-    fn report(&self) -> TableReport {
+    pub(crate) fn report(&self) -> TableReport {
         TableReport {
             read: self.read,
             imported: self.imported,

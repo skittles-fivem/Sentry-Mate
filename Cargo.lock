@@ -974,6 +974,8 @@ dependencies = [
 name = "import"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "chrono-tz",
  "crc32fast",
  "flate2",
  "lzma-rs",
@@ -2420,6 +2422,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytes",
+ "chrono",
  "crc32fast",
  "db",
  "engine",

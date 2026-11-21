@@ -103,7 +103,7 @@ pub(crate) fn view(c: &Car, d: &Drive, x: &Ctx) -> DriveView {
     let duration = if live { x.now_ms.max(d.end_ms) } else { d.end_ms }.saturating_sub(d.start_ms);
     let whkm = d.efficiency_wh_km();
     let (sp, ep) = (d.start.as_ref(), d.end.as_ref());
-    let tm = d.source == Source::Teslamate;
+    let tm = d.source.is_imported();
     DriveView {
         id: d.id.to_string(),
         car: CarRef(c.id),

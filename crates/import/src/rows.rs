@@ -201,6 +201,9 @@ pub enum Batch {
     ChargePoints(Vec<ChargePointRow>),
     States(Vec<StateRow>),
     Updates(Vec<UpdateRow>),
+    /// Rows an earlier import stored that are gone now, by table and id (a TeslaFi drive over a month's end, stored
+    /// in two halves, joined into one: the later half goes). Only TeslaFi imports send these.
+    Removed(Vec<(crate::Table, i64)>),
 }
 
 impl Batch {
@@ -212,6 +215,7 @@ impl Batch {
             Batch::ChargePoints(v) => v.len(),
             Batch::States(v) => v.len(),
             Batch::Updates(v) => v.len(),
+            Batch::Removed(v) => v.len(),
         }
     }
 
@@ -239,4 +243,9 @@ pub trait Sink {
     /// car of the backup, at the end, one car at a time; a second TeslaMate car that is the same car as an earlier
     /// one comes with `None` (the first one carried the state). Not called when the import stops before its end.
     fn car_done(&mut self, report: CarReport, state: Option<ImportState>) -> Result<(), SinkError>;
+    /// The time zone (IANA) of a car [`Sink::car`] gave, for an import whose times are local wall time (TeslaFi's):
+    /// `None` when it has none.
+    fn time_zone(&mut self, _car: CarId) -> Option<String> {
+        None
+    }
 }

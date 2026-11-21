@@ -116,6 +116,59 @@ def import_report(cars, imported):
                      for c in cars], "imported": imported}
 
 
+# The made-up TeslaFi file (mockapi/data/TeslaFi32023.csv): one day of a car no car here is, "Blue Whale" (a
+# made-up VIN, positions in the open ocean), polled once a minute awake and every 30 minutes asleep.
+TESLAFI_DAY = {"rows": 259, "drives": 2, "charges": 2, "states": 3, "updates": 0, "positions": 259,
+               "charge_points": 120, "first_ms": 1_677_888_000_000, "last_ms": 1_677_972_600_000}
+
+
+def teslafi_cars():
+    d = TESLAFI_DAY
+    return [{"tm_car": 1, "name": "Blue Whale", "vin_prefix": "5YJ3E1EA4PF", "drives": d["drives"],
+             "charges": d["charges"], "first_ms": d["first_ms"], "last_ms": d["last_ms"]}]
+
+
+def teslafi_report(cars, imported, settings, again=False):
+    """A TeslaFi file's report as the server writes it (`engine::query::imports::teslafi_report_json`): files, rows
+    read, used and skipped with why, what was found (stored once `imported`), the cars, the span, the units and
+    the time zone the file was read in. `again`: the same file a second time (every row already imported)."""
+    d = TESLAFI_DAY
+    left_out = imported and all(c["match"] == "leave_out" for c in cars)
+    used = 0 if (again or left_out) else d["rows"]
+    skipped = {"already_imported": d["rows"]} if again else ({"car_left_out": d["rows"]} if left_out else {})
+    found = {k: (0 if used == 0 else d[k]) for k in ("drives", "charges", "states", "updates", "positions",
+                                                      "charge_points")}
+    found["replaced"] = 0
+
+    def table(read, n):
+        return {"read": read, "imported": n if imported else 0, "found": n, "skipped": skipped if read else {}}
+
+    units = {"distance": settings.get("distance_unit") or "mi",
+             "distance_from": "setting" if settings.get("distance_unit") else "detected",
+             "temperature": settings.get("temperature_unit") or "c",
+             "temperature_from": "setting" if settings.get("temperature_unit") else "detected"}
+    tz = settings.get("time_zone")
+    return {
+        "kind": "teslafi", "imported": imported, "files": 1, "files_skipped": {},
+        "rows": {"read": d["rows"], "used": used, "skipped": skipped, "bad_values": {}, "windows_1252": 0},
+        "found": found,
+        "tables": {"positions": table(d["rows"], found["positions"]), "drives": table(0, found["drives"]),
+                   "charging_processes": table(0, found["charges"]), "states": table(0, found["states"]),
+                   "updates": table(0, found["updates"])},
+        "span": {"from_ms": d["first_ms"] if used else None, "to_ms": d["last_ms"] if used else None},
+        "cars": [{"tm_car": str(c["tm_car"]), "name": c["name"], "vin_prefix": c["vin_prefix"], "match": c["match"],
+                  "drives": found["drives"], "charges": found["charges"], "first_ms": c["first_ms"],
+                  "last_ms": c["last_ms"],
+                  "rows": None if imported and c["match"] == "leave_out" else d["rows"]} for c in cars],
+        "cars_count": len(cars), "cars_left_out": sum(1 for c in cars if c["match"] == "leave_out") if imported else 0,
+        "units": units,
+        "time_zone": {"name": tz or "UTC", "from": "setting" if tz else "default", "asked": True,
+                      "dst_repeated_rows": 0},
+        "compression": "plain", "packed_bytes": 73_610, "unpacked_bytes": 73_610, "missing_columns": [],
+        "unknown_columns": 3, "warnings": [],
+    }
+
+
 def imports(now, h=None):
     """The import that brought c3's history in (done), with a report that matches what c3 holds."""
     if imported_history(h) is None:  # no c3 (a smaller fleet): nothing was imported

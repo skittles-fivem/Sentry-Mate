@@ -30,6 +30,7 @@ What Sentry Mate does today. What is left: [To do](todo.md). Back to the [README
 | Map tiles: none from outside until an admin turns online tiles on | done |
 | Using a failed log anyway | only `log decode --any`, one log at a time |
 | TeslaMate import from TeslaMate's own backup file, uploaded in the web UI (any number of cars, streamed, again later adds only what's new) | done; a live connection to TeslaMate's database is planned |
+| TeslaFi import from TeslaFi's data download (its monthly CSVs, one or many in a zip; drives, charges, states and updates worked out from the polls; units and time zone from the file or the owner; again later adds only what's new) | server and dev server done; the Import pages show it in a later step |
 | Import of the CAN Bridge logs Sentry Six Manager already has, from its CAN export bundle (`.zip`), uploaded in the web UI: each log checked (signature, pairing, chain) and stored as if the bridge had uploaded it, refused when unsigned or changed, never twice ([how](docs/cars-and-bridge.md#bringing-in-the-logs-sentry-six-manager-already-has)) | done; not yet tried on a real export |
 | MQTT for Home Assistant (TLS unless plain is turned on, never a password in the clear, discovery, any number of cars on one connection), set up in the web UI | done |
 | A dev API server that answers [`docs/ui-api.md`](docs/ui-api.md) on made-up data, shared browser modules, and a page checker that loads every page at laptop and 4K sizes against [`docs/parity/coverage-matrix.json`](docs/parity/coverage-matrix.json) | done |

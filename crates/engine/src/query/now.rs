@@ -403,8 +403,8 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         software: Software {
             version: update.as_ref().map(|u| u.version.clone()).filter(|v| !v.is_empty()),
             version_source: update.as_ref().and_then(|u| {
-                if u.source == Source::Teslamate {
-                    Some("teslamate")
+                if let Some(site) = u.source.site() {
+                    Some(site.word())
                 } else if u.inputs.contains(model::Input::TeslaApi) {
                     Some("tesla_api")
                 } else {

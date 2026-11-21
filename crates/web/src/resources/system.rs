@@ -185,8 +185,11 @@ async fn flip_overlap(
         (None, Some(t)) => format!("overlap:{t}"),
         (None, None) => return Err(ApiError::bad_input("id", "Name the overlap by its id (or start_ms).")),
     };
-    if !["live", "can", "import:teslamate", "teslamate"].contains(&shown.as_str()) {
-        return Err(ApiError::invalid("shown", "Must be live or import:teslamate (or the old words can, teslamate)."));
+    if !["live", "can", "import", "import:teslamate", "import:teslafi", "teslamate"].contains(&shown.as_str()) {
+        return Err(ApiError::invalid(
+            "shown",
+            "Must be live or import (import:teslamate, import:teslafi; or the old words can, teslamate).",
+        ));
     }
     let paging = super::now::paging(&p)?;
     let s2 = shown.clone();

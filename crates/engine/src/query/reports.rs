@@ -321,7 +321,7 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
                 g.temp_ms += ms.max(1);
             }
             g.open_drive |= dx.live == Some(d.id) || d.end.is_none();
-            g.tm += u64::from(d.source == Source::Teslamate);
+            g.tm += u64::from(d.source.is_imported());
         }
         Ok(true)
     })?;
@@ -345,7 +345,7 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
                 }
             }
             g.open_charge |= v.flags.in_progress;
-            g.tm += u64::from(ch.source == Source::Teslamate);
+            g.tm += u64::from(ch.source.is_imported());
         }
         Ok(true)
     })?;

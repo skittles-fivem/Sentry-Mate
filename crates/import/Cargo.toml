@@ -1,6 +1,6 @@
 [package]
 name = "import"
-description = "Brings old TeslaMate history into Sentry Mate from TeslaMate's own backup (plain SQL, gzip or xz), read as data, per car, streamed"
+description = "Brings old history into Sentry Mate: TeslaMate's own backup (plain SQL, gzip or xz) and TeslaFi's data download (CSV, zip, gzip or xz), read as data, per car, streamed"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,8 @@ workspace = true
 
 [dependencies]
 model = { path = "../model" }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 crc32fast = "1"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # Unpacks as it is read, holding only the xz window (lzma-rs holds a whole xz block: the whole file for what the `xz`

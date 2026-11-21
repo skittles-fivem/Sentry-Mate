@@ -24,7 +24,7 @@
 - Receive every log the CAN Bridge uploads and keep it sealed, exactly as uploaded.
 - Turn the checked logs into each car's history (drives, charges, states, the time series) in the background, and
   read it in the web UI on port 10101 (see [The web UI](#the-web-ui)). The web UI also changes the settings: places
-  and costs, car settings, upload tokens and car keys, accounts, MQTT, the TeslaMate import.
+  and costs, car settings, upload tokens and car keys, accounts, MQTT, the TeslaMate and TeslaFi imports.
 - See each upload token and the car key it is tied to (`token list`).
 - See a car key's chain report: gaps, failed logs, restarts (`chain`).
 - See which keys signed a car key's logs, and trust a new one (`keys`, `keys trust`).
@@ -288,7 +288,7 @@ the upload port, so the browser warns once about a certificate it doesn't know: 
   it goes). A log whose check fails is never used.
 - **What the pages do**: they read cars, the Now values, the timeline, drives, charges, battery, places, reports and
   data health, and change places and costs, car settings, upload tokens and car keys (**Settings → Cars**), accounts,
-  server settings, MQTT and the TeslaMate import. Admin accounts change things; watch accounts only read their cars.
+  server settings, MQTT and the TeslaMate and TeslaFi imports. Admin accounts change things; watch accounts only read their cars.
 - **Moving** from the pages: a move code or an export file on the old server, and "move here" or "restore from an
   export file" on the new server's first page ([moving.md](moving.md)).
 - A server whose data moved away serves no web UI: it runs on the new server.
