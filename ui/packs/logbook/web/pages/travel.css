@@ -95,7 +95,7 @@
 
 /* A marker: a ring sized in rem (so it grows with the interface), filled for saved places. */
 .page-travel .tv-mark {
-  width: var(--d, round(1rem, var(--e))); height: var(--d, round(1rem, var(--e))); padding: 0; border-radius: 50%; cursor: pointer;
+  width: round(var(--d, 1rem), 2px); height: round(var(--d, 1rem), 2px); padding: 0; border-radius: 50%; cursor: pointer; /* even, so its centre is on a whole px */
   border: round(0.125rem, var(--e)) solid var(--ink); background: color-mix(in srgb, var(--paper) 55%, transparent);
   box-shadow: 0 0 0 round(0.0625rem, var(--e)) var(--paper);
 }

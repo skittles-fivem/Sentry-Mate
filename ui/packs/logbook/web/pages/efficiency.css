@@ -155,4 +155,4 @@
 }
 .page-efficiency .sort-mark { font-size: max(10px, 0.75em); }
 /* day axes: each label starts at its day's midnight, with a short tick there */
-.page-efficiency .ef-x-days span, .page-efficiency .ef-x-days span:first-child, .page-efficiency .ef-x-days span:last-child { transform: none; padding-left: round(0.25rem, var(--e)); border-left: 1px solid var(--ink-3); }
+.page-efficiency .ef-x-days span, .page-efficiency .ef-x-days span:first-child, .page-efficiency .ef-x-days span:last-child { left: round(var(--x), 1px); transform: none; padding-left: round(0.25rem, var(--e)); border-left: 1px solid var(--ink-3); }

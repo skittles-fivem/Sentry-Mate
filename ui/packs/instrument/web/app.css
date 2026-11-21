@@ -296,6 +296,7 @@ a { color: inherit; text-decoration: none; }
 button, input, select { font: inherit; line-height: var(--LH); color: inherit; }
 button { cursor: pointer; }
 h1, h2, h3, h4, p { margin: 0; }
+pre, blockquote, figure, h5, h6 { margin-block: round(1em, var(--e)); } /* the browser's own space, on whole px */
 ul { margin: 0; padding: 0; list-style: none; }
 :focus-visible { outline: round(0.125rem, var(--e)) solid var(--live); outline-offset: round(0.125rem, var(--e)); }
 ::selection { background: rgba(63, 224, 208, 0.3); }

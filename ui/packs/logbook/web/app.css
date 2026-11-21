@@ -146,6 +146,7 @@ body {
 }
 h1, h2, h3, p, dl, dd, ol, ul, figure { margin: 0; }
 h4 { margin-block: round(1.33em, var(--e)); } /* the browser's own space, on whole px */
+pre, blockquote { margin-block: round(1em, var(--e)); }
 ol, ul { padding: 0; list-style: none; }
 a { color: inherit; text-decoration-color: var(--rule-strong); text-underline-offset: 0.2em; text-decoration-thickness: 1px; }
 a:hover { text-decoration-color: currentColor; }
@@ -230,7 +231,7 @@ button { cursor: pointer; }
 /* Boxes around text are snapped to whole px wide: text is measured in fractions of a pixel, so its box would
    end between pixels and so would everything after it. calc-size() rounds the fitted width up (a browser
    without it keeps the fitted width). */
-.button, .chip, .tag, .kbd, .size-trigger, .account-trigger, .segmented-option, .nav-link, .brand, .shortcut, .menu-toggle, .clock, .legend-item { width: calc-size(fit-content, round(up, size, 1px)); }
+.button, .chip, .tag, .kbd, .size-trigger, .account-trigger, .segmented-option, .nav-link, .brand, .shortcut, .menu-toggle, .clock, .legend-item, .choice > .field-label { width: calc-size(fit-content, round(up, size, 1px)); }
 
 .size-trigger, .account-trigger {
   display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); height: round(2rem, var(--e)); padding: 0 round(0.6875rem, var(--e)); border: 1px solid var(--rule-strong); border-radius: 999px;
