@@ -429,3 +429,89 @@ fn a_file_around_a_stretch_already_in_keeps_its_runs_apart() {
     let again = run(&mut s, around.as_bytes(), &Options::default());
     assert_eq!((again.rows_used, s.handed()), (0, 0));
 }
+
+#[test]
+fn a_row_without_its_vin_stays_with_its_car() {
+    let mut g = Gen::new(VIN1);
+    let csv = month(&mut g, 2023, 3);
+    let rows = csv.lines().count() as u64 - 1;
+    // TeslaFi leaves the VIN blank now and then: here on the first row and on an asleep row later on, the vehicle
+    // id kept
+    let mut lines: Vec<String> = csv.lines().map(String::from).collect();
+    let asleep = lines.iter().skip(200).position(|l| l.contains(",asleep,")).unwrap() + 200;
+    for i in [1, asleep] {
+        assert!(lines[i].contains(",1234567,"), "{}", lines[i]);
+        lines[i] = lines[i].replace(VIN1, "");
+    }
+    let blanked = lines.join("\n");
+    let mut s = Store::new(&[(VIN1, 7)]);
+    let r = run(&mut s, blanked.as_bytes(), &Options::default());
+    assert_eq!((r.cars, r.cars_left_out), (1, 0), "{:?}", s.asked);
+    assert_eq!(s.asked.len(), 1);
+    assert_eq!(s.asked[0].vin.as_ref().unwrap().vin_prefix, "5YJ3E1EA1PF");
+    assert_eq!((r.rows_read, r.rows_used), (rows, rows));
+    assert_eq!(s.reports.len(), 1);
+    assert_eq!(s.reports[0].first_ms, Some(utc("2023-03-01 00:00:00")));
+}
+
+#[test]
+fn months_read_again_in_another_zone_or_units_replace_what_they_stored() {
+    let mut g = Gen::new(VIN1);
+    let csv = month(&mut g, 2023, 3);
+    let mut s = Store::new(&[(VIN1, 1)]);
+    let first = run(&mut s, csv.as_bytes(), &Options::default());
+    let (positions, drives, charges) = (s.positions.len(), s.drives.len(), s.charges.len());
+    assert_eq!(first.time_zone.as_deref(), Some("UTC"));
+    assert_eq!(s.positions.keys().next().unwrap().1, utc("2023-03-01 00:00:00"));
+
+    // the owner says it was Chicago's time: every row is read again there, nothing stays at the old times
+    let chicago = Options { time_zone: Some("America/Chicago".into()), ..Options::default() };
+    let again = run(&mut s, csv.as_bytes(), &chicago);
+    assert_eq!(again.read_again, 1);
+    // (the two half hours the clocks skip on 12 March are not times there)
+    assert_eq!(again.rows_skipped.get("dst_gap"), Some(&2));
+    assert_eq!(again.rows_used, first.rows_used - 2, "{:?}", again.rows_skipped);
+    assert!(again.warnings.iter().any(|w| w.contains("in UTC were read again")), "{:?}", again.warnings);
+    assert_eq!((s.positions.len(), s.drives.len(), s.charges.len()), (positions - 2, drives, charges));
+    assert_eq!(s.positions.keys().next().unwrap().1, utc("2023-03-01 06:00:00"));
+    assert_eq!(s.positions.keys().last().unwrap().1, utc("2023-04-01 04:30:00"));
+    // and once read in it, again in it adds nothing
+    let third = run(&mut s, csv.as_bytes(), &chicago);
+    assert_eq!((third.read_again, third.rows_used, s.handed()), (0, 0, 0));
+
+    // other units: read again too, the same times
+    let km = Options { distance: Some(Distance::Km), ..chicago.clone() };
+    let odo = s.positions.values().next().unwrap().odometer_km.unwrap();
+    let fourth = run(&mut s, csv.as_bytes(), &km);
+    assert_eq!((fourth.read_again, fourth.rows_used), (1, again.rows_used));
+    assert_eq!(s.positions.len(), positions - 2);
+    let odo_km = s.positions.values().next().unwrap().odometer_km.unwrap();
+    assert!((odo / odo_km - 1.609_344).abs() < 0.01, "{odo} {odo_km}");
+}
+
+#[test]
+fn a_zip_with_other_files_first_is_still_teslafis() {
+    let mut g = Gen::new(VIN1);
+    g.day(NaiveDate::from_ymd_opt(2023, 3, 2).unwrap());
+    let csv = g.take_csv();
+    for first in [
+        ("readme.txt", &b"hello"[..]),
+        ("other.csv", &b"a,b\r\n1,2\r\n"[..]),
+        ("TeslaFi/", &b""[..]),
+        ("__MACOSX/._TeslaFi32023.csv", &b"\0\x05\x16\x07"[..]),
+    ] {
+        let z = zip(&[first, ("TeslaFi/TeslaFi32023.csv", csv.as_bytes())]);
+        assert_eq!(teslafi::sniff(&z[..]).unwrap(), Sniff::Teslafi, "{}", first.0);
+        let mut s = Store::new(&[(VIN1, 1)]);
+        assert_eq!(run(&mut s, &z, &Options::default()).files, 1);
+    }
+    let drives = "Date,\"Start Time\",\"End Time\",\"Driving Time\",\"Starting Address\",\"Ending Address\",\
+                  \"Kilometers Driven\",\"Rated Kilometers Used\",\"Starting Odometer\",\"Ending Odometer\"\n";
+    let z = zip(&[("readme.txt", b"hello"), ("drives.csv", drives.as_bytes())]);
+    assert_eq!(teslafi::sniff(&z[..]).unwrap(), Sniff::TeslafiSummary);
+    let z = zip(&[("readme.txt", b"hello"), ("other.csv", b"a,b\r\n1,2\r\n")]);
+    assert_eq!(teslafi::sniff(&z[..]).unwrap(), Sniff::Other);
+    // a CAN export bundle stays not TeslaFi's, whatever follows its logs
+    let z = zip(&[("key1/a.log.xz", b"\xfd7zXZ\0"), ("TeslaFi32023.csv", csv.as_bytes())]);
+    assert_eq!(teslafi::sniff(&z[..]).unwrap(), Sniff::Other);
+}

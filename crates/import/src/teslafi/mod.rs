@@ -156,6 +156,23 @@ pub struct Piece {
     pub last_version: Option<(u64, String)>,
     #[serde(default)]
     pub edges: Vec<Edge>,
+    /// The time zone and units its rows were read in (`None`: not kept, taken as any later import's). Read again in
+    /// others, its rows are replaced ([`Batch::Cleared`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance: Option<Distance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<Temperature>,
+}
+
+impl Piece {
+    /// Whether its rows were read otherwise than in `tz` and `units`.
+    fn read_otherwise(&self, tz: chrono_tz::Tz, units: &Units) -> bool {
+        self.zone.as_deref().is_some_and(|z| z != tz.name())
+            || self.distance.is_some_and(|d| d != units.distance)
+            || self.temperature.is_some_and(|t| t != units.temperature)
+    }
 }
 
 /// What earlier TeslaFi imports took from a car.
@@ -214,6 +231,10 @@ pub struct Report {
     pub updates: u64,
     /// Rows of earlier imports taken away because they were joined into another (a drive over a month's end).
     pub removed: u64,
+    /// Stretches imported before in another time zone or other units and read again here: what they stored was
+    /// replaced.
+    #[serde(default)]
+    pub read_again: u64,
     pub cars: u64,
     pub cars_left_out: u64,
     /// The time span of the rows used.
@@ -254,7 +275,7 @@ impl Report {
 /// What a file's first line says it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sniff {
-    /// TeslaFi's raw data (alone, packed, or the first CSV of a zip).
+    /// TeslaFi's raw data (alone, packed, or a CSV among a zip's first files).
     Teslafi,
     /// TeslaFi's drives or charges list.
     TeslafiSummary,
@@ -262,8 +283,11 @@ pub enum Sniff {
     Other,
 }
 
-/// Looks at the start of a file to tell whether it is TeslaFi's export (reads only its first line, or a zip's first
-/// CSV's).
+/// Entries of a zip looked at for TeslaFi's months.
+const SNIFF_ENTRIES: usize = 16;
+
+/// Looks at the start of a file to tell whether it is TeslaFi's export (reads only its first line; of a zip, the
+/// first line of each of its first CSVs, other files passed over).
 pub fn sniff<R: Read>(r: R) -> io::Result<Sniff> {
     let mut r = BufReader::with_capacity(64 << 10, r);
     let head = r.fill_buf()?.to_vec();
@@ -292,17 +316,29 @@ pub fn sniff<R: Read>(r: R) -> io::Result<Sniff> {
     } else if head.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
         kind_of(&mut BufReader::new(lzma_rust2::XzReader::new_mem_limit(r, true, XZ_MAX_WINDOW_KIB)))
     } else if is_zip(&head) {
+        // TeslaFi's months may come after other files (a readme, another CSV): those are passed over, as the import
+        // passes them over, for the first entries; a CAN export's logs say at once it is not TeslaFi's
         let mut z = ZipStream::new(r);
-        while let Some(e) = z.next_entry().map_err(io::Error::from)? {
+        let mut summary = false;
+        for _ in 0..SNIFF_ENTRIES {
+            let Some(e) = z.next_entry().map_err(io::Error::from)? else { break };
             if skip_entry(&e.name) {
                 continue;
             }
-            if !e.name.to_ascii_lowercase().ends_with(".csv") {
-                return Ok(Sniff::Other);
+            let name = e.name.to_ascii_lowercase();
+            if name.ends_with(".log.xz") || name.ends_with(".log") || name.ends_with("manifest.json") {
+                break;
             }
-            return kind_of(&mut BufReader::new(&mut z));
+            if !name.ends_with(".csv") {
+                continue;
+            }
+            match kind_of(&mut BufReader::new(&mut z))? {
+                Sniff::Teslafi => return Ok(Sniff::Teslafi),
+                Sniff::TeslafiSummary => summary = true,
+                Sniff::Other => {}
+            }
         }
-        Ok(Sniff::Other)
+        Ok(if summary { Sniff::TeslafiSummary } else { Sniff::Other })
     } else {
         kind_of(&mut r)
     }
@@ -311,6 +347,19 @@ pub fn sniff<R: Read>(r: R) -> io::Result<Sniff> {
 /// Folders and the files macOS adds to a zip.
 fn skip_entry(name: &str) -> bool {
     name.ends_with('/') || name.starts_with("__MACOSX/") || name.rsplit('/').next().is_some_and(|n| n.starts_with('.'))
+}
+
+/// A row's VIN, when it is one.
+fn row_vin(row: &Row<'_>) -> Option<String> {
+    row.text(Col::Vin).filter(|v| vin_info(v).is_some()).map(|v| v.trim().to_ascii_uppercase())
+}
+
+fn id_key(row: &Row<'_>) -> Option<String> {
+    row.text(Col::VehicleId).map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).map(|v| format!("id:{v}"))
+}
+
+fn name_key(row: &Row<'_>) -> Option<String> {
+    row.text(Col::DisplayName).map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).map(|v| format!("name:{v}"))
 }
 
 fn header_of(line: &str) -> (Vec<String>, HeaderKind) {
@@ -331,6 +380,7 @@ struct Pending {
     states: Vec<StateRow>,
     updates: Vec<UpdateRow>,
     removed: Vec<(Table, i64)>,
+    cleared: Vec<(u64, u64)>,
 }
 
 impl Pending {
@@ -342,6 +392,7 @@ impl Pending {
             + self.states.len()
             + self.updates.len()
             + self.removed.len()
+            + self.cleared.len()
     }
 }
 
@@ -355,6 +406,10 @@ struct Slot {
     pieces: Vec<Piece>,
     old_updates: Vec<i64>,
     run: Option<Run>,
+    /// The units of the file being read (kept with each piece).
+    units: Option<(Distance, Temperature)>,
+    /// The time zones of earlier pieces read in another zone (their rows are looked for in it too).
+    other_zones: Vec<chrono_tz::Tz>,
     /// The last row's time in the file being read (for the repeated autumn hour).
     prev_ms: Option<u64>,
     pending: Pending,
@@ -373,6 +428,8 @@ struct Importer<'a> {
     sink: &'a mut dyn Sink,
     o: &'a Options,
     keys: HashMap<String, usize>,
+    /// The VIN rows of a file's first lines show for a vehicle id or a name (`id:…`, `name:…`), for rows without one.
+    hints: HashMap<String, String>,
     slots: Vec<Slot>,
     report: Report,
     bad: BTreeMap<&'static str, u64>,
@@ -412,6 +469,7 @@ pub fn import<R: Read>(r: R, sink: &mut dyn Sink, o: &Options) -> Result<Report,
         sink,
         o,
         keys: HashMap::new(),
+        hints: HashMap::new(),
         slots: Vec::new(),
         report: Report::default(),
         bad: BTreeMap::new(),
@@ -633,14 +691,15 @@ impl Importer<'_> {
         // the first rows tell the units
         let mut ahead: Vec<Vec<u8>> = Vec::new();
         let mut too_long_ahead = 0u64;
-        let needs_look = self.o.distance.is_none() || self.o.temperature.is_none();
-        while needs_look && ahead.len() < self.o.lookahead_rows {
+        // (always: they also tell the VIN of rows that lack one)
+        while ahead.len() < self.o.lookahead_rows.max(1) {
             match lines.next(&mut buf)? {
                 None => break,
                 Some(Line::TooLong) => too_long_ahead += 1,
                 Some(Line::Text) => ahead.push(buf.clone()),
             }
         }
+        self.hint_vins(&header, &ahead);
         let units = detect(&header, &ahead, self.o);
         self.units_seen.insert((units.distance, units.temperature));
         if self.report.units.is_none() {
@@ -688,16 +747,42 @@ impl Importer<'_> {
         Ok(())
     }
 
-    /// The car a row belongs to (asked of the sink the first time), `None` when it can't be taken.
+    /// Notes the VIN that rows with a vehicle id or a name show, so a row of the same car without its VIN (TeslaFi
+    /// leaves it blank now and then) goes to that car even when it comes first.
+    fn hint_vins(&mut self, h: &Header, lines: &[Vec<u8>]) {
+        let mut f = Fields::default();
+        for b in lines {
+            let (t, _) = csv::text(b);
+            f.split(&t);
+            let row = Row { h, f: &f, line: &t };
+            let Some(vin) = row_vin(&row) else { continue };
+            for k in [id_key(&row), name_key(&row)].into_iter().flatten() {
+                self.hints.entry(k).or_insert_with(|| vin.clone());
+            }
+        }
+    }
+
+    /// The car a row belongs to (asked of the sink the first time), `None` when it can't be taken. A car is known by
+    /// its VIN, else its vehicle id, else its name: a row without a VIN goes with the car whose rows had the same
+    /// vehicle id (or name), never to a car of its own.
     fn slot_for(&mut self, row: &Row<'_>) -> Result<Option<usize>, Error> {
-        let vin = row.text(Col::Vin).filter(|v| vin_info(v).is_some()).map(|v| v.trim().to_ascii_uppercase());
-        let key = match (&vin, row.text(Col::VehicleId), row.text(Col::DisplayName)) {
-            (Some(v), _, _) => format!("vin:{v}"),
-            (None, Some(id), _) => format!("id:{id}"),
-            (None, None, Some(n)) => format!("name:{n}"),
-            _ => String::new(),
+        let (id, name) = (id_key(row), name_key(row));
+        let vin = row_vin(row).or_else(|| [&id, &name].into_iter().flatten().find_map(|k| self.hints.get(k)).cloned());
+        let vin_key = vin.as_ref().map(|v| format!("vin:{v}"));
+        let found = match &vin_key {
+            Some(k) => self.keys.get(k).copied().or_else(|| {
+                // a car first seen without a VIN (none shown for it yet) with the same id
+                id.as_ref().and_then(|k| self.keys.get(k)).copied().filter(|&i| self.slots[i].tm.vin.is_none())
+            }),
+            None => [&id, &name].into_iter().flatten().find_map(|k| self.keys.get(k)).copied(),
         };
-        if let Some(&i) = self.keys.get(&key) {
+        let found = found.or_else(|| {
+            (vin_key.is_none() && id.is_none() && name.is_none()).then(|| self.keys.get("").copied()).flatten()
+        });
+        if let Some(i) = found {
+            for k in [vin_key, id, name].into_iter().flatten() {
+                self.keys.entry(k).or_insert(i);
+            }
             return Ok(Some(i));
         }
         if self.slots.len() >= self.o.max_cars {
@@ -734,6 +819,12 @@ impl Importer<'_> {
             self.report.cars_left_out += 1;
         }
         let i = self.slots.len();
+        let mut other_zones: Vec<chrono_tz::Tz> = Vec::new();
+        for z in tf.pieces.iter().filter_map(|p| p.zone.as_deref().and_then(parse_tz)) {
+            if z != tz && !other_zones.contains(&z) {
+                other_zones.push(z);
+            }
+        }
         self.slots.push(Slot {
             tm,
             car,
@@ -742,6 +833,8 @@ impl Importer<'_> {
             pieces: tf.pieces,
             old_updates: tf.updates,
             run: None,
+            units: None,
+            other_zones,
             prev_ms: None,
             pending: Pending::default(),
             tally: Default::default(),
@@ -749,7 +842,13 @@ impl Importer<'_> {
             last_ms: None,
             warnings: Vec::new(),
         });
-        self.keys.insert(key, i);
+        let keys = [vin_key, id, name].into_iter().flatten().collect::<Vec<_>>();
+        if keys.is_empty() {
+            self.keys.insert(String::new(), i);
+        }
+        for k in keys {
+            self.keys.entry(k).or_insert(i);
+        }
         Ok(Some(i))
     }
 
@@ -805,6 +904,11 @@ impl Importer<'_> {
             }
         };
         s.prev_ms = Some(t);
+        s.units = Some((units.distance, units.temperature));
+        // in a stretch an earlier import read in another time zone or other units: what it stored goes, the rows
+        // are read again (else they would be passed over, or land beside the earlier ones at other times)
+        self.read_again(i, local, t, units);
+        let s = &mut self.slots[i];
         // already in from an earlier file or import
         let k = s.pieces.partition_point(|p| p.last_ms < t);
         if s.pieces.get(k).is_some_and(|p| p.first_ms <= t) {
@@ -885,6 +989,44 @@ impl Importer<'_> {
         Ok(())
     }
 
+    /// Takes away the earlier piece that the row at wall time `local` (`t` in this import's zone) falls in, when that
+    /// piece was read in another time zone (where the row is looked for in that zone) or in other units.
+    fn read_again(&mut self, i: usize, local: chrono::NaiveDateTime, t: u64, units: &Units) {
+        let s = &mut self.slots[i];
+        let tz = s.tz;
+        // the row's time in this zone, and in each zone an earlier piece was read in
+        let mut at = vec![(tz, t)];
+        for z in &s.other_zones {
+            match poll::to_utc(*z, local, None) {
+                Utc::One(x) | Utc::Repeated(x) => at.push((*z, x)),
+                Utc::Skipped => {}
+            }
+        }
+        for (z, x) in at {
+            let k = s.pieces.partition_point(|p| p.last_ms < x);
+            let hit = s.pieces.get(k).is_some_and(|p| {
+                p.first_ms <= x
+                    && p.zone.as_deref().and_then(parse_tz).unwrap_or(tz) == z
+                    && p.read_otherwise(tz, units)
+            });
+            if !hit {
+                continue;
+            }
+            let p = s.pieces.remove(k);
+            s.pending.cleared.push((p.first_ms, p.last_ms));
+            self.report.read_again += 1;
+            let how = match &p.zone {
+                Some(z) if z != tz.name() => format!("in {z}"),
+                _ => "in other units".to_string(),
+            };
+            self.report.warn(format!(
+                "months imported before {how} were read again: what they stored was replaced (read the months next \
+                 to them again too, so a drive or charge over their edges is whole)"
+            ));
+            return;
+        }
+    }
+
     /// Segments and updates a car's run gave.
     fn take(&mut self, i: usize, out: Vec<Out>) {
         for o in out {
@@ -963,6 +1105,9 @@ impl Importer<'_> {
             first_version: run.first_version,
             last_version: run.last_version,
             edges,
+            zone: Some(self.slots[i].tz.name().to_string()),
+            distance: self.slots[i].units.map(|u| u.0),
+            temperature: self.slots[i].units.map(|u| u.1),
         };
         let s = &mut self.slots[i];
         let k = s.pieces.partition_point(|p| p.first_ms < piece.first_ms);
@@ -997,7 +1142,11 @@ impl Importer<'_> {
         let mut send = |b: Batch| -> Result<(), Error> {
             if b.is_empty() { Ok(()) } else { self.sink.batch(car, b).map_err(sink_err) }
         };
-        // removals first: a joined row may reuse nothing of what it replaces, but its halves go before it comes
+        // removals first: a joined row may reuse nothing of what it replaces, but its halves go before it comes;
+        // stretches read again before that
+        if !p.cleared.is_empty() {
+            send(Batch::Cleared(p.cleared))?;
+        }
         for c in p.removed.chunks(n) {
             send(Batch::Removed(c.to_vec()))?;
         }

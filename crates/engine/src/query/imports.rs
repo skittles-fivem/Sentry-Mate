@@ -369,9 +369,17 @@ pub fn teslafi_report_json(
             let own = reports.iter().find(|x| x.tm_car_id == c.tm_car);
             let left_out = m.as_str() == Some("leave_out") || own.is_some_and(|o| o.car.is_none() && imported);
             let rows = own.map_or(0, |o| o.table(Table::Positions).read);
+            // this pass's own figures (a run may read the times in another zone than the check did), else the check's
+            let mine = own.filter(|o| o.car.is_some() && o.first_ms.is_some());
+            let (drives, charges, first_ms, last_ms) = match mine {
+                Some(o) => {
+                    (o.table(Table::Drives).imported, o.table(Table::ChargingProcesses).imported, o.first_ms, o.last_ms)
+                }
+                None => (c.drives, c.charges, c.first_ms, c.last_ms),
+            };
             json!({
                 "tm_car": c.tm_car.to_string(), "name": c.name, "vin_prefix": c.vin_prefix, "match": m,
-                "drives": c.drives, "charges": c.charges, "first_ms": c.first_ms, "last_ms": c.last_ms,
+                "drives": drives, "charges": charges, "first_ms": first_ms, "last_ms": last_ms,
                 "rows": if left_out && imported { Value::Null } else { json!(rows) },
             })
         })
@@ -391,6 +399,7 @@ pub fn teslafi_report_json(
         "found": {
             "drives": r.drives, "charges": r.charges, "states": r.states, "updates": r.updates,
             "positions": r.positions, "charge_points": r.charge_points, "replaced": r.removed,
+            "read_again": r.read_again,
         },
         "tables": {
             "positions": table(Table::Positions),

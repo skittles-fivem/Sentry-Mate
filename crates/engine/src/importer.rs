@@ -315,6 +315,13 @@ impl import::Sink for DbSink<'_> {
                 self.removed += n;
                 self.touched.insert(car);
             }
+            Batch::Cleared(spans) => {
+                for (a, b) in spans {
+                    let d = db.delete_imported_window(car, self.source, a, b.saturating_add(1)).map_err(err)?;
+                    self.removed += d.drives + d.charges + d.states + d.updates;
+                    self.widen(car, a, b);
+                }
+            }
         }
         Ok(())
     }

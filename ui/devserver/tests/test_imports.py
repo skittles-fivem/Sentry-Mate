@@ -5,7 +5,9 @@ report counts what was taken; one import at a time; a broken file fails its chec
 from __future__ import annotations
 
 import hashlib
+import io
 import os
+import zipfile
 
 from .helpers import ServerCase
 
@@ -223,6 +225,86 @@ class Imports(ServerCase):
         c.json("PUT", f"{url}/cars", {"items": [{"tm_car": 2, "match": "leave_out"}]})
         c.error("POST", f"{url}/start", 422, "invalid", body={"time_zone": "UTC"})
         c.json("DELETE", url)
+
+
+TF_FILE = os.path.join(os.path.dirname(__file__), "..", "mockapi", "data", "TeslaFi32023.csv")
+
+
+class TeslafiLikeTheServer(ServerCase):
+    """The dev server takes TeslaFi's uploads and settings as the server does: a zip's folders and other files passed
+    over, any IANA time zone, the unit words the server takes, and no memory of a car that was left out."""
+
+    def upload(self, name, data):
+        c = self.c
+        job = c.json("POST", "/api/v1/imports", {"name": name, "bytes_total": len(data)}, expect=201)
+        url = f"/api/v1/imports/{job['id']}"
+        c.json("PATCH", url, data, headers=chunk(data, 0, len(data)))
+        self.server.app.clock.advance(7000)
+        return url
+
+    def run_it(self, url, match, body):
+        self.c.json("PUT", f"{url}/cars", {"items": [{"tm_car": 1, "match": match}]})
+        self.c.json("POST", f"{url}/start", body)
+        self.server.app.clock.advance(12_500)
+        done = self.c.get(url)
+        self.assertEqual(done["status"], "done")
+        return done["report"]
+
+    def test_1_zips_as_the_server_reads_them(self):
+        from mockapi.resources import imports
+        with open(TF_FILE, "rb") as f:
+            data = f.read()
+
+        def zipped(*entries):
+            b = io.BytesIO()
+            with zipfile.ZipFile(b, "w", zipfile.ZIP_DEFLATED) as z:
+                for n, d in entries:
+                    z.writestr(n, d)
+            return b.getvalue()
+
+        for first in (("TeslaFi/", b""), ("readme.txt", b"hello"), ("other.csv", b"a,b\n1,2\n"),
+                      ("__MACOSX/._TeslaFi32023.csv", b"\0\x05")):
+            z = zipped(first, ("TeslaFi/TeslaFi32023.csv", data))
+            self.assertEqual(imports.teslafi_sniff(z), "raw", first[0])
+        self.assertIsNone(imports.teslafi_sniff(zipped(("key1/a.log.xz", b"x"), ("TeslaFi32023.csv", data))))
+        self.assertIsNone(imports.teslafi_sniff(zipped(("readme.txt", b"hello"))))
+        url = self.upload("teslafi.zip", zipped(("TeslaFi/", b""), ("TeslaFi/TeslaFi32023.csv", data)))
+        j = self.c.get(url)
+        self.assertEqual((j["status"], j["kind"]), ("ready", "teslafi"))
+        self.c.json("DELETE", url)
+
+    def test_2_settings_and_a_car_left_out(self):
+        c = self.c
+        with open(TF_FILE, "rb") as f:
+            data = f.read()
+        url = self.upload("TeslaFi32023.csv", data)
+        rows = c.get(url)["report"]["rows"]["read"]
+        c.json("PUT", f"{url}/cars", {"items": [{"tm_car": 1, "match": "new"}]})
+        for body in ({"time_zone": "Mars/Olympus"}, {"time_zone": 5}, {"distance_unit": "parsec"},
+                     {"temperature_unit": "kelvin"}):
+            c.error("POST", f"{url}/start", 422, "invalid", body=body)
+        # left out: the server keeps nothing for that car, so the same file again is all new
+        rep = self.run_it(url, "leave_out", {})
+        self.assertEqual(rep["rows"]["used"], 0)
+        url = self.upload("TeslaFi32023.csv", data)
+        again = c.get(url)["report"]
+        self.assertEqual((again["rows"]["used"], again["rows"]["skipped"]), (rows, {}))
+        # any IANA zone, and the unit words the server takes
+        rep = self.run_it(url, "new", {"time_zone": "America/Phoenix", "distance_unit": "Miles ",
+                                       "temperature_unit": "Celsius"})
+        self.assertEqual(rep["time_zone"]["name"], "America/Phoenix")
+        self.assertEqual((rep["units"]["distance"], rep["units"]["distance_from"]), ("mi", "setting"))
+        self.assertEqual(rep["units"]["temperature"], "c")
+        self.assertEqual(rep["found"]["read_again"], 0)
+        # then in the same zone: nothing new; in another: read again, its earlier rows replaced
+        url = self.upload("TeslaFi32023.csv", data)
+        self.assertEqual(c.get(url)["report"]["rows"]["used"], 0)
+        same = self.run_it(url, "new", {"time_zone": "America/Phoenix", "distance_unit": "mi"})
+        self.assertEqual(same["rows"]["skipped"], {"already_imported": rows})
+        url = self.upload("TeslaFi32023.csv", data)
+        other = self.run_it(url, "new", {"time_zone": "Europe/Berlin"})
+        self.assertEqual((other["rows"]["used"], other["found"]["read_again"]), (rows, 1))
+        self.assertIn("in America/Phoenix were read again", other["warnings"][0])
 
 
 class WatchImports(ServerCase):

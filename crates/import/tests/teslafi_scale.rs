@@ -66,7 +66,7 @@ impl Sink for Count {
             Batch::ChargePoints(_) => 3,
             Batch::States(_) => 4,
             Batch::Updates(_) => 5,
-            Batch::Removed(_) => 6,
+            Batch::Removed(_) | Batch::Cleared(_) => 6,
         };
         self.rows[i] += b.len() as u64;
         Ok(())

@@ -125,13 +125,19 @@ TeslaFi keeps a poll of the car about once a minute. Its data download has them 
    or a new one) and the units and time zone it read the file in. TeslaFi writes its times without a time zone:
    check that the report's time zone is the one your TeslaFi account is set to (TeslaFi's Settings → Account), and
    say otherwise when you start. The units are worked out from the file (miles or km, °F or °C); you can say
-   otherwise too.
+   otherwise too. The check reads the times in the car's time zone; a zone you name at Start is used for the import
+   itself (its report says which zone it used). A `.zip` may hold other files too (a readme, folders): they are
+   passed over.
 4. **Start the import.** Drives come from the gear, charges from the charging state, sleep from the car's state and
    software updates from the version, all marked "Imported from TeslaFi". Where they meet SMO's or the Tesla API's
    history, the live side is shown, as with a TeslaMate import (Settings → Cars → overlaps flips a span).
 
 Importing the same files again adds nothing; a later month, or the rest of a month downloaded before it ended, adds
-only what is new, and a drive over the end of a month becomes one drive once both months are in. TeslaFi's own
+only what is new, and a drive over the end of a month becomes one drive once both months are in. **Imported in the
+wrong time zone or units?** Upload the same files again and name the right ones at Start: each month imported before
+in another zone or other units is read again, and what it stored is replaced, never doubled (the report's
+`read_again` counts them, with a warning). Upload all the months at once (the whole download) so a drive or charge
+over the end of a month is rebuilt whole on both sides. TeslaFi's own
 drive and charge lists (Drives → Drive Search And Download) are refused: they have no positions. TeslaFi's costs,
 tags and notes are not in its monthly files, so they don't come over.
 

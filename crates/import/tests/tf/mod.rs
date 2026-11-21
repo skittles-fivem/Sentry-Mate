@@ -305,6 +305,7 @@ impl Sink for Store {
             Batch::States(_) => "states",
             Batch::Updates(_) => "updates",
             Batch::Removed(_) => "removed",
+            Batch::Cleared(_) => "cleared",
         };
         *self.handed.entry(kind).or_default() += batch.len() as u64;
         match batch {
@@ -348,6 +349,17 @@ impl Sink for Store {
                         _ => false,
                     };
                     assert!(gone, "removed {t:?} {id}, which was not stored");
+                }
+            }
+            Batch::Cleared(v) => {
+                for (a, b) in v {
+                    let at = |t: u64| t >= a && t <= b;
+                    self.positions.retain(|(c, t), _| *c != car || !at(*t));
+                    self.points.retain(|(c, t), _| *c != car || !at(*t));
+                    self.drives.retain(|(c, _), d| *c != car || !at(d.start_ms));
+                    self.charges.retain(|(c, _), d| *c != car || !at(d.start_ms));
+                    self.spans.retain(|(c, _), (d, _)| *c != car || !at(d.start_ms));
+                    self.updates.retain(|(c, _), d| *c != car || !at(d.start_ms));
                 }
             }
         }

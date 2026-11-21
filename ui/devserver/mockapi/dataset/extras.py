@@ -128,10 +128,12 @@ def teslafi_cars():
              "charges": d["charges"], "first_ms": d["first_ms"], "last_ms": d["last_ms"]}]
 
 
-def teslafi_report(cars, imported, settings, again=False):
+def teslafi_report(cars, imported, settings, again=False, read_again=False, read_in=None):
     """A TeslaFi file's report as the server writes it (`engine::query::imports::teslafi_report_json`): files, rows
     read, used and skipped with why, what was found (stored once `imported`), the cars, the span, the units and
-    the time zone the file was read in. `again`: the same file a second time (every row already imported)."""
+    the time zone the file was read in. `again`: the same file a second time (every row already imported);
+    `read_again`: the same file in another time zone or other units than `read_in` (zone, distance, temperature),
+    its earlier rows replaced."""
     d = TESLAFI_DAY
     left_out = imported and all(c["match"] == "leave_out" for c in cars)
     used = 0 if (again or left_out) else d["rows"]
@@ -139,6 +141,12 @@ def teslafi_report(cars, imported, settings, again=False):
     found = {k: (0 if used == 0 else d[k]) for k in ("drives", "charges", "states", "updates", "positions",
                                                       "charge_points")}
     found["replaced"] = 0
+    found["read_again"] = 1 if read_again and used else 0
+    warnings = []
+    if found["read_again"]:
+        how = f"in {read_in[0]}" if read_in and read_in[0] != (settings.get("time_zone") or "UTC") else "in other units"
+        warnings.append(f"months imported before {how} were read again: what they stored was replaced (read the "
+                        "months next to them again too, so a drive or charge over their edges is whole)")
 
     def table(read, n):
         return {"read": read, "imported": n if imported else 0, "found": n, "skipped": skipped if read else {}}
@@ -165,7 +173,7 @@ def teslafi_report(cars, imported, settings, again=False):
         "time_zone": {"name": tz or "UTC", "from": "setting" if tz else "default", "asked": True,
                       "dst_repeated_rows": 0},
         "compression": "plain", "packed_bytes": 73_610, "unpacked_bytes": 73_610, "missing_columns": [],
-        "unknown_columns": 3, "warnings": [],
+        "unknown_columns": 3, "warnings": warnings,
     }
 
 

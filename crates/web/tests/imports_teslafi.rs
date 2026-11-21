@@ -213,3 +213,69 @@ async fn teslafis_drive_list_and_junk_are_refused_with_why() {
     let j = wait_for(&mut admin, &id, "failed").await;
     assert_ne!(j["kind"], "teslafi", "{j}");
 }
+
+async fn drive_starts(c: &mut Client, car: &str) -> Vec<u64> {
+    let d = c.get(&format!("/api/v1/cars/{car}/drives?source=import:teslafi&limit=200")).await;
+    assert_eq!(d.status, 200, "{}", d.text());
+    d.json()["items"].as_array().unwrap().iter().map(|x| x["start_ms"].as_u64().unwrap()).collect()
+}
+
+/// A month with one row missing its VIN, zipped after a readme; then the same month read again in another zone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blank_vin_a_readme_first_and_a_month_read_again_in_another_zone() {
+    let k = kit().await;
+    let car = format!("c{}", k.car);
+    let mut admin = k.s.admin().await;
+    let mut g = tf::Gen::new(tf::VIN1);
+    let march = tf::month(&mut g, 2023, 3);
+    let mut lines: Vec<String> = march.lines().map(String::from).collect();
+    let asleep = lines.iter().skip(300).position(|l| l.contains(",asleep,")).unwrap() + 300;
+    lines[asleep] = lines[asleep].replace(tf::VIN1, "");
+    let blanked = lines.join("\r\n");
+    let mut z = import::zip::ManagerZip::new(Vec::new());
+    z.entry("readme.txt", b"TeslaFi data download").unwrap();
+    z.entry("TeslaFi32023.csv", blanked.as_bytes()).unwrap();
+    let zip = z.finish().unwrap();
+
+    let id = upload(&mut admin, "teslafi.zip", &zip).await;
+    let j = wait_for(&mut admin, &id, "ready").await;
+    assert_eq!(j["kind"], "teslafi", "the readme is passed over: {j}");
+    assert_eq!(j["cars_to_match"], json!(0), "one car, matched: {j}");
+    assert_eq!(j["report"]["files_skipped"], json!({ "readme.txt": "not TeslaFi's data" }));
+    let cars = admin.get(&format!("/api/v1/imports/{id}/cars")).await.json();
+    assert_eq!(cars["items"].as_array().unwrap().len(), 1, "{cars}");
+    assert_eq!(cars["items"][0]["match"], json!(car));
+    let r = admin.post(&format!("/api/v1/imports/{id}/start"), json!({})).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let done = wait_for(&mut admin, &id, "done").await;
+    assert_eq!(done["report"]["tables"]["drives"]["imported"], json!(62), "{done}");
+    let ny = drive_starts(&mut admin, &car).await;
+    assert_eq!(ny.len(), 62);
+
+    // the same month, the owner saying it was Berlin's time: read again there, its earlier rows replaced
+    let again = upload(&mut admin, "TeslaFi32023.csv", march.as_bytes()).await;
+    let j = wait_for(&mut admin, &again, "ready").await;
+    assert_eq!(j["report"]["rows"]["used"], json!(0), "in the car's zone it is all in: {j}");
+    let r = admin.post(&format!("/api/v1/imports/{again}/start"), json!({ "time_zone": "Europe/Berlin" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let done = wait_for(&mut admin, &again, "done").await;
+    let rep = &done["report"];
+    assert_eq!(rep["time_zone"]["name"], "Europe/Berlin");
+    assert_eq!(rep["found"]["read_again"], json!(1), "{rep}");
+    assert!(rep["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("America/New_York")));
+    // (2023-03-26 02:00 and 02:30 never happened in Berlin)
+    assert_eq!(rep["rows"]["skipped"], json!({ "dst_gap": 2 }), "{rep}");
+    assert_eq!(rep["tables"]["drives"]["imported"], json!(62));
+    // 2023-03-01 00:00 in Berlin (CET) is 2023-02-28 23:00 UTC: the car's figures are this run's, not the check's
+    assert_eq!(rep["span"]["from_ms"], json!(1_677_625_200_000u64));
+    assert_eq!(rep["cars"][0]["first_ms"], rep["span"]["from_ms"], "{rep}");
+    assert_eq!(rep["cars"][0]["last_ms"], rep["span"]["to_ms"], "{rep}");
+    let berlin = drive_starts(&mut admin, &car).await;
+    assert_eq!(berlin.len(), 62, "no drive at the New York times is left");
+    let mut shifted: Vec<u64> = ny.iter().map(|t| t - 6 * 3_600_000).collect();
+    let mut b = berlin.clone();
+    shifted.sort_unstable();
+    b.sort_unstable();
+    // (until 12 March New York is 6 h behind Berlin)
+    assert_eq!(b[..20], shifted[..20]);
+}

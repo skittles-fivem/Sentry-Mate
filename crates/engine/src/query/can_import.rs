@@ -52,8 +52,8 @@ pub enum CanImportError {
     Zip(#[from] ZipError),
     #[error(
         "this zip is not a Sentry Six Manager CAN export: it has no manifest.json naming a car key and no CAN Bridge \
-         logs. In Sentry Six Manager use the CAN export bundle; for a TeslaMate backup, upload the .sql (or .sql.gz, \
-         .sql.xz) itself"
+         logs, and no TeslaFi data download (TeslaFi's monthly CSVs) either. In Sentry Six Manager use the CAN export \
+         bundle; for a TeslaMate backup, upload the .sql (or .sql.gz, .sql.xz) itself"
     )]
     NotCanExport,
     #[error("storing a log: {0}")]

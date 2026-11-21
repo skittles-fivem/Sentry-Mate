@@ -26,6 +26,7 @@ import hashlib
 import re
 import struct
 import zlib
+import zoneinfo
 
 from ..conventions import page
 from ..dataset import extras
@@ -39,8 +40,11 @@ KIND_TM, KIND_CAN, KIND_TF = "teslamate", "sentry_manager_can", "teslafi"
 # columns of TeslaFi's raw data; a header with "Date" and four of these is TeslaFi's
 TF_MARKS = ("data_id", "shift_state", "charging_state", "battery_level", "odometer", "latitude", "longitude",
             "state", "carstate", "battery_range", "car_version")
-TIME_ZONES = ("UTC", "Europe/Berlin", "Europe/London", "Europe/Amsterdam", "America/New_York", "America/Chicago",
-              "America/Denver", "America/Los_Angeles", "Asia/Tokyo", "Australia/Sydney", "Pacific/Auckland")
+# the words the server takes for the units (`import::teslafi::Distance::from_word`, `Temperature::from_word`)
+DISTANCE_WORDS = {"mi": "mi", "miles": "mi", "mile": "mi", "km": "km", "kilometers": "km", "kilometres": "km"}
+TEMPERATURE_WORDS = {"c": "c", "celsius": "c", "f": "f", "fahrenheit": "f"}
+# zip entries looked at for TeslaFi's months (`import::teslafi::sniff`)
+SNIFF_ENTRIES = 16
 ZIP_HEADS = (b"PK\x03\x04", b"PK\x05\x06")
 # the CAN export's made-up logs: c3's key, and a key no car has yet
 CAN_KEYS = (("cbk_c90a7716", 1440, 3), ("smo-new-0001", 60, 0))
@@ -53,24 +57,18 @@ def _job(req):
     return j
 
 
-def teslafi_sniff(head):
-    """What the start of an upload is: "raw" (TeslaFi's data), "summary" (its drives or charges list) or None."""
-    text = None
+def valid_time_zone(tz):
+    """Any IANA time zone name, as the server takes (`import::teslafi::valid_time_zone`)."""
+    if not isinstance(tz, str) or not tz.strip():
+        return False
     try:
-        if head[:2] == b"\x1f\x8b":
-            text = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(head, 1 << 16)
-        elif head[:4] == b"PK\x03\x04" and len(head) >= 30:
-            method, csize = struct.unpack("<H", head[8:10])[0], struct.unpack("<I", head[18:22])[0]
-            nlen, xlen = struct.unpack("<HH", head[26:30])
-            name = head[30:30 + nlen].decode("utf-8", "replace").lower()
-            if not name.endswith(".csv"):
-                return None
-            body = head[30 + nlen + xlen:]
-            text = zlib.decompressobj(-15).decompress(body, 1 << 16) if method == 8 else body[:csize or None]
-        else:
-            text = head
-    except (zlib.error, struct.error):
-        return None
+        zoneinfo.ZoneInfo(tz.strip())
+        return True
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
+        return False
+
+
+def _header_kind(text):
     line = text.decode("utf-8", "replace").lstrip("\ufeff").lstrip('"').splitlines()
     names = [x.strip().strip('"').lower() for x in (line[0].split(",") if line else [])]
     if "date" in names and sum(1 for m in TF_MARKS if m in names) >= 4:
@@ -78,6 +76,54 @@ def teslafi_sniff(head):
     if "start time" in names and "end time" in names and "data_id" not in names:
         return "summary"
     return None
+
+
+def _skip_entry(name):
+    """Folders and the files macOS adds to a zip, passed over as the server passes them."""
+    return name.endswith("/") or name.startswith("__MACOSX/") or name.rsplit("/", 1)[-1].startswith(".")
+
+
+def teslafi_sniff(head):
+    """What the start of an upload is: "raw" (TeslaFi's data), "summary" (its drives or charges list) or None. Of a
+    zip, its first entries are looked at as the server does: folders, macOS's files and other files passed over, the
+    first CSV that is TeslaFi's data telling; a CAN export's logs say at once it is not TeslaFi's."""
+    try:
+        if head[:2] == b"\x1f\x8b":
+            return _header_kind(zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(head, 1 << 16))
+        if head[:4] != b"PK\x03\x04":
+            return _header_kind(head)
+        off, summary = 0, False
+        for _ in range(SNIFF_ENTRIES):
+            if head[off:off + 4] != b"PK\x03\x04" or len(head) < off + 30:
+                break
+            flags, method = struct.unpack("<HH", head[off + 6:off + 10])
+            csize = struct.unpack("<I", head[off + 18:off + 22])[0]
+            nlen, xlen = struct.unpack("<HH", head[off + 26:off + 30])
+            name = head[off + 30:off + 30 + nlen].decode("utf-8", "replace")
+            body = off + 30 + nlen + xlen
+            low = name.lower()
+            if not _skip_entry(name):
+                if low.endswith((".log.xz", ".log", "manifest.json")):
+                    break
+                if low.endswith(".csv"):
+                    data = head[body:]
+                    text = zlib.decompressobj(-15).decompress(data, 1 << 16) if method == 8 else data[:csize or None]
+                    kind = _header_kind(text)
+                    if kind == "raw":
+                        return "raw"
+                    summary = summary or kind == "summary"
+            if flags & 0x08 and csize == 0:
+                break  # its size comes after it: the next entry can't be found from here
+            off = body + csize
+        return "summary" if summary else None
+    except (zlib.error, struct.error):
+        return None
+
+
+def _reading(settings):
+    """The time zone and units a TeslaFi import reads in (the mock's cars have no zone: UTC)."""
+    return (settings.get("time_zone") or "UTC", settings.get("distance_unit") or "mi",
+            settings.get("temperature_unit") or "c")
 
 
 def _advance(req, j):
@@ -107,7 +153,11 @@ def _advance(req, j):
             if j.get("kind") == KIND_CAN:
                 j["report"] = can_report(req, imported=True, again=j.get("_again", False))
             elif j.get("kind") == KIND_TF:
-                j["report"] = extras.teslafi_report(j["cars"], True, j.get("teslafi") or {}, j.get("_again", False))
+                st = j.get("teslafi") or {}
+                # read again in another zone or other units: the earlier rows are replaced, every row is used
+                reread = j.get("_again", False) and j.get("_read_in") not in (None, _reading(st))
+                j["report"] = extras.teslafi_report(j["cars"], True, st, j.get("_again", False) and not reread,
+                                                    read_again=reread, read_in=j.get("_read_in"))
             else:
                 j["report"] = _report(req, j, imported=True)
         if j["status"] == "checking":
@@ -132,8 +182,12 @@ def _advance_tf(req, j):
             "message": "this is TeslaFi's list of drives or charges, which has no positions: upload the monthly "
                        "files of Settings > Account > Advanced > Download TeslaFi Data instead"})
         return
-    again = any(x.get("kind") == KIND_TF and x["status"] == "done" for x in req.store.imports.values())
+    # the server keeps what an import took per car: a done import whose cars were all left out took nothing
+    took = [x for x in req.store.imports.values() if x.get("kind") == KIND_TF and x["status"] == "done"
+            and any(c["match"] != "leave_out" for c in x["cars"])]
+    again = bool(took)
     j["_again"] = again
+    j["_read_in"] = _reading(took[-1].get("teslafi") or {}) if took else None
     j.update(status="ready", bytes_read=j["bytes_total"], checked_ms=done,
              report=extras.teslafi_report(j["cars"], False, {}, again))
     j["pass"] = 1
@@ -437,14 +491,20 @@ def _start_body(req, j):
     if cur is not None and not (isinstance(cur, str) and re.fullmatch(r"[A-Za-z]{3}", cur.strip())):
         rule["currency"] = "A currency code such as EUR."
     tz = body.get("time_zone")
-    if tz is not None and tz not in TIME_ZONES:
+    if isinstance(tz, str):
+        tz = tz.strip() or None
+    if tz is not None and not valid_time_zone(tz):
         rule["time_zone"] = "An IANA time zone such as Europe/Berlin."
     du = body.get("distance_unit")
-    if du is not None and du not in ("mi", "km"):
-        rule["distance_unit"] = "mi or km."
+    if du is not None:
+        du = DISTANCE_WORDS.get(du.strip().lower()) if isinstance(du, str) else None
+        if du is None:
+            rule["distance_unit"] = "mi or km."
     tu = body.get("temperature_unit")
-    if tu is not None and tu not in ("c", "f"):
-        rule["temperature_unit"] = "c or f."
+    if tu is not None:
+        tu = TEMPERATURE_WORDS.get(tu.strip().lower()) if isinstance(tu, str) else None
+        if tu is None:
+            rule["temperature_unit"] = "c or f."
     if j.get("kind") != KIND_TF:
         for k in ("time_zone", "distance_unit", "temperature_unit"):
             if body.get(k) is not None:

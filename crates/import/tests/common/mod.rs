@@ -462,7 +462,7 @@ impl Sink for Count {
             Batch::ChargePoints(_) => 3,
             Batch::States(_) => 4,
             Batch::Updates(_) => 5,
-            Batch::Removed(_) => return Ok(()),
+            Batch::Removed(_) | Batch::Cleared(_) => return Ok(()),
         };
         c[i] += batch.len() as u64;
         Ok(())

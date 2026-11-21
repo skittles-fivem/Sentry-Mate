@@ -400,25 +400,32 @@ the file is all there is.
   (`odometerF` beside `odometer`, `inside_tempF` beside `inside_temp`, `gui_distance_units`,
   `gui_temperature_units`; a cabin over 60 is °F); with nothing to tell, miles and °C. `report.units` says what was
   used: `{ distance: "mi" | "km", distance_from, temperature: "c" | "f", temperature_from }` (`from`: `detected`,
-  `default` or `setting`). Start's `distance_unit` (`mi`, `km`) and `temperature_unit` (`c`, `f`) override them.
+  `default` or `setting`). Start's `distance_unit` (`mi`, `km`; also `miles`, `kilometers`, any case) and
+  `temperature_unit` (`c`, `f`; also `celsius`, `fahrenheit`) override them.
 - **Time zone:** TeslaFi writes local wall time without a zone, so the file cannot tell it: the check reads the
   times in the time zone of the car it is matched to (else the server's default) and the report says so
   (`report.time_zone: { name, from: "car" | "default" | "setting", asked: true, dst_repeated_rows }`). A page asks
   the owner to confirm it (TeslaFi's own setting, Settings > Account) and sends `time_zone` (an IANA name such as
-  `Europe/Berlin`, else `422 invalid`) with Start. In the hour the clocks go back the rows are read in their order
+  `Europe/Berlin`: any IANA name, else `422 invalid`) with Start; the check keeps its own zone, the import's report
+  (and its `cars[]` figures) are the import's. In the hour the clocks go back the rows are read in their order
   (the second pass through that hour is the later one); a wall time the clocks skip is passed over (`dst_gap`).
-- **Cars:** each car is told apart by its VIN (else `vehicle_id`, else its name) and matched as a TeslaMate car is,
-  by its VIN prefix (`tm_car` is the file's own car number, 1 up; `name` is TeslaFi's `display_name`).
+- **Cars:** each car is told apart by its VIN (else `vehicle_id`, else its name): a row without its VIN goes with the
+  car whose rows have the same `vehicle_id` (or name), never to a car of its own. Matched as a TeslaMate car is, by
+  its VIN prefix (`tm_car` is the file's own car number, 1 up; `name` is TeslaFi's `display_name`).
 - **Never doubled:** each car keeps the stretches of time already imported (with what was under way at their edges).
   A row inside one is passed over (`already_imported`): importing the same files again adds nothing, and a month
   downloaded before it ended, then again whole, adds only the rest. A drive or charge over the end of a month is
   joined with its other half once both months are in, whichever came first (`found.replaced` counts the halves
-  taken away). Stopping part way loses nothing: starting it again replaces what it stored.
+  taken away). Stopping part way loses nothing: starting it again replaces what it stored. Each stretch keeps the
+  time zone and units it was read in: a stretch read again in another zone (its rows looked for in its own) or other
+  units is replaced, everything it stored taken away before its rows are stored again (`found.read_again` counts
+  those stretches, with a warning), so an import in the wrong zone or units is corrected by importing the files
+  again with the right ones. Read the neighbouring months again too, so a drive over a month's end is whole.
 - **Report** (`report.kind: "teslafi"`, `report.imported` false after the check, true after the import):
   `files`, `files_skipped: { name: why }`, `rows: { read, used, skipped: { reason: n }, bad_values: { column: n },
-  windows_1252 }`, `found: { drives, charges, states, updates, positions, charge_points, replaced }` (what the file
-  gives; stored once imported), `tables: { positions, drives, charging_processes, states, updates }` each `{ read,
-  imported, found, skipped }` (`imported` 0 until the import ran), `cars: [{ tm_car, name, vin_prefix, match,
+  windows_1252 }`, `found: { drives, charges, states, updates, positions, charge_points, replaced, read_again }`
+  (what the file gives; stored once imported), `tables: { positions, drives, charging_processes, states, updates }`
+  each `{ read, imported, found, skipped }` (`imported` 0 until the import ran), `cars: [{ tm_car, name, vin_prefix, match,
   drives, charges, first_ms, last_ms, rows }]`, `cars_count`, `cars_left_out`, `span: { from_ms, to_ms }` (the rows
   used), `units`, `time_zone`, `compression`, `packed_bytes`, `unpacked_bytes`, `missing_columns` (read here, not in
   the files: read as empty), `unknown_columns` (how many columns were passed over), `warnings`. The `skipped`
@@ -437,7 +444,8 @@ The same upload takes the `.zip` that Sentry Six Manager's `GET /api/can/export/
 (`<key>/<name>.log.xz`, its sidecar `<key>/<name>.log.xz.json`), with `candump=1` a candump text copy
 (`<key>/<name>.log`, not signed: skipped and counted), then `ids.csv` and `manifest.json` (`{ vehicleKey, from, to,
 madeAt, logs, ids, note }`). A name ending in `.zip` (or `compression: "zip"`) sets `compression` to `zip`; the
-kind comes from the file itself once it is in: TeslaFi's CSVs (alone, packed, or the first CSV of a zip) are TeslaFi's
+kind comes from the file itself once it is in: TeslaFi's CSVs (alone, packed, or in a zip: of its first 16 entries,
+folders, macOS's files and other files passed over, a CAN export's logs ending the look) are TeslaFi's
 data (`kind: "teslafi"`), any other file that starts like a zip is read as a CAN export (`kind:
 "sentry_manager_can"`), anything else as a TeslaMate backup (`kind: "teslamate"`). `kind` is null until the check.
 

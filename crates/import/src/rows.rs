@@ -204,6 +204,11 @@ pub enum Batch {
     /// Rows an earlier import stored that are gone now, by table and id (a TeslaFi drive over a month's end, stored
     /// in two halves, joined into one: the later half goes). Only TeslaFi imports send these.
     Removed(Vec<(crate::Table, i64)>),
+    /// Stretches of time `[from_ms, to_ms]` an earlier import from the same site filled and this one reads again (a
+    /// TeslaFi month imported before in another time zone or other units): every row of that site stored for the car
+    /// in them goes (positions and charge points in them; drives, charges, states and updates starting in them)
+    /// before the rows that replace them come. Only TeslaFi imports send these.
+    Cleared(Vec<(u64, u64)>),
 }
 
 impl Batch {
@@ -216,6 +221,7 @@ impl Batch {
             Batch::States(v) => v.len(),
             Batch::Updates(v) => v.len(),
             Batch::Removed(v) => v.len(),
+            Batch::Cleared(v) => v.len(),
         }
     }
 
