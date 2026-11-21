@@ -170,7 +170,7 @@ async fn a_seeded_server_shows_its_made_up_car_on_the_web_port() {
 
     // nothing without signing in; the setup code is in the keys folder (and the log)
     assert_eq!(c.get("/api/v1/cars").await.status, 401);
-    let code = std::fs::read_to_string(keys.join(site::SETUP_FILE)).unwrap().trim().to_string();
+    let code = setup_code(&keys).await;
     assert!(!code.is_empty());
     // the code the start announced stays the one that works (the upkeep makes no other at once)
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -286,7 +286,7 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
             .with_no_client_auth(),
     );
     let mut c = Client { port: web_port, tls, cookie: None };
-    let code = std::fs::read_to_string(keys.join(site::SETUP_FILE)).unwrap().trim().to_string();
+    let code = setup_code(&keys).await;
     let r = c
         .request(
             "POST",
@@ -538,7 +538,7 @@ async fn a_new_certificate_from_the_web_pages_is_served_on_both_ports_at_once() 
     let (upload, web_port, server) = start_serving(&data, &keys);
     listening(web_port, &server).await;
     let mut c = Client { port: web_port, tls: any_cert(), cookie: None };
-    let code = std::fs::read_to_string(keys.join(site::SETUP_FILE)).unwrap().trim().to_string();
+    let code = setup_code(&keys).await;
     let r =
         c.request("POST", "/api/v1/setup", Some(json!({ "code": code, "name": "owner", "password": PASSWORD }))).await;
     assert_eq!(r.status, 200, "setup: {}", r.text());
@@ -720,4 +720,18 @@ async fn the_owners_own_certificate_is_refused_before_the_password() {
     }
     assert!(!tls_dir(&data).join("key.pem").exists(), "sealed at start");
     server.abort();
+}
+
+/// The one-time set-up code, once the server has written it (a busy machine may take a moment after the port opens).
+async fn setup_code(keys: &std::path::Path) -> String {
+    let path = keys.join(site::SETUP_FILE);
+    for _ in 0..300 {
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && !text.trim().is_empty()
+        {
+            return text.trim().to_string();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("no set-up code in {} after 30 s", path.display());
 }
