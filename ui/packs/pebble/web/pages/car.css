@@ -13,9 +13,9 @@
 .band { display: flex; flex-direction: column; gap: var(--s2); }
 .band-track { position: relative; display: block; height: var(--s3); border-radius: 999px; background: var(--card-alt); overflow: hidden; }
 .band-low { position: absolute; left: 0; top: 0; bottom: 0; width: 20%; background: var(--sun-soft); }
-.band-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 100%; border-radius: 999px; background: var(--coral-fill); transform: scaleX(var(--v, 0)); transform-origin: left; }
+.band-fill { position: absolute; left: 0; top: 0; bottom: 0; width: round(calc(var(--v, 0) * 100%), var(--e)); border-radius: 999px; background: var(--coral-fill); }
 .band.is-low .band-fill { background: var(--sun); }
-.band-limit { position: absolute; top: 0; bottom: 0; left: calc(var(--v) * 100%); width: var(--s1); margin-left: calc(var(--s1) / -2); background: var(--text); border-radius: 999px; }
+.band-limit { position: absolute; top: 0; bottom: 0; left: round(calc(var(--v) * 100% - var(--s1) / 2), var(--e)); width: var(--s1); background: var(--text); border-radius: 999px; }
 .band-words { font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
 .where-tile .map { flex: 1; min-height: round(16rem, var(--e)); height: auto; }
 .tile-link { display: inline-flex; align-items: center; gap: var(--s1); font-size: var(--f14); line-height: var(--l14); font-weight: 700; text-decoration: none; margin-top: auto; }
@@ -55,7 +55,9 @@
 .strip-tile .fpill .ic { width: var(--ic-sm); height: var(--ic-sm); color: var(--coral); }
 .ring-arc.no-anim { animation: none; }
 
-html[data-form="phone"] .hero-top { flex-direction: column; align-items: flex-start; gap: var(--s4); }
+html[data-form="phone"] .hero-top { flex-direction: column; align-items: center; gap: var(--s4); text-align: center; }
+html[data-form="phone"] .hero-text { align-items: center; }
+html[data-form="phone"] :is(.hero-state, .hero-where) { justify-content: center; }
 html[data-form="phone"] .hero-name { font-size: var(--f28); line-height: var(--l28); }
 html[data-form="phone"] .hero-nums, html[data-form="phone"] .sum-nums { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 html[data-form="phone"] .tyres { column-gap: var(--s2); }

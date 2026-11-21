@@ -26,7 +26,7 @@ a.log-k:hover { color: var(--coral); text-decoration: underline; }
 .kind-n { font-size: var(--f14); line-height: var(--l14); font-weight: 800; font-variant-numeric: tabular-nums; }
 .kind-bar { grid-column: 1 / -1; }
 .cov { position: relative; display: block; height: var(--s2); border-radius: 999px; background: var(--card-alt); overflow: hidden; }
-.cov-fill { position: absolute; left: 0; top: 0; bottom: 0; width: max(var(--s2), calc(var(--v, 0) * 100%)); border-radius: 999px; background: var(--sky); }
+.cov-fill { position: absolute; left: 0; top: 0; bottom: 0; width: max(var(--s2), round(calc(var(--v, 0) * 100%), var(--e))); border-radius: 999px; background: var(--sky); }
 .kinds-total { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--card-alt); font-size: var(--f14); line-height: var(--l14); }
 .kinds-total b { font-size: var(--f20); line-height: var(--l20); font-weight: 800; font-variant-numeric: tabular-nums; }
 

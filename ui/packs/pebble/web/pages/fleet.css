@@ -8,7 +8,7 @@
 .car-tile-where { font-weight: 700; }
 .car-tile-state .state-word { display: none; }
 .car-tile-line { font-size: var(--f14); line-height: var(--l14); color: var(--muted); font-variant-numeric: tabular-nums; }
-.car-tile-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--card-alt); }
+.car-tile-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2); min-height: calc(var(--h-chip) + var(--s3) + 1px); box-sizing: border-box; padding-top: var(--s3); border-top: 1px solid var(--card-alt); }
 .car-tile-age { display: inline-flex; align-items: center; gap: var(--s2); font-size: var(--f14); line-height: var(--l14); font-variant-numeric: tabular-nums; }
 .car-tile-age .ic { width: var(--ic-xs); height: var(--ic-xs); color: var(--muted); }
 .car-tile.is-stale .ring { color: var(--muted); }

@@ -275,6 +275,8 @@ export function mountFrame(opts) {
 
 /** The router: a new page (or period) is shown. view: { page, info, car, tz, period, carsCount }. */
 function update(v) {
+  // a new page: take away the items the last page marked on the header's pills (core/bits.js filterBar)
+  if (v.page !== view.page) for (const p of [el.carPill, el.datePill]) delete p.dataset.cover;
   view = { ...view, ...v, carsCount: v.carsCount ?? view.carsCount, title: null };
   setSwitcherCar(view.car ? view.car.id : null);
   drawHead();

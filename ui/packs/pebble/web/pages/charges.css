@@ -12,7 +12,7 @@ a.cost-link.is-missing { color: var(--coral); }
 .inc-n { margin-left: auto; color: var(--muted); }
 
 /* when in the week: 7 rows of 24 hours */
-.week { display: grid; grid-template-columns: auto repeat(24, minmax(0, 1fr)); grid-template-rows: auto repeat(7, var(--s5)); gap: var(--dp); align-items: center; }
+.week { display: grid; grid-template-columns: auto repeat(24, minmax(0, 1fr)); grid-template-rows: auto repeat(7, var(--s5)); gap: 1px; align-items: center; }
 .week-corner { grid-column: 1; grid-row: 1; }
 .week-x { grid-row: 1; grid-column: var(--c) / span 6; font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
 .week-y { grid-column: 1; grid-row: var(--r); padding-right: var(--s2); font-size: var(--f13); line-height: var(--l13); color: var(--muted); }

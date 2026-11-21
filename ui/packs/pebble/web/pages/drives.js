@@ -1,6 +1,6 @@
 // Sentry Mate, "Pebble" UI pack: Drives (/cars/{car}/drives), drives as tiles grouped by day.
 //
-// A pill row picks the span (This week, This month, Pick dates) and Filters opens a sheet (place, words in the
+// A pill row picks the span (Last 7 days, Last 30 days, Pick dates) and Filters opens a sheet (place, words in the
 // address, shortest drive, slowest average, how efficiency is worked out, places left out of the patterns). Then
 // the totals (distance, time, energy, use), the driving patterns (counts, per day, top speeds, projections, a speed
 // histogram, top destinations), drives with missing data, and one tile per drive under friendly day headers.
@@ -77,7 +77,7 @@ export async function mount(ctx) {
 
   // the span pills: a week, a month, or dates of your own
   const pre = ctx.period?.preset;
-  const span = pills({ label: 'Span', value: pre === '7d' ? '7d' : pre === '30d' ? '30d' : 'pick', options: [['7d', 'This week'], ['30d', 'This month'], ['pick', 'Pick dates']],
+  const span = pills({ label: 'Span', value: pre === '7d' ? '7d' : pre === '30d' ? '30d' : 'pick', options: [['7d', 'Last 7 days'], ['30d', 'Last 30 days'], ['pick', 'Pick dates']],
     onchange: (val) => { if (val === 'pick') openPeriod(ctx.period, tz, span.querySelector('[data-value="pick"]')); else state.setPeriod({ preset: val }, { push: true }); } });
   const filtersBtn = btn('Filters', { kind: 'soft', icon: 'filter', cover: ['drives.filter.geofence', 'drives.filter.location', 'drives.filter.min_distance', 'drives.filter.min_speed', 'drives.setting.efficiency_method', 'ds.filter.exclude_locations'], onclick: (e) => openFilters(e.currentTarget) });
   const filterNote = h('span', { class: 'filter-note' });

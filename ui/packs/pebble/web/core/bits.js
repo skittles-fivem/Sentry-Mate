@@ -4,7 +4,7 @@
 // fact lists, the SOC bar (start to end), the activity strip (what the car did, as coloured spans), filter pill
 // rows, a "Show more" button for paged lists, place words and links, and the words for awake reasons and gaps.
 
-import { h } from '../shared/dom.js';
+import { h, cover } from '../shared/dom.js';
 import { format, formatMoney } from '../shared/units.js';
 import { formatNumber } from '../shared/i18n.js';
 import { dayKey, formatDayKey, formatTime, formatDuration, addDays, daysBetween, startOf, addPeriod, zonedParts, dateFormat } from '../shared/time.js';
@@ -226,15 +226,26 @@ export function stripShares(act) {
 export { addDays, icon };
 
 /**
- * The filter bar under a page's header, across the grid: the car and the period as pills (each opens its sheet),
- * then any other controls: filterBar(ctx, { carCover, periodCover }, ...extra).
+ * The filter bar under a page's header, across the grid: filterBar(ctx, { carCover, periodCover }, ...extra).
+ * The car and the period are the header's own pills: the bar marks them with the page's items instead of showing
+ * them a second time (core/frame.js clears the marks when the page changes). Only when the header shows no pill
+ * (a page without a car or a period) does the bar get its own, then the other controls.
  */
 export function filterBar(ctx, { carCover = null, periodCover = null, cls = null } = {}, ...extra) {
-  const carB = ctx.car ? h('button', { type: 'button', class: 'fpill fpill-ic', cover: carCover, 'aria-label': `Car: ${ctx.car.name}. Switch car`, onclick: (e) => openSwitcher(e.currentTarget) },
-    icon('car'), ctx.car.name) : carCover ? h('span', { class: 'fpill fpill-ic', cover: carCover }, icon('fleet'), 'Every car') : null;
-  const perB = ctx.period ? h('button', { type: 'button', class: 'fpill fpill-ic', cover: periodCover, 'aria-label': 'Change the period', onclick: (e) => openPeriod(ctx.period, ctx.tz, e.currentTarget) },
-    icon('calendar'), rangeText(ctx.period, ctx.tz)) : null;
-  return h('div', { class: ['page-bar', 'w-full', cls] }, carB, perB, ...extra.flat().filter(Boolean));
+  const headPill = (sel) => document.querySelector(`#head ${sel}:not([hidden])`);
+  let carB = null, perB = null;
+  const carPill = (ctx.car || carCover) && headPill('.car-pill');
+  if (carPill) { if (carCover) cover(carPill, ...[].concat(carCover)); } else {
+    carB = ctx.car ? h('button', { type: 'button', class: 'fpill fpill-ic', cover: carCover, 'aria-label': `Car: ${ctx.car.name}. Switch car`, onclick: (e) => openSwitcher(e.currentTarget) },
+      icon('car'), ctx.car.name) : carCover ? h('span', { class: 'fpill fpill-ic', cover: carCover }, icon('fleet'), 'Every car') : null;
+  }
+  const datePill = ctx.period && headPill('.date-pill');
+  if (datePill) { if (periodCover) cover(datePill, ...[].concat(periodCover)); } else {
+    perB = ctx.period ? h('button', { type: 'button', class: 'fpill fpill-ic', cover: periodCover, 'aria-label': 'Change the period', onclick: (e) => openPeriod(ctx.period, ctx.tz, e.currentTarget) },
+      icon('calendar'), rangeText(ctx.period, ctx.tz)) : null;
+  }
+  const rest = extra.flat().filter(Boolean);
+  return h('div', { class: ['page-bar', 'w-full', cls], hidden: !carB && !perB && !rest.length }, carB, perB, ...rest);
 }
 
 /* ------------------------------------------------------------------ money, split bars, checks */

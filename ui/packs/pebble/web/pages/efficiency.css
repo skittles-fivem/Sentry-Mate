@@ -41,7 +41,7 @@
 .tp-lohi > div { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
 .tp-col > .tp-cov { gap: var(--s1); }
 .cov { position: relative; display: block; height: var(--s2); border-radius: 999px; background: var(--card-alt); overflow: hidden; }
-.cov-fill { position: absolute; left: 0; top: 0; bottom: 0; width: max(var(--s2), calc(var(--v, 0) * 100%)); border-radius: 999px; background: var(--tone, var(--teal)); }
+.cov-fill { position: absolute; left: 0; top: 0; bottom: 0; width: max(var(--s2), round(calc(var(--v, 0) * 100%), var(--e))); border-radius: 999px; background: var(--tone, var(--teal)); }
 .tp-cov-t { font-size: var(--f13); line-height: var(--l13); color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* each day outside: a whisker from lowest to highest, the middle box, the awake bar under it */
