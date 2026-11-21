@@ -1,0 +1,8 @@
+/* Pebble: Help and about. Plain readable tiles with headings. */
+.hp-lede { font-size: var(--f16); line-height: var(--l16); color: var(--muted); }
+.hp-val { font-size: var(--f14); line-height: var(--l14); font-weight: 700; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; max-width: 14em; }
+.hp-val.hp-mono { font-family: var(--mono); font-weight: 400; color: var(--text); }
+.hp-block { display: flex; flex-direction: column; gap: var(--s1); }
+.hp-qa .set-a { max-width: 40em; }
+.hp-go { display: flex; margin-top: auto; padding-top: var(--s2); }
+#answers, #licence, #about { scroll-margin-top: var(--s6); }

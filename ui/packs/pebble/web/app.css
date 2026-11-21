@@ -320,7 +320,7 @@ html[data-form="phone"] .btn-sm.btn-icon { width: var(--h-btn); }
 a.tile { text-decoration: none; }
 .tile.is-link { cursor: pointer; transition: transform 200ms var(--spring); }
 .tile.is-link:active { transform: scale(0.98); }
-.tile-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); min-height: var(--h-sm); }
+.tile-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s3); min-height: var(--h-sm); }
 .tile-title { display: flex; align-items: center; gap: var(--s2); font-size: var(--f16); line-height: var(--l16); font-weight: 700; min-width: 0; }
 .tile-title .tile-ic { width: var(--ic-sm); height: var(--ic-sm); color: var(--muted); }
 .tile-side { display: flex; align-items: center; gap: var(--s2); }
@@ -668,6 +668,7 @@ html[data-form="phone"] .auth-card { padding: var(--s6) var(--s5); }
 .mv-code-dash { color: var(--muted); }
 .mv-copy { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 .mv-copied { font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+.mv-copied:empty { display: none; }
 
 /* --------------------------------------------------------------- data parts: shared by the pages -- */
 
