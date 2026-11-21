@@ -2,9 +2,9 @@
 //
 // A grid shares its free width out among its fr columns, and a table among its columns, in fractions of a
 // pixel, so every column edge after the first can land between two pixels, and with it every border, button
-// and line in the columns. snapAll() rounds each column edge to the nearest whole px: a grid gets its
-// columns as whole px (the same total width), a table gets each column's width rounded to a whole px with its
-// widest column taking what is left over. Columns move by half a pixel at most.
+// and line in the columns. snapAll() puts each column edge on a whole px: every column is rounded up to a
+// whole px and the widest gives back the difference, so the total width stays the same and no column gets
+// narrower than what is in it.
 //
 // It runs again when the page adds or changes content, when a snapped box changes size and when the fonts
 // have loaded. Each run first takes its own widths off again, so the CSS (its tiers and container queries)
@@ -16,20 +16,25 @@ const off = (v) => Math.abs(v - Math.round(v)) > 0.01;
 
 function depth(e) { let d = 0; for (let x = e; x; x = x.parentElement) d++; return d; }
 
-// grid: whole px columns, rounded at each edge, so the total stays the same
+// grid: whole px columns with the same total width
 function gridPlan(g) {
   const v = getComputedStyle(g).gridTemplateColumns;
   if (!v || v === 'none' || /[^\d.\spx-]/.test(v)) return null; // subgrid, names or anything not plain px
   const tracks = v.trim().split(/\s+/).map(parseFloat);
   if (tracks.length < 2 || tracks.some((w) => !Number.isFinite(w)) || !tracks.some(off)) return null;
-  let acc = 0, prev = 0;
-  const out = tracks.map((w) => { acc += w; const e = Math.round(acc); const r = e - prev; prev = e; return r; });
+  // each column rounded up, so no column gets narrower than what is in it, and the widest gives back the
+  // difference (it is the one that shares out the free width)
+  const total = Math.round(tracks.reduce((a, b) => a + b, 0));
+  const out = tracks.map((w) => Math.ceil(w - 0.01));
+  let big = 0;
+  tracks.forEach((w, i) => { if (w > tracks[big]) big = i; });
+  out[big] = total - out.reduce((a, b, i) => (i === big ? a : a + b), 0);
   return () => g.style.setProperty('grid-template-columns', out.map((w) => `${w}px`).join(' '));
 }
 
-// table: each column gets its width rounded to a whole px (rounded up when the table is wider than its box and
-// has no width to spare) and the widest takes what is left over; the table gets the sum as its width and a
-// fixed layout, so it has nothing left to share out
+// table: each column gets its width rounded up to a whole px and the widest takes what is left over (a table
+// wider than its box keeps all its rounded widths); the table gets the sum as its width and a fixed layout,
+// so it has nothing left to share out
 function tablePlan(t) {
   const row = (t.tHead && t.tHead.rows[0]) || t.rows[0];
   if (!row || row.cells.length < 2) return null;
@@ -42,7 +47,7 @@ function tablePlan(t) {
   const scrolls = t.parentElement && tw > t.parentElement.clientWidth + 0.5;
   let grow = 0;
   ws.forEach((w, i) => { if (w > ws[grow]) grow = i; });
-  const px = ws.map((w) => (scrolls ? Math.ceil(w - 0.01) : Math.round(w)));
+  const px = ws.map((w) => Math.ceil(w - 0.01)); // rounded up: no column gets narrower than what is in it
   const total = scrolls ? px.reduce((a, b) => a + b, 0) : Math.round(tw);
   if (!scrolls) px[grow] = total - px.reduce((a, b, i) => (i === grow ? a : a + b), 0);
   const sets = cells.map((c, i) => {
