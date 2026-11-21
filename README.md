@@ -14,12 +14,14 @@ import.
 log is decoded in the background into the car's history (states, drives, charges, positions). The web UI on its own
 HTTPS port (10101) shows that history and changes the settings: places and costs, car settings, upload tokens and car
 keys, accounts, MQTT, Tesla accounts, the TeslaMate import and the import of Sentry Six Manager's CAN logs. The history is not yet checked against real drives and charges. All of
-it: [Status in detail](#status-in-detail).
+it: [Progress](docs/status.md). What's left: [To do](docs/todo.md).
 
 ## Contents
 
 | Guide | What is in it |
 |---|---|
+| [docs/status.md](docs/status.md) | Progress: what works today |
+| [docs/todo.md](docs/todo.md) | To do: what is being built now, what comes next, open questions |
 | [docs/install.md](docs/install.md) | What you need, Docker Compose and TrueNAS step by step, updates, backups, restore, moving, ports and firewalls, when it does not start |
 | [docs/commands.md](docs/commands.md) | Every command, the settings (environment variables and flags), ports and limits, the files it keeps, changing the certificate |
 | [docs/moving.md](docs/moving.md) | Moving to another server in one step: a move code (TrueNAS: two lines), or one export file; the CAN Bridge app, undo, when it stops half way |
@@ -147,18 +149,6 @@ with the `move`, `export` and `import` commands.
   is the same, machine-readable.
 - [`docs/ui-api.md`](docs/ui-api.md): the `/api/v1` the pages use, reads and changes.
 
-## Roadmap
-
-From the plan's phases and progress:
-
-1. Check the timeline by hand against real drives and charges.
-2. Every page in both designs, checked item by item against TeslaMate, on desktop and phone.
-3. A live connection to TeslaMate's database for the import.
-4. First release: the docs, a licence and the final name.
-
-Open questions: two battery % signals disagree (0x33A and 0x292) and need checking against the car's screen. A
-firmware-version signal for software updates is still to be found.
-
 ## Development
 
 Rust 1.88 or newer, edition 2024. The gates CI runs, what each crate does, CI, the image check and the layout:
@@ -168,46 +158,6 @@ Crates: `logfmt` (reads the logs), `trust` (signatures, chain), `vault` (encrypt
 `ingest` (upload API, storage), `gate` and `moving` (export, import, move), `model`, `timeline`, `db`, `engine` (the
 history from the logs), `places`, `accounts`, `import`, `mqtt`, `tesla` (the Tesla Owner API input), `web` (the web UI and `/api/v1`), `synth` (made-up
 cars for tests), and the program, `sentry-mate`.
-
-## Status in detail
-
-| Part | State |
-|---|---|
-| **Working now** | |
-| Upload API the bridge speaks (ping, status, resumable chunks), TLS 1.3 only | done |
-| Logs kept exactly as uploaded, never replaced | done |
-| Upload tokens: no limit, each tied to one car key (one bridge install) on its first upload | done |
-| Any number of cars: kept per car, bounded memory, cars upload in parallel, an upload never reads a car's folder | done |
-| Signature check, pairing with the car's key, chain report (gaps, swaps, restarts) | done |
-| Trusting a new signing key for a car | done (`keys trust`) |
-| Reading both log formats (candump text, columns) | done |
-| Encryption at rest (pure Rust): every file's contents sealed (not the names), key file + recovery key | done |
-| Command line: tokens, certificate, chain report, signing keys, log export and decode, restore, recovery key, move, export, import, health | done |
-| Docker image: one static binary on `scratch`, non-root, health check; run read-only by the compose file | done |
-| Published image for amd64 and arm64 (`ghcr.io/skittles-fivem/sentry-mate`), a compose file and a TrueNAS file | done |
-| Refusing folders it can't keep: not mounted, the keys inside the data, root's | done |
-| Moving to another server in one step: a one-time move code, or one export file that opens with the recovery key ([docs/moving.md](docs/moving.md)) | done |
-| Decoding signals (DBC sets per model, bus split, the Screenmate's GPS), same values as Sentry Six Manager | done |
-| Choosing the DBC set from the car's VIN | done |
-| Each checked log decoded in the background into the car's history (states, drives, charges, positions, charge curves), late and out-of-order logs rebuilding only what they touch, picked up again after a restart; a failed log never used | done; not yet checked against real drives and charges |
-| Storage for the history (sealed, compressed columns, any number of cars), rebuilt from the logs if lost | done |
-| Web server on its own HTTPS port (10101, TLS 1.3, the same certificate): the built-in UI packs with a strict CSP, sign-in with a one-time setup code for the first admin, accounts (admin and watch-only, per-car access, two-step sign-in, audit log), live changes as server-sent events, the reads of [`docs/ui-api.md`](docs/ui-api.md) over the history and its changes | done |
-| From the web UI: places, geofences and charge costs with time-of-use rates, car settings, upload tokens and car keys, server settings, MQTT, Tesla accounts, the TeslaMate import, UI packs | done |
-| The Tesla Owner API as a second live input: off until an admin adds a Tesla account (sign in on Tesla's page, or a refresh token), tokens sealed, read-only, lets the car sleep, merged with SMO into one history, every row saying where it came from | done; tested against a made-up Tesla server, not yet against a real account |
-| Moving from the web UI: a move code or an export file on the old server, "move here" or "restore from an export file" on the new server's first page (the file read as it uploads, nothing stored twice) | done |
-| Map tiles: none from outside until an admin turns online tiles on | done |
-| Using a failed log anyway | only `log decode --any`, one log at a time |
-| TeslaMate import from TeslaMate's own backup file, uploaded in the web UI (any number of cars, streamed, again later adds only what's new) | done; a live connection to TeslaMate's database is planned |
-| Import of the CAN Bridge logs Sentry Six Manager already has, from its CAN export bundle (`.zip`), uploaded in the web UI: each log checked (signature, pairing, chain) and stored as if the bridge had uploaded it, refused when unsigned or changed, never twice ([how](docs/cars-and-bridge.md#bringing-in-the-logs-sentry-six-manager-already-has)) | done; not yet tried on a real export |
-| MQTT for Home Assistant (TLS unless plain is turned on, never a password in the clear, discovery, any number of cars on one connection), set up in the web UI | done |
-| A dev API server that answers [`docs/ui-api.md`](docs/ui-api.md) on made-up data, shared browser modules, and a page checker that loads every page at laptop and 4K sizes against [`docs/parity/coverage-matrix.json`](docs/parity/coverage-matrix.json) | done |
-| **Being built here** | |
-| Web UI: five designs in [`ui/`](ui/), built into the server; every TeslaMate tab gets a page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) | being built: every page in all five designs, checked item by item, with screenshots |
-| **Not built yet** | |
-| A command that lists stored logs (a car's logs and their check results are in the web UI), deleting logs, a backup command | not built |
-| Passkeys | planned |
-| `cargo deny` and `cargo audit`, fuzzing in CI | planned |
-| Sealing the key file to the host's TPM | optional, later |
 
 ## Licence
 
