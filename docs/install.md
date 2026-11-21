@@ -231,7 +231,11 @@ On TrueNAS SCALE 24.10 or newer, install it as a custom app with
 
 3. **Certificate SHA-256.** *Apps → Installed → sentry-mate → Workloads →*
    the log icon shows the line `CAN Bridge uploads on ... certificate
-   SHA-256 <64 hex digits>`.
+   SHA-256 <64 hex digits>`. Once you are signed in as the admin, the web
+   pages show it too, with a *Copy* button: *Settings → Server and access →
+   Certificate, recovery key and backups*. A new certificate (for example
+   after you add a host name) is made there too, with *Make a new
+   certificate*; then enter its SHA-256 in the CAN Bridge again.
 
 4. **Recovery key.** In *System → Shell*, with your keys dataset's path
    (on another pool: for example `/mnt/ssd/sentry-mate-keys`):
@@ -774,7 +778,7 @@ What the bridge says, in its upload section:
 | The bridge says | What to do |
 | --- | --- |
 | `Sentry Manager not reachable` | A wrong address or port, the server or the container is off, or a firewall in between. |
-| `Sentry Manager's certificate doesn't match the SHA-256 entered here` | Copy the SHA-256 again (`fingerprint`). It changes only when the data folder is replaced by a new install's, or when `data/tls/cert.pem` was deleted or replaced ([Changing the certificate](commands.md#changing-the-certificate)). |
+| `Sentry Manager's certificate doesn't match the SHA-256 entered here` | Copy the SHA-256 again (`fingerprint`). It changes only when the data folder is replaced by a new install's, when a new certificate was made (*Settings → Server and access*, which shows the SHA-256 to copy), or when `data/tls/cert.pem` was deleted or replaced ([Changing the certificate](commands.md#changing-the-certificate)). |
 | `Sentry Manager refused the token` | A typo, or the token was revoked: make a new one. |
 | `Sentry Manager answered 403 wrong_car` | That token is tied to another car: one token per car. |
 | `Sentry Manager doesn't know this address` | The address must end in `/api/can/logs`. |

@@ -93,6 +93,34 @@ impl web::CarDirectory for EngineCars {
     }
 }
 
+/// Makes a new certificate in the running server (`POST /api/v1/network/certificate`): both ports serve it at once,
+/// and a move code made from now on gives the new server its SHA-256.
+pub struct Renewer {
+    pub live: Arc<ingest::server::LiveCert>,
+    pub offer: Option<Arc<moving::old::Offer>>,
+    /// Paused while the pair is swapped: an export's snapshot or a command never sees half of it.
+    pub gate: gate::Gate,
+}
+
+impl web::resources::certificate::CertificateMaker for Renewer {
+    fn renew(&self, names: &[String]) -> Result<String, web::resources::certificate::Refused> {
+        use web::resources::certificate::Refused;
+        let _pause = self.gate.pause(Duration::from_secs(60)).map_err(|e| Refused::Failed(e.to_string()))?;
+        let sha = self.live.renew(names).map_err(|e| match e {
+            ingest::server::RenewError::OwnCertificate => Refused::OwnCertificate,
+            ingest::server::RenewError::Io(e) => Refused::Failed(e.to_string()),
+        })?;
+        if let Some(o) = &self.offer {
+            o.set_cert_sha256(&sha);
+        }
+        tracing::warn!(
+            "a new certificate was made from the web pages for {}: its SHA-256 is {sha}; enter it in each CAN Bridge",
+            names.join(", ")
+        );
+        Ok(sha)
+    }
+}
+
 /// The web side's state: accounts and their audit log in the data folder, the web's own files in `web/`, the setup
 /// code beside the key file, the ports the server listens on (for `/network`), the move's side of the upload port
 /// (`offer`: whether its uploads are paused), and the MQTT publisher's side (for [`web::resources::mqtt::spawn`]). The server settings are applied at once (the preference defaults, the tile
@@ -107,6 +135,7 @@ pub fn web_state(
     network: Option<web::resources::mqtt::Network>,
     claim: web::moving::ClaimKeep,
     offer: Option<Arc<moving::old::Offer>>,
+    certificates: Option<Arc<dyn web::resources::certificate::CertificateMaker>>,
 ) -> Result<web::AppState, Fail> {
     let audit = Arc::new(accounts::Audit::open(data.join("audit"), v.clone(), accounts::system_clock())?);
     let options = accounts::Options { hashing, ..accounts::Options::default() };
@@ -136,6 +165,10 @@ pub fn web_state(
         ));
     let app = match network {
         Some(n) => app.service(Arc::new(n)),
+        None => app,
+    };
+    let app = match certificates {
+        Some(c) => app.service(Arc::new(web::resources::certificate::Certificates(c))),
         None => app,
     };
     let app = match offer {

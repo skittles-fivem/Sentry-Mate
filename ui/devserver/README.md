@@ -159,6 +159,11 @@ sends `two_step: "000000"`) answers the move code once. After `--move-peer-after
 { password }` prepares a 4 MB made-up export file in 3 s; its `url` downloads it (with `Range`), and it restores
 on a `--fresh` dev server.
 
+**A new certificate**: `POST /api/v1/network/certificate { password }` answers `{ names, sha256, upload_address }`
+with `localhost` and the saved host names and a made-up SHA-256 (a new one each time), which `/network` shows from
+then on. `409 move_under_way` while a move code waits or a copy runs, `409 moved` after a move, and
+`409 own_certificate` when the store's `cert_own` is set (tests).
+
 ## Layout
 
 ```

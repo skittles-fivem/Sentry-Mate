@@ -285,6 +285,7 @@ class Contract(ServerCase):
             ("POST", "/api/v1/system/recovery-key/show", lambda: (None, {"password": "sentry-mate-dev"}, None)),
             ("POST", "/api/v1/system/recovery-key/saved", lambda: (None, None, None)),
             ("POST", "/api/v1/system/exports", lambda: (None, {"password": "sentry-mate-dev"}, None)),
+            ("POST", "/api/v1/network/certificate", lambda: (None, {"password": "sentry-mate-dev"}, None)),
             ("DELETE", "/api/v1/system/exports/{export}",
              lambda: (self.fill("/api/v1/system/exports/{export}", export=ctx["export"]), None, None)),
             # last of the changes: a moved server takes no other changes until the undo

@@ -19,6 +19,32 @@
 .ss-addr { margin: 0 0 0.75rem; color: var(--text-2); overflow-wrap: anywhere; }
 .ss-addr .mono { color: var(--text); }
 
+/* the certificate in use: its SHA-256, names and upload address, each to copy */
+.ss-cert { display: flex; flex-direction: column; gap: 0.625rem; margin-top: 0.625rem; min-width: 0; }
+.ss-facts { display: flex; flex-direction: column; gap: 0.625rem; margin: 0; }
+.ss-fact { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.ss-fact dt, .ss-fact-label { margin: 0; font-size: max(0.75rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3); }
+.ss-fact dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem 0.625rem; min-width: 0; }
+.ss-value { font-size: max(0.875rem, var(--fs-floor)); padding: 0.25rem 0.5rem; border-radius: 0.375rem; background: var(--glass-2); color: var(--text); user-select: all; min-width: 0; max-width: 100%; }
+.ss-wrap { overflow-wrap: break-word; }
+.ss-sha { display: inline-flex; flex-wrap: wrap; column-gap: 0; line-height: 1.6; }
+.ss-sha-group { white-space: nowrap; }
+.ss-fact--big .ss-sha { font-size: max(1rem, var(--fs-floor)); padding: 0.5rem 0.75rem; }
+.ss-cert-names { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.ss-cert-names .ss-value { overflow-wrap: anywhere; }
+.ss-copy { display: inline-flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.ss-check .ss-copy .btn { margin-top: 0; }
+.ss-copied { color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); }
+.ss-copied:empty { display: none; }
+.ss-cert-need { display: flex; align-items: flex-start; gap: 0.375rem; margin: 0; color: var(--text-2); }
+.ss-cert-need .ico { flex: none; margin-top: 0.1875rem; color: var(--text-3); }
+.ss-newcert { display: flex; flex-direction: column; gap: 0.75rem; }
+.ss-newcert p { margin: 0; }
+.ss-newcert-list { list-style: disc; margin: 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: 0.5rem; color: var(--text-2); }
+.ss-newcert-list b { color: var(--text); }
+.ss-newcert-names .mono { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+.ss-newcert + form, .ss-newcert + .form { margin-top: 1rem; }
+
 /* host names */
 .ss-names { display: flex; flex-direction: column; gap: 0.625rem; width: 100%; }
 .ss-name-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; }

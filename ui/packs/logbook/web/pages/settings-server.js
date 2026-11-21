@@ -55,23 +55,50 @@ function outcome(kind, titleText, text, action = null) {
     h('div', null,
       h('p', { class: 'ss-out-title' }, titleText),
       text ? h('p', { class: 'ss-out-text' }, text) : null,
-      action ? h('p', { class: 'ss-out-action' }, action) : null));
+      action ? h('div', { class: 'ss-out-action' }, action) : null));
 }
 
 const mono = (text) => h('code', { class: 'mono ss-code' }, text);
+// a SHA-256 in colon hex, in groups of four pairs that never break inside, so it wraps cleanly on a phone
+const shaGroups = (sha) => h('code', { class: 'mono ss-value ss-sha', 'aria-label': `SHA-256 ${sha}` },
+  (String(sha).match(/([0-9A-Fa-f]{2}:?){1,4}/g) || [String(sha)]).map((g) => h('span', { class: 'ss-sha-group' }, g)));
+// an address that may break only after a slash or a colon
+const addressEl = (text) => h('code', { class: 'mono ss-value' },
+  String(text).split(/(?<=[/:])/).map((part, i) => [i ? h('wbr') : null, part]));
+
+/** A Copy button for a value: the clipboard on HTTPS, else the value selected for Ctrl+C or the phone's Copy. */
+function copyValue(text, valueEl) {
+  const said = h('span', { class: 'ss-copied', 'aria-live': 'polite' });
+  return h('span', { class: 'ss-copy' },
+    button('Copy', { iconName: 'check', cls: 'button-small', onclick: async () => {
+      try {
+        if (!window.isSecureContext || !navigator.clipboard) throw new Error('no clipboard');
+        await navigator.clipboard.writeText(text);
+        said.textContent = 'Copied.';
+      } catch {
+        const sel = window.getSelection && window.getSelection();
+        if (sel && valueEl) { sel.removeAllRanges(); const r = document.createRange(); r.selectNodeContents(valueEl); sel.addRange(r); }
+        said.textContent = 'Selected: press Ctrl+C (on a phone, tap Copy) to copy it.';
+      }
+    } }), said);
+}
+
 const origin = (proto, host, port) => `${proto}//${host}${port && !((proto === 'https:' && port === 443) || (proto === 'http:' && port === 80)) ? `:${port}` : ''}`;
 
 /* ================================================================== the page */
 
 export async function mount(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
-  const [settingsFirst, network, notices, cars] = await Promise.all([
+  const [settingsFirst, networkFirst, notices, cars] = await Promise.all([
     ctx.api.get('settings'),
     admin ? ctx.api.get('network').catch(() => null) : null,
     admin ? ctx.api.get('notices').catch(() => null) : null,
     (async () => { const out = []; for await (const c of ctx.api.list('cars', {}, { limit: 200 })) out.push(c); return out; })().catch(() => []),
   ]);
   let settings = settingsFirst;
+  let network = networkFirst;
+  // the names in the certificate the server runs with now (admins); saved host names go into the next one
+  const certNames = () => (network && network.certificate && Array.isArray(network.certificate.names) ? network.certificate.names.map((n) => n.toLowerCase()) : null);
   const carName = new Map(cars.map((c) => [c.id, c.name || c.vin_prefix || c.id]));
   const tz = ctx.tz;
 
@@ -99,7 +126,12 @@ export async function mount(ctx) {
     }
     // 2. the name on the certificate
     const shown = loc.host;
-    if (lower.includes(here.host.toLowerCase())) {
+    const inCert = certNames();
+    if (inCert && lower.includes(here.host.toLowerCase()) && !inCert.includes(here.host.toLowerCase())) {
+      list.push(outcome('info', `“${here.host}” is saved, not yet in the certificate.`,
+        `The certificate the server uses now names ${inCert.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until you make a new certificate.`,
+        admin ? button('Make a new certificate', { iconName: 'reset', onclick: () => makeCertificate() }) : null));
+    } else if (lower.includes(here.host.toLowerCase())) {
       list.push(outcome('ok', `“${here.host}” is on the certificate.`, 'Browsers accept the certificate under this name (once they trust it: it is self-signed unless you put your own in).'));
     } else if (isLoopback(here.host)) {
       list.push(outcome('info', `You reached it as ${shown}, the computer itself.`,
@@ -184,10 +216,10 @@ export async function mount(ctx) {
   }
 
   const certSteps = h('ol', { class: 'ss-steps' },
-    h('li', null, 'Stop Sentry Mate: ', mono('docker compose stop'), ' (TrueNAS: Stop the app).'),
-    h('li', null, 'Delete ', mono('data/tls/cert.pem'), ', or put your own ', mono('cert.pem'), ' and ', mono('key.pem'), ' there.'),
-    h('li', null, 'Start it again: ', mono('docker compose start'), '. It makes a new certificate with these names.'),
-    h('li', null, 'A new certificate has a new SHA-256: run ', mono('sentry-mate fingerprint'), ' and enter it in each CAN Bridge, or they stop uploading.'));
+    h('li', null, 'Save the names above.'),
+    h('li', null, 'Press ', h('strong', null, 'Make a new certificate'), ' under Certificate, recovery key and backups. The server makes it with these names and uses it at once, without a restart.'),
+    h('li', null, 'A new certificate has a new SHA-256: copy it there and enter it in each CAN Bridge, or they stop uploading.'),
+    h('li', null, 'With a shell instead: stop Sentry Mate, delete ', mono('data/tls/cert.pem'), ' (or put your own ', mono('cert.pem'), ' and ', mono('key.pem'), ' there), start it again, then run ', mono('sentry-mate fingerprint'), '.'));
 
   const namesSection = section({ title: 'Host names for the certificate', cover: 'docs.env.web.virtual-host', cls: 'ss-names-block' },
     note('The names and addresses people and devices use to reach this server. They go into the HTTPS certificate the server makes, so browsers accept those names, and the first one is the address the server puts in links to itself.'),
@@ -196,7 +228,7 @@ export async function mount(ctx) {
     admin ? h('div', { class: 'ss-save' }, saveBtn, undoBtn, namesNote) : h('p', { class: 'ss-state' }, 'Only an admin can change the names.'),
     h('details', { class: 'ss-details' },
       h('summary', null, 'Put a change into the certificate'),
-      note('A running server keeps the certificate it started with. Saved names are used the next time a certificate is made:'),
+      note('Saved names are used the next time a certificate is made:'),
       certSteps));
 
   /* ---------------------------------------------------------------- ports */
@@ -237,6 +269,59 @@ export async function mount(ctx) {
       h('dt', null, 'At rest'), h('dd', null, 'Everything the server stores is encrypted, always.')));
 
   /* ---------------------------------------------------------------- certificate, recovery key, backups */
+  // the certificate in use: its SHA-256, its names and the CAN Bridge's upload address, each to copy, and a
+  // new one made here (no shell, no restart)
+  const certBox = h('div', { class: 'ss-cert' });
+  function drawCert() {
+    const c = (network && network.certificate) || null;
+    const rows = [];
+    if (c && c.sha256) {
+      const v = shaGroups(c.sha256);
+      rows.push(h('div', { class: 'ss-fact' }, h('dt', null, 'SHA-256'), h('dd', null, v, copyValue(c.sha256, v))));
+    }
+    if (c && c.names && c.names.length) {
+      rows.push(h('div', { class: 'ss-fact' }, h('dt', null, 'Names in it'),
+        h('dd', null, h('ul', { class: 'ss-cert-names' }, c.names.map((n) => h('li', null, h('code', { class: 'mono ss-value' }, n)))))));
+    }
+    if (network && network.upload_address) {
+      const v = addressEl(network.upload_address);
+      rows.push(h('div', { class: 'ss-fact' }, h('dt', null, 'CAN Bridge upload address'), h('dd', null, v, copyValue(network.upload_address, v))));
+    }
+    replace(certBox,
+      rows.length ? h('dl', { class: 'ss-certfacts' }, rows) : h('p', { class: 'ss-quiet' }, 'The server did not say which certificate it runs with.'),
+      c && c.sha256 ? h('p', { class: 'ss-cert-need' }, 'The CAN Bridge app needs this SHA-256 in its upload settings.') : null,
+      h('p', { class: 'ss-cert-act' }, button('Make a new certificate', { iconName: 'reset', onclick: () => makeCertificate() })));
+  }
+  if (admin) drawCert();
+  // the names the next certificate is made for: localhost and the saved host names (what the server does)
+  const nextNames = () => ['localhost', ...(settings.host_names || []).filter((n) => n.toLowerCase() !== 'localhost')];
+  async function makeCertificate() {
+    const names = nextNames();
+    const out = await askPassword(ctx, {
+      title: 'Make a new certificate',
+      text: h('div', { class: 'dialog-text ss-newcert' },
+        h('p', null, 'The server makes a new certificate and uses it at once on both ports, without a restart. Before you go on:'),
+        h('ul', { class: 'ss-newcert-list' },
+          h('li', null, h('strong', null, 'The SHA-256 changes. '), 'The CAN Bridge app’s uploads are refused until you enter the new SHA-256 in its upload settings.'),
+          h('li', null, h('strong', null, 'Browsers ask again '), 'to accept the new certificate, on every device that opens these pages.'),
+          h('li', null, h('strong', null, 'The names in it: '), names.map((n, i) => [i ? ', ' : '', h('code', { class: 'mono ss-newcert-name' }, n)]), '. Change them under Host names for the certificate first, if one is missing.'))),
+      yes: 'Make a new certificate', danger: true,
+      hint: 'It is asked again because each CAN Bridge stops uploading until it has the new SHA-256.',
+      run: (creds) => ctx.api.post('network/certificate', creds),
+    });
+    if (!out) return;
+    try { network = await ctx.api.get('network'); } catch { network = { ...(network || {}), certificate: { names: out.names, sha256: out.sha256 }, upload_address: out.upload_address }; }
+    drawCert(); drawAddress();
+    const v = shaGroups(out.sha256);
+    await openDialog({
+      title: 'The new certificate is in use', cls: 'ss-newcert-dialog',
+      body: h('div', { class: 'ss-newcert' },
+        h('p', { class: 'dialog-text' }, 'Enter this SHA-256 in each CAN Bridge app’s upload settings now: until then it refuses this server.'),
+        h('div', { class: 'ss-fact ss-fact-big' }, h('p', { class: 'ss-fact-label' }, 'New SHA-256'), v, copyValue(out.sha256, v)),
+        h('p', { class: 'dialog-text' }, 'Reload this page to accept the new certificate in this browser.')),
+      actions: [{ label: 'Done', value: true, kind: 'primary' }],
+    });
+  }
   let safetySection = null;
   if (admin) {
     const items = (notices && notices.items) || [];
@@ -246,9 +331,9 @@ export async function mount(ctx) {
     if (cert) {
       const d = cert.detail || {};
       list.push(outcome('warn', d.expires_ms != null ? `The certificate expires ${date(d.expires_ms, tz)} (in ${count(d.days, 'day')}).` : 'The certificate expires soon.',
-        'After that browsers and the CAN Bridges refuse the connection. Make a new one with the steps under the host names.'));
+        'After that browsers and the CAN Bridges refuse the connection. Make a new one with the button below.', certBox));
     } else {
-      list.push(outcome('ok', 'The certificate is not close to expiring.', 'A notice appears here and at the top of every page a few weeks before it does.'));
+      list.push(outcome('ok', 'The certificate is not close to expiring.', 'It keeps the same SHA-256 across restarts, updates and moves, until you make a new one.', certBox));
     }
     // the recovery key: one list item, drawn again as it changes (saved, shown again, a new one made)
     let rkUnsaved = !!rk;

@@ -439,3 +439,193 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
     assert!(body["tokens"]["count"].as_u64().unwrap() <= 1, "{body}");
     server.abort();
 }
+
+/// Takes any certificate (the test compares the one served by its SHA-256 instead).
+#[derive(Debug)]
+struct AnyCert;
+
+impl rustls::client::danger::ServerCertVerifier for AnyCert {
+    fn verify_server_cert(
+        &self,
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &[rustls::pki_types::CertificateDer<'_>],
+        _: &ServerName<'_>,
+        _: &[u8],
+        _: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+    fn verify_tls12_signature(
+        &self,
+        _: &[u8],
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Err(rustls::Error::General("TLS 1.3 only".into()))
+    }
+    fn verify_tls13_signature(
+        &self,
+        m: &[u8],
+        c: &rustls::pki_types::CertificateDer<'_>,
+        d: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            m,
+            c,
+            d,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider().signature_verification_algorithms.supported_schemes()
+    }
+}
+
+fn any_cert() -> Arc<rustls::ClientConfig> {
+    Arc::new(
+        rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AnyCert))
+            .with_no_client_auth(),
+    )
+}
+
+/// The SHA-256 of the certificate a port serves, as `/network` writes it (`AB:CD:...`).
+async fn served(port: u16) -> String {
+    use sha2::Digest as _;
+    let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let tls = tokio_rustls::TlsConnector::from(any_cert())
+        .connect(ServerName::try_from("localhost").unwrap(), tcp)
+        .await
+        .unwrap();
+    let der = tls.get_ref().1.peer_certificates().unwrap()[0].clone();
+    web::resources::certificate::colon_hex(&sha2::Sha256::digest(der.as_ref()))
+}
+
+fn start_serving(data: &Path, keys: &Path) -> (u16, u16, tokio::task::JoinHandle<Result<(), String>>) {
+    let (upload, web_port) = (free_port(), free_port());
+    let (d, k) = (data.to_path_buf(), keys.to_path_buf());
+    let server = tokio::spawn(async move {
+        let net = Net { bind: "127.0.0.1".into(), upload, web: web_port };
+        let names = ["first.example".to_string()];
+        serve(&d, &k, &net, &names, &MoveEnv::default(), accounts::Hashing::FAST_FOR_TESTS)
+            .await
+            .map_err(|e| e.to_string())
+    });
+    (upload, web_port, server)
+}
+
+/// A new certificate from the web pages: admin only, the password again, the saved host names in it, served on both
+/// ports at once without a restart, its files the ones on disk after a restart, and an audit entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_certificate_from_the_web_pages_is_served_on_both_ports_at_once() {
+    const PASSWORD: &str = "correct horse battery staple";
+    let dir = tempfile::tempdir().unwrap();
+    let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+    std::fs::create_dir_all(&data).unwrap();
+    Vault::create(&data, &keys, Kdf::FAST_FOR_TESTS).unwrap();
+    let (upload, web_port, server) = start_serving(&data, &keys);
+    listening(web_port, &server).await;
+    let mut c = Client { port: web_port, tls: any_cert(), cookie: None };
+    let code = std::fs::read_to_string(keys.join(site::SETUP_FILE)).unwrap().trim().to_string();
+    let r =
+        c.request("POST", "/api/v1/setup", Some(json!({ "code": code, "name": "owner", "password": PASSWORD }))).await;
+    assert_eq!(r.status, 200, "setup: {}", r.text());
+
+    let n = c.get("/api/v1/network").await.json();
+    let old = n["certificate"]["sha256"].as_str().unwrap().to_string();
+    assert_eq!(old.len(), 95, "colon hex: {n}");
+    assert_eq!(n["certificate"]["names"], json!(["localhost", "first.example"]), "{n}");
+    assert_eq!(n["upload_address"], json!(format!("https://first.example:{upload}/api/can/logs")));
+    assert_eq!((served(web_port).await, served(upload).await), (old.clone(), old.clone()));
+
+    // the saved host names go into the next one
+    let s = c.get("/api/v1/settings").await.json();
+    let r = c
+        .request(
+            "PATCH",
+            "/api/v1/settings",
+            Some(json!({ "version": s["version"], "host_names": ["nas.example", "192.0.2.57"] })),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+
+    // the password again, and an admin's
+    let r = c.request("POST", "/api/v1/network/certificate", Some(json!({}))).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    let r = c.request("POST", "/api/v1/network/certificate", Some(json!({ "password": "wrong one" }))).await;
+    assert_eq!((r.status, r.json()["error"]["code"].clone()), (403, json!("wrong_password")), "{}", r.text());
+    let r = c
+        .request(
+            "POST",
+            "/api/v1/accounts",
+            Some(json!({ "name": "watcher", "password": "another correct horse battery", "role": "watch",
+                         "cars": [], "confirm_password": PASSWORD })),
+        )
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let mut w = Client { port: web_port, tls: any_cert(), cookie: None };
+    let r = w
+        .request(
+            "POST",
+            "/api/v1/session",
+            Some(json!({ "name": "watcher", "password": "another correct horse battery" })),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let r = w
+        .request("POST", "/api/v1/network/certificate", Some(json!({ "password": "another correct horse battery" })))
+        .await;
+    assert_eq!(r.status, 403, "{}", r.text());
+    assert_eq!(served(web_port).await, old, "nothing changed");
+
+    let r = c.request("POST", "/api/v1/network/certificate", Some(json!({ "password": PASSWORD }))).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let made = r.json();
+    let new = made["sha256"].as_str().unwrap().to_string();
+    assert_ne!(new, old);
+    assert_eq!(made["names"], json!(["localhost", "nas.example", "192.0.2.57"]), "{made}");
+    assert_eq!(made["upload_address"], json!(format!("https://nas.example:{upload}/api/can/logs")));
+    // both ports serve it now, without a restart
+    assert_eq!(served(web_port).await, new, "the web port");
+    assert_eq!(served(upload).await, new, "the upload port");
+    let n = c.get("/api/v1/network").await.json();
+    assert_eq!(n["certificate"], json!({ "names": made["names"], "sha256": new }));
+    // in the audit log
+    let a = c.get("/api/v1/audit").await.json();
+    let entry = a["items"].as_array().unwrap().iter().find(|e| e["action"] == "certificate-made").cloned();
+    let entry = entry.unwrap_or_else(|| panic!("no audit entry: {a}"));
+    assert_eq!((entry["account"].clone(), entry["target"].clone()), (json!("owner"), json!("server:certificate")));
+    assert!(entry["summary"].as_str().unwrap().contains("nas.example"), "{entry}");
+    // what the command prints
+    let v = Vault::open(&data, &keys).unwrap();
+    let fp = Identity::load_or_create(&tls_dir(&data), &[], &v).unwrap().fingerprint();
+    assert_eq!(new.replace(':', "").to_ascii_lowercase(), fp);
+
+    // after a restart: the same new certificate (the names given at start don't make another). The engine of the
+    // stopped server still holds this data folder in the test's process, so the restart runs on a copy of it.
+    server.abort();
+    let _ = server.await;
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            if e.file_type().unwrap().is_dir() {
+                copy(&e.path(), &to.join(e.file_name()));
+            } else {
+                std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+            }
+        }
+    }
+    let again = tempfile::tempdir().unwrap();
+    let (data, keys) = (again.path().join("data"), again.path().join("keys"));
+    copy(&dir.path().join("data"), &data);
+    copy(&dir.path().join("keys"), &keys);
+    let (upload, web_port, server) = start_serving(&data, &keys);
+    listening(web_port, &server).await;
+    listening(upload, &server).await;
+    assert_eq!((served(web_port).await, served(upload).await), (new.clone(), new));
+    server.abort();
+}

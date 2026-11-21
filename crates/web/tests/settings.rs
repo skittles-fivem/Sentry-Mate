@@ -41,6 +41,13 @@ async fn put(store: &ingest::Store, judge: &ingest::Judge, name: &str, bytes: &[
 /// Two made-up cars with a light day each; the MQTT publisher's side, the ports and a certificate made for
 /// `sentry-mate.test`.
 async fn seeded() -> Seeded {
+    seeded_with(|b, _, _| b).await
+}
+
+/// The same; `more` adds services (given the data folder and its vault).
+async fn seeded_with(
+    more: impl FnOnce(web::Builder, &std::path::Path, &Arc<vault::Vault>) -> web::Builder + Send + 'static,
+) -> Seeded {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
@@ -67,8 +74,9 @@ async fn seeded() -> Seeded {
     assert_eq!(ids.len(), 2, "{ids:?}");
     let tls = data.join("tls");
     ingest::server::Identity::load_or_create(&tls, &["sentry-mate.test".to_string()], &v).unwrap();
-    let (e2, d2) = (engine.clone(), db.clone());
+    let (e2, d2, data2, v2) = (engine.clone(), db.clone(), data.clone(), v.clone());
     let s = TestServer::start_with(move |b| {
+        let b = more(b, &data2, &v2);
         b.cars(Arc::new(EngineCars(d2)))
             .service(Arc::new(e2))
             .service(Arc::new(Publisher::new()))
@@ -845,4 +853,91 @@ async fn publisher_errors_are_codes() {
     assert!(!words.is_empty() && words != "connection_refused", "{st}");
     assert!(st["last_error_ms"].is_u64());
     task.abort();
+}
+
+/// The program's side of a new certificate, for the tests: the real one, or (`own`) a server that runs with its
+/// owner's certificate.
+struct Maker {
+    live: Arc<ingest::server::LiveCert>,
+    own: std::sync::atomic::AtomicBool,
+}
+
+impl web::resources::certificate::CertificateMaker for Maker {
+    fn renew(&self, names: &[String]) -> Result<String, web::resources::certificate::Refused> {
+        if self.own.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(web::resources::certificate::Refused::OwnCertificate);
+        }
+        self.live.renew(names).map_err(|e| web::resources::certificate::Refused::Failed(e.to_string()))
+    }
+}
+
+/// `POST /network/certificate`: an admin with the password again; the saved host names go in, `/network` shows the
+/// new SHA-256 at once; refused while a move code waits, and when the server runs with its owner's own
+/// certificate; recorded in the audit log.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_certificate() {
+    let maker = Arc::new(std::sync::Mutex::new(None::<Arc<Maker>>));
+    let m2 = maker.clone();
+    let t =
+        seeded_with(move |b, data, v| {
+            let tls = data.join("tls");
+            let id = ingest::server::Identity::load_or_create(&tls, &["sentry-mate.test".to_string()], v).unwrap();
+            let live = ingest::server::LiveCert::new(&id, &tls, v.clone()).unwrap();
+            let m = Arc::new(Maker { live, own: false.into() });
+            *m2.lock().unwrap() = Some(m.clone());
+            let keys = data.parent().unwrap().join("keys");
+            b.service(Arc::new(web::resources::certificate::Certificates(m)))
+                .service(Arc::new(web::moving::MoveSite::new(data.to_path_buf(), keys, "0.0.0")))
+        })
+        .await;
+    let maker = maker.lock().unwrap().clone().unwrap();
+    let mut admin = t.s.admin().await;
+    let mut watch = t.s.watch(&mut admin, &[t.ids[0]]).await;
+    let pw = web::testkit::ADMIN_PASSWORD;
+    let before = ok(&mut admin, "/api/v1/network").await;
+    let old = before["certificate"]["sha256"].as_str().unwrap().to_string();
+    assert_eq!(old.len(), 95, "{before}");
+    assert_eq!(before["upload_address"], json!("https://sentry-mate.test:10100/api/can/logs"));
+    let s = ok(&mut admin, "/api/v1/settings").await;
+    let r = admin.patch("/api/v1/settings", json!({ "version": s["version"], "host_names": ["nas.example"] })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+
+    let path = "/api/v1/network/certificate";
+    assert_eq!(watch.post(path, json!({ "password": web::testkit::WATCH_PASSWORD })).await.status, 403);
+    assert_eq!(admin.post(path, json!({})).await.status, 400);
+    let r = admin.post(path, json!({ "password": "not it" })).await;
+    assert_eq!((r.status, r.code()), (403, Some("wrong_password".into())), "{}", r.text());
+    let r = admin.post(path, json!({ "password": pw, "extra": 1 })).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert_eq!(ok(&mut admin, "/api/v1/network").await["certificate"]["sha256"], json!(old), "nothing changed");
+
+    let r = admin.post(path, json!({ "password": pw })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let made = r.json();
+    assert_eq!(made["names"], json!(["localhost", "nas.example"]));
+    assert_eq!(made["upload_address"], json!("https://nas.example:10100/api/can/logs"));
+    let new = made["sha256"].as_str().unwrap().to_string();
+    assert_ne!(new, old);
+    assert_eq!(new.replace(':', "").to_ascii_lowercase(), maker.live.fingerprint());
+    let n = ok(&mut admin, "/api/v1/network").await;
+    assert_eq!(n["certificate"], json!({ "names": ["localhost", "nas.example"], "sha256": new }));
+    let a = ok(&mut admin, "/api/v1/audit").await;
+    let e = a["items"].as_array().unwrap().iter().find(|e| e["action"] == "certificate-made").unwrap().clone();
+    assert_eq!(e["target"], "server:certificate", "{e}");
+
+    // a move code waiting: the new server would pin this certificate
+    let r = admin.post("/api/v1/system/move", json!({ "password": pw })).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let r = admin.post(path, json!({ "password": pw })).await;
+    assert_eq!((r.status, r.code()), (409, Some("move_under_way".into())), "{}", r.text());
+    let r = admin.delete("/api/v1/system/move", json!({})).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+
+    // the owner's own certificate is not replaced
+    maker.own.store(true, std::sync::atomic::Ordering::Relaxed);
+    let r = admin.post(path, json!({ "password": pw })).await;
+    assert_eq!((r.status, r.code()), (409, Some("own_certificate".into())), "{}", r.text());
+    maker.own.store(false, std::sync::atomic::Ordering::Relaxed);
+    let r = admin.post(path, json!({ "password": pw })).await;
+    assert_eq!(r.status, 200, "after the move code is cancelled: {}", r.text());
 }

@@ -20,7 +20,7 @@ import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { dateTime, date, agoEl, tzName, DASH } from '../core/fmt.js';
 import { timeColumn } from '../shared/csv.js';
-import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved } from './settings-server-move.js';
+import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved, askPassword } from './settings-server-move.js';
 
 export const id = 'settings-server';
 export const css = true;
@@ -44,6 +44,30 @@ const checkRow = (tone, head, text, action = null) => h('li', { class: ['ss-chec
   h('div', null, h('p', { class: 'ss-check-head' }, head), h('p', { class: 'ss-check-text' }, text), action));
 
 const mono = (t) => h('code', { class: 'mono ss-code' }, t);
+
+// a SHA-256 in colon hex, in groups of four pairs that never break inside, so it wraps cleanly on a phone
+const shaGroups = (sha) => h('code', { class: 'mono ss-value ss-sha', 'aria-label': `SHA-256 ${sha}` },
+  (String(sha).match(/([0-9A-Fa-f]{2}:?){1,4}/g) || [String(sha)]).map((g) => h('span', { class: 'ss-sha-group' }, g)));
+// an address that may break only after a slash or a colon
+const addressEl = (text) => h('code', { class: 'mono ss-value ss-wrap' },
+  String(text).split(/(?<=[/:])/).map((part, i) => [i ? h('wbr') : null, part]));
+
+/** A Copy button for a value: the clipboard on HTTPS, else the value selected for Ctrl+C or the phone's Copy. */
+function copyValue(text, valueEl, label = 'Copy') {
+  const said = h('span', { class: 'ss-copied', 'aria-live': 'polite' });
+  return h('span', { class: 'ss-copy' },
+    h('button', { class: 'btn btn--sm', type: 'button', onclick: async () => {
+      try {
+        if (!globalThis.isSecureContext || !navigator.clipboard) throw new Error('no clipboard');
+        await navigator.clipboard.writeText(text);
+        said.textContent = 'Copied.';
+      } catch {
+        const sel = globalThis.getSelection?.();
+        if (sel && valueEl) { sel.removeAllRanges(); const r = document.createRange(); r.selectNodeContents(valueEl); sel.addRange(r); }
+        said.textContent = 'Selected: press Ctrl+C (on a phone, tap Copy) to copy it.';
+      }
+    } }, icon('check', 'ico--sm'), label), said);
+}
 
 /* ====================================================================== the page */
 
@@ -88,7 +112,9 @@ export async function mount(ctx) {
   const hostingBox = h('div');
   // the names in the certificate the server runs with now (admins, from /network); saved host names
   // only go into the next certificate the server makes
-  const certNames = Array.isArray(S.network?.certificate?.names) ? S.network.certificate.names.map((n) => n.toLowerCase()) : null;
+  let certNames = null;
+  const readCert = () => { certNames = Array.isArray(S.network?.certificate?.names) ? S.network.certificate.names.map((n) => n.toLowerCase()) : null; };
+  readCert();
   function paintHosting() {
     const saved = (S.settings.host_names || []).map((n) => n.toLowerCase());
     const names = certNames || saved;
@@ -104,7 +130,8 @@ export async function mount(ctx) {
         : 'This name is on the server\'s list of names for its certificate, so the browser trusts the address without a warning (once it trusts the certificate). An admin sees whether the certificate in use already has it.')
       : savedOnly
         ? checkRow('info', `Host name ${here.host} is saved, not yet in the certificate`,
-          `The name is on the list below, but the certificate the server uses now names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until the server makes a new certificate (see Certificate, recovery key and backups).`)
+          `The name is on the list below, but the certificate the server uses now names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until you make a new certificate: the button is here and under Certificate, recovery key and backups.`,
+          admin ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => makeCertificate() }, icon('reset', 'ico--sm'), 'Make a new certificate') : null)
         : checkRow('warn', `Host name ${here.host} is not on the certificate`,
           `You opened Sentry Mate as ${here.host}, but the certificate names ${names.join(', ') || 'no host'}. Browsers warn about a name that is not on it. The CAN Bridge is not affected: it pins the certificate's SHA-256 and does not check names.`,
           admin ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => addName(here.host) }, icon('plus', 'ico--sm'), `Add ${here.host} to the names`) : null));
@@ -241,12 +268,66 @@ export async function mount(ctx) {
   let keyEl = null;
   function paintKey() { const n = keyRow(); if (keyEl) keyEl.replaceWith(n); keyEl = n; }
   paintKey();
+  // the certificate in use: its SHA-256, its names and the CAN Bridge's upload address, each to copy, and a
+  // new one made here (no shell, no restart)
+  const certBox = h('div', { class: 'ss-cert' });
+  function paintCert() {
+    const c = S.network?.certificate || null;
+    const rows = [];
+    if (c?.sha256) {
+      const v = shaGroups(c.sha256);
+      rows.push(h('div', { class: 'ss-fact' }, h('dt', null, 'SHA-256'), h('dd', null, v, copyValue(c.sha256, v))));
+    }
+    if (c?.names?.length) {
+      rows.push(h('div', { class: 'ss-fact' }, h('dt', null, 'Names in it'),
+        h('dd', null, h('ul', { class: 'ss-cert-names' }, c.names.map((n) => h('li', null, h('code', { class: 'mono ss-value' }, n)))))));
+    }
+    if (S.network?.upload_address) {
+      const v = addressEl(S.network.upload_address);
+      rows.push(h('div', { class: 'ss-fact' }, h('dt', null, 'CAN Bridge upload address'), h('dd', null, v, copyValue(S.network.upload_address, v))));
+    }
+    replace(certBox,
+      rows.length ? h('dl', { class: 'ss-facts' }, rows) : h('p', { class: 'note' }, 'The server did not say which certificate it runs with.'),
+      c?.sha256 ? h('p', { class: 'ss-cert-need' }, icon('info', 'ico--sm'), 'The CAN Bridge app needs this SHA-256 in its upload settings.') : null,
+      h('div', { class: 'row ss-keyacts' },
+        h('button', { class: 'btn btn--sm', type: 'button', onclick: () => makeCertificate() }, icon('reset', 'ico--sm'), 'Make a new certificate')));
+  }
+  paintCert();
+  // the names the next certificate is made for: localhost and the saved host names (what the server does)
+  const nextNames = () => ['localhost', ...(S.settings.host_names || []).filter((n) => n.toLowerCase() !== 'localhost')];
+  async function makeCertificate() {
+    const names = nextNames();
+    const out = await askPassword(ctx, {
+      title: 'Make a new certificate',
+      intro: h('div', { class: 'ss-newcert' },
+        h('p', null, 'The server makes a new certificate and uses it at once on both ports, without a restart. Before you go on:'),
+        h('ul', { class: 'ss-newcert-list' },
+          h('li', null, h('b', null, 'The SHA-256 changes. '), 'The CAN Bridge app\'s uploads are refused until you enter the new SHA-256 in its upload settings.'),
+          h('li', null, h('b', null, 'Browsers ask again '), 'to accept the new certificate, on every device that opens these pages.'),
+          h('li', null, h('b', null, 'The names in it: '), h('span', { class: 'ss-newcert-names' }, names.map((n, i) => [i ? ', ' : '', h('code', { class: 'mono' }, n)])), '. Change them under Host names for the certificate first, if one is missing.'))),
+      submit: 'Make a new certificate', danger: true,
+      run: (cred) => ctx.api.post('network/certificate', cred),
+    });
+    if (!out || !ctx.alive()) return;
+    try { S.network = await ctx.api.get('network'); } catch { S.network = { ...(S.network || {}), certificate: { names: out.names, sha256: out.sha256 }, upload_address: out.upload_address }; }
+    if (!ctx.alive()) return;
+    readCert(); paintCert(); paintHosting();
+    const v = shaGroups(out.sha256);
+    await openDialog({
+      title: 'The new certificate is in use', wide: true,
+      body: h('div', { class: 'ss-newcert' },
+        h('p', null, 'Enter this SHA-256 in each CAN Bridge app\'s upload settings now: until then it refuses this server.'),
+        h('div', { class: 'ss-fact ss-fact--big' }, h('p', { class: 'ss-fact-label' }, 'New SHA-256'), v, copyValue(out.sha256, v)),
+        h('p', { class: 'note' }, 'Reload this page to accept the new certificate in this browser.')),
+      actions: [{ label: 'Done', value: true, kind: 'primary', focus: true }],
+    });
+  }
   const safety = panel({ title: 'Certificate, recovery key and backups', icon: 'lock', pad: true },
     h('ul', { class: 'ss-checks' },
       cert
         ? checkRow('warn', `The certificate expires ${cert.detail?.expires_ms ? date(cert.detail.expires_ms, tz) : 'soon'}${cert.detail?.days != null ? ` (in ${format(cert.detail.days, 'count')} days)` : ''}`,
-          h('span', null, 'Make a new one before then: stop the container, delete ', mono('data/tls/cert.pem'), ' (or put your own ', mono('cert.pem'), ' and ', mono('key.pem'), ' there) and start it again. A new certificate has a new SHA-256: enter it again in each CAN Bridge.'))
-        : checkRow('ok', 'Certificate', 'The server reports no problem with its certificate. It keeps the same SHA-256 across restarts, updates and moves.'),
+          h('span', null, 'Make a new one before then with Make a new certificate (or, with your own certificate, put the new ', mono('cert.pem'), ' and ', mono('key.pem'), ' in ', mono('data/tls'), ' and start the container again). A new certificate has a new SHA-256: enter it again in each CAN Bridge.'), certBox)
+        : checkRow('ok', 'Certificate', 'The server reports no problem with its certificate. It keeps the same SHA-256 across restarts, updates and moves, until you make a new one.', certBox),
       keyEl,
       checkRow('ok', 'Everything is encrypted at rest',
         h('span', null, 'Logs, the database, tokens and the certificate\'s key are sealed. A backup is a copy of the data folder: it opens only with the key file (kept apart in ', mono('/keys'), ') or the recovery key, so keep those out of the same backup.'))));

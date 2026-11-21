@@ -1433,6 +1433,8 @@ async fn start(
         }
     }
     let id = Identity::load_or_create(&tls_dir(data), names, &v)?;
+    // what both ports serve: a new certificate made from the web pages is swapped in here, without a restart
+    let live = ingest::server::LiveCert::new(&id, &tls_dir(data), v.clone())?;
     let tokens = Tokens::open(tokens_file(data), v.clone()).await?;
     drop(pass);
     let any_token = tokens.has_any().await;
@@ -1495,13 +1497,14 @@ async fn start(
     });
     let ticker = offer.spawn_ticker();
     let app = router(up.clone()).merge(moving::old::router(offer.clone()));
-    let server = Box::pin(serve_tls(listener, id.tls_config()?, app));
+    let server = Box::pin(serve_tls(listener, live.tls_config()?, app));
     if !serving {
         tracing::info!(
             "the data moved away: the web UI here shows the move, read only (the data is on the new server)"
         );
     }
-    let side = start_web(data, keys, &v, engine, &id, net, hashing, claim.clone(), offer.clone()).await?;
+    let renewer = Arc::new(site::Renewer { live, offer: Some(offer.clone()), gate: gate.clone() });
+    let side = start_web(data, keys, &v, engine, renewer, net, hashing, claim.clone(), offer.clone()).await?;
     let offer = Arc::new(OfferAndUploads { offer, uploads: up });
     Ok(Instance { server, housekeeping, offer, ticker, confirm, side })
 }
@@ -1513,7 +1516,7 @@ async fn start_web(
     keys: &Path,
     v: &Arc<Vault>,
     engine: site::EngineRun,
-    id: &Identity,
+    renewer: Arc<site::Renewer>,
     net: &Net,
     hashing: accounts::Hashing,
     claim: web::moving::ClaimKeep,
@@ -1522,10 +1525,13 @@ async fn start_web(
     let moved = offer.is_moved();
     let (d, k, v2, e2) = (data.to_path_buf(), keys.to_path_buf(), v.clone(), engine.engine.clone());
     let ports = web::resources::mqtt::Network { web_port: net.web, upload_port: net.upload };
-    let app =
-        tokio::task::spawn_blocking(move || site::web_state(&d, &k, v2, &e2, hashing, Some(ports), claim, Some(offer)))
-            .await?
-            .map_err(|e| e as Box<dyn std::error::Error>)?;
+    let live = renewer.live.clone();
+    let certs: Arc<dyn web::resources::certificate::CertificateMaker> = renewer;
+    let app = tokio::task::spawn_blocking(move || {
+        site::web_state(&d, &k, v2, &e2, hashing, Some(ports), claim, Some(offer), Some(certs))
+    })
+    .await?
+    .map_err(|e| e as Box<dyn std::error::Error>)?;
     let listener = tokio::net::TcpListener::bind((net.bind.as_str(), net.web)).await?;
     tracing::info!("web UI on https://{}:{}/ (TLS 1.3), the same certificate", net.bind, net.web);
     let a2 = app.clone();
@@ -1550,7 +1556,7 @@ async fn start_web(
             tracing::info!("Tesla API: reading the cars of {n} Tesla account(s)");
         }
     }
-    let web = Box::pin(web::serve(listener, id.tls_config()?, web::router_with(app.clone(), api::routes())));
+    let web = Box::pin(web::serve(listener, live.tls_config()?, web::router_with(app.clone(), api::routes())));
     Ok(Side { engine: Some(engine), web, app: Some(app), tasks, tesla })
 }
 

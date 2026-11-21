@@ -114,8 +114,8 @@ Revoked tokens stay in the list. No command deletes a token or ties it to anothe
 docker exec sentry-mate /sentry-mate fingerprint
 ```
 
-It stays the same across restarts, updates and moves: the certificate's key is in the data folder. To change it, see
-[Changing the certificate](#changing-the-certificate).
+It stays the same across restarts, updates and moves: the certificate's key is in the data folder. The web pages
+show it too (*Settings → Server and access*). To change it, see [Changing the certificate](#changing-the-certificate).
 
 ## The chain report
 
@@ -394,8 +394,16 @@ The keys folder:
 
 ## Changing the certificate
 
-A running server keeps the certificate it started with. To change it, stop the container first and start it again
-after (TrueNAS: *Stop* and *Start* the app):
+**From the web pages (no shell, no restart):** *Settings → Server and access → Certificate, recovery key and
+backups* shows the certificate's SHA-256, the names in it and the CAN Bridge upload address, each with *Copy*.
+*Make a new certificate* makes a new self-signed one for the names saved under *Host names for the certificate*
+(and `localhost`), after your password (and the two-step code when you have it on). Both ports serve it at once,
+and it is kept across restarts. Then put the new SHA-256 in each CAN Bridge's upload settings: until then it refuses
+the server. Browsers ask again to accept the certificate. It is refused while a move code waits or a move or
+restore runs, and when the server runs with your own certificate (below), which it never replaces.
+
+**With a shell:** the server reads its certificate files only when it starts. To change them by hand, stop the
+container first and start it again after (TrueNAS: *Stop* and *Start* the app):
 
 ```bash
 docker compose stop

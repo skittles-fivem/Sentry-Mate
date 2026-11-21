@@ -6,6 +6,7 @@ use crate::AppState;
 use axum::Router;
 
 pub mod battery;
+pub mod certificate;
 pub mod charges;
 pub mod drives;
 pub mod efficiency;
@@ -43,6 +44,7 @@ pub fn routes() -> Router<AppState> {
         .merge(logs::routes())
         .merge(settings::routes())
         .merge(mqtt::routes())
+        .merge(certificate::routes())
         .merge(imports::routes())
         .merge(system::routes())
         .merge(notices::routes())

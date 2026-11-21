@@ -12,7 +12,10 @@
 ## Security
 
 - TLS 1.3 only on the upload port; plain HTTP and older TLS are refused. The certificate is self-signed and made on
-  first start, its private key sealed in the vault; the app pins it by SHA-256.
+  first start, its private key sealed in the vault; the app pins it by SHA-256. An admin can make a new one from the
+  web pages (Settings → Server and access, with the password again and the two-step code): it is written beside the
+  old one and renamed into place, so a power cut never leaves none, and it is never made over the owner's own
+  certificate or while a move is under way. Each CAN Bridge then needs the new SHA-256.
 - The upload port can't be filled without a token: connections are counted per address (an IPv6 /64 is one), the
   TLS handshake and the headers must come within 10 s each, and a connection that has not shown a valid token is
   closed, oldest first, to make room for a new one, so the CAN Bridge's uploads still get in.
@@ -104,9 +107,10 @@
   tries, the web UI is HTTPS only (a password never crosses the network in the clear), and two-step sign-in (or the
   "two-step from outside" rule) puts a code from an app after the password.
 - **Changes ask again.** Every account and two-step change (a new account, a role, a password, a car list, turning
-  someone's two-step sign-in off, new recovery codes, the two-step rule) asks for the acting account's password and,
-  when it has two-step sign-in on, a code from the app or a recovery code: a browser left open plus a known password
-  isn't enough. When the rule changes, open live streams of accounts it cuts off end at once.
+  someone's two-step sign-in off, new recovery codes, the two-step rule), and each server change that can lock a
+  device out or hand data on (a move code, an export file, the recovery key, a new certificate), asks for the acting
+  account's password and, when it has two-step sign-in on, a code from the app or a recovery code: a browser left
+  open plus a known password isn't enough. When the rule changes, open live streams of accounts it cuts off end at once.
 - **What counts as the home network** is decided from the connection's address: loopback, the private ranges and
   link-local. Behind Docker's published ports that address is only right for IPv4: a connection to the host's
   **IPv6** address on a network without IPv6 (the compose file's default) is passed on by Docker's proxy from the

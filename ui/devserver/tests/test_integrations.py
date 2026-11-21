@@ -117,6 +117,48 @@ class Mqtt(ServerCase):
         self.assertEqual((out["geocoding"]["host"], out["geocoding"]["enabled"]), ("geo.example", True))
 
 
+class NewCertificate(ServerCase):
+    """POST /network/certificate: the password again, the saved host names in it, a new SHA-256 in /network,
+    refused while a move code waits and with the owner's own certificate, recorded in the audit log."""
+
+    def test_new_certificate(self):
+        before = self.c.get("/api/v1/network")
+        old = before["certificate"]["sha256"]
+        self.assertRegex(old, r"^([0-9A-F]{2}:){31}[0-9A-F]{2}$")
+        self.assertTrue(before["upload_address"].startswith("https://"))
+        v = self.c.get("/api/v1/settings")["version"]
+        self.c.json("PATCH", "/api/v1/settings", {"version": v, "host_names": ["nas.example", "192.0.2.57"]})
+        self.assertEqual(self.c.get("/api/v1/network")["certificate"]["sha256"], old, "saving names changes nothing")
+        path = "/api/v1/network/certificate"
+        self.c.error("POST", path, 403, "wrong_password", body={})
+        self.c.error("POST", path, 403, "wrong_password", body={"password": "nope"})
+        e, _ = self.c.error("POST", path, 400, "bad_input", body={"password": "sentry-mate-dev", "names": []})
+        self.assertIn("names", e["fields"])
+        made = self.c.json("POST", path, {"password": "sentry-mate-dev"})
+        self.assertEqual(made["names"], ["localhost", "nas.example", "192.0.2.57"])
+        self.assertEqual(made["upload_address"], "https://nas.example:10100/api/can/logs")
+        self.assertRegex(made["sha256"], r"^([0-9A-F]{2}:){31}[0-9A-F]{2}$")
+        self.assertNotEqual(made["sha256"], old)
+        net = self.c.get("/api/v1/network")
+        self.assertEqual(net["certificate"], {"names": made["names"], "sha256": made["sha256"]})
+        self.assertEqual(net["upload_address"], made["upload_address"])
+        again = self.c.json("POST", path, {"password": "sentry-mate-dev"})
+        self.assertNotEqual(again["sha256"], made["sha256"], "a new one each time")
+        audit = self.c.get("/api/v1/audit?limit=5")["items"]
+        self.assertEqual((audit[0]["action"], audit[0]["target"]), ("certificate-made", "server:certificate"))
+        # a move code waiting: the new server would pin this certificate
+        self.c.json("POST", "/api/v1/system/move", {"password": "sentry-mate-dev"}, expect=201)
+        self.c.error("POST", path, 409, "move_under_way", body={"password": "sentry-mate-dev"})
+        self.c.json("DELETE", "/api/v1/system/move")
+        # the owner's own certificate stays
+        self.server.app.store.cert_own = True
+        try:
+            self.c.error("POST", path, 409, "own_certificate", body={"password": "sentry-mate-dev"})
+        finally:
+            self.server.app.store.cert_own = False
+        self.c.json("POST", path, {"password": "sentry-mate-dev"})
+
+
 class WatchIntegrations(ServerCase):
     server_args = {"role": "watch"}
 
@@ -125,6 +167,7 @@ class WatchIntegrations(ServerCase):
         self.c.error("PUT", "/api/v1/settings/mqtt", 403, "not_allowed", body={})
         self.c.error("POST", "/api/v1/settings/mqtt/test", 403, "not_allowed")
         self.c.error("GET", "/api/v1/network", 403, "not_allowed")
+        self.c.error("POST", "/api/v1/network/certificate", 403, "not_allowed", body={"password": "sentry-mate-dev"})
         self.assertIn("connected", self.c.get("/api/v1/settings/mqtt/status"))
         p = self.c.get("/api/v1/settings/mqtt/preview")
         self.assertEqual(p["car"], "c1")
