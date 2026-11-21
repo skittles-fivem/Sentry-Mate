@@ -79,11 +79,11 @@ export async function mount(ctx) {
     replace(sub,
       h('span', { cover: 'summary.stat.status' }, stateWord(n.state, { stale: n.stale }), ' since ', n.since_ms ? when(n.since_ms, tz) : '—',
         n.since_ms ? h('span', { class: 'muted' }, ` (${dur(Math.max(0, ctx.api.now() - n.since_ms))})`) : null),
-      h('span', { class: 'sep', 'aria-hidden': 'true' }, ' | '),
+      h('span', { class: 'sep', 'aria-hidden': 'true' }, '\u00a0| '),
       h('span', { cover: 'summary.header.model', title: 'Model and year come from the VIN prefix' }, [car.model, car.year].filter(Boolean).join(' ') || 'model not known yet'),
-      h('span', { class: 'sep', 'aria-hidden': 'true' }, ' | '),
+      h('span', { class: 'sep', 'aria-hidden': 'true' }, '\u00a0| '),
       h('span', { cover: 'summary.header.trim' }, trim?.value ? [trim.value, trimSrc ? h('span', { class: 'muted' }, ` (${trimSrc})`) : null] : h('span', { class: 'muted' }, 'trim not known yet')),
-      car.vin_prefix ? [h('span', { class: 'sep', 'aria-hidden': 'true' }, ' | '), h('span', { class: 'muted', title: 'Only the VIN prefix is stored' }, 'vin '), car.vin_prefix] : null);
+      car.vin_prefix ? [h('span', { class: 'sep', 'aria-hidden': 'true' }, '\u00a0| '), h('span', { class: 'muted', title: 'Only the VIN prefix is stored' }, 'vin '), car.vin_prefix] : null);
     const midDrive = n.state === 'driving' && n.stale;
     const show = n.stale || n.state === 'unknown';
     staleLine.hidden = !show;

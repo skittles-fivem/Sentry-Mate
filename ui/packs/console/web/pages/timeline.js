@@ -87,7 +87,7 @@ export function eventLine(r, { car, tz }) {
     h('span', { class: 'ln-tag' }, detailHref ? h('a', { class: `tag tag--${k.tone} lnk-plain`, href: detailHref }, `[${k.tag}]`) : tag(k.tag, k.tone)),
     h('span', { class: 'ln-what' },
       h('span', { class: 'ln-main' }, h('span', { class: `ln-ph-tag tag tag--${k.tone}` }, `[${k.tag}] `), what),
-      h('span', { class: 'ln-detail' }, h('span', { class: 'muted' }, `to ${end ? formatTime(end, tz) : 'now'}`), bits.filter(Boolean).flatMap((b) => [h('span', { class: 'sep' }, ' | '), h('span', { class: 'muted' }, b)]))),
+      h('span', { class: 'ln-detail' }, h('span', { class: 'muted' }, `to ${end ? formatTime(end, tz) : 'now'}`), bits.filter(Boolean).flatMap((b) => [h('span', { class: 'sep' }, '\u00a0| '), h('span', { class: 'muted' }, b)]))),
     h('span', { class: 'ln-num' }, h('span', { class: 'ln-dur' }, r.duration_ms != null ? formatDuration(r.duration_ms) : end ? formatDuration(end - r.start_ms) : ''), numCell ? h('span', { class: 'ln-n2' }, numCell) : null));
 }
 

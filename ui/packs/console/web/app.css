@@ -241,7 +241,7 @@ button:disabled { cursor: default; }
 /* the header line every page starts with */
 .ph { display: flex; align-items: baseline; gap: calc(var(--g) * 2); padding-block: calc(var(--g) * 2) var(--g); border-bottom: 1px solid var(--rule); margin-bottom: calc(var(--g) * 2); }
 .ph-title { font-size: var(--fs4); line-height: var(--lh4); font-weight: 600; white-space: nowrap; }
-.ph-side { margin-left: auto; display: flex; gap: calc(var(--g) * 2); min-width: 0; }
+.ph-side { margin-left: auto; display: flex; align-items: baseline; gap: calc(var(--g) * 2); min-width: 0; }
 .ph-btn { background: none; border: 0; padding: 0; color: var(--text); white-space: nowrap; text-align: left; }
 .ph-btn:hover { text-decoration: underline; }
 
@@ -250,7 +250,7 @@ button:disabled { cursor: default; }
 .sec-head { display: flex; align-items: baseline; gap: calc(var(--g) * 2); border-bottom: 1px solid var(--rule); padding-bottom: var(--g2); margin-bottom: var(--g); }
 .sec-title { font-size: var(--fs2); line-height: var(--lh2); font-weight: 600; color: var(--text); }
 .sec-title::before { content: '## '; color: var(--muted); font-weight: 400; }
-.sec-side { margin-left: auto; display: flex; gap: var(--g); }
+.sec-side { margin-left: auto; display: flex; align-items: baseline; gap: var(--g); }
 .is-target > .sec-head .sec-title, .is-target.kv-row .kv-k { color: var(--accent); }
 
 /* key: value lines */
@@ -259,7 +259,7 @@ button:disabled { cursor: default; }
 .kv-row { display: grid; grid-template-columns: calc(var(--a2) * 18) minmax(0, 1fr); gap: var(--g); border-bottom: 1px solid var(--rule); padding-block: var(--g2); }
 .kv-k { color: var(--muted); }
 .kv-k::after { content: ':'; }
-.kv-v { min-width: 0; overflow-wrap: anywhere; }
+.kv-v { min-width: 0; overflow-wrap: break-word; }
 .kv-row--warn .kv-v { color: var(--warn); }
 .kv-row--bad .kv-v { color: var(--bad); }
 
@@ -292,6 +292,8 @@ button:disabled { cursor: default; }
 /* Boxes around text are snapped to whole px wide: font sizes are kept in 1/64 px, so a run of characters can
  * miss a whole pixel by a hair. calc-size() rounds the fitted width up (browsers without it keep the fitted width). */
 .btn, .key, .kbd, .toast, .cmd-btn { width: calc-size(fit-content, round(up, size, 1px)); }
+/* the same for what sits beside a section heading, so a button there starts on a whole pixel */
+.sec-side > * { width: calc-size(fit-content, round(up, size, 1px)); }
 
 /* buttons: a box of whole pixels, the label in the exact middle of its line */
 .btn {
@@ -433,7 +435,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .lnk-plain:hover { color: var(--accent); text-decoration: underline; text-underline-offset: var(--g2); }
 .ph-extra { font-size: var(--fs2); }
 .pin { display: inline-flex; gap: var(--g2); }
-.soc-cell { display: inline-flex; gap: var(--a2); }
+.soc-cell { display: inline-flex; flex-wrap: wrap; gap: 0 var(--a2); max-width: 100%; }
 .soc-n { display: inline-block; min-width: calc(var(--a2) * 4); text-align: right; }
 .optline { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--g2) var(--g); margin-bottom: calc(var(--g) * 2); }
 .optline-k { color: var(--muted); line-height: var(--ctl); }
@@ -464,7 +466,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .filt-on { display: flex; flex-wrap: wrap; gap: 0 calc(var(--g) * 2); margin: 0 0 var(--g); }
 
 /* a line of stats: 'distance 14.7 km   time 12 min ...' */
-.stats { display: flex; flex-wrap: wrap; gap: var(--g2) calc(var(--g) * 3); padding-block: var(--g2); }
+.stats { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--g2) calc(var(--g) * 3); padding-block: var(--g2); }
 .stat { white-space: nowrap; }
 .stat-k { color: var(--muted); }
 .stat-k::after { content: ' '; }
@@ -556,7 +558,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 
 /* the line under a page header: '[driving] since 14:02 | Model Y 2025 | Long Range AWD' */
 .subline { margin: calc(var(--g) * -1) 0 calc(var(--g) * 2); }
-.sep { color: var(--rule-2); white-space: pre; }
+.sep { color: var(--rule-2); }  /* " | " with a no-break space first: a wrapped line never starts with the bar */
 .staleline { margin: calc(var(--g) * -1) 0 calc(var(--g) * 2); }
 .tyre { display: inline-block; min-width: calc(var(--a2) * 9); }
 /* a button that is a line of text: '[full screen]', chart keys */
@@ -921,7 +923,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
   .kv { grid-template-columns: minmax(0, 1fr); }
   .drive-nav { white-space: pre-wrap; display: block; margin-left: 0; }
   .st-cars { margin-left: 0; width: 100%; }
-  .kv-row { grid-template-columns: calc(var(--a2) * 12) minmax(0, 1fr); }
+  .kv-row { grid-template-columns: calc(var(--a2) * 14) minmax(0, 1fr); }
   .fld, .bare-box .fld, .bare-box--wide .fld { grid-template-columns: minmax(0, 1fr); gap: var(--g2); }
   .fld-label { line-height: var(--lh2); }
   .toasts { bottom: calc(var(--bar) + var(--g) + env(safe-area-inset-bottom, 0px)); }
