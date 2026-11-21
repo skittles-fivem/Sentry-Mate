@@ -54,7 +54,7 @@ vendor/           MapLibre GL JS and uPlot, loaded only by pages that draw maps 
 | `core/strip.js` | `strip(items, from, to, opts)`: the activity strip (one SVG), with its marks and key |
 | `core/chart.js` | uPlot: `scope()` (traces on a time axis, synced cursor, drag to zoom), `columns()` (bars per bucket), `well()` |
 | `core/map.js` | MapLibre: `createMap()`, `addTrace()` (neon route), `pin()`, `boundsOf()`, `pad()`, `mapFallback()` |
-| `core/placeholder.js` | The page shown until a page is built |
+| `core/setting.js` | Parts of the Set-up pages: `chan` (numbered channel rows), `recLamp` (the REC lamp that lights after a save), `presets` (jump buttons), `toggle`, `copyBtn`, `lcd` (codes on a radio face), `sig` (signal lights), `checkLine`, `lampSteps`, `code`, `downloadText` |
 
 ## The frame
 
@@ -99,7 +99,7 @@ started is cancelled when the page is left), `me`, `prefs`, `admin`, `alive()`, 
 poll), `setTitle(...)`, `link(page, params)`, `setQuery(patch)`, `navigate(href)`, `reload()`, `carChanged(car)`.
 A page that exports `onQuery(query, ctx)` takes back and forward between its own filters without being built again.
 
-## The pages built so far
+## The pages
 
 | Page | Its picture |
 |---|---|
@@ -119,6 +119,12 @@ A page that exports `onQuery(query, ctx)` takes back and forward between its own
 | Statistics | Rows per day, week, month or year with sum counters, odometer and distance charts, each car, and milestones as lamps |
 | Software | The version on an LCD face, update counters, the update history (admins name a version) and every car's version |
 | Data health | A car's warning lights, fixes, keys, gaps, what is recorded, storage and signals; on /system the server's storage, cars, health and API errors |
+| Car settings | The patch bay: car presets to switch, the name and what the car reports, upload warning lights with tokens and keys, the zone on a clock face, chemistry, free Supercharging ranges, reference values |
+| Display and units | A preview cluster in your units beside the unit channels; look, size, language, pack; the Background; the server defaults and where addresses and maps come from |
+| Integrations | The transmitter: an ON AIR face with counters, the broker form and log, the topic tree, every value sent, Home Assistant discovery and cards, events and ideas, the API, every connection, other tools |
+| Server and access | Address checks, host names, ports; access rules and counters, accounts, sessions, audit log; the certificate and recovery key; moving (move code with steps and progress, carry on, undo; export file) |
+| Import | The tape deck: step lamps, the file slot and upload bar, the three passes, car matching, the report as counters and lists, overlaps with CAN history, every import |
+| Help | The version on a radio face, the release notice, source and guides, licences with their texts, data credits, notices to download, answers with a filter |
 
 ## Looks and tokens
 

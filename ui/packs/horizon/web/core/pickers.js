@@ -99,7 +99,7 @@ export function openScan() {
     if (!q) {
       replace(list, BANDS.map((b) => [h('p', { class: 'scan-band' }, b.full || b.name), inBand(b.id).map((s) => opt(s, ''))]));
     } else {
-      const hits = DIAL.filter((s) => [s.name, s.full, s.short, s.line, s.words].filter(Boolean).join(' ').toLowerCase().includes(q));
+      const hits = DIAL.filter((s) => [s.name, s.full, s.short, s.line, s.words, ...(s.parts || [])].filter(Boolean).join(' ').toLowerCase().includes(q));
       replace(list, hits.length ? hits.map((s) => opt(s, q)) : h('p', { class: 'scan-empty' }, `No page matches "${input.value.trim()}". Try a shorter word.`));
     }
     nav.reset();

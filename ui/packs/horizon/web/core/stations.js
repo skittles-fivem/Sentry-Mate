@@ -13,7 +13,7 @@
 //   car      'needs' (the route has {car}), 'either' (with or without one), null (never)
 //   period   the default period when the address and the tab have none; null: no period
 //   parent   the list a detail page belongs to
-//   parts    what the page holds (shown while a page is still a placeholder)
+//   parts    what the page holds (the page finder searches these words too)
 
 export const BANDS = Object.freeze([
   { id: 'cars', name: 'Cars', icon: 'car', side: 'left' },
