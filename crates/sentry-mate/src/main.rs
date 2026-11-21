@@ -821,12 +821,17 @@ struct Side {
     tasks: Vec<tokio::task::JoinHandle<()>>,
     /// The Tesla API input's pollers (running only when a Tesla account exists).
     tesla: Option<Arc<web::resources::tesla::TeslaService>>,
+    /// The TeslaFi input's pollers (running only when a TeslaFi account exists).
+    teslafi: Option<Arc<web::resources::teslafi::TeslafiService>>,
 }
 
 impl Side {
     /// Stops the engine's background work only (its data stays readable for the web side).
     async fn stop_engine(&mut self, wait: Duration) {
         if let Some(t) = &self.tesla {
+            t.stop();
+        }
+        if let Some(t) = &self.teslafi {
             t.stop();
         }
         if let Some(e) = self.engine.as_mut() {
@@ -838,6 +843,9 @@ impl Side {
     async fn stop(&mut self, wait: Duration) {
         self.web = Box::pin(std::future::pending());
         if let Some(t) = self.tesla.take() {
+            t.stop();
+        }
+        if let Some(t) = self.teslafi.take() {
             t.stop();
         }
         for t in self.tasks.drain(..) {
@@ -1561,8 +1569,19 @@ async fn start_web(
             tracing::info!("Tesla API: reading the cars of {n} Tesla account(s)");
         }
     }
+    // the same for TeslaFi: only for a token an admin added
+    let teslafi = app.service::<web::resources::teslafi::TeslafiService>().ok();
+    if let Some(t) = &teslafi
+        && !moved
+    {
+        t.start();
+        let n = t.accounts().len();
+        if n > 0 {
+            tracing::info!("TeslaFi: reading the car(s) of {n} TeslaFi account(s)");
+        }
+    }
     let web = Box::pin(web::serve(listener, live.tls_config()?, web::router_with(app.clone(), api::routes())));
-    Ok(Side { engine: Some(engine), web, app: Some(app), tasks, tesla })
+    Ok(Side { engine: Some(engine), web, app: Some(app), tasks, tesla, teslafi })
 }
 
 /// `SENTRY_MATE_OFFER_MOVE`: keeps a move code ready and prints it in the log (with no shell, the log is the only

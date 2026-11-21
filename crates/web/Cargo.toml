@@ -19,6 +19,7 @@ moving = { path = "../moving" }
 mqtt = { path = "../mqtt" }
 places = { path = "../places" }
 tesla = { path = "../tesla" }
+teslafi = { path = "../teslafi" }
 vault = { path = "../vault" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
 base64 = "0.22"

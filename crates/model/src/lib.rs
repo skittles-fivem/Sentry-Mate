@@ -75,15 +75,19 @@ pub enum Input {
     Smo,
     /// The Tesla Owner API, polled by this server.
     TeslaApi,
+    /// TeslaFi's API (for owners who pay for TeslaFi): TeslaFi's own polls of the car, read by this server.
+    TeslafiApi,
 }
 
 impl Input {
-    pub const ALL: [Input; 2] = [Input::Smo, Input::TeslaApi];
+    /// In the order they win where two cover the same time: SMO, then the Tesla API, then TeslaFi.
+    pub const ALL: [Input; 3] = [Input::Smo, Input::TeslaApi, Input::TeslafiApi];
 
     fn bit(self) -> u8 {
         match self {
             Input::Smo => 1,
             Input::TeslaApi => 2,
+            Input::TeslafiApi => 4,
         }
     }
 }
@@ -98,6 +102,7 @@ impl Inputs {
     pub const SMO: Inputs = Inputs(1);
     pub const TESLA_API: Inputs = Inputs(2);
     pub const BOTH: Inputs = Inputs(3);
+    pub const TESLAFI_API: Inputs = Inputs(4);
 
     pub fn is_empty(&self) -> bool {
         self.0 == 0
@@ -113,6 +118,16 @@ impl Inputs {
 
     pub fn union(self, o: Inputs) -> Inputs {
         Inputs(self.0 | o.0)
+    }
+
+    /// Whether every input in it is one of `o`'s.
+    pub fn is_subset(self, o: Inputs) -> bool {
+        self.0 & !o.0 == 0
+    }
+
+    /// The inputs that are not SMO (the APIs).
+    pub fn without_smo(self) -> Inputs {
+        Inputs(self.0 & !1)
     }
 
     /// In a fixed order: SMO first.
@@ -185,20 +200,23 @@ impl ImportSite {
     }
 }
 
-/// Where a row or a value came from, as the API names it: SMO, the Tesla API, or an import from a site.
+/// Where a row or a value came from, as the API names it: SMO, the Tesla API, TeslaFi's API, or an import from a
+/// site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Origin {
     Smo,
     TeslaApi,
+    TeslafiApi,
     Import(ImportSite),
 }
 
 impl Origin {
-    /// `smo`, `tesla_api` or `import`.
+    /// `smo`, `tesla_api`, `teslafi_api` or `import`.
     pub fn kind(self) -> &'static str {
         match self {
             Origin::Smo => "smo",
             Origin::TeslaApi => "tesla_api",
+            Origin::TeslafiApi => "teslafi_api",
             Origin::Import(_) => "import",
         }
     }
@@ -224,6 +242,7 @@ impl Origin {
         match self {
             Origin::Smo => "Data from SMO".into(),
             Origin::TeslaApi => "Data from the Tesla API".into(),
+            Origin::TeslafiApi => "Data from TeslaFi".into(),
             Origin::Import(s) => format!("Imported from {}", s.name()),
         }
     }
@@ -232,6 +251,7 @@ impl Origin {
         match self {
             Origin::Smo => "SMO".into(),
             Origin::TeslaApi => "the Tesla API".into(),
+            Origin::TeslafiApi => "TeslaFi".into(),
             Origin::Import(s) => s.name().into(),
         }
     }
@@ -269,6 +289,7 @@ impl From<Input> for Origin {
         match i {
             Input::Smo => Origin::Smo,
             Input::TeslaApi => Origin::TeslaApi,
+            Input::TeslafiApi => Origin::TeslafiApi,
         }
     }
 }
@@ -281,6 +302,8 @@ pub enum Stream {
     Smo,
     /// From the Tesla API (dir `tesla-api`).
     TeslaApi,
+    /// From TeslaFi's API, read live (dir `teslafi-api`; not the TeslaFi import's `teslafi`).
+    TeslafiApi,
     /// From a TeslaMate import (dir `teslamate`).
     Teslamate,
     /// From a TeslaFi import (dir `teslafi`).
@@ -288,7 +311,11 @@ pub enum Stream {
 }
 
 impl Stream {
-    pub const ALL: [Stream; 4] = [Stream::Smo, Stream::TeslaApi, Stream::Teslamate, Stream::Teslafi];
+    pub const ALL: [Stream; 5] =
+        [Stream::Smo, Stream::TeslaApi, Stream::TeslafiApi, Stream::Teslamate, Stream::Teslafi];
+
+    /// The live streams, in the order they win: SMO, the Tesla API, TeslaFi's API.
+    pub const LIVE: [Stream; 3] = [Stream::Smo, Stream::TeslaApi, Stream::TeslafiApi];
 
     /// The streams imports are kept in.
     pub const IMPORTED: [Stream; 2] = [Stream::Teslamate, Stream::Teslafi];
@@ -303,6 +330,7 @@ impl Stream {
         match self {
             Stream::Smo => "can",
             Stream::TeslaApi => "tesla-api",
+            Stream::TeslafiApi => "teslafi-api",
             Stream::Teslamate => "teslamate",
             Stream::Teslafi => "teslafi",
         }
@@ -312,6 +340,7 @@ impl Stream {
         match self {
             Stream::Smo => Origin::Smo,
             Stream::TeslaApi => Origin::TeslaApi,
+            Stream::TeslafiApi => Origin::TeslafiApi,
             Stream::Teslamate => Origin::Import(ImportSite::Teslamate),
             Stream::Teslafi => Origin::Import(ImportSite::Teslafi),
         }
@@ -342,6 +371,7 @@ impl From<Input> for Stream {
         match i {
             Input::Smo => Stream::Smo,
             Input::TeslaApi => Stream::TeslaApi,
+            Input::TeslafiApi => Stream::TeslafiApi,
         }
     }
 }
@@ -776,6 +806,34 @@ mod tests {
         assert_eq!(serde_json::from_str::<Inputs>(r#"["tesla_api"]"#).unwrap(), Inputs::TESLA_API);
         assert!(Inputs::NONE.is_empty());
         assert!(serde_json::from_str::<Inputs>(r#"["fleet_api"]"#).is_err(), "an unknown input is refused");
+        let all: Inputs = Input::ALL.into_iter().collect();
+        assert_eq!(serde_json::to_string(&all).unwrap(), r#"["smo","tesla_api","teslafi_api"]"#);
+        assert_eq!(serde_json::from_str::<Inputs>(r#"["teslafi_api"]"#).unwrap(), Inputs::TESLAFI_API);
+        assert_eq!(all.without_smo(), Inputs::TESLA_API.union(Inputs::TESLAFI_API));
+        assert!(Inputs::TESLAFI_API.is_subset(all) && !all.is_subset(Inputs::BOTH));
+    }
+
+    #[test]
+    fn teslafi_api_is_a_live_input_of_its_own() {
+        assert_eq!(Origin::TeslafiApi.kind(), "teslafi_api");
+        assert_eq!(Origin::TeslafiApi.word(), "teslafi_api");
+        assert_eq!(Origin::TeslafiApi.label(), "Data from TeslaFi");
+        assert_eq!(Origin::TeslafiApi.site(), None);
+        assert_eq!(Stream::from(Input::TeslafiApi).dir_name(), "teslafi-api");
+        assert_ne!(Stream::TeslafiApi.dir_name(), Stream::Teslafi.dir_name(), "never mixed with the import");
+        assert!(!Stream::TeslafiApi.is_imported());
+        assert_eq!(
+            Origin::of_row(Source::Live, Inputs::SMO.union(Inputs::TESLAFI_API)),
+            vec![Origin::Smo, Origin::TeslafiApi]
+        );
+        assert_eq!(
+            Origin::label_of(&[Origin::Smo, Origin::TeslaApi, Origin::TeslafiApi]),
+            "Data from SMO, the Tesla API and TeslaFi"
+        );
+        assert_eq!(
+            Origin::label_of(&[Origin::TeslafiApi, Origin::Import(ImportSite::Teslafi)]),
+            "Data from TeslaFi; imported from TeslaFi"
+        );
     }
 
     #[test]

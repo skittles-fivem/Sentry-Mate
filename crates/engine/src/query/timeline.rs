@@ -262,7 +262,11 @@ pub(crate) fn each_span(
             let s = row.span;
             match cur.as_mut() {
                 Some(l)
-                    if l.end_ms == s.start_ms && l.state == s.state && l.buses == s.buses && l.source == s.source =>
+                    if l.end_ms == s.start_ms
+                        && l.state == s.state
+                        && l.buses == s.buses
+                        && l.source == s.source
+                        && l.inputs == s.inputs =>
                 {
                     l.end_ms = l.end_ms.max(s.end_ms);
                 }
@@ -404,11 +408,13 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             range_end_km: v.end_range_km,
             range_delta_km: v.range_added_km,
             energy_delta_kwh: v.energy_added_kwh,
-            energy_basis: Some(if ch.source == Source::Live && ch.inputs != model::Inputs::TESLA_API {
-                "measured"
-            } else {
-                "estimated"
-            }),
+            energy_basis: Some(
+                if ch.source == Source::Live && (ch.inputs.is_empty() || ch.inputs.contains(model::Input::Smo)) {
+                    "measured"
+                } else {
+                    "estimated"
+                },
+            ),
             outside_avg_c: v.outside_avg_c,
             cost: v.cost.clone(),
             reference: Some(serde_json::json!({ "charge": v.id })),
@@ -727,7 +733,13 @@ pub(crate) fn joined(spans: Vec<StateSpan>) -> Vec<StateSpan> {
     let mut out: Vec<StateSpan> = Vec::new();
     for s in spans {
         match out.last_mut() {
-            Some(l) if l.end_ms == s.start_ms && l.state == s.state && l.buses == s.buses && l.source == s.source => {
+            Some(l)
+                if l.end_ms == s.start_ms
+                    && l.state == s.state
+                    && l.buses == s.buses
+                    && l.source == s.source
+                    && l.inputs == s.inputs =>
+            {
                 l.end_ms = s.end_ms;
             }
             _ => out.push(s),

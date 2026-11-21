@@ -18,7 +18,7 @@
 //! 4. **Firmware fingerprints** ([`firmware`]): what the modules' info frames on the vehicle bus say about their
 //!    code (CRCs, git hashes), tallied per log; the engine confirms them per awake span and finds the updates.
 //!
-//! 5. **Two live inputs** ([`fuse`]): SMO's samples and the Tesla API's made one stream before the timeline is
+//! 5. **Live inputs** ([`fuse_all`]): SMO's samples, the Tesla API's and TeslaFi's made one stream before the timeline is
 //!    built, SMO's winning where it has data, the API's filling the rest; the API's view of the car's state fills
 //!    what SMO does not know ([`Input::api`]). Rows name the inputs that gave them.
 //!
@@ -41,7 +41,7 @@ mod window;
 
 pub use facts::{Closed, FactsCollector, LogFacts, NotRecorded};
 pub use firmware::{FirmwareCollector, LogFirmware};
-pub use fuse::{ApiSpan, ApiState, FuseParams, Fused, fuse};
+pub use fuse::{ApiSpan, ApiState, FuseParams, Fused, fuse, fuse_all};
 pub use read::{LogRead, MAX_LOG_SAMPLES, read_log};
 pub use sample::{SampleBuilder, SampleParams};
 pub use states::is_settled;

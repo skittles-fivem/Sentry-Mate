@@ -62,9 +62,10 @@ async fn list(State(app): State<AppState>, v: crate::Viewer) -> ApiResult<axum::
                 let paused = app.service::<moving::old::Offer>().is_ok_and(|o| o.is_paused());
                 out.extend(move_notices(&site.data, &app.vault, now, paused));
             }
-            // the Tesla accounts are for admins only, like `/integrations/tesla`
+            // the Tesla and TeslaFi accounts are for admins only, like `/integrations/*`
             if v.is_admin() {
                 out.extend(super::tesla::notices(app));
+                out.extend(super::teslafi::notices(app));
             }
             Ok(out)
         })

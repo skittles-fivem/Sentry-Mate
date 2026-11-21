@@ -21,6 +21,7 @@
 //! their start, so a run cut short and started again replaces what it stored, never doubles it.
 
 mod csv;
+pub mod feed;
 mod poll;
 mod seg;
 
@@ -578,66 +579,86 @@ impl<R: Read> Read for CountRead<'_, R> {
 
 /// What a file's first rows show of its units.
 fn detect(h: &Header, lines: &[Vec<u8>], o: &Options) -> Units {
-    let mut ratios = Vec::new();
-    let (mut t_diff, mut t_same, mut hot) = (0u32, 0u32, false);
-    let (mut gui_d, mut gui_t, mut measure) = (None::<String>, None::<String>, None::<String>);
+    let mut d = Detect::default();
     let mut f = Fields::default();
-    let mut bad = BTreeMap::new();
     for b in lines {
         let (t, _) = csv::text(b);
         f.split(&t);
-        let row = Row { h, f: &f, line: &t };
+        d.see(&Row::Csv { h, f: &f, line: &t });
+    }
+    d.units(o)
+}
+
+/// What rows show of their units (the file's first rows, or one answer of TeslaFi's API).
+#[derive(Default)]
+pub(crate) struct Detect {
+    ratios: Vec<f64>,
+    t_diff: u32,
+    t_same: u32,
+    hot: bool,
+    gui_d: Option<String>,
+    gui_t: Option<String>,
+    measure: Option<String>,
+}
+
+impl Detect {
+    pub(crate) fn see(&mut self, row: &Row<'_>) {
+        let mut bad = BTreeMap::new();
         if let (Some(a), Some(b)) = (row.num(Col::Odometer, &mut bad), row.num(Col::OdometerF, &mut bad))
             && a > 1.0
         {
-            ratios.push(b / a);
+            self.ratios.push(b / a);
         }
         if let (Some(a), Some(b)) = (row.num(Col::InsideTemp, &mut bad), row.num(Col::InsideTempF, &mut bad)) {
-            if (a - b).abs() > 0.5 { t_diff += 1 } else { t_same += 1 }
+            if (a - b).abs() > 0.5 { self.t_diff += 1 } else { self.t_same += 1 }
         }
         for c in [Col::InsideTemp, Col::OutsideTemp] {
-            if row.num(c, &mut bad).is_some_and(|x| x > 60.0) && !h.has(Col::InsideTempF) {
-                hot = true;
+            if row.num(c, &mut bad).is_some_and(|x| x > 60.0) && !row.has(Col::InsideTempF) {
+                self.hot = true;
             }
         }
-        gui_d = gui_d.or_else(|| row.text(Col::GuiDistanceUnits));
-        gui_t = gui_t.or_else(|| row.text(Col::GuiTemperatureUnits));
-        measure = measure.or_else(|| row.text(Col::Measure));
+        self.gui_d = self.gui_d.take().or_else(|| row.text(Col::GuiDistanceUnits));
+        self.gui_t = self.gui_t.take().or_else(|| row.text(Col::GuiTemperatureUnits));
+        self.measure = self.measure.take().or_else(|| row.text(Col::Measure));
     }
-    let gui_km = gui_d.as_deref().map(|g| g.to_ascii_lowercase().starts_with("km")).or_else(|| {
-        measure.as_deref().map(|m| {
-            let m = m.to_ascii_lowercase();
-            m.contains("metric") || m.starts_with("km")
-        })
-    });
-    let (distance, distance_from) = match o.distance {
-        Some(d) => (d, "setting"),
-        None => {
-            ratios.sort_by(f64::total_cmp);
-            match ratios.get(ratios.len() / 2) {
-                Some(r) if (r - 1.609_344).abs() < 0.05 => (Distance::Mi, "detected"),
-                Some(r) if (r - 0.621_371).abs() < 0.03 => (Distance::Km, "detected"),
-                Some(r) if (r - 1.0).abs() < 0.01 => match gui_km {
-                    Some(true) => (Distance::Km, "detected"),
-                    Some(false) => (Distance::Mi, "detected"),
-                    None => (Distance::Mi, "default"),
-                },
-                _ => (Distance::Mi, "default"),
+
+    pub(crate) fn units(mut self, o: &Options) -> Units {
+        let (t_diff, t_same, hot) = (self.t_diff, self.t_same, self.hot);
+        let gui_km = self.gui_d.as_deref().map(|g| g.to_ascii_lowercase().starts_with("km")).or_else(|| {
+            self.measure.as_deref().map(|m| {
+                let m = m.to_ascii_lowercase();
+                m.contains("metric") || m.starts_with("km")
+            })
+        });
+        let (distance, distance_from) = match o.distance {
+            Some(d) => (d, "setting"),
+            None => {
+                self.ratios.sort_by(f64::total_cmp);
+                match self.ratios.get(self.ratios.len() / 2) {
+                    Some(r) if (r - 1.609_344).abs() < 0.05 => (Distance::Mi, "detected"),
+                    Some(r) if (r - 0.621_371).abs() < 0.03 => (Distance::Km, "detected"),
+                    Some(r) if (r - 1.0).abs() < 0.01 => match gui_km {
+                        Some(true) => (Distance::Km, "detected"),
+                        Some(false) => (Distance::Mi, "detected"),
+                        None => (Distance::Mi, "default"),
+                    },
+                    _ => (Distance::Mi, "default"),
+                }
             }
-        }
-    };
-    let (temperature, temperature_from) = match o.temperature {
-        Some(t) => (t, "setting"),
-        None if t_diff > 0 && t_diff >= t_same => (Temperature::C, "detected"),
-        None if t_same > 0 => match gui_t.as_deref().map(|g| g.trim().to_ascii_uppercase()) {
-            Some(g) if g.starts_with('F') => (Temperature::F, "detected"),
-            Some(g) if g.starts_with('C') => (Temperature::C, "detected"),
-            _ => (Temperature::C, "default"),
-        },
-        None if hot => (Temperature::F, "detected"),
-        None => (Temperature::C, "default"),
-    };
-    Units { distance, distance_from: distance_from.into(), temperature, temperature_from: temperature_from.into() }
+        };
+        let (temperature, temperature_from) = match o.temperature {
+            Some(t) => (t, "setting"),
+            None if t_diff > 0 && t_diff >= t_same => (Temperature::C, "detected"),
+            None if t_same > 0 => match self.gui_t.as_deref().map(|g| g.trim().to_ascii_uppercase()) {
+                Some(g) if g.starts_with('F') => (Temperature::F, "detected"),
+                Some(g) if g.starts_with('C') => (Temperature::C, "detected"),
+                _ => (Temperature::C, "default"),
+            },
+            None if hot => (Temperature::F, "detected"),
+            None => (Temperature::C, "default"),
+        };
+        Units { distance, distance_from: distance_from.into(), temperature, temperature_from: temperature_from.into() }
+    }
 }
 
 impl Importer<'_> {
@@ -754,7 +775,7 @@ impl Importer<'_> {
         for b in lines {
             let (t, _) = csv::text(b);
             f.split(&t);
-            let row = Row { h, f: &f, line: &t };
+            let row = Row::Csv { h, f: &f, line: &t };
             let Some(vin) = row_vin(&row) else { continue };
             for k in [id_key(&row), name_key(&row)].into_iter().flatten() {
                 self.hints.entry(k).or_insert_with(|| vin.clone());
@@ -873,7 +894,7 @@ impl Importer<'_> {
             self.report.skip("wrong_field_count");
             return Ok(());
         }
-        let row = Row { h, f: fields, line: text };
+        let row = Row::Csv { h, f: fields, line: text };
         let Some(local) = row.text(Col::Date).as_deref().and_then(poll::parse_local) else {
             self.report.skip("bad_time");
             return Ok(());

@@ -87,6 +87,11 @@ impl Proxy {
         let port = port.parse::<u16>().ok().filter(|p| *p > 0)?;
         ok.then(|| Proxy { host: host.to_string(), port })
     }
+
+    /// Where the proxy listens.
+    pub fn addr(&self) -> (&str, u16) {
+        (&self.host, self.port)
+    }
 }
 
 /// One answer: the status, how long Tesla asked us to wait (429), and the body.
@@ -278,8 +283,9 @@ impl Http {
     }
 }
 
-/// Asks the proxy for a tunnel to `origin` (`CONNECT`); the TLS handshake then runs through it end to end.
-async fn tunnel(tcp: &mut TcpStream, origin: &Origin) -> Result<(), HttpError> {
+/// Asks the proxy for a tunnel to `origin` (`CONNECT`); the TLS handshake then runs through it end to end. (Also the
+/// TeslaFi input's way through the owner's proxy.)
+pub async fn tunnel(tcp: &mut TcpStream, origin: &Origin) -> Result<(), HttpError> {
     let target = format!("{}:{}", origin.host, origin.port);
     let req = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nUser-Agent: {USER_AGENT}\r\n\r\n");
     tcp.write_all(req.as_bytes()).await.map_err(|_| HttpError::Proxy)?;

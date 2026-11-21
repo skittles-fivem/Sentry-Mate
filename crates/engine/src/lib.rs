@@ -54,7 +54,7 @@ pub mod records;
 pub mod tesla_in;
 pub mod tz;
 
-pub use tesla_in::TeslaSink;
+pub use tesla_in::{TeslaSink, TeslafiSink};
 
 pub use jobs::{Job, JobStatus, Scope};
 pub use records::DECODE_VERSION;
@@ -179,8 +179,9 @@ pub(crate) enum Work {
     Reconcile {
         car: Option<CarId>,
     },
-    /// Tesla API data to store ([`tesla_in`]).
+    /// Tesla API or TeslaFi API data to store ([`tesla_in`]).
     ApiData {
+        input: model::Input,
         car: CarId,
         samples: Vec<model::Sample>,
         facts: Vec<timeline::ApiSpan>,
@@ -386,7 +387,7 @@ impl Engine {
                 let r = match w {
                     Work::Log { key, name } => e.work_log(&key, &name),
                     Work::Reconcile { car } => e.work_reconcile(car),
-                    Work::ApiData { car, samples, facts } => e.work_api_data(car, samples, facts),
+                    Work::ApiData { input, car, samples, facts } => e.work_api_data(input, car, samples, facts),
                     Work::ApiMeta { car, meta } => e.work_api_meta(car, *meta),
                     Work::ApiBuild { car } => e.work_api_build(car),
                 };

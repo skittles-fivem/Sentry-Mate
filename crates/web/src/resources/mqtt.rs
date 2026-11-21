@@ -706,6 +706,7 @@ async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Valu
         inbound.push(json!({ "purpose": "upload", "port": n.upload_port, "tls": true }));
     }
     let tesla = super::tesla::network_rows(&app);
+    let teslafi = super::teslafi::network_rows(&app);
     let mut outbound = vec![
         // no address lookup runs online in this server yet: listed, never used
         json!({ "purpose": "geocoding", "host": geo_host, "enabled": ss.geocode.mode == "online" && geo_host.is_some(), "last_used_ms": null }),
@@ -717,6 +718,7 @@ async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Valu
         json!({ "purpose": "release_check", "host": null, "enabled": false, "last_used_ms": null }),
     ];
     outbound.extend(tesla);
+    outbound.extend(teslafi);
     Ok(Json(json!({
         "outbound": outbound,
         "inbound": inbound,

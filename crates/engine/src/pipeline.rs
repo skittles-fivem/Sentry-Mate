@@ -3,7 +3,7 @@
 use crate::records::{self, CarMeta, DAY_MS, LogEntry, Outcome};
 use crate::{Engine, Error, Event, NewKeys, Result, Work, lock, now_ms};
 use db::{Query, StateRow};
-use model::{Car, CarId, Charge, ChargePoint, Drive, Input, Now, Sample, Source, StateSpan, Stream, VinInfo};
+use model::{Car, CarId, Charge, ChargePoint, Drive, Input, Inputs, Now, Sample, Source, StateSpan, Stream, VinInfo};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -849,7 +849,13 @@ impl Engine {
             from.saturating_sub(fp.margin_ms()),
             to.saturating_add(fp.margin_ms()),
         )?;
-        let mut fused = timeline::fuse(&smo, &api, fp);
+        let fi = db.read_points::<Sample>(
+            car,
+            Stream::TeslafiApi,
+            from.saturating_sub(fp.lower_margin_ms()),
+            to.saturating_add(fp.lower_margin_ms()),
+        )?;
+        let mut fused = timeline::fuse_all(&smo, &[(&api, Inputs::TESLA_API), (&fi, Inputs::TESLAFI_API)], fp);
         fused.samples.retain(|s| s.t_ms >= from && s.t_ms < to);
         fused.marks.retain(|m| m.0 >= from && m.0 < to);
         let seen = records::api_between(db, car, meta, from, to)?;
@@ -1202,6 +1208,15 @@ const FAST_FIELDS: &[&str] = &["lat", "lon", "gps_accuracy_m", "elevation_m", "s
 /// How long an SMO value of a fast field beats a newer API value (ms).
 const SMO_FAST_WINS_MS: u64 = 60_000;
 
+/// The order live inputs win in: SMO, then the Tesla API, then TeslaFi.
+fn input_rank(i: Input) -> u8 {
+    match i {
+        Input::Smo => 0,
+        Input::TeslaApi => 1,
+        Input::TeslafiApi => 2,
+    }
+}
+
 /// Whether `input`'s value of `field` recorded at `t` replaces the kept one.
 fn newer(
     field: &str,
@@ -1213,9 +1228,11 @@ fn newer(
     let Some(&kept) = at.get(field) else { return true };
     let kept_from = from.get(field).copied().unwrap_or(Input::Smo);
     if kept_from != input && FAST_FIELDS.contains(&field) {
-        return match input {
-            Input::Smo => t.saturating_add(SMO_FAST_WINS_MS) >= kept,
-            Input::TeslaApi => t > kept.saturating_add(SMO_FAST_WINS_MS),
+        // the input that wins (SMO over the APIs, the Tesla API over TeslaFi) keeps its value a minute
+        return if input_rank(input) < input_rank(kept_from) {
+            t.saturating_add(SMO_FAST_WINS_MS) >= kept
+        } else {
+            t > kept.saturating_add(SMO_FAST_WINS_MS)
         };
     }
     t >= kept

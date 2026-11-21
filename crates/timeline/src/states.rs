@@ -223,16 +223,26 @@ pub(crate) fn with_api(spans: Vec<StateSpan>, api: &[crate::ApiSpan], unknown_in
         pts.dedup();
         for w in pts.windows(2) {
             let (x, y) = (w[0], w[1]);
-            let seen = over
+            let looks: Vec<(Seen, model::Inputs)> = over
                 .iter()
                 .filter(|a| a.start_ms <= x && a.end_ms >= y)
-                .map(|a| match a.state {
-                    ApiState::Online if a.data => Seen::Data,
-                    ApiState::Online => Seen::Online,
-                    _ => Seen::Asleep,
+                .map(|a| {
+                    let seen = match a.state {
+                        ApiState::Online if a.data => Seen::Data,
+                        ApiState::Online => Seen::Online,
+                        _ => Seen::Asleep,
+                    };
+                    (seen, a.input())
                 })
-                .min();
-            let api_in = model::Inputs::TESLA_API;
+                .collect();
+            let seen = looks.iter().map(|l| l.0).min();
+            // the API that saw it: the Tesla API where both saw the same, else TeslaFi's
+            let by: Vec<model::Inputs> = looks.iter().filter(|l| Some(l.0) == seen).map(|l| l.1).collect();
+            let api_in = if by.iter().any(|i| i.contains(model::Input::TeslaApi)) {
+                model::Inputs::TESLA_API
+            } else {
+                by.iter().fold(model::Inputs::NONE, |a, i| a.union(*i))
+            };
             let (state, inputs) = match (span.state, seen) {
                 (State::Asleep, Some(Seen::Data)) => (State::Online, api_in),
                 (State::Asleep, _) => (State::Asleep, span.inputs),

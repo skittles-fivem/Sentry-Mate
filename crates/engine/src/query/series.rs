@@ -253,7 +253,7 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     let mut days = std::collections::BTreeSet::new();
     let streams: Vec<model::Stream> = match source {
         None => model::Stream::ALL.to_vec(),
-        Some(super::SourceFilter::Live) => vec![model::Stream::Smo, model::Stream::TeslaApi],
+        Some(super::SourceFilter::Live) => model::Stream::LIVE.to_vec(),
         Some(f) => f.streams(),
     };
     // where both imports cover the same time, only the chosen site's points (with `source=all` and `source=import`)
@@ -275,21 +275,18 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     for day in days {
         let (x, y) = (day.max(a), day.saturating_add(DAY).min(b));
         let mut chunk: Vec<Sample> = Vec::new();
-        // SMO's and the API's seconds fused as the timeline is (inside SMO's coverage SMO's second, no API second
+        // SMO's and the APIs' seconds fused as the timeline is (inside SMO's coverage SMO's second, no API second
         // beside it), never summed
-        let live = streams.contains(&model::Stream::Smo) && streams.contains(&model::Stream::TeslaApi);
+        let live = model::Stream::LIVE.iter().all(|s| streams.contains(s));
         if live {
-            let (pts, smo, api) = e.live_fused(car, x, y)?;
-            if smo {
-                gave.insert(model::Stream::Smo.origin());
-            }
-            if api {
-                gave.insert(model::Stream::TeslaApi.origin());
+            let (pts, gave_live) = e.live_fused(car, x, y)?;
+            for i in gave_live.iter() {
+                gave.insert(model::Stream::from(i).origin());
             }
             chunk.extend(pts);
         }
         for &s in &streams {
-            if live && matches!(s, model::Stream::Smo | model::Stream::TeslaApi) {
+            if live && model::Stream::LIVE.contains(&s) {
                 continue;
             }
             let mut pts = e.db().read_points::<Sample>(car, s, x, y)?;

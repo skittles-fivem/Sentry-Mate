@@ -240,6 +240,7 @@ pub fn apply(app: &AppState, s: &ServerSettings) {
         e.set_default_time_zone(z);
     }
     super::tesla::follow_proxy(app, s.outbound.proxy.as_deref());
+    super::teslafi::follow_proxy(app, s.outbound.proxy.as_deref());
 }
 
 /// First-run setup: the time zone of the first admin's browser becomes the one new cars start in, unless one is

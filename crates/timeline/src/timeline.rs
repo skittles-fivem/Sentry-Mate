@@ -268,7 +268,18 @@ pub fn build(input: &Input<'_>, params: &Params) -> Timeline {
     // a window with only the API's data names the API on the unknown spans it leaves
     let api_only =
         input.logs.is_empty() && input.holes.is_empty() && (!input.api.is_empty() || !input.marks.is_empty());
-    let unknown_inputs = if api_only { model::Inputs::TESLA_API } else { model::Inputs::SMO };
+    let unknown_inputs = if api_only {
+        // the APIs that gave the window's data (the Tesla API when none is named)
+        let by = input
+            .api
+            .iter()
+            .map(crate::ApiSpan::input)
+            .chain(input.marks.iter().map(|m| m.1.without_smo()))
+            .fold(model::Inputs::NONE, model::Inputs::union);
+        if by.is_empty() { model::Inputs::TESLA_API } else { by }
+    } else {
+        model::Inputs::SMO
+    };
     let mut t = Timeline { states: with_api(smo, input.api, unknown_inputs), ..Timeline::default() };
     let samples = sorted(input.samples, from_ms, to_ms);
 
@@ -299,7 +310,7 @@ pub fn build(input: &Input<'_>, params: &Params) -> Timeline {
         let api: Vec<bool> = if marks.is_empty() {
             Vec::new()
         } else {
-            seg.iter().map(|s| crate::fuse::inputs_at(marks, s.t_ms) == model::Inputs::TESLA_API).collect()
+            seg.iter().map(|s| !crate::fuse::inputs_at(marks, s.t_ms).contains(model::Input::Smo)).collect()
         };
         // the thresholds of rows with seconds from the API alone, and the inputs of a row's seconds
         let params_of = |i: usize, j: usize| if api[i..=j].contains(&true) { params.for_api() } else { *params };

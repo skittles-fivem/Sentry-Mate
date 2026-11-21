@@ -199,11 +199,11 @@ impl Header {
     }
 }
 
-/// A row's fields by column.
-pub(crate) struct Row<'a> {
-    pub h: &'a Header,
-    pub f: &'a Fields,
-    pub line: &'a str,
+/// A row's fields by column: a line of the CSV download, or one answer of TeslaFi's API (its keys are the same
+/// column names; values as text, see [`super::feed`]).
+pub(crate) enum Row<'a> {
+    Csv { h: &'a Header, f: &'a Fields, line: &'a str },
+    Map(&'a BTreeMap<String, String>),
 }
 
 /// Empty, `None`, `null`, `NaN` and `<invalid>`: no value.
@@ -216,16 +216,33 @@ fn is_null(s: &str) -> bool {
 }
 
 impl Row<'_> {
+    /// The value of a column as it stands (`None`: no such column).
+    fn raw(&self, c: Col) -> Option<std::borrow::Cow<'_, str>> {
+        match self {
+            Row::Csv { h, f, line } => f.get(line, *h.at.get(&c)?),
+            Row::Map(m) => m
+                .get(c.name())
+                .or_else(|| m.iter().find(|(k, _)| k.eq_ignore_ascii_case(c.name())).map(|(_, v)| v))
+                .map(|v| std::borrow::Cow::Borrowed(v.trim())),
+        }
+    }
+
+    /// Whether the row has the column at all.
+    pub fn has(&self, c: Col) -> bool {
+        match self {
+            Row::Csv { h, .. } => h.has(c),
+            Row::Map(_) => self.raw(c).is_some(),
+        }
+    }
+
     pub fn text(&self, c: Col) -> Option<String> {
-        let i = *self.h.at.get(&c)?;
-        let v = self.f.get(self.line, i)?;
+        let v = self.raw(c)?;
         (!is_null(&v)).then(|| v.into_owned())
     }
 
     /// A number; `bad` is told a value that is there but not a number.
     pub fn num(&self, c: Col, bad: &mut BTreeMap<&'static str, u64>) -> Option<f64> {
-        let i = *self.h.at.get(&c)?;
-        let v = self.f.get(self.line, i)?;
+        let v = self.raw(c)?;
         if is_null(&v) {
             return None;
         }
@@ -405,7 +422,7 @@ pub(crate) fn read(row: &Row<'_>, dist: Distance, temp: Temperature, bad: &mut B
         state,
         gear,
         charging,
-        charging_known: charging_text.is_some() || row.h.has(Col::ChargingState),
+        charging_known: charging_text.is_some() || row.has(Col::ChargingState),
         lat,
         lon,
         elevation_m: row.num(Col::Elevation, bad),

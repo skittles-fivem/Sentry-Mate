@@ -1135,6 +1135,7 @@ pub fn storage(
         let word = match stream {
             model::Stream::Smo => "can",
             model::Stream::TeslaApi => "tesla_api",
+            model::Stream::TeslafiApi => "teslafi_api",
             model::Stream::Teslamate => "teslamate",
             model::Stream::Teslafi => "teslafi",
         };
