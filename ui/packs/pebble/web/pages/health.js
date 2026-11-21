@@ -19,7 +19,9 @@ import { tile, btn, linkBtn, icon, note, stateTag, ago } from '../core/ui.js';
 import { emptyTile, errorWords } from '../core/states.js';
 import { confirmSheet } from '../core/sheet.js';
 import { bars } from '../core/chart.js';
-import { filterBar, statTile, checkRow, sectionHead, pills, moreButton, nums } from '../core/bits.js';
+import { filterBar, statTile, checkRow, sectionHead, pills, moreButton, nums, facts } from '../core/bits.js';
+import { srcShort, srcPill } from '../core/source.js';
+import { teslaCarFacts, teslaAccountHref, lastErrorText } from './tesla.js';
 
 export const id = 'health';
 export const css = true;
@@ -93,15 +95,17 @@ async function mountCar(ctx) {
   ] });
   const bar = filterBar(ctx, { carCover: 'dbinfo.filter.car' }, h('span', { class: 'filter-note' }, 'Checks and gaps follow the period; totals and storage are all time.'));
 
-  const [hl, gaps, all, can, tm, upd, st, sig] = await Promise.all([
+  const [hl, gaps, all, can, tm, upd, st, sig, tapi, tst] = await Promise.all([
     ctx.api.get(`${base}/health`, fullPeriod(ctx.params)),
     ctx.api.page(`${base}/gaps`, ctx.params, { limit: 40 }).catch(() => ({ items: [] })),
     ctx.api.get(`${base}/totals`, { source: 'all' }).catch(() => ({})),
-    ctx.api.get(`${base}/totals`, { source: 'can' }).catch(() => ({})),
-    ctx.api.get(`${base}/totals`, { source: 'teslamate' }).catch(() => ({})),
+    ctx.api.get(`${base}/totals`, { source: 'smo' }).catch(() => ({})),
+    ctx.api.get(`${base}/totals`, { source: 'import' }).catch(() => ({})),
     ctx.api.get(`${base}/updates`, { limit: 1 }).catch(() => null),
     ctx.api.get(`${base}/storage`, { limit: 14 }).catch(() => null),
     ctx.api.list(`${base}/signals/latest`, {}, { limit: 500 }).all({ max: 5000 }).catch(() => []),
+    ctx.api.get(`${base}/totals`, { source: 'tesla_api' }).catch(() => ({})),
+    ctx.admin ? ctx.api.list('integrations/tesla/status').all().catch(() => null) : Promise.resolve(null),
   ]);
   if (!ctx.alive()) return {};
   if (hl.rebuild_pending) { const t = setTimeout(() => ctx.alive() && ctx.reload(), 4000); ctx.onCleanup(() => clearTimeout(t)); }
@@ -168,7 +172,7 @@ async function mountCar(ctx) {
   /* ------------------------------------------------------------ what is recorded */
   const sm = upd?.summary || {};
   const tots = [
-    statTile({ label: 'Logged distance', value: all.distance_km, kind: 'distance', icon: 'route', cover: 'dbinfo.stat.logged_distance', sub: `${format(can.distance_km ?? 0, 'distance')} from the car` }),
+    statTile({ label: 'Logged distance', value: all.distance_km, kind: 'distance', icon: 'route', cover: 'dbinfo.stat.logged_distance', sub: `${format(can.distance_km ?? 0, 'distance')} from SMO, ${format(tapi.distance_km ?? 0, 'distance')} from the Tesla API` }),
     statTile({ label: 'Odometer', value: all.odometer_last_km, kind: 'odometer', icon: 'gauge', cover: 'dbinfo.stat.odometer', why: 'not sent yet', sub: all.odometer_last_ms != null ? h('span', null, 'read ', ago(all.odometer_last_ms)) : null }),
     statTile({ label: 'Drives', value: all.drives ?? 0, kind: 'count', icon: 'route', cover: 'dbinfo.stat.drive_count', sub: `${n0(tm.drives ?? 0)} imported` }),
     statTile({ label: 'Charges', value: all.charges ?? 0, kind: 'count', icon: 'bolt', cover: 'dbinfo.stat.charge_count', sub: `${n0(tm.charges ?? 0)} imported` }),
@@ -180,15 +184,21 @@ async function mountCar(ctx) {
   const rowKinds = [['Drives', 'drives'], ['Charges', 'charges'], ['Software updates', 'updates']];
   const rowsT = tile({ w: 2, title: 'Rows kept', icon: 'book', cover: 'dbinfo.table.row_counts' },
     h('div', { class: 'hl-rows', role: 'table', 'aria-label': 'Rows kept' },
-      h('div', { class: 'hl-row hl-row-head', role: 'row' }, h('span', { role: 'columnheader', cover: 'dbinfo.rows.table_name' }, 'Kind'), h('span', { role: 'columnheader' }, 'From the car'), h('span', { role: 'columnheader' }, 'Imported'), h('span', { role: 'columnheader', cover: 'dbinfo.rows.row_count' }, 'Rows')),
-      rowKinds.map(([name, k]) => h('div', { class: 'hl-row', role: 'row' }, h('span', { role: 'cell' }, name), h('span', { role: 'cell' }, n0(can[k] ?? 0)), h('span', { role: 'cell' }, n0(tm[k] ?? 0)), h('b', { role: 'cell' }, n0((can[k] || 0) + (tm[k] || 0)))))),
-    note('Exact counts, kept up to date as rows change. Where imported and car history overlap both are counted here.'));
+      h('div', { class: 'hl-row hl-row-head', role: 'row' }, h('span', { role: 'columnheader', cover: 'dbinfo.rows.table_name' }, 'Kind'), h('span', { role: 'columnheader' }, 'SMO'), h('span', { role: 'columnheader' }, 'Tesla API'), h('span', { role: 'columnheader' }, 'Imported'), h('span', { role: 'columnheader', cover: 'dbinfo.rows.row_count' }, 'Rows')),
+      rowKinds.map(([name, k]) => h('div', { class: 'hl-row', role: 'row' }, h('span', { role: 'cell' }, name), h('span', { role: 'cell' }, n0(can[k] ?? 0)), h('span', { role: 'cell' }, n0(tapi[k] ?? 0)), h('span', { role: 'cell' }, n0(tm[k] ?? 0)), h('b', { role: 'cell' }, n0(all[k] ?? 0))))),
+    note('Exact counts, kept up to date as rows change. A row SMO and the Tesla API both saw counts in both columns, and once under Rows; where imported and live history overlap both are counted.'));
   const storeT = st ? kindsTile(st.kinds, st.total_bytes, { title: `What ${car.name}’s data takes` }) : tile({ w: 2, title: 'Storage', icon: 'server', cover: 'dbinfo.table.sizes' }, note('Storage could not be read.'));
   const days = (st?.items || []).slice(0, 14);
   const daysT = tile({ w: 2, title: 'Stored by day', icon: 'calendar' },
-    days.length ? h('div', { class: 'log' }, days.map((d) => h('div', { class: 'log-row' }, h('span', { class: 'log-k' }, `${formatDayKey(d.date)}  ${d.series}${d.source === 'teslamate' ? ' (imported)' : ''}`), h('span', { class: 'log-v' }, bytes(d.bytes)))))
+    days.length ? h('div', { class: 'log' }, days.map((d) => h('div', { class: 'log-row' }, h('span', { class: 'log-k' }, `${formatDayKey(d.date)}  ${d.series}${srcShort(d) ? `  ${srcShort(d)}` : ''}`), h('span', { class: 'log-v' }, bytes(d.bytes)))))
       : h('p', { class: 'lede' }, 'No stored days yet.'),
-    note('Newest first, only days with data.'));
+    note('Newest first, only days with data, with where each came from: SMO, the Tesla API or imported.'));
+
+  /* the Tesla API input of this car (admins only) */
+  const tf = tst ? teslaCarFacts(ctx, tst, car.id) : null;
+  const teslaT = !ctx.admin ? null : tile({ w: 2, title: 'Tesla API input', icon: 'key', side: tf ? srcPill({ sources: [{ kind: 'tesla_api', label: 'Data from the Tesla API' }] }, { short: true }) : null },
+    tf ? facts(tf) : tst == null ? note('The Tesla API status could not be read.')
+      : [note('No Tesla account reads this car: its data comes from SMO and any import only.'), h('a', { class: 'tile-link', href: `${state.buildUrl('settings-integrations')}#tesla` }, 'Tesla account settings', icon('chevronRight'))]);
 
   /* ------------------------------------------------------------ signals */
   const sigHead = sectionHead('Signals from the newest log', 'Every decoded signal with its value. Find one, sort, and scroll the list.');
@@ -226,7 +236,7 @@ async function mountCar(ctx) {
   const sigT = tile({ w: 'full', title: 'Signals', icon: 'pulse', cls: 'sig-tile' },
     h('div', { class: 'page-bar' }, h('label', { class: 'search-pill' }, icon('search'), search), sortPills, count), listEl);
 
-  ctx.view.replaceChildren(bar, status, keysT, logT, rowsT, ...tots, storeT, daysT, sigHead, sigT);
+  ctx.view.replaceChildren(bar, status, keysT, teslaT, logT, rowsT, ...tots, storeT, daysT, sigHead, sigT);
   ctx.ready();
   return {};
 }
@@ -275,6 +285,9 @@ async function mountSystem(ctx) {
         checkRow({ name: 'Upload memory', sub: `${bytes(mem.used_bytes)} of ${bytes(mem.limit_bytes)}`, word: memPct == null ? '—' : format(memPct, 'percent'), level: memPct > 85 ? 'warn' : 'ok' }),
         checkRow({ name: 'Cars open', sub: `${bytes(sh.db?.open_bytes)} in open stores · ${n0(sh.ingest?.cached_cars ?? 0)} kept in memory`, word: `${n0(sh.db?.open_cars ?? 0)} of ${n0(sh.db?.cars ?? 0)}`, level: 'ok' }),
         checkRow({ name: 'Address look-ups', sub: geo ? `${n0(geo.cache_size ?? 0)} cached${geo.online?.last_error ? ` · last error: ${geo.online.last_error}` : ''}` : 'Not known', word: geo ? (geo.mode === 'online' ? 'Online' : 'Offline') : '—', level: geo?.online?.last_error ? 'warn' : 'ok' }),
+        sh.tesla ? checkRow({ name: 'Tesla API', sub: sh.tesla.accounts ? `${n0(sh.tesla.accounts)} ${sh.tesla.accounts === 1 ? 'account' : 'accounts'}, ${n0(sh.tesla.cars ?? 0)} ${sh.tesla.cars === 1 ? 'car' : 'cars'} read, ${n0(sh.tesla.requests_today ?? 0)} requests today${sh.tesla.last_error ? ` · last error: ${lastErrorText(sh.tesla.last_error)}` : ''}` : 'Off: no Tesla account, so no connection to Tesla.',
+          word: !sh.tesla.accounts ? 'Off' : sh.tesla.last_error ? 'Look' : 'On', level: !sh.tesla.accounts ? 'off' : sh.tesla.last_error ? 'warn' : 'ok',
+          side: h('a', { class: 'check-word place-link', href: `${state.buildUrl('settings-integrations')}#tesla` }, !sh.tesla.accounts ? 'Off' : sh.tesla.last_error ? 'Look' : 'On') }) : null,
         checkRow({ name: 'Housekeeping', sub: 'Checks, compaction and the daily storage figure', word: sh.housekeeping_last_ms != null ? ago(sh.housekeeping_last_ms) : 'Not yet', level: sh.housekeeping_last_ms != null ? 'ok' : 'off' }))),
     tile({ w: 2, title: 'Versions and timings', icon: 'chip' },
       nums([

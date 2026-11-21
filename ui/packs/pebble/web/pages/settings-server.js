@@ -35,6 +35,15 @@ const ROLE_TEXT = {
   watch: 'Sees only the cars on its list, and changes only its own preferences and sessions.',
 };
 const PURPOSE = { web: 'Web pages and API', upload: 'CAN Bridge uploads' };
+// audit actions this page names in words (the entry's own summary says the rest)
+const ACTION = {
+  'tesla-account-added': 'Tesla account added', 'tesla-account-removed': 'Tesla account removed', 'tesla-account-paused': 'Tesla account paused',
+  'tesla-account-resumed': 'Tesla account resumed', 'tesla-account-changed': 'Tesla account changed', 'tesla-token-replaced': 'Tesla token replaced',
+  'tesla-car-matched': 'Tesla cars matched', 'tesla-poll-changed': 'Tesla pace changed', 'tesla-sign-in-needed': 'Tesla stopped taking a sign-in',
+  'tesla-account-error': 'Tesla account error', 'certificate-made': 'New certificate made',
+};
+/** Text that may break only after a slash, a colon or a dot (addresses, a SHA-256). */
+const breakable = (t) => String(t).split(/(?<=[/:.])/).map((part, i) => [i ? h('wbr') : null, part]);
 
 export async function mount(ctx) {
   inOrder(ctx);
@@ -159,6 +168,52 @@ export async function mount(ctx) {
       h('div', { class: 'form-actions' },
         keyUnsaved ? [btn('Show the key again', { kind: 'primary', icon: 'key', onclick: showKey }), btn('I saved it already', { kind: 'soft', icon: 'check', onclick: markSaved })] : null,
         btn('Make a new recovery key', { kind: keyUnsaved ? 'ghost' : 'soft', icon: 'refresh', onclick: newKey })));
+  }
+
+  /* ================================================================ the certificate in use (admins) */
+  const certOwn = () => !!(network && network.certificate && network.certificate.own);
+  function certTile() {
+    const c = (network && network.certificate) || null;
+    const up = network && network.upload_address;
+    const val = (t) => h('code', { class: 'set-mono cert-val' }, breakable(t));
+    return tile({ w: 2, title: 'Certificate', icon: 'shield', id: 'certificate', side: chip(certOwn() ? 'Your own' : 'Made by the server', { tone: certOwn() ? 'sky' : 'muted' }) },
+      c || up ? h('dl', { class: 'facts cert-facts' },
+        c && c.sha256 ? h('div', { class: 'fact' }, h('dt', null, 'SHA-256'), h('dd', null, val(c.sha256), copyButton(() => c.sha256))) : null,
+        c && c.names && c.names.length ? h('div', { class: 'fact' }, h('dt', null, 'Names in it'), h('dd', null, h('ul', { class: 'cert-names' }, c.names.map((n) => h('li', null, h('code', { class: 'set-mono' }, n)))))) : null,
+        up ? h('div', { class: 'fact' }, h('dt', null, 'CAN Bridge upload address'), h('dd', null, val(up), copyButton(() => up))) : null)
+        : said('info', 'The server did not say which certificate it runs with.'),
+      c && c.sha256 ? said('info', 'The CAN Bridge app needs this SHA-256 and the upload address in its upload settings.') : null,
+      certOwn()
+        ? note('This is your own certificate (the cert.pem in data/tls), so the server never replaces it. To change it, put the new cert.pem and key.pem there and start the container again. For a certificate the server makes instead, delete data/tls/cert.pem and start it again.')
+        : h('div', { class: 'form-actions' }, btn('Make a new certificate', { kind: 'soft', icon: 'refresh', onclick: makeCertificate })));
+  }
+  async function makeCertificate() {
+    const names = ['localhost', ...(settings.host_names || []).filter((n) => n.toLowerCase() !== 'localhost')];
+    const out = await askPassword(ctx, {
+      title: 'Make a new certificate', yes: 'Make a new certificate', danger: true, hint: 'It is asked again because every CAN Bridge must be told the new SHA-256.',
+      text: h('div', { class: 'sheet-text' },
+        h('p', null, 'The server makes a new certificate and uses it at once on both ports, without a restart. Before you go on:'),
+        h('ul', { class: 'set-list' },
+          h('li', null, h('b', null, 'The SHA-256 changes. '), 'The CAN Bridge app’s uploads are refused until you enter the new SHA-256 in its upload settings.'),
+          h('li', null, h('b', null, 'Browsers ask again '), 'to accept the new certificate, on every device that opens these pages.'),
+          h('li', null, h('b', null, 'The names in it: '), names.map((n, i) => [i ? ', ' : '', h('code', { class: 'set-mono' }, n)]), '. Change them under Host names for the certificate first, if one is missing.'))),
+      run: (creds) => ctx.api.post('network/certificate', creds).catch((e) => {
+        if (e && e.code === 'own_certificate') throw Object.assign(new Error('The server runs with your own certificate, so it makes no new one.'), { fields: null });
+        if (e && (e.code === 'setup_busy' || e.code === 'move_under_way' || e.code === 'moved')) throw Object.assign(new Error(e.code === 'moved' ? 'The data moved to another server, so this one makes no new certificate.' : 'Not now: a move is under way. The new server pins this certificate’s SHA-256 until it is done.'), { fields: null });
+        throw e;
+      }),
+    });
+    if (!out || !ctx.alive()) return;
+    try { network = await ctx.api.get('network'); } catch { network = { ...(network || {}), certificate: { names: out.names, sha256: out.sha256 }, upload_address: out.upload_address }; }
+    if (!ctx.alive()) return;
+    draw();
+    await openSheet({
+      title: 'The new certificate is in use',
+      body: [h('p', { class: 'sheet-text' }, 'Enter this SHA-256 in each CAN Bridge app’s upload settings now: until then it refuses this server.'),
+        h('div', { class: 'set-key' }, h('code', { class: 'set-mono cert-val cert-big' }, breakable(out.sha256)), copyButton(() => out.sha256, { kind: 'primary' }),
+          h('p', { class: 'hint' }, 'Reload this page to accept the new certificate in this browser.'))],
+      actions: [{ label: 'Done', value: true, kind: 'primary' }],
+    });
   }
 
   /* ================================================================ how access works */
@@ -479,10 +534,12 @@ export async function mount(ctx) {
       const kind = i < 0 ? t : t.slice(0, i), tid = i < 0 ? '' : t.slice(i + 1);
       if (kind === 'car' && carName.has(tid)) return carName.get(tid);
       if (kind === 'account') return `account ${(accounts.find((a) => a.id === tid) || {}).name || tid}`;
+      if (kind === 'tesla') return `Tesla account ${tid}`;
+      if (kind === 'server') return tid === 'certificate' ? 'the certificate' : 'the server';
       if (car && carName.has(car)) return `${kind} of ${carName.get(car)}`;
       return kind || '';
     };
-    const rowOf = (e) => h('div', { class: 'log-row', role: 'listitem' }, h('span', { class: 'log-k' }, `${when(e.at_ms)}  ${e.account || 'server'}  ${e.summary || e.action}`), h('span', { class: 'log-v' }, target(e.target, e.car)));
+    const rowOf = (e) => h('div', { class: 'log-row', role: 'listitem' }, h('span', { class: 'log-k' }, `${when(e.at_ms)}  ${e.account || 'server'}  ${e.summary || ACTION[e.action] || e.action}`), h('span', { class: 'log-v' }, [ACTION[e.action] && e.summary ? ACTION[e.action] : null, target(e.target, e.car)].filter(Boolean).join(' · ')));
     const log = h('div', { class: 'log', role: 'list' }, pager.items.map(rowOf));
     const more = moreButton(async () => { const b = pager.items.length; await pager.more(); log.append(...pager.items.slice(b).map(rowOf)); return !pager.done; }, { text: 'Older entries' });
     more.querySelector('button').hidden = pager.done;
@@ -495,7 +552,7 @@ export async function mount(ctx) {
   /* ================================================================ put together */
   function draw() {
     const tiles = [hostingTile(), accessTile()];
-    if (admin) tiles.push(namesTile(), portsTile(), keyTile());
+    if (admin) tiles.push(namesTile(), certTile(), portsTile(), keyTile());
     tiles.push(sessionsTile());
     if (admin) tiles.push(accountsTile(), moveBox, auditT);
     ctx.view.replaceChildren(...tiles.filter(Boolean));

@@ -987,3 +987,41 @@ html[data-form="phone"] .set-ctl .two { grid-template-columns: minmax(0, 1fr); }
 .tile-intro { padding-top: var(--s4); padding-bottom: var(--s4); }
 /* settings pages: tiles keep their order, so a section heading never ends up under its own tiles */
 .bento.in-order { grid-auto-flow: row; }
+/* where data came from (core/source.js): a soft pill, one dot per input; never instead of the data */
+.src {
+  display: inline-flex; align-items: center; gap: var(--s2); max-width: 100%; min-height: var(--h-chip); padding: 0 var(--s3); border-radius: 999px;
+  background: var(--well); color: var(--muted); font-size: var(--f13); line-height: var(--l13); font-weight: 700; vertical-align: middle;
+}
+.src > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.src-dots { display: inline-flex; flex: none; gap: var(--s1); }
+.src-dot { width: round(0.5rem, var(--e)); height: round(0.5rem, var(--e)); border-radius: 50%; background: var(--tone); }
+.src.is-est { background: var(--sun-soft); color: var(--sun); }
+.src-via { min-height: 0; padding: 0 var(--s2); margin-left: var(--s2); }
+.src-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.src-inputs { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+.src-inputs-k { font-weight: 700; color: var(--text); }
+.tile .src-line { margin-top: var(--s1); }
+/* the Tesla account (pages/tesla.js) */
+.tesla-way { display: flex; align-items: flex-start; gap: var(--s3); padding: var(--s4); border-radius: var(--r-card); background: var(--well); }
+.tesla-way-text { display: flex; flex-direction: column; gap: var(--s1); flex: 1; min-width: 0; }
+.tesla-way-act { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s3); margin-top: var(--s2); }
+.tesla-acts { flex-wrap: wrap; }
+.tesla-hosts { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3); }
+.tesla-car { display: flex; flex-direction: column; }
+.tesla-car + .tesla-car { border-top: 1px solid var(--card-alt); }
+.tesla-mode { display: flex; align-items: center; gap: var(--s2); padding: 0 var(--s3) var(--s3); font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+.tesla-mode.is-warn { color: var(--sun); font-weight: 700; }
+.tesla-mode .src-dot { flex: none; }
+.tesla-steps { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s3); margin-bottom: var(--s3); }
+.page-bar .src { background: var(--card); }
+.tesla-way-act .tick { font-size: var(--f14); line-height: var(--l14); font-weight: 400; color: var(--muted); align-items: center; }
+.tesla-steps { padding: 0 var(--s2); }
+/* Settings: Server, the certificate */
+.cert-facts dd { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); min-width: 0; }
+.cert-val { overflow-wrap: normal; word-break: normal; }
+.cert-big { font-size: var(--f16); line-height: var(--l16); }
+.cert-names { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3); margin: 0; padding: 0; list-style: none; }
+.cert-facts .fact { flex-direction: column; align-items: stretch; gap: var(--s1); }
+.cert-facts dd { text-align: left; overflow-wrap: normal; }
+.tesla-facts .tesla-hosts { justify-content: flex-end; }
+.tesla-err { display: inline-flex; flex-direction: column; align-items: flex-end; color: var(--sun); }

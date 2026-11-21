@@ -21,6 +21,7 @@ import { field, segmented } from '../core/form.js';
 import { mapTile, boundsOf } from '../core/map.js';
 import { xyChart } from '../core/chart.js';
 import { byDay, dayHead, socBar, filterBar, moreButton, statTile, pills, money, splitBar, sectionHead, dur } from '../core/bits.js';
+import { srcPill, estPill, SOURCE_OPTIONS, SOURCE_WORDS, sourceParam } from '../core/source.js';
 
 export const id = 'charges';
 export const css = true;
@@ -55,7 +56,7 @@ function chargeTile(c, ctx, tz, carName) {
         h('span', { cover: 'charges.table.type' }, chip(c.fast_charger?.type === 'supercharger' ? `${KIND[kind]} · Supercharger` : KIND[kind], { tone: KIND_TONE[kind] })),
         going ? chip('Charging now', { tone: 'teal' }) : null,
         c.has_gaps ? chip('Some data missing', { tone: 'bad' }) : null,
-        c.source === 'teslamate' ? chip('Imported', { tone: 'muted' }) : null)),
+        null)),
     h('div', { class: 'item-nums' },
       h('span', { cover: 'charges.table.energy_added' }, num(c.energy_added_kwh, 'energy', { size: 's' })),
       h('span', { cover: 'charges.table.duration' }, num(c.charging_ms, 'duration', { size: 's' })),
@@ -64,6 +65,7 @@ function chargeTile(c, ctx, tz, carName) {
           c.cost ? formatMoney(c.cost.amount, c.cost.currency) : 'Set a cost')
           : h('span', { class: ['cost-link', { 'is-missing': !c.cost }] }, c.cost ? formatMoney(c.cost.amount, c.cost.currency) : 'No price'))),
     socBar(c.start_soc_pct, c.end_soc_pct, { cover: ['charges.table.start_soc', 'charges.table.end_soc'] }),
+    h('p', { class: 'src-line' }, srcPill(c, { short: true }), estPill(c)),
     h('p', { class: 'item-sub charge-more' },
       h('span', { cover: 'charges.table.energy_used' }, c.energy_grid_kwh != null ? `${format(c.energy_grid_kwh, 'energy')} from the grid` : c.dc_inlet_kwh != null ? `${format(c.dc_inlet_kwh, 'energy')} at the inlet` : 'grid not measured'), ' · ',
       h('span', { cover: 'charges.table.efficiency' }, c.efficiency_pct != null ? `${pct(c.efficiency_pct)} efficient` : kind === 'dc' ? 'efficiency unknown (DC)' : 'efficiency —'), ' · ',
@@ -87,10 +89,10 @@ export async function mount(ctx) {
   const listPath = car ? api.apiPath`cars/${car.id}/charges` : 'charges';
   const statsPath = car ? api.apiPath`cars/${car.id}/charging-stats` : 'charging-stats';
   const base = () => ({ ...ctx.params, cars: car ? undefined : 'all' });
-  const f = { kind: ['ac', 'dc', 'unknown'].includes(Q.kind) ? Q.kind : '', place: Q.place || '', q: Q.q || '', min_cost: Number(Q.min_cost) > 0 ? Number(Q.min_cost) : null, min_dur: Number(Q.min_dur) > 0 ? Number(Q.min_dur) : null };
-  const listParams = () => ({ ...base(), kind: f.kind || undefined, places: f.place || undefined, q: f.q || undefined, min_cost: f.min_cost ?? undefined, min_duration_min: f.min_dur ?? undefined });
+  const f = { kind: ['ac', 'dc', 'unknown'].includes(Q.kind) ? Q.kind : '', place: Q.place || '', q: Q.q || '', min_cost: Number(Q.min_cost) > 0 ? Number(Q.min_cost) : null, min_dur: Number(Q.min_dur) > 0 ? Number(Q.min_dur) : null, source: sourceParam(Q.source) };
+  const listParams = () => ({ ...base(), kind: f.kind || undefined, places: f.place || undefined, q: f.q || undefined, min_cost: f.min_cost ?? undefined, min_duration_min: f.min_dur ?? undefined, source: f.source || undefined });
   const statsParams = () => ({ ...base(), places: f.place || undefined, min_duration_min: f.min_dur ?? undefined });
-  const write = () => ctx.setQuery({ kind: f.kind || null, place: f.place || null, q: f.q || null, min_cost: f.min_cost, min_dur: f.min_dur });
+  const write = () => ctx.setQuery({ kind: f.kind || null, place: f.place || null, q: f.q || null, min_cost: f.min_cost, min_dur: f.min_dur, source: f.source || null });
   const places = await ctx.api.page('places', { sort: 'visits' }, { limit: 200 }).then((p) => p.items || []).catch(() => []);
   if (!ctx.alive()) return {};
 
@@ -101,7 +103,7 @@ export async function mount(ctx) {
   const filterNote = h('span', { class: 'filter-note' });
   const bar = filterBar(ctx, { carCover: ['charges.filter.car', 'cs.filter.car'], periodCover: ['charges.filter.time_range', 'cs.filter.time_range'] }, kindPills, filtersBtn, filterNote);
   const drawNote = () => {
-    filterNote.textContent = [f.place && `at ${places.find((p) => p.id === f.place)?.name || 'a place'}`, f.q && `“${f.q}”`, f.min_cost && `cost at least ${formatNumber(f.min_cost)}`, f.min_dur && `charging at least ${f.min_dur} min`].filter(Boolean).join(' · ');
+    filterNote.textContent = [f.place && `at ${places.find((p) => p.id === f.place)?.name || 'a place'}`, f.q && `“${f.q}”`, f.min_cost && `cost at least ${formatNumber(f.min_cost)}`, f.min_dur && `charging at least ${f.min_dur} min`, f.source && (SOURCE_WORDS[f.source] || f.source)].filter(Boolean).join(' · ');
   };
   const sheet = createSheet({ title: 'Filters', cls: 'filters-sheet' });
   ctx.onCleanup(() => sheet.el.remove());
@@ -110,11 +112,13 @@ export async function mount(ctx) {
     const fQ = field({ label: 'Words in the place or address', name: 'q', value: f.q, attrs: { autocomplete: 'off' } });
     const fCost = field({ label: 'Lowest cost (in its currency)', name: 'min_cost', type: 'number', value: f.min_cost ?? '', attrs: { min: '0', step: '0.01', inputmode: 'decimal' } });
     const fDur = field({ label: 'Shortest charging time (min)', name: 'min_dur', type: 'number', value: f.min_dur ?? '', hint: 'Time charging only; waiting while plugged in does not count.', attrs: { min: '0', step: '1', inputmode: 'numeric' } });
+    const fSrc = segmented({ label: 'Data from', name: 'source', value: f.source === 'import:teslamate' ? 'import' : f.source, options: SOURCE_OPTIONS });
     const n = (el) => { const x = Number(el.control.value); return el.control.value === '' || !(x > 0) ? null : x; };
-    sheet.body.replaceChildren(h('div', { class: 'form' }, fPlace, fQ, fCost, fDur,
+    sheet.body.replaceChildren(h('div', { class: 'form' }, fPlace, fQ, fCost, fDur, fSrc,
+      h('p', { class: 'hint' }, 'SMO is the car’s CAN Bridge, the Tesla API is the Tesla account this server reads, Imported is history from TeslaMate. This narrows the list, not the statistics.'),
       h('div', { class: 'sheet-actions' },
-        btn('Clear', { kind: 'soft', onclick: () => { Object.assign(f, { place: '', q: '', min_cost: null, min_dur: null }); sheet.close(); apply(); } }),
-        btn('Show charges', { kind: 'primary', onclick: () => { f.place = fPlace.control.value; f.q = fQ.control.value.trim(); f.min_cost = n(fCost); f.min_dur = n(fDur); sheet.close(); apply(); } }))));
+        btn('Clear', { kind: 'soft', onclick: () => { Object.assign(f, { place: '', q: '', min_cost: null, min_dur: null, source: '' }); sheet.close(); apply(); } }),
+        btn('Show charges', { kind: 'primary', onclick: () => { f.place = fPlace.control.value; f.q = fQ.control.value.trim(); f.min_cost = n(fCost); f.min_dur = n(fDur); f.source = fSrc.querySelector('[aria-checked="true"]')?.dataset.value || ''; sheet.close(); apply(); } }))));
   }
   fill();
   async function apply() { write(); drawNote(); await Promise.all([loadList(), loadStats()]); ctx.ready(); }

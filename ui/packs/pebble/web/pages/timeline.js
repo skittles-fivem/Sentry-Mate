@@ -16,6 +16,7 @@ import { tile, num, stateTag, chip, icon, note } from '../core/ui.js';
 import { emptyTile } from '../core/states.js';
 import { spanHref } from '../core/period.js';
 import { AWAKE_WORDS, GAP_WORDS, endLabel, placeLink, byDay, dayHead, strip, stripShares, filterBar, moreButton, dur } from '../core/bits.js';
+import { srcPill } from '../core/source.js';
 
 export const id = 'timeline';
 export const css = true;
@@ -52,7 +53,7 @@ function rowTile(r, ctx) {
     h('span', { class: 'tl-n', cover: 'timeline.col.duration' }, icon('clock'), dur(r.duration_ms)),
     r.soc_end_pct != null ? h('span', { class: 'tl-n', cover: ['timeline.col.soc', 'timeline.col.soc_diff'] }, icon('battery'), `${format(r.soc_end_pct, 'percent')} (${signed(r.soc_delta_pct, 'percent')})`) : null,
     r.range_end_km != null ? h('span', { class: 'tl-n', cover: ['timeline.col.range', 'timeline.col.range_diff'] }, `${format(r.range_end_km, 'range')} range (${signed(r.range_delta_km, 'range')})`) : null,
-    r.energy_delta_kwh != null ? h('span', { class: 'tl-n', cover: 'timeline.col.energy_diff' }, icon('bolt'), signed(r.energy_delta_kwh, 'energy'), r.energy_basis === 'estimated' ? ' est.' : '') : null,
+    r.energy_delta_kwh != null ? h('span', { class: 'tl-n', cover: 'timeline.col.energy_diff' }, icon('bolt'), signed(r.energy_delta_kwh, 'energy'), r.energy_basis === 'estimated' ? ' estimated' : '') : null,
     r.outside_avg_c != null ? h('span', { class: 'tl-n', cover: 'timeline.col.temp' }, icon('thermo'), format(r.outside_avg_c, 'temperature')) : null,
     r.cost ? h('span', { class: 'tl-n' }, icon('coin'), format(r.cost.amount, 'money', { currency: r.cost.currency })) : null,
   ];
@@ -69,14 +70,14 @@ function rowTile(r, ctx) {
         h('p', { class: 'item-sub' },
           h('span', { cover: 'timeline.col.start' }, formatTime(r.start_ms, tz)), ' – ', h('span', { cover: 'timeline.col.end' }, going ? 'now' : formatTime(r.end_ms, tz)),
           r.odometer_km != null ? h('span', { cover: 'timeline.col.odometer' }, ` · ${format(r.odometer_km, 'odometer')}`) : null)),
-      going ? chip('Now', { tone: k.tone }) : r.source === 'teslamate' ? chip('Imported', { tone: 'muted' }) : null),
+      going ? chip('Now', { tone: k.tone }) : null),
     r.kind === 'drive' || r.kind === 'charge' || r.kind === 'parked' ? h('p', { class: 'route-words item-sub' },
       h('span', { cover: ['timeline.col.start_address', 'timeline.link.geofence_start', 'timeline.link.place_cells_other_rows'] }, placeLink(r.start)),
       r.end ? [icon('arrowRight', 'route-arrow'), h('span', { cover: ['timeline.col.end_address', 'timeline.link.geofence_end'] }, placeLink(r.end, { still: going }))] : null) : null,
     h('div', { class: 'item-nums tl-nums' }, nums),
     pm ? h('p', { class: 'item-sub' }, `Asleep ${dur(pm.asleep)}, awake ${dur((pm.awake || 0) + (pm.awake_vehicle_bus_only || 0))}${pm.unknown ? `, no data ${dur(pm.unknown)}` : ''}`,
       r.awake_reasons?.length ? `; awake for ${formatList(r.awake_reasons.map((x) => AWAKE_WORDS[x] || x.replace(/_/g, ' ')))}` : '', '.') : null,
-    h('p', { class: 'item-links tile-foot' }, links));
+    h('p', { class: 'item-links tile-foot' }, srcPill(r, { short: true, cls: 'tl-src' }), links));
 }
 
 export async function mount(ctx) {

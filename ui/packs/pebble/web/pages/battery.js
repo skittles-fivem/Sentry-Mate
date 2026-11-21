@@ -20,6 +20,7 @@ import { emptyTile } from '../core/states.js';
 import { field, form, segmented, toggle } from '../core/form.js';
 import { timeChart, xyChart } from '../core/chart.js';
 import { statTile, facts, filterBar, pills, splitBar, sectionHead, nums, moreButton, AWAKE_WORDS } from '../core/bits.js';
+import { srcPill, unionOf } from '../core/source.js';
 
 export const id = 'battery';
 export const css = true;
@@ -67,7 +68,7 @@ export async function mount(ctx) {
         h('div', { cover: 'bh.bar.stored_energy' }, h('span', { class: 'hero-k' }, 'Stored energy'), num(bat.energy_now_kwh, 'energy', { size: 'l', why: 'not reported' }),
           h('p', { class: 'tile-line' }, cap.usable_kwh ? `of ${format(cap.usable_kwh, 'energy')} usable when full` : 'usable energy in the pack now')),
         h('p', { class: 'tile-line' }, `${CHEM[bat.chemistry?.value] || 'Chemistry not known'}${bat.chemistry ? `, ${bat.chemistry.source === 'owner' ? 'set by the owner' : 'detected'}` : ''}${bat.brick_spread_v != null ? ` · cells within ${format(bat.brick_spread_v * 1000, 'number', { digits: 0 })} mV` : ''}`))),
-    bandEl);
+    bandEl, bat.sources?.length ? h('p', { class: 'src-line' }, srcPill(bat)) : null);
 
   /* ------------------------------------------------------------ health: capacity now vs new */
   const factor = rangeLabel() === 'Ideal range' ? eff?.factor?.ideal_wh_per_km : eff?.factor?.rated_wh_per_km;
@@ -142,6 +143,8 @@ export async function mount(ctx) {
       dots: pts.map((x) => ({ x: x.odometer_km, y: x.usable_kwh })), dotsName: 'Per day',
       series: [{ name: 'Monthly median', kind: 'energy', values: m.map((x) => x.usable_kwh), tone: 'c3' }] });
     const tr = med?.trend;
+    const from = unionOf([...pts, ...(med?.items || [])]);
+    if (from.sources.length) capT.append(h('p', { class: 'src-line' }, srcPill(from)));
     capT.append(note(tr?.slope_kwh_per_10000_km != null ? `About ${format(Math.abs(tr.slope_kwh_per_10000_km), 'energy')} ${tr.slope_kwh_per_10000_km < 0 ? 'less' : 'more'} every ${format(10000, 'distance')}${tr.projection?.odometer_km ? `; at this pace the warranty line comes at about ${format(tr.projection.odometer_km, 'odometer')}` : ''}.` : 'Not enough readings for a trend yet.'));
   }
 

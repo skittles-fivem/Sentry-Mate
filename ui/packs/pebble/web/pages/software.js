@@ -13,6 +13,7 @@ import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tile, num, chip, btn, icon, note } from '../core/ui.js';
+import { srcPill, hasKind } from '../core/source.js';
 import { emptyTile } from '../core/states.js';
 import { createSheet } from '../core/sheet.js';
 import { field, form } from '../core/form.js';
@@ -24,8 +25,8 @@ export const shape = [['full', 'h1'], [2, 'h2'], [1, 'h1'], [1, 'h1'], [2, 'h2']
 export const title = () => 'Software';
 
 const VERSION_RX = /^\d{4}\.\d{1,2}(\.\d{1,3}){0,2}$/;
-const SOURCE = { teslamate: 'imported from TeslaMate', owner: 'typed by the owner', build_match: 'same module builds as a named update' };
-const DETECTED = { ota_status: 'the car’s update status', build_change: 'changed module builds', teslamate: 'the imported history' };
+const SOURCE = { teslamate: 'imported from TeslaMate', owner: 'typed by the owner', build_match: 'same module builds as a named update', tesla_api: 'from the Tesla API' };
+const DETECTED = { ota_status: 'the car’s update status', build_change: 'changed module builds', teslamate: 'the imported history', tesla_api: 'the Tesla API' };
 const MODULES = { bms: 'Battery management', vcfront: 'Front body controller', di_front: 'Front motor', di_rear: 'Rear motor', fc: 'Fast-charge controller' };
 const mods = (l) => (l || []).map((m) => MODULES[m] || m).join(', ');
 
@@ -94,7 +95,7 @@ export async function mount(ctx) {
           h('p', { class: 'item-sub', cover: 'updates.table.date' }, h('a', { href: timelineHref(r), title: 'Open the timeline around this update' }, `${formatDate(r.start_ms, tz, { now: api.now(), year: true })}, ${formatTime(r.start_ms, tz)}`))),
         h('span', { class: 'item-flags' },
           going ? chip('Installing', { tone: 'sun' }) : null,
-          r.version && SOURCE[r.version_source] ? chip(r.version_source === 'owner' ? 'Typed' : r.version_source === 'build_match' ? 'Same build' : 'Imported', { tone: 'muted' }) : null,
+          r.version && SOURCE[r.version_source] ? chip(r.version_source === 'owner' ? 'Typed' : r.version_source === 'build_match' ? 'Same build' : r.version_source === 'tesla_api' ? 'Tesla API' : 'Imported', { tone: 'muted' }) : null,
           !r.version ? chip('Version not known', { tone: 'sun' }) : null)),
       h('div', { class: 'tile-nums sw-nums' },
         h('div', { cover: 'updates.table.duration' }, h('span', { class: 'hero-k' }, going ? 'So far' : 'Took'), num(r.duration_ms, 'duration', { size: 's' })),
@@ -103,7 +104,8 @@ export async function mount(ctx) {
           r.charges ? h('a', { class: 'sw-link', href: state.buildUrl('charges', { car: car.id, period: onVersion(r) }) }, formatNumber(r.charges)) : h('span', { class: 'sw-link is-zero' }, '0')),
         h('div', { cover: 'updates.table.avg_range' }, h('span', { class: 'hero-k' }, 'Range at 100 %'), num(r.full_range_km, 'range', { size: 's', why: 'no reading' }))),
       h('p', { class: 'item-sub' }, `Found by ${DETECTED[r.detected_by] || r.detected_by || 'the car'}${r.changed_modules?.length ? ` · changed: ${mods(r.changed_modules)}` : ''}${r.full_pack_kwh != null ? ` · full pack ${format(r.full_pack_kwh, 'energy')}` : ''}`),
-      ctx.admin && r.source === 'can' ? h('div', { class: 'item-links' }, btn(r.version ? 'Change the version' : 'Type the version', { kind: 'soft', icon: 'edit', onclick: (e) => editVersion(r, e.currentTarget) })) : null);
+      h('p', { class: 'src-line' }, srcPill(r, { short: true })),
+      ctx.admin && (r.sources ? hasKind(r, 'smo') && r.version_source !== 'tesla_api' : r.source === 'can') ? h('div', { class: 'item-links' }, btn(r.version ? 'Change the version' : 'Type the version', { kind: 'soft', icon: 'edit', onclick: (e) => editVersion(r, e.currentTarget) })) : null);
   }
 
   const sheet = createSheet({ title: 'Version of this update' });

@@ -206,6 +206,13 @@ const DISMISS_KEY = 'pebble:dismissed';
 const dismissed = () => { try { return new Set(JSON.parse(sessionStorage.getItem(DISMISS_KEY) || '[]')); } catch { return new Set(); } };
 let notices = [];
 
+// a Tesla account's notice (admins only) opens that account on Settings: Integrations
+const TESLA_NOTICES = new Set(['tesla_sign_in_needed', 'tesla_account_error']);
+function fixOf(n) {
+  if (TESLA_NOTICES.has(n.code)) return `${String(n.fix_link || state.buildUrl('settings-integrations')).split('#')[0]}#tesla${n.detail?.account ? `-${encodeURIComponent(n.detail.account)}` : ''}`;
+  return n.fix_link || null;
+}
+
 function fixWords(link) {
   const page = state.parseUrl(link).page;
   return PAGES[page] ? `Fix it in ${PAGES[page].title}` : 'Fix it';
@@ -219,7 +226,7 @@ function drawNotices() {
   box.replaceChildren(...shown.map((n) => h('div', { class: ['notice', `lv-${n.level || 'info'}`], role: n.level === 'error' ? 'alert' : null },
     h('span', { class: 'dot', 'aria-hidden': 'true' }),
     h('p', { class: 'notice-text' }, n.message),
-    n.fix_link ? h('a', { class: 'btn btn-soft btn-sm', href: n.fix_link }, h('span', { class: 'btn-text' }, fixWords(n.fix_link)), icon('arrowRight')) : null,
+    fixOf(n) ? h('a', { class: 'btn btn-soft btn-sm', href: fixOf(n) }, h('span', { class: 'btn-text' }, TESLA_NOTICES.has(n.code) ? 'Open the Tesla account' : fixWords(n.fix_link)), icon('arrowRight')) : null,
     h('button', { type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': 'Hide this notice for now', title: 'Hide for now', onclick: () => {
       try { const s = dismissed(); s.add(`${n.code}:${n.since_ms}`); sessionStorage.setItem(DISMISS_KEY, JSON.stringify([...s])); } catch { /* fine */ }
       drawNotices();

@@ -61,3 +61,4 @@ html[data-form="phone"] :is(.hero-state, .hero-where) { justify-content: center;
 html[data-form="phone"] .hero-name { font-size: var(--f28); line-height: var(--l28); }
 html[data-form="phone"] .hero-nums, html[data-form="phone"] .sum-nums { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 html[data-form="phone"] .tyres { column-gap: var(--s2); }
+html[data-form="phone"] .car-inputs { justify-content: center; }

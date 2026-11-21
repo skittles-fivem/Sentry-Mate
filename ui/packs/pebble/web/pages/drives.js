@@ -19,6 +19,7 @@ import { field, segmented } from '../core/form.js';
 import { bars } from '../core/chart.js';
 import { openPeriod } from '../core/period.js';
 import { placeLink, byDay, dayHead, socBar, filterBar, moreButton, statTile, dur, pills } from '../core/bits.js';
+import { srcPill, estPill, SOURCE_OPTIONS, SOURCE_WORDS, sourceParam } from '../core/source.js';
 
 export const id = 'drives';
 export const css = true;
@@ -43,13 +44,14 @@ export function driveTile(d, ctx, { w = 2, cover = null, links = true } = {}) {
         going ? chip('Driving now', { tone: 'coral' }) : null,
         d.flags?.reduced_range ? chip('Reduced range', { tone: 'sun', cover: 'drives.table.reduced_range' }) : h('span', { cover: 'drives.table.reduced_range', class: 'sr-only' }, 'Range not reduced'),
         d.flags?.gap_ms ? chip('Some data missing', { tone: 'bad' }) : null,
-        d.source === 'teslamate' ? chip('Imported', { tone: 'muted' }) : null)),
+        null)),
     h('div', { class: 'item-nums' },
       h('span', { cover: 'drives.table.distance' }, num(d.distance_km, 'distance', { size: 's' })),
       h('span', { cover: 'drives.table.duration' }, num(d.duration_ms, 'duration', { size: 's' })),
       h('span', { cover: 'drives.table.energy' }, num(d.energy_kwh, 'energy', { size: 's' })),
       h('span', { cover: 'drives.table.consumption' }, num(d.wh_per_km, 'efficiency', { size: 's' }))),
     socBar(d.start_soc_pct, d.end_soc_pct, { cover: ['drives.table.soc_start', 'drives.table.soc_end'] }),
+    h('p', { class: 'src-line' }, srcPill(d, { short: true }), estPill(d)),
     h('p', { class: 'item-sub drive-more' },
       h('span', { cover: 'drives.table.speed_avg' }, `Avg ${format(d.speed_avg_kph, 'speed')}`), ' · ',
       h('span', { cover: 'drives.table.speed_max' }, `top ${format(d.speed_max_kph, 'speed')}`), ' · ',
@@ -66,14 +68,15 @@ export async function mount(ctx) {
     place: Q.place || '', side: ['start', 'end'].includes(Q.side) ? Q.side : 'any', q: Q.q || '',
     min: Number(Q.min) > 0 ? Number(Q.min) : null, speed: Number(Q.speed) > 0 ? Number(Q.speed) : null,
     eff: Q.eff === 'hill_corrected' ? 'hill_corrected' : 'plain', exclude: Q.exclude ? String(Q.exclude).split(',') : [],
+    source: sourceParam(Q.source),
   };
   const placesP = ctx.api.list('places', { sort: 'name' }).all({ max: 300 }).catch(() => []);
   const params = () => ({
     ...ctx.params, places: f.place || undefined, place_side: f.place ? f.side : undefined, q: f.q || undefined,
-    min_distance_km: f.min || undefined, min_avg_kph: f.speed || undefined, efficiency: f.eff,
+    min_distance_km: f.min || undefined, min_avg_kph: f.speed || undefined, efficiency: f.eff, source: f.source || undefined,
   });
   const write = () => ctx.setQuery({ place: f.place || null, side: f.place && f.side !== 'any' ? f.side : null, q: f.q || null,
-    min: f.min, speed: f.speed, eff: f.eff === 'plain' ? null : f.eff, exclude: f.exclude.length ? f.exclude.join(',') : null });
+    min: f.min, speed: f.speed, eff: f.eff === 'plain' ? null : f.eff, exclude: f.exclude.length ? f.exclude.join(',') : null, source: f.source || null });
 
   // the span pills: a week, a month, or dates of your own
   const pre = ctx.period?.preset;
@@ -86,7 +89,7 @@ export async function mount(ctx) {
   const placeName = (pid) => places.find((p) => p.id === pid)?.name || pid;
   function drawFilterNote() {
     const bits = [f.place && `${f.side === 'start' ? 'from' : f.side === 'end' ? 'to' : 'at'} ${placeName(f.place)}`, f.q && `“${f.q}”`, f.min && `over ${format(f.min, 'distance')}`, f.speed && `avg over ${format(f.speed, 'speed')}`,
-      f.eff === 'hill_corrected' && 'hills taken out', f.exclude.length && `${f.exclude.length} place${f.exclude.length > 1 ? 's' : ''} left out of patterns`].filter(Boolean);
+      f.source && (SOURCE_WORDS[f.source] || f.source), f.eff === 'hill_corrected' && 'hills taken out', f.exclude.length && `${f.exclude.length} place${f.exclude.length > 1 ? 's' : ''} left out of patterns`].filter(Boolean);
     filterNote.textContent = bits.length ? bits.join(' · ') : '';
   }
 
@@ -105,18 +108,21 @@ export async function mount(ctx) {
     const fMin = field({ label: `Shortest drive (${unitLabel('distance')})`, name: 'min', type: 'number', value: f.min != null ? Math.round(convert(f.min, 'distance') * 10) / 10 : '', attrs: { min: '0', step: '0.1', inputmode: 'decimal' } });
     const fSpeed = field({ label: `Slowest average (${unitLabel('speed')})`, name: 'speed', type: 'number', value: f.speed != null ? Math.round(convert(f.speed, 'speed')) : '', attrs: { min: '0', step: '1', inputmode: 'numeric' } });
     const fEff = segmented({ label: 'Efficiency', name: 'eff', value: f.eff, options: [['plain', 'As driven'], ['hill_corrected', 'Hills taken out']] });
+    const fSrc = segmented({ label: 'Data from', name: 'source', value: f.source === 'import:teslamate' ? 'import' : f.source, options: SOURCE_OPTIONS });
     const ex = new Set(f.exclude);
     const exList = h('div', { class: 'ex-list', role: 'group', 'aria-label': 'Places left out of the patterns' },
       places.slice(0, 40).map((p) => h('button', { type: 'button', class: 'fpill', 'aria-pressed': String(ex.has(p.id)), onclick: (e) => { if (ex.has(p.id)) ex.delete(p.id); else ex.add(p.id); e.currentTarget.setAttribute('aria-pressed', String(ex.has(p.id))); } }, p.name)));
     const toMetric = (val, kind) => { const n = Number(val); return val === '' || !(n > 0) ? null : n / (convert(1, kind) || 1); };
-    sheet.body.replaceChildren(h('div', { class: 'form' }, fPlace, fSide, fQ, fMin, fSpeed, fEff,
+    sheet.body.replaceChildren(h('div', { class: 'form' }, fPlace, fSide, fQ, fMin, fSpeed, fEff, fSrc,
+      h('p', { class: 'hint' }, 'SMO is the car’s CAN Bridge, the Tesla API is the Tesla account this server reads, Imported is history from TeslaMate. Where live and imported drives cover the same time, All shows one side (see Import).'),
       h('div', { class: 'field' }, h('span', { class: 'label' }, 'Leave out of the patterns'), h('p', { class: 'hint', cover: 'ds.filter.exclude_locations.hint' }, 'Drives that start or end at these places are not counted in the driving patterns, for example trips to work.'), exList),
       h('div', { class: 'sheet-actions' },
-        btn('Clear', { kind: 'soft', onclick: () => { Object.assign(f, { place: '', side: 'any', q: '', min: null, speed: null, eff: 'plain', exclude: [] }); apply(); } }),
+        btn('Clear', { kind: 'soft', onclick: () => { Object.assign(f, { place: '', side: 'any', q: '', min: null, speed: null, eff: 'plain', exclude: [], source: '' }); apply(); } }),
         btn('Show drives', { kind: 'primary', onclick: () => {
           f.place = fPlace.control.value; f.side = fSide.querySelector('[aria-checked="true"]')?.dataset.value || 'any'; f.q = fQ.control.value.trim();
           f.min = toMetric(fMin.control.value, 'distance'); f.speed = toMetric(fSpeed.control.value, 'speed');
           f.eff = fEff.querySelector('[aria-checked="true"]')?.dataset.value || 'plain'; f.exclude = [...ex];
+          f.source = fSrc.querySelector('[aria-checked="true"]')?.dataset.value || '';
           apply();
         } }))));
   }

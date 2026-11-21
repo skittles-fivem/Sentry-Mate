@@ -20,6 +20,9 @@ import { openPeriod, rangeText } from '../core/period.js';
 import { mapTile, coordsText } from '../core/map.js';
 import { timeChart, spansOf } from '../core/chart.js';
 import { v, AWAKE_WORDS, endLabel, placeLink, strip, stripShares, facts, dur } from '../core/bits.js';
+import { srcPill, viaMark, inputsLine } from '../core/source.js';
+
+const withVia = (text, x) => { const m = viaMark(x); return m ? h('span', { class: 'src-line' }, text, m) : text; };
 
 export const id = 'car';
 export const css = true;
@@ -96,9 +99,11 @@ export async function mount(ctx) {
           h('p', { class: 'hero-state', cover: ['summary.stat.status', 'summary.state.drive_offline'] }, stateTag(st, { stale: !!now.stale }),
             now.since_ms ? h('span', { class: 'muted' }, `since ${formatWhen(now.since_ms, tz, api.now())}`) : null),
           h('p', { class: 'hero-where' }, icon('pin'), whereWords),
+          inputsLine(now.inputs, { cls: 'car-inputs' }),
+          viaMark(now.soc_pct) ? h('p', { class: 'src-line' }, h('span', { class: 'hero-k' }, 'Battery level'), viaMark(now.soc_pct)) : null,
           now.stale ? h('p', { class: 'note' }, 'No upload for a while: these are the last known values.') : null)),
       h('div', { class: 'hero-nums' },
-        h('div', { class: 'hero-num', cover: ['summary.stat.range_preferred', 'overview.stat.range'] }, h('span', { class: 'hero-k' }, rangeLabel()), num(rangeValue({ range_km: rated, ideal_range_km: ideal }, 'range_km'), 'range', { size: 'm', why: why(now.range_km) })),
+        h('div', { class: 'hero-num', cover: ['summary.stat.range_preferred', 'overview.stat.range'] }, h('span', { class: 'hero-k' }, rangeLabel()), num(rangeValue({ range_km: rated, ideal_range_km: ideal }, 'range_km'), 'range', { size: 'm', why: why(now.range_km) }), viaMark(now.range_km)),
         h('div', { class: 'hero-num', cover: 'nr.dash.ideal-range' }, h('span', { class: 'hero-k' }, getUnits().range === 'ideal' ? 'Rated range' : 'Ideal range'), num(getUnits().range === 'ideal' ? rated : ideal, 'range', { size: 'm', why: why(now.ideal_range_km) })),
         h('div', { class: 'hero-num', cover: ['summary.stat.range_estimated', 'nr.dash.est-range'] }, h('span', { class: 'hero-k' }, 'Estimated'), num(est, 'range', { size: 'm', why: why(now.est_range_km) }),
           est != null ? h('span', { class: 'hero-k' }, now.est_basis === 'wh_per_km_30d' ? 'at your last 30 days' : 'at recent use') : null)),
@@ -112,13 +117,16 @@ export async function mount(ctx) {
   const tOdo = tile({ w: 1, title: 'Odometer', icon: 'route', cls: 'tile-stat', cover: ['summary.stat.odometer', 'overview.stat.odometer'] });
   function drawSmall() {
     tSpeed.replaceChildren(tSpeed.firstChild, num(v(now.speed_kph), 'speed', { why: why(now.speed_kph) }),
-      h('p', { class: 'tile-line' }, now.gear ? `Gear ${v(now.gear)}` : '', v(now.power_kw) != null ? ` · ${format(v(now.power_kw), 'power')}` : ''));
-    tOut.replaceChildren(tOut.firstChild, num(v(now.outside_c), 'temperature', { why: why(now.outside_c) }), h('p', { class: 'tile-line' }, `Battery ${format(v(now.battery_c), 'temperature')}`));
+      h('p', { class: 'tile-line' }, now.gear ? `Gear ${v(now.gear)}` : '', v(now.power_kw) != null ? ` · ${format(v(now.power_kw), 'power')}` : ''),
+      viaMark(now.speed_kph) ? h('p', { class: 'src-line' }, viaMark(now.speed_kph)) : null);
+    tOut.replaceChildren(tOut.firstChild, num(v(now.outside_c), 'temperature', { why: why(now.outside_c) }), h('p', { class: 'tile-line' }, `Battery ${format(v(now.battery_c), 'temperature')}`), viaMark(now.outside_c) ? h('p', { class: 'src-line' }, viaMark(now.outside_c)) : null);
     const sl = v(now.setpoint_left_c);
     tIn.replaceChildren(tIn.firstChild, num(v(now.cabin_c), 'temperature', { why: why(now.cabin_c) }),
       h('p', { class: 'tile-line', cover: 'overview.stat.driver_temp' }, 'Driver set to ', sl == null ? 'not sent' : typeof sl === 'string' ? sl : format(sl, 'temperature'),
-        `, climate ${(CLIMATE[v(now.flags?.climate)] || 'not known').toLowerCase()}`));
+        `, climate ${(CLIMATE[v(now.flags?.climate)] || 'not known').toLowerCase()}`, viaMark(now.flags?.climate)),
+      viaMark(now.cabin_c) ? h('p', { class: 'src-line' }, viaMark(now.cabin_c)) : null);
     tOdo.replaceChildren(tOdo.firstChild, num(v(now.odometer_km), 'odometer', { why: why(now.odometer_km) }),
+      viaMark(now.odometer_km) ? h('p', { class: 'src-line' }, viaMark(now.odometer_km)) : null,
       h('a', { class: 'tile-link', href: state.buildUrl('statistics', { car: car.id }), cover: 'overview.link.mileage' }, 'Mileage over time'));
   }
 
@@ -145,11 +153,11 @@ export async function mount(ctx) {
 
   /* ---------------------------------------------------------------- status flags */
   const tFlags = tile({ w: 2, title: 'Car status', icon: 'shield', cls: 'flags-tile' });
-  function flag(text, on, { tone = 'coral', cover = null, why: w = null } = {}) {
+  function flag(text, on, { tone = 'coral', cover = null, why: w = null, via = null } = {}) {
     return h('li', { class: ['flag', { 'is-on': on === true, 'is-unknown': on == null }], cover },
       h('span', { class: ['flag-dot', `tone-${tone}`], 'aria-hidden': 'true' }),
       h('span', { class: 'flag-name' }, text),
-      h('span', { class: 'flag-val' }, on == null ? (w || 'not sent') : on ? 'On' : 'Off'));
+      h('span', { class: 'flag-val' }, on == null ? (w || 'not sent') : on ? 'On' : 'Off', via ? viaMark(via) : null));
   }
   function drawFlags() {
     const f = now.flags || {};
@@ -157,9 +165,9 @@ export async function mount(ctx) {
     const doorsOpen = doors.length ? doors.some(Boolean) || !!v(f.trunk) || !!v(f.frunk) : null;
     const keepC = v(f.keep_climate);
     tFlags.replaceChildren(tFlags.firstChild, h('ul', { class: 'flags' },
-      flag('Sentry mode', v(f.sentry), { tone: 'coral', cover: 'summary.flag.sentry_mode' }),
+      flag('Sentry mode', v(f.sentry), { tone: 'coral', cover: 'summary.flag.sentry_mode', via: f.sentry }),
       flag('Sentry recording', v(f.sentry_event_guess), { tone: 'coral', cover: 'summary.flag.sentry_recording' }),
-      flag('Someone in the car', v(f.user_present), { tone: 'sky', cover: 'summary.flag.driver_present' }),
+      flag('Someone in the car', v(f.user_present), { tone: 'sky', cover: 'summary.flag.driver_present', via: f.user_present }),
       flag('Plugged in', v(now.charge?.plugged), { tone: 'teal', cover: 'summary.flag.plugged_in' }),
       flag('Doors, trunk or frunk open', doorsOpen, { tone: 'sun', cover: 'summary.flag.doors_open' }),
       flag(keepC === 'camp' ? 'Camp mode' : 'Dog mode', keepC == null ? null : keepC === 'dog' || keepC === 'camp', { tone: 'sky', cover: 'summary.flag.dog_mode' }),
@@ -190,15 +198,15 @@ export async function mount(ctx) {
     const kind = v(c.kind);
     tCharge.replaceChildren(tCharge.firstChild,
       h('div', { class: 'charge-top' },
-        on ? num(v(c.power_kw), 'power', { size: 'l', why: why(c.power_kw), cover: ['summary.stat.charger_power', 'overview.stat.charging_power', 'nr.dash.charging-power'] })
+        on ? h('span', { class: 'src-line' }, num(v(c.power_kw), 'power', { size: 'l', why: why(c.power_kw), cover: ['summary.stat.charger_power', 'overview.stat.charging_power', 'nr.dash.charging-power'] }), viaMark(c.power_kw))
           : h('p', { class: 'lede', cover: ['summary.stat.charger_power', 'overview.stat.charging_power', 'nr.dash.charging-power'] }, v(c.plugged) ? 'Plugged in, not charging' : 'Not plugged in'),
         chip(status ? String(status).replace(/_/g, ' ') : 'status not sent', { tone: on ? 'teal' : 'muted' }),
         kind ? chip(kind.toUpperCase(), { tone: 'sky' }) : null),
       facts([
-        ['Energy added', format(v(c.added_kwh), 'energy'), 'summary.stat.energy_added'],
-        ['Time to full', v(c.to_full_min) != null ? formatDuration(v(c.to_full_min) * 60000) : on ? 'not sent' : 'not charging', ['summary.stat.remaining_time', 'nr.dash.time-to-full']],
+        ['Energy added', withVia(format(v(c.added_kwh), 'energy'), c.added_kwh), 'summary.stat.energy_added'],
+        ['Time to full', withVia(v(c.to_full_min) != null ? formatDuration(v(c.to_full_min) * 60000) : on ? 'not sent' : 'not charging', c.to_full_min), ['summary.stat.remaining_time', 'nr.dash.time-to-full']],
         ['Done at', c.finish_ms ? formatWhen(v(c.finish_ms), tz, api.now()) : on ? 'not known' : 'not charging', 'summary.stat.expected_finish'],
-        ['Charge limit', format(v(c.limit_pct), 'percent'), 'nr.dash.charge-limit'],
+        ['Charge limit', withVia(format(v(c.limit_pct), 'percent'), c.limit_pct), 'nr.dash.charge-limit'],
         ['Current', v(c.amps_a) != null ? `${format(v(c.amps_a), 'current')}${v(c.phases) ? `, ${v(c.phases)} phase${v(c.phases) > 1 ? 's' : ''}` : ''}${v(c.pilot_a) ? ` (pilot ${format(v(c.pilot_a), 'current')})` : ''}` : on ? 'not sent' : '—', 'nr.dash.charging-current'],
         ['Voltage', format(v(c.volts_v), 'voltage'), 'overview.stat.ac_voltage'],
         ['Scheduled charging', 'not on the CAN bus', 'summary.stat.scheduled_charging'],
@@ -209,7 +217,7 @@ export async function mount(ctx) {
   const sw = now.software || {};
   const tSoft = tile({ w: 1, title: 'Software', icon: 'chip', cls: 'tile-stat', cover: ['summary.stat.version', 'overview.stat.firmware', 'summary.flag.software_update'] },
     h('p', { class: 'tile-big' }, sw.version || 'Not known'),
-    h('p', { class: 'tile-line' }, sw.version ? (sw.version_source === 'owner' ? 'typed by the owner' : sw.version_source === 'build_match' ? 'matched from the build' : 'from the import') : 'the version is not on the CAN bus',
+    h('p', { class: 'tile-line' }, sw.version ? (sw.version_source === 'owner' ? 'typed by the owner' : sw.version_source === 'build_match' ? 'matched from the build' : sw.version_source === 'tesla_api' ? 'from the Tesla API' : 'from the import') : 'the version is not on the CAN bus',
       sw.changed_since_ms ? `; changed ${formatDate(sw.changed_since_ms, tz, { now: api.now() })}` : ''),
     h('a', { class: 'tile-link', href: state.buildUrl('software', { car: car.id }), cover: 'overview.link.updates' }, 'Software history'));
   const d0 = lastDrive.error ? null : lastDrive.items?.[0];
@@ -230,6 +238,7 @@ export async function mount(ctx) {
     tData.replaceChildren(tData.firstChild,
       h('p', { class: 'tile-big' }, ago(now.at_ms)),
       h('p', { class: 'tile-line' }, now.delay_s != null ? `Reached Sentry Mate ${Math.round(now.delay_s)} s after the car sent it; updates live.` : 'Updates live as logs arrive.'),
+      car.sources?.length ? h('p', { class: 'src-line' }, h('span', { class: 'hero-k' }, 'History'), srcPill(car, { short: true })) : null,
       h('p', { class: 'tile-line' }, now.stale ? 'Last known values, kept from the last log.' : 'Values the car did not send again are the last known.'),
       h('p', { class: 'tile-line' }, `Shown in ${u.distance}, °${u.temperature.toUpperCase()}, ${u.pressure}, ${rangeLabel().toLowerCase()}.`));
   }
@@ -290,6 +299,7 @@ export async function mount(ctx) {
       ],
     }));
   }
+  if (!series.error && series.sources?.length) tBatt.append(h('p', { class: 'src-line' }, srcPill(series)));
   charts.push(drawCharging(ctx, tChart, sync));
   await Promise.all([...charts, mapReady]);
   if (!ctx.alive()) return {};

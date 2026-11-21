@@ -14,6 +14,7 @@ import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tile, ring, stateTag, chip, btn, linkBtn, ago, icon, note } from '../core/ui.js';
 import { emptyTile, errorWords } from '../core/states.js';
+import { srcPill } from '../core/source.js';
 import { createSheet, sheetGroup } from '../core/sheet.js';
 import { segmented } from '../core/form.js';
 import { currentPrefs, savePref } from '../core/prefs.js';
@@ -76,7 +77,8 @@ function carTile(c, attention) {
         h('p', { class: 'car-tile-state' }, stateTag(st, { stale: !!n.stale }), h('span', { class: 'car-tile-where' }, stateLine(c))),
         h('p', { class: 'car-tile-line' },
           range != null ? `${format(range, 'range')} ${rangeLabel().toLowerCase()}` : `Range: ${blankWhy(c)}`,
-          n.charge_power_kw != null ? ` · ${format(n.charge_power_kw, 'power')}` : n.plugged ? ' · plugged in' : ''))),
+          n.charge_power_kw != null ? ` · ${format(n.charge_power_kw, 'power')}` : n.plugged ? ' · plugged in' : ''),
+        c.sources?.length ? h('p', { class: 'src-line' }, srcPill(c, { short: true })) : null)),
     h('div', { class: 'car-tile-foot' },
       h('span', { class: 'car-tile-age' }, icon('pulse'), ago(n.at_ms ?? c.last_activity_ms), sinceText(c) ? h('span', { class: 'muted' }, ` · ${sinceText(c)}`) : null),
       codes.length ? h('span', { class: 'item-flags' }, codes.map((k) => chip((ATTN[k] || [k.replace(/_/g, ' ')])[0], { tone: (ATTN[k] || [0, 'sun'])[1] }))) : null));
@@ -201,7 +203,7 @@ function fixRows(fixes, isAdmin) {
 function missingTile(ctx, isAdmin) {
   const body = h('div', { class: 'fix-box' }, note('Checking set-up…'));
   const el = tile({ w: 2, title: 'Missing a car?', icon: 'help', cls: 'missing-tile', cover: ['cars.empty.title', 'cars.empty.hint'] },
-    h('p', { class: 'note' }, 'A car shows here once its CAN Bridge uploads its first log. You name it after that.'), body);
+    h('p', { class: 'note' }, 'A car shows here once its CAN Bridge uploads its first log, or once a car of a Tesla account is matched to a new car (Settings: Integrations). You name it after that.'), body);
   el.done = ctx.api.get('setup/status').then((s) => {
     const fixes = (s && s.fixes) || [];
     body.replaceChildren(fixes.length ? fixRows(fixes, isAdmin) : note('Nothing is waiting: every upload token was used and every CAN Bridge key has its car.'));
@@ -213,11 +215,12 @@ async function emptyFleet(ctx, isAdmin) {
   const box = h('div', { class: 'fix-box' });
   ctx.view.replaceChildren(emptyTile({
     icon: 'car', title: 'No car is logged yet', cover: ['cars.empty.title', 'cars.empty.hint'],
-    text: 'A car shows here when its CAN Bridge uploads its first log. You name it after that.',
-    action: isAdmin ? linkBtn('Make an upload token', '/settings/cars', { kind: 'primary', icon: 'key' }) : null,
+    text: 'A car shows here when its CAN Bridge (SMO) uploads its first log. A Tesla account is another way: add one under Settings: Integrations and its cars are read from the Tesla API. You name a car after that.',
+    action: isAdmin ? h('span', { class: 'form-actions' }, linkBtn('Make an upload token', '/settings/cars', { kind: 'primary', icon: 'key' }), linkBtn('Add a Tesla account', `${state.buildUrl('settings-integrations')}#tesla`, { kind: 'soft', icon: 'plug' })) : null,
   }));
   try {
     const s = await ctx.api.get('setup/status');
+    if (s.tesla_accounts) ctx.view.append(tile({ w: 2, title: 'Tesla account', icon: 'plug' }, note(`${s.tesla_accounts === 1 ? 'A Tesla account is' : `${s.tesla_accounts} Tesla accounts are`} added. Its cars show here once each is matched to a new car.`), isAdmin ? linkBtn('Match its cars', `${state.buildUrl('settings-integrations')}#tesla`, { kind: 'soft', icon: 'car' }) : null));
     if ((s.fixes || []).length) { box.append(fixRows(s.fixes, isAdmin)); ctx.view.append(tile({ w: 2, title: 'What waits in set-up', icon: 'warning' }, box)); }
   } catch { /* the empty tile says enough */ }
   ctx.ready();

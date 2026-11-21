@@ -43,6 +43,7 @@ vendor/        MapLibre GL JS (BSD-3-Clause) and uPlot (MIT), for the map and ch
 | `ui.js` | Icons, `btn`, `linkBtn`, `chip`, `stateTag`, `num` (number and unit on one baseline), `ring` (SOC ring), `tile`, `note`, `ago`. |
 | `map.js` | `mapTile(ctx, box, opts)`: MapLibre in a rounded box, tiles from `/maps/config` (offline first), routes in the series colours, round pins, a place circle. |
 | `chart.js` | `timeChart(ctx, body, opts)`: a uPlot chart with one or two lines, a legend of keys that show the value under the cursor and hide a line when pressed; charts with one `sync` key share cursor and zoom. `bars()` for plain histograms. |
+| `source.js` | Where data came from: `srcPill(row)` (the row's `source_label` as a soft pill, one dot per input: SMO, Tesla API, imported), `estPill` (Tesla-only energy is estimated), `viaMark` (a live value the Tesla API sent), `inputsLine` (the car's live inputs from `/now`), the source filter words. |
 | `bits.js` | Parts the data pages share: `filterBar` (car and period pills), day groups and `dayHead`, `statTile`, `facts`, `socBar`, `strip` (the activity strip), `pills`, `moreButton`, place words and links. |
 
 ## A page module

@@ -17,6 +17,7 @@ import { emptyTile } from '../core/states.js';
 import { mapTile, boundsOf } from '../core/map.js';
 import { timeChart, bars } from '../core/chart.js';
 import { endLabel, placeLink, statTile, socBar, facts } from '../core/bits.js';
+import { srcPill, estPill, srcText, isEstimated, apiOnly, EST_WHY } from '../core/source.js';
 
 export const id = 'drive';
 export const css = true;
@@ -61,7 +62,7 @@ export async function mount(ctx) {
     h('span', { class: 'drive-when' }, `${formatDate(d.start_ms, tz, { weekday: 'long', month: 'long', now: api.now() })}, ${formatTime(d.start_ms, tz)} – ${going ? 'now' : formatTime(d.end_ms, tz)}`),
     going ? chip('In progress', { tone: 'coral' }) : null,
     d.flags?.reduced_range ? chip('Reduced range', { tone: 'sun' }) : null,
-    d.source === 'teslamate' ? chip('Imported: energy estimated', { tone: 'muted' }) : null,
+    srcPill(d), estPill(d),
     d.gaps?.length ? chip(`${d.gaps.length} gap${d.gaps.length > 1 ? 's' : ''} in the data`, { tone: 'bad' }) : null);
 
   /* ------------------------------------------------------------ map */
@@ -74,7 +75,7 @@ export async function mount(ctx) {
   const figs = [
     statTile({ label: 'Distance', value: d.distance_km, kind: 'distance', icon: 'route', cover: 'dd.stat.distance', sub: `${format(d.start_odometer_km, 'odometer')} to ${format(d.end_odometer_km, 'odometer')}` }),
     statTile({ label: 'Duration', value: d.duration_ms, kind: 'duration', icon: 'clock', cover: 'dd.stat.drive_duration', sub: `Avg ${format(d.speed_avg_kph, 'speed')}` }),
-    statTile({ label: 'Energy', value: d.energy_kwh, kind: 'energy', icon: 'bolt', cover: ['dd.stat.energy_net', 'dd.stat.energy_recovered'], sub: `${format(d.regen_kwh, 'energy')} won back braking` }),
+    statTile({ label: 'Energy', value: d.energy_kwh, kind: 'energy', icon: 'bolt', cover: ['dd.stat.energy_net', 'dd.stat.energy_recovered'], sub: isEstimated(d) ? 'estimated: Tesla API readings added up' : `${format(d.regen_kwh, 'energy')} won back braking` }),
     statTile({ label: 'Use', value: d.wh_per_km, kind: 'efficiency', icon: 'leaf', cover: 'dd.stat.consumption_net', sub: d.efficiency_pct != null ? `${format(d.efficiency_pct, 'percent')} of rated` : null }),
     statTile({ label: 'Top speed', value: d.speed_max_kph, kind: 'speed', icon: 'gauge', cover: 'dd.stat.speed_avg', sub: `avg ${format(d.speed_avg_kph, 'speed')}, peak ${format(d.power_max_kw, 'power')}` }),
     statTile({ label: 'Outside', value: d.outside_avg_c, kind: 'temperature', icon: 'thermo', sub: `inside ${format(d.cabin_avg_c, 'temperature')}` }),
@@ -89,8 +90,9 @@ export async function mount(ctx) {
       ['Odometer', `${format(d.start_odometer_km, 'odometer')} → ${format(d.end_odometer_km, 'odometer')}`],
       ['Climate used', format(d.hvac_kwh, 'energy')],
       ['Lowest power', format(d.power_min_kw, 'power')],
-      ['Energy', d.energy_basis === 'estimated' ? 'estimated from range' : 'measured'],
-    ]));
+      ['Energy', isEstimated(d) ? (apiOnly(d) ? 'estimated: the Tesla API’s power readings added up' : 'estimated') : 'measured'],
+      ['Data', srcText(d) || 'not known'],
+    ]), isEstimated(d) && apiOnly(d) ? note(EST_WHY) : null);
 
   /* ------------------------------------------------------------ charts */
   const sync = `drive-${d.id}-${Date.now()}`;
@@ -145,6 +147,7 @@ export async function mount(ctx) {
       { key: 'speed', name: 'Speed', kind: 'speed', values: V.speed_kph, tone: 'c1', fill: true, floor: 0 },
       { key: 'power', name: 'Power', kind: 'power', values: V.power_kw, tone: 'c2', dashed: true, signed: true },
     ] }));
+    if (ser.sources?.length) cSpeed.append(h('p', { class: 'src-line' }, srcPill(ser)));
     const rv = rangeLabel() === 'Ideal range' && has(V.ideal_range_km) ? V.ideal_range_km : V.range_km;
     charts.push(timeChart(ctx, cSoc, { ...common, label: 'Battery and elevation', series: [
       { key: 'soc', name: 'Battery', kind: 'percent', values: V.soc_pct, tone: 'c1', fill: true },

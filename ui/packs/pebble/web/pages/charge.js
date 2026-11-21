@@ -19,6 +19,7 @@ import { field, form, segmented } from '../core/form.js';
 import { mapTile } from '../core/map.js';
 import { timeChart, xyChart } from '../core/chart.js';
 import { statTile, facts, socBar, money } from '../core/bits.js';
+import { srcPill, estPill, isImported, isEstimated, apiOnly, EST_WHY } from '../core/source.js';
 
 export const id = 'charge';
 export const css = true;
@@ -51,7 +52,8 @@ export async function mount(ctx) {
   const live = !!c.flags?.in_progress || c.end_ms == null;
   const t0 = c.start_ms, t1 = c.end_ms ?? api.now();
   const dc = c.kind === 'dc', ac = c.kind === 'ac';
-  const imported = c.source === 'teslamate';
+  const imported = isImported(c) && !c.sources?.some((x) => x.kind !== 'import');
+  const estimated = isEstimated(c) || imported;
   const keep = (p) => p.catch(() => null);
   const [curve, place, typical] = await Promise.all([
     keep(ctx.api.get(`${base}/curve`, { fields: FIELDS, max_points: 2000 })),
@@ -78,7 +80,7 @@ export async function mount(ctx) {
     chip(KIND_WORDS[c.kind] || 'Charge', { tone: dc ? 'sky' : ac ? 'teal' : 'muted' }),
     live ? chip('Charging now', { tone: 'teal' }) : null,
     c.has_gaps ? chip('Some data missing', { tone: 'bad' }) : null,
-    imported ? chip('Imported: figures estimated', { tone: 'muted' }) : null);
+    srcPill(c), estPill(c));
 
   /* ------------------------------------------------------------ where, and the level */
   const pHref = placeHref(c);
@@ -96,13 +98,14 @@ export async function mount(ctx) {
         h('div', { cover: ['cd.stat.soc_added', 'cd.stat.range_added'] }, h('span', { class: 'hero-k' }, 'Added'), num(socAdded, 'percent', { size: 'm', why: 'not known' }), h('span', { class: 'tile-line' }, `+${format(c.range_added_km, 'range')}`)),
         h('div', { cover: ['cd.stat.soc_end', 'cd.stat.range_end'] }, h('span', { class: 'hero-k' }, live ? 'Now' : 'End'), num(c.end_soc_pct, 'percent', { size: 'm' }), h('span', { class: 'tile-line' }, format(c.end_range_km, 'range'))))),
     socBar(c.start_soc_pct, c.end_soc_pct, { tone: 'coral' }),
+    isEstimated(c) && apiOnly(c) ? note(EST_WHY) : null,
     note(`Battery % as the car’s screen shows it; range is rated range.${c.energy_added_kwh && socAdded > 0 ? ` About ${format(c.energy_added_kwh / socAdded, 'energy')} per %.` : ''}`));
 
   /* ------------------------------------------------------------ figures */
   const why = live ? 'still charging' : imported ? 'not in imported history' : 'not recorded';
   const cost = c.cost;
   const figs = [
-    statTile({ label: 'Energy added', value: c.energy_added_kwh, kind: 'energy', icon: 'bolt', cover: 'cd.stat.energy_added', why, sub: imported ? 'estimated (imported)' : 'into the pack' }),
+    statTile({ label: 'Energy added', value: c.energy_added_kwh, kind: 'energy', icon: 'bolt', cover: 'cd.stat.energy_added', why, sub: estimated ? (apiOnly(c) ? 'estimated from Tesla API readings' : 'estimated (imported)') : 'into the pack' }),
     ac ? statTile({ label: 'Energy drawn', value: c.energy_grid_kwh, kind: 'energy', icon: 'plug', cover: 'cd.stat.energy_used', why, sub: c.losses_kwh != null ? `${format(c.losses_kwh, 'energy')} lost on the way` : 'from the supply' })
       : statTile({ label: dc ? 'Delivered' : 'Energy drawn', value: dc ? c.dc_inlet_kwh : null, kind: 'energy', icon: 'plug', cover: 'cd.stat.energy_used', why: dc ? why : 'AC or DC not known', sub: dc ? (c.fast_charger?.billed_kwh != null ? `billed ${format(c.fast_charger.billed_kwh, 'energy')}` : 'at the inlet') : null }),
     tile({ w: 1, title: 'Cost', icon: 'coin', cls: 'tile-stat', cover: ['cd.stat.cost', 'web.charge-cost.current-cost'], href: null },

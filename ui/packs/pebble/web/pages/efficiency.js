@@ -91,7 +91,7 @@ export async function mount(ctx) {
           ['Used while parked', num(parkedShare, 'percent', { size: 'm', why: 'nothing used' })],
           ['Drives counted', h('span', { class: 'num num-m' }, h('span', { class: 'num-n' }, n0(d.drives)))],
         ])),
-      d.estimated_drives ? note(`${n0(d.estimated_drives)} of the ${n0(d.drives)} drives are imported: their energy is worked out from range, not measured.`) : null);
+      d.estimated_drives ? note(`${n0(d.estimated_drives)} of the ${n0(d.drives)} drives have estimated energy: imported drives work it out from range, and drives only the Tesla API saw add up its power readings. Neither is measured.`) : null);
     const helpT = tile({ w: 2, title: 'What these numbers mean', icon: 'info', cls: 'ef-help' },
       h('p', { class: 'note', cover: 'ef.help.headline_stats' },
         `Net is the energy the pack gave while driving (braking energy already taken off) over the distance, for drives of ${minText} or more. Gross is what owning the car takes: every drive of the period plus all energy used parked (climate, Sentry, standby), so the pill above does not change it.`),

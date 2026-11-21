@@ -16,6 +16,7 @@ import { tile, chip, btn, icon, note } from '../core/ui.js';
 import { emptyTile } from '../core/states.js';
 import { mapTile, boundsOf } from '../core/map.js';
 import { filterBar, placeHref, statTile, dur } from '../core/bits.js';
+import { srcPill } from '../core/source.js';
 
 export const id = 'travel';
 export const css = true;
@@ -153,7 +154,8 @@ export async function mount(ctx) {
     stopsT.replaceChildren(stopsT.firstChild, sl.length ? list(sl.map((v) => row({
       name: h('span', { cover: 'locations.last_visited.address' }, v.label || v.address?.short || 'Unnamed spot'),
       sub: [h('span', { cover: 'locations.last_visited.date' }, `${formatDate(v.arrived_ms, v.time_zone || tz, { now: api.now() })}, ${formatTime(v.arrived_ms, v.time_zone || tz)}`), ' · ',
-        h('span', { cover: 'locations.last_visited.city' }, v.address?.locality || '—')],
+        h('span', { cover: 'locations.last_visited.city' }, v.address?.locality || '—'),
+        v.sources?.length || v.source ? h('span', { class: 'src-line' }, srcPill(v, { short: true })) : null],
       side: carName(v.car),
     }))) : note('No stop in this period.'));
 

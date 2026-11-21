@@ -13,6 +13,7 @@ import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { isValidZone, formatDate, formatDateTime, formatTime, formatDayKey } from '../shared/time.js';
 import { tile, btn, chip, note, icon, stateTag, ago } from '../core/ui.js';
+import { srcPill, srcText } from '../core/source.js';
 import { emptyTile } from '../core/states.js';
 import { openSheet, confirmSheet, sheetRow } from '../core/sheet.js';
 import { field, segmented, setFieldError } from '../core/form.js';
@@ -246,9 +247,9 @@ async function mountCar(ctx) {
       ...CONFIG.map(([k, label]) => {
         const c = cfg[k];
         return infoRow({ name: label, sub: c && c.value != null ? null : 'Not sent yet', side: h('span', { class: 'set-line' },
-          h('span', { class: 'set-value' }, c && c.value != null ? yesNo(c.value) : '—'), c && c.source ? chip(SOURCE[c.source] || c.source, { tone: SOURCE_TONE[c.source] || 'muted' }) : null) });
+          h('span', { class: 'set-value' }, c && c.value != null ? yesNo(c.value) : '—'), c && c.value != null ? (c.source === 'vin' ? chip(SOURCE.vin, { tone: SOURCE_TONE.vin }) : srcPill(c, { short: true, typed: 'Typed by an admin' })) : null) });
       }),
-    ], { note: 'Read from the car’s own configuration message, else worked out from the VIN prefix. The label says where each one came from.' }));
+    ], { note: 'Read from the car’s own configuration message (SMO) or from the Tesla API, else worked out from the VIN prefix or typed by an admin. The label says where each one came from.' }));
 
   /* ---------- uploads */
   let upT;
@@ -386,7 +387,7 @@ async function mountCar(ctx) {
   drawRanges();
   const access = cfg.supercharging_access;
   const fsT = tile({ w: 2, title: 'Free Supercharging', icon: 'bolt', cover: 'web.settings.car.free-supercharging' },
-    said('info', 'The car says Supercharging is: ', h('b', null, access && access.value != null ? yesNo(access.value) : 'not sent yet'), access && access.source ? ` (${SOURCE[access.source] || access.source})` : '', '. It does not say since when, so the dates are yours.'),
+    said('info', 'The car says Supercharging is: ', h('b', null, access && access.value != null ? yesNo(access.value) : 'not sent yet'), access && access.value != null ? ` (${access.source === 'vin' ? SOURCE.vin.toLowerCase() : (srcText(access) || SOURCE[access.source] || 'typed by an admin').replace(/^D/, 'd')})` : '', '. It does not say since when, so the dates are yours.'),
     fsBox,
     note('Dated ranges in the car’s time zone. Sessions outside them keep their price, so turning this off later does not rewrite history.'));
 

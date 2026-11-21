@@ -1,12 +1,13 @@
 // Sentry Mate, "Pebble" UI pack: Settings: Integrations (/settings/integrations).
 //
-// Send the cars' live values to other systems, if the owner wants to. One card per integration, each with its
+// The Tesla account first (a second live input beside SMO, pages/tesla.js, admins only), then sending the cars'
+// live values to other systems, if the owner wants to. One card per integration, each with its
 // status: the MQTT broker (publishing switch, connection form, a test, live counts), the topic layout and its rules,
 // every value Sentry Mate publishes previewed for a chosen car (unit, status, where it comes from), Home Assistant
 // discovery and the entities it gets with dashboard cards to paste, the events automations listen to with ideas
 // that use them, the read API, every network connection the server makes, and tools that work with the values.
 // Data: GET / PUT settings/mqtt (admin), GET settings/mqtt/status, GET settings/mqtt/preview?car=, POST
-// settings/mqtt/test (admin), GET cars/{car}/events, GET network (admin).
+// settings/mqtt/test (admin), GET cars/{car}/events, GET network (admin), and the Tesla routes in pages/tesla.js.
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -20,6 +21,7 @@ import { sectionHead, pills, nums } from '../core/bits.js';
 import { group, infoRow, said, notSaved } from '../core/settings.js';
 import { inOrder } from '../core/settings.js';
 import { copyButton } from './move-parts.js';
+import { teslaTiles } from './tesla.js';
 
 export const id = 'settings-integrations';
 export const shape = [['full', 'h1'], [2, 'h3'], [2, 'h3'], [2, 'h2'], [2, 'h2']];
@@ -167,6 +169,7 @@ const PURPOSE = {
   tiles: ['Map pictures', 'Asked by each viewer’s browser while online tiles are on.', 'settings-display'],
   geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
   mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
+  tesla: ['Tesla API', 'Only while a Tesla account is added and not paused: Tesla’s sign-in, its Owner API and its live stream (Tesla account, above).', null],
   release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-display'],
   upload: ['CAN Bridge uploads', 'The car’s CAN Bridge sends its logs here.', null],
   web: ['This app and the API', 'Browsers, apps and the API.', null],
@@ -187,6 +190,8 @@ export async function mount(ctx) {
     admin ? ctx.api.get('network').catch(() => null) : Promise.resolve(null),
     ctx.api.page('cars', { sort: 'custom' }, { limit: 12 }).then((r) => r.items || []).catch(() => []),
   ]);
+  const tesla = teslaTiles(ctx, { cars: admin ? await ctx.api.page('cars', { sort: 'name' }, { limit: 200 }).then((r) => r.items || []).catch(() => cars) : cars });
+  await tesla.load();
   if (!ctx.alive()) return {};
   let carId = (ctx.query.car && cars.some((c) => c.id === ctx.query.car) ? ctx.query.car : null) || (cars.find((c) => c.id === state.lastCar()) || cars[0] || {}).id || null;
   let pv = null;
@@ -477,7 +482,7 @@ export async function mount(ctx) {
     }
     const on = net.outbound.filter((o) => o.enabled).length;
     return tile({ w: 2, title: 'Network use', icon: 'globe', cover: 'faq.network-flows', side: chip(`${on} of ${net.outbound.length} out on`, { tone: on ? 'sun' : 'teal' }) },
-      note('Sentry Mate needs no Tesla account and no cloud: the CAN Bridge uploads to it, and everything else is off until you turn it on.'),
+      note('Sentry Mate needs no cloud: the CAN Bridge uploads to it, and everything else is off until you turn it on. A Tesla account is optional; without one no connection to Tesla is made.'),
       h('ul', { class: 'checks' },
         net.outbound.map((o) => h('li', { class: ['check', o.enabled ? 'is-warn' : 'is-off'] }, h('span', { class: 'check-dot', 'aria-hidden': 'true' }),
           h('span', { class: 'check-text' }, h('span', { class: 'check-name' }, `Out: ${(PURPOSE[o.purpose] || [o.purpose])[0]}`), h('span', { class: 'check-sub' }, `${o.host || 'no host set'} · ${(PURPOSE[o.purpose] || [null, ''])[1]}${o.last_used_ms ? ' Last used ' : ''}`, o.last_used_ms ? ago(o.last_used_ms) : null)),
@@ -506,7 +511,9 @@ export async function mount(ctx) {
     statusEl = statusTile();
     ctx.head({ actions: [headChip()] });
     ctx.view.replaceChildren(
-      tile({ w: 'full', cls: 'tile-intro' }, said('ok', admin ? 'Switches and single fields save at once and a toast confirms it; the broker connection saves with its button. Nothing leaves the server until publishing is on.' : 'Your account can read these; an admin changes them.')),
+      tile({ w: 'full', cls: 'tile-intro' }, said('ok', admin ? 'Switches and single fields save at once and a toast confirms it; the broker connection saves with its button. Nothing leaves the server until publishing is on. Tesla account changes ask for your password again.' : 'Your account can read these; an admin changes them.')),
+      tesla.el,
+      sectionHead('Sending values to other systems'),
       brokerTile(), statusEl, topicsTile(), haTile(),
       h('div', { class: 'page-bar w-full' }, h('h2', { class: 'sub-head' }, 'Published values'), carPills ? h('span', { class: 'page-bar-end' }, carPills) : null),
       valuesTile(),
