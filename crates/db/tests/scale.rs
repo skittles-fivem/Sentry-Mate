@@ -25,9 +25,9 @@ fn threads_write_different_cars_at_once() {
             std::thread::spawn(move || {
                 for round in 0..20u64 {
                     for &car in &mine {
-                        db.upsert(car, &[drive(car, round, DAY0 + round * H, 30, 2.0, Source::Can)]).unwrap();
+                        db.upsert(car, &[drive(car, round, DAY0 + round * H, 30, 2.0, Source::Live)]).unwrap();
                         let t0 = DAY0 + round * 60_000;
-                        db.write_points(car, Source::Can, t0, t0 + 60_000, &samples(t0, 60)).unwrap();
+                        db.write_points(car, Source::Live, t0, t0 + 60_000, &samples(t0, 60)).unwrap();
                     }
                 }
             })
@@ -40,7 +40,7 @@ fn threads_write_different_cars_at_once() {
             let db = db.clone();
             std::thread::spawn(move || {
                 for i in 0..25u64 {
-                    db.upsert(shared, &[charge(shared, k * 100 + i, DAY0 + i * H, 30, 1.0, Source::Can)]).unwrap();
+                    db.upsert(shared, &[charge(shared, k * 100 + i, DAY0 + i * H, 30, 1.0, Source::Live)]).unwrap();
                 }
             })
         })
@@ -50,7 +50,7 @@ fn threads_write_different_cars_at_once() {
     }
     for &car in &cars {
         assert_eq!(db.count::<Drive>(car).unwrap(), 20);
-        assert_eq!(db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap().len(), 20 * 60);
+        assert_eq!(db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap().len(), 20 * 60);
         assert_eq!(db.entry(car).unwrap().unwrap().summary.tally.can.drives, 20);
     }
     assert_eq!(db.count::<Charge>(shared).unwrap(), 200);
@@ -80,10 +80,10 @@ fn two_thousand_cars_stay_within_bounds() {
             std::thread::spawn(move || {
                 for (n, car) in mine.into_iter().enumerate() {
                     let t0 = DAY0 + u64::from(car % 24) * H;
-                    db.upsert(car, &[drive(car, 1, t0, 30, 10.0 + f64::from(car % 7), Source::Can)]).unwrap();
-                    db.upsert(car, &[charge(car, 1, t0 + H, 60, 20.0, Source::Can)]).unwrap();
-                    db.upsert(car, &[state(car, 1, t0 - H, t0 + 2 * H, State::Online, Source::Can)]).unwrap();
-                    db.write_points(car, Source::Can, t0, t0 + 60_000, &samples(t0, 60)).unwrap();
+                    db.upsert(car, &[drive(car, 1, t0, 30, 10.0 + f64::from(car % 7), Source::Live)]).unwrap();
+                    db.upsert(car, &[charge(car, 1, t0 + H, 60, 20.0, Source::Live)]).unwrap();
+                    db.upsert(car, &[state(car, 1, t0 - H, t0 + 2 * H, State::Online, Source::Live)]).unwrap();
+                    db.write_points(car, Source::Live, t0, t0 + 60_000, &samples(t0, 60)).unwrap();
                     if n % 25 == 0 {
                         peak.fetch_max(db.stats().open_cars, Ordering::Relaxed);
                     }
@@ -149,7 +149,7 @@ fn two_thousand_cars_stay_within_bounds() {
     let start = Instant::now();
     for &car in ids.iter().step_by(4) {
         assert_eq!(t.db.list::<StateRow>(car, &Query::default()).unwrap().items.len(), 1);
-        assert_eq!(t.db.read_points::<Sample>(car, Source::Can, 0, u64::MAX).unwrap().len(), 60);
+        assert_eq!(t.db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap().len(), 60);
     }
     let per_car = start.elapsed() / (CARS / 4);
     let s = t.db.stats();

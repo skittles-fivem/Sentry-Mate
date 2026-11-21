@@ -679,12 +679,17 @@ async fn test(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiResu
 
 async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Value>> {
     let e = app.service::<Engine>()?;
-    let (ss, m, names) = app
+    let (ss, m, names, sha256, own) = app
         .blocking(move |app| {
-            let names = server::cert_names(app);
-            Ok((server::load(&e, &names)?, load(&e)?, names))
+            let (names, sha256) = match super::certificate::running(app) {
+                Some((n, s)) => (n, Some(s)),
+                None => (Vec::new(), None),
+            };
+            let own = super::certificate::own(app);
+            Ok((server::load(&e, &names)?, load(&e)?, names, sha256, own))
         })
         .await?;
+    let upload_address = super::certificate::upload_address(&app, &names);
     let p = app.service::<Publisher>().ok();
     if let Some(p) = &p {
         p.observe(app.now());
@@ -700,19 +705,23 @@ async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Valu
         inbound.push(json!({ "purpose": "web", "port": n.web_port, "tls": true }));
         inbound.push(json!({ "purpose": "upload", "port": n.upload_port, "tls": true }));
     }
+    let tesla = super::tesla::network_rows(&app);
+    let mut outbound = vec![
+        // no address lookup runs online in this server yet: listed, never used
+        json!({ "purpose": "geocoding", "host": geo_host, "enabled": ss.geocode.mode == "online" && geo_host.is_some(), "last_used_ms": null }),
+        // the viewers' browsers load the tiles, not the server
+        json!({ "purpose": "tiles", "host": if tiles_online { tile_host } else { None }, "enabled": tiles_online, "last_used_ms": null }),
+        json!({ "purpose": "geonames_download", "host": geonames, "enabled": false, "last_used_ms": null }),
+        json!({ "purpose": "mqtt", "host": (!mqtt_host.is_empty()).then_some(mqtt_host), "enabled": m.settings.enabled, "last_used_ms": mqtt_used }),
+        // no release check exists in this server yet (`/settings` refuses turning it on)
+        json!({ "purpose": "release_check", "host": null, "enabled": false, "last_used_ms": null }),
+    ];
+    outbound.extend(tesla);
     Ok(Json(json!({
-        "outbound": [
-            // no address lookup runs online in this server yet: listed, never used
-            { "purpose": "geocoding", "host": geo_host, "enabled": ss.geocode.mode == "online" && geo_host.is_some(), "last_used_ms": null },
-            // the viewers' browsers load the tiles, not the server
-            { "purpose": "tiles", "host": if tiles_online { tile_host } else { None }, "enabled": tiles_online, "last_used_ms": null },
-            { "purpose": "geonames_download", "host": geonames, "enabled": false, "last_used_ms": null },
-            { "purpose": "mqtt", "host": (!mqtt_host.is_empty()).then_some(mqtt_host), "enabled": m.settings.enabled, "last_used_ms": mqtt_used },
-            // no release check exists in this server yet (`/settings` refuses turning it on)
-            { "purpose": "release_check", "host": null, "enabled": false, "last_used_ms": null },
-        ],
+        "outbound": outbound,
         "inbound": inbound,
-        "certificate": { "names": names },
+        "certificate": { "names": names, "sha256": sha256, "own": own },
+        "upload_address": upload_address,
     })))
 }
 

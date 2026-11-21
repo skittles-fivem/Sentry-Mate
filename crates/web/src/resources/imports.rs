@@ -1,4 +1,8 @@
-//! TeslaMate imports (docs/ui-api.md, "Import"): `/imports[/{import}[/cars|/start]]`, admin only (the guard's list).
+//! Imports (docs/ui-api.md, "Import"): `/imports[/{import}[/cars|/start]]`, admin only (the guard's list). Two kinds,
+//! told apart by the file itself once it is in: a TeslaMate backup (`kind: "teslamate"`, SQL, plain, gzip or xz), and
+//! Sentry Six Manager's CAN export (`kind: "sentry_manager_can"`, the `.zip` of its `GET /api/can/export/bundle`):
+//! the car's own signed CAN Bridge logs, each checked, stored and judged as an upload is
+//! ([`engine::query::can_import`]); its cars follow from the logs' car keys, so it has no cars to match.
 //!
 //! 1. **Upload**: `POST /imports` `{ name, bytes_total, compression? }` (or an `Upload-Length` header) answers 201
 //!    with the job, `upload_url` and `chunk_max_bytes`; each `PATCH /imports/{import}` is the next chunk
@@ -25,6 +29,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use engine::Engine;
+use engine::query::can_import as can;
 use engine::query::imports::{self as im, BackupCar};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -39,7 +44,10 @@ use std::sync::{Arc, Mutex};
 pub const CHUNK_MAX: usize = (1 << 20) - 1024;
 /// The largest backup taken.
 pub const MAX_FILE: u64 = 64 << 30;
-const COMPRESSIONS: [&str; 3] = ["plain", "gzip", "xz"];
+const COMPRESSIONS: [&str; 4] = ["plain", "gzip", "xz", "zip"];
+/// The kinds of import, known once the file is checked.
+pub const KIND_TESLAMATE: &str = "teslamate";
+pub const KIND_CAN: &str = can::KIND;
 const UNFINISHED: [&str; 4] = ["uploading", "checking", "ready", "importing"];
 
 pub fn routes() -> Router<AppState> {
@@ -55,8 +63,15 @@ pub fn routes() -> Router<AppState> {
 pub struct Imports {
     state: Mutex<Jobs>,
     /// One chunk of an upload at a time, per import: held from the offset check to the job's save, so a chunk sent
-    /// again while the first try is still being stored gets `409 wrong_offset`, never a half-written job.
-    chunks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// again while the first try is still being stored gets `409 wrong_offset`, never a half-written job. It holds
+    /// the upload's file, opened to add to it once and kept open between chunks: opening it walks every record
+    /// already there, so opening it per chunk made each chunk cost more than the one before (an upload that started
+    /// fast got slower and slower as the file grew).
+    chunks: Mutex<HashMap<String, Arc<Mutex<Option<vault::Records>>>>>,
+    /// Times an upload's file was opened to add to it (tests: once per upload, not once per chunk).
+    upload_opens: AtomicU64,
+    /// The data folder's write gate, which a CAN export's logs are stored through (as uploads are).
+    gate: std::sync::OnceLock<gate::Gate>,
 }
 
 #[derive(Default)]
@@ -66,11 +81,19 @@ struct Jobs {
     live: HashMap<String, Live>,
 }
 
-/// A pass running now: the bytes it has read (both reads of the file) and its stop.
+/// A pass running now: the bytes it has read (a TeslaMate pass reads the file twice, a CAN export's once) and its
+/// stop.
 #[derive(Clone)]
 struct Live {
     read: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
+    reads: u64,
+}
+
+impl Live {
+    fn new(reads: u64) -> Live {
+        Live { read: Arc::new(AtomicU64::new(0)), stop: Arc::new(AtomicBool::new(false)), reads: reads.max(1) }
+    }
 }
 
 impl Imports {
@@ -82,14 +105,25 @@ impl Imports {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The lock of one import's chunks (a discarded import's goes with it).
-    fn chunk_lock(&self, id: &str) -> Arc<Mutex<()>> {
+    /// The lock of one import's chunks, with its file once opened (a discarded import's goes with it).
+    fn chunk_lock(&self, id: &str) -> Arc<Mutex<Option<vault::Records>>> {
         let mut m = self.chunks.lock().unwrap_or_else(|e| e.into_inner());
         m.entry(id.to_string()).or_default().clone()
     }
 
     fn forget_chunks(&self, id: &str) {
         self.chunks.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
+
+    /// Times an upload's file has been opened to add to it since the server started (once per upload, again only
+    /// after a restart or a failed write).
+    pub fn upload_opens(&self) -> u64 {
+        self.upload_opens.load(Ordering::Relaxed)
+    }
+
+    /// The data folder's write gate (the server gives it once; without one, as in tests, nothing is paused for).
+    pub fn set_gate(&self, g: gate::Gate) {
+        let _ = self.gate.set(g);
     }
 }
 
@@ -123,11 +157,18 @@ struct Job {
     error: Option<JobError>,
     cars: Vec<CarRow>,
     report: Option<Value>,
+    /// `teslamate` or `sentry_manager_can`, once checked (`None` before).
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 impl Job {
+    fn is_can(&self) -> bool {
+        self.kind.as_deref() == Some(KIND_CAN)
+    }
+
     fn view(&self, live: Option<&Live>) -> Value {
-        let read = live.map_or(self.bytes_read, |l| (l.read.load(Ordering::Relaxed) / 2).min(self.bytes_total));
+        let read = live.map_or(self.bytes_read, |l| (l.read.load(Ordering::Relaxed) / l.reads).min(self.bytes_total));
         let cars_to_match: Value = if self.cars.is_empty() && matches!(self.status.as_str(), "uploading" | "checking") {
             Value::Null
         } else {
@@ -137,6 +178,7 @@ impl Job {
             "id": self.id,
             "name": self.name,
             "compression": self.compression,
+            "kind": self.kind,
             "status": self.status,
             "pass": self.pass,
             "bytes_read": read,
@@ -198,12 +240,13 @@ fn load(app: &AppState, all: &Imports) -> ApiResult<()> {
                 "importing" => {
                     j.status = "ready".into();
                     j.pass = 1;
-                    j.error = Some(JobError {
-                        code: "interrupted".into(),
-                        message: "The server stopped during the import. Start it again: what it stored is replaced, \
-                                  not doubled."
-                            .into(),
-                    });
+                    let message = if j.is_can() {
+                        "The server stopped during the import. Start it again: the logs it stored are skipped, the \
+                         rest are imported."
+                    } else {
+                        "The server stopped during the import. Start it again: what it stored is replaced, not doubled."
+                    };
+                    j.error = Some(JobError { code: "interrupted".into(), message: message.into() });
                     save(app, &j)?;
                 }
                 _ => {}
@@ -296,12 +339,13 @@ async fn create(
     let name = if name.is_empty() { "teslamate-backup.sql".to_string() } else { name };
     let compression = match body.str("compression")? {
         Some(c) => c.to_string(),
+        None if name.to_ascii_lowercase().ends_with(".zip") => "zip".into(),
         None if name.ends_with(".xz") => "xz".into(),
         None if name.ends_with(".gz") => "gzip".into(),
         None => "plain".into(),
     };
     if !COMPRESSIONS.contains(&compression.as_str()) {
-        return Err(ApiError::invalid("compression", "Must be plain, gzip or xz."));
+        return Err(ApiError::invalid("compression", "Must be plain, gzip, xz or zip."));
     }
     let now = app.now();
     let (n2, c2) = (name.clone(), compression.clone());
@@ -328,6 +372,7 @@ async fn create(
             error: None,
             cars: Vec::new(),
             report: None,
+            kind: None,
         };
         save(app, &j)?;
         st.jobs.insert(j.id.clone(), j.clone());
@@ -399,7 +444,7 @@ async fn chunk(
     }
     let (done, out) = with_jobs(&app, move |app, all| {
         let one = all.chunk_lock(&id);
-        let _held = one.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = one.lock().unwrap_or_else(|e| e.into_inner());
         let j = job(all, &id)?;
         if j.status != "uploading" {
             return Err(ApiError::conflict(
@@ -427,12 +472,19 @@ async fn chunk(
         if offset + bytes.len() as u64 > j.bytes_total {
             return Err(ApiError::invalid("body", "More bytes than the upload's length."));
         }
-        let dir = folder(app, &j.id);
-        std::fs::create_dir_all(&dir).map_err(|e| ApiError::server(format!("the import's folder: {e}")))?;
-        let mut rec = app
-            .vault
-            .records(&dir.join("backup"), &label(&j.id, "backup"))
-            .map_err(|e| ApiError::server(format!("opening the upload: {e}")))?;
+        let rec = match &mut *held {
+            Some(rec) => rec,
+            slot => {
+                let dir = folder(app, &j.id);
+                std::fs::create_dir_all(&dir).map_err(|e| ApiError::server(format!("the import's folder: {e}")))?;
+                all.upload_opens.fetch_add(1, Ordering::Relaxed);
+                let rec = app
+                    .vault
+                    .records(&dir.join("backup"), &label(&j.id, "backup"))
+                    .map_err(|e| ApiError::server(format!("opening the upload: {e}")))?;
+                slot.insert(rec)
+            }
+        };
         if rec.plain_len() != j.uploaded_bytes {
             // what is on disk is what counts (a write the job's record missed)
             let mut j = j;
@@ -444,7 +496,11 @@ async fn chunk(
                 .with("offset", at)
                 .header(http::HeaderName::from_static("upload-offset"), &at.to_string()));
         }
-        rec.append(&bytes).map_err(|e| ApiError::server(format!("storing the chunk: {e}")))?;
+        if let Err(e) = rec.append(&bytes) {
+            // opened again for the next chunk, which cuts off whatever this write left
+            *held = None;
+            return Err(ApiError::server(format!("storing the chunk: {e}")));
+        }
         let mut j = j;
         j.uploaded_bytes = rec.plain_len();
         j.bytes_read = j.uploaded_bytes;
@@ -453,6 +509,8 @@ async fn chunk(
             j.status = "checking".into();
             j.pass = 1;
             j.bytes_read = 0;
+            // the check reads the file on its own; no more chunks come
+            *held = None;
         }
         save(app, &j)?;
         all.lock().jobs.insert(j.id.clone(), j.clone());
@@ -517,7 +575,7 @@ fn opener(app: &AppState, id: &str) -> impl FnMut() -> io::Result<Backup> + use<
 /// Puts a finished pass's outcome into the job (unless it was discarded meanwhile).
 fn finish(app: &AppState, all: &Imports, id: &str, f: impl FnOnce(&mut Job)) {
     let mut st = all.lock();
-    let read = st.live.remove(id).map(|l| l.read.load(Ordering::Relaxed) / 2);
+    let read = st.live.remove(id).map(|l| l.read.load(Ordering::Relaxed) / l.reads.max(1));
     if let Some(j) = st.jobs.get_mut(id) {
         j.bytes_read = read.unwrap_or(j.bytes_read).min(j.bytes_total);
         f(j);
@@ -527,41 +585,111 @@ fn finish(app: &AppState, all: &Imports, id: &str, f: impl FnOnce(&mut Job)) {
     }
 }
 
+/// The first bytes of the upload (to tell a zip from a TeslaMate backup).
+fn head_of(app: &AppState, id: &str) -> io::Result<Vec<u8>> {
+    let mut r = opener(app, id)()?;
+    let mut head = vec![0u8; 4];
+    let mut got = 0;
+    while got < head.len() {
+        match r.read(&mut head[got..])? {
+            0 => break,
+            n => got += n,
+        }
+    }
+    head.truncate(got);
+    Ok(head)
+}
+
+/// Where a CAN export's pass keeps a log too big for memory while it is read (sealed; removed after).
+fn spool_of(app: &AppState, id: &str) -> PathBuf {
+    folder(app, id).join("spool")
+}
+
 /// Starts the check of a whole upload in the background.
 fn spawn_check(app: &AppState, id: &str) -> ApiResult<()> {
     let all = imports(app)?;
     let e = app.service::<Engine>()?;
-    let live = Live { read: Arc::new(AtomicU64::new(0)), stop: Arc::new(AtomicBool::new(false)) };
+    let compression = all.lock().jobs.get(id).map(|j| j.compression.clone()).unwrap_or_default();
+    let live = Live::new(2);
     all.lock().live.insert(id.to_string(), live.clone());
     let (app, id) = (app.clone(), id.to_string());
     tokio::task::spawn_blocking(move || {
-        let open = im::counted(opener(&app, &id), live.read.clone(), live.stop.clone());
-        let r = im::check(&e, open);
+        let head = head_of(&app, &id);
+        let zip = head.as_ref().is_ok_and(|h| import::zip::is_zip(h));
+        enum Outcome {
+            Tm(Result<im::Checked, import::Error>),
+            Can(Result<Value, can::CanImportError>),
+            Failed(&'static str, String),
+        }
+        let r = match head {
+            Err(err) => Outcome::Failed("read_failed", format!("reading the upload: {err}")),
+            Ok(_) if zip => {
+                if let Some(l) = all.lock().live.get_mut(&id) {
+                    l.reads = 1;
+                }
+                let mut open = im::counted(opener(&app, &id), live.read.clone(), live.stop.clone());
+                let pass = can::Pass { store: false, spool: spool_of(&app, &id), gate: None, stop: live.stop.clone() };
+                Outcome::Can(can::guarded(|| {
+                    open().map_err(can::CanImportError::from).and_then(|r| can::check(&e, r, &pass))
+                }))
+            }
+            Ok(_) if compression == "zip" => Outcome::Failed(
+                "unreadable",
+                "This file is not a zip. For a TeslaMate backup upload the .sql (or .sql.gz, .sql.xz) itself; from \
+                 Sentry Six Manager, its CAN export bundle (.zip) as it was downloaded."
+                    .into(),
+            ),
+            Ok(_) => {
+                let open = im::counted(opener(&app, &id), live.read.clone(), live.stop.clone());
+                Outcome::Tm(im::check(&e, open))
+            }
+        };
         if live.stop.load(Ordering::Relaxed) {
             all.lock().live.remove(&id);
             return;
         }
         let now = app.now();
-        finish(&app, &all, &id, |j| match r {
-            Ok(c) => {
-                j.status = "ready".into();
-                j.checked_ms = Some(now);
-                j.bytes_read = j.bytes_total;
-                j.cars = c
-                    .cars
-                    .into_iter()
-                    .map(|car| {
-                        let matched = car.suggested.map(crate::ids::car);
-                        CarRow { car, matched }
-                    })
-                    .collect();
-                j.report = Some(c.report);
-            }
-            Err(err) => {
-                let (code, message) = im::error_of(&err);
+        finish(&app, &all, &id, |j| {
+            let fail = |j: &mut Job, code: &str, message: String| {
                 j.status = "failed".into();
                 j.finished_ms = Some(now);
                 j.error = Some(JobError { code: code.into(), message });
+            };
+            match r {
+                Outcome::Tm(Ok(c)) => {
+                    j.kind = Some(KIND_TESLAMATE.into());
+                    j.status = "ready".into();
+                    j.checked_ms = Some(now);
+                    j.bytes_read = j.bytes_total;
+                    j.cars = c
+                        .cars
+                        .into_iter()
+                        .map(|car| {
+                            let matched = car.suggested.map(crate::ids::car);
+                            CarRow { car, matched }
+                        })
+                        .collect();
+                    j.report = Some(c.report);
+                }
+                Outcome::Tm(Err(err)) => {
+                    j.kind = Some(KIND_TESLAMATE.into());
+                    let (code, message) = im::error_of(&err);
+                    fail(j, code, message);
+                }
+                Outcome::Can(Ok(report)) => {
+                    j.kind = Some(KIND_CAN.into());
+                    j.status = "ready".into();
+                    j.checked_ms = Some(now);
+                    j.bytes_read = j.bytes_total;
+                    j.cars = Vec::new();
+                    j.report = Some(report);
+                }
+                Outcome::Can(Err(err)) => {
+                    j.kind = Some(KIND_CAN.into());
+                    let (code, message) = can::error_of(&err);
+                    fail(j, code, message);
+                }
+                Outcome::Failed(code, message) => fail(j, code, message),
             }
         });
     });
@@ -573,13 +701,14 @@ async fn discard(State(app): State<AppState>, Admin(v): Admin, Path(id): Path<St
     let (name, status) = with_jobs(&app, move |app, all| {
         // a chunk being stored finishes first (it would put the job back)
         let one = all.chunk_lock(&id2);
-        let _held = one.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = one.lock().unwrap_or_else(|e| e.into_inner());
         let mut st = all.lock();
         let j = st.jobs.remove(&id2).ok_or_else(|| ApiError::not_found("no_such_import"))?;
         if let Some(l) = st.live.remove(&id2) {
             l.stop.store(true, Ordering::Relaxed);
         }
         drop(st);
+        *held = None;
         all.forget_chunks(&j.id);
         let _ = std::fs::remove_dir_all(folder(app, &j.id));
         Ok((j.name, j.status))
@@ -736,6 +865,9 @@ async fn start(
                 format!("This import is {}; it can start once the whole file is checked.", j.status),
             ));
         }
+        if j.is_can() {
+            return start_can(app, all, e, j);
+        }
         if j.cars.iter().any(|c| c.matched.is_none()) {
             return Err(ApiError::conflict(
                 "cars_unmatched",
@@ -782,7 +914,7 @@ async fn start(
         j.error = None;
         j.bytes_read = 0;
         save(app, &j)?;
-        let live = Live { read: Arc::new(AtomicU64::new(0)), stop: Arc::new(AtomicBool::new(false)) };
+        let live = Live::new(2);
         {
             let mut st = all.lock();
             st.jobs.insert(j.id.clone(), j.clone());
@@ -822,4 +954,54 @@ async fn start(
     let iid = out["id"].as_str().unwrap_or_default().to_string();
     v.audit(&app, "import-started", Some(&target("import", None, &iid)), &format!("Started importing {name}.")).await?;
     Ok(Json(out))
+}
+
+/// Pass 2 of a CAN export: each log checked, stored and judged as an upload is (a run started again skips what an
+/// earlier one stored).
+fn start_can(app: &AppState, all: &Imports, e: Arc<Engine>, mut j: Job) -> ApiResult<(Value, String)> {
+    j.status = "importing".into();
+    j.pass = 2;
+    j.error = None;
+    j.bytes_read = 0;
+    save(app, &j)?;
+    let live = Live::new(1);
+    {
+        let mut st = all.lock();
+        st.jobs.insert(j.id.clone(), j.clone());
+        st.live.insert(j.id.clone(), live.clone());
+    }
+    let (app2, id2, all2) = (app.clone(), j.id.clone(), imports(app)?);
+    tokio::task::spawn_blocking(move || {
+        let gate = all2.gate.get().cloned();
+        let pass =
+            can::Pass { store: true, spool: spool_of(&app2, &id2), gate: gate.as_ref(), stop: live.stop.clone() };
+        let mut open = im::counted(opener(&app2, &id2), live.read.clone(), live.stop.clone());
+        let r = can::guarded(|| open().map_err(can::CanImportError::from).and_then(|r| can::run(&e, r, &pass)));
+        let _ = std::fs::remove_dir_all(spool_of(&app2, &id2));
+        if live.stop.load(Ordering::Relaxed) {
+            // discarded: its folder went with it (unless the spool came back meanwhile: then it goes now)
+            if !all2.lock().jobs.contains_key(&id2) {
+                let _ = std::fs::remove_dir(folder(&app2, &id2));
+            }
+            all2.lock().live.remove(&id2);
+            return;
+        }
+        let now = app2.now();
+        finish(&app2, &all2, &id2, |j| match r {
+            Ok(report) => {
+                j.status = "done".into();
+                j.finished_ms = Some(now);
+                j.bytes_read = j.bytes_total;
+                j.report = Some(report);
+            }
+            Err(err) => {
+                let (code, message) = can::error_of(&err);
+                j.status = "failed".into();
+                j.finished_ms = Some(now);
+                j.error = Some(JobError { code: code.into(), message });
+            }
+        });
+    });
+    let view = view_of(all, &j);
+    Ok((view, j.name))
 }

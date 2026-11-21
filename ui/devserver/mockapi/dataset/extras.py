@@ -123,7 +123,8 @@ def imports(now, h=None):
     cars = [dict(backup_cars(now, h)[0], match="c3")]
     t0 = cars[0]["last_ms"] + 2 * DAY
     return {
-        "im1": {"id": "im1", "name": "teslamate-backup-atlas.sql.xz", "compression": "xz", "status": "done", "pass": 2,
+        "im1": {"id": "im1", "name": "teslamate-backup-atlas.sql.xz", "compression": "xz", "kind": "teslamate",
+                "status": "done", "pass": 2,
                 "bytes_read": 412_000_000, "bytes_total": 412_000_000, "uploaded_bytes": 412_000_000,
                 "started_ms": t0, "checked_ms": t0 + 9 * MIN, "finished_ms": t0 + 40 * MIN, "error": None,
                 "cars": cars, "report": import_report(cars, imported=True)},

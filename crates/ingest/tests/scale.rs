@@ -127,7 +127,9 @@ async fn two_thousand_cars_each_with_a_token_upload_and_memory_stays_bounded() {
     assert!(m.store_cars <= 4, "{m:?}");
     assert!(m.tokens <= CACHE, "{m:?}");
     assert!(m.trust_locks <= 200 && m.store_locks <= 200, "lock tables follow the cars in use now: {m:?}");
-    assert_eq!(m.token_windows, CARS as usize, "one rate window per token used in the last ten minutes");
+    // stored chunks don't count against a token (`api::MAX_REQUESTS_PER_TOKEN`): only the tokens whose last request
+    // here counted keep a window
+    assert!(m.token_windows <= CARS as usize, "at most one rate window per token used in the last ten minutes: {m:?}");
     assert_eq!(m.bad_token_addresses, 0);
     assert_eq!(up.store.folder_scans(), 0, "no upload listed a car's folder, even with its count pushed out");
 

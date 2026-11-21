@@ -66,6 +66,32 @@
   .page-settings-server .ss-facts dt { border-bottom: 0; padding-bottom: 0; }
 }
 
+/* the certificate in use: its SHA-256, names and upload address, each to copy */
+.page-settings-server .ss-cert { display: grid; gap: 0.75rem; margin-top: 0.25rem; min-width: 0; }
+.page-settings-server .ss-certfacts { display: grid; gap: 0.75rem; margin: 0; }
+.ss-fact { display: grid; gap: 0.3125rem; min-width: 0; justify-items: start; }
+.ss-fact dt, .ss-fact-label { margin: 0; font: 600 var(--micro-2)/1.6 var(--sans); letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-2); }
+.ss-fact dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem 0.75rem; min-width: 0; max-width: 100%; }
+.ss-value { font-size: 0.95em; padding: 0.25rem 0.5rem; border-radius: 0.1875rem; background: var(--paper-sunk); color: var(--ink); user-select: all; min-width: 0; max-width: 100%; overflow-wrap: break-word; }
+.ss-sha { display: inline-flex; flex-wrap: wrap; line-height: 1.6; font-variant-numeric: tabular-nums; }
+.ss-sha-group { white-space: nowrap; }
+/* an address breaks only between its parts (after a slash or a colon), never at the hyphen of a host name; a part
+   wider than the line on its own still wraps inside */
+.ss-address-part { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+.ss-fact-big .ss-sha { font-size: 1.05rem; padding: 0.5rem 0.75rem; }
+.ss-cert-names { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.ss-copy { display: inline-flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.ss-copied { color: var(--ink-3); font-size: var(--text-sm); }
+.ss-copied:empty { display: none; }
+.page-settings-server .ss-cert-need { margin: 0; color: var(--ink-2); }
+.page-settings-server .ss-cert-act { margin: 0; }
+.page-settings-server .ss-cert-own { margin: 0; color: var(--ink-2); max-width: 40rem; }
+.ss-newcert { display: grid; gap: 0.75rem; }
+.dialog-text.ss-newcert { margin-bottom: 1.25rem; }
+.ss-newcert p { margin: 0; }
+.ss-newcert-list { list-style: disc; margin: 0; padding-left: 1.25rem; display: grid; gap: 0.5rem; }
+.ss-newcert-name { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+
 /* tables */
 .page-settings-server .ss-actions { display: inline-flex; gap: round(0.5rem, var(--e)); flex-wrap: wrap; }
 .page-settings-server .ss-cars-col, .page-settings-server .ss-summary-col { min-width: round(14rem, var(--e)); }

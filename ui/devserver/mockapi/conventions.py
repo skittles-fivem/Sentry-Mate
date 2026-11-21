@@ -310,6 +310,9 @@ def _cell(v):
         return v
     if isinstance(v, str):
         return _text(v)
+    if isinstance(v, list) and v and all(isinstance(x, dict) and "kind" in x and "label" in x for x in v):
+        # `sources`: smo;tesla_api;import:teslamate
+        return ";".join(x["kind"] + (":" + x["site"] if x.get("site") else "") for x in v)
     if isinstance(v, list) and all(not isinstance(x, (dict, list)) for x in v):
         joined = ";".join("" if x is None else str(x) for x in v)
         return _text(joined) if any(isinstance(x, str) for x in v) else joined

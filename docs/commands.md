@@ -114,8 +114,8 @@ Revoked tokens stay in the list. No command deletes a token or ties it to anothe
 docker exec sentry-mate /sentry-mate fingerprint
 ```
 
-It stays the same across restarts, updates and moves: the certificate's key is in the data folder. To change it, see
-[Changing the certificate](#changing-the-certificate).
+It stays the same across restarts, updates and moves: the certificate's key is in the data folder. The web pages
+show it too (*Settings → Server and access*). To change it, see [Changing the certificate](#changing-the-certificate).
 
 ## The chain report
 
@@ -313,7 +313,7 @@ a flag, except `SENTRY_MATE_TAG`, which goes in a `.env` file. The compose and T
 | `SENTRY_MATE_UPLOAD_PORT` | `--upload-port` | `10100` | The upload port. Also the port `token new` prints and `health` checks. Change the port mapping with it. For only another host port, leave it and change the left number of the port mapping. |
 | `SENTRY_MATE_WEB_PORT` | `--web-port` | `10101` | The web UI's port (HTTPS). `health` checks it too. Change the port mapping with it; for only another host port, leave it and change the left number of the port mapping. |
 | `SENTRY_MATE_BIND` | `--bind` (`serve`) | `0.0.0.0` | The address both ports listen on. `health` connects to 127.0.0.1, so in Docker keep the default: another address makes the container unhealthy. |
-| `SENTRY_MATE_NAMES` | `--names` (`serve`) | none | Names or addresses for the certificate, comma separated (the OPTIONAL lines in the compose and TrueNAS files). Used only when the certificate is made. The bridge pins the SHA-256 and does not check names, so it can stay off. |
+| `SENTRY_MATE_NAMES` | `--names` (`serve`) | none | Names or addresses for the certificate, comma separated (the OPTIONAL lines in the compose and TrueNAS files). Used only when the certificate is made. Spaces around a name are dropped; what is not a host name or an IP address (a name with a space, a wildcard such as `*.lan`) is left out, with a warning in the log. The bridge pins the SHA-256 and does not check names, so it can stay off. |
 | `SENTRY_MATE_MOVE_FROM` | `--move-from` (`serve`) | none | A new server: the old server's address, as the CAN Bridge uses it (`192.168.1.20`, `nas.local:10100`). With `SENTRY_MATE_MOVE_CODE`, it brings the data in as it starts. Ignored once the move is done. See [moving.md](moving.md). |
 | `SENTRY_MATE_MOVE_CODE` | `--move-code` (`serve`) | none | A new server: the move code the old server showed. Not shown in `--help`. |
 | `SENTRY_MATE_OFFER_MOVE` | `--offer-move` (`serve`) | none | The old server: `yes` keeps a move code ready and prints it in its log (home network only); `anywhere` the same for a new server anywhere. For TrueNAS, with no shell. |
@@ -353,7 +353,7 @@ Sentry Six Manager's [docs/can-bridge-api.md](https://github.com/skittles-fivem/
 | Logs per car key | 200,000, then `507 car_full` (no command deletes logs yet) |
 | Free disk | a new upload needs twice its size plus 2 GiB free, else `507 no_space` |
 | Wrong tokens | 20 per address per 10 minutes (IPv6: per /64), then `429` |
-| Requests per token | 1200 per 10 minutes, then `429` |
+| Requests per token | 1200 per 10 minutes, then `429` (a chunk that is stored does not count, unless it finishes a sidecar whose log is not here; an empty chunk is refused with `400 empty_chunk`) |
 
 A log whose sidecar hasn't come after 10 minutes is judged without it (checked every minute).
 
@@ -394,8 +394,16 @@ The keys folder:
 
 ## Changing the certificate
 
-A running server keeps the certificate it started with. To change it, stop the container first and start it again
-after (TrueNAS: *Stop* and *Start* the app):
+**From the web pages (no shell, no restart):** *Settings → Server and access → Certificate, recovery key and
+backups* shows the certificate's SHA-256, the names in it and the CAN Bridge upload address, each with *Copy*.
+*Make a new certificate* makes a new self-signed one for the names saved under *Host names for the certificate*
+(and `localhost`), after your password (and the two-step code when you have it on). Both ports serve it at once,
+and it is kept across restarts. Then put the new SHA-256 in each CAN Bridge's upload settings: until then it refuses
+the server. Browsers ask again to accept the certificate. It is refused while a move code waits or a move or
+restore runs, and when the server runs with your own certificate (below), which it never replaces.
+
+**With a shell:** the server reads its certificate files only when it starts. To change them by hand, stop the
+container first and start it again after (TrueNAS: *Stop* and *Start* the app):
 
 ```bash
 docker compose stop

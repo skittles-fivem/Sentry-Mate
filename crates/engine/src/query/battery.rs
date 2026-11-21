@@ -16,7 +16,7 @@
 use super::drives::each as each_row;
 use super::series::{Columns, bucket_for};
 use super::system::Shown;
-use super::{Paging, Period, QResult, QueryError, Scoped, car_of, r, scoped, source_word};
+use super::{Paging, Period, QResult, QueryError, Scoped, car_of, r, scoped};
 use crate::Engine;
 use crate::records::{self, Outcome};
 use chrono::{Datelike, NaiveDate};
@@ -244,7 +244,8 @@ pub struct Reading {
     pub odometer_km: Option<f64>,
     pub full_pack_kwh: Option<f64>,
     pub usable_kwh: Option<f64>,
-    pub source: &'static str,
+    #[serde(flatten)]
+    pub from: super::Sources,
     /// `charge` (energy added over the % it added) or `bms` (the pack's own reading).
     pub method: &'static str,
     pub charge: Option<String>,
@@ -270,7 +271,7 @@ fn charge_reading(ch: &Charge, buffer: Option<f64>) -> Option<Reading> {
         odometer_km: r(ch.position.as_ref().and_then(|p| p.odometer_km), 1),
         full_pack_kwh: r(buffer.map(|b| usable + b), 2),
         usable_kwh: r(Some(usable), 2),
-        source: source_word(ch.source),
+        from: super::Sources::of(ch.source, ch.inputs),
         method: "charge",
         charge: Some(ch.id.to_string()),
         usable_basis: "charge",
@@ -292,7 +293,7 @@ fn pack_reading_row(p: &PackReading, recent_buffer: Option<f64>) -> Option<Readi
         odometer_km: r(p.odometer_km, 1),
         full_pack_kwh: r(Some(full), 2),
         usable_kwh: r(Some(usable.max(0.0)), 2),
-        source: "can",
+        from: super::Sources::family(model::Source::Live),
         method: "bms",
         charge: None,
         usable_basis: basis,
@@ -319,7 +320,7 @@ fn each_sample(
         return Ok(());
     }
     let mut days = BTreeSet::new();
-    for s in [Source::Can, Source::Teslamate] {
+    for s in model::Stream::ALL {
         days.extend(
             e.db()
                 .days::<Sample>(car, s)?
@@ -332,7 +333,7 @@ fn each_sample(
     for day in days {
         let (x, y) = (day.max(a), day.saturating_add(DAY).min(b));
         let mut rows: Vec<(u64, Vec<Option<f64>>)> = Vec::new();
-        for s in [Source::Can, Source::Teslamate] {
+        for s in model::Stream::ALL {
             let cols = e.db().read_fields::<Sample>(car, s, x, y, names)?;
             for (i, &t) in cols.t_ms.iter().enumerate() {
                 for (k, (_, col)) in cols.values.iter().enumerate() {
@@ -352,7 +353,7 @@ fn each_sample(
 /// The first day with samples (either source), as the start of a period without `from_ms`.
 fn first_sample_ms(e: &Engine, car: CarId) -> QResult<Option<u64>> {
     let mut first: Option<u64> = None;
-    for s in [Source::Can, Source::Teslamate] {
+    for s in model::Stream::ALL {
         if let Some(d) = e.db().days::<Sample>(car, s)?.first() {
             first = Some(first.map_or(d.start_ms, |f| f.min(d.start_ms)));
         }
@@ -366,7 +367,7 @@ fn each_state(e: &Engine, car: CarId, a: u64, b: u64, mut f: impl FnMut(&model::
         return Ok(());
     }
     let mut q = db::Query::between(a, b).oldest_first().limit(500);
-    q.source = Some(Source::Can);
+    q.source = Some(Source::Live);
     loop {
         let page = e.db().list::<StateRow>(car, &q)?;
         for s in &page.items {
@@ -421,7 +422,7 @@ fn factor_day(e: &Engine, car: CarId, start_ms: u64, stamp: String) -> QResult<F
         return Ok(kept);
     }
     let mut fd = FactorDay { stamp, ..FactorDay::default() };
-    for s in [Source::Can, Source::Teslamate] {
+    for s in model::Stream::ALL {
         let cols = e.db().read_fields::<Sample>(
             car,
             s,
@@ -461,16 +462,17 @@ fn factor_day(e: &Engine, car: CarId, start_ms: u64, stamp: String) -> QResult<F
 /// between requests). `ideal` is the same per km of ideal range.
 fn rated_factor(e: &Engine, c: &Car, s: &super::fleet::CarSettings, buffer: Option<f64>) -> QResult<Factor> {
     // the days the car has samples of, newest first, each with what its samples take on disk
-    let mut days: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
-    for (k, src) in [Source::Can, Source::Teslamate].into_iter().enumerate() {
-        for d in e.db().days::<Sample>(c.id, src)? {
-            let v = days.entry(d.start_ms).or_default();
-            if k == 0 { v.0 = d.bytes } else { v.1 = d.bytes }
+    let mut days: BTreeMap<u64, [u64; 3]> = BTreeMap::new();
+    for (k, stream) in model::Stream::ALL.into_iter().enumerate() {
+        for d in e.db().days::<Sample>(c.id, stream)? {
+            days.entry(d.start_ms).or_default()[k] = d.bytes;
         }
     }
     let (mut rated, mut ratio, mut readings, mut as_of) = (Vec::new(), Vec::new(), 0u64, None);
-    for (&start, &(a, b)) in days.iter().rev().take(FACTOR_DAYS) {
-        let fd = factor_day(e, c.id, start, format!("{a}:{b}"))?;
+    for (&start, &[a, b, t]) in days.iter().rev().take(FACTOR_DAYS) {
+        // older stamps had two parts (SMO, TeslaMate); a day without Tesla API data keeps its stamp
+        let stamp = if t == 0 { format!("{a}:{b}") } else { format!("{a}:{b}:{t}") };
+        let fd = factor_day(e, c.id, start, stamp)?;
         if fd.n > 0 {
             let w = (fd.s_en - buffer.unwrap_or(0.0) * fd.s_inv) / fd.n as f64 * 1000.0;
             if w > 0.0 {
@@ -563,7 +565,7 @@ fn new_capacity(
         }
     }
     let mut imported = Vec::new();
-    each_row::<Charge>(e, c.id, 0, u64::MAX, Some(Source::Teslamate), shown, false, |ch| {
+    each_row::<Charge>(e, c.id, 0, u64::MAX, Some(super::SourceFilter::Import(None)), shown, false, |ch| {
         if let Some(u) = charge_usable(&ch) {
             imported.push(u);
         }
@@ -1070,7 +1072,7 @@ pub fn capacity(
                         odometer_km: v.iter().rev().find_map(|x| x.odometer_km),
                         full_pack_kwh: r(median(v.iter().filter_map(|x| x.full_pack_kwh).collect()), 2),
                         usable_kwh: r(median(v.iter().filter_map(|x| x.usable_kwh).collect()), 2),
-                        source: "can",
+                        from: super::Sources::family(model::Source::Live),
                         method: "bms",
                         charge: None,
                         usable_basis: basis,
@@ -1419,6 +1421,8 @@ pub fn projected_range(e: &Engine, car: CarId, q: &RangeQuery, now_ms: u64) -> Q
         bucket_ms: w,
         coverage_pct: Vec::new(),
         state: Vec::new(),
+        sources: Vec::new(),
+        source_label: model::Origin::label_of(&[]),
     };
     let fixed: Option<u64> = match q.bucket.as_deref() {
         None | Some("") | Some("auto") => None,
@@ -1517,7 +1521,20 @@ pub fn projected_range(e: &Engine, car: CarId, q: &RangeQuery, now_ms: u64) -> Q
         );
     }
     let (coverage_pct, state) = coverage_streamed(e, car, &edges, end)?;
-    Ok(scoped(&c, Columns { fields, t_ms: starts, values, bucket_ms: w, coverage_pct, state }))
+    let gave = super::series::origins_between(e, car, starts.first().copied().unwrap_or(end), end)?;
+    Ok(scoped(
+        &c,
+        Columns {
+            fields,
+            t_ms: starts,
+            values,
+            bucket_ms: w,
+            coverage_pct,
+            state,
+            sources: super::source_refs(&gave),
+            source_label: model::Origin::label_of(&gave),
+        },
+    ))
 }
 
 /// Per bucket (`edges[i]..edges[i + 1]`, the last cut at `end`): the share with known data (asleep counts as known)
@@ -1959,7 +1976,7 @@ mod tests {
             odometer_km: None,
             full_pack_kwh: None,
             usable_kwh: None,
-            source: "can",
+            from: crate::query::Sources::family(model::Source::Live),
             method: "charge",
             charge: Some(t.to_string()),
             usable_basis: "charge",

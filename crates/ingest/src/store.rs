@@ -73,6 +73,10 @@ pub struct Received {
     pub complete: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub already: bool,
+    /// A sidecar that arrived with no log of its name stored: nothing bounds how many of those a car keeps (the logs
+    /// per car don't count them), so its request counts against the token's rate.
+    #[serde(skip)]
+    pub orphan: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -291,6 +295,11 @@ impl Inner {
         if sha256.len() != 64 || !sha256.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
             return Err(ApiError::new(400, "bad_sha256", "Upload-SHA256 must be the whole file's SHA-256 in hex."));
         }
+        // an empty chunk adds nothing (and would start the upload over at offset 0 every time, at the cost of synced
+        // disk writes): refused
+        if body.is_empty() {
+            return Err(ApiError::new(400, "empty_chunk", "A chunk must hold at least one byte."));
+        }
         let limit = if n.sidecar { MAX_SIDECAR } else { MAX_FILE };
         if length > limit {
             let what = if n.sidecar { "sidecar" } else { "log" };
@@ -307,7 +316,7 @@ impl Inner {
         let had = self.state_of(name)?;
         if had.state == State::Complete {
             if had.length == Some(length) && self.hash_complete(&p.file, &p.label)?.0 == sha256 {
-                return Ok(Received { received: length, length, complete: true, already: true });
+                return Ok(Received { received: length, length, complete: true, already: true, orphan: false });
             }
             return Err(ApiError::new(409, "exists_different", "A different file with this name is already here."));
         }
@@ -380,7 +389,7 @@ impl Inner {
         records.append(body)?;
         let received = records.plain_len();
         if received < length {
-            return Ok(Received { received, length, complete: false, already: false });
+            return Ok(Received { received, length, complete: false, already: false, orphan: false });
         }
 
         // the last byte: kept only if it is the file the app hashed, sealed again as a finished file
@@ -441,7 +450,12 @@ impl Inner {
                 tracing::warn!("CAN upload: could not write a car's log count: {e}");
             }
         }
-        Ok(Received { received, length, complete: true, already: false })
+        let orphan = n.sidecar
+            && match name.strip_suffix(".json") {
+                Some(log) => !self.paths(log)?.file.exists(),
+                None => true,
+            };
+        Ok(Received { received, length, complete: true, already: false, orphan })
     }
 
     /// Drops one car's unfinished uploads older than `max_age_ms`, and leftovers of a crash while sealing or while

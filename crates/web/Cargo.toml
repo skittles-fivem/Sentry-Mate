@@ -13,10 +13,12 @@ workspace = true
 accounts = { path = "../accounts" }
 engine = { path = "../engine" }
 gate = { path = "../gate" }
+import = { path = "../import" }
 model = { path = "../model" }
 moving = { path = "../moving" }
 mqtt = { path = "../mqtt" }
 places = { path = "../places" }
+tesla = { path = "../tesla" }
 vault = { path = "../vault" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
 base64 = "0.22"

@@ -1,6 +1,6 @@
 //! CSV answers (docs/ui-api.md, "CSV"): a UTF-8 byte order mark, a header row, nested fields as dotted columns
-//! (`start.place.name`), lists of plain values joined with `;`, null as an empty cell, `Content-Disposition:
-//! attachment`. Text starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'` so a
+//! (`start.place.name`), lists of plain values joined with `;` (an origin in `sources` as `smo`, `tesla_api` or
+//! `import:teslamate`), null as an empty cell, `Content-Disposition: attachment`. Text starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'` so a
 //! spreadsheet shows it instead of running it; numbers are written as they are.
 //!
 //! A CSV answer carries every matching row, not one page: a handler that answers CSV gathers them all first.
@@ -28,6 +28,14 @@ fn flatten(prefix: &str, v: &Value, out: &mut Vec<(String, String)>) {
 
 fn plain(v: &Value) -> String {
     match v {
+        // an origin in `sources`: `smo`, `tesla_api`, `import:teslamate`
+        Value::Object(m) if m.get("kind").is_some_and(Value::is_string) && m.contains_key("label") => {
+            let kind = m.get("kind").and_then(Value::as_str).unwrap_or("");
+            match m.get("site").and_then(Value::as_str) {
+                Some(site) => format!("{kind}:{site}"),
+                None => kind.to_string(),
+            }
+        }
         Value::Null => String::new(),
         Value::String(s) => s.clone(),
         Value::Bool(b) => b.to_string(),
@@ -152,5 +160,21 @@ mod tests {
         assert_eq!(lines[0], "id,kwh,start.place.name,tags,note,start.place");
         assert_eq!(lines[1], "1,-1.5,'=HYPERLINK(1),a;b,,");
         assert_eq!(lines[2], "2,,,,\"a, \"\"b\"\"\",");
+    }
+
+    #[test]
+    fn sources_are_words() {
+        let items = vec![json!({
+            "id": "1",
+            "sources": [
+                { "kind": "smo", "label": "Data from SMO" },
+                { "kind": "import", "site": "teslamate", "label": "Imported from TeslaMate" },
+            ],
+            "source_label": "Data from SMO; imported from TeslaMate",
+        })];
+        let out = rows(&items);
+        let lines: Vec<&str> = out.trim_start_matches('\u{feff}').split("\r\n").collect();
+        assert_eq!(lines[0], "id,source_label,sources");
+        assert_eq!(lines[1], "1,Data from SMO; imported from TeslaMate,smo;import:teslamate");
     }
 }

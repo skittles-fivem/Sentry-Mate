@@ -72,7 +72,8 @@ mod tests {
                 start_ms: a * 60_000,
                 end_ms: b * 60_000,
                 buses: Vec::new(),
-                source: Source::Can,
+                source: Source::Live,
+                inputs: model::Inputs::SMO,
             })
             .collect()
     }

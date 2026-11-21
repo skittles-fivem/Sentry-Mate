@@ -109,6 +109,70 @@ async fn plain_http_wrong_tokens_and_unknown_paths() {
     assert_eq!((s, b["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
 }
 
+/// Stored chunks don't count against the token's requests: a bridge with a backlog of more files than that (a few
+/// days away from home) goes on at full speed instead of a file a second after a fast start. Everything else still
+/// counts.
+#[tokio::test]
+async fn stored_chunks_do_not_use_up_the_token_s_requests() {
+    let t = setup().await;
+    let n = ingest::api::MAX_REQUESTS_PER_TOKEN + 50;
+    let bytes: Vec<u8> = (0..n + 10).map(|i| (i % 251) as u8).collect();
+    for off in 0..n {
+        let (s, b) = put(&t, LOG, &bytes, off, &bytes[off..off + 1]).await;
+        assert_eq!((s, b["received"].as_u64()), (StatusCode::OK, Some(off as u64 + 1)), "chunk {off}: {b}");
+    }
+    // a refused chunk counts, and so do pings
+    let (s, _) = put(&t, LOG, &bytes, 0, &bytes[..1]).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let mut last = StatusCode::OK;
+    for _ in 0..ingest::api::MAX_REQUESTS_PER_TOKEN {
+        last = call(&t, "GET", "/api/can/logs/ping", Some(&t.token), &[], vec![], true).await.0;
+    }
+    assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn empty_chunks_are_refused_and_count() {
+    let t = setup().await;
+    let bytes = [7u8; 100];
+    let mut last = (StatusCode::OK, Value::Null);
+    for _ in 0..=ingest::api::MAX_REQUESTS_PER_TOKEN {
+        last = put(&t, LOG, &bytes, 0, &[]).await;
+        if last.0 != StatusCode::BAD_REQUEST {
+            break;
+        }
+        assert_eq!(last.1["code"].as_str(), Some("empty_chunk"), "{}", last.1);
+    }
+    assert_eq!(last.0, StatusCode::TOO_MANY_REQUESTS, "{}", last.1);
+}
+
+#[tokio::test]
+async fn sidecars_with_no_log_here_count() {
+    let t = setup().await;
+    let body = br#"{"x":1}"#;
+    let mut last = (StatusCode::OK, Value::Null);
+    for i in 0..ingest::api::MAX_REQUESTS_PER_TOKEN + 10 {
+        last = put(&t, &format!("abcdef123456_20261108T143000Z_{i}.log.xz.json"), body, 0, body).await;
+        if last.0 != StatusCode::CREATED {
+            break;
+        }
+    }
+    assert_eq!(last.0, StatusCode::TOO_MANY_REQUESTS, "{}", last.1);
+}
+
+#[tokio::test]
+async fn a_sidecar_after_its_log_does_not_count() {
+    let t = setup().await;
+    let body = br#"{"x":1}"#;
+    for i in 0..ingest::api::MAX_REQUESTS_PER_TOKEN / 2 + 10 {
+        let log = format!("abcdef123456_20261108T143000Z_{i}.log.xz");
+        let (s, b) = put(&t, &log, &[i as u8; 10], 0, &[i as u8; 10]).await;
+        assert_eq!(s, StatusCode::CREATED, "log {i}: {b}");
+        let (s, b) = put(&t, &format!("{log}.json"), body, 0, body).await;
+        assert_eq!(s, StatusCode::CREATED, "sidecar {i}: {b}");
+    }
+}
+
 #[tokio::test]
 async fn a_log_uploads_in_chunks_and_resumes() {
     let t = setup().await;

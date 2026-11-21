@@ -5,7 +5,7 @@ use super::{QResult, QueryError, Scoped, car_of, r, scoped};
 use crate::Engine;
 use crate::pipeline::all_rows;
 use db::StateRow;
-use model::{CarId, Sample, Source, State};
+use model::{CarId, Sample, State};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -123,6 +123,9 @@ pub struct Columns {
     pub bucket_ms: u64,
     pub coverage_pct: Vec<f64>,
     pub state: Vec<Option<&'static str>>,
+    /// The inputs and imports that gave the points (empty when there were none).
+    pub sources: Vec<super::SourceRef>,
+    pub source_label: String,
 }
 
 /// `/series` options.
@@ -248,9 +251,14 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     let mut accs: Vec<Vec<Acc>> = vec![vec![Acc::default(); n]; q.fields.len()];
     // a day at a time, only the days that have samples: the whole history never sits in memory at once
     let mut days = std::collections::BTreeSet::new();
-    let sources: Vec<Source> =
-        [Source::Can, Source::Teslamate].into_iter().filter(|s| source.is_none_or(|x| x == *s)).collect();
-    for &s in &sources {
+    let streams: Vec<model::Stream> = match source {
+        None => model::Stream::ALL.to_vec(),
+        Some(super::SourceFilter::Live) => vec![model::Stream::Smo, model::Stream::TeslaApi],
+        Some(f) => vec![f.stream()],
+    };
+    // the streams that gave a point to the answer
+    let mut gave = std::collections::BTreeSet::new();
+    for &s in &streams {
         days.extend(
             e.db()
                 .days::<Sample>(car, s)?
@@ -262,8 +270,28 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     for day in days {
         let (x, y) = (day.max(a), day.saturating_add(DAY).min(b));
         let mut chunk: Vec<Sample> = Vec::new();
-        for &s in &sources {
-            chunk.extend(e.db().read_points::<Sample>(car, s, x, y)?);
+        // SMO's and the API's seconds fused as the timeline is (inside SMO's coverage SMO's second, no API second
+        // beside it), never summed
+        let live = streams.contains(&model::Stream::Smo) && streams.contains(&model::Stream::TeslaApi);
+        if live {
+            let (pts, smo, api) = e.live_fused(car, x, y)?;
+            if smo {
+                gave.insert(model::Stream::Smo.origin());
+            }
+            if api {
+                gave.insert(model::Stream::TeslaApi.origin());
+            }
+            chunk.extend(pts);
+        }
+        for &s in &streams {
+            if live && matches!(s, model::Stream::Smo | model::Stream::TeslaApi) {
+                continue;
+            }
+            let pts = e.db().read_points::<Sample>(car, s, x, y)?;
+            if !pts.is_empty() {
+                gave.insert(s.origin());
+            }
+            chunk.extend(pts);
         }
         chunk.sort_by_key(|s| s.t_ms);
         for s in &chunk {
@@ -283,7 +311,31 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
         values.insert(name.clone(), accs[*fi].iter_mut().map(|acc| r(acc.get(how), 4)).collect());
     }
     let (coverage, state) = coverage_and_state(e, car, &t_ms, w, b, source)?;
-    Ok(scoped(&c, Columns { fields: q.fields.clone(), t_ms, values, bucket_ms: w, coverage_pct: coverage, state }))
+    let gave: Vec<model::Origin> = gave.into_iter().collect();
+    Ok(scoped(
+        &c,
+        Columns {
+            fields: q.fields.clone(),
+            t_ms,
+            values,
+            bucket_ms: w,
+            coverage_pct: coverage,
+            state,
+            sources: super::source_refs(&gave),
+            source_label: model::Origin::label_of(&gave),
+        },
+    ))
+}
+
+/// The streams with sample days meeting `[a, b)`, as origins (what a chart over that window draws from).
+pub(crate) fn origins_between(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec<model::Origin>> {
+    let mut out = Vec::new();
+    for s in model::Stream::ALL {
+        if e.db().days::<Sample>(car, s)?.iter().any(|d| d.start_ms.saturating_add(DAY) > a && d.start_ms < b) {
+            out.push(s.origin());
+        }
+    }
+    Ok(out)
 }
 
 /// Per bucket of `t_ms` (each `w` long, the last ending by `b`): the share with known data (asleep counts as known)
@@ -294,12 +346,15 @@ pub(crate) fn coverage_and_state(
     t_ms: &[u64],
     w: u64,
     b: u64,
-    source: Option<Source>,
+    source: Option<super::SourceFilter>,
 ) -> QResult<(Vec<f64>, Vec<Option<&'static str>>)> {
     let n = t_ms.len();
     let first = t_ms.first().copied().unwrap_or(b);
     let spans: Vec<model::StateSpan> =
-        all_rows::<StateRow>(e.db(), car, first, b, source)?.into_iter().map(|s| s.span).collect();
+        all_rows::<StateRow>(e.db(), car, first, b, source.map(super::SourceFilter::family))?
+            .into_iter()
+            .map(|s| s.span)
+            .collect();
     let mut coverage = Vec::with_capacity(n);
     let mut state = Vec::with_capacity(n);
     let drives =

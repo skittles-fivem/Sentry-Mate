@@ -16,6 +16,7 @@ const BACKUP: &[u8] = include_bytes!("../../import/tests/fixtures/teslamate-4.4.
 
 struct Kit {
     s: TestServer,
+    imports: Arc<web::resources::imports::Imports>,
     engine: Engine,
     car: CarId,
     _dir: tempfile::TempDir,
@@ -30,6 +31,11 @@ impl web::CarDirectory for EngineCars {
 }
 
 async fn kit() -> Kit {
+    kit_with(None).await
+}
+
+/// `per_minute`: the request rate per address (the server's own when `None`).
+async fn kit_with(per_minute: Option<u32>) -> Kit {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
@@ -54,6 +60,7 @@ async fn kit() -> Kit {
             time_zone: "Europe/Amsterdam".into(),
             efficiency_wh_km: None,
             created_ms: 1_790_000_000_000,
+            inputs: Default::default(),
         })
         .unwrap();
     let store = ingest::Store::new(data.join("can"), v);
@@ -61,13 +68,17 @@ async fn kit() -> Kit {
     // started, so the charges' views (which read the drive going on) answer
     engine.start().unwrap();
     let (e2, d2) = (engine.clone(), db.clone());
+    let imports = Arc::new(web::resources::imports::Imports::new());
+    let i2 = imports.clone();
     let s = TestServer::start_with(move |b| {
-        b.cars(Arc::new(EngineCars(d2)))
-            .service(Arc::new(e2))
-            .service(Arc::new(web::resources::imports::Imports::new()))
+        let b = b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2)).service(i2);
+        match per_minute {
+            Some(n) => b.requests_per_minute(n),
+            None => b,
+        }
     })
     .await;
-    Kit { s, engine, car: car.id, _dir: dir }
+    Kit { s, imports, engine, car: car.id, _dir: dir }
 }
 
 async fn chunk(c: &mut Client, id: &str, off: usize, bytes: &[u8], sha: Option<String>) -> web::testkit::Res {
@@ -124,7 +135,7 @@ async fn upload_check_match_import_and_discard() {
     assert_eq!((r.status, r.code()), (400, Some("bad_input".into())));
     let r = admin.post("/api/v1/imports", json!({ "bytes_total": 0 })).await;
     assert_eq!(r.status, 422);
-    let r = admin.post("/api/v1/imports", json!({ "bytes_total": 5, "compression": "zip" })).await;
+    let r = admin.post("/api/v1/imports", json!({ "bytes_total": 5, "compression": "bzip2" })).await;
     assert_eq!(r.status, 422);
 
     // the upload
@@ -322,6 +333,27 @@ async fn upload(c: &mut Client, bytes: &[u8], step: usize) -> String {
         off += part.len();
     }
     id
+}
+
+/// An upload that started fast must not slow down as it goes:
+///
+/// - its file is opened once, not once per chunk: opening it walks every record already stored, so a file opened per
+///   chunk made each chunk cost more than the one before;
+/// - its stored chunks don't use up the address's request rate: a big file sent quickly would otherwise empty the
+///   bucket and go on at the rate's pace. Here the rate is 10 a minute (a bucket of 20), and 60 chunks go through
+///   at once; other requests still count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upload_opens_its_file_once_and_its_chunks_do_not_use_up_the_rate() {
+    let k = kit_with(Some(10)).await;
+    let mut admin = k.s.admin().await;
+    let step = BACKUP.len().div_ceil(60);
+    let id = upload(&mut admin, BACKUP, step).await;
+    assert_eq!(k.imports.upload_opens(), 1, "60 chunks, one open");
+    let mut last = 0;
+    for _ in 0..20 {
+        last = admin.get(&format!("/api/v1/imports/{id}")).await.status;
+    }
+    assert_eq!(last, 429, "reads still count");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

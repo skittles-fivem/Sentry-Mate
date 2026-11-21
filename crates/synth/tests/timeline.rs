@@ -18,8 +18,16 @@ fn timeline_of(s: &Scenario) -> (timeline::Timeline, Report) {
         samples.extend(r.samples);
         facts.push(r.facts);
     }
-    let input =
-        timeline::Input { car: 1, from_ms: s.start_ms, to_ms: s.end_ms(), samples: &samples, logs: &facts, holes: &[] };
+    let input = timeline::Input {
+        car: 1,
+        from_ms: s.start_ms,
+        to_ms: s.end_ms(),
+        samples: &samples,
+        logs: &facts,
+        holes: &[],
+        api: &[],
+        marks: &[],
+    };
     (timeline::build(&input, &timeline::Params::default()), logs.report())
 }
 

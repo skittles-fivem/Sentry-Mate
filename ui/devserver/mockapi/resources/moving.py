@@ -240,18 +240,24 @@ def _peer_after_ms(st):
 
 
 def _reauth(req, body):
-    """The account's own password again, and its two-step code when two-step is on: 403 wrong_password or
-    wrong_two_step, throttled like sign-in."""
+    """The account's own password again, and its two-step code when two-step is on: 400 bad_input without one,
+    403 wrong_password or wrong_two_step (throttled like sign-in) when it is not right."""
     from .auth import _check_throttle, _fail
     from ..store import DEV_TWO_STEP_CODE
     st = req.store
     a = req.account
+    pw = body.get("password")
+    # missing (or not text): 400 before anything else, as the real server reads the body first
+    if not isinstance(pw, str):
+        raise bad_input({"password": "Required." if pw is None else "Must be text."})
+    if body.get("two_step") is not None and not isinstance(body.get("two_step"), str):
+        raise bad_input({"two_step": "Must be text."})
     key = "name:" + a["name"].strip().lower()
     _check_throttle(st, key)
-    pw = body.get("password")
-    if not isinstance(pw, str) or not pw:
-        raise ApiError(403, "wrong_password", "Type your password again to do this.",
-                       fields={"password": "Required: your own password."})
+    if not pw:
+        _fail(st, key)
+        raise ApiError(403, "wrong_password", "That password is not right. Type your own password again.",
+                       fields={"password": "Not your password."})
     if not secrets.compare_digest(pw.encode(), a["password"].encode()):
         _fail(st, key)
         raise ApiError(403, "wrong_password", "That password is not right. Type your own password again.",

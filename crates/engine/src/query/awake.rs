@@ -1,7 +1,7 @@
 //! `/cars/{car}/awake-reasons`: the spans the car was awake while not driving, with the buses that were awake, why it
 //! was awake (as far as the decoded signals tell) and the pack's average power over the span.
 
-use super::{List, Paging, Period, QResult, Scoped, car_of, paginate, r, scoped, source_word};
+use super::{List, Paging, Period, QResult, Scoped, car_of, paginate, r, scoped};
 use crate::Engine;
 use crate::pipeline::all_rows;
 use db::StateRow;
@@ -20,7 +20,8 @@ pub struct AwakeSpan {
     pub reasons: Vec<&'static str>,
     /// The pack's mean power over the span, kW (positive out of the pack); null without samples.
     pub avg_power_kw: Option<f64>,
-    pub source: &'static str,
+    #[serde(flatten)]
+    pub from: super::Sources,
 }
 
 /// The awake (online) spans of `spans` with `busy` (drives: start, end) taken out, joined where they touch.
@@ -106,21 +107,26 @@ pub fn awake_reasons(e: &Engine, car: CarId, period: &Period, paging: &Paging) -
     // from a little earlier: a span that began before the period and goes on into it is that span, not a new one
     let from = a.saturating_sub(2 * DAY);
     let spans = super::timeline::joined(
-        all_rows::<StateRow>(e.db(), car, from, b, Some(Source::Can))?.into_iter().map(|s| s.span).collect(),
+        all_rows::<StateRow>(e.db(), car, from, b, Some(Source::Live))?.into_iter().map(|s| s.span).collect(),
     );
-    let drives: Vec<(u64, u64)> = super::drives::rows(e, car, &Period::new(Some(from), Some(b)), Some(Source::Can))?
-        .iter()
-        .map(|d| (d.start_ms, d.end_ms))
-        .collect();
+    let drives: Vec<(u64, u64)> =
+        super::drives::rows(e, car, &Period::new(Some(from), Some(b)), Some(super::SourceFilter::Live))?
+            .iter()
+            .map(|d| (d.start_ms, d.end_ms))
+            .collect();
     let pieces: Vec<(u64, u64, Vec<String>, Source)> =
         awake_pieces(&spans, &drives).into_iter().filter(|p| p.0 >= a && p.0 < b).collect();
     let sig = format!("awake|{car}|{}", period.sig());
     let page = paginate(pieces, |p| (p.0 as f64, p.0.to_string()), true, &sig, paging, false)?;
-    let charges: Vec<(u64, u64)> =
-        super::charges::rows(e, car, &Period::new(Some(from.saturating_sub(5 * DAY)), Some(b)), Some(Source::Can))?
-            .iter()
-            .map(|ch| (ch.start_ms, ch.end_ms))
-            .collect();
+    let charges: Vec<(u64, u64)> = super::charges::rows(
+        e,
+        car,
+        &Period::new(Some(from.saturating_sub(5 * DAY)), Some(b)),
+        Some(super::SourceFilter::Live),
+    )?
+    .iter()
+    .map(|ch| (ch.start_ms, ch.end_ms))
+    .collect();
     let mut items = Vec::with_capacity(page.items.len());
     for (x, y, buses, src) in page.items {
         let mut reasons = Vec::new();
@@ -133,7 +139,7 @@ pub fn awake_reasons(e: &Engine, car: CarId, period: &Period, paging: &Paging) -
             buses: bus_words(&buses),
             reasons,
             avg_power_kw: r(mean_of(e, car, src, x, y, |s| s.battery_power_kw)?, 3),
-            source: source_word(src),
+            from: super::Sources::family(src),
         });
     }
     Ok(scoped(&c, List { items, next: page.next, total: None }))
@@ -150,7 +156,8 @@ mod tests {
             start_ms: a,
             end_ms: b,
             buses: buses.iter().map(|s| s.to_string()).collect(),
-            source: Source::Can,
+            source: Source::Live,
+            inputs: model::Inputs::NONE,
         }
     }
 

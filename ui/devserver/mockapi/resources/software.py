@@ -20,6 +20,7 @@ from ..util import iso_utc, median, r
 from .battery import bms_full
 from .charges import cached_charge_row
 from .drives import cached_drive_row
+from .. import sources as S
 
 VERSION_RX = re.compile(r"\d{4}\.\d{1,2}(\.\d{1,3}){0,2}")
 
@@ -49,7 +50,7 @@ def update_rows(req, h):
             "charges": len(on), "full_range_km": r(car.full_range_km(mid), 1),
             "full_pack_kwh": r(bms_full(car, mid), 2) if u.source == "can" else None,
             "until_ms": ups[i + 1].start if i + 1 < len(ups) else None,
-            "source": u.source,
+            **S.of_seg(u),
         })
         prev_end = u.end
     return rows

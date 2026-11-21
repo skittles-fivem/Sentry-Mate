@@ -743,7 +743,7 @@ fn effect(
                 out.note("charge", ch.id, car, ch.start_ms, if in_focus(a) { "named" } else { "unnamed" });
             }
             let touched = in_focus(a) || in_focus(b);
-            if !touched || ch.source != Source::Can || !ended(e, &ch, now) {
+            if !touched || ch.source != Source::Live || !ended(e, &ch, now) {
                 return Ok(true);
             }
             let kept = records::cost(e.db(), car, ch.id, ch.start_ms)?;
@@ -1273,9 +1273,9 @@ pub fn reprice(
     let (mut before, mut after): (BTreeMap<String, f64>, BTreeMap<String, f64>) = Default::default();
     for &car in cars {
         let tz = super::car_of(e, car)?.time_zone;
-        let shown = Shown::new(e, car, Some(Source::Can))?;
+        let shown = Shown::new(e, car, Some(super::SourceFilter::Live))?;
         let mut changed_here = false;
-        each::<Charge>(e, car, a, b, Some(Source::Can), &shown, false, |ch| {
+        each::<Charge>(e, car, a, b, Some(super::SourceFilter::Live), &shown, false, |ch| {
             let here = ch.position.as_ref().and_then(|p| places.place_at(p.lat, p.lon)).map(|p| p.id);
             if here != Some(place) || !ended(e, &ch, now) {
                 return Ok(true);

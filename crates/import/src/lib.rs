@@ -34,6 +34,7 @@ mod schema;
 pub mod state;
 mod value;
 mod vin;
+pub mod zip;
 
 pub use input::{Compression, Encoding};
 pub use report::{CarReport, Links, Report, Skip, TableReport};

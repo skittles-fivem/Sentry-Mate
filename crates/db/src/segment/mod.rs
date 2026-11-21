@@ -2,8 +2,8 @@
 //! one series per kind and source, so a CAN rebuild never touches what a TeslaMate import brought:
 //!
 //! ```text
-//! db/cars/<car>/seg/<samples|charge>.<can|teslamate>/<YYYY-MM-DD>.snap   the day, columns (see columns), compressed
-//! db/cars/<car>/seg/<samples|charge>.<can|teslamate>/<YYYY-MM-DD>.log    windows written since: (from, to, points)
+//! db/cars/<car>/seg/<samples|charge>.<can|tesla-api|teslamate>/<YYYY-MM-DD>.snap   the day, columns (see columns), compressed
+//! db/cars/<car>/seg/<samples|charge>.<can|tesla-api|teslamate>/<YYYY-MM-DD>.log    windows written since: (from, to, points)
 //! ```
 //!
 //! A write replaces every point of a window. A window that covers whole days writes those days' snapshots
@@ -22,7 +22,7 @@ use crate::file::{Ctx, Kind, Which, check_header, header, remove_if_exists};
 use crate::journal::{Files, Journal};
 use crate::logged::{LEVEL_COLD, Logged, LoggedFile, append_only, snapshot_head};
 use columns::{Reader, put_varint};
-use model::Source;
+use model::Stream;
 use std::path::{Path, PathBuf};
 
 pub const DAY_MS: u64 = 86_400_000;
@@ -101,15 +101,8 @@ pub(crate) fn parse_day(name: &str) -> Option<u64> {
     (days >= 0 && day_name(days as u64) == name).then_some(days as u64)
 }
 
-pub(crate) fn source_name(s: Source) -> &'static str {
-    match s {
-        Source::Can => "can",
-        Source::Teslamate => "teslamate",
-    }
-}
-
-pub(crate) fn series_dir<P: Point>(car_dir: &Path, source: Source) -> PathBuf {
-    car_dir.join("seg").join(format!("{}.{}", P::SERIES, source_name(source)))
+pub(crate) fn series_dir<P: Point>(car_dir: &Path, stream: Stream) -> PathBuf {
+    car_dir.join("seg").join(format!("{}.{}", P::SERIES, stream.dir_name()))
 }
 
 fn day_files(dir: &Path, day: u64) -> Files {
@@ -239,7 +232,7 @@ fn check_points<P: Point>(from: u64, to: u64, points: &[P]) -> Result<()> {
 pub(crate) fn write<P: Point>(
     ctx: &Ctx,
     car_dir: &Path,
-    source: Source,
+    source: Stream,
     from: u64,
     to: u64,
     points: &[P],
@@ -324,7 +317,7 @@ fn days_in(dir: &Path, from: u64, to: u64) -> Result<Vec<u64>> {
 }
 
 /// Every point of `[from, to)`, in time order.
-pub(crate) fn read<P: Point>(ctx: &Ctx, car_dir: &Path, source: Source, from: u64, to: u64) -> Result<Vec<P>> {
+pub(crate) fn read<P: Point>(ctx: &Ctx, car_dir: &Path, source: Stream, from: u64, to: u64) -> Result<Vec<P>> {
     let dir = series_dir::<P>(car_dir, source);
     let mut out = Vec::new();
     for day in days_in(&dir, from, to)? {
@@ -341,7 +334,7 @@ pub(crate) fn read<P: Point>(ctx: &Ctx, car_dir: &Path, source: Source, from: u6
 pub(crate) fn read_fields<P: Point>(
     ctx: &Ctx,
     car_dir: &Path,
-    source: Source,
+    source: Stream,
     from: u64,
     to: u64,
     names: &[&str],
@@ -372,7 +365,7 @@ pub(crate) fn read_fields<P: Point>(
 }
 
 /// The days of a series, with their size.
-pub(crate) fn days<P: Point>(car_dir: &Path, source: Source) -> Result<Vec<DayInfo>> {
+pub(crate) fn days<P: Point>(car_dir: &Path, source: Stream) -> Result<Vec<DayInfo>> {
     let dir = series_dir::<P>(car_dir, source);
     let mut out = Vec::new();
     for day in list_days(&dir)? {
@@ -401,7 +394,7 @@ pub(crate) fn bytes(car_dir: &Path) -> Result<u64> {
 
 /// Packs the days of a series in `[from, before)` at the cold level (nothing left in their journals). Returns how
 /// many it packed.
-pub(crate) fn settle<P: Point>(ctx: &Ctx, car_dir: &Path, source: Source, from: u64, before: u64) -> Result<usize> {
+pub(crate) fn settle<P: Point>(ctx: &Ctx, car_dir: &Path, source: Stream, from: u64, before: u64) -> Result<usize> {
     let dir = series_dir::<P>(car_dir, source);
     let mut n = 0;
     for day in list_days(&dir)? {

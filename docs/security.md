@@ -3,6 +3,7 @@
 [← Back to the README](../README.md)
 
 - [Security](#security)
+- [The Tesla API input](#the-tesla-api-input)
 - [No way back without a backup](#no-way-back-without-a-backup)
 - [Privacy](#privacy)
 - [When a log fails its check](#when-a-log-fails-its-check)
@@ -11,7 +12,10 @@
 ## Security
 
 - TLS 1.3 only on the upload port; plain HTTP and older TLS are refused. The certificate is self-signed and made on
-  first start, its private key sealed in the vault; the app pins it by SHA-256.
+  first start, its private key sealed in the vault; the app pins it by SHA-256. An admin can make a new one from the
+  web pages (Settings → Server and access, with the password again and the two-step code): it is written beside the
+  old one and renamed into place, so a power cut never leaves none, and it is never made over the owner's own
+  certificate or while a move is under way. Each CAN Bridge then needs the new SHA-256.
 - The upload port can't be filled without a token: connections are counted per address (an IPv6 /64 is one), the
   TLS handshake and the headers must come within 10 s each, and a connection that has not shown a valid token is
   closed, oldest first, to make room for a new one, so the CAN Bridge's uploads still get in.
@@ -58,8 +62,14 @@
   at both (the key file would be in the data's backups), and a folder it can't write to (most often root's).
 - **A new vault is never made over an existing key file.** An empty or wrong data folder next to a key file stops it
   instead, so the key file that opens your data is never replaced.
-- Nothing leaves the server: while it runs, Sentry Mate makes no outgoing connections. The one exception is a new
-  server during a move you started: it connects to the old server's upload port, and nowhere else.
+- Nothing leaves the server unless an admin turns it on. These are all the outgoing connections the server makes,
+  and the switch for each (Settings → Integrations lists them, `GET /api/v1/network`):
+  - **MQTT**: to the broker an admin sets up, while MQTT is on.
+  - **The Tesla API**: to Tesla's own hosts only, once an admin adds a Tesla account. See
+    [The Tesla API input](#the-tesla-api-input).
+  - **A move**: a new server, during a move you started, connects to the old server's upload port, and nowhere else.
+
+  With none of these turned on, Sentry Mate makes no outgoing connection at all.
 - The viewers' browsers load nothing from outside either. Map tiles are offline until an admin picks online tiles in
   Settings; until then the pages' Content-Security-Policy names no outside host and every map draws the track on a
   plain background. Online tiles send each viewer's browser to that one tile server, which then sees the viewer's
@@ -97,9 +107,10 @@
   tries, the web UI is HTTPS only (a password never crosses the network in the clear), and two-step sign-in (or the
   "two-step from outside" rule) puts a code from an app after the password.
 - **Changes ask again.** Every account and two-step change (a new account, a role, a password, a car list, turning
-  someone's two-step sign-in off, new recovery codes, the two-step rule) asks for the acting account's password and,
-  when it has two-step sign-in on, a code from the app or a recovery code: a browser left open plus a known password
-  isn't enough. When the rule changes, open live streams of accounts it cuts off end at once.
+  someone's two-step sign-in off, new recovery codes, the two-step rule), and each server change that can lock a
+  device out or hand data on (a move code, an export file, the recovery key, a new certificate), asks for the acting
+  account's password and, when it has two-step sign-in on, a code from the app or a recovery code: a browser left
+  open plus a known password isn't enough. When the rule changes, open live streams of accounts it cuts off end at once.
 - **What counts as the home network** is decided from the connection's address: loopback, the private ranges and
   link-local. Behind Docker's published ports that address is only right for IPv4: a connection to the host's
   **IPv6** address on a network without IPv6 (the compose file's default) is passed on by Docker's proxy from the
@@ -109,6 +120,41 @@
   (`enable_ipv6: true` with an IPv6 subnet) so the real address arrives. The same goes for a reverse proxy on the
   same host: it is the address the server sees.
 - Sealing the key file to the host's TPM is optional, later.
+
+## The Tesla API input
+
+The server can read your cars from Tesla's Owner API (the unofficial API Tesla's own app uses), beside or instead of
+SMO. How to add an account is in [install.md](install.md#add-a-tesla-account).
+
+- **Off until an admin adds a Tesla account.** Before that the server starts nothing for it, makes no connection
+  and no DNS lookup for any Tesla host. Removing the last account stops it again.
+- **Only Tesla's own hosts, over TLS.** The hosts are fixed in the program, never taken from a setting or an answer:
+  `auth.tesla.com`, `owner-api.teslamotors.com` and `streaming.vn.teslamotors.com`, or for a China account
+  `auth.tesla.cn` and `owner-api.vn.cloud.tesla.cn`. TLS 1.3 with rustls and the public web roots; redirects are
+  not followed. Through the owner's HTTP proxy only when one is set in Settings (`outbound.proxy`).
+- **What is sent, and nothing else:** the token requests (a refresh of the access token, or the code from your
+  sign-in), the list of the account's cars, one car's data, and, while a car drives, a subscription to Tesla's live
+  stream for it. The requests carry the access token and a plain `SentryMate/<version> (self-hosted)` User-Agent.
+  Nothing about this server, its other cars, its accounts or its owner is sent.
+- **Read-only.** There is no code that wakes a car or sends it a command. A car that is asleep is left asleep: only
+  the car list is read then, which does not wake it. An awake car with nothing going on is left alone for a while
+  so it can fall asleep. At most one request a second and 3,000 a day go to Tesla per account.
+- **The sign-in is on Tesla's own page,** in your browser: Sentry Mate never sees your Tesla password, your
+  two-step code or a captcha. You paste back the address the page ends on; the code in it works once and only for
+  that sign-in (it is bound to a secret that never leaves the server).
+- **Tokens are sealed in the vault** (`tesla/accounts/<id>.json` in the data folder, encrypted with the vault key
+  like everything else), held in memory only while used, and wiped after. No page, API answer, audit entry or log
+  line shows a token. A move or an export carries the account to the new server, still sealed.
+- **No full VIN is kept:** the VIN prefix, as for SMO, and a keyed hash to tell two cars with the same prefix apart.
+  The access token names the account's e-mail inside; the server never reads it, and the e-mail is kept nowhere.
+- **Admins only.** Every page and call about Tesla accounts is for admins, and every change asks for the admin's
+  password again (and the two-step code when it is on) and writes an audit entry. When Tesla stops taking an
+  account's token, the server stops asking (no retries against Tesla's sign-in), writes an audit entry and shows a
+  notice to admins until someone signs in again.
+- **Removing an account** stops reading at once and deletes its sealed file. Sign the server out at Tesla too
+  (your Tesla account's security page), so the token stops working there as well.
+- Data from the Tesla API is not signed like SMO's logs. Every row says where it came from (`tesla_api`), so it is
+  never mistaken for checked CAN data.
 
 ## No way back without a backup
 

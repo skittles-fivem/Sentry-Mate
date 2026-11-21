@@ -21,7 +21,7 @@ pub fn settle(
 ) -> Result<Option<CostEntry>> {
     let db = &e.inner.db;
     let kept = records::cost(db, car, ch.id, ch.start_ms)?;
-    if ch.source == Source::Can
+    if ch.source == Source::Live
         && kept.as_ref().is_none_or(|k| k.source != "manual")
         && let Some(free) = free_now(e, ch, car_tz)
     {
@@ -79,7 +79,7 @@ pub(crate) fn carry(e: &Engine, car: CarId, old: &[Charge], new: &[Charge]) -> R
         y.saturating_sub(x)
     };
     let mut moves: Vec<(bool, u64, &Charge, &Charge, CostEntry)> = Vec::new();
-    for o in old.iter().filter(|o| !new_ids.contains(&o.id) && o.source == Source::Can) {
+    for o in old.iter().filter(|o| !new_ids.contains(&o.id) && o.source == Source::Live) {
         let Some(kept) = records::cost(db, car, o.id, o.start_ms)? else { continue };
         let best = new.iter().map(|n| (overlap(o, n), n)).filter(|(v, _)| *v > 0).max_by_key(|(v, _)| *v);
         if let Some((v, n)) = best {
@@ -101,7 +101,7 @@ pub(crate) fn carry(e: &Engine, car: CarId, old: &[Charge], new: &[Charge]) -> R
         }
     }
     // a kept "no cost" goes the same way, to a new charge with no cost of its own
-    for o in old.iter().filter(|o| !new_ids.contains(&o.id) && o.source == Source::Can) {
+    for o in old.iter().filter(|o| !new_ids.contains(&o.id) && o.source == Source::Live) {
         if !kept_none(e, car, o.id)? || records::cost(db, car, o.id, o.start_ms)?.is_some() {
             continue;
         }
@@ -322,7 +322,7 @@ pub fn clear_manual(e: &Engine, car: CarId, charge: u64) -> Result<bool, QueryEr
     let before = replaced(e, car, charge)?;
     records::put_cost(db, car, charge, ch.start_ms, before)?;
     put_replaced(e, car, charge, None)?;
-    if ch.source == Source::Can && records::cost(db, car, charge, ch.start_ms)?.is_none() && ended(e, car, &ch)? {
+    if ch.source == Source::Live && records::cost(db, car, charge, ch.start_ms)?.is_none() && ended(e, car, &ch)? {
         let tz = db.car(car)?.map_or_else(|| "UTC".to_string(), |c| c.time_zone);
         let curve = curve_of(e, car, &ch)?;
         settle(e, car, &ch, &curve, &tz, true)?;
@@ -416,7 +416,7 @@ pub fn reprice(
             crate::pipeline::all_rows(db, car, from_ms.unwrap_or(0), to_ms.unwrap_or(u64::MAX), None)?;
         for ch in rows {
             let here = ch.position.as_ref().and_then(|p| places.place_at(p.lat, p.lon)).map(|p| p.id);
-            if here != Some(place) || ch.source != Source::Can {
+            if here != Some(place) || ch.source != Source::Live {
                 continue;
             }
             out.charges += 1;

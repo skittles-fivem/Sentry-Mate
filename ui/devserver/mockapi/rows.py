@@ -10,6 +10,7 @@ import datetime as dt
 
 from . import placing
 from .util import DAY, MIN, local_dt, local_hour, r
+from . import sources as S
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -92,7 +93,9 @@ def drive_row(app, h, d, now):
         "speed_avg_kph": r(dist / (duration / 3_600_000), 1) if duration > 0 else None,
         "speed_max_kph": r(f["vmax"], 1),
         "power_max_kw": r(f["pmax"], 1), "power_min_kw": None if tm else r(f["pmin"], 1),
-        "energy_kwh": r(energy, 3), "energy_basis": "estimated" if tm else "measured",
+        # (the Tesla API alone: its power read every few seconds to a minute, summed)
+        "energy_kwh": r(energy, 3),
+        "energy_basis": "estimated" if tm or getattr(d, "inputs", None) == ["tesla_api"] else "measured",
         "regen_kwh": None if tm else r(f["regen"], 3),
         "wh_per_km": r(whkm, 1),
         "efficiency_pct": r(car.rated_wh_per_km / whkm * 100, 1) if whkm else None,
@@ -102,7 +105,7 @@ def drive_row(app, h, d, now):
         "cabin_avg_c": None if legacy and not tm else r((d.cabin0 + d.setpoint * 3) / 4, 1),
         "climb_m": r(f["climb"], 0), "descent_m": r(f["descent"], 0),
         "hvac_kwh": None if tm else r(f["hvac"], 3),
-        "source": d.source,
+        **S.of_seg(d),
         "flags": {"in_progress": live, "gap_ms": int(f["gap_ms"]), "lost_frames": lost,
                   "reduced_range": bool(d.reduced_range)},
         "purpose": purpose_of(app, car.id, d, meta["time_zone"]),
@@ -264,7 +267,7 @@ def charge_row(app, h, c, now, with_breakdown=False):
         "range_per_hour_km": r(f["range_added"] / hours, 1) if hours > 0.01 else None,
         "power_max_kw": r(f["pmax"], 1), "power_avg_kw": r(f["pavg"], 1),
         "outside_avg_c": r(c.outside, 1), "battery_avg_c": None if tm else r(f["batt_avg"], 1),
-        "source": c.source, "has_gaps": bool(c.gaps) or c.cut_ms is not None,
+        **S.of_seg(c), "has_gaps": bool(c.gaps) or c.cut_ms is not None,
         "flags": {"in_progress": live, "gap_ms": int(f["gap_ms"])},
     }
     if with_breakdown:
@@ -284,7 +287,7 @@ def _tl_point(app, lat, lon, pid=None):
 def timeline_row(app, h, s, now):
     car = h.car
     live = in_progress(s, now)
-    base = {"id": f"{s.kind}:{s.start}", "kind": s.kind, "start_ms": s.start, "source": s.source,
+    base = {"id": f"{s.kind}:{s.start}", "kind": s.kind, "start_ms": s.start, **S.of_seg(s),
             "cost": None, "ref": None, "parked_ms": None, "awake_reasons": [], "gap_reason": None,
             "energy_basis": None}
     if s.kind == "drive":
@@ -307,7 +310,9 @@ def timeline_row(app, h, s, now):
             "odometer_km": c["odometer_km"], "distance_km": None, "duration_ms": c["charging_ms"],
             "soc_end_pct": c["end_soc_pct"], "soc_delta_pct": r(c["end_soc_pct"] - c["start_soc_pct"], 1),
             "range_end_km": c["end_range_km"], "range_delta_km": c["range_added_km"],
-            "energy_delta_kwh": c["energy_added_kwh"], "energy_basis": "measured" if s.source == "can" else "estimated",
+            "energy_delta_kwh": c["energy_added_kwh"], "energy_basis": (
+                "measured" if s.source == "can" and getattr(s, "inputs", None) != ["tesla_api"] else "estimated"
+            ),
             "outside_avg_c": c["outside_avg_c"], "cost": c["cost"], "ref": {"charge": s.id},
             "awake_reasons": ["charging"], "flags": c["flags"],
         })

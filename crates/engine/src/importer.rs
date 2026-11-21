@@ -175,6 +175,7 @@ impl import::Sink for DbSink<'_> {
                         time_zone: self.engine.inner.opts.default_time_zone.clone(),
                         efficiency_wh_km: tm.efficiency_wh_km,
                         created_ms: now_ms(),
+                        inputs: Default::default(),
                     })
                     .map_err(err)?;
                 self.made.push(c.id);

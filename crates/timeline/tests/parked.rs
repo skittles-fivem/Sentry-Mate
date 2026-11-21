@@ -81,6 +81,8 @@ fn a_parked_plugged_in_car_with_its_charge_complete() {
         samples: &samples,
         logs: &logs,
         holes: &[],
+        api: &[],
+        marks: &[],
     };
     let t = timeline::build(&input, &Params::default());
     assert_eq!(t.states.len(), 1);

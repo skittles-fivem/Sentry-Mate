@@ -272,7 +272,16 @@ fn a_recording_pause_is_unknown_even_after_a_quiet_log() {
     );
     // a hole the caller knows of (a log that failed its check) is unknown too, never asleep
     let hole = [(T0 + 1_000_000, T0 + 2_000_000)];
-    let input = timeline::Input { car: 1, from_ms: T0, to_ms: end, samples: &samples, logs: &logs, holes: &hole };
+    let input = timeline::Input {
+        car: 1,
+        from_ms: T0,
+        to_ms: end,
+        samples: &samples,
+        logs: &logs,
+        holes: &hole,
+        api: &[],
+        marks: &[],
+    };
     let with_hole = timeline::build(&input, &Params::default());
     assert_eq!(
         &states(&with_hole)[1..4],

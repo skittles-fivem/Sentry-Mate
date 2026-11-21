@@ -51,7 +51,8 @@ fn days_in_month(y: i64, m: i64) -> i64 {
 /// `yyyyMMddTHHmmssZ` as ms since 1970.
 pub fn parse_stamp(t: &str) -> Option<i64> {
     let b = t.as_bytes();
-    if b.len() != 16 || b[8] != b'T' || b[15] != b'Z' {
+    // ASCII only: the slices below are byte offsets, which a wider character would cut through
+    if b.len() != 16 || !t.is_ascii() || b[8] != b'T' || b[15] != b'Z' {
         return None;
     }
     let (y, mo, d) = (num(&t[0..4])?, num(&t[4..6])?, num(&t[6..8])?);
@@ -108,8 +109,13 @@ mod tests {
             "abc_20261108T143000Z_.log.xz",
             "_20261108T143000Z_1.log.xz",
             "../x_20261108T143000Z_1.log.xz",
+            // a character wider than a byte in the stamp (16 bytes, yet not 16 digits and letters)
+            "abc_202\u{e9}108T143000Z_1.log.xz",
+            "abc_2026110\u{e9}T14300Z_1.log.xz",
+            "abc_20261108T1430\u{e9}Z_1.log.xz.json",
         ] {
             assert!(LogName::parse(bad).is_none(), "{bad}");
         }
+        assert_eq!(parse_stamp("20261\u{e9}8T143000Z"), None);
     }
 }

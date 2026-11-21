@@ -634,7 +634,8 @@ pub struct Offer {
     vault: Arc<Vault>,
     gate: gate::Gate,
     app: String,
-    cert_sha256: String,
+    /// The upload port's certificate now (a new one made while the server runs changes it: [`Offer::set_cert_sha256`]).
+    cert_sha256: Mutex<String>,
     wrong: Mutex<HashMap<String, VecDeque<Instant>>>,
     heads: Mutex<HashMap<(u64, u64), Head>>,
     paused: Mutex<Option<Paused>>,
@@ -671,7 +672,7 @@ impl Offer {
             vault,
             gate,
             app: app.to_string(),
-            cert_sha256: cert_sha256.to_string(),
+            cert_sha256: Mutex::new(cert_sha256.to_string()),
             wrong: Mutex::new(HashMap::new()),
             heads: Mutex::new(HashMap::new()),
             paused: Mutex::new(None),
@@ -688,6 +689,12 @@ impl Offer {
             );
         }
         Ok(o)
+    }
+
+    /// The upload port serves a new certificate (made while the server runs): a new server that takes a move code
+    /// from now on pins this one.
+    pub fn set_cert_sha256(&self, sha256: &str) {
+        *lock(&self.cert_sha256) = sha256.to_string();
     }
 
     fn hold_moved(&self) -> Result<(), Error> {
@@ -1111,7 +1118,7 @@ impl Offer {
             session: hex::encode(session),
             server_proof: String::new(),
             app: self.app.clone(),
-            cert_sha256: self.cert_sha256.clone(),
+            cert_sha256: lock(&self.cert_sha256).clone(),
             files,
             bytes,
             recovery: serde_json::to_string(&part).map_err(Refusal::server)?,

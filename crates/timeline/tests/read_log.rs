@@ -153,6 +153,8 @@ fn a_log_becomes_samples_facts_a_vin_and_a_drive() {
         samples: &read.samples,
         logs: &logs,
         holes: &[],
+        api: &[],
+        marks: &[],
     };
     let t = timeline::build(&input, &Params::default());
     assert_eq!(t.drives.len(), 1);

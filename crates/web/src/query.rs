@@ -38,6 +38,9 @@ fn decode(s: &str) -> Option<String> {
     percent_encoding::percent_decode_str(&spaced).decode_utf8().ok().map(|c| c.into_owned())
 }
 
+/// The words `source=` takes (docs/ui-api.md, Conventions).
+pub const SOURCE_WORDS: &[&str] = &["smo", "tesla_api", "import", "import:teslamate", "all", "can", "teslamate"];
+
 impl Params {
     /// Reads a query string (`a=1&b=x`); a part that is not UTF-8 after decoding is `400`.
     pub fn parse(path: &str, query: Option<&str>, accept: Option<&str>) -> ApiResult<Params> {
@@ -115,6 +118,11 @@ impl Params {
     }
 
     /// One of the words in `allowed`.
+    /// `source=` on lists, series and totals: the input words and the old ones (`can`, `teslamate`).
+    pub fn source(&self) -> ApiResult<Option<&'static str>> {
+        self.one_of("source", SOURCE_WORDS)
+    }
+
     pub fn one_of(&self, name: &str, allowed: &[&'static str]) -> ApiResult<Option<&'static str>> {
         let Some(v) = self.get(name) else { return Ok(None) };
         allowed

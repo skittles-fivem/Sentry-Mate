@@ -89,6 +89,10 @@ first**: if both take uploads, they drift apart. The old server takes uploads ag
 
 ### The CAN Bridge
 
+Coming from Sentry Six Manager rather than from another Sentry Mate? Its CAN logs come over with its CAN export
+bundle and Settings → Import: [Bringing in the logs Sentry Six Manager already
+has](cars-and-bridge.md#bringing-in-the-logs-sentry-six-manager-already-has).
+
 The new server makes upload tokens in **Settings → Cars**, and shows the three fields of the app's "Second Sentry
 Six Manager" section ready to copy: the server address, the token and the certificate SHA-256. After a move or a
 restore the bridge keeps its token and its certificate SHA-256; change only the server address, if it changed (see

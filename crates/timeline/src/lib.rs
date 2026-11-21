@@ -15,12 +15,17 @@
 //!    arrived log changes: back and forward to the nearest sleep, long gap or cut point, so a car that never sleeps
 //!    still gets small windows.
 //!
+//! 4. **Two live inputs** ([`fuse`]): SMO's samples and the Tesla API's made one stream before the timeline is
+//!    built, SMO's winning where it has data, the API's filling the rest; the API's view of the car's state fills
+//!    what SMO does not know ([`Input::api`]). Rows name the inputs that gave them.
+//!
 //! Units are those of `model`: ms since 1970 UTC, km, km/h, kW, kWh, °C, bar; battery power positive out of the pack.
 
 mod calc;
 mod charges;
 mod drives;
 pub mod facts;
+pub mod fuse;
 mod read;
 pub mod sample;
 mod signals;
@@ -31,6 +36,7 @@ pub mod vin;
 mod window;
 
 pub use facts::{Closed, FactsCollector, LogFacts, NotRecorded};
+pub use fuse::{ApiSpan, ApiState, FuseParams, Fused, fuse};
 pub use read::{LogRead, MAX_LOG_SAMPLES, read_log};
 pub use sample::{SampleBuilder, SampleParams};
 pub use states::is_settled;

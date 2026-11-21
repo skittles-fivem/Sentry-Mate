@@ -1,6 +1,6 @@
 //! The rows of a car's time-indexed tables (drives, charges, state spans, updates) and how they are asked for.
 
-use model::{CarId, Charge, Drive, Source, StateSpan, Update};
+use model::{CarId, Charge, Drive, Inputs, Source, StateSpan, Update};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -91,14 +91,14 @@ pub struct Tally {
 impl Tally {
     pub fn totals(&self, source: Source) -> &Totals {
         match source {
-            Source::Can => &self.can,
+            Source::Live => &self.can,
             Source::Teslamate => &self.teslamate,
         }
     }
 
     pub(crate) fn totals_mut(&mut self, source: Source) -> &mut Totals {
         match source {
-            Source::Can => &mut self.can,
+            Source::Live => &mut self.can,
             Source::Teslamate => &mut self.teslamate,
         }
     }
@@ -173,6 +173,8 @@ pub trait Item:
     /// Never before the start (an open-ended row ends where it starts).
     fn end_ms(&self) -> u64;
     fn source(&self) -> Source;
+    /// The live inputs that gave the row (empty on older live rows, which are SMO's, and on imports).
+    fn inputs(&self) -> Inputs;
     /// Adds (sign 1) or takes away (sign -1) what this row counts for in its car's summary.
     fn tally(&self, t: &mut Tally, sign: i64);
 }
@@ -193,6 +195,9 @@ impl Item for Drive {
     }
     fn source(&self) -> Source {
         self.source
+    }
+    fn inputs(&self) -> Inputs {
+        self.inputs
     }
     fn tally(&self, t: &mut Tally, sign: i64) {
         let x = t.totals_mut(self.source);
@@ -218,6 +223,9 @@ impl Item for Charge {
     }
     fn source(&self) -> Source {
         self.source
+    }
+    fn inputs(&self) -> Inputs {
+        self.inputs
     }
     fn tally(&self, t: &mut Tally, sign: i64) {
         let x = t.totals_mut(self.source);
@@ -251,6 +259,9 @@ impl Item for StateRow {
     fn source(&self) -> Source {
         self.span.source
     }
+    fn inputs(&self) -> Inputs {
+        self.span.inputs
+    }
     fn tally(&self, t: &mut Tally, sign: i64) {
         add(&mut t.states, sign, 1);
     }
@@ -279,6 +290,9 @@ impl Item for UpdateRow {
     }
     fn source(&self) -> Source {
         self.update.source
+    }
+    fn inputs(&self) -> Inputs {
+        self.update.inputs
     }
     fn tally(&self, t: &mut Tally, sign: i64) {
         add(&mut t.updates, sign, 1);

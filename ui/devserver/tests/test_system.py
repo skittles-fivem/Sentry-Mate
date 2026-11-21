@@ -75,6 +75,13 @@ class Settings(ServerCase):
         self.assertEqual(g["mode"], "offline")
         self.assertTrue(g["offline_data"]["present"])
         n = {x["code"]: x for x in self.c.get("/api/v1/notices")["items"]}
+        # a certificate the server makes is valid until 4096: only the owner's own expires
+        self.assertNotIn("certificate_expiring", n)
+        self.server.app.store.cert_own = True
+        try:
+            n = {x["code"]: x for x in self.c.get("/api/v1/notices")["items"]}
+        finally:
+            self.server.app.store.cert_own = False
         self.assertEqual(n["certificate_expiring"]["detail"]["days"], 12)
         self.assertIn("12 days", n["certificate_expiring"]["message"])
         self.assertNotIn("release_available", n)  # the release check is off

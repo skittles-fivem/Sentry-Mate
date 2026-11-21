@@ -30,7 +30,7 @@
 //! db/places.*, db/settings.*                   shared small tables
 //! db/kv/                                       the key/value store (names hashed, see kv)
 //! db/cars/<id>/drives.* charges.* states.* updates.*   a car's tables (snapshot + journal)
-//! db/cars/<id>/seg/<series>.<source>/<YYYY-MM-DD>.*     its time series per UTC day (see segment)
+//! db/cars/<id>/seg/<series>.<can|tesla-api|teslamate>/<YYYY-MM-DD>.*     its time series per UTC day (see segment)
 //! db/cars/<id>/meta                            how far its days are packed
 //! ```
 //!
@@ -101,7 +101,7 @@ use fleet::{Fleet, FleetOp};
 use global::{PlaceOp, Places, SettingOp, Settings};
 use journal::Files;
 use logged::LoggedFile;
-use model::{Car, CarId, ChargePoint, Now, Place, PlaceId, Sample, Source};
+use model::{Car, CarId, ChargePoint, Now, Place, PlaceId, Sample, Source, Stream};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -529,7 +529,7 @@ impl Db {
         let new_ids: HashSet<u64> = rows.iter().map(Item::id).collect();
         self.with_car(car, |db, data, dir| {
             let t = db.table::<T>(data, car, dir)?;
-            let del = t.state.starting_in(from_ms, to_ms, Source::Can);
+            let del = t.state.starting_in(from_ms, to_ms, Source::Live);
             let del_ids: HashSet<u64> = del.iter().copied().collect();
             let mut delta = Tally::default();
             let mut gone = 0;
@@ -613,8 +613,8 @@ impl Db {
             states: self.replace_window::<StateRow>(car, from_ms, to_ms, &[])?,
             updates: self.replace_window::<UpdateRow>(car, from_ms, to_ms, &[])?,
         };
-        self.write_points::<Sample>(car, Source::Can, from_ms, to_ms, &[])?;
-        self.write_points::<ChargePoint>(car, Source::Can, from_ms, to_ms, &[])?;
+        self.write_points::<Sample>(car, Source::Live, from_ms, to_ms, &[])?;
+        self.write_points::<ChargePoint>(car, Source::Live, from_ms, to_ms, &[])?;
         Ok(deleted)
     }
 
@@ -625,13 +625,14 @@ impl Db {
     pub fn write_points<P: Point>(
         &self,
         car: CarId,
-        source: Source,
+        stream: impl Into<Stream>,
         from_ms: u64,
         to_ms: u64,
         points: &[P],
     ) -> Result<()> {
+        let stream = stream.into();
         self.with_car(car, |db, data, dir| {
-            let first = segment::write(&db.inner.ctx, dir, source, from_ms, to_ms, points)?;
+            let first = segment::write(&db.inner.ctx, dir, stream, from_ms, to_ms, points)?;
             if let Some(day) = first {
                 let m = data.meta(&db.inner.ctx, dir)?;
                 if day * DAY_MS < m.settled_before_ms {
@@ -647,25 +648,34 @@ impl Db {
     }
 
     /// The points of a series in `[from_ms, to_ms)`, in time order.
-    pub fn read_points<P: Point>(&self, car: CarId, source: Source, from_ms: u64, to_ms: u64) -> Result<Vec<P>> {
-        self.with_car(car, |db, _, dir| segment::read(&db.inner.ctx, dir, source, from_ms, to_ms))
+    pub fn read_points<P: Point>(
+        &self,
+        car: CarId,
+        stream: impl Into<Stream>,
+        from_ms: u64,
+        to_ms: u64,
+    ) -> Result<Vec<P>> {
+        let stream = stream.into();
+        self.with_car(car, |db, _, dir| segment::read(&db.inner.ctx, dir, stream, from_ms, to_ms))
     }
 
     /// Some fields of a series in `[from_ms, to_ms)`, as columns (what a chart draws; faster than whole points).
     pub fn read_fields<P: Point>(
         &self,
         car: CarId,
-        source: Source,
+        stream: impl Into<Stream>,
         from_ms: u64,
         to_ms: u64,
         fields: &[&str],
     ) -> Result<Fields> {
-        self.with_car(car, |db, _, dir| segment::read_fields::<P>(&db.inner.ctx, dir, source, from_ms, to_ms, fields))
+        let stream = stream.into();
+        self.with_car(car, |db, _, dir| segment::read_fields::<P>(&db.inner.ctx, dir, stream, from_ms, to_ms, fields))
     }
 
     /// The days a series has.
-    pub fn days<P: Point>(&self, car: CarId, source: Source) -> Result<Vec<DayInfo>> {
-        self.with_car(car, |_, _, dir| segment::days::<P>(dir, source))
+    pub fn days<P: Point>(&self, car: CarId, stream: impl Into<Stream>) -> Result<Vec<DayInfo>> {
+        let stream = stream.into();
+        self.with_car(car, |_, _, dir| segment::days::<P>(dir, stream))
     }
 
     /// Bytes a car's time series take on disk.
@@ -682,9 +692,9 @@ impl Db {
             let mut out = Settled::default();
             let from = data.meta(ctx, dir)?.settled_before_ms;
             if before > from {
-                for source in [Source::Can, Source::Teslamate] {
-                    out.days += segment::settle::<Sample>(ctx, dir, source, from, before)?;
-                    out.days += segment::settle::<ChargePoint>(ctx, dir, source, from, before)?;
+                for stream in Stream::ALL {
+                    out.days += segment::settle::<Sample>(ctx, dir, stream, from, before)?;
+                    out.days += segment::settle::<ChargePoint>(ctx, dir, stream, from, before)?;
                 }
                 data.meta(ctx, dir)?.settled_before_ms = before;
                 data.save_meta(ctx, dir)?;

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 
+from .. import sources as S
 from ..conventions import Response, page
 from ..errors import bad_input, invalid, not_found
 from ..pdf import text_pdf
@@ -60,7 +61,7 @@ def _filtered(req, h):
     q = (req.q("q") or "").strip().lower()
     min_d = req.float_param("min_distance_km", None, 0, 100000)
     min_v = req.float_param("min_avg_kph", None, 0, 1000)
-    source = req.enum("source", ("can", "teslamate", "all"), "all")
+    source = S.canon(req.enum("source", S.FILTER_WORDS, "all"))
     flags = req.list_param("flags", ("gap", "in_progress", "reduced_range"))
     eff = req.enum("efficiency", ("plain", "hill_corrected"), "plain")
     rows = []

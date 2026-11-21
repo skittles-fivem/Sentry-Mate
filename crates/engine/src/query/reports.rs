@@ -201,7 +201,7 @@ fn median(mut v: Vec<f64>) -> Option<f64> {
 
 /// When the car's data stopped, if its newest state is unknown (no data since: the time up to now is unknown).
 pub(crate) fn still_unknown(e: &Engine, car: CarId) -> QResult<Option<u64>> {
-    let q = db::Query { source: Some(Source::Can), ..db::Query::default().limit(1) };
+    let q = db::Query { source: Some(Source::Live), ..db::Query::default().limit(1) };
     let newest = e.db().list::<StateRow>(car, &q)?;
     Ok(newest.items.first().filter(|s| s.span.state == State::Unknown).map(|s| s.span.start_ms))
 }
@@ -652,8 +652,11 @@ pub struct KindTotal {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Totals {
-    /// `can`, `teslamate` or `all`.
-    pub source: &'static str,
+    /// The filter: `smo`, `tesla_api`, `import`, `import:teslamate` or `all` (the old words `can` and `teslamate` are
+    /// answered as `smo` and `import:teslamate`).
+    pub source: String,
+    /// What the filter reads (every input with `all`).
+    pub sources: Vec<super::SourceRef>,
     pub drives: u64,
     pub distance_km: f64,
     pub odometer_first_km: Option<f64>,
@@ -675,10 +678,7 @@ pub struct Totals {
 pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<Totals>> {
     let c = car_of(e, car)?;
     let src = super::parse_source(source)?;
-    let word = match src {
-        Some(s) => super::source_word(s),
-        None => "all",
-    };
+    let (word, sources) = super::filter_words(src);
     let shown = Shown::new(e, car, src)?;
     let dx = super::drives::ctx(e, &c)?;
     let (mut drives, mut km) = (0u64, 0.0f64);
@@ -721,7 +721,7 @@ pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<To
     })?;
     // (no overlaps to settle: CAN logs give no updates, so every imported one counts)
     let mut updates = 0u64;
-    overlapping::<UpdateRow>(e, car, 0, u64::MAX, src, false, |_| {
+    overlapping::<UpdateRow>(e, car, 0, u64::MAX, src.map(super::SourceFilter::family), false, |_| {
         updates += 1;
         Ok(true)
     })?;
@@ -731,6 +731,7 @@ pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<To
         &c,
         Totals {
             source: word,
+            sources,
             drives,
             distance_km: r(Some(km), 3).unwrap_or(0.0),
             odometer_first_km: r(first, 3),
@@ -765,7 +766,8 @@ pub struct GapRow {
     pub cause: &'static str,
     /// The timeline's word: `no_log`, `not_recorded`, `failed_check`, `dropped_frames`.
     pub gap_reason: &'static str,
-    pub source: &'static str,
+    #[serde(flatten)]
+    pub from: super::Sources,
     /// `{ charge }` for a log missing inside a charge.
     pub inside: Option<serde_json::Value>,
 }
@@ -807,7 +809,7 @@ fn reasons(e: &Engine, car: CarId, a: u64, b: u64, chain: &[(u64, u64)]) -> QRes
 /// Where a run of unknown spans that reaches `y` ends, following the touching unknown spans after it.
 fn run_end_after(e: &Engine, car: CarId, y: u64) -> QResult<u64> {
     let mut y = y;
-    overlapping::<StateRow>(e, car, y, u64::MAX, Some(Source::Can), false, |s| {
+    overlapping::<StateRow>(e, car, y, u64::MAX, Some(Source::Live), false, |s| {
         if s.span.start_ms > y + 1_000 {
             return Ok(false);
         }
@@ -862,7 +864,7 @@ pub fn gaps(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult
         }
         Ok(())
     };
-    overlapping::<StateRow>(e, car, a, top, Some(Source::Can), true, |s| {
+    overlapping::<StateRow>(e, car, a, top, Some(Source::Live), true, |s| {
         let sp = &s.span;
         if sp.state != State::Unknown {
             if let Some(run) = cur.take() {
@@ -888,7 +890,7 @@ pub fn gaps(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult
     let more = runs.len() > limit;
     runs.truncate(limit);
     let chain = if runs.is_empty() { Vec::new() } else { super::timeline::chain_gaps(e, car)? };
-    let shown = Shown::new(e, car, Some(Source::Can))?;
+    let shown = Shown::new(e, car, Some(super::SourceFilter::Live))?;
     let places = e.places();
     let brief = |p: Option<&model::Position>| {
         p.and_then(|p| places.place_at(p.lat, p.lon))
@@ -901,7 +903,7 @@ pub fn gaps(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult
         let (gap_reason, cause) = super::timeline::classify(&why, x, y);
         let inside = if cause == "chain_gap" {
             let mut found = None;
-            overlapping::<Charge>(e, car, x, y, Some(Source::Can), false, |ch| {
+            overlapping::<Charge>(e, car, x, y, Some(Source::Live), false, |ch| {
                 if ch.start_ms <= x && y <= ch.end_ms {
                     found = Some(serde_json::json!({ "charge": ch.id.to_string() }));
                     return Ok(false);
@@ -929,7 +931,7 @@ pub fn gaps(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult
             to_place: brief(after_d.as_ref().and_then(|d| d.start.as_ref())),
             cause,
             gap_reason,
-            source: "can",
+            from: super::Sources::family(model::Source::Live),
             inside,
         });
     }

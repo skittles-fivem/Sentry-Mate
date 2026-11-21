@@ -223,3 +223,36 @@ fn no_owner_data_or_session_paths_in_the_repo() {
     }
     assert!(hits.is_empty(), "owner data or local paths in the repo:\n{}", hits.join("\n"));
 }
+
+/// The fake-Tesla switch of the `tesla` crate (`test-endpoints`) is only for that crate's own tests: no other
+/// manifest may turn it on, so a built server can only ever reach Tesla's own hosts.
+#[test]
+fn only_the_tesla_crates_own_tests_point_it_at_a_fake_tesla() {
+    let root = repo();
+    let mut hits = Vec::new();
+    for f in repo_files(&root) {
+        if f.file_name().and_then(|n| n.to_str()) != Some("Cargo.toml") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&f).unwrap();
+        let rel = f.strip_prefix(&root).unwrap_or(&f).display().to_string();
+        let mut section = String::new();
+        for line in text.lines() {
+            let t = line.trim();
+            if t.starts_with('[') {
+                section = t.to_string();
+                continue;
+            }
+            if !t.contains("test-endpoints") || t.starts_with('#') {
+                continue;
+            }
+            let own_dev = rel == "crates/tesla/Cargo.toml" && section == "[dev-dependencies]";
+            let own_feature =
+                rel == "crates/tesla/Cargo.toml" && section == "[features]" && t.starts_with("test-endpoints");
+            if !own_dev && !own_feature {
+                hits.push(format!("{rel} {section}: {t}"));
+            }
+        }
+    }
+    assert!(hits.is_empty(), "test-endpoints turned on outside the tesla crate's tests:\n{}", hits.join("\n"));
+}

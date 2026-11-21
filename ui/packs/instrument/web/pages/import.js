@@ -1,10 +1,12 @@
-// Import (/settings/import): bring TeslaMate history in from TeslaMate's own backup file. An admin
+// Import (/settings/import): bring history in from TeslaMate's own backup file, or the CAN Bridge
+// logs Sentry Six Manager already has (its CAN export bundle, a .zip). An admin
 // chooses the file; it goes up in chunks over HTTPS (each with its SHA-256, so it can stop and go on
 // from the last chunk the server has), the server checks the whole file before it stores anything,
 // the imported cars are matched to cars here (by VIN prefix, a new car, or left out), and then the
 // import runs. The report counts rows per table and says why each skipped row was skipped (counts
 // only, never row values or positions). Where imported and CAN history cover the same time, the
-// overlap is listed with the side that is shown and a switch.
+// overlap is listed with the side that is shown and a switch. A CAN export has no cars to match (its
+// logs name their car key); its report counts logs: imported, already here, and refused with why.
 //
 // Progress: there is no live event for imports, so while a job is being checked or imported (or
 // uploaded from another tab) the page reads that one job again every few seconds, and stops as soon
@@ -29,6 +31,8 @@ export const title = () => 'Import';
 const enc = encodeURIComponent;
 const bytes = (n) => (n == null ? DASH : format(n, 'bytes'));
 const UNFINISHED = ['uploading', 'checking', 'ready', 'importing'];
+const CAN = 'sentry_manager_can';
+const isCan = (j) => j?.kind === CAN || j?.report?.kind === CAN;
 
 const STATUS = {
   uploading: { label: 'Uploading', tone: 'live', text: 'The file is going up to the server in chunks.' },
@@ -37,6 +41,37 @@ const STATUS = {
   importing: { label: 'Importing', tone: 'live', text: 'Pass 2: the rows are being stored.' },
   done: { label: 'Done', tone: 'ok', text: 'The history is in. It shows on every page, marked as imported.' },
   failed: { label: 'Failed', tone: 'danger', text: 'The import stopped. Nothing from this file was stored.' },
+};
+// the same states of a CAN export, where they differ
+const CAN_STATUS = {
+  checking: 'Pass 1: the server reads every log of the zip and checks its signature, as it checks an upload. Nothing is stored yet.',
+  ready: 'The whole zip was checked. Its logs go to the car their car key belongs to; start the import when the report below looks right.',
+  importing: 'Pass 2: each log is stored and checked as if the CAN Bridge had uploaded it, then decoded into drives and charges.',
+  done: 'The logs are in, as the car\'s own CAN data. Drives, charges and the timeline are built from them as from any upload.',
+  failed: 'The import stopped. Logs stored before it stopped stay (they are checked and signed); running the zip again skips them.',
+};
+const statusText = (j) => (isCan(j) && CAN_STATUS[j.status]) || STATUS[j.status]?.text || '';
+
+// why a log of a CAN export was refused, in words
+const CAN_REASONS = {
+  unsigned: ['Not signed', 'The log has no valid CAN Bridge signature, so nothing shows it came from the car. It is not stored.'],
+  failed_check: ['Changed since it was signed', 'Its bytes, name or length are not the ones the CAN Bridge signed: it was changed or damaged.'],
+  signed_by_another_key: ['Another signing key', 'Signed by a key that is not the one this car key is paired with. Trust that key on Settings → Cars first if it is the car\'s new one.'],
+  no_sidecar: ['No sidecar', 'The zip has the log without its .log.xz.json beside it, which holds the signature.'],
+  bad_sidecar: ['Sidecar unreadable', 'Its sidecar is not JSON, or over 1 MB.'],
+  different_file_here: ['Another log of that name', 'A different log with the same name is already here; the one here is kept.'],
+  being_uploaded: ['Being uploaded', 'The CAN Bridge is uploading this log now; that upload brings it.'],
+  too_large: ['Too large', 'A log can be at most 1 GB.'],
+  car_full: ['Car full', 'The car already holds the most logs a car can keep.'],
+};
+const canReason = (code) => CAN_REASONS[code] || [String(code).replace(/[_-]/g, ' '), 'The server\'s own reason.'];
+const KEY_STATUS = {
+  car: ['Goes to its car', 'live'],
+  new_car: ['A new car', 'warm'],
+  only_car: ['The one car here', 'live'],
+  new_key: ['New car key', 'warm'],
+  waiting: ['Waiting for an admin', 'warm'],
+  working: ['Being decoded', 'live'],
 };
 
 // TeslaMate's table names, in words
@@ -79,6 +114,11 @@ const FAILURES = {
   mixed_cars: 'The file holds rows that point at cars the file does not describe. Make a fresh, complete backup and try again.',
   no_car: 'The file holds no car. A backup made before TeslaMate saw a car has nothing to import.',
   truncated: 'The file ends part-way through. It was cut short when it was copied; copy it again.',
+  not_a_can_export: 'This zip is not a Sentry Six Manager CAN export. In Sentry Six Manager, download the CAN export bundle (Nerd panel, Logs + ids.csv, the car\'s key, From before its first log to now) and upload that .zip as it is. A TeslaMate backup is uploaded as the .sql file itself (or .sql.gz, .sql.xz), not zipped.',
+  unreadable: 'The file cannot be read as a zip (it is damaged, cut short, encrypted or packed with a method other than deflate). Download it again and upload it as it is.',
+  read_failed: 'The server could not read the uploaded file back. Upload it again.',
+  store_failed: 'The server could not store a log (for example the disk is full). Logs stored before it stay; free some space and start again.',
+  stopped: 'The import was stopped. Logs stored before it stopped stay; start it again to import the rest.',
 };
 
 // a refused Start, in words
@@ -107,9 +147,9 @@ export async function mount(ctx) {
     h('a', { href: buildUrl('settings-server') }, 'Settings'), icon('chev-r', 'ico--sm'),
     h('span', { 'aria-current': 'page' }, 'Import'));
   const head = pageHead({
-    eyebrow: trail, title: 'Import TeslaMate history',
-    sub: ['Admins only', 'TeslaMate backup file: plain, gzip or xz', 'times in ' + tz],
-    purpose: 'Brings in the history TeslaMate recorded before the CAN Bridge, from TeslaMate\'s own backup file. The whole file is checked before anything is stored, and running it again stores nothing twice.',
+    eyebrow: trail, title: 'Import history',
+    sub: ['Admins only', 'TeslaMate backup (plain, gzip or xz) or Sentry Six Manager CAN export (.zip)', 'times in ' + tz],
+    purpose: 'Brings in the history TeslaMate recorded before the CAN Bridge, from TeslaMate\'s own backup file, or the CAN Bridge logs Sentry Six Manager already has, from its CAN export bundle. The whole file is checked before anything is stored, and running it again stores nothing twice.',
   });
 
   if (!ctx.admin) {
@@ -151,17 +191,17 @@ export async function mount(ctx) {
       const st = j?.status === 'done' || i < at ? 'done' : i === at ? (j?.status === 'failed' ? 'failed' : 'now') : 'later';
       return h('li', { class: ['im-step', `im-step--${st}`], 'aria-current': st === 'now' ? 'step' : null },
         h('span', { class: 'im-step-n' }, st === 'done' ? icon('check', 'ico--sm') : st === 'failed' ? icon('x', 'ico--sm') : String(i + 1)),
-        h('span', { class: 'im-step-l' }, l));
+        h('span', { class: 'im-step-l' }, k === 'ready' && isCan(j) ? 'Review' : l));
     }));
   }
 
   /* ---------------------------------------------------------------- upload */
-  const fileInput = h('input', { class: 'im-file-input', type: 'file', accept: '.sql,.gz,.xz,.dump,.bak,.txt,application/sql,application/gzip,application/x-xz', 'aria-label': 'TeslaMate backup file',
+  const fileInput = h('input', { class: 'im-file-input', type: 'file', accept: '.sql,.gz,.xz,.zip,.dump,.bak,.txt,application/sql,application/gzip,application/x-xz,application/zip', 'aria-label': 'TeslaMate backup or Sentry Six Manager CAN export',
     onchange: () => { const f = fileInput.files?.[0]; fileInput.value = ''; if (f) chose(f); } });
   const drop = h('label', { class: 'im-drop' }, fileInput,
     h('span', { class: 'im-drop-ic' }, icon('upload')),
     h('span', { class: 'im-drop-main' }, 'Choose the backup file, or drop it here'),
-    h('span', { class: 'im-drop-sub' }, 'The .sql file of a TeslaMate database backup, as it is or compressed (.gz, .xz). Up to 64 GB.'));
+    h('span', { class: 'im-drop-sub' }, 'The .sql file of a TeslaMate database backup, as it is or compressed (.gz, .xz), or the .zip of Sentry Six Manager\'s CAN export bundle. Up to 64 GB.'));
   ctx.on(drop, 'dragover', (e) => { e.preventDefault(); drop.classList.add('im-drop--over'); });
   ctx.on(drop, 'dragleave', () => drop.classList.remove('im-drop--over'));
   ctx.on(drop, 'drop', (e) => { e.preventDefault(); drop.classList.remove('im-drop--over'); const f = e.dataTransfer?.files?.[0]; if (f) chose(f); });
@@ -330,7 +370,7 @@ export async function mount(ctx) {
       replace(failBox, h('p', { class: 'im-fail-head' }, icon('warn', 'ico--sm'), j.checked_ms ? 'The import failed' : 'The check found a problem'),
         h('p', null, FAILURES[code] || j.error?.message || 'The server gave no reason.'),
         FAILURES[code] && j.error?.message ? h('p', { class: 'setting-note' }, 'The server says: ', j.error.message) : null,
-        h('p', { class: 'setting-note' }, 'Nothing from this file was stored. Discard it, then upload a good file.'));
+        h('p', { class: 'setting-note' }, isCan(j) && j.checked_ms ? 'Logs stored before it stopped stay, checked and signed. Start a new import of the same zip to bring the rest: what is here is skipped.' : 'Nothing from this file was stored. Discard it, then upload a good file.'));
       failBox.hidden = false;
     } else { failBox.hidden = true; replace(failBox); }
     parts.push(failBox);
@@ -341,7 +381,7 @@ export async function mount(ctx) {
     const canStart = j?.status === 'ready' && !unmatched;
     startBtn.disabled = !canStart;
     replace(startWhy, !j ? 'Choose a file first.'
-      : j.status === 'ready' ? (unmatched ? `Match ${unmatched === 1 ? 'the last imported car' : `${unmatched} imported cars`} below first.` : 'Checked and matched: ready to start.')
+      : j.status === 'ready' ? (isCan(j) ? 'Checked: ready to start. Each log goes to the car of its car key.' : unmatched ? `Match ${unmatched === 1 ? 'the last imported car' : `${unmatched} imported cars`} below first.` : 'Checked and matched: ready to start.')
         : j.status === 'uploading' || j.status === 'checking' ? 'Possible once the whole file is uploaded and checked.'
           : j.status === 'importing' ? 'Running now.' : j.status === 'done' ? 'This import is done. Upload a file to import again.'
             : 'This import failed; discard it and upload a good file.');
@@ -366,11 +406,11 @@ export async function mount(ctx) {
   }
   // what a restart or a closed page does to an import: shown before one starts too
   const restartNote = () => h('p', { class: 'note im-restart', cover: 'web.import.restart-note' }, icon('info', 'ico--sm'),
-    ' Safe to leave: you can close this page or the browser while it runs. If the server restarts, an upload goes on from the last chunk it has once you choose the file again; a check starts over (nothing was stored); an import is run again from the file, and rows that are already in are recognised by their TeslaMate id, so nothing is stored twice.');
+    ' Safe to leave: you can close this page or the browser while it runs. If the server restarts, an upload goes on from the last chunk it has once you choose the file again; a check starts over (nothing was stored); an import is run again from the file, and rows that are already in are recognised by their TeslaMate id (a CAN export\'s logs by their name and SHA-256), so nothing is stored twice.');
   function paintProgress() {
     const j = S.job;
     if (!j) {
-      replace(progBox, emptyState({ icon: 'upload', title: 'No import yet', text: 'Choose a TeslaMate backup file under Upload. Its upload, check and import show here as they run.' }), restartNote());
+      replace(progBox, emptyState({ icon: 'upload', title: 'No import yet', text: 'Choose a TeslaMate backup file or a Sentry Six Manager CAN export under Upload. Its upload, check and import show here as they run.' }), restartNote());
       return;
     }
     const s = j.status, failedAt = s === 'failed' ? (j.checked_ms ? 'import' : 'check') : null;
@@ -380,9 +420,10 @@ export async function mount(ctx) {
     const read = (st) => (st === 'now' ? `${bytes(j.bytes_read)} of ${bytes(j.bytes_total)} read (${num(pct(j.bytes_read, j.bytes_total))} %)` : null);
     const S1 = STATUS[s] || { label: s, tone: 'plain', text: '' };
     replace(progBox,
-      h('div', { class: 'im-status' }, pill(S1.label, { tone: S1.tone === 'ok' ? 'live' : S1.tone === 'danger' ? 'warm' : S1.tone, lg: true }), h('p', null, S1.text)),
+      h('div', { class: 'im-status' }, pill(S1.label, { tone: S1.tone === 'ok' ? 'live' : S1.tone === 'danger' ? 'warm' : S1.tone, lg: true }), h('p', null, statusText(j))),
       kv([
         ['File', h('span', { class: 'mono im-name' }, j.name), { icon: 'logs' }],
+        ['Kind', isCan(j) ? 'Sentry Six Manager CAN export' : j.kind === 'teslamate' ? 'TeslaMate backup' : 'known once checked'],
         ['Size', `${bytes(j.bytes_total)}${j.compression && j.compression !== 'plain' ? ` (${j.compression})` : ''}`],
         ['Started', dateTime(j.started_ms, tz), { icon: 'clock' }],
         ['Checked', j.checked_ms ? dateTime(j.checked_ms, tz) : DASH],
@@ -390,8 +431,8 @@ export async function mount(ctx) {
       ]),
       h('ol', { class: 'im-stages', 'aria-label': 'State of each pass' },
         stageRow('Upload', 'The file goes to the server in chunks.', up1, up1 === 'done' ? `${bytes(j.bytes_total)} uploaded` : null, up1 === 'now' ? pct(j.uploaded_bytes, j.bytes_total) : null),
-        stageRow('Check (pass 1)', 'Every row is read and checked; nothing is stored.', ck, read(ck) || (ck === 'done' ? `Checked ${j.checked_ms ? dateTime(j.checked_ms, tz) : ''}` : null), ck === 'now' ? pct(j.bytes_read, j.bytes_total) : null),
-        stageRow('Import (pass 2)', 'The rows are stored and the timeline is built again for the matched cars.', im, read(im) || (im === 'done' ? `Done ${dateTime(j.finished_ms, tz)}` : im === 'skipped' ? 'Not run: the check failed.' : null), im === 'now' ? pct(j.bytes_read, j.bytes_total) : null)),
+        stageRow('Check (pass 1)', isCan(j) ? 'Every log is read and its signature checked; nothing is stored.' : 'Every row is read and checked; nothing is stored.', ck, read(ck) || (ck === 'done' ? `Checked ${j.checked_ms ? dateTime(j.checked_ms, tz) : ''}` : null), ck === 'now' ? pct(j.bytes_read, j.bytes_total) : null),
+        stageRow('Import (pass 2)', isCan(j) ? 'The logs are stored and checked as uploads are, then decoded into drives and charges.' : 'The rows are stored and the timeline is built again for the matched cars.', im, read(im) || (im === 'done' ? `Done ${dateTime(j.finished_ms, tz)}` : im === 'skipped' ? 'Not run: the check failed.' : null), im === 'now' ? pct(j.bytes_read, j.bytes_total) : null)),
       restartNote());
   }
   const progressPanel = panel({ title: 'Progress', icon: 'pulse', side: h('span', { class: 'im-age' }) }, progBox);
@@ -453,7 +494,7 @@ export async function mount(ctx) {
   });
   const matchWrap = h('div', { class: 'im-match' }, matchTable.el);
   function paintMatch() {
-    const show = S.job && ['checking', 'ready'].includes(S.job.status);
+    const show = S.job && ['checking', 'ready'].includes(S.job.status) && !isCan(S.job);
     matchWrap.hidden = !show;
     if (show) matchTable.setRows(S.match);
   }
@@ -541,6 +582,8 @@ export async function mount(ctx) {
   function paintReport() {
     const j = S.job, rep = j?.report || null;
     S.report = rep;
+    canWrap.hidden = true;
+    if (rep && rep.kind === CAN) { paintCanReport(rep); return; }
     if (!rep) {
       replace(reportBox, emptyState({ icon: 'book', title: j ? 'No report yet' : 'No import yet', text: j ? 'The report appears once the whole file has been checked (pass 1).' : 'Each import gets a report: rows read, imported and skipped per table, and why.' }));
       skipBox.hidden = true;
@@ -573,6 +616,65 @@ export async function mount(ctx) {
     tablesTable.setRows(rows);
     reasonsTable.setRows(reasons);
     carsTable.setRows(rep.cars || []);
+  }
+  /* ---------------------------------------------------------------- a CAN export's report */
+  const keyStatus = (k) => KEY_STATUS[k.status] || [k.status, 'plain'];
+  const keysTable = dataTable(ctx, {
+    title: 'Logs per car key', icon: 'car', rows: [], csvName: 'import-can-keys', label: 'Logs read, imported, already here and refused per car key',
+    note: 'A car key is the CAN Bridge\'s install on one car. A key a car has goes to that car; a new key gets a car the way a new key\'s first upload does (Settings → Cars).',
+    sort: { key: 'key', dir: 'asc' },
+    columns: [
+      { key: 'key', label: 'Car key', sort: true, render: (k) => h('span', { class: 'mono' }, k.key) },
+      { key: 'car', label: 'Goes to', sort: true, value: (k) => k.car_name || keyStatus(k)[0],
+        render: (k) => (k.car ? h('a', { class: 'link', href: buildUrl('car', { car: k.car }) }, k.car_name || k.car) : tag(keyStatus(k)[0], keyStatus(k)[1])),
+        csv: (k) => k.car_name || keyStatus(k)[0] },
+      { key: 'logs', label: 'Logs', num: true, sort: true, render: (k) => num(k.logs) },
+      { key: 'imported', label: 'Imported', num: true, sort: true, value: (k) => (S.report?.imported ? k.imported : k.logs - k.already_here - k.refused),
+        render: (k) => (S.report?.imported ? num(k.imported) : h('span', { class: 'faint', title: 'From the check: what the import would store' }, num(k.logs - k.already_here - k.refused), ' to import')) },
+      { key: 'already_here', label: 'Already here', num: true, sort: true, render: (k) => num(k.already_here) },
+      { key: 'refused', label: 'Refused', num: true, sort: true, render: (k) => (k.refused ? h('span', { class: 'warn' }, num(k.refused)) : h('span', { class: 'faint' }, '0')) },
+      { key: 'chain', label: 'Chain', value: (k) => (k.chain_gaps || 0) + (k.chain_forks || 0),
+        render: (k) => (k.chain_gaps || k.chain_forks
+          ? h('span', { class: 'warn', title: 'Like a live upload: a gap is a log the chain names that is not here; a fork two logs at one place' }, [k.chain_gaps ? `${num(k.chain_gaps)} gap${k.chain_gaps === 1 ? '' : 's'}` : null, k.chain_forks ? `${num(k.chain_forks)} fork${k.chain_forks === 1 ? '' : 's'}` : null].filter(Boolean).join(', '))
+          : h('span', { class: 'faint' }, 'whole')),
+        csv: (k) => `${k.chain_gaps || 0} gaps, ${k.chain_forks || 0} forks` },
+      { key: 'first_ms', label: 'Logs from', sort: true, render: (k) => (k.first_ms ? `${date(k.first_ms, tz)} – ${date(k.last_ms, tz)}` : DASH), csv: false },
+    ],
+    empty: () => emptyState({ icon: 'car', title: 'No car keys', text: 'The zip holds no CAN Bridge log.' }),
+  });
+  const refusedTable = dataTable(ctx, {
+    title: 'Refused logs', icon: 'warn', rows: [], csvName: 'import-can-refused', label: 'Logs that were refused, with why',
+    note: 'A refused log is never stored: only logs signed by the car\'s CAN Bridge and unchanged since are taken. The first 100 are named; all are counted.',
+    sort: { key: 'name', dir: 'asc' },
+    columns: [
+      { key: 'name', label: 'Log', sort: true, render: (r) => h('span', { class: 'mono im-name' }, r.name) },
+      { key: 'reason', label: 'Why', sort: true, render: (r) => h('span', null, h('b', null, canReason(r.reason)[0]), h('span', { class: 'im-tdesc' }, canReason(r.reason)[1])), csv: (r) => canReason(r.reason)[0] },
+      { key: 'code', label: 'Code', render: (r) => h('span', { class: 'mono faint' }, r.reason), csv: (r) => r.reason },
+    ],
+    empty: () => emptyState({ icon: 'check', title: 'No log was refused', text: 'Every log of the zip is signed by its car\'s CAN Bridge and unchanged since.' }),
+  });
+  const canWrap = h('div', { class: 'im-col im-can', hidden: true }, keysTable.el, refusedTable.el);
+  function paintCanReport(rep) {
+    const L = rep.logs || {};
+    reportTables.hidden = true; carsWrap.hidden = true; canWrap.hidden = false;
+    tablesTable.setRows([]); reasonsTable.setRows([]); carsTable.setRows([]);
+    const took = rep.imported ? L.imported : L.to_import;
+    replace(reportBox,
+      h('p', { class: 'im-report-what' }, rep.imported ? 'What the import stored: the car\'s own signed CAN logs, as if the CAN Bridge had uploaded them.' : 'From the check: what the import will store. Nothing is stored yet.'),
+      figures([
+        metric('Logs read', num(L.read), null, { explain: `${bytes(L.bytes)} of CAN Bridge logs in the zip` }),
+        metric(rep.imported ? 'Logs imported' : 'Logs to import', num(took), null, { explain: 'Signed by the car\'s CAN Bridge and unchanged since' }),
+        metric('Already here', num(L.already_here), null, { explain: 'The same log (name and SHA-256) is here already: not stored twice' }),
+        metric('Refused', num(L.refused), null, { explain: L.refused ? 'Never stored; each with its reason below' : 'None: every log checked out' }),
+        metric('Logs from', rep.span?.from_ms ? date(rep.span.from_ms, tz) : null, null, { size: 'sm', why: 'The zip holds no log', explain: rep.span?.from_ms ? `to ${date(rep.span.to_ms, tz)}` : null }),
+      ], 'im-figs'));
+    skipBox.hidden = !L.refused;
+    const by = Object.entries(rep.refused || {}).filter(([, n]) => n);
+    replace(skipBox, icon('warn', 'ico--sm'), h('div', null,
+      h('p', null, h('b', null, `${num(L.refused)} log${L.refused === 1 ? '' : 's'} ${rep.imported ? 'were' : 'will be'} refused`), ': ', by.map(([k, n]) => `${canReason(k)[0]} ${num(n)}`).join(', '), '.'),
+      h('p', null, 'A refused log is never stored, so it cannot make up history. Every other log is imported.')));
+    keysTable.setRows(rep.cars || []);
+    refusedTable.setRows(rep.refused_logs || []);
   }
   const reportTables = h('div', { class: 'im-two' }, tablesTable.el, reasonsTable.el);
   const carsWrap = h('div', { class: 'im-cars' }, carsTable.el);
@@ -681,7 +783,7 @@ export async function mount(ctx) {
       setJob(fresh);
       lastRead = ctx.api.now();
       if (fresh.status !== was || ['checking', 'ready'].includes(fresh.status)) await loadMatch();
-      if (fresh.status === 'done' && was !== 'done') { await loadJobs(); S.cars = await ctx.api.list('cars', { limit: 500 }).all({ max: 10000 }); pick(); await loadOverlaps(); flash('Import done. The history shows on every page, marked as imported.'); }
+      if (fresh.status === 'done' && was !== 'done') { await loadJobs(); S.cars = await ctx.api.list('cars', { limit: 500 }).all({ max: 10000 }); pick(); await loadOverlaps(); flash(isCan(fresh) ? 'Import done. The logs are in; their drives and charges show as they are decoded.' : 'Import done. The history shows on every page, marked as imported.'); }
       if (fresh.status === 'failed' && was !== 'failed') flash('The import failed; see Upload for why.', { kind: 'error' });
     } catch (e) {
       if (!ctx.alive()) return;
@@ -719,6 +821,7 @@ export async function mount(ctx) {
     reportPanel,
     carsWrap,
     reportTables,
+    canWrap,
     overlapPanel));
   paintAll();
   ctx.ready();

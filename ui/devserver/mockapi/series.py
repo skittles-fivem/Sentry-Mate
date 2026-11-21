@@ -11,6 +11,7 @@ from __future__ import annotations
 import bisect
 import math
 
+from . import sources as S
 from .dataset.segments import SERIES_FIELDS
 from .util import percentile
 
@@ -35,12 +36,10 @@ def nice_bucket(span_ms, max_points):
 def pieces(h, a, b, now, source):
     out = []
     for s in h.segs_between(a, b, now):
-        if source in ("can", "teslamate") and s.source != source:
-            if source == "teslamate":
-                continue
+        if not S.keeps(source, s.source, getattr(s, "inputs", None)):
             continue
         out.append(s)
-    if source == "teslamate":
+    if S.canon(source) == "import:teslamate":
         out += [s for s in h.shadow if s.end > a and s.start < min(b, now)]
     return out
 
@@ -58,7 +57,7 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
     b = min(b, now)
     if b <= a or (edges is not None and len(edges) < 2):
         return {"t_ms": [], "values": {f: [] for f in fields}, "bucket_ms": bucket or 1000, "coverage_pct": [],
-                "state": []}
+                "state": [], "sources": [], "source_label": S.label_of([])}
     if edges is not None:
         edges = list(edges)
         a0, n = edges[0], len(edges) - 1
@@ -91,6 +90,7 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
         quarter = min(quarter, sample_ms)
     peaks = bool(PEAK_FIELDS & set(fields))
     samples = [[] for _ in range(n)]  # (t, values)
+    gave = []  # the origins that gave a point, in the order first seen
     state_ms = [dict() for _ in range(n)]
     for s in pieces(h, a0, b, now, source):
         lo, hi = max(s.start, a0), min(s.end, b, getattr(s, "data_end", s.end) if s.kind != "parked" else s.end)
@@ -137,6 +137,9 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
             i = idx(t)
             if 0 <= i < n:
                 samples[i].append((t, v))
+                for x in S.of_seg(s)["sources"]:
+                    if x not in gave:
+                        gave.append(x)
     t_ms = edges[:-1] if edges is not None else [a0 + i * bucket for i in range(n)]
     want = list(aggs) if aggs else []
     default = not explicit_aggs
@@ -170,7 +173,10 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
         else:
             states.append("unknown")
     _ = default
-    return {"t_ms": t_ms, "values": values, "bucket_ms": bucket, "coverage_pct": coverage, "state": states}
+    order = {"smo": 0, "tesla_api": 1, "import": 2}
+    gave.sort(key=lambda x: order[x["kind"]])
+    return {"t_ms": t_ms, "values": values, "bucket_ms": bucket, "coverage_pct": coverage, "state": states,
+            "sources": gave, "source_label": S.label_of(gave)}
 
 
 def _agg(ag, xs):

@@ -27,6 +27,7 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--now-ms MS` | `1794850200000` | The virtual "now" at start (2026-11-16 17:30 UTC). It then moves with real time. |
 | `--fresh` (or `--needs-setup`) | off | Starts as a fresh server: no accounts and nobody signed in, the first-run set-up page. The set-up code is `SETUP-DEV-0000`. See "First-run set-up and moving" below. |
 | `--move-state S` | `none` | Starts Settings: Server's "Move to another server" in state `S`: `offered`, `expired`, `copying`, `paused`, `moved` or `done` (screenshots; add `--freeze-clock` to hold it there). Not with `--fresh`. |
+| `--own-certificate` | off | Runs with the owner's own certificate (`certificate.own` in `/network`), expiring in 12 days: the `certificate_expiring` notice is up and `POST /network/certificate` is `409 own_certificate`. Without it the certificate is one the server made, which never expires soon. |
 | `--move-peer-after-s N` | `15` | A made-up new server (`192.168.1.30`) claims a waiting move code `N` seconds after it is made, then copies, pauses, switches and is done in about 17 s. `0`: never. |
 | `--freeze-clock` | off | Keeps "now" fixed (stable screenshots and tests). |
 | `--sse-interval-ms N` | `2000` | How often live values are pushed on `/api/v1/events`. |
@@ -66,11 +67,17 @@ start after the virtual clock are not shown yet, and the piece the clock is in i
 | `c3` Atlas | Model S 2017, 90D, old (legacy) CAN profile, `America/Los_Angeles` | East Bay. 16 months imported from TeslaMate (`source: "teslamate"`, estimated energy) that overlap 5 days of CAN rows, free Supercharging, fewer decoded signals (no tyres, no set points). Its CAN Bridge went quiet about 55 hours before "now": the last log failed its check. |
 | `c4`..`cN` | synthetic | Names, models, states and battery from the car's index only; lists elsewhere are empty but valid. |
 
+Where each row came from (`sources`, `source_label`, see `mockapi/sources.py`): `c1` has SMO and the Tesla API
+(most rows SMO, a fifth seen by both, a few by the API alone, and an afternoon two days before "now" when SMO was
+offline and only the API saw the car); `c2` has both on every live row; `c3` has SMO and its TeslaMate import; the
+synthetic cars have SMO. Only the labels differ: the made-up data is the same.
+
 Also present: places that overlap (Work and the Mission Bay Supercharger, Home and Noe Valley), charges with
 and without cost, two software changes per car (one known only as "software changed"), awake, asleep and
 vehicle-bus-only spells, attention items, upload tokens, a CAN Bridge key waiting to be assigned, an audit log,
-saved trips and purpose rules, 40 places (some with prices by time of day), server and MQTT settings, notices (a
-certificate that expires in 12 days, an unsaved recovery key), the finished import that brought `c3`'s TeslaMate
+saved trips and purpose rules, 40 places (some with prices by time of day), server and MQTT settings, notices (an
+unsaved recovery key; with `--own-certificate` also a certificate that expires in 12 days), a Tesla account (`ta1`, reading `c1` and `c2`, a third
+car not matched; every change asks for the password `sentry-mate-dev` again), the finished import that brought `c3`'s TeslaMate
 history in (its report counts exactly what `c3` holds), and storage figures that add up from the cars to the server.
 Seeds that are not car history are in `mockapi/dataset/extras.py`.
 
@@ -98,10 +105,11 @@ each piece's own seed and never stored, so a year of data answers in a few hundr
 | Reports (statistics, mileage, totals, gaps, compare, stops and Travel, tracks, software, car events) | done |
 | Places (preview of a change, reprice, suggestions, the place at a point) | done |
 | Integrations (MQTT settings, status, preview, test; outside connections) | done |
+| Integrations: Tesla (accounts, sign-in at Tesla with a pasted address, refresh token, cars, pause, poll setting, status; nothing leaves the dev server) | done |
 | Server, settings and health (notices, maps, data health, rebuild, overlaps, storage) | done |
 | Import (resumable upload, check, car matching, import, report) | done |
 | Moving and first-run setup (claim, start fresh, move here, restore, move code, undo, export file) | done |
-| Deliberately absent (no car commands, no Tesla account, no SQL, no VIN serial) | absent: `404` |
+| Deliberately absent (no car commands, no wake, no Tesla token, no SQL, no VIN serial) | absent: `404` |
 
 Decisions on points the API document left open are at the end of `docs/ui-api.md` ("Decisions").
 
@@ -152,6 +160,15 @@ sends `two_step: "000000"`) answers the move code once. After `--move-peer-after
 { password }` prepares a 4 MB made-up export file in 3 s; its `url` downloads it (with `Range`), and it restores
 on a `--fresh` dev server.
 
+**A new certificate**: `POST /api/v1/network/certificate { password }` answers `{ names, sha256, upload_address }`
+with `localhost` and the saved host names and a made-up SHA-256 (a new one each time), which `/network` shows from
+then on. `409 move_under_way` while a move code waits or a copy runs, `409 moved` after a move, and
+`409 own_certificate` (before the password is checked) when the server runs with the owner's own certificate:
+`--own-certificate`, or the store's `cert_own` (tests). `/network` then says `certificate.own: true`, and only
+then is the `certificate_expiring` notice up (a certificate the server makes is valid until 4096). `certificate.names`
+starts with `localhost`, as the real server's do. A missing `password` on any request that asks for it again is
+`400 bad_input`, a wrong one `403 wrong_password`.
+
 ## Layout
 
 ```
@@ -169,7 +186,10 @@ mockapi/series.py        bucketed series that keep minima and maxima
 mockapi/events.py        the event hub behind /api/v1/events
 mockapi/dataset/         places, cars, routes, the day-by-day simulator, pieces, synthetic cars, extras
 mockapi/resources/       one module per section of docs/ui-api.md (Reports is reports, travel and software;
-                         moving.py is first-run set-up, the move to another server and export files)
+                         moving.py is first-run set-up, the move to another server and export files;
+                         tesla.py is the Tesla API input: a made-up account `ta1` with c1, c2 and one car not
+                         matched; a refresh token starting `refused` or `unreachable` plays Tesla saying no or
+                         being down)
 tests/                   unittest; test_contract.py checks the server against docs/ui-api.md
 ```
 

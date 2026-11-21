@@ -82,7 +82,7 @@
 /* report */
 .im-report-what { color: var(--text-2); margin-bottom: round(0.875rem, var(--e)); }
 .im-figs { margin-bottom: round(0.25rem, var(--e)); }
-.im-cars[hidden] { display: none; }
+.im-cars[hidden], .im-can[hidden] { display: none; }
 .im-whys { display: inline-flex; flex-wrap: wrap; gap: round(0.125rem, var(--e)) 0; }
 .im-skip { display: flex; gap: round(0.625rem, var(--e)); align-items: flex-start; margin-top: round(1rem, var(--e)); padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--warm-line); background: var(--warm-soft); }
 .im-skip[hidden] { display: none; }

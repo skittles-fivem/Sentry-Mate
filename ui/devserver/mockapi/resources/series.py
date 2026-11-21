@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .. import series as S
+from .. import sources as SRC
 from ..conventions import page
 from ..dataset.segments import SERIES_FIELDS
 from ..errors import bad_input
@@ -55,7 +56,7 @@ def get_series(req):
     a, b = req.period(24 * HOUR)
     max_points = req.int_param("max_points", 1000, 2, 20000)
     aggs = req.list_param("agg", S.AGGS, 6)
-    source = req.enum("source", ("can", "teslamate", "all"), "all")
+    source = SRC.canon(req.enum("source", SRC.FILTER_WORDS, "all"))
     h = req.history()
     out = {"car": req.car, "time_zone": req.tz(), "fields": fields}
     if h is None:

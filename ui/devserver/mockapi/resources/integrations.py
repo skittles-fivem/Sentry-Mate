@@ -9,11 +9,13 @@ turns location publishing on. The VIN is never published. Nothing here leaves th
 
 from __future__ import annotations
 
+import hashlib
 import re
 
-from ..errors import bad_input, invalid
+from ..errors import ApiError, bad_input, invalid
 from ..live import now_object
 from ..util import h01, iso_utc
+from . import tesla
 from .moving import DEV_CERT_SHA256
 
 HOST_RX = re.compile(r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
@@ -335,22 +337,69 @@ def network(req):
              "last_used_ms": now - 1500 if m["enabled"] else None},
             {"purpose": "release_check", "host": "api.github.com", "enabled": bool(ss["release_check"]["enabled"]),
              "last_used_ms": now - 6 * 3_600_000 if ss["release_check"]["enabled"] else None},
-        ],
+        ] + tesla.network_rows(req),
         "inbound": [{"purpose": "web", "port": 443, "tls": True}, {"purpose": "upload", "port": 10100, "tls": True}],
-        "certificate": {"names": list(req.store.cert_names), "sha256": DEV_CERT_SHA256},
+        "certificate": {"names": list(req.store.cert_names), "sha256": cert_sha256(req.store),
+                        "own": bool(getattr(req.store, "cert_own", False))},
         "upload_address": bridge_address(req),
     }
 
 
+def cert_sha256(st):
+    """The SHA-256 of the certificate the dev server pretends to run with (a new one after each POST)."""
+    return getattr(st, "cert_sha256", None) or DEV_CERT_SHA256
+
+
 def bridge_address(req):
-    """The address the CAN Bridge sends logs to: the server's first host name, the upload port."""
-    names = req.store.cert_names or ["sentry-mate.local"]
-    return f"https://{names[0]}:10100/api/can/logs"
+    """The address the CAN Bridge sends logs to: the certificate's first name other than localhost, the upload
+    port."""
+    names = [n for n in req.store.cert_names if n != "localhost"] or list(req.store.cert_names) or ["sentry-mate.local"]
+    host = f"[{names[0]}]" if ":" in names[0] else names[0]
+    return f"https://{host}:10100/api/can/logs"
 
 
 def bridge_fields(req, secret):
     """The three fields of the CAN Bridge app's "Second Sentry Six Manager" section, for a new token."""
-    return {"address": bridge_address(req), "token": secret, "certificate_sha256": DEV_CERT_SHA256}
+    return {"address": bridge_address(req), "token": secret, "certificate_sha256": cert_sha256(req.store)}
+
+
+def post_certificate(req):
+    """A new self-signed certificate for localhost and the saved host names (as the real server makes it): the
+    password again (and the two-step code), refused while a move or restore runs, or with the owner's own
+    certificate (`cert_own` on the store). A made-up SHA-256, new each time."""
+    from .moving import _only, _reauth, _old_phase
+    st = req.store
+    body = req.json(required=False) or {}
+    _only(body, ("password", "two_step"))
+    _refuse_if_moving(req, _old_phase)
+    # before the password, so a two-step code is not used up on a request that can't work
+    if getattr(st, "cert_own", False):
+        raise ApiError(409, "own_certificate",
+                       "The server runs with your own certificate (the cert.pem you put in data/tls, its key sealed "
+                       "into key.sealed at start), so it does not replace it. To change it, put the new cert.pem and "
+                       "key.pem in data/tls and start the server again; for a certificate the server makes, delete "
+                       "data/tls/cert.pem and start it again.")
+    _reauth(req, body)
+    with st.lock:
+        st.cert_made = getattr(st, "cert_made", 0) + 1
+        names = ["localhost"] + [n for n in st.server_settings["host_names"] if n != "localhost"]
+        st.cert_names = names
+        hexd = hashlib.sha256(f"sentry-mate dev certificate {st.cert_made}".encode()).hexdigest().upper()
+        st.cert_sha256 = ":".join(hexd[i:i + 2] for i in range(0, 64, 2))
+    st.record(req.account, "certificate-made", "server:certificate",
+              f"Made a new certificate for {', '.join(names)}; its SHA-256 starts {st.cert_sha256[:11]}.")
+    return {"names": list(names), "sha256": st.cert_sha256, "upload_address": bridge_address(req)}
+
+
+def _refuse_if_moving(req, old_phase):
+    st = req.store
+    state = old_phase(st, req.now)[0]
+    if state in ("moved", "done"):
+        raise ApiError(409, "moved", "The data moved to another server: undo the move first.")
+    if state in ("offered", "copying", "paused"):
+        raise ApiError(409, "move_under_way",
+                       "A move code is waiting or a new server is copying from here, and it uses this certificate's "
+                       "SHA-256: cancel the move first, or make the new certificate after it.")
 
 
 def register(router):
@@ -359,3 +408,4 @@ def register(router):
     router.add("/api/v1/settings/mqtt/preview", GET=preview)
     router.add("/api/v1/settings/mqtt/test", POST=test, admin=("POST",))
     router.add("/api/v1/network", GET=network, admin=("GET",))
+    router.add("/api/v1/network/certificate", POST=post_certificate, admin=("POST",))

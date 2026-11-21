@@ -16,6 +16,7 @@ from ..placing import place_obj, ref
 from ..util import r
 from .charges import cached_charge_row
 from .drives import cached_drive_row
+from .. import sources as S
 
 SORTS = ("arrived_desc", "arrived_asc", "dwell_desc")
 GROUP_SORTS = ("visits", "dwell", "last", "name")
@@ -78,7 +79,8 @@ def visit_view(v):
             "address": {k: a.get(k) for k in ("short", "street", "neighbourhood", "locality", "region", "country_code",
                                               "country", "source")},
             "city_key": v["city_key"], "drive_in": v["drive_in"], "drive_out": v["drive_out"],
-            "charges": list(v["charges"]), "unknown_ms": v["unknown_ms"], "source": v["source"]}
+            "charges": list(v["charges"]), "unknown_ms": v["unknown_ms"],
+            **{k: v[k] for k in ("source", "sources", "source_label")}}
 
 
 def _dwell(v, f, now):
@@ -322,7 +324,7 @@ def tracks(req):
                 lon.append(p[1])
                 acc.append(p[2])
         used += len(t_ms)
-        out.append({"car": h.car.id, "drive": d.id, "source": d.source, "t_ms": t_ms, "lat": lat, "lon": lon,
+        out.append({"car": h.car.id, "drive": d.id, **S.of_seg(d), "t_ms": t_ms, "lat": lat, "lon": lon,
                     "accuracy_m": acc})
     return {"cars": car_ids, "from_ms": a, "to_ms": end, "points": used, "drives": out}
 

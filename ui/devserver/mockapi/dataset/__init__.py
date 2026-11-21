@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import bisect
 
+from .. import sources as S
 from ..util import DAY, local_date
 from . import places as P
 from .cars import featured_specs
@@ -55,8 +56,8 @@ class CarHistory:
 
     def shown(self, row, source="all"):
         """Whether a drive or charge row is listed for a source filter (overlaps show one side)."""
-        if source in ("can", "teslamate"):
-            return row.source == source
+        if source not in (None, "all"):
+            return S.keeps(source, row.source, getattr(row, "inputs", None))
         for o in self.overlaps:
             if o["start_ms"] <= row.start < o["end_ms"]:
                 return row.source == o["shown"]

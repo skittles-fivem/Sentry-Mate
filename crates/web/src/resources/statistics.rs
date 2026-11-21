@@ -57,7 +57,7 @@ async fn mileage(State(app): State<AppState>, CarParam(car): CarParam, p: Params
 }
 
 async fn totals(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let source = p.one_of("source", &["can", "teslamate", "all"])?;
+    let source = p.source()?;
     answer(&app, &p, "totals", move |e| q::reports::totals(e, car, source)).await
 }
 

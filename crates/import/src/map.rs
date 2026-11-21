@@ -210,6 +210,7 @@ pub(crate) fn drive(
         ascent_m: row.f64(Drv::ascent),
         descent_m: row.f64(Drv::descent),
         source: Source::Teslamate,
+        inputs: model::Inputs::NONE,
         rules_version: MAPPING_VERSION,
     };
     Mapped::Take(DriveRow { tm_id: id, drive, tm })
@@ -268,6 +269,7 @@ pub(crate) fn charge(
         battery_temp_avg_c: None,
         cost: row.f64(Cp::cost),
         source: Source::Teslamate,
+        inputs: model::Inputs::NONE,
         rules_version: MAPPING_VERSION,
     };
     Mapped::Take(ChargeRow { tm_id: id, charge, tm })
@@ -310,7 +312,15 @@ pub(crate) fn state(row: &Row<'_, '_>, id: i64, car: CarId) -> Mapped<StateRow> 
         Err(true) => return Mapped::Open,
         Err(false) => return Mapped::Bad("end_date"),
     };
-    let span = StateSpan { car, state, start_ms, end_ms, buses: Vec::new(), source: Source::Teslamate };
+    let span = StateSpan {
+        car,
+        state,
+        start_ms,
+        end_ms,
+        buses: Vec::new(),
+        source: Source::Teslamate,
+        inputs: model::Inputs::NONE,
+    };
     Mapped::Take(StateRow { tm_id: id, span, offline })
 }
 
@@ -324,7 +334,14 @@ pub(crate) fn update(row: &Row<'_, '_>, id: i64, car: CarId) -> Mapped<UpdateRow
     let Some(version) = row.text(Upd::version) else { return Mapped::Bad("version") };
     Mapped::Take(UpdateRow {
         tm_id: id,
-        update: Update { car, start_ms, end_ms: Some(end_ms), version, source: Source::Teslamate },
+        update: Update {
+            car,
+            start_ms,
+            end_ms: Some(end_ms),
+            version,
+            source: Source::Teslamate,
+            inputs: model::Inputs::NONE,
+        },
     })
 }
 

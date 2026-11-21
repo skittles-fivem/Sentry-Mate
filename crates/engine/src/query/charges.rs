@@ -8,7 +8,7 @@ use super::now::kind_word;
 use super::system::Shown;
 use super::{
     Address, CarRef, CursorBody, Money, Paging, Period, QResult, QueryError, Scoped, car_of, money, paginate,
-    place_ref, r, scoped, sig_hash, source_word,
+    place_ref, r, scoped, sig_hash,
 };
 use crate::records::{self, CostEntry};
 use crate::{Engine, costs};
@@ -88,7 +88,8 @@ pub struct ChargeView {
     pub power_avg_kw: Option<f64>,
     pub outside_avg_c: Option<f64>,
     pub battery_avg_c: Option<f64>,
-    pub source: &'static str,
+    #[serde(flatten)]
+    pub from: super::Sources,
     pub has_gaps: bool,
     pub flags: ChargeFlags,
 }
@@ -112,7 +113,7 @@ pub(crate) fn ctx(e: &Engine, c: &Car) -> QResult<Ctx> {
     let live = match snap {
         Some(n) => e
             .db()
-            .list::<Charge>(c.id, &db::Query { source: Some(Source::Can), ..db::Query::default().limit(1) })?
+            .list::<Charge>(c.id, &db::Query { source: Some(Source::Live), ..db::Query::default().limit(1) })?
             .items
             .into_iter()
             .next()
@@ -135,7 +136,7 @@ pub(crate) fn cost_of(e: &Engine, c: &Car, ch: &Charge) -> QResult<Option<CostEn
 fn cost_live(e: &Engine, c: &Car, ch: &Charge, live: bool) -> QResult<Option<CostEntry>> {
     let kept = records::cost(e.db(), c.id, ch.id, ch.start_ms)?;
     // free Supercharging (the car's settings) wins over a place price, kept or not; only a typed cost holds
-    if ch.source == Source::Can
+    if ch.source == Source::Live
         && kept.as_ref().is_none_or(|k| k.source != "manual")
         && let Some(free) = costs::free_now(e, ch, &c.time_zone)
     {
@@ -144,7 +145,7 @@ fn cost_live(e: &Engine, c: &Car, ch: &Charge, live: bool) -> QResult<Option<Cos
     if let Some(k) = kept.filter(|k| !live || k.source == "manual") {
         return Ok(Some(k));
     }
-    if ch.source == Source::Can {
+    if ch.source == Source::Live {
         // an ended charge that had no cost when a place change was saved keeps none until a reprice
         if !live && costs::kept_none(e, c.id, ch.id)? {
             return Ok(None);
@@ -219,7 +220,7 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
         power_avg_kw: r(added.filter(|_| hours > 0.001).map(|a| a / hours), 1),
         outside_avg_c: r(ch.outside_temp_avg_c, 1),
         battery_avg_c: r(ch.battery_temp_avg_c, 1),
-        source: source_word(ch.source),
+        from: super::Sources::of(ch.source, ch.inputs),
         has_gaps: false,
         flags: ChargeFlags { in_progress: live, gap_ms: 0 },
     }
@@ -233,7 +234,7 @@ fn each<T: db::Item>(
     car: CarId,
     a: u64,
     b: u64,
-    source: Option<Source>,
+    source: Option<super::SourceFilter>,
     shown: &Shown,
     newest_first: bool,
     mut f: impl FnMut(T) -> QResult<bool>,
@@ -245,12 +246,12 @@ fn each<T: db::Item>(
     if !newest_first {
         q = q.oldest_first();
     }
-    q.source = source;
+    q.source = source.map(super::SourceFilter::family);
     loop {
         let page = e.db().list::<T>(car, &q)?;
         for row in page.items {
             let (start, src) = (row.start_ms(), row.source());
-            if start >= a && start < b && shown.keep(src, start) && !f(row)? {
+            if start >= a && start < b && shown.keep(src, row.inputs(), start) && !f(row)? {
                 return Ok(());
             }
         }
@@ -262,7 +263,12 @@ fn each<T: db::Item>(
 }
 
 /// The charges of a car in a period (by start, oldest first), as shown.
-pub(crate) fn rows(e: &Engine, car: CarId, period: &Period, source: Option<Source>) -> QResult<Vec<Charge>> {
+pub(crate) fn rows(
+    e: &Engine,
+    car: CarId,
+    period: &Period,
+    source: Option<super::SourceFilter>,
+) -> QResult<Vec<Charge>> {
     let (a, b) = period.bounds()?;
     let shown = Shown::new(e, car, source)?;
     let mut out = Vec::new();
@@ -432,7 +438,7 @@ pub struct ChargesPage {
 /// The checked filters of a query.
 struct Filter<'a> {
     q: &'a ChargesQuery,
-    source: Option<Source>,
+    source: Option<super::SourceFilter>,
     places: Option<Vec<u32>>,
     needle: Option<String>,
     flags: Vec<&'a str>,

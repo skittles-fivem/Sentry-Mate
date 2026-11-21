@@ -56,9 +56,13 @@ impl Signer {
 
     /// The sidecar's `integrity` object for a log (its name and bytes), and moves the chain on.
     pub fn sign(&mut self, vehicle_key: &str, name: &str, log: &[u8]) -> serde_json::Value {
-        let sha = hex::encode(Sha256::digest(log));
-        let msg =
-            trust::signed_message(vehicle_key, name, &sha, log.len() as u64, self.index, &self.prev.0, &self.prev.1);
+        self.sign_digest(vehicle_key, name, &hex::encode(Sha256::digest(log)), log.len() as u64)
+    }
+
+    /// As [`Signer::sign`], for a log known by its SHA-256 (hex) and length (one too big to hold in memory).
+    pub fn sign_digest(&mut self, vehicle_key: &str, name: &str, sha: &str, length: u64) -> serde_json::Value {
+        let sha = sha.to_string();
+        let msg = trust::signed_message(vehicle_key, name, &sha, length, self.index, &self.prev.0, &self.prev.1);
         let sig: Signature = self.key.sign(msg.as_bytes());
         let v = serde_json::json!({
             "signed": true,
@@ -68,7 +72,7 @@ impl Signer {
             "key_fingerprint": self.fingerprint(),
             "vehicle_key": vehicle_key,
             "sha256": sha,
-            "length": log.len(),
+            "length": length,
             "index": self.index,
             "prev_name": self.prev.0,
             "prev_sha256": self.prev.1,

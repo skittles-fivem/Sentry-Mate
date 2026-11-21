@@ -26,6 +26,9 @@
 //! 6. **Live**: the car's newest values (its Now), and an [`Event`] for every change, on a broadcast the web server
 //!    turns into server-sent events ([`Engine::subscribe`]).
 //!
+//! **A second live input**, the Tesla API ([`tesla_in`]): its samples and its view of the car's state are kept apart
+//! from SMO's and fused with them when a window is built, so a drive both saw is one row naming both inputs.
+//!
 //! **Restart-safe.** What was decoded is recorded per log ([`records`]), and a window written to is noted dirty until it
 //! is rebuilt. On start ([`Engine::start`]) each car's logs are compared with what was recorded
 //! ([`Engine::reconcile`]): logs told of while the engine was down (or cut off by a crash) are worked on, dirty windows
@@ -47,7 +50,10 @@ pub use pipeline::NEW_CAR_NAME;
 pub mod placing;
 pub mod query;
 pub mod records;
+pub mod tesla_in;
 pub mod tz;
+
+pub use tesla_in::TeslaSink;
 
 pub use jobs::{Job, JobStatus, Scope};
 pub use records::DECODE_VERSION;
@@ -102,6 +108,11 @@ pub struct Options {
     pub event_capacity: usize,
     /// The time zone of a car made here.
     pub default_time_zone: String,
+    /// A car's Tesla API data is built into its timeline at most this often (ms): a car polled every half minute, or
+    /// streaming while driving, is not rebuilt for every reading.
+    pub api_rebuild_ms: u64,
+    /// How SMO's and the Tesla API's samples are made one ([`timeline::fuse`]).
+    pub fuse: timeline::FuseParams,
 }
 
 impl Default for Options {
@@ -114,6 +125,8 @@ impl Default for Options {
             new_keys: NewKeys::default(),
             event_capacity: 1024,
             default_time_zone: "UTC".into(),
+            api_rebuild_ms: 30_000,
+            fuse: timeline::FuseParams::default(),
         }
     }
 }
@@ -157,8 +170,27 @@ struct Counters {
 }
 
 pub(crate) enum Work {
-    Log { key: String, name: String },
-    Reconcile { car: Option<CarId> },
+    Log {
+        key: String,
+        name: String,
+    },
+    Reconcile {
+        car: Option<CarId>,
+    },
+    /// Tesla API data to store ([`tesla_in`]).
+    ApiData {
+        car: CarId,
+        samples: Vec<model::Sample>,
+        facts: Vec<timeline::ApiSpan>,
+    },
+    ApiMeta {
+        car: CarId,
+        meta: Box<tesla::ApiMeta>,
+    },
+    /// A car's stored Tesla API data to build into its timeline.
+    ApiBuild {
+        car: CarId,
+    },
 }
 
 pub(crate) struct Inner {
@@ -169,7 +201,7 @@ pub(crate) struct Inner {
     pub(crate) judge: Judge,
     pub(crate) opts: Options,
     events: broadcast::Sender<Event>,
-    tx: mpsc::UnboundedSender<Work>,
+    pub(crate) tx: mpsc::UnboundedSender<Work>,
     rx: Mutex<Option<mpsc::UnboundedReceiver<Work>>>,
     car_locks: Mutex<HashMap<CarId, Arc<Mutex<()>>>>,
     /// Making a car for a new key, one at a time.
@@ -185,6 +217,9 @@ pub(crate) struct Inner {
     handle: Mutex<Option<tokio::runtime::Handle>>,
     /// The upload tokens (their car names tell a new car's logger from the only car's), when given.
     tokens: std::sync::OnceLock<Arc<ingest::Tokens>>,
+    /// Cars whose Tesla API data waits for a build, and when each was last built.
+    pub(crate) api_pending: Mutex<std::collections::HashSet<CarId>>,
+    pub(crate) api_built: Mutex<HashMap<CarId, u64>>,
 }
 
 impl Inner {
@@ -229,6 +264,8 @@ impl Engine {
                 last_error: Mutex::new(None),
                 handle: Mutex::new(None),
                 tokens: std::sync::OnceLock::new(),
+                api_pending: Mutex::new(std::collections::HashSet::new()),
+                api_built: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -325,6 +362,9 @@ impl Engine {
                 let r = match w {
                     Work::Log { key, name } => e.work_log(&key, &name),
                     Work::Reconcile { car } => e.work_reconcile(car),
+                    Work::ApiData { car, samples, facts } => e.work_api_data(car, samples, facts),
+                    Work::ApiMeta { car, meta } => e.work_api_meta(car, *meta),
+                    Work::ApiBuild { car } => e.work_api_build(car),
                 };
                 if let Err(err) = r {
                     e.failed(&err);

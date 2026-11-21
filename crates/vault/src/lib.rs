@@ -490,6 +490,12 @@ impl Vault {
         Ok(Vault { id: key_id.to_string(), key })
     }
 
+    /// A key of its own for `purpose`, made from the data key (the same on every start and after a move, since a
+    /// move carries the data key): for keyed hashes that must not be worked back, such as a tag for a VIN.
+    pub fn derive_key(&self, purpose: &[u8]) -> Zeroizing<[u8; 32]> {
+        self.file_key(b"sentry-mate derived key v1", purpose)
+    }
+
     /// The key of one file, from its random id.
     pub(crate) fn file_key(&self, purpose: &[u8], file_id: &[u8]) -> Zeroizing<[u8; 32]> {
         let hk = Hkdf::<Sha256>::new(Some(file_id), &*self.key);

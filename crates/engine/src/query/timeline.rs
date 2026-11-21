@@ -1,6 +1,6 @@
 //! `/cars/{car}/timeline`, `/states`, `/activity`, `/gaps`.
 
-use super::{List, Paging, Period, QResult, QueryError, Scoped, car_of, paginate, parse_place, r, scoped, source_word};
+use super::{List, Paging, Period, QResult, QueryError, Scoped, car_of, paginate, parse_place, r, scoped};
 use crate::Engine;
 use crate::pipeline::all_rows;
 use db::{StateRow, UpdateRow};
@@ -54,7 +54,8 @@ pub struct Row {
     pub awake_reasons: Vec<&'static str>,
     /// `no_log`, `not_recorded`, `failed_check`, `dropped_frames`.
     pub gap_reason: Option<&'static str>,
-    pub source: &'static str,
+    #[serde(flatten)]
+    pub from: super::Sources,
     /// A drive's or charge's flags (`in_progress`, ...); null on the other rows.
     pub flags: Option<serde_json::Value>,
     pub version: Option<String>,
@@ -187,7 +188,7 @@ fn stretch_rows(
             // the only reason the decoded signals give yet is charging, and a stretch holds no charge
             awake_reasons: Vec::new(),
             gap_reason: None,
-            source: "can",
+            from: super::Sources::family(model::Source::Live),
             flags: None,
             version: None,
             version_source: None,
@@ -222,7 +223,7 @@ fn stretch_rows(
             parked_ms: Some(ParkedMs { unknown: gb - ga, ..ParkedMs::default() }),
             awake_reasons: Vec::new(),
             gap_reason: Some(known.unwrap_or_else(|| why(ga, gb))),
-            source: "can",
+            from: super::Sources::family(model::Source::Live),
             flags: None,
             version: None,
             version_source: None,
@@ -278,7 +279,7 @@ pub(crate) fn each_span(
 /// The car's newest `k` state spans (CAN), newest first, joined as [`each_span`] joins them: read back from the
 /// newest row until `k` spans are whole.
 pub(crate) fn newest_spans(e: &Engine, car: CarId, k: usize) -> QResult<Vec<StateSpan>> {
-    let mut q = db::Query { source: Some(Source::Can), ..db::Query::default().limit(64) };
+    let mut q = db::Query { source: Some(Source::Live), ..db::Query::default().limit(64) };
     let mut out: Vec<StateSpan> = Vec::new();
     let mut cur: Option<StateSpan> = None;
     loop {
@@ -361,7 +362,7 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             parked_ms: None,
             awake_reasons: Vec::new(),
             gap_reason: None,
-            source: v.source,
+            from: v.from.clone(),
             flags: serde_json::to_value(&v.flags).ok(),
             version: None,
             version_source: None,
@@ -391,14 +392,18 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             range_end_km: v.end_range_km,
             range_delta_km: v.range_added_km,
             energy_delta_kwh: v.energy_added_kwh,
-            energy_basis: Some(if ch.source == Source::Can { "measured" } else { "estimated" }),
+            energy_basis: Some(if ch.source == Source::Live && ch.inputs != model::Inputs::TESLA_API {
+                "measured"
+            } else {
+                "estimated"
+            }),
             outside_avg_c: v.outside_avg_c,
             cost: v.cost.clone(),
             reference: Some(serde_json::json!({ "charge": v.id })),
             parked_ms: None,
             awake_reasons: vec!["charging"],
             gap_reason: None,
-            source: v.source,
+            from: v.from.clone(),
             flags: serde_json::to_value(&v.flags).ok(),
             version: None,
             version_source: None,
@@ -451,7 +456,7 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
     if let (Some(lo), Some(hi)) = (between.iter().map(|s| s.0).min(), between.iter().map(|s| s.1).max()) {
         // the stretches' state spans, and the unknown time in them: unknown spans, and what follows the newest data
         let mut states: Vec<StateSpan> = Vec::new();
-        each_span(e, car, lo.saturating_sub(1), Some(Source::Can), |s| {
+        each_span(e, car, lo.saturating_sub(1), Some(Source::Live), |s| {
             if s.start_ms >= hi {
                 return Ok(false);
             }
@@ -517,7 +522,7 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             parked_ms: None,
             awake_reasons: Vec::new(),
             gap_reason: None,
-            source: source_word(up.source),
+            from: super::Sources::of(up.source, up.inputs),
             flags: None,
             version: Some(up.version.clone()).filter(|v| !v.is_empty()),
             version_source: (up.source == Source::Teslamate).then_some("teslamate"),
@@ -537,7 +542,7 @@ fn fill_energy(e: &Engine, car: CarId, rated_wh_km: Option<f64>, rows: &mut [Row
         let (x, y) = (row.start_ms, row.end_ms.unwrap_or(now));
         let s = match sampler.as_mut() {
             Some(s) => s,
-            None => sampler.insert(super::parked::Sampler::new(e, car, Source::Can, &super::parked::END_FIELDS)?),
+            None => sampler.insert(super::parked::Sampler::new(e, car, Source::Live, &super::parked::END_FIELDS)?),
         };
         let first = s.at(x, x.saturating_sub(super::parked::EDGE_MS), y)?;
         let last = s.at(y, x, y.saturating_add(super::parked::EDGE_MS))?;
@@ -639,7 +644,8 @@ pub struct StateItem {
     pub start_ms: u64,
     pub end_ms: Option<u64>,
     pub buses: Vec<&'static str>,
-    pub source: &'static str,
+    #[serde(flatten)]
+    pub from: super::Sources,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -717,7 +723,7 @@ pub fn states(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResu
     let mut first: Option<u64> = None;
     let mut best = super::drives::Best::new(limit + 1, true, after);
     if a < b {
-        each_span(e, car, a.saturating_sub(1), Some(Source::Can), |s| {
+        each_span(e, car, a.saturating_sub(1), Some(Source::Live), |s| {
             if s.start_ms >= b {
                 return Ok(false);
             }
@@ -744,13 +750,13 @@ pub fn states(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResu
                     start_ms: s.start_ms,
                     end_ms: (!going).then_some(s.end_ms),
                     buses: bus_words(&s.buses),
-                    source: source_word(s.source),
+                    from: super::Sources::of(s.source, s.inputs),
                 };
                 best.offer((s.start_ms as f64, item.id.clone()), item);
             }
             Ok(true)
         })?;
-        for d in super::drives::rows(e, car, period, Some(Source::Can))? {
+        for d in super::drives::rows(e, car, period, Some(super::SourceFilter::Live))? {
             driving += d.end_ms.min(b_eff).saturating_sub(d.start_ms.max(a));
         }
     }
@@ -787,7 +793,8 @@ pub struct Segment {
     /// `{ drive: id }`, `{ charge: id }` or `{ update: id }`; null for the states between them.
     #[serde(rename = "ref")]
     pub reference: Option<serde_json::Value>,
-    pub source: &'static str,
+    #[serde(flatten)]
+    pub from: super::Sources,
 }
 
 /// The strip's segments of a period, and the period they cover (`to_ms` no later than now).
@@ -816,7 +823,7 @@ pub fn activity(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Activ
                 start_ms: d.start_ms.max(a),
                 end_ms: d.end_ms.min(b),
                 reference: Some(serde_json::json!({ "drive": d.id.to_string() })),
-                source: source_word(d.source),
+                from: super::Sources::of(d.source, d.inputs),
             });
         }
     }
@@ -827,7 +834,7 @@ pub fn activity(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Activ
                 start_ms: ch.start_ms.max(a),
                 end_ms: ch.end_ms.min(b),
                 reference: Some(serde_json::json!({ "charge": ch.id.to_string() })),
-                source: source_word(ch.source),
+                from: super::Sources::of(ch.source, ch.inputs),
             });
         }
     }
@@ -839,7 +846,7 @@ pub fn activity(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Activ
                 start_ms: u.update.start_ms.max(a),
                 end_ms: end.min(b),
                 reference: Some(serde_json::json!({ "update": u.id.to_string() })),
-                source: source_word(u.update.source),
+                from: super::Sources::of(u.update.source, u.update.inputs),
             });
         }
     }
@@ -851,7 +858,7 @@ pub fn activity(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Activ
         if s.start_ms >= b {
             return Ok(false);
         }
-        if s.end_ms > a && shown.keep(s.source, s.start_ms.max(a)) {
+        if s.end_ms > a && shown.keep(s.source, s.inputs, s.start_ms.max(a)) {
             spans.push(s);
         }
         Ok(true)
@@ -877,13 +884,19 @@ pub fn activity(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Activ
                     start_ms: cur,
                     end_ms: x.start_ms,
                     reference: None,
-                    source: source_word(s.source),
+                    from: super::Sources::of(s.source, s.inputs),
                 });
             }
             cur = cur.max(x.end_ms);
         }
         if end > cur {
-            out.push(Segment { kind, start_ms: cur, end_ms: end, reference: None, source: source_word(s.source) });
+            out.push(Segment {
+                kind,
+                start_ms: cur,
+                end_ms: end,
+                reference: None,
+                from: super::Sources::of(s.source, s.inputs),
+            });
         }
     }
     out.extend(busy.into_iter().filter(|s| s.end_ms > s.start_ms));
@@ -911,7 +924,7 @@ fn fold(segs: Vec<Segment>, min: u64) -> Vec<Segment> {
         if let Some(l) = out.last_mut()
             && l.end_ms >= s.start_ms
         {
-            let same = l.kind == s.kind && l.reference.is_none() && s.reference.is_none() && l.source == s.source;
+            let same = l.kind == s.kind && l.reference.is_none() && s.reference.is_none() && l.from == s.from;
             if len < min || same {
                 l.end_ms = l.end_ms.max(s.end_ms);
                 continue;
@@ -939,7 +952,8 @@ pub struct GapRow {
     /// `no_log`, `not_recorded`, `chain_gap`, `unknown`.
     pub cause: &'static str,
     pub gap_reason: &'static str,
-    pub source: &'static str,
+    #[serde(flatten)]
+    pub from: super::Sources,
     pub inside: Option<serde_json::Value>,
 }
 
@@ -1054,11 +1068,12 @@ pub(crate) fn classify(why: &[Why], x: u64, y: u64) -> (&'static str, &'static s
 pub fn gaps(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult<Scoped<List<GapRow>>> {
     let c = car_of(e, car)?;
     let (a, b) = period.bounds()?;
-    let drives = super::drives::rows(e, car, &Period::all(), Some(Source::Can))?;
+    let drives = super::drives::rows(e, car, &Period::all(), Some(super::SourceFilter::Live))?;
     let mut items = Vec::new();
     let why = why_unknown(e, car, a, b)?;
-    let charges: Vec<Charge> = all_rows(e.db(), car, a.saturating_sub(7 * 86_400_000), b, Some(Source::Can))?;
-    for s in joined(all_rows::<StateRow>(e.db(), car, a, b, Some(Source::Can))?.into_iter().map(|r| r.span).collect()) {
+    let charges: Vec<Charge> = all_rows(e.db(), car, a.saturating_sub(7 * 86_400_000), b, Some(Source::Live))?;
+    for s in joined(all_rows::<StateRow>(e.db(), car, a, b, Some(Source::Live))?.into_iter().map(|r| r.span).collect())
+    {
         if s.state != State::Unknown || s.end_ms - s.start_ms < GAP_MS || s.start_ms < a {
             continue;
         }
@@ -1090,7 +1105,7 @@ pub fn gaps(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult
             to_place: brief(after.and_then(|d| d.start.as_ref())),
             cause,
             gap_reason,
-            source: "can",
+            from: super::Sources::family(model::Source::Live),
             inside,
         });
     }
@@ -1104,7 +1119,13 @@ mod tests {
     use super::*;
 
     fn seg(kind: &'static str, a: u64, b: u64) -> Segment {
-        Segment { kind, start_ms: a, end_ms: b, reference: None, source: "can" }
+        Segment {
+            kind,
+            start_ms: a,
+            end_ms: b,
+            reference: None,
+            from: crate::query::Sources::family(model::Source::Live),
+        }
     }
 
     #[test]

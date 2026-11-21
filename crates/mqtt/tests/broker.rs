@@ -273,7 +273,8 @@ fn drive(car: u32) -> Drive {
         inside_temp_avg_c: None,
         ascent_m: None,
         descent_m: None,
-        source: Source::Can,
+        source: Source::Live,
+        inputs: model::Inputs::NONE,
         rules_version: 1,
     }
 }

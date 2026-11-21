@@ -37,7 +37,12 @@ pub struct Exporter(pub [u8; 32]);
 /// The exporter label of the move protocol.
 pub const EXPORTER_LABEL: &[u8] = b"EXPORTER-sentry-mate-move-v1";
 
-/// Wrong tokens from one address before it must wait, and requests per token, both per [`WINDOW`].
+/// Wrong tokens from one address before it must wait, and requests per token, both per [`WINDOW`]. A chunk that was
+/// stored does not count against its token: the bridge sends a request per file (a log and its sidecar), so after a
+/// few days away from home its backlog alone is more than this, and the upload would go on at this pace (a file a
+/// second) after a fast start. What a stored chunk costs is bounded already (one request per file at a time, the
+/// logs per car, the free disk; an empty chunk is refused). Pings, status questions, refused chunks, files that were
+/// already here and sidecars that arrive with no log of their name stored (the logs per car don't bound those) count.
 pub const MAX_BAD_TOKENS: usize = 20;
 pub const MAX_REQUESTS_PER_TOKEN: usize = 1200;
 pub const WINDOW: Duration = Duration::from_secs(600);
@@ -83,6 +88,16 @@ impl Window {
             q.push_back(now);
         }
         q.len()
+    }
+
+    /// Takes back the newest hit of `who` (a request that should not count after all).
+    fn give_back(&mut self, who: &str) {
+        if let Some(q) = self.hits.get_mut(who) {
+            q.pop_back();
+            if q.is_empty() {
+                self.hits.remove(who);
+            }
+        }
     }
 
     fn count(&mut self, who: &str, now: Instant) -> usize {
@@ -399,6 +414,7 @@ async fn upload(AxState(up): St, Path(name): Path<String>, req: Request) -> Resu
     // record together. The writes run in a task of their own that keeps the pass, so a request dropped part way (its
     // time ran out) never leaves a write running outside the gate.
     let pass = enter_gate(&up.gate, up.gate_wait).await?;
+    let token_id = token.id.clone();
     let task = {
         let up = up.clone();
         let vehicle_key = n.vehicle_key.to_string();
@@ -408,6 +424,11 @@ async fn upload(AxState(up): St, Path(name): Path<String>, req: Request) -> Resu
         })
     };
     let r = task.await.map_err(ApiError::server)??;
+    // given back only for a chunk that added bytes, and not for a sidecar with no log here (not bounded by the logs
+    // per car)
+    if !r.already && r.received > offset && !r.orphan {
+        lock_window(&up.per_token).give_back(&token_id);
+    }
     let code = if r.complete { StatusCode::CREATED } else { StatusCode::OK };
     Ok((code, Json(r)).into_response())
 }

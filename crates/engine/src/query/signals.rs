@@ -10,7 +10,7 @@
 use super::{List, Paging, QResult, QueryError, Scoped, car_of, decoding, make_after, r, read_after, scoped};
 use crate::Engine;
 use crate::records::{self, Outcome};
-use model::{CarId, Source};
+use model::CarId;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 
@@ -288,7 +288,7 @@ pub fn signals(e: &Engine, car: CarId, q: &SignalsQuery, now_ms: u64) -> QResult
             sums[k].iter().map(|&(s, c)| if c == 0 { None } else { r(Some(s / f64::from(c)), 6) }).collect(),
         );
     }
-    let (coverage, state) = super::series::coverage_and_state(e, car, &t_ms, w, b, Some(Source::Can))?;
+    let (coverage, state) = super::series::coverage_and_state(e, car, &t_ms, w, b, Some(super::SourceFilter::Live))?;
     Ok(scoped(
         &c,
         SignalColumns {

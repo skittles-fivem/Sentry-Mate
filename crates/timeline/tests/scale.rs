@@ -51,7 +51,8 @@ fn one_car(car: u32) -> Summary {
     c.park(30);
     let end = c.t;
     let (samples, logs) = c.finish();
-    let input = Input { car, from_ms: T0, to_ms: end, samples: &samples, logs: &logs, holes: &[] };
+    let input =
+        Input { car, from_ms: T0, to_ms: end, samples: &samples, logs: &logs, holes: &[], api: &[], marks: &[] };
     let t = timeline::build(&input, &Params::default());
     Summary {
         car,
@@ -107,7 +108,8 @@ fn a_long_history_costs_the_window_lookup_next_to_nothing() {
             start_ms: a,
             end_ms: b,
             buses: Vec::new(),
-            source: Source::Can,
+            source: Source::Live,
+            inputs: model::Inputs::SMO,
         };
         spans.push(span(State::Online, t, t + day / 2));
         spans.push(span(State::Asleep, t + day / 2, t + day));
@@ -144,7 +146,8 @@ fn a_car_that_never_sleeps_costs_the_window_lookup_next_to_nothing_too() {
             start_ms: T0 + k * step,
             end_ms: T0 + (k + 1) * step,
             buses: vec!["can0".into()],
-            source: Source::Can,
+            source: Source::Live,
+            inputs: model::Inputs::SMO,
         })
         .collect();
     let cuts: Vec<u64> = (1..n).map(|k| T0 + k * step).collect();

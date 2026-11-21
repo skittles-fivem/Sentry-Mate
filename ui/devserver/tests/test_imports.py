@@ -43,7 +43,7 @@ class Imports(ServerCase):
         e, _ = c.error("POST", "/api/v1/imports", 400, "bad_input", body={"name": "x.sql"})
         self.assertIn("bytes_total", e["fields"])
         c.error("POST", "/api/v1/imports", 422, "invalid", body={"name": "x.sql", "bytes_total": 0})
-        c.error("POST", "/api/v1/imports", 422, "invalid", body={"name": "x.sql", "bytes_total": 9, "compression": "zip"})
+        c.error("POST", "/api/v1/imports", 422, "invalid", body={"name": "x.sql", "bytes_total": 9, "compression": "bzip2"})
         job = c.json("POST", "/api/v1/imports", {"name": "backup.sql.gz", "bytes_total": n}, expect=201)
         jid = job["id"]
         self.assertEqual((job["status"], job["compression"], job["upload_url"]),
@@ -115,6 +115,51 @@ class Imports(ServerCase):
         self.assertFalse(c.get("/api/v1/setup/status")["import_running"])
         c.error("POST", f"{url}/start", 409, "not_ready")
         c.json("DELETE", url)
+
+
+    def test_4_can_export_zip(self):
+        c = self.c
+        data = b"PK\x03\x04" + b"made-up CAN export" * 50
+        n = len(data)
+        job = c.json("POST", "/api/v1/imports", {"name": "can-cbk_c90a7716-20260101T0000-to-20260201T0000.zip",
+                                                 "bytes_total": n}, expect=201)
+        self.assertEqual((job["compression"], job["kind"]), ("zip", None))
+        url = f"/api/v1/imports/{job['id']}"
+        c.json("PATCH", url, data, headers=chunk(data, 0, n))
+        self.server.app.clock.advance(7000)
+        ready = c.get(url)
+        self.assertEqual((ready["status"], ready["kind"], ready["cars_to_match"]), ("ready", "sentry_manager_can", 0))
+        rep = ready["report"]
+        self.assertEqual((rep["kind"], rep["imported"]), ("sentry_manager_can", False))
+        lg = rep["logs"]
+        self.assertEqual(lg["read"], lg["to_import"] + lg["already_here"] + lg["refused"])
+        self.assertEqual(lg["refused"], sum(rep["refused"].values()))
+        self.assertEqual(len(rep["refused_logs"]), lg["refused"])
+        self.assertEqual([x["status"] for x in rep["cars"]], ["car", "new_key"])
+        self.assertEqual(c.get(f"{url}/cars")["items"], [])
+        c.json("POST", f"{url}/start")
+        self.server.app.clock.advance(12_500)
+        done = c.get(url)
+        self.assertEqual(done["status"], "done")
+        lg = done["report"]["logs"]
+        self.assertTrue(done["report"]["imported"])
+        self.assertEqual(lg["read"], lg["imported"] + lg["already_here"] + lg["refused"])
+        self.assertGreater(lg["imported"], 0)
+        # the same export again: nothing new
+        job = c.json("POST", "/api/v1/imports", {"name": "again.zip", "bytes_total": n}, expect=201)
+        url = f"/api/v1/imports/{job['id']}"
+        c.json("PATCH", url, data, headers=chunk(data, 0, n))
+        self.server.app.clock.advance(7000)
+        self.assertEqual(c.get(url)["report"]["logs"]["to_import"], 0)
+        c.json("DELETE", url)
+        # a zip that is not a CAN export, and a "zip" that is not one at all
+        for name, body, code in (("photos.zip", data, "not_a_can_export"), ("x.zip", b"-- SQL\n", "unreadable")):
+            job = c.json("POST", "/api/v1/imports", {"name": name, "bytes_total": len(body)}, expect=201)
+            url = f"/api/v1/imports/{job['id']}"
+            c.json("PATCH", url, body, headers=chunk(body, 0, len(body)))
+            self.server.app.clock.advance(7000)
+            d = c.get(url)
+            self.assertEqual((d["status"], d["error"]["code"]), ("failed", code), name)
 
 
 class WatchImports(ServerCase):

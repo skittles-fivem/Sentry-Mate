@@ -55,7 +55,7 @@ fn query(p: &Params) -> ApiResult<q::charges::ChargesQuery> {
         min_cost: p.float("min_cost", 0.0, 1e9)?,
         include_unpriced: p.bool("include_unpriced")?,
         min_duration_min: p.float("min_duration_min", 0.0, 1e6)?,
-        source: p.one_of("source", &["can", "teslamate", "all"])?.map(str::to_string),
+        source: p.source()?.map(str::to_string),
         flags: p.list("flags", Some(&["gap", "in_progress"]), 2)?.map(|f| f.join(",")),
         sort: p.one_of("sort", &["start", "energy", "duration", "cost", "power_max", "end_soc"])?.map(str::to_string),
         dir: p.one_of("dir", &["asc", "desc"])?.map(str::to_string),
