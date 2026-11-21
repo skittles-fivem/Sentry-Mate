@@ -339,7 +339,8 @@ def network(req):
              "last_used_ms": now - 6 * 3_600_000 if ss["release_check"]["enabled"] else None},
         ] + tesla.network_rows(req),
         "inbound": [{"purpose": "web", "port": 443, "tls": True}, {"purpose": "upload", "port": 10100, "tls": True}],
-        "certificate": {"names": list(req.store.cert_names), "sha256": cert_sha256(req.store)},
+        "certificate": {"names": list(req.store.cert_names), "sha256": cert_sha256(req.store),
+                        "own": bool(getattr(req.store, "cert_own", False))},
         "upload_address": bridge_address(req),
     }
 
@@ -371,12 +372,14 @@ def post_certificate(req):
     body = req.json(required=False) or {}
     _only(body, ("password", "two_step"))
     _refuse_if_moving(req, _old_phase)
-    _reauth(req, body)
+    # before the password, so a two-step code is not used up on a request that can't work
     if getattr(st, "cert_own", False):
         raise ApiError(409, "own_certificate",
-                       "The server runs with your own certificate (cert.pem and key.pem you put in data/tls), so it "
-                       "does not replace it. To use a certificate the server makes, remove those two files and "
-                       "start the server again.")
+                       "The server runs with your own certificate (the cert.pem you put in data/tls, its key sealed "
+                       "into key.sealed at start), so it does not replace it. To change it, put the new cert.pem and "
+                       "key.pem in data/tls and start the server again; for a certificate the server makes, delete "
+                       "data/tls/cert.pem and start it again.")
+    _reauth(req, body)
     with st.lock:
         st.cert_made = getattr(st, "cert_made", 0) + 1
         names = ["localhost"] + [n for n in st.server_settings["host_names"] if n != "localhost"]

@@ -113,13 +113,52 @@ impl Identity {
     }
 }
 
+/// A name for the certificate, written the way it goes in: a DNS name (letters, digits and hyphens between dots,
+/// lower case), an IPv4 address, or an IPv6 address (with or without brackets, compressed). Spaces around it are
+/// dropped. `None` for anything else: a name with a space, a wildcard, an empty one.
+pub fn cert_name(n: &str) -> Option<String> {
+    let n = n.trim().to_ascii_lowercase();
+    let bare = n.strip_prefix('[').and_then(|r| r.strip_suffix(']')).unwrap_or(&n);
+    if let Ok(ip) = bare.parse::<IpAddr>() {
+        return Some(ip.to_string());
+    }
+    let dns = !n.is_empty()
+        && n.len() <= 253
+        && n.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+        });
+    dns.then_some(n)
+}
+
+/// `names` as they go into a certificate ([`cert_name`]), each once, in order; and the ones that are not names.
+pub fn cert_names(names: &[String]) -> (Vec<String>, Vec<String>) {
+    let (mut good, mut bad) = (Vec::new(), Vec::new());
+    for n in names {
+        match cert_name(n) {
+            Some(n) if !good.contains(&n) => good.push(n),
+            Some(_) => {}
+            None if n.trim().is_empty() => {}
+            None => bad.push(n.clone()),
+        }
+    }
+    (good, bad)
+}
+
 /// A new self-signed certificate for `localhost` and `names` (the same generator the first start uses): its PEM
-/// and its key's PEM.
+/// and its key's PEM. What is not a name ([`cert_name`]) is left out, never written in as a DNS name.
 fn make(names: &[String]) -> std::io::Result<(String, zeroize::Zeroizing<String>)> {
     let mut sans = vec!["localhost".to_string()];
-    for n in names.iter().filter(|n| !n.is_empty()) {
-        if !sans.contains(n) {
-            sans.push(n.clone());
+    let (good, bad) = cert_names(names);
+    if !bad.is_empty() {
+        tracing::warn!("left out of the certificate, not host names or addresses: {bad:?}");
+    }
+    for n in good {
+        if !sans.contains(&n) {
+            sans.push(n);
         }
     }
     let made = rcgen::generate_simple_self_signed(sans).map_err(other)?;
@@ -277,12 +316,18 @@ impl LiveCert {
         Ok(Arc::new(c))
     }
 
+    /// Whether [`renew`](Self::renew) refuses: the server runs with its owner's own certificate, or one waits in
+    /// the folder for the next start (a `key.pem`).
+    pub fn own(&self) -> bool {
+        !self.made_here() || self.dir.join("key.pem").exists()
+    }
+
     /// Makes a new self-signed certificate for `localhost` and `names`, seals its key, puts the pair in place
     /// (crash-safe: see [`Identity`]) and serves it from now on. Blocking (file writes). Answers its SHA-256.
-    /// Refused when the server runs with the owner's own certificate.
+    /// Refused when the server runs with the owner's own certificate ([`own`](Self::own)).
     pub fn renew(&self, names: &[String]) -> Result<String, RenewError> {
         let _one = self.making.lock().unwrap_or_else(|e| e.into_inner());
-        if !self.made_here() || self.dir.join("key.pem").exists() {
+        if self.own() {
             return Err(RenewError::OwnCertificate);
         }
         let dir = &self.dir;
@@ -453,6 +498,30 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn only_host_names_and_addresses_go_into_a_certificate() {
+        assert_eq!(cert_name(" NAS.lan "), Some("nas.lan".into()));
+        assert_eq!(cert_name(" 192.168.1.5"), Some("192.168.1.5".into()));
+        assert_eq!(cert_name("[FD00::0001]"), Some("fd00::1".into()));
+        for bad in ["bad name", "*.lan", "a..b", "-a.lan", "", "nas.lan/x", "[::1"] {
+            assert_eq!(cert_name(bad), None, "{bad:?}");
+        }
+        let names: Vec<String> =
+            ["nas.lan", " 192.168.1.5", "bad name", "*.lan", "NAS.lan", " "].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            cert_names(&names),
+            (vec!["nas.lan".into(), "192.168.1.5".into()], vec!["bad name".into(), "*.lan".into()])
+        );
+
+        // in the certificate: the address as an IP address, nothing of the rest
+        let (pem, _) = make(&names).unwrap();
+        let der = rustls_pemfile::certs(&mut pem.as_bytes()).next().unwrap().unwrap();
+        let has = |b: &[u8]| der.windows(b.len()).any(|w| w == b);
+        assert!(has(&[0x87, 4, 192, 168, 1, 5]), "an IP address SAN");
+        assert!(has(b"nas.lan") && has(b"localhost"));
+        assert!(!has(b"192.168.1.5") && !has(b"bad name") && !has(b"*.lan"));
     }
 
     #[test]

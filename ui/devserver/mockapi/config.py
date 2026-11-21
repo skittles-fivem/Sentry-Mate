@@ -31,6 +31,7 @@ class Config:
     freeze_clock: bool = False
     sse_interval_ms: int = 2000
     verbose: bool = False
+    own_certificate: bool = False
 
 
 def parse_args(argv=None) -> Config:
@@ -53,6 +54,8 @@ def parse_args(argv=None) -> Config:
     ap.add_argument("--freeze-clock", action="store_true", help="keep 'now' fixed instead of advancing")
     ap.add_argument("--sse-interval-ms", type=int, default=2000, help="how often live values are pushed")
     ap.add_argument("--verbose", action="store_true", help="log every request to stderr")
+    ap.add_argument("--own-certificate", action="store_true",
+                    help="run with the owner's own certificate (expiring in 12 days): no new one can be made here")
     a = ap.parse_args(argv)
     if a.cars < 0 or a.cars > 5_000_000:
         ap.error("--cars must be between 0 and 5000000")
@@ -67,7 +70,8 @@ def parse_args(argv=None) -> Config:
     return Config(pack=a.pack, host=a.host, port=a.port, cars=a.cars, latency_ms=a.latency_ms, seed=a.seed,
                   signed_out=a.signed_out, role=a.role, now_ms=a.now_ms, needs_setup=a.needs_setup,
                   move_state=a.move_state, move_peer_after_s=a.move_peer_after_s,
-                  freeze_clock=a.freeze_clock, sse_interval_ms=max(200, a.sse_interval_ms), verbose=a.verbose)
+                  freeze_clock=a.freeze_clock, sse_interval_ms=max(200, a.sse_interval_ms), verbose=a.verbose,
+                  own_certificate=a.own_certificate)
 
 
 class Clock:

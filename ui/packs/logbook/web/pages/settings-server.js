@@ -63,8 +63,9 @@ const mono = (text) => h('code', { class: 'mono ss-code' }, text);
 const shaGroups = (sha) => h('code', { class: 'mono ss-value ss-sha', 'aria-label': `SHA-256 ${sha}` },
   (String(sha).match(/([0-9A-Fa-f]{2}:?){1,4}/g) || [String(sha)]).map((g) => h('span', { class: 'ss-sha-group' }, g)));
 // an address that may break only after a slash or a colon
-const addressEl = (text) => h('code', { class: 'mono ss-value' },
-  String(text).split(/(?<=[/:])/).map((part, i) => [i ? h('wbr') : null, part]));
+// (each part kept whole: a browser would otherwise also break after the hyphen in a host name)
+const addressEl = (text) => h('code', { class: 'mono ss-value ss-address' },
+  String(text).split(/(?<=[/:])/).map((part, i) => [i ? h('wbr') : null, h('span', { class: 'ss-address-part' }, part)]));
 
 /** A Copy button for a value: the clipboard on HTTPS, else the value selected for Ctrl+C or the phone's Copy. */
 function copyValue(text, valueEl) {
@@ -99,6 +100,9 @@ export async function mount(ctx) {
   let network = networkFirst;
   // the names in the certificate the server runs with now (admins); saved host names go into the next one
   const certNames = () => (network && network.certificate && Array.isArray(network.certificate.names) ? network.certificate.names.map((n) => n.toLowerCase()) : null);
+  // the owner's own certificate (put in data/tls): the server never makes a new one in its place
+  const certOwn = () => !!(network && network.certificate && network.certificate.own);
+  const ownSteps = () => h('span', null, 'Put the new ', mono('cert.pem'), ' and ', mono('key.pem'), ' in ', mono('data/tls'), ' and start Sentry Mate again; then enter the new SHA-256 in each CAN Bridge.');
   const carName = new Map(cars.map((c) => [c.id, c.name || c.vin_prefix || c.id]));
   const tz = ctx.tz;
 
@@ -129,8 +133,10 @@ export async function mount(ctx) {
     const inCert = certNames();
     if (inCert && lower.includes(here.host.toLowerCase()) && !inCert.includes(here.host.toLowerCase())) {
       list.push(outcome('info', `“${here.host}” is saved, not yet in the certificate.`,
-        `The certificate the server uses now names ${inCert.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until you make a new certificate.`,
-        admin ? button('Make a new certificate', { iconName: 'reset', onclick: () => makeCertificate() }) : null));
+        certOwn()
+          ? `The certificate the server uses now is your own and names ${inCert.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until your certificate names it too.`
+          : `The certificate the server uses now names ${inCert.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until you make a new certificate.`,
+        !admin ? null : certOwn() ? ownSteps() : button('Make a new certificate', { iconName: 'reset', onclick: () => makeCertificate() })));
     } else if (lower.includes(here.host.toLowerCase())) {
       list.push(outcome('ok', `“${here.host}” is on the certificate.`, 'Browsers accept the certificate under this name (once they trust it: it is self-signed unless you put your own in).'));
     } else if (isLoopback(here.host)) {
@@ -139,7 +145,9 @@ export async function mount(ctx) {
     } else {
       list.push(outcome('warn', `“${here.host}” is not on the certificate.`,
         `${isIpv4(here.host) ? 'You reached the server by its address. ' : ''}The certificate names ${names.length ? names.join(', ') : 'nothing yet'}, so browsers warn about this name. Pages still work after the warning, but it is easy to get used to clicking past a real one.`,
-        admin ? 'Add the name below, then make a new certificate (the steps are under the names).' : 'Ask an admin to add it to the host names.'));
+        !admin ? 'Ask an admin to add it to the host names.'
+          : certOwn() ? 'The server runs with your own certificate: get one that names it as well (the steps are under the names).'
+            : 'Add the name below, then make a new certificate (the steps are under the names).'));
     }
     // 3. the port
     if (webPort == null) {
@@ -215,7 +223,12 @@ export async function mount(ctx) {
     drawNames();
   }
 
-  const certSteps = h('ol', { class: 'ss-steps' },
+  const certSteps = certOwn() ? h('ol', { class: 'ss-steps' },
+    h('li', null, 'The server runs with your own certificate, so it never makes one in its place: the names above go into a certificate it makes, not into yours.'),
+    h('li', null, 'Get a certificate with the names you need, put its ', mono('cert.pem'), ' and ', mono('key.pem'), ' in ', mono('data/tls'), ' and start Sentry Mate again. The key is sealed at start.'),
+    h('li', null, 'A new certificate has a new SHA-256: copy it from Certificate, recovery key and backups and enter it in each CAN Bridge, or they stop uploading.'),
+    h('li', null, 'To go back to a certificate the server makes: stop Sentry Mate, delete ', mono('data/tls/cert.pem'), ', start it again.'))
+  : h('ol', { class: 'ss-steps' },
     h('li', null, 'Save the names above.'),
     h('li', null, 'Press ', h('strong', null, 'Make a new certificate'), ' under Certificate, recovery key and backups. The server makes it with these names and uses it at once, without a restart.'),
     h('li', null, 'A new certificate has a new SHA-256: copy it there and enter it in each CAN Bridge, or they stop uploading.'),
@@ -290,7 +303,9 @@ export async function mount(ctx) {
     replace(certBox,
       rows.length ? h('dl', { class: 'ss-certfacts' }, rows) : h('p', { class: 'ss-quiet' }, 'The server did not say which certificate it runs with.'),
       c && c.sha256 ? h('p', { class: 'ss-cert-need' }, 'The CAN Bridge app needs this SHA-256 in its upload settings.') : null,
-      h('p', { class: 'ss-cert-act' }, button('Make a new certificate', { iconName: 'reset', onclick: () => makeCertificate() })));
+      certOwn()
+        ? h('p', { class: 'ss-cert-own' }, 'This is your own certificate (the ', mono('cert.pem'), ' in ', mono('data/tls'), '), so the server never replaces it. To change it, put the new ', mono('cert.pem'), ' and ', mono('key.pem'), ' there and start Sentry Mate again. For a certificate the server makes instead, delete ', mono('data/tls/cert.pem'), ' and start it again.')
+        : h('p', { class: 'ss-cert-act' }, button('Make a new certificate', { iconName: 'reset', onclick: () => makeCertificate() })));
   }
   if (admin) drawCert();
   // the names the next certificate is made for: localhost and the saved host names (what the server does)
@@ -331,7 +346,9 @@ export async function mount(ctx) {
     if (cert) {
       const d = cert.detail || {};
       list.push(outcome('warn', d.expires_ms != null ? `The certificate expires ${date(d.expires_ms, tz)} (in ${count(d.days, 'day')}).` : 'The certificate expires soon.',
-        'After that browsers and the CAN Bridges refuse the connection. Make a new one with the button below.', certBox));
+        certOwn()
+          ? 'After that browsers and the CAN Bridges refuse the connection. It is your own certificate, so the server cannot make a new one: renew it where you got it, then put its files in place as below.'
+          : 'After that browsers and the CAN Bridges refuse the connection. Make a new one with the button below.', certBox));
     } else {
       list.push(outcome('ok', 'The certificate is not close to expiring.', 'It keeps the same SHA-256 across restarts, updates and moves, until you make a new one.', certBox));
     }

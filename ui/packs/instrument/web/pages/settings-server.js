@@ -48,9 +48,10 @@ const mono = (t) => h('code', { class: 'mono ss-code' }, t);
 // a SHA-256 in colon hex, in groups of four pairs that never break inside, so it wraps cleanly on a phone
 const shaGroups = (sha) => h('code', { class: 'mono ss-value ss-sha', 'aria-label': `SHA-256 ${sha}` },
   (String(sha).match(/([0-9A-Fa-f]{2}:?){1,4}/g) || [String(sha)]).map((g) => h('span', { class: 'ss-sha-group' }, g)));
-// an address that may break only after a slash or a colon
-const addressEl = (text) => h('code', { class: 'mono ss-value ss-wrap' },
-  String(text).split(/(?<=[/:])/).map((part, i) => [i ? h('wbr') : null, part]));
+// an address that may break only after a slash or a colon (each part kept whole: a browser would otherwise also
+// break after the hyphen in a host name)
+const addressEl = (text) => h('code', { class: 'mono ss-value ss-address' },
+  String(text).split(/(?<=[/:])/).map((part, i) => [i ? h('wbr') : null, h('span', { class: 'ss-address-part' }, part)]));
 
 /** A Copy button for a value: the clipboard on HTTPS, else the value selected for Ctrl+C or the phone's Copy. */
 function copyValue(text, valueEl, label = 'Copy') {
@@ -115,6 +116,9 @@ export async function mount(ctx) {
   let certNames = null;
   const readCert = () => { certNames = Array.isArray(S.network?.certificate?.names) ? S.network.certificate.names.map((n) => n.toLowerCase()) : null; };
   readCert();
+  // the owner's own certificate (put in data/tls): the server never makes a new one in its place
+  const certOwn = () => !!S.network?.certificate?.own;
+  const ownSteps = () => h('span', null, 'Put the new ', mono('cert.pem'), ' and ', mono('key.pem'), ' in ', mono('data/tls'), ' and start the container again; then enter the new SHA-256 in each CAN Bridge.');
   function paintHosting() {
     const saved = (S.settings.host_names || []).map((n) => n.toLowerCase());
     const names = certNames || saved;
@@ -129,9 +133,13 @@ export async function mount(ctx) {
         ? 'This name is in the certificate the server uses now, so the browser trusts the address without a warning (once it trusts the certificate).'
         : 'This name is on the server\'s list of names for its certificate, so the browser trusts the address without a warning (once it trusts the certificate). An admin sees whether the certificate in use already has it.')
       : savedOnly
-        ? checkRow('info', `Host name ${here.host} is saved, not yet in the certificate`,
-          `The name is on the list below, but the certificate the server uses now names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until you make a new certificate: the button is here and under Certificate, recovery key and backups.`,
-          admin ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => makeCertificate() }, icon('reset', 'ico--sm'), 'Make a new certificate') : null)
+        ? (certOwn()
+          ? checkRow('info', `Host name ${here.host} is saved, not yet in the certificate`,
+            `The name is on the list below, but the certificate the server uses now is your own and names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until your certificate names it too.`,
+            admin ? ownSteps() : null)
+          : checkRow('info', `Host name ${here.host} is saved, not yet in the certificate`,
+            `The name is on the list below, but the certificate the server uses now names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until you make a new certificate: the button is here and under Certificate, recovery key and backups.`,
+            admin ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => makeCertificate() }, icon('reset', 'ico--sm'), 'Make a new certificate') : null))
         : checkRow('warn', `Host name ${here.host} is not on the certificate`,
           `You opened Sentry Mate as ${here.host}, but the certificate names ${names.join(', ') || 'no host'}. Browsers warn about a name that is not on it. The CAN Bridge is not affected: it pins the certificate's SHA-256 and does not check names.`,
           admin ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => addName(here.host) }, icon('plus', 'ico--sm'), `Add ${here.host} to the names`) : null));
@@ -289,8 +297,10 @@ export async function mount(ctx) {
     replace(certBox,
       rows.length ? h('dl', { class: 'ss-facts' }, rows) : h('p', { class: 'note' }, 'The server did not say which certificate it runs with.'),
       c?.sha256 ? h('p', { class: 'ss-cert-need' }, icon('info', 'ico--sm'), 'The CAN Bridge app needs this SHA-256 in its upload settings.') : null,
-      h('div', { class: 'row ss-keyacts' },
-        h('button', { class: 'btn btn--sm', type: 'button', onclick: () => makeCertificate() }, icon('reset', 'ico--sm'), 'Make a new certificate')));
+      certOwn()
+        ? h('p', { class: 'ss-cert-own' }, 'This is your own certificate (the ', mono('cert.pem'), ' in ', mono('data/tls'), '), so the server never replaces it. To change it, put the new ', mono('cert.pem'), ' and ', mono('key.pem'), ' there and start the container again. For a certificate the server makes instead, delete ', mono('data/tls/cert.pem'), ' and start it again.')
+        : h('div', { class: 'row ss-keyacts' },
+          h('button', { class: 'btn btn--sm', type: 'button', onclick: () => makeCertificate() }, icon('reset', 'ico--sm'), 'Make a new certificate')));
   }
   paintCert();
   // the names the next certificate is made for: localhost and the saved host names (what the server does)
@@ -326,7 +336,9 @@ export async function mount(ctx) {
     h('ul', { class: 'ss-checks' },
       cert
         ? checkRow('warn', `The certificate expires ${cert.detail?.expires_ms ? date(cert.detail.expires_ms, tz) : 'soon'}${cert.detail?.days != null ? ` (in ${format(cert.detail.days, 'count')} days)` : ''}`,
-          h('span', null, 'Make a new one before then with Make a new certificate (or, with your own certificate, put the new ', mono('cert.pem'), ' and ', mono('key.pem'), ' in ', mono('data/tls'), ' and start the container again). A new certificate has a new SHA-256: enter it again in each CAN Bridge.'), certBox)
+          certOwn()
+            ? h('span', null, 'After that browsers and the CAN Bridges refuse the connection. It is your own certificate, so the server cannot make a new one: renew it where you got it, then put the new ', mono('cert.pem'), ' and ', mono('key.pem'), ' in ', mono('data/tls'), ' and start the container again. A new certificate has a new SHA-256: enter it again in each CAN Bridge.')
+            : h('span', null, 'Make a new one before then with Make a new certificate. A new certificate has a new SHA-256: enter it again in each CAN Bridge.'), certBox)
         : checkRow('ok', 'Certificate', 'The server reports no problem with its certificate. It keeps the same SHA-256 across restarts, updates and moves, until you make a new one.', certBox),
       keyEl,
       checkRow('ok', 'Everything is encrypted at rest',
@@ -569,6 +581,9 @@ export async function mount(ctx) {
     hostingBox);
   const namesPanel = panel({ title: 'Host names for the certificate', icon: 'server', pad: true, cover: 'docs.env.web.virtual-host' },
     setting('Names on the certificate', 'The names (or addresses) people and devices use to reach this server. The server puts them in the certificate it makes, so browsers accept those names. They are used when a certificate is made: to put a change in the running certificate, make a new one (see below).', namesBox));
+  if (certOwn()) {
+    namesPanel.append(h('p', { class: 'note ss-gap' }, 'The server runs with your own certificate, so these names go only into a certificate it makes, not into yours. To have browsers accept another name, get a certificate that names it, put its ', mono('cert.pem'), ' and ', mono('key.pem'), ' in ', mono('data/tls'), ' and start the container again.'));
+  }
 
   replace(ctx.view,
     pageHead({ title: ctx.info.title, purpose: ctx.info.purpose }),

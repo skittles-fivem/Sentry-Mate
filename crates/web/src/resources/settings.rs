@@ -198,9 +198,17 @@ pub fn load(e: &Engine, cert_names: &[String]) -> ApiResult<ServerSettings> {
     })
 }
 
-/// The names the next certificate is made for when none are saved: those of the running one, but `localhost`.
+/// The names the next certificate is made for when none are saved: those of the running one, but `localhost`, and
+/// only the ones that are host names or addresses ([`cert_host_name`], as a saved name must be: the running one's
+/// may come from `SENTRY_MATE_NAMES` as written, spaces and all), each once.
 fn default_host_names(cert_names: &[String]) -> Vec<String> {
-    cert_names.iter().filter(|n| *n != "localhost").cloned().collect()
+    let mut out: Vec<String> = Vec::new();
+    for n in cert_names.iter().filter_map(|n| cert_host_name(n)) {
+        if n != "localhost" && !out.contains(&n) {
+            out.push(n);
+        }
+    }
+    out
 }
 
 /// A host name for the certificate: a DNS name, an IPv4 address or an IPv6 address (with or without brackets),
@@ -715,6 +723,12 @@ mod tests {
         assert_eq!(cert_host_name("FD00:0:0::0001").as_deref(), Some("fd00::1"));
         assert_eq!(cert_host_name("[::1"), None);
         assert_eq!(cert_host_name("a b"), None);
+        // the running certificate's names, from SENTRY_MATE_NAMES as written: only real names are offered
+        let running: Vec<String> = ["localhost", "nas.lan", " 192.168.1.5", "bad name", "*.lan", "NAS.lan"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(default_host_names(&running), ["nas.lan", "192.168.1.5"]);
         // nothing outside until an admin turns online tiles on
         let mut s = ServerSettings::default();
         assert_eq!(s.tiles.mode, "offline");

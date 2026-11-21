@@ -86,8 +86,12 @@ class Store:
         from .dataset import extras
         self.notices = extras.notices(now)
         self.server_settings = extras.server_settings(now)
-        # the names in the certificate the server runs with: made at start, not changed by saving host_names
-        self.cert_names = list(self.server_settings["host_names"])
+        # the names in the certificate the server runs with: made at start, not changed by saving host_names.
+        # The server's own always has localhost first, as the real one makes it.
+        self.cert_names = ["localhost"] + [n for n in self.server_settings["host_names"] if n != "localhost"]
+        # the owner's own certificate (--own-certificate): the only kind that expires soon (one the server makes
+        # is valid until 4096), and the only kind no new one is made for
+        self.cert_own = bool(getattr(cfg, "own_certificate", False))
         self.mqtt = extras.mqtt(now)
         self.imports = extras.imports(now, ds.history("c3"))
         self.storage = extras.storage(now)

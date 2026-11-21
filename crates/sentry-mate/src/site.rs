@@ -103,6 +103,10 @@ pub struct Renewer {
 }
 
 impl web::resources::certificate::CertificateMaker for Renewer {
+    fn own_certificate(&self) -> bool {
+        self.live.own()
+    }
+
     fn renew(&self, names: &[String]) -> Result<String, web::resources::certificate::Refused> {
         use web::resources::certificate::Refused;
         let _pause = self.gate.pause(Duration::from_secs(60)).map_err(|e| Refused::Failed(e.to_string()))?;

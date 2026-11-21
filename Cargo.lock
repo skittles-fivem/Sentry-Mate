@@ -1714,6 +1714,7 @@ dependencies = [
  "moving",
  "p256",
  "rand_core 0.6.4",
+ "rcgen",
  "rustix",
  "rustls",
  "serde",

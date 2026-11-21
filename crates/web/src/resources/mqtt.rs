@@ -679,13 +679,14 @@ async fn test(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiResu
 
 async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Value>> {
     let e = app.service::<Engine>()?;
-    let (ss, m, names, sha256) = app
+    let (ss, m, names, sha256, own) = app
         .blocking(move |app| {
             let (names, sha256) = match super::certificate::running(app) {
                 Some((n, s)) => (n, Some(s)),
                 None => (Vec::new(), None),
             };
-            Ok((server::load(&e, &names)?, load(&e)?, names, sha256))
+            let own = super::certificate::own(app);
+            Ok((server::load(&e, &names)?, load(&e)?, names, sha256, own))
         })
         .await?;
     let upload_address = super::certificate::upload_address(&app, &names);
@@ -719,7 +720,7 @@ async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Valu
     Ok(Json(json!({
         "outbound": outbound,
         "inbound": inbound,
-        "certificate": { "names": names, "sha256": sha256 },
+        "certificate": { "names": names, "sha256": sha256, "own": own },
         "upload_address": upload_address,
     })))
 }

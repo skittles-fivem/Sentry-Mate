@@ -75,6 +75,9 @@
 .ss-value { font-size: 0.95em; padding: 0.25rem 0.5rem; border-radius: 0.1875rem; background: var(--paper-sunk); color: var(--ink); user-select: all; min-width: 0; max-width: 100%; overflow-wrap: break-word; }
 .ss-sha { display: inline-flex; flex-wrap: wrap; line-height: 1.6; font-variant-numeric: tabular-nums; }
 .ss-sha-group { white-space: nowrap; }
+/* an address breaks only between its parts (after a slash or a colon), never at the hyphen of a host name; a part
+   wider than the line on its own still wraps inside */
+.ss-address-part { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
 .ss-fact-big .ss-sha { font-size: 1.05rem; padding: 0.5rem 0.75rem; }
 .ss-cert-names { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.375rem; }
 .ss-copy { display: inline-flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
@@ -82,6 +85,7 @@
 .ss-copied:empty { display: none; }
 .page-settings-server .ss-cert-need { margin: 0; color: var(--ink-2); }
 .page-settings-server .ss-cert-act { margin: 0; }
+.page-settings-server .ss-cert-own { margin: 0; color: var(--ink-2); max-width: 40rem; }
 .ss-newcert { display: grid; gap: 0.75rem; }
 .dialog-text.ss-newcert { margin-bottom: 1.25rem; }
 .ss-newcert p { margin: 0; }

@@ -71,7 +71,7 @@ class MoveRunningNotCarriedOn(FreshCase):
 class NewRecoveryKey(ServerCase):
     def test_new_key_shown_once_then_saved(self):
         c = self.c
-        c.error("POST", "/api/v1/system/recovery-key/new", 403, "wrong_password", body={})
+        c.error("POST", "/api/v1/system/recovery-key/new", 400, "bad_input", body={})
         c.error("POST", "/api/v1/system/recovery-key/new", 403, "wrong_password", body={"password": "nope"})
         d = c.json("POST", "/api/v1/system/recovery-key/new", {"password": PW}, expect=201)
         self.assertRegex(d["recovery_key"], r"^SMRK(-[0-9A-HJKMNP-TV-Z]{4}){13}$")

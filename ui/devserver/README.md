@@ -27,6 +27,7 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--now-ms MS` | `1794850200000` | The virtual "now" at start (2026-11-16 17:30 UTC). It then moves with real time. |
 | `--fresh` (or `--needs-setup`) | off | Starts as a fresh server: no accounts and nobody signed in, the first-run set-up page. The set-up code is `SETUP-DEV-0000`. See "First-run set-up and moving" below. |
 | `--move-state S` | `none` | Starts Settings: Server's "Move to another server" in state `S`: `offered`, `expired`, `copying`, `paused`, `moved` or `done` (screenshots; add `--freeze-clock` to hold it there). Not with `--fresh`. |
+| `--own-certificate` | off | Runs with the owner's own certificate (`certificate.own` in `/network`), expiring in 12 days: the `certificate_expiring` notice is up and `POST /network/certificate` is `409 own_certificate`. Without it the certificate is one the server made, which never expires soon. |
 | `--move-peer-after-s N` | `15` | A made-up new server (`192.168.1.30`) claims a waiting move code `N` seconds after it is made, then copies, pauses, switches and is done in about 17 s. `0`: never. |
 | `--freeze-clock` | off | Keeps "now" fixed (stable screenshots and tests). |
 | `--sse-interval-ms N` | `2000` | How often live values are pushed on `/api/v1/events`. |
@@ -74,8 +75,8 @@ synthetic cars have SMO. Only the labels differ: the made-up data is the same.
 Also present: places that overlap (Work and the Mission Bay Supercharger, Home and Noe Valley), charges with
 and without cost, two software changes per car (one known only as "software changed"), awake, asleep and
 vehicle-bus-only spells, attention items, upload tokens, a CAN Bridge key waiting to be assigned, an audit log,
-saved trips and purpose rules, 40 places (some with prices by time of day), server and MQTT settings, notices (a
-certificate that expires in 12 days, an unsaved recovery key), a Tesla account (`ta1`, reading `c1` and `c2`, a third
+saved trips and purpose rules, 40 places (some with prices by time of day), server and MQTT settings, notices (an
+unsaved recovery key; with `--own-certificate` also a certificate that expires in 12 days), a Tesla account (`ta1`, reading `c1` and `c2`, a third
 car not matched; every change asks for the password `sentry-mate-dev` again), the finished import that brought `c3`'s TeslaMate
 history in (its report counts exactly what `c3` holds), and storage figures that add up from the cars to the server.
 Seeds that are not car history are in `mockapi/dataset/extras.py`.
@@ -162,7 +163,11 @@ on a `--fresh` dev server.
 **A new certificate**: `POST /api/v1/network/certificate { password }` answers `{ names, sha256, upload_address }`
 with `localhost` and the saved host names and a made-up SHA-256 (a new one each time), which `/network` shows from
 then on. `409 move_under_way` while a move code waits or a copy runs, `409 moved` after a move, and
-`409 own_certificate` when the store's `cert_own` is set (tests).
+`409 own_certificate` (before the password is checked) when the server runs with the owner's own certificate:
+`--own-certificate`, or the store's `cert_own` (tests). `/network` then says `certificate.own: true`, and only
+then is the `certificate_expiring` notice up (a certificate the server makes is valid until 4096). `certificate.names`
+starts with `localhost`, as the real server's do. A missing `password` on any request that asks for it again is
+`400 bad_input`, a wrong one `403 wrong_password`.
 
 ## Layout
 

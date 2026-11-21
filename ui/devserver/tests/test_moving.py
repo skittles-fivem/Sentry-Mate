@@ -90,7 +90,7 @@ class Fresh(ServerCase):
         self.assertIn("recovery_key_unsaved", [n["code"] for n in notices])
         self.assertNotIn(d["recovery_key"], repr(c2.get("/api/v1/setup")) + repr(notices))
         # a key page closed before the tick: Settings shows the file's key once more, behind the password
-        c2.error("POST", "/api/v1/system/recovery-key/show", 403, "wrong_password", body={})
+        c2.error("POST", "/api/v1/system/recovery-key/show", 400, "bad_input", body={})
         c2.error("POST", "/api/v1/system/recovery-key/show", 403, "wrong_password", body={"password": "nope"})
         self.assertEqual(c2.json("POST", "/api/v1/system/recovery-key/show", {"password": "a long password"}),
                          {"recovery_key": d["recovery_key"]})
@@ -375,8 +375,8 @@ class OldServer(ServerCase):
     def test_move_code_progress_moved_and_undo(self):
         c = self.c
         self.assertEqual(c.get("/api/v1/system/move")["state"], "none")
-        e, _ = c.error("POST", "/api/v1/system/move", 403, "wrong_password", body={})
-        self.assertIn("password", e["fields"])
+        e, _ = c.error("POST", "/api/v1/system/move", 400, "bad_input", body={})
+        self.assertEqual(e["fields"], {"password": "Required."})
         c.error("POST", "/api/v1/system/move", 403, "wrong_password", body={"password": "nope"})
         d = c.json("POST", "/api/v1/system/move", {"password": PW}, expect=201)
         self.assertRegex(d["move_code"], r"^SMMV(-[0-9A-HJKMNP-TV-Z]{5}){6}$")

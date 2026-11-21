@@ -863,6 +863,10 @@ struct Maker {
 }
 
 impl web::resources::certificate::CertificateMaker for Maker {
+    fn own_certificate(&self) -> bool {
+        self.own.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn renew(&self, names: &[String]) -> Result<String, web::resources::certificate::Refused> {
         if self.own.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(web::resources::certificate::Refused::OwnCertificate);
@@ -920,7 +924,7 @@ async fn a_new_certificate() {
     assert_ne!(new, old);
     assert_eq!(new.replace(':', "").to_ascii_lowercase(), maker.live.fingerprint());
     let n = ok(&mut admin, "/api/v1/network").await;
-    assert_eq!(n["certificate"], json!({ "names": ["localhost", "nas.example"], "sha256": new }));
+    assert_eq!(n["certificate"], json!({ "names": ["localhost", "nas.example"], "sha256": new, "own": false }));
     let a = ok(&mut admin, "/api/v1/audit").await;
     let e = a["items"].as_array().unwrap().iter().find(|e| e["action"] == "certificate-made").unwrap().clone();
     assert_eq!(e["target"], "server:certificate", "{e}");
@@ -933,10 +937,16 @@ async fn a_new_certificate() {
     let r = admin.delete("/api/v1/system/move", json!({})).await;
     assert_eq!(r.status, 200, "{}", r.text());
 
-    // the owner's own certificate is not replaced
+    // the owner's own certificate is not replaced: /network says so, and it is refused before the password is
+    // checked (a two-step code is not used up on it)
     maker.own.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(ok(&mut admin, "/api/v1/network").await["certificate"]["own"], json!(true));
+    let r = admin.post(path, json!({ "password": "not it" })).await;
+    assert_eq!((r.status, r.code()), (409, Some("own_certificate".into())), "{}", r.text());
     let r = admin.post(path, json!({ "password": pw })).await;
     assert_eq!((r.status, r.code()), (409, Some("own_certificate".into())), "{}", r.text());
+    let words = r.json()["error"]["message"].as_str().unwrap().to_string();
+    assert!(words.contains("key.sealed") && !words.contains("remove those two files"), "{words}");
     maker.own.store(false, std::sync::atomic::Ordering::Relaxed);
     let r = admin.post(path, json!({ "password": pw })).await;
     assert_eq!(r.status, 200, "after the move code is cancelled: {}", r.text());

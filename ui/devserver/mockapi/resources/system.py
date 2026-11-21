@@ -193,6 +193,8 @@ def notices(req):
     for n in req.store.notices:
         n = dict(n)
         if n["code"] == "certificate_expiring":
+            if not getattr(req.store, "cert_own", False):
+                continue  # a certificate the server makes is valid until 4096: only the owner's own expires
             days = max(0, (n["expires_ms"] - req.now) // DAY)
             n["message"] = f"The HTTPS certificate expires in {days} days. Renew it in Settings > Server."
             n["detail"] = {"expires_ms": n.pop("expires_ms"), "days": days}

@@ -505,11 +505,20 @@ async fn served(port: u16) -> String {
 }
 
 fn start_serving(data: &Path, keys: &Path) -> (u16, u16, tokio::task::JoinHandle<Result<(), String>>) {
+    start_serving_as(data, keys, &["first.example"])
+}
+
+/// [`start_serving`] with these `--names`.
+fn start_serving_as(
+    data: &Path,
+    keys: &Path,
+    names: &[&str],
+) -> (u16, u16, tokio::task::JoinHandle<Result<(), String>>) {
     let (upload, web_port) = (free_port(), free_port());
     let (d, k) = (data.to_path_buf(), keys.to_path_buf());
+    let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
     let server = tokio::spawn(async move {
         let net = Net { bind: "127.0.0.1".into(), upload, web: web_port };
-        let names = ["first.example".to_string()];
         serve(&d, &k, &net, &names, &MoveEnv::default(), accounts::Hashing::FAST_FOR_TESTS)
             .await
             .map_err(|e| e.to_string())
@@ -592,7 +601,7 @@ async fn a_new_certificate_from_the_web_pages_is_served_on_both_ports_at_once() 
     assert_eq!(served(web_port).await, new, "the web port");
     assert_eq!(served(upload).await, new, "the upload port");
     let n = c.get("/api/v1/network").await.json();
-    assert_eq!(n["certificate"], json!({ "names": made["names"], "sha256": new }));
+    assert_eq!(n["certificate"], json!({ "names": made["names"], "sha256": new, "own": false }));
     // in the audit log
     let a = c.get("/api/v1/audit").await.json();
     let entry = a["items"].as_array().unwrap().iter().find(|e| e["action"] == "certificate-made").cloned();
@@ -627,5 +636,88 @@ async fn a_new_certificate_from_the_web_pages_is_served_on_both_ports_at_once() 
     listening(web_port, &server).await;
     listening(upload, &server).await;
     assert_eq!((served(web_port).await, served(upload).await), (new.clone(), new));
+    server.abort();
+}
+
+/// A fresh server set up with `PASSWORD` as the owner's: its client.
+async fn set_up(keys: &Path, web_port: u16, password: &str) -> Client {
+    let mut c = Client { port: web_port, tls: any_cert(), cookie: None };
+    // the code is written just after the port opens
+    let file = keys.join(site::SETUP_FILE);
+    for _ in 0..600 {
+        if file.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let code = std::fs::read_to_string(&file).unwrap().trim().to_string();
+    let r =
+        c.request("POST", "/api/v1/setup", Some(json!({ "code": code, "name": "owner", "password": password }))).await;
+    assert_eq!(r.status, 200, "setup: {}", r.text());
+    c
+}
+
+/// `--names` as typed (spaces, a wildcard, a name with a space): only the host names and addresses go into the
+/// certificate, the address as an IP address, and a new certificate made with no host names saved takes those, not
+/// the rest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn names_given_at_start_that_are_not_host_names_stay_out_of_the_certificate() {
+    const PASSWORD: &str = "correct horse battery staple";
+    let dir = tempfile::tempdir().unwrap();
+    let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+    std::fs::create_dir_all(&data).unwrap();
+    Vault::create(&data, &keys, Kdf::FAST_FOR_TESTS).unwrap();
+    let (_, web_port, server) = start_serving_as(&data, &keys, &["nas.lan", " 192.168.1.5", "bad name", "*.lan"]);
+    listening(web_port, &server).await;
+    let mut c = set_up(&keys, web_port, PASSWORD).await;
+    let want = json!(["localhost", "nas.lan", "192.168.1.5"]);
+    assert_eq!(c.get("/api/v1/network").await.json()["certificate"]["names"], want);
+    assert_eq!(c.get("/api/v1/settings").await.json()["host_names"], json!(["nas.lan", "192.168.1.5"]));
+    let r = c.request("POST", "/api/v1/network/certificate", Some(json!({ "password": PASSWORD }))).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["names"], want);
+    let pem = std::fs::read_to_string(tls_dir(&data).join("cert.pem")).unwrap();
+    let der = first_der(&pem);
+    let has = |b: &[u8]| der.windows(b.len()).any(|w| w == b);
+    assert!(has(&[0x87, 4, 192, 168, 1, 5]), "the address as an IP address");
+    assert!(!has(b"bad name") && !has(b"*.lan") && !has(b"192.168.1.5"));
+    server.abort();
+}
+
+/// The first certificate of a PEM file, DER.
+fn first_der(pem: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    let body = pem.split("-----BEGIN CERTIFICATE-----").nth(1).unwrap().split("-----END CERTIFICATE-----").next();
+    let b64: String = body.unwrap().chars().filter(|c| !c.is_whitespace()).collect();
+    base64::engine::general_purpose::STANDARD.decode(b64).unwrap()
+}
+
+/// With the owner's own certificate, `/network` says so and a new certificate is refused before the password is
+/// checked, so a two-step code is never used up on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_own_certificate_is_refused_before_the_password() {
+    const PASSWORD: &str = "correct horse battery staple";
+    let dir = tempfile::tempdir().unwrap();
+    let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+    std::fs::create_dir_all(&data).unwrap();
+    Vault::create(&data, &keys, Kdf::FAST_FOR_TESTS).unwrap();
+    let mut own = rcgen::CertificateParams::new(vec!["nas.lan".to_string()]).unwrap();
+    own.distinguished_name = rcgen::DistinguishedName::new();
+    own.distinguished_name.push(rcgen::DnType::CommonName, "nas.lan");
+    let kp = rcgen::KeyPair::generate().unwrap();
+    let cert = own.self_signed(&kp).unwrap();
+    std::fs::create_dir_all(tls_dir(&data)).unwrap();
+    std::fs::write(tls_dir(&data).join("cert.pem"), cert.pem()).unwrap();
+    std::fs::write(tls_dir(&data).join("key.pem"), kp.serialize_pem()).unwrap();
+    let (_, web_port, server) = start_serving(&data, &keys);
+    listening(web_port, &server).await;
+    let mut c = set_up(&keys, web_port, PASSWORD).await;
+    let n = c.get("/api/v1/network").await.json();
+    assert_eq!(n["certificate"]["own"], json!(true), "{n}");
+    for pw in ["wrong one", PASSWORD] {
+        let r = c.request("POST", "/api/v1/network/certificate", Some(json!({ "password": pw }))).await;
+        assert_eq!((r.status, r.json()["error"]["code"].clone()), (409, json!("own_certificate")), "{}", r.text());
+    }
+    assert!(!tls_dir(&data).join("key.pem").exists(), "sealed at start");
     server.abort();
 }

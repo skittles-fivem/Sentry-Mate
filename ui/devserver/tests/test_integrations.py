@@ -124,13 +124,19 @@ class NewCertificate(ServerCase):
     def test_new_certificate(self):
         before = self.c.get("/api/v1/network")
         old = before["certificate"]["sha256"]
+        # the real server's certificate always names localhost first, from the first start on
+        self.assertEqual(before["certificate"]["names"][0], "localhost")
+        self.assertEqual(before["certificate"]["own"], False)
+        self.assertEqual(self.c.get("/api/v1/settings")["host_names"], before["certificate"]["names"][1:])
         self.assertRegex(old, r"^([0-9A-F]{2}:){31}[0-9A-F]{2}$")
         self.assertTrue(before["upload_address"].startswith("https://"))
         v = self.c.get("/api/v1/settings")["version"]
         self.c.json("PATCH", "/api/v1/settings", {"version": v, "host_names": ["nas.example", "192.0.2.57"]})
         self.assertEqual(self.c.get("/api/v1/network")["certificate"]["sha256"], old, "saving names changes nothing")
         path = "/api/v1/network/certificate"
-        self.c.error("POST", path, 403, "wrong_password", body={})
+        # no password at all: 400, as the real server answers a missing field
+        e, _ = self.c.error("POST", path, 400, "bad_input", body={})
+        self.assertEqual(e["fields"], {"password": "Required."})
         self.c.error("POST", path, 403, "wrong_password", body={"password": "nope"})
         e, _ = self.c.error("POST", path, 400, "bad_input", body={"password": "sentry-mate-dev", "names": []})
         self.assertIn("names", e["fields"])
@@ -140,7 +146,7 @@ class NewCertificate(ServerCase):
         self.assertRegex(made["sha256"], r"^([0-9A-F]{2}:){31}[0-9A-F]{2}$")
         self.assertNotEqual(made["sha256"], old)
         net = self.c.get("/api/v1/network")
-        self.assertEqual(net["certificate"], {"names": made["names"], "sha256": made["sha256"]})
+        self.assertEqual(net["certificate"], {"names": made["names"], "sha256": made["sha256"], "own": False})
         self.assertEqual(net["upload_address"], made["upload_address"])
         again = self.c.json("POST", path, {"password": "sentry-mate-dev"})
         self.assertNotEqual(again["sha256"], made["sha256"], "a new one each time")
@@ -150,10 +156,13 @@ class NewCertificate(ServerCase):
         self.c.json("POST", "/api/v1/system/move", {"password": "sentry-mate-dev"}, expect=201)
         self.c.error("POST", path, 409, "move_under_way", body={"password": "sentry-mate-dev"})
         self.c.json("DELETE", "/api/v1/system/move")
-        # the owner's own certificate stays
+        # the owner's own certificate stays: /network says so, and it is refused before the password is checked
         self.server.app.store.cert_own = True
         try:
-            self.c.error("POST", path, 409, "own_certificate", body={"password": "sentry-mate-dev"})
+            self.assertEqual(self.c.get("/api/v1/network")["certificate"]["own"], True)
+            self.c.error("POST", path, 409, "own_certificate", body={"password": "nope"})
+            e, _ = self.c.error("POST", path, 409, "own_certificate", body={"password": "sentry-mate-dev"})
+            self.assertNotIn("remove those two files", e["message"])
         finally:
             self.server.app.store.cert_own = False
         self.c.json("POST", path, {"password": "sentry-mate-dev"})

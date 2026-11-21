@@ -7,7 +7,8 @@
 //! It asks for the admin's password again (and the two-step code when the account has it on), as a move code does,
 //! and is recorded in the audit log (`certificate-made`). Refused (`409`) while a move or a restore is under way here
 //! (`setup_busy`), while a move code waits or a new server copies from here (`move_under_way`: the new server pins
-//! this certificate), and when the server runs with its owner's own certificate (`own_certificate`).
+//! this certificate), and when the server runs with its owner's own certificate (`own_certificate`). Both are checked
+//! before the password too, so a two-step code is not used up on a request that can't work.
 
 use super::notices::Sources;
 use super::settings;
@@ -32,6 +33,10 @@ pub enum Refused {
 
 /// What makes a new certificate in the running server.
 pub trait CertificateMaker: Send + Sync {
+    /// Whether the server runs with its owner's own certificate (or one waits for the next start), which
+    /// [`renew`](Self::renew) never replaces.
+    fn own_certificate(&self) -> bool;
+
     /// Makes a new self-signed certificate for `localhost` and `names`, puts it in place of the old one on disk and
     /// serves it on every port from now on. Blocking. Answers its SHA-256 (hex).
     fn renew(&self, names: &[String]) -> Result<String, Refused>;
@@ -100,21 +105,21 @@ fn refuse_if_moving(app: &AppState) -> ApiResult<()> {
 async fn renew(State(app): State<AppState>, Admin(v): Admin, body: JsonBody) -> ApiResult<Json<Value>> {
     body.only(&["password", "two_step"])?;
     // before the password is checked too, so a two-step code is not used up on a change that can't be made
-    app.blocking(refuse_if_moving).await?;
-    crate::moving::confirm(&app, &v, &body).await?;
     let maker = app.service::<Certificates>()?;
+    let m2 = maker.clone();
+    app.blocking(move |app| {
+        refuse_if_moving(app)?;
+        if m2.0.own_certificate() { Err(own_certificate()) } else { Ok(()) }
+    })
+    .await?;
+    crate::moving::confirm(&app, &v, &body).await?;
     let e = app.service::<Engine>()?;
     let (names, sha) = app
         .blocking(move |app| {
             refuse_if_moving(app)?;
             let names = settings::load(&e, &settings::cert_names(app))?.host_names;
             maker.0.renew(&names).map_err(|r| match r {
-                Refused::OwnCertificate => ApiError::conflict(
-                    "own_certificate",
-                    "The server runs with your own certificate (cert.pem and key.pem you put in data/tls), so it \
-                     does not replace it. To use a certificate the server makes, remove those two files and start \
-                     the server again.",
-                ),
+                Refused::OwnCertificate => own_certificate(),
                 Refused::Failed(m) => ApiError::server(format!("making a new certificate: {m}")),
             })?;
             Ok((settings::cert_names(app), sha_now(app)))
@@ -131,6 +136,21 @@ async fn renew(State(app): State<AppState>, Admin(v): Admin, body: JsonBody) -> 
     .await?;
     let address = upload_address(&app, &names);
     Ok(Json(json!({ "names": names, "sha256": sha, "upload_address": address })))
+}
+
+/// Whether the server runs with its owner's own certificate (`/network`'s `certificate.own`): false without the
+/// program's [`Certificates`] service.
+pub fn own(app: &AppState) -> bool {
+    app.service::<Certificates>().is_ok_and(|m| m.0.own_certificate())
+}
+
+fn own_certificate() -> ApiError {
+    ApiError::conflict(
+        "own_certificate",
+        "The server runs with your own certificate (the cert.pem you put in data/tls, its key sealed into key.sealed \
+         at start), so it does not replace it. To change it, put the new cert.pem and key.pem in data/tls and start \
+         the server again; for a certificate the server makes, delete data/tls/cert.pem and start it again.",
+    )
 }
 
 fn sha_now(app: &AppState) -> Option<String> {
