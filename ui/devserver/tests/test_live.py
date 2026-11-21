@@ -168,3 +168,30 @@ class LiveClock(ServerCase):
         c = self.c.get("/api/v1/cars/c1/now")
         self.assertIn(c["state"], ("charging", "parked", "asleep"))
         self.assertEqual(c["location"]["place"]["name"], "Stanford Shopping Center")
+
+
+class ForcedRows(ServerCase):
+    server_args = {"freeze_clock": False, "rows_every_s": 1}
+
+    def test_rows_events_at_the_set_pace(self):
+        self.c.get("/api/v1/me")
+        start = time.time()
+        events = read_events(self.server.port, self.c.cookie,
+                             lambda ev: len([e for e in ev if e["event"] == "rows" and e["data"]["car"] == "c1"]) >= 3)
+        took = time.time() - start
+        rows = [e["data"] for e in events if e["event"] == "rows" and e["data"]["car"] == "c1"]
+        self.assertGreaterEqual(len(rows), 3, events)
+        self.assertLess(took, 5)  # one a second, not one per piece of history
+        self.assertEqual(rows[0]["kinds"], ["charges", "drives", "states", "updates", "visits"])
+        self.assertLess(rows[0]["from_ms"], rows[0]["to_ms"])
+        self.assertIn("c2", {e["data"]["car"] for e in events if e["event"] == "rows"})
+
+
+class NoForcedRows(ServerCase):
+    server_args = {"freeze_clock": True}
+
+    def test_no_rows_events_without_the_flag(self):
+        self.c.get("/api/v1/me")
+        events = read_events(self.server.port, self.c.cookie, lambda ev: False, seconds=2)
+        self.assertTrue(any(e["event"] == "now" for e in events))
+        self.assertFalse(any(e["event"] == "rows" for e in events))

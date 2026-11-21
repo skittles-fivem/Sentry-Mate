@@ -31,6 +31,7 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--move-peer-after-s N` | `15` | A made-up new server (`192.168.1.30`) claims a waiting move code `N` seconds after it is made, then copies, pauses, switches and is done in about 17 s. `0`: never. |
 | `--freeze-clock` | off | Keeps "now" fixed (stable screenshots and tests). |
 | `--sse-interval-ms N` | `2000` | How often live values are pushed on `/api/v1/events`. |
+| `--rows-every-s N` | `0` | Also sends every featured car a `rows` event every `N` seconds (all row kinds), as if its rows had changed, so the pages load their lists again (`ui/tools/check.js --stable` uses it). `0`: `rows` only when a drive, charge or parked spell really starts or ends. |
 | `--verbose` | off | Logs every request to stderr. |
 
 ### Signing in
@@ -227,4 +228,4 @@ They start servers in-process on free ports (about 45 s for all). They cover:
 - the contract (`test_contract.py`): every resource, method and field in the tables of `docs/ui-api.md` is read from
   the document and called with ids from the API; it fails on a missing resource, a 5xx or a missing field, on a route
   the document lacks, on anything under "Deliberately absent" that answers, and on a VIN serial in any answer;
-- determinism, a 200,000-car fleet paged under 200 ms a page, and the event stream.
+- determinism, a 200,000-car fleet paged under 200 ms a page, and the event stream (with `--rows-every-s` at its pace).

@@ -4,7 +4,7 @@
 //   node ui/tools/check.js --pack instrument [--pages fleet,car,...|all] [--sizes 1440x900,3840x2160]
 //        [--out DIR] [--server-args "<dev server flags>"] [--json] [--allow-missing] [--full]
 //        [--fixture-matrix FILE] [--ready-timeout-ms N] [--idle-timeout-ms N] [--jobs N]
-//        [--car ID] [--drive ID] [--charge ID] [--pixel]
+//        [--car ID] [--drive ID] [--charge ID] [--pixel] [--stable [SECONDS]] [--stable-fast]
 //        [--base https://HOST:PORT --user NAME (--password PW | --password-file FILE)]
 //   node ui/tools/check.js --self-test
 //
@@ -17,6 +17,8 @@
 // With --pixel it also measures whether the page is pixel centred and correct (ui/tools/pixel.js): text and
 // icons off centre, rows and columns that just miss, borders off device pixels, text cut off, sticking out,
 // overlapping or hidden, sideways scroll; and saves a screenshot with the bad boxes outlined.
+// With --stable it stays on each ready page while the dev server sends live updates (ui/tools/stable.js) and
+// fails a page whose layout shifts, whose blocks move or whose elements and loading texts come and go.
 // With --base it starts no dev server: it signs in to a real `sentry-mate serve` (made-up data only),
 // accepting that server's self-signed certificate for this run only.
 // See ui/tools/README.md. Plain Node (CommonJS) plus Playwright; nothing else.
@@ -31,6 +33,7 @@ const https = require('https');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
 const { pixelChecks, pixelOutline, pixelOutlineRemove } = require('./pixel');
+const { stableInit, stableCollect, stableOutline, stableOutlineRemove } = require('./stable');
 
 const TOOLS_DIR = __dirname;
 const UI_DIR = path.dirname(TOOLS_DIR);
@@ -52,6 +55,17 @@ const LIST_CAP = 100; // entries kept per list and size; the rest are counted
 // (more than that is taken as meant); a border edge more than PIXEL_FRAC device px off a whole device pixel
 const PIXEL = { tol: 0.5, near: 3, fracTol: 0.05, maxFindings: LIST_CAP };
 const PIXEL_LINES = 15; // pixel findings listed per size in the readable report
+// --stable: how long to stay on a ready page, what fails, and the dev server's pace of live updates
+const STABLE_DEFAULT_S = 30;
+const STABLE_MAX_SHIFT = 0.01; // layout shift score (CLS) after ready
+const STABLE_LINES = 8; // moved and toggling entries listed per size in the readable report
+const STABLE_PACE = {
+  // the normal pace (live values every 2 s, as the dev server always does) plus a `rows` event every 10 s, as if a
+  // drive or charge had changed, so the lists load again during the watch
+  normal: ['--rows-every-s', '10'],
+  // --stable-fast: live values every 0.5 s and rows every 3 s
+  fast: ['--sse-interval-ms', '500', '--rows-every-s', '3'],
+};
 
 // Page id -> routes (contract 3). A page with two routes (health) is loaded at both; its own items
 // may sit on either one, the frame items must be on each.
@@ -548,7 +562,7 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
   const res = {
     size: size.label, ready: { ok: false, value: null, ms: null, landed: null, reason: null },
     missing: [], foreign: [], unknown: [], console: [], pageErrors: [], csp: [], apiFailures: [], outside: [],
-    overflow: null, smallText: null, pixel: null, shot: null, fullShot: null, tiles: 0, notes: [], loadError: null,
+    overflow: null, smallText: null, pixel: null, stable: null, shot: null, fullShot: null, tiles: 0, notes: [], loadError: null,
     _tokens: new Set(), _dropped: {},
   };
   if (entry.problem) { res.loadError = entry.problem; res.ready.reason = 'not_loaded'; return finish(); }
@@ -559,6 +573,7 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
   const cspConsole = [];
   const pending = [];
   const inflight = new Set();
+  const watch = { on: false, api: 0 }; // --stable: /api requests while the page is watched
   let lastBusy = Date.now();
   let context;
 
@@ -599,6 +614,7 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
     });
     await page.exposeFunction('__smCheckCsp', (v) => { if (v) cspEvents.push(v); });
     await page.addInitScript(initScript);
+    if (o.stable) await page.addInitScript(stableInit, { pageId: entry.id });
     page.on('worker', (w) => { w.evaluate(workerHook).catch(() => {}); });
 
     page.on('console', (msg) => {
@@ -627,7 +643,10 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
     // requests in flight, for "network idle"; event streams and sockets stay open and do not count
     const counts = (r) => { const t = r.resourceType(); return t !== 'eventsource' && t !== 'websocket'; };
     const settle = (r) => { if (inflight.delete(r)) lastBusy = Date.now(); };
-    page.on('request', (r) => { if (counts(r)) { inflight.add(r); lastBusy = Date.now(); } });
+    page.on('request', (r) => {
+      if (counts(r)) { inflight.add(r); lastBusy = Date.now(); }
+      if (watch.on && counts(r)) { try { if (isApi(new URL(r.url()))) watch.api++; } catch (_) { /* odd URL */ } }
+    });
     page.on('requestfinished', settle);
     page.on('response', (resp) => {
       const req = resp.request();
@@ -700,6 +719,37 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
     }
     try { res.ready.landed = shortUrl(page.url(), origin); } catch (_) { /* closed */ }
 
+    // --stable: stay on the ready page while live updates arrive, then read what moved and what came and went
+    if (o.stable && !res.loadError && res.ready.ok) {
+      const base = path.join(outDir, `${entry.key}-${size.label}-stable`);
+      const shot = async (file, full) => {
+        try {
+          await page.screenshot({ path: file, fullPage: !!full, animations: 'allow', caret: 'initial', timeout: 30000 });
+          return file;
+        } catch (e) { res.notes.push(`no stability screenshot: ${clip(e.message.split('\n')[0], 200)}`); return null; }
+      };
+      const before = await shot(base + '-before.png');
+      watch.on = true;
+      await sleep(o.stableSeconds * 1000);
+      watch.on = false;
+      try {
+        const st = await within(30000, page.evaluate(stableCollect, { maxList: LIST_CAP }), 'reading the stability watch');
+        const boxes = st.boxes.map((b, i) => ({ n: i + 1, ...b }));
+        delete st.boxes;
+        res.stable = { ...st, apiRequests: watch.api, before, after: null, outlined: null };
+        res.stable.after = await shot(base + '-after.png');
+        if (boxes.length) {
+          await within(10000, page.evaluate(stableOutline, boxes), 'outlining').catch(() => {});
+          res.stable.outlined = await shot(base + '-outlined.png', true);
+          await within(10000, page.evaluate(stableOutlineRemove), 'removing the outlines').catch(() => {});
+        }
+        if (st.noShiftApi) res.notes.push('this browser has no layout-shift entries: only moved blocks were measured');
+        if (!st.eventCount && !watch.api) res.notes.push(`nothing was updated during the ${o.stableSeconds} s watch (no event and no /api request)`);
+      } catch (e) {
+        res.stable = { error: clip(e.message.split('\n')[0], 200) };
+      }
+    }
+
     // measure the page
     try {
       const dom = await within(30000, page.evaluate(pageChecks, { minPx: MIN_TEXT_PX, maxElements: 10 }), 'measuring the page');
@@ -769,7 +819,13 @@ function failures(r, o) {
   if (r.overflow && (r.overflow.document || r.overflow.count)) f.push('overflow');
   if (r.smallText && r.smallText.count) f.push('smallText');
   if (o.pixel && (!r.pixel || r.pixel.count)) f.push('pixel');
+  if (o.stable && !r.loadError && r.ready.ok && stableFails(r.stable)) f.push('stable');
   return f;
+}
+
+// A watched page fails when its layout shifted after ready, a block moved, or something came and went more than once.
+function stableFails(st) {
+  return !st || !!st.error || st.shift > STABLE_MAX_SHIFT || st.movedCount > 0 || st.togglingCount > 0;
 }
 
 // Missing, foreign and unknown ids. A page's own items count when they are on any of its routes at that
@@ -876,6 +932,7 @@ async function run(o) {
       out: outDir,
       allowMissing: !!o.allowMissing,
       pixel: !!o.pixel,
+      stable: o.stable ? { seconds: o.stableSeconds, pace: o.stableFast ? 'fast' : 'normal', maxShift: STABLE_MAX_SHIFT } : null,
       pages,
       pass: pages.every((p) => p.pass),
     };
@@ -902,6 +959,11 @@ const COLUMNS = [
   ['small text', (s) => (!s.smallText ? '?' : s.smallText.count)],
 ];
 const PIXEL_COLUMN = ['pixel', (s) => (!s.pixel ? '?' : s.pixel.count)];
+const STABLE_COLUMNS = [
+  ['shift', (s) => (!s.stable || s.stable.error ? '?' : s.stable.shift.toFixed(3))],
+  ['moved', (s) => (!s.stable || s.stable.error ? '?' : s.stable.movedCount)],
+  ['flicker', (s) => (!s.stable || s.stable.error ? '?' : s.stable.togglingCount)],
+];
 
 const listOf = (arr, n, f = String) => arr.slice(0, n).map(f).join(', ') + (arr.length > n ? `, and ${arr.length - n} more` : '');
 
@@ -939,9 +1001,39 @@ function details(s, pageId) {
     for (const f of s.pixel.findings.slice(0, PIXEL_LINES)) d.push(`pixel: ${f.kind} ${f.selector}: ${f.what}`);
     if (s.pixel.count > PIXEL_LINES) d.push(`pixel: and ${s.pixel.count - PIXEL_LINES} more${s.pixel.count > s.pixel.findings.length ? ` (${s.pixel.findings.length} in --json)` : ' (all in --json)'}`);
   }
+  if (s.stable) d.push(...stableDetails(s.stable));
   for (const n of s.notes) d.push(`note: ${n}`);
   if (s.dropped) d.push(`not listed: ${Object.entries(s.dropped).map(([k, n]) => `${n} more ${k}`).join(', ')}`);
   return d;
+}
+
+function stableDetails(st) {
+  const d = [];
+  if (st.error) { d.push(`stable: could not read the watch: ${st.error}`); return d; }
+  const ms = (a) => a.map((t) => `${(t / 1000).toFixed(1)}`).join(', ') + ' s';
+  if (st.shift > STABLE_MAX_SHIFT) {
+    d.push(`stable: layout shift ${st.shift.toFixed(3)} after ready (more than ${STABLE_MAX_SHIFT})${st.shiftSources.length ? `; moved: ${listOf(st.shiftSources, 4, (x) => `${x.selector} (${x.px == null ? 'into or out of the window' : `${x.px > 0 ? '+' : ''}${x.px} px`}, ${x.times}x)`)}` : ''}`);
+  }
+  for (const m of st.moved.slice(0, STABLE_LINES)) {
+    d.push(`stable: moved ${m.selector} by ${m.px > 0 ? '+' : ''}${m.px} px, ${m.times}x (at ${ms(m.atMs)})${m.cause ? ` after ${m.cause}` : ''}`);
+  }
+  if (st.movedCount > STABLE_LINES) d.push(`stable: and ${st.movedCount - STABLE_LINES} more moved blocks (--json)`);
+  for (const t of st.toggling.slice(0, STABLE_LINES)) {
+    const how = t.first === 'appeared' ? 'appeared and went away again' : 'went away and came back';
+    d.push(`stable: flicker ${t.selector}${t.text ? ` "${clip(t.text, 30)}"` : ''} ${how} (${t.times} changes, at ${ms(t.atMs)})`);
+  }
+  if (st.togglingCount > STABLE_LINES) d.push(`stable: and ${st.togglingCount - STABLE_LINES} more toggling elements (--json)`);
+  for (const l of st.late.slice(0, 4)) d.push(`stable: late block ${l.selector} (${l.h} px) appeared ${(l.atMs / 1000).toFixed(1)} s after ready and pushed ${plural(l.pushed, 'block')} down`);
+  if (stableFails(st) && st.outlined) d.push(`stable: outlined in ${rel(st.outlined)}`);
+  return d;
+}
+
+// One line per size under the table: the watch itself (how long, what arrived, the time from the first paint).
+function stableSummary(s) {
+  const st = s.stable;
+  if (!st || st.error) return null;
+  const ev = Object.entries(st.events).map(([k, n]) => `${n} ${k}`).join(', ') || 'no events';
+  return `watched ${(st.watchedMs / 1000).toFixed(0)} s: ${ev}, ${plural(st.apiRequests, '/api request')}; first paint ${st.firstPaintMs == null ? '?' : st.firstPaintMs} ms, ready ${st.readyMs} ms, shift before ready ${st.shiftBeforeReady.toFixed(3)}`;
 }
 
 function formatReport(rep) {
@@ -950,6 +1042,7 @@ function formatReport(rep) {
   const opened = Object.entries(rep.opened).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(', ');
   if (rep.server.origin) L.push(`${rep.server.real ? `Real server (signed in as ${rep.server.user})` : 'Dev server'} ${rep.server.origin}${rep.server.args.length ? ` (${rep.server.args.join(' ')})` : ''}${opened ? `; opened ${opened}` : ''}`);
   L.push(`Screenshots in ${rep.out}`);
+  if (rep.stable) L.push(`Stability watch: ${rep.stable.seconds} s per page and size after ready, ${rep.stable.pace} pace of live updates; fails above a layout shift of ${rep.stable.maxShift}, on a block that moves more than 1 px or anything that comes and goes more than once`);
   L.push('');
   let pass = 0, warn = 0;
   for (const p of rep.pages) {
@@ -957,7 +1050,7 @@ function formatReport(rep) {
     if (p.pass) pass++;
     if (warned) warn++;
     L.push(`${p.pass ? (warned ? 'WARN' : 'PASS') : 'FAIL'}  ${p.id}  ${p.url}`);
-    const cols = rep.pixel ? [...COLUMNS, PIXEL_COLUMN] : COLUMNS;
+    const cols = [...COLUMNS, ...(rep.pixel ? [PIXEL_COLUMN] : []), ...(rep.stable ? STABLE_COLUMNS : [])];
     const rows = [cols.map(([h]) => h), ...p.sizes.map((s) => cols.map(([, f]) => String(f(s))))];
     const widths = cols.map((_, i) => Math.max(...rows.map((r) => r[i].length)));
     for (const r of rows) L.push('  ' + r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd());
@@ -974,6 +1067,7 @@ function formatReport(rep) {
       const tag = p.sizes.length > 1 ? (sizes.length === p.sizes.length ? 'all sizes' : sizes.join(', ')) + ': ' : '';
       L.push(`  ${tag}${l}`);
     }
+    if (rep.stable) for (const s of p.sizes) { const line = stableSummary(s); if (line) L.push(`  ${s.size}: ${line}`); }
     L.push('');
   }
   L.push(`${pass} of ${plural(rep.pages.length, 'page route')} pass${warn ? ` (${warn} with warnings)` : ''}.${rep.allowMissing ? ' Missing items only warn (--allow-missing).' : ''}`);
@@ -1080,6 +1174,30 @@ async function selfTest(o) {
   expect('pixel: the report lists kind, selector and by how much', /pixel: centre [^\n]*badge\.bad: text (0\.9|1\.0)\d px right of the centre/.test(formatReport(px)));
   expect('pixel: no pixel column or check without --pixel', ok.pages.every((p) => p.sizes.every((s) => s.pixel === null)) && !/ pixel\n/.test(formatReport(ok)));
 
+  // --stable: a page that stays still passes, one that jumps and one that flickers fail (fast pace, 6 s)
+  const sb = await run({
+    ...common, packDir: path.join(FIXTURES_DIR, 'pack-stable'), pages: 'fleet,drives,drive', sizes: parseSizes('1280x800,390x844@3'),
+    full: false, stable: true, stableSeconds: 6, stableFast: true, serverArgs: [...STABLE_PACE.fast],
+  });
+  const still = find(sb, 'fleet'), jumps = find(sb, 'drives'), flickers = find(sb, 'drive');
+  const st = (s) => s.stable || {};
+  expect('stable: live updates arrive during the watch (now and rows events, /api requests)', every(still, (s) => (st(s).events || {}).now >= 5 && (st(s).events || {}).rows >= 1 && st(s).apiRequests >= 1 && st(s).watchedMs >= 5500));
+  expect(`stable: the still page passes (values change in place, a list drawn again in one go, a spinner, a map and a chart redraw)${still && !still.pass ? ` (got: ${still.sizes.flatMap((s) => (s.stable ? stableDetails(s.stable) : ['no watch']).map((l) => `${s.size} ${l}`)).join('; ')})` : ''}`, still && still.pass);
+  expect('stable: the still page has shift 0, nothing moved, nothing toggling', every(still, (s) => st(s).shift <= 0.01 && st(s).movedCount === 0 && st(s).togglingCount === 0));
+  expect('stable: before and after screenshots', every(still, (s) => st(s).before && fs.existsSync(st(s).before) && st(s).after && fs.existsSync(st(s).after)));
+  expect('stable: the jumping page fails', jumps && !jumps.pass && every(jumps, (s) => s.fails.join() === 'stable'));
+  expect('stable: its layout shift is over 0.01', every(jumps, (s) => st(s).shift > 0.01 && st(s).shiftSources.some((x) => x.selector.includes('section.card'))));
+  expect('stable: its list is reported moved down, with how much and why', every(jumps, (s) => st(s).moved.some((m) => m.selector.includes('section.card') && m.px > 1 && m.times >= 3 && /banner/.test(m.cause || ''))));
+  expect('stable: the block that came late and pushed it is named', every(jumps, (s) => st(s).late.some((l) => l.selector.includes('div.banner.late') && l.pushed >= 1 && l.atMs >= 700)));
+  expect('stable: the flickering page fails', flickers && !flickers.pass && every(flickers, (s) => s.fails.join() === 'stable'));
+  expect('stable: its "Loading…" coming back is reported, with how often', every(flickers, (s) => st(s).toggling.some((t) => t.selector.includes('p.loading') && t.times >= 4 && t.first === 'appeared')));
+  expect('stable: its rows going and coming back are reported', every(flickers, (s) => st(s).toggling.some((t) => /div\.box > p:nth-of-type\(1\)/.test(t.selector) && t.first === 'went away')));
+  expect('stable: a badge hidden and shown again (visibility) is reported', every(flickers, (s) => st(s).toggling.some((t) => t.selector.includes('p.badge'))));
+  expect('stable: the flicker moved nothing and shifted nothing', every(flickers, (s) => st(s).movedCount === 0 && st(s).shift <= 0.01));
+  expect('stable: an outlined screenshot of what moved and flickered', [jumps, flickers].every((p) => every(p, (s) => st(s).outlined && fs.existsSync(st(s).outlined))));
+  expect('stable: the report has shift, moved and flicker columns and says why', /shift {2}moved {2}flicker/.test(formatReport(sb)) && /stable: moved main#view > section\.card by \+\d+(\.\d)? px/.test(formatReport(sb)) && /stable: flicker [^\n]*p\.loading appeared and went away again/.test(formatReport(sb)));
+  expect('stable: no stability column or watch without --stable', ok.pages.every((p) => p.sizes.every((s) => s.stable === null)) && !/ flicker\n/.test(formatReport(ok)));
+
   const failed = checks.filter((c) => !c.ok);
   const L = checks.map((c) => `${c.ok ? 'ok  ' : 'FAIL'}  ${c.what}`);
   L.push('', failed.length ? `self-test failed: ${failed.length} of ${checks.length} checks` : `self-test passed: ${checks.length} checks`);
@@ -1087,8 +1205,9 @@ async function selfTest(o) {
     L.push('', 'pack-bad report:', formatReport(bad));
     if (!ok.pass) L.push('pack-ok report:', formatReport(ok));
     L.push('pack-pixel report:', formatReport(px));
+    L.push('pack-stable report:', formatReport(sb));
   }
-  return { pass: failed.length === 0, text: L.join('\n') + '\n', reports: { ok, bad, pixel: px } };
+  return { pass: failed.length === 0, text: L.join('\n') + '\n', reports: { ok, bad, pixel: px, stable: sb } };
 }
 
 // ------------------------------------------------------------------ command line
@@ -1112,6 +1231,10 @@ const HELP = `Usage: node ui/tools/check.js --pack <name or folder> [options]
   --pixel                also check that the page is pixel centred and correct (off-centre text and icons, rows
                          and columns that just miss, borders off device pixels, cut, sticking out, overlapping or
                          hidden text, sideways scroll), with an outlined screenshot of the problems
+  --stable [SECONDS]     also stay on each ready page this long (default ${STABLE_DEFAULT_S}) while the dev server sends
+                         live updates, and fail it when its layout shifts (more than ${STABLE_MAX_SHIFT}), a block moves more
+                         than 1 px, or an element or loading text comes and goes more than once
+  --stable-fast          with --stable: live values every 0.5 s and list changes every 3 s (else every 2 s and 10 s)
   --base URL             a real sentry-mate serve (https://127.0.0.1:PORT) instead of the dev server; its
                          self-signed certificate is accepted for this run only (see ui/tools/README.md)
   --user NAME            the account to sign in with on --base (the pack becomes its own UI pack)
@@ -1137,7 +1260,7 @@ function parseArgs(argv) {
   const o = {
     pack: null, pages: 'all', sizes: DEFAULT_SIZES, out: null, serverArgs: '', json: false, allowMissing: false,
     full: false, pixel: false, fixtureMatrix: null, selfTest: false, readyTimeoutMs: '20000', idleTimeoutMs: '10000', jobs: '2',
-    car: null, drive: null, charge: null, help: false, base: null, user: null, password: null, passwordFile: null,
+    car: null, drive: null, charge: null, help: false, stable: false, stableSeconds: STABLE_DEFAULT_S, stableFast: false, base: null, user: null, password: null, passwordFile: null,
   };
   const values = {
     '--pack': 'pack', '--pages': 'pages', '--sizes': 'sizes', '--out': 'out', '--server-args': 'serverArgs',
@@ -1145,13 +1268,23 @@ function parseArgs(argv) {
     '--jobs': 'jobs', '--car': 'car', '--drive': 'drive', '--charge': 'charge',
     '--base': 'base', '--user': 'user', '--password': 'password', '--password-file': 'passwordFile',
   };
-  const flags = { '--json': 'json', '--allow-missing': 'allowMissing', '--full': 'full', '--pixel': 'pixel', '--self-test': 'selfTest', '--help': 'help', '-h': 'help' };
+  const flags = { '--json': 'json', '--allow-missing': 'allowMissing', '--full': 'full', '--pixel': 'pixel', '--self-test': 'selfTest', '--help': 'help', '-h': 'help', '--stable-fast': 'stableFast' };
   for (let i = 0; i < argv.length; i++) {
     let a = argv[i];
     let v;
     const eq = a.indexOf('=');
     if (a.startsWith('--') && eq > 0) { v = a.slice(eq + 1); a = a.slice(0, eq); }
     if (flags[a] && v === undefined) { o[flags[a]] = true; continue; }
+    if (a === '--stable') { // an optional number of seconds
+      if (v === undefined && i + 1 < argv.length && /^\d+(\.\d+)?$/.test(argv[i + 1])) v = argv[++i];
+      if (v !== undefined) {
+        const n = Number(v);
+        if (!(n >= 1 && n <= 3600)) throw new UsageError('--stable takes a number of seconds from 1 to 3600');
+        o.stableSeconds = n;
+      }
+      o.stable = true;
+      continue;
+    }
     if (values[a]) {
       if (v === undefined) {
         if (i + 1 >= argv.length) throw new UsageError(`${a} needs a value`);
@@ -1169,6 +1302,10 @@ function parseArgs(argv) {
   }
   o.sizes = parseSizes(o.sizes);
   o.serverArgs = splitArgs(o.serverArgs);
+  if (o.stableFast && !o.stable) throw new UsageError('--stable-fast goes with --stable');
+  if (o.stable && o.serverArgs.includes('--freeze-clock')) throw new UsageError('--stable needs the dev server\'s clock to run: leave out --freeze-clock');
+  // the pace of live updates goes first, so --server-args can still change it
+  if (o.stable && !o.base) o.serverArgs = [...STABLE_PACE[o.stableFast ? 'fast' : 'normal'], ...o.serverArgs];
   o.matrixFile = o.fixtureMatrix ? path.resolve(o.fixtureMatrix) : MATRIX_FILE;
   if (o.base) {
     if (o.selfTest) throw new UsageError('--self-test runs on the dev server; leave out --base');
@@ -1207,7 +1344,7 @@ async function main() {
   o.log = (line) => process.stderr.write(line + '\n');
   if (o.selfTest) {
     const r = await selfTest(o);
-    if (o.json) process.stdout.write(JSON.stringify({ pass: r.pass, ok: r.reports.ok, bad: r.reports.bad, pixel: r.reports.pixel }, null, 2) + '\n');
+    if (o.json) process.stdout.write(JSON.stringify({ pass: r.pass, ok: r.reports.ok, bad: r.reports.bad, pixel: r.reports.pixel, stable: r.reports.stable }, null, 2) + '\n');
     else process.stdout.write(r.text);
     return r.pass ? 0 : 1;
   }

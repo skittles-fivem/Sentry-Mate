@@ -4,6 +4,7 @@
 |---|---|
 | `sync_shared.py` | Copies the shared browser modules (`ui/shared/*.js`) into every pack's `web/shared/`. |
 | `check.js` | The page checker: opens a pack's pages in Chromium on the dev API server (or a real server) and reports what is wrong. |
+| `pixel.js`, `stable.js` | The in-page parts of `check.js --pixel` and `check.js --stable`. |
 | `settings-server.test.js` | `node --test ui/tools/settings-server.test.js`: Settings: Server and access of both built-in packs in Chromium at phone size on the dev server: the CAN Bridge upload address breaks only after a slash or a colon, the certificate's names start with `localhost`, and with `--own-certificate` no "Make a new certificate" is offered. Skipped without Playwright. |
 
 ## The page checker
@@ -13,6 +14,7 @@ node ui/tools/check.js --pack instrument                       # every page, at 
 node ui/tools/check.js --pack instrument --pages fleet,drives --sizes 1280x800
 node ui/tools/check.js --pack instrument --allow-missing --json > report.json
 node ui/tools/check.js --pack instrument --pixel --sizes 1440x900,3840x2160,390x844@3   # pixel centred and correct?
+node ui/tools/check.js --pack instrument --stable --sizes 1440x900,390x844             # still while live updates come in?
 node ui/tools/check.js --self-test                             # checks the checker
 ```
 
@@ -31,6 +33,8 @@ also on Ctrl-C and on errors. It needs Node and the Playwright that is already i
 | `--allow-missing` | off | Missing items only warn; the page can still pass. |
 | `--full` | off | Also a full-page screenshot at the first size. |
 | `--pixel` | off | Also the pixel checks (below): fails a page that is not pixel centred and correct, and saves a screenshot with the problems outlined. |
+| `--stable [SECONDS]` | off (`30` when given without a number) | Also the stability checks (below): stays on each ready page that long while the dev server sends live updates, and fails a page whose layout shifts, whose blocks move, or whose elements and loading texts come and go. |
+| `--stable-fast` | off | With `--stable`: the dev server sends live values every 0.5 s and list changes every 3 s instead of every 2 s and 10 s. |
 | `--fixture-matrix FILE` | `docs/parity/coverage-matrix.json` | Another coverage matrix (the fixtures use `fixtures/matrix.json`). |
 | `--ready-timeout-ms N` | `20000` | How long to wait for the page to say it is ready. |
 | `--idle-timeout-ms N` | `10000` | How long to wait after that for the network to go quiet. |
@@ -107,6 +111,7 @@ Each page and size is checked in a fresh browser window, then gets a screenshot.
 | **small text** | Visible text is smaller than 10 CSS px: the computed font size, scaled by an SVG `viewBox` or a shrinking transform. The 5 smallest are listed with a selector. Hidden, transparent and off-page text is left out. |
 
 | **pixel** | Only with `--pixel`: a pixel check found a problem (see "Pixel checks"). |
+| **shift**, **moved**, **flicker** | Only with `--stable`: the layout shift score after ready (fails above 0.01), the blocks that moved, and the elements that came and went more than once (fails on any); see "Stability checks". |
 
 Under the table, lines explain each problem; a line shared by every size is printed once as `all sizes:`.
 `note:` lines are warnings that do not fail the page: the network still busy at the end, or a script, style
@@ -132,12 +137,17 @@ Status per page: **PASS**, **WARN** (passes, with missing items under `--allow-m
       smallText: { count, smallest: [{ px, selector, text }] },
       pixel: null | { count, dpr, elements, texts, ms, shot,
         findings: [{ n, kind, selector, what, by, box: { x, y, w, h } }] },
+      stable: null | { error } | { watchedMs, firstPaintMs, readyMs, shift, shiftBeforeReady, shiftWithInput,
+        shiftSources: [{ selector, times, px }], moved: [{ selector, px, times, atMs: [ms], cause, box }], movedCount,
+        toggling: [{ selector, times, first, atMs: [ms], text? }], togglingCount, late: [{ selector, h, atMs, pushed }],
+        events: { now, rows, ... }, eventCount, apiRequests, cost, before, after, outlined },
       shot, fullShot, tiles, covered, notes: [text], ms, dropped? }] }] }
 ```
 
 `fails` names the checks that failed (`load`, `ready`, `missing`, `foreign`, `unknown`, `console`,
-`pageErrors`, `csp`, `apiFailures`, `outside`, `overflow`, `smallText`, and `pixel` with `--pixel`). The report
-also has `pixel: true|false`. `pixel` per size is `null` without `--pixel`. `covered` is the number of distinct
+`pageErrors`, `csp`, `apiFailures`, `outside`, `overflow`, `smallText`, `pixel` with `--pixel`, and `stable` with
+`--stable`). The report also has `pixel: true|false` and `stable: null | { seconds, pace, maxShift }`. `pixel` per
+size is `null` without `--pixel`, `stable` per size `null` without `--stable` (see "Stability checks" for its shape). `covered` is the number of distinct
 `data-cover` ids found. Lists keep 100 entries; `dropped` counts the rest.
 
 ### What it cannot see
@@ -192,6 +202,51 @@ on a canvas or in an SVG, the inside of an icon's drawing, anything under an ele
 or text with it (for `hidden`), a bar that is `fixed` or `sticky` on top of text (the page scrolls under it; not
 reported), and where a designer moved something on purpose by a pixel or two to look right.
 
+### Stability checks (`--stable`)
+
+The owner's rule: a page you are on must not jump around, and nothing may show up, go away and come back while
+live values and list changes arrive. With `--stable [SECONDS]` (default 30) the checker stays on each page for that
+long after it is ready (`data-ready`) and measures in the page (`stable.js`, installed before any page script):
+
+| Measure | How | Fails when |
+|---|---|---|
+| **shift** | A `PerformanceObserver` for `layout-shift` entries (what Chromium's CLS is made of): the sum of the values without recent input, from the frame after the one that painted the ready page. The nodes each entry moved are listed (`shiftSources`, with the px when the node was in the window before and after). | The sum is above 0.01. |
+| **moved** | A cross-check that also sees below the window: every 250 ms the layout top (`offsetTop` up the `offsetParent` chain, so a turning spinner or a transform animation does not count) of every block-level element of at least 40 x 8 px. A block whose top moves by more than 1 px without input is listed once with the largest move, how often and when, and what came before it in the page in that step (`cause`: a block that appeared, grew, shrank or went away). Only the outermost of blocks that moved together is listed; fixed and sticky ones are left out. | A block moved. |
+| **flicker** | A `MutationObserver` marks the page changed; at the next animation frame (the frame that gets painted) the checker takes the set of visible elements (by their place in the page: tag, id or first class, place among their kind) and of placeholder texts (`—`, `…`, `Loading…`, `Updating…`, `No …`, `None`, `unknown` and the like). Each element or placeholder that appears or goes away counts one change. An element that appeared once (a new row) or went away once is fine. Only the outermost of elements that changed together is listed. | Anything changed more than once: it went away and came back (data, then a loading text or an empty state, then data again), or it appeared and went away again (a spinner or `Loading…` coming back), hidden and shown again (`hidden`, `display`, `visibility`, `opacity: 0`). |
+| **late** | Blocks that appeared after ready and pushed others down (the `cause` of a move). | (Shown with the moves they caused.) |
+| before ready | The shift between the first paint and ready, and both times. | Never: shown on the summary line. |
+| updates | The events the page's `EventSource` got during the watch, by type, and its `/api` requests. | Never; a `note:` when nothing arrived at all. |
+
+Left out on purpose: whatever is inside `svg`, `canvas` and a MapLibre map (`.maplibregl-map`), which redraw by design,
+and an element marked `data-stable-ignore`. Text that only changes its value (a speed, "3 min ago") is not a flicker.
+
+**The pace of updates.** With `--stable` the dev server is started with `--rows-every-s 10`: besides the live values it
+always sends every 2 s (`now` events), every car gets a `rows` event every 10 s as if a drive or charge had started
+or ended, so the pages load their lists again during the watch. `--stable-fast` makes it `--sse-interval-ms 500
+--rows-every-s 3`. `--server-args` come after these, so they can change them; `--freeze-clock` is refused (nothing
+would change). Against a real server (`--base`) the pace is the server's own.
+
+**Screenshots.** Per page and size: `<page>-<size>-stable-before.png` (at ready), `-stable-after.png` (at the end of
+the watch) and, when something moved or flickered, `-stable-outlined.png`: the whole page with the moved blocks (red,
+`moved`) and the toggling elements that are on the page at the end (purple, `flicker`) outlined and numbered.
+
+The readable report adds the columns **shift**, **moved** and **flicker**, a `stable:` line per problem (up to 8 of
+each kind per size; all of them, up to 100, in `--json`) and a summary line per size: how long it watched, the events
+and requests that arrived, the first paint, ready, and the shift before ready.
+
+```text
+FAIL  drive  /cars/c1/drives/9007200254742142
+  size       ready  ...  shift  moved  flicker
+  1280x800   yes    ...  0.000  0      5
+  all sizes: stable: flicker main#view > section.card > div.box > p.loading appeared and went away again (27 changes, at 0.1, 0.4, 0.6 s)
+  all sizes: stable: flicker main#view > section.card > p.badge went away and came back (27 changes, at 0.1, 0.4, 0.6 s)
+  1280x800: watched 7 s: 29 now, 6 rows, 0 /api requests; first paint 104 ms, ready 233 ms, shift before ready 0.000
+```
+
+What it cannot see: a flash shorter than one frame (never painted, so never seen), a change inside a canvas or svg,
+a block that moves and comes back between two 250 ms samples (the layout shift entries still see it when it was in
+the window), and movement inside a box that scrolls (its scroll position is not counted).
+
 ## Fixtures and the self-test
 
 `fixtures/pack-ok`, `fixtures/pack-bad` and `fixtures/pack-pixel` are tiny packs on the dev server, with their
@@ -202,6 +257,16 @@ breaks which). Check one by hand:
 ```bash
 node ui/tools/check.js --pack ui/tools/fixtures/pack-bad --fixture-matrix ui/tools/fixtures/matrix.json \
   --pages fleet,drives,drive,charge,health,sign-in,setup --ready-timeout-ms 3000
+```
+
+`fixtures/pack-stable` is for `--stable`: on `fleet` live values change in place, a list is drawn again in one go
+on `rows` events, a spinner turns and a map pin and a chart redraw, and nothing may be reported; on `drives` a block
+comes in above the list 1 s after ready and grows with every event (layout shift, moved, late); on `drive` every
+event swaps the list for `Loading…` for 300 ms and hides a badge (flicker, nothing moved).
+
+```bash
+node ui/tools/check.js --pack ui/tools/fixtures/pack-stable --fixture-matrix ui/tools/fixtures/matrix.json \
+  --pages fleet,drives,drive --sizes 1280x800,390x844@3 --stable 6 --stable-fast
 ```
 
 `fixtures/pack-pixel` has the same small cases twice: right on `fleet`, off on purpose (mostly by 1 px) on
@@ -215,4 +280,6 @@ node ui/tools/check.js --pack ui/tools/fixtures/pack-pixel --fixture-matrix ui/t
 `node ui/tools/check.js --self-test` checks the ok and bad packs at two sizes and asserts that the ok pack passes
 and the bad one reports every kind of failure, then that `--allow-missing` turns a missing item into a
 warning, then checks the pixel pack with `--pixel` at 1280x800 and at 390x844@3 and asserts that the right
-cases report nothing and each case off by 1 px is found, with how much. It prints one line per assertion and exits `0` when all hold.
+cases report nothing and each case off by 1 px is found, with how much, then checks the stable pack with `--stable 6
+--stable-fast` and asserts that live updates arrived, the still page passes, and the jumping and the flickering
+pages fail with what moved (how far, why, the late block) and what came and went (how often). It prints one line per assertion and exits `0` when all hold.

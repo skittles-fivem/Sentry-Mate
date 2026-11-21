@@ -3,16 +3,21 @@
 A ticker computes each featured car's "now" object every --sse-interval-ms and sends what changed
 to every stream whose account may see that car. A stream's first `now` event for a car carries
 the whole object; later ones only the fields that changed (merge them into what you have).
+With --rows-every-s N every featured car also gets a `rows` event every N seconds with every row kind, as if
+its rows had changed: the pages load their lists again, so their refreshes can be watched (ui/tools/check.js
+--stable) without waiting for a drive to end.
 """
 
 from __future__ import annotations
 
 import queue
 import threading
+import time
 
 from .conventions import json_bytes
 from .live import now_object
 
+ALL_ROW_KINDS = ["charges", "drives", "states", "updates", "visits"]
 ROW_KINDS = {"drive": ["drives", "states"], "charge": ["charges", "states"], "parked": ["visits", "states"],
              "gap": ["states"], "update": ["updates", "states"]}
 
@@ -65,6 +70,7 @@ class EventHub:
         self.last = {}
         self.last_seg = {}
         self.seq = 0
+        self.forced_rows_at = None  # time.monotonic() of the last --rows-every-s event
         self.stop = threading.Event()
         self.thread = None
 
@@ -162,7 +168,15 @@ class EventHub:
         t = app.clock.now()
         with self.lock:
             streams = list(self.streams)
+        every = app.cfg.rows_every_s
+        mono = time.monotonic()
+        forced = bool(every) and (self.forced_rows_at is None or mono - self.forced_rows_at >= every - 0.05)
+        if forced:
+            self.forced_rows_at = mono
         for car_id, h in app.ds.featured.items():
+            if forced:
+                self.publish("rows", {"car": car_id, "kinds": ALL_ROW_KINDS, "from_ms": t - int(every * 1000), "to_ms": t},
+                             car=car_id)
             # rows: a piece started or finished since the last tick
             i = h.seg_index_at(t)
             prev = self.last_seg.get(car_id)

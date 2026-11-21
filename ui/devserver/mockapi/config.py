@@ -30,6 +30,7 @@ class Config:
     move_peer_after_s: int = 15
     freeze_clock: bool = False
     sse_interval_ms: int = 2000
+    rows_every_s: float = 0
     verbose: bool = False
     own_certificate: bool = False
 
@@ -53,6 +54,9 @@ def parse_args(argv=None) -> Config:
                     help="a made-up new server claims a waiting move code this many seconds after it is made (0: never)")
     ap.add_argument("--freeze-clock", action="store_true", help="keep 'now' fixed instead of advancing")
     ap.add_argument("--sse-interval-ms", type=int, default=2000, help="how often live values are pushed")
+    ap.add_argument("--rows-every-s", type=float, default=0,
+                    help="also send a `rows` event for every featured car this often, as if rows changed (0: only "
+                         "when a piece really starts or ends); pages load their lists again on it")
     ap.add_argument("--verbose", action="store_true", help="log every request to stderr")
     ap.add_argument("--own-certificate", action="store_true",
                     help="run with the owner's own certificate (expiring in 12 days): no new one can be made here")
@@ -61,6 +65,8 @@ def parse_args(argv=None) -> Config:
         ap.error("--cars must be between 0 and 5000000")
     if a.latency_ms < 0:
         ap.error("--latency-ms must be 0 or more")
+    if a.rows_every_s < 0:
+        ap.error("--rows-every-s must be 0 or more")
     if a.move_peer_after_s < 0:
         ap.error("--move-peer-after-s must be 0 or more")
     if a.needs_setup and a.move_state != "none":
@@ -70,7 +76,8 @@ def parse_args(argv=None) -> Config:
     return Config(pack=a.pack, host=a.host, port=a.port, cars=a.cars, latency_ms=a.latency_ms, seed=a.seed,
                   signed_out=a.signed_out, role=a.role, now_ms=a.now_ms, needs_setup=a.needs_setup,
                   move_state=a.move_state, move_peer_after_s=a.move_peer_after_s,
-                  freeze_clock=a.freeze_clock, sse_interval_ms=max(200, a.sse_interval_ms), verbose=a.verbose,
+                  freeze_clock=a.freeze_clock, sse_interval_ms=max(200, a.sse_interval_ms),
+                  rows_every_s=a.rows_every_s, verbose=a.verbose,
                   own_certificate=a.own_certificate)
 
 
