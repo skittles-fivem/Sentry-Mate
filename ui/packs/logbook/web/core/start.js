@@ -12,6 +12,7 @@ import * as state from '../shared/state.js';
 import { startDisplay, keepReadingPlace } from './display.js';
 import { loadPrefs } from './prefs.js';
 import { mountFrame } from './frame.js';
+import { watchTables } from './snap.js';
 import { startRouter, AUTH_SCREENS } from './router.js';
 
 const here = () => location.pathname + location.search;
@@ -19,6 +20,7 @@ const pageNow = () => state.parseUrl(location.href).page;
 
 async function start() {
   startDisplay();
+  watchTables();
   keepReadingPlace(document.getElementById('main'));
   let setup = { needs_setup: false };
   try { setup = await api.get('setup'); } catch { /* an older server: carry on */ }

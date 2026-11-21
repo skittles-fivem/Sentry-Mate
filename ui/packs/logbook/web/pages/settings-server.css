@@ -13,7 +13,7 @@
 
 .page-settings-server .note { max-width: 70ch; margin-bottom: round(0.875rem, var(--e)); }
 .page-settings-server .ss-lede { font-size: var(--text-sm); color: var(--ink-2); margin: round(0.25rem, var(--e)) 0 round(0.875rem, var(--e)); overflow-wrap: anywhere; }
-.page-settings-server .ss-code { font-size: round(0.92em, 1px); padding: round(0.0625rem, var(--e)) round(0.3125rem, var(--e)); border-radius: round(0.1875rem, var(--e)); background: var(--paper-sunk); color: var(--ink); overflow-wrap: anywhere; }
+.page-settings-server .ss-code { font-size: 0.92em; padding: round(0.0625rem, var(--e)) round(0.3125rem, var(--e)); border-radius: round(0.1875rem, var(--e)); background: var(--paper-sunk); color: var(--ink); overflow-wrap: anywhere; }
 .page-settings-server .ss-quiet { color: var(--ink-3); }
 .page-settings-server .ss-ok { color: var(--accent-strong); }
 .page-settings-server .ss-warn { color: var(--rust); }
@@ -29,7 +29,7 @@
 .page-settings-server .ss-out-mark .icon { width: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); }
 .page-settings-server .ss-out-ok .ss-out-mark { color: var(--accent); }
 .page-settings-server .ss-out-warn .ss-out-mark { color: var(--rust); }
-.page-settings-server .ss-out-title { font: 400 round(1.0625rem, 1px) var(--serif); --LH: round(calc(1.35 * 1em), 2px); line-height: var(--LH); overflow-wrap: anywhere; }
+.page-settings-server .ss-out-title { font: 400 1.0625rem var(--serif); --LH: round(calc(1.35 * 1em), 2px); line-height: var(--LH); overflow-wrap: anywhere; }
 .page-settings-server .ss-out-text { color: var(--ink-3); margin-top: round(0.1875rem, var(--e)); max-width: 70ch; font-size: var(--text-sm); --LH: round(calc(1.5 * 1em), 2px); }
 .page-settings-server .ss-out-action { margin-top: round(0.5rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.7 * 1em), 2px); }
 
@@ -49,11 +49,11 @@
 .page-settings-server .ss-steps { margin: 0; padding-left: round(1.25rem, var(--e)); display: grid; gap: round(0.5rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.6 * 1em), 2px); max-width: 70ch; }
 
 /* ports */
-.page-settings-server .ss-port { font: 400 round(1.0625rem, 1px) var(--serif); --LH: normal; line-height: var(--LH); font-variant-numeric: tabular-nums; }
+.page-settings-server .ss-port { font: 400 1.0625rem var(--serif); --LH: normal; line-height: var(--LH); font-variant-numeric: tabular-nums; }
 
 /* access */
 .page-settings-server .ss-me { padding: round(1rem, var(--e)) round(1.125rem, var(--e)); background: var(--accent-wash); border-radius: round(0.25rem, var(--e)); margin: round(0.25rem, var(--e)) 0 round(1.25rem, var(--e)); }
-.page-settings-server .ss-me-name { font: 400 round(1.25rem, 1px) var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); }
+.page-settings-server .ss-me-name { font: 400 1.25rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); }
 .page-settings-server .ss-me-name .flag { margin-left: round(0.375rem, var(--e)); vertical-align: round(0.1875rem, var(--e)); }
 .page-settings-server .ss-me-text { margin-top: round(0.25rem, var(--e)); color: var(--ink-2); font-size: var(--text-sm); --LH: round(calc(1.5 * 1em), 2px); max-width: 70ch; }
 .page-settings-server .ss-facts { display: grid; grid-template-columns: round(7rem, var(--e)) minmax(0, 1fr); margin: 0; }
@@ -100,7 +100,7 @@
 .page-settings-server .mv-ways { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(1.5rem, var(--e)); align-items: start; }
 @container page (width < 72rem) { .page-settings-server .mv-ways { grid-template-columns: minmax(0, 1fr); } }
 .page-settings-server .mv-way { border: 1px solid var(--rule-strong); border-top: 3px solid var(--ink); border-radius: round(0.25rem, var(--e)); background: var(--paper-raised); padding: round(1.125rem, var(--e)) round(1.25rem, var(--e)) round(1.25rem, var(--e)); min-width: 0; display: grid; gap: round(0.875rem, var(--e)); }
-.page-settings-server .mv-way-title { font: 400 round(1.375rem, 1px) var(--serif); --LH: round(calc(1.25 * 1em), 2px); line-height: var(--LH); display: flex; align-items: center; gap: round(0.625rem, var(--e)); flex-wrap: wrap; }
+.page-settings-server .mv-way-title { font: 400 1.375rem var(--serif); --LH: round(calc(1.25 * 1em), 2px); line-height: var(--LH); display: flex; align-items: center; gap: round(0.625rem, var(--e)); flex-wrap: wrap; }
 .page-settings-server .mv-way-when { font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.55 * 1em), 2px); padding-bottom: round(0.875rem, var(--e)); border-bottom: 1px solid var(--rule); }
 .page-settings-server .mv-way-when strong { color: var(--ink); font-weight: 600; }
 .page-settings-server .mv-way-body { display: grid; gap: round(0.875rem, var(--e)); min-width: 0; }
@@ -113,10 +113,10 @@
 .page-settings-server .mv-list-num { list-style: decimal; }
 .page-settings-server .mv-list strong { color: var(--ink); font-weight: 600; }
 .page-settings-server .mv-list .mv-copy { vertical-align: middle; }
-.page-settings-server .mv-mono { font-size: round(0.92em, 1px); padding: round(0.0625rem, var(--e)) round(0.3125rem, var(--e)); border-radius: round(0.1875rem, var(--e)); background: var(--paper-sunk); color: var(--ink); overflow-wrap: anywhere; }
+.page-settings-server .mv-mono { font-size: 0.92em; padding: round(0.0625rem, var(--e)) round(0.3125rem, var(--e)); border-radius: round(0.1875rem, var(--e)); background: var(--paper-sunk); color: var(--ink); overflow-wrap: anywhere; }
 .page-settings-server .mv-actions { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.625rem, var(--e)) round(0.75rem, var(--e)); }
 .page-settings-server .mv-file { padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: round(0.25rem, var(--e)); background: var(--paper); display: grid; gap: round(0.25rem, var(--e)); }
-.page-settings-server .mv-file-name { font: 400 round(1.0625rem, 1px) var(--serif); --LH: round(calc(1.35 * 1em), 2px); line-height: var(--LH); overflow-wrap: anywhere; }
+.page-settings-server .mv-file-name { font: 400 1.0625rem var(--serif); --LH: round(calc(1.35 * 1em), 2px); line-height: var(--LH); overflow-wrap: anywhere; }
 .page-settings-server .mv-file-facts { font-size: var(--text-sm); color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .page-settings-server .mv-more, .page-settings-server .mv-skipped { border-top: 1px solid var(--rule); padding-top: round(0.875rem, var(--e)); }
 .page-settings-server .mv-more summary, .page-settings-server .mv-skipped summary { cursor: pointer; font-size: var(--text-sm); color: var(--accent-strong); }

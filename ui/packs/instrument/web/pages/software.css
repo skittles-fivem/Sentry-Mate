@@ -12,8 +12,8 @@
 .sw-figs .figures { flex: 1 1 auto; }
 
 .sw-version { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); margin-bottom: round(1rem, var(--e)); }
-.sw-version-text { font-family: var(--font-display); font-size: round(2.75rem, 1px); font-weight: 300; --LH: round(calc(1 * 1em), 2px); letter-spacing: -0.03em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.sw-version-text.is-unknown { color: var(--text-3); font-size: round(2rem, 1px); }
+.sw-version-text { font-family: var(--font-display); font-size: 2.75rem; font-weight: 300; --LH: round(calc(1 * 1em), 2px); letter-spacing: -0.03em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.sw-version-text.is-unknown { color: var(--text-3); font-size: 2rem; }
 .sw-kv { margin-bottom: round(0.875rem, var(--e)); }
 .sw-now .explain { display: block; --LH: round(calc(1.45 * 1em), 2px); }
 .sw-notify { margin: round(1.125rem, var(--e)) 0 0; padding-top: round(0.875rem, var(--e)); border-top: 1px solid var(--line); --LH: round(calc(1.5 * 1em), 2px); }
@@ -25,7 +25,7 @@
 .sw-page .cell-text { display: flex; flex-direction: column; align-items: flex-start; gap: round(0.125rem, var(--e)); min-width: 0; --LH: round(calc(1.3 * 1em), 2px); }
 .sw-page .is-num .cell-text { align-items: flex-end; }
 .sw-page .cell-text > * { white-space: nowrap; }
-.sw-page .cell-text .sub { font-size: max(round(0.75rem, 1px), var(--fs-floor)); color: var(--text-3); }
+.sw-page .cell-text .sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
 .sw-ver { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); font-weight: 500; font-variant-numeric: tabular-nums; }
 .sw-ver.is-unknown { color: var(--text-2); font-weight: 400; }
 .sw-ver .link .ico { width: round(0.8125rem, var(--e)); height: round(0.8125rem, var(--e)); vertical-align: round(-0.0625em, var(--e)); }
@@ -40,7 +40,7 @@
 }
 @container page (max-width: 50rem) {
   .sw-now, .sw-figs { grid-column: 1 / -1; }
-  .sw-version-text { font-size: round(2.25rem, 1px); }
+  .sw-version-text { font-size: 2.25rem; }
   .sw-fleet .field--search { width: 100%; }
 }
 

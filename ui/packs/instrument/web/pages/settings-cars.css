@@ -51,7 +51,7 @@
 .sc-range { display: flex; flex-wrap: wrap; align-items: flex-end; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); }
 .sc-range-f { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); }
 .sc-range-f .input { width: round(11rem, var(--e)); }
-.sc-range-say { padding-bottom: round(0.4375rem, var(--e)); font-size: max(round(0.78125rem, 1px), var(--fs-floor)); }
+.sc-range-say { padding-bottom: round(0.4375rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); }
 .sc-range-say.is-bad { color: var(--warm); }
 .sc-range .btn { margin-bottom: round(0.125rem, var(--e)); }
 
@@ -71,4 +71,4 @@
 .sc-app-label { display: flex; align-items: center; gap: round(0.5rem, var(--e)); font-weight: 600; }
 .sc-app .sc-secret-row { margin: round(0.25rem, var(--e)) 0 0; }
 .sc-app .sc-secret { width: round(34rem, var(--e)); flex: 1 1 round(16rem, var(--e)); min-width: 0; }
-.sc-copied { font-size: max(round(0.78125rem, 1px), var(--fs-floor)); }
+.sc-copied { font-size: max(0.78125rem, var(--fs-floor)); }

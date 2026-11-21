@@ -4,6 +4,7 @@
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { initFrame } from './frame.js';
+import { watchTables } from './snap.js';
 import { startRouter } from './router.js';
 import * as session from './session.js';
 import { flash } from './flash.js';
@@ -26,4 +27,5 @@ api.on('unauthorized', ({ path } = {}) => {
 api.on('events', (info) => { if (info?.state === 'signed_out') sessionEnded(); });
 
 initFrame();
+watchTables();
 startRouter();

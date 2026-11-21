@@ -29,17 +29,17 @@
 .gauge-status { display: flex; justify-content: center; gap: round(0.5rem, var(--e)); flex-wrap: wrap; margin-bottom: round(1rem, var(--e)); }
 /* battery through today: shown on large screens when the gauge panel has height to spare */
 .gauge-today { display: none; flex-direction: column; min-height: 0; margin-bottom: round(1rem, var(--e)); }
-.gauge-today-head { display: flex; justify-content: space-between; align-items: baseline; gap: round(0.75rem, var(--e)); margin-bottom: round(0.5rem, var(--e)); font-size: max(round(0.75rem, 1px), var(--fs-floor)); color: var(--text-3); }
+.gauge-today-head { display: flex; justify-content: space-between; align-items: baseline; gap: round(0.75rem, var(--e)); margin-bottom: round(0.5rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
 .gauge-today-head b { color: var(--text); font-weight: 600; }
 .gauge-today-plot { position: relative; flex: 1; min-height: round(4rem, var(--e)); border-bottom: 1px solid var(--line-2); background: repeating-linear-gradient(180deg, transparent 0 calc(25% - 1px), var(--chart-grid) calc(25% - 1px) 25%); }
 .gauge-today-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-.gauge-today-y { position: absolute; left: 0; top: var(--y); margin-top: round(0.25rem, var(--e)); font-size: max(round(0.6875rem, 1px), var(--fs-floor)); --LH: round(calc(1 * 1em), 2px); color: var(--text-3); }
+.gauge-today-y { position: absolute; left: 0; top: var(--y); margin-top: round(0.25rem, var(--e)); font-size: max(0.6875rem, var(--fs-floor)); --LH: round(calc(1 * 1em), 2px); color: var(--text-3); }
 .gauge-today-area { fill: url(#g-soc-today); stroke: none; }
 .gauge-today-line { fill: none; stroke: var(--c-soc); stroke-width: 2; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .gauge-today-now { stroke: var(--text); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .gauge-today-strip { position: relative; height: round(0.375rem, var(--e)); margin-top: round(0.375rem, var(--e)); border-radius: 99px; overflow: hidden; background: rgba(150, 182, 240, 0.08); }
 .gauge-today-strip > i { --x0: round(var(--x), 1px); --x1: round(calc(var(--x) + var(--w)), 1px); position: absolute; top: 0; bottom: 0; left: var(--x0); width: max(1px, calc(var(--x1) - var(--x0))); background: var(--dot); }
-.gauge-today-axis { display: flex; justify-content: space-between; margin-top: round(0.375rem, var(--e)); font-size: max(round(0.6875rem, 1px), var(--fs-floor)); color: var(--text-3); }
+.gauge-today-axis { display: flex; justify-content: space-between; margin-top: round(0.375rem, var(--e)); font-size: max(0.6875rem, var(--fs-floor)); color: var(--text-3); }
 .gauge-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-top: auto; padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
 .gauge-stats .metric { padding: 0 round(0.875rem, var(--e)); }
 .gauge-stats .metric + .metric { border-left: 1px solid var(--line); }
@@ -50,34 +50,34 @@
 .temp-rows { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); margin-top: round(0.125rem, var(--e)); }
 .temp-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label val" "scale scale"; align-items: baseline; row-gap: round(0.4375rem, var(--e)); }
 .temp-row .temp-label { grid-area: label; }
-.temp-row .temp-val { grid-area: val; font-size: round(1.25rem, 1px); --LH: round(calc(1.1 * 1em), 2px); }
+.temp-row .temp-val { grid-area: val; font-size: 1.25rem; --LH: round(calc(1.1 * 1em), 2px); }
 .temp-row .temp-scale { grid-area: scale; }
-.temp-label { font-size: max(round(0.8125rem, 1px), var(--fs-floor)); color: var(--text-2); }
-.temp-val { font-family: var(--font-display); font-size: round(1.375rem, 1px); font-weight: 500; text-align: right; white-space: nowrap; }
+.temp-label { font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); }
+.temp-val { font-family: var(--font-display); font-size: 1.375rem; font-weight: 500; text-align: right; white-space: nowrap; }
 /* a plain reading scale, not a control: thin track, shaded normal range, a 2 px tick for the value */
 .temp-scale { position: relative; height: round(0.25rem, var(--e)); border-radius: 99px; background: rgba(150, 182, 240, 0.12); }
 .temp-band { position: absolute; top: round(-0.125rem, var(--e)); bottom: round(-0.125rem, var(--e)); left: round(var(--x), 1px); width: round(var(--w), 1px); border-radius: round(0.125rem, var(--e)); background: rgba(63, 224, 208, 0.2); }
 .temp-tick { position: absolute; top: round(-0.3125rem, var(--e)); bottom: round(-0.3125rem, var(--e)); left: round(calc(var(--x) - 1px), 1px); width: round(0.125rem, var(--e)); border-radius: 1px; background: var(--text); }
-.temp-axis { display: flex; justify-content: space-between; align-items: center; margin-top: round(0.625rem, var(--e)); font-size: max(round(0.6875rem, 1px), var(--fs-floor)); color: var(--text-3); }
+.temp-axis { display: flex; justify-content: space-between; align-items: center; margin-top: round(0.625rem, var(--e)); font-size: max(0.6875rem, var(--fs-floor)); color: var(--text-3); }
 .temp-axis-key { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); }
 .temp-axis-key i { width: round(0.75rem, var(--e)); height: round(0.5rem, var(--e)); border-radius: round(0.125rem, var(--e)); background: rgba(63, 224, 208, 0.2); }
 
 .tires { display: grid; grid-template-columns: minmax(0, 1fr) round(3.25rem, var(--e)) minmax(0, 1fr); grid-template-rows: auto auto; align-items: center; gap: round(0.5rem, var(--e)) round(0.375rem, var(--e)); }
 .tire { display: flex; flex-direction: column; gap: 1px; }
 .tire--r { align-items: flex-end; text-align: right; }
-.tire-pos { font-size: max(round(0.71875rem, 1px), var(--fs-floor)); color: var(--text-3); font-weight: 500; }
-.tire-val { font-family: var(--font-display); font-size: round(1.3125rem, 1px); white-space: nowrap; font-weight: 500; --LH: round(calc(1.1 * 1em), 2px); }
-.tire-val .unit { font-family: var(--font); font-size: max(round(0.75rem, 1px), var(--fs-floor)); color: var(--text-2); margin-left: round(0.1875rem, var(--e)); }
+.tire-pos { font-size: max(0.71875rem, var(--fs-floor)); color: var(--text-3); font-weight: 500; }
+.tire-val { font-family: var(--font-display); font-size: 1.3125rem; white-space: nowrap; font-weight: 500; --LH: round(calc(1.1 * 1em), 2px); }
+.tire-val .unit { font-family: var(--font); font-size: max(0.75rem, var(--fs-floor)); color: var(--text-2); margin-left: round(0.1875rem, var(--e)); }
 .tire.is-low .tire-val { color: var(--warm); }
 .tire-val .q-why, .temp-val .q-why { white-space: nowrap; }
 .tire-val .q.is-missing { display: inline-flex; flex-direction: column; align-items: inherit; gap: round(0.125rem, var(--e)); }
 .tire--r .tire-val .q.is-missing { align-items: flex-end; }
 .tire-val .q.is-missing > .q-why { margin-left: 0; }
-.tire-note { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); white-space: nowrap; font-size: max(round(0.71875rem, 1px), var(--fs-floor)); color: var(--warm); }
+.tire-note { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); white-space: nowrap; font-size: max(0.71875rem, var(--fs-floor)); color: var(--warm); }
 .car-top { grid-column: 2; grid-row: 1 / span 2; width: round(3.25rem, var(--e)); height: round(6rem, var(--e)); }
 .tire-rec { margin-top: round(0.875rem, var(--e)); padding-top: round(0.75rem, var(--e)); border-top: 1px solid var(--line); }
 .tire-rec b { color: var(--text); font-weight: 600; }
-.sw-src { font-size: max(round(0.8125rem, 1px), var(--fs-floor)); color: var(--text-2); font-weight: 400; }
+.sw-src { font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); font-weight: 400; }
 .car-top .body { fill: rgba(146, 176, 236, 0.08); stroke: rgba(150, 182, 240, 0.4); stroke-width: 1.4; }
 .car-top .glass { fill: rgba(146, 176, 236, 0.16); }
 .car-top .wheel { fill: rgba(232, 238, 247, 0.75); }
@@ -89,13 +89,13 @@
 .today-tl-body { position: relative; flex: 1; min-height: round(12rem, var(--e)); }
 .today-tl-list { position: absolute; inset: 0; overflow-y: auto; scrollbar-color: rgba(150, 182, 240, 0.25) transparent; }
 .today-tl .tl-item { grid-template-columns: minmax(0, round(6.5rem, var(--e))) round(1.125rem, var(--e)) minmax(0, 1fr) auto round(1rem, var(--e)); column-gap: round(0.75rem, var(--e)); min-height: round(3.25rem, var(--e)); padding: 0 round(1.375rem, var(--e)); }
-.today-tl .tl-time { font-size: max(round(0.75rem, 1px), var(--fs-floor)); white-space: normal; --LH: round(calc(1.3 * 1em), 2px); }
+.today-tl .tl-time { font-size: max(0.75rem, var(--fs-floor)); white-space: normal; --LH: round(calc(1.3 * 1em), 2px); }
 .tl-time > span { white-space: nowrap; }
 .today-tl .tl-body { padding: round(0.5rem, var(--e)) 0; }
 /* a narrow list: the detail wraps between its parts ("1.3 mi · 238 Wh/mi") instead of being cut short */
 .today-tl .tl-body .detail { white-space: normal; overflow: visible; }
 .tl-when { display: none; }
-.today-tl .tl-dur { font-size: max(round(0.75rem, 1px), var(--fs-floor)); }
+.today-tl .tl-dur { font-size: max(0.75rem, var(--fs-floor)); }
 
 
 /* the gauge: everyday bands outside the ticks (under 20 %, 20 to 80 %, over 80 %) */
@@ -105,41 +105,41 @@
 .gauge-band--high { stroke: color-mix(in oklab, var(--warm) 70%, transparent); }
 .gauge--stale .gauge-fill { stroke: var(--st-unknown); filter: none; }
 .gauge-usable { margin-top: 0; }
-.gauge-est { margin-top: round(0.75rem, var(--e)); font-size: max(round(0.8125rem, 1px), var(--fs-floor)); color: var(--text-2); }
+.gauge-est { margin-top: round(0.75rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); }
 .gauge-est b { color: var(--text); font-weight: 600; }
-.now-head .page-sub .src { margin-left: round(0.375rem, var(--e)); padding: 0 round(0.3125rem, var(--e)); border: 1px solid var(--line-2); border-radius: round(0.25rem, var(--e)); font-size: max(round(0.6875rem, 1px), var(--fs-floor)); color: var(--text-3); }
-.aged-note { color: var(--text-3); font-size: max(round(0.75rem, 1px), var(--fs-floor)); font-family: var(--font); font-weight: 400; }
+.now-head .page-sub .src { margin-left: round(0.375rem, var(--e)); padding: 0 round(0.3125rem, var(--e)); border: 1px solid var(--line-2); border-radius: round(0.25rem, var(--e)); font-size: max(0.6875rem, var(--fs-floor)); color: var(--text-3); }
+.aged-note { color: var(--text-3); font-size: max(0.75rem, var(--fs-floor)); font-family: var(--font); font-weight: 400; }
 
 /* the map: tools at the bottom left */
 .map-tools { display: flex; gap: round(0.5rem, var(--e)); align-items: center; }
 .map-btn { background: var(--surface-ctrl); backdrop-filter: blur(round(0.75rem, var(--e))); }
-.map-chip { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); height: round(1.875rem, var(--e)); padding: 0 round(0.625rem, var(--e)); border-radius: round(0.5rem, var(--e)); background: var(--surface-attrib); color: var(--text-3); font-size: max(round(0.75rem, 1px), var(--fs-floor)); }
+.map-chip { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); height: round(1.875rem, var(--e)); padding: 0 round(0.625rem, var(--e)); border-radius: round(0.5rem, var(--e)); background: var(--surface-attrib); color: var(--text-3); font-size: max(0.75rem, var(--fs-floor)); }
 .map-panel:fullscreen { border-radius: 0; }
 
 /* the live panels */
 .now-row--3 { grid-template-columns: minmax(0, 2fr) minmax(0, 2fr); }
-.setpoints { margin-top: round(0.875rem, var(--e)); padding-top: round(0.75rem, var(--e)); border-top: 1px solid var(--line); font-size: max(round(0.8125rem, 1px), var(--fs-floor)); color: var(--text-2); }
+.setpoints { margin-top: round(0.875rem, var(--e)); padding-top: round(0.75rem, var(--e)); border-top: 1px solid var(--line); font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); }
 .setpoints b { color: var(--text); font-weight: 600; }
 .why-state { color: var(--text); font-weight: 500; margin-bottom: round(0.625rem, var(--e)); }
 .why-list { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-bottom: round(0.75rem, var(--e)); }
 .why-list li { display: flex; flex-direction: column; padding-left: round(0.75rem, var(--e)); border-left: round(0.125rem, var(--e)) solid var(--warm-line); }
 .why-list b { font-weight: 600; }
-.why-list span { font-size: max(round(0.78125rem, 1px), var(--fs-floor)); color: var(--text-2); }
-.flag-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, round(12.5rem, var(--e))), 1fr)); gap: round(0.5rem, var(--e)) round(1.5rem, var(--e)); margin: 0 0 round(0.875rem, var(--e)); font-size: max(round(0.8125rem, 1px), var(--fs-floor)); }
+.why-list span { font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-2); }
+.flag-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, round(12.5rem, var(--e))), 1fr)); gap: round(0.5rem, var(--e)) round(1.5rem, var(--e)); margin: 0 0 round(0.875rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); }
 .flag-grid--modes { grid-template-columns: repeat(auto-fill, minmax(min(100%, round(15rem, var(--e))), 1fr)); padding-top: round(0.875rem, var(--e)); border-top: 1px solid var(--line); }
 .flag { display: flex; justify-content: space-between; align-items: baseline; gap: round(0.75rem, var(--e)); min-width: 0; }
 .flag dt { color: var(--text-3); min-width: 0; }
 .flag dd { margin: 0; color: var(--text); font-weight: 500; text-align: right; white-space: nowrap; }
 .charge-word { display: flex; align-items: center; gap: round(0.625rem, var(--e)); margin-bottom: round(0.875rem, var(--e)); }
-.charge-word b { font-size: round(1.0625rem, 1px); font-weight: 600; }
+.charge-word b { font-size: 1.0625rem; font-weight: 600; }
 .charge-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: round(1rem, var(--e)) round(1.125rem, var(--e)); }
-.charge-grid .metric-value { font-size: round(1.125rem, 1px); white-space: normal; }
+.charge-grid .metric-value { font-size: 1.125rem; white-space: normal; }
 .is-charging { border-color: var(--warm-line); }
 
 /* the period */
 .car-window { display: flex; flex-direction: column; gap: var(--gap); margin-top: round(0.5rem, var(--e)); }
 .window-head { display: flex; align-items: center; gap: round(0.875rem, var(--e)); flex-wrap: wrap; }
-.section-title { font-family: var(--font-display); font-size: round(1.25rem, 1px); font-weight: 600; letter-spacing: -0.01em; }
+.section-title { font-family: var(--font-display); font-size: 1.25rem; font-weight: 600; letter-spacing: -0.01em; }
 .window-figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: round(1rem, var(--e)) round(1.5rem, var(--e)); }
 .chart--batt { height: round(15rem, var(--e)); }
 .chart--chg { height: round(11rem, var(--e)); }

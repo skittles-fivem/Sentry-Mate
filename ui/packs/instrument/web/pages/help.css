@@ -13,19 +13,19 @@
 .help-own { display: grid; gap: round(0.125rem, var(--e)); padding: round(0.625rem, var(--e)) round(0.75rem, var(--e)); margin-top: round(0.25rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .help-own b { font-weight: 600; }
 .help-own + .note { margin-top: round(0.75rem, var(--e)); }
-.help-own span { font-size: max(round(0.8125rem, 1px), var(--fs-floor)); }
+.help-own span { font-size: max(0.8125rem, var(--fs-floor)); }
 .licence-list { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); margin: round(0.5rem, var(--e)) 0 0; padding: 0; list-style: none; }
 .licence-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: round(0.125rem, var(--e)) round(0.75rem, var(--e)); }
 .licence-list b { font-weight: 600; }
-.licence-list span { grid-column: 1; color: var(--text-2); font-size: max(round(0.8125rem, 1px), var(--fs-floor)); }
-.licence-list a { grid-column: 2; grid-row: 1 / span 2; align-self: center; font-size: max(round(0.8125rem, 1px), var(--fs-floor)); }
+.licence-list span { grid-column: 1; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); }
+.licence-list a { grid-column: 2; grid-row: 1 / span 2; align-self: center; font-size: max(0.8125rem, var(--fs-floor)); }
 .help-notice-row { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); margin-top: round(1rem, var(--e)); padding-top: round(0.875rem, var(--e)); border-top: 1px solid var(--line); }
 .help-notice-row .explain { flex: 1 1 round(12rem, var(--e)); }
 .help-credits .note { margin-top: round(0.75rem, var(--e)); }
 .qa-tools { display: flex; align-items: center; gap: round(0.75rem, var(--e)); }
 .qa-tools .field--search { width: round(18rem, var(--e)); }
 .qa-tools .field--search .input { width: 100%; }
-.qa-count { font-size: max(round(0.8125rem, 1px), var(--fs-floor)); white-space: nowrap; }
+.qa-count { font-size: max(0.8125rem, var(--fs-floor)); white-space: nowrap; }
 .qa { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 round(2.5rem, var(--e)); margin: 0; }
 .qa-item { padding: round(0.875rem, var(--e)) 0; border-top: 1px solid var(--line); }
 .qa-item[hidden] { display: none; }

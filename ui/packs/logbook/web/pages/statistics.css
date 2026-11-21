@@ -17,7 +17,7 @@
 .page-statistics .st-filters { padding: round(1.25rem, var(--e)) 0; display: grid; gap: round(1.125rem, var(--e)); }
 .page-statistics .st-period { display: flex; align-items: baseline; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); }
 .page-statistics .st-period .button { align-self: center; }
-.page-statistics .st-period-text { font: 400 round(1.0625rem, 1px) var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
+.page-statistics .st-period-text { font: 400 1.0625rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
 .page-statistics .st-period-why { color: var(--ink-3); font-size: var(--small-2); }
 .page-statistics .st-filter-row { display: grid; grid-template-columns: auto minmax(round(13rem, var(--e)), round(17rem, var(--e))) minmax(0, 1fr); gap: round(1rem, var(--e)) round(2rem, var(--e)); align-items: start; }
 .page-statistics .st-f-group .choice { display: grid; gap: round(0.375rem, var(--e)); justify-items: start; }
@@ -37,14 +37,14 @@
 .page-statistics .st-pick-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: round(0.625rem, var(--e)); padding: round(0.375rem, var(--e)) round(0.25rem, var(--e)); border-radius: round(0.25rem, var(--e)); cursor: pointer; }
 .page-statistics .st-pick-item:hover { background: var(--paper-sunk); }
 .page-statistics .st-pick-item input { width: round(1rem, var(--e)); height: round(1rem, var(--e)); margin: 0; accent-color: var(--accent); }
-.page-statistics .st-pick-name { font-family: var(--serif); font-size: round(1rem, 1px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.page-statistics .st-pick-name { font-family: var(--serif); font-size: 1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .page-statistics .st-pick-sub, .page-statistics .st-pick-more { color: var(--ink-3); font-size: var(--small-2); white-space: nowrap; }
 .page-statistics .st-pick-more:empty { display: none; }
 .page-statistics .st-pick-foot { display: flex; justify-content: space-between; gap: round(0.75rem, var(--e)); padding-top: round(0.625rem, var(--e)); border-top: 1px solid var(--rule); }
 
 /* ------------------------------------------------------------- totals */
 .page-statistics .st-totals { grid-template-columns: repeat(7, minmax(0, 1fr)); }
-.page-statistics .st-totals .fig-value { font-size: round(1.5rem, 1px); }
+.page-statistics .st-totals .fig-value { font-size: 1.5rem; }
 .page-statistics .st-totals .fig { padding-right: round(0.875rem, var(--e)); padding-left: round(0.875rem, var(--e)); }
 .page-statistics .st-totals .fig:first-child { padding-left: 0; }
 
@@ -53,7 +53,7 @@
 .page-statistics .st-ledger .ledger-table tbody td, .page-statistics .st-ledger .ledger-table tbody th { padding-left: round(0.5rem, var(--e)); padding-right: round(0.5rem, var(--e)); font-size: var(--text-sm); }
 .page-statistics .st-ledger .ledger-table thead th:first-child, .page-statistics .st-ledger .ledger-table tbody > tr > :first-child { padding-left: 0; }
 .page-statistics .st-ledger .ledger-table thead th:last-child, .page-statistics .st-ledger .ledger-table tbody > tr > :last-child { padding-right: 0; }
-.page-statistics .st-ledger .cell-main { font-size: round(1rem, 1px); }
+.page-statistics .st-ledger .cell-main { font-size: 1rem; }
 .page-statistics .st-ledger .num .cell-main { font-size: var(--text-sm); font-family: var(--sans); }
 .page-statistics .st-ledger tbody tr.is-zero > * { color: var(--ink-3); }
 .page-statistics .st-ledger .c-period { min-width: round(9rem, var(--e)); }
@@ -79,7 +79,7 @@
 .page-statistics .st-percar { grid-column: 1 / -1; }
 .page-statistics .st-chart-part { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: round(0.625rem, var(--e)); }
 .page-statistics .part-head { display: flex; align-items: flex-end; justify-content: space-between; gap: round(0.75rem, var(--e)); padding-bottom: round(0.5rem, var(--e)); border-bottom: 1px solid var(--rule-strong); }
-.page-statistics .st-part-title { font: 400 round(1.125rem, 1px) var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
+.page-statistics .st-part-title { font: 400 1.125rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
 .page-statistics .st-part-note { display: block; font: 400 var(--small-2) var(--sans); --LH: round(calc(1.4 * 1em), 2px); line-height: var(--LH); color: var(--ink-3); margin-top: round(0.125rem, var(--e)); }
 .page-statistics .st-more-note { font-size: var(--small-2); }
 .page-statistics .st-scale-row { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); }
@@ -122,7 +122,7 @@
 .page-statistics .st-stone:nth-child(3n + 1) { border-left: 0; padding-left: 0; }
 .page-statistics .st-stone-kind { font: 600 var(--micro) var(--sans); --LH: round(calc(1.2 * 1em), 2px); line-height: var(--LH); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ochre); }
 .page-statistics .st-stone.is-mark .st-stone-kind { color: var(--accent); }
-.page-statistics .st-stone-title { font: 400 round(1.125rem, 1px) var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
+.page-statistics .st-stone-title { font: 400 1.125rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
 .page-statistics .st-stone-note { font-size: var(--small-2); color: var(--ink-3); --LH: round(calc(1.45 * 1em), 2px); }
 .page-statistics .st-stone-link { margin-top: round(0.25rem, var(--e)); font-size: var(--small-2); }
 
@@ -141,7 +141,7 @@
   .page-statistics .st-ledger .st-fold { display: none; }
 }
 @container page (width < 112.5rem) {
-  .page-statistics .st-totals .fig-value { font-size: round(1.3125rem, 1px); }
+  .page-statistics .st-totals .fig-value { font-size: 1.3125rem; }
   .page-statistics .st-filter-row { grid-template-columns: auto minmax(round(13rem, var(--e)), round(17rem, var(--e))); }
   .page-statistics .st-precision { grid-column: 1 / -1; justify-self: start; max-width: round(48rem, var(--e)); border-left: 0; padding-left: 0; }
 }
@@ -170,7 +170,7 @@
   .page-statistics .st-chart-grid { grid-template-columns: round(3rem, var(--e)) minmax(0, 1fr); grid-template-rows: round(12rem, var(--e)) round(1.5rem, var(--e)); }
   .page-statistics .st-readout, .page-statistics .st-key { padding-left: 0; }
 }
-.page-statistics .sort-mark { font-size: max(10px, round(0.75em, 1px)); }
+.page-statistics .sort-mark { font-size: max(10px, 0.75em); }
 
 /* ------------------------------------------------------------- a part that did not follow the last reload */
 .page-statistics .is-stale > :not(.st-stale-note) { opacity: 0.45; }
