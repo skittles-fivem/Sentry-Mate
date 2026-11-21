@@ -19,10 +19,23 @@ name: Image
 #     code changed, so there is nothing to test and no new image.
 # This replaces ci.yml: it ran the same tests on every push to main, so with
 # this file they would have run twice.
-# The tests (once, on amd64) and the two images (each on its own kind of
+# The owner's rule: a push to main takes about 5 minutes, tests and image.
+#   - tests runs the fast set (cargo test --workspace --locked, split in two
+#     halves on two machines at once): every unit test and the quick
+#     integration tests, which still take each main
+#     feature end to end once (upload, check, decode, a drive and a charge on
+#     the web API; sign-in and accounts; places; imports; the Tesla client;
+#     moving; the certificate; the packs). The slow tests, which decode
+#     several days of made-up logs each, are #[ignore]d and run in
+#     full-tests.yml (weekly and by hand). docs/development.md has both sets.
+#   - clippy and cargo fmt run beside them, on a machine of their own.
+#   - the image build keeps the dependencies in a layer of their own, cached
+#     per arch in GitHub's cache (type=gha): a push that changes no
+#     Cargo.toml or Cargo.lock builds only the workspace's own crates.
+# The tests, clippy and the two images (each on its own kind of
 # machine, no emulation) run at the same time. The images are pushed only by
 # digest, which nobody pulls; the tags that people pull are put on them last,
-# and only when the tests passed and both images passed
+# and only when the tests and clippy passed and both images passed
 # .github/check-image.sh, as 1000:1000 and as TrueNAS's 568:568: folders it
 # can't keep refused (root's, not mounted, the keys inside the data), no
 # capabilities, a read-only root, healthy, TLS 1.3 only, the recovery key
@@ -87,13 +100,39 @@ jobs:
             echo "build=$GITHUB_RUN_NUMBER"
           } >> "$GITHUB_OUTPUT"
 
+  # The fast set, in two halves on two machines at once (cargo runs one test
+  # binary at a time, and most of them wait more than they work): web, the
+  # binary and moving in one, every other crate in the other (a new crate
+  # lands there by itself). The slow tests are in full-tests.yml.
   tests:
-    # Off for now, by the owner's call: a quicker test set that runs on every push is on its way.
-    if: false
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - half: web
+            packages: -p web -p sentry-mate -p moving
+          - half: rest
+            packages: --workspace --exclude web --exclude sentry-mate --exclude moving
     steps:
       # (the tests never see a token)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: tests-${{ matrix.half }}
+      - run: cargo test --locked ${{ matrix.packages }}
+
+  # Beside the tests, on a machine of its own (its own build cache too).
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -104,12 +143,12 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - run: cargo clippy -p sentry-mate --all-targets --features dev-seed --locked -- -D warnings
 
   build:
     needs: names
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -186,7 +225,7 @@ jobs:
           retention-days: 1
 
   publish:
-    needs: [names, build]
+    needs: [names, tests, clippy, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

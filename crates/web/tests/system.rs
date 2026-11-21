@@ -145,6 +145,7 @@ async fn walk(c: &mut Client, path: &str, limit: usize, key: impl Fn(&Value) -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn health_storage_and_the_servers_figures() {
     let k = seeded().await;
     let car = k.car.clone();
@@ -237,6 +238,7 @@ async fn health_storage_and_the_servers_figures() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn a_cars_logs_overlaps_and_a_rebuild() {
     let k = seeded().await;
     let car = k.car.clone();
@@ -335,6 +337,7 @@ async fn a_cars_logs_overlaps_and_a_rebuild() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn bounds_streamed_pages_arrival_times_and_local_days() {
     let k = seeded().await;
     let car = k.car.clone();

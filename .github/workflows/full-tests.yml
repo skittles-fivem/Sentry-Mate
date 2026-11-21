@@ -1,0 +1,42 @@
+name: Full tests
+
+# Every test, the slow ones too (cargo test -- --include-ignored): the tests
+# that decode several days of made-up logs each through the whole engine, and
+# the long move and scale tests. The Image workflow runs only the fast set on
+# a push, so that a push to main takes about 5 minutes; this runs the rest
+# once a week (Monday 03:17 UTC) and by hand (Actions > Full tests > Run
+# workflow). It publishes nothing and holds no token that can write.
+# The two measurements in crates/db/tests/compression.rs (measure_*) are left
+# out: they are for a --release run by hand, not checks.
+# Every action is pinned to a full commit id (its version in the comment);
+# crates/sentry-mate/tests/repo_hygiene.rs fails on an unpinned one.
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo test --workspace --locked --no-fail-fast -- --include-ignored --skip measure_

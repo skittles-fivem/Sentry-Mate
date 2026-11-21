@@ -17,9 +17,16 @@ expect_used = "warn"
 panic = "warn"
 
 # Tests and debug builds: the dependencies (crypto, argon2, xz, hashing, TLS) built with optimisation, so the tests
-# run in minutes instead of most of an hour; the workspace's own code stays at opt-level 0 with its checks.
+# run in minutes instead of most of an hour; the workspace's own code stays at opt-level 0 with its checks (building
+# it optimised too made the slow tests about 4x faster but added more build time than the fast set runs for).
+# Debug info: line tables only for the workspace (backtraces keep their lines), none for the dependencies: the test
+# binaries are several GB smaller and link faster.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
 
 [profile.release]
 lto = true

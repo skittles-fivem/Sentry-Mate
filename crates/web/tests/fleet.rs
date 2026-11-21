@@ -474,6 +474,7 @@ async fn put(store: &ingest::Store, judge: &ingest::Judge, name: &str, bytes: &[
 /// A made-up car's day of logs (synth: a made-up VIN, a public signing seed), uploaded and judged as an upload is,
 /// whose newest log is not the file that was signed: it fails its check.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn the_fleet_follows_the_logs_rules_of_health_and_the_time_logs_arrived() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");

@@ -94,6 +94,7 @@ fn csv_lines(r: &web::testkit::Res) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn gaps_lost_frames_and_the_values_not_known() {
     // frames lost for 40 s in the middle of the day's first drive
     let base_sc = synth::Scenario::new(5).days(1).rates(synth::Rates::Light).with_trouble(false);
@@ -233,6 +234,7 @@ async fn a_drive_whose_data_stopped_csv_stats_logbook_and_trip() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn every_purpose_rule_in_a_csv() {
     let sc = synth::Scenario::new(5).days(1).rates(synth::Rates::Light).with_trouble(false);
     let k = seeded(&sc, |_| true).await;

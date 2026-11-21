@@ -196,6 +196,7 @@ const STAT_KEYS: &[&str] = &[
 ];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn statistics_mileage_totals_gaps_and_compare() {
     let k = seeded().await;
     let (a, b) = (k.cars[0].clone(), k.cars[1].clone());
@@ -420,6 +421,7 @@ const GROUP_KEYS: &[&str] = &[
 ];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn visits_their_groups_days_and_tracks() {
     let k = seeded().await;
     let (a, b) = (k.cars[0].clone(), k.cars[1].clone());
@@ -573,6 +575,7 @@ async fn visits_their_groups_days_and_tracks() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn updates_versions_and_events() {
     let k = seeded().await;
     let (a, b) = (k.cars[0].clone(), k.cars[1].clone());

@@ -79,6 +79,7 @@ fn keys(v: &Value) -> Vec<&str> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn battery_capacity_level_range_efficiency_and_temperatures_of_decoded_days() {
     let k = seeded().await;
     let (car, from, to) = (k.car.clone(), k.from, k.to);
@@ -410,6 +411,7 @@ async fn a_car_without_history_answers_the_same_keys_with_null() {
 /// More record days than a `group=day` page looks at (limit + 180): one short log a day of a made-up car over 240
 /// days. Paging one reading at a time reaches the newest day, and holds every day the whole list holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn day_readings_page_one_at_a_time_past_the_days_a_page_looks_at() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
