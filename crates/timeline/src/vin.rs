@@ -8,42 +8,22 @@
 //! | 0x405 | 0x10, 0x11, 0x12 | bytes 5-7 (3), then 1-7 (7), then 1-7 (7) |
 //! | 0x508 | 0, 1, 2 | bytes 1-7 (7), then 1-7 (7), then 1-3 (3) |
 //!
-//! The 4th character is the model (`3`, `Y`, `S`, `X`), the 10th the model year, the 11th the plant. Only the first
+//! The 4th character is the model (`3`, `Y`, `S`, `X`, `C` ...), the 10th the model year, the 11th the plant (read
+//! against the built-in tables of [`model::vehicle`]). Only the first
 //! 11 characters are ever kept ([`model::VinInfo::vin_prefix`]): the last six are the car's serial number.
 
 use model::VinInfo;
 
-/// The VIN's 10th character, by model year from 2010: the letters I, O, Q, U, Z and the digit 0 are not used.
-const YEAR_CODES: &[u8] = b"ABCDEFGHJKLMNPRSTVWXY123456789";
-
 /// The model year a VIN's 10th character stands for (2010 to 2039): `L` 2020, `M` 2021, `N` 2022, `P` 2023, `R`
-/// 2024, `S` 2025, `T` 2026, `V` 2027 ...
+/// 2024, `S` 2025, `T` 2026, `V` 2027 ... (the built-in table, [`model::vehicle::year_of`]).
 pub fn year_of(code: char) -> Option<u16> {
-    let c = code.to_ascii_uppercase();
-    YEAR_CODES.iter().position(|&y| char::from(y) == c).and_then(|i| u16::try_from(i).ok()).map(|i| 2010 + i)
-}
-
-/// Seventeen characters of the VIN alphabet (digits and capitals without I, O, Q).
-fn is_vin(v: &[u8]) -> bool {
-    v.len() == 17 && v.iter().all(|b| matches!(b, b'A'..=b'H' | b'J'..=b'N' | b'P' | b'R'..=b'Z' | b'0'..=b'9'))
+    model::vehicle::year_of(code, None)
 }
 
 /// What a VIN says, without its serial number. `via` is the message it came in (0x405 or 0x508). `None` when the
 /// text is no VIN.
 pub fn decode_vin(vin: &str, via: u32) -> Option<VinInfo> {
-    let v = vin.trim().to_ascii_uppercase();
-    let b = v.as_bytes();
-    if !is_vin(b) {
-        return None;
-    }
-    let ch = |i: usize| char::from(b[i]);
-    Some(VinInfo {
-        vin_prefix: v.chars().take(11).collect(),
-        model: matches!(ch(3), '3' | 'Y' | 'S' | 'X').then_some(ch(3)),
-        year: year_of(ch(9)),
-        plant: Some(ch(10)),
-        via,
-    })
+    VinInfo::from_vin(vin, via)
 }
 
 /// Collects the VIN from a log's frames, one at a time, on whichever bus they come.
@@ -126,8 +106,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
     use super::*;
 
-    /// A made-up VIN (not a real car's): maker XP7, Model Y, 2024 (`R`), plant `B`.
-    const FAKE: &str = "XP7YGCEK0RB000042";
+    /// A made-up VIN (not a real car's): maker 7SA, Model Y, 2023 (`P`), plant `F`.
+    const FAKE: &str = "7SAYGDEE1PF000042";
 
     fn pages_405(vin: &str) -> [[u8; 8]; 3] {
         let v = vin.as_bytes();
@@ -172,15 +152,17 @@ mod tests {
     #[test]
     fn decoding_keeps_no_serial_number() {
         let v = decode_vin(FAKE, 0x405).unwrap();
-        assert_eq!(v.vin_prefix, "XP7YGCEK0RB");
+        assert_eq!(v.vin_prefix, "7SAYGDEE1PF");
         assert_eq!(v.model, Some('Y'));
-        assert_eq!(v.year, Some(2024));
-        assert_eq!(v.plant, Some('B'));
+        assert_eq!(v.year, Some(2023));
+        assert_eq!(v.plant, Some('F'));
         assert_eq!(v.via, 0x405);
-        let other = decode_vin("5yj3e1ea7lf000001", 0x405).unwrap();
-        assert_eq!((other.model, other.year, other.plant), (Some('3'), Some(2020), Some('F')));
+        let other = decode_vin("5yj3e1ea7pf000001", 0x405).unwrap();
+        assert_eq!((other.model, other.year, other.plant), (Some('3'), Some(2023), Some('F')));
+        let truck = decode_vin("7G2CEHEE8PF000003", 0x405).unwrap();
+        assert_eq!(truck.model, Some('C'), "a Cybertruck is named");
         // an unknown model letter, letters a VIN never has, wrong lengths
-        assert_eq!(decode_vin("5YJAE1EA7LF000001", 0x405).unwrap().model, None);
+        assert_eq!(decode_vin("5YJZE1EA7PF000001", 0x405).unwrap().model, None);
         assert!(decode_vin("5YJ3E1EA7LF00000I", 0x405).is_none());
         assert!(decode_vin("5YJ3E1EA7LF00001", 0x405).is_none());
         assert!(decode_vin("", 0x405).is_none());
@@ -193,7 +175,7 @@ mod tests {
         assert!(c.add(0x405, &p[2]).is_none());
         assert!(c.add(0x405, &p[0]).is_none());
         let v = c.add(0x405, &p[1]).cloned().unwrap();
-        assert_eq!(v.vin_prefix, "XP7YGCEK0RB");
+        assert_eq!(v.vin_prefix, "7SAYGDEE1PF");
         assert_eq!(v.via, 0x405);
         // kept once found, whatever comes next
         assert_eq!(c.add(0x123, &[0; 8]), Some(&v));
@@ -210,20 +192,20 @@ mod tests {
         assert!(c.vin().is_some());
         assert!(c.parts.iter().flatten().all(Option::is_none), "pages dropped once found");
         let shown = format!("{c:?}");
-        assert!(!shown.contains("000042") && shown.contains("XP7YGCEK0RB"), "{shown}");
+        assert!(!shown.contains("000042") && shown.contains("7SAYGDEE1PF"), "{shown}");
         let b = crate::SampleBuilder::new(dbc::Profile::Tesla3Y, crate::SampleParams::default());
         assert!(format!("{b:?}").contains("VinCollector"));
     }
 
     #[test]
     fn collects_a_legacy_model_s_from_0x508() {
-        let p = pages_508("5YJSA1E26HF000007");
+        let p = pages_508("5YJSA1E26PF000007");
         let mut c = VinCollector::new();
         for page in &p {
             c.add(0x508, page);
         }
         let v = c.vin().unwrap();
-        assert_eq!((v.model, v.year, v.via), (Some('S'), Some(2017), 0x508));
+        assert_eq!((v.model, v.year, v.via), (Some('S'), Some(2023), 0x508));
     }
 
     #[test]

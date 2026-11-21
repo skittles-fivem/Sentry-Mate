@@ -12,16 +12,44 @@
 
 ## Supported cars
 
-| Car | DBC set | Checked on a real car |
-|---|---|---|
-| Model 3 and Model Y, every year | `tesla-3y` | Model Y only |
-| Model S and Model X from 2021 | `tesla-3y` | no |
-| Model S and Model X before 2021 | `tesla-sx-legacy` | no |
+| Car (VIN 4th character) | Maker codes (VIN 1-3) | Plants (VIN 11th) | Model years in the tables | DBC set | Checked on a real car |
+|---|---|---|---|---|---|
+| Model 3 (`3`) | `5YJ` (US), `LRW` (Shanghai) | `F` Fremont, `C` Shanghai | 2017-2027 | `tesla-3y` | no |
+| Model Y (`Y`) | `5YJ`, `7SA` (US, from 2022), `LRW` (Shanghai), `XP7` (Berlin) | `F` Fremont, `A` Austin, `C` Shanghai, `B` Berlin | 2020-2027 | `tesla-3y` | Model Y |
+| Model S and Model X after the 2021 refresh (VIN 8th `5` or `6`) | `5YJ`, `7SA` (X from 2022) | `F` Fremont | 2021-2026 | `tesla-3y` | no |
+| Model S and Model X before the refresh (VIN 8th `1`-`4`; 2012-13 S: `C`, `G`, `N`, `P`) | `5YJ` | `F` Fremont (`P` Palo Alto, 2012 S) | S 2012-2021, X 2016-2021 | `tesla-sx-legacy` | no |
+| Cybertruck (`C`) | `7G2` | `A` Austin | 2024-2027 | `tesla-3y` (not checked) | no |
+| Semi (`T`), Cybercab (`A`) | `7G2`, `5YJ` | `N` Reno, `A` Austin | 2023-2027, 2026-2027 | none: shown from the VIN only | no |
 
 Today only `log decode` decodes ([Logs](commands.md#logs)). It picks the set from the car's VIN (the log's own
-frames, its sidecar, or the car key's newest logs), else `tesla-3y`. `--model` picks one by hand. The decoded values
-are the same as Sentry Six Manager's, the Screenmate's GPS included. The DBC files and their sources are listed in
-[crates/dbc/files/README.md](../crates/dbc/files/README.md).
+frames, its sidecar, or the car key's newest logs), else `tesla-3y`. Model year 2021 had both kinds of Model S and
+X, so the VIN's 8th character decides, not the year (a car that sends its VIN in 0x508 is a legacy one). `--model`
+picks one by hand. The decoded values are the same as Sentry Six Manager's, the Screenmate's GPS included. The DBC
+files and their sources are listed in [crates/dbc/files/README.md](../crates/dbc/files/README.md).
+
+### What the server knows of each car
+
+`/cars/{car}` has a `vehicle` part ([ui-api.md](ui-api.md#vehicle-info)): model, model year, plant, body, restraint
+set, battery type and chemistry, pack energy, motors and drive, performance, trim, EPA range, wheels, paint, roof,
+steering side and map region, each with where it came from and how sure it is. It is worked out offline from built-in
+tables, nothing is looked up:
+
+- **The VIN's first 11 characters** (the server never keeps the last six, the serial number), read against every
+  VIN decoder Tesla filed with NHTSA (49 CFR Part 565, 2009-2026) and Tesla's service-manual VIN pages (the only
+  source for Shanghai and Berlin cars). For cars built in Shanghai and Berlin the 10th character is the calendar year
+  built, not a model year (`year_kind: "build_year"`).
+- **The car's own configuration on its CAN bus**: the gateway's `0x7FF` pages (model, drive, performance package,
+  pack code, wheels and tyres, paint, roof, spoiler, steering side, map region, Supercharging access) and the pack's
+  energy and brick count. These win over the VIN.
+- **The EPA's rated ranges** (every Tesla row of the EPA's dataset) for cars built in the US, and typical pack
+  energies when new.
+- **The Tesla API's `vehicle_config`** and a **TeslaMate import's car row**, labelled as such.
+- **What an admin types** (`PATCH /cars/{car}` with `config`), which beats everything.
+
+What the tables don't know is left unknown and listed (`unknown_codes`), never guessed. A US-built car's VIN never
+tells its chemistry (Tesla files `E` for every pack, LFP included); only Shanghai and Berlin VINs do. Where the car's
+CAN and its VIN disagree, both are listed (`disagreements`). The tables are in
+[crates/model/data/vehicle/](../crates/model/data/vehicle/), one source note per row.
 
 ## The CAN Bridge app
 

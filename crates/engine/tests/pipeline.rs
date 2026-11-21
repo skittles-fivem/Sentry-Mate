@@ -22,7 +22,13 @@ const LAT: f64 = 10.0;
 const LON: f64 = -30.0;
 
 fn signal(series: &str) -> &'static Signal {
-    Profile::Tesla3Y.dbc().messages.values().flat_map(|m| m.signals.iter()).find(|s| s.series == series).unwrap()
+    Profile::Tesla3Y
+        .dbc()
+        .messages
+        .values()
+        .flat_map(|m| m.signals.iter())
+        .find(|s| s.series == series || s.name == series)
+        .unwrap()
 }
 
 fn put(bytes: &mut [u8], sig: &Signal, value: f64) {
@@ -102,6 +108,13 @@ fn minute_of(key: &str, i: u64, what: Minute, lon0: f64, vin: Option<&[u8; 17]>)
             writeln!(log, "({}.{:06}) can0 405#{hex}", start / 1000, 5000 + k * 1000).unwrap();
         }
     }
+    // the gateway's configuration pages, in every log: AWD, left-hand drive, a Model Y, base package, pack code 4,
+    // 19" wheels
+    log += &frame(start + 8, &[("GTW_drivetrainType", 1.0), ("GTW_rightHandDrive", 0.0)]);
+    log += &frame(
+        start + 9,
+        &[("GTW_chassisType", 3.0), ("GTW_performancePackage", 0.0), ("GTW_packEnergy", 4.0), ("GTW_wheelType", 1.0)],
+    );
     let odo0 = 12_345.0;
     for k in 0..600u64 {
         let t = start + 10 + k * 100;
@@ -265,6 +278,23 @@ fn logs_become_a_drive_and_a_charge_and_late_logs_rebuild_the_same_history() {
         let fleet = query::fleet::cars(&a.engine, &[car], &Default::default(), &Paging::default()).unwrap();
         assert_eq!(fleet.items.len(), 1);
         assert_eq!(fleet.items[0].model.as_deref(), Some("Model Y"));
+        // the build: the car's own configuration over its VIN (a Berlin car: the year is the year built)
+        let detail = tokio::task::block_in_place(|| query::fleet::car(&a.engine, car)).unwrap();
+        let v = &detail.vehicle;
+        use model::vehicle::FactSource;
+        assert_eq!((v.model.value.as_deref(), v.model.source), (Some("Model Y"), Some(FactSource::Can)));
+        assert_eq!((v.drive.value.as_deref(), v.drive.source), (Some("AWD"), Some(FactSource::Can)));
+        assert_eq!((v.performance.value, v.performance.source), (Some(false), Some(FactSource::Can)));
+        assert_eq!(v.pack_code.value.as_deref(), Some("4 (PACK_75_KWH)"));
+        assert_eq!((v.wheel.value.as_deref(), v.wheel_in.value), (Some("Stiletto 19"), Some(19)));
+        assert_eq!((v.model_year.value, v.year_kind), (Some(2024), Some("build_year")));
+        assert_eq!(v.plant.value.as_deref(), Some("Berlin-Brandenburg (Giga Berlin)"));
+        assert_eq!(v.trim.value.as_deref(), Some("Model Y Long Range AWD"));
+        assert!(v.disagreements.is_empty(), "{:?}", v.disagreements);
+        assert_eq!(detail.config["drivetrain"].value, "AWD");
+        assert_eq!(detail.config["drivetrain"].source, Some("can"));
+        assert_eq!(detail.config["right_hand_drive"].value, false);
+        assert_eq!(detail.config["plant"].value, "B");
         let logs =
             tokio::task::block_in_place(|| query::system::logs(&a.engine, car, &Period::all(), &Paging::first(100)))
                 .unwrap()

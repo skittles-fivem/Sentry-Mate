@@ -79,6 +79,30 @@ class Cars(ServerCase):
                                                          "time_zone": "America/Los_Angeles"})
         self.assertEqual(back["config"]["paint"]["source"], "can")
 
+    def test_vehicle_info(self):
+        d = self.c.get("/api/v1/cars/c1")
+        v = d["vehicle"]
+        self.assertEqual(v["vin_prefix"], d["vin_prefix"])
+        self.assertEqual(v["model"], {"value": "Model Y", "source": "vin", "confidence": "high"})
+        self.assertEqual(v["year_kind"], "model_year")
+        self.assertEqual(v["plant"]["value"], "Fremont; California")
+        self.assertEqual(v["drive"]["value"], "AWD")
+        self.assertEqual(v["steering"]["value"], "left")
+        self.assertEqual(v["nominal_kwh"]["source"], "can")
+        for k in ("disagreements", "unknown_codes", "notes", "trim_candidates", "wheel_options_in"):
+            self.assertEqual(v[k], [], k)
+        for k, f in v.items():
+            if isinstance(f, dict) and "confidence" in f:
+                self.assertIn(f["source"], (None, "owner", "can", "vin", "tesla_api", "teslamate", "teslafi"), k)
+        # the owner overrides any field; config keeps its keys
+        up = self.c.json("PATCH", "/api/v1/cars/c1", {"version": d["version"], "config": {"model_year": 2024, "motors": 2}})
+        self.assertEqual(up["vehicle"]["model_year"]["source"], "owner")
+        self.assertEqual(up["vehicle"]["motors"], {"value": 2, "source": "owner", "confidence": "high"})
+        self.assertNotIn("model_year", up["config"])
+        self.c.json("PATCH", "/api/v1/cars/c1", {"version": up["version"], "config": {"model_year": None, "motors": None}})
+        # a Model S from before the refresh
+        self.assertEqual(self.c.get("/api/v1/cars/c3")["vehicle"]["platform"]["value"], "legacy")
+
 
 class Settings(ServerCase):
     def test_settings(self):

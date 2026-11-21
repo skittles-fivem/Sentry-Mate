@@ -217,6 +217,18 @@ impl import::Sink for DbSink<'_> {
                 c.id
             }
         };
+        // what TeslaMate said of the car's build, for its `vehicle` facts (labelled `teslamate`)
+        let build = model::vehicle::TextBuild {
+            car_type: tm.model.clone(),
+            trim_badging: tm.trim_badging.clone(),
+            exterior_color: tm.exterior_color.clone(),
+            wheel_type: tm.wheel_type.clone(),
+            lfp_battery: tm.lfp_battery,
+            ..Default::default()
+        };
+        if build != model::vehicle::TextBuild::default() {
+            crate::query::vehicle::put_imported(db, car, &build).map_err(err)?;
+        }
         let state = import_state(db, car).map_err(err)?.unwrap_or_default();
         Ok(Some(Target { car, state }))
     }

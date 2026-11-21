@@ -1,0 +1,31 @@
+code,year,roadster_year,source,confidence
+A,2010,,49 CFR 565.15 table as printed in Tesla's Part 565 filings,high
+B,2011,,49 CFR 565.15,high
+C,2012,,49 CFR 565.15,high
+D,2013,,49 CFR 565.15,high
+E,2014,,49 CFR 565.15,high
+F,2015,,49 CFR 565.15,high
+G,2016,,49 CFR 565.15,high
+H,2017,,49 CFR 565.15,high
+J,2018,,49 CFR 565.15,high
+K,2019,,49 CFR 565.15,high
+L,2020,,49 CFR 565.15,high
+M,2021,,49 CFR 565.15,high
+N,2022,,49 CFR 565.15,high
+P,2023,,49 CFR 565.15,high
+R,2024,,49 CFR 565.15,high
+S,2025,,49 CFR 565.15,high
+T,2026,,49 CFR 565.15,high
+V,2027,,49 CFR 565.15,high
+W,2028,,49 CFR 565.15,high
+X,2029,,49 CFR 565.15,high
+Y,2030,,49 CFR 565.15,high
+1,2031,,49 CFR 565.15,high
+2,2032,,49 CFR 565.15,high
+3,2033,,49 CFR 565.15,high
+4,2034,,49 CFR 565.15,high
+5,2035,,49 CFR 565.15,high
+6,2036,,49 CFR 565.15,high
+7,2037,,49 CFR 565.15,high
+8,2038,2008,49 CFR 565.15 (Tesla built only the Roadster in 2008),high
+9,2039,2009,49 CFR 565.15 (Tesla built only the Roadster in 2009),high

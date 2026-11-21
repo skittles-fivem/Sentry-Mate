@@ -1,0 +1,36 @@
+model,code,motors,drive,performance,platform,trim,year_from,year_to,plants,source,confidence
+S,C,1,RWD,false,legacy,Model S 40,2012,2013,F|P,Part 565 2012-03-26 (5df993c3: base drive unit; battery tier 2 31-40 kWh),high
+S,G,1,RWD,false,legacy,Model S 60,2012,2013,F|P,Part 565 2012-03-26 (5df993c3: base drive unit; battery tier 4 51-60 kWh),high
+S,N,1,RWD,false,legacy,Model S 85,2012,2013,F|P,Part 565 2012-03-26 (5df993c3: base drive unit; battery tier 7 81-90 kWh),high
+S,P,1,RWD,true,legacy,Model S P85,2012,2013,F|P,Part 565 2012-03-26 (5df993c3: performance drive unit; battery tier 7 81-90 kWh),high
+S,1,1,RWD,false,legacy,,2014,2021,F,Part 565 2013-12-10 (54ed893e) onward,high
+S,2,2,AWD,false,legacy,,2014,2021,F,Part 565 2013-12-10 (54ed893e) onward,high
+S,3,1,RWD,true,legacy,,2015,2021,F,Part 565 2015-08-01 (7aef9e63) onward,high
+S,4,2,AWD,true,legacy,,2015,2021,F,Part 565 2015-08-01 (7aef9e63) onward,high
+X,2,2,AWD,false,legacy,,2016,2021,F,Part 565 2015-08-27 (f26a7663) onward,high
+X,4,2,AWD,true,legacy,,2016,2021,F,Part 565 2015-08-27 (f26a7663) onward,high
+S|X,5,2,AWD,false,refresh,,2021,,F,Part 565 2021-02-18 (b523d13b) onward; 2021+ Model S/X service manuals,high
+S|X,6,3,AWD,true,refresh,Plaid,2021,,F,Part 565 2021-02-18 (b523d13b) onward,high
+3,A,1,RWD,false,,,2017,,F|C|A,Part 565; Model 3 service manuals,high
+3,B,2,AWD,,,,2018,2019,F|C,Part 565 2017-11-14 (9d71d5c8); 2019-07-10 (08d92abf: 'Standard / Performance' share B),high
+3,B,2,AWD,false,,,2020,,F|C,Part 565 2019-08-29 (c646fbf1) onward,high
+3,C,2,AWD,true,,,2020,2024,F|C,Part 565 2019-08-29 (c646fbf1) to MY2024 filings,high
+3,T,2,AWD,true,,,2025,,F,Part 565 2024-09-04 (b71476d4) onward,high
+3,R,1,RWD,false,,,2020,,C,Model 3 service manuals (Shanghai; 3DU 600A),high
+3,S,1,RWD,false,,,2021,,C,Model 3 service manuals (Shanghai; DUB 600A),high
+3,J,1,RWD,false,,,2024,,C,Model 3 2024+ service manual (plant assignment: medium),medium
+3,K,2,AWD,false,,,2024,,C,Model 3 2024+ service manual (plant assignment: medium),medium
+Y,D,1,RWD,false,,,2020,,F|A,Part 565 2019-12-09 (54414e8c) onward; Model Y service manuals,high
+Y,E,2,AWD,false,,,2020,,F|A,Part 565 2019-12-09 (54414e8c) onward; Model Y service manuals,high
+Y,F,2,AWD,true,,,2020,2025,F|A,Part 565 2019-12-09 (54414e8c) to MY2025; Model Y service manuals,high
+Y,T,2,AWD,true,,,2026,,F|A,Part 565 2025-11-11 (ef945db7) onward,high
+Y,J,1,RWD,false,,,2021,,C|B,Model Y service manuals (plant assignment: medium),medium
+Y,K,2,AWD,false,,,2021,,C|B,Model Y service manuals (plant assignment: medium),medium
+Y,L,2,AWD,true,,,2021,,C|B,Model Y service manuals (plant assignment: medium),medium
+Y,R,1,RWD,false,,,2021,,C,Model Y service manuals (Shanghai; 3DU 600A),high
+Y,S,1,RWD,false,,,2022,,C,Model Y service manuals (Shanghai; DUB 600A),high
+C,C,1,RWD,false,,,2025,,A,Part 565 2025-11-11 (ef945db7); NHTSA vPIC accepts it for MY2025,high
+C,D,2,AWD,false,,,2024,,A,Part 565 2023-08-23 (fbec7f77) onward,high
+C,E,3,AWD,true,,Cyberbeast,2024,,A,Part 565 2023-08-23 (fbec7f77) onward,high
+T,B,,RWD,false,,,2023,,N|A,Part 565 2022-09-13 (7404ccb6) onward (dual drive rear axle; air brakes),high
+A,U,1,,false,,,2026,,A,Part 565 2026-05-04 (fb63da70),high

@@ -1,0 +1,6 @@
+code,dbc_name,label,likely_cars,source,confidence
+0,PACK_50_KWH,50 kWh class (Standard Range / Standard Range Plus),Model 3 SR/SR+ 2019-2021 (NCA),model3dbc VAL_ 2047 GTW_packEnergy,medium
+1,PACK_74_KWH,74 kWh class (early Long Range),Model 3 Long Range 2017-2019,model3dbc VAL_ 2047 GTW_packEnergy,low
+2,PACK_62_KWH,62 kWh class (Mid Range),Model 3 Mid Range 2018-2019,model3dbc VAL_ 2047 GTW_packEnergy,medium
+3,PACK_100_KWH,100 kWh class,Model S/X 100,model3dbc VAL_ 2047 GTW_packEnergy,low
+4,PACK_75_KWH,75 kWh class (Long Range),Model 3/Y Long Range 2019+,model3dbc VAL_ 2047 GTW_packEnergy,low

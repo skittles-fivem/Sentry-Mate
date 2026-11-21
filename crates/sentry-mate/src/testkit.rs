@@ -14,8 +14,8 @@ use std::sync::Arc;
 pub const CAR: &str = "abcdef123456";
 /// A made-up Model Y of 2024 (maker `XP7`, not a real one).
 pub const VIN_Y: &str = "XP7YGCEK0RB000042";
-/// A made-up Model S of 2017.
-pub const VIN_S: &str = "XP7SA1E26HF000007";
+/// A made-up Model S of 2023 (a legacy one by its 8th character, `2`).
+pub const VIN_S: &str = "5YJSA1E26PF000007";
 
 pub struct Kit {
     _dir: tempfile::TempDir,

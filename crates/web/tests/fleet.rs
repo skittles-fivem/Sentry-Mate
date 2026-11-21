@@ -20,9 +20,9 @@ fn made_up_car(name: &str, model: char, year: u16, serial: &str) -> Car {
         name: name.into(),
         vehicle_keys: Vec::new(),
         preferred_key: None,
-        // "XP7" is no maker's code: a made-up VIN prefix
+        // a made-up VIN prefix (the first 11 characters, plant F; no serial)
         vin: Some(VinInfo {
-            vin_prefix: format!("XP7{model}{serial}"),
+            vin_prefix: format!("5YJ{model}{serial}F"),
             model: Some(model),
             year: Some(year),
             plant: Some('F'),
@@ -150,7 +150,7 @@ async fn the_cars_list_pages_sorts_filters_and_hides_what_an_account_may_not_see
     // search (name, model, VIN prefix) and state; no total then
     let r = admin.get("/api/v1/cars?search=model%203").await.json();
     assert_eq!((ids(&r), r.get("total")), (vec!["c2".to_string()], None));
-    assert_eq!(ids(&admin.get("/api/v1/cars?search=xp7s").await.json()), ["c3"]);
+    assert_eq!(ids(&admin.get("/api/v1/cars?search=5yjs").await.json()), ["c3"]);
     assert_eq!(ids(&admin.get("/api/v1/cars?state=asleep").await.json()), ["c3"]);
     // bad values name the field; a cursor of another sort is refused
     assert!(admin.get("/api/v1/cars?state=flying").await.json()["error"]["fields"]["state"].is_string());

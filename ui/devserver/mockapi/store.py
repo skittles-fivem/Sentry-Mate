@@ -288,7 +288,9 @@ class Store:
             car = h.car
             base = {"name": car.name, "model": car.model, "year": car.year, "trim": car.trim,
                     "vin_prefix": car.vin_prefix, "profile": car.profile, "time_zone": car.time_zone,
-                    "config": {k: {"value": v, "source": s} for k, (v, s) in car.config.items()}}
+                    "config": {k: {"value": v, "source": s} for k, (v, s) in car.config.items()},
+                    "build": {"chemistry": car.chemistry, "full_now_kwh": car.full_now_kwh,
+                              "buffer_kwh": car.buffer_kwh, "full_range_new_km": car.full_range_new_km}}
         else:
             sm = self.ds.synthetic.summary(int(car_id[1:]))
             base = {k: sm[k] for k in ("name", "model", "year", "trim", "vin_prefix", "profile", "time_zone")}

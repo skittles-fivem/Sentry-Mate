@@ -251,6 +251,8 @@ fn a_car_with_the_tesla_api_alone() {
         let detail = query::fleet::car(&k.engine, car).unwrap();
         assert_eq!(detail.config["trim"].source, Some("tesla_api"));
         assert_eq!(detail.config["trim"].value, "74d");
+        assert_eq!(detail.vehicle.trim.source, Some(model::vehicle::FactSource::TeslaApi));
+        assert_eq!(detail.vehicle.drive.value.as_deref(), Some("AWD"), "74d: dual motor");
 
         // a new version is an update the API saw
         k.engine.api_meta(

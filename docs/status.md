@@ -20,7 +20,8 @@ What Sentry Mate does today. What is left: [To do](todo.md). Back to the [README
 | Refusing folders it can't keep: not mounted, the keys inside the data, root's | done |
 | Moving to another server in one step: a one-time move code, or one export file that opens with the recovery key ([docs/moving.md](docs/moving.md)) | done |
 | Decoding signals (DBC sets per model, bus split, the Screenmate's GPS), same values as Sentry Six Manager | done |
-| Choosing the DBC set from the car's VIN | done |
+| Choosing the DBC set from the car's VIN (Model S and X by the VIN's 8th character, so a 2021 car of either kind gets the right set) | done |
+| Vehicle info offline: model, year, plant, body, battery and chemistry, pack energy, motors, trim, EPA range, wheels, paint and more, from the VIN's first 11 characters, the car's own CAN configuration, the Tesla API, an import and what an admin types, each with its source and confidence (`vehicle` in `/cars/{car}`, [cars-and-bridge.md](cars-and-bridge.md#what-the-server-knows-of-each-car)) | done on the server; the pages show it later; the CAN configuration not yet checked on a real log |
 | Each checked log decoded in the background into the car's history (states, drives, charges, positions, charge curves), late and out-of-order logs rebuilding only what they touch, picked up again after a restart; a failed log never used | done; not yet checked against real drives and charges |
 | Storage for the history (sealed, compressed columns, any number of cars), rebuilt from the logs if lost | done |
 | Web server on its own HTTPS port (10101, TLS 1.3, the same certificate): the built-in UI packs with a strict CSP, sign-in with a one-time setup code for the first admin, accounts (admin and watch-only, per-car access, two-step sign-in, audit log), live changes as server-sent events, the reads of [`docs/ui-api.md`](docs/ui-api.md) over the history and its changes | done |

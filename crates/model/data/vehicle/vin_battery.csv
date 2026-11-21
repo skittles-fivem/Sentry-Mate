@@ -1,0 +1,18 @@
+model,code,meaning,chemistry,pack_class,year_from,year_to,plants,source,confidence
+S,A,10 kW on-board charger,,,2012,2013,F|P,Part 565 2012-03-26 (5df993c3); Model S service manual 2012-2020,high
+S,B,20 kW (twin) on-board charger,,,2012,2013,F|P,Part 565 2012-03-26 (5df993c3); Model S service manual 2012-2020,high
+S,C,10 kW on-board charger and DC fast charging (Supercharging),,,2012,2013,F|P,Part 565 2012-03-26 (5df993c3); Model S service manual 2012-2020,high
+S,D,20 kW on-board charger and DC fast charging (Supercharging),,,2012,2013,F|P,Part 565 2012-03-26 (5df993c3); Model S service manual 2012-2020,high
+S,H,Li-ion battery - high capacity (85 kWh class),nca_nmc,85,2014,2015,F,Part 565 2013-12-10 (54ed893e); 2014-12-30 (b6a941a0); Model S service manual,high
+S,S,Li-ion battery - standard capacity (60 kWh class),nca_nmc,60,2014,2015,F,Part 565 2013-12-10 (54ed893e); 2014-12-30 (b6a941a0),high
+S,V,Li-ion battery - ultra high capacity (90 kWh class),nca_nmc,90,2015,2016,F,Model S service manual 2012-2020 (2015 column); NHTSA vPIC accepts it,medium
+X,H,Li-ion battery - high capacity (early Model X),nca_nmc,,2016,2016,F,NHTSA vPIC; Part 565 example VIN,low
+X,S,Li-ion battery - standard capacity (early Model X),nca_nmc,,2016,2016,F,NHTSA vPIC,low
+X,V,Li-ion battery - ultra high capacity (early Model X),nca_nmc,,2016,2016,F,NHTSA vPIC,low
+S|X,E,electric (no battery detail),,,2015,,F,Part 565 2015-08-01 (7aef9e63) onward,high
+3|Y,E,electric (no battery detail),,,2017,,F|A,Part 565 (US filings say E for every pack; LFP included),high
+3|Y,E,electric - ternary (NCM/NCA) lithium-ion battery,nca_nmc,,2019,,C,Model 3 and Model Y service manuals (Giga Shanghai),high
+Y,E,electric,,,2022,,B,Model Y service manuals,high
+3|Y,F,lithium iron phosphate (LFP) battery,lfp,,2020,,C,Model 3 service manuals ('Giga Shanghai-built vehicles only'); Model Y service manuals,high
+Y,F,lithium iron phosphate (LFP) battery,lfp,,2022,,B,Model Y 2025 service manual,medium
+C|T|A,E,electric,,,2023,,,Part 565 2022-09-13 (7404ccb6) onward,high

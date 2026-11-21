@@ -36,8 +36,8 @@ pub(crate) fn sidecar_vin(side: &serde_json::Value) -> Option<VinInfo> {
 /// A car's name from its VIN: `Model Y XP7YGC`.
 pub(crate) fn name_from_vin(v: &VinInfo) -> String {
     let short: String = v.vin_prefix.chars().take(6).collect();
-    match v.model {
-        Some(m) => format!("Model {m} {short}"),
+    match v.model_name() {
+        Some(m) => format!("{m} {short}"),
         None => format!("Car {short}"),
     }
 }

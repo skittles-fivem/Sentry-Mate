@@ -35,6 +35,7 @@ pub mod system;
 pub mod timeline;
 pub mod travel;
 pub mod trips;
+pub mod vehicle;
 
 use crate::Engine;
 use base64::Engine as _;

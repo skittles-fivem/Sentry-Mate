@@ -62,9 +62,9 @@ fn profile_of(v: &VinInfo) -> dbc::Profile {
 
 /// What a VIN says, without any of it: `Model Y of 2024`.
 fn car_of(v: &VinInfo) -> String {
-    let car = match (v.model, v.year) {
-        (Some(m), Some(y)) => format!("Model {m} of {y}"),
-        (Some(m), None) => format!("Model {m}"),
+    let car = match (v.model_name(), v.year) {
+        (Some(m), Some(y)) => format!("{m} of {y}"),
+        (Some(m), None) => m.to_string(),
         (None, Some(y)) => format!("a car of {y}"),
         (None, None) => "a car it doesn't name".into(),
     };
@@ -265,7 +265,7 @@ mod tests {
         assert_eq!(code, ExitCode::SUCCESS, "{err}");
         assert!(
             err.contains(
-                "signal set tesla-sx-legacy (Model S and X before 2021): the VIN in the log says Model S of 2017"
+                "signal set tesla-sx-legacy (Model S and X before 2021): the VIN in the log says Model S of 2023"
             ),
             "{err}"
         );
@@ -280,7 +280,7 @@ mod tests {
         // a log without the VIN: from the car key's newest log that has it
         let (b, prev) = testkit::chain(&k, &key, 1, 1, 1, prev, None).await;
         let (_, _, err) = decoded(&k, &b[0], false, Model::Auto).await;
-        assert!(err.contains(&format!("signal set tesla-sx-legacy (Model S and X before 2021): the VIN in {}, a log of the same car key, says Model S of 2017", a[0])), "{err}");
+        assert!(err.contains(&format!("signal set tesla-sx-legacy (Model S and X before 2021): the VIN in {}, a log of the same car key, says Model S of 2023", a[0])), "{err}");
         let (_, _, err) = decoded(&k, &b[0], false, Model::SxLegacy).await;
         assert!(err.contains("signal set tesla-sx-legacy (Model S and X before 2021): chosen with --model"), "{err}");
 

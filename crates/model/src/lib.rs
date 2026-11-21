@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod vehicle;
+
 pub type CarId = u32;
 pub type DriveId = u64;
 pub type ChargeId = u64;
@@ -369,7 +371,7 @@ impl CarProfile {
 pub struct VinInfo {
     /// The VIN without its last six characters (the serial), e.g. `7SAYGDEE1NF`.
     pub vin_prefix: String,
-    /// `3`, `Y`, `S` or `X`.
+    /// `3`, `Y`, `S`, `X`, `C` (Cybertruck), `T` (Semi) or `A` (Cybercab): [`vehicle::model_name`] names it.
     pub model: Option<char>,
     pub year: Option<u16>,
     /// The plant letter (11th character).
@@ -403,10 +405,25 @@ pub struct Car {
 }
 
 impl VinInfo {
-    /// The DBC set this VIN calls for: a Model S or X from before the 2021 refresh (it sends its VIN in 0x508, or its
-    /// VIN says so) gets the legacy set, every other car the Model 3/Y set.
+    /// What a VIN says, keeping only its first 11 characters; `via` is the CAN message it came in (0 when it came
+    /// from elsewhere). `None` when the text is no VIN.
+    pub fn from_vin(vin: &str, via: u32) -> Option<VinInfo> {
+        vehicle::vin_info(vin, via)
+    }
+
+    /// The model's name: `Model Y`, `Cybertruck`.
+    pub fn model_name(&self) -> Option<&'static str> {
+        self.model.and_then(vehicle::model_name)
+    }
+
+    /// The DBC set this VIN calls for: a Model S or X from before the 2021 refresh gets the legacy set, every other
+    /// car the Model 3/Y set. A car that sends its VIN in 0x508 is a legacy one; otherwise VIN position 8 tells
+    /// (model year 2021 had both kinds), and only a VIN without a known position 8 falls back to its year.
     pub fn profile(&self) -> CarProfile {
-        let legacy_sx = matches!(self.model, Some('S') | Some('X')) && self.year.is_some_and(|y| y < 2021);
+        let legacy_sx = match vehicle::platform_of(&self.vin_prefix) {
+            Some(p) => p == "legacy",
+            None => matches!(self.model, Some('S') | Some('X')) && self.year.is_some_and(|y| y < 2021),
+        };
         if self.via == 0x508 || legacy_sx { CarProfile::TeslaSxLegacy } else { CarProfile::Tesla3Y }
     }
 }
@@ -736,6 +753,19 @@ mod tests {
         car.vin = None;
         car.profile_setting = None;
         assert_eq!(car.profile(), CarProfile::Tesla3Y);
+    }
+
+    #[test]
+    fn the_dbc_set_from_vin_position_8() {
+        // model year 2021 had both: position 8 tells, not the year
+        let legacy = VinInfo::from_vin("5YJSA1E2XMF000001", 0).unwrap();
+        assert_eq!(legacy.profile(), CarProfile::TeslaSxLegacy);
+        let refresh = VinInfo::from_vin("5YJSA1E57MF000002", 0).unwrap();
+        assert_eq!(refresh.profile(), CarProfile::Tesla3Y);
+        let plaid_2020_year_code = VinInfo { year: Some(2020), ..VinInfo::from_vin("5YJXCAE60NF000003", 0).unwrap() };
+        assert_eq!(plaid_2020_year_code.profile(), CarProfile::Tesla3Y, "position 8 = 6 is a refresh car");
+        let truck = VinInfo::from_vin("7G2CEHEE8RA000004", 0x405).unwrap();
+        assert_eq!((truck.model_name(), truck.profile()), (Some("Cybertruck"), CarProfile::Tesla3Y));
     }
 
     #[test]
