@@ -552,7 +552,8 @@ export async function mount(ctx) {
       const max = Math.max(1, ...g.flat());
       week.setAttribute('aria-label', `When sessions ${heatSide}, by weekday and hour`);
       const cells = [h('span')];
-      for (let hr = 0; hr < 24; hr++) cells.push(h('span', { class: 'weekmap-x' }, hr % 3 === 0 ? formatTime(Date.UTC(2026, 0, 5, hr), 'UTC').replace(':00', '') : ''));
+      // one label per three hours, over the three columns it names
+      for (let hr = 0; hr < 24; hr += 3) cells.push(h('span', { class: 'weekmap-x' }, formatTime(Date.UTC(2026, 0, 5, hr), 'UTC').replace(':00', '')));
       for (let d = 0; d < 7; d++) {
         cells.push(h('span', { class: 'weekmap-y' }, DAYS[d]));
         for (let hr = 0; hr < 24; hr++) {

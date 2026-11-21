@@ -85,7 +85,7 @@ export async function mount(ctx) {
     for (const t of tiles.splice(0)) t.remove();
     ctx.view.querySelector('.places-empty')?.remove();
     if (!pager.items.length) {
-      const e = emptyTile({ icon: 'pin', title: qtext ? `No place matches “${qtext}”` : 'No places yet', text: qtext ? 'Try part of the name.' : 'Name the spots that matter, like home and work. Every list then shows the names.', cover: 'web.geofences.list.empty-state',
+      const e = emptyTile({ icon: 'pin', title: qtext ? `No place matches “${qtext}”` : 'No places yet', text: qtext ? 'Try part of the name.' : 'Name the spots that matter, like home and work. Every list then shows the names.', cover: ['web.geofences.list.empty-state', 'web.geofences.list.col-name', 'web.geofences.list.col-position', 'web.geofences.list.col-radius', 'web.geofences.list.edit'],
         action: admin && !qtext ? btn('New place', { kind: 'primary', icon: 'plus', onclick: (ev) => openEditor(null, null, ev.currentTarget) }) : null });
       e.classList.add('places-empty');
       ctx.view.insertBefore(e, more);

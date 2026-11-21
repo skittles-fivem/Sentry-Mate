@@ -340,7 +340,8 @@ export async function mount(ctx) {
     const lo = band.low_pct ?? 20, hi = band.high_pct ?? 80;
     const lines = [
       { k: 'battery', a: soc, cv: 'cl.chart.battery_level', st: { mean: st.mean, min: st.min, max: st.max }, mark: '--' },
-      { k: 'usable', a: usable, cv: 'cl.chart.usable_level', st: stat(usable), mark: '- -' },
+      // the usable line stays in the table without readings (its values show as a dash)
+      { k: 'usable', a: usable, cv: 'cl.chart.usable_level', st: stat(usable) || {}, mark: '- -' },
       ...(opt.clMoving ? [
         { k: `mean ${opt.clWindow}`, a: mv.mean, cv: 'cl.chart.moving_avg', st: stat(mv.mean), mark: '. .' },
         { k: `median ${opt.clWindow}`, a: mv.median, cv: 'cl.chart.moving_median', st: stat(mv.median), mark: '-.' },

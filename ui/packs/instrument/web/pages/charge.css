@@ -37,7 +37,7 @@
 .charge-charts .chart-block[data-series="range"] .chart, .charge-charts .chart-block[data-series="heat"] .chart { height: round(6.5rem, var(--e)); }
 .charge-charts .chart-block[data-series="phases"] .chart { height: round(5.5rem, var(--e)); }
 .charge-page .chart-note { margin: round(0.125rem, var(--e)) 0 round(0.25rem, var(--e)) round(4rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
-.charge-page .chart-label { flex-wrap: wrap; }
+.charge-page .chart-label { flex-wrap: wrap; align-items: flex-start; } /* every part is one line high: their tops line up */
 .charge-page .chart-label .key--dash i { background: repeating-linear-gradient(90deg, var(--c) 0 round(0.25rem, var(--e)), transparent round(0.25rem, var(--e)) round(0.4375rem, var(--e))); }
 .charge-page .chart-label .key--dot i { width: round(0.4375rem, var(--e)); height: round(0.4375rem, var(--e)); border-radius: 50%; }
 .charge-page .charts-panel > .note { margin: round(0.5rem, var(--e)) 0 round(0.25rem, var(--e)); }

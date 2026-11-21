@@ -27,7 +27,7 @@
 .im-step--failed .im-step-n { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
 
 /* file drop */
-.im-drop { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; column-gap: round(1rem, var(--e)); row-gap: round(0.25rem, var(--e)); align-items: center;
+.im-drop { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; column-gap: round(1rem, var(--e)); row-gap: round(0.25rem, var(--e)); align-items: start;
   padding: round(1.25rem, var(--e)) round(1.375rem, var(--e)); border: 1px dashed var(--line-3); border-radius: var(--radius); background: var(--surface-sunken); cursor: pointer; }
 .im-drop:hover, .im-drop--over, .im-drop:focus-within { border-color: var(--live); background: var(--live-soft); }
 .im-file-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
@@ -86,7 +86,7 @@
 .im-whys { display: inline-flex; flex-wrap: wrap; gap: round(0.125rem, var(--e)) 0; }
 .im-skip { display: flex; gap: round(0.625rem, var(--e)); align-items: flex-start; margin-top: round(1rem, var(--e)); padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--warm-line); background: var(--warm-soft); }
 .im-skip[hidden] { display: none; }
-.im-skip > .ico { flex: none; color: var(--warm); margin-top: round(0.1875rem, var(--e)); }
+.im-skip > .ico { flex: none; color: var(--warm); height: 1lh; margin-top: 0; }
 .im-skip p { color: var(--text-2); max-width: round(60rem, var(--e)); }
 .im-skip p + p { margin-top: round(0.25rem, var(--e)); }
 .im-skip b { color: var(--text); }
@@ -96,7 +96,7 @@
 /* overlap */
 .im-facts { list-style: none; margin: 0 0 round(1rem, var(--e)); padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--gap); }
 .im-facts li { display: flex; gap: round(0.625rem, var(--e)); align-items: flex-start; padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-sunken); color: var(--text-2); }
-.im-facts li > .ico { flex: none; color: var(--live); margin-top: round(0.1875rem, var(--e)); }
+.im-facts li > .ico { flex: none; color: var(--live); height: 1lh; margin-top: 0; }
 .im-facts b { color: var(--text); }
 .im-overlap .tbl-panel { box-shadow: none; background: none; border: 0; padding: 0; }
 .im-seg .seg-btn { white-space: nowrap; }
@@ -111,3 +111,4 @@
   .im-top { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
 }
 .im-two[hidden] { display: none; }
+.tbl td > .im-st:only-child { display: flex; width: fit-content; } /* a box of its own in its cell, centred like a line */

@@ -399,7 +399,7 @@ export async function mount(ctx) {
       const s = marks.find((k) => k.kind === 'start'), e = [...marks].reverse().find((k) => k.kind === 'end');
       if (s) routePin(m, [s.lon, s.lat], 'A');
       if (e) routePin(m, [e.lon, e.lat], 'B');
-      m.frame(() => m.map.fitBounds(boundsOf(all), { padding: padClear(mapEl, mapLegend, { left: 40, top: 24, right: 60, bottom: 40, beside: true }), maxZoom: 15, duration: 0 }));
+      m.frame(() => m.map.fitBounds(boundsOf(all), { padding: padClear(mapEl, mapLegend, { left: 40, top: 24, right: 60, bottom: 56, beside: true }), maxZoom: 15, duration: 0 }));
     } catch (err) { console.warn(err); replace(mapEl, mapFallback()); }
   })();
   function hoverAt(i) {

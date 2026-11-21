@@ -419,6 +419,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 }
 .crumbs { display: flex; align-items: center; gap: round(0.5rem, var(--e)); min-width: 0; font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-3); }
 .crumbs a { color: var(--text-2); border-radius: round(0.375rem, var(--e)); }
+.crumbs > :not(.sep) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } /* a long trail ends in an ellipsis on a phone */
 .crumbs a:hover { color: var(--text); }
 .crumbs .sep { color: var(--line-3); }
 .crumbs [aria-current] { color: var(--text); font-weight: 500; }
@@ -536,7 +537,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 .pill--warm { --dot: var(--warm); }
 .pill .ico { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); }
 
-.tag { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); height: round(1.25rem, var(--e)); padding: 0 round(0.4375rem, var(--e)); border-radius: round(0.375rem, var(--e)); font-size: max(0.6875rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.tag { display: inline-flex; align-items: center; white-space: nowrap; gap: round(0.3125rem, var(--e)); height: round(1.25rem, var(--e)); padding: 0 round(0.4375rem, var(--e)); border-radius: round(0.375rem, var(--e)); font-size: max(0.6875rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
 .tag--warm { color: var(--warm); background: var(--warm-soft); }
 .tag--live { color: var(--live); background: var(--live-soft); }
 .tag .ico { width: round(0.75rem, var(--e)); height: round(0.75rem, var(--e)); stroke-width: 2.2; }
@@ -550,7 +551,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 .age--stale { color: var(--warm); font-weight: 500; }
 
 .bar { position: relative; height: round(0.375rem, var(--e)); border-radius: 99px; background: rgba(150, 182, 240, 0.12); overflow: hidden; }
-.bar > i { position: absolute; inset: 0 auto 0 0; width: var(--w, 0%); border-radius: inherit; background: linear-gradient(90deg, var(--live-2), var(--live)); }
+.bar > i { position: absolute; inset: 0 auto 0 0; width: round(var(--w, 0%), 1px); border-radius: inherit; background: linear-gradient(90deg, var(--live-2), var(--live)); }
 .bar--warm > i { background: linear-gradient(90deg, #E39B2C, var(--warm)); }
 .bar--low > i { background: linear-gradient(90deg, #E2606C, var(--danger)); }
 .bar--muted > i { background: rgba(167, 180, 200, 0.55); }
@@ -883,7 +884,7 @@ a.tl-kind:hover { color: var(--live); }
 .chart-block + .chart-block { border-top: 1px solid var(--line); }
 .chart-block { padding: round(0.625rem, var(--e)) 0 round(0.25rem, var(--e)); }
 .chart-label { display: flex; align-items: center; gap: round(0.625rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); padding: 0 0 round(0.125rem, var(--e)) round(4rem, var(--e)); }
-.chart-label .swatch { width: round(0.875rem, var(--e)); height: round(0.1875rem, var(--e)); border-radius: round(0.125rem, var(--e)); background: var(--c); }
+.chart-label .swatch { flex: none; width: round(0.875rem, var(--e)); height: round(0.1875rem, var(--e)); border-radius: round(0.125rem, var(--e)); background: var(--c); }
 .chart-label .name { font-weight: 600; color: var(--text); }
 .chart-label .chart-unit { font-weight: 500; color: var(--text-3); }
 .chart-label .val { margin-left: auto; color: var(--text-2); }
@@ -1138,6 +1139,8 @@ a.tl-kind:hover { color: var(--live); }
 /* a tag alone in a cell is a box of its own, so the cell centres it like a line of text */
 .tbl td > .tag:only-child { display: flex; }
 .tbl td.is-num > .tag:only-child { margin-left: auto; }
+/* a box in a cell is at least one line high, so it centres like a line of text */
+.tbl td > :not(svg, img, input, select, textarea, button, .btn, .pill, .tag, .key-chip) { min-height: 1lh; }
 .tbl td { box-sizing: content-box; height: calc(round(3.375rem, var(--e)) - 2 * round(0.375rem, var(--e))); /* an even height inside, with or without its 1 px line */ padding: round(0.375rem, var(--e)) round(0.75rem, var(--e)); border-bottom: 1px solid var(--line); vertical-align: middle; }
 .tbl tbody tr:last-child td { border-bottom: 0; }
 .tbl tbody tr.is-link { cursor: pointer; }
@@ -1364,4 +1367,11 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
   .chart-label { flex-wrap: wrap; row-gap: round(0.25rem, var(--e)); padding-left: 0; }
   .filter-bar .field--search { width: 100%; }
   .kv dd { white-space: normal; }
+  /* a figure too wide for a phone column breaks between its words (a duration, a value and its unit) */
+  .metric-value, .metric-value .q, .money-stack > span { white-space: normal; }
+  /* a panel's title and its controls stack */
+  .panel-head { flex-wrap: wrap; }
+  .panel-head > .row { flex: 1 1 100%; }
+  /* the time axis under a strip keeps every other label */
+  .tl-axis span:nth-child(even):not(:last-child), .tl-axis span:nth-last-child(2) { display: none; }
 }

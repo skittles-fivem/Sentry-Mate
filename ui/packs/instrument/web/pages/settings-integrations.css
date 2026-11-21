@@ -116,6 +116,7 @@
 .si-legend dd { margin: 0; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); }
 .si-fold summary { cursor: pointer; list-style: none; }
 .si-fold summary::-webkit-details-marker { display: none; }
-.si-fold summary .faint { font-family: inherit; margin-left: round(0.25rem, var(--e)); text-decoration: underline dotted; }
+.si-fold summary .faint { white-space: nowrap; font-family: inherit; margin-left: round(0.25rem, var(--e)); text-decoration: underline dotted; }
 .si-fold[open] summary .faint { display: none; }
 .si-fold > .si-json { display: block; margin-top: round(0.25rem, var(--e)); }
+.si-fold:not([open]) > :not(summary) { display: none; }

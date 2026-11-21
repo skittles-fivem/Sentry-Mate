@@ -187,7 +187,7 @@ export async function mount(ctx) {
     const tile = (key, label, ic, value, subText, { stale = false } = {}) => {
       const pressed = !stale && stateFilter === key;
       const attrs = { class: ['state-tile', stale && 'state-tile--stale'], dataset: { state: stale ? null : key } };
-      const kids = [h('span', { class: 'state-tile-label' }, icon(ic), label), h('span', { class: 'state-tile-value' }, formatNumber(value)), h('span', { class: 'state-tile-sub' }, subText)];
+      const kids = [h('span', { class: 'state-tile-label' }, icon(ic), h('span', { class: 'state-tile-name' }, label)), h('span', { class: 'state-tile-value' }, formatNumber(value)), h('span', { class: 'state-tile-sub' }, subText)];
       if (stale) return h('div', { ...attrs, title: 'Cars with no upload for over an hour. Their last known state is shown and counted under it as well.' }, kids);
       return h('button', { ...attrs, type: 'button', 'aria-pressed': String(pressed), title: pressed ? 'Show every state' : `Show only ${label.toLowerCase()} cars`,
         onclick: () => { stateSel.value = pressed ? '' : key; apply(); } }, kids);

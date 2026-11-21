@@ -396,9 +396,20 @@ Pages are checked with `node ui/tools/check.js --pixel` (see `ui/tools/README.md
   `--LH: round(1rem, 2px)` (a length). A rule in `app.css` makes `--LH` each element's line height, so a number
   still follows each element's own font size. The `font` shorthand is followed by `line-height: var(--LH)`.
 - Bars, strips and marks placed by a fraction (`left: var(--x)`) round their edges: `round(var(--x), 1px)`.
-- `core/snap.js` keeps grid and table columns on whole px: it rounds each grid's `fr` columns and each table's
-  columns (the same total width) and runs again when the page adds or takes away elements, when text in a
-  table changes, when a snapped box changes size and when the fonts have loaded. Nothing to call from a page.
+- `core/snap.js` keeps the page on whole px. Nothing to call from a page. Each run:
+  - rounds each grid's `fr` columns (up, the widest give back a pixel each) and each table's columns (the
+    same total width);
+  - grows a box outside tables whose width or height ends between two device pixels to the next one (a
+    `min-width` / `min-height`), so what follows it starts on a whole pixel;
+  - makes each table row a whole number of px high, with an even height inside its cells, and moves a cell
+    centred up and down by a whole px when its content is a pixel or so off the centre the other cells share;
+  - last, moves a box with a border or a 1 px line that still starts between two device pixels by less than
+    half a pixel (`translate`, or `position: relative` for an inline box) onto whole ones.
+  It first takes back everything the last run set, so the CSS always decides the layout and the snap only
+  rounds it. It runs again when the page adds or takes away elements, when text in a table changes, when a
+  snapped grid or table changes size (not when the run itself changed it) and when the fonts have loaded. It
+  takes about 1 s on a page of 40,000 elements: it reads all sizes before it writes any.
+- Mark a box the snap must leave alone with `data-nosnap` (maps and charts are left alone already).
 - A box that sits in a line of text (an inline-flex pill or button) is a source of half pixels: in a table cell
   give it `vertical-align: top` or make it a block; in a flex row with `align-items: baseline`, let the words
   give the baseline and centre the icon with `align-self: center`.

@@ -102,7 +102,7 @@
 /* the period's sections */
 .bat-history-head { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); margin: 0 0 round(0.875rem, var(--e)); }
 .cl-top { display: flex; align-items: flex-start; justify-content: space-between; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); flex-wrap: wrap; }
-.cl-cursor { font-size: max(0.78125rem, var(--fs-floor)); padding-top: round(0.25rem, var(--e)); }
+.cl-cursor { font-size: max(0.78125rem, var(--fs-floor)); }
 .legend-swatch.is-dashed { background: repeating-linear-gradient(90deg, var(--c) 0 round(0.1875rem, var(--e)), transparent round(0.1875rem, var(--e)) round(0.3125rem, var(--e))); }
 .chart--cl { --chart-h: round(17rem, var(--e)); }
 .cl-foot { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: round(1.25rem, var(--e)) round(2rem, var(--e)); margin-top: round(1rem, var(--e)); align-items: start; }
@@ -130,7 +130,7 @@
 .vd-table .is-long { color: var(--text); font-weight: 600; }
 .standby { display: flex; flex-direction: column; gap: round(0.3125rem, var(--e)); }
 .standby-bar { display: flex; width: round(8rem, var(--e)); height: round(0.4375rem, var(--e)); border-radius: 99px; overflow: hidden; background: var(--surface-sunken); }
-.standby-bar > i { width: var(--w); }
+.standby-bar > i { width: round(var(--w), 1px); flex: none; } /* each part on whole px */
 .sb-asleep { background: var(--st-asleep); }
 .sb-awake { background: var(--warm); }
 .sb-unknown { background: repeating-linear-gradient(135deg, var(--st-unknown) 0 round(0.125rem, var(--e)), transparent round(0.125rem, var(--e)) round(0.25rem, var(--e))); }
@@ -170,3 +170,4 @@
   .bat-soc-val { font-size: 3rem; }
 }
 @container page (max-width: 36rem) { .cl-foot, .cl-shares { grid-template-columns: minmax(0, 1fr); } .cl-stats { display: block; overflow-x: auto; } }
+.cl-top > .legend { margin-top: 0; } /* level with the readout beside it */

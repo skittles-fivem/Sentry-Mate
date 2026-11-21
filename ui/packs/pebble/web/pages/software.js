@@ -129,7 +129,7 @@ export async function mount(ctx) {
   function draw(list) { for (const r of list) { const t = updateTile(r); listEnd.before(t); drawn.push(t); } }
   ctx.view.replaceChildren(bar, hero, countT, gapT, tell, listStart, listEnd);
   if (!pager.items.length) {
-    listEnd.before(emptyTile({ icon: 'chip', title: 'No updates in this period', text: ctx.period?.preset === 'all' ? `Nothing recorded for ${car.name} yet. An update shows once the car installs one while recording, or with an imported history.` : 'Pick a longer period above; All time shows every update.' }));
+    listEnd.before(emptyTile({ icon: 'chip', cover: ['updates.table.version', 'updates.table.date', 'updates.table.duration', 'updates.table.since_previous', 'updates.table.charge_count', 'updates.table.avg_range'], title: 'No updates in this period', text: ctx.period?.preset === 'all' ? `Nothing recorded for ${car.name} yet. An update shows once the car installs one while recording, or with an imported history.` : 'Pick a longer period above; All time shows every update.' }));
   } else {
     draw(pager.items);
     if (!pager.done) listEnd.append(more);

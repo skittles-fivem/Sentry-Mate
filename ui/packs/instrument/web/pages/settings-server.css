@@ -14,7 +14,8 @@
 .ss-check-head { font-weight: 600; overflow-wrap: anywhere; }
 .ss-check-text { color: var(--text-2); margin-top: round(0.125rem, var(--e)); max-width: round(52rem, var(--e)); }
 .ss-check .btn { margin-top: round(0.5rem, var(--e)); }
-.ss-keyacts { flex-wrap: wrap; gap: 0 round(0.5rem, var(--e)); }
+.ss-keyacts { flex-wrap: wrap; gap: round(0.5rem, var(--e)); margin-top: round(0.5rem, var(--e)); }
+.ss-check .ss-keyacts > .btn { margin-top: 0; } /* the row keeps the space above, so each button is centred in it */
 .ss-code { font-size: max(0.8125rem, var(--fs-floor)); padding: 0 round(0.25rem, var(--e)); border-radius: round(0.25rem, var(--e)); background: var(--glass-2); overflow-wrap: anywhere; }
 .ss-addr { margin: 0 0 round(0.75rem, var(--e)); color: var(--text-2); overflow-wrap: anywhere; }
 .ss-addr .mono { color: var(--text); }

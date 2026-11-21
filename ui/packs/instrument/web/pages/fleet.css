@@ -19,8 +19,9 @@
 .state-tile::after { content: ""; position: absolute; left: round(1rem, var(--e)); right: round(1rem, var(--e)); top: 0; height: round(0.125rem, var(--e)); border-radius: 0 0 round(0.125rem, var(--e)) round(0.125rem, var(--e)); background: var(--dot); opacity: 0.85; box-shadow: 0 0 round(0.875rem, var(--e)) var(--dot); }
 button.state-tile:hover { border-color: var(--line-3); }
 .state-tile[aria-pressed="true"] { border-color: color-mix(in oklab, var(--dot) 60%, transparent); box-shadow: var(--shadow), 0 0 0 1px color-mix(in oklab, var(--dot) 40%, transparent); }
-.state-tile-label { display: flex; align-items: center; gap: round(0.5rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); font-weight: 500; color: var(--text-2); }
+.state-tile-label { display: flex; align-items: center; min-width: 0; gap: round(0.5rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); font-weight: 500; color: var(--text-2); }
 .state-tile-label .ico { width: round(0.9375rem, var(--e)); height: round(0.9375rem, var(--e)); color: var(--dot); }
+.state-tile-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .state-tile-value { font-family: var(--font-display); font-weight: 300; font-size: clamp(1.5rem, 26cqi, 2.5rem); --LH: round(calc(1 * 1em), 2px); letter-spacing: -0.02em; color: var(--text); white-space: nowrap; }
 .state-tile-sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .state-tile--stale { --dot: var(--warm); background: linear-gradient(180deg, rgba(245, 181, 74, 0.07), rgba(146, 176, 236, 0.02)); }
@@ -68,4 +69,7 @@ a.attn-car:hover { color: var(--live); }
   .fleet-board { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .attn-row { grid-template-columns: minmax(0, 1fr) auto; }
   .attn-text { grid-column: 1 / -1; grid-row: 2; }
+}
+@container page (max-width: 25rem) {
+  .fleet-board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
