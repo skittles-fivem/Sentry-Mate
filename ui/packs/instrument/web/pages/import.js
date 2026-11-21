@@ -23,6 +23,7 @@ import { emptyState, errorWords } from '../core/states.js';
 import { flash } from '../core/flash.js';
 import { confirmDialog } from '../core/dialog.js';
 import { dateTime, date, dur, num, agoEl, DASH } from '../core/fmt.js';
+import { srcMark } from '../core/source.js';
 
 export const id = 'import';
 export const css = true;
@@ -693,14 +694,19 @@ export async function mount(ctx) {
     }));
     S.overlaps = lists.flat().sort((a, b) => b.start_ms - a.start_ms);
   }
+  // the side shown: live (SMO or the Tesla API) or import:teslamate (the old words can and teslamate still read)
+  const shownOf = (o) => o.shown_source || (o.shown === 'teslamate' ? 'import:teslamate' : 'live');
+  const liveOf = (o) => o.live || o.can;
+  const importedOf = (o) => o.imported || o.teslamate;
+  const liveName = (o) => { const k = (o.sources || []).filter((x) => x.kind !== 'import').map((x) => (x.kind === 'smo' ? 'SMO' : 'Tesla API')); return k.length ? k.join(' + ') : 'Live'; };
   async function flip(o, shown) {
-    if (o.shown === shown) return;
+    if (shownOf(o) === shown) return;
     try {
       const r = await ctx.api.patch(`cars/${enc(o.car)}/overlaps`, { id: o.id, shown });
       if (!ctx.alive()) return;
-      const ch = r.changed || { ...o, shown };
+      const ch = r.changed || { ...o, shown_source: shown };
       S.overlaps = S.overlaps.map((x) => (x.car === o.car && x.id === o.id ? { ...x, ...ch, car: o.car } : x));
-      flash(`${carName(o.car)}: ${shown === 'can' ? 'CAN' : 'TeslaMate'} history is shown for that span on every page.`);
+      flash(`${carName(o.car)}: ${shown === 'live' ? `live (${liveName(o)})` : 'imported TeslaMate'} history is shown for that span on every page.`);
     } catch (e) {
       if (!ctx.alive()) return;
       flash(`Could not switch: ${errorWords(e).text}`, { kind: 'error' });
@@ -719,30 +725,30 @@ export async function mount(ctx) {
       : 'Timeline of each car');
   }
   const overlapTable = dataTable(ctx, {
-    title: 'Spans with both histories', icon: 'timeline', rows: [], csvName: 'import-overlaps', label: 'Spans where imported and CAN history overlap',
-    note: 'Where TeslaMate and the CAN Bridge both recorded the same time, only one side is shown on Drives, Charges, Timeline, Statistics and Travel: CAN at first, since it is measured. Neither side is deleted; switch a span to show the other.',
+    title: 'Spans with both histories', icon: 'timeline', rows: [], csvName: 'import-overlaps', label: 'Spans where imported and live history overlap',
+    note: 'Where TeslaMate and a live input (SMO, the Tesla API) both recorded the same time, only one side is shown on Drives, Charges, Timeline, Statistics and Travel: live at first, since SMO measures. Neither side is deleted; switch a span to show the other.',
     sort: { key: 'start_ms', dir: 'desc' },
     columns: [
       { key: 'car', label: 'Car', sort: true, value: (o) => carName(o.car), render: (o) => h('b', null, carName(o.car)), csv: (o) => carName(o.car) },
       { key: 'start_ms', label: 'From', sort: true, render: (o) => dateTime(o.start_ms, zoneOf(o)), csv: { label: 'From (ISO 8601, car\'s time zone)', value: (o) => toIsoZoned(o.start_ms, zoneOf(o)) } },
       { key: 'end_ms', label: 'To', sort: true, render: (o) => dateTime(o.end_ms, zoneOf(o)), csv: { label: 'To (ISO 8601, car\'s time zone)', value: (o) => toIsoZoned(o.end_ms, zoneOf(o)) } },
       { key: 'len', label: 'Length', num: true, sort: true, value: (o) => o.end_ms - o.start_ms, render: (o) => dur(o.end_ms - o.start_ms), csv: { label: 'Length (s)', value: (o) => Math.round((o.end_ms - o.start_ms) / 1000) } },
-      { key: 'can', label: 'CAN has', render: (o) => side(o.can), csv: { label: 'CAN has (drives, charges)', value: (o) => side(o.can) } },
-      { key: 'teslamate', label: 'TeslaMate has', render: (o) => side(o.teslamate), csv: { label: 'TeslaMate has (drives, charges)', value: (o) => side(o.teslamate) } },
-      { key: 'shown', label: 'Shown', sort: true, csv: { label: 'Shown (can or teslamate)', value: (o) => o.shown }, render: (o) => h('div', { class: 'seg im-seg', role: 'group', 'aria-label': `Which history is shown for ${carName(o.car)} from ${dateTime(o.start_ms, zoneOf(o))}` },
-        [['can', 'CAN'], ['teslamate', 'TeslaMate']].map(([v, l]) => h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': String(o.shown === v), onclick: () => flip(o, v) }, l))) },
+      { key: 'live', label: 'Live has', render: (o) => h('span', { class: 'cell-text' }, h('span', null, side(liveOf(o))), srcMark({ sources: (o.sources || []).filter((x) => x.kind !== 'import') }, { short: true })), csv: { label: 'Live has (drives, charges)', value: (o) => side(liveOf(o)) } },
+      { key: 'imported', label: 'Imported has', render: (o) => h('span', { class: 'cell-text' }, h('span', null, side(importedOf(o))), srcMark({ sources: (o.sources || []).filter((x) => x.kind === 'import') }, { short: true })), csv: { label: 'Imported has (drives, charges)', value: (o) => side(importedOf(o)) } },
+      { key: 'shown', label: 'Shown', sort: true, value: (o) => shownOf(o), csv: { label: 'Shown (live or import:teslamate)', value: (o) => shownOf(o) }, render: (o) => h('div', { class: 'seg im-seg', role: 'group', 'aria-label': `Which history is shown for ${carName(o.car)} from ${dateTime(o.start_ms, zoneOf(o))}` },
+        [['live', `Live (${liveName(o)})`], ['import:teslamate', 'Imported']].map(([v, l]) => h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': String(shownOf(o) === v), onclick: () => flip(o, v) }, l))) },
       { key: 'go', label: 'See it', csv: false, render: (o) => h('a', { class: 'link nowrap', href: buildUrl('timeline', { car: o.car, period: { from: o.start_ms, to: o.end_ms } }) }, 'Timeline', icon('chev-r', 'ico--sm')) },
     ],
     empty: () => (S.overlapErr
       ? emptyState({ icon: 'warn', warn: true, title: 'Overlaps could not be read', text: `${errorWords(S.overlapErr).text} Reload the page to try again.` })
       : emptyState({ icon: 'check', title: 'No overlap', text: S.cars.length
-        ? `No span of ${S.cars.length === 1 ? 'the car' : `the ${num(S.cars.length)} cars`} has both imported and CAN history, so every span shows the one history it has. Imported history that ends before the CAN Bridge started recording never overlaps.`
+        ? `No span of ${S.cars.length === 1 ? 'the car' : `the ${num(S.cars.length)} cars`} has both imported and live history, so every span shows the one history it has. Imported history that ends before SMO or the Tesla API started recording never overlaps.`
         : 'There is no car yet, so there is nothing to overlap.' })),
   });
-  const overlapPanel = panel({ title: 'Overlap with CAN history', icon: 'timeline', cls: 'im-overlap', cover: ['web.import.docs-overlap', 'web.import.docs-backfill', 'faq.no-backfill'] },
+  const overlapPanel = panel({ title: 'Overlap with live history', icon: 'timeline', cls: 'im-overlap', id: 'overlaps', cover: ['web.import.docs-overlap', 'web.import.docs-backfill', 'faq.no-backfill'] },
     h('ul', { class: 'im-facts' },
       h('li', { cover: 'web.import.docs-overlap' }, icon('timeline', 'ico--sm'), h('div', null, h('b', null, 'Every span is imported, and overlaps are kept. '),
-        'History is imported for all of its time, also where the CAN Bridge was recording too. Those spans are listed here with the side that is shown, and a switch.')),
+        'History is imported for all of its time, also where SMO or the Tesla API was recording too. Those spans are listed here with the side that is shown, and a switch.')),
       h('li', { cover: 'web.import.docs-backfill' }, icon('pin', 'ico--sm'), h('div', null, h('b', null, 'Addresses and elevation come with the backup. '),
         'A TeslaMate backup holds its own addresses and heights, so imported drives have them at once. A stop without an address gets one from the server\'s offline address lookup in the minutes after the import; it shows its coordinates until then.')),
       h('li', { cover: 'faq.no-backfill' }, icon('info', 'ico--sm'), h('div', null, h('b', null, 'Time nobody recorded cannot be fetched later. '),

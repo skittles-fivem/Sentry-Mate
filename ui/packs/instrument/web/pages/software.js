@@ -24,6 +24,7 @@ import { field, form } from '../core/form.js';
 import { flash } from '../core/flash.js';
 import { isAdmin } from '../core/prefs.js';
 import { q, DASH } from '../core/fmt.js';
+import { srcMark, hasKind } from '../core/source.js';
 
 export const id = 'software';
 export const css = true;
@@ -34,6 +35,7 @@ const VERSION_RX = /^\d{4}\.\d{1,2}(\.\d{1,3}){0,2}$/;
 // where a version came from
 const SOURCE = {
   teslamate: ['Imported', 'Imported from TeslaMate with the version text it recorded.'],
+  tesla_api: ['Tesla API', 'Read from the Tesla API, which names the installed version.'],
   owner: ['Typed by the owner', 'An admin typed this version in Sentry Mate.'],
   build_match: ['Same build', 'Another update with exactly the same module builds has this version.'],
 };
@@ -42,6 +44,7 @@ const DETECTED = {
   ota_status: ['Update status', 'The car reported that it was installing an update.'],
   build_change: ['Module builds changed', 'The build ids its modules send on the vehicle bus changed.'],
   teslamate: ['Imported', 'From the imported TeslaMate history.'],
+  tesla_api: ['Tesla API', 'The version the Tesla API reports changed.'],
 };
 // the modules whose build ids are compared
 const MODULES = {
@@ -121,8 +124,8 @@ export async function mount(ctx) {
         installing ? kvRow('Installing since', at(installing.start_ms), 'clock') : null),
       h('p', { class: 'explain' }, sm.build_changed_since != null
         ? `The module builds changed after ${v || 'the last known version'} was recorded, so the car now runs a version nobody has named. ${admin ? 'Type it on the newest update below.' : 'An admin can type it on the newest update below.'}`
-        : v ? `${src ? src[1] : ''} The car does not send its version text; Sentry Mate never guesses one.`
-          : 'The car does not send its version text. It is known once a TeslaMate history is imported, an admin types it, or another car on the same build has one.'));
+        : v ? `${src ? src[1] : ''} The car's bus does not carry its version text; Sentry Mate never guesses one.`
+          : 'The car does not send its version text. It is known once the Tesla API reads it, a TeslaMate history is imported, an admin types it, or another car on the same build has one.'));
     const median = sm.median_gap_ms;
     replace(figSlot, figures([
       metric('Updates', sm.count ?? null, 'count', {
@@ -155,7 +158,7 @@ export async function mount(ctx) {
       ? (r.changed_modules?.length ? `Changed: ${moduleNames(r.changed_modules).join(', ')}` : null)
       : r.changed_modules?.length ? `Changed: ${moduleNames(r.changed_modules).join(', ')}` : 'No module list';
     return h('span', { class: 'cell-text' }, main, sub ? h('span', { class: 'sub sw-mods' }, sub) : null,
-      admin && r.source === 'can' ? h('button', { class: 'btn btn--sm btn--ghost sw-edit', type: 'button', onclick: () => editVersion(r), title: 'Type the version this update installed' },
+      admin && hasKind(r, 'smo') && r.version_source !== 'tesla_api' ? h('button', { class: 'btn btn--sm btn--ghost sw-edit', type: 'button', onclick: () => editVersion(r), title: 'Type the version this update installed' },
         icon('settings', 'ico--sm'), r.version ? 'Change version' : 'Type the version') : null);
   }
 
@@ -189,7 +192,7 @@ export async function mount(ctx) {
     { key: 'vsource', label: 'Version from', hidden: true, csv: { label: 'Version from', value: (r) => (SOURCE[r.version_source] ? SOURCE[r.version_source][0] : '') } },
     {
       key: 'source', label: 'Found by', title: 'How Sentry Mate knows about this update',
-      render: (r) => { const d = DETECTED[r.detected_by] || [r.detected_by, '']; return h('span', { class: 'cell-text', title: d[1] }, h('span', null, d[0]), h('span', { class: 'sub' }, r.source === 'teslamate' ? 'TeslaMate row' : 'From the car')); },
+      render: (r) => { const d = DETECTED[r.detected_by] || [r.detected_by, '']; return h('span', { class: 'cell-text', title: d[1] }, h('span', null, d[0]), h('span', { class: 'sub sub--src' }, srcMark(r, { short: true }) || 'From the car')); },
       csv: { label: 'Found by', value: (r) => (DETECTED[r.detected_by] ? DETECTED[r.detected_by][0] : r.detected_by) },
     },
     {

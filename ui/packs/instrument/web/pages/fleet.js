@@ -14,6 +14,7 @@ import { emptyState } from '../core/states.js';
 import { statePill, STATES, ago, agoEl, carMeta, when, dur } from '../core/fmt.js';
 import { getPrefs, savePrefs, isAdmin } from '../core/prefs.js';
 import { flash } from '../core/flash.js';
+import { srcMark } from '../core/source.js';
 
 export const id = 'fleet';
 export const css = true;
@@ -119,7 +120,8 @@ export async function mount(ctx) {
     { key: 'name', label: 'Car', sort: 'name', firstDir: 'asc', render: (c) => h('span', { class: 'car-cell' },
       h('a', { class: 'car-name main', href: state.linkTo('car', { car: c.id }) }, c.name || `Unnamed ${c.model || 'car'}`),
       h('span', { class: 'car-meta' }, carMeta(c), ' ', c.vin_prefix ? h('span', { class: 'key-chip', title: 'VIN prefix (the serial number is never stored)' }, c.vin_prefix) : null,
-        !c.name && isAdmin() ? [' · ', h('a', { class: 'link', href: state.buildUrl('settings-cars', { car: c.id }) }, 'Name it')] : null)) },
+        !c.name && isAdmin() ? [' · ', h('a', { class: 'link', href: state.buildUrl('settings-cars', { car: c.id }) }, 'Name it')] : null),
+      srcMark(c, { short: true, cls: 'car-src' })) },
     { key: 'state', label: 'State', render: (c) => h('span', { class: 'cell-since' },
       statePill(c.now?.state, { stale: c.now?.stale }),
       h('span', null, c.now?.since_ms ? `since ${when(c.now.since_ms, c.time_zone)}` : 'no data yet')) },
@@ -255,7 +257,10 @@ export async function mount(ctx) {
     replace(empty, h('div', { class: 'empty' },
       h('div', { class: 'empty-icon' }, icon('car')),
       h('h3', null, 'No car to show yet'),
-      h('p', null, isAdmin() ? 'A car appears here when its CAN Bridge uploads its first log.' : 'Your account may not see any car yet. Ask an admin to add one to your account.'),
+      h('p', null, isAdmin() ? 'A car appears here when its CAN Bridge (SMO) uploads its first log, or when a car of a Tesla account is matched to a new car here.' : 'Your account may not see any car yet. Ask an admin to add one to your account.'),
+      isAdmin() ? h('p', { class: 'note' }, setup?.tesla_accounts
+        ? [`${formatNumber(setup.tesla_accounts)} Tesla ${setup.tesla_accounts === 1 ? 'account is' : 'accounts are'} added: match its cars to start reading them. `, h('a', { class: 'link', href: `${state.buildUrl('settings-integrations')}#tesla` }, 'Tesla account')]
+        : ['Another way in: add a Tesla account, and the server reads its cars from the Tesla API as well (optional; off until you add one). ', h('a', { class: 'link', href: `${state.buildUrl('settings-integrations')}#tesla` }, 'Add a Tesla account')]) : null,
       causes.length ? h('ul', { class: 'empty-causes' }, causes.map((f) => h('li', null, h('b', null, FIX[f.cause][0]), ': ', FIX[f.cause][1], ' ', h('a', { class: 'link', href: f.link || '/settings/cars' }, 'Fix it')))) : null,
       isAdmin() && !causes.length ? h('a', { class: 'btn', href: state.buildUrl('settings-cars') }, icon('settings'), 'Settings: Cars') : null));
   }

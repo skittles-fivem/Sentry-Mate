@@ -27,6 +27,7 @@ import { loadUPlot, mountPlot, timeAxis, TIME_INCRS, valueAxis, colors, hexA } f
 import { openPeriodPicker } from '../core/period.js';
 import { openCarSwitcher } from '../core/carswitch.js';
 import { rpx } from '../core/display.js';
+import { srcMark } from '../core/source.js';
 
 export const id = 'efficiency';
 export const css = true;
@@ -440,7 +441,7 @@ export async function mount(ctx) {
       setpoint: (v.setpoint_left_c || []).map((x, i) => (on(i) ? x : null)),
     };
     const rows = ts.map((t, i) => ({ t_ms: t, outside: raw.outside[i], cabin: raw.cabin[i], battery: raw.battery[i], setpoint: raw.setpoint[i], climate: climate[i] ?? null, state: st[i] ?? null }));
-    replace(tHistSide, csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'temperatures', period.preset), rows, [timeColumn('Bucket start', 't_ms', tz), column('Outside', 'outside', 'temperature', { digits: 1 }), column('Cabin', 'cabin', 'temperature', { digits: 1 }), column('Battery', 'battery', 'temperature', { digits: 1 }), column('Set point (climate on)', 'setpoint', 'temperature', { digits: 1 }), column('Climate', 'climate'), column('State', 'state')]) }));
+    replace(tHistSide, srcMark(d, { short: true }), csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'temperatures', period.preset), rows, [timeColumn('Bucket start', 't_ms', tz), column('Outside', 'outside', 'temperature', { digits: 1 }), column('Cabin', 'cabin', 'temperature', { digits: 1 }), column('Battery', 'battery', 'temperature', { digits: 1 }), column('Set point (climate on)', 'setpoint', 'temperature', { digits: 1 }), column('Climate', 'climate'), column('State', 'state')]) }));
     if (!ts.length || !['outside', 'cabin', 'battery'].some((k) => raw[k].some((x) => x != null))) {
       replace(tHistSlot, emptyState({ icon: 'thermo', title: 'No temperature readings in this period', text: 'The car was asleep or not logged the whole time. Choose a longer period in the period picker.' }));
       return;

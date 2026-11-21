@@ -16,7 +16,8 @@ import { activityStrip, KINDS as STRIP_KINDS } from '../core/strip.js';
 import { openCarSwitcher } from '../core/carswitch.js';
 import { openPeriodPicker } from '../core/period.js';
 import { emptyState, errorWords } from '../core/states.js';
-import { when, ago, statePill, spotText } from '../core/fmt.js';
+import { when, ago, statePill, spotText, dateTime } from '../core/fmt.js';
+import { srcMark, srcText, isImported, hasKind } from '../core/source.js';
 
 export const id = 'timeline';
 export const css = true;
@@ -97,7 +98,7 @@ export function timelineRow(r, { car, tz, compact = false }) {
   detail = bits.filter(Boolean).join(' · ');
   const awake = r.kind === 'parked' && r.awake_reasons?.length ? r.awake_reasons.map((x) => AWAKE_WORD[x] || x.replace(/_/g, ' ')) : null;
   const t0 = formatTime(r.start_ms, tz), t1 = end ? formatTime(end, tz) : 'now';
-  return h('div', { class: ['tl-item', r.source === 'teslamate' && 'is-imported'], dataset: { state: k.state, kind: r.kind } },
+  return h('div', { class: ['tl-item', isImported(r) && !hasKind(r, 'smo') && !hasKind(r, 'tesla_api') && 'is-imported'], dataset: { state: k.state, kind: r.kind } },
     h('a', { class: 'tl-time', href: tripHref, title: 'Open this span as a trip' },
       compact ? [h('span', null, t0), h('span', { class: 'faint' }, ` – ${t1}`)] : [h('span', { class: 'tl-day' }, formatDate(r.start_ms, tz, { weekday: true, year: false })), h('span', null, `${t0} – ${t1}`)]),
     h('span', { class: 'tl-rail', 'aria-hidden': 'true' }, h('i')),
@@ -107,7 +108,7 @@ export function timelineRow(r, { car, tz, compact = false }) {
         h('span', { class: 'tl-what' }, title)),
       detail ? h('span', { class: 'detail' }, detail) : null,
       awake ? h('span', { class: 'detail tl-awake' }, `Kept awake by ${awake.join(', ')}`) : null,
-      r.source === 'teslamate' ? h('span', { class: 'detail' }, h('span', { class: 'tag tag--plain' }, 'Imported from TeslaMate')) : null),
+      r.sources?.length || r.source ? h('span', { class: 'detail tl-src' }, srcMark(r, { short: compact, estimated: true })) : null),
     h('span', { class: 'tl-dur' }, r.duration_ms != null ? formatDuration(r.duration_ms) : end ? formatDuration(end - r.start_ms) : ''),
     detailHref ? h('a', { class: 'row-chev', href: detailHref, 'aria-label': `Open the ${k.word.toLowerCase()}` }, icon('chev-r')) : h('span', { class: 'row-chev' }));
 }
@@ -124,10 +125,12 @@ export async function mount(ctx) {
   const root = h('div', { class: 'timeline-page', cover: ['shots.states', 'shots.timeline'] });
   replace(ctx.view, root);
 
-  const [states, act] = await Promise.all([
+  const [states, act, overlaps] = await Promise.all([
     ctx.api.get(`cars/${encodeURIComponent(cid)}/states`, { from_ms: from, to_ms: to, limit: 1 }),
     // /activity defaults to the last 24 hours without a start: ask for the whole history when the period has none
     ctx.api.get(`cars/${encodeURIComponent(cid)}/activity`, { from_ms: from ?? 0, to_ms: to }),
+    // spans where imported and live history both exist: only one side is listed for each
+    ctx.api.get(`cars/${encodeURIComponent(cid)}/overlaps`).then((r) => (r.items || []).filter((o) => (to == null || o.start_ms < to) && (from == null || o.end_ms > from))).catch(() => []),
   ]);
   if (!ctx.alive()) return;
 
@@ -180,7 +183,7 @@ export async function mount(ctx) {
     { label: 'State', value: (s) => (STRIP_KINDS[s.kind] || STRIP_KINDS.unknown).label },
     timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz),
     { label: 'Duration (min)', value: (s) => (s.end_ms != null ? Math.round((s.end_ms - s.start_ms) / 60000) : null) },
-    { label: 'Source', value: (s) => s.source || '' },
+    { label: 'Data from', value: (s) => srcText(s) },
   ]) });
   const strip = panel({ title: 'What the car did', icon: 'timeline', cls: 'tl-panel', side: [stripCsv], cover: ['states.chart.states', 'states.chart.legend'] },
     activityStrip(act.items || [], stripFrom, to, { tz, now: ctx.api.now(), size: 'lg', kinds: ['driving', 'charging', 'online', 'online_vehicle_bus_only', 'asleep', 'updating', 'unknown'] }),
@@ -248,6 +251,16 @@ export async function mount(ctx) {
       h('li', { cover: 'faq.no-sleep.mcu1' }, h('b', null, 'Older Model S and X. '), 'Cars with the older media computer sleep less deeply and wake more often; expect more awake time than on newer cars.'),
       h('li', { cover: 'faq.no-sleep.other-loggers' }, h('b', null, 'Other apps. '), 'Sentry Mate only listens to the car, so it never keeps it awake. An app that asks Tesla’s servers for the car’s data can wake it; check the parked rows for awake spells when such an app runs.')));
 
+  function overlapNote() {
+    const where = h('p', { class: 'note tl-legend-note tl-src-note' }, 'Each entry says where its data came from: ', h('span', { class: 'src-key' },
+      srcMark({ sources: [{ kind: 'smo', label: 'SMO (the car\'s CAN Bridge)' }] }), srcMark({ sources: [{ kind: 'tesla_api', label: 'the Tesla API' }] }), srcMark({ sources: [{ kind: 'import', site: 'teslamate', label: 'an import (TeslaMate)' }] })),
+      car.sources?.length ? h('span', { class: 'tl-car-src' }, h('span', null, `${car.name}, all its history:`), srcMark(car)) : null);
+    if (!overlaps.length) return where;
+    return [where, h('p', { class: 'note tl-legend-note warn' }, icon('info', 'ico--sm'), ' ',
+      overlaps.map((o, i) => [i ? '; ' : '', `${dateTime(o.start_ms, tz)} to ${dateTime(o.end_ms, tz)}: ${o.shown_source === 'live' ? 'live data' : 'imported history'} is shown (both exist)`]),
+      '. ', h('a', { class: 'link', href: state.buildUrl('import') + '#overlaps' }, 'Choose which side in Import'), '.')];
+  }
+
   replace(root,
     pageHead({
       eyebrow: car.name, title: 'Timeline', sub: [period.label, `times in ${tz.replace(/_/g, ' ')}`],
@@ -264,7 +277,7 @@ export async function mount(ctx) {
       'timeline.link.trip_span', 'timeline.link.slot_details', 'timeline.link.geofence_start', 'timeline.link.geofence_end', 'timeline.link.place_cells_other_rows'] },
     h('div', { class: 'tbl-bar' }, h('h2', { class: 'panel-title' }, icon('timeline'), 'Entries, newest first'), count, csvSlot),
     h('p', { class: 'note tl-legend-note' }, 'A time opens that span as a trip. A kind opens the drive, charge or software page. A place name opens the place editor. A gap is never counted as parked time. The text filter only hides rows; it never changes their figures.'),
-    list, foot),
+    overlapNote(), list, foot),
     help);
 
   await reload();

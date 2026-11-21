@@ -20,6 +20,7 @@ import { openCarSwitcher } from '../core/carswitch.js';
 import { openPeriodPicker } from '../core/period.js';
 import { rpx } from '../core/display.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
+import { srcMark, srcText, inputsLine } from '../core/source.js';
 
 export const id = 'car';
 export const css = true;
@@ -60,12 +61,20 @@ function merge(into, delta) {
 }
 
 const at = (x) => (x && typeof x === 'object' && 'at_ms' in x ? x.at_ms : null);
-// a value with its own age when it is older than the snapshot (a tyre read an hour ago)
+// the input a live value came from ({ value, at_ms, sources }): a small mark for any input but SMO (the Tesla API),
+// so a value the API sent is never mistaken for one measured on the car's bus. The live inputs line explains it.
+function via(pair) {
+  const s = pair && typeof pair === 'object' ? pair.sources?.[0] : null;
+  if (!s || s.kind === 'smo') return null;
+  return h('span', { class: 'src-via', title: s.label || 'Data from the Tesla API' }, h('i', { class: `src-m src-m--${s.kind}`, 'aria-hidden': 'true' }), h('span', null, s.kind === 'tesla_api' ? 'API' : s.kind));
+}
+const withVia = (pair, content) => { const m = via(pair); return m ? h('span', { class: 'aged' }, content, m) : content; };
+// a value with its own age when it is older than the snapshot (a tyre read an hour ago), and its input
 function aged(pair, content, newest) {
   const t = at(pair);
   if (t == null) return content;
   const old = newest != null && newest - t > 10 * 60000;
-  return h('span', { class: 'aged', title: `Recorded ${ago(t)}` }, content, old ? h('span', { class: 'aged-note' }, ` · ${ago(t)}`) : null);
+  return h('span', { class: 'aged', title: `Recorded ${ago(t)}${pair.sources?.[0]?.label ? `; ${pair.sources[0].label}` : ''}` }, content, via(pair), old ? h('span', { class: 'aged-note' }, ` · ${ago(t)}`) : null);
 }
 
 /* ------------------------------------------------------------------ the gauge */
@@ -118,6 +127,7 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
 
   const head = h('div');
+  const inputsSlot = h('div', { class: 'now-inputs' });
   const banner = h('div');
   const gaugeSlot = h('section', { class: 'panel gauge-panel', 'aria-label': 'Battery and range' });
   const mapEl = h('div', { class: 'map', role: 'img', 'aria-label': `Map: where ${car.name} is` });
@@ -130,7 +140,7 @@ export async function mount(ctx) {
   const rowMore = h('div', { class: 'now-row now-row--3' });
   const windowSlot = h('div', { class: 'car-window' });
 
-  replace(root, head, banner,
+  replace(root, head, inputsSlot, banner,
     h('div', { class: 'now-hero' }, gaugeSlot, mapPanel, todaySlot),
     h('div', { class: 'now-panels' }, rowLive, rowMore),
     windowSlot);
@@ -147,7 +157,7 @@ export async function mount(ctx) {
       titleExtra: h('span', { cover: 'summary.stat.status' }, statePill(n.state, { lg: true, stale: n.stale })),
       sub: [
         h('span', { cover: 'summary.header.model', title: 'Model and year come from the VIN prefix.' }, [car.model, car.year].filter(Boolean).join(' · ') || 'Model not known yet'),
-        trim?.value ? h('span', { cover: 'summary.header.trim', title: `Trim: ${trim.value}, from ${trim.source === 'can' ? "the car's own configuration message" : trim.source === 'owner' ? 'the owner' : trim.source === 'vin' ? 'the VIN prefix' : 'the TeslaMate import'}` }, trim.value, h('span', { class: 'src' }, { can: 'from the car', vin: 'from the VIN', owner: 'typed by the owner', teslamate: 'imported from TeslaMate' }[trim.source] || 'source not known')) : h('span', { cover: 'summary.header.trim' }, 'Trim not known yet'),
+        trim?.value ? h('span', { cover: 'summary.header.trim', title: `Trim: ${trim.value}, from ${trim.source === 'can' ? "the car's own configuration message" : trim.source === 'owner' ? 'the owner' : trim.source === 'vin' ? 'the VIN prefix' : trim.source === 'tesla_api' ? 'the Tesla API' : 'the TeslaMate import'}` }, trim.value, h('span', { class: 'trim-src' }, { can: 'from SMO', vin: 'from the VIN', owner: 'typed by the owner', teslamate: 'imported from TeslaMate', tesla_api: 'from the Tesla API' }[trim.source] || 'source not known')) : h('span', { cover: 'summary.header.trim' }, 'Trim not known yet'),
         vin ? h('span', null, 'VIN ', h('span', { class: 'key-chip', title: 'Only the VIN prefix is stored; the serial number never is.' }, vin)) : null,
         h('span', { cover: 'summary.stat.status' }, `${stateLabel(n.state)} since ${n.since_ms ? when(n.since_ms, tz) : '—'}`, n.since_ms ? h('span', { class: 'faint' }, ` (${dur(Math.max(0, ctx.api.now() - n.since_ms))})`) : null),
       ],
@@ -156,6 +166,16 @@ export async function mount(ctx) {
         h('a', { class: 'btn', href: ctx.link('timeline') }, icon('timeline'), 'Timeline'),
       ],
     }));
+  }
+
+  // the live inputs (SMO, the Tesla API) with each one's newest value, and what the car's history comes from
+  function paintInputs() {
+    const ins = now.inputs || [];
+    const api = ins.some((i) => i.kind === 'tesla_api');
+    replace(inputsSlot,
+      ins.length ? inputsLine(ins, ago) : h('span', { class: 'src-inputs' }, h('span', { class: 'src-inputs-label' }, 'Live inputs'), h('span', { class: 'faint' }, 'none: no SMO log and no Tesla API reading yet')),
+      api ? h('span', { class: 'now-inputs-key' }, 'A value marked ', h('span', { class: 'src-via' }, h('i', { class: 'src-m src-m--tesla_api' }), h('span', null, 'API')), ' came from the Tesla API; the rest from SMO.') : null,
+      car.sources?.length ? h('span', { class: 'now-inputs-hist' }, h('span', { class: 'faint' }, 'History: '), srcMark(car)) : null);
   }
 
   function paintBanner() {
@@ -206,12 +226,12 @@ export async function mount(ctx) {
         }, g, label,
         h('div', { class: 'gauge-center' },
           h('div', { class: 'gauge-soc' }, soc != null ? format(soc, 'percent', { unit: false }) : '—', h('sup', null, '%')),
-          usable != null && soc != null && Math.abs(usable - soc) >= 0.5 ? h('div', { class: 'gauge-caption gauge-usable', title: 'The cold battery locks part of the charge; this much can be used now.' }, `${pct(usable)} usable`) : null,
+          usable != null && soc != null && Math.abs(usable - soc) >= 0.5 ? h('div', { class: 'gauge-caption gauge-usable', title: 'The cold battery locks part of the charge; this much can be used now.' }, `${pct(usable)} usable`, via(n.usable_soc_pct)) : null,
           h('div', { class: 'gauge-range', cover: ['summary.stat.range_preferred', 'overview.stat.range', 'nr.dash.ideal-range'] }, aged(rangePair, format(val(rangePair), 'range'), n.at_ms)),
           h('div', { class: 'gauge-caption' }, `${ideal ? 'ideal' : 'rated'} range${n.stale ? ', last known' : ''}`))),
         h('div', { class: 'gauge-status' }, pills)),
       h('div', { class: 'gauge-stats' },
-        metric('Charge limit', limit, 'percent', { size: 'sm', cover: ['summary.stat.charge_limit', 'nr.dash.charge-limit'], why: val(c.plugged) ? 'Not sent yet' : 'Not plugged in' }),
+        metric('Charge limit', limit == null ? null : withVia(c.limit_pct, quantity(limit, 'percent')), null, { size: 'sm', cover: ['summary.stat.charge_limit', 'nr.dash.charge-limit'], why: val(c.plugged) ? 'Not sent yet' : 'Not plugged in' }),
         metric('In the pack', val(n.energy_remaining_kwh), 'energy', { size: 'sm', explain: 'energy remaining' }),
         metric('Full charge', full, 'range', { size: 'sm', explain: 'range at 100 %' })),
       h('div', { class: 'gauge-est', cover: ['summary.stat.range_estimated', 'nr.dash.est-range'] },
@@ -349,11 +369,11 @@ export async function mount(ctx) {
 
     // the car: 12 V, odometer, software, data age
     const sw = n.software || {};
-    const srcWord = { teslamate: 'imported from TeslaMate', owner: 'typed by the owner', build_match: 'matched by its module builds' }[sw.version_source] || null;
-    const srcShort = { teslamate: 'TeslaMate import', owner: 'typed by the owner', build_match: 'module builds' }[sw.version_source] || null;
+    const srcWord = { teslamate: 'imported from TeslaMate', tesla_api: 'read from the Tesla API', owner: 'typed by the owner', build_match: 'matched by its module builds' }[sw.version_source] || null;
+    const srcShort = { teslamate: 'TeslaMate import', tesla_api: 'the Tesla API', owner: 'typed by the owner', build_match: 'module builds' }[sw.version_source] || null;
     const swFrom = sw.version
       ? [srcShort, sw.version_since_ms ? `since ${formatDate(sw.version_since_ms, tz, { weekday: false })}` : null].filter(Boolean).join(', ')
-      : 'not on the CAN bus; type it on Software';
+      : 'not on the CAN bus; the Tesla API, an import or you can give it (Software)';
     const speedV = val(n.speed_kph), powerV = val(n.power_kw);
     const vehicle = panel({ title: 'Vehicle', icon: 'car', cover: 'nr.dash.panel.car-status' },
       kv([
@@ -396,13 +416,13 @@ export async function mount(ctx) {
           [h('span', { cover: 'summary.flag.reduced_range', title: 'Part of the charge is locked by a cold battery' }, 'Cold battery'), val(f.reduced_range) == null ? '—' : val(f.reduced_range) ? h('span', { class: 'warn' }, 'Range reduced') : 'No'],
         ].map(flagPair)),
       h('dl', { class: 'flag-grid flag-grid--modes' },
-        [[h('span', { cover: 'summary.flag.sentry_mode' }, 'Sentry'), yes(f.sentry, 'On', 'Off')],
+        [[h('span', { cover: 'summary.flag.sentry_mode' }, 'Sentry'), withVia(f.sentry, yes(f.sentry, 'On', 'Off'))],
           [h('span', { cover: 'summary.flag.sentry_recording', title: 'A guess: the screen and cameras woke while Sentry was on. Not a confirmed event.' }, 'Sentry event (guess)'), val(f.sentry_event_guess) ? h('span', { class: 'warn' }, 'Likely') : 'No'],
-          [h('span', { cover: 'summary.flag.preconditioning' }, 'Climate'), CLIMATE[val(f.climate)] || '—'],
-          ['Battery preconditioning', yes(f.battery_preconditioning, 'On', 'Off')],
-          [h('span', { cover: 'summary.flag.dog_mode' }, 'Keep climate'), KEEP[val(f.keep_climate)] || '—'],
+          [h('span', { cover: 'summary.flag.preconditioning' }, 'Climate'), withVia(f.climate, CLIMATE[val(f.climate)] || '—')],
+          ['Battery preconditioning', withVia(f.battery_preconditioning, yes(f.battery_preconditioning, 'On', 'Off'))],
+          [h('span', { cover: 'summary.flag.dog_mode' }, 'Keep climate'), withVia(f.keep_climate, KEEP[val(f.keep_climate)] || '—')],
           ['Battery kept warm', yes(f.keep_warm, 'On', 'Off', false)],
-          [h('span', { cover: 'summary.flag.driver_present' }, 'Someone in the car'), val(f.user_present) == null ? '—' : val(f.user_present) ? 'Yes' : 'No'],
+          [h('span', { cover: 'summary.flag.driver_present' }, 'Someone in the car'), withVia(f.user_present, val(f.user_present) == null ? '—' : val(f.user_present) ? 'Yes' : 'No')],
           [h('span', { cover: ['summary.flag.service_mode', 'summary.state.in_service'] }, 'Service mode'), val(f.service_mode) ? h('span', { class: 'warn' }, now.location?.place ? `On, at ${now.location.place.name}` : 'On') : val(f.service_mode) === false ? 'Off' : '—'],
           ['Accessory power', yes(f.accessory_power, 'On', 'Off')],
           ['Centre display', yes(f.display_on, 'On', 'Off', false)],
@@ -421,13 +441,13 @@ export async function mount(ctx) {
       val(chg.kind) ? h('span', { class: 'tag tag--warm' }, String(val(chg.kind)).toUpperCase()) : null,
       !charging && plugged && usualStart ? h('span', { class: 'faint' }, ` · usually starts at ${usualStart} here`) : null),
     h('div', { class: 'charge-grid' },
-      metric('Power', val(chg.power_kw), 'power', { size: 'sm', why: charging ? 'No reading' : 'Not charging', cover: ['summary.stat.charger_power', 'nr.dash.charging-power', 'overview.stat.charging_power'] }),
+      metric('Power', val(chg.power_kw) == null ? null : withVia(chg.power_kw, quantity(val(chg.power_kw), 'power')), null, { size: 'sm', why: charging ? 'No reading' : 'Not charging', cover: ['summary.stat.charger_power', 'nr.dash.charging-power', 'overview.stat.charging_power'] }),
       metric('Volts', val(chg.volts_v), 'voltage', { size: 'sm', why: charging ? 'No reading' : 'Not charging', cover: 'overview.stat.ac_voltage', explain: val(chg.kind) === 'dc' ? "the charger's" : null }),
       metric('Amps', val(chg.amps_a), 'current', { size: 'sm', why: charging ? 'No reading' : 'Not charging', cover: 'nr.dash.charging-current', explain: val(chg.phases) ? `${val(chg.phases)} ${val(chg.phases) === 1 ? 'phase' : 'phases'}${val(chg.pilot_a) ? `, station allows ${format(val(chg.pilot_a), 'current')}` : ''}${LIMIT_BY[val(chg.limit_source)] && !['pilot', 'station'].includes(val(chg.limit_source)) ? `; held by ${LIMIT_BY[val(chg.limit_source)]}` : ''}` : null }),
-      metric('Added', val(chg.added_kwh), 'energy', { size: 'sm', cover: 'summary.stat.energy_added', why: 'No charge under way' }),
-      metric('Charge limit', val(chg.limit_pct), 'percent', { size: 'sm', cover: 'summary.stat.charge_limit', explain: val(chg.limit_pct) != null ? 'set on the car' : null, why: plugged ? 'Not sent yet' : 'Not plugged in' }),
+      metric('Added', val(chg.added_kwh) == null ? null : withVia(chg.added_kwh, quantity(val(chg.added_kwh), 'energy')), null, { size: 'sm', cover: 'summary.stat.energy_added', why: 'No charge under way' }),
+      metric('Charge limit', val(chg.limit_pct) == null ? null : withVia(chg.limit_pct, quantity(val(chg.limit_pct), 'percent')), null, { size: 'sm', cover: 'summary.stat.charge_limit', explain: val(chg.limit_pct) != null ? 'set on the car' : null, why: plugged ? 'Not sent yet' : 'Not plugged in' }),
       metric('Still to add', val(chg.to_full_kwh), 'energy', { size: 'sm', explain: val(chg.limit_pct) != null ? `to ${pct(val(chg.limit_pct))}` : null, why: plugged ? 'Not known yet' : 'Not plugged in' }),
-      metric('Time to full', val(chg.to_full_min) != null ? val(chg.to_full_min) * 60000 : null, 'duration', { size: 'sm', cover: ['summary.stat.remaining_time', 'nr.dash.time-to-full'], why: charging ? 'Not known yet' : 'No charge under way' }),
+      metric('Time to full', val(chg.to_full_min) != null ? withVia(chg.to_full_min, quantity(val(chg.to_full_min) * 60000, 'duration')) : null, null, { size: 'sm', cover: ['summary.stat.remaining_time', 'nr.dash.time-to-full'], why: charging ? 'Not known yet' : 'No charge under way' }),
       metric('Done at', chg.finish_ms ? when(chg.finish_ms, tz) : null, null, { size: 'sm', cover: 'summary.stat.expected_finish', explain: chg.finish_ms ? `${formatDate(chg.finish_ms, tz, { weekday: false })}, ${zoneName(chg.finish_ms, tz)} (the car's time)` : null, why: charging ? 'Not known yet' : 'No charge under way' })));
 
     replace(rowLive, temps, tyrePanel, vehicle, why);
@@ -510,15 +530,15 @@ export async function mount(ctx) {
         h('span', { class: 'faint' }, 'Updates by itself when a drive, charge or parked spell starts or ends.')),
       panel({ title: 'Summary', icon: 'stats' }, summary),
       panel({ title: 'Battery', icon: 'battery', cover: ['overview.chart.charge_level', 'overview.control.shared_crosshair', 'overview.chart.legend_toggle'],
-        side: h('span', { class: 'row' }, csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'battery', p.preset), series.t_ms.map((t, i) => ({ t, soc: series.values.soc_pct?.[i], usable: series.values.usable_soc_pct?.[i], range: series.values[rk]?.[i], state: series.state?.[i] })), [timeColumn('Time', 't', tz), column('Battery', 'soc', 'percent'), column('Usable', 'usable', 'percent'), column(ideal ? 'Ideal range' : 'Rated range', 'range', 'range'), column('State', 'state')]) }),
+        side: h('span', { class: 'row' }, srcMark(series, { short: true }), csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'battery', p.preset), series.t_ms.map((t, i) => ({ t, soc: series.values.soc_pct?.[i], usable: series.values.usable_soc_pct?.[i], range: series.values[rk]?.[i], state: series.state?.[i] })), [timeColumn('Time', 't', tz), column('Battery', 'soc', 'percent'), column('Usable', 'usable', 'percent'), column(ideal ? 'Ideal range' : 'Rated range', 'range', 'range'), column('State', 'state')]) }),
           h('a', { class: 'panel-link', href: ctx.link('battery'), cover: 'overview.link.charge_level' }, 'Battery', icon('chev-r', 'ico--sm'))) },
-      battLegend, battEl, h('p', { class: 'note' }, 'Shaded blue: asleep (the battery holds). Grey: unknown, no log; the lines break there.')),
+      battLegend, battEl, h('p', { class: 'note' }, 'Shaded blue: asleep (the battery holds). Grey: unknown, no log; the lines break there.', series.sources?.length > 1 ? ` Points: ${series.source_label}. Where SMO has data its seconds are used; the Tesla API only fills what SMO lacks.` : '')),
       panel({ title: 'Charging', icon: 'bolt', cover: ['overview.chart.charging_details.power', 'overview.chart.charging_details.energy', 'overview.chart.charging_details.ac_current', 'overview.chart.charging_details.ac_voltage', 'overview.chart.charging_details.battery_heater'],
         side: h('span', { class: 'row' }, csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'charging', p.preset), chgRows.filter((r) => r.power != null), [timeColumn('Time', 't', tz), column('Charge', 'charge'), column('Kind', 'kind'), column('Power', 'power', 'power'), column('Battery heating', 'heater', 'power'), column('Energy added', 'energy', 'energy'), column('Volts', 'volts', 'voltage'), column('Amps', 'amps', 'current')]) }),
           h('a', { class: 'panel-link', href: ctx.link('charges'), cover: 'overview.link.charging_stats' }, 'Charges', icon('chev-r', 'ico--sm'))) },
       chgLegend, chgEl, supEl, curveNote),
       panel({ title: 'What the car did', icon: 'timeline', cover: 'overview.chart.states',
-        side: h('span', { class: 'row' }, csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'activity', p.preset), (act.items || []).map((a) => ({ ...a, state: ACTIVITY[a.kind] || a.kind, minutes: a.end_ms != null ? Math.round((a.end_ms - a.start_ms) / 60000) : null })), [timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz), column('State', 'state'), column('Minutes', 'minutes'), column('Source', 'source')]) }),
+        side: h('span', { class: 'row' }, csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'activity', p.preset), (act.items || []).map((a) => ({ ...a, state: ACTIVITY[a.kind] || a.kind, minutes: a.end_ms != null ? Math.round((a.end_ms - a.start_ms) / 60000) : null })), [timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz), column('State', 'state'), column('Minutes', 'minutes'), { label: 'Data from', value: (a) => srcText(a) }]) }),
           h('a', { class: 'panel-link', href: ctx.link('timeline'), cover: 'overview.link.states' }, 'Timeline', icon('chev-r', 'ico--sm'))) },
       activityStrip(act.items || [], from, to, { tz, now: ctx.api.now(), size: 'lg' })));
 
@@ -683,7 +703,7 @@ export async function mount(ctx) {
   }
 
   /* ---------- first draw, then live */
-  paintHead(); paintBanner(); paintGauge(); paintPlace(); paintLive();
+  paintHead(); paintInputs(); paintBanner(); paintGauge(); paintPlace(); paintLive();
   ctx.setTitle('Overview');
   try {
     await paintWindow();
@@ -707,7 +727,7 @@ export async function mount(ctx) {
     // plugged in, unplugged or moved: learn the usual start time for the place it is at now
     if (plugKey() !== before && !(scheduleHint && scheduleFor === now.location?.place?.id)) learnSchedule();
     if (pend) return;
-    pend = setTimeout(() => { pend = 0; if (!ctx.alive()) return; paintHead(); paintBanner(); paintGauge(); paintPlace(); paintLive(); placeMarker(); }, 2000);
+    pend = setTimeout(() => { pend = 0; if (!ctx.alive()) return; paintHead(); paintInputs(); paintBanner(); paintGauge(); paintPlace(); paintLive(); placeMarker(); }, 2000);
   });
   let rowsT = 0;
   ctx.events('rows', (ev) => {

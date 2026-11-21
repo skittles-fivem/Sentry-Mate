@@ -26,6 +26,7 @@ import { openDialog, confirmDialog } from '../core/dialog.js';
 import { flash } from '../core/flash.js';
 import { isAdmin } from '../core/prefs.js';
 import { rpx } from '../core/display.js';
+import { srcMark, srcText } from '../core/source.js';
 
 export const id = 'trip';
 export const css = true;
@@ -244,7 +245,7 @@ export async function mount(ctx) {
   /* ---------- activity strip */
   const ACT = Object.fromEntries(Object.entries(STRIP_KINDS).map(([k, v]) => [k, v.label]));
   const stripPanel = panel({ title: 'What the car did', icon: 'timeline', cover: 'trip.chart.states',
-    side: h('span', { class: 'row' }, csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(from, tz), 'activity'), actItems.map((a) => ({ ...a, state: ACT[a.kind] || a.kind, minutes: a.end_ms != null ? Math.round((a.end_ms - a.start_ms) / 60000) : null })), [timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz), column('State', 'state'), column('Minutes', 'minutes'), column('Source', 'source')]) }),
+    side: h('span', { class: 'row' }, csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(from, tz), 'activity'), actItems.map((a) => ({ ...a, state: ACT[a.kind] || a.kind, minutes: a.end_ms != null ? Math.round((a.end_ms - a.start_ms) / 60000) : null })), [timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz), column('State', 'state'), column('Minutes', 'minutes'), { label: 'Data from', value: (a) => srcText(a) }]) }),
       h('a', { class: 'panel-link', href: state.buildUrl('timeline', { car: cid, period: { from, to: ctx.period?.to_ms ?? null } }) }, 'Timeline', icon('chev-r', 'ico--sm'))) },
     activityStrip(actItems, from, to, { tz, now, size: 'lg' }),
     h('p', { class: 'note' }, 'Asleep is hatched blue: the car went quiet. Grey hatching is unknown: no log, a paused recording or a log that failed its check.'));
@@ -260,7 +261,7 @@ export async function mount(ctx) {
     [timeColumn('Time', 't', tz), column('State', 'state'), column('Battery', 'soc', 'percent'), column(rangeLabel(), 'range', 'range'), column('Elevation', 'elev', 'length')]);
   const chartsPanel = h('section', { class: 'panel trip-charts', 'aria-label': 'Battery and elevation', cover: 'trip.control.zoom' },
     h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('battery'), 'Battery and elevation'),
-      h('span', { class: 'row' }, chartTime, h('span', { class: 'faint' }, 'Drag across a chart to make that span the trip'), csvButton({ onClick: seriesCsv }))),
+      h('span', { class: 'row' }, chartTime, srcMark(series, { short: true }), h('span', { class: 'faint' }, 'Drag across a chart to make that span the trip'), csvButton({ onClick: seriesCsv }))),
     h('div', { class: 'chart-block', dataset: { series: 'batt' }, cover: ['trip.chart.battery.soc', 'trip.chart.battery.range'] },
       h('div', { class: 'chart-label' }, h('span', { class: 'name' }, 'Battery', h('span', { class: 'chart-unit' }, ' · % and ', unitLabel('range'))),
         h('span', { class: 'key' }, h('i', { vars: { '--c': 'var(--c-soc)' } }), 'Battery %'),
@@ -282,7 +283,7 @@ export async function mount(ctx) {
     columns: [
       { key: 'start', label: 'Start', sort: 'start', firstDir: 'asc', cover: ['trip.drives.date', 'trip.drives.link.details'], csv: (d) => iso(d.start_ms),
         render: (d) => h('span', { class: 'cell-text' }, h('a', { class: 'main', href: state.buildUrl('drive', { car: cid, drive: d.id }), title: 'Open this drive' }, `${formatDate(d.start_ms, tz, { year: false })}, ${formatTime(d.start_ms, tz)}`),
-          h('span', { class: 'sub' }, d.flags?.in_progress ? 'driving now' : `to ${formatTime(d.end_ms, tz)}`)) },
+          h('span', { class: 'sub sub--src' }, d.flags?.in_progress ? 'driving now' : `to ${formatTime(d.end_ms, tz)}`, srcMark(d, { short: true, estimated: true }))) },
       { key: 'from', label: 'From', cls: 'col-place', cover: ['trip.drives.start', 'trip.drives.link.geofence_start'], csv: (d) => placeLabel(d.start), render: (d) => placeCell(d.start, d.start?.lat, d.start?.lon) },
       { key: 'to', label: 'To', cls: 'col-place', cover: ['trip.drives.destination', 'trip.drives.link.geofence_end'], csv: (d) => placeLabel(d.end), render: (d) => (d.flags?.in_progress ? h('span', { class: 'cell-text' }, h('span', { class: 'main faint' }, 'driving now')) : placeCell(d.end, d.end?.lat, d.end?.lon)) },
       { key: 'duration', label: 'Duration', num: true, sort: 'duration', cover: ['trip.drives.duration', 'trip.drives.link.duration_hint'], csv: (d) => (d.duration_ms == null ? null : Math.round(d.duration_ms / 60000)),
@@ -304,7 +305,7 @@ export async function mount(ctx) {
     columns: [
       { key: 'start', label: 'Start', sort: 'start', firstDir: 'asc', cover: ['trip.charges.date', 'trip.charges.link.details'], csv: (c) => iso(c.start_ms),
         render: (c) => h('span', { class: 'cell-text' }, h('a', { class: 'main', href: state.buildUrl('charge', { car: cid, charge: c.id }), title: 'Open this charge' }, `${formatDate(c.start_ms, tz, { year: false })}, ${formatTime(c.start_ms, tz)}`),
-          h('span', { class: 'sub' }, c.end_ms ? `${c.kind === 'dc' ? 'DC' : c.kind === 'ac' ? 'AC' : 'AC or DC unknown'}, to ${formatTime(c.end_ms, tz)}` : 'charging now')) },
+          h('span', { class: 'sub sub--src' }, c.end_ms ? `${c.kind === 'dc' ? 'DC' : c.kind === 'ac' ? 'AC' : 'AC or DC unknown'}, to ${formatTime(c.end_ms, tz)}` : 'charging now', srcMark(c, { short: true, estimated: true }))) },
       { key: 'place', label: 'Place', cls: 'col-place', cover: ['trip.charges.location', 'trip.charges.link.geofence'], csv: (c) => placeLabel(c), render: (c) => placeCell(c, c.position?.lat, c.position?.lon) },
       { key: 'duration', label: 'Charging', num: true, sort: 'duration', cover: 'trip.charges.duration', csv: (c) => (c.charging_ms == null ? null : Math.round(c.charging_ms / 60000)),
         render: (c) => h('span', { class: 'cell-text cell-num', title: 'Time actually charging; waiting while plugged in is left out' }, h('span', { class: 'main' }, formatDuration(c.charging_ms)), h('span', { class: 'sub' }, c.plugged_ms != null ? `plugged ${formatDuration(c.plugged_ms)}` : '')) },

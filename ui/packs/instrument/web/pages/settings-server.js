@@ -550,20 +550,29 @@ export async function mount(ctx) {
       case 'account': return a(state.buildUrl('settings-server', { query: { account: tid } }), `Account ${accountName(tid) || tid}`);
       case 'session': return a(state.buildUrl('settings-server', { query: { session: tid } }), 'A session');
       case 'car': return carName.has(tid) ? a(state.buildUrl('settings-cars', { car: tid }), carName.get(tid)) : h('span', { class: 'faint' }, 'A car no longer here');
-      case 'settings': return tid === 'mqtt' ? a(state.buildUrl('settings-integrations'), 'MQTT settings') : a(state.buildUrl('settings-display'), 'Server defaults');
+      case 'settings': return tid === 'mqtt' ? a(state.buildUrl('settings-integrations'), 'MQTT settings') : tid === 'tesla' ? a(`${state.buildUrl('settings-integrations')}#tesla`, 'Tesla API pace') : a(state.buildUrl('settings-display'), 'Server defaults');
       case 'place': return a(state.buildUrl('places', { query: { place: tid } }), 'A place');
       case 'import': return a(state.buildUrl('import'), 'An import');
       case 'key': return a(state.buildUrl('settings-cars'), `CAN Bridge key ${tid}`);
+      // tesla:ta1 (an account), tesla:ta1:tv1 (one of its vehicles); settings:tesla is the poll pace
+      case 'tesla': { const acc = tid.split(':')[0]; return a(`${state.buildUrl('settings-integrations')}#tesla-${encodeURIComponent(acc)}`, tid.includes(':') ? 'A car of a Tesla account' : 'A Tesla account'); }
       default: return h('span', { class: 'faint' }, t ? 'Another item' : DASH);
     }
   }
+  // the Tesla account's actions, in words (the code stays under them, for a search)
+  const ACTION_WORDS = {
+    'tesla-account-added': 'Tesla account added', 'tesla-account-removed': 'Tesla account removed', 'tesla-account-paused': 'Tesla account paused',
+    'tesla-account-resumed': 'Tesla account resumed', 'tesla-account-changed': 'Tesla account changed', 'tesla-token-replaced': 'Tesla token replaced',
+    'tesla-car-matched': 'Tesla car matched', 'tesla-poll-changed': 'Tesla API pace changed', 'tesla-sign-in-needed': 'Tesla asks to sign in again',
+    'tesla-account-error': 'Tesla account not read',
+  };
   const auditTable = admin ? dataTable(ctx, {
     title: 'Audit log', icon: 'book', path: 'audit', label: 'Who changed what', csvName: 'audit-log',
     note: `Every change and every sign-in, newest first. The item links to what was changed, where it still exists. Times are in ${zoneText}.`,
     columns: [
       { key: 'at_ms', label: `When (${zone})`, render: (e) => dateTime(e.at_ms, tz) },
       { key: 'account', label: 'Who', render: (e) => (e.account ? h('b', null, e.account) : h('span', { class: 'faint' }, 'The server')) },
-      { key: 'action', label: 'Action', render: (e) => h('span', { class: 'mono ss-action' }, e.action) },
+      { key: 'action', label: 'Action', render: (e) => (ACTION_WORDS[e.action] ? h('span', { class: 'cell-text' }, h('span', null, ACTION_WORDS[e.action]), h('span', { class: 'sub mono' }, e.action)) : h('span', { class: 'mono ss-action' }, e.action)) },
       { key: 'target', label: 'Item', render: (e) => target(e.target, e.car) },
       { key: 'summary', label: 'What happened', render: (e) => e.summary || DASH },
     ],

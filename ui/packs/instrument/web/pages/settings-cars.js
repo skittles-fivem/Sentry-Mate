@@ -27,7 +27,7 @@ export const css = true;
 export const title = (ctx) => (ctx.car ? 'Car settings' : 'Settings: Cars');
 
 const enc = encodeURIComponent;
-const SOURCE = { can: ['From CAN', 'live'], vin: ['From VIN', 'plain'], owner: ['Typed', 'warm'], teslamate: ['From TeslaMate', 'plain'] };
+const SOURCE = { can: ['From SMO', 'live'], vin: ['From VIN', 'plain'], owner: ['Typed', 'warm'], teslamate: ['From TeslaMate', 'plain'], tesla_api: ['From the Tesla API', 'plain'] };
 const CHEM = { auto: 'Automatic', lfp: 'LFP (iron phosphate)', nca_nmc: 'NCA / NMC (nickel)' };
 const CONFIG_ROWS = [
   ['trim', 'Trim'], ['drivetrain', 'Drivetrain'], ['performance_package', 'Performance package'], ['pack_kwh_code', 'Pack code'],
@@ -51,6 +51,7 @@ function howCarsAppear(admin) {
       ? h('li', null, h('b', null, 'Make an upload token'), ' with ', h('b', null, 'Make upload token'), ' under Upload tokens for a new car, and enter it in the app. It is shown once, so copy it straight in.')
       : h('li', null, h('b', null, 'Enter an upload token'), ' in the app. An admin makes one on this page.'),
     h('li', null, h('b', null, 'Wait for the first log.'), ' The car shows up here by itself, with its model and year from the VIN prefix. Name it, and set its time zone.'),
+    h('li', null, h('b', null, 'Or a Tesla account'), ' (optional): added under Settings: Integrations, its cars are read from the Tesla API once each is matched to a car here or to a new car.'),
     h('li', null, h('b', null, 'A second logger'), ' in the same car (a new Screenmate, a reinstall, a Pi) brings a new key. It waits under Keys waiting until it is tied to the car.'));
 }
 
@@ -111,7 +112,7 @@ async function mountIndex(ctx) {
 
   const noCars = status && status.cars === 0;
   const empty = h('section', { class: 'panel panel-pad sc-empty', cover: 'web.settings.car.empty-state', hidden: !noCars },
-    emptyState({ icon: 'car', title: 'No cars yet', text: 'Sentry Mate needs no Tesla account: a car appears here when its CAN Bridge uploads its first log.' }),
+    emptyState({ icon: 'car', title: 'No cars yet', text: 'A car appears here when its CAN Bridge (SMO) uploads its first log. No Tesla account is needed; adding one (Settings: Integrations) is an optional second input, and its cars can be matched to new cars here.' }),
     howCarsAppear(admin));
 
   const table = noCars ? null : dataTable(ctx, {
@@ -358,10 +359,10 @@ async function mountCar(ctx) {
 
     replace(slots.car, panel({ title: 'Car', icon: 'car', side: h('span', { class: 'faint' }, `${carMeta(c)}${c.profile ? ` · CAN profile ${c.profile}` : ''}`) },
       setting('Whose settings', 'Pick the car to change. Each car has its own settings; nothing here changes another car.',
-        [picker, h('p', { class: 'setting-note', cover: 'web.settings.car.empty-state' }, icon('info', 'ico--sm'), ' A new car appears here by itself once its CAN Bridge has uploaded its first log; no Tesla account is involved. ',
+        [picker, h('p', { class: 'setting-note', cover: 'web.settings.car.empty-state' }, icon('info', 'ico--sm'), ' A new car appears here by itself once its CAN Bridge has uploaded its first log, or when a Tesla account\'s car is matched to a new car. ',
           h('a', { class: 'link', href: state.buildUrl('settings-cars') }, 'How a car appears'), '.')]),
       setting('Name', 'Sentry Mate never reads a name from Tesla: you name the car. Until then it shows its model and VIN prefix.', name.el),
-      setting('What the car reports', `Read from the car's build message on the vehicle bus, with model and year from the VIN prefix. ${missing.length ? `Not reported: ${missing.join(', ')}.` : ''}`,
+      setting('What the car reports', `Read from the car's build message on the vehicle bus (SMO), with model and year from the VIN prefix; a value only the Tesla API gave says so. ${missing.length ? `Not reported: ${missing.join(', ')}.` : ''}`,
         kv(rows))));
   }
 

@@ -103,3 +103,7 @@
   .hl-page .field--search { width: 100%; }
 }
 .hl-figs .metric-value { white-space: normal; overflow-wrap: anywhere; }
+/* the Tesla API rows of a car (pages/tesla-account.js teslaCarStatus) */
+.hl-tesla { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
+.hl-tesla .hl-sub, .hl-tesla p { margin: 0; }
+.hl-tesla > .link { align-self: flex-start; display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); }

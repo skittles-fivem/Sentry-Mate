@@ -31,6 +31,13 @@ function fixLabel(link) {
   return 'How to fix';
 }
 
+// a Tesla account's notice (admins only) links to that account on Settings: Integrations
+const TESLA = new Set(['tesla_sign_in_needed', 'tesla_account_error']);
+function fixOf(n) {
+  if (TESLA.has(n.code) && n.detail?.account) return `${(n.fix_link || '/settings/integrations').split('#')[0]}#tesla-${encodeURIComponent(n.detail.account)}`;
+  return n.fix_link || null;
+}
+
 function render() {
   if (!box) return;
   const gone = hidden();
@@ -41,7 +48,7 @@ function render() {
     const row = h('div', { class: 'notice', dataset: { level, code: n.code }, role: level === 'info' ? 'status' : 'alert' },
       icon(level === 'info' ? 'info' : 'warn'),
       h('span', { class: 'notice-text' }, n.message || n.code),
-      n.fix_link ? h('a', { class: 'btn btn--sm', href: n.fix_link }, fixLabel(n.fix_link), icon('arrow-r', 'ico--sm')) : null,
+      fixOf(n) ? h('a', { class: 'btn btn--sm', href: fixOf(n) }, TESLA.has(n.code) ? 'Open the Tesla account' : fixLabel(n.fix_link), icon('arrow-r', 'ico--sm')) : null,
       level === 'info' ? h('button', { class: 'btn btn--ghost btn--icon btn--sm', type: 'button', 'aria-label': 'Hide this notice for now',
         onclick: () => { hide(n.code); render(); } }, icon('x', 'ico--sm')) : null);
     return row;

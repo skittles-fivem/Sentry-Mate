@@ -29,6 +29,7 @@ import { createMap, mapFallback, boundsOf, padClear } from '../core/map.js';
 import { openPeriodPicker } from '../core/period.js';
 import { placePopover } from '../core/popover.js';
 import { rpx } from '../core/display.js';
+import { srcMark, srcText } from '../core/source.js';
 
 export const id = 'travel';
 export const css = true;
@@ -301,8 +302,8 @@ export async function mount(ctx) {
       csvOf('travel-markers', () => (markMode === 'cities' ? cities.items : placesG.items), [column('Marker', 'label'), column('Key', 'key'), column('Region', 'region'), column('Country', 'country'),
         column('Latitude', 'lat'), column('Longitude', 'lon'), column('Stops', 'visits'), column('Days', 'days'), column('Time spent (h)', (r) => Math.round(r.dwell_ms / 36e3) / 100),
         timeColumn('First visit', 'first_ms', ctx.tz), timeColumn('Last visit', 'last_ms', ctx.tz)]),
-      csvButton({ label: 'Route CSV', onClick: () => downloadCsv(csvFilename(fileBase, 'travel-route'), (tracks?.drives || []).flatMap((d) => d.t_ms.map((t, i) => ({ car: d.car, drive: d.drive, t, lat: d.lat[i], lon: d.lon[i], acc: d.accuracy_m?.[i] }))),
-        [column('Car', (r) => carName(r.car)), column('Drive', 'drive'), column('Time', (r) => iso(r.t)), column('Latitude', 'lat'), column('Longitude', 'lon'), column('Accuracy (m)', 'acc')]) })),
+      csvButton({ label: 'Route CSV', onClick: () => downloadCsv(csvFilename(fileBase, 'travel-route'), (tracks?.drives || []).flatMap((d) => d.t_ms.map((t, i) => ({ car: d.car, drive: d.drive, t, lat: d.lat[i], lon: d.lon[i], acc: d.accuracy_m?.[i], src: srcText(d) }))),
+        [column('Car', (r) => carName(r.car)), column('Drive', 'drive'), column('Time', (r) => iso(r.t)), column('Latitude', 'lat'), column('Longitude', 'lon'), column('Accuracy (m)', 'acc'), column('Data from', 'src')]) })),
     h('div', { class: 'tv-map-box', cover: ['visited.map.route', 'visited.map.city_markers'] }, mapEl,
       h('div', { class: 'map-overlay map-overlay--tl' }, legend),
       h('div', { class: 'map-overlay map-overlay--tr' }, hoverCard)),
@@ -471,7 +472,7 @@ export async function mount(ctx) {
           r.place && r.address?.short ? h('span', { class: 'sub' }, r.address.short) : null), csv: (r) => r.label },
       { key: 'city', label: 'City', cover: 'locations.last_visited.city', render: (r) => r.address?.locality || DASH, csv: (r) => r.address?.locality },
       ...(multi ? [{ key: 'car', label: 'Car', render: (r) => carName(r.car), csv: (r) => carName(r.car) }] : []),
-      { key: 'source', label: 'Source', render: (r) => (r.source === 'teslamate' ? tag('Imported', 'warm') : h('span', { class: 'faint' }, 'CAN')), csv: (r) => r.source },
+      { key: 'source', label: 'Data from', render: (r) => srcMark(r, { short: true }), csv: (r) => srcText(r) },
     ],
     empty: () => emptyState({ icon: 'clock', title: 'No stop', text: anyFilter ? 'No stop matches these filters in this period.' : 'No stop in this period.' }),
   });

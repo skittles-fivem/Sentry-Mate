@@ -28,6 +28,7 @@ import { openCarSwitcher } from '../core/carswitch.js';
 import { field, form, showApiError } from '../core/form.js';
 import { flash } from '../core/flash.js';
 import { rpx } from '../core/display.js';
+import { srcMark, srcText, srcShort } from '../core/source.js';
 
 export const id = 'battery';
 export const css = true;
@@ -254,6 +255,7 @@ export async function mount(ctx) {
       h('p', { class: 'note' }, `From the pack’s own lifetime counters (${life.basis || 'pack counters'}), so it covers years before logging too. Out of the pack: ${format(life.drive_kwh, 'energy')} driving, ${format(life.standing_kwh, 'energy')} while parked.`));
 
     return panel({ title: 'Lifetime totals', icon: 'odo', cls: 'bat-life' },
+      totals?.sources?.length ? h('p', { class: 'note life-src' }, 'Drives and charges counted from: ', srcMark(totals)) : null,
       h('div', { class: 'life-cols' },
         h('div', { class: 'life-col' },
           h('h3', { class: 'life-h' }, icon('route', 'ico--sm'), 'Driving', h('a', { class: 'panel-link', href: ctx.link('statistics'), cover: 'bh.drive.link_stats' }, 'Statistics', icon('chev-r', 'ico--sm'))),
@@ -322,7 +324,7 @@ export async function mount(ctx) {
     ]);
     if (!ctx.alive()) return;
     const items = pts.items, trend = pts.trend || med.trend;
-    const csv = csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'battery-capacity', opt.capGroup), items, [timeColumn('Time', 't_ms', tz), column('Odometer', 'odometer_km', 'odometer'), column('Full pack', 'full_pack_kwh', 'energy'), column('Usable', 'usable_kwh', 'energy'), column('Method', 'method'), column('Charge', 'charge'), column('Source', 'source')]) });
+    const csv = csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'battery-capacity', opt.capGroup), items, [timeColumn('Time', 't_ms', tz), column('Odometer', 'odometer_km', 'odometer'), column('Full pack', 'full_pack_kwh', 'energy'), column('Usable', 'usable_kwh', 'energy'), column('Method', 'method'), column('Charge', 'charge'), { label: 'Data from', value: (it) => srcText(it) }]) });
     replace(capSide, seg, segG, csv);
     if (!items.length) { replace(capChartSlot, emptyState({ icon: 'battery', title: 'No capacity readings yet', text: opt.capGroup === 'charge' ? 'A reading needs a finished charge that added at least 10 %. Try Per day for the pack’s own daily readings.' : 'The pack reports its capacity while the car is awake; none is stored yet.' })); return; }
 
@@ -347,6 +349,9 @@ export async function mount(ctx) {
         h('span', { class: 'key', vars: { '--c': 'var(--warm)' } }, h('i'), 'Trend'),
         newKwh != null ? h('span', { class: 'key', vars: { '--c': 'var(--text-3)' } }, h('i'), `When new ${format(newKwh, 'energy')}`) : null,
         h('span', { class: 'chart-unit' }, 'usable kWh'), readout),
+      // what the readings came from: every input among them, once
+      h('p', { class: 'note cap-src' }, 'Readings from: ', srcMark({ sources: [...new Map(items.flatMap((it) => it.sources || []).map((x) => [`${x.kind}:${x.site || ''}`, x])).values()] }),
+        '. Pointing at a reading names its own.'),
       plotEl,
       h('p', { class: 'note' },
         slope == null ? 'Not enough readings for a trend yet.'
@@ -380,7 +385,7 @@ export async function mount(ctx) {
             const i = u.cursor.idxs?.[1];
             if (i == null || u.cursor.left < 0 || ys1[i] == null) { readout.textContent = 'Point at a reading; click a per-charge reading to open that charge.'; return; }
             const p = all[i];
-            readout.textContent = `${formatDate(p.it.t_ms, tz, { weekday: false })} · ${format(p.it.odometer_km, 'odometer')} · usable ${format(p.it.usable_kwh, 'energy')} (full pack ${format(p.it.full_pack_kwh, 'energy')})${p.it.charge ? ' · click to open the charge' : ''}`;
+            readout.textContent = `${formatDate(p.it.t_ms, tz, { weekday: false })} · ${format(p.it.odometer_km, 'odometer')} · usable ${format(p.it.usable_kwh, 'energy')} (full pack ${format(p.it.full_pack_kwh, 'energy')}) · ${srcShort(p.it) || 'source not known'}${p.it.charge ? ' · click to open the charge' : ''}`;
           }],
           ready: [(u) => {
             u.over.addEventListener('click', () => {

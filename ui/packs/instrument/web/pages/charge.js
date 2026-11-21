@@ -21,6 +21,7 @@ import { emptyState } from '../core/states.js';
 import { createMap, carMarker, mapFallback } from '../core/map.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA, chartFont } from '../core/chart.js';
 import { rpx } from '../core/display.js';
+import { srcMark, isImported, apiOnly, hasKind } from '../core/source.js';
 
 export const id = 'charge';
 export const css = true;
@@ -93,7 +94,12 @@ export async function mount(ctx) {
   const live = !!c.flags?.in_progress;
   const t0 = c.start_ms, t1 = c.end_ms ?? ctx.api.now();
   const dc = c.kind === 'dc', ac = c.kind === 'ac';
-  const imported = c.source === 'teslamate';
+  // where the data came from: SMO measures; the Tesla API alone and an import only estimate the energy
+  const apiAlone = apiOnly(c);
+  const imported = isImported(c) && !hasKind(c, 'smo');
+  const est = c.energy_basis === 'estimated' || imported || apiAlone;
+  const estWord = apiAlone ? 'estimated from the Tesla API\'s readings' : 'estimated (imported)';
+  const notIn = apiAlone ? 'Not from the Tesla API' : 'Not in imported history';
 
   const [curve, place, around, typical] = await Promise.all([
     ctx.api.get(`${base}/curve`, { fields: FIELDS.join(','), max_points: 4000 }).catch(() => null),
@@ -129,14 +135,14 @@ export async function mount(ctx) {
     ? `${formatTime(t0, viewerZone)} – ${live ? 'now' : formatTime(t1, viewerZone)} ${zoneName(t0, viewerZone)} where you are` : null;
 
   /* ---------- the figures */
-  const why = live ? 'Still charging' : imported ? 'Not in imported history' : 'Not recorded';
+  const why = live ? 'Still charging' : imported || apiAlone ? notIn : 'Not recorded';
   const gridKwh = c.energy_grid_kwh;
-  const drawn = ac ? metric('Energy drawn', gridKwh, 'energy', { cover: 'cd.stat.energy_used', explain: imported ? 'estimated (imported)' : 'from the supply, AC line volts × amps', why: imported ? 'Not in imported history' : why })
+  const drawn = ac ? metric('Energy drawn', gridKwh, 'energy', { cover: 'cd.stat.energy_used', explain: est ? estWord : 'from the supply, AC line volts × amps', why: imported || apiAlone ? notIn : why })
     : dc ? metric('Delivered by the charger', c.dc_inlet_kwh, 'energy', { cover: 'cd.stat.energy_used', explain: c.fast_charger?.billed_kwh != null ? `at the inlet; the charger billed ${format(c.fast_charger.billed_kwh, 'energy')}` : "at the inlet (the charger's volts × amps); the grid side is not sent", why })
       : metric('Energy drawn', null, 'energy', { cover: 'cd.stat.energy_used', why: 'Unknown whether AC or DC' });
   const eff = metric('Efficiency', c.efficiency_pct, 'percent', {
     cover: 'cd.stat.efficiency', digits: 1,
-    explain: c.efficiency_pct != null ? `${format(c.losses_kwh, 'energy')} lost on the way${imported ? ' (estimated)' : ''}${c.efficiency_pct > 100 ? '; above 100 % means a bad reading' : ''}` : null,
+    explain: c.efficiency_pct != null ? `${format(c.losses_kwh, 'energy')} lost on the way${est ? ' (estimated)' : ''}${c.efficiency_pct > 100 ? '; above 100 % means a bad reading' : ''}` : null,
     why: dc ? "DC: the charger's own losses are not on the CAN bus" : why,
   });
   const avgTemp = metric('Outside', c.outside_avg_c, 'temperature', { cover: 'cd.stat.avg_temp', explain: c.battery_avg_c != null ? `average; battery ${format(c.battery_avg_c, 'temperature')}` : 'average of the session', why });
@@ -146,7 +152,7 @@ export async function mount(ctx) {
   const stats = panel({ title: 'Figures', icon: 'stats', cls: 'charge-figures-panel', side: live ? h('span', { class: 'pill pill--warm' }, icon('bolt'), 'so far') : null },
     h('div', { class: 'charge-figures' },
       metric('Charging time', c.charging_ms, 'duration', { cover: 'cd.stat.duration', explain: c.plugged_ms != null ? `plugged in for ${formatDuration(c.plugged_ms)}` : 'first to last charging second' }),
-      metric('Energy added', c.energy_added_kwh, 'energy', { cover: 'cd.stat.energy_added', explain: imported ? 'estimated (imported)' : "into the pack, the pack's volts × amps", why }),
+      metric('Energy added', c.energy_added_kwh, 'energy', { cover: 'cd.stat.energy_added', explain: est ? estWord : "into the pack, the pack's volts × amps", why }),
       drawn, eff,
       metric('Average power', c.power_avg_kw, 'power', { cover: 'cd.stat.avg_power', explain: c.power_max_kw != null ? `peak ${format(c.power_max_kw, 'power')}, into the pack` : 'into the pack', why }),
       avgTemp,
@@ -164,7 +170,7 @@ export async function mount(ctx) {
       h('dt', null, 'Odometer'), h('dd', null, format(c.odometer_km, 'odometer')),
       c.fast_charger ? [h('dt', null, 'Charger'), h('dd', null, [c.fast_charger.brand, c.fast_charger.type === 'supercharger' ? 'Supercharger' : c.fast_charger.type, c.fast_charger.class].filter(Boolean).join(' '))] : null,
       c.flags?.gap_ms ? [h('dt', null, 'Missing'), h('dd', { class: 'warn' }, `${formatDuration(c.flags.gap_ms)} without data`)] : null,
-      [h('dt', null, 'Source'), h('dd', null, imported ? 'Imported from TeslaMate (estimated)' : 'Recorded from the CAN bus')]));
+      [h('dt', null, 'Data from'), h('dd', null, srcMark(c, { estimated: true }))]));
 
   /* ---------- where */
   const mapEl = h('div', { class: 'map', role: 'img', 'aria-label': `Map of where the car charged: ${placeLabel(c)}` });
@@ -195,7 +201,7 @@ export async function mount(ctx) {
     column('Phases', 'phases'), column('Current set by', 'limit_source'), column('Charger voltage (DC)', 'dc_volts_v', 'voltage'),
     column('Charger current (DC)', 'dc_amps_a', 'current'), column('Pack voltage', 'volts_v', 'voltage'), column('Pack current', 'amps_a', 'current')];
   const csvCurve = (part) => csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'charge', day, part), rowsCsv(), curveCols) });
-  const stepNote = curve?.step_ms > 1000 ? `One point every ${formatDuration(curve.step_ms)}${imported ? ' (imported history)' : ' (a long charge)'}.` : 'One point per second.';
+  const stepNote = curve?.step_ms > 1000 ? `One point every ${formatDuration(curve.step_ms)}${imported ? ' (imported history)' : apiAlone ? ' (Tesla API readings)' : ' (a long charge)'}.` : 'One point per second.';
   const gapNote = (c.gaps || []).length ? h('p', { class: 'note warn' }, icon('warn', 'ico--sm'), `${c.gaps.length === 1 ? 'One stretch' : `${c.gaps.length} stretches`} without data, shaded grey: nothing is drawn across ${c.gaps.length === 1 ? 'it' : 'them'}.`) : null;
 
   const chargePanel = h('section', { class: 'panel charts-panel', 'aria-label': 'Through the charge', cover: 'cd.chart.timeline' },
@@ -281,7 +287,7 @@ export async function mount(ctx) {
       eyebrow: trail,
       title: [placeLabel(c)],
       titleExtra: live ? h('span', { class: 'pill pill--lg pill--warm' }, icon('bolt'), 'Charging now') : h('span', { class: 'tag' }, KIND_WORDS[c.kind] || 'Charge'),
-      sub: [`${formatDate(t0, tz, { weekday: 'long', month: 'long' })}, ${formatTime(t0, tz)} – ${live ? 'now' : formatTime(t1, tz)} ${zone}`, format(c.energy_added_kwh, 'energy'), formatDuration(c.charging_ms)],
+      sub: [`${formatDate(t0, tz, { weekday: 'long', month: 'long' })}, ${formatTime(t0, tz)} – ${live ? 'now' : formatTime(t1, tz)} ${zone}`, format(c.energy_added_kwh, 'energy'), formatDuration(c.charging_ms), srcMark(c, { estimated: true })],
       actions: [
         back,
         c.prev ? h('a', { class: 'btn btn--icon', href: state.buildUrl('charge', { car: cid, charge: c.prev }), 'aria-label': 'Previous charge', title: 'Previous charge' }, icon('chev-l')) : null,
@@ -401,7 +407,7 @@ export async function mount(ctx) {
     replace(selBox, h('span', { class: 'selection-title' }, zoomed ? `Selection ${formatTime(a * 1000, tz)} – ${formatTime(b * 1000, tz)}` : 'The whole session'),
       metric('Duration', zoomed ? (b - a) * 1000 : c.charging_ms, 'duration', { size: 'sm', explain: zoomed ? null : 'charging time' }),
       zoomed ? metric('Energy added', pw.length ? kwh : null, 'energy', { size: 'sm', explain: 'from the 1 Hz curve, power × time', why: 'No power here' })
-        : metric('Energy added', c.energy_added_kwh, 'energy', { size: 'sm', explain: imported ? 'estimated (imported)' : 'the figure for this charge', why }),
+        : metric('Energy added', c.energy_added_kwh, 'energy', { size: 'sm', explain: est ? estWord : 'the figure for this charge', why }),
       zoomed ? metric('Average power', pw.length ? pw.reduce((s, v) => s + v, 0) / pw.length : null, 'power', { size: 'sm', explain: 'from the 1 Hz curve', why: 'No power here' })
         : metric('Average power', c.power_avg_kw, 'power', { size: 'sm', explain: c.power_max_kw != null ? `peak ${format(c.power_max_kw, 'power')}` : null, why }),
       zoomed ? metric('Battery', soc.length > 1 ? soc[soc.length - 1] - soc[0] : null, 'percent', { size: 'sm', sign: true, explain: 'from the 1 Hz curve', why: 'No battery % here' })

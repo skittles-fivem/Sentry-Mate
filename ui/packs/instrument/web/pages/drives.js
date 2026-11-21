@@ -3,7 +3,8 @@
 // feed the list (GET /cars/{car}/drives, sorted and paged by the server, CSV) and its summary; the places
 // left out feed only the patterns (GET /cars/{car}/drive-stats). Each change reloads only what it feeds.
 // The place pick lists hold this car's places, counted by this car (GET /places?car=), every page.
-// Energy is measured at the pack; imported drives say "estimated". Ticked drives open as one trip.
+// Energy is measured at the pack; drives with Tesla API data alone and imported ones say "estimated". Each drive
+// says where its data came from (SMO, the Tesla API, an import: sources, source_label). Ticked drives open as one trip.
 // Live: a drive that starts or ends ("rows" events) loads the lists and patterns again.
 
 import * as state from '../shared/state.js';
@@ -23,6 +24,7 @@ import { openPeriodPicker } from '../core/period.js';
 import { placePopover } from '../core/popover.js';
 import { isAdmin } from '../core/prefs.js';
 import { flash } from '../core/flash.js';
+import { srcMark, SOURCE_FILTER, filterWord, FILTER_WORDS } from '../core/source.js';
 
 export const id = 'drives';
 export const css = true;
@@ -42,7 +44,7 @@ export async function mount(ctx) {
   const q = ctx.query;
   const f = {
     places: q.places || '', place_side: q.place_side || 'any', q: q.q || '', min_distance: q.min_distance || '', min_speed: q.min_speed || '',
-    source: q.source || '', flags: q.flags || '', efficiency: q.efficiency || 'plain', exclude: q.exclude || '',
+    source: filterWord(q.source), flags: q.flags || '', efficiency: q.efficiency || 'plain', exclude: q.exclude || '',
   };
   const apiParams = () => ({
     ...ctx.params,
@@ -78,7 +80,7 @@ export async function mount(ctx) {
   const textIn = h('input', { class: 'input', type: 'search', value: f.q, placeholder: 'Start or destination', 'aria-label': 'Text in the start or destination (place name or address)' });
   const distIn = h('input', { class: 'input input--sm', type: 'number', min: '0', step: '0.1', value: f.min_distance, 'aria-label': `Shortest drive (${unitLabel('distance')})` });
   const speedIn = h('input', { class: 'input input--sm', type: 'number', min: '0', step: '1', value: f.min_speed, 'aria-label': `Lowest average speed (${unitLabel('speed')})` });
-  const sourceSel = h('select', { class: 'select', 'aria-label': 'Source' }, [['', 'Every source'], ['can', 'CAN Bridge'], ['teslamate', 'Imported']].map(([v, l]) => h('option', { value: v, selected: f.source === v }, l)));
+  const sourceSel = h('select', { class: 'select', 'aria-label': 'Source' }, SOURCE_FILTER.map(([v, l]) => h('option', { value: v, selected: f.source === v }, l)));
   const flagSel = h('select', { class: 'select', 'aria-label': 'Flags' }, [['', 'Every drive'], ['gap', 'With a gap'], ['in_progress', 'In progress'], ['reduced_range', 'Cold battery']].map(([v, l]) => h('option', { value: v, selected: f.flags === v }, l)));
   const effSel = h('select', { class: 'select', 'aria-label': 'Basis for consumption and efficiency' },
     [['plain', 'Efficiency: plain'], ['hill_corrected', 'Efficiency: hill corrected']].map(([v, l]) => h('option', { value: v, selected: f.efficiency === v }, l)));
@@ -195,7 +197,7 @@ export async function mount(ctx) {
         metric('Drives', st ? null : s.count ?? 0, 'count', { why, explain: st === 'error' ? 'the list could not be loaded' : st ? 'loading the list' : none ? 'match the filters' : s.without_energy ? `${formatNumber(measured)} with energy, ${formatNumber(s.without_energy)} without` : 'all with energy' }),
         metric('Distance', blank ? null : s.distance_km, 'distance', { cover: 'drives.summary.distance', why, explain: 'sum of the listed drives' }),
         metric('Driving time', blank ? null : s.duration_ms, 'duration', { cover: 'drives.summary.duration', why, explain: 'from start to end of each drive' }),
-        metric('Energy', blank ? null : s.energy_kwh, 'energy', { cover: 'drives.summary.energy', why, explain: s.energy_estimated_kwh ? `${format(s.energy_measured_kwh, 'energy')} measured at the pack, ${format(s.energy_estimated_kwh, 'energy')} estimated (imported)` : 'measured at the pack, regen taken off' }),
+        metric('Energy', blank ? null : s.energy_kwh, 'energy', { cover: 'drives.summary.energy', why, explain: s.energy_estimated_kwh ? `${format(s.energy_measured_kwh, 'energy')} measured at the pack, ${format(s.energy_estimated_kwh, 'energy')} estimated (Tesla API alone or imported)` : 'measured at the pack, regen taken off' }),
         metric(`Consumption${hillS ? ' (hill corrected)' : ''}`, blank ? null : s.wh_per_km, 'efficiency', { cover: 'drives.summary.consumption', why,
           explain: `${hillS ? 'energy less the climb, over distance' : 'energy over distance'}${s.without_energy ? ', drives with energy only' : ''}; same basis as the list` })));
   };
@@ -237,7 +239,7 @@ export async function mount(ctx) {
         onchange: (e) => { if (e.target.checked) picked.set(d.id, d); else picked.delete(d.id); paintPicks(); } })) },
     { key: 'start', label: 'Start', sort: 'start', firstDir: 'desc', cover: 'drives.table.date', render: (d) => h('span', { class: 'cell-text' },
       h('a', { class: 'main', href: state.buildUrl('drive', { car: cid, drive: d.id }) }, `${formatDate(d.start_ms, tz, { year: false })}, ${formatTime(d.start_ms, tz)}`),
-      h('span', { class: 'sub' }, d.end_ms ? `to ${formatTime(d.end_ms, tz)}` : 'still driving')),
+      h('span', { class: 'sub sub--src' }, d.end_ms ? `to ${formatTime(d.end_ms, tz)}` : 'still driving', srcMark(d, { short: true }))),
       csv: (d) => new Date(d.start_ms).toISOString() },
     { key: 'route', label: 'Route', cls: 'col-route', cover: ['drives.table.start', 'drives.table.destination', 'drives.table.link.geofence_start', 'drives.table.link.geofence_end'], render: (d) => h('span', { class: 'cell-text' },
       h('span', { class: 'route' }, placeCell(d.start), h('span', { class: 'tl-arrow', 'aria-hidden': 'true' }, ' → '), d.end && d.end_ms != null ? placeCell(d.end) : h('span', null, d.end_ms == null ? 'driving now' : '…')),
@@ -249,19 +251,18 @@ export async function mount(ctx) {
     { key: 'speed', label: 'Average', num: true, cover: 'drives.table.speed_avg', render: (d) => format(d.speed_avg_kph, 'speed') },
     { key: 'speed_max', label: 'Top', num: true, sort: 'speed_max', cover: 'drives.table.speed_max', render: (d) => format(d.speed_max_kph, 'speed') },
     { key: 'power', label: 'Peak', num: true, cover: 'drives.table.power_max', title: 'Highest power taken from the battery', render: (d) => format(d.power_max_kw, 'power') },
-    { key: 'energy', label: 'Energy', num: true, sort: 'energy', cover: 'drives.table.energy', render: (d) => h('span', { class: 'nowrap' }, format(d.energy_kwh, 'energy'), d.energy_basis === 'estimated' ? [' ', tag('est.', 'warm')] : null) },
+    { key: 'energy', label: 'Energy', num: true, sort: 'energy', cover: 'drives.table.energy', render: (d) => h('span', { class: 'nowrap' }, format(d.energy_kwh, 'energy'), d.energy_basis === 'estimated' ? [' ', h('span', { class: 'tag tag--warm', title: 'Estimated: from the Tesla API\'s power readings (or an import), not measured at the pack' }, 'est.')] : null) },
     { key: 'wh', label: whHead, num: true, sort: 'wh_per_km', cover: 'drives.table.consumption', render: (d) => format(d.wh_per_km, 'efficiency') },
     { key: 'eff', label: effHead, cover: 'drives.table.efficiency', title: 'Rated consumption against this drive\'s consumption, on the basis chosen above (100 % = as rated)', render: effBar, csv: (d) => d.efficiency_pct },
-    { key: 'flags', label: 'Flags', cover: 'drives.table.reduced_range', csv: false, title: 'Thermometer: cold battery. Warning sign: data missing. Live: still driving. Imported: from TeslaMate.', render: (d) => h('span', { class: 'flag-icons' },
+    { key: 'flags', label: 'Flags', cover: 'drives.table.reduced_range', csv: false, title: 'Thermometer: cold battery. Warning sign: data missing. Live: still driving.', render: (d) => h('span', { class: 'flag-icons' },
       d.flags?.reduced_range ? h('span', { class: 'flag-ico', title: 'Cold battery: part of the charge was locked, so range and consumption read high' }, icon('thermo', 'ico--sm')) : null,
       d.flags?.gap_ms ? h('span', { class: 'flag-ico', title: `Data missing for ${formatDuration(d.flags.gap_ms)}` }, icon('warn', 'ico--sm')) : null,
-      d.flags?.in_progress ? h('span', { class: 'tag tag--live' }, 'live') : null,
-      d.source && d.source !== 'can' ? h('span', { class: 'tag tag--plain', title: 'Imported from TeslaMate: energy is estimated, points are sparser' }, 'imported') : null) },
+      d.flags?.in_progress ? h('span', { class: 'tag tag--live' }, 'live') : null) },
   ];
   const table = dataTable(ctx, {
     title: 'Drives', icon: 'route', path, params: apiParams(), limit: 25, columns, sort: { key: 'start', dir: 'desc' }, csvName: 'drives', cls: 'drives-table',
     cover: ['drives.table', 'drives.table.link.details', 'drives.empty_states'], side: pickBar,
-    note: 'Energy is measured at the battery pack, with regen taken off; imported drives are marked "est." and "imported". Efficiency is the rated consumption against the drive\'s own. Flags: a thermometer marks a cold battery (part of the charge was locked, so range and consumption read high), a warning sign missing data. Tick drives to open them together as a trip.',
+    note: 'Energy is measured at the battery pack, with regen taken off; drives whose energy is an estimate (Tesla API data alone, or imported) are marked "est.", and the line under each start says where its data came from (SMO, the Tesla API, an import). Efficiency is the rated consumption against the drive\'s own. Flags: a thermometer marks a cold battery (part of the charge was locked, so range and consumption read high), a warning sign missing data. Tick drives to open them together as a trip.',
     rowHref: (d) => state.buildUrl('drive', { car: cid, drive: d.id }),
     onPage: (pg) => { if (pg.summary) paintSummary(pg.summary); },
     onError: () => paintSummary(null, 'error'),
@@ -282,7 +283,7 @@ export async function mount(ctx) {
       f.q && `text "${f.q}"`,
       f.min_distance && `at least ${format(toMetric(+f.min_distance, 'distance'), 'distance')}`,
       f.min_speed && `average at least ${format(toMetric(+f.min_speed, 'speed'), 'speed')}`,
-      f.source && (f.source === 'can' ? 'CAN Bridge drives only' : 'imported drives only'),
+      f.source && (FILTER_WORDS[f.source] || f.source),
       f.flags && ({ gap: 'with a gap', in_progress: 'in progress', reduced_range: 'cold battery' }[f.flags] || f.flags),
     ].filter(Boolean);
   }

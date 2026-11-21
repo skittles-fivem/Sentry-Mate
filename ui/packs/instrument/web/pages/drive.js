@@ -15,6 +15,7 @@ import { createMap, routePin, boundsOf, padClear, mapFallback } from '../core/ma
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA } from '../core/chart.js';
 import { rpx } from '../core/display.js';
 import { TYRES, val, spotText } from '../core/fmt.js';
+import { srcMark, isImported, apiOnly } from '../core/source.js';
 
 export const id = 'drive';
 export const css = true;
@@ -120,8 +121,8 @@ export async function mount(ctx) {
       metric('Distance', d.distance_km, 'distance', { cover: 'dd.stat.distance', explain: 'by odometer, 1 m steps' }),
       metric('Duration', dur, 'duration', { cover: 'dd.stat.drive_duration' }),
       metric('Average speed', avg, 'speed', { cover: 'dd.stat.speed_avg', explain: `${AVG_HOW}; top ${format(d.speed_max_kph, 'speed')}` }),
-      metric('Energy used', d.energy_kwh, 'energy', { cover: 'dd.stat.energy_net', explain: est ? 'estimated (imported)' : 'measured at the pack, regen taken off', why }),
-      metric('Regen', d.regen_kwh, 'energy', { cover: 'dd.stat.energy_recovered', explain: 'won back braking', why: est ? 'Not in imported history' : why }),
+      metric('Energy used', d.energy_kwh, 'energy', { cover: 'dd.stat.energy_net', explain: est ? (apiOnly(d) ? 'estimated: the Tesla API\'s power readings, summed' : 'estimated (imported)') : 'measured at the pack, regen taken off', why }),
+      metric('Regen', d.regen_kwh, 'energy', { cover: 'dd.stat.energy_recovered', explain: 'won back braking', why: est ? (apiOnly(d) ? 'Not from the Tesla API' : 'Not in imported history') : why }),
       metric('Consumption', d.wh_per_km, 'efficiency', { cover: 'dd.stat.consumption_net', explain: d.efficiency_pct != null ? `${format(d.efficiency_pct, 'percent')} of rated` : null, why: d.distance_km < 0.5 ? 'Too short to be reliable' : why }),
       metric('Climb', d.climb_m, 'length', { cover: 'dd.stat.elevation_up', explain: "the car's own elevation", sign: true }),
       metric('Descent', d.descent_m != null ? -d.descent_m : null, 'length', { cover: 'dd.stat.elevation_down' }),
@@ -145,7 +146,7 @@ export async function mount(ctx) {
       h('dt', null, 'Cabin'), h('dd', null, format(d.cabin_avg_c, 'temperature', { why: 'Not sent by this car' })),
       d.flags?.gap_ms ? [h('dt', null, 'Missing'), h('dd', { class: 'warn' }, `${formatDuration(d.flags.gap_ms)} without data`)] : null,
       d.flags?.reduced_range ? [h('dt', null, 'Cold battery'), h('dd', { class: 'warn' }, 'part of the charge was locked')] : null,
-      d.source === 'teslamate' ? [h('dt', null, 'Source'), h('dd', null, 'Imported from TeslaMate')] : null));
+      [h('dt', null, 'Data from'), h('dd', { cover: null }, srcMark(d, { estimated: true }))]));
 
   // a set point column: LO and HI stay words, numbers go to the viewer's unit
   const setColumn = (label, key) => {
@@ -171,7 +172,7 @@ export async function mount(ctx) {
       eyebrow: `${live ? 'Drive in progress' : 'Drive'} · ${formatDate(t0, tz, { weekday: 'long', month: 'long' })}`,
       title: [placeLabel(d.start), ' → ', d.end ? placeLabel(d.end) : 'driving now'],
       titleExtra: live ? h('span', { class: 'pill pill--lg pill--live' }, icon('live'), 'Live') : null,
-      sub: [h('span', { cover: 'dd.context.drive' }, `${formatTime(t0, tz)} – ${live ? 'now' : formatTime(t1, tz)} ${zoneName(t0, tz)}`), format(d.distance_km, 'distance'), formatDuration(d.duration_ms), h('span', { cover: 'dd.filter.car' }, car.name)],
+      sub: [h('span', { cover: 'dd.context.drive' }, `${formatTime(t0, tz)} – ${live ? 'now' : formatTime(t1, tz)} ${zoneName(t0, tz)}`), format(d.distance_km, 'distance'), formatDuration(d.duration_ms), h('span', { cover: 'dd.filter.car' }, car.name), srcMark(d, { estimated: true })],
       actions: [
         d.prev ? h('a', { class: 'btn btn--icon', href: state.buildUrl('drive', { car: cid, drive: d.prev }), 'aria-label': 'Previous drive', title: 'Previous drive' }, icon('chev-l')) : null,
         d.next ? h('a', { class: 'btn btn--icon', href: state.buildUrl('drive', { car: cid, drive: d.next }), 'aria-label': 'Next drive', title: 'Next drive' }, icon('chev-r')) : null,
@@ -184,7 +185,7 @@ export async function mount(ctx) {
     h('div', { class: 'drive-layout' }, mapPanel, stats),
     h('section', { class: 'panel charts-panel', 'aria-label': 'Through the drive', cover: ['dd.chart.drive', 'dd.chart.drive.tooltip'] },
       h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('signals'), 'Through the drive'),
-        h('span', { class: 'row' }, timeEl, h('span', { class: 'faint' }, 'Drag across a chart to zoom; double-click for the whole drive'), resetBtn,
+        h('span', { class: 'row' }, timeEl, srcMark(series, { short: true }), h('span', { class: 'faint' }, 'Drag across a chart to zoom; double-click for the whole drive'), resetBtn,
           csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'drive', day), series.t_ms.map((t, i) => Object.fromEntries([['t', t], ...[...fields, 'est_range_km'].map((f) => [f, series.values[f]?.[i] ?? null])])),
             [timeColumn('Time', 't', tz), column('Speed', 'speed_kph', 'speed'), column('Power', 'power_kw', 'power'), column('Battery', 'soc_pct', 'percent'), column('Usable', 'usable_soc_pct', 'percent'), column(ideal ? 'Ideal range' : 'Rated range', rk, 'range'), column('Estimated range (Sentry Mate)', 'est_range_km', 'range'), column('Energy left', 'energy_remaining_kwh', 'energy'), column('Elevation', 'elevation_m', 'length'), column('Outside', 'outside_c', 'temperature'), column('Cabin', 'cabin_c', 'temperature'), setColumn('Set left', 'setpoint_left_c'), setColumn('Set right', 'setpoint_right_c'), column('Climate', 'climate'), column('Fan step (0-10)', 'fan_level'), column('Battery heating', 'battery_heat_kw', 'power'), column('Odometer', 'odometer_km', 'odometer'), column('Latitude', 'lat'), column('Longitude', 'lon'), column('Accuracy', 'accuracy_m', 'length')]) }))),
       selBox, chartsHost),
@@ -278,7 +279,7 @@ export async function mount(ctx) {
     { key: 'range', name: ideal ? 'Ideal range' : 'Rated range', unit: unitLabel('range'), cover: 'dd.chart.drive.range', kind: 'range',
       series: [{ label: ideal ? 'Ideal' : 'Rated', data: V(rk, 'range'), color: '--live' }, { label: 'Estimate', data: V('est_range_km', 'range'), color: '--warm', dash: true }],
       note: estWh && known('energy_remaining_kwh') ? `The estimate is Sentry Mate's own: the energy left in the pack ÷ ${format(estWh, 'efficiency')}, the car's consumption over the 30 days before this drive.`
-        : d.source === 'teslamate' ? 'No estimate: imported history has no energy left in the pack.' : 'No estimate: this car does not send the energy left in the pack.' },
+        : isImported(d) && !d.sources?.some((x) => x.kind === 'smo') ? 'No estimate: imported history has no energy left in the pack.' : 'No estimate: this car does not send the energy left in the pack.' },
     { key: 'elev', name: 'Elevation', unit: unitLabel('length'), cover: 'dd.chart.elevation', series: [{ label: 'Elevation', data: V('elevation_m', 'length'), color: '--c-elev', area: true }], kind: 'length' },
     { key: 'temps', name: 'Climate', unit: unitLabel('temperature'), cover: ['dd.chart.temps.air', 'dd.chart.temps.setpoints'], kind: 'temperature', digits: 1,
       series: [{ label: 'Outside', data: V('outside_c', 'temperature'), color: '--c-power' }, { label: 'Cabin', data: V('cabin_c', 'temperature'), color: '--warm' },
@@ -295,7 +296,7 @@ export async function mount(ctx) {
         : heatVals.some((v) => v > 0) ? `Power the pack spent warming itself: about ${format(heatKwh, 'energy')} on this drive, part of the energy used.`
           : 'The pack did not heat itself on this drive (0 kW all the way).' },
     { key: 'tyres', name: 'Tyres', unit: unitLabel('pressure'), cover: 'dd.chart.tire_pressure', kind: 'pressure', digits: 2, series: tyreSeries, showX: true,
-      note: TYRES.some(([k]) => known(`tyre_${k}_kpa`)) ? null : d.source === 'teslamate' ? 'Not in imported history: these drives came without tyre pressures.' : 'This car does not send tyre pressures.' },
+      note: TYRES.some(([k]) => known(`tyre_${k}_kpa`)) ? null : isImported(d) ? 'Not in imported history: these drives came without tyre pressures.' : apiOnly(d) ? 'Not read from the Tesla API for this drive.' : 'This car does not send tyre pressures.' },
   ];
   const xMin = x[0], xMax = x[x.length - 1];
   const plots = [];

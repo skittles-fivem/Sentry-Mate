@@ -25,6 +25,7 @@ import { placePopover } from '../core/popover.js';
 import { isAdmin } from '../core/prefs.js';
 import { flash } from '../core/flash.js';
 import { rpx } from '../core/display.js';
+import { srcMark, SOURCE_FILTER, filterWord } from '../core/source.js';
 
 export const id = 'charges';
 export const css = true;
@@ -95,7 +96,7 @@ export async function mount(ctx) {
   /* ---------- filters (in the address) */
   const f = {
     places: q.places || '', place_kind: q.place_kind || '', kind: q.kind || '', q: q.q || '', min_cost: q.min_cost || '',
-    unpriced: q.unpriced === '1', min_dur: q.min_dur || '', source: q.source || '', flags: q.flags || '',
+    unpriced: q.unpriced === '1', min_dur: q.min_dur || '', source: filterWord(q.source), flags: q.flags || '',
   };
   const base = () => ({ ...ctx.params, cars: carsParam });
   const listParams = () => ({
@@ -195,7 +196,7 @@ export async function mount(ctx) {
   const costIn = h('input', { class: 'input input--sm', type: 'number', min: '0', step: '0.01', value: f.min_cost, 'aria-label': 'Lowest cost' });
   const unpricedIn = h('input', { type: 'checkbox', checked: f.unpriced, 'aria-label': 'Keep charges without a price' });
   const durIn = h('input', { class: 'input input--sm', type: 'number', min: '0', step: '1', value: f.min_dur, 'aria-label': 'Shortest charging time (minutes)' });
-  const sourceSel = h('select', { class: 'select', 'aria-label': 'Source' }, [['', 'Every source'], ['can', 'CAN Bridge'], ['teslamate', 'Imported']].map(([v, l]) => h('option', { value: v, selected: f.source === v }, l)));
+  const sourceSel = h('select', { class: 'select', 'aria-label': 'Source' }, SOURCE_FILTER.map(([v, l]) => h('option', { value: v, selected: f.source === v }, l)));
   const flagSel = h('select', { class: 'select', 'aria-label': 'Missing data' }, [['', 'Every charge'], ['gap', 'With missing data'], ['in_progress', 'Under way'], ['gap,in_progress', 'Missing data or under way']].map(([v, l]) => h('option', { value: v, selected: f.flags === v }, l)));
 
   let timer = 0;
@@ -271,7 +272,7 @@ export async function mount(ctx) {
     multi ? { key: 'car', label: 'Car', render: (c) => h('span', { class: 'nowrap' }, carName(c.car)), csv: (c) => carName(c.car) } : null,
     { key: 'start', label: 'Start', sort: 'start', firstDir: 'desc', cover: ['charges.table.date', 'charges.link.view_details'], render: (c) => h('span', { class: 'cell-text' },
       h('a', { class: 'main', href: state.buildUrl('charge', { car: c.car, charge: c.id }) }, `${formatDate(c.start_ms, c.time_zone || tz, { year: false })}, ${formatTime(c.start_ms, c.time_zone || tz)}`),
-      h('span', { class: 'sub' }, c.end_ms ? `to ${formatTime(c.end_ms, c.time_zone || tz)}` : 'charging now')),
+      h('span', { class: 'sub sub--src' }, c.end_ms ? `to ${formatTime(c.end_ms, c.time_zone || tz)}` : 'charging now', srcMark(c, { short: true, estimated: true }))),
       csv: (c) => iso(c.start_ms) },
     { key: 'place', label: 'Place', cls: 'col-place', cover: ['charges.table.location', 'charges.link.geofence'], render: (c) => {
       const href = placeHref(c);
@@ -308,13 +309,12 @@ export async function mount(ctx) {
     { key: 'odo', label: 'Odometer', num: true, cover: 'charges.table.odometer', render: (c) => format(c.odometer_km, 'odometer'), csv: column('Odometer', 'odometer_km', 'odometer') },
     { key: 'flags', label: '', csv: false, render: (c) => h('span', { class: 'flag-icons' },
       c.has_gaps ? h('span', { class: 'flag-ico', title: `Data missing for ${formatDuration(c.flags?.gap_ms || 0)} inside this charge` }, icon('warn', 'ico--sm')) : null,
-      c.flags?.in_progress || c.end_ms == null ? h('span', { class: 'tag tag--live' }, 'live') : null,
-      c.source && c.source !== 'can' ? h('span', { class: 'tag tag--plain', title: 'Imported from TeslaMate: figures are estimated' }, 'imported') : null) },
+      c.flags?.in_progress || c.end_ms == null ? h('span', { class: 'tag tag--live' }, 'live') : null) },
   ].filter(Boolean);
   const table = dataTable(ctx, {
     title: 'Charging sessions', icon: 'bolt', path: listPath, params: listParams(), limit: 25, columns, sort: { key: 'start', dir: 'desc' }, csvName: 'charges', cls: 'charges-table',
     cover: 'charges.table', noteCover: 'charges.text.list_help',
-    note: 'Narrow the list with the period, cars, places, AC or DC, text, a lowest cost and a shortest charging time; the totals above count exactly the listed charges. Charging time leaves out time plugged in but not charging, so average power is not diluted. Energy added is measured at the pack; DC efficiency is unknown because a fast charger’s grid side is not measured. Open a row for its curve and cost.',
+    note: 'Narrow the list with the period, cars, places, AC or DC, text, a lowest cost and a shortest charging time; the totals above count exactly the listed charges. Charging time leaves out time plugged in but not charging, so average power is not diluted. Energy added is measured at the pack (estimated for a charge with Tesla API data alone, or imported; the line under each start says where its data came from); DC efficiency is unknown because a fast charger’s grid side is not measured. Open a row for its curve and cost.',
     rowHref: (c) => state.buildUrl('charge', { car: c.car, charge: c.id }),
     onPage: (pg) => { if (pg.totals) paintSummary(pg.totals); },
     empty: () => {

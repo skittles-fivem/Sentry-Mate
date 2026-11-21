@@ -215,7 +215,7 @@ export async function mount(ctx) {
     const bar = h('span', { class: 'st-rec-bar', 'aria-hidden': 'true' }, h('i'));
     setVars(bar, { '--w': `${Math.max(0, Math.min(100, c.recorded_pct ?? 0)).toFixed(2)}%` });
     const good = (c.recorded_pct ?? 0) >= 99.5 && !c.dropped_stretches && !c.open_drive && !c.open_charge;
-    return h('span', { class: ['st-rec', good ? 'is-good' : 'is-warn'], title: 'Recorded share: the part of the period the CAN logs cover. Unknown time is when nothing was logged (asleep time counts as recorded: a quiet car is known to be asleep).' },
+    return h('span', { class: ['st-rec', good ? 'is-good' : 'is-warn'], title: 'Recorded share: the part of the period the live inputs (SMO, the Tesla API) or an import cover. Unknown time is when nothing was logged (asleep time counts as recorded: a quiet car is known to be asleep).' },
       h('span', { class: 'st-rec-top' }, bar, h('b', null, c.recorded_pct == null ? '—' : pctText(c.recorded_pct, c.recorded_pct >= 100 ? 0 : c.recorded_pct >= 99 ? 2 : 1))),
       h('span', { class: 'sub' }, bits.length ? bits.join(' · ') : 'nothing missing'));
   };
