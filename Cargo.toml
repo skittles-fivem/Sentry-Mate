@@ -28,7 +28,9 @@ debug = "line-tables-only"
 opt-level = 2
 debug = false
 
+# The release build (the Docker image): no link-time optimisation and the default 16 codegen units. With full LTO and
+# one codegen unit the workspace's own crates alone took 9 minutes per arch in the image build (runs 13 and 15 of the
+# Image workflow), on the path of every push to main; the owner's limit is 5 minutes for the whole run.
 [profile.release]
-lto = true
-codegen-units = 1
+lto = false
 strip = true

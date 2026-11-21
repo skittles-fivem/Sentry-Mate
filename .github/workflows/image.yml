@@ -19,7 +19,9 @@ name: Image
 #     code changed, so there is nothing to test and no new image.
 # This replaces ci.yml: it ran the same tests on every push to main, so with
 # this file they would have run twice.
-# The owner's rule: a push to main takes about 5 minutes, tests and image.
+# The owner's limit: a push to main takes at most 5 minutes, tests and image
+# (docs/development.md has what the runs so far measured; check the job times
+# on a run's page).
 #   - tests runs the fast set (cargo test --workspace --locked, split in two
 #     halves on two machines at once): every unit test and the quick
 #     integration tests, which still take each main
@@ -31,7 +33,9 @@ name: Image
 #   - clippy and cargo fmt run beside them, on a machine of their own.
 #   - the image build keeps the dependencies in a layer of their own, cached
 #     per arch in GitHub's cache (type=gha): a push that changes no
-#     Cargo.toml or Cargo.lock builds only the workspace's own crates.
+#     Cargo.toml or Cargo.lock builds only the workspace's own crates. That
+#     build is the longest step of a run: with full LTO and one codegen unit
+#     it took 9 minutes, so the release profile (Cargo.toml) has neither.
 # The tests, clippy and the two images (each on its own kind of
 # machine, no emulation) run at the same time. The images are pushed only by
 # digest, which nobody pulls; the tags that people pull are put on them last,
