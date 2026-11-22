@@ -1,8 +1,8 @@
 // Sentry Mate, "Pebble" UI pack: Settings: Display and units (/settings/display).
 //
 // Your own choices first (GET / PATCH /api/v1/me/preferences): theme (Auto, Light, Dark), units, rated or ideal
-// range, language, interface size and the UI pack. Each is a rounded list row; a picker opens a sheet, and the
-// change saves at once and shows on every page, with an example in the chosen unit next to it.
+// range, language, the main car (none: the car looked at last), interface size and the UI pack. Each is a
+// rounded list row; a picker opens a sheet, and the change saves at once and shows on every page, with an example in the chosen unit next to it.
 // Below a divider, what an admin sets for everyone (GET / PATCH /api/v1/settings): default units, address lookup
 // and its status (GET /api/v1/geocode/status), map tiles, the outbound proxy, outside links and the release check.
 
@@ -60,8 +60,9 @@ const strip = (err, prefix, rename = {}) => {
 export async function mount(ctx) {
   inOrder(ctx);
   const admin = ctx.admin;
-  let [srv, geo, mapCfg, packList] = await Promise.all([ctx.api.get('settings'), ctx.api.get('geocode/status').catch(() => null), ctx.api.get('maps/config').catch(() => null),
-    packChoices(ctx.api, { fallback: PACKS, current: (currentPrefs() || {}).ui_pack || null })]);
+  let [srv, geo, mapCfg, packList, cars] = await Promise.all([ctx.api.get('settings'), ctx.api.get('geocode/status').catch(() => null), ctx.api.get('maps/config').catch(() => null),
+    packChoices(ctx.api, { fallback: PACKS, current: (currentPrefs() || {}).ui_pack || null }),
+    ctx.api.list('cars', { sort: 'custom' }).all({ max: 200 }).catch(() => [])]);
   // satellite first, then the rest as the server lists them
   const tilePresets = [...((mapCfg && mapCfg.tiles && mapCfg.tiles.presets) || [])].sort((a, b) => (b.kind === 'satellite') - (a.kind === 'satellite'));
   const regionNote = (p) => (p.region ? ` ${p.region === 'us' ? 'United States only' : `${p.region} only`}: elsewhere it shows nothing.` : '');
@@ -148,9 +149,17 @@ export async function mount(ctx) {
     onpick: (v) => save({ language: v }).then(() => saved('Language')) });
   const langInUse = h('span', { class: 'row-sub' });
   const langSample = h('span', { class: 'row-sub' });
+  /* ------------------------------------------------------------ main car */
+  // '' is no main car: pages without a car in their address show the car you looked at last.
+  const carOpts = [['', 'None', 'The car you looked at last'],
+    ...cars.map((c) => [c.id, c.name || c.id, [c.year, c.model].filter(Boolean).join(' ') || null, state.isSold(c)])];
+  const mainCar = pickRow({ name: 'Main car', sub: 'Pages without a car in their address show this one.', value: p0.main_car || '', options: carOpts,
+    sheetNote: 'With None, each page opens on the car you looked at last.',
+    onpick: (v) => save({ main_car: v || null }).then(() => saved('Main car')) });
   const langT = tile({ w: 2, title: 'Language', icon: 'globe' },
     group(null, [lang,
-      h('div', { class: 'row row-static set-ex-row', cover: 'web.shell.locale-negotiation' }, h('span', { class: 'row-text' }, langInUse, langSample))]));
+      h('div', { class: 'row row-static set-ex-row', cover: 'web.shell.locale-negotiation' }, h('span', { class: 'row-text' }, langInUse, langSample))]),
+    cars.length ? group('Car', [mainCar]) : null);
 
   /* ------------------------------------------------------------ keeping it in step */
   function sync() {
@@ -169,6 +178,7 @@ export async function mount(ctx) {
     exPress.textContent = `For example: front left ${format(290, 'pressure')}.${def('pressure', u.pressure)}`;
     exRange.textContent = `Shown as “${(pr.range || 'rated') === 'ideal' ? 'Ideal range' : 'Rated range'}”, for example ${format(386, 'range')}.${def('range', pr.range)}`;
     lang.set(pr.language && pr.language !== 'auto' ? pr.language : 'auto');
+    mainCar.set(pr.main_car || '');
     const loc = getLocale();
     const chosen = pr.language && pr.language !== 'auto';
     langInUse.textContent = `In use: ${langName(loc) || loc} (${loc}), ${chosen ? 'your choice' : 'the first of your browser’s languages this browser can write'}. If one cannot be used, the next in your browser’s list is taken, then English (US).`;

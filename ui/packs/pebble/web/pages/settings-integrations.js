@@ -215,7 +215,7 @@ export async function mount(ctx) {
   const teslamate = teslamateTiles(ctx, { cars: allCars });
   await Promise.all([tesla.load(), teslafi.load(), teslamate.load()]);
   if (!ctx.alive()) return {};
-  let carId = (ctx.query.car && cars.some((c) => c.id === ctx.query.car) ? ctx.query.car : null) || (cars.find((c) => c.id === state.lastCar()) || cars.find((c) => !state.isSold(c)) || cars[0] || {}).id || null;
+  let carId = (ctx.query.car && cars.some((c) => c.id === ctx.query.car) ? ctx.query.car : null) || state.preferredCar(cars);
   let pv = null;
   let events = [];
   async function loadCar() {
@@ -544,7 +544,7 @@ export async function mount(ctx) {
   }
 
   /* ---------- the car for the preview */
-  const carPills = cars.length > 1 ? pills({ label: 'Preview for', value: carId, options: cars.map((c) => [c.id, c.name || c.id, state.isSold(c)]), onchange: async (v) => { carId = v; ctx.setQuery({ car: v }); await loadCar(); if (ctx.alive()) draw(); } }) : null;
+  const carPills = cars.length > 1 ? pills({ label: 'Preview for', value: carId, options: cars.map((c) => [c.id, c.name || c.id, state.isSold(c)]), onchange: async (v) => { carId = v; state.rememberCar(v, { sold: state.isSold(cars.find((c) => c.id === v)) }); ctx.setQuery({ car: v }); await loadCar(); if (ctx.alive()) draw(); } }) : null;
 
   function draw() {
     statusEl = statusTile();

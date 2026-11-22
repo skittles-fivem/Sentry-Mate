@@ -11,6 +11,7 @@ import { setUnits } from '../shared/units.js';
 import { setLocale } from '../shared/i18n.js';
 import { cover } from '../shared/dom.js';
 import { setSize } from './display.js';
+import { setCarPrefs } from '../shared/state.js';
 
 const root = document.documentElement;
 const THEME_KEY = 'pebble:theme';
@@ -46,7 +47,7 @@ export function applyTheme(theme) {
 /** fn(dark) when the page starts to be drawn dark or light. Returns a remover. */
 export function onTheme(fn) { themeListeners.add(fn); return () => themeListeners.delete(fn); }
 
-const KEYS = ['units', 'range', 'theme', 'language', 'interface_size', 'follow_screen', 'ui_pack', 'car_order', 'pinned_cars'];
+const KEYS = ['units', 'range', 'theme', 'language', 'interface_size', 'follow_screen', 'ui_pack', 'car_order', 'pinned_cars', 'main_car'];
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Use these preferences now. Returns the keys that changed. */
@@ -55,6 +56,7 @@ export function applyPrefs(p) {
   const before = prefs;
   prefs = { ...p };
   const changed = new Set(KEYS.filter((k) => !before || !same(before[k], p[k])));
+  setCarPrefs(p);
   setUnits(p);
   setLocale(p.language && p.language !== 'auto' ? p.language : 'auto');
   cover(root, 'web.shell.document-language');
