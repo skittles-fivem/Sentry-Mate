@@ -16,12 +16,15 @@ import { choice, switchField, field, form, setFieldError } from '../core/form.js
 import { currentPrefs, onPrefs } from '../core/prefs.js';
 import { savePref, currentAbout } from '../core/frame.js';
 import { SIZES, sizeState, setSize, sizeNote, display } from '../core/display.js';
+import { packChoices, packLabel } from '../shared/packs.js';
 
 export const id = 'settings-display';
 export const css = true;
 export const title = () => 'Display and units';
 
 // Locales offered for dates and numbers, besides the browser's own languages. Names come from the browser.
+// used only when the server's list of packs can't be read
+const PACKS = [['logbook', 'Logbook'], ['instrument', 'Instrument'], ['horizon', 'Horizon'], ['console', 'Console'], ['pebble', 'Pebble']];
 const LOCALES = ['en-US', 'en-GB', 'en-CA', 'en-AU', 'de-DE', 'de-CH', 'fr-FR', 'fr-CA', 'nl-NL', 'nb-NO', 'sv-SE', 'da-DK',
   'fi-FI', 'es-ES', 'it-IT', 'pt-PT', 'pl-PL', 'cs-CZ', 'ja-JP', 'ko-KR', 'zh-CN'];
 // Address languages suggested in the address language field (any language code is allowed).
@@ -62,10 +65,11 @@ const UNIT_WORDS = {
 
 export async function mount(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
-  const [server, geoFirst, maps] = await Promise.all([
+  const [server, geoFirst, maps, packList] = await Promise.all([
     ctx.api.get('settings'),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
+    packChoices(ctx.api, { fallback: PACKS, current: (currentPrefs() || {}).ui_pack || null }),
   ]);
   const tilePresets = (maps && maps.tiles && maps.tiles.presets) || [];
   let srv = server;
@@ -160,6 +164,26 @@ export async function mount(ctx) {
   fillLang();
 
   const about = currentAbout();
+  // every pack the server offers (GET /ui-packs); the one running now is the served pack
+  const packHere = (about && about.ui_pack && (about.ui_pack.id || (about.ui_pack.name || '').toLowerCase())) || 'logbook';
+  const packNow = p.ui_pack || packHere;
+  const packSel = h('select', { class: 'field-select', id: 'pref-pack', 'aria-label': 'UI pack', 'aria-describedby': 'pref-pack-note' },
+    packList.items.map((k) => h('option', { value: k.id, selected: k.id === packNow }, packLabel(k))));
+  if (!packList.items.some((k) => k.id === packNow)) packSel.prepend(h('option', { value: packNow, selected: true }, packNow));
+  const switchBtn = button('Switch now', { onclick: () => location.reload() });
+  const packNote = h('p', { class: 'setting-note', id: 'pref-pack-note' });
+  const paintPack = () => {
+    const other = packSel.value !== packHere;
+    switchBtn.hidden = !other;
+    packNote.textContent = other ? 'The new pack is used the next time the app loads, or now with Switch now.'
+      : `In use: ${about && about.ui_pack ? `${about.ui_pack.name} ${about.ui_pack.version || ''}`.trim() : 'Logbook'}. Your choice is used the next time the app loads.`;
+  };
+  packSel.addEventListener('change', async () => {
+    const before = (currentPrefs() || {}).ui_pack || packHere;
+    try { await savePref({ ui_pack: packSel.value }, { quiet: false }); } catch { packSel.value = before; }
+    paintPack();
+  });
+  paintPack();
   const savedNote = h('span', { class: 'label-note' }, 'no save button: each change is saved at once with your account and used on every device you sign in on');
 
   const mine = h('div', { class: 'settings-mine' },
@@ -175,7 +199,8 @@ export async function mount(ctx) {
       setting('Language', 'How dates, times and numbers are written (for example 1,234.5 or 1.234,5, and the first day of the week).', h('div', { class: 'lang-control' }, lang, langNote),
         { cover: ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation'], extra: langEx }),
       setting('Interface size', 'Text, controls, tables, charts and maps grow or shrink together. With “Follow screen size” on, big screens such as 4K monitors get larger text by themselves. Browser zoom works on top.', h('div', { class: 'size-control' }, size, follow, sizeNoteEl), { cls: 'setting-size' }),
-      setting('UI pack', 'The look of the whole app. Admins install other packs.', h('p', { class: 'setting-value' }, about && about.ui_pack ? `${about.ui_pack.name} ${about.ui_pack.version}` : 'Logbook'))));
+      setting('UI pack', 'The look of the whole app. Admins install other packs; your data and settings stay the same in every pack.',
+        h('div', { class: 'lang-control' }, h('div', { class: 'pack-control' }, packSel, switchBtn), packNote))));
 
   // ------------------------------------------------------------ the divider
   const divider = h('div', { class: 'settings-divider', role: 'separator', cover: 'web.settings.general.divider' },

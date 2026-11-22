@@ -4,10 +4,13 @@ storage that adds up from the cars to the server."""
 
 from __future__ import annotations
 
+import os
 import threading
 
 from .helpers import DAY, NOW, ServerCase
 from .test_live import read_events
+
+PACKS = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "packs"))
 
 
 class OutboundProxy(ServerCase):
@@ -239,3 +242,33 @@ class WatchSystem(ServerCase):
         self.assertIn("healthy", self.c.get("/api/v1/cars/c1/health"))
         self.assertIn("tiles", self.c.get("/api/v1/maps/config"))
         self.assertTrue(self.c.get("/api/v1/notices")["items"])
+
+
+class UiPacks(ServerCase):
+    """GET /ui-packs lists every built-in pack; a person's ui_pack picks the pack their browser is served."""
+
+    def test_list_and_choice(self):
+        r = self.c.get("/api/v1/ui-packs")
+        self.assertEqual([p["id"] for p in r["items"]], ["instrument", "logbook", "horizon", "console", "pebble"])
+        self.assertEqual(r["chosen"], "instrument")
+        self.assertEqual(r["default"], "instrument")
+        for p in r["items"]:
+            self.assertTrue(p["name"] and p["version"] and p["description"])
+            self.assertTrue(p["api_supported"] and p["builtin"])
+            self.assertEqual(p["chosen"], p["id"] == "instrument")
+        e, _ = self.c.error("PATCH", "/api/v1/me/preferences", 422, "invalid", body={"ui_pack": "nope"})
+        self.assertIn("ui_pack", e["fields"])
+        try:
+            self.c.json("PATCH", "/api/v1/me/preferences", {"ui_pack": "pebble"})
+            self.assertEqual(self.c.get("/api/v1/about")["ui_pack"]["name"], "Pebble")
+            st, _hd, body = self.c.request("GET", "/settings/display")
+            self.assertEqual(st, 200)
+            with open(os.path.join(PACKS, "pebble", "web", "index.html"), "rb") as f:
+                self.assertEqual(body, f.read())
+            st, _hd, body = self.c.request("GET", "/pages/settings-display.js")
+            with open(os.path.join(PACKS, "pebble", "web", "pages", "settings-display.js"), "rb") as f:
+                self.assertEqual(body, f.read())
+        finally:
+            p = self.c.json("PATCH", "/api/v1/me/preferences", {"ui_pack": None})
+        self.assertEqual(p["ui_pack"], "instrument")
+        self.assertEqual(self.c.get("/api/v1/about")["ui_pack"]["name"], "Instrument")

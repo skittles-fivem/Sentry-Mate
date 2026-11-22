@@ -13,12 +13,14 @@ import { getPrefs, savePrefs, onPrefs } from '../core/prefs.js';
 import { getInterface, applyInterface, getTheme, applyTheme, onChange } from '../core/display.js';
 import { tag, ago } from '../core/fmt.js';
 import { toast } from '../core/toast.js';
+import { packChoices } from '../shared/packs.js';
 
 export const id = 'settings-display';
 export const title = () => 'Settings: display';
 
 const LOCALES = [['auto', 'auto'], ['en-US', 'en-US'], ['en-GB', 'en-GB'], ['de-DE', 'de-DE'], ['fr-FR', 'fr-FR'], ['nl-NL', 'nl-NL']].filter(([v]) => v === 'auto' || isSupportedLocale(v));
-const PACKS = [['console', 'console'], ['instrument', 'instrument'], ['logbook', 'logbook']];
+// used only when the server's list of packs can't be read
+const PACKS = [['console', 'console'], ['instrument', 'instrument'], ['logbook', 'logbook'], ['horizon', 'horizon'], ['pebble', 'pebble']];
 const LANG_RE = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
 const ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
 const BROWSER_ZONE = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
@@ -26,11 +28,12 @@ const https = (t) => (t.trim() === '' ? { value: null } : /^https:\/\/\S+$/.test
 
 export async function mount(ctx) {
   const admin = ctx.admin;
-  let [about, server, geo, maps] = await Promise.all([
+  let [about, server, geo, maps, packList] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
+    packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || null }),
   ]);
   if (!ctx.alive()) return;
   const p = getPrefs() || {};
@@ -64,14 +67,19 @@ export async function mount(ctx) {
   paintLang();
   const browserLang = (navigator.languages && navigator.languages[0]) || navigator.language || 'unknown';
   const shownPack = p.ui_pack || about?.ui_pack?.name?.toLowerCase() || 'console';
-  const packs = PACKS.some(([v]) => v === shownPack) ? PACKS : [[shownPack, shownPack], ...PACKS];
+  // every pack the server offers (GET /ui-packs), as keys; each one's short description under them
+  const packs = packList.items.map((k) => [k.id, k.id]);
+  if (!packs.some(([v]) => v === shownPack)) packs.unshift([shownPack, shownPack]);
+  const packHere = about?.ui_pack?.id || about?.ui_pack?.name?.toLowerCase() || 'console';
+  const switchBtn = h('button', { class: 'btn', type: 'button', hidden: shownPack === packHere, onclick: () => location.reload() }, 'switch now');
+  const packInfo = packList.items.filter((k) => k.blurb).map((k) => [h('br'), h('span', { class: 'muted' }, `${k.id}: ${k.blurb}`)]);
   const look = editLines([
     { key: 'theme', id: 'theme', type: 'choice', value: th, options: [['device', 'auto'], ['dark', 'dark'], ['light', 'light']], cover: ['shell.theme', 'web.settings.general.theme', 'shots.theme-note'],
       help: 'Auto follows this device. Saved with your account and set before the page is drawn, so there is no flash. Every page, chart and map has a dark and a light look.',
       save: async (v) => { const before = getTheme().choice; applyTheme(v); try { await pref({ theme: v }); } catch (e) { applyTheme(before); throw e; } } },
     { key: 'ui_pack', id: 'pack', type: 'choice', value: shownPack, options: packs,
-      help: `The design of the whole app.${about?.ui_pack?.name ? ` This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Another pack is used the next time the app loads, where the server offers it.`,
-      save: async (v) => { await pref({ ui_pack: v }); if (v !== 'console') toast('Saved. Reload the page to see the other pack.', { kind: 'info' }); } },
+      help: [`The design of the whole app.${about?.ui_pack?.name ? ` This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Another pack is used the next time the app loads, where the server offers it. `, switchBtn, packInfo],
+      save: async (v) => { await pref({ ui_pack: v }); switchBtn.hidden = v === packHere; if (v !== packHere) toast('Saved. Used the next time the app loads; switch now reloads.', { kind: 'info' }); } },
     { key: 'interface_size', id: 'size', type: 'number', value: getInterface().size, unit: '%', cls: 'ke--short', attrs: { min: '75', max: '200' },
       help: 'Text, tables, charts and maps bigger or smaller together, 75 to 200. Browser zoom works on top.',
       parse: (t) => { const n = Math.round(Number(t)); return n >= 75 && n <= 200 ? { value: n } : { error: 'a whole number from 75 to 200' }; },

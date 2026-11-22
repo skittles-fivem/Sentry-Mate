@@ -17,6 +17,7 @@ import { getPrefs, savePrefs, isAdmin, onPrefs } from '../core/prefs.js';
 import { getInterface, onInterface } from '../core/display.js';
 import { sizeChoice, followSwitch, lookChoice, skyChoice, sizeLine } from '../core/account.js';
 import { getSky, onSky } from '../core/sky.js';
+import { packChoices, packLabel } from '../shared/packs.js';
 import { chan, hint, recLamp, presets, errText, code } from '../core/setting.js';
 import { ago, num } from '../core/fmt.js';
 
@@ -26,7 +27,8 @@ export const css = true;
 const LOCALES = [['auto', "This browser's language"], ['en-US', 'English (United States)'], ['en-GB', 'English (United Kingdom)'],
   ['de-DE', 'German number and date style'], ['fr-FR', 'French number and date style'], ['nl-NL', 'Dutch number and date style']]
   .filter(([v]) => v === 'auto' || isSupportedLocale(v));
-const PACKS = [['instrument', 'Instrument'], ['logbook', 'Logbook'], ['horizon', 'Horizon']];
+// used only when the server's list of packs can't be read
+const PACKS = [['instrument', 'Instrument'], ['logbook', 'Logbook'], ['horizon', 'Horizon'], ['console', 'Console'], ['pebble', 'Pebble']];
 const LANG_RE = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
 const ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
 const BROWSER_ZONE = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
@@ -55,11 +57,12 @@ function presetChoice(label, options, current, pick, { readOnly = false, cover }
 
 export async function mount(ctx) {
   const admin = isAdmin();
-  let [about, server, geo, maps] = await Promise.all([
+  let [about, server, geo, maps, packList] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
+    packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || null }),
   ]);
   if (!ctx.alive()) return;
   const rec = recLamp({ cover: 'web.settings.general.autosave' });
@@ -127,8 +130,13 @@ export async function mount(ctx) {
   const paintLang = () => replace(langLine, 'Written now as: ', h('b', null, format(1234.5, 'distance')), ', ', h('b', null, formatDate(ctx.api.now(), ctx.tz, { weekday: false, year: true })), '.');
   paintLang();
   const packNow = p.ui_pack || about?.ui_pack?.name?.toLowerCase() || 'horizon';
-  const packSel = h('select', { class: 'input sd-select', 'aria-label': 'UI pack', onchange: () => mine({ ui_pack: packSel.value }, 'UI pack') },
-    PACKS.map(([v, l]) => h('option', { value: v, selected: packNow === v }, l)));
+  const packHere = about?.ui_pack?.id || about?.ui_pack?.name?.toLowerCase() || 'horizon';
+  const packSel = h('select', { class: 'input sd-select', 'aria-label': 'UI pack', onchange: async () => { if (await mine({ ui_pack: packSel.value }, 'UI pack')) paintSwitch(); } },
+    packList.items.map((k) => h('option', { value: k.id, selected: packNow === k.id }, packLabel(k))));
+  const switchBtn = btn('Switch now', () => location.reload(), { sm: true });
+  const switchLine = hint('The new pack is used the next time the app loads.');
+  const paintSwitch = () => { const other = packSel.value !== packHere; switchBtn.hidden = !other; switchLine.hidden = !other; };
+  paintSwitch();
 
   const lookPanel = hud({ title: 'Look and language', icon: 'monitor', id: 'sd-look', side: tag('Follows you', 'cyan') },
     h('div', { class: 'chans' },
@@ -140,7 +148,8 @@ export async function mount(ctx) {
         h('div', { class: 'tog' }, follow.el, h('label', { class: 'tog-label', for: 'sd-follow' }, 'Follow screen size')), sizeNote),
       chan({ no: 7, title: 'Language', text: 'The words are English for now; this sets how numbers and dates are written. "This browser\'s language" follows what your browser asks for, and the page tells the browser its language.', cover: ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation'] },
         langSel, langLine),
-      chan({ no: 8, title: 'UI pack', text: `The design of the whole app. ${about?.ui_pack?.name ? `You are in ${about.ui_pack.name} ${about.ui_pack.version || ''}.` : ''} A new choice is used the next time the app loads.` }, packSel)));
+      chan({ no: 8, title: 'UI pack', text: `The design of the whole app. ${about?.ui_pack?.name ? `You are in ${about.ui_pack.name} ${about.ui_pack.version || ''}.` : ''} A new choice is used the next time the app loads.` },
+        h('div', { class: 'row' }, packSel, switchBtn), switchLine)));
 
   /* ---------- the background (this browser only) */
   const sky = skyChoice();
@@ -160,7 +169,7 @@ export async function mount(ctx) {
     dist.set(n.distance); temp.set(n.temperature); pres.set(n.pressure); rng.set(n.range);
     look.sync(pp);
     langSel.value = pp?.language === 'en' ? 'en-US' : (pp?.language || 'auto');
-    if (pp?.ui_pack) packSel.value = pp.ui_pack;
+    if (pp?.ui_pack) { packSel.value = pp.ui_pack; paintSwitch(); }
     paintPreview(); paintLang();
   }));
   ctx.onCleanup(onLocaleChange(() => { paintPreview(); paintLang(); }));

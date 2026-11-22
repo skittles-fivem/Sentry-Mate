@@ -22,6 +22,7 @@ from .conventions import Req, Response, json_bytes, to_csv
 from .dataset import Dataset
 from .errors import ApiError, bad_input, csrf, no_such_car, not_allowed, not_found, not_signed_in
 from .events import EventHub, frame
+from .packs import Packs
 from .router import Router
 from .store import COOKIE, COOKIE_SIGNED_OUT, SETUP_COOKIE, Store
 
@@ -86,7 +87,16 @@ class App:
         self.events = EventHub(self)
         self.router = Router()
         resources.register_all(self.router)
+        self.packs = Packs(cfg.pack)
         self.web_root = os.path.realpath(os.path.join(cfg.pack, "web"))
+
+    def root_for(self, session):
+        """The web folder this browser is served: the person's own `ui_pack`, else the --pack one."""
+        if session is None:
+            return self.web_root
+        own = self.store.get_prefs(session["account"]).get("ui_pack")
+        pid = self.packs.pick(own)
+        return self.web_root if pid == self.packs.served else self.packs.web_root(pid)
 
     def make_server(self):
         srv = Server((self.cfg.host, self.cfg.port), Handler)
@@ -335,14 +345,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def static(self, method, path):
         if method not in ("GET", "HEAD"):
             return self.send(405, b"", None, {"Allow": "GET, HEAD"})
-        root = self.app.web_root
         rel = path.lstrip("/")
+        token = self.cookie_value()
+        s = self.app.store.session_for(token) if token and token != COOKIE_SIGNED_OUT else None
+        root = self.app.root_for(s)
         full = os.path.realpath(os.path.join(root, rel)) if rel else root
         cookie = None
         if not (full == root or full.startswith(root + os.sep)) or not os.path.isfile(full):
             full = os.path.join(root, "index.html")
         if full.endswith("index.html"):
-            _s, cookie = self.session()
+            s, cookie = self.session()  # a session starts on a page load
+            root = self.app.root_for(s)
+            full = os.path.join(root, "index.html")
         try:
             with open(full, "rb") as f:
                 data = f.read()

@@ -33,6 +33,13 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--sse-interval-ms N` | `2000` | How often live values are pushed on `/api/v1/events`. |
 | `--verbose` | off | Logs every request to stderr. |
 
+### UI packs
+
+`GET /api/v1/ui-packs` lists the five built-in packs of `ui/packs` (ids `instrument`, `logbook`, `horizon`,
+`console`, `pebble`; plus the `--pack` folder when it is another one), as the real server does. The `--pack` one is
+the pack chosen for everyone. A person's `ui_pack` preference picks the pack their browser is served from the next
+page load on, as on the real server; `null` goes back to the `--pack` one, and an unknown id is `422`.
+
 ### Signing in
 
 Unless `--signed-out` is given, the first request without a session cookie signs in the default account

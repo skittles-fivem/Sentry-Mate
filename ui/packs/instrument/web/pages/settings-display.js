@@ -7,6 +7,7 @@ import { getUnits, format } from '../shared/units.js';
 import { isSupportedLocale, onLocaleChange } from '../shared/i18n.js';
 import { formatDate, isValidZone } from '../shared/time.js';
 import { buildUrl } from '../shared/state.js';
+import { packChoices, packLabel } from '../shared/packs.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel } from '../core/page.js';
 import { field, showApiError } from '../core/form.js';
@@ -19,6 +20,8 @@ import { ago } from '../core/fmt.js';
 export const id = 'settings-display';
 export const css = true;
 
+// used only when the server's list of packs can't be read
+const PACKS = [['instrument', 'Instrument'], ['logbook', 'Logbook'], ['horizon', 'Horizon'], ['console', 'Console'], ['pebble', 'Pebble']];
 const LOCALES = [['auto', "This browser's language"], ['en-US', 'English (United States)'], ['en-GB', 'English (United Kingdom)'], ['de-DE', 'German number and date style'], ['fr-FR', 'French number and date style'], ['nl-NL', 'Dutch number and date style']].filter(([v]) => v === 'auto' || isSupportedLocale(v));
 
 // A language code as address data names it: en, de, pt-BR, zh-Hant.
@@ -58,12 +61,13 @@ async function savePref(patch, what) {
 
 export async function mount(ctx) {
   const admin = isAdmin();
-  let about = null, server = null, geo = null, maps = null;
-  [about, server, geo, maps] = await Promise.all([
+  let about = null, server = null, geo = null, maps = null, packList = null;
+  [about, server, geo, maps, packList] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
+    packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || 'instrument' }),
   ]);
   if (!ctx.alive()) return;
   const p = getPrefs() || {};
@@ -120,15 +124,21 @@ export async function mount(ctx) {
     theme.sync(pp);
     lang.value = pp?.language === 'en' ? 'en-US' : (pp?.language || 'auto');
     packSel.value = pp?.ui_pack || 'instrument';
+    paintSwitch();
     paintLangExample();
   }));
   ctx.onCleanup(onLocaleChange(() => { paintExample(); paintLangExample(); }));
   const browserLang = (navigator.languages && navigator.languages[0]) || navigator.language || 'unknown';
   const lang = h('select', { class: 'select', 'aria-label': 'Language and number style', onchange: (e) => savePref({ language: e.target.value }, 'Language') },
     LOCALES.map(([v, l]) => h('option', { value: v, selected: (p.language || 'auto') === v || (v === 'en-US' && p.language === 'en') }, v === 'auto' ? `${l} (${browserLang})` : l)));
-  const packs = [['instrument', 'Instrument'], ['logbook', 'Logbook']];
-  const packSel = h('select', { class: 'select', 'aria-label': 'UI pack', onchange: (e) => savePref({ ui_pack: e.target.value }, 'UI pack') },
-    packs.map(([v, l]) => h('option', { value: v, selected: (p.ui_pack || 'instrument') === v }, l)));
+  // every pack the server offers (GET /ui-packs); the one running now is the served pack
+  const packHere = about?.ui_pack?.id || 'instrument';
+  const packSel = h('select', { class: 'select', id: 'set-pack', 'aria-label': 'UI pack', onchange: async (e) => { if (await savePref({ ui_pack: e.target.value }, 'UI pack')) paintSwitch(); } },
+    packList.items.map((k) => h('option', { value: k.id, selected: (p.ui_pack || 'instrument') === k.id }, packLabel(k))));
+  const switchBtn = h('button', { class: 'btn btn--sm', type: 'button', hidden: true, onclick: () => location.reload() }, 'Switch now');
+  const switchNote = h('p', { class: 'setting-note', hidden: true }, 'The new pack is used the next time the app loads.');
+  function paintSwitch() { const other = packSel.value !== packHere; switchBtn.hidden = !other; switchNote.hidden = !other; }
+  paintSwitch();
   // written with the app's own formatters, so it shows what the saved language really does
   const langExample = h('p', { class: 'setting-note' });
   const paintLangExample = () => replace(langExample, 'Example: ', h('b', null, format(1234.5, 'distance')), ', ', h('b', null, formatDate(ctx.api.now(), ctx.tz, { weekday: false, year: true })), '.');
@@ -142,7 +152,8 @@ export async function mount(ctx) {
     setting('Language', 'The text is in English for now. This sets how numbers and dates are written. "This browser\'s language" follows the language your browser asks for; the app tells the browser which language the page is in.',
       [lang, langExample],
       ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation']),
-    setting('UI pack', `The design of the whole app. ${about?.ui_pack?.name ? `This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Your choice is used the next time the app loads where the server offers that pack.`, packSel));
+    setting('UI pack', `The design of the whole app. ${about?.ui_pack?.name ? `This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Your choice is used the next time the app loads where the server offers that pack.`,
+      [h('div', { class: 'row pack-row' }, packSel, switchBtn), switchNote]));
 
   /* ---------- server defaults, addresses and maps */
   const serverPanel = h('div', { class: 'settings-server' });

@@ -20,6 +20,7 @@ import { currentAbout } from '../core/frame.js';
 import { sectionHead, facts } from '../core/bits.js';
 import { group, pickRow, ctlRow, infoRow, notSaved } from '../core/settings.js';
 import { inOrder } from '../core/settings.js';
+import { packChoices } from '../shared/packs.js';
 
 export const id = 'settings-display';
 export const shape = [[2, 'h3'], [2, 'h3'], [2, 'h2'], [2, 'h2']];
@@ -27,7 +28,9 @@ export const title = () => 'Display and units';
 
 const LOCALES = ['en-US', 'en-GB', 'en-CA', 'en-AU', 'de-DE', 'de-CH', 'fr-FR', 'fr-CA', 'nl-NL', 'nb-NO', 'sv-SE', 'da-DK',
   'fi-FI', 'es-ES', 'it-IT', 'pt-PT', 'pl-PL', 'cs-CZ', 'ja-JP', 'ko-KR', 'zh-CN'];
-const PACKS = [['pebble', 'Pebble', 'Light, rounded tiles and a floating dock'], ['instrument', 'Instrument', 'A dark glass cluster with a side bar'], ['logbook', 'Logbook', 'Paper and ink, the day as a log']];
+// used only when the server's list of packs can't be read
+const PACKS = [['pebble', 'Pebble', 'Light, rounded tiles and a floating dock'], ['instrument', 'Instrument', 'A dark glass cluster with a side bar'], ['logbook', 'Logbook', 'Paper and ink, the day as a log'],
+  ['horizon', 'Horizon', 'Neon panels over a dusk sky'], ['console', 'Console', 'A keyboard-first operator console']];
 const DIST = [['km', 'Kilometres', 'km, km/h, Wh/km, metres'], ['mi', 'Miles', 'mi, mph, Wh/mi, feet']];
 const TEMP = [['c', 'Celsius', '°C'], ['f', 'Fahrenheit', '°F']];
 const PRESS = [['bar', 'bar'], ['psi', 'psi']];
@@ -54,7 +57,8 @@ const strip = (err, prefix, rename = {}) => {
 export async function mount(ctx) {
   inOrder(ctx);
   const admin = ctx.admin;
-  let [srv, geo, mapCfg] = await Promise.all([ctx.api.get('settings'), ctx.api.get('geocode/status').catch(() => null), ctx.api.get('maps/config').catch(() => null)]);
+  let [srv, geo, mapCfg, packList] = await Promise.all([ctx.api.get('settings'), ctx.api.get('geocode/status').catch(() => null), ctx.api.get('maps/config').catch(() => null),
+    packChoices(ctx.api, { fallback: PACKS, current: (currentPrefs() || {}).ui_pack || null })]);
   const tilePresets = (mapCfg && mapCfg.tiles && mapCfg.tiles.presets) || [];
   if (!ctx.alive()) return {};
   const p0 = currentPrefs() || {};
@@ -83,10 +87,15 @@ export async function mount(ctx) {
   const sizeLine = h('span', { class: 'row-sub' });
   const about = currentAbout();
   const packNow = (p0.ui_pack || (about && about.ui_pack && about.ui_pack.name ? about.ui_pack.name.toLowerCase() : 'pebble'));
-  const packOpts = PACKS.some(([k]) => k === packNow) ? PACKS : [...PACKS, [packNow, packNow, 'Installed on this server']];
+  // every pack the server offers (GET /ui-packs), each with its short description
+  const packOpts = packList.items.map((k) => [k.id, k.name, k.blurb || null]);
+  if (!packOpts.some(([k]) => k === packNow)) packOpts.push([packNow, packNow, 'Installed on this server']);
+  const packHere = (about && about.ui_pack && (about.ui_pack.id || (about.ui_pack.name || '').toLowerCase())) || 'pebble';
+  const switchRow = h('div', { class: 'row row-static set-ex-row', hidden: packNow === packHere },
+    h('span', { class: 'row-sub' }, 'The new pack is used the next time the app loads. '), btn('Switch now', { kind: 'soft', onclick: () => location.reload() }));
   const pack = pickRow({ name: 'UI pack', sub: 'The look of the whole app. Used the next time the app loads.', value: packNow, options: packOpts,
     sheetNote: 'Admins can install more packs. Your data and settings stay the same in every pack.',
-    onpick: (v) => save({ ui_pack: v }).then(() => ctx.toast('UI pack saved. Reload the page to see it.', { kind: 'info' })) });
+    onpick: (v) => save({ ui_pack: v }).then(() => { switchRow.hidden = v === packHere; if (v !== packHere) ctx.toast('UI pack saved. Switch now, or it is used the next time the app loads.', { kind: 'info' }); }) });
   const lookT = tile({ w: 2, title: 'Look', icon: 'sun', cover: ['shell.theme', 'web.settings.general.theme'] },
     group(null, [
       ctlRow({ name: 'Theme', sub: 'Auto follows your device, day and night.', control: theme, stack: true }),
@@ -97,7 +106,7 @@ export async function mount(ctx) {
       h('div', { class: 'row row-static set-ex-row' }, sizeLine),
       follow,
     ]),
-    group('Pack', [pack]));
+    group('Pack', [pack, switchRow]));
 
   /* ------------------------------------------------------------ units */
   const u0 = p0.units || {};

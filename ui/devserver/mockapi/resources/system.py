@@ -12,8 +12,6 @@ from __future__ import annotations
 import copy
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import ipaddress
-import json
-import os
 import re
 
 from .. import derive
@@ -247,13 +245,10 @@ def release_notice(req):
 
 
 def about(req):
-    pack = {"name": None, "version": None, "api": None}
-    try:
-        with open(os.path.join(req.app.cfg.pack, "ui.json"), encoding="utf-8") as f:
-            m = json.load(f)
-        pack = {"name": m.get("name"), "version": m.get("version"), "api": m.get("api")}
-    except (OSError, ValueError):
-        pass
+    packs = req.app.packs
+    own = req.store.get_prefs(req.account).get("ui_pack") if req.account else None
+    m = packs.get(packs.pick(own))
+    pack = {"id": m["id"], "name": m["name"], "version": m["version"], "api": m["api"]}
     return {
         "version": DEV_VERSION, "api_version": API_VERSION, "ui_pack": pack, "dev_server": True,
         "links": {"source": None, "docs": "/help"},
@@ -263,6 +258,11 @@ def about(req):
         "data_credits": [{"name": "OpenStreetMap", "text": "Map data © OpenStreetMap contributors", "licence": "ODbL"},
                          {"name": "GeoNames", "text": "Place names for offline address lookup", "licence": "CC BY 4.0"}],
     }
+
+
+def ui_packs(req):
+    """Every pack on the server, for anyone signed in (crates/web/src/packs list())."""
+    return req.app.packs.listing()
 
 
 # ------------------------------------------------------------------ per-car health
@@ -567,6 +567,7 @@ def register(router):
     router.add("/api/v1/geocode/status", GET=geocode_status)
     router.add("/api/v1/notices", GET=notices)
     router.add("/api/v1/about", GET=about)
+    router.add("/api/v1/ui-packs", GET=ui_packs)
     router.add("/api/v1/cars/{car}/health", GET=car_health)
     router.add("/api/v1/cars/{car}/rebuild", POST=rebuild, admin=("POST",))
     router.add("/api/v1/cars/{car}/overlaps", GET=get_overlaps, PATCH=patch_overlap, admin=("PATCH",))
