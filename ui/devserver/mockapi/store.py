@@ -27,6 +27,7 @@ DEFAULT_PREFS = {
     "language": "auto",
     "interface_size": 100,
     "follow_screen": True,
+    "map_colors": "dimmed",
     "ui_pack": None,
     "car_order": [],
     "pinned_cars": [],
@@ -86,6 +87,10 @@ class Store:
         from .dataset import extras
         self.notices = extras.notices(now)
         self.server_settings = extras.server_settings(now)
+        # --map-tiles: online (the default here), none (a new server: offline, no map file) or offline (a file)
+        self.map_file = getattr(cfg, "map_tiles", "online") == "offline"
+        if getattr(cfg, "map_tiles", "online") != "online":
+            self.server_settings["tiles"]["mode"] = "offline"
         # the names in the certificate the server runs with: made at start, not changed by saving host_names.
         # The server's own always has localhost first, as the real one makes it.
         self.cert_names = ["localhost"] + [n for n in self.server_settings["host_names"] if n != "localhost"]

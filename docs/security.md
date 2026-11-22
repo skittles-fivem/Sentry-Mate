@@ -148,8 +148,30 @@ folded away.
 - OpenTopoMap's terms are on [opentopomap.org/about](https://opentopomap.org/about) (light use, no bulk
   downloads, the credit "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)").
 - OpenFreeMap is not offered: it serves vector tiles only, and the packs draw raster tiles.
-- Offline tiles (a PMTiles file served by Sentry Mate itself) are planned; until then "offline" draws the routes and
-  pins on a plain background.
+- **A map with no tiles says so.** With offline tiles and no map file (a new server), every map shows "No map tiles
+  yet" over its plain background: an admin gets "Use online map (OpenStreetMap)", which turns the OpenStreetMap
+  source on only after a confirm that says what the tile server then sees (each viewer's IP address, this server's
+  address and the map area), and "Add an offline map file"; anyone else is told to ask an admin. Tiles that fail
+  (403 blocked, 429, unreachable) show a short note with the cause: maps draw tiles as images, which say nothing
+  about why they failed, so a map asks the same server for the same tile once more to read its status.
+- **Dark maps are dimmed, not inverted**: in the dark theme raster tiles are drawn darker so streets, labels and
+  water stay readable. Each person can pick "original colours" instead (Settings → Display and units, Map colours).
+
+### Offline map file
+
+An offline map file keeps every tile request on the server: the browsers ask Sentry Mate for tiles
+(`/api/v1/maps/tiles/{z}/{x}/{y}`, signed-in accounts only), which reads them out of a
+[PMTiles](https://github.com/protomaps/PMTiles) file in the data folder's `maps/` folder. Nothing leaves the server,
+and the pages' policy names no outside host.
+
+- **Sentry Mate never downloads a map.** An admin makes the file (for example a Protomaps extract of their area,
+  made on their own computer with the `pmtiles` tool: [install.md](install.md#offline-map)) and copies it into
+  `data/maps/`. Any `*.pmtiles` there counts; the largest is used unless an admin picks another in Settings →
+  Display and units (`tiles.offline_file`, a plain file name: no folders, no `..`).
+- The file is only read: its header and directories are checked (version 3, plain or gzip directories, sizes
+  bounded) before a tile is served, and a damaged file is named in Settings instead of served.
+- A Protomaps (vector) file is drawn in a plain style without names (the server serves no fonts); a raster
+  `.pmtiles` shows its pictures as made.
 
 ## The Tesla API input
 

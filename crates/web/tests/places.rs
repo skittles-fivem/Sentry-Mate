@@ -557,6 +557,75 @@ async fn maps_and_addresses_say_what_the_server_has() {
     assert_eq!(anon.get("/api/v1/maps/config").await.status, 401);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offline_map_files_are_found_and_served() {
+    let k = seeded_cars(0).await;
+    let s = &k.s;
+    let mut admin = s.admin().await;
+    // a new server has no map file: the pages show their "no map tiles yet" note
+    let m = ok(&mut admin, "/api/v1/maps/config").await;
+    assert_eq!((&m["tiles"]["offline_present"], &m["tiles"]["offline_url"]), (&json!(false), &Value::Null), "{m}");
+    assert_eq!(m["tiles"]["offline_files"], json!([]));
+    assert_eq!(admin.get("/api/v1/maps/tiles/0/0/0").await.code().as_deref(), Some("no_offline_map"));
+    // any .pmtiles file in data/maps: the largest is used
+    let maps = s.dir.path().join("data").join("maps");
+    std::fs::create_dir_all(&maps).unwrap();
+    let region = places::pmtiles::build(&[(0, 0, 0, b"world".to_vec()), (13, 4093, 2724, b"city".to_vec())], 2, true);
+    let home = places::pmtiles::build(&[(0, 0, 0, b"home".to_vec())], 1, false);
+    std::fs::write(maps.join("region.pmtiles"), &region).unwrap();
+    std::fs::write(maps.join("home.pmtiles"), &home).unwrap();
+    let m = ok(&mut admin, "/api/v1/maps/config").await;
+    let t = &m["tiles"];
+    assert_eq!(
+        (&t["offline_present"], &t["offline_file"], &t["offline_kind"]),
+        (&json!(true), &json!("region.pmtiles"), &json!("raster")),
+        "{m}"
+    );
+    assert_eq!(t["offline_url"], "/api/v1/maps/tiles/{z}/{x}/{y}");
+    assert_eq!((&t["offline_min_zoom"], &t["offline_max_zoom"]), (&json!(0), &json!(13)));
+    assert_eq!(t["offline_files"][0]["name"], "region.pmtiles", "largest first");
+    let r = admin.get("/api/v1/maps/tiles/13/4093/2724").await;
+    assert_eq!((r.status, r.header("content-type"), r.body.as_slice()), (200, Some("image/png"), b"city".as_slice()));
+    assert!(r.header("cache-control").unwrap().starts_with("private"), "{:?}", r.header("cache-control"));
+    assert_eq!(admin.get("/api/v1/maps/tiles/13/4093/2725").await.status, 204, "the file has no tile there");
+    assert_eq!(admin.get("/api/v1/maps/tiles/x/0/0").await.status, 404);
+    assert_eq!(admin.get("/api/v1/maps/tiles/40/0/0").await.status, 404);
+    assert_eq!(s.client().get("/api/v1/maps/tiles/0/0/0").await.status, 401, "tiles need a sign-in");
+    // an admin chooses another file; a name with a folder in it is refused
+    let v = ok(&mut admin, "/api/v1/settings").await["version"].as_u64().unwrap();
+    let r = admin.patch("/api/v1/settings", json!({ "version": v, "tiles": { "offline_file": "../x.pmtiles" } })).await;
+    assert_eq!((r.status, r.code().as_deref()), (422, Some("invalid")), "{}", r.text());
+    let r = admin.patch("/api/v1/settings", json!({ "version": v, "tiles": { "offline_file": "home.pmtiles" } })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let m = ok(&mut admin, "/api/v1/maps/config").await;
+    assert_eq!(
+        (&m["tiles"]["offline_file"], &m["tiles"]["offline_kind"]),
+        (&json!("home.pmtiles"), &json!("vector")),
+        "{m}"
+    );
+    assert_eq!(m["tiles"]["offline_choice"], "home.pmtiles");
+    let r = admin.get("/api/v1/maps/tiles/0/0/0").await;
+    assert_eq!(
+        (r.status, r.header("content-type"), r.body.as_slice()),
+        (200, Some("application/vnd.mapbox-vector-tile"), b"home".as_slice())
+    );
+    // a file that is not PMTiles: said so, nothing served
+    std::fs::write(maps.join("home.pmtiles"), vec![0u8; 500]).unwrap();
+    let m = ok(&mut admin, "/api/v1/maps/config").await;
+    assert_eq!(m["tiles"]["offline_present"], false, "{m}");
+    assert!(m["tiles"]["offline_error"].as_str().unwrap().contains("home.pmtiles"), "{m}");
+    assert_eq!(admin.get("/api/v1/maps/tiles/0/0/0").await.code().as_deref(), Some("offline_map_unreadable"));
+    // online tiles: the file is not served
+    std::fs::remove_file(maps.join("home.pmtiles")).unwrap();
+    let r = admin
+        .patch("/api/v1/settings", json!({ "version": v + 1, "tiles": { "mode": "online", "offline_file": null } }))
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let m = ok(&mut admin, "/api/v1/maps/config").await;
+    assert_eq!((&m["tiles"]["offline_present"], &m["tiles"]["offline_url"]), (&json!(true), &Value::Null), "{m}");
+    assert_eq!(admin.get("/api/v1/maps/tiles/0/0/0").await.code().as_deref(), Some("no_offline_map"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn maps_and_addresses_follow_the_settings_at_once() {
@@ -591,7 +660,7 @@ async fn maps_and_addresses_follow_the_settings_at_once() {
     // never its path; the API's answers still send none
     assert_eq!(referrer(&page), "strict-origin");
     assert_eq!(referrer(&admin.get("/api/v1/maps/config").await), "no-referrer");
-    // offline tiles: none served yet, so no address for them, and nothing online
+    // offline tiles with no map file: no address for them, and nothing online
     let r = admin.patch("/api/v1/settings", json!({ "version": v + 1, "tiles": { "mode": "offline" } })).await;
     assert_eq!(r.status, 200, "{}", r.text());
     let m = ok(&mut admin, "/api/v1/maps/config").await;

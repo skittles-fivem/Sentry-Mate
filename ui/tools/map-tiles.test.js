@@ -4,7 +4,10 @@
 //     the person moves to a map inside the app (the page loads itself again, once, for the server's new policy);
 //   - the same after a switch to another tile source (OpenTopoMap);
 //   - every tile request carries a Referer with the page's origin only (OpenStreetMap blocks tiles without one);
-//   - Settings: Display and units at 360 px with a long zone name: its zone button and tile terms fit the window.
+//   - Settings: Display and units at 360 px with a long zone name: its zone button and tile terms fit the window;
+//   - a new server (no map file, tiles offline): the car page's map says "No map tiles yet"; an admin's one click
+//     (after the confirm) turns OpenStreetMap on and the map loads its tiles; a watch account is told to ask an admin;
+//   - a tile server that refuses (403) gives a short note with the cause.
 // No request leaves the machine: the tile servers are answered by page.route.
 // Run: node --test ui/tools/map-tiles.test.js. Skipped when Playwright is not installed.
 'use strict';
@@ -20,10 +23,10 @@ const REPO_DIR = path.dirname(UI_DIR);
 let playwright = null;
 try { playwright = require('playwright'); } catch { /* not installed: skip */ }
 
-function devServer(pack) {
+function devServer(pack, args = []) {
   return new Promise((resolve, reject) => {
     const child = spawn('python3', [path.join(UI_DIR, 'devserver', 'serve.py'), '--pack', path.join(UI_DIR, 'packs', pack),
-      '--port', '0', '--freeze-clock'], { cwd: REPO_DIR, stdio: ['ignore', 'pipe', 'pipe'] });
+      '--port', '0', '--freeze-clock', ...args], { cwd: REPO_DIR, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`no dev server in 60 s: ${err}`)); }, 60000);
     child.stderr.on('data', (d) => { err = (err + d).slice(-5000); });
@@ -152,6 +155,76 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble']) {
       });
       assert.ok(out.found > 0, 'the zone button or the terms note is on the page');
       assert.deepEqual(out.wide, [], 'past the right edge of a 360 px window');
+      await context.close();
+    } finally {
+      await server.stop();
+      await browser.close();
+    }
+  });
+}
+
+// A new server: no map file and offline tiles. Every map says so; an admin turns OpenStreetMap on from the map itself.
+for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble']) {
+  test(`${pack}: a map with no tiles says so, and an admin turns OpenStreetMap on from it`, { skip: !playwright && 'Playwright is not installed', timeout: 180000 }, async () => {
+    const browser = await playwright.chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+    const server = await devServer(pack, ['--map-tiles', 'none']);
+    try {
+      const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      const tiles = [];
+      const body = png();
+      await context.route(/^https:\/\/tile\.openstreetmap\.org\//, (route) => { tiles.push(route.request().url()); return route.fulfill({ status: 200, contentType: 'image/png', body, headers: { 'access-control-allow-origin': '*' } }); });
+      await context.route((u) => !u.href.startsWith(server.origin) && !/^https:\/\/tile\.openstreetmap\.org\//.test(u.href), (route) => route.abort());
+      const page = await context.newPage();
+      const errors = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      await page.goto(`${server.origin}/cars/c1`);
+      const note = page.locator('.map-empty').first();
+      await note.waitFor({ timeout: 30000 });
+      assert.match(await note.textContent(), /No map tiles yet/);
+      const use = note.getByRole('button', { name: 'Use online map (OpenStreetMap)' });
+      await use.waitFor({ timeout: 10000 });
+      assert.equal(await note.getByRole('link', { name: 'Add an offline map file' }).getAttribute('href'), '/settings/display#offline-map');
+      await use.click();
+      assert.match(await note.textContent(), /sees the viewer.s IP address/, 'the confirm says what the tile server sees');
+      assert.equal(tiles.length, 0, 'nothing asked before the confirm');
+      await note.getByRole('button', { name: 'Turn on' }).click();
+      for (let i = 0; i < 150 && !tiles.length; i++) await page.waitForTimeout(100);
+      assert.ok(tiles.length > 0, 'the map loads OpenStreetMap tiles after the confirm');
+      assert.equal(await page.locator('.map-empty').count(), 0, 'no note once tiles are there');
+      assert.deepEqual(errors, []);
+      await context.close();
+    } finally {
+      await server.stop();
+      await browser.close();
+    }
+  });
+
+  test(`${pack}: a watch account is told to ask an admin; a refusing tile server gives its cause`, { skip: !playwright && 'Playwright is not installed', timeout: 180000 }, async () => {
+    const browser = await playwright.chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+    const watch = await devServer(pack, ['--map-tiles', 'none', '--role', 'watch']);
+    try {
+      const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      await context.route((u) => !u.href.startsWith(watch.origin), (route) => route.abort());
+      const page = await context.newPage();
+      await page.goto(`${watch.origin}/cars/c1`);
+      const note = page.locator('.map-empty').first();
+      await note.waitFor({ timeout: 30000 });
+      await page.waitForFunction(() => /Ask an admin/.test(document.querySelector('.map-empty')?.textContent || ''), null, { timeout: 10000 });
+      assert.equal(await note.getByRole('button').count(), 0, 'no switch for a watch account');
+      await context.close();
+    } finally {
+      await watch.stop();
+    }
+    const server = await devServer(pack);
+    try {
+      const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      await context.route(/^https:\/\/tile\.openstreetmap\.org\//, (route) => route.fulfill({ status: 403, contentType: 'text/plain', body: 'Access blocked', headers: { 'access-control-allow-origin': '*' } }));
+      await context.route((u) => !u.href.startsWith(server.origin) && !/^https:\/\/tile\.openstreetmap\.org\//.test(u.href), (route) => route.abort());
+      const page = await context.newPage();
+      await page.goto(`${server.origin}/cars/c1`);
+      const err = page.locator('[data-tile-error="403"]').first();
+      await err.waitFor({ timeout: 30000 });
+      assert.match(await err.textContent(), /refused them \(403\)/);
       await context.close();
     } finally {
       await server.stop();

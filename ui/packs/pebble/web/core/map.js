@@ -1,10 +1,13 @@
 // Sentry Mate, "Pebble" UI pack: map tiles on MapLibre.
 //
 // mapTile(ctx, box, opts) draws a soft map inside a rounded box: the tiles from the server's map settings
-// (GET /api/v1/maps/config: offline tiles first when installed, else the online tile server the owner turned on,
-// else none, only the routes and pins on a plain ground), routes in the pack's series colours and round pins.
-// Light and dark have their own look (the tiles are calmed down, never tinted neon). Nothing else is fetched
-// from outside. MapLibre loads on first use from vendor/maplibre-gl, its worker from the same folder.
+// (GET /api/v1/maps/config, read by shared/maptiles.js: the offline map file Sentry Mate serves, raster or a
+// Protomaps vector file in a plain style, else the online tile server the owner turned on, else none: only the
+// routes and pins on a plain ground under a "No map tiles yet" note, with a one-click OpenStreetMap switch for
+// an admin), routes in the pack's series colours and round pins. Tiles that fail show their cause. The light
+// theme shows the tile server's own colours; the dark one dims them (never inverted, so streets, labels and
+// water stay readable) unless the person chose original colours. Nothing else is fetched from outside.
+// MapLibre loads on first use from vendor/maplibre-gl, its worker from the same folder.
 //
 // Line widths and padding are given in px at the standard size and follow the Interface size; a new theme
 // repaints the ground, the tiles and the lines.
@@ -12,7 +15,8 @@
 import { h, cssVar } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { display } from './display.js';
-import { isDark, onTheme } from './prefs.js';
+import { isDark, onTheme, currentPrefs, onPrefs } from './prefs.js';
+import { tileChoice, rasterPaint, mapColors, tileSourceDef, tileLayers, repaintTiles, vectorGround, noTilesNote, watchTileErrors } from '../shared/maptiles.js';
 
 let lib = null;
 /** Load MapLibre once (module, worker and its style sheet). */
@@ -56,19 +60,12 @@ export function watchTilePolicy(template) {
     location.reload();
   });
 }
-/** Where the tiles come from: { url, attribution, maxZoom, offline }, or null when there are none. */
-export function tileSource(cfg) {
-  const t = cfg && cfg.tiles;
-  if (!t) return null;
-  if (t.offline_url && t.offline_data_present !== false && t.mode === 'offline') return { url: t.offline_url, attribution: t.attribution || '', maxZoom: t.max_zoom || 16, offline: true };
-  if (t.mode === 'online' && t.online_template) return { url: t.online_template, attribution: t.attribution || '', maxZoom: t.max_zoom || 19, offline: false };
-  if (t.offline_url) return { url: t.offline_url, attribution: t.attribution || '', maxZoom: t.max_zoom || 16, offline: true };
-  return null;
-}
+/** Where the tiles come from (shared/maptiles.js): { kind, template, attribution, maxZoom, offline, why }; kind 'none' when there are none. */
+export const tileSource = (cfg) => tileChoice(cfg);
 
-const paint = (dark) => (dark
-  ? { 'raster-saturation': -0.85, 'raster-brightness-min': 0.62, 'raster-brightness-max': 0.12, 'raster-contrast': 0.05, 'raster-opacity': 0.95, 'raster-fade-duration': 0 }
-  : { 'raster-saturation': -0.55, 'raster-contrast': -0.1, 'raster-brightness-min': 0.12, 'raster-opacity': 0.9, 'raster-fade-duration': 0 });
+// the dimmed dark look (calm, a little colour kept, never inverted)
+const DIM = { saturation: -0.4, contrast: 0.14, min: 0.04, max: 0.58 };
+const paintNow = () => rasterPaint({ dark: isDark(), colors: mapColors(currentPrefs()), tune: DIM });
 const tilePx = () => (display.scale >= 1.2 ? Math.round(256 * display.scale) : 256);
 
 /** [[west, south], [east, north]] around [lon, lat] points (null without points). */
@@ -104,18 +101,20 @@ export async function mapTile(ctx, box, { center = null, zoom = 13, bounds = nul
     return { map: null, ready: Promise.resolve(), route() {}, routes() {}, pin() {}, circle() {}, frame() {}, noTiles: true, failed: err };
   }
   if (ctx.signal.aborted) return null;
-  const src = tileSource(cfg);
-  watchTilePolicy(src && !src.offline ? src.url : null);
+  const choice = tileSource(cfg);
+  const src = choice.kind === 'none' ? null : choice;
+  watchTilePolicy(src && !src.offline ? src.template : null);
   const pad = () => Math.round(padding * display.scale);
   let tiles = tilePx();
-  const source = () => ({ type: 'raster', tiles: [src.url], tileSize: tiles, maxzoom: src.maxZoom, attribution: src.attribution });
+  const source = () => tileSourceDef(src, { rasterSize: tiles });
+  const ground = () => (src?.kind === 'vector' ? vectorGround(isDark()) : cssVar('--map-ground'));
   const map = new ml.Map({
     container: box,
     style: {
       version: 8,
       sources: src ? { tiles: source() } : {},
-      layers: [{ id: 'ground', type: 'background', paint: { 'background-color': cssVar('--map-ground') } },
-        ...(src ? [{ id: 'tiles', type: 'raster', source: 'tiles', paint: paint(isDark()) }] : [])],
+      layers: [{ id: 'ground', type: 'background', paint: { 'background-color': ground() } },
+        ...tileLayers(src, { dark: isDark(), paint: paintNow() })],
     },
     center: center || [0, 0], zoom, bounds: bounds || undefined, fitBoundsOptions: { padding: pad(), maxZoom },
     attributionControl: { compact: false }, refreshExpiredTiles: false, // the credit stays in view, as the tile policies ask
@@ -125,7 +124,7 @@ export async function mapTile(ctx, box, { center = null, zoom = 13, bounds = nul
   map.touchZoomRotate.disableRotation();
   if (interactive) map.addControl(new ml.NavigationControl({ showCompass: false }), 'top-right');
   if (fullscreen) map.addControl(new ml.FullscreenControl({ container: box.closest('.tile') || box }), 'top-right');
-  if (!src) box.append(h('p', { class: 'map-note' }, 'No map tiles: offline maps are not installed and online tiles are off.'));
+  if (!src) box.append(noTilesNote(choice, { compact: box.clientHeight < 300, classes: { primary: 'btn btn-primary', secondary: 'btn btn-soft' } }));
   const lines = new Map(); // layer id -> { width, token }
   let framing = bounds;
   let moved = false;
@@ -137,29 +136,32 @@ export async function mapTile(ctx, box, { center = null, zoom = 13, bounds = nul
     if (change.dpr) map.resize();
     if (!change.rem) return;
     for (const [id, l] of lines) if (map.getLayer(id)) map.setPaintProperty(id, 'line-width', l.width * display.scale);
-    if (src && tilePx() !== tiles && map.isStyleLoaded() && map.getSource('tiles')) {
+    if (src?.kind === 'raster' && tilePx() !== tiles && map.isStyleLoaded() && map.getSource('tiles')) {
       tiles = tilePx();
       const ids = map.getStyle().layers.map((l) => l.id);
       const next = ids[ids.indexOf('tiles') + 1];
       map.removeLayer('tiles'); map.removeSource('tiles');
       map.addSource('tiles', source());
-      map.addLayer({ id: 'tiles', type: 'raster', source: 'tiles', paint: paint(isDark()) }, next);
+      map.addLayer({ id: 'tiles', type: 'raster', source: 'tiles', paint: paintNow() }, next);
     }
     reframe();
   });
   const stopTheme = onTheme(() => {
     if (!map.isStyleLoaded()) return;
-    map.setPaintProperty('ground', 'background-color', cssVar('--map-ground'));
-    if (map.getLayer('tiles')) for (const [k, v] of Object.entries(paint(isDark()))) map.setPaintProperty('tiles', k, v);
+    map.setPaintProperty('ground', 'background-color', ground());
+    if (src) repaintTiles(map, src, { dark: isDark(), paint: paintNow() });
     for (const [id, l] of lines) if (map.getLayer(id)) map.setPaintProperty(id, l.prop || 'line-color', cssVar(l.token));
   });
-  let timer = 0;
-  ctx.onCleanup(() => { clearTimeout(timer); stopSize(); stopTheme(); map.remove(); });
-  let failedTiles = 0;
-  map.on('error', (e) => {
-    if (!(e && (e.tile || e.sourceId === 'tiles'))) return;
-    if (++failedTiles === 1) box.append(h('p', { class: 'map-note' }, 'Map tiles did not load; the routes and pins still show.'));
+  // the person's map colours (dimmed or original) change in place
+  let colorsNow = mapColors(currentPrefs());
+  const stopPrefs = onPrefs((p) => {
+    if (mapColors(p) === colorsNow) return;
+    colorsNow = mapColors(p);
+    if (src && map.isStyleLoaded()) repaintTiles(map, src, { dark: isDark(), paint: paintNow() });
   });
+  const stopErrors = watchTileErrors(map, box, src, (text) => h('p', { class: 'map-note map-note-error', role: 'status' }, text));
+  let timer = 0;
+  ctx.onCleanup(() => { clearTimeout(timer); stopSize(); stopTheme(); stopPrefs(); stopErrors(); map.remove(); });
   const ready = new Promise((resolve) => {
     let done = false;
     const finish = () => { clearTimeout(timer); if (!done) { done = true; box.classList.remove('is-loading'); resolve(); } };

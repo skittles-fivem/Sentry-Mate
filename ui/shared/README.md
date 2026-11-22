@@ -33,6 +33,7 @@ node --test ui/shared/tests/
 | [`dom.js`](dom.js) | `h()` and other safe DOM helpers; coverage marks; the readiness signal |
 | [`packs.js`](packs.js) | `packChoices(client, { fallback, current })`: the UI packs a person can choose (`GET /ui-packs`), with a short description each, the page's own list if the request fails |
 | [`password.js`](password.js) | `passwordAdvice(name, password)`: why a new password is easy to guess, in the server's words; pages warn with it and let the person go on |
+| [`maptiles.js`](maptiles.js) | Map tiles for every map: which tiles to draw (`GET /maps/config`: the offline map file, the online source, or none and why), raster paint for the theme and the person's map colours (dimmed, never inverted, in the dark theme), a plain style for an offline Protomaps vector file, the "No map tiles yet" note with an admin's one-click OpenStreetMap switch, the note with the cause when tiles fail, and the words of the Settings map rows |
 
 ### api.js
 

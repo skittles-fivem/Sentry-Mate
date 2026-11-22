@@ -16,6 +16,7 @@ import { getInterface, onInterface } from '../core/display.js';
 import { sizePicker, followSwitch, sizeNote, themeButtons } from '../core/account.js';
 import { flash } from '../core/flash.js';
 import { ago } from '../core/fmt.js';
+import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
 export const css = true;
@@ -120,8 +121,10 @@ export async function mount(ctx) {
   const noteEl = h('p', { class: 'setting-note' }, sizeNote());
   ctx.onCleanup(onInterface((i) => { size.sync(i); follow.sync(i); pctIn.value = String(i.size); noteEl.textContent = sizeNote(); }));
   const theme = themeButtons();
+  const segMapColors = choice('Map colours', MAP_COLORS_CHOICES, p.map_colors || 'dimmed', (v) => savePref({ map_colors: v }, 'Map colours'));
   ctx.onCleanup(onPrefs((pp) => {
     theme.sync(pp);
+    segMapColors.set(pp?.map_colors || 'dimmed');
     lang.value = pp?.language === 'en' ? 'en-US' : (pp?.language || 'auto');
     packSel.value = pp?.ui_pack || 'instrument';
     paintSwitch();
@@ -146,6 +149,7 @@ export async function mount(ctx) {
   const look = panel({ title: 'Look and language', icon: 'monitor', side: h('span', { class: 'faint' }, 'Yours; follows you to every screen') },
     setting('Theme', 'Light, dark, or follow this device. It is saved with your account, so every browser you sign in on uses it, and it is set before the page is drawn, so there is no flash.',
       [theme.el, h('p', { class: 'setting-note' }, 'Every page, chart and map has both a light and a dark look; screenshots in the help show either.')], ['shell.theme', 'web.settings.general.theme', 'shots.theme-note']),
+    setting('Map colours', MAP_COLORS_TEXT, segMapColors),
     setting('Interface size', 'Makes text, controls, tables, charts and maps bigger or smaller together. With Follow screen size on, a very large screen (a native 4K monitor) adds its own step on top. Browser zoom works on top of both.',
       [size.el, h('div', { class: 'row' }, h('label', { class: 'faint', for: 'set-size-pct' }, 'Any size:'), pctIn, h('span', { class: 'faint' }, '%')), sizeErr,
         h('div', { class: 'switch-row switch-row--inline' }, follow.el, h('label', { for: 'set-follow' }, 'Follow screen size')), noteEl]),
@@ -175,7 +179,7 @@ export async function mount(ctx) {
   function tileStatus(t) {
     const off = maps?.tiles?.offline_data_present;
     if (t.mode === 'online') return h('p', { class: 'setting-note' }, icon('globe', 'ico--sm'), ' Maps load pictures from the online source; its credit shows on every map: ', h('b', null, t.attribution || '(none set)'), '.');
-    return h('p', { class: 'setting-note' }, icon(off ? 'check' : 'info', 'ico--sm'), off ? ' Offline tiles are installed: maps need nothing from outside.' : ' No offline tiles are installed yet: maps draw routes and places on a plain background, with a note saying so.');
+    return h('p', { class: 'setting-note' }, icon(off ? 'check' : 'info', 'ico--sm'), off ? ' An offline map file is installed: maps need nothing from outside.' : ' No offline map file yet: maps draw routes and places on a plain background, with a note saying so. See Offline map file below.');
   }
   function paintServer() {
     if (!server) { replace(serverPanel, panel({ title: 'Server defaults', icon: 'server' }, h('p', { class: 'note' }, 'The server settings could not be loaded. Your own choices above still work.'))); return; }
@@ -213,6 +217,14 @@ export async function mount(ctx) {
     }) : null;
     const tTerms = tilePreset ? h('p', { class: 'setting-note' }, icon('info', 'ico--sm'), ` ${tilePreset.name}: free, no key. Its terms (`, ...breakable(tilePreset.terms.replace(/^https:\/\//, '')), ') ask for light use and its credit on every map.') : null;
     const tUrl = field({ label: 'Online tile address (https)', name: 'turl', path: 'tiles.online_url', value: t.online_url || '', hint: 'With {z}, {x} and {y} in it.', attrs: { placeholder: 'https://', disabled: ro } });
+    // the offline map file: how to make one, which is in use, and (with several) which to use
+    const tFiles = offlineFileChoices(maps?.tiles);
+    const offlineRow = setting('Offline map file', 'A map of your own area kept on this server: maps then need nothing from outside, and no viewer’s browser asks another site for tiles.',
+        [h('p', { class: 'setting-note' }, icon(maps?.tiles?.offline_present ? 'check' : 'info', 'ico--sm'), ' ', offlineSummary(maps?.tiles)),
+          tFiles ? sChoice('Offline map file', tFiles, t.offline_file || '', (v) => patch({ tiles: { offline_file: v || null } }, 'Offline map file')) : null,
+          h('ol', { class: 'setting-note offline-steps' }, OFFLINE_STEPS.map((x) => h('li', null, x))),
+          h('p', { class: 'setting-note' }, OFFLINE_NOTE)]);
+    offlineRow.id = OFFLINE_ANCHOR;
     const tAttr = field({ label: 'Map credit', name: 'tattr', path: 'tiles.attribution', value: t.attribution || '', hint: 'Shown in the corner of every map, as the source asks.', attrs: { disabled: ro } });
     // checks here first (worded plainly), then the server's own checks under the same field
     const local = {
@@ -252,6 +264,7 @@ export async function mount(ctx) {
           setting('Address language', 'Street and place names are written in this language where the data has it; otherwise in the local language.', gLang.el, ['web.settings.general.address-language', 'web.settings.general.address-language-error', 'web.settings.general.address-language-invalid']),
           setting('Map tiles', 'Offline tiles come from Sentry Mate itself. An online source is asked by each viewer’s browser for the map pictures, so it sees the map area and this server’s address (as Referer, which OpenStreetMap needs; never a page or a car); only turn it on if you accept that.',
             [sChoice('Map tiles', [['offline', 'Offline'], ['online', 'Online source']], t.mode, (v) => patch({ tiles: { mode: v } }, 'Map tiles', [tUrl])), tileStatus(t), tSource, tTerms, tUrl.el, tAttr.el], 'web.shell.map-tiles'),
+          offlineRow,
           setting('Outside links', 'Links that open another site in a new tab, only when the viewer clicks them.',
             h('div', { class: 'row' },
               sChoice('Map links', [['false', 'No map links'], ['true', 'Map links']], String(!!server.outside_links?.maps), (v) => patch({ outside_links: { maps: v === 'true' } }, 'Map links')),
@@ -264,5 +277,6 @@ export async function mount(ctx) {
     h('div', { class: 'settings-stack' },
       h('p', { class: 'note saving-note', cover: 'web.settings.general.autosave' }, icon('check', 'ico--sm'), ' Every change here is saved at once; there is no Save button. A short note confirms it, and your choices follow you to every browser you sign in on.'),
       h('div', { class: 'settings-pair' }, units, look), serverPanel));
+  showOfflineHelp(document.getElementById(OFFLINE_ANCHOR));
   ctx.ready();
 }

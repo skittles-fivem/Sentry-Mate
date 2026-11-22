@@ -10,14 +10,15 @@
 //!
 //! `/maps/config` and `/geocode/status` follow the saved `/settings` at once (tile mode, template, credit and zoom; the
 //! address mode, service, language and rounding), with what the server has: the offline address data when it is in
-//! the data folder, no offline tiles served yet (`offline_url` null), and no address lookup running yet (nothing
-//! cached, no online error).
+//! the data folder, the offline map files in its `maps/` folder (the chosen one, else the largest, is served tile by
+//! tile at `/maps/tiles/{z}/{x}/{y}` while tiles are offline), and no address lookup running yet (nothing cached, no
+//! online error).
 
 use super::now::{answer, failed, list_answer, run, text};
 use crate::ctx::target;
 use crate::{ApiError, ApiResult, AppState, Fields, JsonBody, Params, Viewer, ids};
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -27,6 +28,7 @@ use engine::query::{self as q};
 use model::{CarId, PlaceId};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -37,6 +39,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/places/{place}", get(one).patch(change).delete(remove))
         .route("/api/v1/places/{place}/reprice", post(reprice))
         .route("/api/v1/maps/config", get(maps_config))
+        .route("/api/v1/maps/tiles/{z}/{x}/{y}", get(map_tile))
         .route("/api/v1/geocode/status", get(geocode_status))
 }
 
@@ -402,18 +405,86 @@ fn offline_addresses(app: &AppState) -> bool {
     })
 }
 
+/// The data folder (the web folder's parent).
+fn data_dir(app: &AppState) -> Option<std::path::PathBuf> {
+    app.dir.parent().map(std::path::Path::to_path_buf)
+}
+
+/// The open offline map file, kept while its name, size and change time stay the same.
+type OpenMap = (std::path::PathBuf, u64, Option<std::time::SystemTime>, Arc<places::pmtiles::Archive>);
+static OPEN_MAP: Mutex<Option<OpenMap>> = Mutex::new(None);
+
+/// The offline map file in use (`tiles.offline_file` when it is there, else the largest), opened; `Err` when the
+/// file is there but cannot be read as PMTiles.
+fn offline_map(
+    app: &AppState,
+    chosen: Option<&str>,
+) -> Option<Result<(String, Arc<places::pmtiles::Archive>), String>> {
+    let dir = data_dir(app)?;
+    let files = places::pmtiles::maps_in(&dir);
+    let f = places::pmtiles::pick(&files, chosen)?;
+    let path = dir.join(places::pmtiles::MAPS_DIR).join(&f.name);
+    let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let mut open = OPEN_MAP.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((p, len, m, a)) = open.as_ref()
+        && *p == path
+        && *len == f.bytes
+        && *m == modified
+    {
+        return Some(Ok((f.name.clone(), a.clone())));
+    }
+    Some(match places::pmtiles::Archive::open(&path) {
+        Ok(a) => {
+            let a = Arc::new(a);
+            *open = Some((path, f.bytes, modified, a.clone()));
+            Ok((f.name.clone(), a))
+        }
+        Err(e) => {
+            *open = None;
+            Err(format!("{}: {e}", f.name))
+        }
+    })
+}
+
+/// Where the pages fetch offline tiles (MapLibre fills in z, x and y).
+pub const OFFLINE_TILE_URL: &str = "/api/v1/maps/tiles/{z}/{x}/{y}";
+
 async fn maps_config(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Value>> {
     let st = saved_settings(&app).await?;
-    let t = &st.tiles;
-    // offline tiles are not served by this server yet: their address stays null in that mode
+    let t = st.tiles.clone();
     let online = t.mode == "online";
+    let (files, map) = app
+        .blocking(move |app| {
+            let files = data_dir(app).map(|d| places::pmtiles::maps_in(&d)).unwrap_or_default();
+            Ok((files, offline_map(app, t.offline_file.as_deref())))
+        })
+        .await?;
+    let t = &st.tiles;
+    let (offline_file, offline_error, header) = match &map {
+        Some(Ok((name, a))) => (Some(name.clone()), None, Some(a.header.clone())),
+        Some(Err(e)) => (None, Some(e.clone()), None),
+        None => (None, None, None),
+    };
+    let present = header.is_some();
+    let kind = header.as_ref().map(|h| h.tile_type.kind());
+    let usable = matches!(kind, Some("vector" | "raster"));
     let tiles = json!({
         "mode": t.mode,
-        "offline_url": null,
+        // offline tiles come from this server, while tiles are offline and a map file is there
+        "offline_url": if !online && usable { Some(OFFLINE_TILE_URL) } else { None },
         "online_template": if online { t.online_url.clone() } else { None },
         "attribution": t.attribution,
         "max_zoom": t.max_zoom,
-        "offline_data_present": false,
+        "offline_present": present,
+        "offline_data_present": present,
+        "offline_file": offline_file,
+        "offline_choice": t.offline_file,
+        "offline_files": files.iter().map(|f| json!({ "name": f.name, "bytes": f.bytes })).collect::<Vec<_>>(),
+        "offline_kind": kind,
+        "offline_min_zoom": header.as_ref().map(|h| h.min_zoom),
+        "offline_max_zoom": header.as_ref().map(|h| h.max_zoom),
+        "offline_bounds": header.as_ref().map(|h| h.bounds),
+        "offline_error": offline_error,
         "presets": places::tiles::PRESETS,
     });
     let g = &st.geocode;
@@ -424,6 +495,60 @@ async fn maps_config(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<
             "mode": g.mode, "credit": credit, "offline_data_present": offline_addresses(&app), "language": g.language,
         },
     })))
+}
+
+/// One offline tile out of the map file in use: `204` when the file has none there (the sea, outside its area),
+/// `404 no_offline_map` while tiles are online or no map file is there.
+async fn map_tile(
+    State(app): State<AppState>,
+    _v: Viewer,
+    Path(p): Path<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    let num = |k: &str| {
+        p.get(k)
+            .and_then(|s| (s.len() <= 10 && s.bytes().all(|b| b.is_ascii_digit())).then_some(s))
+            .and_then(|s| s.parse::<u32>().ok())
+    };
+    let (Some(z), Some(x), Some(y)) = (num("z"), num("x"), num("y")) else {
+        return Err(ApiError::not_found("no_such_tile"));
+    };
+    // zoom 0 to 30, x and y inside the zoom
+    if z > 30 || x >> z != 0 || y >> z != 0 {
+        return Err(ApiError::not_found("no_such_tile"));
+    }
+    let z = z as u8;
+    let st = saved_settings(&app).await?;
+    if st.tiles.mode == "online" {
+        return Err(ApiError::not_found("no_offline_map"));
+    }
+    let chosen = st.tiles.offline_file.clone();
+    let (tile, header) = app
+        .blocking(move |app| match offline_map(app, chosen.as_deref()) {
+            None => Err(ApiError::not_found("no_offline_map")),
+            Some(Err(e)) => {
+                Err(ApiError::new(503, "offline_map_unreadable", format!("The offline map file can't be read: {e}.")))
+            }
+            Some(Ok((_, a))) => {
+                let t = a.tile(z, x, y).map_err(|e| ApiError::server(format!("offline map: {e}")))?;
+                Ok((t, a.header.clone()))
+            }
+        })
+        .await?;
+    let mut res = match tile {
+        Some(b) => {
+            let mut r = (StatusCode::OK, b).into_response();
+            let h = r.headers_mut();
+            h.insert(header::CONTENT_TYPE, HeaderValue::from_static(header.tile_type.content_type()));
+            if let Some(enc) = header.tile_compression.content_encoding() {
+                h.insert(header::CONTENT_ENCODING, HeaderValue::from_static(enc));
+            }
+            r
+        }
+        None => StatusCode::NO_CONTENT.into_response(),
+    };
+    // tiles change only with the file; a day in this browser only (they need the sign-in to load)
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=86400"));
+    Ok(res)
 }
 
 async fn geocode_status(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Value>> {
