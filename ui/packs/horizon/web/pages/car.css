@@ -101,3 +101,7 @@
   .vi-row > .vi-v { grid-column: 1; }
   .vi-act { grid-column: 2; }
 }
+
+.cl-off .rack { margin-bottom: 0.75rem; }
+.cl-off .stat-how { overflow-wrap: anywhere; }
+.cl-off-how { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }

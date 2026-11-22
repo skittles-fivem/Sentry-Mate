@@ -579,6 +579,16 @@ pub(crate) fn vehicle_defaults(e: &Engine, car: CarId) -> QResult<VehicleDefault
     vehicle_defaults_of(e, &c, &owner(e, car)?)
 }
 
+/// The trim as Car settings shows it (`config.trim`): the build's trim when something names it.
+fn shown_trim(v: &VehicleInfo) -> Option<String> {
+    v.trim.value.clone().filter(|_| v.trim.source.is_some())
+}
+
+/// [`shown_trim`] of a car (its build worked out from the car's small records).
+pub(crate) fn trim_of(e: &Engine, c: &model::Car) -> QResult<Option<String>> {
+    Ok(shown_trim(&vehicle_of(e, c, &owner(e, c.id)?)?))
+}
+
 /// `/cars/{car}`.
 pub fn car(e: &Engine, car: CarId) -> QResult<CarDetail> {
     let x = e.db().entry(car)?.ok_or(QueryError::NoSuchCar)?;
@@ -629,8 +639,8 @@ pub fn car(e: &Engine, car: CarId) -> QResult<CarDetail> {
     }
     let mut it = item(e, &x, now_ms());
     typed_over(&mut it, &o);
-    if let Some(t) = config.get("trim").and_then(|t| t.value.as_str()) {
-        it.trim = Some(t.to_string());
+    if let Some(t) = shown_trim(&vehicle) {
+        it.trim = Some(t);
     }
     fill_page(e, &x, &mut it, now_ms())?;
     Ok(CarDetail { item: it, config, vehicle, version: o.car_changes + 1, created_ms: c.created_ms })

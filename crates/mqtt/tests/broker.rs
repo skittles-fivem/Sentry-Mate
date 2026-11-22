@@ -229,6 +229,9 @@ fn now(car: u32, soc: f64) -> Now {
     Now {
         range_estimated_km: None,
         healthy: None,
+        since_ms: None,
+        trim: None,
+        off_can: Box::default(),
         car,
         at_ms: 1_794_150_000_000,
         state: Some(State::Online),

@@ -125,6 +125,32 @@ async fn the_pace_follows_the_car_and_a_poll_goes_on_once() {
 }
 
 #[tokio::test]
+async fn a_new_poll_hands_on_the_values_not_on_the_can_bus_once() {
+    let (_t, data, v) = vault();
+    let store = Store::new(&data, v);
+    let id = account(&store, true);
+    let (script, sink) = (Script::default(), Arc::new(MemSink::default()));
+    let mut p = poller(&store, &id, &script, &sink);
+    let extra = json!({"locked": "1", "fd_window": "0", "fp_window": "0", "rd_window": "0", "rp_window": "0",
+                       "car_version": "2026.32.5 abcdef", "newVersion": "2026.38.1", "newVersionStatus": "Available"});
+    script.push(Ok(poll(1, "2027-01-15 08:00:00", "Idling", extra.clone())));
+    let next = p.tick(NOW).await.unwrap();
+    script.push(Ok(poll(1, "2027-01-15 08:00:00", "Idling", extra)));
+    let next = p.tick(next).await.unwrap();
+    // a poll with none of them: nothing handed on
+    script.push(Ok(poll(2, "2027-01-15 08:05:00", "Idling", json!({}))));
+    p.tick(next).await.unwrap();
+    let got = sink.off_can.lock().unwrap().clone();
+    assert_eq!(got.len(), 1, "once, for the new poll only: {got:?}");
+    let (car, at, o) = &got[0];
+    assert_eq!((*car, *at), (7, 1_800_000_000_000));
+    assert_eq!(o.locked, Some(true));
+    assert_eq!(o.windows, [Some(false); 4]);
+    assert_eq!(o.version.as_deref(), Some("2026.32.5"));
+    assert_eq!((o.update_status.as_deref(), o.update_version.as_deref()), (Some("available"), Some("2026.38.1")));
+}
+
+#[tokio::test]
 async fn errors_back_off_teslafis_wait_is_kept_and_a_refused_token_stops_it() {
     let (_t, data, v) = vault();
     let store = Store::new(&data, v);

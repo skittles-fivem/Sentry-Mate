@@ -827,6 +827,12 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .src-plus { color: var(--muted); }
 .src--via { margin-left: var(--a2); }
 .src-est { margin-left: var(--a2); }
+/* settings/integrations: where an API value came from, after its payload; car: a value past its age limit */
+.pay-src { display: block; white-space: normal; }
+.src-stale { margin-left: var(--a2); white-space: nowrap; }
+/* settings/integrations: the status legend; its longest word ([from tesla api / teslafi]) wraps rather than spill */
+.kv--legend > .kv-row { grid-template-columns: calc(var(--a2) * 27) minmax(0, 1fr); }
+.kv--legend .kv-k > .tag { white-space: normal; }
 .src-line { color: var(--muted); margin-top: var(--g2); }
 .page > .src-line { margin-bottom: calc(var(--g) * 2); }
 .src-line > .src { white-space: normal; }
@@ -1002,6 +1008,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
   .drive-nav { white-space: pre-wrap; display: block; margin-left: 0; }
   .st-cars { margin-left: 0; width: 100%; }
   .kv-row { grid-template-columns: calc(var(--a2) * 14) minmax(0, 1fr); }
+  .kv--legend > .kv-row { grid-template-columns: calc(var(--a2) * 16) minmax(0, 1fr); }
   .fld, .bare-box .fld, .bare-box--wide .fld { grid-template-columns: minmax(0, 1fr); gap: var(--g2); }
   .fld-label { line-height: var(--lh2); }
   .toasts { bottom: calc(var(--bar) + var(--g) + env(safe-area-inset-bottom, 0px)); }

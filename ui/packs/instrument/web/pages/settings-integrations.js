@@ -38,11 +38,17 @@ const STATUS = {
   published: ['Published', 'live', 'Sent now, retained, in the server units.'],
   logged: ['Logged, not yet sent', 'plain', 'Sentry Mate has the value (from the car or worked out); it is not its own topic yet.'],
   signal: ['Needs a new CAN signal', 'warm', 'The car sends it; Sentry Mate does not decode it yet. Nothing is guessed meanwhile.'],
-  none: ['Not on the CAN bus', 'plain', 'No message on the car’s buses carries it, so it is never published.'],
+  api: ['From Tesla API / TeslaFi', 'live', 'No CAN message carries it; the Tesla API or TeslaFi’s polls give it, tagged with where it came from, and it goes stale (sent empty) when the input stops.'],
+  none: ['Not on the CAN bus', 'plain', 'No message on the car’s buses carries it, and no other input gives it, so it is never published.'],
   never: ['Never published', 'plain', 'Left out on purpose.'],
   device: ['On the device', 'live', 'Sent once as part of the Home Assistant device, not as a topic.'],
 };
-const STATUS_ORDER = ['published', 'device', 'logged', 'signal', 'none', 'never'];
+const STATUS_ORDER = ['published', 'api', 'device', 'logged', 'signal', 'none', 'never'];
+// the live inputs other than SMO, as a status word names them
+const INPUT_WORD = { tesla_api: 'Tesla API', teslafi_api: 'TeslaFi' };
+// the inputs an `api` row can come from (all of them so far)
+const API_INPUTS = ['tesla_api', 'teslafi_api'];
+const statusWord = (s, inputs = API_INPUTS) => (s === 'api' ? `From ${inputs.map((i) => INPUT_WORD[i] || i).join(' / ')}` : STATUS[s][0]);
 
 // unit kinds in the server's units (payloads are text in the server's units, not each person's)
 function unitText(kind, u) {
@@ -61,16 +67,16 @@ function unitText(kind, u) {
 const VALUES = [
   ['mqtt.display-name', null, 'Car name', null, 'device', 'Typed in Settings: Cars', 'The Home Assistant device name. Topics use the car id, so a rename never moves them.'],
   ['mqtt.state', 'state', 'State', null, 'published', 'The timeline', 'driving, charging, online, asleep or unknown. Unknown (no log, recording paused) is never called asleep.'],
-  ['mqtt.since', 'since', 'State since', 'ISO time, UTC', 'logged', 'The start of the timeline span', 'Exact to the CAN frame, not to a poll.'],
+  ['mqtt.since', 'since', 'State since', 'ISO time, UTC', 'published', 'The start of the timeline span', 'Exact to the CAN frame, not to a poll.'],
   ['mqtt.healthy', 'healthy', 'Logger healthy', 'true / false', 'published', 'The Data health rule', 'False when no log came while the car was awake, the newest log failed its check, or frames were lost in the last hour. See Data health.'],
-  ['mqtt.version', 'version', 'Software version', null, 'none', 'No version text on CAN', 'Instead: a software_changed event when module build ids change, with the version you typed (Software page).'],
-  ['mqtt.update-available', null, 'Update waiting', null, 'none', 'Only Tesla’s servers know', 'Left out.'],
-  ['mqtt.update-version', null, 'Waiting update version', null, 'none', 'Only Tesla’s servers know', 'Left out; the software_changed event tells you afterwards.'],
-  ['mqtt.download-perc', null, 'Update download %', '%', 'none', 'No progress on CAN', 'Left out.'],
-  ['mqtt.install-perc', 'installing', 'Update install %', 'true / false', 'published', 'Update status (0x343 VCRIGHT_OTAState)', 'No percentage on CAN: an installing true/false flag instead.'],
+  ['mqtt.version', 'version', 'Software version', null, 'api', 'The version the car reports to the Tesla API / TeslaFi', 'No version text on CAN. A software_changed event also comes when module build ids change.'],
+  ['mqtt.update-available', 'update_available', 'Update waiting', 'true / false', 'api', 'The update status the Tesla API / TeslaFi reads', 'Only Tesla’s servers know; not on CAN.'],
+  ['mqtt.update-version', 'update_version', 'Waiting update version', null, 'api', 'The waiting update, as the Tesla API / TeslaFi reads it', 'Not sent while none waits; the software_changed event tells you afterwards.'],
+  ['mqtt.download-perc', 'update_download', 'Update download %', '%', 'api', 'Download progress from the Tesla API / TeslaFi', 'No progress on CAN.'],
+  ['mqtt.install-perc', 'installing', 'Update install %', 'true / false', 'published', 'Update status (0x343), else the Tesla API / TeslaFi', 'No percentage on CAN: an installing true/false flag instead.'],
   ['mqtt.vin', null, 'VIN', null, 'never', 'Only the first 11 characters are ever kept', 'The VIN is never published, so a broker or Home Assistant never holds it.'],
   ['mqtt.model', null, 'Model', null, 'device', 'The VIN prefix', 'Model and year are the Home Assistant device model.'],
-  ['mqtt.trim-badging', 'trim', 'Trim', null, 'logged', 'The VIN prefix (drive units, battery)', 'Shown in Settings: Cars; the car configuration message can confirm it.'],
+  ['mqtt.trim-badging', 'trim', 'Trim', null, 'published', 'The VIN prefix (drive units, battery)', 'Shown in Settings: Cars; the car configuration message can confirm it.'],
   ['mqtt.exterior-color', 'paint', 'Paint', null, 'published', 'Car configuration (0x7FF GTW_exteriorColor)', 'Newer paints come as a bare code; you can type the name.'],
   ['mqtt.wheel-type', 'wheels', 'Wheels', null, 'published', 'Car configuration (0x7FF GTW_wheelType)', ''],
   ['mqtt.spoiler-type', 'spoiler', 'Spoiler', null, 'published', 'Car configuration (0x7FF GTW_spoilerType)', 'None or passive.'],
@@ -82,15 +88,15 @@ const VALUES = [
   ['mqtt.speed', 'speed', 'Speed', 'speed', 'published', 'Wheel speed (0x257)', ''],
   ['mqtt.heading', 'heading', 'Heading', '°', 'published', 'GPS heading (0x3D9 UI_gpsVehicleHeading, chassis bus)', 'Only while driving: the chassis bus is quiet when parked.'],
   ['mqtt.elevation', 'elevation', 'Elevation', 'elevation', 'published', 'The car’s GPS height (0x3D8)', 'Logged with every drive; from the car, no map lookup.'],
-  ['mqtt.locked', null, 'Locked', null, 'none', 'No lock state on CAN', 'Only a lock request exists, which is not the lock state. Never guessed.'],
+  ['mqtt.locked', 'locked', 'Locked', 'true / false', 'api', 'The lock state the Tesla API / TeslaFi reads', 'Never from a lock request: CAN only carries the request, which is not the lock state.'],
   ['mqtt.sentry-mode', 'sentry_mode', 'Sentry mode', 'true / false', 'published', 'Vehicle modes (0x284 UIsentryMode284)', ''],
-  ['mqtt.windows-open', null, 'Any window open', null, 'none', 'Only window switch presses on CAN', 'Left out: switch presses cannot tell open from closed.'],
-  ['mqtt.window-each', null, 'Each window', null, 'none', 'Only window switch presses on CAN', 'Left out.'],
+  ['mqtt.windows-open', 'windows_open', 'Any window open', 'true / false', 'api', 'The four windows as the Tesla API / TeslaFi reads them', 'CAN only has switch presses, which cannot tell open from closed. False only when all four read closed.'],
+  ['mqtt.window-each', ['window_driver_front', 'window_passenger_front', 'window_driver_rear', 'window_passenger_rear'], 'Each window', 'true / false', 'api', 'The Tesla API / TeslaFi (fd, fp, rd, rp)', 'Named by seat: driver front, passenger front, driver rear, passenger rear.'],
   ['mqtt.doors-open', 'doors_open', 'Any door open', 'true / false', 'published', 'Door latches (0x102, 0x103)', ''],
   ['mqtt.door-each', ['door_front_left', 'door_front_right', 'door_rear_left', 'door_rear_right'], 'Each door', 'true / false', 'published', 'Door latches (0x102 left, 0x103 right)', 'Named by side; right-hand drive comes from the car configuration.'],
-  ['mqtt.sun-roof-state', null, 'Sunroof position', null, 'none', 'No roof position on CAN', 'The roof type below instead.'],
+  ['mqtt.sun-roof-state', 'sunroof_state', 'Sunroof position', null, 'api', 'The Tesla API / TeslaFi', 'closed, open, vent … as the input says it. Only a car with a sunroof sends it; the roof type is below.'],
   ['mqtt.sun-roof-installed', 'roof', 'Roof type', null, 'published', 'Car configuration (0x7FF GTW_roofType)', 'Metal, fixed glass or panoramic.'],
-  ['mqtt.sun-roof-percent-open', null, 'Sunroof % open', '%', 'none', 'No roof position on CAN', 'Left out.'],
+  ['mqtt.sun-roof-percent-open', 'sunroof_open', 'Sunroof % open', '%', 'api', 'The Tesla API / TeslaFi', 'No roof position on CAN.'],
   ['mqtt.trunk-open', 'trunk_open', 'Trunk open', 'true / false', 'published', 'Trunk latch (0x103), liftgate (0x142)', 'A power liftgate also gives its angle.'],
   ['mqtt.frunk-open', 'frunk_open', 'Frunk open', 'true / false', 'published', 'Frunk latch (0x2E1 VCFRONT_frunkLatchStatus)', ''],
   ['mqtt.is-user-present', 'user_present', 'Someone in the car', 'true / false', 'published', 'Occupancy (0x3B3 UI_userPresent)', 'The user_present event is sent too, when someone is seen.'],
@@ -115,11 +121,12 @@ const VALUES = [
   ['mqtt.charger-voltage', 'charger_voltage', 'Charger voltage', 'V', 'published', 'AC line voltage (0x264), DC charger voltage', 'Sent while charging; also logged on every charge curve.'],
   ['mqtt.charge-current-request', 'charge_current_request', 'Current asked for', 'A', 'published', 'The current set on the screen (0x333)', ''],
   ['mqtt.charge-current-request-max', 'charge_current_limit', 'Current limit', 'A', 'published', 'Charger pilot, cable and car limits (0x21D, 0x13D)', 'Says which of the three limits applies.'],
-  ['mqtt.scheduled-charging-start-time', null, 'Scheduled charge start', null, 'none', 'Only schedule on/off flags on CAN', 'Instead: “plugged in, waiting” from the charge status, and the usual start time at that place from past charges.'],
+  ['mqtt.scheduled-charging-start-time', 'scheduled_charge_start', 'Scheduled charge start', 'ISO time, UTC', 'api', 'The charge schedule the Tesla API / TeslaFi reads', 'CAN only has the schedule on/off flags. Not sent while no start is set.'],
+  [null, 'scheduled_departure', 'Scheduled departure', 'ISO time, UTC', 'api', 'The departure the Tesla API / TeslaFi reads', 'The time set for off-peak charging and preconditioning to be done by.'],
   ['mqtt.time-to-full-charge', 'time_to_full', 'Time to full', 'min', 'published', 'Time remaining (0x132)', ''],
   ['mqtt.tpms-pressure', ['tire_pressure_fl', 'tire_pressure_fr', 'tire_pressure_rl', 'tire_pressure_rr'], 'Tyre pressures', 'pressure', 'published', 'Tyre sensors (0x219)', 'Front left, front right, rear left, rear right.'],
   ['mqtt.tpms-soft-warning', 'tire_low', 'Tyre pressure low', 'true / false', 'published', 'Pressure against the recommended pressure (0x219 page 4)', ''],
-  ['mqtt.active-route', null, 'Route (destination, distance, minutes, traffic)', null, 'none', 'Not on CAN', 'Only navigating and the energy at the destination are on CAN.'],
+  ['mqtt.active-route', ['route_destination', 'route_distance', 'route_minutes', 'route_traffic_delay'], 'Route (destination, distance, minutes, traffic)', 'distance, min', 'api', 'The active route the Tesla API / TeslaFi reads', 'While navigating: destination, distance left (server units), minutes left and minutes lost to traffic. Navigating and the energy at the destination come from CAN.'],
   ['mqtt.active-route-payload-routing', 'energy_at_destination', 'Energy at destination', 'kWh', 'published', 'Trip planning (0x082 UI_energyAtDestination)', 'While navigating; destination and minutes are not on CAN.'],
   ['mqtt.active-route-payload-idle', 'navigating', 'Navigating', 'true / false', 'published', 'Trip planning (0x082), map data (0x238)', 'A plain false with no destination, not an error text.'],
   ['mqtt.center-display-state', 'display_mode', 'Screen mode', null, 'published', 'Display on (0x00C), modes (0x284), keep climate (0x2F3)', 'Named modes: off, on, sentry, dog, camp. Not bare numbers.'],
@@ -132,14 +139,15 @@ const VALUES = [
   [null, 'battery_temp', 'Battery temperature', 'temperature', 'published', 'Cell temperatures', 'Sentry Mate extra.'],
   [null, 'lv_voltage', '12 V battery', 'V', 'published', 'Low-voltage battery', 'Sentry Mate extra.'],
   [null, 'updated', 'Last data', 'ISO time, UTC', 'published', 'The newest decoded frame', 'Every value set carries its time: read it before trusting a value.'],
-].map(([cid, keys, what, unitKind, status, source, why]) => ({ cid, keys: keys == null ? [] : Array.isArray(keys) ? keys : [keys], what, unitKind, status, source, why }));
+].map(([cid, keys, what, unitKind, status, source, why]) => ({ cid, keys: keys == null ? [] : Array.isArray(keys) ? keys : [keys], what, unitKind, status, source, why, inputs: status === 'api' ? API_INPUTS : null }));
 
 // Home Assistant: what it gets, per group, with the same statuses
 const ENTITY_GROUPS = [
   ['ha.entity.location-tracker', 'Device tracker', 'The car on the Home Assistant map, home or away by zone', 'location', 'published', 'Only with location publishing on. About 75 s behind live (one-minute logs and the upload).'],
-  ['ha.entity.active-route-tracker', 'Destination tracker', 'Where the car is navigating to', null, 'none', 'The destination is not on CAN.'],
-  ['ha.entity.status-sensors', 'Status sensors', 'State, Charging, Screen mode, Last data', 'state, charging, display_mode, updated', 'published', 'State since comes next; software version and waiting updates are not on CAN.'],
-  ['ha.entity.config-sensors', 'Build sensors', 'Paint, wheels, spoiler, roof', 'paint, wheels, spoiler, roof', 'published', 'Model and year are on the device already. Trim is not sent yet.'],
+  ['ha.entity.active-route-tracker', 'Destination tracker', 'Where the car is navigating to', null, 'none', 'The destination’s position is on no input Sentry Mate reads: the route gives its name (Route destination), not where it is.'],
+  ['ha.entity.status-sensors', 'Status sensors', 'State, State since, Charging, Screen mode, Last data', 'state, since, charging, display_mode, updated', 'published', 'Software version and waiting updates come from the Tesla API or TeslaFi (Software sensors).'],
+  [null, 'Software sensors', 'Software version, Software update, Update version, Update downloaded', 'version, update_available, update_version, update_download', 'api', 'Not on CAN; unknown in Home Assistant while the input’s reading is stale.'],
+  ['ha.entity.config-sensors', 'Build sensors', 'Paint, wheels, spoiler, roof, trim', 'paint, wheels, spoiler, roof, trim', 'published', 'Model and year are on the device already.'],
   ['ha.entity.motion-sensors', 'Motion sensors', 'Place, Gear, Power, Speed, Heading, Elevation', 'place, gear, power, speed, heading, elevation', 'published', 'Heading only while driving: the chassis bus is quiet when parked.'],
   ['ha.entity.parking-brake', 'In park', 'On while the gear is P', 'in_park', 'published', 'From the gear. The parking brake itself (0x228, 0x288) is on CAN as well.'],
   ['ha.entity.temperature-sensors', 'Temperature sensors', 'Inside, outside and battery temperature', 'inside_temp, outside_temp, battery_temp', 'published', 'Battery temperature is extra.'],
@@ -147,16 +155,18 @@ const ENTITY_GROUPS = [
   ['ha.entity.charging-sensors', 'Charging sensors', 'Battery, Usable level, Charge status, Limit, Charge power, Charger, Current, Voltage, Phases, Current asked for, Current limit, Time to full, Energy remaining', 'soc, soc_usable, charge_status, charge_limit, charge_power, charge_kind, charger_*, charge_current_*, time_to_full, energy_remaining', 'published', 'Current, voltage, phases and time to full are sent while charging.'],
   ['ha.entity.charge-energy-added.counter', 'Energy added counter', 'A running total for Home Assistant’s Energy view', 'charge_energy_added', 'published', 'Sent as the pack’s lifetime counter (total_increasing), which never resets, rather than a per-charge value that does.'],
   ['ha.entity.tpms-sensors', 'Tyre sensors', 'Four tyre pressures, Pressure low', 'tire_pressure_fl … rr, tire_low', 'published', 'Which sensor is which wheel is still to be confirmed on new firmware.'],
-  ['ha.entity.active-route-destination', 'Route destination', 'Destination name', null, 'none', 'Not on CAN.'],
+  ['ha.entity.active-route-destination', 'Route destination', 'Destination name', 'route_destination', 'api', 'Not on CAN.'],
   ['ha.entity.active-route-energy', 'Route energy', 'Navigating, Battery expected on arrival', 'navigating, energy_at_destination', 'published', 'Shown as a real 0; unavailable while not navigating.'],
-  ['ha.entity.active-route-distance', 'Route distance', 'Distance left', null, 'none', 'Not on CAN.'],
-  ['ha.entity.active-route-minutes', 'Route minutes', 'Minutes left', null, 'none', 'Not on CAN.'],
-  ['ha.entity.active-route-traffic', 'Route traffic', 'Minutes lost to traffic', null, 'none', 'Not on CAN.'],
-  ['ha.entity.binary-status', 'Health on/off', 'Logger healthy, Update installing, Service mode', 'healthy, installing, service_mode', 'published', 'A waiting update is not on CAN; the software_changed event says when one was installed.'],
-  ['ha.entity.binary-security', 'Security on/off', 'Doors (any and each), trunk, frunk, Sentry mode, someone in the car', 'doors_open, door_*, trunk_open, frunk_open, sentry_mode, user_present', 'published', 'Lock and windows are not on CAN and are never guessed.'],
+  ['ha.entity.active-route-distance', 'Route distance', 'Distance left', 'route_distance', 'api', 'Not on CAN.'],
+  ['ha.entity.active-route-minutes', 'Route minutes', 'Minutes left', 'route_minutes', 'api', 'Not on CAN.'],
+  ['ha.entity.active-route-traffic', 'Route traffic', 'Minutes lost to traffic', 'route_traffic_delay', 'api', 'Not on CAN.'],
+  ['ha.entity.binary-status', 'Health on/off', 'Logger healthy, Update installing, Service mode', 'healthy, installing, service_mode', 'published', 'Update installing is CAN’s flag, else the Tesla API’s or TeslaFi’s word; a waiting update is in Software sensors.'],
+  ['ha.entity.binary-security', 'Security on/off', 'Doors (any and each), trunk, frunk, Sentry mode, someone in the car', 'doors_open, door_*, trunk_open, frunk_open, sentry_mode, user_present', 'published', 'Lock and windows are their own group, from the Tesla API or TeslaFi.'],
+  [null, 'Lock and windows', 'Lock (Home Assistant’s lock class), Windows (any and each), Sunroof, Sunroof open', 'locked, windows_open, window_*, sunroof_state, sunroof_open', 'api', 'Never guessed from a lock request; unknown while the reading is stale.'],
+  [null, 'Charge schedule', 'Scheduled charge start, Scheduled departure', 'scheduled_charge_start, scheduled_departure', 'api', 'Timestamps; not on CAN.'],
   ['ha.entity.binary-climate-charge', 'Climate and charging on/off', 'Climate, preconditioning, cable, charge port', 'climate_on, preconditioning_*, plugged_in, charge_port_open', 'published', ''],
   ['ha.proximity', 'Distance to home', 'Home Assistant’s own proximity helper, fed by the device tracker', 'location', 'published', 'Needs location publishing on. Arrival is known about 75 s late.'],
-].map(([cid, what, gives, topics, status, why]) => ({ cid, what, gives, topics, status, why }));
+].map(([cid, what, gives, topics, status, why]) => ({ cid, what, gives, topics, status, why, inputs: status === 'api' ? API_INPUTS : null }));
 
 // the events: one topic, never retained, so a restart never repeats one
 const EVENTS = [
@@ -171,7 +181,7 @@ const EVENT_TYPES = EVENTS.map((e) => e[0]);
 
 /* ---------------------------------------------------------------------- small pieces */
 
-const statusTag = (s) => tag(STATUS[s][0], STATUS[s][1]);
+const statusTag = (s, inputs) => tag(statusWord(s, inputs), STATUS[s][1]);
 const code = (t) => h('code', { class: 'si-code' }, t);
 // a long topic or id: may break after each / or _, never inside a word
 const codeLong = (t) => h('code', { class: 'si-code si-code--long' }, String(t).split(/(?<=[/_])/).flatMap((part, i) => (i ? [h('wbr'), part] : [part])));
@@ -485,17 +495,31 @@ export async function mount(ctx) {
       return { ...v, shown, unit: v.unitKind ? unitText(v.unitKind, u) : '' };
     });
   }
+  // whether the preview car has any input a row's value can come from (null: the preview does not say)
+  const hasInput = (r) => (!r.inputs || !Array.isArray(pv?.inputs) ? null : pv.inputs.some((i) => r.inputs.includes(i.kind)));
+  // where the value now published came from, for a value an API input gave: its label, and stale when it is
+  function sourceLine(r) {
+    const seen = new Map();
+    for (const k of r.keys) {
+      const src = pv?.sources?.[k];
+      if (src) seen.set(`${src.label}|${src.stale}`, src);
+    }
+    if (!seen.size) return null;
+    return h('span', { class: 'si-src' }, [...seen.values()].map((src) => h('span', { class: 'si-src-one', title: src.at_ms ? `Read ${ago(src.at_ms)}` : null },
+      h('i', { class: `src-m src-m--${src.kind}`, 'aria-hidden': 'true' }), src.label, src.stale ? h('span', { class: 'si-stale' }, 'stale') : null)));
+  }
   function payloadCell(r) {
     if (r.status === 'device') {
       const d = pv?.device;
       return h('span', { class: 'mono' }, r.cid === 'mqtt.model' ? d?.model || '—' : d?.name || pv?.name || '—');
     }
-    if (r.status !== 'published' || !r.keys.length) return h('span', { class: 'faint' }, '—');
+    if (!['published', 'api'].includes(r.status) || !r.keys.length) return h('span', { class: 'faint' }, '—');
     const any = r.shown.some(([, p]) => p !== undefined);
-    if (!any) return h('span', { class: 'faint' }, 'Not sent by this car yet');
-    return h('span', { class: 'si-payloads' }, r.shown.map(([k, p]) => h('span', { class: 'mono' }, r.shown.length > 1 ? h('span', { class: 'faint' }, `${k.replace(/^.*_/, '')} `) : null,
-      p === undefined ? '—' : p === '' ? h('span', { class: 'faint' }, '(empty)') : p.length > 60 ? `${p.slice(0, 57)}…` : p)));
+    if (!any) return h('span', { class: 'faint' }, r.status === 'api' && hasInput(r) === false ? 'No input gives this now' : 'Not sent by this car yet');
+    return h('span', { class: 'si-payloads' }, r.shown.map(([k, p]) => h('span', { class: 'mono' }, r.shown.length > 1 ? h('span', { class: 'faint' }, `${k.replace(/^(window|route)_/, '')} `) : null,
+      p === undefined ? '—' : p === '' ? h('span', { class: 'faint' }, '(empty)') : p.length > 60 ? `${p.slice(0, 57)}…` : p)), sourceLine(r));
   }
+  const srcCsv = (r) => [...new Set(r.keys.map((k) => pv?.sources?.[k]).filter(Boolean).map((x) => `${x.label}${x.stale ? ' (stale)' : ''}`))].join('; ');
   let valuesTable = null;
   function paintValues() {
     const rows = valueRows();
@@ -505,15 +529,15 @@ export async function mount(ctx) {
     } else replace(valuesSlot);
     valuesTable = dataTable(ctx, {
       title: 'Every value', icon: 'signals', rows, csvName: `mqtt-values-${carId || 'none'}`, label: 'Published values',
-      side: h('span', { class: 'faint' }, `${counts.published} published · ${counts.logged} logged · ${counts.signal} need a signal · ${counts.none + counts.never} left out`),
+      side: h('span', { class: 'faint' }, `${counts.published} published · ${counts.api} from Tesla API / TeslaFi · ${counts.logged} logged · ${counts.signal} need a signal · ${counts.none + counts.never} left out`),
       note: `Payloads are what a broker gets now for ${pv?.name || 'this car'}, as text in the server units (${unitText('distance', units())}, ${unitText('temperature', units())}, ${unitText('pressure', units())}): MQTT has one set of units for everyone. Sort by Status to group them.`,
       sort: { key: 'status', dir: 'asc' },
       columns: [
         { key: 'what', label: 'Value', sort: true, render: (r) => h('span', { class: 'si-what', cover: r.cid || null }, h('b', null, r.what), r.cid ? null : h('span', { class: 'faint' }, ' extra')), csv: (r) => r.what },
         { key: 'topic', label: 'Topic', value: (r) => r.keys[0] || '', sort: true, render: (r) => (r.keys.length ? h('span', { class: 'si-topics-cell' }, r.keys.map((k) => codeLong(k))) : h('span', { class: 'faint' }, 'no topic')), csv: (r) => r.keys.map((k) => `${ns()}/cars/${carId}/${k}`).join(' ') },
-        { key: 'payload', label: 'Payload now', render: payloadCell, csv: (r) => (r.status === 'published' ? r.shown.map(([, p]) => p ?? '').join(' ') : r.status === 'device' ? (r.cid === 'mqtt.model' ? pv?.device?.model : pv?.name) || '' : '') },
+        { key: 'payload', label: 'Payload now', render: payloadCell, csv: (r) => (['published', 'api'].includes(r.status) ? [r.shown.map(([, p]) => p ?? '').join(' '), srcCsv(r) ? `(${srcCsv(r)})` : ''].filter(Boolean).join(' ') : r.status === 'device' ? (r.cid === 'mqtt.model' ? pv?.device?.model : pv?.name) || '' : '') },
         { key: 'unit', label: 'Unit', cls: 'nowrap', render: (r) => r.unit || h('span', { class: 'faint' }, 'text'), csv: (r) => r.unit },
-        { key: 'status', label: 'Status', sort: true, value: (r) => STATUS_ORDER.indexOf(r.status), render: (r) => statusTag(r.status), csv: (r) => STATUS[r.status][0] },
+        { key: 'status', label: 'Status', sort: true, value: (r) => STATUS_ORDER.indexOf(r.status), render: (r) => statusTag(r.status, r.inputs || undefined), csv: (r) => statusWord(r.status, r.inputs || undefined) },
         { key: 'source', label: 'Comes from', sort: true, cls: 'si-wrap', render: (r) => h('span', null, r.source, r.why ? h('span', { class: 'si-why' }, r.why) : null), csv: (r) => `${r.source}${r.why ? `. ${r.why}` : ''}` },
       ],
     });
@@ -591,7 +615,7 @@ export async function mount(ctx) {
         { key: 'what', label: 'Group', sort: true, render: (r) => h('span', { cover: r.cid }, h('b', null, r.what)) },
         { key: 'gives', label: 'Entities', cls: 'si-wrap' },
         { key: 'topics', label: 'From topics', cls: 'si-wrap', render: (r) => (r.topics ? h('span', { class: 'mono' }, r.topics) : h('span', { class: 'faint' }, '—')) },
-        { key: 'status', label: 'Status', sort: true, value: (r) => STATUS_ORDER.indexOf(r.status), render: (r) => statusTag(r.status), csv: (r) => STATUS[r.status][0] },
+        { key: 'status', label: 'Status', sort: true, value: (r) => STATUS_ORDER.indexOf(r.status), render: (r) => statusTag(r.status, r.inputs || undefined), csv: (r) => statusWord(r.status, r.inputs || undefined) },
         { key: 'why', label: 'Notes', cls: 'si-wrap' },
       ],
     });

@@ -224,3 +224,14 @@
 
 /* the head line: each part whole px wide (so the VIN chip after a long trim or tag sits on the pixel grid), and a long part wraps instead of running out */
 .now-head .page-sub > span { width: calc-size(fit-content, round(up, size, 1px)); min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+
+/* values no CAN message carries (now.off_can): from the Tesla API or TeslaFi, each with its input and a stale mark */
+.now-row--3 > .off-panel { grid-column: 1 / -1; }
+.off-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, round(26rem, var(--e))), 1fr)); gap: round(0.625rem, var(--e)) round(2rem, var(--e)); margin: 0 0 round(0.875rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); }
+.off-pair { display: flex; justify-content: space-between; align-items: baseline; gap: round(0.75rem, var(--e)); min-width: 0; padding-bottom: round(0.5rem, var(--e)); border-bottom: 1px solid var(--line); }
+.off-pair dt { flex: none; color: var(--text-3); }
+.off-pair dd { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: baseline; gap: round(0.125rem, var(--e)) round(0.5rem, var(--e)); min-width: 0; margin: 0; color: var(--text); font-weight: 500; text-align: right; overflow-wrap: anywhere; }
+.off-old { color: var(--text-2); }
+.off-src { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); white-space: nowrap; font-size: max(0.6875rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.02em; color: var(--text-3); }
+.off-src .src-m { height: round(0.625rem, var(--e)); }
+.off-stale { padding: 0 round(0.3125rem, var(--e)); border: 1px solid var(--warm-line); border-radius: round(0.25rem, var(--e)); color: var(--warm); font-weight: 600; }

@@ -4,7 +4,9 @@
 // loads again when a drive, charge or parked spell starts or ends ('rows' events).
 //
 //   ## now        key: value lines in two columns (state, battery, range, odometer, temperatures,
-//                 doors and modes, tyres FL FR RL RR, software, data age)
+//                 doors and modes, lock, windows, sunroof, route, tyres FL FR RL RR, software and updates, data age;
+//                 lock, windows, sunroof, route, version, updates and the charge schedule are not on CAN: they come from
+//                 now.off_can, the Tesla API's or TeslaFi's newest reading, each marked [api] or [tfi] and [stale] when old)
 //   ## where      a small flat grey map, and charging now / why the car is awake beside it
 //   ## period     figures, the battery sparkline, the charging chart, the state strip, last drive and charge
 //   ## vehicle    the car's build facts, each with its source and how sure (pages/vehicle.js); an admin can type over them
@@ -115,6 +117,11 @@ export async function mount(ctx) {
     return [content, old ? h('span', { class: 'muted' }, ` (${ago(t)})`) : null, via(pair)];
   };
   const by = (pair, content) => (content == null ? null : [content, via(pair)]);
+  // a value from now.off_can ({ value, at_ms, sources, stale } or null): its input's mark, [stale] past its age limit
+  const oc = () => now.off_can || {};
+  const offMark = (p) => (p ? [via(p), p.stale ? h('span', { class: 'src-stale', title: p.at_ms ? `newest ${formatDateTime(p.at_ms, tz)}; past its age limit` : null }, tag('stale', 'warn'), h('span', { class: 'muted' }, p.at_ms ? ` ${ago(p.at_ms)}` : '')) : null] : null);
+  const off = (p, content) => (val(p) == null || content == null ? null : [p.stale ? h('span', { class: 'muted' }, content) : content, offMark(p)]);
+  const WINDOWS = [['driver_front', 'driver front'], ['passenger_front', 'passenger front'], ['driver_rear', 'driver rear'], ['passenger_rear', 'passenger rear']];
   const yes = (pair, on = 'open', off = 'closed', warn = true) => { const v = val(pair); return v == null ? null : v ? (warn ? h('span', { class: 'tone--warn' }, on) : on) : off; };
   function paintNow() {
     const n = now, f = n.flags || {}, c = n.charge || {}, loc = n.location || {};
@@ -132,6 +139,21 @@ export async function mount(ctx) {
     const doorsKnown = ['fl', 'fr', 'rl', 'rr'].some((k) => val(doors[k]) != null);
     const sw = n.software || {};
     const swSrc = { teslamate: 'imported', tesla_api: 'from the Tesla API', owner: 'typed by the owner', build_match: 'matched by module builds' }[sw.version_source];
+    const o = oc();
+    const winOpen = WINDOWS.filter(([k]) => val(o.windows?.[k])).map(([, w]) => w);
+    const ov = val(o.version);
+    const upd = val(o.update_available);
+    const updText = upd == null ? null : val(o.update_installing) ? h('span', { class: 'tone--warn' }, `installing ${val(o.update_version) || 'an update'}`)
+      : upd ? [h('span', { class: 'tone--warn' }, `${val(o.update_version) || 'an update'} waiting`), val(o.update_download_pct) != null ? h('span', { class: 'muted' }, `, ${format(val(o.update_download_pct), 'percent')} downloaded`) : null]
+      : 'none waiting';
+    const roofPct = val(o.sunroof_pct);
+    const roofText = val(o.sunroof_state) != null ? [String(val(o.sunroof_state)).replace(/_/g, ' '), roofPct != null ? h('span', { class: 'muted' }, ` ${format(roofPct, 'percent')} open`) : null] : roofPct != null ? `${format(roofPct, 'percent')} open` : null;
+    const r = o.route || {};
+    const routeText = val(r.destination) == null && val(r.km) == null ? null
+      : [val(r.destination) || 'a destination', val(r.km) != null ? h('span', { class: 'muted' }, `, ${format(val(r.km), 'distance')}`) : null,
+        val(r.minutes) != null ? h('span', { class: 'muted' }, `, ${dur(val(r.minutes) * 60000)}`) : null,
+        val(r.traffic_min) ? h('span', { class: 'tone--warn' }, ` +${dur(val(r.traffic_min) * 60000)} traffic`) : null];
+    const routeP = r.destination || r.km || r.minutes;
     const band = soc == null ? null : soc < 20 ? 'low' : soc > 80 ? 'high' : 'normal';
     replace(nowBlock, section({ title: 'now', cover: 'nr.dash.panel.car-status', side: h('span', { class: 'muted', cover: ['nr.dash.last-update', 'summary.data.live_push'], title: n.at_ms ? `recorded ${formatDateTime(n.at_ms, tz)}` : null }, 'newest ', n.at_ms ? ago(n.at_ms) : '—', ', updates by itself') },
       kv([
@@ -152,7 +174,10 @@ export async function mount(ctx) {
         ['battery temp', aged(n.battery_c, num(val(n.battery_c), 'temperature'))],
         ['climate', by(f.climate, CLIMATE[val(f.climate)] || null), { cover: 'summary.flag.preconditioning' }],
         ['keep climate', by(f.keep_climate, KEEP[val(f.keep_climate)] || null), { cover: 'summary.flag.dog_mode' }],
-        ['locked', h('span', { class: 'muted' }, 'not on the CAN bus'), { cover: ['summary.flag.lock', 'summary.flag.windows_open'] }],
+        ['locked', off(o.locked, val(o.locked) ? 'locked' : h('span', { class: 'tone--warn' }, 'unlocked')), { cover: 'summary.flag.lock' }],
+        ['windows', off(o.windows_open, val(o.windows_open) ? h('span', { class: 'tone--warn' }, winOpen.length ? `open: ${winOpen.join(', ')}` : 'open') : 'all closed'), { cover: 'summary.flag.windows_open' }],
+        roofText ? ['sunroof', off(o.sunroof_state || o.sunroof_pct, roofText)] : null,
+        routeText ? ['route', off(routeP, ['to ', routeText])] : null,
         ['doors', !doorsKnown ? null : openOnes.length ? h('span', { class: 'tone--warn' }, `open: ${openOnes.join(', ')}`) : 'all closed', { cover: 'summary.flag.doors_open' }],
         ['sentry', by(f.sentry, yes(f.sentry, 'on', 'off')), { cover: 'summary.flag.sentry_mode' }],
         ['sentry event', val(f.sentry_event_guess) ? h('span', { class: 'tone--warn' }, 'likely (a guess)') : 'none seen', { cover: 'summary.flag.sentry_recording' }],
@@ -163,12 +188,15 @@ export async function mount(ctx) {
         ['tyres fl fr', [tyre(0), '  ', tyre(1)], { cover: 'summary.flag.tire_pressure_warning' }],
         ['tyres rl rr', [tyre(2), '  ', tyre(3), rec != null ? h('span', { class: 'muted' }, ` rec ${format(rec, 'pressure')}`) : null]],
         ['12 v battery', aged(n.lv_v, num(val(n.lv_v), 'voltage'))],
-        ['software', [h('a', { class: 'lnk-plain', href: ctx.link('software') }, sw.version || 'not known'), swSrc ? h('span', { class: 'muted' }, ` (${swSrc})`) : null], { cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
+        ['software', [h('a', { class: 'lnk-plain', href: ctx.link('software') }, sw.version || ov || 'not known'), sw.version && swSrc ? h('span', { class: 'muted' }, ` (${swSrc})`) : null,
+          ov != null && sw.version && ov !== sw.version ? h('span', { class: 'muted' }, `; the car reports ${ov}`) : null, ov != null ? offMark(o.version) : null], { cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
+        ['update', off(o.update_available, updText)],
         ['firmware', h('a', { class: 'lnk-plain', href: `${ctx.link('software')}#firmware`, title: 'the modules\' firmware fingerprints, and the Tesla updates found from them' }, 'module fingerprints')],
         ['update seen', sw.changed_since_ms ? h('span', { class: 'tone--warn' }, `builds changed ${when(sw.changed_since_ms, tz)}`) : h('span', { class: 'muted' }, 'no change seen'), { cover: 'summary.flag.software_update' }],
         ['log received', n.received_ms ? ago(n.received_ms) : null],
       ]),
-      note(h('span', { class: 'src' }, h('span', { class: 'src-b' }, '[', h('span', { class: 'src-k src-k--tesla_api' }, 'api'), ']')), ' after a value: the Tesla API sent it; the rest came from SMO. ', `Logs arrive about ${n.delay_s ? (n.delay_s < 120 ? `${Math.round(n.delay_s)} s` : dur(n.delay_s * 1000)) : '75 s'} after the car records them; a value older than that shows its own age. Values in your units (${unitLabel('distance')}, ${unitLabel('temperature')}, ${unitLabel('pressure')}). `,
+      note(h('span', { class: 'src' }, h('span', { class: 'src-b' }, '[', h('span', { class: 'src-k src-k--tesla_api' }, 'api'), ']')), ' or ', h('span', { class: 'src' }, h('span', { class: 'src-b' }, '[', h('span', { class: 'src-k src-k--teslafi_api' }, 'tfi'), ']')),
+        ' after a value: the Tesla API or TeslaFi sent it; the rest came from SMO. ', tag('stale', 'warn'), ' that input has not sent it again within its age limit. ', `Logs arrive about ${n.delay_s ? (n.delay_s < 120 ? `${Math.round(n.delay_s)} s` : dur(n.delay_s * 1000)) : '75 s'} after the car records them; a value older than that shows its own age. Values in your units (${unitLabel('distance')}, ${unitLabel('temperature')}, ${unitLabel('pressure')}). `,
         h('a', { class: 'lnk', href: ctx.link('health'), cover: 'summary.data.prefs_snapshot' }, 'every signal'))));
   }
 
@@ -189,7 +217,8 @@ export async function mount(ctx) {
       ['limit', val(chg.limit_pct) != null ? by(chg.limit_pct, num(val(chg.limit_pct), 'percent')) : not(plugged ? 'not sent yet' : 'not plugged in'), { cover: ['summary.stat.charge_limit', 'nr.dash.charge-limit'] }],
       ['to full', val(chg.to_full_min) != null ? by(chg.to_full_min, dur(val(chg.to_full_min) * 60000)) : not(charging ? 'not known yet' : 'no charge under way'), { cover: ['summary.stat.remaining_time', 'nr.dash.time-to-full'] }],
       ['done at', chg.finish_ms ? when(chg.finish_ms, tz) : not(charging ? 'not known yet' : 'no charge under way'), { cover: 'summary.stat.expected_finish' }],
-      ['scheduled', not('not on the CAN bus')],
+      ['scheduled', off(n.off_can?.scheduled_charge_start_ms, when(val(n.off_can?.scheduled_charge_start_ms), tz))],
+      ['departure', off(n.off_can?.scheduled_departure_ms, when(val(n.off_can?.scheduled_departure_ms), tz))],
     ], { cols: 1 })));
     const buses = Object.fromEntries((n.buses || []).map((b) => [b.bus, b.awake]));
     const reasons = (n.awake_reasons || []).filter((r) => AWAKE[r]);

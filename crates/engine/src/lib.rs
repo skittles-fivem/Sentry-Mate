@@ -195,6 +195,12 @@ pub(crate) enum Work {
     ApiBuild {
         car: CarId,
     },
+    /// TeslaFi's values no CAN message carries, from one of its polls ([`tesla_in`]).
+    TeslafiOffCan {
+        car: CarId,
+        at_ms: u64,
+        values: Box<model::OffCan>,
+    },
 }
 
 pub(crate) struct Inner {
@@ -405,6 +411,7 @@ impl Engine {
                     Work::ApiData { input, car, samples, facts } => e.work_api_data(input, car, samples, facts),
                     Work::ApiMeta { car, meta } => e.work_api_meta(car, *meta),
                     Work::ApiBuild { car } => e.work_api_build(car),
+                    Work::TeslafiOffCan { car, at_ms, values } => e.work_teslafi_off_can(car, at_ms, *values),
                 };
                 if let Err(err) = r {
                     e.failed(&err);

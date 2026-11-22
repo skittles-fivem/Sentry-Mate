@@ -18,6 +18,7 @@
 //! engine  car/<id>/api/<day>    what the Tesla API saw of the car's state that UTC day (spans, clipped to the day)
 //! engine  car/<id>/api_dirty    Tesla API data stored but not yet built into the timeline
 //! engine  car/<id>/api_meta     the Tesla API's newest values beside the samples (version, settings, charger)
+//! engine  car/<id>/teslafi_off_can  TeslaFi's newest values no CAN message carries (lock, windows, update ...)
 //! engine  car/<id>/fw/...       the firmware fingerprints of the car's logs, their history and the updates found
 //!                               from them ([`crate::firmware`])
 //! ```
@@ -622,6 +623,22 @@ pub(crate) fn api_meta(db: &Db, car: CarId) -> Result<ApiMetaRec> {
 
 pub(crate) fn put_api_meta(db: &Db, car: CarId, m: &ApiMetaRec) -> Result<()> {
     put(db, NS, &format!("car/{car}/api_meta"), m)
+}
+
+/// TeslaFi's newest poll's values no CAN message carries, with TeslaFi's time of the poll.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TeslafiOffCan {
+    pub at_ms: u64,
+    pub values: model::OffCan,
+}
+
+pub(crate) fn teslafi_off_can(db: &Db, car: CarId) -> Result<TeslafiOffCan> {
+    Ok(get(db, NS, &format!("car/{car}/teslafi_off_can"))?.unwrap_or_default())
+}
+
+pub(crate) fn put_teslafi_off_can(db: &Db, car: CarId, m: &TeslafiOffCan) -> Result<()> {
+    put(db, NS, &format!("car/{car}/teslafi_off_can"), m)
 }
 
 #[cfg(test)]
