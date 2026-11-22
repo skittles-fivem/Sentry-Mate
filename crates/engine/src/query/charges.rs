@@ -90,6 +90,8 @@ pub struct ChargeView {
     pub battery_avg_c: Option<f64>,
     #[serde(flatten)]
     pub from: super::Sources,
+    /// The values an import filled where the live row had none (field → the import): empty for a row's own values.
+    pub value_sources: super::gapfill::ValueSources,
     pub has_gaps: bool,
     pub flags: ChargeFlags,
 }
@@ -160,6 +162,36 @@ pub(crate) fn view(e: &Engine, c: &Car, ch: &Charge, x: &Ctx) -> QResult<ChargeV
     Ok(view_with(c, ch, x, kept.as_ref()))
 }
 
+/// [`view`] with the values the chosen import fills where the live row has none ([`super::gapfill`]), named in
+/// `value_sources` and `sources`. The cost stays the row's own (worked out from the charge as stored).
+pub(crate) fn view_filled(
+    e: &Engine,
+    c: &Car,
+    ch: &Charge,
+    x: &Ctx,
+    fill: &super::gapfill::Gaps,
+) -> QResult<ChargeView> {
+    let kept = cost_live(e, c, ch, x.live == Some(ch.id))?;
+    filled_with(c, ch, x, kept.as_ref(), fill)
+}
+
+fn filled_with(
+    c: &Car,
+    ch: &Charge,
+    x: &Ctx,
+    kept: Option<&CostEntry>,
+    fill: &super::gapfill::Gaps,
+) -> QResult<ChargeView> {
+    let mut filled = ch.clone();
+    let got = fill.charge(&mut filled)?;
+    let mut v = view_with(c, &filled, x, kept);
+    if !got.is_empty() {
+        v.value_sources = got.value_sources();
+        v.from = got.sources(&v.from);
+    }
+    Ok(v)
+}
+
 fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeView {
     let live = x.live == Some(ch.id);
     let ms = ch.end_ms.saturating_sub(ch.start_ms);
@@ -221,6 +253,7 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
         outside_avg_c: r(ch.outside_temp_avg_c, 1),
         battery_avg_c: r(ch.battery_temp_avg_c, 1),
         from: super::Sources::of(ch.source, ch.inputs),
+        value_sources: Default::default(),
         has_gaps: false,
         flags: ChargeFlags { in_progress: live, gap_ms: 0 },
     }
@@ -545,13 +578,14 @@ fn each_view(
         let c = car_of(e, car)?;
         let x = ctx(e, &c)?;
         let shown = Shown::new(e, car, flt.source)?;
+        let fill = super::gapfill::Gaps::new(e, car, flt.source)?;
         let mut win = HoleWindow::default();
         let mut go = true;
         each::<Charge>(e, car, a, b, flt.source, &shown, newest_first, |ch| {
             if !flt.row_may(&ch, &x) {
                 return Ok(true);
             }
-            let mut v = view(e, &c, &ch, &x)?;
+            let mut v = view_filled(e, &c, &ch, &x, &fill)?;
             if flt.gaps {
                 mark(&mut v, &win.of(e, &c, &ch)?);
             }
@@ -936,7 +970,8 @@ pub fn charge(e: &Engine, car: CarId, id: u64) -> QResult<ChargeDetail> {
         currency: k.currency.clone(),
         energy_basis: k.energy_basis.clone(),
     });
-    let mut v = view_with(&c, &ch, &x, kept.as_ref());
+    let fill = super::gapfill::Gaps::new(e, car, None)?;
+    let mut v = filled_with(&c, &ch, &x, kept.as_ref(), &fill)?;
     v.has_gaps = !gaps.is_empty();
     v.flags.gap_ms = covered_ms(&gaps);
     Ok(ChargeDetail { charge: v, prev, next, cost_breakdown, manual_cost, gaps })

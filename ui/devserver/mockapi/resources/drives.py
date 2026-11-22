@@ -17,6 +17,7 @@ from ..conventions import Response, page
 from ..errors import bad_input, invalid, not_found
 from ..pdf import text_pdf
 from ..placing import drive_pids
+from .. import gapfill
 from ..rows import charge_row, drive_row, in_progress, place_obj
 from ..util import DAY, HOUR, iso_utc, local_dt, median, r
 
@@ -73,6 +74,8 @@ def _filtered(req, h):
             if not (s_ok if side == "start" else e_ok if side == "end" else s_ok or e_ok):
                 continue
         row = cached_drive_row(req, h, d)
+        if source != "all":  # one source alone: nothing filled from an import
+            row = gapfill.unfill(row)
         if min_d is not None and (row["distance_km"] or 0) < min_d:
             continue
         if min_v is not None and (row["speed_avg_kph"] or 0) < min_v:
@@ -222,14 +225,27 @@ def _rdp(pts, eps):
     return [k for k in range(n) if keep[k]]
 
 
-def track_parts(d, now, step_ms=None):
-    """[[{t_ms, lat, lon, ele, accuracy_m, speed_kph, power_kw, soc_pct}]] split where frames were dropped."""
+TRACK_KEYS = ("lat", "lon", "elevation_m", "accuracy_m", "speed_kph", "power_kw", "soc_pct")
+
+
+def track_parts(d, now, step_ms=None, twin=None):
+    """[[{t_ms, lat, lon, ele, accuracy_m, speed_kph, power_kw, soc_pct}]] split where frames were dropped.
+    `twin`: the drive's import copy, whose points fill where the drive's own frames were dropped (they carry
+    `imported`, every field)."""
     end = min(now, d.data_end)
     step = step_ms or (1000 if d.source == "can" else 5000)
     parts, cur = [], []
     t = d.start
     while t <= end:
         v = d.values(t)
+        if v is None and twin is not None:
+            v = twin.values(t)
+            if v is not None:
+                cur.append({"t_ms": t, "lat": v["lat"], "lon": v["lon"], "ele": v["elevation_m"],
+                            "accuracy_m": v["accuracy_m"], "speed_kph": v["speed_kph"], "power_kw": v["power_kw"],
+                            "soc_pct": v["soc_pct"], "imported": list(TRACK_KEYS)})
+                t += step
+                continue
         if v is None:
             if cur:
                 parts.append(cur)
@@ -249,7 +265,12 @@ def get_track(req):
     fmt = req.enum("format", ("geojson", "gpx", "csv"), "geojson")
     simplify = req.float_param("simplify_m", 0.0, 0, 5000)
     ext = req.list_param("extensions", ("speed", "power", "soc", "accuracy")) or []
-    parts = track_parts(d, req.now)
+    # a live drive's dropped frames: its import's points there, with import gap filling on
+    tw = gapfill.twin(h, d) if gapfill.on(req.store, h.car.id) else None
+    parts = track_parts(d, req.now, twin=tw)
+    value_sources = {}
+    if tw is not None and any("imported" in q for p in parts for q in p):
+        value_sources = {k: [S.ref("import", S.site_of(tw))] for k in TRACK_KEYS}
     if simplify:
         out = []
         for p in parts:
@@ -264,7 +285,8 @@ def get_track(req):
                         {"Content-Disposition": f'attachment; filename="{name}.gpx"'})
     if req.csv or fmt == "csv":
         req.csv = True
-        return {"items": [dict(pt, part=i) for i, p in enumerate(parts) for pt in p]}
+        return {"items": [{k: v for k, v in dict(pt, part=i).items() if k != "imported"}
+                          for i, p in enumerate(parts) for pt in p]}
     feats = []
     for i, p in enumerate(parts):
         props = {"drive": d.id, "car": h.car.id, "part": i, "t_ms": [q["t_ms"] for q in p]}
@@ -276,10 +298,13 @@ def get_track(req):
             props["power_kw"] = [q["power_kw"] for q in p]
         if "soc" in ext:
             props["soc_pct"] = [q["soc_pct"] for q in p]
+        if any("imported" in q for q in p):
+            props["imported"] = [q.get("imported", []) for q in p]
         feats.append({"type": "Feature", "properties": props,
                       "geometry": {"type": "LineString", "coordinates": [[q["lon"], q["lat"], q["ele"]] for q in p]}})
     return Response(200, _json(
-        {"type": "FeatureCollection", "car": h.car.id, "drive": d.id, "time_zone": req.tz(), "features": feats}),
+        {"type": "FeatureCollection", "car": h.car.id, "drive": d.id, "time_zone": req.tz(), "features": feats,
+         "value_sources": value_sources}),
         "application/geo+json; charset=utf-8", {"Content-Disposition": f'attachment; filename="{name}.geojson"'})
 
 

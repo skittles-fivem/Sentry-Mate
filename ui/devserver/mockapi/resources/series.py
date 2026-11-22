@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .. import series as S
+from .. import gapfill as G
 from .. import sources as SRC
 from ..conventions import page
 from ..dataset.segments import SERIES_FIELDS
@@ -60,9 +61,12 @@ def get_series(req):
     h = req.history()
     out = {"car": req.car, "time_zone": req.tz(), "fields": fields}
     if h is None:
-        out.update({"t_ms": [], "values": {f: [] for f in fields}, "bucket_ms": 1000, "coverage_pct": [], "state": []})
+        out.update({"t_ms": [], "values": {f: [] for f in fields}, "bucket_ms": 1000, "coverage_pct": [], "state": [],
+                    "value_sources": {f: [] for f in fields}})
         return out
-    out.update(S.build(h, fields, a, b, max_points, aggs, req.now, source, explicit_aggs=aggs is not None))
+    # with source=all, the import shown fills what live history lacks (mockapi/gapfill.py)
+    fill = source == "all" and G.on(req.store, req.car)
+    out.update(S.build(h, fields, a, b, max_points, aggs, req.now, source, explicit_aggs=aggs is not None, fill=fill))
     return out
 
 

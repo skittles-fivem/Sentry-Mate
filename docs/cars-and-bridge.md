@@ -201,16 +201,28 @@ charge once, chosen in this order:
    TeslaFi import cover the same days, only one of them is shown there, never both: at first the one with more data
    in that span (more drives and charges; if they have the same, more positions; if those are equal too,
    TeslaMate's).
+4. **The import fills the gaps.** Where SMO and the Tesla API both have nothing for a value at a time, the import
+   chosen for that span (by rule 3 and the switch below) fills it: a temperature, the elevation and climb, a position
+   (in a chart, and a stretch of a drive's track where the live data has a gap), the odometer, battery level or range
+   at a drive's or charge's ends. The drive or charge is still the live one, shown once; only its missing values
+   come from the import, and each is labelled "Imported from TeslaMate" (or TeslaFi). A value live history has is
+   never replaced. Distance, energy and costs are never filled, so totals and consumption don't change and a
+   measured figure stays measured.
 
 **The switches** (Settings → Cars → overlaps, admins only, each change in the audit log):
 
 - A span where live and imported history meet shows the live side at first; flip it to show the imported side
   there instead.
 - A span both imports cover shows the import picked above; flip it to show the other import there. Inside live
-  history this choice decides which import shows once that span is flipped to the imported side.
+  history this choice decides which import shows once that span is flipped to the imported side, and which import
+  fills the gaps there.
+- Gap filling (rule 4) is on at first. Turn it off for the whole server (Settings → Server: `import_gap_fill`) or
+  for one car (Settings → Cars: `import_gap_fill`, which wins over the server's); off, live rows and charts show
+  only live values.
 
 Asking for one source only (a page's source filter: SMO, the Tesla API, TeslaMate or TeslaFi) always shows that
-source's rows alone, whatever the switches say; "imported" shows the chosen import in each span.
+source's rows alone, whatever the switches say, and nothing is filled from an import; "imported" shows the chosen
+import in each span.
 
 ## Bringing in the logs Sentry Six Manager already has
 
