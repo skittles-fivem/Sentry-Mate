@@ -86,17 +86,20 @@ def _car_tables(c):
     }
 
 
-def import_report(cars, imported):
-    """The report of an import of `cars` (all of them when only checked; the matched ones once imported).
-    Each table's figures are the sum of its cars' (geofences belong to no car); each car carries its own
-    read, imported and skipped counts (None for a car left out of a finished import: it was not counted)."""
-    use = [c for c in cars if c["match"] != "leave_out"] if imported else cars
-    tables = {name: {"read": 0, "imported": 0, "skipped": {}, "bad_values": {}}
+def import_report(cars, imported, tables_in_file=("cars", "drives", "charging_processes", "positions", "updates")):
+    """The report of an import of `cars`. A car left out is not in it at all (not in `cars`, not in the counts).
+    Each table's figures are the sum of its cars'; a table the backup does not have (here `geofences`, which the
+    made-up backups lack) has null counts, never 0. Each car carries its own read, imported and skipped counts."""
+    use = [c for c in cars if c["match"] != "leave_out"]
+    tables = {name: ({"read": 0, "imported": 0, "skipped": {}, "bad_values": {}} if name in tables_in_file
+                     else {"read": None, "imported": None, "skipped": {}, "bad_values": {}})
               for name in ("cars", "drives", "charging_processes", "positions", "updates", "geofences")}
     per_car = {}
     for c in use:
         own = {"read": 0, "imported": 0, "skipped": {}}
         for name, (read, skipped, bad) in _car_tables(c).items():
+            if name not in tables_in_file:
+                continue
             t, sk = tables[name], sum(skipped.values())
             t["read"] += read
             t["imported"] += (read - sk) if imported else 0
@@ -110,12 +113,13 @@ def import_report(cars, imported):
                 if v:
                     t["bad_values"][k] = t["bad_values"].get(k, 0) + v
         per_car[c["tm_car"]] = own
-    tables["geofences"].update(read=6, imported=6 if imported else 0)
+    firsts = [c["first_ms"] for c in use if c.get("first_ms") is not None]
+    lasts = [c["last_ms"] for c in use if c.get("last_ms") is not None]
     return {"tables": tables,
-            "span": {"from_ms": min(c["first_ms"] for c in cars), "to_ms": max(c["last_ms"] for c in cars)},
-            "cars": [dict({"tm_car": c["tm_car"], "name": c["name"], "match": c["match"], "drives": c["drives"], "charges": c["charges"]},
-                          **(per_car.get(c["tm_car"]) or {"read": None, "imported": None, "skipped": None}))
-                     for c in cars], "imported": imported}
+            "span": {"from_ms": min(firsts) if firsts else None, "to_ms": max(lasts) if lasts else None},
+            "cars": [dict({"tm_car": c["tm_car"], "name": c["name"], "match": c["match"], "drives": c["drives"],
+                           "charges": c["charges"]}, **per_car[c["tm_car"]]) for c in use],
+            "imported": imported}
 
 
 # The made-up TeslaFi file (mockapi/data/TeslaFi32023.csv): one day of a car no car here is, "Blue Whale" (a
@@ -130,16 +134,20 @@ def teslafi_cars():
              "charges": d["charges"], "first_ms": d["first_ms"], "last_ms": d["last_ms"]}]
 
 
-def teslafi_report(cars, imported, settings, again=False, read_again=False, read_in=None):
+def teslafi_report(cars, imported, settings, again=False, read_again=False, read_in=None, uploads=None):
     """A TeslaFi file's report as the server writes it (`engine::query::imports::teslafi_report_json`): files, rows
     read, used and skipped with why, what was found (stored once `imported`), the cars, the span, the units and
     the time zone the file was read in. `again`: the same file a second time (every row already imported);
     `read_again`: the same file in another time zone or other units than `read_in` (zone, distance, temperature),
-    its earlier rows replaced."""
-    d = TESLAFI_DAY
-    left_out = imported and all(c["match"] == "leave_out" for c in cars)
-    used = 0 if (again or left_out) else d["rows"]
-    skipped = {"already_imported": d["rows"]} if again else ({"car_left_out": d["rows"]} if left_out else {})
+    its earlier rows replaced. `uploads`: the uploaded files (`[{ name, compression }]`) when there were several:
+    each is the made-up day once, and `report.uploads` lists them. A car left out is not in the report: not in
+    `cars`, and its rows not in the counts."""
+    n = len(uploads) if uploads and len(uploads) > 1 else 1
+    use = [c for c in cars if c["match"] != "leave_out"]
+    d = {k: (v * n if isinstance(v, int) and k not in ("first_ms", "last_ms") else v) for k, v in TESLAFI_DAY.items()}
+    read = d["rows"] if use else 0
+    used = 0 if again else read
+    skipped = {"already_imported": read} if again and read else {}
     found = {k: (0 if used == 0 else d[k]) for k in ("drives", "charges", "states", "updates", "positions",
                                                       "charge_points")}
     found["replaced"] = 0
@@ -152,6 +160,11 @@ def teslafi_report(cars, imported, settings, again=False, read_again=False, read
 
     def table(read, n):
         return {"read": read, "imported": n if imported else 0, "found": n, "skipped": skipped if read else {}}
+    one = TESLAFI_DAY["rows"] if use else 0
+    up = None if n == 1 else [
+        {"name": u["name"], "compression": u.get("compression") or "plain", "packed_bytes": 73_610,
+         "unpacked_bytes": 73_610, "files": 1, "files_skipped": {}, "rows_read": one,
+         "rows_used": 0 if again else one, "rows_skipped": one if again else 0} for u in uploads]
 
     units = {"distance": settings.get("distance_unit") or "mi",
              "distance_from": "setting" if settings.get("distance_unit") else "detected",
@@ -159,23 +172,24 @@ def teslafi_report(cars, imported, settings, again=False, read_again=False, read
              "temperature_from": "setting" if settings.get("temperature_unit") else "detected"}
     tz = settings.get("time_zone")
     return {
-        "kind": "teslafi", "imported": imported, "files": 1, "files_skipped": {},
-        "rows": {"read": d["rows"], "used": used, "skipped": skipped, "bad_values": {}, "windows_1252": 0},
+        "kind": "teslafi", "imported": imported, "files": n, "files_skipped": {},
+        "rows": {"read": read, "used": used, "skipped": skipped, "bad_values": {}, "windows_1252": 0},
         "found": found,
-        "tables": {"positions": table(d["rows"], found["positions"]), "drives": table(0, found["drives"]),
+        "tables": {"positions": table(read, found["positions"]), "drives": table(0, found["drives"]),
                    "charging_processes": table(0, found["charges"]), "states": table(0, found["states"]),
                    "updates": table(0, found["updates"])},
         "span": {"from_ms": d["first_ms"] if used else None, "to_ms": d["last_ms"] if used else None},
         "cars": [{"tm_car": str(c["tm_car"]), "name": c["name"], "vin_prefix": c["vin_prefix"], "match": c["match"],
                   "drives": found["drives"], "charges": found["charges"], "first_ms": c["first_ms"],
                   "last_ms": c["last_ms"],
-                  "rows": None if imported and c["match"] == "leave_out" else d["rows"]} for c in cars],
-        "cars_count": len(cars), "cars_left_out": sum(1 for c in cars if c["match"] == "leave_out") if imported else 0,
+                  "rows": d["rows"]} for c in use],
+        "cars_count": len(use), "cars_left_out": len(cars) - len(use),
         "units": units,
         "time_zone": {"name": tz or "UTC", "from": "setting" if tz else "default", "asked": True,
                       "dst_repeated_rows": 0},
-        "compression": "plain", "packed_bytes": 73_610, "unpacked_bytes": 73_610, "missing_columns": [],
+        "compression": "plain", "packed_bytes": 73_610 * n, "unpacked_bytes": 73_610 * n, "missing_columns": [],
         "unknown_columns": 3, "warnings": warnings,
+        **({"uploads": up} if up else {}),
     }
 
 

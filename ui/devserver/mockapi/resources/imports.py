@@ -15,6 +15,10 @@ The dev server keeps no bytes: each chunk is checked (offset, length, SHA-256) a
 check and the import then run on the virtual clock (about 6 s and 12 s), so a page can poll a job
 from "checking" through "ready" and "importing" to "done". A file named with "broken" fails its
 check. Imported history is not added to the made-up dataset; the report says what would be.
+
+Several files make one import (`files: [...]` at create, each sent to its own `files/{index}` address): taken for
+TeslaFi only (each the made-up TeslaFi day once, listed in `report.uploads`); several files that are not TeslaFi's
+fail the check with `one_file_only`, a non-TeslaFi file among TeslaFi ones with `not_a_teslafi_export`.
 """
 
 from __future__ import annotations
@@ -48,6 +52,7 @@ SNIFF_ENTRIES = 16
 ZIP_HEADS = (b"PK\x03\x04", b"PK\x05\x06")
 # the CAN export's made-up logs: c3's key, and a key no car has yet
 CAN_KEYS = (("cbk_c90a7716", 1440, 3), ("smo-new-0001", 60, 0))
+MAX_FILES = 500
 
 def _job(req):
     j = req.store.imports.get(req.params["import"])
@@ -130,7 +135,11 @@ def _advance(req, j):
     """Move a job along the virtual clock."""
     with req.store.lock:
         now = req.now
-        if j["status"] == "checking" and now >= j["_check_done_ms"] and j.get("_tf"):
+        if j["status"] == "checking" and now >= j["_check_done_ms"] and j.get("_fail"):
+            kind, code, message = j["_fail"]
+            j.update(kind=kind, status="failed", finished_ms=j["_check_done_ms"],
+                     error={"code": code, "message": message})
+        elif j["status"] == "checking" and now >= j["_check_done_ms"] and j.get("_tf"):
             _advance_tf(req, j)
         elif j["status"] == "checking" and now >= j["_check_done_ms"] and j.get("_zip") is not None:
             _advance_can(req, j)
@@ -157,7 +166,8 @@ def _advance(req, j):
                 # read again in another zone or other units: the earlier rows are replaced, every row is used
                 reread = j.get("_again", False) and j.get("_read_in") not in (None, _reading(st))
                 j["report"] = extras.teslafi_report(j["cars"], True, st, j.get("_again", False) and not reread,
-                                                    read_again=reread, read_in=j.get("_read_in"))
+                                                    read_again=reread, read_in=j.get("_read_in"),
+                                                    uploads=_uploads(j))
             else:
                 j["report"] = _report(req, j, imported=True)
         if j["status"] == "checking":
@@ -170,6 +180,20 @@ def _advance(req, j):
 
 def _report(req, j, imported):
     return extras.import_report(j["cars"], imported)
+
+
+def _uploads(j):
+    fs = j.get("_files") or []
+    return [{"name": f["name"], "compression": f["compression"]} for f in fs] if len(fs) > 1 else None
+
+
+def _checked_report(req, j):
+    """A checked job's report, written again when its cars' matches change (a car left out drops out of it)."""
+    if j.get("kind") == KIND_TF:
+        return extras.teslafi_report(j["cars"], False, {}, j.get("_again", False), uploads=_uploads(j))
+    if j.get("kind") == KIND_CAN:
+        return j["report"]
+    return _report(req, j, imported=False)
 
 
 def _advance_tf(req, j):
@@ -189,7 +213,7 @@ def _advance_tf(req, j):
     j["_again"] = again
     j["_read_in"] = _reading(took[-1].get("teslafi") or {}) if took else None
     j.update(status="ready", bytes_read=j["bytes_total"], checked_ms=done,
-             report=extras.teslafi_report(j["cars"], False, {}, again))
+             report=extras.teslafi_report(j["cars"], False, {}, again, uploads=_uploads(j)))
     j["pass"] = 1
 
 
@@ -257,9 +281,18 @@ def can_report(req, imported, again=False):
             "warnings": []}
 
 
+def _file_views(j):
+    fs = j.get("_files") or [{"index": 0, "name": j["name"], "bytes_total": j["bytes_total"],
+                              "uploaded_bytes": j["uploaded_bytes"]}]
+    return [{"index": f["index"], "name": f["name"], "bytes_total": f["bytes_total"],
+             "uploaded_bytes": f["uploaded_bytes"], "upload_url": f"/api/v1/imports/{j['id']}/files/{f['index']}"}
+            for f in fs]
+
+
 def view(j):
     out = {k: copy.deepcopy(v) for k, v in j.items() if not k.startswith("_") and k != "cars"}
     out.setdefault("kind", None)
+    out["files"] = _file_views(j)
     if j.get("kind") == KIND_CAN:
         out["cars_to_match"] = 0 if j["status"] not in ("uploading", "checking") else None
     else:
@@ -291,6 +324,8 @@ def list_imports(req):
 def create_import(req):
     st = req.store
     body = req.json(required=False)
+    if "files" in body:
+        return _create_many(req, body)
     bad = {k: "Unknown field." for k in body if k not in ("name", "bytes_total", "compression")}
     length = req.headers.get("Upload-Length")
     total = body.get("bytes_total", int(length) if length and length.isdigit() else None)
@@ -308,23 +343,63 @@ def create_import(req):
     comp = body.get("compression")
     name = (body.get("name") or "teslamate-backup.sql").strip()[:200]
     if comp is None:
-        comp = ("zip" if name.lower().endswith(".zip") else "xz" if name.endswith(".xz")
-                else "gzip" if name.endswith(".gz") else "plain")
+        comp = _compression(name)
     if comp not in COMPRESSIONS:
         rule["compression"] = "Must be plain, gzip, xz or zip."
     if rule:
         raise invalid(rule)
+    return _new_job(req, [{"name": name, "bytes_total": total, "compression": comp}])
+
+
+def _compression(name):
+    return ("zip" if name.lower().endswith(".zip") else "xz" if name.endswith(".xz")
+            else "gzip" if name.endswith(".gz") else "plain")
+
+
+def _create_many(req, body):
+    """`{ files: [{ name, bytes_total }] }`: 1 to 500 files, one import."""
+    bad = {k: "Unknown field." for k in body if k != "files"}
+    fs = body["files"]
+    if not isinstance(fs, list) or not fs:
+        bad["files"] = "A list of { name, bytes_total }, at least one."
+    else:
+        for i, f in enumerate(fs):
+            if not isinstance(f, dict) or set(f) - {"name", "bytes_total"}:
+                bad[f"files.{i}"] = "Only name and bytes_total."
+            elif not isinstance(f.get("name"), str) or not f["name"].strip():
+                bad[f"files.{i}.name"] = "Required: the file's name."
+            elif not isinstance(f.get("bytes_total"), int) or isinstance(f["bytes_total"], bool):
+                bad[f"files.{i}.bytes_total"] = "Required: the file's size in bytes, a whole number."
+    if bad:
+        raise bad_input(bad)
+    rule = {f"files.{i}.bytes_total": "Between 1 byte and 64 GB." for i, f in enumerate(fs)
+            if not 1 <= f["bytes_total"] <= MAX_FILE}
+    if len(fs) > MAX_FILES:
+        rule["files"] = f"At most {MAX_FILES} files."
+    if rule:
+        raise invalid(rule)
+    return _new_job(req, [{"name": f["name"].strip()[:200], "bytes_total": f["bytes_total"],
+                           "compression": _compression(f["name"].strip())} for f in fs])
+
+
+def _new_job(req, files):
+    st = req.store
     if running_import(req):
         raise conflict("import_running", "Another import is running. Wait for it or discard it first.")
     jid = st.new_id("im")
-    j = {"id": jid, "name": name, "compression": comp, "kind": None, "status": "uploading", "pass": 0, "bytes_read": 0,
-         "bytes_total": total, "uploaded_bytes": 0, "started_ms": req.now, "finished_ms": None, "error": None,
-         "cars": [], "report": None}
+    name = files[0]["name"]
+    if len(files) > 1:
+        name += f" and {len(files) - 1} more file{'s' if len(files) > 2 else ''}"
+    total = sum(f["bytes_total"] for f in files)
+    fs = [dict(f, index=i, uploaded_bytes=0) for i, f in enumerate(files)]
+    j = {"id": jid, "name": name, "compression": files[0]["compression"], "kind": None, "status": "uploading",
+         "pass": 0, "bytes_read": 0, "bytes_total": total, "uploaded_bytes": 0, "started_ms": req.now,
+         "finished_ms": None, "error": None, "cars": [], "report": None, "_files": fs}
     with st.lock:
         st.imports[jid] = j
     st.record(req.account, "import.create", f"import:{jid}", f"Started uploading {name} ({total} bytes).")
     out = view(j)
-    out["upload_url"] = f"/api/v1/imports/{jid}"
+    out["upload_url"] = out["files"][0]["upload_url"]
     out["chunk_max_bytes"] = 1024 * 1024 - 1024
     out["_created"] = True
     return out
@@ -346,10 +421,24 @@ def _sha_header(v):
 
 
 def patch_import(req):
-    st = req.store
+    """The old one-file address: file 0."""
+    return _patch_file(req, _job(req), 0)
+
+
+def patch_file(req):
     j = _job(req)
+    ix = req.params["index"]
+    fs = j.get("_files") or []
+    if not ix.isdigit() or int(ix) >= len(fs):
+        raise not_found("no_such_file", "This import has no such file.")
+    return _patch_file(req, j, int(ix))
+
+
+def _patch_file(req, j, ix):
+    st = req.store
     if j["status"] != "uploading":
         raise conflict("not_uploading", f"This import is {j['status']}; it takes no more chunks.")
+    f = j["_files"][ix]
     hd = req.headers
     off, ln = hd.get("Upload-Offset"), hd.get("Upload-Length")
     bad = {}
@@ -364,45 +453,76 @@ def patch_import(req):
         bad["body"] = "Send the chunk's bytes."
     if bad:
         raise bad_input(bad)
-    if ln is not None and int(ln) != j["bytes_total"]:
-        raise invalid({"Upload-Length": f"This upload is {j['bytes_total']} bytes."})
-    if int(off) != j["uploaded_bytes"]:
-        raise ApiError(409, "wrong_offset", f"The upload is at byte {j['uploaded_bytes']}; send from there.",
-                       headers={"Upload-Offset": str(j["uploaded_bytes"])}, extra={"offset": j["uploaded_bytes"]})
+    if ln is not None and int(ln) != f["bytes_total"]:
+        raise invalid({"Upload-Length": f"This file is {f['bytes_total']} bytes."})
+    if int(off) != f["uploaded_bytes"]:
+        raise ApiError(409, "wrong_offset", f"The upload is at byte {f['uploaded_bytes']}; send from there.",
+                       headers={"Upload-Offset": str(f["uploaded_bytes"])}, extra={"offset": f["uploaded_bytes"]})
     if hashlib.sha256(req.body).digest() != want:
         raise ApiError(422, "checksum_mismatch", "The chunk does not match its SHA-256. Send it again.",
                        fields={"Upload-SHA256": "Does not match the bytes sent."})
-    if j["uploaded_bytes"] + len(req.body) > j["bytes_total"]:
+    if f["uploaded_bytes"] + len(req.body) > f["bytes_total"]:
         raise invalid({"body": "More bytes than the upload's length."})
     with st.lock:
-        if j["uploaded_bytes"] == 0:
+        if f["uploaded_bytes"] == 0:
             zip_ = req.body[:4] in ZIP_HEADS
-            j["_tf"] = teslafi_sniff(req.body)
-            if (zip_ or comp_says_zip(j)) and not j["_tf"]:
-                j["_zip"] = zip_
-        j["uploaded_bytes"] += len(req.body)
+            f["_tf"] = teslafi_sniff(req.body)
+            f["_zip"] = zip_ if (zip_ or f["compression"] == "zip") and not f["_tf"] else None
+        f["uploaded_bytes"] += len(req.body)
+        j["uploaded_bytes"] = sum(x["uploaded_bytes"] for x in j["_files"])
         j["bytes_read"] = j["uploaded_bytes"]
-        if j["uploaded_bytes"] == j["bytes_total"]:
+        if all(x["uploaded_bytes"] == x["bytes_total"] for x in j["_files"]):
+            _sort_out(j)
             j["status"] = "checking"
             j["pass"] = 1
             j["bytes_read"] = 0
             j["_check_start_ms"] = req.now
             j["_check_done_ms"] = req.now + CHECK_MS
-            if j.get("_tf") == "raw":
-                j["cars"] = [dict(c, match=_suggest(req, c)) for c in extras.teslafi_cars()]
+            if j.get("_fail"):
+                pass
+            elif j.get("_tf") == "raw":
+                j["cars"] = [dict(c, match=_first_match(req, c)) for c in extras.teslafi_cars()]
             elif j.get("_zip") is None and not j.get("_tf"):
-                j["cars"] = [dict(c, match=_suggest(req, c))
+                j["cars"] = [dict(c, match=_first_match(req, c))
                              for c in extras.backup_cars(req.app.cfg.now_ms, req.ds.history("c3"))]
             st.rev += 1
     if j["status"] == "checking":
-        st.record(req.account, "import.uploaded", f"import:{j['id']}", "Uploaded the whole file; checking it.")
+        st.record(req.account, "import.uploaded", f"import:{j['id']}", "Uploaded every file; checking it.")
     out = view(j)
-    out["offset"] = j["uploaded_bytes"]
+    out["offset"] = f["uploaded_bytes"]
     return out
 
 
-def comp_says_zip(j):
-    return j["compression"] == "zip"
+def _sort_out(j):
+    """What the uploaded files are, together: one file is what it is; several must all be TeslaFi's."""
+    fs = j["_files"]
+    if len(fs) == 1:
+        j["_tf"] = fs[0].get("_tf")
+        if fs[0].get("_zip") is not None:
+            j["_zip"] = fs[0]["_zip"]
+        return
+    tf = [f for f in fs if f.get("_tf")]
+    if not tf:
+        kind = KIND_CAN if fs[0].get("_zip") else KIND_TM
+        j["_fail"] = (kind, "one_file_only",
+                      "A TeslaMate backup / CAN export is imported on its own: upload it alone.")
+        return
+    other = next((f for f in fs if f.get("_tf") != "raw"), None)
+    if other is None:
+        j["_tf"] = "raw"
+    elif other.get("_tf") == "summary":
+        j["_tf"] = "summary"
+    else:
+        j["_fail"] = (KIND_TF, "not_a_teslafi_export",
+                      f"{other['name']} is not TeslaFi's data: several files are taken for TeslaFi only, each a "
+                      "TeslaFi CSV (.csv, .csv.gz, or a .zip of them)")
+
+
+def _first_match(req, c):
+    """A car with no drives and no charges starts left out; else the car suggested, if any."""
+    if not c.get("drives") and not c.get("charges"):
+        return "leave_out"
+    return _suggest(req, c)
 
 
 def _suggest(req, c):
@@ -475,6 +595,8 @@ def put_cars(req):
     with st.lock:
         for x in rows:
             known[x["tm_car"]]["match"] = x["match"]
+        if j["status"] == "ready":
+            j["report"] = _checked_report(req, j)
     st.record(req.account, "import.cars", f"import:{j['id']}",
               "Matched imported cars: " + ", ".join(f"{x['tm_car']} -> {x['match']}" for x in rows) + ".")
     return get_cars(req)
@@ -538,5 +660,6 @@ def register(router):
     router.add("/api/v1/imports", GET=list_imports, POST=create_import, admin=("GET", "POST"))
     router.add("/api/v1/imports/{import}", GET=get_import, PATCH=patch_import, DELETE=delete_import,
                admin=("GET", "PATCH", "DELETE"))
+    router.add("/api/v1/imports/{import}/files/{index}", PATCH=patch_file, admin=("PATCH",))
     router.add("/api/v1/imports/{import}/cars", GET=get_cars, PUT=put_cars, admin=("GET", "PUT"))
     router.add("/api/v1/imports/{import}/start", POST=start, admin=("POST",))
