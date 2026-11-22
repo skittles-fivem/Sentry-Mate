@@ -5,8 +5,8 @@
 // value Sentry Mate publishes for a chosen car (its payload now, unit, status and where it comes from),
 // Home Assistant discovery with the device and every entity, dashboard cards to paste, the events automations
 // listen to with recent ones and ideas, the read API, every network connection, and other people's tools.
-// First of all the Tesla account (pages/settings-tesla.js): the Tesla API as a second live input beside SMO; then
-// TeslaFi (pages/settings-teslafi.js, #teslafi): TeslaFi's own polls read with the owner's TeslaFi token.
+// First of all the Tesla account (pages/settings-tesla.js): the Tesla API as a second live input beside SMO, and
+// TeslaFi (pages/settings-teslafi.js): TeslaFi's polls of the car, read with the owner's TeslaFi token, as a third.
 //
 // Broker settings, the network list and the broker log are for admins; anyone reads the status, the preview and
 // the events of the cars they see. Switches and single fields save at once (PUT /settings/mqtt with the whole
@@ -582,7 +582,7 @@ export async function mount(ctx) {
         { key: 'host', label: 'Host or port', render: (r) => (r.port != null ? code(`port ${r.port}${r.tls ? ', TLS' : ''}`) : r.host ? code(r.host, { long: true }) : h('span', { class: 'faint' }, 'not set')), csv: (r) => r.host || (r.port != null ? `port ${r.port}` : '') },
         { key: 'on', label: 'State', sort: true, value: (r) => (r.enabled ? 0 : 1), render: (r) => (r.enabled ? sig('ok', r.dir === 'in' ? 'Open' : 'On') : sig('off', 'Off')), csv: (r) => (r.enabled ? 'on' : 'off') },
         { key: 'last', label: 'Last used', num: true, sort: true, value: (r) => r.last_used_ms, render: (r) => (r.last_used_ms ? ago(r.last_used_ms) : h('span', { class: 'faint' }, r.dir === 'in' ? 'always listening' : 'never')), csv: (r) => (r.last_used_ms ? new Date(r.last_used_ms).toISOString() : '') },
-        { key: 'change', label: 'Change it', csv: false, render: (r) => (PURPOSE[r.purpose]?.[2] ? h('a', { class: 'plc', href: state.buildUrl(PURPOSE[r.purpose][2]) }, 'Settings') : r.purpose === 'tesla' ? h('a', { class: 'plc', href: '#tesla' }, 'Tesla account') : r.purpose === 'teslafi' ? h('a', { class: 'plc', href: '#teslafi' }, 'TeslaFi') : h('span', { class: 'faint' }, r.purpose === 'mqtt' ? 'Above' : '—')) },
+        { key: 'change', label: 'Change it', csv: false, render: (r) => (PURPOSE[r.purpose]?.[2] ? h('a', { class: 'plc', href: state.buildUrl(PURPOSE[r.purpose][2]) }, 'Settings') : r.purpose === 'teslafi' ? h('a', { class: 'plc', href: state.buildUrl('settings-integrations') + '#teslafi' }, 'TeslaFi') : r.purpose === 'tesla' ? h('a', { class: 'plc', href: '#tesla' }, 'Tesla account') : h('span', { class: 'faint' }, r.purpose === 'mqtt' ? 'Above' : '—')) },
       ],
     }).el);
   }
@@ -599,7 +599,7 @@ export async function mount(ctx) {
       presets([['tesla', 'Tesla account'], ['teslafi', 'TeslaFi'], ['si-broker', 'Broker'], ['si-topics', 'Topics'], ['si-values', 'Values'], ['si-ha', 'Home Assistant'], ['si-events', 'Events'], ['si-api', 'API'], ['si-network', 'Network'], ['si-works', 'Works with']]),
       h('p', { class: 'note jump-note' }, icon('check', 'i--sm'), h('span', null, 'Switches and single fields save at once; the connection saves with its button. Nothing leaves the server until sending is on.'))),
 
-    band(1, 'Tesla API input'),
+    band(1, 'Live inputs: Tesla API and TeslaFi'),
     tesla.el,
     teslafi.el,
 
