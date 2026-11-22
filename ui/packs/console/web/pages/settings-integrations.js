@@ -21,6 +21,7 @@ import { copyBtn } from '../core/secret.js';
 import { toast } from '../core/toast.js';
 import { teslaSection } from './tesla.js';
 import { teslafiSection } from './teslafi.js';
+import { teslamateSection } from './teslamate.js';
 
 export const id = 'settings-integrations';
 export const title = () => 'Settings: integrations';
@@ -495,6 +496,8 @@ export async function mount(ctx) {
     mqtt: ['mqtt broker', 'only while publishing is on (above)', null],
     tesla: ['tesla api', 'only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (tesla account, above)', null],
     teslafi: ['teslafi api', 'only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi', '#teslafi'],
+    teslamate_mqtt: ['local teslamate (mqtt)', 'only while a local TeslaMate is added and not paused: subscribes to its topics, never publishes', '#teslamate'],
+    teslamate_db: ['local teslamate (database)', 'only while its database catch-up is on: reads what MQTT missed', '#teslamate'],
     release_check: ['release check', 'asks whether a newer Sentry Mate exists, when on', 'settings-server'],
     upload: ['can bridge uploads', 'the car\'s CAN Bridge sends its logs here', null],
     web: ['this app and the api', 'browsers, apps and the api', null],
@@ -517,11 +520,13 @@ export async function mount(ctx) {
   paintStatus(); paintBroker(); paintTopics(); paintValues(); paintHa(); paintEvents();
   const tesla = teslaSection(ctx, { cars: carList });
   const teslafi = teslafiSection(ctx, { cars: carList });
+  const teslamate = teslamateSection(ctx, { cars: carList });
   const recipe = (t, cv, uses, text, s) => [statusTag(s), [h('b', null, t), ': ', text, h('span', { class: 'muted' }, ` uses ${uses.join(', ')}.`)], cv];
   paint(ctx, head(ctx, { extra: h('span', { class: 'muted' }, headTag) }),
     h('p', { class: 'note' }, 'Switches and single lines save at once (Enter saves, Esc undoes); the broker connection lines save together. Nothing leaves the server until publishing is on.'),
     tesla.el,
     teslafi.el,
+    teslamate.el,
     section({ title: 'mqtt', id: 'mqtt', side: mqttTag }, brokerSlot, h('p', { class: 'sub-title' }, 'status'), statusSlot, logSlot,
       h('p', { class: 'note', cover: 'nr.setup.mqtt' }, 'Connect a client: Node-RED, Home Assistant or any MQTT client uses this broker. Subscribe to ', code(`${ns()}/cars/+/#`), ' for every car, or ', code(`${ns()}/cars/<car id>/#`), ' for one. Use TLS as here.')),
     section({ title: 'mqtt topics', side: h('span', { class: 'muted' }, 'layout and rules') }, topicsSlot),
@@ -564,6 +569,6 @@ export async function mount(ctx) {
         [tag('mqtt', 'muted'), 'garage door openers that act on arrival and departure, by place: good for closing behind you, late for opening.', 'projects.geogdo'],
       ])));
   paintLog();
-  await Promise.all([valuesT?.ready, eventsT?.ready, netT?.ready, tesla.load(), teslafi.load(), ...(S.haTables || []).map((t) => t.ready)].filter(Boolean)).catch(() => {});
+  await Promise.all([valuesT?.ready, eventsT?.ready, netT?.ready, tesla.load(), teslafi.load(), teslamate.load(), ...(S.haTables || []).map((t) => t.ready)].filter(Boolean)).catch(() => {});
   if (ctx.alive()) ctx.ready();
 }

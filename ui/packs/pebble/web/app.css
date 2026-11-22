@@ -1088,3 +1088,7 @@ html[data-form="phone"] .fw-v { align-items: flex-start; }
 html[data-form="phone"] .fw-change { flex-direction: column; align-items: flex-start; }
 .tf-head-text { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); }
 .seg-tight .seg-btn { padding: 0 var(--s2); }
+/* the Local TeslaMate tiles (#teslamate) */
+.tm-form [hidden] { display: none; }
+.tm-tick > .set-said { margin-top: var(--s2); }
+.tm-test:empty { display: none; }

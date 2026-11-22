@@ -24,6 +24,7 @@ import { inOrder } from '../core/settings.js';
 import { copyButton } from './move-parts.js';
 import { teslaTiles } from './tesla.js';
 import { teslafiTiles } from './teslafi.js';
+import { teslamateTiles } from './teslamate.js';
 
 export const id = 'settings-integrations';
 export const shape = [['full', 'h1'], [2, 'h3'], [2, 'h3'], [2, 'h2'], [2, 'h2']];
@@ -173,6 +174,8 @@ const PURPOSE = {
   mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
   tesla: ['Tesla API', 'Only while a Tesla account is added and not paused: Tesla’s sign-in, its Owner API and its live stream (Tesla account, above).', null],
   teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars’ data from TeslaFi', '#teslafi'],
+  teslamate_mqtt: ['Local TeslaMate (MQTT)', 'Only while a local TeslaMate is added and not paused: subscribes to its topics, never publishes', '#teslamate'],
+  teslamate_db: ['Local TeslaMate (database)', 'Only while its database catch-up is on: reads what MQTT missed', '#teslamate'],
   release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-display'],
   upload: ['CAN Bridge uploads', 'The car’s CAN Bridge sends its logs here.', null],
   web: ['This app and the API', 'Browsers, apps and the API.', null],
@@ -198,7 +201,8 @@ export async function mount(ctx) {
   const allCars = admin ? await ctx.api.page('cars', { sort: 'name' }, { limit: 200 }).then((r) => r.items || []).catch(() => cars) : cars;
   const tesla = teslaTiles(ctx, { cars: allCars });
   const teslafi = teslafiTiles(ctx, { cars: allCars });
-  await Promise.all([tesla.load(), teslafi.load()]);
+  const teslamate = teslamateTiles(ctx, { cars: allCars });
+  await Promise.all([tesla.load(), teslafi.load(), teslamate.load()]);
   if (!ctx.alive()) return {};
   let carId = (ctx.query.car && cars.some((c) => c.id === ctx.query.car) ? ctx.query.car : null) || (cars.find((c) => c.id === state.lastCar()) || cars.find((c) => !state.isSold(c)) || cars[0] || {}).id || null;
   let pv = null;
@@ -519,9 +523,10 @@ export async function mount(ctx) {
     statusEl = statusTile();
     ctx.head({ actions: [headChip()] });
     ctx.view.replaceChildren(
-      tile({ w: 'full', cls: 'tile-intro' }, said('ok', admin ? 'Switches and single fields save at once and a toast confirms it; the broker connection saves with its button. Nothing leaves the server until publishing is on. Tesla account and TeslaFi changes ask for your password again.' : 'Your account can read these; an admin changes them.')),
+      tile({ w: 'full', cls: 'tile-intro' }, said('ok', admin ? 'Switches and single fields save at once and a toast confirms it; the broker connection saves with its button. Nothing leaves the server until publishing is on. Tesla account, TeslaFi and local TeslaMate changes ask for your password again.' : 'Your account can read these; an admin changes them.')),
       tesla.el,
       teslafi.el,
+      teslamate.el,
       sectionHead('Sending values to other systems'),
       brokerTile(), statusEl, topicsTile(), haTile(),
       h('div', { class: 'page-bar w-full' }, h('h2', { class: 'sub-head' }, 'Published values'), carPills ? h('span', { class: 'page-bar-end' }, carPills) : null),

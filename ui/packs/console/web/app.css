@@ -810,6 +810,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .src-k--smo { color: var(--accent); }
 .src-k--tesla_api { color: var(--c2); }
 .src-k--teslafi_api { color: var(--c3); }
+.src-k--teslamate_local { color: var(--warn); }
 .src-k--import { color: var(--text); }
 .src-k--typed { color: var(--warn); }
 .src-plus { color: var(--muted); }
@@ -1070,3 +1071,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .veh-note { display: block; }
 .tbl .tf-car-col { width: calc(var(--a2) * 48); min-width: calc(var(--a2) * 48); max-width: calc(var(--a2) * 48); white-space: normal; }
 .tesla-sel.tf-sel { max-width: none; }
+/* the local teslamate block (#teslamate) */
+.tm-form [hidden] { display: none; }
+.tm-form .fld--check > .fld-hint, .tm-form .fld--check > .tm-warn { margin-top: var(--g2); }
+.tm-test:empty { display: none; }

@@ -1,5 +1,5 @@
 // Where data came from: SMO (the CAN Bridge's signed logs), the Tesla API this server reads, TeslaFi's polls
-// this server reads (teslafi_api), or history imported from another site (TeslaMate, TeslaFi). Every row, live value, series and total carries `sources`
+// this server reads (teslafi_api), the owner's local TeslaMate (teslamate_local), or history imported from another site (TeslaMate, TeslaFi). Every row, live value, series and total carries `sources`
 // ([{ kind, site?, label }]) and rows carry `source_label` too ("Data from SMO and the Tesla API").
 // Horizon shows them as a small band chip: a neon dot per input (cyan SMO, violet Tesla API, green TeslaFi,
 // orange imported) and the words. The old `source` word (can, teslamate, tesla_api) is read only as a fallback.
@@ -14,8 +14,8 @@
 import { h } from '../shared/dom.js';
 import { ago } from './fmt.js';
 
-const LABEL = { smo: 'Data from SMO', tesla_api: 'Data from the Tesla API', teslafi_api: 'Data from TeslaFi', import: 'Imported' };
-const SHORT = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', import: 'Imported' };
+const LABEL = { smo: 'Data from SMO', tesla_api: 'Data from the Tesla API', teslafi_api: 'Data from TeslaFi', teslamate_local: 'Data from local TeslaMate', import: 'Imported' };
+const SHORT = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'Local TeslaMate', import: 'Imported' };
 const OLD = { can: [{ kind: 'smo', label: LABEL.smo }], teslamate: [{ kind: 'import', site: 'teslamate', label: 'Imported from TeslaMate' }], tesla_api: [{ kind: 'tesla_api', label: LABEL.tesla_api }] };
 const SITE = { teslamate: 'TeslaMate', teslafi: 'TeslaFi' };
 
@@ -85,12 +85,12 @@ export function inputsLine(inputs, { cover } = {}) {
 }
 
 /** Options for a source filter (the API also takes all). */
-export const SOURCE_FILTER = Object.freeze([['', 'Every source'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['teslafi_api', 'TeslaFi (live)'], ['import', 'Imported'],
+export const SOURCE_FILTER = Object.freeze([['', 'Every source'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['teslafi_api', 'TeslaFi (live)'], ['teslamate_local', 'Local TeslaMate (live)'], ['import', 'Imported'],
   ['import:teslamate', 'Imported from TeslaMate'], ['import:teslafi', 'Imported from TeslaFi']]);
 /** The old filter words still arrive in saved addresses: read them as the new ones. */
 export const sourceParam = (v) => ({ can: 'smo', teslamate: 'import' }[v] || v || '');
 /** Words for a filter value in a "showing only" line. */
-export const SOURCE_ONLY = Object.freeze({ smo: 'from SMO only', tesla_api: 'from the Tesla API only', import: 'imported only', 'import:teslamate': 'imported from TeslaMate only', teslafi_api: 'from TeslaFi only', 'import:teslafi': 'imported from TeslaFi only' });
+export const SOURCE_ONLY = Object.freeze({ smo: 'from SMO only', tesla_api: 'from the Tesla API only', import: 'imported only', 'import:teslamate': 'imported from TeslaMate only', teslafi_api: 'from TeslaFi only', teslamate_local: 'from local TeslaMate only', 'import:teslafi': 'imported from TeslaFi only' });
 
 /** True when a row has a live input (SMO, the Tesla API or TeslaFi), false when it is imported only. */
-export const isLive = (x) => kindsOf(x).some((k) => k === 'smo' || k === 'tesla_api' || k === 'teslafi_api');
+export const isLive = (x) => kindsOf(x).some((k) => k === 'smo' || k === 'tesla_api' || k === 'teslafi_api' || k === 'teslamate_local');

@@ -648,6 +648,7 @@ def system_health(req):
         "geocoder": {"mode": req.store.server_settings["geocode"]["mode"], "cache_size": 1_842, "hits_pct": 97.4},
         "tesla": _tesla_health(req),
         "teslafi": _teslafi_health(req),
+        "teslamate_local": _teslamate_health(req),
         "housekeeping_last_ms": req.now - 47 * MIN,
         "timings_ms": {"decode_per_log": 38.0, "rebuild_per_window": 410.0, "api_p50": 4.0, "api_p95": 31.0},
         "dev_server": {"dataset_build_ms": int(app.build_s * 1000), "now_ms": req.now, "clock_frozen": app.cfg.freeze_clock},
@@ -661,6 +662,11 @@ def _tesla_health(req):
 
 def _teslafi_health(req):
     from .teslafi import health
+    return health(req)
+
+
+def _teslamate_health(req):
+    from .teslamate import health
     return health(req)
 
 

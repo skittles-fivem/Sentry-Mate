@@ -24,6 +24,7 @@ export const SETTINGS_KEYS = Object.freeze([
   ['cars.time_zone', 'settings-cars', 'time-zone', 'zone clock'],
   ['cars.upload_token', 'settings-cars', 'tokens', 'can bridge'],
   ['integrations.teslafi', 'settings-integrations', 'teslafi', 'teslafi token pace'],
+  ['integrations.teslamate', 'settings-integrations', 'teslamate', 'local teslamate mqtt database'],
   ['integrations.mqtt', 'settings-integrations', 'mqtt', 'broker'],
   ['integrations.home_assistant', 'settings-integrations', 'home-assistant', 'discovery'],
   ['integrations.api', 'settings-integrations', 'api', 'token access'],
