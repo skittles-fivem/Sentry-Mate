@@ -16,6 +16,11 @@ the [README](../README.md).
   its report, the time zone to confirm and the units to Start, `docs/ui-api.md`, "TeslaFi's data") and the dev
   server serves it with a made-up file (`ui/devserver/mockapi/data/TeslaFi32023.csv`); a later step does the pages:
   the time zone and units on the check's page, the report's rows, drives and charges, and "Imported from TeslaFi".
+- **A TeslaFi page in each design.** The server reads TeslaFi's API for owners who pay for TeslaFi (`/api/v1/
+  integrations/teslafi`, `docs/ui-api.md`, "Integrations: TeslaFi": add a token, match the car, pause, remove, the
+  status) and the dev server serves a made-up TeslaFi account and car; a later step does the pages in all five
+  designs: the TeslaFi account in Settings: Integrations, the token refused notice, and "Data from TeslaFi" beside
+  SMO and the Tesla API on every page. Until then a TeslaFi token can't be added from the web UI.
 - **CI in about 5 minutes** per push to main (tests in parallel shards, a build cache), down from 30-45.
 
 ## Next

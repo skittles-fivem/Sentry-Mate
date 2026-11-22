@@ -105,7 +105,8 @@ class Mqtt(ServerCase):
     def test_5_network(self):
         net = self.c.get("/api/v1/network")
         out = {x["purpose"]: x for x in net["outbound"]}
-        self.assertEqual(set(out), {"geocoding", "tiles", "geonames_download", "mqtt", "release_check", "tesla"})
+        self.assertEqual(set(out), {"geocoding", "tiles", "geonames_download", "mqtt", "release_check", "tesla",
+                                    "teslafi"})
         self.assertFalse(out["geocoding"]["enabled"])  # offline address lookup: nothing leaves
         self.assertEqual(out["tiles"]["host"], "tile.openstreetmap.org")
         self.assertEqual({x["purpose"] for x in net["inbound"]}, {"web", "upload"})

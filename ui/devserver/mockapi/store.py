@@ -99,6 +99,8 @@ class Store:
         moving.seed(self, cfg, now)  # first-run set-up, the move to another server, export files
         from .resources import tesla
         tesla.seed(self, now)  # the Tesla API input: one account, its cars
+        from .resources import teslafi
+        teslafi.seed(self, now)  # the TeslaFi input: one account, its car
 
     # ------------------------------------------------------------ seeding
     def seed_accounts(self, now):

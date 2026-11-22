@@ -4,6 +4,7 @@
 
 - [Security](#security)
 - [The Tesla API input](#the-tesla-api-input)
+- [The TeslaFi input](#the-teslafi-input)
 - [No way back without a backup](#no-way-back-without-a-backup)
 - [Privacy](#privacy)
 - [When a log fails its check](#when-a-log-fails-its-check)
@@ -67,6 +68,8 @@
   - **MQTT**: to the broker an admin sets up, while MQTT is on.
   - **The Tesla API**: to Tesla's own hosts only, once an admin adds a Tesla account. See
     [The Tesla API input](#the-tesla-api-input).
+  - **TeslaFi**: to `www.teslafi.com` only, once an admin adds a TeslaFi token. See
+    [The TeslaFi input](#the-teslafi-input).
   - **A move**: a new server, during a move you started, connects to the old server's upload port, and nowhere else.
 
   With none of these turned on, Sentry Mate makes no outgoing connection at all.
@@ -182,6 +185,43 @@ SMO. How to add an account is in [install.md](install.md#add-a-tesla-account).
   (your Tesla account's security page), so the token stops working there as well.
 - Data from the Tesla API is not signed like SMO's logs. Every row says where it came from (`tesla_api`), so it is
   never mistaken for checked CAN data.
+
+## The TeslaFi input
+
+For owners who pay for TeslaFi, the server can read TeslaFi's own polls of the car from TeslaFi's API, beside or
+instead of SMO and the Tesla API. TeslaFi is a third party: it already polls your car with the Tesla access it was
+given; this server only reads what TeslaFi stored. How to add the token is in
+[install.md](install.md#add-a-teslafi-token).
+
+- **Off until an admin adds a TeslaFi token.** Before that the server starts nothing for it, makes no connection and
+  no DNS lookup for TeslaFi. Removing the last account stops it again (`/network` shows its `teslafi` row off).
+- **Only TeslaFi's API host, over TLS.** The host is fixed in the program, never taken from a setting or an
+  answer: `www.teslafi.com` on port 443, with rustls and the public web roots. TLS 1.3 whenever TeslaFi's host
+  offers it (rustls refuses a downgrade from it); TLS 1.2 is allowed for this one host only, in case TeslaFi's edge
+  stops offering 1.3, and the TeslaFi status says which one was used (`tls`). Plain `http://` is never used,
+  redirects are never followed. Through the owner's HTTP proxy only when one is set in Settings (`outbound.proxy`).
+- **What is sent, and nothing else:** `GET /feed.php` (TeslaFi's latest poll of the car) and
+  `GET /feed.php?command=lastGood` (its last poll of the car awake), with the token in the `Authorization` header
+  (never in an address, where proxies and logs keep it) and a plain `SentryMate/<version> (self-hosted)`
+  User-Agent. These two reads are fixed in the program: no other command can be built, so no wake (`wake_up`,
+  `wake`, a `wake=` parameter), no command to the car, no change to TeslaFi's logging is ever sent. They are served
+  from TeslaFi's database and do not wake the car.
+- **Polite.** One read a minute at most while the car drives or charges, less while it is parked or asleep or while
+  SMO or the Tesla API is live for it; at most 1,500 requests a day per account; waits after errors and whatever
+  TeslaFi asks for (429).
+- **The token is sealed in the vault** (`teslafi/accounts/<id>.json` in the data folder, encrypted with the vault
+  key), held in memory only while used and wiped after. No page, API answer, audit entry, error or log line shows
+  it. A move or an export carries the account to the new server, still sealed.
+- **No full VIN is kept:** the VIN prefix (11 characters at most) and a keyed hash to tell two cars apart. A car
+  TeslaFi names is not read into any car here until an admin confirms which car it is.
+- **Admins only.** Every page and call about TeslaFi is for admins, and every change asks for the admin's password
+  again (and the two-step code when it is on) and writes an audit entry. When TeslaFi refuses the token (a wrong
+  token, or the subscription ended), the server stops asking, writes an audit entry and shows a notice to admins
+  until someone gives a new token.
+- **Removing an account** stops reading at once and deletes its sealed file. Make a new token on TeslaFi's API page
+  too, so the old one stops working there as well.
+- Data from TeslaFi is not signed like SMO's logs. Every row and value says where it came from (`teslafi_api`, "Data
+  from TeslaFi"), and SMO's and the Tesla API's data win over it where they cover the same time.
 
 ## No way back without a backup
 

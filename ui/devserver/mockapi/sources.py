@@ -16,11 +16,12 @@ from __future__ import annotations
 from .util import DAY, h01
 
 SITES = {"teslamate": "TeslaMate", "teslafi": "TeslaFi"}
-SHORT = {"smo": "SMO", "tesla_api": "the Tesla API"}
-LABEL = {"smo": "Data from SMO", "tesla_api": "Data from the Tesla API"}
+SHORT = {"smo": "SMO", "tesla_api": "the Tesla API", "teslafi_api": "TeslaFi"}
+LABEL = {"smo": "Data from SMO", "tesla_api": "Data from the Tesla API", "teslafi_api": "Data from TeslaFi"}
 
 # the words `source=` takes; `can` and `teslamate` are the old ones
-FILTER_WORDS = ("smo", "tesla_api", "import", "import:teslamate", "import:teslafi", "all", "can", "teslamate")
+FILTER_WORDS = ("smo", "tesla_api", "teslafi_api", "import", "import:teslamate", "import:teslafi", "all", "can",
+                "teslamate")
 
 
 def ref(kind, site=None):
@@ -85,6 +86,8 @@ def old_word(refs):
         return "teslamate"
     if "tesla_api" in kinds:
         return "tesla_api"
+    if "teslafi_api" in kinds:
+        return "teslafi_api"
     return "can"
 
 
@@ -115,6 +118,8 @@ def keeps(word, source, inputs, site=None):
         return "smo" in ins
     if word == "tesla_api":
         return "tesla_api" in ins
+    if word == "teslafi_api":
+        return "teslafi_api" in ins
     return True
 
 
@@ -150,6 +155,7 @@ def filter_refs(word):
         "smo": [ref("smo")],
         "tesla_api": [ref("tesla_api")],
         "import": [ref("import", "teslamate"), ref("import", "teslafi")],
+        "teslafi_api": [ref("teslafi_api")],
         "import:teslamate": [ref("import", "teslamate")],
         "import:teslafi": [ref("import", "teslafi")],
     }[canon(word)]

@@ -17,6 +17,7 @@ Every command is in [commands.md](commands.md). The bridge app in detail is in
 - [TrueNAS SCALE](#truenas-scale)
 - [The CAN Bridge app](#the-can-bridge-app)
 - [Add a Tesla account](#add-a-tesla-account)
+- [Add a TeslaFi token](#add-a-teslafi-token)
 - [Updating](#updating)
 - [Backups](#backups)
 - [Restore](#restore)
@@ -55,6 +56,8 @@ Every command is in [commands.md](commands.md). The bridge app in detail is in
   ([The CAN Bridge app](cars-and-bridge.md#the-can-bridge-app)).
 - Optional: a Tesla account, for reading the cars from Tesla's API as well
   ([Add a Tesla account](#add-a-tesla-account)).
+- Optional: a TeslaFi token, if you pay for TeslaFi, for reading the polls
+  TeslaFi already makes of your car ([Add a TeslaFi token](#add-a-teslafi-token)).
 - It can share the server with Sentry Six Manager
   ([Ports and firewalls](#ports-and-firewalls)).
 
@@ -344,6 +347,45 @@ sign in again. What is sent, and where: [security](security.md#the-tesla-api-inp
 The built-in designs are still getting their Tesla page. Until yours has it,
 the same steps are API calls, listed in
 [ui-api.md](ui-api.md#integrations-tesla).
+
+## Add a TeslaFi token
+
+Optional, for owners who pay for TeslaFi. With a TeslaFi token added, the
+server also reads the polls TeslaFi makes of your car (about one a minute
+while it is awake) from TeslaFi's API: for a car with no Screenmate, or for
+the time SMO was offline. Where SMO or the Tesla API have data for the same
+time, theirs win; TeslaFi's fills the rest, and every drive, charge and value
+says which it came from ("Data from TeslaFi"). Nothing connects to TeslaFi
+until you add a token, and the server only reads: it never wakes the car and
+never sends it a command.
+
+You need an admin account on Sentry Mate, and the server must be able to
+reach `www.teslafi.com` on port 443. A proxy for outgoing connections is set
+in Settings (`outbound.proxy`).
+
+1. Sign in at TeslaFi and open **Settings → TeslaFi API**. Make a token there
+   if you have none (TeslaFi shows it as a long string of letters and
+   digits). Sentry Mate needs no command ticked on TeslaFi's **Commands** tab:
+   it only reads.
+2. In the Sentry Mate web UI, open **Settings → Integrations → TeslaFi** and
+   paste the token, with a name for it and your own Sentry Mate password
+   again. If TeslaFi shows your times in another time zone than the server's
+   default, pick that zone too.
+3. The server checks the token with TeslaFi before it keeps anything, then
+   names the car TeslaFi polls (its VIN prefix). Match it to a car Sentry Mate
+   already has (the one with the same VIN prefix is suggested), to a new car,
+   or leave it out. Nothing is read into a car before it is matched.
+
+To stop for a while, pause the account; to stop for good, remove it. Removing
+deletes its sealed token; the history already stored stays. Also make a new
+token on TeslaFi's API page, so the old one stops working there. If TeslaFi
+stops taking the token (a new token was made there, or the subscription
+ended), a notice says so: paste a new token. What is sent, and where:
+[security](security.md#the-teslafi-input).
+
+The built-in designs are still getting their TeslaFi page. Until yours has
+it, the same steps are API calls, listed in
+[ui-api.md](ui-api.md#integrations-teslafi).
 
 ## Updating
 

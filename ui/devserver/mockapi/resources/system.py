@@ -234,6 +234,8 @@ def notices(req):
         items += move_notices(req)
         from .tesla import notices as tesla_notices
         items += tesla_notices(req)
+        from .teslafi import notices as teslafi_notices
+        items += teslafi_notices(req)
     return {"items": items, "next": None}
 
 
@@ -596,6 +598,7 @@ def system_health(req):
         "ingest": {"memory": {"used_bytes": 212 * 1024 ** 2, "limit_bytes": 1024 ** 3}, "cached_cars": len(ds.featured)},
         "geocoder": {"mode": req.store.server_settings["geocode"]["mode"], "cache_size": 1_842, "hits_pct": 97.4},
         "tesla": _tesla_health(req),
+        "teslafi": _teslafi_health(req),
         "housekeeping_last_ms": req.now - 47 * MIN,
         "timings_ms": {"decode_per_log": 38.0, "rebuild_per_window": 410.0, "api_p50": 4.0, "api_p95": 31.0},
         "dev_server": {"dataset_build_ms": int(app.build_s * 1000), "now_ms": req.now, "clock_frozen": app.cfg.freeze_clock},
@@ -604,6 +607,11 @@ def system_health(req):
 
 def _tesla_health(req):
     from .tesla import health
+    return health(req)
+
+
+def _teslafi_health(req):
+    from .teslafi import health
     return health(req)
 
 
