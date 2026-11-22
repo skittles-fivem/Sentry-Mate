@@ -12,7 +12,7 @@ import bisect
 from .. import sources as S
 from ..util import DAY, local_date
 from . import places as P
-from .cars import featured_specs
+from .cars import featured_specs, sold_spec
 from .sim import Sim
 from .synthetic import SyntheticFleet
 
@@ -86,7 +86,10 @@ class Dataset:
         self.n_cars = cfg.cars
         self.plan_end = cfg.now_ms + 2 * DAY
         self.featured = {}
-        for spec in featured_specs()[: max(0, min(3, cfg.cars))]:
+        specs = featured_specs()[: max(0, min(3, cfg.cars))]
+        if cfg.cars >= 3:  # and the car the owner sold (its history only)
+            specs.append(sold_spec())
+        for spec in specs:
             spec.now_ms = cfg.now_ms
             spec.now_day_index = cfg.now_ms // DAY
             spec.live_drive = None
@@ -96,7 +99,8 @@ class Dataset:
             if sim.can_from is not None and sim.tm_until is not None:
                 overlaps.append({"start_ms": sim.can_from, "end_ms": sim.tm_until, "shown": "can"})
             self.featured[spec.id] = CarHistory(spec, sim.segs, sim.shadow, overlaps, _import_overlaps(sim))
-        self.synthetic = SyntheticFleet(cfg.cars, cfg.now_ms, cfg.seed)
+        # a fleet of N cars counts the sold car among them (c4 to c<N-1> are the synthetic ones)
+        self.synthetic = SyntheticFleet(cfg.cars - 1 if cfg.cars > 3 else cfg.cars, cfg.now_ms, cfg.seed)
         self.places = P.PLACES
 
     # --- cars

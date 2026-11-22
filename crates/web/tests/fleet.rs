@@ -185,7 +185,7 @@ async fn the_cars_list_pages_sorts_filters_and_hides_what_an_account_may_not_see
     let s = watch.get("/api/v1/fleet/summary").await.json();
     assert_eq!(
         s,
-        json!({ "cars": 1, "by_state": { "driving": 0, "charging": 1, "parked": 0, "asleep": 0, "unknown": 0 }, "stale": 0 })
+        json!({ "cars": 1, "by_state": { "driving": 0, "charging": 1, "parked": 0, "asleep": 0, "unknown": 0 }, "stale": 0, "sold": 0 })
     );
     // (no log of c2 ever arrived: it is silent, as its health says; nothing of the other cars shows)
     let a = watch.get("/api/v1/fleet/attention").await.json();
@@ -200,7 +200,7 @@ async fn the_fleet_summary_and_attention_count_every_car() {
     let s = admin.get("/api/v1/fleet/summary").await.json();
     assert_eq!(
         s,
-        json!({ "cars": 3, "by_state": { "driving": 1, "charging": 1, "parked": 0, "asleep": 1, "unknown": 0 }, "stale": 1 })
+        json!({ "cars": 3, "by_state": { "driving": 1, "charging": 1, "parked": 0, "asleep": 1, "unknown": 0 }, "stale": 1, "sold": 0 })
     );
     let a = admin.get("/api/v1/fleet/attention").await;
     assert_eq!(a.status, 200, "{}", a.text());
@@ -592,4 +592,25 @@ async fn a_typed_model_and_year_reach_the_list_and_the_car() {
     let r =
         admin.patch("/api/v1/cars/c1", json!({ "version": 2, "config": { "model_year": null, "model": null } })).await;
     assert_eq!((r.json()["year"].clone(), r.json()["model"].clone()), (json!(2024), json!("Model Y")), "{}", r.text());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sold_car_keeps_its_history_but_raises_nothing_and_leaves_the_fleet_totals() {
+    let f = fleet().await;
+    let mut admin = f.s.admin().await;
+    let r = admin.patch("/api/v1/cars/c3", json!({ "version": 1, "sold": true, "sold_date": "2026-03-14" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!((r.json()["sold"].clone(), r.json()["sold_date"].clone()), (json!(true), json!("2026-03-14")));
+    let s = admin.get("/api/v1/fleet/summary").await.json();
+    assert_eq!((s["cars"].clone(), s["sold"].clone()), (json!(2), json!(1)), "{s}");
+    let a = admin.get("/api/v1/fleet/attention").await.json();
+    assert!(a["items"].as_array().unwrap().iter().all(|i| i["car"] != json!("c3")), "{a}");
+    // still listed, marked sold
+    let list = admin.get("/api/v1/cars").await.json();
+    let one = list["items"].as_array().unwrap().iter().find(|i| i["id"] == json!("c3")).unwrap().clone();
+    assert_eq!((one["sold"].clone(), one["attention"].clone()), (json!(true), json!([])), "{one}");
+    assert_eq!(admin.patch("/api/v1/cars/c3", json!({ "version": 2, "sold_date": "14 March" })).await.status, 422);
+    // undone: the date goes with it
+    let r = admin.patch("/api/v1/cars/c3", json!({ "version": 2, "sold": false })).await;
+    assert_eq!((r.json()["sold"].clone(), r.json()["sold_date"].clone()), (json!(false), json!(null)), "{}", r.text());
 }

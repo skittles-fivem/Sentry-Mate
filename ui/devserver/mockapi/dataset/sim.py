@@ -153,7 +153,7 @@ def plan_c3(car, day, rel, rnd):
     return T
 
 
-PLANNERS = {"c1": plan_c1, "c2": plan_c2, "c3": plan_c3}
+PLANNERS = {"c1": plan_c1, "c2": plan_c2, "c3": plan_c3, "c0": plan_c3}
 
 
 # ------------------------------------------------------------------ the simulator
@@ -339,7 +339,7 @@ class Sim:
         if before_trip:
             target = 100
         thresholds = {"c1": 58, "c2": 55, "c3": 50}
-        if not (self.soc < thresholds[car.id] or rnd.random() < 0.06 or before_trip):
+        if not (self.soc < thresholds.get(car.id, 50) or rnd.random() < 0.06 or before_trip):
             return None
         if self.soc >= target - 2:
             return None

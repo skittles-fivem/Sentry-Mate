@@ -9,7 +9,7 @@
 
 import { h, svg, replace } from '../shared/dom.js';
 import { format, parts, rangeLabel, rangeField, getUnits } from '../shared/units.js';
-import { formatTime, formatDate, formatDateTime, formatDuration, formatRelative, dayKey, periodLabel } from '../shared/time.js';
+import { formatTime, formatDate, formatDateTime, formatDuration, formatRelative, dayKey, formatDayKey, periodLabel } from '../shared/time.js';
 import { formatList } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
@@ -186,7 +186,8 @@ function header(car, now, tz) {
   const sameDay = now.at_ms && dayKey(now.at_ms, tz) === dayKey(api.now(), tz);
   return pageHead({
     eyebrow: 'Car overview',
-    title: h('span', { cover: 'summary.header.name' }, car.name || 'Unnamed car'),
+    title: [h('span', { cover: 'summary.header.name' }, car.name || 'Unnamed car'),
+      state.isSold(car) ? [' ', h('span', { class: 'flag car-sold-flag', title: car.sold_date ? `Sold on ${formatDayKey(car.sold_date, { weekday: false })}` : 'Sold' }, 'Sold')] : null],
     deck: h('span', { class: 'car-line' },
       h('span', { cover: 'summary.header.model', title: car.vin_prefix ? `Model and year from the VIN prefix ${car.vin_prefix}` : null }, [car.year, car.model].filter(Boolean).join(' ')),
       trim ? [sep(), h('span', { cover: 'summary.header.trim', title: `Trim ${src(trim.source, trim.sources)}` }, trim.value, h('span', { class: 'source-note' }, ` (${src(trim.source, trim.sources)})`))]

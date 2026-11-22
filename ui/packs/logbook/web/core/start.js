@@ -38,7 +38,8 @@ async function start() {
   }
   const [about, cars] = await Promise.all([
     api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
-    api.page('cars', null, { limit: 1 }).catch(() => null),
+    // the cars not sold (the masthead's "3 cars · search"); sold ones are behind the switcher's own toggle
+    api.get('fleet/summary').catch(() => null),
     loadPrefs().catch(() => null),
   ]);
   const frame = mountFrame({ me, about });
@@ -53,7 +54,7 @@ async function start() {
     }
     location.assign(`/sign-in?next=${encodeURIComponent(here())}`);
   });
-  startRouter({ frame, me, carsCount: cars && typeof cars.total === 'number' ? cars.total : null });
+  startRouter({ frame, me, carsCount: cars && typeof cars.cars === 'number' ? cars.cars : null });
 }
 
 start().catch((err) => {

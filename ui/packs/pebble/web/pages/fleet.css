@@ -23,3 +23,10 @@
 html[data-form="phone"] .car-tile-main { gap: var(--s4); }
 html[data-form="phone"] .car-tile .ring { --ring: round(6.5rem, var(--e)); }
 html[data-form="phone"] .car-tile .ring-n { font-size: var(--f20); line-height: var(--l20); }
+.car-tile.is-sold { color: var(--muted); }
+.car-tile.is-sold .car-tile-name { color: var(--muted); }
+.car-tile .sold-avatar { --av: round(9rem, var(--e)); font-size: var(--f28); line-height: var(--l28); background: var(--card-alt); color: var(--muted); }
+html[data-form="phone"] .car-tile .sold-avatar { --av: round(6.5rem, var(--e)); }
+.fleet-sold { display: grid; grid-template-columns: repeat(var(--cols, 4), var(--col, 1fr)); gap: var(--gap, 16px); align-items: stretch; }
+.fleet-sold[hidden], .fleet-sold > [hidden] { display: none; }
+.fleet-sold-bar { display: flex; justify-content: flex-start; }

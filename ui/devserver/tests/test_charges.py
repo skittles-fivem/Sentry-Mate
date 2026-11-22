@@ -15,7 +15,7 @@ class Charges(ServerCase):
     def test_all_cars(self):
         d = self.c.get("/api/v1/charges?limit=500")
         cars = {x["car"] for x in d["items"]}
-        self.assertEqual(cars, {"c1", "c2", "c3"})
+        self.assertEqual(cars, {"c1", "c2", "c3", "c0"})  # the sold car's history counts in "all cars"
         for x in d["items"]:
             self.assertTrue(CHARGE <= set(x), CHARGE - set(x))
         t = d["totals"]

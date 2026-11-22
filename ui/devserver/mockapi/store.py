@@ -11,7 +11,7 @@ import copy
 import secrets
 import threading
 
-from .util import DAY, HOUR, MIN
+from .util import DAY, HOUR, MIN, local_date
 
 DEV_PASSWORD = "sentry-mate-dev"
 DEV_TWO_STEP_CODE = "000000"
@@ -138,7 +138,7 @@ class Store:
                                       "detected": car.chemistry if cid != "c3" else None,
                                       "evidence": {"c1": "Pack voltage range and the BMS pack type message.",
                                                    "c2": "Flat voltage curve between 20 % and 90 %.",
-                                                   "c3": None}[cid]},
+                                                   "c3": None}.get(cid)},
                 "free_supercharging": [{"from_date": "2017-03-01", "to_date": None}] if cid == "c3" else [],
                 "capacity_new_kwh": None if cid != "c3" else 87.0,
                 "full_range_new_km": None,
@@ -147,6 +147,10 @@ class Store:
                 "software_version_typed": None,
             }
             self.car_settings[cid] = s
+            sold = getattr(car, "sold_date_days", None)
+            if sold is not None:
+                self.car_over.setdefault(cid, {}).update(
+                    {"sold": True, "sold_date": local_date(now + sold * DAY, car.time_zone).isoformat()})
         first = self.ds.featured.get("c1")
         t0 = first.first_ms if first else now - 400 * DAY
         self.tokens = {
@@ -309,6 +313,8 @@ class Store:
             base["name"] = over["name"]
         if "time_zone" in over:
             base["time_zone"] = over["time_zone"]
+        base["sold"] = bool(over.get("sold"))
+        base["sold_date"] = over.get("sold_date") if base["sold"] else None
         for k, v in over.get("config", {}).items():
             base["config"][k] = {"value": v, "source": "owner"}
         return base

@@ -47,6 +47,11 @@ pub struct CarItem {
     /// What the car has data from: its live inputs and its imports (empty for a car with no data yet).
     pub sources: Vec<super::SourceRef>,
     pub source_label: String,
+    /// The owner marked the car sold: its history stays, but it leaves the car pickers' default lists, raises no
+    /// attention and is matched by no live input.
+    pub sold: bool,
+    /// The day it was sold (`YYYY-MM-DD`), when typed.
+    pub sold_date: Option<String>,
 }
 
 /// The inputs and imports a car has data from, from its fleet entry (no car store is opened).
@@ -108,6 +113,10 @@ fn last_judged(e: &Engine, car: CarId, meta: &records::CarMeta) -> QResult<Optio
 /// server picked is not the car's) and `door_open_asleep` (the Now keeps no doors).
 pub fn attention_of(e: &Engine, x: &FleetEntry, meta: &records::CarMeta, now: u64) -> QResult<Vec<Noted>> {
     let mut out = Vec::new();
+    // a sold car is not watched any more
+    if owner(e, x.car.id)?.sold {
+        return Ok(out);
+    }
     if let Some(n) = &x.summary.now {
         let silent = now.saturating_sub(n.at_ms) > STALE_MS;
         let detail = serde_json::json!({ "last_data_ms": n.at_ms });
@@ -180,12 +189,16 @@ pub(crate) fn item(e: &Engine, x: &FleetEntry, now: u64) -> CarItem {
             charge_power_kw: r(s.and_then(|s| s.charge_power_kw), 1),
         },
         attention: Vec::new(),
+        sold: false,
+        sold_date: None,
     }
 }
 
 /// What an admin typed for the car's model and model year, over the VIN's in a list item (the same values
 /// `vehicle` settles on: a typed value beats every other source).
 fn typed_over(i: &mut CarItem, o: &Owner) {
+    i.sold = o.sold;
+    i.sold_date = o.sold_date.clone();
     if let Some(m) = o.config.get("model").and_then(|v| v.as_str()) {
         i.model = Some(m.to_string());
     }
@@ -321,16 +334,22 @@ pub struct ByState {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FleetSummary {
+    /// The cars not sold (the others are counted in `sold` only).
     pub cars: u64,
     pub by_state: ByState,
     pub stale: u64,
+    pub sold: u64,
 }
 
 /// `/fleet/summary`.
 pub fn summary(e: &Engine, visible: &[CarId]) -> QResult<FleetSummary> {
     let now = now_ms();
-    let mut s = FleetSummary { cars: 0, by_state: ByState::default(), stale: 0 };
+    let mut s = FleetSummary { cars: 0, by_state: ByState::default(), stale: 0, sold: 0 };
     for x in entries(e, visible)? {
+        if owner(e, x.car.id)?.sold {
+            s.sold += 1;
+            continue;
+        }
         let i = item(e, &x, now);
         s.cars += 1;
         s.stale += u64::from(i.now.stale);
@@ -455,6 +474,16 @@ struct Owner {
     /// The car's consumption factor before the owner's override (it comes back when the override is taken away).
     #[serde(default)]
     efficiency_before: Option<f64>,
+    /// Marked sold by an admin (and the day, when typed).
+    #[serde(default)]
+    sold: bool,
+    #[serde(default)]
+    sold_date: Option<String>,
+}
+
+/// Whether an admin marked the car sold (live inputs leave such a car alone).
+pub fn is_sold(e: &Engine, car: CarId) -> bool {
+    owner(e, car).is_ok_and(|o| o.sold)
 }
 
 fn owner(e: &Engine, car: CarId) -> QResult<Owner> {
@@ -667,7 +696,24 @@ fn owner_extra(path: &str, kind: OwnerKind, v: &serde_json::Value, errs: &mut Er
 /// one typed in). One change at a time; a stale `version` changes nothing.
 pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDetail>> {
     let mut errs = Errs::default();
-    let version = errs.head(body, &["name", "time_zone", "config"]);
+    let version = errs.head(body, &["name", "time_zone", "config", "sold", "sold_date"]);
+    let sold = match body.get("sold") {
+        None => None,
+        Some(serde_json::Value::Bool(b)) => Some(*b),
+        Some(_) => {
+            errs.bad("sold", "Must be true or false.");
+            None
+        }
+    };
+    let sold_date = match body.get("sold_date") {
+        None => None,
+        Some(serde_json::Value::Null) => Some(None),
+        Some(serde_json::Value::String(s)) if date(s.trim()).is_some() => Some(Some(s.trim().to_string())),
+        Some(_) => {
+            errs.rule("sold_date", "A date (YYYY-MM-DD), or null.");
+            None
+        }
+    };
     let name = match body.get("name") {
         None => None,
         Some(serde_json::Value::String(s)) => {
@@ -750,6 +796,17 @@ pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDeta
     if let Some(z) = zone {
         c.time_zone = z;
     }
+    if let Some(b) = sold {
+        o.sold = b;
+        if !b {
+            o.sold_date = None;
+        }
+    }
+    if let Some(d) = sold_date
+        && o.sold
+    {
+        o.sold_date = d;
+    }
     for (k, v) in config {
         if v.is_null() {
             o.config.remove(&k);
@@ -763,6 +820,9 @@ pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDeta
     put_owner(e, car, &o)?;
     if renamed {
         e.emit(crate::Event::Fleet { car, change: "renamed", name: Some(c.name.clone()) });
+    }
+    if sold.is_some() {
+        e.emit(crate::Event::Fleet { car, change: "sold", name: None });
     }
     Ok(Patched::Done(self::car(e, car)?))
 }

@@ -277,6 +277,7 @@ fn translate(
                 "removed" => web::FleetChange::Removed,
                 "renamed" => web::FleetChange::Renamed,
                 "inputs" => web::FleetChange::Inputs,
+                "sold" => web::FleetChange::Sold,
                 _ => web::FleetChange::ListChanged,
             };
             if change == web::FleetChange::Removed {

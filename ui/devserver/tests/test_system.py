@@ -266,7 +266,7 @@ class Storage(ServerCase):
 
     def test_system_health(self):
         h = self.c.get("/api/v1/system/health")
-        self.assertEqual(h["db"]["cars"], 3)
+        self.assertEqual(h["db"]["cars"], 4)
         self.assertEqual(h["versions"]["api"], "1")
         self.assertGreater(h["uptime_ms"], 0)
 

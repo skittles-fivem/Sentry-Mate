@@ -131,3 +131,10 @@
 .page-settings-cars .sc-how { margin-top: round(1.25rem, var(--e)); padding-top: round(0.75rem, var(--e)); border-top: 1px solid var(--rule); font-size: var(--text-s); }
 .page-settings-cars .sc-how summary { cursor: pointer; color: var(--accent-strong); font-weight: 500; }
 .page-settings-cars .sc-how .sc-steps { padding-left: round(1.25rem, var(--e)); margin-top: round(0.75rem, var(--e)); }
+
+/* Sold: the state in words with a flag; in the car list, a sold car is muted. */
+.page-settings-cars .sc-sold-on { color: var(--ink-2); }
+.page-settings-cars .sc-sold-on .flag { vertical-align: round(0.125rem, var(--e)); }
+.page-settings-cars .sc-sold .field { max-width: round(14rem, var(--e)); }
+.page-settings-cars tr.is-sold .sc-car-link:not(.is-current) .cell-main { color: var(--ink-3); }
+.page-settings-cars .page-title .flag { vertical-align: middle; font-size: var(--micro); }

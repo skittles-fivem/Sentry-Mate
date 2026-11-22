@@ -37,6 +37,7 @@ const oldTag = (s) => (SOURCE[s] ? tag(SOURCE[s][0], SOURCE[s][1]) : null);
 const srcTag = (v) => (Array.isArray(v?.sources) ? src(v, { typed: 'typed by an admin' }) : oldTag(v?.source));
 const meta = (c) => [c.model, c.year].filter(Boolean).join(' ');
 const errMsg = (e) => saveError(e);
+const soldTag = (c) => h('span', { title: c.sold_date ? `Sold on ${c.sold_date}` : 'Sold' }, tag('sold', 'muted'));
 
 function howCarsAppear(admin) {
   return h('ol', { class: 'howto' }, [
@@ -84,7 +85,7 @@ async function mountIndex(ctx) {
     title: 'cars', path: 'cars', params: { sort: 'custom' }, csvName: 'cars', label: 'Cars and their settings',
     rowHref: (c) => state.buildUrl('settings-cars', { car: c.id }),
     columns: [
-      { key: 'name', label: 'car', ph: 'main', render: (c) => link(state.buildUrl('settings-cars', { car: c.id }), c.name || c.id) },
+      { key: 'name', label: 'car', ph: 'main', render: (c) => [link(state.buildUrl('settings-cars', { car: c.id }), c.name || c.id), state.isSold(c) ? [' ', soldTag(c)] : null] },
       { key: 'model', label: 'model', ph: 'sub', render: (c) => meta(c) || null },
       { key: 'vin_prefix', label: 'vin prefix', render: (c) => c.vin_prefix || null },
       { key: 'time_zone', label: 'time zone', ph: 'sub', render: (c) => c.time_zone || null },
@@ -195,19 +196,21 @@ async function mountCar(ctx) {
     try { S.settings = await ctx.api.patch(`cars/${enc(cid)}/settings`, { version: S.settings.version, ...body }); } catch (e) { if (e.status === 409) throw await stale(); throw e; }
   });
 
-  const slots = { top: h('div'), car: h('div'), uploads: h('div'), tz: h('div'), battery: h('div'), refs: h('div'), free: h('div') };
-  function repaint() { paintTop(); paintCar(); paintUploads(); paintTz(); paintBattery(); paintRefs(); paintFree(); }
+  const slots = { top: h('div'), car: h('div'), sold: h('div'), uploads: h('div'), tz: h('div'), battery: h('div'), refs: h('div'), free: h('div') };
+  function repaint() { paintTop(); paintCar(); paintSold(); paintUploads(); paintTz(); paintBattery(); paintRefs(); paintFree(); }
 
   /* ---- where this is, and the other cars */
   function paintTop() {
     const c = S.car;
-    const list = S.cars.some((x) => x.id === cid) ? S.cars.map((x) => (x.id === cid ? { ...x, name: c.name } : x)) : [c, ...S.cars.slice(0, 7)];
+    // sold cars leave the picker; the open one stays, sold or not
+    const others = S.cars.filter((x) => x.id === cid || !state.isSold(x));
+    const list = others.some((x) => x.id === cid) ? others.map((x) => (x.id === cid ? { ...x, name: c.name } : x)) : [c, ...others.slice(0, 7)];
     replace(slots.top,
-      h('p', { class: 'trail', cover: 'web.settings.car.breadcrumb' }, link(state.buildUrl('settings-cars'), 'settings/cars'), ' / ', h('span', null, c.name || cid),
+      h('p', { class: 'trail', cover: 'web.settings.car.breadcrumb' }, link(state.buildUrl('settings-cars'), 'settings/cars'), ' / ', h('span', null, c.name || cid), state.isSold(c) ? [' ', soldTag(c)] : null,
         h('span', { class: 'muted' }, `  ${[meta(c), c.vin_prefix ? `vin ${c.vin_prefix}` : null, `times in ${tz()}`].filter(Boolean).join(' · ')}`)),
       h('div', { class: 'carline', cover: 'web.settings.car.car-switcher', role: 'group', 'aria-label': 'Whose settings' },
         h('span', { class: 'muted' }, 'car:'),
-        list.map((x) => h('a', { class: 'key', href: state.buildUrl('settings-cars', { car: x.id }), 'aria-pressed': String(x.id === cid), 'aria-current': x.id === cid ? 'page' : null }, x.name || x.id)),
+        list.map((x) => h('a', { class: 'key', href: state.buildUrl('settings-cars', { car: x.id }), 'aria-pressed': String(x.id === cid), 'aria-current': x.id === cid ? 'page' : null }, x.name || x.id, x.id === cid && state.isSold(c) ? ' (sold)' : '')),
         S.more ? btn('find another car', () => openCarSwitcher()) : null));
   }
 
@@ -234,6 +237,33 @@ async function mountCar(ctx) {
         missing.length ? ` Not reported: ${missing.join(', ')}.` : ''),
       h('p', { class: 'note', cover: 'web.settings.car.empty-state' }, 'A new car appears by itself once its CAN Bridge has uploaded its first log, or when a vehicle of a Tesla account is matched to a new car under ',
         link(`${state.buildUrl('settings-integrations')}#tesla`, 'settings/integrations'), '. ', link(state.buildUrl('settings-cars'), 'how a car appears'), '.')));
+  }
+
+  /* ---- sold: the car left the fleet; its history stays */
+  function paintSold() {
+    const c = S.car;
+    const sold = state.isSold(c);
+    const msg = h('p', { class: 'ke-msg', role: 'alert', hidden: true });
+    const say = (t) => { msg.hidden = !t; replace(msg, t || ''); };
+    const day = h('input', { class: 'in in--date', type: 'date', value: c.sold_date || '', disabled: ro, 'aria-label': 'Sold on (optional)' });
+    async function save(body, done) {
+      say(null);
+      try { await patchCar(body); toast(done); } catch (e) { if (ctx.alive()) { paintSold(); paintTop(); } say(errMsg(e)); return; }
+      if (ctx.alive()) { paintTop(); paintSold(); }
+    }
+    if (sold && !ro) day.addEventListener('change', () => save({ sold_date: day.value || null }, day.value ? `Sold date saved: ${day.value}.` : 'Sold date cleared.'));
+    const stateLine = sold ? [tag('sold', 'muted'), ' ', h('b', null, c.sold_date ? `Sold on ${c.sold_date}` : 'Sold'), c.sold_date ? null : h('span', { class: 'muted' }, ' (no date given)')]
+      : [tag('active', 'ok'), ' in the fleet: live state, attention and the Tesla API are on'];
+    const controls = ro ? null : h('div', { class: 'ke-list' }, h('div', { class: 'ke' },
+      h('span', { class: 'ke-k' }, 'sold_date'), h('span', { class: 'ke-eq' }, '='),
+      h('div', { class: 'ke-v range-line' }, day, h('span', { class: 'muted' }, sold ? 'change saves' : 'optional')),
+      h('span', { class: 'ke-side' }, sold
+        ? btn('mark as not sold', () => save({ sold: false }, `${c.name || 'The car'} is not sold: back in the fleet.`))
+        : btn('mark as sold', () => save(day.value ? { sold: true, sold_date: day.value } : { sold: true }, `${c.name || 'The car'} is marked sold${day.value ? ` on ${day.value}` : ''}.`), { kind: 'primary' }))));
+    replace(slots.sold, section({ title: 'sold', id: 'sold', side: ro ? h('span', { class: 'muted' }, 'set by an admin') : null },
+      h('p', { class: 'note', role: 'status' }, stateLine),
+      controls, msg,
+      note('A sold car keeps all its history and every page of it. It leaves the fleet list, the totals and the car pickers (shown under sold cars), raises no attention, and the Tesla API and TeslaFi store nothing more for it.')));
   }
 
   /* ---- uploads: what happened, tokens, keys, keys waiting */
@@ -432,8 +462,8 @@ async function mountCar(ctx) {
   paint(ctx, head(ctx, { title: 'Settings: car' }),
     slots.top,
     h('p', { class: 'note', cover: 'web.settings.car.autosave' }, ro ? 'These settings are changed by an admin; you can read them here.' : 'Each line saves on its own: Enter saves, Esc undoes. There is no save button for the page.'),
-    slots.car, slots.tz, slots.battery, slots.refs, slots.free, slots.uploads);
-  ctx.events(['fleet'], (ev) => { if (ev.data?.car === cid && ev.data?.change === 'renamed' && ev.data.name !== S.car.name) load().then(() => { if (ctx.alive()) repaint(); }).catch(() => {}); });
+    slots.car, slots.sold, slots.tz, slots.battery, slots.refs, slots.free, slots.uploads);
+  ctx.events(['fleet'], (ev) => { if (ev.data?.car === cid && ((ev.data?.change === 'renamed' && ev.data.name !== S.car.name) || ev.data?.change === 'sold')) load().then(() => { if (ctx.alive()) repaint(); }).catch(() => {}); });
   await Promise.all(uploadTables.map((t) => t.ready));
   if (ctx.alive()) ctx.ready();
 }

@@ -101,8 +101,9 @@ function showCarInSidebar(car) {
   const n = car.now || {};
   b.dataset.state = n.state || 'unknown';
   name.textContent = car.name;
-  sub.textContent = [carMeta(car), n.stale ? 'last known: ' + stateLabel(n.state).toLowerCase() : stateLabel(n.state)].join(' · ');
-  dot.classList.toggle('is-stale', !!n.stale);
+  const sold = state.isSold(car);
+  sub.textContent = [carMeta(car), sold ? 'Sold' : n.stale ? 'last known: ' + stateLabel(n.state).toLowerCase() : stateLabel(n.state)].join(' · ');
+  dot.classList.toggle('is-stale', !!n.stale || sold);
   b.setAttribute('aria-label', `Car: ${car.name}, ${stateLabel(n.state)}. Switch car`);
 }
 
@@ -237,8 +238,8 @@ async function lastCarForSidebar() {
   const id = state.lastCar();
   try {
     if (id) return await api.get(api.apiPath`cars/${id}`, null, { maxAgeMs: 30000 });
-    const p = await api.page('cars', { sort: 'custom', limit: 1 });
-    return p.items[0] || null;
+    const p = await api.page('cars', { sort: 'custom', limit: 10 });
+    return state.splitSold(p.items).active[0] || p.items[0] || null;
   } catch (e) {
     if (e.status === 404 && id) state.forgetCar(id);
     return null;

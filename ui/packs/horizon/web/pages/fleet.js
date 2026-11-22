@@ -7,7 +7,7 @@ import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { format } from '../shared/units.js';
 import { formatNumber } from '../shared/i18n.js';
-import { icon, hud, plate, btn, linkBtn, lamp } from '../core/ui.js';
+import { icon, hud, plate, btn, linkBtn, lamp, tag } from '../core/ui.js';
 import { fuel } from '../core/gauges.js';
 import { controls, slot, select, search, plural } from '../core/kit.js';
 import { emptyState, errorWords } from '../core/states.js';
@@ -60,6 +60,8 @@ export async function mount(ctx) {
   const attnEl = h('div');
   const emptyEl = h('div', { hidden: true, cover: ['cars.empty.title', 'cars.empty.hint'] });
   const bay = h('div', { class: 'gar-bay', role: 'list', 'aria-label': 'Cars' });
+  let showSold = q.sold === '1';
+  const soldEl = h('div', { class: 'gar-sold', hidden: true });
   const count = h('span', { class: 'trk-count', 'aria-live': 'polite' });
   const moreBtn = btn('Load more cars', () => more(gen), { icon: 'chev-d', sm: true });
   const foot = h('div', { class: 'gar-foot', hidden: true }, moreBtn);
@@ -88,7 +90,7 @@ export async function mount(ctx) {
       slot('State', stateSel),
       slot('Order', h('span', { class: 'gar-order' }, orderSel, dirBtn), { cover: ['cars.list.order', 'faq.reorder-cars', 'web.settings.general.car-order'] }),
       slot('', orderNote, { cls: 'gar-note-slot' })),
-    h('section', { class: 'gar-cars', 'aria-label': 'The cars', cover: ['cars.list.cards', 'cars.list.live_refresh', 'faq.null-panels'] }, bay, foot)));
+    h('section', { class: 'gar-cars', 'aria-label': 'The cars', cover: ['cars.list.cards', 'cars.list.live_refresh', 'faq.null-panels'] }, bay, foot, soldEl)));
 
   /* ---------- the cars */
   let pager = null, gen = 0, shown = [];
@@ -134,12 +136,37 @@ export async function mount(ctx) {
       h('a', { class: 'bay-car-open', href, 'aria-label': `Open the cluster of ${c.name || 'this car'}` }, h('span', null, 'Open cluster'), icon('arrow-r', 'i--sm')));
   }
 
+  // a sold car: muted, marked Sold, no live state, no gauge
+  function soldCartridge(c) {
+    const href = state.linkTo('car', { car: c.id });
+    return h('article', { class: 'bay-car is-sold', role: 'listitem' },
+      h('div', { class: 'bay-car-top' }, h('span', { class: 'bay-car-state' }, tag('Sold'), h('span', null, c.sold_date ? `Sold on ${c.sold_date}` : 'Sold'))),
+      h('a', { class: 'bay-car-name', href }, h('span', { class: 'chrome ell' }, c.name || `Unnamed ${c.model || 'car'}`)),
+      h('p', { class: 'bay-car-line' }, [carLine(c), c.trim].filter(Boolean).join(' · ') || 'Model not known yet',
+        c.vin_prefix ? h('span', { class: 'bay-car-vin', title: 'VIN start (the serial number is never stored)' }, c.vin_prefix) : null),
+      h('p', { class: 'bay-car-src faint small' }, 'Its history stays browsable. Not counted in the totals or the lights.'),
+      h('a', { class: 'bay-car-open', href, 'aria-label': `Open the history of ${c.name || 'this car'}` }, h('span', null, 'Open history'), icon('arrow-r', 'i--sm')));
+  }
+
+  function paintSold(sold) {
+    const n = Math.max(sold.length, text ? 0 : (lastSummary?.sold || 0));
+    soldEl.hidden = !!only || n === 0;
+    if (soldEl.hidden) { replace(soldEl); return; }
+    const toggle = h('button', { class: 'btn btn--sm btn--ghost gar-sold-toggle', type: 'button', 'aria-expanded': String(showSold),
+      onclick: () => { showSold = !showSold; ctx.setQuery({ sold: showSold ? '1' : null }); paintSold(sold); } },
+    icon(showSold ? 'chev-d' : 'chev-r', 'i--sm'), h('span', null, `Sold cars (${formatNumber(n)})`));
+    replace(soldEl, h('div', { class: 'gar-sold-head' }, toggle, h('span', { class: 'faint small' }, 'Kept with their history; left out of the garage, the totals and the lights.')),
+      showSold ? h('div', { class: 'gar-bay gar-bay--sold', role: 'list', 'aria-label': 'Sold cars' }, sold.length ? sold.map(soldCartridge) : h('p', { class: 'faint small' }, 'Load more cars to see the rest.')) : null);
+  }
+
   function paintCars() {
-    replace(bay, shown.length ? shown.map(cartridge) : (lastSummary?.cars ? h('div', { class: 'gar-none hud' }, emptyState({ icon: 'search', title: 'No car matches',
+    const { active, sold } = state.splitSold(shown);
+    paintSold(sold);
+    replace(bay, active.length ? active.map(cartridge) : (lastSummary?.cars ? h('div', { class: 'gar-none hud' }, emptyState({ icon: 'search', title: 'No car matches',
       text: `Nothing matches${text ? ` "${text}"` : ''}${only ? ` in the state ${stateWord(only).toLowerCase()}` : ''}. Clear the search or pick Every state.`,
       actions: btn('Show every car', () => { text = ''; only = ''; ctx.view.querySelector('.ctl-search input').value = ''; stateSel.value = ''; apply(); }, { icon: 'grid' }) })) : null));
     const total = pager?.last?.total;
-    count.textContent = total != null ? plural(total, 'car') : plural(shown.length, 'car');
+    count.textContent = total != null && !text && !only && lastSummary?.sold != null ? plural(Math.max(0, total - lastSummary.sold), 'car') : plural(active.length, 'car');
     foot.hidden = !!pager?.done;
   }
 

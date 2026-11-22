@@ -8,7 +8,7 @@
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
-import { icon, lamp } from './ui.js';
+import { icon, lamp, tag } from './ui.js';
 import { openDialog } from './layer.js';
 import { BANDS, inBand, DIAL, channel, fullName } from './stations.js';
 import { carLine, carStatus, agoEl } from './fmt.js';
@@ -51,7 +51,15 @@ export function openCarPicker() {
   d.querySelector('.dlg-body').classList.add('picker-body');
   const go = (id) => { d.close(); state.rememberCar(id); state.navigate(state.linkForCar(id)); };
   const nav = keyNav(input, list, (o) => go(o.dataset.car));
-  let seq = 0, t = 0;
+  let seq = 0, t = 0, showSold = false, soldN = null;
+  api.get('fleet/summary', null, { maxAgeMs: 30000 }).then((s) => { soldN = s?.sold ?? null; }).catch(() => {});
+  const opt = (c, q, open) => h('div', {
+    class: ['car-opt', state.isSold(c) && 'is-sold'], role: 'option', id: `hz-car-${c.id}`, 'aria-selected': 'false', dataset: { opt: '', car: c.id }, onclick: () => go(c.id),
+  },
+  lamp(state.isSold(c) ? 'unknown' : c.now?.state, { stale: !state.isSold(c) && c.now?.stale }),
+  h('span', { class: 'car-opt-text' }, h('span', { class: 'car-opt-name' }, marked(c.name, q), c.id === open ? ' (open now)' : '', state.isSold(c) ? [' ', tag('Sold')] : null),
+    h('span', { class: 'car-opt-meta' }, marked([carLine(c), state.isSold(c) ? null : c.now?.place?.name].filter(Boolean).join(' · '), q))),
+  h('span', { class: 'car-opt-side' }, h('span', null, carStatus(c)), state.isSold(c) ? null : c.now?.at_ms ? agoEl(c.now.at_ms) : h('span', null, 'No data yet')));
   async function load() {
     const my = ++seq;
     const q = input.value.trim();
@@ -60,13 +68,15 @@ export function openCarPicker() {
       const pg = await api.page('cars', { search: q || null, sort: 'custom', limit });
       if (my !== seq) return;
       const open = state.current().car || state.lastCar();
-      replace(list, pg.items.length ? pg.items.map((c) => h('div', {
-        class: 'car-opt', role: 'option', id: `hz-car-${c.id}`, 'aria-selected': 'false', dataset: { opt: '', car: c.id }, onclick: () => go(c.id),
-      },
-      lamp(c.now?.state, { stale: c.now?.stale }),
-      h('span', { class: 'car-opt-text' }, h('span', { class: 'car-opt-name' }, marked(c.name, q), c.id === open ? ' (open now)' : ''), h('span', { class: 'car-opt-meta' }, marked([carLine(c), c.now?.place?.name].filter(Boolean).join(' · '), q))),
-      h('span', { class: 'car-opt-side' }, h('span', null, carStatus(c)), c.now?.at_ms ? agoEl(c.now.at_ms) : h('span', null, 'No data yet'))))
-        : h('p', { class: 'picker-empty' }, q ? `No car matches "${q}". Try its name, model or the start of its VIN.` : 'No cars yet. A car appears when its CAN Bridge sends its first log.'),
+      // sold cars stay out of the plain list (the open car stays in it); a search finds them, marked Sold
+      const { active, sold: soldAll } = state.splitSold(pg.items);
+      const main = q ? pg.items : pg.items.filter((c) => !state.isSold(c) || c.id === open);
+      const sold = q ? [] : soldAll.filter((c) => c.id !== open);
+      const n = Math.max(soldN ?? 0, soldAll.length) - (q || !soldAll.some((c) => c.id === open) ? 0 : 1);
+      const soldBtn = !q && n > 0 ? h('button', { class: 'picker-sold', type: 'button', 'aria-expanded': String(showSold), onclick: () => { showSold = !showSold; load(); input.focus(); } },
+        icon(showSold ? 'chev-d' : 'chev-r', 'i--sm'), `Sold cars (${n})`) : null;
+      replace(list, main.length || sold.length ? [main.map((c) => opt(c, q, open)), soldBtn, showSold ? sold.map((c) => opt(c, q, open)) : null]
+        : [h('p', { class: 'picker-empty' }, q ? `No car matches "${q}". Try its name, model or the start of its VIN.` : active.length || soldAll.length ? 'Every car here is sold.' : 'No cars yet. A car appears when its CAN Bridge sends its first log.'), soldBtn],
       pg.next ? h('p', { class: 'picker-empty' }, 'More cars match: type more of the name, or ', h('a', { href: state.buildUrl('fleet', { query: q ? { search: q } : null }), onclick: () => d.close() }, 'see them all'), '.') : null);
       nav.reset();
     } catch (e) {

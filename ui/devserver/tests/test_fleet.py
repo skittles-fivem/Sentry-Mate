@@ -7,7 +7,7 @@ import unittest
 from .helpers import ServerCase
 
 ITEM = {"id", "name", "model", "year", "vin_prefix", "trim", "profile", "time_zone", "last_activity_ms", "now",
-        "attention", "sources", "source_label"}
+        "attention", "sources", "source_label", "sold", "sold_date"}
 NOW_KEYS = {"state", "since_ms", "at_ms", "received_ms", "stale", "soc_pct", "range_km", "ideal_range_km", "place", "plugged",
             "charge_power_kw"}
 
@@ -15,9 +15,12 @@ NOW_KEYS = {"state", "since_ms", "at_ms", "received_ms", "stale", "soc_pct", "ra
 class Cars(ServerCase):
     def test_list(self):
         d = self.c.get("/api/v1/cars")
-        self.assertEqual(d["total"], 3)
+        self.assertEqual(d["total"], 4)
         ids = {x["id"] for x in d["items"]}
-        self.assertEqual(ids, {"c1", "c2", "c3"})
+        self.assertEqual(ids, {"c1", "c2", "c3", "c0"})  # c0: the car the owner sold
+        by = {x["id"]: x for x in d["items"]}
+        self.assertEqual((by["c0"]["sold"], by["c0"]["attention"]), (True, []))
+        self.assertFalse(by["c1"]["sold"])
         for x in d["items"]:
             self.assertEqual(set(x), ITEM)
             self.assertEqual(set(x["now"]), NOW_KEYS)
@@ -37,7 +40,7 @@ class Cars(ServerCase):
     def test_filters_and_sorts(self):
         self.assertEqual([x["id"] for x in self.c.get("/api/v1/cars?state=charging")["items"]], ["c2"])
         self.assertEqual([x["id"] for x in self.c.get("/api/v1/cars?search=atl")["items"]], ["c3"])
-        self.assertEqual([x["id"] for x in self.c.get("/api/v1/cars?search=model%203")["items"]], ["c2"])
+        self.assertEqual([x["id"] for x in self.c.get("/api/v1/cars?search=model%203")["items"]], ["c2", "c0"])
         names = [x["name"] for x in self.c.get("/api/v1/cars?sort=name")["items"]]
         self.assertEqual(names, sorted(names, key=str.lower))
         rev = [x["name"] for x in self.c.get("/api/v1/cars?sort=name&dir=desc")["items"]]
@@ -245,3 +248,16 @@ class EmptyFleet(ServerCase):
         st = self.c.get("/api/v1/setup/status")
         self.assertEqual(st["cars"], 0)
         self.assertIn("no_token", [f["cause"] for f in st["fixes"]])
+
+
+class SoldCar(ServerCase):
+    def test_sold_and_undone(self):
+        s = self.c.get("/api/v1/fleet/summary")
+        self.assertEqual((s["cars"], s["sold"]), (3, 1))
+        self.assertFalse([a for a in self.c.get("/api/v1/fleet/attention")["items"] if a["car"] == "c0"])
+        v = self.c.get("/api/v1/cars/c1")["version"]
+        r = self.c.json("PATCH", "/api/v1/cars/c1", {"version": v, "sold": True, "sold_date": "2026-10-01"})
+        self.assertEqual((r["sold"], r["sold_date"], r["attention"]), (True, "2026-10-01", []))
+        self.assertEqual(self.c.get("/api/v1/fleet/summary")["sold"], 2)
+        r = self.c.json("PATCH", "/api/v1/cars/c1", {"version": r["version"], "sold": False})
+        self.assertEqual((r["sold"], r["sold_date"]), (False, None))

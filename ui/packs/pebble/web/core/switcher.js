@@ -16,16 +16,25 @@ import { icon, stateTag, initial } from './ui.js';
 let sheet = null;
 let input, list, count;
 let options = [], active = 0, seq = 0, timer = 0, currentCar = null;
+let shown = null, showSold = false; // the last answer { items, next, total, query }, and whether sold cars are open
 
 function optionEl(car, i) {
   const n = car.now || {};
   const st = n.state || 'unknown';
-  return h('li', { class: ['row', 'car-row', { 'is-current': car.id === currentCar }], role: 'option', id: `car-opt-${i}`, 'aria-selected': 'false', dataset: { id: car.id, index: String(i) } },
+  return h('li', { class: ['row', 'car-row', { 'is-current': car.id === currentCar, 'is-sold': !!car.sold }], role: 'option', id: `car-opt-${i}`, 'aria-selected': 'false', dataset: { id: car.id, index: String(i) } },
     h('span', { class: ['avatar', `st-${st}`], 'aria-hidden': 'true' }, initial(car.name)),
     h('span', { class: 'row-text' },
       h('span', { class: 'row-name' }, car.name),
       h('span', { class: 'row-sub' }, [car.year, car.model].filter(Boolean).join(' ') || car.vin_prefix || car.id)),
-    h('span', { class: 'row-side' }, stateTag(st, { stale: !!n.stale }), n.soc_pct != null ? h('span', { class: 'car-soc' }, format(n.soc_pct, 'percent')) : null));
+    car.sold ? h('span', { class: 'row-side' }, h('span', { class: 'chip tone-muted' }, h('span', null, 'Sold')))
+      : h('span', { class: 'row-side' }, stateTag(st, { stale: !!n.stale }), n.soc_pct != null ? h('span', { class: 'car-soc' }, format(n.soc_pct, 'percent')) : null));
+}
+/** The row that opens or closes the sold cars: 'Sold cars (2)'. */
+function soldToggleEl(n, i) {
+  return h('li', { class: ['row', 'car-row', 'sold-toggle'], role: 'option', id: `car-opt-${i}`, 'aria-selected': 'false', 'aria-expanded': String(showSold), dataset: { toggle: '1', index: String(i) } },
+    h('span', { class: 'row-ic', 'aria-hidden': 'true' }, icon(showSold ? 'chevronUp' : 'chevronDown')),
+    h('span', { class: 'row-text' }, h('span', { class: 'row-name' }, `Sold cars (${formatNumber(n)})`),
+      h('span', { class: 'row-sub' }, showSold ? 'Hide the cars that were sold.' : 'Their history stays; open one to browse it.')));
 }
 
 function setActive(i, scroll = true) {
@@ -53,13 +62,33 @@ async function fillNow() {
   }
   if (my !== seq) return;
   list.removeAttribute('aria-busy');
-  const items = pg.items || [];
-  list.replaceChildren(...items.map(optionEl));
+  shown = { items: pg.items || [], next: pg.next, total: pg.total, query };
+  draw();
+}
+function draw(keep = false) {
+  const { items, next: more, total, query } = shown;
+  // Sold cars are left out of the plain list, behind 'Sold cars (n)'; a search finds them too, marked Sold.
+  const { active: unsold, sold } = query ? { active: items, sold: [] } : state.splitSold(items);
+  if (!query && !keep && sold.some((c) => c.id === currentCar)) showSold = true;
+  const rows = unsold.map(optionEl);
+  if (sold.length) {
+    rows.push(soldToggleEl(sold.length, rows.length));
+    if (showSold) for (const c of sold) rows.push(optionEl(c, rows.length));
+  }
+  const pg = { next: more, total };
+  list.replaceChildren(...rows);
   if (pg.next) list.append(h('li', { class: 'list-more', role: 'presentation' }, 'More cars match. Type more of the name.'));
   if (!items.length) list.replaceChildren(h('li', { class: 'list-empty', role: 'presentation' }, h('strong', null, query ? `No car matches “${query}”.` : 'No cars yet.'), h('span', null, query ? 'Try part of a name, a model or a VIN prefix.' : 'A car shows once its CAN Bridge uploads.')));
   options = [...list.querySelectorAll('.car-row')];
-  count.textContent = typeof pg.total === 'number' ? `${formatNumber(pg.total)} ${pg.total === 1 ? 'car' : 'cars'}` : `${formatNumber(items.length)}${pg.next ? '+' : ''} found`;
-  setActive(Math.max(0, items.findIndex((c) => c.id === currentCar && !query)), false);
+  const carsWord = (n) => `${formatNumber(n)} ${n === 1 ? 'car' : 'cars'}`;
+  count.textContent = typeof pg.total === 'number' ? (sold.length ? `${carsWord(pg.total - sold.length)}, ${formatNumber(sold.length)} sold` : carsWord(pg.total)) : `${formatNumber(items.length)}${pg.next ? '+' : ''} found`;
+  const cur = options.findIndex((o) => o.dataset.id === currentCar && !query);
+  setActive(keep ? options.findIndex((o) => o.dataset.toggle) : Math.max(0, cur), false);
+}
+function choose(o) {
+  if (!o) return;
+  if (o.dataset.toggle) { showSold = !showSold; draw(true); return; }
+  go(o.dataset.id);
 }
 
 function go(id) {
@@ -80,11 +109,11 @@ function build() {
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(active - 1); }
     else if (e.key === 'Enter') {
       e.preventDefault();
-      if (timer) { clearTimeout(timer); timer = 0; fill().then(() => { if (options[active]) go(options[active].dataset.id); }); return; }
-      Promise.resolve(filling).then(() => { if (options[active]) go(options[active].dataset.id); });
+      if (timer) { clearTimeout(timer); timer = 0; fill().then(() => { choose(options[active]); }); return; }
+      Promise.resolve(filling).then(() => choose(options[active]));
     }
   });
-  list.addEventListener('click', (e) => { const o = e.target.closest('.car-row'); if (o) go(o.dataset.id); });
+  list.addEventListener('click', (e) => { choose(e.target.closest('.car-row')); });
 }
 
 /** Open the switcher (opener gets the focus back when it closes). */
@@ -93,6 +122,7 @@ export function openSwitcher(opener) {
   input.value = '';
   list.replaceChildren();
   options = [];
+  showSold = false;
   sheet.open(opener);
   input.focus();
   fill();

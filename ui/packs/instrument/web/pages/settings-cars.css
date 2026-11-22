@@ -72,3 +72,10 @@
 .sc-app .sc-secret-row { margin: round(0.25rem, var(--e)) 0 0; }
 .sc-app .sc-secret { width: round(34rem, var(--e)); flex: 1 1 round(16rem, var(--e)); min-width: 0; }
 .sc-copied { font-size: max(0.78125rem, var(--fs-floor)); }
+
+/* sold */
+.sc-sold { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); width: 100%; }
+.settings-stack .setting-control .sc-sold .form-row, .sc-sold .form-row { max-width: round(14rem, var(--e)); }
+.sc-sold-state { margin: 0; color: var(--text-2); }
+.sc-sold-state.is-sold { color: var(--text); }
+.sc-sold-state .ico { vertical-align: round(-0.125rem, var(--e)); color: var(--text-3); }

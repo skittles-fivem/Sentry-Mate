@@ -352,3 +352,7 @@ html[data-screen="bare"] .view { width: 100%; max-width: none; min-height: 100vh
 .gate-lead { color: var(--ink-2); }
 .gate-foot { display: flex; align-items: flex-start; gap: 0.5rem; font-size: var(--fs-xs); color: var(--ink-3); }
 .gate-foot .i { color: var(--cyan); }
+.car-opt.is-sold { color: var(--ink-2); }
+.car-opt.is-sold .car-opt-name { font-weight: 600; }
+.picker-sold { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; border: 0; border-radius: var(--r); background: none; color: var(--ink-2); font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.1em; text-transform: uppercase; text-align: left; cursor: pointer; }
+.picker-sold:hover { background: rgba(61, 240, 255, 0.1); color: var(--ink); }

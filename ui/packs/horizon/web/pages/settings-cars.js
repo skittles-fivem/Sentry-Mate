@@ -253,8 +253,8 @@ async function mountCar(ctx) {
     }
   });
 
-  const slots = { head: h('div'), car: h('div'), uploads: h('div', { class: 'stack' }), tz: h('div'), battery: h('div'), charging: h('div'), refs: h('div') };
-  function paintAll() { if (!ctx.alive()) return; paintHead(); paintCar(); paintUploads(); paintTz(); paintBattery(); paintCharging(); paintRefs(); }
+  const slots = { head: h('div'), car: h('div'), sold: h('div'), uploads: h('div', { class: 'stack' }), tz: h('div'), battery: h('div'), charging: h('div'), refs: h('div') };
+  function paintAll() { if (!ctx.alive()) return; paintHead(); paintCar(); paintSold(); paintUploads(); paintTz(); paintBattery(); paintCharging(); paintRefs(); }
 
   /* ---- the plate, with the trail back to every car */
   function paintHead() {
@@ -264,14 +264,14 @@ async function mountCar(ctx) {
       h('a', { href: state.buildUrl('settings-cars'), 'aria-label': 'Car settings, every car' }, 'Car settings'), icon('chev-r', 'i--sm'),
       h('span', { 'aria-current': 'page' }, c.name));
     replace(slots.head, plate({ kicker: trail, title: c.name, aim: [carLine(c), c.vin_prefix ? `VIN ${c.vin_prefix}…` : null, `times in ${zone(tz())}`].filter(Boolean).join(' · '),
-      tools: [rec.el, linkBtn('Car overview', state.buildUrl('car', { car: cid }), { icon: 'gauge', sm: true }), linkBtn('Every car', state.buildUrl('settings-cars'), { icon: 'arrow-l', sm: true, kind: 'ghost' })] }));
+      tools: [rec.el, state.isSold(c) ? tag(c.sold_date ? `Sold on ${c.sold_date}` : 'Sold', 'org') : null, linkBtn('Car overview', state.buildUrl('car', { car: cid }), { icon: 'gauge', sm: true }), linkBtn('Every car', state.buildUrl('settings-cars'), { icon: 'arrow-l', sm: true, kind: 'ghost' })] }));
     docTitle('Car settings', c.name);
   }
 
   /* ---- the car: presets to switch, its name, what it reports */
   function paintCar() {
     const c = S.car;
-    const listed = (S.cars?.items || []).map((x) => (x.id === cid ? { ...x, name: c.name } : x));
+    const listed = (S.cars?.items || []).filter((x) => x.id === cid || !state.isSold(x)).map((x) => (x.id === cid ? { ...x, name: c.name } : x));
     const shown = listed.some((x) => x.id === cid) ? listed : [c, ...listed.slice(0, 7)];
     const more = S.cars?.next || (S.cars?.total ?? 0) > shown.length;
     const switcher = h('div', { class: 'sc-switch', cover: 'web.settings.car.car-switcher' },
@@ -546,17 +546,52 @@ async function mountCar(ctx) {
           h('div', { class: 'sc-fields' }, fields[3].el, sw.el)))));
   }
 
+  /* ---- sold: the car stays with its history, left out of the garage, the totals and the lights */
+  function paintSold() {
+    const c = S.car;
+    const sold = state.isSold(c);
+    const today = new Date(ctx.api.now()).toISOString().slice(0, 10);
+    const f = field({ label: sold ? 'Sold on' : 'Sold on (optional)', name: 'sc-sold-date', type: 'date', path: 'sold_date', value: c.sold_date || '', hint: 'The day it changed hands. Leave it empty if you do not know.', attrs: { max: today, disabled: ro } });
+    const day = f.input;
+    const setErr = (m) => f.setError(m || null);
+    const save = (body, what) => serial('car', async () => {
+      try {
+        S.car = await ctx.api.patch(`cars/${enc(cid)}`, { version: S.car.version, ...body });
+        invalidate('cars'); invalidate('fleet');
+        if (ctx.car) Object.assign(ctx.car, { sold: S.car.sold, sold_date: S.car.sold_date });
+        ctx.carChanged(S.car);
+        rec.saved(what);
+        settle('car');
+      } catch (e) {
+        if (e.status === 409) { await refresh(); toast('Someone else changed this car; the page shows their change now. Try again.', { kind: 'info' }); return; }
+        if (e.fields) setErr(e.fields.sold_date || Object.values(e.fields).join(' ')); else rec.failed(what, e);
+      }
+    });
+    day.addEventListener('change', () => { setErr(null); if (sold && (day.value || null) !== (c.sold_date || null)) save({ sold: true, sold_date: day.value || null }, 'Sold date'); });
+    const state_ = sold
+      ? callout('info', c.sold_date ? `Sold on ${c.sold_date}.` : 'Marked as sold.', 'Its pages and history stay browsable. It is left out of All cars, the totals, the lights and the car picker (under Sold cars there).')
+      : h('p', { class: 'chan-hint' }, 'Not sold: it is listed and counted like every other car.');
+    replace(slots.sold, hud({ title: 'Sold', icon: 'flag', id: 'sc-sold', side: sold ? tag('Sold', 'org') : null },
+      h('div', { class: 'chans' },
+        chan({ no: 9, title: 'Sold car', text: 'A sold car keeps all its history here. Mark it sold to take it out of the garage, the totals and the warning lights; undo it any time.' },
+          state_,
+          ro ? null : f.el,
+          ro ? null : h('div', { class: 'row' }, sold
+            ? btn('Mark as not sold', () => { setErr(null); save({ sold: false, sold_date: null }, 'Not sold'); }, { icon: 'x', sm: true })
+            : btn('Mark as sold', () => { setErr(null); save({ sold: true, sold_date: day.value || null }, 'Sold'); }, { kind: 'go', icon: 'flag', sm: true }))))));
+  }
+
   paintAll();
   replace(ctx.view, h('div', { class: 'page sc' },
     slots.head,
     h('section', { class: 'hud hud--plain jump', 'aria-label': 'Sections and saving' },
-      presets([['sc-car', 'Car'], ['sc-uploads', 'Uploads'], ['sc-tz', 'Time zone'], ['sc-battery', 'Battery'], ['sc-charging', 'Charging'], ['sc-refs', 'Reference']]),
+      presets([['sc-car', 'Car'], ['sc-uploads', 'Uploads'], ['sc-tz', 'Time zone'], ['sc-battery', 'Battery'], ['sc-charging', 'Charging'], ['sc-refs', 'Reference'], ['sc-sold', 'Sold']]),
       h('p', { class: 'note jump-note', cover: 'web.settings.car.autosave' }, icon('check', 'i--sm'),
         h('span', null, ro ? 'These settings are changed by an admin; you can read them here.' : 'Every change saves at once; there is no Save button. The REC lamp lights and a short note confirms it.'))),
     slots.car, slots.uploads,
     h('div', { class: 'cols' }, slots.tz, slots.battery),
-    slots.charging, slots.refs));
-  ctx.events(['fleet'], (ev) => { if (ev.data?.car === cid && ev.data?.change === 'renamed' && ev.data.name !== S.car.name && !busy.car) refresh(); });
+    slots.charging, slots.refs, slots.sold));
+  ctx.events(['fleet'], (ev) => { if (ev.data?.car === cid && !busy.car && ((ev.data?.change === 'renamed' && ev.data.name !== S.car.name) || ev.data?.change === 'sold')) refresh(); });
   ctx.ready();
 }
 

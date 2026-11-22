@@ -150,3 +150,11 @@ test('storage that throws is only a lost convenience', () => {
     define('sessionStorage', keep[1]);
   }
 });
+
+test('splitSold keeps the order and puts sold cars apart', async () => {
+  const { splitSold, isSold } = await import('../state.js');
+  const r = splitSold([{ id: 'c1' }, { id: 'c0', sold: true }, { id: 'c2', sold: false }]);
+  assert.deepEqual(r.active.map(c => c.id), ['c1', 'c2']);
+  assert.deepEqual(r.sold.map(c => c.id), ['c0']);
+  assert.equal(isSold(null), false);
+});

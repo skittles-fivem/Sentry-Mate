@@ -210,3 +210,4 @@
   .map-where { height: auto; }
   .car-period .chart-box { height: round(11rem, var(--e)); }
 }
+.car-head .car-sold-flag { vertical-align: middle; font-size: var(--micro); }

@@ -47,6 +47,8 @@ pub enum FleetChange {
     ListChanged,
     /// The car has data from a new live input (its first Tesla API reading, its first SMO log).
     Inputs,
+    /// An admin marked the car sold, or not sold any more.
+    Sold,
 }
 
 /// Something the open pages should hear about.
