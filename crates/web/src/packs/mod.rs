@@ -732,16 +732,22 @@ pub fn pick(app: &AppState, original: bool, own: Option<&str>) -> Arc<Loaded> {
     app.packs.get(&pick_id(app, own)).unwrap_or_else(|_| app.packs.default_pack())
 }
 
-/// `ui_pack` of `/about`: the pack this account is served (from the list, nothing is loaded).
-pub fn about_ui_pack(app: &AppState, v: Option<&Viewer>) -> Value {
+/// `ui_pack` of `/about`: the pack this browser is served (from the list, nothing is loaded): the default one while
+/// it has `/original`'s cookie (`"original": true`), else this account's [`pick_id`].
+pub fn about_ui_pack(app: &AppState, v: Option<&Viewer>, original: bool) -> Value {
     let own = v.and_then(|v| app.accounts.account(v.id())).and_then(|a| a.ui_pack);
-    let id = pick_id(app, own.as_deref());
-    match app.packs.meta(&id) {
-        Some(m) => json!({ "id": m.id, "name": m.name, "version": m.version, "api": m.api }),
-        None => {
-            let p = app.packs.default_pack();
-            json!({ "id": p.meta.id, "name": p.meta.name, "version": p.meta.version, "api": p.meta.api })
-        }
+    let meta = if original { None } else { app.packs.meta(&pick_id(app, own.as_deref())) };
+    let m = meta.unwrap_or_else(|| app.packs.default_pack().meta.clone());
+    json!({ "id": m.id, "name": m.name, "version": m.version, "api": m.api, "original": original })
+}
+
+/// Lets a response end `/original` in this browser: a pack was just chosen, so it is the one to show (else the
+/// cookie, set once and kept a year, would keep serving the default pack whatever the person picks).
+pub fn end_original(res: &mut Response, headers: &HeaderMap) {
+    if original(headers)
+        && let Ok(v) = HeaderValue::from_str(&original_cookie(false))
+    {
+        res.headers_mut().append(header::SET_COOKIE, v);
     }
 }
 
@@ -788,7 +794,7 @@ async fn choose(
     Admin(v): Admin,
     headers: HeaderMap,
     body: JsonBody,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<Response> {
     body.only(&["pack", "confirm_password", "code"])?;
     let id = body.req_str("pack")?.to_string();
     match app.packs.meta(&id) {
@@ -809,7 +815,10 @@ async fn choose(
     .await?;
     let chosen = app.packs.chosen();
     let items: Vec<Value> = app.packs.list().iter().map(|m| m.json(&chosen)).collect();
-    Ok(Json(json!({ "items": items, "next": null, "chosen": chosen, "default": app.packs.default_id() })))
+    let mut res = Json(json!({ "items": items, "next": null, "chosen": chosen, "default": app.packs.default_id() }))
+        .into_response();
+    end_original(&mut res, &headers);
+    Ok(res)
 }
 
 async fn remove(
@@ -880,7 +889,8 @@ pub async fn original_off() -> Response {
     redirect_home(&original_cookie(false))
 }
 
-fn original(headers: &HeaderMap) -> bool {
+/// Whether this browser has `/original`'s cookie.
+pub fn original(headers: &HeaderMap) -> bool {
     headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).any(|c| {
         c.split(';').filter_map(|p| p.trim().split_once('=')).any(|(k, v)| k == ORIGINAL_COOKIE && v == "original")
     })

@@ -409,6 +409,21 @@ async fn packs_are_served_with_a_strict_policy() {
     assert!(admin.get("/").await.header("etag").unwrap().starts_with("\"instrument-"));
     admin.get("/original/off").await;
     assert!(admin.get("/").await.header("etag").unwrap().starts_with("\"logbook-"));
+    // a browser left on /original (its cookie is kept a year): /about says so, and choosing a pack ends it
+    admin.get("/original").await;
+    assert_eq!(admin.get("/api/v1/about").await.json()["ui_pack"]["id"], "instrument");
+    for pack in ["horizon", "console", "pebble", "logbook"] {
+        assert_eq!(admin.patch("/api/v1/me/preferences", json!({ "ui_pack": pack })).await.status, 200);
+        let page = admin.get("/").await;
+        assert!(page.header("etag").unwrap().starts_with(&format!("\"{pack}-")), "{pack}: {:?}", page.header("etag"));
+        let about = admin.get("/api/v1/about").await.json();
+        assert_eq!(
+            (about["ui_pack"]["id"].as_str(), about["ui_pack"]["original"].as_bool()),
+            (Some(pack), Some(false))
+        );
+        admin.get("/original").await;
+    }
+    admin.get("/original/off").await;
     assert_eq!(admin.patch("/api/v1/me/preferences", json!({ "ui_pack": "nope" })).await.status, 422);
 
     // the built-in pack to start from

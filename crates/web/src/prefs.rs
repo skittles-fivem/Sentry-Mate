@@ -218,7 +218,13 @@ fn check_cars(
     }
 }
 
-async fn patch_prefs(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiResult<Json<Value>> {
+async fn patch_prefs(
+    State(app): State<AppState>,
+    v: Viewer,
+    headers: axum::http::HeaderMap,
+    body: JsonBody,
+) -> ApiResult<axum::response::Response> {
+    let picks_pack = body.get("ui_pack").is_some();
     let mut bad = Fields::new();
     let mut rule = Fields::new();
     for k in body.0.keys() {
@@ -337,5 +343,10 @@ async fn patch_prefs(State(app): State<AppState>, v: Viewer, body: JsonBody) -> 
         v.mark_audited();
     }
     app.events.publish(Event::Prefs { account: v.id() });
-    Ok(Json(prefs))
+    let mut res = axum::response::IntoResponse::into_response(Json(prefs));
+    if picks_pack {
+        // choosing a pack ends `/original` in this browser, so the choice shows
+        crate::packs::end_original(&mut res, &headers);
+    }
+    Ok(res)
 }
