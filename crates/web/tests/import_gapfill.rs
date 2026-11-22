@@ -114,6 +114,11 @@ fn import_samples(kmh: f64, outside: f64) -> Vec<Sample> {
 }
 
 async fn kit() -> Kit {
+    kit_with(|_, _| {}).await
+}
+
+/// [`kit`] with more rows and samples written before the engine starts.
+async fn kit_with(more: impl FnOnce(&db::Db, CarId)) -> Kit {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
@@ -161,6 +166,7 @@ async fn kit() -> Kit {
     let (a, b) = (LIVE_AT - MIN, LIVE_AT + 21 * MIN + 1);
     db.write_points(car, tm, a, b, &import_samples(40.0, 20.0)).unwrap();
     db.write_points(car, tf, a, b, &import_samples(45.0, 30.0)).unwrap();
+    more(&db, car);
     let store = ingest::Store::new(data.join("can"), v);
     let engine = Engine::new(db.clone(), store, engine::Options::default());
     engine.start().unwrap();
@@ -353,4 +359,90 @@ async fn a_live_span_flipped_to_the_imported_side_shows_the_import_alone() {
     let speed = nums(&s, "speed_kph");
     assert!(!speed.is_empty() && speed.iter().all(|v| (v - 40.0).abs() < 1e-6), "{s}");
     assert_eq!(kinds(&s["value_sources"]["speed_kph"]), ["import:teslamate"], "{s}");
+}
+
+/// Tesla API samples every 100 s (further apart than a series' live coverage) with soc 50 and 5 °C outside, and
+/// TeslaMate's every 10 s (3 s later) with soc 60 and 25 °C, from DAY0 + 8 h.
+const API_AT: u64 = DAY0 + 8 * H;
+
+fn api_and_import(db: &db::Db, car: CarId) {
+    let api: Vec<Sample> = (0..12u64)
+        .map(|k| Sample {
+            t_ms: API_AT + k * 100_000,
+            soc: Some(50.0),
+            outside_temp_c: Some(5.0),
+            ..Default::default()
+        })
+        .collect();
+    let tm: Vec<Sample> = (0..115u64)
+        .map(|k| Sample {
+            t_ms: API_AT + k * 10_000 + 3_000,
+            soc: Some(60.0),
+            outside_temp_c: Some(25.0),
+            ..Default::default()
+        })
+        .collect();
+    db.write_points(car, model::Stream::TeslaApi, API_AT, API_AT + 1_200_000, &api).unwrap();
+    db.write_points(car, Source::Teslamate, API_AT, API_AT + 1_200_000, &tm).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_import_never_shows_a_value_the_tesla_api_still_holds() {
+    let k = kit_with(api_and_import).await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    let series = format!(
+        "/api/v1/cars/{car}/series?fields=soc_pct,outside_c&from_ms={API_AT}&to_ms={}&max_points=2000",
+        API_AT + 1_150_000
+    );
+    let s = ok(&mut admin, &series).await;
+    assert_eq!(s["bucket_ms"].as_u64(), Some(1000), "{s}");
+    let (soc, outside) = (nums(&s, "soc_pct"), nums(&s, "outside_c"));
+    assert!(!soc.is_empty() && soc.iter().all(|v| (v - 50.0).abs() < 1e-6), "the API's soc holds 120 s: {soc:?}");
+    assert!(outside.iter().all(|v| (v - 5.0).abs() < 1e-6), "the API's outside holds 300 s: {outside:?}");
+    assert_eq!(kinds(&s["value_sources"]["soc_pct"]), ["tesla_api"], "{s}");
+    assert_eq!(kinds(&s["sources"]), ["tesla_api"], "{s}");
+
+    // the switch off: still the API's values alone
+    let cs = ok(&mut admin, &format!("/api/v1/cars/{car}/settings")).await;
+    let r = admin
+        .patch(&format!("/api/v1/cars/{car}/settings"), json!({ "version": cs["version"], "import_gap_fill": false }))
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let s = ok(&mut admin, &series).await;
+    assert!(nums(&s, "soc_pct").iter().all(|v| (v - 50.0).abs() < 1e-6), "{s}");
+    assert_eq!(kinds(&s["sources"]), ["tesla_api"], "{s}");
+}
+
+const STOPPED_AT: u64 = DAY0 + 10 * H;
+
+fn stopped_drive(db: &db::Db, car: CarId) {
+    let mut d = drive(car, Source::Live, 88, STOPPED_AT, 2_000.0);
+    d.end_ms = STOPPED_AT + 5 * MIN;
+    db.upsert(car, &[d]).unwrap();
+    let tm: Vec<Sample> = (0..31u64)
+        .map(|k| Sample {
+            t_ms: STOPPED_AT + k * 10_000,
+            lat: Some(37.0 + k as f64 * 0.01 / 3.0),
+            lon: Some(-122.0 - k as f64 * 0.01 / 3.0),
+            ..Default::default()
+        })
+        .collect();
+    db.write_points(car, Source::Teslamate, STOPPED_AT, STOPPED_AT + 5 * MIN + 1, &tm).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drive_whose_data_stopped_keeps_its_end_unfilled() {
+    let k = kit_with(stopped_drive).await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    let d = ok(&mut admin, &format!("/api/v1/cars/{car}/drives/88")).await;
+    assert!(d["end"]["lat"].is_null() && d["end"]["lon"].is_null(), "{d}");
+    assert_eq!(d["end"]["label"], "Data stopped here", "{d}");
+    assert!(d["value_sources"].get("end").is_none(), "{d}");
+    assert_eq!(d["start"]["lat"].as_f64(), Some(37.0), "the start the drive lacks is filled: {d}");
+    assert_eq!(kinds(&d["value_sources"]["start"]), ["import:teslamate"], "{d}");
+    let v = ok(&mut admin, &format!("/api/v1/cars/{car}/drives?source=smo")).await;
+    let smo = v["items"].as_array().unwrap().iter().find(|x| x["id"] == "88").cloned().unwrap();
+    assert_eq!(smo["end"], d["end"], "the same end as with SMO alone: {v}");
 }

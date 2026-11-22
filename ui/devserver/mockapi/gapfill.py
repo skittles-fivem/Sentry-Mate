@@ -14,11 +14,22 @@ from __future__ import annotations
 
 from . import sources as S
 
-# the fields a live row may get from its import (never distance, energy, costs or the basis)
-DRIVE_FIELDS = ("start_odometer_km", "end_odometer_km", "start_soc_pct", "end_soc_pct", "start_range_km",
+# the fields a live row may get from its import (never distance, energy, costs or the basis), as the server's
+# (crates/timeline/src/gapfill.rs): a drive's `start` but never its `end` (a live drive without one is one whose data
+# stopped: it keeps "Data stopped here"); a charge's `odometer_km` only with its `position`
+DRIVE_FIELDS = ("start", "start_odometer_km", "end_odometer_km", "start_soc_pct", "end_soc_pct", "start_range_km",
                 "end_range_km", "outside_avg_c", "cabin_avg_c", "climb_m", "descent_m")
-CHARGE_FIELDS = ("odometer_km", "start_soc_pct", "end_soc_pct", "start_range_km", "end_range_km", "outside_avg_c",
+CHARGE_FIELDS = ("position", "start_soc_pct", "end_soc_pct", "start_range_km", "end_range_km", "outside_avg_c",
                  "battery_avg_c")
+# positions: a point (`start`, `position`) without coordinates is none
+POSITIONS = ("start", "position")
+
+
+def _missing(row, f):
+    v = row.get(f)
+    if f in POSITIONS:
+        return v is None or v.get("lat") is None or v.get("lon") is None
+    return v is None
 
 
 def on(st, car_id):
@@ -48,7 +59,7 @@ def twin(h, seg):
 
 def fill_row(app, h, seg, row, make):
     """Fills a live row's null fields from its imported twin (`make(twin)` builds the twin's row); names them in
-    `value_sources` and adds the import to `sources`. Keeps what it filled in `_unfilled` (for `source=` filters)."""
+    `value_sources` and adds the import to `sources`. Keeps what it filled, with the values it had, in `_unfilled` (for `source=` filters)."""
     row["value_sources"] = {}
     if not on(app.store, h.car.id):
         return row
@@ -56,22 +67,25 @@ def fill_row(app, h, seg, row, make):
     if t is None:
         return row
     fields = DRIVE_FIELDS if seg.kind == "drive" else CHARGE_FIELDS
-    lacks = [f for f in fields if row.get(f) is None]
+    lacks = [f for f in fields if _missing(row, f)]
     if not lacks:
         return row
     other = make(t)
     site = S.site_of(t)
-    got = [f for f in lacks if other.get(f) is not None]
+    got = [f for f in lacks if not _missing(other, f)]
+    # a charge's odometer comes with the position filled (the server reads both from one import sample)
+    if "position" in got and row.get("odometer_km") is None and other.get("odometer_km") is not None:
+        got.append("odometer_km")
     if not got:
         return row
     ref = S.ref("import", site)
+    row["_unfilled"] = {f: row.get(f) for f in got}
     for f in got:
         row[f] = other[f]
         row["value_sources"][f] = [ref]
     refs = list(row["sources"]) + ([ref] if ref not in row["sources"] else [])
     row["sources"] = refs
     row["source_label"] = S.label_of(refs)
-    row["_unfilled"] = got
     return row
 
 
@@ -81,8 +95,8 @@ def unfill(row):
     if not got:
         return row
     row = dict(row)
-    for f in got:
-        row[f] = None
+    for f, was in got.items():
+        row[f] = was
     row["value_sources"] = {}
     row["sources"] = [r for r in row["sources"] if r["kind"] != "import"]
     row["source_label"] = S.label_of(row["sources"])
