@@ -16,7 +16,7 @@ import { getInterface, onInterface } from '../core/display.js';
 import { sizePicker, followSwitch, sizeNote, themeButtons } from '../core/account.js';
 import { flash } from '../core/flash.js';
 import { ago } from '../core/fmt.js';
-import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
+import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, LABELS_TEXT, STYLES_TEXT, presetHosts, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
 export const css = true;
@@ -149,7 +149,7 @@ export async function mount(ctx) {
   const look = panel({ title: 'Look and language', icon: 'monitor', side: h('span', { class: 'faint' }, 'Yours; follows you to every screen') },
     setting('Theme', 'Light, dark, or follow this device. It is saved with your account, so every browser you sign in on uses it, and it is set before the page is drawn, so there is no flash.',
       [theme.el, h('p', { class: 'setting-note' }, 'Every page, chart and map has both a light and a dark look; screenshots in the help show either.')], ['shell.theme', 'web.settings.general.theme', 'shots.theme-note']),
-    setting('Map colours', MAP_COLORS_TEXT, segMapColors),
+    setting('Map colours', `${MAP_COLORS_TEXT} It does not apply to satellite pictures: photos always show as taken, never dimmed.`, segMapColors),
     setting('Interface size', 'Makes text, controls, tables, charts and maps bigger or smaller together. With Follow screen size on, a very large screen (a native 4K monitor) adds its own step on top. Browser zoom works on top of both.',
       [size.el, h('div', { class: 'row' }, h('label', { class: 'faint', for: 'set-size-pct' }, 'Any size:'), pctIn, h('span', { class: 'faint' }, '%')), sizeErr,
         h('div', { class: 'switch-row switch-row--inline' }, follow.el, h('label', { for: 'set-follow' }, 'Follow screen size')), noteEl]),
@@ -207,15 +207,35 @@ export async function mount(ctx) {
     const gRound = field({ label: 'Round positions to (m)', name: 'grnd', path: 'geocode.rounding_m', type: 'number', value: g.rounding_m, hint: 'metres, from 0 to 1000, before an online lookup', attrs: { min: '0', max: '1000', step: '1', disabled: ro } });
     const gLang = field({ label: 'Address language', name: 'glang', path: 'geocode.language', value: g.language || 'en', hint: 'A code such as en, de, fr or pt-BR. Changing it looks every stored address up again.', attrs: { maxlength: '10', spellcheck: 'false', autocomplete: 'off', disabled: ro } });
     const tz = field({ label: 'Time zone for new cars', name: 'dtz', path: 'default_time_zone', value: server.default_time_zone || 'UTC', hint: 'A zone name such as America/Chicago. Type to search the list.', attrs: { list: 'sd-zones', disabled: ro, autocomplete: 'off', spellcheck: 'false' } });
-    const tilePresets = maps?.tiles?.presets || [];
-    const tilePreset = tilePresets.find((p) => p.url === t.online_url) || null;
-    const tSource = tilePresets.length ? sChoice('Tile source', [...tilePresets.map((p) => [p.id, p.name]), ['custom', 'Custom address']], tilePreset ? tilePreset.id : 'custom', (v) => {
-      const p = tilePresets.find((x) => x.id === v);
-      if (p) return patch({ tiles: { online_url: p.url, attribution: p.attribution, max_zoom: p.max_zoom } }, 'Tile source', [tUrl, tAttr]);
-      tUrl.input.focus();
-      return true;
+    // the online presets, satellite first (the default), then the admin's own address
+    const mt = maps?.tiles || {};
+    const tilePresets = [...(mt.presets || [])].sort((a, b) => (b.id === 'satellite') - (a.id === 'satellite'));
+    const presetId = mt.preset || t.preset || tilePresets.find((p) => p.url === t.online_url)?.id || (t.online_url ? 'custom' : 'satellite');
+    const tilePreset = tilePresets.find((p) => p.id === presetId) || null;
+    const region = (p) => (p.region ? ` · ${p.region === 'US' ? 'United States only' : `${p.region} only`}` : '');
+    const presetMeta = (p) => `${presetHosts(p).join(', ')} · up to zoom ${p.max_zoom}${region(p)}`;
+    const presetOpt = (p) => h('span', { class: 'tp-opt' }, h('b', null, p.name), h('span', { class: 'tp-meta' }, presetMeta(p)));
+    const tSource = tilePresets.length ? sChoice('Online map', [...tilePresets.map((p) => [p.id, presetOpt(p)]), ['custom', h('span', { class: 'tp-opt' }, h('b', null, 'Custom address'), h('span', { class: 'tp-meta' }, 'Your own tile server, below'))]], presetId, (v) => {
+      if (v !== 'custom') return patch({ tiles: { mode: t.mode, preset: v } }, 'Online map', [tUrl, tAttr]);
+      if (!tUrl.input.value) { tUrl.input.focus(); return true; }
+      return patch({ tiles: { mode: t.mode, preset: 'custom' } }, 'Online map', [tUrl, tAttr]);
     }) : null;
-    const tTerms = tilePreset ? h('p', { class: 'setting-note' }, icon('info', 'ico--sm'), ` ${tilePreset.name}: free, no key. Its terms (`, ...breakable(tilePreset.terms.replace(/^https:\/\//, '')), ') ask for light use and its credit on every map.') : null;
+    tSource?.classList.add('seg--stack');
+    const tTerms = tilePreset ? h('p', { class: 'setting-note' }, icon('info', 'ico--sm'), ` ${tilePreset.name}: free, no key. Its terms (`, ...breakable(String(tilePreset.terms || '').replace(/^https:\/\//, '')), ') ask for light use and its credit on every map.', tilePreset.region === 'US' ? ' It has pictures of the United States only: elsewhere the map stays blank.' : '') : null;
+    // names and roads over the photos (only presets that have them)
+    const tLabels = tilePreset?.overlays?.length ? setting('Place names and roads', LABELS_TEXT,
+      sChoice('Place names and roads', [['true', 'On'], ['false', 'Off']], String(mt.labels ?? t.labels ?? true), (v) => patch({ tiles: { labels: v === 'true' } }, 'Place names and roads'))) : null;
+    // the maps viewers may switch to on a map page (Map / Satellite)
+    const allowed = new Set(mt.allowed_styles || t.styles || []);
+    const tStyles = tilePresets.length ? setting('Maps people can switch to', STYLES_TEXT,
+      h('div', { class: 'tp-styles', role: 'group', 'aria-label': 'Maps people can switch to' }, tilePresets.map((p) => {
+        const idText = `sd-style-${p.id}`;
+        const input = h('input', { type: 'checkbox', id: idText, checked: allowed.has(p.id), disabled: ro, onchange: async () => {
+          const next = tilePresets.filter((x) => (x.id === p.id ? input.checked : allowed.has(x.id))).map((x) => x.id);
+          if (!(await patch({ tiles: { styles: next } }, 'Maps people can switch to'))) input.checked = !input.checked;
+        } });
+        return h('div', { class: 'switch-row switch-row--inline tp-style' }, h('span', { class: 'switch' }, input, h('i', { 'aria-hidden': 'true' })), h('label', { for: idText }, p.short || p.name));
+      }))) : null;
     const tUrl = field({ label: 'Online tile address (https)', name: 'turl', path: 'tiles.online_url', value: t.online_url || '', hint: 'With {z}, {x} and {y} in it.', attrs: { placeholder: 'https://', disabled: ro } });
     // the offline map file: how to make one, which is in use, and (with several) which to use
     const tFiles = offlineFileChoices(maps?.tiles);
@@ -262,8 +282,9 @@ export async function mount(ctx) {
             [sChoice('Address lookup', [['offline', 'Offline'], ['online', 'Online service']], g.mode, (v) => patch({ geocode: { mode: v } }, 'Address lookup', [gUrl])),
               geoStatus(), gUrl.el, gRound.el], ['web.settings.general.address-lookup', 'docs.env.tesla-api.nominatim-proxy']),
           setting('Address language', 'Street and place names are written in this language where the data has it; otherwise in the local language.', gLang.el, ['web.settings.general.address-language', 'web.settings.general.address-language-error', 'web.settings.general.address-language-invalid']),
-          setting('Map tiles', 'Offline tiles come from Sentry Mate itself. An online source is asked by each viewer’s browser for the map pictures, so it sees the map area and this server’s address (as Referer, which OpenStreetMap needs; never a page or a car); only turn it on if you accept that.',
+          setting('Map tiles', 'Offline tiles come from Sentry Mate itself. An online map (satellite pictures by default) is asked by each viewer’s browser for the map pictures, so it sees the map area and this server’s address (as Referer, which some tile servers such as OpenStreetMap need; never a page or a car); only turn it on if you accept that.',
             [sChoice('Map tiles', [['offline', 'Offline'], ['online', 'Online source']], t.mode, (v) => patch({ tiles: { mode: v } }, 'Map tiles', [tUrl])), tileStatus(t), tSource, tTerms, tUrl.el, tAttr.el], 'web.shell.map-tiles'),
+          tLabels, tStyles,
           offlineRow,
           setting('Outside links', 'Links that open another site in a new tab, only when the viewer clicks them.',
             h('div', { class: 'row' },

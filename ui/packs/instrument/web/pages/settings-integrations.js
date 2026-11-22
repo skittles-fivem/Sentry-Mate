@@ -708,7 +708,7 @@ export async function mount(ctx) {
   const netSlot = h('div');
   const PURPOSE = {
     geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-display'],
-    tiles: ['Map pictures', 'Asked by each viewer’s browser when online tiles are on.', 'settings-display'],
+    tiles: ['Map pictures', 'Asked by each viewer’s browser when online tiles are on: the chosen map (satellite by default), its place names and roads, and the maps people may switch to.', 'settings-display'],
     geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
     mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
     tesla: ['Tesla API', 'Only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (Tesla account, this page).', null],
@@ -717,6 +717,8 @@ export async function mount(ctx) {
     upload: ['CAN Bridge uploads', 'The car’s CAN Bridge sends its logs here.', null],
     web: ['This app and the API', 'Browsers, apps and the API.', null],
   };
+  // every host of a row: the map pictures name each server (the chosen map, its names and roads, the maps people may switch to)
+  const hostsOf = (r) => (Array.isArray(r.hosts) && r.hosts.length ? r.hosts : r.host ? [r.host] : []);
   function paintNetwork() {
     if (!net) { replace(netSlot, note(icon('lock', 'ico--sm'), admin ? ' The connection list could not be read.' : ' The list of connections is shown to admins. By default Sentry Mate makes no outbound connection at all.')); return; }
     const rows = [
@@ -729,7 +731,7 @@ export async function mount(ctx) {
       columns: [
         { key: 'dir', label: 'Way', sort: true, render: (r) => tag(r.dir === 'In' ? 'Inbound' : 'Outbound', r.dir === 'In' ? 'live' : 'plain'), csv: (r) => r.dir },
         { key: 'purpose', label: 'For', sort: true, render: (r) => h('span', null, h('b', null, PURPOSE[r.purpose]?.[0] || r.purpose), h('span', { class: 'si-why' }, PURPOSE[r.purpose]?.[1] || '')), csv: (r) => PURPOSE[r.purpose]?.[0] || r.purpose },
-        { key: 'host', label: 'Host or port', render: (r) => (r.port != null ? code(`port ${r.port}${r.tls ? ', TLS' : ''}`) : r.host ? code(r.host) : h('span', { class: 'faint' }, 'not set')), csv: (r) => r.host || (r.port != null ? `port ${r.port}` : '') },
+        { key: 'host', label: 'Host or port', render: (r) => (r.port != null ? code(`port ${r.port}${r.tls ? ', TLS' : ''}`) : hostsOf(r).length ? h('span', { class: 'si-hosts' }, hostsOf(r).map((x) => code(x))) : h('span', { class: 'faint' }, 'not set')), csv: (r) => hostsOf(r).join(' ') || (r.port != null ? `port ${r.port}` : '') },
         { key: 'enabled', label: 'State', sort: true, render: (r) => (r.enabled ? pill(r.dir === 'In' ? 'Open' : 'On', { tone: 'live' }) : pill('Off')), csv: (r) => (r.enabled ? 'on' : 'off') },
         { key: 'last_used_ms', label: 'Last used', num: true, sort: true, render: (r) => (r.last_used_ms ? h('span', { class: 'nowrap', title: dateTime(r.last_used_ms, ctx.tz) }, ago(r.last_used_ms)) : h('span', { class: 'faint' }, r.dir === 'In' ? 'always listening' : 'never')), csv: (r) => (r.last_used_ms ? new Date(r.last_used_ms).toISOString() : '') },
         { key: 'change', label: 'Change it', render: (r) => (PURPOSE[r.purpose]?.[3] ? h('a', { class: 'link', href: `${buildUrl('settings-integrations')}#${PURPOSE[r.purpose][3]}` }, 'TeslaFi') : PURPOSE[r.purpose]?.[2] ? h('a', { class: 'link', href: buildUrl(PURPOSE[r.purpose][2]) }, 'Settings') : h('span', { class: 'faint' }, r.purpose === 'mqtt' || r.purpose === 'tesla' ? 'Above' : '—')), csv: false },

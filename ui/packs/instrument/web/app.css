@@ -659,6 +659,16 @@ ul { margin: 0; padding: 0; list-style: none; }
 .maplibregl-ctrl-attrib a { color: var(--text) !important; }
 .maplibregl-ctrl-attrib-button { display: none; }
 .maplibregl-ctrl-bottom-right .maplibregl-ctrl { margin: 0; }
+/* the Map / Satellite switch (shared/maptiles.js mapStyleSwitch), bottom right above the credit */
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl.map-style { clear: both; display: flex; margin: 0 round(0.625rem, var(--e)) round(0.5rem, var(--e)) 0; gap: 1px; padding: round(0.1875rem, var(--e)); background: var(--surface-ctrl); border: 1px solid var(--line-2); border-radius: round(0.75rem, var(--e)); box-shadow: 0 round(0.625rem, var(--e)) round(1.5rem, var(--e)) round(-0.625rem, var(--e)) rgba(0, 0, 0, 0.7); backdrop-filter: blur(round(0.75rem, var(--e))); }
+.map-style-btn { width: calc-size(fit-content, round(up, size, 1px)); display: grid; place-items: center; height: round(1.75rem, var(--e)); padding: 0 round(0.625rem, var(--e)); border: 0; border-radius: round(0.5625rem, var(--e)); background: transparent; color: var(--text-2); font: inherit; font-size: max(0.75rem, var(--fs-floor)); font-weight: 500; --LH: round(calc(1 * 1em), 2px); white-space: nowrap; cursor: pointer; }
+.map-style-btn:hover { color: var(--text); background: rgba(146, 176, 236, 0.12); }
+.map-style-btn.is-active { color: var(--live); background: var(--live-soft); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--live) 35%, transparent); }
+.map-style-btn:focus-visible { outline: round(0.125rem, var(--e)) solid var(--live); outline-offset: round(-0.125rem, var(--e)); }
+/* over satellite photos: a dark edge round the markers, so they read on fields, forest, water and roofs alike */
+[data-imagery="true"] .car-marker::after { box-shadow: 0 0 0 round(0.1875rem, var(--e)) rgba(10, 14, 20, 0.85), 0 0 0 round(0.375rem, var(--e)) color-mix(in oklab, var(--m) 40%, transparent), 0 round(0.25rem, var(--e)) round(0.875rem, var(--e)) rgba(0, 0, 0, 0.7); }
+[data-imagery="true"] .car-marker-heading { fill: #0A0E14; }
+[data-imagery="true"] .route-pin, [data-imagery="true"] .pl-handle { box-shadow: 0 0 0 round(0.1875rem, var(--e)) rgba(10, 14, 20, 0.85), 0 round(0.25rem, var(--e)) round(0.75rem, var(--e)) rgba(0, 0, 0, 0.6); }
 .maplibregl-canvas:focus-visible { outline: round(0.125rem, var(--e)) solid var(--live); outline-offset: round(-0.125rem, var(--e)); }
 
 /* ------------------------------------------------------------------ state and series colours (last, so they win) */
@@ -733,7 +743,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 .map-overlay > * { pointer-events: auto; }
 .map-overlay--tl { top: round(1rem, var(--e)); left: round(1rem, var(--e)); }
 .map-overlay--tr { top: round(1rem, var(--e)); right: round(1rem, var(--e)); }
-.map-overlay--bl { bottom: round(1rem, var(--e)); left: round(1rem, var(--e)); }
+.map-overlay--bl { bottom: calc(round(1rem, var(--e)) + var(--map-foot, 0px)); left: round(1rem, var(--e)); }
 .glass-card {
   padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-radius: round(1rem, var(--e)); border: 1px solid var(--line-2);
   background: linear-gradient(180deg, var(--surface-card-a), var(--surface-card-b));
@@ -1295,7 +1305,7 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 .hbar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); border-radius: inherit; background: var(--live); opacity: 0.75; }
 .hbar-val { white-space: nowrap; color: var(--text-2); }
 
-.map-overlay--br { bottom: round(1.75rem, var(--e)); right: round(0.75rem, var(--e)); }
+.map-overlay--br { bottom: calc(round(0.5rem, var(--e)) + var(--map-foot-br, round(1.25rem, var(--e)))); right: round(0.75rem, var(--e)); }
 .chart-block[data-series] .chart-label .key i { background: var(--c); }
 
 /* ------------------------------------------------------------------ tiers (container queries on <body>, in rem)
