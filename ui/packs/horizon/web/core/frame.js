@@ -298,15 +298,20 @@ async function loadCarCount() {
   } catch { /* the count is a convenience */ }
 }
 
-// the car shown in the sidebar on pages without a car: the last one opened
+// the car shown in the sidebar on pages without a car: the person's preferred car (Main car, else the
+// last one looked at, else the first in their own order; shared/state.js preferredCar)
 async function lastCarForSidebar() {
-  const id = state.lastCar();
+  const guess = state.lastCar();
   try {
-    if (id) return await api.get(api.apiPath`cars/${id}`, null, { maxAgeMs: 30000 });
-    const p = await api.page('cars', { sort: 'custom', limit: 10 });
-    return state.splitSold(p.items).active[0] || p.items[0] || null;
-  } catch (e) {
-    if (e.status === 404 && id) state.forgetCar(id);
+    const p = await api.page('cars', { sort: 'custom', limit: 100 });
+    let items = p.items || [];
+    if (guess && p.next && !items.some((c) => c.id === guess)) {
+      // more cars than one page: the guessed car may be further down
+      try { items = [...items, await api.get(api.apiPath`cars/${guess}`, null, { maxAgeMs: 30000 })]; } catch (e) { if (e.status === 404) state.forgetCar(guess); }
+    }
+    const id = state.preferredCar(items);
+    return items.find((c) => c.id === id) || null;
+  } catch {
     return null;
   }
 }

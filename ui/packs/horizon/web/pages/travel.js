@@ -66,6 +66,8 @@ export async function mount(ctx) {
   const viewCars = chosen === 'all' ? fleet.map((c) => c.id) : chosen.filter((c) => carById.has(c));
   const multi = viewCars.length > 1;
   const carsParam = chosen === 'all' ? 'all' : viewCars.join(',');
+  // one car picked (and seen): the person looked at it
+  if (chosen !== 'all' && viewCars.length === 1) state.rememberCar(viewCars[0], { sold: state.isSold(carById.get(viewCars[0])) });
   const carName = (cid) => carById.get(cid)?.name || cid;
   const carTz = (cid) => carById.get(cid)?.time_zone || ctx.tz;
   const colorOf = new Map(viewCars.map((cid, i) => [cid, CAR_COLORS[i % CAR_COLORS.length]]));
