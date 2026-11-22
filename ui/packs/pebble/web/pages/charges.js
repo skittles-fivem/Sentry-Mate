@@ -162,10 +162,15 @@ export async function mount(ctx) {
         h('span', { class: 'inc-when' }, `${formatDate(c.start_ms, c.time_zone || tz, { now: api.now() })}, ${formatTime(c.start_ms, c.time_zone || tz)} – ${c.end_ms ? formatTime(c.end_ms, c.time_zone || tz) : 'still going'}`),
         h('span', { class: 'inc-n' }, `+${format(c.energy_added_kwh, 'energy')} · grid ${format(c.energy_grid_kwh, 'energy')} · ${pct(c.start_soc_pct)} → ${pct(c.end_soc_pct)} · ${dur(c.charging_ms)}`)))) : h('p', { class: 'lede' }, 'Every charge here has all its data.')));
   }
+  // Each load has its own pager and draws only if no later load (a filter change, a live update) started
+  // meanwhile, so an older answer never overwrites a newer one and the old list stays until the new one is in.
+  let listSeq = 0;
   async function loadList() {
-    pager = ctx.api.pager(listPath, listParams(), { limit: 30 });
-    const [, inc] = await Promise.all([pager.more(), ctx.api.page(listPath, { ...base(), flags: 'gap,in_progress' }, { limit: 6 }).catch(() => null)]);
-    if (!ctx.alive()) return;
+    const seq = ++listSeq;
+    const p = ctx.api.pager(listPath, listParams(), { limit: 30 });
+    const [, inc] = await Promise.all([p.more(), ctx.api.page(listPath, { ...base(), flags: 'gap,in_progress' }, { limit: 6 }).catch(() => null)]);
+    if (!ctx.alive() || seq !== listSeq) return;
+    pager = p;
     drawSummary(pager.last?.totals);
     drawIncomplete(inc);
     while (listStart.nextSibling && listStart.nextSibling !== statsBox) listStart.nextSibling.remove();
@@ -342,6 +347,7 @@ export async function mount(ctx) {
   await Promise.all([loadList(), loadStats()]);
   if (!ctx.alive()) return {};
   ctx.ready();
-  ctx.events('rows', (ev) => { if (ev.data?.kinds && !ev.data.kinds.includes('charges')) return; if (car && ev.data?.car && ev.data.car !== car.id) return; loadList(); });
+  // A charge started or ended (or a rebuild): load the list again; a failed live reload keeps what is shown.
+  ctx.events(['rows'], (ev) => { if (ev.data?.kinds && !ev.data.kinds.includes('charges')) return; if (car && ev.data?.car && ev.data.car !== car.id) return; loadList().catch(() => {}); });
   return { onQuery: async () => { await Promise.all([loadList(), loadStats()]); } };
 }
