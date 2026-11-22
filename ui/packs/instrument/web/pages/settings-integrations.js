@@ -45,9 +45,12 @@ const STATUS = {
 };
 const STATUS_ORDER = ['published', 'api', 'device', 'logged', 'signal', 'none', 'never'];
 // the live inputs other than SMO, as a status word names them
-const INPUT_WORD = { tesla_api: 'Tesla API', teslafi_api: 'TeslaFi' };
+const INPUT_WORD = { tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'TeslaMate' };
 // the inputs an `api` row can come from (all of them so far)
 const API_INPUTS = ['tesla_api', 'teslafi_api'];
+// what the owner's own TeslaMate gives too (one flag for the windows, no window of its own, no sunroof)
+const TM_KEYS = new Set(['version', 'update_available', 'update_version', 'locked', 'windows_open', 'scheduled_charge_start', 'route_destination', 'route_distance', 'route_minutes', 'route_traffic_delay']);
+const apiInputs = (keys) => ([].concat(keys ?? []).some((k) => TM_KEYS.has(k)) ? [...API_INPUTS, 'teslamate_local'] : API_INPUTS);
 const statusWord = (s, inputs = API_INPUTS) => (s === 'api' ? `From ${inputs.map((i) => INPUT_WORD[i] || i).join(' / ')}` : STATUS[s][0]);
 
 // unit kinds in the server's units (payloads are text in the server's units, not each person's)
@@ -139,7 +142,7 @@ const VALUES = [
   [null, 'battery_temp', 'Battery temperature', 'temperature', 'published', 'Cell temperatures', 'Sentry Mate extra.'],
   [null, 'lv_voltage', '12 V battery', 'V', 'published', 'Low-voltage battery', 'Sentry Mate extra.'],
   [null, 'updated', 'Last data', 'ISO time, UTC', 'published', 'The newest decoded frame', 'Every value set carries its time: read it before trusting a value.'],
-].map(([cid, keys, what, unitKind, status, source, why]) => ({ cid, keys: keys == null ? [] : Array.isArray(keys) ? keys : [keys], what, unitKind, status, source, why, inputs: status === 'api' ? API_INPUTS : null }));
+].map(([cid, keys, what, unitKind, status, source, why]) => ({ cid, keys: keys == null ? [] : Array.isArray(keys) ? keys : [keys], what, unitKind, status, source, why, inputs: status === 'api' ? apiInputs(keys) : null }));
 
 // Home Assistant: what it gets, per group, with the same statuses
 const ENTITY_GROUPS = [
@@ -166,7 +169,7 @@ const ENTITY_GROUPS = [
   [null, 'Charge schedule', 'Scheduled charge start, Scheduled departure', 'scheduled_charge_start, scheduled_departure', 'api', 'Timestamps; not on CAN.'],
   ['ha.entity.binary-climate-charge', 'Climate and charging on/off', 'Climate, preconditioning, cable, charge port', 'climate_on, preconditioning_*, plugged_in, charge_port_open', 'published', ''],
   ['ha.proximity', 'Distance to home', 'Home Assistant’s own proximity helper, fed by the device tracker', 'location', 'published', 'Needs location publishing on. Arrival is known about 75 s late.'],
-].map(([cid, what, gives, topics, status, why]) => ({ cid, what, gives, topics, status, why, inputs: status === 'api' ? API_INPUTS : null }));
+].map(([cid, what, gives, topics, status, why]) => ({ cid, what, gives, topics, status, why, inputs: status === 'api' ? apiInputs(topics) : null }));
 
 // the events: one topic, never retained, so a restart never repeats one
 const EVENTS = [

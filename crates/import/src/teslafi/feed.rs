@@ -120,6 +120,7 @@ pub fn off_can(fields: &BTreeMap<String, String>, version: Option<String>, dista
         update_download_pct: field_num(fields, "download_perc").filter(|p| (0.0..=100.0).contains(p)),
         locked: field_bool(fields, "locked"),
         windows: ["fd_window", "fp_window", "rd_window", "rp_window"].map(window),
+        windows_open: None,
         sunroof_state: field_word(fields, "sun_roof_state", 32).map(|w| w.to_ascii_lowercase()),
         sunroof_pct: field_num(fields, "sun_roof_percent_open").filter(|p| (0.0..=100.0).contains(p)),
         scheduled_charge_start_ms: secs("scheduled_charging_start_time"),

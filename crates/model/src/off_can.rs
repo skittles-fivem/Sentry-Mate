@@ -3,7 +3,7 @@
 //! the inputs that gave one.
 //!
 //! Each input hands over what it read as an [`OffCan`] with the time it was read. [`fuse`] takes them in the order
-//! inputs win ([`Input::ALL`]: SMO, the Tesla API, TeslaFi's API, ...), value by value: the first input with a value
+//! inputs win ([`Input::ALL`]: SMO, the Tesla API, TeslaFi's API, local TeslaMate), value by value: the first input with a value
 //! that is not stale gives it; when every input's value is stale, the first one's is kept, marked stale. A value is
 //! stale once it is older than its age limit ([`max_age_ms`]): the lock state an hour after the input stopped
 //! reading the car is no longer the lock state. Nothing is guessed: a value an input did not send is `None`.
@@ -44,6 +44,9 @@ pub struct OffCan {
     /// Windows open (not closed), by seat: driver front, passenger front, driver rear, passenger rear (the Tesla
     /// API's `fd`, `fp`, `rd`, `rp`).
     pub windows: [Option<bool>; 4],
+    /// Any window open, from an input that gives one flag for all four (local TeslaMate's `windows_open`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows_open: Option<bool>,
     /// The sunroof's position word (`closed`, `open`, `vent` ...), lower case.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sunroof_state: Option<String>,
@@ -152,6 +155,7 @@ pub fn rank(i: Input) -> usize {
         Input::Smo => 0,
         Input::TeslaApi => 1,
         Input::TeslafiApi => 2,
+        Input::TeslamateLocal => 3,
     }
 }
 
@@ -208,7 +212,7 @@ pub fn fuse(now_ms: u64, readings: &[Reading<'_>]) -> OffCanNow {
         windows_open: pick(&rs, Kind::Body, st, &|o| match o.windows {
             w if w.contains(&Some(true)) => Some(true),
             [Some(false), Some(false), Some(false), Some(false)] => Some(false),
-            _ => None,
+            _ => o.windows_open,
         }),
         windows: [None, None, None, None],
         sunroof_state: pick(&rs, Kind::Body, st, &|o| o.sunroof_state.clone().filter(|s| !s.trim().is_empty())),

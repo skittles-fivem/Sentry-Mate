@@ -49,7 +49,10 @@ const STATUS = {
 const ORDER = ['published', 'api', 'device', 'logged', 'signal', 'none', 'never'];
 // the inputs other than SMO that can give a value; an 'api' row's status names them
 const API_INPUTS = ['tesla_api', 'teslafi_api'];
-const INPUT_NAME = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi' };
+// what the owner's own TeslaMate gives too (one flag for the windows, no window of its own, no sunroof)
+const TM_KEYS = new Set(['version', 'update_available', 'update_version', 'locked', 'windows_open', 'scheduled_charge_start', 'route_destination', 'route_distance', 'route_minutes', 'route_traffic_delay']);
+const apiInputs = (keys) => ([].concat(keys ?? []).some((k) => TM_KEYS.has(k)) ? [...API_INPUTS, 'teslamate_local'] : API_INPUTS);
+const INPUT_NAME = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'TeslaMate' };
 const apiWord = (inputs = API_INPUTS) => `From ${inputs.map((k) => INPUT_NAME[k] || k).join(' / ')}`;
 function unitText(kind, u) {
   const mi = u && u.distance === 'mi';
@@ -139,7 +142,7 @@ const VALUES = [
   [null, 'battery_temp', 'Battery temperature', 'temperature', 'published', 'Cell temperatures', 'Sentry Mate extra.'],
   [null, 'lv_voltage', '12 V battery', 'V', 'published', 'Low-voltage battery', 'Sentry Mate extra.'],
   [null, 'updated', 'Last data', 'ISO time, UTC', 'published', 'The newest decoded frame', 'Every value set carries its time: read it before trusting a value.'],
-].map(([cid, keys, what, unitKind, status, source, why]) => ({ cid, keys: keys == null ? [] : Array.isArray(keys) ? keys : [keys], what, unitKind, status, source, why, inputs: status === 'api' ? API_INPUTS : [] }));
+].map(([cid, keys, what, unitKind, status, source, why]) => ({ cid, keys: keys == null ? [] : Array.isArray(keys) ? keys : [keys], what, unitKind, status, source, why, inputs: status === 'api' ? apiInputs(keys) : [] }));
 
 // Home Assistant: what it gets, per group, with the same statuses
 const ENTITY_GROUPS = [
