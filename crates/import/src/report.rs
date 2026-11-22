@@ -61,6 +61,9 @@ pub struct TableReport {
     pub bad_values: BTreeMap<String, u64>,
     /// Rows taken with something changed or estimated, how often.
     pub notes: BTreeMap<String, u64>,
+    /// Values read but dropped as impossible (the row was taken without them), by why ([`crate::odo`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skipped_values: BTreeMap<String, u64>,
 }
 
 impl TableReport {
@@ -78,6 +81,10 @@ impl TableReport {
 
     pub(crate) fn note(&mut self, what: &str) {
         *self.notes.entry(what.to_string()).or_default() += 1;
+    }
+
+    pub(crate) fn skip_value(&mut self, why: &str) {
+        *self.skipped_values.entry(why.to_string()).or_default() += 1;
     }
 }
 

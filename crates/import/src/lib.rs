@@ -28,6 +28,7 @@ mod index;
 mod input;
 mod links;
 mod map;
+pub mod odo;
 pub mod report;
 pub mod rows;
 mod schema;

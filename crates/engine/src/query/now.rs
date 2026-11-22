@@ -250,10 +250,17 @@ pub fn estimated_range_km(e: &Engine, car: CarId, s: &Sample, at: u64) -> QResul
 /// as MQTT publishes it. `None` before the car sent anything.
 pub fn published_now(e: &Engine, car: CarId) -> QResult<Option<Now>> {
     let Some(mut n) = e.db().entry(car)?.and_then(|x| x.summary.now) else { return Ok(None) };
+    n.sample.odometer_km = possible_odometer(n.sample.odometer_km);
     // (a figure that can't be worked out now is left out, not the whole Now)
     n.range_estimated_km = estimated_range_km(e, car, &n.sample, n.at_ms).ok().flatten();
     n.healthy = super::system::healthy(e, car).ok();
     Ok(Some(n))
+}
+
+/// No car reads past 2,000,000 km: a Now kept before the CAN odometer's "not available" (4,294,967 km) was read as
+/// such shows no odometer rather than that.
+fn possible_odometer(km: Option<f64>) -> Option<f64> {
+    km.filter(|k| (0.0..=2.0e6).contains(k))
 }
 
 /// The car's Now.
@@ -265,7 +272,8 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     // when the newest data arrived: SMO's newest log, or the Tesla API's newest reading
     let received_ms = meta.last_arrived_ms.max(meta.api_received_ms).max(meta.teslafi_received_ms);
     let now = now_ms();
-    let s: Sample = n.as_ref().map(|n| n.sample.clone()).unwrap_or_default();
+    let mut s: Sample = n.as_ref().map(|n| n.sample.clone()).unwrap_or_default();
+    s.odometer_km = possible_odometer(s.odometer_km);
     let at = n.as_ref().map_or(0, |n| n.at_ms);
     // each value at the time it was recorded (a value kept from an older log keeps its own time)
     let times = records::now_at(db, car)?;

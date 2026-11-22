@@ -515,3 +515,37 @@ fn a_zip_with_other_files_first_is_still_teslafis() {
     let z = zip(&[("key1/a.log.xz", b"\xfd7zXZ\0"), ("TeslaFi32023.csv", csv.as_bytes())]);
     assert_eq!(teslafi::sniff(&z[..]).unwrap(), Sniff::Other);
 }
+
+/// A miles file whose odometer once read 2,668,769.4 mi (4,294,967 km: a 32-bit "not available") and once jumped
+/// 30,000 mi in a minute: the readings are dropped with why, the others kept in km; read as km, as the owner's
+/// setting may say, the same file's readings stay as they are.
+#[test]
+fn impossible_odometer_readings_are_dropped_in_the_files_units() {
+    let row = |i: u32, odo: &str| {
+        format!(
+            "{i},2023-03-04 10:{:02}:02,online,D,Disconnected,-30.51,-140.22,42,18,{odo},77,231.5,5YJ3E1EA1PF000001\n",
+            14 + i
+        )
+    };
+    let mut csv = String::from(
+        "data_id,Date,state,shift_state,charging_state,latitude,longitude,speed,power,odometer,battery_level,\
+         battery_range,vin\n",
+    );
+    for (i, odo) in [(1, "25000.0"), (2, "2668769.4"), (3, "25000.7"), (4, "55000.7"), (5, "25001.4")] {
+        csv.push_str(&row(i, odo));
+    }
+    let odos = |o: &Options| {
+        let mut s = Store::new(&[(VIN1, 1)]);
+        let r = run(&mut s, csv.as_bytes(), o);
+        (s.positions.values().map(|p| p.odometer_km.map(|k| k.round())).collect::<Vec<_>>(), r)
+    };
+    let (mi, r) = odos(&Options::default());
+    assert_eq!(r.units.unwrap().distance, Distance::Mi);
+    assert_eq!(mi, [Some(40234.0), None, Some(40235.0), None, Some(40236.0)]);
+    assert_eq!(r.skipped_values["odometer: past 2,000,000 km"], 1);
+    assert_eq!(r.skipped_values["odometer: jump no car could drive"], 1);
+    let (km, r) = odos(&Options { distance: Some(Distance::Km), ..Options::default() });
+    // in km, 2,668,769 is past 2,000,000 still
+    assert_eq!(km, [Some(25000.0), None, Some(25001.0), None, Some(25001.0)]);
+    assert_eq!(r.skipped_values.values().sum::<u64>(), 2);
+}
