@@ -99,7 +99,9 @@ export async function mount(ctx) {
     const dest = v(r.destination), km = v(r.km), min = v(r.minutes), traffic = v(r.traffic_min);
     if (dest == null && km == null && min == null) return null;
     const bits = [km != null ? format(km, 'distance') : null, min != null ? `${formatDuration(min * 60000)} to go` : null, traffic ? `${formatDuration(traffic * 60000)} lost to traffic` : null].filter(Boolean);
-    return h('p', { class: 'hero-route' }, icon('route'), h('span', null, `Navigating to ${dest || 'a destination'}`, bits.length ? h('span', { class: 'muted' }, `, ${bits.join(', ')}`) : null, offMark(r.destination || r.km || r.minutes, tz)));
+    // each mark after a space, not a margin: a mark that wraps to a line of its own stays centred on a phone
+    const marks = (offMark(r.destination || r.km || r.minutes, tz) || []).filter(Boolean).flatMap((m) => [h('span', { class: 'src-gap' }, ' '), m]);
+    return h('p', { class: 'hero-route' }, icon('route'), h('span', null, `Navigating to ${dest || 'a destination'}`, bits.length ? h('span', { class: 'muted' }, `, ${bits.join(', ')}`) : null, marks));
   }
   function drawHero() {
     const st = now.state || 'unknown';
