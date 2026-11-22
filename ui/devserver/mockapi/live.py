@@ -249,6 +249,8 @@ def _now_object(app, car_id, t):
         "usable_soc_pct": W(vals.get("usable_soc_pct"), ts),
         "range_km": W(vals.get("range_km"), ts), "ideal_range_km": W(vals.get("ideal_range_km"), ts),
         "est_range_km": W(r(est, 1), ts), "est_basis": "wh_per_km_30d",
+        # the car's own estimate from an API input (the Tesla API's, else local TeslaMate's): none in the dev data
+        "car_est_range_km": None,
         "energy_remaining_kwh": W(vals.get("energy_remaining_kwh"), ts),
         "odometer_km": W(odo if odo is None else round(odo, 3), ts),
         "outside_c": W(vals.get("outside_c"), ts), "cabin_c": W(vals.get("cabin_c"), ts),

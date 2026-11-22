@@ -386,6 +386,8 @@ def notices(req):
         items += tesla_notices(req)
         from .teslafi import notices as teslafi_notices
         items += teslafi_notices(req)
+        from .teslamate import notices as teslamate_notices
+        items += teslamate_notices(req)
     return {"items": items, "next": None}
 
 

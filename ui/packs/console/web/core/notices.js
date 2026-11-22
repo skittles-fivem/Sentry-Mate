@@ -6,6 +6,7 @@
 import * as api from '../shared/api.js';
 import { h, replace } from '../shared/dom.js';
 import { releaseDismissed, dismissRelease } from '../shared/release.js';
+import { isTmNotice, tmNoticeFix } from '../shared/teslamate.js';
 
 const HIDDEN_KEY = 'sentrymate.console.notices-hidden';
 let box = null;
@@ -16,11 +17,18 @@ const subs = new Set();
 const hidden = () => { try { return new Set(JSON.parse(sessionStorage.getItem(HIDDEN_KEY) || '[]')); } catch { return new Set(); } };
 const hide = (code) => { try { const s = hidden(); s.add(code); sessionStorage.setItem(HIDDEN_KEY, JSON.stringify([...s])); } catch { /* fine */ } };
 
-// a Tesla account's notice (admins only) links to that account's block on settings/integrations
+// a Tesla account's notice (admins only) links to that account's block on settings/integrations, a local
+// TeslaMate notice (admins only) to its block
 const TESLA = new Set(['tesla_sign_in_needed', 'tesla_account_error']);
 function fixOf(n) {
   if (TESLA.has(n.code)) return `${String(n.fix_link || '/settings/integrations').split('#')[0]}#tesla${n.detail?.account ? `-${encodeURIComponent(n.detail.account)}` : ''}`;
+  if (isTmNotice(n)) return tmNoticeFix(n);
   return n.fix_link || null;
+}
+function fixWords(n) {
+  if (TESLA.has(n.code)) return 'fix: tesla account';
+  if (isTmNotice(n)) return 'fix: local teslamate';
+  return `fix: ${String(n.fix_link).replace(/^\//, '').split(/[?#]/)[0]}`;
 }
 
 export const getNotices = () => items;
@@ -35,7 +43,7 @@ function render() {
     return h('div', { class: ['ntc', `ntc--${tone}`], role: tone === 'info' ? 'status' : 'alert' },
       h('span', { class: `tag tag--${tone}` }, `[${tone}]`),
       h('span', { class: 'ntc-text' }, n.message || n.code),
-      fixOf(n) ? h('a', { class: 'lnk', href: fixOf(n) }, TESLA.has(n.code) ? 'fix: tesla account' : `fix: ${String(n.fix_link).replace(/^\//, '').split(/[?#]/)[0]}`) : null,
+      fixOf(n) ? h('a', { class: 'lnk', href: fixOf(n) }, fixWords(n)) : null,
       tone === 'info' ? h('button', { class: 'ntc-x', type: 'button', 'aria-label': 'Hide this notice for now', onclick: () => { if (n.code === 'release_available') dismissRelease(n); else hide(n.code); render(); } }, 'hide') : null);
   });
   if (offline) {

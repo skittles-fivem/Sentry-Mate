@@ -212,6 +212,7 @@ fn a_car_with_the_tesla_api_alone() {
         let trip = Trip { a: 600, b: 1800 };
         k.engine.api_points(car, api_readings(0, 2400, 30, trip), vec![online(0, 2400)]);
         k.engine.api_meta(
+            Input::TeslaApi,
             car,
             tesla::ApiMeta {
                 at_ms: T0 + 2_390_000,
@@ -262,6 +263,7 @@ fn a_car_with_the_tesla_api_alone() {
 
         // a new version is an update the API saw
         k.engine.api_meta(
+            Input::TeslaApi,
             car,
             tesla::ApiMeta { at_ms: T0 + 90_000_000, car_version: Some("2026.38.1".into()), ..Default::default() },
         );
@@ -874,5 +876,82 @@ fn values_not_on_the_can_bus_come_from_the_tesla_api_and_teslafi_with_their_sour
             assert_eq!(v["off_can"]["route"]["destination"]["sources"][0]["kind"], "teslamate_local");
             assert_eq!(mqtt_topics(&n).get("route_destination").map(String::as_str), Some("Made-up Lake"));
         }
+    });
+}
+
+/// Made-up samples of a parked car charging, one a minute over `[0, to_s)` after `start_ms`.
+fn charging_samples(start_ms: u64, to_s: u64) -> Vec<Sample> {
+    (0..to_s)
+        .step_by(60)
+        .map(|s| Sample {
+            t_ms: start_ms + s * 1000,
+            gear: Some(Gear::P),
+            speed_kmh: Some(0.0),
+            soc: Some(50.0 + s as f64 / 600.0),
+            charging: Some(true),
+            charge_power_kw: Some(11.0),
+            lat: Some(45.0),
+            lon: Some(-93.0),
+            ..Sample::default()
+        })
+        .collect()
+}
+
+#[test]
+fn local_teslamates_energy_added_and_range_are_its_own_and_the_tesla_api_wins() {
+    rt().block_on(async {
+        use tmlocal::Sink as _;
+        let k = kit();
+        let tm = engine::TeslamateLocalSink::new(k.engine.clone());
+        let new =
+            tesla::NewCar { vin_prefix: None, model: Some('3'), year: None, display_name: Some("Made-up".into()) };
+        let car = tm.new_car(&new).unwrap();
+        let start = wall_ms() - 600_000;
+        tm.points(car, &charging_samples(start, 600), &[]).unwrap();
+        k.engine.idle().await;
+        // local TeslaMate's MQTT values: the energy added, its estimated range, and a version (kept off CAN only)
+        let meta = tesla::ApiMeta {
+            at_ms: start + 590_000,
+            charge_energy_added_kwh: Some(12.345),
+            est_range_km: Some(301.26),
+            car_version: Some("2026.32.5".into()),
+            ..tesla::ApiMeta::default()
+        };
+        tm.meta(car, &meta);
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        let v = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+        assert_eq!(v["state"], "charging", "{v}");
+        assert_eq!(v["charge"]["added_kwh"]["value"], 12.35);
+        assert_eq!(v["charge"]["added_kwh"]["sources"][0]["kind"], "teslamate_local");
+        assert_eq!(v["charge"]["added_kwh"]["sources"][0]["label"], "Data from local TeslaMate");
+        assert_eq!(v["charge"]["added_kwh"]["at_ms"], start + 590_000);
+        assert_eq!(v["car_est_range_km"]["value"], 301.3);
+        assert_eq!(v["car_est_range_km"]["sources"][0]["kind"], "teslamate_local");
+        // nothing of it is the Tesla API's: no update row from its version, no Tesla API input
+        let ups = query::software::updates(&k.engine, car, &Period::all(), &Paging::default()).unwrap().body.items;
+        assert!(ups.is_empty(), "{ups:?}");
+        assert!(!v.to_string().contains("tesla_api"), "{v}");
+
+        // the Tesla API's current reading wins, value by value; what it does not give stays local TeslaMate's
+        k.engine.api_meta(
+            Input::TeslaApi,
+            car,
+            tesla::ApiMeta { at_ms: start + 595_000, est_range_km: Some(280.0), ..tesla::ApiMeta::default() },
+        );
+        k.engine.idle().await;
+        let v = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+        assert_eq!(v["car_est_range_km"]["value"], 280.0);
+        assert_eq!(v["car_est_range_km"]["sources"][0]["kind"], "tesla_api");
+        assert_eq!(v["charge"]["added_kwh"]["sources"][0]["kind"], "teslamate_local");
+
+        // an old reading of local TeslaMate's is not the car's now
+        let car2 = tm.new_car(&new).unwrap();
+        tm.points(car2, &charging_samples(start, 600), &[]).unwrap();
+        tm.meta(car2, &tesla::ApiMeta { at_ms: start - 2 * 3_600_000, est_range_km: Some(250.0), ..meta });
+        k.engine.idle().await;
+        let v = serde_json::to_value(query::now::now_view(&k.engine, car2).unwrap()).unwrap();
+        assert_eq!(v["car_est_range_km"], serde_json::Value::Null);
+        assert_eq!(v["charge"]["added_kwh"], serde_json::Value::Null);
     });
 }

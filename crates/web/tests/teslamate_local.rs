@@ -1,8 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 //! The local TeslaMate input's routes through the real router (web::testkit): admin only (reads too), off until
 //! added, the password asked again, the plain-text password rule (`422 plaintext_password`), the resend rule, audit
-//! entries without a password, the `/network` rows and the `/system/health` part. The broker is a closed port on
-//! this machine; every name and password is made up.
+//! entries without a password, the `/network` rows and the `/system/health` part, and the notices of a broker in
+//! trouble (refused, gone quiet) with their audit entries. The broker is a closed port on this machine (or a tiny
+//! one that takes the connection and then says nothing); every name and password is made up.
 
 use engine::Engine;
 use model::CarId;
@@ -25,11 +26,17 @@ struct World {
     s: TestServer,
     svc: Arc<TeslamateLocalService>,
     car: CarId,
+    events: web::Events,
+    audit: Arc<accounts::Audit>,
     _engine: Engine,
     _dir: tempfile::TempDir,
 }
 
 async fn world() -> World {
+    world_with(tmlocal::Options::default()).await
+}
+
+async fn world_with(opts: tmlocal::Options) -> World {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
@@ -49,10 +56,163 @@ async fn world() -> World {
             model::Input::TeslamateLocal,
         )
         .unwrap();
-    let svc = Arc::new(web::resources::teslamate_local::service(&data, v, &engine));
-    let (e2, d2, s2) = (engine.clone(), db.clone(), svc.clone());
-    let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2)).service(s2)).await;
-    World { s, svc, car, _engine: engine, _dir: dir }
+    let audit = Arc::new(accounts::Audit::open(data.join("audit"), v.clone(), accounts::system_clock()).unwrap());
+    let events = web::Events::new();
+    let svc =
+        Arc::new(web::resources::teslamate_local::service_with(&data, v, &engine, audit.clone(), events.clone(), opts));
+    let (e2, d2, s2, ev2) = (engine.clone(), db.clone(), svc.clone(), events.clone());
+    let s =
+        TestServer::start_with(move |b| b.events(ev2).cars(Arc::new(EngineCars(d2))).service(Arc::new(e2)).service(s2))
+            .await;
+    World { s, svc, car, events, audit, _engine: engine, _dir: dir }
+}
+
+/// The codes of the notices an account sees.
+async fn notice_codes(c: &mut Client) -> Vec<String> {
+    let r = c.get("/api/v1/notices").await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    r.json()["items"].as_array().unwrap().iter().map(|n| n["code"].as_str().unwrap().to_string()).collect()
+}
+
+/// The notice with `code`, waiting for it up to 10 s.
+async fn wait_notice(c: &mut Client, code: &str) -> Value {
+    for _ in 0..100 {
+        let r = c.get("/api/v1/notices").await.json();
+        if let Some(n) = r["items"].as_array().unwrap().iter().find(|n| n["code"] == code) {
+            return n.clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("no notice {code}");
+}
+
+/// The notice events published so far.
+fn notice_events(rx: &mut tokio::sync::broadcast::Receiver<Arc<web::Event>>) -> Vec<Value> {
+    let mut out = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        if let web::Event::Notice { notice, admins_only } = &*e {
+            assert!(*admins_only);
+            out.push((**notice).clone());
+        }
+    }
+    out
+}
+
+fn audit_written(a: &accounts::Audit) -> Vec<(String, String)> {
+    a.list(100, None).unwrap().entries.into_iter().map(|e| (e.action, e.details)).collect()
+}
+
+/// A broker that takes the connection and the subscription, then sends nothing at all.
+async fn quiet_broker() -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut c, _)) = l.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 512];
+                while let Ok(n) = c.read(&mut buf).await {
+                    if n == 0 {
+                        return;
+                    }
+                    // CONNECT: CONNACK; SUBSCRIBE: SUBACK (QoS 0) with its packet id; PINGREQ: PINGRESP
+                    let reply: Vec<u8> = match buf[0] >> 4 {
+                        1 => vec![0x20, 0x02, 0x00, 0x00],
+                        8 => vec![0x90, 0x03, buf[2], buf[3], 0x00],
+                        12 => vec![0xd0, 0x00],
+                        _ => Vec::new(),
+                    };
+                    if !reply.is_empty() && c.write_all(&reply).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_broker_in_trouble_is_a_notice_for_admins_with_an_audit_entry() {
+    let opts = tmlocal::Options {
+        backoff: (std::time::Duration::from_millis(200), std::time::Duration::from_secs(1)),
+        quiet_after_ms: 700,
+        ..tmlocal::Options::default()
+    };
+    let w = world_with(opts).await;
+    let mut rx = w.events.subscribe();
+    let mut admin = w.s.admin().await;
+    let t = "/api/v1/integrations/teslamate";
+    assert!(!notice_codes(&mut admin).await.iter().any(|c| c.starts_with("teslamate_")), "not added: nothing to say");
+
+    // nothing listens on the broker's port: refused
+    let port = closed_port();
+    let mqtt = json!({ "host": "127.0.0.1", "port": port });
+    let r = admin.put(t, json!({ "version": 0, "mqtt": mqtt, "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let n = wait_notice(&mut admin, "teslamate_connection_refused").await;
+    assert_eq!(n["fix_link"], "/settings/integrations#teslamate");
+    assert_eq!((n["level"].clone(), n["detail"]["part"].clone()), (json!("warning"), json!("mqtt")));
+    assert_eq!(n["detail"]["error"], "connection_refused");
+    assert!(n["since_ms"].is_u64() && n["message"].as_str().unwrap().contains("MQTT broker"), "{n}");
+    // a watch account sees none of it
+    let mut watch = w.s.watch(&mut admin, &[w.car]).await;
+    assert!(!notice_codes(&mut watch).await.iter().any(|c| c.starts_with("teslamate_")));
+    // the broker keeps refusing while the server tries again: told once, one audit entry
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let told = notice_events(&mut rx);
+    assert_eq!(told.iter().filter(|n| n["code"] == "teslamate_connection_refused").count(), 1, "{told:?}");
+    let written = audit_written(&w.audit);
+    assert_eq!(written.iter().filter(|(a, _)| a == "teslamate-local-connection-refused").count(), 1, "{written:?}");
+    assert!(written.iter().all(|(_, d)| d.starts_with("[settings:teslamate_local]")), "{written:?}");
+
+    // a broker that takes the connection and then sends nothing: refused no more, quiet instead
+    let quiet = quiet_broker().await;
+    let mqtt = json!({ "host": "127.0.0.1", "port": quiet });
+    let r = admin.put(t, json!({ "version": 1, "mqtt": mqtt, "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let n = wait_notice(&mut admin, "teslamate_quiet").await;
+    assert_eq!((n["detail"]["part"].clone(), n["detail"]["error"].clone()), (json!("mqtt"), Value::Null));
+    assert!(!notice_codes(&mut admin).await.contains(&"teslamate_connection_refused".to_string()));
+    assert_eq!(admin.get(t).await.json()["status"]["mqtt"]["state"], "connected");
+    assert!(notice_events(&mut rx).iter().any(|n| n["code"] == "teslamate_quiet"));
+    assert!(audit_written(&w.audit).iter().any(|(a, _)| a == "teslamate-local-quiet"));
+
+    // paused: nothing to say
+    let r = admin.patch(t, json!({ "version": 2, "paused": true, "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(!notice_codes(&mut admin).await.iter().any(|c| c.starts_with("teslamate_")));
+    w.svc.stop();
+}
+
+#[test]
+fn every_trouble_has_its_notice() {
+    use tmlocal::{ErrorInfo, Problem, Trouble};
+    use web::resources::teslamate_local::{audit_action, notice};
+    let e = |code: &str| Some(ErrorInfo { code: code.into(), message: "made-up words.".into(), at_ms: 1_000 });
+    let cases = [
+        (Trouble::ConnectionRefused, e("timeout"), "teslamate_connection_refused", "mqtt"),
+        (Trouble::AuthFailed, e("auth_failed"), "teslamate_auth_failed", "mqtt"),
+        (Trouble::PinMismatch, e("pin_mismatch"), "teslamate_pin_mismatch", "mqtt"),
+        (Trouble::Quiet, None, "teslamate_quiet", "mqtt"),
+        (Trouble::CatchupFailed, e("query_failed"), "teslamate_catchup_failed", "database"),
+    ];
+    assert_eq!(cases.len(), Trouble::ALL.len());
+    for (trouble, error, code, part) in cases {
+        let n = notice(&Problem { trouble, error, since_ms: Some(1_000) }, 1_000 + 3 * 3_600_000);
+        assert_eq!((n.code, n.level, n.fix_link), (code, "warning", Some("/settings/integrations#teslamate")));
+        assert_eq!(n.since_ms, Some(1_000));
+        assert_eq!(n.detail.as_ref().unwrap()["part"], part);
+        assert!(!n.message.contains(".."), "{}", n.message);
+        assert!(audit_action(trouble).starts_with("teslamate-local-"));
+        match trouble {
+            Trouble::ConnectionRefused | Trouble::AuthFailed | Trouble::CatchupFailed => {
+                assert!(n.message.contains("(made-up words)"), "{}", n.message);
+            }
+            Trouble::Quiet => assert!(n.message.contains("for 3 hours"), "{}", n.message),
+            Trouble::PinMismatch => assert!(n.message.contains("pinned"), "{}", n.message),
+        }
+    }
 }
 
 fn closed_port() -> u16 {

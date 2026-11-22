@@ -18,6 +18,7 @@
 //! engine  car/<id>/api/<day>    what the Tesla API saw of the car's state that UTC day (spans, clipped to the day)
 //! engine  car/<id>/api_dirty    Tesla API data stored but not yet built into the timeline
 //! engine  car/<id>/api_meta     the Tesla API's newest values beside the samples (version, settings, charger)
+//! engine  car/<id>/teslamate_local_api_meta  local TeslaMate's (the energy added, the estimated range)
 //! engine  car/<id>/teslafi_off_can  TeslaFi's newest values no CAN message carries (lock, windows, update ...)
 //! engine  car/<id>/teslamate_local_off_can  the same from the owner's own TeslaMate
 //! engine  car/<id>/fw/...       the firmware fingerprints of the car's logs, their history and the updates found
@@ -606,7 +607,7 @@ pub(crate) fn put_api_dirty(db: &Db, car: CarId, spans: &[(u64, u64)]) -> Result
     put(db, NS, &key, &spans)
 }
 
-/// The Tesla API's newest values beside its samples, and the software version it last named.
+/// An API input's newest values beside its samples, and the software version it last named.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ApiMetaRec {
     #[serde(default)]
@@ -618,12 +619,30 @@ pub struct ApiMetaRec {
     pub version_seen_ms: Option<u64>,
 }
 
-pub(crate) fn api_meta(db: &Db, car: CarId) -> Result<ApiMetaRec> {
-    Ok(get(db, NS, &format!("car/{car}/api_meta"))?.unwrap_or_default())
+/// Where an input's newest values beside its samples are kept: `None` for SMO (it has none: its values are its
+/// samples). The Tesla API's keep their first key.
+fn api_meta_key(car: CarId, input: model::Input) -> Option<String> {
+    match input {
+        model::Input::Smo => None,
+        model::Input::TeslaApi => Some(format!("car/{car}/api_meta")),
+        model::Input::TeslafiApi => Some(format!("car/{car}/teslafi_api_meta")),
+        model::Input::TeslamateLocal => Some(format!("car/{car}/teslamate_local_api_meta")),
+    }
 }
 
-pub(crate) fn put_api_meta(db: &Db, car: CarId, m: &ApiMetaRec) -> Result<()> {
-    put(db, NS, &format!("car/{car}/api_meta"), m)
+/// An input's newest values beside its samples (empty for SMO, and before the input sent any).
+pub(crate) fn api_meta(db: &Db, car: CarId, input: model::Input) -> Result<ApiMetaRec> {
+    match api_meta_key(car, input) {
+        Some(k) => Ok(get(db, NS, &k)?.unwrap_or_default()),
+        None => Ok(ApiMetaRec::default()),
+    }
+}
+
+pub(crate) fn put_api_meta(db: &Db, car: CarId, input: model::Input, m: &ApiMetaRec) -> Result<()> {
+    match api_meta_key(car, input) {
+        Some(k) => put(db, NS, &k, m),
+        None => Ok(()),
+    }
 }
 
 /// TeslaFi's newest poll's values no CAN message carries, with TeslaFi's time of the poll.

@@ -7,6 +7,7 @@
 //   versions, memory, timings), the clock, the /health address for container checks, the one error shape of the
 //   API with a live try, and every car's data status.
 // Data: GET cars/{car}/health, /gaps, /totals?source=, /updates, /storage, /signals/latest; POST /rebuild (admin);
+// GET integrations/tesla/status, integrations/teslafi/status, integrations/teslamate (admin: the live inputs' tiles);
 // GET system/storage, system/health (admin), geocode/status, cars.
 
 import { h } from '../shared/dom.js';
@@ -23,6 +24,8 @@ import { filterBar, statTile, checkRow, sectionHead, pills, moreButton, nums, fa
 import { srcShort, srcPill } from '../core/source.js';
 import { teslaCarFacts, teslaAccountHref, lastErrorText } from './tesla.js';
 import { teslafiCarFacts } from './teslafi.js';
+import { teslamateCarFacts, teslamateHref } from './teslamate.js';
+import { TM_BASE, TM_SOURCE } from '../shared/teslamate.js';
 
 export const id = 'health';
 export const css = true;
@@ -96,7 +99,7 @@ async function mountCar(ctx) {
   ] });
   const bar = filterBar(ctx, { carCover: 'dbinfo.filter.car' }, h('span', { class: 'filter-note' }, 'Checks and gaps follow the period; totals and storage are all time.'));
 
-  const [hl, gaps, all, can, tm, upd, st, sig, tapi, tst, tfi, tfst] = await Promise.all([
+  const [hl, gaps, all, can, tm, upd, st, sig, tapi, tst, tfi, tfst, tmst] = await Promise.all([
     ctx.api.get(`${base}/health`, fullPeriod(ctx.params)),
     ctx.api.page(`${base}/gaps`, ctx.params, { limit: 40 }).catch(() => ({ items: [] })),
     ctx.api.get(`${base}/totals`, { source: 'all' }).catch(() => ({})),
@@ -109,6 +112,7 @@ async function mountCar(ctx) {
     ctx.admin ? ctx.api.list('integrations/tesla/status').all().catch(() => null) : Promise.resolve(null),
     ctx.api.get(`${base}/totals`, { source: 'teslafi_api' }).catch(() => ({})),
     ctx.admin ? ctx.api.list('integrations/teslafi/status').all().catch(() => null) : Promise.resolve(null),
+    ctx.admin ? ctx.api.get(TM_BASE).catch(() => null) : Promise.resolve(null),
   ]);
   if (!ctx.alive()) return {};
   if (hl.rebuild_pending) { const t = setTimeout(() => ctx.alive() && ctx.reload(), 4000); ctx.onCleanup(() => clearTimeout(t)); }
@@ -207,6 +211,11 @@ async function mountCar(ctx) {
   const teslafiT = !ctx.admin ? null : tile({ w: 2, title: 'TeslaFi input', icon: 'key', side: fif ? srcPill({ sources: [{ kind: 'teslafi_api', label: 'Data from TeslaFi' }] }, { short: true }) : null },
     fif ? facts(fif) : tfst == null ? note('The TeslaFi status could not be read.')
       : [note('No TeslaFi token reads this car.'), h('a', { class: 'tile-link', href: `${state.buildUrl('settings-integrations')}#teslafi` }, 'TeslaFi settings', icon('chevronRight'))]);
+  /* the local TeslaMate input of this car (admins only) */
+  const tmf = tmst ? teslamateCarFacts(ctx, tmst, car.id) : null;
+  const teslamateT = !ctx.admin ? null : tile({ w: 2, title: 'Local TeslaMate input', icon: 'key', side: tmf ? srcPill({ sources: [TM_SOURCE] }, { short: true }) : null },
+    tmf ? facts(tmf) : tmst == null ? note('The local TeslaMate status could not be read.')
+      : [note(tmst.enabled ? 'No TeslaMate car is matched to this car.' : 'No local TeslaMate is added: none reads this car.'), h('a', { class: 'tile-link', href: teslamateHref() }, 'Local TeslaMate settings', icon('chevronRight'))]);
 
   /* ------------------------------------------------------------ signals */
   const sigHead = sectionHead('Signals from the newest log', 'Every decoded signal with its value. Find one, sort, and scroll the list.');
@@ -244,7 +253,7 @@ async function mountCar(ctx) {
   const sigT = tile({ w: 'full', title: 'Signals', icon: 'pulse', cls: 'sig-tile' },
     h('div', { class: 'page-bar' }, h('label', { class: 'search-pill' }, icon('search'), search), sortPills, count), listEl);
 
-  ctx.view.replaceChildren(bar, status, keysT, teslaT, teslafiT, logT, rowsT, ...tots, storeT, daysT, sigHead, sigT);
+  ctx.view.replaceChildren(bar, status, keysT, teslaT, teslafiT, teslamateT, logT, rowsT, ...tots, storeT, daysT, sigHead, sigT);
   ctx.ready();
   return {};
 }

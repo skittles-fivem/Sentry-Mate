@@ -8,6 +8,7 @@ import { icon } from './icons.js';
 import { pageInfo } from './pages.js';
 import { parseUrl } from '../shared/state.js';
 import { releaseDismissed, dismissRelease } from '../shared/release.js';
+import { isTmNotice, tmNoticeFix, TM_NOTICE_ACTION } from '../shared/teslamate.js';
 
 const HIDDEN_KEY = 'sentrymate.notices-hidden';
 let box = null;
@@ -32,11 +33,18 @@ function fixLabel(link) {
   return 'How to fix';
 }
 
-// a Tesla account's notice (admins only) links to that account on Settings: Integrations
+// a Tesla account's notice (admins only) links to that account on Settings: Integrations, a local TeslaMate notice
+// (admins only) to its section there
 const TESLA = new Set(['tesla_sign_in_needed', 'tesla_account_error']);
 function fixOf(n) {
   if (TESLA.has(n.code) && n.detail?.account) return `${(n.fix_link || '/settings/integrations').split('#')[0]}#tesla-${encodeURIComponent(n.detail.account)}`;
+  if (isTmNotice(n)) return tmNoticeFix(n);
   return n.fix_link || null;
+}
+function fixWords(n) {
+  if (TESLA.has(n.code)) return 'Open the Tesla account';
+  if (isTmNotice(n)) return TM_NOTICE_ACTION;
+  return fixLabel(n.fix_link);
 }
 
 function render() {
@@ -50,7 +58,7 @@ function render() {
     const row = h('div', { class: 'notice', dataset: { level, code: n.code }, role: level === 'info' ? 'status' : 'alert' },
       icon(level === 'info' ? 'info' : 'warn'),
       h('span', { class: 'notice-text' }, n.message || n.code),
-      fixOf(n) ? h('a', { class: 'btn btn--sm', href: fixOf(n) }, TESLA.has(n.code) ? 'Open the Tesla account' : fixLabel(n.fix_link), icon('arrow-r', 'ico--sm')) : null,
+      fixOf(n) ? h('a', { class: 'btn btn--sm', href: fixOf(n) }, fixWords(n), icon('arrow-r', 'ico--sm')) : null,
       level === 'info' ? h('button', { class: 'btn btn--ghost btn--icon btn--sm', type: 'button', 'aria-label': 'Hide this notice for now',
         onclick: () => { if (n.code === 'release_available') dismissRelease(n); else hide(n.code); render(); } }, icon('x', 'ico--sm')) : null);
     return row;

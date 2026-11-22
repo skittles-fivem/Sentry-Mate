@@ -103,7 +103,10 @@ TeslaMate".
 - `tmlocal::Sink` gained a default method `meta(&self, car, &tesla::ApiMeta)`: MQTT values a `Sample` has no field
   for (`locked`, `version`, `update_available`, `update_version`, `scheduled_charging_start_time`,
   `charge_energy_added`, `est_battery_range_km`, `display_name`), at most every 10 s per car. `TeslamateLocalSink`
-  can forward it to `Engine::api_meta`. `windows_open`, `doors_open` (one flag), the sunroof and `active_route_*` are
+  forwards the off-CAN values to `Engine::off_can` and `charge_energy_added` and `est_battery_range_km` to
+  `Engine::api_meta(Input::TeslamateLocal, ..)` (kept apart from the Tesla API's, named `teslamate_local`). `Sink::changed`
+  takes the status now; `TeslamateLocalSink::on_change` gets it and the web side turns `Status::problems()` into
+  notices. `windows_open`, `doors_open` (one flag), the sunroof and `active_route_*` are
   left out (no field yet); `map::target` is the per-topic table.
 - The DB timer (`database.enabled`, not paused) runs at start and every `interval_s`: `catchup::test` (merges the
   `cars` table into the car list), then for matched cars `catchup::dump` to `<data>/teslamate-local/catchup.dump`,

@@ -1,14 +1,17 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 //! The subscriber against a tiny hand-rolled MQTT 3.1.1 broker on this machine: it connects with no last will,
 //! subscribes to `<prefix>/cars/+/#` only, never publishes, and a matched car's values reach the sink as samples
-//! and state facts. A password over plain TCP is refused before anything is stored or connects. Every value is made
+//! and state facts. A password over plain TCP is refused before anything is stored or connects. A broker that refuses
+//! the connection, refuses the password or goes quiet is told to the sink once (for a notice). Every value is made
 //! up.
 
 use model::{CarId, Sample};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tesla::ApiState;
-use tmlocal::{ApiFact, Draft, Match, MqttConfig, Password, Secret, Service, ServiceError, Sink, SinkError};
+use tmlocal::{
+    ApiFact, Draft, Match, MqttConfig, Password, Secret, Service, ServiceError, Sink, SinkError, Status, Trouble,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -18,6 +21,14 @@ type Points = (CarId, Vec<Sample>, Vec<ApiFact>);
 #[derive(Default)]
 struct TestSink {
     points: Mutex<Vec<Points>>,
+    /// The troubles of each status told by `changed`.
+    told: Mutex<Vec<Vec<Trouble>>>,
+}
+
+impl TestSink {
+    fn told(&self) -> Vec<Vec<Trouble>> {
+        self.told.lock().unwrap().clone()
+    }
 }
 
 impl Sink for TestSink {
@@ -31,6 +42,20 @@ impl Sink for TestSink {
     fn catch_up(&self, _dump: &std::path::Path, _cars: &[(i64, CarId)]) -> Result<tmlocal::catchup::Counts, SinkError> {
         Ok(tmlocal::catchup::Counts::default())
     }
+    fn changed(&self, status: &Status) {
+        self.told.lock().unwrap().push(status.problems().into_iter().map(|p| p.trouble).collect());
+    }
+}
+
+/// How the made-up broker answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Takes the connection and sends car 1's values.
+    Normal,
+    /// Takes the connection and the subscription, then sends nothing.
+    Quiet,
+    /// Refuses the user name or password (CONNACK 5, not authorized).
+    Refuse,
 }
 
 /// What the broker saw of the client.
@@ -71,6 +96,10 @@ fn publish(topic: &str, payload: &str) -> Vec<u8> {
 /// A broker on 127.0.0.1 for one client at a time: CONNACK, SUBACK, then made-up car 1 values, the battery level
 /// going up every 200 ms.
 async fn broker() -> (u16, Arc<Mutex<Seen>>, Arc<Mutex<usize>>) {
+    broker_with(Mode::Normal).await
+}
+
+async fn broker_with(mode: Mode) -> (u16, Arc<Mutex<Seen>>, Arc<Mutex<usize>>) {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = l.local_addr().unwrap().port();
     let seen = Arc::new(Mutex::new(Seen::default()));
@@ -94,13 +123,17 @@ async fn broker() -> (u16, Arc<Mutex<Seen>>, Arc<Mutex<usize>>) {
                                 1 => {
                                     // CONNECT: "MQTT", level 4, then the flags
                                     seen.lock().unwrap().connect_flags = body.get(7).copied();
-                                    c.write_all(&[0x20, 0x02, 0x00, 0x00]).await.unwrap();
+                                    let code = if mode == Mode::Refuse { 0x05 } else { 0x00 };
+                                    c.write_all(&[0x20, 0x02, 0x00, code]).await.unwrap();
                                 }
                                 8 => {
                                     let n = usize::from(u16::from_be_bytes([body[2], body[3]]));
                                     let filter = String::from_utf8_lossy(&body[4..4 + n]).to_string();
                                     seen.lock().unwrap().filters.push(filter);
                                     c.write_all(&[0x90, 0x03, body[0], body[1], 0x00]).await.unwrap();
+                                    if mode == Mode::Quiet {
+                                        continue;
+                                    }
                                     for (t, p) in [
                                         ("display_name", "Made-up Car"),
                                         ("state", "online"),
@@ -138,6 +171,10 @@ async fn broker() -> (u16, Arc<Mutex<Seen>>, Arc<Mutex<usize>>) {
 }
 
 fn service(dir: &tempfile::TempDir) -> (Service<TestSink>, Arc<TestSink>) {
+    service_with(dir, tmlocal::QUIET_AFTER_MS)
+}
+
+fn service_with(dir: &tempfile::TempDir, quiet_after_ms: u64) -> (Service<TestSink>, Arc<TestSink>) {
     let data = dir.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
     let (v, _) = vault::Vault::create(&data, &dir.path().join("keys"), vault::Kdf::FAST_FOR_TESTS).unwrap();
@@ -146,6 +183,7 @@ fn service(dir: &tempfile::TempDir) -> (Service<TestSink>, Arc<TestSink>) {
         connect_timeout: Duration::from_secs(3),
         backoff: (Duration::from_millis(200), Duration::from_secs(1)),
         test_listen: Duration::from_millis(800),
+        quiet_after_ms,
         ..tmlocal::Options::default()
     };
     (Service::new(&data, Arc::new(v), sink.clone(), opts), sink)
@@ -215,6 +253,109 @@ async fn values_reach_the_sink_and_nothing_is_published() {
     let flags = seen.connect_flags.unwrap();
     assert_eq!(flags & 0x04, 0, "no last will");
     assert_eq!(flags & 0x02, 0x02, "a clean session");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_broker_in_trouble_is_told_once_and_its_end_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let (svc, sink) = service(&dir);
+    // nothing listens on the port: refused, told once however often it is tried again
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    svc.put(0, draft(closed), 1).unwrap();
+    until("refused", || sink.told().iter().any(|t| t == &[Trouble::ConnectionRefused])).await;
+    let p = svc.status().mqtt_problem().unwrap();
+    assert_eq!(
+        (p.trouble, p.error.as_ref().map(|e| e.code.as_str())),
+        (Trouble::ConnectionRefused, Some("connection_refused"))
+    );
+    let since = p.since_ms;
+    // the backoff starts at 200 ms: several more tries in this time
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(sink.told().iter().filter(|t| t == &&[Trouble::ConnectionRefused]).count(), 1, "{:?}", sink.told());
+    assert_eq!(svc.status().mqtt_problem().unwrap().since_ms, since, "since the first failure");
+    assert_eq!(Trouble::ConnectionRefused.target(), tmlocal::Target::Mqtt);
+
+    // the broker refuses the user name or password
+    let (port, _, _) = broker_with(Mode::Refuse).await;
+    let c = svc.config().unwrap();
+    svc.put(c.version, draft(port), 2).unwrap();
+    until("auth", || sink.told().last().is_some_and(|t| t == &[Trouble::AuthFailed])).await;
+
+    // a broker that takes the connection: the trouble ends, and that is told too
+    let (port, _, _) = broker().await;
+    let c = svc.config().unwrap();
+    svc.put(c.version, draft(port), 3).unwrap();
+    until("connected", || svc.status().mqtt.state == tmlocal::MqttState::Connected).await;
+    until("no trouble", || sink.told().last().is_some_and(Vec::is_empty)).await;
+    assert!(svc.status().problems().is_empty());
+    svc.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_broker_that_goes_quiet_is_told() {
+    let dir = tempfile::tempdir().unwrap();
+    let (svc, sink) = service_with(&dir, 600);
+    let (port, _, _) = broker_with(Mode::Quiet).await;
+    svc.put(0, draft(port), 1).unwrap();
+    until("quiet", || sink.told().iter().any(|t| t == &[Trouble::Quiet])).await;
+    let st = svc.status();
+    assert_eq!(st.mqtt.state, tmlocal::MqttState::Connected, "still connected");
+    let p = st.mqtt_problem().unwrap();
+    assert_eq!((p.trouble, p.error), (Trouble::Quiet, None));
+    assert_eq!(p.since_ms, st.mqtt.connected_since_ms, "quiet since it connected: nothing ever came");
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(sink.told().iter().filter(|t| t == &&[Trouble::Quiet]).count(), 1, "told once");
+    svc.stop();
+    assert!(svc.status().problems().is_empty(), "stopped: nothing to say");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_catch_up_is_told() {
+    let dir = tempfile::tempdir().unwrap();
+    let (svc, sink) = service(&dir);
+    let (port, _, _) = broker().await;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let mut d = draft(port);
+    d.database = tmlocal::DbConfig { enabled: true, host: "127.0.0.1".into(), port: closed, ..Default::default() };
+    svc.put(0, d, 1).unwrap();
+    until("catch-up failed", || sink.told().iter().any(|t| t.contains(&Trouble::CatchupFailed))).await;
+    let p = svc.status().db_problem().unwrap();
+    assert_eq!(p.error.map(|e| e.code), Some("connection_refused".to_string()));
+    svc.stop();
+}
+
+#[test]
+fn troubles_of_a_status() {
+    let mut st = Status::default();
+    assert!(st.problems().is_empty());
+    let e = |code: &str| tmlocal::ErrorInfo { code: code.into(), message: "made up".into(), at_ms: 5 };
+    st.mqtt.state = tmlocal::MqttState::Error;
+    for (code, t) in [
+        ("connection_refused", Trouble::ConnectionRefused),
+        ("timeout", Trouble::ConnectionRefused),
+        ("tls_failed", Trouble::ConnectionRefused),
+        ("auth_failed", Trouble::AuthFailed),
+        ("pin_mismatch", Trouble::PinMismatch),
+    ] {
+        st.mqtt.last_error = Some(e(code));
+        assert_eq!(st.mqtt_problem().map(|p| (p.trouble, p.since_ms)), Some((t, Some(5))), "{code}");
+    }
+    // the database: failed, and still while the next catch-up runs; caught up again: none
+    st.database.state = tmlocal::DbState::Error;
+    st.database.last_error = Some(e("query_failed"));
+    assert_eq!(
+        st.problems().iter().map(|p| p.trouble).collect::<Vec<_>>(),
+        [Trouble::PinMismatch, Trouble::CatchupFailed]
+    );
+    st.database.state = tmlocal::DbState::Syncing;
+    assert_eq!(st.db_problem().map(|p| p.trouble), Some(Trouble::CatchupFailed));
+    assert_eq!(Trouble::CatchupFailed.target(), tmlocal::Target::Database);
+    st.database.state = tmlocal::DbState::Ok;
+    st.database.last_error = None;
+    st.mqtt.state = tmlocal::MqttState::Paused;
+    assert!(st.problems().is_empty(), "paused: nothing to say");
+    let words: Vec<&str> = Trouble::ALL.iter().map(|t| t.word()).collect();
+    assert_eq!(words, ["connection_refused", "auth_failed", "pin_mismatch", "quiet", "catchup_failed"]);
 }
 
 #[tokio::test]

@@ -15,9 +15,16 @@
 //! kept password and a new host, port or TLS).
 //!
 //! Nothing connects anywhere until an admin adds it: the service starts no task without its settings file.
+//!
+//! When it is in trouble (its broker refuses the connection, the user name or password, or has another certificate
+//! than the pinned one, goes quiet, or a database catch-up fails), the admins' pages get a notice ([`notice`]) and
+//! an audit entry is written in the server's name, as the TeslaFi input does, told by the engine's
+//! `TeslamateLocalSink::on_change`.
 
 use crate::accounts_admin::{confirm_code, confirm_password};
-use crate::ctx::{Admin, JsonBody, target};
+use crate::ctx::{Admin, JsonBody, audit_details, target};
+use crate::events::{Event, Events};
+use crate::resources::notices::Notice;
 use crate::{ApiError, ApiResult, AppState, Fields, Viewer, ids};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -27,18 +34,156 @@ use axum::{Json, Router};
 use engine::Engine;
 use model::CarId;
 use serde_json::{Map, Value, json};
-use std::sync::Arc;
-use tmlocal::{Config, DbConfig, Draft, Invalid, LocalCar, Match, MqttConfig, Password, ServiceError, Status};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use tmlocal::{
+    Config, DbConfig, Draft, Invalid, LocalCar, Match, MqttConfig, Password, Problem, ServiceError, Status, Trouble,
+};
 
 /// The local TeslaMate input as the web side holds it (handed over with `Builder::service`).
 pub type TeslamateLocalService = tmlocal::Service<engine::TeslamateLocalSink>;
 
 /// The local TeslaMate input of a server over `engine`, keeping its settings sealed with `vault` in
 /// `data/teslamate-local`. Builds nothing that talks to the network; [`TeslamateLocalService::start`] starts reading
-/// (nothing without the settings file).
-pub fn service(data: &std::path::Path, vault: Arc<vault::Vault>, engine: &Engine) -> TeslamateLocalService {
-    let sink = engine::TeslamateLocalSink::new(engine.clone());
-    tmlocal::Service::new(data, vault, Arc::new(sink), tmlocal::Options::default())
+/// (nothing without the settings file). When it gets into trouble an audit entry is written in the server's name and
+/// the admins' pages get a notice ([`notice`]), once per trouble while it lasts.
+pub fn service(
+    data: &std::path::Path,
+    vault: Arc<vault::Vault>,
+    engine: &Engine,
+    audit: Arc<accounts::Audit>,
+    events: Events,
+) -> TeslamateLocalService {
+    service_with(data, vault, engine, audit, events, tmlocal::Options::default())
+}
+
+/// [`service`] with its own connection options (tests: a short quiet time, short waits).
+pub fn service_with(
+    data: &std::path::Path,
+    vault: Arc<vault::Vault>,
+    engine: &Engine,
+    audit: Arc<accounts::Audit>,
+    events: Events,
+    opts: tmlocal::Options,
+) -> TeslamateLocalService {
+    // the troubles told already (a trouble that lasts is told once)
+    let told: Mutex<HashSet<Trouble>> = Mutex::new(HashSet::new());
+    let hook: engine::tesla_in::TeslamateLocalHook = Arc::new(move |st: &Status| {
+        let problems = st.problems();
+        let new: Vec<&Problem> = {
+            let mut t = told.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let new = problems.iter().filter(|p| !t.contains(&p.trouble)).collect();
+            *t = problems.iter().map(|p| p.trouble).collect();
+            new
+        };
+        for p in new {
+            let n = notice(p, now_ms());
+            let details = audit_details(Some(&target("settings", None, "teslamate_local")), &n.message);
+            let (audit, what) = (audit.clone(), audit_action(p.trouble));
+            let write = move || {
+                if let Err(e) = audit.record(None, None, what, &details) {
+                    tracing::warn!("audit: {e}");
+                }
+            };
+            match tokio::runtime::Handle::try_current() {
+                Ok(h) => {
+                    h.spawn_blocking(write);
+                }
+                Err(_) => write(),
+            }
+            if let Ok(v) = serde_json::to_value(&n) {
+                events.publish(Event::Notice { notice: Arc::new(v), admins_only: true });
+            }
+        }
+    });
+    let sink = engine::TeslamateLocalSink { engine: engine.clone(), on_change: Some(hook) };
+    tmlocal::Service::new(data, vault, Arc::new(sink), opts)
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Where every local TeslaMate notice sends the admin: its section of Settings: Integrations.
+pub const FIX_LINK: &str = "/settings/integrations#teslamate";
+
+/// The audit action written when a trouble begins.
+pub fn audit_action(t: Trouble) -> &'static str {
+    match t {
+        Trouble::ConnectionRefused => "teslamate-local-connection-refused",
+        Trouble::AuthFailed => "teslamate-local-auth-failed",
+        Trouble::PinMismatch => "teslamate-local-pin-mismatch",
+        Trouble::Quiet => "teslamate-local-quiet",
+        Trouble::CatchupFailed => "teslamate-local-catchup-failed",
+    }
+}
+
+/// The notice code of a trouble.
+pub fn notice_code(t: Trouble) -> &'static str {
+    match t {
+        Trouble::ConnectionRefused => "teslamate_connection_refused",
+        Trouble::AuthFailed => "teslamate_auth_failed",
+        Trouble::PinMismatch => "teslamate_pin_mismatch",
+        Trouble::Quiet => "teslamate_quiet",
+        Trouble::CatchupFailed => "teslamate_catchup_failed",
+    }
+}
+
+/// The notice of a trouble at `now_ms`: `detail: { part: "mqtt" | "database", error }` (`error` the status's
+/// `last_error` code, null for a quiet broker), linking to Settings: Integrations (#teslamate).
+pub fn notice(p: &Problem, now_ms: u64) -> Notice {
+    let why = p.error.as_ref().map(|e| e.message.trim_end_matches('.').to_string());
+    let why = |default: &str| why.clone().filter(|w| !w.is_empty()).unwrap_or_else(|| default.to_string());
+    let message = match p.trouble {
+        Trouble::ConnectionRefused => format!(
+            "The server cannot reach local TeslaMate's MQTT broker ({}): its live values are not read. Check the host \
+             and port, and that the broker runs; the server tries again by itself.",
+            why("the connection was refused")
+        ),
+        Trouble::AuthFailed => format!(
+            "Local TeslaMate's MQTT broker refused the user name or password ({}): nothing is read from it until you \
+             give the right ones.",
+            why("not authorized")
+        ),
+        Trouble::PinMismatch => "The certificate of local TeslaMate's MQTT broker does not have the pinned SHA-256 \
+                                 fingerprint, so the server does not connect. If the broker's certificate was renewed, \
+                                 pin the new one."
+            .to_string(),
+        Trouble::Quiet => {
+            let hours = p.since_ms.map_or(0, |t| now_ms.saturating_sub(t) / 3_600_000);
+            format!(
+                "Local TeslaMate's MQTT broker is connected but has sent nothing for {hours} hour{}: check that \
+                 TeslaMate runs and publishes to this broker under the topic prefix set (a car asleep for days sends \
+                 nothing either).",
+                if hours == 1 { "" } else { "s" }
+            )
+        }
+        Trouble::CatchupFailed => format!(
+            "The catch-up from local TeslaMate's database failed ({}). It is tried again at the next interval; live \
+             values from MQTT still come.",
+            why("a query failed")
+        ),
+    };
+    let part = match p.trouble.target() {
+        tmlocal::Target::Mqtt => "mqtt",
+        tmlocal::Target::Database => "database",
+    };
+    Notice {
+        code: notice_code(p.trouble),
+        level: "warning",
+        message,
+        since_ms: p.since_ms,
+        fix_link: Some(FIX_LINK),
+        detail: Some(json!({ "part": part, "error": p.error.as_ref().map(|e| e.code.clone()) })),
+    }
+}
+
+/// The notices of the local TeslaMate input in trouble now (for admins).
+pub fn notices(app: &AppState) -> Vec<Notice> {
+    let now = app.now();
+    svc(app).map(|s| s.status().problems().iter().map(|p| notice(p, now)).collect()).unwrap_or_default()
 }
 
 pub fn routes() -> Router<AppState> {

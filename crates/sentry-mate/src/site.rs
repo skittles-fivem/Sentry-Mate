@@ -149,9 +149,10 @@ pub fn web_state(
     let events = web::Events::new();
     let tesla = Arc::new(web::resources::tesla::service(data, v.clone(), engine, audit.clone(), events.clone()));
     // the TeslaFi input: the same, nothing connects before an admin adds a TeslaFi token
-    let teslafi = Arc::new(web::resources::teslafi::service(data, v.clone(), engine, audit, events.clone()));
+    let teslafi = Arc::new(web::resources::teslafi::service(data, v.clone(), engine, audit.clone(), events.clone()));
     // the local TeslaMate: the same, nothing connects before an admin adds its settings
-    let teslamate_local = Arc::new(web::resources::teslamate_local::service(data, v.clone(), engine));
+    let teslamate_local =
+        Arc::new(web::resources::teslamate_local::service(data, v.clone(), engine, audit, events.clone()));
     let app = web::AppState::builder(acc, v, data.join("web"))
         .events(events)
         .service(tesla)

@@ -21,6 +21,7 @@ import { currentPrefs, savePrefs, applyPrefs, onPrefs } from './prefs.js';
 import { SIZES, sizeState, setSize, sizeNote, display } from './display.js';
 import { flash } from './flash.js';
 import { buildLabel, releaseDismissed, dismissRelease } from '../shared/release.js';
+import { isTmNotice, tmNoticeFix, TM_NOTICE_ACTION } from '../shared/teslamate.js';
 
 const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
@@ -220,7 +221,7 @@ function drawNotices() {
     h('div', { class: 'wrap notice-row' },
       icon(n.level === 'info' ? 'info' : 'warning', 'icon notice-icon'),
       h('p', { class: 'notice-text' }, n.message),
-      n.fix_link ? h('a', { class: 'notice-fix', href: fixHref(n) }, /^tesla_/.test(n.code || '') ? 'Open the Tesla account' : n.code === 'release_available' ? 'About this release' : fixWords(n.fix_link), icon('arrowRight')) : null,
+      n.fix_link ? h('a', { class: 'notice-fix', href: fixHref(n) }, /^tesla_/.test(n.code || '') ? 'Open the Tesla account' : isTmNotice(n) ? TM_NOTICE_ACTION : n.code === 'release_available' ? 'About this release' : fixWords(n.fix_link), icon('arrowRight')) : null,
       h('button', { type: 'button', class: 'notice-close', 'aria-label': n.code === 'release_available' ? 'Hide this notice until a later build' : 'Hide this notice for now', onclick: () => {
         if (n.code === 'release_available') { dismissRelease(n); drawNotices(); return; }
         try { const s = dismissed(); s.add(`${n.code}:${n.since_ms}`); sessionStorage.setItem(DISMISS_KEY, JSON.stringify([...s])); } catch { /* fine */ }
@@ -228,10 +229,12 @@ function drawNotices() {
       } }, icon('close'))))));
   drawFooter();
 }
-/** A Tesla account's notice opens that account on Settings: Integrations (#tesla-<id>). */
+/** A Tesla account's notice opens that account on Settings: Integrations (#tesla-<id>), a local TeslaMate notice its
+ * section there (#teslamate). */
 function fixHref(n) {
   const acc = n && n.detail && n.detail.account;
   if (/^tesla_/.test(n.code || '') && acc && /^[A-Za-z0-9_-]+$/.test(acc)) return `${String(n.fix_link).split('#')[0]}#tesla-${acc}`;
+  if (isTmNotice(n)) return tmNoticeFix(n);
   return n.fix_link;
 }
 function fixWords(link) {
