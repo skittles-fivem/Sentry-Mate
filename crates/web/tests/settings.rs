@@ -526,7 +526,7 @@ async fn network() {
     );
     assert_eq!(
         row("tiles"),
-        json!({ "purpose": "tiles", "host": null, "enabled": false, "last_used_ms": null }),
+        json!({ "purpose": "tiles", "host": null, "hosts": [], "preset": "satellite", "enabled": false, "last_used_ms": null }),
         "tiles are offline by default"
     );
     assert_eq!(row("mqtt"), json!({ "purpose": "mqtt", "host": null, "enabled": false, "last_used_ms": null }));
