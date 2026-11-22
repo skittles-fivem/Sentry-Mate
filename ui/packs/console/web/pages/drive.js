@@ -90,7 +90,7 @@ export async function mount(ctx) {
   };
   paintStats();
   if (live) {
-    ctx.events('rows', (ev) => { if (ev.data?.car === cid && (ev.data.kinds || []).includes('drives')) ctx.reload(); });
+    ctx.events('rows', (ev) => { if (ev.data?.car === cid && (ev.data.kinds || []).includes('drives')) ctx.refresh(); });
     ctx.events('now', (ev) => {
       const dr = ev.data?.car === cid ? ev.data.now?.drive : null;
       if (!dr || (dr.drive_id != null && dr.drive_id !== did)) return;

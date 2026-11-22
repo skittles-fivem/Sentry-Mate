@@ -576,7 +576,8 @@ export async function mount(ctx) {
     if (ev.data?.car && !chosen.includes(ev.data.car)) return;
     if (ev.data?.kinds && !ev.data.kinds.includes('charges')) return;
     clearTimeout(rowsT);
-    rowsT = setTimeout(() => { if (!ctx.alive()) return; list.reload(listParams(), { quiet: true }); incomplete.reload(null, { quiet: true }); loadStats(); }, 2000);
+    // built again off screen and swapped in whole (the lists, sparklines, charts and maps never empty first)
+    rowsT = setTimeout(() => { if (ctx.alive()) ctx.refresh(); }, 2000);
   });
   ctx.onCleanup(() => clearTimeout(rowsT));
 }

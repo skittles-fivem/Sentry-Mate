@@ -15,6 +15,7 @@ import { formatNumber } from '../shared/i18n.js';
 import { head, section, kv, textBar, link, note } from '../core/ui.js';
 import { num, stateWord, ago, when, dur, tag, date } from '../core/fmt.js';
 import { safeMap } from '../core/map.js';
+import { offstage } from '../core/stage.js';
 import { chartOrNote, line, timeAxis, valueAxis, cursor, readout } from '../core/chart.js';
 import { rpx } from '../core/display.js';
 import { stateStrip } from '../core/strip.js';
@@ -259,7 +260,9 @@ export async function mount(ctx) {
     const lastD = lastDrive.items?.[0], lastC = lastCharge.items?.[0];
     const placeOf = (x) => x?.place?.name || x?.label || x?.address?.short || '—';
 
-    replace(periodBlock,
+    // drawn off screen and swapped in whole, charts included: a live update never empties the period first
+    await offstage(periodBlock, async (slot) => {
+    replace(slot,
       section({ title: 'period', cover: 'overview.control.refresh', side: h('span', { class: 'muted' }, 'reloads when a drive, charge or parked spell starts or ends') },
         h('div', { class: 'stats' },
           h('span', { class: 'stat', cover: 'overview.stat.distance_logged' }, h('span', { class: 'stat-k' }, 'distance'), fig(row.distance_logged_km, 'distance'), blank ? null : h('span', { class: 'muted' }, ` ${formatNumber(row.drives ?? 0)} drives`)),
@@ -343,6 +346,7 @@ export async function mount(ctx) {
       axes: [timeAxis(tz), valueAxis((v) => formatNumber(v), { scale: 'v', size: 48 }), valueAxis((v) => formatNumber(v), { scale: 'a', side: 1, grid: false, size: 48 })],
       series: [{}, line('volts', 0, { scale: 'v' }), line('amps', 1, { scale: 'a' })],
     }), [cx, none(V), none(A)], { onCursor: chgCursor });
+    });
   }
 
   paintSub(); paintNow(); paintCharge(); paintTools();

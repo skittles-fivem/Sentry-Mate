@@ -71,15 +71,20 @@ export const cover = addCover;
 
 /**
  * Keep an element whose height is not known centred up and down on whole pixels: sets --cy on host to
- * the rounded-down top offset. Returns a stop function.
+ * the rounded-down top offset. Returns a stop function; its update() measures again at once.
  */
 export function centreUpDown(host, box) {
   const set = () => {
+    // measured without the old offset: a host that grew by it would keep part of it (and the box would jump later)
+    host.style.setProperty('--cy', '0px');
     const free = host.clientHeight - box.offsetHeight;
     host.style.setProperty('--cy', `${Math.max(0, Math.floor(free / 2))}px`);
   };
   const ro = new ResizeObserver(set);
   ro.observe(host); ro.observe(box);
   set();
-  return () => ro.disconnect();
+  // stop.update(): measure again now (after the box got its contents), so the first painted frame is already centred
+  const stop = () => ro.disconnect();
+  stop.update = set;
+  return stop;
 }

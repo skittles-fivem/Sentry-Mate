@@ -14,8 +14,8 @@ export function bareScreen(ctx, { wide = false, label = 'login' } = {}) {
   ctx.onCleanup(stop);
   return {
     box, head, body,
-    paint(...children) { replace(body, children); },
-    setWide(on) { box.classList.toggle('bare-box--wide', !!on); },
+    paint(...children) { replace(body, children); stop.update(); },
+    setWide(on) { box.classList.toggle('bare-box--wide', !!on); stop.update(); },
   };
 }
 

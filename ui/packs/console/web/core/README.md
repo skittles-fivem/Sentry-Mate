@@ -52,6 +52,7 @@ pages/<id>.js  one module per page id, plus sign-in and setup; pages/<id>.css wh
 | `ui.js` | `head(ctx)` (the header line), `section`, `kv`, `btn`, `actions`, `note`, `link`, `textBar`, `paint`, `centreUpDown`. |
 | `fmt.js` | `num(value, kind)` (number with its unit muted), `numText`, `time`, `date`, `dateTime`, `when`, `dur`, `ago`, `range`, `slug`, `stateWord`, `tag`. |
 | `bare.js` | The sign-in and set-up box: centred both ways on whole pixels; `canSendSecrets()` and the plain-HTTP line. |
+| `stage.js` | `offstage(slot, build)`: a part of a page drawn again on a live update is built in an invisible box of the same width (charts and all) and swapped in at once. |
 | `table.js` | `table(ctx, opts)`: dense text tables from an API list (server sort and paging, csv) or local rows, a totals row, `data-row` rows, the two-line phone rows (`ph: 'main' \| 'sub' \| 'num'`); `cellBar(frac, cells)`. |
 | `chart.js` | uPlot: `loadUPlot`, `plot(el, ctx, make, data, { onCursor })`, `line(label, n)` (series n: c1 solid, c2 / c3 dashed), `timeAxis(tz)`, `valueAxis(fmt)`, `cursor(syncKey)`, `readout()`, `chartOrNote`. |
 | `map.js` | MapLibre in a flat grey style: `createMap` / `safeMap(el, ctx, opts)` with `line`, `points`, `circle`, `marker`, `fit`, `frame`. |
@@ -98,8 +99,12 @@ pickers). Then sections (`## drives`), `key: value` blocks, tables and charts, o
 | `ready()`, `fail(err, { retry })` | The data-ready signal (`<html data-ready="<id>">`), or the error block (`error:<id>`). |
 | `onCleanup`, `on`, `every`, `events(types, fn)` | Clean-up, listeners, timers and live events that end with the page. |
 | `setTitle`, `link(page, params)`, `setQuery(patch)`, `navigate`, `reload` | Tab title, links that carry car and period, filters in the address. |
+| `refresh()` | Live data changed (a `rows` event): the page is built again off screen and put in place in one step once it is ready, drawn and its own requests are done; the old page stays until then. Asked before the first `ready()`, it waits for it. |
 
 Live data: `ctx.events('now', fn)` and `ctx.events('rows', fn)`; never poll on a timer for data.
+On a live update nothing may go away and come back: update values in place, keep what is on screen until the
+new answer is in (a loading line only the first time), or use `ctx.refresh()` / `offstage()`. `ready()` is marked
+on the next frame once the fonts are in; check with `node ui/tools/check.js --pack console --stable`.
 
 ## Rows and keys
 

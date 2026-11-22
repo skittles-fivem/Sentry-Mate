@@ -23,6 +23,12 @@ api.on('unauthorized', ({ path } = {}) => {
 });
 api.on('events', (info) => { if (info?.state === 'signed_out') sessionEnded(); });
 
+// every face of the pack's fonts, loading from the start: a weight first used deep in a page (a bold figure, a
+// sans heading) is in before that page says it is ready, so text never re-flows under the reader when it swaps in
+if (document.fonts?.load) {
+  for (const f of ['400 1em "JetBrains Mono"', '600 1em "JetBrains Mono"', '400 1em "IBM Plex Sans"', '600 1em "IBM Plex Sans"']) document.fonts.load(f).catch(() => {});
+}
+
 initFrame();
 initKeys();
 startRouter();

@@ -54,20 +54,101 @@ function onState(s) {
       m.ctx.query = s.query;
       m.ctx.state = s;
       Promise.resolve().then(() => onQuery(s.query, m.ctx))
-        .then(() => { if (mounted === m) markReady(m.ctx.id); }, (e) => { if (mounted === m) m.ctx.fail(e); });
+        .then(() => { if (mounted === m) markWhenSettled(m.ctx.id, () => mounted === m); }, (e) => { if (mounted === m) m.ctx.fail(e); });
       return;
     }
   }
   mount(s, { keepScroll: !!mounted && mounted.ctx?.id === s.page && mounted.ctx?.carId === s.car });
 }
 
-function unmountCurrent() {
-  if (!mounted) return;
+// keep: a live refresh builds the new page off screen first (see stageView), so the old page's own clean-up
+// (charts and maps it removes) waits until the new one takes its place; its requests and events stop at once
+function unmountCurrent(keep = false) {
+  if (!mounted) return null;
   const m = mounted;
   mounted = null;
-  try { m.instance?.unmount?.(); } catch (e) { console.error(e); }
-  for (const f of m.cleanups.splice(0).reverse()) { try { f(); } catch (e) { console.error(e); } }
   m.scope.abort();
+  const finish = () => {
+    try { m.instance?.unmount?.(); } catch (e) { console.error(e); }
+    for (const f of m.cleanups.splice(0).reverse()) { try { f(); } catch (e) { console.error(e); } }
+  };
+  if (keep) return finish;
+  finish();
+  return null;
+}
+
+// A live refresh (ctx.refresh: a drive or charge started or ended) builds the page again in an invisible box of
+// the view's width and puts it in the view in one step once it is drawn and has stopped changing: the old page
+// stays on screen until then, so nothing goes away, shows a loading line, and comes back.
+let staged = null;   // { stage, commit, settle, drop }
+// keepOld: a newer live refresh takes over, and the page still on screen is cleaned up when that one commits
+function dropStage(keepOld = false) { const f = staged?.drop(keepOld) || null; staged = null; return f; }
+function stageView(view, finishOld) {
+  const r = view.getBoundingClientRect();
+  const stage = h('div', { class: view.className, 'aria-hidden': 'true', inert: true, dataset: { offstage: '' } });
+  Object.assign(stage.style, {
+    position: 'fixed', top: '0', left: `${r.left}px`, width: `${r.width}px`, boxSizing: 'border-box', height: '100vh', overflow: 'hidden',
+    visibility: 'hidden', pointerEvents: 'none', zIndex: '-1',
+  });
+  document.body.append(stage);
+  let done = false, quietT = 0, mo = null;
+  const maxT = setTimeout(() => commit(), 15000);
+  const end = () => { done = true; clearTimeout(maxT); clearTimeout(quietT); mo?.disconnect(); stage.remove(); if (staged?.stage === stage) staged = null; };
+  function commit() {
+    if (done) return;
+    const nodes = [...stage.childNodes];
+    end();
+    // the control that had the focus: the same place in the new page gets it back
+    const path = [];
+    for (let e = document.activeElement; e && e !== view && view.contains(e); e = e.parentElement) path.unshift([...e.parentElement.children].indexOf(e));
+    view.replaceChildren(...nodes);
+    finishOld?.();
+    if (path.length) {
+      let e = view;
+      for (const i of path) e = e?.children[i];
+      e?.focus?.({ preventScroll: true });
+    }
+  }
+  // after ready: wait until the new page has stopped changing (charts drawn, late parts loaded) and has no
+  // request of its own under way, at most 6 s
+  function settle(busy = () => 0) {
+    if (done) return;
+    const later = setTimeout(() => commit(), 6000);
+    const again = () => {
+      clearTimeout(quietT);
+      quietT = setTimeout(() => { if (busy() > 0) { again(); return; } clearTimeout(later); commit(); }, 200);
+    };
+    mo = new MutationObserver(again);
+    mo.observe(stage, { subtree: true, childList: true, attributes: true, characterData: true });
+    again();
+  }
+  const drop = (keepOld) => { if (done) return null; end(); if (keepOld) return finishOld; finishOld?.(); return null; };
+  staged = { stage, commit, settle, drop };
+  return staged;
+}
+
+// A page's API client that also counts its requests under way (a live refresh waits for them, see stageView).
+function counted(sc) {
+  let n = 0;
+  const track = (p) => { n++; const off = () => { n--; }; p.then(off, off); return p; };
+  return {
+    ...sc,
+    get busy() { return n; },
+    get aborted() { return sc.aborted; },
+    get: (...a) => track(sc.get(...a)),
+    page: (...a) => track(sc.page(...a)),
+    list: (...a) => { const l = sc.list(...a); const all = l.all.bind(l); return Object.assign(l, { all: (...b) => track(all(...b)) }); },
+    pager: (...a) => { const pg = sc.pager(...a); const more = pg.more.bind(pg); return Object.assign(pg, { more: (...b) => track(more(...b)) }); },
+  };
+}
+
+// once the fonts the page uses are in (a late swap would re-flow the text it just drew), at the next frame
+function markWhenSettled(id, alive) {
+  requestAnimationFrame(() => {
+    const fonts = document.fonts;
+    if (fonts && fonts.status === 'loading') fonts.ready.then(() => { if (alive()) markReady(id); });
+    else if (alive()) markReady(id);
+  });
 }
 
 function pageCss(id) {
@@ -79,27 +160,31 @@ function pageCss(id) {
 }
 const dropCss = (keep) => { for (const l of document.head.querySelectorAll('link[data-page-css]')) if (l.dataset.pageCss !== keep) l.remove(); };
 
-async function mount(s, { keepScroll = false } = {}) {
+async function mount(s, { keepScroll = false, live = false } = {}) {
   const my = ++seq;
-  unmountCurrent();
-  unready();
-  resetRows();
+  const older = dropStage(live);
+  const finishMounted = unmountCurrent(live);
+  const finishOld = older || finishMounted ? () => { older?.(); finishMounted?.(); } : null;
+  if (!live) { unready(); resetRows(); }
   const id = s.page;
-  const view = frame.view();
+  const st = live ? stageView(frame.view(), finishOld) : null;
+  const view = st ? st.stage : frame.view();
+  const shown = () => { if (st) st.commit(); };
   const info = pageInfo(id);
-  const scope = api.scope();
+  const scope = counted(api.scope());
   const cleanups = [];
   const rec = { key: routeKey(s), queryKey: queryKey(s.query), ctx: null, instance: null, mod: null, cleanups, scope };
   mounted = rec;
   const alive = () => mounted === rec && my === seq;
 
   document.documentElement.dataset.screen = info?.bare ? 'bare' : 'app';
-  view.setAttribute('aria-busy', 'true');
+  if (!live) view.setAttribute('aria-busy', 'true');
 
   const showError = (err, retry = () => mount(state.current(), { keepScroll: true })) => {
     if (!alive()) return;
     replace(view, h('div', { class: 'page' }, h('header', { class: 'ph' }, h('h1', { class: 'ph-title' }, info?.name || 'not found')), errorBlock(err, { retry, home: id !== 'fleet' && !info?.bare })));
-    view.removeAttribute('aria-busy');
+    shown();
+    frame.view().removeAttribute('aria-busy');
     markFailed(id || 'not-found');
   };
 
@@ -122,7 +207,7 @@ async function mount(s, { keepScroll = false } = {}) {
     return;
   }
 
-  if (!keepScroll || first) replace(view, loadingPage(`loading ${info.link}`));
+  if (!live && (!keepScroll || first)) replace(view, loadingPage(`loading ${info.link}`));
 
   let car = null;
   if (s.car) {
@@ -167,6 +252,7 @@ async function mount(s, { keepScroll = false } = {}) {
   dropCss(mod.css ? id : null);
   rec.mod = mod;
 
+  let shownOnce = false, refreshAsked = false;
   const ctx = {
     id, info, view, state: s, query: s.query, car, carId: s.car, tz, period,
     params: period ? periodParams(period) : {},
@@ -176,7 +262,14 @@ async function mount(s, { keepScroll = false } = {}) {
     on(target, type, f, opts) { const off = on(target, type, f, opts); cleanups.push(off); return off; },
     every(ms, f) { const t = setInterval(() => { if (alive()) f(); }, ms); cleanups.push(() => clearInterval(t)); return t; },
     events(types, f) { return scope.events((ev) => { if (alive()) f(ev); }, { types: [].concat(types) }); },
-    ready() { if (!alive()) return; view.removeAttribute('aria-busy'); markReady(id); },
+    ready() {
+      if (!alive()) return;
+      shownOnce = true;
+      if (refreshAsked) { refreshAsked = false; setTimeout(() => ctx.refresh(), 0); }
+      st?.settle(() => scope.busy);
+      frame.view().removeAttribute('aria-busy');
+      markWhenSettled(id, alive);
+    },
     fail(err, opts = {}) { if (api.isAbort(err) || !alive()) return; console.warn(err); showError(err, opts.retry === undefined ? undefined : opts.retry); },
     setTitle(...parts) { docTitle(...parts, car?.name); },
     link: (page, params) => state.linkTo(page, params),
@@ -190,6 +283,13 @@ async function mount(s, { keepScroll = false } = {}) {
     },
     navigate: (href, opts) => state.navigate(href, opts),
     reload: () => mount(state.current(), { keepScroll: true }),
+    // live data changed (a 'rows' event): build the page again without taking the one on screen away first
+    // (asked before this page was ready: once it is, so a slow first load is never started over and over)
+    refresh: () => {
+      if (!alive()) return;
+      if (!shownOnce) { refreshAsked = true; return; }
+      mount(state.current(), { keepScroll: true, live: true });
+    },
   };
   rec.ctx = ctx;
   docTitle(typeof mod.title === 'function' ? mod.title(ctx) : info.name, car?.name);
@@ -203,6 +303,7 @@ async function mount(s, { keepScroll = false } = {}) {
     ctx.fail(err);
   }
   if (!alive()) return;
+  if (live) { showPending(); return; }
   if (!keepScroll) {
     window.scrollTo(0, 0);
     document.getElementById('scroller')?.scrollTo?.(0, 0);   // phones scroll inside it

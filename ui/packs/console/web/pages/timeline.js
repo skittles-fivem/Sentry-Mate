@@ -191,7 +191,8 @@ export async function mount(ctx) {
     ctx.setQuery({ kinds: kinds.size === 5 ? null : [...kinds].join(','), place: placeId || null, q: text || null });
     pager = ctx.api.pager(`cars/${enc}/timeline`, params(), { limit: 60 });
     csvLink.href = ctx.api.csvUrl(`cars/${enc}/timeline`, params());
-    replace(list, loadingLine('loading the timeline'));
+    // the loading line only the first time: a live reload keeps the entries on screen until the new ones are in
+    if (!list.firstChild) replace(list, loadingLine('loading the timeline'));
     await loadMore(my);
   }
 
