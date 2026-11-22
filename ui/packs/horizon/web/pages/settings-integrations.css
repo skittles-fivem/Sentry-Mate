@@ -88,6 +88,12 @@
 .tz-pace > div { display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.25rem 0; box-shadow: inset 0 -1px 0 rgba(61, 240, 255, 0.16); font-size: var(--fs-sm); }
 .tz-pace dt { color: #c7e4ef; }
 .tz-pace dd { margin: 0; font-family: var(--mono); color: var(--radio-ink); white-space: nowrap; }
+.tz-paces { display: grid; gap: 0.25rem; margin: 0.5rem 0; padding: 0; list-style: none; }
+.tz-pc { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; padding: 0.25rem 0.5rem; border-left: 2px solid transparent; font-size: var(--fs-sm); color: #c7e4ef; }
+.tz-pc b { min-width: 4.5rem; }
+.tz-pc .mono { font-family: var(--mono); overflow-wrap: anywhere; }
+.tz-pc.is-on { border-left-color: var(--radio-ink); background: rgba(61, 240, 255, 0.06); }
+.tz-pc.is-on b, .tz-pc.is-on .mono { color: var(--radio-ink); }
 .tz-add { display: grid; gap: 0.875rem; min-width: 0; }
 .tz-add-head { display: flex; align-items: center; gap: 0.5rem; margin: 0; font-weight: 700; }
 .tz-region { display: grid; gap: 0.375rem; max-width: 20rem; }
