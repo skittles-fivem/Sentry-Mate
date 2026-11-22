@@ -355,7 +355,7 @@ async function mountCar(ctx) {
     columns: [
       { key: 'start', label: 'From', render: (g) => h('a', { class: 'main', href: timelineAt(cid, g.start_ms, g.end_ms ?? ctx.api.now()), title: 'Open the timeline at this gap' }, when(ctx, g.start_ms)), csv: { label: 'From (UTC)', value: (g) => iso(g.start_ms) } },
       { key: 'dur', label: 'Lasted', num: true, render: (g) => (g.end_ms == null ? pill('Still open', { tone: 'warm' }) : formatDuration(g.end_ms - g.start_ms)), csv: { label: 'Lasted (minutes)', value: (g) => (g.end_ms == null ? '' : Math.round((g.end_ms - g.start_ms) / 600) / 100) } },
-      { key: 'cause', label: 'Cause', render: (g) => { const c = GAP_CAUSES[g.cause] || [g.cause, '']; return h('span', { class: 'cell-text', title: c[1] }, h('span', null, c[0]), g.gap_reason ? h('span', { class: 'sub' }, SPAN_REASONS[g.gap_reason] || g.gap_reason) : null); }, csv: { label: 'Cause', value: (g) => [(GAP_CAUSES[g.cause] || [g.cause])[0], g.gap_reason ? SPAN_REASONS[g.gap_reason] || g.gap_reason : null].filter(Boolean).join(': ') } },
+      { key: 'cause', label: 'Cause', render: (g) => { const c = GAP_CAUSES[g.cause] || [g.cause, '']; return h('span', { class: 'cell-text', title: c[1] }, h('span', null, c[0]), g.gap_reason ? h('span', { class: 'sub' }, SPAN_REASONS[g.gap_reason] || g.gap_reason) : null, c[1] ? h('span', { class: 'sub hl-phone-only' }, c[1]) : null); }, csv: { label: 'Cause', value: (g) => [(GAP_CAUSES[g.cause] || [g.cause])[0], g.gap_reason ? SPAN_REASONS[g.gap_reason] || g.gap_reason : null].filter(Boolean).join(': ') } },
       { key: 'jump', label: 'Odometer moved', num: true, render: (g) => q(g.odometer_jump_km, 'distance', { why: 'not known' }), csv: column('Odometer moved', 'odometer_jump_km', 'distance') },
       { key: 'where', label: 'Where', render: (g) => h('span', { class: 'cell-text' }, g.from_place?.name || 'Unknown place', g.to_place && g.to_place.id !== g.from_place?.id ? h('span', { class: 'sub' }, `to ${g.to_place.name}`) : null), csv: { label: 'Where', value: (g) => g.from_place?.name || '' } },
       { key: 'source', label: 'Data from', render: (g) => srcMark(g, { short: true }) || DASH, csv: { label: 'Data from', value: (g) => srcText(g) } },
@@ -712,7 +712,9 @@ async function mountSystem(ctx) {
             kvRow('Cars open', `${formatNumber(sh.db?.open_cars ?? 0)} of ${formatNumber(sh.db?.cars ?? 0)}`, 'car', { title: 'Car stores kept open for quick answers.' }),
             kvRow('Open stores take', bytes(sh.db?.open_bytes), 'server'),
             kvRow('Cars kept in memory', formatNumber(sh.ingest?.cached_cars ?? 0), 'car'),
-            kvRow('Address look-ups', geo ? `${geo.mode === 'online' ? 'Online' : 'Offline'}, ${formatNumber(geo.cache_size ?? 0)} cached` : (sh.geocoder ? `${sh.geocoder.mode}, ${formatNumber(sh.geocoder.cache_size ?? 0)} cached` : DASH), 'globe',
+            kvRow('Address look-ups', [geo ? `${geo.mode === 'online' ? 'Online' : 'Offline'}, ${formatNumber(geo.cache_size ?? 0)} cached` : (sh.geocoder ? `${sh.geocoder.mode}, ${formatNumber(sh.geocoder.cache_size ?? 0)} cached` : DASH),
+              // the hit rate is the row's title on a desktop; a phone has no hover, so it is written out there
+              sh.geocoder?.hits_pct != null ? h('span', { class: 'hl-phone-only' }, ` · ${formatNumber(sh.geocoder.hits_pct, { maximumFractionDigits: 1 })} % from the cache`) : null], 'globe',
               { title: sh.geocoder?.hits_pct != null ? `${formatNumber(sh.geocoder.hits_pct, { maximumFractionDigits: 1 })} % answered from the cache` : null }),
           ])),
         h('div', null,

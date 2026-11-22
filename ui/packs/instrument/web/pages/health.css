@@ -107,3 +107,25 @@
 .hl-tesla { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
 .hl-tesla .hl-sub, .hl-tesla p { margin: 0; }
 .hl-tesla > .link { align-self: flex-start; display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); }
+
+/* phone (<html data-phone>): cards read left to right, what a desktop shows
+   on hover is written out, links are whole taps */
+.hl-phone-only { display: none; }
+:root[data-phone] .hl-phone-only { display: inline; }
+:root[data-phone] .cell-text > .hl-phone-only { display: block; }
+:root[data-phone] .hl-page .is-num .cell-text { align-items: flex-start; }
+/* the long lists (40 days, every signal) run with the page: a box that scrolls inside a scrolling page is hard to use by thumb */
+:root[data-phone] .hl-page :is(.hl-days, .hl-signals) .tbl-scroll { max-height: none; overflow-y: visible; }
+:root[data-phone] .hl-tot-figs .metric { min-width: 0; }
+:root[data-phone] .hl-tot-figs .metric-value { white-space: normal; overflow-wrap: anywhere; }
+:root[data-phone] .hl-kinds td:first-child { min-width: 0; }
+:root[data-phone] .hl-kinds .hl-wrap { max-width: none; }
+:root[data-phone] .hl-days td { white-space: normal; }
+:root[data-phone] .hl-page .q-u { font-size: max(0.86em, var(--fs-floor)); }
+:root[data-phone] .hl-tesla > .link { min-height: var(--tap); }
+:root[data-phone] .hl-key { grid-template-columns: auto minmax(0, 1fr); }
+:root[data-phone] .hl-key > .hl-key-r { grid-column: 2; align-items: flex-start !important; text-align: left; }
+:root[data-phone] .hl-page .field--search { width: 100%; }
+:root[data-phone] .hl-srv-cols .kv + .hl-sub { margin-top: round(1.25rem, var(--e)); }
+:root[data-phone] .hl-pre, :root[data-phone] .hl-code { overflow-wrap: anywhere; }
+:root[data-phone] .hl-page a.cell-text { min-height: var(--tap); justify-content: center; }
