@@ -27,3 +27,32 @@
 }
 .tl-car-src { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.375rem, var(--e)); margin-top: round(0.25rem, var(--e)); }
 .tl-fp { color: var(--live); font-weight: 500; }
+
+/* phone (<html data-phone>): the filters stack full width; each row puts its time and length on top, what
+   happened under it (wrapping, never cut), the rail on the left and a whole-tap chevron on the right */
+:root[data-phone] .tl-filters > * { flex: 1 1 100%; min-width: 0; }
+:root[data-phone] .tl-filters > .btn { flex: 0 1 auto; }
+:root[data-phone] .tl-filters .seg { display: flex; }
+:root[data-phone] .tl-filters .seg-btn { flex: 1 1 auto; }
+:root[data-phone] .tl-filters .select, :root[data-phone] .tl-filters .field--search { width: 100%; }
+:root[data-phone] .tl-rows .day-head { padding-left: round(1rem, var(--e)); padding-right: round(1rem, var(--e)); }
+:root[data-phone] .tl-rows .day-head h3 { font-size: max(0.875rem, var(--fs-floor)); }
+:root[data-phone] .tl-legend-note { padding-left: round(1rem, var(--e)); padding-right: round(1rem, var(--e)); overflow-wrap: anywhere; }
+:root[data-phone] .tl-rows .tl-item {
+  grid-template-columns: round(1.125rem, var(--e)) minmax(0, 1fr) auto var(--tap);
+  grid-template-rows: auto auto; column-gap: round(0.625rem, var(--e)); align-items: center;
+  padding: round(0.25rem, var(--e)) round(0.5rem, var(--e)) round(0.25rem, var(--e)) round(1rem, var(--e));
+}
+:root[data-phone] .tl-rows .tl-rail { grid-column: 1; grid-row: 1 / span 2; }
+:root[data-phone] .tl-rows .tl-time { grid-column: 2; grid-row: 1; flex-direction: row; flex-wrap: wrap; align-items: center; column-gap: round(0.375rem, var(--e)); min-height: var(--tap); margin-bottom: round(-0.5rem, var(--e)); white-space: normal; }
+/* the day heading above already names the day */
+:root[data-phone] .tl-rows .tl-day { display: none; }
+:root[data-phone] .tl-rows .tl-dur { grid-column: 3; grid-row: 1; }
+:root[data-phone] .tl-rows .tl-body { grid-column: 2 / span 2; grid-row: 2; padding: 0 0 round(0.5rem, var(--e)); }
+:root[data-phone] .tl-rows .row-chev { grid-column: 4; grid-row: 1 / span 2; align-self: stretch; align-items: center; justify-content: center; min-height: var(--tap); }
+:root[data-phone] .tl-rows .tl-body .title { flex-wrap: wrap; align-items: center; column-gap: round(0.625rem, var(--e)); white-space: normal; overflow: visible; }
+:root[data-phone] .tl-rows .tl-kind { align-items: center; min-height: var(--tap); margin-block: round(-0.25rem, var(--e)); }
+:root[data-phone] .tl-rows .tl-what { min-width: 0; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+:root[data-phone] .tl-rows .tl-body .detail { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+:root[data-phone] .tl-rows .tl-skel { grid-template-rows: auto; }
+:root[data-phone] .tl-help summary { min-height: var(--tap); }
