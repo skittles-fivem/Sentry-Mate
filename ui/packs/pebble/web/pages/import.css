@@ -57,3 +57,9 @@
 .im-report .tile-nums { padding: var(--s2) 0; }
 .im-report-of { font-size: var(--f14); line-height: var(--l14); color: var(--muted); overflow-wrap: anywhere; }
 .im-warn .num-n { color: var(--sun); }
+
+/* a count the file does not have: a faint dash, never 0 */
+.im-gap { color: var(--muted); font-weight: 600; }
+.im-up-row { flex-wrap: wrap; }
+.im-up-row > .row-text { flex: 1 1 round(14rem, var(--e)); min-width: 0; overflow-wrap: anywhere; }
+.im-up-row > .row-side { margin-left: auto; }

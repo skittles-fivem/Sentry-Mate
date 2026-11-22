@@ -115,6 +115,8 @@ const FAILURES = {
   mixed_cars: 'The file holds rows that point at cars the file does not describe. Make a fresh, complete backup and try again.',
   no_car: 'The file holds no car. A backup made before TeslaMate saw a car has nothing to import.',
   truncated: 'The file ends part-way through. It was cut short when it was copied; copy it again.',
+  one_file_only: 'A TeslaMate backup / CAN export is imported on its own: upload it alone. Several files at once are for TeslaFi\'s CSVs only.',
+  not_a_teslafi_export: 'Several files go up as one TeslaFi import, and one of them is not a TeslaFi export (the server names it below). Discard this import and upload only TeslaFi\'s CSVs (.csv, .csv.gz or a .zip of them), or that other file on its own.',
   not_a_can_export: 'This zip is not a Sentry Six Manager CAN export. In Sentry Six Manager, download the CAN export bundle (Nerd panel, Logs + ids.csv, the car\'s key, From before its first log to now) and upload that .zip as it is. A TeslaMate backup is uploaded as the .sql file itself (or .sql.gz, .sql.xz), not zipped.',
   unreadable: 'The file cannot be read as a zip (it is damaged, cut short, encrypted or packed with a method other than deflate). Download it again and upload it as it is.',
   read_failed: 'The server could not read the uploaded file back. Upload it again.',
@@ -134,7 +136,15 @@ function startWords(e) {
 }
 
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
-const rowsOf = (o) => Object.values(o || {}).reduce((a, b) => a + b, 0);
+// a count the file does not have is null: a gap (the faint dash), never 0; a sum adds only the numbers present
+const sumOf = (list) => { const v = list.filter((x) => x != null); return v.length ? v.reduce((a, b) => a + b, 0) : null; };
+const rowsOf = (o) => (o == null ? null : sumOf(Object.values(o)) ?? 0);
+const less = (a, b) => (a == null ? null : a - (b ?? 0));
+const gap = () => h('span', { class: 'faint', title: 'Not in the file' }, DASH);
+const cnt = (n) => (n == null ? gap() : num(n));
+const figNum = (n) => (n == null ? null : num(n)); // a metric shows null as its own gap
+const counted = (cars) => (cars || []).filter((c) => c.match !== 'leave_out');
+const PARALLEL = 3; // files sent at the same time; each file's chunks one after another
 const pct = (a, b) => (b > 0 ? Math.max(0, Math.min(100, (a / b) * 100)) : 0);
 
 /* ====================================================================== the page */
@@ -149,7 +159,7 @@ export async function mount(ctx) {
     h('span', { 'aria-current': 'page' }, 'Import'));
   const head = pageHead({
     eyebrow: trail, title: 'Import history',
-    sub: ['Admins only', 'TeslaMate backup (plain, gzip or xz) or Sentry Six Manager CAN export (.zip)', 'times in ' + tz],
+    sub: ['Admins only', 'TeslaMate backup (plain, gzip or xz), TeslaFi CSVs (several at once) or Sentry Six Manager CAN export (.zip)', 'times in ' + tz],
     purpose: 'Brings in the history TeslaMate recorded before the CAN Bridge, from TeslaMate\'s own backup file, or the CAN Bridge logs Sentry Six Manager already has, from its CAN export bundle. The whole file is checked before anything is stored, and running it again stores nothing twice.',
   });
 
@@ -161,7 +171,8 @@ export async function mount(ctx) {
   }
 
   const S = { jobs: [], cars: [], job: null, match: [], matchErr: null, overlaps: [] };
-  const up = { file: null, active: false, paused: false, error: null, startedAt: 0, sentAt0: 0 };
+  // files: the chosen File of each job file (by its index) still to send; sent: each file's offset while sending
+  const up = { files: new Map(), sent: new Map(), active: false, paused: false, stop: false, failed: [], startedAt: 0, sentAt0: 0 };
 
   async function loadJobs() { S.jobs = await ctx.api.list('imports', { limit: 100 }).all({ max: 1000 }); }
   try {
@@ -197,37 +208,55 @@ export async function mount(ctx) {
   }
 
   /* ---------------------------------------------------------------- upload */
-  const fileInput = h('input', { class: 'im-file-input', type: 'file', accept: '.sql,.gz,.xz,.zip,.dump,.bak,.txt,application/sql,application/gzip,application/x-xz,application/zip', 'aria-label': 'TeslaMate backup or Sentry Six Manager CAN export',
-    onchange: () => { const f = fileInput.files?.[0]; fileInput.value = ''; if (f) chose(f); } });
+  const fileInput = h('input', { class: 'im-file-input', type: 'file', multiple: true, accept: '.sql,.gz,.xz,.zip,.csv,.dump,.bak,.txt,application/sql,application/gzip,application/x-xz,application/zip,text/csv', 'aria-label': 'TeslaMate backup, TeslaFi CSVs or Sentry Six Manager CAN export',
+    onchange: () => { const fs = [...(fileInput.files || [])]; fileInput.value = ''; if (fs.length) chose(fs); } });
   const drop = h('label', { class: 'im-drop' }, fileInput,
     h('span', { class: 'im-drop-ic' }, icon('upload')),
-    h('span', { class: 'im-drop-main' }, 'Choose the backup file, or drop it here'),
-    h('span', { class: 'im-drop-sub' }, 'The .sql file of a TeslaMate database backup, as it is or compressed (.gz, .xz), or the .zip of Sentry Six Manager\'s CAN export bundle. Up to 64 GB.'));
+    h('span', { class: 'im-drop-main' }, 'Choose the file or files, or drop them here'),
+    h('span', { class: 'im-drop-sub' }, 'The .sql file of a TeslaMate database backup, as it is or compressed (.gz, .xz); TeslaFi\'s CSV exports (.csv, .csv.gz or a .zip of them), several at once is fine, for example all of TeslaFi\'s monthly CSVs, and they become one import; or the .zip of Sentry Six Manager\'s CAN export bundle. A TeslaMate backup or a CAN export goes up on its own. Up to 64 GB a file.'));
   ctx.on(drop, 'dragover', (e) => { e.preventDefault(); drop.classList.add('im-drop--over'); });
   ctx.on(drop, 'dragleave', () => drop.classList.remove('im-drop--over'));
-  ctx.on(drop, 'drop', (e) => { e.preventDefault(); drop.classList.remove('im-drop--over'); const f = e.dataTransfer?.files?.[0]; if (f) chose(f); });
+  ctx.on(drop, 'drop', (e) => { e.preventDefault(); drop.classList.remove('im-drop--over'); const fs = [...(e.dataTransfer?.files || [])]; if (fs.length) chose(fs); });
 
   const upErr = h('p', { class: 'form-error im-err', hidden: true, role: 'alert' });
   function showUpErr(text) { if (text) replace(upErr, icon('warn', 'ico--sm'), text); upErr.hidden = !text; }
 
-  async function chose(file) {
+  // the files of a job (an older job view without files is its own one file) and where each one's chunks go
+  const jobFiles = (j) => (!j ? [] : Array.isArray(j.files) && j.files.length ? j.files
+    : [{ index: 0, name: j.name, bytes_total: j.bytes_total, uploaded_bytes: j.uploaded_bytes || 0, upload_url: null }]);
+  const fileUrl = (j, f) => f.upload_url || (f.index ? `imports/${enc(j.id)}/files/${f.index}` : `imports/${enc(j.id)}`);
+  const sentOf = (f) => (up.sent.has(f.index) ? up.sent.get(f.index) : f.uploaded_bytes || 0);
+  const uploadedOf = (j) => (j ? jobFiles(j).reduce((a, f) => a + Math.min(sentOf(f), f.bytes_total || 0), 0) : 0);
+  const fileList = (fs) => fs.map((f) => `${f.name} (${bytes(f.bytes_total)})`).join(', ');
+
+  async function chose(files) {
     showUpErr(null);
     const j = S.job;
     if (j && j.status === 'uploading' && !up.active) {
-      // go on with an upload that stopped: it must be the same file
-      if (file.size !== j.bytes_total || file.name !== j.name) {
-        showUpErr(`That is not the file this upload was started with (${j.name}, ${bytes(j.bytes_total)}). Choose that file to go on, or discard this upload to start with another.`);
+      // go on with an upload that stopped: each chosen file goes to the job file of the same name and size
+      const want = jobFiles(j).filter((f) => (f.uploaded_bytes || 0) < f.bytes_total);
+      const used = new Set();
+      for (const f of want) {
+        const m = files.find((x) => !used.has(x) && x.name === f.name && x.size === f.bytes_total);
+        if (m) { used.add(m); up.files.set(f.index, m); }
+      }
+      const missing = want.filter((f) => !up.files.has(f.index));
+      if (missing.length === want.length) {
+        showUpErr(want.length === 1
+          ? `That is not the file this upload was started with (${fileList(want)}). Choose that file to go on, or discard this upload to start with another.`
+          : `None of those is a file this upload still needs: ${fileList(want)}. Choose them (all at once is fine) to go on, or discard this upload to start with others.`);
         return;
       }
-      up.file = file;
+      if (missing.length) showUpErr(`Still to choose, to finish the upload: ${fileList(missing)}. The others go on now.`);
       upload(j);
       return;
     }
     if (j && UNFINISHED.includes(j.status)) { showUpErr('An import is not finished yet. Wait for it, or discard it, before you upload another file.'); return; }
     try {
-      const created = await ctx.api.post('imports', { name: file.name, bytes_total: file.size });
+      const created = await ctx.api.post('imports', { files: files.map((f) => ({ name: f.name, bytes_total: f.size })) });
       if (!ctx.alive()) return;
-      up.file = file;
+      up.files = new Map(); up.sent = new Map();
+      jobFiles(created).forEach((f, i) => { if (files[i]) up.files.set(f.index ?? i, files[i]); });
       S.jobs = [created, ...S.jobs.filter((x) => x.id !== created.id)];
       S.job = created;
       ctx.setQuery({ import: created.id });
@@ -240,55 +269,90 @@ export async function mount(ctx) {
     }
   }
 
-  async function upload(job) {
-    if (up.active || !up.file) return;
-    up.active = true; up.paused = false; up.error = null;
-    up.startedAt = Date.now(); up.sentAt0 = job.uploaded_bytes || 0;
-    paintAll();
-    const file = up.file;
-    const max = job.chunk_max_bytes || S.chunkMax || (1024 * 1024 - 1024);
-    S.chunkMax = max;
-    let off = job.uploaded_bytes || 0, tries = 0;
-    while (off < file.size && ctx.alive() && !up.paused) {
+  // one file: its chunks one after another, from where the server has it
+  async function sendFile(job, f, max) {
+    const file = up.files.get(f.index);
+    let off = f.uploaded_bytes || 0, tries = 0;
+    up.sent.set(f.index, off);
+    while (off < file.size && ctx.alive() && !up.paused && !up.stop) {
       try {
         const buf = await file.slice(off, Math.min(file.size, off + max)).arrayBuffer();
         const sum = hex(await crypto.subtle.digest('SHA-256', buf));
-        const r = await ctx.api.patch(`imports/${enc(job.id)}`, buf, { headers: {
+        const r = await ctx.api.patch(fileUrl(job, f), buf, { headers: {
           'Content-Type': 'application/offset+octet-stream', 'Upload-Offset': String(off), 'Upload-Length': String(file.size), 'Upload-SHA256': sum } });
         if (!ctx.alive()) return;
         tries = 0;
-        off = r.offset ?? r.uploaded_bytes;
+        off = r.offset ?? r.files?.find((x) => x.index === f.index)?.uploaded_bytes ?? r.uploaded_bytes;
+        up.sent.set(f.index, off);
         setJob(r);
         paintUploadProgress();
       } catch (e) {
         if (!ctx.alive()) return;
         if ((e?.code === 'wrong_offset' || e?.code === 'checksum_mismatch' || e?.code === 'network' || e?.code === 'timeout') && tries < 3) {
           tries++;
-          try { const fresh = await ctx.api.get(`imports/${enc(job.id)}`); if (!ctx.alive()) return; setJob(fresh); off = fresh.uploaded_bytes; if (fresh.status !== 'uploading') break; } catch { /* try the chunk again */ }
+          try {
+            const fresh = await ctx.api.get(`imports/${enc(job.id)}`);
+            if (!ctx.alive()) return;
+            setJob(fresh);
+            if (fresh.status !== 'uploading') { up.stop = true; break; }
+            const ff = jobFiles(fresh).find((x) => x.index === f.index);
+            if (ff) { off = ff.uploaded_bytes || 0; up.sent.set(f.index, off); }
+          } catch { /* try the chunk again */ }
           continue;
         }
-        up.error = e?.code === 'not_uploading' ? null : e;
+        if (e?.code === 'not_uploading') { up.stop = true; break; }
+        up.failed.push({ name: file.name, off, e });
         break;
       }
     }
+    if (off >= file.size) up.files.delete(f.index);
+  }
+
+  async function upload(job) {
+    if (up.active || !up.files.size) return;
+    up.active = true; up.paused = false; up.stop = false; up.failed = [];
+    up.startedAt = Date.now(); up.sentAt0 = uploadedOf(job);
+    const max = job.chunk_max_bytes || S.chunkMax || (1024 * 1024 - 1024);
+    S.chunkMax = max;
+    const queue = jobFiles(job).filter((f) => up.files.has(f.index) && (f.uploaded_bytes || 0) < f.bytes_total);
+    // a chosen file the server already has whole needs nothing more
+    for (const i of [...up.files.keys()]) if (!queue.some((f) => f.index === i)) up.files.delete(i);
+    paintAll();
+    const worker = async () => { while (queue.length && ctx.alive() && !up.paused && !up.stop) await sendFile(job, queue.shift(), max); };
+    await Promise.all(Array.from({ length: Math.min(PARALLEL, queue.length) }, worker));
+    if (!ctx.alive()) return;
     up.active = false;
-    if (up.error) showUpErr(`The upload stopped at ${bytes(off)}: ${errorWords(up.error).text} Choose the file again to go on from there.`);
-    if (off >= file.size) up.file = null;
+    up.sent = new Map();
+    if (up.failed.length) {
+      const f1 = up.failed[0];
+      showUpErr(up.failed.length === 1
+        ? `The upload of ${f1.name} stopped at ${bytes(f1.off)}: ${errorWords(f1.e).text} Choose the file again to go on from there.`
+        : `The upload of ${up.failed.map((x) => `${x.name} (at ${bytes(x.off)})`).join(', ')} stopped: ${errorWords(f1.e).text} Choose the files again to go on from there.`);
+    }
+    if (up.stop) up.files.clear();
     await refreshJob();
   }
 
   const upBox = h('div', { class: 'im-up' });
   const upBar = h('div', { class: 'bar im-bar' }, h('i'));
   const upText = h('p', { class: 'im-bar-text' });
+  const upFiles = h('div', { class: 'im-upload-now', 'aria-label': 'Each file', role: 'list' });
   function paintUploadProgress() {
     const j = S.job;
     if (!j) return;
-    const done = j.uploaded_bytes ?? 0;
+    const done = uploadedOf(j);
     setVars(upBar, { '--w': `${pct(done, j.bytes_total).toFixed(1)}%` });
     const secs = (Date.now() - up.startedAt) / 1000;
     const rate = up.active && secs > 1 ? (done - up.sentAt0) / secs : null;
     replace(upText, h('b', null, bytes(done)), ` of ${bytes(j.bytes_total)} uploaded (${num(pct(done, j.bytes_total), 0)} %)`,
       rate ? ` · ${bytes(rate)} per second · about ${dur(((j.bytes_total - done) / rate) * 1000)} to go` : null);
+    // a line per file once there are several: name, bytes, percent, done
+    const fs = jobFiles(j);
+    replace(upFiles, fs.length < 2 ? null : fs.map((f) => {
+      const n = Math.min(sentOf(f), f.bytes_total), whole = n >= f.bytes_total;
+      return h('p', { class: 'im-bar-text', role: 'listitem' }, h('span', { class: 'mono' }, f.name), ` · ${bytes(n)} of ${bytes(f.bytes_total)} (${num(pct(n, f.bytes_total), 0)} %) `,
+        whole ? tag('done', 'live') : up.active && up.files.has(f.index) ? (up.sent.has(f.index) ? tag('sending', 'live') : tag('waiting', 'plain')) : null);
+    }));
   }
 
   // Start and Discard are always in the head of the Upload panel; each says why when it cannot be used
@@ -327,7 +391,7 @@ export async function mount(ctx) {
           : `Discard ${j.name}? Nothing from it has been stored, so nothing changes in your history. You can upload it again later.`,
       { title: unfinished ? 'Discard this import?' : 'Remove this import?', ok: unfinished ? 'Discard' : 'Remove', danger: true });
     if (!ok || !ctx.alive()) return;
-    up.paused = true; up.file = null;
+    up.paused = true; up.files.clear();
     try {
       await ctx.api.del(`imports/${enc(j.id)}`);
       if (!ctx.alive()) return;
@@ -355,14 +419,15 @@ export async function mount(ctx) {
       paintUploadProgress();
       parts.push(h('div', { class: 'im-upload-now' },
         h('p', { class: 'im-file' }, icon('logs', 'ico--sm'), h('b', { class: 'mono' }, j.name), ` · ${bytes(j.bytes_total)}`),
-        upBar, upText,
+        upBar, upText, upFiles,
         up.active
           ? h('div', { class: 'row' }, h('button', { class: 'btn btn--sm', type: 'button', onclick: () => { up.paused = true; } }, 'Pause'),
-            h('span', { class: 'setting-note' }, 'Sent over HTTPS in chunks of about 1 MB, each with its SHA-256, so a chunk that arrives damaged is sent again.'))
+            h('span', { class: 'setting-note' }, `Sent over HTTPS in chunks of about 1 MB, each with its SHA-256, so a chunk that arrives damaged is sent again${jobFiles(j).length > 1 ? `; up to ${PARALLEL} files at the same time` : ''}.`))
           : h('div', { class: 'im-resume' },
             h('p', null, up.paused ? 'Paused. ' : 'This upload stopped (the page was closed or the connection broke). ',
-              `The server has the first ${bytes(j.uploaded_bytes)}. Choose the same file again to go on from there.`),
-            up.file && up.paused ? h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: () => upload(S.job) }, 'Go on') : drop)));
+              jobFiles(j).length > 1 ? `The server has ${bytes(uploadedOf(j))} of these files. Choose the same files again (all at once is fine) to go on from there; each goes on where it stopped.`
+                : `The server has the first ${bytes(j.uploaded_bytes)}. Choose the same file again to go on from there.`),
+            up.files.size && up.paused ? h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: () => upload(S.job) }, 'Go on') : drop)));
     }
     parts.push(upErr);
     // what failed, in words
@@ -424,14 +489,14 @@ export async function mount(ctx) {
       h('div', { class: 'im-status' }, pill(S1.label, { tone: S1.tone === 'ok' ? 'live' : S1.tone === 'danger' ? 'warm' : S1.tone, lg: true }), h('p', null, statusText(j))),
       kv([
         ['File', h('span', { class: 'mono im-name' }, j.name), { icon: 'logs' }],
-        ['Kind', isCan(j) ? 'Sentry Six Manager CAN export' : j.kind === 'teslamate' ? 'TeslaMate backup' : 'known once checked'],
+        ['Kind', isCan(j) ? 'Sentry Six Manager CAN export' : j.kind === 'teslamate' ? 'TeslaMate backup' : j.kind === 'teslafi' ? 'TeslaFi export' : 'known once checked'],
         ['Size', `${bytes(j.bytes_total)}${j.compression && j.compression !== 'plain' ? ` (${j.compression})` : ''}`],
         ['Started', dateTime(j.started_ms, tz), { icon: 'clock' }],
         ['Checked', j.checked_ms ? dateTime(j.checked_ms, tz) : DASH],
         ['Finished', j.finished_ms ? h('span', null, dateTime(j.finished_ms, tz), ' · took ', dur(j.finished_ms - j.started_ms)) : DASH],
       ]),
       h('ol', { class: 'im-stages', 'aria-label': 'State of each pass' },
-        stageRow('Upload', 'The file goes to the server in chunks.', up1, up1 === 'done' ? `${bytes(j.bytes_total)} uploaded` : null, up1 === 'now' ? pct(j.uploaded_bytes, j.bytes_total) : null),
+        stageRow('Upload', jobFiles(j).length > 1 ? `The ${num(jobFiles(j).length)} files go to the server in chunks.` : 'The file goes to the server in chunks.', up1, up1 === 'done' ? `${bytes(j.bytes_total)} uploaded` : null, up1 === 'now' ? pct(uploadedOf(j), j.bytes_total) : null),
         stageRow('Check (pass 1)', isCan(j) ? 'Every log is read and its signature checked; nothing is stored.' : 'Every row is read and checked; nothing is stored.', ck, read(ck) || (ck === 'done' ? `Checked ${j.checked_ms ? dateTime(j.checked_ms, tz) : ''}` : null), ck === 'now' ? pct(j.bytes_read, j.bytes_total) : null),
         stageRow('Import (pass 2)', isCan(j) ? 'The logs are stored and checked as uploads are, then decoded into drives and charges.' : 'The rows are stored and the timeline is built again for the matched cars.', im, read(im) || (im === 'done' ? `Done ${dateTime(j.finished_ms, tz)}` : im === 'skipped' ? 'Not run: the check failed.' : null), im === 'now' ? pct(j.bytes_read, j.bytes_total) : null)),
       restartNote());
@@ -455,7 +520,7 @@ export async function mount(ctx) {
       if (!ctx.alive()) return;
       flash(e?.fields ? Object.values(e.fields).join(' ') : errorWords(e).text, { kind: 'error' });
     }
-    paintMatch(); paintUpload();
+    paintMatch(); paintUpload(); paintReport();
   }
   const matchTable = dataTable(ctx, {
     title: 'Match the imported cars', icon: 'car', rows: [], label: 'Cars in the backup and where their history goes', csvName: 'import-cars',
@@ -463,8 +528,8 @@ export async function mount(ctx) {
     columns: [
       { key: 'name', label: 'In the backup', sort: true, render: (c) => h('span', { class: 'row im-car' }, h('b', null, c.name), h('span', { class: 'mono faint' }, `#${c.tm_car}`)), csv: (c) => c.name },
       { key: 'vin_prefix', label: 'VIN prefix', sort: true, render: (c) => h('span', { class: 'mono' }, c.vin_prefix) },
-      { key: 'drives', label: 'Drives', num: true, sort: true, render: (c) => num(c.drives) },
-      { key: 'charges', label: 'Charges', num: true, sort: true, render: (c) => num(c.charges) },
+      { key: 'drives', label: 'Drives', num: true, sort: true, render: (c) => cnt(c.drives) },
+      { key: 'charges', label: 'Charges', num: true, sort: true, render: (c) => cnt(c.charges) },
       { key: 'first_ms', label: 'History', sort: true, render: (c) => `${date(c.first_ms, tz)} – ${date(c.last_ms, tz)}`, csv: false },
       { key: 'match', label: 'Goes to', csv: (c) => c.match ?? 'not chosen', render: (c) => {
         const taken = new Set(S.match.filter((x) => x.tm_car !== c.tm_car && x.match && x.match !== 'new' && x.match !== 'leave_out').map((x) => x.match));
@@ -509,9 +574,10 @@ export async function mount(ctx) {
     sort: { key: 'order', dir: 'asc' },
     columns: [
       { key: 'order', label: 'Table', sort: true, value: (r) => r.order, render: (r) => h('span', null, h('b', null, tableName(r.name)), h('span', { class: 'im-tdesc' }, TABLES[r.name]?.[1] || '')), csv: (r) => r.name },
-      { key: 'read', label: 'Read', num: true, sort: true, render: (r) => num(r.read) },
-      { key: 'imported', label: 'Imported', num: true, sort: true, render: (r) => (S.report?.imported ? num(r.imported) : h('span', { class: 'faint', title: 'From the check: what the import would store' }, num(r.would), ' to import')), csv: (r) => (S.report?.imported ? r.imported : r.would) },
-      { key: 'skipped', label: 'Skipped', num: true, sort: true, render: (r) => (r.skipped ? h('span', { class: 'warn' }, num(r.skipped)) : h('span', { class: 'faint' }, '0')) },
+      { key: 'read', label: 'Read', num: true, sort: true, render: (r) => cnt(r.read) },
+      { key: 'imported', label: 'Imported', num: true, sort: true, value: (r) => (S.report?.imported ? r.imported : r.would),
+        render: (r) => (S.report?.imported ? cnt(r.imported) : r.would == null ? gap() : h('span', { class: 'faint', title: 'From the check: what the import would store' }, num(r.would), ' to import')), csv: (r) => (S.report?.imported ? r.imported : r.would) },
+      { key: 'skipped', label: 'Skipped', num: true, sort: true, render: (r) => (r.skipped == null ? gap() : r.skipped ? h('span', { class: 'warn' }, num(r.skipped)) : h('span', { class: 'faint' }, '0')) },
       { key: 'bad', label: 'Values cleared', render: (r) => (r.bad.length ? r.bad.map(([col, n]) => h('span', { class: 'im-badval' }, h('span', { class: 'mono' }, col), ` ${num(n)}`)) : h('span', { class: 'faint' }, 'none')),
         csv: (r) => r.bad.map(([c, n]) => `${c}:${n}`).join('; ') },
     ],
@@ -548,20 +614,20 @@ export async function mount(ctx) {
     sort: { key: 'tm_car', dir: 'asc' },
     columns: [
       { key: 'tm_car', label: 'In the backup', sort: true, render: (c) => h('span', { class: 'row im-car' }, h('b', null, c.name || `Car ${c.tm_car}`), h('span', { class: 'mono faint' }, `#${c.tm_car}`)) },
-      { key: 'match', label: 'Went to', sort: true, value: (c) => goesTo(c.match), render: (c) => (c.match && c.match !== 'new' && c.match !== 'leave_out'
+      { key: 'match', label: 'Went to', sort: true, value: (c) => goesTo(c.match), render: (c) => (c.match && c.match !== 'new'
         ? h('a', { class: 'link', href: buildUrl('car', { car: c.match }) }, carName(c.match))
-        : h('span', { class: c.match === 'leave_out' ? 'faint' : c.match ? null : 'warn' }, goesTo(c.match))) },
-      { key: 'read', label: 'Read', num: true, sort: true, render: (c) => (c.read == null ? h('span', { class: 'faint', title: 'Left out: its rows were not counted' }, 'not counted') : num(c.read)) },
-      { key: 'imported', label: 'Imported', num: true, sort: true, value: (c) => (c.read == null ? null : S.report?.imported ? c.imported : c.read - rowsOf(c.skipped)),
-        render: (c) => (c.read == null ? h('span', { class: 'faint' }, DASH) : S.report?.imported ? num(c.imported) : h('span', { class: 'faint', title: 'From the check: what the import would store' }, num(c.read - rowsOf(c.skipped)), ' to import')) },
-      { key: 'skipped', label: 'Skipped', num: true, sort: true, value: (c) => (c.skipped ? rowsOf(c.skipped) : null),
-        render: (c) => (c.skipped == null ? h('span', { class: 'faint' }, DASH) : rowsOf(c.skipped) ? h('span', { class: 'warn' }, num(rowsOf(c.skipped))) : h('span', { class: 'faint' }, '0')) },
+        : h('span', { class: c.match ? null : 'warn' }, goesTo(c.match))) },
+      { key: 'read', label: 'Read', num: true, sort: true, render: (c) => cnt(c.read) },
+      { key: 'imported', label: 'Imported', num: true, sort: true, value: (c) => (S.report?.imported ? c.imported : less(c.read, rowsOf(c.skipped))),
+        render: (c) => (S.report?.imported ? cnt(c.imported) : c.read == null ? gap() : h('span', { class: 'faint', title: 'From the check: what the import would store' }, num(less(c.read, rowsOf(c.skipped))), ' to import')) },
+      { key: 'skipped', label: 'Skipped', num: true, sort: true, value: (c) => rowsOf(c.skipped),
+        render: (c) => (c.skipped == null ? gap() : rowsOf(c.skipped) ? h('span', { class: 'warn' }, num(rowsOf(c.skipped))) : h('span', { class: 'faint' }, '0')) },
       { key: 'why', label: 'Why skipped', render: (c) => {
         const e = Object.entries(c.skipped || {}).filter(([, n]) => n);
-        return e.length ? h('span', { class: 'im-whys' }, e.map(([k, n]) => h('span', { class: 'im-badval', title: reasonWords(k)[1] }, reasonWords(k)[0], ` ${num(n)}`))) : h('span', { class: 'faint' }, c.skipped ? 'none' : DASH);
+        return e.length ? h('span', { class: 'im-whys' }, e.map(([k, n]) => h('span', { class: 'im-badval', title: reasonWords(k)[1] }, reasonWords(k)[0], ` ${num(n)}`))) : c.skipped ? h('span', { class: 'faint' }, 'none') : gap();
       } },
-      { key: 'drives', label: 'Drives', num: true, sort: true, render: (c) => num(c.drives) },
-      { key: 'charges', label: 'Charges', num: true, sort: true, render: (c) => num(c.charges) },
+      { key: 'drives', label: 'Drives', num: true, sort: true, render: (c) => cnt(c.drives) },
+      { key: 'charges', label: 'Charges', num: true, sort: true, render: (c) => cnt(c.charges) },
     ],
     csv: { get columns() {
       const done = !!S.report?.imported;
@@ -569,16 +635,29 @@ export async function mount(ctx) {
         { label: 'TeslaMate car number', value: (c) => c.tm_car },
         { label: 'In the backup', value: (c) => c.name || '' },
         { label: 'Went to', value: (c) => goesTo(c.match) },
-        { label: 'Went to (car id)', value: (c) => (c.match && c.match !== 'new' && c.match !== 'leave_out' ? c.match : '') },
-        { label: 'Read (rows; empty when left out)', value: (c) => c.read },
-        done ? { label: 'Imported (rows)', value: (c) => c.imported } : { label: 'To import (rows, not stored yet)', value: (c) => (c.read == null ? null : c.read - rowsOf(c.skipped)) },
-        { label: 'Skipped (rows)', value: (c) => (c.skipped ? rowsOf(c.skipped) : null) },
+        { label: 'Went to (car id)', value: (c) => (c.match && c.match !== 'new' ? c.match : '') },
+        { label: 'Read (rows; empty when the file has none)', value: (c) => c.read },
+        done ? { label: 'Imported (rows)', value: (c) => c.imported } : { label: 'To import (rows, not stored yet)', value: (c) => less(c.read, rowsOf(c.skipped)) },
+        { label: 'Skipped (rows)', value: (c) => rowsOf(c.skipped) },
         { label: 'Skipped by reason (reason: rows)', value: (c) => Object.entries(c.skipped || {}).map(([k, n]) => `${reasonWords(k)[0]}: ${n}`).join('; ') },
         { label: 'Drives (count)', value: (c) => c.drives },
         { label: 'Charges (count)', value: (c) => c.charges },
       ];
     } },
     empty: () => emptyState({ icon: 'car', title: 'No cars in the report', text: 'The report lists each car of the backup once the whole file has been checked.' }),
+  });
+  // several files in one import (TeslaFi): what each one gave
+  const filesTable = dataTable(ctx, {
+    title: 'Files', icon: 'logs', rows: [], csvName: 'import-report-files', label: 'Rows read, used and skipped per uploaded file',
+    note: 'Each uploaded file, in the order it went up.',
+    sort: { key: 'order', dir: 'asc' },
+    columns: [
+      { key: 'order', label: 'File', sort: true, value: (u) => u.order, render: (u) => h('span', { class: 'mono im-name' }, u.name), csv: { label: 'File', value: (u) => u.name } },
+      { key: 'rows_read', label: 'Rows read', num: true, sort: true, render: (u) => cnt(u.rows_read) },
+      { key: 'rows_used', label: 'Used', num: true, sort: true, render: (u) => cnt(u.rows_used) },
+      { key: 'rows_skipped', label: 'Skipped', num: true, sort: true, render: (u) => (u.rows_skipped == null ? gap() : u.rows_skipped ? h('span', { class: 'warn' }, num(u.rows_skipped)) : h('span', { class: 'faint' }, '0')) },
+    ],
+    empty: () => emptyState({ icon: 'logs', title: 'One file', text: 'The import was one file; Rows per table counts it.' }),
   });
   function paintReport() {
     const j = S.job, rep = j?.report || null;
@@ -588,27 +667,32 @@ export async function mount(ctx) {
     if (!rep) {
       replace(reportBox, emptyState({ icon: 'book', title: j ? 'No report yet' : 'No import yet', text: j ? 'The report appears once the whole file has been checked (pass 1).' : 'Each import gets a report: rows read, imported and skipped per table, and why.' }));
       skipBox.hidden = true;
-      tablesTable.setRows([]); reasonsTable.setRows([]); carsTable.setRows([]);
-      reportTables.hidden = true; carsWrap.hidden = true;
+      tablesTable.setRows([]); reasonsTable.setRows([]); carsTable.setRows([]); filesTable.setRows([]);
+      reportTables.hidden = true; carsWrap.hidden = true; filesWrap.hidden = true;
       return;
     }
-    reportTables.hidden = false; carsWrap.hidden = !(rep.cars || []).length;
+    // a car left out is not in the report (the server leaves it out too): no row, not in a count
+    const out = new Set(S.match.filter((c) => c.match === 'leave_out').map((c) => String(c.tm_car)));
+    const cars = counted(rep.cars).filter((c) => !out.has(String(c.tm_car)));
+    const uploads = Array.isArray(rep.uploads) ? rep.uploads : [];
+    reportTables.hidden = false; carsWrap.hidden = !cars.length; filesWrap.hidden = !uploads.length;
     const names = Object.keys(rep.tables || {});
     const rows = names.map((name, i) => {
-      const t = rep.tables[name];
-      const skipped = Object.values(t.skipped || {}).reduce((a, b) => a + b, 0);
-      return { name, order: i, read: t.read, imported: t.imported, would: t.read - skipped, skipped, bad: Object.entries(t.bad_values || {}) };
+      const t = rep.tables[name] || {};
+      const skipped = rowsOf(t.skipped);
+      return { name, order: i, read: t.read ?? null, imported: t.imported ?? null, would: less(t.read, skipped), skipped, bad: Object.entries(t.bad_values || {}).filter(([, n]) => n != null) };
     });
-    const reasons = names.flatMap((name) => Object.entries(rep.tables[name].skipped || {}).map(([reason, n]) => ({ table: name, reason, n })));
-    const tot = rows.reduce((a, r) => ({ read: a.read + r.read, imp: a.imp + (rep.imported ? r.imported : r.would), sk: a.sk + r.skipped, bad: a.bad + r.bad.reduce((x, [, n]) => x + n, 0) }), { read: 0, imp: 0, sk: 0, bad: 0 });
+    const reasons = names.flatMap((name) => Object.entries(rep.tables[name]?.skipped || {}).filter(([, n]) => n != null).map(([reason, n]) => ({ table: name, reason, n })));
+    const tot = { read: sumOf(rows.map((r) => r.read)), imp: sumOf(rows.map((r) => (rep.imported ? r.imported : r.would))),
+      sk: sumOf(rows.map((r) => r.skipped)), bad: sumOf(rows.flatMap((r) => r.bad.map(([, n]) => n))) };
     replace(reportBox,
       h('p', { class: 'im-report-what' }, rep.imported ? 'What the import stored.' : 'From the check: what the import will store. Nothing is stored yet.'),
       figures([
-        metric('Rows read', num(tot.read), null, { explain: 'Every row of every table the import uses' }),
-        metric(rep.imported ? 'Rows imported' : 'Rows to import', num(tot.imp), null, { explain: rep.imported ? 'Stored and marked as imported' : 'Read minus skipped' }),
-        metric('Rows skipped', num(tot.sk), null, { explain: tot.sk ? 'Each with its reason below' : 'None: every row passed' }),
-        metric('Values cleared', num(tot.bad), null, { explain: 'A value out of range was left blank; the row was kept' }),
-        metric('History from', rep.span ? date(rep.span.from_ms, tz) : null, null, { size: 'sm', why: 'The file holds no dated rows', explain: rep.span ? `to ${date(rep.span.to_ms, tz)}: ${dur(rep.span.to_ms - rep.span.from_ms)} of TeslaMate history` : null }),
+        metric('Rows read', figNum(tot.read), null, { explain: 'Every row of every table the import uses' }),
+        metric(rep.imported ? 'Rows imported' : 'Rows to import', figNum(tot.imp), null, { explain: rep.imported ? 'Stored and marked as imported' : 'Read minus skipped' }),
+        metric('Rows skipped', figNum(tot.sk), null, { explain: tot.sk ? 'Each with its reason below' : tot.sk == null ? null : 'None: every row passed' }),
+        metric('Values cleared', figNum(tot.bad), null, { explain: 'A value out of range was left blank; the row was kept' }),
+        metric('History from', rep.span?.from_ms != null ? date(rep.span.from_ms, tz) : null, null, { size: 'sm', why: 'The file holds no dated rows', explain: rep.span?.from_ms != null ? `to ${date(rep.span.to_ms, tz)}: ${dur(rep.span.to_ms - rep.span.from_ms)} of ${rep.kind === 'teslafi' ? 'TeslaFi' : 'TeslaMate'} history` : null }),
       ], 'im-figs'));
     skipBox.hidden = !tot.sk;
     replace(skipBox, icon('warn', 'ico--sm'), h('div', null,
@@ -616,7 +700,8 @@ export async function mount(ctx) {
       h('p', null, 'A drive or charge built around a skipped row can come out a little short (fewer track points, no energy figure). The report keeps only how many rows were skipped and why, never what they held, so it is still here after a restart.')));
     tablesTable.setRows(rows);
     reasonsTable.setRows(reasons);
-    carsTable.setRows(rep.cars || []);
+    carsTable.setRows(cars);
+    filesTable.setRows(uploads.map((u, i) => ({ ...u, order: i })));
   }
   /* ---------------------------------------------------------------- a CAN export's report */
   const keyStatus = (k) => KEY_STATUS[k.status] || [k.status, 'plain'];
@@ -657,8 +742,8 @@ export async function mount(ctx) {
   const canWrap = h('div', { class: 'im-col im-can', hidden: true }, keysTable.el, refusedTable.el);
   function paintCanReport(rep) {
     const L = rep.logs || {};
-    reportTables.hidden = true; carsWrap.hidden = true; canWrap.hidden = false;
-    tablesTable.setRows([]); reasonsTable.setRows([]); carsTable.setRows([]);
+    reportTables.hidden = true; carsWrap.hidden = true; filesWrap.hidden = true; canWrap.hidden = false;
+    tablesTable.setRows([]); reasonsTable.setRows([]); carsTable.setRows([]); filesTable.setRows([]);
     const took = rep.imported ? L.imported : L.to_import;
     replace(reportBox,
       h('p', { class: 'im-report-what' }, rep.imported ? 'What the import stored: the car\'s own signed CAN logs, as if the CAN Bridge had uploaded them.' : 'From the check: what the import will store. Nothing is stored yet.'),
@@ -679,6 +764,7 @@ export async function mount(ctx) {
   }
   const reportTables = h('div', { class: 'im-two' }, tablesTable.el, reasonsTable.el);
   const carsWrap = h('div', { class: 'im-cars' }, carsTable.el);
+  const filesWrap = h('div', { class: 'im-cars', hidden: true }, filesTable.el);
   const reportPanel = panel({ title: 'Report', icon: 'book', cls: 'im-report-panel' }, reportBox, skipBox);
 
   /* ---------------------------------------------------------------- overlap with CAN history */
@@ -718,7 +804,7 @@ export async function mount(ctx) {
   // the Timeline is a car page: link a real car's (one with an overlap, else one an import brought history to, else the first)
   const timelineSlot = h('span', { class: 'im-tl' });
   function paintTimelineLink() {
-    const done = S.jobs.filter((j) => j.status === 'done').flatMap((j) => (j.report?.cars || []).map((c) => c.match));
+    const done = S.jobs.filter((j) => j.status === 'done').flatMap((j) => counted(j.report?.cars).map((c) => c.match));
     const car = S.cars.find((c) => c.id === S.overlaps[0]?.car) || S.cars.find((c) => done.includes(c.id)) || S.cars[0];
     replace(timelineSlot, car
       ? h('a', { class: 'link', href: buildUrl('timeline', { car: car.id }) }, S.cars.length > 1 ? `Timeline of ${car.name}` : 'Timeline')
@@ -825,6 +911,7 @@ export async function mount(ctx) {
       h('div', { class: 'im-col' }, progressPanel)),
     matchWrap,
     reportPanel,
+    filesWrap,
     carsWrap,
     reportTables,
     canWrap,
