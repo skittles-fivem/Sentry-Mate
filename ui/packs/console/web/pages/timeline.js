@@ -207,7 +207,7 @@ export async function mount(ctx) {
     const key = (kind, label, site) => src({ sources: [{ kind, label, ...(site ? { site } : {}) }] });
     return [
       h('p', { class: 'note' }, 'data from: ', key('smo', 'Data from SMO'), ' smo (the CAN Bridge)  ', key('tesla_api', 'Data from the Tesla API'), ' the tesla api  ',
-        key('teslafi_api', 'Data from TeslaFi'), ' teslafi  ', key('import', 'Imported from TeslaMate', 'teslamate'), ' imported (teslamate or teslafi)', car.sources?.length ? h('span', { class: 'muted' }, `. ${car.name} has: `) : null, car.sources?.length ? src(car) : null),
+        key('teslafi_api', 'Data from TeslaFi'), ' teslafi  ', key('teslamate_local', 'Data from local TeslaMate'), ' local teslamate  ', key('import', 'Imported from TeslaMate', 'teslamate'), ' imported (teslamate or teslafi)', car.sources?.length ? h('span', { class: 'muted' }, `. ${car.name} has: `) : null, car.sources?.length ? src(car) : null),
       overlaps.length ? h('p', { class: 'note tone--warn' }, tag('overlap', 'warn'), ' ',
         overlaps.map((o, i) => [i ? '; ' : '', `${formatDate(o.start_ms, tz, { year: false })} ${formatTime(o.start_ms, tz)} to ${formatDate(o.end_ms, tz, { year: false })} ${formatTime(o.end_ms, tz)}: `,
           o.kind === 'imports' ? `${SHOWN[o.shown_source] || 'one import'} is listed (TeslaMate and TeslaFi imports both cover it)` : `${SHOWN[o.shown_source || (o.shown === 'teslamate' ? 'import:teslamate' : 'live')] || 'imported history'} is listed (live and imported both exist)`]),

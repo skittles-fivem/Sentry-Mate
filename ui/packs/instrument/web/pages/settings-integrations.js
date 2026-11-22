@@ -23,6 +23,7 @@ import { confirmDialog } from '../core/dialog.js';
 import { dateTime, ago, num } from '../core/fmt.js';
 import { teslaSection } from './tesla-account.js';
 import { teslafiSection } from './teslafi-account.js';
+import { teslamateSection } from './teslamate-local.js';
 
 export const id = 'settings-integrations';
 export const css = true;
@@ -283,7 +284,8 @@ export async function mount(ctx) {
   }
   const tesla = teslaSection(ctx, { cars: carList });
   const teslafi = teslafiSection(ctx, { cars: carList });
-  const jumps = [['tesla', 'Tesla account'], ['teslafi', 'TeslaFi'], ['si-broker', 'Broker'], ['si-topics', 'Topics'], ['si-values', 'Values'], ['si-ha', 'Home Assistant'], ['si-events', 'Events'], ['si-api', 'API'], ['si-network', 'Network'], ['si-works', 'Works with']];
+  const teslamate = teslamateSection(ctx, { cars: carList });
+  const jumps = [['tesla', 'Tesla account'], ['teslafi', 'TeslaFi'], ['teslamate', 'Local TeslaMate'], ['si-broker', 'Broker'], ['si-topics', 'Topics'], ['si-values', 'Values'], ['si-ha', 'Home Assistant'], ['si-events', 'Events'], ['si-api', 'API'], ['si-network', 'Network'], ['si-works', 'Works with']];
   const jumpNav = h('nav', { class: 'si-jump', 'aria-label': 'Sections of this page' },
     jumps.map(([target, label]) => h('button', { class: 'btn btn--sm btn--ghost', type: 'button', onclick: () => document.getElementById(target)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, label)));
 
@@ -716,7 +718,9 @@ export async function mount(ctx) {
     geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
     mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
     tesla: ['Tesla API', 'Only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (Tesla account, this page).', null],
-    teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi', null, 'teslafi'],
+    teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi', null, 'teslafi', 'TeslaFi'],
+    teslamate_mqtt: ['Local TeslaMate (MQTT)', 'Only while a local TeslaMate is added and not paused: subscribes to its topics, never publishes', null, 'teslamate', 'Local TeslaMate'],
+    teslamate_db: ['Local TeslaMate (database)', 'Only while its database catch-up is on: reads what MQTT missed', null, 'teslamate', 'Local TeslaMate'],
     release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-server'],
     upload: ['CAN Bridge uploads', 'The car’s CAN Bridge sends its logs here.', null],
     web: ['This app and the API', 'Browsers, apps and the API.', null],
@@ -736,7 +740,7 @@ export async function mount(ctx) {
         { key: 'host', label: 'Host or port', render: (r) => (r.port != null ? code(`port ${r.port}${r.tls ? ', TLS' : ''}`) : r.host ? code(r.host) : h('span', { class: 'faint' }, 'not set')), csv: (r) => r.host || (r.port != null ? `port ${r.port}` : '') },
         { key: 'enabled', label: 'State', sort: true, render: (r) => (r.enabled ? pill(r.dir === 'In' ? 'Open' : 'On', { tone: 'live' }) : pill('Off')), csv: (r) => (r.enabled ? 'on' : 'off') },
         { key: 'last_used_ms', label: 'Last used', num: true, sort: true, render: (r) => (r.last_used_ms ? h('span', { class: 'nowrap', title: dateTime(r.last_used_ms, ctx.tz) }, ago(r.last_used_ms)) : h('span', { class: 'faint' }, r.dir === 'In' ? 'always listening' : 'never')), csv: (r) => (r.last_used_ms ? new Date(r.last_used_ms).toISOString() : '') },
-        { key: 'change', label: 'Change it', render: (r) => (PURPOSE[r.purpose]?.[3] ? h('a', { class: 'link', href: `${buildUrl('settings-integrations')}#${PURPOSE[r.purpose][3]}` }, 'TeslaFi') : PURPOSE[r.purpose]?.[2] ? h('a', { class: 'link', href: buildUrl(PURPOSE[r.purpose][2]) }, 'Settings') : h('span', { class: 'faint' }, r.purpose === 'mqtt' || r.purpose === 'tesla' ? 'Above' : '—')), csv: false },
+        { key: 'change', label: 'Change it', render: (r) => (PURPOSE[r.purpose]?.[3] ? h('a', { class: 'link', href: `${buildUrl('settings-integrations')}#${PURPOSE[r.purpose][3]}` }, PURPOSE[r.purpose][4]) : PURPOSE[r.purpose]?.[2] ? h('a', { class: 'link', href: buildUrl(PURPOSE[r.purpose][2]) }, 'Settings') : h('span', { class: 'faint' }, r.purpose === 'mqtt' || r.purpose === 'tesla' ? 'Above' : '—')), csv: false },
       ],
     });
     replace(netSlot, t.el);
@@ -762,11 +766,11 @@ export async function mount(ctx) {
     jumpNav,
     h('div', { class: 'si-stack' },
       h('p', { class: 'note saving-note' }, icon('check', 'ico--sm'), ' Switches and single fields save at once and a short note confirms it; the broker connection saves with its button. Nothing leaves the server until publishing is on.'),
-      tesla.el, teslafi.el, brokerPanel, topicsPanel, valuesPanel, haPanel, entitiesPanel, eventsPanel, apiPanel, netPanel, worksPanel));
+      tesla.el, teslafi.el, teslamate.el, brokerPanel, topicsPanel, valuesPanel, haPanel, entitiesPanel, eventsPanel, apiPanel, netPanel, worksPanel));
   paintHead(); paintBroker(); paintStatus(); paintTopics(); paintValues(); paintHa(); paintEntities();
   eventsPanel.append(...eventsBody());
   paintEvents(); paintNetwork();
-  await Promise.all([valuesTable?.ready, eventsTable?.ready, paintLog(), tesla.load(), teslafi.load()].filter(Boolean));
+  await Promise.all([valuesTable?.ready, eventsTable?.ready, paintLog(), tesla.load(), teslafi.load(), teslamate.load()].filter(Boolean));
   if (!ctx.alive()) return;
   ctx.ready();
 }

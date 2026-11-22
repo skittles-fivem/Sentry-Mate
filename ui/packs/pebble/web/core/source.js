@@ -1,6 +1,6 @@
 // Sentry Mate, "Pebble" UI pack: where data came from.
 //
-// Every row of the API carries `sources` (a list of { kind: smo | tesla_api | import, site?, label }) and
+// Every row of the API carries `sources` (a list of { kind: smo | tesla_api | teslafi_api | teslamate_local | import, site?, label }) and
 // `source_label`, one line for all of them ("Data from SMO and the Tesla API"). SMO is the Screenmate CAN Bridge's
 // signed logs, the Tesla API is the Tesla Owner API this server reads, TeslaFi (`teslafi_api`) is TeslaFi's own polls
 // of the car read with the owner's TeslaFi token, an import is history brought in from TeslaMate or TeslaFi's data
@@ -20,8 +20,8 @@ import { h } from '../shared/dom.js';
 import { formatRelative } from '../shared/time.js';
 import * as api from '../shared/api.js';
 
-const SHORT = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', import: 'Imported' };
-const TONE = { smo: 'teal', tesla_api: 'sky', teslafi_api: 'coral', import: 'sun' };
+const SHORT = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'Local TeslaMate', import: 'Imported' };
+const TONE = { smo: 'teal', tesla_api: 'sky', teslafi_api: 'coral', teslamate_local: 'muted', import: 'sun' };
 const SITE = { teslamate: 'TeslaMate', teslafi: 'TeslaFi' };
 const OLD = {
   can: [{ kind: 'smo', label: 'Data from SMO' }],
@@ -29,10 +29,11 @@ const OLD = {
   teslafi: [{ kind: 'import', site: 'teslafi', label: 'Imported from TeslaFi' }],
   tesla_api: [{ kind: 'tesla_api', label: 'Data from the Tesla API' }],
   teslafi_api: [{ kind: 'teslafi_api', label: 'Data from TeslaFi' }],
+  teslamate_local: [{ kind: 'teslamate_local', label: 'Data from local TeslaMate' }],
 };
-const LABEL = { smo: 'Data from SMO', tesla_api: 'Data from the Tesla API', teslafi_api: 'Data from TeslaFi' };
+const LABEL = { smo: 'Data from SMO', tesla_api: 'Data from the Tesla API', teslafi_api: 'Data from TeslaFi', teslamate_local: 'Data from local TeslaMate' };
 /** The words of a live input in a list: "SMO", "the Tesla API", "TeslaFi". */
-const LIVE_WORDS = { smo: 'SMO', tesla_api: 'the Tesla API', teslafi_api: 'TeslaFi' };
+const LIVE_WORDS = { smo: 'SMO', tesla_api: 'the Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'local TeslaMate' };
 
 /** The row's inputs (never null). */
 export function sourcesOf(r) {
@@ -105,8 +106,8 @@ export function inputsLine(inputs, { cls = null, cover = null } = {}) {
 }
 
 /** The source filter: [value, words]. '' is every input. */
-export const SOURCE_OPTIONS = Object.freeze([['', 'All'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['teslafi_api', 'TeslaFi'], ['import', 'Imported']]);
-export const SOURCE_WORDS = Object.freeze({ smo: 'from SMO', tesla_api: 'from the Tesla API', teslafi_api: 'from TeslaFi', import: 'imported', 'import:teslamate': 'imported from TeslaMate', 'import:teslafi': 'imported from TeslaFi' });
+export const SOURCE_OPTIONS = Object.freeze([['', 'All'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['teslafi_api', 'TeslaFi'], ['teslamate_local', 'Local TeslaMate'], ['import', 'Imported']]);
+export const SOURCE_WORDS = Object.freeze({ smo: 'from SMO', tesla_api: 'from the Tesla API', teslafi_api: 'from TeslaFi', teslamate_local: 'from local TeslaMate', import: 'imported', 'import:teslamate': 'imported from TeslaMate', 'import:teslafi': 'imported from TeslaFi' });
 /** A query word (smo, tesla_api, api, teslafi_api, import, imported, teslamate, can) -> the API's source= value, or '' for all. */
 export function sourceParam(v) {
   const w = String(v || '').toLowerCase();
@@ -114,6 +115,7 @@ export function sourceParam(v) {
   if (w === 'api' || w === 'tesla' || w === 'tesla_api') return 'tesla_api';
   if (w === 'import' || w === 'imported') return 'import';
   if (w === 'teslafi_api' || w === 'teslafi-api') return 'teslafi_api';
+  if (w === 'teslamate_local' || w === 'teslamate-local' || w === 'local-teslamate') return 'teslamate_local';
   if (w === 'teslamate' || w === 'import:teslamate') return 'import:teslamate';
   if (w === 'teslafi' || w === 'import:teslafi') return 'import:teslafi';
   return '';
@@ -123,6 +125,6 @@ export function sourceParam(v) {
 export function unionOf(rows) {
   const seen = new Map();
   for (const r of rows || []) for (const s of sourcesOf(r)) { const k = `${s.kind}:${s.site || ''}`; if (!seen.has(k)) seen.set(k, s); }
-  const order = { smo: 0, tesla_api: 1, teslafi_api: 2, import: 3 };
+  const order = { smo: 0, tesla_api: 1, teslafi_api: 2, teslamate_local: 3, import: 4 };
   return { sources: [...seen.values()].sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9)) };
 }

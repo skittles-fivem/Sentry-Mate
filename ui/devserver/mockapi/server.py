@@ -302,7 +302,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if cookie:
                     headers["Set-Cookie"] = cookie
                 return self.send(200, csv_res.body, csv_res.content_type, headers, api=True)
-            status = 201 if m == "POST" and isinstance(res, dict) and res.pop("_created", False) else 200
+            status = 201 if m in ("POST", "PUT") and isinstance(res, dict) and res.pop("_created", False) else 200
             headers = {"Set-Cookie": cookie} if cookie else {}
             return self.send(status, json_bytes(_strip(res)), "application/json; charset=utf-8", headers, api=True)
         except ApiError as e:

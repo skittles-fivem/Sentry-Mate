@@ -183,3 +183,13 @@
 }
 .ta-cell-label { display: none; color: var(--text-3); }
 @container page (max-width: 50rem) { .ta-cell-label { display: inline; } }
+
+/* the Local TeslaMate section (#teslamate) */
+.tm-conn .panel-head { display: flex; align-items: center; justify-content: space-between; gap: round(0.5rem, var(--e)); flex-wrap: wrap; margin: 0; }
+.tm-form > [hidden] { display: none; }
+.tm-warn { display: flex; align-items: flex-start; gap: round(0.375rem, var(--e)); margin: 0; grid-column: 1 / -1; }
+.tm-warn .ico { flex: none; margin-top: round(0.1875rem, var(--e)); }
+.tm-conn .si-test:empty { display: none; }
+.tm-col { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+.tm-test-line { align-items: flex-start; flex-wrap: nowrap; }
+.tm-test-line > .ico { flex: none; margin-top: round(0.1875rem, var(--e)); }

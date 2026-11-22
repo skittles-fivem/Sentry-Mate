@@ -8,7 +8,7 @@ checks that against the document.
 from __future__ import annotations
 
 from . import (auth, battery, charges, drives, firmware, fleet, imports, integrations, live, moving, places, reports,
-               series, software, system, tesla, teslafi, timeline, travel)
+               series, software, system, tesla, teslafi, teslamate, timeline, travel)
 
 
 def SSE(req):  # noqa: N802 - a marker: the HTTP layer streams /api/v1/events itself
@@ -16,7 +16,7 @@ def SSE(req):  # noqa: N802 - a marker: the HTTP layer streams /api/v1/events it
 
 
 MODULES = [auth, fleet, live, series, timeline, drives, charges, battery, reports, travel, software, firmware,
-           places, integrations, tesla, teslafi, system, imports, moving]
+           places, integrations, tesla, teslafi, teslamate, system, imports, moving]
 
 
 def register_all(router):

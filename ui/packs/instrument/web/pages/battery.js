@@ -29,8 +29,8 @@ import { field, form, showApiError } from '../core/form.js';
 import { flash } from '../core/flash.js';
 import { rpx } from '../core/display.js';
 import { srcMark, srcText, srcShort } from '../core/source.js';
-const LIFE_KINDS = ['smo', 'tesla_api', 'teslafi_api', 'import'];
-const LIFE_WORDS = { smo: 'SMO', tesla_api: 'the Tesla API', teslafi_api: 'TeslaFi', import: 'imported history' };
+const LIFE_KINDS = ['smo', 'tesla_api', 'teslafi_api', 'teslamate_local', 'import'];
+const LIFE_WORDS = { smo: 'SMO', tesla_api: 'the Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'local TeslaMate', import: 'imported history' };
 
 export const id = 'battery';
 export const css = true;
