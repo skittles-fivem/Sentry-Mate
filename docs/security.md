@@ -322,6 +322,10 @@ Every log is kept as uploaded, whatever its check says. Each gets one of these r
   today, one log at a time.
 - A log signed by another key is marked failed. `keys` lists that key. Check it in the app, then trust it with
   `keys trust` ([A new signing key](#a-new-signing-key)): its logs are verified from then on.
+- The app asks which logs arrived intact (`check` of `POST /api/can/logs/status`) and keeps a failed one. Its
+  **Resend all** sends it again under its name: that copy takes the failed one's place, the failed copy is kept in
+  `quarantine/` until the new one verifies, and the log's time stops being unknown once it does. A verified or
+  waiting log is never replaced ([Did each log arrive intact](cars-and-bridge.md#did-each-log-arrive-intact)).
 - A reinstalled bridge app or a new Screenmate has a new car key. Its uploads with the old token get
   `403 wrong_car`, so give it a new token. Its logs are kept under the new car key, which is paired by its own first
   signed log. Linking several car keys to one car is planned.

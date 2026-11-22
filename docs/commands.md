@@ -361,7 +361,7 @@ Sentry Six Manager's [docs/can-bridge-api.md](https://github.com/skittles-fivem/
 |---|---|
 | Connections per address | 32 for a car's own (an address that showed a valid token in the last 30 minutes), 6 not yet authorized; then `503 too_many_connections` with `Retry-After: 5` |
 | Connections in all | 512, at most 192 not yet authorized |
-| Uploads at once from one bridge | 16 recommended (each on its own connection) |
+| Uploads at once from one bridge | 16 (`maxParallel` of `/ping`, half the 32 per address for keep-alive slack; each on its own connection) |
 | TLS handshake, headers, request | 10 s, 10 s, 10 minutes |
 | A chunk (piece) | 16 MiB |
 | A log | 1 GiB |
@@ -373,7 +373,9 @@ Sentry Six Manager's [docs/can-bridge-api.md](https://github.com/skittles-fivem/
 | Wrong tokens | 20 per address per 10 minutes (IPv6: per /64), then `429` |
 | Requests per token | 1200 per 10 minutes, then `429` (a chunk that is stored does not count, unless it finishes a sidecar whose log is not here; an empty chunk is refused with `400 empty_chunk`) |
 
-A log whose sidecar hasn't come after 10 minutes is judged without it (checked every minute).
+A log whose sidecar hasn't come after 10 minutes is judged without it (checked every minute). What `status` says of
+each stored log (`check`), and how a failed log sent again replaces its copy:
+[Did each log arrive intact](cars-and-bridge.md#did-each-log-arrive-intact).
 
 ## Files
 
@@ -382,6 +384,7 @@ The data folder (contents sealed unless said):
 | Path | What |
 |---|---|
 | `vault.json` | The data key, wrapped by the key file and by the recovery key. `restore` needs it. |
+| `can/<car key>/quarantine/<name>` | The first bad copy of a log (or sidecar) that failed its check and was sent again, kept until the copy sent again verifies. |
 | `migrated.json` | A note that the one-time check for files an older version stored in the clear has run, so later starts skip it. Made on the first start, a new install too. |
 | `tokens/<sha256>.json`, `tokens/<sha256>.key` | Each token, and the car key it is tied to. |
 | `tls/cert.pem` | The certificate, in the clear (it is public). |

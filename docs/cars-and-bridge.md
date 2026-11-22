@@ -147,6 +147,42 @@ second table.
 - A reinstalled bridge app or a new Screenmate has a new car key, and needs a new token
   ([When a log fails its check](security.md#when-a-log-fails-its-check)).
 
+## Did each log arrive intact
+
+The CAN Bridge app asks the upload API which of its logs arrived (`POST /api/can/logs/status` with
+`{ "names": [...] }`, up to 2000 names; the app sends up to 500). Each name gets its `state` (`complete`,
+`partial`, `missing`, or `invalid` / `forbidden` for a name that is not a log name or is another car's) with
+`received` and `length`, and a complete one also its `check`:
+
+```json
+{"files": {"k_20261122T101500Z_0042.log.xz": {"state": "complete", "received": 1834221, "length": 1834221, "check": "verified"}}}
+```
+
+| `check` | When |
+|---|---|
+| `verified` | The whole file's SHA-256 is the one its sidecar names, the ECDSA P-256 signature is the paired key's, and its chain link fits: the log before it (`prev_name`, `prev_sha256`, index one less) is here and verified, or it is the first of its chain (`prev_name` `-`), or the first one here (a chain received from its middle). |
+| `failed` | It failed one of those, with `check_reason`: `mismatch` (the file differs from what its sidecar names), `bad_signature` (a wrong signature, another key's, another car key's, or fields that can't be read), `unsigned` (no signature, or the bridge could not sign) or `chain_break` (the log before it is here but is not the one it names or failed its check, or it is missing though older logs of the chain are here and nothing of it is arriving). |
+| `pending` | Not judged yet: its sidecar hasn't come (a log is judged without it after 10 minutes), or the log before it is still arriving, or is missing but may still come (for 10 minutes after this log arrived). The app asks again next round. |
+
+- A sidecar's name has its log's `check` (`pending` while its log isn't here). Partial and missing names have none.
+- The answer is read from the stored verdicts (one pass over the car key's records, whatever the number of names):
+  asking never judges a log or waits for one being judged (while a key is held over 2 s, its logs answer
+  `pending`).
+- **Resend replaces a failed log.** A failed log stays on the car, and the app's **Resend all** uploads it (and
+  its sidecar) again under the same name. If the stored copy's check is `failed` (any reason), the new upload is
+  taken as any upload is (in chunks, resumable); once its last byte is here and its SHA-256 matches, the bad copy is
+  linked into `data/can/<car key>/quarantine/` (the first bad copy is kept there) and the new one takes its name.
+  It is judged again; once it verifies its bad copy is dropped, its minutes stop being unknown time on the
+  timeline, and the logs after it fit their chain again. The Data health page's "the last log failed its check"
+  clears when that log's new copy verifies. The same bytes again answer as before (`201`, `complete`).
+- A `verified` or `pending` log is never overwritten: a different file under its name is `409 exists_different`,
+  as before.
+- **How many at once:** `GET /api/can/logs/ping` says `maxParallel` (16): the uploads to send at once. A car's
+  address may have 32 connections open, so 16 uploads leave a spare connection each for keep-alive.
+- **Limits** (see [Ports and limits](commands.md#ports-and-limits)): 32 connections per car's address, 6
+  anonymous ones from an address that is not a car's, 512 in all of which 192 anonymous. Over a limit the answer is
+  `503 too_many_connections` with `Retry-After: 5`: wait that long and send fewer at once.
+
 ## Running next to TeslaMate and Sentry Six Manager
 
 - **Sentry Six Manager** uses ports 9000 (web) and 10000 (CAN uploads). Sentry Mate uses 10100, and 10101 for its web
