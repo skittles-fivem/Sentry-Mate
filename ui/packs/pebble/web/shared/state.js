@@ -5,11 +5,14 @@
 // The car is in the path (/cars/{car}/drives), the period in the query (?preset=7d or ?from=<ms>&to=<ms>).
 // parseUrl() and buildUrl() turn one into the other for every page id. The current state sits in a small
 // store (subscribe() to hear changes). The period also stays with the browser tab (sessionStorage), so a
-// menu link without one keeps it; the last car is remembered across tabs (localStorage). Storage is a
-// convenience only: everything works without it. navigate() changes the URL and removes data-ready.
+// menu link without one keeps it. The car a page shows when its URL names none is the person's own
+// (`main_car`, else `last_car` in /me/preferences, kept with the account so every device agrees; see
+// preferredCar()); localStorage keeps a copy only for a fast first paint. Storage is a convenience only:
+// everything works without it. navigate() changes the URL and removes data-ready.
 
 import { normalizePeriod, PRESETS } from './time.js';
 import { unready } from './dom.js';
+import * as api from './api.js';
 
 /** Page id -> routes, the most specific first. ':car', ':drive' and ':charge' are path parameters. */
 export const ROUTES = Object.freeze([
@@ -187,12 +190,112 @@ function writeStore(area, key, value) {
 }
 /** The period this tab chose last, or null. */
 export const tabPeriod = () => normalizePeriod(readStore('sessionStorage', KEY_PERIOD));
-/** The car opened last in any tab, or null. */
-export const lastCar = () => { const c = readStore('localStorage', KEY_CAR); return typeof c === 'string' && c ? c : null; };
-/** Remember a car as the last one opened. */
-export function rememberCar(id) { if (id) writeStore('localStorage', KEY_CAR, String(id)); }
-/** Forget the last car (it was not found, or the account may not see it). */
-export function forgetCar(id) { if (!id || lastCar() === String(id)) writeStore('localStorage', KEY_CAR, null); }
+/* ------------------------------------------------------------------ the person's car */
+
+const KEY_CAR_PREFS = 'sentrymate.car-prefs';
+let carMem = null; // { main_car, last_car, pinned_cars, car_order } from the server, once known
+let saveTimer = null, pendingCar = null;
+const memory = { delayMs: 1500, save: (id) => api.patch('me/preferences', { last_car: id }) };
+
+/**
+ * Tell this module the person's preferences (the /me/preferences object, on load and on every `prefs`
+ * event). They are the truth; the local copy follows them.
+ */
+export function setCarPrefs(prefs) {
+  if (!prefs || typeof prefs !== 'object') return;
+  const pick = (k) => (typeof prefs[k] === 'string' && prefs[k] ? prefs[k] : null);
+  const list = (k) => (Array.isArray(prefs[k]) ? prefs[k].filter((c) => typeof c === 'string') : []);
+  carMem = { main_car: pick('main_car'), last_car: pick('last_car'), pinned_cars: list('pinned_cars'), car_order: list('car_order') };
+  writeStore('localStorage', KEY_CAR_PREFS, carMem);
+  if (carMem.last_car && pendingCar == null) writeStore('localStorage', KEY_CAR, carMem.last_car);
+}
+/** The car choices known now: { main_car, last_car, pinned_cars, car_order } (the server's, else the local copy). */
+export function carPrefs() {
+  if (carMem) return carMem;
+  const c = readStore('localStorage', KEY_CAR_PREFS);
+  const local = lastOpened();
+  return {
+    main_car: typeof c?.main_car === 'string' ? c.main_car : null,
+    last_car: local || (typeof c?.last_car === 'string' ? c.last_car : null),
+    pinned_cars: Array.isArray(c?.pinned_cars) ? c.pinned_cars : [],
+    car_order: Array.isArray(c?.car_order) ? c.car_order : [],
+  };
+}
+
+/**
+ * The car a page shows when its URL names none, from the cars the account sees (/cars items, with `sold`):
+ * the main car if set and seen; else the last car opened if seen and not sold; else the first pinned car
+ * not sold, then the first of the car order not sold; else the first car not sold; else the first car.
+ * Returns its id, or null when there are no cars.
+ */
+export function preferredCar(cars, prefs = carPrefs()) {
+  const list = (cars || []).filter((c) => c && c.id != null);
+  const byId = new Map(list.map((c) => [String(c.id), c]));
+  const p = prefs || {};
+  const seen = (id) => (id != null && byId.has(String(id)) ? byId.get(String(id)) : null);
+  const main = seen(p.main_car);
+  if (main) return main.id;
+  const last = seen(p.last_car);
+  if (last && !isSold(last)) return last.id;
+  for (const id of [...(p.pinned_cars || []), ...(p.car_order || [])]) {
+    const c = seen(id);
+    if (c && !isSold(c)) return c.id;
+  }
+  return (list.find((c) => !isSold(c)) || list[0] || {}).id ?? null;
+}
+
+const lastOpened = () => { const c = readStore('localStorage', KEY_CAR); return typeof c === 'string' && c ? c : null; };
+/**
+ * The car to use before the car list is at hand (links, a first paint): the main car, else the car opened
+ * last, or null. Pages that have the car list use preferredCar(cars), which also checks sold and visible.
+ */
+export const lastCar = () => carPrefs().main_car || lastOpened();
+
+/**
+ * The person picked a car (car switcher, a page's car picker, a car page that loaded): remember it as
+ * `last_car`, here at once and on the server a moment later (only the newest of quick picks is sent). Call it
+ * only for a car the account sees (after it loaded). A sold car counts only when picked explicitly:
+ * rememberCar(id, { sold: true, explicit: false }) does nothing.
+ */
+export function rememberCar(id, { sold = false, explicit = true } = {}) {
+  if (!id || (sold && !explicit)) return;
+  id = String(id);
+  writeStore('localStorage', KEY_CAR, id);
+  if (carMem && carMem.last_car === id && pendingCar == null) return;
+  pendingCar = id;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(flushCar, memory.delayMs);
+}
+/** Send a waiting rememberCar() now (tests, leaving the page). */
+export async function flushCar() {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  const id = pendingCar;
+  if (id == null) return;
+  try {
+    const saved = await memory.save(id);
+    if (pendingCar === id) pendingCar = null;
+    if (saved && typeof saved === 'object' && 'last_car' in saved) setCarPrefs(saved);
+    else if (carMem) carMem = { ...carMem, last_car: id };
+  } catch {
+    if (pendingCar === id) pendingCar = null; // the car is gone or the network is: the local copy stays
+  }
+}
+/** For tests: how a pick is saved and after how long. */
+export function configureCarMemory({ save, delayMs } = {}) {
+  if (save) memory.save = save;
+  if (delayMs != null) memory.delayMs = delayMs;
+  carMem = null; pendingCar = null;
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+}
+/** Forget the last car here (it was not found, or the account may not see it). */
+export function forgetCar(id) {
+  if (!id || lastOpened() === String(id)) writeStore('localStorage', KEY_CAR, null);
+  const c = readStore('localStorage', KEY_CAR_PREFS);
+  if (c && id && (c.main_car === String(id) || c.last_car === String(id))) {
+    writeStore('localStorage', KEY_CAR_PREFS, { ...c, main_car: c.main_car === String(id) ? null : c.main_car, last_car: c.last_car === String(id) ? null : c.last_car });
+  }
+  if (carMem && id) carMem = { ...carMem, main_car: carMem.main_car === String(id) ? null : carMem.main_car, last_car: carMem.last_car === String(id) ? null : carMem.last_car };
+}
 
 /* ------------------------------------------------------------------ the app's state and navigation */
 
@@ -209,7 +312,7 @@ function stateFromUrl(u) {
   const fromUrl = !!s.period;
   const period = s.period || tabPeriod();
   if (fromUrl) writeStore('sessionStorage', KEY_PERIOD, s.period);
-  if (s.car) rememberCar(s.car);
+  if (s.car) writeStore('localStorage', KEY_CAR, s.car); // the fast copy; the router calls rememberCar() once the car loaded
   return { ...s, period, periodFromUrl: fromUrl };
 }
 

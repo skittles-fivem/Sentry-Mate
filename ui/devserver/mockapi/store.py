@@ -32,6 +32,8 @@ DEFAULT_PREFS = {
     "ui_pack": None,
     "car_order": [],
     "pinned_cars": [],
+    "main_car": None,
+    "last_car": None,
 }
 
 
@@ -301,6 +303,9 @@ class Store:
             # only cars this person may see (the server's order names every car; an account's list can shrink)
             for k in ("car_order", "pinned_cars"):
                 p[k] = [c for c in p[k] if self.ds.exists(c) and self.sees(account, c)]
+            for k in ("main_car", "last_car"):
+                if p.get(k) is not None and not (self.ds.exists(p[k]) and self.sees(account, p[k])):
+                    p[k] = None
             return p
 
     # ------------------------------------------------------------ cars

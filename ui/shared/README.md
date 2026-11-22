@@ -27,7 +27,7 @@ node --test ui/shared/tests/
 | [`api.js`](api.js) | The one client for `/api/v1`: reads, cursor paging, changes with the CSRF header, errors, sign-in prompts, live events, cancelling, the server's clock |
 | [`units.js`](units.js) | The person's units applied to the API's metric values; every number with its unit |
 | [`time.js`](time.js) | Dates and times in the car's time zone, ISO weeks, buckets, the period presets |
-| [`state.js`](state.js) | Page, car and period in the URL; the shared store; links that carry the car and period |
+| [`state.js`](state.js) | Page, car and period in the URL; the shared store; links that carry the car and period; the person's car when the URL names none (`setCarPrefs(prefs)`, `preferredCar(cars)`: main car, else last car not sold, else first pinned, else first not sold; `rememberCar(id, { sold, explicit })` saves `last_car`, debounced) |
 | [`i18n.js`](i18n.js) | `t()` with the English text as key; the locale for numbers and dates; `<html lang>` |
 | [`csv.js`](csv.js) | CSV built in the browser, for chart data that has no list resource |
 | [`dom.js`](dom.js) | `h()` and other safe DOM helpers; coverage marks; the readiness signal |

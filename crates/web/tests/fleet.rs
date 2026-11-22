@@ -193,6 +193,17 @@ async fn the_cars_list_pages_sorts_filters_and_hides_what_an_account_may_not_see
     assert_eq!((ids(&r), r["total"].clone()), (vec!["c2".to_string()], json!(1)));
     assert_eq!(watch.get("/api/v1/cars/c1").await.json()["error"]["code"], json!("no_such_car"));
     assert_eq!(watch.get("/api/v1/cars/c9").await.json()["error"]["code"], json!("no_such_car"));
+    // main_car and last_car: one car the account sees, or null; another's car is refused
+    let r = admin.patch("/api/v1/me/preferences", json!({ "main_car": "c1", "last_car": "c3" })).await;
+    assert_eq!((r.status, r.json()["main_car"].clone(), r.json()["last_car"].clone()), (200, json!("c1"), json!("c3")));
+    let r = admin.patch("/api/v1/me/preferences", json!({ "main_car": null })).await;
+    assert_eq!((r.json()["main_car"].clone(), r.json()["last_car"].clone()), (json!(null), json!("c3")));
+    assert_eq!(admin.patch("/api/v1/me/preferences", json!({ "last_car": 3 })).await.status, 400);
+    assert_eq!(admin.patch("/api/v1/me/preferences", json!({ "last_car": "c9" })).await.status, 422);
+    let r = watch.patch("/api/v1/me/preferences", json!({ "last_car": "c1" })).await;
+    assert_eq!((r.status, r.json()["error"]["fields"]["last_car"].is_string()), (422, true));
+    let r = watch.patch("/api/v1/me/preferences", json!({ "last_car": "c2" })).await;
+    assert_eq!((r.status, r.json()["last_car"].clone(), r.json()["main_car"].clone()), (200, json!("c2"), json!(null)));
     let s = watch.get("/api/v1/fleet/summary").await.json();
     assert_eq!(
         s,
