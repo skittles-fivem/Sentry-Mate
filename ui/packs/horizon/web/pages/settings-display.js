@@ -256,7 +256,7 @@ export async function mount(ctx) {
               hint('A new server starts from the distance unit set on the car\'s own screen, once its CAN Bridge has sent it.')),
             chan({ no: 12, title: 'Time zone for new cars', text: 'The zone a new car starts in: its days, weeks and prices by time of day. Each car keeps its own after that.' },
               tz.el, h('datalist', { id: 'sd-zones' }, ZONES.map((x) => h('option', { value: x }))),
-              BROWSER_ZONE && BROWSER_ZONE !== server.default_time_zone && !ro ? btn(`Use this browser's zone (${BROWSER_ZONE})`, () => save({ default_time_zone: BROWSER_ZONE }, 'Time zone for new cars', [tz]), { icon: 'globe', sm: true }) : null,
+              BROWSER_ZONE && BROWSER_ZONE !== server.default_time_zone && !ro ? [btn('Use this browser\'s zone', () => save({ default_time_zone: BROWSER_ZONE }, 'Time zone for new cars', [tz]), { icon: 'globe', sm: true, label: `Use this browser's zone, ${BROWSER_ZONE}` }), hint(`This browser is in ${BROWSER_ZONE}.`)] : null,
               hint('Each car\'s own zone: ', h('a', { class: 'plc', href: state.buildUrl('settings-cars') }, 'Settings: Cars'), '. The clock in the page header names the zone shown.')),
             chan({ no: 16, title: 'Outside links', text: 'Links that open another site in a new tab, only when someone clicks them.' },
               pc('Map links', [['false', 'No map links'], ['true', 'Map links']], String(!!server.outside_links?.maps), (v) => save({ outside_links: { maps: v === 'true' } }, 'Map links')),

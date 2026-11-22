@@ -137,6 +137,9 @@ folded away.
   server gets the page's origin (`https://sentry.example:10101`), never a path, a car, a drive or a query. API
   answers still say `no-referrer`, and with online tiles off every page does. The Content-Security-Policy lets the
   pages reach only that one tile server, and links to other sites carry `noreferrer`.
+- **A page keeps the policy it was loaded with.** After an admin turns online tiles on or picks another source, a
+  page that was already open still blocks the new tile server. Its maps notice the first blocked tile and load the
+  page once more to get the new policy (not again for the same server within two minutes).
 - **What the tile server sees**: the viewer's address, the server's origin and the tiles asked for (the area the
   map shows). Nothing else leaves; the server itself downloads no tiles.
 - OpenTopoMap's terms are on [opentopomap.org/about](https://opentopomap.org/about) (light use, no bulk

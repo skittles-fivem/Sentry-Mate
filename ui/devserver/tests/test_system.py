@@ -92,6 +92,7 @@ class Settings(ServerCase):
         # online tiles: the pages send their origin as Referer (OpenStreetMap blocks tiles without one), the API none
         st, hd, _ = self.c.request("GET", "/")
         self.assertEqual(hd["referrer-policy"], "strict-origin")
+        self.assertIn("img-src 'self' data: blob: https://tile.openstreetmap.org;", hd["content-security-policy"])
         st, hd, _ = self.c.request("GET", "/api/v1/me")
         self.assertEqual(hd["referrer-policy"], "no-referrer")
         g = self.c.get("/api/v1/geocode/status")
@@ -117,6 +118,14 @@ class Settings(ServerCase):
         self.assertEqual((m["tiles"]["mode"], m["tiles"]["online_template"]), ("offline", None))
         st, hd, _ = self.c.request("GET", "/")
         self.assertEqual(hd["referrer-policy"], "no-referrer")
+        # as the real server: a page may load tiles only from the source that is on (none while offline)
+        self.assertNotIn("tile.openstreetmap.org", hd["content-security-policy"])
+        v = self.c.get("/api/v1/settings")["version"]
+        self.c.json("PATCH", "/api/v1/settings", {"version": v, "tiles": {"mode": "online", "online_url": "https://tile.opentopomap.org/{z}/{x}/{y}.png"}})
+        st, hd, _ = self.c.request("GET", "/")
+        self.assertIn("img-src 'self' data: blob: https://tile.opentopomap.org;", hd["content-security-policy"])
+        self.assertNotIn("tile.openstreetmap.org", hd["content-security-policy"])
+        self.assertEqual(hd["referrer-policy"], "strict-origin")
         a = self.c.get("/api/v1/about")
         self.assertEqual(a["api_version"], "1")
         self.assertEqual(a["ui_pack"]["name"], "Instrument")

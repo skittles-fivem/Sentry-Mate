@@ -24,6 +24,8 @@ const LOCALES = [['auto', "This browser's language"], ['en-US', 'English (United
 // A language code as address data names it: en, de, pt-BR, zh-Hant.
 const LANG_RE = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
 const ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+// A web address that may break after each slash on a narrow screen (a <wbr> after it).
+const breakable = (s) => s.split('/').flatMap((part, i, all) => (i < all.length - 1 ? [`${part}/`, h('wbr')] : [part]));
 const BROWSER_ZONE = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
 
 const UNIT_WORDS = { km: 'km', mi: 'miles', c: '°C', f: '°F', bar: 'bar', psi: 'psi', rated: 'rated', ideal: 'ideal' };
@@ -198,7 +200,7 @@ export async function mount(ctx) {
       tUrl.input.focus();
       return true;
     }) : null;
-    const tTerms = tilePreset ? h('p', { class: 'setting-note' }, icon('info', 'ico--sm'), ` ${tilePreset.name}: free, no key. Its terms (${tilePreset.terms.replace(/^https:\/\//, '')}) ask for light use and its credit on every map.`) : null;
+    const tTerms = tilePreset ? h('p', { class: 'setting-note' }, icon('info', 'ico--sm'), ` ${tilePreset.name}: free, no key. Its terms (`, ...breakable(tilePreset.terms.replace(/^https:\/\//, '')), ') ask for light use and its credit on every map.') : null;
     const tUrl = field({ label: 'Online tile address (https)', name: 'turl', path: 'tiles.online_url', value: t.online_url || '', hint: 'With {z}, {x} and {y} in it.', attrs: { placeholder: 'https://', disabled: ro } });
     const tAttr = field({ label: 'Map credit', name: 'tattr', path: 'tiles.attribution', value: t.attribution || '', hint: 'Shown in the corner of every map, as the source asks.', attrs: { disabled: ro } });
     // checks here first (worded plainly), then the server's own checks under the same field
@@ -229,7 +231,8 @@ export async function mount(ctx) {
           h('p', { class: 'setting-note' }, 'A fresh server starts from the distance unit set on the car’s own screen, once its CAN Bridge has sent it.'),
           setting('Time zone for new cars', 'The zone a new car starts in: its days, weeks and prices by time of day. Each car keeps its own after that.',
             [tz.el, h('datalist', { id: 'sd-zones' }, ZONES.map((x) => h('option', { value: x }))),
-              BROWSER_ZONE && BROWSER_ZONE !== server.default_time_zone && !ro ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => patch({ default_time_zone: BROWSER_ZONE }, 'Time zone for new cars', [tz]) }, icon('globe', 'ico--sm'), `Use this browser's zone (${BROWSER_ZONE})`) : null,
+              BROWSER_ZONE && BROWSER_ZONE !== server.default_time_zone && !ro ? [h('button', { class: 'btn btn--sm', type: 'button', 'aria-label': `Use this browser's zone, ${BROWSER_ZONE}`, onclick: () => patch({ default_time_zone: BROWSER_ZONE }, 'Time zone for new cars', [tz]) }, icon('globe', 'ico--sm'), 'Use this browser’s zone'),
+                h('p', { class: 'setting-note' }, `This browser is in ${BROWSER_ZONE}.`)] : null,
               h('p', { class: 'setting-note' }, 'Each car’s own zone: ', h('a', { href: buildUrl('settings-cars'), class: 'panel-link' }, 'Settings: Cars ›'), ' The clock in the page header names the zone shown.')])),
         panel({ title: 'Addresses and maps', icon: 'globe', side: h('span', { class: 'faint' }, 'Private by default') },
           setting('Address lookup', 'Offline uses the place names bundled with Sentry Mate: nothing leaves the server. Online asks the service you name (for example your own address server or a proxy in front of one), with rounded positions, and keeps a cache.',
