@@ -10,6 +10,7 @@ import { format } from '../shared/units.js';
 import { formatTime, formatDuration, dayRange } from '../shared/time.js';
 import { formatNumber, compareText } from '../shared/i18n.js';
 import { head, section, kv } from '../core/ui.js';
+import { carKeys as soldAwareKeys } from '../core/carpick.js';
 import { num, date, dateTime } from '../core/fmt.js';
 import { table, cellBar } from '../core/table.js';
 import { safeMap } from '../core/map.js';
@@ -42,8 +43,8 @@ export async function mount(ctx) {
   if (pb) pb.dataset.cover = 'locations.filter.time_range visited.filter.time_range';
   const carKeys = h('span', { class: 'keys', role: 'group', 'aria-label': 'Cars', cover: ['locations.filter.car', 'visited.filter.car', 'visited.section.car_header'] },
     h('a', { class: 'key', href: state.buildUrl('travel', { period: state.current().period }), 'aria-pressed': String(chosen === 'all') }, 'all cars'),
-    fleet.map((c) => h('a', { class: 'key', 'aria-pressed': String(chosen !== 'all' && viewCars.length === 1 && viewCars[0] === c.id),
-      href: state.buildUrl('travel', { period: state.current().period, query: { cars: c.id } }) }, c.name)));
+    soldAwareKeys(fleet, (c) => h('a', { class: 'key', 'aria-pressed': String(chosen !== 'all' && viewCars.length === 1 && viewCars[0] === c.id),
+      href: state.buildUrl('travel', { period: state.current().period, query: { cars: c.id } }) }, c.name), { keep: chosen === 'all' ? null : viewCars }));
   if (!viewCars.length) {
     replace(ctx.view, h('div', { class: 'page', cover: ['shots.locations', 'shots.visited'] }, hd, h('div', { class: 'optline' }, carKeys),
       empty(fleet.length ? 'none of these cars is yours to see' : 'no car yet', fleet.length ? 'pick other cars above' : 'travel lists where the cars have been once a CAN Bridge has sent logs')));

@@ -15,6 +15,7 @@ import { format, convert, toMetric, unitLabel, getUnits } from '../shared/units.
 import { formatDateTime, formatDate, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { head, section, kv, note, link } from '../core/ui.js';
+import { carKeys } from '../core/carpick.js';
 import { num, tag } from '../core/fmt.js';
 import { table, cellBar } from '../core/table.js';
 import { empty, loadingLine, errorBlock } from '../core/states.js';
@@ -80,14 +81,14 @@ export async function mount(ctx) {
   const stepRow = keyRow('band', TSTEP[fahr ? 'f' : 'c'].map((v) => [v, `${v} ${tUnit}`]), opt.tgW, (v) => { opt.tgW = v; opt.group = null; ctx.setQuery({ tg_w: v === (fahr ? 10 : 5) ? null : String(v), group: null }); refresh(); });
   const others = (fleetPg.items || []).filter((c) => c.id !== cid);
   const carsRow = h('div', { class: 'st-switch', cover: 'ef.section.per_car' }, h('span', { class: 'muted' }, 'compare> '),
-    others.length ? h('span', { class: 'keys keys--inline', role: 'group', 'aria-label': 'Cars to compare' }, others.map((c) => h('button', { class: 'key', type: 'button', 'aria-pressed': String(opt.cars.includes(c.id)),
+    others.length ? h('span', { class: 'keys keys--inline', role: 'group', 'aria-label': 'Cars to compare' }, carKeys(others, (c) => h('button', { class: 'key', type: 'button', 'aria-pressed': String(opt.cars.includes(c.id)),
       onclick: (e) => {
         const on = e.currentTarget.getAttribute('aria-pressed') !== 'true';
         e.currentTarget.setAttribute('aria-pressed', String(on));
         opt.cars = on ? [...new Set([...opt.cars, c.id])] : opt.cars.filter((x) => x !== c.id);
         ctx.setQuery({ cars: opt.cars.length ? opt.cars.join(',') : null });
         paintCompare().catch((err) => replace(compareSlot, errorBlock(err, { home: false })));
-      } }, c.name))) : none('only one car'));
+      } }, c.name), { keep: opt.cars })) : none('only one car'));
   const filterNote = note('drives count when they start in the range. the shortest-drive filter applies to net, logged distance, the bands and the daily line; gross and the parked share take every drive.');
 
   const consSlot = h('div');

@@ -17,6 +17,7 @@ import { format, formatMoney, unitLabel, rangeLabel } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, buckets, bucketKey } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { head, section, kv, note, link } from '../core/ui.js';
+import { carKeys } from '../core/carpick.js';
 import { num, tag, date } from '../core/fmt.js';
 import { table, cellBar } from '../core/table.js';
 import { empty } from '../core/states.js';
@@ -554,7 +555,7 @@ export async function mount(ctx) {
   const carLine = multi
     ? h('p', { class: 'note filt-note', cover: ['charges.filter.car', 'cs.filter.car'] }, 'cars: ', h('span', { class: 'keys keys--inline' },
       h('a', { class: 'key', href: state.buildUrl('charges', { period: state.current().period, query: { cars: 'all' } }), 'aria-pressed': String(!q.cars || q.cars === 'all') }, 'all'),
-      fleet.map((c) => h('a', { class: 'key', href: state.buildUrl('charges', { car: c.id, period: state.current().period }) }, c.name))))
+      carKeys(fleet, (c) => h('a', { class: 'key', href: state.buildUrl('charges', { car: c.id, period: state.current().period }) }, c.name), { keep: q.cars && q.cars !== 'all' ? chosen : null })))
     : null;
   if (!multi && btns[1]) btns[1].dataset.cover = 'charges.filter.car cs.filter.car';
   replace(ctx.view, h('div', { class: 'page', dataset: { page: 'charges' }, cover: ['shots.charges', 'shots.charging-stats'] },
