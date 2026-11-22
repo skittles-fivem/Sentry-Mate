@@ -210,3 +210,4 @@
 .tesla-way-name { margin: 0; }
 .tesla-dialog .dialog-text { margin-bottom: round(1rem, var(--e)); }
 .tesla-dialog div.dialog-text > p + p { margin-top: round(0.625rem, var(--e)); }
+.teslafi-add-form { max-width: round(36rem, var(--e)); }

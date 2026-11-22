@@ -39,6 +39,18 @@ class Teslafi(ServerCase):
         net = [x for x in self.c.get("/api/v1/network")["outbound"] if x["purpose"] == "teslafi"]
         self.assertEqual([(x["host"], x["enabled"]) for x in net], [("www.teslafi.com", True)])
 
+    def test_1b_pace(self):
+        o = self.c.get(BASE)
+        self.assertEqual((o["poll"], o["version"]), ("normal", 1))
+        self.c.error("PATCH", BASE, 403, "password_needed", body={"version": 1, "poll": "often"})
+        self.c.error("PATCH", BASE, 422, "invalid", body={"version": 1, "poll": "fast", "confirm_password": PW})
+        o = self.c.json("PATCH", BASE, {"version": 1, "poll": "often", "confirm_password": PW})
+        self.assertEqual((o["poll"], o["polls"]["driving_s"], o["polls"]["parked_s"], o["polls"]["asleep_s"]),
+                         ("often", 15, 60, 180))
+        self.c.error("PATCH", BASE, 409, "stale_version", body={"version": 1, "poll": "gentle", "confirm_password": PW})
+        self.assertIn("teslafi-poll-changed", {x["action"] for x in self.audit()})
+        self.c.json("PATCH", BASE, {"version": o["version"], "poll": "normal", "confirm_password": PW})
+
     def test_2_add_match_pause_remove(self):
         e, _ = self.c.error("POST", BASE + "/accounts", 403, "password_needed", body={"token": TOKEN})
         self.c.error("POST", BASE + "/accounts", 422, "invalid", body={"token": "has space", "confirm_password": PW})

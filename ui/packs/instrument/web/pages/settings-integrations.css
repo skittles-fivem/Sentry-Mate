@@ -161,6 +161,10 @@
 .ta-steps { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); margin-bottom: round(1rem, var(--e)); }
 .ta-step-list { margin: 0; padding-left: round(1.25rem, var(--e)); display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); color: var(--text-2); }
 .ta-step-list b { color: var(--text); }
+.ta-add > .ta-step-list { margin: 0; }
+.tf-add-btn { align-self: flex-start; }
+.ta-pace-now { margin: 0; color: var(--text-2); }
+.ta-pace-now b { color: var(--text); font-weight: 600; }
 .ta-step-list .btn { margin-top: round(0.5rem, var(--e)); display: flex; width: fit-content; }
 .ta-expiry { display: flex; align-items: center; gap: round(0.375rem, var(--e)); margin: 0; }
 /* a phone: each Tesla car is a card (no sideways scroll for the match picker) */

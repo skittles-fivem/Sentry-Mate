@@ -208,8 +208,10 @@ let notices = [];
 
 // a Tesla account's notice (admins only) opens that account on Settings: Integrations
 const TESLA_NOTICES = new Set(['tesla_sign_in_needed', 'tesla_account_error']);
+const TESLAFI_NOTICES = new Set(['teslafi_token_refused', 'teslafi_account_error']);
 function fixOf(n) {
   if (TESLA_NOTICES.has(n.code)) return `${String(n.fix_link || state.buildUrl('settings-integrations')).split('#')[0]}#tesla${n.detail?.account ? `-${encodeURIComponent(n.detail.account)}` : ''}`;
+  if (TESLAFI_NOTICES.has(n.code)) return `${String(n.fix_link || state.buildUrl('settings-integrations')).split('#')[0]}#teslafi${n.detail?.account ? `-${encodeURIComponent(n.detail.account)}` : ''}`;
   return n.fix_link || null;
 }
 

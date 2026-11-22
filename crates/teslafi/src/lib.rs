@@ -16,7 +16,7 @@ pub mod store;
 pub use api::{Client, Feed, FeedError, Read};
 pub use hosts::{Endpoint, HOST};
 pub use http::{Http, HttpError};
-pub use poller::{AccountStatus, Cadence, Mode, Poller, Sink};
+pub use poller::{AccountStatus, Cadence, Mode, Pace, Poller, Sink};
 pub use store::{Account, AccountCar, AccountState, Match, Store, StoreError};
 pub use tesla::{Proxy, Secret};
 
@@ -229,6 +229,23 @@ impl<S: Sink> Service<S> {
             }
             o.proxy = proxy;
         }
+        self.restart();
+    }
+
+    /// A new pace (an admin chose how often TeslaFi is read): every running poller starts again with it. Their
+    /// saved pacing (the day's count, TeslaFi's wait, the back-off) is kept, so this never asks early.
+    pub fn set_cadence(&self, cadence: Cadence) {
+        {
+            let mut o = self.inner.opts.write().unwrap_or_else(|p| p.into_inner());
+            if o.cadence == cadence {
+                return;
+            }
+            o.cadence = cadence;
+        }
+        self.restart();
+    }
+
+    fn restart(&self) {
         let running: Vec<String> = lock(&self.inner.tasks).keys().cloned().collect();
         for id in running {
             if let Err(e) = self.spawn(&id, None) {

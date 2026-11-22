@@ -1,4 +1,5 @@
-// settings/integrations: the Tesla account (a second live input beside SMO, pages/tesla.js), and sending the cars'
+// settings/integrations: the Tesla account (a second live input beside SMO, pages/tesla.js), TeslaFi (a third,
+// pages/teslafi.js), and sending the cars'
 // live values to other systems, if the owner wants to. One block per integration, each with a status tag: MQTT (the broker as 'key = value' lines, a test, live counts), its
 // topics and rules, every value it publishes (previewed for a chosen car), Home Assistant discovery and the
 // entities it gets, events for automations, the read API, every network connection, and tools that use them.
@@ -19,6 +20,7 @@ import { formatNumber } from '../shared/i18n.js';
 import { copyBtn } from '../core/secret.js';
 import { toast } from '../core/toast.js';
 import { teslaSection } from './tesla.js';
+import { teslafiSection, teslafiHref } from './teslafi.js';
 
 export const id = 'settings-integrations';
 export const title = () => 'Settings: integrations';
@@ -492,6 +494,7 @@ export async function mount(ctx) {
     geonames_download: ['place-name download', 'only when an admin asks for new offline place names', 'settings-display'],
     mqtt: ['mqtt broker', 'only while publishing is on (above)', null],
     tesla: ['tesla api', 'only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (tesla account, above)', null],
+    teslafi: ['teslafi api', 'only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi (teslafi, above)', '#teslafi'],
     release_check: ['release check', 'asks whether a newer Sentry Mate exists, when on', 'settings-server'],
     upload: ['can bridge uploads', 'the car\'s CAN Bridge sends its logs here', null],
     web: ['this app and the api', 'browsers, apps and the api', null],
@@ -506,17 +509,19 @@ export async function mount(ctx) {
       { key: 'host', label: 'host or port', render: (r) => (r.port != null ? `port ${r.port}${r.tls ? ', tls' : ''}` : r.host || h('span', { class: 'muted' }, 'not set')) },
       { key: 'enabled', label: 'state', ph: 'num', render: (r) => (r.enabled ? tag(r.dir === 'in' ? 'open' : 'on', 'ok') : tag('off', 'muted')) },
       { key: 'last', label: 'last used', render: (r) => (r.last_used_ms ? ago(r.last_used_ms) : h('span', { class: 'muted' }, r.dir === 'in' ? 'listening' : 'never')) },
-      { key: 'go', label: '', grow: true, render: (r) => (PURPOSE[r.purpose]?.[2] ? link(state.buildUrl(PURPOSE[r.purpose][2]), 'change') : null) },
+      { key: 'go', label: '', grow: true, render: (r) => { const to = PURPOSE[r.purpose]?.[2]; return to ? link(to.startsWith('#') ? teslafiHref() : state.buildUrl(to), 'change') : null; } },
     ],
   }) : null;
 
   /* ---------- put it together */
   paintStatus(); paintBroker(); paintTopics(); paintValues(); paintHa(); paintEvents();
   const tesla = teslaSection(ctx, { cars: carList });
+  const teslafi = teslafiSection(ctx, { cars: carList });
   const recipe = (t, cv, uses, text, s) => [statusTag(s), [h('b', null, t), ': ', text, h('span', { class: 'muted' }, ` uses ${uses.join(', ')}.`)], cv];
   paint(ctx, head(ctx, { extra: h('span', { class: 'muted' }, headTag) }),
     h('p', { class: 'note' }, 'Switches and single lines save at once (Enter saves, Esc undoes); the broker connection lines save together. Nothing leaves the server until publishing is on.'),
     tesla.el,
+    teslafi.el,
     section({ title: 'mqtt', id: 'mqtt', side: mqttTag }, brokerSlot, h('p', { class: 'sub-title' }, 'status'), statusSlot, logSlot,
       h('p', { class: 'note', cover: 'nr.setup.mqtt' }, 'Connect a client: Node-RED, Home Assistant or any MQTT client uses this broker. Subscribe to ', code(`${ns()}/cars/+/#`), ' for every car, or ', code(`${ns()}/cars/<car id>/#`), ' for one. Use TLS as here.')),
     section({ title: 'mqtt topics', side: h('span', { class: 'muted' }, 'layout and rules') }, topicsSlot),
@@ -547,7 +552,7 @@ export async function mount(ctx) {
       [tag('phone', 'muted'), 'This app works in a phone\'s browser and can be added to the home screen. A phone app of your own can use the same api.', 'projects.matedroid'],
     ])),
     section({ title: 'network', cover: 'faq.network-flows', side: h('span', { class: 'muted' }, 'every connection the server makes') },
-      note('Sentry Mate needs no Tesla account and no cloud: the CAN Bridge (SMO) uploads to it, and everything else is off until you turn it on. A Tesla account (above) is an optional second input; without one the server never connects to Tesla.'),
+      note('Sentry Mate needs no Tesla account and no cloud: the CAN Bridge (SMO) uploads to it, and everything else is off until you turn it on. A Tesla account and a TeslaFi token (above) are optional inputs; without them the server never connects to Tesla or TeslaFi.'),
       netT ? netT.el : note(admin ? 'The connection list could not be read.' : 'The list of connections is shown to admins. By default Sentry Mate makes no outbound connection at all.')),
     section({ title: 'works with', side: h('span', { class: 'muted' }, 'other people\'s tools') },
       h('p', { class: 'note', cover: 'projects.disclaimer' }, 'Named so you know what fits. Sentry Mate does not make, check or vouch for them. Anything built on the MQTT topics or the api keeps working; anything that reads the storage directly will break.'),
@@ -559,6 +564,6 @@ export async function mount(ctx) {
         [tag('mqtt', 'muted'), 'garage door openers that act on arrival and departure, by place: good for closing behind you, late for opening.', 'projects.geogdo'],
       ])));
   paintLog();
-  await Promise.all([valuesT?.ready, eventsT?.ready, netT?.ready, tesla.load(), ...(S.haTables || []).map((t) => t.ready)].filter(Boolean)).catch(() => {});
+  await Promise.all([valuesT?.ready, eventsT?.ready, netT?.ready, tesla.load(), teslafi.load(), ...(S.haTables || []).map((t) => t.ready)].filter(Boolean)).catch(() => {});
   if (ctx.alive()) ctx.ready();
 }

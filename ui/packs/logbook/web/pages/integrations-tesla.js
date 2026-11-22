@@ -98,9 +98,9 @@ const quiet = (t) => h('span', { class: 'si-quiet' }, t);
  * the dialog under its field, other errors in clear words on its top line. Resolves with run's answer, or
  * null when closed.
  */
-export function askAgain(ctx, { title, text = null, yes, extra = [], run, danger = false }) {
+export function askAgain(ctx, { title, text = null, yes, extra = [], run, danger = false, input = 'Tesla input', words = ERROR_WORDS, errorText = teslaErrorText }) {
   let twoShown = !!(ctx.me && ctx.me.two_step_required);
-  const pass = field({ label: 'Your password', name: 'confirm_password', type: 'password', hint: 'Your own Sentry Mate password: it is asked again for every change to the Tesla input.', attrs: { autocomplete: 'current-password', required: true } });
+  const pass = field({ label: 'Your password', name: 'confirm_password', type: 'password', hint: `Your own Sentry Mate password: it is asked again for every change to the ${input}.`, attrs: { autocomplete: 'current-password', required: true } });
   const two = field({ label: 'Two-step code', name: 'code', hint: 'The 6 digits from your authenticator app, or a recovery code.', attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', spellcheck: 'false' } });
   two.hidden = !twoShown;
   let result = null;
@@ -124,14 +124,14 @@ export function askAgain(ctx, { title, text = null, yes, extra = [], run, danger
               twoShown = true; two.hidden = false;
               throw Object.assign(new Error('Your account asks for a two-step code as well.'), { fields: { code: 'Type the 6-digit code from your authenticator app.' } });
             }
-            if (c === 'wrong_password' || c === 'password_needed') throw Object.assign(new Error(ERROR_WORDS[c]), { fields: { confirm_password: ERROR_WORDS[c] } });
-            if (c === 'wrong_code' || c === 'wrong_two_step') throw Object.assign(new Error(ERROR_WORDS[c]), { fields: { code: ERROR_WORDS[c] } });
+            if (c === 'wrong_password' || c === 'password_needed') throw Object.assign(new Error(words[c]), { fields: { confirm_password: words[c] } });
+            if (c === 'wrong_code' || c === 'wrong_two_step') throw Object.assign(new Error(words[c]), { fields: { code: words[c] } });
             if (err && err.status === 429) throw new Error(`Too many tries. Wait ${Math.ceil((err.retryAfterMs || 60000) / 1000)} seconds, then try again.`);
             if (err && err.fields) {
               // field errors keep the server's words; a field this dialog does not have goes to the top line
-              throw Object.assign(new Error(teslaErrorText(err)), { fields: err.fields });
+              throw Object.assign(new Error(errorText(err)), { fields: err.fields });
             }
-            throw new Error(teslaErrorText(err));
+            throw new Error(errorText(err));
           }
           if (result === false) return;
           close('done');

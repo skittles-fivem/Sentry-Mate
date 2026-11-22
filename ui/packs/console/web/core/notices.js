@@ -33,7 +33,7 @@ function render() {
     return h('div', { class: ['ntc', `ntc--${tone}`], role: tone === 'info' ? 'status' : 'alert' },
       h('span', { class: `tag tag--${tone}` }, `[${tone}]`),
       h('span', { class: 'ntc-text' }, n.message || n.code),
-      fixOf(n) ? h('a', { class: 'lnk', href: fixOf(n) }, TESLA.has(n.code) ? 'fix: tesla account' : `fix: ${String(n.fix_link).replace(/^\//, '').split(/[?#]/)[0]}`) : null,
+      fixOf(n) ? h('a', { class: 'lnk', href: fixOf(n) }, TESLA.has(n.code) ? 'fix: tesla account' : String(n.code).startsWith('teslafi_') ? 'fix: teslafi' : `fix: ${String(n.fix_link).replace(/^\//, '').split(/[?#]/)[0]}`) : null,
       tone === 'info' ? h('button', { class: 'ntc-x', type: 'button', 'aria-label': 'Hide this notice for now', onclick: () => { hide(n.code); render(); } }, 'hide') : null);
   });
   if (offline) {
