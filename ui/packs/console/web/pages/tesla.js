@@ -16,6 +16,7 @@ import { h, replace } from '../shared/dom.js';
 import { formatNumber } from '../shared/i18n.js';
 import { section, kv, btn, note, link } from '../core/ui.js';
 import { table } from '../core/table.js';
+import { pairOptions } from '../core/carpick.js';
 import { field } from '../core/form.js';
 import { errorWords } from '../core/states.js';
 import { tag, dateTime, time, ago, dur, DASH } from '../core/fmt.js';
@@ -410,7 +411,7 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     const select = (c) => {
       const pre = picked.get(c.vehicle);
       const known = opts.some(([v]) => v === pre) ? opts : [...opts, [pre, carName(pre)]];
-      const sel = h('select', { class: 'in in--cell tesla-sel', 'aria-label': `Sentry Mate car for ${c.display_name || c.vehicle}` }, known.map(([v, l]) => h('option', { value: v, selected: v === pre }, l)));
+      const sel = h('select', { class: 'in in--cell tesla-sel', 'aria-label': `Sentry Mate car for ${c.display_name || c.vehicle}` }, pairOptions(known, cars, pre));
       sel.addEventListener('change', () => { picked.set(c.vehicle, sel.value); sync(); });
       return sel;
     };

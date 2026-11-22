@@ -10,6 +10,7 @@ import { format, getUnits, convert, unitLabel } from '../shared/units.js';
 import { formatTime, formatDuration, formatDateRange, dayKey, dayRange, addDays, startOf, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { head, section, kv, note } from '../core/ui.js';
+import { carOptions } from '../core/carpick.js';
 import { num, tag, date } from '../core/fmt.js';
 import { table, cellBar } from '../core/table.js';
 import { safeMap } from '../core/map.js';
@@ -64,7 +65,7 @@ export async function mount(ctx) {
   const l3From = l3.length ? l3[l3.length - 1].start_ms : null;
   const today = dayKey(now, tz);
   const vsSel = h('select', { class: 'in', 'aria-label': 'Set a second car beside this one' }, h('option', { value: '' }, 'vs: no second car'),
-    (fleet.items || []).filter((c) => c.id !== cid).map((c) => h('option', { value: c.id, selected: c.id === vsId }, `vs: ${c.name}`)));
+    carOptions((fleet.items || []).filter((c) => c.id !== cid), (c) => h('option', { value: c.id, selected: c.id === vsId }, `vs: ${c.name}`)));
   vsSel.addEventListener('change', () => ctx.setQuery({ vs: vsSel.value || null }) && ctx.reload());
   const rangeLine = h('div', { class: 'optline' },
     h('span', { class: 'optline-k' }, 'range>'),

@@ -18,6 +18,7 @@ import { h, replace } from '../shared/dom.js';
 import { format } from '../shared/units.js';
 import { isValidZone } from '../shared/time.js';
 import { head, paint, section, note, link, btn, kv, textBar } from '../core/ui.js';
+import { carOptions } from '../core/carpick.js';
 import { table } from '../core/table.js';
 import { empty, errorWords } from '../core/states.js';
 import { tag, dateTime, date, dur, ago, DASH } from '../core/fmt.js';
@@ -418,7 +419,7 @@ export async function mount(ctx) {
         const taken = new Set(S.match.filter((x) => x.tm_car !== c.tm_car && x.match && !['new', 'leave_out'].includes(x.match)).map((x) => x.match));
         const sel = h('select', { class: 'in in--cell', 'aria-label': `Where ${c.name}'s history goes`, disabled: !['ready', 'checking'].includes(S.job?.status), onchange: () => setMatch(c, sel.value) },
           c.match == null ? h('option', { value: '', selected: true, disabled: true }, 'choose') : null,
-          S.cars.map((x) => h('option', { value: x.id, selected: c.match === x.id, disabled: taken.has(x.id) }, `${x.name}${x.id === c.suggested ? ' (same vin prefix)' : ''}${taken.has(x.id) ? ' (taken)' : ''}`)),
+          carOptions(S.cars, (x) => h('option', { value: x.id, selected: c.match === x.id, disabled: taken.has(x.id) }, `${x.name}${x.id === c.suggested ? ' (same vin prefix)' : ''}${taken.has(x.id) ? ' (taken)' : ''}`)),
           h('option', { value: 'new', selected: c.match === 'new' }, 'a new car'), h('option', { value: 'leave_out', selected: c.match === 'leave_out' }, 'leave out'));
         return [sel, c.match == null ? [' ', tag('todo', 'warn')] : c.suggested && c.match === c.suggested ? [' ', tag('vin match', 'ok')] : null];
       } },
