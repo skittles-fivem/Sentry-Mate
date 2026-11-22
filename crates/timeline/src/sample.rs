@@ -225,6 +225,7 @@ impl SampleBuilder {
         let (lat, lon, gps_accuracy_m) = self.position(end_us);
 
         Sample {
+            extra: Default::default(),
             t_ms: sec * 1000,
             lat,
             lon,

@@ -227,6 +227,8 @@ async fn wait_for(what: &str, cond: impl Fn() -> bool) {
 /// A parked car with made-up values (and a made-up position).
 fn now(car: u32, soc: f64) -> Now {
     Now {
+        range_estimated_km: None,
+        healthy: None,
         car,
         at_ms: 1_794_150_000_000,
         state: Some(State::Online),

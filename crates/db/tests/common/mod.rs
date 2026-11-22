@@ -260,6 +260,7 @@ impl Car {
         let volt = dbc(340.0 + self.soc * 0.75 - current * 0.04 + wander, 0.01, 0.0);
         let charging = charge_kw.is_some();
         let s = Sample {
+            extra: Default::default(),
             t_ms,
             lat: Some(dbc(self.lat, 1e-6, 0.0)),
             lon: Some(dbc(self.lon, 1e-6, 0.0)),

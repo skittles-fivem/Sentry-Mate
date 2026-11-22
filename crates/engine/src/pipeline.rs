@@ -792,7 +792,16 @@ impl Engine {
             (Some(lat), Some(lon)) => self.places().place_at(lat, lon).map(|p| p.id),
             _ => None,
         };
-        let now = Now { car, at_ms, state: Some(model::State::Online), driving, sample: merged, place };
+        let now = Now {
+            range_estimated_km: None,
+            healthy: None,
+            car,
+            at_ms,
+            state: Some(model::State::Online),
+            driving,
+            sample: merged,
+            place,
+        };
         records::put_now_at(db, car, &at)?;
         records::put_now_from(db, car, &from)?;
         db.set_now(now)?;

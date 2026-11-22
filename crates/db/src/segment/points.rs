@@ -150,6 +150,7 @@ mod tests {
     #[test]
     fn every_sample_field_round_trips() {
         let full = |t: u64| Sample {
+            extra: Default::default(),
             t_ms: t,
             lat: Some(10.123_456),
             lon: Some(-20.5),
