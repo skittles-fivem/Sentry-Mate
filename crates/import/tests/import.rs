@@ -892,3 +892,44 @@ fn an_old_charge_and_state_never_closed_are_taken_ending_at_their_last_reading()
     assert_eq!(r.table(Table::ChargingProcesses).skipped(Skip::Open), 0);
     assert_eq!(r.table(Table::States).skipped(Skip::Open), 2, "the latest state of each car is still going");
 }
+
+/// Made-up rows of a Model Y with about 41,000 km on it: one position with a 32-bit "not available" odometer
+/// (4,294,967.295 km, which showed as 2,668,769 mi), one a jump no car could drive, and a drive whose end reads
+/// before its start. The readings go, the rows stay, and the report says why.
+#[test]
+fn impossible_odometer_readings_are_dropped_and_reported() {
+    let text = dump(&[
+        ("cars (id, vin, name)", &["1\t7SAYGDEE0PF000000\tY"]),
+        (
+            "positions (id, car_id, date, latitude, longitude, odometer)",
+            &[
+                "1\t1\t2024-01-01 00:00:00\t1.0\t2.0\t41000.5",
+                "2\t1\t2024-01-01 00:01:00\t1.0\t2.0\t4294967.295",
+                "3\t1\t2024-01-01 00:02:00\t1.0\t2.0\t41001.5",
+                "4\t1\t2024-01-01 00:03:00\t1.0\t2.0\t91001.5",
+                "5\t1\t2024-01-01 00:04:00\t1.0\t2.0\t41002.5",
+            ],
+        ),
+        (
+            "drives (id, car_id, start_date, end_date, start_km, end_km, distance)",
+            &[
+                "1\t1\t2024-01-01 00:00:00\t2024-01-01 00:04:00\t41000.5\t41002.5\t2.0",
+                "2\t1\t2024-01-01 01:00:00\t2024-01-01 01:10:00\t41010.0\t40000.0\t5.0",
+                "3\t1\t2024-01-01 02:00:00\t2024-01-01 02:10:00\t4294967.295\t41020.0\t5.0",
+            ],
+        ),
+    ]);
+    let mut k = Keep::new(&[(WHY, 20)]);
+    let r = from_bytes(text.as_bytes(), &mut k, &Options::default()).unwrap();
+    let odo: Vec<Option<f64>> = k.positions(20).iter().map(|p| p.sample.odometer_km).collect();
+    assert_eq!(odo, [Some(41000.5), None, Some(41001.5), None, Some(41002.5)]);
+    let p = r.table(Table::Positions);
+    assert_eq!(p.imported, 5, "the rows are kept without the reading");
+    assert_eq!(p.skipped_values["odometer: past 2,000,000 km"], 1);
+    assert_eq!(p.skipped_values["odometer: jump no car could drive"], 1);
+    let d: Vec<_> = k.drives(20).iter().map(|d| (d.drive.start_odometer_km, d.drive.end_odometer_km)).collect();
+    assert_eq!(d, [(Some(41000.5), Some(41002.5)), (None, None), (None, Some(41020.0))]);
+    let dr = r.table(Table::Drives);
+    assert_eq!(dr.skipped_values["odometer: end before start"], 1);
+    assert_eq!(dr.skipped_values["odometer: past 2,000,000 km"], 1);
+}

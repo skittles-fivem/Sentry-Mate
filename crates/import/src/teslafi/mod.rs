@@ -222,6 +222,9 @@ pub struct Report {
     pub rows_skipped: BTreeMap<String, u64>,
     /// Values there but unreadable, by column (read as empty).
     pub bad_values: BTreeMap<String, u64>,
+    /// Values read but dropped as impossible (the row was used without them), by why ([`crate::odo`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skipped_values: BTreeMap<String, u64>,
     /// Lines read as Windows-1252 (not UTF-8).
     pub lines_windows_1252: u64,
     pub positions: u64,
@@ -421,6 +424,8 @@ struct Slot {
     first_ms: Option<u64>,
     last_ms: Option<u64>,
     warnings: Vec<String>,
+    /// The odometer readings so far ([`crate::odo`]).
+    odo: crate::odo::OdoCheck,
 }
 
 /// Tally positions by table.
@@ -971,6 +976,7 @@ impl Importer<'_> {
             first_ms: None,
             last_ms: None,
             warnings: Vec::new(),
+            odo: crate::odo::OdoCheck::default(),
         });
         // the one car of rows without a VIN: later such rows go with it whatever id or name they carry
         if vin_key.is_none() {
@@ -1065,6 +1071,9 @@ impl Importer<'_> {
         let s = &mut self.slots[i];
         let mut p = poll::read(&row, units.distance, units.temperature, &mut self.bad);
         p.t_ms = t;
+        if let Some(why) = s.odo.keep(t, &mut p.odometer_km) {
+            *self.report.skipped_values.entry(why.to_string()).or_default() += 1;
+        }
         let run = s.run.get_or_insert_with(Run::new);
         let mut out = Vec::new();
         run.push(&p, &mut out);

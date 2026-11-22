@@ -165,10 +165,11 @@ pub(crate) const WANTED: &[(Field, &str, Kind)] = &[
     (F::Gear, "DI_gear", Kind::Gear),
     (F::Gear, "DI_gear_116", Kind::Gear),
     (F::Gear, "DI_gear_118", Kind::Gear),
-    // UI_odometer is km (0.1 km), Odometer3B6 km (0.001), the legacy Odometer5D8 miles
-    (F::Odometer, "UI_odometer", Number(Q::Distance, 0.0, 5.0e6)),
-    (F::Odometer, "Odometer3B6", Number(Q::Distance, 0.0, 5.0e6)),
-    (F::Odometer, "Odometer5D8", Number(Q::Distance, 0.0, 5.0e6)),
+    // UI_odometer is km (0.1 km), Odometer3B6 km (0.001), the legacy Odometer5D8 miles; no car reads past
+    // 2,000,000 km (Odometer3B6 with every bit set, its "not available", reads 4,294,967 km)
+    (F::Odometer, "UI_odometer", Number(Q::Distance, 0.0, MAX_ODOMETER_KM)),
+    (F::Odometer, "Odometer3B6", Number(Q::Distance, 0.0, MAX_ODOMETER_KM)),
+    (F::Odometer, "Odometer5D8", Number(Q::Distance, 0.0, MAX_ODOMETER_KM)),
     // the screen's battery %: UI_SOC (0x33A, 48|7@1+ unsigned, not multiplexed, in model3dbc; the opendbc file here
     // has no 0x33A) on a Model 3/Y, SOCUI302 on a legacy S/X. The sample builder checks it against the pack's energy
     // (0x352) and works the % out from that where it does not follow (a Model Y's UI_SOC read 71 % across a charge
@@ -485,6 +486,9 @@ fn charger_named(name: &str) -> f64 {
     }
 }
 
+/// No car's odometer reads more (km).
+pub(crate) const MAX_ODOMETER_KM: f64 = 2.0e6;
+
 fn resolve(kind: Kind, sig: &dbc::Signal) -> Option<Cand> {
     let conv = match kind {
         Number(q, _, _) => conversion(q, &sig.unit)?,
@@ -501,6 +505,15 @@ fn resolve(kind: Kind, sig: &dbc::Signal) -> Option<Cand> {
     };
     let names = sig.values.iter().flatten();
     let mut unavailable: Vec<f64> = names.clone().filter(|(_, n)| not_available(n)).map(|(&r, _)| scaled(r)).collect();
+    // a value name given in the signal's units, not its raw bits (Odometer3B6's SNA is 4294967, its 32 bits all set
+    // times 0.001): the raw value with every bit set is the one not available
+    if !sig.signed && (1..=63).contains(&sig.length) && sig.factor != 0.0 {
+        let all = ((1u64 << sig.length) - 1) as f64;
+        let physical = (all * sig.factor + sig.offset).trunc();
+        if names.clone().any(|(&r, n)| not_available(n) && r as f64 == physical && r as f64 != all) {
+            unavailable.push(all * sig.factor + sig.offset);
+        }
+    }
     let mut labels = Vec::new();
     let codes = match kind {
         Kind::Gear => names.filter_map(|(&r, n)| gear_named(n).map(|g| (scaled(r), gear_code(g)))).collect(),
@@ -608,6 +621,10 @@ mod tests {
         let range = t.cand("UI_Range");
         assert!((range.read(256.0).unwrap() - 411.992_064).abs() < 1e-6);
         assert_eq!(t.cand("Odometer3B6").read(1234.5), Some(1234.5));
+        // its 32 bits all set: not available (the DBC names 4294967, in km), and nothing past 2,000,000 km
+        assert_eq!(t.cand("Odometer3B6").read(4_294_967.295), None);
+        assert_eq!(t.cand("Odometer3B6").read(2_500_000.0), None);
+        assert_eq!(t.cand("UI_odometer").read(1_677_721.5), None, "UI_odometer's SNA");
         // value names: gears, "not available", charger types
         let gear = t.cand("DI_gear");
         assert_eq!(gear.read(1.0).and_then(gear_of), Some(Gear::P));
