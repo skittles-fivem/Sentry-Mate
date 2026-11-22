@@ -15,7 +15,7 @@
 // as the job is ready, done or failed.
 
 import { h, replace, setVars } from '../shared/dom.js';
-import { buildUrl } from '../shared/state.js';
+import { buildUrl, preferredCar } from '../shared/state.js';
 import { toIsoZoned } from '../shared/time.js';
 import { format } from '../shared/units.js';
 import { icon } from '../core/icons.js';
@@ -962,7 +962,7 @@ export async function mount(ctx) {
   const timelineSlot = h('span', { class: 'im-tl' });
   function paintTimelineLink() {
     const done = S.jobs.filter((j) => j.status === 'done').flatMap((j) => counted(j.report?.cars).map((c) => c.match));
-    const car = S.cars.find((c) => c.id === S.overlaps[0]?.car) || S.cars.find((c) => done.includes(c.id)) || S.cars[0];
+    const car = S.cars.find((c) => c.id === S.overlaps[0]?.car) || S.cars.find((c) => done.includes(c.id)) || S.cars.find((c) => c.id === preferredCar(S.cars));
     replace(timelineSlot, car
       ? h('a', { class: 'link', href: buildUrl('timeline', { car: car.id }) }, S.cars.length > 1 ? `Timeline of ${car.name}` : 'Timeline')
       : 'Timeline of each car');
