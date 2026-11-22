@@ -145,6 +145,8 @@ class Store:
                 "warranty_threshold_pct": 70,
                 "efficiency_wh_per_km_override": None,
                 "software_version_typed": None,
+                "pack_replaced_date": None,
+                "pack_new_kwh": None,
             }
             self.car_settings[cid] = s
             sold = getattr(car, "sold_date_days", None)
