@@ -1,184 +1,249 @@
-// The router: from the address to a page on screen.
+// The router: turns the address into a mounted page.
 //
-// shared/state.js owns the address (page, car, drive, charge, period, query). On each change the router
-// decides whether the page must be built again (another page, car, drive, charge or period, or filters the
-// page did not set itself), and then:
-//   1. asks core/session.js where the page may open (set-up first, then sign-in, then the page);
-//   2. reads the car of a car page (GET /cars/{car}); an unknown or hidden car is "not found";
-//   3. works out the period in the car's zone (the address's, else the tab's, else the page's own);
-//   4. loads pages/<id>.js (and pages/<id>.css while the page is open, if it says css = true);
-//   5. calls mount(ctx). The page draws into ctx.view and calls ctx.ready() after its first render with data,
-//      or ctx.fail(err) when it cannot load. core/README.md lists everything on ctx.
-// Leaving a page cancels what it started (ctx.api calls, ctx.on listeners, ctx.every timers, ctx.events).
+// shared/state.js owns the address (page, car, drive, charge, period, query). On every change this
+// module decides whether the page must be built again (another page, car, drive, charge or period, or a
+// query change it did not make itself), then:
+//   1. asks core/session.js where the page may be shown (set-up first, then sign-in, then the page);
+//   2. loads the car for car pages (GET /cars/{car}); an unknown or hidden car shows "not found";
+//   3. works out the period in the car's time zone (the URL's, else the tab's, else the page's default);
+//   4. imports pages/<id>.js (and links pages/<id>.css while the page is mounted, if it says css = true);
+//   5. calls mount(ctx). The page draws into ctx.view and calls ctx.ready() after its first render with
+//      data, or ctx.fail(err) when it cannot load. See core/README.md for ctx.
+// Leaving a page cancels everything it started (ctx.api, ctx.on, ctx.every, ctx.events, ctx.onCleanup).
 
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { h, replace, ready as markReady, failed as markFailed, unready, setTitle as docTitle, on } from '../shared/dom.js';
 import { resolvePeriod, periodParams } from '../shared/time.js';
-import { station, fullName } from './stations.js';
+import { pageInfo } from './pages.js';
 import * as frame from './frame.js';
 import * as session from './session.js';
-import { loadingDeck, errorState, offlineState, statePanel } from './states.js';
-import { showWaitingToast } from './layer.js';
+import { errorState, statePanel, loadingPage } from './states.js';
+import { showPending } from './flash.js';
 import { getMe, getPrefs, isAdmin } from './prefs.js';
 
 const BARE = new Set(['sign-in', 'setup']);
-let open = null;   // { key, qkey, ctx, mod, inst, cleanups, scope }
+let mounted = null;      // { key, queryKey, ctx, instance, cleanups, scope, cssHref }
 let seq = 0;
-let first = true;
-// Rebuilds of the page that is on screen (a live update, a retry, a filter) draw off screen, in a hidden
-// stage of the same width, and take the place of the old page in one step once the new one has its data:
-// nothing on screen goes back to loading and nothing jumps. The old page's cleanups wait until then.
-let stale = [];
-const flushStale = () => { for (const o of stale.splice(0)) runCleanups(o); };
+let firstMount = true;
 
-const routeKey = (s) => [s.page, s.car, s.drive, s.charge, s.period ? JSON.stringify(s.period) : ''].join('|');
+const periodKey = (p) => (p ? JSON.stringify(p) : '');
+const routeKey = (s) => [s.page, s.car, s.drive, s.charge, periodKey(s.period)].join('|');
 const queryKey = (q) => JSON.stringify(Object.entries(q || {}).sort());
 
-let zoneHere = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 /** The zone for pages without a car: the last car's, else this browser's. */
-export const fallbackZone = () => zoneHere;
+let fallbackZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+export const setFallbackZone = (tz) => { if (tz) fallbackZone = tz; };
+export const defaultZone = () => fallbackZone;
 
-/** Follow the address. Call once, after the frame is built. */
+/** Start following the address. Call once, after the frame exists. */
 export function startRouter() {
-  state.subscribe((s) => queueMicrotask(() => changed(s)));
+  state.subscribe((s) => queueMicrotask(() => onState(s)));
   state.startRouting();
 }
 
-/** Build the page on screen again (keeps the scroll). */
-export const rebuild = () => mount(state.current(), { keepScroll: true });
+/** Build the current page again (after signing in, after a change that affects everything). */
+export function reload() { const s = state.current(); mount(s, { keepScroll: true }); }
 
-function changed(s) {
-  if (s !== state.current()) return;   // a newer change follows
-  if (open && open.key === routeKey(s)) {
+function onState(s) {
+  if (s !== state.current()) return; // a newer change is on its way
+  if (mounted && mounted.key === routeKey(s)) {
     const qk = queryKey(s.query);
-    if (qk === open.qkey) return;      // the same filters, or the page set them itself
-    open.qkey = qk;
-    const onQuery = open.inst?.onQuery || open.mod?.onQuery;
+    if (qk === mounted.queryKey) return; // the same filters, or the page set them itself (ctx.setQuery)
+    mounted.queryKey = qk;
+    const onQuery = mounted.instance?.onQuery || mounted.mod?.onQuery;
     if (onQuery) {
-      const o = open;
-      o.ctx.query = s.query;
-      o.ctx.state = s;
-      Promise.resolve().then(() => onQuery(s.query, o.ctx)).then(() => { if (open === o) markReady(o.ctx.id); }, (e) => { if (open === o) o.ctx.fail(e); });
+      // back / forward between filters: the page updates itself, and is ready again once onQuery resolves
+      const m = mounted;
+      m.ctx.query = s.query;
+      m.ctx.state = s;
+      Promise.resolve().then(() => onQuery(s.query, m.ctx))
+        .then(() => { if (mounted === m) markReady(m.ctx.id); }, (e) => { if (mounted === m) m.ctx.fail(e); });
       return;
     }
   }
-  mount(s, { keepScroll: !!open && open.ctx?.id === s.page && open.ctx?.carId === s.car });
+  const samePage = mounted && mounted.ctx?.id === s.page && mounted.ctx?.carId === s.car;
+  mount(s, { keepScroll: samePage });
 }
 
-function runCleanups(o) {
-  try { o.inst?.unmount?.(); } catch (e) { console.error(e); }
-  for (const f of o.cleanups.splice(0).reverse()) { try { f(); } catch (e) { console.error(e); } }
+// keep: a live refresh builds the new page off screen first (see stageView), so the old page's own clean-up
+// (charts and maps it removes) waits until the new one takes its place; its requests and events stop at once
+function unmountCurrent(keep = false) {
+  if (!mounted) return null;
+  const m = mounted;
+  mounted = null;
+  m.scope.abort();
+  const finish = () => {
+    try { m.instance?.unmount?.(); } catch (e) { console.error(e); }
+    for (const f of m.cleanups.splice(0).reverse()) { try { f(); } catch (e) { console.error(e); } }
+  };
+  if (keep) return finish;
+  finish();
+  return null;
 }
 
-function leave(quiet = false) {
-  if (!open) return;
-  const o = open;
-  open = null;
-  o.scope.abort();
-  if (quiet) stale.push(o); else { flushStale(); runCleanups(o); }
+// A live refresh (ctx.refresh: a drive or charge started or ended) builds the page again in an invisible box of
+// the view's size, and puts it in the view in one step once it is drawn and has stopped changing: the old page
+// stays on screen until then, so nothing goes away, shows a loading skeleton, and comes back.
+let staged = null;   // { stage, commit, drop }
+// keepOld: a newer live refresh takes over, and the page still on screen is cleaned up when that one commits
+function dropStage(keepOld = false) { const f = staged?.drop(keepOld) || null; staged = null; return f; }
+function stageView(view, finishOld) {
+  const r = view.getBoundingClientRect();
+  const stage = h('div', { class: view.className + ' view-stage', 'aria-hidden': 'true', inert: '' });
+  Object.assign(stage.style, {
+    position: 'fixed', top: '0', left: `${r.left}px`, width: `${r.width}px`, boxSizing: 'border-box', height: '100vh', overflow: 'hidden',
+    visibility: 'hidden', pointerEvents: 'none', zIndex: '-1',
+  });
+  document.body.append(stage);
+  let done = false, quietT = 0, mo = null;
+  const maxT = setTimeout(() => commit(), 12000);
+  const end = () => { done = true; clearTimeout(maxT); clearTimeout(quietT); mo?.disconnect(); stage.remove(); if (staged?.stage === stage) staged = null; };
+  function commit() {
+    if (done) return;
+    const nodes = [...stage.childNodes];
+    end();
+    // the control that had the focus: the same place in the new page gets it back
+    const path = [];
+    for (let e = document.activeElement; e && e !== view && view.contains(e); e = e.parentElement) path.unshift([...e.parentElement.children].indexOf(e));
+    view.replaceChildren(...nodes);
+    finishOld?.();
+    if (path.length) {
+      let e = view;
+      for (const i of path) e = e?.children[i];
+      e?.focus?.({ preventScroll: true });
+    }
+  }
+  // after ready: wait until the new page has stopped changing (charts drawn, late parts loaded)
+  // and has no request of its own under way (a route or a list that loads after ready), at most 6 s
+  function settle(busy = () => 0) {
+    if (done) return;
+    const later = setTimeout(() => commit(), 6000);
+    const again = () => {
+      clearTimeout(quietT);
+      quietT = setTimeout(() => { if (busy() > 0) { again(); return; } clearTimeout(later); commit(); }, 200);
+    };
+    mo = new MutationObserver(again);
+    mo.observe(stage, { subtree: true, childList: true, attributes: true, characterData: true });
+    again();
+  }
+  const drop = (keepOld) => { if (done) return null; end(); if (keepOld) return finishOld; finishOld?.(); return null; };
+  staged = { stage, commit, settle, drop };
+  return staged;
 }
 
+// A page's API client that also counts its requests under way (a live refresh waits for them, see stageView).
+function counted(sc) {
+  let n = 0;
+  const track = (p) => { n++; const off = () => { n--; }; p.then(off, off); return p; };
+  return {
+    ...sc,
+    get busy() { return n; },
+    get aborted() { return sc.aborted; },
+    get: (...a) => track(sc.get(...a)),
+    page: (...a) => track(sc.page(...a)),
+    list: (...a) => { const l = sc.list(...a); const all = l.all.bind(l); return Object.assign(l, { all: (...b) => track(all(...b)) }); },
+  };
+}
+
+// pages/<id>.css, linked while the page is mounted; resolves when it has loaded (no unstyled flash)
 function pageCss(id) {
-  if (document.head.querySelector(`link[data-page-css="${id}"]`)) return Promise.resolve();
-  const link = h('link', { rel: 'stylesheet', href: `/pages/${id}.css`, dataset: { pageCss: id } });
-  const done = new Promise((r) => { link.addEventListener('load', r, { once: true }); link.addEventListener('error', r, { once: true }); });
+  const href = `/pages/${id}.css`;
+  let link = document.head.querySelector(`link[data-page-css="${id}"]`);
+  if (link) return Promise.resolve(href);
+  link = h('link', { rel: 'stylesheet', href, dataset: { pageCss: id } });
+  const done = new Promise((resolve) => {
+    link.addEventListener('load', () => resolve(href), { once: true });
+    link.addEventListener('error', () => resolve(href), { once: true });
+  });
   document.head.append(link);
   return done;
 }
-const dropCss = (keep) => { for (const l of document.head.querySelectorAll('link[data-page-css]')) if (l.dataset.pageCss !== keep) l.remove(); };
+function dropCss(keep) {
+  for (const l of document.head.querySelectorAll('link[data-page-css]')) if (l.dataset.pageCss !== keep) l.remove();
+}
 
-async function mount(s, { keepScroll = false } = {}) {
+async function mount(s, { keepScroll = false, live = false } = {}) {
   const my = ++seq;
-  const view = frame.view();
-  const quiet = keepScroll && !first && !!open && open.ctx?.id === s.page && view.childElementCount > 0;
-  leave(quiet);
-  if (!quiet) unready();
+  const older = dropStage(live);
+  const finishMounted = unmountCurrent(live);
+  const finishOld = older || finishMounted ? () => { older?.(); finishMounted?.(); } : null;
+  if (!live) unready();
   const id = s.page;
-  const info = station(id);
-  const scope = api.scope();
+  const st = live ? stageView(frame.view(), finishOld) : null;
+  const view = st ? st.stage : frame.view();
+  const shown = () => { if (st) st.commit(); };
+  const info = pageInfo(id);
+  const scope = counted(api.scope());
   const cleanups = [];
-  const rec = { key: routeKey(s), qkey: queryKey(s.query), ctx: null, mod: null, inst: null, cleanups, scope, stage: null };
-  open = rec;
-  const alive = () => open === rec && my === seq;
+  const rec = { key: routeKey(s), queryKey: queryKey(s.query), ctx: null, instance: null, mod: null, cleanups, scope };
+  mounted = rec;
+  const alive = () => mounted === rec && my === seq;
+
   document.documentElement.dataset.screen = BARE.has(id) ? 'bare' : 'app';
-  document.documentElement.dataset.page = id;
-  if (quiet) {
-    // the stage: a second .view (same width, padding and container queries), hidden and out of the flow
-    rec.stage = h('main', { class: 'view view--stage', 'aria-hidden': 'true', 'aria-busy': 'true' });
-    rec.stage.inert = true;
-    for (const old of document.querySelectorAll('.view--stage')) old.remove();
-    view.after(rec.stage);
-  } else {
-    flushStale();
-    view.setAttribute('aria-busy', 'true');
-  }
-  let swapTimer = 0;
-  const dropStage = () => { clearTimeout(swapTimer); rec.stage?.remove(); rec.stage = null; };
-  // the new page takes the old one's place in one step
-  const swap = () => {
-    if (!rec.stage || !alive()) return;
-    const st = rec.stage;
-    dropStage();
-    flushStale();
-    view.replaceChildren(...st.childNodes);
-    view.removeAttribute('aria-busy');
-  };
-  cleanups.push(dropStage);
+  view.setAttribute('aria-busy', 'true');
 
   const showError = (err, retry = () => mount(state.current(), { keepScroll: true })) => {
     if (!alive()) return;
-    dropStage();
-    flushStale();
-    const offline = !navigator.onLine && (err?.status === 0);
-    replace(view, statePanel(offline ? offlineState(retry) : errorState(err, { retry, home: id !== 'fleet' && !BARE.has(id) })));
-    view.removeAttribute('aria-busy');
-    markFailed(id);
+    replace(view, statePanel(errorState(err, { retry, home: id !== 'fleet' && !BARE.has(id) })));
+    shown();
+    frame.view().removeAttribute('aria-busy');
+    markFailed(id === 'not-found' ? 'not-found' : id);
   };
 
+  // where may this page be shown?
   let gate;
-  try { gate = await session.admit(id, s.path + (location.search || '')); } catch (err) {
-    frame.update({ page: id, info, car: null, period: null });
+  try {
+    gate = await session.gate(id, s.path + (location.search || ''));
+  } catch (err) {
+    frame.update({ s, info, car: null, period: null });
     showError(err);
     return;
   }
   if (!alive()) return;
-  if (gate.go) { state.navigate(gate.go, { replace: true }); return; }
+  if (gate.redirect) { state.navigate(gate.redirect, { replace: true }); return; }
 
-  if (!info) {
-    frame.update({ page: id, info: null, car: null, period: null });
+  if (id === 'not-found' || !info) {
+    frame.update({ s, info: null, car: null, period: null });
     docTitle('Not found');
-    showError(new api.ApiError({ status: 404, code: 'not_found', message: 'There is no page at this address. Tune to another one with the arrows, or open All cars.' }), null);
+    showError(Object.assign(new api.ApiError({ status: 404, code: 'not_found', message: 'There is no page at this address.' })), null);
     return;
   }
 
-  if (!keepScroll || first) replace(view, loadingDeck(3));
+  if (!keepScroll || firstMount) replace(view, loadingPage(info.loading ?? 3));
 
+  // the car of a car page
   let car = null;
   if (s.car) {
-    try { car = await scope.get(api.apiPath`cars/${s.car}`, null, { maxAgeMs: 15000 }); } catch (err) {
+    try {
+      car = await scope.get(api.apiPath`cars/${s.car}`, null, { maxAgeMs: 15000 });
+    } catch (err) {
       if (api.isAbort(err) || !alive()) return;
-      if (err.status === 404) { state.forgetCar(s.car); err.message = 'There is no car at this address, or your account may not see it.'; }
-      frame.update({ page: id, info, car: null, period: null });
-      docTitle(fullName(info));
-      showError(err);
+      if (err.status === 404) state.forgetCar(s.car);
+      frame.update({ s, info, car: null, period: null });
+      docTitle(info.title);
+      showError(err.status === 404 ? Object.assign(err, { message: 'There is no car at this address, or your account may not see it.' }) : err);
       return;
     }
     if (!alive()) return;
-    if (car.time_zone) zoneHere = car.time_zone;
-    state.rememberCar(car.id);
+    setFallbackZone(car.time_zone);
   } else if (info.period && state.lastCar()) {
-    // a page with a period and no car (Travel): its days are the last car's days
-    try { const last = await scope.get(api.apiPath`cars/${state.lastCar()}`, null, { maxAgeMs: 60000 }); if (last.time_zone) zoneHere = last.time_zone; } catch (err) {
+    // a page with a period but no car (Travel): days are the last car's days
+    try {
+      const last = await scope.get(api.apiPath`cars/${state.lastCar()}`, null, { maxAgeMs: 60000 });
+      setFallbackZone(last.time_zone);
+    } catch (err) {
       if (api.isAbort(err) || !alive()) return;
       if (err.status === 404) state.forgetCar(state.lastCar());
     }
     if (!alive()) return;
   }
-  const tz = car?.time_zone || zoneHere;
+  const tz = car?.time_zone || fallbackZone;
   const period = info.period ? resolvePeriod(s.period ?? { preset: info.period }, { now: api.now(), tz, fallback: info.period }) : null;
-  frame.update({ page: id, info, car, period, tz });
 
+  frame.update({ s, info, car, period, tz });
+
+  // the page module and its style sheet
   let mod;
   try {
     mod = await import(`../pages/${id}.js`);
@@ -193,59 +258,85 @@ async function mount(s, { keepScroll = false } = {}) {
   dropCss(mod.css ? id : null);
   rec.mod = mod;
 
+  let shownOnce = false, refreshAsked = false;
   const ctx = {
-    id, info, get view() { return rec.stage || view; }, state: s, query: s.query, car, carId: s.car, tz, period,
+    id, info, view, state: s, query: s.query, car, carId: s.car, tz, period,
     params: period ? periodParams(period) : {},
     api: scope, me: getMe(), prefs: getPrefs(), admin: isAdmin(),
     alive,
     onCleanup(f) { cleanups.push(f); return f; },
-    on(target, type, f, o) { const off = on(target, type, f, o); cleanups.push(off); return off; },
+    on(target, type, f, opts) { const off = on(target, type, f, opts); cleanups.push(off); return off; },
     every(ms, f) { const t = setInterval(() => { if (alive()) f(); }, ms); cleanups.push(() => clearInterval(t)); return t; },
     events(types, f) { return scope.events((ev) => { if (alive()) f(ev); }, { types: [].concat(types) }); },
-    // ready only once the bundled fonts are in: the page is then drawn as it will stay (no swap after it)
     ready() {
       if (!alive()) return;
-      // a page that goes on loading after its first render: show it at the latest a moment after
-      if (rec.stage) { clearTimeout(swapTimer); swapTimer = setTimeout(swap, 4000); } else view.removeAttribute('aria-busy');
-      const done = () => { if (alive()) markReady(id); };
-      const fonts = document.fonts?.ready;
-      if (fonts) fonts.then(done, done); else done();
+      shownOnce = true;
+      if (refreshAsked) { refreshAsked = false; setTimeout(() => ctx.refresh(), 0); }
+      st?.settle(() => scope.busy);
+      frame.view().removeAttribute('aria-busy');
+      // at the next frame (the page's own code after ready() and the router's are done by then), once the fonts the
+      // page uses are in (a late swap would re-flow the text it just drew)
+      requestAnimationFrame(() => {
+        const fonts = document.fonts;
+        if (fonts && fonts.status === 'loading') fonts.ready.then(() => { if (alive()) markReady(id); });
+        else if (alive()) markReady(id);
+      });
     },
-    fail(err, o = {}) { if (api.isAbort(err) || !alive()) return; console.warn(err); showError(err, o.retry === undefined ? undefined : o.retry); },
+    fail(err, opts = {}) {
+      if (api.isAbort(err) || !alive()) return;
+      console.warn(err);
+      showError(err, opts.retry === undefined ? undefined : opts.retry);
+    },
     setTitle(...parts) { docTitle(...parts, car?.name); },
+    setCrumbs(list) { frame.setCrumbs(list); },
     link: (page, params) => state.linkTo(page, params),
-    setQuery(patch, o) {
+    // The page's own filters: the router knows them at once, so it does not build the page again; a page
+    // that was left changes nothing (a late timer must not write into the next page's address).
+    setQuery(patch, opts) {
       if (!alive()) return state.current();
-      const next = state.setQuery(patch, o);
-      rec.qkey = queryKey(next.query);
+      const next = state.setQuery(patch, opts);
+      rec.queryKey = queryKey(next.query);
       ctx.query = next.query;
       ctx.state = next;
       return next;
     },
-    navigate: (href, o) => state.navigate(href, o),
+    navigate: (href, opts) => state.navigate(href, opts),
     reload: () => mount(state.current(), { keepScroll: true }),
-    carChanged: (c) => frame.carChanged(c),
+    // live data changed (a 'rows' event): build the page again without taking the one on screen away first
+    // (asked before this page was ready: once it is, so a slow first load is never started over and over)
+    refresh: () => {
+      if (!alive()) return;
+      if (!shownOnce) { refreshAsked = true; return; }
+      mount(state.current(), { keepScroll: true, live: true });
+    },
   };
   rec.ctx = ctx;
-  docTitle(typeof mod.title === 'function' ? mod.title(ctx) : fullName(info), car?.name);
+
+  docTitle(typeof mod.title === 'function' ? mod.title(ctx) : info.title, car?.name);
+  // (a live refresh keeps the trail on screen: the page sets its own again, so it never flips to the usual one)
+  if (!live) frame.setCrumbs(frame.defaultCrumbs(s, info, car));
 
   try {
     const inst = await mod.mount(ctx);
-    if (!alive()) { try { inst?.unmount?.(); } catch { /* gone */ } return; }
-    rec.inst = inst || null;
+    if (!alive()) { try { inst?.unmount?.(); } catch { /* left already */ } return; }
+    rec.instance = inst || null;
   } catch (err) {
     if (api.isAbort(err) || !alive()) return;
     ctx.fail(err);
   }
   if (!alive()) return;
-  swap();
-  if (!keepScroll) { window.scrollTo(0, 0); if (!first) view.focus({ preventScroll: true }); }
+  if (live) { showPending(); return; }
+  if (!keepScroll) {
+    window.scrollTo(0, 0);
+    if (!firstMount) view.focus({ preventScroll: true });
+  }
+  // a link to a section of a page (/cars/c1/charges?…#habits): open the page there
   const target = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
   if (target && view.contains(target)) {
-    const top = document.querySelector('.dash')?.getBoundingClientRect().height || 0;
+    const bar = document.querySelector('.topbar')?.getBoundingClientRect().height || 0; // the sticky top bar
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    window.scrollTo(0, Math.max(0, target.getBoundingClientRect().top + window.scrollY - top - rem));
+    window.scrollTo(0, Math.max(0, target.getBoundingClientRect().top + window.scrollY - bar - rem));
   }
-  first = false;
-  showWaitingToast();
+  firstMount = false;
+  showPending();
 }

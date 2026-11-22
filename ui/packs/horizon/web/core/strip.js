@@ -1,62 +1,72 @@
-// The activity strip: what the car did over a span, as one band of coloured pieces (driving, charging,
-// awake, vehicle bus only, asleep, updating, unknown), with hour or day marks under it and a key. Every
-// piece has its words in a title and in the list a screen reader reads; a colour is never the only sign.
+// The activity strip: what the car did over a span, in fixed colours with a legend (GET
+// /api/v1/cars/{car}/activity). Asleep is hatched, unknown (no log, a paused recording, a failed check)
+// is grey and hatched the other way, so the two never look alike. Positions are CSS custom properties
+// set through CSSOM. Used by Car overview, Timeline and Trip.
 
-import { h, svg } from '../shared/dom.js';
-import { formatTime, formatDate, formatDuration } from '../shared/time.js';
-import { format } from '../shared/units.js';
+import { h, setVars } from '../shared/dom.js';
+import { formatTime, formatDate, formatDuration, buckets, zonedParts, HOUR, DAY } from '../shared/time.js';
 
+/** API kind -> the state word used for colours, and its label. */
 export const KINDS = Object.freeze({
-  driving: { word: 'Driving', tone: 'driving' },
-  charging: { word: 'Charging', tone: 'charging' },
-  online: { word: 'Parked, awake', tone: 'parked' },
-  online_vehicle_bus_only: { word: 'Awake, vehicle bus only', tone: 'bus' },
-  asleep: { word: 'Asleep', tone: 'asleep' },
-  updating: { word: 'Updating', tone: 'updating' },
-  unknown: { word: 'Unknown: no log', tone: 'unknown' },
+  driving: { state: 'driving', label: 'Driving' },
+  charging: { state: 'charging', label: 'Charging' },
+  online: { state: 'parked', label: 'Parked, awake' },
+  online_vehicle_bus_only: { state: 'vbus', label: 'Awake, vehicle bus only' },
+  asleep: { state: 'asleep', label: 'Asleep' },
+  updating: { state: 'updating', label: 'Updating' },
+  unknown: { state: 'unknown', label: 'Unknown (no data)' },
 });
-const kindOf = (k) => KINDS[k] || KINDS.unknown;
+
+const pct = (v, a, b) => Math.max(0, Math.min(100, ((v - a) / Math.max(1, b - a)) * 100));
+
+/** Axis labels for a span: hours within a day or two, dates for longer spans. */
+export function axisTicks(from, to, tz, n = 5) {
+  const span = to - from;
+  const out = [];
+  if (span <= 2 * DAY) {
+    const step = span <= 13 * HOUR ? 3 : span <= 26 * HOUR ? 6 : 12;
+    for (const b of buckets(from, to, 'hour', tz)) {
+      if (b.start_ms < from) continue;
+      if (zonedParts(b.start_ms, tz).hour % step === 0) out.push({ x: pct(b.start_ms, from, to), text: formatTime(b.start_ms, tz) });
+    }
+  } else {
+    const days = buckets(from, to, 'day', tz).filter((b) => b.start_ms >= from);
+    const every = Math.max(1, Math.ceil(days.length / n));
+    days.forEach((b, i) => { if (i % every === 0) out.push({ x: pct(b.start_ms, from, to), text: formatDate(b.start_ms, tz, { weekday: false, year: false }) }); });
+  }
+  return out;
+}
 
 /**
- * strip(items, from, to, { tz, now, cover, key: true }) where items are /activity pieces
- * ({ kind, start_ms, end_ms }). The time before the first piece and after the last (up to now) shows as
- * unknown. Returns the element.
+ * The strip: activityStrip(items, from_ms, to_ms, { tz, now, size: 'lg' | 'sm', axis: true, legend: true }).
+ * items: the /activity segments. Time after now is left empty (not yet happened).
  */
-export function strip(items, from, to, { tz, now = Date.now(), cover, key = true, tall = false } = {}) {
-  const end = Math.min(to ?? now, now);
-  const span = Math.max(1, end - from);
-  const pieces = [];
-  let at = from;
-  for (const it of items || []) {
-    const s = Math.max(from, it.start_ms), e = Math.min(end, it.end_ms ?? end);
-    if (e <= s) continue;
-    if (s > at) pieces.push({ kind: 'unknown', start_ms: at, end_ms: s, filled: true });
-    pieces.push({ ...it, start_ms: s, end_ms: e });
-    at = Math.max(at, e);
+export function activityStrip(items, from, to, { tz, now = null, size = 'lg', axis = true, legend = true, kinds = null } = {}) {
+  const lg = size === 'lg';
+  const end = now != null ? Math.min(to, now) : to;
+  const segs = items.filter((s) => (s.end_ms ?? end) > from && s.start_ms < end).map((s) => {
+    const k = KINDS[s.kind] || KINDS.unknown;
+    const a = Math.max(from, s.start_ms), b = Math.min(end, s.end_ms ?? end);
+    const el = h('i', { dataset: { state: k.state }, title: `${k.label}: ${formatTime(a, tz)} – ${formatTime(b, tz)} (${formatDuration(b - a)})` });
+    setVars(el, { '--x': `${pct(a, from, to).toFixed(3)}%`, '--w': `${Math.max(lg ? 0.15 : 0.3, pct(b, from, to) - pct(a, from, to)).toFixed(3)}%` });
+    if (lg) el.classList.add('tl-seg');
+    return el;
+  });
+  const used = new Set(segs.map((s) => s.dataset.state));
+  const band = h('div', { class: lg ? 'tl-band' : 'daystrip', role: 'img', 'aria-label': `What the car did from ${formatDate(from, tz)} ${formatTime(from, tz)} to ${formatDate(end, tz)} ${formatTime(end, tz)}` }, segs);
+  const wrap = h('div', { class: lg ? 'strip-band-wrap' : 'daystrip-wrap' }, band);
+  if (now != null && now > from && now < to) {
+    const mark = h('i', { class: lg ? 'tl-now' : 'daystrip-now', title: 'Now' });
+    setVars(mark, { '--x': `${pct(now, from, to).toFixed(3)}%` });
+    wrap.append(mark);
   }
-  if (at < end) pieces.push({ kind: 'unknown', start_ms: at, end_ms: end, filled: true });
-  const long = span > 2 * 86400000;
-  // marks: about six evenly spaced times
-  const marks = [];
-  for (let i = 0; i <= 6; i++) {
-    const t = from + (span * i) / 6;
-    marks.push(h('span', { class: 'strip-mark', vars: { '--x': `${((i / 6) * 100).toFixed(3)}%` }, dataset: { edge: i === 0 ? 'start' : i === 6 ? 'end' : null } },
-      long ? formatDate(t, tz, { weekday: false, year: false }) : formatTime(t, tz)));
-  }
-  const used = [...new Set(pieces.map((p) => (KINDS[p.kind] ? p.kind : 'unknown')))];
-  const total = {};
-  for (const p of pieces) { const k = KINDS[p.kind] ? p.kind : 'unknown'; total[k] = (total[k] || 0) + (p.end_ms - p.start_ms); }
-  return h('div', { class: ['strip', tall && 'strip--tall'], cover },
-    h('div', { class: 'strip-band', role: 'img', 'aria-label': `What the car did from ${formatDate(from, tz, { year: false })}, ${formatTime(from, tz)} to ${formatTime(end, tz)}: ${used.map((k) => `${kindOf(k).word} ${formatDuration(total[k])}`).join(', ')}` },
-      // one SVG, stretched to the band: thin pieces stay crisp and never land between device pixels
-      svg('svg', { class: 'strip-svg', viewBox: '0 0 1000 10', preserveAspectRatio: 'none', 'shape-rendering': 'crispEdges', 'aria-hidden': 'true' },
-        pieces.map((p) => svg('rect', {
-          class: 'strip-rect', dataset: { tone: kindOf(p.kind).tone },
-          x: (((p.start_ms - from) / span) * 1000).toFixed(3), y: 0, height: 10,
-          width: Math.max(0.6, ((p.end_ms - p.start_ms) / span) * 1000).toFixed(3),
-        }, svg('title', null, `${kindOf(p.kind).word}: ${formatTime(p.start_ms, tz)} to ${formatTime(p.end_ms, tz)} (${formatDuration(p.end_ms - p.start_ms)})`))))),
-    h('div', { class: 'strip-marks', 'aria-hidden': 'true' }, marks),
-    key ? h('ul', { class: 'strip-key' }, used.map((k) => h('li', { class: 'strip-key-item' },
-      h('i', { class: 'strip-sw', dataset: { tone: kindOf(k).tone }, 'aria-hidden': 'true' }), h('span', null, kindOf(k).word),
-      h('span', { class: 'strip-key-v' }, `${formatDuration(total[k])} · ${format((total[k] / span) * 100, 'percent')}`)))) : null);
+  const ticks = axis ? axisTicks(from, to, tz) : [];
+  const axisEl = axis ? h('div', { class: lg ? 'tl-axis' : 'tl-axis strip-axis--sm', 'aria-hidden': 'true' }, ticks.map((t) => {
+    const s = h('span', null, t.text);
+    setVars(s, { '--x': `${t.x.toFixed(2)}%` });
+    return s;
+  })) : null;
+  const show = (kinds || Object.keys(KINDS)).map((k) => KINDS[k]).filter((k) => !kinds ? used.has(k.state) || ['driving', 'charging', 'parked', 'asleep', 'unknown'].includes(k.state) : true);
+  const legendEl = legend ? h('div', { class: lg ? 'tl-legend' : 'mini-legend' }, show.map((k) => h('span', null, h('i', { dataset: { state: k.state } }), k.label))) : null;
+  return h('div', { class: ['strip', `strip--${size}`] }, wrap, axisEl, legendEl);
 }

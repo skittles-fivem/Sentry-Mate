@@ -10,10 +10,12 @@
 // tablets, Calm on phones), Full, Calm, Off (a plain dusk gradient).
 
 import { svg, h, replace } from '../shared/dom.js';
-import { bootInfo, onTheme } from './display.js';
+import { onTheme } from './display.js';
 
 export const CHOICES = Object.freeze([['auto', 'Auto'], ['full', 'Full'], ['calm', 'Calm'], ['off', 'Off']]);
 const html = document.documentElement;
+// boot.js (window.uiRoot) read this browser's choice before the first paint
+const bootInfo = { SKY_KEY: window.uiRoot?.SKY_KEY || 'sentrymate.horizon.sky', skyChoice: window.uiRoot?.skyChoice || ((v) => (v === 'full' || v === 'calm' || v === 'off' ? v : 'auto')) };
 const still = matchMedia('(prefers-reduced-motion: reduce)');
 const S = { choice: bootInfo.skyChoice(html.dataset.skyChoice), mode: 'full', canvas: null, ctx: null, w: 0, h: 0, dpr: 1, phase: 0, raf: 0, last: 0, drawn: 0, frames: 0, holds: new Set() };
 const subs = new Set();
