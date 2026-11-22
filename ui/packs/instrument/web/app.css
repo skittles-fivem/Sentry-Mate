@@ -1599,3 +1599,4 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 /* bare screens (sign-in, set-up) have no dock either: its tabs lead to pages that need an account */
 :root[data-phone][data-screen="bare"] .dock { display: none; }
 :root[data-phone][data-screen="bare"] .app > .main { padding-bottom: var(--safe-b); }
+:root[data-phone] .map-style-btn { height: var(--tap); padding: 0 round(0.875rem, var(--e)); }
