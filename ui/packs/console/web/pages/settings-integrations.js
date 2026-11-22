@@ -1,5 +1,4 @@
-// settings/integrations: the Tesla account (a second live input beside SMO, pages/tesla.js), TeslaFi (a third,
-// pages/teslafi.js), and sending the cars'
+// settings/integrations: the Tesla account (a second live input beside SMO, pages/tesla.js), TeslaFi (a third, pages/teslafi.js), and sending the cars'
 // live values to other systems, if the owner wants to. One block per integration, each with a status tag: MQTT (the broker as 'key = value' lines, a test, live counts), its
 // topics and rules, every value it publishes (previewed for a chosen car), Home Assistant discovery and the
 // entities it gets, events for automations, the read API, every network connection, and tools that use them.
@@ -20,7 +19,7 @@ import { formatNumber } from '../shared/i18n.js';
 import { copyBtn } from '../core/secret.js';
 import { toast } from '../core/toast.js';
 import { teslaSection } from './tesla.js';
-import { teslafiSection, teslafiHref } from './teslafi.js';
+import { teslafiSection } from './teslafi.js';
 
 export const id = 'settings-integrations';
 export const title = () => 'Settings: integrations';
@@ -494,7 +493,7 @@ export async function mount(ctx) {
     geonames_download: ['place-name download', 'only when an admin asks for new offline place names', 'settings-display'],
     mqtt: ['mqtt broker', 'only while publishing is on (above)', null],
     tesla: ['tesla api', 'only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (tesla account, above)', null],
-    teslafi: ['teslafi api', 'only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi (teslafi, above)', '#teslafi'],
+    teslafi: ['teslafi api', 'only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi', '#teslafi'],
     release_check: ['release check', 'asks whether a newer Sentry Mate exists, when on', 'settings-server'],
     upload: ['can bridge uploads', 'the car\'s CAN Bridge sends its logs here', null],
     web: ['this app and the api', 'browsers, apps and the api', null],
@@ -509,7 +508,7 @@ export async function mount(ctx) {
       { key: 'host', label: 'host or port', render: (r) => (r.port != null ? `port ${r.port}${r.tls ? ', tls' : ''}` : r.host || h('span', { class: 'muted' }, 'not set')) },
       { key: 'enabled', label: 'state', ph: 'num', render: (r) => (r.enabled ? tag(r.dir === 'in' ? 'open' : 'on', 'ok') : tag('off', 'muted')) },
       { key: 'last', label: 'last used', render: (r) => (r.last_used_ms ? ago(r.last_used_ms) : h('span', { class: 'muted' }, r.dir === 'in' ? 'listening' : 'never')) },
-      { key: 'go', label: '', grow: true, render: (r) => { const to = PURPOSE[r.purpose]?.[2]; return to ? link(to.startsWith('#') ? teslafiHref() : state.buildUrl(to), 'change') : null; } },
+      { key: 'go', label: '', grow: true, render: (r) => { const to = PURPOSE[r.purpose]?.[2]; return to ? link(to.startsWith('#') ? `${state.buildUrl('settings-integrations')}${to}` : state.buildUrl(to), 'change') : null; } },
     ],
   }) : null;
 
