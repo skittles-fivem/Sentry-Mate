@@ -113,3 +113,20 @@
 }
 @container page (max-width: 36rem) { .ef-filter-row > .filter { flex-wrap: wrap; max-width: 100%; } .ef-cars-menu { max-width: calc(100vw - round(7.5rem, var(--e))); } }
 .tp-day-body p.note > i { vertical-align: middle; } /* the keys in a line of text share one centre */
+
+/* phone (<html data-phone>): filter controls wrap at full width, the three figures of a temperature
+   line on one baseline, the small tables as labelled cards (cardLabels), readouts left-aligned */
+:root[data-phone] .ef-filter-row > .filter { flex: 1 1 100%; }
+:root[data-phone] .ef-filter-row .seg { flex-wrap: wrap; }
+:root[data-phone] .efficiency-page .panel-side { justify-content: flex-start; }
+:root[data-phone] .ef-cars-menu { max-width: calc(100vw - 2 * var(--gutter)); }
+:root[data-phone] .tp-col-figs { align-items: start; }
+:root[data-phone] .tp-cov { grid-template-columns: minmax(round(3rem, var(--e)), 1fr) auto auto; }
+:root[data-phone] .tp-cov > :first-child { grid-column: 1 / -1; }
+:root[data-phone] .ef-readout { margin-left: 0; text-align: left; overflow-wrap: anywhere; }
+:root[data-phone] .efficiency-page .tbl:not(.tbl--keep) .ef-rowhead { white-space: normal; }
+:root[data-phone] .ef-whcell { justify-content: flex-start; }
+:root[data-phone="short"] .tp-hist-chart { --chart-h: min(round(15rem, var(--e)), 60dvh); }
+:root[data-phone] .efficiency-page .tbl .ef-rowhead .legend-swatch { min-height: 0; }
+:root[data-phone] .tp-cols { grid-template-columns: minmax(0, 1fr); }
+:root[data-phone] .tp-col + .tp-col { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: round(1rem, var(--e)); }

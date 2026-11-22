@@ -85,3 +85,14 @@
   .charge-soc { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .charge-soc-bar { grid-column: 1 / -1; grid-row: 2; }
 }
+
+/* phone (<html data-phone>): trail links big enough to tap, notes and keys from the left edge, no
+   drag-to-zoom hint (a finger scrolls the page), and a map no taller than most of the screen */
+:root[data-phone] .charge-trail a { display: inline-flex; align-items: center; min-height: var(--tap); }
+:root[data-phone] .charge-page .chart-note, :root[data-phone] .curve-keys { margin-left: 0; padding-left: 0; }
+:root[data-phone] .charge-page .zoom-hint { display: none; }
+:root[data-phone] .charge-map { min-height: min(round(20rem, var(--e)), 60dvh); }
+:root[data-phone] .charge-place { max-width: min(round(19rem, var(--e)), calc(100% - var(--tap) - round(1rem, var(--e)))); }
+:root[data-phone] .charge-page .curve-chart { height: min(round(17rem, var(--e)), 60dvh); }
+:root[data-phone] .cost-amount { font-size: 1.875rem; }
+:root[data-phone] .cost-form .form-actions > .btn { flex: 1 1 auto; }

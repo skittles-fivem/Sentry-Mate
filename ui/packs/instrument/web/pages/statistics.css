@@ -92,3 +92,8 @@
 .st-mileage .st-mile-fail { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)); margin: 0 0 round(0.75rem, var(--e)); }
 .st-fail-note { text-align: center; margin: 0 0 round(0.5rem, var(--e)); }
 @container page (max-width: 36rem) { .st-stones { grid-template-columns: minmax(0, 1fr); } .st-filter { flex-wrap: wrap; max-width: 100%; } }
+
+/* phone (<html data-phone>): links in the cards and the milestones big enough to tap */
+:root[data-phone] .stats-page .tbl a.st-car, :root[data-phone] .stats-page .tbl a.st-count { min-height: var(--tap); min-width: var(--tap); }
+:root[data-phone] .stats-page .tbl a.st-count { display: inline-flex; align-items: center; }
+:root[data-phone] .st-stone .link { display: inline-flex; align-items: center; width: fit-content; min-height: var(--tap); margin-top: 0; }

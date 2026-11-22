@@ -21,7 +21,7 @@ import { formatDateTime, formatDate } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, metric, csvButton, note, tag } from '../core/page.js';
-import { dataTable } from '../core/table.js';
+import { dataTable, cardLabels } from '../core/table.js';
 import { emptyState, errorState } from '../core/states.js';
 import { loadUPlot, mountPlot, timeAxis, TIME_INCRS, valueAxis, colors, hexA } from '../core/chart.js';
 import { openPeriodPicker } from '../core/period.js';
@@ -208,6 +208,7 @@ export async function mount(ctx) {
           h('td', null, r.source)))))),
       note(`A cross-check only: the car uses this to turn energy into the range it shows. Consumption above is measured, so it never depends on it. Each reading is one second where the pack energy and the range were both read${f.as_of_ms ? `; last reading ${formatDateTime(f.as_of_ms, tz, { now: now() })}` : ''}.`),
       h('a', { class: 'panel-link', href: state.buildUrl('settings-cars', { car: cid }) }, 'Type a value in Car settings', icon('chev-r', 'ico--sm')));
+    factorSlot.querySelectorAll('table.tbl').forEach(cardLabels);
   }
 
   function groupLabel(g) {
@@ -374,6 +375,7 @@ export async function mount(ctx) {
         h('td', { class: 'is-num' }, format(r.e?.distance_km, 'distance')),
         h('td', { class: 'is-num' }, n0(r.e?.drives)),
         h('td', { class: 'is-num' }, format(r.e?.parked_kwh, 'energy')))))));
+    cardLabels(tbl.querySelector('table'));
     const chartEl = h('div', { class: 'chart ef-compare-chart' });
     const readout = h('span', { class: 'faint ef-readout' }, 'Point at the chart for each car’s day.');
     const series = (cmp.error ? [] : cmp.series || []).map((s) => ({ ...s, color: rows.find((r) => r.id === s.car)?.color || '--text-3' })).filter((s) => rows.some((r) => r.id === s.car));
@@ -478,6 +480,7 @@ export async function mount(ctx) {
         return h('tr', null, h('td', { class: 'ef-rowhead' }, h('i', { class: ['legend-swatch', k === 'setpoint' && 'is-dashed'], vars: { '--c': `var(${SERIES[k].color})` } }), SERIES[k].label),
           sv ? [h('td', { class: 'is-num' }, format(sv.min, 'temperature')), h('td', { class: 'is-num' }, format(sv.mean, 'temperature')), h('td', { class: 'is-num' }, format(sv.max, 'temperature')), h('td', { class: 'is-num' }, format(last, 'temperature'))]
             : h('td', { class: 'faint', colspan: 4 }, k === 'setpoint' ? 'Climate was not on, or this car does not send its set point' : 'No reading')); }))));
+    cardLabels(statsTbl.querySelector('table'));
     const plotEl = h('div', { class: 'chart tp-hist-chart' });
     replace(tHistSlot,
       h('div', { class: 'tp-top' }, h('div', { class: 'legend', role: 'group', 'aria-label': 'Temperature lines' }, chips), at),
@@ -525,7 +528,7 @@ export async function mount(ctx) {
     }
     const sv = withT.map((c) => c.outside_avg_c);
     const mean = sv.reduce((s, x) => s + x, 0) / sv.length;
-    const link = h('span', { class: 'ef-readout' }, h('span', { class: 'faint' }, 'Point at a dot; click it to open that charge.'));
+    const link = h('span', { class: 'ef-readout' }, h('span', { class: 'faint' }, 'Point at a dot (or tap it); click it, or tap it again, to open that charge.'));
     const plotEl = h('div', { class: 'chart tp-chg-chart', cover: 'tp.chart.charging_outside' });
     replace(tChgSlot,
       h('div', { class: 'tp-top' },
@@ -536,7 +539,9 @@ export async function mount(ctx) {
     const xs = withT.map((c) => c.start_ms / 1000);
     const ys = withT.map((c) => convert(c.outside_avg_c, 'temperature'));
     let hover = null;
-    const open = () => { if (hover != null) ctx.navigate(state.buildUrl('charge', { car: cid, charge: withT[hover].id })); };
+    let tapped = null;
+    // on a touch screen the first tap on a dot shows its charge above the chart, a second tap opens it
+    const open = (e) => { if (hover == null) return; if (e?.pointerType === 'touch' && tapped !== hover) { tapped = hover; return; } ctx.navigate(state.buildUrl('charge', { car: cid, charge: withT[hover].id })); };
     const make = (width, height) => {
       const c = colors();
       const col = cssVar('--c-charge');
@@ -548,7 +553,7 @@ export async function mount(ctx) {
         series: [{}, { label: 'Outside at charge', stroke: col, width: 0, paths: () => null, points: { show: true, size: rpx(7), width: rpx(1), fill: hexA(col, 0.8), stroke: col } }],
         hooks: { setCursor: [(u) => {
           const i = u.cursor.idx;
-          if (i == null || u.cursor.left < 0 || Math.abs(u.valToPos(xs[i], 'x') - u.cursor.left) > rpx(24)) { hover = null; replace(link, h('span', { class: 'faint' }, 'Point at a dot; click it to open that charge.')); u.over.classList.remove('is-link'); return; }
+          if (i == null || u.cursor.left < 0 || Math.abs(u.valToPos(xs[i], 'x') - u.cursor.left) > rpx(24)) { hover = null; replace(link, h('span', { class: 'faint' }, 'Point at a dot (or tap it); click it, or tap it again, to open that charge.')); u.over.classList.remove('is-link'); return; }
           hover = i;
           u.over.classList.add('is-link');
           const ch = withT[i];

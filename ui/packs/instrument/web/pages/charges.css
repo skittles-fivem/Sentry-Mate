@@ -169,3 +169,31 @@
   .charges-page .metric-value { font-size: 1.125rem; } /* two money figures side by side fit a phone */
   .money-stack > span { overflow-wrap: anywhere; }
 }
+
+/* phone (<html data-phone>): filters as full-width controls, table cards read left to right, the
+   week grid with one label per six hours, and the readouts the grids give on a tap */
+:root[data-phone] .charges-page .filter-bar { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, round(10rem, var(--e))), 1fr)); gap: round(0.5rem, var(--e)); }
+:root[data-phone] .charges-page .filter-bar > * { min-width: 0; width: auto; }
+:root[data-phone] .charges-page .filter-bar > .btn { justify-content: flex-start; }
+:root[data-phone] .charges-page .filter-bar > .btn > .ico:last-child { margin-left: auto; }
+:root[data-phone] .charges-page .filter-bar > :is(.seg, .field--search, .filter) { grid-column: 1 / -1; width: auto; }
+:root[data-phone] .charges-page .filter-bar > .seg { display: grid; grid-auto-flow: column; grid-auto-columns: auto; }
+:root[data-phone] .charges-page .filter-bar > .seg > .seg-btn { justify-content: center; padding-inline: round(0.375rem, var(--e)); width: auto; }
+:root[data-phone] .charges-page .filter-bar > .filter { flex-wrap: wrap; row-gap: round(0.5rem, var(--e)); }
+:root[data-phone] .charges-page .pick-text { max-width: none; }
+:root[data-phone] .charges-page .tbl:not(.tbl--keep) .cell-num { align-items: flex-start; }
+:root[data-phone] .charges-page .tbl:not(.tbl--keep) .cell-text > * { white-space: normal; overflow: visible; }
+:root[data-phone] .charges-page .tbl:not(.tbl--keep) td:has(> .flag-icons:empty) { display: none; }
+:root[data-phone] .charges-table .col-place .cell-text, :root[data-phone] .places-table .cell-text { max-width: none; }
+:root[data-phone] .charges-page .cost-link { min-height: var(--tap); }
+:root[data-phone] .charges-page .stats-scope { min-width: 0; }
+:root[data-phone] .charges-page .panel-side { justify-content: flex-start; }
+:root[data-phone] .charges-page .chart-read { overflow-wrap: anywhere; }
+:root[data-phone="tall"] .weekmap-x { grid-column: span 6; }
+:root[data-phone="tall"] .weekmap-x:nth-child(odd) { display: none; }
+.week-read b { color: var(--text); font-weight: 600; }
+:root[data-phone] .charges-page .places-map { height: min(round(22rem, var(--e)), 60dvh); }
+:root[data-phone] .charges-page .curve-chart { height: min(round(17rem, var(--e)), 60dvh); }
+:root[data-phone="short"] .charges-page .delta-chart { height: min(round(13rem, var(--e)), 55dvh); }
+:root[data-phone] .socmap, :root[data-phone] .socmap-axis { grid-template-columns: round(4.75rem, var(--e)) repeat(var(--n), minmax(0, 1fr)); }
+:root[data-phone] .socmap-y { padding-right: round(0.375rem, var(--e)); }
