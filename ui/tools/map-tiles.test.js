@@ -6,7 +6,8 @@
 //   - every tile request carries a Referer with the page's origin only (OpenStreetMap blocks tiles without one);
 //   - Settings: Display and units at 360 px with a long zone name: its zone button and tile terms fit the window;
 //   - a new server (no map file, tiles offline): the car page's map says "No map tiles yet"; an admin's one click
-//     (after the confirm) turns OpenStreetMap on and the map loads its tiles; a watch account is told to ask an admin;
+//     (after the confirm) turns the default online map on (Esri satellite pictures with place names and roads) and the
+//     map loads its tiles; the Map / Satellite switch then draws OpenStreetMap; a watch account is told to ask an admin;
 //   - a tile server that refuses (403) gives a short note with the cause.
 // No request leaves the machine: the tile servers are answered by page.route.
 // Run: node --test ui/tools/map-tiles.test.js. Skipped when Playwright is not installed.
@@ -150,7 +151,7 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble']) {
         const W = document.documentElement.clientWidth;
         const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
         const mine = [...document.querySelectorAll('button, p, span, small, div')]
-          .filter((e) => e.children.length <= 3 && (/browser.s zone/i.test(e.textContent) || /free, no key/.test(e.textContent) || e.textContent.includes(zone)) && e.textContent.length < 300);
+          .filter((e) => e.children.length <= 3 && (/browser.s zone/i.test(e.textContent) || /free, no key/i.test(e.textContent) || e.textContent.includes(zone) || e.textContent.includes(zone.replace(/_/g, ' '))) && e.textContent.length < 300);
         return { found: mine.length, wide: mine.filter((e) => e.getBoundingClientRect().right > W + 0.5).map((e) => `${e.tagName} ${e.textContent.trim().slice(0, 60)} (${Math.round(e.getBoundingClientRect().right)} px)`) };
       });
       assert.ok(out.found > 0, 'the zone button or the terms note is on the page');
@@ -163,17 +164,22 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble']) {
   });
 }
 
-// A new server: no map file and offline tiles. Every map says so; an admin turns OpenStreetMap on from the map itself.
+// A new server: no map file and offline tiles. Every map says so; an admin turns the online map on from the map
+// itself, with the default preset (Esri satellite pictures with place names and roads over them); the Map / Satellite
+// switch then draws OpenStreetMap instead.
+const SAT_BASE = /^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/World_Imagery\//;
+const SAT_LABELS = /^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/Reference\//;
+const TILE_HOSTS = /^https:\/\/(server\.arcgisonline\.com|tile\.openstreetmap\.org)\//;
 for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble']) {
-  test(`${pack}: a map with no tiles says so, and an admin turns OpenStreetMap on from it`, { skip: !playwright && 'Playwright is not installed', timeout: 180000 }, async () => {
+  test(`${pack}: a map with no tiles says so, and an admin turns the satellite map on from it`, { skip: !playwright && 'Playwright is not installed', timeout: 180000 }, async () => {
     const browser = await playwright.chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
     const server = await devServer(pack, ['--map-tiles', 'none']);
     try {
       const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
       const tiles = [];
       const body = png();
-      await context.route(/^https:\/\/tile\.openstreetmap\.org\//, (route) => { tiles.push(route.request().url()); return route.fulfill({ status: 200, contentType: 'image/png', body, headers: { 'access-control-allow-origin': '*' } }); });
-      await context.route((u) => !u.href.startsWith(server.origin) && !/^https:\/\/tile\.openstreetmap\.org\//.test(u.href), (route) => route.abort());
+      await context.route(TILE_HOSTS, (route) => { tiles.push(route.request().url()); return route.fulfill({ status: 200, contentType: 'image/png', body, headers: { 'access-control-allow-origin': '*' } }); });
+      await context.route((u) => !u.href.startsWith(server.origin) && !TILE_HOSTS.test(u.href), (route) => route.abort());
       const page = await context.newPage();
       const errors = [];
       page.on('pageerror', (e) => errors.push(e.message));
@@ -181,16 +187,29 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble']) {
       const note = page.locator('.map-empty').first();
       await note.waitFor({ timeout: 30000 });
       assert.match(await note.textContent(), /No map tiles yet/);
-      const use = note.getByRole('button', { name: 'Use online map (OpenStreetMap)' });
+      const use = note.getByRole('button', { name: 'Use online map (satellite)' });
       await use.waitFor({ timeout: 10000 });
       assert.equal(await note.getByRole('link', { name: 'Add an offline map file' }).getAttribute('href'), '/settings/display#offline-map');
       await use.click();
+      assert.match(await note.textContent(), /server\.arcgisonline\.com/, 'the confirm names the tile server');
       assert.match(await note.textContent(), /sees the viewer.s IP address/, 'the confirm says what the tile server sees');
       assert.equal(tiles.length, 0, 'nothing asked before the confirm');
       await note.getByRole('button', { name: 'Turn on' }).click();
-      for (let i = 0; i < 150 && !tiles.length; i++) await page.waitForTimeout(100);
-      assert.ok(tiles.length > 0, 'the map loads OpenStreetMap tiles after the confirm');
+      const has = (re) => tiles.some((u) => re.test(u));
+      for (let i = 0; i < 150 && !(has(SAT_BASE) && has(SAT_LABELS)); i++) await page.waitForTimeout(100);
+      assert.ok(has(SAT_BASE), 'the map loads the satellite pictures after the confirm');
+      assert.ok(has(SAT_LABELS), 'and the place names and roads over them');
+      assert.ok(!tiles.some((u) => u.includes('openstreetmap')), 'no OpenStreetMap tiles while satellite is shown');
       assert.equal(await page.locator('.map-empty').count(), 0, 'no note once tiles are there');
+
+      // the Map / Satellite switch: OpenStreetMap, drawn in place
+      const toMap = page.locator('[data-map-style="osm"]').first();
+      await toMap.waitFor({ timeout: 10000 });
+      tiles.length = 0;
+      await toMap.click();
+      for (let i = 0; i < 150 && !tiles.some((u) => u.includes('tile.openstreetmap.org')); i++) await page.waitForTimeout(100);
+      assert.ok(tiles.some((u) => u.includes('tile.openstreetmap.org')), 'the switch to Map loads OpenStreetMap tiles');
+      assert.equal(await toMap.getAttribute('aria-pressed'), 'true');
       assert.deepEqual(errors, []);
       await context.close();
     } finally {
@@ -215,16 +234,17 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble']) {
     } finally {
       await watch.stop();
     }
+    // the dev server starts online with the default preset (satellite): its tile server refuses every picture
     const server = await devServer(pack);
     try {
       const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-      await context.route(/^https:\/\/tile\.openstreetmap\.org\//, (route) => route.fulfill({ status: 403, contentType: 'text/plain', body: 'Access blocked', headers: { 'access-control-allow-origin': '*' } }));
-      await context.route((u) => !u.href.startsWith(server.origin) && !/^https:\/\/tile\.openstreetmap\.org\//.test(u.href), (route) => route.abort());
+      await context.route(TILE_HOSTS, (route) => route.fulfill({ status: 403, contentType: 'text/plain', body: 'Access blocked', headers: { 'access-control-allow-origin': '*' } }));
+      await context.route((u) => !u.href.startsWith(server.origin) && !TILE_HOSTS.test(u.href), (route) => route.abort());
       const page = await context.newPage();
       await page.goto(`${server.origin}/cars/c1`);
       const err = page.locator('[data-tile-error="403"]').first();
       await err.waitFor({ timeout: 30000 });
-      assert.match(await err.textContent(), /refused them \(403\)/);
+      assert.match(await err.textContent(), /server\.arcgisonline\.com refused them \(403\)/);
       await context.close();
     } finally {
       await server.stop();
