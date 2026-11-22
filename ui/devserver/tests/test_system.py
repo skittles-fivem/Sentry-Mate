@@ -119,7 +119,7 @@ class Settings(ServerCase):
         self.c.json("PATCH", "/api/v1/settings", {"version": v, "release_check": {"enabled": True},
                                                   "tiles": {"mode": "offline"}})
         r = {x["code"]: x for x in self.c.get("/api/v1/notices")["items"]}["release_available"]
-        self.assertTrue(r["detail"]["notes_url"].startswith("https://"))
+        self.assertTrue(r["detail"]["notes_url"].startswith("https://github.com/"))
         m = self.c.get("/api/v1/maps/config")
         self.assertEqual((m["tiles"]["mode"], m["tiles"]["online_template"]), ("offline", None))
         st, hd, _ = self.c.request("GET", "/")
@@ -330,3 +330,55 @@ class UiPacks(ServerCase):
             p = self.c.json("PATCH", "/api/v1/me/preferences", {"ui_pack": None})
         self.assertEqual(p["ui_pack"], "instrument")
         self.assertEqual(self.c.get("/api/v1/about")["ui_pack"]["name"], "Instrument")
+
+
+class ReleaseCheck(ServerCase):
+    """/about `build`, GET /release and POST /release/check: off by default, the switch saves, a check now, the
+    admins' `release_available` notice only while a newer build is found."""
+
+    def test_release_check(self):
+        b = self.c.get("/api/v1/about")["build"]
+        self.assertEqual((b["version"], b["short"], b["dev"]), ("0.1.0", "2f44a52", False))
+        self.assertEqual(b["commit"][:7], b["short"])
+        r = self.c.get("/api/v1/release")
+        self.assertEqual((r["enabled"], r["status"], r["newest"], r["next_ms"]), (False, "off", None, None))
+        self.assertEqual(r["current"]["short"], "2f44a52")
+        self.c.error("POST", "/api/v1/release/check", 409, "release_check_off", body={})
+        self.assertNotIn("release_available", {x["code"] for x in self.c.get("/api/v1/notices")["items"]})
+        v = self.c.get("/api/v1/settings")["version"]
+        s = self.c.json("PATCH", "/api/v1/settings", {"version": v, "release_check": {"enabled": True}})
+        self.assertTrue(s["release_check"]["enabled"])
+        r = self.c.get("/api/v1/release")
+        self.assertEqual(r["status"], "newer")
+        self.assertEqual(r["checked_ms"], NOW)
+        self.assertEqual(r["next_ms"], NOW + DAY)
+        nw = r["newest"]
+        self.assertEqual((nw["changes"], len(nw["titles"]), nw["more"]), (4, 4, 0))
+        self.assertTrue(nw["compare_url"].startswith("https://github.com/skittles-fivem/Sentry-Mate/compare/"))
+        self.assertIn("docker", r["pull"])
+        n = {x["code"]: x for x in self.c.get("/api/v1/notices")["items"]}["release_available"]
+        self.assertEqual((n["detail"]["commit"], n["detail"]["changes"]), (nw["commit"], 4))
+        self.assertEqual(n["detail"]["notes_url"], nw["compare_url"])
+        self.server.app.store.release_result = "error"
+        r = self.c.json("POST", "/api/v1/release/check", {})
+        self.assertEqual((r["status"], r["error"]["code"]), ("error", "rate_limited"))
+        self.assertNotIn("release_available", {x["code"] for x in self.c.get("/api/v1/notices")["items"]})
+        self.server.app.store.release_result = "up_to_date"
+        r = self.c.json("POST", "/api/v1/release/check", {})
+        self.assertEqual((r["status"], r["newest"]["commit"], r["newest"]["changes"]), ("up_to_date", b["commit"], 0))
+        self.server.app.store.release_result = "newer"
+        v = self.c.get("/api/v1/settings")["version"]
+        self.c.json("PATCH", "/api/v1/settings", {"version": v, "release_check": {"enabled": False}})
+        r = self.c.get("/api/v1/release")
+        self.assertEqual((r["status"], r["checked_ms"]), ("off", None))
+
+
+class ReleaseCheckWatcher(ServerCase):
+    """A watch account sees the result but gets no notice and can't check now."""
+
+    server_args = {"role": "watch", "release_check": "newer"}
+
+    def test_watcher(self):
+        self.assertEqual(self.c.get("/api/v1/release")["status"], "newer")
+        self.assertNotIn("release_available", {x["code"] for x in self.c.get("/api/v1/notices")["items"]})
+        self.c.error("POST", "/api/v1/release/check", 403, "not_allowed", body={})
