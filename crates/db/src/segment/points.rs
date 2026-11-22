@@ -159,6 +159,7 @@ mod tests {
             gear: Some(Gear::R),
             odometer_km: Some(12_345.678),
             soc: Some(71.0),
+            soc_basis: None,
             soc_bms: Some(996.0 * 0.1),
             range_km: Some(256.0 * 1.609_344),
             ideal_range_km: Some(1.0 / 3.0),

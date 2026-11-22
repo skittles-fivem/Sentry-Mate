@@ -21,6 +21,8 @@ pub(crate) enum Field {
     Range,
     IdealRange,
     EnergyRemaining,
+    FullPack,
+    EnergyBuffer,
     BattVolts,
     BattAmps,
     BrickTempMax,
@@ -85,9 +87,12 @@ pub(crate) const WANTED: &[(Field, &str, Kind)] = &[
     (F::Odometer, "UI_odometer", Number(Q::Distance, 0.0, 5.0e6)),
     (F::Odometer, "Odometer3B6", Number(Q::Distance, 0.0, 5.0e6)),
     (F::Odometer, "Odometer5D8", Number(Q::Distance, 0.0, 5.0e6)),
-    // the screen's battery %: UI_SOC (0x33A) on a Model 3/Y, SOCUI302 on a legacy S/X. 0x292's values are not
-    // used here: on a Model Y's logs they read about 100 % while the screen showed far less (see the plan's
-    // findings), so a fallback to them would make the % jump whenever UI_SOC is late
+    // the screen's battery %: UI_SOC (0x33A, 48|7@1+ unsigned, not multiplexed, in model3dbc; the opendbc file here
+    // has no 0x33A) on a Model 3/Y, SOCUI302 on a legacy S/X. The sample builder checks it against the pack's energy
+    // (0x352) and works the % out from that where it does not follow (a Model Y's UI_SOC read 71 % across a charge
+    // while energy and range rose). 0x292's values are not used here: on a Model Y's logs they read about 100 % while
+    // the screen showed far less (see the plan's findings), so a fallback to them would make the % jump whenever
+    // UI_SOC is late
     (F::Soc, "UI_SOC", Number(Q::Percent, 0.0, 100.0)),
     (F::Soc, "SOCUI302", Number(Q::Percent, 0.0, 100.0)),
     (F::SocBms, "SOCave292", Number(Q::Percent, 0.0, 101.0)),
@@ -99,6 +104,10 @@ pub(crate) const WANTED: &[(Field, &str, Kind)] = &[
     (F::IdealRange, "IdealRange338", Number(Q::Distance, 0.0, 1600.0)),
     (F::EnergyRemaining, "BMS_nominalEnergyRemaining", Number(Q::Energy, 0.0, 250.0)),
     (F::EnergyRemaining, "BMS_expectedEnergyRemaining", Number(Q::Energy, 0.0, 250.0)),
+    // 0x352 (override.dbc's paged layout: page 0 the full pack, page 1 the buffer); only to check the screen's % and
+    // work one out where it does not follow the pack's energy (see the sample builder)
+    (F::FullPack, "BMS_nominalFullPackEnergy", Number(Q::Energy, 10.0, 250.0)),
+    (F::EnergyBuffer, "BMS_energyBuffer", Number(Q::Energy, 0.0, 25.0)),
     (F::BattVolts, "BattVoltage132", Number(Q::Voltage, 0.0, 1000.0)),
     (F::BattVolts, "BattVoltage102", Number(Q::Voltage, 0.0, 1000.0)),
     // positive while the pack gives power (carCalc's sign notes, checked against TotalDischargeKWh3D2)

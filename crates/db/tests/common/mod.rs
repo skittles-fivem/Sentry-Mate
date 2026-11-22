@@ -269,6 +269,7 @@ impl Car {
             gear: Some(gear),
             odometer_km: Some(dbc(self.odo, 0.001, 0.0)),
             soc: Some(self.soc.round()),
+            soc_basis: None,
             soc_bms: Some(dbc(self.soc, 0.1, 0.0)),
             range_km: Some((self.soc * 3.3).round() * 1.609_344),
             ideal_range_km: Some((self.soc * 3.6).round() * 1.609_344),

@@ -486,6 +486,30 @@ pub enum ChargeKind {
     Dc,
 }
 
+/// What a sample's battery % rests on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SocBasis {
+    /// The car's own screen figure (`UI_SOC` on a Model 3/Y), checked against the pack's energy where it sends it.
+    Screen,
+    /// The pack's energy (0x352): (energy remaining less the buffer) over (full pack less the buffer), because the
+    /// screen figure did not follow it.
+    BmsEnergy,
+    /// The rated range against the range at a % checked earlier in the same log, because the screen figure did not
+    /// follow it and the pack's energy was not there.
+    RatedRange,
+}
+
+impl SocBasis {
+    pub fn word(self) -> &'static str {
+        match self {
+            SocBasis::Screen => "screen",
+            SocBasis::BmsEnergy => "bms_energy",
+            SocBasis::RatedRange => "rated_range",
+        }
+    }
+}
+
 /// The car once a second, from its decoded signals: the last value of each in that second. The timeline is built
 /// from these, and positions and charge curves are kept as these.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -500,8 +524,12 @@ pub struct Sample {
     pub speed_kmh: Option<f64>,
     pub gear: Option<Gear>,
     pub odometer_km: Option<f64>,
-    /// Battery % as the car's screen shows it.
+    /// Battery % as the car's screen shows it, or worked out from the pack's energy or the rated range where the
+    /// screen's own figure does not follow them ([`Sample::soc_basis`] says which).
     pub soc: Option<f64>,
+    /// What `soc` rests on (none: an older row, or an input that only sends a %).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soc_basis: Option<SocBasis>,
     /// Battery % from the battery controller (may differ from the screen; kept for checking).
     pub soc_bms: Option<f64>,
     /// Rated range, km.
