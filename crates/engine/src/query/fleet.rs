@@ -786,6 +786,9 @@ pub struct CarSettings {
     pub warranty_threshold_pct: f64,
     pub efficiency_wh_per_km_override: Option<f64>,
     pub software_version_typed: Option<String>,
+    /// Whether the car's import fills what its live history lacks: null follows the server setting.
+    #[serde(default)]
+    pub import_gap_fill: Option<bool>,
 }
 
 impl Default for CarSettings {
@@ -798,8 +801,14 @@ impl Default for CarSettings {
             warranty_threshold_pct: 70.0,
             efficiency_wh_per_km_override: None,
             software_version_typed: None,
+            import_gap_fill: None,
         }
     }
+}
+
+/// Whether a car's import fills what its live history lacks: its own setting, else the server's.
+pub(crate) fn gap_fill_on(e: &Engine, car: CarId) -> QResult<bool> {
+    Ok(settings_of(e, car)?.import_gap_fill.unwrap_or_else(|| e.import_gap_fill()))
 }
 
 /// A car's settings as an admin set them (the defaults until then).
@@ -825,9 +834,12 @@ pub struct SettingsView {
     pub warranty_threshold_pct: f64,
     pub efficiency_wh_per_km_override: Option<f64>,
     pub software_version_typed: Option<String>,
+    /// The car's own choice (null: the server's), and whether filling is on for it now.
+    pub import_gap_fill: Option<bool>,
+    pub import_gap_fill_on: bool,
 }
 
-fn settings_view(o: &Owner) -> SettingsView {
+fn settings_view(e: &Engine, o: &Owner) -> SettingsView {
     let s = &o.settings;
     SettingsView {
         version: o.settings_changes + 1,
@@ -838,13 +850,15 @@ fn settings_view(o: &Owner) -> SettingsView {
         warranty_threshold_pct: s.warranty_threshold_pct,
         efficiency_wh_per_km_override: s.efficiency_wh_per_km_override,
         software_version_typed: s.software_version_typed.clone(),
+        import_gap_fill: s.import_gap_fill,
+        import_gap_fill_on: s.import_gap_fill.unwrap_or_else(|| e.import_gap_fill()),
     }
 }
 
 /// `GET /cars/{car}/settings`.
 pub fn car_settings(e: &Engine, car: CarId) -> QResult<Scoped<SettingsView>> {
     let c = car_of(e, car)?;
-    Ok(scoped(&c, settings_view(&owner(e, car)?)))
+    Ok(scoped(&c, settings_view(e, &owner(e, car)?)))
 }
 
 const CHEMISTRIES: &[&str] = &["auto", "lfp", "nca_nmc"];
@@ -964,6 +978,7 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
         "warranty_threshold_pct",
         "efficiency_wh_per_km_override",
         "software_version_typed",
+        "import_gap_fill",
     ];
     let version = errs.head(body, &known);
     let chemistry = match body.get("battery_chemistry") {
@@ -1009,6 +1024,15 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
             None
         }
     };
+    let gap_fill = match body.get("import_gap_fill") {
+        None => None,
+        Some(serde_json::Value::Null) => Some(None),
+        Some(serde_json::Value::Bool(b)) => Some(Some(*b)),
+        Some(_) => {
+            errs.bad("import_gap_fill", "Must be true, false or null (the server's setting).");
+            None
+        }
+    };
     let _one = crate::lock(&e.inner.claim);
     // the car's record is read and written back under its own lock (the pipeline's VIN and key changes take it too)
     let record = crate::lock(&e.inner.car_record);
@@ -1040,6 +1064,9 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
     if let Some(x) = software {
         s.software_version_typed = x;
     }
+    if let Some(x) = gap_fill {
+        s.import_gap_fill = x;
+    }
     if let Some(x) = efficiency {
         let before = s.efficiency_wh_per_km_override;
         s.efficiency_wh_per_km_override = x;
@@ -1060,7 +1087,7 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
     drop(record);
     o.settings_changes += 1;
     put_owner(e, car, &o)?;
-    Ok(Patched::Done(scoped(&c, settings_view(&o))))
+    Ok(Patched::Done(scoped(&c, settings_view(e, &o))))
 }
 
 #[cfg(test)]

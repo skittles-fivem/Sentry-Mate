@@ -11,6 +11,7 @@ from __future__ import annotations
 import bisect
 import math
 
+from . import gapfill as G
 from . import sources as S
 from .dataset.segments import SERIES_FIELDS
 from .util import percentile
@@ -56,7 +57,7 @@ def pieces(h, a, b, now, source):
 
 
 def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, explicit_aggs=True, bucket=None,
-          align=None, edges=None, sample_ms=None):
+          align=None, edges=None, sample_ms=None, fill=False):
     """Columns { t_ms, values, bucket_ms, coverage_pct, state } for [a, b).
 
     `bucket` fixes the bucket size (else the smallest nice one for max_points); `align` is a moment
@@ -64,11 +65,12 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
     the buckets outright (sorted starts plus the last end, for example local midnights, whose days are
     23 or 25 hours long when the clocks change); `bucket` is then only the size the answer names.
     `sample_ms` caps the sampling step inside long buckets (else a quarter bucket), for answers whose
-    minima and maxima must hold every reading a finer series shows."""
+    minima and maxima must hold every reading a finer series shows. `fill`: a live piece's value that is null
+    comes from its import's copy of the same time (mockapi/gapfill.py), and `value_sources` names it."""
     b = min(b, now)
     if b <= a or (edges is not None and len(edges) < 2):
         return {"t_ms": [], "values": {f: [] for f in fields}, "bucket_ms": bucket or 1000, "coverage_pct": [],
-                "state": [], "sources": [], "source_label": S.label_of([])}
+                "state": [], "sources": [], "source_label": S.label_of([]), "value_sources": {f: [] for f in fields}}
     if edges is not None:
         edges = list(edges)
         a0, n = edges[0], len(edges) - 1
@@ -102,6 +104,7 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
     peaks = bool(PEAK_FIELDS & set(fields))
     samples = [[] for _ in range(n)]  # (t, values)
     gave = []  # the origins that gave a point, in the order first seen
+    by_field = {f: [] for f in fields}  # per field, the origins that gave it a value
     state_ms = [dict() for _ in range(n)]
     for s in pieces(h, a0, b, now, source):
         lo, hi = max(s.start, a0), min(s.end, b, getattr(s, "data_end", s.end) if s.kind != "parked" else s.end)
@@ -139,16 +142,32 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
             for p in s.peak_times():
                 if p is not None and lo <= p < hi:
                     times.add(p)
+        own = S.of_seg(s)["sources"]
+        tw = G.twin(h, s) if fill and value_fn is None else None
+        imp = [S.ref("import", S.site_of(tw))] if tw is not None else []
         for t in sorted(times):
             if t < lo or t >= hi:
                 continue
             v = value_fn(s, t) if value_fn else s.values(t)
             if v is None:
                 continue
+            filled = []
+            if tw is not None and any(v.get(f) is None for f in fields):
+                o = tw.values(t) or {}
+                v = dict(v)
+                for f in fields:
+                    if v.get(f) is None and o.get(f) is not None:
+                        v[f] = o[f]
+                        filled.append(f)
             i = idx(t)
             if 0 <= i < n:
                 samples[i].append((t, v))
-                for x in S.of_seg(s)["sources"]:
+                for f in fields:
+                    if v.get(f) is not None:
+                        for x in (imp if f in filled else own):
+                            if x not in by_field[f]:
+                                by_field[f].append(x)
+                for x in own + (imp if filled else []):
                     if x not in gave:
                         gave.append(x)
     t_ms = edges[:-1] if edges is not None else [a0 + i * bucket for i in range(n)]
@@ -186,8 +205,10 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
     _ = default
     order = {"smo": 0, "tesla_api": 1, "import": 2}
     gave.sort(key=lambda x: order[x["kind"]])
+    for f in by_field:
+        by_field[f].sort(key=lambda x: order[x["kind"]])
     return {"t_ms": t_ms, "values": values, "bucket_ms": bucket, "coverage_pct": coverage, "state": states,
-            "sources": gave, "source_label": S.label_of(gave)}
+            "sources": gave, "source_label": S.label_of(gave), "value_sources": by_field}
 
 
 def _agg(ag, xs):

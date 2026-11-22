@@ -308,8 +308,13 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
     let shown = Shown::new(e, car, None)?;
     let mut acc: Vec<Acc> = slots.iter().map(|_| Acc::default()).collect();
     let dx = super::drives::ctx(e, c)?;
-    each::<Drive>(e, car, wa, wb, None, &shown, false, |d| {
+    // a live drive's mean temperature where only the chosen import has one ([`super::gapfill`])
+    let gaps = super::gapfill::Gaps::new(e, car, None)?;
+    each::<Drive>(e, car, wa, wb, None, &shown, false, |mut d| {
         if let Some(i) = slot_of(slots, d.start_ms) {
+            if d.outside_temp_avg_c.is_none() {
+                gaps.drive(&mut d)?;
+            }
             let g = &mut acc[i];
             let ms = d.end_ms.saturating_sub(d.start_ms);
             g.drives += 1;
@@ -328,7 +333,7 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
     let cx = super::charges::ctx(e, c)?;
     each::<Charge>(e, car, wa, wb, None, &shown, false, |ch| {
         if let Some(i) = slot_of(slots, ch.start_ms) {
-            let v = super::charges::view(e, c, &ch, &cx)?;
+            let v = super::charges::view_filled(e, c, &ch, &cx, &gaps)?;
             let g = &mut acc[i];
             g.charges += 1;
             g.added += v.energy_added_kwh.unwrap_or(0.0);

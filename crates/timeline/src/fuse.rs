@@ -124,7 +124,7 @@ pub fn inputs_at(marks: &[(u64, Inputs)], t_ms: u64) -> Inputs {
 }
 
 /// Sorted by time, one per second (of two with the same second, the later one).
-fn seconds(v: &[Sample]) -> Vec<&Sample> {
+pub(crate) fn seconds(v: &[Sample]) -> Vec<&Sample> {
     let mut s: Vec<&Sample> = v.iter().collect();
     s.sort_by_key(|x| x.t_ms);
     let mut out: Vec<&Sample> = Vec::with_capacity(s.len());
@@ -137,18 +137,24 @@ fn seconds(v: &[Sample]) -> Vec<&Sample> {
     out
 }
 
-/// The times of the lower samples that have one field, for the nearest-within-hold look-ups.
-struct Field<'a> {
+/// The times of the lower samples (or an import's, [`crate::gapfill`]) that have one field, for the
+/// nearest-within-hold look-ups.
+pub(crate) struct Field<'a> {
     at: Vec<(u64, &'a Sample, Inputs)>,
 }
 
 impl<'a> Field<'a> {
-    fn new(below: &[&'a (Sample, Inputs)], has: impl Fn(&Sample) -> bool) -> Field<'a> {
+    pub(crate) fn new(below: &[&'a (Sample, Inputs)], has: impl Fn(&Sample) -> bool) -> Field<'a> {
         Field { at: below.iter().filter(|s| has(&s.0)).map(|s| (s.0.t_ms, &s.0, s.1)).collect() }
     }
 
+    /// The same over samples of no particular input (an import's).
+    pub(crate) fn of(samples: &[&'a Sample], has: impl Fn(&Sample) -> bool) -> Field<'a> {
+        Field { at: samples.iter().filter(|s| has(s)).map(|s| (s.t_ms, *s, Inputs::NONE)).collect() }
+    }
+
     /// The lower sample with this field nearest `t` within `hold` (the earlier one on a tie), and its inputs.
-    fn near(&self, t: u64, hold: u64) -> Option<(&'a Sample, Inputs)> {
+    pub(crate) fn near(&self, t: u64, hold: u64) -> Option<(&'a Sample, Inputs)> {
         let i = self.at.partition_point(|(x, _, _)| *x < t);
         let after = self.at.get(i).filter(|(x, _, _)| x - t <= hold);
         let before = i.checked_sub(1).map(|j| &self.at[j]).filter(|(x, _, _)| t - x <= hold);
@@ -162,29 +168,32 @@ impl<'a> Field<'a> {
     }
 }
 
-/// One value of a sample that the API can fill in: its hold time, whether a sample has it, and its copy.
-struct Slot {
-    hold: fn(&FuseParams) -> u64,
-    has: fn(&Sample) -> bool,
-    copy: fn(&mut Sample, &Sample),
+/// One value of a sample that the API (or an import, [`crate::gapfill`]) can fill in: the sample field's name, its
+/// hold time, whether a sample has it, and its copy.
+pub(crate) struct Slot {
+    pub(crate) name: &'static str,
+    pub(crate) hold: fn(&FuseParams) -> u64,
+    pub(crate) has: fn(&Sample) -> bool,
+    pub(crate) copy: fn(&mut Sample, &Sample),
 }
 
 macro_rules! slots {
     ($($hold:ident: $($f:ident),+);+) => {
         &[$($(Slot {
+            name: stringify!($f),
             hold: |p| p.$hold,
             has: |x| x.$f.is_some(),
             copy: |to, from| to.$f = from.$f,
         },)+)+
-        Slot { hold: |p| p.slow_ms, has: |x| x.tpms_bar[0].is_some(), copy: |to, from| to.tpms_bar[0] = from.tpms_bar[0] },
-        Slot { hold: |p| p.slow_ms, has: |x| x.tpms_bar[1].is_some(), copy: |to, from| to.tpms_bar[1] = from.tpms_bar[1] },
-        Slot { hold: |p| p.slow_ms, has: |x| x.tpms_bar[2].is_some(), copy: |to, from| to.tpms_bar[2] = from.tpms_bar[2] },
-        Slot { hold: |p| p.slow_ms, has: |x| x.tpms_bar[3].is_some(), copy: |to, from| to.tpms_bar[3] = from.tpms_bar[3] },
+        Slot { name: "tpms_bar_0", hold: |p| p.slow_ms, has: |x| x.tpms_bar[0].is_some(), copy: |to, from| to.tpms_bar[0] = from.tpms_bar[0] },
+        Slot { name: "tpms_bar_1", hold: |p| p.slow_ms, has: |x| x.tpms_bar[1].is_some(), copy: |to, from| to.tpms_bar[1] = from.tpms_bar[1] },
+        Slot { name: "tpms_bar_2", hold: |p| p.slow_ms, has: |x| x.tpms_bar[2].is_some(), copy: |to, from| to.tpms_bar[2] = from.tpms_bar[2] },
+        Slot { name: "tpms_bar_3", hold: |p| p.slow_ms, has: |x| x.tpms_bar[3].is_some(), copy: |to, from| to.tpms_bar[3] = from.tpms_bar[3] },
         ]
     };
 }
 
-const SLOTS: &[Slot] = slots!(
+pub(crate) const SLOTS: &[Slot] = slots!(
     fast_ms: speed_kmh, gear, battery_power_kw, battery_voltage_v, battery_current_a, charging, charge_kind,
         charge_power_kw, charger_voltage_v, charger_current_a;
     position_ms: lat, lon, gps_accuracy_m, elevation_m;

@@ -70,6 +70,87 @@ fn get(s: &Sample, f: &str) -> Option<f64> {
     }
 }
 
+/// The sample field a series field is read from (for what an import filled: [`timeline::gapfill::slot_bit`]).
+fn sample_field(f: &str) -> &str {
+    match f {
+        "soc_pct" => "soc",
+        "soc_bms_pct" => "soc_bms",
+        "speed_kph" => "speed_kmh",
+        "power_kw" => "battery_power_kw",
+        "outside_c" => "outside_temp_c",
+        "cabin_c" => "inside_temp_c",
+        "battery_c" => "battery_temp_c",
+        "tyre_fl_kpa" => "tpms_bar_0",
+        "tyre_fr_kpa" => "tpms_bar_1",
+        "tyre_rl_kpa" => "tpms_bar_2",
+        "tyre_rr_kpa" => "tpms_bar_3",
+        "accuracy_m" => "gps_accuracy_m",
+        "lv_v" => "lv_voltage_v",
+        other => other,
+    }
+}
+
+/// Live seconds this far apart at most are live coverage for a series: inside it an import only fills values the
+/// live second lacks; outside it the import's seconds are shown (the Tesla API alone polls every minute or so).
+pub const SERIES_COVER_MS: u64 = 90_000;
+
+/// Where a sample's values came from: the live inputs (SMO, the Tesla API, TeslaFi's API) and per import site the mask of
+/// the values it gave (all bits: the import's own second).
+#[derive(Debug, Clone, Copy, Default)]
+struct Tag {
+    /// The live inputs of the point (none for an import's own second).
+    live: model::Inputs,
+    imported: [u64; 2],
+}
+
+impl Tag {
+    fn of_stream(s: model::Stream) -> Tag {
+        match s.origin() {
+            model::Origin::Smo => Tag { live: model::Inputs::SMO, ..Tag::default() },
+            model::Origin::TeslaApi => Tag { live: model::Inputs::TESLA_API, ..Tag::default() },
+            model::Origin::TeslafiApi => Tag { live: model::Inputs::TESLAFI_API, ..Tag::default() },
+            model::Origin::Import(site) => {
+                let mut t = Tag::default();
+                t.imported[site_index(site)] = u64::MAX;
+                t
+            }
+        }
+    }
+
+    /// The origins of a value with this mask bit.
+    fn origins(&self, bit: u64, out: &mut std::collections::BTreeSet<model::Origin>) {
+        let own: Vec<usize> = (0..2).filter(|&i| self.imported[i] == u64::MAX).collect();
+        let by: Vec<usize> =
+            if own.is_empty() { (0..2).filter(|&i| self.imported[i] & bit != 0).collect() } else { own };
+        if by.is_empty() {
+            out.extend(self.live.iter().map(|i| model::Stream::from(i).origin()));
+        }
+        for i in by {
+            out.insert(model::Origin::Import(model::ImportSite::ALL[i]));
+        }
+    }
+}
+
+impl Tag {
+    /// The origins of the point itself: the import of one of its own seconds, else the live inputs and the imports
+    /// that filled one of the fields asked for (`bits`).
+    fn gave(&self, bits: u64, out: &mut std::collections::BTreeSet<model::Origin>) {
+        let own = self.imported.contains(&u64::MAX);
+        if !own {
+            self.origins(0, out);
+        }
+        for (i, m) in self.imported.iter().enumerate() {
+            if *m == u64::MAX || m & bits != 0 {
+                out.insert(model::Origin::Import(model::ImportSite::ALL[i]));
+            }
+        }
+    }
+}
+
+fn site_index(site: model::ImportSite) -> usize {
+    model::ImportSite::ALL.iter().position(|s| *s == site).unwrap_or(0)
+}
+
 /// Fields whose plain column is the bucket's last value, not its mean (`climate` is text: only its last value means
 /// anything).
 fn last_by_default(f: &str) -> bool {
@@ -126,6 +207,9 @@ pub struct Columns {
     /// The inputs and imports that gave the points (empty when there were none).
     pub sources: Vec<super::SourceRef>,
     pub source_label: String,
+    /// Per field asked for, where its values came from (an import that filled what live history lacked is named
+    /// here; empty when the field had no value).
+    pub value_sources: BTreeMap<String, Vec<super::SourceRef>>,
 }
 
 /// `/series` options.
@@ -258,11 +342,22 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     };
     // where both imports cover the same time, only the chosen site's points (with `source=all` and `source=import`)
     let sites = match source {
-        None | Some(super::SourceFilter::Import(None)) => super::system::Sites::new(e, car)?,
-        Some(_) => super::system::Sites::default(),
+        Some(super::SourceFilter::Import(None)) => super::system::Sites::new(e, car)?,
+        _ => super::system::Sites::default(),
+    };
+    // with `source=all`: the live seconds, with what the chosen import fills; the import's own seconds where there is
+    // no live history (and in the spans flipped to the imported side)
+    let gaps = super::gapfill::Gaps::new(e, car, source)?;
+    let flipped = if source.is_none() { super::system::flipped_spans(e, car)? } else { Vec::new() };
+    let in_flipped = |t: u64| {
+        let i = flipped.partition_point(|s| s.1 <= t);
+        flipped.get(i).is_some_and(|s| s.0 <= t)
     };
     // the streams that gave a point to the answer
     let mut gave = std::collections::BTreeSet::new();
+    let mut by_field: Vec<std::collections::BTreeSet<model::Origin>> = vec![Default::default(); q.fields.len()];
+    let bits: Vec<u64> = q.fields.iter().map(|f| timeline::gapfill::slot_bit(sample_field(f))).collect();
+    let any_bit = bits.iter().fold(0, |a, b| a | b);
     for &s in &streams {
         days.extend(
             e.db()
@@ -274,40 +369,63 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     }
     for day in days {
         let (x, y) = (day.max(a), day.saturating_add(DAY).min(b));
-        let mut chunk: Vec<Sample> = Vec::new();
+        let mut chunk: Vec<(Sample, Tag)> = Vec::new();
         // SMO's and the APIs' seconds fused as the timeline is (inside SMO's coverage SMO's second, no API second
         // beside it), never summed
         let live = model::Stream::LIVE.iter().all(|s| streams.contains(s));
         if live {
-            let (pts, gave_live) = e.live_fused(car, x, y)?;
-            for i in gave_live.iter() {
-                gave.insert(model::Stream::from(i).origin());
+            let lf = e.live_fused(car, x, y)?;
+            let mut pts = lf.samples;
+            if !flipped.is_empty() {
+                pts.retain(|p| !in_flipped(p.t_ms));
             }
-            chunk.extend(pts);
+            let tag_of = |t: u64| timeline::fuse::inputs_at(&lf.marks, t);
+            if source.is_none() {
+                let g = gaps.samples(pts, x, y, SERIES_COVER_MS, super::gapfill::Own::Always)?;
+                for p in g.samples.iter() {
+                    let mut tag = Tag::default();
+                    for (_, site, mask) in g.at(p.t_ms) {
+                        tag.imported[site_index(*site)] |= mask;
+                    }
+                    if tag.imported.iter().all(|m| *m != u64::MAX) {
+                        tag.live = tag_of(p.t_ms);
+                    }
+                    chunk.push((p.clone(), tag));
+                }
+            } else {
+                chunk.extend(pts.into_iter().map(|p| {
+                    let live = tag_of(p.t_ms);
+                    (p, Tag { live, ..Tag::default() })
+                }));
+            }
         }
         for &s in &streams {
             if live && model::Stream::LIVE.contains(&s) {
+                continue;
+            }
+            // (with `source=all` the import's points came with the live seconds)
+            if source.is_none() && s.is_imported() {
                 continue;
             }
             let mut pts = e.db().read_points::<Sample>(car, s, x, y)?;
             if let Some(site) = s.origin().site() {
                 pts.retain(|p| sites.shows(site, p.t_ms));
             }
-            if !pts.is_empty() {
-                gave.insert(s.origin());
-            }
-            chunk.extend(pts);
+            chunk.extend(pts.into_iter().map(|p| (p, Tag::of_stream(s))));
         }
-        chunk.sort_by_key(|s| s.t_ms);
-        for s in &chunk {
+        chunk.sort_by_key(|(s, _)| s.t_ms);
+        for (s, tag) in &chunk {
             let Some(i) = s.t_ms.checked_sub(first).and_then(|d| usize::try_from(d / w).ok()).filter(|&i| i < n) else {
                 continue;
             };
             for (fi, f) in q.fields.iter().enumerate() {
                 if let Some(v) = get(s, f).filter(|v| v.is_finite()) {
                     accs[fi][i].add(v, keep);
+                    tag.origins(bits[fi], &mut by_field[fi]);
                 }
             }
+            // the inputs and imports that gave the answer a point
+            tag.gave(any_bit, &mut gave);
         }
     }
     let t_ms: Vec<u64> = (0..n as u64).map(|i| first + i * w).collect();
@@ -317,6 +435,12 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     }
     let (coverage, state) = coverage_and_state(e, car, &t_ms, w, b, source)?;
     let gave: Vec<model::Origin> = gave.into_iter().collect();
+    let value_sources = q
+        .fields
+        .iter()
+        .zip(by_field)
+        .map(|(f, o)| (f.clone(), super::source_refs(&o.into_iter().collect::<Vec<_>>())))
+        .collect();
     Ok(scoped(
         &c,
         Columns {
@@ -328,6 +452,7 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
             state,
             sources: super::source_refs(&gave),
             source_label: model::Origin::label_of(&gave),
+            value_sources,
         },
     ))
 }
