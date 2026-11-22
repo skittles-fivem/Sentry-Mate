@@ -12,7 +12,7 @@
 a.log-k:hover { color: var(--coral); text-decoration: underline; }
 
 .hl-rows { display: flex; flex-direction: column; }
-.hl-row { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(5, minmax(0, 1fr)); column-gap: var(--s3); align-items: baseline; padding: var(--s2) 0; border-top: 1px solid var(--card-alt);
+.hl-row { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(4, minmax(0, 1fr)); column-gap: var(--s3); align-items: baseline; padding: var(--s2) 0; border-top: 1px solid var(--card-alt);
   font-size: var(--f14); line-height: var(--l14); font-variant-numeric: tabular-nums; }
 .hl-row > :not(:first-child) { text-align: right; }
 .hl-row b { font-weight: 800; }

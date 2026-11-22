@@ -1,23 +1,23 @@
-// Where data came from: SMO (the CAN Bridge's signed logs), the Tesla API this server reads, TeslaFi's polls
-// this server reads (teslafi_api), or history imported from another site (TeslaMate, TeslaFi). Every row, live value, series and total carries `sources`
+// Where data came from: SMO (the CAN Bridge's signed logs), the Tesla API this server reads, or history
+// imported from another site (TeslaMate). Every row, live value, series and total carries `sources`
 // ([{ kind, site?, label }]) and rows carry `source_label` too ("Data from SMO and the Tesla API").
-// Horizon shows them as a small band chip: a neon dot per input (cyan SMO, violet Tesla API, green TeslaFi,
-// orange imported) and the words. The old `source` word (can, teslamate, tesla_api) is read only as a fallback.
+// Horizon shows them as a small band chip: a neon dot per input (cyan SMO, violet Tesla API, orange
+// imported) and the words. The old `source` word (can, teslamate, tesla_api) is read only as a fallback.
 //
 //   srcChip(row)                 the compact chip for list cells: "SMO + Tesla API", full label as its title
 //   srcChip(row, { full: true }) the whole label, for detail pages and charts
 //   valSrc(value)                a live value's input, small, for a figure's label
 //   estTag(row)                  "Energy estimated" when energy_basis is estimated (Tesla API alone)
 //   inputsLine(now.inputs)       the car page's live inputs, with how old each one's newest value is
-//   SOURCE_FILTER                options for a source filter: every, SMO, Tesla API, TeslaFi, Imported (and per site)
+//   SOURCE_FILTER                options for a source filter: every, SMO, Tesla API, Imported
 
 import { h } from '../shared/dom.js';
 import { ago } from './fmt.js';
 
-const LABEL = { smo: 'Data from SMO', tesla_api: 'Data from the Tesla API', teslafi_api: 'Data from TeslaFi', import: 'Imported' };
-const SHORT = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', import: 'Imported' };
+const LABEL = { smo: 'Data from SMO', tesla_api: 'Data from the Tesla API', import: 'Imported' };
+const SHORT = { smo: 'SMO', tesla_api: 'Tesla API', import: 'Imported' };
 const OLD = { can: [{ kind: 'smo', label: LABEL.smo }], teslamate: [{ kind: 'import', site: 'teslamate', label: 'Imported from TeslaMate' }], tesla_api: [{ kind: 'tesla_api', label: LABEL.tesla_api }] };
-const SITE = { teslamate: 'TeslaMate', teslafi: 'TeslaFi' };
+const SITE = { teslamate: 'TeslaMate' };
 
 /** The list of inputs of a row (or a live value), from `sources`, else from the old `source` word. */
 export function sourcesOf(x) {
@@ -84,13 +84,9 @@ export function inputsLine(inputs, { cover } = {}) {
       : h('span', { class: 'inputs-i faint' }, 'None yet: no SMO log and no Tesla API reading.'));
 }
 
-/** Options for a source filter (the API also takes all). */
-export const SOURCE_FILTER = Object.freeze([['', 'Every source'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['teslafi_api', 'TeslaFi (live)'], ['import', 'Imported'],
-  ['import:teslamate', 'Imported from TeslaMate'], ['import:teslafi', 'Imported from TeslaFi']]);
+/** Options for a source filter (the API also takes import:teslamate and all). */
+export const SOURCE_FILTER = Object.freeze([['', 'Every source'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['import', 'Imported']]);
 /** The old filter words still arrive in saved addresses: read them as the new ones. */
 export const sourceParam = (v) => ({ can: 'smo', teslamate: 'import' }[v] || v || '');
 /** Words for a filter value in a "showing only" line. */
-export const SOURCE_ONLY = Object.freeze({ smo: 'from SMO only', tesla_api: 'from the Tesla API only', import: 'imported only', 'import:teslamate': 'imported from TeslaMate only', teslafi_api: 'from TeslaFi only', 'import:teslafi': 'imported from TeslaFi only' });
-
-/** True when a row has a live input (SMO, the Tesla API or TeslaFi), false when it is imported only. */
-export const isLive = (x) => kindsOf(x).some((k) => k === 'smo' || k === 'tesla_api' || k === 'teslafi_api');
+export const SOURCE_ONLY = Object.freeze({ smo: 'from SMO only', tesla_api: 'from the Tesla API only', import: 'imported only', 'import:teslamate': 'imported from TeslaMate only' });

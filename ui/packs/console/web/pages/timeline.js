@@ -14,7 +14,6 @@ import { num, stateWord, when, ago, tag } from '../core/fmt.js';
 import { stateStrip } from '../core/strip.js';
 import { empty, loadingLine, errorWords } from '../core/states.js';
 import { src, isEstimated } from '../core/source.js';
-import { modWords } from './firmware.js';
 
 export const id = 'timeline';
 
@@ -25,7 +24,6 @@ const KIND = {
   gap: { tag: 'gap', tone: 'gap', plural: 'gaps' },
   update: { tag: 'update', tone: 'update', plural: 'updates' },
 };
-const SHOWN = { live: 'live history', import: 'imported history', 'import:teslamate': 'the TeslaMate import', 'import:teslafi': 'the TeslaFi import' };
 const GAP = {
   no_log: 'no log arrived for this time', not_recorded: 'recording was paused on the CAN Bridge',
   failed_check: 'a log failed its check, so its data is not used', dropped_frames: 'the log lost frames here',
@@ -53,7 +51,7 @@ export function eventLine(r, { car, tz }) {
   const k = KIND[r.kind] || KIND.gap;
   const tripHref = state.buildUrl('trip', { car, period: { from: r.start_ms, to: r.end_ms ?? null } });
   const detailHref = r.ref?.drive ? state.buildUrl('drive', { car, drive: r.ref.drive }) : r.ref?.charge ? state.buildUrl('charge', { car, charge: r.ref.charge })
-    : r.kind === 'update' ? `${state.buildUrl('software', { car })}${r.detected_by === 'fingerprint' && r.ref?.update ? `#upd-${r.ref.update}` : ''}` : null;
+    : r.kind === 'update' ? state.buildUrl('software', { car }) : null;
   const est = isEstimated(r) ? ' est.' : '';
   const arrow = h('span', { class: 'arrow' }, ' -> ');
   let what;
@@ -76,11 +74,7 @@ export function eventLine(r, { car, tz }) {
     what = [a, a && b ? arrow : null, b, h('span', { class: 'tone--bad' }, `${a || b ? ' ' : ''}no data`)];
     bits.push(GAP[r.gap_reason] || 'no data for this time', r.distance_km ? `moved ${format(r.distance_km, 'distance')} without a drive` : null);
   } else {
-    if (r.detected_by === 'fingerprint') {
-      // found from the modules' firmware fingerprints: the version is what an admin typed (or none yet)
-      what = ['Tesla update installed', r.version ? h('span', { class: 'muted' }, ` ${r.version}`) : h('span', { class: 'tone--warn' }, ' not named yet')];
-      bits.push(r.changed_modules?.length ? `changed: ${modWords(r.changed_modules, { short: true })}` : null);
-    } else what = ['software update', r.version ? h('span', { class: 'muted' }, ` ${r.version}`) : null];
+    what = ['software update', r.version ? h('span', { class: 'muted' }, ` ${r.version}`) : null];
   }
   if (r.soc_end_pct != null && r.kind !== 'gap' && r.kind !== 'update') bits.push(`${format(r.soc_end_pct - (r.soc_delta_pct || 0), 'percent')} -> ${format(r.soc_end_pct, 'percent')} (${sign(r.soc_delta_pct, 'percent')})`);
   if (r.range_end_km != null && r.kind !== 'gap') bits.push(`range ${format(r.range_end_km, 'range')}${r.range_delta_km != null && r.kind !== 'charge' ? ` (${sign(r.range_delta_km, 'range')})` : ''}`);
@@ -207,11 +201,10 @@ export async function mount(ctx) {
     const key = (kind, label, site) => src({ sources: [{ kind, label, ...(site ? { site } : {}) }] });
     return [
       h('p', { class: 'note' }, 'data from: ', key('smo', 'Data from SMO'), ' smo (the CAN Bridge)  ', key('tesla_api', 'Data from the Tesla API'), ' the tesla api  ',
-        key('teslafi_api', 'Data from TeslaFi'), ' teslafi  ', key('import', 'Imported from TeslaMate', 'teslamate'), ' imported (teslamate or teslafi)', car.sources?.length ? h('span', { class: 'muted' }, `. ${car.name} has: `) : null, car.sources?.length ? src(car) : null),
+        key('import', 'Imported from TeslaMate', 'teslamate'), ' imported', car.sources?.length ? h('span', { class: 'muted' }, `. ${car.name} has: `) : null, car.sources?.length ? src(car) : null),
       overlaps.length ? h('p', { class: 'note tone--warn' }, tag('overlap', 'warn'), ' ',
-        overlaps.map((o, i) => [i ? '; ' : '', `${formatDate(o.start_ms, tz, { year: false })} ${formatTime(o.start_ms, tz)} to ${formatDate(o.end_ms, tz, { year: false })} ${formatTime(o.end_ms, tz)}: `,
-          o.kind === 'imports' ? `${SHOWN[o.shown_source] || 'one import'} is listed (TeslaMate and TeslaFi imports both cover it)` : `${SHOWN[o.shown_source || (o.shown === 'teslamate' ? 'import:teslamate' : 'live')] || 'imported history'} is listed (live and imported both exist)`]),
-        '. ', ctx.admin ? h('a', { class: 'lnk', href: `${state.buildUrl('import')}#overlaps` }, 'choose in import') : 'an admin chooses which in import') : null,
+        overlaps.map((o, i) => [i ? '; ' : '', `${formatDate(o.start_ms, tz, { year: false })} ${formatTime(o.start_ms, tz)} to ${formatDate(o.end_ms, tz, { year: false })} ${formatTime(o.end_ms, tz)}: ${(o.shown_source || (o.shown === 'teslamate' ? 'import:teslamate' : 'live')) === 'live' ? 'live' : 'imported'} history is listed (both exist)`]),
+        '. ', h('a', { class: 'lnk', href: `${state.buildUrl('import')}#overlaps` }, 'choose in import')) : null,
     ];
   }
 

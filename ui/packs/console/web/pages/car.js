@@ -7,7 +7,6 @@
 //                 doors and modes, tyres FL FR RL RR, software, data age)
 //   ## where      a small flat grey map, and charging now / why the car is awake beside it
 //   ## period     figures, the battery sparkline, the charging chart, the state strip, last drive and charge
-//   ## vehicle    the car's build facts, each with its source and how sure (pages/vehicle.js); an admin can type over them
 
 import { h, replace, cover } from '../shared/dom.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
@@ -21,7 +20,6 @@ import { chartOrNote, line, timeAxis, valueAxis, cursor, readout } from '../core
 import { rpx } from '../core/display.js';
 import { stateStrip } from '../core/strip.js';
 import { src, via, inputsLine } from '../core/source.js';
-import { vehicleSection } from './vehicle.js';
 
 export const id = 'car';
 export const title = () => 'Overview';
@@ -48,8 +46,7 @@ function merge(into, delta) {
 }
 
 export async function mount(ctx) {
-  const { tz } = ctx;
-  let car = ctx.car;
+  const { car, tz } = ctx;
   const cid = car.id;
   const enc = encodeURIComponent(cid);
   let now, settings;
@@ -71,14 +68,13 @@ export async function mount(ctx) {
   const chargeBlock = h('div');
   const whyBlock = h('div');
   const periodBlock = h('div');
-  const vehicle = vehicleSection(ctx, { getCar: () => car, setCar: (c) => { car = { ...car, ...c }; paintSub(); } });
 
   replace(ctx.view, h('div', { class: 'page', dataset: { page: 'car' }, cover: ['shots.web-interface', 'shots.overview'] },
     hd, sub, inputsEl, staleLine, nowBlock,
     h('div', { class: 'cols2' },
       section({ title: 'where', cover: ['summary.map.position', 'summary.map.attribution', 'summary.map.zoom'] }, mapEl, mapTools),
       h('div', null, chargeBlock, whyBlock)),
-    periodBlock, vehicle.el));
+    periodBlock));
 
   /* ---------- the lines at the top */
   function paintSub() {
@@ -160,7 +156,6 @@ export async function mount(ctx) {
         ['tyres rl rr', [tyre(2), '  ', tyre(3), rec != null ? h('span', { class: 'muted' }, ` rec ${format(rec, 'pressure')}`) : null]],
         ['12 v battery', aged(n.lv_v, num(val(n.lv_v), 'voltage'))],
         ['software', [h('a', { class: 'lnk-plain', href: ctx.link('software') }, sw.version || 'not known'), swSrc ? h('span', { class: 'muted' }, ` (${swSrc})`) : null], { cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
-        ['firmware', h('a', { class: 'lnk-plain', href: `${ctx.link('software')}#firmware`, title: 'the modules\' firmware fingerprints, and the Tesla updates found from them' }, 'module fingerprints')],
         ['update seen', sw.changed_since_ms ? h('span', { class: 'tone--warn' }, `builds changed ${when(sw.changed_since_ms, tz)}`) : h('span', { class: 'muted' }, 'no change seen'), { cover: 'summary.flag.software_update' }],
         ['log received', n.received_ms ? ago(n.received_ms) : null],
       ]),

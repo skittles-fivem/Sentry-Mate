@@ -232,37 +232,35 @@ async function mountCar(ctx) {
   const totalsEl = h('div');
   const rowsSlot = h('div');
   async function loadTotals() {
-    const [all, can, ta, tm, upd, tf] = await Promise.all([
+    const [all, can, ta, tm, upd] = await Promise.all([
       ctx.api.get(`${base}/totals`, { source: 'all' }), ctx.api.get(`${base}/totals`, { source: 'smo' }),
       ctx.api.get(`${base}/totals`, { source: 'tesla_api' }), ctx.api.get(`${base}/totals`, { source: 'import' }),
       ctx.api.get(`${base}/updates`, { limit: 1 }).catch(() => null),
-      ctx.api.get(`${base}/totals`, { source: 'teslafi_api' }).catch(() => ({})),
     ]);
     if (!ctx.alive()) return;
     const sm = upd?.summary || {};
-    const split = (a, t, b, kind, f) => `${format(a ?? 0, kind)} from SMO, ${format(t ?? 0, kind)} from the Tesla API, ${f ? `${format(f, kind)} from TeslaFi, ` : ''}${format(b ?? 0, kind)} imported`;
+    const split = (a, t, b, kind) => `${format(a ?? 0, kind)} from SMO, ${format(t ?? 0, kind)} from the Tesla API, ${format(b ?? 0, kind)} imported`;
     replace(totalsEl, counters([
-      { label: 'Logged distance', value: all.distance_km, kind: 'distance', cover: 'dbinfo.stat.logged_distance', how: split(can.distance_km, ta.distance_km, tm.distance_km, 'distance', tf.distance_km) },
+      { label: 'Logged distance', value: all.distance_km, kind: 'distance', cover: 'dbinfo.stat.logged_distance', how: split(can.distance_km, ta.distance_km, tm.distance_km, 'distance') },
       { label: 'Odometer', value: all.odometer_last_km, kind: 'odometer', cover: 'dbinfo.stat.odometer', how: all.odometer_last_ms != null ? `read ${when(ctx, all.odometer_last_ms)}` : 'not sent yet' },
       { label: 'Not logged', value: all.not_logged_km, kind: 'distance', how: 'driven while nothing was recorded' },
-      { label: 'Drives', value: all.drives, kind: 'count', cover: 'dbinfo.stat.drive_count', how: split(can.drives, ta.drives, tm.drives, 'count', tf.drives) },
-      { label: 'Charges', value: all.charges, kind: 'count', cover: 'dbinfo.stat.charge_count', how: split(can.charges, ta.charges, tm.charges, 'count', tf.charges) },
-      { label: 'Updates', value: all.updates, kind: 'count', cover: 'dbinfo.stat.update_count', how: split(can.updates, ta.updates, tm.updates, 'count', tf.updates) },
+      { label: 'Drives', value: all.drives, kind: 'count', cover: 'dbinfo.stat.drive_count', how: split(can.drives, ta.drives, tm.drives, 'count') },
+      { label: 'Charges', value: all.charges, kind: 'count', cover: 'dbinfo.stat.charge_count', how: split(can.charges, ta.charges, tm.charges, 'count') },
+      { label: 'Updates', value: all.updates, kind: 'count', cover: 'dbinfo.stat.update_count', how: split(can.updates, ta.updates, tm.updates, 'count') },
       { label: 'Version', text: sm.current_version || '—', cover: 'dbinfo.stat.current_version', how: sm.current_version ? (sm.build_changed_since != null ? 'changed since; the new one has no name' : 'the last named version') : 'never guessed: import, type or match it' },
     ]));
     const rows = [
-      { kind: 'Drives', what: 'One row per drive', can: can.drives, tesla: ta.drives, teslafi: tf.drives, teslamate: tm.drives, total: all.drives },
-      { kind: 'Charges', what: 'One row per charge', can: can.charges, tesla: ta.charges, teslafi: tf.charges, teslamate: tm.charges, total: all.charges },
-      { kind: 'Software updates', what: 'One row per update', can: can.updates, tesla: ta.updates, teslafi: tf.updates, teslamate: tm.updates, total: all.updates },
+      { kind: 'Drives', what: 'One row per drive', can: can.drives, tesla: ta.drives, teslamate: tm.drives, total: all.drives },
+      { kind: 'Charges', what: 'One row per charge', can: can.charges, tesla: ta.charges, teslamate: tm.charges, total: all.charges },
+      { kind: 'Software updates', what: 'One row per update', can: can.updates, tesla: ta.updates, teslamate: tm.updates, total: all.updates },
     ].map((r) => ({ ...r, total: r.total ?? (r.can || 0) + (r.tesla || 0) + (r.teslamate || 0) }));
     const t = tracks(ctx, {
       title: 'Rows kept', icon: 'book', rows, csvName: 'rows-kept', cover: 'dbinfo.table.row_counts', sort: { key: 'total', dir: 'desc' }, dense: true,
-      note: 'Exact counts, kept up to date as rows change. A row several live inputs (SMO, the Tesla API, TeslaFi) saw counts in each of their columns, once in Rows. Where imported and live history overlap, both are counted.',
+      note: 'Exact counts, kept up to date as rows change. A row SMO and the Tesla API both saw counts in both columns, once in Rows. Where imported and live history overlap, both are counted.',
       columns: [
         { key: 'kind', label: 'Kind', sort: true, lead: true, cover: 'dbinfo.rows.table_name', value: (r) => r.kind, render: (r) => h('span', { class: 'cell' }, h('span', { class: 'cell-main' }, r.kind), h('span', { class: 'cell-sub' }, r.what)) },
         { key: 'can', label: 'From SMO', num: true, sort: true, render: (r) => formatNumber(r.can ?? 0) },
         { key: 'tesla', label: 'From the Tesla API', num: true, sort: true, render: (r) => formatNumber(r.tesla ?? 0) },
-        { key: 'teslafi', label: 'From TeslaFi', num: true, sort: true, render: (r) => formatNumber(r.teslafi ?? 0) },
         { key: 'teslamate', label: 'Imported', num: true, sort: true, render: (r) => formatNumber(r.teslamate ?? 0) },
         { key: 'total', label: 'Rows', num: true, sort: true, cover: 'dbinfo.rows.row_count', render: (r) => h('b', null, formatNumber(r.total)) },
       ],

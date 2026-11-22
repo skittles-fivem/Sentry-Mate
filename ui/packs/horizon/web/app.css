@@ -344,7 +344,6 @@ textarea.input { min-height: 6rem; resize: vertical; }
 .src-dot { display: inline-block; width: 0.4375rem; height: 0.4375rem; flex: none; border-radius: 50%; background: var(--ink-3); }
 .src-dot[data-kind="smo"] { background: var(--cyan); box-shadow: 0 0 0.375rem var(--cyan); }
 .src-dot[data-kind="tesla_api"] { background: var(--violet); box-shadow: 0 0 0.375rem var(--violet); }
-.src-dot[data-kind="teslafi_api"] { background: var(--grn); box-shadow: 0 0 0.375rem var(--grn); }
 .src-dot[data-kind="import"] { background: var(--org); box-shadow: 0 0 0.375rem var(--org); }
 :root[data-theme="light"] .src-dot { box-shadow: none; }
 .vsrc { position: relative; display: inline-flex; align-items: center; gap: 0.25rem; margin-left: 0.375rem; font: 600 var(--fs-xs)/1.2 var(--sans); letter-spacing: 0.02em; text-transform: none; color: var(--ink-3); white-space: nowrap; }

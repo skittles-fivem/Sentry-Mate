@@ -849,7 +849,8 @@ fn failed_logs_are_unknown_for_their_own_minutes_whatever_their_sidecar_claims()
         assert_eq!(gaps.len(), 1, "{gaps:#?}");
         assert_eq!((gaps[0].cause, gaps[0].gap_reason), ("unknown", "failed_check"));
         let h = tokio::task::block_in_place(|| query::system::health(&k.engine, car, &Period::all())).unwrap().body;
-        assert!(h.reasons.contains(&"trust_failed"), "{:?}", h.reasons);
+        // earlier failed logs are unknown time, not a problem now: the newest judged log verified
+        assert!(!h.reasons.contains(&"trust_failed"), "{:?}", h.reasons);
         assert!(h.unknown_ms >= 10 * 60_000, "{}", h.unknown_ms);
         assert!(h.unknown_spans.iter().any(|u| u.reason == "failed_check"), "{:?}", h.unknown_spans);
         let t = h.last_log_trust.expect("the newest judged log");

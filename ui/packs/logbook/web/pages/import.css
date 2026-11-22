@@ -79,13 +79,6 @@
 .im-start-row { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); }
 .im-start-row .im-quiet { flex: 1 1 round(18rem, var(--e)); max-width: 60ch; }
 .im-currency { max-width: round(22rem, var(--e)); }
-/* a TeslaFi file: the time zone and units it is read in */
-.im-tf-step { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); }
-.im-tf-step > .im-sub { margin: 0; }
-.im-tf-zone { max-width: round(26rem, var(--e)); }
-.im-tf-units { display: flex; flex-wrap: wrap; gap: round(0.75rem, var(--e)) round(2rem, var(--e)); }
-.im-tf-units .choice { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); }
-.im-tf-step > .im-quiet { max-width: 68ch; --LH: round(calc(1.5 * 1em), 2px); line-height: var(--LH); }
 .im-discard { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); }
 
 /* side notes */
@@ -101,19 +94,12 @@
 .im-report-grid .im-sub { margin-top: round(0.75rem, var(--e)); }
 .im-report-grid > div > .im-sub ~ .im-sub { margin-top: round(2rem, var(--e)); }
 .im-reason { min-width: round(16rem, var(--e)); }
-.im-warnings { list-style: none; margin: 0; padding: round(0.75rem, var(--e)) round(1rem, var(--e)); border-left: round(0.25rem, var(--e)) solid var(--ochre); background: var(--ochre-wash); display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); font-size: var(--text-sm); --LH: round(calc(1.5 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
-.im-warnings li { display: flex; gap: round(0.5rem, var(--e)); align-items: flex-start; }
-.im-warnings .icon { flex: none; width: round(1rem, var(--e)); height: round(1rem, var(--e)); color: var(--ochre); margin-top: round(0.125rem, var(--e)); }
-.im-tf-read { margin-bottom: round(0.5rem, var(--e)); }
-.im-files-skipped { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); font-size: var(--text-sm); overflow-wrap: anywhere; }
 
 /* overlaps */
 .im-overlap-words { display: flex; flex-direction: column; gap: round(0.875rem, var(--e)); font: 400 1rem var(--serif); --LH: round(calc(1.6 * 1em), 2px); line-height: var(--LH); color: var(--ink-2); max-width: 64ch; }
 .im-overlaps { min-width: 0; }
 .im-overlaps > .im-sub:first-child { margin-top: 0; }
 .im-overlaps .segmented { white-space: nowrap; }
-.im-ov-choice { display: flex; flex-direction: column; align-items: flex-start; gap: round(0.375rem, var(--e)); }
-.im-ov-choice .cell-sub { white-space: normal; max-width: round(16rem, var(--e)); }
 
 /* history */
 .page-import .im-history tr.is-current > * { background: var(--accent-wash); }

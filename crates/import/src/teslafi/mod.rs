@@ -797,8 +797,19 @@ impl Importer<'_> {
             }),
             None => [&id, &name].into_iter().flatten().find_map(|k| self.keys.get(k)).copied(),
         };
+        // A row with no VIN (TeslaFi leaves it out while the car sleeps) and an id or name seen nowhere else: a
+        // TeslaFi export is one car, and some exports put a different, made-up id on such rows each day, so it goes
+        // with the one car that showed a VIN, else with the one car of rows without any VIN; never a car of its own.
         let found = found.or_else(|| {
-            (vin_key.is_none() && id.is_none() && name.is_none()).then(|| self.keys.get("").copied()).flatten()
+            if vin_key.is_some() {
+                return None;
+            }
+            let with_vin: Vec<usize> = (0..self.slots.len()).filter(|&i| self.slots[i].tm.vin.is_some()).collect();
+            match with_vin.as_slice() {
+                [only] => Some(*only),
+                [] => self.keys.get("").copied(),
+                _ => None,
+            }
         });
         if let Some(i) = found {
             for k in [vin_key, id, name].into_iter().flatten() {
@@ -863,10 +874,11 @@ impl Importer<'_> {
             last_ms: None,
             warnings: Vec::new(),
         });
-        let keys = [vin_key, id, name].into_iter().flatten().collect::<Vec<_>>();
-        if keys.is_empty() {
-            self.keys.insert(String::new(), i);
+        // the one car of rows without a VIN: later such rows go with it whatever id or name they carry
+        if vin_key.is_none() {
+            self.keys.entry(String::new()).or_insert(i);
         }
+        let keys = [vin_key, id, name].into_iter().flatten().collect::<Vec<_>>();
         for k in keys {
             self.keys.entry(k).or_insert(i);
         }

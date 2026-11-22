@@ -71,33 +71,3 @@
 }
 .cl-map-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .cl-tyre-k { font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); }
-
-/* Vehicle info (core/vehicle.js): each fact with its source and how sure it is, in three groups */
-.vi { display: grid; gap: 1rem; }
-.vi-intro { max-width: 56rem; color: var(--ink-2); }
-.vi-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 24rem), 1fr)); gap: 0.75rem; align-items: start; }
-.vi-group { display: grid; gap: 0.5rem; min-width: 0; padding: 0.75rem 1rem; border-radius: var(--r); background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); }
-.vi-head { font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); }
-.vi-list { display: grid; grid-template-columns: minmax(6.5rem, 0.8fr) minmax(0, 2fr) auto; column-gap: 0.75rem; margin: 0; }
-.vi-row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; row-gap: 0.25rem; align-items: baseline; padding: 0.4375rem 0; box-shadow: inset 0 -1px 0 var(--rule); }
-.vi-row > .vi-v { grid-column: 2; }
-.vi-row:last-child { box-shadow: none; }
-.vi-k { font-size: var(--fs-sm); color: var(--ink-3); }
-.vi-v { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.5rem; min-width: 0; margin: 0; }
-.vi-val { min-width: 0; overflow-wrap: anywhere; color: var(--ink); }
-.vi-val.is-unknown { color: var(--ink-3); font-style: italic; }
-.vi-tags { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; }
-.vi-note { flex-basis: 100%; font-size: var(--fs-xs); color: var(--ink-3); overflow-wrap: anywhere; }
-.vi-note.warn { color: var(--org-ink); }
-.vi-dis { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.5rem; font-size: var(--fs-xs); color: var(--org-ink); }
-.vi-dis-i { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; }
-.vi-act { grid-column: 3; margin: 0; justify-self: end; }
-.vi-notes { margin: 0; padding-left: 1.25rem; font-size: var(--fs-sm); color: var(--ink-2); }
-.vi-fw { display: flex; align-items: flex-start; gap: 0.5rem; font-size: var(--fs-sm); color: var(--ink-2); }
-.vi-fw > .i { height: 1lh; flex: none; }
-@container view (max-width: 40rem) {
-  .vi-list { grid-template-columns: minmax(0, 1fr) auto; }
-  .vi-k { grid-column: 1 / -1; }
-  .vi-row > .vi-v { grid-column: 1; }
-  .vi-act { grid-column: 2; }
-}

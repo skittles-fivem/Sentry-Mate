@@ -22,7 +22,6 @@ import { openPeriodPicker } from '../core/period.js';
 import { rpx } from '../core/display.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import { srcMark, srcText, inputsLine } from '../core/source.js';
-import { vehicleInfoPanel } from './vehicle-info.js';
 
 export const id = 'car';
 export const css = true;
@@ -145,7 +144,7 @@ export async function mount(ctx) {
   replace(root, head, inputsSlot, banner,
     h('div', { class: 'now-hero' }, gaugeSlot, mapPanel, todaySlot),
     h('div', { class: 'now-panels' }, rowLive, rowMore),
-    windowSlot, vehicleInfoPanel(ctx));
+    windowSlot);
 
   /* ---------- header, banner */
   function paintHead() {
@@ -385,7 +384,6 @@ export async function mount(ctx) {
         ['Odometer', h('a', { class: 'link', href: ctx.link('statistics'), title: 'Distance over time on Statistics' }, format(val(n.odometer_km), 'odometer')), { icon: 'odo', cover: ['summary.stat.odometer', 'overview.stat.odometer', 'overview.link.mileage'] }],
         ['Software', h('a', { class: 'link', href: ctx.link('software'), title: srcWord ? `Version ${srcWord}` : 'Software history' }, sw.version || 'not known'), { icon: 'chip', cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
         ['Version from', h('span', { class: 'sw-src' }, swFrom), { icon: 'info', title: 'The car does not send its version text; this is where Sentry Mate got it.' }],
-        ['Firmware', h('a', { class: 'link', href: `${ctx.link('software')}#firmware`, title: 'The fingerprints of the modules\' firmware, as the car sends them' }, 'Module fingerprints'), { icon: 'chip' }],
         sw.changed_since_ms ? ['Software changed', h('span', { class: 'warn' }, `since ${when(sw.changed_since_ms, tz)}`), { icon: 'info', cover: 'summary.flag.software_update', title: "The car's module builds changed; the version text is not known yet." }]
           : ['Software changed', h('span', { class: 'faint' }, 'no change seen'), { icon: 'info', cover: 'summary.flag.software_update', title: "Shows when the car's module builds change after an update." }],
         ['Newest value', agoEl(n.at_ms, tz), { icon: 'live', cover: ['nr.dash.last-update', 'summary.data.live_push'], title: `Recorded ${n.at_ms ? formatDateTime(n.at_ms, tz) : '—'}. Logs arrive about ${n.delay_s ? Math.round(n.delay_s / 60) || 1 : 1} min after the car records them; this page updates by itself.` }],

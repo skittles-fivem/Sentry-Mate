@@ -112,7 +112,7 @@ export async function mount(ctx) {
     const fQ = field({ label: 'Words in the place or address', name: 'q', value: f.q, attrs: { autocomplete: 'off' } });
     const fCost = field({ label: 'Lowest cost (in its currency)', name: 'min_cost', type: 'number', value: f.min_cost ?? '', attrs: { min: '0', step: '0.01', inputmode: 'decimal' } });
     const fDur = field({ label: 'Shortest charging time (min)', name: 'min_dur', type: 'number', value: f.min_dur ?? '', hint: 'Time charging only; waiting while plugged in does not count.', attrs: { min: '0', step: '1', inputmode: 'numeric' } });
-    const fSrc = segmented({ label: 'Data from', name: 'source', value: String(f.source).startsWith('import') ? 'import' : f.source, options: SOURCE_OPTIONS, cls: 'seg-tight' });
+    const fSrc = segmented({ label: 'Data from', name: 'source', value: f.source === 'import:teslamate' ? 'import' : f.source, options: SOURCE_OPTIONS });
     const n = (el) => { const x = Number(el.control.value); return el.control.value === '' || !(x > 0) ? null : x; };
     sheet.body.replaceChildren(h('div', { class: 'form' }, fPlace, fQ, fCost, fDur, fSrc,
       h('p', { class: 'hint' }, 'SMO is the car’s CAN Bridge, the Tesla API is the Tesla account this server reads, Imported is history from TeslaMate. This narrows the list, not the statistics.'),

@@ -75,39 +75,3 @@
 .page-software .sw-figs .fig:first-child { padding-left: 0; }
 .page-software .sw-notes { margin-top: round(0.625rem, var(--e)); }
 .page-software .sw-summary, .page-software .sw-history { margin-bottom: round(1.5rem, var(--e)); }
-
-/* Tesla updates installed: found from the modules' firmware fingerprints, each with its changes and a name box */
-.page-software .sw-fp-lead { max-width: 72ch; margin-bottom: round(1rem, var(--e)); }
-.page-software .sw-fp-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, round(34rem, var(--e))), 1fr)); gap: round(1.5rem, var(--e)) round(2.5rem, var(--e)); }
-.page-software .sw-fp-card { min-width: 0; border-top: 2px solid var(--ink); padding-top: round(0.875rem, var(--e)); display: flex; flex-direction: column; gap: round(0.875rem, var(--e)); scroll-margin-top: var(--clear-top); }
-.page-software .sw-fp-card:focus { outline: none; }
-.page-software .sw-fp-card:focus-visible { outline: 2px solid var(--accent); outline-offset: round(0.5rem, var(--e)); }
-.page-software .sw-fp-title { font: 400 1.5rem var(--serif); --LH: round(calc(1.25 * 1em), 2px); line-height: var(--LH); color: var(--ink); margin-top: round(0.25rem, var(--e)); font-variant-numeric: tabular-nums; }
-.page-software .sw-fp-title.is-unknown { color: var(--rust); font-style: italic; }
-.page-software .sw-fp-named { font-size: var(--text-s); color: var(--ink-3); margin-top: round(0.25rem, var(--e)); }
-.page-software .sw-fp-facts { display: grid; gap: round(0.5rem, var(--e)); font-size: var(--text-sm); }
-.page-software .sw-fp-facts > div { display: grid; grid-template-columns: round(9.5rem, var(--e)) minmax(0, 1fr); gap: round(1rem, var(--e)); }
-.page-software .sw-fp-facts dt { color: var(--ink-3); }
-.page-software .sw-fp-facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
-.page-software .sw-fp-changes { display: flex; flex-direction: column; border-top: 1px solid var(--rule-strong); }
-.page-software .sw-fp-change { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: round(0.25rem, var(--e)) round(1.25rem, var(--e)); align-items: baseline; padding: round(0.4375rem, var(--e)) 0; border-bottom: 1px solid var(--rule); font-size: var(--text-sm); }
-.page-software .sw-fp-change-head { font: 600 var(--micro) var(--sans); --LH: round(calc(1.2 * 1em), 2px); line-height: var(--LH); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
-.page-software .sw-fp-what { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 round(0.625rem, var(--e)); min-width: 0; }
-.page-software .sw-fp-module { color: var(--ink); font-weight: 500; }
-.page-software .sw-fp-field { color: var(--ink-3); overflow-wrap: anywhere; }
-.page-software .sw-fp-hexes { white-space: nowrap; color: var(--ink); }
-.page-software .sw-hex { font-variant-numeric: tabular-nums; }
-.page-software .sw-hex.is-old { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--rule-strong); }
-.page-software .sw-fp-arrow { color: var(--ink-3); }
-.page-software .sw-fp-name { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); padding-top: round(0.75rem, var(--e)); border-top: 1px solid var(--rule); }
-.page-software .sw-fp-name-row { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)); }
-.page-software .sw-fp-input { width: round(12rem, var(--e)); max-width: 100%; font-variant-numeric: tabular-nums; }
-.page-software .sw-fp-err[hidden] { display: none; }
-.page-software .sw-fp-link { color: var(--accent); }
-/* a phone: the hex goes under the fingerprint's name, old over new, so a 14-digit hash never runs off the side */
-@container page (width < 40rem) {
-  .page-software .sw-fp-change { grid-template-columns: minmax(0, 1fr); }
-  .page-software .sw-fp-change-head > :last-child { display: none; }
-  .page-software .sw-fp-hexes { white-space: normal; display: flex; flex-wrap: wrap; column-gap: round(0.25rem, var(--e)); }
-  .page-software .sw-fp-facts > div { grid-template-columns: minmax(0, 1fr); gap: round(0.125rem, var(--e)); }
-}

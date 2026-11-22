@@ -3,9 +3,7 @@
 // A hero tile with the big battery ring, the range and where the car is; a map tile; small tiles for speed,
 // temperatures, odometer, tyres (four dots on a car outline), locks and Sentry, software, the last drive and the
 // last charge; a charging tile; what keeps the car awake; the period's activity strip and summary; a battery
-// chart and a charging chart that share one cursor; then the vehicle info (pages/vehicle-parts.js: each fact of the
-// car's build with where it came from and how sure, an admin's corrections). The software tile links to the car's
-// firmware fingerprints on Software (#firmware). Every blank value says why (asleep, not sent by this car,
+// chart and a charging chart that share one cursor. Every blank value says why (asleep, not sent by this car,
 // not on the CAN bus). Live: `now` events update the tiles in place.
 //
 // Data: GET /api/v1/cars/{car}/now, /activity, /series (battery), /trip (the period's summary), /drives and
@@ -23,7 +21,6 @@ import { mapTile, coordsText } from '../core/map.js';
 import { timeChart, spansOf } from '../core/chart.js';
 import { v, AWAKE_WORDS, endLabel, placeLink, strip, stripShares, facts, dur } from '../core/bits.js';
 import { srcPill, viaMark, inputsLine } from '../core/source.js';
-import { vehicleTiles } from './vehicle-parts.js';
 
 const withVia = (text, x) => { const m = viaMark(x); return m ? h('span', { class: 'src-line' }, text, m) : text; };
 
@@ -222,10 +219,9 @@ export async function mount(ctx) {
   const sw = now.software || {};
   const tSoft = tile({ w: 1, title: 'Software', icon: 'chip', cls: 'tile-stat', cover: ['summary.stat.version', 'overview.stat.firmware', 'summary.flag.software_update'] },
     h('p', { class: 'tile-big' }, sw.version || 'Not known'),
-    h('p', { class: 'tile-line' }, sw.version ? (sw.version_source === 'owner' ? 'typed by the owner' : sw.version_source === 'build_match' ? 'named from an earlier update with the same fingerprints' : sw.version_source === 'tesla_api' ? 'from the Tesla API' : 'from the import') : 'the version is not on the CAN bus',
+    h('p', { class: 'tile-line' }, sw.version ? (sw.version_source === 'owner' ? 'typed by the owner' : sw.version_source === 'build_match' ? 'matched from the build' : sw.version_source === 'tesla_api' ? 'from the Tesla API' : 'from the import') : 'the version is not on the CAN bus',
       sw.changed_since_ms ? `; changed ${formatDate(sw.changed_since_ms, tz, { now: api.now() })}` : ''),
-    h('a', { class: 'tile-link', href: state.buildUrl('software', { car: car.id }), cover: 'overview.link.updates' }, 'Software history'),
-    h('a', { class: 'tile-link', href: `${state.buildUrl('software', { car: car.id })}#firmware` }, 'Car firmware'));
+    h('a', { class: 'tile-link', href: state.buildUrl('software', { car: car.id }), cover: 'overview.link.updates' }, 'Software history'));
   const d0 = lastDrive.error ? null : lastDrive.items?.[0];
   const tDrive = d0 ? tile({ w: 1, title: 'Last drive', icon: 'route', href: state.buildUrl('drive', { car: car.id, drive: d0.id }), cls: 'tile-stat' },
     num(d0.distance_km, 'distance'),
@@ -272,8 +268,7 @@ export async function mount(ctx) {
     cover: ['overview.chart.charging_details.power', 'overview.chart.charging_details.energy', 'overview.chart.charging_details.ac_current', 'overview.chart.charging_details.ac_voltage', 'overview.chart.charging_details.battery_heater'] });
 
   drawHero(); drawSmall(); drawTyres(); drawFlags(); drawAwake(); drawCharge(); drawData();
-  ctx.view.replaceChildren(hero, where, tSpeed, tOut, tIn, tOdo, tCharge, tTyres, tFlags, tAwake, tSoft, tDrive, tLastC, tData, tStrip, tSum, tBatt, tChart,
-    ...vehicleTiles(ctx, car, { onChanged: () => ctx.reload() }));
+  ctx.view.replaceChildren(hero, where, tSpeed, tOut, tIn, tOdo, tCharge, tTyres, tFlags, tAwake, tSoft, tDrive, tLastC, tData, tStrip, tSum, tBatt, tChart);
 
   /* the map: the car's spot, an outside link when the owner allows it */
   const lat = v(now.location?.lat), lon = v(now.location?.lon);

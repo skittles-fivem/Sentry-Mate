@@ -31,7 +31,7 @@ vendor/        MapLibre GL JS (BSD-3-Clause) and uPlot (MIT), for the map and ch
 |---|---|
 | `start.js` | Home routing: set-up first, then sign-in (`?next=`), then the page. Loads preferences and starts the frame and the router. |
 | `router.js` | Leaves the old page, shows grey tiles of the page's shape, loads the car and the period, calls `mount(ctx)`. The grey tiles stay until the page puts its own content in, and the view keeps their height until the page is ready, so a page never collapses and grows again while it loads. |
-| `frame.js` | The page header (brand, a clock with its time zone, account button, title, car pill, date-range pill, page buttons), the dock, the More sheet, notices, footer, offline chip. |
+| `frame.js` | The page header (brand, account button, title, car pill, date-range pill, page buttons), the dock, the More sheet, notices, footer, offline chip. |
 | `pages.js` | The catalogue: title, dock and sheet label, icon, blurb, purpose, default period, car need. `DOCK` and `SHEET` order the navigation. |
 | `display.js` | Interface size (50 to 200 %), Follow screen size, `--dp`, and the bento grid in whole device pixels. `display.grid`, `display.onGrid(fn)`, `display.onChange(fn)`, `snap(px)`, `scrollToTop()`. |
 | `prefs.js` | Preferences: units, theme (Auto, Light, Dark), language, size. `savePref(patch)` shows a change at once and puts it back if the server says no. `onTheme(fn)`. |
@@ -43,8 +43,7 @@ vendor/        MapLibre GL JS (BSD-3-Clause) and uPlot (MIT), for the map and ch
 | `ui.js` | Icons, `btn`, `linkBtn`, `chip`, `stateTag`, `num` (number and unit on one baseline), `ring` (SOC ring), `tile`, `note`, `ago`. |
 | `map.js` | `mapTile(ctx, box, opts)`: MapLibre in a rounded box, tiles from `/maps/config` (offline first), routes in the series colours, round pins, a place circle. |
 | `chart.js` | `timeChart(ctx, body, opts)`: a uPlot chart with one or two lines, a legend of keys that show the value under the cursor and hide a line when pressed; charts with one `sync` key share cursor and zoom. `bars()` for plain histograms. |
-| `source.js` | Where data came from: `srcPill(row)` (the row's `source_label` as a soft pill, one dot per input: SMO, Tesla API, TeslaFi, imported), `estPill` (Tesla-only energy is estimated), `viaMark` (a live value the Tesla API sent), `inputsLine` (the car's live inputs from `/now`), the source filter words. |
-| `firmware.js` | The car's firmware fingerprints and the "Tesla update installed" marker: module names, `hexCode` (lowercase hex, monospace), `changesList` (old hex -> new hex per module), `aroundDrives` / `betweenLine` (the drive before and after), `namedLine`, `nameBox` (admins type or clear the version name). Used by Software and Timeline. |
+| `source.js` | Where data came from: `srcPill(row)` (the row's `source_label` as a soft pill, one dot per input: SMO, Tesla API, imported), `estPill` (Tesla-only energy is estimated), `viaMark` (a live value the Tesla API sent), `inputsLine` (the car's live inputs from `/now`), the source filter words. |
 | `bits.js` | Parts the data pages share: `filterBar` (car and period pills), day groups and `dayHead`, `statTile`, `facts`, `socBar`, `strip` (the activity strip), `pills`, `moreButton`, place words and links. |
 
 ## A page module

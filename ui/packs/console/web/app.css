@@ -200,7 +200,6 @@ button:disabled { cursor: default; }
 .cmd-seg[aria-current="page"] { color: var(--accent); }
 .cmd-sep { color: var(--muted); padding-inline: var(--a2); }
 .cmd-live { color: var(--muted); }
-.cmd-clock { color: var(--text); }   /* the server's time now in the page's zone */
 .cmd-btn, .cmd-find {
   display: block; height: calc(var(--bar) - 1px); line-height: calc(var(--bar) - 1px); padding: 0 var(--g);
   background: none; border: 0; color: var(--text); white-space: nowrap;
@@ -292,7 +291,7 @@ button:disabled { cursor: default; }
 
 /* Boxes around text are snapped to whole px wide: font sizes are kept in 1/64 px, so a run of characters can
  * miss a whole pixel by a hair. calc-size() rounds the fitted width up (browsers without it keep the fitted width). */
-.btn, .key, .kbd, .toast, .cmd-btn, .cmd-clock { width: calc-size(fit-content, round(up, size, 1px)); }
+.btn, .key, .kbd, .toast, .cmd-btn { width: calc-size(fit-content, round(up, size, 1px)); }
 /* the same for what sits beside a section heading, so a button there starts on a whole pixel */
 .sec-side > * { width: calc-size(fit-content, round(up, size, 1px)); }
 
@@ -797,7 +796,6 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .src-t { white-space: normal; margin-left: var(--a2); }
 .src-k--smo { color: var(--accent); }
 .src-k--tesla_api { color: var(--c2); }
-.src-k--teslafi_api { color: var(--c3); }
 .src-k--import { color: var(--text); }
 .src-k--typed { color: var(--warn); }
 .src-plus { color: var(--muted); }
@@ -957,11 +955,8 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
     flex: 1 1 auto; min-width: 0; height: 44px; line-height: 42px; border: 1px solid var(--rule-2); border-radius: 2px;
     background: none; padding: 0 var(--g);   /* no fill of its own: the bar's (the page scrolls under the bar) */
   }
-  .cmd-find-t { display: inline; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .cmd-find { overflow: hidden; }
+  .cmd-find-t { display: inline; }
   .cmd-find-t::after { content: ' pages, cars, drives'; }
-  .cmd-clock { flex: none; height: 44px; line-height: 44px; }
-  .cmd-btn { flex-shrink: 0; }   /* the find field gives up its room first */
   .cmd-btn { height: 44px; line-height: 44px; padding: 0 var(--g); max-width: calc(var(--a2) * 12); overflow: hidden; text-overflow: ellipsis; }
   .cmd-btn .muted { display: none; }
   .links-wrap { gap: calc(var(--g) * 2); overflow-x: auto; scrollbar-width: none; line-height: 43px; }
@@ -1039,22 +1034,3 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   .caret, .dlg--palette[open] { animation: none; }
 }
-
-/* ------------------------------------------------------------------ firmware, vehicle facts, teslafi, overlaps */
-/* a fingerprint: lowercase hex in the page's monospace, free to break anywhere on a narrow screen */
-.hex { font-family: inherit; font-size: inherit; color: var(--text); overflow-wrap: anywhere; word-break: break-all; }
-.fw-mod { display: flex; flex-wrap: wrap; column-gap: var(--g); }
-.fw-mod-n { color: var(--text); }
-.fw-upd { border-top: 1px solid var(--rule); padding-block: var(--g); margin-top: var(--g); }
-.fw-upd-head { padding-bottom: var(--g2); }
-.fw-chg { overflow-wrap: anywhere; }
-.fw-name { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--g); margin-top: var(--g); }
-.fw-name-k { line-height: var(--ctl); }
-.fw-name-in { width: calc(var(--a2) * 16 + var(--g) * 2 + 2px); }
-.fw-name + .fld-hint { margin-top: var(--g2); }
-.fw-field { overflow-wrap: anywhere; }
-.ov-shown { display: flex; flex-direction: column; align-items: flex-start; row-gap: var(--g2); white-space: normal; }
-.ov-shown > .muted { max-width: calc(var(--a2) * 40); }
-.veh-note { display: block; }
-.tbl .tf-car-col { width: calc(var(--a2) * 48); min-width: calc(var(--a2) * 48); max-width: calc(var(--a2) * 48); white-space: normal; }
-.tesla-sel.tf-sel { max-width: none; }

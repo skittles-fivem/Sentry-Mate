@@ -41,7 +41,6 @@ const AWAKE_WORD = {
   door_open: 'a door open', accessory_power: 'accessory power',
 };
 
-const FP_MODULE = { vcfront: 'front body controller', bms: 'battery management', dir: 'rear drive unit', dif: 'front drive unit' };
 const placeLabel = (p) => p?.place?.name || p?.label || (typeof p?.address === 'string' ? p.address : p?.address?.short) || spotText(p) || null;
 // the place editor for a point: an existing place opens for editing, else a new one starts there
 const placeHref = (p) => (p?.place?.id ? state.buildUrl('places', { query: { place: p.place.id } })
@@ -64,7 +63,7 @@ export function timelineRow(r, { car, tz, compact = false }) {
   const end = r.end_ms;
   const tripHref = state.buildUrl('trip', { car, period: { from: r.start_ms, to: end ?? null } });
   const detailHref = r.ref?.drive ? state.buildUrl('drive', { car, drive: r.ref.drive }) : r.ref?.charge ? state.buildUrl('charge', { car, charge: r.ref.charge })
-    : r.kind === 'update' ? (r.detected_by === 'fingerprint' && r.ref?.update ? `${state.buildUrl('software', { car, period: { from: r.start_ms - 3600000, to: (r.end_ms ?? r.start_ms) + 3600000 } })}#fp-${r.ref.update}` : state.buildUrl('software', { car })) : null;
+    : r.kind === 'update' ? state.buildUrl('software', { car }) : null;
   const est = r.energy_basis === 'estimated';
   let title, detail;
   const bits = [];
@@ -87,11 +86,6 @@ export function timelineRow(r, { car, tz, compact = false }) {
     title = [a, a && b ? h('span', { class: 'tl-arrow', 'aria-hidden': 'true' }, ' → ') : null, b, a || b ? h('span', { class: 'tl-place' }, ' · ') : null,
       h('span', null, 'No data'), r.distance_km ? h('span', { class: 'tl-place' }, ` · moved ${format(r.distance_km, 'distance')}`) : null];
     bits.push(GAP[r.gap_reason] || 'No data for this time.', r.distance_km ? 'The car moved, but no drive was recorded.' : null);
-  } else if (r.detected_by === 'fingerprint') {
-    // a "Tesla update installed" found from the modules' firmware fingerprints: named only once someone names it
-    title = [h('span', { class: 'tl-fp' }, 'Tesla update installed'), h('span', { class: 'tl-place' }, ` · ${r.version || 'not named yet'}`)];
-    bits.push(r.changed_modules?.length ? `changed: ${r.changed_modules.map((m) => FP_MODULE[m] || m).join(', ')}` : null,
-      r.version_source === 'build_match' ? 'named from an earlier update with the same fingerprints' : !r.version ? 'the car does not send the version name; it can be named on Software' : null);
   } else {
     title = [h('span', null, 'Software update'), r.version ? h('span', { class: 'tl-place' }, ` · ${r.version}`) : null];
   }

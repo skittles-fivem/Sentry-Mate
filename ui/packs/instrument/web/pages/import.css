@@ -112,28 +112,3 @@
 }
 .im-two[hidden] { display: none; }
 .tbl td > .im-st:only-child { display: flex; width: fit-content; } /* a box of its own in its cell, centred like a line */
-
-/* overlapping histories: what each side has, and the switch */
-.im-sides { display: flex; flex-direction: column; gap: round(0.125rem, var(--e)); white-space: nowrap; }
-.im-side { color: var(--text-2); }
-.im-side.is-shown { color: var(--text); }
-.im-side b { font-weight: 600; }
-.im-shown { display: flex; flex-direction: column; align-items: flex-start; gap: round(0.25rem, var(--e)); }
-.im-shown .sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); white-space: nowrap; }
-
-/* TeslaFi: the time zone and units step */
-.im-tf { margin-bottom: var(--gap); scroll-margin-top: round(5rem, var(--e)); }
-.im-tf > .note { margin: 0 0 round(0.75rem, var(--e)); max-width: round(64rem, var(--e)); --LH: round(calc(1.5 * 1em), 2px); }
-.im-tf-said { margin: 0 0 round(1rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); --LH: round(calc(1.5 * 1em), 2px); }
-.im-tf-fields { display: grid; grid-template-columns: minmax(0, round(22rem, var(--e))) repeat(2, minmax(0, round(11rem, var(--e)))); gap: round(1rem, var(--e)); align-items: start; }
-.im-tf-fields .form-row { margin: 0; min-width: 0; }
-.im-tf-fields .input, .im-tf-fields .select { width: 100%; }
-.im-warn-list { margin: round(0.75rem, var(--e)) 0 0; padding: 0; list-style: none; font-size: max(0.8125rem, var(--fs-floor)); }
-@container page (max-width: 50rem) {
-  .im-tf-fields { grid-template-columns: minmax(0, 1fr); }
-}
-.im-stamp { display: flex; flex-direction: column; white-space: nowrap; }
-.im-stamp .sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
-.im-overlap .cell-text { display: flex; flex-direction: column; align-items: flex-start; --LH: round(1.25rem, 2px); }
-.im-overlap .cell-text .sub, .im-overlap .im-shown .sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); --LH: round(1rem, 2px); }
-.im-overlap .im-sides { --LH: round(1.25rem, 2px); }

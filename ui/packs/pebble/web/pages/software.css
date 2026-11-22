@@ -13,6 +13,3 @@ a.sw-ver .ic { width: var(--ic-sm); height: var(--ic-sm); }
 .sw-link { font-size: var(--f16); line-height: var(--l16); font-weight: 800; color: var(--coral); text-decoration: none; font-variant-numeric: tabular-nums; }
 a.sw-link:hover { text-decoration: underline; }
 .sw-link.is-zero { color: var(--muted); }
-.sw-kind { font-size: var(--f13); line-height: var(--l13); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--coral); }
-.sw-tile.is-fp { gap: var(--s4); }
-.sw-fw-mod .tile-side .fw-sig { padding: 0 var(--s2); border-radius: 999px; background: var(--card-alt); }

@@ -4,10 +4,7 @@
 // tile (now, last change, share of time parked and asleep) and the period's activity strip. Then one header per
 // day ('Tuesday') and a tile per row: an icon for drive, charge, park, gap or update, a one-line summary, the
 // figures (odometer, distance, duration, range, energy, battery, temperature) and links to the drive or charge,
-// the Trip for exactly that span, and the places. An update found from the firmware fingerprints is a "Tesla update
-// installed" marker: its version (or a box an admin names it in), what changed (old hex to new hex) and between which
-// drives. Data: GET /api/v1/cars/{car}/timeline (paged), /states, /activity, /updates (the changes of the period's
-// fingerprint updates), /drives (the drive on either side of one), PATCH /updates/{update}.
+// the Trip for exactly that span, and the places. Data: GET /api/v1/cars/{car}/timeline (paged), /states, /activity.
 
 import { h } from '../shared/dom.js';
 import { format } from '../shared/units.js';
@@ -20,7 +17,6 @@ import { emptyTile } from '../core/states.js';
 import { spanHref } from '../core/period.js';
 import { AWAKE_WORDS, GAP_WORDS, endLabel, placeLink, byDay, dayHead, strip, stripShares, filterBar, moreButton, dur } from '../core/bits.js';
 import { srcPill } from '../core/source.js';
-import { isFingerprint, changesList, aroundDrives, betweenLine, namedLine, nameBox, moduleList } from '../core/firmware.js';
 
 export const id = 'timeline';
 export const css = true;
@@ -38,21 +34,19 @@ function summary(r) {
     case 'charge': return `Charged at ${a}`;
     case 'parked': return `Parked at ${a}`;
     case 'gap': return `No data: ${GAP_WORDS[r.gap_reason] || 'reason not known'}`;
-    case 'update': return isFingerprint(r) ? 'Tesla update installed' : r.version ? `Software update to ${r.version}` : 'Software update';
+    case 'update': return 'Software update';
     default: return r.kind;
   }
 }
 
-function rowTile(r, ctx, extra = {}) {
+function rowTile(r, ctx) {
   const tz = ctx.tz, car = ctx.car;
   const k = KIND[r.kind] || KIND.gap;
   const going = r.end_ms == null;
   const end = r.end_ms ?? api.now();
   const detail = r.ref?.drive ? state.buildUrl('drive', { car: car.id, drive: r.ref.drive, period: ctx.state.period })
     : r.ref?.charge ? state.buildUrl('charge', { car: car.id, charge: r.ref.charge, period: ctx.state.period })
-      : r.ref?.update ? `${state.buildUrl('software', { car: car.id, period: { from: r.start_ms - 3600000, to: end + 3600000 } })}#update-${encodeURIComponent(r.ref.update)}` : null;
-  const fp = r.kind === 'update' && isFingerprint(r);
-  const upd = fp && r.ref?.update ? extra.updates?.get(r.ref.update) : null;
+      : r.ref?.update ? state.buildUrl('software', { car: car.id }) : null;
   const pm = r.parked_ms;
   const nums = [
     r.distance_km != null ? h('span', { class: 'tl-n', cover: 'timeline.col.distance' }, num(r.distance_km, 'distance', { size: 's' })) : null,
@@ -81,12 +75,6 @@ function rowTile(r, ctx, extra = {}) {
       h('span', { cover: ['timeline.col.start_address', 'timeline.link.geofence_start', 'timeline.link.place_cells_other_rows'] }, placeLink(r.start)),
       r.end ? [icon('arrowRight', 'route-arrow'), h('span', { cover: ['timeline.col.end_address', 'timeline.link.geofence_end'] }, placeLink(r.end, { still: going }))] : null) : null,
     h('div', { class: 'item-nums tl-nums' }, nums),
-    fp ? h('div', { class: 'tl-fw' },
-      h('p', { class: ['tl-fw-ver', { 'is-unknown': !r.version }] }, r.version ? `Version ${r.version}` : 'Version not named yet', r.changed_modules?.length ? h('span', { class: 'muted' }, ` · changed: ${moduleList(r.changed_modules)}`) : null),
-      namedLine(r),
-      upd ? betweenLine(ctx, car.id, upd, extra.around?.get(upd.id), tz) : null,
-      upd ? changesList(upd) : null,
-      upd ? nameBox(ctx, car.id, upd, { onSaved: () => ctx.reload() }) : null) : null,
     pm ? h('p', { class: 'item-sub' }, `Asleep ${dur(pm.asleep)}, awake ${dur((pm.awake || 0) + (pm.awake_vehicle_bus_only || 0))}${pm.unknown ? `, no data ${dur(pm.unknown)}` : ''}`,
       r.awake_reasons?.length ? `; awake for ${formatList(r.awake_reasons.map((x) => AWAKE_WORDS[x] || x.replace(/_/g, ' ')))}` : '', '.') : null,
     h('p', { class: 'item-links tile-foot' }, srcPill(r, { short: true, cls: 'tl-src' }), links));
@@ -148,22 +136,13 @@ export async function mount(ctx) {
         ctx.view.insertBefore(dayHead(g.key, tz, dist ? `${format(dist, 'distance')} driven` : null), more);
         lastDay = g.key;
       }
-      for (const r of g.items) ctx.view.insertBefore(rowTile(r, ctx, extra), more);
+      for (const r of g.items) ctx.view.insertBefore(rowTile(r, ctx), more);
     }
     more.querySelector('button').hidden = pager.done;
   }
-  // the period's fingerprint updates (their changes are not on timeline rows) and the drives around each, kept by id
-  const extra = { updates: new Map(), around: new Map() };
-  async function readUpdates() {
-    if (!kinds.has('update')) return;
-    const list = await ctx.api.list(api.apiPath`cars/${car.id}/updates`, { ...ctx.params, limit: 100 }).all({ max: 300 }).catch(() => null);
-    if (!list || !ctx.alive()) return;
-    extra.updates = new Map(list.filter(isFingerprint).map((u) => [u.id, u]));
-    await Promise.all([...extra.updates.values()].filter((u) => !extra.around.has(u.id)).map(async (u) => { extra.around.set(u.id, await aroundDrives(ctx, car.id, u)); }));
-  }
   async function reload() {
     pager = ctx.api.pager(api.apiPath`cars/${car.id}/timeline`, { ...ctx.params, kinds: [...kinds].join(','), q: qtext || undefined }, { limit: 30 });
-    await Promise.all([pager.more(), readUpdates()]);
+    await pager.more();
     if (!ctx.alive()) return;
     while (listStart.nextSibling && listStart.nextSibling !== more) listStart.nextSibling.remove();
     lastDay = null;
