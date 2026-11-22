@@ -169,8 +169,9 @@ async fn overlaps(State(app): State<AppState>, CarParam(car): CarParam, p: Param
     list_answer(&app, &p, "overlaps", move |e, pg| q::system::overlaps(e, car, pg)).await
 }
 
-/// `PATCH /cars/{car}/overlaps` `{ id, shown }` (or `start_ms` in place of `id`): which side a span shows. Answers
-/// the first page of the list plus `changed`.
+/// `PATCH /cars/{car}/overlaps` `{ id, shown, version? }` (or `start_ms` in place of `id`, a `live` span): which side
+/// a span shows, or of an `imports` span which site. A stale `version` is `409 stale_version`; one is needed for an
+/// `imports` span (the old pages that flip `live` spans send none). Answers the first page of the list plus `changed`.
 async fn flip_overlap(
     State(app): State<AppState>,
     v: Viewer,
@@ -178,33 +179,57 @@ async fn flip_overlap(
     p: Params,
     body: JsonBody,
 ) -> ApiResult<Json<Value>> {
-    body.only(&["id", "start_ms", "shown"])?;
+    body.only(&["id", "start_ms", "shown", "version"])?;
     let shown = body.req_str("shown")?.to_string();
+    let version = body.u64("version")?;
     let id = match (body.str("id")?, body.u64("start_ms")?) {
         (Some(id), _) => id.to_string(),
         (None, Some(t)) => format!("overlap:{t}"),
         (None, None) => return Err(ApiError::bad_input("id", "Name the overlap by its id (or start_ms).")),
     };
-    if !["live", "can", "import", "import:teslamate", "import:teslafi", "teslamate"].contains(&shown.as_str()) {
+    let pair = id.starts_with("imports:");
+    if pair && version.is_none() {
+        return Err(ApiError::bad_input("version", "Required: the version you loaded."));
+    }
+    let words: &[&str] = if pair {
+        &["import:teslamate", "import:teslafi", "teslamate", "teslafi"]
+    } else {
+        &["live", "can", "import", "import:teslamate", "import:teslafi", "teslamate"]
+    };
+    if !words.contains(&shown.as_str()) {
         return Err(ApiError::invalid(
             "shown",
-            "Must be live or import (import:teslamate, import:teslafi; or the old words can, teslamate).",
+            if pair {
+                "Must be import:teslamate or import:teslafi: the import this span shows."
+            } else {
+                "Must be live or import (import:teslamate, import:teslafi; or the old words can, teslamate)."
+            },
         ));
     }
     let paging = super::now::paging(&p)?;
-    let s2 = shown.clone();
+    let (s2, id2) = (shown.clone(), id.clone());
     let out = run(&app, move |e| {
-        let changed = q::system::set_overlap(e, car, &id, &s2)?;
-        let list = q::system::overlaps(e, car, &paging)?;
-        Ok((changed, list))
+        Ok(match q::system::set_overlap(e, car, &id2, &s2, version)? {
+            q::fleet::Patched::Done(changed) => (Some(changed), None, Some(q::system::overlaps(e, car, &paging)?)),
+            q::fleet::Patched::Stale { version } => (None, Some(version), None),
+        })
     })
     .await?;
+    if let Some(have) = out.get(1).and_then(Value::as_u64) {
+        return Err(ApiError::stale_version(have));
+    }
     let changed = out.get(0).cloned().unwrap_or(Value::Null);
-    let mut list = out.get(1).cloned().unwrap_or_else(|| json!({}));
-    let side = if shown == "can" || shown == "live" { "live (SMO)" } else { "imported TeslaMate" };
-    let summary = format!("Showing {side} history for an overlap of live and imported history.");
+    let mut list = out.get(2).cloned().unwrap_or_else(|| json!({}));
+    let site = |w: &str| if w.ends_with("teslafi") { "TeslaFi" } else { "TeslaMate" };
+    let summary = if pair {
+        format!("Showing the {} import for a span both TeslaMate and TeslaFi imports cover.", site(&shown))
+    } else if shown == "can" || shown == "live" {
+        "Showing live history for an overlap of live and imported history.".to_string()
+    } else {
+        "Showing imported history for an overlap of live and imported history.".to_string()
+    };
     // (the engine's flip tells the live stream which rows changed: no second `rows` event here)
-    v.audit(&app, "car-overlap", Some(&target("car", Some(car), "")), &summary).await?;
+    v.audit(&app, "car-overlap", Some(&target("car", Some(car), &id)), &summary).await?;
     if let Value::Object(m) = &mut list {
         m.insert("changed".into(), changed);
     }

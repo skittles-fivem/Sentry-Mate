@@ -73,7 +73,7 @@ start after the virtual clock are not shown yet, and the piece the clock is in i
 |---|---|---|
 | `c1` Comet | Model Y 2025, Long Range AWD, NCA pack, `America/Los_Angeles` | Home in Noe Valley, work in Mission Bay (San Francisco). Weekday commutes, weekend outings, a road trip to Los Angeles in July with six Supercharger stops, a nine-day holiday parked at home (vampire drain), Sentry at work, scheduled home charging at 23:30 (1 phase, 32 A). **Driving at "now"** (home to Palo Alto). A drive and a charge that stopped mid-way, and a gap of every kind. |
 | `c2` Maple | Model 3 2022, RWD, LFP pack, `America/Chicago` | Home in Logan Square, work garage in River North (Chicago). Cold winters with reduced range days, home charging on 3 phases, public AC at work, a road trip to Toronto in August (DC in Michigan and in Ontario, costs in CAD). A slow leak in the rear left tyre for the last three weeks. **Charging at "now"** at work. |
-| `c3` Atlas | Model S 2017, 90D, old (legacy) CAN profile, `America/Los_Angeles` | East Bay. 16 months imported from TeslaMate (`source: "teslamate"`, estimated energy) that overlap 5 days of CAN rows, free Supercharging, fewer decoded signals (no tyres, no set points). Its CAN Bridge went quiet about 55 hours before "now": the last log failed its check. |
+| `c3` Atlas | Model S 2017, 90D, old (legacy) CAN profile, `America/Los_Angeles` | East Bay. 16 months imported from TeslaMate (`source: "teslamate"`, estimated energy) that overlap 5 days of CAN rows, and a week of that history imported from TeslaFi as well (TeslaFi's copies of the same drives and charges, `source: "teslafi"`; with no live data there, one import is shown: TeslaMate's at first, flipped in `/overlaps`), free Supercharging, fewer decoded signals (no tyres, no set points). Its CAN Bridge went quiet about 55 hours before "now": the last log failed its check. |
 | `c4`..`cN` | synthetic | Names, models, states and battery from the car's index only; lists elsewhere are empty but valid. |
 
 Where each row came from (`sources`, `source_label`, see `mockapi/sources.py`): `c1` has SMO and the Tesla API
@@ -207,7 +207,8 @@ tests/                   unittest; test_contract.py checks the server against do
 1. Write `mockapi/resources/<section>.py` with a `register(router)` function. `drives.py` shows the pattern:
    read filters with `req.period()`, `req.enum()`, `req.list_param()` (they answer 400 with `fields`), build
    rows from `req.history()` (the car's pieces: `h.segs`, `h.drives`, `h.charges`, `h.updates`, `h.shadow` for
-   TeslaMate copies, `h.overlaps`), page with `conventions.page(req, rows, key=..., reverse=...)` (CSV then
+   TeslaMate copies of CAN rows and TeslaFi copies of TeslaMate rows (`site = "teslafi"`; `sources.site_of(row)`),
+   `h.overlaps`, `h.import_overlaps`), page with `conventions.page(req, rows, key=..., reverse=...)` (CSV then
    comes for free), and for changes validate (400 for shape, 422 for rules), change the store under
    `st.lock`, then `st.record(account, action, target, summary)` for the audit log.
 2. Add the module to `MODULES` in `mockapi/resources/__init__.py`, and the resource to `docs/ui-api.md`:
@@ -219,7 +220,10 @@ tests/                   unittest; test_contract.py checks the server against do
 4. Pieces have `values(t)` (every series field at a moment) and `activity()` (strip segments); parked spells
    have `subs` (awake, vehicle-bus-only and asleep sub-spans with reasons and power) and `soc_at(t)`; charges
    have `curve(t)` and `figures()`. The owner's choice of side in a CAN and TeslaMate overlap is
-   `h.overlaps[i]["shown"]` (the one dataset field meant to change: change it under `st.lock`).
+   `h.overlaps[i]["shown"]`, of the import shown where both imports cover the same days
+   `h.import_overlaps[i]["shown"]` (`teslamate` or `teslafi`; `h.shown(row, source)` and `h.site_shown` apply them),
+   and `h.overlap_changes` counts the changes for their `version` (the dataset fields meant to change: change them
+   under `st.lock`).
 
 ## Tests
 

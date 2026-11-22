@@ -16,7 +16,7 @@ import re
 
 from .. import derive
 from ..conventions import page
-from ..errors import bad_input, invalid, not_found
+from ..errors import bad_input, invalid, not_found, stale_version
 from ..live import now_object
 from ..util import DAY, HOUR, MIN, date_str, h01, local_date, r
 from .. import sources as SRC
@@ -369,54 +369,98 @@ def rebuild(req):
 # ------------------------------------------------------------------ overlaps
 
 
+def _counts(rows):
+    return {"drives": sum(1 for s in rows if s.kind == "drive"), "charges": sum(1 for s in rows if s.kind == "charge")}
+
+
+def _site_counts(rows):
+    return {site: _counts([s for s in rows if SRC.site_of(s) == site]) for site in ("teslamate", "teslafi")}
+
+
 def _overlap_view(h, i, o, now):
+    """A span of live and imported history (`kind: "live"`)."""
     can = [s for s in h.drives + h.charges if s.source == "can" and o["start_ms"] <= s.start < o["end_ms"]]
     tm = [s for s in h.shadow if o["start_ms"] <= s.start < o["end_ms"]]
-    live = {"drives": sum(1 for s in can if s.kind == "drive"), "charges": sum(1 for s in can if s.kind == "charge")}
-    imported = {"drives": sum(1 for s in tm if s.kind == "drive"), "charges": sum(1 for s in tm if s.kind == "charge")}
-    return {"id": f"overlap:{o['start_ms']}", "start_ms": o["start_ms"], "end_ms": o["end_ms"], "shown": o["shown"],
-            "shown_source": "live" if o["shown"] == "can" else "import:teslamate",
-            "live": live, "imported": imported, "can": dict(live), "teslamate": dict(imported),
-            "sources": [SRC.ref("smo"), SRC.ref("import", "teslamate")]}
+    live, imported = _counts(can), _counts(tm)
+    sites = _site_counts(tm)
+    return {"id": f"overlap:{o['start_ms']}", "kind": "live", "start_ms": o["start_ms"], "end_ms": o["end_ms"],
+            "shown": o["shown"], "shown_source": "live" if o["shown"] == "can" else "import:teslamate",
+            "default_source": "live", "default_reason": None,
+            "live": live, "imported": imported, "sites": sites, "can": dict(live), "teslamate": dict(imported),
+            "sources": [SRC.ref("smo")] + [SRC.ref("import", k) for k, n in sites.items() if n["drives"] + n["charges"]],
+            "version": h.overlap_changes + 1}
+
+
+def _pair_view(h, o):
+    """A span both imports cover (`kind: "imports"`): which site it shows, and why at first."""
+    rows = [s for s in h.drives + h.charges if s.source == "teslamate" and o["start_ms"] <= s.start < o["end_ms"]]
+    live = _counts([s for s in h.drives + h.charges if s.source == "can" and o["start_ms"] <= s.start < o["end_ms"]])
+    imported = _counts(rows)
+    return {"id": f"imports:{o['start_ms']}", "kind": "imports", "start_ms": o["start_ms"], "end_ms": o["end_ms"],
+            "shown": "teslamate", "shown_source": f"import:{o['shown']}", "default_source": f"import:{o['default']}",
+            "default_reason": o["reason"], "live": live, "imported": imported, "sites": _site_counts(rows),
+            "can": dict(live), "teslamate": dict(imported),
+            "sources": [SRC.ref("import", "teslamate"), SRC.ref("import", "teslafi")],
+            "version": h.overlap_changes + 1}
 
 
 def get_overlaps(req):
     h = req.history()
     rows = [_overlap_view(h, i, o, req.now) for i, o in enumerate(h.overlaps)] if h else []
-    items, nxt = page(req, rows, key=lambda x: (x["start_ms"],))
+    rows += [_pair_view(h, o) for o in h.import_overlaps] if h else []
+    # newest first, as the server lists them
+    items, nxt = page(req, rows, key=lambda x: (x["start_ms"], x["id"]), reverse=True)
     return {"car": req.car, "time_zone": req.tz(), "items": items, "next": nxt}
 
 
 def patch_overlap(req):
     h = req.history()
     body = req.json()
-    bad = {k: "Unknown field." for k in body if k not in ("id", "start_ms", "shown")}
+    bad = {k: "Unknown field." for k in body if k not in ("id", "start_ms", "shown", "version")}
     if "shown" not in body:
         bad["shown"] = "Required: live or import:teslamate."
     if "id" not in body and "start_ms" not in body:
         bad["id"] = "Name the overlap by its id (or start_ms)."
+    pair = str(body.get("id", "")).startswith("imports:")
+    version = body.get("version")
+    if version is not None and (not isinstance(version, int) or isinstance(version, bool) or version < 0):
+        bad["version"] = "Must be a whole number."
+    elif pair and version is None:
+        bad["version"] = "Required: the version you loaded."
     if bad:
         raise bad_input(bad)
-    shown = {"live": "can", "can": "can", "import:teslamate": "teslamate", "teslamate": "teslamate"}.get(body["shown"])
-    if shown is None:
-        raise invalid({"shown": "Must be live or import:teslamate (or the old words can, teslamate)."})
-    target = None
-    for i, o in enumerate(h.overlaps if h else []):
-        if body.get("id") == f"overlap:{o['start_ms']}" or body.get("start_ms") == o["start_ms"]:
-            target = (i, o)
-    if target is None:
+    if pair:
+        shown = {"import:teslamate": "teslamate", "teslamate": "teslamate", "import:teslafi": "teslafi",
+                 "teslafi": "teslafi"}.get(body["shown"])
+        if shown is None:
+            raise invalid({"shown": "Must be import:teslamate or import:teslafi: the import this span shows."})
+        spans = [o for o in (h.import_overlaps if h else []) if body["id"] == f"imports:{o['start_ms']}"]
+    else:
+        shown = {"live": "can", "can": "can", "import": "teslamate", "import:teslamate": "teslamate",
+                 "import:teslafi": "teslamate", "teslamate": "teslamate"}.get(body["shown"])
+        if shown is None:
+            raise invalid({"shown": "Must be live or import:teslamate (or the old words can, teslamate)."})
+        spans = [o for o in (h.overlaps if h else [])
+                 if body.get("id") == f"overlap:{o['start_ms']}" or body.get("start_ms") == o["start_ms"]]
+    if not spans:
         raise not_found("no_such_overlap", "There is no such overlap for this car.")
-    i, o = target
+    o = spans[-1]
     st = req.store
     with st.lock:
+        if version is not None and version != h.overlap_changes + 1:
+            raise stale_version(h.overlap_changes + 1)
         o["shown"] = shown
+        h.overlap_changes += 1
+    if pair:
+        what = f"the {'TeslaFi' if shown == 'teslafi' else 'TeslaMate'} import"
+    else:
+        what = f"{'live (SMO)' if shown == 'can' else 'imported TeslaMate'} history"
     st.record(req.account, "car.overlap", f"car:{req.car}",
-              f"Showing {'live (SMO)' if shown == 'can' else 'imported TeslaMate'} history from "
-              f"{date_str(o['start_ms'], req.tz())} to {date_str(o['end_ms'], req.tz())}.")
+              f"Showing {what} from {date_str(o['start_ms'], req.tz())} to {date_str(o['end_ms'], req.tz())}.")
     req.app.events.publish("rows", {"car": req.car, "kinds": ["drives", "charges", "states", "visits"],
                                     "from_ms": o["start_ms"], "to_ms": o["end_ms"]}, car=req.car)
     out = get_overlaps(req)
-    out["changed"] = _overlap_view(h, i, o, req.now)
+    out["changed"] = _pair_view(h, o) if pair else _overlap_view(h, h.overlaps.index(o), o, req.now)
     return out
 
 

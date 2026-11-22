@@ -36,11 +36,22 @@ def nice_bucket(span_ms, max_points):
 def pieces(h, a, b, now, source):
     out = []
     for s in h.segs_between(a, b, now):
-        if not S.keeps(source, s.source, getattr(s, "inputs", None)):
+        if not S.keeps(source, s.source, getattr(s, "inputs", None), S.site_of(s)):
+            continue
+        # where both imports cover the same time, the chosen site's drives and charges only
+        if s.kind in ("drive", "charge") and not h.site_shown(s, source):
             continue
         out.append(s)
-    if S.canon(source) == "import:teslamate":
-        out += [s for s in h.shadow if s.end > a and s.start < min(b, now)]
+    w = S.canon(source or "all")
+    for s in h.shadow:
+        if not (s.end > a and s.start < min(b, now)):
+            continue
+        if S.site_of(s) == "teslafi":
+            # TeslaFi's copies of TeslaMate's rows: where TeslaFi is the import shown, or asked for alone
+            if S.keeps(source, s.source, None, "teslafi") and h.site_shown(s, source):
+                out.append(s)
+        elif w in ("import", "import:teslamate"):
+            out.append(s)
     return out
 
 

@@ -256,6 +256,11 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
         Some(super::SourceFilter::Live) => vec![model::Stream::Smo, model::Stream::TeslaApi],
         Some(f) => f.streams(),
     };
+    // where both imports cover the same time, only the chosen site's points (with `source=all` and `source=import`)
+    let sites = match source {
+        None | Some(super::SourceFilter::Import(None)) => super::system::Sites::new(e, car)?,
+        Some(_) => super::system::Sites::default(),
+    };
     // the streams that gave a point to the answer
     let mut gave = std::collections::BTreeSet::new();
     for &s in &streams {
@@ -287,7 +292,10 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
             if live && matches!(s, model::Stream::Smo | model::Stream::TeslaApi) {
                 continue;
             }
-            let pts = e.db().read_points::<Sample>(car, s, x, y)?;
+            let mut pts = e.db().read_points::<Sample>(car, s, x, y)?;
+            if let Some(site) = s.origin().site() {
+                pts.retain(|p| sites.shows(site, p.t_ms));
+            }
             if !pts.is_empty() {
                 gave.insert(s.origin());
             }

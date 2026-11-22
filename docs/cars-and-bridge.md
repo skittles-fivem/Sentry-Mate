@@ -176,7 +176,8 @@ TeslaFi keeps a poll of the car about once a minute. Its data download has them 
    passed over.
 4. **Start the import.** Drives come from the gear, charges from the charging state, sleep from the car's state and
    software updates from the version, all marked "Imported from TeslaFi". Where they meet SMO's or the Tesla API's
-   history, the live side is shown, as with a TeslaMate import (Settings → Cars → overlaps flips a span).
+   history, the live side is shown, as with a TeslaMate import; where a TeslaMate import covers the same days, only
+   one of the two imports is shown ([Which history is shown](#which-history-is-shown)).
 
 Importing the same files again adds nothing; a later month, or the rest of a month downloaded before it ended, adds
 only what is new, and a drive over the end of a month becomes one drive once both months are in. **Imported in the
@@ -186,6 +187,30 @@ in another zone or other units is read again, and what it stored is replaced, ne
 over the end of a month is rebuilt whole on both sides. TeslaFi's own
 drive and charge lists (Drives → Drive Search And Download) are refused: they have no positions. TeslaFi's costs,
 tags and notes are not in its monthly files, so they don't come over.
+
+## Which history is shown
+
+A car can have history of the same time from several places: SMO (the CAN Bridge's logs), the Tesla API, a TeslaMate
+import and a TeslaFi import. Every list, detail, total, chart, the timeline and the statistics show each drive and
+charge once, chosen in this order:
+
+1. **SMO.** Where SMO's logs cover a time, its data is used.
+2. **The Tesla API.** It fills what SMO doesn't have (a value SMO doesn't send, or a time SMO wasn't recording).
+   Together they are the *live* history.
+3. **One import per span.** Imported history is shown where there is no live history. Where a TeslaMate import and a
+   TeslaFi import cover the same days, only one of them is shown there, never both: at first the one with more data
+   in that span (more drives and charges; if they have the same, more positions; if those are equal too,
+   TeslaMate's).
+
+**The switches** (Settings → Cars → overlaps, admins only, each change in the audit log):
+
+- A span where live and imported history meet shows the live side at first; flip it to show the imported side
+  there instead.
+- A span both imports cover shows the import picked above; flip it to show the other import there. Inside live
+  history this choice decides which import shows once that span is flipped to the imported side.
+
+Asking for one source only (a page's source filter: SMO, the Tesla API, TeslaMate or TeslaFi) always shows that
+source's rows alone, whatever the switches say; "imported" shows the chosen import in each span.
 
 ## Bringing in the logs Sentry Six Manager already has
 

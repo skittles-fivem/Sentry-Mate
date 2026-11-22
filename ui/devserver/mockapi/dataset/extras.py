@@ -52,7 +52,7 @@ def imported_history(h):
     """What c3's imported TeslaMate history holds (the made-up backup's first car is exactly that)."""
     if h is None:
         return None
-    tm = [x for x in h.segs + h.shadow if x.source == "teslamate"]
+    tm = [x for x in h.segs + h.shadow if x.source == "teslamate" and getattr(x, "site", None) != "teslafi"]
     if not tm:
         return None
     drives = sum(1 for x in tm if x.kind == "drive")

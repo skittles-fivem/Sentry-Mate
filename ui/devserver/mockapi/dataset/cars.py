@@ -135,7 +135,8 @@ def featured_specs():
                  (-625, "2025.8.3", "teslamate", "teslamate"), (-511, "2025.20.6", "teslamate", "teslamate"),
                  (-308, "2025.45.8", "build_match", "fingerprint")],
         first_version=("2024.14.11", "teslamate"),
-        special={"can_from": -398, "teslamate_until": -393, "silent_from_h": 55.0},
+        special={"can_from": -398, "teslamate_until": -393, "silent_from_h": 55.0,
+                 "teslafi_from": -430, "teslafi_until": -423},
         gaps=[
             (-350, 10.0, 240, "no_log", "parked"),
             (-240, 16.0, 26 * 60, "no_log", "moved"),

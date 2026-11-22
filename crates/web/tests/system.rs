@@ -457,7 +457,8 @@ async fn bounds_streamed_pages_arrival_times_and_local_days() {
 }
 
 /// TeslaFi rows inside SMO's history: hidden behind the live side at first, found by `source=import:teslafi`, named
-/// in the overlap beside TeslaMate's, shown once the overlap is flipped.
+/// in the overlap beside TeslaMate's; once the overlap is flipped to the imported side only one import's drive shows
+/// (the imports span's choice, which an admin flips too).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_teslafi_import_overlaps_smo_like_a_teslamate_one() {
     let k = seeded().await;
@@ -499,21 +500,46 @@ async fn a_teslafi_import_overlaps_smo_like_a_teslamate_one() {
     let tf = ok(&mut admin, &format!("/api/v1/cars/{car}/drives?source=import:teslafi")).await;
     assert_eq!(tf["items"].as_array().unwrap().len(), 1, "{tf}");
     assert_eq!(tf["items"][0]["source_label"], "Imported from TeslaFi");
+    // both imports have the drive: one of them shows (a tie on drives and charges, TeslaFi has the positions)
     let imported = ok(&mut admin, &format!("/api/v1/cars/{car}/drives?source=import")).await;
-    assert_eq!((of(&imported, "teslafi"), of(&imported, "teslamate")), (1, 1), "{imported}");
+    assert_eq!((of(&imported, "teslafi"), of(&imported, "teslamate")), (1, 0), "{imported}");
 
-    let o = ok(&mut admin, &format!("/api/v1/cars/{car}/overlaps")).await;
+    let path = format!("/api/v1/cars/{car}/overlaps");
+    let o = ok(&mut admin, &path).await;
     let items = o["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1, "{o}");
-    assert_eq!(items[0]["imported"]["drives"], json!(2), "{o}");
-    let sites: Vec<&str> = items[0]["sources"].as_array().unwrap().iter().filter_map(|s| s["site"].as_str()).collect();
+    assert_eq!(items.len(), 2, "a live span and an imports span: {o}");
+    let live = items.iter().find(|x| x["kind"] == "live").unwrap();
+    assert_eq!(live["imported"]["drives"], json!(2), "{o}");
+    assert_eq!(live["sites"]["teslafi"]["drives"], json!(1), "{o}");
+    let sites: Vec<&str> = live["sources"].as_array().unwrap().iter().filter_map(|s| s["site"].as_str()).collect();
     assert_eq!(sites, ["teslamate", "teslafi"], "{o}");
-    let id = items[0]["id"].as_str().unwrap().to_string();
-    let r = admin.patch(&format!("/api/v1/cars/{car}/overlaps"), json!({ "id": id, "shown": "import:teslafi" })).await;
+    let pair = items.iter().find(|x| x["kind"] == "imports").unwrap();
+    assert_eq!(
+        (pair["shown_source"].as_str(), pair["default_reason"].as_str()),
+        (Some("import:teslafi"), Some("more_samples"))
+    );
+    let (pair_id, version) = (pair["id"].as_str().unwrap().to_string(), pair["version"].as_u64().unwrap());
+    let id = live["id"].as_str().unwrap().to_string();
+    let r = admin.patch(&path, json!({ "id": id, "shown": "import:teslafi" })).await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!(r.json()["items"][0]["shown_source"], "import", "both sites are in it");
+    let changed = r.json()["changed"].clone();
+    assert_eq!(changed["shown_source"], "import", "both sites are in it: {changed}");
     let shown = ok(&mut admin, &format!("/api/v1/cars/{car}/drives")).await;
-    assert_eq!((of(&shown, "teslafi"), of(&shown, "teslamate")), (1, 1), "now the imported side: {shown}");
+    assert_eq!((of(&shown, "teslafi"), of(&shown, "teslamate")), (1, 0), "the imported side, one import: {shown}");
+    // the imports span flipped: TeslaMate's drive instead (the version moved on with the live span's flip)
+    let r = admin.patch(&path, json!({ "id": pair_id, "shown": "import:teslamate", "version": version })).await;
+    assert_eq!((r.status, r.code()), (409, Some("stale_version".into())), "{}", r.text());
+    let r = admin.patch(&path, json!({ "id": pair_id, "shown": "import:teslamate", "version": version + 1 })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let shown = ok(&mut admin, &format!("/api/v1/cars/{car}/drives")).await;
+    assert_eq!((of(&shown, "teslafi"), of(&shown, "teslamate")), (0, 1), "{shown}");
+    let tf = ok(&mut admin, &format!("/api/v1/cars/{car}/drives?source=import:teslafi")).await;
+    assert_eq!(tf["items"].as_array().unwrap().len(), 1, "TeslaFi alone still: {tf}");
+    // the live span back to live: SMO's drives, no import
+    let r = admin.patch(&path, json!({ "id": id, "shown": "live" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let shown = ok(&mut admin, &format!("/api/v1/cars/{car}/drives")).await;
+    assert_eq!((of(&shown, "teslafi"), of(&shown, "teslamate")), (0, 0), "{shown}");
     let fleet = ok(&mut admin, "/api/v1/cars").await;
     let label = fleet["items"][0]["source_label"].as_str().unwrap().to_string();
     assert!(label.contains("TeslaMate and TeslaFi"), "{label}");

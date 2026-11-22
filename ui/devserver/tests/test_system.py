@@ -168,7 +168,7 @@ class Health(ServerCase):
 
     def test_overlaps(self):
         o = self.c.get("/api/v1/cars/c3/overlaps")["items"]
-        self.assertEqual(len(o), 1)
+        self.assertEqual([x["kind"] for x in o], ["live", "imports"], "newest first")
         span = o[0]
         self.assertEqual(span["shown"], "can")
         self.assertEqual(self.c.get("/api/v1/cars/c1/overlaps")["items"], [])
@@ -183,6 +183,41 @@ class Health(ServerCase):
         self.assertEqual(len(rows), span["teslamate"]["drives"])
         self.c.json("PATCH", "/api/v1/cars/c3/overlaps", {"id": span["id"], "shown": "can"})
         self.assertEqual({x["source"] for x in self.c.get(q)["items"]}, {"can"})
+
+    def test_two_imports_of_the_same_days(self):
+        """A week TeslaMate and TeslaFi both imported (no live data): one import's rows only, TeslaMate's at first
+        (the same drives, TeslaMate's positions more often), TeslaFi's once flipped (admin, version checked)."""
+        path = "/api/v1/cars/c3/overlaps"
+        span = [x for x in self.c.get(path)["items"] if x["kind"] == "imports"][0]
+        self.assertEqual((span["shown_source"], span["default_source"], span["default_reason"]),
+                         ("import:teslamate", "import:teslamate", "more_samples"))
+        self.assertEqual(span["sites"]["teslamate"], span["sites"]["teslafi"])
+        self.assertGreater(span["sites"]["teslafi"]["drives"], 0)
+        q = f"/api/v1/cars/c3/drives?from_ms={span['start_ms']}&to_ms={span['end_ms']}&limit=500"
+        n = span["sites"]["teslamate"]["drives"]
+
+        def sources(extra=""):
+            rows = self.c.get(q + extra)["items"]
+            return len(rows), {x["source"] for x in rows}
+
+        self.assertEqual(sources(), (n, {"teslamate"}), "one drive per real drive")
+        self.assertEqual(sources("&source=import"), (n, {"teslamate"}))
+        self.assertEqual(sources("&source=import:teslafi"), (n, {"teslafi"}), "TeslaFi alone")
+        t0 = self.c.get("/api/v1/cars/c3/totals")
+        self.c.error("PATCH", path, 400, "bad_input", body={"id": span["id"], "shown": "import:teslafi"})
+        self.c.error("PATCH", path, 422, "invalid", body={"id": span["id"], "shown": "live", "version": span["version"]})
+        self.c.error("PATCH", path, 409, "stale_version",
+                     body={"id": span["id"], "shown": "import:teslafi", "version": span["version"] + 1})
+        d = self.c.json("PATCH", path, {"id": span["id"], "shown": "import:teslafi", "version": span["version"]})
+        self.assertEqual(d["changed"]["shown_source"], "import:teslafi")
+        self.assertEqual(d["changed"]["version"], span["version"] + 1)
+        self.assertEqual(self.c.get("/api/v1/audit?limit=1")["items"][0]["action"], "car.overlap")
+        self.assertEqual(sources(), (n, {"teslafi"}))
+        self.assertEqual(sources("&source=import:teslamate"), (n, {"teslamate"}), "TeslaMate alone")
+        t1 = self.c.get("/api/v1/cars/c3/totals")
+        self.assertEqual(t1["drives"], t0["drives"], "never doubled")
+        self.c.json("PATCH", path, {"id": span["id"], "shown": "import:teslamate", "version": span["version"] + 1})
+        self.assertEqual(sources(), (n, {"teslamate"}))
 
 
 class Storage(ServerCase):

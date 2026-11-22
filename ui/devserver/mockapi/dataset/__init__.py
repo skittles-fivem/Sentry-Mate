@@ -20,12 +20,15 @@ from .synthetic import SyntheticFleet
 class CarHistory:
     """One featured car: its pieces in time order, and quick lookups."""
 
-    def __init__(self, car, segs, shadow, overlaps):
+    def __init__(self, car, segs, shadow, overlaps, import_overlaps=None):
         self.car = car
         self.segs = segs
         self.starts = [s.start for s in segs]
         self.shadow = shadow
         self.overlaps = overlaps  # [{start_ms, end_ms, shown}]
+        # spans both imports cover: [{start_ms, end_ms, shown: "teslamate" | "teslafi", default, reason}]
+        self.import_overlaps = import_overlaps or []
+        self.overlap_changes = 0  # the overlaps' `version` is one more
         self.drives = [s for s in segs if s.kind == "drive"] + [s for s in shadow if s.kind == "drive"]
         self.drives.sort(key=lambda s: (s.start, s.id))
         self.charges = [s for s in segs if s.kind == "charge"] + [s for s in shadow if s.kind == "charge"]
@@ -54,14 +57,26 @@ class CarHistory:
             i += 1
         return out
 
+    def site_shown(self, row, source="all"):
+        """Where both imports cover the same time, whether an imported row is of the chosen site (with `source`
+        all or import; a site's own filter shows that site alone)."""
+        site = S.site_of(row)
+        if site is None or S.canon(source or "all") not in ("all", "import"):
+            return True
+        for o in self.import_overlaps:
+            if o["start_ms"] <= row.start < o["end_ms"]:
+                return site == o["shown"]
+        return True
+
     def shown(self, row, source="all"):
-        """Whether a drive or charge row is listed for a source filter (overlaps show one side)."""
+        """Whether a drive or charge row is listed for a source filter (overlaps show one side, and one import)."""
         if source not in (None, "all"):
-            return S.keeps(source, row.source, getattr(row, "inputs", None))
+            return S.keeps(source, row.source, getattr(row, "inputs", None), S.site_of(row)) \
+                and self.site_shown(row, source)
         for o in self.overlaps:
             if o["start_ms"] <= row.start < o["end_ms"]:
-                return row.source == o["shown"]
-        return True
+                return row.source == o["shown"] and self.site_shown(row)
+        return self.site_shown(row)
 
 
 class Dataset:
@@ -80,7 +95,7 @@ class Dataset:
             overlaps = []
             if sim.can_from is not None and sim.tm_until is not None:
                 overlaps.append({"start_ms": sim.can_from, "end_ms": sim.tm_until, "shown": "can"})
-            self.featured[spec.id] = CarHistory(spec, sim.segs, sim.shadow, overlaps)
+            self.featured[spec.id] = CarHistory(spec, sim.segs, sim.shadow, overlaps, _import_overlaps(sim))
         self.synthetic = SyntheticFleet(cfg.cars, cfg.now_ms, cfg.seed)
         self.places = P.PLACES
 
@@ -105,3 +120,18 @@ class Dataset:
 
     def local_day(self, car_id, ms):
         return local_date(ms, self.car_tz(car_id))
+
+
+def _import_overlaps(sim):
+    """The span both imports cover (TeslaFi's copies of TeslaMate's rows), widened over the rows reaching into it.
+    The same drives and charges on both sides: TeslaMate's positions every few seconds beat TeslaFi's once a minute,
+    so TeslaMate's is shown at first."""
+    if sim.tf_span is None:
+        return []
+    a, b = sim.tf_span
+    rows = [s for s in sim.segs + sim.shadow
+            if s.kind in ("drive", "charge") and s.source == "teslamate" and s.end > a and s.start < b]
+    if not rows:
+        return []
+    a, b = min([a] + [s.start for s in rows]), max([b] + [s.end for s in rows])
+    return [{"start_ms": a, "end_ms": b, "shown": "teslamate", "default": "teslamate", "reason": "more_samples"}]
