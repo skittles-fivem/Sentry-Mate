@@ -91,8 +91,27 @@ def patch_settings(req):
     sub("units", UNITS)
     sub("geocode", {"mode": ("offline", "online"), "dataset": "str", "url": "str?", "language": "str",
                     "rounding_m": int})
+    tiles_body = body.get("tiles") if isinstance(body.get("tiles"), dict) else {}
     sub("tiles", {"mode": ("offline", "online"), "online_url": "str?", "attribution": "str", "max_zoom": int,
-                  "offline_file": "str?"})
+                  "offline_file": "str?", "preset": "str?", "labels": bool, "styles": "any"})
+    if "online_url" in tiles_body and "preset" not in tiles_body:
+        # an address without a preset: the preset it is, else the admin's own
+        p = next((x for x in TILE_PRESETS if x["url"] == new["tiles"].get("online_url")), None)
+        new["tiles"]["preset"] = p["id"] if p else "custom"
+    if "preset" in tiles_body and isinstance(tiles_body["preset"], str) and tiles_body["preset"] != "custom":
+        p = next((x for x in TILE_PRESETS if x["id"] == tiles_body["preset"]), None)
+        if p is None:
+            rule["tiles.preset"] = "One of: " + ", ".join(x["id"] for x in TILE_PRESETS) + ", custom, or null."
+        else:
+            new["tiles"].update(online_url=p["url"], attribution=p["attribution"], max_zoom=p["max_zoom"])
+    if "styles" in tiles_body:
+        v = tiles_body["styles"]
+        if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+            bad["tiles.styles"] = "Must be a list of preset ids."
+        elif any(x not in {p["id"] for p in TILE_PRESETS} for x in v):
+            rule["tiles.styles"] = "Preset ids only: " + ", ".join(x["id"] for x in TILE_PRESETS) + "."
+        else:
+            new["tiles"]["styles"] = list(dict.fromkeys(v))
     sub("release_check", {"enabled": bool})
     sub("outside_links", {"maps": bool, "release_notes": bool})
     sub("outbound", {"proxy": "str?"})
@@ -189,14 +208,80 @@ def valid_zone(z):
 
 
 # the ready-made online tile sources, as the real server's places::tiles::PRESETS
-TILE_PRESETS = [
-    {"id": "osm", "name": "OpenStreetMap standard", "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-     "attribution": "© OpenStreetMap contributors", "max_zoom": 19,
-     "terms": "https://operations.osmfoundation.org/policies/tiles/"},
-    {"id": "opentopomap", "name": "OpenTopoMap (terrain)", "url": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
-     "attribution": "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)",
-     "max_zoom": 17, "terms": "https://opentopomap.org/about"},
+ESRI_LABELS = [
+    "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+    "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
 ]
+TILE_PRESETS = [
+    {"id": "satellite", "name": "Satellite (Esri World Imagery)", "short": "Satellite", "kind": "satellite",
+     "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+     "attribution": "Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User Community", "max_zoom": 19,
+     "terms": "https://www.esri.com/en-us/legal/terms/full-master-agreement", "overlays": ESRI_LABELS,
+     "region": None},
+    {"id": "satellite_us", "name": "Satellite, US only (USGS National Map)", "short": "Satellite (US)",
+     "kind": "satellite",
+     "url": "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
+     "attribution": "Imagery: USGS The National Map (public domain)", "max_zoom": 16,
+     "terms": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits", "overlays": [],
+     "region": "US"},
+    {"id": "osm", "name": "OpenStreetMap standard", "short": "Map", "kind": "map",
+     "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+     "attribution": "© OpenStreetMap contributors", "max_zoom": 19,
+     "terms": "https://operations.osmfoundation.org/policies/tiles/", "overlays": [], "region": None},
+    {"id": "opentopomap", "name": "OpenTopoMap (terrain)", "short": "Terrain", "kind": "map",
+     "url": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
+     "attribution": "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)",
+     "max_zoom": 17, "terms": "https://opentopomap.org/about", "overlays": [], "region": None},
+]
+DEFAULT_PRESET = "satellite"
+
+
+def tile_chosen_id(t):
+    """As the real server's Tiles::chosen_id: the preset an admin picked, else satellite (also over the old
+    implicit OpenStreetMap / OpenTopoMap default); an address of their own is `custom`."""
+    p = t.get("preset")
+    if p == "custom" or any(x["id"] == p for x in TILE_PRESETS):
+        return p
+    url = t.get("online_url")
+    m = next((x for x in TILE_PRESETS if x["url"] == url), None)
+    if url is None or (m and m["id"] in ("osm", "opentopomap")):
+        return DEFAULT_PRESET
+    return m["id"] if m else "custom"
+
+
+def tile_style(t, sid):
+    if sid == "custom":
+        if not t.get("online_url"):
+            return None
+        return {"id": "custom", "name": "Custom tile server", "short": "Map", "kind": "map",
+                "template": t["online_url"], "attribution": t["attribution"], "max_zoom": t["max_zoom"],
+                "overlays": [], "imagery": False, "region": None}
+    p = next((x for x in TILE_PRESETS if x["id"] == sid), None)
+    if p is None:
+        return None
+    return {"id": p["id"], "name": p["name"], "short": p["short"], "kind": p["kind"], "template": p["url"],
+            "attribution": p["attribution"], "max_zoom": p["max_zoom"],
+            "overlays": list(p["overlays"]) if t.get("labels", True) else [], "imagery": p["kind"] == "satellite",
+            "region": p["region"]}
+
+
+def tile_viewer_styles(t):
+    first = tile_chosen_id(t)
+    out = [s for s in [tile_style(t, first)] if s]
+    for sid in t.get("styles", ["satellite", "osm"]):
+        if sid != first and (s := tile_style(t, sid)):
+            out.append(s)
+    return out
+
+
+def tile_hosts(t):
+    out = []
+    for s in tile_viewer_styles(t):
+        for u in [s["template"], *s["overlays"]]:
+            h = re.sub(r"^https?://([^/:]+).*$", r"\1", u).lower()
+            if h not in out:
+                out.append(h)
+    return out
 
 
 # the made-up offline map file (--map-tiles offline): one raster file, as the real server reports a .pmtiles in data/maps
@@ -208,6 +293,8 @@ def maps_config(req):
     ss = req.store.server_settings
     t, g = ss["tiles"], ss["geocode"]
     present = req.store.map_file
+    online = t["mode"] == "online"
+    chosen = tile_style(t, tile_chosen_id(t))
     files = copy.deepcopy(MAP_FILES) if present else []
     return {"tiles": {"mode": t["mode"],
                       "offline_url": OFFLINE_TILE_URL if present and t["mode"] != "online" else None,
@@ -216,8 +303,15 @@ def maps_config(req):
                       "offline_files": files, "offline_kind": "raster" if present else None,
                       "offline_min_zoom": 0 if present else None, "offline_max_zoom": 16 if present else None,
                       "offline_bounds": [-122.6, 37.6, -122.3, 37.9] if present else None, "offline_error": None,
-                      "online_template": t["online_url"] if t["mode"] == "online" else None,
-                      "attribution": t["attribution"], "max_zoom": t["max_zoom"],
+                      "online_template": chosen["template"] if online and chosen else None,
+                      "attribution": chosen["attribution"] if chosen else t["attribution"],
+                      "max_zoom": chosen["max_zoom"] if chosen else t["max_zoom"],
+                      "preset": tile_chosen_id(t), "labels": t.get("labels", True),
+                      "allowed_styles": list(t.get("styles", ["satellite", "osm"])),
+                      "overlays": chosen["overlays"] if online and chosen else [],
+                      "imagery": bool(online and chosen and chosen["imagery"]),
+                      "styles": tile_viewer_styles(t) if online else [],
+                      "hosts": tile_hosts(t) if online else [],
                       "presets": copy.deepcopy(TILE_PRESETS)},
             "geocoding": {"mode": g["mode"], "credit": "GeoNames (CC BY 4.0)" if g["mode"] == "offline" else
                           "The address service set in Settings", "offline_data_present": True,

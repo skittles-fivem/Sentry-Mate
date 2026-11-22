@@ -28,6 +28,7 @@ DEFAULT_PREFS = {
     "interface_size": 100,
     "follow_screen": True,
     "map_colors": "dimmed",
+    "map_style": "default",
     "ui_pack": None,
     "car_order": [],
     "pinned_cars": [],

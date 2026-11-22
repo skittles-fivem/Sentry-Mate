@@ -702,7 +702,8 @@ async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Valu
     let (mqtt_host, _, _) = broker_parts(&m.settings);
     let geo_host = ss.geocode.url.as_deref().and_then(server::host_of);
     let tiles_online = ss.tiles.mode == "online";
-    let tile_host = ss.tiles.online_url.as_deref().and_then(server::host_of);
+    let tile_hosts = ss.tiles.hosts();
+    let tile_host = tile_hosts.first().cloned();
     let geonames = server::host_of(places::geocode::download::DEFAULT_GEONAMES_URL);
     let mut inbound = Vec::new();
     if let Ok(n) = app.service::<Network>() {
@@ -715,7 +716,12 @@ async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Valu
         // no address lookup runs online in this server yet: listed, never used
         json!({ "purpose": "geocoding", "host": geo_host, "enabled": ss.geocode.mode == "online" && geo_host.is_some(), "last_used_ms": null }),
         // the viewers' browsers load the tiles, not the server
-        json!({ "purpose": "tiles", "host": if tiles_online { tile_host } else { None }, "enabled": tiles_online, "last_used_ms": null }),
+        // (every host of the chosen preset and the styles viewers may switch to, in `hosts`)
+        json!({
+            "purpose": "tiles", "host": if tiles_online { tile_host } else { None },
+            "hosts": if tiles_online { tile_hosts } else { Vec::new() },
+            "preset": ss.tiles.chosen_id(), "enabled": tiles_online, "last_used_ms": null,
+        }),
         json!({ "purpose": "geonames_download", "host": geonames, "enabled": false, "last_used_ms": null }),
         json!({ "purpose": "mqtt", "host": (!mqtt_host.is_empty()).then_some(mqtt_host), "enabled": m.settings.enabled, "last_used_ms": mqtt_used }),
         // no release check exists in this server yet (`/settings` refuses turning it on)

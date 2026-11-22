@@ -1,9 +1,14 @@
 // Map tiles for every pack, so each map knows the same things whatever it looks like:
-//   tileChoice(cfg)            which tiles to draw, from GET /maps/config: the offline map file (raster or vector, served
-//                              by Sentry Mate), the online source an admin turned on, or none (with why);
+//   tileChoice(cfg, prefs)     which tiles to draw, from GET /maps/config: the offline map file (raster or vector, served
+//                              by Sentry Mate), the online style (the admin's, or the person's map_style among the
+//                              styles the admin allows: Map / Satellite), or none (with why);
 //   rasterPaint(o)             how raster tiles look: the tile server's own colours in the light theme or when the person
 //                              chose "original colours" (me/preferences map_colors), dimmed in the dark theme otherwise;
-//                              never inverted, so streets, labels and water stay readable;
+//                              never inverted, so streets, labels and water stay readable; satellite photos are never
+//                              dimmed (choice.imagery), so they stay readable in the dark theme;
+//   tileSources(choice, o)     the style's sources: 'tiles', and 'tiles-overlay-N' for the names and roads over photos;
+//   mapStyleSwitch(cfg, ...)   the Map / Satellite switch a map page shows (only styles the admin allows; remembered per
+//                              person as me/preferences map_style), and swapTiles(map, ...) to redraw with the new one;
 //   vectorLayers(dark)         a plain style for an offline Protomaps file (land, water, parks, roads, buildings; no
 //                              labels: the file has no fonts);
 //   noTilesNote(choice, o)     the note a map shows instead of a silent empty background: "No map tiles yet", and for
@@ -31,19 +36,35 @@ function why(cfg) {
   return 'There is no offline map file on this server, and the online map is off.';
 }
 
+/** The online styles a viewer may switch between (the admin's chosen one first); none while tiles are offline. */
+export const mapStyles = (cfg) => (cfg?.tiles?.mode === 'online' ? (cfg.tiles.styles || []).filter((s) => s?.template) : []);
+
+/** The person's map style (me/preferences map_style): 'default' (the admin's) or a preset id. */
+export const mapStyle = (prefs) => (typeof prefs?.map_style === 'string' ? prefs.map_style : 'default');
+
+/** The style to draw for this person: theirs when the admin allows it, else the admin's. */
+export function pickStyle(cfg, prefs) {
+  const styles = mapStyles(cfg);
+  const want = mapStyle(prefs);
+  return styles.find((s) => s.id === want) || styles[0] || null;
+}
+
 /**
- * The tiles to draw: { kind: 'raster' | 'vector' | 'none', offline, template, attribution, minZoom, maxZoom, why }.
- * Offline tiles come from this server (template on this origin); online ones from the source an admin turned on.
+ * The tiles to draw: { kind: 'raster' | 'vector' | 'none', offline, template, attribution, minZoom, maxZoom, overlays,
+ * imagery, styleId, why }. Offline tiles come from this server (template on this origin); online ones from the style
+ * the person picked among those an admin allows (prefs.map_style), else the admin's.
  */
-export function tileChoice(cfg) {
+export function tileChoice(cfg, prefs = null) {
   const t = cfg?.tiles || {};
   const attribution = t.attribution || '';
   if (t.mode !== 'online' && t.offline_url && (t.offline_kind === 'raster' || t.offline_kind === 'vector')) {
     return { kind: t.offline_kind, offline: true, template: location.origin + t.offline_url, attribution,
-      minZoom: t.offline_min_zoom || 0, maxZoom: t.offline_max_zoom || 14, why: null };
+      minZoom: t.offline_min_zoom || 0, maxZoom: t.offline_max_zoom || 14, overlays: [], imagery: false, styleId: null, why: null };
   }
-  if (t.mode === 'online' && t.online_template) return { kind: 'raster', offline: false, template: t.online_template, attribution, minZoom: 0, maxZoom: t.max_zoom || 19, why: null };
-  return { kind: 'none', offline: false, template: null, attribution: '', minZoom: 0, maxZoom: 18, why: why(cfg) };
+  const s = pickStyle(cfg, prefs);
+  if (s) return { kind: 'raster', offline: false, template: s.template, attribution: s.attribution || attribution, minZoom: 0, maxZoom: s.max_zoom || 19, overlays: s.overlays || [], imagery: !!s.imagery, styleId: s.id, why: null };
+  if (t.mode === 'online' && t.online_template) return { kind: 'raster', offline: false, template: t.online_template, attribution, minZoom: 0, maxZoom: t.max_zoom || 19, overlays: t.overlays || [], imagery: !!t.imagery, styleId: t.preset || null, why: null };
+  return { kind: 'none', offline: false, template: null, attribution: '', minZoom: 0, maxZoom: 18, overlays: [], imagery: false, styleId: null, why: why(cfg) };
 }
 
 /** The person's map colours: 'dimmed' (default) or 'original'. */
@@ -52,9 +73,10 @@ export const mapColors = (prefs) => (prefs?.map_colors === 'original' ? 'origina
 /**
  * Raster paint for the theme. Every key is always set, so a theme or colours change can set them all again in place.
  * tune: { saturation, contrast, min, max, opacity } for the dimmed look (DIM by default).
+ * imagery: satellite photos, never dimmed (they would turn to mud in the dark theme).
  */
-export function rasterPaint({ dark = false, colors = 'dimmed', tune = null } = {}) {
-  const dim = dark && colors !== 'original';
+export function rasterPaint({ dark = false, colors = 'dimmed', tune = null, imagery = false } = {}) {
+  const dim = dark && colors !== 'original' && !imagery;
   const d = { ...DIM, opacity: 1, ...(tune || {}) };
   return {
     'raster-saturation': dim ? d.saturation : 0,
@@ -67,8 +89,17 @@ export function rasterPaint({ dark = false, colors = 'dimmed', tune = null } = {
   };
 }
 
-/** Whether the map is drawn in its dimmed look (for a pack's tint over it). */
-export const dimmed = (dark, colors) => !!dark && colors !== 'original';
+/** Whether the map is drawn in its dimmed look (for a pack's tint over it): never over satellite photos. */
+export const dimmed = (dark, colors, choice = null) => !!dark && colors !== 'original' && !choice?.imagery;
+
+/** Whether the map under the page's own lines and markers is photos (draw them with a halo / outline then). */
+export const onImagery = (choice) => !!choice?.imagery;
+
+/**
+ * The halo for lines and markers over satellite photos: a dark edge under a light line reads on fields, forest,
+ * water and roofs alike. { casing, casingWidth (px added to the line's width), stroke, glow }.
+ */
+export const IMAGERY_HALO = { casing: 'rgba(10, 14, 20, 0.85)', casingWidth: 3, stroke: '#ffffff', glow: 'rgba(0, 0, 0, 0.55)' };
 
 const VECTOR = {
   light: { earth: '#f2efe9', water: '#aad3df', park: '#cdebc0', wood: '#add19e', sand: '#f5e9c6', building: '#d9d0c9', minor: '#ffffff', major: '#fcd6a4', highway: '#f8b694', casing: '#c9c2b8', path: '#a59f97', rail: '#a8a8a8', boundary: '#9e9cab' },
@@ -111,11 +142,30 @@ export function tileSourceDef(choice, { rasterSize = 256, attribution = choice?.
   return { type: 'raster', tiles: [choice.template], tileSize: rasterSize, minzoom: choice.minZoom || 0, maxzoom: choice.maxZoom, attribution };
 }
 
-/** The tile layers for the choice (one raster layer, or the vector layers), with the raster paint given. */
+/** The overlay source ids (names and roads over photos), in drawing order. */
+export const overlayIds = (choice) => (choice?.kind === 'raster' ? (choice.overlays || []).map((_, i) => `tiles-overlay-${i}`) : []);
+
+/** Every source the tiles need: { tiles, 'tiles-overlay-0', ... } (empty for none). Add each with map.addSource. */
+export function tileSources(choice, opts = {}) {
+  const base = tileSourceDef(choice, opts);
+  if (!base) return {};
+  const out = { tiles: base };
+  overlayIds(choice).forEach((id, i) => {
+    out[id] = { type: 'raster', tiles: [choice.overlays[i]], tileSize: opts.rasterSize || 256, minzoom: 0, maxzoom: choice.maxZoom };
+  });
+  return out;
+}
+
+/**
+ * The tile layers for the choice (one raster layer and its overlays, or the vector layers), with the raster paint
+ * given. Satellite photos (choice.imagery) always get the plain paint: they are never dimmed.
+ */
 export function tileLayers(choice, { dark = false, paint = null } = {}) {
   if (!choice || choice.kind === 'none') return [];
   if (choice.kind === 'vector') return vectorLayers(dark);
-  return [{ id: 'tiles', type: 'raster', source: 'tiles', paint: paint || rasterPaint({ dark }) }];
+  const base = choice.imagery ? rasterPaint({ imagery: true }) : (paint || rasterPaint({ dark }));
+  return [{ id: 'tiles', type: 'raster', source: 'tiles', paint: base },
+    ...overlayIds(choice).map((id) => ({ id, type: 'raster', source: id, paint: rasterPaint({ imagery: true }) }))];
 }
 
 /** Sets the tile layers' colours again in place (a theme or map colours change). */
@@ -128,6 +178,56 @@ export function repaintTiles(map, choice, { dark = false, paint = null } = {}) {
 
 /** The tile layers' ids (to put the page's own layers above them). */
 export const tileLayerIds = (choice) => tileLayers(choice).map((l) => l.id);
+
+/**
+ * Redraws a map with another tile choice (the person switched Map / Satellite): the old tile layers and sources go,
+ * the new ones go under the page's own layers. Returns the new choice.
+ */
+export function swapTiles(map, from, to, { rasterSize = 256, dark = false, paint = null, attribution } = {}) {
+  for (const id of tileLayerIds(from)) if (map.getLayer(id)) map.removeLayer(id);
+  for (const id of ['tiles', ...overlayIds(from)]) if (map.getSource(id)) map.removeSource(id);
+  const layers = map.getStyle()?.layers || [];
+  const before = layers.find((l) => l.type !== 'background')?.id;
+  for (const [id, def] of Object.entries(tileSources(to, { rasterSize, attribution }))) map.addSource(id, def);
+  for (const l of tileLayers(to, { dark, paint })) map.addLayer(l, before);
+  return to;
+}
+
+/** Saves the person's map style (me/preferences map_style); resolves with the saved preferences. */
+export async function setMapStyle(id) {
+  const p = await api.patch('me/preferences', { map_style: id });
+  api.invalidate('me/preferences');
+  return p;
+}
+
+/**
+ * The Map / Satellite switch for a map page, or null when the admin allows only one style (or tiles are offline).
+ * classes: { box, button, active } for the pack's look. onChange(choice, style) after the person picked (the pick is
+ * saved for them); the page redraws its tiles with swapTiles.
+ */
+export function mapStyleSwitch(cfg, prefs, { classes = {}, onChange = () => {}, label = 'Map style' } = {}) {
+  const styles = mapStyles(cfg);
+  if (styles.length < 2) return null;
+  const c = { box: 'map-style', button: 'map-style-btn', active: 'is-active', ...classes };
+  let current = pickStyle(cfg, prefs)?.id;
+  const buttons = styles.map((s) => h('button', {
+    class: c.button, type: 'button', title: s.name, 'aria-pressed': String(s.id === current), dataset: { mapStyle: s.id },
+    onclick: async () => {
+      if (s.id === current) return;
+      current = s.id;
+      for (const b of buttons) {
+        const on = b.dataset.mapStyle === current;
+        b.setAttribute('aria-pressed', String(on));
+        b.classList.toggle(c.active, on);
+      }
+      const next = tileChoice(cfg, { map_style: s.id });
+      onChange(next, s);
+      try { await setMapStyle(s.id); } catch { /* shown as picked for this page; saved next time */ }
+    },
+  }, s.short || s.name));
+  for (const b of buttons) b.classList.toggle(c.active, b.dataset.mapStyle === current);
+  return h('div', { class: c.box, role: 'group', 'aria-label': label, dataset: { mapStyles: String(styles.length) } }, ...buttons);
+}
 
 function host(template) {
   try { return new URL(String(template).replace(/\{[^}]*\}/g, '0')).host; } catch { return 'the tile server'; }
@@ -186,14 +286,31 @@ export function watchTileErrors(map, container, choice, note) {
 }
 
 let meLoad = null;
+
 const role = () => { meLoad ??= api.get('me', null, { maxAgeMs: 60000 }).then((m) => m?.role || null, () => { meLoad = null; return null; }); return meLoad; };
 
-/** Turns the OpenStreetMap preset on (Settings: Display and units does the same); resolves when saved. */
+/** The preset a no-tiles note offers: the server's default (satellite), else OpenStreetMap. */
+const offeredPreset = (cfg) => {
+  const ps = cfg?.tiles?.presets || [];
+  return ps.find((x) => x.id === 'satellite') || ps.find((x) => x.id === 'osm') || null;
+};
+
+/** Every host a preset's pictures come from (its base and its overlays), each once. */
+export function presetHosts(p) {
+  const out = [];
+  for (const u of [p?.url || p?.template, ...(p?.overlays || [])]) {
+    const x = u ? host(u) : null;
+    if (x && x !== 'the tile server' && !out.includes(x)) out.push(x);
+  }
+  return out;
+}
+
+/** Turns the default online preset on (satellite; Settings: Display and units does the same); resolves when saved. */
 export async function useOnlineMap() {
   const [cfg, server] = await Promise.all([api.get('maps/config'), api.get('settings')]);
-  const p = (cfg?.tiles?.presets || []).find((x) => x.id === 'osm');
-  if (!p) throw new Error('This server offers no OpenStreetMap preset.');
-  await api.patch('settings', { version: server.version, tiles: { mode: 'online', online_url: p.url, attribution: p.attribution, max_zoom: p.max_zoom } });
+  const p = offeredPreset(cfg);
+  if (!p) throw new Error('This server offers no online map preset.');
+  await api.patch('settings', { version: server.version, tiles: { mode: 'online', preset: p.id } });
   api.invalidate('maps/');
 }
 
@@ -211,13 +328,15 @@ export function noTilesNote(choice, { classes = {}, compact = false, onDone = ()
     h('p', { class: c.title }, 'No map tiles yet'), text, actions, err);
   const plain = () => {
     replace(actions,
-      h('button', { class: c.primary, type: 'button', onclick: ask }, 'Use online map (OpenStreetMap)'),
+      h('button', { class: c.primary, type: 'button', onclick: ask }, 'Use online map (satellite)'),
       h('a', { class: c.secondary, href: OFFLINE_HELP }, 'Add an offline map file'));
   };
-  const ask = () => {
+  const ask = async () => {
     err.hidden = true;
+    const cfg = await api.get('maps/config', null, { maxAgeMs: 60000 }).catch(() => null);
     box.dataset.mapEmpty = 'confirm';
-    replace(text, 'Turn on OpenStreetMap for everyone? Each viewer’s browser then loads the map pictures from tile.openstreetmap.org, which sees the viewer’s IP address, this server’s address and the map area shown (never a car or a page). You can turn it off in Settings: Display and units.');
+    const hosts = presetHosts(offeredPreset(cfg) || { url: 'https://server.arcgisonline.com/' }).join(' and ');
+    replace(text, `Turn on the satellite map for everyone? Each viewer’s browser then loads the map pictures from ${hosts}, which sees the viewer’s IP address, this server’s address and the map area shown (never a car or a page). You can turn it off or pick another map in Settings: Display and units.`);
     const yes = h('button', { class: c.primary, type: 'button', onclick: async () => {
       yes.disabled = true;
       try { await useOnlineMap(); replace(text, 'The online map is on. Loading it…'); actions.replaceChildren(); onDone(); } catch (e) { yes.disabled = false; err.hidden = false; err.textContent = `Could not turn the online map on: ${e?.message || e}`; }
@@ -280,3 +399,12 @@ export function showOfflineHelp(el) {
   if (location.hash !== `#${OFFLINE_ANCHOR}` || !el) return;
   requestAnimationFrame(() => el.scrollIntoView({ block: 'start' }));
 }
+
+/* ---------- the online map rows (Settings: Display and units) */
+
+/** What the place names and roads switch does. */
+export const LABELS_TEXT = 'Draws town names, borders and roads over the satellite pictures (from the same server), so places can be found.';
+/** What the viewers' styles row does. */
+export const STYLES_TEXT = 'The maps people may switch to on a map page (Map / Satellite). Each person’s pick is remembered for them; the one chosen above is the default.';
+/** Words for a preset in a list: its name, and its region when not worldwide. */
+export const presetLabel = (p) => (p.region ? `${p.name}` : p.name);

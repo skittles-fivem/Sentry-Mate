@@ -23,32 +23,108 @@ pub const OSM_TILE_CREDIT: &str = "© OpenStreetMap contributors";
 pub struct Preset {
     pub id: &'static str,
     pub name: &'static str,
+    /// The word a map's style switch shows (Map, Terrain, Satellite).
+    pub short: &'static str,
+    /// `map` (a drawn street map) or `satellite` (aerial photos: never dimmed in the dark theme).
+    pub kind: &'static str,
     pub url: &'static str,
     pub attribution: &'static str,
     pub max_zoom: u8,
     /// The provider's usage terms, for the settings page to link to.
     pub terms: &'static str,
+    /// Transparent layers drawn on top when the place names and roads overlay is on (same `{z}`/`{x}`/`{y}` rules).
+    pub overlays: &'static [&'static str],
+    /// Where the pictures cover, when not the whole world (`US`).
+    pub region: Option<&'static str>,
 }
+
+impl Preset {
+    /// Every host this preset's browsers load pictures from (the base and its overlays), each once.
+    pub fn hosts(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for u in std::iter::once(&self.url).chain(self.overlays.iter()) {
+            let h = http::origin(u).trim_start_matches("https://").to_string();
+            if !out.contains(&h) {
+                out.push(h);
+            }
+        }
+        out
+    }
+}
+
+/// Esri World Imagery (aerial photos for the whole world, no key; credit on every map).
+pub const ESRI_IMAGERY_URL: &str =
+    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+/// Esri's transparent reference layers over the photos: borders and place names, then roads.
+pub const ESRI_LABEL_URLS: &[&str] = &[
+    "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+    "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
+];
+
+/// The preset online tiles use until an admin picks one (also for servers still on the old implicit default).
+pub const DEFAULT_PRESET: &str = "satellite";
 
 /// The ready-made online tile servers (Settings → Display and units offers these and a custom address).
 pub const PRESETS: &[Preset] = &[
     Preset {
+        id: "satellite",
+        name: "Satellite (Esri World Imagery)",
+        short: "Satellite",
+        kind: "satellite",
+        url: ESRI_IMAGERY_URL,
+        attribution: "Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+        max_zoom: 19,
+        terms: "https://www.esri.com/en-us/legal/terms/full-master-agreement",
+        overlays: ESRI_LABEL_URLS,
+        region: None,
+    },
+    Preset {
+        id: "satellite_us",
+        name: "Satellite, US only (USGS National Map)",
+        short: "Satellite (US)",
+        kind: "satellite",
+        url: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
+        attribution: "Imagery: USGS The National Map (public domain)",
+        max_zoom: 16,
+        terms: "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
+        overlays: &[],
+        region: Some("US"),
+    },
+    Preset {
         id: "osm",
         name: "OpenStreetMap standard",
+        short: "Map",
+        kind: "map",
         url: OSM_TILE_URL,
         attribution: OSM_TILE_CREDIT,
         max_zoom: 19,
         terms: "https://operations.osmfoundation.org/policies/tiles/",
+        overlays: &[],
+        region: None,
     },
     Preset {
         id: "opentopomap",
         name: "OpenTopoMap (terrain)",
+        short: "Terrain",
+        kind: "map",
         url: "https://tile.opentopomap.org/{z}/{x}/{y}.png",
         attribution: "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)",
         max_zoom: 17,
         terms: "https://opentopomap.org/about",
+        overlays: &[],
+        region: None,
     },
 ];
+
+/// The preset with this id.
+pub fn preset(id: &str) -> Option<&'static Preset> {
+    PRESETS.iter().find(|p| p.id == id)
+}
+
+/// The preset whose base address this is.
+pub fn preset_for_url(url: &str) -> Option<&'static Preset> {
+    PRESETS.iter().find(|p| p.url == url)
+}
 
 /// Where the offline map file goes in the data folder, unless set otherwise.
 pub const DEFAULT_PMTILES: &str = "maps/world.pmtiles";
