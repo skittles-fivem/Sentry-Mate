@@ -200,7 +200,7 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
   let cfg = cfg0, status = status0;
   const carList = cars?.items || [];
-  let carId = (ctx.query.car && carList.find((c) => c.id === ctx.query.car)?.id) || carList.find((c) => c.id === state.lastCar())?.id || carList[0]?.id || null;
+  let carId = (ctx.query.car && carList.find((c) => c.id === ctx.query.car)?.id) || state.preferredCar(carList);
   let pv = null;
   const loadPreview = async () => {
     if (!carId) { pv = null; return; }
@@ -357,6 +357,7 @@ export async function mount(ctx) {
   async function pickCar(next) {
     if (!next || next === carId) return;
     carId = next;
+    state.rememberCar(carId, { sold: state.isSold(carList.find((c) => c.id === carId)) });
     ctx.setQuery({ car: carId });
     await loadPreview();
     if (!ctx.alive()) return;
