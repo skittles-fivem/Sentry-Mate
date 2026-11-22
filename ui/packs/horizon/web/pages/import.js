@@ -87,8 +87,13 @@ const FAILURES = {
   mixed_cars: 'The file holds rows that point at cars it does not describe. Make a fresh, whole backup and try again.',
   no_car: 'The file holds no car. A backup made before TeslaMate saw a car has nothing to import.',
   truncated: 'The file ends part way through: it was cut short when it was copied. Copy it again.',
+<<<<<<< HEAD
   not_a_teslafi_export: 'No TeslaFi data is in the upload. In TeslaFi, Settings > Account > Advanced > Download TeslaFi Data gives one CSV per month: upload one, or several in a .zip.',
   teslafi_summary: 'This is TeslaFi\'s list of drives or charges, which has no positions. Upload the monthly files of Settings > Account > Advanced > Download TeslaFi Data instead.',
+=======
+  one_file_only: 'A TeslaMate backup or a CAN export is imported on its own: discard this import and upload that file alone. Only TeslaFi\'s CSVs can go up several at once.',
+  not_a_teslafi_export: 'One of the files is not a TeslaFi export (a TeslaFi CSV, .csv.gz, or a .zip of them). Discard this import and upload the TeslaFi files without it.',
+>>>>>>> f56da76c (Import page in every pack: pick or drop several files, sent three at a time with each file's progress; left-out cars gone from the report; missing counts shown as gaps)
   not_a_can_export: 'The zip is not a CAN export from Sentry Six Manager: it has no manifest naming a car key and no CAN Bridge log. Make the export again in Sentry Six Manager (Logs, with ids.csv) and upload that zip.',
   unreadable: 'The zip cannot be read: it is damaged, encrypted, packed in a way the server does not read, or one entry unpacks to far more than its size. Make the export again.',
   read_failed: 'The server could not read the uploaded file back. Try the upload again.',
@@ -127,7 +132,14 @@ function startWords(e) {
   }
 }
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
-const sum = (o) => Object.values(o || {}).reduce((a, b) => a + b, 0);
+// null is a gap (the file has no such count), never 0: a total adds only the numbers present, and is a gap when none is
+const add = (...vs) => { const p = vs.filter((v) => v != null && !Number.isNaN(v)); return p.length ? p.reduce((a, b) => a + b, 0) : null; };
+const sum = (o) => (o == null ? null : Object.keys(o).length ? add(...Object.values(o)) : 0);
+const less = (a, b) => (a == null ? null : a - (b || 0));
+const gap = () => h('span', { class: 'faint' }, DASH);
+const cnt = (v) => (v == null ? gap() : num(v));
+const ctr = (v) => (v == null ? { text: gap() } : { value: v, kind: 'count' });
+const kindName = (j) => (isCan(j) ? 'CAN export' : (j.kind || j.report?.kind) === 'teslafi' ? 'TeslaFi export' : 'TeslaMate backup');
 const STEPS = [['choose', 'Choose'], ['uploading', 'Upload'], ['checking', 'Check'], ['ready', 'Match cars'], ['importing', 'Import'], ['done', 'Done']];
 // TeslaFi's data: after the cars, its time zone and units
 const TF_STEPS = [['choose', 'Choose'], ['uploading', 'Upload'], ['checking', 'Check'], ['ready', 'Match cars'], ['zone', 'Zone and units'], ['importing', 'Import'], ['done', 'Done']];
@@ -154,7 +166,7 @@ export async function mount(ctx) {
   }
 
   const S = { jobs: [], cars: [], job: null, match: [], overlaps: [], overlapErr: null, report: null };
-  const up = { file: null, active: false, paused: false, error: null, startedAt: 0, sent0: 0 };
+  const up = { files: new Map(), sent: {}, active: false, paused: false, halt: false, error: null, startedAt: 0, sent0: 0 };
   const loadJobs = async () => { S.jobs = await ctx.api.list('imports', { limit: 100 }).all({ max: 1000 }); };
   try {
     const [, cars] = await Promise.all([loadJobs(), ctx.api.list('cars', { limit: 500 }).all({ max: 10000 })]);
@@ -179,33 +191,55 @@ export async function mount(ctx) {
     const at = Math.max(0, steps.findIndex(([x]) => x === k));
     replace(stepsSlot, lampSteps(steps, at, { failed: j?.status === 'failed', done: j?.status === 'done', label: 'Steps of an import' }));
   }
+<<<<<<< HEAD
   const fileInput = h('input', { class: 'im-file', type: 'file', accept: '.sql,.gz,.xz,.dump,.bak,.txt,.zip,.csv,application/sql,application/gzip,application/x-xz,application/zip,text/csv', 'aria-label': 'TeslaMate backup, TeslaFi data or CAN export file',
     onchange: () => { const f = fileInput.files?.[0]; fileInput.value = ''; if (f) chose(f); } });
+=======
+  const fileInput = h('input', { class: 'im-file', type: 'file', multiple: true, accept: '.sql,.gz,.xz,.dump,.bak,.txt,.zip,.csv,text/csv,application/sql,application/gzip,application/x-xz,application/zip', 'aria-label': 'TeslaMate backup, TeslaFi CSVs or CAN export files',
+    onchange: () => { const fs = [...(fileInput.files || [])]; fileInput.value = ''; if (fs.length) chose(fs); } });
+>>>>>>> f56da76c (Import page in every pack: pick or drop several files, sent three at a time with each file's progress; left-out cars gone from the report; missing counts shown as gaps)
   const slot = h('label', { class: 'im-slot' }, fileInput,
     h('span', { class: 'im-slot-ic' }, icon('upload', 'i--lg')),
-    h('span', { class: 'im-slot-text' }, h('span', { class: 'im-slot-main' }, 'Choose the file, or drop it here'),
+    h('span', { class: 'im-slot-text' }, h('span', { class: 'im-slot-main' }, 'Choose the files, or drop them here'),
       h('span', { class: 'im-slot-sub' }, h('span', { class: 'im-kind' }, h('b', null, 'TeslaMate backup: '), 'the .sql file of its database backup, as it is or compressed (.gz, .xz).'),
         h('span', { class: 'im-kind' }, h('b', null, 'TeslaFi data: '), 'its monthly CSVs from Settings > Account > Advanced > Download TeslaFi Data (TeslaFi<M><YYYY>.csv): one month, several in a .zip, or gzipped or xz\'d. Not its drives or charges list.'),
         h('span', { class: 'im-kind' }, h('b', null, 'CAN export: '), 'the .zip Sentry Six Manager makes of a car key\'s CAN Bridge logs (Logs and ids.csv).'),
+<<<<<<< HEAD
         h('span', { class: 'im-kind' }, 'Up to 64 GB. The server tells them apart by the file itself, never by its name.'))));
+=======
+        h('span', { class: 'im-kind' }, h('b', null, 'TeslaFi export: '), 'its CSVs, as they are, as .csv.gz or in a .zip.'),
+        h('span', { class: 'im-kind' }, 'Several files are fine: drop all of TeslaFi\'s monthly CSVs at once and they become one import. A TeslaMate backup or a CAN export goes up alone. Up to 64 GB a file; the server tells the kinds apart by the files themselves.'))));
+>>>>>>> f56da76c (Import page in every pack: pick or drop several files, sent three at a time with each file's progress; left-out cars gone from the report; missing counts shown as gaps)
   ctx.on(slot, 'dragover', (e) => { e.preventDefault(); slot.classList.add('is-over'); });
   ctx.on(slot, 'dragleave', () => slot.classList.remove('is-over'));
-  ctx.on(slot, 'drop', (e) => { e.preventDefault(); slot.classList.remove('is-over'); const f = e.dataTransfer?.files?.[0]; if (f) chose(f); });
+  ctx.on(slot, 'drop', (e) => { e.preventDefault(); slot.classList.remove('is-over'); const fs = [...(e.dataTransfer?.files || [])]; if (fs.length) chose(fs); });
   const upErr = h('p', { class: 'field-error', hidden: true, role: 'alert' });
   const sayUp = (t) => { upErr.hidden = !t; if (t) replace(upErr, icon('warn', 'i--sm'), h('span', null, t)); };
 
-  async function chose(file) {
+  // the files of a job: every job view has them; an older one-file job is its file 0
+  const filesOf = (j) => (j?.files?.length ? j.files : j ? [{ index: 0, name: j.name, bytes_total: j.bytes_total, uploaded_bytes: j.uploaded_bytes || 0, upload_url: `imports/${enc(j.id)}` }] : []);
+  const sentOf = (f) => Math.max(f.uploaded_bytes || 0, up.sent[f.index] || 0);
+  const fileKey = (n, b) => `${n}\u0000${b}`;
+
+  async function chose(files) {
     sayUp(null);
     const j = S.job;
     if (j && j.status === 'uploading' && !up.active) {
-      if (file.size !== j.bytes_total || file.name !== j.name) { sayUp(`That is not the file this upload began with (${j.name}, ${bytes(j.bytes_total)}). Choose that file to carry on, or discard this upload to start another.`); return; }
-      up.file = file; upload(j); return;
+      // carry on: each chosen file goes on from what the server has of the file with its name and size
+      const want = new Map(filesOf(j).filter((f) => (f.uploaded_bytes || 0) < f.bytes_total).map((f) => [fileKey(f.name, f.bytes_total), f]));
+      const got = new Map();
+      for (const file of files) { const f = want.get(fileKey(file.name, file.size)); if (f) got.set(f.index, file); }
+      if (!got.size) { sayUp(`${files.length === 1 ? 'That is not a file' : 'None of those is a file'} this upload still needs (${[...want.values()].map((f) => `${f.name}, ${bytes(f.bytes_total)}`).join('; ')}). Choose ${want.size === 1 ? 'that file' : 'those files'} to carry on, or discard this upload to start another.`); return; }
+      const still = [...want.values()].filter((f) => !got.has(f.index));
+      if (still.length) sayUp(`Carrying on with ${got.size} of ${want.size} files. Still to choose: ${still.map((f) => f.name).join(', ')}.`);
+      up.files = got; upload(j); return;
     }
-    if (j && UNFINISHED.includes(j.status)) { sayUp('An import is not finished yet. Wait for it, or discard it, before you upload another file.'); return; }
+    if (j && UNFINISHED.includes(j.status)) { sayUp('An import is not finished yet. Wait for it, or discard it, before you upload more files.'); return; }
     try {
-      const made = await ctx.api.post('imports', { name: file.name, bytes_total: file.size });
+      const made = await ctx.api.post('imports', { files: files.map((f) => ({ name: f.name, bytes_total: f.size })) });
       if (!ctx.alive()) return;
-      up.file = file;
+      up.files = new Map(filesOf(made).map((f, i) => [f.index ?? i, files[i]]));
+      up.sent = {};
       S.jobs = [made, ...S.jobs.filter((x) => x.id !== made.id)];
       S.job = made;
       ctx.setQuery({ import: made.id });
@@ -217,38 +251,62 @@ export async function mount(ctx) {
     }
   }
 
-  async function upload(job) {
-    if (up.active || !up.file) return;
-    Object.assign(up, { active: true, paused: false, error: null, startedAt: Date.now(), sent0: job.uploaded_bytes || 0 });
-    paintAll();
-    const file = up.file;
-    const max = job.chunk_max_bytes || S.chunkMax || (1024 * 1024 - 1024);
-    S.chunkMax = max;
-    let off = job.uploaded_bytes || 0, tries = 0;
-    while (off < file.size && ctx.alive() && !up.paused) {
+  // one file's chunks, one after another, from what the server has of it
+  async function uploadOne(job, f, file, max) {
+    let off = f.uploaded_bytes || 0, tries = 0;
+    const where = f.upload_url || `imports/${enc(job.id)}/files/${f.index}`;
+    while (off < file.size && ctx.alive() && !up.paused && !up.halt) {
       try {
         const buf = await file.slice(off, Math.min(file.size, off + max)).arrayBuffer();
         const sha = hex(await crypto.subtle.digest('SHA-256', buf));
-        const r = await ctx.api.patch(`imports/${enc(job.id)}`, buf, { headers: { 'Content-Type': 'application/offset+octet-stream', 'Upload-Offset': String(off), 'Upload-Length': String(file.size), 'Upload-SHA256': sha } });
-        if (!ctx.alive()) return;
+        const r = await ctx.api.patch(where, buf, { headers: { 'Content-Type': 'application/offset+octet-stream', 'Upload-Offset': String(off), 'Upload-Length': String(file.size), 'Upload-SHA256': sha } });
+        if (!ctx.alive()) return off;
         tries = 0;
-        off = r.offset ?? r.uploaded_bytes;
+        off = r.offset ?? (r.files?.find((x) => x.index === f.index)?.uploaded_bytes) ?? off + buf.byteLength;
+        up.sent[f.index] = Math.max(up.sent[f.index] || 0, off);
         setJob(r);
         paintUploadBar();
       } catch (e) {
-        if (!ctx.alive()) return;
+        if (!ctx.alive()) return off;
         if (['wrong_offset', 'checksum_mismatch', 'network', 'timeout'].includes(e?.code) && tries < 3) {
           tries++;
-          try { const fresh = await ctx.api.get(`imports/${enc(job.id)}`); if (!ctx.alive()) return; setJob(fresh); off = fresh.uploaded_bytes; if (fresh.status !== 'uploading') break; } catch { /* the chunk again */ }
+          try {
+            const fresh = await ctx.api.get(`imports/${enc(job.id)}`); if (!ctx.alive()) return off;
+            setJob(fresh);
+            const ff = filesOf(fresh).find((x) => x.index === f.index);
+            if (ff) { off = ff.uploaded_bytes || 0; up.sent[f.index] = off; }
+            if (fresh.status !== 'uploading') break;
+          } catch { /* the chunk again */ }
           continue;
         }
-        up.error = e?.code === 'not_uploading' ? null : e;
+        if (e?.code === 'not_uploading') up.halt = true;
+        else if (!up.error) up.error = { e, name: f.name, off };
         break;
       }
     }
+    return off;
+  }
+
+  async function upload(job) {
+    if (up.active || !up.files.size) return;
+    Object.assign(up, { active: true, paused: false, halt: false, error: null, startedAt: Date.now(), sent0: job.uploaded_bytes || 0 });
+    paintAll();
+    const max = job.chunk_max_bytes || S.chunkMax || (1024 * 1024 - 1024);
+    S.chunkMax = max;
+    const queue = filesOf(job).filter((f) => up.files.has(f.index) && (f.uploaded_bytes || 0) < f.bytes_total);
+    // up to 3 files at the same time
+    const worker = async () => {
+      while (queue.length && ctx.alive() && !up.paused && !up.halt && !up.error) {
+        const f = queue.shift();
+        const file = up.files.get(f.index);
+        const off = await uploadOne(job, f, file, max);
+        if (off >= file.size) up.files.delete(f.index);
+      }
+    };
+    await Promise.all([0, 1, 2].map(worker));
+    if (!ctx.alive()) return;
     up.active = false;
-    if (up.error) sayUp(`The upload stopped at ${bytes(off)}: ${errorWords(up.error).text} Choose the file again to carry on from there.`);
-    if (off >= file.size) up.file = null;
+    if (up.error) sayUp(`The upload of ${up.error.name} stopped at ${bytes(up.error.off)}: ${errorWords(up.error.e).text} Choose the files again to carry on from there.`);
     await refreshJob();
   }
 
@@ -256,11 +314,19 @@ export async function mount(ctx) {
   function paintUploadBar() {
     const j = S.job;
     if (!j) return;
-    const done = j.uploaded_bytes ?? 0;
+    const files = filesOf(j);
+    const done = add(...files.map(sentOf)) ?? 0;
     const secs = (Date.now() - up.startedAt) / 1000;
     const rate = up.active && secs > 1 ? (done - up.sent0) / secs : null;
     replace(upBarSlot, bar(share(done, j.bytes_total), { label: 'Uploaded' }),
-      h('p', { class: 'im-bar-text' }, h('b', null, bytes(done)), ` of ${bytes(j.bytes_total)} uploaded (${pctText(done, j.bytes_total)})`, rate ? ` · ${bytes(rate)} a second · about ${dur(((j.bytes_total - done) / rate) * 1000)} to go` : null));
+      h('p', { class: 'im-bar-text' }, h('b', null, bytes(done)), ` of ${bytes(j.bytes_total)} uploaded (${pctText(done, j.bytes_total)})`, files.length > 1 ? ` · ${num(files.filter((f) => sentOf(f) >= f.bytes_total).length)} of ${num(files.length)} files done` : null, rate ? ` · ${bytes(rate)} a second · about ${dur(((j.bytes_total - done) / rate) * 1000)} to go` : null),
+      files.length > 1 ? h('ul', { class: 'im-ups', 'aria-label': 'Upload of each file' }, files.map((f) => {
+        const n = sentOf(f), whole = n >= f.bytes_total;
+        return h('li', { class: ['im-upf', whole && 'is-done'] },
+          code(f.name, { long: true }),
+          h('span', { class: 'im-upf-n' }, `${bytes(n)} of ${bytes(f.bytes_total)} · ${pctText(n, f.bytes_total)}`),
+          whole ? sig('ok', 'Done') : up.files.has(f.index) ? (up.active ? sig('live', 'Sending') : sig('off', 'Chosen')) : sig('off', 'Not chosen'));
+      })) : null);
   }
 
   const startErr = h('p', { class: 'field-error', hidden: true, role: 'alert', cover: 'web.import.start-error' });
@@ -298,7 +364,7 @@ export async function mount(ctx) {
       : j.status === 'importing' ? `Stop and discard ${j.name}? Rows stored so far stay (running the same file again skips them); the rest is not imported.`
         : `Discard ${j.name}? Nothing from it has been stored, so your history does not change. You can upload it again later.`,
     { title: open ? 'Discard this import?' : 'Remove this import?', ok: open ? 'Discard' : 'Remove', danger: true })) || !ctx.alive()) return;
-    up.paused = true; up.file = null;
+    up.paused = true; up.files = new Map(); up.sent = {};
     try { await ctx.api.del(`imports/${enc(j.id)}`); if (!ctx.alive()) return; toast(open ? 'Import discarded.' : 'Import removed from the list.'); } catch (e) {
       if (!ctx.alive()) return;
       if (e?.code !== 'no_such_import') { toast(`Could not discard: ${errorWords(e).text}`, { kind: 'error' }); return; }
@@ -370,12 +436,12 @@ export async function mount(ctx) {
     if (j?.status === 'uploading') {
       paintUploadBar();
       parts.push(h('div', { class: 'im-tape' },
-        h('p', { class: 'im-tape-name' }, icon('book', 'i--sm'), code(j.name, { long: true }), h('span', { class: 'faint small' }, bytes(j.bytes_total))),
+        h('p', { class: 'im-tape-name' }, icon('book', 'i--sm'), code(j.name, { long: true }), h('span', { class: 'faint small' }, filesOf(j).length > 1 ? `${num(filesOf(j).length)} files · ${bytes(j.bytes_total)}` : bytes(j.bytes_total))),
         upBarSlot,
         up.active
           ? h('div', { class: 'row' }, btn('Pause', () => { up.paused = true; }, { sm: true, icon: 'x' }), h('span', { class: 'chan-hint' }, 'Sent over HTTPS in chunks of about 1 MB, each with its SHA-256: a chunk that arrives damaged is sent again.'))
-          : h('div', { class: 'stack' }, h('p', { class: 'small' }, up.paused ? 'Paused. ' : 'This upload stopped (the page was closed or the connection broke). ', `The server has the first ${bytes(j.uploaded_bytes)}. Choose the same file again to carry on from there.`),
-            up.file && up.paused ? btn('Carry on', () => upload(S.job), { kind: 'go', sm: true, icon: 'arrow-r' }) : slot)));
+          : h('div', { class: 'stack' }, h('p', { class: 'small' }, up.paused ? 'Paused. ' : 'This upload stopped (the page was closed or the connection broke). ', filesOf(j).length > 1 ? `The server has ${bytes(j.uploaded_bytes)} of the files. Choose the same files again (all at once is fine) and each carries on from where it stopped.` : `The server has the first ${bytes(j.uploaded_bytes)}. Choose the same file again to carry on from there.`),
+            up.files.size && up.paused ? btn('Carry on', () => upload(S.job), { kind: 'go', sm: true, icon: 'arrow-r' }) : slot)));
     }
     parts.push(upErr);
     if (isTf(j) && j.status === 'ready') { paintTf(); parts.push(tfBlock); }
@@ -427,7 +493,11 @@ export async function mount(ctx) {
     const st = STATUS[s] || [s, 'off', ''];
     replace(passSlot,
       h('div', { class: 'im-status' }, sig(st[1], st[0]), h('p', { class: 'small' }, st[2])),
+<<<<<<< HEAD
       kv([['File', code(j.name, { long: true })], ['Kind', j.kind ? (can ? 'CAN export from Sentry Six Manager' : isTf(j) ? 'TeslaFi\'s data download' : 'TeslaMate backup') : h('span', { class: 'faint' }, can ? 'A zip: known after the check' : 'Known after the check')], ['Size', `${bytes(j.bytes_total)}${j.compression && j.compression !== 'plain' ? ` (${j.compression})` : ''}`],
+=======
+      kv([['File', code(j.name, { long: true })], ['Kind', j.kind ? (can ? 'CAN export from Sentry Six Manager' : kindName(j)) : h('span', { class: 'faint' }, can ? 'A zip: known after the check' : 'Known after the check')], ['Size', `${bytes(j.bytes_total)}${j.compression && j.compression !== 'plain' ? ` (${j.compression})` : ''}`],
+>>>>>>> f56da76c (Import page in every pack: pick or drop several files, sent three at a time with each file's progress; left-out cars gone from the report; missing counts shown as gaps)
         ['Started', dateTime(j.started_ms, tz)], ['Checked', j.checked_ms ? dateTime(j.checked_ms, tz) : DASH],
         ['Finished', j.finished_ms ? `${dateTime(j.finished_ms, tz)} · took ${dur(j.finished_ms - j.started_ms)}` : DASH]]),
       h('ol', { class: 'im-passes', 'aria-label': 'State of each pass' },
@@ -452,7 +522,7 @@ export async function mount(ctx) {
       rec.light('Car matched');
       toast(value === 'new' ? `${c.name} will be added as a new car.` : value === 'leave_out' ? `${c.name} will be left out.` : `${c.name} goes to ${carName(value)}.`);
     } catch (e) { if (ctx.alive()) toast(errText(e), { kind: 'error' }); }
-    paintMatch(); paintDeck();
+    paintMatch(); paintDeck(); paintReport();
   }
   const matchList = tracks(ctx, {
     title: 'Match the imported cars', icon: 'car', tone: 'orange', rows: [], label: 'Cars in the backup and where their history goes', csvName: 'import-cars',
@@ -460,8 +530,8 @@ export async function mount(ctx) {
     columns: [
       { key: 'name', label: 'In the backup', lead: true, sort: true, render: (c) => h('span', { class: 'tagline' }, h('b', null, c.name), h('span', { class: 'mono faint' }, `#${c.tm_car}`)), csv: (c) => c.name },
       { key: 'vin_prefix', label: 'VIN start', sort: true, render: (c) => code(c.vin_prefix) },
-      { key: 'drives', label: 'Drives', num: true, sort: true, render: (c) => num(c.drives) },
-      { key: 'charges', label: 'Charges', num: true, sort: true, render: (c) => num(c.charges) },
+      { key: 'drives', label: 'Drives', num: true, sort: true, render: (c) => cnt(c.drives) },
+      { key: 'charges', label: 'Charges', num: true, sort: true, render: (c) => cnt(c.charges) },
       { key: 'first_ms', label: 'History', sort: true, render: (c) => `${date(c.first_ms, tz, { year: true })} to ${date(c.last_ms, tz, { year: true })}`, csv: (c) => `${toIsoZoned(c.first_ms, tz)} to ${toIsoZoned(c.last_ms, tz)}` },
       { key: 'match', label: 'Goes to', csv: (c) => (c.match === 'new' ? 'a new car' : c.match === 'leave_out' ? 'left out' : c.match ? carName(c.match) : 'not chosen'), render: (c) => {
         const taken = new Set(S.match.filter((x) => x.tm_car !== c.tm_car && x.match && x.match !== 'new' && x.match !== 'leave_out').map((x) => x.match));
@@ -485,9 +555,9 @@ export async function mount(ctx) {
     note: 'Counts only: the report never keeps row values or positions.', sort: { key: 'order', dir: 'asc' },
     columns: [
       { key: 'order', label: 'Table', lead: true, sort: true, value: (r) => r.order, render: (r) => h('span', { class: 'cell' }, h('b', null, tableName(r.name)), h('span', { class: 'cell-sub' }, TABLES[r.name]?.[1] || '')), csv: (r) => r.name },
-      { key: 'read', label: 'Read', num: true, sort: true, render: (r) => num(r.read) },
-      { key: 'imported', label: 'Imported', num: true, sort: true, render: (r) => (S.report?.imported ? num(r.imported) : h('span', { class: 'faint', title: 'From the check: what the import would store' }, `${num(r.would)} to import`)), csv: (r) => (S.report?.imported ? r.imported : r.would) },
-      { key: 'skipped', label: 'Skipped', num: true, sort: true, render: (r) => (r.skipped ? h('span', { class: 'warn' }, num(r.skipped)) : h('span', { class: 'faint' }, '0')) },
+      { key: 'read', label: 'Read', num: true, sort: true, render: (r) => cnt(r.read) },
+      { key: 'imported', label: 'Imported', num: true, sort: true, value: (r) => (S.report?.imported ? r.imported : r.would), render: (r) => (S.report?.imported ? cnt(r.imported) : r.would == null ? gap() : h('span', { class: 'faint', title: 'From the check: what the import would store' }, `${num(r.would)} to import`)), csv: (r) => (S.report?.imported ? r.imported : r.would) ?? '' },
+      { key: 'skipped', label: 'Skipped', num: true, sort: true, render: (r) => (r.skipped == null ? gap() : r.skipped ? h('span', { class: 'warn' }, num(r.skipped)) : h('span', { class: 'faint' }, '0')), csv: (r) => r.skipped ?? '' },
       { key: 'bad', label: 'Values cleared', render: (r) => (r.bad.length ? h('span', { class: 'tagline' }, r.bad.map(([col, n]) => h('span', { class: 'im-chip' }, code(col), ` ${num(n)}`))) : h('span', { class: 'faint' }, 'none')), csv: (r) => r.bad.map(([c, n]) => `${c}:${n}`).join('; ') },
     ],
     empty: () => emptyState({ icon: 'book', title: 'No report yet', text: 'The report shows once the whole file has been checked.' }),
@@ -498,28 +568,39 @@ export async function mount(ctx) {
       { key: 'table', label: 'Table', sort: true, render: (r) => tableName(r.table), csv: (r) => r.table },
       { key: 'reason', label: 'Reason', lead: true, sort: true, render: (r) => h('span', { class: 'cell' }, h('b', null, reasonWords(r.reason)[0]), h('span', { class: 'cell-sub' }, reasonWords(r.reason)[1])), csv: (r) => reasonWords(r.reason)[0] },
       { key: 'code', label: 'Code', render: (r) => code(r.reason), csv: (r) => r.reason },
-      { key: 'n', label: 'Rows', num: true, sort: true, render: (r) => num(r.n) },
+      { key: 'n', label: 'Rows', num: true, sort: true, render: (r) => cnt(r.n) },
     ],
     empty: () => emptyState({ icon: 'check', title: 'No row was skipped', text: 'Every row of the file passed its checks.' }),
   });
   const goesTo = (m) => (m === 'new' ? 'a new car' : m === 'leave_out' ? 'left out' : m ? carName(m) : 'not matched yet');
   const carsList = tracks(ctx, {
     title: 'Rows per car', icon: 'car', rows: [], csvName: 'import-report-cars', label: 'Rows per imported car', cover: 'web.import.rejected-count',
-    note: 'Each car\'s rows over every table. Places belong to no car, so they count only in Rows per table.', sort: { key: 'tm_car', dir: 'asc' },
+    note: 'Each car\'s rows over every table. Places belong to no car, so they count only in Rows per table. A car left out is not listed and its rows are not counted.', sort: { key: 'tm_car', dir: 'asc' },
     columns: [
       { key: 'tm_car', label: 'In the backup', lead: true, sort: true, render: (c) => h('span', { class: 'tagline' }, h('b', null, c.name || `Car ${c.tm_car}`), h('span', { class: 'mono faint' }, `#${c.tm_car}`)), csv: (c) => c.name || c.tm_car },
       { key: 'match', label: 'Went to', sort: true, value: (c) => goesTo(c.match), render: (c) => (c.match && c.match !== 'new' && c.match !== 'leave_out' ? h('a', { class: 'plc', href: state.buildUrl('car', { car: c.match }) }, carName(c.match)) : h('span', { class: c.match ? 'faint' : 'warn' }, goesTo(c.match))), csv: (c) => goesTo(c.match) },
-      { key: 'read', label: 'Read', num: true, sort: true, render: (c) => (c.read == null ? h('span', { class: 'faint' }, 'not counted') : num(c.read)) },
-      { key: 'imported', label: 'Imported', num: true, sort: true, value: (c) => (c.read == null ? null : S.report?.imported ? c.imported : c.read - sum(c.skipped)),
-        render: (c) => (c.read == null ? h('span', { class: 'faint' }, DASH) : S.report?.imported ? num(c.imported) : h('span', { class: 'faint' }, `${num(c.read - sum(c.skipped))} to import`)) },
-      { key: 'skipped', label: 'Skipped', num: true, sort: true, value: (c) => (c.skipped ? sum(c.skipped) : null), render: (c) => (c.skipped == null ? h('span', { class: 'faint' }, DASH) : sum(c.skipped) ? h('span', { class: 'warn' }, num(sum(c.skipped))) : h('span', { class: 'faint' }, '0')) },
-      { key: 'why', label: 'Why skipped', render: (c) => { const e = Object.entries(c.skipped || {}).filter(([, n]) => n); return e.length ? h('span', { class: 'tagline' }, e.map(([k, n]) => h('span', { class: 'im-chip', title: reasonWords(k)[1] }, `${reasonWords(k)[0]} ${num(n)}`))) : h('span', { class: 'faint' }, c.skipped ? 'none' : DASH); }, csv: (c) => Object.entries(c.skipped || {}).map(([k, n]) => `${reasonWords(k)[0]}: ${n}`).join('; ') },
-      { key: 'drives', label: 'Drives', num: true, sort: true, render: (c) => num(c.drives) },
-      { key: 'charges', label: 'Charges', num: true, sort: true, render: (c) => num(c.charges) },
+      { key: 'read', label: 'Read', num: true, sort: true, render: (c) => cnt(c.read) },
+      { key: 'imported', label: 'Imported', num: true, sort: true, value: (c) => (S.report?.imported ? c.imported : less(c.read, sum(c.skipped))),
+        render: (c) => (S.report?.imported ? cnt(c.imported) : c.read == null ? gap() : h('span', { class: 'faint' }, `${num(less(c.read, sum(c.skipped)))} to import`)) },
+      { key: 'skipped', label: 'Skipped', num: true, sort: true, value: (c) => sum(c.skipped), render: (c) => { const n = sum(c.skipped); return n == null ? gap() : n ? h('span', { class: 'warn' }, num(n)) : h('span', { class: 'faint' }, '0'); }, csv: (c) => sum(c.skipped) ?? '' },
+      { key: 'why', label: 'Why skipped', render: (c) => { const e = Object.entries(c.skipped || {}).filter(([, n]) => n); return e.length ? h('span', { class: 'tagline' }, e.map(([k, n]) => h('span', { class: 'im-chip', title: reasonWords(k)[1] }, `${reasonWords(k)[0]} ${num(n)}`))) : c.skipped ? h('span', { class: 'faint' }, 'none') : gap(); }, csv: (c) => Object.entries(c.skipped || {}).map(([k, n]) => `${reasonWords(k)[0]}: ${n}`).join('; ') },
+      { key: 'drives', label: 'Drives', num: true, sort: true, render: (c) => cnt(c.drives) },
+      { key: 'charges', label: 'Charges', num: true, sort: true, render: (c) => cnt(c.charges) },
     ],
     empty: () => emptyState({ icon: 'car', title: 'No cars in the report', text: 'The report lists each car of the backup once the whole file has been checked.' }),
   });
-  const reportLists = h('div', { class: 'stack' }, h('div', { class: 'cols' }, tablesList.el, reasonsList.el), carsList.el);
+  // several files in one import: what each file gave
+  const filesList = tracks(ctx, {
+    title: 'Files', icon: 'book', rows: [], csvName: 'import-report-files', label: 'Rows read, used and skipped per uploaded file', sort: { key: 'order', dir: 'asc' },
+    columns: [
+      { key: 'order', label: 'File', lead: true, sort: true, value: (f) => f.order, render: (f) => code(f.name, { long: true }), csv: (f) => f.name },
+      { key: 'rows_read', label: 'Rows read', num: true, sort: true, render: (f) => cnt(f.rows_read) },
+      { key: 'rows_used', label: 'Used', num: true, sort: true, render: (f) => cnt(f.rows_used) },
+      { key: 'rows_skipped', label: 'Skipped', num: true, sort: true, render: (f) => (f.rows_skipped == null ? gap() : f.rows_skipped ? h('span', { class: 'warn' }, num(f.rows_skipped)) : h('span', { class: 'faint' }, '0')) },
+    ],
+    empty: () => emptyState({ icon: 'book', title: 'No files', text: 'The report lists each uploaded file once the files have been checked.' }),
+  });
+  const reportLists = h('div', { class: 'stack' }, filesList.el, h('div', { class: 'cols' }, tablesList.el, reasonsList.el), carsList.el);
 
   // a CAN export's report: logs per car key, and the refused logs with their reasons
   const keysList = tracks(ctx, {
@@ -555,10 +636,10 @@ export async function mount(ctx) {
     replace(reportSlot,
       h('p', { class: 'small' }, rep.imported ? 'What the import stored. These logs are the car\'s own SMO data now, judged and decoded like live uploads.' : 'From the check: what the import will store. Nothing is stored yet.'),
       counters([
-        { label: 'Logs read', value: L.read, kind: 'count', how: 'signed CAN Bridge logs in the zip' },
-        { label: rep.imported ? 'Stored' : 'To store', value: rep.imported ? L.imported : L.to_import, kind: 'count', how: 'signed and unchanged' },
-        { label: 'Here already', value: L.already_here, kind: 'count', how: 'same name and SHA-256: not stored twice' },
-        { label: 'Refused', value: L.refused, kind: 'count', how: L.refused ? 'each with its reason below' : 'every log passed' },
+        { label: 'Logs read', ...ctr(L.read), how: 'signed CAN Bridge logs in the zip' },
+        { label: rep.imported ? 'Stored' : 'To store', ...ctr(rep.imported ? L.imported : L.to_import), how: 'signed and unchanged' },
+        { label: 'Here already', ...ctr(L.already_here), how: 'same name and SHA-256: not stored twice' },
+        { label: 'Refused', ...ctr(L.refused), how: L.refused ? 'each with its reason below' : 'every log passed' },
         { label: 'Size', text: bytes(L.bytes), how: L.sidecars_added ? `${num(L.sidecars_added)} sidecars added to logs here` : 'of the logs' },
         { label: 'Logs from', text: rep.span ? dur(rep.span.to_ms - rep.span.from_ms) : DASH, how: rep.span ? `${date(rep.span.from_ms, tz, { year: true })} to ${date(rep.span.to_ms, tz, { year: true })}` : 'no dated logs' },
       ]),
@@ -577,7 +658,7 @@ export async function mount(ctx) {
     if (!rep) {
       replace(reportSlot, emptyState({ icon: 'book', title: j ? 'No report yet' : 'No import yet', text: j ? 'The report shows once the whole file has been checked (pass 1).' : 'Each import gets a report: rows (or logs) read, imported and skipped, and why.' }));
       reportLists.hidden = true; canLists.hidden = true;
-      tablesList.setRows([]); reasonsList.setRows([]); carsList.setRows([]); keysList.setRows([]); refusedList.setRows([]);
+      tablesList.setRows([]); reasonsList.setRows([]); carsList.setRows([]); filesList.setRows([]); keysList.setRows([]); refusedList.setRows([]);
       return;
     }
     if (rep.kind === 'sentry_manager_can') { reportLists.hidden = true; canLists.hidden = false; paintCanReport(rep); return; }
@@ -585,20 +666,27 @@ export async function mount(ctx) {
     reportLists.hidden = false;
     if (rep.kind === 'teslafi') { paintTfReport(rep); return; }
     const names = Object.keys(rep.tables || {});
-    const rows = names.map((name, i) => { const t = rep.tables[name]; const sk = sum(t.skipped); return { name, order: i, read: t.read, imported: t.imported, would: t.read - sk, skipped: sk, bad: Object.entries(t.bad_values || {}) }; });
-    const reasons = names.flatMap((name) => Object.entries(rep.tables[name].skipped || {}).map(([reason, n]) => ({ table: name, reason, n })));
-    const tot = rows.reduce((a, r) => ({ read: a.read + r.read, imp: a.imp + (rep.imported ? r.imported : r.would), sk: a.sk + r.skipped, bad: a.bad + r.bad.reduce((x, [, n]) => x + n, 0) }), { read: 0, imp: 0, sk: 0, bad: 0 });
+    const rows = names.map((name, i) => { const t = rep.tables[name] || {}; const sk = sum(t.skipped); return { name, order: i, read: t.read ?? null, imported: t.imported ?? null, would: less(t.read, sk), skipped: sk, bad: Object.entries(t.bad_values || {}) }; });
+    const reasons = names.flatMap((name) => Object.entries(rep.tables[name]?.skipped || {}).map(([reason, n]) => ({ table: name, reason, n })));
+    // the counts add only what the file has: a table it lacks is a gap, and a total of gaps is a gap
+    const tot = { read: add(...rows.map((r) => r.read)), imp: add(...rows.map((r) => (rep.imported ? r.imported : r.would))), sk: add(...rows.map((r) => r.skipped)), bad: add(...rows.flatMap((r) => r.bad.map(([, n]) => n))) ?? (rows.some((r) => r.read != null) ? 0 : null) };
+    // a car left out is not in the report (the server leaves it out; this makes sure)
+    const outs = new Set(S.match.filter((c) => c.match === 'leave_out').map((c) => c.tm_car));
+    const cars = (rep.cars || []).filter((c) => c.match !== 'leave_out' && !outs.has(c.tm_car));
     replace(reportSlot,
       h('p', { class: 'small' }, rep.imported ? 'What the import stored.' : 'From the check: what the import will store. Nothing is stored yet.'),
       counters([
-        { label: 'Rows read', value: tot.read, kind: 'count', how: 'every row of every table used' },
-        { label: rep.imported ? 'Imported' : 'To import', value: tot.imp, kind: 'count', how: rep.imported ? 'stored, marked as imported' : 'read minus skipped' },
-        { label: 'Skipped', value: tot.sk, kind: 'count', how: tot.sk ? 'each with its reason below' : 'every row passed' },
-        { label: 'Values cleared', value: tot.bad, kind: 'count', how: 'out of range, left blank; row kept' },
+        { label: 'Rows read', ...ctr(tot.read), how: 'every row of every table used' },
+        { label: rep.imported ? 'Imported' : 'To import', ...ctr(tot.imp), how: rep.imported ? 'stored, marked as imported' : 'read minus skipped' },
+        { label: 'Skipped', ...ctr(tot.sk), how: tot.sk ? 'each with its reason below' : 'every row passed' },
+        { label: 'Values cleared', ...ctr(tot.bad), how: 'out of range, left blank; row kept' },
         { label: 'History', text: rep.span ? dur(rep.span.to_ms - rep.span.from_ms) : DASH, how: rep.span ? `${date(rep.span.from_ms, tz, { year: true })} to ${date(rep.span.to_ms, tz, { year: true })}` : 'no dated rows' },
       ]),
       tot.sk ? callout('warn', `${num(tot.sk)} rows ${rep.imported ? 'were' : 'will be'} skipped.`, 'Skipping a row did not stop the import; every other row is in. A drive or charge built around a skipped row can come out a little short. The report keeps only how many rows were skipped and why, never what they held.') : null);
-    tablesList.setRows(rows); reasonsList.setRows(reasons); carsList.setRows(rep.cars || []);
+    tablesList.setRows(rows); reasonsList.setRows(reasons); carsList.setRows(cars);
+    const uploads = Array.isArray(rep.uploads) && rep.uploads.length ? rep.uploads : null;
+    filesList.el.hidden = !uploads;
+    filesList.setRows(uploads ? uploads.map((f, i) => ({ ...f, order: i })) : []);
   }
 
   // TeslaFi's data: polls read, used and skipped, what was found, the cars, the zone and units it was read in
@@ -731,7 +819,11 @@ export async function mount(ctx) {
     rowHref: (j) => state.buildUrl('import', { query: { import: j.id } }),
     columns: [
       { key: 'name', label: 'File', lead: true, sort: true, render: (j) => h('span', { class: 'tagline' }, code(j.name, { long: true }), j.id === S.job?.id ? tag('In the deck', 'cyan') : null), csv: (j) => j.name },
+<<<<<<< HEAD
       { key: 'kind', label: 'Kind', sort: true, value: (j) => (isCan(j) ? 2 : isTf(j) ? 1 : 0), render: (j) => (j.kind || j.report?.kind ? kindWord(j) : h('span', { class: 'faint' }, 'not checked yet')), csv: (j) => j.kind || '' },
+=======
+      { key: 'kind', label: 'Kind', sort: true, value: (j) => (isCan(j) ? 1 : 0), render: (j) => (j.kind || j.report?.kind ? kindName(j) : h('span', { class: 'faint' }, 'not checked yet')), csv: (j) => j.kind || '' },
+>>>>>>> f56da76c (Import page in every pack: pick or drop several files, sent three at a time with each file's progress; left-out cars gone from the report; missing counts shown as gaps)
       { key: 'status', label: 'State', sort: true, render: (j) => sig(STATUS[j.status]?.[1] || 'off', STATUS[j.status]?.[0] || j.status), csv: (j) => STATUS[j.status]?.[0] || j.status },
       { key: 'bytes_total', label: 'Size', num: true, sort: true, render: (j) => bytes(j.bytes_total) },
       { key: 'started_ms', label: 'Started', sort: true, render: (j) => dateTime(j.started_ms, tz), csv: (j) => toIsoZoned(j.started_ms, tz) },

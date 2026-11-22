@@ -57,8 +57,17 @@
 .im-report .tile-nums { padding: var(--s2) 0; }
 .im-report-of { font-size: var(--f14); line-height: var(--l14); color: var(--muted); overflow-wrap: anywhere; }
 .im-warn .num-n { color: var(--sun); }
+<<<<<<< HEAD
 /* TeslaFi's start step and the overlap spans */
 .im-units { display: flex; flex-wrap: wrap; gap: var(--s4); }
 .im-span-kind { font-size: var(--f13); line-height: var(--l13); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
 .im-span-row.is-imports .im-span-kind { color: var(--sun); }
 .im-span-counts { display: flex; flex-wrap: wrap; gap: 0 var(--s3); }
+=======
+
+/* a count the file does not have: a faint dash, never 0 */
+.im-gap { color: var(--muted); font-weight: 600; }
+.im-up-row { flex-wrap: wrap; }
+.im-up-row > .row-text { flex: 1 1 round(14rem, var(--e)); min-width: 0; overflow-wrap: anywhere; }
+.im-up-row > .row-side { margin-left: auto; }
+>>>>>>> f56da76c (Import page in every pack: pick or drop several files, sent three at a time with each file's progress; left-out cars gone from the report; missing counts shown as gaps)

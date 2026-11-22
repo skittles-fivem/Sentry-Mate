@@ -53,7 +53,7 @@ class Contract(ServerCase):
             "charge": c.get("/api/v1/cars/c1/charges?limit=3")["items"][1]["id"],
             "update": c.get("/api/v1/cars/c1/updates")["items"][0]["id"],
             "place": "p1", "session": "s-older-1", "account": "a2", "token": "t12", "key": "cbk_5b2e9f13",
-            "trip": "tr1", "rule": "r1", "import": "im1", "tesla_account": "ta1", "sign_in": "si0",
+            "trip": "tr1", "rule": "r1", "import": "im1", "index": "0", "tesla_account": "ta1", "sign_in": "si0",
             "teslafi_account": "fa1", "z": "13", "x": "1310", "y": "3166",
             "export": c.json("POST", "/api/v1/system/exports", {"password": "sentry-mate-dev"}, expect=201)["id"],
         }
@@ -195,9 +195,9 @@ class Contract(ServerCase):
             ctx[key] = value
             return value
 
-        def chunk_headers():
-            return {"Upload-Offset": "0", "Upload-Length": "10",
-                    "Upload-SHA256": hashlib.sha256(b"0123456789").hexdigest(),
+        def chunk_headers(data=b"0123456789", offset=0):
+            return {"Upload-Offset": str(offset), "Upload-Length": "10",
+                    "Upload-SHA256": hashlib.sha256(data).hexdigest(),
                     "Content-Type": "application/offset+octet-stream"}
 
         return [
@@ -258,9 +258,12 @@ class Contract(ServerCase):
              lambda: (self.fill("/api/v1/cars/{car}/overlaps", car="c3"),
                       {"id": c.get("/api/v1/cars/c3/overlaps")["items"][0]["id"], "shown": "can"}, None)),
             ("POST", "/api/v1/imports", lambda: (None, {"name": "contract.sql", "bytes_total": 10}, None)),
+            ("PATCH", "/api/v1/imports/{import}/files/{index}",
+             lambda: (self.fill("/api/v1/imports/{import}/files/{index}", **{"import": ctx["import"]}), b"01234",
+                      chunk_headers(b"01234"))),
             ("PATCH", "/api/v1/imports/{import}",
-             lambda: (self.fill("/api/v1/imports/{import}", **{"import": ctx["import"]}), b"0123456789",
-                      chunk_headers())),
+             lambda: (self.fill("/api/v1/imports/{import}", **{"import": ctx["import"]}), b"56789",
+                      chunk_headers(b"56789", 5))),
             ("PUT", "/api/v1/imports/{import}/cars",
              lambda: (self.fill("/api/v1/imports/{import}/cars", **{"import": ctx["import"]}),
                       {"items": [{"tm_car": 1, "match": "c3"}, {"tm_car": 2, "match": "leave_out"}]}, None)),

@@ -1,5 +1,6 @@
 // Sentry Mate, "Pebble" UI pack: Import (/settings/import).
 //
+<<<<<<< HEAD
 // Three kinds of file: TeslaMate's history from its own backup file, TeslaFi's data download (its monthly CSVs, one,
 // several in a .zip, or gzipped; TeslaFi writes wall times without a zone and its own units, so the start step asks
 // the owner to confirm the time zone and the units), or the CAN Bridge logs Sentry Six Manager already has (its CAN export bundle, a .zip: each log as the CAN Bridge signed it, checked like an upload and
@@ -10,6 +11,18 @@
 // skipped and why, values left blank, per table and per car), the spans where two histories overlap (live and
 // imported, or a TeslaMate and a TeslaFi import) with a switch for the side shown, a tile of what to know, and the
 // earlier imports.
+=======
+// Two kinds of file: TeslaMate's history from its own backup file, or the CAN Bridge logs Sentry Six Manager
+// already has (its CAN export bundle, a .zip: each log as the CAN Bridge signed it, checked like an upload and
+// stored as the car's own SMO data, never doubled), or TeslaFi's CSVs (many at once: they become one import).
+// Numbered step cards: pick the files (all go into one import; up to 3 go up at a time, each in chunks over
+// HTTPS with its SHA-256, so a stopped upload goes on from the last chunk the server has), the check (the
+// whole file is read before anything is stored), match the cars and start, the import, done. Only the current
+// card carries a button and its output under it. Below: the report as number tiles (rows read, imported,
+// skipped and why, values left blank, per table and per car), the spans where imported and CAN history overlap
+// with a switch for the side shown, a tile of what to know, and the earlier imports. A count the file does not
+// have is null in the report and shows as a gap (a faint dash), never as 0; cars left out are not in the report.
+>>>>>>> f56da76c (Import page in every pack: pick or drop several files, sent three at a time with each file's progress; left-out cars gone from the report; missing counts shown as gaps)
 //
 // API (admins): GET / POST imports, GET / PATCH / DELETE imports/{import}, GET / PUT imports/{import}/cars,
 // POST imports/{import}/start, GET / PATCH cars/{car}/overlaps, GET cars. No event says how an import goes, so
@@ -39,6 +52,7 @@ const UNFINISHED = ['uploading', 'checking', 'ready', 'importing'];
 const MOVING = ['checking', 'importing'];
 const CHUNK_DEFAULT = 1024 * 1024 - 1024;
 const POLL_MS = 2500;
+const PARALLEL = 3;
 
 const STATUS = {
   uploading: ['Uploading', 'sky'], checking: ['Checking', 'sky'], ready: ['Waiting for you', 'sun'],
@@ -119,6 +133,7 @@ const FAILURES = {
   teslafi_summary: 'This is TeslaFi’s list of drives or charges (one row per drive, no positions). Upload TeslaFi’s raw data instead: Settings, Account, Advanced, “Download TeslaFi Data”.',
   not_a_can_export: 'This zip is not a Sentry Six Manager CAN export. In Sentry Six Manager, download the CAN export bundle (Nerd panel, Logs + ids.csv, the car’s key, from before its first log to now) and upload that .zip as it is. A TeslaMate backup goes up as the .sql file itself (or .sql.gz, .sql.xz), not zipped.',
   unreadable: 'The file cannot be read as a zip: it is damaged, cut short, encrypted or packed in a way the server does not read. Download it again and upload it as it is.',
+  one_file_only: 'A TeslaMate backup or a CAN export is imported on its own. Discard this import, then upload that file alone; only TeslaFi’s CSVs go up several at a time.',
   read_failed: 'The server could not read the uploaded file back. Upload it again.',
   store_failed: 'The server could not store a log, for example because the disk is full. Logs stored before stay; free some space and start again.',
   stopped: 'The import was stopped. Logs stored before stay; start it again to bring the rest.',
@@ -138,6 +153,15 @@ function startWords(e) {
 const pct = (a, b) => (b > 0 ? Math.max(0, Math.min(100, (a / b) * 100)) : 0);
 const hex = (buf) => Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
 const sum = (o) => Object.values(o || {}).reduce((a, b) => a + (b || 0), 0);
+/** Adds only the numbers present; null when there is none (a gap, never 0). */
+const addUp = (vals) => vals.reduce((a, b) => (typeof b === 'number' ? (a ?? 0) + b : a), null);
+/** A count as text, or the dash of a gap. */
+const cnt = (n) => (n == null ? '—' : count(n));
+/** A count on the right of a row; a gap is a faint dash. */
+const nSide = (n) => (n == null ? h('span', { class: 'im-n im-gap' }, '—') : h('span', { class: 'im-n' }, count(n)));
+/** The files of a job; a job from before several files has its one file at the old address. */
+const jobFiles = (j) => (j && Array.isArray(j.files) && j.files.length ? j.files
+  : j ? [{ index: 0, name: j.name, bytes_total: j.bytes_total, uploaded_bytes: j.uploaded_bytes || 0, upload_url: api.apiPath`imports/${j.id}` }] : []);
 const isCar = (m) => typeof m === 'string' && m !== 'new' && m !== 'leave_out';
 const wait = (ms, signal) => new Promise((res) => { const t = setTimeout(res, ms); signal && signal.addEventListener('abort', () => { clearTimeout(t); res(); }, { once: true }); });
 const fieldsText = (e) => (e && e.fields ? Object.values(e.fields).join(' ') : errorWords(e).text);
@@ -162,8 +186,16 @@ export async function mount(ctx) {
     return {};
   }
 
+<<<<<<< HEAD
   const S = { jobs: [], cars: [], carsMore: false, job: null, match: null, matchErr: null, overlaps: new Map(), currency: '', tf: null };
   const up = { file: null, active: false, paused: false, error: null, t0: 0, b0: 0, ctl: null };
+=======
+  const S = { jobs: [], cars: [], carsMore: false, job: null, match: null, matchErr: null, overlaps: new Map(), currency: '' };
+  // files: the chosen File of each job file still to send, by index; off: the offset each file has reached here
+  const up = { files: null, off: new Map(), active: false, paused: false, error: null, t0: 0, b0: 0, ctl: null };
+  const fileDone = (f) => Math.max(f.uploaded_bytes || 0, up.off.get(f.index) || 0);
+  const upDone = (j) => jobFiles(j).reduce((a, f) => a + fileDone(f), 0);
+>>>>>>> f56da76c (Import page in every pack: pick or drop several files, sent three at a time with each file's progress; left-out cars gone from the report; missing counts shown as gaps)
 
   const [jobs, carsPage] = await Promise.all([
     ctx.api.list('imports', { limit: 100 }).all({ max: 500 }),
@@ -207,8 +239,13 @@ export async function mount(ctx) {
 
   function filePicker(text, sub) {
     const input = h('input', {
+<<<<<<< HEAD
       class: 'im-file', type: 'file', accept: '.sql,.gz,.xz,.zip,.csv,.dump,.bck,.bak,.txt,text/csv,application/sql,application/gzip,application/x-xz,application/zip',
       'aria-label': text, onchange: () => { const f = input.files && input.files[0]; input.value = ''; if (f) chose(f); },
+=======
+      class: 'im-file', type: 'file', multiple: true, accept: '.sql,.gz,.xz,.zip,.csv,.dump,.bck,.bak,.txt,application/sql,application/gzip,application/x-xz,application/zip,text/csv',
+      'aria-label': text, onchange: () => { const fs = [...(input.files || [])]; input.value = ''; if (fs.length) chose(fs); },
+>>>>>>> f56da76c (Import page in every pack: pick or drop several files, sent three at a time with each file's progress; left-out cars gone from the report; missing counts shown as gaps)
     });
     const zone = h('label', { class: 'im-drop' }, input,
       h('span', { class: 'im-drop-ic', 'aria-hidden': 'true' }, icon('upload')),
@@ -216,30 +253,39 @@ export async function mount(ctx) {
       sub ? h('span', { class: 'im-drop-sub' }, sub) : null);
     zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('is-over'); });
     zone.addEventListener('dragleave', () => zone.classList.remove('is-over'));
-    zone.addEventListener('drop', (e) => { e.preventDefault(); zone.classList.remove('is-over'); const f = e.dataTransfer && e.dataTransfer.files[0]; if (f) chose(f); });
+    zone.addEventListener('drop', (e) => { e.preventDefault(); zone.classList.remove('is-over'); const fs = [...((e.dataTransfer && e.dataTransfer.files) || [])]; if (fs.length) chose(fs); });
     return zone;
   }
 
-  async function chose(file) {
+  async function chose(files) {
     showUpErr(null);
     const j = running();
     if (j && j.status === 'uploading' && !up.active) {
-      if (file.size !== j.bytes_total || file.name !== j.name) {
-        showUpErr(`That is not the file this upload began with (${j.name}, ${bytes(j.bytes_total)}). Pick that file to go on, or discard this upload first.`);
+      // going on: each file of the job still to send is matched to a chosen file by name and size
+      const left = jobFiles(j).filter((f) => fileDone(f) < f.bytes_total);
+      const map = new Map(), missing = [];
+      for (const f of left) {
+        const file = files.find((x) => x.name === f.name && x.size === f.bytes_total);
+        if (file) map.set(f.index, file); else missing.push(f);
+      }
+      if (missing.length) {
+        const names = missing.slice(0, 3).map((f) => `${f.name} (${bytes(f.bytes_total)})`).join(', ') + (missing.length > 3 ? ` and ${count(missing.length - 3)} more` : '');
+        showUpErr(`${missing.length === 1 ? 'A file' : `${count(missing.length)} files`} this upload began with ${missing.length === 1 ? 'is' : 'are'} not among those picked: ${names}. Pick ${jobFiles(j).length === 1 ? 'that file' : 'the same files'} to go on, or discard this upload first.`);
         return;
       }
-      up.file = file; S.job = j;
+      up.files = map; S.job = j;
       upload();
       return;
     }
-    if (j) { showUpErr('An import is not finished yet. Finish it or discard it before you upload another file.'); return; }
+    if (j) { showUpErr('An import is not finished yet. Finish it or discard it before you upload more files.'); return; }
     try {
-      const created = await ctx.api.post('imports', { name: file.name, bytes_total: file.size });
+      const created = await ctx.api.post('imports', { files: files.map((f) => ({ name: f.name, bytes_total: f.size })) });
       if (!ctx.alive()) return;
       putJob(created);
       S.job = S.jobs.find((x) => x.id === created.id);
       S.match = null;
-      up.file = file;
+      up.off = new Map();
+      up.files = new Map(jobFiles(S.job).map((f, i) => [f.index, files.find((x) => x.name === f.name && x.size === f.bytes_total) || files[i]]));
       ctx.setQuery({ import: created.id });
       paintAll();
       upload();
@@ -250,54 +296,80 @@ export async function mount(ctx) {
   }
 
   async function upload() {
-    if (up.active || !up.file || !S.job) return;
+    if (up.active || !up.files || !S.job) return;
     if (!(globalThis.crypto && crypto.subtle)) { showUpErr('This browser cannot work out the SHA-256 of each chunk here. Open Sentry Mate over HTTPS and try again.'); return; }
-    const file = up.file;
-    let job = S.job;
-    Object.assign(up, { active: true, paused: false, error: null, t0: performance.now(), b0: job.uploaded_bytes || 0, ctl: new AbortController() });
+    const jid = S.job.id;
+    Object.assign(up, { active: true, paused: false, error: null, t0: performance.now(), b0: upDone(S.job), ctl: new AbortController() });
     const signal = up.ctl.signal;
     ctx.onCleanup(() => up.ctl && up.ctl.abort());
     paintAll();
-    const max = job.chunk_max_bytes || CHUNK_DEFAULT;
-    let off = job.uploaded_bytes || 0, tries = 0;
-    while (off < file.size && ctx.alive() && !up.paused) {
-      try {
-        const buf = await file.slice(off, Math.min(file.size, off + max)).arrayBuffer();
-        const sha = hex(await crypto.subtle.digest('SHA-256', buf));
-        const ans = await ctx.api.patch(api.apiPath`imports/${job.id}`, buf, {
-          signal,
-          headers: { 'Content-Type': 'application/offset+octet-stream', 'Upload-Offset': String(off), 'Upload-Length': String(file.size), 'Upload-SHA256': sha },
-        });
-        if (!ctx.alive()) return;
-        off = (ans && ans.offset) != null ? ans.offset : off + buf.byteLength;
-        putJob({ ...ans, uploaded_bytes: off });
-        job = S.job;
-        tries = 0;
-        paintSteps();
-      } catch (e) {
-        if (!ctx.alive() || api.isAbort(e) || up.paused) break;
-        if (e.code === 'wrong_offset' || e.code === 'not_uploading') {
-          try { const j = await ctx.api.get(api.apiPath`imports/${job.id}`); putJob(j); job = S.job; off = j.uploaded_bytes; if (j.status !== 'uploading') break; continue; } catch (e2) { if (api.isAbort(e2)) break; }
+    const max = S.job.chunk_max_bytes || CHUNK_DEFAULT;
+    let halt = false, gone = false;
+    const stop = (text) => { if (!halt) { halt = true; up.error = text; if (up.ctl) up.ctl.abort(); } };
+    const queue = jobFiles(S.job).filter((f) => fileDone(f) < f.bytes_total && up.files.get(f.index));
+    const cur = (index) => jobFiles(S.job).find((f) => f.index === index);
+
+    // one file: its chunks one after another, from where the server has it
+    async function sendFile(jf) {
+      const file = up.files.get(jf.index);
+      const where = jf.upload_url || api.apiPath`imports/${jid}/files/${jf.index}`;
+      let off = fileDone(jf), tries = 0;
+      while (off < file.size && ctx.alive() && !up.paused && !halt) {
+        try {
+          const buf = await file.slice(off, Math.min(file.size, off + max)).arrayBuffer();
+          const sha = hex(await crypto.subtle.digest('SHA-256', buf));
+          const ans = await ctx.api.patch(where, buf, {
+            signal,
+            headers: { 'Content-Type': 'application/offset+octet-stream', 'Upload-Offset': String(off), 'Upload-Length': String(file.size), 'Upload-SHA256': sha },
+          });
+          if (!ctx.alive()) return;
+          off = (ans && ans.offset) != null ? ans.offset : off + buf.byteLength;
+          up.off.set(jf.index, off);
+          if (ans) putJob(ans);
+          tries = 0;
+          paintSteps();
+        } catch (e) {
+          if (!ctx.alive() || api.isAbort(e) || up.paused || halt) return;
+          if (e.code === 'wrong_offset' || e.code === 'not_uploading') {
+            try {
+              const j = await ctx.api.get(api.apiPath`imports/${jid}`);
+              putJob(j);
+              if (j.status !== 'uploading') { gone = true; return; }
+              const f = cur(jf.index);
+              off = f ? f.uploaded_bytes || 0 : off;
+              up.off.set(jf.index, off);
+              continue;
+            } catch (e2) { if (api.isAbort(e2)) return; }
+          }
+          tries++;
+          const again = e.code === 'checksum_mismatch' || e.status === 0 || e.status >= 500 || e.status === 429;
+          if (again && tries <= 5) { await wait(Math.min(16000, 1000 * 2 ** (tries - 1)), signal); continue; }
+          stop(e.code === 'checksum_mismatch' ? `A chunk of ${jf.name} kept arriving damaged. Check the connection, then go on: the upload resumes where it stopped.`
+            : e.status === 0 ? 'The server stopped answering. Go on when it is back: the upload resumes where it stopped.'
+              : e.code === 'no_such_import' ? 'This upload was discarded, perhaps from another tab.' : `${jf.name}: ${fieldsText(e)}`);
+          return;
         }
-        tries++;
-        const again = e.code === 'checksum_mismatch' || e.status === 0 || e.status >= 500 || e.status === 429;
-        if (again && tries <= 5) { await wait(Math.min(16000, 1000 * 2 ** (tries - 1)), signal); continue; }
-        up.error = e.code === 'checksum_mismatch' ? 'A chunk kept arriving damaged. Check the connection, then go on: the upload resumes where it stopped.'
-          : e.status === 0 ? 'The server stopped answering. Go on when it is back: the upload resumes where it stopped.'
-            : e.code === 'no_such_import' ? 'This upload was discarded, perhaps from another tab.' : fieldsText(e);
-        break;
       }
     }
+    // up to PARALLEL files at a time
+    await Promise.all(Array.from({ length: Math.min(PARALLEL, queue.length) }, async () => {
+      while (queue.length && ctx.alive() && !up.paused && !halt && !gone) await sendFile(queue.shift());
+    }));
     up.active = false;
     up.ctl = null;
     if (!ctx.alive()) return;
-    if (off < file.size || (S.job && S.job.status === 'uploading')) {
+    const left = S.job && S.job.id === jid ? jobFiles(S.job).some((f) => fileDone(f) < f.bytes_total) : false;
+    if (left || (S.job && S.job.id === jid && S.job.status === 'uploading')) {
       paintAll();
-      await syncJob(job.id);
+      await syncJob(jid);
       if (!ctx.alive() || up.active) return;
     }
-    if (S.job && S.job.id === job.id && S.job.status !== 'uploading') {
-      if (up.file) { up.file = null; up.error = null; ctx.toast('The whole file is up. The server checks it now; you can leave this page.', { kind: 'info' }); }
+    if (S.job && S.job.id === jid && S.job.status !== 'uploading') {
+      if (up.files) {
+        const n = jobFiles(S.job).length;
+        up.files = null; up.error = null; up.off = new Map();
+        ctx.toast(`${n === 1 ? 'The whole file is' : `All ${count(n)} files are`} up. The server checks ${n === 1 ? 'it' : 'them'} now; you can leave this page.`, { kind: 'info' });
+      }
       if (S.job.status === 'ready' && !S.match) loadMatch();
     }
     paintAll();
@@ -312,7 +384,7 @@ export async function mount(ctx) {
       if (!ctx.alive() || api.isAbort(e)) return;
       if (e.code === 'no_such_import') {
         S.jobs = S.jobs.filter((x) => x.id !== jid);
-        if (S.job && S.job.id === jid) { up.file = null; S.match = null; pickJob(); }
+        if (S.job && S.job.id === jid) { up.files = null; up.off = new Map(); S.match = null; pickJob(); }
         ctx.toast('This upload was discarded, perhaps from another tab.', { kind: 'info' });
       }
     }
@@ -328,7 +400,7 @@ export async function mount(ctx) {
     clearTimeout(pollTimer);
     const j = S.job;
     if (!j) return;
-    const elsewhere = j.status === 'uploading' && !up.active && !up.file;
+    const elsewhere = j.status === 'uploading' && !up.active && !up.files;
     if (!MOVING.includes(j.status) && !elsewhere && j.status !== 'ready') return;
     pollTimer = setTimeout(async () => {
       if (!ctx.alive() || !S.job || S.job.id !== j.id) return;
@@ -412,7 +484,7 @@ export async function mount(ctx) {
     }
     const can = ['checking', 'ready'].includes(j.status);
     const rows = S.match.map((r) => {
-      const sub = [`VIN prefix ${r.vin_prefix || 'unknown'}`, `${count(r.drives)} drives`, `${count(r.charges)} charges`,
+      const sub = [`VIN prefix ${r.vin_prefix || 'unknown'}`, `${cnt(r.drives)} drives`, `${cnt(r.charges)} charges`,
         r.first_ms ? `${day(r.first_ms)} to ${day(r.last_ms)}` : null].filter(Boolean).join(' · ');
       const row = pickRow({
         name: r.name || `${isTf(j) ? 'TeslaFi' : 'TeslaMate'} car ${r.tm_car}`, sub, value: r.match == null ? '' : r.match, options: matchOptions(r),
@@ -473,7 +545,7 @@ export async function mount(ctx) {
           : 'The uploaded file and its check are thrown away. Nothing from it was stored.';
     const ok = await confirmSheet({ title: j.status === 'done' ? 'Remove this import from the list?' : 'Discard this import?', text: what, yes: j.status === 'done' ? 'Remove' : 'Discard', danger: true });
     if (!ok || !ctx.alive()) return;
-    if (S.job && S.job.id === j.id) { up.paused = true; if (up.ctl) up.ctl.abort(); up.file = null; up.error = null; }
+    if (S.job && S.job.id === j.id) { up.paused = true; if (up.ctl) up.ctl.abort(); up.files = null; up.off = new Map(); up.error = null; }
     try {
       await ctx.api.del(api.apiPath`imports/${j.id}`);
       if (!ctx.alive()) return;
@@ -504,8 +576,13 @@ export async function mount(ctx) {
     ['done', 'Done', 'The history shows on every page, marked “Imported from TeslaFi”.'],
   ];
   const STEPS = [
+<<<<<<< HEAD
     ['pick', 'Pick the file', 'The .sql file of a TeslaMate database backup, plain or compressed (.gz, .xz), TeslaFi’s data download (its monthly .csv files, or a .zip of them), or the .zip of Sentry Six Manager’s CAN export. It goes over HTTPS to this server only.'],
     ['check', 'Check', 'The server reads the whole file and checks every row. Nothing is stored yet.'],
+=======
+    ['pick', 'Pick the files', 'The .sql file of a TeslaMate database backup, plain or compressed (.gz, .xz), the .zip of Sentry Six Manager’s CAN export, or TeslaFi’s CSVs (.csv, .csv.gz or a .zip of them), as many as you have. They go over HTTPS to this server only.'],
+    ['check', 'Check', 'The server reads every file whole and checks every row. Nothing is stored yet.'],
+>>>>>>> f56da76c (Import page in every pack: pick or drop several files, sent three at a time with each file's progress; left-out cars gone from the report; missing counts shown as gaps)
     ['match', 'Match the cars, then start', 'Each car of the file goes to a car here, a new car, or is left out. Then Start stores the checked rows.', 'web.import.start'],
     ['import', 'Import', 'The checked rows are stored, a few minutes per gigabyte. You can leave this page.'],
     ['done', 'Done', 'The history shows on every page, marked as imported.'],
@@ -515,25 +592,42 @@ export async function mount(ctx) {
 
   function atOf(j) {
     if (!j) return { at: 0, st: 'now' };
-    if (j.status === 'failed') return { at: j.checked_ms ? 3 : j.uploaded_bytes >= j.bytes_total ? 1 : 0, st: 'stuck' };
+    if (j.status === 'failed') return { at: j.checked_ms ? 3 : upDone(j) >= j.bytes_total ? 1 : 0, st: 'stuck' };
     return { at: { uploading: 0, checking: 1, ready: 2, importing: 3, done: 4 }[j.status] ?? 0, st: j.status === 'done' ? 'done' : 'now' };
   }
 
   function stepOutput(j, key) {
+<<<<<<< HEAD
     if (!j) return [filePicker('Pick the file, or drop it here', 'A TeslaMate backup (.sql, .sql.gz, .sql.xz), TeslaFi’s data download (TeslaFi<month><year>.csv, or a .zip of months) or Sentry Six Manager’s CAN export (.zip). Up to 64 GB. Choosing it starts the upload.'), upErr];
+=======
+    if (!j) return [filePicker('Pick the files, or drop them here', 'A TeslaMate backup (.sql, .sql.gz, .sql.xz), Sentry Six Manager’s CAN export (.zip), or TeslaFi’s CSVs (.csv, .csv.gz, .zip). Several files are fine: drop all of TeslaFi’s monthly CSVs at once and they become one import. Up to 64 GB each. Choosing them starts the upload.'), upErr];
+>>>>>>> f56da76c (Import page in every pack: pick or drop several files, sent three at a time with each file's progress; left-out cars gone from the report; missing counts shown as gaps)
     if (j.status === 'failed') return null;
     if (key === 'pick') {
-      const done = j.uploaded_bytes || 0;
+      const list = jobFiles(j);
+      const done = upDone(j);
       let speed = null, eta = null;
       if (up.active) {
         const s = (performance.now() - up.t0) / 1000;
         if (s > 2 && done > up.b0) { speed = (done - up.b0) / s; eta = (j.bytes_total - done) / speed; }
       }
+      const many = list.length > 1;
       const acts = up.active ? btn('Pause the upload', { kind: 'soft', icon: 'minus', onclick: pauseUpload })
-        : up.file ? btn('Go on with the upload', { kind: 'primary', icon: 'upload', onclick: upload })
-          : filePicker(`Pick ${j.name} again to go on`, `It goes on from ${bytes(done)}: chunks already on the server are not sent again.`);
-      return [h('p', { class: 'im-file-name' }, icon('file'), h('span', null, j.name)),
-        progressBar({ bytes_done: done, bytes_total: j.bytes_total, bytes_per_s: speed, eta_s: eta }, { label: 'Uploaded' }),
+        : up.files ? btn('Go on with the upload', { kind: 'primary', icon: 'upload', onclick: upload })
+          : filePicker(many ? `Pick the same ${count(list.length)} files again to go on` : `Pick ${j.name} again to go on`,
+            `It goes on from ${bytes(done)}: chunks already on the server are not sent again.${many ? ' Files already up need not be picked.' : ''}`);
+      const perFile = many ? group(null, list.map((f) => {
+        const d = fileDone(f), whole = d >= f.bytes_total;
+        return infoRow({
+          icon: 'file', tone: whole ? 'teal' : null, name: f.name, cls: 'im-up-row',
+          sub: `${bytes(d)} of ${bytes(f.bytes_total)}`,
+          side: whole ? chip('Done', { tone: 'teal' }) : h('span', { class: 'im-n' }, `${Math.floor(pct(d, f.bytes_total))} %`),
+        });
+      })) : null;
+      return [h('p', { class: 'im-file-name' }, icon('file'), h('span', null, many ? `${count(list.length)} files` : j.name)),
+        progressBar({ bytes_done: done, bytes_total: j.bytes_total, bytes_per_s: speed, eta_s: eta,
+          files_total: many ? list.length : 0, files_done: list.filter((f) => fileDone(f) >= f.bytes_total).length }, { label: 'Uploaded' }),
+        perFile,
         h('div', { class: 'im-acts' }, acts), upErr,
         up.error ? said('bad', up.error) : null];
     }
@@ -672,8 +766,15 @@ export async function mount(ctx) {
     if (isCan(j)) { paintCanReport(j); return; }
     if (isTf(j)) { paintTfReport(j); return; }
     const imported = rep.imported !== false && j.status === 'done';
-    const tables = Object.entries(rep.tables || {}).map(([name, t]) => ({ name, read: t.read || 0, imported: imported ? t.imported || 0 : (t.read || 0) - sum(t.skipped), skipped: sum(t.skipped), blank: sum(t.bad_values), t }));
-    const tot = (k) => tables.reduce((a, r) => a + (r[k] || 0), 0);
+    // a table or count the file does not have is null: a gap, never 0
+    const tables = Object.entries(rep.tables || {}).map(([name, t]) => {
+      t = t || {};
+      const has = t.read != null;
+      const skipped = has || t.skipped ? addUp(Object.values(t.skipped || {})) ?? (has ? 0 : null) : null;
+      const blank = has || t.bad_values ? addUp(Object.values(t.bad_values || {})) ?? (has ? 0 : null) : null;
+      return { name, read: has ? t.read : null, imported: imported ? t.imported ?? null : has ? t.read - (skipped || 0) : null, skipped, blank, t };
+    });
+    const tot = (k) => addUp(tables.map((r) => r[k]));
     const reasons = [];
     for (const r of tables) {
       for (const [code, n] of Object.entries(r.t.skipped || {})) if (n) reasons.push({ table: r.name, kind: 'skipped', n, words: reasonWords(code) });
@@ -692,21 +793,32 @@ export async function mount(ctx) {
 
     const tableTile = tile({ w: 2, title: 'Per table', icon: 'bars' },
       group(null, tables.map((r) => infoRow({
-        name: tableName(r.name), sub: `${count(r.read)} read${r.skipped ? ` · ${count(r.skipped)} skipped` : ''}${r.blank ? ` · ${count(r.blank)} left blank` : ''}`,
-        side: h('span', { class: 'im-n' }, count(r.imported)),
+        name: tableName(r.name), sub: r.read == null ? 'Not in the file' : `${count(r.read)} read${r.skipped ? ` · ${count(r.skipped)} skipped` : ''}${r.blank ? ` · ${count(r.blank)} left blank` : ''}`,
+        side: nSide(r.imported),
       }))),
       note(imported ? 'The number on the right is the rows imported.' : 'The number on the right is the rows the import will store.'));
 
-    const cars = rep.cars || [];
+    // a car left out is not in the report (the server leaves it out too); the matching list still has it
+    const cars = (rep.cars || []).filter((c) => c && c.match !== 'leave_out');
     const carTile = cars.length ? tile({ w: 2, title: 'Per car', icon: 'car' },
       group(null, cars.map((c) => {
-        const here = isCar(c.match) ? carName(c.match) : c.match === 'new' ? 'a new car' : c.match === 'leave_out' ? 'left out' : 'not matched';
+        const here = isCar(c.match) ? carName(c.match) : c.match === 'new' ? 'a new car' : 'not matched';
         return infoRow({
-          icon: 'car', tone: c.match === 'leave_out' ? null : 'coral', name: c.name || `TeslaMate car ${c.tm_car}`,
-          sub: [`Becomes ${here}`, c.match === 'leave_out' ? null : `${count(c.drives)} drives · ${count(c.charges)} charges`].filter(Boolean).join(' · '),
+          icon: 'car', tone: 'coral', name: c.name || `TeslaMate car ${c.tm_car}`,
+          sub: [`Becomes ${here}`, `${cnt(c.drives)} drives · ${cnt(c.charges)} charges`].join(' · '),
           side: isCar(c.match) ? h('a', { class: 'tile-link', href: state.buildUrl('timeline', { car: c.match, period: rep.span ? { from: rep.span.from_ms, to: rep.span.to_ms } : null }) }, 'Timeline', icon('chevronRight')) : null,
         });
       }))) : null;
+
+    // several files: what each one gave
+    const uploads = Array.isArray(rep.uploads) ? rep.uploads : [];
+    const filesTile = uploads.length ? tile({ w: 2, title: 'Files', icon: 'file', side: chip(`${count(uploads.length)} files`) },
+      group(null, uploads.map((u) => infoRow({
+        icon: 'file', name: u.name, cls: 'im-up-row',
+        sub: `${cnt(u.rows_read)} rows read · ${cnt(u.rows_used)} used · ${cnt(u.rows_skipped)} skipped`,
+        side: nSide(u.rows_used),
+      }))),
+      note('The number on the right is the rows used from that file.')) : null;
 
     reportBox.replaceChildren(
       tile({ w: 2, title: 'Report', icon: 'bars', side: statusChip(j.status), cls: 'im-report' },
@@ -719,7 +831,7 @@ export async function mount(ctx) {
         ]),
         rep.span ? h('p', { class: 'set-a' }, h('b', null, `${day(rep.span.from_ms)} to ${day(rep.span.to_ms)}`), `: ${formatDuration(rep.span.to_ms - rep.span.from_ms, { style: 'long' })} of TeslaMate history in the file.`) : null,
         note(imported ? 'Imported rows show on every page, marked as imported.' : 'Nothing is stored until the import is started.')),
-      reasonTile, tableTile, carTile);
+      ...[filesTile, reasonTile, tableTile, carTile].filter(Boolean));
   }
 
   /** The report of a CAN export: logs read, stored or to store, here already and refused (and why), per car key. */
