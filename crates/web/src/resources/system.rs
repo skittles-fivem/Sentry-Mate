@@ -50,8 +50,9 @@ const LICENCES: &[(&str, &str)] = &[
     ("Open Vehicle Monitoring System (Model S signal list)", "MIT"),
 ];
 
-async fn about(State(app): State<AppState>, v: Viewer) -> ApiResult<Json<Value>> {
-    let pack = app.blocking(move |app| Ok(crate::packs::about_ui_pack(app, Some(&v)))).await?;
+async fn about(State(app): State<AppState>, v: Viewer, headers: axum::http::HeaderMap) -> ApiResult<Json<Value>> {
+    let original = crate::packs::original(&headers);
+    let pack = app.blocking(move |app| Ok(crate::packs::about_ui_pack(app, Some(&v), original))).await?;
     let licences: Vec<Value> = LICENCES.iter().map(|(n, l)| json!({ "name": n, "licence": l })).collect();
     Ok(Json(json!({
         "version": SERVER_VERSION,
