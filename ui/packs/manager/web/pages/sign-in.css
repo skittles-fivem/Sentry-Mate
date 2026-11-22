@@ -1,0 +1,3 @@
+/* Sign in (pages/sign-in.js). The card is the app's .auth-card; on a phone it is tighter. */
+:root[data-phone] .auth { min-height: calc(100dvh - round(2rem, var(--e))); }
+:root[data-phone] .auth-card { padding: round(1.5rem, var(--e)) round(1.25rem, var(--e)) round(1.375rem, var(--e)); }
