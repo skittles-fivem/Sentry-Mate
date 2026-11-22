@@ -67,7 +67,7 @@ export async function mount(ctx) {
   const step = (cid, text, ic, rel) => (cid ? linkBtn(text, state.buildUrl('charge', { car: car.id, charge: cid }), { kind: 'soft', icon: ic, cls: `step-${rel}` })
     : h('span', { class: 'btn btn-soft is-off', 'aria-disabled': 'true', title: rel === 'prev' ? 'The first charge recorded' : 'The newest charge' }, icon(ic), h('span', { class: 'btn-text' }, text)));
   ctx.head({ title: placeName(c), actions: [step(c.prev, 'Earlier', 'chevronLeft', 'prev'), step(c.next, 'Later', 'chevronRight', 'next')] });
-  if (live) ctx.events('rows', (ev) => { if (ev.data?.car === car.id && (ev.data.kinds || []).includes('charges')) ctx.reload(); });
+  if (live) ctx.events(['rows'], (ev) => { if (ev.data?.car === car.id && (ev.data.kinds || []).includes('charges')) ctx.reload(); });
 
   /* ------------------------------------------------------------ the line under the header */
   const zone = zoneName(t0, tz);
