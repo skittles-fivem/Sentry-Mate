@@ -215,6 +215,80 @@ fn car_figures(r: &CarReport, imported: bool) -> (u64, u64, Map<String, Value>) 
     (read, if imported { took } else { 0 }, sk.into_iter().map(|(k, v)| (k, json!(v))).collect())
 }
 
+/// A car's own figures per table (`read`, `imported`, `skipped` by reason), so a car left out can be taken out of
+/// the report's totals again ([`without_left_out`]).
+fn car_tables(r: &CarReport, imported: bool) -> Value {
+    r.tables
+        .iter()
+        .map(|(t, x)| {
+            let took = if imported { x.imported } else { 0 };
+            (
+                t.name().to_string(),
+                json!({ "read": x.read, "imported": took, "found": x.imported, "skipped": skipped(x) }),
+            )
+        })
+        .collect::<Map<_, _>>()
+        .into()
+}
+
+/// Takes the cars in `left_out` (TeslaMate car numbers as text) out of a report of [`report_json`] or
+/// [`teslafi_report_json`]: out of its cars and out of its counts, as if the file never held them.
+pub fn without_left_out(report: &mut Value, left_out: &[String]) {
+    if left_out.is_empty() {
+        return;
+    }
+    let Some(cars) = report.get_mut("cars").and_then(Value::as_array_mut) else { return };
+    let (gone, kept): (Vec<Value>, Vec<Value>) = std::mem::take(cars)
+        .into_iter()
+        .partition(|c| c["tm_car"].as_str().is_some_and(|t| left_out.iter().any(|x| x == t)));
+    *cars = kept;
+    let less = |v: &mut Value, by: &Value| {
+        if let (Some(a), Some(b)) = (v.as_u64(), by.as_u64()) {
+            *v = json!(a.saturating_sub(b));
+        }
+    };
+    for c in &gone {
+        if let Some(ts) = c["tables"].as_object() {
+            for (t, f) in ts {
+                let Some(tot) = report.get_mut("tables").and_then(|x| x.get_mut(t)) else { continue };
+                for k in ["read", "imported", "found"] {
+                    if let Some(v) = tot.get_mut(k) {
+                        less(v, &f[k]);
+                    }
+                }
+                if let (Some(sk), Some(fs)) =
+                    (tot.get_mut("skipped").and_then(Value::as_object_mut), f["skipped"].as_object())
+                {
+                    for (why, n) in fs {
+                        if let Some(v) = sk.get_mut(why) {
+                            less(v, n);
+                        }
+                    }
+                }
+            }
+        }
+        if report.get("kind").and_then(Value::as_str) == Some(import::teslafi::KIND) {
+            for k in ["read", "used"] {
+                if let Some(v) = report.pointer_mut(&format!("/rows/{k}")) {
+                    less(v, &c["rows"]);
+                }
+            }
+            if let Some(v) = report.pointer_mut("/found/drives") {
+                less(v, &c["drives"]);
+            }
+            if let Some(v) = report.pointer_mut("/found/charges") {
+                less(v, &c["charges"]);
+            }
+            if let Some(v) = report.get_mut("cars_count") {
+                less(v, &json!(1));
+            }
+        }
+    }
+    if let Some(m) = report.as_object_mut() {
+        m.remove("cars_left_out");
+    }
+}
+
 /// The report of a run as the API writes it. `cars` with their match (`"c1"`, `"new"`, `"leave_out"` or null);
 /// a car left out of an import that ran has its counts null.
 pub fn report_json(r: &Report, reports: &[CarReport], cars: &[(BackupCar, Value)], imported: bool) -> Value {
@@ -230,11 +304,12 @@ pub fn report_json(r: &Report, reports: &[CarReport], cars: &[(BackupCar, Value)
             }),
         );
     }
+    // a table the backup doesn't have is a gap (null), not zero rows
     for t in [Table::Cars, Table::Drives, Table::ChargingProcesses, Table::Positions, Table::Updates, Table::Geofences]
     {
         tables
             .entry(t.name().to_string())
-            .or_insert_with(|| json!({ "read": 0, "imported": 0, "skipped": {}, "bad_values": {} }));
+            .or_insert_with(|| json!({ "read": null, "imported": null, "skipped": {}, "bad_values": {} }));
     }
     let per_car: Vec<Value> = cars
         .iter()
@@ -246,11 +321,12 @@ pub fn report_json(r: &Report, reports: &[CarReport], cars: &[(BackupCar, Value)
                     let (a, b, s) = car_figures(o, imported);
                     (json!(a), json!(b), Value::Object(s))
                 }
-                _ if left_out => (Value::Null, Value::Null, Value::Null),
-                _ => (json!(0), json!(0), json!({})),
+                // left out, or no rows of its own: a gap, not zero
+                _ => (Value::Null, Value::Null, Value::Null),
             };
             json!({ "tm_car": c.tm_car.to_string(), "name": c.name, "match": m, "drives": c.drives,
-                    "charges": c.charges, "read": read, "imported": took, "skipped": sk })
+                    "charges": c.charges, "read": read, "imported": took, "skipped": sk,
+                    "tables": own.map_or(Value::Null, |o| car_tables(o, imported)) })
         })
         .collect();
     json!({
@@ -361,6 +437,10 @@ pub fn teslafi_report_json(
             }
             (a + x.read, b + x.imported, m)
         });
+        // the file has no rows to build it from: a gap, not zero
+        if r.rows_read == 0 {
+            return json!({ "read": null, "imported": null, "found": null, "skipped": {} });
+        }
         json!({ "read": read, "imported": n(took), "found": took, "skipped": skipped })
     };
     let per_car: Vec<Value> = cars
@@ -380,7 +460,8 @@ pub fn teslafi_report_json(
             json!({
                 "tm_car": c.tm_car.to_string(), "name": c.name, "vin_prefix": c.vin_prefix, "match": m,
                 "drives": drives, "charges": charges, "first_ms": first_ms, "last_ms": last_ms,
-                "rows": if left_out && imported { Value::Null } else { json!(rows) },
+                "rows": if (left_out && imported) || own.is_none() { Value::Null } else { json!(rows) },
+                "tables": own.map_or(Value::Null, |o| car_tables(o, imported)),
             })
         })
         .collect();
@@ -420,14 +501,43 @@ pub fn teslafi_report_json(
         "missing_columns": r.missing_columns,
         "unknown_columns": r.unknown_columns,
         "warnings": r.warnings,
+        "uploads": r.uploads,
     })
+}
+
+/// TeslaFi files to read: one upload, or several read as one ([`import::teslafi::import_files`]).
+pub enum TeslafiFiles<R, I> {
+    One(R),
+    Several(I),
+}
+
+impl<R: Read, I: IntoIterator<Item = io::Result<(String, R)>>> TeslafiFiles<R, I> {
+    fn import(
+        self,
+        sink: &mut dyn import::Sink,
+        o: &import::teslafi::Options,
+    ) -> Result<import::teslafi::Report, import::Error> {
+        match self {
+            TeslafiFiles::One(r) => import::teslafi::import(r, sink, o),
+            TeslafiFiles::Several(f) => import::teslafi::import_files(f, sink, o),
+        }
+    }
 }
 
 /// Checks TeslaFi's export: reads it as the import would and stores nothing.
 pub fn teslafi_check<R: Read>(e: &Engine, r: R, s: &TeslafiSettings) -> Result<Checked, import::Error> {
+    teslafi_check_files(e, TeslafiFiles::<R, Vec<io::Result<(String, R)>>>::One(r), s)
+}
+
+/// [`teslafi_check`] of one file or several.
+pub fn teslafi_check_files<R: Read, I: IntoIterator<Item = io::Result<(String, R)>>>(
+    e: &Engine,
+    files: TeslafiFiles<R, I>,
+    s: &TeslafiSettings,
+) -> Result<Checked, import::Error> {
     let mut sink =
         CountSink { engine: e, stand_in: HashMap::new(), cars: Vec::new(), reports: Vec::new(), zones: HashMap::new() };
-    let report = import::teslafi::import(r, &mut sink, &teslafi_options(e, s))?;
+    let report = files.import(&mut sink, &teslafi_options(e, s))?;
     one_each(&mut sink.cars);
     let pairs: Vec<(BackupCar, Value)> = sink.cars.iter().map(|c| (c.clone(), Value::Null)).collect();
     let json = teslafi_report_json(&report, &sink.reports, &pairs, false);
@@ -449,6 +559,16 @@ pub fn teslafi_run<R: Read>(
     m: &Matches,
     s: &TeslafiSettings,
 ) -> Result<TeslafiImported, import::Error> {
+    teslafi_run_files(e, TeslafiFiles::<R, Vec<io::Result<(String, R)>>>::One(r), m, s)
+}
+
+/// [`teslafi_run`] of one file or several.
+pub fn teslafi_run_files<R: Read, I: IntoIterator<Item = io::Result<(String, R)>>>(
+    e: &Engine,
+    files: TeslafiFiles<R, I>,
+    m: &Matches,
+    s: &TeslafiSettings,
+) -> Result<TeslafiImported, import::Error> {
     let mut sink = DbSink::teslafi(e);
     for (tm, to) in &m.to {
         sink.matches.insert(*tm, to.map_or(Match::New, Match::Car));
@@ -456,7 +576,7 @@ pub fn teslafi_run<R: Read>(
     for tm in &m.leave_out {
         sink.matches.insert(*tm, Match::LeaveOut);
     }
-    let r = import::teslafi::import(r, &mut sink, &teslafi_options(e, s));
+    let r = files.import(&mut sink, &teslafi_options(e, s));
     sink.finish();
     let report = r?;
     Ok(TeslafiImported { report, cars: std::mem::take(&mut sink.reports), made: std::mem::take(&mut sink.made) })
