@@ -267,3 +267,4 @@
   .vi-fact { grid-template-columns: minmax(0, 1fr); gap: round(0.125rem, var(--e)); }
   .fw-field { grid-template-columns: minmax(0, 1fr); }
 }
+.car-head .car-sold-flag { vertical-align: middle; font-size: var(--micro); }

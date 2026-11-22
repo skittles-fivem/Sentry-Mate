@@ -2,7 +2,8 @@
 // odometer, place, last seen. The list is sorted and paged by the server (GET /cars); the odometer comes
 // from each listed car's /now. Order keys: [your order] (pinned cars first, then by activity), [activity],
 // [name], [battery]; the pins are this account's (preferences pinned_cars). Updates itself on 'fleet' and
-// 'now' events. Above it: the counts per state, and the cars that need a look.
+// 'now' events. Above it: the counts per state, and the cars that need a look. Sold cars are left out of the
+// list and the counts; "sold cars (n)" at the end shows them, muted, without live state.
 
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
@@ -45,6 +46,8 @@ export async function mount(ctx) {
   let dir = q.dir === 'asc' || q.dir === 'desc' ? q.dir : FIRST_DIR[order];
   let only = ['driving', 'charging', 'parked', 'asleep', 'unknown'].includes(q.state) ? q.state : '';
   const odo = new Map();
+  let showSold = q.sold === '1';
+  const soldSlot = h('div');
 
   const counts = h('div', { class: 'stats', role: 'group', 'aria-label': 'Cars by state' });
   const attn = h('div');
@@ -95,9 +98,45 @@ export async function mount(ctx) {
     title: 'cars', path: 'cars', params: params(), limit: 50, columns, csvName: 'cars',
     cover: ['cars.list.cards', 'cars.list.live_refresh', 'faq.null-panels'],
     rowHref: (c) => state.linkTo('car', { car: c.id }),
-    onPage: (pg, items) => loadOdo(items),
-    empty: () => (only ? empty(`no ${only} car`, h('button', { class: 'btn', type: 'button', onclick: () => setOnly('') }, 'show every state')) : empty('no cars yet', 'the reason and the fix are shown above')),
+    keep: (c) => !state.isSold(c),
+    onPage: (pg, items) => loadOdo(items.filter((c) => !state.isSold(c))),
+    empty: () => (only ? empty(`no ${only} car`, h('button', { class: 'btn', type: 'button', onclick: () => setOnly('') }, 'show every state'))
+      : lastSummary?.sold ? empty('every car is sold', 'sold cars are listed under sold cars below') : empty('no cars yet', 'the reason and the fix are shown above')),
   });
+
+  // sold cars: a muted list at the end, behind "sold cars (n)"
+  let soldCars = null;
+  async function loadSold() {
+    const pg = ctx.api.pager('cars', { sort: 'name' }, { limit: 100 });
+    for (let i = 0; i < 20 && !pg.done; i++) await pg.more();
+    return state.splitSold(pg.items).sold;
+  }
+  async function paintSold(fresh = false) {
+    const n = lastSummary?.sold || 0;
+    if (!n) { replace(soldSlot); return; }
+    const toggle = h('button', { class: 'key', type: 'button', 'aria-pressed': String(showSold), 'aria-expanded': String(showSold), onclick: () => { showSold = !showSold; ctx.setQuery({ sold: showSold ? '1' : null }); paintSold(); } },
+      `sold cars (${formatNumber(n)})`);
+    const line = h('div', { class: 'optline' }, toggle, h('span', { class: 'muted' }, 'not in the list or the counts above; their history stays browsable'));
+    if (!showSold) { replace(soldSlot, line); return; }
+    if (!soldCars || fresh) {
+      replace(soldSlot, line, h('p', { class: 'note' }, 'loading sold cars'));
+      try { soldCars = await loadSold(); } catch (e) { soldCars = null; if (ctx.alive()) replace(soldSlot, line, h('p', { class: 'note' }, `could not load the sold cars: ${e.message}`)); return; }
+      if (!ctx.alive() || !showSold) return;
+    }
+    const t = table(ctx, {
+      title: 'sold cars', rows: soldCars, csv: false, label: 'Sold cars', wrapCls: 'tbl-sec--sold',
+      rowHref: (c) => state.linkTo('car', { car: c.id }),
+      columns: [
+        { key: 'name', label: 'car', ph: 'main', render: (c) => [h('a', { class: 'lnk-plain', href: state.linkTo('car', { car: c.id }) }, c.name || `unnamed ${c.model || 'car'}`), ' ', tag('sold', 'muted')] },
+        { key: 'model', label: 'model', ph: 'sub', render: (c) => [c.model, c.year].filter(Boolean).join(' ') || null },
+        { key: 'sold_date', label: 'sold on', ph: 'num', render: (c) => c.sold_date || 'date not given' },
+        { key: 'seen', label: 'last data', ph: 'sub', grow: true, render: (c) => (c.now?.at_ms ? h('span', { title: when(c.now.at_ms, c.time_zone) }, ago(c.now.at_ms)) : 'no data') },
+        { key: 'from', label: 'data', render: (c) => src(c), value: (c) => srcText(c) },
+      ],
+      empty: () => empty('no sold car'),
+    });
+    replace(soldSlot, line, t.el);
+  }
 
   async function loadOdo(items) {
     const need = items.filter((c) => !odo.has(c.id)).slice(0, 50);
@@ -143,6 +182,7 @@ export async function mount(ctx) {
     if (!ctx.alive()) return;
     lastSummary = s;
     paintCounts(s);
+    paintSold(fresh).catch(() => {});
     const fixes = (setup?.fixes || []).filter((f) => FIX[f.cause]);
     const names = new Map();
     await Promise.all([...new Set(at.items.map((a) => a.car))].map(async (cid) => {
@@ -165,7 +205,7 @@ export async function mount(ctx) {
           h('span', { class: 'ln-what' }, h('span', { class: 'muted' }, 'set-up: '), FIX[f.cause]),
           h('a', { class: 'lnk ln-num', href: f.link || '/settings/cars' }, f.cause === 'import_running' ? 'import' : 'settings')))))
       : null);
-    const none = !(s.cars > 0);
+    const none = !(s.cars > 0) && !(s.sold > 0);
     emptyBox.hidden = !none;
     replace(emptyBox, section({ title: 'no cars' },
       empty('no car to show yet', isAdmin() ? 'a car appears here when its CAN Bridge (SMO) uploads its first log, or when a car of a Tesla account is matched to a new car here' : 'your account may not see any car yet: ask an admin to add one'),
@@ -181,7 +221,7 @@ export async function mount(ctx) {
     head(ctx, { title: 'Fleet', period: false, car: false, extra: h('span', { class: 'muted ph-extra' }, 'updates by itself') }),
     counts, attn, emptyBox,
     h('div', { class: 'optline' }, h('span', { class: 'optline-k' }, 'order:'), orderKeys, orderNote),
-    list.el,
+    list.el, soldSlot,
     note('j / k move through the rows, enter opens the car. Pins and the order are yours; other people keep their own.')));
 
   try { await Promise.all([loadTop(), list.ready]); } catch (e) { ctx.fail(e); return; }

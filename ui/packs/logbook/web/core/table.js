@@ -25,6 +25,7 @@ import { icon, empty as emptyView, errorView, loadingBlock } from './ui.js';
  *   csv: { filename, columns } | false, // client CSV columns (shared/csv.js column()); server CSV needs nothing
  *   empty: () => node,                // what to say when nothing matches (say which filter removed it all)
  *   rowAttrs(row) -> attrs,           // a class, a data- value, a cover id for a row
+ *   keep(row) -> bool,                // rows loaded but not shown (and not counted), such as sold cars
  *   onRows(items, page),              // after each page arrives (summaries in the answer: page.summary)
  *   onSort({ key, dir }),             // a column head was clicked, before the rows load again in that order
  *   caption: node,                    // extra text after the count
@@ -117,14 +118,17 @@ export function dataTable(ctx, opts) {
     return tr;
   }
   function items() { return pager ? pager.items : rows; }
+  const kept = (list) => (opts.keep ? list.filter(opts.keep) : list);
   function draw() {
-    const list = pager && !clientSorted() ? pager.items : sortedClient(items() || []);
+    const list = kept(pager && !clientSorted() ? pager.items : sortedClient(items() || []));
     body.replaceChildren(...list.map(rowEl));
-    const n = (items() || []).length;
+    const loaded = (items() || []).length;
+    const n = list.length;
+    const left = loaded - n; // loaded but not shown: the total counts them too
     const [one, many] = itemName;
     const word = (x) => (x === 1 ? one : many);
     if (pager) {
-      count.textContent = total != null ? `${formatNumber(total)} ${word(total)}` : pager.done ? `${formatNumber(n)} ${word(n)}` : `${formatNumber(n)} ${many} shown, more to load`;
+      count.textContent = total != null ? `${formatNumber(total - left)} ${word(total - left)}` : pager.done ? `${formatNumber(n)} ${word(n)}` : `${formatNumber(n)} ${many} shown, more to load`;
       if (!pager.done && clientSorted()) count.textContent += `; sorted within the ${formatNumber(n)} shown`;
       more.hidden = pager.done;
     } else {

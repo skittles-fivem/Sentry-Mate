@@ -8,6 +8,7 @@ synthetic cars come from an index that is already in order (activity) or cached 
 from __future__ import annotations
 
 import bisect
+import datetime as dt
 import secrets
 
 from ..conventions import bad_cursor, decode_cursor, encode_cursor, nk, page
@@ -193,7 +194,11 @@ def fleet_summary(req):
     by = dict.fromkeys(STATES, 0)
     stale = 0
     ids = list(ds.featured) if acc["cars"] == "all" else [c for c in acc["cars"] if ds.exists(c)]
+    sold = 0
     for cid in ids:
+        if st.car_meta(cid)["sold"]:
+            sold += 1
+            continue
         it = list_item(req.app, cid, req.now)
         by[it["now"]["state"]] += 1
         stale += 1 if it["now"]["stale"] else 0
@@ -202,7 +207,7 @@ def fleet_summary(req):
         for k, v in sby.items():
             by[k] += v
         stale += sst
-    return {"cars": st.visible_car_count(acc), "by_state": by, "stale": stale}
+    return {"cars": st.visible_car_count(acc) - sold, "by_state": by, "stale": stale, "sold": sold}
 
 
 def _att_key(a):
@@ -233,7 +238,8 @@ def fleet_attention(req):
     rows = []
     ids = list(ds.featured) if acc["cars"] == "all" else [c for c in acc["cars"] if ds.exists(c)]
     for cid in ids:
-        rows += attention(req.app, cid, req.now)
+        if not req.store.car_meta(cid)["sold"]:
+            rows += attention(req.app, cid, req.now)
     if not (acc["cars"] == "all" and ds.synthetic.count):
         items, nxt = page(req, rows, key=_att_key, reverse=True)
         return {"items": items, "next": nxt}
@@ -337,6 +343,10 @@ def typed_over(item, meta):
         item["model"] = _typed(meta, "model")
     if _typed(meta, "model_year") is not None:
         item["year"] = int(_typed(meta, "model_year"))
+    item["sold"] = meta.get("sold", False)
+    item["sold_date"] = meta.get("sold_date")
+    if item["sold"]:  # a sold car is not watched any more
+        item["attention"] = []
     return item
 
 
@@ -425,7 +435,7 @@ def patch_car(req):
     req.version_check(meta["version"])
     bad, rule = {}, {}
     for k in body:
-        if k not in ("version", "name", "time_zone", "config"):
+        if k not in ("version", "name", "time_zone", "config", "sold", "sold_date"):
             bad[k] = "Unknown field."
     if "name" in body:
         if not isinstance(body["name"], str):
@@ -437,6 +447,15 @@ def patch_car(req):
             bad["time_zone"] = "Must be text."
         elif not valid_zone(body["time_zone"]):
             rule["time_zone"] = "Not a known time zone (for example Europe/Amsterdam)."
+    if "sold" in body and not isinstance(body["sold"], bool):
+        bad["sold"] = "Must be true or false."
+    if "sold_date" in body and body["sold_date"] is not None:
+        try:
+            dt.date.fromisoformat(body["sold_date"])
+            if len(body["sold_date"]) != 10:
+                raise ValueError
+        except (TypeError, ValueError):
+            rule["sold_date"] = "A date (YYYY-MM-DD), or null."
     cfg = body.get("config")
     if cfg is not None:
         if not isinstance(cfg, dict):
@@ -459,6 +478,12 @@ def patch_car(req):
             over["name"] = body["name"].strip()
         if "time_zone" in body:
             over["time_zone"] = body["time_zone"]
+        if "sold" in body:
+            over["sold"] = body["sold"]
+            if not body["sold"]:
+                over.pop("sold_date", None)
+        if "sold_date" in body and over.get("sold"):
+            over["sold_date"] = body["sold_date"]
         for k, v in (cfg or {}).items():
             if v is None:
                 over.setdefault("config", {}).pop(k, None)
@@ -469,6 +494,8 @@ def patch_car(req):
     st.record(req.account, "car.update", f"car:{cid}", f"Changed {what} of {st.car_meta(cid)['name']}.")
     if "name" in body:
         req.app.events.publish("fleet", {"car": cid, "change": "renamed", "name": over["name"]}, car=cid)
+    if "sold" in body:
+        req.app.events.publish("fleet", {"car": cid, "change": "sold", "name": None}, car=cid)
     return car_detail(req)
 
 

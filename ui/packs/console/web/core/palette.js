@@ -110,7 +110,10 @@ export function openPalette() {
     try {
       const p = await api.page('cars', { sort: 'name', search: q.value.trim() || undefined }, { limit: 20 });
       if (my !== cseq) return;
-      cars = p.items.map((c) => ({ kind: 'car', label: c.name || c.id, href: state.linkForCar(c.id), path: `cars/${slug(c.name)}`, words: `${c.model || ''} ${c.id}` }));
+      // sold cars only when searched for (or the one open), marked sold
+      const text = q.value.trim();
+      cars = p.items.filter((c) => text || !state.isSold(c) || c.id === s.car)
+        .map((c) => ({ kind: 'car', label: state.isSold(c) ? `${c.name || c.id} (sold)` : c.name || c.id, href: state.linkForCar(c.id), path: `cars/${slug(c.name)}`, words: `${c.model || ''} ${c.id}${state.isSold(c) ? ' sold' : ''}` }));
       paint();
     } catch { /* the list works without cars */ }
   }

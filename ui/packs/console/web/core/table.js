@@ -14,6 +14,7 @@
 //     columns: [{ key, label, num, sort, firstDir, render(row), value(row), title, cover, ph, desk, cls, total(page, rows) }],
 //     sort: { key, dir }, onSort({ key, dir }),
 //     rowHref(row), empty(), onPage(page), csv: true | false, csvName,
+//     keep(row),                                 an API list: only the rows it says yes to are shown (and counted)
 //   });
 //   t.el; await t.ready; t.reload(params); t.rows();
 
@@ -25,6 +26,7 @@ import { section } from './ui.js';
 
 export function table(ctx, opts) {
   const { rowHref = null, limit = 50 } = opts;
+  const kept = (rows) => (opts.keep && !opts.rows ? rows.filter(opts.keep) : rows);
   const allCols = opts.columns;
   const columns = allCols.filter((c) => c.desk !== false);   // desk: false = only in the phone row
   let params = { ...(opts.params || {}) };
@@ -111,8 +113,8 @@ export function table(ctx, opts) {
 
   function paintRows(rows, fresh, allRows = null) {
     if (fresh) replace(tbody);
-    tbody.append(...rows.map(rowEl));
-    const all = allRows || (opts.rows ? rows : items);
+    tbody.append(...kept(rows).map(rowEl));
+    const all = allRows || (opts.rows ? rows : kept(items));
     replace(status, all.length ? null : (opts.empty ? opts.empty() : emptyLine('nothing here')));
     tbl.hidden = !all.length;
     sortLine.hidden = all.length < 2;
@@ -141,8 +143,9 @@ export function table(ctx, opts) {
   }
 
   function paintCount(done) {
-    const n = opts.rows ? Math.min(localShown, opts.rows.length) : items.length;
-    const total = pager?.last?.total;
+    const n = opts.rows ? Math.min(localShown, opts.rows.length) : kept(items).length;
+    const left = items.length - n;   // rows keep() left out: not in the total either
+    const total = pager?.last?.total == null ? null : done ? n : pager.last.total - left;
     const all = opts.rows ? opts.rows.length : total;
     count.textContent = `${formatNumber(n)}${!done ? '+' : ''}${all != null && all !== n ? ` of ${formatNumber(all)}` : ''} ${(all ?? n) === 1 ? 'row' : 'rows'}`;
     if (opts.csv !== false && opts.path) {
@@ -199,7 +202,7 @@ export function table(ctx, opts) {
     setRows(rows) { opts.rows = rows; load(); },
     /** Draw the rows again from what is loaded (a cell's data changed). */
     repaint() { if (opts.rows) paintLocal(); else paintRows(items, true); },
-    rows: () => (opts.rows ? sortedLocal() : items),
+    rows: () => (opts.rows ? sortedLocal() : kept(items)),
     last: () => pager?.last || null,
   };
 }

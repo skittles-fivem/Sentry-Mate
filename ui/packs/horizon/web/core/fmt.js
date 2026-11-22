@@ -49,6 +49,7 @@ export const stateWord = (s) => (STATES[s] || STATES.unknown).word;
 export const carLine = (c) => [c?.model, c?.year].filter(Boolean).join(SEP);
 /** 'Driving · 64 %' or 'Last known: parked' for a car list item. */
 export function carStatus(c) {
+  if (c?.sold) return c.sold_date ? `Sold on ${c.sold_date}` : 'Sold';
   const n = c?.now || {};
   const known = n.state && n.state !== 'unknown';
   const s = n.stale && known ? `Last known: ${stateWord(n.state).toLowerCase()}` : stateWord(n.state);

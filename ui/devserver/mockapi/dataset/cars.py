@@ -145,3 +145,27 @@ def featured_specs():
         ],
     )
     return [c1, c2, c3]
+
+
+def sold_spec():
+    """c0, an older car the owner sold: its history came from a made-up TeslaMate backup and ends 210 days ago.
+    It is marked sold (with a date) from the start."""
+    return CarSpec(
+        id="c0", n=0, name="Ember", model="Model 3", year=2019, trim="Long Range AWD", vin_prefix="5YJ3E1EB0KF",
+        profile="tesla-3y", time_zone="America/Los_Angeles", area=EB, chemistry="nca_nmc",
+        full_new_kwh=75.0, full_start_kwh=71.0, full_now_kwh=69.8, buffer_kwh=3.0, full_range_new_km=499.0,
+        rated_wh_per_km=150.0, ideal_factor=1.08, base_wh_per_km=158.0, mass_kg=1850, cda=0.53, crr=0.0092,
+        charge_limit=90, home="p50", work="p51", home_ac=(240, 32, 1), dc_peak_kw=150, dc_knee=(0.10, 0.40),
+        odo_start_km=61200.0, soc_start=70.0, tyre_rec_kpa=290, tyre_base=None,
+        history_days=420, cooldown=0.013, asleep_kw=0.02, sentry_at_work=0.0, scheduled_charging=False,
+        config={"trim": ("Long Range AWD", "teslamate"), "drivetrain": ("AWD", "vin"),
+                "performance_package": (False, "vin"), "pack_kwh_code": (None, None),
+                "wheel": ("18 in Aero", "teslamate"), "paint": ("Deep Blue", "teslamate"), "roof": (None, None),
+                "spoiler": (None, None), "right_hand_drive": (False, "vin"),
+                "map_region": ("North America", "teslamate"), "supercharging_access": ("Paid", "teslamate")},
+        updates=[(-380, "2025.14.6", "teslamate", "teslamate")],
+        first_version=("2025.2.7", "teslamate"),
+        special={"can_from": 30, "silent_from_h": 210 * 24.0},
+        gaps=[],
+        sold_date_days=-209,
+    )

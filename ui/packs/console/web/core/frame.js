@@ -232,8 +232,8 @@ export async function update({ s, info, car, period, tz = null }) {
     if (!carId) {
       // no car opened yet in this browser: the first car, so the link row has the car pages
       try {
-        const p = await api.get('cars', { sort: 'name', limit: 1 }, { maxAgeMs: 60000 });
-        const c = p.items?.[0];
+        const p = await api.get('cars', { sort: 'name', limit: 20 }, { maxAgeMs: 60000 });
+        const c = (p.items || []).find((x) => !state.isSold(x)) || p.items?.[0];   // a sold car only when no other
         if (c) { carId = c.id; names.set(c.id, slug(c.name || c.id)); }
       } catch { /* no car pages then */ }
       if (state.current() !== s) return;

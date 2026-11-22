@@ -319,3 +319,15 @@ export function startRouting({ root = globalThis.document } = {}) {
   root.addEventListener('click', onClick);
   return () => { w.removeEventListener('popstate', onPop); root.removeEventListener('click', onClick); };
 }
+
+/**
+ * Sold cars (`sold: true` on a /cars item): their history stays browsable, but car pickers, the car switcher and
+ * fleet cards leave them out by default and show them behind a "Sold cars (n)" toggle.
+ * splitSold(items) -> { active: [...], sold: [...] }, each in the order given.
+ */
+export function isSold(car) { return !!(car && car.sold); }
+export function splitSold(items = []) {
+  const active = [], sold = [];
+  for (const c of items || []) (isSold(c) ? sold : active).push(c);
+  return { active, sold };
+}

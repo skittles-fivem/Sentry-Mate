@@ -5,7 +5,8 @@
 // what it reports about itself (GET / PATCH /api/v1/cars/{car}), how its uploads are doing in plain words
 // with the next step (health, upload tokens, CAN Bridge keys), its tokens (made here, the secret shown
 // once), the keys tied to it with a preferred one, the keys no car has yet, its time zone, its battery
-// chemistry with the evidence, and free Supercharging as dated ranges (GET / PATCH .../settings).
+// chemistry with the evidence, and free Supercharging as dated ranges (GET / PATCH .../settings). An admin
+// marks a car sold, with an optional date, or not sold again (PATCH sold, sold_date).
 // Every change saves at once, with the object's version, and a short note confirms it.
 // Without a car: the car list, keys waiting for a car, and how a car appears (the empty state).
 
@@ -161,9 +162,10 @@ function carRail(ctx, current) {
       cell: (c) => h('a', { class: ['sc-car-link', { 'is-current': c.id === currentId }], href: settingsUrl(c.id), 'aria-current': c.id === currentId ? 'page' : null },
         h('span', { class: 'cell-main' }, c.name || c.vin_prefix || c.id),
         h('span', { class: 'cell-sub' }, [c.model, c.year].filter(Boolean).join(' '), c.vin_prefix ? [sep(), h('span', { class: 'mono' }, c.vin_prefix)] : null),
-        c.now ? h('span', { class: 'cell-sub' }, stateMark(c.now.state, { stale: c.now.stale })) : null),
+        state.isSold(c) ? h('span', { class: 'cell-sub' }, flag('Sold'), c.sold_date ? ` ${formatDayKey(c.sold_date, { weekday: false })}` : null)
+          : c.now ? h('span', { class: 'cell-sub' }, stateMark(c.now.state, { stale: c.now.stale })) : null),
     }],
-    rowAttrs: (c) => ({ class: c.id === currentId ? 'is-current' : null }),
+    rowAttrs: (c) => ({ class: [{ 'is-current': c.id === currentId, 'is-sold': state.isSold(c) }] }),
     onRows: () => drawEditing(),
     empty: () => empty({ title: input.value.trim() ? `No car matches “${input.value.trim()}”.` : 'No car yet.', text: input.value.trim() ? 'Try part of the name, the model or the VIN prefix.' : null }),
   });
@@ -432,8 +434,38 @@ async function mountCar(ctx) {
     [car.model, car.year].filter(Boolean).join(' ') || 'Model not known yet', car.trim ? [sep(), car.trim] : null,
     car.vin_prefix ? [sep(), 'VIN ', h('span', { class: 'mono' }, car.vin_prefix), h('span', { class: 'sc-quiet' }, ' (prefix only: model and year come from it)')] : null);
 
+  /* ---------- sold */
+  const sold = state.isSold(car);
+  const soldWords = sold ? (car.sold_date ? `Sold on ${formatDayKey(car.sold_date, { weekday: false })}` : 'Sold (date not given)') : 'Not sold';
+  const soldDate = field({ label: sold ? 'Sold on' : 'Sold on (optional)', name: 'sold_date', type: 'date', value: car.sold_date || '', attrs: { disabled: ro, max: dayKey(api.now(), car.time_zone || undefined) } });
+  /** PATCH sold / sold_date; 409 and 422 as for the name. */
+  async function saveSold(body, text) {
+    setFieldError(soldDate, null);
+    try { await patchCar(body); afterCarChange(text); }
+    catch (err) { if (carConflict(err, 'sold state')) return; setFieldError(soldDate, (err.fields && (err.fields.sold_date || err.fields.sold)) || err.message); }
+  }
+  const dateOrNull = () => soldDate.control.value || null;
+  if (sold && !ro) {
+    soldDate.control.addEventListener('change', () => {
+      const d = dateOrNull();
+      if (d === (car.sold_date || null)) return;
+      saveSold({ sold_date: d }, d ? `Saved: ${car.name} was sold on ${formatDayKey(d, { weekday: false })}.` : `Saved: ${car.name} is sold, with no date.`);
+    });
+  }
+  const markSold = ro ? null : sold
+    ? button('Mark as not sold', { onclick: () => saveSold({ sold: false, sold_date: null }, `Saved: ${car.name} is not sold; it is listed and watched again.`) })
+    : button('Mark as sold', { onclick: () => { const d = dateOrNull(); saveSold({ sold: true, sold_date: d }, `Saved: ${car.name} is marked sold${d ? ` on ${formatDayKey(d, { weekday: false })}` : ''}.`); } });
+  const soldControl = h('div', { class: 'sc-stack sc-sold' },
+    h('p', { class: ['sc-setting-value', { 'sc-sold-on': sold }] }, sold ? flag('Sold') : null, sold ? ' ' : null, soldWords),
+    ro ? null : soldDate,
+    markSold ? h('p', null, markSold) : null,
+    h('p', { class: 'sc-setting-note' }, sold
+      ? 'Its history stays, browsable as before. It is out of the fleet totals and the car picker’s first list, raises nothing to look at, and the Tesla API and TeslaFi store nothing more for it.'
+      : ro ? 'An admin marks a car sold.' : 'Pick the date if you know it, then press Mark as sold. Its history stays; it leaves the fleet totals and raises nothing to look at.'));
+
   const carSection = section({ title: 'The car', note: ro ? 'read only for your account' : 'saved as you leave the field', id: 'sc-car' },
     setting('Name', 'Sentry Mate never asks Tesla for a name: the car is called what you type here.', nameField),
+    setting('Sold', 'A car you no longer have. Mark it sold to keep its history without listing it with the cars you drive.', soldControl, { cls: 'sc-setting-sold' }),
     setting('Model', null, facts),
     h('div', { class: 'sc-config' }, h('h3', { class: 'sc-sub' }, 'What the car reports about itself'),
       note('Read from the car’s own configuration message on the CAN bus, else worked out from the VIN prefix.'), configTable.el));
@@ -740,7 +772,7 @@ async function mountCar(ctx) {
       : ' Every change saves at once, for everyone who sees this car; a short note at the top confirms it. There is no Save button.'),
     carSection, uploads, tzSection, batterySection, chargingSection);
   ctx.main.append(
-    pageHead({ eyebrow: crumbs(car), title: car.name, deck: ctx.info.purpose,
+    pageHead({ eyebrow: crumbs(car), title: sold ? [car.name, ' ', flag('Sold')] : car.name, deck: ctx.info.purpose,
       aside: h('p', { class: 'sc-as-of' }, car.last_activity_ms ? ['Last heard ', ago(car.last_activity_ms)] : 'Not heard from yet') }),
     h('div', { class: ['sc-layout', 'sc-layout-car'] }, rail.el, mainCol));
   await Promise.all([rail.table.load(), configTable.load(), uploads.load ? uploads.load() : null]);

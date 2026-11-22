@@ -20,6 +20,7 @@ import { errorWords } from './states.js';
  *   sort: { key, dir: 'asc' | 'desc' }, the first order (key: a column key)
  *   onSort(sort),                      called when the person sorts by a header ({ key, dir })
  *   rowHref(row),                       a row opens this page
+ *   rowClass(row),                      more classes for a row (a string, or null)
  *   empty(),                            what to show when there are no rows (say why)
  *   csv: true | false | { filename, columns: [{ label, value(row) }], all }   (true: the server's CSV;
  *                                       an object: CSV from the columns' csv specs, all: every page of an API list)
@@ -85,7 +86,7 @@ export function dataTable(ctx, opts) {
 
   function rowEl(r) {
     const href = rowHref ? rowHref(r) : null;
-    const tr = h('tr', { class: href ? 'is-link' : null }, columns.map((c) => h('td', { class: [c.num && 'is-num', c.cls] }, c.render ? c.render(r) : r[c.key] ?? '—')));
+    const tr = h('tr', { class: [href && 'is-link', opts.rowClass?.(r)] }, columns.map((c) => h('td', { class: [c.num && 'is-num', c.cls] }, c.render ? c.render(r) : r[c.key] ?? '—')));
     if (href) {
       tr.addEventListener('click', (e) => {
         if (e.defaultPrevented || e.target.closest('a, button, input, select, label')) return;

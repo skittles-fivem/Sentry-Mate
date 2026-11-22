@@ -8,7 +8,7 @@
 
 import { h } from '../shared/dom.js';
 import { format, rangeValue, rangeLabel } from '../shared/units.js';
-import { formatTime, formatDate, dayKey } from '../shared/time.js';
+import { formatTime, formatDate, dayKey, formatDayKey } from '../shared/time.js';
 import { tn } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
@@ -84,10 +84,26 @@ function carTile(c, attention) {
       codes.length ? h('span', { class: 'item-flags' }, codes.map((k) => chip((ATTN[k] || [k.replace(/_/g, ' ')])[0], { tone: (ATTN[k] || [0, 'sun'])[1] }))) : null));
 }
 
+/** A sold car: muted, a Sold badge and its date, no live state, battery or attention. Its pages stay open. */
+function soldTile(c) {
+  return tile({ w: 2, href: state.buildUrl('car', { car: c.id }), cls: ['car-tile', 'is-sold'], label: `${c.name || 'Unnamed car'}: sold` },
+    h('div', { class: 'car-tile-main' },
+      h('span', { class: 'avatar sold-avatar', 'aria-hidden': 'true' }, (c.name || '?').slice(0, 1).toUpperCase()),
+      h('div', { class: 'car-tile-text' },
+        h('p', { class: 'car-tile-name' }, c.name || 'Unnamed car'),
+        h('p', { class: 'car-tile-model' }, [c.year, c.model, c.trim].filter(Boolean).join(' ') || c.vin_prefix || c.id),
+        h('p', { class: 'car-tile-state' }, chip('Sold', { tone: 'muted' }), h('span', { class: 'car-tile-where' }, c.sold_date ? `Sold on ${formatDayKey(c.sold_date, { weekday: false })}` : 'Sold'))),
+    ),
+    h('div', { class: 'car-tile-foot' },
+      h('span', { class: 'car-tile-age' }, icon('pulse'), 'Last heard ', ago(c.last_activity_ms)),
+      h('span', { class: 'muted' }, 'History kept')));
+}
+
 export async function mount(ctx) {
   const q = ctx.query;
   let sort = SORTS.some(([k]) => k === q.sort) ? q.sort : 'custom';
   const isAdmin = ctx.admin;
+  const summaryP = ctx.api.get('fleet/summary').catch(() => null);
   const attnP = ctx.api.get('fleet/attention', { limit: 50 }).then((r) => r.items || [], () => []);
   let pager = null;
   let attention = [];
@@ -106,20 +122,44 @@ export async function mount(ctx) {
   }
   const first = await load();
   attention = await attnP;
+  let soldCount = (await summaryP)?.sold;
   if (!ctx.alive()) return {};
   if (!first.items.length) return emptyFleet(ctx, isAdmin);
 
+  // Sold cars wait at the end behind 'Sold cars (n)'; summary.sold counts them, else the ones loaded so far.
+  let showSold = false;
+  const soldBtn = btn('Sold cars', { kind: 'soft', icon: 'chevronDown', onclick: () => { showSold = !showSold; drawSold(); } });
+  const soldBar = h('div', { class: 'fleet-sold-bar w-full' }, soldBtn);
+  const soldBox = h('div', { class: 'fleet-sold w-full' }, soldBar); // its own grid, so sold tiles never fill gaps above
+  const soldTiles = [];
+  function drawSold() {
+    const loaded = state.splitSold(pager.items).sold.length;
+    const n = typeof soldCount === 'number' ? Math.max(soldCount, loaded) : loaded;
+    soldBox.hidden = !n;
+    soldBtn.querySelector('.btn-text').textContent = `${showSold ? 'Hide sold cars' : 'Sold cars'} (${n})`;
+    soldBtn.setAttribute('aria-expanded', String(showSold));
+    soldBtn.querySelector('.ic')?.replaceWith(icon(showSold ? 'chevronUp' : 'chevronDown'));
+    for (const el of soldTiles) el.hidden = !showSold;
+  }
   const more = moreButton(async () => { const before = pager.items.length; await pager.more(); drawFrom(before); return !pager.done; }, { text: 'Show more cars' });
   function drawFrom(start = 0) {
-    if (start === 0) { tiles.clear(); ctx.view.replaceChildren(); }
+    if (start === 0) { tiles.clear(); soldTiles.length = 0; soldBox.replaceChildren(soldBar); ctx.view.replaceChildren(); }
+    if (!more.isConnected) ctx.view.append(more);
+    if (!soldBox.isConnected) ctx.view.append(soldBox);
+    if (!missing.isConnected) ctx.view.append(missing);
     for (const c of pager.items.slice(start)) {
+      if (state.isSold(c)) {
+        const el = soldTile(c);
+        soldTiles.push(el);
+        soldBox.append(el);
+        continue;
+      }
       const el = carTile(c, attention);
       tiles.set(c.id, { car: c, el });
-      ctx.view.insertBefore(el, more.isConnected ? more : null);
+      ctx.view.insertBefore(el, more);
     }
-    if (!more.isConnected) ctx.view.append(more);
     more.querySelector('button').hidden = pager.done;
-    if (!missing.isConnected) ctx.view.append(missing);
+    drawSold();
   }
   const missing = missingTile(ctx, isAdmin);
   drawFrom(0);
@@ -140,7 +180,7 @@ export async function mount(ctx) {
       ctx.setQuery({ sort: val === 'custom' ? null : val });
       await load(); drawFrom(0); drawOrder();
     } });
-    const rows = sort === 'custom' ? pager.items.map((c, i, all) => h('div', { class: 'row order-row' },
+    const rows = sort === 'custom' ? pager.items.filter((c) => !state.isSold(c)).map((c, i, all) => h('div', { class: 'row order-row' },
       h('span', { class: ['avatar', `st-${c.now?.state || 'unknown'}`], 'aria-hidden': 'true' }, (c.name || '?').slice(0, 1).toUpperCase()),
       h('span', { class: 'row-text' }, h('span', { class: 'row-name' }, c.name || 'Unnamed car'), h('span', { class: 'row-sub' }, [c.year, c.model].filter(Boolean).join(' '))),
       h('span', { class: 'row-side' },
@@ -151,10 +191,13 @@ export async function mount(ctx) {
       pager.done ? null : h('p', { class: 'sheet-note' }, 'Only the cars shown so far are listed; show more on the page to move the rest.'));
   }
   async function move(i, step) {
-    const list = pager.items.map((c) => c.id);
+    // the order sheet lists the unsold cars; sold ones keep their place after them
+    const { active: unsold, sold } = state.splitSold(pager.items);
+    const list = unsold.map((c) => c.id);
     const j = i + step;
     if (j < 0 || j >= list.length) return;
     [list[i], list[j]] = [list[j], list[i]];
+    list.push(...sold.map((c) => c.id));
     const pinned = new Set(currentPrefs()?.pinned_cars || []);
     try {
       await savePref({ car_order: list.filter((x) => !pinned.has(x)), pinned_cars: list.filter((x) => pinned.has(x)) });
@@ -167,7 +210,14 @@ export async function mount(ctx) {
   let again = 0;
   ctx.onCleanup(() => clearTimeout(again));
   ctx.events(['now', 'fleet'], (ev) => {
-    if (ev.type === 'fleet') { clearTimeout(again); again = setTimeout(async () => { await load(); drawFrom(0); }, 500); return; }
+    if (ev.type === 'fleet') {
+      clearTimeout(again);
+      again = setTimeout(async () => {
+        if (ev.data?.change === 'sold') soldCount = (await ctx.api.get('fleet/summary', null, { maxAgeMs: 0 }).catch(() => null))?.sold;
+        await load(); drawFrom(0);
+      }, 500);
+      return;
+    }
     const d = ev.data || {};
     const t = tiles.get(d.car);
     if (!t || !d.now) return;

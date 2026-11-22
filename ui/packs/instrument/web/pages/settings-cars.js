@@ -40,6 +40,8 @@ const yesNo = (v) => (v === true ? 'Yes' : v === false ? 'No' : v);
 const setting = (titleText, text, control, cv = null) => h('div', { class: 'setting', cover: cv },
   h('div', null, h('h3', null, titleText), text ? h('p', null, text) : null), h('div', { class: 'setting-control' }, control));
 
+const soldText = (c) => (c.sold_date ? `Sold on ${c.sold_date}` : 'Sold (date not given)');
+
 // the sentence for an error that did not land under a field
 const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : errorWords(e).text);
 
@@ -121,7 +123,7 @@ async function mountIndex(ctx) {
     side: h('input', { class: 'input sc-search', type: 'search', placeholder: 'Find a car', 'aria-label': 'Find a car',
       oninput: (e) => { clearTimeout(e.target._t); e.target._t = setTimeout(() => table.setParams({ search: e.target.value.trim() || null }), 200); } }),
     columns: [
-      { key: 'name', label: 'Car', render: (c) => h('a', { class: 'link', href: state.buildUrl('settings-cars', { car: c.id }) }, c.name) },
+      { key: 'name', label: 'Car', render: (c) => [h('a', { class: 'link', href: state.buildUrl('settings-cars', { car: c.id }) }, c.name), state.isSold(c) ? [' ', tag('Sold', 'plain')] : null], csv: (c) => c.name },
       { key: 'model', label: 'Model and year', render: (c) => carMeta(c) || '—', csv: (c) => carMeta(c) },
       { key: 'vin_prefix', label: 'VIN prefix', render: (c) => h('span', { class: 'mono' }, c.vin_prefix || '—') },
       { key: 'time_zone', label: 'Time zone', render: (c) => c.time_zone || '—' },
@@ -319,7 +321,7 @@ async function mountCar(ctx) {
     const next = pageHead({
       eyebrow: S.car.name, title: ctx.info.title, purpose: ctx.info.purpose,
       back: { href: state.buildUrl('settings-cars'), label: 'All cars' },
-      sub: [carMeta(S.car) || null, S.car.vin_prefix ? `VIN ${S.car.vin_prefix}…` : null, `Times in ${tzName(tz())}`],
+      sub: [S.car.sold ? soldText(S.car) : null, carMeta(S.car) || null, S.car.vin_prefix ? `VIN ${S.car.vin_prefix}…` : null, `Times in ${tzName(tz())}`],
       actions: [h('a', { class: 'btn btn--sm', href: state.buildUrl('car', { car: cid }) }, icon('gauge', 'ico--sm'), 'Car overview')],
     });
     next.querySelector('.back')?.setAttribute('data-cover', 'web.settings.car.breadcrumb');
@@ -334,7 +336,8 @@ async function mountCar(ctx) {
   function paintCar() {
     const c = car();
     const list = (S.cars?.items || []).map((x) => (x.id === cid ? { ...x, name: c.name } : x)); // a rename shows here at once
-    const shown = list.some((x) => x.id === cid) ? list : [c, ...list.slice(0, 7)];
+    const unsold = list.filter((x) => x.id === cid || !state.isSold(x)); // sold cars only through the switcher
+    const shown = unsold.some((x) => x.id === cid) ? unsold : [c, ...unsold.slice(0, 7)];
     const picker = h('div', { class: 'sc-picker', cover: 'web.settings.car.car-switcher' },
       h('div', { class: 'seg sc-cars', role: 'group', 'aria-label': 'Whose settings' },
         shown.map((x) => h('a', { class: 'seg-btn', href: state.buildUrl('settings-cars', { car: x.id }), 'aria-pressed': String(x.id === cid), 'aria-current': x.id === cid ? 'page' : null }, x.name))),
@@ -362,8 +365,27 @@ async function mountCar(ctx) {
         [picker, h('p', { class: 'setting-note', cover: 'web.settings.car.empty-state' }, icon('info', 'ico--sm'), ' A new car appears here by itself once its CAN Bridge has uploaded its first log, or when a Tesla account\'s car is matched to a new car. ',
           h('a', { class: 'link', href: state.buildUrl('settings-cars') }, 'How a car appears'), '.')]),
       setting('Name', 'Sentry Mate never reads a name from Tesla: you name the car. Until then it shows its model and VIN prefix.', name.el),
+      setting('Sold', 'A sold car keeps all its history, browsable as before. It leaves the fleet cards and car pickers (behind "Sold cars"), raises no attention items, and no input reads it any more.', soldControl(c)),
       setting('What the car reports', `Read from the car's build message on the vehicle bus (SMO), with model and year from the VIN prefix; a value only the Tesla API gave says so. ${missing.length ? `Not reported: ${missing.join(', ')}.` : ''}`,
         kv(rows))));
+  }
+
+  /* ---- Sold: the state, and for admins mark sold (optional date) or not sold */
+  function soldControl(c) {
+    const state_ = h('p', { class: ['sc-sold-state', c.sold && 'is-sold'] }, icon(c.sold ? 'flag' : 'car', 'ico--sm'), ' ', c.sold ? h('b', null, soldText(c)) : 'Not sold. The car shows everywhere.');
+    if (ro) return state_;
+    const today = new Date().toISOString().slice(0, 10);
+    const day = field({ label: c.sold ? 'Sold date' : 'Sold date (optional)', name: 'sc-sold-date', type: 'date', path: 'sold_date', value: c.sold_date || '', hint: c.sold ? 'Change it, or clear it if not known.' : 'Leave empty if not known.', attrs: { max: today } });
+    if (c.sold) {
+      day.input.addEventListener('change', () => {
+        const v = day.input.value || null;
+        if (v !== (car().sold_date || null)) patchCar({ sold: true, sold_date: v }, 'Sold date', day);
+      });
+      return h('div', { class: 'sc-sold' }, state_, day.el,
+        h('div', { class: 'row' }, h('button', { class: 'btn btn--sm', type: 'button', onclick: () => patchCar({ sold: false, sold_date: null }, 'Not sold') }, icon('reset', 'ico--sm'), 'Mark as not sold')));
+    }
+    return h('div', { class: 'sc-sold' }, state_, day.el,
+      h('div', { class: 'row' }, h('button', { class: 'btn btn--sm', type: 'button', onclick: () => patchCar({ sold: true, sold_date: day.input.value || null }, 'Sold', day) }, icon('flag', 'ico--sm'), 'Mark as sold')));
   }
 
   /* ---- Uploads: outcome, tokens, keys, waiting keys */

@@ -368,6 +368,8 @@ select.in { appearance: none; padding-right: calc(var(--g) * 3); background-imag
 .pick-main { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pick-num { text-align: right; white-space: nowrap; }
 .pick-note { padding: var(--g2) var(--g); color: var(--muted); }
+/* sold cars: muted, no live state */
+.pick-row--sold .pick-link, .tbl-sec--sold .tbl td, .tbl-sec--sold .lnk-plain { color: var(--muted); }
 .pal-kind { width: calc(var(--a2) * 8); flex: none; color: var(--muted); }
 .pal-kind--car { color: var(--text); }
 .pal-kind--drive { color: var(--accent); }

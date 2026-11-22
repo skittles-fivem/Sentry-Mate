@@ -153,7 +153,8 @@ def _suggest(req, c):
     if c["match"] is not None:
         return None
     for cid in req.ds.car_ids_featured():
-        if req.store.car_meta(cid)["vin_prefix"] == c["vin_prefix"]:
+        m = req.store.car_meta(cid)
+        if m["vin_prefix"] == c["vin_prefix"] and not m["sold"]:  # a sold car is never suggested
             return cid
     return None
 

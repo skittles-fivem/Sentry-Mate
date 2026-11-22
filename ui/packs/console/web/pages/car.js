@@ -10,6 +10,7 @@
 //   ## vehicle    the car's build facts, each with its source and how sure (pages/vehicle.js); an admin can type over them
 
 import { h, replace, cover } from '../shared/dom.js';
+import { isSold } from '../shared/state.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDateTime } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -58,7 +59,8 @@ export async function mount(ctx) {
   } catch (e) { ctx.fail(e); return; }
   if (!ctx.alive()) return;
 
-  const hd = head(ctx, { title: h('span', { cover: 'summary.header.name' }, car.name || `unnamed ${car.model || 'car'}`) });
+  const hd = head(ctx, { title: h('span', { cover: 'summary.header.name' }, car.name || `unnamed ${car.model || 'car'}`),
+    extra: isSold(car) ? h('span', { class: 'muted ph-extra', title: 'Sold: its history stays; it is left out of the fleet list' }, tag('sold', 'muted'), car.sold_date ? ` on ${car.sold_date}` : '') : null });
   const btns = hd.querySelectorAll('.ph-btn');
   if (btns[0]) cover(btns[0], 'overview.control.time_range');
   if (btns[1]) cover(btns[1], 'overview.filter.car');

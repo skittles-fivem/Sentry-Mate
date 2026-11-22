@@ -68,6 +68,20 @@ export async function mount(ctx) {
   const board = h('div', { class: 'fleet-board', role: 'group', 'aria-label': 'Cars by state' });
   const attn = h('div');
   const empty = h('section', { class: 'panel', hidden: true, cover: ['cars.empty.title', 'cars.empty.hint'] });
+  // sold cars: left out of the list (and of the tiles and counts, by the server) until "Sold cars (n)" shows them;
+  // a search finds them as well
+  let showSold = q.sold === '1';
+  const soldBtn = h('button', { class: 'btn btn--sm sold-toggle', type: 'button', hidden: true, onclick: () => { showSold = !showSold; ctx.setQuery({ sold: showSold ? '1' : null }); paintSold(); } });
+  let soldN = 0;
+  function paintSold() {
+    soldBtn.hidden = !soldN;
+    soldBtn.setAttribute('aria-pressed', String(showSold));
+    replace(soldBtn, icon(showSold ? 'check' : 'flag', 'ico--sm'), `Sold cars (${formatNumber(soldN)})`);
+    soldBtn.title = showSold ? 'Hide the sold cars again' : 'Show the sold cars in the list, marked Sold';
+    table.el.classList.toggle('hide-sold', !showSold && !searchIn.value.trim());
+  }
+  const isSold = state.isSold;
+  const soldCell = (c) => h('span', { class: 'faint' }, '—');
 
   // the list
   const params = () => ({ search: searchIn.value.trim() || null, state: stateFilter || null, sort, dir });
@@ -118,26 +132,29 @@ export async function mount(ctx) {
 
   const columns = [
     { key: 'name', label: 'Car', sort: 'name', firstDir: 'asc', render: (c) => h('span', { class: 'car-cell' },
-      h('a', { class: 'car-name main', href: state.linkTo('car', { car: c.id }) }, c.name || `Unnamed ${c.model || 'car'}`),
+      h('span', { class: 'car-name-row' }, h('a', { class: 'car-name main', href: state.linkTo('car', { car: c.id }) }, c.name || `Unnamed ${c.model || 'car'}`), isSold(c) ? h('span', { class: 'tag tag--plain' }, 'Sold') : null),
       h('span', { class: 'car-meta' }, carMeta(c), ' ', c.vin_prefix ? h('span', { class: 'key-chip', title: 'VIN prefix (the serial number is never stored)' }, c.vin_prefix) : null,
         !c.name && isAdmin() ? [' · ', h('a', { class: 'link', href: state.buildUrl('settings-cars', { car: c.id }) }, 'Name it')] : null),
       srcMark(c, { short: true, cls: 'car-src' })) },
-    { key: 'state', label: 'State', render: (c) => h('span', { class: 'cell-since' },
+    { key: 'state', label: 'State', render: (c) => isSold(c) ? h('span', { class: 'cell-since' }, h('b', { class: 'sold-word' }, 'Sold'), h('span', null, c.sold_date ? `on ${c.sold_date}` : 'date not given')) : h('span', { class: 'cell-since' },
       statePill(c.now?.state, { stale: c.now?.stale }),
       h('span', null, c.now?.since_ms ? `since ${when(c.now.since_ms, c.time_zone)}` : 'no data yet')) },
     { key: 'soc', label: 'Battery', sort: 'soc', firstDir: 'desc', title: 'Battery charge and estimated range, last known value', render: (c) => {
+      if (isSold(c)) return soldCell(c);
       const soc = c.now?.soc_pct;
       const bar = h('span', { class: ['bar', soc != null && soc < 20 && 'bar--low', c.now?.stale && 'bar--muted'] }, h('i'));
       setVars(bar, { '--w': `${Math.max(0, Math.min(100, soc ?? 0))}%` });
       return h('span', { class: 'cell-batt' }, bar, h('span', { class: 'cell-batt-text' }, h('b', null, format(soc, 'percent')), h('span', null, format(c.now?.range_km, 'range'))));
     } },
     { key: 'place', label: 'Place', render: (c) => {
+      if (isSold(c)) return soldCell(c);
       const n = c.now || {};
       const what = n.state === 'charging' && n.charge_power_kw != null ? `Charging at ${format(n.charge_power_kw, 'power')}` : n.plugged ? 'Plugged in' : n.state === 'driving' ? 'On the road' : null;
       return h('span', { class: 'cell-place' }, h('b', null, n.place?.name || (n.state === 'driving' ? 'Driving' : 'No saved place')), what ? h('span', null, what) : null);
     } },
     { key: 'age', label: 'Data', sort: 'last_activity', firstDir: 'desc', title: 'When the newest value was recorded. Logs arrive about a minute after the car records them; stale means no upload for over an hour.', render: (c) => {
       const n = c.now || {};
+      if (isSold(c)) return h('span', { class: 'cell-since' }, h('span', { class: 'age age--old' }, n.at_ms ? agoEl(n.at_ms, c.time_zone) : 'no data'), h('span', null, 'history kept'));
       return h('span', { class: 'cell-since' },
         h('span', { class: ['age', n.stale ? 'age--stale' : n.state === 'driving' || n.state === 'charging' ? 'age--fresh' : 'age--old'] }, n.stale ? icon('clock') : null, n.at_ms ? agoEl(n.at_ms, c.time_zone) : 'no data'),
         n.stale ? h('span', null, 'last known state') : null);
@@ -154,11 +171,13 @@ export async function mount(ctx) {
     },
     cover: ['cars.list.cards', 'cars.list.live_refresh', 'faq.null-panels'],
     rowHref: (c) => state.linkTo('car', { car: c.id }),
+    rowClass: (c) => (isSold(c) ? 'is-sold' : null),
     empty: () => (searchIn.value.trim() || stateFilter
       ? emptyState({ icon: 'search', title: 'No car matches', text: `Nothing matches${searchIn.value.trim() ? ` "${searchIn.value.trim()}"` : ''}${stateFilter ? ` in the state ${STATES[stateFilter].label.toLowerCase()}` : ''}. Clear the search or pick All states.` })
       : emptyState({ icon: 'car', title: 'No cars yet', text: 'The reason and the fix are shown above.' })),
   });
   table.el.classList.add('fleet-table');
+  paintSold();
 
   let timer = 0;
   const apply = () => {
@@ -166,6 +185,7 @@ export async function mount(ctx) {
     stateFilter = stateSel.value;
     setOrderNote();
     ctx.setQuery({ search: searchIn.value.trim() || null, state: stateFilter || null, sort, dir: dir === FIRST_DIR[sort] ? null : dir });
+    paintSold();
     table.reload(params());
     paintBoard(lastSummary);
   };
@@ -179,7 +199,7 @@ export async function mount(ctx) {
     board, attn, empty,
     h('div', { class: 'toolbar' },
       h('label', { class: 'field field--search' }, icon('search'), searchIn),
-      stateSel, sortSel, orderNote, h('span', { class: 'grow' })),
+      stateSel, sortSel, orderNote, h('span', { class: 'grow' }), soldBtn),
     table.el);
   ctx.view.querySelector('.page-head-text').append(sub);
 
@@ -215,10 +235,13 @@ export async function mount(ctx) {
     if (!ctx.alive()) return;
     lastSummary = s;
     paintBoard(s);
+    soldN = s.sold || 0;
+    paintSold();
     const cars = s.cars || 0;
     replace(sub,
       h('span', null, `${formatNumber(cars)} ${cars === 1 ? 'car' : 'cars'}`),
       h('span', { class: 'sep', 'aria-hidden': 'true' }), h('span', null, `${formatNumber(s.by_state?.driving || 0)} driving now`),
+      s.sold ? [h('span', { class: 'sep', 'aria-hidden': 'true' }), h('span', null, `${formatNumber(s.sold)} sold, not counted`)] : null,
       s.stale ? [h('span', { class: 'sep', 'aria-hidden': 'true' }), h('span', { class: 'sub-warn' }, icon('clock', 'ico--sm'), `${formatNumber(s.stale)} stale, last known state shown`)] : null,
       h('span', { class: 'sep', 'aria-hidden': 'true' }), h('span', null, 'Updates by itself'));
     // attention: the cars that need a look, with the cause and the page that shows it, then set-up fixes
@@ -252,7 +275,7 @@ export async function mount(ctx) {
     } else replace(attn);
 
     // no car: say exactly why, and link the fix
-    empty.hidden = cars > 0;
+    empty.hidden = cars > 0 || !!s.sold;
     const causes = (setup?.fixes || []).filter((f) => FIX[f.cause]);
     replace(empty, h('div', { class: 'empty' },
       h('div', { class: 'empty-icon' }, icon('car')),

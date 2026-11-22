@@ -143,19 +143,32 @@ function carsTile(ctx, current) {
   const list = h('div', { class: 'rows-list' });
   const input = h('input', { class: 'input', type: 'search', placeholder: 'Name, model or VIN prefix', 'aria-label': 'Find a car', autocomplete: 'off' });
   let pager = null, timer = 0;
+  // sold cars wait behind 'Sold cars (n)' (open when the car shown is sold); a search shows them, marked Sold
+  let showSold = !!(current && current.sold);
   const rowOf = (c) => sheetRow({ href: settingsUrl(c.id), icon: 'car', current: current && c.id === current.id, name: c.name || c.id,
-    sub: [c.model, c.year, c.vin_prefix].filter(Boolean).join(' · ') || 'Model not known yet', side: c.now ? stateTag(c.now.state, { stale: c.now.stale }) : null });
-  const more = moreButton(async () => { const b = pager.items.length; await pager.more(); list.append(...pager.items.slice(b).map(rowOf)); return !pager.done; }, { text: 'More cars' });
+    sub: [c.model, c.year, c.vin_prefix].filter(Boolean).join(' · ') || 'Model not known yet', side: c.sold ? chip('Sold', { tone: 'muted' }) : c.now ? stateTag(c.now.state, { stale: c.now.stale }) : null });
+  const soldBtn = btn('Sold cars', { kind: 'ghost', icon: 'chevronDown', cls: 'btn-sm', onclick: () => { showSold = !showSold; draw(); } });
+  const draw = () => {
+    const q = input.value.trim();
+    const { active, sold } = q ? { active: pager.items, sold: [] } : state.splitSold(pager.items);
+    const rows = [...active, ...(showSold ? sold : [])].map(rowOf);
+    list.replaceChildren(...(rows.length || sold.length ? rows : [h('p', { class: 'list-empty' }, q ? `No car matches “${q}”.` : 'No car yet.')]));
+    soldBtn.hidden = !sold.length;
+    soldBtn.querySelector('.btn-text').textContent = `${showSold ? 'Hide sold cars' : 'Sold cars'} (${sold.length})`;
+    soldBtn.querySelector('.ic')?.replaceWith(icon(showSold ? 'chevronUp' : 'chevronDown'));
+    soldBtn.setAttribute('aria-expanded', String(showSold));
+    more.querySelector('button').hidden = pager.done;
+  };
+  const more = moreButton(async () => { await pager.more(); draw(); return !pager.done; }, { text: 'More cars' });
   const load = async () => {
     pager = ctx.api.pager('cars', { sort: 'custom', search: input.value.trim() || undefined }, { limit: 12 });
     await pager.more();
-    list.replaceChildren(...(pager.items.length ? pager.items.map(rowOf) : [h('p', { class: 'list-empty' }, input.value.trim() ? `No car matches “${input.value.trim()}”.` : 'No car yet.')]));
-    more.querySelector('button').hidden = pager.done;
+    draw();
   };
   input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 200); });
   ctx.onCleanup(() => clearTimeout(timer));
   const el = tile({ w: 2, title: 'Every car', icon: 'fleet', cover: 'web.settings.car.car-switcher' },
-    h('label', { class: 'search' }, icon('search'), input), h('div', { class: 'rows' }, list), more);
+    h('label', { class: 'search' }, icon('search'), input), h('div', { class: 'rows' }, list), h('div', { class: 'form-actions' }, soldBtn), more);
   return { el, load };
 }
 
@@ -206,7 +219,7 @@ async function mountCar(ctx) {
   if (!ctx.alive()) return {};
   let carVersion = car.version;
 
-  /** Save the car (name, zone) with its version; someone else's change in between shows theirs. */
+  /** Save the car (name, zone, sold) with its version; someone else's change in between shows theirs. */
   async function patchCar(body, what) {
     try {
       await ctx.api.patch(carPath, { version: carVersion, ...body });
@@ -250,6 +263,28 @@ async function mountCar(ctx) {
           h('span', { class: 'set-value' }, c && c.value != null ? yesNo(c.value) : '—'), c && c.value != null ? (c.source === 'vin' ? chip(SOURCE.vin, { tone: SOURCE_TONE.vin }) : srcPill(c, { short: true, typed: 'Typed by an admin' })) : null) });
       }),
     ], { note: 'Read from the car’s own configuration message (SMO) or from the Tesla API, else worked out from the VIN prefix or typed by an admin. The label says where each one came from.' }));
+
+  /* ---------- sold */
+  // PATCH cars/{car} { version, sold, sold_date }: a sold car keeps its history; sold: false forgets the date.
+  const soldWords = car.sold ? (car.sold_date ? `Sold on ${formatDayKey(car.sold_date, { weekday: false })}` : 'Sold, no date given') : 'Not sold';
+  const soldF = field({ label: car.sold ? 'Sold on' : 'Sold on (optional)', name: 'sold_date', type: 'date', value: car.sold_date || '', hint: car.sold ? 'Change it, or empty it to keep no date.' : 'Leave it empty when the date is not known.' });
+  const saveSold = async (sold, date) => {
+    setFieldError(soldF, null);
+    try {
+      await patchCar(sold ? { sold: true, sold_date: date || null } : { sold: false }, sold ? (date ? `${car.name} was sold on ${date}` : `${car.name} is marked sold`) : `${car.name} is not sold`);
+    } catch (err) { setFieldError(soldF, (err.fields && err.fields.sold_date) || notSaved(err)); }
+  };
+  if (car.sold) soldF.control.addEventListener('change', () => { if ((soldF.control.value || null) !== (car.sold_date || null)) saveSold(true, soldF.control.value); });
+  const soldT = tile({ w: 2, title: 'Sold', icon: 'flag', side: car.sold ? chip('Sold', { tone: 'muted' }) : null },
+    group(null, [infoRow({ icon: car.sold ? 'check' : 'car', tone: car.sold ? 'sun' : 'teal', name: soldWords,
+      sub: car.sold ? 'Its history stays and its pages stay open. It is left out of the fleet and raises nothing that needs a look.' : 'Still in the fleet.' })]),
+    admin ? soldF : null,
+    admin ? h('div', { class: 'form-actions' }, car.sold
+      ? btn('Mark as not sold', { kind: 'soft', icon: 'reset', onclick: () => saveSold(false) })
+      : btn('Mark as sold', { kind: 'primary', icon: 'check', onclick: async () => {
+        if (!await confirmSheet({ title: `Mark ${car.name} as sold?`, text: 'It keeps all its history and stays browsable. The fleet leaves it out, and the Tesla API and TeslaFi store nothing more for it. You can undo this.', yes: 'Mark as sold' })) return;
+        saveSold(true, soldF.control.value);
+      } })) : note('Only an admin can mark a car as sold.'));
 
   /* ---------- uploads */
   let upT;
@@ -398,7 +433,7 @@ async function mountCar(ctx) {
   const bar = h('div', { class: 'page-bar w-full' }, crumb(car),
     h('span', { class: 'page-bar-end note' }, car.last_activity_ms ? ['Last heard ', ago(car.last_activity_ms)] : 'Not heard from yet'));
   const how = tile({ w: 2, title: 'How a new car appears', icon: 'spark', cover: 'web.settings.car.empty-state' }, howSteps());
-  ctx.view.replaceChildren(bar, carT, upT, tzT, batT, fsT, cars.el, how);
+  ctx.view.replaceChildren(bar, carT, soldT, upT, tzT, batT, fsT, cars.el, how);
   ctx.ready();
   return { update(c) { drawNow(); c.ready(); } };
 }

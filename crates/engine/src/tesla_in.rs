@@ -189,7 +189,8 @@ impl Engine {
     /// An API input's samples and what it saw of the car's state (`input`: the Tesla API or TeslaFi's): stored and
     /// built into the timeline in the background; returns at once.
     pub fn feed_points(&self, input: Input, car: CarId, samples: Vec<Sample>, facts: Vec<ApiSpan>) {
-        if (samples.is_empty() && facts.is_empty()) || input == Input::Smo {
+        // (a sold car's live inputs are left alone: its history stays as it was)
+        if (samples.is_empty() && facts.is_empty()) || input == Input::Smo || crate::query::fleet::is_sold(self, car) {
             return;
         }
         self.send(Work::ApiData { input, car, samples, facts });
@@ -205,6 +206,9 @@ impl Engine {
 
     /// The Tesla API's values beside its samples: kept in the background; returns at once.
     pub fn api_meta(&self, car: CarId, meta: tesla::ApiMeta) {
+        if crate::query::fleet::is_sold(self, car) {
+            return;
+        }
         self.send(Work::ApiMeta { car, meta: Box::new(meta) });
     }
 
@@ -231,7 +235,8 @@ impl Engine {
                 page.cars
                     .iter()
                     .filter(|e| e.car.vin.as_ref().is_some_and(|v| v.vin_prefix == vin_prefix))
-                    .map(|e| e.car.id),
+                    .map(|e| e.car.id)
+                    .filter(|&c| !crate::query::fleet::is_sold(self, c)),
             );
             match page.next {
                 Some(n) => q.after = Some(n),

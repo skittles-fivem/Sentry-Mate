@@ -119,3 +119,12 @@
 .part-error-title { font: 400 1.0625rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--rust); }
 .part-error .note { margin-top: round(0.25rem, var(--e)); }
 .part-error-action { margin-top: round(0.625rem, var(--e)); }
+
+/* Sold cars: closed at the end of the page, muted, with no live state. */
+.fleet-sold-summary { cursor: pointer; padding-bottom: round(0.75rem, var(--e)); border-bottom: 1px solid var(--rule); list-style-position: inside; }
+.fleet-sold-summary .label { display: inline-flex; }
+.fleet-sold[open] .fleet-sold-summary { border-bottom-color: var(--ink); }
+.fleet-sold > .note { margin: round(0.75rem, var(--e)) 0 0; }
+.fleet-sold-ledger .is-sold { color: var(--ink-3); }
+.fleet-sold-ledger .is-sold .car-name { color: var(--ink-2); }
+.fleet-sold-ledger .cell-main .flag { vertical-align: round(0.125rem, var(--e)); }

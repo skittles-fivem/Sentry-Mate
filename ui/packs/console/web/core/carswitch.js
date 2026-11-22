@@ -1,17 +1,20 @@
 // The car switcher: a dialog with a filter line and the cars as rows (name, state, battery). Choosing one
 // keeps the page (a drive or charge goes to the new car's list). Large fleets page with "more".
+// Sold cars are left out (the open one stays) until "sold cars (n)" is pressed; a search finds them, marked.
 
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { openDialog } from './dialog.js';
-import { stateWord, numText } from './fmt.js';
+import { stateWord, numText, tag } from './fmt.js';
 import { errorWords } from './states.js';
 
 export function openCarSwitcher() {
   const q = h('input', { class: 'in in--wide', type: 'search', placeholder: 'filter cars', 'aria-label': 'Filter cars', autocomplete: 'off', spellcheck: 'false' });
   const list = h('ul', { class: 'pick', role: 'listbox', 'aria-label': 'Cars' });
   const more = h('button', { class: 'btn', type: 'button', hidden: true }, 'more');
+  const soldBtn = h('button', { class: 'key', type: 'button', hidden: true, 'aria-pressed': 'false', onclick: () => { showSold = !showSold; paintList(); } });
+  let showSold = false;
   const here = state.current().car;
   let pager = null, seq = 0, sel = 0;
 
@@ -23,11 +26,32 @@ export function openCarSwitcher() {
     r.forEach((x, k) => x.setAttribute('aria-selected', String(k === sel)));
     r[sel].scrollIntoView({ block: 'nearest' });
   };
-  const row = (c) => h('li', { class: 'pick-row', role: 'option', 'aria-selected': 'false' },
-    h('a', { class: 'pick-link', href: state.linkForCar(c.id), onclick: () => d.close() },
-      h('span', { class: 'pick-main' }, c.name || c.id, c.id === here ? h('span', { class: 'muted' }, ' (open)') : null),
-      stateWord(c.now?.state, { stale: c.now?.stale }),
-      h('span', { class: 'pick-num' }, numText(c.now?.soc_pct, 'percent'))));
+  const row = (c) => {
+    const sold = state.isSold(c);
+    return h('li', { class: ['pick-row', sold && 'pick-row--sold'], role: 'option', 'aria-selected': 'false' },
+      h('a', { class: 'pick-link', href: state.linkForCar(c.id), onclick: () => d.close() },
+        h('span', { class: 'pick-main' }, c.name || c.id, c.id === here ? h('span', { class: 'muted' }, ' (open)') : null),
+        sold ? h('span', { title: c.sold_date ? `Sold on ${c.sold_date}` : 'Sold' }, tag('sold', 'muted')) : stateWord(c.now?.state, { stale: c.now?.stale }),
+        h('span', { class: 'pick-num' }, sold ? (c.sold_date || '') : numText(c.now?.soc_pct, 'percent'))));
+  };
+  // with no filter text: the cars not sold (and the open one), then the sold ones when asked for
+  function shownCars() {
+    const items = pager?.items || [];
+    if (q.value.trim()) return items;
+    const { active, sold } = state.splitSold(items);
+    const n = sold.length;
+    soldBtn.hidden = !n;
+    soldBtn.setAttribute('aria-pressed', String(showSold));
+    soldBtn.textContent = `sold cars (${n})`;
+    if (showSold) return [...active, ...sold];
+    return [...active, ...sold.filter((c) => c.id === here)];
+  }
+  function paintList() {
+    if (q.value.trim()) soldBtn.hidden = true;
+    const cars = shownCars();
+    replace(list, cars.length ? cars.map(row) : h('li', { class: 'pick-note' }, '-- no car matches --'));
+    mark(0);
+  }
 
   async function load() {
     const my = ++seq;
@@ -36,9 +60,8 @@ export function openCarSwitcher() {
     try {
       await pager.more();
       if (my !== seq) return;
-      replace(list, pager.items.length ? pager.items.map(row) : h('li', { class: 'pick-note' }, '-- no car matches --'));
+      paintList();
       more.hidden = pager.done;
-      mark(0);
     } catch (e) {
       if (my !== seq || api.isAbort(e)) return;
       replace(list, h('li', { class: 'pick-note' }, `[bad] ${errorWords(e).text}`));
@@ -47,7 +70,7 @@ export function openCarSwitcher() {
   more.addEventListener('click', async () => {
     const n = pager.items.length;
     await pager.more();
-    list.append(...pager.items.slice(n).map(row));
+    if (pager.items.length > n) paintList();
     more.hidden = pager.done;
   });
   let t = 0;
@@ -57,7 +80,7 @@ export function openCarSwitcher() {
     else if (e.key === 'ArrowUp') { e.preventDefault(); mark(sel - 1); }
     else if (e.key === 'Enter') { e.preventDefault(); rows()[sel]?.querySelector('a')?.click(); }
   });
-  const d = openDialog({ title: 'switch car', cls: 'dlg--pick', body: [h('div', { class: 'pick-q' }, h('span', { class: 'prompt' }, '>'), q), list], actions: [more] });
+  const d = openDialog({ title: 'switch car', cls: 'dlg--pick', body: [h('div', { class: 'pick-q' }, h('span', { class: 'prompt' }, '>'), q), list], actions: [soldBtn, more] });
   q.focus();
   load();
   return d;

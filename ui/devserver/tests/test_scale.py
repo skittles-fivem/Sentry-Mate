@@ -50,7 +50,7 @@ class BigFleet(ServerCase):
         self.assertIn("state", self.c.get("/api/v1/cars/c150000/now"))
         self.c.error("GET", "/api/v1/cars/c200001/now", 404, "no_such_car")
         s = self.c.get("/api/v1/fleet/summary")
-        self.assertEqual(s["cars"], 200_000)
-        self.assertEqual(sum(s["by_state"].values()), 200_000)
+        self.assertEqual((s["cars"], s["sold"]), (199_999, 1))  # the sold car is counted apart
+        self.assertEqual(sum(s["by_state"].values()), 199_999)
         a = self.c.get("/api/v1/fleet/attention?limit=20")
         self.assertEqual(len(a["items"]), 20)

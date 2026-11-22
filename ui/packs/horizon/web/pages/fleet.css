@@ -99,3 +99,10 @@ a.attn-car:hover { color: var(--mag-ink); }
 .gar-order-note { line-height: normal; }
 .bay-car-line { align-items: baseline; }
 .bay-car-src { margin: 0; display: flex; }
+
+/* sold cars: a collapsed shelf after the garage, muted, no live state */
+.gar-sold { display: grid; gap: var(--gap); margin-top: var(--gap); }
+.gar-sold-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
+.bay-car.is-sold { opacity: 0.72; filter: saturate(0.4); }
+.bay-car.is-sold::before { background: var(--ink-3); box-shadow: none; }
+.bay-car.is-sold .bay-car-src { margin: 0; }

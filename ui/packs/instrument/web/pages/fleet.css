@@ -73,3 +73,11 @@ a.attn-car:hover { color: var(--live); }
 @container page (max-width: 25rem) {
   .fleet-board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* sold cars: hidden until "Sold cars (n)" shows them, then muted */
+.fleet-table.hide-sold tr.is-sold { display: none; }
+.fleet-table tr.is-sold td { color: var(--text-3); }
+.fleet-table tr.is-sold .car-name { color: var(--text-2); }
+.car-name-row { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); min-width: 0; max-width: 100%; }
+.sold-word { font-weight: 500; color: var(--text-2); }
+.sold-toggle[aria-pressed="true"] { color: var(--live); }

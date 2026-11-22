@@ -37,7 +37,8 @@ async function start() {
   // the notices come with the rest, so they are in place before the page and do not push it down later
   const [about, cars, , notices] = await Promise.all([
     api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
-    api.page('cars', null, { limit: 1 }).catch(() => null),
+    // the count of the car pill leaves out sold cars (fleet/summary counts the unsold ones)
+    api.get('fleet/summary').then((x) => (x && typeof x.cars === 'number' ? { total: x.cars } : api.page('cars', null, { limit: 1 })), () => api.page('cars', null, { limit: 1 })).catch(() => null),
     loadPrefs().catch(() => null),
     api.get('notices').then((r) => r.items || [], () => null),
   ]);

@@ -3,12 +3,13 @@
 // Data: GET /api/v1/fleet/summary (counts per state), /fleet/attention (cars that need a look and why),
 // /cars (the list: search, state, sort, cursor paging, CSV), /setup/status (why no car shows, for the empty
 // state), /me/preferences (pinned cars and the person's own order). Live: `now` events update a car's row
-// in place, `fleet` events (a car added, removed or renamed) load the list again.
+// in place, `fleet` events (a car added, removed, renamed or sold) load the list again. Sold cars are left out
+// of the totals and the list; "Sold cars (n)" at the end (n from the summary's `sold`) lists them, muted.
 
 import { h } from '../shared/dom.js';
 import { formatNumber, tn } from '../shared/i18n.js';
 import { format, rangeValue, rangeLabel } from '../shared/units.js';
-import { formatTime, formatDate, dayKey } from '../shared/time.js';
+import { formatTime, formatDate, formatDayKey, dayKey } from '../shared/time.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { pageHead, stateMark, stateLabel, ago, batteryBar, icon, empty, flag, sep, q, errorWords, button } from '../core/ui.js';
@@ -70,7 +71,7 @@ export async function mount(ctx) {
   const attnFirst = ctx.api.get('fleet/attention', { limit: 20 }).then((r) => ({ ok: r }), (err) => ({ err }));
   const summary = await ctx.api.get('fleet/summary');
 
-  if (!summary.cars) return emptyFleet(ctx, isAdmin);
+  if (!summary.cars && !summary.sold) return emptyFleet(ctx, isAdmin);
 
   // Tallies: counts per state; a click shows only those cars.
   const by = summary.by_state || {};
@@ -89,7 +90,9 @@ export async function mount(ctx) {
     const stale = tallies.querySelector('[data-stale]');
     if (stale) stale.textContent = sm.stale ? `${formatNumber(sm.stale)} stale` : 'none stale';
     summary.cars = sm.cars;
+    summary.sold = sm.sold || 0;
     deckLine.textContent = deckText();
+    drawSoldHead();
   }
   const syncTallies = () => tallies.querySelectorAll('.tally').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.state === st.state)));
 
@@ -184,7 +187,7 @@ export async function mount(ctx) {
       h('div', { class: 'field' }, h('label', { class: 'field-label', for: 'fleet-sort' }, 'Order'), sortSel),
       h('p', { class: 'note toolbar-note' }, 'Pin a car with its star. In your order, the arrows move a car among the pinned or the other cars; the order is kept with your account. A column head orders by that column.')));
 
-  const write = () => ctx.setQuery({ q: st.q, state: st.state === 'all' ? null : st.state, sort: st.sort === 'custom' ? null : st.sort,
+  const write = () => ctx.setQuery({ sold: soldBox && soldBox.open ? '1' : null, q: st.q, state: st.state === 'all' ? null : st.state, sort: st.sort === 'custom' ? null : st.sort,
     dir: st.sort !== 'custom' && st.dir !== SORT_DIR[st.sort] ? st.dir : null });
   // Your order is the server's `custom` sort; any other order is a column's sort (the table sends sort and dir).
   const params = () => ({ search: st.q || undefined, state: st.state === 'all' ? undefined : st.state, sort: st.sort === 'custom' ? 'custom' : undefined });
@@ -205,7 +208,7 @@ export async function mount(ctx) {
   /** The loaded car next to this one in its own group (pinned or not), or null. */
   function neighbour(car, step) {
     if (st.sort !== 'custom') return null;
-    const list = table.items || [];
+    const list = (table.items || []).filter((c) => !state.isSold(c));
     const i = list.findIndex((c) => c.id === car.id);
     const o = i < 0 ? null : list[i + step];
     return o && pinned.has(o.id) === pinned.has(car.id) ? o : null;
@@ -292,14 +295,53 @@ export async function mount(ctx) {
   const table = dataTable(ctx, {
     path: 'cars', params: params(), sort: tableSort(), onSort: headSort, limit: 50, columns, itemName: ['car', 'cars'], cls: 'fleet-ledger', label: 'Cars',
     cover: ['cars.list.cards', 'faq.null-panels', 'cars.list.live_refresh'],
+    keep: (c) => !state.isSold(c),
     rowAttrs: (c) => ({ class: ['ledger-row', { 'is-stale': !!c.now?.stale, 'is-unknown': c.now?.state === 'unknown' }], dataset: { car: c.id } }),
     onRows: (items) => { for (const c of items) carInfo.set(c.id, { name: c.name, tz: c.time_zone }); drawAttention(); },
-    empty: () => empty({
+    empty: () => (!st.q && st.state === 'all' && summary.sold ? empty({ title: 'Every car here is sold.', text: 'Sold cars are listed under “Sold cars” below, with all their history.' }) : empty({
       title: st.q ? `No car matches “${st.q}”${st.state !== 'all' ? ` among ${stateLabel(st.state).toLowerCase()} cars` : ''}.` : `No car is ${stateLabel(st.state).toLowerCase()} right now.`,
       text: st.q ? 'Try part of a name, a model or a VIN prefix.' : 'Choose another state above to see more cars.',
       action: h('button', { type: 'button', class: 'button', onclick: () => { st.q = ''; search.value = ''; st.state = 'all'; syncTallies(); write(); reload(); } }, 'Show all cars'),
-    }),
+    })),
   });
+
+  // Sold cars: not in the totals or the list above; here at the end, closed until asked for. No live state.
+  let soldLoaded = false;
+  const soldTable = dataTable(ctx, {
+    rows: [], itemName: ['sold car', 'sold cars'], cls: 'fleet-sold-ledger', label: 'Sold cars', csv: false, sort: { key: 'sold', dir: 'desc' },
+    rowAttrs: (c) => ({ class: ['ledger-row', 'is-sold'], dataset: { car: c.id } }),
+    columns: [
+      { key: 'name', label: 'Car', sort: true, th: true, cls: 'c-car', value: (c) => c.name,
+        cell: (c) => [
+          h('span', { class: 'cell-main' }, h('a', { class: 'car-name', href: state.buildUrl('car', { car: c.id, period: null }) }, nameOf(c)), ' ', flag('Sold')),
+          h('span', { class: 'cell-sub' }, [c.year, c.model, c.trim].filter(Boolean).join(' '), sep(), h('span', { class: 'mono' }, c.vin_prefix || c.id)),
+          sourceMark(c, { block: true, short: true, cls: 'fleet-src' })] },
+      { key: 'sold', label: 'Sold on', sort: true, value: (c) => c.sold_date,
+        cell: (c) => (c.sold_date ? formatDayKey(c.sold_date, { weekday: false }) : h('span', { class: 'nil' }, 'Date not given')) },
+      { key: 'last_activity', label: 'Last data', sort: true, value: (c) => c.last_activity_ms,
+        cell: (c) => (c.last_activity_ms ? [h('span', { class: 'cell-main' }, formatDate(c.last_activity_ms, c.time_zone, { weekday: false, now: api.now() })), h('span', { class: 'cell-sub' }, ago(c.last_activity_ms))] : h('span', { class: 'nil' }, 'None')) },
+      { key: 'history', label: 'History', cell: (c) => h('a', { class: 'link-arrow', href: state.buildUrl('timeline', { car: c.id }) }, 'Timeline', icon('arrowRight')) },
+    ],
+    empty: () => empty({ title: 'No car is sold.' }),
+  });
+  const soldCount = h('span', { class: 'label-note' });
+  const soldBox = h('details', { class: 'block fleet-sold', open: ctx.query.sold === '1' && summary.sold > 0 },
+    h('summary', { class: 'fleet-sold-summary' }, h('span', { class: 'label' }, 'Sold cars', soldCount)),
+    h('p', { class: 'note' }, 'Cars marked sold in Settings: Cars. They keep all their history, browsable as before, and raise nothing to look at. Not counted in the totals above.'),
+    soldTable.el);
+  function drawSoldHead() {
+    soldBox.hidden = !summary.sold;
+    soldCount.textContent = `(${formatNumber(summary.sold || 0)})`;
+  }
+  async function loadSold() {
+    soldLoaded = true;
+    let list = [];
+    try { list = await ctx.api.list('cars', { sort: 'name' }, { limit: 200 }).all({ max: 5000 }); } catch (err) { if (ctx.signal.aborted) return; ctx.flash(`The sold cars could not be loaded: ${err.message || err}`, { kind: 'error' }); }
+    if (ctx.alive && !ctx.alive()) return;
+    soldTable.setRows(list.filter(state.isSold));
+  }
+  soldBox.addEventListener('toggle', () => { write(); if (soldBox.open && !soldLoaded) loadSold(); });
+  drawSoldHead();
   function reload() { return table.reload(params(), { sort: tableSort() }); }
   function redrawRows() { table.redraw(); }
 
@@ -310,8 +352,9 @@ export async function mount(ctx) {
       tallies),
     attentionBox,
     toolbar,
-    table.el);
-  await table.load();
+    table.el,
+    soldBox);
+  await Promise.all([table.load(), soldTable.load(), soldBox.open ? loadSold() : null]);
   const missing = missingCars(ctx, isAdmin);
   ctx.main.append(missing);
   await missing.done;
@@ -327,7 +370,7 @@ export async function mount(ctx) {
     sumTimer = setTimeout(() => ctx.api.get('fleet/summary').then(drawSummary).catch(() => {}), 1000);
   }
   ctx.events(['now', 'fleet'], (ev) => {
-    if (ev.type === 'fleet') { clearTimeout(again); again = setTimeout(reload, 500); refreshSummary(); return; }
+    if (ev.type === 'fleet') { clearTimeout(again); again = setTimeout(() => { reload(); if (soldLoaded) loadSold(); }, 500); refreshSummary(); return; }
     const d = ev.data || {};
     const car = table.items.find((c) => c.id === d.car);
     if (!car || !d.now) return;
