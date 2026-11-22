@@ -7,6 +7,9 @@ the switch (the car's, else the server's) turns it off.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest import TestCase
+
 from .helpers import ServerCase
 
 OVERLAP = "/api/v1/cars/c3/overlaps"
@@ -85,3 +88,39 @@ class GapFill(ServerCase):
         e = self.c.json("PATCH", "/api/v1/cars/c3/settings", {"version": s["version"], "import_gap_fill": "yes"},
                         expect=400)
         self.assertIn("import_gap_fill", e["error"]["fields"])
+
+
+class FillRow(TestCase):
+    """`fill_row` fills what the server fills (crates/timeline/src/gapfill.rs): a live drive's start (never its end,
+    whose absence means its data stopped), a charge's position, and its odometer only with the position."""
+
+    class Seg:
+        def __init__(self, kind):
+            self.source, self.kind, self.id = "can", kind, 1
+
+    def fill(self, kind, row, other):
+        from mockapi import gapfill
+
+        app = SimpleNamespace(store=SimpleNamespace(car_settings={}, server_settings={}))
+        twin = SimpleNamespace(tm_copy_of=1, source="teslamate", site="teslamate")
+        h = SimpleNamespace(car=SimpleNamespace(id="c1"), shadow=[twin], site_shown=lambda t: True)
+        return gapfill.fill_row(app, h, self.Seg(kind), dict(row, sources=[]), lambda t: other)
+
+    def test_a_drive_gets_its_start_but_never_its_end(self):
+        p = {"lat": 37.0, "lon": -122.0, "label": None}
+        row = self.fill("drive", {"start": None, "end": None, "cabin_avg_c": None},
+                        {"start": p, "end": p, "cabin_avg_c": 21.0})
+        self.assertEqual(row["start"], p)
+        self.assertIsNone(row["end"])
+        self.assertEqual(sorted(row["value_sources"]), ["cabin_avg_c", "start"])
+        from mockapi import gapfill
+        self.assertIsNone(gapfill.unfill(row)["start"])
+
+    def test_a_charge_gets_its_odometer_only_with_its_position(self):
+        p = {"lat": 37.0, "lon": -122.0, "accuracy_m": 6.0}
+        row = self.fill("charge", {"position": None, "odometer_km": None}, {"position": p, "odometer_km": 1000.0})
+        self.assertEqual((row["position"], row["odometer_km"]), (p, 1000.0))
+        self.assertEqual(sorted(row["value_sources"]), ["odometer_km", "position"])
+        row = self.fill("charge", {"position": p, "odometer_km": None}, {"position": p, "odometer_km": 1000.0})
+        self.assertIsNone(row["odometer_km"], "the live position stays, so the odometer is not filled")
+        self.assertEqual(row["value_sources"], {})

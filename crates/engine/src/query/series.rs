@@ -91,7 +91,8 @@ fn sample_field(f: &str) -> &str {
 }
 
 /// Live seconds this far apart at most are live coverage for a series: inside it an import only fills values the
-/// live second lacks; outside it the import's seconds are shown (the Tesla API alone polls every minute or so).
+/// live second lacks; outside it the import's seconds are shown (the Tesla API alone polls every minute or so), less
+/// the values a live one still holds then ([`timeline::gapfill::fill`]).
 pub const SERIES_COVER_MS: u64 = 90_000;
 
 /// Where a sample's values came from: the live inputs (SMO, the Tesla API, TeslaFi's API) and per import site the mask of
