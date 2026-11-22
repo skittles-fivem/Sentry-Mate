@@ -98,9 +98,9 @@ const quiet = (t) => h('span', { class: 'si-quiet' }, t);
  * the dialog under its field, other errors in clear words on its top line. Resolves with run's answer, or
  * null when closed.
  */
-export function askAgain(ctx, { title, text = null, yes, extra = [], run, danger = false }) {
+export function askAgain(ctx, { title, text = null, yes, extra = [], run, danger = false, input = 'the Tesla input', errorText = teslaErrorText }) {
   let twoShown = !!(ctx.me && ctx.me.two_step_required);
-  const pass = field({ label: 'Your password', name: 'confirm_password', type: 'password', hint: 'Your own Sentry Mate password: it is asked again for every change to the Tesla input.', attrs: { autocomplete: 'current-password', required: true } });
+  const pass = field({ label: 'Your password', name: 'confirm_password', type: 'password', hint: `Your own Sentry Mate password: it is asked again for every change to ${input}.`, attrs: { autocomplete: 'current-password', required: true } });
   const two = field({ label: 'Two-step code', name: 'code', hint: 'The 6 digits from your authenticator app, or a recovery code.', attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', spellcheck: 'false' } });
   two.hidden = !twoShown;
   let result = null;
@@ -129,9 +129,9 @@ export function askAgain(ctx, { title, text = null, yes, extra = [], run, danger
             if (err && err.status === 429) throw new Error(`Too many tries. Wait ${Math.ceil((err.retryAfterMs || 60000) / 1000)} seconds, then try again.`);
             if (err && err.fields) {
               // field errors keep the server's words; a field this dialog does not have goes to the top line
-              throw Object.assign(new Error(teslaErrorText(err)), { fields: err.fields });
+              throw Object.assign(new Error(errorText(err)), { fields: err.fields });
             }
-            throw new Error(teslaErrorText(err));
+            throw new Error(errorText(err));
           }
           if (result === false) return;
           close('done');
@@ -562,8 +562,9 @@ export function teslaPart(ctx) {
 /** The account a #tesla-<id> address points at, opened into view once the part is drawn. */
 export function showTeslaHash() {
   const id = (location.hash || '').slice(1);
-  if (!/^tesla(-|$)/.test(id)) return;
-  const t = document.getElementById(id) || document.getElementById('tesla');
+  const m = /^(tesla|teslafi)(-|$)/.exec(id);
+  if (!m) return;
+  const t = document.getElementById(id) || document.getElementById(m[1]);
   if (!t) return;
   // the account (tabindex -1) or the part gets the focus, so a keyboard user carries on from there
   if (!t.hasAttribute('tabindex')) t.setAttribute('tabindex', '-1');
