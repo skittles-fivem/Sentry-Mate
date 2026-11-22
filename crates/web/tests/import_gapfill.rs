@@ -492,3 +492,14 @@ async fn a_drive_whose_data_stopped_keeps_its_end_unfilled() {
     let smo = v["items"].as_array().unwrap().iter().find(|x| x["id"] == "88").cloned().unwrap();
     assert_eq!(smo["end"], d["end"], "the same end as with SMO alone: {v}");
 }
+
+/// Days with TeslaFi API samples (a stream past the first three) never fail the battery pages.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn battery_pages_answer_with_teslafi_api_days() {
+    let k = kit_with(teslafi_api_and_import).await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    for path in [format!("/api/v1/cars/{car}/battery"), format!("/api/v1/cars/{car}/battery/capacity")] {
+        ok(&mut admin, &path).await;
+    }
+}
