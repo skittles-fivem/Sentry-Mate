@@ -28,6 +28,7 @@ test('release status texts', async () => {
 
 test('dismissal is per commit and survives blocked storage', async () => {
   const r = await load();
+  const had = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
   const store = new Map();
   globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };
   const n = { detail: { commit: 'abc' } };
@@ -38,5 +39,5 @@ test('dismissal is per commit and survives blocked storage', async () => {
   globalThis.localStorage = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } };
   assert.equal(r.releaseDismissed(n), false);
   r.dismissRelease(n);
-  delete globalThis.localStorage;
+  if (had) Object.defineProperty(globalThis, 'localStorage', had); else delete globalThis.localStorage;
 });

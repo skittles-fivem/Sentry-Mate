@@ -253,6 +253,8 @@ class Contract(ServerCase):
             ("POST", "/api/v1/settings/mqtt/test", lambda: (None, None, None)),
             ("PATCH", "/api/v1/settings", lambda: (None, {"version": c.get("/api/v1/settings")["version"],
                                                           "range": "rated"}, None)),
+            ("POST", "/api/v1/release/check", lambda: (None, {}, None) if c.json("PATCH", "/api/v1/settings", {
+                "version": c.get("/api/v1/settings")["version"], "release_check": {"enabled": True}}) else None),
             ("POST", "/api/v1/cars/{car}/rebuild", lambda: (None, {"from_ms": now - 2 * DAY}, None)),
             ("PATCH", "/api/v1/cars/{car}/overlaps",
              lambda: (self.fill("/api/v1/cars/{car}/overlaps", car="c3"),

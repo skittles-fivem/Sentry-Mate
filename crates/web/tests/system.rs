@@ -227,7 +227,12 @@ async fn health_storage_and_the_servers_figures() {
 
     // about: for everyone
     let a = ok(&mut watch, "/api/v1/about").await;
-    has(&a, &["version", "api_version", "ui_pack", "licences", "data_credits", "links", "licence"]);
+    has(&a, &["version", "build", "api_version", "ui_pack", "licences", "data_credits", "links", "licence"]);
+    // a test's build is a local one (no SENTRY_MATE_COMMIT): a dev build
+    assert_eq!(
+        a["build"],
+        json!({ "version": a["version"], "number": null, "commit": null, "short": null, "built_ms": null, "dev": true })
+    );
     assert_eq!(a["api_version"], json!(web::API_VERSION));
     assert!(a["ui_pack"]["name"].is_string(), "{a}");
 
