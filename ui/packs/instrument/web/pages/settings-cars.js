@@ -585,7 +585,33 @@ async function mountCar(ctx) {
     sw.input.addEventListener('change', () => patchSettings({ software_version_typed: sw.input.value.trim() || null }, 'Software version', (errs) => sw.setError(errs.software_version_typed || Object.values(errs)[0])));
     replace(slots.refs, panel({ title: 'Reference values', icon: 'gauge', side: h('span', { class: 'faint' }, 'Optional; empty means worked out') },
       setting('Battery and range', 'Battery health compares today\'s capacity and range with these. Without them Sentry Mate uses the earliest readings it has, and says so on the Battery page.', [fields[0].el, fields[1].el, fields[2].el, swap.el, fields[4].el]),
-      setting('Consumption and software', 'The consumption factor turns range into energy on Efficiency. A typed software version is marked as typed on Software.', [fields[3].el, sw.el])));
+      setting('Consumption and software', 'The consumption factor turns range into energy on Efficiency. A typed software version is marked as typed on Software.', [fields[3].el, sw.el]),
+      tyreSetting()));
+  }
+
+  /* ---- the recommended tyre pressures, typed (config.tyre_pressure_front_kpa / _rear_kpa, kPa) */
+  function tyreSetting() {
+    const cfg = car().config || {};
+    const u = unitLabel('pressure');
+    const r2 = (x) => Math.round(x * 100) / 100;
+    const lo = Math.ceil(convert(100, 'pressure') * 100) / 100, hi = Math.floor(convert(600, 'pressure') * 100) / 100;
+    const say = `A number from ${lo} to ${hi} ${u}, or empty.`;
+    const one = (k, label, hint) => {
+      const cur = cfg[k]?.value;
+      const f = field({ label: `${label} (${u})`, name: `sc-${k}`, path: `config.${k}`, type: 'number', value: cur == null ? '' : String(r2(convert(cur, 'pressure'))),
+        hint: `${lo} to ${hi} ${u}. ${hint}`, attrs: { min: String(lo), max: String(hi), step: u === 'psi' ? '1' : '0.05', disabled: ro } });
+      f.input.addEventListener('change', () => {
+        const raw = f.input.value.trim();
+        const n = raw === '' ? null : Number(raw);
+        if (n != null && (!Number.isFinite(n) || n < lo || n > hi)) { f.setError(say); return; }
+        f.setError(null);
+        patchCar({ config: { [k]: n == null ? null : Math.round(toMetric(n, 'pressure') * 10) / 10 } }, label, f);
+      });
+      return f;
+    };
+    return setting('Tyre pressure', 'The cold pressures on the door placard. A typed pressure beats the one the car sends and the placard\'s for its wheel size; a tyre more than 10 % under it is flagged on the car page.',
+      [one('tyre_pressure_front_kpa', 'Recommended pressure, front', 'Leave empty to use what the car sends.').el,
+        one('tyre_pressure_rear_kpa', 'Recommended pressure, rear', 'Leave empty to use the front\'s when that is typed.').el]);
   }
 
   /* ---- Free Supercharging as dated ranges */

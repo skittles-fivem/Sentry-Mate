@@ -556,7 +556,34 @@ async function mountCar(ctx) {
         chan({ no: 7, title: 'Battery and range', text: 'Battery health compares today\'s capacity and range with these. Without them Sentry Mate uses its earliest readings, and says so on Battery.' },
           h('div', { class: 'sc-fields' }, fields[0].el, fields[1].el, fields[2].el, swap.el, fields[4].el)),
         chan({ no: 8, title: 'Consumption and software', text: 'The consumption factor turns range into energy on Efficiency. A typed version is marked as typed on Software.' },
-          h('div', { class: 'sc-fields' }, fields[3].el, sw.el)))));
+          h('div', { class: 'sc-fields' }, fields[3].el, sw.el)),
+        tyreChan())));
+  }
+
+  /* ---- the recommended tyre pressures, typed (config.tyre_pressure_front_kpa / _rear_kpa, kPa) */
+  function tyreChan() {
+    const cfg = S.car.config || {};
+    const unit = unitLabel('pressure');
+    const r2 = (x) => Math.round(x * 100) / 100;
+    const lo = Math.ceil(convert(100, 'pressure') * 100) / 100, hi = Math.floor(convert(600, 'pressure') * 100) / 100;
+    const say = `A number from ${lo} to ${hi} ${unit}, or empty.`;
+    const one = (k, label, why) => {
+      const cur = cfg[k]?.value;
+      const f = field({ label: `${label} (${unit})`, name: `sc-${k}`, path: `config.${k}`, type: 'number', value: cur == null ? '' : String(r2(convert(cur, 'pressure'))),
+        hint: `${lo} to ${hi} ${unit}. ${why}`, attrs: { min: String(lo), max: String(hi), step: unit === 'psi' ? '1' : '0.05', disabled: ro } });
+      f.input.addEventListener('change', () => {
+        const raw = f.input.value.trim();
+        const n = raw === '' ? null : Number(raw);
+        if (n != null && (!Number.isFinite(n) || n < lo || n > hi)) { f.setError(say); return; }
+        f.setError(null);
+        patchCar({ config: { [k]: n == null ? null : Math.round(toMetric(n, 'pressure') * 10) / 10 } }, label, f);
+      });
+      return f;
+    };
+    const front = one('tyre_pressure_front_kpa', 'Recommended tyre pressure, front', 'The cold pressure on the door placard. Empty: what the car sends, else the placard\'s for its wheel size.');
+    const rear = one('tyre_pressure_rear_kpa', 'Recommended tyre pressure, rear', 'Empty: the front\'s when that is typed.');
+    return chan({ no: 9, title: 'Tyre pressure', text: 'A typed pressure beats the one the car sends. A tyre more than 10 % under it is flagged on the car page.' },
+      h('div', { class: 'sc-fields' }, front.el, rear.el));
   }
 
   /* ---- sold: the car stays with its history, left out of the garage, the totals and the lights */

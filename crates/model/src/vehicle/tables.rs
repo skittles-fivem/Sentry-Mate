@@ -22,6 +22,7 @@ pub(crate) const FILES: &[(&str, &str)] = &[
     ("wheels.csv", include_str!("../../data/vehicle/wheels.csv")),
     ("can_values.csv", include_str!("../../data/vehicle/can_values.csv")),
     ("trim_can.csv", include_str!("../../data/vehicle/trim_can.csv")),
+    ("tyre_pressure.csv", include_str!("../../data/vehicle/tyre_pressure.csv")),
 ];
 
 /// Model years `from..=to` (`to` open when the code is still current).
@@ -207,6 +208,20 @@ pub struct TrimRule {
     pub src: Src,
 }
 
+/// The door placard's recommended cold tyre pressures of a model, years and wheel size (the owner's manual's "Tire
+/// Care and Maintenance": keep the tyres at the placard's pressures).
+#[derive(Debug, Clone)]
+pub struct TyrePressureRow {
+    pub models: Vec<char>,
+    pub years: Years,
+    pub wheel_in: u8,
+    pub front_psi: f64,
+    pub rear_psi: f64,
+    pub front_kpa: f64,
+    pub rear_kpa: f64,
+    pub src: Src,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Tables {
     pub wmi: Vec<WmiRow>,
@@ -223,6 +238,7 @@ pub struct Tables {
     pub wheels: Vec<WheelRow>,
     pub can_values: Vec<CanValueRow>,
     pub trim_can: Vec<TrimRule>,
+    pub tyre_pressure: Vec<TyrePressureRow>,
 }
 
 /// One parsed row: its fields by column name.
@@ -547,6 +563,26 @@ pub fn load() -> R<Tables> {
             src: r.src()?,
         })
     })?;
+    let (n, s) = t("tyre_pressure.csv")?;
+    let tyre_pressure = rows(n, s, |r| {
+        let row = TyrePressureRow {
+            models: r.chars("model")?,
+            years: r.years()?,
+            wheel_in: r.num("wheel_in")?,
+            front_psi: r.num("front_psi")?,
+            rear_psi: r.num("rear_psi")?,
+            front_kpa: r.num("front_kpa")?,
+            rear_kpa: r.num("rear_kpa")?,
+            src: r.src()?,
+        };
+        // the placard gives both units, rounded: they must say the same (1 psi = 6.894757 kPa)
+        for (psi, kpa, col) in [(row.front_psi, row.front_kpa, "front_kpa"), (row.rear_psi, row.rear_kpa, "rear_kpa")] {
+            if !(100.0..=600.0).contains(&kpa) || (psi * 6.894_757 - kpa).abs() > 3.5 {
+                return Err(r.bad(col, "does not match the psi"));
+            }
+        }
+        Ok(row)
+    })?;
     Ok(Tables {
         wmi,
         models,
@@ -562,6 +598,7 @@ pub fn load() -> R<Tables> {
         wheels,
         can_values,
         trim_can,
+        tyre_pressure,
     })
 }
 

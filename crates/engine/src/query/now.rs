@@ -143,9 +143,21 @@ pub struct NowView {
     pub setpoint_right_c: Option<V<f64>>,
     pub lv_v: Option<V<f64>>,
     pub location: Option<Location>,
+    /// Front left, front right, rear left, rear right when `tyres_slots_mapped`; else 0x219's slots in the car's
+    /// own order.
     pub tyres_kpa: [Option<V<f64>>; 4],
     pub tyres_slots_mapped: bool,
-    pub tyre_recommended_kpa: Option<V<f64>>,
+    /// The recommended (cold) pressure, front axle, and the rear's: typed, else the car's (CAN), else the door
+    /// placard's for the car's wheel size (`tyre_recommended_source`).
+    pub tyre_recommended_kpa: Option<Recommended>,
+    pub tyre_recommended_rear_kpa: Option<Recommended>,
+    /// `owner`, `can` or `placard`.
+    pub tyre_recommended_source: Option<&'static str>,
+    /// The wheel size the placard's pressures are for (placard only).
+    pub tyre_recommended_wheel_in: Option<u8>,
+    /// A tyre more than 10 % under its recommended pressure (each against the lower axle's while the slots are not
+    /// mapped).
+    pub tyre_low: Option<V<bool>>,
     pub flags: serde_json::Value,
     pub charge: ChargeNow,
     pub drive: Option<DriveNow>,
@@ -244,6 +256,55 @@ impl From<&model::OffCanNow> for OffCanView {
             },
         }
     }
+}
+
+/// A recommended tyre pressure: `{ value, at_ms, sources }`, as a value read from the car when the car sent it;
+/// typed or the door placard's: `at_ms` null and `sources` empty.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Recommended {
+    pub value: f64,
+    pub at_ms: Option<u64>,
+    pub sources: Vec<super::SourceRef>,
+}
+
+/// A Now's tyres judged against the car's recommended pressures (kPa).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TyresJudged {
+    pub kpa: [Option<f64>; 4],
+    /// The pressures are in wheel order (front left, front right, rear left, rear right).
+    pub mapped: bool,
+    pub recommended: super::fleet::TyreRecommended,
+    /// The pressure each tyre is judged against: its axle's when mapped, else the lower of the two.
+    pub against: [Option<f64>; 4],
+    pub lows: [Option<bool>; 4],
+    pub low: Option<bool>,
+}
+
+impl TyresJudged {
+    /// The low tyre furthest under its pressure.
+    pub fn lowest_low(&self) -> Option<usize> {
+        let share = |i: usize| self.kpa[i].zip(self.against[i]).map_or(f64::INFINITY, |(p, r)| p / r);
+        (0..4).filter(|&i| self.lows[i] == Some(true)).min_by(|&a, &b| share(a).total_cmp(&share(b)))
+    }
+}
+
+/// The tyres of a Now's sample judged against the car's recommended pressures (typed, else the car's, else the door
+/// placard's); `None` when none is known. The pressures are taken as in wheel order only when the input said so
+/// (`extra.tires_mapped`): a Now kept before it was noted is not mapped.
+pub(crate) fn tyres_judged(e: &Engine, car: CarId, s: &Sample) -> QResult<Option<TyresJudged>> {
+    let can = [s.extra.tire_recommended_front_bar, s.extra.tire_recommended_rear_bar].map(kpa);
+    let Some(rec) = super::fleet::tyre_recommended(e, car, can)? else { return Ok(None) };
+    let kpa = s.tpms_bar.map(kpa);
+    let mapped = s.extra.tires_mapped == Some(true);
+    let recommended = [Some(rec.front_kpa), Some(rec.rear_kpa)];
+    Ok(Some(TyresJudged {
+        kpa,
+        mapped,
+        recommended: rec,
+        against: model::tyre_against(recommended, mapped),
+        lows: model::tyre_lows(&kpa, recommended, mapped),
+        low: model::tyre_low(&kpa, recommended, mapped),
+    }))
 }
 
 /// The state word of a Now: driving, charging, parked, asleep or unknown.
@@ -352,6 +413,12 @@ pub fn published_now(e: &Engine, car: CarId) -> QResult<Option<Now>> {
         n.trim = super::fleet::trim_of(e, &c).ok().flatten();
     }
     n.off_can = Box::new(off_can_now(e, car, now_ms())?);
+    // the tyre warning as the Now gives it: against the typed, the car's or the placard's pressures
+    if let Some(t) = tyres_judged(e, car, &n.sample).ok().flatten()
+        && t.low.is_some()
+    {
+        n.sample.extra.tire_low = t.low;
+    }
     Ok(Some(n))
 }
 
@@ -527,6 +594,17 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         reasons.push("charging");
     }
     let est_range = estimated_range_km(e, car, &s, at)?;
+    let tyres = tyres_judged(e, car, &s)?;
+    let recommended = |kpa: f64, field: &str| {
+        let src = tyres.as_ref().map(|t| t.recommended.source);
+        match src {
+            Some(super::fleet::TyreSource::Can) => {
+                let at = t(field);
+                Recommended { value: kpa, at_ms: Some(at.0), sources: vec![at.1.into()] }
+            }
+            _ => Recommended { value: kpa, at_ms: None, sources: Vec::new() },
+        }
+    };
     // the software the car runs: the newest update's version
     let update =
         db.list::<db::UpdateRow>(car, &db::Query::default().limit(1))?.items.into_iter().next().map(|u| u.update);
@@ -584,9 +662,17 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         setpoint_right_c: None,
         lv_v: vf(s.lv_voltage_v, 2, t("lv_voltage_v")),
         location,
-        tyres_kpa: [0, 1, 2, 3].map(|i| v(kpa(s.tpms_bar[i]), t(&format!("tpms_bar{i}")))),
-        tyres_slots_mapped: false,
-        tyre_recommended_kpa: None,
+        tyres_kpa: [0, 1, 2, 3].map(|i| v(kpa(s.tpms_bar[i]), t("tpms_bar"))),
+        tyres_slots_mapped: s.extra.tires_mapped == Some(true),
+        tyre_recommended_kpa: tyres
+            .as_ref()
+            .map(|x| recommended(x.recommended.front_kpa, "extra.tire_recommended_front_bar")),
+        tyre_recommended_rear_kpa: tyres
+            .as_ref()
+            .map(|x| recommended(x.recommended.rear_kpa, "extra.tire_recommended_rear_bar")),
+        tyre_recommended_source: tyres.as_ref().map(|x| x.recommended.source.word()),
+        tyre_recommended_wheel_in: tyres.as_ref().and_then(|x| x.recommended.wheel_in),
+        tyre_low: v(tyres.as_ref().and_then(|x| x.low), t("tpms_bar")),
         flags: {
             // the car's own word (CAN) first, the Tesla API's while its reading is current
             let x = &s.extra;

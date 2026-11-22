@@ -1,0 +1,7 @@
+model,year_from,year_to,wheel_in,front_psi,rear_psi,front_kpa,rear_kpa,source,confidence
+3,2017,2023,18,42,42,290,290,Tesla Model 3 Owner's Manual (Tire Care and Maintenance: keep tires at the pressures on the Tire and Loading Information placard on the center door pillar); placard 42 psi (290 kPa) cold front and rear,medium
+3,2017,2023,19,42,42,290,290,Tesla Model 3 Owner's Manual (Tire Care and Maintenance: keep tires at the pressures on the Tire and Loading Information placard on the center door pillar); placard 42 psi (290 kPa) cold front and rear,medium
+3,2018,2023,20,42,42,290,290,Tesla Model 3 Owner's Manual (Tire Care and Maintenance: keep tires at the pressures on the Tire and Loading Information placard on the center door pillar); placard 42 psi (290 kPa) cold front and rear,medium
+Y,2020,2024,19,42,42,290,290,Tesla Model Y Owner's Manual (Tire Care and Maintenance: keep tires at the pressures on the Tire and Loading Information placard on the center door pillar); placard 42 psi (290 kPa) cold front and rear,medium
+Y,2020,2024,20,42,42,290,290,Tesla Model Y Owner's Manual (Tire Care and Maintenance: keep tires at the pressures on the Tire and Loading Information placard on the center door pillar); placard 42 psi (290 kPa) cold front and rear,medium
+Y,2020,2024,21,42,42,290,290,Tesla Model Y Owner's Manual (Tire Care and Maintenance: keep tires at the pressures on the Tire and Loading Information placard on the center door pillar); placard 42 psi (290 kPa) cold front and rear,medium

@@ -1328,12 +1328,18 @@ fn overlay(
         total_discharge_kwh,
         lv_voltage_v
     );
+    // the four tyre pressures are one value, with their order (`extra.tires_mapped`): SMO's may be 0x219's slots in
+    // the car's own order, the APIs' name the wheels, so all four come from one input (keys of older Nows, one per
+    // slot, go)
     for i in 0..4 {
-        let f = format!("tpms_bar{i}");
-        if s.tpms_bar[i].is_some() && newer(&f, s.t_ms, input, at, from) {
-            to.tpms_bar[i] = s.tpms_bar[i];
-            note(&f, at, from);
-        }
+        let old = format!("tpms_bar{i}");
+        at.remove(&old);
+        from.remove(&old);
+    }
+    if s.tpms_bar.iter().any(Option::is_some) && newer("tpms_bar", s.t_ms, input, at, from) {
+        to.tpms_bar = s.tpms_bar;
+        to.extra.tires_mapped = s.extra.tires_mapped;
+        note("tpms_bar", at, from);
     }
     // the less frequent values, kept as `extra.<name>`
     macro_rules! take_extra {
@@ -1380,6 +1386,8 @@ fn overlay(
         charger_phases,
         time_to_full_min,
         tire_low,
+        tire_recommended_front_bar,
+        tire_recommended_rear_bar,
         energy_at_destination_kwh,
         navigating,
         update_installing

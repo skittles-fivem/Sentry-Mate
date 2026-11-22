@@ -13,6 +13,7 @@
 import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
+import { convert, toMetric, unitLabel } from '../shared/units.js';
 import { isValidZone, formatDate, formatDateTime, formatTime, dayKey, formatDayKey, zoneSourceText } from '../shared/time.js';
 import { pageHead, section, empty, errorView, ago, chip, flag, button, icon, stateMark, note, sep } from '../core/ui.js';
 import { labelOf } from '../core/sources.js';
@@ -434,6 +435,30 @@ async function mountCar(ctx) {
     [car.model, car.year].filter(Boolean).join(' ') || 'Model not known yet', car.trim ? [sep(), car.trim] : null,
     car.vin_prefix ? [sep(), 'VIN ', h('span', { class: 'mono' }, car.vin_prefix), h('span', { class: 'sc-quiet' }, ' (prefix only: model and year come from it)')] : null);
 
+  /* ---------- the recommended tyre pressures, typed (config.tyre_pressure_front_kpa / _rear_kpa, kPa) */
+  const pu = unitLabel('pressure');
+  const r2 = (x) => Math.round(x * 100) / 100;
+  const pLo = Math.ceil(convert(100, 'pressure') * 100) / 100, pHi = Math.floor(convert(600, 'pressure') * 100) / 100;
+  const tyreField = (k, label, hint) => {
+    const cur = cfg[k] ? cfg[k].value : null;
+    const f = field({ label: `${label} (${pu})`, name: k, type: 'number', value: cur == null ? '' : String(r2(convert(cur, 'pressure'))), hint: `${pLo} to ${pHi} ${pu}. ${hint}`,
+      attrs: { min: String(pLo), max: String(pHi), step: pu === 'psi' ? '1' : '0.05', disabled: ro } });
+    f.control.addEventListener('change', async () => {
+      const raw = f.control.value.trim();
+      const n = raw === '' ? null : Number(raw);
+      setFieldError(f, null);
+      if (n != null && (!Number.isFinite(n) || n < pLo || n > pHi)) { setFieldError(f, `A number from ${pLo} to ${pHi} ${pu}, or empty.`); return; }
+      try {
+        await patchCar({ config: { [k]: n == null ? null : Math.round(toMetric(n, 'pressure') * 10) / 10 } });
+        afterCarChange(n == null ? `Saved: ${label.toLowerCase()} is no longer typed.` : `Saved: ${label.toLowerCase()} ${n} ${pu}.`);
+      } catch (err) { if (carConflict(err, 'tyre pressure')) return; setFieldError(f, (err.fields && err.fields[`config.${k}`]) || err.message); }
+    });
+    return f;
+  };
+  const tyreControl = h('div', { class: 'sc-stack' },
+    tyreField('tyre_pressure_front_kpa', 'Front', 'The cold pressure on the door placard. Empty: what the car sends, else the placard’s for its wheel size.'),
+    tyreField('tyre_pressure_rear_kpa', 'Rear', 'Empty: the front’s when that is typed.'));
+
   /* ---------- sold */
   const sold = state.isSold(car);
   const soldWords = sold ? (car.sold_date ? `Sold on ${formatDayKey(car.sold_date, { weekday: false })}` : 'Sold (date not given)') : 'Not sold';
@@ -467,6 +492,7 @@ async function mountCar(ctx) {
     setting('Name', 'Sentry Mate never asks Tesla for a name: the car is called what you type here.', nameField),
     setting('Sold', 'A car you no longer have. Mark it sold to keep its history without listing it with the cars you drive.', soldControl, { cls: 'sc-setting-sold' }),
     setting('Model', null, facts),
+    setting('Recommended tyre pressure', 'A typed pressure beats the one the car sends. The car page flags a tyre more than 10 % under it.', tyreControl),
     h('div', { class: 'sc-config' }, h('h3', { class: 'sc-sub' }, 'What the car reports about itself'),
       note('Read from the car’s own configuration message on the CAN bus, else worked out from the VIN prefix.'), configTable.el));
 

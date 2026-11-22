@@ -628,3 +628,85 @@ async fn a_sold_car_keeps_its_history_but_raises_nothing_and_leaves_the_fleet_to
     let r = admin.patch("/api/v1/cars/c3", json!({ "version": 2, "sold": false })).await;
     assert_eq!((r.json()["sold"].clone(), r.json()["sold_date"].clone()), (json!(false), json!(null)), "{}", r.text());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_recommended_tyre_pressure_is_typed_else_the_cars_else_the_placards_and_a_low_tyre_is_said() {
+    let f = fleet().await;
+    let mut admin = f.s.admin().await;
+    let kpa = |v: &Value| v["value"].as_f64();
+    // c3 (a Model S, no wheel size known, nothing sent): no recommended pressure, so no tyre is judged
+    let n = admin.get("/api/v1/cars/c3/now").await.json();
+    assert_eq!(
+        (n["tyre_recommended_kpa"].clone(), n["tyre_recommended_source"].clone(), n["tyre_low"].clone()),
+        (json!(null), json!(null), json!(null)),
+        "{n}"
+    );
+    assert_eq!(n["tyres_slots_mapped"], json!(false), "a Now that does not say is not mapped");
+
+    // typed (kPa): beats everything; the sensors' wheels are not known, so each tyre is judged against the lower
+    let body = json!({ "version": 1, "config": { "tyre_pressure_front_kpa": 290, "tyre_pressure_rear_kpa": 300 } });
+    let r = admin.patch("/api/v1/cars/c3", body).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let typed = r.json()["config"]["tyre_pressure_front_kpa"].clone();
+    assert_eq!((kpa(&typed), typed["source"].clone()), (Some(290.0), json!("owner")), "{typed}");
+    let n = admin.get("/api/v1/cars/c3/now").await.json();
+    let rec = (kpa(&n["tyre_recommended_kpa"]), kpa(&n["tyre_recommended_rear_kpa"]));
+    assert_eq!(rec, (Some(290.0), Some(300.0)), "{n}");
+    assert_eq!(n["tyre_recommended_source"], json!("owner"));
+    assert_eq!(
+        (n["tyre_recommended_kpa"]["at_ms"].clone(), n["tyre_recommended_kpa"]["sources"].clone()),
+        (json!(null), json!([]))
+    );
+    assert_eq!(n["tyre_low"]["value"], json!(true), "200 kPa is under 90 % of 290: {n}");
+    let a = admin.get("/api/v1/fleet/attention").await.json();
+    let items = a["items"].as_array().cloned().unwrap();
+    let low = items.iter().find(|i| i["code"] == json!("tyre_low")).cloned().unwrap();
+    assert_eq!(low["car"], json!("c3"));
+    let d = &low["detail"];
+    assert_eq!(
+        (d["tyre"].clone(), d["source"].clone()),
+        (json!(null), json!("owner")),
+        "not mapped: which tyre is not known"
+    );
+    assert_eq!((d["pressure_kpa"].as_f64(), d["recommended_kpa"].as_f64()), (Some(200.0), Some(290.0)), "{low}");
+    // out of range, refused
+    let r = admin.patch("/api/v1/cars/c3", json!({ "version": 2, "config": { "tyre_pressure_rear_kpa": 50 } })).await;
+    assert_eq!(r.status, 422, "{}", r.text());
+
+    // c1: the car sends 2.9 front, 3.1 rear (CAN) and its sensors' wheels are known: the rear right at 2.7 bar is
+    // more than 10 % under the rear's
+    let mut c1 = now_of(1, (accounts::system_clock())() - 5_000, State::Online, true, 64.0, false);
+    c1.sample.tpms_bar = [Some(2.9), Some(2.9), Some(3.1), Some(2.7)];
+    c1.sample.extra.tire_recommended_front_bar = Some(2.9);
+    c1.sample.extra.tire_recommended_rear_bar = Some(3.1);
+    c1.sample.extra.tires_mapped = Some(true);
+    f.engine.db().set_now(c1.clone()).unwrap();
+    let n = admin.get("/api/v1/cars/c1/now").await.json();
+    let rec = (kpa(&n["tyre_recommended_kpa"]), kpa(&n["tyre_recommended_rear_kpa"]));
+    assert_eq!(rec, (Some(290.0), Some(310.0)), "{n}");
+    assert_eq!((n["tyre_recommended_source"].clone(), n["tyres_slots_mapped"].clone()), (json!("can"), json!(true)));
+    assert!(n["tyre_recommended_kpa"]["at_ms"].is_u64(), "a value read from the car: {n}");
+    assert_eq!(n["tyre_low"]["value"], json!(true));
+    let a = admin.get("/api/v1/fleet/attention").await.json();
+    let items = a["items"].as_array().cloned().unwrap();
+    let low = items.iter().find(|i| i["code"] == json!("tyre_low") && i["car"] == json!("c1")).cloned();
+    assert_eq!(low.map(|l| l["detail"]["tyre"].clone()), Some(json!("rr")));
+    // the same tyres not mapped: judged against the lower (2.9 bar), none is low (no false alarm)
+    c1.sample.extra.tires_mapped = Some(false);
+    f.engine.db().set_now(c1).unwrap();
+    let n = admin.get("/api/v1/cars/c1/now").await.json();
+    assert_eq!((n["tyre_low"]["value"].clone(), n["tyres_slots_mapped"].clone()), (json!(false), json!(false)), "{n}");
+
+    // c2 (a Model 3 of 2022): nothing typed or sent; its wheel size typed: the door placard's for 18 in
+    let version = admin.get("/api/v1/cars/c2").await.json()["version"].clone();
+    let r = admin.patch("/api/v1/cars/c2", json!({ "version": version, "config": { "wheel_in": 18 } })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let n = admin.get("/api/v1/cars/c2/now").await.json();
+    let rec = (kpa(&n["tyre_recommended_kpa"]), kpa(&n["tyre_recommended_rear_kpa"]));
+    assert_eq!(rec, (Some(290.0), Some(290.0)), "{n}");
+    assert_eq!(
+        (n["tyre_recommended_source"].clone(), n["tyre_recommended_wheel_in"].clone()),
+        (json!("placard"), json!(18))
+    );
+    assert_eq!(n["tyre_low"]["value"], json!(false));
+}

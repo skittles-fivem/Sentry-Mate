@@ -20,6 +20,7 @@ import { formatDate, formatWhen, formatDuration } from '../shared/time.js';
 import { formatList } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
+import { tyreView, recommendedLine } from '../shared/tyres.js';
 import { tile, num, ring, stateTag, chip, btn, icon, note, ago } from '../core/ui.js';
 import { openPeriod, rangeText } from '../core/period.js';
 import { mapTile, coordsText } from '../core/map.js';
@@ -159,11 +160,11 @@ export async function mount(ctx) {
   const tTyres = tile({ w: 2, title: 'Tyres', icon: 'tyre', cls: 'tyres-tile' });
   function drawTyres() {
     const list = now.tyres_kpa || [];
-    const rec = v(now.tyre_recommended_kpa);
-    const low = list.some((t) => v(t) != null && rec != null && v(t) < rec * 0.9);
+    const ty = tyreView(now);
+    const low = ty.anyLow === true;
     const dots = TYRES.map(([k, name], i) => {
       const val = v(list[i]);
-      const bad = val != null && rec != null && val < rec * 0.9;
+      const bad = ty.low[i] === true;
       return h('div', { class: ['tyre', `tyre-${k}`, { 'is-low': bad, 'is-missing': val == null }] },
         h('span', { class: 'tyre-dot', 'aria-hidden': 'true' }),
         h('span', { class: 'tyre-text' }, h('span', { class: 'tyre-name' }, name), h('span', { class: 'tyre-val' }, val == null ? '—' : format(val, 'pressure'))));
@@ -172,8 +173,8 @@ export async function mount(ctx) {
       h('div', { class: 'tyres', role: 'img', 'aria-label': TYRES.map(([, n], i) => `${n} ${format(v(list[i]), 'pressure')}`).join(', ') },
         h('span', { class: 'tyres-car', 'aria-hidden': 'true' }), dots),
       h('p', { class: ['tile-line', { 'is-warn': low }], cover: 'summary.flag.tire_pressure_warning' },
-        !list.length ? `Tyre pressures: ${why(null)}.` : low ? 'A tyre is more than 10 % under what the car recommends.' : rec != null ? `All near the ${format(rec, 'pressure')} the car recommends.` : 'No recommended pressure sent.',
-        now.tyres_slots_mapped === false ? ' Which wheel is which is not known yet.' : ''));
+        !list.length ? `Tyre pressures: ${why(null)}.` : low ? 'A tyre is more than 10 % under its recommended pressure. ' : ty.front != null ? 'All near the recommended pressure. ' : '',
+        list.length ? recommendedLine(now) : ''));
   }
 
   /* ---------------------------------------------------------------- status flags */

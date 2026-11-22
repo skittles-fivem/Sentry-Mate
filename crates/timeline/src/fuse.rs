@@ -185,10 +185,18 @@ macro_rules! slots {
             has: |x| x.$f.is_some(),
             copy: |to, from| to.$f = from.$f,
         },)+)+
-        Slot { name: "tpms_bar_0", hold: |p| p.slow_ms, has: |x| x.tpms_bar[0].is_some(), copy: |to, from| to.tpms_bar[0] = from.tpms_bar[0] },
-        Slot { name: "tpms_bar_1", hold: |p| p.slow_ms, has: |x| x.tpms_bar[1].is_some(), copy: |to, from| to.tpms_bar[1] = from.tpms_bar[1] },
-        Slot { name: "tpms_bar_2", hold: |p| p.slow_ms, has: |x| x.tpms_bar[2].is_some(), copy: |to, from| to.tpms_bar[2] = from.tpms_bar[2] },
-        Slot { name: "tpms_bar_3", hold: |p| p.slow_ms, has: |x| x.tpms_bar[3].is_some(), copy: |to, from| to.tpms_bar[3] = from.tpms_bar[3] },
+        // the four tyre pressures are one value: an input's four may be in its own slot order (SMO's 0x219 while
+        // which wheel each slot is is not known) and another's in wheel order (the APIs'), so a sample takes all
+        // four from one input or none, never a slot from each
+        Slot {
+            name: "tpms_bar",
+            hold: |p| p.slow_ms,
+            has: |x| x.tpms_bar.iter().any(Option::is_some),
+            copy: |to, from| {
+                to.tpms_bar = from.tpms_bar;
+                to.extra.tires_mapped = from.extra.tires_mapped;
+            },
+        },
         ]
     };
 }
@@ -308,6 +316,35 @@ mod tests {
             inside_temp_c: Some(21.0),
             ..Sample::default()
         }
+    }
+
+    #[test]
+    fn the_four_tyres_come_from_one_input() {
+        // SMO's 0x219 slots (order not known) with one slot missing: never filled from the API's named wheels
+        let s: Vec<Sample> = (0..30)
+            .map(|t| {
+                let mut x = smo(t);
+                x.tpms_bar = [Some(2.5), None, Some(2.6), Some(2.7)];
+                x.extra.tires_mapped = Some(false);
+                x
+            })
+            .collect();
+        let a: Vec<Sample> = (0..3)
+            .map(|i| {
+                let mut x = api(i * 10 + 5);
+                x.tpms_bar = [Some(2.9), Some(2.91), Some(2.92), Some(2.93)];
+                x.extra.tires_mapped = Some(true);
+                x
+            })
+            .collect();
+        let f = fuse(&s, &a, &FuseParams::default());
+        assert!(f.samples.iter().all(|x| x.tpms_bar == [Some(2.5), None, Some(2.6), Some(2.7)]));
+        assert!(f.samples.iter().all(|x| x.extra.tires_mapped == Some(false)));
+        // SMO with no tyres at all: the API's four, with their order
+        let s: Vec<Sample> = (0..30).map(smo).collect();
+        let f = fuse(&s, &a, &FuseParams::default());
+        assert!(f.samples.iter().all(|x| x.tpms_bar == [Some(2.9), Some(2.91), Some(2.92), Some(2.93)]));
+        assert!(f.samples.iter().all(|x| x.extra.tires_mapped == Some(true)));
     }
 
     #[test]

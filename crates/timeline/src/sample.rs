@@ -34,8 +34,6 @@ impl Default for SampleParams {
 const LEGACY_CHARGING_KW: f64 = 0.1;
 /// An AC line current above this, while charging, says AC when no signal names the charger (A).
 const AC_CURRENT_A: f64 = 0.5;
-/// A tyre is low when its pressure is more than this far below its axle's recommended pressure (0.1: 10 %).
-const TIRE_LOW_FRACTION: f64 = 0.1;
 
 /// The pack's full energy and its buffer are held this long (ms): they change over weeks, and 0x352 sends them on
 /// pages of their own, so one may be a while behind the other.
@@ -238,8 +236,8 @@ impl SampleBuilder {
 
         let (lat, lon, gps_accuracy_m) = self.position(end_us);
 
-        let tpms_bar = [num(Field::Tire0), num(Field::Tire1), num(Field::Tire2), num(Field::Tire3)];
-        let extra = self.extra(end_us, &tpms_bar);
+        let (tpms_bar, tires_mapped) = self.tyres(end_us);
+        let extra = self.extra(end_us, &tpms_bar, tires_mapped);
 
         Sample {
             extra,
@@ -276,13 +274,14 @@ impl SampleBuilder {
     }
 
     /// The less frequent values. Codes are kept in the slots; the few words are made here.
-    fn extra(&self, end_us: u64, tpms_bar: &[Option<f64>; 4]) -> SampleExtra {
+    fn extra(&self, end_us: u64, tpms_bar: &[Option<f64>; 4], tires_mapped: Option<bool>) -> SampleExtra {
         let num = |f: Field| self.best(f, end_us).map(|(v, _)| v);
         let flag = |f: Field| num(f).map(|v| v >= 0.5);
         let config = |f: Field| self.best_cand(f, end_us).map(|(v, _, i)| self.table.cands[i].label(v));
         let word = |f: Field, words: &[&str]| num(f).and_then(|c| words.get(c as usize)).map(|w| w.to_string());
 
         let hvac = num(Field::Hvac);
+        let (rec_front, rec_rear) = (num(Field::TireRecFront), num(Field::TireRecRear));
         let preconditioning_battery = match (flag(Field::PrecondBattery), flag(Field::BatteryHeating)) {
             (None, None) => None,
             (a, b) => Some(a == Some(true) || b == Some(true)),
@@ -329,11 +328,41 @@ impl SampleBuilder {
             charger_phases,
             time_to_full_min: num(Field::TimeToFull),
             tire_low: flag(Field::TpmsWarning)
-                .or_else(|| tire_low(tpms_bar, [num(Field::TireRecFront), num(Field::TireRecRear)])),
+                .or_else(|| tire_low(tpms_bar, [rec_front, rec_rear], tires_mapped == Some(true))),
+            tire_recommended_front_bar: rec_front,
+            tire_recommended_rear_bar: rec_rear,
+            tires_mapped,
             energy_at_destination_kwh: num(Field::EnergyAtDest),
             navigating: flag(Field::Navigating),
             update_installing: flag(Field::Ota),
         }
+    }
+
+    /// The four tyre pressures (bar), and whether they are in wheel order (front left, front right, rear left, rear
+    /// right). 0x219's four slots when it sends any: put in wheel order when its four locations (pages 0-3) name each
+    /// wheel once, else kept in the car's slot order and not mapped (an incomplete, unknown or doubled location says
+    /// nothing sure about any slot). Else 0x31F's, which names the wheels. Each group is read whole: a slot of one is
+    /// never filled from the other, whose order may differ.
+    fn tyres(&self, end_us: u64) -> ([Option<f64>; 4], Option<bool>) {
+        let hold = self.params.hold_ms;
+        let slots = SLOT_PRESSURES.map(|n| self.series(n, end_us, hold));
+        if slots.iter().any(Option::is_some) {
+            // the slots' wheels change only when the tyres are moved: held as the car's configuration is
+            let locs = SLOT_LOCATIONS.map(|n| self.series(n, end_us, self.params.config_hold_ms));
+            return match wheel_of_slots(locs) {
+                Some(wheel) => {
+                    let mut out = [None; 4];
+                    for (slot, w) in wheel.into_iter().enumerate() {
+                        out[w] = slots[slot];
+                    }
+                    (out, Some(true))
+                }
+                None => (slots, Some(false)),
+            };
+        }
+        let named = NAMED_PRESSURES.map(|n| self.series(n, end_us, hold));
+        let any = named.iter().any(Option::is_some);
+        (named, any.then_some(true))
     }
 
     /// A slot's value by series name, if it was sent within `hold_ms` before `end_us`.
@@ -412,21 +441,39 @@ impl SampleBuilder {
     }
 }
 
-/// A tyre low, when the car's own warning isn't there: `true` when any of the four pressures (front left, front
-/// right, rear left, rear right) is more than [`TIRE_LOW_FRACTION`] (10 %) below its axle's recommended pressure
-/// (`recommended`: front, rear); `false` when all four pressures and both recommended ones are known and none is;
-/// else not known.
-fn tire_low(bar: &[Option<f64>; 4], recommended: [Option<f64>; 2]) -> Option<bool> {
-    let recommended = recommended.map(|r| r.filter(|r| *r > 0.0));
-    let low = |i: usize| bar[i].zip(recommended[i / 2]).map(|(p, r)| p < r * (1.0 - TIRE_LOW_FRACTION));
-    let lows = [0, 1, 2, 3].map(low);
-    if lows.contains(&Some(true)) {
-        Some(true)
-    } else if lows.iter().all(|l| *l == Some(false)) {
-        Some(false)
-    } else {
-        None
+/// 0x219's pressure slots and the wheel of each (override.dbc; the locations are the base layout's).
+const SLOT_PRESSURES: [&str; 4] =
+    ["VCSEC_TPMSPressure0", "VCSEC_TPMSPressure1", "VCSEC_TPMSPressure2", "VCSEC_TPMSPressure3"];
+const SLOT_LOCATIONS: [&str; 4] =
+    ["VCSEC_TPMSLocation0", "VCSEC_TPMSLocation1", "VCSEC_TPMSLocation2", "VCSEC_TPMSLocation3"];
+/// 0x31F's pressures (chassis bus; the legacy set's too), by wheel: front left, front right, rear left, rear right.
+const NAMED_PRESSURES: [&str; 4] = ["TPMSFLpressure31F", "TPMSFRpressure31F", "TPMSRLpressure31F", "TPMSRRpressure31F"];
+
+/// The wheel (0 front left, 1 front right, 2 rear left, 3 rear right) of each of 0x219's four slots, when the four
+/// locations are all known and name each wheel once; else `None`.
+pub(crate) fn wheel_of_slots(locs: [Option<f64>; 4]) -> Option<[usize; 4]> {
+    let mut wheel = [0usize; 4];
+    let mut seen = [false; 4];
+    for (slot, loc) in locs.into_iter().enumerate() {
+        let l = loc?;
+        if !(0.0..=3.0).contains(&l) || l.fract() != 0.0 {
+            return None;
+        }
+        let w = l as usize;
+        if seen[w] {
+            return None;
+        }
+        seen[w] = true;
+        wheel[slot] = w;
     }
+    Some(wheel)
+}
+
+/// A tyre low, when the car's own warning isn't there: [`model::tyre_low`] against the recommended pressures
+/// (front, rear), each tyre against its own axle's when the pressures are in wheel order, else against the lower of
+/// the two (no false alarm while which wheel each slot is is not known).
+fn tire_low(bar: &[Option<f64>; 4], recommended: [Option<f64>; 2], mapped: bool) -> Option<bool> {
+    model::tyre_low(bar, recommended, mapped)
 }
 
 #[cfg(test)]
