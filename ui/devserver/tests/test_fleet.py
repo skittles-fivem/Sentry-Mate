@@ -6,8 +6,8 @@ import unittest
 
 from .helpers import ServerCase
 
-ITEM = {"id", "name", "model", "year", "vin_prefix", "trim", "profile", "time_zone", "last_activity_ms", "now",
-        "attention", "sources", "source_label", "sold", "sold_date"}
+ITEM = {"id", "name", "model", "year", "vin_prefix", "trim", "profile", "time_zone", "time_zone_source",
+        "last_activity_ms", "now", "attention", "sources", "source_label", "sold", "sold_date"}
 NOW_KEYS = {"state", "since_ms", "at_ms", "received_ms", "stale", "soc_pct", "range_km", "ideal_range_km", "place", "plugged",
             "charge_power_kw"}
 
@@ -36,6 +36,7 @@ class Cars(ServerCase):
         self.assertIn("tyre_low", by["c2"]["attention"])
         self.assertEqual(by["c1"]["time_zone"], "America/Los_Angeles")
         self.assertEqual(by["c2"]["time_zone"], "America/Chicago")
+        self.assertEqual((by["c1"]["time_zone_source"], by["c2"]["time_zone_source"]), ("position", "owner"))
 
     def test_filters_and_sorts(self):
         self.assertEqual([x["id"] for x in self.c.get("/api/v1/cars?state=charging")["items"]], ["c2"])
@@ -80,9 +81,13 @@ class Cars(ServerCase):
         self.assertEqual(self.c.get("/api/v1/cars/c1/now")["time_zone"], "America/Denver")
         self.c.error("PATCH", "/api/v1/cars/c1", 422, "invalid", body={"version": up["version"], "time_zone": "Mars/Base"})
         self.c.error("PATCH", "/api/v1/cars/c1", 400, "bad_input", body={"version": up["version"], "config": {"colour": 1}})
+        self.assertEqual(up["time_zone_source"], "owner")
         back = self.c.json("PATCH", "/api/v1/cars/c1", {"version": up["version"], "config": {"paint": None},
-                                                         "time_zone": "America/Los_Angeles"})
+                                                         "time_zone": None})
         self.assertEqual(back["config"]["paint"]["source"], "can")
+        # back to automatic: the car's zone from its position
+        self.assertEqual((back["time_zone"], back["time_zone_source"]), ("America/Los_Angeles", "position"))
+        self.c.error("PATCH", "/api/v1/cars/c1", 400, "bad_input", body={"version": back["version"], "time_zone": 7})
 
     def test_vehicle_info(self):
         d = self.c.get("/api/v1/cars/c1")

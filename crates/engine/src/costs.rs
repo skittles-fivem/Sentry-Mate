@@ -323,7 +323,7 @@ pub fn clear_manual(e: &Engine, car: CarId, charge: u64) -> Result<bool, QueryEr
     records::put_cost(db, car, charge, ch.start_ms, before)?;
     put_replaced(e, car, charge, None)?;
     if ch.source == Source::Live && records::cost(db, car, charge, ch.start_ms)?.is_none() && ended(e, car, &ch)? {
-        let tz = db.car(car)?.map_or_else(|| "UTC".to_string(), |c| c.time_zone);
+        let tz = db.car(car)?.map_or_else(|| "UTC".to_string(), |c| e.car_zone(&c).0);
         let curve = curve_of(e, car, &ch)?;
         settle(e, car, &ch, &curve, &tz, true)?;
     }
@@ -411,7 +411,7 @@ pub fn reprice(
     let mut before: std::collections::BTreeMap<String, f64> = Default::default();
     let mut after: std::collections::BTreeMap<String, f64> = Default::default();
     for &car in cars {
-        let tz = db.car(car)?.map_or_else(|| "UTC".to_string(), |c| c.time_zone);
+        let tz = db.car(car)?.map_or_else(|| "UTC".to_string(), |c| e.car_zone(&c).0);
         let rows: Vec<Charge> =
             crate::pipeline::all_rows(db, car, from_ms.unwrap_or(0), to_ms.unwrap_or(u64::MAX), None)?;
         for ch in rows {

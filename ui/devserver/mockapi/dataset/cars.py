@@ -98,7 +98,7 @@ def featured_specs():
     )
     c2 = CarSpec(
         id="c2", n=2, name="Maple", model="Model 3", year=2022, trim="RWD", vin_prefix="5YJ3E1EA0NF",
-        profile="tesla-3y", time_zone="America/Chicago", area=CHI, chemistry="lfp",
+        profile="tesla-3y", time_zone="America/Chicago", time_zone_source="owner", area=CHI, chemistry="lfp",
         full_new_kwh=60.5, full_start_kwh=60.0, full_now_kwh=59.3, buffer_kwh=2.5, full_range_new_km=438.0,
         rated_wh_per_km=132.0, ideal_factor=1.07, base_wh_per_km=138.0, mass_kg=1760, cda=0.51, crr=0.0090,
         charge_limit=100, home="p30", work="p31", home_ac=(230, 16, 3), dc_peak_kw=170, dc_knee=(0.10, 0.45),

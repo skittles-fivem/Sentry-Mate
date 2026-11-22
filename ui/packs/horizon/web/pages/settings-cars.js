@@ -8,7 +8,7 @@
 import * as state from '../shared/state.js';
 import { h, replace, setTitle as docTitle } from '../shared/dom.js';
 import { invalidate } from '../shared/api.js';
-import { isValidZone, dayKey } from '../shared/time.js';
+import { isValidZone, dayKey, zoneSourceText } from '../shared/time.js';
 import { convert, toMetric, unitLabel, format } from '../shared/units.js';
 import { icon, hud, plate, btn, linkBtn, tag, kv, note, callout } from '../core/ui.js';
 import { search, plural } from '../core/kit.js';
@@ -230,7 +230,7 @@ async function mountCar(ctx) {
     try {
       S.car = await ctx.api.patch(`cars/${enc(cid)}`, { version: S.car.version, ...body });
       invalidate('cars');
-      if (ctx.car) Object.assign(ctx.car, { name: S.car.name, time_zone: S.car.time_zone });
+      if (ctx.car) Object.assign(ctx.car, { name: S.car.name, time_zone: S.car.time_zone, time_zone_source: S.car.time_zone_source });
       ctx.carChanged(S.car);
       f?.setError(null);
       rec.saved(what);
@@ -391,11 +391,12 @@ async function mountCar(ctx) {
   const ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
   function paintTz() {
     const z = S.car.time_zone || '';
+    const src = S.car.time_zone_source;
     const listId = `sc-zones-${cid}`;
     const f = field({ label: 'Time zone', name: 'sc-tz', path: 'time_zone', value: z, hint: 'A zone name such as America/Chicago or Europe/Amsterdam. Type to search the list.', attrs: { list: listId, disabled: ro, autocomplete: 'off', spellcheck: 'false' } });
     f.input.addEventListener('change', () => {
       const v = f.input.value.trim();
-      if (!v || v === S.car.time_zone) return;
+      if (!v || (v === S.car.time_zone && src === 'owner')) return;
       if (!isValidZone(v)) { f.setError('Not a time zone this browser knows. Pick one from the list.'); return; }
       patchCar({ time_zone: v }, 'Time zone', f);
     });
@@ -408,6 +409,9 @@ async function mountCar(ctx) {
       h('div', { class: 'chans' },
         chan({ no: 4, title: 'The car\'s zone', text: 'Days, weeks, months, statistics, charging grids and prices by time of day use it, wherever the server runs. A change regroups the whole history at once; nothing is lost.' },
           f.el, h('datalist', { id: listId }, (ZONES.includes(z) || !z ? ZONES : [z, ...ZONES]).map((x) => h('option', { value: x }))),
+          zoneSourceText(src) ? h('p', { class: 'sc-tz-src' }, h('b', null, z), ` (${zoneSourceText(src)})`,
+            src === 'owner' ? '.' : '. Type or pick a zone to set it for this car.') : null,
+          src === 'owner' && !ro ? btn('Work it out from the car’s position', () => patchCar({ time_zone: null }, 'Time zone', f), { icon: 'pin', sm: true }) : null,
           here && here !== z && !ro ? btn(`Use this browser's zone (${here})`, () => patchCar({ time_zone: here }, 'Time zone', f), { icon: 'globe', sm: true }) : null))));
   }
 

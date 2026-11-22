@@ -443,10 +443,15 @@ def patch_car(req):
         elif not 1 <= len(body["name"].strip()) <= 64:
             rule["name"] = "1 to 64 characters."
     if "time_zone" in body:
-        if not isinstance(body["time_zone"], str):
-            bad["time_zone"] = "Must be text."
-        elif not valid_zone(body["time_zone"]):
-            rule["time_zone"] = "Not a known time zone (for example Europe/Amsterdam)."
+        z = body["time_zone"]
+        if z is None or (isinstance(z, str) and z.strip().lower() == "auto"):
+            body["time_zone"] = None  # automatic again
+        elif not isinstance(z, str):
+            bad["time_zone"] = "Must be text or null."
+        elif not valid_zone(z.strip()):
+            rule["time_zone"] = "Not a known time zone (for example Europe/Amsterdam), or null for automatic."
+        else:
+            body["time_zone"] = z.strip()
     if "sold" in body and not isinstance(body["sold"], bool):
         bad["sold"] = "Must be true or false."
     if "sold_date" in body and body["sold_date"] is not None:

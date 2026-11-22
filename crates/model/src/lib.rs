@@ -487,8 +487,13 @@ pub struct Car {
     pub vin: Option<VinInfo>,
     /// `None`: automatic (from the VIN, else Model 3/Y).
     pub profile_setting: Option<CarProfile>,
-    /// IANA time zone, e.g. `America/Chicago` (days, tariffs and the UI's clock follow it).
+    /// IANA time zone, e.g. `America/Chicago` (days, tariffs and the UI's clock follow it), when the owner set it
+    /// ([`Car::typed_zone`]); otherwise only what the car started with, and the engine works the zone out.
     pub time_zone: String,
+    /// Whether the owner set `time_zone`. `None` on older records, which had no such notion: set unless it is
+    /// `UTC`, the zone every car started in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_zone_typed: Option<bool>,
     /// Wh per km at the wheels used for range figures, when known.
     pub efficiency_wh_km: Option<f64>,
     pub created_ms: u64,
@@ -522,6 +527,12 @@ impl VinInfo {
 }
 
 impl Car {
+    /// The time zone the owner set, if they did (an older record's `UTC` counts as not set).
+    pub fn typed_zone(&self) -> Option<&str> {
+        let typed = self.time_zone_typed.unwrap_or(self.time_zone != "UTC");
+        typed.then_some(self.time_zone.as_str())
+    }
+
     /// The DBC set in use: the setting, else what the VIN says, else Model 3/Y.
     pub fn profile(&self) -> CarProfile {
         if let Some(p) = self.profile_setting {
@@ -997,6 +1008,7 @@ mod tests {
             vin: Some(vin(Some('S'), Some(2017), 0x508)),
             profile_setting: None,
             time_zone: "UTC".into(),
+            time_zone_typed: Some(true),
             efficiency_wh_km: None,
             created_ms: 0,
             inputs: Default::default(),

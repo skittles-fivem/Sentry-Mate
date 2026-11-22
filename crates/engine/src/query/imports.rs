@@ -133,7 +133,7 @@ impl import::Sink for CountSink<'_> {
             None => Default::default(),
         };
         let zone = match suggested {
-            Some(c) => self.engine.db().car(c).map_err(sink_err)?.map(|c| c.time_zone),
+            Some(c) => self.engine.db().car(c).map_err(sink_err)?.map(|c| self.engine.car_zone(&c).0),
             None => None,
         };
         self.zones.insert(id, zone.unwrap_or_else(|| self.engine.inner.default_zone()));

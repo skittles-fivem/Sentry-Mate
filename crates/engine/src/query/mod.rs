@@ -325,8 +325,9 @@ pub struct Scoped<T> {
 }
 
 /// The car, or `no_such_car`.
+/// A car, its `time_zone` the zone it follows ([`Engine::car_zone`]): not to be stored back as the owner's.
 pub(crate) fn car_of(e: &Engine, car: CarId) -> QResult<Car> {
-    e.db().car(car)?.ok_or(QueryError::NoSuchCar)
+    Ok(e.inner.zoned(e.db().car(car)?.ok_or(QueryError::NoSuchCar)?))
 }
 
 pub(crate) fn scoped<T>(c: &Car, body: T) -> Scoped<T> {

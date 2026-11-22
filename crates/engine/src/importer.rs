@@ -204,6 +204,7 @@ impl import::Sink for DbSink<'_> {
                         vin: tm.vin.clone(),
                         profile_setting: None,
                         time_zone: self.engine.inner.default_zone(),
+                        time_zone_typed: Some(false),
                         efficiency_wh_km: tm.efficiency_wh_km,
                         created_ms: now_ms(),
                         inputs: Default::default(),
@@ -339,7 +340,7 @@ impl import::Sink for DbSink<'_> {
     }
 
     fn time_zone(&mut self, car: CarId) -> Option<String> {
-        self.engine.inner.db.car(car).ok().flatten().map(|c| c.time_zone)
+        self.engine.inner.db.car(car).ok().flatten().map(|c| self.engine.inner.car_zone(&c).0)
     }
 
     fn places(&mut self, rows: Vec<PlaceRow>) -> Result<(), SinkError> {
