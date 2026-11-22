@@ -213,3 +213,25 @@ body { font-feature-settings: normal; font-size: 0.9375rem; }
 @container page (max-width: 36rem) {
   :root .gauge-stats .q-u { flex-basis: 100%; margin-left: 0; } /* the unit always under the number on a phone */
 }
+
+/* ------------------------------------------------------------------ phone (<html data-phone>): Horizon's dock and sheets
+   The dock sits over the page and the sky: near-solid glass so the tab labels never read through to a card
+   or the sun behind them, the neon line on top like the top bar's, the chosen tab in cyan with the hot bar
+   over it. Sheets get the panels' glass and the magenta edge. */
+:root[data-phone] .dock {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-panel-a) 96%, var(--bg-0)), color-mix(in srgb, var(--surface-panel-b) 98%, var(--bg-0)));
+  border-top-color: color-mix(in srgb, var(--mag) 40%, transparent);
+  backdrop-filter: var(--blur);
+}
+:root[data-phone] .dock-period { border-bottom-color: var(--line-2); }
+:root[data-phone] .tab { position: relative; font-weight: 600; letter-spacing: 0.02em; }
+:root[data-phone] .tab[aria-current="page"], :root[data-phone] .tab.is-current { color: var(--live); text-shadow: var(--glow-cyan); }
+:root[data-phone] .tab[aria-current="page"]::before, :root[data-phone] .tab.is-current::before {
+  content: ""; position: absolute; top: 0; left: 50%; width: round(2rem, var(--e)); height: round(0.125rem, var(--e)); transform: translateX(-50%);
+  background: var(--hot); box-shadow: var(--glow-mag);
+}
+:root[data-theme="light"][data-phone] .tab[aria-current="page"], :root[data-theme="light"][data-phone] .tab.is-current { text-shadow: none; }
+:root[data-phone] :is(.popover, .account-menu, .dialog, .menu-panel, .switcher, dialog.dialog--advice) {
+  border-top-color: color-mix(in srgb, var(--mag) 45%, transparent);
+}
+:root[data-phone] .page-head { padding: round(0.875rem, var(--e)) round(1rem, var(--e)); }

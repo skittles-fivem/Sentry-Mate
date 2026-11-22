@@ -54,8 +54,31 @@
     root.style.setProperty('--ui-scale', String(size / 100));
     root.setAttribute('data-ui-size', String(size));
     root.setAttribute('data-ui-follow', follow ? 'on' : 'off');
+    layout();
     return { size: size, follow: follow, auto: auto };
   }
+
+  // The phone layout (a tab bar at the bottom instead of the sidebar), set on <html data-phone>:
+  //   "tall"  a window up to 48rem wide (a phone held upright, a small tablet, a laptop at 200 % zoom)
+  //   "short" a window up to 30rem high and 60rem wide (a phone on its side): the period stays in the top bar
+  // In rem of the root size, like the tiers in app.css, so a larger Interface size reaches it sooner.
+  // It follows the window, not the screen; app.css and core/frame.js read the attribute.
+  function phoneLayout() {
+    var rem = 16 * (parseFloat(root.style.getPropertyValue('--ui-auto')) || 1) * (parseFloat(root.style.getPropertyValue('--ui-scale')) || 1);
+    var w = window.innerWidth || root.clientWidth || 0, hgt = window.innerHeight || root.clientHeight || 0;
+    if (!w) return '';
+    if (w <= 48 * rem) return 'tall';
+    if (hgt <= 30 * rem && w <= 60 * rem) return 'short';
+    return '';
+  }
+  function layout() {
+    var v = phoneLayout();
+    if ((root.getAttribute('data-phone') || '') === v) return v;
+    if (v) root.setAttribute('data-phone', v); else root.removeAttribute('data-phone');
+    try { window.dispatchEvent(new CustomEvent('phonelayout', { detail: v })); } catch (e) { /* old browser */ }
+    return v;
+  }
+  window.addEventListener('resize', layout);
 
   // 'light' | 'dark' | 'device' -> the theme drawn now
   function effectiveTheme(choice) {
@@ -81,7 +104,8 @@
 
   window.uiRoot = {
     MIN: MIN, MAX: MAX, KEY: KEY, THEME_KEY: THEME_KEY, SKY_KEY: SKY_KEY, skyChoice: skyChoice,
-    autoFactor: autoFactor, apply: apply, clampSize: clampSize,
+    autoFactor: autoFactor, apply: apply, clampSize: clampSize, layout: layout,
+    phone: function () { return root.getAttribute('data-phone') || ''; },
     effectiveTheme: effectiveTheme, applyTheme: applyTheme,
     saved: function () { return saved; },
   };

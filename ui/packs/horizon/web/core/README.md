@@ -288,6 +288,35 @@ get more columns, not a narrow column in the middle.
 - Canvases draw at `devicePixelRatio`: use `mountPlot` and `createMap`, and size what they draw with `rpx()`.
 - A table wider than its panel scrolls inside `.tbl-scroll`; nothing may make the page itself wider than the window.
 
+## Phones
+
+The phone layout follows Sentry Manager's: one column, a compact bar of the main sections instead of the
+sidebar, tables as cards, 44 px tap targets, 16 px fields. `boot.js` sets `<html data-phone>` before the
+first paint, and again when the window changes:
+
+| `data-phone` | When | Frame |
+|---|---|---|
+| `tall` | the window is at most 48rem wide (an upright phone, a small tablet, a laptop at 200 %) | the dock at the bottom holds the period bar (pages with a period) and the tab bar |
+| `short` | at most 30rem high and 60rem wide (a phone on its side) | the period stays in the top bar; a lower tab bar |
+| (none) | anything else | the desktop frame |
+
+- The sidebar is hidden; the top bar holds the car (opens the switcher), the live dot and the account. The tab
+  bar has All cars, Overview, Drives, Charges and Menu (the finder: every page). `window` gets a
+  `phonelayout` event when the attribute changes.
+- Tokens on a phone: `--fs-floor` 14px (text never below 14 px), `--tap` 44px, `--gutter` 16px (or the
+  safe-area inset), `--dock-h` (the dock's height, the page keeps that much room at the bottom).
+- Buttons, fields, segmented choices, panel links, legend chips, the back link and the map's zoom buttons are
+  44 px tall; fields use 16 px text so iPhones do not zoom into them.
+- Dialogs, the menu, the car switcher, popovers and the account menu are sheets from the bottom, as wide as
+  the screen, and fit above the keyboard (`interactive-widget=resizes-content` in `index.html`). The notch and
+  the home bar are kept clear with `env(safe-area-inset-*)` (`viewport-fit=cover`). No pull-to-refresh.
+- `dataTable()` rows become cards: the first cell is the card's title, the others have their column's name
+  over them (`td[data-label]`; a column's `cardLabel` overrides it), and a select in the table's bar picks
+  the order. A table a page builds itself with class `tbl` gets its captions from `cardLabels(table)`; a
+  matrix of numbers that must stay a table gets `tbl--keep` (scrolls sideways in its panel, first column held).
+- A page's own phone rules go in its `pages/<id>.css` under `:root[data-phone]` (they never change the
+  desktop). Check with `node ui/tools/check.js --pack instrument --sizes 390x844@3,360x780@3,844x390@3,1440x900 --pixel`.
+
 ## Coverage marks and readiness
 
 - The element that does what an inventory item needs carries `data-cover="<item id>"`: `h('div', { cover: ['a', 'b'] })`

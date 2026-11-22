@@ -96,3 +96,35 @@
 
 /* the table while a reload is in flight (the first load keeps the router skeleton up) */
 .lb-loading { display: grid; gap: round(0.75rem, var(--e)); padding: round(1.25rem, var(--e)); }
+
+/* ------------------------------------------------------------ phone (<html data-phone>) */
+:root[data-phone] .lb-filters .filter-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.5rem, var(--e)); }
+:root[data-phone] .lb-filters .filter-bar > .btn { min-width: 0; }
+:root[data-phone] .lb-filters .filter-bar > .btn > .ico:last-child { margin-left: auto; }
+:root[data-phone] .lb-filter-label, :root[data-phone] .lb-seg { grid-column: 1 / -1; }
+:root[data-phone] .lb-filter-label { margin: round(0.25rem, var(--e)) 0 0; }
+:root[data-phone] .lb-seg { display: flex; width: 100%; }
+:root[data-phone] .lb-seg .seg-btn { flex: 1 1 auto; }
+:root[data-phone] .lb-filters .note { align-items: flex-start; }
+:root[data-phone] .lb-filters .note > .ico { flex: none; margin-top: round(0.1875rem, var(--e)); }
+:root[data-phone] .lb-export .panel-head { flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
+:root[data-phone] .lb-export-btns { flex-wrap: wrap; }
+:root[data-phone] .lb-gaps li { flex-wrap: wrap; }
+:root[data-phone] .lb-gaps li > .panel-link { margin-left: auto; }
+/* units next to the numbers in the cards and the gap list stay readable */
+:root[data-phone] :is(.lb-table, .lb-gaps) .q-u { font-size: max(0.86em, var(--fs-floor)); }
+:root[data-phone] .lb-page .cell-text .sub { font-size: max(0.875rem, var(--fs-floor)); }
+/* the cards: the number heads the card; places, purpose and the continuity line wrap rather than clip */
+:root[data-phone] .lb-table .tbl td, :root[data-phone] .lb-table .tbl td:first-child { padding-left: 0; padding-right: 0; }
+:root[data-phone] .lb-page .is-num .cell-text { align-items: flex-start; }
+:root[data-phone] .lb-where, :root[data-phone] .lb-pcell { max-width: none; }
+:root[data-phone] .lb-where .main, :root[data-phone] .lb-where .sub, :root[data-phone] .lb-note { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+:root[data-phone] .lb-table .nowrap { white-space: normal; }
+:root[data-phone] .lb-seq { display: inline-flex; align-items: center; min-height: var(--tap); min-width: var(--tap); }
+:root[data-phone] .lb-gap { min-height: var(--tap); }
+:root[data-phone] .lb-rule { flex-wrap: wrap; }
+:root[data-phone] .lb-rule-text { flex-basis: 100%; overflow-wrap: anywhere; }
+:root[data-phone] .lb-where a.main { min-width: var(--tap); }
+:root[data-phone] .lb-seg { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+:root[data-phone] .lb-seg .seg-btn:first-child { grid-column: 1 / -1; }
+:root[data-phone] .lb-seg .seg-btn { justify-content: flex-start; }

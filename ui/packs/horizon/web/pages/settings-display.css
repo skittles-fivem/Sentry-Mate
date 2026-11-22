@@ -40,3 +40,12 @@
 .release-pull { overflow-wrap: anywhere; }
 .release-pull code { color: var(--text); user-select: all; }
 .release-actions { margin-top: round(0.25rem, var(--e)); }
+
+/* a phone: controls as wide as the panel, choices as tall as a finger, the links on lines of their own */
+:root[data-phone] .settings-stack .setting-control { align-items: stretch; }
+:root[data-phone] .settings-stack .setting-control > :is(.btn, .switch-row, .switch-row--inline, .panel-link, .link-btn) { align-self: flex-start; }
+:root[data-phone] .settings-stack .setting-control .form-row { max-width: none; }
+:root[data-phone] .settings-stack .seg:not(.seg--stack) { display: flex; flex-wrap: wrap; width: 100%; max-width: 100%; }
+:root[data-phone] .settings-stack .seg:not(.seg--stack) .seg-btn { flex: 1 1 auto; justify-content: center; }
+:root[data-phone] .settings-stack .setting-note .panel-link { display: flex; width: fit-content; margin-left: 0; }
+:root[data-phone] .settings-stack .pack-row .select { flex: 1 1 100%; }

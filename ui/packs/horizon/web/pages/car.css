@@ -235,3 +235,16 @@
 .off-src { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); white-space: nowrap; font-size: max(0.6875rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.02em; color: var(--text-3); }
 .off-src .src-m { height: round(0.625rem, var(--e)); }
 .off-stale { padding: 0 round(0.3125rem, var(--e)); border: 1px solid var(--warm-line); border-radius: round(0.25rem, var(--e)); color: var(--warm); font-weight: 600; }
+
+/* phone (<html data-phone>): the place card sits above the map instead of over it (on a phone it would hide
+   most of the map and its zoom buttons); the map keeps a screenful's share of height, less in landscape */
+:root[data-phone] .now-hero .map-panel { display: flex; flex-direction: column; min-height: 0; }
+:root[data-phone] .now-hero .map-panel > .map { position: relative; inset: auto; order: 2; height: min(round(22rem, var(--e)), 60dvh); }
+:root[data-phone] .now-hero .map-panel > .map-overlay--tl { position: static; order: 1; padding: round(0.75rem, var(--e)); }
+:root[data-phone] .now-hero .map-panel > .map-overlay--tl:has(> .place-card:empty) { display: none; }
+:root[data-phone] .now-hero .place-card { min-width: 0; max-width: none; box-shadow: none; }
+:root[data-phone] .charge-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+:root[data-phone] .flag dd { white-space: normal; overflow-wrap: anywhere; }
+:root[data-phone] .now-hero .map-panel:fullscreen > .map { height: auto; flex: 1 1 auto; }
+:root[data-phone] .now-head .page-sub > span:has(> .trim-src) { display: inline-flex; align-items: baseline; justify-content: space-between; }
+:root[data-phone] .now-head .page-sub .trim-src { width: calc-size(fit-content, round(up, size, 1px)); }

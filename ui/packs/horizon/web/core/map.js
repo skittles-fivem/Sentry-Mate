@@ -154,7 +154,10 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
   const measureFoot = () => {
     // a bottom-right overlay always sits above the credit and the switch
     if (foot) container.parentElement?.style.setProperty('--map-foot-br', `${Math.ceil(foot.offsetHeight)}px`);
-    const h2 = foot && foot.offsetWidth > container.clientWidth * 0.5 ? Math.ceil(foot.offsetHeight) : 0;
+    // on a phone the credit and the switch always take the bottom (the credit's text arrives after the map does, and
+    // the overlays must not jump up when it does)
+    const wide = !!document.documentElement.dataset.phone || (foot && foot.offsetWidth > container.clientWidth * 0.5);
+    const h2 = foot && wide ? Math.ceil(foot.offsetHeight) : 0;
     if (h2 === footNow) return;
     footNow = h2;
     container.parentElement?.style.setProperty('--map-foot', `${h2}px`);
@@ -168,6 +171,7 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
     ro.observe(foot); ro.observe(container);
     ctx.onCleanup(() => ro.disconnect());
   }
+  measureFoot(); // at once, so the overlays start where they stay
   const offTheme = onTheme(repaint);
   // the person's map colours (dimmed or original) change in place too
   let colorsNow = mapColors(getPrefs());

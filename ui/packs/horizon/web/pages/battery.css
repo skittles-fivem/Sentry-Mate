@@ -171,3 +171,21 @@
 }
 @container page (max-width: 36rem) { .cl-foot, .cl-shares { grid-template-columns: minmax(0, 1fr); } .cl-stats { display: block; overflow-x: auto; } }
 .cl-top > .legend { margin-top: 0; } /* level with the readout beside it */
+
+/* phone (<html data-phone>): controls start at the left, parked-drain cards read left to right with
+   links big enough to tap, and the charge-level table fits without its own scroll */
+:root[data-phone] .battery-page .panel-side, :root[data-phone] .vd-side { justify-content: flex-start; }
+:root[data-phone] .bat-now-side .metric { max-width: none; }
+:root[data-phone] .vd-table .cell-num { align-items: flex-start; }
+:root[data-phone] .vd-table .cell-text > * { white-space: normal; }
+:root[data-phone] .vd-table .cell-text > a { display: flex; align-items: center; width: fit-content; min-height: var(--tap); }
+:root[data-phone] .vd-table .standby .sub { max-width: none; }
+:root[data-phone] .vd-table .standby-bar { width: 100%; }
+:root[data-phone] .why-cell { min-width: 0; max-width: none; }
+:root[data-phone] .cl-stats { display: table; }
+:root[data-phone] .cl-stats th, :root[data-phone] .cl-stats td { padding-inline: round(0.375rem, var(--e)); }
+:root[data-phone] .cl-stats tbody th { white-space: normal; }
+:root[data-phone] .pr-label .name { min-width: 0; }
+:root[data-phone="short"] .chart--cl { --chart-h: min(round(17rem, var(--e)), 60dvh); }
+:root[data-phone="short"] .chart--cap { --chart-h: min(round(18rem, var(--e)), 60dvh); }
+:root[data-phone="tall"] .soc-scale:has(.shi) .s100 { display: none; } /* the end of the track is 100 %; its label would run into the band's top */

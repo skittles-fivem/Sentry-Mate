@@ -41,10 +41,16 @@ export function dataTable(ctx, opts) {
   let fresh = false, freshQuiet = false, prevPager = null, answered = false;
 
   const count = h('span', { class: 'tbl-count', 'aria-live': 'polite' });
+  // on a phone the rows are cards without the header, so the order is picked here (app.css shows it there)
+  const sortable = columns.filter((c) => c.sort);
+  const sortPick = sortable.length ? h('select', { class: 'select tbl-sort-pick', 'aria-label': 'Order of the rows', onchange: (e) => {
+    const [key, dir] = e.target.value.split(':');
+    pickSort(key, dir);
+  } }) : null;
   const csvSlot = h('span', { class: 'tbl-csv' });
   const bar = h('div', { class: 'tbl-bar' },
     opts.title ? h('h2', { class: 'panel-title' }, opts.icon ? icon(opts.icon) : null, opts.title) : h('span', { class: 'grow' }),
-    opts.side || null, count, csvSlot);
+    opts.side || null, sortPick, count, csvSlot);
   const thead = h('thead');
   const tbody = h('tbody');
   const table = h('table', { class: 'tbl', 'aria-label': opts.label || opts.title || null }, thead, tbody);
@@ -72,6 +78,23 @@ export function dataTable(ctx, opts) {
       if (c.cover) cover(th, c.cover);
       return th;
     })));
+    if (sortPick) {
+      replace(sortPick, sort ? null : h('option', { value: '' }, 'Usual order'), sortable.flatMap((c) => {
+        const name = labelText(c);
+        return [h('option', { value: `${c.key}:desc` }, `${name}: ${c.num ? 'highest' : 'last'} first`),
+          h('option', { value: `${c.key}:asc` }, `${name}: ${c.num ? 'lowest' : 'first'} first`)];
+      }));
+      sortPick.value = sort ? `${sort.key}:${sort.dir}` : '';
+    }
+  }
+
+  function pickSort(key, dir) {
+    if (!key) return;
+    sort = { key, dir: dir === 'asc' ? 'asc' : 'desc' };
+    head();
+    opts.onSort?.({ ...sort });
+    if (opts.rows) { renderLocal(); return; }
+    load();
   }
 
   function setSort(key) {
@@ -86,7 +109,7 @@ export function dataTable(ctx, opts) {
 
   function rowEl(r) {
     const href = rowHref ? rowHref(r) : null;
-    const tr = h('tr', { class: [href && 'is-link', opts.rowClass?.(r)] }, columns.map((c) => h('td', { class: [c.num && 'is-num', c.cls] }, c.render ? c.render(r) : r[c.key] ?? '—')));
+    const tr = h('tr', { class: [href && 'is-link', opts.rowClass?.(r)] }, columns.map((c) => h('td', { class: [c.num && 'is-num', c.cls], dataset: { label: labelText(c) || null } }, c.render ? c.render(r) : r[c.key] ?? '—')));
     if (href) {
       tr.addEventListener('click', (e) => {
         if (e.defaultPrevented || e.target.closest('a, button, input, select, label')) return;
@@ -233,4 +256,23 @@ export function dataTable(ctx, opts) {
     rows: () => loaded,
     done: () => done,
   };
+}
+
+// a column's name as text: the caption of its value when the row is a card on a phone
+function labelText(c) {
+  if (c.cardLabel != null) return c.cardLabel;
+  if (typeof c.label === 'string') return c.label;
+  return c.label?.textContent?.trim() || c.title || '';
+}
+
+/**
+ * For a table a page builds itself (class "tbl"): give each cell its column's name from the header, so on
+ * a phone, where the rows are cards, every value has its caption. Call after the rows are in.
+ */
+export function cardLabels(table) {
+  const names = [...table.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+  for (const tr of table.querySelectorAll('tbody tr')) {
+    [...tr.children].forEach((td, i) => { if (names[i] && !td.dataset.label) td.dataset.label = names[i]; });
+  }
+  return table;
 }

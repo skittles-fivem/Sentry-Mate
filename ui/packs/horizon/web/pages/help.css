@@ -54,3 +54,10 @@
 .help-release-head .ico { vertical-align: round(-0.125em, var(--e)); }
 .help-release-pull { color: var(--text); overflow-wrap: anywhere; user-select: all; }
 .help-release-titles li + li { margin-top: round(0.125rem, var(--e)); }
+
+/* phone (<html data-phone>): links that stand on their own line are whole taps */
+:root[data-phone] .help-cell > a.link { display: inline-flex; align-items: center; min-height: var(--tap); }
+/* the licence link: on its own line under the licence, a whole tap high */
+:root[data-phone] .licence-list li { grid-template-columns: minmax(0, 1fr); }
+:root[data-phone] .licence-list a { grid-column: 1; grid-row: auto; justify-self: start; align-self: start; display: inline-flex; align-items: center; min-height: var(--tap); }
+:root[data-phone] .qa-tools .field--search { flex: 1 1 100%; width: auto; }
