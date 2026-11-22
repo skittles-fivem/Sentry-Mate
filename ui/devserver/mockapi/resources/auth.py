@@ -202,7 +202,7 @@ def patch_prefs(req):
     body = req.json()
     bad, rule = {}, {}
     allowed = {"units", "range", "theme", "language", "interface_size", "follow_screen", "map_colors", "map_style", "ui_pack",
-               "car_order", "pinned_cars"}
+               "car_order", "pinned_cars", "main_car", "last_car"}
     for k in body:
         if k not in allowed:
             bad[k] = "Unknown field."
@@ -248,6 +248,12 @@ def patch_prefs(req):
                 rule[k] = f"At most {most} cars."
             elif any(not req.ds.exists(c) or not st.sees(req.account, c) for c in v):
                 rule[k] = "Unknown car in the list."
+    for k in ("main_car", "last_car"):
+        if k in body and body[k] is not None:
+            if not isinstance(body[k], str):
+                bad[k] = "Must be a car id, or null."
+            elif not req.ds.exists(body[k]) or not st.sees(req.account, body[k]):
+                rule[k] = "Unknown car."
     if bad:
         raise bad_input(bad)
     if rule:

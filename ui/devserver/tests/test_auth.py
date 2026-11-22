@@ -102,7 +102,8 @@ class Preferences(ServerCase):
     def test_get_patch(self):
         p = self.c.get("/api/v1/me/preferences")
         self.assertEqual(set(p), {"units", "range", "theme", "language", "interface_size", "follow_screen", "map_colors",
-                                  "map_style", "ui_pack", "car_order", "pinned_cars"})
+                                  "map_style", "ui_pack", "car_order", "pinned_cars", "main_car", "last_car"})
+        self.assertEqual((p["main_car"], p["last_car"]), (None, None))
         self.assertEqual(p["map_colors"], "dimmed")
         self.assertIs(p["follow_screen"], True)
         self.assertEqual(p["language"], "auto")  # a new account follows its browser until it picks one
@@ -123,6 +124,16 @@ class Preferences(ServerCase):
         cars = self.c.get("/api/v1/cars?sort=custom")
         self.assertEqual(cars["items"][0]["id"], "c3")
         self.c.json("PATCH", "/api/v1/me/preferences", {"units": {"distance": "km"}, "pinned_cars": []})
+
+    def test_main_and_last_car(self):
+        q = self.c.json("PATCH", "/api/v1/me/preferences", {"last_car": "c2", "main_car": "c3"})
+        self.assertEqual((q["main_car"], q["last_car"]), ("c3", "c2"))
+        self.assertEqual(self.c.get("/api/v1/me/preferences")["last_car"], "c2")
+        e, _ = self.c.error("PATCH", "/api/v1/me/preferences", 422, "invalid", body={"last_car": "c99"})
+        self.assertIn("last_car", e["fields"])
+        self.c.error("PATCH", "/api/v1/me/preferences", 400, "bad_input", body={"main_car": 3})
+        q = self.c.json("PATCH", "/api/v1/me/preferences", {"main_car": None, "last_car": None})
+        self.assertEqual((q["main_car"], q["last_car"]), (None, None))
 
 
 class Sessions(ServerCase):
