@@ -1,6 +1,6 @@
 /* Drive detail (pages/drive.js): the map beside the figures, the charts below, speed bands and export. */
 .drive-layout { display: grid; gap: var(--gap); grid-template-columns: minmax(0, 8fr) minmax(round(21rem, var(--e)), 4fr); margin-bottom: var(--gap); }
-.drive-layout > .map-panel { min-height: round(32.5rem, var(--e)); }
+.drive-layout > .map-panel { min-height: round(32.5rem, var(--e)); --map-foot-br: round(4rem, var(--e)); } /* the style switch and the credit, reserved before the map draws them, so the colour switch above them never jumps */
 .stats-panel { display: flex; flex-direction: column; }
 .drive-figures { display: grid; grid-template-columns: 1fr 1fr; gap: round(1rem, var(--e)) round(1rem, var(--e)); }
 .drive-figures .metric-value { font-size: 1.375rem; }

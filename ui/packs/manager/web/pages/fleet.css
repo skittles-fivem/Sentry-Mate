@@ -12,19 +12,19 @@
   --dot: var(--st-unknown);
   position: relative; display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); padding: round(0.875rem, var(--e)) round(1rem, var(--e)); text-align: left; min-width: 0;
   container-type: inline-size; color: inherit; font: inherit; line-height: var(--LH);
-  border-radius: round(1rem, var(--e)); border: 1px solid var(--line);
-  background: linear-gradient(180deg, color-mix(in oklab, var(--dot) 9%, transparent), color-mix(in oklab, var(--tint) 3%, transparent));
+  border-radius: var(--radius); border: 1px solid var(--line);
+  background: var(--panel-solid);
   box-shadow: var(--shadow); overflow: hidden; transition: border-color 120ms;
 }
-.state-tile::after { content: ""; position: absolute; left: round(1rem, var(--e)); right: round(1rem, var(--e)); top: 0; height: round(0.125rem, var(--e)); border-radius: 0 0 round(0.125rem, var(--e)) round(0.125rem, var(--e)); background: var(--dot); opacity: 0.85; box-shadow: 0 0 round(0.875rem, var(--e)) var(--dot); }
+.state-tile::after { content: ""; position: absolute; left: round(1rem, var(--e)); right: round(1rem, var(--e)); top: 0; height: round(0.125rem, var(--e)); border-radius: 0 0 round(0.125rem, var(--e)) round(0.125rem, var(--e)); background: var(--dot); }
 button.state-tile:hover { border-color: var(--line-3); }
-.state-tile[aria-pressed="true"] { border-color: color-mix(in oklab, var(--dot) 60%, transparent); box-shadow: var(--shadow), 0 0 0 1px color-mix(in oklab, var(--dot) 40%, transparent); }
+.state-tile[aria-pressed="true"] { border-color: var(--live); box-shadow: var(--shadow), 0 0 0 1px var(--live); }
 .state-tile-label { display: flex; align-items: center; min-width: 0; gap: round(0.5rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); font-weight: 500; color: var(--text-2); }
 .state-tile-label .ico { width: round(0.9375rem, var(--e)); height: round(0.9375rem, var(--e)); color: var(--dot); }
 .state-tile-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.state-tile-value { font-family: var(--font-display); font-weight: 300; font-size: clamp(1.5rem, 26cqi, 2.5rem); --LH: round(calc(1 * 1em), 2px); letter-spacing: -0.02em; color: var(--text); white-space: nowrap; }
+.state-tile-value { font-family: var(--font-display); font-weight: 600; font-size: clamp(1.5rem, 26cqi, 2.25rem); --LH: round(calc(1 * 1em), 2px); letter-spacing: -0.02em; color: var(--text); white-space: nowrap; }
 .state-tile-sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.state-tile--stale { --dot: var(--warm); background: linear-gradient(180deg, color-mix(in oklab, var(--warm) 7%, transparent), color-mix(in oklab, var(--tint) 2%, transparent)); }
+.state-tile--stale { --dot: var(--warm); }
 .state-tile--stale::after { background: repeating-linear-gradient(90deg, var(--warm) 0 round(0.375rem, var(--e)), transparent round(0.375rem, var(--e)) round(0.625rem, var(--e))); box-shadow: none; }
 
 /* attention */

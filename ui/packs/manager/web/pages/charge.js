@@ -145,7 +145,7 @@ export async function mount(ctx) {
   const eff = metric('Efficiency', c.efficiency_pct, 'percent', {
     cover: 'cd.stat.efficiency', digits: 1,
     explain: c.efficiency_pct != null ? `${format(c.losses_kwh, 'energy')} lost on the way${est ? ' (estimated)' : ''}${c.efficiency_pct > 100 ? '; above 100 % means a bad reading' : ''}` : null,
-    why: dc ? "DC: the charger's own losses are not on the CAN bus" : why,
+    why: dc ? "Fast charge: the car cannot see the charger's own losses" : why,
   });
   const avgTemp = metric('Outside', c.outside_avg_c, 'temperature', { cover: 'cd.stat.avg_temp', explain: c.battery_avg_c != null ? `average; battery ${format(c.battery_avg_c, 'temperature')}` : 'average of the session', why });
   const socFrom = clamp(c.start_soc_pct ?? 0, 0, 100), socTo = clamp(c.end_soc_pct ?? 0, 0, 100);

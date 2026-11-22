@@ -149,7 +149,7 @@ export async function mount(ctx) {
   const paintLangExample = () => replace(langExample, 'Example: ', h('b', null, format(1234.5, 'distance')), ', ', h('b', null, formatDate(ctx.api.now(), ctx.tz, { weekday: false, year: true })), '.');
   paintLangExample();
   const look = panel({ title: 'Look and language', icon: 'monitor', side: h('span', { class: 'faint' }, 'Yours; follows you to every screen') },
-    setting('Theme', 'Light, dark, or follow this device. It is saved with your account, so every browser you sign in on uses it, and it is set before the page is drawn, so there is no flash.',
+    setting('Theme', 'Light, dark, or follow this device. Saved with your account, so every browser you sign in on uses it.',
       [theme.el, h('p', { class: 'setting-note' }, 'Every page, chart and map has both a light and a dark look; screenshots in the help show either.')], ['shell.theme', 'web.settings.general.theme', 'shots.theme-note']),
     setting('Map colours', `${MAP_COLORS_TEXT} It does not apply to satellite pictures: photos always show as taken, never dimmed.`, segMapColors),
     setting('Interface size', 'Makes text, controls, tables, charts and maps bigger or smaller together. With Follow screen size on, a very large screen (a native 4K monitor) adds its own step on top. Browser zoom works on top of both.',
@@ -348,7 +348,7 @@ export async function mount(ctx) {
   paintServer();
 
   replace(ctx.view,
-    pageHead({ title: ctx.info.title, purpose: ctx.info.purpose }),
+    pageHead({ title: ctx.info.nav || ctx.info.title, purpose: ctx.info.purpose }),
     h('div', { class: 'settings-stack' },
       h('p', { class: 'note saving-note', cover: 'web.settings.general.autosave' }, icon('check', 'ico--sm'), ' Every change here is saved at once; there is no Save button. A short note confirms it, and your choices follow you to every browser you sign in on.'),
       h('div', { class: 'settings-pair' }, units, look), serverPanel));

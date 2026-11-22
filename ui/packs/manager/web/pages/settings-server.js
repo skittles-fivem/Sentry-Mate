@@ -152,7 +152,7 @@ export async function mount(ctx) {
       rows.push(checkRow('info', `Port ${here.port}`, 'The port in your address. An admin sees the ports the server itself listens on.'));
     }
     rows.push(checkRow('ok', 'At the root of its address', `Sentry Mate always lives at / on its own host name or port, so links never need a path prefix. Behind a shared proxy, give it its own name (such as ${names[0] || 'sentry-mate.local'}) rather than a path.`));
-    rows.push(checkRow('ok', 'Works from any address', 'There is no list of allowed origins to keep in step: the session cookie is never sent by other sites (SameSite=Strict) and every change carries a header other sites cannot set, so the page works under each of its names.'));
+    rows.push(checkRow('ok', 'Works from any address', 'Nothing to set up for each address: other sites can never use your sign-in (SameSite=Strict cookie, and every change carries a header they cannot set), so the page works under each of its names.'));
     replace(hostingBox, h('ul', { class: 'ss-checks' }, rows));
   }
 
@@ -601,7 +601,7 @@ export async function mount(ctx) {
   }
 
   replace(ctx.view,
-    pageHead({ title: ctx.info.title, purpose: ctx.info.purpose }),
+    pageHead({ title: ctx.info.nav || ctx.info.title, purpose: ctx.info.purpose }),
     h('div', { class: 'settings-stack ss' },
       h('div', { class: 'ss-two' }, hostPanel, h('div', { class: 'ss-col' }, namesPanel, portsPanel)),
       h('div', { class: 'ss-two' }, accessPanel, admin ? safety : null),

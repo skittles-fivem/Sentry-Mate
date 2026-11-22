@@ -791,7 +791,7 @@ export async function mount(ctx) {
 
   /* ---------- put it together */
   replace(ctx.view,
-    pageHead({ title: ctx.info.title, purpose: ctx.info.purpose, actions: headSlot }),
+    pageHead({ title: ctx.info.nav || ctx.info.title, purpose: ctx.info.purpose, actions: headSlot }),
     jumpNav,
     h('div', { class: 'si-stack' },
       h('p', { class: 'note saving-note' }, icon('check', 'ico--sm'), ' Switches and single fields save at once and a short note confirms it; the broker connection saves with its button. Nothing leaves the server until publishing is on.'),

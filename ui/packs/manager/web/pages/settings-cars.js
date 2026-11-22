@@ -138,7 +138,7 @@ async function mountIndex(ctx) {
   const newTokens = admin ? newCarTokens(ctx, fresh?.items || [], noCars) : null;
 
   replace(ctx.view,
-    pageHead({ title: ctx.info.title, purpose: ctx.info.purpose }),
+    pageHead({ title: ctx.info.nav || ctx.info.title, purpose: ctx.info.purpose }),
     h('div', { class: 'settings-stack' },
       h('p', { class: 'note saving-note', cover: 'web.settings.car.autosave' }, icon('check', 'ico--sm'),
         admin ? ' Every change on these pages is saved at once; there is no Save button. A short note confirms it.' : ' Car settings are changed by an admin; you can read them here.'),
@@ -319,7 +319,7 @@ async function mountCar(ctx) {
   let head = null;
   function paintHead() {
     const next = pageHead({
-      eyebrow: S.car.name, title: ctx.info.title, purpose: ctx.info.purpose,
+      eyebrow: S.car.name, title: 'Car settings', purpose: ctx.info.purpose,
       back: { href: state.buildUrl('settings-cars'), label: 'All cars' },
       sub: [S.car.sold ? soldText(S.car) : null, carMeta(S.car) || null, S.car.vin_prefix ? `VIN ${S.car.vin_prefix}…` : null, `Times in ${tzName(tz())}`],
       actions: [h('a', { class: 'btn btn--sm', href: state.buildUrl('car', { car: cid }) }, icon('gauge', 'ico--sm'), 'Car overview')],
@@ -328,7 +328,7 @@ async function mountCar(ctx) {
     next.querySelector('.back')?.setAttribute('aria-label', 'Back to Settings: Cars, every car');
     if (head?.isConnected) head.replaceWith(next);
     head = next;
-    ctx.setCrumbs([{ label: 'Set-up' }, { label: 'Settings: Cars', href: state.buildUrl('settings-cars') }, { label: S.car.name }]);
+    ctx.setCrumbs([{ label: 'Settings' }, { label: 'Cars', href: state.buildUrl('settings-cars') }, { label: S.car.name }]);
     docTitle('Car settings', S.car.name);
   }
 
