@@ -55,6 +55,8 @@ fn updates_of(v: &Value) -> Vec<Value> {
     items
 }
 
+// 3 minutes on CI's 4 cores (run 24): three decoded days; engine's own firmware tests are the fast ones
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fingerprints_updates_names_and_a_rebuild_after_loss() {
     let dir = tempfile::tempdir().unwrap();
