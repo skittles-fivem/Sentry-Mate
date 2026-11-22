@@ -1,15 +1,14 @@
 // Sentry Mate, "Pebble" UI pack: Settings: Integrations (/settings/integrations).
 //
-// The Tesla account first (a second live input beside SMO, pages/tesla.js, admins only), then TeslaFi (a third, with
-// the owner's TeslaFi token, pages/teslafi.js, admins only), then sending the cars'
+// The Tesla account first (a second live input beside SMO, pages/tesla.js, admins only), TeslaFi (a third,
+// pages/teslafi.js, #teslafi), then sending the cars'
 // live values to other systems, if the owner wants to. One card per integration, each with its
 // status: the MQTT broker (publishing switch, connection form, a test, live counts), the topic layout and its rules,
 // every value Sentry Mate publishes previewed for a chosen car (unit, status, where it comes from), Home Assistant
 // discovery and the entities it gets with dashboard cards to paste, the events automations listen to with ideas
 // that use them, the read API, every network connection the server makes, and tools that work with the values.
 // Data: GET / PUT settings/mqtt (admin), GET settings/mqtt/status, GET settings/mqtt/preview?car=, POST
-// settings/mqtt/test (admin), GET cars/{car}/events, GET network (admin), the Tesla routes in pages/tesla.js and the
-// TeslaFi routes in pages/teslafi.js.
+// settings/mqtt/test (admin), GET cars/{car}/events, GET network (admin), and the Tesla and TeslaFi routes in pages/tesla.js and pages/teslafi.js.
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -173,12 +172,14 @@ const PURPOSE = {
   geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
   mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
   tesla: ['Tesla API', 'Only while a Tesla account is added and not paused: Tesla’s sign-in, its Owner API and its live stream (Tesla account, above).', null],
-  teslafi: ['TeslaFi', 'Only while a TeslaFi token is added and not paused: www.teslafi.com, reads only (TeslaFi, above).', null],
+  teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars’ data from TeslaFi', '#teslafi'],
   release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-display'],
   upload: ['CAN Bridge uploads', 'The car’s CAN Bridge sends its logs here.', null],
   web: ['This app and the API', 'Browsers, apps and the API.', null],
 };
 const code = (t) => h('code', { class: 'set-mono' }, t);
+// the Change it link of a connection: an anchor on this page (#teslafi) or another settings page
+const changeLink = (p) => (p && p[2] ? [' ', h('a', { class: 'place-link', href: p[2].startsWith('#') ? `${state.buildUrl('settings-integrations')}${p[2]}` : state.buildUrl(p[2]) }, 'Change it')] : null);
 const slug = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'car';
 const domainOf = (t) => { const p = String(t || '').split('/'); return p.length >= 5 ? p[p.length - 4] : null; };
 const prefixOf = (t) => { const p = String(t || '').split('/'); return p.length >= 5 ? p.slice(0, -4).join('/') : null; };
@@ -491,7 +492,8 @@ export async function mount(ctx) {
       note('Sentry Mate needs no cloud: the CAN Bridge uploads to it, and everything else is off until you turn it on. A Tesla account is optional; without one no connection to Tesla is made.'),
       h('ul', { class: 'checks' },
         net.outbound.map((o) => h('li', { class: ['check', o.enabled ? 'is-warn' : 'is-off'] }, h('span', { class: 'check-dot', 'aria-hidden': 'true' }),
-          h('span', { class: 'check-text' }, h('span', { class: 'check-name' }, `Out: ${(PURPOSE[o.purpose] || [o.purpose])[0]}`), h('span', { class: 'check-sub' }, `${o.host || 'no host set'} · ${(PURPOSE[o.purpose] || [null, ''])[1]}${o.last_used_ms ? ' Last used ' : ''}`, o.last_used_ms ? ago(o.last_used_ms) : null)),
+          h('span', { class: 'check-text' }, h('span', { class: 'check-name' }, `Out: ${(PURPOSE[o.purpose] || [o.purpose])[0]}`), h('span', { class: 'check-sub' }, `${o.host || 'no host set'} · ${(PURPOSE[o.purpose] || [null, ''])[1]}${o.last_used_ms ? ' Last used ' : ''}`, o.last_used_ms ? ago(o.last_used_ms) : null,
+            changeLink(PURPOSE[o.purpose]))),
           h('span', { class: 'check-word' }, o.enabled ? 'On' : 'Off'))),
         net.inbound.map((i) => h('li', { class: 'check is-ok' }, h('span', { class: 'check-dot', 'aria-hidden': 'true' }),
           h('span', { class: 'check-text' }, h('span', { class: 'check-name' }, `In: ${(PURPOSE[i.purpose] || [i.purpose])[0]}`), h('span', { class: 'check-sub' }, `Port ${i.port}${i.tls ? ', HTTPS with TLS 1.3' : ''}`)),
