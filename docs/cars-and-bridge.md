@@ -40,14 +40,19 @@ tables, nothing is looked up:
   built, not a model year (`year_kind: "build_year"`).
 - **The car's own configuration on its CAN bus**: the gateway's `0x7FF` pages (model, drive, performance package,
   pack code, wheels and tyres, paint, roof, spoiler, steering side, map region, Supercharging access) and the pack's
-  energy and brick count. These win over the VIN.
+  energy. These win over the VIN. (The pack's brick count is not used for the chemistry until its rules are
+  checked on real logs; when they are, it comes after the VIN.) The CAN configuration does not tell a base car's
+  trim (an RWD from a Long Range RWD, the 2022-24 Austin "Model Y AWD" from the Long Range AWD): the VIN's
+  candidates then stay listed.
 - **The EPA's rated ranges** (every Tesla row of the EPA's dataset) for cars built in the US, and typical pack
   energies when new.
 - **The Tesla API's `vehicle_config`** and a **TeslaMate import's car row**, labelled as such.
 - **What an admin types** (`PATCH /cars/{car}` with `config`), which beats everything.
 
 What the tables don't know is left unknown and listed (`unknown_codes`), never guessed. A US-built car's VIN never
-tells its chemistry (Tesla files `E` for every pack, LFP included); only Shanghai and Berlin VINs do. Where the car's
+tells its chemistry (Tesla files `E` for every pack, LFP included); only Shanghai and Berlin VINs do. For a US car
+the chemistry shown is only the usual pack for its model, year and drive, at low confidence. A VIN whose maker
+code is not Tesla's gives no model. Where the car's
 CAN and its VIN disagree, both are listed (`disagreements`). The tables are in
 [crates/model/data/vehicle/](../crates/model/data/vehicle/), one source note per row.
 

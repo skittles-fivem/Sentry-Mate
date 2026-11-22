@@ -7,6 +7,4 @@ model,efficiency_package,performance_package,soft_range,pack_energy,drivetrain,t
 3,,3,,,,Standard Range Plus,model3dbc GTW_performancePackage 3 BASE_PLUS,high
 3,,4,,,,Standard Range Plus AWD,model3dbc GTW_performancePackage 4 BASE_PLUS_AWD,medium
 3,,,,2,,Mid Range,model3dbc GTW_packEnergy 2 PACK_62_KWH,medium
-3|Y,,0,,,1,Long Range AWD,model3dbc GTW_performancePackage 0 BASE with GTW_drivetrainType 1 AWD (2022-24 Austin 4680 Model Y is sold as 'AWD'),medium
-3|Y,,0,,,0,RWD,model3dbc GTW_performancePackage 0 BASE with GTW_drivetrainType 0 RWD,medium
 S|X,,2,,,,Performance Ludicrous,model3dbc GTW_performancePackage 2 LUDICROUS,medium

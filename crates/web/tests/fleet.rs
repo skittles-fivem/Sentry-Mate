@@ -567,3 +567,28 @@ async fn a_key_change_and_a_rename_at_once_both_stay() {
     assert_eq!(c.preferred_key.as_deref(), Some("made-up-key-b"), "the key change stays");
     assert_eq!(c.vehicle_keys.len(), 2);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_typed_model_and_year_reach_the_list_and_the_car() {
+    let f = fleet().await;
+    let mut admin = f.s.admin().await;
+    assert_eq!(admin.get("/api/v1/cars/c1").await.json()["year"], json!(2024));
+    let r = admin
+        .patch("/api/v1/cars/c1", json!({ "version": 1, "config": { "model_year": 2025, "model": "Model Y L" } }))
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let c = admin.get("/api/v1/cars/c1").await.json();
+    assert_eq!((c["year"].clone(), c["model"].clone()), (json!(2025), json!("Model Y L")), "{c}");
+    assert_eq!(c["config"]["year"]["value"], json!(2025));
+    assert_eq!(c["vehicle"]["model_year"]["value"], json!(2025));
+    let list = admin.get("/api/v1/cars").await.json();
+    let one = list["items"].as_array().unwrap().iter().find(|i| i["id"] == json!("c1")).unwrap().clone();
+    assert_eq!((one["year"].clone(), one["model"].clone()), (json!(2025), json!("Model Y L")), "{one}");
+    // the search finds it by the typed model
+    let found = admin.get("/api/v1/cars?search=y%20l").await.json();
+    assert_eq!(ids(&found), vec!["c1".to_string()], "{found}");
+    // forgotten: the VIN's again
+    let r =
+        admin.patch("/api/v1/cars/c1", json!({ "version": 2, "config": { "model_year": null, "model": null } })).await;
+    assert_eq!((r.json()["year"].clone(), r.json()["model"].clone()), (json!(2024), json!("Model Y")), "{}", r.text());
+}

@@ -757,14 +757,14 @@ mod tests {
 
     #[test]
     fn the_dbc_set_from_vin_position_8() {
-        // model year 2021 had both: position 8 tells, not the year
-        let legacy = VinInfo::from_vin("5YJSA1E2XMF000001", 0).unwrap();
+        // model year 2021 had both: position 8 tells, not the year (made-up VINs: the year code is always P)
+        let legacy = VinInfo::from_vin("5YJSA1E2XPF000001", 0).unwrap();
         assert_eq!(legacy.profile(), CarProfile::TeslaSxLegacy);
-        let refresh = VinInfo::from_vin("5YJSA1E57MF000002", 0).unwrap();
+        let refresh = VinInfo::from_vin("5YJSA1E57PF000002", 0).unwrap();
         assert_eq!(refresh.profile(), CarProfile::Tesla3Y);
-        let plaid_2020_year_code = VinInfo { year: Some(2020), ..VinInfo::from_vin("5YJXCAE60NF000003", 0).unwrap() };
+        let plaid_2020_year_code = VinInfo { year: Some(2020), ..VinInfo::from_vin("5YJXCAE60PF000003", 0).unwrap() };
         assert_eq!(plaid_2020_year_code.profile(), CarProfile::Tesla3Y, "position 8 = 6 is a refresh car");
-        let truck = VinInfo::from_vin("7G2CEHEE8RA000004", 0x405).unwrap();
+        let truck = VinInfo::from_vin("7G2CEHEE8PF000004", 0x405).unwrap();
         assert_eq!((truck.model_name(), truck.profile()), (Some("Cybertruck"), CarProfile::Tesla3Y));
     }
 

@@ -16,13 +16,14 @@ S|X,6,3,AWD,true,refresh,Plaid,2021,,F,Part 565 2021-02-18 (b523d13b) onward,hig
 3,B,2,AWD,false,,,2020,,F|C,Part 565 2019-08-29 (c646fbf1) onward,high
 3,C,2,AWD,true,,,2020,2024,F|C,Part 565 2019-08-29 (c646fbf1) to MY2024 filings,high
 3,T,2,AWD,true,,,2025,,F,Part 565 2024-09-04 (b71476d4) onward,high
+3,T,2,AWD,true,,,2024,,C,Model 3 2024+ service manual (VIN page: T Dual Motor Performance at plants C and F),high
 3,R,1,RWD,false,,,2020,,C,Model 3 service manuals (Shanghai; 3DU 600A),high
 3,S,1,RWD,false,,,2021,,C,Model 3 service manuals (Shanghai; DUB 600A),high
 3,J,1,RWD,false,,,2024,,C,Model 3 2024+ service manual (plant assignment: medium),medium
 3,K,2,AWD,false,,,2024,,C,Model 3 2024+ service manual (plant assignment: medium),medium
 Y,D,1,RWD,false,,,2020,,F|A,Part 565 2019-12-09 (54414e8c) onward; Model Y service manuals,high
 Y,E,2,AWD,false,,,2020,,F|A,Part 565 2019-12-09 (54414e8c) onward; Model Y service manuals,high
-Y,F,2,AWD,true,,,2020,2025,F|A,Part 565 2019-12-09 (54414e8c) to MY2025; Model Y service manuals,high
+Y,F,2,AWD,true,,,2020,,F|A,Part 565 2019-12-09 (54414e8c) to MY2025; Model Y 2025+ service manual (VIN page: F Dual Motor - Performance for model years S/T/V),high
 Y,T,2,AWD,true,,,2026,,F|A,Part 565 2025-11-11 (ef945db7) onward,high
 Y,J,1,RWD,false,,,2021,,C|B,Model Y service manuals (plant assignment: medium),medium
 Y,K,2,AWD,false,,,2021,,C|B,Model Y service manuals (plant assignment: medium),medium

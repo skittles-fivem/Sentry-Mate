@@ -88,7 +88,7 @@ def list_cars(req):
     # the explicit cars
     cands = []
     for cid in special_ids:
-        it = list_item(req.app, cid, t)
+        it = typed_over(list_item(req.app, cid, t), st.car_meta(cid))
         if _matches(it, search, states):
             cands.append((_key(sort, it, prefs, False if sort != "soc" else d == "asc"), it))
     soc_desc = sort == "soc" and d == "desc"
@@ -278,6 +278,12 @@ CONFIG_FIELDS = {"trim": "trim", "drivetrain": "drive", "performance_package": "
 # the keys an admin may type beside CONFIG_KEYS (they show in `vehicle`, not in `config`)
 EXTRA_KEYS = ("model", "model_year", "plant", "body", "restraint", "seats", "battery_type", "chemistry", "nominal_kwh",
               "usable_kwh", "motors", "epa_range_km", "wheel_in")
+# each extra key's kind, as the server's OWNER_EXTRA_KEYS: ("text",), ("word", words), ("whole"|"number", lo, hi)
+EXTRA_KINDS = {"model": ("text",), "model_year": ("whole", 2008, 2045), "plant": ("text",), "body": ("text",),
+               "restraint": ("text",), "seats": ("whole", 1, 9), "battery_type": ("text",),
+               "chemistry": ("word", ("lfp", "nca_nmc")), "nominal_kwh": ("number", 5, 300),
+               "usable_kwh": ("number", 5, 300), "motors": ("whole", 1, 4), "epa_range_km": ("number", 10, 2000),
+               "wheel_in": ("whole", 14, 24)}
 VEHICLE_FACTS = ("maker", "built_in", "model", "model_year", "plant", "platform", "body", "restraint", "seats",
                  "battery_type", "chemistry", "pack", "pack_code", "nominal_kwh", "usable_kwh", "motors", "drive",
                  "performance", "trim", "epa_range_km", "wheel", "wheel_in", "paint", "roof", "spoiler", "steering",
@@ -293,17 +299,63 @@ def _fact(value=None, source=None, confidence=None, note=None):
     return f
 
 
-def vehicle_info(meta):
-    """`vehicle` of /cars/{car}: what the server works out from the VIN, CAN, the Tesla API and the owner."""
+def _extra(path, kind, v, bad, rule):
+    """One extra key as typed (the server's owner_extra): null to forget it, or a value of its kind; else an error."""
+    if v is None:
+        return None
+    k = kind[0]
+    if k == "text":
+        if not isinstance(v, str):
+            bad[path] = "Must be text or null."
+            return None
+        t = v.strip()
+        if not t or len(t) > 100 or any(ord(c) < 32 or ord(c) == 127 for c in t):
+            rule[path] = "1 to 100 characters, or null to forget it."
+        return t
+    if k == "word":
+        if not isinstance(v, str) or v not in kind[1]:
+            bad[path] = f"One of {', '.join(kind[1])}, or null."
+        return v
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        bad[path] = "Must be a number or null."
+        return None
+    lo, hi = kind[1], kind[2]
+    if not lo <= v <= hi or (k == "whole" and float(v) != int(v)):
+        rule[path] = f"{'A whole number' if k == 'whole' else 'A number'} from {float(lo)} to {float(hi)}, or null."
+    return v
+
+
+def _typed(meta, key):
+    c = meta.get("config", {}).get(key) or {}
+    return c["value"] if c.get("source") == "owner" and c.get("value") is not None else None
+
+
+def typed_over(item, meta):
+    """A typed model and model year are also the list item's `model` and `year` (the server's typed_over)."""
+    if _typed(meta, "model") is not None:
+        item["model"] = _typed(meta, "model")
+    if _typed(meta, "model_year") is not None:
+        item["year"] = int(_typed(meta, "model_year"))
+    return item
+
+
+def vehicle_info(meta, battery_setting="auto"):
+    """`vehicle` of /cars/{car}: what the server works out from the VIN, CAN, the Tesla API and the owner.
+
+    `battery_setting` is the car's battery setting: lfp or nca_nmc is the owner's word on the chemistry, unless
+    config names one."""
     vp = meta.get("vin_prefix") or ""
     cfg = meta.get("config", {})
     build = meta.get("build", {})
     plant = PLANTS.get(vp[10:11])
+    build_year = bool(plant) and plant[2] == "build_year"
     v = {k: _fact() for k in VEHICLE_FACTS}
     model = meta.get("model")
     v["maker"] = _fact("Tesla Inc.", "vin")
     v["model"] = _fact(model, "vin")
-    v["model_year"] = _fact(meta.get("year"), "vin", note="VIN position 10 (49 CFR 565.15)")
+    v["model_year"] = _fact(meta.get("year"), "vin",
+                            note="VIN position 10: the calendar year built (Tesla's service manual)" if build_year
+                            else "VIN position 10 (49 CFR 565.15)")
     if plant:
         v["plant"] = _fact(plant[0], "vin")
         v["built_in"] = _fact(plant[1], "vin")
@@ -321,6 +373,8 @@ def vehicle_info(meta):
         if c.get("value") is not None and c.get("source") == "owner":
             val = c["value"]
             v[k] = _fact({"min": val, "max": val} if k in ("nominal_kwh", "usable_kwh") else val, "owner")
+    if v["chemistry"]["source"] != "owner" and battery_setting in ("lfp", "nca_nmc"):
+        v["chemistry"] = _fact(battery_setting, "owner")
     drive = v["drive"]["value"]
     if drive and v["motors"]["source"] != "owner":
         v["motors"] = _fact(3 if "Plaid" in str(meta.get("trim")) or "Cyberbeast" in str(meta.get("trim"))
@@ -328,9 +382,12 @@ def vehicle_info(meta):
     if model in ("Model S", "Model X"):
         v["platform"] = _fact("legacy" if meta.get("profile") == "tesla-sx-legacy" else "refresh", "vin",
                               note="VIN position 8")
+    # the usual pack for the build (the brick count is not read for it); a US VIN never tells the chemistry
     if build.get("chemistry") and v["chemistry"]["source"] != "owner":
-        v["chemistry"] = _fact(build["chemistry"], "can" if build["chemistry"] == "lfp" else "vin", "medium",
-                               note="brick_count" if build["chemistry"] == "lfp" else "the usual pack for this build")
+        us = plant is None or plant[1] == "US"
+        v["chemistry"] = _fact(build["chemistry"], "vin", "low" if us else "medium",
+                               note="the usual pack for this build; a US VIN does not tell the chemistry" if us
+                               else "the usual pack for this build")
     if build.get("full_now_kwh") and v["nominal_kwh"]["source"] != "owner":
         now = round(build["full_now_kwh"], 1)
         v["nominal_kwh"] = _fact({"min": now, "max": now}, "can", note="BMS_nominalFullPackEnergy: the pack's own reading now")
@@ -340,7 +397,9 @@ def vehicle_info(meta):
     if build.get("full_range_new_km") and (plant is None or plant[1] == "US") and v["epa_range_km"]["source"] != "owner":
         v["epa_range_km"] = _fact(build["full_range_new_km"], "vin", "medium", note="EPA rating, US test cycle")
     v["battery_type"] = _fact("electric (no battery detail)", "vin") if vp[6:7] == "E" else _fact()
-    return dict(v, vin_prefix=vp or None, year_kind=(plant[2] if plant else "model_year") if meta.get("year") else None,
+    yk = None if v["model_year"]["value"] is None else (
+        "build_year" if build_year and v["model_year"]["source"] == "vin" else "model_year")
+    return dict(v, vin_prefix=vp or None, year_kind=yk,
                 trim_candidates=[], epa_name=None, epa_id=None, wheel_options_in=[], disagreements=[],
                 unknown_codes=[], notes=[])
 
@@ -348,10 +407,11 @@ def vehicle_info(meta):
 def car_detail(req, cid=None):
     cid = cid or req.car
     st = req.store
-    it = list_item(req.app, cid, req.now)
     meta = st.car_meta(cid)
+    it = typed_over(list_item(req.app, cid, req.now), meta)
     it["config"] = {k: config_value(meta["config"].get(k, {"value": None, "source": None})) for k in CONFIG_KEYS}
-    it["vehicle"] = vehicle_info(meta)
+    s = st.car_settings.get(cid) or {}
+    it["vehicle"] = vehicle_info(meta, (s.get("battery_chemistry") or {}).get("setting", "auto"))
     it["version"] = meta["version"]
     return it
 
@@ -381,8 +441,10 @@ def patch_car(req):
         if not isinstance(cfg, dict):
             bad["config"] = "Must be an object."
         else:
-            for k, v in cfg.items():
-                if k not in CONFIG_KEYS and k not in EXTRA_KEYS:
+            for k, v in list(cfg.items()):
+                if k in EXTRA_KINDS:
+                    cfg[k] = _extra(f"config.{k}", EXTRA_KINDS[k], v, bad, rule)
+                elif k not in CONFIG_KEYS:
                     bad[f"config.{k}"] = "Unknown setting."
                 elif v is not None and not isinstance(v, (str, bool, int, float)):
                     bad[f"config.{k}"] = "Must be text, a number, true/false or null."

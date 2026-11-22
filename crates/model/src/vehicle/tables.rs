@@ -178,6 +178,8 @@ pub struct WheelRow {
     pub years: Years,
     /// `performance`, `non_performance` or `any`.
     pub kind: &'static str,
+    /// The trim the row is for (`Standard RWD`, `Model Y L`); empty for the model's other trims.
+    pub trim: Option<&'static str>,
     pub base_in: u8,
     pub optional_in: Option<u8>,
     pub src: Src,
@@ -515,6 +517,7 @@ pub fn load() -> R<Tables> {
             kind: r
                 .one_of("kind", &["performance", "non_performance", "any"])?
                 .ok_or_else(|| r.bad("kind", "empty"))?,
+            trim: r.opt("trim")?,
             base_in: r.num("base_in")?,
             optional_in: r.opt_num("optional_in")?,
             src: r.src()?,

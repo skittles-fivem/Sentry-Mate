@@ -43,8 +43,6 @@ pub enum FactSource {
     TeslaApi,
     /// A TeslaMate import.
     Teslamate,
-    /// A TeslaFi import.
-    Teslafi,
 }
 
 impl FactSource {
@@ -55,7 +53,6 @@ impl FactSource {
             FactSource::Vin => "vin",
             FactSource::TeslaApi => "tesla_api",
             FactSource::Teslamate => "teslamate",
-            FactSource::Teslafi => "teslafi",
         }
     }
 }
@@ -402,7 +399,7 @@ pub struct VehicleInputs {
     pub vin: Option<String>,
     pub can: CanBuild,
     pub tesla_api: TextBuild,
-    /// An import's car row, and the site it came from ([`FactSource::Teslamate`] or [`FactSource::Teslafi`]).
+    /// An import's car row, and the site it came from ([`FactSource::Teslamate`]).
     pub import: Option<(FactSource, TextBuild)>,
     /// What an admin typed, by `config` key (the older keys and [`OWNER_EXTRA_KEYS`]).
     pub owner: BTreeMap<String, OwnerValue>,
@@ -470,8 +467,8 @@ pub fn vin_prefix(vin: &str) -> Option<String> {
     ok.then_some(p)
 }
 
-/// The model a VIN prefix names (`Y`, `C` ...), when its maker code allows it (a known Tesla maker code must be one
-/// the model is filed under).
+/// The model a VIN prefix names (`Y`, `C` ...), only when its maker code is a Tesla one the model is filed under: a
+/// maker code the tables don't know names no model (a 4th character means nothing without its maker).
 pub fn model_code(prefix: &str) -> Option<char> {
     let b = prefix.as_bytes();
     if b.len() < 4 {
@@ -479,12 +476,7 @@ pub fn model_code(prefix: &str) -> Option<char> {
     }
     let (wmi, code) = (&prefix[..3], char::from(b[3]));
     let t = tables();
-    if t.wmi.iter().any(|w| w.wmi == wmi) {
-        return t.models.iter().find(|m| m.code == code && m.wmis.contains(&wmi)).map(|m| m.code);
-    }
-    // a maker code the tables don't know (a made-up VIN from a test bench): the four models every Tesla VIN
-    // decoder has always named by the 4th character alone
-    matches!(code, '3' | 'Y' | 'S' | 'X').then_some(code)
+    t.models.iter().find(|m| m.code == code && m.wmis.contains(&wmi)).map(|m| m.code)
 }
 
 /// The model's name for a model letter: `Model Y`, `Cybertruck`.
@@ -1014,14 +1006,8 @@ pub fn vehicle_info(inp: &VehicleInputs) -> VehicleInfo {
 
     let mut chem = Field::<String>::new("chemistry");
     chem.add(owner_text("chemistry"), Owner, High, None);
-    if let Some(n) = can.brick_count.filter(|n| *n >= 100) {
-        chem.add(
-            Some("lfp".into()),
-            Can,
-            Medium,
-            Some(format!("brick_count: {n} bricks in series (LFP packs have 106 or 108)")),
-        );
-    }
+    // (the pack's brick count is not read for the chemistry until the count rules are checked on real logs: see
+    // docs/todo.md; when they are, they come after VIN position 7, not before it)
     if let Some(r) = battery_row {
         chem.add(
             r.chemistry.map(String::from),
@@ -1031,12 +1017,14 @@ pub fn vehicle_info(inp: &VehicleInputs) -> VehicleInfo {
         );
     }
     if let Some(r) = pack_row {
-        chem.add(
-            r.chemistry.map(String::from),
-            Vin,
-            r.src.confidence.min(Medium),
-            Some(format!("the usual pack for this build: {} ({})", r.pack, r.src.source)),
-        );
+        // a US-built car's VIN never tells the chemistry (Tesla files `E` for every pack): the usual pack for its
+        // model, year and drive is a hint, nothing more
+        let (conf, why) = if us_plant {
+            (Low, "the usual pack for this build; a US VIN does not tell the chemistry")
+        } else {
+            (r.src.confidence.min(Medium), "the usual pack for this build")
+        };
+        chem.add(r.chemistry.map(String::from), Vin, conf, Some(format!("{why}: {} ({})", r.pack, r.src.source)));
     }
     chem.add(import.lfp_battery.map(|l| if l { "lfp" } else { "nca_nmc" }.to_string()), import_site, Medium, None);
     let chemistry = chem.resolve(&mut dis);
@@ -1121,37 +1109,7 @@ pub fn vehicle_info(inp: &VehicleInputs) -> VehicleInfo {
     wheel.add_words(import.wheel_type.clone(), import_site, Medium);
     wheel_in.add(import.wheel_type.as_deref().and_then(inches_in), import_site, Low, None);
     let wheel = wheel.resolve(&mut dis);
-    let mut wheel_options_in = Vec::new();
     let mut wheel_in_fact = wheel_in.resolve(&mut dis);
-    if !wheel_in_fact.is_known()
-        && let (Some(m), Some(y)) = (mcode, my)
-    {
-        let kind = match performance.value {
-            Some(true) => "performance",
-            Some(false) => "non_performance",
-            None => "",
-        };
-        if let Some(r) = t
-            .wheels
-            .iter()
-            .find(|r| in_models(&r.models, m) && r.years.contains(y) && (r.kind == "any" || r.kind == kind))
-        {
-            match r.optional_in {
-                None => {
-                    wheel_in_fact = Fact {
-                        value: Some(r.base_in),
-                        source: Some(Vin),
-                        confidence: Some(r.src.confidence.min(Medium)),
-                        note: Some(format!("the only factory size for this build ({})", r.src.source)),
-                    };
-                }
-                Some(opt) => {
-                    wheel_options_in = vec![r.base_in, opt];
-                    wheel_options_in.sort_unstable();
-                }
-            }
-        }
-    }
 
     // ---- paint, roof, spoiler, region, supercharging
     let mut paint = Field::<String>::new("paint");
@@ -1313,6 +1271,53 @@ pub fn vehicle_info(inp: &VehicleInputs) -> VehicleInfo {
     } else {
         Vec::new()
     };
+
+    // the factory wheel sizes, when the car's own is not known: of the trim when it is known (a trim with its own
+    // row, else the model's row), else every size any trim it can be came with
+    let mut wheel_options_in = Vec::new();
+    if !wheel_in_fact.is_known()
+        && let (Some(m), Some(y)) = (mcode, my)
+    {
+        let kind = match performance.value {
+            Some(true) => "performance",
+            Some(false) => "non_performance",
+            None => "",
+        };
+        let rows: Vec<&tables::WheelRow> = t
+            .wheels
+            .iter()
+            .filter(|r| in_models(&r.models, m) && r.years.contains(y) && (r.kind == "any" || r.kind == kind))
+            .collect();
+        let of_trim = |tr: &str| -> Option<&tables::WheelRow> {
+            rows.iter()
+                .copied()
+                .find(|r| r.trim.is_some_and(|w| with_model(w).eq_ignore_ascii_case(tr)))
+                .or_else(|| rows.iter().copied().find(|r| r.trim.is_none()))
+        };
+        let picked: Vec<&tables::WheelRow> = match trim.value.as_deref() {
+            Some(tr) => of_trim(tr).into_iter().collect(),
+            None if trim_candidates.is_empty() => of_trim("").into_iter().collect(),
+            None => trim_candidates.iter().filter_map(|c| of_trim(c)).collect(),
+        };
+        let mut sizes: Vec<u8> = picked.iter().flat_map(|r| [Some(r.base_in), r.optional_in]).flatten().collect();
+        sizes.sort_unstable();
+        sizes.dedup();
+        match (sizes.as_slice(), picked.first()) {
+            ([one], Some(r)) => {
+                let srcs: Vec<&str> = picked.iter().map(|r| r.src.source).collect();
+                wheel_in_fact = Fact {
+                    value: Some(*one),
+                    source: Some(Vin),
+                    confidence: Some(
+                        picked.iter().map(|r| r.src.confidence).min().unwrap_or(r.src.confidence).min(Medium),
+                    ),
+                    note: Some(format!("the only factory size for this build ({})", srcs.join("; "))),
+                };
+            }
+            ([], _) | (_, None) => {}
+            _ => wheel_options_in = sizes,
+        }
+    }
 
     // the EPA row: the one whose name is the trim, else the only one; a wheel size splits rows that differ by it
     let mut epa_pick: Vec<&EpaRow> = epa_rows.clone();

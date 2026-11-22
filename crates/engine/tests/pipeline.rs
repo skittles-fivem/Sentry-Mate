@@ -289,7 +289,8 @@ fn logs_become_a_drive_and_a_charge_and_late_logs_rebuild_the_same_history() {
         assert_eq!((v.wheel.value.as_deref(), v.wheel_in.value), (Some("Stiletto 19"), Some(19)));
         assert_eq!((v.model_year.value, v.year_kind), (Some(2024), Some("build_year")));
         assert_eq!(v.plant.value.as_deref(), Some("Berlin-Brandenburg (Giga Berlin)"));
-        assert_eq!(v.trim.value.as_deref(), Some("Model Y Long Range AWD"));
+        // (a base AWD's CAN configuration doesn't tell the Long Range from the 4680 AWD: no trim is chosen)
+        assert_eq!(v.trim.value, None);
         assert!(v.disagreements.is_empty(), "{:?}", v.disagreements);
         assert_eq!(detail.config["drivetrain"].value, "AWD");
         assert_eq!(detail.config["drivetrain"].source, Some("can"));

@@ -180,6 +180,17 @@ pub(crate) fn item(e: &Engine, x: &FleetEntry, now: u64) -> CarItem {
     }
 }
 
+/// What an admin typed for the car's model and model year, over the VIN's in a list item (the same values
+/// `vehicle` settles on: a typed value beats every other source).
+fn typed_over(i: &mut CarItem, o: &Owner) {
+    if let Some(m) = o.config.get("model").and_then(|v| v.as_str()) {
+        i.model = Some(m.to_string());
+    }
+    if let Some(y) = o.config.get("model_year").and_then(serde_json::Value::as_f64).filter(|y| y.fract() == 0.0) {
+        i.year = Some(y as u16);
+    }
+}
+
 /// Every fleet entry the caller may see.
 fn entries(e: &Engine, visible: &[CarId]) -> QResult<Vec<FleetEntry>> {
     let mut out = Vec::new();
@@ -216,9 +227,14 @@ pub fn cars(e: &Engine, visible: &[CarId], q: &CarsQuery, paging: &Paging) -> QR
         return Err(QueryError::bad("state", "driving, charging, parked, asleep or unknown"));
     }
     let all = entries(e, visible)?;
-    let items: Vec<CarItem> = all
-        .iter()
-        .map(|x| item(e, x, now))
+    let mut items: Vec<CarItem> = Vec::with_capacity(all.len());
+    for x in &all {
+        let mut i = item(e, x, now);
+        typed_over(&mut i, &owner(e, x.car.id)?);
+        items.push(i);
+    }
+    let items: Vec<CarItem> = items
+        .into_iter()
         .filter(|i| {
             needle.as_ref().is_none_or(|n| {
                 i.name.to_lowercase().contains(n)
@@ -535,6 +551,7 @@ pub fn car(e: &Engine, car: CarId) -> QResult<CarDetail> {
         config.insert(k, shown);
     }
     let mut it = item(e, &x, now_ms());
+    typed_over(&mut it, &o);
     if let Some(t) = config.get("trim").and_then(|t| t.value.as_str()) {
         it.trim = Some(t.to_string());
     }

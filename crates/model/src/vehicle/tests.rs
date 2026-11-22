@@ -340,18 +340,22 @@ fn chemistry_from_the_vin_only_where_tesla_says_it() {
 
 #[test]
 fn unknown_codes_give_no_value() {
-    // Model Y F (Performance) ended with MY2025; T took over
-    let v = vin_only("7SAYGDEF0TF");
+    // a position-8 code no table names
+    let v = vin_only("7SAYGDEZ0TF");
     assert_eq!(v.motors.value, None);
     assert_eq!(v.performance.value, None);
-    assert!(v.unknown_codes.iter().any(|u| u.at == "vin:8" && u.code == "F"));
+    assert!(v.unknown_codes.iter().any(|u| u.at == "vin:8" && u.code == "Z"));
     // a model letter the tables don't know for its maker, a maker that isn't Tesla
     let x = vin_only("5YJZE1EA0PF");
     assert_eq!(x.model.value, None);
     assert!(x.unknown_codes.iter().any(|u| u.field == "model"));
     assert_eq!(vin_only("XP7SA1E26PF").model.value, None, "Berlin builds no Model S");
-    assert_eq!(model_code("SYN3FAKE0RX"), Some('3'), "an unknown maker code: the 4th character, 3/Y/S/X only");
     assert_eq!(model_code("SYNCFAKE0RX"), None);
+    // a maker code that is not Tesla's names no model, whatever its 4th character
+    assert_eq!(model_code("SYN3FAKE0RX"), None);
+    let vw = vin_only("WVW3E1EA0PF");
+    assert_eq!((vw.model.value.as_deref(), vw.epa_range_km.value, vw.body.value.as_deref()), (None, None, None));
+    assert!(vw.unknown_codes.iter().any(|u| u.field == "maker") && vw.unknown_codes.iter().any(|u| u.field == "model"));
     let w = vin_only("WVWZZZ1KZPF");
     assert_eq!((w.model.value.clone(), w.maker.value.clone()), (None, None));
     // CAN codes beyond the public DBC's tables
@@ -412,11 +416,6 @@ fn can_wins_over_the_vin_and_disagreements_are_listed() {
     let v = vehicle_info(&VehicleInputs { vin: Some("7SAYGDEE1PF".into()), can: other, ..VehicleInputs::default() });
     assert_eq!(v.model.value.as_deref(), Some("Model 3"));
     assert!(v.disagreements.iter().any(|d| d.field == "model"));
-    // an LFP pack's brick count
-    let lfp = CanBuild { brick_count: Some(106), ..CanBuild::default() };
-    let v = vehicle_info(&VehicleInputs { vin: Some("7SAYGDEE1PF".into()), can: lfp, ..VehicleInputs::default() });
-    assert_eq!((v.chemistry.value.as_deref(), v.chemistry.source), (Some("lfp"), Some(FactSource::Can)));
-    assert!(v.disagreements.iter().any(|d| d.field == "chemistry"));
 }
 
 #[test]
@@ -536,10 +535,10 @@ fn trims_and_ranges_from_the_epa_table() {
 
 #[test]
 fn vin_info_keeps_eleven_characters_and_knows_every_model() {
-    let v = vin_info("7G2CEHEE8RA000004", 0).unwrap();
-    assert_eq!((v.vin_prefix.as_str(), v.model, v.year, v.plant), ("7G2CEHEE8RA", Some('C'), Some(2024), Some('A')));
+    let v = vin_info("7G2CEHEE8PF000004", 0).unwrap();
+    assert_eq!((v.vin_prefix.as_str(), v.model, v.year, v.plant), ("7G2CEHEE8PF", Some('C'), Some(2023), Some('F')));
     assert_eq!(vin_info("5YJ3E1EA2PF000002", 0x405).unwrap().model, Some('3'));
-    assert_eq!(vin_info("5YJRE1EA0AF000003", 0).unwrap().model, None, "the Roadster is not shown");
+    assert_eq!(vin_info("5YJRE1EA0PF000003", 0).unwrap().model, None, "the Roadster is not shown");
     assert_eq!(vin_info("5YJZE1EA2PF000002", 0).unwrap().model, None);
     assert!(vin_info("5YJ3E1EA2PF00000I", 0).is_none());
     assert!(vin_info("5YJ3E1EA2PF00000", 0).is_none());
@@ -604,4 +603,139 @@ fn can_build_takes_decoded_signals() {
     newer.fill_from(&c);
     assert_eq!((newer.wheel_type, newer.chassis_type, newer.brick_count), (Some(17), Some(3), Some(96)));
     assert!(CanBuild::default().is_empty() && !newer.is_empty());
+}
+
+#[test]
+fn base_trims_are_not_told_apart_by_can() {
+    // GTW_performancePackage 0 with GTW_drivetrainType 0 or 1 is every base car: RWD and Long Range RWD, the 4680
+    // AWD and the Long Range AWD look the same; the VIN's candidates stay and no range is chosen
+    let base = |vin: &str, drive: u32| {
+        let can = CanBuild { performance_package: Some(0), drivetrain_type: Some(drive), ..CanBuild::default() };
+        vehicle_info(&VehicleInputs { vin: Some(vin.into()), can, ..VehicleInputs::default() })
+    };
+    for (vin, drive, both) in [
+        ("5YJ3E1EA0RF", 0, ["Model 3 RWD", "Model 3 Long Range RWD"]),
+        ("7SAYGDED0RF", 0, ["Model Y RWD", "Model Y Long Range RWD"]),
+        ("7SAYGDEE0PA", 1, ["Model Y AWD", "Model Y Long Range AWD"]),
+        ("7SAYGDEE0TF", 1, ["Model Y Standard AWD", "Model Y Long Range AWD"]),
+    ] {
+        let v = base(vin, drive);
+        assert_eq!(v.trim.value, None, "{vin}");
+        for n in both {
+            assert!(v.trim_candidates.iter().any(|c| c == n), "{vin}: {n} in {:?}", v.trim_candidates);
+        }
+        assert_eq!((v.epa_range_km.value, v.epa_name.as_deref()), (None, None), "{vin}");
+    }
+    // a 2027 Model 3 RWD can be the RWD or the Premium RWD
+    let v = base("5YJ3E1EA0VF", 0);
+    assert_eq!((v.trim.value.as_deref(), v.epa_range_km.value), (None, None), "{:?}", v.trim_candidates);
+    // the rules that do tell a trim still do
+    let can = CanBuild { performance_package: Some(1), ..CanBuild::default() };
+    let v = vehicle_info(&VehicleInputs { vin: Some("7SAYGDEE0PA".into()), can, ..VehicleInputs::default() });
+    assert_eq!((v.trim.value.as_deref(), v.trim.source), (Some("Model Y Performance"), Some(FactSource::Can)));
+    assert!(t_has_no_base_rule());
+}
+
+fn t_has_no_base_rule() -> bool {
+    tables().trim_can.iter().all(|r| r.performance_package != Some(0))
+}
+
+#[test]
+fn the_vin_outranks_the_brick_count_for_the_chemistry() {
+    // Shanghai, position 7 E: NCA/NMC by Tesla's manual; 106 bricks would say LFP, but that rule is not checked yet
+    let can = CanBuild { brick_count: Some(106), ..CanBuild::default() };
+    let v = vehicle_info(&VehicleInputs { vin: Some("LRW3E7EB0PC".into()), can, ..VehicleInputs::default() });
+    assert_eq!((v.chemistry.value.as_deref(), v.chemistry.source), (Some("nca_nmc"), Some(FactSource::Vin)));
+    assert_eq!(v.chemistry.confidence, Some(Confidence::High));
+    // the brick count alone says nothing of it either
+    let can = CanBuild { brick_count: Some(106), ..CanBuild::default() };
+    let v = vehicle_info(&VehicleInputs { can, ..VehicleInputs::default() });
+    assert_eq!(v.chemistry.value, None);
+}
+
+#[test]
+fn a_us_vin_only_hints_at_the_chemistry() {
+    for vin in ["5YJ3E1EA0PF", "7SAYGDED0PF"] {
+        let v = vin_only(vin);
+        assert_eq!((v.chemistry.value.as_deref(), v.chemistry.source), (Some("lfp"), Some(FactSource::Vin)), "{vin}");
+        assert_eq!(v.chemistry.confidence, Some(Confidence::Low), "{vin}: the usual pack for the build, no more");
+        assert!(v.chemistry.note.as_deref().is_some_and(|n| n.contains("does not tell")), "{vin}");
+    }
+}
+
+#[test]
+fn trims_with_their_own_factory_wheels() {
+    // a 2026 Model Y RWD can be a Long Range (19/20) or a Standard (18/19, EPA 50040 and 50041)
+    assert_eq!(vin_only("7SAYGDED0TF").wheel_options_in, vec![18, 19, 20]);
+    let owner = |trim: &str| {
+        let mut o = BTreeMap::new();
+        o.insert("trim".to_string(), OwnerValue::Text(trim.into()));
+        o
+    };
+    let v = vehicle_info(&VehicleInputs {
+        vin: Some("7SAYGDED0TF".into()),
+        owner: owner("Model Y Standard RWD"),
+        ..VehicleInputs::default()
+    });
+    assert_eq!((v.wheel_options_in.clone(), v.wheel_in.value), (vec![18, 19], None));
+    let v = vehicle_info(&VehicleInputs {
+        vin: Some("7SAYGDED0TF".into()),
+        owner: owner("Model Y Long Range RWD"),
+        ..VehicleInputs::default()
+    });
+    assert_eq!(v.wheel_options_in, vec![19, 20]);
+    // the 2027 Model Y L comes on 20 in only
+    let v = vehicle_info(&VehicleInputs {
+        vin: Some("7SAYGDEE0VF".into()),
+        owner: owner("Model Y L"),
+        ..VehicleInputs::default()
+    });
+    assert_eq!((v.wheel_in.value, v.wheel_in.source), (Some(20), Some(FactSource::Vin)));
+    assert!(v.wheel_options_in.is_empty());
+    assert_eq!(v.epa_id, Some(50862));
+}
+
+#[test]
+fn performance_codes_of_the_current_manuals() {
+    // Model Y 2025+ manual: F is Dual Motor - Performance for model years S/T/V
+    let v = vin_only("7SAYGFEF0TF");
+    assert_eq!((v.motors.value, v.drive.value.as_deref(), v.performance.value), (Some(2), Some("AWD"), Some(true)));
+    assert!(v.unknown_codes.iter().all(|u| u.field != "motors"));
+    // Model 3 2024+ manual: T is Dual Motor Performance at plants C and F
+    let v = vin_only("LRW3E7ET0RC");
+    assert_eq!((v.motors.value, v.drive.value.as_deref(), v.performance.value), (Some(2), Some("AWD"), Some(true)));
+    assert!(v.unknown_codes.iter().all(|u| u.field != "motors"));
+}
+
+#[test]
+fn full_test_vins_are_made_up() {
+    // the repo's rule: a whole VIN in a test ends in PF0000 and two digits
+    for src in [include_str!("tests.rs"), include_str!("../lib.rs")] {
+        let b = src.as_bytes();
+        for i in 0..b.len().saturating_sub(16) {
+            let w = &b[i..i + 17];
+            let vin_char = |c: &u8| matches!(c, b'A'..=b'H' | b'J'..=b'N' | b'P' | b'R'..=b'Z' | b'0'..=b'9');
+            let edge = |j: Option<&u8>| j.is_none_or(|c| !c.is_ascii_alphanumeric());
+            if w.iter().all(vin_char)
+                && w.iter().any(u8::is_ascii_uppercase)
+                && edge(i.checked_sub(1).and_then(|j| b.get(j)))
+                && edge(b.get(i + 17))
+            {
+                let s = std::str::from_utf8(w).unwrap();
+                assert!(s[9..15] == *"PF0000" && s[15..].bytes().all(|c| c.is_ascii_digit()), "{s}");
+            }
+        }
+    }
+}
+
+#[test]
+fn only_sources_that_exist_are_named() {
+    // no TeslaFi import exists: no fact can say it came from one
+    let words: Vec<&str> =
+        [FactSource::Owner, FactSource::Can, FactSource::Vin, FactSource::TeslaApi, FactSource::Teslamate]
+            .iter()
+            .map(|s| s.word())
+            .collect();
+    assert_eq!(words, ["owner", "can", "vin", "tesla_api", "teslamate"]);
+    assert!(serde_json::from_str::<FactSource>("\"teslafi\"").is_err());
 }
