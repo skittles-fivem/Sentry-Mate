@@ -1596,3 +1596,6 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 /* an icon in the dock takes no taps of its own: they go to its tab or button (and the page under the dock
    counts as under the dock, not under an icon) */
 :root[data-phone] .dock :is(svg, .ico) { pointer-events: none; }
+/* bare screens (sign-in, set-up) have no dock either: its tabs lead to pages that need an account */
+:root[data-phone][data-screen="bare"] .dock { display: none; }
+:root[data-phone][data-screen="bare"] .app > .main { padding-bottom: var(--safe-b); }

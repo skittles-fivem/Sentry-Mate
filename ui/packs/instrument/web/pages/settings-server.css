@@ -173,3 +173,17 @@
   .mv-code { font-size: 1.25rem; }
   .mv-way { padding: round(0.875rem, var(--e)); }
 }
+
+/* a phone: controls as wide as the panel, key and value stacked, long values wrap */
+:root[data-phone] .ss .setting-control { align-items: stretch; }
+:root[data-phone] .ss .setting-control > :is(.btn, .switch-row, .panel-link, .link-btn) { align-self: flex-start; }
+:root[data-phone] .ss .setting-control .form-row { max-width: none; }
+:root[data-phone] .ss .seg { display: flex; flex-wrap: wrap; width: 100%; max-width: 100%; }
+:root[data-phone] .ss .seg-btn { flex: 1 1 auto; justify-content: center; }
+:root[data-phone] .ss-name-add { flex-wrap: wrap; }
+:root[data-phone] .ss-name-input { width: 100%; flex: 1 1 100%; }
+:root[data-phone] .ss-acts { flex-wrap: wrap; }
+:root[data-phone="tall"] .ss .kv-row { flex-direction: column; align-items: flex-start; gap: round(0.125rem, var(--e)); }
+:root[data-phone="tall"] .ss .kv dd { margin: 0; text-align: left; white-space: normal; }
+:root[data-phone] .ss-port { justify-content: flex-start; }
+:root[data-phone] .ss-carlist label { min-height: var(--tap); }
