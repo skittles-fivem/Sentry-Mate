@@ -43,9 +43,13 @@ export async function mount(ctx) {
   const minKm = () => r3(toMetric(minD, 'distance'));
   const effParams = () => ({ ...ctx.params, min_distance_km: minKm(), temp_group_c: groupC });
 
-  const [eff, temps] = await Promise.all([
+  // the drives (for use by speed) come with the rest, so the efficiency tiles are all there at once and do not push
+  // the temperature tiles down when they arrive
+  const drivesOf = () => ctx.api.list(`${base}/drives`, { ...ctx.params, min_distance_km: minKm(), sort: 'start', dir: 'desc' }, { limit: 200 }).all({ max: 3000 }).catch(() => []);
+  const [eff, temps, drives0] = await Promise.all([
     ctx.api.get(`${base}/efficiency`, effParams()),
     ctx.api.get(`${base}/temperatures`, ctx.params).catch((e) => ({ error: e })),
+    drivesOf(),
   ]);
   if (!ctx.alive()) return {};
   const now = api.now();
@@ -68,13 +72,13 @@ export async function mount(ctx) {
 
   /* ------------------------------------------------------------ efficiency */
   async function refresh() {
-    const d = await ctx.api.get(`${base}/efficiency`, effParams()).catch((e) => ({ error: e }));
+    const [d, drives] = await Promise.all([ctx.api.get(`${base}/efficiency`, effParams()).catch((e) => ({ error: e })), drivesOf()]);
     if (!ctx.alive()) return;
-    await paintEff(d);
+    paintEff(d, drives);
     ctx.ready();
   }
 
-  async function paintEff(d) {
+  function paintEff(d, drives) {
     if (d.error) { effBox.replaceChildren(emptyTile({ icon: 'leaf', title: 'Efficiency could not be read', text: 'Try again in a moment.' })); return; }
     const minText = format(minKm(), 'distance', { digits: 0 });
     const why = d.drives ? 'too little distance' : `no drive of ${minText} or more`;
@@ -130,8 +134,6 @@ export async function mount(ctx) {
 
     /* by average speed, from the drives */
     const speedT = tile({ w: 2, title: 'By average speed', icon: 'gauge', cls: ['chart-tile', 'ef-bars-tile'] });
-    const drives = await ctx.api.list(`${base}/drives`, { ...ctx.params, min_distance_km: minKm(), sort: 'start', dir: 'desc' }, { limit: 200 }).all({ max: 3000 }).catch(() => []);
-    if (!ctx.alive()) return;
     const step = 20; // in the person's speed unit
     const bins = new Map();
     for (const x of drives) {
@@ -279,7 +281,8 @@ export async function mount(ctx) {
 
   paintSummary();
   paintDaily();
-  await Promise.all([paintEff(eff), paintHistory(), paintCharges()]);
+  paintEff(eff, drives0);
+  await Promise.all([paintHistory(), paintCharges()]);
   if (!ctx.alive()) return {};
   ctx.ready();
   return {};

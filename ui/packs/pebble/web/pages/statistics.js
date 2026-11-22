@@ -52,7 +52,6 @@ export async function mount(ctx) {
   const rowsBox = h('div', { class: 'contents' });
   const odoT = tile({ w: 2, title: 'Odometer', icon: 'gauge', cls: 'chart-tile' });
   const stoneT = tile({ w: 2, title: 'Milestones', icon: 'flag', cover: 'projects.achievements' });
-  ctx.view.replaceChildren(bar, precise, totBox, chartT, rowsHead, rowsBox, odoT, stoneT);
 
   const periodOf = (r) => ({ from: r.period_start_ms, to: r.period_end_ms });
   const linkFor = (page, r) => state.buildUrl(page, { car: r.car || car?.id, period: periodOf(r) });
@@ -130,18 +129,24 @@ export async function mount(ctx) {
       }), { tone: 'c1', label: `Distance per ${WORD[group]}` }));
   }
 
+  // A live reload keeps the old chart and milestones on screen until the new answers are in, then swaps them in one go.
+  const clear = (t) => t.querySelectorAll(':scope > :not(.tile-head)').forEach((e) => e.remove());
   async function paintOdometer() {
-    odoT.querySelectorAll(':scope > :not(.tile-head)').forEach((e) => e.remove());
-    if (!car) { odoT.append(h('div', { cover: 'mi.chart.odometer' }, note('Open one car to see its odometer over time.'))); return; }
+    if (!car) { clear(odoT); odoT.append(h('div', { cover: 'mi.chart.odometer' }, note('Open one car to see its odometer over time.'))); return; }
     const g = group === 'all' ? 'month' : group;
     const m = await ctx.api.get(api.apiPath`cars/${car.id}/mileage`, { ...ctx.params, group: g }).catch(() => null);
     if (!ctx.alive()) return;
+    const old = odoT.querySelector('.plot');
+    const oldH = old ? odoT.offsetHeight : 0;
+    if (oldH) odoT.style.minHeight = `${oldH}px`;
+    clear(odoT);
     const items = (m?.items || []).filter((x) => x.odometer_end_km != null).sort((a, b) => a.period_start_ms - b.period_start_ms);
-    if (!items.length) { odoT.append(h('div', { cover: 'mi.chart.odometer' }, emptyTile({ icon: 'gauge', title: 'No odometer readings in this period', text: 'The car sends it while driving.', w: 2 }))); return; }
+    if (!items.length) { odoT.style.minHeight = ''; odoT.append(h('div', { cover: 'mi.chart.odometer' }, emptyTile({ icon: 'gauge', title: 'No odometer readings in this period', text: 'The car sends it while driving.', w: 2 }))); return; }
     await timeChart(ctx, odoT, { tz, t_ms: items.map((x) => x.period_start_ms), short: true, label: 'Odometer over time', cover: 'mi.chart.odometer', series: [
       { key: 'o', name: 'Odometer', kind: 'odometer', values: items.map((x) => x.odometer_end_km), tone: 'c1', fill: true, axis: 'left' },
       { key: 'n', name: 'Not logged', kind: 'distance', values: items.map((x) => x.not_logged_km), tone: 'c2', dashed: true, axis: 'right', floor: 0 },
     ] });
+    odoT.style.minHeight = '';
     if (!ctx.alive()) return;
     const p = m.projection;
     odoT.append(h('p', { class: 'chart-note' }, p?.km_per_year != null ? `At this pace about ${format(p.km_per_year, 'distance', { digits: 0 })} a year (from the last ${n0(p.basis_days)} days).` : 'Not enough days yet for a yearly pace.',
@@ -149,9 +154,12 @@ export async function mount(ctx) {
   }
 
   async function paintStones(rows) {
-    stoneT.querySelectorAll(':scope > :not(.tile-head)').forEach((e) => e.remove());
     const items = [];
-    const longest = car ? await ctx.api.page(api.apiPath`cars/${car.id}/drives`, { ...ctx.params, sort: 'distance', dir: 'desc' }, { limit: 1 }).then((p) => p.items?.[0]).catch(() => null) : null;
+    const odoRows = rows.filter((r) => r.distance_odometer_km);
+    const [longest, totals] = await Promise.all([
+      car ? ctx.api.page(api.apiPath`cars/${car.id}/drives`, { ...ctx.params, sort: 'distance', dir: 'desc' }, { limit: 1 }).then((p) => p.items?.[0]).catch(() => null) : null,
+      car && odoRows.length ? ctx.api.get(api.apiPath`cars/${car.id}/totals`).catch(() => null) : null,
+    ]);
     if (!ctx.alive()) return;
     const stone = (ic, tone, name, text, href) => h('li', { class: 'stone' }, h('span', { class: `item-ic tone-${tone}`, 'aria-hidden': 'true' }, icon(ic)),
       h('span', { class: 'stone-text' }, h('b', null, name), h('span', null, text)), href ? h('a', { class: 'stone-go', href, 'aria-label': `Open: ${name}` }, icon('chevronRight')) : null);
@@ -169,12 +177,12 @@ export async function mount(ctx) {
       if (chg) items.push(stone('bolt', 'teal', `Most charged in a ${WORD[group]}`, `${format(chg.energy_added_kwh, 'energy')} in ${rowName(chg)}`, linkFor('charges', chg)));
     }
     if (car && odo.length) {
-      const total = (await ctx.api.get(api.apiPath`cars/${car.id}/totals`).catch(() => null))?.odometer_last_km;
-      if (!ctx.alive()) return;
+      const total = totals?.odometer_last_km;
       const shown = total != null ? (mi ? total / 1.609344 : total) : null;
       const next = shown != null ? MARKS.find((x) => x > shown) : null;
       if (next) items.push(stone('gauge', 'sun', `Next: ${formatNumber(next)} ${mi ? 'mi' : 'km'}`, `${formatNumber(Math.round(next - shown))} ${mi ? 'mi' : 'km'} to go on the odometer`, null));
     }
+    clear(stoneT);
     stoneT.append(items.length ? h('ul', { class: 'stones' }, items) : emptyTile({ icon: 'flag', title: 'No milestones yet', text: 'Records need drives and charges. Pick a longer period.', w: 2 }),
       note('Firsts and records in this period, worked out from the tiles above.'));
   }
@@ -186,6 +194,8 @@ export async function mount(ctx) {
     paintTotals(rows);
     paintChart(rows);
     rowsBox.replaceChildren(...(rows.length ? rows.map(rowTile) : [emptyTile({ icon: 'calendar', title: 'Nothing in this period', text: 'Pick a longer period above.' })]));
+    // the first time, the page goes in with its tiles filled, so nothing is pushed down when the rows arrive
+    if (!bar.isConnected) ctx.view.replaceChildren(bar, precise, totBox, chartT, rowsHead, rowsBox, odoT, stoneT);
     await Promise.all([paintOdometer(), paintStones(rows)]);
     if (!ctx.alive()) return;
     ctx.ready();

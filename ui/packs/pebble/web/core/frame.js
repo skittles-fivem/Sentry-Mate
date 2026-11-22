@@ -265,8 +265,7 @@ export function mountFrame(opts) {
   buildHead();
   buildMoreSheet();
   buildDock();
-  drawFoot();
-  loadNotices();
+  if (Array.isArray(opts.notices)) { notices = opts.notices; drawNotices(); } else { drawFoot(); loadNotices(); }
   setInterval(refreshAges, 20000);
   api.events((ev) => {
     if (ev.type === 'notice') loadNotices();

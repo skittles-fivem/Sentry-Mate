@@ -205,7 +205,7 @@ html.is-auth .scroller { bottom: 0; }
 .shell { width: var(--grid-w, calc(100% - 2rem)); margin-left: var(--grid-x, 1rem); padding-bottom: var(--s8); }
 .bento {
   display: grid; grid-template-columns: repeat(var(--cols, 4), var(--col, 1fr)); gap: var(--gap, 16px);
-  grid-auto-flow: row dense; align-items: stretch; margin-top: var(--s6);
+  grid-auto-flow: row dense; align-items: stretch; align-content: start; margin-top: var(--s6);
 }
 .w-1 { grid-column: span 1; }
 .w-2 { grid-column: span 2; }
@@ -406,6 +406,8 @@ a.tile { text-decoration: none; }
   display: flex; align-items: center; gap: var(--s1); padding: var(--s1);
   background: var(--card); border: 1px solid var(--edge); border-radius: 999px; box-shadow: var(--shadow-up);
 }
+/* until the frame fills it: an empty dock would show as a sliver, then grow */
+.dock:empty { visibility: hidden; }
 .dock-tabs { display: flex; align-items: center; gap: var(--s1); }
 .dock-pill {
   position: absolute; z-index: 0; top: var(--s1); left: 0; height: var(--h-btn); width: var(--pill-w, 0px); border-radius: 999px;
@@ -578,7 +580,7 @@ html[data-form="phone"] .seg-btn { height: var(--h-btn); }
 
 html.is-auth :is(.head, .notices, .foot, .dock) { display: none; }
 html.is-auth .shell { width: auto; margin: 0; padding: var(--s6) var(--s4); }
-html.is-auth .bento { display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; min-height: calc(100dvh - 2 * var(--s6)); margin: 0; }
+html.is-auth .bento { display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; align-content: center; min-height: calc(100dvh - 2 * var(--s6)); margin: 0; }
 .auth-card {
   display: flex; flex-direction: column; gap: var(--s4); width: round(down, min(25rem, 100%), var(--e)); padding: var(--s8);
   background: var(--card); border: 1px solid var(--edge); border-radius: var(--r-tile); box-shadow: var(--shadow);
@@ -853,7 +855,8 @@ html[data-form="phone"] .notice > .btn-soft { grid-column: 2 / 4; grid-row: 2; j
 html[data-form="phone"] .notice > .btn-ghost { grid-column: 3; grid-row: 1; }
 
 /* phone: the page's own buttons share the title's row, the pills wrap below */
-html[data-form="phone"] .head-main { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--s3); row-gap: 0; margin-top: var(--s3); }
+/* the first row keeps a button's height, so the page's own buttons (set after it loads) do not make the header grow */
+html[data-form="phone"] .head-main { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(var(--h-btn), auto); align-items: center; column-gap: var(--s3); row-gap: 0; margin-top: var(--s3); }
 html[data-form="phone"] .head-text { display: contents; }
 html[data-form="phone"] .page-title { grid-column: 1; grid-row: 1; }
 html[data-form="phone"] .head-actions { grid-column: 2; grid-row: 1; justify-content: flex-end; }

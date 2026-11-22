@@ -171,13 +171,20 @@ export async function mount(ctx) {
     const d = ev.data || {};
     const t = tiles.get(d.car);
     if (!t || !d.now) return;
-    const vv = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : x);
+    // A delta carries only what changed: a { value, at_ms } pair sent as just { at_ms } kept its value.
     const now = { ...t.car.now };
-    for (const k of ['state', 'since_ms', 'at_ms', 'received_ms', 'stale', 'soc_pct', 'range_km', 'ideal_range_km']) if (k in d.now) now[k] = vv(d.now[k]);
-    if (d.now.location && 'place' in d.now.location) now.place = vv(d.now.location.place);
+    const put = (key, x) => {
+      if (x && typeof x === 'object' && !Array.isArray(x)) { if ('value' in x) now[key] = x.value; }
+      else now[key] = x;
+    };
+    for (const k of ['state', 'since_ms', 'at_ms', 'received_ms', 'stale', 'soc_pct', 'range_km', 'ideal_range_km']) if (k in d.now) put(k, d.now[k]);
+    if (d.now.location && 'place' in d.now.location) {
+      const p = d.now.location.place;
+      now.place = p && typeof p === 'object' ? ('value' in p ? p.value : { ...(now.place || {}), ...p }) : p;
+    }
     if (d.now.charge) {
-      if ('plugged' in d.now.charge) now.plugged = vv(d.now.charge.plugged);
-      if ('power_kw' in d.now.charge) now.charge_power_kw = vv(d.now.charge.power_kw);
+      if ('plugged' in d.now.charge) put('plugged', d.now.charge.plugged);
+      if ('power_kw' in d.now.charge) put('charge_power_kw', d.now.charge.power_kw);
     }
     if (now.state !== 'charging') now.charge_power_kw = null;
     t.car.now = now;

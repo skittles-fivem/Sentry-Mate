@@ -66,6 +66,7 @@ let carsCount = null;
 let current = null; // { key, id, ctx, instance, scope, cleanups }
 let token = 0;
 let first = true;
+let shownCar = null; // the car the header shows
 let selfQuery = false;
 
 /** Load a page's own style sheet once (/pages/<id>.css); resolves when it applies. */
@@ -106,12 +107,13 @@ function makeCtx(s, my, scope, cleanups) {
     /** True while this page is still the one on screen. */
     alive: () => my === token,
     /** The first render with data is done: data-ready = page id. A link with #id lands on that part. */
-    ready: () => { if (my === token) { ready(id); if (!jumped) { jumped = true; jumpToHash(); } } },
+    ready: () => { if (my === token) { main().style.minHeight = ''; ready(id); if (!jumped) { jumped = true; jumpToHash(); } } },
     /** The page could not load: its error tile, and data-ready = 'error:<id>'. retry: null hides Try again. */
     fail: (err, { retry = () => remount() } = {}) => {
       if (my !== token || api.isAbort(err)) return;
       console.warn(`page ${id}:`, err);
       main().removeAttribute('aria-busy');
+      main().style.minHeight = '';
       main().replaceChildren(errorTile(err, { retry }));
       failed(id);
     },
@@ -169,6 +171,9 @@ async function mount(s) {
     const modP = MODULES[id]();
     if (!auth) m.replaceChildren(...loadingTiles(id));
     const carP = s.car && !auth ? scope.get(api.apiPath`cars/${s.car}`) : null;
+    // the header gets its car and period pills at once (the car's name follows), so it does not grow under the
+    // loading tiles when the car arrives
+    if (carP && !auth) frame?.update({ page: id, info: ctx.info, car: shownCar && shownCar.id === s.car ? shownCar : { id: s.car, name: '' }, tz: browserZone, period: resolveFor(ctx.info, s, browserZone), carsCount });
     let car = null;
     try { car = carP ? await carP : null; } catch (err) {
       if (err && err.status === 404) state.forgetCar(s.car);
@@ -180,15 +185,24 @@ async function mount(s) {
     ctx.tz = (car && car.time_zone) || browserZone;
     ctx.period = resolveFor(ctx.info, s, ctx.tz);
     ctx.params = ctx.period ? periodParams(ctx.period) : {};
-    if (!auth) frame?.update({ page: id, info: ctx.info, car, tz: ctx.tz, period: ctx.period, carsCount });
+    if (!auth) { frame?.update({ page: id, info: ctx.info, car, tz: ctx.tz, period: ctx.period, carsCount }); shownCar = car; }
     const mod = await modP;
     if (my !== token) return;
     if (mod.shape && !auth) m.replaceChildren(...loadingTiles(mod.shape));
     setTitle(mod.title ? mod.title(ctx) : (ctx.info ? ctx.info.title : id), car ? car.name : null);
     if (mod.css) await pageCss(id);
     if (my !== token) return;
-    m.replaceChildren();
-    const inst = await mod.mount(ctx);
+    // the loading tiles stay until the page puts its own content in (taken away in the same task, before a paint),
+    // so the page does not collapse to nothing while it waits for its data and then grow again
+    // Until the page is ready the view keeps the loading tiles' height, so a page that fills its boxes one by one
+    // does not first shrink to its filter row (the footer coming up) and then grow again.
+    const ghosts = [...m.children];
+    if (ghosts.length) m.style.minHeight = `${m.offsetHeight}px`;
+    const unghost = () => { mo.disconnect(); for (const g of ghosts) if (g.parentNode === m) g.remove(); };
+    const mo = new MutationObserver(unghost);
+    mo.observe(m, { childList: true });
+    let inst;
+    try { inst = await mod.mount(ctx); } finally { if (my === token) { unghost(); m.style.minHeight = ''; } else mo.disconnect(); }
     if (my !== token) { try { inst?.unmount?.(); } catch { /* left */ } return; }
     current.instance = inst || null;
     m.removeAttribute('aria-busy');
@@ -226,7 +240,7 @@ async function onState(s, prev) {
       c.query = { ...s.query };
       c.period = resolveFor(c.info, s, c.tz);
       c.params = c.period ? periodParams(c.period) : {};
-      frame?.update({ page: c.id, info: c.info, car: c.car, tz: c.tz, period: c.period, carsCount });
+      frame?.update({ page: c.id, info: c.info, car: c.car, tz: c.tz, period: c.period, carsCount }); shownCar = c.car;
       unready();
       try { await inst.update(c, { period: true }); } catch (err) { c.fail(err); }
       return;

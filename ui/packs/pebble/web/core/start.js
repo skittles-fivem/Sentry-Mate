@@ -34,13 +34,15 @@ async function start() {
     if (!AUTH_SCREENS.includes(pageNow())) history.replaceState(null, '', `/sign-in?next=${encodeURIComponent(here())}`);
     return startRouter({});
   }
-  const [about, cars] = await Promise.all([
+  // the notices come with the rest, so they are in place before the page and do not push it down later
+  const [about, cars, , notices] = await Promise.all([
     api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     api.page('cars', null, { limit: 1 }).catch(() => null),
     loadPrefs().catch(() => null),
+    api.get('notices').then((r) => r.items || [], () => null),
   ]);
   const carsCount = cars && typeof cars.total === 'number' ? cars.total : null;
-  const frame = mountFrame({ me, about, carsCount });
+  const frame = mountFrame({ me, about, carsCount, notices });
   const ended = () => {
     if (AUTH_SCREENS.includes(pageNow())) return;
     toast('Your session ended. Sign in again to go on.', { kind: 'info', next: true });

@@ -30,12 +30,14 @@ export const shape = [[2, 'h3'], [2, 'h3'], [1, 'h1'], [1, 'h1'], [1, 'h1'], [1,
 export const title = () => 'Car';
 
 const isPair = (x) => x && typeof x === 'object' && !Array.isArray(x) && 'value' in x;
-/** Merge a `now` delta into the object: pairs are replaced whole. */
+/** Merge a `now` delta (only what changed) into the object. A { value, at_ms, sources } pair carries only its changed
+ *  parts: a newer at_ms alone keeps the value, a new value without sources keeps the input. */
 function mergeNow(base, delta) {
   const out = { ...base };
   for (const [k, d] of Object.entries(delta || {})) {
     const b = out[k];
     if (d && typeof d === 'object' && !Array.isArray(d) && !isPair(d) && b && typeof b === 'object' && !Array.isArray(b) && !isPair(b)) out[k] = mergeNow(b, d);
+    else if (d && typeof d === 'object' && !Array.isArray(d) && isPair(b)) out[k] = { ...b, ...d };
     else out[k] = d;
   }
   return out;

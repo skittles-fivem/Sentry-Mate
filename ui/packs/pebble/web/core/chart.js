@@ -20,15 +20,23 @@ import { onTheme } from './prefs.js';
 let loading = null;
 /** Load uPlot (script and style sheet) once. */
 export function loadUplot() {
-  if (window.uPlot) return Promise.resolve(window.uPlot);
   if (!loading) {
-    loading = new Promise((resolve, reject) => {
-      if (!document.querySelector('link[data-uplot]')) document.head.append(h('link', { rel: 'stylesheet', href: '/vendor/uplot/uPlot.min.css', dataset: { uplot: '' } }));
+    // the script and its stylesheet: a chart drawn before the stylesheet applies lays its axes out wrong, and they
+    // jump into place when it arrives, so both must be in first
+    const css = new Promise((resolve) => {
+      let link = document.querySelector('link[data-uplot]');
+      if (link?.sheet) { resolve(); return; }
+      if (!link) { link = h('link', { rel: 'stylesheet', href: '/vendor/uplot/uPlot.min.css', dataset: { uplot: '' } }); document.head.append(link); }
+      link.addEventListener('load', () => resolve(), { once: true });
+      link.addEventListener('error', () => resolve(), { once: true });
+    });
+    const js = new Promise((resolve, reject) => {
       const s = h('script', { src: '/vendor/uplot/uPlot.iife.min.js' });
       s.addEventListener('load', () => resolve(window.uPlot));
       s.addEventListener('error', () => { loading = null; reject(new Error('The chart library did not load.')); });
       document.head.append(s);
     });
+    loading = Promise.all([js, css]).then(([u]) => u);
   }
   return loading;
 }

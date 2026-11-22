@@ -159,6 +159,8 @@ export async function mount(ctx) {
       side: carName(v.car),
     }))) : note('No stop in this period.'));
 
+    // the first time, the page goes in with its tiles filled, so nothing is pushed down when the answers arrive
+    if (!bar.isConnected) ctx.view.replaceChildren(bar, sumBox, mapT, citiesT, daysT, countriesT, regionsT, placesT, stopsT);
     await drawDays();
     await drawMap(tracks, allCities);
   }
@@ -214,7 +216,6 @@ export async function mount(ctx) {
     if (pts.length) map.frame(boundsOf(pts));
   }
 
-  ctx.view.replaceChildren(bar, sumBox, mapT, citiesT, daysT, countriesT, regionsT, placesT, stopsT);
   try { await load(); } catch (err) {
     ctx.view.replaceChildren(bar, emptyTile({ icon: 'globe', title: 'Travel did not load', text: err.message || '' }));
   }

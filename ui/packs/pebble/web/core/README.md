@@ -30,7 +30,7 @@ vendor/        MapLibre GL JS (BSD-3-Clause) and uPlot (MIT), for the map and ch
 | Module | What it does |
 |---|---|
 | `start.js` | Home routing: set-up first, then sign-in (`?next=`), then the page. Loads preferences and starts the frame and the router. |
-| `router.js` | Leaves the old page, shows grey tiles of the page's shape, loads the car and the period, calls `mount(ctx)`. |
+| `router.js` | Leaves the old page, shows grey tiles of the page's shape, loads the car and the period, calls `mount(ctx)`. The grey tiles stay until the page puts its own content in, and the view keeps their height until the page is ready, so a page never collapses and grows again while it loads. |
 | `frame.js` | The page header (brand, account button, title, car pill, date-range pill, page buttons), the dock, the More sheet, notices, footer, offline chip. |
 | `pages.js` | The catalogue: title, dock and sheet label, icon, blurb, purpose, default period, car need. `DOCK` and `SHEET` order the navigation. |
 | `display.js` | Interface size (50 to 200 %), Follow screen size, `--dp`, and the bento grid in whole device pixels. `display.grid`, `display.onGrid(fn)`, `display.onChange(fn)`, `snap(px)`, `scrollToTop()`. |
@@ -111,5 +111,6 @@ States: Driving coral, Charging teal, Parked sky, Asleep muted, Offline bad (`st
 - Mark what does an inventory item with `cover: '<item id>'`; frame items are marked by the frame.
 - `ctx.ready()` once tiles and charts have drawn; `ctx.fail(err)` when the page cannot load.
 - Empty states say why and what to do ("No drives this week"); loading shows grey tiles of the final size.
+- Pages stay still (`ui/tools/check.js --stable`): live `now` events are merged into what is shown (a `{ value, at_ms }` pair sent as only `{ at_ms }` keeps its value), a live reload keeps the old content until the new answers are in, and a page goes in with its tiles already filled where they would push the rest down.
 - Motion (tile press, the dock pill, ring fill, sheets) is off with `prefers-reduced-motion`.
 - No inline styles, `innerHTML`, `fetch` or outside requests; units and dates only through `shared/`.
