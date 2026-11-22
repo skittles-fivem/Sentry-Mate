@@ -4,6 +4,7 @@
 //!   buses are one span, and a span ends where the buses change (the vehicle bus awake with the chassis bus asleep is
 //!   a parked car kept awake).
 //! - **Asleep**: from the last frame of a log closed `quiet` until the next frames.
+//!   The end of the window (the newest data) within [`Params::join_ms`] of a log's last frame is still online.
 //! - **Unknown**: everything else (no log, a log closed for an update or a stop, the time between logs), and always a
 //!   `# not recorded` pause or a hole the caller knows of, even where it would otherwise be asleep. Never sleep.
 
@@ -131,6 +132,8 @@ pub(crate) fn states(
         });
     };
     let (mut cur, mut online_now, mut asleep, mut unknown) = (from_ms, None, 0i64, 0i64);
+    // the online piece that ended last, and when
+    let mut ended: Option<(usize, u64)> = None;
     let mut i = 0;
     while i < events.len() {
         let t = events[i].0;
@@ -142,7 +145,10 @@ pub(crate) fn states(
         while let Some(&(_, ev)) = events.get(i).filter(|(et, _)| *et == t) {
             match ev {
                 Ev::OnlineStart(k) => online_now = Some(k),
-                Ev::OnlineEnd(k) if online_now == Some(k) => online_now = None,
+                Ev::OnlineEnd(k) if online_now == Some(k) => {
+                    online_now = None;
+                    ended = Some((k, t));
+                }
                 Ev::OnlineEnd(_) => {}
                 Ev::AsleepStart => asleep += 1,
                 Ev::AsleepEnd => asleep -= 1,
@@ -153,7 +159,16 @@ pub(crate) fn states(
         }
     }
     if to_ms > cur {
-        push(cur, to_ms, online_now, asleep, unknown);
+        // the window ends (at the newest data) within `join_ms` of the last frames, with nothing saying otherwise: the
+        // car is still online there, as a log that followed this soon would be joined. (Else every window would end in
+        // a sliver of unknown between a log's last frame and its end, and the car's state now would read unknown.)
+        let tail = match ended {
+            Some((k, at)) if online_now.is_none() && asleep == 0 && unknown == 0 && at == cur => {
+                (to_ms - cur <= params.join_ms).then_some(k)
+            }
+            _ => None,
+        };
+        push(cur, to_ms, online_now.or(tail), asleep, unknown);
     }
     spans
 }
