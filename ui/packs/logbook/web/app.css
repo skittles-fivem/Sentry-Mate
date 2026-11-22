@@ -765,6 +765,9 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
 .switcher-sold-toggle .switcher-option-meta { color: var(--ink-2); font-weight: 500; }
 .switcher-sold-mark { justify-self: center; font: 600 var(--small-2) var(--sans); color: var(--ink-3); }
 .tag.tag-sold { background: var(--paper-sunk); color: var(--ink-3); }
+/* A page's own car pick list: the sold cars behind a toggle (core/form.js soldPickRows). */
+.pick-sold { padding: round(0.375rem, var(--e)) round(0.25rem, var(--e)); border-top: 1px solid var(--rule); margin-top: round(0.25rem, var(--e)); }
+.pick-sold .pick-sold-toggle { color: var(--ink-2); }
 .switcher-option-place { color: var(--ink-3); max-width: round(12.5rem, var(--e)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .switcher-list[aria-busy="true"] .switcher-option { opacity: 0.6; }
 .switcher-more { padding: round(0.75rem, var(--e)) round(1.25rem, var(--e)) round(0.375rem, var(--e)); color: var(--ink-3); font: italic 400 0.875rem var(--serif); --LH: normal; line-height: var(--LH); }

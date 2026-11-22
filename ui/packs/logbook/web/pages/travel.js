@@ -27,7 +27,7 @@ import { pageHead, q, figure, icon, empty, errorView, flag, button, sep, loading
 import { sourceMark, sourceLabel, isImported } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
 import { popover } from '../core/dialog.js';
-import { choice } from '../core/form.js';
+import { choice, soldPickRows } from '../core/form.js';
 import { makeMap, boundsOf, coordsText } from '../core/map.js';
 import { zoneLabel, zoneShort } from '../core/format.js';
 import { placeLink } from '../core/journal.js';
@@ -831,6 +831,7 @@ export async function mount(ctx) {
 
 function carPicker(ctx, { fleet, chosen, onapply }) {
   const sel = new Set(chosen);
+  let soldOpen = false;
   const trigger = h('button', { type: 'button', class: 'field-select tv-pick-trigger', id: 'travel-cars', disabled: fleet.length < 2 });
   const search = h('input', { class: 'field-input tv-pick-search', type: 'search', placeholder: 'Find a car', 'aria-label': 'Find a car', autocomplete: 'off' });
   const list = h('ul', { class: 'tv-pick-list' });
@@ -844,12 +845,17 @@ function carPicker(ctx, { fleet, chosen, onapply }) {
     const s = search.value.trim().toLowerCase();
     const found = fleet.filter((c) => !s || String(c.name || '').toLowerCase().includes(s));
     found.sort((a, b) => (sel.has(b.id) - sel.has(a.id)) || compareText(String(a.name || ''), String(b.name || '')));
-    replace(list, found.slice(0, 60).map((c) => {
-      const box = h('input', { type: 'checkbox', id: `tv-car-${c.id}`, checked: sel.has(c.id) });
-      box.addEventListener('change', () => { if (box.checked) sel.add(c.id); else sel.delete(c.id); text(); });
-      return h('li', null, h('label', { class: 'tv-pick-item', for: `tv-car-${c.id}` }, box, h('span', { class: 'tv-pick-name' }, c.name || c.id), h('span', { class: 'tv-pick-sub' }, [c.model, c.year].filter(Boolean).join(' '))));
-    }));
-    more.textContent = !found.length ? 'No car has that name.' : found.length > 60 ? `${formatNumber(found.length - 60)} more; type to narrow the list.` : '';
+    // Sold cars wait behind their own toggle unless ticked or searched for.
+    const { rows, cut } = soldPickRows(found, {
+      chosen: (c) => sel.has(c.id), searching: !!s, open: soldOpen, ontoggle: () => { soldOpen = !soldOpen; draw(); }, max: 60,
+      row: (c) => {
+        const box = h('input', { type: 'checkbox', id: `tv-car-${c.id}`, checked: sel.has(c.id) });
+        box.addEventListener('change', () => { if (box.checked) sel.add(c.id); else sel.delete(c.id); text(); });
+        return h('li', null, h('label', { class: 'tv-pick-item', for: `tv-car-${c.id}` }, box, h('span', { class: 'tv-pick-name' }, c.name || c.id), h('span', { class: 'tv-pick-sub' }, [[c.model, c.year].filter(Boolean).join(' '), state.isSold(c) ? 'Sold' : null].filter(Boolean).join(' · '))));
+      },
+    });
+    replace(list, rows);
+    more.textContent = !found.length ? 'No car has that name.' : cut ? `${formatNumber(cut)} more; type to narrow the list.` : '';
   }
   search.addEventListener('input', draw);
   const panel = h('div', { class: 'pop tv-pick-pop', id: 'travel-cars-menu', role: 'group', 'aria-label': 'Cars', tabindex: '-1' },

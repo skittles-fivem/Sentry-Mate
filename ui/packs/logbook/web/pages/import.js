@@ -28,7 +28,7 @@ import { formatDateTime, formatDate, formatDuration } from '../shared/time.js';
 import { column, timeColumn } from '../shared/csv.js';
 import { pageHead, section, figure, figures, flag, button, icon, empty, errorView, errorWords } from '../core/ui.js';
 import { labelOf } from '../core/sources.js';
-import { choice, field } from '../core/form.js';
+import { choice, field, carOptions } from '../core/form.js';
 import { dataTable } from '../core/table.js';
 import { confirmDialog } from '../core/dialog.js';
 import { zoneShort } from '../core/format.js';
@@ -601,16 +601,19 @@ export async function mount(ctx) {
     paintMatch();
   }
 
+  // The choices for one car of the file: the suggestion first, the other cars here (the sold ones under their
+  // own "Sold cars" group), then a new car or leaving it out.
   function matchOptions(row) {
     const taken = new Set((S.match || []).filter((x) => x.tm_car !== row.tm_car && isCar(x.match)).map((x) => x.match));
-    const opts = [];
-    if (row.match == null) opts.push(['', 'Choose…']);
+    const opt = (v, t) => h('option', { value: v, selected: String(v) === String(row.match ?? '') }, t);
     const sug = row.suggested && carById.get(row.suggested);
-    if (sug) opts.push([sug.id, `${sug.name} (same VIN prefix)`]);
-    for (const c of S.cars) if (c.id !== row.suggested) opts.push([c.id, `${c.name}${taken.has(c.id) ? ' (already matched)' : ''}`]);
-    if (isCar(row.match) && !carById.has(row.match)) opts.push([row.match, row.match]);
-    opts.push(['new', 'Add as a new car'], ['leave_out', 'Leave out']);
-    return opts;
+    return [
+      row.match == null ? opt('', 'Choose…') : null,
+      sug ? opt(sug.id, `${sug.name} (same VIN prefix)`) : null,
+      carOptions(S.cars.filter((c) => c.id !== row.suggested), { option: (c) => opt(c.id, `${c.name}${taken.has(c.id) ? ' (already matched)' : ''}`) }),
+      isCar(row.match) && !carById.has(row.match) ? opt(row.match, row.match) : null,
+      opt('new', 'Add as a new car'), opt('leave_out', 'Leave out'),
+    ];
   }
 
   async function setMatch(row, value, sel) {
@@ -656,7 +659,7 @@ export async function mount(ctx) {
           key: 'match', label: 'Becomes', cls: 'im-match-cell',
           cell: (r) => {
             const sel = h('select', { class: 'field-select im-select', 'aria-label': `Match for ${r.name || r.tm_car}`, disabled: j.status !== 'checking' && j.status !== 'ready' },
-              matchOptions(r).map(([v, t]) => h('option', { value: v, selected: String(v) === String(r.match ?? '') }, t)));
+              matchOptions(r));
             sel.addEventListener('change', () => setMatch(r, sel.value, sel));
             const note = r.match == null ? h('span', { class: 'cell-sub is-warn' }, 'Not matched yet')
               : r.match === 'new' ? h('span', { class: 'cell-sub' }, 'A new car is made with this name and VIN prefix.')

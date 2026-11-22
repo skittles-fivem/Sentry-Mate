@@ -24,7 +24,7 @@ import { pageHead, q, figure, icon, empty, errorView, loadingBlock, flag, button
 import { dataTable } from '../core/table.js';
 import { makeMap, boundsOf } from '../core/map.js';
 import { openDialog, confirmDialog, popover } from '../core/dialog.js';
-import { choice } from '../core/form.js';
+import { choice, soldPickRows } from '../core/form.js';
 import { placeLink } from '../core/journal.js';
 import { SOURCE_FILTER, sourceFilter, SOURCE_WHY, sourceMark, sourceLabel, isImported, isEstimated, ESTIMATED_WHY } from '../core/sources.js';
 import { zoneLabel } from '../core/format.js';
@@ -113,7 +113,7 @@ export async function mount(ctx) {
   // Cars: one opens /cars/{car}/charges; several or all open /charges?cars=.
   const carPick = pickList(ctx, {
     id: 'charges-cars', none: 'Every car', noun: ['car', 'cars'],
-    items: fleet.map((c) => ({ id: c.id, label: c.name, sub: [c.model, c.year].filter(Boolean).join(' ') })),
+    items: fleet.map((c) => ({ id: c.id, label: c.name, sold: state.isSold(c), sub: [[c.model, c.year].filter(Boolean).join(' '), state.isSold(c) ? 'Sold' : null].filter(Boolean).join(' · ') })),
     chosen: fixedCar ? [fixedCar.id] : all ? [] : asked, apply: 'Show these cars',
     onapply: (ids) => {
       const query = queryOf();
@@ -943,6 +943,7 @@ function socBar(a, b) {
  */
 function pickList(ctx, { id, items, chosen, none, noun, onapply, instant = false, apply = 'Apply', failed = false, emptyText = 'Nothing to pick' }) {
   let sel = new Set(chosen);
+  let soldOpen = false;
   const byId = new Map(items.map((x) => [x.id, x]));
   const trigger = h('button', { type: 'button', class: 'field-select ch-pick-trigger', id, disabled: failed || !items.length });
   const search = h('input', { class: 'field-input ch-pick-search', type: 'search', placeholder: `Find a ${noun[0]}`, 'aria-label': `Find a ${noun[0]}`, autocomplete: 'off' });
@@ -961,12 +962,17 @@ function pickList(ctx, { id, items, chosen, none, noun, onapply, instant = false
     const s = search.value.trim().toLowerCase();
     const found = items.filter((x) => !s || x.label.toLowerCase().includes(s));
     found.sort((a, b) => (sel.has(b.id) - sel.has(a.id)) || a.label.localeCompare(b.label));
-    replace(list, found.slice(0, 60).map((x) => {
-      const box = h('input', { type: 'checkbox', id: `${id}-${x.id}`, checked: sel.has(x.id) });
-      box.addEventListener('change', () => { if (box.checked) sel.add(x.id); else sel.delete(x.id); text(); fire(); });
-      return h('li', null, h('label', { class: 'ch-pick-item', for: `${id}-${x.id}` }, box, h('span', { class: 'ch-pick-name' }, x.label), h('span', { class: 'ch-pick-sub' }, x.sub || '')));
-    }));
-    more.textContent = !found.length ? `No ${noun[0]} has that name.` : found.length > 60 ? `${formatNumber(found.length - 60)} more; type to narrow the list.` : '';
+    // Sold cars (items with sold: true) wait behind their own toggle unless ticked or searched for.
+    const { rows, cut } = soldPickRows(found, {
+      chosen: (x) => sel.has(x.id), searching: !!s, open: soldOpen, ontoggle: () => { soldOpen = !soldOpen; draw(); }, max: 60,
+      row: (x) => {
+        const box = h('input', { type: 'checkbox', id: `${id}-${x.id}`, checked: sel.has(x.id) });
+        box.addEventListener('change', () => { if (box.checked) sel.add(x.id); else sel.delete(x.id); text(); fire(); });
+        return h('li', null, h('label', { class: 'ch-pick-item', for: `${id}-${x.id}` }, box, h('span', { class: 'ch-pick-name' }, x.label), h('span', { class: 'ch-pick-sub' }, x.sub || '')));
+      },
+    });
+    replace(list, rows);
+    more.textContent = !found.length ? `No ${noun[0]} has that name.` : cut ? `${formatNumber(cut)} more; type to narrow the list.` : '';
   }
   search.addEventListener('input', draw);
   const panel = h('div', { class: 'pop ch-pick-pop', id: `${id}-menu`, role: 'group', 'aria-label': noun[1], tabindex: '-1' },

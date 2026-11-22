@@ -17,7 +17,7 @@ import { format } from '../shared/units.js';
 import { formatDateTime, DAY } from '../shared/time.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { pageHead, section, figure, figures, chip, flag, pageLink, button, icon, empty, errorView, errorWords, ago } from '../core/ui.js';
-import { field, form, setFieldError, switchField, choice } from '../core/form.js';
+import { field, form, setFieldError, switchField, choice, carOptions } from '../core/form.js';
 import { dataTable } from '../core/table.js';
 import { confirmDialog } from '../core/dialog.js';
 import { teslaPart, showTeslaHash } from './integrations-tesla.js';
@@ -565,7 +565,7 @@ export async function mount(ctx) {
   function paintCarPick() {
     if (!carList.length) { replace(carPickSlot); return; }
     const sel = h('select', { class: 'field-select', id: 'si-car', 'aria-label': 'Car for the preview' },
-      carList.map((c) => h('option', { value: c.id, selected: c.id === carId }, `${c.name} (${c.id})`)));
+      carOptions(carList, { option: (c) => h('option', { value: c.id, selected: c.id === carId }, `${c.name} (${c.id})`) }));
     if (carId && !carOf(carId)) sel.prepend(h('option', { value: carId, selected: true }, carId));
     sel.addEventListener('change', () => pickCar(sel.value));
     let search = null;
