@@ -94,10 +94,18 @@ page that was left cannot change the address any more (`ctx.setQuery` does nothi
 | `link(page, params)` | A link that carries the car and period (`state.linkTo`). |
 | `setQuery(patch)` | Puts filters in the address (`null` removes one) without rebuilding the page. |
 | `navigate(href)`, `reload()` | Go somewhere; build this page again (keeps the scroll). |
+| `refresh()` | Live data changed (a `rows` event): build the page again off screen, in an invisible box of the view's size, and swap it in whole once it is ready, drawn and its requests are done. The page on screen stays until then, so nothing goes away, shows a skeleton and comes back. Asked before the first `ready()`, it waits for it. |
 | `#id` in a link | After the page mounts, the router scrolls to the element with that id in the view (below the top bar): `/cars/c1/charges?…#habits`. Give a section an `id` for links to land on it. |
 
 Live data: `ctx.events('now', (ev) => ...)` gets `now` deltas (`ev.data = { car, now }`, merge field by field);
 `ctx.events('rows', ...)` fires when a drive, charge, parked spell or gap starts or ends (reload the page's lists).
+
+Stillness (the owner's rule, checked by `node ui/tools/check.js --pack instrument --stable`): a page must not jump,
+and nothing may show up, go away and come back, on first load or while live data arrives. So: call `ctx.ready()`
+only after every section has its data and its charts (load uPlot with the data, not after ready); on a `rows` event
+reload tables (`t.reload()` keeps the rows on screen until the new ones are in) or call `ctx.refresh()`, never
+paint skeletons or "loading" again; a part with charts that is drawn again uses `offstage(slot, build)`
+(`core/stage.js`), which builds it off screen and swaps it in at once; reserve the space of text that arrives later.
 Never poll on a timer for data.
 
 ## Core helpers
@@ -128,6 +136,7 @@ const t = dataTable(ctx, {
   onPage: (pg) => paintSummary(pg.summary), note: 'One line that explains the table.', cover: 'drives.table',
 });
 ctx.view.append(t.el); await t.ready;     // t.reload(params), t.setParams(patch), t.setRows(rows), t.rows()
+// t.reload() keeps the rows (or the empty state) on screen until the new first page is in; { quiet: false } shows the skeleton
 ```
 
 An API list is sorted by the server (`sort` is the API's sort name) and paged by cursor with a "Show more" button;
@@ -141,7 +150,7 @@ An API list that should download readable columns instead of the server's file p
 
 `await loadUPlot()` once, then `mountPlot(el, make(width, height) => uPlotOptions, data, ctx, onBuild)`. The box `el`
 is sized by CSS in rem (`.chart { height: 9rem }`); the chart follows it, and is built again when the pixel ratio,
-the Interface size or the theme changes. Helpers for the options: `timeAxis(tz, { show, spanMs })`,
+the Interface size or the theme changes; a chart mounted again into the same box replaces the one there. Helpers for the options: `timeAxis(tz, { show, spanMs })`,
 `valueAxis({ digits, size })`, `colors()` (theme colours now), `areaFill(color)`, `hexA(color, a)`, `chartFont()`,
 `toUnits(values, kind)`. Ready-made: `timeChart(el, ctx, { tz, t_ms, series: [{ label, values, kind, color: '--c-soc', area }], range, sync, zoom(fromMs, toMs), onCursor(i) })`
 and `barChart(el, ctx, { t_ms, values, kind, color, tz, onCursor })`.

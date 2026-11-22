@@ -34,4 +34,11 @@ api.on('events', (info) => { if (info?.state === 'signed_out') sessionEnded(); }
 
 initFrame();
 watchTables();
+// every face of the pack's fonts, loading from the start: a weight first used deep in a page (a bold figure, a
+// mono value) is in before that page says it is ready, so text never re-flows under the reader when it swaps in
+if (document.fonts?.load) {
+  for (const f of ['400 1em "SM Inter"', '500 1em "SM Inter"', '600 1em "SM Inter"', '300 1em "SM Inter Display"',
+    '500 1em "SM Inter Display"', '600 1em "SM Inter Display"', '400 1em "SM JetBrains Mono"']) document.fonts.load(f).catch(() => {});
+}
+
 startRouter();

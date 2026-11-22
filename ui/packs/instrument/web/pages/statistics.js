@@ -297,7 +297,6 @@ export async function mount(ctx) {
     paintTable(rows);
     replace(mileSlot, panel({ title: 'Odometer and mileage', icon: 'odo' }, h('div', { class: 'st-chart-skel' }, skel('block'))));
     replace(milestonesSlot);
-    if (my === 1) ctx.ready();
     const mileage = await loadMileage(my);
     if (my !== gen || !ctx.alive()) return;
     await paintMileage(mileage, my);
@@ -305,7 +304,10 @@ export async function mount(ctx) {
     const longest = await loadLongest(my);
     if (my !== gen || !ctx.alive()) return;
     paintMilestones(rows, mileage, longest);
+    // ready once the odometer and the milestones are in too: nothing grows under the reader after that
+    if (!shown) { shown = true; ctx.ready(); }
   }
+  let shown = false;
 
   // a few requests at a time
   async function eachCar(fn) {
@@ -653,7 +655,8 @@ export async function mount(ctx) {
   /* ---------- live */
   let timer = 0;
   ctx.onCleanup(() => clearTimeout(timer));
-  ctx.events('rows', () => { clearTimeout(timer); timer = setTimeout(() => load(), 1500); });
+  // a drive or charge started or ended: the page is built again off screen and swapped in whole (no skeletons)
+  ctx.events('rows', () => { clearTimeout(timer); timer = setTimeout(() => ctx.refresh(), 1500); });
 
   await load();
 }

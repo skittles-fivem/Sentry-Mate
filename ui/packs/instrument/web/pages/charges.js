@@ -842,7 +842,8 @@ export async function mount(ctx) {
     if (ev.data?.car && !viewCars.includes(ev.data.car)) return;
     if (ev.data?.kinds && !ev.data.kinds.includes('charges')) return;
     clearTimeout(rowsTimer);
-    rowsTimer = setTimeout(() => { if (!ctx.alive()) return; table.reload(listParams()); incomplete.reload(); loadStats(); }, 2000);
+    // the page is built again off screen and swapped in whole: the statistics redraw panel by panel, maps and charts included
+    rowsTimer = setTimeout(() => { if (ctx.alive()) ctx.refresh(); }, 2000);
   });
   ctx.onCleanup(() => clearTimeout(rowsTimer));
 

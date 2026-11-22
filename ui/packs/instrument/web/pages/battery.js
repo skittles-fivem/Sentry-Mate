@@ -226,7 +226,6 @@ export async function mount(ctx) {
       periodBtn(['cl.filter.time_range', 'pr.filter.time_range', 'vd.filter.time_range']),
       h('span', { class: 'faint' }, `Times in the car’s zone. Shaded blue: asleep (the battery holds). Grey: unknown, no log.`)),
     clPanel, prPanel, vdSlot));
-  ctx.ready();
 
   await loadUPlot().catch(() => null);
   if (!ctx.alive()) return;
@@ -237,6 +236,8 @@ export async function mount(ctx) {
     paintProjected().catch((e) => replace(prSlot, errorState(e, { compact: true, home: false, retry: () => paintProjected() }))),
     paintParked(),
   ]);
+  // ready once every section has its data: the charts and the parked list are part of the first render
+  if (ctx.alive()) ctx.ready();
   return {};
 
   /* ================================================================ sections */

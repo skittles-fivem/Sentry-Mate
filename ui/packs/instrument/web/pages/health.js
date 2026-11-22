@@ -448,6 +448,8 @@ async function mountCar(ctx) {
       empty: () => emptyState({ icon: 'calendar', title: 'No stored days yet', text: 'A day shows here once a log for it has arrived.' }),
     });
     replace(storageSlot, kt.el, days.el);
+    // the days list is part of the first render (the page does not grow under the reader after ready)
+    await days.ready;
   }
 
   /* ---------- signals */

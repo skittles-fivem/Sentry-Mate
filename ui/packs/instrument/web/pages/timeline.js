@@ -286,6 +286,6 @@ export async function mount(ctx) {
 
   ctx.events('now', (ev) => { if (ev.data?.car !== cid || !ev.data.now) return; Object.assign(live, ev.data.now); paintNow(); });
   let rt = 0;
-  ctx.events('rows', (ev) => { if (ev.data?.car !== cid) return; clearTimeout(rt); rt = setTimeout(() => { if (ctx.alive()) ctx.reload(); }, 2000); });
+  ctx.events('rows', (ev) => { if (ev.data?.car !== cid) return; clearTimeout(rt); rt = setTimeout(() => { if (ctx.alive()) ctx.refresh(); }, 2000); });
   ctx.onCleanup(() => clearTimeout(rt));
 }

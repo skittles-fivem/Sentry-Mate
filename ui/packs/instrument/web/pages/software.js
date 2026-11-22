@@ -327,7 +327,8 @@ export async function mount(ctx) {
     fleetTable.reload(null, { quiet: true });
   });
 
-  await table.ready;
+  // both lists are part of the first render: the page does not change height once it says it is ready
+  await Promise.all([table.ready, fleetTable.ready]);
   if (!ctx.alive()) return;
   if (!painted) paintSummary(null, []);
   ctx.ready();

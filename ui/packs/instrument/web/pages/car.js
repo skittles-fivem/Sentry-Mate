@@ -14,6 +14,7 @@ import { pageHead, panel, panelLink, metric, kv, csvButton } from '../core/page.
 import { statePill, stateLabel, ago, agoEl, when, dur, val, TYRES } from '../core/fmt.js';
 import { timelineRow } from './timeline.js';
 import { createMap, carMarker, addRoute, padClear, mapFallback } from '../core/map.js';
+import { offstage } from '../core/stage.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA } from '../core/chart.js';
 import { activityStrip } from '../core/strip.js';
 import { openCarSwitcher } from '../core/carswitch.js';
@@ -524,7 +525,9 @@ export async function mount(ctx) {
     const chgLegend = h('div', { class: 'legend', role: 'group', 'aria-label': 'Charging chart series' });
     const curveNote = h('p', { class: 'note' });
 
-    replace(windowSlot,
+    // drawn off screen and swapped in whole, charts included: a live update never empties the period first
+    await offstage(windowSlot, async (slot) => {
+    replace(slot,
       h('div', { class: 'window-head', cover: ['overview.control.refresh'] },
         h('h2', { class: 'section-title' }, 'The period'), periodBtn,
         h('span', { class: 'faint' }, 'Updates by itself when a drive, charge or parked spell starts or ends.')),
@@ -546,6 +549,7 @@ export async function mount(ctx) {
     if (!ctx.alive()) return;
     batteryChart(battEl, battLegend, series, rk, from, to);
     await chargingChart(chgEl, supEl, chgLegend, curveNote, charges.items.filter((c) => (c.end_ms ?? to) > from), from, to);
+    });
   }
 
   // a legend whose entries show and hide their series, with the value at the cursor

@@ -37,7 +37,7 @@ export function dataTable(ctx, opts) {
   let params = { ...(opts.params || {}) };
   let sort = opts.sort ? { ...opts.sort } : null;
   let pager = null, loaded = [], done = false, total = null, busy = false, gen = 0;
-  let fresh = false, freshQuiet = false, prevPager = null;
+  let fresh = false, freshQuiet = false, prevPager = null, answered = false;
 
   const count = h('span', { class: 'tbl-count', 'aria-live': 'polite' });
   const csvSlot = h('span', { class: 'tbl-csv' });
@@ -160,11 +160,12 @@ export function dataTable(ctx, opts) {
     setCsv();
   }
 
-  // quiet (live refreshes): the rows on screen stay until the new first page arrives, with no skeleton
+  // quiet (live refreshes, the default once the table has had an answer): the rows (or the empty state) on
+  // screen stay until the new first page arrives, with no skeleton
   async function load(quiet = false) {
     const my = ++gen;
     busy = false; // an earlier load still under way must not block this one
-    fresh = true; freshQuiet = quiet && loaded.length > 0;
+    fresh = true; freshQuiet = quiet && answered;
     if (!freshQuiet) {
       loaded = []; done = false; total = null;
       replace(tbody, skeleton());
@@ -188,6 +189,7 @@ export function dataTable(ctx, opts) {
       if (fresh) { fresh = false; loaded = []; total = null; tbody.replaceChildren(); if (freshQuiet) setCsv(); }
       loaded.push(...items);
       tbody.append(...items.map(rowEl));
+      answered = true;
       done = !pg.next;
       if (pg.total != null) total = pg.total;
       if (!loaded.length) replace(tbody, emptyRow(opts.empty ? opts.empty(pg) : h('div', { class: 'empty' }, h('h3', null, 'Nothing in this period'))));
@@ -215,8 +217,9 @@ export function dataTable(ctx, opts) {
     el,
     /** Resolves when the first page has been drawn. */
     ready,
-    /** Load again from the first page, with new filters if given; { quiet: true } keeps the rows on screen until the new ones arrive. */
-    reload(p, o = {}) { if (p) params = { ...p }; if (opts.rows) renderLocal(); else return load(!!o.quiet); return Promise.resolve(); },
+    /** Load again from the first page, with new filters if given. The rows on screen stay until the new ones
+     * arrive (no skeleton, nothing jumps); { quiet: false } shows the skeleton instead. */
+    reload(p, o = {}) { if (p) params = { ...p }; if (opts.rows) renderLocal(); else return load(o.quiet !== false); return Promise.resolve(); },
     /** Set the order shown in the header ({ key, dir } or null) without loading; reload() follows. */
     setSortKey(next) { sort = next ? { ...next } : null; head(); },
     /** Change some filters (null removes one) and load again. */

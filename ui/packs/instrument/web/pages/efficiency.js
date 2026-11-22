@@ -131,9 +131,8 @@ export async function mount(ctx) {
   paintFactor(eff);
   paintByTemp(eff);
   paintTempSummary();
-  ctx.ready();
 
-  paintCarsPicker();
+  const picker = paintCarsPicker();
   if (opt.group != null) paintGroup(eff);
   const sync = `temps-${cid}`;
   await loadUPlot().catch(() => null);
@@ -143,7 +142,10 @@ export async function mount(ctx) {
     paintHistory().catch((e) => replace(tHistSlot, errorState(e, { compact: true, home: false, retry: () => paintHistory() }))),
     paintCharges().catch((e) => replace(tChgSlot, errorState(e, { compact: true, home: false, retry: () => paintCharges() }))),
     paintDaily(),
+    picker,
   ]);
+  // ready once every section has its data: the charts and the car picker are part of the first render
+  if (ctx.alive()) ctx.ready();
   return {};
 
   /* ================================================================ efficiency */

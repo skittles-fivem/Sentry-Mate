@@ -110,6 +110,8 @@ export async function mount(ctx) {
       live ? null : driveAfterOf(ctx, cid, t1),
     ]),
     dc ? ctx.api.get(`cars/${encodeURIComponent(cid)}/charging-stats/dc-curve`, { from_ms: t0 - 365 * DAY, to_ms: t1 + 1 }).catch(() => null) : null,
+    // uPlot loads with the data, so the charts are drawn with the page (their space never opens up later)
+    loadUPlot(),
   ]);
   if (!ctx.alive()) return;
 
@@ -117,7 +119,7 @@ export async function mount(ctx) {
   const when = `${formatDate(t0, tz, { year: false })}, ${formatTime(t0, tz)}`;
   ctx.setTitle(`Charge ${when}`);
   ctx.setCrumbs([{ label: 'All cars', href: '/' }, { label: car.name, href: ctx.link('car') }, { label: 'Charges', href: ctx.link('charges') }, { label: when }]);
-  if (live) ctx.events('rows', (ev) => { if (ev.data?.car === cid && (ev.data.kinds || []).includes('charges')) ctx.reload(); });
+  if (live) ctx.events('rows', (ev) => { if (ev.data?.car === cid && (ev.data.kinds || []).includes('charges')) ctx.refresh(); });
 
   const driveBefore = around[0]?.items?.[0]?.ref?.drive || null;
   const driveAfter = around[1] || null;
@@ -308,17 +310,20 @@ export async function mount(ctx) {
     h('div', { hidden: true, cover: 'web.charge-cost.not-found' }, emptyState({ title: 'No such charge', text: 'A charge number that does not exist, or one of a car your account may not see, gives this same answer.' }))));
   await breakdown.ready;
   if (!ctx.alive()) return;
-  ctx.ready();
-  // ?edit=cost (the cost cell of the charges list): go straight to the cost editor
-  // (on the next frame: the router puts a new page at the top once mount returns)
-  if (ctx.query?.edit === 'cost') {
-    requestAnimationFrame(() => {
-      if (!ctx.alive()) return;
-      const sec = ctx.view.querySelector('#cost');
-      sec?.scrollIntoView({ block: 'start' });
-      sec?.querySelector('.cost-edit input, .cost-edit select, .cost-edit button')?.focus({ preventScroll: true });
-    });
-  }
+  // ready once the charts are in too (below)
+  const shown = () => {
+    ctx.ready();
+    // ?edit=cost (the cost cell of the charges list): go straight to the cost editor
+    // (on the next frame: the router puts a new page at the top once mount returns)
+    if (ctx.query?.edit === 'cost') {
+      requestAnimationFrame(() => {
+        if (!ctx.alive()) return;
+        const sec = ctx.view.querySelector('#cost');
+        sec?.scrollIntoView({ block: 'start' });
+        sec?.querySelector('.cost-edit input, .cost-edit select, .cost-edit button')?.focus({ preventScroll: true });
+      });
+    }
+  };
 
   /* ---------- the map */
   (async () => {
@@ -340,10 +345,9 @@ export async function mount(ctx) {
     for (const id2 of ['cd.chart.soc', 'cd.chart.power', 'cd.chart.range', 'cd.chart.outdoor_temp', 'cd.chart.battery_heater']) cover(chargeHost, id2);
     for (const id2 of ['cd.chart.ac_voltage', 'cd.chart.ac_current', 'cd.chart.pilot_current', 'cd.chart.phases']) cover(supplyHost, id2);
     selBox.append(h('span', { class: 'selection-title' }, 'Nothing to zoom: no curve'));
+    shown();
     return;
   }
-  await loadUPlot();
-  if (!ctx.alive()) return;
   const x = t.map((ms) => ms / 1000);
   const V = (f, kind) => col(f).map((v) => (v == null || typeof v !== 'number' ? null : kind ? convert(v, kind) : v));
   const known = (f) => col(f).some((v) => v != null);
@@ -393,6 +397,7 @@ export async function mount(ctx) {
     return { df, target, valEl };
   });
   const idle = () => { for (const b of blocks) b.valEl.textContent = ''; };
+  shown();
 
   function paintSelection() {
     const [a, b] = zoom;

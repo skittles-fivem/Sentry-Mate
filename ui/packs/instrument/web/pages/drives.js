@@ -406,7 +406,7 @@ export async function mount(ctx) {
   ctx.events('rows', (ev) => {
     if (ev.data?.car && ev.data.car !== cid) return;
     clearTimeout(rowsTimer);
-    rowsTimer = setTimeout(() => { if (!ctx.alive()) return; paintSummary(null, 'loading'); table.reload(apiParams()); incomplete.reload(); loadPatterns(); }, 2000);
+    rowsTimer = setTimeout(() => { if (!ctx.alive()) return; table.reload(apiParams()); incomplete.reload(); loadPatterns(); }, 2000);
   });
   ctx.onCleanup(() => clearTimeout(rowsTimer));
 

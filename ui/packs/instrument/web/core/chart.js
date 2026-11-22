@@ -56,6 +56,8 @@ export const colors = () => ({
  */
 export function mountPlot(target, make, data, ctx, onBuild = null) {
   const uPlot = window.uPlot;
+  // a chart drawn again into the same box (a live refresh) takes the old one's place, never a second one under it
+  target.__smPlot?.destroy();
   let u = null, later = 0, cur = data;
   const box = () => ({ width: Math.max(10, Math.floor(target.clientWidth)), height: Math.max(10, Math.floor(target.clientHeight)) });
   const cursorAt = () => (u && u.cursor.idx != null && u.cursor.left >= 0 ? { x: u.posToVal(u.cursor.left, 'x'), fy: u.cursor.top / Math.max(1, u.over.clientHeight) } : null);
@@ -81,8 +83,11 @@ export function mountPlot(target, make, data, ctx, onBuild = null) {
     else { clearTimeout(later); later = setTimeout(build, 150); }
   });
   const offTheme = onTheme(() => build());
-  ctx.onCleanup(() => { clearTimeout(later); ro.disconnect(); off(); offTheme(); u?.destroy(); u = null; });
-  return { get u() { return u; }, setData(d) { cur = d; u?.setData(d); }, rebuild: build };
+  const destroy = () => { clearTimeout(later); ro.disconnect(); off(); offTheme(); u?.destroy(); u = null; if (target.__smPlot === plot) delete target.__smPlot; };
+  ctx.onCleanup(destroy);
+  const plot = { get u() { return u; }, setData(d) { cur = d; u?.setData(d); }, rebuild: build, destroy };
+  target.__smPlot = plot;
+  return plot;
 }
 
 /** Time ticks that read as whole minutes and hours (seconds). */

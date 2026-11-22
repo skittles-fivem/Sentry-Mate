@@ -348,7 +348,10 @@ export async function mount(ctx) {
     if (!box || typeof ResizeObserver !== 'function') continue;
     const hint = h('p', { class: 'trip-scroll-hint', hidden: true }, icon('chev-r', 'ico--sm'), 'More columns to the right: scroll the table sideways');
     box.before(hint);
-    const ro = new ResizeObserver(() => { hint.hidden = box.scrollWidth <= box.clientWidth + 1; });
+    // measured now, before ready, so the hint is there with the first paint (not a line that pushes the table later)
+    const fits = () => { hint.hidden = box.scrollWidth <= box.clientWidth + 1; };
+    fits();
+    const ro = new ResizeObserver(fits);
     ro.observe(box);
     ctx.onCleanup(() => ro.disconnect());
   }
@@ -362,7 +365,7 @@ export async function mount(ctx) {
       if (ev.data?.car !== cid && ev.data?.car !== vsId) return;
       if (!(ev.data.kinds || []).some((k) => k === 'drives' || k === 'charges')) return;
       clearTimeout(t);
-      t = setTimeout(() => { if (ctx.alive()) ctx.reload(); }, 1500);
+      t = setTimeout(() => { if (ctx.alive()) ctx.refresh(); }, 1500);
     });
     ctx.onCleanup(() => clearTimeout(t));
   }

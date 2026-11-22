@@ -515,7 +515,7 @@ export async function mount(ctx) {
     const d = ev.data || {};
     if (d.car && !viewCars.includes(d.car)) return;
     if (d.kinds && !d.kinds.some((k) => k === 'visits' || k === 'drives' || k === 'charges')) return;
-    clearTimeout(liveTimer); liveTimer = setTimeout(() => ctx.reload(), 1500);
+    clearTimeout(liveTimer); liveTimer = setTimeout(() => ctx.refresh(), 1500);
   });
   ctx.onCleanup(() => clearTimeout(liveTimer));
 

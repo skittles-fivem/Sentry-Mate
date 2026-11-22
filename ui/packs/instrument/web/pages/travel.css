@@ -53,6 +53,11 @@
 .tv-map-head { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); padding: round(0.875rem, var(--e)) round(1.25rem, var(--e)); border-bottom: 1px solid var(--line); }
 .tv-map-head .panel-title { margin-right: auto; }
 .tv-route-read { font-size: max(0.78125rem, var(--fs-floor)); }
+/* on a narrow screen the route line has a row of its own under the title and buttons, there before the route
+   loads, so filling it in never pushes the map down */
+@container page (max-width: 50rem) {
+  .tv-route-read { order: 9; flex-basis: 100%; min-height: var(--LH); }
+}
 .tv-map-box { position: relative; flex: 1 1 auto; min-height: round(34rem, var(--e)); }
 .tv-legend { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-2); max-width: round(16rem, var(--e)); }
 .tv-legend b { color: var(--text); font-weight: 600; }

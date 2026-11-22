@@ -63,9 +63,11 @@ export async function mount(ctx) {
   const ideal = getUnits().range === 'ideal';
   const rk = ideal ? 'ideal_range_km' : 'range_km';
   const fields = ['speed_kph', 'power_kw', 'soc_pct', 'usable_soc_pct', rk, 'energy_remaining_kwh', 'elevation_m', 'outside_c', 'cabin_c', 'setpoint_left_c', 'setpoint_right_c', 'odometer_km', 'tyre_fl_kpa', 'tyre_fr_kpa', 'tyre_rl_kpa', 'tyre_rr_kpa', 'lat', 'lon', 'accuracy_m', 'battery_heat_kw', 'climate', 'fan_level'];
+  // uPlot loads with the data, so the charts are drawn with the page (their space never opens up later)
   const [series, track] = await Promise.all([
     ctx.api.get(`cars/${encodeURIComponent(cid)}/series`, { fields: fields.join(','), from_ms: t0, to_ms: t1 + 1000, max_points: 3600 }),
     ctx.api.get(`${base}/track`, { extensions: 'speed,power' }).catch(() => null),
+    loadUPlot(),
   ]);
   if (!ctx.alive()) return;
   // Sentry Mate's own range estimate: the energy left divided by the consumption of the 30 days before the drive
@@ -74,7 +76,7 @@ export async function mount(ctx) {
   let repaintSel = null;
   // a drive still going: build again when it ends, and keep the 'so far' figures moving meanwhile
   if (live) {
-    ctx.events('rows', (ev) => { if (ev.data?.car === cid && (ev.data.kinds || []).includes('drives')) ctx.reload(); });
+    ctx.events('rows', (ev) => { if (ev.data?.car === cid && (ev.data.kinds || []).includes('drives')) ctx.refresh(); });
     ctx.events('now', (ev) => {
       const dr = ev.data?.car === cid ? ev.data.now?.drive : null;
       if (!dr || (dr.drive_id != null && dr.drive_id !== did)) return;
@@ -193,7 +195,6 @@ export async function mount(ctx) {
       panel({ title: 'Export the route', icon: 'download' },
         h('p', { class: 'note' }, 'Every second of the route with its time, elevation and GPS accuracy, for map apps and route planners.'),
         h('div', { class: 'row' }, gpxA, geoA), extras))));
-  ctx.ready();
 
   /* ---------- the map */
   const coords = [];
@@ -258,8 +259,6 @@ export async function mount(ctx) {
   }
 
   /* ---------- the charts */
-  await loadUPlot();
-  if (!ctx.alive()) return;
   const x = series.t_ms.map((t) => t / 1000);
   const V = (f, kind) => (series.values[f] || []).map((v) => (v == null || typeof v !== 'number' ? null : kind ? convert(v, kind) : v));
   const raw = (f) => series.values[f] || [];
@@ -313,6 +312,7 @@ export async function mount(ctx) {
     return { df, block, target, valEl };
   });
   replace(chartsHost, blocks.map((b) => b.block));
+  ctx.ready();
   const idle = () => blocks.forEach(({ df, valEl }) => { valEl.textContent = ''; });
   idle();
 
