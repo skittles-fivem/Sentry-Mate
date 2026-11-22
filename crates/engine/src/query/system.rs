@@ -933,7 +933,6 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
     }
     // the day records of the period, one at a time (a log's data spills a day either side of its start's day)
     let mut dropped = Newest::new();
-    let mut failed = false;
     let (lo, hi) = (records::day_of(a).saturating_sub(1), records::day_of(b.saturating_sub(1).max(a)));
     for &d in meta.days.range(lo..=hi) {
         let mut day: Vec<(u64, String, records::LogEntry)> = records::day(db, car, d)?
@@ -964,7 +963,7 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
                     }
                 }
             }
-            failed |= en.status == "failed" && !en.usable;
+            // (a log that failed earlier shows as unknown time; only the newest judged log raises trust_failed)
         }
     }
     let last_trust = last_judged(e, car, &meta)?;
@@ -989,7 +988,7 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
     if last_seen.is_none_or(|t| now.saturating_sub(t) > 24 * super::now::STALE_MS) {
         reasons.push("upload_silence");
     }
-    if failed || last_trust.as_ref().is_some_and(|t| t.result == "failed") {
+    if last_trust.as_ref().is_some_and(|t| t.result == "failed") {
         reasons.push("trust_failed");
     }
     if waiting > 0 {
