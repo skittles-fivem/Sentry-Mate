@@ -724,8 +724,7 @@ async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Valu
         }),
         json!({ "purpose": "geonames_download", "host": geonames, "enabled": false, "last_used_ms": null }),
         json!({ "purpose": "mqtt", "host": (!mqtt_host.is_empty()).then_some(mqtt_host), "enabled": m.settings.enabled, "last_used_ms": mqtt_used }),
-        // no release check exists in this server yet (`/settings` refuses turning it on)
-        json!({ "purpose": "release_check", "host": null, "enabled": false, "last_used_ms": null }),
+        super::release::network_row(&app),
     ];
     outbound.extend(tesla);
     outbound.extend(teslafi);

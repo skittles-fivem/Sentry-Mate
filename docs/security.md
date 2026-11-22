@@ -288,6 +288,29 @@ and optionally its PostgreSQL database to catch up on what MQTT missed.
 - Data from TeslaMate is not signed like SMO's logs. Every value says where it came from (`teslamate_local`, "Data
   from local TeslaMate"); SMO's, the Tesla API's and TeslaFi's data win over it where they cover the same time.
 
+## The release check
+
+The server can tell its admins when a newer image is published (Settings → Display and units, "Check for new
+releases"). It only says so: it never pulls, downloads or installs anything; updating stays `docker compose pull`.
+
+- **Off by default; an admin's switch.** Until it is on, the server makes no connection and no DNS lookup for it.
+  Turning it off stops it and drops what it learnt.
+- **When:** once at the switch (and at each start while on), then once a day, 24 hours after the last check (later
+  when GitHub's rate limit says to wait: no request goes before the time GitHub gave), and when an admin presses
+  "Check now".
+- **Only GitHub's API host, over TLS.** `api.github.com` on port 443, fixed in the program, with rustls and the
+  public web roots (TLS 1.3, or 1.2 if GitHub's edge offers only that); plain `http://` is never used, redirects are
+  never followed, answers are read up to 16 MB. Through the owner's HTTP proxy only when one is set in Settings
+  (`outbound.proxy`).
+- **What is sent, and nothing else:** `GET /repos/skittles-fivem/Sentry-Mate/actions/workflows/image.yml/runs?branch=main&status=success&per_page=1`
+  (the newest published image) and, when that is not this build,
+  `GET /repos/skittles-fivem/Sentry-Mate/compare/<this build's commit>...<the newest's commit>` (what changed),
+  with the headers `User-Agent: sentry-mate`, `Accept: application/vnd.github+json`, `X-GitHub-Api-Version` and
+  `If-None-Match` (the ETag of the last answer). No token, no cookie, no body, and no id of the server, a car or an
+  account. GitHub sees the server's (or the proxy's) address and this build's commit, which is public. A local build
+  (no commit) asks nothing.
+- `/network` lists it (`release_check`, `api.github.com`, on or off, last used).
+
 ## No way back without a backup
 
 This version writes growing files in a newer format (format 2) as soon as it opens them to add to, from its first

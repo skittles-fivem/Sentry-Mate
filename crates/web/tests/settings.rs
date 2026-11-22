@@ -520,6 +520,11 @@ async fn network() {
     let row = |p: &str| out.iter().find(|o| o["purpose"] == p).unwrap().clone();
     assert_eq!(row("geocoding")["enabled"], false, "address lookup is offline by default");
     assert_eq!(
+        row("release_check"),
+        json!({ "purpose": "release_check", "host": "api.github.com", "enabled": false, "last_used_ms": null }),
+        "the release check is off by default"
+    );
+    assert_eq!(
         row("tiles"),
         json!({ "purpose": "tiles", "host": null, "hosts": [], "preset": "satellite", "enabled": false, "last_used_ms": null }),
         "tiles are offline by default"
@@ -615,7 +620,7 @@ async fn turning_mqtt_on_connects() {
 }
 
 /// `host_names`: an empty list means the running certificate's names (so what GET answers can always be sent back),
-/// IPv6 addresses are names too; the release check (none exists yet) stays off; and the frame follows the settings in
+/// IPv6 addresses are names too; the release check saves (and checks at once); and the frame follows the settings in
 /// the order they were saved, however close together two changes come.
 #[tokio::test(flavor = "multi_thread")]
 async fn host_names_release_check_and_changes_close_together() {
@@ -643,12 +648,32 @@ async fn host_names_release_check_and_changes_close_together() {
     let r = admin.patch("/api/v1/settings", json!({ "version": v + 3, "host_names": many })).await;
     assert_eq!((r.status, fields(&r).get("host_names").is_some()), (422, true), "{}", r.text());
 
-    // the release check: no such check exists, so it can't be turned on, and /network never lists it on
+    // the release check: turning it on saves, /network lists it on (GitHub's API host), and it checks at once (this
+    // test's build is a dev build: nothing to compare, no request)
     let r = admin.patch("/api/v1/settings", json!({ "version": v + 3, "release_check": { "enabled": true } })).await;
-    assert_eq!((r.status, fields(&r).get("release_check.enabled").is_some()), (422, true), "{}", r.text());
-    let r = admin.patch("/api/v1/settings", json!({ "version": v + 3, "release_check": { "enabled": false } })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["release_check"], json!({ "enabled": true }));
+    assert_eq!(ok(&mut admin, "/api/v1/settings").await["release_check"], json!({ "enabled": true }));
+    let n = ok(&mut admin, "/api/v1/network").await;
+    let rc = n["outbound"].as_array().unwrap().iter().find(|o| o["purpose"] == "release_check").unwrap().clone();
+    assert_eq!((rc["host"].clone(), rc["enabled"].clone()), (json!("api.github.com"), json!(true)));
+    let mut rel = Value::Null;
+    for _ in 0..100 {
+        rel = ok(&mut admin, "/api/v1/release").await;
+        if rel["status"] == "error" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!((rel["status"].clone(), rel["error"]["code"].clone()), (json!("error"), json!("dev_build")), "{rel}");
+    let r = admin.patch("/api/v1/settings", json!({ "version": v + 4, "release_check": { "enabled": false } })).await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["release_check"], json!({ "enabled": false }));
+    let rel = ok(&mut admin, "/api/v1/release").await;
+    assert_eq!(
+        (rel["status"].clone(), rel["error"].clone(), rel["next_ms"].clone()),
+        (json!("off"), Value::Null, Value::Null)
+    );
     let n = ok(&mut admin, "/api/v1/network").await;
     let rc = n["outbound"].as_array().unwrap().iter().find(|o| o["purpose"] == "release_check").unwrap().clone();
     assert_eq!(rc["enabled"], false);
@@ -1038,4 +1063,122 @@ async fn a_new_certificate() {
     maker.own.store(false, std::sync::atomic::Ordering::Relaxed);
     let r = admin.post(path, json!({ "password": pw })).await;
     assert_eq!(r.status, 200, "after the move code is cancelled: {}", r.text());
+}
+
+// ---- the release check, against a stand-in for GitHub's API (never the network)
+
+const THIS_BUILD: &str = "1111111aaaabbbbccccddddeeeeffff000011112";
+const NEWEST_BUILD: &str = "abc1234aaaabbbbccccddddeeeeffff000011112";
+
+/// `/release` and `/release/check`: off by default (and "Check now" refused while off), turning it on checks at once,
+/// a newer build with its titles, the admins' `release_available` notice, `/about` `build`, `/network`'s row.
+#[tokio::test(flavor = "multi_thread")]
+async fn release_check_against_a_fake_github() {
+    let fake = Arc::new(web::testkit::FakeGitHub::default());
+    fake.answer(
+        "/repos/skittles-fivem/Sentry-Mate/actions/workflows/image.yml/runs?branch=main&status=success&per_page=1",
+        json!({ "total_count": 1, "workflow_runs": [
+            { "head_sha": NEWEST_BUILD, "run_number": 57, "updated_at": "2026-11-24T10:00:00Z" } ] }),
+    );
+    fake.answer(
+        &format!("/repos/skittles-fivem/Sentry-Mate/compare/{THIS_BUILD}...{NEWEST_BUILD}"),
+        json!({ "status": "ahead", "ahead_by": 2, "behind_by": 0, "commits": [
+            { "commit": { "message": "A made-up first change\n\nbody" } },
+            { "commit": { "message": "A made-up second change" } } ] }),
+    );
+    let build = release::Build::from_parts("0.1.0", Some("12"), Some(THIS_BUILD), Some("2026-11-22T08:00:00Z"));
+    let f2 = fake.clone();
+    let t = seeded_cars(0, move |b, _, _| b.release_check(f2, build)).await;
+    let mut admin = t.s.admin().await;
+    let mut watch = t.s.watch(&mut admin, &[]).await;
+
+    let r = ok(&mut watch, "/api/v1/release").await;
+    assert_eq!(
+        (r["enabled"].clone(), r["status"].clone(), r["newest"].clone()),
+        (json!(false), json!("off"), Value::Null)
+    );
+    assert_eq!(
+        r["current"],
+        json!({ "commit": THIS_BUILD, "short": "1111111", "built_ms": 1_795_334_400_000u64, "number": 12 })
+    );
+    assert_eq!(r["pull"], "docker compose pull && docker compose up -d");
+    assert_eq!(r["image"], "ghcr.io/skittles-fivem/sentry-mate:latest");
+    let r = admin.post("/api/v1/release/check", json!({})).await;
+    assert_eq!((r.status, r.code()), (409, Some("release_check_off".into())), "{}", r.text());
+    assert_eq!(watch.post("/api/v1/release/check", json!({})).await.status, 403);
+    assert!(fake.asked().is_empty(), "nothing asked while off");
+
+    let a = ok(&mut watch, "/api/v1/about").await;
+    assert_eq!(
+        a["build"],
+        json!({ "version": "0.1.0", "number": 12, "commit": THIS_BUILD, "short": "1111111",
+                "built_ms": 1_795_334_400_000u64, "dev": false })
+    );
+
+    // on: a check at once
+    let v = ok(&mut admin, "/api/v1/settings").await["version"].as_u64().unwrap();
+    let r = admin.patch("/api/v1/settings", json!({ "version": v, "release_check": { "enabled": true } })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let mut rel = Value::Null;
+    for _ in 0..200 {
+        rel = ok(&mut watch, "/api/v1/release").await;
+        if rel["status"] == "newer" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(rel["status"], "newer", "{rel}");
+    let n = &rel["newest"];
+    assert_eq!(
+        (n["commit"].clone(), n["short"].clone(), n["build"].clone()),
+        (json!(NEWEST_BUILD), json!("abc1234"), json!(57))
+    );
+    assert_eq!((n["changes"].clone(), n["more"].clone()), (json!(2), json!(0)));
+    assert_eq!(n["titles"], json!(["A made-up first change", "A made-up second change"]));
+    assert_eq!(
+        n["compare_url"],
+        format!("https://github.com/skittles-fivem/Sentry-Mate/compare/{THIS_BUILD}...{NEWEST_BUILD}")
+    );
+    let checked = rel["checked_ms"].as_u64().unwrap();
+    assert_eq!(rel["next_ms"].as_u64(), Some(checked + 24 * 3_600_000), "the next one a day later");
+    assert_eq!(fake.asked().len(), 2);
+
+    // the notice: admins only
+    let items = ok(&mut admin, "/api/v1/notices").await["items"].clone();
+    let notice = items.as_array().unwrap().iter().find(|i| i["code"] == "release_available").cloned().unwrap();
+    assert_eq!(notice["level"], "info");
+    assert_eq!(notice["fix_link"], "/help#about");
+    assert_eq!(notice["message"], "A newer build is ready: abc1234, Nov 24, 2 changes.");
+    assert_eq!(notice["detail"]["commit"], NEWEST_BUILD);
+    assert_eq!(notice["detail"]["version"], "abc1234");
+    assert_eq!(notice["detail"]["build"], 57);
+    assert_eq!(notice["detail"]["notes_url"], n["compare_url"]);
+    let items = ok(&mut watch, "/api/v1/notices").await["items"].clone();
+    assert!(!items.as_array().unwrap().iter().any(|i| i["code"] == "release_available"));
+
+    // "Check now": asks again at once
+    let r = admin.post("/api/v1/release/check", json!({})).await;
+    assert_eq!((r.status, r.json()["status"].clone()), (200, json!("newer")), "{}", r.text());
+    assert_eq!(fake.asked().len(), 4);
+    let n = ok(&mut admin, "/api/v1/network").await;
+    let rc = n["outbound"].as_array().unwrap().iter().find(|o| o["purpose"] == "release_check").unwrap().clone();
+    assert_eq!((rc["host"].clone(), rc["enabled"].clone()), (json!("api.github.com"), json!(true)));
+    assert!(rc["last_used_ms"].is_u64(), "{rc}");
+
+    // GitHub unreachable: an error, the newest kept, no notice
+    fake.answers.lock().unwrap().clear();
+    let r = admin.post("/api/v1/release/check", json!({})).await;
+    assert_eq!((r.json()["status"].clone(), r.json()["error"]["code"].clone()), (json!("error"), json!("unreachable")));
+    let items = ok(&mut admin, "/api/v1/notices").await["items"].clone();
+    assert!(!items.as_array().unwrap().iter().any(|i| i["code"] == "release_available"));
+
+    // off: the result dropped
+    let v = ok(&mut admin, "/api/v1/settings").await["version"].as_u64().unwrap();
+    let r = admin.patch("/api/v1/settings", json!({ "version": v, "release_check": { "enabled": false } })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let rel = ok(&mut admin, "/api/v1/release").await;
+    assert_eq!(
+        (rel["status"].clone(), rel["newest"].clone(), rel["checked_ms"].clone()),
+        (json!("off"), Value::Null, Value::Null)
+    );
 }

@@ -56,6 +56,7 @@ async fn about(State(app): State<AppState>, v: Viewer, headers: axum::http::Head
     let licences: Vec<Value> = LICENCES.iter().map(|(n, l)| json!({ "name": n, "licence": l })).collect();
     Ok(Json(json!({
         "version": SERVER_VERSION,
+        "build": super::release::about_build(&app),
         "api_version": crate::API_VERSION,
         "ui_pack": pack,
         "links": { "source": null, "docs": "/help" },
