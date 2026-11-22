@@ -493,6 +493,7 @@ export async function mount(ctx) {
     geonames_download: ['place-name download', 'only when an admin asks for new offline place names', 'settings-display'],
     mqtt: ['mqtt broker', 'only while publishing is on (above)', null],
     tesla: ['tesla api', 'only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (tesla account, above)', null],
+    teslafi: ['teslafi api', 'only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi', '#teslafi'],
     release_check: ['release check', 'asks whether a newer Sentry Mate exists, when on', 'settings-server'],
     upload: ['can bridge uploads', 'the car\'s CAN Bridge sends its logs here', null],
     web: ['this app and the api', 'browsers, apps and the api', null],
@@ -507,7 +508,7 @@ export async function mount(ctx) {
       { key: 'host', label: 'host or port', render: (r) => (r.port != null ? `port ${r.port}${r.tls ? ', tls' : ''}` : r.host || h('span', { class: 'muted' }, 'not set')) },
       { key: 'enabled', label: 'state', ph: 'num', render: (r) => (r.enabled ? tag(r.dir === 'in' ? 'open' : 'on', 'ok') : tag('off', 'muted')) },
       { key: 'last', label: 'last used', render: (r) => (r.last_used_ms ? ago(r.last_used_ms) : h('span', { class: 'muted' }, r.dir === 'in' ? 'listening' : 'never')) },
-      { key: 'go', label: '', grow: true, render: (r) => (PURPOSE[r.purpose]?.[2] ? link(state.buildUrl(PURPOSE[r.purpose][2]), 'change') : null) },
+      { key: 'go', label: '', grow: true, render: (r) => { const to = PURPOSE[r.purpose]?.[2]; return to ? link(to.startsWith('#') ? `${state.buildUrl('settings-integrations')}${to}` : state.buildUrl(to), 'change') : null; } },
     ],
   }) : null;
 
@@ -550,7 +551,7 @@ export async function mount(ctx) {
       [tag('phone', 'muted'), 'This app works in a phone\'s browser and can be added to the home screen. A phone app of your own can use the same api.', 'projects.matedroid'],
     ])),
     section({ title: 'network', cover: 'faq.network-flows', side: h('span', { class: 'muted' }, 'every connection the server makes') },
-      note('Sentry Mate needs no Tesla account and no cloud: the CAN Bridge (SMO) uploads to it, and everything else is off until you turn it on. A Tesla account (above) is an optional second input; without one the server never connects to Tesla.'),
+      note('Sentry Mate needs no Tesla account and no cloud: the CAN Bridge (SMO) uploads to it, and everything else is off until you turn it on. A Tesla account and a TeslaFi token (above) are optional inputs; without them the server never connects to Tesla or TeslaFi.'),
       netT ? netT.el : note(admin ? 'The connection list could not be read.' : 'The list of connections is shown to admins. By default Sentry Mate makes no outbound connection at all.')),
     section({ title: 'works with', side: h('span', { class: 'muted' }, 'other people\'s tools') },
       h('p', { class: 'note', cover: 'projects.disclaimer' }, 'Named so you know what fits. Sentry Mate does not make, check or vouch for them. Anything built on the MQTT topics or the api keeps working; anything that reads the storage directly will break.'),
