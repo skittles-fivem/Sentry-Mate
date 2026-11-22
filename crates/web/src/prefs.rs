@@ -164,6 +164,7 @@ pub fn view(app: &AppState, id: AccountId, access: &CarAccess) -> ApiResult<Valu
         "interface_size": pick("interface_size", json!(100)),
         "follow_screen": pick("follow_screen", json!(true)),
         "map_colors": pick("map_colors", json!("dimmed")),
+        "map_style": pick("map_style", json!("default")),
         "ui_pack": pack.unwrap_or_else(|| crate::packs::pick_id(app, None)),
         "car_order": visible(app, access, Some(&order)),
         "pinned_cars": visible(app, access, own.get("pinned_cars")),
@@ -188,6 +189,7 @@ const KEYS: &[&str] = &[
     "interface_size",
     "follow_screen",
     "map_colors",
+    "map_style",
     "ui_pack",
     "car_order",
     "pinned_cars",
@@ -259,6 +261,12 @@ async fn patch_prefs(
         {
             rule.add(k, &format!("Must be one of: {}.", allowed.join(", ")));
         }
+    }
+    if let Some(val) = body.get("map_style")
+        && !val.as_str().is_some_and(|s| s == "default" || places::tiles::preset(s).is_some())
+    {
+        let ids: Vec<&str> = places::tiles::PRESETS.iter().map(|p| p.id).collect();
+        rule.add("map_style", &format!("Must be default or one of: {}.", ids.join(", ")));
     }
     if let Some(val) = body.get("language") {
         let ok = val

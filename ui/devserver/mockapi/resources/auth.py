@@ -201,7 +201,7 @@ def patch_prefs(req):
     st = req.store
     body = req.json()
     bad, rule = {}, {}
-    allowed = {"units", "range", "theme", "language", "interface_size", "follow_screen", "map_colors", "ui_pack",
+    allowed = {"units", "range", "theme", "language", "interface_size", "follow_screen", "map_colors", "map_style", "ui_pack",
                "car_order", "pinned_cars"}
     for k in body:
         if k not in allowed:
@@ -219,6 +219,11 @@ def patch_prefs(req):
     for k, vals in PREF_ENUMS.items():
         if k in body and body[k] not in vals:
             rule[k] = "Must be one of: " + ", ".join(vals) + "."
+    if "map_style" in body:
+        from .system import TILE_PRESETS
+        ids = [p["id"] for p in TILE_PRESETS]
+        if body["map_style"] != "default" and body["map_style"] not in ids:
+            rule["map_style"] = "Must be default or one of: " + ", ".join(ids) + "."
     if "language" in body and (not isinstance(body["language"], str) or not 2 <= len(body["language"]) <= 10):
         rule["language"] = "A language code such as en or de."
     if "interface_size" in body:

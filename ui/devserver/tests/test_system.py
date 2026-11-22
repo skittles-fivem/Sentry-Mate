@@ -88,14 +88,17 @@ class Settings(ServerCase):
         m = self.c.get("/api/v1/maps/config")
         self.assertEqual(m["tiles"]["mode"], "online")
         self.assertIn("{z}", m["tiles"]["online_template"])
-        # the ready-made sources, OpenStreetMap first, each with its credit, zoom and terms
-        self.assertEqual(m["tiles"]["presets"][0]["id"], "osm")
+        # the ready-made sources, satellite (the default) first, each with its credit, zoom and terms
+        self.assertEqual(m["tiles"]["presets"][0]["id"], "satellite")
         for p in m["tiles"]["presets"]:
-            self.assertEqual(set(p), {"id", "name", "url", "attribution", "max_zoom", "terms"})
+            self.assertEqual(set(p), {"id", "name", "short", "kind", "url", "attribution", "max_zoom", "terms",
+                                      "overlays", "region"})
         # online tiles: the pages send their origin as Referer (OpenStreetMap blocks tiles without one), the API none
         st, hd, _ = self.c.request("GET", "/")
         self.assertEqual(hd["referrer-policy"], "strict-origin")
-        self.assertIn("img-src 'self' data: blob: https://tile.openstreetmap.org;", hd["content-security-policy"])
+        # the satellite default and the OpenStreetMap style viewers may switch to
+        self.assertIn("img-src 'self' data: blob: https://server.arcgisonline.com https://tile.openstreetmap.org;",
+                      hd["content-security-policy"])
         st, hd, _ = self.c.request("GET", "/api/v1/me")
         self.assertEqual(hd["referrer-policy"], "no-referrer")
         g = self.c.get("/api/v1/geocode/status")
@@ -124,7 +127,7 @@ class Settings(ServerCase):
         # as the real server: a page may load tiles only from the source that is on (none while offline)
         self.assertNotIn("tile.openstreetmap.org", hd["content-security-policy"])
         v = self.c.get("/api/v1/settings")["version"]
-        self.c.json("PATCH", "/api/v1/settings", {"version": v, "tiles": {"mode": "online", "online_url": "https://tile.opentopomap.org/{z}/{x}/{y}.png"}})
+        self.c.json("PATCH", "/api/v1/settings", {"version": v, "tiles": {"mode": "online", "online_url": "https://tile.opentopomap.org/{z}/{x}/{y}.png", "styles": []}})
         st, hd, _ = self.c.request("GET", "/")
         self.assertIn("img-src 'self' data: blob: https://tile.opentopomap.org;", hd["content-security-policy"])
         self.assertNotIn("tile.openstreetmap.org", hd["content-security-policy"])

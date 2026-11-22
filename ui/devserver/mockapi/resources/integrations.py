@@ -434,13 +434,15 @@ def network(req):
     if ss["geocode"].get("url"):
         geo_host = re.sub(r"^https?://([^/:]+).*$", r"\1", ss["geocode"]["url"])
     tiles_online = ss["tiles"]["mode"] == "online"
-    tile_host = re.sub(r"^https?://([^/:]+).*$", r"\1", ss["tiles"]["online_url"]) if ss["tiles"].get(
-        "online_url") else None
+    from .system import tile_chosen_id, tile_hosts
+    hosts = tile_hosts(ss["tiles"]) if tiles_online else []
+    tile_host = hosts[0] if hosts else None
     return {
         "outbound": [
             {"purpose": "geocoding", "host": geo_host, "enabled": geo_online and bool(geo_host),
              "last_used_ms": now - 40 * 60_000 if geo_online and geo_host else None},
-            {"purpose": "tiles", "host": tile_host, "enabled": tiles_online,
+            {"purpose": "tiles", "host": tile_host, "hosts": hosts, "preset": tile_chosen_id(ss["tiles"]),
+             "enabled": tiles_online,
              "last_used_ms": now - 3 * 60_000 if tiles_online else None},
             {"purpose": "geonames_download", "host": "download.geonames.org", "enabled": False,
              "last_used_ms": None},
