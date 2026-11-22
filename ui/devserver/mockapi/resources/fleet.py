@@ -515,6 +515,8 @@ def get_settings(req):
             "import_gap_fill": None})
     out = dict(s)
     out.setdefault("import_gap_fill", None)
+    out.setdefault("pack_replaced_date", None)
+    out.setdefault("pack_new_kwh", None)
     out["import_gap_fill_on"] = gapfill.on(st, req.car)
     # what the car's build gives when the owner has typed nothing (the inputs' placeholders)
     h = req.history()
@@ -548,7 +550,8 @@ def patch_settings(req):
     req.version_check(cur["version"])
     bad, rule = {}, {}
     known = ("version", "battery_chemistry", "free_supercharging", "capacity_new_kwh", "full_range_new_km",
-             "warranty_threshold_pct", "efficiency_wh_per_km_override", "software_version_typed", "import_gap_fill")
+             "warranty_threshold_pct", "efficiency_wh_per_km_override", "software_version_typed", "import_gap_fill",
+             "pack_replaced_date", "pack_new_kwh")
     for k in body:
         if k not in known:
             bad[k] = "Unknown field."
@@ -573,6 +576,9 @@ def patch_settings(req):
                 elif b is not None and b < a:
                     rule[f"free_supercharging.{i}.to_date"] = "Must not be before from_date."
     _num_rule(body, "capacity_new_kwh", 10, 250, rule, bad)
+    _num_rule(body, "pack_new_kwh", 10, 250, rule, bad)
+    if body.get("pack_replaced_date") is not None and parse_date(body["pack_replaced_date"]) is None:
+        rule["pack_replaced_date"] = "A date as YYYY-MM-DD, or null for not replaced."
     _num_rule(body, "full_range_new_km", 100, 1500, rule, bad)
     _num_rule(body, "warranty_threshold_pct", 50, 95, rule, bad, allow_null=False)
     _num_rule(body, "efficiency_wh_per_km_override", 60, 500, rule, bad)

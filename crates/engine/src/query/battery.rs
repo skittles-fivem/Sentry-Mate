@@ -587,12 +587,7 @@ fn swap_in(fulls: &[(u64, f64)]) -> Option<u64> {
 type Start = Option<(u64, bool)>;
 
 /// Where the battery figures start: the pack's replacement (counted as a new pack), else the history's start.
-fn pack_start(
-    e: &Engine,
-    c: &Car,
-    s: &super::fleet::CarSettings,
-    shown: &Shown,
-) -> QResult<(Start, Option<Swap>)> {
+fn pack_start(e: &Engine, c: &Car, s: &super::fleet::CarSettings, shown: &Shown) -> QResult<(Start, Option<Swap>)> {
     let swap = pack_swap(e, c, s)?;
     Ok(match swap {
         Some(w) => (Some((w.at_ms, true)), swap),
