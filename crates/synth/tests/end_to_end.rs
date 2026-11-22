@@ -122,7 +122,7 @@ fn the_vin_reads_as_the_model_and_is_clearly_made_up() {
     for (m, letter) in [(CarModel::Y, 'Y'), (CarModel::Three, '3')] {
         let s = Scenario::new(1).model(m).car(4);
         let vin = s.vin();
-        assert!(vin.starts_with("SYN") && vin.contains("FAKE"), "{vin}");
+        assert!(vin.starts_with("5YJ") && vin.contains("FAKE"), "{vin}");
         let info = timeline::decode_vin(&vin, 0x405).unwrap();
         assert_eq!(info.model, Some(letter));
         assert_eq!(info.year, Some(2024));

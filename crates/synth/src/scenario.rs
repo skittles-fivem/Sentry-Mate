@@ -233,10 +233,10 @@ impl Scenario {
         hex::encode(&h[..6])
     }
 
-    /// A VIN that is clearly made up (maker `SYN`, `FAKE`), yet reads as a model, a year and a plant: `SYN`, the model
-    /// letter, `FAKE0`, `R` (2024), `X`, then six digits.
+    /// A VIN that is clearly made up (`FAKE` where the body and motor codes go), yet reads as a model, a year and a
+    /// plant: maker `5YJ` (every model's), the model letter, `FAKE0`, `R` (2024), `X`, then six digits.
     pub fn vin(&self) -> String {
-        format!("SYN{}FAKE0RX{:06}", self.model.letter(), 100 + u64::from(self.car.min(MAX_CAR)))
+        format!("5YJ{}FAKE0RX{:06}", self.model.letter(), 100 + u64::from(self.car.min(MAX_CAR)))
     }
 
     /// The bridge's signing key.

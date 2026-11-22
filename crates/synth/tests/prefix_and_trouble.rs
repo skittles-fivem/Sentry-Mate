@@ -125,8 +125,8 @@ fn the_same_seed_gives_these_bytes_on_every_machine() {
         h.update(f.name.as_bytes());
         h.update(&f.bytes);
     }
-    // a change here changes every seeded data folder: only with a reason
-    assert_eq!(hex::encode(h.finalize()), "90c19c2df0cbcf980de02eb04eccc1cc013299369001f2c7633ea007f3d62053");
+    // a change here changes every seeded data folder: only with a reason (last: the VIN reads as a Tesla, maker 5YJ)
+    assert_eq!(hex::encode(h.finalize()), "3b95739762bd5b372a6b3e3e715c7fee253f7980872cf808bcb80fa130d3a451");
 }
 
 #[test]

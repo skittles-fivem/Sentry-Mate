@@ -35,7 +35,7 @@ Open questions: two battery % signals disagree (0x33A and 0x292) and need checki
 Answered: Tesla's version number (2025.x) is not on CAN, but the modules' firmware fingerprints are (CRCs and git
 hashes in 0x300, 0x301, 0x335 and 0x656 on the vehicle bus): the server decodes them and finds the updates from them
 (done, server side; the version is what the owner types, and names later updates to the same fingerprints by itself).
-Still to check on the owner's car: which fields change at a real update.
+Still to check on a real car: which fields change at a real update.
 
 ## Not built yet
 
