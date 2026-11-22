@@ -26,6 +26,8 @@ pub(crate) enum Quantity {
     Percent,
     /// degrees
     Angle,
+    /// minutes
+    Minutes,
     /// A state number (gear, charge status): taken as it is.
     Plain,
 }
@@ -84,6 +86,9 @@ pub(crate) fn conversion(q: Quantity, unit: &str) -> Option<Conv> {
         (Quantity::Current, "ma") => times(0.001),
         (Quantity::Percent, "%" | "") => same,
         (Quantity::Angle, "deg" | "°" | "degree" | "degrees" | "") => same,
+        (Quantity::Minutes, "min" | "mins" | "minute" | "minutes") => same,
+        (Quantity::Minutes, "h" | "hr" | "hours") => times(60.0),
+        (Quantity::Minutes, "s" | "sec") => times(1.0 / 60.0),
         _ => None,
     }
 }
