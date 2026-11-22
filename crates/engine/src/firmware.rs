@@ -487,6 +487,16 @@ pub fn name_of(db: &db::Db, car: CarId, ev: &FwEvent) -> Result<Option<(String, 
     Ok(names(db, car)?.lookup(ev))
 }
 
+/// The log a fingerprint frame at `ms` came in: the log of that UTC day whose fingerprint frames span `ms`, else the
+/// first one after it that day (null: none kept). One day's log list read.
+pub fn log_at(db: &db::Db, car: CarId, ms: u64) -> Result<Option<String>> {
+    let Some(day) = records::get::<DayLogs>(db, NS, &day_key(car, records::day_of(ms)))? else { return Ok(None) };
+    let mut logs: Vec<(&String, &LogRef)> = day.logs.iter().collect();
+    logs.sort_by_key(|(n, l)| (l.from, (*n).clone()));
+    let hit = logs.iter().find(|(_, l)| l.from <= ms && ms <= l.to).or_else(|| logs.iter().find(|(_, l)| l.from >= ms));
+    Ok(hit.map(|(n, _)| (*n).clone()))
+}
+
 impl Engine {
     /// Notes one log's fingerprints (`None`: it has none now: left out, or none in it), with whether it closed
     /// `quiet`. The car's lock is held.
@@ -514,6 +524,28 @@ impl Engine {
         }
         compact(&mut day);
         self.fw_put_day(car, d, &day, false)
+    }
+
+    /// Notes made-up fingerprints for one log, for tests that lay a car's history down by hand: each value
+    /// `(field, value, first_ms, last_ms)` taken as confirmed. Takes the car's lock.
+    #[doc(hidden)]
+    pub fn fw_note_values_for_tests(&self, car: CarId, name: &str, values: &[(&str, u64, u64, u64)]) -> Result<()> {
+        let l = self.car_lock(car);
+        let _held = lock(&l);
+        let f = LogFirmware {
+            seen: values
+                .iter()
+                .map(|&(field, value, first_ms, last_ms)| timeline::firmware::Seen {
+                    field: field.to_string(),
+                    value,
+                    count: CONFIRM,
+                    first_ms,
+                    last_ms,
+                })
+                .collect(),
+            hints: 0,
+        };
+        self.fw_note_log(car, name, Some((&f, true)))
     }
 
     /// Takes these logs (by name) out of the fingerprints: a key moved to another car, a window cleared. The car's

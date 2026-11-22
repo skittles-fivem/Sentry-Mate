@@ -104,7 +104,7 @@ pub struct Updates {
 }
 
 /// A car's update rows, oldest first (small: see the module's notes).
-fn all_updates(e: &Engine, car: CarId) -> QResult<Vec<UpdateRow>> {
+pub(crate) fn all_updates(e: &Engine, car: CarId) -> QResult<Vec<UpdateRow>> {
     let mut out = Vec::new();
     super::reports::overlapping::<UpdateRow>(e, car, 0, u64::MAX, None, false, |u| {
         out.push(u);
@@ -116,7 +116,7 @@ fn all_updates(e: &Engine, car: CarId) -> QResult<Vec<UpdateRow>> {
 
 /// The version an update shows and where it came from: typed by an admin, else imported. A fingerprint update's
 /// is its name ([`crate::firmware::name_of`]): `owner`, or `build_match` when its set was named on another.
-fn version_of(e: &Engine, car: CarId, u: &UpdateRow) -> QResult<(Option<String>, Option<&'static str>)> {
+pub(crate) fn version_of(e: &Engine, car: CarId, u: &UpdateRow) -> QResult<(Option<String>, Option<&'static str>)> {
     if crate::firmware::is_fingerprint(u.id) {
         let Some(ev) = super::firmware::event(e, car, u.id)? else { return Ok((None, None)) };
         return Ok(match crate::firmware::name_of(e.db(), car, &ev)? {
