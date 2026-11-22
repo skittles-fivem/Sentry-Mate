@@ -4,11 +4,11 @@
 // owner's TeslaFi token, a third live input beside SMO and the Tesla API, labelled "Data from TeslaFi". Off until an
 // admin adds a token. It only reads (TeslaFi's latest poll and its last poll awake): no wake, no command, and no page
 // ever shows the token. This part shows the input's state (on or off, its host, the pace, requests today, TLS), adds
-// a token, and per account its status, the car TeslaFi polls and which car here it is, the zone TeslaFi's times are
-// in, pause and resume, a new token, removing it, and its errors. Every change asks for the admin's own password
+// a token, sets the pace (Gentle, Normal, Often), and per account its status, the car TeslaFi polls and which car
+// here it is, the zone TeslaFi's times are in, pause and resume, a new token, removing it, and its errors. Every change asks for the admin's own password
 // again (and the two-step code), as the Tesla account part does.
 //
-// API: GET integrations/teslafi, GET / POST integrations/teslafi/accounts, PATCH / DELETE
+// API: GET / PATCH integrations/teslafi (the pace), GET / POST integrations/teslafi/accounts, PATCH / DELETE
 // integrations/teslafi/accounts/{id}, PUT integrations/teslafi/accounts/{id}/cars, GET integrations/teslafi/status,
 // GET cars (the match picker).
 
@@ -18,7 +18,7 @@ import * as state from '../shared/state.js';
 import { formatDateTime, formatTime, formatDuration } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { section, figure, chip, button, icon, ago, errorView, empty } from '../core/ui.js';
-import { field } from '../core/form.js';
+import { field, choice } from '../core/form.js';
 import { dataTable } from '../core/table.js';
 import { askAgain } from './integrations-tesla.js';
 import { zoneLabel } from '../core/format.js';
@@ -34,10 +34,10 @@ const STATUS = {
 };
 const MODE = {
   off: ['Off', 'Not read: no car matched, paused, or the token was refused.'],
-  asleep: ['Asleep', 'TeslaFi says the car sleeps: asked every 10 minutes.'],
-  idle: ['Parked', 'TeslaFi says the car is parked and awake: asked every 3 minutes.'],
-  charging: ['Charging', 'Asked once a minute.'],
-  driving: ['Driving', 'Asked once a minute.'],
+  asleep: ['Asleep', 'TeslaFi says the car sleeps: read at the asleep pace. The car is never woken.'],
+  idle: ['Parked', 'TeslaFi says the car is parked and awake: read at the parked pace.'],
+  charging: ['Charging', 'Read at the charging pace.'],
+  driving: ['Driving', 'Read at the driving pace.'],
   backoff: ['Waiting after errors', 'TeslaFi answered with errors, or the day’s requests are used up: nothing is asked until the next try.'],
 };
 const ERROR_WORDS = {
@@ -55,6 +55,14 @@ const ERROR_WORDS = {
   invalid: 'A value was not taken; see the field.',
   bad_input: 'A value was not taken; see the field.',
   not_allowed: 'Only an admin may change the TeslaFi input.',
+};
+const PACE = [['gentle', 'Gentle'], ['normal', 'Normal'], ['often', 'Often']];
+// Each pace's waits (driving or charging, awake and parked, asleep), as docs/ui-api.md gives them.
+const PACE_WAITS = { often: '15 s driving or charging, 1 min awake, 3 min asleep', normal: '1 min, 3 min, 10 min', gentle: '2 min, 5 min, 20 min' };
+const PACE_WHY = {
+  often: 'About as fast as TeslaFi itself refreshes its polls (at most 6,000 requests a day per account).',
+  normal: 'The default (at most 1,500 requests a day per account).',
+  gentle: 'Fewer requests to TeslaFi (at most 1,500 a day per account).',
 };
 const LAST_ERROR = {
   token_refused: 'TeslaFi refused the token',
@@ -144,7 +152,22 @@ export function teslafiPart(ctx) {
 
   function overview() {
     const p = over.polls || {};
+    const poll = over.poll || 'normal';
     const every = (n) => (n == null ? '—' : `every ${n >= 60 ? formatDuration(n * 1000) : `${n} s`}`);
+    const pace = choice({
+      label: 'How often TeslaFi is read', labelHidden: true, name: 'teslafi-poll', value: poll, options: PACE,
+      onchange: async (v) => {
+        if (v === poll) return;
+        const out = await ask({
+          title: `Read TeslaFi ${v === 'often' ? 'more often' : v === 'gentle' ? 'less often' : 'at the normal pace'}?`,
+          text: `${PACE_WHY[v]} ${(PACE.find(([k]) => k === v) || [0, v])[1]}: ${PACE_WAITS[v]}. This changes how often every TeslaFi account is read. TeslaFi’s Retry-After and its errors are always respected, and the car is never woken.`,
+          yes: 'Change it',
+          run: (creds) => ctx.api.patch('integrations/teslafi', { version: over.version, poll: v, ...creds }),
+        });
+        if (out) ctx.flash('How often TeslaFi is read was changed.'); else pace.set(poll);
+        await again('fi-pace');
+      },
+    });
     const paceRows = [
       ['Driving', p.driving_s], ['Charging', p.charging_s], ['Parked and awake', p.parked_s], ['Asleep', p.asleep_s],
       ['While SMO or the Tesla API is live', p.other_live_s],
@@ -166,9 +189,10 @@ export function teslafiPart(ctx) {
             ? h('ul', { class: 'tesla-hosts' }, over.hosts.map((x) => h('li', null, code(x))))
             : h('p', { class: 'si-quiet' }, 'None: with no token the server talks to no TeslaFi host. Adding one uses www.teslafi.com on port 443 only, the token in a header, never in an address.')),
         h('div', null,
-          h('h3', { class: 'si-sub' }, 'How often', h('span', { class: 'label-note' }, 'set by the server')),
+          h('h3', { class: 'si-sub' }, 'How often', h('span', { class: 'label-note' }, `“${(PACE.find(([k]) => k === poll) || [0, poll])[1]}” now`)),
+          tf(pace, 'fi-pace'),
           h('dl', { class: 'tesla-pace' }, paceRows.map(([n, s]) => h('div', { class: 'tesla-pace-row' }, h('dt', null, n), h('dd', null, every(s))))),
-          h('p', { class: 'si-quiet' }, 'Errors wait a minute, doubling up to 15 minutes; when TeslaFi asks to slow down, the server waits as long as it asks.'))));
+          h('p', { class: 'si-quiet' }, `Gentle: ${PACE_WAITS.gentle}. Normal: ${PACE_WAITS.normal}. Often: ${PACE_WAITS.often}. Errors wait a minute, doubling up to 15 minutes; when TeslaFi asks to slow down, the server waits as long as it asks.`))));
   }
   const accountLabel = (id) => (accounts.find((a) => a.id === id) || {}).label || id;
 

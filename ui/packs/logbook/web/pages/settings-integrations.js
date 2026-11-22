@@ -167,7 +167,7 @@ const NET_PURPOSE = {
   mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
   release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-display'],
   tesla: ['Tesla API', 'Only while a Tesla account is added (Tesla account, on this page): signs in and reads its cars, never sends a command.', null],
-  teslafi: ['TeslaFi', 'Only while a TeslaFi token is added (TeslaFi, on this page): reads TeslaFi’s polls of the car, never a wake or a command.', null],
+  teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars’ data from TeslaFi', null],
   upload: ['CAN Bridge uploads', 'The car’s CAN Bridge sends its logs here.', null],
   web: ['This app and the API', 'Browsers, phone apps and scripts.', null],
 };
@@ -890,7 +890,7 @@ export async function mount(ctx) {
         { key: 'host', label: 'Host or port', cell: (r) => (r.port != null ? h('span', null, code(`port ${r.port}`), r.tls ? ', TLS' : ', no TLS') : r.host ? code(r.host) : h('span', { class: 'si-quiet' }, 'not set')) },
         { key: 'enabled', label: 'State', sort: true, cell: (r) => (r.enabled ? chip(r.dir === 'in' ? 'Open' : 'On', { kind: 'on' }) : chip('Off')), value: (r) => (r.enabled ? 1 : 0) },
         { key: 'last', label: 'Last used', sort: true, cell: (r) => (r.last_used_ms ? ago(r.last_used_ms) : h('span', { class: 'si-quiet' }, r.dir === 'in' ? 'always listening' : 'never')), value: (r) => r.last_used_ms },
-        { key: 'change', label: 'Change it', cell: (r) => ((NET_PURPOSE[r.purpose] || [])[2] ? pageLink('Settings', NET_PURPOSE[r.purpose][2], {}, { arrow: true }) : h('span', { class: 'si-quiet' }, r.purpose === 'mqtt' || r.purpose === 'tesla' || r.purpose === 'teslafi' ? 'on this page' : '—')), value: () => '' },
+        { key: 'change', label: 'Change it', cell: (r) => (r.purpose === 'teslafi' ? h('a', { class: 'link-arrow', href: '#teslafi' }, 'TeslaFi, on this page', icon('arrowRight')) : (NET_PURPOSE[r.purpose] || [])[2] ? pageLink('Settings', NET_PURPOSE[r.purpose][2], {}, { arrow: true }) : h('span', { class: 'si-quiet' }, r.purpose === 'mqtt' || r.purpose === 'tesla' ? 'on this page' : '—')), value: () => '' },
       ],
     });
     t.load();
