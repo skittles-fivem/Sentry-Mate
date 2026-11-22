@@ -41,3 +41,13 @@
 .im-facts b { color: var(--ink); }
 .im-fact-ic { display: grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: 50%; color: var(--cyan); box-shadow: inset 0 0 0 1px var(--ring); }
 .im-facts li > div { padding-top: 0.25rem; }
+
+/* TeslaFi's data: the time zone and units it is read in, asked before Start */
+.im-tf { display: grid; gap: 0.75rem; padding: 0.875rem 1rem; border-radius: var(--r); background: var(--well); box-shadow: inset 0 0 0 1px var(--ring); }
+.im-tf-head { display: flex; align-items: center; gap: 0.5rem; }
+.im-zone { max-width: 22rem; }
+.im-tf-units { display: flex; flex-wrap: wrap; gap: 0.75rem 1.5rem; }
+.im-tf-unit { display: grid; gap: 0.375rem; }
+/* an overlap's sides and its switch */
+.im-side-k { text-transform: none; }
+.im-shown { gap: 0.25rem; justify-items: start; }
