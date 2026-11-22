@@ -597,7 +597,7 @@ function colourLayers(m, lines, legend, mode) {
   const key = (looks, names, cls) => h('ul', { class: 'route-key' }, names.map((n, k) => h('li', null, h('span', { class: ['route-swatch', `${cls}-${k}`], 'aria-hidden': 'true' }), n)));
   return function paint() {
     const by = mode();
-    const vis = (id, on) => { if (m.map.getLayer(id)) m.map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none'); };
+    const vis = (id, on) => m.setVisible(id, on);
     plainIds.forEach((lid) => vis(lid, by === 'plain'));
     layers.speed.forEach((lid) => vis(lid, by === 'speed'));
     layers.power.forEach((lid) => vis(lid, by === 'power'));

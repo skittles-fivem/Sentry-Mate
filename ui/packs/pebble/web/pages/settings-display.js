@@ -21,7 +21,7 @@ import { sectionHead, facts } from '../core/bits.js';
 import { group, pickRow, ctlRow, infoRow, notSaved } from '../core/settings.js';
 import { inOrder } from '../core/settings.js';
 import { packChoices } from '../shared/packs.js';
-import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
+import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, LABELS_TEXT, STYLES_TEXT, offlineSummary, offlineFileChoices, showOfflineHelp, presetHosts } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
 export const shape = [[2, 'h3'], [2, 'h3'], [2, 'h2'], [2, 'h2']];
@@ -60,7 +60,10 @@ export async function mount(ctx) {
   const admin = ctx.admin;
   let [srv, geo, mapCfg, packList] = await Promise.all([ctx.api.get('settings'), ctx.api.get('geocode/status').catch(() => null), ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: (currentPrefs() || {}).ui_pack || null })]);
-  const tilePresets = (mapCfg && mapCfg.tiles && mapCfg.tiles.presets) || [];
+  // satellite first, then the rest as the server lists them
+  const tilePresets = [...((mapCfg && mapCfg.tiles && mapCfg.tiles.presets) || [])].sort((a, b) => (b.kind === 'satellite') - (a.kind === 'satellite'));
+  const regionNote = (p) => (p.region ? ` ${p.region === 'us' ? 'United States only' : `${p.region} only`}: elsewhere it shows nothing.` : '');
+  const presetLine = (p) => `From ${presetHosts(p).join(' and ') || 'the tile server'}, down to zoom ${p.max_zoom}.${regionNote(p)}`;
   if (!ctx.alive()) return {};
   const p0 = currentPrefs() || {};
   const save = (patch) => savePref(patch).catch((err) => { ctx.toast(notSaved(err), { kind: 'error' }); throw err; });
@@ -103,7 +106,7 @@ export async function mount(ctx) {
     group(null, [
       ctlRow({ name: 'Theme', sub: 'Auto follows your device, day and night.', control: theme, stack: true }),
       h('div', { class: 'row row-static set-ex-row' }, themeEx),
-      ctlRow({ name: 'Map colours', sub: MAP_COLORS_TEXT, control: mapColors, stack: true }),
+      ctlRow({ name: 'Map colours', sub: `${MAP_COLORS_TEXT} Satellite pictures are always shown as taken.`, control: mapColors, stack: true }),
     ]),
     group('Size', [
       ctlRow({ name: 'Interface size', sub: null, control: h('div', { class: 'stepper', role: 'group', 'aria-label': 'Interface size' }, smaller, sizeValue, bigger) }),
@@ -295,18 +298,37 @@ export async function mount(ctx) {
     // map tiles
     const tilesSeg = segmented({ name: 'Map tiles', value: s.tiles.mode, options: [['offline', 'Offline'], ['online', 'Online']],
       onchange: (v) => {
-        if (v === 'online' && !s.tiles.online_url) { tilesSeg.set(s.tiles.mode); setFieldError(tileUrl, 'Save an https:// tile address with {z}, {x} and {y} first, then choose Online.'); tileUrl.control.focus(); return; }
-        quick({ tiles: { mode: v } }, () => tilesSeg.set(s.tiles.mode));
+        if (v === 'online' && !tilePresets.length && !s.tiles.online_url) { tilesSeg.set(s.tiles.mode); setFieldError(tileUrl, 'Save an https:// tile address with {z}, {x} and {y} first, then choose Online.'); tileUrl.control.focus(); return; }
+        // online without an address of its own: the satellite preset (the default)
+        quick({ tiles: v === 'online' && chosenId !== 'custom' ? { mode: v, preset: chosenId } : { mode: v } }, () => tilesSeg.set(s.tiles.mode));
       } });
     tilesSeg.querySelectorAll('button').forEach((b) => { b.disabled = off; });
-    const tilePreset = tilePresets.find((x) => x.url === s.tiles.online_url) || null;
-    const tileSource = tilePresets.length ? segmented({ name: 'Tile source', value: tilePreset ? tilePreset.id : 'custom', options: [...tilePresets.map((x) => [x.id, x.name]), ['custom', 'Custom']],
-      onchange: (v) => {
-        const x = tilePresets.find((y) => y.id === v);
-        if (!x) { tileUrl.control.focus(); return; }
-        quick({ tiles: { online_url: x.url, attribution: x.attribution, max_zoom: x.max_zoom } }, () => tileSource.set(tilePreset ? tilePreset.id : 'custom'));
+    const mt = (mapCfg && mapCfg.tiles) || {};
+    const chosenId = mt.preset || s.tiles.preset || (tilePresets.find((x) => x.url === s.tiles.online_url) || {}).id || (s.tiles.online_url ? 'custom' : 'satellite');
+    const tilePreset = tilePresets.find((x) => x.id === chosenId) || null;
+    const tileSource = tilePresets.length ? pickRow({ name: 'Online map', sheetTitle: 'Online map',
+      sub: tilePreset ? `${tilePreset.name}. ${presetLine(tilePreset)} Free, no key; its terms (${String(tilePreset.terms || '').replace(/^https:\/\//, '')}) ask for light use and its credit on every map.` : 'Your own tile address below. A preset fills in its address, credit and zoom.',
+      value: tilePreset ? tilePreset.id : 'custom', disabled: off,
+      options: [...tilePresets.map((x) => [x.id, x.name, presetLine(x)]), ['custom', 'Custom address', 'Your own https:// tile address, typed below']],
+      sheetNote: 'Each viewer’s browser loads the map pictures from the hosts named, which see the viewer’s IP address, this server’s address and the map area shown.',
+      onpick: (v) => {
+        // a custom address is typed and saved in the form below (saved as preset "custom")
+        if (v === 'custom') { tileSource.set(tilePreset ? tilePreset.id : 'custom'); tileUrl.control.focus(); setFieldError(tileUrl, 'Type your own https:// tile address here, then save it.'); return; }
+        return quick({ tiles: { preset: v } }, () => tileSource.set(tilePreset ? tilePreset.id : 'custom'));
       } }) : null;
-    if (tileSource) tileSource.querySelectorAll('button').forEach((b) => { b.disabled = off; });
+    // place names and roads over the photos, for a preset that has them
+    const labelsRow = tilePreset && (tilePreset.overlays || []).length ? toggle({ label: 'Place names and roads', sub: LABELS_TEXT, checked: mt.labels !== false && s.tiles.labels !== false, disabled: off,
+      onchange: (on) => quick({ tiles: { labels: on } }, () => labelsRow.set(!on)) }) : null;
+    // the styles viewers may switch between (Map / Satellite)
+    const allowed = new Set(mt.allowed_styles || s.tiles.styles || ['satellite', 'osm']);
+    const styleRows = tilePresets.map((x) => {
+      const t = toggle({ label: x.name, sub: `${x.kind === 'satellite' ? 'Satellite pictures' : 'A drawn map'}. ${presetLine(x)}`, checked: allowed.has(x.id) || x.id === chosenId, disabled: off || x.id === chosenId,
+        onchange: (on) => {
+          const next = tilePresets.map((y) => y.id).filter((id) => (id === x.id ? on : allowed.has(id)));
+          quick({ tiles: { styles: next } }, () => t.set(!on));
+        } });
+      return t;
+    });
     const tileUrl = field({ label: 'Online tile address', name: 'online_url', value: s.tiles.online_url || '', hint: 'An https:// address with {z}, {x} and {y} in it.', attrs: { spellcheck: 'false', autocomplete: 'off', placeholder: 'https://…/{z}/{x}/{y}.png', disabled: off } });
     tileUrl.control.addEventListener('input', () => setFieldError(tileUrl, null));
     const tileForm = form({
@@ -320,7 +342,7 @@ export async function mount(ctx) {
         if (url && !(/^https:\/\//.test(url) && ['{z}', '{x}', '{y}'].every((x) => url.includes(x)))) bad.online_url = 'An https:// address with {z}, {x} and {y} in it.';
         if (v.max_zoom == null || !Number.isInteger(v.max_zoom) || v.max_zoom < 1 || v.max_zoom > 22) bad.max_zoom = 'A whole number from 1 to 22.';
         if (Object.keys(bad).length) throw Object.assign(new Error('Not saved: check the fields marked.'), { fields: bad });
-        try { await patch({ tiles: { online_url: url || null, attribution: String(v.attribution || '').trim(), max_zoom: v.max_zoom } }); } catch (err) { throw strip(err, /^tiles\./); }
+        try { await patch({ tiles: { online_url: url || null, attribution: String(v.attribution || '').trim(), max_zoom: v.max_zoom, ...(url && !tilePresets.some((x) => x.url === url) ? { preset: 'custom' } : {}) } }); } catch (err) { throw strip(err, /^tiles\./); }
       },
     });
     if (off) tileForm.submitButton.hidden = true;
@@ -337,10 +359,11 @@ export async function mount(ctx) {
     ], { id: OFFLINE_ANCHOR });
     const mapsT = tile({ w: 2, title: 'Maps', icon: 'map', side: ro, cover: 'web.shell.map-tiles' },
       group(null, [ctlRow({ name: 'Map tiles', sub: s.tiles.mode === 'online'
-        ? `Online, from ${hostOf(s.tiles.online_url) || 'the tile server below'}. Each viewer’s browser asks it for the map pictures, sending this server’s address as Referer (OpenStreetMap needs it; never a page or a car).`
+        ? `Online, from ${(mt.hosts && mt.hosts.length ? mt.hosts : [hostOf(s.tiles.online_url) || 'the tile server below']).join(', ')}. Each viewer’s browser asks them for the map pictures, sending this server’s address as Referer (tile servers ask for it; never a page or a car).`
         : 'Offline: maps are drawn from the offline map file on this server; without one, maps show routes and pins on a plain ground, with a note.', control: tilesSeg, stack: true }),
-      ...(tileSource ? [ctlRow({ name: 'Tile source', sub: tilePreset ? `${tilePreset.name}: free, no key. Its terms (${tilePreset.terms.replace(/^https:\/\//, '')}) ask for light use and its credit on every map.` : 'Your own address below. A source fills in its address, credit and zoom.', control: tileSource, stack: true })] : [])]),
+      tileSource, labelsRow]),
       tileForm,
+      tilePresets.length ? group('Maps people can switch to', styleRows, { note: `${STYLES_TEXT} The default is always on.` }) : null,
       offlineGroup);
 
     // proxy

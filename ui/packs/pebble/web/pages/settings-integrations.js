@@ -492,7 +492,7 @@ export async function mount(ctx) {
       note('Sentry Mate needs no cloud: the CAN Bridge uploads to it, and everything else is off until you turn it on. A Tesla account is optional; without one no connection to Tesla is made.'),
       h('ul', { class: 'checks' },
         net.outbound.map((o) => h('li', { class: ['check', o.enabled ? 'is-warn' : 'is-off'] }, h('span', { class: 'check-dot', 'aria-hidden': 'true' }),
-          h('span', { class: 'check-text' }, h('span', { class: 'check-name' }, `Out: ${(PURPOSE[o.purpose] || [o.purpose])[0]}`), h('span', { class: 'check-sub' }, `${o.host || 'no host set'} · ${(PURPOSE[o.purpose] || [null, ''])[1]}${o.last_used_ms ? ' Last used ' : ''}`, o.last_used_ms ? ago(o.last_used_ms) : null,
+          h('span', { class: 'check-text' }, h('span', { class: 'check-name' }, `Out: ${(PURPOSE[o.purpose] || [o.purpose])[0]}`), h('span', { class: 'check-sub' }, `${(Array.isArray(o.hosts) && o.hosts.length ? o.hosts.join(', ') : o.host) || 'no host set'} · ${(PURPOSE[o.purpose] || [null, ''])[1]}${o.last_used_ms ? ' Last used ' : ''}`, o.last_used_ms ? ago(o.last_used_ms) : null,
             changeLink(PURPOSE[o.purpose]))),
           h('span', { class: 'check-word' }, o.enabled ? 'On' : 'Off'))),
         net.inbound.map((i) => h('li', { class: 'check is-ok' }, h('span', { class: 'check-dot', 'aria-hidden': 'true' }),

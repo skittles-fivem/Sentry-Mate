@@ -877,17 +877,19 @@ export async function mount(ctx) {
       ...net.inbound.map((i) => ({ dir: 'in', purpose: i.purpose, host: null, enabled: true, last_used_ms: null, port: i.port, tls: i.tls })),
     ];
     const on = net.outbound.filter((o) => o.enabled).length;
+    // map pictures may come from several hosts (the chosen preset, its names and roads, the maps people may switch to)
+    const hostsOf = (r) => (Array.isArray(r.hosts) && r.hosts.length ? r.hosts : r.host ? [r.host] : []);
     const t = dataTable(ctx, {
       rows, itemName: ['connection', 'connections'], label: 'Network connections',
       caption: `${on} of ${net.outbound.length} outbound connections on now; one that is off makes no request`,
       csv: { filename: csvFilename('sentry-mate', 'network'), columns: [
         { label: 'Direction', value: (r) => (r.dir === 'in' ? 'inbound' : 'outbound') }, { label: 'For', value: (r) => (NET_PURPOSE[r.purpose] || [r.purpose])[0] },
-        { label: 'Host', value: (r) => r.host || '' }, { label: 'Port', value: (r) => r.port ?? '' }, { label: 'TLS', value: (r) => (r.tls == null ? '' : r.tls ? 'yes' : 'no') },
+        { label: 'Host', value: (r) => hostsOf(r).join(' ') }, { label: 'Port', value: (r) => r.port ?? '' }, { label: 'TLS', value: (r) => (r.tls == null ? '' : r.tls ? 'yes' : 'no') },
         { label: 'State', value: (r) => (r.enabled ? 'on' : 'off') }, { label: 'Last used (UTC)', value: (r) => (r.last_used_ms ? new Date(r.last_used_ms).toISOString() : '') }] },
       columns: [
         { key: 'purpose', label: 'For', th: true, sort: true, cls: 'si-wrap', cell: (r) => h('span', null, h('span', { class: 'cell-main' }, (NET_PURPOSE[r.purpose] || [r.purpose])[0]), h('span', { class: 'cell-sub' }, (NET_PURPOSE[r.purpose] || [null, ''])[1])), value: (r) => (NET_PURPOSE[r.purpose] || [r.purpose])[0] },
         { key: 'dir', label: 'Direction', sort: true, cell: (r) => (r.dir === 'in' ? 'Inbound' : 'Outbound') },
-        { key: 'host', label: 'Host or port', cell: (r) => (r.port != null ? h('span', null, code(`port ${r.port}`), r.tls ? ', TLS' : ', no TLS') : r.host ? code(r.host) : h('span', { class: 'si-quiet' }, 'not set')) },
+        { key: 'host', label: 'Host or port', cell: (r) => (r.port != null ? h('span', null, code(`port ${r.port}`), r.tls ? ', TLS' : ', no TLS') : hostsOf(r).length ? h('span', { class: 'si-hosts' }, hostsOf(r).map((x, i) => [i ? ', ' : null, code(x)])) : h('span', { class: 'si-quiet' }, 'not set')) },
         { key: 'enabled', label: 'State', sort: true, cell: (r) => (r.enabled ? chip(r.dir === 'in' ? 'Open' : 'On', { kind: 'on' }) : chip('Off')), value: (r) => (r.enabled ? 1 : 0) },
         { key: 'last', label: 'Last used', sort: true, cell: (r) => (r.last_used_ms ? ago(r.last_used_ms) : h('span', { class: 'si-quiet' }, r.dir === 'in' ? 'always listening' : 'never')), value: (r) => r.last_used_ms },
         { key: 'change', label: 'Change it', cell: (r) => (r.purpose === 'teslafi' ? h('a', { class: 'link-arrow', href: '#teslafi' }, 'TeslaFi, on this page', icon('arrowRight')) : (NET_PURPOSE[r.purpose] || [])[2] ? pageLink('Settings', NET_PURPOSE[r.purpose][2], {}, { arrow: true }) : h('span', { class: 'si-quiet' }, r.purpose === 'mqtt' || r.purpose === 'tesla' ? 'on this page' : '—')), value: () => '' },

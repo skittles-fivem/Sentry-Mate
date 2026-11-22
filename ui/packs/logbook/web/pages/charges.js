@@ -23,6 +23,7 @@ import * as state from '../shared/state.js';
 import { pageHead, q, figure, icon, empty, errorView, loadingBlock, flag, button, sep } from '../core/ui.js';
 import { dataTable } from '../core/table.js';
 import { makeMap, boundsOf } from '../core/map.js';
+import { IMAGERY_HALO } from '../shared/maptiles.js';
 import { openDialog, confirmDialog, popover } from '../core/dialog.js';
 import { choice } from '../core/form.js';
 import { placeLink } from '../core/journal.js';
@@ -794,12 +795,13 @@ export async function mount(ctx) {
       if (ctx.signal.aborted) return;
       ui.m = m;
       m.map.addSource('ch-places', { type: 'geojson', data: features() });
-      const paint = () => ({ 'circle-color': cssVar('--ochre'), 'circle-opacity': 0.42, 'circle-stroke-color': cssVar('--ochre'), 'circle-stroke-width': 1.5 * display.scale, 'circle-radius': ['*', ['get', 'r'], display.scale] });
+      const paint = () => ({ 'circle-color': cssVar('--ochre'), 'circle-opacity': 0.42, 'circle-stroke-color': m.imagery() ? IMAGERY_HALO.casing : cssVar('--ochre'), 'circle-stroke-width': (m.imagery() ? 2.5 : 1.5) * display.scale, 'circle-radius': ['*', ['get', 'r'], display.scale] });
       m.map.addLayer({ id: 'ch-places', type: 'circle', source: 'ch-places', paint: paint() });
       const restyle = () => { if (m.map.getLayer('ch-places')) for (const [k, v] of Object.entries(paint())) m.map.setPaintProperty('ch-places', k, v); };
       const stopTheme = onTheme(restyle);
       const stopSize = display.onChange((c) => { if (c.rem) restyle(); });
-      ctx.onCleanup(() => { stopTheme(); stopSize(); });
+      const stopTiles = m.onTiles(restyle);
+      ctx.onCleanup(() => { stopTheme(); stopSize(); stopTiles(); });
       m.map.on('mousemove', 'ch-places', (e) => {
         const p = ui.pts[e.features && e.features[0] && e.features[0].properties.i];
         m.map.getCanvas().classList.add('is-pointing');

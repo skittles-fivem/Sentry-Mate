@@ -505,7 +505,13 @@ export async function mount(ctx) {
     columns: [
       { key: 'dir', label: 'way', ph: 'sub', render: (r) => (r.dir === 'in' ? 'in' : 'out') },
       { key: 'purpose', label: 'for', ph: 'main', render: (r) => [PURPOSE[r.purpose]?.[0] || r.purpose, h('span', { class: 'muted' }, ` ${PURPOSE[r.purpose]?.[1] || ''}`)] },
-      { key: 'host', label: 'host or port', render: (r) => (r.port != null ? `port ${r.port}${r.tls ? ', tls' : ''}` : r.host || h('span', { class: 'muted' }, 'not set')) },
+      { key: 'host', label: 'host or port', render: (r) => {
+        if (r.port != null) return `port ${r.port}${r.tls ? ', tls' : ''}`;
+        // map pictures can come from several hosts (the chosen preset, its names and roads, the styles viewers may pick)
+        const hosts = Array.isArray(r.hosts) && r.hosts.length ? r.hosts : r.host ? [r.host] : [];
+        if (!hosts.length) return h('span', { class: 'muted' }, 'not set');
+        return hosts.length === 1 ? hosts[0] : h('span', { class: 'net-hosts', dataset: { hosts: String(hosts.length) } }, hosts.flatMap((x, i) => (i ? [h('br'), x] : [x])));
+      } },
       { key: 'enabled', label: 'state', ph: 'num', render: (r) => (r.enabled ? tag(r.dir === 'in' ? 'open' : 'on', 'ok') : tag('off', 'muted')) },
       { key: 'last', label: 'last used', render: (r) => (r.last_used_ms ? ago(r.last_used_ms) : h('span', { class: 'muted' }, r.dir === 'in' ? 'listening' : 'never')) },
       { key: 'go', label: '', grow: true, render: (r) => { const to = PURPOSE[r.purpose]?.[2]; return to ? link(to.startsWith('#') ? `${state.buildUrl('settings-integrations')}${to}` : state.buildUrl(to), 'change') : null; } },
