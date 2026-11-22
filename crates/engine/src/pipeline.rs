@@ -182,6 +182,7 @@ impl Engine {
                     vin: None,
                     profile_setting: None,
                     time_zone: self.inner.default_zone(),
+                    time_zone_typed: Some(false),
                     efficiency_wh_km: None,
                     created_ms: now_ms(),
                     inputs: model::Inputs::SMO,
@@ -945,7 +946,7 @@ impl Engine {
             d.end_place = d.end.as_ref().and_then(|p| places.place_at(p.lat, p.lon)).map(|p| p.id);
         }
         let c = db.car(car)?;
-        let tz = c.as_ref().map_or("UTC", |c| c.time_zone.as_str()).to_string();
+        let tz = c.as_ref().map_or_else(|| "UTC".to_string(), |c| self.inner.car_zone(c).0);
         let mut charges: Vec<Charge> = t.charges;
         let mut points: Vec<ChargePoint> = t.charge_points.iter().map(|(_, p)| p.clone()).collect();
         points.sort_by_key(|p| p.t_ms);

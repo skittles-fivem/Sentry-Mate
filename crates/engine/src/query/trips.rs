@@ -326,7 +326,7 @@ fn saved(e: &Engine, account: &str) -> QResult<Saved> {
 }
 
 fn view(e: &Engine, t: &Stored) -> QResult<SavedTrip> {
-    let tz = e.db().car(t.car)?.map(|c| c.time_zone).unwrap_or_else(|| "UTC".into());
+    let tz = e.db().car(t.car)?.map(|c| e.car_zone(&c).0).unwrap_or_else(|| "UTC".into());
     Ok(SavedTrip {
         id: t.id.clone(),
         car: CarRef(t.car),

@@ -680,6 +680,7 @@ dependencies = [
  "tokio",
  "tracing",
  "trust",
+ "tzf-rs",
  "vault",
 ]
 
@@ -818,6 +819,15 @@ dependencies = [
  "typenum",
  "version_check",
  "zeroize",
+]
+
+[[package]]
+name = "geometry-rs"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "794fbaf8ce24464265e001a7a1dc819e401a303127c0cb714538e21ebe077c77"
+dependencies = [
+ "rtree_rs",
 ]
 
 [[package]]
@@ -1583,6 +1593,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a6394b9e965e73d0a289ee54f589087e2c676aedf60885baf52c76b771e4958"
 
 [[package]]
+name = "pqueue"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2145d14f09d5fc7fe7134b556146599c2929af5b1f1e3a0ecc9d582a9b85e4d"
+
+[[package]]
 name = "primeorder"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1743,6 +1759,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtree_rs"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7787960e978c1c675fd6b8eb7d56b9c7162aec55c41d368add6f3ff39251b96e"
+dependencies = [
+ "pqueue",
+]
+
+[[package]]
 name = "rumqttc"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1762,6 +1787,12 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
 ]
+
+[[package]]
+name = "rustc-hash"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "rustix"
@@ -2599,6 +2630,23 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "tzf-dist"
+version = "0.0.2026-f"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3633c44cb5e44c1224f82d306c9eb179880996a070cdfe1ecb1b4db6f9fa39c2"
+
+[[package]]
+name = "tzf-rs"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fdf8262c938adb6613ceb1871ce43857cabd26d74d4c38313c20f9223459eda"
+dependencies = [
+ "geometry-rs",
+ "rustc-hash",
+ "tzf-dist",
+]
 
 [[package]]
 name = "unicode-bidi"

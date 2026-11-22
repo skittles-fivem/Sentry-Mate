@@ -360,6 +360,7 @@ impl Engine {
             vin,
             profile_setting: None,
             time_zone: self.inner.default_zone(),
+            time_zone_typed: Some(false),
             efficiency_wh_km: None,
             created_ms: now_ms(),
             inputs: Inputs::from(input),

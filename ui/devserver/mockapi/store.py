@@ -67,7 +67,7 @@ class Store:
         self.fresh_start = cfg.needs_setup
         if not cfg.needs_setup:
             self._seed_accounts(now)
-        self.car_over = {}  # car id -> {name, time_zone, config: {key: value}, version}
+        self.car_over = {}  # car id -> {name, time_zone (the owner's; None: automatic), config: {key: value}, version}
         self.car_settings = {}
         self.tokens = {}  # car id -> [token rows]
         self.new_car_tokens = []  # upload tokens for a car that has not uploaded yet
@@ -312,18 +312,23 @@ class Store:
             car = h.car
             base = {"name": car.name, "model": car.model, "year": car.year, "trim": car.trim,
                     "vin_prefix": car.vin_prefix, "profile": car.profile, "time_zone": car.time_zone,
+                    "time_zone_source": getattr(car, "time_zone_source", "position"),
                     "config": {k: {"value": v, "source": s} for k, (v, s) in car.config.items()},
                     "build": {"chemistry": car.chemistry, "full_now_kwh": car.full_now_kwh,
                               "buffer_kwh": car.buffer_kwh, "full_range_new_km": car.full_range_new_km}}
         else:
             sm = self.ds.synthetic.summary(int(car_id[1:]))
-            base = {k: sm[k] for k in ("name", "model", "year", "trim", "vin_prefix", "profile", "time_zone")}
+            base = {k: sm[k] for k in ("name", "model", "year", "trim", "vin_prefix", "profile", "time_zone",
+                                       "time_zone_source")}
             base["config"] = {"trim": {"value": sm["trim"], "source": "vin"}}
         base["version"] = over.get("version", 1)
         if "name" in over:
             base["name"] = over["name"]
-        if "time_zone" in over:
-            base["time_zone"] = over["time_zone"]
+        if over.get("time_zone"):
+            base["time_zone"], base["time_zone_source"] = over["time_zone"], "owner"
+        elif "time_zone" in over and base["time_zone_source"] == "owner":
+            # back to automatic: the made-up car's own zone, as if from its position
+            base["time_zone_source"] = "position"
         base["sold"] = bool(over.get("sold"))
         base["sold_date"] = over.get("sold_date") if base["sold"] else None
         for k, v in over.get("config", {}).items():

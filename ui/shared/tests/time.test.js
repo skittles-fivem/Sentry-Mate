@@ -238,3 +238,10 @@ test('an unknown zone falls back to UTC instead of breaking the page', () => {
     assert.equal(warned, 1);
   } finally { console.warn = warn; }
 });
+
+test('where a car zone comes from, in words', () => {
+  assert.equal(T.zoneSourceText('owner'), 'set for this car');
+  assert.equal(T.zoneSourceText('position'), 'from the car’s position');
+  assert.equal(T.zoneSourceText('default'), 'the server’s default');
+  assert.equal(T.zoneSourceText(undefined), null);
+});

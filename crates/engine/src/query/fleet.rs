@@ -40,7 +40,11 @@ pub struct CarItem {
     pub trim: Option<String>,
     /// The DBC set: `tesla-3y` or `tesla-sx-legacy`.
     pub profile: &'static str,
+    /// The zone the car's days and clocks follow ([`crate::Engine::car_zone`]).
     pub time_zone: String,
+    /// Where `time_zone` comes from: `owner` (set for the car), `position` (the zone of its newest position) or
+    /// `default` (the server's `default_time_zone`).
+    pub time_zone_source: &'static str,
     pub last_activity_ms: Option<u64>,
     pub now: CarNow,
     pub attention: Vec<&'static str>,
@@ -157,6 +161,7 @@ pub(crate) fn item(e: &Engine, x: &FleetEntry, now: u64) -> CarItem {
     let n = x.summary.now.as_ref();
     let s = n.map(|n| &n.sample);
     let place = s.and_then(|s| s.lat.zip(s.lon)).and_then(|(a, b)| places.place_at(a, b));
+    let (zone, zone_source) = e.car_zone(c);
     CarItem {
         id: CarRef(c.id),
         name: c.name.clone(),
@@ -165,7 +170,8 @@ pub(crate) fn item(e: &Engine, x: &FleetEntry, now: u64) -> CarItem {
         vin_prefix: c.vin.as_ref().map(|v| v.vin_prefix.clone()),
         trim: None,
         profile: c.profile().dbc_name(),
-        time_zone: c.time_zone.clone(),
+        time_zone: zone,
+        time_zone_source: zone_source.word(),
         last_activity_ms: x.summary.last_activity_ms,
         sources: super::source_refs(&car_origins(x)),
         source_label: model::Origin::label_of(&car_origins(x)),
@@ -748,7 +754,8 @@ fn owner_extra(path: &str, kind: OwnerKind, v: &serde_json::Value, errs: &mut Er
 }
 
 /// `PATCH /cars/{car}`: `{ version, name?, time_zone?, config? }` (each config key a value, or null to forget the
-/// one typed in). One change at a time; a stale `version` changes nothing.
+/// one typed in; `time_zone` an IANA zone the owner sets, or null or `auto` to have it worked out again). One
+/// change at a time; a stale `version` changes nothing.
 pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDetail>> {
     let mut errs = Errs::default();
     let version = errs.head(body, &["name", "time_zone", "config", "sold", "sold_date"]);
@@ -787,14 +794,16 @@ pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDeta
     };
     let zone = match body.get("time_zone") {
         None => None,
+        Some(serde_json::Value::Null) => Some(None),
+        Some(serde_json::Value::String(s)) if s.trim().eq_ignore_ascii_case("auto") => Some(None),
         Some(serde_json::Value::String(s)) => {
             if !crate::tz::is_zone(s.trim()) {
-                errs.rule("time_zone", "Not a known time zone (for example Europe/Amsterdam).");
+                errs.rule("time_zone", "Not a known time zone (for example Europe/Amsterdam), or null for automatic.");
             }
-            Some(s.trim().to_string())
+            Some(Some(s.trim().to_string()))
         }
         Some(_) => {
-            errs.bad("time_zone", "Must be text.");
+            errs.bad("time_zone", "Must be text or null.");
             None
         }
     };
@@ -835,7 +844,8 @@ pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDeta
     let _one = crate::lock(&e.inner.claim);
     // the car's record is read and written back under its own lock (the pipeline's VIN and key changes take it too)
     let record = crate::lock(&e.inner.car_record);
-    let mut c = car_of(e, car)?;
+    // (the stored record, not the zone worked out for it: it is written back)
+    let mut c = e.db().car(car)?.ok_or(QueryError::NoSuchCar)?;
     let mut o = owner(e, car)?;
     if errs.bad.is_empty()
         && let Some(v) = version
@@ -848,8 +858,13 @@ pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDeta
     if let Some(n) = name {
         c.name = n;
     }
-    if let Some(z) = zone {
-        c.time_zone = z;
+    match zone {
+        Some(Some(z)) => {
+            c.time_zone = z;
+            c.time_zone_typed = Some(true);
+        }
+        Some(None) => c.time_zone_typed = Some(false),
+        None => {}
     }
     if let Some(b) = sold {
         o.sold = b;
@@ -1191,7 +1206,8 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
     let _one = crate::lock(&e.inner.claim);
     // the car's record is read and written back under its own lock (the pipeline's VIN and key changes take it too)
     let record = crate::lock(&e.inner.car_record);
-    let mut c = car_of(e, car)?;
+    // (the stored record, not the zone worked out for it: it is written back)
+    let mut c = e.db().car(car)?.ok_or(QueryError::NoSuchCar)?;
     let mut o = owner(e, car)?;
     if errs.bad.is_empty()
         && let Some(v) = version

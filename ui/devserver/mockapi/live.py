@@ -357,6 +357,7 @@ def list_item(app, car_id, t):
         sm = {k: v for k, v in sm.items() if not k.startswith("_")}
         sm["name"] = meta["name"]
         sm["time_zone"] = meta["time_zone"]
+        sm["time_zone_source"] = meta["time_zone_source"]
         sm["sources"] = [S.ref("smo")]
         sm["source_label"] = S.label_of(sm["sources"])
         return sm
@@ -367,7 +368,8 @@ def list_item(app, car_id, t):
     return {
         "id": car_id, "name": meta["name"], "model": meta["model"], "year": meta["year"],
         "vin_prefix": meta["vin_prefix"], "trim": meta["config"].get("trim", {}).get("value") or meta["trim"],
-        "profile": meta["profile"], "time_zone": meta["time_zone"], "last_activity_ms": last,
+        "profile": meta["profile"], "time_zone": meta["time_zone"], "time_zone_source": meta["time_zone_source"],
+        "last_activity_ms": last,
         "now": {
             "state": n["state"], "since_ms": n["since_ms"], "at_ms": n["at_ms"], "received_ms": n["received_ms"],
             "stale": n["stale"], "soc_pct": _v(n.get("soc_pct")), "range_km": _v(n.get("range_km")),

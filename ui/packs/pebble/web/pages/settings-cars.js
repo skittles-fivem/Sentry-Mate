@@ -11,7 +11,7 @@
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { isValidZone, formatDate, formatDateTime, formatTime, formatDayKey } from '../shared/time.js';
+import { isValidZone, formatDate, formatDateTime, formatTime, formatDayKey, zoneSourceText } from '../shared/time.js';
 import { tile, btn, chip, note, icon, stateTag, ago } from '../core/ui.js';
 import { srcPill, srcText } from '../core/source.js';
 import { emptyTile } from '../core/states.js';
@@ -344,18 +344,28 @@ async function mountCar(ctx) {
   const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
   const tzF = field({ label: 'Time zone', name: 'time_zone', value: car.time_zone || '', hint: 'A name such as Europe/Amsterdam. Type to see the list.', attrs: { list: 'sc-zones', spellcheck: 'false', autocomplete: 'off', disabled: ro } });
   const tzNow = h('p', { class: 'note' });
-  const drawNow = () => { const z = car.time_zone; tzNow.textContent = z && isValidZone(z) ? `Now there: ${formatTime(api.now(), z)}, ${formatDate(api.now(), z, { now: api.now() })}.` : 'Not set: times show in this browser’s zone.'; };
+  const drawNow = () => {
+    const z = car.time_zone;
+    const src = zoneSourceText(car.time_zone_source);
+    const from = src ? `${z.replace(/_/g, ' ')} (${src})${car.time_zone_source === 'owner' ? '' : ': type or pick a zone to set it for this car'}. ` : '';
+    tzNow.textContent = z && isValidZone(z) ? `${from}Now there: ${formatTime(api.now(), z)}, ${formatDate(api.now(), z, { now: api.now() })}.` : 'Not set: times show in this browser’s zone.';
+  };
   drawNow();
   const saveZone = async (v) => {
     setFieldError(tzF, null);
     if (!v || !isValidZone(v)) { setFieldError(tzF, 'Not a known time zone. Pick one from the list, for example Europe/Amsterdam.'); return; }
-    if (v === car.time_zone) return;
+    if (v === car.time_zone && car.time_zone_source === 'owner') return;
     try { await patchCar({ time_zone: v }, `${car.name} now uses ${v.replace(/_/g, ' ')}`); } catch (err) { setFieldError(tzF, (err.fields && err.fields.time_zone) || err.message); }
   };
   tzF.control.addEventListener('change', () => saveZone(tzF.control.value.trim()));
   const tzT = tile({ w: 2, title: 'Time zone', icon: 'clock', cover: 'docs.env.core.tz' },
     tzF, h('datalist', { id: 'sc-zones' }, zones.map((z) => h('option', { value: z }))), tzNow,
-    browserZone && browserZone !== car.time_zone && !ro ? h('div', { class: 'form-actions' }, btn(`Use ${browserZone.replace(/_/g, ' ')}`, { kind: 'soft', icon: 'pin', onclick: () => { tzF.control.value = browserZone; saveZone(browserZone); } })) : null,
+    (car.time_zone_source === 'owner' || (browserZone && browserZone !== car.time_zone)) && !ro ? h('div', { class: 'form-actions' },
+      car.time_zone_source === 'owner' ? btn('From the car’s position', { kind: 'soft', icon: 'pin', onclick: async () => {
+        setFieldError(tzF, null);
+        try { await patchCar({ time_zone: null }, `${car.name} takes its time zone from its position`); } catch (err) { setFieldError(tzF, (err.fields && err.fields.time_zone) || err.message); }
+      } }) : null,
+      browserZone && browserZone !== car.time_zone ? btn(`Use ${browserZone.replace(/_/g, ' ')}`, { kind: 'soft', icon: 'pin', onclick: () => { tzF.control.value = browserZone; saveZone(browserZone); } }) : null) : null,
     note('Days, weeks and months, and the hours of time-of-use prices, are counted in this zone. Times are stored in UTC, so a new zone regroups the history without changing it.'));
 
   /* ---------- battery */

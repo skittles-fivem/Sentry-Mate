@@ -38,6 +38,7 @@ fn car(name: &str) -> model::Car {
         vin: None,
         profile_setting: None,
         time_zone: "UTC".into(),
+        time_zone_typed: Some(true),
         efficiency_wh_km: None,
         created_ms: 0,
         inputs: Default::default(),

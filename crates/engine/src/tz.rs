@@ -14,6 +14,54 @@ pub fn is_zone(name: &str) -> bool {
     name.parse::<Tz>().is_ok()
 }
 
+/// The time zone boundaries built into the program (tzf's simplified world data, about 4 MB, read in place;
+/// timezone-boundary-builder's, from OpenStreetMap, ODbL).
+fn finder() -> &'static tzf_rs::EmbeddedFinder {
+    static F: std::sync::OnceLock<tzf_rs::EmbeddedFinder> = std::sync::OnceLock::new();
+    F.get_or_init(tzf_rs::EmbeddedFinder::new)
+}
+
+/// The IANA zone a position is in, looked up in the boundaries built in: nothing is sent anywhere. At sea it is
+/// the nautical zone (`Etc/GMT+6`); `None` for a position that is no position or a zone chrono-tz doesn't know.
+pub fn zone_at(lat: f64, lon: f64) -> Option<&'static str> {
+    if !(lat.is_finite() && lon.is_finite() && (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)) {
+        return None;
+    }
+    Some(finder().get_tz_name(lon, lat)).filter(|z| !z.is_empty() && is_zone(z))
+}
+
+/// Where a car's time zone comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoneSource {
+    /// The owner set it.
+    Owner,
+    /// The zone the car's newest position is in.
+    Position,
+    /// The server's `default_time_zone` (no zone set and no position known).
+    Default,
+}
+
+impl ZoneSource {
+    /// As the API writes it: `owner`, `position` or `default`.
+    pub fn word(self) -> &'static str {
+        match self {
+            ZoneSource::Owner => "owner",
+            ZoneSource::Position => "position",
+            ZoneSource::Default => "default",
+        }
+    }
+}
+
+/// The zone a car's days and clocks follow: the owner's, else the one its position is in, else the server's
+/// default.
+pub fn pick(typed: Option<&str>, at_position: Option<&str>, default: &str) -> (String, ZoneSource) {
+    match (typed, at_position) {
+        (Some(z), _) => (z.to_string(), ZoneSource::Owner),
+        (None, Some(z)) => (z.to_string(), ZoneSource::Position),
+        (None, None) => (default.to_string(), ZoneSource::Default),
+    }
+}
+
 fn local(ms: u64, tz: Tz) -> DateTime<Tz> {
     let ms = i64::try_from(ms).unwrap_or(i64::MAX);
     DateTime::<Utc>::from_timestamp_millis(ms).unwrap_or_default().with_timezone(&tz)
@@ -120,5 +168,28 @@ mod tests {
         assert_eq!(period_of(ms, Period::Year, tz).2, "2026");
         assert_eq!(zone("Not/AZone"), Tz::UTC);
         assert!(is_zone("Europe/Berlin") && !is_zone("Mars/Base"));
+    }
+
+    #[test]
+    fn the_zone_of_a_position_is_looked_up_offline() {
+        // made-up points in well-known public places
+        assert_eq!(zone_at(41.8800, -87.6300), Some("America/Chicago"), "central Chicago");
+        assert_eq!(zone_at(52.5200, 13.4050), Some("Europe/Berlin"), "central Berlin");
+        assert_eq!(zone_at(35.6800, 139.7600), Some("Asia/Tokyo"), "central Tokyo");
+        assert_eq!(zone_at(-33.8700, 151.2100), Some("Australia/Sydney"), "central Sydney");
+        // the middle of the Atlantic: a nautical zone
+        let sea = zone_at(30.0, -40.0);
+        assert!(sea.is_some_and(|z| z.starts_with("Etc/")), "{sea:?}");
+        assert_eq!(zone_at(f64::NAN, 0.0), None);
+        assert_eq!(zone_at(91.0, 0.0), None);
+    }
+
+    #[test]
+    fn the_owners_zone_wins_then_the_position_then_the_default() {
+        let owner = pick(Some("Europe/Berlin"), Some("America/Chicago"), "UTC");
+        assert_eq!(owner, ("Europe/Berlin".into(), ZoneSource::Owner));
+        assert_eq!(pick(None, Some("America/Chicago"), "UTC"), ("America/Chicago".into(), ZoneSource::Position));
+        assert_eq!(pick(None, None, "Asia/Tokyo"), ("Asia/Tokyo".into(), ZoneSource::Default));
+        assert_eq!(ZoneSource::Position.word(), "position");
     }
 }

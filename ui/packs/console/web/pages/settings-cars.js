@@ -9,7 +9,7 @@
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { invalidate } from '../shared/api.js';
-import { isValidZone, dayKey } from '../shared/time.js';
+import { isValidZone, dayKey, zoneSourceText } from '../shared/time.js';
 import { convert, toMetric, unitLabel, format } from '../shared/units.js';
 import { head, paint, section, note, link, btn, kv } from '../core/ui.js';
 import { table } from '../core/table.js';
@@ -190,7 +190,7 @@ async function mountCar(ctx) {
   const patchCar = (body) => serial('car', async () => {
     try { S.car = await ctx.api.patch(`cars/${enc(cid)}`, { version: S.car.version, ...body }); } catch (e) { if (e.status === 409) throw await stale(); throw e; }
     invalidate('cars');
-    Object.assign(ctx.car, { name: S.car.name, time_zone: S.car.time_zone });
+    Object.assign(ctx.car, { name: S.car.name, time_zone: S.car.time_zone, time_zone_source: S.car.time_zone_source });
   });
   const patchSettings = (body) => serial('settings', async () => {
     try { S.settings = await ctx.api.patch(`cars/${enc(cid)}/settings`, { version: S.settings.version, ...body }); } catch (e) { if (e.status === 409) throw await stale(); throw e; }
@@ -349,16 +349,20 @@ async function mountCar(ctx) {
   const ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
   function paintTz() {
     const z = S.car.time_zone || '';
+    const src = S.car.time_zone_source;
+    const srcText = zoneSourceText(src);
     const listId = `sc-zones-${cid}`;
     const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
     const now = ctx.api.now();
     const lines = editLines([
       { key: 'time_zone', id: 'time-zone', type: 'text', value: z, readOnly: ro, cover: 'docs.env.core.tz', attrs: { list: listId },
         parse: (t) => (isValidZone(t.trim()) ? { value: t.trim() } : { error: 'not a time zone this browser knows: pick one from the list, such as Europe/Amsterdam' }),
-        help: [`Days, ISO weeks, months, statistics and prices by time of day use this zone, wherever the server runs. A change regroups the whole history at once; nothing is lost. Now there: ${time(now, z || ctx.tz)}, ${date(now, z || ctx.tz)}.`],
-        after: browserZone && browserZone !== z && !ro ? btn(`use ${browserZone}`, async () => {
+        help: [srcText ? `${z} (${srcText})${src === 'owner' ? '' : ': type or pick a zone to set it for this car'}. ` : '', `Days, ISO weeks, months, statistics and prices by time of day use this zone, wherever the server runs. A change regroups the whole history at once; nothing is lost. Now there: ${time(now, z || ctx.tz)}, ${date(now, z || ctx.tz)}.`],
+        after: [src === 'owner' && !ro ? btn('automatic', async () => {
+          try { await patchCar({ time_zone: null }); toast('Time zone: worked out from the car’s position again.'); repaint(); } catch (e) { toast(errMsg(e), { kind: 'error' }); }
+        }) : null, browserZone && browserZone !== z && !ro ? btn(`use ${browserZone}`, async () => {
           try { await patchCar({ time_zone: browserZone }); toast(`Time zone saved: ${browserZone}.`); repaint(); } catch (e) { toast(errMsg(e), { kind: 'error' }); }
-        }) : null,
+        }) : null].filter(Boolean),
         save: async (v) => { await patchCar({ time_zone: v }); paintTop(); } },
     ]);
     replace(slots.tz, section({ title: 'time zone' }, lines.el, h('datalist', { id: listId }, ZONES.map((x) => h('option', { value: x })))));
