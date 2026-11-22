@@ -22,6 +22,9 @@
 //!    built, SMO's winning where it has data, the API's filling the rest; the API's view of the car's state fills
 //!    what SMO does not know ([`Input::api`]). Rows name the inputs that gave them.
 //!
+//! 6. **Import gap filling** ([`gapfill`]): where both live inputs have nothing for a value, the import shown for that
+//!    time fills it (samples and a live row's null fields), each filled value named.
+//!
 //! Units are those of `model`: ms since 1970 UTC, km, km/h, kW, kWh, °C, bar; battery power positive out of the pack.
 
 mod calc;
@@ -30,6 +33,7 @@ mod drives;
 pub mod facts;
 pub mod firmware;
 pub mod fuse;
+pub mod gapfill;
 mod read;
 pub mod sample;
 mod signals;

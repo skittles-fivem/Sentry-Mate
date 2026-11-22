@@ -346,7 +346,8 @@ async fn a_cars_settings_keep_their_rules_and_the_consumption_factor_reaches_the
         json!({ "car": "c2", "time_zone": "Europe/Amsterdam", "version": 1,
                 "battery_chemistry": { "setting": "auto", "detected": null, "evidence": null },
                 "free_supercharging": [], "capacity_new_kwh": null, "full_range_new_km": null,
-                "warranty_threshold_pct": 70.0, "efficiency_wh_per_km_override": null, "software_version_typed": null })
+                "warranty_threshold_pct": 70.0, "efficiency_wh_per_km_override": null, "software_version_typed": null,
+                "import_gap_fill": null, "import_gap_fill_on": true })
     );
     let r = admin
         .patch(

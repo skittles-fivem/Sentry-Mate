@@ -4,6 +4,7 @@ breakdown, the 1 Hz curve, manual costs, charging stats, stats per place and the
 
 from __future__ import annotations
 
+from .. import gapfill
 from .. import sources as S
 from ..conventions import nk, page
 from ..dataset.segments import CURVE_FIELDS
@@ -69,6 +70,8 @@ def _filtered(req, car_ids):
             if kind and c.ckind != kind:
                 continue
             x = cached_charge_row(req, h, c)
+            if source != "all":  # one source alone: nothing filled from an import
+                x = gapfill.unfill(x)
             if pkind:
                 pk = (x["place"] or {}).get("kind") or "none"
                 if pk != pkind:

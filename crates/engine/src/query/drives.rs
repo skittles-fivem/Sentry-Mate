@@ -64,6 +64,8 @@ pub struct DriveView {
     pub hvac_kwh: Option<f64>,
     #[serde(flatten)]
     pub from: super::Sources,
+    /// The values an import filled where the live row had none (field → the import): empty for a row's own values.
+    pub value_sources: super::gapfill::ValueSources,
     pub flags: DriveFlags,
     pub purpose: Option<serde_json::Value>,
 }
@@ -146,10 +148,24 @@ pub(crate) fn view(c: &Car, d: &Drive, x: &Ctx) -> DriveView {
         descent_m: r(d.descent_m, 0),
         hvac_kwh: None,
         from: super::Sources::of(d.source, d.inputs),
+        value_sources: Default::default(),
         // gaps and lost frames are marked by the list and the detail ([`Cover`])
         flags: DriveFlags { in_progress: live, ..DriveFlags::default() },
         purpose: None,
     }
+}
+
+/// [`view`] of a drive with the values the chosen import fills where the live row has none ([`super::gapfill`]),
+/// named in `value_sources` and `sources`; the filled drive too (for figures read from it).
+pub(crate) fn view_filled(c: &Car, d: &Drive, x: &Ctx, gaps: &super::gapfill::Gaps) -> QResult<(DriveView, Drive)> {
+    let mut d = d.clone();
+    let filled = gaps.drive(&mut d)?;
+    let mut v = view(c, &d, x);
+    if !filled.is_empty() {
+        v.value_sources = filled.value_sources();
+        v.from = filled.sources(&v.from);
+    }
+    Ok((v, d))
 }
 
 /// `/cars/{car}/drives` filters.
@@ -638,6 +654,7 @@ fn pass(
     let sort = sort_of(q)?;
     let (a, b) = q.period.bounds()?;
     let shown = Shown::new(e, car, f.source)?;
+    let gaps = super::gapfill::Gaps::new(e, car, f.source)?;
     let mut purposes = super::logbook::Purposes::new(e, c)?;
     let mut sum = Summer::new(f.hill);
     let mass = mass_kg(c);
@@ -648,9 +665,10 @@ fn pass(
         Cover::read(e, car, a.saturating_sub(GAP_MS), b.saturating_add(2 * 86_400_000))?
     };
     each::<Drive>(e, car, a, b, f.source, &shown, desc, |d| {
-        let mut v = view(c, &d, &x);
+        let (mut v, filled) = view_filled(c, &d, &x, &gaps)?;
         mark_gaps(e, &d, &cover, None, &mut v)?;
-        v.purpose = purposes.of(e, &d, &v)?;
+        v.purpose = purposes.of(e, &filled, &v)?;
+        // (the consumption over the climb from the row's own climb: an imported one is never counted as measured)
         if f.hill {
             hill_corrected(&mut v, &d, x.rated_wh_per_km, mass);
         }
@@ -864,11 +882,12 @@ pub fn drive(e: &Engine, car: CarId, id: u64, speed_band_kph: Option<f64>) -> QR
         }
         Ok(true)
     })?;
-    let mut view = view(&c, &d, &x);
+    let gaps = super::gapfill::Gaps::new(e, car, None)?;
+    let (mut view, filled) = view_filled(&c, &d, &x, &gaps)?;
     let cover = Cover::read(e, car, d.start_ms.saturating_sub(GAP_MS), d.end_ms.saturating_add(GAP_MS + 1))?;
     let times: Vec<u64> = s.iter().map(|x| x.t_ms).collect();
     let gaps = mark_gaps(e, &d, &cover, Some(&times), &mut view)?;
-    view.purpose = super::logbook::Purposes::new(e, &c)?.of(e, &d, &view)?;
+    view.purpose = super::logbook::Purposes::new(e, &c)?.of(e, &filled, &view)?;
     if d.source == Source::Live && with_power {
         view.regen_kwh = r(Some(regen), 3);
     }
@@ -900,7 +919,22 @@ pub struct TrackPoint {
     pub speed_kph: Option<f64>,
     pub power_kw: Option<f64>,
     pub soc_pct: Option<f64>,
+    /// The values of this point an import gave (where the live drive had none; all of them for a point of the
+    /// import's own, in a stretch the live data does not cover): left out when none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub imported: Vec<&'static str>,
 }
+
+/// The track fields and the sample fields they are read from.
+const TRACK_FIELDS: &[(&str, &str)] = &[
+    ("lat", "lat"),
+    ("lon", "lon"),
+    ("elevation_m", "elevation_m"),
+    ("accuracy_m", "gps_accuracy_m"),
+    ("speed_kph", "speed_kmh"),
+    ("power_kw", "battery_power_kw"),
+    ("soc_pct", "soc"),
+];
 
 /// A drive's track: one point a second with a fix, cut into stretches where data is missing for over 10 s.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -911,6 +945,8 @@ pub struct Track {
     pub start_ms: u64,
     pub time_zone: String,
     pub stretches: Vec<Vec<TrackPoint>>,
+    /// The track fields an import gave values to (field → the import): empty when all are the drive's own.
+    pub value_sources: super::gapfill::ValueSources,
 }
 
 pub fn track(e: &Engine, car: CarId, id: u64) -> QResult<Track> {
@@ -918,8 +954,41 @@ pub fn track(e: &Engine, car: CarId, id: u64) -> QResult<Track> {
     let d: Drive = e.db().get(car, id)?.ok_or(QueryError::NotFound("no_such_drive"))?;
     let mut stretches: Vec<Vec<TrackPoint>> = Vec::new();
     let mut last_t: Option<u64> = None;
-    for s in samples(e, car, &d)? {
+    let own = samples(e, car, &d)?;
+    // a live drive's track with what the chosen import fills: values it lacks, and the import's points where the
+    // drive's own data has a gap
+    let given = if d.source == Source::Live {
+        let gaps = super::gapfill::Gaps::new(e, car, None)?;
+        let to = d.end_ms.max(d.start_ms) + 1;
+        gaps.samples(own, d.start_ms, to, GAP_MS, super::gapfill::Own::WhenOn)?
+    } else {
+        super::gapfill::Given { samples: own, masks: Vec::new() }
+    };
+    let mut value_sources = super::gapfill::ValueSources::new();
+    for s in &given.samples {
         let (Some(lat), Some(lon)) = (s.lat, s.lon) else { continue };
+        let mut imported = Vec::new();
+        for (_, site, mask) in given.at(s.t_ms) {
+            for (name, field) in TRACK_FIELDS {
+                let bit = timeline::gapfill::slot_bit(field);
+                let has = match *name {
+                    "elevation_m" => s.elevation_m.is_some(),
+                    "accuracy_m" => s.gps_accuracy_m.is_some(),
+                    "speed_kph" => s.speed_kmh.is_some(),
+                    "power_kw" => s.battery_power_kw.is_some(),
+                    "soc_pct" => s.soc.is_some(),
+                    _ => true,
+                };
+                if has && (*mask == u64::MAX || mask & bit != 0) && !imported.contains(name) {
+                    imported.push(*name);
+                    let r = super::SourceRef::from(model::Origin::Import(*site));
+                    let v = value_sources.entry((*name).to_string()).or_default();
+                    if !v.contains(&r) {
+                        v.push(r);
+                    }
+                }
+            }
+        }
         let p = TrackPoint {
             t_ms: s.t_ms,
             lat,
@@ -929,6 +998,7 @@ pub fn track(e: &Engine, car: CarId, id: u64) -> QResult<Track> {
             speed_kph: s.speed_kmh,
             power_kw: s.battery_power_kw,
             soc_pct: s.soc,
+            imported,
         };
         if last_t.is_none_or(|t| s.t_ms.saturating_sub(t) > GAP_MS) || stretches.is_empty() {
             stretches.push(Vec::new());
@@ -945,6 +1015,7 @@ pub fn track(e: &Engine, car: CarId, id: u64) -> QResult<Track> {
         start_ms: d.start_ms,
         time_zone: c.time_zone.clone(),
         stretches,
+        value_sources,
     })
 }
 
@@ -1017,6 +1088,10 @@ pub fn geojson(t: &Track, simplify_m: Option<f64>, extensions: &[&str]) -> serde
                 };
                 props.insert(name.into(), serde_json::json!(col));
             }
+            // per point, the values an import gave it (only on a stretch with any)
+            if pts.iter().any(|p| !p.imported.is_empty()) {
+                props.insert("imported".into(), serde_json::json!(pts.iter().map(|p| &p.imported).collect::<Vec<_>>()));
+            }
             serde_json::json!({
                 "type": "Feature",
                 "geometry": { "type": "LineString", "coordinates": coords },
@@ -1024,7 +1099,7 @@ pub fn geojson(t: &Track, simplify_m: Option<f64>, extensions: &[&str]) -> serde
             })
         })
         .collect();
-    serde_json::json!({ "type": "FeatureCollection", "features": features })
+    serde_json::json!({ "type": "FeatureCollection", "features": features, "value_sources": t.value_sources })
 }
 
 fn iso(ms: u64) -> String {
