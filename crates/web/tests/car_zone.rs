@@ -35,6 +35,9 @@ fn parked_at(car: CarId, at_ms: u64, lat: f64, lon: f64) -> Now {
         driving: false,
         sample,
         place: None,
+        since_ms: None,
+        trim: None,
+        off_can: Box::default(),
     }
 }
 
