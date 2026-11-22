@@ -549,7 +549,7 @@ fn vehicle_from(e: &Engine, c: &model::Car, o: &Owner, can: model::vehicle::CanB
     if matches!(o.settings.chemistry.as_str(), "lfp" | "nca_nmc") {
         owner.entry("chemistry".into()).or_insert_with(|| OwnerValue::Text(o.settings.chemistry.clone()));
     }
-    let api = records::api_meta(e.db(), c.id)?.meta;
+    let api = records::api_meta(e.db(), c.id, model::Input::TeslaApi)?.meta;
     let inputs = VehicleInputs {
         vin: c.vin.as_ref().map(|v| v.vin_prefix.clone()),
         can,

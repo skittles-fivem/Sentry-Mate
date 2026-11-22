@@ -117,6 +117,7 @@ class Store:
         teslafi.seed(self, now)  # the TeslaFi input: one account, its car
         from .resources import teslamate
         teslamate.seed(self, now)  # the local TeslaMate input: MQTT on, the database catch-up off, two cars
+        teslamate.seed_trouble(self, getattr(cfg, "teslamate_trouble", "none"), now)  # --teslamate-trouble
 
     # ------------------------------------------------------------ seeding
     def seed_accounts(self, now):

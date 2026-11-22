@@ -117,6 +117,50 @@ class Teslamate(ServerCase):
             self.assertIn(want, actions)
 
 
+class TeslamateNotices(ServerCase):
+    def codes(self):
+        return [n["code"] for n in self.c.get("/api/v1/notices")["items"] if n["code"].startswith("teslamate_")]
+
+    def test_troubles_are_notices_with_their_link_and_audit(self):
+        from mockapi.resources.teslamate import fail
+        st, now = self.server.app.store, self.server.app.clock.now()
+        self.assertEqual(self.codes(), [])
+        for code, want in (("connection_refused", "teslamate_connection_refused"), ("timeout", "teslamate_connection_refused"),
+                           ("auth_failed", "teslamate_auth_failed"), ("pin_mismatch", "teslamate_pin_mismatch"),
+                           ("quiet", "teslamate_quiet")):
+            fail(st, "mqtt", code, now)
+            self.assertEqual(self.codes(), [want], code)
+            n = [x for x in self.c.get("/api/v1/notices")["items"] if x["code"] == want][0]
+            self.assertEqual((n["level"], n["fix_link"], n["detail"]["part"]),
+                             ("warning", "/settings/integrations#teslamate", "mqtt"))
+            self.assertEqual(n["detail"]["error"], None if code == "quiet" else code)
+        self.assertEqual(self.c.get(BASE)["status"]["mqtt"]["state"], "connected", "quiet: still connected")
+        fail(st, "mqtt", None, now)
+        self.assertEqual(self.codes(), [])
+        # the database catch-up: only while it is on
+        fail(st, "database", "query_failed", now)
+        self.assertEqual(self.codes(), [])
+        t = self.c.get(BASE)
+        self.c.json("PUT", BASE, {"version": t["version"], "mqtt": {"host": "192.0.2.10", "port": 1883},
+                                  "database": {"enabled": True, "host": "192.0.2.10"}, "confirm_password": PW})
+        fail(st, "database", "query_failed", now)
+        n = [x for x in self.c.get("/api/v1/notices")["items"] if x["code"] == "teslamate_catchup_failed"]
+        self.assertEqual((len(n), n[0]["detail"]), (1, {"part": "database", "error": "query_failed"}))
+        actions = {e["action"] for e in self.c.get("/api/v1/audit?limit=500")["items"]}
+        for want in ("teslamate-local-connection-refused", "teslamate-local-auth-failed", "teslamate-local-pin-mismatch",
+                     "teslamate-local-quiet", "teslamate-local-catchup-failed"):
+            self.assertIn(want, actions)
+
+
+class TeslamateNoticesWatch(ServerCase):
+    server_args = {"role": "watch"}
+
+    def test_admins_only(self):
+        from mockapi.resources.teslamate import fail
+        fail(self.server.app.store, "mqtt", "auth_failed", self.server.app.clock.now())
+        self.assertFalse([n for n in self.c.get("/api/v1/notices")["items"] if n["code"].startswith("teslamate_")])
+
+
 class TeslamateWatch(ServerCase):
     server_args = {"role": "watch"}
 

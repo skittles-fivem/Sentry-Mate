@@ -38,6 +38,12 @@ fn v<T>(x: Option<T>, at: At) -> Option<V<T>> {
     x.map(|value| V { value, at_ms: at.0, origin: at.1 })
 }
 
+/// When an API input's values beside its samples were read, and that input: the source each value taken from them
+/// names (local TeslaMate's are never the Tesla API's).
+pub(crate) fn api_at(meta: &tesla::ApiMeta, input: model::Input) -> At {
+    At(meta.at_ms, model::Origin::from(input))
+}
+
 /// A live input with when its newest value was recorded.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct InputNow {
@@ -134,6 +140,9 @@ pub struct NowView {
     pub ideal_range_km: Option<V<f64>>,
     pub est_range_km: Option<V<f64>>,
     pub est_basis: Option<&'static str>,
+    /// The car's own range estimate (`est_battery_range`) as an API input reads it: the Tesla API's while its
+    /// reading is current, else local TeslaMate's; `sources` names the one.
+    pub car_est_range_km: Option<V<f64>>,
     pub energy_remaining_kwh: Option<V<f64>>,
     pub odometer_km: Option<V<f64>>,
     pub outside_c: Option<V<f64>>,
@@ -427,7 +436,7 @@ pub fn published_now(e: &Engine, car: CarId) -> QResult<Option<Now>> {
 pub fn off_can_now(e: &Engine, car: CarId, now_ms: u64) -> QResult<model::OffCanNow> {
     use model::off_can::{Reading, fuse};
     let db = e.db();
-    let api = records::api_meta(db, car)?.meta;
+    let api = records::api_meta(db, car, model::Input::TeslaApi)?.meta;
     let fi = records::off_can_of(db, car, model::Input::TeslafiApi)?;
     let tm = records::off_can_of(db, car, model::Input::TeslamateLocal)?;
     let mut readings = Vec::with_capacity(3);
@@ -521,11 +530,23 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     let origin = |f: &str| from.get(f).map_or(model::Origin::Smo, |i| model::Origin::from(*i));
     let t = |f: &str| At(times.get(f).copied().unwrap_or(at), origin(f));
     let tm = |f: &str| t(f).0;
-    // the Tesla API's newest values beside its samples (charge limit, flags), while they are the car's newest
-    let api = records::api_meta(db, car)?;
-    let api_at = At(api.meta.at_ms, model::Origin::TeslaApi);
-    let api_fresh = api.meta.at_ms > 0 && api.meta.at_ms + STALE_MS >= at;
-    let m = api_fresh.then_some(&api.meta);
+    // each API input's newest values beside its samples, while they are the car's newest, in the order inputs win
+    let fresh = |m: &tesla::ApiMeta| m.at_ms > 0 && m.at_ms + STALE_MS >= at;
+    let mut beside: Vec<(At, tesla::ApiMeta)> = Vec::new();
+    for input in model::Input::apis() {
+        let meta = records::api_meta(db, car, input)?.meta;
+        if fresh(&meta) {
+            beside.push((api_at(&meta, input), meta));
+        }
+    }
+    // the Tesla API's alone give the charge limit, the flags and the rest
+    let api = records::api_meta(db, car, model::Input::TeslaApi)?;
+    let api_at = api_at(&api.meta, model::Input::TeslaApi);
+    let m = fresh(&api.meta).then_some(&api.meta);
+    // a value more than one input gives: the first input's with one (the Tesla API's, then local TeslaMate's)
+    let first = |get: &dyn Fn(&tesla::ApiMeta) -> Option<f64>, d: i32| {
+        beside.iter().find_map(|(at, meta)| vf(get(meta), d, *at))
+    };
     let StateNow { state, spans, drive, charge: current_charge, since_ms } = state_now(e, car, n.as_ref())?;
     let places = e.places();
     let location = match (s.lat, s.lon) {
@@ -580,7 +601,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
             s.extra.charge_limit_source.as_deref().and_then(limit_source_word),
             t("extra.charge_limit_source"),
         ),
-        added_kwh: m.filter(|_| charging).and_then(|m| vf(m.charge_energy_added_kwh, 2, api_at)),
+        added_kwh: if charging { first(&|m| m.charge_energy_added_kwh, 2) } else { None },
         limit_pct: vf(s.extra.charge_limit_pct, 0, t("extra.charge_limit_pct"))
             .or_else(|| m.and_then(|m| vf(m.charge_limit_soc, 0, api_at))),
         to_full_kwh: None,
@@ -653,6 +674,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         ideal_range_km: vf(s.ideal_range_km, 1, t("ideal_range_km")),
         est_range_km: vf(est_range, 1, t("energy_remaining_kwh")),
         est_basis: est_range.map(|_| "wh_per_km_30d"),
+        car_est_range_km: first(&|m| m.est_range_km, 1),
         energy_remaining_kwh: vf(s.energy_remaining_kwh, 2, t("energy_remaining_kwh")),
         odometer_km: vf(s.odometer_km, 3, t("odometer_km")),
         outside_c: vf(s.outside_temp_c, 1, t("outside_temp_c")),

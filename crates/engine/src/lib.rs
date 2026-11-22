@@ -187,7 +187,9 @@ pub(crate) enum Work {
         samples: Vec<model::Sample>,
         facts: Vec<timeline::ApiSpan>,
     },
+    /// An API input's values beside its samples ([`tesla_in`]).
     ApiMeta {
+        input: model::Input,
         car: CarId,
         meta: Box<tesla::ApiMeta>,
     },
@@ -469,7 +471,7 @@ impl Engine {
                     Work::Log { key, name } => e.work_log(&key, &name),
                     Work::Reconcile { car } => e.work_reconcile(car),
                     Work::ApiData { input, car, samples, facts } => e.work_api_data(input, car, samples, facts),
-                    Work::ApiMeta { car, meta } => e.work_api_meta(car, *meta),
+                    Work::ApiMeta { input, car, meta } => e.work_api_meta(input, car, *meta),
                     Work::ApiBuild { car } => e.work_api_build(car),
                     Work::OffCan { input, car, at_ms, values } => e.work_off_can(input, car, at_ms, *values),
                 };

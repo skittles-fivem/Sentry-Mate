@@ -27,6 +27,7 @@ import { openAccount, setAccount } from './account.js';
 import { applyPrefs } from './prefs.js';
 import { display, snap } from './display.js';
 import { buildLabel, releaseDismissed, dismissRelease } from '../shared/release.js';
+import { isTmNotice, tmNoticeFix, TM_NOTICE_ACTION } from '../shared/teslamate.js';
 
 let me = null;
 let about = null;
@@ -232,7 +233,15 @@ const TESLAFI_NOTICES = new Set(['teslafi_token_refused', 'teslafi_account_error
 function fixOf(n) {
   if (TESLA_NOTICES.has(n.code)) return `${String(n.fix_link || state.buildUrl('settings-integrations')).split('#')[0]}#tesla${n.detail?.account ? `-${encodeURIComponent(n.detail.account)}` : ''}`;
   if (TESLAFI_NOTICES.has(n.code)) return `${String(n.fix_link || state.buildUrl('settings-integrations')).split('#')[0]}#teslafi${n.detail?.account ? `-${encodeURIComponent(n.detail.account)}` : ''}`;
+  // a local TeslaMate notice opens its section
+  if (isTmNotice(n)) return tmNoticeFix(n, state.buildUrl('settings-integrations'));
   return n.fix_link || null;
+}
+function fixLabel(n) {
+  if (TESLA_NOTICES.has(n.code)) return 'Open the Tesla account';
+  if (TESLAFI_NOTICES.has(n.code)) return 'Open the TeslaFi account';
+  if (isTmNotice(n)) return TM_NOTICE_ACTION;
+  return n.code === 'release_available' ? 'About this release' : fixWords(n.fix_link);
 }
 
 function fixWords(link) {
@@ -249,7 +258,7 @@ function drawNotices() {
   box.replaceChildren(...shown.map((n) => h('div', { class: ['notice', `lv-${n.level || 'info'}`], role: n.level === 'error' ? 'alert' : null },
     h('span', { class: 'dot', 'aria-hidden': 'true' }),
     h('p', { class: 'notice-text' }, n.message),
-    fixOf(n) ? h('a', { class: 'btn btn-soft btn-sm', href: fixOf(n) }, h('span', { class: 'btn-text' }, TESLA_NOTICES.has(n.code) ? 'Open the Tesla account' : TESLAFI_NOTICES.has(n.code) ? 'Open the TeslaFi account' : n.code === 'release_available' ? 'About this release' : fixWords(n.fix_link)), icon('arrowRight')) : null,
+    fixOf(n) ? h('a', { class: 'btn btn-soft btn-sm', href: fixOf(n) }, h('span', { class: 'btn-text' }, fixLabel(n)), icon('arrowRight')) : null,
     h('button', { type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': n.code === 'release_available' ? 'Hide this release notice' : 'Hide this notice for now', title: n.code === 'release_available' ? 'Hide' : 'Hide for now', onclick: () => {
       if (n.code === 'release_available') dismissRelease(n);
       else try { const s = dismissed(); s.add(`${n.code}:${n.since_ms}`); sessionStorage.setItem(DISMISS_KEY, JSON.stringify([...s])); } catch { /* fine */ }
