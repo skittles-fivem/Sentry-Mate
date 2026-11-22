@@ -126,6 +126,9 @@ a.cell-main:hover { color: var(--mag-ink); text-decoration: underline; }
   .trk tbody tr:last-child { box-shadow: none; }
   .trk td, .trk td:first-child, .trk td:last-child { display: grid; align-content: start; gap: 0.125rem; min-width: 0; padding: 0; box-shadow: none !important; text-align: left; }
   .trk td.is-num { text-align: left; white-space: normal; }
+  /* a card cell is half the row: its column and a source chip in it never grow past that, the chip's words wrap */
+  .trk .cell { grid-template-columns: minmax(0, 1fr); }
+  .trk td .src-t { white-space: normal; }
   .trk td::before { content: attr(data-label); font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.12em; text-transform: uppercase; color: var(--cyan-ink); }
   .trk td:not([data-label])::before, .trk td.is-lead::before { display: none; }
   .trk td.is-lead, .trk td.is-wide { grid-column: 1 / -1; }
