@@ -7,6 +7,13 @@
 // - GET /cars/{car}/updates (period, newest first, paged; summary in each page), PATCH .../updates/{id}
 //   (admin: type or forget a version), GET /fleet/versions (every car, searched and paged by cursor).
 // - Live: an update that starts or ends ("rows" events with kind "updates") loads the lists again.
+// - Tesla updates installed: an update found from the modules' firmware fingerprints (detected_by
+//   "fingerprint") has its own card (#fingerprint-updates): which fields changed (old hex -> new hex), between
+//   which drives it was installed (the last drive with the old set, the first with the new one), and for an admin
+//   a box to name the version (PATCH; empty forgets it). An auto-named one says it was named from an earlier
+//   update with the same fingerprints.
+// - Car firmware (#firmware): GET /cars/{car}/firmware, each module's fingerprints as lowercase hex and when the
+//   current value was first seen. The car page links here.
 
 import * as state from '../shared/state.js';
 import { h, replace, cover } from '../shared/dom.js';
@@ -43,12 +50,17 @@ const SOURCE = {
 const DETECTED = {
   ota_status: ['Update status', 'The car reported that it was installing an update.'],
   build_change: ['Module builds changed', 'The build ids its modules send on the vehicle bus changed.'],
+  fingerprint: ['Tesla update installed', 'The firmware fingerprints the car\'s modules send on the vehicle bus changed.'],
   teslamate: ['Imported', 'From the imported TeslaMate history.'],
   tesla_api: ['Tesla API', 'The version the Tesla API reports changed.'],
 };
 // the modules whose build ids are compared
 const MODULES = {
-  bms: 'Battery management', vcfront: 'Front body controller', di_front: 'Front motor', di_rear: 'Rear motor', fc: 'Fast-charge controller',
+  bms: 'Battery management', vcfront: 'Front body controller', dir: 'Rear drive unit', dif: 'Front drive unit', di_front: 'Front motor', di_rear: 'Rear motor', fc: 'Fast-charge controller',
+};
+const NAMED = {
+  owner: 'Named by an admin.',
+  auto: 'Named from an earlier update with the same fingerprints.',
 };
 const moduleNames = (list) => (list || []).map((m) => MODULES[m] || m);
 const iso = (ms) => (ms == null ? '' : new Date(ms).toISOString());
@@ -153,12 +165,17 @@ export async function mount(ctx) {
         ? h('a', { class: 'link', href: notesHref(r.version), target: '_blank', rel: 'noopener noreferrer external', title: 'Release notes of this version on an outside site (opens in a new tab)' }, r.version, ' ', icon('ext', 'ico--sm'))
         : r.version,
       src ? tag(src[0], 'plain') : null)
-      : h('span', { class: 'sw-ver is-unknown' }, 'Build changed', tag('Version not known', 'warm'));
+      : h('span', { class: 'sw-ver is-unknown' }, r.detected_by === 'fingerprint' ? 'Tesla update installed' : 'Build changed', tag(r.detected_by === 'fingerprint' ? 'Not named yet' : 'Version not known', 'warm'));
+    if (r.detected_by === 'fingerprint') {
+      return h('span', { class: 'cell-text' }, main,
+        h('span', { class: 'sub sw-mods' }, r.named_by === 'auto' ? 'Named from an earlier update with the same fingerprints' : `Changed: ${moduleNames(r.changed_modules).join(', ')}`),
+        h('a', { class: 'link sw-fp-jump', href: `#fp-${r.id}`, title: 'The fingerprints that changed, between which drives, and the name box' }, admin ? (r.version ? 'Details and name' : 'Details, name it') : 'Details'));
+    }
     const sub = r.version
       ? (r.changed_modules?.length ? `Changed: ${moduleNames(r.changed_modules).join(', ')}` : null)
       : r.changed_modules?.length ? `Changed: ${moduleNames(r.changed_modules).join(', ')}` : 'No module list';
     return h('span', { class: 'cell-text' }, main, sub ? h('span', { class: 'sub sw-mods' }, sub) : null,
-      admin && hasKind(r, 'smo') && r.version_source !== 'tesla_api' ? h('button', { class: 'btn btn--sm btn--ghost sw-edit', type: 'button', onclick: () => editVersion(r), title: 'Type the version this update installed' },
+      admin && hasKind(r, 'smo') && r.version_source !== 'tesla_api' && r.detected_by !== 'fingerprint' ? h('button', { class: 'btn btn--sm btn--ghost sw-edit', type: 'button', onclick: () => editVersion(r), title: 'Type the version this update installed' },
         icon('settings', 'ico--sm'), r.version ? 'Change version' : 'Type the version') : null);
   }
 
@@ -236,6 +253,7 @@ export async function mount(ctx) {
       if (!ctx.alive()) return;
       painted = true;
       paintSummary(pg.summary, table.rows());
+      fpPaint = paintFingerprints(table.rows());
     },
   });
 
@@ -285,8 +303,161 @@ export async function mount(ctx) {
   });
   ctx.onCleanup(() => clearTimeout(searchTimer));
 
+  /* ---------- Tesla updates installed (fingerprint updates in the period) */
+  let fpPaint = null;
+  const fpSlot = h('div', { class: 'sw-fp-list' });
+  const fpPanel = panel({ title: 'Tesla updates installed', icon: 'chip', cls: 'sw-fp', id: 'fingerprint-updates' },
+    h('p', { class: 'note' }, 'Found from the firmware fingerprints the car\'s modules send about once a second: when they change, Tesla installed an update. The car never sends the version\'s name, so it stays “Not named yet” until ',
+      admin ? 'you type it (as the car\'s screen shows it, under Software). Every later update to the same fingerprints gets that name by itself.' : 'an admin types it. Every later update to the same fingerprints then gets that name by itself.'),
+    fpSlot);
+  fpPanel.hidden = true;
+  const fpCards = new Map(); // update id -> { key, el, input }
+  const driveCache = new Map();
+  async function driveNear(r) {
+    if (driveCache.has(r.id)) return driveCache.get(r.id);
+    const p = `cars/${enc(cid)}/drives`;
+    const [b, a] = await Promise.all([
+      ctx.api.get(p, { to_ms: r.start_ms, sort: 'start', dir: 'desc', limit: 1 }).then((x) => x.items?.[0] || null).catch(() => null),
+      ctx.api.get(p, { from_ms: r.end_ms ?? r.start_ms, sort: 'start', dir: 'asc', limit: 1 }).then((x) => x.items?.[0] || null).catch(() => null),
+    ]);
+    const out = { before: b, after: a };
+    driveCache.set(r.id, out);
+    return out;
+  }
+  const driveLink = (d) => h('a', { class: 'link', href: state.buildUrl('drive', { car: cid, drive: d.id }) },
+    `${formatDate(d.start_ms, tz, { year: true })} ${formatTime(d.start_ms, tz)}`, d.start?.label || d.end?.label ? ` (${[d.start?.label, d.end?.label].filter(Boolean).join(' → ')})` : '');
+  const hexEl = (x) => h('code', { class: 'sw-hex' }, x);
+
+  function fpCard(r, near) {
+    const at = (ms) => formatDateTime(ms, tz, { year: true });
+    const between = near.before || near.after
+      ? h('p', { class: 'sw-fp-between' }, icon('route', 'ico--sm'), h('span', null, 'Installed between ',
+        near.before ? ['the drive of ', driveLink(near.before)] : 'the start of the record', ' and ',
+        near.after ? ['the drive of ', driveLink(near.after)] : 'now (no drive since)', '.'))
+      : null;
+    const seen = h('p', { class: 'sw-fp-between' }, icon('clock', 'ico--sm'),
+      h('span', null, `Old fingerprints last seen ${at(r.between_ms?.[0] ?? r.start_ms)}, new ones first seen ${at(r.between_ms?.[1] ?? r.end_ms)}.`));
+    const byMod = new Map();
+    for (const c of r.changes || []) { if (!byMod.has(c.module)) byMod.set(c.module, { name: c.module_name || MODULES[c.module] || c.module, rows: [] }); byMod.get(c.module).rows.push(c); }
+    const changes = h('div', { class: 'sw-fp-changes', role: 'list', 'aria-label': 'Fingerprints that changed' },
+      [...byMod.values()].map((m) => h('div', { class: 'sw-fp-mod', role: 'listitem' },
+        h('h4', { class: 'sw-fp-mod-name' }, m.name),
+        h('dl', { class: 'sw-fp-rows' }, m.rows.map((c) => h('div', { class: 'sw-fp-row' },
+          h('dt', { class: 'sw-fp-field' }, c.field),
+          h('dd', { class: 'sw-fp-hexes' }, hexEl(c.old), h('span', { class: 'sw-fp-arrow', 'aria-label': 'became' }, '→'), hexEl(c.new))))))));
+    const namedWord = r.version ? (NAMED[r.named_by] || (SOURCE[r.version_source]?.[1] ?? '')) : 'Not named yet: the car does not send the version\'s name.';
+    let box = null, input = null;
+    if (admin) {
+      const fid = `fp-name-${r.id}`;
+      input = h('input', { class: 'input mono sw-fp-input', id: fid, type: 'text', value: r.version || '', placeholder: '2026.38.4', autocomplete: 'off', spellcheck: 'false', inputmode: 'decimal',
+        pattern: '\\d{4}\\.\\d{1,2}(\\.\\d{1,3}){0,2}', 'aria-describedby': `${fid}-hint ${fid}-err` });
+      const err = h('p', { class: 'form-error', id: `${fid}-err`, role: 'alert', hidden: true });
+      const save = h('button', { class: 'btn btn--primary btn--sm', type: 'submit' }, icon('check', 'ico--sm'), 'Save name');
+      const clear = h('button', { class: 'btn btn--ghost btn--sm', type: 'button', hidden: !r.version, title: 'Forget the name typed for this update' }, icon('x', 'ico--sm'), 'Clear');
+      const showErr = (t) => { err.hidden = !t; replace(err, t ? [icon('warn'), t] : null); input.toggleAttribute('aria-invalid', !!t); };
+      input.addEventListener('input', () => showErr(null));
+      const send = async (v) => {
+        save.disabled = clear.disabled = true;
+        try {
+          await ctx.api.patch(`${path}/${enc(r.id)}`, { version: v });
+          if (!ctx.alive()) return;
+          fpCards.delete(r.id); input.blur();
+          flash(v ? `Named: this update installed ${v}. Later updates to the same fingerprints get the name too.` : 'The name is cleared.');
+          echoUntil = Date.now() + 5000;
+          await reloadAll(false);
+        } catch (e) {
+          if (e?.name === 'AbortError') return;
+          showErr(e?.fields?.version || (e?.code === 'no_such_update' ? 'This update is not there any more (the logs were read again). The list now shows the updates there are.' : e?.message || 'Could not save the name.'));
+          if (e?.code === 'no_such_update') reloadAll(false);
+        } finally { save.disabled = clear.disabled = false; }
+      };
+      box = h('form', { class: 'sw-fp-name', novalidate: '', onsubmit: (e) => {
+        e.preventDefault();
+        const v = input.value.trim();
+        if (!v) { if (r.version) send(null); else showErr('Type the version as the car\'s screen shows it, such as 2026.38.4.'); return; }
+        if (!VERSION_RX.test(v)) { showErr('A version looks like 2026.38.4: the year, a dot and one to three numbers.'); return; }
+        if (v === r.version) { showErr('That is the name it has already.'); return; }
+        send(v);
+      } },
+      h('label', { class: 'form-label', for: fid }, r.version ? 'Version name' : 'Name this version'),
+      h('div', { class: 'sw-fp-name-row' }, input, save, clear),
+      h('p', { class: 'form-hint', id: `${fid}-hint` }, 'As the car\'s screen shows it (Controls, Software), such as 2026.38.4. Clear forgets it.'),
+      err);
+      clear.addEventListener('click', () => send(null));
+    }
+    const el = h('article', { class: 'sw-fp-card', id: `fp-${r.id}` },
+      h('div', { class: 'sw-fp-head' },
+        pill('Tesla update installed', { tone: 'live', ic: 'chip' }),
+        h('span', { class: 'sw-fp-when' }, formatDate(r.end_ms ?? r.start_ms, tz, { year: true }))),
+      h('div', { class: 'sw-fp-ver' },
+        h('span', { class: ['sw-fp-vname', !r.version && 'is-unknown'] }, r.version || 'Not named yet'),
+        r.version && SOURCE[r.version_source] ? tag(r.named_by === 'auto' ? 'Same fingerprints' : SOURCE[r.version_source][0], 'plain') : null),
+      h('p', { class: 'sw-fp-named faint' }, namedWord),
+      between, seen,
+      h('p', { class: 'sw-fp-sub metric-label' }, `${(r.changes || []).length} ${(r.changes || []).length === 1 ? 'fingerprint' : 'fingerprints'} changed in ${byMod.size} ${byMod.size === 1 ? 'module' : 'modules'}`),
+      changes,
+      box || h('p', { class: 'note sw-fp-ro' }, icon('lock', 'ico--sm'), ' Only an admin can name an update.'));
+    return { el, input };
+  }
+
+  async function paintFingerprints(rows) {
+    const list = rows.filter((r) => r.detected_by === 'fingerprint');
+    const nears = await Promise.all(list.map(driveNear));
+    if (!ctx.alive()) return;
+    const keep = new Set();
+    const els = list.map((r, i) => {
+      keep.add(r.id);
+      const key = JSON.stringify([r, nears[i].before?.id, nears[i].after?.id]);
+      const old = fpCards.get(r.id);
+      // a card being typed in is left alone; an unchanged one is kept as it is
+      if (old && (old.key === key || (old.input && (document.activeElement === old.input || old.input.value.trim() !== (old.version || ''))))) return old.el;
+      const c = fpCard(r, nears[i]);
+      fpCards.set(r.id, { key, el: c.el, input: c.input, version: r.version });
+      return c.el;
+    });
+    for (const k of [...fpCards.keys()]) if (!keep.has(k)) fpCards.delete(k);
+    const same = els.length === fpSlot.children.length && els.every((e, i) => fpSlot.children[i] === e);
+    if (!same) replace(fpSlot, els);
+    fpPanel.hidden = !list.length;
+  }
+
+  /* ---------- car firmware */
+  const fwSlot = h('div', { class: 'sw-fw-body' });
+  const fwPanel = panel({ title: 'Car firmware', icon: 'chip', cls: 'sw-fw', id: 'firmware',
+    side: h('a', { class: 'panel-link', href: `${ctx.link('car')}#vehicle-info` }, 'Vehicle info', icon('chev-r', 'ico--sm')) }, fwSlot);
+  let fwKey = null;
+  async function loadFirmware() {
+    let fw;
+    try { fw = await ctx.api.get(`cars/${enc(cid)}/firmware`); } catch (e) {
+      if (e?.name === 'AbortError' || !ctx.alive()) return;
+      if (fwKey == null) replace(fwSlot, h('p', { class: 'warn' }, icon('warn', 'ico--sm'), ' The firmware fingerprints could not be read. Reload the page to try again.'));
+      return;
+    }
+    if (!ctx.alive()) return;
+    const key = JSON.stringify(fw);
+    if (key === fwKey) return;
+    fwKey = key;
+    const ftz = fw.time_zone || tz;
+    const day = (ms) => formatDate(ms, ftz, { year: true });
+    const mods = fw.modules || [];
+    replace(fwSlot,
+      h('p', { class: 'note' }, 'Tesla\'s version name is not on the CAN bus, but the main modules send fingerprints of their code (checksums and code hashes). They are shown as the car sends them, in lowercase hex; a change of them is a Tesla update.'),
+      h('dl', { class: 'kv sw-fw-kv' },
+        kvRow('Last seen', fw.updated_ms != null ? formatDateTime(fw.updated_ms, ftz, { now: ctx.api.now() }) : 'none yet', 'clock'),
+        kvRow('Updates found from them', formatNumber(fw.updates ?? 0), 'chip'),
+        fw.bridge_hints?.count ? kvRow('CAN Bridge hints', `${formatNumber(fw.bridge_hints.count)} “firmware changed” lines in its logs, the last ${day(fw.bridge_hints.last_ms)}`, 'info') : null),
+      h('div', { class: 'sw-fw-mods' }, mods.map((m) => h('section', { class: 'sw-fw-mod', 'aria-label': m.name },
+        h('h3', { class: 'sw-fw-name' }, m.name, m.can_id != null ? h('span', { class: 'faint sw-fw-can' }, `0x${m.can_id.toString(16).toUpperCase()}`) : null),
+        m.fields?.length
+          ? h('dl', { class: 'sw-fw-fields' }, m.fields.map((f) => h('div', { class: 'sw-fw-row' },
+            h('dt', { class: 'sw-fw-field' }, f.field),
+            h('dd', { class: 'sw-fw-val' }, hexEl(f.hex),
+              h('span', { class: 'sw-fw-seen' }, `since ${day(f.first_seen_ms)}`, f.history?.length > 1 ? `, ${f.history.length - 1} earlier ${f.history.length === 2 ? 'value' : 'values'}` : '')))))
+          : h('p', { class: 'faint sw-fw-none' }, 'No fingerprints in this car\'s logs: this module does not send them on this car, or no log with them has arrived.')))));
+  }
+
   replace(ctx.view, root);
-  root.append(head, filters, summary, table.el, fleetTable.el);
+  root.append(head, filters, summary, fpPanel, table.el, fwPanel, fleetTable.el);
 
   /* ---------- typing a version (admin) */
   async function editVersion(r) {
@@ -316,19 +487,20 @@ export async function mount(ctx) {
   let echoUntil = 0;
   async function reloadAll(say) {
     reloadBtn.disabled = true;
-    try { await Promise.all([table.reload(), fleetTable.reload()]); if (say && ctx.alive()) flash('Loaded again.', { kind: 'info' }); } finally { reloadBtn.disabled = false; }
+    try { await Promise.all([table.reload(), fleetTable.reload(), loadFirmware()]); await fpPaint; if (say && ctx.alive()) flash('Loaded again.', { kind: 'info' }); } finally { reloadBtn.disabled = false; }
   }
 
   ctx.events('rows', (ev) => {
     const d = ev?.data || {};
     if (!(d.kinds || []).includes('updates')) return;
     if (Date.now() < echoUntil) { echoUntil = 0; return; } // the echo of a version just saved here
-    if (d.car === cid) table.reload(null, { quiet: true });
+    if (d.car === cid) { table.reload(null, { quiet: true }); loadFirmware(); }
     fleetTable.reload(null, { quiet: true });
   });
 
   // both lists are part of the first render: the page does not change height once it says it is ready
-  await Promise.all([table.ready, fleetTable.ready]);
+  await Promise.all([table.ready, fleetTable.ready, loadFirmware()]);
+  await fpPaint;
   if (!ctx.alive()) return;
   if (!painted) paintSummary(null, []);
   ctx.ready();
