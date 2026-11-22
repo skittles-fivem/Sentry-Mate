@@ -218,6 +218,7 @@ fn origin_of(r: &SourceRef) -> Option<Origin> {
         "smo" => Some(Origin::Smo),
         "tesla_api" => Some(Origin::TeslaApi),
         "teslafi_api" => Some(Origin::TeslafiApi),
+        "teslamate_local" => Some(Origin::TeslamateLocal),
         "import" => r.site.and_then(ImportSite::from_word).map(Origin::Import),
         _ => None,
     }

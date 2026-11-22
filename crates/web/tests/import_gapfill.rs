@@ -503,3 +503,28 @@ async fn battery_pages_answer_with_teslafi_api_days() {
         ok(&mut admin, &path).await;
     }
 }
+
+fn tmlocal_and_import(db: &db::Db, car: CarId) {
+    live_api_and_import(db, car, model::Stream::TeslamateLocal);
+}
+
+/// Days with local TeslaMate samples (the newest stream) never fail the battery, series or health pages.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pages_answer_with_local_teslamate_days() {
+    let k = kit_with(tmlocal_and_import).await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    let series = format!(
+        "/api/v1/cars/{car}/series?fields=soc_pct,outside_c&from_ms={API_AT}&to_ms={}&max_points=2000&source=teslamate_local",
+        API_AT + 1_150_000
+    );
+    for path in [
+        format!("/api/v1/cars/{car}/battery"),
+        format!("/api/v1/cars/{car}/battery/capacity"),
+        format!("/api/v1/cars/{car}/storage"),
+        series,
+        "/api/v1/system/health".to_string(),
+    ] {
+        ok(&mut admin, &path).await;
+    }
+}

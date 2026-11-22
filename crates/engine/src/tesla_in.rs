@@ -179,6 +179,49 @@ impl teslafi::Sink for TeslafiSink {
     }
 }
 
+/// The engine as the `tmlocal` crate (the owner's own TeslaMate) sees it.
+#[derive(Clone)]
+pub struct TeslamateLocalSink {
+    pub engine: Engine,
+    pub on_change: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl TeslamateLocalSink {
+    pub fn new(engine: Engine) -> TeslamateLocalSink {
+        TeslamateLocalSink { engine, on_change: None }
+    }
+}
+
+impl tmlocal::Sink for TeslamateLocalSink {
+    fn new_car(&self, car: &tesla::NewCar) -> std::result::Result<CarId, tesla::SinkError> {
+        self.engine.api_new_car_for(car, Input::TeslamateLocal).map_err(|e| tesla::SinkError(e.to_string()))
+    }
+
+    fn points(
+        &self,
+        car: CarId,
+        samples: &[Sample],
+        facts: &[tesla::ApiFact],
+    ) -> std::result::Result<(), tesla::SinkError> {
+        self.engine.feed_points(Input::TeslamateLocal, car, samples.to_vec(), facts.iter().map(span_of).collect());
+        Ok(())
+    }
+
+    fn catch_up(
+        &self,
+        dump: &std::path::Path,
+        cars: &[(i64, CarId)],
+    ) -> std::result::Result<tmlocal::catchup::Counts, tesla::SinkError> {
+        self.engine.teslamate_local_catch_up(dump, cars).map_err(|e| tesla::SinkError(e.to_string()))
+    }
+
+    fn changed(&self) {
+        if let Some(h) = &self.on_change {
+            h();
+        }
+    }
+}
+
 impl Engine {
     /// The Tesla API's samples and what it saw of the car's state: stored and built into the timeline in the
     /// background; returns at once.
@@ -336,6 +379,7 @@ impl Engine {
         meta.newest_ms = Some(meta.newest_ms.map_or(b, |n| n.max(b)));
         let (last, received) = match input {
             Input::TeslafiApi => (&mut meta.teslafi_last_ms, &mut meta.teslafi_received_ms),
+            Input::TeslamateLocal => (&mut meta.tmlocal_last_ms, &mut meta.tmlocal_received_ms),
             _ => (&mut meta.api_last_ms, &mut meta.api_received_ms),
         };
         if let Some(l) = samples.last() {
@@ -410,8 +454,10 @@ impl Engine {
     /// builds again from it.
     pub(crate) fn api_span(&self, car: CarId) -> Result<Option<(u64, u64)>> {
         let meta = records::meta(&self.inner.db, car)?;
-        let first = meta.api_days.first().into_iter().chain(meta.teslafi_days.first()).min();
-        let last = meta.api_days.last().into_iter().chain(meta.teslafi_days.last()).max();
+        let first =
+            meta.api_days.first().into_iter().chain(meta.teslafi_days.first()).chain(meta.tmlocal_days.first()).min();
+        let last =
+            meta.api_days.last().into_iter().chain(meta.teslafi_days.last()).chain(meta.tmlocal_days.last()).max();
         match (first, last) {
             (Some(&a), Some(&b)) => Ok(Some((u64::from(a) * records::DAY_MS, (u64::from(b) + 1) * records::DAY_MS))),
             _ => Ok(None),
@@ -509,7 +555,17 @@ impl Engine {
             db.read_points::<Sample>(car, Stream::TeslaApi, from_ms.saturating_sub(m), to_ms.saturating_add(m))?;
         let fi =
             db.read_points::<Sample>(car, Stream::TeslafiApi, from_ms.saturating_sub(lm), to_ms.saturating_add(lm))?;
-        let mut f = timeline::fuse_all(&smo, &[(&api, Inputs::TESLA_API), (&fi, Inputs::TESLAFI_API)], p);
+        let tm = db.read_points::<Sample>(
+            car,
+            Stream::TeslamateLocal,
+            from_ms.saturating_sub(lm),
+            to_ms.saturating_add(lm),
+        )?;
+        let mut f = timeline::fuse_all(
+            &smo,
+            &[(&api, Inputs::TESLA_API), (&fi, Inputs::TESLAFI_API), (&tm, Inputs::TESLAMATE_LOCAL)],
+            p,
+        );
         f.samples.retain(|s| s.t_ms >= from_ms && s.t_ms < to_ms);
         f.marks.retain(|(t, _)| *t >= from_ms && *t < to_ms);
         Ok(LiveFused { samples: f.samples, marks: f.marks })

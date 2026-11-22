@@ -110,6 +110,7 @@ impl Tag {
             model::Origin::Smo => Tag { live: model::Inputs::SMO, ..Tag::default() },
             model::Origin::TeslaApi => Tag { live: model::Inputs::TESLA_API, ..Tag::default() },
             model::Origin::TeslafiApi => Tag { live: model::Inputs::TESLAFI_API, ..Tag::default() },
+            model::Origin::TeslamateLocal => Tag { live: model::Inputs::TESLAMATE_LOCAL, ..Tag::default() },
             model::Origin::Import(site) => {
                 let mut t = Tag::default();
                 t.imported[site_index(site)] = u64::MAX;
