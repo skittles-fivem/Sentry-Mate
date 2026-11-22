@@ -1589,7 +1589,7 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 :root[data-phone] .maplibregl-ctrl-group button { width: var(--tap) !important; height: var(--tap) !important; }
 :root[data-phone] .skip:not(:focus) { visibility: hidden; }
 
-:root[data-phone] .tbl a.main { display: flex; align-items: center; min-height: var(--tap); }
+:root[data-phone] .tbl a.main { display: flex; flex-direction: row; align-items: center; min-height: var(--tap); }
 :root[data-phone] .back { min-height: var(--tap); }
 :root[data-phone] .empty p { font-size: max(0.84375rem, var(--fs-floor)); }
 :root[data-phone] :is(.popover, .account-menu)::backdrop { background: var(--backdrop); }
