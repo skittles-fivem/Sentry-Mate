@@ -321,6 +321,8 @@ impl Engine {
             db.write_points(car, stream, x, y, &merge_points(old, &samples))?;
         }
         let mut meta = records::meta(db, car)?;
+        // (SMO is not an API input: its data never comes this way)
+        let Some(track) = meta.api_track(input) else { return Ok(()) };
         for sp in &spans {
             let mut d = records::day_of(sp.start_ms);
             while d <= records::day_of(sp.end_ms - 1) {
@@ -328,20 +330,16 @@ impl Engine {
                 let part = ApiSpan { start_ms: sp.start_ms.max(lo), end_ms: sp.end_ms.min(hi), ..*sp };
                 let laid = records::lay_api(&records::api_day(db, car, input, d)?, &part);
                 records::put_api_day(db, car, input, d, &laid)?;
-                meta.days_of(input).insert(d);
+                track.days.insert(d);
                 d += 1;
             }
         }
+        if let Some(l) = samples.last() {
+            *track.last_ms = (*track.last_ms).max(Some(l.t_ms));
+        }
+        *track.received_ms = Some(now_ms());
         meta.first_ms = Some(meta.first_ms.map_or(a, |f| f.min(a)));
         meta.newest_ms = Some(meta.newest_ms.map_or(b, |n| n.max(b)));
-        let (last, received) = match input {
-            Input::TeslafiApi => (&mut meta.teslafi_last_ms, &mut meta.teslafi_received_ms),
-            _ => (&mut meta.api_last_ms, &mut meta.api_received_ms),
-        };
-        if let Some(l) = samples.last() {
-            *last = (*last).max(Some(l.t_ms));
-        }
-        *received = Some(now_ms());
         records::put_meta(db, car, &meta)?;
         let mut dirty = records::api_dirty(db, car)?;
         dirty.push((a, b));
@@ -410,8 +408,9 @@ impl Engine {
     /// builds again from it.
     pub(crate) fn api_span(&self, car: CarId) -> Result<Option<(u64, u64)>> {
         let meta = records::meta(&self.inner.db, car)?;
-        let first = meta.api_days.first().into_iter().chain(meta.teslafi_days.first()).min();
-        let last = meta.api_days.last().into_iter().chain(meta.teslafi_days.last()).max();
+        let days = || Input::apis().filter_map(|i| meta.api_days_of(i));
+        let first = days().filter_map(std::collections::BTreeSet::first).min();
+        let last = days().filter_map(std::collections::BTreeSet::last).max();
         match (first, last) {
             (Some(&a), Some(&b)) => Ok(Some((u64::from(a) * records::DAY_MS, (u64::from(b) + 1) * records::DAY_MS))),
             _ => Ok(None),
@@ -504,12 +503,21 @@ impl Engine {
         let db = &self.inner.db;
         let p = &self.inner.opts.fuse;
         let smo = db.read_points::<Sample>(car, Stream::Smo, from_ms, to_ms)?;
-        let (m, lm) = (p.margin_ms(), p.lower_margin_ms());
-        let api =
-            db.read_points::<Sample>(car, Stream::TeslaApi, from_ms.saturating_sub(m), to_ms.saturating_add(m))?;
-        let fi =
-            db.read_points::<Sample>(car, Stream::TeslafiApi, from_ms.saturating_sub(lm), to_ms.saturating_add(lm))?;
-        let mut f = timeline::fuse_all(&smo, &[(&api, Inputs::TESLA_API), (&fi, Inputs::TESLAFI_API)], p);
+        // each API's samples, in the order they win, read as far around the window as it fills seconds
+        let mut apis = Vec::new();
+        for input in Input::apis() {
+            let m = match input {
+                Input::Smo => continue,
+                Input::TeslaApi => p.margin_ms(),
+                // (it fills the Tesla API's seconds, which fill SMO's)
+                Input::TeslafiApi => p.lower_margin_ms(),
+            };
+            let pts =
+                db.read_points::<Sample>(car, Stream::from(input), from_ms.saturating_sub(m), to_ms.saturating_add(m))?;
+            apis.push((pts, Inputs::from(input)));
+        }
+        let lower: Vec<(&[Sample], Inputs)> = apis.iter().map(|(v, i)| (v.as_slice(), *i)).collect();
+        let mut f = timeline::fuse_all(&smo, &lower, p);
         f.samples.retain(|s| s.t_ms >= from_ms && s.t_ms < to_ms);
         f.marks.retain(|(t, _)| *t >= from_ms && *t < to_ms);
         Ok(LiveFused { samples: f.samples, marks: f.marks })

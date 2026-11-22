@@ -138,13 +138,53 @@ pub struct CarMeta {
 }
 
 impl CarMeta {
-    /// The days with state spans of one API input.
-    pub(crate) fn days_of(&mut self, input: model::Input) -> &mut BTreeSet<u32> {
+    /// The days with state spans, the newest data and when it came, of one API input (none for SMO, which keeps its
+    /// own in its logs). Every input is named, so a new one must be given its own fields here.
+    pub(crate) fn api_track(&mut self, input: model::Input) -> Option<ApiTrack<'_>> {
         match input {
-            model::Input::TeslafiApi => &mut self.teslafi_days,
-            _ => &mut self.api_days,
+            model::Input::Smo => None,
+            model::Input::TeslaApi => Some(ApiTrack {
+                days: &mut self.api_days,
+                last_ms: &mut self.api_last_ms,
+                received_ms: &mut self.api_received_ms,
+            }),
+            model::Input::TeslafiApi => Some(ApiTrack {
+                days: &mut self.teslafi_days,
+                last_ms: &mut self.teslafi_last_ms,
+                received_ms: &mut self.teslafi_received_ms,
+            }),
         }
     }
+
+    /// The days with state spans of one API input ([`Self::api_track`]).
+    pub(crate) fn api_days_of(&self, input: model::Input) -> Option<&BTreeSet<u32>> {
+        match input {
+            model::Input::Smo => None,
+            model::Input::TeslaApi => Some(&self.api_days),
+            model::Input::TeslafiApi => Some(&self.teslafi_days),
+        }
+    }
+
+    /// The newest data of one API input (when it was recorded), and when it came.
+    pub(crate) fn api_times(&self, input: model::Input) -> (Option<u64>, Option<u64>) {
+        match input {
+            model::Input::Smo => (None, None),
+            model::Input::TeslaApi => (self.api_last_ms, self.api_received_ms),
+            model::Input::TeslafiApi => (self.teslafi_last_ms, self.teslafi_received_ms),
+        }
+    }
+
+    /// When any input's data last came: SMO's newest log or an API's newest reading.
+    pub(crate) fn received_ms(&self) -> Option<u64> {
+        model::Input::apis().map(|i| self.api_times(i).1).fold(self.last_arrived_ms, Option::max)
+    }
+}
+
+/// One API input's fields in [`CarMeta`].
+pub(crate) struct ApiTrack<'a> {
+    pub days: &'a mut BTreeSet<u32>,
+    pub last_ms: &'a mut Option<u64>,
+    pub received_ms: &'a mut Option<u64>,
 }
 
 /// A rebuild of a car under way (kept so a restart carries on with it).
@@ -438,10 +478,13 @@ pub(crate) fn put_now_from(db: &Db, car: CarId, m: &BTreeMap<String, model::Inpu
 }
 
 fn api_key(car: CarId, input: model::Input, d: u32) -> String {
-    match input {
-        model::Input::TeslafiApi => format!("car/{car}/teslafi_api/{d}"),
-        _ => format!("car/{car}/api/{d}"),
-    }
+    // (the Tesla API's key was the first and keeps its short word; SMO has no API days, its key is never written)
+    let word = match input {
+        model::Input::Smo => "smo_api",
+        model::Input::TeslaApi => "api",
+        model::Input::TeslafiApi => "teslafi_api",
+    };
+    format!("car/{car}/{word}/{d}")
 }
 
 /// One API input's state spans of one UTC day (the Tesla API's, or TeslaFi's kept apart).
@@ -518,7 +561,8 @@ pub(crate) fn api_between(
 ) -> Result<Vec<timeline::ApiSpan>> {
     let mut out = Vec::new();
     let days = day_of(from_ms)..=day_of(to_ms.saturating_sub(1).max(from_ms));
-    for (input, set) in [(model::Input::TeslaApi, &meta.api_days), (model::Input::TeslafiApi, &meta.teslafi_days)] {
+    for input in model::Input::apis() {
+        let Some(set) = meta.api_days_of(input) else { continue };
         for &d in set.range(days.clone()) {
             for a in api_day(db, car, input, d)? {
                 let (x, y) = (a.start_ms.max(from_ms), a.end_ms.min(to_ms));

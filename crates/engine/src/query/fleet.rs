@@ -64,12 +64,7 @@ fn car_origins(x: &FleetEntry) -> Vec<model::Origin> {
     if inputs.contains(model::Input::Smo) || !x.car.vehicle_keys.is_empty() || older {
         out.push(model::Origin::Smo);
     }
-    if inputs.contains(model::Input::TeslaApi) {
-        out.push(model::Origin::TeslaApi);
-    }
-    if inputs.contains(model::Input::TeslafiApi) {
-        out.push(model::Origin::TeslafiApi);
-    }
+    out.extend(model::Input::apis().filter(|i| inputs.contains(*i)).map(model::Origin::from));
     for site in model::ImportSite::ALL {
         let s = t.of_site(site);
         if s.drives + s.charges > 0 {
@@ -407,11 +402,12 @@ impl Configured {
     fn new(value: serde_json::Value, source: Option<&'static str>) -> Configured {
         let origin = match source {
             Some("can" | "vin") => Some(model::Origin::Smo),
-            Some("tesla_api") => Some(model::Origin::TeslaApi),
             Some(w) if model::ImportSite::from_word(w).is_some() => {
                 model::ImportSite::from_word(w).map(model::Origin::Import)
             }
-            _ => None,
+            // an API input's own word (`tesla_api`, `teslafi_api`)
+            Some(w) => model::Input::apis().map(model::Origin::from).find(|o| o.kind() == w),
+            None => None,
         };
         Configured { value, source, sources: origin.into_iter().map(super::SourceRef::from).collect() }
     }
@@ -499,7 +495,7 @@ fn put_owner(e: &Engine, car: CarId, o: &Owner) -> QResult<()> {
 fn fill_page(e: &Engine, x: &FleetEntry, i: &mut CarItem, now: u64) -> QResult<()> {
     let meta = records::meta(e.db(), i.id.0)?;
     i.now.since_ms = meta.state_since_ms;
-    i.now.received_ms = meta.last_arrived_ms.max(meta.api_received_ms).max(meta.teslafi_received_ms);
+    i.now.received_ms = meta.received_ms();
     i.attention = attention_of(e, x, &meta, now)?.into_iter().map(|a| a.code).collect();
     Ok(())
 }

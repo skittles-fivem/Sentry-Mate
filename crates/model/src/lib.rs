@@ -38,6 +38,15 @@ impl Source {
     /// Every source.
     pub const ALL: [Source; 3] = [Source::Live, Source::Teslamate, Source::Teslafi];
 
+    /// Its place in [`Source::ALL`], for tables with one slot per source.
+    pub fn index(self) -> usize {
+        match self {
+            Source::Live => 0,
+            Source::Teslamate => 1,
+            Source::Teslafi => 2,
+        }
+    }
+
     /// Whether the row was imported (from any site).
     pub fn is_imported(self) -> bool {
         self != Source::Live
@@ -83,6 +92,11 @@ impl Input {
     /// In the order they win where two cover the same time: SMO, then the Tesla API, then TeslaFi.
     pub const ALL: [Input; 3] = [Input::Smo, Input::TeslaApi, Input::TeslafiApi];
 
+    /// The inputs other than SMO (the APIs), in the order they win.
+    pub fn apis() -> impl Iterator<Item = Input> {
+        Input::ALL.into_iter().filter(|i| *i != Input::Smo)
+    }
+
     fn bit(self) -> u8 {
         match self {
             Input::Smo => 1,
@@ -127,7 +141,7 @@ impl Inputs {
 
     /// The inputs that are not SMO (the APIs).
     pub fn without_smo(self) -> Inputs {
-        Inputs(self.0 & !1)
+        Inputs(self.0 & !Input::Smo.bit())
     }
 
     /// In a fixed order: SMO first.
@@ -174,6 +188,14 @@ pub enum ImportSite {
 
 impl ImportSite {
     pub const ALL: [ImportSite; 2] = [ImportSite::Teslamate, ImportSite::Teslafi];
+
+    /// Its place in [`ImportSite::ALL`], for tables with one slot per site.
+    pub fn index(self) -> usize {
+        match self {
+            ImportSite::Teslamate => 0,
+            ImportSite::Teslafi => 1,
+        }
+    }
 
     /// The word the API writes (`site`).
     pub fn word(self) -> &'static str {
@@ -882,6 +904,36 @@ pub struct Now {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The per-source, per-input and per-stream lists stay whole as variants are added: every variant once, at its
+    /// own index, each input with its own bit (an [`Inputs`] holds 8), and every stream live or imported.
+    #[test]
+    fn enum_lists_cover_every_variant() {
+        for (k, s) in Source::ALL.into_iter().enumerate() {
+            assert_eq!(s.index(), k);
+        }
+        for (k, s) in ImportSite::ALL.into_iter().enumerate() {
+            assert_eq!(s.index(), k);
+            assert_eq!(Source::of_site(s).site(), Some(s));
+            assert!(Stream::IMPORTED.contains(&Stream::of_site(s)));
+        }
+        assert!(Input::ALL.len() <= 8);
+        let mut bits = 0u8;
+        for i in Input::ALL {
+            assert_eq!(i.bit().count_ones(), 1);
+            assert_eq!(bits & i.bit(), 0, "{i:?} shares a bit");
+            bits |= i.bit();
+            assert!(Stream::LIVE.contains(&Stream::from(i)));
+            assert_eq!(Inputs::from(i).without_smo().is_empty(), i == Input::Smo);
+        }
+        assert_eq!(Stream::LIVE.len(), Input::ALL.len());
+        assert_eq!(Stream::IMPORTED.len(), ImportSite::ALL.len());
+        assert_eq!(Stream::LIVE.len() + Stream::IMPORTED.len(), Stream::ALL.len());
+        for s in Stream::ALL {
+            assert_eq!(Stream::LIVE.contains(&s), !s.is_imported());
+            assert_eq!(Stream::IMPORTED.contains(&s), s.is_imported());
+        }
+    }
 
     fn vin(model: Option<char>, year: Option<u16>, via: u32) -> VinInfo {
         VinInfo { vin_prefix: String::new(), model, year, plant: None, via }

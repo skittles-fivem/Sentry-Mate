@@ -270,7 +270,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     let n = db.entry(car)?.and_then(|x| x.summary.now);
     let meta = records::meta(db, car)?;
     // when the newest data arrived: SMO's newest log, or the Tesla API's newest reading
-    let received_ms = meta.last_arrived_ms.max(meta.api_received_ms).max(meta.teslafi_received_ms);
+    let received_ms = meta.received_ms();
     let now = now_ms();
     let mut s: Sample = n.as_ref().map(|n| n.sample.clone()).unwrap_or_default();
     s.odometer_km = possible_odometer(s.odometer_km);
@@ -415,11 +415,10 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
             if let Some(t) = smo_last.filter(|_| n.is_some()) {
                 v.push(InputNow { input: model::Origin::Smo.into(), last_ms: Some(t) });
             }
-            if let Some(t) = meta.api_last_ms {
-                v.push(InputNow { input: model::Origin::TeslaApi.into(), last_ms: Some(t) });
-            }
-            if let Some(t) = meta.teslafi_last_ms {
-                v.push(InputNow { input: model::Origin::TeslafiApi.into(), last_ms: Some(t) });
+            for i in model::Input::apis() {
+                if let Some(t) = meta.api_times(i).0 {
+                    v.push(InputNow { input: model::Origin::from(i).into(), last_ms: Some(t) });
+                }
             }
             v
         },
