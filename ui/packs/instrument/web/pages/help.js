@@ -60,16 +60,16 @@ function lookupSentence(settings) {
 }
 
 /**
- * A link to the page an answer is about. Car pages need a car: with none chosen yet, use the only car if
- * there is exactly one, else say that a car must be chosen first (the link then goes to All cars).
+ * A link to the page an answer is about. Car pages need a car: without one in the address, use the preferred
+ * car (state.preferredCar), else say that a car must be chosen first (the link then goes to All cars).
  */
 function carLink(page, label, cars) {
-  let href = state.linkTo(page);
+  // with the car list (no car in the address), car pages open the preferred car: Main car, else the last opened
+  const pick = cars && cars.length ? state.preferredCar(cars) : null;
+  const usesCar = state.linkTo(page, { car: 'x' }) !== state.linkTo(page, { car: null });
+  let href = pick && usesCar ? state.linkTo(page, { car: pick }) : state.linkTo(page);
   let text = `Open ${label}`;
-  if (href === state.buildUrl('fleet') && page !== 'fleet') {
-    if (cars && cars.length === 1) href = state.linkTo(page, { car: cars[0].id });
-    else text = `Choose a car, then open ${label}`;
-  }
+  if (href === state.buildUrl('fleet') && page !== 'fleet') text = `Choose a car, then open ${label}`;
   return h('a', { class: 'link nowrap', href }, text, icon('chev-r', 'ico--sm'));
 }
 
@@ -101,14 +101,14 @@ function downloadText(filename, text) {
 
 export async function mount(ctx) {
   let about, notices, settings = null, cars = null, release = null;
-  const needCar = !(ctx.state.car ?? state.lastCar());
+  const needCar = !ctx.state.car;
   try {
     [about, notices, settings, cars, release] = await Promise.all([
       ctx.api.get('about', null, { maxAgeMs: 600000 }),
       ctx.api.get('notices').then((r) => r.items).catch(() => getNotices()),
       ctx.admin ? ctx.api.get('settings').catch(() => null) : Promise.resolve(null),
-      // Only when no car is chosen yet: with exactly one car, links to car pages can name it.
-      needCar ? ctx.api.get('cars', { limit: 2 }).then((r) => r.items || []).catch(() => null) : Promise.resolve(null),
+      // Only without a car in the address: links to car pages name the preferred car.
+      needCar ? ctx.api.get('cars', { sort: 'custom', limit: 100 }, { maxAgeMs: 30000 }).then((r) => r.items || []).catch(() => null) : Promise.resolve(null),
       ctx.api.get('release').catch(() => null),
     ]);
   } catch (e) { ctx.fail(e); return; }

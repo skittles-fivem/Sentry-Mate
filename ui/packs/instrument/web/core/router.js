@@ -226,15 +226,17 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
       return;
     }
     if (!alive()) return;
+    state.rememberCar(car.id, { sold: state.isSold(car) }); // the car opened: the one to show next time
     setFallbackZone(car.time_zone);
-  } else if (info.period && state.lastCar()) {
-    // a page with a period but no car (Travel): days are the last car's days
+  } else if (info.period) {
+    // a page with a period but no car (Travel): days are the preferred car's days (Main car, else the last opened)
     try {
-      const last = await scope.get(api.apiPath`cars/${state.lastCar()}`, null, { maxAgeMs: 60000 });
-      setFallbackZone(last.time_zone);
+      const p = await scope.page('cars', { sort: 'custom', limit: 50 }, { maxAgeMs: 60000 });
+      const id = state.preferredCar(p.items);
+      const pick = p.items.find((c) => c.id === id);
+      if (pick?.time_zone) setFallbackZone(pick.time_zone);
     } catch (err) {
       if (api.isAbort(err) || !alive()) return;
-      if (err.status === 404) state.forgetCar(state.lastCar());
     }
     if (!alive()) return;
   }
