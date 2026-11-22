@@ -139,6 +139,16 @@ struct JobError {
     message: String,
 }
 
+/// Where a backup car goes at first: the car here with its VIN prefix, else left out when it holds no drive and no
+/// charge (nothing would be imported for it), else not chosen yet.
+fn first_match(car: &engine::query::imports::BackupCar) -> Option<String> {
+    match car.suggested {
+        Some(c) => Some(crate::ids::car(c)),
+        None if car.drives == 0 && car.charges == 0 => Some("leave_out".into()),
+        None => None,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CarRow {
     car: BackupCar,
@@ -698,7 +708,7 @@ fn spawn_check(app: &AppState, id: &str) -> ApiResult<()> {
                         .cars
                         .into_iter()
                         .map(|car| {
-                            let matched = car.suggested.map(crate::ids::car);
+                            let matched = first_match(&car);
                             CarRow { car, matched }
                         })
                         .collect();
@@ -718,7 +728,7 @@ fn spawn_check(app: &AppState, id: &str) -> ApiResult<()> {
                         .cars
                         .into_iter()
                         .map(|car| {
-                            let matched = car.suggested.map(crate::ids::car);
+                            let matched = first_match(&car);
                             CarRow { car, matched }
                         })
                         .collect();
