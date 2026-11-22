@@ -8,7 +8,7 @@ use crate::links::{AddressBook, Ends, Procs, Route, Routes, Slot};
 use crate::map;
 use crate::report::CarTally;
 use crate::rows::{Sink, TmCar};
-use crate::schema::{Addr, Car, CarSetting, Chg, Class, ColumnMap, Cp, Drv, Pos, Table, classify};
+use crate::schema::{Addr, Car, CarSetting, Chg, Class, ColumnMap, Cp, Drv, Pos, St, Table, classify};
 use crate::state::STATE_VERSION;
 use crate::value::{Val, timestamp_ms};
 use crate::{Error, Options};
@@ -43,7 +43,8 @@ impl<'s> Index<'s> {
         }
     }
 
-    pub fn into_parts(self) -> (&'s mut dyn Sink, Routes, AddressBook, Procs, Ends) {
+    pub fn into_parts(mut self) -> (&'s mut dyn Sink, Routes, AddressBook, Procs, Ends) {
+        self.procs.settle();
         (self.sink, self.routes, self.labels, self.procs, self.ends)
     }
 
@@ -127,6 +128,7 @@ impl<'s> Index<'s> {
                 if let Some(p) = self.procs.entry(id) {
                     p.car = car;
                 }
+                self.newest(car, &row, &[Cp::start_date, Cp::end_date]);
                 let closed = matches!(row.val(Cp::end_date, timestamp_ms), Val::Ok(_));
                 if closed
                     && self.routes.may_take(Table::ChargingProcesses, car, id)
@@ -137,6 +139,7 @@ impl<'s> Index<'s> {
             }
             Table::Drives => {
                 let (Ok(id), Ok(car)) = (row.req_i64(Drv::id), row.req_i64(Drv::car_id)) else { return Ok(()) };
+                self.newest(car, &row, &[Drv::start_date, Drv::end_date]);
                 let closed = matches!(row.val(Drv::end_date, timestamp_ms), Val::Ok(_));
                 if closed && self.routes.may_take(Table::Drives, car, id) {
                     for c in [Drv::start_position_id, Drv::end_position_id] {
@@ -150,7 +153,9 @@ impl<'s> Index<'s> {
                 let Ok(cp) = row.req_i64(Chg::charging_process_id) else { return Ok(()) };
                 let power = row.f64(Chg::charger_power);
                 let fast = row.bool(Chg::fast_charger_present);
+                let at = row.ms(Chg::date);
                 if let Some(p) = self.procs.entry(cp) {
+                    p.last_ms = p.last_ms.max(at.unwrap_or(0));
                     if let Some(w) = power {
                         let w = w as f32;
                         if p.power_max.is_nan() || w > p.power_max {
@@ -172,9 +177,26 @@ impl<'s> Index<'s> {
                     self.ends.fill(id, &p);
                 }
             }
-            Table::Geofences | Table::States | Table::Updates => {}
+            Table::States => {
+                let Ok(car) = row.req_i64(St::car_id) else { return Ok(()) };
+                self.newest(car, &row, &[St::start_date, St::end_date]);
+                if let Some(t) = row.ms(St::start_date) {
+                    let l = self.procs.last_state.entry(car).or_default();
+                    *l = (*l).max(t);
+                }
+            }
+            Table::Geofences | Table::Updates => {}
         }
         Ok(())
+    }
+
+    /// The newest of these times of the car so far.
+    fn newest<C: crate::schema::Columns + Copy>(&mut self, car: i64, row: &crate::schema::Row<'_, '_>, cols: &[C]) {
+        for &c in cols {
+            if let Some(t) = row.ms(c) {
+                self.procs.saw(car, t);
+            }
+        }
     }
 }
 
@@ -192,7 +214,8 @@ impl Handler for Index<'_> {
             Table::Cars => !self.routes.known,
             Table::CarSettings | Table::Addresses | Table::Drives | Table::ChargingProcesses | Table::Charges => true,
             Table::Positions => self.ends.any_wanted(),
-            Table::Geofences | Table::States | Table::Updates => false,
+            Table::States => true,
+            Table::Geofences | Table::Updates => false,
         };
         if !take {
             return Ok(Take::Skip);

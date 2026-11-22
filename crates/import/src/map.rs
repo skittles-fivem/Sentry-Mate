@@ -44,6 +44,19 @@ macro_rules! need {
 
 /// The end of a drive, charge, state or update: `Err(true)` when there is none yet (still open), `Err(false)` when
 /// it can't be read or comes before the start.
+/// An open charge (no end) whose last point is more than this before its car's newest data in the backup was never
+/// closed by TeslaMate, not one still going: it is taken, ending at its last point. (An open state is taken, ending at
+/// its own start, once a later state of its car follows it.)
+pub(crate) const STALE_MS: u64 = 60 * 60 * 1000;
+
+/// What a row's note says when it was closed at its last reading.
+pub const CLOSED_AT_LAST: &str = "closed at its last reading (TeslaMate never ended it)";
+
+/// The end of an open row whose last reading is `last`, when it is stale (see [`STALE_MS`]).
+fn stale_end(start: u64, last: u64, newest: u64) -> Option<u64> {
+    (last >= start && newest > last.saturating_add(STALE_MS)).then_some(last)
+}
+
 fn end_ms<C: crate::schema::Columns>(row: &Row<'_, '_>, c: C, start: u64) -> Result<u64, bool> {
     match row.val(c, timestamp_ms) {
         Val::Ok(e) if e >= start => Ok(e),
@@ -220,6 +233,8 @@ pub(crate) struct ChargeCtx<'a> {
     pub labels: &'a AddressBook,
     pub ends: &'a Ends,
     pub proc: Option<Proc>,
+    /// The car's newest time in the backup ([`crate::links::Procs::newest`]).
+    pub newest_ms: u64,
 }
 
 pub(crate) fn charge(
@@ -232,7 +247,13 @@ pub(crate) fn charge(
     let start_ms = need!(row.req_ms(Cp::start_date));
     let end_ms = match end_ms(row, Cp::end_date, start_ms) {
         Ok(e) => e,
-        Err(true) => return Mapped::Open,
+        Err(true) => match cx.proc.and_then(|p| stale_end(start_ms, p.last_ms, cx.newest_ms)) {
+            Some(e) => {
+                notes.push(CLOSED_AT_LAST);
+                e
+            }
+            None => return Mapped::Open,
+        },
         Err(false) => return Mapped::Bad("end_date"),
     };
     let tm = ChargeRefs {
@@ -299,7 +320,13 @@ pub(crate) fn charge_point(row: &Row<'_, '_>, id: i64, charge_id: i64) -> Mapped
     })
 }
 
-pub(crate) fn state(row: &Row<'_, '_>, id: i64, car: CarId) -> Mapped<StateRow> {
+pub(crate) fn state(
+    row: &Row<'_, '_>,
+    id: i64,
+    car: CarId,
+    later_state_ms: u64,
+    notes: &mut Vec<&'static str>,
+) -> Mapped<StateRow> {
     let start_ms = need!(row.req_ms(St::start_date));
     let (state, offline) = match row.text(St::state).as_deref() {
         Some("online") => (State::Online, false),
@@ -309,7 +336,13 @@ pub(crate) fn state(row: &Row<'_, '_>, id: i64, car: CarId) -> Mapped<StateRow> 
     };
     let end_ms = match end_ms(row, St::end_date, start_ms) {
         Ok(e) => e,
-        Err(true) => return Mapped::Open,
+        Err(true) => match (later_state_ms > start_ms).then_some(start_ms) {
+            Some(e) => {
+                notes.push(CLOSED_AT_LAST);
+                e
+            }
+            None => return Mapped::Open,
+        },
         Err(false) => return Mapped::Bad("end_date"),
     };
     let span = StateSpan {

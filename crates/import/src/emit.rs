@@ -408,7 +408,12 @@ impl<'s> Emit<'s> {
                 let Some(id) = self.id(t, row.req_i64(Cp::id)) else { return Ok(()) };
                 let Some(at) = self.admit(t, id, row.i64(Cp::car_id), row.ms(Cp::start_date)) else { return Ok(()) };
                 let car = self.routes.slots[at.slot].car;
-                let cx = ChargeCtx { labels: &self.labels, ends: &self.ends, proc: self.procs.get(id) };
+                let cx = ChargeCtx {
+                    labels: &self.labels,
+                    ends: &self.ends,
+                    proc: self.procs.get(id),
+                    newest_ms: self.procs.newest_of(row.i64(Cp::car_id)),
+                };
                 let out = map::charge(&row, id, car, &cx, &mut self.notes).map(|c| {
                     let span = (c.charge.start_ms, c.charge.end_ms);
                     (c, span)
@@ -430,7 +435,14 @@ impl<'s> Emit<'s> {
                 let Some(id) = self.id(t, row.req_i64(St::id)) else { return Ok(()) };
                 let Some(at) = self.admit(t, id, row.i64(St::car_id), row.ms(St::start_date)) else { return Ok(()) };
                 let car = self.routes.slots[at.slot].car;
-                let out = map::state(&row, id, car).map(|s| {
+                let out = map::state(
+                    &row,
+                    id,
+                    car,
+                    row.i64(St::car_id).and_then(|c| self.procs.last_state.get(&c).copied()).unwrap_or(0),
+                    &mut self.notes,
+                )
+                .map(|s| {
                     let span = (s.span.start_ms, s.span.end_ms);
                     (s, span)
                 });

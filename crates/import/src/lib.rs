@@ -38,6 +38,7 @@ mod vin;
 pub mod zip;
 
 pub use input::{Compression, Encoding};
+pub use map::CLOSED_AT_LAST;
 pub use report::{CarReport, Links, Report, Skip, TableReport};
 pub use rows::{
     AddressRow, Batch, ChargePointRow, ChargeRefs, ChargeRow, DriveRefs, DriveRow, MAPPING_VERSION, PlaceRow,

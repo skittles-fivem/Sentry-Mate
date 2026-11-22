@@ -59,6 +59,8 @@ pub(crate) struct Proc {
     pub kind: u8,
     /// The highest charger power of its points, kW; NaN when none had one.
     pub power_max: f32,
+    /// The time of its last charge point (0: none).
+    pub last_ms: u64,
 }
 
 impl Proc {
@@ -77,11 +79,17 @@ pub(crate) struct Procs {
     map: HashMap<i64, Proc>,
     max: usize,
     pub over: u64,
+    /// The newest time the first read saw of each car (TeslaMate car id; drives, charges and their points, states):
+    /// an open charge whose last point is well before it was never closed, rather than still going
+    /// ([`crate::map::STALE_MS`]).
+    pub newest: HashMap<i64, u64>,
+    /// The start of each car's latest state: an open state before it has ended.
+    pub last_state: HashMap<i64, u64>,
 }
 
 impl Procs {
     pub fn new(max: usize) -> Self {
-        Procs { map: HashMap::new(), max, over: 0 }
+        Procs { map: HashMap::new(), max, over: 0, newest: HashMap::new(), last_state: HashMap::new() }
     }
 
     /// The charge's entry, made if there is room.
@@ -91,9 +99,27 @@ impl Procs {
                 self.over += 1;
                 return None;
             }
-            self.map.insert(id, Proc { car: Proc::NO_CAR, kind: 0, power_max: f32::NAN });
+            self.map.insert(id, Proc { car: Proc::NO_CAR, kind: 0, power_max: f32::NAN, last_ms: 0 });
         }
         self.map.get_mut(&id)
+    }
+
+    /// Notes a time of car `car`.
+    pub fn saw(&mut self, car: i64, t: u64) {
+        let n = self.newest.entry(car).or_default();
+        *n = (*n).max(t);
+    }
+
+    /// Once the first read is done: each charge's last point counts for its car.
+    pub fn settle(&mut self) {
+        let pts: Vec<(i64, u64)> = self.map.values().filter_map(|p| p.car().map(|c| (c, p.last_ms))).collect();
+        for (c, t) in pts {
+            self.saw(c, t);
+        }
+    }
+
+    pub fn newest_of(&self, car: Option<i64>) -> u64 {
+        car.and_then(|c| self.newest.get(&c).copied()).unwrap_or(0)
     }
 
     pub fn get(&self, id: i64) -> Option<Proc> {

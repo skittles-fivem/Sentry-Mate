@@ -870,3 +870,25 @@ fn cars_sharing_a_vin_prefix_are_flagged() {
     assert_eq!((r.cars, r.cars_left_out, k.states.len()), (3, 1, 1));
     assert_eq!(k.asked.iter().map(|c| c.name.clone().unwrap()).collect::<Vec<_>>(), ["One", "Two", "Three"]);
 }
+
+#[test]
+fn an_old_charge_and_state_never_closed_are_taken_ending_at_their_last_reading() {
+    // made-up: a later state of each car (car 1 asleep, car 2 asleep a day on): car 1's online state 6 and car 2's
+    // charge 3 (its last point 2024-03-03 10:00:30) were left open by TeslaMate, not still going
+    let dump = String::from_utf8(read_fixture("teslamate-4.4.0.sql")).unwrap().replace(
+        "7\tonline\t2024-03-03 09:50:00\t\\N\t2\n",
+        "7\tonline\t2024-03-03 09:50:00\t\\N\t2\n8\tasleep\t2024-03-02 06:00:00\t\\N\t1\n9\tasleep\t2024-03-04 12:00:00\t\\N\t2\n",
+    );
+    let mut k = both();
+    let r = from_bytes(dump.as_bytes(), &mut k, &Options::default()).unwrap();
+    let c = k.charges(20).into_iter().find(|c| c.tm_id == 3).expect("the old open charge is taken");
+    assert_eq!(c.charge.end_ms, 1_709_460_030_000, "ending at its last point");
+    let st: Vec<i64> = k.states_of(10).iter().map(|s| s.tm_id).collect();
+    assert_eq!(st, [1, 3, 4, 6], "state 6 ended (a later one follows); state 8 is still going");
+    let s6 = k.states_of(10).iter().find(|s| s.tm_id == 6).unwrap().span.clone();
+    assert_eq!(s6.end_ms, s6.start_ms);
+    let closed = |t: Table| r.table(t).notes.get(import::CLOSED_AT_LAST).copied().unwrap_or(0);
+    assert_eq!((closed(Table::ChargingProcesses), closed(Table::States)), (1, 2), "counted apart: {:?}", r.tables);
+    assert_eq!(r.table(Table::ChargingProcesses).skipped(Skip::Open), 0);
+    assert_eq!(r.table(Table::States).skipped(Skip::Open), 2, "the latest state of each car is still going");
+}
