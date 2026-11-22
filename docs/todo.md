@@ -25,10 +25,10 @@ the [README](../README.md).
    and the Software page with the changed modules and a box to type the version (the server side is done).
 2. Vehicle info on each design's car page (the server's `vehicle` facts with their sources, disagreements and unknown
    codes), and check the gateway configuration (`0x7FF`) and the LFP brick count on a real log (until then the brick count is not read for the chemistry).
-2. Check the timeline by hand against real drives and charges.
-3. Every page in all five designs, checked item by item against TeslaMate, on desktop and phone.
-4. A live connection to TeslaMate's database for the import.
-5. First release: the docs, a licence and the final name.
+3. Check the timeline by hand against real drives and charges.
+4. Every page in all five designs, checked item by item against TeslaMate, on desktop and phone.
+5. A live connection to TeslaMate's database for the import.
+6. First release: the docs, a licence and the final name.
 
 Open questions: two battery % signals disagree (0x33A and 0x292) and need checking against the car's screen.
 
