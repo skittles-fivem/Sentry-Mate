@@ -47,7 +47,7 @@ fn now_of(car: CarId, at_ms: u64, state: State, driving: bool, soc: f64, chargin
         tpms_bar: [Some(2.9), Some(2.9), Some(if soc < 10.0 { 2.0 } else { 2.9 }), Some(2.9)],
         ..Sample::default()
     };
-    Now { car, at_ms, state: Some(state), driving, sample, place: None }
+    Now { range_estimated_km: None, healthy: None, car, at_ms, state: Some(state), driving, sample, place: None }
 }
 
 /// Cars c1 (driving, fresh), c2 (charging, fresh) and c3 (asleep for two days, a low tyre and a low battery).

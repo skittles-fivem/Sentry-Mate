@@ -489,6 +489,8 @@ pub(crate) mod tests {
     /// A synthetic parked car (made-up position, nowhere in particular).
     pub(crate) fn parked(car: CarId) -> Now {
         Now {
+            range_estimated_km: None,
+            healthy: None,
             car,
             at_ms: 1_794_150_000_000,
             state: Some(State::Online),

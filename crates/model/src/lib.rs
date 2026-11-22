@@ -556,6 +556,103 @@ pub struct Sample {
     pub lv_voltage_v: Option<f64>,
     /// Tire pressures, bar: front left, front right, rear left, rear right.
     pub tpms_bar: [Option<f64>; 4],
+    /// Body, build, comfort and charge-detail values (doors, modes, car configuration, charge limit ...). Kept out of
+    /// the stored points: only the car's Now and MQTT use them. Absent in JSON when none is known.
+    #[serde(default, skip_serializing_if = "SampleExtra::is_empty")]
+    pub extra: SampleExtra,
+}
+
+/// The less frequent values of a [`Sample`], each decoded from a named DBC signal (never guessed): `None` when the car
+/// did not send it (or sent "not available"). Flags are `true` when the thing is so (a door open, Sentry mode on).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SampleExtra {
+    // car configuration (0x7FF GTW_carConfig, multiplexed): the DBC's value name in lower case, or `code_<n>` for a
+    // value the DBC has no name for
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wheels: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spoiler: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roof: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub right_hand_drive: Option<bool>,
+    /// GPS heading, degrees 0 to 360 (chassis bus, so only while driving).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heading_deg: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sentry_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_on: Option<bool>,
+    /// Keep climate on: `off`, `on`, `dog` or `camp` (the DBC's PARTY).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_climate: Option<String>,
+    /// Doors open, by the car's own sides: driver-side front and rear come from the left (0x102) or right (0x103)
+    /// body controller by the car's right-hand-drive setting; these are front left, front right, rear left, rear right.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub door_fl: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub door_fr: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub door_rl: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub door_rr: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trunk_open: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frunk_open: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_present: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub climate_on: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preconditioning_cabin: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preconditioning_battery: Option<bool>,
+    /// Usable state of energy, %.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usable_soc: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugged_in: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charge_port_open: Option<bool>,
+    /// The charge status word: `disconnected`, `no_power`, `about_to_charge`, `charging`, `complete`, `stopped`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charge_status: Option<String>,
+    /// Charge limit, %.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charge_limit_pct: Option<f64>,
+    /// The AC current set on the screen, A.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charge_current_request_a: Option<f64>,
+    /// The AC current the car may draw, A, and which limit sets it: `pilot`, `cable` or `car`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charge_current_limit_a: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charge_limit_source: Option<String>,
+    /// AC phases in use, 1 to 3.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charger_phases: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_to_full_min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tire_low: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_at_destination_kwh: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub navigating: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_installing: Option<bool>,
+}
+
+impl SampleExtra {
+    pub fn is_empty(&self) -> bool {
+        *self == SampleExtra::default()
+    }
 }
 
 /// Whether the car was reachable and what it was doing, over a span.
@@ -774,6 +871,12 @@ pub struct Now {
     pub driving: bool,
     pub sample: Sample,
     pub place: Option<PlaceId>,
+    /// Sentry Mate's own range estimate (energy left at the recent consumption), km: worked out, labelled as such.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_estimated_km: Option<f64>,
+    /// The Data health rule's verdict for the car's logger, when it was worked out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub healthy: Option<bool>,
 }
 
 #[cfg(test)]
