@@ -6,7 +6,7 @@ import { h, replace } from '../shared/dom.js';
 import { getUnits, format } from '../shared/units.js';
 import { isSupportedLocale, onLocaleChange } from '../shared/i18n.js';
 import { formatDate, isValidZone } from '../shared/time.js';
-import { buildUrl } from '../shared/state.js';
+import { buildUrl, isSold } from '../shared/state.js';
 import { packChoices, packLabel } from '../shared/packs.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel } from '../core/page.js';
@@ -17,6 +17,7 @@ import { sizePicker, followSwitch, sizeNote, themeButtons } from '../core/accoun
 import { flash } from '../core/flash.js';
 import { CHOICES as SKY_CHOICES, getSky, setSky, onSky } from '../core/sky.js';
 import { ago } from '../core/fmt.js';
+import { soldParts, soldOptions } from '../core/carswitch.js';
 import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, LABELS_TEXT, STYLES_TEXT, presetHosts, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 
@@ -64,14 +65,15 @@ async function savePref(patch, what) {
 
 export async function mount(ctx) {
   const admin = isAdmin();
-  let about = null, server = null, geo = null, maps = null, packList = null, release = null;
-  [about, server, geo, maps, packList, release] = await Promise.all([
+  let about = null, server = null, geo = null, maps = null, packList = null, release = null, cars = [];
+  [about, server, geo, maps, packList, release, cars] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || 'instrument' }),
     ctx.api.get('release').catch(() => null),
+    ctx.api.list('cars', { sort: 'custom', limit: 500 }).all({ max: 5000 }).catch(() => []),
   ]);
   if (!ctx.alive()) return;
   const p = getPrefs() || {};
@@ -141,6 +143,7 @@ export async function mount(ctx) {
     segMapColors.set(pp?.map_colors || 'dimmed');
     lang.value = pp?.language === 'en' ? 'en-US' : (pp?.language || 'auto');
     packSel.value = pp?.ui_pack || 'instrument';
+    paintMainCar(pp?.main_car || '');
     paintSwitch();
     paintLangExample();
   }));
@@ -156,6 +159,18 @@ export async function mount(ctx) {
   const switchNote = h('p', { class: 'setting-note', hidden: true }, 'The new pack is used the next time the app loads.');
   function paintSwitch() { const other = packSel.value !== packHere; switchBtn.hidden = !other; switchNote.hidden = !other; }
   paintSwitch();
+  // the Main car: what pages without a car in the address show (else the car looked at last); sold cars
+  // wait in their own group unless chosen
+  const carOpt = (c) => h('option', { value: c.id }, isSold(c) ? `${c.name} (sold)` : c.name);
+  const mainCar = h('select', { class: 'select', id: 'set-main-car', 'aria-label': 'Main car', onchange: async (e) => {
+    if (!(await savePref({ main_car: e.target.value || null }, 'Main car'))) paintMainCar(getPrefs()?.main_car || '');
+  } });
+  function paintMainCar(v) {
+    const { main, sold } = soldParts(cars, [v]);
+    replace(mainCar, h('option', { value: '' }, 'None (the car you looked at last)'), main.map(carOpt), soldOptions(sold, carOpt));
+    mainCar.value = cars.some((c) => c.id === v) ? v : '';
+  }
+  paintMainCar(p.main_car || '');
   // written with the app's own formatters, so it shows what the saved language really does
   const langExample = h('p', { class: 'setting-note' });
   const paintLangExample = () => replace(langExample, 'Example: ', h('b', null, format(1234.5, 'distance')), ', ', h('b', null, formatDate(ctx.api.now(), ctx.tz, { weekday: false, year: true })), '.');
@@ -173,7 +188,8 @@ export async function mount(ctx) {
       [lang, langExample],
       ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation']),
     setting('UI pack', `The design of the whole app. ${about?.ui_pack?.name ? `This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Your choice is used the next time the app loads where the server offers that pack.`,
-      [h('div', { class: 'row pack-row' }, packSel, switchBtn), switchNote]));
+      [h('div', { class: 'row pack-row' }, packSel, switchBtn), switchNote]),
+    cars.length > 1 ? setting('Main car', 'The car shown on pages that are not about one car (the sidebar, Travel, Help, Settings). With None, it is the car you looked at last, on any device.', mainCar) : null);
 
   /* ---------- server defaults, addresses and maps */
   const serverPanel = h('div', { class: 'settings-server' });

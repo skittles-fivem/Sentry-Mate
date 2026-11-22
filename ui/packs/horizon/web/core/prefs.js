@@ -7,6 +7,7 @@
 import * as api from '../shared/api.js';
 import { setUnits } from '../shared/units.js';
 import { setLocale } from '../shared/i18n.js';
+import { setCarPrefs } from '../shared/state.js';
 import { applyInterface, applyTheme } from './display.js';
 
 let me = null;
@@ -27,6 +28,7 @@ export function onPrefs(f) { subs.add(f); return () => subs.delete(f); }
 export function applyPrefs(p) {
   if (!p) return;
   prefs = p;
+  setCarPrefs(p); // main_car / last_car: the car pages without a car in the address show
   setUnits(p);
   setLocale(p.language || 'auto'); // also sets <html lang>: en-GB, or the language the text is really in
   if (p.theme) applyTheme(p.theme);

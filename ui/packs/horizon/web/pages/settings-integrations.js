@@ -10,7 +10,7 @@
 // because host, port, TLS, pin and password are checked together.
 
 import { h, replace } from '../shared/dom.js';
-import { buildUrl, lastCar } from '../shared/state.js';
+import { buildUrl, lastCar, preferredCar, rememberCar, isSold } from '../shared/state.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { icon } from '../core/icons.js';
 import { soldParts, soldOptions } from '../core/carswitch.js';
@@ -222,7 +222,7 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
 
   const carList = cars?.items || [];
-  // the preview car: the address's, else the frame's last car, else the first in the person's own order
+  // the preview car: the address's, else the person's preferred car (Main car, last looked at, first in their order)
   const findCar = async (id) => {
     if (!id) return null;
     const known = carList.find((c) => c.id === id);
@@ -234,7 +234,7 @@ export async function mount(ctx) {
     const wanted = ctx.query.car || null;
     extraCar = await findCar(wanted);
     if (wanted && !extraCar) carMissing = wanted;
-    if (!extraCar) extraCar = await findCar(lastCar());
+    if (!extraCar) extraCar = await findCar(preferredCar(carList) || lastCar());
     if (!extraCar && carList.length) extraCar = (await ctx.api.page('cars', { sort: 'custom', limit: 1 }).catch(() => null))?.items?.[0] || carList[0];
   } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
   if (!ctx.alive()) return;
@@ -478,6 +478,7 @@ export async function mount(ctx) {
     if (!next || next === carId) return;
     carId = next;
     extraCar = carList.find((c) => c.id === next) || { id: next, name: carSel.selectedOptions[0]?.textContent || next };
+    rememberCar(next, { sold: isSold(extraCar) });
     replace(carNoteSlot);
     ctx.setQuery({ car: carId });
     await loadPreview();
