@@ -204,6 +204,12 @@ pub(crate) fn get<T: DeserializeOwned>(db: &Db, ns: &str, key: &str) -> Result<O
     }
 }
 
+/// A kept working value (a cache): as [`get`], but one that no longer reads (kept by an older version in another
+/// shape, or damaged) is as if none was kept, and is worked out again rather than failing the request.
+pub(crate) fn kept<T: DeserializeOwned>(db: &Db, ns: &str, key: &str) -> Result<Option<T>> {
+    Ok(db.kv().get(ns, key)?.and_then(|b| serde_json::from_slice(&b).ok()))
+}
+
 pub(crate) fn put<T: Serialize>(db: &Db, ns: &str, key: &str, v: &T) -> Result<()> {
     let b = serde_json::to_vec(v).map_err(|e| crate::Error::Damaged(format!("{key}: {e}")))?;
     Ok(db.kv().put(ns, key, &b)?)

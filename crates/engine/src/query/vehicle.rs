@@ -70,7 +70,7 @@ fn day_build(e: &Engine, c: &Car, d: u32) -> QResult<Option<CanBuild>> {
     }
     let stamp: String = h.finalize()[..12].iter().map(|b| format!("{b:02x}")).collect();
     let key = format!("car/{}/day/{d}", c.id);
-    if let Some(kept) = records::get::<BuildDay>(e.db(), NS, &key)?
+    if let Some(kept) = records::kept::<BuildDay>(e.db(), NS, &key)?
         && kept.stamp == stamp
     {
         return Ok(Some(kept.can));
