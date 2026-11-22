@@ -403,6 +403,10 @@ async fn status(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>
         .map(|(n, s)| {
             let mut v = serde_json::to_value(&s).unwrap_or_default();
             let log = n.strip_suffix(".json").unwrap_or(&n);
+            // `size` beside `length`, as the bridge app reads it: the whole file's size when known, else what is here
+            if let Some(o) = v.as_object_mut() {
+                o.insert("size".into(), s.length.unwrap_or(s.received).into());
+            }
             if let (State::Complete, Some(c), Some(o)) = (&s.state, checks.get(log), v.as_object_mut()) {
                 o.insert("check".into(), c.word().into());
                 if let Some(r) = c.reason() {

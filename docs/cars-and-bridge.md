@@ -152,10 +152,11 @@ second table.
 The CAN Bridge app asks the upload API which of its logs arrived (`POST /api/can/logs/status` with
 `{ "names": [...] }`, up to 2000 names; the app sends up to 500). Each name gets its `state` (`complete`,
 `partial`, `missing`, or `invalid` / `forbidden` for a name that is not a log name or is another car's) with
-`received` and `length`, and a complete one also its `check`:
+`received`, `length` and `size` (the whole file's size when known, else the bytes received; the same as `length`
+once known), and a complete one also its `check`:
 
 ```json
-{"files": {"k_20261122T101500Z_0042.log.xz": {"state": "complete", "received": 1834221, "length": 1834221, "check": "verified"}}}
+{"files": {"k_20261122T101500Z_0042.log.xz": {"state": "complete", "received": 1834221, "length": 1834221, "size": 1834221, "check": "verified"}}}
 ```
 
 | `check` | When |

@@ -150,9 +150,15 @@ async fn chained_logs_are_verified_and_incomplete_ones_get_no_check() {
         let n = name(i);
         assert_eq!(f[&n]["check"], json!("verified"), "{f}");
         assert!(f[&n].get("check_reason").is_none(), "{f}");
+        assert_eq!(f[&n]["size"], json!(log_bytes(i).len()), "size is the whole file's, beside length: {f}");
+        assert_eq!(f[&n]["size"], f[&n]["length"], "{f}");
     }
     assert_eq!(f[format!("{}.json", name(1))]["check"], json!("verified"), "a sidecar has its log's check");
-    assert_eq!(f[name(7)], json!({ "state": "missing", "received": 0, "length": null }), "missing: no check");
+    assert_eq!(
+        f[name(7)],
+        json!({ "state": "missing", "received": 0, "length": null, "size": 0 }),
+        "missing: no check"
+    );
 
     // a partial upload has no check either
     let b = log_bytes(9);

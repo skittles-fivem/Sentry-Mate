@@ -185,7 +185,7 @@ async fn a_log_uploads_in_chunks_and_resumes() {
     let (s, b) = put(&t, LOG, &bytes, 0, &bytes[..400]).await;
     assert_eq!((s, b["received"].as_u64(), b["complete"].as_bool()), (StatusCode::OK, Some(400), Some(false)));
     let (_, b) = status(&t, &[LOG]).await;
-    assert_eq!(b["files"][LOG], json!({ "state": "partial", "received": 400, "length": 1000 }));
+    assert_eq!(b["files"][LOG], json!({ "state": "partial", "received": 400, "length": 1000, "size": 1000 }));
     // a lost connection: the app resends from the wrong place and is told where to resume
     let (s, b) = put(&t, LOG, &bytes, 300, &bytes[300..]).await;
     assert_eq!(
@@ -229,7 +229,7 @@ async fn a_status_request_reads_an_upload_without_cutting_or_changing_it() {
     drop(f);
     let before = std::fs::read(part).unwrap();
     let (_, b) = status(&t, &[LOG]).await;
-    assert_eq!(b["files"][LOG], json!({ "state": "partial", "received": 400, "length": 1000 }));
+    assert_eq!(b["files"][LOG], json!({ "state": "partial", "received": 400, "length": 1000, "size": 1000 }));
     assert_eq!(std::fs::read(part).unwrap(), before, "the status request left the upload as it is");
     // the next chunk carries on after the whole records
     let (s, b) = put(&t, LOG, &bytes, 400, &bytes[400..]).await;
@@ -262,7 +262,7 @@ async fn a_damaged_part_from_before_format_2_is_dropped_and_the_upload_starts_ov
     }
     std::fs::write(&part, &old).unwrap();
     let (_, b) = status(&t, &[LOG]).await;
-    assert_eq!(b["files"][LOG], json!({ "state": "partial", "received": 400, "length": 1000 }));
+    assert_eq!(b["files"][LOG], json!({ "state": "partial", "received": 400, "length": 1000, "size": 1000 }));
     // the next chunk: the part is dropped and the app told to start again from 0, at once
     let (s, b) = put(&t, LOG, &bytes, 400, &bytes[400..]).await;
     assert_eq!(
