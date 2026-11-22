@@ -177,6 +177,7 @@
 :root[data-phone] .charges-page .filter-bar > .btn { justify-content: flex-start; }
 :root[data-phone] .charges-page .filter-bar > .btn > .ico:last-child { margin-left: auto; }
 :root[data-phone] .charges-page .filter-bar > :is(.seg, .field--search, .filter) { grid-column: 1 / -1; width: auto; }
+:root[data-phone="tall"] .charges-page .filter-bar > select { grid-column: 1 / -1; } /* "Any kind of place" is not cut short */
 :root[data-phone] .charges-page .filter-bar > .seg { display: grid; grid-auto-flow: column; grid-auto-columns: auto; }
 :root[data-phone] .charges-page .filter-bar > .seg > .seg-btn { justify-content: center; padding-inline: round(0.375rem, var(--e)); width: auto; }
 :root[data-phone] .charges-page .filter-bar > .filter { flex-wrap: wrap; row-gap: round(0.5rem, var(--e)); }
