@@ -30,7 +30,7 @@ class Cars(ServerCase):
         self.assertEqual(by["c2"]["now"]["state"], "charging")
         self.assertTrue(by["c2"]["now"]["plugged"])
         self.assertGreater(by["c2"]["now"]["charge_power_kw"], 1)
-        self.assertEqual(by["c3"]["now"]["state"], "unknown")
+        self.assertEqual(by["c3"]["now"]["state"], "parked")  # silent, its newest log ended parked
         self.assertTrue(by["c3"]["now"]["stale"])
         self.assertIn("upload_silence", by["c3"]["attention"])
         self.assertIn("tyre_low", by["c2"]["attention"])

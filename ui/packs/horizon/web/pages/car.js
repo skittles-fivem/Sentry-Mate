@@ -105,11 +105,11 @@ export async function mount(ctx) {
       h('span', { class: 'cl-sep cl-status', cover: 'summary.stat.status' }, lamp(st, { stale: !!now.stale }),
         h('b', null, now.stale && st !== 'unknown' ? `Last known: ${stateWord(st).toLowerCase()}` : stateWord(st)),
         now.since_ms ? h('span', null, ` since ${when(now.since_ms, tz)} (${dur(Math.max(0, ctx.api.now() - now.since_ms))})`) : null));
-    const quiet = now.stale || st === 'unknown';
+    const quiet = now.stale || !now.at_ms;
     const viaApi = (now.inputs || []).some((i) => i.kind === 'tesla_api');
     replace(dataLine, inputsLine(now.inputs, { cover: 'summary.data.live_push' }), quiet
       ? h('div', { class: 'callout callout--warn', role: 'status' }, icon('signal'), h('div', null,
-        h('p', { class: 'callout-head' }, st === 'unknown' ? 'No recent log from this car' : 'Showing the last known values'),
+        h('p', { class: 'callout-head' }, !now.at_ms ? 'No recent log from this car' : 'Showing the last known values'),
         h('p', { class: 'callout-text' }, `Nothing has arrived since ${now.at_ms ? ago(now.at_ms) : 'a long time'}. Every value below is the last one the car sent, with its age. ${viaApi ? 'Neither SMO nor the Tesla API has sent anything newer.' : 'SMO (the CAN Bridge) may be off or out of range; a drive under way then shows as stopped until its logs arrive.'}`)))
       : h('p', { class: 'cl-live' }, icon('live', 'i--sm'), h('span', null, `Live: SMO values arrive about a minute after the car records them${viaApi ? ', Tesla API values as often as the server asks' : ''}, and update here by themselves. Each value names the input it came from. Values from before a restart are kept until a new one comes.`)));
   }

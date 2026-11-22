@@ -220,7 +220,7 @@ function header(car, now, tz) {
 }
 
 function staleBanner(now, tz) {
-  if (!now.stale && now.state !== 'unknown') return null;
+  if (!now.stale && now.at_ms) return null;
   const wasDriving = now.drive && now.drive.drive_id;
   return h('p', { class: 'stale-banner', role: 'note', cover: 'summary.state.drive_offline' },
     h('strong', null, `Last known values, ${formatDuration(api.now() - (now.at_ms || api.now()))} old.`),
