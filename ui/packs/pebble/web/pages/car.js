@@ -5,7 +5,7 @@
 // last charge; a charging tile; what keeps the car awake; the period's activity strip and summary; a battery
 // chart and a charging chart that share one cursor; then the vehicle info (pages/vehicle-parts.js: each fact of the
 // car's build with where it came from and how sure, an admin's corrections). The software tile links to the car's
-// firmware fingerprints on Software (#firmware). Every blank value says why (asleep, not sent by this car,
+// firmware fingerprints on Software (#firmware) and to its module firmware history (#firmware-history). Every blank value says why (asleep, not sent by this car,
 // not on the CAN bus). What no CAN message carries (lock, windows, sunroof, the route, the software version and a
 // waiting update, the charge schedule) comes from now.off_can, the Tesla API's or TeslaFi's newest reading: each
 // with its input's mark, and Stale once it is past its age limit; a value no input has is a dash.
@@ -31,6 +31,7 @@ import { srcPill, viaMark, inputsLine } from '../core/source.js';
 // a tile's new children; a null or false part is left out (replaceChildren would print it as text)
 const put = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false && k !== ''));
 import { vehicleTiles } from './vehicle-parts.js';
+import { historyHref } from '../core/firmware.js';
 
 const withVia = (text, x) => { const m = viaMark(x); return m ? h('span', { class: 'src-line' }, text, m) : text; };
 /** The input mark of an off_can value ({ value, at_ms, sources, stale } or null), and Stale past its age limit. */
@@ -265,7 +266,8 @@ export async function mount(ctx) {
       ov ? h('p', { class: 'src-line' }, offMark(oc.version, tz)) : null,
       updText ? h('p', { class: ['tile-line', 'src-line', { 'is-warn': !!upd }] }, updText, offMark(oc.update_available, tz)) : null,
       h('a', { class: 'tile-link', href: state.buildUrl('software', { car: car.id }), cover: 'overview.link.updates' }, 'Software history'),
-      h('a', { class: 'tile-link', href: `${state.buildUrl('software', { car: car.id })}#firmware` }, 'Car firmware'));
+      h('a', { class: 'tile-link', href: `${state.buildUrl('software', { car: car.id })}#firmware` }, 'Car firmware'),
+      h('a', { class: 'tile-link', href: historyHref(car.id) }, 'Module firmware history'));
   }
   const d0 = lastDrive.error ? null : lastDrive.items?.[0];
   const tDrive = d0 ? tile({ w: 1, title: 'Last drive', icon: 'route', href: state.buildUrl('drive', { car: car.id, drive: d0.id }), cls: 'tile-stat' },
