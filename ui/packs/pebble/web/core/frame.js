@@ -1,6 +1,7 @@
 // Sentry Mate, "Pebble" UI pack: the frame every page shares.
 //
-// - The header of each page: the brand (home), the offline chip and the round account button on a thin bar;
+// - The header of each page: the brand (home), the offline chip, a clock with its time zone ("11:20 PM CST", the
+//   zone the page's times are in: the car's, else the default) and the round account button on a thin bar;
 //   under it the big page title, the car's name (a pill that opens the car switcher) and the date-range pill
 //   (it opens the period sheet), and a slot for the page's own buttons.
 // - The floating dock, 16 px above the bottom edge (plus the safe area) and centred on every screen: the round
@@ -16,6 +17,7 @@ import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { formatNumber } from '../shared/i18n.js';
+import { formatTime, zoneName } from '../shared/time.js';
 import { PAGES, DOCK, SHEET, pageInfo, navId } from './pages.js';
 import { icon, initial, refreshAges, safeLink, stateWord } from './ui.js';
 import { createSheet, sheetRow, sheetGroup } from './sheet.js';
@@ -47,11 +49,14 @@ function buildHead() {
   el.offline = h('span', { class: 'chip tone-bad offline-chip', role: 'status', hidden: true }, icon('offline'), h('span', null, 'Offline, trying again'));
   el.account = h('button', { type: 'button', class: 'avatar-btn', 'aria-haspopup': 'dialog', 'aria-label': `You: ${me ? me.name : 'account'}`, title: me ? `${me.name}: look, links, sign out` : 'Account', onclick: (e) => openAccount(e.currentTarget) },
     h('span', { class: 'avatar', 'aria-hidden': 'true' }, initial(me && me.name)));
+  el.clockTime = h('span', { class: 'head-clock-time' });
+  el.clockZone = h('span', { class: 'head-clock-zone' });
+  el.clock = h('p', { class: 'head-clock', role: 'timer', 'aria-live': 'off' }, icon('clock'), el.clockTime, el.clockZone);
   head.replaceChildren(
     h('div', { class: 'head-bar' },
       h('a', { class: 'brand', href: '/', 'aria-label': 'Sentry Mate: Fleet', cover: ['shell.nav.home', 'web.shell.logo-home', 'web.shell.home-routing'] },
         h('img', { class: 'brand-mark', src: '/icon.svg', alt: '' }), h('span', { class: 'brand-name' }, 'Sentry Mate')),
-      h('div', { class: 'head-bar-end' }, el.offline, el.account)),
+      h('div', { class: 'head-bar-end' }, el.offline, el.clock, el.account)),
     h('div', { class: 'head-main' },
       h('div', { class: 'head-text' }, el.title, h('div', { class: 'head-meta' }, el.carPill, el.datePill)),
       el.actions));
@@ -90,6 +95,19 @@ function drawHead() {
     el.datePill.setAttribute('aria-label', `Period: ${w.name}${w.dates ? `, ${w.dates}` : ''}. Change the period`);
   }
   el.actions.replaceChildren();
+}
+
+/** The clock: the time now in the page's zone and the zone's short name; text changed in place only when it changes. */
+function drawClock() {
+  if (!el.clock) return;
+  const tz = view.tz || 'UTC';
+  const now = api.now();
+  let t, z;
+  try { t = formatTime(now, tz); z = zoneName(now, tz); } catch { t = formatTime(now, 'UTC'); z = 'UTC'; }
+  if (el.clockTime.textContent !== t) el.clockTime.textContent = t;
+  if (el.clockZone.textContent !== z) el.clockZone.textContent = z;
+  const title = `${t} in ${tz.replace(/_/g, ' ')}${view.car ? `, ${view.car.name}’s time zone` : ''}: the zone this page’s times are in`;
+  if (el.clock.title !== title) { el.clock.title = title; el.clock.setAttribute('aria-label', `Time ${t} ${z}, ${tz.replace(/_/g, ' ')}`); }
 }
 
 /* ------------------------------------------------------------------ the dock */
@@ -208,8 +226,11 @@ let notices = [];
 
 // a Tesla account's notice (admins only) opens that account on Settings: Integrations
 const TESLA_NOTICES = new Set(['tesla_sign_in_needed', 'tesla_account_error']);
+// a TeslaFi account's notice opens that TeslaFi account
+const TESLAFI_NOTICES = new Set(['teslafi_token_refused', 'teslafi_account_error']);
 function fixOf(n) {
   if (TESLA_NOTICES.has(n.code)) return `${String(n.fix_link || state.buildUrl('settings-integrations')).split('#')[0]}#tesla${n.detail?.account ? `-${encodeURIComponent(n.detail.account)}` : ''}`;
+  if (TESLAFI_NOTICES.has(n.code)) return `${String(n.fix_link || state.buildUrl('settings-integrations')).split('#')[0]}#teslafi${n.detail?.account ? `-${encodeURIComponent(n.detail.account)}` : ''}`;
   return n.fix_link || null;
 }
 
@@ -226,7 +247,7 @@ function drawNotices() {
   box.replaceChildren(...shown.map((n) => h('div', { class: ['notice', `lv-${n.level || 'info'}`], role: n.level === 'error' ? 'alert' : null },
     h('span', { class: 'dot', 'aria-hidden': 'true' }),
     h('p', { class: 'notice-text' }, n.message),
-    fixOf(n) ? h('a', { class: 'btn btn-soft btn-sm', href: fixOf(n) }, h('span', { class: 'btn-text' }, TESLA_NOTICES.has(n.code) ? 'Open the Tesla account' : fixWords(n.fix_link)), icon('arrowRight')) : null,
+    fixOf(n) ? h('a', { class: 'btn btn-soft btn-sm', href: fixOf(n) }, h('span', { class: 'btn-text' }, TESLA_NOTICES.has(n.code) ? 'Open the Tesla account' : TESLAFI_NOTICES.has(n.code) ? 'Open the TeslaFi account' : fixWords(n.fix_link)), icon('arrowRight')) : null,
     h('button', { type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': 'Hide this notice for now', title: 'Hide for now', onclick: () => {
       try { const s = dismissed(); s.add(`${n.code}:${n.since_ms}`); sessionStorage.setItem(DISMISS_KEY, JSON.stringify([...s])); } catch { /* fine */ }
       drawNotices();
@@ -267,6 +288,8 @@ export function mountFrame(opts) {
   buildDock();
   if (Array.isArray(opts.notices)) { notices = opts.notices; drawNotices(); } else { drawFoot(); loadNotices(); }
   setInterval(refreshAges, 20000);
+  setInterval(drawClock, 5000);
+  drawClock();
   api.events((ev) => {
     if (ev.type === 'notice') loadNotices();
     else if (ev.type === 'prefs' && ev.data) applyPrefs(ev.data);
@@ -286,6 +309,7 @@ function update(v) {
   view = { ...view, ...v, carsCount: v.carsCount ?? view.carsCount, title: null };
   setSwitcherCar(view.car ? view.car.id : null);
   drawHead();
+  drawClock();
   drawDock();
   if (el.moreSheet.isOpen) el.moreSheet.close();
 }
