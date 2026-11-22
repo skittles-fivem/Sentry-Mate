@@ -9,6 +9,7 @@ import * as session from '../core/session.js';
 import { flash } from '../core/flash.js';
 
 export const id = 'sign-in';
+export const css = true;
 export const title = () => 'Sign in';
 
 export async function mount(ctx) {

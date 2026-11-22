@@ -199,3 +199,25 @@
 .tm-col { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
 .tm-test-line { align-items: flex-start; flex-wrap: nowrap; }
 .tm-test-line > .ico { flex: none; margin-top: round(0.1875rem, var(--e)); }
+
+/* a phone: one column, controls as wide as the panel, long cells across the whole card, key and value stacked */
+:root[data-phone] .si-stack .seg:not(.seg--stack) { display: flex; flex-wrap: wrap; width: 100%; max-width: 100%; }
+:root[data-phone] .si-stack .seg:not(.seg--stack) .seg-btn { flex: 1 1 auto; justify-content: center; }
+:root[data-phone] .ta-pace-head .seg { width: 100%; }
+:root[data-phone] .si-jump { gap: round(0.25rem, var(--e)); }
+:root[data-phone] .si-jump > a { min-height: var(--tap); display: inline-flex; align-items: center; }
+:root[data-phone] .si-car .select, :root[data-phone] .si-car-search { flex: 1 1 100%; width: 100%; min-width: 0; }
+:root[data-phone] .si-stack .tbl:not(.tbl--keep) > tbody > tr > td.si-wrap { grid-column: 1 / -1; min-width: 0; max-width: none; }
+:root[data-phone] .si-topics-cell, :root[data-phone] .si-payloads { max-width: none; }
+:root[data-phone] .si-what { min-width: 0; }
+:root[data-phone] .ta-tbl > tbody > tr > td:has(.ta-match) { grid-column: 1 / -1; }
+:root[data-phone] .ta-match .select { flex: 1 1 100%; width: 100%; min-width: 0; }
+:root[data-phone] .ta-acc-acts .btn { flex: 1 1 auto; }
+:root[data-phone] .si-status-top .btn { margin-left: 0; }
+:root[data-phone] .si-log-head .btn { margin-left: 0; }
+:root[data-phone="tall"] .si-stack .kv-row { flex-direction: column; align-items: flex-start; gap: round(0.125rem, var(--e)); }
+:root[data-phone="tall"] .si-stack .kv dd { margin: 0; text-align: left; white-space: normal; }
+:root[data-phone] .ta-pace-list dd { white-space: normal; text-align: right; }
+:root[data-phone] .si-legend > div { flex-direction: column; gap: round(0.125rem, var(--e)); }
+:root[data-phone] .si-tree-row > .si-code { overflow-wrap: anywhere; }
+:root[data-phone] .si-fold > summary { display: block; min-height: var(--tap); padding: round(0.625rem, var(--e)) 0; }

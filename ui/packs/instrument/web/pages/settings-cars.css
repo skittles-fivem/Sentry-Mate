@@ -79,3 +79,22 @@
 .sc-sold-state { margin: 0; color: var(--text-2); }
 .sc-sold-state.is-sold { color: var(--text); }
 .sc-sold-state .ico { vertical-align: round(-0.125rem, var(--e)); color: var(--text-3); }
+
+/* a phone: one column, controls as wide as the panel, choices as tall as a finger, key and value stacked */
+:root[data-phone] .settings-stack .setting-control { align-items: stretch; }
+:root[data-phone] .settings-stack .setting-control > :is(.btn, .switch-row, .panel-link, .link-btn) { align-self: flex-start; }
+:root[data-phone] .settings-stack .setting-control .form-row,
+:root[data-phone] .settings-stack .setting-control .sc-sold .form-row,
+:root[data-phone] .settings-stack .setting-control > .kv { max-width: none; }
+:root[data-phone] .settings-stack .seg { display: flex; flex-wrap: wrap; width: 100%; max-width: 100%; }
+:root[data-phone] .settings-stack .seg-btn { flex: 1 1 auto; justify-content: center; }
+:root[data-phone] .sc-cars { align-self: stretch; }
+:root[data-phone] .sc-picker > .btn { align-self: flex-start; }
+:root[data-phone] .sc-search, :root[data-phone] .sc-secret, :root[data-phone] .sc-range-f, :root[data-phone] .sc-range-f .input { width: 100%; }
+:root[data-phone] .sc-range { align-items: stretch; }
+:root[data-phone] .sc-range-f { flex: 1 1 100%; }
+:root[data-phone] .sc-acts { flex-wrap: wrap; }
+:root[data-phone="tall"] .settings-stack .kv-row { flex-direction: column; align-items: flex-start; gap: round(0.125rem, var(--e)); }
+:root[data-phone="tall"] .settings-stack .kv dd { margin: 0; text-align: left; white-space: normal; flex-wrap: wrap; }
+:root[data-phone] .sc-outcome .panel-link { white-space: normal; }
+:root[data-phone] .settings-stack .tbl:not(.tbl--keep) > tbody > tr > td:has(> .sc-acts) { grid-column: 1 / -1; }

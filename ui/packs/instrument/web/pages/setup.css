@@ -119,3 +119,6 @@
   .mv-code { font-size: 1.25rem; }
   .su-key { font-size: 1.125rem; }
 }
+
+/* a phone: the set-up buttons share the width */
+:root[data-phone] .su-acts > .btn { flex: 1 1 auto; }
