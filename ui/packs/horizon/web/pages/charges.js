@@ -779,7 +779,7 @@ export async function mount(ctx) {
     if (!curveCar || !viewCars.includes(curveCar)) curveCar = fixedCar ? fixedCar.id : ([...dcCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || viewCars[0]);
     const carSel = multi && viewCars.length > 1 ? h('select', { class: 'select select--sm', 'aria-label': 'Car for the curve' },
       viewCars.map((cid) => h('option', { value: cid, selected: cid === curveCar }, `${carName(cid)} (${formatNumber(dcCount.get(cid) || 0)} DC)`))) : null;
-    carSel?.addEventListener('change', () => { curveCar = carSel.value; ctx.setQuery({ curve_car: curveCar }); paintCurve(rows, statsGen); });
+    carSel?.addEventListener('change', () => { curveCar = carSel.value; state.rememberCar(curveCar, { sold: state.isSold(carById.get(curveCar)) }); ctx.setQuery({ curve_car: curveCar }); paintCurve(rows, statsGen); });
     const plotEl = h('div', { class: 'curve-chart' });
     const read = h('span', { class: 'chart-read' });
     let data = { median: [], sessions: [] };

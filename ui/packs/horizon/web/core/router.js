@@ -226,6 +226,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
       return;
     }
     if (!alive()) return;
+    state.rememberCar(car.id, { sold: state.isSold(car) }); // the car loaded: the person looked at it
     setFallbackZone(car.time_zone);
   } else if (info.period && state.lastCar()) {
     // a page with a period but no car (Travel): days are the last car's days
