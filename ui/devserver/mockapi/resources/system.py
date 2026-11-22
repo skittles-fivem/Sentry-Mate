@@ -52,7 +52,7 @@ def patch_settings(req):
     req.version_check(cur["version"])
     bad, rule = {}, {}
     known = ("version", "units", "range", "car_order", "geocode", "tiles", "release_check", "outside_links",
-             "outbound", "host_names", "default_time_zone")
+             "outbound", "host_names", "default_time_zone", "import_gap_fill")
     for k in body:
         if k not in known:
             bad[k] = "Unknown field."
@@ -95,6 +95,7 @@ def patch_settings(req):
     sub("release_check", {"enabled": bool})
     sub("outside_links", {"maps": bool, "release_notes": bool})
     sub("outbound", {"proxy": "str?"})
+    sub("import_gap_fill", {"enabled": bool})
     if "range" in body:
         if body["range"] not in ("rated", "ideal"):
             rule["range"] = "Must be rated or ideal."

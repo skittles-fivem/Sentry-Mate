@@ -1423,6 +1423,7 @@ pub fn projected_range(e: &Engine, car: CarId, q: &RangeQuery, now_ms: u64) -> Q
         state: Vec::new(),
         sources: Vec::new(),
         source_label: model::Origin::label_of(&[]),
+        value_sources: RANGE_FIELDS.iter().map(|f| ((*f).to_string(), Vec::new())).collect(),
     };
     let fixed: Option<u64> = match q.bucket.as_deref() {
         None | Some("") | Some("auto") => None,
@@ -1531,6 +1532,7 @@ pub fn projected_range(e: &Engine, car: CarId, q: &RangeQuery, now_ms: u64) -> Q
             bucket_ms: w,
             coverage_pct,
             state,
+            value_sources: RANGE_FIELDS.iter().map(|f| ((*f).to_string(), super::source_refs(&gave))).collect(),
             sources: super::source_refs(&gave),
             source_label: model::Origin::label_of(&gave),
         },
@@ -1669,7 +1671,12 @@ pub fn efficiency(
     let mut groups: BTreeMap<i64, (u64, f64, f64, u64, f64)> = BTreeMap::new();
     let (mut no_t, mut no_t_km) = (0u64, 0.0);
     let mut last_end: Option<u64> = None;
-    each_row::<Drive>(e, car, a, end, None, &shown, false, |d| {
+    // a live drive's outside temperature where only the chosen import has one ([`super::gapfill`])
+    let gaps = super::gapfill::Gaps::new(e, car, None)?;
+    each_row::<Drive>(e, car, a, end, None, &shown, false, |mut d| {
+        if d.outside_temp_avg_c.is_none() && d.distance_km.is_some_and(|k| k >= min_km) {
+            gaps.drive(&mut d)?;
+        }
         let (dk, de) = (d.distance_km.unwrap_or(0.0), d.energy_used_kwh.unwrap_or(0.0));
         let dk_e = if d.energy_used_kwh.is_some() { dk } else { 0.0 };
         all_n += 1;

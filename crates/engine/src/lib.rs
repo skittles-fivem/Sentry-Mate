@@ -224,6 +224,8 @@ pub(crate) struct Inner {
     pub(crate) api_built: Mutex<HashMap<CarId, u64>>,
     /// The time zone a car made from now on starts in.
     default_zone: RwLock<String>,
+    /// Whether an import fills the values live history lacks (the server setting; a car's own setting wins).
+    pub(crate) gap_fill: std::sync::atomic::AtomicBool,
 }
 
 impl Inner {
@@ -274,6 +276,7 @@ impl Engine {
                 api_pending: Mutex::new(std::collections::HashSet::new()),
                 api_built: Mutex::new(HashMap::new()),
                 default_zone: RwLock::new(opts.default_time_zone.clone()),
+                gap_fill: std::sync::atomic::AtomicBool::new(true),
                 opts,
             }),
         }
@@ -296,6 +299,17 @@ impl Engine {
         }
         *self.inner.default_zone.write().unwrap_or_else(|e| e.into_inner()) = zone.to_string();
         true
+    }
+
+    /// Whether imports fill the values live history lacks, server-wide (on until the server setting turns it off;
+    /// a car's own `import_gap_fill` setting wins over it).
+    pub fn import_gap_fill(&self) -> bool {
+        self.inner.gap_fill.load(Ordering::SeqCst)
+    }
+
+    /// Turns import gap filling on or off server-wide (the server setting `import_gap_fill.enabled`).
+    pub fn set_import_gap_fill(&self, on: bool) {
+        self.inner.gap_fill.store(on, Ordering::SeqCst);
     }
 
     pub fn store(&self) -> &Store {

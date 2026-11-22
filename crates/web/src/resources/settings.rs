@@ -99,6 +99,19 @@ pub struct OutsideLinks {
     pub release_notes: bool,
 }
 
+/// Whether an import fills the values live history lacks, server-wide (on by default; a car's own setting wins).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImportGapFill {
+    pub enabled: bool,
+}
+
+impl Default for ImportGapFill {
+    fn default() -> ImportGapFill {
+        ImportGapFill { enabled: true }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Outbound {
@@ -123,6 +136,7 @@ pub struct ServerSettings {
     /// The IANA time zone a new car starts in (Settings: Cars changes each car's own). None until it is set, at
     /// first-run setup from the admin's browser or here: then new cars start in the container's `TZ`, else UTC.
     pub default_time_zone: Option<String>,
+    pub import_gap_fill: ImportGapFill,
     pub version: u64,
 }
 
@@ -139,6 +153,7 @@ impl Default for ServerSettings {
             outbound: Outbound::default(),
             host_names: Vec::new(),
             default_time_zone: None,
+            import_gap_fill: ImportGapFill::default(),
             version: 1,
         }
     }
@@ -240,6 +255,9 @@ pub fn apply(app: &AppState, s: &ServerSettings) {
         e.set_default_time_zone(z);
     }
     super::tesla::follow_proxy(app, s.outbound.proxy.as_deref());
+    if let Ok(e) = app.service::<Engine>() {
+        e.set_import_gap_fill(s.import_gap_fill.enabled);
+    }
 }
 
 /// First-run setup: the time zone of the first admin's browser becomes the one new cars start in, unless one is
@@ -343,6 +361,7 @@ async fn change(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiRe
         ("proxy", before.outbound == after.outbound),
         ("host names", before.host_names == after.host_names),
         ("default time zone", before.default_time_zone == after.default_time_zone),
+        ("import gap filling", before.import_gap_fill == after.import_gap_fill),
     ] {
         if !same {
             changed.push(k);
@@ -511,6 +530,7 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
         "outbound",
         "host_names",
         "default_time_zone",
+        "import_gap_fill",
     ];
     for k in body.0.keys() {
         if !known.contains(&k.as_str()) {
@@ -593,6 +613,11 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
         if let Some(n) = whole(m, "tiles", "max_zoom", &mut bad) {
             new.tiles.max_zoom = u8::try_from(n).unwrap_or(u8::MAX);
         }
+    }
+    if let Some(m) = part(body, "import_gap_fill", &["enabled"], &mut bad)
+        && let Some(b) = flag(m, "import_gap_fill", "enabled", &mut bad)
+    {
+        new.import_gap_fill.enabled = b;
     }
     if let Some(m) = part(body, "release_check", &["enabled"], &mut bad)
         && let Some(b) = flag(m, "release_check", "enabled", &mut bad)

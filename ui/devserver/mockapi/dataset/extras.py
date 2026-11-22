@@ -35,6 +35,8 @@ def server_settings(now):
         "host_names": ["sentry-mate.local"],
         # the zone new cars start in (set from the first admin's browser at set-up)
         "default_time_zone": "America/Chicago",
+        # an import fills what live history lacks (a car's own `import_gap_fill` wins)
+        "import_gap_fill": {"enabled": True},
     }
 
 

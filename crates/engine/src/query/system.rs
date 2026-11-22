@@ -592,6 +592,18 @@ fn imported_coverage(e: &Engine, car: CarId) -> QResult<Vec<(u64, u64)>> {
     }
 }
 
+/// The live spans flipped to show the imported side (in order, apart): a series shows the import there.
+pub(crate) fn flipped_spans(e: &Engine, car: CarId) -> QResult<Vec<(u64, u64)>> {
+    let fl = flips(e, car)?;
+    if fl.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(imported_coverage(e, car)?
+        .into_iter()
+        .filter(|s| chosen_for(&fl, s.0, s.1).is_some_and(|f| f.shown == "teslamate"))
+        .collect())
+}
+
 /// Every overlap of a car, both kinds.
 fn all_overlaps(e: &Engine, car: CarId) -> QResult<Vec<Overlap>> {
     let ch = choices(e, car)?;

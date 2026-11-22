@@ -399,11 +399,11 @@ impl Engine {
 
     /// A drive's or a stretch's live samples: SMO's and the API's fused, as the timeline was built from.
     pub(crate) fn live_samples(&self, car: CarId, from_ms: u64, to_ms: u64) -> Result<Vec<Sample>> {
-        Ok(self.live_fused(car, from_ms, to_ms)?.0)
+        Ok(self.live_fused(car, from_ms, to_ms)?.samples)
     }
 
-    /// [`Self::live_samples`], and whether SMO and the API gave any of them (a value, for the API).
-    pub(crate) fn live_fused(&self, car: CarId, from_ms: u64, to_ms: u64) -> Result<(Vec<Sample>, bool, bool)> {
+    /// [`Self::live_samples`] and the seconds that are not SMO's alone ([`timeline::Fused::marks`]).
+    pub(crate) fn live_fused(&self, car: CarId, from_ms: u64, to_ms: u64) -> Result<LiveFused> {
         let db = &self.inner.db;
         let p = &self.inner.opts.fuse;
         let smo = db.read_points::<Sample>(car, Stream::Smo, from_ms, to_ms)?;
@@ -412,7 +412,14 @@ impl Engine {
             db.read_points::<Sample>(car, Stream::TeslaApi, from_ms.saturating_sub(m), to_ms.saturating_add(m))?;
         let mut f = timeline::fuse(&smo, &api, p);
         f.samples.retain(|s| s.t_ms >= from_ms && s.t_ms < to_ms);
-        let api_gave = f.marks.iter().any(|(t, _)| *t >= from_ms && *t < to_ms);
-        Ok((f.samples, !smo.is_empty(), api_gave))
+        f.marks.retain(|(t, _)| *t >= from_ms && *t < to_ms);
+        Ok(LiveFused { samples: f.samples, marks: f.marks })
     }
+}
+
+/// A stretch's live samples ([`Engine::live_fused`]).
+pub(crate) struct LiveFused {
+    pub samples: Vec<Sample>,
+    /// `(t_ms, inputs)` of the seconds not SMO's alone, by time.
+    pub marks: Vec<(u64, Inputs)>,
 }

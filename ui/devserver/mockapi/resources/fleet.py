@@ -14,6 +14,7 @@ from ..conventions import bad_cursor, decode_cursor, encode_cursor, nk, page
 from ..errors import bad_input, invalid, not_found
 from ..live import attention, list_item
 from ..util import valid_zone
+from .. import gapfill
 from .. import sources as SRC
 
 STATES = ("driving", "charging", "parked", "asleep", "unknown")
@@ -483,8 +484,11 @@ def get_settings(req):
         s = st.car_settings.setdefault(req.car, {
             "version": 1, "battery_chemistry": {"setting": "auto", "detected": None, "evidence": None},
             "free_supercharging": [], "capacity_new_kwh": None, "full_range_new_km": None,
-            "warranty_threshold_pct": 70, "efficiency_wh_per_km_override": None, "software_version_typed": None})
+            "warranty_threshold_pct": 70, "efficiency_wh_per_km_override": None, "software_version_typed": None,
+            "import_gap_fill": None})
     out = dict(s)
+    out.setdefault("import_gap_fill", None)
+    out["import_gap_fill_on"] = gapfill.on(st, req.car)
     out["car"] = req.car
     out["time_zone"] = req.tz()
     return out
@@ -510,7 +514,7 @@ def patch_settings(req):
     req.version_check(cur["version"])
     bad, rule = {}, {}
     known = ("version", "battery_chemistry", "free_supercharging", "capacity_new_kwh", "full_range_new_km",
-             "warranty_threshold_pct", "efficiency_wh_per_km_override", "software_version_typed")
+             "warranty_threshold_pct", "efficiency_wh_per_km_override", "software_version_typed", "import_gap_fill")
     for k in body:
         if k not in known:
             bad[k] = "Unknown field."
@@ -545,6 +549,8 @@ def patch_settings(req):
             bad["software_version_typed"] = "Must be text or null."
         elif v is not None and not re.fullmatch(r"\d{4}\.\d{1,2}(\.\d{1,3}){0,2}", v.strip()):
             rule["software_version_typed"] = "A version such as 2026.38.4."
+    if "import_gap_fill" in body and body["import_gap_fill"] is not None and not isinstance(body["import_gap_fill"], bool):
+        bad["import_gap_fill"] = "Must be true, false or null (the server's setting)."
     if bad:
         raise bad_input(bad)
     if rule:

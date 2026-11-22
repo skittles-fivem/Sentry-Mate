@@ -10,6 +10,7 @@ import datetime as dt
 
 from . import placing
 from .util import DAY, MIN, local_dt, local_hour, r
+from . import gapfill
 from . import sources as S
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -84,7 +85,7 @@ def drive_row(app, h, d, now):
     end_label = "Data stopped here" if cut else ("Driving now" if live else None)
     lost = sum(int((b - a) / 1000 * 140) for a, b in d.drops)
     duration = (now if live else d.data_end) - d.start
-    return {
+    row = {
         "id": d.id, "car": car.id, "time_zone": meta["time_zone"],
         "start_ms": d.start, "end_ms": None if live else d.data_end, "duration_ms": duration,
         "start": _point(app, *f["start_pt"], pid=d.from_pid),
@@ -111,6 +112,8 @@ def drive_row(app, h, d, now):
         "purpose": purpose_of(app, car.id, d, meta["time_zone"]),
         "_whkm_hill": (energy - d.climb_kwh * f["frac"]) / dist * 1000 if dist > 0.05 else None,
     }
+    # what its import has where the live drive has nothing (docs/ui-api.md, "Values filled from an import")
+    return gapfill.fill_row(app, h, d, row, lambda t: drive_row(app, h, t, now))
 
 
 # ------------------------------------------------------------------ charges and costs
@@ -270,6 +273,7 @@ def charge_row(app, h, c, now, with_breakdown=False):
         **S.of_seg(c), "has_gaps": bool(c.gaps) or c.cut_ms is not None,
         "flags": {"in_progress": live, "gap_ms": int(f["gap_ms"])},
     }
+    gapfill.fill_row(app, h, c, row, lambda t: charge_row(app, h, t, now))
     if with_breakdown:
         row["_breakdown"] = bd
     return row
