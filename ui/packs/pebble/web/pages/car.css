@@ -62,3 +62,29 @@ html[data-form="phone"] .hero-name { font-size: var(--f28); line-height: var(--l
 html[data-form="phone"] .hero-nums, html[data-form="phone"] .sum-nums { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 html[data-form="phone"] .tyres { column-gap: var(--s2); }
 html[data-form="phone"] .car-inputs { justify-content: center; }
+/* vehicle info (pages/vehicle-parts.js) */
+.vi-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.vi-row { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s2) 0; border-top: 1px solid var(--card-alt); }
+.vi-row:first-child { border-top: 0; padding-top: 0; }
+.vi-line { display: flex; align-items: center; gap: var(--s3); min-height: var(--h-sm); }
+.vi-k { flex: 0 0 auto; width: round(9.5rem, var(--e)); font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+.vi-v { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s1) var(--s2); text-align: right; }
+.vi-val { font-size: var(--f14); line-height: var(--l14); font-weight: 700; overflow-wrap: anywhere; }
+.vi-row.is-unknown .vi-val { color: var(--muted); font-weight: 500; }
+.vi-edit { flex: none; }
+.vi-src { display: inline-flex; align-items: center; gap: var(--s1); height: var(--h-chip); padding: 0 var(--s2); border-radius: 999px; background: var(--tone-soft); color: var(--tone); font-size: var(--f13); line-height: var(--l13); font-weight: 700; white-space: nowrap; }
+.vi-src .src-dot { background: var(--tone); }
+.vi-conf { color: var(--muted); font-weight: 500; }
+.vi-src.is-low .vi-conf { color: var(--sun); font-weight: 700; }
+.vi-note { font-size: var(--f13); line-height: var(--l13); color: var(--muted); text-align: right; }
+.vi-differ { display: flex; flex-direction: column; gap: var(--s1); margin: 0; padding: var(--s2) var(--s3); border-radius: var(--r-ctl); background: var(--sun-soft); list-style: none; font-size: var(--f14); line-height: var(--l14); }
+.vi-differ-v { font-weight: 700; }
+.vi-differ-s { color: var(--muted); }
+.vi-legend { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.vi-edit-gap { flex: none; width: var(--h-sm); }
+html[data-form="phone"] .vi-edit-gap { width: var(--h-btn); }
+html[data-form="phone"] .vi-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s3); row-gap: var(--s1); align-items: center; }
+html[data-form="phone"] .vi-k { width: auto; grid-column: 1; grid-row: 1; }
+html[data-form="phone"] .vi-v { grid-column: 1; grid-row: 2; justify-content: flex-start; text-align: left; }
+html[data-form="phone"] :is(.vi-edit, .vi-edit-gap) { grid-column: 2; grid-row: 1 / span 2; }
+html[data-form="phone"] .vi-note { text-align: left; }

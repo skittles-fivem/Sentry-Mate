@@ -22,6 +22,7 @@ import { bars } from '../core/chart.js';
 import { filterBar, statTile, checkRow, sectionHead, pills, moreButton, nums, facts } from '../core/bits.js';
 import { srcShort, srcPill } from '../core/source.js';
 import { teslaCarFacts, teslaAccountHref, lastErrorText } from './tesla.js';
+import { teslafiCarFacts } from './teslafi.js';
 
 export const id = 'health';
 export const css = true;
@@ -95,7 +96,7 @@ async function mountCar(ctx) {
   ] });
   const bar = filterBar(ctx, { carCover: 'dbinfo.filter.car' }, h('span', { class: 'filter-note' }, 'Checks and gaps follow the period; totals and storage are all time.'));
 
-  const [hl, gaps, all, can, tm, upd, st, sig, tapi, tst] = await Promise.all([
+  const [hl, gaps, all, can, tm, upd, st, sig, tapi, tst, tfi, tfst] = await Promise.all([
     ctx.api.get(`${base}/health`, fullPeriod(ctx.params)),
     ctx.api.page(`${base}/gaps`, ctx.params, { limit: 40 }).catch(() => ({ items: [] })),
     ctx.api.get(`${base}/totals`, { source: 'all' }).catch(() => ({})),
@@ -106,6 +107,8 @@ async function mountCar(ctx) {
     ctx.api.list(`${base}/signals/latest`, {}, { limit: 500 }).all({ max: 5000 }).catch(() => []),
     ctx.api.get(`${base}/totals`, { source: 'tesla_api' }).catch(() => ({})),
     ctx.admin ? ctx.api.list('integrations/tesla/status').all().catch(() => null) : Promise.resolve(null),
+    ctx.api.get(`${base}/totals`, { source: 'teslafi_api' }).catch(() => ({})),
+    ctx.admin ? ctx.api.list('integrations/teslafi/status').all().catch(() => null) : Promise.resolve(null),
   ]);
   if (!ctx.alive()) return {};
   if (hl.rebuild_pending) { const t = setTimeout(() => ctx.alive() && ctx.reload(), 4000); ctx.onCleanup(() => clearTimeout(t)); }
@@ -172,7 +175,7 @@ async function mountCar(ctx) {
   /* ------------------------------------------------------------ what is recorded */
   const sm = upd?.summary || {};
   const tots = [
-    statTile({ label: 'Logged distance', value: all.distance_km, kind: 'distance', icon: 'route', cover: 'dbinfo.stat.logged_distance', sub: `${format(can.distance_km ?? 0, 'distance')} from SMO, ${format(tapi.distance_km ?? 0, 'distance')} from the Tesla API` }),
+    statTile({ label: 'Logged distance', value: all.distance_km, kind: 'distance', icon: 'route', cover: 'dbinfo.stat.logged_distance', sub: `${format(can.distance_km ?? 0, 'distance')} from SMO, ${format(tapi.distance_km ?? 0, 'distance')} from the Tesla API${tfi.distance_km ? `, ${format(tfi.distance_km, 'distance')} from TeslaFi` : ''}` }),
     statTile({ label: 'Odometer', value: all.odometer_last_km, kind: 'odometer', icon: 'gauge', cover: 'dbinfo.stat.odometer', why: 'not sent yet', sub: all.odometer_last_ms != null ? h('span', null, 'read ', ago(all.odometer_last_ms)) : null }),
     statTile({ label: 'Drives', value: all.drives ?? 0, kind: 'count', icon: 'route', cover: 'dbinfo.stat.drive_count', sub: `${n0(tm.drives ?? 0)} imported` }),
     statTile({ label: 'Charges', value: all.charges ?? 0, kind: 'count', icon: 'bolt', cover: 'dbinfo.stat.charge_count', sub: `${n0(tm.charges ?? 0)} imported` }),
@@ -184,9 +187,9 @@ async function mountCar(ctx) {
   const rowKinds = [['Drives', 'drives'], ['Charges', 'charges'], ['Software updates', 'updates']];
   const rowsT = tile({ w: 2, title: 'Rows kept', icon: 'book', cover: 'dbinfo.table.row_counts' },
     h('div', { class: 'hl-rows', role: 'table', 'aria-label': 'Rows kept' },
-      h('div', { class: 'hl-row hl-row-head', role: 'row' }, h('span', { role: 'columnheader', cover: 'dbinfo.rows.table_name' }, 'Kind'), h('span', { role: 'columnheader' }, 'SMO'), h('span', { role: 'columnheader' }, 'Tesla API'), h('span', { role: 'columnheader' }, 'Imported'), h('span', { role: 'columnheader', cover: 'dbinfo.rows.row_count' }, 'Rows')),
-      rowKinds.map(([name, k]) => h('div', { class: 'hl-row', role: 'row' }, h('span', { role: 'cell' }, name), h('span', { role: 'cell' }, n0(can[k] ?? 0)), h('span', { role: 'cell' }, n0(tapi[k] ?? 0)), h('span', { role: 'cell' }, n0(tm[k] ?? 0)), h('b', { role: 'cell' }, n0(all[k] ?? 0))))),
-    note('Exact counts, kept up to date as rows change. A row SMO and the Tesla API both saw counts in both columns, and once under Rows; where imported and live history overlap both are counted.'));
+      h('div', { class: 'hl-row hl-row-head', role: 'row' }, h('span', { role: 'columnheader', cover: 'dbinfo.rows.table_name' }, 'Kind'), h('span', { role: 'columnheader' }, 'SMO'), h('span', { role: 'columnheader' }, 'Tesla API'), h('span', { role: 'columnheader' }, 'TeslaFi'), h('span', { role: 'columnheader' }, 'Imported'), h('span', { role: 'columnheader', cover: 'dbinfo.rows.row_count' }, 'Rows')),
+      rowKinds.map(([name, k]) => h('div', { class: 'hl-row', role: 'row' }, h('span', { role: 'cell' }, name), h('span', { role: 'cell' }, n0(can[k] ?? 0)), h('span', { role: 'cell' }, n0(tapi[k] ?? 0)), h('span', { role: 'cell' }, n0(tfi[k] ?? 0)), h('span', { role: 'cell' }, n0(tm[k] ?? 0)), h('b', { role: 'cell' }, n0(all[k] ?? 0))))),
+    note('Exact counts, kept up to date as rows change. A row two live inputs (SMO, the Tesla API, TeslaFi) both saw counts in both columns, and once under Rows; where imported and live history overlap both are counted.'));
   const storeT = st ? kindsTile(st.kinds, st.total_bytes, { title: `What ${car.name}’s data takes` }) : tile({ w: 2, title: 'Storage', icon: 'server', cover: 'dbinfo.table.sizes' }, note('Storage could not be read.'));
   const days = (st?.items || []).slice(0, 14);
   const daysT = tile({ w: 2, title: 'Stored by day', icon: 'calendar' },
@@ -199,6 +202,11 @@ async function mountCar(ctx) {
   const teslaT = !ctx.admin ? null : tile({ w: 2, title: 'Tesla API input', icon: 'key', side: tf ? srcPill({ sources: [{ kind: 'tesla_api', label: 'Data from the Tesla API' }] }, { short: true }) : null },
     tf ? facts(tf) : tst == null ? note('The Tesla API status could not be read.')
       : [note('No Tesla account reads this car: its data comes from SMO and any import only.'), h('a', { class: 'tile-link', href: `${state.buildUrl('settings-integrations')}#tesla` }, 'Tesla account settings', icon('chevronRight'))]);
+  /* the TeslaFi input of this car (admins only) */
+  const fif = tfst ? teslafiCarFacts(ctx, tfst, car.id) : null;
+  const teslafiT = !ctx.admin ? null : tile({ w: 2, title: 'TeslaFi input', icon: 'key', side: fif ? srcPill({ sources: [{ kind: 'teslafi_api', label: 'Data from TeslaFi' }] }, { short: true }) : null },
+    fif ? facts(fif) : tfst == null ? note('The TeslaFi status could not be read.')
+      : [note('No TeslaFi token reads this car.'), h('a', { class: 'tile-link', href: `${state.buildUrl('settings-integrations')}#teslafi` }, 'TeslaFi settings', icon('chevronRight'))]);
 
   /* ------------------------------------------------------------ signals */
   const sigHead = sectionHead('Signals from the newest log', 'Every decoded signal with its value. Find one, sort, and scroll the list.');
@@ -236,7 +244,7 @@ async function mountCar(ctx) {
   const sigT = tile({ w: 'full', title: 'Signals', icon: 'pulse', cls: 'sig-tile' },
     h('div', { class: 'page-bar' }, h('label', { class: 'search-pill' }, icon('search'), search), sortPills, count), listEl);
 
-  ctx.view.replaceChildren(bar, status, keysT, teslaT, logT, rowsT, ...tots, storeT, daysT, sigHead, sigT);
+  ctx.view.replaceChildren(bar, status, keysT, teslaT, teslafiT, logT, rowsT, ...tots, storeT, daysT, sigHead, sigT);
   ctx.ready();
   return {};
 }
