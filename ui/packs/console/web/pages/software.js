@@ -7,6 +7,8 @@
 // - Tesla updates found from the modules' firmware fingerprints (detected_by "fingerprint"): what changed (old ->
 //   new hex), between which drives, and a box to type the version (admin); the car's firmware fingerprints
 //   (GET /cars/{car}/firmware), #firmware. Both in pages/firmware.js.
+// - Every fingerprint each module has had and a versions-over-time strip (GET /cars/{car}/firmware/history),
+//   #firmware-history, in pages/firmware-history.js; read-only.
 // - Live: "rows" events with kind "updates" load the lists again.
 
 import * as state from '../shared/state.js';
@@ -22,6 +24,7 @@ import { openDialog } from '../core/dialog.js';
 import { toast } from '../core/toast.js';
 import { src, srcText } from '../core/source.js';
 import { firmwarePanel, fingerprintUpdates, modWords } from './firmware.js';
+import { firmwareHistory } from './firmware-history.js';
 
 export const id = 'software';
 export const title = () => 'Software';
@@ -133,8 +136,9 @@ export async function mount(ctx) {
 
   const fpUpdates = fingerprintUpdates(ctx, { onNamed: () => { echoUntil = Date.now() + 5000; reloadAll(false); } });
   const firmware = firmwarePanel(ctx);
+  const fwHistory = firmwareHistory(ctx);
   replace(ctx.view, h('div', { class: 'page', dataset: { page: 'software' }, cover: 'shots.updates' },
-    hd, section({ title: 'now' }, nowSlot), updates.el, notesLine, fpUpdates.el, firmware.el, fleet.el));
+    hd, section({ title: 'now' }, nowSlot), updates.el, notesLine, fpUpdates.el, firmware.el, fwHistory.el, fleet.el));
   paintNow(null, []);
 
   async function editVersion(r) {
@@ -157,17 +161,17 @@ export async function mount(ctx) {
   let echoUntil = 0;
   async function reloadAll(say) {
     reloadBtn.disabled = true;
-    try { await Promise.all([updates.reload(), fleet.reload(), fpUpdates.reload(), firmware.reload()]); if (say && ctx.alive()) toast('loaded again', { kind: 'info' }); } catch { /* the tables say why */ } finally { reloadBtn.disabled = false; }
+    try { await Promise.all([updates.reload(), fleet.reload(), fpUpdates.reload(), firmware.reload(), fwHistory.reload({ quiet: false })]); if (say && ctx.alive()) toast('loaded again', { kind: 'info' }); } catch { /* the tables say why */ } finally { reloadBtn.disabled = false; }
   }
   ctx.events('rows', (ev) => {
     const d = ev?.data || {};
     if (!(d.kinds || []).includes('updates')) return;
     if (Date.now() < echoUntil) { echoUntil = 0; return; }
-    if (d.car === cid) { updates.reload(null, { quiet: true }); fpUpdates.reload(); firmware.reload(); }
+    if (d.car === cid) { updates.reload(null, { quiet: true }); fpUpdates.reload(); firmware.reload(); fwHistory.reload(); }
     fleet.reload(null, { quiet: true });
   });
 
-  try { await Promise.all([updates.ready, fleet.ready, fpUpdates.ready, firmware.ready]); } catch (e) { if (!painted) { ctx.fail(e); return; } }
+  try { await Promise.all([updates.ready, fleet.ready, fpUpdates.ready, firmware.ready, fwHistory.ready]); } catch (e) { if (!painted) { ctx.fail(e); return; } }
   if (!ctx.alive()) return;
   ctx.ready();
 }

@@ -192,7 +192,7 @@ export async function mount(ctx) {
         ['software', [h('a', { class: 'lnk-plain', href: ctx.link('software') }, sw.version || ov || 'not known'), sw.version && swSrc ? h('span', { class: 'muted' }, ` (${swSrc})`) : null,
           ov != null && sw.version && ov !== sw.version ? h('span', { class: 'muted' }, `; the car reports ${ov}`) : null, ov != null ? offMark(o.version) : null], { cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
         ['update', off(o.update_available, updText)],
-        ['firmware', h('a', { class: 'lnk-plain', href: `${ctx.link('software')}#firmware`, title: 'the modules\' firmware fingerprints, and the Tesla updates found from them' }, 'module fingerprints')],
+        ['firmware', [h('a', { class: 'lnk-plain', href: `${ctx.link('software')}#firmware`, title: 'the modules\' firmware fingerprints, and the Tesla updates found from them' }, 'module fingerprints'), h('span', { class: 'muted' }, ', '), h('a', { class: 'lnk-plain', href: `${ctx.link('software')}#firmware-history`, title: 'every fingerprint each module has had, and the versions over time' }, 'history')]],
         ['update seen', sw.changed_since_ms ? h('span', { class: 'tone--warn' }, `builds changed ${when(sw.changed_since_ms, tz)}`) : h('span', { class: 'muted' }, 'no change seen'), { cover: 'summary.flag.software_update' }],
         ['log received', n.received_ms ? ago(n.received_ms) : null],
       ]),

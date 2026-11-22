@@ -248,3 +248,6 @@
 :root[data-phone] .now-hero .map-panel:fullscreen > .map { height: auto; flex: 1 1 auto; }
 :root[data-phone] .now-head .page-sub > span:has(> .trim-src) { display: inline-flex; align-items: baseline; justify-content: space-between; }
 :root[data-phone] .now-head .page-sub .trim-src { width: calc-size(fit-content, round(up, size, 1px)); }
+/* the Firmware row: the fingerprints now and their history (both on Software) */
+.car-fw-links, .vi-fw-links { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: round(0.25rem, var(--e)) round(0.75rem, var(--e)); }
+.vi-fw-links { align-items: center; justify-content: flex-end; }
