@@ -13,6 +13,7 @@
 
 import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
+import * as state from '../shared/state.js';
 import { format } from '../shared/units.js';
 import { formatDateTime, DAY } from '../shared/time.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
@@ -279,7 +280,7 @@ export async function mount(ctx) {
   let net = netFirst;
   let carList = carsFirst.items || [];
   const carTotal = carsFirst.total ?? carList.length;
-  let carId = ctx.query.car || (carList[0] && carList[0].id) || null;
+  let carId = ctx.query.car || state.preferredCar(carList);
   let pv = null;
 
   const carOf = (cid) => carList.find((c) => c.id === cid) || null;
@@ -575,8 +576,10 @@ export async function mount(ctx) {
   let valuesTable = null;
   let valueFilter = ctx.query.show || 'all';
 
-  async function pickCar(cid) {
+  async function pickCar(cid, { explicit = true } = {}) {
     carId = cid;
+    const picked = carOf(cid);
+    if (picked) state.rememberCar(cid, { sold: picked.sold, explicit });
     ctx.setQuery({ car: cid });
     await loadPreview();
     if (!ctx.alive()) return;
@@ -596,7 +599,7 @@ export async function mount(ctx) {
         if (!ctx.alive()) return;
         carList = r.items || [];
         paintCarPick();
-        if (carList[0] && !carOf(carId)) pickCar(carList[0].id);
+        if (carList.length && !carOf(carId)) pickCar(state.preferredCar(carList), { explicit: false });
       });
     }
     const car = carOf(carId);
