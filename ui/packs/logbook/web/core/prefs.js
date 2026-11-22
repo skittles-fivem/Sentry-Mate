@@ -4,13 +4,15 @@
 // <html lang> (shared/i18n.js), the theme (data-theme on <html>), and the interface size (display.js).
 // savePrefs(patch) saves at once and applies the answer. onPrefs(fn) hears every change, also those
 // pushed by the server (a `prefs` event, frame.js), with the set of keys that changed. onTheme(fn) hears
-// when the page is drawn dark or light from then on (charts and maps redraw their colours).
+// when the page is drawn dark or light from then on (charts and maps redraw their colours). The car
+// choices (main_car, last_car) also go to shared/state.js, which picks the car for pages without one.
 
 import * as api from '../shared/api.js';
 import { setUnits } from '../shared/units.js';
 import { setLocale } from '../shared/i18n.js';
 import { cover } from '../shared/dom.js';
 import { setSize } from './display.js';
+import { setCarPrefs } from '../shared/state.js';
 
 const root = document.documentElement;
 const THEME_KEY = 'logbook:theme';
@@ -46,7 +48,7 @@ export function isDark() {
   return matchMedia('(prefers-color-scheme: dark)').matches;
 }
 
-const KEYS = ['units', 'range', 'theme', 'language', 'interface_size', 'follow_screen', 'ui_pack', 'car_order', 'pinned_cars'];
+const KEYS = ['units', 'range', 'theme', 'language', 'interface_size', 'follow_screen', 'ui_pack', 'car_order', 'pinned_cars', 'main_car'];
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Use these preferences now. Returns the keys that changed. */
@@ -55,6 +57,7 @@ export function applyPrefs(p) {
   const before = prefs;
   prefs = { ...p };
   const changed = new Set(KEYS.filter((k) => !before || !same(before[k], p[k])));
+  setCarPrefs(p); // main_car, last_car, pinned_cars, car_order: the car a page without one in its URL shows
   setUnits(p);
   // The language: 'auto' (or none) negotiates from the browser's languages; <html lang> follows.
   setLocale(p.language && p.language !== 'auto' ? p.language : 'auto');
