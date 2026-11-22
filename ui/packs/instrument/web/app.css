@@ -1486,7 +1486,8 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 :root[data-phone] .dock {
   display: flex; flex-direction: column; position: fixed; z-index: 40; left: 0; right: 0; bottom: 0;
   padding: 0 var(--safe-r) var(--safe-b) var(--safe-l);
-  background: var(--surface-bar); backdrop-filter: blur(round(1.125rem, var(--e))) saturate(150%);
+  /* solid, so the page never shows through behind the tab labels */
+  background: var(--bg-1);
   border-top: 1px solid var(--line);
 }
 .dock-period:empty, .dock-period:has(> .period[hidden]) { display: none; }
