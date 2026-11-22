@@ -72,6 +72,7 @@ export function mountPlot(target, make, data, ctx, onBuild = null) {
     putCursor(c);
   };
   build();
+  keepTapReadout(target);
   const ro = new ResizeObserver(() => {
     if (!u) return;
     const { width, height } = box();
@@ -88,6 +89,17 @@ export function mountPlot(target, make, data, ctx, onBuild = null) {
   const plot = { get u() { return u; }, setData(d) { cur = d; u?.setData(d); }, rebuild: build, destroy };
   target.__smPlot = plot;
   return plot;
+}
+
+// A tap on a touch screen fires mousemove, mousedown, mouseup, click and then mouseleave at once; uPlot hides
+// its cursor on that mouseleave, so the value tapped would vanish. Within a second of a touch the mouseleave
+// is stopped on its way down (capture on the chart's box), and the cursor and its readout stay where tapped.
+function keepTapReadout(target) {
+  if (target.__smTap) return;
+  target.__smTap = true;
+  let touched = 0;
+  target.addEventListener('pointerdown', (e) => { if (e.pointerType === 'touch') touched = performance.now(); }, true);
+  target.addEventListener('mouseleave', (e) => { if (performance.now() - touched < 1000) e.stopImmediatePropagation(); }, true);
 }
 
 /** Time ticks that read as whole minutes and hours (seconds). */
