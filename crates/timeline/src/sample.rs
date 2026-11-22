@@ -9,9 +9,9 @@
 //! signal sent once a second may not have come yet, and "the first signal with a value decides" could pick a worse
 //! one), and the previous log already gave that second, with the whole context of its own minute.
 
-use crate::signals::{Field, Kind, Table, charger_of, gear_of, table};
+use crate::signals::{CHARGE_STATUS, Field, KEEP_CLIMATE, Kind, Table, charger_of, gear_of, table};
 use crate::vin::VinCollector;
-use model::{ChargeKind, Sample, SocBasis, VinInfo};
+use model::{ChargeKind, Sample, SampleExtra, SocBasis, VinInfo};
 
 /// How long values are held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,11 +20,13 @@ pub struct SampleParams {
     pub hold_ms: u64,
     /// The same for a GPS position: a fix older than this isn't where the car is now.
     pub gps_hold_ms: u64,
+    /// The same for the car's configuration (paint, wheels ...: 0x7FF), which is sent rarely and doesn't change.
+    pub config_hold_ms: u64,
 }
 
 impl Default for SampleParams {
     fn default() -> Self {
-        SampleParams { hold_ms: 5_000, gps_hold_ms: 2_000 }
+        SampleParams { hold_ms: 5_000, gps_hold_ms: 2_000, config_hold_ms: 600_000 }
     }
 }
 
@@ -32,6 +34,8 @@ impl Default for SampleParams {
 const LEGACY_CHARGING_KW: f64 = 0.1;
 /// An AC line current above this, while charging, says AC when no signal names the charger (A).
 const AC_CURRENT_A: f64 = 0.5;
+/// A tyre is low when its pressure is more than this far below its axle's recommended pressure (0.1: 10 %).
+const TIRE_LOW_FRACTION: f64 = 0.1;
 
 /// The pack's full energy and its buffer are held this long (ms): they change over weeks, and 0x352 sends them on
 /// pages of their own, so one may be a while behind the other.
@@ -109,8 +113,10 @@ impl SampleBuilder {
     /// One decoded value by series name (`dbc::Signal::series`).
     pub fn value(&mut self, time_us: u64, series: &str, value: f64) {
         self.tick(time_us);
-        if let Some(&i) = self.table.by_series.get(series) {
-            self.slots[i] = self.table.cands[i].read(value).map(|v| (v, time_us));
+        if let Some(cands) = self.table.by_series.get(series) {
+            for &i in cands {
+                self.slots[i] = self.table.cands[i].read(value).map(|v| (v, time_us));
+            }
         }
     }
 
@@ -169,12 +175,20 @@ impl SampleBuilder {
         (end_us.saturating_sub(t) <= hold_us).then_some(v)
     }
 
+    /// The best signal of a field with a fresh value: (its value, its kind, its candidate).
+    fn best_cand(&self, field: Field, end_us: u64) -> Option<(f64, Kind, usize)> {
+        let hold = self.params.hold_ms.saturating_mul(1000);
+        let config_hold = self.params.config_hold_ms.saturating_mul(1000);
+        self.table.fields[field as usize].iter().find_map(|&i| {
+            let kind = self.table.cands[i].kind;
+            let hold = if kind.is_config() { config_hold } else { hold };
+            self.fresh(i, end_us, hold).map(|v| (v, kind, i))
+        })
+    }
+
     /// The best signal of a field with a fresh value: (its value, its kind).
     fn best(&self, field: Field, end_us: u64) -> Option<(f64, Kind)> {
-        let hold = self.params.hold_ms.saturating_mul(1000);
-        self.table.fields[field as usize]
-            .iter()
-            .find_map(|&i| self.fresh(i, end_us, hold).map(|v| (v, self.table.cands[i].kind)))
+        self.best_cand(field, end_us).map(|(v, k, _)| (v, k))
     }
 
     fn sample(&mut self, sec: u64) -> Sample {
@@ -224,8 +238,11 @@ impl SampleBuilder {
 
         let (lat, lon, gps_accuracy_m) = self.position(end_us);
 
+        let tpms_bar = [num(Field::Tire0), num(Field::Tire1), num(Field::Tire2), num(Field::Tire3)];
+        let extra = self.extra(end_us, &tpms_bar);
+
         Sample {
-            extra: Default::default(),
+            extra,
             t_ms: sec * 1000,
             lat,
             lon,
@@ -254,13 +271,74 @@ impl SampleBuilder {
             total_charge_kwh: num(Field::TotalCharge),
             total_discharge_kwh: num(Field::TotalDischarge),
             lv_voltage_v: num(Field::LvVolts),
-            tpms_bar: [num(Field::Tire0), num(Field::Tire1), num(Field::Tire2), num(Field::Tire3)],
+            tpms_bar,
+        }
+    }
+
+    /// The less frequent values. Codes are kept in the slots; the few words are made here.
+    fn extra(&self, end_us: u64, tpms_bar: &[Option<f64>; 4]) -> SampleExtra {
+        let num = |f: Field| self.best(f, end_us).map(|(v, _)| v);
+        let flag = |f: Field| num(f).map(|v| v >= 0.5);
+        let config = |f: Field| self.best_cand(f, end_us).map(|(v, _, i)| self.table.cands[i].label(v));
+        let word = |f: Field, words: &[&str]| num(f).and_then(|c| words.get(c as usize)).map(|w| w.to_string());
+
+        let hvac = num(Field::Hvac);
+        let preconditioning_battery = match (flag(Field::PrecondBattery), flag(Field::BatteryHeating)) {
+            (None, None) => None,
+            (a, b) => Some(a == Some(true) || b == Some(true)),
+        };
+        let phases = [Field::PhaseA, Field::PhaseB, Field::PhaseC].map(flag);
+        let charger_phases =
+            phases.iter().any(Option::is_some).then(|| phases.iter().filter(|p| **p == Some(true)).count() as f64);
+        // the lowest of the limits the car is told (a 0 is no limit given)
+        let limit = [(Field::PilotLimit, "pilot"), (Field::CableLimit, "cable"), (Field::CarLimit, "car")]
+            .into_iter()
+            .filter_map(|(f, src)| num(f).filter(|a| *a > 0.0).map(|a| (a, src)))
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+
+        SampleExtra {
+            paint: config(Field::Paint),
+            wheels: config(Field::Wheels),
+            spoiler: config(Field::Spoiler),
+            roof: config(Field::Roof),
+            right_hand_drive: flag(Field::RightHand),
+            heading_deg: num(Field::Heading),
+            sentry_mode: flag(Field::Sentry),
+            service_mode: flag(Field::Service),
+            display_on: flag(Field::Display),
+            keep_climate: word(Field::KeepClimate, &KEEP_CLIMATE),
+            door_fl: flag(Field::DoorFl),
+            door_fr: flag(Field::DoorFr),
+            door_rl: flag(Field::DoorRl),
+            door_rr: flag(Field::DoorRr),
+            trunk_open: flag(Field::Trunk),
+            frunk_open: flag(Field::Frunk),
+            user_present: flag(Field::UserPresent),
+            // ON, PRECONDITION and the overheat protection (the fan runs) are climate on
+            climate_on: hvac.map(|c| c >= 1.0),
+            preconditioning_cabin: hvac.map(|c| c == 2.0),
+            preconditioning_battery,
+            usable_soc: num(Field::UsableSoc),
+            plugged_in: flag(Field::Cable),
+            charge_port_open: flag(Field::ChargeDoor),
+            charge_status: word(Field::ChargeStatus, &CHARGE_STATUS),
+            charge_limit_pct: num(Field::ChargeLimit),
+            charge_current_request_a: num(Field::ChargeRequest),
+            charge_current_limit_a: limit.map(|l| l.0),
+            charge_limit_source: limit.map(|l| l.1.to_string()),
+            charger_phases,
+            time_to_full_min: num(Field::TimeToFull),
+            tire_low: flag(Field::TpmsWarning)
+                .or_else(|| tire_low(tpms_bar, [num(Field::TireRecFront), num(Field::TireRecRear)])),
+            energy_at_destination_kwh: num(Field::EnergyAtDest),
+            navigating: flag(Field::Navigating),
+            update_installing: flag(Field::Ota),
         }
     }
 
     /// A slot's value by series name, if it was sent within `hold_ms` before `end_us`.
     fn series(&self, name: &str, end_us: u64, hold_ms: u64) -> Option<f64> {
-        let &i = self.table.by_series.get(name)?;
+        let &i = self.table.by_series.get(name)?.first()?;
         self.fresh(i, end_us, hold_ms.saturating_mul(1000))
     }
 
@@ -331,6 +409,23 @@ impl SampleBuilder {
             }
         }
         (None, None, None)
+    }
+}
+
+/// A tyre low, when the car's own warning isn't there: `true` when any of the four pressures (front left, front
+/// right, rear left, rear right) is more than [`TIRE_LOW_FRACTION`] (10 %) below its axle's recommended pressure
+/// (`recommended`: front, rear); `false` when all four pressures and both recommended ones are known and none is;
+/// else not known.
+fn tire_low(bar: &[Option<f64>; 4], recommended: [Option<f64>; 2]) -> Option<bool> {
+    let recommended = recommended.map(|r| r.filter(|r| *r > 0.0));
+    let low = |i: usize| bar[i].zip(recommended[i / 2]).map(|(p, r)| p < r * (1.0 - TIRE_LOW_FRACTION));
+    let lows = [0, 1, 2, 3].map(low);
+    if lows.contains(&Some(true)) {
+        Some(true)
+    } else if lows.iter().all(|l| *l == Some(false)) {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -447,8 +542,10 @@ mod tests {
     #[test]
     fn a_frame_time_at_the_end_of_u64_does_not_overflow() {
         // (a crafted line "(18446744073709.551615) can0 ..." parses to u64::MAX µs)
-        let mut b =
-            SampleBuilder::new(dbc::Profile::Tesla3Y, SampleParams { hold_ms: u64::MAX, gps_hold_ms: u64::MAX });
+        let mut b = SampleBuilder::new(
+            dbc::Profile::Tesla3Y,
+            SampleParams { hold_ms: u64::MAX, gps_hold_ms: u64::MAX, config_hold_ms: u64::MAX },
+        );
         b.value(5_000_000, "UI_SOC", 50.0);
         b.value(u64::MAX, "UI_SOC", 60.0);
         b.value(u64::MAX - 1, "GPSAccuracy04F", 3.0);
@@ -586,7 +683,10 @@ mod tests {
         let (s, _) = b.finish();
         assert_eq!(socs(&s), vec![(Some(64.0), Some(SocBasis::Screen))], "no energy, no checked range: the screen's");
         // the energy alone (UI_SOC late): the energy's figure
-        let mut b = SampleBuilder::new(dbc::Profile::Tesla3Y, SampleParams { hold_ms: 500, gps_hold_ms: 500 });
+        let mut b = SampleBuilder::new(
+            dbc::Profile::Tesla3Y,
+            SampleParams { hold_ms: 500, gps_hold_ms: 500, ..SampleParams::default() },
+        );
         b.value(at(0.2), "UI_SOC", 64.0);
         pack(&mut b, 1.8, 50.0, true);
         b.value(at(2.2), "DI_gear", 1.0);

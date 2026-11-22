@@ -219,3 +219,46 @@ pub fn build(car: u32, from: u64, to: u64, samples: &[Sample], logs: &[LogFacts]
 pub fn close(a: f64, b: f64, tol: f64) -> bool {
     (a - b).abs() <= tol
 }
+
+/// Made-up frames of the Model 3/Y set, built from the DBC definitions (`dbc::encode_message`), run through the
+/// decoder (default buses: can0 vehicle, can1 chassis) and the sample builder.
+pub struct Bench {
+    pub decoder: dbc::Decoder,
+    pub builder: timeline::SampleBuilder,
+}
+
+impl Bench {
+    pub fn new() -> Bench {
+        Bench {
+            decoder: dbc::Decoder::new(dbc::Profile::Tesla3Y, &serde_json::json!({})),
+            builder: timeline::SampleBuilder::new(dbc::Profile::Tesla3Y, timeline::SampleParams::default()),
+        }
+    }
+
+    /// One frame of message `id` on `can<bus>` at `t_s` seconds after [`T0`], carrying these values (by series or
+    /// plain name; the rest of its bits 0).
+    pub fn send(&mut self, t_s: f64, bus: u8, id: u32, values: &[(&str, f64)]) {
+        let msg = &dbc::Profile::Tesla3Y.dbc().messages[&id];
+        let (bytes, back) = dbc::encode_message(msg, values).unwrap();
+        for ((name, want), got) in values.iter().zip(&back) {
+            assert!((want - got).abs() < 1e-6, "{name}: {want} encodes as {got}");
+        }
+        let mut data = [0u8; 64];
+        data[..bytes.len()].copy_from_slice(&bytes);
+        let frame = logfmt::Frame {
+            time_us: T0 * 1000 + (t_s * 1e6) as u64,
+            bus,
+            id,
+            extended: false,
+            len: bytes.len() as u8,
+            data,
+        };
+        self.builder.feed(&mut self.decoder, &frame);
+    }
+
+    /// The samples, by whole second after [`T0`].
+    pub fn finish(self) -> std::collections::BTreeMap<u64, Sample> {
+        let (samples, _) = self.builder.finish();
+        samples.into_iter().map(|s| ((s.t_ms - T0) / 1000, s)).collect()
+    }
+}
