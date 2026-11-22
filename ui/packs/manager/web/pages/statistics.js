@@ -172,7 +172,7 @@ export async function mount(ctx) {
       periodBtn, carPicker(),
       h('span', { class: 'st-filter' }, h('span', { class: 'faint' }, 'One row per'), groupSeg)),
     h('p', { class: 'note st-precision', cover: 'statistics.filter.high_precision' }, icon('info', 'ico--sm'),
-      'There is no precision switch: net and gross consumption come from the pack’s own energy counters, so they are exact for a day as much as for a year. Rows at the edges of the period can be part periods; they say so.'));
+      'Energy use comes straight from the battery’s own counters, so it is exact for a single day as well as a whole year. The first and last rows may cover only part of a day, week or month; they say so.'));
 
   const totalsSlot = h('div');
   const tableSlot = h('div');

@@ -185,8 +185,8 @@ export async function mount(ctx) {
     h('span', { 'aria-current': 'page' }, 'Import'));
   const head = pageHead({
     eyebrow: trail, title: 'Import history',
-    sub: ['Admins only', 'TeslaMate backup (plain, gzip or xz), TeslaFi data download (CSV months, several at once, or a .zip) or Sentry Six Manager CAN export (.zip)', 'times in ' + tz],
-    purpose: 'Brings in the history TeslaMate or TeslaFi recorded before the CAN Bridge, from TeslaMate\'s own backup file or TeslaFi\'s data download, or the CAN Bridge logs Sentry Six Manager already has, from its CAN export bundle. The whole file is checked before anything is stored, and running it again stores nothing twice.',
+    sub: ['Admins only', 'From TeslaMate, TeslaFi or Sentry Six Manager', 'times in ' + tz],
+    purpose: 'Bring in the history recorded before the CAN Bridge: a TeslaMate backup, a TeslaFi data download, or a Sentry Six Manager CAN export. The whole file is checked before anything is stored, and importing the same file again adds nothing twice.',
   });
 
   if (!ctx.admin) {

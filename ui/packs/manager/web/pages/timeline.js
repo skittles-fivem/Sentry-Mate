@@ -179,9 +179,9 @@ export async function mount(ctx) {
       h('div', { class: 'metric', cover: 'states.stat.current' }, h('span', { class: 'metric-label' }, 'Now'), nowSlot, nowExplain),
       h('div', { class: 'metric', cover: 'states.stat.last_change' }, h('span', { class: 'metric-label' }, 'Last change'), h('span', { class: 'metric-value metric-value--sm' }, states.last_change_ms ? when(states.last_change_ms, tz) : '—'), h('span', { class: 'explain' }, states.last_change_ms ? ago(states.last_change_ms) : '')),
       h('div', { class: 'metric', cover: 'states.stat.parked_pct' }, h('span', { class: 'metric-label' }, 'Parked'), h('span', { class: 'metric-value' }, format(share.parked, 'percent')), h('span', { class: 'explain' }, 'of the known time, not driving')),
-      h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Asleep'), h('span', { class: 'metric-value' }, format(share.asleep, 'percent')), h('span', { class: 'explain' }, 'both buses quiet')),
+      h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Asleep'), h('span', { class: 'metric-value' }, format(share.asleep, 'percent')), h('span', { class: 'explain' }, 'the car was sleeping')),
       h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Awake'), h('span', { class: 'metric-value' }, format(share.awake, 'percent')), h('span', { class: 'explain' }, 'driving included')),
-      h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Unknown'), h('span', { class: 'metric-value' }, format(share.unknown, 'percent')), h('span', { class: 'explain' }, 'no log, paused or failed check'))),
+      h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Unknown'), h('span', { class: 'metric-value' }, format(share.unknown, 'percent')), h('span', { class: 'explain' }, 'nothing recorded, or data not trusted'))),
     h('p', { class: 'note' }, 'The shares overlap on purpose (parked time includes asleep time), so they need not add up to 100 %.'));
 
   const stripFrom = from ?? (act.items?.[0]?.start_ms ?? to - 86400000);

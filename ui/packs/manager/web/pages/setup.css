@@ -122,3 +122,5 @@
 
 /* a phone: the set-up buttons share the width */
 :root[data-phone] .su-acts > .btn { flex: 1 1 auto; }
+/* the name beside the mark also on a phone (the header hides it in a narrow window) */
+.su-card .auth-brand .brand-name { display: block; }

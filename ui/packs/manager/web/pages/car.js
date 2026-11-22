@@ -12,7 +12,7 @@ import { formatTime, formatDate, formatDateTime, zoneName, buckets } from '../sh
 import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, panelLink, metric, kv, csvButton } from '../core/page.js';
-import { statePill, stateLabel, ago, agoEl, when, dur, val, TYRES } from '../core/fmt.js';
+import { statePill, stateLabel, ago, agoEl, when, dur, val, TYRES, STATES } from '../core/fmt.js';
 import { timelineRow } from './timeline.js';
 import { createMap, carMarker, addRoute, mapFallback } from '../core/map.js';
 import { offstage } from '../core/stage.js';
@@ -155,7 +155,7 @@ export async function mount(ctx) {
   const banner = h('div');
   const gaugeSlot = h('section', { class: 'panel gauge-panel', 'aria-label': 'Battery and range' });
   const mapEl = h('div', { class: 'map', role: 'img', 'aria-label': `Map: where ${car.name} is` });
-  const mapTools = h('div', { class: 'map-overlay map-overlay--bl map-tools' });
+  const mapTools = h('div', { class: 'map-overlay map-overlay--tl map-tools' });
   const mapPanel = h('section', { class: 'panel map-panel', 'aria-label': 'Where the car is', cover: ['summary.map.position', 'summary.map.attribution', 'summary.map.zoom'] },
     mapEl, mapTools);
   const todaySlot = h('section', { class: 'panel today-tl', 'aria-label': "Today's timeline" });
@@ -165,7 +165,7 @@ export async function mount(ctx) {
 
   // the six key facts, big and plain; each keeps its place and size while live values arrive
   const fact = (key, label, ic, tag = 'div') => {
-    const el = h(tag, { class: ['fact', `fact--${key}`], role: tag === 'div' ? 'group' : null, 'aria-label': label });
+    const el = h(tag, { class: ['fact', `fact--${key}`], role: tag === 'div' ? 'group' : null, 'aria-label': tag === 'div' ? label : null });
     const value = h('div', { class: 'fact-value' }), sub = h('div', { class: 'fact-sub' }), foot = h('div', { class: 'fact-foot' });
     el.append(h('div', { class: 'fact-label' }, icon(ic, 'ico--sm'), h('span', null, label)), value, foot, sub);
     return { el, value, sub, foot };
@@ -204,7 +204,7 @@ export async function mount(ctx) {
     h('div', { class: 'now-panels' }, rowLive, rowMore),
     windowSlot, vehicleInfoPanel(ctx));
   replace(root, head, banner,
-    h('div', { class: 'car-top' }, facts, mapPanel),
+    h('div', { class: 'car-summary' }, facts, mapPanel),
     h('div', { class: 'details-bar' }, toggle,
       h('span', { class: 'details-hint' }, 'Battery gauge, temperatures, tyres, doors, charging, the period’s charts and the car’s build')),
     details);
@@ -302,6 +302,88 @@ export async function mount(ctx) {
       h('div', { class: 'gauge-est', cover: ['summary.stat.range_estimated', 'nr.dash.est-range'] },
         h('span', null, "Sentry Mate's estimate: "), h('b', null, format(val(n.est_range_km), 'range')),
         h('span', { class: 'faint' }, n.est_basis === 'wh_per_km_30d' ? ' · energy left over the last 30 days’ consumption' : ' · from energy left and recent consumption')));
+  }
+
+  /* ---------- the six facts */
+  let lastDrive;  // undefined: not loaded; null: none
+  function paintFacts() {
+    const n = now, c = n.charge || {}, loc = n.location || {};
+    const stale = n.stale || n.state === 'unknown';
+    const soc = val(n.soc_pct);
+    const ideal = getUnits().range === 'ideal';
+    const rangePair = ideal ? n.ideal_range_km : n.range_km;
+    const limit = val(c.limit_pct);
+    const charging = n.state === 'charging';
+    const plugged = val(c.plugged);
+    const sinceMs = n.since_ms;
+    const forTime = sinceMs ? dur(Math.max(0, ctx.api.now() - sinceMs)) : null;
+
+    // battery: the level and a bar
+    replace(F.battery.value, soc != null ? quantity(soc, 'percent', { digits: 0 }) : '—');
+    replace(F.battery.foot, h('div', { class: ['bar', 'fact-bar', charging ? 'bar--warm' : soc != null && soc < 20 ? 'bar--low' : null], role: 'img', 'aria-label': `Battery ${pct(soc)}` },
+      h('i', { vars: { '--w': `${clamp(soc ?? 0, 0, 100).toFixed(1)}%` } }),
+      limit != null ? h('b', { class: 'fact-bar-limit', vars: { '--x': `${clamp(limit, 0, 100).toFixed(1)}%` }, title: `Charge limit ${pct(limit)}` }) : null));
+    const kwh = val(n.energy_remaining_kwh);
+    F.battery.sub.textContent = kwh != null ? `${format(kwh, 'energy')} in the battery` : stale ? 'Last known level' : 'Level now';
+    F.battery.el.classList.toggle('is-low', soc != null && soc < 20);
+
+    // range
+    replace(F.range.value, val(rangePair) != null ? quantity(val(rangePair), 'range', { digits: 0 }) : '—');
+    const est = val(n.est_range_km);
+    F.range.sub.textContent = est != null ? `About ${format(est, 'range', { digits: 0 })} the way you drive lately` : `${ideal ? 'Ideal' : 'Rated'} range shown by the car`;
+
+    // state, since when
+    replace(F.state.value, h('span', { class: 'fact-state', dataset: { state: STATES[n.state] ? n.state : 'unknown' } }, h('i', { class: 'fact-dot', 'aria-hidden': 'true' }), stateLabel(n.state)));
+    const extra = n.state === 'driving'
+      ? [val(n.speed_kph) != null ? format(val(n.speed_kph), 'speed') : null, n.drive?.distance_km != null ? `${format(n.drive.distance_km, 'distance')} so far` : null]
+      : [];
+    F.state.sub.textContent = [sinceMs ? `Since ${when(sinceMs, tz).replace(/^(Today|Yesterday)\b/, (w) => w.toLowerCase())}` : 'Not known since when', forTime ? `for ${forTime}` : null, ...extra].filter(Boolean).join(' · ') + (n.stale ? ' · old data' : '');
+    F.state.el.classList.toggle('is-stale', !!stale);
+
+    // where
+    const plat = val(loc.lat), plon = val(loc.lon);
+    const known = plat != null && plon != null;
+    const name = loc.place?.name || loc.address?.short || (n.state === 'driving' ? 'On the road' : known ? 'Not a saved place' : 'No position yet');
+    const area = [loc.address?.locality, loc.address?.region].filter(Boolean).join(', ');
+    F.where.value.textContent = name;
+    F.where.value.title = name;
+    F.where.sub.textContent = (loc.place ? loc.address?.short || area : area) || (known ? `${plat.toFixed(4)}, ${plon.toFixed(4)}` : 'The car has not sent a position');
+
+    // charging now, else the plug and the limit
+    F.charge.el.classList.toggle('is-charging', charging);
+    if (charging) {
+      replace(F.charge.value, val(c.power_kw) != null ? quantity(val(c.power_kw), 'power') : 'Charging');
+      const toFull = val(c.to_full_min);
+      F.charge.sub.textContent = [toFull != null ? `Full in ${dur(toFull * 60000)}` : 'Time to full not known yet', limit != null ? `to ${pct(limit)}` : null].filter(Boolean).join(' · ');
+    } else {
+      replace(F.charge.value, val(c.status) === 'complete' ? 'Done' : plugged ? 'Plugged in' : plugged === false ? 'Unplugged' : 'Not known');
+      F.charge.sub.textContent = limit != null ? `Charge limit ${pct(limit)}` : plugged ? 'Charge limit not sent yet' : 'Charge limit shows when plugged in';
+    }
+  }
+
+  function paintDrive() {
+    const d = lastDrive;
+    const el = F.drive.el;
+    if (!d) {
+      el.removeAttribute('href');
+      F.drive.value.textContent = d === null ? 'None yet' : '—';
+      F.drive.sub.textContent = d === null ? 'No drive recorded for this car' : 'Could not be loaded';
+      return;
+    }
+    el.href = state.buildUrl('drive', { car: cid, drive: d.id });
+    el.title = 'Open this drive';
+    replace(F.drive.value, quantity(d.distance_km, 'distance', { digits: 1 }));
+    const route = [d.start?.place?.name || d.start?.address?.short, d.end?.place?.name || d.end?.address?.short].filter(Boolean).join(' → ');
+    F.drive.sub.textContent = [when(d.start_ms, tz), route].filter(Boolean).join(' · ');
+  }
+  // the newest finished drive: one small page of the drives list, newest first
+  async function loadDrive() {
+    try {
+      const pg = await ctx.api.page(`cars/${encodeURIComponent(cid)}/drives`, {}, { limit: 3 });
+      if (!ctx.alive()) return;
+      lastDrive = pg.items.find((d) => d.end_ms != null) ?? null;
+    } catch { lastDrive = lastDrive || undefined; }
+    if (ctx.alive()) paintDrive();
   }
 
   /* ---------- the map */
@@ -786,10 +868,10 @@ export async function mount(ctx) {
   }
 
   /* ---------- first draw, then live */
-  paintHead(); paintInputs(); paintBanner(); paintGauge(); paintPlace(); paintLive();
+  paintHead(); paintInputs(); paintBanner(); paintFacts(); paintDrive(); paintGauge(); paintPlace(); paintLive();
   ctx.setTitle('Overview');
   try {
-    await paintWindow();
+    await Promise.all([paintWindow(), loadDrive(), paintToday()]);
   } catch (e) {
     if (!ctx.alive()) return;
     replace(windowSlot, panel({ title: 'The period', icon: 'stats' }, h('p', { class: 'note' }, `The charts could not be loaded: ${e.message}`)));
@@ -797,7 +879,6 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
   ctx.ready();
   mountMap();
-  paintToday();
   learnSchedule();
 
   // live values: merge `now` deltas, draw again at most every 2 s
@@ -810,14 +891,14 @@ export async function mount(ctx) {
     // plugged in, unplugged or moved: learn the usual start time for the place it is at now
     if (plugKey() !== before && !(scheduleHint && scheduleFor === now.location?.place?.id)) learnSchedule();
     if (pend) return;
-    pend = setTimeout(() => { pend = 0; if (!ctx.alive()) return; paintHead(); paintInputs(); paintBanner(); paintGauge(); paintPlace(); paintLive(); placeMarker(); }, 2000);
+    pend = setTimeout(() => { pend = 0; if (!ctx.alive()) return; paintHead(); paintInputs(); paintBanner(); paintFacts(); paintGauge(); paintPlace(); paintLive(); placeMarker(); }, 2000);
   });
   let rowsT = 0;
   ctx.events('rows', (ev) => {
     if (ev.data?.car !== cid) return;
     clearTimeout(rowsT);
-    rowsT = setTimeout(() => { if (ctx.alive()) { paintWindow().catch(() => {}); paintToday(); } }, 1500);
+    rowsT = setTimeout(() => { if (ctx.alive()) { paintWindow().catch(() => {}); paintToday(); loadDrive(); } }, 1500);
   });
   ctx.onCleanup(() => { clearTimeout(pend); clearTimeout(rowsT); });
-  ctx.onCleanup(onUnitsChange(() => { paintGauge(); paintPlace(); paintLive(); paintWindow().catch(() => {}); }));
+  ctx.onCleanup(onUnitsChange(() => { paintFacts(); paintDrive(); paintGauge(); paintPlace(); paintLive(); paintWindow().catch(() => {}); }));
 }
