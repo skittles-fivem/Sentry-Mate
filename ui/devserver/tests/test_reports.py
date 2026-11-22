@@ -213,7 +213,7 @@ class Software(ServerCase):
         self.assertNotIn("start_latitude", ended)  # positions only when the owner turns location publishing on
         self.assertTrue(all(x["topic"] == "sentrymate/cars/c1/event" for x in d["items"]))
         sw = self.c.get("/api/v1/cars/c1/events?types=software_changed")["items"]
-        self.assertEqual(len(sw), 2)
+        self.assertEqual(len(sw), 3)  # one per software update of c1
         ch = self.c.get("/api/v1/cars/c2/events?types=charge_started&limit=1")["items"][0]
         self.assertEqual(ch["payload"]["place"], "Work garage")
         self.c.error("GET", "/api/v1/cars/c1/events?types=wake_up", 400, "bad_input")

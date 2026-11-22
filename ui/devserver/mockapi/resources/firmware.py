@@ -9,7 +9,11 @@ many updates changed it. The app git hashes read zero on these cars, so they are
 """
 from __future__ import annotations
 
-from ..util import h01
+from .. import sources as S
+from ..conventions import page
+from ..errors import bad_input
+from ..live import update_version
+from ..util import h01, iso_utc
 
 # (id, name, can_id, [(field, bits)]): the fields the made-up cars send, in the DBC's order
 MODULES = [
@@ -132,5 +136,90 @@ def get_firmware(req):
             "bridge_hints": {"count": 0, "last_ms": None}}
 
 
+# ------------------------------------------------------------------ history
+
+def _module_rows(req, h, rs):
+    """One row per fingerprint each module had (its main field's runs), oldest first per module."""
+    car = h.car
+    ups = {u.end: u for u in fingerprint_updates(h)}
+    drives = sorted((d for d in h.drives if d.source == "can" and d.start <= req.now), key=lambda d: d.start)
+    out = []
+    for mid, name, _, fs in MODULES:
+        seq = rs.get(MAIN[mid])
+        if not seq:
+            continue
+        for i, (v, a, b) in enumerate(seq):
+            fields = []
+            for f, _ in fs:
+                run = next((x for x in rs.get(f, []) if x[1] <= a <= x[2]), None)
+                if run is not None:
+                    fields.append({"field": f, "hex": hexof(f, run[0])})
+            u = ups.get(a) if i else None
+            upd = None
+            changed = None
+            if u is not None:
+                ver, vs = update_version(req.app, u)
+                upd = {"id": u.id, "version": ver, "version_source": vs if ver else None}
+                d = next((d for d in drives if d.start >= a), None)
+                changed = {"drive_id": d.id if d else None,
+                           "log": f"{iso_utc(a - a % 60_000).replace(':', '-')}_{car.id}.log"}
+            nxt = seq[i + 1][1] if i + 1 < len(seq) else None
+            out.append({
+                "id": f"{mid}:{a}", "kind": "module", "module": mid, "module_name": name,
+                "fingerprint": hexof(MAIN[mid], v), "previous": hexof(MAIN[mid], seq[i - 1][0]) if i else None,
+                "fields": fields, "first_seen_ms": a, "last_seen_ms": b, "until_ms": nxt, "duration_ms": b - a,
+                "current": nxt is None, "update": upd, "version": upd["version"] if upd else None,
+                "changed_in": changed, "source": "can", "source_label": S.LABEL["smo"],
+            })
+    return out
+
+
+def _version_rows(req, h):
+    """One row per imported (TeslaMate, TeslaFi) update: they carry a version, no fingerprints."""
+    ups = sorted((u for u in h.updates if u.source == "teslamate" and u.start <= req.now), key=lambda u: u.start)
+    out = []
+    for i, u in enumerate(ups):
+        ver, vs = update_version(req.app, u)
+        nxt = ups[i + 1].start if i + 1 < len(ups) else None
+        src = S.of_seg(u)
+        site = S.site_of(u) or "teslamate"
+        end = min(u.end, req.now)
+        out.append({
+            "id": f"version:{u.id}", "kind": "version", "module": None, "module_name": None, "fingerprint": None,
+            "previous": None, "fields": [], "first_seen_ms": u.start, "last_seen_ms": end, "until_ms": nxt,
+            "duration_ms": (nxt if nxt is not None else req.now) - u.start, "current": nxt is None,
+            "update": {"id": u.id, "version": ver, "version_source": vs if ver else None}, "version": ver,
+            "changed_in": None, "source": site, "source_label": src["source_label"],
+        })
+    return out
+
+
+def get_firmware_history(req):
+    mod = req.q("module")
+    if mod is not None and mod not in MAIN:
+        raise bad_input({"module": "One of vcfront, bms, dir, dif."})
+    req.limit()
+    h = req.history()
+    rows = []
+    if h is not None:
+        rows = _module_rows(req, h, runs(h, req.now)) + _version_rows(req, h)
+    mrows = [x for x in rows if x["kind"] == "module"]
+    modules = []
+    for mid, name, can_id, _ in MODULES:
+        mine = [x for x in mrows if x["module"] == mid]
+        modules.append({"id": mid, "name": name, "can_id": can_id, "fingerprints": len(mine),
+                        "current": mine[-1]["fingerprint"] if mine else None})
+    spans = sorted(({"module": x["module"], "fingerprint": x["fingerprint"], "from_ms": x["first_seen_ms"],
+                     "to_ms": x["last_seen_ms"], "version": x["version"], "current": x["current"]} for x in mrows),
+                   key=lambda s: (s["from_ms"], [m[0] for m in MODULES].index(s["module"])))
+    sel = [x for x in rows if x["module"] == mod] if mod else rows
+    items, nxt = page(req, sel, key=lambda x: (x["first_seen_ms"], x["id"]), reverse=True)
+    return {"car": req.car, "time_zone": req.tz(), "items": items, "next": nxt, "modules": modules,
+            "spans": spans,
+            "range": {"from_ms": min((x["first_seen_ms"] for x in mrows), default=None),
+                      "to_ms": max((x["last_seen_ms"] for x in mrows), default=None)}}
+
+
 def register(router):
     router.add("/api/v1/cars/{car}/firmware", GET=get_firmware)
+    router.add("/api/v1/cars/{car}/firmware/history", GET=get_firmware_history)
