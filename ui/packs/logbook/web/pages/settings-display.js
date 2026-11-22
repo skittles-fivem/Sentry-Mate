@@ -13,7 +13,7 @@ import { format, getUnits, FT_PER_M } from '../shared/units.js';
 import { formatDateTime, isValidZone } from '../shared/time.js';
 import { pageHead, errorView, pageLink, flag, button } from '../core/ui.js';
 import { choice, switchField, field, form, setFieldError } from '../core/form.js';
-import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
+import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, LABELS_TEXT, STYLES_TEXT, presetHosts, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 import { currentPrefs, onPrefs } from '../core/prefs.js';
 import { savePref, currentAbout } from '../core/frame.js';
 import { SIZES, sizeState, setSize, sizeNote, display } from '../core/display.js';
@@ -199,7 +199,7 @@ export async function mount(ctx) {
     h('section', { class: 'settings', 'aria-labelledby': 'look-title' },
       h('h2', { class: 'label settings-label', id: 'look-title' }, 'Look and language', h('span', { class: 'label-note' }, 'yours alone, not this browser’s or the server’s')),
       setting('Theme', 'Paper by day and night ink after dark, following your device, or always one of the two. It is put in place before the page draws, so it never flashes the other one.', theme, { cover: ['shell.theme', 'shots.theme-note', 'web.settings.general.theme'], extra: themeEx }),
-      setting('Map colours', MAP_COLORS_TEXT, mapColors),
+      setting('Map colours', `${MAP_COLORS_TEXT} Satellite pictures are never dimmed, so this does not apply to them.`, mapColors),
       setting('Language', 'How dates, times and numbers are written (for example 1,234.5 or 1.234,5, and the first day of the week).', h('div', { class: 'lang-control' }, lang, langNote),
         { cover: ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation'], extra: langEx }),
       setting('Interface size', 'Text, controls, tables, charts and maps grow or shrink together. With “Follow screen size” on, big screens such as 4K monitors get larger text by themselves. Browser zoom works on top.', h('div', { class: 'size-control' }, size, follow, sizeNoteEl), { cls: 'setting-size' }),
@@ -444,13 +444,18 @@ export async function mount(ctx) {
     // Map tiles
     const tiles = choice({ label: 'Map tiles', labelHidden: true, name: 'tiles', value: s.tiles.mode, options: [['offline', 'Offline (on this server)'], ['online', 'Online tile server']],
       onchange: (v) => {
-        if (v === 'online' && !s.tiles.online_url) return refuse(tiles, s.tiles.mode, tileUrlField, 'Save an https:// tile address with {z}, {x} and {y} here first; then choose Online tile server.');
+        if (v === 'online' && !s.tiles.online_url && !tilePresets.length) return refuse(tiles, s.tiles.mode, tileUrlField, 'Save an https:// tile address with {z}, {x} and {y} here first; then choose Online tile server.');
         quick({ tiles: { mode: v } }, () => tiles.set(s.tiles.mode));
       } });
+    // the online preset in use (maps/config says which, the default satellite one when none was picked yet)
+    const mt = (maps && maps.tiles) || {};
+    const presetId = mt.preset || s.tiles.preset || (tilePresets.find((x) => x.url === s.tiles.online_url) || {}).id || (s.tiles.online_url ? 'custom' : (tilePresets[0] || {}).id || 'custom');
+    const tilePreset = tilePresets.find((x) => x.id === presetId) || null;
     let tileHost = null;
     try { tileHost = s.tiles.online_url ? new URL(s.tiles.online_url.replace(/\{[a-z]\}/g, '0')).host : null; } catch { tileHost = null; }
+    const nowHosts = (mt.hosts && mt.hosts.length ? mt.hosts : tilePreset ? presetHosts(tilePreset) : tileHost ? [tileHost] : []).join(', ');
     const tileNow = h('p', { class: 'setting-note' }, s.tiles.mode === 'online'
-      ? `Now: online, from ${tileHost || 'the tile server below'}. Each viewer’s browser asks it for the map pictures, so it sees which area is shown and this server’s address (as Referer, which OpenStreetMap needs; never a page or a car).`
+      ? `Now: online, ${tilePreset ? tilePreset.name : 'a custom address'}, from ${nowHosts || 'the tile server below'}. Each viewer’s browser asks it for the map pictures, so it sees which area is shown and this server’s address (as Referer, which some tile servers need; never a page or a car).`
       : 'Now: offline. Maps are drawn from the offline map file on this server; without one, maps show the routes and pins on plain paper, with a note saying so.');
     // the offline map file: which is in use, (with several) which to use, and how to make one
     const tFiles = offlineFileChoices(maps && maps.tiles);
@@ -461,15 +466,48 @@ export async function mount(ctx) {
       h('div', { class: 'tiles-control' }, h('p', { class: 'setting-note' }, offlineSummary(maps && maps.tiles)), offlineFile,
         h('ol', { class: 'setting-note offline-steps' }, OFFLINE_STEPS.map((x) => h('li', null, x))), h('p', { class: 'setting-note' }, OFFLINE_NOTE)));
     offlineRow.id = OFFLINE_ANCHOR;
-    const tilePreset = tilePresets.find((x) => x.url === s.tiles.online_url) || null;
-    const tileSource = tilePresets.length ? choice({ label: 'Tile source', labelHidden: true, name: 'tile-source', value: tilePreset ? tilePreset.id : 'custom',
-      options: [...tilePresets.map((x) => [x.id, x.name]), ['custom', 'Custom address']],
-      onchange: (v) => {
-        const x = tilePresets.find((y) => y.id === v);
-        if (!x) { tileUrlField.control.focus(); return; }
-        quick({ tiles: { online_url: x.url, attribution: x.attribution, max_zoom: x.max_zoom } }, () => tileSource.set(tilePreset ? tilePreset.id : 'custom'));
-      } }) : null;
-    const tileTerms = tilePreset ? h('p', { class: 'setting-note' }, `${tilePreset.name}: free, no key. Its terms (${tilePreset.terms.replace(/^https:\/\//, '')}) ask for light use and its credit on every map.`) : null;
+    // the presets (satellite first), each with where its pictures come from, how deep it zooms and where it covers
+    const presetNote = (x) => [presetHosts(x).join(', '), `zoom up to ${x.max_zoom}`, x.region ? `${x.region} only: elsewhere the map is blank` : null].filter(Boolean).join(' · ');
+    const sortedPresets = [...tilePresets].sort((a, b) => (a.kind === 'satellite' ? 0 : 1) - (b.kind === 'satellite' ? 0 : 1));
+    const radios = [];
+    const pickPreset = (v) => {
+      for (const r of radios) r.checked = r.value === v;
+      if (v === 'custom') {
+        if (!s.tiles.online_url) { tileUrlField.control.focus(); return; }
+        quick({ tiles: { mode: s.tiles.mode, preset: 'custom' } }, () => pickPreset.reset());
+        return;
+      }
+      quick({ tiles: { mode: s.tiles.mode, preset: v } }, () => pickPreset.reset());
+    };
+    pickPreset.reset = () => { for (const r of radios) r.checked = r.value === presetId; };
+    const presetRow = (id, name, note) => {
+      const input = h('input', { type: 'radio', name: 'tile-preset', value: id, checked: id === presetId, disabled, class: 'preset-radio', onchange: () => pickPreset(id) });
+      radios.push(input);
+      return h('label', { class: 'preset-option', dataset: { preset: id } }, input,
+        h('span', { class: 'preset-text' }, h('span', { class: 'preset-name' }, name), note ? h('span', { class: 'preset-note' }, note) : null));
+    };
+    const tileSource = tilePresets.length ? h('div', { class: 'preset-list', role: 'radiogroup', 'aria-label': 'Online map' },
+      sortedPresets.map((x) => presetRow(x.id, x.name, presetNote(x))),
+      presetRow('custom', 'Custom address', s.tiles.online_url && presetId === 'custom' ? `${tileHost || 'your tile server'} · zoom up to ${s.tiles.max_zoom}` : 'Your own tile server, typed below')) : null;
+    const tileTerms = tilePreset && tilePreset.terms ? h('p', { class: 'setting-note' }, `${tilePreset.name}: free, no key. Its terms (${String(tilePreset.terms).replace(/^https:\/\//, '')}) ask for light use and its credit on every map.`) : null;
+    // names and roads over the photos (presets that have them)
+    const labelsSwitch = tilePreset && (tilePreset.overlays || []).length
+      ? switchField({ label: 'Place names and roads', checked: !!(mt.labels ?? s.tiles.labels), onchange: (on) => quick({ tiles: { labels: on } }, () => labelsSwitch.set(mt.labels ?? s.tiles.labels)) }) : null;
+    if (labelsSwitch) labelsSwitch.input.disabled = disabled;
+    // the maps viewers may switch to (the chosen one is always offered)
+    const allowed = new Set(mt.allowed_styles || s.tiles.styles || []);
+    const styleBoxes = sortedPresets.map((x) => {
+      const on = x.id === presetId || allowed.has(x.id);
+      const input = h('input', { type: 'checkbox', value: x.id, checked: on, disabled: disabled || x.id === presetId, class: 'preset-check',
+        onchange: () => {
+          const list = styleBoxes.filter((b) => b.checked && b.value !== presetId).map((b) => b.value);
+          quick({ tiles: { styles: list } }, () => { for (const b of styleBoxes) b.checked = b.value === presetId || allowed.has(b.value); });
+        } });
+      input.label = h('label', { class: 'preset-option' }, input, h('span', { class: 'preset-text' }, h('span', { class: 'preset-name' }, x.short || x.name),
+        h('span', { class: 'preset-note' }, x.id === presetId ? `${x.name}, the default above` : x.name)));
+      return input;
+    });
+    const stylesList = sortedPresets.length > 1 ? h('div', { class: 'preset-list', role: 'group', 'aria-label': 'Maps people can switch to' }, styleBoxes.map((b) => b.label)) : null;
     const tileUrlField = field({ label: 'Online tile address', name: 'online_url', value: s.tiles.online_url || '', hint: 'An https:// address with {z}, {x} and {y} in it.', attrs: { spellcheck: 'false', autocomplete: 'off', placeholder: 'https://…/{z}/{x}/{y}.png', disabled } });
     tileUrlField.control.addEventListener('input', () => setFieldError(tileUrlField, null));
     const tileForm = form({
@@ -486,7 +524,7 @@ export async function mount(ctx) {
         if (v.max_zoom == null || !Number.isInteger(v.max_zoom) || v.max_zoom < 1 || v.max_zoom > 22) bad.max_zoom = 'A whole number from 1 to 22.';
         if (Object.keys(bad).length) throw Object.assign(new Error('Not saved: check the fields marked.'), { fields: bad });
         try {
-          await patch({ tiles: { online_url: url || null, attribution: String(v.attribution || '').trim(), max_zoom: v.max_zoom } });
+          await patch({ tiles: { online_url: url || null, attribution: String(v.attribution || '').trim(), max_zoom: v.max_zoom, preset: 'custom' } });
         } catch (err) {
           if (err && err.fields) err.fields = Object.fromEntries(Object.entries(err.fields).map(([k, m]) => [k.replace(/^tiles\./, ''), m]));
           throw err;
@@ -501,7 +539,6 @@ export async function mount(ctx) {
     const mapsLink = switchField({ label: 'Allow links to an outside map', checked: !!s.outside_links.maps, onchange: (on) => quick({ outside_links: { maps: on } }, () => mapsLink.set(s.outside_links.maps)) });
     const notesLink = switchField({ label: 'Allow release-notes links', checked: !!s.outside_links.release_notes, onchange: (on) => quick({ outside_links: { release_notes: on } }, () => notesLink.set(s.outside_links.release_notes)) });
     const release = switchField({ label: 'Check for new releases', checked: !!s.release_check.enabled, onchange: (on) => quick({ release_check: { enabled: on } }, () => release.set(s.release_check.enabled)) });
-    if (tileSource) tileSource.querySelectorAll('button').forEach((b) => { b.disabled = disabled; });
     for (const el of [defDist, defTemp, defPress, defRange, lookup, tiles]) el.querySelectorAll('button').forEach((b) => { b.disabled = disabled; });
     for (const el of [mapsLink, notesLink, release]) el.input.disabled = disabled;
 
@@ -519,7 +556,9 @@ export async function mount(ctx) {
         setting('Address details', 'Language, online service and rounding.', addr, { cls: 'setting-form' }),
         setting('Map tiles', `The pictures under every map. Credit: ${s.tiles.attribution || 'shown on the map'}; zoom up to ${s.tiles.max_zoom}.`, h('div', { class: 'tiles-control' }, tiles, tileNow), { cover: 'web.shell.map-tiles' }),
         offlineRow,
-        setting('Online tile server', 'Only used with online tiles. A source fills in its address, credit and zoom.', h('div', { class: 'tiles-control' }, tileSource, tileTerms, tileForm), { cls: 'setting-form' }),
+        setting('Online map', 'Only used with online tiles. Satellite is the default; a preset fills in its address, credit and zoom, or type your own address below.', h('div', { class: 'tiles-control' }, tileSource, tileTerms, tileForm), { cls: 'setting-form' }),
+        labelsSwitch ? setting('Place names and roads', LABELS_TEXT, labelsSwitch) : null,
+        stylesList ? setting('Maps people can switch to', STYLES_TEXT, stylesList, { cls: 'setting-form' }) : null,
         setting('Outbound proxy', 'If this server may only reach the internet through a proxy: online address look-ups and map tiles the server downloads go through it. Viewers’ browsers loading online tiles use their own connection.',
           h('div', { class: 'proxy-control' }, proxyForm, proxyNow), { cls: 'setting-form', cover: 'docs.env.tesla-api.nominatim-proxy' }),
         setting('Outside links', 'Off by default: nothing on a page sends you to another site unless an admin allows it. Links open in a new tab, only when clicked.', h('div', { class: 'switches' }, mapsLink, notesLink)),

@@ -14,7 +14,7 @@ import { getInterface, applyInterface, getTheme, applyTheme, onChange } from '..
 import { tag, ago } from '../core/fmt.js';
 import { toast } from '../core/toast.js';
 import { packChoices } from '../shared/packs.js';
-import { MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
+import { MAP_COLORS_TEXT, LABELS_TEXT, STYLES_TEXT, presetHosts, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
 export const title = () => 'Settings: display';
@@ -26,6 +26,32 @@ const LANG_RE = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
 const ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
 const BROWSER_ZONE = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
 const https = (t) => (t.trim() === '' ? { value: null } : /^https:\/\/\S+$/.test(t.trim()) ? { value: t.trim() } : { error: 'an https:// address, or empty' });
+
+/**
+ * tiles.styles: the presets viewers may switch to on a map page, as keys that each turn on and off (saved at once).
+ * Returns a line for editLines ({ el, spec }).
+ */
+function stylesLine(presets, allowed, ro, save) {
+  let now = [...allowed];
+  const st = h('span', { class: 'ke-st', 'aria-live': 'polite' });
+  const err = h('p', { class: 'ke-err', role: 'alert', hidden: true });
+  const mark = () => { for (const b of keys.children) b.setAttribute('aria-pressed', String(now.includes(b.dataset.v))); };
+  const keys = h('div', { class: 'keys ke-keys', role: 'group', 'aria-label': 'tiles.styles' }, presets.map((p) => h('button', {
+    class: 'key', type: 'button', dataset: { v: p.id }, disabled: ro, title: p.name,
+    onclick: async () => {
+      const before = now;
+      now = now.includes(p.id) ? now.filter((x) => x !== p.id) : presets.map((x) => x.id).filter((x) => x === p.id || now.includes(x));
+      mark(); err.hidden = true; replace(st, h('span', { class: 'muted' }, 'saving'));
+      try { await save(now); replace(st, tag('saved', 'ok')); } catch (e) { now = before; mark(); replace(st, tag('bad', 'bad')); err.hidden = false; replace(err, e?.message || 'not saved'); }
+    },
+  }, p.id)));
+  mark();
+  const el = h('div', { class: ['ke', ro && 'ke--ro'], id: 'tiles-styles', dataset: { row: '' } },
+    h('span', { class: 'ke-k' }, 'tiles.styles'), h('span', { class: 'ke-eq', 'aria-hidden': 'true' }, '='),
+    h('div', { class: 'ke-v' }, keys), h('span', { class: 'ke-side' }, st),
+    h('p', { class: 'ke-help' }, `${STYLES_TEXT} With fewer than two (counting the one chosen above), maps show no switch.`), err);
+  return { el, spec: { key: 'tiles.styles' } };
+}
 
 export async function mount(ctx) {
   const admin = ctx.admin;
@@ -79,7 +105,7 @@ export async function mount(ctx) {
       help: 'Auto follows this device. Saved with your account and set before the page is drawn, so there is no flash. Every page, chart and map has a dark and a light look.',
       save: async (v) => { const before = getTheme().choice; applyTheme(v); try { await pref({ theme: v }); } catch (e) { applyTheme(before); throw e; } } },
     { key: 'map_colors', id: 'map-colors', type: 'choice', value: p.map_colors || 'dimmed', options: [['dimmed', 'dimmed'], ['original', 'original']],
-      help: MAP_COLORS_TEXT, save: (v) => pref({ map_colors: v }) },
+      help: `${MAP_COLORS_TEXT} It doesn't apply to satellite pictures: those are always shown as taken.`, save: (v) => pref({ map_colors: v }) },
     { key: 'ui_pack', id: 'pack', type: 'choice', value: shownPack, options: packs,
       help: [`The design of the whole app.${about?.ui_pack?.name ? ` This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Another pack is used the next time the app loads, where the server offers it. `, switchBtn, packInfo],
       save: async (v) => { await pref({ ui_pack: v }); switchBtn.hidden = v === packHere; if (v !== packHere) toast('Saved. Used the next time the app loads; switch now reloads.', { kind: 'info' }); } },
@@ -134,8 +160,16 @@ export async function mount(ctx) {
     const ro = !admin;
     const g = server.geocode || {}, t = server.tiles || {};
     const off = maps?.tiles?.offline_data_present ?? maps?.geocoding?.offline_data_present;
-    const presets = maps?.tiles?.presets || [];
-    const preset = presets.find((p) => p.url === t.online_url) || null;
+    // the online presets, satellite first; the chosen one (or custom) from maps/config, else from the address
+    const presets = [...(maps?.tiles?.presets || [])].sort((a, b) => (b.kind === 'satellite') - (a.kind === 'satellite'));
+    const chosenId = maps?.tiles?.preset || t.preset || presets.find((p) => p.url === t.online_url)?.id || 'custom';
+    const preset = presets.find((p) => p.id === chosenId) || null;
+    const labelsOn = maps?.tiles?.labels ?? t.labels ?? true;
+    const allowed = maps?.tiles?.allowed_styles || t.styles || [];
+    // after a tiles change: maps/config again (styles, hosts, the chosen preset), then the lines
+    const tilesSaved = () => { ctx.api.invalidate?.('maps/'); setTimeout(async () => { maps = await ctx.api.get('maps/config', null, { maxAgeMs: 0 }).catch(() => maps); if (ctx.alive()) paintServer(); }, 0); };
+    const presetInfo = (p) => h('li', { dataset: { preset: p.id } }, h('span', { class: p.id === chosenId ? 'tone--accent' : null }, p.id), ` ${p.name}: `,
+      presetHosts(p).join(', ') || '-', `, zoom to ${p.max_zoom}`, p.region ? h('span', { class: 'tone--warn' }, ` (${p.region === 'US' ? 'United States only: elsewhere it is blank' : `${p.region} only`})`) : null);
     const lines = editLines([
       { key: 'default.units.distance', type: 'choice', value: server.units?.distance, options: [['km', 'km'], ['mi', 'mi']], readOnly: ro,
         help: 'What an account sees until it picks its own. A fresh server starts from the unit set on the car\'s own screen.', save: (v) => patchServer({ units: { distance: v } }) },
@@ -166,9 +200,9 @@ export async function mount(ctx) {
         help: 'Street and place names in this language where the data has it, else in the local one. A change looks every stored address up again; a code the server refuses is said here.',
         save: (v) => patchServer({ geocode: { language: v } }) },
       { key: 'tiles.mode', type: 'choice', value: t.mode, options: [['offline', 'offline'], ['online', 'online']], readOnly: ro, cover: 'web.shell.map-tiles',
-        help: [t.mode === 'online' ? `Maps load pictures from the online source; its credit shows on every map: ${t.attribution || '(none set)'}. ` : off ? 'An offline map file is installed: maps need nothing from outside. ' : 'No offline map file yet: maps draw routes and places on a plain grey ground, with a note (see tiles.offline_file). ',
-          'An online source is asked by each viewer\'s browser, so it sees the map area and this server\'s address (as Referer: OpenStreetMap refuses tiles without one), never a page or a car.'],
-        save: (v) => patchServer({ tiles: { mode: v } }) },
+        help: [t.mode === 'online' ? `Maps load pictures from the online source; its credit shows on every map: ${maps?.tiles?.attribution || t.attribution || '(none set)'}. ` : off ? 'An offline map file is installed: maps need nothing from outside. ' : 'No offline map file yet: maps draw routes and places on a plain grey ground, with a note (see tiles.offline_file). ',
+          'An online source (satellite by default) is asked by each viewer\'s browser, so it sees the map area and this server\'s address (as Referer: some tile servers refuse tiles without one), never a page or a car.'],
+        save: async (v) => { await patchServer({ tiles: { mode: v } }); tilesSaved(); } },
       (() => {
         // the offline map file: which is in use, (with several) which to use, and how to make one
         const files = offlineFileChoices(maps?.tiles);
@@ -178,19 +212,19 @@ export async function mount(ctx) {
             save: async (v) => { await patchServer({ tiles: { offline_file: v || null } }); setTimeout(() => { if (ctx.alive()) paintServer(); }, 0); } }
           : { key: 'tiles.offline_file', id: OFFLINE_ANCHOR, type: 'show', show: () => maps?.tiles?.offline_file || 'none', value: '', help };
       })(),
-      ...(presets.length ? [{ key: 'tiles.source', type: 'choice', value: preset ? preset.id : 'custom', readOnly: ro, options: [...presets.map((p) => [p.id, p.name]), ['custom', 'custom']],
-        help: [preset ? `${preset.name}: free, no key; its terms (${preset.terms.replace(/^https:\/\//, '')}) ask for light use and the credit on every map. ` : 'Your own address below. ',
-          'A source fills in the address, credit and zoom below.'],
-        save: async (v) => {
-          const p = presets.find((x) => x.id === v);
-          if (!p) return;
-          await patchServer({ tiles: { online_url: p.url, attribution: p.attribution, max_zoom: p.max_zoom } });
-          setTimeout(() => { if (ctx.alive()) paintServer(); }, 0); // the address, credit and zoom lines show the source's
-        } }] : []),
-      { key: 'tiles.online_url', type: 'text', value: t.online_url || '', readOnly: ro, attrs: { placeholder: 'https://.../{z}/{x}/{y}.png', inputmode: 'url' },
+      ...(presets.length ? [{ key: 'tiles.preset', id: 'tiles-preset', type: 'choice', value: preset ? preset.id : 'custom', readOnly: ro, options: [...presets.map((p) => [p.id, p.id]), ['custom', 'custom']],
+        show: (v) => (presets.find((p) => p.id === v)?.name || 'custom'),
+        help: [preset ? `${preset.name}: free, no key; its terms (${String(preset.terms || '').replace(/^https:\/\//, '')}) ask for light use and the credit on every map. ` : 'Your own address below (custom). ',
+          'A preset fills in the address, credit and zoom below. Each viewer\'s browser loads the pictures from:',
+          h('ul', { class: 'preset-list' }, presets.map(presetInfo))],
+        save: async (v) => { await patchServer({ tiles: { mode: t.mode, preset: v } }); tilesSaved(); } }] : []),
+      ...(preset?.overlays?.length ? [{ key: 'tiles.labels', id: 'tiles-labels', type: 'bool', value: !!labelsOn, readOnly: ro,
+        help: LABELS_TEXT, save: async (v) => { await patchServer({ tiles: { labels: v } }); tilesSaved(); } }] : []),
+      ...(presets.length ? [stylesLine(presets, allowed, ro, async (list) => { await patchServer({ tiles: { styles: list } }); tilesSaved(); })] : []),
+      { key: 'tiles.online_url', type: 'text', value: (preset ? preset.url : t.online_url) || '', readOnly: ro, attrs: { placeholder: 'https://.../{z}/{x}/{y}.png', inputmode: 'url' },
         parse: (x) => (x.trim() === '' ? { value: null } : /^https:\/\/\S*\{z\}\S*\{x\}\S*\{y\}/.test(x.trim()) ? { value: x.trim() } : { error: 'an https:// address with {z}, {x} and {y} in it, or empty' }),
-        save: (v) => patchServer({ tiles: { online_url: v } }) },
-      { key: 'tiles.attribution', type: 'text', value: t.attribution || '', readOnly: ro, keepEmpty: true, help: 'Shown in the corner of every map, as the source asks.', save: (v) => patchServer({ tiles: { attribution: v ?? '' } }) },
+        save: async (v) => { await patchServer({ tiles: { online_url: v } }); tilesSaved(); } },
+      { key: 'tiles.attribution', type: 'text', value: (preset ? preset.attribution : t.attribution) || '', readOnly: ro, keepEmpty: true, help: 'Shown in the corner of every map, as the source asks.', save: (v) => patchServer({ tiles: { attribution: v ?? '' } }) },
       { key: 'outside_links.maps', type: 'bool', value: !!server.outside_links?.maps, readOnly: ro, help: 'A link from a place to an outside map, opened only when someone clicks it.', save: (v) => patchServer({ outside_links: { maps: v } }) },
       { key: 'outside_links.release_notes', type: 'bool', value: !!server.outside_links?.release_notes, readOnly: ro, save: (v) => patchServer({ outside_links: { release_notes: v } }) },
     ]);

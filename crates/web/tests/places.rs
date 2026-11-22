@@ -543,12 +543,13 @@ async fn maps_and_addresses_say_what_the_server_has() {
     assert_eq!(m["tiles"]["mode"], "offline", "{m}");
     assert_eq!(m["tiles"]["online_template"], Value::Null, "{m}");
     has_keys(&m["tiles"], &["mode", "offline_url", "online_template", "attribution", "max_zoom", "presets"]);
-    // the ready-made online sources: OpenStreetMap's first, each with its credit, zoom and terms
+    // the ready-made online sources: satellite (the default) first, each with its credit, zoom and terms
     let presets = m["tiles"]["presets"].as_array().unwrap();
-    assert_eq!(presets[0]["id"], "osm", "{m}");
+    assert_eq!(presets[0]["id"], "satellite", "{m}");
     for p in presets {
-        has_keys(p, &["id", "name", "url", "attribution", "max_zoom", "terms"]);
+        has_keys(p, &["id", "name", "short", "kind", "url", "attribution", "max_zoom", "terms", "overlays", "region"]);
     }
+    assert_eq!((&m["tiles"]["preset"], &m["tiles"]["styles"]), (&json!("satellite"), &json!([])), "{m}");
     has_keys(&m["geocoding"], &["mode", "credit", "offline_data_present"]);
     let g = ok(&mut admin, "/api/v1/geocode/status").await;
     has_keys(&g, &["mode", "offline_data", "cache_size", "online"]);
@@ -644,7 +645,7 @@ async fn maps_and_addresses_follow_the_settings_at_once() {
     assert_eq!((m["geocoding"]["mode"].as_str(), m["geocoding"]["language"].as_str()), (Some("offline"), Some("en")));
     let v = ok(&mut admin, "/api/v1/settings").await["version"].as_u64().unwrap();
     let tiles = json!({ "mode": "online", "online_url": "https://tiles.example.org/{z}/{x}/{y}.png",
-                        "attribution": "Example tiles", "max_zoom": 17 });
+                        "attribution": "Example tiles", "max_zoom": 17, "styles": [] });
     let r = admin.patch("/api/v1/settings", json!({ "version": v, "tiles": tiles })).await;
     assert_eq!(r.status, 200, "{}", r.text());
     let m = ok(&mut admin, "/api/v1/maps/config").await;
@@ -655,7 +656,9 @@ async fn maps_and_addresses_follow_the_settings_at_once() {
     );
     let page = admin.get("/").await;
     let on = csp(&page);
+    // only the admin's own server: no other style to switch to
     assert!(on.contains("https://tiles.example.org") && !on.contains("openstreetmap"), "{on}");
+    assert_eq!((&m["tiles"]["preset"], &m["tiles"]["hosts"]), (&json!("custom"), &json!(["tiles.example.org"])), "{m}");
     // the tile server sees the page's origin as Referer (OpenStreetMap's policy blocks tile requests without one),
     // never its path; the API's answers still send none
     assert_eq!(referrer(&page), "strict-origin");

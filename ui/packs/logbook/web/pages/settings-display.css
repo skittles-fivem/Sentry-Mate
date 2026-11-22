@@ -56,3 +56,13 @@
 /* the offline map file's steps: a long command may break anywhere on a phone */
 .offline-steps { margin: 0; padding-left: round(1.25rem, var(--e)); overflow-wrap: anywhere; }
 .offline-steps li + li { margin-top: round(0.25rem, var(--e)); }
+/* the online map presets (a radio list: name, then hosts, zoom and region) and the maps people can switch to */
+.preset-list { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); width: 100%; margin-bottom: round(0.875rem, var(--e)); }
+.preset-option { display: flex; align-items: flex-start; gap: round(0.625rem, var(--e)); padding: round(0.5rem, var(--e)) round(0.75rem, var(--e)); border: 1px solid var(--rule); border-radius: round(0.1875rem, var(--e)); cursor: pointer; }
+.preset-option:has(input:checked) { border-color: var(--ink); background: var(--paper-sunk); }
+.preset-option:has(input:disabled) { cursor: default; }
+.preset-radio, .preset-check { flex: none; accent-color: var(--accent); width: round(1rem, var(--e)); height: round(1rem, var(--e)); margin: 0; }
+.preset-text { display: flex; flex-direction: column; min-width: 0; }
+.preset-name { font-size: var(--text-sm); color: var(--ink); }
+.preset-note { font-size: var(--small-2); color: var(--ink-3); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.tiles-control > .setting-note + .form { margin-top: round(0.875rem, var(--e)); }

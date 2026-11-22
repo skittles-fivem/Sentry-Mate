@@ -289,7 +289,7 @@ button:disabled { cursor: default; }
 
 /* Boxes around text are snapped to whole px wide: font sizes are kept in 1/64 px, so a run of characters can
  * miss a whole pixel by a hair. calc-size() rounds the fitted width up (browsers without it keep the fitted width). */
-.btn, .key, .kbd, .toast, .cmd-btn, .cmd-clock { width: calc-size(fit-content, round(up, size, 1px)); }
+.btn, .key, .kbd, .toast, .cmd-btn, .cmd-clock, .map-style-btn { width: calc-size(fit-content, round(up, size, 1px)); }
 /* the same for what sits beside a section heading, so a button there starts on a whole pixel */
 .sec-side > * { width: calc-size(fit-content, round(up, size, 1px)); }
 
@@ -545,7 +545,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .map-empty-error { margin: var(--g) 0 0; color: var(--bad); }
 .map-empty--compact .map-empty-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 /* settings/display: the offline map file's steps */
-.offline-steps { margin: var(--g2) 0; padding-left: calc(var(--g) * 4); }
+.offline-steps, .preset-list { margin: var(--g2) 0; padding-left: calc(var(--g) * 4); }
 .map-pin { width: round(up, calc(var(--g2) * 3), 2px); height: round(up, calc(var(--g2) * 3), 2px); background: var(--accent); border: 1px solid var(--map-land); }
 .map-pin--a { background: var(--text); }
 .map-pin--b { background: var(--accent); }
@@ -560,6 +560,17 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 :root:not([data-theme="light"]) .map .maplibregl-ctrl-icon { filter: invert(0.85) grayscale(1); }
 .map .maplibregl-ctrl-attrib { background: var(--panel); color: var(--muted); font-family: var(--mono); font-size: var(--fs1); line-height: var(--lh1); padding: 0 var(--g2); }
 .map .maplibregl-ctrl-attrib a { color: var(--muted); }
+/* the Map / Satellite switch (shared/maptiles.js mapStyleSwitch), a row of keys over the map's top left */
+.map-style { position: absolute; left: var(--g); top: var(--g); z-index: 2; display: flex; border: 1px solid var(--rule-2); background: var(--panel); }
+.map-style-btn { height: calc(var(--ctl) - 2px); line-height: calc(var(--ctl) - 2px); padding: 0 var(--g); border: 0; border-radius: 0; background: var(--panel); color: var(--muted); font-family: var(--mono); font-size: var(--fs1); white-space: nowrap; cursor: pointer; }
+.map-style-btn + .map-style-btn { border-left: 1px solid var(--rule); }
+.map-style-btn:hover { color: var(--text); }
+.map-style-btn[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.map-style-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.map:has(.map-style) .map-note--error { top: calc(var(--g) + var(--ctl) + var(--g2)); }
+/* over satellite pictures: pins get a dark edge and a soft shadow so they read on fields, forest and roofs */
+.map--imagery .map-pin { border-color: rgba(10, 14, 20, 0.85); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7), 0 0 6px rgba(0, 0, 0, 0.55); }
+.map--imagery .map-pin--sel { border-color: var(--warn); box-shadow: 0 0 0 2px rgba(10, 14, 20, 0.85), 0 0 6px rgba(0, 0, 0, 0.55); }
 .map-tools { display: flex; flex-wrap: wrap; gap: 0 calc(var(--g) * 2); padding-top: var(--g2); }
 
 /* a page with a list beside a detail: one column, two at 2560 px and wider (40 / 60) */
