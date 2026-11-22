@@ -210,3 +210,60 @@
   .map-where { height: auto; }
   .car-period .chart-box { height: round(11rem, var(--e)); }
 }
+
+/* ------------------------------------------------------------------ vehicle info and car firmware (pages/car-facts.js) */
+.car-facts { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: round(1.5rem, var(--e)) round(3rem, var(--e)); align-items: start; margin-top: round(2.5rem, var(--e)); }
+.car-facts > .block { min-width: 0; scroll-margin-top: var(--clear-top); }
+.car-facts > .block:focus { outline: none; }
+.car-facts > .block:focus-visible { outline: 2px solid var(--accent); outline-offset: round(0.5rem, var(--e)); }
+.vi-lead, .fw-lead { max-width: 72ch; margin-bottom: round(1rem, var(--e)); }
+.vi-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, round(17rem, var(--e))), 1fr)); gap: round(1.25rem, var(--e)) round(2rem, var(--e)); }
+.vi-group { min-width: 0; }
+.vi-group-name { font: 400 1.125rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); padding-bottom: round(0.375rem, var(--e)); border-bottom: 1px solid var(--rule-strong); }
+.vi-facts { margin: 0; }
+.vi-fact { display: grid; grid-template-columns: round(8.5rem, var(--e)) minmax(0, 1fr); gap: round(0.75rem, var(--e)); padding: round(0.4375rem, var(--e)) 0; border-bottom: 1px solid var(--rule); font-size: var(--text-sm); --LH: round(calc(1.45 * 1em), 2px); line-height: var(--LH); }
+.vi-fact dt { color: var(--ink-3); }
+.vi-fact dd { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: round(0.125rem, var(--e)) round(0.5rem, var(--e)); min-width: 0; }
+.vi-value { color: var(--ink); overflow-wrap: anywhere; }
+.vi-fact.is-unknown .vi-value { color: var(--ink-3); font-style: italic; }
+.vi-fact.is-owner .vi-value { font-weight: 600; }
+.vi-meta { display: inline-flex; flex-wrap: wrap; gap: round(0.375rem, var(--e)); align-items: baseline; }
+.vi-src, .vi-conf { font: 600 var(--micro) var(--sans); --LH: round(calc(1.2 * 1em), 2px); line-height: var(--LH); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.vi-src-can { color: var(--accent); }
+.vi-src-owner { color: var(--ochre); }
+.vi-conf-low { color: var(--rust); }
+.vi-note { flex-basis: 100%; font-size: var(--small-2); color: var(--ink-3); }
+.vi-note.is-warn { color: var(--rust); }
+.vi-edit { flex-basis: 100%; text-align: left; padding: 0; border: 0; background: none; font: 500 var(--small-2) var(--sans); --LH: round(calc(1.4 * 1em), 2px); line-height: var(--LH); color: var(--ink-3); text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 0.2em; cursor: pointer; }
+.vi-edit:hover { color: var(--accent-strong); text-decoration-color: currentColor; }
+.vi-faint { color: var(--ink-3); }
+.vi-disagree { margin-top: round(1.25rem, var(--e)); padding: round(0.75rem, var(--e)) round(1rem, var(--e)); border-left: round(0.25rem, var(--e)) solid var(--rust); background: var(--rust-wash); font-size: var(--text-sm); --LH: round(calc(1.5 * 1em), 2px); line-height: var(--LH); }
+.vi-disagree-title { display: flex; gap: round(0.5rem, var(--e)); align-items: center; font-weight: 600; color: var(--ink); }
+.vi-disagree-title .icon { flex: none; width: round(1rem, var(--e)); height: round(1rem, var(--e)); color: var(--rust); }
+.vi-disagree ul, .vi-unknown-codes ul, .vi-notes { margin: round(0.375rem, var(--e)) 0 0; padding-left: round(1.25rem, var(--e)); }
+.vi-unknown-codes, .vi-notes { margin-top: round(1rem, var(--e)); font-size: var(--text-sm); }
+.car-vehicle > .vi-body > .note + .note { margin-top: round(0.5rem, var(--e)); }
+.vi-forget { margin-top: round(0.75rem, var(--e)); }
+
+.fw-facts { display: flex; flex-wrap: wrap; gap: round(0.25rem, var(--e)) round(1.5rem, var(--e)); font-size: var(--text-s); color: var(--ink-3); margin-bottom: round(1rem, var(--e)); }
+.fw-facts strong { color: var(--ink); font-weight: 500; }
+.fw-modules { display: flex; flex-direction: column; gap: round(1.25rem, var(--e)); }
+.fw-module { min-width: 0; }
+.fw-module-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: round(0.5rem, var(--e)); font: 400 1.125rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); padding-bottom: round(0.375rem, var(--e)); border-bottom: 1px solid var(--rule-strong); }
+.fw-can { font-size: var(--small-2); color: var(--ink-3); }
+.fw-fields { margin: 0; }
+.fw-field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: round(0.125rem, var(--e)) round(1rem, var(--e)); padding: round(0.4375rem, var(--e)) 0; border-bottom: 1px solid var(--rule); font-size: var(--text-sm); --LH: round(calc(1.45 * 1em), 2px); line-height: var(--LH); }
+.fw-field dt { color: var(--ink-3); overflow-wrap: anywhere; }
+.fw-field dd { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 round(0.625rem, var(--e)); min-width: 0; }
+.fw-hex { color: var(--ink); font-variant-numeric: tabular-nums; }
+.fw-seen { font-size: var(--small-2); color: var(--ink-3); }
+.fw-before { flex-basis: 100%; font-size: var(--small-2); color: var(--ink-3); overflow-wrap: anywhere; }
+.fw-none { font-size: var(--text-sm); color: var(--ink-3); font-style: italic; padding: round(0.4375rem, var(--e)) 0; }
+
+@container page (width < 82.5rem) {
+  .car-facts { grid-template-columns: minmax(0, 1fr); }
+}
+@container page (width < 40rem) {
+  .vi-fact { grid-template-columns: minmax(0, 1fr); gap: round(0.125rem, var(--e)); }
+  .fw-field { grid-template-columns: minmax(0, 1fr); }
+}

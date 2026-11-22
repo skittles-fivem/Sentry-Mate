@@ -11,13 +11,15 @@ import { formatList } from '../shared/i18n.js';
 import { formatDuration } from '../shared/time.js';
 import * as api from '../shared/api.js';
 
-const SITE = { teslamate: 'TeslaMate' };
-const SHORT = { smo: 'SMO', tesla_api: 'the Tesla API' };
-const TAG = { smo: 'SMO', tesla_api: 'Tesla API' };
+const SITE = { teslamate: 'TeslaMate', teslafi: 'TeslaFi' };
+const SHORT = { smo: 'SMO', tesla_api: 'the Tesla API', teslafi_api: 'TeslaFi' };
+const TAG = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi' };
 const OLD = {
   can: [{ kind: 'smo', label: 'Data from SMO' }],
   teslamate: [{ kind: 'import', site: 'teslamate', label: 'Imported from TeslaMate' }],
   tesla_api: [{ kind: 'tesla_api', label: 'Data from the Tesla API' }],
+  teslafi: [{ kind: 'import', site: 'teslafi', label: 'Imported from TeslaFi' }],
+  teslafi_api: [{ kind: 'teslafi_api', label: 'Data from TeslaFi' }],
 };
 
 /** The row's inputs, as `sources` (or the old `source` word). */
@@ -26,7 +28,7 @@ export function sourcesOf(r) {
   return (r && OLD[r.source]) || [];
 }
 export const kindsOf = (r) => new Set(sourcesOf(r).map((s) => s.kind));
-/** History brought in from another site (TeslaMate). */
+/** History brought in from another site (TeslaMate, TeslaFi's data download). */
 export const isImported = (r) => kindsOf(r).has('import');
 /** Only the Tesla API saw it (no SMO, no import). */
 export const teslaOnly = (r) => { const k = kindsOf(r); return k.size > 0 && [...k].every((x) => x === 'tesla_api'); };
@@ -49,7 +51,7 @@ export function sourceLabel(r) {
   if (r && typeof r.source_label === 'string' && r.source_label) return r.source_label;
   return labelOf(sourcesOf(r));
 }
-/** A short tag for tight places: "SMO", "Tesla API", "SMO + Tesla API", "TeslaMate import". */
+/** A short tag for tight places: "SMO", "Tesla API", "TeslaFi", "SMO + Tesla API", "TeslaMate import". */
 export function sourceTag(r) {
   const list = sourcesOf(r);
   const live = [...new Set(list.filter((s) => s.kind !== 'import').map((s) => TAG[s.kind] || s.kind))];
@@ -91,13 +93,17 @@ export function estimatedWhy(r) {
 }
 
 /** The source filter: the words `source=` takes (the old `can` and `teslamate` read as `smo` and `import`). */
-export const SOURCE_FILTER = [['', 'All sources'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['import', 'Imported']];
+export const SOURCE_FILTER = [['', 'All sources'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['teslafi_api', 'TeslaFi (live)'],
+  ['import', 'Imported (any site)'], ['import:teslamate', 'Imported from TeslaMate'], ['import:teslafi', 'Imported from TeslaFi']];
 export function sourceFilter(v) {
-  const w = { can: 'smo', teslamate: 'import', 'import:teslamate': 'import', all: '' }[v] ?? v;
+  const w = { can: 'smo', teslamate: 'import:teslamate', teslafi: 'import:teslafi', all: '' }[v] ?? v;
   return SOURCE_FILTER.some(([k]) => k === w) ? w : '';
 }
 /** "comes from SMO" for an empty list's reasons. */
-export const SOURCE_WHY = { smo: 'has data from SMO', tesla_api: 'has data from the Tesla API', import: 'was imported' };
+export const SOURCE_WHY = {
+  smo: 'has data from SMO', tesla_api: 'has data from the Tesla API', teslafi_api: 'has data from TeslaFi', import: 'was imported',
+  'import:teslamate': 'was imported from TeslaMate', 'import:teslafi': 'was imported from TeslaFi',
+};
 
 /** The "live inputs" line of a car: /now `inputs` ([{ kind, label, last_ms }]). */
 export function inputsLine(inputs, { cls = null } = {}) {

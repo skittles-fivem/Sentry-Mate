@@ -152,9 +152,11 @@ export function timelineRow(r, { car, tz, now = api.now(), full = false, period 
     title = ['No data', r.start ? [' near ', placeEl(r.start)] : ''];
     meta = [formatDuration(len), r.gap_reason ? GAP_WORDS[r.gap_reason] || r.gap_reason.replace(/_/g, ' ') : null, r.distance_km ? `the car moved ${format(r.distance_km, 'distance')}` : null];
   } else if (r.kind === 'update') {
-    href = state.buildUrl('software', { car, period });
-    title = ['Software changed'];
-    meta = [formatDuration(len)];
+    href = `${state.buildUrl('software', { car, period })}${r.ref && r.ref.update ? `#update-${r.ref.update}` : ''}`;
+    const fp = r.detected_by === 'fingerprint';
+    title = [fp ? 'Tesla update installed' : 'Software changed', r.version ? `: ${r.version}` : ''];
+    meta = [fp ? (r.version ? (r.version_source === 'build_match' ? 'named from an earlier update with the same fingerprints' : null) : 'version not named yet') : formatDuration(len),
+      fp && r.changed_modules && r.changed_modules.length ? `${r.changed_modules.length} ${r.changed_modules.length === 1 ? 'module' : 'modules'} changed` : null];
   }
   const awake = r.kind === 'parked' && r.awake_reasons && r.awake_reasons.length
     ? h('p', { class: 'tl-why' }, 'Stayed awake for ', formatList(r.awake_reasons.map((x) => AWAKE_WORDS[x] || x.replace(/_/g, ' '))), '.') : null;

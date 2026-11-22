@@ -4,10 +4,14 @@
 // about what is known: the car never sends its version text, so a version is only ever what someone said
 // (imported from TeslaMate, typed by an admin, or learned from another update with exactly the same module
 // builds). An update seen only as changed module builds says "build changed" with the modules, never a guess.
+// A "Tesla update installed" (found from the firmware fingerprints the modules broadcast on CAN) is shown with
+// each changed fingerprint (old -> new, lowercase hex), the drives before and after it, and, for an admin, a box
+// to type its version (or clear it); the car's current fingerprints are on the car page (Car firmware).
 // Data:
 //   GET /cars/{car}/updates            the history in the period (newest first, paged, CSV from the server),
 //                                      with a summary in every page (count, median gap, the version now)
 //   PATCH /cars/{car}/updates/{id}     admin: type or forget the version an update installed
+//   GET /cars/{car}/drives             the drive before and the drive after a fingerprint update
 //   GET /fleet/versions                every car with its version (searched, paged by cursor, CSV)
 //   GET /settings                      whether the owner allows release-notes links (outside_links)
 // Live: an update that starts or ends ("rows" events naming "updates") loads both lists again.
@@ -17,7 +21,7 @@ import { formatDate, formatTime, formatDateTime, formatDuration, periodLabel, HO
 import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { pageHead, q, figure, icon, empty, flag, button, sep, loadingBlock } from '../core/ui.js';
+import { pageHead, q, figure, icon, empty, flag, button, sep, loadingBlock, errorWords } from '../core/ui.js';
 import { sourceMark, hasSmo, isImported } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
 import { openDialog } from '../core/dialog.js';
@@ -35,19 +39,22 @@ const SOURCE = {
   teslamate: ['Imported', 'Imported from TeslaMate with the version text it recorded.'],
   tesla_api: ['Tesla API', 'The Tesla API named the version the car runs.'],
   owner: ['Typed by an admin', 'An admin typed this version from the car’s screen.'],
-  build_match: ['Same build', 'Another update with exactly the same module builds has this version.'],
+  build_match: ['Same fingerprints', 'Named from an earlier update with the same fingerprints.'],
 };
 /** How an update was found. */
 const DETECTED = {
   ota_status: ['Update status', 'The car reported that it was installing an update.'],
   build_change: ['Module builds changed', 'The build ids its modules send on the vehicle bus changed.'],
+  fingerprint: ['Firmware fingerprints', 'The fingerprints of their code that the modules broadcast on the vehicle bus changed: a Tesla update was installed.'],
   teslamate: ['Imported', 'A row of the imported TeslaMate history.'],
   tesla_api: ['Tesla API', 'The Tesla API reported a new version.'],
 };
 /** The modules whose build ids are compared. */
 const MODULES = {
-  bms: 'Battery management', vcfront: 'Front body controller', di_front: 'Front motor', di_rear: 'Rear motor', fc: 'Fast-charge controller',
+  bms: 'Battery management', vcfront: 'Front body controller', dir: 'Rear drive unit', dif: 'Front drive unit',
+  di_front: 'Front motor', di_rear: 'Rear motor', fc: 'Fast-charge controller',
 };
+const isFp = (r) => r && r.detected_by === 'fingerprint';
 const moduleNames = (list) => (list || []).map((m) => MODULES[m] || m).join(', ');
 
 /** A long gap in words beside the short duration: 'about 7.8 months', '23 days'. */
@@ -189,11 +196,12 @@ export async function mount(ctx) {
           ? h('a', { href: notesHref(r.version), target: '_blank', rel: 'external noopener noreferrer', title: 'Release notes of this version on an outside site (opens in a new tab)' }, r.version)
           : h('span', { class: 'sw-ver-text' }, r.version),
         src ? flag(src[0], { title: src[1] }) : null)
-      : h('span', { class: 'sw-ver is-unknown' }, h('span', { class: 'sw-ver-text' }, 'Build changed'), flag('version not known', { kind: 'warn' }));
+      : h('span', { class: 'sw-ver is-unknown' }, h('span', { class: 'sw-ver-text' }, isFp(r) ? 'Tesla update installed' : 'Build changed'), flag(isFp(r) ? 'not named yet' : 'version not known', { kind: 'warn' }));
     const mods = r.changed_modules && r.changed_modules.length ? `Changed: ${moduleNames(r.changed_modules)}` : isImported(r) ? 'Imported row: no module list' : null;
     return h('div', { class: 'cell-main sw-ver-cell' }, main,
       mods ? h('span', { class: 'cell-sub' }, mods) : null,
-      admin && hasSmo(r) && r.end_ms != null
+      isFp(r) ? h('a', { class: 'cell-sub sw-fp-link', href: `#update-${r.id}` }, 'Fingerprints and name') : null,
+      !isFp(r) && admin && hasSmo(r) && r.end_ms != null
         ? h('button', { type: 'button', class: 'sw-edit', onclick: () => editVersion(r), title: 'Type the version this update installed, from the car’s screen' },
           icon('settings'), r.version && r.version_source === 'owner' ? 'Change the version' : 'Type the version')
         : null);
@@ -266,6 +274,115 @@ export async function mount(ctx) {
       ? 'A known version links to its release notes on an outside site, opened in a new tab by your own click; this server sends nothing.'
       : ['Release-notes links are off, so nothing leaves this server. ', admin ? 'Turn them on in ' : 'An admin can turn them on in ',
         h('a', { href: state.buildUrl('settings-display') }, 'Settings: Display and units'), '.']));
+  /* ---------------------------------------------------------------- Tesla updates installed (fingerprints) */
+
+  const drivesPath = api.apiPath`cars/${cid}/drives`;
+  const near = new Map(); // update id -> { before, after }: the drive before it and the drive after it
+  async function neighbours(rows) {
+    await Promise.all(rows.filter((r) => !near.has(r.id)).map(async (r) => {
+      const [b, a] = await Promise.all([
+        ctx.api.get(drivesPath, { to_ms: r.start_ms, limit: 1 }).catch(() => null),
+        ctx.api.get(drivesPath, { from_ms: r.end_ms, sort: 'start', dir: 'asc', limit: 1 }).catch(() => null),
+      ]);
+      near.set(r.id, { before: (b && b.items && b.items[0]) || null, after: (a && a.items && a.items[0]) || null, failed: !b || !a });
+    }));
+  }
+  const fpRows = () => (table.items || []).filter(isFp);
+  const fpBox = h('div', { class: 'sw-fp-list' });
+  const firmwareHref = `${state.buildUrl('car', { car: cid })}#car-firmware`;
+  const fpSec = h('section', { class: 'block sw-fp', id: 'sw-fp', 'aria-labelledby': 'sw-fp-title' },
+    h('div', { class: 'block-head' },
+      h('h2', { class: 'label', id: 'sw-fp-title' }, 'Tesla updates installed', h('span', { class: 'label-note' }, 'found from the modules’ firmware fingerprints'))),
+    h('p', { class: 'note sw-fp-lead' }, 'Tesla’s version number is not on the CAN bus, but the front body controller, the battery management and the drive units broadcast fingerprints of their code. When they change between two drives, a Tesla update was installed then. ',
+      admin ? 'Type the version from the car’s screen (Controls, Software) to name it; later updates to the same fingerprints are then named by themselves.' : 'An admin can name each one from the car’s screen.',
+      ' ', h('a', { class: 'link-arrow', href: firmwareHref }, 'The car’s firmware now', icon('arrowRight'))),
+    fpBox);
+
+  const driveLine = (d, none) => (d
+    ? h('a', { href: state.buildUrl('drive', { car: cid, drive: d.id }) },
+      `${(d.start && d.start.label) || 'a place'} to ${(d.end && d.end.label) || 'a place'}`,
+      h('span', { class: 'sw-faint' }, `, ${formatDateTime(d.start_ms, tz, { now: api.now() })}`))
+    : h('span', { class: 'sw-faint' }, none));
+
+  function fpCard(r) {
+    const nb = near.get(r.id) || {};
+    const btw = r.between_ms || [r.start_ms, r.end_ms];
+    const named = r.version ? (r.named_by === 'auto' || r.version_source === 'build_match' ? 'auto' : 'owner') : null;
+    const changes = r.changes || [];
+    const byModule = new Map();
+    for (const c of changes) { if (!byModule.has(c.module)) byModule.set(c.module, []); byModule.get(c.module).push(c); }
+    const err = h('p', { class: 'field-error sw-fp-err', role: 'alert', id: `sw-fp-err-${r.id}`, hidden: true });
+    let nameBox = null;
+    if (admin) {
+      const input = h('input', {
+        class: 'field-input sw-fp-input', id: `sw-fp-name-${r.id}`, name: 'version', value: r.version || '', placeholder: '2026.38.4',
+        autocomplete: 'off', spellcheck: 'false', inputmode: 'decimal', 'aria-describedby': `sw-fp-hint-${r.id} sw-fp-err-${r.id}`,
+      });
+      const save = async (v) => {
+        err.hidden = true;
+        if (v && !VERSION_RX.test(v)) { replace(err, 'A version such as 2026.38.4, as the car’s screen shows it.'); err.hidden = false; input.setAttribute('aria-invalid', 'true'); input.focus(); return; }
+        input.removeAttribute('aria-invalid');
+        for (const b of box.querySelectorAll('button')) b.disabled = true;
+        try {
+          await ctx.api.patch(api.apiPath`cars/${cid}/updates/${r.id}`, { version: v || null });
+          if (!ctx.alive()) return;
+          await reloadAll(false, `sw-fp-name-${r.id}`);
+          if (!ctx.alive()) return;
+          const after = (table.items || []).find((x) => x.id === r.id);
+          ctx.flash(v ? `Saved: this Tesla update installed ${v}. Later updates to the same fingerprints are named by themselves.`
+            : after && after.version ? `The typed name is cleared. It is still ${after.version}, named from an earlier update with the same fingerprints.`
+              : 'The name is cleared from this update and from the ones named after it.');
+        } catch (e) {
+          if (!ctx.alive() || api.isAbort(e)) return;
+          replace(err, (e.fields && Object.values(e.fields).join(' ')) || errorWords(e).text);
+          err.hidden = false;
+          for (const b of box.querySelectorAll('button')) b.disabled = false;
+        }
+      };
+      const box = h('form', { class: 'sw-fp-name', onsubmit: (e) => { e.preventDefault(); save(String(input.value || '').trim()); } },
+        h('label', { class: 'field-label', for: input.id }, r.version ? 'Its version' : 'Name it'),
+        h('div', { class: 'sw-fp-name-row' }, input,
+          h('button', { type: 'submit', class: 'button button-small button-primary' }, 'Save'),
+          r.version ? h('button', { type: 'button', class: 'button button-small button-quiet', onclick: () => { input.value = ''; save(''); } }, 'Clear the name') : null),
+        h('p', { class: 'field-hint', id: `sw-fp-hint-${r.id}` }, 'As the car’s screen shows it (Controls, Software). Clearing it also takes it off the updates that were named from this one.'),
+        err);
+      nameBox = box;
+    }
+    return h('article', { class: 'sw-fp-card', id: `update-${r.id}`, tabindex: '-1', 'aria-labelledby': `sw-fp-t-${r.id}` },
+      h('div', { class: 'sw-fp-head' },
+        h('p', { class: 'eyebrow' }, 'Tesla update installed'),
+        h('h3', { class: ['sw-fp-title', { 'is-unknown': !r.version }], id: `sw-fp-t-${r.id}` }, r.version || 'Not named yet'),
+        h('p', { class: 'sw-fp-named' }, named === 'auto' ? 'Named from an earlier update with the same fingerprints.'
+          : named === 'owner' ? 'Typed by an admin from the car’s screen.' : admin ? 'Type its version below.' : 'Not named yet: an admin can name it.')),
+      h('dl', { class: 'sw-fp-facts' },
+        h('div', null, h('dt', null, 'Installed between'), h('dd', null, `${formatDateTime(btw[0], tz, { now: api.now() })} and ${formatDateTime(btw[1], tz, { now: api.now() })}`,
+          h('span', { class: 'sw-faint' }, ' (last old, first new fingerprint)'))),
+        h('div', null, h('dt', null, 'After the drive'), h('dd', null, driveLine(nb.before, nb.failed ? 'could not be loaded' : 'no drive before it'))),
+        h('div', null, h('dt', null, 'Before the drive'), h('dd', null, driveLine(nb.after, nb.failed ? 'could not be loaded' : r.until_ms == null ? 'no drive since' : 'none')))),
+      changes.length
+        ? h('div', { class: 'sw-fp-changes', role: 'table', 'aria-label': 'Fingerprints that changed' },
+          h('div', { class: 'sw-fp-change sw-fp-change-head', role: 'row' },
+            h('span', { role: 'columnheader' }, 'Module and fingerprint'), h('span', { role: 'columnheader' }, 'Old → new')),
+          [...byModule].map(([m, list]) => list.map((c, i) => h('div', { class: 'sw-fp-change', role: 'row' },
+            h('span', { class: 'sw-fp-what', role: 'cell' }, i === 0 ? h('span', { class: 'sw-fp-module' }, c.module_name || MODULES[m] || m) : null, h('span', { class: 'sw-fp-field mono' }, c.field)),
+            h('span', { class: 'sw-fp-hexes', role: 'cell' }, h('span', { class: 'sw-hex is-old mono' }, c.old), h('span', { class: 'sw-fp-arrow', 'aria-label': 'changed to' }, ' → '), h('span', { class: 'sw-hex mono' }, c.new))))))
+        : h('p', { class: 'note' }, `Changed: ${moduleNames(r.changed_modules)}.`),
+      nameBox);
+  }
+  function drawFp() {
+    const rows = fpRows();
+    // a name being typed survives a redraw (live updates load the list again)
+    const typed = new Map([...fpBox.querySelectorAll('.sw-fp-input:not([data-saved])')].map((i) => [i.id, i.value]));
+    const focused = document.activeElement && fpBox.contains(document.activeElement) ? document.activeElement.id : null;
+    replace(fpBox, rows.length ? rows.map(fpCard) : empty({
+      title: 'No Tesla update found from fingerprints in this period.',
+      text: 'Updates show here when the modules’ firmware fingerprints change between two drives. Choose a longer period to see earlier ones.',
+    }));
+    for (const [idv, v] of typed) { const i = document.getElementById(idv); if (i && i.value !== v) i.value = v; }
+    if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
+  }
+  ctx.main.append(fpSec);
+
   ctx.main.append(h('section', { class: 'block sw-history', 'aria-labelledby': 'sw-hist-title' },
     h('div', { class: 'block-head' }, h('h2', { class: 'label', id: 'sw-hist-title' }, 'Update history', h('span', { class: 'label-note' }, `${car.name || cid}, ${periodLabel(ctx.period, tz, now)}`))),
     notesNote, table.el));
@@ -369,10 +486,15 @@ export async function mount(ctx) {
     });
   }
 
-  async function reloadAll(say) {
+  async function reloadAll(say, focusId = null) {
     reloadBtn.disabled = true;
     try {
       await Promise.all([table.reload(), fleetTable.reload(), findNewest()]);
+      await neighbours(fpRows());
+      if (!ctx.alive()) return;
+      if (focusId) for (const i of fpBox.querySelectorAll('.sw-fp-input')) i.dataset.saved = '1';
+      drawFp();
+      if (focusId) document.getElementById(focusId)?.focus({ preventScroll: true });
       if (ctx.alive() && !table.items?.length && !lastSummary) drawSummary(null, true);
       drawAsOf();
       if (say && ctx.alive()) ctx.flash('Loaded again.', { kind: 'info' });
@@ -391,7 +513,15 @@ export async function mount(ctx) {
   // Each list fails on its own: the table shows its error with Try again, and the other list stays.
   let historyFailed = false;
   await Promise.all([table.load().catch(() => { historyFailed = true; }), fleetTable.load().catch(() => {}), findNewest()]);
+  await neighbours(fpRows());
   if (!ctx.alive()) return {};
+  drawFp();
+  // a link to one update (#update-<id>, from the timeline) opens it once the page is drawn
+  const hashT = setTimeout(() => {
+    const t = /^#update-/.test(location.hash) ? document.getElementById(location.hash.slice(1)) : null;
+    if (t && ctx.alive()) { t.focus({ preventScroll: true }); t.scrollIntoView({ block: 'start' }); }
+  }, 0);
+  ctx.onCleanup(() => clearTimeout(hashT));
   if (!lastSummary) drawSummary(null, historyFailed);
   else if (newestEver) drawSummary(lastSummary);
   ctx.ready();
