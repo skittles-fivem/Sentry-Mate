@@ -12,17 +12,28 @@ import { formatNumber } from '../shared/i18n.js';
 import { rpx, onRedraw, onTheme } from './display.js';
 
 let loading = null;
-/** Load uPlot and its stylesheet once; resolves to window.uPlot. */
+/**
+ * Load uPlot and its stylesheet once; resolves to window.uPlot once both are in, so the first chart is
+ * laid out with uPlot's styles (built before them, its axes would jump into place when they arrive).
+ */
 export function loadUPlot() {
-  loading ??= new Promise((resolve, reject) => {
-    if (!document.querySelector('link[data-uplot]')) document.head.append(h('link', { rel: 'stylesheet', href: '/vendor/uplot/uPlot.min.css', dataset: { uplot: '' } }));
-    if (window.uPlot) { resolve(window.uPlot); return; }
-    const s = document.createElement('script');
-    s.src = '/vendor/uplot/uPlot.iife.min.js';
-    s.onload = () => resolve(window.uPlot);
-    s.onerror = () => { loading = null; reject(new Error('The chart library did not load.')); };
-    document.head.append(s);
-  });
+  loading ??= (() => {
+    let css = Promise.resolve();
+    if (!document.querySelector('link[data-uplot]')) {
+      const link = h('link', { rel: 'stylesheet', href: '/vendor/uplot/uPlot.min.css', dataset: { uplot: '' } });
+      css = new Promise((r) => { link.addEventListener('load', r, { once: true }); link.addEventListener('error', r, { once: true }); });
+      document.head.append(link);
+    }
+    const js = new Promise((resolve, reject) => {
+      if (window.uPlot) { resolve(window.uPlot); return; }
+      const s = document.createElement('script');
+      s.src = '/vendor/uplot/uPlot.iife.min.js';
+      s.onload = () => resolve(window.uPlot);
+      s.onerror = () => { loading = null; reject(new Error('The chart library did not load.')); };
+      document.head.append(s);
+    });
+    return Promise.all([js, css]).then(([u]) => u);
+  })();
   return loading;
 }
 

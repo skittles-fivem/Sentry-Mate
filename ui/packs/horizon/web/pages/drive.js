@@ -151,7 +151,6 @@ export async function mount(ctx) {
       hud({ title: 'Export the route', icon: 'download' },
         h('p', { class: 'note' }, icon('info', 'i--sm'), h('span', null, 'Every second of the route with its time, elevation and position, for map apps and route planners. A drive that no longer exists answers "not found".')),
         h('div', { class: 'row dd-exp' }, gpx, geo), extras))));
-  ctx.ready();
 
   /* ---------- the map */
   const coords = [];
@@ -275,4 +274,6 @@ export async function mount(ctx) {
     if (!ctx.alive()) return;
     plots.push(p);
   }
+  // ready once the traces are drawn: they are the page's main part, and drawn later they would grow it
+  ctx.ready();
 }

@@ -99,6 +99,15 @@ started is cancelled when the page is left), `me`, `prefs`, `admin`, `alive()`, 
 poll), `setTitle(...)`, `link(page, params)`, `setQuery(patch)`, `navigate(href)`, `reload()`, `carChanged(car)`.
 A page that exports `onQuery(query, ctx)` takes back and forward between its own filters without being built again.
 
+**Staying still.** A page on screen must not jump or flash while live events arrive. `ctx.reload()` (and a retry, or
+a filter that builds the page again) draws the new page off screen, in a hidden `.view--stage` of the same width,
+with `ctx.view` pointing there; the new page takes the old one's place in one step when its `mount` is done (at
+the latest 4 s after it calls `ctx.ready()`), and the old page's cleanups run only then. So a page may simply
+call `ctx.reload()` on a `rows` event. `tracks()` keeps its rows (or its empty state) on screen while it loads
+again, and asks for as many rows as are shown. A `now` event after the first carries only what changed, down to
+a value's `at_ms`: merge it into what the page holds (see `merge` in pages/car.js), never read it on its own.
+Check with `node ui/tools/check.js --pack horizon --stable`.
+
 ## The pages
 
 | Page | Its picture |

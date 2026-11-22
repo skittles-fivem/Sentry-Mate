@@ -57,6 +57,9 @@
   .cl-cluster { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .cl-dial--main { grid-column: 1 / -1; order: -1; }
   .cl-counters { grid-template-columns: minmax(0, 1fr); }
+  /* the lines under the dials change with the readings: room for their longest form, so nothing moves */
+  .cl-dial-how { min-height: 2lh; }
+  .cl-fuel .cl-dial-how { min-height: 3lh; }
 }
 @container view (max-width: 40rem) {
   .cl-cluster { gap: 1rem; }

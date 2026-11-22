@@ -26,6 +26,11 @@ const BARE = new Set(['sign-in', 'setup']);
 let open = null;   // { key, qkey, ctx, mod, inst, cleanups, scope }
 let seq = 0;
 let first = true;
+// Rebuilds of the page that is on screen (a live update, a retry, a filter) draw off screen, in a hidden
+// stage of the same width, and take the place of the old page in one step once the new one has its data:
+// nothing on screen goes back to loading and nothing jumps. The old page's cleanups wait until then.
+let stale = [];
+const flushStale = () => { for (const o of stale.splice(0)) runCleanups(o); };
 
 const routeKey = (s) => [s.page, s.car, s.drive, s.charge, s.period ? JSON.stringify(s.period) : ''].join('|');
 const queryKey = (q) => JSON.stringify(Object.entries(q || {}).sort());
@@ -61,13 +66,17 @@ function changed(s) {
   mount(s, { keepScroll: !!open && open.ctx?.id === s.page && open.ctx?.carId === s.car });
 }
 
-function leave() {
+function runCleanups(o) {
+  try { o.inst?.unmount?.(); } catch (e) { console.error(e); }
+  for (const f of o.cleanups.splice(0).reverse()) { try { f(); } catch (e) { console.error(e); } }
+}
+
+function leave(quiet = false) {
   if (!open) return;
   const o = open;
   open = null;
-  try { o.inst?.unmount?.(); } catch (e) { console.error(e); }
-  for (const f of o.cleanups.splice(0).reverse()) { try { f(); } catch (e) { console.error(e); } }
   o.scope.abort();
+  if (quiet) stale.push(o); else { flushStale(); runCleanups(o); }
 }
 
 function pageCss(id) {
@@ -81,22 +90,46 @@ const dropCss = (keep) => { for (const l of document.head.querySelectorAll('link
 
 async function mount(s, { keepScroll = false } = {}) {
   const my = ++seq;
-  leave();
-  unready();
-  const id = s.page;
   const view = frame.view();
+  const quiet = keepScroll && !first && !!open && open.ctx?.id === s.page && view.childElementCount > 0;
+  leave(quiet);
+  if (!quiet) unready();
+  const id = s.page;
   const info = station(id);
   const scope = api.scope();
   const cleanups = [];
-  const rec = { key: routeKey(s), qkey: queryKey(s.query), ctx: null, mod: null, inst: null, cleanups, scope };
+  const rec = { key: routeKey(s), qkey: queryKey(s.query), ctx: null, mod: null, inst: null, cleanups, scope, stage: null };
   open = rec;
   const alive = () => open === rec && my === seq;
   document.documentElement.dataset.screen = BARE.has(id) ? 'bare' : 'app';
   document.documentElement.dataset.page = id;
-  view.setAttribute('aria-busy', 'true');
+  if (quiet) {
+    // the stage: a second .view (same width, padding and container queries), hidden and out of the flow
+    rec.stage = h('main', { class: 'view view--stage', 'aria-hidden': 'true', 'aria-busy': 'true' });
+    rec.stage.inert = true;
+    for (const old of document.querySelectorAll('.view--stage')) old.remove();
+    view.after(rec.stage);
+  } else {
+    flushStale();
+    view.setAttribute('aria-busy', 'true');
+  }
+  let swapTimer = 0;
+  const dropStage = () => { clearTimeout(swapTimer); rec.stage?.remove(); rec.stage = null; };
+  // the new page takes the old one's place in one step
+  const swap = () => {
+    if (!rec.stage || !alive()) return;
+    const st = rec.stage;
+    dropStage();
+    flushStale();
+    view.replaceChildren(...st.childNodes);
+    view.removeAttribute('aria-busy');
+  };
+  cleanups.push(dropStage);
 
   const showError = (err, retry = () => mount(state.current(), { keepScroll: true })) => {
     if (!alive()) return;
+    dropStage();
+    flushStale();
     const offline = !navigator.onLine && (err?.status === 0);
     replace(view, statePanel(offline ? offlineState(retry) : errorState(err, { retry, home: id !== 'fleet' && !BARE.has(id) })));
     view.removeAttribute('aria-busy');
@@ -161,7 +194,7 @@ async function mount(s, { keepScroll = false } = {}) {
   rec.mod = mod;
 
   const ctx = {
-    id, info, view, state: s, query: s.query, car, carId: s.car, tz, period,
+    id, info, get view() { return rec.stage || view; }, state: s, query: s.query, car, carId: s.car, tz, period,
     params: period ? periodParams(period) : {},
     api: scope, me: getMe(), prefs: getPrefs(), admin: isAdmin(),
     alive,
@@ -172,7 +205,8 @@ async function mount(s, { keepScroll = false } = {}) {
     // ready only once the bundled fonts are in: the page is then drawn as it will stay (no swap after it)
     ready() {
       if (!alive()) return;
-      view.removeAttribute('aria-busy');
+      // a page that goes on loading after its first render: show it at the latest a moment after
+      if (rec.stage) { clearTimeout(swapTimer); swapTimer = setTimeout(swap, 4000); } else view.removeAttribute('aria-busy');
       const done = () => { if (alive()) markReady(id); };
       const fonts = document.fonts?.ready;
       if (fonts) fonts.then(done, done); else done();
@@ -204,6 +238,7 @@ async function mount(s, { keepScroll = false } = {}) {
     ctx.fail(err);
   }
   if (!alive()) return;
+  swap();
   if (!keepScroll) { window.scrollTo(0, 0); if (!first) view.focus({ preventScroll: true }); }
   const target = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
   if (target && view.contains(target)) {

@@ -126,6 +126,7 @@ export function tracks(ctx, o) {
   }
 
   function renderLocal() {
+    painted = true;
     loaded = sorted();
     done = true; total = null;
     replace(tbody, loaded.length ? loaded.map(rowEl) : emptyRow(o.empty ? o.empty() : h('p', { class: 'trk-none' }, 'Nothing to show.')));
@@ -133,17 +134,20 @@ export function tracks(ctx, o) {
     paintCsv();
   }
 
-  // quiet: a live refresh keeps the rows on screen until the new first page is in
+  // Once a first answer is on screen, a reload keeps it (rows, or the empty state) until the new first page
+  // is in, and asks for as many rows as are shown, so the list neither flashes a skeleton nor shrinks.
+  // quiet: a live refresh; when it fails, what is shown stays.
+  let painted = false;
   async function load(quiet = false) {
     const my = ++gen;
-    const keep = quiet && loaded.length > 0;
+    const keep = painted;
     if (!keep) { loaded = []; done = false; total = null; replace(tbody, skeleton()); foot.hidden = true; count.textContent = ''; }
-    pager = ctx.api.pager(o.path, { ...params, ...sortParams() }, { limit });
+    pager = ctx.api.pager(o.path, { ...params, ...sortParams() }, { limit: keep ? Math.min(500, Math.max(limit, loaded.length)) : limit });
     paintCsv();
-    await more(my, keep);
+    await more(my, keep, quiet);
   }
 
-  async function more(my, fresh = false) {
+  async function more(my, fresh = false, quiet = false) {
     if (!pager || (pager.done && !fresh)) return;
     moreBtn.disabled = true;
     try {
@@ -157,11 +161,12 @@ export function tracks(ctx, o) {
       done = !pg.next;
       if (pg.total != null) total = pg.total;
       if (!loaded.length) replace(tbody, emptyRow(o.empty ? o.empty(pg) : h('p', { class: 'trk-none' }, 'Nothing in this period.')));
+      painted = true;
       paintCount();
       o.onPage?.(pg);
     } catch (e) {
       if (my !== gen || !ctx.alive() || e.name === 'AbortError') return;
-      if (fresh && loaded.length) return; // a failed live refresh keeps what is shown
+      if (fresh && quiet) return; // a failed live refresh keeps what is shown
       const w = errorWords(e);
       replace(tbody, emptyRow(h('div', { class: 'trk-none', role: 'alert' }, h('b', null, w.title), h('span', null, w.text),
         h('button', { class: 'btn btn--sm', type: 'button', onclick: () => load() }, icon('arrow-r', 'i--sm'), h('span', null, 'Try again')))));

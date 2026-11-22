@@ -543,7 +543,8 @@ export async function mount(ctx) {
     if (ev.data?.car && !viewCars.includes(ev.data.car)) return;
     if (ev.data?.kinds && !ev.data.kinds.includes('charges')) return;
     clearTimeout(rowsT);
-    rowsT = setTimeout(() => { if (!ctx.alive()) return; list.reload(listParams(), { quiet: true }); missing.reload(null, { quiet: true }); loadStats(); }, 2000);
+    // the whole page is built again off screen and takes this one's place in one step (core/router.js)
+    rowsT = setTimeout(() => { if (ctx.alive()) ctx.reload(); }, 2000);
   });
   ctx.onCleanup(() => clearTimeout(rowsT));
 

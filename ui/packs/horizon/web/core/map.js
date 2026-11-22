@@ -11,13 +11,25 @@ import { h, cssVar, esc } from '../shared/dom.js';
 import { rpx, onRedraw, onTheme } from './display.js';
 
 let mlLoad = null;
-/** Load MapLibre once (an ES module, its worker and its stylesheet, all from this pack). */
+/**
+ * Load MapLibre once (an ES module, its worker and its stylesheet, all from this pack). Resolves once the
+ * stylesheet is in too: a map built before it lays its canvas and controls out in the flow for a moment,
+ * which makes the box around it grow and shrink back.
+ */
 export function loadMapLibre() {
-  mlLoad ??= import('../vendor/maplibre-gl/maplibre-gl.mjs').then((ml) => {
-    if (!document.querySelector('link[data-maplibre]')) document.head.append(h('link', { rel: 'stylesheet', href: '/vendor/maplibre-gl/maplibre-gl.css', dataset: { maplibre: '' } }));
-    ml.setWorkerUrl(new URL('../vendor/maplibre-gl/maplibre-gl-worker.mjs', import.meta.url).href);
-    return ml;
-  });
+  mlLoad ??= (() => {
+    let css = Promise.resolve();
+    if (!document.querySelector('link[data-maplibre]')) {
+      const link = h('link', { rel: 'stylesheet', href: '/vendor/maplibre-gl/maplibre-gl.css', dataset: { maplibre: '' } });
+      css = new Promise((r) => { link.addEventListener('load', r, { once: true }); link.addEventListener('error', r, { once: true }); });
+      document.head.append(link);
+    }
+    const js = import('../vendor/maplibre-gl/maplibre-gl.mjs').then((ml) => {
+      ml.setWorkerUrl(new URL('../vendor/maplibre-gl/maplibre-gl-worker.mjs', import.meta.url).href);
+      return ml;
+    });
+    return Promise.all([js, css]).then(([ml]) => ml);
+  })();
   return mlLoad;
 }
 

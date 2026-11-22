@@ -46,6 +46,14 @@ const CHEM = { lfp: 'LFP (iron phosphate)', nca_nmc: 'NCA or NMC (nickel)' };
 const REASONS = { sentry: 'Sentry', keep_climate_on: 'Climate on', keep_climate_dog: 'Dog mode', keep_climate_camp: 'Camp mode', user_present: 'Someone near', preconditioning_cabin: 'Cabin warm-up', preconditioning_battery: 'Pack warm-up', charging: 'Charging', keep_warm: 'Keeping warm', door_open: 'Door open', accessory_power: 'Accessory power' };
 const METHOD = { counter: 'pack counters', bms_energy: 'pack energy reading', range: 'range change (estimated)' };
 
+// merge a live `now` delta into the values we hold (objects field by field)
+function merge(into, from) {
+  for (const [k, v] of Object.entries(from || {})) {
+    if (v && typeof v === 'object' && !Array.isArray(v) && !('value' in v) && into[k] && typeof into[k] === 'object') merge(into[k], v);
+    else into[k] = v;
+  }
+}
+
 export async function mount(ctx) {
   const { car, tz, period } = ctx;
   const cid = car.id, base = `cars/${enc(cid)}`, q = ctx.query;
@@ -104,10 +112,15 @@ export async function mount(ctx) {
       ]));
   }
   paintNow();
+  const held = {};
   ctx.events('now', (ev) => {
     if (ev.data?.car !== cid) return;
-    const d = ev.data.now || {};
-    const live = Object.fromEntries(Object.entries({ soc: val(d.soc_pct), usable: val(d.usable_soc_pct), kwh: val(d.energy_remaining_kwh), limit: val(d.charge?.limit_pct) }).filter(([, x]) => x != null));
+    // a "now" event after the first carries only what changed (inside a value, perhaps only its time):
+    // merged into what we hold, a reading stays on screen until a newer one replaces it
+    merge(held, ev.data.now);
+    const d = held;
+    const num = (x) => { const v = val(x); return typeof v === 'number' && Number.isFinite(v) ? v : null; };
+    const live = Object.fromEntries(Object.entries({ soc: num(d.soc_pct), usable: num(d.usable_soc_pct), kwh: num(d.energy_remaining_kwh), limit: num(d.charge?.limit_pct) }).filter(([, x]) => x != null));
     if (Object.keys(live).length) paintNow(live);
   });
 

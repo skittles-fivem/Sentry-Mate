@@ -240,12 +240,24 @@ export async function mount(ctx) {
     countryT.el, h('div', null, daysT ? daysT.el : hud({ title: 'Days in a city', icon: 'calendar', cover: ['visited.table.city_days', 'visited.text.city_days_help', 'visited.state.selected_city'] }, emptyState({ icon: 'calendar', title: 'No city yet', text: 'There is no stop in this period.' }))),
     cityT.el, placeT.el, stopsT.el));
 
-  try { await Promise.all([stopsT.ready, daysT?.ready]); } catch (e) { ctx.fail(e); return; }
+  // the drives for the map are asked for with the lists: the map head's count is in before the page is
+  // ready, so the head does not grow (and push the page down) a moment later
+  const tracksIn = (async () => {
+    for (const max of [40000, 200000]) {
+      try { return await ctx.api.get('tracks', { cars: carsParam, from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms, max_points: max }); } catch (e) { if (e.status !== 400) break; }
+    }
+    return null;
+  })();
+  let tr = null;
+  try { [, , tr] = await Promise.all([stopsT.ready, daysT?.ready, tracksIn]); } catch (e) { ctx.fail(e); return; }
   if (!ctx.alive()) return;
+  const lines = (tr?.drives || []).filter((d) => d.lat.length > 1).map((d) => ({ type: 'Feature', properties: { car: d.car }, geometry: { type: 'LineString', coordinates: d.lat.map((la, i) => [d.lon[i], la]) } }));
+  const trSrc = [...new Map((tr?.drives || []).flatMap((d) => d.sources || []).map((x) => [`${x.kind}:${x.site || ''}`, x])).values()];
+  replace(routeRead, tr ? `${plural(lines.length, 'drive')} · ${formatNumber(tr.points || 0)} positions ` : 'Too many drives for one map: pick a shorter period or fewer cars.', trSrc.length ? srcChip({ sources: trSrc }) : null);
   ctx.ready();
 
   /* ---------- map, after the first paint */
-  let m = null, tr = null;
+  let m = null;
   const markRows = () => (markMode === 'cities' ? cities : placesG).filter((r) => r.lat != null && r.lon != null);
   function paintMarks() {
     card.hidden = true;
@@ -254,13 +266,6 @@ export async function mount(ctx) {
     const max = Math.max(1, ...rows.map((r) => r.days || 0));
     m.map.getSource('tv-marks')?.setData({ type: 'FeatureCollection', features: rows.map((r, i) => ({ type: 'Feature', properties: { i, r: 4 + 12 * Math.sqrt((r.days || 0) / max), picked: r.key === picked ? 1 : 0 }, geometry: { type: 'Point', coordinates: [r.lon, r.lat] } })) });
   }
-  for (const max of [40000, 200000]) {
-    try { tr = await ctx.api.get('tracks', { cars: carsParam, from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms, max_points: max }); break; } catch (e) { if (e.status !== 400) break; }
-  }
-  if (!ctx.alive()) return;
-  const lines = (tr?.drives || []).filter((d) => d.lat.length > 1).map((d) => ({ type: 'Feature', properties: { car: d.car }, geometry: { type: 'LineString', coordinates: d.lat.map((la, i) => [d.lon[i], la]) } }));
-  const trSrc = [...new Map((tr?.drives || []).flatMap((d) => d.sources || []).map((x) => [`${x.kind}:${x.site || ''}`, x])).values()];
-  replace(routeRead, tr ? `${plural(lines.length, 'drive')} · ${formatNumber(tr.points || 0)} positions ` : 'Too many drives for one map: pick a shorter period or fewer cars.', trSrc.length ? srcChip({ sources: trSrc }) : null);
   const pts = [...lines.flatMap((l) => [l.geometry.coordinates[0], l.geometry.coordinates[l.geometry.coordinates.length - 1]]), ...cities.filter((r) => r.lat != null).map((r) => [r.lon, r.lat])];
   if (!pts.length) { mapEl.append(mapFallback('No drive and no stop in this period, so there is nothing to map.')); return; }
   try { m = await createMap(mapEl, ctx, { bounds: boundsOf(pts) }); } catch { replace(mapEl, mapFallback()); return; }

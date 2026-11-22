@@ -77,6 +77,9 @@ html[data-sky="off"] .sky-stars { opacity: 0.35; }
   padding: var(--gutter) calc(var(--gutter) + var(--safe-r)) 2.5rem calc(var(--gutter) + var(--safe-l));
 }
 .view:focus { outline: none; }
+/* a rebuild of the open page draws here, unseen, until it takes the page's place (core/router.js) */
+.view--stage { position: absolute; top: 0; left: 0; right: 0; height: 100vh; overflow: hidden; visibility: hidden;
+  pointer-events: none; z-index: -1; contain: strict; }
 
 /* ------------------------------------------------------------------ the dashboard strip */
 .dash {
