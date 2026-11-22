@@ -56,6 +56,7 @@ export function firmwarePanel(ctx) {
       kv([
         ['updates found', [formatNumber(d.updates ?? 0), none(' from fingerprints, '), link(`${state.buildUrl('software', { car: cid })}#tesla-updates`, 'listed below')]],
         ['last seen', d.updated_ms ? [dateTime(d.updated_ms, tz), none(` (${ago(d.updated_ms)})`)] : none('not yet: the logs carried no fingerprint')],
+        ['history', [link(`${state.buildUrl('software', { car: cid })}#firmware-history`, 'every fingerprint so far'), none(', and the versions over time')]],
         ['bridge hints', d.bridge_hints?.count ? [formatNumber(d.bridge_hints.count), none(` "firmware changed" lines in the logs, last ${dateTime(d.bridge_hints.last_ms, tz)}; a hint only`)] : none('none')],
         ['from', src({ sources: [{ kind: 'smo', label: 'Data from SMO' }] }, { full: true })],
       ]),

@@ -13,8 +13,10 @@
 //   PATCH /cars/{car}/updates/{id}     admin: type or forget the version an update installed
 //   GET /cars/{car}/drives             the drive before and the drive after a fingerprint update
 //   GET /fleet/versions                every car with its version (searched, paged by cursor, CSV)
+//   GET /cars/{car}/firmware/history   every fingerprint each module has had (paged, by module), with the
+//                                      "versions over time" spans of all of them
 //   GET /settings                      whether the owner allows release-notes links (outside_links)
-// Live: an update that starts or ends ("rows" events naming "updates") loads both lists again.
+// Live: an update that starts or ends ("rows" events naming "updates") loads the lists again.
 
 import { h, replace } from '../shared/dom.js';
 import { formatDate, formatTime, formatDateTime, formatDuration, periodLabel, HOUR, DAY } from '../shared/time.js';
@@ -25,7 +27,7 @@ import { pageHead, q, figure, icon, empty, flag, button, sep, loadingBlock, erro
 import { sourceMark, hasSmo, isImported } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
 import { openDialog } from '../core/dialog.js';
-import { field, form } from '../core/form.js';
+import { field, form, choice } from '../core/form.js';
 import { zoneLabel } from '../core/format.js';
 
 export const id = 'software';
@@ -383,6 +385,129 @@ export async function mount(ctx) {
   }
   ctx.main.append(fpSec);
 
+  /* ---------------------------------------------------------------- module firmware history */
+
+  // Every fingerprint each module has had (GET /cars/{car}/firmware/history), newest first and paged, with a
+  // filter by module, and a "versions over time" strip of all of them (the answer's spans over its range).
+  // Read-only for everyone: a watch account sees the same. Not tied to the period: it is the car's whole history.
+  const FW_MODULES = ['vcfront', 'bms', 'dir', 'dif'];
+  const histPath = api.apiPath`cars/${cid}/firmware/history`;
+  let fwModule = FW_MODULES.includes(ctx.query.fwm) ? ctx.query.fwm : 'all';
+  let fwAnswer = null;   // the newest first page: modules, spans, range
+  let fwFailed = false;
+  const fwDay = (ms) => formatDate(ms, tz, { now: api.now(), weekday: false, year: true });
+  const fwModName = (m) => (fwAnswer && (fwAnswer.modules || []).find((x) => x.id === m)?.name) || MODULES[m] || m;
+  const cellLabel = (t) => h('span', { class: 'fwh-cell-label', 'aria-hidden': 'true' }, t);
+  const fwhColumns = [
+    {
+      key: 'module', label: 'Module', th: true, hint: 'The module the fingerprint is from. A version row is a car version from an import, with no module fingerprints.',
+      cell: (r) => h('div', { class: 'cell-main fwh-module' },
+        h('span', { class: 'fwh-module-line' },
+          h('span', { class: 'fwh-module-name' }, r.kind === 'version' ? 'Car version' : r.module_name || fwModName(r.module)),
+          r.current ? flag('current', { kind: null, title: r.kind === 'version' ? 'The newest imported version.' : 'The fingerprint this module broadcasts now.' }) : null),
+        h('span', { class: 'cell-sub' }, r.source_label || (r.kind === 'version' ? 'Imported' : 'Data from SMO'))),
+    },
+    {
+      key: 'fingerprint', label: 'Fingerprint', hint: 'The module’s main fingerprint (its app checksum), lowercase hex, and the one before it.',
+      cell: (r) => (r.kind === 'version'
+        ? h('div', { class: 'cell-main' }, cellLabel('Fingerprint'), h('span', { class: 'sw-faint' }, 'none: an imported version only'))
+        : h('div', { class: 'cell-main' }, cellLabel('Fingerprint'),
+          h('span', { class: 'sw-hex fwh-hex mono' }, r.fingerprint || '—'),
+          h('span', { class: 'cell-sub' }, r.previous ? ['after ', h('span', { class: 'mono' }, r.previous)] : 'the first one seen'))),
+    },
+    {
+      key: 'seen', label: 'Seen', hint: 'From when it was first seen to when it was last seen, in the car’s time zone; “now” while it is current.',
+      cell: (r) => h('div', { class: 'cell-main' }, cellLabel('Seen'),
+        h('span', { class: 'fwh-dates' }, `${fwDay(r.first_seen_ms)} – ${r.current ? 'now' : fwDay(r.last_seen_ms)}`),
+        r.changed_in && r.changed_in.drive_id
+          ? h('a', { class: 'cell-sub', href: state.buildUrl('drive', { car: cid, drive: r.changed_in.drive_id }) }, 'First drive after the change')
+          : null),
+    },
+    {
+      key: 'duration', label: 'Ran for', num: true, hint: 'How long it ran: from first seen to last seen (a version row: to the next version, or now).',
+      cell: (r) => h('div', { class: 'cell-main' }, cellLabel('Ran for'), formatDuration(r.duration_ms),
+        gapWords(r.duration_ms) ? h('span', { class: 'cell-sub' }, gapWords(r.duration_ms)) : null),
+    },
+    {
+      key: 'version', label: 'Came with', hint: 'The version name of the update it came with, when someone named it. Never guessed.',
+      cell: (r) => h('div', { class: 'cell-main' }, cellLabel('Came with'),
+        r.version ? h('span', { class: 'sw-ver-text' }, r.version) : h('span', { class: 'sw-faint' }, 'unnamed'),
+        r.update && r.update.version_source && SOURCE[r.update.version_source] ? h('span', { class: 'cell-sub' }, SOURCE[r.update.version_source][0]) : null),
+    },
+  ];
+  const fwhTable = dataTable(ctx, {
+    path: histPath, params: fwModule === 'all' ? {} : { module: fwModule }, limit: 50, columns: fwhColumns, csv: false,
+    cls: 'fwh-table', label: 'Module firmware history', itemName: ['fingerprint', 'fingerprints'],
+    caption: 'Newest first. A fingerprint runs from the update that brought it to the next one.',
+    rowAttrs: (r) => ({ class: [r.kind === 'version' ? 'is-version' : null, r.current ? 'is-current' : null].filter(Boolean).join(' ') || null }),
+    empty: () => empty({
+      title: fwModule === 'all' ? 'No fingerprint recorded yet.' : `No fingerprint from the ${fwModName(fwModule).toLowerCase()} yet.`,
+      text: fwModule === 'all' ? 'They show once the car’s logs carry the modules’ info messages; some older cars send none.' : 'Choose All to see every module.',
+    }),
+    onRows: (_items, pg) => { if (pg && pg.spans) { fwAnswer = pg; fwFailed = false; } },
+  });
+  const fwFilter = choice({
+    label: 'Module', name: 'fwh-module', value: fwModule, cls: 'fwh-filter-options',
+    options: [['all', 'All'], ...FW_MODULES.map((m) => [m, MODULES[m] || m])],
+    onchange: (v) => {
+      fwModule = v;
+      ctx.setQuery({ fwm: v === 'all' ? null : v });
+      fwhTable.reload(v === 'all' ? {} : { module: v }).then(drawStrip).catch(() => {});
+    },
+  });
+  const stripBox = h('div', { class: 'fwh-strip-box' }, loadingBlock(2));
+
+  function drawStrip() {
+    if (!ctx.alive()) return;
+    const a = fwAnswer;
+    if (!a) {
+      replace(stripBox, h('p', { class: 'note' }, fwFailed ? 'The firmware history could not be loaded, so there is no strip.' : 'Loading…'));
+      return;
+    }
+    const range = a.range || {};
+    const spans = a.spans || [];
+    if (range.from_ms == null || !spans.length) {
+      replace(stripBox, h('p', { class: 'note' }, 'No fingerprint yet, so there is nothing to draw over time.'));
+      return;
+    }
+    const from = range.from_ms;
+    const to = Math.max(range.to_ms ?? from, ...spans.map((s) => s.to_ms ?? range.to_ms ?? from));
+    const span = Math.max(1, to - from);
+    const pct = (ms) => `${(Math.min(Math.max(ms, from), to) - from) / span * 100}%`;
+    const mods = (a.modules && a.modules.length ? a.modules : FW_MODULES.map((id) => ({ id })));
+    replace(stripBox,
+      h('div', { class: 'fwh-lanes', role: 'list', 'aria-label': 'Versions over time, one lane per module' },
+        mods.map((m) => {
+          const mine = spans.filter((s) => s.module === m.id);
+          const name = m.name || MODULES[m.id] || m.id;
+          return h('div', { class: ['fwh-lane', { 'is-picked': fwModule === m.id, 'is-dim': fwModule !== 'all' && fwModule !== m.id }], role: 'listitem' },
+            h('span', { class: 'fwh-lane-name' }, name,
+              h('span', { class: 'fwh-lane-count' }, `${formatNumber(m.fingerprints ?? mine.length)} ${(m.fingerprints ?? mine.length) === 1 ? 'fingerprint' : 'fingerprints'}`)),
+            h('div', { class: 'fwh-track' },
+              mine.length ? mine.map((s, i) => {
+                const end = s.to_ms ?? to;
+                const w = (Math.min(end, to) - Math.max(s.from_ms, from)) / span;
+                const tip = `${name}: ${s.fingerprint} · ${s.version || 'unnamed'} · ${fwDay(s.from_ms)} – ${s.current ? 'now' : fwDay(end)}`;
+                return h('span', {
+                  class: ['fwh-seg', `fwh-seg-${i % 2 ? 'b' : 'a'}`, { 'is-current': s.current, 'is-unnamed': !s.version }],
+                  style: { left: pct(s.from_ms), width: `${Math.max(0, w) * 100}%` }, title: tip, 'aria-label': tip,
+                }, w >= 0.07 ? h('span', { class: 'fwh-seg-label' }, s.version || 'unnamed') : null);
+              }) : h('span', { class: 'fwh-track-none' }, 'never seen'),
+              mine.slice(1).map((s) => h('span', { class: 'fwh-tick', style: { left: pct(s.from_ms) }, 'aria-hidden': 'true' }))));
+        })),
+      h('div', { class: 'fwh-axis' }, h('span', null, fwDay(from)), h('span', null, a.spans.some((s) => s.current) ? 'now' : fwDay(to))));
+  }
+
+  const fwhSec = h('section', { class: 'block fwh', id: 'sw-fwh', tabindex: '-1', 'aria-labelledby': 'sw-fwh-title' },
+    h('div', { class: 'block-head' },
+      h('h2', { class: 'label', id: 'sw-fwh-title' }, 'Module firmware history', h('span', { class: 'label-note' }, 'every fingerprint each module has had, all time'))),
+    h('p', { class: 'note fwh-lead' }, 'Each of the four main modules broadcasts a fingerprint of its code on the vehicle bus. Here is every one they have had, when it was seen and the version it came with, when someone named it. Not tied to the period. ',
+      h('a', { class: 'link-arrow', href: firmwareHref }, 'The car’s firmware now', icon('arrowRight'))),
+    h('div', { class: 'fwh-strip' }, h('h3', { class: 'fwh-sub' }, 'Versions over time'), stripBox),
+    h('div', { class: 'fwh-filter' }, fwFilter),
+    fwhTable.el);
+  ctx.main.append(fwhSec);
+
   ctx.main.append(h('section', { class: 'block sw-history', 'aria-labelledby': 'sw-hist-title' },
     h('div', { class: 'block-head' }, h('h2', { class: 'label', id: 'sw-hist-title' }, 'Update history', h('span', { class: 'label-note' }, `${car.name || cid}, ${periodLabel(ctx.period, tz, now)}`))),
     notesNote, table.el));
@@ -489,7 +614,8 @@ export async function mount(ctx) {
   async function reloadAll(say, focusId = null) {
     reloadBtn.disabled = true;
     try {
-      await Promise.all([table.reload(), fleetTable.reload(), findNewest()]);
+      await Promise.all([table.reload(), fleetTable.reload(), findNewest(), fwhTable.reload().catch(() => {})]);
+      drawStrip();
       await neighbours(fpRows());
       if (!ctx.alive()) return;
       if (focusId) for (const i of fpBox.querySelectorAll('.sw-fp-input')) i.dataset.saved = '1';
@@ -512,13 +638,15 @@ export async function mount(ctx) {
 
   // Each list fails on its own: the table shows its error with Try again, and the other list stays.
   let historyFailed = false;
-  await Promise.all([table.load().catch(() => { historyFailed = true; }), fleetTable.load().catch(() => {}), findNewest()]);
+  await Promise.all([table.load().catch(() => { historyFailed = true; }), fleetTable.load().catch(() => {}), findNewest(),
+    fwhTable.load().catch(() => { fwFailed = true; })]);
+  drawStrip();
   await neighbours(fpRows());
   if (!ctx.alive()) return {};
   drawFp();
   // a link to one update (#update-<id>, from the timeline) opens it once the page is drawn
   const hashT = setTimeout(() => {
-    const t = /^#update-/.test(location.hash) ? document.getElementById(location.hash.slice(1)) : null;
+    const t = /^#(update-|sw-fwh$)/.test(location.hash) ? document.getElementById(location.hash.slice(1)) : null;
     if (t && ctx.alive()) { t.focus({ preventScroll: true }); t.scrollIntoView({ block: 'start' }); }
   }, 0);
   ctx.onCleanup(() => clearTimeout(hashT));

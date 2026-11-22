@@ -7,7 +7,8 @@
 //
 // Car firmware: the fingerprints of their code that the four main modules broadcast on the vehicle bus
 // (GET /cars/{car}/firmware), lowercase hex, with when each value was first seen and the values before it. The
-// updates they reveal ("Tesla update installed") are on the Software page, which links here.
+// updates they reveal ("Tesla update installed") and every fingerprint each module has had (Module firmware history)
+// are on the Software page; both link each way.
 
 import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -227,6 +228,7 @@ export function firmwarePanel(ctx, car) {
       h('h2', { class: 'label', id: 'car-firmware-title' }, 'Car firmware', h('span', { class: 'label-note' }, 'fingerprints the modules broadcast on CAN'))),
     body);
   const swHref = `${state.buildUrl('software', { car: car.id })}#sw-fp`;
+  const historyHref = `${state.buildUrl('software', { car: car.id })}#sw-fwh`;
 
   async function load() {
     let fw;
@@ -244,6 +246,7 @@ export function firmwarePanel(ctx, car) {
     replace(body,
       h('p', { class: 'note fw-lead' }, 'Tesla’s version number is not on CAN. Instead each main module broadcasts fingerprints of its code (checksums and build hashes, here as lowercase hex); when they change, a Tesla update was installed. ',
         h('a', { href: swHref }, fw.updates ? `${formatNumber(fw.updates)} ${fw.updates === 1 ? 'update' : 'updates'} found this way, on Software` : 'Updates found this way are on Software'), '.'),
+      h('p', { class: 'fw-history-link' }, h('a', { class: 'link-arrow', href: historyHref }, 'Module firmware history: every fingerprint, all time', icon('arrowRight'))),
       h('p', { class: 'fw-facts' },
         h('span', null, 'Last seen ', h('strong', null, fw.updated_ms ? formatDateTime(fw.updated_ms, tz, { now: api.now() }) : 'never')),
         fw.bridge_hints && fw.bridge_hints.count ? h('span', null, `The CAN Bridge noted a firmware change ${formatNumber(fw.bridge_hints.count)} ${fw.bridge_hints.count === 1 ? 'time' : 'times'}${fw.bridge_hints.last_ms ? `, last ${day(fw.bridge_hints.last_ms)}` : ''} (a hint only)`) : null),

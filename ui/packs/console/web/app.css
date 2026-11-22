@@ -1084,6 +1084,17 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .fw-name-in { width: calc(var(--a2) * 16 + var(--g) * 2 + 2px); }
 .fw-name + .fld-hint { margin-top: var(--g2); }
 .fw-field { overflow-wrap: anywhere; }
+/* software: ## module firmware history (pages/firmware-history.js): one lane of characters per module, then the rows */
+.fh-lane { padding-top: var(--g2); min-width: 0; }
+.fh-lane-k { overflow-wrap: anywhere; }
+.fh-lane-n { color: var(--text); }
+.fh-cells { max-width: 100%; }
+.fh-a { color: var(--text); }
+.fh-b { color: var(--c2); }
+.fh-cur { color: var(--accent); }
+.fh-tick { color: var(--warn); }
+.fh-none { color: var(--muted); font-weight: 400; }
+.fh-keys { padding-bottom: var(--g); }
 .ov-shown { display: flex; flex-direction: column; align-items: flex-start; row-gap: var(--g2); white-space: normal; }
 .ov-shown > .muted { max-width: calc(var(--a2) * 40); }
 .veh-note { display: block; }
