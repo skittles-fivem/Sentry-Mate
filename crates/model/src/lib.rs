@@ -38,18 +38,18 @@ impl Source {
     /// Every source.
     pub const ALL: [Source; 3] = [Source::Live, Source::Teslamate, Source::Teslafi];
 
-    /// Its place in [`Source::ALL`], for tables with one slot per source.
-    pub fn index(self) -> usize {
+    /// Whether the row was imported (from any site).
+    pub fn is_imported(self) -> bool {
+        self.site().is_some()
+    }
+
+    /// Its place in [`Source::ALL`], for per-source arrays (`[T; Source::ALL.len()]`).
+    pub const fn index(self) -> usize {
         match self {
             Source::Live => 0,
             Source::Teslamate => 1,
             Source::Teslafi => 2,
         }
-    }
-
-    /// Whether the row was imported (from any site).
-    pub fn is_imported(self) -> bool {
-        self != Source::Live
     }
 
     /// The site an imported row came from.
@@ -97,14 +97,23 @@ impl Input {
         Input::ALL.into_iter().filter(|i| *i != Input::Smo)
     }
 
-    fn bit(self) -> u8 {
+    /// Its place in [`Input::ALL`], for per-input arrays (`[T; Input::ALL.len()]`).
+    pub const fn index(self) -> usize {
         match self {
-            Input::Smo => 1,
-            Input::TeslaApi => 2,
-            Input::TeslafiApi => 4,
+            Input::Smo => 0,
+            Input::TeslaApi => 1,
+            Input::TeslafiApi => 2,
         }
     }
+
+    /// Its bit in [`Inputs`] (in memory only: a set is stored as words).
+    const fn bit(self) -> u8 {
+        1 << self.index()
+    }
 }
+
+// An input more than [`Inputs`] has bits for must widen it (it is stored as words, so that changes nothing on disk).
+const _: () = assert!(Input::ALL.len() <= u8::BITS as usize);
 
 /// A set of live inputs (stored as a list of words, `["smo", "tesla_api"]`). Empty on rows written before inputs were
 /// kept: a live row then counts as SMO, the only live input there was.
@@ -113,10 +122,11 @@ pub struct Inputs(u8);
 
 impl Inputs {
     pub const NONE: Inputs = Inputs(0);
-    pub const SMO: Inputs = Inputs(1);
-    pub const TESLA_API: Inputs = Inputs(2);
-    pub const BOTH: Inputs = Inputs(3);
-    pub const TESLAFI_API: Inputs = Inputs(4);
+    pub const SMO: Inputs = Inputs(Input::Smo.bit());
+    pub const TESLA_API: Inputs = Inputs(Input::TeslaApi.bit());
+    /// SMO and the Tesla API.
+    pub const BOTH: Inputs = Inputs(Input::Smo.bit() | Input::TeslaApi.bit());
+    pub const TESLAFI_API: Inputs = Inputs(Input::TeslafiApi.bit());
 
     pub fn is_empty(&self) -> bool {
         self.0 == 0
@@ -344,7 +354,22 @@ impl Stream {
 
     /// Whether it holds imported points.
     pub fn is_imported(self) -> bool {
-        matches!(self, Stream::Teslamate | Stream::Teslafi)
+        match self {
+            Stream::Smo | Stream::TeslaApi | Stream::TeslafiApi => false,
+            Stream::Teslamate | Stream::Teslafi => true,
+        }
+    }
+
+    /// Its place in [`Stream::ALL`], for per-stream arrays (`[T; Stream::ALL.len()]`). Never stored: a new stream
+    /// may take any place.
+    pub const fn index(self) -> usize {
+        match self {
+            Stream::Smo => 0,
+            Stream::TeslaApi => 1,
+            Stream::TeslafiApi => 2,
+            Stream::Teslamate => 3,
+            Stream::Teslafi => 4,
+        }
     }
 
     /// The series directory's suffix.
@@ -979,6 +1004,33 @@ mod tests {
         assert_eq!(plaid_2020_year_code.profile(), CarProfile::Tesla3Y, "position 8 = 6 is a refresh car");
         let truck = VinInfo::from_vin("7G2CEHEE8PF000004", 0x405).unwrap();
         assert_eq!((truck.model_name(), truck.profile()), (Some("Cybertruck"), CarProfile::Tesla3Y));
+    }
+
+    #[test]
+    fn enum_lists_cover_every_variant_in_index_order() {
+        for (i, s) in Stream::ALL.into_iter().enumerate() {
+            assert_eq!(s.index(), i, "{s:?}");
+            assert_eq!(Stream::LIVE.contains(&s), !s.is_imported(), "{s:?}: LIVE and IMPORTED split ALL");
+            assert_eq!(Stream::IMPORTED.contains(&s), s.is_imported(), "{s:?}");
+        }
+        assert_eq!(Stream::LIVE.len() + Stream::IMPORTED.len(), Stream::ALL.len());
+        let dirs: std::collections::HashSet<_> = Stream::ALL.iter().map(|s| s.dir_name()).collect();
+        assert_eq!(dirs.len(), Stream::ALL.len(), "every stream has its own directory");
+        for (i, x) in Input::ALL.into_iter().enumerate() {
+            assert_eq!(x.index(), i, "{x:?}");
+            assert_eq!(Stream::from(x), Stream::LIVE[i], "inputs and live streams win in the same order");
+        }
+        assert_eq!(Input::ALL.len(), Stream::LIVE.len());
+        for (i, s) in Source::ALL.into_iter().enumerate() {
+            assert_eq!(s.index(), i, "{s:?}");
+            assert_eq!(Stream::from(s).is_imported(), s.is_imported(), "{s:?}");
+        }
+        for site in ImportSite::ALL {
+            assert!(Stream::IMPORTED.contains(&Stream::of_site(site)));
+            assert_eq!(Source::of_site(site).site(), Some(site));
+        }
+        let all: Inputs = Input::ALL.into_iter().collect();
+        assert_eq!(all.iter().count(), Input::ALL.len(), "every input has its own bit");
     }
 
     #[test]
