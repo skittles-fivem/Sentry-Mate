@@ -3,7 +3,7 @@
 //! them again after a restart without the server listening for it; each car's are sent once per connection (again
 //! only if its name changes or it was out of the recent-car cache).
 
-use crate::render::{Event, Field, Layout, MAX_NAME, Message, STATES, clip};
+use crate::render::{CHARGE_STATUSES, DISPLAY_MODES, Event, Field, Layout, MAX_NAME, Message, STATES, clip};
 use model::CarId;
 use serde_json::{Map, Value, json};
 
@@ -19,6 +19,10 @@ enum Unit {
     Temperature,
     Pressure,
     Volt,
+    Amp,
+    Degree,
+    Elevation,
+    Minutes,
 }
 
 struct Entity {
@@ -62,6 +66,16 @@ const fn text(field: Field, name: &'static str, icon: &'static str, options: &'s
     }
 }
 
+/// A number without a Home Assistant device class (heading, phases).
+const fn number(field: Field, name: &'static str, icon: &'static str, unit: Unit) -> Entity {
+    Entity { device_class: None, icon: Some(icon), ..sensor(field, name, "", unit) }
+}
+
+/// A binary sensor without a device class.
+const fn flag(field: Field, name: &'static str, icon: &'static str) -> Entity {
+    Entity { device_class: None, icon: Some(icon), ..binary(field, name, "") }
+}
+
 const fn binary(field: Field, name: &'static str, device_class: &'static str) -> Entity {
     Entity {
         field,
@@ -99,6 +113,53 @@ const ENTITIES: &[Entity] = &[
     Entity { state_class: Some("total_increasing"), ..sensor(Field::Odometer, "Odometer", "distance", Unit::Distance) },
     text(Field::Gear, "Gear", "mdi:car-shift-pattern", &["P", "R", "N", "D"]),
     Entity { diagnostic: true, ..sensor(Field::LvVoltage, "12 V battery", "voltage", Unit::Volt) },
+    Entity { diagnostic: true, ..text(Field::Paint, "Paint", "mdi:palette", &[]) },
+    Entity { diagnostic: true, ..text(Field::Wheels, "Wheels", "mdi:tire", &[]) },
+    Entity { diagnostic: true, ..text(Field::Spoiler, "Spoiler", "mdi:car-sports", &[]) },
+    Entity { diagnostic: true, ..text(Field::Roof, "Roof", "mdi:car-select", &[]) },
+    number(Field::Heading, "Heading", "mdi:compass", Unit::Degree),
+    sensor(Field::Elevation, "Elevation", "distance", Unit::Elevation),
+    flag(Field::SentryMode, "Sentry mode", "mdi:cctv"),
+    Entity { diagnostic: true, ..flag(Field::ServiceMode, "Service mode", "mdi:wrench") },
+    text(Field::DisplayMode, "Display", "mdi:monitor", &DISPLAY_MODES),
+    binary(Field::DoorsOpen, "Doors", "door"),
+    binary(Field::DoorFrontLeft, "Door front left", "door"),
+    binary(Field::DoorFrontRight, "Door front right", "door"),
+    binary(Field::DoorRearLeft, "Door rear left", "door"),
+    binary(Field::DoorRearRight, "Door rear right", "door"),
+    binary(Field::TrunkOpen, "Trunk", "opening"),
+    binary(Field::FrunkOpen, "Frunk", "opening"),
+    binary(Field::UserPresent, "User present", "occupancy"),
+    flag(Field::ClimateOn, "Climate", "mdi:fan"),
+    flag(Field::PreconditioningCabin, "Preconditioning cabin", "mdi:car-defrost-front"),
+    flag(Field::PreconditioningBattery, "Preconditioning battery", "mdi:battery-heart-variant"),
+    sensor(Field::RangeIdeal, "Ideal range", "distance", Unit::Distance),
+    sensor(Field::RangeEstimated, "Estimated range", "distance", Unit::Distance),
+    sensor(Field::SocUsable, "Usable battery", "battery", Unit::Percent),
+    binary(Field::PluggedIn, "Plugged in", "plug"),
+    text(Field::ChargeStatus, "Charge status", "mdi:ev-station", &CHARGE_STATUSES),
+    Entity {
+        state_class: Some("total_increasing"),
+        ..sensor(Field::ChargeEnergyAdded, "Energy charged (lifetime)", "energy", Unit::Energy)
+    },
+    Entity {
+        icon: Some("mdi:battery-lock"),
+        device_class: None,
+        ..sensor(Field::ChargeLimit, "Charge limit", "", Unit::Percent)
+    },
+    binary(Field::ChargePortOpen, "Charge port", "opening"),
+    sensor(Field::ChargerCurrent, "Charger current", "current", Unit::Amp),
+    sensor(Field::ChargerVoltage, "Charger voltage", "voltage", Unit::Volt),
+    number(Field::ChargerPhases, "Charger phases", "mdi:sine-wave", Unit::None),
+    sensor(Field::ChargeCurrentRequest, "Charge current requested", "current", Unit::Amp),
+    sensor(Field::ChargeCurrentLimit, "Charge current limit", "current", Unit::Amp),
+    sensor(Field::TimeToFull, "Time to full", "duration", Unit::Minutes),
+    binary(Field::TireLow, "Tire pressure low", "problem"),
+    sensor(Field::EnergyAtDestination, "Energy at destination", "energy_storage", Unit::Energy),
+    flag(Field::Navigating, "Navigating", "mdi:navigation"),
+    binary(Field::Installing, "Software installing", "update"),
+    Entity { diagnostic: true, ..flag(Field::Healthy, "Data healthy", "mdi:heart-pulse") },
+    flag(Field::InPark, "In park", "mdi:alpha-p-box"),
     Entity {
         device_class: Some("timestamp"),
         state_class: None,
@@ -119,6 +180,10 @@ fn unit_text(layout: &Layout, unit: Unit) -> Option<&'static str> {
         Unit::Temperature => Some(u.temperature_unit()),
         Unit::Pressure => Some(u.pressure_unit()),
         Unit::Volt => Some("V"),
+        Unit::Amp => Some("A"),
+        Unit::Degree => Some("°"),
+        Unit::Elevation => Some(u.elevation_unit()),
+        Unit::Minutes => Some("min"),
     }
 }
 

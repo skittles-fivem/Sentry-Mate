@@ -905,18 +905,20 @@ pub struct Health {
     pub uploads_enabled: Option<bool>,
 }
 
-/// `/cars/{car}/health` over a period (default the last 30 days). The day records stream past one day at a time, the
-/// state spans a page at a time, and each key's chain is read once.
-pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>> {
-    use super::timeline::Why;
-    let c = car_of(e, car)?;
+/// What the Data health verdict rests on: the car's keys and their uploads, the newest judged log, and the reasons
+/// it is not healthy (none: healthy).
+struct Verdict {
+    keys: Vec<KeyHealth>,
+    waiting: u64,
+    last_upload: Option<u64>,
+    last_trust: Option<LastTrust>,
+    rebuild_pending: bool,
+    reasons: Vec<&'static str>,
+}
+
+fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QResult<Verdict> {
+    let car = c.id;
     let rt = e.handle()?;
-    let now = now_ms();
-    let db = e.db();
-    let meta = records::meta(db, car)?;
-    // the last 30 days of the car's data (a car that stopped uploading still shows its last month)
-    let end = meta.newest_ms.map_or(now, |n| n.saturating_add(1).min(now));
-    let (a, b) = period.window(30 * 86_400_000, end)?;
     let mut keys = Vec::new();
     let mut waiting = 0u64;
     let mut last_upload: Option<u64> = None;
@@ -935,6 +937,45 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
             logs_waiting: w,
         });
     }
+    let last_trust = last_judged(e, car, meta)?;
+    let mut reasons = Vec::new();
+    let last_seen = meta.newest_ms.or(last_upload);
+    if last_seen.is_none_or(|t| now.saturating_sub(t) > 24 * super::now::STALE_MS) {
+        reasons.push("upload_silence");
+    }
+    if last_trust.as_ref().is_some_and(|t| t.result == "failed") {
+        reasons.push("trust_failed");
+    }
+    if waiting > 0 {
+        reasons.push("logs_waiting_trust");
+    }
+    let rebuild_pending = e.rebuild_pending(car);
+    if rebuild_pending {
+        reasons.push("rebuild_pending");
+    }
+    Ok(Verdict { keys, waiting, last_upload, last_trust, rebuild_pending, reasons })
+}
+
+/// Whether the car's data is healthy by the Data health rule (`healthy` of `/cars/{car}/health`): uploads within a
+/// day, the newest judged log trusted, no logs waiting for trust and no rebuild pending.
+pub fn healthy(e: &Engine, car: CarId) -> QResult<bool> {
+    let c = car_of(e, car)?;
+    let meta = records::meta(e.db(), car)?;
+    Ok(verdict(e, &c, &meta, now_ms())?.reasons.is_empty())
+}
+
+/// `/cars/{car}/health` over a period (default the last 30 days). The day records stream past one day at a time, the
+/// state spans a page at a time, and each key's chain is read once.
+pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>> {
+    use super::timeline::Why;
+    let c = car_of(e, car)?;
+    let now = now_ms();
+    let db = e.db();
+    let meta = records::meta(db, car)?;
+    // the last 30 days of the car's data (a car that stopped uploading still shows its last month)
+    let end = meta.newest_ms.map_or(now, |n| n.saturating_add(1).min(now));
+    let (a, b) = period.window(30 * 86_400_000, end)?;
+    let Verdict { keys, waiting, last_upload, last_trust, rebuild_pending, reasons } = verdict(e, &c, &meta, now)?;
     let mut why: Vec<Why> = Vec::new();
     let mut chain_gaps = Newest::new();
     for (x, y) in super::timeline::chain_gaps(e, car)? {
@@ -978,7 +1019,6 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
             // (a log that failed earlier shows as unknown time; only the newest judged log raises trust_failed)
         }
     }
-    let last_trust = last_judged(e, car, &meta)?;
     let mut unknown = Newest::new();
     let mut unknown_ms = 0u64;
     if a < b {
@@ -994,21 +1034,6 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
             }
             Ok(true)
         })?;
-    }
-    let mut reasons = Vec::new();
-    let last_seen = meta.newest_ms.or(last_upload);
-    if last_seen.is_none_or(|t| now.saturating_sub(t) > 24 * super::now::STALE_MS) {
-        reasons.push("upload_silence");
-    }
-    if last_trust.as_ref().is_some_and(|t| t.result == "failed") {
-        reasons.push("trust_failed");
-    }
-    if waiting > 0 {
-        reasons.push("logs_waiting_trust");
-    }
-    let rebuild_pending = e.rebuild_pending(car);
-    if rebuild_pending {
-        reasons.push("rebuild_pending");
     }
     let mut dropped_rows: Vec<Span> = dropped.rows.into_iter().collect();
     dropped_rows.sort_by_key(|s| s.start_ms);

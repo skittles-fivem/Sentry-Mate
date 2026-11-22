@@ -8,7 +8,7 @@
 use crate::error::Error;
 use crate::settings::{Settings, Units};
 use crate::topics::{Topics, check_prefix};
-use model::{CarId, Charge, ChargeKind, Drive, Gear, Now, Position, State};
+use model::{CarId, Charge, ChargeKind, Drive, Gear, Now, Position, SampleExtra, State};
 use serde_json::{Map, Value, json};
 
 /// One MQTT message. Everything is sent at QoS 1 (at least once).
@@ -93,6 +93,60 @@ pub enum Field {
     Gear,
     /// The 12 V system's voltage.
     LvVoltage,
+    /// The car's configuration, as the car names it (`code_<n>` for a value without a name).
+    Paint,
+    Wheels,
+    Spoiler,
+    Roof,
+    /// GPS heading, degrees (not a position: published with location publishing off too).
+    Heading,
+    Elevation,
+    SentryMode,
+    ServiceMode,
+    /// `off`, `sentry`, `dog`, `camp` or `on`: what the screen shows.
+    DisplayMode,
+    /// Any of the four doors open.
+    DoorsOpen,
+    DoorFrontLeft,
+    DoorFrontRight,
+    DoorRearLeft,
+    DoorRearRight,
+    TrunkOpen,
+    FrunkOpen,
+    UserPresent,
+    ClimateOn,
+    PreconditioningCabin,
+    PreconditioningBattery,
+    RangeIdeal,
+    /// Sentry Mate's own estimate: the energy left at the recent consumption.
+    RangeEstimated,
+    SocUsable,
+    PluggedIn,
+    /// `disconnected`, `no_power`, `about_to_charge`, `charging`, `complete` or `stopped`.
+    ChargeStatus,
+    /// The pack's lifetime charge counter, kWh: it never resets.
+    ChargeEnergyAdded,
+    ChargeLimit,
+    ChargePortOpen,
+    ChargerCurrent,
+    ChargerVoltage,
+    ChargerPhases,
+    /// The AC current set on the screen, A.
+    ChargeCurrentRequest,
+    /// The AC current the car may draw, A.
+    ChargeCurrentLimit,
+    /// Minutes.
+    TimeToFull,
+    TireLow,
+    /// kWh left on arrival, only while navigating.
+    EnergyAtDestination,
+    Navigating,
+    /// A software update installing.
+    Installing,
+    /// The Data health rule's verdict.
+    Healthy,
+    /// The gear is P.
+    InPark,
     /// When these values were recorded on the car (ISO 8601, UTC); about a minute behind live.
     Updated,
     Latitude,
@@ -102,7 +156,7 @@ pub enum Field {
 }
 
 impl Field {
-    pub const COUNT: usize = 25;
+    pub const COUNT: usize = 65;
     pub const ALL: [Field; Field::COUNT] = [
         Field::State,
         Field::Driving,
@@ -125,6 +179,46 @@ impl Field {
         Field::Odometer,
         Field::Gear,
         Field::LvVoltage,
+        Field::Paint,
+        Field::Wheels,
+        Field::Spoiler,
+        Field::Roof,
+        Field::Heading,
+        Field::Elevation,
+        Field::SentryMode,
+        Field::ServiceMode,
+        Field::DisplayMode,
+        Field::DoorsOpen,
+        Field::DoorFrontLeft,
+        Field::DoorFrontRight,
+        Field::DoorRearLeft,
+        Field::DoorRearRight,
+        Field::TrunkOpen,
+        Field::FrunkOpen,
+        Field::UserPresent,
+        Field::ClimateOn,
+        Field::PreconditioningCabin,
+        Field::PreconditioningBattery,
+        Field::RangeIdeal,
+        Field::RangeEstimated,
+        Field::SocUsable,
+        Field::PluggedIn,
+        Field::ChargeStatus,
+        Field::ChargeEnergyAdded,
+        Field::ChargeLimit,
+        Field::ChargePortOpen,
+        Field::ChargerCurrent,
+        Field::ChargerVoltage,
+        Field::ChargerPhases,
+        Field::ChargeCurrentRequest,
+        Field::ChargeCurrentLimit,
+        Field::TimeToFull,
+        Field::TireLow,
+        Field::EnergyAtDestination,
+        Field::Navigating,
+        Field::Installing,
+        Field::Healthy,
+        Field::InPark,
         Field::Updated,
         Field::Latitude,
         Field::Longitude,
@@ -155,6 +249,46 @@ impl Field {
             Field::Odometer => "odometer",
             Field::Gear => "gear",
             Field::LvVoltage => "lv_voltage",
+            Field::Paint => "paint",
+            Field::Wheels => "wheels",
+            Field::Spoiler => "spoiler",
+            Field::Roof => "roof",
+            Field::Heading => "heading",
+            Field::Elevation => "elevation",
+            Field::SentryMode => "sentry_mode",
+            Field::ServiceMode => "service_mode",
+            Field::DisplayMode => "display_mode",
+            Field::DoorsOpen => "doors_open",
+            Field::DoorFrontLeft => "door_front_left",
+            Field::DoorFrontRight => "door_front_right",
+            Field::DoorRearLeft => "door_rear_left",
+            Field::DoorRearRight => "door_rear_right",
+            Field::TrunkOpen => "trunk_open",
+            Field::FrunkOpen => "frunk_open",
+            Field::UserPresent => "user_present",
+            Field::ClimateOn => "climate_on",
+            Field::PreconditioningCabin => "preconditioning_cabin",
+            Field::PreconditioningBattery => "preconditioning_battery",
+            Field::RangeIdeal => "range_ideal",
+            Field::RangeEstimated => "range_estimated",
+            Field::SocUsable => "soc_usable",
+            Field::PluggedIn => "plugged_in",
+            Field::ChargeStatus => "charge_status",
+            Field::ChargeEnergyAdded => "charge_energy_added",
+            Field::ChargeLimit => "charge_limit",
+            Field::ChargePortOpen => "charge_port_open",
+            Field::ChargerCurrent => "charger_current",
+            Field::ChargerVoltage => "charger_voltage",
+            Field::ChargerPhases => "charger_phases",
+            Field::ChargeCurrentRequest => "charge_current_request",
+            Field::ChargeCurrentLimit => "charge_current_limit",
+            Field::TimeToFull => "time_to_full",
+            Field::TireLow => "tire_low",
+            Field::EnergyAtDestination => "energy_at_destination",
+            Field::Navigating => "navigating",
+            Field::Installing => "installing",
+            Field::Healthy => "healthy",
+            Field::InPark => "in_park",
             Field::Updated => "updated",
             Field::Latitude => "latitude",
             Field::Longitude => "longitude",
@@ -242,6 +376,8 @@ pub fn field_payload(layout: &Layout, field: Field, now: &Now, place: Option<&st
     if field.is_location() && !layout.location {
         return Some(String::new());
     }
+    let x = &s.extra;
+    let name = |v: &Option<String>| v.as_deref().map(|t| clip(t, MAX_NAME).to_string());
     let tire = |i: usize| text(s.tpms_bar[i].map(|v| u.pressure(v)), u.pressure_decimals());
     match field {
         Field::State => Some(car_state(now).to_string()),
@@ -265,6 +401,53 @@ pub fn field_payload(layout: &Layout, field: Field, now: &Now, place: Option<&st
         Field::Odometer => text(s.odometer_km.map(|v| u.distance(v)), 1),
         Field::Gear => s.gear.map(|g| gear_text(g).to_string()),
         Field::LvVoltage => text(s.lv_voltage_v, 2),
+        Field::Paint => name(&x.paint),
+        Field::Wheels => name(&x.wheels),
+        Field::Spoiler => name(&x.spoiler),
+        Field::Roof => name(&x.roof),
+        Field::Heading => text(x.heading_deg, 0),
+        Field::Elevation => text(s.elevation_m.map(|v| u.elevation(v)), 0),
+        Field::SentryMode => x.sentry_mode.map(bool_text),
+        Field::ServiceMode => x.service_mode.map(bool_text),
+        Field::DisplayMode => display_mode(x).map(str::to_string),
+        Field::DoorsOpen => doors_open(x).map(bool_text),
+        Field::DoorFrontLeft => x.door_fl.map(bool_text),
+        Field::DoorFrontRight => x.door_fr.map(bool_text),
+        Field::DoorRearLeft => x.door_rl.map(bool_text),
+        Field::DoorRearRight => x.door_rr.map(bool_text),
+        Field::TrunkOpen => x.trunk_open.map(bool_text),
+        Field::FrunkOpen => x.frunk_open.map(bool_text),
+        Field::UserPresent => x.user_present.map(bool_text),
+        Field::ClimateOn => x.climate_on.map(bool_text),
+        Field::PreconditioningCabin => x.preconditioning_cabin.map(bool_text),
+        Field::PreconditioningBattery => x.preconditioning_battery.map(bool_text),
+        Field::RangeIdeal => text(s.ideal_range_km.map(|v| u.distance(v)), 1),
+        Field::RangeEstimated => text(now.range_estimated_km.map(|v| u.distance(v)), 1),
+        Field::SocUsable => text(x.usable_soc, 1),
+        Field::PluggedIn => x.plugged_in.map(bool_text),
+        Field::ChargeStatus => x.charge_status.as_deref().filter(|w| CHARGE_STATUSES.contains(w)).map(str::to_string),
+        Field::ChargeEnergyAdded => text(s.total_charge_kwh, 2),
+        Field::ChargeLimit => text(x.charge_limit_pct, 0),
+        Field::ChargePortOpen => x.charge_port_open.map(bool_text),
+        Field::ChargerCurrent => text(s.charger_current_a, 1),
+        Field::ChargerVoltage => text(s.charger_voltage_v, 0),
+        Field::ChargerPhases => text(x.charger_phases, 0),
+        Field::ChargeCurrentRequest => text(x.charge_current_request_a, 1),
+        Field::ChargeCurrentLimit => text(x.charge_current_limit_a, 1),
+        Field::TimeToFull => text(x.time_to_full_min, 0),
+        Field::TireLow => x.tire_low.map(bool_text),
+        // the energy at the destination of a route only while there is one
+        Field::EnergyAtDestination => {
+            if x.navigating == Some(true) {
+                text(x.energy_at_destination_kwh, 2)
+            } else {
+                None
+            }
+        }
+        Field::Navigating => x.navigating.map(bool_text),
+        Field::Installing => x.update_installing.map(bool_text),
+        Field::Healthy => now.healthy.map(bool_text),
+        Field::InPark => s.gear.map(|g| bool_text(g == Gear::P)),
         Field::Updated => (now.at_ms > 0).then(|| iso_utc(now.at_ms)),
         Field::Latitude => valid_position(s.lat, s.lon).and_then(|(la, _)| text(Some(la), 6)),
         Field::Longitude => valid_position(s.lat, s.lon).and_then(|(_, lo)| text(Some(lo), 6)),
@@ -277,6 +460,38 @@ pub fn field_payload(layout: &Layout, field: Field, now: &Now, place: Option<&st
             }
             Value::Object(o).to_string()
         }),
+    }
+}
+
+/// What the screen shows: `off`, else `sentry` in Sentry mode, else `dog` or `camp` (keep climate), else `on`; `None`
+/// when the car did not say whether the screen is on.
+pub fn display_mode(x: &SampleExtra) -> Option<&'static str> {
+    Some(match x.display_on? {
+        false => "off",
+        true if x.sentry_mode == Some(true) => "sentry",
+        true => match x.keep_climate.as_deref() {
+            Some("dog") => "dog",
+            Some("camp") => "camp",
+            _ => "on",
+        },
+    })
+}
+
+/// The charge status words (another word is not published).
+pub const CHARGE_STATUSES: [&str; 6] =
+    ["disconnected", "no_power", "about_to_charge", "charging", "complete", "stopped"];
+
+pub const DISPLAY_MODES: [&str; 5] = ["off", "sentry", "dog", "camp", "on"];
+
+/// Whether any door is open: `true` when one is, `false` when all four are known closed.
+fn doors_open(x: &SampleExtra) -> Option<bool> {
+    let doors = [x.door_fl, x.door_fr, x.door_rl, x.door_rr];
+    if doors.contains(&Some(true)) {
+        Some(true)
+    } else if doors.iter().all(|d| *d == Some(false)) {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -613,6 +828,147 @@ pub(crate) mod tests {
             ["state", "driving", "place", "latitude", "longitude", "location"],
             "nothing known, nothing made up"
         );
+    }
+
+    #[test]
+    fn body_comfort_and_charge_details() {
+        // made-up values throughout
+        let mut n = parked(4);
+        n.range_estimated_km = Some(321.04);
+        n.healthy = Some(true);
+        n.sample.ideal_range_km = Some(420.0);
+        n.sample.elevation_m = Some(123.4);
+        n.sample.total_charge_kwh = Some(12_345.678);
+        n.sample.charger_current_a = Some(15.96);
+        n.sample.charger_voltage_v = Some(229.6);
+        n.sample.extra = SampleExtra {
+            paint: Some("synthetic_blue".into()),
+            wheels: Some("code_99".into()),
+            heading_deg: Some(181.6),
+            sentry_mode: Some(false),
+            display_on: Some(true),
+            keep_climate: Some("dog".into()),
+            door_fl: Some(false),
+            door_fr: Some(false),
+            door_rl: Some(true),
+            door_rr: Some(false),
+            trunk_open: Some(false),
+            usable_soc: Some(77.04),
+            plugged_in: Some(true),
+            charge_status: Some("complete".into()),
+            charge_limit_pct: Some(80.0),
+            charger_phases: Some(3.0),
+            time_to_full_min: Some(0.0),
+            energy_at_destination_kwh: Some(31.5),
+            navigating: Some(false),
+            update_installing: Some(false),
+            ..SampleExtra::default()
+        };
+        let msgs = now_messages(&layout(false, Units::default()), &n, None);
+        let p = |k| payload(&msgs, k);
+        assert_eq!(p("paint").as_deref(), Some("synthetic_blue"));
+        assert_eq!(p("wheels").as_deref(), Some("code_99"));
+        assert_eq!(p("spoiler"), None, "not sent: not published");
+        assert_eq!(p("heading").as_deref(), Some("182"), "heading is not a position");
+        assert_eq!(p("elevation").as_deref(), Some("123"));
+        assert_eq!(p("display_mode").as_deref(), Some("dog"));
+        assert_eq!(p("doors_open").as_deref(), Some("true"), "one door open is enough");
+        assert_eq!(p("door_rear_left").as_deref(), Some("true"));
+        assert_eq!(p("door_front_left").as_deref(), Some("false"));
+        assert_eq!(p("frunk_open"), None);
+        assert_eq!(p("soc_usable").as_deref(), Some("77"));
+        assert_eq!(p("range_ideal").as_deref(), Some("420"));
+        assert_eq!(p("range_estimated").as_deref(), Some("321"));
+        assert_eq!(p("charge_status").as_deref(), Some("complete"));
+        assert_eq!(p("charge_energy_added").as_deref(), Some("12345.68"));
+        assert_eq!(p("charger_current").as_deref(), Some("16"));
+        assert_eq!(p("charger_voltage").as_deref(), Some("230"));
+        assert_eq!(p("charger_phases").as_deref(), Some("3"));
+        assert_eq!(p("time_to_full").as_deref(), Some("0"), "0 minutes is a value");
+        assert_eq!(p("energy_at_destination"), None, "not navigating: no destination");
+        assert_eq!(p("navigating").as_deref(), Some("false"));
+        assert_eq!(p("in_park").as_deref(), Some("true"));
+        assert_eq!(p("healthy").as_deref(), Some("true"));
+        assert_eq!(p("installing").as_deref(), Some("false"));
+
+        n.sample.extra.navigating = Some(true);
+        n.sample.extra.door_rl = Some(false);
+        n.sample.extra.sentry_mode = Some(true);
+        n.sample.gear = Some(Gear::D);
+        let us = Units { distance: DistanceUnit::Mi, temperature: TemperatureUnit::F, pressure: PressureUnit::Psi };
+        let msgs = now_messages(&layout(false, us), &n, None);
+        let p = |k| payload(&msgs, k);
+        assert_eq!(p("energy_at_destination").as_deref(), Some("31.5"));
+        assert_eq!(p("doors_open").as_deref(), Some("false"), "all four known closed");
+        assert_eq!(p("display_mode").as_deref(), Some("sentry"));
+        assert_eq!(p("in_park").as_deref(), Some("false"));
+        assert_eq!(p("elevation").as_deref(), Some("405"), "123.4 m in feet");
+        assert_eq!(p("range_estimated").as_deref(), Some("199.5"));
+        n.sample.extra.door_rr = None;
+        n.sample.extra.display_on = Some(false);
+        let msgs = now_messages(&layout(false, us), &n, None);
+        assert_eq!(payload(&msgs, "doors_open"), None, "a door not known: not said closed");
+        assert_eq!(payload(&msgs, "display_mode").as_deref(), Some("off"));
+
+        // Home Assistant has an entity for each of them
+        let configs = crate::discovery::configs(&layout(false, Units::default()), 4, &CarInfo::default());
+        let has = |component: &str, key: &str| {
+            let topic = format!("homeassistant/{component}/sentry-mate_c4/{key}/config");
+            configs.iter().find(|m| m.topic == topic).map(|m| serde_json::from_str::<Value>(&m.payload).unwrap())
+        };
+        let energy = has("sensor", "charge_energy_added").unwrap();
+        assert_eq!(
+            (energy["device_class"].as_str(), energy["state_class"].as_str()),
+            (Some("energy"), Some("total_increasing"))
+        );
+        assert_eq!(energy["unit_of_measurement"], "kWh");
+        assert_eq!(has("binary_sensor", "door_rear_left").unwrap()["device_class"], "door");
+        assert_eq!(has("binary_sensor", "frunk_open").unwrap()["device_class"], "opening");
+        assert_eq!(has("binary_sensor", "user_present").unwrap()["device_class"], "occupancy");
+        assert_eq!(has("binary_sensor", "plugged_in").unwrap()["device_class"], "plug");
+        assert_eq!(has("binary_sensor", "tire_low").unwrap()["device_class"], "problem");
+        assert_eq!(has("binary_sensor", "installing").unwrap()["device_class"], "update");
+        assert_eq!(has("sensor", "display_mode").unwrap()["options"], json!(DISPLAY_MODES));
+        assert_eq!(has("sensor", "heading").unwrap()["unit_of_measurement"], "°");
+        for key in [
+            "paint",
+            "wheels",
+            "spoiler",
+            "roof",
+            "elevation",
+            "range_ideal",
+            "range_estimated",
+            "soc_usable",
+            "charge_status",
+            "charge_limit",
+            "charger_current",
+            "charger_voltage",
+            "charger_phases",
+            "charge_current_request",
+            "charge_current_limit",
+            "time_to_full",
+            "energy_at_destination",
+        ] {
+            assert!(has("sensor", key).is_some(), "{key}");
+        }
+        for key in [
+            "sentry_mode",
+            "service_mode",
+            "doors_open",
+            "door_front_left",
+            "door_front_right",
+            "door_rear_right",
+            "trunk_open",
+            "climate_on",
+            "preconditioning_cabin",
+            "preconditioning_battery",
+            "charge_port_open",
+            "navigating",
+            "healthy",
+            "in_park",
+        ] {
+            assert!(has("binary_sensor", key).is_some(), "{key}");
+        }
     }
 
     #[test]

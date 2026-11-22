@@ -756,7 +756,8 @@ impl Engine {
     /// The car's newest values, from an input's samples. Each value keeps when it was recorded
     /// ([`records::now_at`]) and which input sent it ([`records::now_from`]); of two inputs the newer value wins, but
     /// for the fast values (speed, power, gear, position) an SMO value beats the API's for a minute (the API's time
-    /// lags). The charge's kind and power go once the newest values say the car is not charging, or it drives.
+    /// lags). The charge's kind and power (and its phases, current limit and its source, and the time to full) go once
+    /// the newest values say the car is not charging, or it drives.
     pub(crate) fn note_now_from(&self, car: CarId, samples: &[Sample], input: Input) -> Result<()> {
         let Some(last) = samples.last() else { return Ok(()) };
         let db = &self.inner.db;
@@ -1201,12 +1202,23 @@ pub(crate) fn join_spans(mut spans: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
 
 /// The values of a charge, cleared from the Now once the car is not charging (the charger's volts and amps stay:
 /// they read 0 then, at their own time).
-const CHARGE_FIELDS: &[&str] = &["charge_kind", "charge_power_kw"];
+const CHARGE_FIELDS: &[&str] = &[
+    "charge_kind",
+    "charge_power_kw",
+    "extra.time_to_full_min",
+    "extra.charger_phases",
+    "extra.charge_current_limit_a",
+    "extra.charge_limit_source",
+];
 
 fn clear(s: &mut Sample, field: &str) {
     match field {
         "charge_kind" => s.charge_kind = None,
         "charge_power_kw" => s.charge_power_kw = None,
+        "extra.time_to_full_min" => s.extra.time_to_full_min = None,
+        "extra.charger_phases" => s.extra.charger_phases = None,
+        "extra.charge_current_limit_a" => s.extra.charge_current_limit_a = None,
+        "extra.charge_limit_source" => s.extra.charge_limit_source = None,
         _ => {}
     }
 }
@@ -1308,6 +1320,55 @@ fn overlay(
             note(&f, at, from);
         }
     }
+    // the less frequent values, kept as `extra.<name>`
+    macro_rules! take_extra {
+        ($($f:ident),*) => { $(
+            let field = concat!("extra.", stringify!($f));
+            if s.extra.$f.is_some() && newer(field, s.t_ms, input, at, from) {
+                to.extra.$f = s.extra.$f;
+                note(field, at, from);
+            }
+        )* };
+    }
+    macro_rules! take_extra_text {
+        ($($f:ident),*) => { $(
+            let field = concat!("extra.", stringify!($f));
+            if s.extra.$f.is_some() && newer(field, s.t_ms, input, at, from) {
+                to.extra.$f.clone_from(&s.extra.$f);
+                note(field, at, from);
+            }
+        )* };
+    }
+    take_extra_text!(paint, wheels, spoiler, roof, keep_climate, charge_status, charge_limit_source);
+    take_extra!(
+        right_hand_drive,
+        heading_deg,
+        sentry_mode,
+        service_mode,
+        display_on,
+        door_fl,
+        door_fr,
+        door_rl,
+        door_rr,
+        trunk_open,
+        frunk_open,
+        user_present,
+        climate_on,
+        preconditioning_cabin,
+        preconditioning_battery,
+        usable_soc,
+        plugged_in,
+        charge_port_open,
+        charge_limit_pct,
+        charge_current_request_a,
+        charge_current_limit_a,
+        charger_phases,
+        time_to_full_min,
+        tire_low,
+        energy_at_destination_kwh,
+        navigating,
+        update_installing
+    );
 }
 
 /// The ids the window's new rows (`new_ids`, spans `new`) take: a row with the id of an old one keeps it; else the
