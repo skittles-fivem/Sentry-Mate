@@ -88,13 +88,19 @@ def _car_tables(c):
     }
 
 
+def _closed_at_last(c):
+    """Open rows TeslaMate never ended that one backup car brings, per table: imported ending at their last
+    reading (counted in read and imported, not skipped)."""
+    return {"charging_processes": c["charges"] // 100}
+
+
 def import_report(cars, imported, tables_in_file=("cars", "drives", "charging_processes", "positions", "updates")):
     """The report of an import of `cars`. A car left out is not in it at all (not in `cars`, not in the counts).
     Each table's figures are the sum of its cars'; a table the backup does not have (here `geofences`, which the
     made-up backups lack) has null counts, never 0. Each car carries its own read, imported and skipped counts."""
     use = [c for c in cars if c["match"] != "leave_out"]
-    tables = {name: ({"read": 0, "imported": 0, "skipped": {}, "bad_values": {}} if name in tables_in_file
-                     else {"read": None, "imported": None, "skipped": {}, "bad_values": {}})
+    tables = {name: ({"read": 0, "imported": 0, "skipped": {}, "bad_values": {}, "closed_at_last_reading": 0}
+                     if name in tables_in_file else {"read": None, "imported": None, "skipped": {}, "bad_values": {}})
               for name in ("cars", "drives", "charging_processes", "positions", "updates", "geofences")}
     per_car = {}
     for c in use:
@@ -114,6 +120,7 @@ def import_report(cars, imported, tables_in_file=("cars", "drives", "charging_pr
             for k, v in bad.items():
                 if v:
                     t["bad_values"][k] = t["bad_values"].get(k, 0) + v
+            t["closed_at_last_reading"] += _closed_at_last(c).get(name, 0)
         per_car[c["tm_car"]] = own
     firsts = [c["first_ms"] for c in use if c.get("first_ms") is not None]
     lasts = [c["last_ms"] for c in use if c.get("last_ms") is not None]

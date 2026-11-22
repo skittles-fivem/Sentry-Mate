@@ -19,7 +19,7 @@ import { h, replace } from '../shared/dom.js';
 import { toIsoZoned } from '../shared/time.js';
 import { format } from '../shared/units.js';
 import { icon, hud, plate, btn, tag, kv, bar, callout, seg } from '../core/ui.js';
-import { counters, band } from '../core/kit.js';
+import { counters, band, plural } from '../core/kit.js';
 import { tracks } from '../core/tracks.js';
 import { emptyState, errorWords } from '../core/states.js';
 import { confirmDialog, toast } from '../core/layer.js';
@@ -535,7 +535,7 @@ export async function mount(ctx) {
     title: 'Rows per table', icon: 'book', rows: [], csvName: 'import-report-tables', label: 'Rows read, imported and skipped per table',
     note: 'Counts only: the report never keeps row values or positions.', sort: { key: 'order', dir: 'asc' },
     columns: [
-      { key: 'order', label: 'Table', lead: true, sort: true, value: (r) => r.order, render: (r) => h('span', { class: 'cell' }, h('b', null, tableName(r.name)), h('span', { class: 'cell-sub' }, TABLES[r.name]?.[1] || '')), csv: (r) => r.name },
+      { key: 'order', label: 'Table', lead: true, sort: true, value: (r) => r.order, render: (r) => h('span', { class: 'cell' }, h('b', null, tableName(r.name)), h('span', { class: 'cell-sub' }, TABLES[r.name]?.[1] || '', r.closed ? ` · ${num(r.closed)}\u00a0closed at last reading` : '')), csv: (r) => r.name },
       { key: 'read', label: 'Read', num: true, sort: true, render: (r) => cnt(r.read) },
       { key: 'imported', label: 'Imported', num: true, sort: true, value: (r) => (S.report?.imported ? r.imported : r.would), render: (r) => (S.report?.imported ? cnt(r.imported) : r.would == null ? gap() : h('span', { class: 'faint', title: 'From the check: what the import would store' }, `${num(r.would)} to import`)), csv: (r) => (S.report?.imported ? r.imported : r.would) ?? '' },
       { key: 'skipped', label: 'Skipped', num: true, sort: true, render: (r) => (r.skipped == null ? gap() : r.skipped ? h('span', { class: 'warn' }, num(r.skipped)) : h('span', { class: 'faint' }, '0')), csv: (r) => r.skipped ?? '' },
@@ -647,7 +647,12 @@ export async function mount(ctx) {
     reportLists.hidden = false;
     if (rep.kind === 'teslafi') { paintTfReport(rep); return; }
     const names = Object.keys(rep.tables || {});
-    const rows = names.map((name, i) => { const t = rep.tables[name] || {}; const sk = sum(t.skipped); return { name, order: i, read: t.read ?? null, imported: t.imported ?? null, would: less(t.read, sk), skipped: sk, bad: Object.entries(t.bad_values || {}) }; });
+    const rows = names.map((name, i) => { const t = rep.tables[name] || {}; const sk = sum(t.skipped); return { name, order: i, read: t.read ?? null, imported: t.imported ?? null, would: less(t.read, sk), skipped: sk, closed: t.closed_at_last_reading || 0, bad: Object.entries(t.bad_values || {}) }; });
+    // old charges or states TeslaMate never ended: imported ending at their last reading (in read and imported, not skipped)
+    const closed = rows.filter((r) => r.closed).map((r) => {
+      const [one, many] = { charging_processes: ['charge', 'charges'], states: ['state', 'states'] }[r.name] || ['row', 'rows'];
+      return `${plural(r.closed, one, many)} TeslaMate never ended ${rep.imported ? (r.closed === 1 ? 'was' : 'were') : 'will be'} taken, ending at ${r.closed === 1 ? 'its' : 'their'} last reading.`;
+    });
     const reasons = names.flatMap((name) => Object.entries(rep.tables[name]?.skipped || {}).map(([reason, n]) => ({ table: name, reason, n })));
     // the counts add only what the file has: a table it lacks is a gap, and a total of gaps is a gap
     const tot = { read: add(...rows.map((r) => r.read)), imp: add(...rows.map((r) => (rep.imported ? r.imported : r.would))), sk: add(...rows.map((r) => r.skipped)), bad: add(...rows.flatMap((r) => r.bad.map(([, n]) => n))) ?? (rows.some((r) => r.read != null) ? 0 : null) };
@@ -655,7 +660,7 @@ export async function mount(ctx) {
     const outs = new Set(S.match.filter((c) => c.match === 'leave_out').map((c) => c.tm_car));
     const cars = (rep.cars || []).filter((c) => c.match !== 'leave_out' && !outs.has(c.tm_car));
     replace(reportSlot,
-      h('p', { class: 'small' }, rep.imported ? 'What the import stored.' : 'From the check: what the import will store. Nothing is stored yet.'),
+      h('p', { class: 'small' }, rep.imported ? 'What the import stored.' : 'From the check: what the import will store. Nothing is stored yet.', ...closed.map((c) => ` ${c}`)),
       counters([
         { label: 'Rows read', ...ctr(tot.read), how: 'every row of every table used' },
         { label: rep.imported ? 'Imported' : 'To import', ...ctr(tot.imp), how: rep.imported ? 'stored, marked as imported' : 'read minus skipped' },

@@ -648,19 +648,26 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- report */
   const reportBox = h('div', { class: 'im-report' });
   const skipBox = h('div', { class: 'im-skip', role: 'note', cover: 'web.import.rejected-count' });
+  // old charges or states TeslaMate never ended, imported ending at their last reading (in read and imported,
+  // not skipped): a column only while some table has them
+  const closedCol = { key: 'closed', label: 'Closed', num: true, sort: true, title: 'Never ended in TeslaMate: imported ending at their last reading',
+    render: (r) => (r.closed == null ? gap() : r.closed ? num(r.closed) : h('span', { class: 'faint' }, '0')) };
+  const tableCols = [
+    { key: 'order', label: 'Table', sort: true, value: (r) => r.order, render: (r) => h('span', null, h('b', null, r.tf ? TF_TABLES[r.name]?.[0] || tableName(r.name) : tableName(r.name)), h('span', { class: 'im-tdesc' }, (r.tf ? TF_TABLES[r.name]?.[1] : TABLES[r.name]?.[1]) || '')), csv: (r) => r.name },
+    { key: 'read', label: 'Read', num: true, sort: true, render: (r) => cnt(r.read) },
+    { key: 'imported', label: 'Imported', num: true, sort: true, value: (r) => (S.report?.imported ? r.imported : r.would),
+      render: (r) => (S.report?.imported ? cnt(r.imported) : r.would == null ? gap() : h('span', { class: 'faint', title: 'From the check: what the import would store' }, num(r.would), ' to import')), csv: (r) => (S.report?.imported ? r.imported : r.would) },
+    closedCol,
+    { key: 'skipped', label: 'Skipped', num: true, sort: true, render: (r) => (r.skipped == null ? gap() : r.skipped ? h('span', { class: 'warn' }, num(r.skipped)) : h('span', { class: 'faint' }, '0')) },
+    { key: 'bad', label: 'Values cleared', render: (r) => (r.bad.length ? r.bad.map(([col, n]) => h('span', { class: 'im-badval' }, h('span', { class: 'mono' }, col), ` ${num(n)}`)) : h('span', { class: 'faint' }, 'none')),
+      csv: (r) => r.bad.map(([c, n]) => `${c}:${n}`).join('; ') },
+  ];
+  let tablesSort = { key: 'order', dir: 'asc' };
   const tablesTable = dataTable(ctx, {
     title: 'Rows per table', icon: 'book', rows: [], csvName: 'import-report-tables', label: 'Rows read, imported and skipped per table',
     note: 'Counts only: the report never keeps row values or positions.',
     sort: { key: 'order', dir: 'asc' },
-    columns: [
-      { key: 'order', label: 'Table', sort: true, value: (r) => r.order, render: (r) => h('span', null, h('b', null, r.tf ? TF_TABLES[r.name]?.[0] || tableName(r.name) : tableName(r.name)), h('span', { class: 'im-tdesc' }, (r.tf ? TF_TABLES[r.name]?.[1] : TABLES[r.name]?.[1]) || '')), csv: (r) => r.name },
-      { key: 'read', label: 'Read', num: true, sort: true, render: (r) => cnt(r.read) },
-      { key: 'imported', label: 'Imported', num: true, sort: true, value: (r) => (S.report?.imported ? r.imported : r.would),
-        render: (r) => (S.report?.imported ? cnt(r.imported) : r.would == null ? gap() : h('span', { class: 'faint', title: 'From the check: what the import would store' }, num(r.would), ' to import')), csv: (r) => (S.report?.imported ? r.imported : r.would) },
-      { key: 'skipped', label: 'Skipped', num: true, sort: true, render: (r) => (r.skipped == null ? gap() : r.skipped ? h('span', { class: 'warn' }, num(r.skipped)) : h('span', { class: 'faint' }, '0')) },
-      { key: 'bad', label: 'Values cleared', render: (r) => (r.bad.length ? r.bad.map(([col, n]) => h('span', { class: 'im-badval' }, h('span', { class: 'mono' }, col), ` ${num(n)}`)) : h('span', { class: 'faint' }, 'none')),
-        csv: (r) => r.bad.map(([c, n]) => `${c}:${n}`).join('; ') },
-    ],
+    columns: tableCols, onSort: (o) => { tablesSort = o; },
     csv: { get columns() {
       const done = !!S.report?.imported;
       return [
@@ -668,12 +675,21 @@ export async function mount(ctx) {
         { label: 'Table', value: (r) => tableName(r.name) },
         { label: 'Read (rows)', value: (r) => r.read },
         done ? { label: 'Imported (rows)', value: (r) => r.imported } : { label: 'To import (rows, not stored yet)', value: (r) => r.would },
+        ...(tableCols.includes(closedCol) ? [{ label: 'Closed at last reading (rows)', value: (r) => r.closed ?? '' }] : []),
         { label: 'Skipped (rows)', value: (r) => r.skipped },
         { label: 'Values cleared (column: rows)', value: (r) => r.bad.map(([c, n]) => `${c}: ${n}`).join('; ') },
       ];
     } },
     empty: () => emptyState({ icon: 'book', title: 'No report yet', text: 'The report appears once the whole file has been checked.' }),
   });
+  function setTableRows(rows) {
+    const on = rows.some((r) => r.closed), at = tableCols.indexOf(closedCol);
+    if (on && at < 0) tableCols.splice(tableCols.findIndex((c) => c.key === 'imported') + 1, 0, closedCol);
+    if (!on && at >= 0) tableCols.splice(at, 1);
+    if (!on && tablesSort.key === 'closed') tablesSort = { key: 'order', dir: 'asc' };
+    tablesTable.setSortKey(tablesSort);
+    tablesTable.setRows(rows);
+  }
   const reasonsTable = dataTable(ctx, {
     title: 'Why rows were skipped', icon: 'warn', rows: [], csvName: 'import-report-skipped', label: 'Skipped rows by reason',
     cover: 'web.import.rejected.col-reason', sort: { key: 'n', dir: 'desc' },
@@ -748,7 +764,7 @@ export async function mount(ctx) {
     if (!rep) {
       replace(reportBox, emptyState({ icon: 'book', title: j ? 'No report yet' : 'No import yet', text: j ? 'The report appears once the whole file has been checked (pass 1).' : 'Each import gets a report: rows read, imported and skipped per table, and why.' }));
       skipBox.hidden = true;
-      tablesTable.setRows([]); reasonsTable.setRows([]); carsTable.setRows([]); filesTable.setRows([]);
+      setTableRows([]); reasonsTable.setRows([]); carsTable.setRows([]); filesTable.setRows([]);
       reportTables.hidden = true; carsWrap.hidden = true; filesWrap.hidden = true;
       return;
     }
@@ -761,13 +777,17 @@ export async function mount(ctx) {
     const rows = names.map((name, i) => {
       const t = rep.tables[name] || {};
       const skipped = rowsOf(t.skipped);
-      return { name, order: i, read: t.read ?? null, imported: t.imported ?? null, would: less(t.read, skipped), skipped, bad: Object.entries(t.bad_values || {}).filter(([, n]) => n != null) };
+      return { name, order: i, read: t.read ?? null, imported: t.imported ?? null, would: less(t.read, skipped), skipped, closed: t.closed_at_last_reading ?? null, bad: Object.entries(t.bad_values || {}).filter(([, n]) => n != null) };
+    });
+    const closed = rows.filter((r) => r.closed).map((r) => {
+      const [one, many] = { charging_processes: ['charge', 'charges'], states: ['state', 'states'] }[r.name] || ['row', 'rows'];
+      return `${num(r.closed)} ${r.closed === 1 ? one : many} TeslaMate never ended ${rep.imported ? (r.closed === 1 ? 'was' : 'were') : 'will be'} taken, ending at ${r.closed === 1 ? 'its' : 'their'} last reading.`;
     });
     const reasons = names.flatMap((name) => Object.entries(rep.tables[name]?.skipped || {}).filter(([, n]) => n != null).map(([reason, n]) => ({ table: name, reason, n })));
     const tot = { read: sumOf(rows.map((r) => r.read)), imp: sumOf(rows.map((r) => (rep.imported ? r.imported : r.would))),
       sk: sumOf(rows.map((r) => r.skipped)), bad: sumOf(rows.flatMap((r) => r.bad.map(([, n]) => n))) };
     replace(reportBox,
-      h('p', { class: 'im-report-what' }, rep.imported ? 'What the import stored.' : 'From the check: what the import will store. Nothing is stored yet.'),
+      h('p', { class: 'im-report-what' }, rep.imported ? 'What the import stored.' : 'From the check: what the import will store. Nothing is stored yet.', ...closed.map((c) => ` ${c}`)),
       figures([
         metric('Rows read', figNum(tot.read), null, { explain: 'Every row of every table the import uses' }),
         metric(rep.imported ? 'Rows imported' : 'Rows to import', figNum(tot.imp), null, { explain: rep.imported ? 'Stored and marked as imported' : 'Read minus skipped' }),
@@ -779,7 +799,7 @@ export async function mount(ctx) {
     replace(skipBox, icon('warn', 'ico--sm'), h('div', null,
       h('p', null, h('b', null, `${num(tot.sk)} rows ${rep.imported ? 'were' : 'will be'} skipped.`), ' Skipping a row did not stop the import; every other row is in.'),
       h('p', null, 'A drive or charge built around a skipped row can come out a little short (fewer track points, no energy figure). The report keeps only how many rows were skipped and why, never what they held, so it is still here after a restart.')));
-    tablesTable.setRows(rows);
+    setTableRows(rows);
     reasonsTable.setRows(reasons);
     carsTable.setRows(cars);
     filesTable.setRows(uploads.map((u, i) => ({ ...u, order: i })));
@@ -809,7 +829,7 @@ export async function mount(ctx) {
     replace(skipBox, icon('warn', 'ico--sm'), h('div', null,
       h('p', null, h('b', null, `${num(sk)} polls ${rep.imported ? 'were' : 'will be'} skipped.`), ' Skipping a poll did not stop the import; every other poll is in.'),
       h('p', null, 'The report keeps only how many polls were skipped and why, never what they held.')));
-    tablesTable.setRows(rows);
+    setTableRows(rows);
     reasonsTable.setRows(reasons);
     carsTable.setRows((rep.cars || []).map((c) => ({ ...c, read: c.rows, imported: rep.imported ? c.rows : null, skipped: c.rows == null ? null : {} })));
   }
@@ -853,7 +873,7 @@ export async function mount(ctx) {
   function paintCanReport(rep) {
     const L = rep.logs || {};
     reportTables.hidden = true; carsWrap.hidden = true; filesWrap.hidden = true; canWrap.hidden = false;
-    tablesTable.setRows([]); reasonsTable.setRows([]); carsTable.setRows([]); filesTable.setRows([]);
+    setTableRows([]); reasonsTable.setRows([]); carsTable.setRows([]); filesTable.setRows([]);
     const took = rep.imported ? L.imported : L.to_import;
     replace(reportBox,
       h('p', { class: 'im-report-what' }, rep.imported ? 'What the import stored: the car\'s own signed CAN logs, as if the CAN Bridge had uploaded them.' : 'From the check: what the import will store. Nothing is stored yet.'),

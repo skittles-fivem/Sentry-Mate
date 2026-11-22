@@ -431,7 +431,7 @@ export async function mount(ctx) {
   const tablesT = table(ctx, {
     title: 'rows per table', rows: [], csv: false, label: 'Rows read, imported and skipped per table', note: 'Counts only: the report never keeps row values or positions.',
     columns: [
-      { key: 'name', label: 'table', ph: 'main', grow: true, render: (r) => (r.tf ? TF_TABLES : TABLES)[r.name] || r.name.replace(/_/g, ' ') },
+      { key: 'name', label: 'table', ph: 'main', grow: true, render: (r) => [(r.tf ? TF_TABLES : TABLES)[r.name] || r.name.replace(/_/g, ' '), r.closed ? h('span', { class: 'muted' }, ` · ${nf(r.closed)}\u00a0closed at last reading`) : null] },
       { key: 'read', label: 'read', num: true, ph: 'sub', render: (r) => cnt(r.read) },
       { key: 'imp', label: 'imported', num: true, ph: 'num', render: (r) => (S.rep?.imported ? cnt(r.imported) : r.would == null ? gap() : h('span', { class: 'muted' }, `${nf(r.would)} to import`)) },
       { key: 'skipped', label: 'skipped', num: true, ph: 'sub', render: (r) => (r.skipped == null ? gap() : r.skipped ? h('span', { class: 'tone--warn' }, nf(r.skipped)) : h('span', { class: 'muted' }, '0')) },
@@ -566,14 +566,19 @@ export async function mount(ctx) {
     const uploads = rep.uploads || [];
     tablesT.el.hidden = reasonsT.el.hidden = false; carsT.el.hidden = !cars.length; uploadsT.el.hidden = !uploads.length;
     const names = Object.keys(rep.tables || {});
-    const rows = names.map((name) => { const t = rep.tables[name] || {}; const sk = sum(t.skipped); return { name, read: t.read ?? null, imported: t.imported ?? null, would: t.read == null ? null : t.read - (sk ?? 0), skipped: sk, bad: Object.entries(t.bad_values || {}) }; });
+    const rows = names.map((name) => { const t = rep.tables[name] || {}; const sk = sum(t.skipped); return { name, read: t.read ?? null, imported: t.imported ?? null, would: t.read == null ? null : t.read - (sk ?? 0), skipped: sk, closed: t.closed_at_last_reading || 0, bad: Object.entries(t.bad_values || {}) }; });
+    // old charges or states TeslaMate never ended: imported ending at their last reading (in read and imported, not skipped)
+    const closed = rows.filter((r) => r.closed).map((r) => {
+      const [one, many] = { charging_processes: ['charge', 'charges'], states: ['state', 'states'] }[r.name] || ['row', 'rows'];
+      return `${nf(r.closed)} ${r.closed === 1 ? one : many} TeslaMate never ended ${rep.imported ? (r.closed === 1 ? 'was' : 'were') : 'will be'} taken, ending at ${r.closed === 1 ? 'its' : 'their'} last reading. `;
+    });
     const tot = rows.reduce((a, r) => ({ read: add(a.read, r.read), imp: add(a.imp, rep.imported ? r.imported : r.would), sk: add(a.sk, r.skipped) }), { read: null, imp: null, sk: null });
     replace(repSlot, kv([
       ['rows read', cnt(tot.read)],
       [rep.imported ? 'rows imported' : 'rows to import', cnt(tot.imp)],
       ['rows skipped', tot.sk == null ? gap() : tot.sk ? [h('span', { class: 'tone--warn' }, nf(tot.sk)), ' each with its reason below'] : 'none: every row passed', { tone: tot.sk ? 'warn' : null }],
       ['history', rep.span ? `${date(rep.span.from_ms, tz)} .. ${date(rep.span.to_ms, tz)} (${dur(rep.span.to_ms - rep.span.from_ms)})` : 'no dated rows'],
-    ]), note(rep.imported ? 'What the import stored. ' : 'From the check: what the import will store. Nothing is stored yet. ',
+    ]), note(rep.imported ? 'What the import stored. ' : 'From the check: what the import will store. Nothing is stored yet. ', ...closed,
       tot.sk ? `Skipping a row did not stop the import. A drive or charge built around a skipped row can come out a little short.` : ''));
     tablesT.setRows(rows);
     reasonsT.setRows(names.flatMap((name) => Object.entries(rep.tables[name].skipped || {}).map(([reason, n]) => ({ table: name, reason, n }))));
