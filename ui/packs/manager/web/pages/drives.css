@@ -1,0 +1,132 @@
+/* Drives (pages/drives.js): the filter bar, the summary, the list with picks for a trip, the patterns with
+   distance per day, the drives with missing data. */
+
+.drives-summary { padding: round(1.125rem, var(--e)) round(1.25rem, var(--e)); margin-bottom: var(--gap); }
+.drives-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.drives-metrics .metric { padding: 0 round(1.25rem, var(--e)); border-left: 1px solid var(--line); }
+.drives-metrics .metric:first-child { padding-left: 0; border-left: 0; }
+.daily-chart { margin-top: round(1.5rem, var(--e)); padding-top: round(1.25rem, var(--e)); border-top: 1px solid var(--line); }
+.daily-chart-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-3); }
+.daily-chart-side { display: inline-flex; align-items: center; gap: round(0.875rem, var(--e)); }
+.daily-chart-head b { color: var(--text); font-weight: 600; }
+.daily-chart-plot { position: relative; height: round(6.5rem, var(--e)); margin-top: round(0.375rem, var(--e)); }
+
+.drives-table { margin-bottom: var(--gap); }
+.drives-table .col-route .cell-text { max-width: round(24rem, var(--e)); }
+.cell-text { display: flex; flex-direction: column; min-width: 0; --LH: round(calc(1.3 * 1em), 2px); }
+.cell-text > * { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cell-text .route { font-weight: 500; }
+.temp-cell.is-cold { color: var(--st-parked); }
+.temp-cell.is-warm { color: var(--warm); }
+.eff { display: grid; justify-content: start; /* a block, so it sits in the middle of the cell on whole px */ grid-template-columns: round(4.5rem, var(--e)) auto; align-items: center; gap: round(0.625rem, var(--e)); }
+.eff-bar { position: relative; height: round(0.375rem, var(--e)); border-radius: 99px; background: var(--glass-3); overflow: hidden; }
+.eff-bar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); border-radius: inherit; background: var(--text-3); }
+.eff-bar.is-better > i { background: linear-gradient(90deg, var(--live-2), var(--live)); }
+.eff-val { font-size: max(0.8125rem, var(--fs-floor)); white-space: nowrap; }
+.flag-icons { display: flex; gap: round(0.375rem, var(--e)); align-items: center; color: var(--warm); }
+
+/* picks for a trip */
+.drives-table .col-pick { width: round(2.5rem, var(--e)); padding-right: 0; }
+.pick { display: inline-flex; align-items: center; justify-content: center; width: round(1.75rem, var(--e)); height: round(1.75rem, var(--e)); cursor: pointer; }
+.pick input { width: round(1rem, var(--e)); height: round(1rem, var(--e)); margin: 0; accent-color: var(--live); cursor: pointer; }
+.pick-bar { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); margin-left: auto; }
+.pick-bar[hidden] { display: none; }
+.pick-text { font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); white-space: nowrap; }
+
+/* places left out of the patterns */
+.excl-btn.is-on { border-color: var(--live-line); background: var(--live-soft); }
+.excl-text { max-width: round(18rem, var(--e)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.excl-pop { width: round(20rem, var(--e)); }
+.excl-hint { font-size: max(0.78125rem, var(--fs-floor)); --LH: round(calc(1.45 * 1em), 2px); color: var(--text-2); margin-bottom: round(0.75rem, var(--e)); }
+.excl-pop .input { width: 100%; margin-bottom: round(0.625rem, var(--e)); }
+.excl-sub { margin-left: auto; padding-left: round(0.75rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); white-space: nowrap; }
+.excl-list .check { width: 100%; }
+.excl-list { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); max-height: round(16rem, var(--e)); overflow-y: auto; padding: round(0.125rem, var(--e)); }
+.excl-actions { display: flex; justify-content: space-between; gap: round(0.5rem, var(--e)); margin-top: round(0.875rem, var(--e)); padding-top: round(0.75rem, var(--e)); border-top: 1px solid var(--line); }
+.missing-table { margin-top: var(--gap); }
+
+.patterns { margin-bottom: 0; }
+.patterns > .panel-head { flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); }
+.patterns-scope { flex: 1; min-width: 0; font-size: max(0.8125rem, var(--fs-floor)); }
+.patterns-empty { margin-bottom: round(1rem, var(--e)); }
+.list-head { display: flex; align-items: flex-start; justify-content: space-between; gap: round(1rem, var(--e)); }
+.pattern-lists .note { margin-top: round(0.625rem, var(--e)); }
+.pattern-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(round(11rem, var(--e)), 1fr)); gap: round(1.125rem, var(--e)) round(1.5rem, var(--e)); }
+.spark { display: flex; align-items: flex-end; gap: 1px; height: round(1.5rem, var(--e)); margin-top: round(0.25rem, var(--e)); }
+.spark i { flex: 1; min-width: 1px; height: max(1px, var(--h)); background: var(--live-line); border-radius: 1px 1px 0 0; }
+.pattern-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(1.5rem, var(--e)) round(2rem, var(--e)); margin-top: round(1.5rem, var(--e)); padding-top: round(1.25rem, var(--e)); border-top: 1px solid var(--line); }
+
+@container page (max-width: 85.375rem) {
+  .drives-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: round(1rem, var(--e)); }
+  .drives-metrics .metric:nth-child(4) { padding-left: 0; border-left: 0; }
+}
+@container page (max-width: 76rem) {
+  .pattern-lists { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* the visible line under the filter bar: what the text box matches, what the basis means */
+.filter-bar .filters-hint { flex-basis: 100%; margin: 0; font-size: max(0.78125rem, var(--fs-floor)); --LH: round(calc(1.45 * 1em), 2px); color: var(--text-3); }
+.excl-unused { margin-top: round(0.625rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); }
+.patterns-empty .btn { margin-left: round(0.5rem, var(--e)); }
+@container page (max-width: 36rem) {
+  .drives-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .drives-metrics .metric { padding: 0 round(0.75rem, var(--e)); border-left: 1px solid var(--line); }
+  .drives-metrics .metric:nth-child(odd) { padding-left: 0; border-left: 0; }
+}
+
+/* ------------------------------------------------------------ phone (<html data-phone>)
+   The filter bar is one column of full-width controls: the period, the place (and where), the text box,
+   then "More filters" folding the rest (distance, speed, source, flags, basis, places left out, the hint). */
+:root[data-phone] .drives-filters { display: grid; grid-template-columns: minmax(0, 1fr); gap: round(0.5rem, var(--e)); }
+:root[data-phone] .drives-filters > .drv-period { justify-content: flex-start; width: 100%; }
+:root[data-phone="short"] .drives-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+:root[data-phone="short"] .drives-filters > :is(.filter-place, .drv-more) { grid-column: 1 / -1; }
+:root[data-phone="short"] .drives-filters > .filter-place { grid-row: 2; }
+:root[data-phone] .drives-filters > .drv-period > .ico:last-child { margin-left: auto; }
+:root[data-phone] .drives-filters .filter-place { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: round(0.5rem, var(--e)); }
+:root[data-phone] .drives-filters .filter-place > .ico { display: none; }
+:root[data-phone] .drives-filters .filter-place .select { width: 100%; max-width: none; min-width: 0; }
+:root[data-phone] .drives-filters .field--search { width: 100%; }
+:root[data-phone] .drv-more { min-width: 0; }
+:root[data-phone] .drv-more-sum { display: flex; width: 100%; justify-content: flex-start; list-style: none; cursor: pointer; }
+:root[data-phone] .drv-more-sum::-webkit-details-marker { display: none; }
+:root[data-phone] .drv-more-count { color: var(--live); font-weight: 600; }
+:root[data-phone] .drv-more-chev { margin-left: auto; transition: transform 0.15s; }
+:root[data-phone] .drv-more[open] .drv-more-chev { transform: rotate(180deg); }
+:root[data-phone] .drv-more[open] > .drv-more-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.5rem, var(--e)); padding-top: round(0.625rem, var(--e)); }
+:root[data-phone] .drv-more-body > * { grid-column: 1 / -1; min-width: 0; }
+:root[data-phone] .drv-more-body > .select { grid-column: auto; width: 100%; max-width: none; }
+:root[data-phone] .drv-more-body .filter--num { display: grid; grid-template-columns: round(8.5rem, var(--e)) minmax(0, 1fr) round(2.5rem, var(--e)); align-items: center; gap: round(0.5rem, var(--e)); }
+:root[data-phone] .drv-more-body .filter--num .input--sm { width: 100%; }
+:root[data-phone] .drv-more-body .filter-eff .select, :root[data-phone] .drv-more-body .filter-excl, :root[data-phone] .drv-more-body .excl-btn { width: 100%; max-width: none; }
+:root[data-phone] .drv-more-body .excl-btn { justify-content: flex-start; }
+:root[data-phone] .drv-more-body .excl-btn > .ico:last-child { margin-left: auto; }
+:root[data-phone] .drv-more-body .excl-text { max-width: none; flex: 0 1 auto; min-width: 0; }
+:root[data-phone] .drv-more-body .filters-hint { margin-top: round(0.25rem, var(--e)); }
+:root[data-phone] .excl-pop { width: auto; }
+:root[data-phone] .excl-list { max-height: 40dvh; }
+
+/* the list as cards: the start (with the pick box at its right) heads the card, the route under it */
+:root[data-phone] .drives-table .tbl > tbody > tr:not(.tbl-empty, .tbl-skel) { position: relative; }
+:root[data-phone] .drives-table .tbl td.col-pick { position: absolute; top: round(0.375rem, var(--e)); right: round(0.5rem, var(--e)); width: auto; }
+:root[data-phone] .drives-table .tbl td.col-pick::before { display: none; }
+:root[data-phone] .drives-table .pick { width: var(--tap); height: var(--tap); }
+:root[data-phone] .drives-table .pick input { width: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); }
+:root[data-phone] .drives-table .tbl > tbody > tr > td:nth-child(2) { grid-column: 1 / -1; padding-right: round(3rem, var(--e)); font-size: max(0.9375rem, var(--fs-floor)); }
+:root[data-phone] .drives-table .tbl:not(.tbl--keep) > tbody > tr > td[data-label]:nth-child(2)::before { display: none; }
+:root[data-phone] .drives-table .tbl td.col-route { grid-column: 1 / -1; }
+:root[data-phone] .drives-table .col-route .cell-text { max-width: none; }
+:root[data-phone] .drives-table .cell-text > * { white-space: normal; overflow: visible; }
+:root[data-phone] .drives-table .sub--src { flex-wrap: wrap; }
+:root[data-phone] .drives-table td:has(> .flag-icons:empty) { display: none; }
+:root[data-phone] .drives-table .eff { grid-template-columns: minmax(0, 4.5rem) auto; }
+:root[data-phone] .drives-table .pick-bar { flex: 1 0 100%; flex-wrap: wrap; margin-left: 0; }
+:root[data-phone] .drives-table .pick-bar .pick-text { flex: 1 0 100%; }
+:root[data-phone] .drives-table .pick-bar .btn { flex: 1 1 auto; }
+:root[data-phone] .missing-table .tbl > tbody > tr > td:nth-child(4) { grid-column: 1 / -1; }
+
+/* the patterns: two columns of figures; the lists in one column */
+:root[data-phone] .pattern-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(1rem, var(--e)) round(1rem, var(--e)); }
+:root[data-phone] .patterns-scope { flex-basis: 100%; order: 3; }
+:root[data-phone] .pattern-lists { grid-template-columns: minmax(0, 1fr); }
+:root[data-phone] .drives-summary { padding: round(1rem, var(--e)); }
