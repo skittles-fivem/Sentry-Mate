@@ -73,7 +73,7 @@ export async function mount(ctx) {
 
   function why(x, { sleepy = true } = {}) {
     if (x != null && v(x) != null) return null;
-    if (now.state === 'unknown') return 'no recent log';
+    if (!now.at_ms) return 'no recent log';
     if (sleepy && now.state === 'asleep') return 'asleep, not sent';
     return 'not sent by this car';
   }

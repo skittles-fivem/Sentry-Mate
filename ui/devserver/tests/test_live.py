@@ -72,7 +72,8 @@ class Now(ServerCase):
 
     def test_c3_is_silent(self):
         n = self.c.get("/api/v1/cars/c3/now")
-        self.assertEqual(n["state"], "unknown")
+        # its newest log ended parked: it stays parked (stale), not unknown
+        self.assertEqual(n["state"], "parked")
         self.assertTrue(n["stale"])
         self.assertLess(n["at_ms"], NOW - 2 * 86_400_000)  # values keep their own time
         self.assertIsNone(n["tyres_kpa"])  # the old Model S has no mapped tyre sensors

@@ -143,7 +143,11 @@ def _now_object(app, car_id, t):
         return {"car": car_id, "time_zone": meta["time_zone"], "state": "unknown", "since_ms": None, "at_ms": None,
                 "received_ms": received, "delay_s": None, "stale": True, "buses": [], "driving": False}
     # state and since
-    if cur is None or cur.kind == "gap":
+    if silent and seg is not None and seg.kind == "parked":
+        # nothing since the newest log, which ended parked: the car stays parked (or asleep, if that log closed quiet)
+        _, sub = seg.sub_at(ts)
+        state, since = ("asleep" if sub[2] == "asleep" else "parked"), max(seg.start, sub[0])
+    elif cur is None or cur.kind == "gap":
         state, since = "unknown", cur.start if cur else None
     elif cur.kind == "parked":
         i, sub = cur.sub_at(tv)

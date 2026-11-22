@@ -94,10 +94,12 @@ export async function mount(ctx) {
     const hist = src(car, { full: true });
     replace(inputsEl, inputsLine(n.inputs), hist ? h('p', { class: 'src-line src-line--car' }, h('span', { class: 'src-inputs-k' }, 'history '), hist) : null);
     const midDrive = n.state === 'driving' && n.stale;
-    const show = n.stale || n.state === 'unknown';
+    // no data: no sample at all (an unknown state with fresh values is not "no data")
+    const none = !n.at_ms;
+    const show = n.stale || none;
     staleLine.hidden = !show;
-    replace(staleLine, tag(n.state === 'unknown' ? 'offline' : 'stale', 'warn'), ' ',
-      midDrive ? 'data stopped during a drive; it is finished when later logs arrive. ' : n.state === 'unknown' ? 'no data for now. ' : 'old data. ',
+    replace(staleLine, tag(none ? 'offline' : 'stale', 'warn'), ' ',
+      midDrive ? 'data stopped during a drive; it is finished when later logs arrive. ' : none ? 'no data for now. ' : 'old data. ',
       `newest values from ${n.at_ms ? formatDateTime(n.at_ms, tz) : 'a while ago'} (${n.at_ms ? ago(n.at_ms) : '—'}); below are the last known values.`);
   }
 

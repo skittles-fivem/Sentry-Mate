@@ -182,13 +182,15 @@ export async function mount(ctx) {
   function paintBanner() {
     const n = now;
     const midDrive = n.state === 'driving' && n.stale;
-    const show = n.stale || n.state === 'unknown';
+    // no data: no sample at all (an unknown state with fresh values is not "no data")
+    const none = !n.at_ms;
+    const show = n.stale || none;
     replace(banner, h('div', {
-      class: ['stale-banner', n.state === 'unknown' && 'stale-banner--offline'], role: 'status', hidden: !show,
+      class: ['stale-banner', none && 'stale-banner--offline'], role: 'status', hidden: !show,
       cover: ['summary.state.drive_offline', 'summary.data.restored_values'],
-    }, icon(n.state === 'unknown' ? 'question' : 'clock'),
+    }, icon(none ? 'question' : 'clock'),
     h('p', null,
-      h('b', null, midDrive ? 'Data stopped during a drive. ' : n.state === 'unknown' ? 'No data for now. ' : 'Old data. '),
+      h('b', null, midDrive ? 'Data stopped during a drive. ' : none ? 'No data for now. ' : 'Old data. '),
       `The newest values are from ${n.at_ms ? formatDateTime(n.at_ms, tz) : 'a while ago'} (${n.at_ms ? ago(n.at_ms) : '—'}). `,
       midDrive ? 'The drive is shown up to there and is finished when later logs arrive. ' : '',
       'Values below are from then; one recorded earlier still shows its own age.')));

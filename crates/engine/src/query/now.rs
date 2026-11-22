@@ -159,12 +159,27 @@ pub fn state_word(n: Option<&Now>) -> &'static str {
     if n.driving {
         return "driving";
     }
+    // no state span says so (the newest span is a sliver of unknown), but the newest sample shows the car standing
+    // still: it is parked (online)
+    let still = n.sample.gear == Some(Gear::P) || n.sample.speed_kmh == Some(0.0);
     match n.state {
         Some(State::Asleep) => "asleep",
-        Some(State::Unknown) | None => "unknown",
-        Some(State::Online) if n.sample.charging == Some(true) => "charging",
-        Some(State::Online) => "parked",
+        Some(State::Unknown) | None if !still => "unknown",
+        _ if n.sample.charging == Some(true) => "charging",
+        _ => "parked",
     }
+}
+
+/// The state word of a Now, with the car's newest state spans (newest first): as [`state_word`], but an unknown
+/// state after a log that closed quiet (an asleep span with no frames after the newest sample) is asleep.
+pub(crate) fn state_word_with(n: Option<&Now>, spans: &[model::StateSpan]) -> &'static str {
+    let word = state_word(n);
+    let Some(n) = n.filter(|n| !n.driving && matches!(n.state, Some(State::Unknown) | None)) else { return word };
+    let slept = spans
+        .iter()
+        .find(|s| s.state != State::Unknown)
+        .is_some_and(|s| s.state == State::Asleep && s.end_ms >= n.at_ms);
+    if slept { "asleep" } else { word }
 }
 
 pub(crate) fn gear_word(g: Gear) -> &'static str {
@@ -221,7 +236,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     // the car's newest state spans, joined across the rows they are stored in (the newest row is often a stub at
     // the end of the newest log)
     let spans = super::timeline::newest_spans(e, car, 8)?;
-    let state = state_word(n.as_ref());
+    let state = state_word_with(n.as_ref(), &spans);
     let places = e.places();
     let location = match (s.lat, s.lon) {
         (Some(lat), Some(lon)) => Some(Location {
@@ -418,4 +433,53 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
             changed_since_ms: None,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use model::StateSpan;
+
+    fn now(state: State, gear: Option<Gear>, speed: Option<f64>) -> Now {
+        let sample = Sample { gear, speed_kmh: speed, ..Sample::default() };
+        Now {
+            car: 1,
+            at_ms: 10_000,
+            state: Some(state),
+            driving: false,
+            sample,
+            place: None,
+            range_estimated_km: None,
+            healthy: None,
+        }
+    }
+
+    fn span(state: State, start_ms: u64, end_ms: u64) -> StateSpan {
+        StateSpan {
+            car: 1,
+            state,
+            start_ms,
+            end_ms,
+            buses: Vec::new(),
+            source: Source::Live,
+            inputs: Default::default(),
+        }
+    }
+
+    #[test]
+    fn an_unknown_sliver_with_the_car_standing_still_is_parked_or_asleep() {
+        // gear P (or speed 0) in the newest sample: parked, not unknown
+        assert_eq!(state_word(Some(&now(State::Unknown, Some(Gear::P), None))), "parked");
+        assert_eq!(state_word(Some(&now(State::Unknown, None, Some(0.0)))), "parked");
+        // nothing says the car stands still: still unknown
+        assert_eq!(state_word(Some(&now(State::Unknown, Some(Gear::D), Some(30.0)))), "unknown");
+        assert_eq!(state_word(None), "unknown");
+        // the newest log closed quiet (asleep after the newest sample), then an unknown sliver: asleep
+        let n = now(State::Unknown, Some(Gear::P), None);
+        let spans =
+            [span(State::Unknown, 20_000, 21_000), span(State::Asleep, 10_500, 20_000), span(State::Online, 0, 10_500)];
+        assert_eq!(state_word_with(Some(&n), &spans), "asleep");
+        // the newest non-unknown span is online: parked
+        assert_eq!(state_word_with(Some(&n), &spans[2..]), "parked");
+    }
 }
