@@ -298,7 +298,7 @@ def about(req):
     packs = req.app.packs
     own = req.store.get_prefs(req.account).get("ui_pack") if req.account else None
     m = packs.get(packs.pick(own))
-    pack = {"id": m["id"], "name": m["name"], "version": m["version"], "api": m["api"]}
+    pack = {"id": m["id"], "name": m["name"], "version": m["version"], "api": m["api"], "original": False}
     return {
         "version": DEV_VERSION, "api_version": API_VERSION, "ui_pack": pack, "dev_server": True,
         "links": {"source": None, "docs": "/help"},

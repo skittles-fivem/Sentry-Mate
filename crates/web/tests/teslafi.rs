@@ -229,6 +229,27 @@ async fn accounts_cars_pause_notices_and_removal() {
         (json!(true), json!(1), json!(["www.teslafi.com"]))
     );
 
+    // how often TeslaFi is read
+    assert_eq!(
+        (o["poll"].clone(), o["version"].clone(), o["polls"]["driving_s"].clone()),
+        (json!("normal"), json!(1), json!(60))
+    );
+    let t = "/api/v1/integrations/teslafi";
+    let r = admin.patch(t, json!({ "version": 1, "poll": "often" })).await;
+    assert_eq!((r.status, r.code().as_deref()), (403, Some("password_needed")));
+    let r = admin.patch(t, json!({ "version": 1, "poll": "fast", "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!((r.status, r.code().as_deref()), (422, Some("invalid")));
+    let r = admin.patch(t, json!({ "version": 1, "poll": "often", "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(
+        (r.json()["poll"].clone(), r.json()["polls"]["driving_s"].clone(), r.json()["polls"]["parked_s"].clone()),
+        (json!("often"), json!(15), json!(60))
+    );
+    assert_eq!(w.svc.cadence(), teslafi::Pace::Often.cadence());
+    let r = admin.patch(t, json!({ "version": 1, "poll": "gentle", "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!((r.status, r.code().as_deref()), (409, Some("stale_version")));
+    assert!(audit_actions(&mut admin).await.iter().any(|(a, _)| a == "teslafi-poll-changed"));
+
     // pause, the time zone, the label
     let v1 = admin.get(&base).await.json()["version"].as_u64().unwrap();
     let r = admin

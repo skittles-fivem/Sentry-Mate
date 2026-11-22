@@ -341,6 +341,14 @@ Either way the server checks it with Tesla before it keeps anything. Then:
 5. Pick how often it asks: `normal` (the default), `often` or `gentle`. A car
    that is asleep is never woken; only the list of cars is read then.
 
+4. Pick how often TeslaFi is read: `normal` (the default: driving or
+   charging every minute, awake every 3 min, asleep every 10 min), `often`
+   (as fast as TeslaFi itself refreshes: every 15 s while driving or
+   charging, every minute awake, every 3 min asleep) or `gentle` (2 min,
+   5 min, 20 min). TeslaFi only has new data as often as it polls the car, so
+   `often` is as fast as is useful. Whatever the pace, the server waits as
+   long as TeslaFi asks it to (`Retry-After`) and backs off on errors.
+
 To stop for a while, pause the account; to stop for good, remove it. Removing
 deletes its sealed tokens; the history already stored stays. Also sign the
 server out at Tesla (your Tesla account's security settings). If Tesla stops
@@ -386,8 +394,8 @@ stops taking the token (a new token was made there, or the subscription
 ended), a notice says so: paste a new token. What is sent, and where:
 [security](security.md#the-teslafi-input).
 
-The built-in designs are still getting their TeslaFi page. Until yours has
-it, the same steps are API calls, listed in
+Every built-in design has the TeslaFi section on Settings: Integrations,
+right after the Tesla account. The same steps are also API calls, listed in
 [ui-api.md](ui-api.md#integrations-teslafi).
 
 ## Updating

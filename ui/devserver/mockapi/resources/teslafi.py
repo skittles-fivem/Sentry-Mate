@@ -22,7 +22,16 @@ from .tesla import _only, _str, reconfirm
 
 HOST = "www.teslafi.com"
 MAX_LABEL = 64
-POLLS = {"driving_s": 60, "charging_s": 60, "parked_s": 180, "asleep_s": 600, "other_live_s": 600, "daily_cap": 1500}
+# how often TeslaFi is read, by pace (crates/teslafi Pace): `often` as often as TeslaFi itself refreshes its data
+PACES = {
+    "often": {"driving_s": 15, "charging_s": 15, "parked_s": 60, "asleep_s": 180, "other_live_s": 600,
+              "daily_cap": 6000},
+    "normal": {"driving_s": 60, "charging_s": 60, "parked_s": 180, "asleep_s": 600, "other_live_s": 600,
+               "daily_cap": 1500},
+    "gentle": {"driving_s": 120, "charging_s": 120, "parked_s": 300, "asleep_s": 1200, "other_live_s": 1200,
+               "daily_cap": 1500},
+}
+POLLS = PACES["normal"]
 TOKEN_RX = re.compile(r"[\x21-\x7e]{1,256}")
 # the zones the real server takes (chrono-tz's list; crates/teslafi/tests/zones.rs checks it is the same)
 ZONES = frozenset((Path(__file__).with_name("time_zones.txt")).read_text(encoding="utf-8").split())
@@ -42,6 +51,7 @@ def seed(st, now):
         },
         "next_account": 2,
         "clients_built": 1,
+        "settings": {"poll": "normal", "version": 1},
     }
 
 
@@ -122,8 +132,14 @@ def _mode(req, a):
             "parked": ("idle", "Idling")}.get(state, ("asleep", "Sleeping"))
 
 
-def _step(mode):
-    return {"driving": 60_000, "charging": 60_000, "idle": 3 * MIN, "asleep": 10 * MIN, "backoff": 2 * MIN}.get(mode)
+def _step(mode, poll="normal"):
+    p = PACES[poll]
+    return {"driving": p["driving_s"] * 1000, "charging": p["charging_s"] * 1000, "idle": p["parked_s"] * 1000,
+            "asleep": p["asleep_s"] * 1000, "backoff": 2 * MIN}.get(mode)
+
+
+def _poll(req):
+    return _t(req).setdefault("settings", {"poll": "normal", "version": 1})
 
 
 def _polls_today(req, a):
@@ -175,17 +191,39 @@ def overview(req):
     t = _t(req)
     return {
         "enabled": bool(t["accounts"]), "accounts": len(t["accounts"]), "cars": _n_matched(t),
-        "hosts": [HOST] if t["accounts"] else [], "polls": dict(POLLS),
+        "hosts": [HOST] if t["accounts"] else [], "poll": _poll(req)["poll"], "polls": dict(PACES[_poll(req)["poll"]]),
         "polls_today": sum(_polls_today(req, a) for a in t["accounts"].values()), "last_error": _last_error(t),
         "clients_built": t["clients_built"], "tls": "1.3" if t["accounts"] else None,
+        "version": _poll(req)["version"],
     }
+
+
+def patch_overview(req):
+    """`PATCH /integrations/teslafi` `{ version, poll }`: how often TeslaFi is read."""
+    body = req.json()
+    _only(body, ("version", "poll", "confirm_password", "code"))
+    poll = _str(body, "poll")
+    if poll is not None and poll not in PACES:
+        raise invalid({"poll": "Must be often, normal or gentle."})
+    reconfirm(req, body)
+    st = req.store
+    s = _poll(req)
+    with st.lock:
+        req.version_check(s["version"])
+        if poll is not None and poll != s["poll"]:
+            s["poll"] = poll
+            s["version"] += 1
+            st.rev += 1
+            st.record(req.account, "teslafi-poll-changed", "settings:teslafi",
+                      f"Set how often TeslaFi is read to {poll}.")
+    return overview(req)
 
 
 def status(req):
     items = []
     for a in _t(req)["accounts"].values():
         mode, car_state = _mode(req, a)
-        step = _step(mode)
+        step = _step(mode, _poll(req)["poll"])
         last = req.now - req.now % step if step else None
         car = next((c for c in a["cars"] if _matched(c)), None)
         items.append({
@@ -427,7 +465,7 @@ def token_refused(st, account_id, now):
 
 def register(router):
     admin_all = ("GET", "POST", "PUT", "PATCH", "DELETE")
-    router.add("/api/v1/integrations/teslafi", GET=overview, admin=admin_all)
+    router.add("/api/v1/integrations/teslafi", GET=overview, PATCH=patch_overview, admin=admin_all)
     router.add("/api/v1/integrations/teslafi/accounts", GET=list_accounts, POST=add_account, admin=admin_all)
     router.add("/api/v1/integrations/teslafi/accounts/{teslafi_account}", GET=get_account, PATCH=patch_account,
                DELETE=delete_account, admin=admin_all)

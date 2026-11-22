@@ -228,9 +228,10 @@ given; this server only reads what TeslaFi stored. How to add the token is in
   User-Agent. These two reads are fixed in the program: no other command can be built, so no wake (`wake_up`,
   `wake`, a `wake=` parameter), no command to the car, no change to TeslaFi's logging is ever sent. They are served
   from TeslaFi's database and do not wake the car.
-- **Polite.** One read a minute at most while the car drives or charges, less while it is parked or asleep or while
-  SMO or the Tesla API is live for it; at most 1,500 requests a day per account; waits after errors and whatever
-  TeslaFi asks for (429).
+- **Polite.** One read a minute at most while the car drives or charges (every 15 s with the `often` pace, about as
+  often as TeslaFi itself refreshes), less while it is parked or asleep or while SMO or the Tesla API is live for it;
+  never two requests within 10 s; at most 1,500 requests a day per account (6,000 with `often`); waits after errors
+  and whatever TeslaFi asks for (429, `Retry-After`), whatever the pace.
 - **The token is sealed in the vault** (`teslafi/accounts/<id>.json` in the data folder, encrypted with the vault
   key), held in memory only while used and wiped after. No page, API answer, audit entry, error or log line shows
   it. A move or an export carries the account to the new server, still sealed.

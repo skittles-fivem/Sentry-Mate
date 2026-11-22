@@ -3,13 +3,15 @@
 //! | Mode | When | Reads |
 //! |---|---|---|
 //! | `off` | account paused, the token refused, no car matched yet (after the first look) | none |
-//! | `driving` / `charging` | TeslaFi's last poll says so | the latest poll every 60 s |
-//! | `idle` | awake, parked | every 3 min |
-//! | `asleep` | TeslaFi says the car sleeps (or is offline) | every 10 min |
+//! | `driving` / `charging` | TeslaFi's last poll says so | the latest poll every 60 s (`often`: 15 s; `gentle`: 2 min) |
+//! | `idle` | awake, parked | every 3 min (`often`: 1 min; `gentle`: 5 min) |
+//! | `asleep` | TeslaFi says the car sleeps (or is offline) | every 10 min (`often`: 3 min; `gentle`: 20 min) |
 //! | `backoff` | errors, TeslaFi's wait, the daily cap | 429: TeslaFi's wait (at least 60 s, else 5 min); others: 60 s doubling to 15 min |
 //!
-//! While SMO or the Tesla API sends live data for the car, a read waits 10 min at least: their data wins there
-//! anyway. At most one request every 10 s and 1,500 a day per account (then nothing until midnight UTC), the checks of
+//! The waits are the [`Pace`] an admin chooses (`normal` above). `often` reads about as often as TeslaFi itself polls
+//! the car while it drives or charges (TeslaFi's data changes no faster, so reading faster would only repeat it).
+//! While SMO or the Tesla API sends live data for the car, a read waits 10 min at least (`gentle`: 20 min): their
+//! data wins there anyway. At most one request every 10 s and 1,500 a day per account (`often`: 6,000) (then nothing until midnight UTC), the checks of
 //! a token included (their requests are written into the pacing). TeslaFi's own poll time is the time of the data, and
 //! a poll already handed on (the same `data_id`) is not handed on again.
 //! A refused token stops the account until an admin gives a new one. The back-off, TeslaFi's wait and the day's
@@ -88,6 +90,60 @@ impl Default for Cadence {
             rate_limit_min_ms: 60_000,
             rate_limit_default_ms: 5 * 60_000,
             fact_join_ms: 15 * 60_000,
+        }
+    }
+}
+
+/// How often TeslaFi is read, as an admin chooses it (`/integrations/teslafi` `poll`). The gap between requests,
+/// TeslaFi's `retry-after` and the back-off on errors stay as they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Pace {
+    /// As often as TeslaFi refreshes its data: driving or charging every 15 s, awake 1 min, asleep 3 min (at most
+    /// 6,000 requests a day).
+    Often,
+    #[default]
+    Normal,
+    /// Fewer requests: driving or charging every 2 min, awake 5 min, asleep 20 min.
+    Gentle,
+}
+
+impl Pace {
+    pub const ALL: [Pace; 3] = [Pace::Often, Pace::Normal, Pace::Gentle];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Pace::Often => "often",
+            Pace::Normal => "normal",
+            Pace::Gentle => "gentle",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Pace> {
+        Pace::ALL.into_iter().find(|p| p.word() == s)
+    }
+
+    /// The cadence of this pace.
+    pub fn cadence(self) -> Cadence {
+        let n = Cadence::default();
+        match self {
+            Pace::Normal => n,
+            Pace::Often => Cadence {
+                driving_ms: 15_000,
+                charging_ms: 15_000,
+                idle_ms: 60_000,
+                asleep_ms: 3 * 60_000,
+                daily_cap: 6_000,
+                ..n
+            },
+            Pace::Gentle => Cadence {
+                driving_ms: 120_000,
+                charging_ms: 120_000,
+                idle_ms: 5 * 60_000,
+                asleep_ms: 20 * 60_000,
+                other_live_ms: 20 * 60_000,
+                ..n
+            },
         }
     }
 }

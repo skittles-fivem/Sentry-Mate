@@ -3,7 +3,7 @@
 //!
 //! | Route | |
 //! |---|---|
-//! | `GET /integrations/teslafi` | `{ enabled, accounts, cars, hosts, polls, polls_today, last_error, clients_built, tls }` |
+//! | `GET`/`PATCH /integrations/teslafi` | `{ enabled, accounts, cars, hosts, poll, polls, polls_today, last_error, clients_built, tls, version }`; PATCH `{ version, poll }` |
 //! | `GET`/`POST /integrations/teslafi/accounts` | POST `{ label, token, time_zone? }` -> 201 Account |
 //! | `GET`/`PATCH`/`DELETE /integrations/teslafi/accounts/{account}` | PATCH `{ version, label?, paused?, time_zone?, token? }` |
 //! | `GET`/`PUT /integrations/teslafi/accounts/{account}/cars` | PUT `{ version, items: [{ vehicle, match }] }` |
@@ -29,10 +29,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use engine::Engine;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use teslafi::{Account, AccountState, AccountStatus, Match, ServiceError};
+use teslafi::{Account, AccountState, AccountStatus, Match, Pace, ServiceError};
 
 /// The TeslaFi input as the web side holds it (handed over with `Builder::service`).
 pub type TeslafiService = teslafi::Service<engine::TeslafiSink>;
@@ -40,10 +40,33 @@ pub type TeslafiService = teslafi::Service<engine::TeslafiSink>;
 /// Labels at most (characters).
 const MAX_LABEL: usize = 64;
 
-/// The options the service starts with: the owner's proxy and the server's default time zone.
+/// The database setting the input's own settings are kept under.
+pub const SETTING: &str = "teslafi";
+
+/// The input's settings: how often TeslaFi is read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TeslafiSettings {
+    pub poll: Pace,
+    pub version: u64,
+}
+
+impl Default for TeslafiSettings {
+    fn default() -> TeslafiSettings {
+        TeslafiSettings { poll: Pace::Normal, version: 1 }
+    }
+}
+
+/// The saved settings (the defaults when none are saved or they don't read).
+pub fn load_settings(e: &Engine) -> TeslafiSettings {
+    e.db().setting(SETTING).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
+/// The options the service starts with: the saved pace, the owner's proxy and the server's default time zone.
 pub fn options(e: &Engine) -> teslafi::Options {
     let mut o = teslafi::Options::default();
     o.proxy = super::tesla::proxy(e);
+    o.cadence = load_settings(e).poll.cadence();
     o.default_time_zone = e.options().default_time_zone.clone();
     o
 }
@@ -173,7 +196,7 @@ pub fn network_rows(app: &AppState) -> Vec<Value> {
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/integrations/teslafi", get(overview))
+        .route("/api/v1/integrations/teslafi", get(overview).patch(change_settings))
         .route("/api/v1/integrations/teslafi/accounts", get(list).post(add))
         .route("/api/v1/integrations/teslafi/accounts/{teslafi_account}", get(one).patch(change).delete(remove))
         .route("/api/v1/integrations/teslafi/accounts/{teslafi_account}/cars", get(cars).put(put_cars))
@@ -349,15 +372,18 @@ fn time_zone_of(body: &JsonBody) -> ApiResult<Option<Option<String>>> {
 
 async fn overview(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Json<Value>> {
     let s = svc(&app)?;
+    let e = app.service::<Engine>()?;
     app.blocking(move |_| {
         let accounts = s.accounts();
         let status = s.status();
         let c = s.cadence();
+        let settings = load_settings(&e);
         Ok(Json(json!({
             "enabled": !accounts.is_empty(),
             "accounts": accounts.len(),
             "cars": matched_cars(&accounts),
             "hosts": s.hosts(),
+            "poll": settings.poll.word(),
             "polls": {
                 "driving_s": c.driving_ms / 1000,
                 "charging_s": c.charging_ms / 1000,
@@ -370,9 +396,57 @@ async fn overview(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Jso
             "last_error": last_error(&accounts),
             "clients_built": s.clients_built(),
             "tls": status.iter().find_map(|s| s.tls),
+            "version": settings.version,
         })))
     })
     .await
+}
+
+/// `PATCH /integrations/teslafi` `{ version, poll }`: how often TeslaFi is read.
+async fn change_settings(
+    State(app): State<AppState>,
+    Admin(v): Admin,
+    headers: HeaderMap,
+    body: JsonBody,
+) -> ApiResult<Json<Value>> {
+    body.only(&["version", "poll", "confirm_password", "code"])?;
+    let version = body.version()?;
+    let pace = match body.str("poll")? {
+        None => None,
+        Some(p) => Some(Pace::parse(p).ok_or_else(|| ApiError::invalid("poll", "Must be often, normal or gentle."))?),
+    };
+    reconfirm(&app, &v, &body, &headers).await?;
+    let s = svc(&app)?;
+    let e = app.service::<Engine>()?;
+    let (old, new) = app
+        .blocking(move |_| {
+            let _one = super::settings::CHANGES.lock().unwrap_or_else(|p| p.into_inner());
+            let old = load_settings(&e);
+            if old.version != version {
+                return Err(ApiError::stale_version(old.version));
+            }
+            let mut new = old.clone();
+            if let Some(p) = pace {
+                new.poll = p;
+            }
+            if new != old {
+                new.version = old.version + 1;
+                let value = serde_json::to_value(&new).map_err(ApiError::server)?;
+                e.db()
+                    .set_setting(SETTING, value)
+                    .map_err(|err| ApiError::server(format!("teslafi settings: {err}")))?;
+                s.set_cadence(new.poll.cadence());
+            }
+            Ok((old, new))
+        })
+        .await?;
+    if new != old {
+        let summary = format!("Set how often TeslaFi is read to {}.", new.poll.word());
+        v.audit(&app, "teslafi-poll-changed", Some(&target("settings", None, "teslafi")), &summary).await?;
+    } else {
+        v.mark_audited();
+    }
+    overview(State(app), Admin(v)).await
 }
 
 async fn status(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Json<Value>> {
