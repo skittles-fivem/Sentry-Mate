@@ -1098,3 +1098,13 @@ html[data-form="phone"] .fw-v { align-items: flex-start; }
 html[data-form="phone"] .fw-change { flex-direction: column; align-items: flex-start; }
 .tf-head-text { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); }
 .seg-tight .seg-btn { padding: 0 var(--s2); }
+
+/* the release check (Settings: Display, Help): the newer build's titles and the pull command */
+.rel-newer { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.rel-titles { margin: 0; padding-left: var(--s5); font-size: var(--f14); line-height: var(--l14); color: var(--muted); overflow-wrap: anywhere; }
+.rel-titles li + li { margin-top: var(--s1); }
+.rel-pull { display: flex; flex-direction: column; gap: var(--s1); font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+.rel-code { display: block; padding: var(--s2) var(--s3); border-radius: var(--r-sm); background: var(--card); color: var(--text); font-family: var(--mono); font-size: var(--f13); line-height: var(--l13); overflow-wrap: anywhere; user-select: all; }
+.rel-row { flex-wrap: wrap; }
+.rel-row .row-text { flex: 1 1 14em; }
+.rel-row .row-side { flex: none; }

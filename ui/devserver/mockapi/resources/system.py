@@ -475,7 +475,9 @@ def release_notice(req):
     if s["status"] != "newer":
         return None
     nw = s["newest"]
-    msg = f"A newer build is ready: {nw['short']}, {nw['changes']} changes."
+    import datetime
+    d = datetime.datetime.fromtimestamp(nw["date_ms"] / 1000, datetime.timezone.utc)
+    msg = f"A newer build is ready: {nw['short']}, {d.strftime('%b')} {d.day}, {nw['changes']} changes."
     return {"code": "release_available", "level": "info", "message": msg,
             "since_ms": nw["date_ms"], "fix_link": "/help#about",
             "detail": {"version": nw["short"], "commit": nw["commit"], "build": nw["build"],
