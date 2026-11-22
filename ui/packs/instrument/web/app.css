@@ -1593,3 +1593,6 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 :root[data-phone] .back { min-height: var(--tap); }
 :root[data-phone] .empty p { font-size: max(0.84375rem, var(--fs-floor)); }
 :root[data-phone] :is(.popover, .account-menu)::backdrop { background: var(--backdrop); }
+/* an icon in the dock takes no taps of its own: they go to its tab or button (and the page under the dock
+   counts as under the dock, not under an icon) */
+:root[data-phone] .dock :is(svg, .ico) { pointer-events: none; }
