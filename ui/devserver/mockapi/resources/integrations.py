@@ -168,7 +168,39 @@ ENTITIES = [  # key, name, unit kind, device class
     ("tire_pressure_rr", "Tire pressure rear right", "pressure", "pressure"),
     ("odometer", "Odometer", "distance", "distance"), ("gear", "Gear", None, "enum"),
     ("lv_voltage", "12 V battery", "V", "voltage"), ("updated", "Last data", None, "timestamp"),
+    # build
+    ("paint", "Paint", None, None), ("wheels", "Wheels", None, None), ("spoiler", "Spoiler", None, None),
+    ("roof", "Roof", None, None),
+    # motion and status
+    ("heading", "Heading", "°", None), ("elevation", "Elevation", "elevation", "distance"),
+    ("in_park", "In park", None, None), ("display_mode", "Screen mode", None, "enum"),
+    ("sentry_mode", "Sentry mode", None, None), ("service_mode", "Service mode", None, None),
+    ("installing", "Update installing", None, "update"), ("healthy", "Logger healthy", None, None),
+    # openings and people
+    ("doors_open", "Doors", None, "door"), ("door_front_left", "Door front left", None, "door"),
+    ("door_front_right", "Door front right", None, "door"), ("door_rear_left", "Door rear left", None, "door"),
+    ("door_rear_right", "Door rear right", None, "door"), ("trunk_open", "Trunk", None, "opening"),
+    ("frunk_open", "Frunk", None, "opening"), ("user_present", "Someone in the car", None, "occupancy"),
+    # climate
+    ("climate_on", "Climate", None, None), ("preconditioning_cabin", "Preconditioning cabin", None, None),
+    ("preconditioning_battery", "Preconditioning battery", None, None),
+    # range and charging
+    ("range_ideal", "Ideal range", "distance", "distance"), ("range_estimated", "Estimated range", "distance", "distance"),
+    ("soc_usable", "Usable battery", "%", "battery"), ("plugged_in", "Plugged in", None, "plug"),
+    ("charge_status", "Charge status", None, "enum"), ("charge_energy_added", "Energy added", "kWh", "energy"),
+    ("charge_limit", "Charge limit", "%", None), ("charge_port_open", "Charge port", None, "opening"),
+    ("charger_current", "Charger current", "A", "current"), ("charger_voltage", "Charger voltage", "V", "voltage"),
+    ("charger_phases", "Charger phases", None, None), ("charge_current_request", "Current asked for", "A", "current"),
+    ("charge_current_limit", "Current limit", "A", "current"), ("time_to_full", "Time to full", "min", "duration"),
+    ("tire_low", "Tire pressure low", None, "problem"),
+    # navigation
+    ("navigating", "Navigating", None, None), ("energy_at_destination", "Energy at destination", "kWh", "energy_storage"),
 ]
+# true / false topics: Home Assistant gets a binary_sensor for each, the rest are sensors
+BINARY = {"driving", "charging", "in_park", "sentry_mode", "service_mode", "installing", "healthy", "doors_open",
+          "door_front_left", "door_front_right", "door_rear_left", "door_rear_right", "trunk_open", "frunk_open",
+          "user_present", "climate_on", "preconditioning_cabin", "preconditioning_battery", "plugged_in",
+          "charge_port_open", "tire_low", "navigating"}
 
 
 def _units(req):
@@ -179,7 +211,8 @@ def _units(req):
 def _unit_text(kind, u):
     return {"distance": "mi" if u["distance"] == "mi" else "km", "speed": "mph" if u["distance"] == "mi" else "km/h",
             "temperature": "°F" if u["temperature"] == "f" else "°C",
-            "pressure": "psi" if u["pressure"] == "psi" else "bar"}.get(kind, kind)
+            "pressure": "psi" if u["pressure"] == "psi" else "bar",
+            "elevation": "ft" if u["distance"] == "mi" else "m"}.get(kind, kind)
 
 
 def _num(v, d):
@@ -187,6 +220,83 @@ def _num(v, d):
         return None
     x = round(float(v), d)
     return str(int(x)) if d == 0 else (str(x) if x != 0 else "0.0")
+
+
+def _tf(x):
+    return None if x is None else ("true" if x else "false")
+
+
+def _new_values(req, car, n, u, v, dist, pres):
+    """The topics decoded from the car's own signals (build, openings, modes, charging detail, navigation).
+    Made-up values from the dev dataset; a value the car did not send stays unpublished."""
+    meta = req.store.car_meta(car)
+    cfg = meta.get("config") or {}
+    fl = n.get("flags") or {}
+    ch = n.get("charge") or {}
+    loc = n.get("location") or {}
+    mi = u["distance"] == "mi"
+    doors = fl.get("doors") or {}
+    door = {k: v(doors.get(k)) for k in ("fl", "fr", "rl", "rr")}
+    climate, keep = v(fl.get("climate")), v(fl.get("keep_climate"))
+    display_on, sentry = v(fl.get("display_on")), v(fl.get("sentry"))
+    if display_on is None:
+        display = None
+    elif sentry:
+        display = "sentry"
+    elif keep in ("dog", "camp"):
+        display = keep
+    else:
+        display = "on" if display_on else "off"
+    status = v(ch.get("status"))
+    charging = status == "charging"
+    rec = v(n.get("tyre_recommended_kpa"))
+    tyres = [v(x) for x in (n.get("tyres_kpa") or [])]
+    tire_low = None if rec is None or not tyres or None in tyres else any(x < rec * 0.85 for x in tyres)
+    odo = v(n.get("odometer_km"))
+    pilot = v(ch.get("pilot_a"))
+    driving = bool(n.get("driving"))
+    remaining = v(n.get("energy_remaining_kwh"))
+    gear = v(n.get("gear"))
+    elev = v(loc.get("elevation_m"))
+    h = req.ds.history(car)
+    limit = v(ch.get("limit_pct"))
+    if limit is None and h is not None:
+        limit = h.car.charge_limit  # the limit set in the car holds while no charge runs
+    return {
+        "paint": (cfg.get("paint") or {}).get("value"), "wheels": (cfg.get("wheel") or {}).get("value"),
+        "spoiler": (cfg.get("spoiler") or {}).get("value"), "roof": (cfg.get("roof") or {}).get("value"),
+        "heading": _num(v(loc.get("heading_deg")), 0),
+        "elevation": _num(None if elev is None else (elev / 0.3048 if mi else elev), 0),
+        "in_park": None if gear is None else _tf(gear == "P"),
+        "display_mode": display, "sentry_mode": _tf(sentry), "service_mode": _tf(v(fl.get("service_mode"))),
+        "installing": None if n.get("at_ms") is None else "false",
+        "healthy": None if n.get("at_ms") is None else _tf(not n.get("stale")),
+        "doors_open": None if None in door.values() else _tf(any(door.values())),
+        "door_front_left": _tf(door["fl"]), "door_front_right": _tf(door["fr"]),
+        "door_rear_left": _tf(door["rl"]), "door_rear_right": _tf(door["rr"]),
+        "trunk_open": _tf(v(fl.get("trunk"))), "frunk_open": _tf(v(fl.get("frunk"))),
+        "user_present": _tf(v(fl.get("user_present"))),
+        "climate_on": None if climate is None else _tf(climate in ("on", "precondition")),
+        "preconditioning_cabin": None if climate is None else _tf(climate == "precondition"),
+        "preconditioning_battery": _tf(v(fl.get("battery_preconditioning"))),
+        "range_ideal": _num(dist(v(n.get("ideal_range_km"))), 1),
+        "range_estimated": _num(dist(v(n.get("est_range_km"))), 1),
+        "soc_usable": _num(v(n.get("usable_soc_pct")), 1),
+        "plugged_in": _tf(v(ch.get("plugged"))), "charge_status": status,
+        # the pack's lifetime charge counter: made up from the odometer, it only grows
+        "charge_energy_added": None if odo is None else _num(odo * 0.172 + 41.3, 1),
+        "charge_limit": _num(limit, 0), "charge_port_open": _tf(v(fl.get("charge_port_open"))),
+        "charger_current": _num(v(ch.get("amps_a")), 1) if charging else None,
+        "charger_voltage": _num(v(ch.get("volts_v")), 0) if charging else None,
+        "charger_phases": _num(v(ch.get("phases")), 0) if charging else None,
+        "charge_current_request": _num(pilot, 0) if charging else None,
+        "charge_current_limit": _num(pilot, 0) if charging else None,
+        "time_to_full": _num(v(ch.get("to_full_min")), 0) if charging else None,
+        "tire_low": _tf(tire_low),
+        # made up: a driving car navigates, and expects to arrive with a little less than it has now
+        "navigating": None if n.get("at_ms") is None else _tf(driving),
+        "energy_at_destination": _num(max(0.0, remaining - 7.4), 1) if driving and remaining is not None else None,
+    }
 
 
 def preview(req):
@@ -242,6 +352,7 @@ def preview(req):
         "lv_voltage": _num(v(n.get("lv_v")), 2),
         "updated": iso_utc(n["at_ms"]).replace("Z", "+00:00") if n.get("at_ms") else None,
     }
+    vals.update(_new_values(req, car, n, u, v, dist, pres))
     lat, lon = v(loc.get("lat")), v(loc.get("lon"))
     if m["publish_location"] and lat is not None:
         vals["latitude"] = _num(lat, 6)
@@ -265,7 +376,7 @@ def preview(req):
                          "unit": _unit_text(unit, u) if unit else None, "device_class": dc,
                          "state_topic": f"{ns}/cars/{car}/{key}",
                          "config_topic": f"{m['ha_discovery']['prefix']}/"
-                                         f"{'binary_sensor' if key in ('driving', 'charging') else 'sensor'}"
+                                         f"{'binary_sensor' if key in BINARY else 'sensor'}"
                                          f"/{node}/{key}/config"})
         if m["publish_location"]:
             ents.append({"id": f"{node}_location", "name": "Location", "unit": None, "device_class": None,

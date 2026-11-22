@@ -3150,7 +3150,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3159,7 +3159,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3168,7 +3168,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3231,7 +3231,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3258,7 +3258,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3285,7 +3285,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3294,7 +3294,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3312,7 +3312,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3330,7 +3330,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3339,7 +3339,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3348,7 +3348,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3357,7 +3357,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3384,7 +3384,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3438,7 +3438,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3447,7 +3447,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3456,7 +3456,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3474,7 +3474,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3483,7 +3483,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3501,7 +3501,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3528,7 +3528,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3537,7 +3537,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3555,7 +3555,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3573,7 +3573,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3609,7 +3609,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3618,7 +3618,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3627,7 +3627,7 @@
    "tab": "docs.mqtt",
    "page": "settings-integrations",
    "section": "MQTT published values",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3843,7 +3843,7 @@
    "tab": "docs.home-assistant",
    "page": "settings-integrations",
    "section": "Home Assistant entities",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3888,7 +3888,7 @@
    "tab": "docs.home-assistant",
    "page": "settings-integrations",
    "section": "Home Assistant entities",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3924,7 +3924,7 @@
    "tab": "docs.home-assistant",
    "page": "settings-integrations",
    "section": "Home Assistant entities",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3969,7 +3969,7 @@
    "tab": "docs.home-assistant",
    "page": "settings-integrations",
    "section": "Home Assistant entities",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
@@ -3978,7 +3978,7 @@
    "tab": "docs.home-assistant",
    "page": "settings-integrations",
    "section": "Home Assistant entities",
-   "data_status": "new_signal",
+   "data_status": "have",
    "inventory": "docs-extras",
    "page_name": "Settings: Integrations"
   },
