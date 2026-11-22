@@ -13,7 +13,7 @@ import { format, convert, toMetric, unitLabel, getUnits } from '../shared/units.
 import { formatDate, formatDateTime, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { icon, hud, plate, btn, seg, note, tag, bar } from '../core/ui.js';
-import { controls, slot, periodBtn, carBtn, select, counters, csvBtn, band, plural, route } from '../core/kit.js';
+import { controls, slot, periodBtn, carBtn, select, carOptions, counters, csvBtn, band, plural, route } from '../core/kit.js';
 import { dial } from '../core/gauges.js';
 import { tracks } from '../core/tracks.js';
 import { loadUPlot, mountPlot, scope, timeAxis, valueAxis, tone, alpha, well } from '../core/chart.js';
@@ -68,7 +68,7 @@ export async function mount(ctx) {
   const segMin = seg(DIST.map((v) => [v, v ? `${v} ${unitLabel('distance')}` : 'Any']), opt.minD, (v) => { opt.minD = v; opt.group = null; ctx.setQuery({ min_d: v === 1 ? null : String(v), group: null }); refresh(); }, { label: 'Shortest drive' });
   const segT = seg(TEMPW[fahr ? 'f' : 'c'].map((v) => [v, `${v} ${unitLabel('temperature')}`]), opt.tgW, (v) => { opt.tgW = v; opt.group = null; ctx.setQuery({ tg_w: v === (fahr ? 10 : 5) ? null : String(v), group: null }); refresh(); }, { label: 'Temperature groups' });
   const others = fleet.filter((c) => c.id !== cid);
-  const cmpSel = select([['', others.length ? 'No other car' : 'Only one car'], ...others.map((c) => [c.id, c.name])], opt.other || '', (v) => { opt.other = v || null; ctx.setQuery({ cars: opt.other }); paintCompare(); }, { label: 'Compare with another car' });
+  const cmpSel = select([['', others.length ? 'No other car' : 'Only one car'], ...carOptions(others, opt.other)], opt.other || '', (v) => { opt.other = v || null; ctx.setQuery({ cars: opt.other }); paintCompare(); }, { label: 'Compare with another car' });
   if (!others.length) cmpSel.disabled = true;
   const deck = controls({ note: 'Drives count when they start in the period. The shortest drive applies to net consumption, logged distance, the groups and the comparison; gross consumption and the temperatures take everything.' },
     slot('Period', periodBtn(ctx, ['ef.filter.time_range', 'tp.filter.time_range'])),

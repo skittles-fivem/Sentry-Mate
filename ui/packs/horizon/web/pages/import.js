@@ -516,9 +516,13 @@ export async function mount(ctx) {
       { key: 'first_ms', label: 'History', sort: true, render: (c) => `${date(c.first_ms, tz, { year: true })} to ${date(c.last_ms, tz, { year: true })}`, csv: (c) => `${toIsoZoned(c.first_ms, tz)} to ${toIsoZoned(c.last_ms, tz)}` },
       { key: 'match', label: 'Goes to', csv: (c) => (c.match === 'new' ? 'a new car' : c.match === 'leave_out' ? 'left out' : c.match ? carName(c.match) : 'not chosen'), render: (c) => {
         const taken = new Set(S.match.filter((x) => x.tm_car !== c.tm_car && x.match && x.match !== 'new' && x.match !== 'leave_out').map((x) => x.match));
+        const opt = (x) => h('option', { value: x.id, selected: c.match === x.id, disabled: taken.has(x.id) }, `${x.name}${x.id === c.suggested ? ' (same VIN start)' : ''}${taken.has(x.id) ? ' (taken)' : ''}`);
+        // sold cars wait under Sold cars; the one this car goes to now stays up top
+        const main = S.cars.filter((x) => !state.isSold(x) || x.id === c.match), sold = state.splitSold(S.cars).sold.filter((x) => x.id !== c.match);
         const sel = h('select', { class: 'input im-select', 'aria-label': `Where ${c.name}'s history goes`, disabled: !['ready', 'checking'].includes(S.job?.status), onchange: () => setMatch(c, sel.value) },
           c.match == null ? h('option', { value: '', selected: true, disabled: true }, 'Choose…') : null,
-          S.cars.map((x) => h('option', { value: x.id, selected: c.match === x.id, disabled: taken.has(x.id) }, `${x.name}${x.id === c.suggested ? ' (same VIN start)' : ''}${taken.has(x.id) ? ' (taken)' : ''}`)),
+          main.map(opt),
+          sold.length ? h('optgroup', { label: `Sold cars (${sold.length})` }, sold.map(opt)) : null,
           h('option', { value: 'new', selected: c.match === 'new' }, 'Add as a new car'),
           h('option', { value: 'leave_out', selected: c.match === 'leave_out' }, 'Leave out'));
         return h('div', { class: 'row im-goes' }, sel, c.suggested && c.match === c.suggested ? tag('VIN match', 'grn') : null, c.match == null ? tag('Not chosen', 'org') : null);
