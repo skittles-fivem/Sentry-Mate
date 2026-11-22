@@ -136,7 +136,7 @@ export async function mount(ctx) {
   const rangeWord = ideal ? 'ideal' : 'rated';
   const r0 = ideal ? d.start_ideal_range_km : d.start_range_km;
   const r1 = ideal ? d.end_ideal_range_km : d.end_range_km;
-  const stats = panel({ title: 'Figures', icon: 'stats', cls: 'stats-panel', side: live ? h('span', { class: 'faint' }, 'so far') : null, cover: 'dd.empty_states' },
+  const stats = panel({ title: 'Summary', icon: 'stats', cls: 'stats-panel', side: live ? h('span', { class: 'faint' }, 'so far') : null, cover: 'dd.empty_states' },
     figuresEl,
     h('div', { class: 'drive-soc' },
       h('div', null, h('b', null, format(d.start_soc_pct, 'percent')), h('span', null, `${format(r0, 'range')} ${rangeWord}`)),

@@ -151,7 +151,7 @@ export async function mount(ctx) {
   const socFrom = clamp(c.start_soc_pct ?? 0, 0, 100), socTo = clamp(c.end_soc_pct ?? 0, 0, 100);
   const socAdded = c.end_soc_pct != null && c.start_soc_pct != null ? c.end_soc_pct - c.start_soc_pct : null;
   const rangeName = getUnits().range === 'ideal' ? 'Rated range (charges keep rated range only)' : 'Rated range';
-  const stats = panel({ title: 'Figures', icon: 'stats', cls: 'charge-figures-panel', side: live ? h('span', { class: 'pill pill--warm' }, icon('bolt'), 'so far') : null },
+  const stats = panel({ title: 'Summary', icon: 'stats', cls: 'charge-figures-panel', side: live ? h('span', { class: 'pill pill--warm' }, icon('bolt'), 'so far') : null },
     h('div', { class: 'charge-figures' },
       metric('Charging time', c.charging_ms, 'duration', { cover: 'cd.stat.duration', explain: c.plugged_ms != null ? `plugged in for ${formatDuration(c.plugged_ms)}` : 'first to last charging second' }),
       metric('Energy added', c.energy_added_kwh, 'energy', { cover: 'cd.stat.energy_added', explain: est ? estWord : "into the pack, the pack's volts × amps", why }),

@@ -1960,6 +1960,7 @@ body { background: var(--bg-0); font-feature-settings: "cv11"; }
 :root[data-phone] .subtab { min-height: var(--tap); margin: auto 0; padding: 0 round(0.875rem, var(--e)); border: 1px solid var(--line-2); border-radius: 999px; font-size: max(0.875rem, var(--fs-floor)); }
 :root[data-phone] .subtab[aria-current="page"] { border-color: var(--live-line); }
 :root[data-phone] .subbar .crumbs, :root[data-phone][data-detail] .subbar .crumbs { display: none; }
+:root[data-phone][data-detail] .subbar .subtabs { flex: 1; min-width: 0; } /* a detail page keeps the strip scrolling sideways */
 :root[data-phone] .subbar-tools:empty { display: none; }
 :root[data-phone] .subbar-tools { padding-right: var(--gutter); }
 :root[data-phone] .flash { top: calc(var(--topbar-h) + var(--safe-t) + round(0.5rem, var(--e))); }

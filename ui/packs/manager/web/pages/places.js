@@ -619,7 +619,7 @@ async function mountEditor(ctx, q) {
     replace(costRule, h('h3', null, 'How a charge here is costed'),
       h('p', { class: 'pl-formula' }, part.join('  +  ')),
       h('p', null, 'When a charge ends inside this circle it gets this cost by itself, worked out in 15-minute steps so each step uses the rate of its time. A cost typed on a charge by hand always wins, and free Supercharging stays free.'),
-      h('p', { class: 'faint' }, 'Charges that already ended keep the cost they have. To price them with this place’s price, save first, then use Reprice past charges.'));
+      h('p', { class: 'faint' }, 'Charges that already ended keep the cost they have. To price them with this place’s price, save first, then use Update past charge costs.'));
   }
   function paintPrice() {
     fPerKwh.el.hidden = d.mode === 'minute';
@@ -652,7 +652,7 @@ async function mountEditor(ctx, q) {
       ...(per.length ? per.flatMap((x) => [dot(), h('a', { class: 'link', href: drivesHref(x.car, cur.id) }, `${x.name}’s ${plural(x.drives, 'drive', 'drives')} here`)])
         : [dot(), h('span', { class: 'faint' }, 'no drives start or end here yet')]));
   }
-  const effPanel = panel({ title: 'Effect on history', icon: 'timeline', cls: 'pl-effect', cover: 'web.geofences.form.relabel-history' },
+  const effPanel = panel({ title: 'What changes in past data', icon: 'timeline', cls: 'pl-effect', cover: 'web.geofences.form.relabel-history' },
     note('Names follow the place as it is now: saving renames every drive, charge and stop inside the circle, including those recorded before the place existed. Moving or shrinking it can take the name off some. Nothing below has changed yet.'),
     effBody, drillLinks);
   let effT = 0, effGen = 0;
@@ -679,7 +679,7 @@ async function mountEditor(ctx, q) {
 
   /* ---------- match rule and overlaps */
   const overlapBox = h('div', { class: 'pl-overlaps' });
-  const matchPanel = panel({ title: 'Which place wins', icon: 'pin', cls: 'pl-match', cover: 'web.geofences.form.match-rule' },
+  const matchPanel = panel({ title: 'Overlapping places', icon: 'pin', cls: 'pl-match', cover: 'web.geofences.form.match-rule' },
     h('p', { class: 'pl-rule-line' }, 'A point is inside a place when it is no farther from the centre than the radius. A point inside several circles goes to the place whose centre is nearest (on a tie, the older place). So each drive end, charge and stop has at most one place.'),
     overlapBox);
   function paintOverlaps() {
@@ -900,7 +900,7 @@ async function mountEditor(ctx, q) {
     // past charges a reprice would change: ask now, before going back to the list
     if (eff.charges_repriced > 0 && res.price) {
       const choice = await openDialog({
-        title: 'Reprice past charges too?',
+        title: 'Update past charge costs too?',
         body: [h('p', null, `${plural(eff.charges_repriced, 'past charge', 'past charges')} here would cost differently with this price. They keep their cost unless you reprice them. A cost typed by hand is never changed.`)],
         actions: [{ label: 'Keep their costs', value: 'keep' }, { label: 'Choose a span first', value: 'span' }, { label: `Reprice all ${formatNumber(eff.charges_repriced)}`, value: 'all', kind: 'primary' }],
       });
@@ -957,9 +957,9 @@ async function mountEditor(ctx, q) {
         previewSoon();
       } catch (e) { flash(e.message || 'The reprice failed.', { kind: 'error' }); }
     };
-    repricePanel = !cur.price ? panel({ title: 'Reprice past charges', icon: 'reset', cls: 'pl-reprice', id: 'reprice', cover: 'web.geofences.form.retro-costs' },
+    repricePanel = !cur.price ? panel({ title: 'Update past charge costs', icon: 'reset', cls: 'pl-reprice', id: 'reprice', cover: 'web.geofences.form.retro-costs' },
       note(`${cur.name} has no saved price, so there is nothing to reprice past charges with. Give it a price and save; then past charges here can be priced for a span you choose.`))
-      : panel({ title: 'Reprice past charges', icon: 'reset', cls: 'pl-reprice', id: 'reprice', cover: 'web.geofences.form.retro-costs' },
+      : panel({ title: 'Update past charge costs', icon: 'reset', cls: 'pl-reprice', id: 'reprice', cover: 'web.geofences.form.retro-costs' },
       note(`Applies the saved price of ${cur.name} to charges here that already ended, for the days you pick (in ${tz.replace(/_/g, ' ')}). Leave a day blank for no limit. Check shows the change first; nothing is changed until you confirm.`),
       h('div', { class: 'pl-row pl-reprice-row' },
         h('label', { class: 'form-row' }, h('span', { class: 'form-label' }, 'First day'), fromIn),
@@ -967,7 +967,7 @@ async function mountEditor(ctx, q) {
         h('label', { class: 'check pl-only' }, onlyIn, h('span', null, 'Only charges that have no cost yet'))),
       h('div', { class: 'row' },
         h('button', { class: 'btn', type: 'button', disabled: lock, onclick: () => run(true) }, 'Check'),
-        h('button', { class: 'btn btn--primary', type: 'button', disabled: lock, onclick: () => run(false) }, 'Reprice…')),
+        h('button', { class: 'btn btn--primary', type: 'button', disabled: lock, onclick: () => run(false) }, 'Update past costs…')),
       out);
   }
 
