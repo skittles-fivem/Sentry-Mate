@@ -1583,6 +1583,9 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 
 /* shared parts on a phone: text of 14 px and more, and links and chips as tall as a finger */
 :root[data-phone] :is(.page-sub, .pill--lg, .mono, .tbl .main, .tbl .sub) { font-size: max(0.875rem, var(--fs-floor)); }
+/* a page head's sub-line of parts with dots between: one part a line, no dot (a dot left at a line's end reads as a stray mark) */
+:root[data-phone] .page-sub:has(> .sep) { flex-direction: column; align-items: flex-start; gap: round(0.25rem, var(--e)); }
+:root[data-phone] .page-sub > .sep { display: none; }
 :root[data-phone] .pill--lg { height: auto; min-height: round(2rem, var(--e)); }
 :root[data-phone] :is(.panel-link, .legend-chip, a.hbar-label, .link-btn) { min-height: var(--tap); display: inline-flex; align-items: center; }
 :root[data-phone] .hbars li { min-height: var(--tap); }

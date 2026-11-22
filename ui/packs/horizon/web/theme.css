@@ -209,7 +209,8 @@ body { font-feature-settings: normal; font-size: 0.9375rem; }
 
 /* Chakra Petch sets figures a little wider than the shared layout was tuned for: keep lines that hold live
    values from wrapping and unwrapping as the values change (no jumps) */
-:root .drive-soc span { white-space: nowrap; }
+:root .drive-soc span { white-space: nowrap; width: calc-size(max-content, round(up, size, 1px)); max-width: none; }
+:root .drive-soc > div.r > span { align-self: flex-end; }
 @container page (max-width: 36rem) {
   :root .gauge-stats .q-u { flex-basis: 100%; margin-left: 0; } /* the unit always under the number on a phone */
 }
