@@ -16,6 +16,7 @@ import { getInterface, onInterface } from '../core/display.js';
 import { sizePicker, followSwitch, sizeNote, themeButtons } from '../core/account.js';
 import { flash } from '../core/flash.js';
 import { ago } from '../core/fmt.js';
+import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, LABELS_TEXT, STYLES_TEXT, presetHosts, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
@@ -62,13 +63,14 @@ async function savePref(patch, what) {
 
 export async function mount(ctx) {
   const admin = isAdmin();
-  let about = null, server = null, geo = null, maps = null, packList = null;
-  [about, server, geo, maps, packList] = await Promise.all([
+  let about = null, server = null, geo = null, maps = null, packList = null, release = null;
+  [about, server, geo, maps, packList, release] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || 'instrument' }),
+    ctx.api.get('release').catch(() => null),
   ]);
   if (!ctx.alive()) return;
   const p = getPrefs() || {};
@@ -181,6 +183,47 @@ export async function mount(ctx) {
     if (t.mode === 'online') return h('p', { class: 'setting-note' }, icon('globe', 'ico--sm'), ' Maps load pictures from the online source; its credit shows on every map: ', h('b', null, t.attribution || '(none set)'), '.');
     return h('p', { class: 'setting-note' }, icon(off ? 'check' : 'info', 'ico--sm'), off ? ' An offline map file is installed: maps need nothing from outside.' : ' No offline map file yet: maps draw routes and places on a plain background, with a note saying so. See Offline map file below.');
   }
+  // the release check (GET /release; POST /release/check for an admin): this build, the last answer, Check now
+  const releaseBox = h('div', { class: 'release-box' });
+  let checking = false, releaseTimer = null;
+  ctx.onCleanup(() => clearTimeout(releaseTimer));
+  async function refreshRelease() {
+    release = await ctx.api.get('release').catch(() => release);
+    if (ctx.alive()) paintRelease();
+  }
+  async function checkNow() {
+    checking = true; paintRelease();
+    try {
+      release = await ctx.api.post('release/check', {});
+      if (release?.status === 'error') flash(releaseStatus(release).text, { kind: 'error' });
+    } catch (e) {
+      if (e?.name === 'AbortError') return;
+      flash(e?.code === 'release_check_off' ? 'Not checked: the release check is off.' : `Not checked: ${e?.message || e}`, { kind: 'error' });
+      release = await ctx.api.get('release').catch(() => release);
+    } finally { checking = false; }
+    if (ctx.alive()) paintRelease();
+  }
+  function paintRelease() {
+    const now = ctx.api.now();
+    const st = release ? releaseStatus(release, now) : { tone: 'error', text: 'The release check could not be read from the server.' };
+    const when = release ? checkedAgo(release, now) : '';
+    const on = release ? !!release.enabled : !!server?.release_check?.enabled;
+    const busy = checking || release?.status === 'checking';
+    const newer = release?.status === 'newer';
+    const lines = newer ? changeLines(release.newest) : [];
+    const tone = { ok: 'ok', newer: 'ok', error: 'warn' }[st.tone] || 'faint';
+    replace(releaseBox,
+      h('p', { class: 'setting-note release-build' }, icon('server', 'ico--sm'), ' This build: ', h('span', { class: 'mono' }, buildLabel(about || {}, ctx.api.now()))),
+      h('p', { class: 'release-status', role: 'status' }, icon(st.tone === 'error' ? 'warn' : st.tone === 'ok' ? 'check' : st.tone === 'newer' ? 'upload' : 'clock', 'ico--sm'), ' ',
+        h('span', { class: tone }, busy && st.tone !== 'wait' ? 'Checking…' : st.text), when ? h('span', { class: 'faint' }, ` · ${when}`) : null),
+      lines.length ? h('ul', { class: 'setting-note release-titles' }, lines.map((x) => h('li', null, x))) : null,
+      newer && release.pull ? h('p', { class: 'setting-note release-pull' }, 'To update, run on the server: ', h('code', { class: 'mono' }, release.pull)) : null,
+      admin ? h('div', { class: 'release-actions' },
+        h('button', { class: 'btn btn--sm', type: 'button', disabled: !on || busy, title: on ? null : 'Turn the release check on first', onclick: checkNow }, icon('reset', 'ico--sm'), busy ? 'Checking…' : 'Check now')) : null);
+    if (release?.status === 'checking' && !checking) { clearTimeout(releaseTimer); releaseTimer = setTimeout(() => { if (ctx.alive()) refreshRelease(); }, 4000); }
+  }
+  paintRelease();
+
   function paintServer() {
     if (!server) { replace(serverPanel, panel({ title: 'Server defaults', icon: 'server' }, h('p', { class: 'note' }, 'The server settings could not be loaded. Your own choices above still work.'))); return; }
     const ro = !admin;
@@ -200,6 +243,14 @@ export async function mount(ctx) {
         return false;
       }
     };
+    // the release check's switch: saves at once, then the release answer is read again
+    const releaseInput = h('input', { type: 'checkbox', id: 'sd-release', role: 'switch', 'aria-label': 'Check for new releases', checked: !!server.release_check?.enabled, disabled: ro,
+      onchange: async () => {
+        const want = releaseInput.checked;
+        if (!(await patch({ release_check: { enabled: want } }, want ? 'Release check on' : 'Release check off'))) { releaseInput.checked = !!server.release_check?.enabled; return; }
+        await refreshRelease();
+      } });
+    const releaseSwitch = { el: h('span', { class: 'switch' }, releaseInput, h('i', { 'aria-hidden': 'true' })) };
     // a server choice: read-only (buttons disabled) for anyone but an admin
     const sChoice = (name, options, current, onPick) => choice(name, options, current, onPick, { readOnly: ro });
     const g = server.geocode || {}, t = server.tiles || {};
@@ -289,7 +340,10 @@ export async function mount(ctx) {
           setting('Outside links', 'Links that open another site in a new tab, only when the viewer clicks them.',
             h('div', { class: 'row' },
               sChoice('Map links', [['false', 'No map links'], ['true', 'Map links']], String(!!server.outside_links?.maps), (v) => patch({ outside_links: { maps: v === 'true' } }, 'Map links')),
-              sChoice('Release notes', [['false', 'No release notes'], ['true', 'Release notes']], String(!!server.outside_links?.release_notes), (v) => patch({ outside_links: { release_notes: v === 'true' } }, 'Release-notes links')))))));
+              sChoice('Release notes', [['false', 'No release notes'], ['true', 'Release notes']], String(!!server.outside_links?.release_notes), (v) => patch({ outside_links: { release_notes: v === 'true' } }, 'Release-notes links')))))),
+      panel({ title: 'New releases', icon: 'upload', id: 'release-check', side: h('span', { class: 'faint' }, 'Off by default') },
+        setting('Check for new releases', 'Once a day the server asks GitHub whether a newer Sentry Mate image is published, and tells admins. Only that question goes out: no token, no car, no account. It never downloads or installs anything.',
+          [h('div', { class: 'switch-row switch-row--inline' }, releaseSwitch.el, h('label', { for: 'sd-release' }, server.release_check?.enabled ? 'On' : 'Off')), releaseBox])));
   }
   paintServer();
 

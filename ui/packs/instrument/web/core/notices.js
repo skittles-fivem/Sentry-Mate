@@ -1,12 +1,13 @@
 // The notices bar: server notices (certificate, vault, recovery key file, the opt-in release notice), each
 // with its cause and a link to the fix. Loaded at start and after a `notice` event; information notices
-// can be put away for this browser tab.
+// can be put away for this browser tab, the release notice for that newer build in this browser.
 
 import * as api from '../shared/api.js';
 import { h, replace } from '../shared/dom.js';
 import { icon } from './icons.js';
 import { pageInfo } from './pages.js';
 import { parseUrl } from '../shared/state.js';
+import { releaseDismissed, dismissRelease } from '../shared/release.js';
 
 const HIDDEN_KEY = 'sentrymate.notices-hidden';
 let box = null;
@@ -41,7 +42,8 @@ function fixOf(n) {
 function render() {
   if (!box) return;
   const gone = hidden();
-  const shown = items.filter((n) => n.code !== 'release_available' && !(n.level === 'info' && gone.has(n.code)));
+  // the release notice (admins only) is put away per newer build, in this browser; the others per tab
+  const shown = items.filter((n) => (n.code === 'release_available' ? !releaseDismissed(n) : !(n.level === 'info' && gone.has(n.code))));
   box.hidden = !shown.length;
   replace(box, shown.map((n) => {
     const level = n.level === 'error' || n.level === 'warning' ? n.level : 'info';
@@ -50,7 +52,7 @@ function render() {
       h('span', { class: 'notice-text' }, n.message || n.code),
       fixOf(n) ? h('a', { class: 'btn btn--sm', href: fixOf(n) }, TESLA.has(n.code) ? 'Open the Tesla account' : fixLabel(n.fix_link), icon('arrow-r', 'ico--sm')) : null,
       level === 'info' ? h('button', { class: 'btn btn--ghost btn--icon btn--sm', type: 'button', 'aria-label': 'Hide this notice for now',
-        onclick: () => { hide(n.code); render(); } }, icon('x', 'ico--sm')) : null);
+        onclick: () => { if (n.code === 'release_available') dismissRelease(n); else hide(n.code); render(); } }, icon('x', 'ico--sm')) : null);
     return row;
   }));
 }

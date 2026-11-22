@@ -1086,3 +1086,9 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .tm-form [hidden] { display: none; }
 .tm-form .fld--check > .fld-hint, .tm-form .fld--check > .tm-warn { margin-top: var(--g2); }
 .tm-test:empty { display: none; }
+/* settings/display: the release check under its switch (this build, the answer, the changes, the pull command) */
+.rel-box { display: flex; flex-direction: column; row-gap: var(--g2); margin-top: var(--g); min-width: 0; }
+.rel-line { min-width: 0; overflow-wrap: anywhere; }
+.rel-titles { margin: 0; padding-left: calc(var(--g) * 2); list-style: '- '; color: var(--muted); overflow-wrap: anywhere; }
+.rel-pull { user-select: all; }
+.rel-help { display: flex; flex-direction: column; row-gap: var(--g2); min-width: 0; overflow-wrap: anywhere; }

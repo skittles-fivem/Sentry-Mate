@@ -7,6 +7,7 @@
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { h, replace, cover, safeUrl } from '../shared/dom.js';
+import { buildLabel } from '../shared/release.js';
 import { pagesOf } from './pages.js';
 import { initNotices, loadNotices, onNotices, setOffline } from './notices.js';
 import { initToasts } from './toast.js';
@@ -126,7 +127,7 @@ function buildFoot() {
 async function loadAbout() {
   try {
     const a = await api.get('about', null, { maxAgeMs: 600000 });
-    els.version.textContent = `sentry-mate ${a.version} · ${String(a.ui_pack?.name || 'console').toLowerCase()} ${a.ui_pack?.version || ''}`.trim();
+    els.version.textContent = `sentry-mate ${buildLabel(a)} · ${String(a.ui_pack?.name || 'console').toLowerCase()} ${a.ui_pack?.version || ''}`.trim();
   } catch { /* keeps the plain name */ }
 }
 
