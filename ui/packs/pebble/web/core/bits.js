@@ -111,17 +111,38 @@ export function socBar(start, end, { cover = null, tone = 'coral' } = {}) {
     h('span', { class: 'soc-n' }, format(start, 'percent')), bar, h('span', { class: 'soc-n' }, format(end, 'percent')));
 }
 
-/** A row of filter pills (radios): pills({ label, value, options: [[v, text]], onchange, cover }). el.set(v). */
+/**
+ * A row of filter pills (radios): pills({ label, value, options: [[v, text, sold?]], onchange, cover }). el.set(v).
+ * Options with sold = true (sold cars) hide behind a 'Sold cars (n)' pill at the end, unless one is the choice.
+ */
 export function pills({ label, value, options, onchange, cover = null } = {}) {
   const el = h('div', { class: 'pills', role: 'radiogroup', 'aria-label': label, cover });
-  const buttons = options.map(([val, text]) => h('button', {
-    type: 'button', role: 'radio', class: 'fpill', dataset: { value: String(val) }, 'aria-checked': String(String(val) === String(value)),
+  let cur = value, open = false;
+  const buttons = options.map(([val, text, sold]) => h('button', {
+    type: 'button', role: 'radio', class: ['fpill', { 'is-sold': !!sold }], dataset: { value: String(val), sold: sold ? '1' : null }, 'aria-checked': String(String(val) === String(value)),
     onclick: () => { pick(val); onchange?.(val); },
   }, text));
   el.append(...buttons);
-  function pick(val) { for (const b of buttons) b.setAttribute('aria-checked', String(b.dataset.value === String(val))); }
+  const nSold = buttons.filter((b) => b.dataset.sold).length;
+  const tg = nSold ? soldPill(nSold, () => { open = !open; show(); }) : null;
+  if (tg) el.append(tg);
+  function show() {
+    for (const b of buttons) if (b.dataset.sold) b.hidden = !open && b.dataset.value !== String(cur);
+    if (tg) tg.set(open);
+  }
+  function pick(val) { cur = val; for (const b of buttons) b.setAttribute('aria-checked', String(b.dataset.value === String(val))); show(); }
+  show();
   el.set = pick;
   return el;
+}
+
+/** The 'Sold cars (n)' pill that shows or hides the sold cars of a pill row: soldPill(n, ontoggle). el.set(open). */
+export function soldPill(n, ontoggle) {
+  const ic = h('span', { class: 'fpill-ic', 'aria-hidden': 'true' });
+  const b = h('button', { type: 'button', class: 'fpill fpill-ic sold-pill', 'aria-expanded': 'false', onclick: () => ontoggle() }, ic, `Sold cars (${formatNumber(n)})`);
+  b.set = (open) => { b.setAttribute('aria-expanded', String(!!open)); ic.replaceChildren(icon(open ? 'chevronUp' : 'chevronDown')); };
+  b.set(false);
+  return b;
 }
 
 /** A 'Show more' button for a paged list: more(async () => hasMore). Hidden when the list is done. */

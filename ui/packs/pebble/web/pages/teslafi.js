@@ -319,7 +319,7 @@ export function teslafiTiles(ctx, { cars = [] } = {}) {
       ...cars.map((x) => {
         const other = items.find((o) => o.vehicle !== c.vehicle && picked.get(o.vehicle) === x.id);
         return [x.id, x.name || x.id, takenBy.has(x.id) ? `Read through ${takenBy.get(x.id)} already: leave it out there first`
-          : other ? `Picked for the TeslaFi car ${nameOf(other)} already` : 'Read into this car'];
+          : other ? `Picked for the TeslaFi car ${nameOf(other)} already` : 'Read into this car', state.isSold(x)];
       }),
       ['new', 'A new car', 'A new car is made for it here'], ['leave_out', 'Leave out', 'Never read']];
     const save = btn('Save the matches', { kind: 'primary', icon: 'check', onclick: () => saveMatches() });
