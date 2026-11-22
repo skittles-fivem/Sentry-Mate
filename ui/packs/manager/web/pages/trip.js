@@ -193,7 +193,7 @@ export async function mount(ctx) {
   const en = trip.energy_kwh || {};
   const costWhy = nCharges === 0 ? 'No charge in this window' : 'No charge has a price yet';
   const moneyEl = (list, kind) => (list.length ? h('span', { class: 'money-stack' }, list.map((x) => h('span', null, kind ? format({ amount: x.amount, currency: x.currency }, kind) : formatMoney(x.amount, x.currency), list.length > 1 ? h('small', { class: 'cur' }, ` ${x.currency}`) : null))) : null);
-  const figs = panel({ title: 'Trip figures', icon: 'stats', cls: 'trip-figures', cover: 'trip.empty_states', side: csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(from, tz), 'figures'), figureRows(trip, car), FIG_COLS) }) },
+  const figs = panel({ title: 'Trip summary', icon: 'stats', cls: 'trip-figures', cover: 'trip.empty_states', side: csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(from, tz), 'figures'), figureRows(trip, car), FIG_COLS) }) },
     h('div', { class: 'trip-fig-grid' },
       metric('Distance', dist.odometer_km, 'distance', { size: 'lg', cover: 'trip.stat.mileage', why: noDrive ? whyDrive : 'No odometer reading', explain: !noDrive && dist.drives_km != null ? `by odometer; the ${formatNumber(nDrives)} ${nDrives === 1 ? 'drive adds' : 'drives add'} up to ${format(dist.drives_km, 'distance')}` : 'by odometer' }),
       metric('Average speed, moving', trip.speed_kph?.moving, 'speed', { cover: 'trip.stat.speed_moving', why: whyDrive, explain: noDrive ? 'distance over the time driving' : `distance over ${formatDuration(tm.driving || 0)} of driving` }),

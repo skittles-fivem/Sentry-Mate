@@ -14,7 +14,7 @@ import { icon } from '../core/icons.js';
 import { pageHead, panel, panelLink, metric, kv, csvButton } from '../core/page.js';
 import { statePill, stateLabel, ago, agoEl, when, dur, val, TYRES } from '../core/fmt.js';
 import { timelineRow } from './timeline.js';
-import { createMap, carMarker, addRoute, padClear, mapFallback } from '../core/map.js';
+import { createMap, carMarker, addRoute, mapFallback } from '../core/map.js';
 import { offstage } from '../core/stage.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA } from '../core/chart.js';
 import { activityStrip } from '../core/strip.js';
@@ -155,19 +155,59 @@ export async function mount(ctx) {
   const banner = h('div');
   const gaugeSlot = h('section', { class: 'panel gauge-panel', 'aria-label': 'Battery and range' });
   const mapEl = h('div', { class: 'map', role: 'img', 'aria-label': `Map: where ${car.name} is` });
-  const placeCard = h('div', { class: 'glass-card place-card' });
   const mapTools = h('div', { class: 'map-overlay map-overlay--bl map-tools' });
   const mapPanel = h('section', { class: 'panel map-panel', 'aria-label': 'Where the car is', cover: ['summary.map.position', 'summary.map.attribution', 'summary.map.zoom'] },
-    mapEl, h('div', { class: 'map-overlay map-overlay--tl' }, placeCard), mapTools);
+    mapEl, mapTools);
   const todaySlot = h('section', { class: 'panel today-tl', 'aria-label': "Today's timeline" });
   const rowLive = h('div', { class: 'now-row' });
   const rowMore = h('div', { class: 'now-row now-row--3' });
   const windowSlot = h('div', { class: 'car-window' });
 
-  replace(root, head, inputsSlot, banner,
-    h('div', { class: 'now-hero' }, gaugeSlot, mapPanel, todaySlot),
+  // the six key facts, big and plain; each keeps its place and size while live values arrive
+  const fact = (key, label, ic, tag = 'div') => {
+    const el = h(tag, { class: ['fact', `fact--${key}`], role: tag === 'div' ? 'group' : null, 'aria-label': label });
+    const value = h('div', { class: 'fact-value' }), sub = h('div', { class: 'fact-sub' }), foot = h('div', { class: 'fact-foot' });
+    el.append(h('div', { class: 'fact-label' }, icon(ic, 'ico--sm'), h('span', null, label)), value, foot, sub);
+    return { el, value, sub, foot };
+  };
+  const F = {
+    battery: fact('battery', 'Battery', 'battery'),
+    range: fact('range', 'Range', 'gauge'),
+    state: fact('state', 'State', 'clock'),
+    where: fact('where', 'Where', 'pin'),
+    drive: fact('drive', 'Last drive', 'route', 'a'),
+    charge: fact('charge', 'Charging', 'bolt'),
+  };
+  const facts = h('div', { class: 'facts' }, Object.values(F).map((f) => f.el));
+
+  // everything else sits behind one control, closed at first; the choice is kept in this browser
+  const KEY = 'sentrymate.manager.car-details';
+  let open = false;
+  try { open = localStorage.getItem(KEY) === 'open'; } catch { /* no storage: closed */ }
+  const details = h('div', { class: 'car-details', id: 'car-details', hidden: !open });
+  const toggleText = h('span');
+  const toggleIcon = h('span', { class: 'details-chev' }, icon('chev-d'));
+  const toggle = h('button', { class: 'btn details-toggle', type: 'button', 'aria-controls': 'car-details', 'aria-expanded': String(open) }, toggleIcon, toggleText);
+  const paintToggle = () => { toggle.setAttribute('aria-expanded', String(open)); toggleText.textContent = open ? 'Hide details' : 'Show all details'; };
+  paintToggle();
+  toggle.addEventListener('click', () => {
+    open = !open;
+    details.hidden = !open;
+    paintToggle();
+    try { localStorage.setItem(KEY, open ? 'open' : 'closed'); } catch { /* kept for this visit only */ }
+    // charts drawn while closed take their real size now
+    if (open) requestAnimationFrame(() => { for (const pl of Object.values(plots)) pl?.rebuild?.(); });
+  });
+
+  replace(details, inputsSlot,
+    h('div', { class: 'now-hero' }, gaugeSlot, todaySlot),
     h('div', { class: 'now-panels' }, rowLive, rowMore),
     windowSlot, vehicleInfoPanel(ctx));
+  replace(root, head, banner,
+    h('div', { class: 'car-top' }, facts, mapPanel),
+    h('div', { class: 'details-bar' }, toggle,
+      h('span', { class: 'details-hint' }, 'Battery gauge, temperatures, tyres, doors, charging, the period’s charts and the car’s build')),
+    details);
 
   /* ---------- header, banner */
   function paintHead() {
@@ -181,9 +221,8 @@ export async function mount(ctx) {
       titleExtra: h('span', { cover: 'summary.stat.status' }, statePill(n.state, { lg: true, stale: n.stale })),
       sub: [
         h('span', { cover: 'summary.header.model', title: 'Model and year come from the VIN prefix.' }, [car.model, car.year].filter(Boolean).join(' · ') || 'Model not known yet'),
-        trim?.value ? h('span', { cover: 'summary.header.trim', title: `Trim: ${trim.value}, from ${trim.source === 'can' ? "the car's own configuration message" : trim.source === 'owner' ? 'the owner' : trim.source === 'vin' ? 'the VIN prefix' : trim.source === 'tesla_api' ? 'the Tesla API' : 'the TeslaMate import'}` }, trim.value, h('span', { class: 'trim-src' }, { can: 'from SMO', vin: 'from the VIN', owner: 'typed by the owner', teslamate: 'imported from TeslaMate', tesla_api: 'from the Tesla API' }[trim.source] || 'source not known')) : h('span', { cover: 'summary.header.trim' }, 'Trim not known yet'),
+        trim?.value ? h('span', { cover: 'summary.header.trim', title: `Trim: ${trim.value}, from ${trim.source === 'can' ? "the car's own configuration message" : trim.source === 'owner' ? 'the owner' : trim.source === 'vin' ? 'the VIN prefix' : trim.source === 'tesla_api' ? 'the Tesla API' : 'the TeslaMate import'}` }, trim.value, h('span', { class: 'trim-src' }, { can: 'from the car', vin: 'from the VIN', owner: 'typed by the owner', teslamate: 'imported from TeslaMate', tesla_api: 'from the Tesla API' }[trim.source] || 'source not known')) : h('span', { cover: 'summary.header.trim' }, 'Trim not known yet'),
         vin ? h('span', null, 'VIN ', h('span', { class: 'key-chip', title: 'Only the VIN prefix is stored; the serial number never is.' }, vin)) : null,
-        h('span', { cover: 'summary.stat.status' }, `${stateLabel(n.state)} since ${n.since_ms ? when(n.since_ms, tz) : '—'}`, n.since_ms ? h('span', { class: 'faint' }, ` (${dur(Math.max(0, ctx.api.now() - n.since_ms))})`) : null),
       ],
       actions: [
         h('button', { class: 'btn', type: 'button', onclick: openCarSwitcher, cover: 'overview.filter.car', title: 'Show another car on this page' }, icon('car'), 'Switch car'),
@@ -268,27 +307,7 @@ export async function mount(ctx) {
   /* ---------- the map */
   let map = null, marker = null, trailShown = false;
   function paintPlace() {
-    const n = now, loc = n.location || {};
-    const plat = val(loc.lat), plon = val(loc.lon);
-    const known = plat != null && plon != null;
-    const placeName = loc.place?.name || loc.address?.short || (n.state === 'driving' ? 'On the road' : known ? 'Not a saved place' : 'No position yet');
-    const area = [loc.address?.locality, loc.address?.region].filter(Boolean).join(', ');
-    const detail = loc.place ? loc.address?.short : area || (known && !loc.address?.short ? `${plat.toFixed(5)}, ${plon.toFixed(5)}` : '');
-    const c = n.charge || {};
-    const rows = [];
-    if (n.state === 'driving') {
-      rows.push(['Started', formatTime(n.drive?.start_ms ?? n.since_ms, tz)], ['This drive', `${format(n.drive?.distance_km, 'distance')} · ${dur((n.at_ms || 0) - (n.drive?.start_ms ?? n.since_ms))}`]);
-    } else if (n.state === 'charging') {
-      rows.push(['Charging since', formatTime(n.since_ms, tz)]);
-      if (c.finish_ms) rows.push([`Reaches ${pct(val(c.limit_pct))}`, `about ${when(c.finish_ms, tz)}`]);
-    } else {
-      rows.push(['Here since', when(n.since_ms, tz)], ['Charge port', CHARGE_STATUS[val(c.status)] || '—']);
-    }
-    rows.push(['Accuracy', format(val(loc.accuracy_m), 'length')], ['Position', aged(loc.lat, agoEl(at(loc.lat), tz), null)]);
-    replace(placeCard,
-      h('div', { class: 'place-card-top' }, h('span', { class: ['place-icon', n.state === 'charging' && 'place-icon--warm', (n.stale || n.state === 'unknown') && 'place-icon--muted'] }, icon(n.state === 'driving' ? 'route' : loc.place ? 'home' : 'pin')),
-        h('div', null, h('div', { class: 'place-name' }, placeName), detail ? h('div', { class: 'place-detail' }, detail) : null)),
-      h('dl', { class: 'place-card-rows' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])));
+    const loc = now.location || {};
     const lat = val(loc.lat), lon = val(loc.lon);
     const outside = !!settings?.outside_links?.maps;
     replace(mapTools,
@@ -326,7 +345,7 @@ export async function mount(ctx) {
     const tone = n.stale || n.state === 'unknown' ? 'muted' : n.state === 'charging' ? 'warm' : n.state === 'asleep' ? 'asleep' : 'live';
     marker?.remove();
     marker = carMarker(map, [lon, lat], { tone, heading: n.state === 'driving' ? val(loc.heading_deg) : null });
-    map.frame(() => map.map.jumpTo({ center: [lon, lat], padding: { ...padClear(mapEl, placeCard, { left: 4, top: 30, right: 0, bottom: 0, beside: true }), top: rpx(30) } }));
+    map.frame(() => map.map.jumpTo({ center: [lon, lat] }));
     if (n.state === 'driving' && n.drive?.drive_id && !trailShown) {
       trailShown = true;
       ctx.api.get(`cars/${encodeURIComponent(cid)}/drives/${encodeURIComponent(n.drive.drive_id)}/track`, { simplify_m: 5 }).then((t) => {
@@ -412,6 +431,7 @@ export async function mount(ctx) {
           h('a', { class: 'link', href: `${ctx.link('software')}#firmware-history`, title: 'Every fingerprint each module has had, with the version it came with, over time' }, 'History')), { icon: 'chip' }],
         sw.changed_since_ms ? ['Software changed', h('span', { class: 'warn' }, `since ${when(sw.changed_since_ms, tz)}`), { icon: 'info', cover: 'summary.flag.software_update', title: "The car's module builds changed; the version text is not known yet." }]
           : ['Software changed', h('span', { class: 'faint' }, 'no change seen'), { icon: 'info', cover: 'summary.flag.software_update', title: "Shows when the car's module builds change after an update." }],
+        ['Position', h('span', null, aged(n.location?.lat, agoEl(at(n.location?.lat), tz), null), val(n.location?.accuracy_m) != null ? h('span', { class: 'faint' }, ` · within ${format(val(n.location.accuracy_m), 'length')}`) : null), { icon: 'pin', title: 'When the position was recorded, and how close it is' }],
         ['Newest value', agoEl(n.at_ms, tz), { icon: 'live', cover: ['nr.dash.last-update', 'summary.data.live_push'], title: `Recorded ${n.at_ms ? formatDateTime(n.at_ms, tz) : '—'}. Logs arrive about ${n.delay_s ? Math.round(n.delay_s / 60) || 1 : 1} min after the car records them; this page updates by itself.` }],
         ['Log received', agoEl(n.received_ms, tz), { icon: 'upload' }],
       ]),
