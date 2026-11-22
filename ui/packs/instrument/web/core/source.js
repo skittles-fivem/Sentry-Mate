@@ -1,7 +1,7 @@
 // Where data came from: SMO (the Screenmate CAN Bridge's signed logs), the Tesla API (the Tesla Owner API this
 // server reads), TeslaFi (its polls, read with the owner's TeslaFi token) or an import (TeslaMate's or TeslaFi's
 // history). Every row of the API carries `sources` (a list of
-// { kind: smo | tesla_api | teslafi_api | import, site?, label }) and `source_label` (one line for all of them). Pages show
+// { kind: smo | tesla_api | teslafi_api | teslamate_local | import, site?, label }) and `source_label` (one line for all of them). Pages show
 // that line, never the old `source` word, which the server drops in a later release (read here only as a
 // fallback for an answer without `sources`).
 //
@@ -14,10 +14,10 @@
 
 import { h } from '../shared/dom.js';
 
-export const SOURCE_FILTER = [['', 'Every source'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['teslafi_api', 'TeslaFi (live)'], ['import', 'Imported'], ['import:teslamate', 'Imported from TeslaMate'], ['import:teslafi', 'Imported from TeslaFi']];
+export const SOURCE_FILTER = [['', 'Every source'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['teslafi_api', 'TeslaFi (live)'], ['teslamate_local', 'Local TeslaMate (live)'], ['import', 'Imported'], ['import:teslamate', 'Imported from TeslaMate'], ['import:teslafi', 'Imported from TeslaFi']];
 // the old filter words still work on the server: read them from an old address as the new ones
 export const filterWord = (v) => ({ can: 'smo', teslamate: 'import:teslamate', all: '' }[v] ?? v ?? '');
-export const FILTER_WORDS = { smo: 'SMO data only', tesla_api: 'Tesla API data only', teslafi_api: 'data from TeslaFi only', import: 'imported history only', 'import:teslamate': 'history imported from TeslaMate only', 'import:teslafi': 'history imported from TeslaFi only' };
+export const FILTER_WORDS = { smo: 'SMO data only', tesla_api: 'Tesla API data only', teslafi_api: 'data from TeslaFi only', teslamate_local: 'data from local TeslaMate only', import: 'imported history only', 'import:teslamate': 'history imported from TeslaMate only', 'import:teslafi': 'history imported from TeslaFi only' };
 /** The options of a source select, with the value in use always among them (so the select never hides a filter). */
 export function sourceOptions(v) {
   if (!v || SOURCE_FILTER.some(([x]) => x === v)) return SOURCE_FILTER;
@@ -25,13 +25,14 @@ export function sourceOptions(v) {
   return [...SOURCE_FILTER, [v, site ? `Imported from ${SITE[site] || site}` : v]];
 }
 
-const SHORT = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', import: 'Imported' };
-const LABEL = { smo: 'Data from SMO', tesla_api: 'Data from the Tesla API', teslafi_api: 'Data from TeslaFi', import: 'Imported' };
+const SHORT = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'Local TeslaMate', import: 'Imported' };
+const LABEL = { smo: 'Data from SMO', tesla_api: 'Data from the Tesla API', teslafi_api: 'Data from TeslaFi', teslamate_local: 'Data from local TeslaMate', import: 'Imported' };
 const SITE = { teslamate: 'TeslaMate', teslafi: 'TeslaFi' };
 // the old single word, for an answer that has no sources yet
 const LEGACY = { can: [{ kind: 'smo', label: 'Data from SMO' }], teslamate: [{ kind: 'import', site: 'teslamate', label: 'Imported from TeslaMate' }],
   tesla_api: [{ kind: 'tesla_api', label: 'Data from the Tesla API' }], teslafi: [{ kind: 'import', site: 'teslafi', label: 'Imported from TeslaFi' }],
-  teslafi_api: [{ kind: 'teslafi_api', label: 'Data from TeslaFi' }] };
+  teslafi_api: [{ kind: 'teslafi_api', label: 'Data from TeslaFi' }],
+  teslamate_local: [{ kind: 'teslamate_local', label: 'Data from local TeslaMate' }] };
 
 /** The row's sources as a list (never null). */
 export function sourcesOf(row) {

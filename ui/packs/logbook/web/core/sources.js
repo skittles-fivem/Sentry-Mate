@@ -1,7 +1,7 @@
 // Sentry Mate, "Logbook" UI pack: where a row, a value or a chart came from.
 //
 // Every row of the API names its inputs (docs/ui-api.md, Conventions, "Sources"): `sources` is a list of
-// { kind: 'smo' | 'tesla_api' | 'import', site?, label } and `source_label` says it in one line ("Data from SMO",
+// { kind: 'smo' | 'tesla_api' | 'teslafi_api' | 'teslamate_local' | 'import', site?, label } and `source_label` says it in one line ("Data from SMO",
 // "Data from the Tesla API", "Imported from TeslaMate", "Data from SMO and the Tesla API"). The pages show that
 // line, small and quiet, beside the data; never instead of it. The old one-word `source` (can, teslamate,
 // tesla_api) is read only when a row has no `sources` (a server from before them).
@@ -12,14 +12,15 @@ import { formatDuration } from '../shared/time.js';
 import * as api from '../shared/api.js';
 
 const SITE = { teslamate: 'TeslaMate', teslafi: 'TeslaFi' };
-const SHORT = { smo: 'SMO', tesla_api: 'the Tesla API', teslafi_api: 'TeslaFi' };
-const TAG = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi' };
+const SHORT = { smo: 'SMO', tesla_api: 'the Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'local TeslaMate' };
+const TAG = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'Local TeslaMate' };
 const OLD = {
   can: [{ kind: 'smo', label: 'Data from SMO' }],
   teslamate: [{ kind: 'import', site: 'teslamate', label: 'Imported from TeslaMate' }],
   tesla_api: [{ kind: 'tesla_api', label: 'Data from the Tesla API' }],
   teslafi: [{ kind: 'import', site: 'teslafi', label: 'Imported from TeslaFi' }],
   teslafi_api: [{ kind: 'teslafi_api', label: 'Data from TeslaFi' }],
+  teslamate_local: [{ kind: 'teslamate_local', label: 'Data from local TeslaMate' }],
 };
 
 /** The row's inputs, as `sources` (or the old `source` word). */
@@ -93,7 +94,7 @@ export function estimatedWhy(r) {
 }
 
 /** The source filter: the words `source=` takes (the old `can` and `teslamate` read as `smo` and `import`). */
-export const SOURCE_FILTER = [['', 'All sources'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['teslafi_api', 'TeslaFi (live)'],
+export const SOURCE_FILTER = [['', 'All sources'], ['smo', 'SMO'], ['tesla_api', 'Tesla API'], ['teslafi_api', 'TeslaFi (live)'], ['teslamate_local', 'Local TeslaMate (live)'],
   ['import', 'Imported (any site)'], ['import:teslamate', 'Imported from TeslaMate'], ['import:teslafi', 'Imported from TeslaFi']];
 export function sourceFilter(v) {
   const w = { can: 'smo', teslamate: 'import:teslamate', teslafi: 'import:teslafi', all: '' }[v] ?? v;
@@ -101,7 +102,7 @@ export function sourceFilter(v) {
 }
 /** "comes from SMO" for an empty list's reasons. */
 export const SOURCE_WHY = {
-  smo: 'has data from SMO', tesla_api: 'has data from the Tesla API', teslafi_api: 'has data from TeslaFi', import: 'was imported',
+  smo: 'has data from SMO', tesla_api: 'has data from the Tesla API', teslafi_api: 'has data from TeslaFi', teslamate_local: 'has data from local TeslaMate', import: 'was imported',
   'import:teslamate': 'was imported from TeslaMate', 'import:teslafi': 'was imported from TeslaFi',
 };
 

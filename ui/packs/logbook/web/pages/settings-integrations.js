@@ -22,6 +22,7 @@ import { dataTable } from '../core/table.js';
 import { confirmDialog } from '../core/dialog.js';
 import { teslaPart, showTeslaHash } from './integrations-tesla.js';
 import { teslafiPart } from './integrations-teslafi.js';
+import { teslamatePart } from './integrations-teslamate.js';
 
 export const id = 'settings-integrations';
 export const css = true;
@@ -168,6 +169,8 @@ const NET_PURPOSE = {
   release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-display'],
   tesla: ['Tesla API', 'Only while a Tesla account is added (Tesla account, on this page): signs in and reads its cars, never sends a command.', null],
   teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars’ data from TeslaFi', null],
+  teslamate_mqtt: ['Local TeslaMate (MQTT)', 'Only while a local TeslaMate is added and not paused: subscribes to its topics, never publishes', null],
+  teslamate_db: ['Local TeslaMate (database)', 'Only while its database catch-up is on: reads what MQTT missed', null],
   upload: ['CAN Bridge uploads', 'The car’s CAN Bridge sends its logs here.', null],
   web: ['This app and the API', 'Browsers, phone apps and scripts.', null],
 };
@@ -334,7 +337,8 @@ export async function mount(ctx) {
   /* ---------------- the Tesla account (its own module) */
   const tesla = teslaPart(ctx);
   const teslafi = teslafiPart(ctx);
-  const teslaLoad = Promise.all([tesla.load(), teslafi.load()]);
+  const teslamate = teslamatePart(ctx);
+  const teslaLoad = Promise.all([tesla.load(), teslafi.load(), teslamate.load()]);
   const onHash = () => showTeslaHash();
   window.addEventListener('hashchange', onHash);
   ctx.onCleanup(() => window.removeEventListener('hashchange', onHash));
@@ -349,7 +353,7 @@ export async function mount(ctx) {
           : chip('Not connected', { kind: 'warn', iconName: 'warning' }),
       h('p', { class: 'si-head-note' }, status.enabled ? `${format(status.delivered, 'count')} messages delivered since the server started` : 'Nothing leaves the server until publishing is on'));
   }
-  const JUMPS = [['tesla', 'Tesla account'], ['teslafi', 'TeslaFi'], ['si-broker', 'Broker'], ['si-topics', 'Topics'], ['si-values', 'Values'], ['si-ha', 'Home Assistant'], ['si-events', 'Events'], ['si-api', 'API'], ['si-network', 'Network'], ['si-works', 'Works with']];
+  const JUMPS = [['tesla', 'Tesla account'], ['teslafi', 'TeslaFi'], ['teslamate', 'Local TeslaMate'], ['si-broker', 'Broker'], ['si-topics', 'Topics'], ['si-values', 'Values'], ['si-ha', 'Home Assistant'], ['si-events', 'Events'], ['si-api', 'API'], ['si-network', 'Network'], ['si-works', 'Works with']];
   const jumpNav = h('nav', { class: 'si-jump', 'aria-label': 'Parts of this page' },
     h('span', { class: 'si-jump-label' }, 'On this page'),
     JUMPS.map(([target, label]) => h('button', { type: 'button', class: 'si-jump-link', onclick: () => { const t = document.getElementById(target); if (t) { t.scrollIntoView({ block: 'start' }); t.querySelector('h2')?.focus?.(); } } }, label)));
@@ -892,7 +896,7 @@ export async function mount(ctx) {
         { key: 'host', label: 'Host or port', cell: (r) => (r.port != null ? h('span', null, code(`port ${r.port}`), r.tls ? ', TLS' : ', no TLS') : hostsOf(r).length ? h('span', { class: 'si-hosts' }, hostsOf(r).map((x, i) => [i ? ', ' : null, code(x)])) : h('span', { class: 'si-quiet' }, 'not set')) },
         { key: 'enabled', label: 'State', sort: true, cell: (r) => (r.enabled ? chip(r.dir === 'in' ? 'Open' : 'On', { kind: 'on' }) : chip('Off')), value: (r) => (r.enabled ? 1 : 0) },
         { key: 'last', label: 'Last used', sort: true, cell: (r) => (r.last_used_ms ? ago(r.last_used_ms) : h('span', { class: 'si-quiet' }, r.dir === 'in' ? 'always listening' : 'never')), value: (r) => r.last_used_ms },
-        { key: 'change', label: 'Change it', cell: (r) => (r.purpose === 'teslafi' ? h('a', { class: 'link-arrow', href: '#teslafi' }, 'TeslaFi, on this page', icon('arrowRight')) : (NET_PURPOSE[r.purpose] || [])[2] ? pageLink('Settings', NET_PURPOSE[r.purpose][2], {}, { arrow: true }) : h('span', { class: 'si-quiet' }, r.purpose === 'mqtt' || r.purpose === 'tesla' ? 'on this page' : '—')), value: () => '' },
+        { key: 'change', label: 'Change it', cell: (r) => (r.purpose === 'teslafi' ? h('a', { class: 'link-arrow', href: '#teslafi' }, 'TeslaFi, on this page', icon('arrowRight')) : r.purpose === 'teslamate_mqtt' || r.purpose === 'teslamate_db' ? h('a', { class: 'link-arrow', href: '#teslamate' }, 'Local TeslaMate, on this page', icon('arrowRight')) : (NET_PURPOSE[r.purpose] || [])[2] ? pageLink('Settings', NET_PURPOSE[r.purpose][2], {}, { arrow: true }) : h('span', { class: 'si-quiet' }, r.purpose === 'mqtt' || r.purpose === 'tesla' ? 'on this page' : '—')), value: () => '' },
       ],
     });
     t.load();
@@ -926,7 +930,7 @@ export async function mount(ctx) {
     pageHead({ eyebrow: 'Settings', title: 'Integrations', deck: `${ctx.info.purpose} Nothing leaves this server until an admin turns it on, and the VIN is never sent.`, aside: headStatus }),
     jumpNav,
     h('p', { class: 'si-saving' }, icon('info'), ' Switches and single fields save at once and a short note confirms it; the broker connection saves with its button.'),
-    tesla.el, teslafi.el, brokerSec, topicsSec, valuesSec, haSec, entSec, eventsSec, apiSec, netSec, worksSec);
+    tesla.el, teslafi.el, teslamate.el, brokerSec, topicsSec, valuesSec, haSec, entSec, eventsSec, apiSec, netSec, worksSec);
   // The broker log is in before the page says it is ready, so it does not push the client notes down later.
   const logLoad = paintAll();
   await Promise.all([teslaLoad, logLoad.catch(() => {})]);

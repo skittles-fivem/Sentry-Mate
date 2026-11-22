@@ -25,6 +25,7 @@ import { dateTime, ago, num } from '../core/fmt.js';
 import { chan, hint, recLamp, presets, toggle, copyBtn, code, sig, errText } from '../core/setting.js';
 import { teslaSection } from './settings-tesla.js';
 import { teslafiSection } from './settings-teslafi.js';
+import { teslamateSection } from './settings-teslamate.js';
 
 export const id = 'settings-integrations';
 export const css = true;
@@ -169,6 +170,8 @@ const PURPOSE = {
   web: ['This app and the API', 'Browsers, apps and the API.', null],
   tesla: ['Tesla API', 'Only once an admin adds a Tesla account (above): its sign-in, Owner API and live stream hosts.', null],
   teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi', null],
+  teslamate_mqtt: ['Local TeslaMate (MQTT)', 'Only while a local TeslaMate is added and not paused: subscribes to its topics, never publishes', null],
+  teslamate_db: ['Local TeslaMate (database)', 'Only while its database catch-up is on: reads what MQTT missed', null],
 };
 
 // in the server's units: a broker has one set of units for everyone
@@ -207,6 +210,7 @@ export async function mount(ctx) {
   const carList = cars?.items || [];
   const tesla = teslaSection(ctx, { cars: carList });
   const teslafi = teslafiSection(ctx, { cars: carList });
+  const teslamate = teslamateSection(ctx, { cars: carList });
 
   // the preview car: the address's, else the last car, else the first in the person's own order
   const wanted = ctx.query.car || null;
@@ -584,7 +588,7 @@ export async function mount(ctx) {
         { key: 'host', label: 'Host or port', render: (r) => (r.port != null ? code(`port ${r.port}${r.tls ? ', TLS' : ''}`) : hostsOf(r).length ? h('span', { class: 'si-hosts' }, hostsOf(r).map((x) => code(x, { long: true }))) : h('span', { class: 'faint' }, 'not set')), csv: (r) => hostsOf(r).join(' ') || (r.port != null ? `port ${r.port}` : '') },
         { key: 'on', label: 'State', sort: true, value: (r) => (r.enabled ? 0 : 1), render: (r) => (r.enabled ? sig('ok', r.dir === 'in' ? 'Open' : 'On') : sig('off', 'Off')), csv: (r) => (r.enabled ? 'on' : 'off') },
         { key: 'last', label: 'Last used', num: true, sort: true, value: (r) => r.last_used_ms, render: (r) => (r.last_used_ms ? ago(r.last_used_ms) : h('span', { class: 'faint' }, r.dir === 'in' ? 'always listening' : 'never')), csv: (r) => (r.last_used_ms ? new Date(r.last_used_ms).toISOString() : '') },
-        { key: 'change', label: 'Change it', csv: false, render: (r) => (PURPOSE[r.purpose]?.[2] ? h('a', { class: 'plc', href: state.buildUrl(PURPOSE[r.purpose][2]) }, 'Settings') : r.purpose === 'teslafi' ? h('a', { class: 'plc', href: state.buildUrl('settings-integrations') + '#teslafi' }, 'TeslaFi') : r.purpose === 'tesla' ? h('a', { class: 'plc', href: '#tesla' }, 'Tesla account') : h('span', { class: 'faint' }, r.purpose === 'mqtt' ? 'Above' : '—')) },
+        { key: 'change', label: 'Change it', csv: false, render: (r) => (PURPOSE[r.purpose]?.[2] ? h('a', { class: 'plc', href: state.buildUrl(PURPOSE[r.purpose][2]) }, 'Settings') : r.purpose === 'teslafi' ? h('a', { class: 'plc', href: state.buildUrl('settings-integrations') + '#teslafi' }, 'TeslaFi') : r.purpose === 'teslamate_mqtt' || r.purpose === 'teslamate_db' ? h('a', { class: 'plc', href: '#teslamate' }, 'Local TeslaMate') : r.purpose === 'tesla' ? h('a', { class: 'plc', href: '#tesla' }, 'Tesla account') : h('span', { class: 'faint' }, r.purpose === 'mqtt' ? 'Above' : '—')) },
       ],
     }).el);
   }
@@ -598,12 +602,13 @@ export async function mount(ctx) {
   replace(ctx.view, h('div', { class: 'page si' },
     plate({ kicker: 'Set-up · integrations', title: 'Integrations', aim: ctx.info.aim, tools: rec.el }),
     h('section', { class: 'hud hud--plain jump', 'aria-label': 'Sections and saving' },
-      presets([['tesla', 'Tesla account'], ['teslafi', 'TeslaFi'], ['si-broker', 'Broker'], ['si-topics', 'Topics'], ['si-values', 'Values'], ['si-ha', 'Home Assistant'], ['si-events', 'Events'], ['si-api', 'API'], ['si-network', 'Network'], ['si-works', 'Works with']]),
+      presets([['tesla', 'Tesla account'], ['teslafi', 'TeslaFi'], ['teslamate', 'Local TeslaMate'], ['si-broker', 'Broker'], ['si-topics', 'Topics'], ['si-values', 'Values'], ['si-ha', 'Home Assistant'], ['si-events', 'Events'], ['si-api', 'API'], ['si-network', 'Network'], ['si-works', 'Works with']]),
       h('p', { class: 'note jump-note' }, icon('check', 'i--sm'), h('span', null, 'Switches and single fields save at once; the connection saves with its button. Nothing leaves the server until sending is on.'))),
 
-    band(1, 'Live inputs: Tesla API and TeslaFi'),
+    band(1, 'Live inputs: Tesla API, TeslaFi and local TeslaMate'),
     tesla.el,
     teslafi.el,
+    teslamate.el,
 
     band(2, 'Transmitter'),
     hud({ title: 'MQTT broker', icon: 'antenna', id: 'si-broker', side: tag(admin ? 'Admin' : 'Read only', admin ? 'mag' : 'org') },
@@ -670,7 +675,7 @@ export async function mount(ctx) {
           works('Smart mirrors and wall screens', 'projects.magic-mirror', 'A status tile on a mirror or wall screen, from MQTT or the API.', [code('soc'), ', ', code('range'), ', ', code('state'), ', ', code('updated'), '.']),
           works('Garage door openers', 'projects.geogdo', 'Openers that act on arrival and departure, by zone or saved place. Values are about 75 s late: good for closing behind you, late for opening.', [code('location'), ', ', code('place'), ' and drive events.']))))));
 
-  await Promise.all([valuesList?.ready, eventsList?.ready, paintLog(), tesla.load(), teslafi.load()].filter(Boolean));
+  await Promise.all([valuesList?.ready, eventsList?.ready, paintLog(), tesla.load(), teslafi.load(), teslamate.load()].filter(Boolean));
   if (ctx.alive()) ctx.ready();
 }
 

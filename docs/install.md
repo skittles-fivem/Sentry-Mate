@@ -18,6 +18,7 @@ Every command is in [commands.md](commands.md). The bridge app in detail is in
 - [The CAN Bridge app](#the-can-bridge-app)
 - [Add a Tesla account](#add-a-tesla-account)
 - [Add a TeslaFi token](#add-a-teslafi-token)
+- [Connect a local TeslaMate](#connect-a-local-teslamate)
 - [Updating](#updating)
 - [Backups](#backups)
 - [Restore](#restore)
@@ -58,6 +59,8 @@ Every command is in [commands.md](commands.md). The bridge app in detail is in
   ([Add a Tesla account](#add-a-tesla-account)).
 - Optional: a TeslaFi token, if you pay for TeslaFi, for reading the polls
   TeslaFi already makes of your car ([Add a TeslaFi token](#add-a-teslafi-token)).
+- Optional: your own TeslaMate on the local network, for reading its MQTT
+  topics ([Connect a local TeslaMate](#connect-a-local-teslamate)).
 - It can share the server with Sentry Six Manager
   ([Ports and firewalls](#ports-and-firewalls)).
 
@@ -397,6 +400,49 @@ ended), a notice says so: paste a new token. What is sent, and where:
 Every built-in design has the TeslaFi section on Settings: Integrations,
 right after the Tesla account. The same steps are also API calls, listed in
 [ui-api.md](ui-api.md#integrations-teslafi).
+
+## Connect a local TeslaMate
+
+Optional, for owners who already run TeslaMate on their own network. The
+server subscribes to the MQTT topics TeslaMate publishes (`teslamate/cars/+/#`
+unless you changed TeslaMate's `MQTT_NAMESPACE`) and reads each car's values
+from them, as one more live input. It only reads: it never publishes to the
+broker, never wakes the car and never sends a command. Where SMO, the Tesla API
+or TeslaFi cover the same time, theirs win; the rest says "Data from local
+TeslaMate". Nothing connects to TeslaMate until an admin adds it.
+
+1. In the Sentry Mate web UI, open **Settings → Integrations → Local
+   TeslaMate**. Type the MQTT broker TeslaMate publishes to (for example
+   `192.0.2.10`, port 1883, or 8883 with TLS), its user name and password if
+   the broker has accounts, and the topic prefix (`teslamate` by default).
+2. Press **Test**: the server connects, listens a few seconds and lists the
+   TeslaMate cars it saw. Nothing is saved by a test. Then press **Save**; both
+   ask for your own Sentry Mate password again.
+3. Match each TeslaMate car to a car Sentry Mate already has (the one with the
+   same VIN prefix is suggested), to a new car, or leave it out. Nothing is
+   read into a car before it is matched; press **Save matches**.
+
+Optionally, turn on **Catch up from TeslaMate's database** in the same section
+and give TeslaMate's PostgreSQL host, port (5432), database (`teslamate`) and a
+user that may read its tables (a read-only user is enough). Every few minutes
+(300 s by default) the server reads the drives, charges and positions MQTT
+missed and stores them as a TeslaMate import. It is off by default.
+
+**Passwords and plain text.** A password sent without TLS can be read by anyone
+on the network between the two machines. So the server refuses to save a
+broker or database password with TLS off unless you also tick **Allow
+unencrypted (local network only)**, which is off by default; tick it only when
+both machines are on your own local network. Without a password, plain TCP
+needs no tick. Passwords are sealed on the server and never shown again; a
+saved password is only sent to the host it was typed for, so changing the
+host, port or TLS asks for it again. To pin a self-signed certificate, turn
+TLS on and paste its SHA-256.
+
+To stop for a while, pause it; to stop for good, remove it (its sealed
+settings are deleted; the history already stored stays). Every built-in design
+has the section on Settings: Integrations, right after TeslaFi. The same steps
+are also API calls, listed in
+[ui-api.md](ui-api.md#integrations-local-teslamate).
 
 ## Updating
 

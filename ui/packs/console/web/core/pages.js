@@ -47,7 +47,7 @@ export const PAGES = Object.freeze([
   { id: 'settings-display', name: 'Settings: display', link: 'display', scope: 'settings', car: null, period: null,
     desc: 'units, theme, UI pack, interface size', words: 'units theme pack size language' },
   { id: 'settings-integrations', name: 'Settings: integrations', link: 'integrations', scope: 'settings', car: null, period: null,
-    desc: 'Tesla account, TeslaFi, MQTT, Home Assistant, API access', words: 'mqtt home assistant api tesla teslafi token' },
+    desc: 'Tesla account, TeslaFi, local TeslaMate, MQTT, Home Assistant, API access', words: 'mqtt home assistant api tesla teslafi teslamate token' },
   { id: 'settings-server', name: 'Settings: server', link: 'server', scope: 'settings', car: null, period: null,
     desc: 'accounts, access, moving and export files', words: 'accounts password move export certificate' },
   { id: 'import', name: 'Import', link: 'import', scope: 'settings', car: null, period: null,

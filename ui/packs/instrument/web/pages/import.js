@@ -922,7 +922,7 @@ export async function mount(ctx) {
   const liveOf = (o) => o.live || o.can;
   const importedOf = (o) => o.imported || o.teslamate;
   const SITE = { teslamate: 'TeslaMate', teslafi: 'TeslaFi' };
-  const LIVE_WORD = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi' };
+  const LIVE_WORD = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'local TeslaMate' };
   const liveName = (o) => { const k = [...new Set((o.sources || []).filter((x) => x.kind !== 'import').map((x) => LIVE_WORD[x.kind] || x.kind))]; return k.length ? k.join(' + ') : 'Live'; };
   const sitesOf = (o) => (o.sources || []).filter((x) => x.kind === 'import').map((x) => x.site).filter(Boolean);
   const importName = (o) => { const st = [...new Set(sitesOf(o))]; return st.length ? st.map((x) => SITE[x] || x).join(' + ') : 'Imported'; };
