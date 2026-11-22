@@ -471,3 +471,72 @@ async fn day_readings_page_one_at_a_time_past_the_days_a_page_looks_at() {
     assert_eq!(paged.len(), all.len(), "every day, the newest too");
     assert_eq!(paged, all);
 }
+
+/// A made-up car with only its first few minutes of logs and no reference values: every battery endpoint the
+/// battery page reads (and every query shape it sends) answers 200 with empty values, never a 500.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_car_with_only_a_few_minutes_of_data_and_no_references_answers_every_battery_endpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let (v, _) = vault::Vault::create(&data, &dir.path().join("keys"), vault::Kdf::FAST_FOR_TESTS).unwrap();
+    let v = Arc::new(v);
+    let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
+    let store = ingest::Store::with_limits(data.join("can"), v, 0, 200_000, |_| u64::MAX);
+    let engine = Engine::new(db.clone(), store.clone(), engine::Options { workers: 2, ..engine::Options::default() });
+    let judge = ingest::Judge::new(store.clone()).on_judged(engine.listener());
+    engine.start().unwrap();
+    let sc = synth::Scenario::new(12).days(1).battery(60.0).odometer(48_000.0).rates(synth::Rates::Light);
+    for log in sc.logs().take(4) {
+        put(&store, &judge, &log.name, &log.bytes).await;
+        put(&store, &judge, &log.sidecar_name(), &log.sidecar_bytes()).await;
+    }
+    engine.idle().await;
+    let cars = engine::query::all_cars(&engine).unwrap();
+    assert_eq!(cars.len(), 1, "{cars:?}");
+    let (e2, d2) = (engine.clone(), db.clone());
+    let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2))).await;
+    let mut admin = s.admin().await;
+    let car = format!("c{}", cars[0]);
+    // working values kept by an older version in another shape are worked out again, not a failed request
+    let day = sc.start_ms / 86_400_000;
+    db.kv().put(engine::query::battery::PACK_NS, &format!("car/{}/day/{day}", cars[0]), b"{\"old\":1}").unwrap();
+    db.kv()
+        .put(engine::query::battery::PACK_NS, &format!("car/{}/factor/{}", cars[0], day * 86_400_000), b"[1]")
+        .unwrap();
+    let now = sc.start_ms + 600_000;
+    let mut paths = vec![
+        format!("/api/v1/cars/{car}/battery"),
+        format!("/api/v1/cars/{car}/efficiency"),
+        format!("/api/v1/cars/{car}/temperatures"),
+        format!("/api/v1/cars/{car}/projected-range"),
+        format!("/api/v1/cars/{car}/battery-level"),
+    ];
+    for g in ["charge", "day", "month"] {
+        for x in ["time", "odometer"] {
+            paths.push(format!("/api/v1/cars/{car}/battery/capacity?group={g}&x={x}&limit=500"));
+        }
+    }
+    for preset in ["all", "year", "month", "week", "day"] {
+        paths.push(format!("/api/v1/cars/{car}/battery-level?preset={preset}"));
+        paths.push(format!("/api/v1/cars/{car}/projected-range?preset={preset}"));
+        paths.push(format!("/api/v1/cars/{car}/efficiency?preset={preset}"));
+        paths.push(format!("/api/v1/cars/{car}/temperatures?preset={preset}"));
+    }
+    for (bucket, window) in [("hour", "7d"), ("day", "30d")] {
+        for moving in ["true", "false"] {
+            paths.push(format!(
+                "/api/v1/cars/{car}/battery-level?from_ms={}&to_ms={now}&bucket={bucket}&moving={moving}&window={window}",
+                sc.start_ms
+            ));
+        }
+    }
+    // an empty period: nothing in it
+    paths.push(format!("/api/v1/cars/{car}/battery-level?from_ms={now}&to_ms={}", now + 1));
+    paths.push(format!("/api/v1/cars/{car}/projected-range?from_ms={now}&to_ms={}", now + 1));
+    for p in &paths {
+        ok(&mut admin, p).await;
+    }
+    let b = ok(&mut admin, &format!("/api/v1/cars/{car}/battery")).await;
+    assert!(b["capacity"]["degradation_pct"].is_null() || b["capacity"]["degradation_pct"].is_number(), "{b}");
+}

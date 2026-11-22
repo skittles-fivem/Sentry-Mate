@@ -110,9 +110,10 @@ struct PackDay {
 /// A stored log decoded frame by frame, keeping the pack's signals; `None` when it cannot be read.
 fn decode_pack(e: &Engine, profile: dbc::Profile, name: &str) -> QResult<Option<PackReading>> {
     let rt = e.handle()?;
-    let read = |n: &str| rt.block_on(e.store().read(n)).map_err(|x| crate::Error::Store(x.to_string()));
-    let Some(bytes) = read(name)? else { return Ok(None) };
-    let side: Value = read(&format!("{name}.json"))?.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    // a log that cannot be read (gone, or its file damaged) gives no reading, never a failed request
+    let read = |n: &str| rt.block_on(e.store().read(n)).ok().flatten();
+    let Some(bytes) = read(name) else { return Ok(None) };
+    let side: Value = read(&format!("{name}.json")).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let mut decoder = dbc::Decoder::new(profile, &side);
     let mut p = PackReading::default();
     // a log that cannot be read to its end gives what it gave before the trouble; a request that is gone stops it
@@ -153,7 +154,7 @@ fn day_pack(e: &Engine, c: &Car, d: u32) -> QResult<Option<PackReading>> {
     }
     let stamp: String = h.finalize()[..12].iter().map(|b| format!("{b:02x}")).collect();
     let key = format!("car/{}/day/{d}", c.id);
-    if let Some(kept) = records::get::<PackDay>(e.db(), PACK_NS, &key)?
+    if let Some(kept) = records::kept::<PackDay>(e.db(), PACK_NS, &key)?
         && kept.stamp == stamp
     {
         return Ok(kept.reading);
@@ -416,7 +417,7 @@ struct FactorDay {
 
 fn factor_day(e: &Engine, car: CarId, start_ms: u64, stamp: String) -> QResult<FactorDay> {
     let key = format!("car/{car}/factor/{start_ms}");
-    if let Some(kept) = records::get::<FactorDay>(e.db(), PACK_NS, &key)?
+    if let Some(kept) = records::kept::<FactorDay>(e.db(), PACK_NS, &key)?
         && kept.stamp == stamp
     {
         return Ok(kept);
