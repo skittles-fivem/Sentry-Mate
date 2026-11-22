@@ -728,7 +728,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 /* ------------------------------------------------------------------ maps: panels, cards on top, markers */
 .map-panel { position: relative; overflow: hidden; min-height: round(29.375rem, var(--e)); padding: 0; }
 .map { position: absolute; inset: 0; background: var(--map-bg); }
-.map-fallback { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-3); font-size: max(0.8125rem, var(--fs-floor)); }
+.map-fallback { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; text-wrap: balance; color: var(--text-3); font-size: max(0.8125rem, var(--fs-floor)); }
 .map-overlay { position: absolute; z-index: 2; pointer-events: none; }
 .map-overlay > * { pointer-events: auto; }
 .map-overlay--tl { top: round(1rem, var(--e)); left: round(1rem, var(--e)); }

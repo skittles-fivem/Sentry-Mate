@@ -221,3 +221,6 @@
   .vi-row { grid-template-columns: minmax(0, 1fr) auto; }
   .vi-label { grid-column: 1 / -1; }
 }
+
+/* the head line: each part whole px wide (so the VIN chip after a long trim or tag sits on the pixel grid), and a long part wraps instead of running out */
+.now-head .page-sub > span { width: calc-size(fit-content, round(up, size, 1px)); min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
