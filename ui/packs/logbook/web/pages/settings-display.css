@@ -20,6 +20,7 @@
 .setting-default { margin-top: round(0.25rem, var(--e)); font-size: var(--small-2); color: var(--ink-3); }
 .lang-control { display: flex; flex-direction: column; align-items: flex-end; max-width: round(30rem, var(--e)); }
 .lang-control .field-select { min-width: round(18rem, var(--e)); max-width: 100%; }
+.pack-control { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: round(0.5rem, var(--e)); max-width: 100%; }
 .tiles-control { display: flex; flex-direction: column; align-items: flex-end; }
 .proxy-control .setting-note { text-align: left; max-width: none; }
 .settings-divider-note { margin-top: round(0.75rem, var(--e)); text-align: center; font-size: var(--text-s); color: var(--ink-3); }
@@ -37,6 +38,7 @@
 @container page (width < 72rem) {
   .setting { flex-wrap: wrap; row-gap: round(1rem, var(--e)); }
   .setting-control, .size-control, .lang-control, .tiles-control { align-items: flex-start; }
+  .pack-control { justify-content: flex-start; }
   .defaults-grid { justify-items: start; }
   .setting-note { text-align: left; }
 }

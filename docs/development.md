@@ -42,11 +42,57 @@ free ports, setup, the cars, drives and charges, and the built-in pack with its 
 cargo test --workspace --locked
 ```
 
+That is the **fast set**: every unit test and the quick integration tests (cargo runs one test binary at a time). It
+still takes each main feature end to end at least
+once: logs uploaded, checked and decoded into a drive and a charge on the web API (one made-up light day), sign-in and
+accounts, places, the TeslaMate, TeslaFi and CAN imports, the Tesla API client against its fake server, moving and the export
+file, the certificate, the server settings and MQTT, and the packs served. CI runs it in two halves on two machines at
+once, each half a plain `cargo test`; run one half locally the same way:
+
+```bash
+cargo test --locked -p web -p sentry-mate -p moving
+cargo test --locked --workspace --exclude web --exclude sentry-mate --exclude moving
+```
+
+The **full set** adds the slow tests, marked `#[ignore = "slow: full tests (cargo test -- --include-ignored)"]`:
+the tests that each decode several days of made-up logs through the whole engine at opt-level 0 (reports, places,
+charges, battery, settings, drives, the system pages; 3 to 6 minutes each on CI's 4 cores), the long move, the
+2,000-car upload and database, and the big CAN export imported in bounded memory. They take most of half an hour more:
+
+```bash
+cargo test --workspace --locked -- --include-ignored --skip measure_
+```
+
+(`--skip measure_` leaves out the two measurements in `crates/db/tests/compression.rs`, which are for a `--release`
+run by hand.) Only the slow ones: `cargo test --workspace --locked -- --ignored`. One file's, for example:
+`cargo test --workspace --locked --test places -- --include-ignored`. A test that takes more than about 20 seconds
+on 4 cores belongs in the full set; a feature whose only tests are slow gets a small fast one too (no logs, or one
+light day).
+
 ## CI and the published image
 
 CI is [`.github/workflows/image.yml`](../.github/workflows/image.yml). It runs on a push to `main` that changes code
 (a push that changes only `README.md`, `docs/` or `truenas/` runs nothing), and by hand (*Actions → Image → Run
-workflow*). First the gates (above), once.
+workflow*). The owner's limit is 5 minutes for the whole run.
+First the gates (above), once: the fast set in its two halves, and `cargo fmt` with clippy (both commands) beside
+them on a machine of its own.
+
+What is known about that limit, from the Image workflow's runs (ubuntu-latest, 4 cores):
+
+- The other half's tests (every crate but `web`, `sentry-mate` and `moving`) took about 196 s in the last run of the
+  whole set (run 13), about 140 s without the three tests now in the full set (scale in `db` and `ingest`, `can_import_memory`). Its build of the workspace took up to
+  3.5 minutes there with no build cache; with GitHub's cache (`Swatinem/rust-cache`, one per half) the dependencies
+  are not built again. The `web` half has not been timed on its own yet.
+- The image: with full LTO and one codegen unit, the workspace's own crates took 9 minutes per arch even with every
+  dependency layer from the cache (runs 13 and 15). The release profile now has neither (`Cargo.toml`); that build
+  has not run on CI yet. Everything else in run 15 took about 80 seconds (the jobs starting, the image check about
+  20 s, the push by digest under 10 s, the tags about 15 s), so for 5 minutes that build has about 3.5 minutes.
+
+Whether a run fits in 5 minutes shows in the first runs after this change; the times of each job are on the run's
+page (*Actions → Image*).
+
+The full set runs in [`.github/workflows/full-tests.yml`](../.github/workflows/full-tests.yml): every Monday and by
+hand (*Actions → Full tests → Run workflow*). It publishes nothing; a failure there shows on the Actions page.
 
 At the same time it builds the image for amd64 and arm64, each on a machine of its kind. It checks each one with
 [`.github/check-image.sh`](../.github/check-image.sh), as 1000:1000 and as TrueNAS's 568:568: folders it can't keep
@@ -54,7 +100,10 @@ are refused (root's, not mounted, the keys inside the data, the same folder at b
 root, healthy, TLS 1.3 only, the recovery key file, a token made with `docker exec`, a clean stop, and the same
 certificate after a restart. Only when all of that passed does it publish both as one image,
 `ghcr.io/skittles-fivem/sentry-mate`, tagged `latest`, `build-N` (the workflow's run number) and `sha-<commit>`.
-`latest` is tagged last. A run by hand for another branch gets the branch's name as its tag, never `latest` or a
+`latest` is tagged last. The image build keeps the dependencies in a layer of their own (the `manifests` stage of
+the Dockerfile builds them from the Cargo files alone), cached per arch in GitHub's cache: a push that changes no
+`Cargo.toml` or `Cargo.lock` builds only the workspace's own crates.
+A run by hand for another branch gets the branch's name as its tag, never `latest` or a
 `build-N`.
 
 `cargo deny`, `cargo audit` and fuzzing in CI are planned.
@@ -146,7 +195,7 @@ node ui/tools/check.js --pack instrument --stable --sizes 1440x900,390x844
 | `db` | Sealed storage for what the timeline works out | yes |
 | `places` | Geofences, prices, addresses, map settings | yes, through the engine and the web server (Places page) |
 | `accounts` | People and sign-in | yes, through the web server |
-| `import` | TeslaMate history | yes, through the engine (the web UI's import page) |
+| `import` | TeslaMate's backup and TeslaFi's data download | yes, through the engine (the web UI's import page) |
 | `engine` | Checked logs into each car's history in the background, and the read side of `/api/v1` | yes |
 | `web` | The web port: UI packs, sign-in, accounts, preferences, the live stream, the frame every `/api/v1` route shares | yes |
 | `mqtt` | Home Assistant | yes, through the engine and the web server |

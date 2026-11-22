@@ -64,7 +64,7 @@ fn online_log(x: u64, y: u64, closed: Closed) -> LogFacts {
 }
 
 fn span(a: u64, b: u64, state: ApiState, data: bool) -> ApiSpan {
-    ApiSpan { start_ms: T0 + a * 1000, end_ms: T0 + b * 1000, state, data }
+    ApiSpan { start_ms: T0 + a * 1000, end_ms: T0 + b * 1000, state, data, inputs: Inputs::NONE }
 }
 
 #[test]
@@ -195,4 +195,64 @@ fn the_api_fills_what_smo_does_not_know_and_never_overrules_its_frames() {
     let t = timeline::build(&Input { api: &facts, ..input }, &Params::default());
     let last = t.states.last().unwrap();
     assert_eq!((last.state, last.inputs), (State::Asleep, Inputs::TESLA_API));
+}
+
+#[test]
+fn a_drive_from_teslafi_alone_names_teslafi_and_the_tesla_api_wins_over_it() {
+    // TeslaFi's polls every 60 s; no SMO, no Tesla API
+    let fi = api_drive(0, 600, 1800, 2400, 60);
+    let p = FuseParams::default();
+    let f = timeline::fuse_all(&[], &[(&[], Inputs::TESLA_API), (&fi, Inputs::TESLAFI_API)], &p);
+    assert!(f.marks.iter().all(|m| m.1 == Inputs::TESLAFI_API));
+    let facts = [ApiSpan { inputs: Inputs::TESLAFI_API, ..span(0, 2400, ApiState::Online, true) }];
+    let input = Input {
+        car: 1,
+        from_ms: T0,
+        to_ms: T0 + 2400 * 1000,
+        samples: &f.samples,
+        logs: &[],
+        holes: &[],
+        api: &facts,
+        marks: &f.marks,
+    };
+    let t = timeline::build(&input, &Params::default());
+    assert_eq!(t.drives.len(), 1, "{:?}", t.drives);
+    assert_eq!(t.drives[0].inputs, Inputs::TESLAFI_API);
+    assert!(t.states.iter().all(|s| s.inputs == Inputs::TESLAFI_API), "{:?}", t.states);
+
+    // the Tesla API polled the same drive every 30 s: its seconds, TeslaFi's only fill
+    let api = api_drive(0, 600, 1800, 2400, 30);
+    let f = timeline::fuse_all(&[], &[(&api, Inputs::TESLA_API), (&fi, Inputs::TESLAFI_API)], &p);
+    let both = [span(0, 2400, ApiState::Online, true), facts[0]];
+    let t = timeline::build(&Input { samples: &f.samples, marks: &f.marks, api: &both, ..input }, &Params::default());
+    assert_eq!(t.drives.len(), 1);
+    assert_eq!(t.drives[0].inputs, Inputs::TESLA_API, "TeslaFi had nothing the Tesla API lacked");
+    assert!(t.states.iter().all(|s| s.inputs == Inputs::TESLA_API), "the Tesla API's view of the state wins");
+}
+
+#[test]
+fn states_name_the_api_that_saw_each_stretch() {
+    let logs: Vec<LogFacts> = (0..5).map(|i| online_log(i * 60, i * 60 + 60, Closed::Rotate)).collect();
+    let fi = Inputs::TESLAFI_API;
+    let facts = [
+        span(0, 720, ApiState::Online, false),
+        span(0, 691, ApiState::Online, true),
+        ApiSpan { inputs: fi, ..span(0, 1800, ApiState::Online, false) },
+        ApiSpan { inputs: fi, ..span(0, 1741, ApiState::Online, true) },
+    ];
+    let input = Input {
+        car: 1,
+        from_ms: T0,
+        to_ms: T0 + 2400 * 1000,
+        samples: &[],
+        logs: &logs,
+        holes: &[],
+        api: &facts,
+        marks: &[],
+    };
+    let t = timeline::build(&input, &Params::default());
+    let s: Vec<(State, u64, u64, Inputs)> =
+        t.states.iter().map(|s| (s.state, (s.start_ms - T0) / 1000, (s.end_ms - T0) / 1000, s.inputs)).collect();
+    assert!(s.contains(&(State::Online, 300, 691, Inputs::TESLA_API)), "{s:?}");
+    assert!(s.iter().any(|x| x.0 == State::Online && x.2 == 1800 && x.3 == fi), "{s:?}");
 }

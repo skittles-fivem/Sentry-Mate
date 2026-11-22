@@ -99,6 +99,8 @@ class Store:
         moving.seed(self, cfg, now)  # first-run set-up, the move to another server, export files
         from .resources import tesla
         tesla.seed(self, now)  # the Tesla API input: one account, its cars
+        from .resources import teslafi
+        teslafi.seed(self, now)  # the TeslaFi input: one account, its car
 
     # ------------------------------------------------------------ seeding
     def seed_accounts(self, now):
@@ -274,6 +276,8 @@ class Store:
                     p["units"].update(v)
                 else:
                     p[k] = copy.deepcopy(v)
+            if p.get("ui_pack") is None:  # null: the server's choice
+                p["ui_pack"] = self.default_prefs["ui_pack"]
             # only cars this person may see (the server's order names every car; an account's list can shrink)
             for k in ("car_order", "pinned_cars"):
                 p[k] = [c for c in p[k] if self.ds.exists(c) and self.sees(account, c)]
@@ -288,7 +292,9 @@ class Store:
             car = h.car
             base = {"name": car.name, "model": car.model, "year": car.year, "trim": car.trim,
                     "vin_prefix": car.vin_prefix, "profile": car.profile, "time_zone": car.time_zone,
-                    "config": {k: {"value": v, "source": s} for k, (v, s) in car.config.items()}}
+                    "config": {k: {"value": v, "source": s} for k, (v, s) in car.config.items()},
+                    "build": {"chemistry": car.chemistry, "full_now_kwh": car.full_now_kwh,
+                              "buffer_kwh": car.buffer_kwh, "full_range_new_km": car.full_range_new_km}}
         else:
             sm = self.ds.synthetic.summary(int(car_id[1:]))
             base = {k: sm[k] for k in ("name", "model", "year", "trim", "vin_prefix", "profile", "time_zone")}

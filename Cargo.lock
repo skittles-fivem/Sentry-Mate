@@ -640,6 +640,7 @@ dependencies = [
  "synth",
  "tempfile",
  "tesla",
+ "teslafi",
  "thiserror",
  "timeline",
  "tokio",
@@ -974,6 +975,8 @@ dependencies = [
 name = "import"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "chrono-tz",
  "crc32fast",
  "flate2",
  "lzma-rs",
@@ -2026,6 +2029,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "teslafi"
+version = "0.1.0"
+dependencies = [
+ "chrono-tz",
+ "hex",
+ "hmac",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "import",
+ "model",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tesla",
+ "teslafi",
+ "thiserror",
+ "timeline",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+ "vault",
+ "webpki-roots",
+ "zeroize",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2420,6 +2454,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytes",
+ "chrono",
  "crc32fast",
  "db",
  "engine",
@@ -2449,6 +2484,7 @@ dependencies = [
  "synth",
  "tempfile",
  "tesla",
+ "teslafi",
  "tokio",
  "tokio-rustls",
  "tower",

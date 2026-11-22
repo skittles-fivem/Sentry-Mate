@@ -5,7 +5,9 @@ and the old one-word `source` (`can`, `teslamate`, `tesla_api`), kept for one re
 
 The made-up inputs: Comet (`c1`) has SMO and the Tesla API (most rows SMO, a fifth seen by both, a few by the API
 alone, and an afternoon two days ago when SMO was offline and only the API saw the car); Maple (`c2`) has both on
-every live row; Atlas (`c3`) has SMO and its TeslaMate import; the synthetic cars have SMO. The data itself is the
+every live row; Atlas (`c3`) has SMO and its TeslaMate import, and a TeslaFi import of a week of the TeslaMate
+history (imported rows are `source == "teslamate"`, the imported family; TeslaFi's carry `site = "teslafi"`); the
+synthetic cars have SMO. The data itself is the
 same as before; only the labels say which input gave it.
 """
 
@@ -13,12 +15,13 @@ from __future__ import annotations
 
 from .util import DAY, h01
 
-SITES = {"teslamate": "TeslaMate"}
-SHORT = {"smo": "SMO", "tesla_api": "the Tesla API"}
-LABEL = {"smo": "Data from SMO", "tesla_api": "Data from the Tesla API"}
+SITES = {"teslamate": "TeslaMate", "teslafi": "TeslaFi"}
+SHORT = {"smo": "SMO", "tesla_api": "the Tesla API", "teslafi_api": "TeslaFi"}
+LABEL = {"smo": "Data from SMO", "tesla_api": "Data from the Tesla API", "teslafi_api": "Data from TeslaFi"}
 
 # the words `source=` takes; `can` and `teslamate` are the old ones
-FILTER_WORDS = ("smo", "tesla_api", "import", "import:teslamate", "all", "can", "teslamate")
+FILTER_WORDS = ("smo", "tesla_api", "teslafi_api", "import", "import:teslamate", "import:teslafi", "all", "can",
+                "teslamate")
 
 
 def ref(kind, site=None):
@@ -62,9 +65,16 @@ def inputs_for(car, start_ms, now_day_index=None):
     return ["smo"]
 
 
-def refs_of(source, inputs):
+def site_of(row):
+    """The import site of a dataset piece (None for a live one)."""
+    if getattr(row, "source", None) != "teslamate":
+        return None
+    return getattr(row, "site", None) or "teslamate"
+
+
+def refs_of(source, inputs, site=None):
     if source == "teslamate":
-        return [ref("import", "teslamate")]
+        return [ref("import", site or "teslamate")]
     return [ref(i) for i in (inputs or ["smo"])]
 
 
@@ -76,26 +86,31 @@ def old_word(refs):
         return "teslamate"
     if "tesla_api" in kinds:
         return "tesla_api"
+    if "teslafi_api" in kinds:
+        return "teslafi_api"
     return "can"
 
 
-def fields(source, inputs=None):
-    """`source`, `sources` and `source_label` for a row of `source` (`can`, `teslamate`) from `inputs`."""
-    refs = refs_of(source, inputs)
-    return {"source": old_word(refs), "sources": refs, "source_label": label_of(refs)}
+def fields(source, inputs=None, site=None):
+    """`source`, `sources` and `source_label` for a row of `source` (`can`, `teslamate`) from `inputs` (`site`: an
+    imported row's site; its old word is the site's)."""
+    refs = refs_of(source, inputs, site)
+    word = site if source == "teslamate" and site else old_word(refs)
+    return {"source": word, "sources": refs, "source_label": label_of(refs)}
 
 
 def of_seg(s):
     """The fields for a dataset piece (a drive, charge, parked spell, gap or update)."""
-    return fields(s.source, getattr(s, "inputs", None))
+    return fields(s.source, getattr(s, "inputs", None), site_of(s))
 
 
-def keeps(word, source, inputs):
-    """Whether a `source=` filter word keeps a row (`all` and None keep everything)."""
+def keeps(word, source, inputs, site=None):
+    """Whether a `source=` filter word keeps a row (`all` and None keep everything; `site`: an imported row's)."""
     if word in (None, "all"):
         return True
-    if word in ("import", "import:teslamate", "teslamate"):
-        return source == "teslamate"
+    w = canon(word)
+    if w in ("import", "import:teslamate", "import:teslafi"):
+        return source == "teslamate" and (w == "import" or w == "import:" + (site or "teslamate"))
     if source == "teslamate":
         return False
     ins = inputs or ["smo"]
@@ -103,15 +118,19 @@ def keeps(word, source, inputs):
         return "smo" in ins
     if word == "tesla_api":
         return "tesla_api" in ins
+    if word == "teslafi_api":
+        return "teslafi_api" in ins
     return True
 
 
-def car_refs(car_id, has_live, has_import):
+def car_refs(car_id, has_live, has_import, has_teslafi=False):
     out = []
     if has_live:
         out += [ref(i) for i in (["smo", "tesla_api"] if car_id in ("c1", "c2") else ["smo"])]
     if has_import:
         out.append(ref("import", "teslamate"))
+    if has_teslafi:
+        out.append(ref("import", "teslafi"))
     return out
 
 
@@ -124,15 +143,19 @@ def value_ref(car_id, field=None):
 
 
 def canon(word):
-    """A `source=` word in today's spelling: `can` is `smo`, `teslamate` and `import` are `import:teslamate`."""
-    return {"can": "smo", "teslamate": "import:teslamate", "import": "import:teslamate"}.get(word, word)
+    """A `source=` word in today's spelling: `can` is `smo`, `teslamate` is `import:teslamate` (`import` is every
+    import site)."""
+    return {"can": "smo", "teslamate": "import:teslamate"}.get(word, word)
 
 
 def filter_refs(word):
     """The origins a filter word reads (`all`: every input and import)."""
     return {
-        "all": [ref("smo"), ref("tesla_api"), ref("import", "teslamate")],
+        "all": [ref("smo"), ref("tesla_api"), ref("import", "teslamate"), ref("import", "teslafi")],
         "smo": [ref("smo")],
         "tesla_api": [ref("tesla_api")],
+        "import": [ref("import", "teslamate"), ref("import", "teslafi")],
+        "teslafi_api": [ref("teslafi_api")],
         "import:teslamate": [ref("import", "teslamate")],
+        "import:teslafi": [ref("import", "teslafi")],
     }[canon(word)]

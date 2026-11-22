@@ -1,7 +1,11 @@
-//! The Tesla API as a second live input. The `tesla` crate's poller hands the engine what it read ([`TeslaSink`]);
-//! the engine keeps it apart from SMO's data (its own sample stream, `tesla-api`, and its own state spans) and builds
-//! the timeline from both at once ([`timeline::fuse`]): one drive seen by both inputs is one row naming both, SMO's
-//! values win where it has them, and the API's fill what SMO did not send or the time SMO was offline.
+//! The Tesla API and TeslaFi's API as live inputs beside SMO. The `tesla` crate's poller hands the engine what it
+//! read ([`TeslaSink`]), the `teslafi` crate's what TeslaFi polled ([`TeslafiSink`]); the engine keeps each apart from
+//! SMO's data (its own sample stream, `tesla-api` or `teslafi-api`, and its own state spans) and builds the timeline
+//! from all of them at once ([`timeline::fuse_all`]): one drive seen by several inputs is one row naming them, SMO's
+//! values win where it has them, then the Tesla API's, then TeslaFi's, each filling what the one above did not send
+//! or the time it was offline. TeslaFi's samples go through the same steps as the Tesla API's, below; only its
+//! values beside the samples (1, 3) are not taken (TeslaFi's software version and settings are left to the Tesla API
+//! and SMO).
 //!
 //! 1. **Stored first** ([`Engine::api_points`], in the background): the samples to the car's `tesla-api` stream, what
 //!    the API saw of the car's state to day records, the span noted as waiting to be built, the car's Now.
@@ -35,8 +39,14 @@ pub fn span_of(f: &tesla::ApiFact) -> ApiSpan {
         tesla::ApiState::Asleep => ApiState::Asleep,
         tesla::ApiState::Offline => ApiState::Offline,
     };
-    // one look counts for its second
-    ApiSpan { start_ms: f.start_ms, end_ms: f.end_ms.max(f.start_ms.saturating_add(1000)), state, data: false }
+    // one look counts for its second (the input is named when the spans are read: each input keeps its own)
+    ApiSpan {
+        start_ms: f.start_ms,
+        end_ms: f.end_ms.max(f.start_ms.saturating_add(1000)),
+        state,
+        data: false,
+        inputs: Inputs::NONE,
+    }
 }
 
 /// The API's samples as the timeline takes them: on whole seconds, one per second, and parked when the car answered
@@ -66,7 +76,13 @@ fn seen(samples: &[Sample]) -> Vec<ApiSpan> {
         let end = s.t_ms + 1000;
         match out.last_mut() {
             Some(l) if s.t_ms <= l.end_ms.saturating_add(SEEN_JOIN_MS) => l.end_ms = l.end_ms.max(end),
-            _ => out.push(ApiSpan { start_ms: s.t_ms, end_ms: end, state: ApiState::Online, data: true }),
+            _ => out.push(ApiSpan {
+                start_ms: s.t_ms,
+                end_ms: end,
+                state: ApiState::Online,
+                data: true,
+                inputs: Inputs::NONE,
+            }),
         }
     }
     out
@@ -120,14 +136,71 @@ impl tesla::Sink for TeslaSink {
     }
 }
 
+/// Told when a TeslaFi account's state changes (TeslaFi refuses its token): the web side writes the audit entry
+/// and the notice.
+pub type TeslafiHook = std::sync::Arc<dyn Fn(&teslafi::Account) + Send + Sync>;
+
+/// The engine as the `teslafi` crate's poller sees it.
+#[derive(Clone)]
+pub struct TeslafiSink {
+    pub engine: Engine,
+    pub on_account: Option<TeslafiHook>,
+}
+
+impl TeslafiSink {
+    pub fn new(engine: Engine) -> TeslafiSink {
+        TeslafiSink { engine, on_account: None }
+    }
+}
+
+impl teslafi::Sink for TeslafiSink {
+    fn new_car(&self, car: &tesla::NewCar) -> std::result::Result<CarId, tesla::SinkError> {
+        self.engine.api_new_car_for(car, Input::TeslafiApi).map_err(|e| tesla::SinkError(e.to_string()))
+    }
+
+    fn points(
+        &self,
+        car: CarId,
+        samples: &[Sample],
+        facts: &[tesla::ApiFact],
+    ) -> std::result::Result<(), tesla::SinkError> {
+        self.engine.feed_points(Input::TeslafiApi, car, samples.to_vec(), facts.iter().map(span_of).collect());
+        Ok(())
+    }
+
+    fn other_live(&self, car: CarId) -> bool {
+        self.engine.smo_live(car) || self.engine.tesla_api_live(car)
+    }
+
+    fn account_changed(&self, account: &teslafi::Account) {
+        if let Some(h) = &self.on_account {
+            h(account);
+        }
+    }
+}
+
 impl Engine {
     /// The Tesla API's samples and what it saw of the car's state: stored and built into the timeline in the
     /// background; returns at once.
     pub fn api_points(&self, car: CarId, samples: Vec<Sample>, facts: Vec<ApiSpan>) {
-        if samples.is_empty() && facts.is_empty() {
+        self.feed_points(Input::TeslaApi, car, samples, facts);
+    }
+
+    /// An API input's samples and what it saw of the car's state (`input`: the Tesla API or TeslaFi's): stored and
+    /// built into the timeline in the background; returns at once.
+    pub fn feed_points(&self, input: Input, car: CarId, samples: Vec<Sample>, facts: Vec<ApiSpan>) {
+        if (samples.is_empty() && facts.is_empty()) || input == Input::Smo {
             return;
         }
-        self.send(Work::ApiData { car, samples, facts });
+        self.send(Work::ApiData { input, car, samples, facts });
+    }
+
+    /// Whether the Tesla API sent the car's data in the last few minutes.
+    pub fn tesla_api_live(&self, car: CarId) -> bool {
+        records::meta(&self.inner.db, car)
+            .ok()
+            .and_then(|m| m.api_received_ms)
+            .is_some_and(|t| now_ms().saturating_sub(t) <= SMO_LIVE_MS)
     }
 
     /// The Tesla API's values beside its samples: kept in the background; returns at once.
@@ -172,6 +245,11 @@ impl Engine {
     /// Tesla app, else its model and VIN prefix. Its VIN prefix counts as told, not read from its frames, so a VIN SMO
     /// reads from the car's own frames later wins.
     pub fn api_new_car(&self, new: &tesla::NewCar) -> Result<CarId> {
+        self.api_new_car_for(new, Input::TeslaApi)
+    }
+
+    /// [`Self::api_new_car`] for a car an API `input` (the Tesla API or TeslaFi's) reads.
+    pub fn api_new_car_for(&self, new: &tesla::NewCar, input: Input) -> Result<CarId> {
         let _one = lock(&self.inner.claim);
         let vin = new.vin_prefix.as_ref().filter(|p| !p.is_empty()).map(|p| VinInfo {
             vin_prefix: p.clone(),
@@ -194,27 +272,33 @@ impl Engine {
             preferred_key: None,
             vin,
             profile_setting: None,
-            time_zone: self.inner.opts.default_time_zone.clone(),
+            time_zone: self.inner.default_zone(),
             efficiency_wh_km: None,
             created_ms: now_ms(),
-            inputs: Inputs::TESLA_API,
+            inputs: Inputs::from(input),
         })?;
         self.emit(Event::Fleet { car: car.id, change: "added", name: Some(name) });
         Ok(car.id)
     }
 
-    /// Stores what the API sent (the car's lock held by the caller), then has it built.
-    pub(crate) fn work_api_data(&self, car: CarId, samples: Vec<Sample>, facts: Vec<ApiSpan>) -> Result<()> {
+    /// Stores what an API sent (the car's lock held by the caller), then has it built.
+    pub(crate) fn work_api_data(
+        &self,
+        input: Input,
+        car: CarId,
+        samples: Vec<Sample>,
+        facts: Vec<ApiSpan>,
+    ) -> Result<()> {
         {
             let l = self.car_lock(car);
             let _held = lock(&l);
-            self.api_store(car, samples, facts)?;
+            self.api_store(input, car, samples, facts)?;
         }
         self.schedule_api(car);
         Ok(())
     }
 
-    fn api_store(&self, car: CarId, samples: Vec<Sample>, facts: Vec<ApiSpan>) -> Result<()> {
+    fn api_store(&self, input: Input, car: CarId, samples: Vec<Sample>, facts: Vec<ApiSpan>) -> Result<()> {
         let db = &self.inner.db;
         let Some(c) = db.car(car)? else { return Ok(()) };
         let samples = normalize(samples);
@@ -227,8 +311,9 @@ impl Engine {
         let b = spans.iter().map(|s| s.end_ms).chain(samples.last().map(|s| s.t_ms + 1000)).max().unwrap_or(a + 1);
         if let (Some(x), Some(y)) = (samples.first(), samples.last()) {
             let (x, y) = (x.t_ms, y.t_ms + 1000);
-            let old = db.read_points::<Sample>(car, Stream::TeslaApi, x, y)?;
-            db.write_points(car, Stream::TeslaApi, x, y, &merge_points(old, &samples))?;
+            let stream = Stream::from(input);
+            let old = db.read_points::<Sample>(car, stream, x, y)?;
+            db.write_points(car, stream, x, y, &merge_points(old, &samples))?;
         }
         let mut meta = records::meta(db, car)?;
         for sp in &spans {
@@ -236,32 +321,36 @@ impl Engine {
             while d <= records::day_of(sp.end_ms - 1) {
                 let (lo, hi) = (u64::from(d) * records::DAY_MS, (u64::from(d) + 1) * records::DAY_MS);
                 let part = ApiSpan { start_ms: sp.start_ms.max(lo), end_ms: sp.end_ms.min(hi), ..*sp };
-                let laid = records::lay_api(&records::api_day(db, car, d)?, &part);
-                records::put_api_day(db, car, d, &laid)?;
-                meta.api_days.insert(d);
+                let laid = records::lay_api(&records::api_day(db, car, input, d)?, &part);
+                records::put_api_day(db, car, input, d, &laid)?;
+                meta.days_of(input).insert(d);
                 d += 1;
             }
         }
         meta.first_ms = Some(meta.first_ms.map_or(a, |f| f.min(a)));
         meta.newest_ms = Some(meta.newest_ms.map_or(b, |n| n.max(b)));
+        let (last, received) = match input {
+            Input::TeslafiApi => (&mut meta.teslafi_last_ms, &mut meta.teslafi_received_ms),
+            _ => (&mut meta.api_last_ms, &mut meta.api_received_ms),
+        };
         if let Some(l) = samples.last() {
-            meta.api_last_ms = meta.api_last_ms.max(Some(l.t_ms));
+            *last = (*last).max(Some(l.t_ms));
         }
-        meta.api_received_ms = Some(now_ms());
+        *received = Some(now_ms());
         records::put_meta(db, car, &meta)?;
         let mut dirty = records::api_dirty(db, car)?;
         dirty.push((a, b));
         records::put_api_dirty(db, car, &join_spans(dirty))?;
-        if !c.inputs.contains(Input::TeslaApi) {
+        if !c.inputs.contains(input) {
             let _record = lock(&self.inner.car_record);
             if let Some(mut now) = db.car(car)? {
-                now.inputs.insert(Input::TeslaApi);
+                now.inputs.insert(input);
                 db.update_car(now)?;
                 self.emit(Event::Fleet { car, change: "inputs", name: None });
             }
         }
         if !samples.is_empty() {
-            self.note_now_from(car, &samples, Input::TeslaApi)?;
+            self.note_now_from(car, &samples, input)?;
         }
         Ok(())
     }
@@ -312,10 +401,13 @@ impl Engine {
         records::put_api_dirty(db, car, &[])
     }
 
-    /// The span of the car's API data, when it has some: what a rebuild of the car builds again from it.
+    /// The span of the car's API data (the Tesla API's and TeslaFi's), when it has some: what a rebuild of the car
+    /// builds again from it.
     pub(crate) fn api_span(&self, car: CarId) -> Result<Option<(u64, u64)>> {
         let meta = records::meta(&self.inner.db, car)?;
-        match (meta.api_days.first(), meta.api_days.last()) {
+        let first = meta.api_days.first().into_iter().chain(meta.teslafi_days.first()).min();
+        let last = meta.api_days.last().into_iter().chain(meta.teslafi_days.last()).max();
+        match (first, last) {
             (Some(&a), Some(&b)) => Ok(Some((u64::from(a) * records::DAY_MS, (u64::from(b) + 1) * records::DAY_MS))),
             _ => Ok(None),
         }
@@ -402,17 +494,22 @@ impl Engine {
         Ok(self.live_fused(car, from_ms, to_ms)?.0)
     }
 
-    /// [`Self::live_samples`], and whether SMO and the API gave any of them (a value, for the API).
-    pub(crate) fn live_fused(&self, car: CarId, from_ms: u64, to_ms: u64) -> Result<(Vec<Sample>, bool, bool)> {
+    /// [`Self::live_samples`], and the inputs that gave any of them (a value, for an API).
+    pub(crate) fn live_fused(&self, car: CarId, from_ms: u64, to_ms: u64) -> Result<(Vec<Sample>, Inputs)> {
         let db = &self.inner.db;
         let p = &self.inner.opts.fuse;
         let smo = db.read_points::<Sample>(car, Stream::Smo, from_ms, to_ms)?;
-        let m = p.margin_ms();
+        let (m, lm) = (p.margin_ms(), p.lower_margin_ms());
         let api =
             db.read_points::<Sample>(car, Stream::TeslaApi, from_ms.saturating_sub(m), to_ms.saturating_add(m))?;
-        let mut f = timeline::fuse(&smo, &api, p);
+        let fi =
+            db.read_points::<Sample>(car, Stream::TeslafiApi, from_ms.saturating_sub(lm), to_ms.saturating_add(lm))?;
+        let mut f = timeline::fuse_all(&smo, &[(&api, Inputs::TESLA_API), (&fi, Inputs::TESLAFI_API)], p);
         f.samples.retain(|s| s.t_ms >= from_ms && s.t_ms < to_ms);
-        let api_gave = f.marks.iter().any(|(t, _)| *t >= from_ms && *t < to_ms);
-        Ok((f.samples, !smo.is_empty(), api_gave))
+        let mut gave = if smo.is_empty() { Inputs::NONE } else { Inputs::SMO };
+        for (_, i) in f.marks.iter().filter(|(t, _)| *t >= from_ms && *t < to_ms) {
+            gave = gave.union(i.without_smo());
+        }
+        Ok((f.samples, gave))
     }
 }

@@ -103,7 +103,7 @@ pub(crate) fn view(c: &Car, d: &Drive, x: &Ctx) -> DriveView {
     let duration = if live { x.now_ms.max(d.end_ms) } else { d.end_ms }.saturating_sub(d.start_ms);
     let whkm = d.efficiency_wh_km();
     let (sp, ep) = (d.start.as_ref(), d.end.as_ref());
-    let tm = d.source == Source::Teslamate;
+    let tm = d.source.is_imported();
     DriveView {
         id: d.id.to_string(),
         car: CarRef(c.id),
@@ -127,8 +127,12 @@ pub(crate) fn view(c: &Car, d: &Drive, x: &Ctx) -> DriveView {
         power_max_kw: r(d.power_max_kw, 1),
         power_min_kw: r(d.power_min_kw, 1),
         energy_kwh: r(d.energy_used_kwh, 3),
-        // the Tesla API alone: its power, read every few seconds to a minute, summed
-        energy_basis: if tm || d.inputs == model::Inputs::TESLA_API { "estimated" } else { "measured" },
+        // the APIs alone (no SMO): their power, read every few seconds to a minute, summed
+        energy_basis: if tm || (!d.inputs.is_empty() && !d.inputs.contains(model::Input::Smo)) {
+            "estimated"
+        } else {
+            "measured"
+        },
         regen_kwh: None,
         wh_per_km: r(whkm, 1),
         efficiency_pct: r(x.rated_wh_per_km.zip(whkm).filter(|(_, w)| *w > 0.0).map(|(rated, w)| rated / w * 100.0), 1),

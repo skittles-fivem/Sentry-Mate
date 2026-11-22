@@ -224,8 +224,8 @@ fn no_owner_data_or_session_paths_in_the_repo() {
     assert!(hits.is_empty(), "owner data or local paths in the repo:\n{}", hits.join("\n"));
 }
 
-/// The fake-Tesla switch of the `tesla` crate (`test-endpoints`) is only for that crate's own tests: no other
-/// manifest may turn it on, so a built server can only ever reach Tesla's own hosts.
+/// The fake-server switch of the `tesla` and `teslafi` crates (`test-endpoints`) is only for each crate's own tests:
+/// no other manifest may turn it on, so a built server can only ever reach Tesla's and TeslaFi's own hosts.
 #[test]
 fn only_the_tesla_crates_own_tests_point_it_at_a_fake_tesla() {
     let root = repo();
@@ -246,13 +246,15 @@ fn only_the_tesla_crates_own_tests_point_it_at_a_fake_tesla() {
             if !t.contains("test-endpoints") || t.starts_with('#') {
                 continue;
             }
-            let own_dev = rel == "crates/tesla/Cargo.toml" && section == "[dev-dependencies]";
-            let own_feature =
-                rel == "crates/tesla/Cargo.toml" && section == "[features]" && t.starts_with("test-endpoints");
+            let own = rel == "crates/tesla/Cargo.toml" || rel == "crates/teslafi/Cargo.toml";
+            // a crate's dev-dependency on itself only
+            let own_name = if rel.contains("teslafi") { "teslafi = " } else { "tesla = " };
+            let own_dev = own && section == "[dev-dependencies]" && t.starts_with(own_name);
+            let own_feature = own && section == "[features]" && t.starts_with("test-endpoints");
             if !own_dev && !own_feature {
                 hits.push(format!("{rel} {section}: {t}"));
             }
         }
     }
-    assert!(hits.is_empty(), "test-endpoints turned on outside the tesla crate's tests:\n{}", hits.join("\n"));
+    assert!(hits.is_empty(), "test-endpoints turned on outside the tesla crates' own tests:\n{}", hits.join("\n"));
 }

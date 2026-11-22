@@ -67,7 +67,10 @@ impl<T: Item> TimeTable<T> {
         let limit = q.limit.min(MAX_PAGE);
         let lo = (q.from_ms.saturating_sub(self.max_span), 0);
         let hi = (q.to_ms, 0);
-        let keep = |r: &&T| Self::overlaps(r, q.from_ms, q.to_ms) && q.source.is_none_or(|s| r.source() == s);
+        // a source names its family: every imported row, whatever its site, is in the imported family
+        let keep = |r: &&T| {
+            Self::overlaps(r, q.from_ms, q.to_ms) && q.source.is_none_or(|s| r.source().family() == s.family())
+        };
         let mut items = Vec::new();
         let mut more = false;
         let mut push = |key: &(u64, u64)| -> bool {

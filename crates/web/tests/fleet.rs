@@ -20,9 +20,9 @@ fn made_up_car(name: &str, model: char, year: u16, serial: &str) -> Car {
         name: name.into(),
         vehicle_keys: Vec::new(),
         preferred_key: None,
-        // "XP7" is no maker's code: a made-up VIN prefix
+        // a made-up VIN prefix (the first 11 characters, plant F; no serial)
         vin: Some(VinInfo {
-            vin_prefix: format!("XP7{model}{serial}"),
+            vin_prefix: format!("5YJ{model}{serial}F"),
             model: Some(model),
             year: Some(year),
             plant: Some('F'),
@@ -150,7 +150,7 @@ async fn the_cars_list_pages_sorts_filters_and_hides_what_an_account_may_not_see
     // search (name, model, VIN prefix) and state; no total then
     let r = admin.get("/api/v1/cars?search=model%203").await.json();
     assert_eq!((ids(&r), r.get("total")), (vec!["c2".to_string()], None));
-    assert_eq!(ids(&admin.get("/api/v1/cars?search=xp7s").await.json()), ["c3"]);
+    assert_eq!(ids(&admin.get("/api/v1/cars?search=5yjs").await.json()), ["c3"]);
     assert_eq!(ids(&admin.get("/api/v1/cars?state=asleep").await.json()), ["c3"]);
     // bad values name the field; a cursor of another sort is refused
     assert!(admin.get("/api/v1/cars?state=flying").await.json()["error"]["fields"]["state"].is_string());
@@ -474,6 +474,7 @@ async fn put(store: &ingest::Store, judge: &ingest::Judge, name: &str, bytes: &[
 /// A made-up car's day of logs (synth: a made-up VIN, a public signing seed), uploaded and judged as an upload is,
 /// whose newest log is not the file that was signed: it fails its check.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn the_fleet_follows_the_logs_rules_of_health_and_the_time_logs_arrived() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
@@ -565,4 +566,29 @@ async fn a_key_change_and_a_rename_at_once_both_stay() {
     assert_eq!(c.name, "Blue 29", "the rename stays");
     assert_eq!(c.preferred_key.as_deref(), Some("made-up-key-b"), "the key change stays");
     assert_eq!(c.vehicle_keys.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_typed_model_and_year_reach_the_list_and_the_car() {
+    let f = fleet().await;
+    let mut admin = f.s.admin().await;
+    assert_eq!(admin.get("/api/v1/cars/c1").await.json()["year"], json!(2024));
+    let r = admin
+        .patch("/api/v1/cars/c1", json!({ "version": 1, "config": { "model_year": 2025, "model": "Model Y L" } }))
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let c = admin.get("/api/v1/cars/c1").await.json();
+    assert_eq!((c["year"].clone(), c["model"].clone()), (json!(2025), json!("Model Y L")), "{c}");
+    assert_eq!(c["config"]["year"]["value"], json!(2025));
+    assert_eq!(c["vehicle"]["model_year"]["value"], json!(2025));
+    let list = admin.get("/api/v1/cars").await.json();
+    let one = list["items"].as_array().unwrap().iter().find(|i| i["id"] == json!("c1")).unwrap().clone();
+    assert_eq!((one["year"].clone(), one["model"].clone()), (json!(2025), json!("Model Y L")), "{one}");
+    // the search finds it by the typed model
+    let found = admin.get("/api/v1/cars?search=y%20l").await.json();
+    assert_eq!(ids(&found), vec!["c1".to_string()], "{found}");
+    // forgotten: the VIN's again
+    let r =
+        admin.patch("/api/v1/cars/c1", json!({ "version": 2, "config": { "model_year": null, "model": null } })).await;
+    assert_eq!((r.json()["year"].clone(), r.json()["model"].clone()), (json!(2024), json!("Model Y")), "{}", r.text());
 }

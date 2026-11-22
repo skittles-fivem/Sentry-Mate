@@ -1,9 +1,10 @@
-//! TeslaMate imports for `/imports`: a check of a whole backup that stores nothing (which cars it holds, what each
-//! brings, what a car here would take), the car suggested for each by its VIN prefix, and the import itself into the
-//! engine's db ([`crate::importer::DbSink`]) with every car matched.
+//! TeslaMate and TeslaFi imports for `/imports`: a check of a whole file that stores nothing (which cars it holds,
+//! what each brings, what a car here would take), the car suggested for each by its VIN prefix, and the import itself
+//! into the engine's db ([`crate::importer::DbSink`]) with every car matched.
 //!
-//! The backup is read through `open` (called twice per run, as [`import::import`] needs); `stop` ends a run at the
-//! next read (the reader answers an error), so a discarded job stops reading at once.
+//! A TeslaMate backup is read through `open` (called twice per run, as [`import::import`] needs); TeslaFi's export
+//! once per pass ([`import::teslafi::import`], [`teslafi_check`], [`teslafi_run`]). `stop` ends a run at the next read
+//! (the reader answers an error), so a discarded job stops reading at once.
 
 use super::{QResult, QueryError};
 use crate::Engine;
@@ -99,6 +100,8 @@ struct CountSink<'a> {
     stand_in: HashMap<CarId, i64>,
     cars: Vec<BackupCar>,
     reports: Vec<CarReport>,
+    /// The time zone of each stand-in's suggested car (TeslaFi's times are read in it).
+    zones: HashMap<CarId, String>,
 }
 
 /// Stand-in ids of a check's cars: from the top, far from any real car's.
@@ -129,6 +132,11 @@ impl import::Sink for CountSink<'_> {
             Some(c) => import_state(self.engine.db(), c).map_err(sink_err)?.unwrap_or_default(),
             None => Default::default(),
         };
+        let zone = match suggested {
+            Some(c) => self.engine.db().car(c).map_err(sink_err)?.map(|c| c.time_zone),
+            None => None,
+        };
+        self.zones.insert(id, zone.unwrap_or_else(|| self.engine.inner.default_zone()));
         Ok(Some(Target { car: id, state }))
     }
 
@@ -159,6 +167,10 @@ impl import::Sink for CountSink<'_> {
         self.reports.push(report);
         Ok(())
     }
+
+    fn time_zone(&mut self, car: CarId) -> Option<String> {
+        self.zones.get(&car).cloned()
+    }
 }
 
 /// A failure of a run: `(code, message)` for the job's `error`.
@@ -168,6 +180,8 @@ pub fn error_of(e: &import::Error) -> (&'static str, String) {
         import::Error::Unpack(_) | import::Error::Unsupported(_) | import::Error::Utf16Be => "unreadable",
         import::Error::CustomFormat => "custom_format",
         import::Error::NotTeslamate => "not_a_backup",
+        import::Error::NotTeslafi => "not_a_teslafi_export",
+        import::Error::TeslafiSummary => "teslafi_summary",
         import::Error::Incomplete(_) => "incomplete",
         import::Error::Changed => "changed",
         import::Error::StateVersion(_) => "state_version",
@@ -270,7 +284,8 @@ pub fn one_each(cars: &mut [BackupCar]) {
 
 /// Checks a whole backup: reads it as the import would and stores nothing.
 pub fn check<R: Read>(e: &Engine, open: impl FnMut() -> io::Result<R>) -> Result<Checked, import::Error> {
-    let mut sink = CountSink { engine: e, stand_in: HashMap::new(), cars: Vec::new(), reports: Vec::new() };
+    let mut sink =
+        CountSink { engine: e, stand_in: HashMap::new(), cars: Vec::new(), reports: Vec::new(), zones: HashMap::new() };
     let report = import::import(open, &mut sink, &import::Options::default())?;
     one_each(&mut sink.cars);
     let pairs: Vec<(BackupCar, Value)> = sink.cars.iter().map(|c| (c.clone(), Value::Null)).collect();
@@ -306,6 +321,145 @@ pub fn run<R: Read>(
     sink.finish();
     let report = r?;
     Ok(Imported { report, cars: std::mem::take(&mut sink.reports), made: std::mem::take(&mut sink.made) })
+}
+
+/// What the owner said about a TeslaFi file (each `None`: worked out from the file, or the car's time zone).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct TeslafiSettings {
+    pub distance_unit: Option<import::teslafi::Distance>,
+    pub temperature_unit: Option<import::teslafi::Temperature>,
+    pub time_zone: Option<String>,
+}
+
+fn teslafi_options(e: &Engine, s: &TeslafiSettings) -> import::teslafi::Options {
+    import::teslafi::Options {
+        distance: s.distance_unit,
+        temperature: s.temperature_unit,
+        time_zone: s.time_zone.clone(),
+        default_time_zone: e.inner.default_zone(),
+        ..import::teslafi::Options::default()
+    }
+}
+
+/// The report of a TeslaFi pass as the API writes it (`kind: "teslafi"`): files, rows read, used and skipped with why,
+/// the drives, charges, states and updates found (stored, once `imported`), the cars with their match, the date range,
+/// the units and time zone the times and values were read in (the file can't tell its time zone: `asked` says the
+/// owner should confirm it).
+pub fn teslafi_report_json(
+    r: &import::teslafi::Report,
+    reports: &[CarReport],
+    cars: &[(BackupCar, Value)],
+    imported: bool,
+) -> Value {
+    let n = |x: u64| if imported { x } else { 0 };
+    let table = |t: Table| -> Value {
+        let (read, took, skipped) = reports.iter().fold((0u64, 0u64, Map::new()), |(a, b, mut m), c| {
+            let x = c.table(t);
+            for (k, v) in skipped(&x) {
+                let old = m.get(&k).and_then(Value::as_u64).unwrap_or(0);
+                m.insert(k, json!(old + v.as_u64().unwrap_or(0)));
+            }
+            (a + x.read, b + x.imported, m)
+        });
+        json!({ "read": read, "imported": n(took), "found": took, "skipped": skipped })
+    };
+    let per_car: Vec<Value> = cars
+        .iter()
+        .map(|(c, m)| {
+            let own = reports.iter().find(|x| x.tm_car_id == c.tm_car);
+            let left_out = m.as_str() == Some("leave_out") || own.is_some_and(|o| o.car.is_none() && imported);
+            let rows = own.map_or(0, |o| o.table(Table::Positions).read);
+            // this pass's own figures (a run may read the times in another zone than the check did), else the check's
+            let mine = own.filter(|o| o.car.is_some() && o.first_ms.is_some());
+            let (drives, charges, first_ms, last_ms) = match mine {
+                Some(o) => {
+                    (o.table(Table::Drives).imported, o.table(Table::ChargingProcesses).imported, o.first_ms, o.last_ms)
+                }
+                None => (c.drives, c.charges, c.first_ms, c.last_ms),
+            };
+            json!({
+                "tm_car": c.tm_car.to_string(), "name": c.name, "vin_prefix": c.vin_prefix, "match": m,
+                "drives": drives, "charges": charges, "first_ms": first_ms, "last_ms": last_ms,
+                "rows": if left_out && imported { Value::Null } else { json!(rows) },
+            })
+        })
+        .collect();
+    json!({
+        "kind": import::teslafi::KIND,
+        "imported": imported,
+        "files": r.files,
+        "files_skipped": r.files_skipped,
+        "rows": {
+            "read": r.rows_read,
+            "used": r.rows_used,
+            "skipped": r.rows_skipped,
+            "bad_values": r.bad_values,
+            "windows_1252": r.lines_windows_1252,
+        },
+        "found": {
+            "drives": r.drives, "charges": r.charges, "states": r.states, "updates": r.updates,
+            "positions": r.positions, "charge_points": r.charge_points, "replaced": r.removed,
+            "read_again": r.read_again,
+        },
+        "tables": {
+            "positions": table(Table::Positions),
+            "drives": table(Table::Drives),
+            "charging_processes": table(Table::ChargingProcesses),
+            "states": table(Table::States),
+            "updates": table(Table::Updates),
+        },
+        "span": { "from_ms": r.first_ms, "to_ms": r.last_ms },
+        "cars": per_car,
+        "cars_count": r.cars,
+        "cars_left_out": r.cars_left_out,
+        "units": r.units,
+        "time_zone": { "name": r.time_zone, "from": r.time_zone_from, "asked": true, "dst_repeated_rows": r.dst_repeated },
+        "compression": r.compression,
+        "packed_bytes": r.packed_bytes,
+        "unpacked_bytes": r.unpacked_bytes,
+        "missing_columns": r.missing_columns,
+        "unknown_columns": r.unknown_columns,
+        "warnings": r.warnings,
+    })
+}
+
+/// Checks TeslaFi's export: reads it as the import would and stores nothing.
+pub fn teslafi_check<R: Read>(e: &Engine, r: R, s: &TeslafiSettings) -> Result<Checked, import::Error> {
+    let mut sink =
+        CountSink { engine: e, stand_in: HashMap::new(), cars: Vec::new(), reports: Vec::new(), zones: HashMap::new() };
+    let report = import::teslafi::import(r, &mut sink, &teslafi_options(e, s))?;
+    one_each(&mut sink.cars);
+    let pairs: Vec<(BackupCar, Value)> = sink.cars.iter().map(|c| (c.clone(), Value::Null)).collect();
+    let json = teslafi_report_json(&report, &sink.reports, &pairs, false);
+    Ok(Checked { cars: sink.cars, report: json })
+}
+
+/// What a TeslaFi run did.
+#[derive(Debug, Clone)]
+pub struct TeslafiImported {
+    pub report: import::teslafi::Report,
+    pub cars: Vec<CarReport>,
+    pub made: Vec<CarId>,
+}
+
+/// Imports TeslaFi's export with every car matched.
+pub fn teslafi_run<R: Read>(
+    e: &Engine,
+    r: R,
+    m: &Matches,
+    s: &TeslafiSettings,
+) -> Result<TeslafiImported, import::Error> {
+    let mut sink = DbSink::teslafi(e);
+    for (tm, to) in &m.to {
+        sink.matches.insert(*tm, to.map_or(Match::New, Match::Car));
+    }
+    for tm in &m.leave_out {
+        sink.matches.insert(*tm, Match::LeaveOut);
+    }
+    let r = import::teslafi::import(r, &mut sink, &teslafi_options(e, s));
+    sink.finish();
+    let report = r?;
+    Ok(TeslafiImported { report, cars: std::mem::take(&mut sink.reports), made: std::mem::take(&mut sink.made) })
 }
 
 /// A car of the backup may be matched to this car (it exists).

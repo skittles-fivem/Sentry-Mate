@@ -48,6 +48,7 @@ fn peak() -> Option<u64> {
 }
 
 #[test]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 fn a_big_export_is_imported_in_bounded_memory() {
     let Some(_) = peak() else { return };
     let base = std::env::var_os("CAN_IMPORT_WORK").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);

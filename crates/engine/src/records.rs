@@ -18,6 +18,8 @@
 //! engine  car/<id>/api/<day>    what the Tesla API saw of the car's state that UTC day (spans, clipped to the day)
 //! engine  car/<id>/api_dirty    Tesla API data stored but not yet built into the timeline
 //! engine  car/<id>/api_meta     the Tesla API's newest values beside the samples (version, settings, charger)
+//! engine  car/<id>/fw/...       the firmware fingerprints of the car's logs, their history and the updates found
+//!                               from them ([`crate::firmware`])
 //! ```
 
 use crate::Result;
@@ -32,7 +34,8 @@ pub(crate) const NS: &str = "engine";
 
 /// The version of how logs are decoded here (with the timeline's rules): entries made by another are made again.
 /// 2: a left-out log's hole is held to a few minutes around its name's start (its sidecar's span is not signed).
-pub const DECODE_VERSION: u32 = 2;
+/// 3: each log's firmware fingerprints are kept ([`crate::firmware`]): older logs are read again for them.
+pub const DECODE_VERSION: u32 = 3;
 
 /// The version stamp an entry carries: this crate's decoding and the timeline's rules.
 pub(crate) fn rules() -> u32 {
@@ -125,6 +128,23 @@ pub struct CarMeta {
     pub api_last_ms: Option<u64>,
     #[serde(default)]
     pub api_received_ms: Option<u64>,
+    /// The same for TeslaFi's API: days with its state spans, its newest data and when it came.
+    #[serde(default)]
+    pub teslafi_days: BTreeSet<u32>,
+    #[serde(default)]
+    pub teslafi_last_ms: Option<u64>,
+    #[serde(default)]
+    pub teslafi_received_ms: Option<u64>,
+}
+
+impl CarMeta {
+    /// The days with state spans of one API input.
+    pub(crate) fn days_of(&mut self, input: model::Input) -> &mut BTreeSet<u32> {
+        match input {
+            model::Input::TeslafiApi => &mut self.teslafi_days,
+            _ => &mut self.api_days,
+        }
+    }
 }
 
 /// A rebuild of a car under way (kept so a restart carries on with it).
@@ -411,13 +431,20 @@ pub(crate) fn put_now_from(db: &Db, car: CarId, m: &BTreeMap<String, model::Inpu
     put(db, NS, &key, m)
 }
 
-/// The Tesla API's state spans of one UTC day.
-pub(crate) fn api_day(db: &Db, car: CarId, d: u32) -> Result<Vec<timeline::ApiSpan>> {
-    Ok(get(db, NS, &format!("car/{car}/api/{d}"))?.unwrap_or_default())
+fn api_key(car: CarId, input: model::Input, d: u32) -> String {
+    match input {
+        model::Input::TeslafiApi => format!("car/{car}/teslafi_api/{d}"),
+        _ => format!("car/{car}/api/{d}"),
+    }
 }
 
-pub(crate) fn put_api_day(db: &Db, car: CarId, d: u32, spans: &[timeline::ApiSpan]) -> Result<()> {
-    let key = format!("car/{car}/api/{d}");
+/// One API input's state spans of one UTC day (the Tesla API's, or TeslaFi's kept apart).
+pub(crate) fn api_day(db: &Db, car: CarId, input: model::Input, d: u32) -> Result<Vec<timeline::ApiSpan>> {
+    Ok(get(db, NS, &api_key(car, input, d))?.unwrap_or_default())
+}
+
+pub(crate) fn put_api_day(db: &Db, car: CarId, input: model::Input, d: u32, spans: &[timeline::ApiSpan]) -> Result<()> {
+    let key = api_key(car, input, d);
     if spans.is_empty() {
         db.kv().delete(NS, &key)?;
         return Ok(());
@@ -474,7 +501,8 @@ fn lay_one(old: &[timeline::ApiSpan], new: &timeline::ApiSpan) -> Vec<timeline::
     joined
 }
 
-/// The Tesla API's state spans that meet `[from_ms, to_ms)`, clipped to it, sorted.
+/// The APIs' state spans (the Tesla API's and TeslaFi's, each naming its input) that meet `[from_ms, to_ms)`,
+/// clipped to it, sorted.
 pub(crate) fn api_between(
     db: &Db,
     car: CarId,
@@ -483,11 +511,14 @@ pub(crate) fn api_between(
     to_ms: u64,
 ) -> Result<Vec<timeline::ApiSpan>> {
     let mut out = Vec::new();
-    for &d in meta.api_days.range(day_of(from_ms)..=day_of(to_ms.saturating_sub(1).max(from_ms))) {
-        for a in api_day(db, car, d)? {
-            let (x, y) = (a.start_ms.max(from_ms), a.end_ms.min(to_ms));
-            if y > x {
-                out.push(timeline::ApiSpan { start_ms: x, end_ms: y, ..a });
+    let days = day_of(from_ms)..=day_of(to_ms.saturating_sub(1).max(from_ms));
+    for (input, set) in [(model::Input::TeslaApi, &meta.api_days), (model::Input::TeslafiApi, &meta.teslafi_days)] {
+        for &d in set.range(days.clone()) {
+            for a in api_day(db, car, input, d)? {
+                let (x, y) = (a.start_ms.max(from_ms), a.end_ms.min(to_ms));
+                if y > x {
+                    out.push(timeline::ApiSpan { start_ms: x, end_ms: y, inputs: model::Inputs::from(input), ..a });
+                }
             }
         }
     }
@@ -534,7 +565,7 @@ mod tests {
     use timeline::{ApiSpan, ApiState};
 
     fn sp(a: u64, b: u64, state: ApiState, data: bool) -> ApiSpan {
-        ApiSpan { start_ms: a, end_ms: b, state, data }
+        ApiSpan { start_ms: a, end_ms: b, state, data, inputs: model::Inputs::NONE }
     }
 
     #[test]

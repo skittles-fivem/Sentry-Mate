@@ -8,8 +8,8 @@ import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { getUnits, format } from '../shared/units.js';
 import { isSupportedLocale, onLocaleChange } from '../shared/i18n.js';
-import { formatDate } from '../shared/time.js';
-import { icon, hud, plate, tag, note } from '../core/ui.js';
+import { formatDate, isValidZone } from '../shared/time.js';
+import { icon, hud, plate, tag, note, btn } from '../core/ui.js';
 import { band } from '../core/kit.js';
 import { field, showApiError } from '../core/form.js';
 import { toast } from '../core/layer.js';
@@ -17,6 +17,7 @@ import { getPrefs, savePrefs, isAdmin, onPrefs } from '../core/prefs.js';
 import { getInterface, onInterface } from '../core/display.js';
 import { sizeChoice, followSwitch, lookChoice, skyChoice, sizeLine } from '../core/account.js';
 import { getSky, onSky } from '../core/sky.js';
+import { packChoices, packLabel } from '../shared/packs.js';
 import { chan, hint, recLamp, presets, errText, code } from '../core/setting.js';
 import { ago, num } from '../core/fmt.js';
 
@@ -26,8 +27,11 @@ export const css = true;
 const LOCALES = [['auto', "This browser's language"], ['en-US', 'English (United States)'], ['en-GB', 'English (United Kingdom)'],
   ['de-DE', 'German number and date style'], ['fr-FR', 'French number and date style'], ['nl-NL', 'Dutch number and date style']]
   .filter(([v]) => v === 'auto' || isSupportedLocale(v));
-const PACKS = [['instrument', 'Instrument'], ['logbook', 'Logbook'], ['horizon', 'Horizon']];
+// used only when the server's list of packs can't be read
+const PACKS = [['instrument', 'Instrument'], ['logbook', 'Logbook'], ['horizon', 'Horizon'], ['console', 'Console'], ['pebble', 'Pebble']];
 const LANG_RE = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
+const ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+const BROWSER_ZONE = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
 const WORD = { km: 'km', mi: 'miles', c: '°C', f: '°F', bar: 'bar', psi: 'psi', rated: 'rated', ideal: 'ideal' };
 
 /**
@@ -53,11 +57,12 @@ function presetChoice(label, options, current, pick, { readOnly = false, cover }
 
 export async function mount(ctx) {
   const admin = isAdmin();
-  let [about, server, geo, maps] = await Promise.all([
+  let [about, server, geo, maps, packList] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
+    packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || null }),
   ]);
   if (!ctx.alive()) return;
   const rec = recLamp({ cover: 'web.settings.general.autosave' });
@@ -125,8 +130,13 @@ export async function mount(ctx) {
   const paintLang = () => replace(langLine, 'Written now as: ', h('b', null, format(1234.5, 'distance')), ', ', h('b', null, formatDate(ctx.api.now(), ctx.tz, { weekday: false, year: true })), '.');
   paintLang();
   const packNow = p.ui_pack || about?.ui_pack?.name?.toLowerCase() || 'horizon';
-  const packSel = h('select', { class: 'input sd-select', 'aria-label': 'UI pack', onchange: () => mine({ ui_pack: packSel.value }, 'UI pack') },
-    PACKS.map(([v, l]) => h('option', { value: v, selected: packNow === v }, l)));
+  const packHere = about?.ui_pack?.id || about?.ui_pack?.name?.toLowerCase() || 'horizon';
+  const packSel = h('select', { class: 'input sd-select', 'aria-label': 'UI pack', onchange: async () => { if (await mine({ ui_pack: packSel.value }, 'UI pack')) paintSwitch(); } },
+    packList.items.map((k) => h('option', { value: k.id, selected: packNow === k.id }, packLabel(k))));
+  const switchBtn = btn('Switch now', () => location.reload(), { sm: true });
+  const switchLine = hint('The new pack is used the next time the app loads.');
+  const paintSwitch = () => { const other = packSel.value !== packHere; switchBtn.hidden = !other; switchLine.hidden = !other; };
+  paintSwitch();
 
   const lookPanel = hud({ title: 'Look and language', icon: 'monitor', id: 'sd-look', side: tag('Follows you', 'cyan') },
     h('div', { class: 'chans' },
@@ -138,7 +148,8 @@ export async function mount(ctx) {
         h('div', { class: 'tog' }, follow.el, h('label', { class: 'tog-label', for: 'sd-follow' }, 'Follow screen size')), sizeNote),
       chan({ no: 7, title: 'Language', text: 'The words are English for now; this sets how numbers and dates are written. "This browser\'s language" follows what your browser asks for, and the page tells the browser its language.', cover: ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation'] },
         langSel, langLine),
-      chan({ no: 8, title: 'UI pack', text: `The design of the whole app. ${about?.ui_pack?.name ? `You are in ${about.ui_pack.name} ${about.ui_pack.version || ''}.` : ''} A new choice is used the next time the app loads.` }, packSel)));
+      chan({ no: 8, title: 'UI pack', text: `The design of the whole app. ${about?.ui_pack?.name ? `You are in ${about.ui_pack.name} ${about.ui_pack.version || ''}.` : ''} A new choice is used the next time the app loads.` },
+        h('div', { class: 'row' }, packSel, switchBtn), switchLine)));
 
   /* ---------- the background (this browser only) */
   const sky = skyChoice();
@@ -158,7 +169,7 @@ export async function mount(ctx) {
     dist.set(n.distance); temp.set(n.temperature); pres.set(n.pressure); rng.set(n.range);
     look.sync(pp);
     langSel.value = pp?.language === 'en' ? 'en-US' : (pp?.language || 'auto');
-    if (pp?.ui_pack) packSel.value = pp.ui_pack;
+    if (pp?.ui_pack) { packSel.value = pp.ui_pack; paintSwitch(); }
     paintPreview(); paintLang();
   }));
   ctx.onCleanup(onLocaleChange(() => { paintPreview(); paintLang(); }));
@@ -210,17 +221,27 @@ export async function mount(ctx) {
     const gUrl = field({ label: 'Address service (https)', name: 'sd-gurl', path: 'geocode.url', value: g.url || '', hint: 'Used only when lookup is online. Positions are rounded first; the service never gets a VIN or a car name.', attrs: { placeholder: 'https://', disabled: ro, spellcheck: 'false' } });
     const gRound = field({ label: 'Round positions to (m)', name: 'sd-grnd', path: 'geocode.rounding_m', type: 'number', value: g.rounding_m, hint: 'Metres, 0 to 1000, before an online lookup.', attrs: { min: '0', max: '1000', step: '1', disabled: ro } });
     const gLang = field({ label: 'Address language', name: 'sd-glang', path: 'geocode.language', value: g.language || 'en', hint: 'A code such as en, de, fr or pt-BR. A change looks every stored address up again.', attrs: { maxlength: '10', spellcheck: 'false', autocomplete: 'off', disabled: ro } });
+    const tz = field({ label: 'Time zone for new cars', name: 'sd-tz', path: 'default_time_zone', value: server.default_time_zone || 'UTC', hint: 'A zone name such as America/Chicago. Type to search the list.', attrs: { list: 'sd-zones', disabled: ro, autocomplete: 'off', spellcheck: 'false' } });
+    const tilePresets = maps?.tiles?.presets || [];
+    const tilePreset = tilePresets.find((p) => p.url === t.online_url) || null;
+    const tSource = tilePresets.length ? pc('Tile source', [...tilePresets.map((p) => [p.id, p.name]), ['custom', 'Custom address']], tilePreset ? tilePreset.id : 'custom', (v) => {
+      const p = tilePresets.find((x) => x.id === v);
+      if (p) save({ tiles: { online_url: p.url, attribution: p.attribution, max_zoom: p.max_zoom } }, 'Tile source', [tUrl, tAttr]);
+      else tUrl.input.focus();
+    }) : null;
+    const tTerms = tilePreset ? hint(`${tilePreset.name}: free, no key. Its terms (${tilePreset.terms.replace(/^https:\/\//, '')}) ask for light use and its credit on every map.`) : null;
     const tUrl = field({ label: 'Online tile address (https)', name: 'sd-turl', path: 'tiles.online_url', value: t.online_url || '', hint: 'With {z}, {x} and {y} in it.', attrs: { placeholder: 'https://', disabled: ro, spellcheck: 'false' } });
     const tAttr = field({ label: 'Map credit', name: 'sd-tattr', path: 'tiles.attribution', value: t.attribution || '', hint: 'Shown in the corner of every map, as the source asks.', attrs: { disabled: ro } });
     const local = {
       'sd-grnd': (v) => (v === '' || !(Number(v) >= 0 && Number(v) <= 1000) ? 'A whole number of metres from 0 to 1000.' : null),
       'sd-glang': (v) => (!LANG_RE.test(v.trim()) ? 'Not a language code: two or three letters such as en or de, with a region if you like, such as pt-BR.' : null),
+      'sd-tz': (v) => (!isValidZone(v.trim()) ? 'Not a time zone this browser knows: pick one from the list, such as America/Chicago.' : null),
       'sd-turl': (v) => (v && !/^https:\/\/.+/.test(v) ? 'An https:// address, or empty.' : null),
       'sd-gurl': (v) => (v && !/^https:\/\/.+/.test(v) ? 'An https:// address, or empty.' : null),
     };
-    const words = { 'sd-gurl': 'Address service', 'sd-grnd': 'Rounding', 'sd-glang': 'Address language', 'sd-turl': 'Tile address', 'sd-tattr': 'Map credit' };
+    const words = { 'sd-tz': 'Time zone for new cars', 'sd-gurl': 'Address service', 'sd-grnd': 'Rounding', 'sd-glang': 'Address language', 'sd-turl': 'Tile address', 'sd-tattr': 'Map credit' };
     for (const [f, mk] of [[gUrl, (v) => ({ geocode: { url: v || null } })], [gRound, (v) => ({ geocode: { rounding_m: Math.round(Number(v)) } })],
-      [gLang, (v) => ({ geocode: { language: v.trim() } })], [tUrl, (v) => ({ tiles: { online_url: v || null } })], [tAttr, (v) => ({ tiles: { attribution: v } })]]) {
+      [gLang, (v) => ({ geocode: { language: v.trim() } })], [tz, (v) => ({ default_time_zone: v.trim() })], [tUrl, (v) => ({ tiles: { online_url: v || null } })], [tAttr, (v) => ({ tiles: { attribution: v } })]]) {
       if (ro) continue;
       f.input.addEventListener('change', () => {
         const bad = local[f.name]?.(f.input.value);
@@ -242,7 +263,11 @@ export async function mount(ctx) {
             chan({ no: 11, title: 'Range', text: 'Rated or ideal, for accounts that have not chosen.' },
               pc('Default range', [['rated', 'Rated'], ['ideal', 'Ideal']], server.range, (v) => save({ range: v }, 'Default range')),
               hint('A new server starts from the distance unit set on the car\'s own screen, once its CAN Bridge has sent it.')),
-            chan({ no: 12, title: 'Outside links', text: 'Links that open another site in a new tab, only when someone clicks them.' },
+            chan({ no: 12, title: 'Time zone for new cars', text: 'The zone a new car starts in: its days, weeks and prices by time of day. Each car keeps its own after that.' },
+              tz.el, h('datalist', { id: 'sd-zones' }, ZONES.map((x) => h('option', { value: x }))),
+              BROWSER_ZONE && BROWSER_ZONE !== server.default_time_zone && !ro ? [btn('Use this browser\'s zone', () => save({ default_time_zone: BROWSER_ZONE }, 'Time zone for new cars', [tz]), { icon: 'globe', sm: true, label: `Use this browser's zone, ${BROWSER_ZONE}` }), hint(`This browser is in ${BROWSER_ZONE}.`)] : null,
+              hint('Each car\'s own zone: ', h('a', { class: 'plc', href: state.buildUrl('settings-cars') }, 'Settings: Cars'), '. The clock in the page header names the zone shown.')),
+            chan({ no: 16, title: 'Outside links', text: 'Links that open another site in a new tab, only when someone clicks them.' },
               pc('Map links', [['false', 'No map links'], ['true', 'Map links']], String(!!server.outside_links?.maps), (v) => save({ outside_links: { maps: v === 'true' } }, 'Map links')),
               pc('Release notes', [['false', 'No release notes'], ['true', 'Release notes']], String(!!server.outside_links?.release_notes), (v) => save({ outside_links: { release_notes: v === 'true' } }, 'Release notes links')))),
           h('p', { class: 'note sd-metric' }, icon('info', 'i--sm'), h('span', null, 'Server values are metric (', code('100 km'), ', ', code('20 °C'), ', ', code('290 kPa'), '); every page converts them for each person.'))),
@@ -251,8 +276,8 @@ export async function mount(ctx) {
             chan({ no: 13, title: 'Address lookup', text: 'Offline uses the place names that come with Sentry Mate: nothing leaves the server. Online asks the service you name (your own address server, or a proxy in front of one) with rounded positions, and keeps a cache.', cover: ['web.settings.general.address-lookup', 'docs.env.tesla-api.nominatim-proxy'] },
               pc('Address lookup', [['offline', 'Offline'], ['online', 'Online service']], g.mode, (v) => save({ geocode: { mode: v } }, 'Address lookup', [gUrl])), geoLine(), gUrl.el, gRound.el),
             chan({ no: 14, title: 'Address language', text: 'Street and place names in this language where the data has it; otherwise in the local language.', cover: ['web.settings.general.address-language', 'web.settings.general.address-language-error', 'web.settings.general.address-language-invalid'] }, gLang.el),
-            chan({ no: 15, title: 'Map tiles', text: 'Offline tiles come from Sentry Mate itself. An online source is asked by each viewer\'s browser, so it sees the map area: turn it on only if you accept that.', cover: 'web.shell.map-tiles' },
-              pc('Map tiles', [['offline', 'Offline'], ['online', 'Online source']], t.mode, (v) => save({ tiles: { mode: v } }, 'Map tiles', [tUrl])), tileLine(t), tUrl.el, tAttr.el)))));
+            chan({ no: 15, title: 'Map tiles', text: 'Offline tiles come from Sentry Mate itself. An online source is asked by each viewer\'s browser, so it sees the map area and this server\'s address (as Referer, which OpenStreetMap needs; never a page or a car): turn it on only if you accept that.', cover: 'web.shell.map-tiles' },
+              pc('Map tiles', [['offline', 'Offline'], ['online', 'Online source']], t.mode, (v) => save({ tiles: { mode: v } }, 'Map tiles', [tUrl])), tileLine(t), tSource, tTerms, tUrl.el, tAttr.el)))));
   }
   paintServer();
 

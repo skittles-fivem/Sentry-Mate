@@ -65,6 +65,8 @@ pub struct Scenario {
     /// Adds the usual trouble, each where the car is parked and awake (see [`Scenario::bridge_trouble`]): a lost log
     /// (a chain gap), dropped frames, a pause in recording and an app update.
     pub with_trouble: bool,
+    /// Made-up firmware fingerprints in the modules' info frames (off: none sent).
+    pub firmware: Option<crate::firmware::Firmware>,
 }
 
 impl Scenario {
@@ -99,6 +101,7 @@ impl Scenario {
             xz_preset: 6,
             trouble: Trouble::default(),
             with_trouble: false,
+            firmware: None,
         }
     }
 
@@ -212,6 +215,11 @@ impl Scenario {
         self.with_trouble = on;
         self
     }
+    /// The modules' info frames with these made-up fingerprints (see [`crate::Firmware::made_up`]).
+    pub fn firmware(mut self, f: crate::firmware::Firmware) -> Self {
+        self.firmware = Some(f);
+        self
+    }
 
     /// The seed of this car (the scenario's seed and the car's number).
     fn car_seed(&self) -> u64 {
@@ -225,10 +233,10 @@ impl Scenario {
         hex::encode(&h[..6])
     }
 
-    /// A VIN that is clearly made up (maker `SYN`, `FAKE`), yet reads as a model, a year and a plant: `SYN`, the model
-    /// letter, `FAKE0`, `R` (2024), `X`, then six digits.
+    /// A VIN that is clearly made up (`FAKE` where the body and motor codes go), yet reads as a model, a year and a
+    /// plant: maker `5YJ` (every model's), the model letter, `FAKE0`, `R` (2024), `X`, then six digits.
     pub fn vin(&self) -> String {
-        format!("SYN{}FAKE0RX{:06}", self.model.letter(), 100 + u64::from(self.car.min(MAX_CAR)))
+        format!("5YJ{}FAKE0RX{:06}", self.model.letter(), 100 + u64::from(self.car.min(MAX_CAR)))
     }
 
     /// The bridge's signing key.
@@ -337,6 +345,7 @@ impl Scenario {
             trouble: cfg.trouble.clone(),
             bridge: Bridge::new(cfg, self.signer(), self.start_ms * 1000, uptime),
             schedule: Schedule::new(&self.vin(), self.rates, rng),
+            firmware: self.firmware.clone().map(crate::firmware::Sender::new),
             sim,
             buf: Vec::new(),
             done: false,
@@ -349,6 +358,7 @@ pub struct Logs {
     trouble: Trouble,
     bridge: Bridge,
     schedule: Schedule,
+    firmware: Option<crate::firmware::Sender>,
     sim: Sim,
     buf: Vec<RawFrame>,
     done: bool,
@@ -408,6 +418,11 @@ impl Iterator for Logs {
                         self.sim.state(),
                         &mut self.buf,
                     );
+                    if let Some(fw) = &mut self.firmware {
+                        let updated = !self.sim.truth.updates.is_empty();
+                        fw.frames(from, from + crate::sim::STEP_MS * 1000, buses, updated, &mut self.buf);
+                        self.buf.sort_by_key(|f| f.t_us);
+                    }
                     if self.buf.is_empty() {
                         self.bridge.tick(from);
                     } else {

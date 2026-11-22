@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/logfmt", "crates/trust", "crates/vault", "crates/gate", "crates/moving", "crates/model", "crates/dbc", "crates/ingest", "crates/timeline", "crates/db", "crates/places", "crates/accounts", "crates/import", "crates/mqtt", "crates/engine", "crates/web", "crates/sentry-mate", "crates/synth", "crates/tesla"]
+members = ["crates/logfmt", "crates/trust", "crates/vault", "crates/gate", "crates/moving", "crates/model", "crates/dbc", "crates/ingest", "crates/timeline", "crates/db", "crates/places", "crates/accounts", "crates/import", "crates/mqtt", "crates/engine", "crates/web", "crates/sentry-mate", "crates/synth", "crates/tesla", "crates/teslafi"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,11 +17,20 @@ expect_used = "warn"
 panic = "warn"
 
 # Tests and debug builds: the dependencies (crypto, argon2, xz, hashing, TLS) built with optimisation, so the tests
-# run in minutes instead of most of an hour; the workspace's own code stays at opt-level 0 with its checks.
+# run in minutes instead of most of an hour; the workspace's own code stays at opt-level 0 with its checks (building
+# it optimised too made the slow tests about 4x faster but added more build time than the fast set runs for).
+# Debug info: line tables only for the workspace (backtraces keep their lines), none for the dependencies: the test
+# binaries are several GB smaller and link faster.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
 
+# The release build (the Docker image): no link-time optimisation and the default 16 codegen units. With full LTO and
+# one codegen unit the workspace's own crates alone took 9 minutes per arch in the image build (runs 13 and 15 of the
+# Image workflow), on the path of every push to main; the owner's limit is 5 minutes for the whole run.
 [profile.release]
-lto = true
-codegen-units = 1
+lto = false
 strip = true

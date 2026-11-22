@@ -240,6 +240,7 @@ async fn a_seeded_server_shows_its_made_up_car_on_the_web_port() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
     let dir = tempfile::tempdir().unwrap();
     let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));

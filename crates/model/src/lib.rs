@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod vehicle;
+
 pub type CarId = u32;
 pub type DriveId = u64;
 pub type ChargeId = u64;
@@ -22,9 +24,47 @@ pub enum Source {
     #[default]
     #[serde(rename = "can")]
     Live,
-    /// Brought in from a TeslaMate backup (Tesla API data: a point every few seconds, unsigned).
+    /// Brought in from a TeslaMate backup (Tesla API data: a point every few seconds, unsigned). In a query it also
+    /// names imported rows as a whole ([`Source::family`]).
     #[serde(rename = "teslamate")]
     Teslamate,
+    /// Brought in from TeslaFi's data download (Tesla API data polled about once a minute, unsigned). Kept with the
+    /// other imported rows: the same family as [`Source::Teslamate`], its own site.
+    #[serde(rename = "teslafi")]
+    Teslafi,
+}
+
+impl Source {
+    /// Every source.
+    pub const ALL: [Source; 3] = [Source::Live, Source::Teslamate, Source::Teslafi];
+
+    /// Whether the row was imported (from any site).
+    pub fn is_imported(self) -> bool {
+        self != Source::Live
+    }
+
+    /// The site an imported row came from.
+    pub fn site(self) -> Option<ImportSite> {
+        match self {
+            Source::Live => None,
+            Source::Teslamate => Some(ImportSite::Teslamate),
+            Source::Teslafi => Some(ImportSite::Teslafi),
+        }
+    }
+
+    /// The row family: [`Source::Live`], or [`Source::Teslamate`] for every imported row (a rebuild never touches
+    /// those, and where both cover the same time one side is shown).
+    pub fn family(self) -> Source {
+        if self.is_imported() { Source::Teslamate } else { Source::Live }
+    }
+
+    /// The source of rows imported from `site`.
+    pub fn of_site(site: ImportSite) -> Source {
+        match site {
+            ImportSite::Teslamate => Source::Teslamate,
+            ImportSite::Teslafi => Source::Teslafi,
+        }
+    }
 }
 
 /// A live input: where the engine's own history comes from.
@@ -35,15 +75,19 @@ pub enum Input {
     Smo,
     /// The Tesla Owner API, polled by this server.
     TeslaApi,
+    /// TeslaFi's API (for owners who pay for TeslaFi): TeslaFi's own polls of the car, read by this server.
+    TeslafiApi,
 }
 
 impl Input {
-    pub const ALL: [Input; 2] = [Input::Smo, Input::TeslaApi];
+    /// In the order they win where two cover the same time: SMO, then the Tesla API, then TeslaFi.
+    pub const ALL: [Input; 3] = [Input::Smo, Input::TeslaApi, Input::TeslafiApi];
 
     fn bit(self) -> u8 {
         match self {
             Input::Smo => 1,
             Input::TeslaApi => 2,
+            Input::TeslafiApi => 4,
         }
     }
 }
@@ -58,6 +102,7 @@ impl Inputs {
     pub const SMO: Inputs = Inputs(1);
     pub const TESLA_API: Inputs = Inputs(2);
     pub const BOTH: Inputs = Inputs(3);
+    pub const TESLAFI_API: Inputs = Inputs(4);
 
     pub fn is_empty(&self) -> bool {
         self.0 == 0
@@ -73,6 +118,16 @@ impl Inputs {
 
     pub fn union(self, o: Inputs) -> Inputs {
         Inputs(self.0 | o.0)
+    }
+
+    /// Whether every input in it is one of `o`'s.
+    pub fn is_subset(self, o: Inputs) -> bool {
+        self.0 & !o.0 == 0
+    }
+
+    /// The inputs that are not SMO (the APIs).
+    pub fn without_smo(self) -> Inputs {
+        Inputs(self.0 & !1)
     }
 
     /// In a fixed order: SMO first.
@@ -114,13 +169,17 @@ impl<'de> Deserialize<'de> for Inputs {
 #[serde(rename_all = "snake_case")]
 pub enum ImportSite {
     Teslamate,
+    Teslafi,
 }
 
 impl ImportSite {
+    pub const ALL: [ImportSite; 2] = [ImportSite::Teslamate, ImportSite::Teslafi];
+
     /// The word the API writes (`site`).
     pub fn word(self) -> &'static str {
         match self {
             ImportSite::Teslamate => "teslamate",
+            ImportSite::Teslafi => "teslafi",
         }
     }
 
@@ -128,31 +187,36 @@ impl ImportSite {
     pub fn name(self) -> &'static str {
         match self {
             ImportSite::Teslamate => "TeslaMate",
+            ImportSite::Teslafi => "TeslaFi",
         }
     }
 
     pub fn from_word(w: &str) -> Option<ImportSite> {
         match w {
             "teslamate" => Some(ImportSite::Teslamate),
+            "teslafi" => Some(ImportSite::Teslafi),
             _ => None,
         }
     }
 }
 
-/// Where a row or a value came from, as the API names it: SMO, the Tesla API, or an import from a site.
+/// Where a row or a value came from, as the API names it: SMO, the Tesla API, TeslaFi's API, or an import from a
+/// site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Origin {
     Smo,
     TeslaApi,
+    TeslafiApi,
     Import(ImportSite),
 }
 
 impl Origin {
-    /// `smo`, `tesla_api` or `import`.
+    /// `smo`, `tesla_api`, `teslafi_api` or `import`.
     pub fn kind(self) -> &'static str {
         match self {
             Origin::Smo => "smo",
             Origin::TeslaApi => "tesla_api",
+            Origin::TeslafiApi => "teslafi_api",
             Origin::Import(_) => "import",
         }
     }
@@ -165,7 +229,7 @@ impl Origin {
         }
     }
 
-    /// One word for filters and CSV: `smo`, `tesla_api`, `import:teslamate`.
+    /// One word for filters and CSV: `smo`, `tesla_api`, `import:teslamate`, `import:teslafi`.
     pub fn word(self) -> String {
         match self {
             Origin::Import(s) => format!("import:{}", s.word()),
@@ -178,6 +242,7 @@ impl Origin {
         match self {
             Origin::Smo => "Data from SMO".into(),
             Origin::TeslaApi => "Data from the Tesla API".into(),
+            Origin::TeslafiApi => "Data from TeslaFi".into(),
             Origin::Import(s) => format!("Imported from {}", s.name()),
         }
     }
@@ -186,6 +251,7 @@ impl Origin {
         match self {
             Origin::Smo => "SMO".into(),
             Origin::TeslaApi => "the Tesla API".into(),
+            Origin::TeslafiApi => "TeslaFi".into(),
             Origin::Import(s) => s.name().into(),
         }
     }
@@ -194,6 +260,7 @@ impl Origin {
     pub fn of_row(source: Source, inputs: Inputs) -> Vec<Origin> {
         match source {
             Source::Teslamate => vec![Origin::Import(ImportSite::Teslamate)],
+            Source::Teslafi => vec![Origin::Import(ImportSite::Teslafi)],
             Source::Live if inputs.is_empty() => vec![Origin::Smo],
             Source::Live => inputs.iter().map(Origin::from).collect(),
         }
@@ -222,6 +289,7 @@ impl From<Input> for Origin {
         match i {
             Input::Smo => Origin::Smo,
             Input::TeslaApi => Origin::TeslaApi,
+            Input::TeslafiApi => Origin::TeslafiApi,
         }
     }
 }
@@ -234,19 +302,37 @@ pub enum Stream {
     Smo,
     /// From the Tesla API (dir `tesla-api`).
     TeslaApi,
+    /// From TeslaFi's API, read live (dir `teslafi-api`; not the TeslaFi import's `teslafi`).
+    TeslafiApi,
     /// From a TeslaMate import (dir `teslamate`).
     Teslamate,
+    /// From a TeslaFi import (dir `teslafi`).
+    Teslafi,
 }
 
 impl Stream {
-    pub const ALL: [Stream; 3] = [Stream::Smo, Stream::TeslaApi, Stream::Teslamate];
+    pub const ALL: [Stream; 5] =
+        [Stream::Smo, Stream::TeslaApi, Stream::TeslafiApi, Stream::Teslamate, Stream::Teslafi];
+
+    /// The live streams, in the order they win: SMO, the Tesla API, TeslaFi's API.
+    pub const LIVE: [Stream; 3] = [Stream::Smo, Stream::TeslaApi, Stream::TeslafiApi];
+
+    /// The streams imports are kept in.
+    pub const IMPORTED: [Stream; 2] = [Stream::Teslamate, Stream::Teslafi];
+
+    /// Whether it holds imported points.
+    pub fn is_imported(self) -> bool {
+        matches!(self, Stream::Teslamate | Stream::Teslafi)
+    }
 
     /// The series directory's suffix.
     pub fn dir_name(self) -> &'static str {
         match self {
             Stream::Smo => "can",
             Stream::TeslaApi => "tesla-api",
+            Stream::TeslafiApi => "teslafi-api",
             Stream::Teslamate => "teslamate",
+            Stream::Teslafi => "teslafi",
         }
     }
 
@@ -254,7 +340,17 @@ impl Stream {
         match self {
             Stream::Smo => Origin::Smo,
             Stream::TeslaApi => Origin::TeslaApi,
+            Stream::TeslafiApi => Origin::TeslafiApi,
             Stream::Teslamate => Origin::Import(ImportSite::Teslamate),
+            Stream::Teslafi => Origin::Import(ImportSite::Teslafi),
+        }
+    }
+
+    /// The stream of an import site's points.
+    pub fn of_site(site: ImportSite) -> Stream {
+        match site {
+            ImportSite::Teslamate => Stream::Teslamate,
+            ImportSite::Teslafi => Stream::Teslafi,
         }
     }
 }
@@ -265,6 +361,7 @@ impl From<Source> for Stream {
         match s {
             Source::Live => Stream::Smo,
             Source::Teslamate => Stream::Teslamate,
+            Source::Teslafi => Stream::Teslafi,
         }
     }
 }
@@ -274,6 +371,7 @@ impl From<Input> for Stream {
         match i {
             Input::Smo => Stream::Smo,
             Input::TeslaApi => Stream::TeslaApi,
+            Input::TeslafiApi => Stream::TeslafiApi,
         }
     }
 }
@@ -303,7 +401,7 @@ impl CarProfile {
 pub struct VinInfo {
     /// The VIN without its last six characters (the serial), e.g. `7SAYGDEE1NF`.
     pub vin_prefix: String,
-    /// `3`, `Y`, `S` or `X`.
+    /// `3`, `Y`, `S`, `X`, `C` (Cybertruck), `T` (Semi) or `A` (Cybercab): [`vehicle::model_name`] names it.
     pub model: Option<char>,
     pub year: Option<u16>,
     /// The plant letter (11th character).
@@ -337,10 +435,25 @@ pub struct Car {
 }
 
 impl VinInfo {
-    /// The DBC set this VIN calls for: a Model S or X from before the 2021 refresh (it sends its VIN in 0x508, or its
-    /// VIN says so) gets the legacy set, every other car the Model 3/Y set.
+    /// What a VIN says, keeping only its first 11 characters; `via` is the CAN message it came in (0 when it came
+    /// from elsewhere). `None` when the text is no VIN.
+    pub fn from_vin(vin: &str, via: u32) -> Option<VinInfo> {
+        vehicle::vin_info(vin, via)
+    }
+
+    /// The model's name: `Model Y`, `Cybertruck`.
+    pub fn model_name(&self) -> Option<&'static str> {
+        self.model.and_then(vehicle::model_name)
+    }
+
+    /// The DBC set this VIN calls for: a Model S or X from before the 2021 refresh gets the legacy set, every other
+    /// car the Model 3/Y set. A car that sends its VIN in 0x508 is a legacy one; otherwise VIN position 8 tells
+    /// (model year 2021 had both kinds), and only a VIN without a known position 8 falls back to its year.
     pub fn profile(&self) -> CarProfile {
-        let legacy_sx = matches!(self.model, Some('S') | Some('X')) && self.year.is_some_and(|y| y < 2021);
+        let legacy_sx = match vehicle::platform_of(&self.vin_prefix) {
+            Some(p) => p == "legacy",
+            None => matches!(self.model, Some('S') | Some('X')) && self.year.is_some_and(|y| y < 2021),
+        };
         if self.via == 0x508 || legacy_sx { CarProfile::TeslaSxLegacy } else { CarProfile::Tesla3Y }
     }
 }
@@ -673,6 +786,19 @@ mod tests {
     }
 
     #[test]
+    fn the_dbc_set_from_vin_position_8() {
+        // model year 2021 had both: position 8 tells, not the year (made-up VINs: the year code is always P)
+        let legacy = VinInfo::from_vin("5YJSA1E2XPF000001", 0).unwrap();
+        assert_eq!(legacy.profile(), CarProfile::TeslaSxLegacy);
+        let refresh = VinInfo::from_vin("5YJSA1E57PF000002", 0).unwrap();
+        assert_eq!(refresh.profile(), CarProfile::Tesla3Y);
+        let plaid_2020_year_code = VinInfo { year: Some(2020), ..VinInfo::from_vin("5YJXCAE60PF000003", 0).unwrap() };
+        assert_eq!(plaid_2020_year_code.profile(), CarProfile::Tesla3Y, "position 8 = 6 is a refresh car");
+        let truck = VinInfo::from_vin("7G2CEHEE8PF000004", 0x405).unwrap();
+        assert_eq!((truck.model_name(), truck.profile()), (Some("Cybertruck"), CarProfile::Tesla3Y));
+    }
+
+    #[test]
     fn inputs_read_and_write_as_words() {
         let both: Inputs = [Input::TeslaApi, Input::Smo].into_iter().collect();
         assert_eq!(both, Inputs::BOTH);
@@ -680,6 +806,34 @@ mod tests {
         assert_eq!(serde_json::from_str::<Inputs>(r#"["tesla_api"]"#).unwrap(), Inputs::TESLA_API);
         assert!(Inputs::NONE.is_empty());
         assert!(serde_json::from_str::<Inputs>(r#"["fleet_api"]"#).is_err(), "an unknown input is refused");
+        let all: Inputs = Input::ALL.into_iter().collect();
+        assert_eq!(serde_json::to_string(&all).unwrap(), r#"["smo","tesla_api","teslafi_api"]"#);
+        assert_eq!(serde_json::from_str::<Inputs>(r#"["teslafi_api"]"#).unwrap(), Inputs::TESLAFI_API);
+        assert_eq!(all.without_smo(), Inputs::TESLA_API.union(Inputs::TESLAFI_API));
+        assert!(Inputs::TESLAFI_API.is_subset(all) && !all.is_subset(Inputs::BOTH));
+    }
+
+    #[test]
+    fn teslafi_api_is_a_live_input_of_its_own() {
+        assert_eq!(Origin::TeslafiApi.kind(), "teslafi_api");
+        assert_eq!(Origin::TeslafiApi.word(), "teslafi_api");
+        assert_eq!(Origin::TeslafiApi.label(), "Data from TeslaFi");
+        assert_eq!(Origin::TeslafiApi.site(), None);
+        assert_eq!(Stream::from(Input::TeslafiApi).dir_name(), "teslafi-api");
+        assert_ne!(Stream::TeslafiApi.dir_name(), Stream::Teslafi.dir_name(), "never mixed with the import");
+        assert!(!Stream::TeslafiApi.is_imported());
+        assert_eq!(
+            Origin::of_row(Source::Live, Inputs::SMO.union(Inputs::TESLAFI_API)),
+            vec![Origin::Smo, Origin::TeslafiApi]
+        );
+        assert_eq!(
+            Origin::label_of(&[Origin::Smo, Origin::TeslaApi, Origin::TeslafiApi]),
+            "Data from SMO, the Tesla API and TeslaFi"
+        );
+        assert_eq!(
+            Origin::label_of(&[Origin::TeslafiApi, Origin::Import(ImportSite::Teslafi)]),
+            "Data from TeslaFi; imported from TeslaFi"
+        );
     }
 
     #[test]
@@ -713,5 +867,32 @@ mod tests {
         );
         assert_eq!(Origin::label_of(&[]), "No data yet");
         assert_eq!(Origin::Import(ImportSite::Teslamate).word(), "import:teslamate");
+        assert_eq!(Origin::Import(ImportSite::Teslafi).word(), "import:teslafi");
+        assert_eq!(Origin::Import(ImportSite::Teslafi).label(), "Imported from TeslaFi");
+        assert_eq!(
+            Origin::label_of(&[
+                Origin::Smo,
+                Origin::Import(ImportSite::Teslamate),
+                Origin::Import(ImportSite::Teslafi)
+            ]),
+            "Data from SMO; imported from TeslaMate and TeslaFi"
+        );
+    }
+
+    #[test]
+    fn teslafi_rows_are_imported_rows_of_their_own_site() {
+        assert_eq!(serde_json::to_string(&Source::Teslafi).unwrap(), r#""teslafi""#);
+        assert_eq!(serde_json::from_str::<Source>(r#""teslafi""#).unwrap(), Source::Teslafi);
+        assert_eq!(Source::Teslafi.family(), Source::Teslamate);
+        assert_eq!(Source::Teslamate.family(), Source::Teslamate);
+        assert_eq!(Source::Live.family(), Source::Live);
+        assert!(Source::Teslafi.is_imported() && !Source::Live.is_imported());
+        assert_eq!(Origin::of_row(Source::Teslafi, Inputs::NONE), vec![Origin::Import(ImportSite::Teslafi)]);
+        assert_eq!(Stream::from(Source::Teslafi).dir_name(), "teslafi");
+        assert_eq!(ImportSite::from_word("teslafi"), Some(ImportSite::Teslafi));
+        for site in ImportSite::ALL {
+            assert_eq!(Source::of_site(site).site(), Some(site));
+            assert_eq!(Stream::of_site(site).origin(), Origin::Import(site));
+        }
     }
 }

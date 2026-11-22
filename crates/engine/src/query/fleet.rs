@@ -9,7 +9,8 @@ use super::now::{STALE_MS, state_word};
 use super::{CarRef, List, Paging, PlaceBrief, QResult, QueryError, Scoped, car_of, paginate, place_ref, r, scoped};
 use crate::{Engine, now_ms, records};
 use db::FleetEntry;
-use model::CarId;
+use model::vehicle::{FactSource, OwnerKind, OwnerValue, VehicleInfo, VehicleInputs};
+use model::{CarId, VinInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -61,8 +62,14 @@ fn car_origins(x: &FleetEntry) -> Vec<model::Origin> {
     if inputs.contains(model::Input::TeslaApi) {
         out.push(model::Origin::TeslaApi);
     }
-    if t.teslamate.drives + t.teslamate.charges > 0 {
-        out.push(model::Origin::Import(model::ImportSite::Teslamate));
+    if inputs.contains(model::Input::TeslafiApi) {
+        out.push(model::Origin::TeslafiApi);
+    }
+    for site in model::ImportSite::ALL {
+        let s = t.of_site(site);
+        if s.drives + s.charges > 0 {
+            out.push(model::Origin::Import(site));
+        }
     }
     out
 }
@@ -149,7 +156,7 @@ pub(crate) fn item(e: &Engine, x: &FleetEntry, now: u64) -> CarItem {
     CarItem {
         id: CarRef(c.id),
         name: c.name.clone(),
-        model: c.vin.as_ref().and_then(|v| v.model).map(|m| format!("Model {m}")),
+        model: c.vin.as_ref().and_then(VinInfo::model_name).map(String::from),
         year: c.vin.as_ref().and_then(|v| v.year),
         vin_prefix: c.vin.as_ref().map(|v| v.vin_prefix.clone()),
         trim: None,
@@ -173,6 +180,17 @@ pub(crate) fn item(e: &Engine, x: &FleetEntry, now: u64) -> CarItem {
             charge_power_kw: r(s.and_then(|s| s.charge_power_kw), 1),
         },
         attention: Vec::new(),
+    }
+}
+
+/// What an admin typed for the car's model and model year, over the VIN's in a list item (the same values
+/// `vehicle` settles on: a typed value beats every other source).
+fn typed_over(i: &mut CarItem, o: &Owner) {
+    if let Some(m) = o.config.get("model").and_then(|v| v.as_str()) {
+        i.model = Some(m.to_string());
+    }
+    if let Some(y) = o.config.get("model_year").and_then(serde_json::Value::as_f64).filter(|y| y.fract() == 0.0) {
+        i.year = Some(y as u16);
     }
 }
 
@@ -212,9 +230,14 @@ pub fn cars(e: &Engine, visible: &[CarId], q: &CarsQuery, paging: &Paging) -> QR
         return Err(QueryError::bad("state", "driving, charging, parked, asleep or unknown"));
     }
     let all = entries(e, visible)?;
-    let items: Vec<CarItem> = all
-        .iter()
-        .map(|x| item(e, x, now))
+    let mut items: Vec<CarItem> = Vec::with_capacity(all.len());
+    for x in &all {
+        let mut i = item(e, x, now);
+        typed_over(&mut i, &owner(e, x.car.id)?);
+        items.push(i);
+    }
+    let items: Vec<CarItem> = items
+        .into_iter()
         .filter(|i| {
             needle.as_ref().is_none_or(|n| {
                 i.name.to_lowercase().contains(n)
@@ -355,7 +378,7 @@ pub fn attention(e: &Engine, visible: &[CarId], paging: &Paging) -> QResult<List
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Configured {
     pub value: serde_json::Value,
-    /// `can`, `vin`, `owner`, `teslamate`.
+    /// `can`, `vin`, `owner`, `teslamate`, `teslafi`.
     pub source: Option<&'static str>,
     /// The input it was read from (a VIN comes from SMO's frames); empty when an admin typed it or it is unknown.
     pub sources: Vec<super::SourceRef>,
@@ -366,7 +389,9 @@ impl Configured {
         let origin = match source {
             Some("can" | "vin") => Some(model::Origin::Smo),
             Some("tesla_api") => Some(model::Origin::TeslaApi),
-            Some("teslamate") => Some(model::Origin::Import(model::ImportSite::Teslamate)),
+            Some(w) if model::ImportSite::from_word(w).is_some() => {
+                model::ImportSite::from_word(w).map(model::Origin::Import)
+            }
             _ => None,
         };
         Configured { value, source, sources: origin.into_iter().map(super::SourceRef::from).collect() }
@@ -395,8 +420,11 @@ const CONFIG_BOOLS: &[&str] = &["performance_package", "right_hand_drive"];
 pub struct CarDetail {
     #[serde(flatten)]
     pub item: CarItem,
-    /// Every key of [`CONFIG_KEYS`], plus `model`, `year` and `plant` from the VIN.
+    /// Every key of [`CONFIG_KEYS`], plus `model`, `year` and `plant` (the VIN's plant letter): each the value
+    /// [`CarDetail::vehicle`] settled on, in the words `config` has always used.
     pub config: BTreeMap<&'static str, Configured>,
+    /// Everything known of the car's build, each fact with its source and confidence.
+    pub vehicle: VehicleInfo,
     /// Goes up with every change an admin makes (for `PATCH` with `version`).
     pub version: u64,
     pub created_ms: u64,
@@ -442,9 +470,39 @@ fn put_owner(e: &Engine, car: CarId, o: &Owner) -> QResult<()> {
 fn fill_page(e: &Engine, x: &FleetEntry, i: &mut CarItem, now: u64) -> QResult<()> {
     let meta = records::meta(e.db(), i.id.0)?;
     i.now.since_ms = meta.state_since_ms;
-    i.now.received_ms = meta.last_arrived_ms.max(meta.api_received_ms);
+    i.now.received_ms = meta.last_arrived_ms.max(meta.api_received_ms).max(meta.teslafi_received_ms);
     i.attention = attention_of(e, x, &meta, now)?.into_iter().map(|a| a.code).collect();
     Ok(())
+}
+
+/// The car's build from everything that says something of it (no lookup: built-in tables only).
+fn vehicle_of(e: &Engine, c: &model::Car, o: &Owner) -> QResult<VehicleInfo> {
+    let mut owner: BTreeMap<String, OwnerValue> = BTreeMap::new();
+    for (k, v) in &o.config {
+        let value = match v {
+            serde_json::Value::String(s) => OwnerValue::Text(s.clone()),
+            serde_json::Value::Bool(b) => OwnerValue::Bool(*b),
+            serde_json::Value::Number(n) => match n.as_f64() {
+                Some(n) => OwnerValue::Number(n),
+                None => continue,
+            },
+            _ => continue,
+        };
+        owner.insert(k.clone(), value);
+    }
+    // the battery setting is the owner's word on the chemistry, unless the config names one
+    if matches!(o.settings.chemistry.as_str(), "lfp" | "nca_nmc") {
+        owner.entry("chemistry".into()).or_insert_with(|| OwnerValue::Text(o.settings.chemistry.clone()));
+    }
+    let api = records::api_meta(e.db(), c.id)?.meta;
+    let inputs = VehicleInputs {
+        vin: c.vin.as_ref().map(|v| v.vin_prefix.clone()),
+        can: super::vehicle::can_build(e, c)?,
+        tesla_api: super::vehicle::from_api(&api),
+        import: super::vehicle::imported(e, c.id)?.map(|b| (FactSource::Teslamate, b)),
+        owner,
+    };
+    Ok(model::vehicle::vehicle_info(&inputs))
 }
 
 /// `/cars/{car}`.
@@ -452,46 +510,56 @@ pub fn car(e: &Engine, car: CarId) -> QResult<CarDetail> {
     let x = e.db().entry(car)?.ok_or(QueryError::NoSuchCar)?;
     let o = owner(e, car)?;
     let c = &x.car;
+    let vehicle = vehicle_of(e, c, &o)?;
     let mut config: BTreeMap<&'static str, Configured> = BTreeMap::new();
-    let vin = |v: Option<serde_json::Value>| match v {
-        Some(value) => Configured::new(value, Some("vin")),
-        None => Configured::new(serde_json::Value::Null, None),
-    };
-    let v = c.vin.as_ref();
-    config.insert("model", vin(v.and_then(|v| v.model).map(|m| format!("Model {m}").into())));
-    config.insert("year", vin(v.and_then(|v| v.year).map(Into::into)));
-    config.insert("plant", vin(v.and_then(|v| v.plant).map(|p| p.to_string().into())));
-    // what the Tesla API says of the car's build, where an admin typed nothing
-    let api = records::api_meta(e.db(), car)?.meta;
-    let api_value = |k: &str| -> Option<serde_json::Value> {
-        let text = |v: &Option<String>| v.clone().map(serde_json::Value::from);
-        match k {
-            "trim" => text(&api.trim_badging),
-            "wheel" => text(&api.wheel_type),
-            "paint" => text(&api.exterior_color),
-            "roof" => text(&api.roof_color),
-            "spoiler" => text(&api.spoiler_type),
-            "right_hand_drive" => api.right_hand_drive.map(serde_json::Value::from),
-            _ => None,
+    fn put<T: Clone + Into<serde_json::Value>>(f: &model::vehicle::Fact<T>) -> Configured {
+        match (&f.value, f.source) {
+            (Some(v), Some(s)) => Configured::new(v.clone().into(), Some(s.word())),
+            _ => Configured::new(serde_json::Value::Null, None),
         }
+    }
+    let v = &vehicle;
+    config.insert("model", put(&v.model));
+    config.insert("year", put(&v.model_year));
+    let plant = c.vin.as_ref().and_then(|v| v.plant).map(|p| p.to_string());
+    config.insert(
+        "plant",
+        match (plant, v.plant.source) {
+            (_, Some(FactSource::Owner)) => put(&v.plant),
+            (Some(p), _) => Configured::new(p.into(), Some("vin")),
+            (None, _) => Configured::new(serde_json::Value::Null, None),
+        },
+    );
+    let steering = model::vehicle::Fact {
+        value: v.steering.value.as_deref().map(|s| s == "right"),
+        source: v.steering.source,
+        confidence: v.steering.confidence,
+        note: None,
     };
     for &k in CONFIG_KEYS {
-        let typed = o.config.get(k).filter(|v| !v.is_null());
-        config.insert(
-            k,
-            match (typed, api_value(k)) {
-                (Some(value), _) => Configured::new(value.clone(), Some("owner")),
-                (None, Some(value)) => Configured::new(value, Some("tesla_api")),
-                (None, None) => Configured::new(serde_json::Value::Null, None),
-            },
-        );
+        let shown = match k {
+            "trim" => put(&v.trim),
+            "drivetrain" => put(&v.drive),
+            "performance_package" => put(&v.performance),
+            "pack_kwh_code" => put(&v.pack_code),
+            "wheel" => put(&v.wheel),
+            "paint" => put(&v.paint),
+            "roof" => put(&v.roof),
+            "spoiler" => put(&v.spoiler),
+            "right_hand_drive" => put(&steering),
+            "map_region" => put(&v.region),
+            "supercharging_access" => put(&v.supercharging_access),
+            _ => Configured::new(serde_json::Value::Null, None),
+        };
+        config.insert(k, shown);
     }
     let mut it = item(e, &x, now_ms());
+    typed_over(&mut it, &o);
     if let Some(t) = config.get("trim").and_then(|t| t.value.as_str()) {
         it.trim = Some(t.to_string());
     }
     fill_page(e, &x, &mut it, now_ms())?;
-    Ok(CarDetail { item: it, config, version: o.car_changes + 1, created_ms: c.created_ms })
+    Ok(CarDetail { item: it, config, vehicle, version: o.car_changes + 1, created_ms: c.created_ms })
 }
 
 /// A change made, or refused because it was sent with an old `version` (`409 stale_version` with the current one).
@@ -550,6 +618,51 @@ impl Errs {
     }
 }
 
+/// One of [`model::vehicle::OWNER_EXTRA_KEYS`] as typed: null (to forget it), or a value of its kind.
+fn owner_extra(path: &str, kind: OwnerKind, v: &serde_json::Value, errs: &mut Errs) -> Option<serde_json::Value> {
+    use serde_json::Value as J;
+    match (kind, v) {
+        (_, J::Null) => Some(J::Null),
+        (OwnerKind::Bool, J::Bool(_)) => Some(v.clone()),
+        (OwnerKind::Bool, _) => {
+            errs.bad(path, "Must be true, false or null.");
+            None
+        }
+        (OwnerKind::Text, J::String(s)) => {
+            let t = s.trim();
+            if t.is_empty() || t.chars().count() > 100 || t.chars().any(char::is_control) {
+                errs.rule(path, "1 to 100 characters, or null to forget it.");
+                return None;
+            }
+            Some(t.into())
+        }
+        (OwnerKind::Word(words), J::String(s)) if words.contains(&s.as_str()) => Some(v.clone()),
+        (OwnerKind::Word(words), _) => {
+            errs.bad(path, &format!("One of {}, or null.", words.join(", ")));
+            None
+        }
+        (OwnerKind::Whole(lo, hi) | OwnerKind::Number(lo, hi), J::Number(n)) => {
+            let whole = matches!(kind, OwnerKind::Whole(..));
+            match n.as_f64() {
+                Some(x) if (lo..=hi).contains(&x) && (!whole || x.fract() == 0.0) => Some(v.clone()),
+                _ => {
+                    let what = if whole { "A whole number" } else { "A number" };
+                    errs.rule(path, &format!("{what} from {lo} to {hi}, or null."));
+                    None
+                }
+            }
+        }
+        (OwnerKind::Whole(..) | OwnerKind::Number(..), _) => {
+            errs.bad(path, "Must be a number or null.");
+            None
+        }
+        (OwnerKind::Text, _) => {
+            errs.bad(path, "Must be text or null.");
+            None
+        }
+    }
+}
+
 /// `PATCH /cars/{car}`: `{ version, name?, time_zone?, config? }` (each config key a value, or null to forget the
 /// one typed in). One change at a time; a stale `version` changes nothing.
 pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDetail>> {
@@ -590,6 +703,12 @@ pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDeta
         Some(serde_json::Value::Object(m)) => {
             for (k, v) in m {
                 let path = format!("config.{k}");
+                if let Some((_, kind)) = model::vehicle::OWNER_EXTRA_KEYS.iter().find(|(n, _)| *n == k.as_str()) {
+                    if let Some(v) = owner_extra(&path, *kind, v, &mut errs) {
+                        config.push((k.clone(), v));
+                    }
+                    continue;
+                }
                 if !CONFIG_KEYS.contains(&k.as_str()) {
                     errs.bad(&path, "Unknown setting.");
                     continue;

@@ -54,6 +54,7 @@ class Contract(ServerCase):
             "update": c.get("/api/v1/cars/c1/updates")["items"][0]["id"],
             "place": "p1", "session": "s-older-1", "account": "a2", "token": "t12", "key": "cbk_5b2e9f13",
             "trip": "tr1", "rule": "r1", "import": "im1", "tesla_account": "ta1", "sign_in": "si0",
+            "teslafi_account": "fa1",
             "export": c.json("POST", "/api/v1/system/exports", {"password": "sentry-mate-dev"}, expect=201)["id"],
         }
         cls.server.app.store.exports[cls.ids["export"]]["made_ms"] -= 10_000  # prepared
@@ -281,6 +282,20 @@ class Contract(ServerCase):
             ("DELETE", "/api/v1/integrations/tesla/accounts/{tesla_account}",
              lambda: (self.fill("/api/v1/integrations/tesla/accounts/{tesla_account}",
                                 tesla_account=ctx["tesla_account"]), {"confirm_password": "sentry-mate-dev"}, None)),
+            ("POST", "/api/v1/integrations/teslafi/accounts",
+             lambda: (None, {"label": "Contract TeslaFi", "token": "0000madeup0000", "time_zone": "Europe/Oslo",
+                             "confirm_password": "sentry-mate-dev"}, None)),
+            ("PATCH", "/api/v1/integrations/teslafi/accounts/{teslafi_account}",
+             lambda: (None, {"version": c.get("/api/v1/integrations/teslafi/accounts/fa1")["version"],
+                             "label": "TeslaFi (paid)", "confirm_password": "sentry-mate-dev"}, None)),
+            ("PUT", "/api/v1/integrations/teslafi/accounts/{teslafi_account}/cars",
+             lambda: (None, {"version": c.get("/api/v1/integrations/teslafi/accounts/fa1")["version"],
+                             "items": [{"vehicle": "fv1", "match": "c3"}],
+                             "confirm_password": "sentry-mate-dev"}, None)),
+            ("DELETE", "/api/v1/integrations/teslafi/accounts/{teslafi_account}",
+             lambda: (self.fill("/api/v1/integrations/teslafi/accounts/{teslafi_account}",
+                                teslafi_account=ctx["teslafi_account"]), {"confirm_password": "sentry-mate-dev"},
+                      None)),
             ("POST", "/api/v1/system/recovery-key/new", lambda: (None, {"password": "sentry-mate-dev"}, None)),
             ("POST", "/api/v1/system/recovery-key/show", lambda: (None, {"password": "sentry-mate-dev"}, None)),
             ("POST", "/api/v1/system/recovery-key/saved", lambda: (None, None, None)),
@@ -351,7 +366,8 @@ class Contract(ServerCase):
                        "/api/v1/cars/{car}/purpose-rules": "rule", "/api/v1/trips": "trip",
                        "/api/v1/places": "place", "/api/v1/imports": "import",
                        "/api/v1/system/exports": "export",
-                       "/api/v1/integrations/tesla/accounts": "tesla_account"}.get(pattern)
+                       "/api/v1/integrations/tesla/accounts": "tesla_account",
+                       "/api/v1/integrations/teslafi/accounts": "teslafi_account"}.get(pattern)
                 if key:
                     new(key, data["id"])
             row = doc[(m, pattern)]

@@ -76,7 +76,7 @@ class Sources(ServerCase):
         self.assertEqual([i["kind"] for i in n["inputs"]], ["smo", "tesla_api"])
         self.assertTrue(all(isinstance(i["last_ms"], int) for i in n["inputs"]))
         cars = {x["id"]: x for x in self.c.get("/api/v1/cars")["items"]}
-        self.assertEqual(cars["c3"]["source_label"], "Data from SMO; imported from TeslaMate")
+        self.assertEqual(cars["c3"]["source_label"], "Data from SMO; imported from TeslaMate and TeslaFi")
         self.assertEqual(cars["c2"]["source_label"], "Data from SMO and the Tesla API")
 
     def test_series_names_its_sources(self):

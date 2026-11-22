@@ -147,10 +147,13 @@ pub fn web_state(
     // the Tesla API input: builds nothing that talks to the network (the start starts its pollers, none without an
     // account)
     let events = web::Events::new();
-    let tesla = Arc::new(web::resources::tesla::service(data, v.clone(), engine, audit, events.clone()));
+    let tesla = Arc::new(web::resources::tesla::service(data, v.clone(), engine, audit.clone(), events.clone()));
+    // the TeslaFi input: the same, nothing connects before an admin adds a TeslaFi token
+    let teslafi = Arc::new(web::resources::teslafi::service(data, v.clone(), engine, audit, events.clone()));
     let app = web::AppState::builder(acc, v, data.join("web"))
         .events(events)
         .service(tesla)
+        .service(teslafi)
         .setup_code_file(keys.join(SETUP_FILE))
         .cars(Arc::new(EngineCars(engine.db().clone())))
         .service(Arc::new(engine.clone()))

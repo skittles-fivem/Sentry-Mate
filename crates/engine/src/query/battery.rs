@@ -644,7 +644,7 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
     let (mut charge_usable_v, mut imported, mut ac, mut dc, mut charges_n) = (Vec::new(), false, 0.0, 0.0, 0u64);
     each_row::<Charge>(e, car, 0, u64::MAX, None, &shown, true, |ch| {
         charges_n += 1;
-        imported |= ch.source == Source::Teslamate;
+        imported |= ch.source.is_imported();
         if Some(ch.id) != live
             && charge_usable_v.len() < 5
             && let Some(u) = charge_usable(&ch)
@@ -661,7 +661,7 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
     let (mut drive_kwh, mut drives_n) = (0.0, 0u64);
     each_row::<Drive>(e, car, 0, u64::MAX, None, &shown, true, |d| {
         drives_n += 1;
-        imported |= d.source == Source::Teslamate;
+        imported |= d.source.is_imported();
         drive_kwh += d.energy_used_kwh.unwrap_or(0.0);
         Ok(true)
     })?;
@@ -1684,7 +1684,7 @@ pub fn efficiency(
         kwh += de;
         km_e += dk_e;
         without += u64::from(d.energy_used_kwh.is_none());
-        estimated += u64::from(d.source == Source::Teslamate);
+        estimated += u64::from(d.source.is_imported());
         last_end = Some(d.end_ms);
         match d.outside_temp_avg_c {
             Some(t) => {

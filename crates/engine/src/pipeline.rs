@@ -3,7 +3,7 @@
 use crate::records::{self, CarMeta, DAY_MS, LogEntry, Outcome};
 use crate::{Engine, Error, Event, NewKeys, Result, Work, lock, now_ms};
 use db::{Query, StateRow};
-use model::{Car, CarId, Charge, ChargePoint, Drive, Input, Now, Sample, Source, StateSpan, Stream, VinInfo};
+use model::{Car, CarId, Charge, ChargePoint, Drive, Input, Inputs, Now, Sample, Source, StateSpan, Stream, VinInfo};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -36,8 +36,8 @@ pub(crate) fn sidecar_vin(side: &serde_json::Value) -> Option<VinInfo> {
 /// A car's name from its VIN: `Model Y XP7YGC`.
 pub(crate) fn name_from_vin(v: &VinInfo) -> String {
     let short: String = v.vin_prefix.chars().take(6).collect();
-    match v.model {
-        Some(m) => format!("Model {m} {short}"),
+    match v.model_name() {
+        Some(m) => format!("{m} {short}"),
         None => format!("Car {short}"),
     }
 }
@@ -181,7 +181,7 @@ impl Engine {
                     preferred_key: None,
                     vin: None,
                     profile_setting: None,
-                    time_zone: self.inner.opts.default_time_zone.clone(),
+                    time_zone: self.inner.default_zone(),
                     efficiency_wh_km: None,
                     created_ms: now_ms(),
                     inputs: model::Inputs::SMO,
@@ -423,13 +423,15 @@ impl Engine {
         let mut meta = records::meta(db, car)?;
         let mut spans = Vec::new();
         let mut sample_spans = Vec::new();
+        let mut names = Vec::new();
         for d in meta.days.clone() {
             let mut rec = records::day(db, car, d)?;
             let before = rec.logs.len();
-            rec.logs.retain(|_, e| {
+            rec.logs.retain(|name, e| {
                 if e.key != key {
                     return true;
                 }
+                names.push(name.clone());
                 spans.push(e.span());
                 match &e.outcome {
                     Outcome::Decoded { samples_from_ms, samples_to_ms, .. } => {
@@ -453,6 +455,7 @@ impl Engine {
             return Ok(());
         }
         records::put_meta(db, car, &meta)?;
+        self.fw_forget(car, &names)?;
         let spans = join_spans(spans);
         // noted dirty first: a crash part way rebuilds them on the next start
         let mut dirty = records::dirty(db, car)?;
@@ -515,6 +518,7 @@ impl Engine {
             _ => None,
         };
         let mut wrote_samples = false;
+        let mut firmware: Option<(timeline::LogFirmware, bool)> = None;
         let outcome = if usable {
             match read(name)? {
                 None => Outcome::Hole { from_ms: start, to_ms: start + 60_000, reason: "not_stored".into() },
@@ -559,6 +563,7 @@ impl Engine {
                             Outcome::Hole { from_ms: a, to_ms: b, reason: "other_vin".into() }
                         }
                         Ok(r) => {
+                            firmware = Some((r.firmware.clone(), r.facts.closed == timeline::Closed::Quiet));
                             let (from, to) = match (r.samples.first(), r.samples.last()) {
                                 (Some(a), Some(b)) => (Some(a.t_ms), Some(b.t_ms + 1000)),
                                 _ => (None, None),
@@ -624,6 +629,7 @@ impl Engine {
         let mut rec = records::day(db, car, d)?;
         rec.logs.insert(name.to_string(), entry);
         records::put_day(db, car, d, &rec)?;
+        self.fw_note_log(car, name, firmware.as_ref().map(|(f, q)| (f, *q)))?;
         let mut meta = records::meta(db, car)?;
         meta.days.insert(d);
         meta.first_ms = Some(meta.first_ms.map_or(span.0, |f| f.min(span.0)));
@@ -843,7 +849,13 @@ impl Engine {
             from.saturating_sub(fp.margin_ms()),
             to.saturating_add(fp.margin_ms()),
         )?;
-        let mut fused = timeline::fuse(&smo, &api, fp);
+        let fi = db.read_points::<Sample>(
+            car,
+            Stream::TeslafiApi,
+            from.saturating_sub(fp.lower_margin_ms()),
+            to.saturating_add(fp.lower_margin_ms()),
+        )?;
+        let mut fused = timeline::fuse_all(&smo, &[(&api, Inputs::TESLA_API), (&fi, Inputs::TESLAFI_API)], fp);
         fused.samples.retain(|s| s.t_ms >= from && s.t_ms < to);
         fused.marks.retain(|m| m.0 >= from && m.0 < to);
         let seen = records::api_between(db, car, meta, from, to)?;
@@ -1134,11 +1146,13 @@ impl Engine {
             .range(records::day_of(from_ms)..=records::day_of(to_ms.saturating_sub(1).max(from_ms)))
             .copied()
             .collect();
+        let mut names = Vec::new();
         for d in days {
             let mut rec = records::day(db, car, d)?;
             rec.logs.retain(|name, e| {
                 let keep = records::name_start_ms(name).is_none_or(|s| s < from_ms || s >= to_ms);
                 if !keep {
+                    names.push(name.clone());
                     match e.outcome {
                         Outcome::Decoded { .. } => meta.decoded = meta.decoded.saturating_sub(1),
                         Outcome::Hole { .. } => meta.holes = meta.holes.saturating_sub(1),
@@ -1153,6 +1167,10 @@ impl Engine {
             }
         }
         records::put_meta(db, car, &meta)?;
+        // the fingerprints of those logs go too, and the updates found from them are found again (the rows in the
+        // window went with the window)
+        self.fw_forget(car, &names)?;
+        self.fw_sync_rows(car, &crate::firmware::history(db, car)?)?;
         self.emit(Event::Rows { car, kinds: vec!["drives", "charges", "states", "visits"], from_ms, to_ms });
         Ok(())
     }
@@ -1190,6 +1208,15 @@ const FAST_FIELDS: &[&str] = &["lat", "lon", "gps_accuracy_m", "elevation_m", "s
 /// How long an SMO value of a fast field beats a newer API value (ms).
 const SMO_FAST_WINS_MS: u64 = 60_000;
 
+/// The order live inputs win in: SMO, then the Tesla API, then TeslaFi.
+fn input_rank(i: Input) -> u8 {
+    match i {
+        Input::Smo => 0,
+        Input::TeslaApi => 1,
+        Input::TeslafiApi => 2,
+    }
+}
+
 /// Whether `input`'s value of `field` recorded at `t` replaces the kept one.
 fn newer(
     field: &str,
@@ -1201,9 +1228,11 @@ fn newer(
     let Some(&kept) = at.get(field) else { return true };
     let kept_from = from.get(field).copied().unwrap_or(Input::Smo);
     if kept_from != input && FAST_FIELDS.contains(&field) {
-        return match input {
-            Input::Smo => t.saturating_add(SMO_FAST_WINS_MS) >= kept,
-            Input::TeslaApi => t > kept.saturating_add(SMO_FAST_WINS_MS),
+        // the input that wins (SMO over the APIs, the Tesla API over TeslaFi) keeps its value a minute
+        return if input_rank(input) < input_rank(kept_from) {
+            t.saturating_add(SMO_FAST_WINS_MS) >= kept
+        } else {
+            t > kept.saturating_add(SMO_FAST_WINS_MS)
         };
     }
     t >= kept

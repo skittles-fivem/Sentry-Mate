@@ -22,6 +22,25 @@ export function loadMapLibre() {
   return mlLoad;
 }
 
+// A page keeps the Content-Security-Policy and Referrer-Policy it was loaded with. After an admin turns online tiles
+// on or picks another tile source, an open page still blocks the new tile server (and sends it no Referer), so its
+// maps would stay blank until a reload: the first tile the page's policy blocks loads the page again, once, so it
+// gets the server's current policy. Not again for the same server within two minutes (then the server leaves it out).
+let tileOrigin = null, policyWatched = false;
+export function watchTilePolicy(template) {
+  try { tileOrigin = template ? new URL(template.replace(/\{[^}]*\}/g, '0')).origin : null; } catch { tileOrigin = null; }
+  if (!tileOrigin || policyWatched) return;
+  policyWatched = true;
+  document.addEventListener('securitypolicyviolation', (e) => {
+    if (!tileOrigin || !String(e.blockedURI || '').startsWith(tileOrigin)) return;
+    try {
+      const last = JSON.parse(sessionStorage.getItem('sm-tile-policy-reload') || 'null');
+      if (last && last.origin === tileOrigin && Date.now() - last.at < 120000) return;
+      sessionStorage.setItem('sm-tile-policy-reload', JSON.stringify({ origin: tileOrigin, at: Date.now() }));
+    } catch { return; } // no session storage: nothing would stop a reload loop
+    location.reload();
+  });
+}
 /** { kind: 'offline' | 'online' | 'none', template, attribution, maxZoom } */
 export async function tileSource() {
   let cfg = null;
@@ -64,6 +83,7 @@ function style(src) {
  */
 export async function createMap(el, ctx, { center = [0, 0], zoom = 13, interactive = true } = {}) {
   const [ml, src] = await Promise.all([loadMapLibre(), tileSource()]);
+  watchTilePolicy(src.kind === 'online' ? src.template : null);
   if (!ctx.alive()) return null;
   el.classList.add('map');
   const map = new ml.Map({

@@ -1,0 +1,9 @@
+code,wmi,model,first_year,source,confidence
+R,5YJ,Roadster,2008,Part 565 2009-03-30 (5e87a425),high
+S,5YJ,Model S,2012,Part 565 2012-03-26 (5df993c3) onward,high
+X,5YJ|7SA,Model X,2016,Part 565 2015-08-27 (f26a7663) onward,high
+3,5YJ|LRW,Model 3,2017,Part 565 2017-05-08 (90a46d61) onward; Model 3 service manuals,high
+Y,5YJ|7SA|LRW|XP7,Model Y,2020,Part 565 2019-12-09 (54414e8c) onward; Model Y service manuals,high
+T,7G2,Semi,2023,Part 565 2022-09-13 (7404ccb6) onward,high
+C,7G2,Cybertruck,2024,Part 565 2023-08-23 (fbec7f77) onward,high
+A,5YJ,Cybercab,2026,Part 565 2026-05-04 (fb63da70),high

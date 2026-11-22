@@ -4,10 +4,13 @@ storage that adds up from the cars to the server."""
 
 from __future__ import annotations
 
+import os
 import threading
 
 from .helpers import DAY, NOW, ServerCase
 from .test_live import read_events
+
+PACKS = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "packs"))
 
 
 class OutboundProxy(ServerCase):
@@ -20,6 +23,20 @@ class OutboundProxy(ServerCase):
         self.assertIn("outbound.proxy", e["fields"])
         u = self.c.json("PATCH", "/api/v1/settings", {"version": t["version"], "outbound": {"proxy": None}})
         self.assertIsNone(u["outbound"]["proxy"])
+
+
+class DefaultTimeZone(ServerCase):
+    def test_default_time_zone(self):
+        s = self.c.get("/api/v1/settings")
+        self.assertEqual(s["default_time_zone"], "America/Chicago")
+        e, _ = self.c.error("PATCH", "/api/v1/settings", 422, "invalid",
+                            body={"version": s["version"], "default_time_zone": "Mars/Olympus_Mons"})
+        self.assertIn("default_time_zone", e["fields"])
+        e, _ = self.c.error("PATCH", "/api/v1/settings", 400, "bad_input",
+                            body={"version": s["version"], "default_time_zone": 5})
+        self.assertIn("default_time_zone", e["fields"])
+        t = self.c.json("PATCH", "/api/v1/settings", {"version": s["version"], "default_time_zone": " Europe/Berlin "})
+        self.assertEqual(t["default_time_zone"], "Europe/Berlin")
 
 
 class Settings(ServerCase):
@@ -71,6 +88,16 @@ class Settings(ServerCase):
         m = self.c.get("/api/v1/maps/config")
         self.assertEqual(m["tiles"]["mode"], "online")
         self.assertIn("{z}", m["tiles"]["online_template"])
+        # the ready-made sources, OpenStreetMap first, each with its credit, zoom and terms
+        self.assertEqual(m["tiles"]["presets"][0]["id"], "osm")
+        for p in m["tiles"]["presets"]:
+            self.assertEqual(set(p), {"id", "name", "url", "attribution", "max_zoom", "terms"})
+        # online tiles: the pages send their origin as Referer (OpenStreetMap blocks tiles without one), the API none
+        st, hd, _ = self.c.request("GET", "/")
+        self.assertEqual(hd["referrer-policy"], "strict-origin")
+        self.assertIn("img-src 'self' data: blob: https://tile.openstreetmap.org;", hd["content-security-policy"])
+        st, hd, _ = self.c.request("GET", "/api/v1/me")
+        self.assertEqual(hd["referrer-policy"], "no-referrer")
         g = self.c.get("/api/v1/geocode/status")
         self.assertEqual(g["mode"], "offline")
         self.assertTrue(g["offline_data"]["present"])
@@ -92,6 +119,16 @@ class Settings(ServerCase):
         self.assertTrue(r["detail"]["notes_url"].startswith("https://"))
         m = self.c.get("/api/v1/maps/config")
         self.assertEqual((m["tiles"]["mode"], m["tiles"]["online_template"]), ("offline", None))
+        st, hd, _ = self.c.request("GET", "/")
+        self.assertEqual(hd["referrer-policy"], "no-referrer")
+        # as the real server: a page may load tiles only from the source that is on (none while offline)
+        self.assertNotIn("tile.openstreetmap.org", hd["content-security-policy"])
+        v = self.c.get("/api/v1/settings")["version"]
+        self.c.json("PATCH", "/api/v1/settings", {"version": v, "tiles": {"mode": "online", "online_url": "https://tile.opentopomap.org/{z}/{x}/{y}.png"}})
+        st, hd, _ = self.c.request("GET", "/")
+        self.assertIn("img-src 'self' data: blob: https://tile.opentopomap.org;", hd["content-security-policy"])
+        self.assertNotIn("tile.openstreetmap.org", hd["content-security-policy"])
+        self.assertEqual(hd["referrer-policy"], "strict-origin")
         a = self.c.get("/api/v1/about")
         self.assertEqual(a["api_version"], "1")
         self.assertEqual(a["ui_pack"]["name"], "Instrument")
@@ -131,7 +168,7 @@ class Health(ServerCase):
 
     def test_overlaps(self):
         o = self.c.get("/api/v1/cars/c3/overlaps")["items"]
-        self.assertEqual(len(o), 1)
+        self.assertEqual([x["kind"] for x in o], ["live", "imports"], "newest first")
         span = o[0]
         self.assertEqual(span["shown"], "can")
         self.assertEqual(self.c.get("/api/v1/cars/c1/overlaps")["items"], [])
@@ -146,6 +183,61 @@ class Health(ServerCase):
         self.assertEqual(len(rows), span["teslamate"]["drives"])
         self.c.json("PATCH", "/api/v1/cars/c3/overlaps", {"id": span["id"], "shown": "can"})
         self.assertEqual({x["source"] for x in self.c.get(q)["items"]}, {"can"})
+
+    def test_two_imports_of_the_same_days(self):
+        """A week TeslaMate and TeslaFi both imported (no live data): one import's rows only, TeslaMate's at first
+        (the same drives, TeslaMate's positions more often), TeslaFi's once flipped (admin, version checked)."""
+        path = "/api/v1/cars/c3/overlaps"
+        span = [x for x in self.c.get(path)["items"] if x["kind"] == "imports"][0]
+        self.assertEqual((span["shown_source"], span["default_source"], span["default_reason"]),
+                         ("import:teslamate", "import:teslamate", "more_samples"))
+        self.assertEqual(span["sites"]["teslamate"], span["sites"]["teslafi"])
+        self.assertGreater(span["sites"]["teslafi"]["drives"], 0)
+        q = f"/api/v1/cars/c3/drives?from_ms={span['start_ms']}&to_ms={span['end_ms']}&limit=500"
+        n = span["sites"]["teslamate"]["drives"]
+
+        def sources(extra=""):
+            rows = self.c.get(q + extra)["items"]
+            return len(rows), {x["source"] for x in rows}
+
+        self.assertEqual(sources(), (n, {"teslamate"}), "one drive per real drive")
+        self.assertEqual(span["imported"], span["sites"]["teslamate"], "the shown site's rows, each drive once")
+
+        def visits_point_at_shown_rows():
+            # the stops link the drives and charges the lists show, never the hidden site's copies
+            r = f"from_ms={span['start_ms']}&to_ms={span['end_ms']}&limit=500"
+            drives = {x["id"] for x in self.c.get(f"/api/v1/cars/c3/drives?{r}")["items"]}
+            charges = {x["id"] for x in self.c.get(f"/api/v1/cars/c3/charges?{r}")["items"]}
+            vs = self.c.get(f"/api/v1/visits?cars=c3&{r}")["items"]
+            self.assertTrue(vs)
+            links = [v[k] for v in vs for k in ("drive_in", "drive_out")
+                     if v[k] is not None and span["start_ms"] <= v["arrived_ms"] and (v["left_ms"] or 0) < span["end_ms"]]
+            self.assertTrue(links)
+            self.assertEqual([x for x in links if x not in drives], [])
+            got = [x if isinstance(x, str) else x["id"] for v in vs for x in v["charges"]]
+            self.assertTrue(got)
+            self.assertEqual([x for x in got if x not in charges], [])
+
+        visits_point_at_shown_rows()
+        self.assertEqual(sources("&source=import"), (n, {"teslamate"}))
+        self.assertEqual(sources("&source=import:teslafi"), (n, {"teslafi"}), "TeslaFi alone")
+        t0 = self.c.get("/api/v1/cars/c3/totals")
+        self.c.error("PATCH", path, 400, "bad_input", body={"id": span["id"], "shown": "import:teslafi"})
+        self.c.error("PATCH", path, 422, "invalid", body={"id": span["id"], "shown": "live", "version": span["version"]})
+        self.c.error("PATCH", path, 409, "stale_version",
+                     body={"id": span["id"], "shown": "import:teslafi", "version": span["version"] + 1})
+        d = self.c.json("PATCH", path, {"id": span["id"], "shown": "import:teslafi", "version": span["version"]})
+        self.assertEqual(d["changed"]["shown_source"], "import:teslafi")
+        self.assertEqual(d["changed"]["version"], span["version"] + 1)
+        self.assertEqual(self.c.get("/api/v1/audit?limit=1")["items"][0]["action"], "car.overlap")
+        self.assertEqual(sources(), (n, {"teslafi"}))
+        self.assertEqual(d["changed"]["imported"], span["sites"]["teslafi"])
+        visits_point_at_shown_rows()
+        self.assertEqual(sources("&source=import:teslamate"), (n, {"teslamate"}), "TeslaMate alone")
+        t1 = self.c.get("/api/v1/cars/c3/totals")
+        self.assertEqual(t1["drives"], t0["drives"], "never doubled")
+        self.c.json("PATCH", path, {"id": span["id"], "shown": "import:teslamate", "version": span["version"] + 1})
+        self.assertEqual(sources(), (n, {"teslamate"}))
 
 
 class Storage(ServerCase):
@@ -205,3 +297,33 @@ class WatchSystem(ServerCase):
         self.assertIn("healthy", self.c.get("/api/v1/cars/c1/health"))
         self.assertIn("tiles", self.c.get("/api/v1/maps/config"))
         self.assertTrue(self.c.get("/api/v1/notices")["items"])
+
+
+class UiPacks(ServerCase):
+    """GET /ui-packs lists every built-in pack; a person's ui_pack picks the pack their browser is served."""
+
+    def test_list_and_choice(self):
+        r = self.c.get("/api/v1/ui-packs")
+        self.assertEqual([p["id"] for p in r["items"]], ["instrument", "logbook", "horizon", "console", "pebble"])
+        self.assertEqual(r["chosen"], "instrument")
+        self.assertEqual(r["default"], "instrument")
+        for p in r["items"]:
+            self.assertTrue(p["name"] and p["version"] and p["description"])
+            self.assertTrue(p["api_supported"] and p["builtin"])
+            self.assertEqual(p["chosen"], p["id"] == "instrument")
+        e, _ = self.c.error("PATCH", "/api/v1/me/preferences", 422, "invalid", body={"ui_pack": "nope"})
+        self.assertIn("ui_pack", e["fields"])
+        try:
+            self.c.json("PATCH", "/api/v1/me/preferences", {"ui_pack": "pebble"})
+            self.assertEqual(self.c.get("/api/v1/about")["ui_pack"]["name"], "Pebble")
+            st, _hd, body = self.c.request("GET", "/settings/display")
+            self.assertEqual(st, 200)
+            with open(os.path.join(PACKS, "pebble", "web", "index.html"), "rb") as f:
+                self.assertEqual(body, f.read())
+            st, _hd, body = self.c.request("GET", "/pages/settings-display.js")
+            with open(os.path.join(PACKS, "pebble", "web", "pages", "settings-display.js"), "rb") as f:
+                self.assertEqual(body, f.read())
+        finally:
+            p = self.c.json("PATCH", "/api/v1/me/preferences", {"ui_pack": None})
+        self.assertEqual(p["ui_pack"], "instrument")
+        self.assertEqual(self.c.get("/api/v1/about")["ui_pack"]["name"], "Instrument")

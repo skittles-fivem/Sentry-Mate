@@ -324,7 +324,8 @@ pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Res
     res
 }
 
-/// Headers on every answer: no sniffing, no framing, no referrer, HSTS, and on API answers no caching, a CSP that
+/// Headers on every answer: no sniffing, no framing, no referrer (pack files set their own:
+/// [`crate::packs::referrer_policy`]), HSTS, and on API answers no caching, a CSP that
 /// allows nothing, and the server's clock.
 pub async fn headers(State(app): State<AppState>, req: Request, next: Next) -> Response {
     let api = req.uri().path().starts_with("/api/");

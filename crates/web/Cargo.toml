@@ -19,6 +19,7 @@ moving = { path = "../moving" }
 mqtt = { path = "../mqtt" }
 places = { path = "../places" }
 tesla = { path = "../tesla" }
+teslafi = { path = "../teslafi" }
 vault = { path = "../vault" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
 base64 = "0.22"
@@ -48,6 +49,8 @@ tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 synth = { path = "../synth" }
+# made-up TeslaFi files (the import crate's test generator)
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 db = { path = "../db" }
 # its own test server (web::testkit) in the tests here
 web = { path = ".", features = ["testkit"] }

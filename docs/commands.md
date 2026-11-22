@@ -24,7 +24,7 @@
 - Receive every log the CAN Bridge uploads and keep it sealed, exactly as uploaded.
 - Turn the checked logs into each car's history (drives, charges, states, the time series) in the background, and
   read it in the web UI on port 10101 (see [The web UI](#the-web-ui)). The web UI also changes the settings: places
-  and costs, car settings, upload tokens and car keys, accounts, MQTT, the TeslaMate import.
+  and costs, car settings, upload tokens and car keys, accounts, MQTT, the TeslaMate and TeslaFi imports.
 - See each upload token and the car key it is tied to (`token list`).
 - See a car key's chain report: gaps, failed logs, restarts (`chain`).
 - See which keys signed a car key's logs, and trust a new one (`keys`, `keys trust`).
@@ -288,7 +288,7 @@ the upload port, so the browser warns once about a certificate it doesn't know: 
   it goes). A log whose check fails is never used.
 - **What the pages do**: they read cars, the Now values, the timeline, drives, charges, battery, places, reports and
   data health, and change places and costs, car settings, upload tokens and car keys (**Settings → Cars**), accounts,
-  server settings, MQTT and the TeslaMate import. Admin accounts change things; watch accounts only read their cars.
+  server settings, MQTT and the TeslaMate and TeslaFi imports. Admin accounts change things; watch accounts only read their cars.
 - **Moving** from the pages: a move code or an export file on the old server, and "move here" or "restore from an
   export file" on the new server's first page ([moving.md](moving.md)).
 - A server whose data moved away serves no web UI: it runs on the new server.
@@ -336,16 +336,34 @@ in until it has its own; without it, UTC.
 
 Firewalls, another host port and uploads from away from home: [Ports and firewalls](install.md#ports-and-firewalls).
 
-The upload port takes 6 connections per address (an IPv6 /64 counts as one address) and 256 in all. A TLS
-handshake must finish within 10 s, the headers within 10 s, a request within 10 minutes. A connection counts as
-anonymous until a request on it is answered with success (it carried a valid token); at most 192 are, and a new one
-beyond closes the oldest anonymous one, so connections without a token can't keep the CAN Bridge out.
+Connections to the upload port are counted per address (an IPv6 /64 counts as one address). A connection counts as
+anonymous until a request on it shows a valid token (as soon as the token is checked, before an upload's body
+arrives). An address is a car's while a connection with a valid token is open from it, and for 30 minutes after the
+last one closes. A car's address may have 32 connections open, and its new connections (anonymous until their
+token is checked) may use all of them. Any other address may have 6 anonymous connections. In all, the port takes
+512 connections, at most 192 of them anonymous: a new one beyond closes the oldest anonymous one, so connections
+without a token can't keep a car out or cut its uploads in flight.
+
+A connection over a limit is not closed unanswered: the server finishes the TLS handshake and answers
+`503 too_many_connections` with `Retry-After: 5` as soon as the request's headers are in, without reading its body
+(a client that sends `Expect: 100-continue` gets it before sending any body). It then closes the connection,
+reading what the client still sends for 2 s (up to 1 MiB) first so the answer isn't lost to a reset; a large body
+still being sent then is cut. A refusal takes at most 15 s in all. At most 32 are answered at once, 16 from one
+address: a new one beyond closes an earlier refusal instead (the address's own oldest, or the oldest of the address
+with the most), so no address can use them all up, and a warning is logged. The first refusal per address per
+minute is logged with that address's open counts. Before a car's first request with a valid token (its first ping after a start, or after 30
+minutes without one), its address gets 6 like any other, so the first few of many uploads at once can get `503`.
+
 Any other path than the upload API gets `404`. The protocol is
 Sentry Six Manager's [docs/can-bridge-api.md](https://github.com/skittles-fivem/Sentry-Manager/blob/main/docs/can-bridge-api.md).
 
 | Limit | Value |
 |---|---|
-| A chunk | 16 MiB |
+| Connections per address | 32 for a car's own (an address that showed a valid token in the last 30 minutes), 6 not yet authorized; then `503 too_many_connections` with `Retry-After: 5` |
+| Connections in all | 512, at most 192 not yet authorized |
+| Uploads at once from one bridge | 16 recommended (each on its own connection) |
+| TLS handshake, headers, request | 10 s, 10 s, 10 minutes |
+| A chunk (piece) | 16 MiB |
 | A log | 1 GiB |
 | A sidecar | 1 MiB |
 | Names in one status request | 2000 |

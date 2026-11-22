@@ -85,6 +85,7 @@ fn files_in(dir: &Path) -> usize {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn two_thousand_cars_each_with_a_token_upload_and_memory_stays_bounded() {
     const CARS: u32 = 2000;
     let t = vault_dir();

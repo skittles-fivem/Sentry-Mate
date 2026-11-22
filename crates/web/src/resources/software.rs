@@ -1,12 +1,12 @@
-//! Software: `/cars/{car}/updates[/{update}]`, `/fleet/versions`, `/cars/{car}/events`, over the engine's
-//! [`engine::query::software`].
+//! Software: `/cars/{car}/updates[/{update}]`, `/cars/{car}/firmware`, `/fleet/versions`, `/cars/{car}/events`,
+//! over the engine's [`engine::query::software`] and [`engine::query::firmware`].
 //!
 //! Reads are for every account over the cars it sees (the guard has checked the `{car}` of the path; a hidden car
 //! answers as an unknown one, and `/fleet/versions` lists only the cars the account sees). Naming an update's version
 //! (`PATCH .../updates/{update}`) is an admin's change (the guard keeps it so), recorded in the audit log, and tells
 //! the live stream that the car's updates changed.
 
-use super::now::{list_answer, period, run, text};
+use super::now::{answer, list_answer, period, run, text};
 use super::statistics::cars_of;
 use crate::ctx::target;
 use crate::{ApiError, ApiResult, AppState, CarParam, CarsParam, Event, JsonBody, Params, Viewer};
@@ -22,6 +22,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/cars/{car}/updates", get(updates))
         .route("/api/v1/cars/{car}/updates/{update}", axum::routing::patch(name_version))
+        .route("/api/v1/cars/{car}/firmware", get(firmware))
         .route("/api/v1/fleet/versions", get(versions))
         .route("/api/v1/cars/{car}/events", get(events))
 }
@@ -63,6 +64,11 @@ async fn name_version(
     let (from_ms, to_ms) = span.and_then(|s| Some((s.get(0)?.as_u64()?, s.get(1)?.as_u64()?))).unwrap_or((0, 0));
     app.events.publish(Event::Rows { car, kinds: vec!["updates".into()], from_ms, to_ms });
     Ok(Json(value))
+}
+
+/// `/cars/{car}/firmware`: the modules' firmware fingerprints.
+async fn firmware(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
+    answer(&app, &p, "firmware", move |e| q::firmware::firmware(e, car)).await
 }
 
 async fn versions(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResult<Response> {

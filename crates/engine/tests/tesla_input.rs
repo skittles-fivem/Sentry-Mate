@@ -7,7 +7,7 @@ use dbc::{Mux, Profile, Signal};
 use engine::query::{self, Paging, Period};
 use engine::{Engine, Options};
 use ingest::{Judge, Store};
-use model::{Gear, Sample, Source};
+use model::{Gear, Input, Inputs, Sample, Source};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use timeline::{ApiSpan, ApiState};
@@ -137,7 +137,13 @@ fn api_readings(x: u64, y: u64, every: u64, trip: Trip) -> Vec<Sample> {
 }
 
 fn online(x: u64, y: u64) -> ApiSpan {
-    ApiSpan { start_ms: T0 + x * 1000, end_ms: T0 + y * 1000, state: ApiState::Online, data: false }
+    ApiSpan {
+        start_ms: T0 + x * 1000,
+        end_ms: T0 + y * 1000,
+        state: ApiState::Online,
+        data: false,
+        inputs: Inputs::NONE,
+    }
 }
 
 struct Kit {
@@ -251,6 +257,8 @@ fn a_car_with_the_tesla_api_alone() {
         let detail = query::fleet::car(&k.engine, car).unwrap();
         assert_eq!(detail.config["trim"].source, Some("tesla_api"));
         assert_eq!(detail.config["trim"].value, "74d");
+        assert_eq!(detail.vehicle.trim.source, Some(model::vehicle::FactSource::TeslaApi));
+        assert_eq!(detail.vehicle.drive.value.as_deref(), Some("AWD"), "74d: dual motor");
 
         // a new version is an update the API saw
         k.engine.api_meta(
@@ -498,5 +506,135 @@ fn suggestions_and_smo_live() {
         // two cars on one prefix: no suggestion
         api_car(&k);
         assert_eq!(k.engine.suggest_car("XP7YGCEK0RB").unwrap(), None);
+    });
+}
+
+fn teslafi_car(k: &Kit) -> u32 {
+    let new = tesla::NewCar {
+        vin_prefix: Some("5YJ3E1EA0PF".into()),
+        model: Some('3'),
+        year: Some(2023),
+        display_name: Some("Made-up car".into()),
+    };
+    k.engine.api_new_car_for(&new, Input::TeslafiApi).unwrap()
+}
+
+#[test]
+fn a_car_with_teslafi_alone_names_teslafi() {
+    rt().block_on(async {
+        let k = kit();
+        let car = teslafi_car(&k);
+        assert_eq!(k.db.car(car).unwrap().unwrap().inputs, Inputs::TESLAFI_API);
+        let trip = Trip { a: 600, b: 1800 };
+        // TeslaFi polls the car about once a minute
+        k.engine.feed_points(Input::TeslafiApi, car, api_readings(0, 2400, 60, trip), vec![online(0, 2400)]);
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+
+        let ds = drives(&k, car);
+        assert_eq!(ds.len(), 1, "{ds:#?}");
+        let d = &ds[0];
+        assert_eq!(kinds(&d.from), vec!["teslafi_api"]);
+        assert_eq!(d.from.source, "teslafi_api");
+        assert_eq!(d.from.source_label, "Data from TeslaFi");
+        assert_eq!(d.energy_basis, "estimated");
+        assert!((d.distance_km.unwrap() - 12.0).abs() < 0.6, "{d:?}");
+        let fi = query::drives::DrivesQuery { source: Some("teslafi_api".into()), ..Default::default() };
+        let api = query::drives::DrivesQuery { source: Some("tesla_api".into()), ..Default::default() };
+        assert_eq!(query::drives::drives(&k.engine, car, &fi, &Paging::default()).unwrap().body.items.len(), 1);
+        assert!(query::drives::drives(&k.engine, car, &api, &Paging::default()).unwrap().body.items.is_empty());
+
+        let states = query::timeline::states(&k.engine, car, &Period::all(), &Paging::first(100)).unwrap().body;
+        assert!(states.items.iter().any(|s| s.state == "online"));
+        assert!(states.items.iter().all(|s| kinds(&s.from) == vec!["teslafi_api"]), "{:#?}", states.items);
+
+        let now = query::now::now_view(&k.engine, car).unwrap();
+        let soc = serde_json::to_value(now.soc_pct.unwrap()).unwrap();
+        assert_eq!(soc["sources"][0]["kind"], "teslafi_api");
+        assert_eq!(soc["sources"][0]["label"], "Data from TeslaFi");
+        assert_eq!(now.inputs.iter().map(|i| i.input.kind).collect::<Vec<_>>(), vec!["teslafi_api"]);
+        let fleet = query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default()).unwrap();
+        assert_eq!(fleet.items[0].source_label, "Data from TeslaFi");
+        assert!(!k.engine.tesla_api_live(car));
+
+        // a whole rebuild brings the same history back from TeslaFi's stored data
+        let before: Vec<(u64, Option<u64>)> = drives(&k, car).iter().map(|d| (d.start_ms, d.end_ms)).collect();
+        k.engine.rebuild(engine::Scope::car(car)).unwrap();
+        k.engine.idle().await;
+        let after: Vec<(u64, Option<u64>)> = drives(&k, car).iter().map(|d| (d.start_ms, d.end_ms)).collect();
+        assert_eq!(after, before);
+    });
+}
+
+#[test]
+fn smo_wins_then_the_tesla_api_then_teslafi_in_one_drive() {
+    rt().block_on(async {
+        let k = kit();
+        // a 20-minute drive: SMO records its first five minutes, the Tesla API is polled until minute 12, TeslaFi all
+        // along (its speed made different, so a value from it shows)
+        let trip = Trip { a: 60, b: 1260 };
+        for i in 0..5 {
+            send_smo(&k, i, trip).await;
+        }
+        k.engine.idle().await;
+        let car = k.db.car_for_key(KEY).unwrap().unwrap();
+        k.engine.api_points(car, api_readings(0, 720, 30, trip), vec![online(0, 720)]);
+        let mut fi = api_readings(0, 1800, 60, trip);
+        for s in &mut fi {
+            s.speed_kmh = s.speed_kmh.map(|_| 40.0);
+            s.inside_temp_c = Some(19.0);
+        }
+        k.engine.feed_points(Input::TeslafiApi, car, fi, vec![online(0, 1800)]);
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+
+        let ds = drives(&k, car);
+        assert_eq!(ds.len(), 1, "one drive, not one per input: {ds:#?}");
+        let d = &ds[0];
+        assert_eq!(kinds(&d.from), vec!["smo", "tesla_api", "teslafi_api"]);
+        assert_eq!(d.from.source_label, "Data from SMO, the Tesla API and TeslaFi");
+        assert_eq!(d.from.source, "can");
+        assert!(d.end_ms.unwrap() >= T0 + 1_200_000, "TeslaFi fills the end (its last poll in D): {:?}", d.end_ms);
+        assert!((d.distance_km.unwrap() - 12.0).abs() < 0.6, "{d:?}");
+
+        // the seconds: SMO's inside its coverage, the Tesla API's inside its own, TeslaFi's after
+        let q = |a: u64, b: u64| query::series::SeriesQuery {
+            fields: vec!["speed_kph".into()],
+            from_ms: Some(T0 + a * 1000),
+            to_ms: Some(T0 + b * 1000),
+            max_points: Some(2000),
+            ..Default::default()
+        };
+        let speeds = |a: u64, b: u64| -> Vec<f64> {
+            let c = query::series::series(&k.engine, car, &q(a, b), T0 + 2_000_000).unwrap().body;
+            c.values["speed_kph"].iter().flatten().copied().collect()
+        };
+        assert!(speeds(100, 200).iter().all(|v| (v - 36.0).abs() < 0.5), "SMO's: {:?}", speeds(100, 200));
+        let api = speeds(400, 700);
+        assert!(
+            !api.is_empty() && api.iter().all(|v| (v - 36.0).abs() < 0.5),
+            "the Tesla API's, not TeslaFi's: {api:?}"
+        );
+        let late = speeds(800, 1200);
+        assert!(!late.is_empty() && late.iter().all(|v| (v - 40.0).abs() < 0.5), "TeslaFi's: {late:?}");
+
+        // the states say which input saw each stretch: the Tesla API where it saw the car, TeslaFi after
+        let states = query::timeline::states(&k.engine, car, &Period::all(), &Paging::first(100)).unwrap().body;
+        let at = |t: u64| {
+            states.items.iter().find(|s| s.start_ms <= T0 + t * 1000 && s.end_ms.is_none_or(|e| e > T0 + t * 1000))
+        };
+        assert_eq!(at(500).map(|s| kinds(&s.from)), Some(vec!["tesla_api"]), "{:#?}", states.items);
+        assert_eq!(at(1500).map(|s| kinds(&s.from)), Some(vec!["teslafi_api"]), "{:#?}", states.items);
+
+        let fleet = query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default()).unwrap();
+        assert_eq!(fleet.items[0].source_label, "Data from SMO, the Tesla API and TeslaFi");
+        // Now: each value from the newest second that has it, the inputs named
+        let now = query::now::now_view(&k.engine, car).unwrap();
+        let mut ins: Vec<&str> = now.inputs.iter().map(|i| i.input.kind).collect();
+        ins.sort_unstable();
+        assert_eq!(ins, vec!["smo", "tesla_api", "teslafi_api"]);
+        let cabin = serde_json::to_value(now.cabin_c.unwrap()).unwrap();
+        assert_eq!(cabin["sources"][0]["kind"], "teslafi_api", "the newest cabin temperature came from TeslaFi");
+        assert!(k.engine.tesla_api_live(car), "the Tesla API's data just came: TeslaFi is read less");
     });
 }

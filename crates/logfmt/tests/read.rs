@@ -89,6 +89,30 @@ fn comments_parse() {
         Line::NotRecorded { paused_s: Some(42), .. }
     ));
     assert!(matches!(Line::parse(b"# something new"), Line::Comment("something new")));
+    assert_eq!(
+        Line::parse(b"# firmware changed: Battery management (0x300), BMS_appCrc 920f4248 -> 1a2b3c4d"),
+        Line::FirmwareChanged("Battery management (0x300), BMS_appCrc 920f4248 -> 1a2b3c4d")
+    );
+}
+
+#[test]
+fn a_firmware_hint_and_an_unknown_comment_do_not_stop_the_frames() {
+    // the bridge's hint line and a comment no reader knows yet, between frames: every frame still read, the hint
+    // given as what it is, the unknown line as a comment
+    let body = b"# canbridge v1 app=0.2.160\n(1767225600.100000) can0 300#0D000000484280F2\n\
+        # firmware changed: Battery management (0x300), BMS_appCrc 920f4248 -> f2804248\n\
+        # sparkles: a line from a newer bridge\n(1767225601.100000) can0 300#0D000000484280F2\n";
+    let (mut frames, mut hints, mut comments) = (0, Vec::new(), Vec::new());
+    let s = read_log(&xz(body), Limits::default(), |l| match Line::parse(l) {
+        Line::Frame(_) => frames += 1,
+        Line::FirmwareChanged(t) => hints.push(t.to_string()),
+        Line::Comment(t) => comments.push(t.to_string()),
+        _ => {}
+    })
+    .unwrap();
+    assert_eq!((frames, s.lines), (2, 5));
+    assert_eq!(hints, vec!["Battery management (0x300), BMS_appCrc 920f4248 -> f2804248"]);
+    assert_eq!(comments, vec!["sparkles: a line from a newer bridge"]);
 }
 
 #[test]

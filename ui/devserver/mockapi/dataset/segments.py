@@ -1003,11 +1003,11 @@ class Update(Seg):
         self.detected_by = detected_by
         self.lat, self.lon, self.pid = lat, lon, pid
         self.soc = soc
-        # the module build ids the car reported after the update (made up; one set per version)
-        self.build_id = hashlib.blake2b((version or f"{car.id}:{seq}").encode(), digest_size=6).hexdigest()
-        mods = ["bms", "vcfront", "di_front", "di_rear", "fc"]
+        # the fingerprint set the car's modules reported after the update (made up; one set per version)
+        self.build_id = hashlib.blake2b((version or f"{car.id}:{seq}").encode(), digest_size=8).hexdigest()
+        mods = ["vcfront", "bms", "dir", "dif"]
         if car.config.get("drivetrain", ("AWD",))[0] == "RWD":
-            mods.remove("di_front")
+            mods.remove("dif")
         k = int(h01("mods", car.id, seq) * 3)
         self.changed_modules = [m for i, m in enumerate(mods) if (i + k) % 3 != 2 or m == "bms"]
 

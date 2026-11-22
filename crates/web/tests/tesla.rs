@@ -279,6 +279,7 @@ async fn accounts_cars_pause_poll_notices_and_removal() {
     let car = &item["cars"][0];
     assert_eq!(car["vehicle"], "tv1");
     assert_eq!(car["vin_prefix"], PREFIX);
+    assert_eq!(car["model"], "Model 3", "named as the car pages name it");
     assert_eq!(car["match"], Value::Null);
     // the one car with that VIN prefix is suggested, not taken
     assert_eq!(car["suggested"], format!("c{}", w.car));

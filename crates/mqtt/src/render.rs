@@ -30,10 +30,10 @@ pub struct CarInfo {
 impl CarInfo {
     pub fn of(car: &model::Car) -> CarInfo {
         let model = car.vin.as_ref().and_then(|v| {
-            let m = v.model?;
+            let m = v.model_name()?;
             Some(match v.year {
-                Some(y) => format!("Model {m} {y}"),
-                None => format!("Model {m}"),
+                Some(y) => format!("{m} {y}"),
+                None => m.to_string(),
             })
         });
         CarInfo { name: car.name.clone(), model }

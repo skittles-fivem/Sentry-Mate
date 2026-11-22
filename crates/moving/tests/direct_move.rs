@@ -731,6 +731,7 @@ async fn with_the_old_server_gone_the_copy_opens_with_the_recovery_key() {
 /// run and the old server answers every upload `503 moving` for as long as that connection stays open, far past the
 /// 60 s quiet limit and the 15 minutes at most.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn a_fetch_the_new_server_stops_reading_does_not_hold_the_pause_for_ever() {
     use moving::proto::{self, ClaimAnswer, ClaimRequest, FetchRequest, PauseAnswer, StatusAnswer, Want};
     let old = server();

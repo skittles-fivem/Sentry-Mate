@@ -518,6 +518,18 @@ impl Db {
     /// Replaces the CAN rows that start in `[from_ms, to_ms)` with `rows` (which must start there too), all or
     /// none: a rebuilt window. Rows from TeslaMate stay. Returns how many rows were removed.
     pub fn replace_window<T: Item>(&self, car: CarId, from_ms: u64, to_ms: u64, rows: &[T]) -> Result<usize> {
+        self.replace_window_of(car, Source::Live, from_ms, to_ms, rows)
+    }
+
+    /// [`Db::replace_window`] for the rows of `source`.
+    fn replace_window_of<T: Item>(
+        &self,
+        car: CarId,
+        source: Source,
+        from_ms: u64,
+        to_ms: u64,
+        rows: &[T],
+    ) -> Result<usize> {
         if from_ms > to_ms {
             return Err(Error::invalid("a window ends before it starts"));
         }
@@ -529,7 +541,7 @@ impl Db {
         let new_ids: HashSet<u64> = rows.iter().map(Item::id).collect();
         self.with_car(car, |db, data, dir| {
             let t = db.table::<T>(data, car, dir)?;
-            let del = t.state.starting_in(from_ms, to_ms, Source::Live);
+            let del = t.state.starting_in(from_ms, to_ms, source);
             let del_ids: HashSet<u64> = del.iter().copied().collect();
             let mut delta = Tally::default();
             let mut gone = 0;
@@ -615,6 +627,27 @@ impl Db {
         };
         self.write_points::<Sample>(car, Source::Live, from_ms, to_ms, &[])?;
         self.write_points::<ChargePoint>(car, Source::Live, from_ms, to_ms, &[])?;
+        Ok(deleted)
+    }
+
+    /// Removes everything an import from `source` (an import site, never [`Source::Live`]) stored for `[from_ms,
+    /// to_ms)`: rows of every table that start in it and that site's samples and charge points in it (a stretch read
+    /// again).
+    pub fn delete_imported_window(&self, car: CarId, source: Source, from_ms: u64, to_ms: u64) -> Result<Deleted> {
+        if from_ms > to_ms {
+            return Err(Error::invalid("a window ends before it starts"));
+        }
+        if source.site().is_none() {
+            return Err(Error::invalid("only an import's rows are removed this way"));
+        }
+        let deleted = Deleted {
+            drives: self.replace_window_of::<model::Drive>(car, source, from_ms, to_ms, &[])?,
+            charges: self.replace_window_of::<model::Charge>(car, source, from_ms, to_ms, &[])?,
+            states: self.replace_window_of::<StateRow>(car, source, from_ms, to_ms, &[])?,
+            updates: self.replace_window_of::<UpdateRow>(car, source, from_ms, to_ms, &[])?,
+        };
+        self.write_points::<Sample>(car, source, from_ms, to_ms, &[])?;
+        self.write_points::<ChargePoint>(car, source, from_ms, to_ms, &[])?;
         Ok(deleted)
     }
 

@@ -176,6 +176,7 @@ const CHARGE_KEYS: &[&str] = &[
 ];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn charges_lists_detail_curve_cost_and_stats_of_decoded_days() {
     let k = seeded().await;
     let (a, b) = (k.cars[0].clone(), k.cars[1].clone());
@@ -519,6 +520,7 @@ fn removed_rows(audit: &Value) -> usize {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn costs_stay_put_typed_costs_come_off_cleanly_and_list_and_detail_agree() {
     let k = seeded().await;
     let a = k.cars[0].clone();
@@ -621,6 +623,7 @@ async fn costs_stay_put_typed_costs_come_off_cleanly_and_list_and_detail_agree()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn free_supercharging_days_make_dc_charges_cost_nothing() {
     let k = seeded().await;
     let a = k.cars[0].clone();
@@ -677,4 +680,54 @@ async fn free_supercharging_days_make_dc_charges_cost_nothing() {
         admin.put(&cost, json!({ "mode": "total", "amount": 3.5, "currency": "EUR", "energy_basis": "pack" })).await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["cost"]["source"], "manual");
+}
+
+/// The fast set's charges test: one made-up car, one light day (a trip to the supercharger), uploaded, judged and
+/// decoded the way an upload is, then its drives and its charge on the web API (the tests above, in the
+/// --include-ignored set, do the lists, curves, costs and stats over two cars' days).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_decoded_day_gives_drives_and_a_charge_on_the_api() {
+    const SATURDAY_MS: u64 = synth::DEFAULT_START_MS + 5 * 86_400_000;
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let (v, _) = vault::Vault::create(&data, &dir.path().join("keys"), vault::Kdf::FAST_FOR_TESTS).unwrap();
+    let v = Arc::new(v);
+    let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
+    let store = ingest::Store::with_limits(data.join("can"), v, 0, 200_000, |_| u64::MAX);
+    let engine = Engine::new(
+        db.clone(),
+        store.clone(),
+        engine::Options { workers: 2, new_keys: engine::NewKeys::NewCar, ..engine::Options::default() },
+    );
+    let judge = ingest::Judge::new(store.clone()).on_judged(engine.listener());
+    engine.start().unwrap();
+    let sc = synth::Scenario::new(11)
+        .start(SATURDAY_MS)
+        .days(1)
+        .rates(synth::Rates::Light)
+        .supercharger_trip(true)
+        .with_trouble(false);
+    for log in sc.logs() {
+        put(&store, &judge, &log.name, &log.bytes).await;
+        put(&store, &judge, &log.sidecar_name(), &log.sidecar_bytes()).await;
+    }
+    engine.idle().await;
+    let ids = engine::query::all_cars(&engine).unwrap();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    let car = format!("c{}", ids[0]);
+    let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(db))).service(Arc::new(engine))).await;
+    let mut admin = s.admin().await;
+
+    let drives = ok(&mut admin, &format!("/api/v1/cars/{car}/drives")).await;
+    assert!(drives["items"].as_array().is_some_and(|d| d.len() >= 2), "there and back: {drives}");
+    let list = ok(&mut admin, &format!("/api/v1/cars/{car}/charges")).await;
+    let items = list["items"].as_array().unwrap();
+    assert!(!items.is_empty(), "the supercharger stop: {list}");
+    let id = items[0]["id"].as_str().unwrap();
+    let one = ok(&mut admin, &format!("/api/v1/cars/{car}/charges/{id}")).await;
+    assert_eq!(one["id"], json!(id), "{one}");
+    assert!(one["energy_added_kwh"].as_f64().is_some_and(|e| e > 1.0), "{one}");
+    let mut anon = s.client();
+    assert_eq!(anon.get(&format!("/api/v1/cars/{car}/charges")).await.status, 401);
 }

@@ -6,29 +6,34 @@
 import { h, replace } from '../shared/dom.js';
 import { getUnits, format } from '../shared/units.js';
 import { isSupportedLocale, onLocaleChange } from '../shared/i18n.js';
-import { formatDate } from '../shared/time.js';
+import { formatDate, isValidZone } from '../shared/time.js';
 import { head, paint, section, note, link } from '../core/ui.js';
 import { editLines } from '../core/kvedit.js';
 import { getPrefs, savePrefs, onPrefs } from '../core/prefs.js';
 import { getInterface, applyInterface, getTheme, applyTheme, onChange } from '../core/display.js';
 import { tag, ago } from '../core/fmt.js';
 import { toast } from '../core/toast.js';
+import { packChoices } from '../shared/packs.js';
 
 export const id = 'settings-display';
 export const title = () => 'Settings: display';
 
 const LOCALES = [['auto', 'auto'], ['en-US', 'en-US'], ['en-GB', 'en-GB'], ['de-DE', 'de-DE'], ['fr-FR', 'fr-FR'], ['nl-NL', 'nl-NL']].filter(([v]) => v === 'auto' || isSupportedLocale(v));
-const PACKS = [['console', 'console'], ['instrument', 'instrument'], ['logbook', 'logbook']];
+// used only when the server's list of packs can't be read
+const PACKS = [['console', 'console'], ['instrument', 'instrument'], ['logbook', 'logbook'], ['horizon', 'horizon'], ['pebble', 'pebble']];
 const LANG_RE = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
+const ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+const BROWSER_ZONE = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
 const https = (t) => (t.trim() === '' ? { value: null } : /^https:\/\/\S+$/.test(t.trim()) ? { value: t.trim() } : { error: 'an https:// address, or empty' });
 
 export async function mount(ctx) {
   const admin = ctx.admin;
-  let [about, server, geo, maps] = await Promise.all([
+  let [about, server, geo, maps, packList] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
+    packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || null }),
   ]);
   if (!ctx.alive()) return;
   const p = getPrefs() || {};
@@ -62,14 +67,19 @@ export async function mount(ctx) {
   paintLang();
   const browserLang = (navigator.languages && navigator.languages[0]) || navigator.language || 'unknown';
   const shownPack = p.ui_pack || about?.ui_pack?.name?.toLowerCase() || 'console';
-  const packs = PACKS.some(([v]) => v === shownPack) ? PACKS : [[shownPack, shownPack], ...PACKS];
+  // every pack the server offers (GET /ui-packs), as keys; each one's short description under them
+  const packs = packList.items.map((k) => [k.id, k.id]);
+  if (!packs.some(([v]) => v === shownPack)) packs.unshift([shownPack, shownPack]);
+  const packHere = about?.ui_pack?.id || about?.ui_pack?.name?.toLowerCase() || 'console';
+  const switchBtn = h('button', { class: 'btn', type: 'button', hidden: shownPack === packHere, onclick: () => location.reload() }, 'switch now');
+  const packInfo = packList.items.filter((k) => k.blurb).map((k) => [h('br'), h('span', { class: 'muted' }, `${k.id}: ${k.blurb}`)]);
   const look = editLines([
     { key: 'theme', id: 'theme', type: 'choice', value: th, options: [['device', 'auto'], ['dark', 'dark'], ['light', 'light']], cover: ['shell.theme', 'web.settings.general.theme', 'shots.theme-note'],
       help: 'Auto follows this device. Saved with your account and set before the page is drawn, so there is no flash. Every page, chart and map has a dark and a light look.',
       save: async (v) => { const before = getTheme().choice; applyTheme(v); try { await pref({ theme: v }); } catch (e) { applyTheme(before); throw e; } } },
     { key: 'ui_pack', id: 'pack', type: 'choice', value: shownPack, options: packs,
-      help: `The design of the whole app.${about?.ui_pack?.name ? ` This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Another pack is used the next time the app loads, where the server offers it.`,
-      save: async (v) => { await pref({ ui_pack: v }); if (v !== 'console') toast('Saved. Reload the page to see the other pack.', { kind: 'info' }); } },
+      help: [`The design of the whole app.${about?.ui_pack?.name ? ` This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Another pack is used the next time the app loads, where the server offers it. `, switchBtn, packInfo],
+      save: async (v) => { await pref({ ui_pack: v }); switchBtn.hidden = v === packHere; if (v !== packHere) toast('Saved. Used the next time the app loads; switch now reloads.', { kind: 'info' }); } },
     { key: 'interface_size', id: 'size', type: 'number', value: getInterface().size, unit: '%', cls: 'ke--short', attrs: { min: '75', max: '200' },
       help: 'Text, tables, charts and maps bigger or smaller together, 75 to 200. Browser zoom works on top.',
       parse: (t) => { const n = Math.round(Number(t)); return n >= 75 && n <= 200 ? { value: n } : { error: 'a whole number from 75 to 200' }; },
@@ -120,12 +130,21 @@ export async function mount(ctx) {
     const ro = !admin;
     const g = server.geocode || {}, t = server.tiles || {};
     const off = maps?.tiles?.offline_data_present ?? maps?.geocoding?.offline_data_present;
+    const presets = maps?.tiles?.presets || [];
+    const preset = presets.find((p) => p.url === t.online_url) || null;
     const lines = editLines([
       { key: 'default.units.distance', type: 'choice', value: server.units?.distance, options: [['km', 'km'], ['mi', 'mi']], readOnly: ro,
         help: 'What an account sees until it picks its own. A fresh server starts from the unit set on the car\'s own screen.', save: (v) => patchServer({ units: { distance: v } }) },
       { key: 'default.units.temperature', type: 'choice', value: server.units?.temperature, options: [['c', '°C'], ['f', '°F']], readOnly: ro, save: (v) => patchServer({ units: { temperature: v } }) },
       { key: 'default.units.pressure', type: 'choice', value: server.units?.pressure, options: [['bar', 'bar'], ['psi', 'psi']], readOnly: ro, save: (v) => patchServer({ units: { pressure: v } }) },
       { key: 'default.range', type: 'choice', value: server.range, options: [['rated', 'rated'], ['ideal', 'ideal']], readOnly: ro, save: (v) => patchServer({ range: v }) },
+      { key: 'default.time_zone', id: 'default-tz', type: 'text', value: server.default_time_zone || 'UTC', readOnly: ro, attrs: { list: 'sd-zones' },
+        parse: (t) => (isValidZone(t.trim()) ? { value: t.trim() } : { error: 'not a time zone this browser knows: pick one from the list, such as America/Chicago' }),
+        help: ['The zone a new car starts in. Each car keeps its own, changed in ', link(ctx.link('settings-cars'), 'settings/cars'), '; the page header\'s clock names the zone shown.'],
+        after: BROWSER_ZONE && BROWSER_ZONE !== server.default_time_zone && !ro ? h('button', { class: 'btn', type: 'button', onclick: async () => {
+          try { await patchServer({ default_time_zone: BROWSER_ZONE }); toast(`New cars start in ${BROWSER_ZONE}.`); paintServer(); } catch (e) { toast(e.message || 'not saved', { kind: 'error' }); }
+        } }, `use ${BROWSER_ZONE}`) : null,
+        save: (v) => patchServer({ default_time_zone: v }) },
     ]);
     const addr = editLines([
       { key: 'geocode.mode', type: 'choice', value: g.mode, options: [['offline', 'offline'], ['online', 'online']], readOnly: ro,
@@ -144,8 +163,17 @@ export async function mount(ctx) {
         save: (v) => patchServer({ geocode: { language: v } }) },
       { key: 'tiles.mode', type: 'choice', value: t.mode, options: [['offline', 'offline'], ['online', 'online']], readOnly: ro, cover: 'web.shell.map-tiles',
         help: [t.mode === 'online' ? `Maps load pictures from the online source; its credit shows on every map: ${t.attribution || '(none set)'}. ` : off ? 'Offline tiles are installed: maps need nothing from outside. ' : 'No offline tiles are installed: maps draw routes and places on a plain grey ground, with a note. ',
-          'An online source is asked by each viewer\'s browser, so it sees the map area.'],
+          'An online source is asked by each viewer\'s browser, so it sees the map area and this server\'s address (as Referer: OpenStreetMap refuses tiles without one), never a page or a car.'],
         save: (v) => patchServer({ tiles: { mode: v } }) },
+      ...(presets.length ? [{ key: 'tiles.source', type: 'choice', value: preset ? preset.id : 'custom', readOnly: ro, options: [...presets.map((p) => [p.id, p.name]), ['custom', 'custom']],
+        help: [preset ? `${preset.name}: free, no key; its terms (${preset.terms.replace(/^https:\/\//, '')}) ask for light use and the credit on every map. ` : 'Your own address below. ',
+          'A source fills in the address, credit and zoom below.'],
+        save: async (v) => {
+          const p = presets.find((x) => x.id === v);
+          if (!p) return;
+          await patchServer({ tiles: { online_url: p.url, attribution: p.attribution, max_zoom: p.max_zoom } });
+          setTimeout(() => { if (ctx.alive()) paintServer(); }, 0); // the address, credit and zoom lines show the source's
+        } }] : []),
       { key: 'tiles.online_url', type: 'text', value: t.online_url || '', readOnly: ro, attrs: { placeholder: 'https://.../{z}/{x}/{y}.png', inputmode: 'url' },
         parse: (x) => (x.trim() === '' ? { value: null } : /^https:\/\/\S*\{z\}\S*\{x\}\S*\{y\}/.test(x.trim()) ? { value: x.trim() } : { error: 'an https:// address with {z}, {x} and {y} in it, or empty' }),
         save: (v) => patchServer({ tiles: { online_url: v } }) },
@@ -154,7 +182,8 @@ export async function mount(ctx) {
       { key: 'outside_links.release_notes', type: 'bool', value: !!server.outside_links?.release_notes, readOnly: ro, save: (v) => patchServer({ outside_links: { release_notes: v } }) },
     ]);
     replace(serverSlot,
-      section({ title: 'server defaults', cover: 'web.settings.general.divider', side: h('span', { class: 'muted' }, ro ? 'set by an admin; read only' : 'for everyone; a person\'s own choice wins') }, lines.el),
+      section({ title: 'server defaults', cover: 'web.settings.general.divider', side: h('span', { class: 'muted' }, ro ? 'set by an admin; read only' : 'for everyone; a person\'s own choice wins') }, lines.el,
+        h('datalist', { id: 'sd-zones' }, ZONES.map((x) => h('option', { value: x })))),
       section({ title: 'addresses and maps', side: h('span', { class: 'muted' }, 'private by default') }, addr.el));
   }
   paintServer();

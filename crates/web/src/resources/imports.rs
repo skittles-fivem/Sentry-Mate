@@ -1,8 +1,10 @@
-//! Imports (docs/ui-api.md, "Import"): `/imports[/{import}[/cars|/start]]`, admin only (the guard's list). Two kinds,
-//! told apart by the file itself once it is in: a TeslaMate backup (`kind: "teslamate"`, SQL, plain, gzip or xz), and
-//! Sentry Six Manager's CAN export (`kind: "sentry_manager_can"`, the `.zip` of its `GET /api/can/export/bundle`):
-//! the car's own signed CAN Bridge logs, each checked, stored and judged as an upload is
-//! ([`engine::query::can_import`]); its cars follow from the logs' car keys, so it has no cars to match.
+//! Imports (docs/ui-api.md, "Import"): `/imports[/{import}[/cars|/start]]`, admin only (the guard's list). Three
+//! kinds, told apart by the file itself once it is in: a TeslaMate backup (`kind: "teslamate"`, SQL, plain, gzip or
+//! xz); TeslaFi's data download (`kind: "teslafi"`, its monthly CSVs: one, several in a `.zip`, gzip or xz; known by
+//! the CSV's header, [`import::teslafi::sniff`]); and Sentry Six Manager's CAN export (`kind: "sentry_manager_can"`,
+//! the `.zip` of its `GET /api/can/export/bundle`): the car's own signed CAN Bridge logs, each checked, stored and
+//! judged as an upload is ([`engine::query::can_import`]); its cars follow from the logs' car keys, so it has no cars
+//! to match.
 //!
 //! 1. **Upload**: `POST /imports` `{ name, bytes_total, compression? }` (or an `Upload-Length` header) answers 201
 //!    with the job, `upload_url` and `chunk_max_bytes`; each `PATCH /imports/{import}` is the next chunk
@@ -15,7 +17,10 @@
 //!    with the same VIN prefix (suggested, and matched at first). Then `ready`, or `failed` with `error`.
 //! 3. **Cars**: `GET /imports/{import}/cars`, `PUT` `{ items: [{ tm_car, match: car | "new" | "leave_out" }] }`.
 //! 4. **Start** (pass 2, `importing`): `POST /imports/{import}/start` `{ currency? }` (what TeslaMate's charge costs
-//!    are in; TeslaMate keeps none, so costs are taken only with it). Then `done` with the report, or `failed`.
+//!    are in; TeslaMate keeps none, so costs are taken only with it). A TeslaFi import also takes `time_zone` (TeslaFi
+//!    writes local time without a zone: the check read it in the matched car's, which the report names),
+//!    `distance_unit` (`mi`, `km`) and `temperature_unit` (`c`, `f`) for its base columns when what the check
+//!    worked out from the file is wrong. Then `done` with the report, or `failed`.
 //!
 //! A job is kept sealed (`web/imports/<id>/job`); a restart picks up a check again, and an import cut off by one
 //! goes back to `ready` with the reason in `error` (running it again replaces what it stored, never doubles it).
@@ -30,7 +35,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use engine::Engine;
 use engine::query::can_import as can;
-use engine::query::imports::{self as im, BackupCar};
+use engine::query::imports::{self as im, BackupCar, TeslafiSettings};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -48,6 +53,7 @@ const COMPRESSIONS: [&str; 4] = ["plain", "gzip", "xz", "zip"];
 /// The kinds of import, known once the file is checked.
 pub const KIND_TESLAMATE: &str = "teslamate";
 pub const KIND_CAN: &str = can::KIND;
+pub const KIND_TESLAFI: &str = import::teslafi::KIND;
 const UNFINISHED: [&str; 4] = ["uploading", "checking", "ready", "importing"];
 
 pub fn routes() -> Router<AppState> {
@@ -157,14 +163,21 @@ struct Job {
     error: Option<JobError>,
     cars: Vec<CarRow>,
     report: Option<Value>,
-    /// `teslamate` or `sentry_manager_can`, once checked (`None` before).
+    /// `teslamate`, `teslafi` or `sentry_manager_can`, once checked (`None` before).
     #[serde(default)]
     kind: Option<String>,
+    /// A TeslaFi import's time zone and units, as the start said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    teslafi: Option<TeslafiSettings>,
 }
 
 impl Job {
     fn is_can(&self) -> bool {
         self.kind.as_deref() == Some(KIND_CAN)
+    }
+
+    fn is_teslafi(&self) -> bool {
+        self.kind.as_deref() == Some(KIND_TESLAFI)
     }
 
     fn view(&self, live: Option<&Live>) -> Value {
@@ -373,6 +386,7 @@ async fn create(
             cars: Vec::new(),
             report: None,
             kind: None,
+            teslafi: None,
         };
         save(app, &j)?;
         st.jobs.insert(j.id.clone(), j.clone());
@@ -585,6 +599,11 @@ fn finish(app: &AppState, all: &Imports, id: &str, f: impl FnOnce(&mut Job)) {
     }
 }
 
+/// Whether the upload is TeslaFi's export (its first CSV's header; only the start of the file is read).
+fn sniff_of(app: &AppState, id: &str) -> io::Result<import::teslafi::Sniff> {
+    import::teslafi::sniff(opener(app, id)()?)
+}
+
 /// The first bytes of the upload (to tell a zip from a TeslaMate backup).
 fn head_of(app: &AppState, id: &str) -> io::Result<Vec<u8>> {
     let mut r = opener(app, id)()?;
@@ -616,13 +635,26 @@ fn spawn_check(app: &AppState, id: &str) -> ApiResult<()> {
     tokio::task::spawn_blocking(move || {
         let head = head_of(&app, &id);
         let zip = head.as_ref().is_ok_and(|h| import::zip::is_zip(h));
+        let teslafi = head.is_ok() && sniff_of(&app, &id).is_ok_and(|s| s != import::teslafi::Sniff::Other);
         enum Outcome {
             Tm(Result<im::Checked, import::Error>),
+            Tf(Result<im::Checked, import::Error>),
             Can(Result<Value, can::CanImportError>),
             Failed(&'static str, String),
         }
         let r = match head {
             Err(err) => Outcome::Failed("read_failed", format!("reading the upload: {err}")),
+            Ok(_) if teslafi => {
+                if let Some(l) = all.lock().live.get_mut(&id) {
+                    l.reads = 1;
+                }
+                let mut open = im::counted(opener(&app, &id), live.read.clone(), live.stop.clone());
+                Outcome::Tf(
+                    open()
+                        .map_err(import::Error::Io)
+                        .and_then(|r| im::teslafi_check(&e, r, &TeslafiSettings::default())),
+                )
+            }
             Ok(_) if zip => {
                 if let Some(l) = all.lock().live.get_mut(&id) {
                     l.reads = 1;
@@ -636,7 +668,8 @@ fn spawn_check(app: &AppState, id: &str) -> ApiResult<()> {
             Ok(_) if compression == "zip" => Outcome::Failed(
                 "unreadable",
                 "This file is not a zip. For a TeslaMate backup upload the .sql (or .sql.gz, .sql.xz) itself; from \
-                 Sentry Six Manager, its CAN export bundle (.zip) as it was downloaded."
+                 TeslaFi, its CSV files (one, or several in a .zip); from Sentry Six Manager, its CAN export bundle \
+                 (.zip) as it was downloaded."
                     .into(),
             ),
             Ok(_) => {
@@ -673,6 +706,26 @@ fn spawn_check(app: &AppState, id: &str) -> ApiResult<()> {
                 }
                 Outcome::Tm(Err(err)) => {
                     j.kind = Some(KIND_TESLAMATE.into());
+                    let (code, message) = im::error_of(&err);
+                    fail(j, code, message);
+                }
+                Outcome::Tf(Ok(c)) => {
+                    j.kind = Some(KIND_TESLAFI.into());
+                    j.status = "ready".into();
+                    j.checked_ms = Some(now);
+                    j.bytes_read = j.bytes_total;
+                    j.cars = c
+                        .cars
+                        .into_iter()
+                        .map(|car| {
+                            let matched = car.suggested.map(crate::ids::car);
+                            CarRow { car, matched }
+                        })
+                        .collect();
+                    j.report = Some(c.report);
+                }
+                Outcome::Tf(Err(err)) => {
+                    j.kind = Some(KIND_TESLAFI.into());
                     let (code, message) = im::error_of(&err);
                     fail(j, code, message);
                 }
@@ -844,18 +897,37 @@ async fn match_cars(
     Ok(Json(out))
 }
 
-/// `POST /imports/{import}/start` `{ currency? }`.
+/// `POST /imports/{import}/start` `{ currency?, time_zone?, distance_unit?, temperature_unit? }` (the last three for
+/// a TeslaFi import only).
 async fn start(
     State(app): State<AppState>,
     Admin(v): Admin,
     Path(id): Path<String>,
     body: JsonBody,
 ) -> ApiResult<Json<Value>> {
-    body.only(&["currency"])?;
+    body.only(&["currency", "time_zone", "distance_unit", "temperature_unit"])?;
     let currency = body.str("currency")?.map(|c| c.trim().to_ascii_uppercase());
     if currency.as_deref().is_some_and(|c| c.len() != 3 || !c.chars().all(|x| x.is_ascii_uppercase())) {
         return Err(ApiError::invalid("currency", "A currency code such as EUR."));
     }
+    let time_zone = body.str("time_zone")?.map(|z| z.trim().to_string()).filter(|z| !z.is_empty());
+    if time_zone.as_deref().is_some_and(|z| !import::teslafi::valid_time_zone(z)) {
+        return Err(ApiError::invalid("time_zone", "An IANA time zone such as Europe/Berlin."));
+    }
+    let distance_unit = match body.str("distance_unit")? {
+        None => None,
+        Some(w) => Some(
+            import::teslafi::Distance::from_word(w).ok_or_else(|| ApiError::invalid("distance_unit", "mi or km."))?,
+        ),
+    };
+    let temperature_unit = match body.str("temperature_unit")? {
+        None => None,
+        Some(w) => Some(
+            import::teslafi::Temperature::from_word(w)
+                .ok_or_else(|| ApiError::invalid("temperature_unit", "c or f."))?,
+        ),
+    };
+    let tf = TeslafiSettings { distance_unit, temperature_unit, time_zone };
     let e = app.service::<Engine>()?;
     let (out, name) = with_jobs(&app, move |app, all| {
         let mut j = job(all, &id)?;
@@ -864,6 +936,16 @@ async fn start(
                 "not_ready",
                 format!("This import is {}; it can start once the whole file is checked.", j.status),
             ));
+        }
+        if !j.is_teslafi() && tf != TeslafiSettings::default() {
+            let field = if tf.time_zone.is_some() {
+                "time_zone"
+            } else if tf.distance_unit.is_some() {
+                "distance_unit"
+            } else {
+                "temperature_unit"
+            };
+            return Err(ApiError::invalid(field, "Only for a TeslaFi import."));
         }
         if j.is_can() {
             return start_can(app, all, e, j);
@@ -913,8 +995,11 @@ async fn start(
         j.pass = 2;
         j.error = None;
         j.bytes_read = 0;
+        if j.is_teslafi() {
+            j.teslafi = Some(tf.clone());
+        }
         save(app, &j)?;
-        let live = Live::new(2);
+        let live = Live::new(if j.is_teslafi() { 1 } else { 2 });
         {
             let mut st = all.lock();
             st.jobs.insert(j.id.clone(), j.clone());
@@ -922,22 +1007,30 @@ async fn start(
         }
         let (app2, id2, all2) = (app.clone(), j.id.clone(), imports(app)?);
         let tables_before = j.cars.clone();
+        let teslafi = j.is_teslafi();
         tokio::task::spawn_blocking(move || {
-            let open = im::counted(opener(&app2, &id2), live.read.clone(), live.stop.clone());
-            let r = im::run(&e, open, &m, currency);
+            let mut open = im::counted(opener(&app2, &id2), live.read.clone(), live.stop.clone());
+            let pairs: Vec<(BackupCar, Value)> =
+                tables_before.iter().map(|c| (c.car.clone(), json!(c.matched))).collect();
+            let r = if teslafi {
+                open()
+                    .map_err(import::Error::Io)
+                    .and_then(|r| im::teslafi_run(&e, r, &m, &tf))
+                    .map(|done| im::teslafi_report_json(&done.report, &done.cars, &pairs, true))
+            } else {
+                im::run(&e, open, &m, currency).map(|done| im::report_json(&done.report, &done.cars, &pairs, true))
+            };
             if live.stop.load(Ordering::Relaxed) {
                 all2.lock().live.remove(&id2);
                 return;
             }
             let now = app2.now();
             finish(&app2, &all2, &id2, |j| match r {
-                Ok(done) => {
+                Ok(report) => {
                     j.status = "done".into();
                     j.finished_ms = Some(now);
                     j.bytes_read = j.bytes_total;
-                    let pairs: Vec<(BackupCar, Value)> =
-                        tables_before.iter().map(|c| (c.car.clone(), json!(c.matched))).collect();
-                    j.report = Some(im::report_json(&done.report, &done.cars, &pairs, true));
+                    j.report = Some(report);
                 }
                 Err(err) => {
                     let (code, message) = im::error_of(&err);

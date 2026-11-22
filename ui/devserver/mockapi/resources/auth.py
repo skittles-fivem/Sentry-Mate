@@ -229,8 +229,11 @@ def patch_prefs(req):
             rule["interface_size"] = "Must be between 50 and 200 (percent)."
     if "follow_screen" in body and not isinstance(body["follow_screen"], bool):
         bad["follow_screen"] = "Must be true or false."
-    if "ui_pack" in body and (not isinstance(body["ui_pack"], str) or not 1 <= len(body["ui_pack"]) <= 64):
-        rule["ui_pack"] = "A pack name of 1 to 64 characters."
+    if "ui_pack" in body and body["ui_pack"] is not None:
+        if not isinstance(body["ui_pack"], str) or not 1 <= len(body["ui_pack"]) <= 64:
+            bad["ui_pack"] = "Must be a pack id, or null for the server's choice."
+        elif req.app.packs.get(body["ui_pack"]) is None:
+            rule["ui_pack"] = "No such UI pack on this server."
     for k, most in (("car_order", 10000), ("pinned_cars", 50)):
         if k in body:
             v = body[k]

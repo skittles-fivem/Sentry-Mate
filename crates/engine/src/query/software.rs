@@ -1,9 +1,12 @@
 //! `/cars/{car}/updates` (and the version an admin types for one), `/fleet/versions`, and `/cars/{car}/events`: a
 //! car's drive, charge and software events exactly as MQTT publishes them.
 //!
-//! A version is only ever what someone said: imported from TeslaMate (`teslamate`) or typed by an admin
-//! (`owner`, kept sealed in the db's key/value store, per update). CAN logs carry no firmware version and no module
-//! build ids yet, so every update comes from imported history for now and none is `build_change` or `build_match`.
+//! A version is only ever what someone said: imported from TeslaMate (`teslamate`), given by the Tesla API
+//! (`tesla_api`) or typed by an admin (`owner`, kept sealed in the db's key/value store, per update). CAN logs carry
+//! no version number, but the modules' firmware fingerprints ([`crate::firmware`]) show when an update reflashed
+//! them: such an update is `detected_by: "fingerprint"`, lists the changed modules and fields, and its version is the
+//! one an admin typed on it (`owner`) or on an earlier update to the same fingerprint set (`build_match`, named by
+//! `auto`).
 //!
 //! Bounds: a car has a few dozen updates a year, so its update rows (start, end, version) are read whole; the charges
 //! of an update's stretch are only counted, a db page at a time. The fleet's versions walk the cars in id order and
@@ -15,7 +18,7 @@ use super::system::Shown;
 use super::{CarRef, List, Paging, Period, QResult, QueryError, Scoped, car_of, cmp_key, r, read_after, scoped};
 use crate::Engine;
 use db::UpdateRow;
-use model::{Car, CarId, Charge, Drive, Source};
+use model::{Car, CarId, Charge, Drive};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
@@ -61,10 +64,17 @@ pub struct UpdateView {
     pub version: Option<String>,
     /// `teslamate`, `owner`, `build_match`, or null without a version.
     pub version_source: Option<&'static str>,
-    /// `ota_status`, `build_change` or `teslamate`.
+    /// `ota_status`, `fingerprint`, `teslamate` or `tesla_api`.
     pub detected_by: &'static str,
     pub build_id: Option<String>,
     pub changed_modules: Vec<String>,
+    /// A fingerprint update's changed fields (old and new values as lowercase hex); empty for the others.
+    pub changes: Vec<super::firmware::ChangeView>,
+    /// A fingerprint update's version: typed on it (`owner`), or taken from an earlier update to the same fingerprint
+    /// set (`auto`); null without a version and on the other updates.
+    pub named_by: Option<&'static str>,
+    /// A fingerprint update: the last time the old fingerprints were seen and the first time the new ones were.
+    pub between_ms: Option<[u64; 2]>,
     /// Charges that started while the car ran this version.
     pub charges: u64,
     /// The rated range at 100 % at the end of those charges (their median).
@@ -104,15 +114,23 @@ fn all_updates(e: &Engine, car: CarId) -> QResult<Vec<UpdateRow>> {
     Ok(out)
 }
 
-/// The version an update shows and where it came from: typed by an admin, else imported.
+/// The version an update shows and where it came from: typed by an admin, else imported. A fingerprint update's
+/// is its name ([`crate::firmware::name_of`]): `owner`, or `build_match` when its set was named on another.
 fn version_of(e: &Engine, car: CarId, u: &UpdateRow) -> QResult<(Option<String>, Option<&'static str>)> {
+    if crate::firmware::is_fingerprint(u.id) {
+        let Some(ev) = super::firmware::event(e, car, u.id)? else { return Ok((None, None)) };
+        return Ok(match crate::firmware::name_of(e.db(), car, &ev)? {
+            Some((v, by)) => (Some(v), Some(if by == "auto" { "build_match" } else { "owner" })),
+            None => (None, None),
+        });
+    }
     if let Some(t) = typed(e, car, u.id)? {
         return Ok((Some(t.version), Some("owner")));
     }
     let v = Some(u.update.version.trim().to_string()).filter(|v| !v.is_empty());
     let src = v.as_ref().map(|_| {
-        if u.update.source == Source::Teslamate {
-            "teslamate"
+        if let Some(site) = u.update.source.site() {
+            site.word()
         } else if u.update.inputs.contains(model::Input::TeslaApi) {
             "tesla_api"
         } else {
@@ -147,7 +165,13 @@ fn view(e: &Engine, c: &Car, all: &[UpdateRow], i: usize, shown: &Shown) -> QRes
         n if n % 2 == 1 => Some(ranges[n / 2]),
         n => Some((ranges[n / 2 - 1] + ranges[n / 2]) / 2.0),
     };
-    let tm = up.source == Source::Teslamate;
+    let site = up.source.site();
+    let fw = super::firmware::event(e, c.id, u.id)?;
+    let named_by = match (&fw, version_source) {
+        (Some(_), Some("owner")) => Some("owner"),
+        (Some(_), Some(_)) => Some("auto"),
+        _ => None,
+    };
     Ok(UpdateView {
         id: u.id.to_string(),
         car: CarRef(c.id),
@@ -158,15 +182,20 @@ fn view(e: &Engine, c: &Car, all: &[UpdateRow], i: usize, shown: &Shown) -> QRes
         since_previous_ms: prev_end.map(|p| up.start_ms.saturating_sub(p)),
         version,
         version_source,
-        detected_by: if tm {
-            "teslamate"
+        detected_by: if let Some(site) = site {
+            site.word()
+        } else if fw.is_some() {
+            "fingerprint"
         } else if up.inputs.contains(model::Input::TeslaApi) {
             "tesla_api"
         } else {
             "ota_status"
         },
-        build_id: None,
-        changed_modules: Vec::new(),
+        build_id: fw.as_ref().map(|f| f.set.clone()),
+        changed_modules: fw.as_ref().map(super::firmware::modules_of).unwrap_or_default(),
+        changes: fw.as_ref().map(super::firmware::changes_of).unwrap_or_default(),
+        named_by,
+        between_ms: fw.as_ref().map(|f| [f.from_ms, f.to_ms]),
         charges,
         full_range_km: r(full_range, 1),
         full_pack_kwh: None,
@@ -237,9 +266,25 @@ pub fn updates(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QRes
         current_version: cv,
         current_version_source: cs,
         current_version_since_ms: since,
-        build_changed_since: None,
+        build_changed_since: build_changed_since(e, car, &all)?,
     };
     Ok(scoped(&c, Updates { items, next, summary }))
+}
+
+/// When the module builds changed after the newest named version: the end of the oldest fingerprint update without
+/// a version after the newest update with one (null: none since, or no update was ever named).
+fn build_changed_since(e: &Engine, car: CarId, all: &[UpdateRow]) -> QResult<Option<u64>> {
+    let mut since = None;
+    for u in all.iter().rev() {
+        let (v, _) = version_of(e, car, u)?;
+        if v.is_some() {
+            return Ok(since);
+        }
+        if crate::firmware::is_fingerprint(u.id) {
+            since = Some(u.update.end_ms.unwrap_or(u.update.start_ms));
+        }
+    }
+    Ok(None)
 }
 
 /// One update as `PATCH` answers it: the row with the car's zone.
@@ -259,12 +304,21 @@ pub fn set_version(e: &Engine, car: CarId, id: u64, version: Option<&str>) -> QR
     let key = typed_key(car, id);
     match version.map(str::trim) {
         Some(v) if !valid_version(v) => return Err(QueryError::invalid("version", "A version such as 2026.38.4.")),
+        // a fingerprint update's name is kept with its fingerprint set, so later updates to the same set get it
+        v if crate::firmware::is_fingerprint(id) => {
+            if !e.fw_set_name(car, id, v)? {
+                return Err(QueryError::NotFound("no_such_update"));
+            }
+        }
         Some(v) => crate::records::put(e.db(), NS, &key, &Typed { version: v.to_string(), at_ms: crate::now_ms() })?,
         None => {
             e.db().kv().delete(NS, &key)?;
         }
     }
     let shown = Shown::new(e, car, None)?;
+    // a fingerprint update's row is written again with its name
+    let all = if crate::firmware::is_fingerprint(id) { all_updates(e, car)? } else { all };
+    let i = all.iter().position(|u| u.id == id).unwrap_or(i);
     Ok(UpdateOne { update: view(e, &c, &all, i, &shown)?, time_zone: c.time_zone.clone() })
 }
 

@@ -374,8 +374,9 @@ def list_item(app, car_id, t):
 
 
 def _car_sources(h, car_id):
-    has_import = any(s.source == "teslamate" for s in h.segs) or bool(getattr(h, "shadow", None))
-    refs = S.car_refs(car_id, True, has_import)
+    shadow = getattr(h, "shadow", None) or []
+    has_import = any(s.source == "teslamate" for s in h.segs) or any(S.site_of(s) == "teslamate" for s in shadow)
+    refs = S.car_refs(car_id, True, has_import, any(S.site_of(s) == "teslafi" for s in shadow))
     return {"sources": refs, "source_label": S.label_of(refs)}
 
 

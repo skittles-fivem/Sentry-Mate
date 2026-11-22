@@ -10,14 +10,13 @@ rebuild is pending.
 from __future__ import annotations
 
 import copy
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import ipaddress
-import json
-import os
 import re
 
 from .. import derive
 from ..conventions import page
-from ..errors import bad_input, invalid, not_found
+from ..errors import bad_input, invalid, not_found, stale_version
 from ..live import now_object
 from ..util import DAY, HOUR, MIN, date_str, h01, local_date, r
 from .. import sources as SRC
@@ -53,7 +52,7 @@ def patch_settings(req):
     req.version_check(cur["version"])
     bad, rule = {}, {}
     known = ("version", "units", "range", "car_order", "geocode", "tiles", "release_check", "outside_links",
-             "outbound", "host_names")
+             "outbound", "host_names", "default_time_zone")
     for k in body:
         if k not in known:
             bad[k] = "Unknown field."
@@ -133,6 +132,14 @@ def patch_settings(req):
                     out.append(x)
             out = list(dict.fromkeys(out))
             new["host_names"] = out or [n for n in st.cert_names if n != "localhost"]
+    if "default_time_zone" in body:
+        z = body["default_time_zone"]
+        if not isinstance(z, str):
+            bad["default_time_zone"] = "Must be text."
+        elif not valid_zone(z.strip()):
+            rule["default_time_zone"] = "An IANA time zone such as America/Chicago."
+        else:
+            new["default_time_zone"] = z.strip()
     if bad:
         raise bad_input(bad)
     g, t = new["geocode"], new["tiles"]
@@ -168,12 +175,32 @@ def patch_settings(req):
     return copy.deepcopy(new)
 
 
+def valid_zone(z):
+    try:
+        ZoneInfo(z)
+        return True
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        return False
+
+
+# the ready-made online tile sources, as the real server's places::tiles::PRESETS
+TILE_PRESETS = [
+    {"id": "osm", "name": "OpenStreetMap standard", "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+     "attribution": "© OpenStreetMap contributors", "max_zoom": 19,
+     "terms": "https://operations.osmfoundation.org/policies/tiles/"},
+    {"id": "opentopomap", "name": "OpenTopoMap (terrain)", "url": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
+     "attribution": "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)",
+     "max_zoom": 17, "terms": "https://opentopomap.org/about"},
+]
+
+
 def maps_config(req):
     ss = req.store.server_settings
     t, g = ss["tiles"], ss["geocode"]
     return {"tiles": {"mode": t["mode"], "offline_url": None, "offline_data_present": False,
                       "online_template": t["online_url"] if t["mode"] == "online" else None,
-                      "attribution": t["attribution"], "max_zoom": t["max_zoom"]},
+                      "attribution": t["attribution"], "max_zoom": t["max_zoom"],
+                      "presets": copy.deepcopy(TILE_PRESETS)},
             "geocoding": {"mode": g["mode"], "credit": "GeoNames (CC BY 4.0)" if g["mode"] == "offline" else
                           "The address service set in Settings", "offline_data_present": True,
                           "language": g["language"]}}
@@ -207,6 +234,8 @@ def notices(req):
         items += move_notices(req)
         from .tesla import notices as tesla_notices
         items += tesla_notices(req)
+        from .teslafi import notices as teslafi_notices
+        items += teslafi_notices(req)
     return {"items": items, "next": None}
 
 
@@ -218,13 +247,10 @@ def release_notice(req):
 
 
 def about(req):
-    pack = {"name": None, "version": None, "api": None}
-    try:
-        with open(os.path.join(req.app.cfg.pack, "ui.json"), encoding="utf-8") as f:
-            m = json.load(f)
-        pack = {"name": m.get("name"), "version": m.get("version"), "api": m.get("api")}
-    except (OSError, ValueError):
-        pass
+    packs = req.app.packs
+    own = req.store.get_prefs(req.account).get("ui_pack") if req.account else None
+    m = packs.get(packs.pick(own))
+    pack = {"id": m["id"], "name": m["name"], "version": m["version"], "api": m["api"]}
     return {
         "version": DEV_VERSION, "api_version": API_VERSION, "ui_pack": pack, "dev_server": True,
         "links": {"source": None, "docs": "/help"},
@@ -234,6 +260,11 @@ def about(req):
         "data_credits": [{"name": "OpenStreetMap", "text": "Map data © OpenStreetMap contributors", "licence": "ODbL"},
                          {"name": "GeoNames", "text": "Place names for offline address lookup", "licence": "CC BY 4.0"}],
     }
+
+
+def ui_packs(req):
+    """Every pack on the server, for anyone signed in (crates/web/src/packs list())."""
+    return req.app.packs.listing()
 
 
 # ------------------------------------------------------------------ per-car health
@@ -340,54 +371,100 @@ def rebuild(req):
 # ------------------------------------------------------------------ overlaps
 
 
+def _counts(rows):
+    return {"drives": sum(1 for s in rows if s.kind == "drive"), "charges": sum(1 for s in rows if s.kind == "charge")}
+
+
+def _site_counts(rows):
+    return {site: _counts([s for s in rows if SRC.site_of(s) == site]) for site in ("teslamate", "teslafi")}
+
+
 def _overlap_view(h, i, o, now):
+    """A span of live and imported history (`kind: "live"`)."""
     can = [s for s in h.drives + h.charges if s.source == "can" and o["start_ms"] <= s.start < o["end_ms"]]
     tm = [s for s in h.shadow if o["start_ms"] <= s.start < o["end_ms"]]
-    live = {"drives": sum(1 for s in can if s.kind == "drive"), "charges": sum(1 for s in can if s.kind == "charge")}
-    imported = {"drives": sum(1 for s in tm if s.kind == "drive"), "charges": sum(1 for s in tm if s.kind == "charge")}
-    return {"id": f"overlap:{o['start_ms']}", "start_ms": o["start_ms"], "end_ms": o["end_ms"], "shown": o["shown"],
-            "shown_source": "live" if o["shown"] == "can" else "import:teslamate",
-            "live": live, "imported": imported, "can": dict(live), "teslamate": dict(imported),
-            "sources": [SRC.ref("smo"), SRC.ref("import", "teslamate")]}
+    # the imported side as the lists show it: where both imports cover a span, only its chosen site's rows
+    live, imported = _counts(can), _counts([s for s in tm if h.site_shown(s)])
+    sites = _site_counts(tm)
+    return {"id": f"overlap:{o['start_ms']}", "kind": "live", "start_ms": o["start_ms"], "end_ms": o["end_ms"],
+            "shown": o["shown"], "shown_source": "live" if o["shown"] == "can" else "import:teslamate",
+            "default_source": "live", "default_reason": None,
+            "live": live, "imported": imported, "sites": sites, "can": dict(live), "teslamate": dict(imported),
+            "sources": [SRC.ref("smo")] + [SRC.ref("import", k) for k, n in sites.items() if n["drives"] + n["charges"]],
+            "version": h.overlap_changes + 1}
+
+
+def _pair_view(h, o):
+    """A span both imports cover (`kind: "imports"`): which site it shows, and why at first."""
+    rows = [s for s in h.drives + h.charges if s.source == "teslamate" and o["start_ms"] <= s.start < o["end_ms"]]
+    live = _counts([s for s in h.drives + h.charges if s.source == "can" and o["start_ms"] <= s.start < o["end_ms"]])
+    # the shown site's rows (each real drive once, as the lists show it); `sites` has both
+    imported = _counts([s for s in rows if SRC.site_of(s) == o["shown"]])
+    return {"id": f"imports:{o['start_ms']}", "kind": "imports", "start_ms": o["start_ms"], "end_ms": o["end_ms"],
+            "shown": "teslamate", "shown_source": f"import:{o['shown']}", "default_source": f"import:{o['default']}",
+            "default_reason": o["reason"], "live": live, "imported": imported, "sites": _site_counts(rows),
+            "can": dict(live), "teslamate": dict(imported),
+            "sources": [SRC.ref("import", "teslamate"), SRC.ref("import", "teslafi")],
+            "version": h.overlap_changes + 1}
 
 
 def get_overlaps(req):
     h = req.history()
     rows = [_overlap_view(h, i, o, req.now) for i, o in enumerate(h.overlaps)] if h else []
-    items, nxt = page(req, rows, key=lambda x: (x["start_ms"],))
+    rows += [_pair_view(h, o) for o in h.import_overlaps] if h else []
+    # newest first, as the server lists them
+    items, nxt = page(req, rows, key=lambda x: (x["start_ms"], x["id"]), reverse=True)
     return {"car": req.car, "time_zone": req.tz(), "items": items, "next": nxt}
 
 
 def patch_overlap(req):
     h = req.history()
     body = req.json()
-    bad = {k: "Unknown field." for k in body if k not in ("id", "start_ms", "shown")}
+    bad = {k: "Unknown field." for k in body if k not in ("id", "start_ms", "shown", "version")}
     if "shown" not in body:
         bad["shown"] = "Required: live or import:teslamate."
     if "id" not in body and "start_ms" not in body:
         bad["id"] = "Name the overlap by its id (or start_ms)."
+    pair = str(body.get("id", "")).startswith("imports:")
+    version = body.get("version")
+    if version is not None and (not isinstance(version, int) or isinstance(version, bool) or version < 0):
+        bad["version"] = "Must be a whole number."
+    elif pair and version is None:
+        bad["version"] = "Required: the version you loaded."
     if bad:
         raise bad_input(bad)
-    shown = {"live": "can", "can": "can", "import:teslamate": "teslamate", "teslamate": "teslamate"}.get(body["shown"])
-    if shown is None:
-        raise invalid({"shown": "Must be live or import:teslamate (or the old words can, teslamate)."})
-    target = None
-    for i, o in enumerate(h.overlaps if h else []):
-        if body.get("id") == f"overlap:{o['start_ms']}" or body.get("start_ms") == o["start_ms"]:
-            target = (i, o)
-    if target is None:
+    if pair:
+        shown = {"import:teslamate": "teslamate", "teslamate": "teslamate", "import:teslafi": "teslafi",
+                 "teslafi": "teslafi"}.get(body["shown"])
+        if shown is None:
+            raise invalid({"shown": "Must be import:teslamate or import:teslafi: the import this span shows."})
+        spans = [o for o in (h.import_overlaps if h else []) if body["id"] == f"imports:{o['start_ms']}"]
+    else:
+        shown = {"live": "can", "can": "can", "import": "teslamate", "import:teslamate": "teslamate",
+                 "import:teslafi": "teslamate", "teslamate": "teslamate"}.get(body["shown"])
+        if shown is None:
+            raise invalid({"shown": "Must be live or import:teslamate (or the old words can, teslamate)."})
+        spans = [o for o in (h.overlaps if h else [])
+                 if body.get("id") == f"overlap:{o['start_ms']}" or body.get("start_ms") == o["start_ms"]]
+    if not spans:
         raise not_found("no_such_overlap", "There is no such overlap for this car.")
-    i, o = target
+    o = spans[-1]
     st = req.store
     with st.lock:
+        if version is not None and version != h.overlap_changes + 1:
+            raise stale_version(h.overlap_changes + 1)
         o["shown"] = shown
+        h.overlap_changes += 1
+    if pair:
+        what = f"the {'TeslaFi' if shown == 'teslafi' else 'TeslaMate'} import"
+    else:
+        what = f"{'live (SMO)' if shown == 'can' else 'imported TeslaMate'} history"
     st.record(req.account, "car.overlap", f"car:{req.car}",
-              f"Showing {'live (SMO)' if shown == 'can' else 'imported TeslaMate'} history from "
-              f"{date_str(o['start_ms'], req.tz())} to {date_str(o['end_ms'], req.tz())}.")
+              f"Showing {what} from {date_str(o['start_ms'], req.tz())} to {date_str(o['end_ms'], req.tz())}.")
     req.app.events.publish("rows", {"car": req.car, "kinds": ["drives", "charges", "states", "visits"],
                                     "from_ms": o["start_ms"], "to_ms": o["end_ms"]}, car=req.car)
     out = get_overlaps(req)
-    out["changed"] = _overlap_view(h, i, o, req.now)
+    out["changed"] = _pair_view(h, o) if pair else _overlap_view(h, h.overlaps.index(o), o, req.now)
     return out
 
 
@@ -521,6 +598,7 @@ def system_health(req):
         "ingest": {"memory": {"used_bytes": 212 * 1024 ** 2, "limit_bytes": 1024 ** 3}, "cached_cars": len(ds.featured)},
         "geocoder": {"mode": req.store.server_settings["geocode"]["mode"], "cache_size": 1_842, "hits_pct": 97.4},
         "tesla": _tesla_health(req),
+        "teslafi": _teslafi_health(req),
         "housekeeping_last_ms": req.now - 47 * MIN,
         "timings_ms": {"decode_per_log": 38.0, "rebuild_per_window": 410.0, "api_p50": 4.0, "api_p95": 31.0},
         "dev_server": {"dataset_build_ms": int(app.build_s * 1000), "now_ms": req.now, "clock_frozen": app.cfg.freeze_clock},
@@ -532,12 +610,18 @@ def _tesla_health(req):
     return health(req)
 
 
+def _teslafi_health(req):
+    from .teslafi import health
+    return health(req)
+
+
 def register(router):
     router.add("/api/v1/settings", GET=get_settings, PATCH=patch_settings, admin=("PATCH",))
     router.add("/api/v1/maps/config", GET=maps_config)
     router.add("/api/v1/geocode/status", GET=geocode_status)
     router.add("/api/v1/notices", GET=notices)
     router.add("/api/v1/about", GET=about)
+    router.add("/api/v1/ui-packs", GET=ui_packs)
     router.add("/api/v1/cars/{car}/health", GET=car_health)
     router.add("/api/v1/cars/{car}/rebuild", POST=rebuild, admin=("POST",))
     router.add("/api/v1/cars/{car}/overlaps", GET=get_overlaps, PATCH=patch_overlap, admin=("PATCH",))

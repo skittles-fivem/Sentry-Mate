@@ -1,0 +1,23 @@
+model,code,meaning,seats,market,year_from,year_to,source,confidence
+S,1,belts FR+SR*3; front airbags; PODS; side airbags; knee airbags FR,,North America,2012,,Part 565; Model S service manuals,high
+S,2,EU belts; front airbags; side airbags; knee airbags,,Europe,2012,2015,Model S service manual 2012-2020,medium
+S,3,belts FR+SR*3; front and side airbags (no knee),,export,2013,2021,Model S service manual 2012-2020; Part 565 2013-12-10 (54ed893e),medium
+S,4,belts FR+SR*2 or SR*3; front; side and knee airbags,,export (no PODS),2014,2021,Part 565 2014-12-30 (b6a941a0); 2015-08-01 (7aef9e63); 2016-10-31 (eed8a05c),high
+S,5,belts FR+SR*2; front and side airbags,,export,2015,2021,Model S service manual 2012-2020,low
+S,6,belts FR+SR*3; front and side airbags,,export,2015,2021,Model S service manual 2012-2020,low
+S,7,belts FR+SR*3; front and side airbags (active hood in some years),,Europe / Asia (no knee airbags),2015,,Model S service manuals (2012-2020; 2021+),high
+S,8,belts FR+SR*2; front and side airbags; active hood,,Europe,2015,2021,Model S service manual 2012-2020,low
+X,A,belts FR+SR*3+TR*2; front; PODS; side; knee,7,North America,2016,,Part 565; Model X service manuals,high
+X,B,belts FR+SR*2+TR*2; front; PODS; side; knee,6,North America,2016,,Part 565; Model X service manuals,high
+X,C,belts; front; PODS; side (no knee),,export,2016,,Model X service manuals,high
+X,D,belts FR+SR*3; front; PODS; side; knee,5,North America,2017,,Part 565 2016-10-31 (9179e681); Model X service manuals,high
+3,1,belts FR+SR*3; front; PODS; side; knee FR,5,North America (and some export),2017,,Part 565; Model 3 service manuals,high
+3,7,belts FR+SR*3; front; side (no PODS or knee),5,export (Shanghai; Europe; Asia-Pacific),2019,,Model 3 service manuals,high
+Y,A,belts FR+SR*3+TR*2; front; PODS; side; knee FR,7,North America,2020,,Part 565; Model Y service manuals,high
+Y,B,belts FR+SR*2+TR*2; front; PODS; side; knee FR,6,North America,2020,,Part 565; Model Y 2025 service manual,high
+Y,C,belts; front; PODS; side (no knee),,export (Shanghai; Berlin),2021,,Model Y service manuals,high
+Y,D,belts FR+SR*3; front; PODS; side; knee FR,5,North America,2020,,Part 565; Model Y service manuals,high
+A,E,belts; front; PODS; side; knee,2,North America,2026,,Part 565 2026-05-04 (fb63da70),high
+C,G,GVWR Class 2G (8001-9000 lb),,,2024,,Part 565 MY2024+ (position 6 is GVWR on 7G2),high
+C,H,GVWR Class 2H (9001-10000 lb),,,2024,,Part 565 MY2024+; Cybertruck service manual,high
+T,E,GVWR Class 8 (over 33000 lb),,,2023,,Part 565 2022-09-13 (7404ccb6) onward,high

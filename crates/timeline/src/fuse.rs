@@ -1,5 +1,8 @@
-//! Two live inputs over the same time, made one: SMO's samples (1 Hz, from the car's own buses) and the Tesla API's
-//! (every few seconds while streaming, every half minute to minute when polled).
+//! The live inputs over the same time, made one: SMO's samples (1 Hz, from the car's own buses), the Tesla API's
+//! (every few seconds while streaming, every half minute to minute when polled) and TeslaFi's (TeslaFi's own polls,
+//! about once a minute, read from its API). They are laid in that order ([`fuse_all`]): the Tesla API's over
+//! TeslaFi's first (inside the Tesla API's coverage, [`FuseParams::api_gap_ms`], its seconds, TeslaFi filling the
+//! values it lacks), then SMO's over the result, as below.
 //!
 //! - **Inside SMO's coverage** (seconds between two SMO samples at most [`FuseParams::smo_gap_ms`] apart), SMO's
 //!   sample is the second, and every value it has is SMO's. A value it lacks is taken from the nearest API sample
@@ -24,8 +27,9 @@ pub enum ApiState {
     Offline,
 }
 
-/// A span the Tesla API saw the car in one state. `data`: the API sent the car's values in it (vehicle data or the
-/// stream), not only its state in the vehicle list.
+/// A span an API saw the car in one state. `data`: the API sent the car's values in it (vehicle data or the
+/// stream), not only its state in the vehicle list. `inputs`: which API saw it (empty, as older servers wrote it:
+/// the Tesla API).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ApiSpan {
     pub start_ms: u64,
@@ -33,6 +37,15 @@ pub struct ApiSpan {
     pub state: ApiState,
     #[serde(default)]
     pub data: bool,
+    #[serde(default, skip_serializing_if = "Inputs::is_empty")]
+    pub inputs: Inputs,
+}
+
+impl ApiSpan {
+    /// The input that saw it (the Tesla API when none is named).
+    pub fn input(&self) -> Inputs {
+        if self.inputs.is_empty() { Inputs::TESLA_API } else { self.inputs }
+    }
 }
 
 /// How long an API value may stand in for a value SMO did not send that second (ms).
@@ -49,6 +62,14 @@ pub struct FuseParams {
     pub odometer_ms: u64,
     /// Temperatures and tire pressures.
     pub slow_ms: u64,
+    /// Tesla API samples this close are one stretch of its coverage, over TeslaFi's (it is polled about once a
+    /// minute, as TeslaFi is: inside that, no TeslaFi second of its own between two of the Tesla API's).
+    #[serde(default = "default_api_gap_ms")]
+    pub api_gap_ms: u64,
+}
+
+fn default_api_gap_ms() -> u64 {
+    90_000
 }
 
 impl Default for FuseParams {
@@ -60,6 +81,7 @@ impl Default for FuseParams {
             battery_ms: 120_000,
             odometer_ms: 60_000,
             slow_ms: 300_000,
+            api_gap_ms: default_api_gap_ms(),
         }
     }
 }
@@ -69,6 +91,11 @@ impl FuseParams {
     pub fn margin_ms(&self) -> u64 {
         self.fast_ms.max(self.position_ms).max(self.battery_ms).max(self.odometer_ms).max(self.slow_ms)
     }
+
+    /// How far around a window TeslaFi's samples must be read (they fill the Tesla API's seconds, which fill SMO's).
+    pub fn lower_margin_ms(&self) -> u64 {
+        self.margin_ms().saturating_mul(2).saturating_add(self.api_gap_ms)
+    }
 }
 
 /// The fused samples, by time, one per second, and the seconds that are not SMO's alone (by time).
@@ -76,7 +103,8 @@ impl FuseParams {
 pub struct Fused {
     pub samples: Vec<Sample>,
     /// `(t_ms, inputs)` for every second whose values are not all SMO's: `TESLA_API` for an API second, `BOTH` for
-    /// an SMO second with values from the API. A second not here is SMO's.
+    /// an SMO second with values from the API (and with `TESLAFI_API` where TeslaFi gave values). A second not here
+    /// is SMO's.
     pub marks: Vec<(u64, Inputs)>,
 }
 
@@ -109,27 +137,28 @@ fn seconds(v: &[Sample]) -> Vec<&Sample> {
     out
 }
 
-/// The times of the API samples that have one field, for the nearest-within-hold look-ups.
+/// The times of the lower samples that have one field, for the nearest-within-hold look-ups.
 struct Field<'a> {
-    at: Vec<(u64, &'a Sample)>,
+    at: Vec<(u64, &'a Sample, Inputs)>,
 }
 
 impl<'a> Field<'a> {
-    fn new(api: &[&'a Sample], has: impl Fn(&Sample) -> bool) -> Field<'a> {
-        Field { at: api.iter().filter(|s| has(s)).map(|s| (s.t_ms, *s)).collect() }
+    fn new(below: &[&'a (Sample, Inputs)], has: impl Fn(&Sample) -> bool) -> Field<'a> {
+        Field { at: below.iter().filter(|s| has(&s.0)).map(|s| (s.0.t_ms, &s.0, s.1)).collect() }
     }
 
-    /// The API sample with this field nearest `t` within `hold` (the earlier one on a tie).
-    fn near(&self, t: u64, hold: u64) -> Option<&'a Sample> {
-        let i = self.at.partition_point(|(x, _)| *x < t);
-        let after = self.at.get(i).filter(|(x, _)| x - t <= hold);
-        let before = i.checked_sub(1).map(|j| &self.at[j]).filter(|(x, _)| t - x <= hold);
-        match (before, after) {
-            (Some(b), Some(a)) => Some(if a.0 - t < t - b.0 { a.1 } else { b.1 }),
-            (Some(b), None) => Some(b.1),
-            (None, Some(a)) => Some(a.1),
+    /// The lower sample with this field nearest `t` within `hold` (the earlier one on a tie), and its inputs.
+    fn near(&self, t: u64, hold: u64) -> Option<(&'a Sample, Inputs)> {
+        let i = self.at.partition_point(|(x, _, _)| *x < t);
+        let after = self.at.get(i).filter(|(x, _, _)| x - t <= hold);
+        let before = i.checked_sub(1).map(|j| &self.at[j]).filter(|(x, _, _)| t - x <= hold);
+        let pick = match (before, after) {
+            (Some(b), Some(a)) => Some(if a.0 - t < t - b.0 { a } else { b }),
+            (Some(b), None) => Some(b),
+            (None, Some(a)) => Some(a),
             (None, None) => None,
-        }
+        };
+        pick.map(|(_, s, i)| (*s, *i))
     }
 }
 
@@ -164,63 +193,84 @@ const SLOTS: &[Slot] = slots!(
     slow_ms: outside_temp_c, inside_temp_c, battery_temp_c
 );
 
-/// Fuses SMO's samples and the API's (each any order). See the module's notes.
+/// Fuses SMO's samples and the Tesla API's (each any order). See the module's notes.
 pub fn fuse(smo: &[Sample], api: &[Sample], p: &FuseParams) -> Fused {
+    fuse_all(smo, &[(api, Inputs::TESLA_API)], p)
+}
+
+/// Fuses SMO's samples and those of the APIs (`lower`, each any order, highest first: the Tesla API's, then
+/// TeslaFi's), each lower input filling the one above it value by value. See the module's notes.
+pub fn fuse_all(smo: &[Sample], lower: &[(&[Sample], Inputs)], p: &FuseParams) -> Fused {
     let smo = seconds(smo);
-    let api = seconds(api);
-    if api.is_empty() {
+    let mut below: Vec<(Sample, Inputs)> = Vec::new();
+    for (samples, inputs) in lower.iter().rev() {
+        let top = seconds(samples);
+        below = if below.is_empty() {
+            top.into_iter().map(|s| (s.clone(), *inputs)).collect()
+        } else {
+            lay(&top, *inputs, &below, p.api_gap_ms, p)
+        };
+    }
+    if below.is_empty() {
         return Fused { samples: smo.into_iter().cloned().collect(), marks: Vec::new() };
     }
-    let smo_t: Vec<u64> = smo.iter().map(|s| s.t_ms).collect();
-    // whether a time falls in SMO's coverage: an SMO sample that second, or two around it close enough
-    let covered = |t: u64| {
-        let i = smo_t.partition_point(|&x| x < t);
-        if smo_t.get(i) == Some(&t) {
-            return true;
-        }
-        match (i.checked_sub(1).map(|j| smo_t[j]), smo_t.get(i)) {
-            (Some(a), Some(&b)) => b - a <= p.smo_gap_ms,
-            _ => false,
-        }
-    };
-    // only the API samples near SMO's seconds are looked at for filling
-    let near_smo: Vec<&Sample> = api
-        .iter()
-        .copied()
-        .filter(|a| {
-            let i = smo_t.partition_point(|&x| x < a.t_ms);
-            let m = p.margin_ms();
-            smo_t.get(i).is_some_and(|&x| x - a.t_ms <= m) || i.checked_sub(1).is_some_and(|j| a.t_ms - smo_t[j] <= m)
-        })
-        .collect();
-    let mut out: Vec<(Sample, Inputs)> = Vec::with_capacity(smo.len() + api.len());
-    if near_smo.is_empty() {
-        out.extend(smo.iter().map(|s| ((*s).clone(), Inputs::SMO)));
-    } else {
-        let looks: Vec<Field<'_>> = SLOTS.iter().map(|slot| Field::new(&near_smo, slot.has)).collect();
-        for s in &smo {
-            let mut x = (*s).clone();
-            let api_vals = fill_one(&mut x, p, &looks);
-            out.push((x, if api_vals { Inputs::BOTH } else { Inputs::SMO }));
-        }
-    }
-    out.extend(api.iter().filter(|a| !covered(a.t_ms)).map(|a| ((*a).clone(), Inputs::TESLA_API)));
-    out.sort_by_key(|(s, _)| s.t_ms);
+    let out = lay(&smo, Inputs::SMO, &below, p.smo_gap_ms, p);
     let marks = out.iter().filter(|(_, i)| *i != Inputs::SMO).map(|(s, i)| (s.t_ms, *i)).collect();
     Fused { samples: out.into_iter().map(|(s, _)| s).collect(), marks }
 }
 
-fn fill_one(s: &mut Sample, p: &FuseParams, looks: &[Field<'_>]) -> bool {
-    let mut any = false;
-    for (slot, look) in SLOTS.iter().zip(looks) {
-        if !(slot.has)(s)
-            && let Some(a) = look.near(s.t_ms, (slot.hold)(p))
-        {
-            (slot.copy)(s, a);
-            any = true;
+/// `top`'s seconds (one per second, sorted) with the values they lack from `below` (sorted, one per second), and
+/// `below`'s seconds outside `top`'s coverage (seconds between two of `top`'s at most `gap` apart), by time.
+fn lay(top: &[&Sample], top_in: Inputs, below: &[(Sample, Inputs)], gap: u64, p: &FuseParams) -> Vec<(Sample, Inputs)> {
+    let top_t: Vec<u64> = top.iter().map(|s| s.t_ms).collect();
+    // whether a time falls in the top input's coverage: a sample that second, or two around it close enough
+    let covered = |t: u64| {
+        let i = top_t.partition_point(|&x| x < t);
+        if top_t.get(i) == Some(&t) {
+            return true;
+        }
+        match (i.checked_sub(1).map(|j| top_t[j]), top_t.get(i)) {
+            (Some(a), Some(&b)) => b - a <= gap,
+            _ => false,
+        }
+    };
+    // only the lower samples near the top's seconds are looked at for filling
+    let m = p.margin_ms();
+    let near_top: Vec<&(Sample, Inputs)> = below
+        .iter()
+        .filter(|(a, _)| {
+            let i = top_t.partition_point(|&x| x < a.t_ms);
+            top_t.get(i).is_some_and(|&x| x - a.t_ms <= m) || i.checked_sub(1).is_some_and(|j| a.t_ms - top_t[j] <= m)
+        })
+        .collect();
+    let mut out: Vec<(Sample, Inputs)> = Vec::with_capacity(top.len() + below.len());
+    if near_top.is_empty() {
+        out.extend(top.iter().map(|s| ((*s).clone(), top_in)));
+    } else {
+        let looks: Vec<Field<'_>> = SLOTS.iter().map(|slot| Field::new(&near_top, slot.has)).collect();
+        for s in top {
+            let mut x = (*s).clone();
+            let filled = fill_one(&mut x, p, &looks);
+            out.push((x, top_in.union(filled)));
         }
     }
-    any
+    out.extend(below.iter().filter(|(a, _)| !covered(a.t_ms)).cloned());
+    out.sort_by_key(|(s, _)| s.t_ms);
+    out
+}
+
+/// Fills what `s` lacks; returns the inputs of the values taken.
+fn fill_one(s: &mut Sample, p: &FuseParams, looks: &[Field<'_>]) -> Inputs {
+    let mut from = Inputs::NONE;
+    for (slot, look) in SLOTS.iter().zip(looks) {
+        if !(slot.has)(s)
+            && let Some((a, i)) = look.near(s.t_ms, (slot.hold)(p))
+        {
+            (slot.copy)(s, a);
+            from = from.union(i);
+        }
+    }
+    from
 }
 
 #[cfg(test)]
@@ -293,6 +343,59 @@ mod tests {
         let f = fuse(&s, &[], &FuseParams::default());
         assert_eq!(f.samples, s);
         assert!(f.marks.is_empty());
+    }
+
+    fn fi(t: u64) -> Sample {
+        Sample {
+            t_ms: t * 1000,
+            speed_kmh: Some(47.0),
+            soc: Some(68.0),
+            lat: Some(1.2),
+            lon: Some(2.2),
+            inside_temp_c: Some(19.0),
+            outside_temp_c: Some(9.0),
+            ..Sample::default()
+        }
+    }
+
+    #[test]
+    fn smo_then_the_tesla_api_then_teslafi() {
+        // SMO for the first minute, the Tesla API every 30 s for the first five, TeslaFi every 60 s for ten
+        let s: Vec<Sample> = (0..60).map(smo).collect();
+        let a: Vec<Sample> = (0..10).map(|i| api(i * 30)).collect();
+        let t: Vec<Sample> = (0..10).map(|i| fi(i * 60 + 7)).collect();
+        let p = FuseParams::default();
+        let f = fuse_all(&s, &[(&a, Inputs::TESLA_API), (&t, Inputs::TESLAFI_API)], &p);
+        let at = |sec: u64| f.samples.iter().find(|x| x.t_ms == sec * 1000).cloned();
+        // inside SMO's coverage: SMO's values, the cabin from the Tesla API, the outside from TeslaFi
+        let x = at(30).unwrap();
+        assert_eq!((x.speed_kmh, x.inside_temp_c, x.outside_temp_c), (Some(50.0), Some(21.0), Some(9.0)));
+        let all = Inputs::SMO.union(Inputs::TESLA_API).union(Inputs::TESLAFI_API);
+        assert_eq!(f.inputs_at(30_000), all);
+        // inside the Tesla API's coverage (to 270 s): its seconds, TeslaFi's only to fill
+        let x = at(120).unwrap();
+        assert_eq!((x.speed_kmh, x.outside_temp_c), (Some(48.0), Some(9.0)));
+        assert_eq!(f.inputs_at(120_000), Inputs::TESLA_API.union(Inputs::TESLAFI_API));
+        assert!(at(127).is_none(), "no TeslaFi second between two of the Tesla API's");
+        // after it: TeslaFi's own seconds
+        let x = at(367).unwrap();
+        assert_eq!((x.speed_kmh, x.soc), (Some(47.0), Some(68.0)));
+        assert_eq!(f.inputs_at(367_000), Inputs::TESLAFI_API);
+        assert!(f.samples.windows(2).all(|w| w[0].t_ms < w[1].t_ms));
+        // the two-input call is the same as before
+        assert_eq!(fuse(&s, &a, &p), fuse_all(&s, &[(&a, Inputs::TESLA_API)], &p));
+    }
+
+    #[test]
+    fn teslafi_alone_or_under_smo_alone() {
+        let s: Vec<Sample> = (0..60).map(smo).collect();
+        let t: Vec<Sample> = (0..5).map(|i| fi(i * 60 + 7)).collect();
+        let f = fuse_all(&s, &[(&[], Inputs::TESLA_API), (&t, Inputs::TESLAFI_API)], &FuseParams::default());
+        assert_eq!(f.inputs_at(10_000), Inputs::SMO.union(Inputs::TESLAFI_API));
+        assert_eq!(f.inputs_at(187_000), Inputs::TESLAFI_API);
+        let only = fuse_all(&[], &[(&[], Inputs::TESLA_API), (&t, Inputs::TESLAFI_API)], &FuseParams::default());
+        assert_eq!(only.samples.len(), 5);
+        assert!(only.marks.iter().all(|m| m.1 == Inputs::TESLAFI_API));
     }
 
     #[test]

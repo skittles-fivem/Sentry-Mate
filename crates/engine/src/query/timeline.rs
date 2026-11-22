@@ -60,6 +60,12 @@ pub struct Row {
     pub flags: Option<serde_json::Value>,
     pub version: Option<String>,
     pub version_source: Option<&'static str>,
+    /// An update row found from the modules' firmware fingerprints: `fingerprint`, with the modules it changed
+    /// (`bms`, `vcfront` ...); left out on every other row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detected_by: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_modules: Option<Vec<String>>,
 }
 
 fn point(w: &super::Where) -> Point {
@@ -192,6 +198,8 @@ fn stretch_rows(
             flags: None,
             version: None,
             version_source: None,
+            detected_by: None,
+            changed_modules: None,
         });
     };
     let mut cur = x;
@@ -227,6 +235,8 @@ fn stretch_rows(
             flags: None,
             version: None,
             version_source: None,
+            detected_by: None,
+            changed_modules: None,
         });
         cur = gb;
     }
@@ -252,7 +262,11 @@ pub(crate) fn each_span(
             let s = row.span;
             match cur.as_mut() {
                 Some(l)
-                    if l.end_ms == s.start_ms && l.state == s.state && l.buses == s.buses && l.source == s.source =>
+                    if l.end_ms == s.start_ms
+                        && l.state == s.state
+                        && l.buses == s.buses
+                        && l.source == s.source
+                        && l.inputs == s.inputs =>
                 {
                     l.end_ms = l.end_ms.max(s.end_ms);
                 }
@@ -366,6 +380,8 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             flags: serde_json::to_value(&v.flags).ok(),
             version: None,
             version_source: None,
+            detected_by: None,
+            changed_modules: None,
         }
     };
     let charge_row = |ch: &Charge| -> QResult<Row> {
@@ -392,11 +408,13 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             range_end_km: v.end_range_km,
             range_delta_km: v.range_added_km,
             energy_delta_kwh: v.energy_added_kwh,
-            energy_basis: Some(if ch.source == Source::Live && ch.inputs != model::Inputs::TESLA_API {
-                "measured"
-            } else {
-                "estimated"
-            }),
+            energy_basis: Some(
+                if ch.source == Source::Live && (ch.inputs.is_empty() || ch.inputs.contains(model::Input::Smo)) {
+                    "measured"
+                } else {
+                    "estimated"
+                },
+            ),
             outside_avg_c: v.outside_avg_c,
             cost: v.cost.clone(),
             reference: Some(serde_json::json!({ "charge": v.id })),
@@ -407,6 +425,8 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             flags: serde_json::to_value(&v.flags).ok(),
             version: None,
             version_source: None,
+            detected_by: None,
+            changed_modules: None,
         })
     };
     let mut pieces: Vec<Piece> = Vec::new();
@@ -498,8 +518,14 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
         }
     }
     out.extend(pieces.into_iter().map(|p| p.2));
+    let fw = crate::firmware::history(db, car)?;
     for u in all_rows::<UpdateRow>(db, car, a, b, None)? {
         let up = &u.update;
+        let ev = fw.events.iter().find(|ev| crate::firmware::is_fingerprint(u.id) && ev.id == u.id);
+        let fw_name = match ev {
+            Some(ev) => crate::firmware::name_of(db, car, ev)?,
+            None => None,
+        };
         out.push(Row {
             id: format!("update:{}", up.start_ms),
             kind: "update",
@@ -524,8 +550,18 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             gap_reason: None,
             from: super::Sources::of(up.source, up.inputs),
             flags: None,
-            version: Some(up.version.clone()).filter(|v| !v.is_empty()),
-            version_source: (up.source == Source::Teslamate).then_some("teslamate"),
+            version: match ev {
+                Some(_) => fw_name.as_ref().map(|n| n.0.clone()),
+                None => Some(up.version.clone()).filter(|v| !v.is_empty()),
+            },
+            version_source: match (ev, &fw_name) {
+                (Some(_), Some((_, "auto"))) => Some("build_match"),
+                (Some(_), Some(_)) => Some("owner"),
+                (Some(_), None) => None,
+                (None, _) => up.source.site().map(model::ImportSite::word),
+            },
+            detected_by: ev.map(|_| "fingerprint"),
+            changed_modules: ev.map(super::firmware::modules_of),
         });
     }
     out.retain(|row| row.start_ms >= a && row.start_ms < b);
@@ -697,7 +733,13 @@ pub(crate) fn joined(spans: Vec<StateSpan>) -> Vec<StateSpan> {
     let mut out: Vec<StateSpan> = Vec::new();
     for s in spans {
         match out.last_mut() {
-            Some(l) if l.end_ms == s.start_ms && l.state == s.state && l.buses == s.buses && l.source == s.source => {
+            Some(l)
+                if l.end_ms == s.start_ms
+                    && l.state == s.state
+                    && l.buses == s.buses
+                    && l.source == s.source
+                    && l.inputs == s.inputs =>
+            {
                 l.end_ms = s.end_ms;
             }
             _ => out.push(s),
@@ -867,7 +909,7 @@ pub fn activity(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Activ
         let kind = match s.state {
             State::Asleep => "asleep",
             State::Unknown => "unknown",
-            State::Online if s.buses.iter().any(|x| x == "can1") || s.source == Source::Teslamate => "online",
+            State::Online if s.buses.iter().any(|x| x == "can1") || s.source.is_imported() => "online",
             State::Online => "online_vehicle_bus_only",
         };
         // the span with the drives and charges taken out

@@ -37,6 +37,25 @@ export function loadMapLibre() {
 /** The server's map settings, kept for 5 minutes. */
 export const mapConfig = () => api.get('maps/config', null, { maxAgeMs: 300000 });
 
+// A page keeps the Content-Security-Policy and Referrer-Policy it was loaded with. After an admin turns online tiles
+// on or picks another tile source, an open page still blocks the new tile server (and sends it no Referer), so its
+// maps would stay blank until a reload: the first tile the page's policy blocks loads the page again, once, so it
+// gets the server's current policy. Not again for the same server within two minutes (then the server leaves it out).
+let tileOrigin = null, policyWatched = false;
+export function watchTilePolicy(template) {
+  try { tileOrigin = template ? new URL(template.replace(/\{[^}]*\}/g, '0')).origin : null; } catch { tileOrigin = null; }
+  if (!tileOrigin || policyWatched) return;
+  policyWatched = true;
+  document.addEventListener('securitypolicyviolation', (e) => {
+    if (!tileOrigin || !String(e.blockedURI || '').startsWith(tileOrigin)) return;
+    try {
+      const last = JSON.parse(sessionStorage.getItem('sm-tile-policy-reload') || 'null');
+      if (last && last.origin === tileOrigin && Date.now() - last.at < 120000) return;
+      sessionStorage.setItem('sm-tile-policy-reload', JSON.stringify({ origin: tileOrigin, at: Date.now() }));
+    } catch { return; } // no session storage: nothing would stop a reload loop
+    location.reload();
+  });
+}
 /** Where the tiles come from: { url, attribution, maxZoom, offline }, or null when there are none. */
 export function tileSource(cfg) {
   const t = cfg && cfg.tiles;
@@ -86,6 +105,7 @@ export async function mapTile(ctx, box, { center = null, zoom = 13, bounds = nul
   }
   if (ctx.signal.aborted) return null;
   const src = tileSource(cfg);
+  watchTilePolicy(src && !src.offline ? src.url : null);
   const pad = () => Math.round(padding * display.scale);
   let tiles = tilePx();
   const source = () => ({ type: 'raster', tiles: [src.url], tileSize: tiles, maxzoom: src.maxZoom, attribution: src.attribution });
@@ -98,7 +118,7 @@ export async function mapTile(ctx, box, { center = null, zoom = 13, bounds = nul
         ...(src ? [{ id: 'tiles', type: 'raster', source: 'tiles', paint: paint(isDark()) }] : [])],
     },
     center: center || [0, 0], zoom, bounds: bounds || undefined, fitBoundsOptions: { padding: pad(), maxZoom },
-    attributionControl: { compact: true }, refreshExpiredTiles: false,
+    attributionControl: { compact: false }, refreshExpiredTiles: false, // the credit stays in view, as the tile policies ask
     scrollZoom: false, dragRotate: false, pitchWithRotate: false, touchPitch: false, cooperativeGestures: false,
     interactive, fadeDuration: 0, maxZoom: 18, maxCanvasSize: [8192, 8192],
   });

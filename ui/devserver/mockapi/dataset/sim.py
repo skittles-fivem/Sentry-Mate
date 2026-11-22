@@ -167,7 +167,7 @@ class Sim:
         self.plan_end = plan_end_ms
         self.tz = car.time_zone
         self.segs = []
-        self.shadow = []  # teslamate copies of CAN rows where both exist
+        self.shadow = []  # teslamate copies of CAN rows where both exist; teslafi copies of teslamate rows
         self.dseq = 0
         self.cseq = 0
         self.useq = 0
@@ -189,6 +189,10 @@ class Sim:
         self.can_from = local_ms(now_day + dt.timedelta(days=sp["can_from"]), 0, self.tz) if "can_from" in sp else None
         self.tm_until = (local_ms(now_day + dt.timedelta(days=sp["teslamate_until"]), 0, self.tz)
                          if "teslamate_until" in sp else None)
+        # a TeslaFi import of the same days as part of the TeslaMate one (no live data there)
+        self.tf_span = ((local_ms(now_day + dt.timedelta(days=sp["teslafi_from"]), 0, self.tz),
+                         local_ms(now_day + dt.timedelta(days=sp["teslafi_until"]), 0, self.tz))
+                        if "teslafi_from" in sp else None)
 
     def source(self, t):
         if self.can_from is not None and t < self.can_from:
@@ -402,6 +406,11 @@ class Sim:
             for s in segs:
                 if s.kind in ("drive", "charge") and s.source == "can" and self.can_from <= s.start < self.tm_until:
                     self.shadow.append(_teslamate_copy(s, self.rnd("tm", s.id)))
+        if self.tf_span is not None:
+            a, b = self.tf_span
+            for s in segs:
+                if s.kind in ("drive", "charge") and s.source == "teslamate" and a <= s.start < b:
+                    self.shadow.append(_teslafi_copy(s, self.rnd("tf", s.id)))
         self.segs = segs
 
 
@@ -513,6 +522,16 @@ def _apply_tail(car, segs, g0, plan_end):
     g1 = g0 + HOUR
     return head + [Gap(car, g0, g1, "failed_check", before=(p.lat, p.lon), after=(p.lat, p.lon)),
                    Gap(car, g1, plan_end, "no_log", before=(p.lat, p.lon), after=None, open_end=True)]
+
+
+def _teslafi_copy(s, rnd):
+    """TeslaFi's copy of a TeslaMate row: the same drive or charge polled about once a minute (a little later)."""
+    c = _teslamate_copy(s, rnd)
+    c.site = "teslafi"
+    c.id = str(int(s.id) + 700_000)
+    c.tm_copy_of = None
+    c.tf_copy_of = s.id
+    return c
 
 
 def _teslamate_copy(s, rnd):

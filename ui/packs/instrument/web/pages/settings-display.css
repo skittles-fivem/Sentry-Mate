@@ -19,3 +19,5 @@
   .settings-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settings-pair .setting { grid-template-columns: minmax(0, round(22rem, var(--e))) minmax(0, 1fr); gap: round(0.875rem, var(--e)) round(1.75rem, var(--e)); }
 }
+.settings-stack .pack-row { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.settings-stack .pack-row .select { min-width: 0; max-width: 100%; }

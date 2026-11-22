@@ -1,0 +1,6 @@
+wmi,maker,vehicle_type,region,country,year_from,year_to,source,confidence
+5YJ,Tesla Inc.,passenger car (all Tesla vehicles before MY2022),North America,US,2008,,Part 565 VIN decoders 2009-2027 (NHTSA MID manufacturer 955); Tesla service manuals,high
+7SA,Tesla Inc.,multipurpose passenger vehicle,North America,US,2022,,Part 565 MY2023+ (7404ccb6); Model X and Model Y service manuals,high
+7G2,Tesla Inc.,truck,North America,US,2023,,Part 565 MY2023+ (7404ccb6; fbec7f77),high
+LRW,Tesla (Shanghai) Co. Ltd.,passenger car / multipurpose passenger vehicle,China,CN,2019,,Model 3 and Model Y service manuals (VIN page),high
+XP7,Tesla Manufacturing Brandenburg SE,multipurpose passenger vehicle,Europe,DE,2022,,Model Y service manuals (VIN page),high

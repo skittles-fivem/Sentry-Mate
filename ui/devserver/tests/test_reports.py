@@ -136,7 +136,8 @@ class Software(ServerCase):
         self.assertEqual(u["summary"]["count"], 2)
         unknown = u["items"][0]
         self.assertIsNone(unknown["version"])
-        self.assertEqual(unknown["detected_by"], "build_change")
+        self.assertEqual(unknown["detected_by"], "fingerprint")
+        self.assertIsNone(unknown["named_by"])
         self.assertEqual(u["summary"]["current_version"], "2025.44.25")
         self.assertIsNotNone(u["summary"]["build_changed_since"])
         self.c.error("PATCH", f"/api/v1/cars/c2/updates/{unknown['id']}", 422, "invalid", body={"version": "soon"})
@@ -155,6 +156,52 @@ class Software(ServerCase):
         self.assertTrue(any(x["version_source"] == "teslamate" for x in tm))
         self.c.json("PATCH", f"/api/v1/cars/c2/updates/{unknown['id']}", {"version": None})
         self.assertEqual(self.c.get("/api/v1/cars/c2/updates")["summary"]["current_version"], "2025.44.25")
+
+    def test_firmware_and_fingerprint_updates(self):
+        fw = self.c.get("/api/v1/cars/c2/firmware")
+        self.assertEqual([m["id"] for m in fw["modules"]], ["vcfront", "bms", "dir", "dif"])
+        self.assertEqual(fw["modules"][1]["can_id"], 0x300)
+        self.assertEqual(fw["modules"][3]["fields"], [], "c2 is rear drive only")
+        self.assertEqual(fw["updates"], 2)
+        bms = next(f for f in fw["modules"][1]["fields"] if f["field"] == "BMS_appCrc")
+        self.assertRegex(bms["hex"], r"^[0-9a-f]{8}$")
+        self.assertEqual(len(bms["history"]), 3, "two updates changed it")
+        self.assertEqual(bms["history"][-1]["hex"], bms["hex"])
+        h = next(f for f in fw["modules"][2]["fields"] if f["field"] == "DIR_subcomponentGitHash")
+        self.assertRegex(h["hex"], r"^[0-9a-f]{14}$")
+        self.assertIsNotNone(fw["updated_ms"])
+        ups = sorted(self.c.get("/api/v1/cars/c2/updates")["items"], key=lambda u: u["start_ms"])
+        named, unnamed = ups
+        for u in ups:
+            self.assertEqual(u["detected_by"], "fingerprint")
+            self.assertEqual(u["between_ms"], [u["start_ms"], u["end_ms"]])
+            self.assertIn("bms", u["changed_modules"])
+            self.assertEqual(sorted({c["module"] for c in u["changes"]}), sorted(u["changed_modules"]))
+            # the change's new value is the one seen from the end of the update on
+            c = next(c for c in u["changes"] if c["field"] == "BMS_appCrc")
+            run = next(x for x in bms["history"] if x["first_seen_ms"] == u["end_ms"])
+            self.assertEqual(run["hex"], c["new"])
+            self.assertNotEqual(c["old"], c["new"])
+        self.assertEqual((named["version"], named["named_by"]), ("2025.44.25", "owner"))
+        self.assertEqual((unnamed["version"], unnamed["named_by"]), (None, None))
+        tl = self.c.get(f"/api/v1/cars/c2/timeline?kinds=update&from_ms={named['start_ms']}&limit=10")["items"]
+        self.assertTrue(tl and all(r["detected_by"] == "fingerprint" and r["changed_modules"] for r in tl))
+        self.assertEqual(self.c.get("/api/v1/cars/c1/firmware")["modules"][3]["fields"][0]["field"],
+                         "DIF_applicationCrc")
+
+    def test_fingerprint_update_never_in_progress(self):
+        # like the real server: between_ms and end_ms are set even while "now" is inside the update's window
+        from types import SimpleNamespace
+        from mockapi.resources.software import update_rows
+        app = self.server.app
+        h = app.ds.history("c2")
+        u = next(u for u in h.updates if u.source == "can" and u.detected_by == "fingerprint")
+        self.assertLess(u.start + 1, u.end)
+        rows = update_rows(SimpleNamespace(app=app, now=u.start + 1), h)
+        row = next(x for x in rows if x["id"] == u.id)
+        self.assertEqual(row["between_ms"], [u.start, u.end])
+        self.assertEqual((row["end_ms"], row["duration_ms"]), (u.end, u.end - u.start))
+        self.c.error("GET", "/api/v1/cars/c999/firmware", 404, "no_such_car")
 
     def test_events(self):
         d = self.c.get("/api/v1/cars/c1/events?limit=20")

@@ -314,7 +314,7 @@ fn car_json(e: &Engine, c: &tesla::AccountCar, st: Option<&AccountStatus>) -> Va
     json!({
         "vehicle": c.vehicle,
         "vin_prefix": c.vin_prefix,
-        "model": c.model.map(String::from),
+        "model": c.model.map(|m| format!("Model {m}")),
         "year": c.year,
         "display_name": c.display_name,
         "match": match_json(c.matched),

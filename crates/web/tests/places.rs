@@ -42,6 +42,11 @@ async fn put(store: &ingest::Store, judge: &ingest::Judge, name: &str, bytes: &[
 /// Two made-up cars, two light days each (home charging at night; the first also drives to a supercharger), no
 /// places yet.
 async fn seeded() -> Seeded {
+    seeded_cars(2).await
+}
+
+/// The same with `cars` made-up cars (0: an engine with no logs at all, nothing to decode).
+async fn seeded_cars(cars: u32) -> Seeded {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
@@ -56,7 +61,7 @@ async fn seeded() -> Seeded {
     );
     let judge = ingest::Judge::new(store.clone()).on_judged(engine.listener());
     engine.start().unwrap();
-    for n in 0..2 {
+    for n in 0..cars {
         let sc = synth::Scenario::new(11)
             .car(n)
             .start(SATURDAY_MS)
@@ -70,7 +75,7 @@ async fn seeded() -> Seeded {
     }
     engine.idle().await;
     let ids = engine::query::all_cars(&engine).unwrap();
-    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert_eq!(ids.len(), cars as usize, "{ids:?}");
     let (e2, d2) = (engine.clone(), db.clone());
     let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2))).await;
     Seeded { s, _engine: engine, cars: ids.iter().map(|c| format!("c{c}")).collect(), ids, store, judge, _dir: dir }
@@ -127,7 +132,48 @@ async fn charges(c: &mut Client, car: &str) -> Vec<Value> {
     ok(c, &format!("/api/v1/cars/{car}/charges?limit=500")).await["items"].as_array().unwrap().clone()
 }
 
+/// The fast set's places test: create, list, read, change, the place at a point and delete, with no logs to
+/// decode (the full one above runs over decoded days, with the --include-ignored set).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn places_create_list_change_and_delete_without_logs() {
+    let k = seeded_cars(0).await;
+    let mut admin = k.s.admin().await;
+    let l = ok(&mut admin, "/api/v1/places").await;
+    assert_eq!((l["items"].as_array().unwrap().len(), l["total"].as_u64()), (0, Some(0)), "{l}");
+
+    let draft = json!({ "name": "Made-up home", "kind": "home", "lat": synth::TOWN.lat, "lon": synth::TOWN.lon,
+                        "radius_m": 300, "price": { "currency": "EUR", "per_kwh": 0.25 } });
+    let r = admin.post("/api/v1/places", json!({ "name": 5 })).await;
+    assert_eq!((r.status, r.code().as_deref()), (400, Some("bad_input")), "{}", r.text());
+    let r = admin.post("/api/v1/places", draft).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let home = r.json();
+    has_keys(&home, PLACE_KEYS);
+    let hid = home["id"].as_str().unwrap().to_string();
+    assert_eq!((home["kind"].as_str(), home["version"].as_u64()), (Some("home"), Some(1)), "{home}");
+
+    let l = ok(&mut admin, "/api/v1/places").await;
+    assert_eq!((l["total"].as_u64(), &l["items"][0]["id"]), (Some(1), &json!(hid)), "{l}");
+    assert_eq!(ok(&mut admin, &format!("/api/v1/places/{hid}")).await["name"], "Made-up home");
+    let at = ok(&mut admin, &format!("/api/v1/places/at?lat={}&lon={}", synth::TOWN.lat, synth::TOWN.lon)).await;
+    assert_eq!(at["place"]["id"], json!(hid), "{at}");
+
+    let r = admin.patch(&format!("/api/v1/places/{hid}"), json!({ "name": "Home", "version": 7 })).await;
+    assert_eq!((r.status, r.code().as_deref()), (409, Some("stale_version")));
+    let r = admin.patch(&format!("/api/v1/places/{hid}"), json!({ "name": "Home", "version": 1 })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!((r.json()["name"].as_str(), r.json()["version"].as_u64()), (Some("Home"), Some(2)));
+
+    let r = admin.request("DELETE", &format!("/api/v1/places/{hid}?version=2"), None, &[]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["deleted"], true);
+    assert_eq!(code(&mut admin, &format!("/api/v1/places/{hid}")).await, (404, Some("no_such_place".into())));
+    let mut anon = k.s.client();
+    assert_eq!(anon.get("/api/v1/places").await.status, 401);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn places_crud_preview_reprice_suggestions_and_at_over_decoded_days() {
     let k = seeded().await;
     let (a, b) = (k.cars[0].clone(), k.cars[1].clone());
@@ -496,7 +542,13 @@ async fn maps_and_addresses_say_what_the_server_has() {
     // a fresh server sends no browser to an outside tile server: offline until an admin turns online tiles on
     assert_eq!(m["tiles"]["mode"], "offline", "{m}");
     assert_eq!(m["tiles"]["online_template"], Value::Null, "{m}");
-    has_keys(&m["tiles"], &["mode", "offline_url", "online_template", "attribution", "max_zoom"]);
+    has_keys(&m["tiles"], &["mode", "offline_url", "online_template", "attribution", "max_zoom", "presets"]);
+    // the ready-made online sources: OpenStreetMap's first, each with its credit, zoom and terms
+    let presets = m["tiles"]["presets"].as_array().unwrap();
+    assert_eq!(presets[0]["id"], "osm", "{m}");
+    for p in presets {
+        has_keys(p, &["id", "name", "url", "attribution", "max_zoom", "terms"]);
+    }
     has_keys(&m["geocoding"], &["mode", "credit", "offline_data_present"]);
     let g = ok(&mut admin, "/api/v1/geocode/status").await;
     has_keys(&g, &["mode", "offline_data", "cache_size", "online"]);
@@ -506,6 +558,7 @@ async fn maps_and_addresses_say_what_the_server_has() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn maps_and_addresses_follow_the_settings_at_once() {
     let k = seeded().await;
     let mut admin = k.s.admin().await;
@@ -514,8 +567,11 @@ async fn maps_and_addresses_follow_the_settings_at_once() {
     assert_eq!(m["tiles"]["online_template"], Value::Null, "{m}");
     // the pages' policy names no outside host while tiles are offline
     let csp = |r: &web::testkit::Res| r.header("content-security-policy").unwrap().to_string();
-    let before = csp(&admin.get("/").await);
+    let referrer = |r: &web::testkit::Res| r.header("referrer-policy").unwrap().to_string();
+    let page = admin.get("/").await;
+    let before = csp(&page);
     assert!(!before.contains("https://"), "{before}");
+    assert_eq!(referrer(&page), "no-referrer", "no Referer leaves while tiles are offline");
     assert_eq!((m["geocoding"]["mode"].as_str(), m["geocoding"]["language"].as_str()), (Some("offline"), Some("en")));
     let v = ok(&mut admin, "/api/v1/settings").await["version"].as_u64().unwrap();
     let tiles = json!({ "mode": "online", "online_url": "https://tiles.example.org/{z}/{x}/{y}.png",
@@ -528,8 +584,13 @@ async fn maps_and_addresses_follow_the_settings_at_once() {
         (&json!("online"), &json!("https://tiles.example.org/{z}/{x}/{y}.png"), &json!("Example tiles"), &json!(17)),
         "{m}"
     );
-    let on = csp(&admin.get("/").await);
+    let page = admin.get("/").await;
+    let on = csp(&page);
     assert!(on.contains("https://tiles.example.org") && !on.contains("openstreetmap"), "{on}");
+    // the tile server sees the page's origin as Referer (OpenStreetMap's policy blocks tile requests without one),
+    // never its path; the API's answers still send none
+    assert_eq!(referrer(&page), "strict-origin");
+    assert_eq!(referrer(&admin.get("/api/v1/maps/config").await), "no-referrer");
     // offline tiles: none served yet, so no address for them, and nothing online
     let r = admin.patch("/api/v1/settings", json!({ "version": v + 1, "tiles": { "mode": "offline" } })).await;
     assert_eq!(r.status, 200, "{}", r.text());
@@ -538,8 +599,10 @@ async fn maps_and_addresses_follow_the_settings_at_once() {
         (&m["tiles"]["mode"], &m["tiles"]["offline_url"], &m["tiles"]["online_template"]),
         (&json!("offline"), &Value::Null, &Value::Null)
     );
-    let off = csp(&admin.get("/").await);
+    let page = admin.get("/").await;
+    let off = csp(&page);
     assert!(!off.contains("https://"), "{off}");
+    assert_eq!(referrer(&page), "no-referrer");
 
     // addresses: the mode, service, language and rounding saved
     let g = ok(&mut admin, "/api/v1/geocode/status").await;
@@ -583,6 +646,7 @@ async fn ended_at(c: &mut Client, car: &str, place: &str) -> Vec<(String, Value)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn a_past_charge_without_a_cost_keeps_none_until_a_reprice() {
     let k = seeded().await;
     let a = k.cars[0].clone();
@@ -634,6 +698,7 @@ async fn a_past_charge_without_a_cost_keeps_none_until_a_reprice() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn paging_by_name_keys_on_the_name_not_the_position() {
     let k = seeded().await;
     let mut admin = k.s.admin().await;
@@ -684,7 +749,7 @@ async fn paging_by_name_keys_on_the_name_not_the_position() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn prices_that_leave_energy_unpriced_and_wrong_preview_versions_are_refused() {
-    let k = seeded().await;
+    let k = seeded_cars(0).await;
     let mut admin = k.s.admin().await;
     let rates = json!([
         { "name": "Night", "days": "mon-fri", "from": "22:00", "to": "06:00", "per_kwh": 0.1 },
@@ -714,6 +779,7 @@ async fn prices_that_leave_energy_unpriced_and_wrong_preview_versions_are_refuse
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn counts_follow_new_rows_and_every_way_of_asking_agrees() {
     let k = seeded().await;
     let (a, b) = (k.cars[0].clone(), k.cars[1].clone());

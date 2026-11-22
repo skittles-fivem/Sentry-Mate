@@ -5,8 +5,9 @@
 import { h, replace } from '../shared/dom.js';
 import { getUnits, format } from '../shared/units.js';
 import { isSupportedLocale, onLocaleChange } from '../shared/i18n.js';
-import { formatDate } from '../shared/time.js';
+import { formatDate, isValidZone } from '../shared/time.js';
 import { buildUrl } from '../shared/state.js';
+import { packChoices, packLabel } from '../shared/packs.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel } from '../core/page.js';
 import { field, showApiError } from '../core/form.js';
@@ -19,10 +20,16 @@ import { ago } from '../core/fmt.js';
 export const id = 'settings-display';
 export const css = true;
 
+// used only when the server's list of packs can't be read
+const PACKS = [['instrument', 'Instrument'], ['logbook', 'Logbook'], ['horizon', 'Horizon'], ['console', 'Console'], ['pebble', 'Pebble']];
 const LOCALES = [['auto', "This browser's language"], ['en-US', 'English (United States)'], ['en-GB', 'English (United Kingdom)'], ['de-DE', 'German number and date style'], ['fr-FR', 'French number and date style'], ['nl-NL', 'Dutch number and date style']].filter(([v]) => v === 'auto' || isSupportedLocale(v));
 
 // A language code as address data names it: en, de, pt-BR, zh-Hant.
 const LANG_RE = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
+const ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+// A web address that may break after each slash on a narrow screen (a <wbr> after it).
+const breakable = (s) => s.split('/').flatMap((part, i, all) => (i < all.length - 1 ? [`${part}/`, h('wbr')] : [part]));
+const BROWSER_ZONE = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
 
 const UNIT_WORDS = { km: 'km', mi: 'miles', c: '°C', f: '°F', bar: 'bar', psi: 'psi', rated: 'rated', ideal: 'ideal' };
 
@@ -54,12 +61,13 @@ async function savePref(patch, what) {
 
 export async function mount(ctx) {
   const admin = isAdmin();
-  let about = null, server = null, geo = null, maps = null;
-  [about, server, geo, maps] = await Promise.all([
+  let about = null, server = null, geo = null, maps = null, packList = null;
+  [about, server, geo, maps, packList] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
+    packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || 'instrument' }),
   ]);
   if (!ctx.alive()) return;
   const p = getPrefs() || {};
@@ -116,15 +124,21 @@ export async function mount(ctx) {
     theme.sync(pp);
     lang.value = pp?.language === 'en' ? 'en-US' : (pp?.language || 'auto');
     packSel.value = pp?.ui_pack || 'instrument';
+    paintSwitch();
     paintLangExample();
   }));
   ctx.onCleanup(onLocaleChange(() => { paintExample(); paintLangExample(); }));
   const browserLang = (navigator.languages && navigator.languages[0]) || navigator.language || 'unknown';
   const lang = h('select', { class: 'select', 'aria-label': 'Language and number style', onchange: (e) => savePref({ language: e.target.value }, 'Language') },
     LOCALES.map(([v, l]) => h('option', { value: v, selected: (p.language || 'auto') === v || (v === 'en-US' && p.language === 'en') }, v === 'auto' ? `${l} (${browserLang})` : l)));
-  const packs = [['instrument', 'Instrument'], ['logbook', 'Logbook']];
-  const packSel = h('select', { class: 'select', 'aria-label': 'UI pack', onchange: (e) => savePref({ ui_pack: e.target.value }, 'UI pack') },
-    packs.map(([v, l]) => h('option', { value: v, selected: (p.ui_pack || 'instrument') === v }, l)));
+  // every pack the server offers (GET /ui-packs); the one running now is the served pack
+  const packHere = about?.ui_pack?.id || 'instrument';
+  const packSel = h('select', { class: 'select', id: 'set-pack', 'aria-label': 'UI pack', onchange: async (e) => { if (await savePref({ ui_pack: e.target.value }, 'UI pack')) paintSwitch(); } },
+    packList.items.map((k) => h('option', { value: k.id, selected: (p.ui_pack || 'instrument') === k.id }, packLabel(k))));
+  const switchBtn = h('button', { class: 'btn btn--sm', type: 'button', hidden: true, onclick: () => location.reload() }, 'Switch now');
+  const switchNote = h('p', { class: 'setting-note', hidden: true }, 'The new pack is used the next time the app loads.');
+  function paintSwitch() { const other = packSel.value !== packHere; switchBtn.hidden = !other; switchNote.hidden = !other; }
+  paintSwitch();
   // written with the app's own formatters, so it shows what the saved language really does
   const langExample = h('p', { class: 'setting-note' });
   const paintLangExample = () => replace(langExample, 'Example: ', h('b', null, format(1234.5, 'distance')), ', ', h('b', null, formatDate(ctx.api.now(), ctx.tz, { weekday: false, year: true })), '.');
@@ -138,7 +152,8 @@ export async function mount(ctx) {
     setting('Language', 'The text is in English for now. This sets how numbers and dates are written. "This browser\'s language" follows the language your browser asks for; the app tells the browser which language the page is in.',
       [lang, langExample],
       ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation']),
-    setting('UI pack', `The design of the whole app. ${about?.ui_pack?.name ? `This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Your choice is used the next time the app loads where the server offers that pack.`, packSel));
+    setting('UI pack', `The design of the whole app. ${about?.ui_pack?.name ? `This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Your choice is used the next time the app loads where the server offers that pack.`,
+      [h('div', { class: 'row pack-row' }, packSel, switchBtn), switchNote]));
 
   /* ---------- server defaults, addresses and maps */
   const serverPanel = h('div', { class: 'settings-server' });
@@ -187,6 +202,16 @@ export async function mount(ctx) {
     const gUrl = field({ label: 'Address service (https)', name: 'gurl', path: 'geocode.url', value: g.url || '', hint: 'Only used when lookup is online. Positions are rounded first (below); the service never gets a VIN or a car name.', attrs: { placeholder: 'https://', disabled: ro } });
     const gRound = field({ label: 'Round positions to (m)', name: 'grnd', path: 'geocode.rounding_m', type: 'number', value: g.rounding_m, hint: 'metres, from 0 to 1000, before an online lookup', attrs: { min: '0', max: '1000', step: '1', disabled: ro } });
     const gLang = field({ label: 'Address language', name: 'glang', path: 'geocode.language', value: g.language || 'en', hint: 'A code such as en, de, fr or pt-BR. Changing it looks every stored address up again.', attrs: { maxlength: '10', spellcheck: 'false', autocomplete: 'off', disabled: ro } });
+    const tz = field({ label: 'Time zone for new cars', name: 'dtz', path: 'default_time_zone', value: server.default_time_zone || 'UTC', hint: 'A zone name such as America/Chicago. Type to search the list.', attrs: { list: 'sd-zones', disabled: ro, autocomplete: 'off', spellcheck: 'false' } });
+    const tilePresets = maps?.tiles?.presets || [];
+    const tilePreset = tilePresets.find((p) => p.url === t.online_url) || null;
+    const tSource = tilePresets.length ? sChoice('Tile source', [...tilePresets.map((p) => [p.id, p.name]), ['custom', 'Custom address']], tilePreset ? tilePreset.id : 'custom', (v) => {
+      const p = tilePresets.find((x) => x.id === v);
+      if (p) return patch({ tiles: { online_url: p.url, attribution: p.attribution, max_zoom: p.max_zoom } }, 'Tile source', [tUrl, tAttr]);
+      tUrl.input.focus();
+      return true;
+    }) : null;
+    const tTerms = tilePreset ? h('p', { class: 'setting-note' }, icon('info', 'ico--sm'), ` ${tilePreset.name}: free, no key. Its terms (`, ...breakable(tilePreset.terms.replace(/^https:\/\//, '')), ') ask for light use and its credit on every map.') : null;
     const tUrl = field({ label: 'Online tile address (https)', name: 'turl', path: 'tiles.online_url', value: t.online_url || '', hint: 'With {z}, {x} and {y} in it.', attrs: { placeholder: 'https://', disabled: ro } });
     const tAttr = field({ label: 'Map credit', name: 'tattr', path: 'tiles.attribution', value: t.attribution || '', hint: 'Shown in the corner of every map, as the source asks.', attrs: { disabled: ro } });
     // checks here first (worded plainly), then the server's own checks under the same field
@@ -194,9 +219,10 @@ export async function mount(ctx) {
       grnd: (v) => (v === '' || !(Number(v) >= 0 && Number(v) <= 1000) ? 'A whole number of metres from 0 to 1000.' : null),
       glang: (v) => (!LANG_RE.test(v.trim()) ? 'Not a language code. Use two or three letters, such as en or de, optionally with a region: pt-BR.' : null),
       turl: (v) => (v && !/^https:\/\/.+/.test(v) ? 'An https:// address, or empty.' : null),
+      dtz: (v) => (!isValidZone(v.trim()) ? 'Not a time zone this browser knows: pick one from the list, such as America/Chicago.' : null),
       gurl: (v) => (v && !/^https:\/\/.+/.test(v) ? 'An https:// address, or empty.' : null),
     };
-    for (const [f, mk] of [[gUrl, (v) => ({ geocode: { url: v || null } })], [gRound, (v) => ({ geocode: { rounding_m: Math.round(Number(v)) } })], [gLang, (v) => ({ geocode: { language: v.trim() } })], [tUrl, (v) => ({ tiles: { online_url: v || null } })], [tAttr, (v) => ({ tiles: { attribution: v } })]]) {
+    for (const [f, mk] of [[gUrl, (v) => ({ geocode: { url: v || null } })], [gRound, (v) => ({ geocode: { rounding_m: Math.round(Number(v)) } })], [gLang, (v) => ({ geocode: { language: v.trim() } })], [tz, (v) => ({ default_time_zone: v.trim() })], [tUrl, (v) => ({ tiles: { online_url: v || null } })], [tAttr, (v) => ({ tiles: { attribution: v } })]]) {
       f.input.addEventListener('change', () => {
         const bad = local[f.name]?.(f.input.value);
         if (bad) { f.setError(bad); return; }
@@ -213,14 +239,19 @@ export async function mount(ctx) {
               sChoice('Default temperature', [['c', '°C'], ['f', '°F']], server.units?.temperature, (v) => patch({ units: { temperature: v } }, 'Default temperature unit')),
               sChoice('Default pressure', [['bar', 'bar'], ['psi', 'psi']], server.units?.pressure, (v) => patch({ units: { pressure: v } }, 'Default pressure unit')))),
           setting('Range', 'Rated or ideal, for accounts that have not chosen.', sChoice('Default range', [['rated', 'Rated'], ['ideal', 'Ideal']], server.range, (v) => patch({ range: v }, 'Default range'))),
-          h('p', { class: 'setting-note' }, 'A fresh server starts from the distance unit set on the car’s own screen, once its CAN Bridge has sent it.')),
+          h('p', { class: 'setting-note' }, 'A fresh server starts from the distance unit set on the car’s own screen, once its CAN Bridge has sent it.'),
+          setting('Time zone for new cars', 'The zone a new car starts in: its days, weeks and prices by time of day. Each car keeps its own after that.',
+            [tz.el, h('datalist', { id: 'sd-zones' }, ZONES.map((x) => h('option', { value: x }))),
+              BROWSER_ZONE && BROWSER_ZONE !== server.default_time_zone && !ro ? [h('button', { class: 'btn btn--sm', type: 'button', 'aria-label': `Use this browser's zone, ${BROWSER_ZONE}`, onclick: () => patch({ default_time_zone: BROWSER_ZONE }, 'Time zone for new cars', [tz]) }, icon('globe', 'ico--sm'), 'Use this browser’s zone'),
+                h('p', { class: 'setting-note' }, `This browser is in ${BROWSER_ZONE}.`)] : null,
+              h('p', { class: 'setting-note' }, 'Each car’s own zone: ', h('a', { href: buildUrl('settings-cars'), class: 'panel-link' }, 'Settings: Cars ›'), ' The clock in the page header names the zone shown.')])),
         panel({ title: 'Addresses and maps', icon: 'globe', side: h('span', { class: 'faint' }, 'Private by default') },
           setting('Address lookup', 'Offline uses the place names bundled with Sentry Mate: nothing leaves the server. Online asks the service you name (for example your own address server or a proxy in front of one), with rounded positions, and keeps a cache.',
             [sChoice('Address lookup', [['offline', 'Offline'], ['online', 'Online service']], g.mode, (v) => patch({ geocode: { mode: v } }, 'Address lookup', [gUrl])),
               geoStatus(), gUrl.el, gRound.el], ['web.settings.general.address-lookup', 'docs.env.tesla-api.nominatim-proxy']),
           setting('Address language', 'Street and place names are written in this language where the data has it; otherwise in the local language.', gLang.el, ['web.settings.general.address-language', 'web.settings.general.address-language-error', 'web.settings.general.address-language-invalid']),
-          setting('Map tiles', 'Offline tiles come from Sentry Mate itself. An online source is asked by each viewer’s browser for the map pictures, so it sees the map area; only turn it on if you accept that.',
-            [sChoice('Map tiles', [['offline', 'Offline'], ['online', 'Online source']], t.mode, (v) => patch({ tiles: { mode: v } }, 'Map tiles', [tUrl])), tileStatus(t), tUrl.el, tAttr.el], 'web.shell.map-tiles'),
+          setting('Map tiles', 'Offline tiles come from Sentry Mate itself. An online source is asked by each viewer’s browser for the map pictures, so it sees the map area and this server’s address (as Referer, which OpenStreetMap needs; never a page or a car); only turn it on if you accept that.',
+            [sChoice('Map tiles', [['offline', 'Offline'], ['online', 'Online source']], t.mode, (v) => patch({ tiles: { mode: v } }, 'Map tiles', [tUrl])), tileStatus(t), tSource, tTerms, tUrl.el, tAttr.el], 'web.shell.map-tiles'),
           setting('Outside links', 'Links that open another site in a new tab, only when the viewer clicks them.',
             h('div', { class: 'row' },
               sChoice('Map links', [['false', 'No map links'], ['true', 'Map links']], String(!!server.outside_links?.maps), (v) => patch({ outside_links: { maps: v === 'true' } }, 'Map links')),

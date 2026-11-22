@@ -977,15 +977,32 @@ pub fn serve_file(app: &AppState, pack: &Loaded, path: &str, headers: &HeaderMap
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(file.mime));
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     h.insert(header::VARY, HeaderValue::from_static("Cookie"));
-    if let Ok(v) = HeaderValue::from_str(&csp(&app.tiles())) {
+    let tiles = app.tiles();
+    if let Ok(v) = HeaderValue::from_str(&csp(&tiles)) {
         h.insert(header::CONTENT_SECURITY_POLICY, v);
     }
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static(referrer_policy(&tiles)));
     res
+}
+
+/// The Referrer-Policy of every pack file. `no-referrer` while no outside tile server is on. With online tiles, the
+/// pages send their origin (`https://sentry.example:8443`, never a path, a car or a query) and nothing more:
+/// OpenStreetMap's tile usage policy expects browsers to send a valid Referer and blocks tile requests without one
+/// ("403 Access blocked"). The CSP allows no other outside origin, and links to other sites carry `noreferrer`.
+pub fn referrer_policy(tiles: &[String]) -> &'static str {
+    if tiles.iter().any(|t| valid_origin(t)) { "strict-origin" } else { "no-referrer" }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn referrer_only_the_origin_and_only_with_online_tiles() {
+        assert_eq!(referrer_policy(&[]), "no-referrer");
+        assert_eq!(referrer_policy(&["https://tile.openstreetmap.org".into()]), "strict-origin");
+        assert_eq!(referrer_policy(&["javascript:x".into()]), "no-referrer");
+    }
 
     #[test]
     fn names_and_types() {

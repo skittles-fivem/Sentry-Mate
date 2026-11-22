@@ -203,7 +203,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     let n = db.entry(car)?.and_then(|x| x.summary.now);
     let meta = records::meta(db, car)?;
     // when the newest data arrived: SMO's newest log, or the Tesla API's newest reading
-    let received_ms = meta.last_arrived_ms.max(meta.api_received_ms);
+    let received_ms = meta.last_arrived_ms.max(meta.api_received_ms).max(meta.teslafi_received_ms);
     let now = now_ms();
     let s: Sample = n.as_ref().map(|n| n.sample.clone()).unwrap_or_default();
     let at = n.as_ref().map_or(0, |n| n.at_ms);
@@ -357,6 +357,9 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
             if let Some(t) = meta.api_last_ms {
                 v.push(InputNow { input: model::Origin::TeslaApi.into(), last_ms: Some(t) });
             }
+            if let Some(t) = meta.teslafi_last_ms {
+                v.push(InputNow { input: model::Origin::TeslafiApi.into(), last_ms: Some(t) });
+            }
             v
         },
         buses,
@@ -403,8 +406,8 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         software: Software {
             version: update.as_ref().map(|u| u.version.clone()).filter(|v| !v.is_empty()),
             version_source: update.as_ref().and_then(|u| {
-                if u.source == Source::Teslamate {
-                    Some("teslamate")
+                if let Some(site) = u.source.site() {
+                    Some(site.word())
                 } else if u.inputs.contains(model::Input::TeslaApi) {
                     Some("tesla_api")
                 } else {

@@ -10,6 +10,7 @@
 //! - A signal name used by two messages gets the message id after it (`UI_cpuTemperature_353`): its series name.
 
 pub mod encode;
+pub mod firmware;
 
 pub use encode::{EncodeError, encode_message, encode_signal};
 

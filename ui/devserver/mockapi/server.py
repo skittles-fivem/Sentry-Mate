@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import http.server
 import mimetypes
+import re
 import os
 import socketserver
 import sys
@@ -21,13 +22,36 @@ from .conventions import Req, Response, json_bytes, to_csv
 from .dataset import Dataset
 from .errors import ApiError, bad_input, csrf, no_such_car, not_allowed, not_found, not_signed_in
 from .events import EventHub, frame
+from .packs import Packs
 from .router import Router
 from .store import COOKIE, COOKIE_SIGNED_OUT, SETUP_COOKIE, Store
 
-CSP = ("default-src 'self'; img-src 'self' data: blob: https://tile.openstreetmap.org; worker-src 'self' blob:; "
-       "style-src 'self'; script-src 'self'; connect-src 'self' https://tile.openstreetmap.org; font-src 'self'; "
-       "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+def tile_origin(store):
+    """As the real server's tile_origins(): the online tile server's https origin, none while tiles are offline."""
+    t = store.server_settings["tiles"]
+    url = t.get("online_url") or ""
+    if t["mode"] != "online" or not url.startswith("https://"):
+        return None
+    auth = re.split(r"[/?#]", url[len("https://"):], maxsplit=1)[0]
+    ok = auth and "@" not in auth and re.fullmatch(r"[A-Za-z0-9.-]+(:[0-9]{1,5})?", auth) and not auth.startswith((".", "-"))
+    return f"https://{auth.lower()}" if ok else None
+
+
+def page_csp(store=None):
+    """As the real server's csp(): the pages may load tiles only from the online tile server, named while it is on."""
+    extra = f" {o}" if store is not None and (o := tile_origin(store)) else ""
+    return (f"default-src 'self'; img-src 'self' data: blob:{extra}; worker-src 'self' blob:; "
+            f"style-src 'self'; script-src 'self'; connect-src 'self'{extra}; font-src 'self'; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+
+
 CSRF_HEADER = "X-Sentry-Mate"
+
+
+def page_referrer_policy(store):
+    """As the real server: pages send their origin (never a path) to the tile server while online tiles are on, since
+    OpenStreetMap's tile policy blocks tile requests without a Referer; otherwise no Referer at all."""
+    return "strict-origin" if tile_origin(store) else "no-referrer"
 MAX_BODY = 1 << 20
 # changes a moved server still takes: the move itself, export files, signing in and out
 # (and the recovery key file: shown again, or removed once saved; a new key is refused, as on the real server)
@@ -63,7 +87,16 @@ class App:
         self.events = EventHub(self)
         self.router = Router()
         resources.register_all(self.router)
+        self.packs = Packs(cfg.pack)
         self.web_root = os.path.realpath(os.path.join(cfg.pack, "web"))
+
+    def root_for(self, session):
+        """The web folder this browser is served: the person's own `ui_pack`, else the --pack one."""
+        if session is None:
+            return self.web_root
+        own = self.store.get_prefs(session["account"]).get("ui_pack")
+        pid = self.packs.pick(own)
+        return self.web_root if pid == self.packs.served else self.packs.web_root(pid)
 
     def make_server(self):
         srv = Server((self.cfg.host, self.cfg.port), Handler)
@@ -115,9 +148,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # ------------------------------------------------------------ responses
     def send(self, status, body=b"", content_type=None, headers=None, api=False):
         self.send_response(status)
-        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("Content-Security-Policy", page_csp(self.app.store))
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Referrer-Policy", "no-referrer" if api else page_referrer_policy(self.app.store))
         if api:
             self.send_header("Cache-Control", "no-store")
             # The virtual clock, so pages count "5 min ago" and the period presets from the dataset's "now".
@@ -279,7 +312,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         app = self.app
         stream = app.events.subscribe(req.session)
         self.send_response(200)
-        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("Content-Security-Policy", page_csp())
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-store")
@@ -312,14 +345,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def static(self, method, path):
         if method not in ("GET", "HEAD"):
             return self.send(405, b"", None, {"Allow": "GET, HEAD"})
-        root = self.app.web_root
         rel = path.lstrip("/")
+        token = self.cookie_value()
+        s = self.app.store.session_for(token) if token and token != COOKIE_SIGNED_OUT else None
+        root = self.app.root_for(s)
         full = os.path.realpath(os.path.join(root, rel)) if rel else root
         cookie = None
         if not (full == root or full.startswith(root + os.sep)) or not os.path.isfile(full):
             full = os.path.join(root, "index.html")
         if full.endswith("index.html"):
-            _s, cookie = self.session()
+            s, cookie = self.session()  # a session starts on a page load
+            root = self.app.root_for(s)
+            full = os.path.join(root, "index.html")
         try:
             with open(full, "rb") as f:
                 data = f.read()

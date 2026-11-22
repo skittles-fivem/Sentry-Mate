@@ -10,7 +10,8 @@ import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { getLocale, isSupportedLocale } from '../shared/i18n.js';
 import { format, getUnits, FT_PER_M } from '../shared/units.js';
-import { formatDateTime } from '../shared/time.js';
+import { formatDateTime, isValidZone } from '../shared/time.js';
+import * as state from '../shared/state.js';
 import { tile, btn, chip, note } from '../core/ui.js';
 import { segmented, toggle, field, form, setFieldError } from '../core/form.js';
 import { currentPrefs, onPrefs, savePref, isDark, onTheme } from '../core/prefs.js';
@@ -19,6 +20,7 @@ import { currentAbout } from '../core/frame.js';
 import { sectionHead, facts } from '../core/bits.js';
 import { group, pickRow, ctlRow, infoRow, notSaved } from '../core/settings.js';
 import { inOrder } from '../core/settings.js';
+import { packChoices } from '../shared/packs.js';
 
 export const id = 'settings-display';
 export const shape = [[2, 'h3'], [2, 'h3'], [2, 'h2'], [2, 'h2']];
@@ -26,7 +28,9 @@ export const title = () => 'Display and units';
 
 const LOCALES = ['en-US', 'en-GB', 'en-CA', 'en-AU', 'de-DE', 'de-CH', 'fr-FR', 'fr-CA', 'nl-NL', 'nb-NO', 'sv-SE', 'da-DK',
   'fi-FI', 'es-ES', 'it-IT', 'pt-PT', 'pl-PL', 'cs-CZ', 'ja-JP', 'ko-KR', 'zh-CN'];
-const PACKS = [['pebble', 'Pebble', 'Light, rounded tiles and a floating dock'], ['instrument', 'Instrument', 'A dark glass cluster with a side bar'], ['logbook', 'Logbook', 'Paper and ink, the day as a log']];
+// used only when the server's list of packs can't be read
+const PACKS = [['pebble', 'Pebble', 'Light, rounded tiles and a floating dock'], ['instrument', 'Instrument', 'A dark glass cluster with a side bar'], ['logbook', 'Logbook', 'Paper and ink, the day as a log'],
+  ['horizon', 'Horizon', 'Neon panels over a dusk sky'], ['console', 'Console', 'A keyboard-first operator console']];
 const DIST = [['km', 'Kilometres', 'km, km/h, Wh/km, metres'], ['mi', 'Miles', 'mi, mph, Wh/mi, feet']];
 const TEMP = [['c', 'Celsius', '°C'], ['f', 'Fahrenheit', '°F']];
 const PRESS = [['bar', 'bar'], ['psi', 'psi']];
@@ -53,7 +57,9 @@ const strip = (err, prefix, rename = {}) => {
 export async function mount(ctx) {
   inOrder(ctx);
   const admin = ctx.admin;
-  let [srv, geo] = await Promise.all([ctx.api.get('settings'), ctx.api.get('geocode/status').catch(() => null)]);
+  let [srv, geo, mapCfg, packList] = await Promise.all([ctx.api.get('settings'), ctx.api.get('geocode/status').catch(() => null), ctx.api.get('maps/config').catch(() => null),
+    packChoices(ctx.api, { fallback: PACKS, current: (currentPrefs() || {}).ui_pack || null })]);
+  const tilePresets = (mapCfg && mapCfg.tiles && mapCfg.tiles.presets) || [];
   if (!ctx.alive()) return {};
   const p0 = currentPrefs() || {};
   const save = (patch) => savePref(patch).catch((err) => { ctx.toast(notSaved(err), { kind: 'error' }); throw err; });
@@ -81,10 +87,15 @@ export async function mount(ctx) {
   const sizeLine = h('span', { class: 'row-sub' });
   const about = currentAbout();
   const packNow = (p0.ui_pack || (about && about.ui_pack && about.ui_pack.name ? about.ui_pack.name.toLowerCase() : 'pebble'));
-  const packOpts = PACKS.some(([k]) => k === packNow) ? PACKS : [...PACKS, [packNow, packNow, 'Installed on this server']];
+  // every pack the server offers (GET /ui-packs), each with its short description
+  const packOpts = packList.items.map((k) => [k.id, k.name, k.blurb || null]);
+  if (!packOpts.some(([k]) => k === packNow)) packOpts.push([packNow, packNow, 'Installed on this server']);
+  const packHere = (about && about.ui_pack && (about.ui_pack.id || (about.ui_pack.name || '').toLowerCase())) || 'pebble';
+  const switchRow = h('div', { class: 'row row-static set-ex-row', hidden: packNow === packHere },
+    h('span', { class: 'row-sub' }, 'The new pack is used the next time the app loads. '), btn('Switch now', { kind: 'soft', onclick: () => location.reload() }));
   const pack = pickRow({ name: 'UI pack', sub: 'The look of the whole app. Used the next time the app loads.', value: packNow, options: packOpts,
     sheetNote: 'Admins can install more packs. Your data and settings stay the same in every pack.',
-    onpick: (v) => save({ ui_pack: v }).then(() => ctx.toast('UI pack saved. Reload the page to see it.', { kind: 'info' })) });
+    onpick: (v) => save({ ui_pack: v }).then(() => { switchRow.hidden = v === packHere; if (v !== packHere) ctx.toast('UI pack saved. Switch now, or it is used the next time the app loads.', { kind: 'info' }); }) });
   const lookT = tile({ w: 2, title: 'Look', icon: 'sun', cover: ['shell.theme', 'web.settings.general.theme'] },
     group(null, [
       ctlRow({ name: 'Theme', sub: 'Auto follows your device, day and night.', control: theme, stack: true }),
@@ -95,7 +106,7 @@ export async function mount(ctx) {
       h('div', { class: 'row row-static set-ex-row' }, sizeLine),
       follow,
     ]),
-    group('Pack', [pack]));
+    group('Pack', [pack, switchRow]));
 
   /* ------------------------------------------------------------ units */
   const u0 = p0.units || {};
@@ -203,9 +214,23 @@ export async function mount(ctx) {
       ['distance', 'Distance', DIST], ['temperature', 'Temperature', TEMP], ['pressure', 'Tyre pressure', PRESS],
     ].map(([k, name, opts]) => pickRow({ name, value: s.units[k], options: opts, disabled: off, onpick: (v) => quick({ units: { [k]: v } }, () => {}) }));
     const defRange = pickRow({ name: 'Range', value: s.range, options: RANGE, disabled: off, onpick: (v) => quick({ range: v }, () => {}) });
+    // the time zone new cars start in
+    const zones = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+    const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
+    const tzF = field({ label: 'Time zone for new cars', name: 'default_time_zone', value: s.default_time_zone || 'UTC', hint: 'A name such as America/Chicago. Type to see the list.', attrs: { list: 'sd-zones', spellcheck: 'false', autocomplete: 'off', disabled: off } });
+    const saveZone = async (v) => {
+      setFieldError(tzF, null);
+      if (!v || !isValidZone(v)) { setFieldError(tzF, 'Not a known time zone. Pick one from the list, for example America/Chicago.'); return; }
+      if (v === s.default_time_zone) return;
+      try { await patch({ default_time_zone: v }); } catch (err) { setFieldError(tzF, (err.fields && err.fields.default_time_zone) || notSaved(err)); }
+    };
+    tzF.control.addEventListener('change', () => saveZone(tzF.control.value.trim()));
     const defaultsT = tile({ w: 2, title: 'Defaults for everyone', icon: 'person', side: ro },
       group(null, [...defs, defRange]),
-      note('For people who have not chosen their own. The distance unit can start from the one a car reports from its own screen settings.'));
+      note('For people who have not chosen their own. The distance unit can start from the one a car reports from its own screen settings.'),
+      tzF, h('datalist', { id: 'sd-zones' }, zones.map((z) => h('option', { value: z }))),
+      browserZone && browserZone !== s.default_time_zone && !off ? h('div', { class: 'form-actions' }, btn(`Use ${browserZone.replace(/_/g, ' ')}`, { kind: 'soft', icon: 'pin', onclick: () => { tzF.control.value = browserZone; saveZone(browserZone); } })) : null,
+      note(['The zone a new car starts in. Each car keeps its own: ', h('a', { href: state.buildUrl('settings-cars'), class: 'place-link' }, 'Settings: Cars'), '.']));
 
     // address lookup
     const g = geo || {};
@@ -268,6 +293,14 @@ export async function mount(ctx) {
         quick({ tiles: { mode: v } }, () => tilesSeg.set(s.tiles.mode));
       } });
     tilesSeg.querySelectorAll('button').forEach((b) => { b.disabled = off; });
+    const tilePreset = tilePresets.find((x) => x.url === s.tiles.online_url) || null;
+    const tileSource = tilePresets.length ? segmented({ name: 'Tile source', value: tilePreset ? tilePreset.id : 'custom', options: [...tilePresets.map((x) => [x.id, x.name]), ['custom', 'Custom']],
+      onchange: (v) => {
+        const x = tilePresets.find((y) => y.id === v);
+        if (!x) { tileUrl.control.focus(); return; }
+        quick({ tiles: { online_url: x.url, attribution: x.attribution, max_zoom: x.max_zoom } }, () => tileSource.set(tilePreset ? tilePreset.id : 'custom'));
+      } }) : null;
+    if (tileSource) tileSource.querySelectorAll('button').forEach((b) => { b.disabled = off; });
     const tileUrl = field({ label: 'Online tile address', name: 'online_url', value: s.tiles.online_url || '', hint: 'An https:// address with {z}, {x} and {y} in it.', attrs: { spellcheck: 'false', autocomplete: 'off', placeholder: 'https://…/{z}/{x}/{y}.png', disabled: off } });
     tileUrl.control.addEventListener('input', () => setFieldError(tileUrl, null));
     const tileForm = form({
@@ -287,8 +320,9 @@ export async function mount(ctx) {
     if (off) tileForm.submitButton.hidden = true;
     const mapsT = tile({ w: 2, title: 'Maps', icon: 'map', side: ro, cover: 'web.shell.map-tiles' },
       group(null, [ctlRow({ name: 'Map tiles', sub: s.tiles.mode === 'online'
-        ? `Online, from ${hostOf(s.tiles.online_url) || 'the tile server below'}. Each viewer’s browser asks it for the map pictures.`
-        : 'Offline: maps are drawn by this server; with no offline tiles, maps show routes and pins on a plain ground.', control: tilesSeg, stack: true })]),
+        ? `Online, from ${hostOf(s.tiles.online_url) || 'the tile server below'}. Each viewer’s browser asks it for the map pictures, sending this server’s address as Referer (OpenStreetMap needs it; never a page or a car).`
+        : 'Offline: maps are drawn by this server; with no offline tiles, maps show routes and pins on a plain ground.', control: tilesSeg, stack: true }),
+      ...(tileSource ? [ctlRow({ name: 'Tile source', sub: tilePreset ? `${tilePreset.name}: free, no key. Its terms (${tilePreset.terms.replace(/^https:\/\//, '')}) ask for light use and its credit on every map.` : 'Your own address below. A source fills in its address, credit and zoom.', control: tileSource, stack: true })] : [])]),
       tileForm);
 
     // proxy

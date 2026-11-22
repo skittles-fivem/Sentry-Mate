@@ -1,0 +1,17 @@
+model,code,body,steering,drive,year_from,year_to,source,confidence
+S,A,hatchback 5-door,left,RWD,2012,2013,Model S service manual 2012-2020 (2012/2013 column); Part 565 2012-03-26 (5df993c3),high
+S,B,hatchback 5-door,left,AWD,2012,2013,Model S service manual 2012-2020 (2012/2013 column),medium
+S,C,hatchback 5-door,right,RWD,2012,2013,Model S service manual 2012-2020 (2012/2013 column),medium
+S,D,hatchback 5-door,right,AWD,2012,2013,Model S service manual 2012-2020 (2012/2013 column),medium
+S,A,hatchback 5-door,left,,2014,,Part 565 2013-12-10 (54ed893e) onward; Model S service manuals,high
+S,B,hatchback 5-door,right,,2015,,Part 565 2015-08-01 (7aef9e63); Model S service manuals,high
+X,C,Class E MPV 5-door,left,,2016,,Part 565 2015-08-27 (f26a7663) onward; Model X service manuals,high
+X,D,Class E MPV 5-door,right,,2016,,Part 565 2015-08-27 (f26a7663); Model X service manuals,high
+3,E,sedan 4-door,left,,2017,,Part 565 2017-05-08 (90a46d61) onward; Model 3 service manuals,high
+3,F,sedan 4-door,right,,2019,,Model 3 service manuals (VIN page),high
+Y,G,Class D MPV 5-door,left,,2020,,Part 565 2019-12-09 (54414e8c) onward; Model Y service manuals,high
+Y,H,Class D MPV 5-door,right,,2021,,Model Y service manuals (VIN page),high
+C,E,truck,left,,2024,,Part 565 2023-08-23 (fbec7f77) onward; Cybertruck service manual,high
+T,A,day cab (short),left,,2023,2023,Part 565 2024-05-15 (caf05bbc),high
+T,B,day cab (long),left,,2023,,Part 565 2022-09-13 (7404ccb6) onward,high
+A,J,hatchback 2-door,left,,2026,,Part 565 2026-05-04 (fb63da70),high

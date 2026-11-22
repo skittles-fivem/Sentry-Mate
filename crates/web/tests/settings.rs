@@ -44,8 +44,21 @@ async fn seeded() -> Seeded {
     seeded_with(|b, _, _| b).await
 }
 
+/// The server with no logs at all (nothing to decode): for the tests that need no car, so they stay in the fast set.
+async fn bare() -> Seeded {
+    seeded_cars(0, |b, _, _| b).await
+}
+
 /// The same; `more` adds services (given the data folder and its vault).
 async fn seeded_with(
+    more: impl FnOnce(web::Builder, &std::path::Path, &Arc<vault::Vault>) -> web::Builder + Send + 'static,
+) -> Seeded {
+    seeded_cars(2, more).await
+}
+
+/// The same with `cars` made-up cars (0: no logs at all, nothing to decode).
+async fn seeded_cars(
+    cars: u32,
     more: impl FnOnce(web::Builder, &std::path::Path, &Arc<vault::Vault>) -> web::Builder + Send + 'static,
 ) -> Seeded {
     let dir = tempfile::tempdir().unwrap();
@@ -62,7 +75,7 @@ async fn seeded_with(
     );
     let judge = ingest::Judge::new(store.clone()).on_judged(engine.listener());
     engine.start().unwrap();
-    for n in 0..2 {
+    for n in 0..cars {
         let sc = synth::Scenario::new(5).car(n).days(1).rates(synth::Rates::Light);
         for log in sc.logs() {
             put(&store, &judge, &log.name, &log.bytes).await;
@@ -71,7 +84,7 @@ async fn seeded_with(
     }
     engine.idle().await;
     let ids = engine::query::all_cars(&engine).unwrap();
-    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert_eq!(ids.len(), cars as usize, "{ids:?}");
     let tls = data.join("tls");
     ingest::server::Identity::load_or_create(&tls, &["sentry-mate.test".to_string()], &v).unwrap();
     let (e2, d2, data2, v2) = (engine.clone(), db.clone(), data.clone(), v.clone());
@@ -100,7 +113,80 @@ fn fields(r: &web::testkit::Res) -> Value {
     r.json()["error"]["fields"].clone()
 }
 
+/// The fast set's settings test, with no logs to decode: the defaults, a change of only the parts sent, a stale
+/// version and CSRF (`server_settings` below, in the --include-ignored set, does all of it over two decoded cars).
 #[tokio::test(flavor = "multi_thread")]
+async fn server_settings_read_and_change_without_logs() {
+    let t = seeded_cars(0, |b, _, _| b).await;
+    let mut admin = t.s.admin().await;
+    let s = ok(&mut admin, "/api/v1/settings").await;
+    assert_eq!(s["units"], json!({ "distance": "km", "temperature": "c", "pressure": "bar" }));
+    assert_eq!(s["range"], "rated");
+    assert_eq!(s["tiles"]["mode"], "offline");
+    assert_eq!(s["host_names"], json!(["sentry-mate.test"]));
+    let v1 = s["version"].as_u64().unwrap();
+    let body = serde_json::to_vec(&json!({ "version": v1, "range": "ideal" })).unwrap();
+    let r = admin
+        .request(
+            "PATCH",
+            "/api/v1/settings",
+            Some(&body),
+            &[("Content-Type", "application/json"), ("X-Sentry-Mate", "0")],
+        )
+        .await;
+    assert_eq!((r.status, r.code().as_deref()), (403, Some("csrf")));
+    let r = admin.patch("/api/v1/settings", json!({ "version": v1, "units": { "pressure": "psi" } })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let s = r.json();
+    assert_eq!(s["units"], json!({ "distance": "km", "temperature": "c", "pressure": "psi" }));
+    assert_eq!((&s["range"], &s["version"]), (&json!("rated"), &json!(v1 + 1)));
+    let r = admin.patch("/api/v1/settings", json!({ "version": v1, "range": "ideal" })).await;
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert_eq!(ok(&mut admin, "/api/v1/settings").await["units"]["pressure"], "psi");
+    assert_eq!(t.s.client().get("/api/v1/settings").await.status, 401);
+}
+
+/// The time zone new cars start in: the engine's (UTC here, the container's `TZ` in the real server) until one is
+/// saved, an IANA name only, and the engine follows a change at once (cars already made keep theirs).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_default_time_zone_for_new_cars() {
+    let t = bare().await;
+    let mut admin = t.s.admin().await;
+    let s = ok(&mut admin, "/api/v1/settings").await;
+    assert_eq!(s["default_time_zone"], "UTC", "{s}");
+    // first-run setup's browser zone: kept only when it is a zone and none is saved yet
+    let app = t.s.app.clone();
+    tokio::task::spawn_blocking(move || {
+        web::resources::settings::first_time_zone(&app, "Not/A_Zone").unwrap();
+        assert_eq!(app.service::<Engine>().unwrap().default_time_zone(), "UTC");
+        web::resources::settings::first_time_zone(&app, "Europe/Berlin").unwrap();
+        web::resources::settings::first_time_zone(&app, "Asia/Tokyo").unwrap();
+    })
+    .await
+    .unwrap();
+    let s = ok(&mut admin, "/api/v1/settings").await;
+    assert_eq!(s["default_time_zone"], "Europe/Berlin", "the first one stays: {s}");
+    assert_eq!(t._engine.default_time_zone(), "Europe/Berlin");
+    let v = s["version"].as_u64().unwrap();
+    for bad in [json!("Mars/Olympus_Mons"), json!(""), json!("CST6CDT; x")] {
+        let r = admin.patch("/api/v1/settings", json!({ "version": v, "default_time_zone": bad })).await;
+        assert_eq!(r.status, 422, "{bad}: {}", r.text());
+        assert!(fields(&r)["default_time_zone"].is_string(), "{}", r.text());
+    }
+    let r = admin.patch("/api/v1/settings", json!({ "version": v, "default_time_zone": 5 })).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert_eq!(t._engine.default_time_zone(), "Europe/Berlin");
+    let r = admin.patch("/api/v1/settings", json!({ "version": v, "default_time_zone": " America/Chicago " })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["default_time_zone"], "America/Chicago");
+    assert_eq!(t._engine.default_time_zone(), "America/Chicago", "new cars start in it from now on");
+    assert_eq!(ok(&mut admin, "/api/v1/settings").await["default_time_zone"], "America/Chicago");
+    let audit = ok(&mut admin, "/api/v1/audit").await.to_string();
+    assert!(audit.contains("default time zone"), "{audit}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn server_settings() {
     let t = seeded().await;
     let mut admin = t.s.admin().await;
@@ -255,6 +341,7 @@ fn mqtt_body(version: u64) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn mqtt_settings_status_preview_and_test() {
     let t = seeded().await;
     let mut admin = t.s.admin().await;
@@ -422,9 +509,9 @@ async fn mqtt_settings_status_preview_and_test() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn network() {
-    let t = seeded().await;
+    let t = bare().await;
     let mut admin = t.s.admin().await;
-    let mut watch = t.s.watch(&mut admin, &[t.ids[0]]).await;
+    let mut watch = t.s.watch(&mut admin, &[]).await;
     assert_eq!(watch.get("/api/v1/network").await.status, 403);
     let n = ok(&mut admin, "/api/v1/network").await;
     let out = n["outbound"].as_array().unwrap();
@@ -458,7 +545,7 @@ async fn network() {
 /// a PUT that changes the broker's host, port, TLS or certificate pin must send the password again.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_saved_mqtt_password_never_follows_a_new_broker() {
-    let t = seeded().await;
+    let t = bare().await;
     let mut admin = t.s.admin().await;
     let v = ok(&mut admin, "/api/v1/settings/mqtt").await["version"].as_u64().unwrap();
     let r = admin.put("/api/v1/settings/mqtt", mqtt_body(v)).await;
@@ -503,7 +590,7 @@ async fn the_saved_mqtt_password_never_follows_a_new_broker() {
 #[tokio::test(flavor = "multi_thread")]
 async fn turning_mqtt_on_connects() {
     use tokio::io::AsyncReadExt;
-    let t = seeded().await;
+    let t = bare().await;
     let task = web::resources::mqtt::spawn(t.s.app.clone());
     let mut admin = t.s.admin().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -532,7 +619,7 @@ async fn turning_mqtt_on_connects() {
 /// the order they were saved, however close together two changes come.
 #[tokio::test(flavor = "multi_thread")]
 async fn host_names_release_check_and_changes_close_together() {
-    let t = seeded().await;
+    let t = bare().await;
     let mut admin = t.s.admin().await;
     let s = ok(&mut admin, "/api/v1/settings").await;
     let v = s["version"].as_u64().unwrap();
@@ -713,6 +800,7 @@ fn on_body(version: u64, port: u16, namespace: &str, discovery: bool) -> Value {
 /// car's API id, exactly as `/cars/{car}/events` lists it, once each (a restart sends none again). A save that turns
 /// Home Assistant discovery off removes the old configs from the broker; a new topic prefix clears the old values.
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn the_publisher_sends_events_and_clears_old_layouts() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
@@ -829,7 +917,7 @@ async fn the_publisher_sends_events_and_clears_old_layouts() {
 /// A publisher that can't reach its broker says so as a code, the words beside it.
 #[tokio::test(flavor = "multi_thread")]
 async fn publisher_errors_are_codes() {
-    let t = seeded().await;
+    let t = bare().await;
     let task = web::resources::mqtt::spawn(t.s.app.clone());
     let mut admin = t.s.admin().await;
     let port = {
@@ -877,13 +965,13 @@ impl web::resources::certificate::CertificateMaker for Maker {
 
 /// `POST /network/certificate`: an admin with the password again; the saved host names go in, `/network` shows the
 /// new SHA-256 at once; refused while a move code waits, and when the server runs with its owner's own
-/// certificate; recorded in the audit log.
+/// certificate; recorded in the audit log. (No logs: none are needed, and it stays in the fast set.)
 #[tokio::test(flavor = "multi_thread")]
 async fn a_new_certificate() {
     let maker = Arc::new(std::sync::Mutex::new(None::<Arc<Maker>>));
     let m2 = maker.clone();
     let t =
-        seeded_with(move |b, data, v| {
+        seeded_cars(0, move |b, data, v| {
             let tls = data.join("tls");
             let id = ingest::server::Identity::load_or_create(&tls, &["sentry-mate.test".to_string()], v).unwrap();
             let live = ingest::server::LiveCert::new(&id, &tls, v.clone()).unwrap();
@@ -896,7 +984,7 @@ async fn a_new_certificate() {
         .await;
     let maker = maker.lock().unwrap().clone().unwrap();
     let mut admin = t.s.admin().await;
-    let mut watch = t.s.watch(&mut admin, &[t.ids[0]]).await;
+    let mut watch = t.s.watch(&mut admin, &[]).await;
     let pw = web::testkit::ADMIN_PASSWORD;
     let before = ok(&mut admin, "/api/v1/network").await;
     let old = before["certificate"]["sha256"].as_str().unwrap().to_string();

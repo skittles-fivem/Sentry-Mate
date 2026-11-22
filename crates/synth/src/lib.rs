@@ -11,7 +11,8 @@
 //! Its frames are encoded with the DBC set `dbc` decodes (`tesla-3y`), on the buses the car uses: the vehicle bus
 //! (`can0`), the chassis bus (`can1`, asleep while charging) and the Screenmate's internal bus (`can3`, its own GPS
 //! in 0x04F), at the car's rates (10 ms to 1 s, [`Rates::Realistic`]) or at most once a second ([`Rates::Light`]).
-//! The VIN comes in 0x405's three pages.
+//! The VIN comes in 0x405's three pages. When given a [`Firmware`], the modules' info frames carry made-up firmware
+//! fingerprints on `can0` (and gateway copies on `can1`), changing at the software update.
 //!
 //! The made-up bridge writes what the real one does (SMO `docs/sentry-manager-format.md`): a log a minute, closed
 //! `quiet` after 60 s without frames, `# clock` and `# helper-clock` lines, `# not recorded` and `# dropped` when
@@ -37,6 +38,7 @@
 mod bridge;
 mod car;
 pub mod columns;
+pub mod firmware;
 mod geo;
 mod plan;
 mod rng;
@@ -48,6 +50,7 @@ pub mod xz;
 
 pub use bridge::{Formats, LogFile, utc_stamp};
 pub use car::{CarModel, CarState, ChargeStatus};
+pub use firmware::Firmware;
 pub use geo::LatLon;
 pub use plan::{Place, Trouble};
 pub use scenario::{DEFAULT_START_MS, Logs, MAX_CAR, MAX_FLEET, Report, Scenario, TOWN, fleet};

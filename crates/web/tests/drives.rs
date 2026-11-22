@@ -148,6 +148,7 @@ fn csv_lines(r: &web::testkit::Res) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn drives_list_detail_track_and_stats() {
     let k = seeded().await;
     let (car, other) = (k.car.clone(), k.other.clone());
@@ -299,6 +300,7 @@ async fn drives_list_detail_track_and_stats() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn purposes_rules_logbook_and_saved_trips() {
     let k = seeded().await;
     let (car, other) = (k.car.clone(), k.other.clone());

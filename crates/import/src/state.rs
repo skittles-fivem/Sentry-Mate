@@ -19,16 +19,19 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const STATE_VERSION: u32 = 1;
 
 /// One car's import marks (keep it with the car; give it back to the next import).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportState {
     pub version: u32,
     /// Per table of the car's history.
     pub tables: BTreeMap<Table, Mark>,
+    /// What TeslaFi imports took (kept apart: TeslaFi has no row ids).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teslafi: Option<crate::teslafi::State>,
 }
 
 impl Default for ImportState {
     fn default() -> Self {
-        ImportState { version: STATE_VERSION, tables: BTreeMap::new() }
+        ImportState { version: STATE_VERSION, tables: BTreeMap::new(), teslafi: None }
     }
 }
 

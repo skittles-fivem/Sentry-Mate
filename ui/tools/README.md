@@ -5,6 +5,7 @@
 | `sync_shared.py` | Copies the shared browser modules (`ui/shared/*.js`) into every pack's `web/shared/`. |
 | `check.js` | The page checker: opens a pack's pages in Chromium on the dev API server (or a real server) and reports what is wrong. |
 | `pixel.js`, `stable.js` | The in-page parts of `check.js --pixel` and `check.js --stable`. |
+| `map-tiles.test.js` | `node --test ui/tools/map-tiles.test.js`: in all five packs, a page loaded with tiles offline shows OpenStreetMap tiles once an admin turns them on and the person moves to a map inside the app (the page loads itself again once, for the server's new policy), the same after a switch to OpenTopoMap, and every tile request carries only the page origin as Referer; and Settings: Display and units at 360 px with a long zone name (America/Argentina/Buenos_Aires) keeps its zone button and tile terms inside the window. The tile servers are answered inside the browser; nothing leaves the machine. Skipped without Playwright. |
 | `settings-server.test.js` | `node --test ui/tools/settings-server.test.js`: Settings: Server and access of both built-in packs in Chromium at phone size on the dev server: the CAN Bridge upload address breaks only after a slash or a colon, the certificate's names start with `localhost`, and with `--own-certificate` no "Make a new certificate" is offered. Skipped without Playwright. |
 
 ## The page checker

@@ -58,6 +58,7 @@ fn threads_write_different_cars_at_once() {
 }
 
 #[test]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 fn two_thousand_cars_stay_within_bounds() {
     const CARS: u32 = 2_000;
     const OPEN: usize = 64;

@@ -120,6 +120,9 @@ pub struct ServerSettings {
     pub outbound: Outbound,
     /// The names the next certificate is made for (the one running now keeps its own: `/network`).
     pub host_names: Vec<String>,
+    /// The IANA time zone a new car starts in (Settings: Cars changes each car's own). None until it is set, at
+    /// first-run setup from the admin's browser or here: then new cars start in the container's `TZ`, else UTC.
+    pub default_time_zone: Option<String>,
     pub version: u64,
 }
 
@@ -135,6 +138,7 @@ impl Default for ServerSettings {
             outside_links: OutsideLinks::default(),
             outbound: Outbound::default(),
             host_names: Vec::new(),
+            default_time_zone: None,
             version: 1,
         }
     }
@@ -230,7 +234,35 @@ pub fn apply(app: &AppState, s: &ServerSettings) {
         app.set_defaults(d);
     }
     app.set_tiles(s.tile_origins());
+    if let Some(z) = s.default_time_zone.as_deref()
+        && let Ok(e) = app.service::<Engine>()
+    {
+        e.set_default_time_zone(z);
+    }
     super::tesla::follow_proxy(app, s.outbound.proxy.as_deref());
+    super::teslafi::follow_proxy(app, s.outbound.proxy.as_deref());
+}
+
+/// First-run setup: the time zone of the first admin's browser becomes the one new cars start in, unless one is
+/// saved already (a restore or move brings its own) or `zone` is not an IANA zone. Quietly does nothing without an
+/// engine.
+pub fn first_time_zone(app: &AppState, zone: &str) -> ApiResult<()> {
+    let zone = zone.trim();
+    let Ok(e) = app.service::<Engine>() else { return Ok(()) };
+    if !engine::tz::is_zone(zone) {
+        return Ok(());
+    }
+    let _one = CHANGES.lock().unwrap_or_else(|p| p.into_inner());
+    let mut s = load(&e, &cert_names(app))?;
+    if s.default_time_zone.is_some() {
+        return Ok(());
+    }
+    s.default_time_zone = Some(zone.to_string());
+    s.version += 1;
+    let value = serde_json::to_value(&s)?;
+    e.db().set_setting(KEY, value).map_err(|err| ApiError::server(format!("saving the server settings: {err}")))?;
+    apply(app, &s);
+    Ok(())
 }
 
 /// At start: the frame follows the saved settings (else the defaults).
@@ -251,9 +283,15 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/api/v1/settings", get(read).patch(change))
 }
 
-/// The settings as one account sees them: `car_order` lists only the cars it sees.
+/// The settings as one account sees them: `car_order` lists only the cars it sees, and `default_time_zone` is the
+/// zone new cars start in now (the container's `TZ`, else UTC, until one is saved).
 fn view(app: &AppState, v: &Viewer, s: &ServerSettings) -> Value {
     let mut out = serde_json::to_value(s).unwrap_or_else(|_| json!({}));
+    if s.default_time_zone.is_none()
+        && let Ok(e) = app.service::<Engine>()
+    {
+        out["default_time_zone"] = Value::from(e.default_time_zone());
+    }
     let order: Vec<Value> = s
         .car_order
         .iter()
@@ -305,6 +343,7 @@ async fn change(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiRe
         ("links to other sites", before.outside_links == after.outside_links),
         ("proxy", before.outbound == after.outbound),
         ("host names", before.host_names == after.host_names),
+        ("default time zone", before.default_time_zone == after.default_time_zone),
     ] {
         if !same {
             changed.push(k);
@@ -472,6 +511,7 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
         "outside_links",
         "outbound",
         "host_names",
+        "default_time_zone",
     ];
     for k in body.0.keys() {
         if !known.contains(&k.as_str()) {
@@ -599,6 +639,12 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
                 new.host_names = if out.is_empty() { default_host_names(&cert_names(app)) } else { out };
             }
         }
+    }
+    match body.get("default_time_zone") {
+        None => {}
+        Some(Value::String(z)) if engine::tz::is_zone(z.trim()) => new.default_time_zone = Some(z.trim().to_string()),
+        Some(Value::String(_)) => rule.add("default_time_zone", "An IANA time zone such as America/Chicago."),
+        Some(_) => bad.add("default_time_zone", "Must be text."),
     }
     bad.bad_input()?;
     // the rules of the whole, after the parts
