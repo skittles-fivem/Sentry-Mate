@@ -259,8 +259,7 @@ def _now_object(app, car_id, t):
             "address": addr,
         },
         "tyres_kpa": [W(vals.get(k), ts - 20_000) for k in ty_keys] if has_ty else None,
-        "tyres_slots_mapped": has_ty,
-        "tyre_recommended_kpa": W(car.tyre_rec_kpa, h.first_ms) if not legacy else None,
+        **tyres_now(car, meta, legacy, has_ty, [vals.get(k) for k in ty_keys], ts - 20_000, h.first_ms),
         "flags": flags,
         "charge": charge,
         "drive": drive,
@@ -268,6 +267,44 @@ def _now_object(app, car_id, t):
         "software": software_at(app, h, ts),
     }
     return obj
+
+
+# made-up variety: c2's sensors are not mapped yet and the car sends no recommended pressure (the door placard's for
+# its 18 in wheels is used); the other cars send theirs on CAN
+PLACARD_CARS = {"c2": 18}
+
+
+def tyres_now(car, meta, legacy, has_ty, kpa, tyres_at, rec_at):
+    """The Now's tyre fields: whether the slots are mapped, the recommended pressures (typed, else CAN, else the
+    door placard's), and the low flag (each tyre against its axle's, or the lower one while not mapped)."""
+    cfg = meta.get("config", {})
+    typed = [(cfg.get(k) or {}).get("value") if (cfg.get(k) or {}).get("source") == "owner" else None
+             for k in ("tyre_pressure_front_kpa", "tyre_pressure_rear_kpa")]
+    mapped = has_ty and car.id not in PLACARD_CARS
+    src = wheel = None
+    front = rear = None
+    if typed[0] is not None or typed[1] is not None:
+        front = typed[0] if typed[0] is not None else typed[1]
+        rear = typed[1] if typed[1] is not None else front
+        src = "owner"
+    elif car.id in PLACARD_CARS:
+        front = rear = 290.0
+        src, wheel = "placard", PLACARD_CARS[car.id]
+    elif not legacy:
+        front = rear = float(car.tyre_rec_kpa)
+        src = "can"
+
+    def rec(x):
+        if x is None:
+            return None
+        return W(x, rec_at) if src == "can" else {"value": x, "at_ms": None, "sources": []}
+
+    low = None
+    if has_ty and front is not None and None not in kpa:
+        against = [front, front, rear, rear] if mapped else [min(front, rear)] * 4
+        low = W(any(p < a * 0.9 for p, a in zip(kpa, against)), tyres_at)
+    return {"tyres_slots_mapped": bool(mapped), "tyre_recommended_kpa": rec(front), "tyre_recommended_rear_kpa": rec(rear),
+            "tyre_recommended_source": src, "tyre_recommended_wheel_in": wheel, "tyre_low": low}
 
 
 def charge_now(app, h, cur, seg, ts, tv, flags):
@@ -449,7 +486,7 @@ def attention(app, car_id, t, n=None):
                     since = probe
                     day += 1
                 out.append({"car": car_id, "code": "tyre_low", "since_ms": since,
-                            "detail": {"tyre": name, "pressure_kpa": w["value"], "recommended_kpa": rec}})
+                            "detail": {"tyre": name, "pressure_kpa": w["value"], "recommended_kpa": rec, "source": "can"}})
     return out
 
 
@@ -459,7 +496,7 @@ def _synthetic_detail(code, sm):
     if code == "upload_silence":
         return {"last_upload_ms": sm["now"]["received_ms"]}
     if code == "tyre_low":
-        return {"tyre": "rr", "pressure_kpa": 241.0, "recommended_kpa": 290}
+        return {"tyre": "rr", "pressure_kpa": 241.0, "recommended_kpa": 290, "source": "can"}
     if code == "door_open_asleep":
         return {"door": "rl"}
     if code == "trust_failed":

@@ -108,8 +108,10 @@ fn last_judged(e: &Engine, car: CarId, meta: &records::CarMeta) -> QResult<Optio
 /// What a car's people should look at (`stopped_mid_drive`, `stopped_mid_charge`, `upload_silence`, `trust_failed`,
 /// `low_battery`), from its fleet entry and its log records. `upload_silence` and `trust_failed` follow the rules of
 /// `/cars/{car}/health`: nothing new (its newest log's data, else its last upload) for a day, and its newest judged
-/// log failed its check. Not said yet: `tyre_low` (the car's recommended pressure isn't read, and a threshold the
-/// server picked is not the car's) and `door_open_asleep` (the Now keeps no doors).
+/// log failed its check. `tyre_low`: a tyre of the Now more than 10 % under its recommended pressure (as the Now's
+/// `tyre_low`: typed, else the car's, else the door placard's; each tyre against the lower axle's while which wheel
+/// each sensor is is not known), with `{ tyre: "fl" | "fr" | "rl" | "rr" | null (not known), pressure_kpa,
+/// recommended_kpa, source }` for the lowest. Not said yet: `door_open_asleep` (the Now keeps no doors).
 pub fn attention_of(e: &Engine, x: &FleetEntry, meta: &records::CarMeta, now: u64) -> QResult<Vec<Noted>> {
     let mut out = Vec::new();
     // a sold car is not watched any more
@@ -124,6 +126,21 @@ pub fn attention_of(e: &Engine, x: &FleetEntry, meta: &records::CarMeta, now: u6
         } else if silent && n.sample.charging == Some(true) {
             out.push(Noted { code: "stopped_mid_charge", since_ms: Some(n.at_ms), detail });
         }
+    }
+    if let Some(n) = &x.summary.now
+        && let Some(t) = super::now::tyres_judged(e, x.car.id, &n.sample)?
+        && let Some(i) = t.lowest_low()
+    {
+        out.push(Noted {
+            code: "tyre_low",
+            since_ms: Some(n.at_ms),
+            detail: serde_json::json!({
+                "tyre": t.mapped.then(|| ["fl", "fr", "rl", "rr"][i]),
+                "pressure_kpa": t.kpa[i],
+                "recommended_kpa": t.against[i],
+                "source": t.recommended.source.word(),
+            }),
+        });
     }
     let last_seen = meta.newest_ms.or(meta.last_arrived_ms);
     if last_seen.is_none_or(|t| now.saturating_sub(t) > 24 * STALE_MS) {
@@ -442,7 +459,8 @@ pub struct CarDetail {
     #[serde(flatten)]
     pub item: CarItem,
     /// Every key of [`CONFIG_KEYS`], plus `model`, `year` and `plant` (the VIN's plant letter): each the value
-    /// [`CarDetail::vehicle`] settled on, in the words `config` has always used.
+    /// [`CarDetail::vehicle`] settled on, in the words `config` has always used; and the recommended tyre pressures
+    /// an admin typed (`tyre_pressure_front_kpa`, `tyre_pressure_rear_kpa`: null when none is).
     pub config: BTreeMap<&'static str, Configured>,
     /// Everything known of the car's build, each fact with its source and confidence.
     pub vehicle: VehicleInfo,
@@ -579,6 +597,68 @@ fn vehicle_defaults_of(e: &Engine, c: &model::Car, o: &Owner) -> QResult<Vehicle
     })
 }
 
+/// Where a car's recommended tyre pressures come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TyreSource {
+    /// An admin typed them (`config.tyre_pressure_front_kpa`, `_rear_kpa`).
+    Owner,
+    /// The car sent them (0x219 page 4).
+    Can,
+    /// The door placard's for the car's model, year and wheel size (`tyre_pressure.csv`).
+    Placard,
+}
+
+impl TyreSource {
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            TyreSource::Owner => "owner",
+            TyreSource::Can => "can",
+            TyreSource::Placard => "placard",
+        }
+    }
+}
+
+/// A car's recommended (cold) tyre pressures, kPa: front and rear axle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TyreRecommended {
+    pub front_kpa: f64,
+    pub rear_kpa: f64,
+    pub source: TyreSource,
+    /// The wheel size the placard's are for (placard only).
+    pub wheel_in: Option<u8>,
+}
+
+/// A car's recommended tyre pressures: what an admin typed (one alone is both axles'), else what the car sends
+/// (`can`, kPa: front and rear, both needed), else the door placard's for its build (its model, model year and
+/// wheel size all known; the build is only worked out when neither of the others is there).
+pub(crate) fn tyre_recommended(e: &Engine, car: CarId, can: [Option<f64>; 2]) -> QResult<Option<TyreRecommended>> {
+    let o = owner(e, car)?;
+    let typed = |k: &str| o.config.get(k).and_then(serde_json::Value::as_f64).filter(|x| x.is_finite() && *x > 0.0);
+    if let (f, r) = (typed("tyre_pressure_front_kpa"), typed("tyre_pressure_rear_kpa"))
+        && let Some(front) = f.or(r)
+    {
+        let rear = r.unwrap_or(front);
+        return Ok(Some(TyreRecommended {
+            front_kpa: front,
+            rear_kpa: rear,
+            source: TyreSource::Owner,
+            wheel_in: None,
+        }));
+    }
+    let can = can.map(|x| x.filter(|x| x.is_finite() && *x > 0.0));
+    if let [Some(front), Some(rear)] = can {
+        return Ok(Some(TyreRecommended { front_kpa: front, rear_kpa: rear, source: TyreSource::Can, wheel_in: None }));
+    }
+    let c = car_of(e, car)?;
+    let v = vehicle_of(e, &c, &o)?;
+    Ok(model::vehicle::placard_pressure(&v).map(|p| TyreRecommended {
+        front_kpa: p.front_kpa,
+        rear_kpa: p.rear_kpa,
+        source: TyreSource::Placard,
+        wheel_in: Some(p.wheel_in),
+    }))
+}
+
 /// [`VehicleDefaults`] of one car.
 pub(crate) fn vehicle_defaults(e: &Engine, car: CarId) -> QResult<VehicleDefaults> {
     let c = car_of(e, car)?;
@@ -630,6 +710,15 @@ pub fn car(e: &Engine, car: CarId) -> QResult<CarDetail> {
             "map_region" => put(&v.region),
             "supercharging_access" => put(&v.supercharging_access),
             _ => Configured::new(serde_json::Value::Null, None),
+        };
+        config.insert(k, shown);
+    }
+    // the recommended tyre pressures an admin typed (kPa; the Now's `tyre_recommended_*` say what is used)
+    for k in ["tyre_pressure_front_kpa", "tyre_pressure_rear_kpa"] {
+        let typed = o.config.get(k).filter(|v| v.is_number()).cloned();
+        let shown = match typed {
+            Some(v) => Configured::new(v, Some(FactSource::Owner.word())),
+            None => Configured::new(serde_json::Value::Null, None),
         };
         config.insert(k, shown);
     }

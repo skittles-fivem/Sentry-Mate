@@ -7,6 +7,7 @@
 // the battery and charging charts on one cursor, and the activity strip. Rows events reload the period.
 
 import * as state from '../shared/state.js';
+import { tyreView, recommendedLine } from '../shared/tyres.js';
 import { h, replace } from '../shared/dom.js';
 import { format, getUnits, onUnitsChange, unitLabel } from '../shared/units.js';
 import { formatDateTime, formatDate, zoneName } from '../shared/time.js';
@@ -241,19 +242,18 @@ export async function mount(ctx) {
       h('p', { class: 'note' }, icon('info', 'i--sm'), h('span', null, 'Sentry Mate only listens, so it never keeps the car awake. ', h('a', { href: ctx.link('timeline') }, 'The timeline'), ' shows when it slept.'))));
   }
   function paintTyres() {
-    const rec = val(now.tyre_recommended_kpa);
     const ty = now.tyres_kpa || [];
-    const low = ty.some((x) => val(x) != null && rec != null && val(x) < rec * 0.9);
+    const tv = tyreView(now);
+    const low = tv.anyLow === true;
     replace(tyresEl, hud({ title: 'Tyres', icon: 'tyre', cover: 'summary.flag.tire_pressure_warning', side: [ty.length ? valSrc(ty.find((x) => x)) : null, low ? tag('Low', 'org') : ty.length ? tag('Fine', 'grn') : null] },
       ty.length ? h('div', { class: 'cl-tyres' }, h('div', { class: 'cl-tyre-car', 'aria-hidden': 'true' }, icon('car', 'i--xl')),
         TYRES.map(([k, w], i) => {
           const v = val(ty[i]);
-          const isLow = v != null && rec != null && v < rec * 0.9;
+          const isLow = tv.low[i] === true;
           return h('div', { class: ['cl-tyre', `cl-tyre--${k}`, isLow && 'is-low'] }, h('span', { class: 'cl-tyre-k' }, w), h('span', { class: 'cl-tyre-v' }, format(v, 'pressure')));
         }))
         : h('p', { class: 'empty-line' }, icon('info', 'i--sm'), h('span', null, 'This car does not send tyre pressures.')),
-      h('p', { class: 'note' }, icon('info', 'i--sm'), h('span', null, rec != null ? `Recommended ${format(rec, 'pressure')}; under 90 % of it lights the warning.` : 'No recommended pressure is known.',
-        now.tyres_slots_mapped === false ? ' Which sensor sits on which wheel is not known yet.' : ''))));
+      h('p', { class: 'note' }, icon('info', 'i--sm'), h('span', null, recommendedLine(now), tv.front != null ? ' Under 90 % of it lights the warning.' : ''))));
   }
   function paintCharge() {
     const c = now.charge || {};

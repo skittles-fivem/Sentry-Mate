@@ -43,7 +43,7 @@ impl Filled {
     }
 }
 
-/// The sample field names of a mask's bits (`outside_temp_c`, `lat`, `tpms_bar_0`, ...).
+/// The sample field names of a mask's bits (`outside_temp_c`, `lat`, `tpms_bar` (the four tyres), ...).
 pub fn slot_names(mask: u64) -> impl Iterator<Item = &'static str> {
     SLOTS.iter().enumerate().filter(move |(i, _)| mask & (1u64 << i) != 0).map(|(_, s)| s.name)
 }

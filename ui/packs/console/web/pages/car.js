@@ -11,6 +11,7 @@
 
 import { h, replace, cover } from '../shared/dom.js';
 import { isSold } from '../shared/state.js';
+import { tyreView, recommendedLine } from '../shared/tyres.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDateTime } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -122,10 +123,9 @@ export async function mount(ctx) {
     const soc = val(n.soc_pct), usable = val(n.usable_soc_pct);
     const rangePair = ideal ? n.ideal_range_km : n.range_km;
     const setp = (p) => { const v = val(p); return v == null ? null : format(v, 'temperature'); };
-    const rec = val(n.tyre_recommended_kpa);
-    const tyres = (n.tyres_kpa || []).map(val);
-    const low = (v) => v != null && rec != null && v < rec * 0.9;
-    const tyre = (i) => h('span', { class: ['tyre', low(tyres[i]) && 'tone--warn'] }, num(tyres[i], 'pressure'));
+    const tv = tyreView(n);
+    const tyres = tv.kpa;
+    const tyre = (i) => h('span', { class: ['tyre', tv.low[i] === true && 'tone--warn'] }, num(tyres[i], 'pressure'));
     const doors = f.doors || {};
     const openOnes = [['fl', 'fl'], ['fr', 'fr'], ['rl', 'rl'], ['rr', 'rr']].filter(([k]) => val(doors[k])).map(([, l]) => `door ${l}`)
       .concat(val(f.trunk) ? ['trunk'] : [], val(f.frunk) ? ['frunk'] : [], val(f.liftgate_deg) ? ['liftgate'] : []);
@@ -160,8 +160,9 @@ export async function mount(ctx) {
         ['cable', by(c.plugged, yes(c.plugged, 'plugged in', 'unplugged')), { cover: 'summary.flag.plugged_in' }],
         ['cold battery', val(f.reduced_range) == null ? null : val(f.reduced_range) ? h('span', { class: 'tone--warn' }, 'range reduced') : 'no', { cover: 'summary.flag.reduced_range' }],
         ['service mode', val(f.service_mode) == null ? null : val(f.service_mode) ? h('span', { class: 'tone--warn' }, loc.place ? `on, at ${loc.place.name}` : 'on') : 'off', { cover: ['summary.flag.service_mode', 'summary.state.in_service'] }],
-        ['tyres fl fr', [tyre(0), '  ', tyre(1)], { cover: 'summary.flag.tire_pressure_warning' }],
-        ['tyres rl rr', [tyre(2), '  ', tyre(3), rec != null ? h('span', { class: 'muted' }, ` rec ${format(rec, 'pressure')}`) : null]],
+        [tv.mapped ? 'tyres fl fr' : 'tyre sensors 1 2', [tyre(0), '  ', tyre(1)], { cover: 'summary.flag.tire_pressure_warning' }],
+        [tv.mapped ? 'tyres rl rr' : 'tyre sensors 3 4', [tyre(2), '  ', tyre(3)]],
+        ['tyre pressure', h('span', { class: 'muted' }, recommendedLine(n))],
         ['12 v battery', aged(n.lv_v, num(val(n.lv_v), 'voltage'))],
         ['software', [h('a', { class: 'lnk-plain', href: ctx.link('software') }, sw.version || 'not known'), swSrc ? h('span', { class: 'muted' }, ` (${swSrc})`) : null], { cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
         ['firmware', h('a', { class: 'lnk-plain', href: `${ctx.link('software')}#firmware`, title: 'the modules\' firmware fingerprints, and the Tesla updates found from them' }, 'module fingerprints')],

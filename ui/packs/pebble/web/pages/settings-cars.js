@@ -11,6 +11,7 @@
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
+import { convert, toMetric, unitLabel } from '../shared/units.js';
 import { isValidZone, formatDate, formatDateTime, formatTime, formatDayKey, zoneSourceText } from '../shared/time.js';
 import { tile, btn, chip, note, icon, stateTag, ago } from '../core/ui.js';
 import { srcPill, srcText } from '../core/source.js';
@@ -253,6 +254,24 @@ async function mountCar(ctx) {
   });
   nameF.control.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); nameF.control.blur(); } });
   const cfg = car.config || {};
+  // the recommended tyre pressures, typed (config.tyre_pressure_front_kpa / _rear_kpa, kPa)
+  const pu = unitLabel('pressure');
+  const r2 = (x) => Math.round(x * 100) / 100;
+  const pLo = Math.ceil(convert(100, 'pressure') * 100) / 100, pHi = Math.floor(convert(600, 'pressure') * 100) / 100;
+  const tyreF = (k, label, hint) => {
+    const cur = cfg[k] ? cfg[k].value : null;
+    const f = field({ label: `${label} (${pu})`, name: k, type: 'number', value: cur == null ? '' : String(r2(convert(cur, 'pressure'))), hint: `${pLo} to ${pHi} ${pu}. ${hint}`,
+      attrs: { min: String(pLo), max: String(pHi), step: pu === 'psi' ? '1' : '0.05', disabled: ro } });
+    f.control.addEventListener('change', async () => {
+      const raw = f.control.value.trim();
+      const n = raw === '' ? null : Number(raw);
+      setFieldError(f, null);
+      if (n != null && (!Number.isFinite(n) || n < pLo || n > pHi)) { setFieldError(f, `A number from ${pLo} to ${pHi} ${pu}, or empty.`); return; }
+      try { await patchCar({ config: { [k]: n == null ? null : Math.round(toMetric(n, 'pressure') * 10) / 10 } }, n == null ? `${label.toLowerCase()} is no longer typed` : `${label.toLowerCase()} ${n} ${pu}`); }
+      catch (err) { setFieldError(f, (err.fields && err.fields[`config.${k}`]) || notSaved(err)); }
+    });
+    return f;
+  };
   const carT = tile({ w: 2, title: 'The car', icon: 'car', side: chip(ro ? 'Read only' : 'Saves as you go', { tone: ro ? 'muted' : 'teal', icon: ro ? 'lock' : 'check', cover: 'web.settings.car.autosave' }) },
     nameF,
     group('What it reports about itself', [
@@ -262,7 +281,10 @@ async function mountCar(ctx) {
         return infoRow({ name: label, sub: c && c.value != null ? null : 'Not sent yet', side: h('span', { class: 'set-line' },
           h('span', { class: 'set-value' }, c && c.value != null ? yesNo(c.value) : '—'), c && c.value != null ? (c.source === 'vin' ? chip(SOURCE.vin, { tone: SOURCE_TONE.vin }) : srcPill(c, { short: true, typed: 'Typed by an admin' })) : null) });
       }),
-    ], { note: 'Read from the car’s own configuration message (SMO) or from the Tesla API, else worked out from the VIN prefix or typed by an admin. The label says where each one came from.' }));
+    ], { note: 'Read from the car’s own configuration message (SMO) or from the Tesla API, else worked out from the VIN prefix or typed by an admin. The label says where each one came from.' }),
+    tyreF('tyre_pressure_front_kpa', 'Recommended tyre pressure, front', 'The cold pressure on the door placard. Empty: what the car sends, else the placard’s for its wheel size.'),
+    tyreF('tyre_pressure_rear_kpa', 'Recommended tyre pressure, rear', 'Empty: the front’s when that is typed.'),
+    note('A typed pressure beats the one the car sends. A tyre more than 10 % under it is flagged on the car page.'));
 
   /* ---------- sold */
   // PATCH cars/{car} { version, sold, sold_date }: a sold car keeps its history; sold: false forgets the date.

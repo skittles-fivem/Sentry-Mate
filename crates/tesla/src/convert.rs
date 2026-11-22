@@ -115,6 +115,7 @@ pub fn reading(v: &Value, now_ms: u64) -> Reading {
         (Some(a), Some(o)) if (-90.0..=90.0).contains(&a) && (-180.0..=180.0).contains(&o) => (Some(a), Some(o)),
         _ => (None, None),
     };
+    let tpms_bar = ["fl", "fr", "rl", "rr"].map(|w| f(v, "vehicle_state", &format!("tpms_pressure_{w}")));
     let sample = Sample {
         t_ms: at - at % 1000,
         lat,
@@ -137,7 +138,12 @@ pub fn reading(v: &Value, now_ms: u64) -> Reading {
         charge_power_kw: if charging == Some(true) { f(v, "charge_state", "charger_power") } else { None },
         charger_voltage_v: if charging == Some(true) { f(v, "charge_state", "charger_voltage") } else { None },
         charger_current_a: if charging == Some(true) { f(v, "charge_state", "charger_actual_current") } else { None },
-        tpms_bar: ["fl", "fr", "rl", "rr"].map(|w| f(v, "vehicle_state", &format!("tpms_pressure_{w}"))),
+        tpms_bar,
+        // the API names each tyre's wheel
+        extra: model::SampleExtra {
+            tires_mapped: tpms_bar.iter().any(Option::is_some).then_some(true),
+            ..model::SampleExtra::default()
+        },
         ..Sample::default()
     };
     let version = s(v, "vehicle_state", "car_version").and_then(|c| c.split_whitespace().next().map(str::to_string));
@@ -245,6 +251,7 @@ mod tests {
         assert_eq!(s.charge_kind, None);
         assert_eq!(s.charge_power_kw, None);
         assert_eq!(s.tpms_bar, [Some(2.9), None, None, None]);
+        assert_eq!(s.extra.tires_mapped, Some(true), "the API names the wheels");
         assert_eq!(s.energy_remaining_kwh, None);
         assert_eq!(r.meta.car_version.as_deref(), Some("2026.32.5"));
         assert_eq!(r.meta.display_name.as_deref(), Some("Made-up car"));

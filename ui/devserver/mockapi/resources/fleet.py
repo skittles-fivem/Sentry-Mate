@@ -290,7 +290,10 @@ EXTRA_KINDS = {"model": ("text",), "model_year": ("whole", 2008, 2045), "plant":
                "restraint": ("text",), "seats": ("whole", 1, 9), "battery_type": ("text",),
                "chemistry": ("word", ("lfp", "nca_nmc")), "nominal_kwh": ("number", 5, 300),
                "usable_kwh": ("number", 5, 300), "motors": ("whole", 1, 4), "epa_range_km": ("number", 10, 2000),
-               "wheel_in": ("whole", 14, 24)}
+               "wheel_in": ("whole", 14, 24),
+               # the recommended tyre pressures, typed (kPa): not build facts, so not in `vehicle` (the Now reads them)
+               "tyre_pressure_front_kpa": ("number", 100, 600), "tyre_pressure_rear_kpa": ("number", 100, 600)}
+TYRE_KEYS = ("tyre_pressure_front_kpa", "tyre_pressure_rear_kpa")
 VEHICLE_FACTS = ("maker", "built_in", "model", "model_year", "plant", "platform", "body", "restraint", "seats",
                  "battery_type", "chemistry", "pack", "pack_code", "nominal_kwh", "usable_kwh", "motors", "drive",
                  "performance", "trim", "epa_range_km", "wheel", "wheel_in", "paint", "roof", "spoiler", "steering",
@@ -421,6 +424,8 @@ def car_detail(req, cid=None):
     meta = st.car_meta(cid)
     it = typed_over(list_item(req.app, cid, req.now), meta)
     it["config"] = {k: config_value(meta["config"].get(k, {"value": None, "source": None})) for k in CONFIG_KEYS}
+    for k in TYRE_KEYS:
+        it["config"][k] = config_value(meta["config"].get(k, {"value": None, "source": None}))
     s = st.car_settings.get(cid) or {}
     it["vehicle"] = vehicle_info(meta, (s.get("battery_chemistry") or {}).get("setting", "auto"))
     it["version"] = meta["version"]

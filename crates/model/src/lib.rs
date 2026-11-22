@@ -628,7 +628,9 @@ pub struct Sample {
     pub total_charge_kwh: Option<f64>,
     pub total_discharge_kwh: Option<f64>,
     pub lv_voltage_v: Option<f64>,
-    /// Tire pressures, bar: front left, front right, rear left, rear right.
+    /// Tire pressures, bar: front left, front right, rear left, rear right where the input names the wheels (the
+    /// APIs, the chassis bus's 0x31F, or 0x219 with its four slots' wheels known); else 0x219's four slots in the
+    /// car's own order, which wheel each is not known ([`SampleExtra::tires_mapped`] says which, where it is known).
     pub tpms_bar: [Option<f64>; 4],
     /// Body, build, comfort and charge-detail values (doors, modes, car configuration, charge limit ...). Kept out of
     /// the stored points: only the car's Now and MQTT use them. Absent in JSON when none is known.
@@ -713,8 +715,19 @@ pub struct SampleExtra {
     pub charger_phases: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_to_full_min: Option<f64>,
+    /// A tyre more than 10 % below its recommended pressure ([`tyre_low`]; the car's own warning where it sends one).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tire_low: Option<bool>,
+    /// The car's recommended (cold) tyre pressures, bar: front and rear axle (0x219 page 4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tire_recommended_front_bar: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tire_recommended_rear_bar: Option<f64>,
+    /// Whether [`Sample::tpms_bar`] is in wheel order (front left, front right, rear left, rear right): `true` when
+    /// the input names the wheels, `false` when the pressures are 0x219's slots and which wheel each is not known;
+    /// `None` with no pressures (or from an input that does not say).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tires_mapped: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub energy_at_destination_kwh: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -726,6 +739,45 @@ pub struct SampleExtra {
 impl SampleExtra {
     pub fn is_empty(&self) -> bool {
         *self == SampleExtra::default()
+    }
+}
+
+/// A tyre is low when its pressure is more than this far below its recommended (cold) pressure (0.1: 10 %).
+pub const TYRE_LOW_FRACTION: f64 = 0.1;
+
+/// Each of four tyre pressures judged against the recommended pressures (`recommended`: front, rear axle; any unit,
+/// the same as the pressures'): `Some(true)` when it is more than [`TYRE_LOW_FRACTION`] below, `Some(false)` when not,
+/// `None` when its pressure or its recommended one is not known. `mapped`: the pressures are in wheel order (front
+/// left, front right, rear left, rear right) and each is judged against its own axle's. Not mapped, which wheel each
+/// is is not known: every tyre is judged against the lower of the two (both needed), so a rear tyre at the rear's
+/// pressure is never called low against a higher front one. That gives no false alarm; a tyre between the two (low
+/// for the higher axle only) is missed.
+pub fn tyre_lows(pressures: &[Option<f64>; 4], recommended: [Option<f64>; 2], mapped: bool) -> [Option<bool>; 4] {
+    let against = tyre_against(recommended, mapped);
+    [0, 1, 2, 3].map(|i| pressures[i].zip(against[i]).map(|(p, r)| p < r * (1.0 - TYRE_LOW_FRACTION)))
+}
+
+/// The recommended pressure each of four tyres is judged against ([`tyre_lows`]): its axle's when `mapped`, else the
+/// lower of the two.
+pub fn tyre_against(recommended: [Option<f64>; 2], mapped: bool) -> [Option<f64>; 4] {
+    let recommended = recommended.map(|r| r.filter(|r| r.is_finite() && *r > 0.0));
+    let lower = match recommended {
+        [Some(a), Some(b)] => Some(a.min(b)),
+        _ => None,
+    };
+    [0, 1, 2, 3].map(|i| if mapped { recommended[i / 2] } else { lower })
+}
+
+/// Whether a tyre is low ([`tyre_lows`]): `true` when any is, `false` when all four are judged and none is, else not
+/// known.
+pub fn tyre_low(pressures: &[Option<f64>; 4], recommended: [Option<f64>; 2], mapped: bool) -> Option<bool> {
+    let lows = tyre_lows(pressures, recommended, mapped);
+    if lows.contains(&Some(true)) {
+        Some(true)
+    } else if lows.iter().all(|l| *l == Some(false)) {
+        Some(false)
+    } else {
+        None
     }
 }
 

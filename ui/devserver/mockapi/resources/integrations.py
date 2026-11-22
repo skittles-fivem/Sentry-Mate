@@ -249,9 +249,8 @@ def _new_values(req, car, n, u, v, dist, pres):
         display = "on" if display_on else "off"
     status = v(ch.get("status"))
     charging = status == "charging"
-    rec = v(n.get("tyre_recommended_kpa"))
-    tyres = [v(x) for x in (n.get("tyres_kpa") or [])]
-    tire_low = None if rec is None or not tyres or None in tyres else any(x < rec * 0.85 for x in tyres)
+    # the Now's own judgment (typed, CAN or the door placard's recommended pressure; 10 % under)
+    tire_low = v(n.get("tyre_low"))
     odo = v(n.get("odometer_km"))
     pilot = v(ch.get("pilot_a"))
     driving = bool(n.get("driving"))

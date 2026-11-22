@@ -86,6 +86,10 @@ pub(crate) enum Field {
     TpmsWarning,
     TireRecFront,
     TireRecRear,
+    TireLoc0,
+    TireLoc1,
+    TireLoc2,
+    TireLoc3,
     EnergyAtDest,
     Navigating,
     Ota,
@@ -230,7 +234,9 @@ pub(crate) const WANTED: &[(Field, &str, Kind)] = &[
     (F::TotalCharge, "TotalChargeKWh3D2", Number(Q::Energy, 0.0, 1.0e7)),
     (F::TotalDischarge, "TotalDischargeKWh3D2", Number(Q::Energy, 0.0, 1.0e7)),
     (F::LvVolts, "v12vBattVoltage261", Number(Q::Voltage, 0.0, 30.0)),
-    // bar in both files (0.025 bar steps; 255 = not available, past the DBC's range)
+    // bar in both files (0.025 bar steps; 255 = not available, past the DBC's range). 0x219's four are the car's
+    // slots (which wheel each is: VCSEC_TPMSLocation0-3), 0x31F's name the wheels; the sample builder reads each
+    // group whole (`SampleBuilder::tyres`), never one slot from each
     (F::Tire0, "VCSEC_TPMSPressure0", Number(Q::Pressure, 0.0, 6.36)),
     (F::Tire0, "TPMSFLpressure31F", Number(Q::Pressure, 0.0, 6.36)),
     (F::Tire1, "VCSEC_TPMSPressure1", Number(Q::Pressure, 0.0, 6.36)),
@@ -300,6 +306,12 @@ pub(crate) const WANTED: &[(Field, &str, Kind)] = &[
     (F::TpmsWarning, "UI_a014_TPMSSoftWarning", Flag),
     (F::TireRecFront, "VCSEC_TPMSRecommendedPressure0", Number(Q::Pressure, 0.0, 6.36)),
     (F::TireRecRear, "VCSEC_TPMSRecommendedPressure1", Number(Q::Pressure, 0.0, 6.36)),
+    // which wheel each 0x219 pressure slot is (pages 0-3; the base layout's, kept in override.dbc): 0 FL, 1 FR,
+    // 2 RL, 3 RR; LOCATION_UNKNOWN (4) is not available
+    (F::TireLoc0, "VCSEC_TPMSLocation0", Number(Q::Plain, 0.0, 3.0)),
+    (F::TireLoc1, "VCSEC_TPMSLocation1", Number(Q::Plain, 0.0, 3.0)),
+    (F::TireLoc2, "VCSEC_TPMSLocation2", Number(Q::Plain, 0.0, 3.0)),
+    (F::TireLoc3, "VCSEC_TPMSLocation3", Number(Q::Plain, 0.0, 3.0)),
     // 0x082, kWh (signed); SNA and TRIP_TOO_LONG are not available
     (F::EnergyAtDest, "UI_energyAtDestination", Number(Q::Energy, -327.67, 327.67)),
     // 0x238 on the chassis bus (the legacy set has it too, 0x3C8)
@@ -641,6 +653,9 @@ mod tests {
         assert_eq!(acc.read(25.0), Some(25.0));
         assert_eq!(t.cand("UI_SOC").read(127.0), None);
         assert_eq!(t.cand("VCSEC_TPMSPressure0").read(6.375), None);
+        // the slot's wheel: LOCATION_RR is 3, LOCATION_UNKNOWN not available
+        assert_eq!(t.cand("VCSEC_TPMSLocation2").read(3.0), Some(3.0));
+        assert_eq!(t.cand("VCSEC_TPMSLocation2").read(4.0), None);
         // the less frequent values: value names by their rules
         let latch = t.cand("VCLEFT_frontLatchStatus");
         assert_eq!(

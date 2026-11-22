@@ -423,7 +423,34 @@ async function mountCar(ctx) {
         save: (v) => patchSettings({ software_version_typed: v }) },
     ]);
     replace(slots.refs, section({ title: 'reference values', side: h('span', { class: 'muted' }, 'empty means worked out') }, lines.el,
-      note('Battery health compares today\'s capacity and range with these; without them it uses the earliest readings and says so.')));
+      note('Battery health compares today\'s capacity and range with these; without them it uses the earliest readings and says so.')),
+    tyreSection());
+  }
+
+  /* ---- the recommended tyre pressures, typed (config.tyre_pressure_front_kpa / _rear_kpa, kPa) */
+  function tyreSection() {
+    const cfg = S.car.config || {};
+    const unit = unitLabel('pressure');
+    const r2 = (x) => Math.round(x * 100) / 100;
+    const lo = Math.ceil(convert(100, 'pressure') * 100) / 100, hi = Math.floor(convert(600, 'pressure') * 100) / 100;
+    const line = (k, label, help) => {
+      const cur = cfg[k]?.value;
+      return { key: k, type: 'number', value: cur == null ? '' : String(r2(convert(cur, 'pressure'))), toText: (v) => (v == null ? '' : String(v)), unit, cls: 'ke--short', readOnly: ro,
+        help: `${help} ${lo} to ${hi} ${unit}, or empty.`,
+        parse: (t) => {
+          if (t.trim() === '') return { value: null };
+          const n = Number(t);
+          return Number.isFinite(n) && n >= lo && n <= hi ? { value: n } : { error: `a number from ${lo} to ${hi}, or empty` };
+        },
+        save: async (v) => { await patchCar({ config: { [k]: v == null ? null : Math.round(toMetric(v, 'pressure') * 10) / 10 } }); return undefined; },
+        label };
+    };
+    const lines = editLines([
+      line('tyre_pressure_front_kpa', 'recommended, front', 'The cold pressure on the door placard. Empty: what the car sends, else the placard\'s for its wheel size.'),
+      line('tyre_pressure_rear_kpa', 'recommended, rear', 'Empty: the front\'s when that is typed.'),
+    ]);
+    return section({ title: 'tyre pressure', side: h('span', { class: 'muted' }, 'typed beats the car') }, lines.el,
+      note('A tyre more than 10 % under its recommended pressure is flagged on the car page.'));
   }
 
   /* ---- free Supercharging as dated ranges */

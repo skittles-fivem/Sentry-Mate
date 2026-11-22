@@ -15,6 +15,7 @@ import { formatTime, formatDate, formatDateTime, formatDuration, formatRelative,
 import { formatList } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
+import { tyreView, recommendedLine } from '../shared/tyres.js';
 import { pageHead, q, plus, figure, chip, icon, stateMark, empty, errorView, loadingBlock, sep, ago, routeSketch } from '../core/ui.js';
 import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
 import { makeMap, coordsText, boundsOf } from '../core/map.js';
@@ -431,14 +432,14 @@ function vitals(car, now, tz) {
       row('Set points', bothNil ? q(null, 'temperature', { why: notSent }) : h('span', null, sp(now.setpoint_left_c), ' / ', sp(now.setpoint_right_c)), 'driver / passenger', { cover: 'overview.stat.driver_temp', measured: t(now.setpoint_left_c), src: now.setpoint_left_c })));
 
   const kpa = (now.tyres_kpa || []).map(v);
-  const rec = v(now.tyre_recommended_kpa);
-  const low = (p) => p != null && rec != null && p < rec * 0.9;
+  const tv = tyreView(now);
+  const lowAt = (i) => tv.low[i] === true;
   const pu = getUnits().pressure === 'psi' ? 'psi' : 'bar';
   const val = (p) => (p == null ? '—' : parts(p, 'pressure').number);
   const wheel = (x, y) => svg('rect', { class: 'tire-wheel', x, y, width: 9, height: 24, rx: 3 });
-  const reading = (p, x, y, anchor) => svg('text', { class: ['tire-value', { 'is-low': low(p) }], x, y, 'text-anchor': anchor }, val(p));
+  const reading = (i, x, y, anchor) => svg('text', { class: ['tire-value', { 'is-low': lowAt(i) }], x, y, 'text-anchor': anchor }, val(kpa[i]));
   const names = ['Front left', 'Front right', 'Rear left', 'Rear right'];
-  const lows = kpa.map((p, i) => (low(p) ? `${names[i]} ${format(p, 'pressure')}` : null)).filter(Boolean);
+  const lows = kpa.map((p, i) => (lowAt(i) ? `${tv.mapped ? names[i] : `Sensor ${i + 1}`} ${format(p, 'pressure')}` : null)).filter(Boolean);
   const tyres = h('section', { class: 'vital vital-tires', cover: 'summary.flag.tire_pressure_warning' }, h('h2', { class: 'label' }, 'Tyres', h('span', { class: 'label-note' }, pu)),
     kpa.length ? h('div', { class: 'tires-figure' },
       h('span', { class: 'tire-axle', 'aria-hidden': 'true' }, 'front'),
@@ -446,10 +447,10 @@ function vitals(car, now, tz) {
         svg('rect', { class: 'tire-body', x: 84, y: 19, width: 52, height: 116, rx: 22 }),
         svg('path', { class: 'tire-glass', d: 'M92 53c8-6 28-6 36 0M92 105c8 5 28 5 36 0' }),
         wheel(76, 33), wheel(135, 33), wheel(76, 99), wheel(135, 99),
-        reading(kpa[0], 64, 52, 'end'), reading(kpa[1], 156, 52, 'start'), reading(kpa[2], 64, 118, 'end'), reading(kpa[3], 156, 118, 'start')),
+        reading(0, 64, 52, 'end'), reading(1, 156, 52, 'start'), reading(2, 64, 118, 'end'), reading(3, 156, 118, 'start')),
       h('span', { class: 'tire-axle', 'aria-hidden': 'true' }, 'rear')) : h('p', { class: 'note' }, 'This car sends no tyre pressures.'),
-    h('p', { class: ['spec-foot', { 'is-low': lows.length }] }, lows.length ? `Low: ${formatList(lows)}` : kpa.length ? 'All four at or near the recommended pressure' : '',
-      rec != null ? ` · ${format(rec, 'pressure')} recommended by the car` : ''));
+    h('p', { class: ['spec-foot', { 'is-low': lows.length }] }, lows.length ? `Low: ${formatList(lows)}. ` : kpa.length && tv.front != null ? 'All four at or near the recommended pressure. ' : '',
+      kpa.length ? recommendedLine(now) : ''));
 
   const sw = now.software || {};
   const swSrc = { teslamate: 'imported', tesla_api: 'from the Tesla API', owner: 'typed by the owner', build_match: 'matched by build' }[sw.version_source] || null;

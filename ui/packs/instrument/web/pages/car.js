@@ -5,6 +5,7 @@
 // starts or ends (`rows` events).
 
 import * as state from '../shared/state.js';
+import { tyreView, recommendedLine } from '../shared/tyres.js';
 import { h, svg, replace, cover, cssVar, quantity } from '../shared/dom.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDate, formatDateTime, zoneName, buckets } from '../shared/time.js';
@@ -341,21 +342,20 @@ export async function mount(ctx) {
         ? h('p', { class: 'setpoints', cover: 'overview.stat.driver_temp' }, `Climate ${(CLIMATE[val(f.climate)] || 'not known').toLowerCase()}`, h('span', { class: 'faint' }, val(f.climate) === 'off' ? ' · the car sends no set point while climate is off' : ' · no set point from this car'))
         : h('p', { class: 'setpoints', cover: 'overview.stat.driver_temp' }, 'Climate set to ', h('b', null, setp(n.setpoint_left_c) ?? '—'), ' left, ', h('b', null, setp(n.setpoint_right_c) ?? '—'), ' right', h('span', { class: 'faint' }, ` · climate ${(CLIMATE[val(f.climate)] || '—').toLowerCase()}`)));
 
-    // tyres: all four at all times, with the car's recommended pressure
-    const rec = val(n.tyre_recommended_kpa);
-    const tyres = (n.tyres_kpa || []).map((p) => val(p));
-    // flagged at 10 % under the recommended pressure: a cold morning takes a few percent off every tyre,
-    // a slow leak goes well past that (a TPMS warning starts at about 20 to 25 % under)
-    const LOW_SHARE = 0.1;
-    const low = (v) => v != null && rec != null && v < rec * (1 - LOW_SHARE);
+    // tyres: all four at all times, with the recommended pressure (the car's, typed, or the door placard's).
+    // Flagged at 10 % under it, as the server judges: a cold morning takes a few percent off every tyre, a slow
+    // leak goes well past that (a TPMS warning starts at about 20 to 25 % under)
+    const tv = tyreView(n);
+    const tyres = tv.kpa;
     const tyre = ([key, label], i, right) => {
       const v = tyres[i];
-      return h('div', { class: ['tire', right && 'tire--r', low(v) && 'is-low'] },
+      const isLow = tv.low[i] === true;
+      return h('div', { class: ['tire', right && 'tire--r', isLow && 'is-low'] },
         h('span', { class: 'tire-pos' }, label),
         h('span', { class: 'tire-val' }, aged(n.tyres_kpa?.[i], quantity(v, 'pressure', { why: v == null ? 'No reading' : null }), newest)),
-        low(v) ? h('span', { class: 'tire-note' }, `${format(rec - v, 'pressure')} under`) : null);
+        isLow ? h('span', { class: 'tire-note' }, `${format(tv.against[i] - v, 'pressure')} under`) : null);
     };
-    const wheel = (i) => (low(tyres[i]) ? 'wheel is-low' : 'wheel');
+    const wheel = (i) => (tv.low[i] === true ? 'wheel is-low' : 'wheel');
     const tyrePanel = panel({ title: 'Tyres', icon: 'tire', cover: 'summary.flag.tire_pressure_warning', side: h('span', { class: 'faint' }, agoEl(at(n.tyres_kpa?.[0]) ?? newest, tz)) },
       h('div', { class: 'tires' },
         tyre(TYRES[0], 0, false),
@@ -366,10 +366,9 @@ export async function mount(ctx) {
           svg('path', { class: 'glass', d: 'M15.5 36 Q32 28 48.5 36 L45.5 52 Q32 48 18.5 52 Z' }),
           svg('path', { class: 'glass', d: 'M18.5 86 Q32 90 45.5 86 L47.5 98 Q32 103 16.5 98 Z' })),
         tyre(TYRES[1], 1, true), tyre(TYRES[2], 2, false), tyre(TYRES[3], 3, true)),
-      h('p', { class: 'note tire-rec' }, rec != null
-        ? ['The car recommends ', h('b', null, format(rec, 'pressure')), `. A tyre more than 10 % under it (${format(rec * LOW_SHARE, 'pressure')}) is flagged; a cold morning alone takes a few percent off every tyre.`]
-        : "The car's recommended pressure has not been seen yet, so no tyre is flagged."),
-      !n.tyres_slots_mapped ? h('p', { class: 'note' }, 'Which wheel each sensor sits on is not confirmed yet.') : null);
+      h('p', { class: 'note tire-rec' }, recommendedLine(n), tv.front != null
+        ? ' A tyre more than 10 % under it is flagged; a cold morning alone takes a few percent off every tyre.'
+        : ' No tyre is flagged.'));
 
     // the car: 12 V, odometer, software, data age
     const sw = n.software || {};
