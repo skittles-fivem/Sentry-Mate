@@ -591,8 +591,8 @@ pub struct SampleExtra {
     /// Keep climate on: `off`, `on`, `dog` or `camp` (the DBC's PARTY).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_climate: Option<String>,
-    /// Doors open, by the car's own sides: driver-side front and rear come from the left (0x102) or right (0x103)
-    /// body controller by the car's right-hand-drive setting; these are front left, front right, rear left, rear right.
+    /// Doors open, by the car's physical sides: the left body controller (0x102) has the left doors, the right one
+    /// (0x103) the right doors. Which side the driver sits is `right_hand_drive` (car configuration).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub door_fl: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
