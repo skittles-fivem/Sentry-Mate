@@ -33,12 +33,19 @@ const STATUS = {
 };
 const MODE = {
   off: ['Not read', 'Not matched, left out, paused, or its token is refused.'],
-  asleep: ['Asleep', 'TeslaFi says the car sleeps: read every 10 minutes (TeslaFi\'s own database; the car is never woken).'],
-  idle: ['Parked', 'Read every 3 minutes.'],
-  charging: ['Charging', 'Read once a minute.'],
-  driving: ['Driving', 'Read once a minute.'],
-  backoff: ['Waiting after errors', 'TeslaFi answered with errors, or the day\'s 1,500 requests are used up: nothing is asked until the next try.'],
+  asleep: ['Asleep', 'TeslaFi says the car sleeps: read at the asleep pace (TeslaFi\'s own database; the car is never woken).'],
+  idle: ['Parked', 'Read at the awake pace.'],
+  charging: ['Charging', 'Read at the driving or charging pace.'],
+  driving: ['Driving', 'Read at the driving or charging pace.'],
+  backoff: ['Waiting after errors', 'TeslaFi answered with errors, or the day\'s requests are used up: nothing is asked until the next try.'],
 };
+// the pace choice (one setting for every TeslaFi account); the waits of the chosen one come back in the overview's `polls`
+const PACE = [
+  ['gentle', 'Gentle', ['2 min', '5 min', '20 min'], 'Fewer requests: for a car that needs no fine detail from TeslaFi.'],
+  ['normal', 'Normal', ['60 s', '3 min', '10 min'], 'The default: about as often as TeslaFi itself polls an awake car.'],
+  ['often', 'Often', ['15 s', '60 s', '3 min'], 'As fast as TeslaFi refreshes: finer drives and charges, up to 6,000 requests a day per account.'],
+];
+const paceLine = ([d, a, s]) => `driving or charging every ${d}, awake every ${a}, asleep every ${s}`;
 const ERROR_WORDS = {
   teslafi_refused: 'TeslaFi did not take this token: check it on TeslaFi (Settings, TeslaFi API), and that the TeslaFi subscription is active. Nothing was changed.',
   teslafi_unreachable: 'TeslaFi could not be reached, or answered with an error. Nothing was changed. Try again in a few minutes.',
@@ -51,7 +58,7 @@ const LAST_ERROR = {
   token_refused: 'TeslaFi refused the token',
   teslafi_unreachable: 'TeslaFi could not be reached',
   rate_limited: 'TeslaFi asked the server to slow down',
-  daily_cap: 'The day\'s 1,500 requests are used up',
+  daily_cap: 'The day\'s requests are used up',
   server_error: 'TeslaFi answered with a server error',
   timeout: 'TeslaFi took too long to answer',
 };
@@ -150,6 +157,9 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
   function statusPanel() {
     const p = ov.polls || {};
     const cap = p.daily_cap || 1500;
+    const poll = ov.poll || 'normal';
+    const paceSeg = h('div', { class: 'seg', role: 'group', 'aria-label': 'How often TeslaFi is asked' },
+      PACE.map(([v, l, w]) => h('button', { class: 'seg-btn', type: 'button', title: `${l}: ${paceLine(w)}`, 'aria-pressed': String(poll === v), onclick: () => setPace(v) }, l)));
     return h('div', { class: 'panel panel-pad ta-status' },
       h('div', { class: 'panel-head' }, h('h3', { class: 'panel-title' }, icon('pulse'), 'Status')),
       figures([
@@ -163,11 +173,24 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
         ov.hosts?.length ? h('ul', { class: 'ta-host-list' }, ov.hosts.map((x) => h('li', null, code(x))))
           : h('p', { class: 'faint' }, 'None while there is no token. Once one is added: www.teslafi.com only, over HTTPS.')),
       h('div', { class: 'ta-pace' },
-        h('div', { class: 'ta-pace-head' }, h('span', { class: 'metric-label' }, 'How often TeslaFi is asked')),
+        h('div', { class: 'ta-pace-head' }, h('span', { class: 'metric-label' }, 'How often TeslaFi is asked'), paceSeg),
+        h('ul', { class: 'tf-pace-opts' }, PACE.map(([v, l, w]) => h('li', { class: poll === v ? 'is-on' : null },
+          h('b', null, l), poll === v ? ' (now)' : '', `: ${paceLine(w)}.`))),
         h('dl', { class: 'ta-pace-list' },
           [['A driving car', p.driving_s], ['A charging car', p.charging_s], ['A parked car', p.parked_s], ['An asleep car', p.asleep_s], ['SMO or Tesla API live', p.other_live_s]]
             .map(([l, s]) => h('div', null, h('dt', null, l), h('dd', null, l.endsWith('live') ? `at most every ${secs(s)}` : `every ${secs(s)}`)))),
-        h('p', { class: 'setting-note' }, `At most one request every 10 s and ${num(cap)} a day per account. After an error it waits 60 s, doubling up to 15 minutes. These reads come from TeslaFi's own database: they never wake the car.`)));
+        h('p', { class: 'setting-note' }, `${PACE.find((x) => x[0] === poll)?.[3] || ''} Whatever the pace: at most one request every 10 s and ${num(cap)} a day per account, TeslaFi's requests to slow down are always obeyed, and after an error it waits 60 s, doubling up to 15 minutes. These reads come from TeslaFi's own database: they never wake the car.`)));
+  }
+  async function setPace(v) {
+    if (v === (ov.poll || 'normal')) return;
+    const pc = PACE.find((x) => x[0] === v);
+    const r = await askPassword(ctx, {
+      title: `Pace: ${pc[1]}`,
+      intro: h('p', { class: 'note' }, `How often the server reads TeslaFi's polls, for every TeslaFi account: ${paceLine(pc[2])}. TeslaFi has new data only as often as it polls the car itself, so a faster pace mostly shortens the wait for a new poll.`),
+      submit: 'Change the pace',
+      run: guarded((cred) => ctx.api.patch(BASE, withPw(cred, { version: ov.version, poll: v }))),
+    });
+    await after(r, `How often TeslaFi is asked: ${pc[1]}, saved.`);
   }
 
   function addPanel() {
@@ -243,7 +266,7 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
         ['What the server does', h('span', { title: mode[1] }, mode[0]), { icon: 'pulse' }],
         ['Last good answer', a.last_ok_ms ? h('span', { title: at(a.last_ok_ms) }, ago(a.last_ok_ms)) : h('span', { class: 'faint' }, 'none yet'), { icon: 'check' }],
         ['Last error', err ? h('span', { class: 'warn' }, lastErrorText(err), err.at_ms ? h('span', { title: at(err.at_ms) }, `, ${ago(err.at_ms)}`) : '') : h('span', { class: 'faint' }, 'none'), { icon: 'warn' }],
-        ['Requests today', `${num(a.polls_today ?? 0)} of 1,500`, { icon: 'pulse' }],
+        ['Requests today', `${num(a.polls_today ?? 0)} of ${num(ov.polls?.daily_cap || 1500)}`, { icon: 'pulse' }],
         ['TeslaFi\'s time zone', a.time_zone ? a.time_zone.replace(/_/g, ' ') : h('span', { class: 'faint' }, 'the server\'s own'), { icon: 'clock' }],
         ['Token', h('span', { class: 'faint' }, 'sealed on the server, never shown'), { icon: 'lock' }],
       ]),

@@ -712,7 +712,7 @@ export async function mount(ctx) {
     geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
     mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
     tesla: ['Tesla API', 'Only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (Tesla account, this page).', null],
-    teslafi: ['TeslaFi', 'Only while a TeslaFi token is added and not paused: TeslaFi\'s latest poll of the car, read only (TeslaFi, this page).', null],
+    teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi', null, 'teslafi'],
     release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-server'],
     upload: ['CAN Bridge uploads', 'The car’s CAN Bridge sends its logs here.', null],
     web: ['This app and the API', 'Browsers, apps and the API.', null],
@@ -732,7 +732,7 @@ export async function mount(ctx) {
         { key: 'host', label: 'Host or port', render: (r) => (r.port != null ? code(`port ${r.port}${r.tls ? ', TLS' : ''}`) : r.host ? code(r.host) : h('span', { class: 'faint' }, 'not set')), csv: (r) => r.host || (r.port != null ? `port ${r.port}` : '') },
         { key: 'enabled', label: 'State', sort: true, render: (r) => (r.enabled ? pill(r.dir === 'In' ? 'Open' : 'On', { tone: 'live' }) : pill('Off')), csv: (r) => (r.enabled ? 'on' : 'off') },
         { key: 'last_used_ms', label: 'Last used', num: true, sort: true, render: (r) => (r.last_used_ms ? h('span', { class: 'nowrap', title: dateTime(r.last_used_ms, ctx.tz) }, ago(r.last_used_ms)) : h('span', { class: 'faint' }, r.dir === 'In' ? 'always listening' : 'never')), csv: (r) => (r.last_used_ms ? new Date(r.last_used_ms).toISOString() : '') },
-        { key: 'change', label: 'Change it', render: (r) => (PURPOSE[r.purpose]?.[2] ? h('a', { class: 'link', href: buildUrl(PURPOSE[r.purpose][2]) }, 'Settings') : h('span', { class: 'faint' }, r.purpose === 'mqtt' || r.purpose === 'tesla' || r.purpose === 'teslafi' ? 'Above' : '—')), csv: false },
+        { key: 'change', label: 'Change it', render: (r) => (PURPOSE[r.purpose]?.[3] ? h('a', { class: 'link', href: `${buildUrl('settings-integrations')}#${PURPOSE[r.purpose][3]}` }, 'TeslaFi') : PURPOSE[r.purpose]?.[2] ? h('a', { class: 'link', href: buildUrl(PURPOSE[r.purpose][2]) }, 'Settings') : h('span', { class: 'faint' }, r.purpose === 'mqtt' || r.purpose === 'tesla' ? 'Above' : '—')), csv: false },
       ],
     });
     replace(netSlot, t.el);

@@ -138,6 +138,9 @@
 .ta-pace-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, round(14rem, var(--e))), 1fr)); gap: round(0.5rem, var(--e)) round(1.25rem, var(--e)); margin: 0; }
 .ta-pace-list > div { display: flex; justify-content: space-between; gap: round(0.75rem, var(--e)); padding: round(0.375rem, var(--e)) 0; border-bottom: 1px solid var(--line); }
 .ta-pace-list dt { color: var(--text-2); }
+.tf-pace-opts { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); color: var(--text-2); }
+.tf-pace-opts b { color: var(--text); font-weight: 600; }
+.tf-pace-opts .is-on { color: var(--text); }
 .ta-pace-list dd { margin: 0; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text); }
 .ta-pace p, .ta-loc p, .ta-account > .setting-note, .ta-add > .setting-note { margin: 0; }
 .ta-field { display: flex; align-items: center; gap: round(0.75rem, var(--e)); flex-wrap: wrap; }
@@ -161,6 +164,10 @@
 .ta-steps { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); margin-bottom: round(1rem, var(--e)); }
 .ta-step-list { margin: 0; padding-left: round(1.25rem, var(--e)); display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); color: var(--text-2); }
 .ta-step-list b { color: var(--text); }
+.ta-add > .ta-step-list { margin: 0; }
+.tf-add-btn { align-self: flex-start; }
+.ta-pace-now { margin: 0; color: var(--text-2); }
+.ta-pace-now b { color: var(--text); font-weight: 600; }
 .ta-step-list .btn { margin-top: round(0.5rem, var(--e)); display: flex; width: fit-content; }
 .ta-expiry { display: flex; align-items: center; gap: round(0.375rem, var(--e)); margin: 0; }
 /* a phone: each Tesla car is a card (no sideways scroll for the match picker) */
