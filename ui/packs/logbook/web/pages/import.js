@@ -31,7 +31,7 @@ import { labelOf } from '../core/sources.js';
 import { choice, field } from '../core/form.js';
 import { dataTable } from '../core/table.js';
 import { confirmDialog } from '../core/dialog.js';
-import { zoneShort } from '../core/format.js';
+import { zoneShort, count } from '../core/format.js';
 
 export const id = 'import';
 export const css = true;
@@ -834,9 +834,15 @@ export async function mount(ctx) {
       const t = t0 || {};
       const has = t.read != null;
       const skipped = has ? sum(t.skipped) : sumOf(t.skipped);
-      return { name, read: t.read ?? null, imported: imported ? t.imported ?? null : null, would: has ? t.read - (skipped || 0) : null, skipped, blank: has ? sum(t.bad_values) : sumOf(t.bad_values), t };
+      return { name, read: t.read ?? null, imported: imported ? t.imported ?? null : null, would: has ? t.read - (skipped || 0) : null, skipped, blank: has ? sum(t.bad_values) : sumOf(t.bad_values), closed: t.closed_at_last_reading ?? null, t };
     });
     const tot = (k) => addUp(tables.map((r) => r[k]));
+    // old charges or states TeslaMate never ended: taken, ending at their last reading (in read and imported, not skipped)
+    const closedRows = tables.filter((r) => r.closed);
+    const closedLine = closedRows.map((r) => {
+      const [one, many] = { charging_processes: ['charge', 'charges'], states: ['state', 'states'] }[r.name] || ['row', 'rows'];
+      return `${count(r.closed, one, many)} TeslaMate never ended ${imported ? (r.closed === 1 ? 'was' : 'were') : 'will be'} taken, ending at ${r.closed === 1 ? 'its' : 'their'} last reading.`;
+    }).join(' ');
     const skippedRows = [];
     for (const r of tables) {
       for (const [code, cnt] of Object.entries(r.t.skipped || {})) if (cnt) skippedRows.push({ table: r.name, kind: 'skipped', code, count: cnt, words: reasonWords(code) });
@@ -855,14 +861,15 @@ export async function mount(ctx) {
 
     const tTable = dataTable(ctx, {
       rows: tables, itemName: ['table', 'tables'], label: 'Rows per table',
-      csv: { filename: `${fileName}-tables`, columns: [column('Table', 'name'), column('Read', 'read', 'count'), column(imported ? 'Imported' : 'To import', imported ? 'imported' : 'would', 'count'), column('Skipped', 'skipped', 'count'), column('Values left blank', 'blank', 'count')] },
+      csv: { filename: `${fileName}-tables`, columns: [column('Table', 'name'), column('Read', 'read', 'count'), column(imported ? 'Imported' : 'To import', imported ? 'imported' : 'would', 'count'), ...(closedRows.length ? [column('Closed at last reading', 'closed', 'count')] : []), column('Skipped', 'skipped', 'count'), column('Values left blank', 'blank', 'count')] },
       columns: [
         { key: 'name', label: 'Table', th: true, cell: (r) => h('span', null, h('span', { class: 'cell-main' }, tableName(r.name)), h('span', { class: 'cell-sub' }, tableNote(r.name))), value: (r) => r.name },
         { key: 'read', label: 'Read', num: true, sort: true, cell: (r) => nn(r.read), value: (r) => r.read },
         { key: 'imported', label: imported ? 'Imported' : 'To import', num: true, sort: true, cell: (r) => nn(imported ? r.imported : r.would), value: (r) => (imported ? r.imported : r.would) },
+        closedRows.length ? { key: 'closed', label: 'Closed at last reading', num: true, sort: true, cell: (r) => nn(r.closed), value: (r) => r.closed } : null,
         { key: 'skipped', label: 'Skipped', num: true, sort: true, cell: (r) => (r.skipped ? h('span', { class: 'is-warn' }, n(r.skipped)) : nn(r.skipped)), value: (r) => r.skipped },
         { key: 'blank', label: 'Values left blank', num: true, sort: true, cell: (r) => nn(r.blank), value: (r) => r.blank },
-      ],
+      ].filter(Boolean),
     });
 
     const sTable = skippedRows.length ? dataTable(ctx, {
@@ -909,6 +916,7 @@ export async function mount(ctx) {
       h('p', { class: 'im-lead' }, h('span', { class: 'im-report-of' }, j.name), ' · ', statusWord(j.status),
         j.finished_ms ? ` ${formatDateTime(j.finished_ms, tz, { now: api.now() })} ${zone}` : j.checked_ms ? ` since ${formatDateTime(j.checked_ms, tz, { now: api.now() })} ${zone}` : null),
       figs,
+      closedLine ? h('p', { class: 'im-lead' }, closedLine) : null,
       skippedTotal ? h('div', { class: 'im-skip-note' },
         h('p', null, `${n(skippedTotal)} ${skippedTotal === 1 ? 'row was' : 'rows were'} skipped. That did not stop the import; every other row went in.`),
         h('p', null, 'A drive or charge built around a skipped row can come out with less detail (a missing track point leaves a straight line on the map). The report keeps only counts and reasons, never a row’s values or positions, so it can stay after the import.')) : null,

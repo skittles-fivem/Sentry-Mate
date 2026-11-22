@@ -742,8 +742,17 @@ export async function mount(ctx) {
       const has = t.read != null;
       const skipped = has || t.skipped ? addUp(Object.values(t.skipped || {})) ?? (has ? 0 : null) : null;
       const blank = has || t.bad_values ? addUp(Object.values(t.bad_values || {})) ?? (has ? 0 : null) : null;
-      return { name, read: has ? t.read : null, imported: imported ? t.imported ?? null : has ? t.read - (skipped || 0) : null, skipped, blank, t };
+      return { name, read: has ? t.read : null, imported: imported ? t.imported ?? null : has ? t.read - (skipped || 0) : null, skipped, blank, closed: t.closed_at_last_reading || 0, t };
     });
+    // old charges and states TeslaMate never ended: taken, ending at their last reading (not skipped)
+    const closedWords = (r) => {
+      const noun = { charging_processes: ['charge', 'charges'], states: ['state', 'states'] }[r.name] || ['row', 'rows'];
+      return `${count(r.closed)} ${noun[r.closed === 1 ? 0 : 1]}`;
+    };
+    const closedRows = tables.filter((r) => r.closed);
+    const one = closedRows.length === 1 && closedRows[0].closed === 1;
+    const closedLine = closedRows.length ? h('p', { class: 'set-a' },
+      `${closedRows.map(closedWords).join(' and ')} TeslaMate never ended ${imported ? (one ? 'was' : 'were') : 'will be'} taken, ending at ${one ? 'its' : 'their'} last reading.`) : null;
     const tot = (k) => addUp(tables.map((r) => r[k]));
     const reasons = [];
     for (const r of tables) {
@@ -763,7 +772,7 @@ export async function mount(ctx) {
 
     const tableTile = tile({ w: 2, title: 'Per table', icon: 'bars' },
       group(null, tables.map((r) => infoRow({
-        name: tableName(r.name), sub: r.read == null ? 'Not in the file' : `${count(r.read)} read${r.skipped ? ` · ${count(r.skipped)} skipped` : ''}${r.blank ? ` · ${count(r.blank)} left blank` : ''}`,
+        name: tableName(r.name), sub: r.read == null ? 'Not in the file' : `${count(r.read)} read${r.skipped ? ` · ${count(r.skipped)} skipped` : ''}${r.blank ? ` · ${count(r.blank)} left blank` : ''}${r.closed ? ` · ${count(r.closed)} closed at last reading` : ''}`,
         side: nSide(r.imported),
       }))),
       note(imported ? 'The number on the right is the rows imported.' : 'The number on the right is the rows the import will store.'));
@@ -800,6 +809,7 @@ export async function mount(ctx) {
           ['Values left blank', num(tot('blank'), 'count', { size: 'm' })],
         ]),
         rep.span ? h('p', { class: 'set-a' }, h('b', null, `${day(rep.span.from_ms)} to ${day(rep.span.to_ms)}`), `: ${formatDuration(rep.span.to_ms - rep.span.from_ms, { style: 'long' })} of TeslaMate history in the file.`) : null,
+        closedLine,
         note(imported ? 'Imported rows show on every page, marked as imported.' : 'Nothing is stored until the import is started.')),
       ...[filesTile, reasonTile, tableTile, carTile].filter(Boolean));
   }
