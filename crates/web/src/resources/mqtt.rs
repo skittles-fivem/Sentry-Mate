@@ -555,8 +555,12 @@ fn place_name(e: &Engine, now: &model::Now, no_place: &str) -> Option<String> {
     at.or_else(|| (!no_place.is_empty()).then(|| no_place.to_string()))
 }
 
+/// The car's newest values as MQTT publishes them: with Sentry Mate's range estimate and the Data health verdict.
 fn car_now(e: &Engine, car: CarId) -> ApiResult<Option<model::Now>> {
-    Ok(e.db().entry(car).map_err(db_err("reading a car"))?.and_then(|x| x.summary.now))
+    match engine::query::now::published_now(e, car) {
+        Err(engine::query::QueryError::NoSuchCar) => Ok(None),
+        r => r.map_err(db_err("reading a car")),
+    }
 }
 
 fn car_info(e: &Engine, car: CarId) -> ApiResult<Option<mqtt::CarInfo>> {

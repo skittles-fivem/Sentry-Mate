@@ -211,6 +211,51 @@ pub(crate) fn plugged_now(s: &Sample, driving: bool, t: &dyn Fn(&str) -> u64, at
     None
 }
 
+/// The charge status word of the car (`disconnected`, `no_power`, ...), or `None` for a word the API does not name.
+fn charge_status_word(w: &str) -> Option<&'static str> {
+    ["disconnected", "no_power", "about_to_charge", "charging", "complete", "stopped"].into_iter().find(|k| *k == w)
+}
+
+/// Which limit sets the AC current: `pilot`, `cable` or `car`.
+fn limit_source_word(w: &str) -> Option<&'static str> {
+    ["pilot", "cable", "car"].into_iter().find(|k| *k == w)
+}
+
+/// The car's consumption over the last 30 days of drives before `at`, Wh/km (`None` under 10 km of drives with
+/// energy, or an implausible figure).
+fn recent_wh_km(e: &Engine, car: CarId, at: u64) -> QResult<Option<f64>> {
+    let from = at.saturating_sub(30 * 86_400_000);
+    let mut kwh = 0.0;
+    let mut km = 0.0;
+    for d in super::drives::rows(e, car, &super::Period::new(Some(from), Some(at.saturating_add(1))), None)? {
+        if let (Some(k), Some(x)) = (d.energy_used_kwh, d.distance_km)
+            && k > 0.0
+            && x > 0.0
+        {
+            kwh += k;
+            km += x;
+        }
+    }
+    Ok((km >= 10.0).then(|| kwh * 1000.0 / km).filter(|w| *w > 50.0))
+}
+
+/// Sentry Mate's own range estimate, km: the energy left in `s` at the consumption of the last 30 days of drives
+/// before `at` (`est_range_km` of the Now, `range_estimated` on MQTT).
+pub fn estimated_range_km(e: &Engine, car: CarId, s: &Sample, at: u64) -> QResult<Option<f64>> {
+    let Some(kwh) = s.energy_remaining_kwh else { return Ok(None) };
+    Ok(recent_wh_km(e, car, at)?.map(|w| kwh * 1000.0 / w))
+}
+
+/// The car's stored Now with Sentry Mate's own figures filled in (the range estimate and the Data health verdict),
+/// as MQTT publishes it. `None` before the car sent anything.
+pub fn published_now(e: &Engine, car: CarId) -> QResult<Option<Now>> {
+    let Some(mut n) = e.db().entry(car)?.and_then(|x| x.summary.now) else { return Ok(None) };
+    // (a figure that can't be worked out now is left out, not the whole Now)
+    n.range_estimated_km = estimated_range_km(e, car, &n.sample, n.at_ms).ok().flatten();
+    n.healthy = super::system::healthy(e, car).ok();
+    Ok(Some(n))
+}
+
 /// The car's Now.
 pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     let c = car_of(e, car)?;
@@ -244,7 +289,8 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
             lon: vf(Some(lon), 6, t("lon")),
             accuracy_m: vf(s.gps_accuracy_m, 1, t("gps_accuracy_m")),
             elevation_m: vf(s.elevation_m, 0, t("elevation_m")),
-            heading_deg: m.and_then(|m| vf(m.heading_deg, 0, api_at)),
+            heading_deg: vf(s.extra.heading_deg, 0, t("extra.heading_deg"))
+                .or_else(|| m.and_then(|m| vf(m.heading_deg, 0, api_at))),
             place: places.place_at(lat, lon).map(|p| PlaceBrief { id: place_ref(p.id), name: p.name.clone() }),
             address: None,
         }),
@@ -307,19 +353,27 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         }
     };
     let charge = ChargeNow {
-        status: v(s.charging.map(|c| if c { "charging" } else { "disconnected" }), t("charging")),
-        plugged: plugged_now(&s, driving, &tm, at).map(|p| V { value: p, at_ms: at, origin: origin("charging") }),
+        status: v(s.extra.charge_status.as_deref().and_then(charge_status_word), t("extra.charge_status"))
+            .or_else(|| v(s.charging.map(|c| if c { "charging" } else { "disconnected" }), t("charging"))),
+        plugged: v(s.extra.plugged_in, t("extra.plugged_in")).or_else(|| {
+            plugged_now(&s, driving, &tm, at).map(|p| V { value: p, at_ms: at, origin: origin("charging") })
+        }),
         kind: v(s.charge_kind.map(kind_word), t("charge_kind")),
         power_kw: vf(s.charge_power_kw, 1, t("charge_power_kw")),
         volts_v: vf(s.charger_voltage_v, 0, t("charger_voltage_v")),
         amps_a: vf(s.charger_current_a, 1, t("charger_current_a")),
-        phases: None,
-        pilot_a: None,
-        limit_source: None,
+        phases: vf(s.extra.charger_phases, 0, t("extra.charger_phases")),
+        pilot_a: vf(s.extra.charge_current_limit_a, 1, t("extra.charge_current_limit_a")),
+        limit_source: v(
+            s.extra.charge_limit_source.as_deref().and_then(limit_source_word),
+            t("extra.charge_limit_source"),
+        ),
         added_kwh: m.filter(|_| charging).and_then(|m| vf(m.charge_energy_added_kwh, 2, api_at)),
-        limit_pct: m.and_then(|m| vf(m.charge_limit_soc, 0, api_at)),
+        limit_pct: vf(s.extra.charge_limit_pct, 0, t("extra.charge_limit_pct"))
+            .or_else(|| m.and_then(|m| vf(m.charge_limit_soc, 0, api_at))),
         to_full_kwh: None,
-        to_full_min: m.filter(|_| charging).and_then(|m| vf(m.minutes_to_full_charge, 0, api_at)),
+        to_full_min: vf(s.extra.time_to_full_min, 0, t("extra.time_to_full_min"))
+            .or_else(|| m.filter(|_| charging).and_then(|m| vf(m.minutes_to_full_charge, 0, api_at))),
         finish_ms: None,
         charge_id,
     };
@@ -327,23 +381,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     if charging {
         reasons.push("charging");
     }
-    // Sentry Mate's own range estimate: the energy left at the consumption of the last 30 days of drives
-    let est_wh_km = {
-        let from = at.saturating_sub(30 * 86_400_000);
-        let mut kwh = 0.0;
-        let mut km = 0.0;
-        for d in super::drives::rows(e, car, &super::Period::new(Some(from), Some(at.saturating_add(1))), None)? {
-            if let (Some(k), Some(x)) = (d.energy_used_kwh, d.distance_km)
-                && k > 0.0
-                && x > 0.0
-            {
-                kwh += k;
-                km += x;
-            }
-        }
-        (km >= 10.0).then(|| kwh * 1000.0 / km).filter(|w| *w > 50.0)
-    };
-    let est_range = s.energy_remaining_kwh.zip(est_wh_km).map(|(k, w)| k * 1000.0 / w);
+    let est_range = estimated_range_km(e, car, &s, at)?;
     // the software the car runs: the newest update's version
     let update =
         db.list::<db::UpdateRow>(car, &db::Query::default().limit(1))?.items.into_iter().next().map(|u| u.update);
@@ -384,7 +422,8 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         power_kw: vf(s.battery_power_kw, 1, t("battery_power_kw")),
         soc_pct: vf(s.soc, 1, t("soc")),
         soc_bms_pct: vf(s.soc_bms, 1, t("soc_bms")),
-        usable_soc_pct: m.and_then(|m| vf(m.usable_battery_level, 1, api_at)),
+        usable_soc_pct: vf(s.extra.usable_soc, 1, t("extra.usable_soc"))
+            .or_else(|| m.and_then(|m| vf(m.usable_battery_level, 1, api_at))),
         range_km: vf(s.range_km, 1, t("range_km")),
         ideal_range_km: vf(s.ideal_range_km, 1, t("ideal_range_km")),
         est_range_km: vf(est_range, 1, t("energy_remaining_kwh")),
@@ -401,20 +440,39 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         tyres_kpa: [0, 1, 2, 3].map(|i| v(kpa(s.tpms_bar[i]), t(&format!("tpms_bar{i}")))),
         tyres_slots_mapped: false,
         tyre_recommended_kpa: None,
-        flags: serde_json::json!({
-            "sentry": m.and_then(|m| v(m.sentry_mode, api_at)), "sentry_event_guess": null, "service_mode": null,
-            "user_present": m.and_then(|m| v(m.user_present, api_at)),
-            "keep_climate": m.and_then(|m| v(m.climate_keeper_mode.clone(), api_at)),
-            "climate": m.and_then(|m| v(m.climate_on.map(|on| match (on, m.preconditioning) {
+        flags: {
+            // the car's own word (CAN) first, the Tesla API's while its reading is current
+            let x = &s.extra;
+            let can = |value: Option<bool>, f: &str| v(value, t(&format!("extra.{f}")));
+            let climate_word = |on: bool, pre: Option<bool>| match (on, pre) {
                 (true, Some(true)) => "precondition",
                 (true, _) => "on",
                 (false, _) => "off",
-            }), api_at)),
-            "battery_preconditioning": m.and_then(|m| v(m.preconditioning, api_at)), "keep_warm": null,
-            "accessory_power": null, "parking_brake": null, "reduced_range": null,
-            "doors": { "fl": null, "fr": null, "rl": null, "rr": null }, "trunk": null, "frunk": null,
-            "liftgate_deg": null, "charge_port_open": null, "display_on": null,
-        }),
+            };
+            serde_json::json!({
+                "sentry": can(x.sentry_mode, "sentry_mode").or_else(|| m.and_then(|m| v(m.sentry_mode, api_at))),
+                "sentry_event_guess": null,
+                "service_mode": can(x.service_mode, "service_mode"),
+                "user_present": can(x.user_present, "user_present")
+                    .or_else(|| m.and_then(|m| v(m.user_present, api_at))),
+                "keep_climate": v(x.keep_climate.clone(), t("extra.keep_climate"))
+                    .or_else(|| m.and_then(|m| v(m.climate_keeper_mode.clone(), api_at))),
+                "climate": v(x.climate_on.map(|on| climate_word(on, x.preconditioning_cabin)), t("extra.climate_on"))
+                    .or_else(|| m.and_then(|m| v(m.climate_on.map(|on| climate_word(on, m.preconditioning)), api_at))),
+                "battery_preconditioning": can(x.preconditioning_battery, "preconditioning_battery")
+                    .or_else(|| m.and_then(|m| v(m.preconditioning, api_at))),
+                "keep_warm": null,
+                "accessory_power": null, "parking_brake": null, "reduced_range": null,
+                "doors": {
+                    "fl": can(x.door_fl, "door_fl"), "fr": can(x.door_fr, "door_fr"),
+                    "rl": can(x.door_rl, "door_rl"), "rr": can(x.door_rr, "door_rr"),
+                },
+                "trunk": can(x.trunk_open, "trunk_open"), "frunk": can(x.frunk_open, "frunk_open"),
+                "liftgate_deg": null,
+                "charge_port_open": can(x.charge_port_open, "charge_port_open"),
+                "display_on": can(x.display_on, "display_on"),
+            })
+        },
         charge,
         drive,
         awake_reasons: reasons,

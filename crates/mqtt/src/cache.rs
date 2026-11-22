@@ -11,11 +11,17 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// Hashes of the payloads last sent to each topic of a car (0: nothing sent yet on this connection).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct Sent {
     /// Of the car's name and model, when its discovery configs were sent.
     pub discovery: u64,
     pub fields: [u64; Field::COUNT],
+}
+
+impl Default for Sent {
+    fn default() -> Sent {
+        Sent { discovery: 0, fields: [0; Field::COUNT] }
+    }
 }
 
 /// A stable 64-bit hash, never 0 (0 means "not sent").
