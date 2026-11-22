@@ -76,6 +76,13 @@ class Mqtt(ServerCase):
         c2 = topics(self.c.get("/api/v1/settings/mqtt/preview?car=c2"))
         self.assertEqual(c2["garage/tesla/cars/c2/place"], "Work garage")
         self.assertEqual(c2["garage/tesla/cars/c2/charging"], "true")
+        self.assertEqual(c2["garage/tesla/cars/c2/charge_status"], "charging")
+        self.assertEqual(c2["garage/tesla/cars/c2/plugged_in"], "true")
+        self.assertIn("garage/tesla/cars/c2/charger_current", c2)
+        self.assertNotIn("garage/tesla/cars/c2/energy_at_destination", c2)  # only while navigating
+        ents = {x["id"]: x for x in self.c.get("/api/v1/settings/mqtt/preview?car=c2")["ha_entities"]}
+        self.assertTrue(ents["garage_tesla_c2_doors_open"]["config_topic"].startswith("homeassistant/binary_sensor/"))
+        self.assertEqual(ents["garage_tesla_c2_charge_energy_added"]["unit"], "kWh")
         # a password set to null is removed
         d = self.put(password=None)
         self.assertFalse(d["password_set"])
