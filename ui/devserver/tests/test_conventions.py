@@ -8,7 +8,8 @@ import unittest
 
 from .helpers import NOW, PACK, ServerCase
 
-CSP_START = "default-src 'self'; img-src 'self' data: blob: https://tile.openstreetmap.org"
+CSP_START = ("default-src 'self'; img-src 'self' data: blob: https://server.arcgisonline.com "
+             "https://tile.openstreetmap.org")
 
 
 class Paging(ServerCase):
