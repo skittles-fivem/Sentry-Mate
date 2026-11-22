@@ -12,6 +12,8 @@ import { editLines } from '../core/kvedit.js';
 import { getPrefs, savePrefs, onPrefs } from '../core/prefs.js';
 import { getInterface, applyInterface, getTheme, applyTheme, onChange } from '../core/display.js';
 import { tag, ago } from '../core/fmt.js';
+import { carOptions } from '../core/carpick.js';
+import * as state from '../shared/state.js';
 import { toast } from '../core/toast.js';
 import { packChoices } from '../shared/packs.js';
 import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
@@ -54,15 +56,42 @@ function stylesLine(presets, allowed, ro, save) {
   return { el, spec: { key: 'tiles.styles' } };
 }
 
+/**
+ * main_car: the car shown where an address names none, as a select: none (the car looked at last) or one of the
+ * cars this account sees; a sold car is listed (under "sold cars") only while it is the one chosen. Saved at once.
+ * Returns a line for editLines ({ el, spec, set }).
+ */
+function mainCarLine(cars, value, save) {
+  const st = h('span', { class: 'ke-st', 'aria-live': 'polite' });
+  const err = h('p', { class: 'ke-err', role: 'alert', hidden: true });
+  const known = (v) => (v && cars.some((c) => c.id === v) ? v : '');
+  let now = known(value);
+  const sel = h('select', { class: 'in', id: 'main-car', 'aria-label': 'main_car', 'data-focus': '' });
+  const fill = () => replace(sel, h('option', { value: '', selected: now === '' }, 'None (the car you looked at last)'),
+    carOptions(cars.filter((c) => !state.isSold(c) || c.id === now), (c) => h('option', { value: c.id, selected: c.id === now }, c.name || c.id)));
+  fill();
+  sel.addEventListener('change', async () => {
+    const before = now, v = sel.value;
+    now = v; err.hidden = true; replace(st, h('span', { class: 'muted' }, 'saving'));
+    try { await save(v || null); replace(st, tag('saved', 'ok')); fill(); } catch (e) { now = before; fill(); replace(st, tag('bad', 'bad')); err.hidden = false; replace(err, e?.message || 'not saved'); }
+  });
+  const el = h('div', { class: 'ke', id: 'main-car-line', dataset: { row: '' } },
+    h('label', { class: 'ke-k', for: 'main-car' }, 'main_car'), h('span', { class: 'ke-eq', 'aria-hidden': 'true' }, '='),
+    h('div', { class: 'ke-v' }, sel), h('span', { class: 'ke-side' }, st),
+    h('p', { class: 'ke-help' }, 'The car pages open on when the address names no car, on every device. None: the car you looked at last.'), err);
+  return { el, spec: { key: 'main_car' }, set: (v) => { const k = known(v); if (k !== now) { now = k; fill(); } } };
+}
+
 export async function mount(ctx) {
   const admin = ctx.admin;
-  let [about, server, geo, maps, packList, release] = await Promise.all([
+  let [about, server, geo, maps, packList, release, carList] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || null }),
     ctx.api.get('release').catch(() => null),
+    ctx.api.get('cars', { sort: 'name', limit: 200 }).then((r) => r.items || []).catch(() => []),
   ]);
   if (!ctx.alive()) return;
   const p = getPrefs() || {};
@@ -122,6 +151,7 @@ export async function mount(ctx) {
       cover: ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation'],
       help: [`The text is English for now; this sets how numbers and dates are written. Auto follows the language this browser asks for (${browserLang}), and the page tells the browser which language it is in. `, langEx],
       save: (v) => pref({ language: v }) },
+    carList.length ? mainCarLine(carList, p.main_car || null, (v) => pref({ main_car: v })) : null,
   ]);
   ctx.onCleanup(onPrefs((pp) => {
     const n = getUnits();
@@ -129,6 +159,7 @@ export async function mount(ctx) {
     units.line('units.pressure').set(n.pressure); units.line('range').set(n.range);
     look.line('theme').set(pp?.theme || getTheme().choice);
     look.line('map_colors').set(pp?.map_colors || 'dimmed');
+    look.line('main_car')?.set(pp?.main_car || null);
     paintExample(); paintLang();
   }));
   ctx.onCleanup(onChange(() => { look.line('interface_size').set(getInterface().size); }));

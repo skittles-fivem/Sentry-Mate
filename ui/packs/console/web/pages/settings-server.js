@@ -80,7 +80,7 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
   Object.assign(S, { settings, network, notices: notices?.items || [], cars });
   const carName = new Map(S.cars.map((c) => [c.id, c.name]));
-  const clock = S.cars.find((c) => c.id === state.lastCar()) || S.cars[0] || null;
+  const clock = S.cars.find((c) => c.id === state.preferredCar(S.cars)) || null;
   const tz = clock?.time_zone || ctx.tz;
   const t = (ms) => (ms == null ? DASH : dateTime(ms, tz));
 

@@ -223,7 +223,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     }
     if (!alive()) return;
     if (car.time_zone) fallbackZone = car.time_zone;
-    state.rememberCar(car.id);
+    state.rememberCar(car.id, { sold: state.isSold(car) });
   } else if (info.period && state.lastCar()) {
     try {
       const last = await scope.get(api.apiPath`cars/${state.lastCar()}`, null, { maxAgeMs: 60000 });

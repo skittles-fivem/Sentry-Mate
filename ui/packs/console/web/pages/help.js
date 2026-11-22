@@ -48,7 +48,7 @@ export async function mount(ctx) {
     ctx.api.get('about', null, { maxAgeMs: 600000 }),
     ctx.api.get('notices').then((r) => r.items).catch(() => getNotices()),
     ctx.admin ? ctx.api.get('settings').catch(() => null) : null,
-    needCar ? ctx.api.get('cars', { limit: 2 }).then((r) => r.items || []).catch(() => null) : null,
+    needCar ? ctx.api.get('cars', { sort: 'name', limit: 200 }).then((r) => r.items || []).catch(() => null) : null,
     ctx.api.get('release').catch(() => null),
   ]);
   if (!ctx.alive()) return;
@@ -132,7 +132,8 @@ export async function mount(ctx) {
   const carLink = (page, words) => {
     let href = state.linkTo(page);
     if (href === state.buildUrl('fleet') && page !== 'fleet') {
-      if (cars && cars.length === 1) href = state.linkTo(page, { car: cars[0].id });
+      const pick = cars && cars.length ? state.preferredCar(cars) : null;
+      if (pick) href = state.linkTo(page, { car: pick });
       else return link(href, `choose a car, then open ${words}`);
     }
     return link(href, `open ${words}`);
