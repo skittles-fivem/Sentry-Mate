@@ -98,6 +98,12 @@ class Store:
         # the owner's own certificate (--own-certificate): the only kind that expires soon (one the server makes
         # is valid until 4096), and the only kind no new one is made for
         self.cert_own = bool(getattr(cfg, "own_certificate", False))
+        # --release-check: the result the made-up check gives (resources/system.py release_state); a check turned
+        # on later in the session finds a newer build
+        rc = getattr(cfg, "release_check", "off")
+        self.release_result = "newer" if rc == "off" else rc
+        self.server_settings["release_check"]["enabled"] = rc != "off"
+        self.release_checked_ms = None if rc in ("off", "never") else now - 2 * 3_600_000
         self.mqtt = extras.mqtt(now)
         self.imports = extras.imports(now, ds.history("c3"))
         self.storage = extras.storage(now)

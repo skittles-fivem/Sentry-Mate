@@ -16,7 +16,7 @@ import re
 
 from .. import derive
 from ..conventions import Response, page
-from ..errors import ApiError, bad_input, invalid, not_found, stale_version
+from ..errors import ApiError, bad_input, conflict, invalid, not_found, stale_version
 from ..live import now_object
 from ..util import DAY, HOUR, MIN, date_str, h01, local_date, r
 from .. import sources as SRC
@@ -195,7 +195,13 @@ def patch_settings(req):
         for a in accounts:
             req.app.events.publish("prefs", st.get_prefs(a), account_id=a["id"])
     if new["release_check"]["enabled"] and not cur["release_check"]["enabled"]:
-        req.app.events.publish("notice", release_notice(req))
+        # turning it on checks at once (the made-up check answers at once)
+        st.release_checked_ms = req.now
+        n = release_notice(req)
+        if n:
+            req.app.events.publish("notice", n)
+    elif cur["release_check"]["enabled"] and not new["release_check"]["enabled"]:
+        st.release_checked_ms = None  # off drops the result
     return copy.deepcopy(new)
 
 
@@ -369,8 +375,9 @@ def notices(req):
             n["message"] = f"The HTTPS certificate expires in {days} days. Renew it in Settings > Server."
             n["detail"] = {"expires_ms": n.pop("expires_ms"), "days": days}
         items.append(n)
-    if req.store.server_settings["release_check"]["enabled"]:
-        items.append(release_notice(req))
+    rn = release_notice(req)
+    if rn:
+        items.append(rn)
     # the move is an admin's to read, like /system/move
     if req.is_admin:
         from .moving import move_notices
@@ -382,11 +389,97 @@ def notices(req):
     return {"items": items, "next": None}
 
 
+# ------------------------------------------------------------------ build and release check
+
+# this build (made up): what the real server bakes in at image build (crates/release)
+BUILD = {"version": "0.1.0", "number": 41, "commit": "2f44a52c0e9b7d1a6f3e8c5b4a2d9e7f1c0b3a68", "short": "2f44a52",
+         "built_days_ago": 2, "dev": False}
+# the newest build on main the made-up check finds
+NEWEST = {"commit": "9c1e7d3b5a2f4e8c6d0b1a3f5e7c9d2b4a6f8e01", "short": "9c1e7d3", "build": 57, "days_ago": 1}
+NEWEST_TITLES = [
+    "Battery: one counter per stream, so imported days no longer stop the battery pages",
+    "Odometer: read the CAN odometer's \"not available\" as such, drop impossible readings",
+    "Charges: the place price follows a renamed place",
+    "Settings: the release check asks GitHub once a day when it is on",
+]
+PULL = "docker compose pull && docker compose up -d"
+IMAGE = "ghcr.io/skittles-fivem/sentry-mate:latest"
+REPO_URL = "https://github.com/skittles-fivem/Sentry-Mate"
+
+
+def build_info(req):
+    b = dict(BUILD)
+    b["built_ms"] = req.app.cfg.now_ms - b.pop("built_days_ago") * DAY
+    return b
+
+
+def release_state(req):
+    """GET /release: the release check's last result (docs/ui-api.md). Made up: the result is --release-check's."""
+    st = req.store
+    b = build_info(req)
+    current = {k: b[k] for k in ("commit", "short", "built_ms", "number")}
+    on = bool(st.server_settings["release_check"]["enabled"])
+    out = {"enabled": on, "status": "off", "checked_ms": None, "next_ms": None, "current": current, "newest": None,
+           "pull": PULL, "image": IMAGE, "error": None}
+    if not on:
+        return out
+    res = st.release_result
+    checked = st.release_checked_ms
+    out["checked_ms"] = checked
+    out["next_ms"] = (checked if checked is not None else req.now) + DAY
+    if res == "never" or (checked is None and res != "checking"):
+        out["status"] = "never"
+        out["checked_ms"] = None
+        return out
+    if res == "checking":
+        out["status"] = "checking"
+        return out
+    if res == "error":
+        out["status"] = "error"
+        out["error"] = {"code": "rate_limited",
+                        "message": "GitHub's rate limit for this address is used up; trying again in 40 minutes."}
+        out["next_ms"] = req.now + 40 * MIN
+        return out
+    newest_ms = req.app.cfg.now_ms - NEWEST["days_ago"] * DAY
+    if res == "up_to_date":
+        out["status"] = "up_to_date"
+        out["newest"] = {"commit": b["commit"], "short": b["short"], "date_ms": b["built_ms"], "build": b["number"],
+                         "changes": 0, "titles": [], "more": 0,
+                         "compare_url": f"{REPO_URL}/compare/{b['commit']}...{b['commit']}"}
+        return out
+    out["status"] = "newer"
+    out["newest"] = {"commit": NEWEST["commit"], "short": NEWEST["short"], "date_ms": newest_ms,
+                     "build": NEWEST["build"], "changes": len(NEWEST_TITLES), "titles": list(NEWEST_TITLES),
+                     "more": 0, "compare_url": f"{REPO_URL}/compare/{b['commit']}...{NEWEST['commit']}"}
+    return out
+
+
+def release_check_now(req):
+    """POST /release/check (admin): checks at once; 409 release_check_off while the check is off."""
+    if not req.store.server_settings["release_check"]["enabled"]:
+        raise conflict("release_check_off", "The release check is off. Turn it on in Settings: Display and units.")
+    if req.store.release_result != "checking":
+        req.store.release_checked_ms = req.now
+    out = release_state(req)
+    n = release_notice(req)
+    if n:
+        req.app.events.publish("notice", n)
+    return out
+
+
 def release_notice(req):
-    """The opt-in release notice: shown only while the owner has the release check on."""
-    return {"code": "release_available", "level": "info", "message": "Sentry Mate 0.2.0 is out.",
-            "since_ms": req.app.cfg.now_ms - 2 * DAY, "fix_link": "/help#about",
-            "detail": {"version": "0.2.0", "notes_url": "https://example.org/sentry-mate/releases/0.2.0"}}
+    """The release notice, for admins only, while the check is on and found a newer build."""
+    if not req.is_admin:
+        return None
+    s = release_state(req)
+    if s["status"] != "newer":
+        return None
+    nw = s["newest"]
+    msg = f"A newer build is ready: {nw['short']}, {nw['changes']} changes."
+    return {"code": "release_available", "level": "info", "message": msg,
+            "since_ms": nw["date_ms"], "fix_link": "/help#about",
+            "detail": {"version": nw["short"], "commit": nw["commit"], "build": nw["build"],
+                       "changes": nw["changes"], "notes_url": nw["compare_url"]}}
 
 
 def about(req):
@@ -396,6 +489,7 @@ def about(req):
     pack = {"id": m["id"], "name": m["name"], "version": m["version"], "api": m["api"], "original": False}
     return {
         "version": DEV_VERSION, "api_version": API_VERSION, "ui_pack": pack, "dev_server": True,
+        "build": build_info(req),
         "links": {"source": None, "docs": "/help"},
         "licence": {"name": None, "url": None},
         "licences": [{"name": "model3dbc (Tesla Model 3 and Y signal list)", "licence": "MIT"},
@@ -771,6 +865,8 @@ def register(router):
     router.add("/api/v1/geocode/status", GET=geocode_status)
     router.add("/api/v1/notices", GET=notices)
     router.add("/api/v1/about", GET=about)
+    router.add("/api/v1/release", GET=release_state)
+    router.add("/api/v1/release/check", POST=release_check_now, admin=("POST",))
     router.add("/api/v1/ui-packs", GET=ui_packs)
     router.add("/api/v1/cars/{car}/health", GET=car_health)
     router.add("/api/v1/cars/{car}/rebuild", POST=rebuild, admin=("POST",))
