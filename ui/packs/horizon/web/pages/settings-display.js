@@ -18,8 +18,9 @@ import { getInterface, onInterface } from '../core/display.js';
 import { sizeChoice, followSwitch, lookChoice, skyChoice, sizeLine } from '../core/account.js';
 import { getSky, onSky } from '../core/sky.js';
 import { packChoices, packLabel } from '../shared/packs.js';
-import { chan, hint, recLamp, presets, errText, code, toggle } from '../core/setting.js';
+import { chan, hint, recLamp, presets, errText, code, toggle, sig } from '../core/setting.js';
 import { ago, num } from '../core/fmt.js';
+import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp, presetHosts, LABELS_TEXT, STYLES_TEXT } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
@@ -58,12 +59,13 @@ function presetChoice(label, options, current, pick, { readOnly = false, cover }
 
 export async function mount(ctx) {
   const admin = isAdmin();
-  let [about, server, geo, maps, packList] = await Promise.all([
+  let [about, server, geo, maps, packList, rel] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || null }),
+    ctx.api.get('release').catch(() => null),
   ]);
   if (!ctx.alive()) return;
   const rec = recLamp({ cover: 'web.settings.general.autosave' });
@@ -197,6 +199,42 @@ export async function mount(ctx) {
     if (t.mode === 'online') return hint('Each viewer\'s browser asks the online source for map pictures; its credit shows on every map: ', h('b', null, t.attribution || '(none set)'), '.');
     return hint(maps?.tiles?.offline_data_present ? 'An offline map file is installed: maps need nothing from outside.' : 'No offline map file yet: maps draw routes and places on a plain background, with a note saying so. See Offline map file below.');
   }
+  /* ---------- release check: this build, GET /release's answer and Check now (admins) */
+  const relSlot = h('div', { class: 'stack sd-rel' });
+  let relBusy = false;
+  const TONE = { ok: 'ok', newer: 'live', error: 'bad', wait: 'off', off: 'off' };
+  function paintRelease() {
+    const now = ctx.api.now();
+    const st = rel ? releaseStatus(rel, now) : { tone: 'error', text: 'The release check could not be read.' };
+    const when = rel ? checkedAgo(rel, now) : '';
+    const on = rel ? !!rel.enabled : !!server?.release_check?.enabled;
+    const checking = relBusy || rel?.status === 'checking';
+    const lines = rel?.status === 'newer' ? changeLines(rel.newest) : [];
+    replace(relSlot,
+      hint('This build: ', code(buildLabel(about || {}))),
+      h('div', { class: 'sd-rel-status' }, sig(TONE[st.tone] || 'off', st.text), when ? h('span', { class: 'faint small' }, when) : null),
+      lines.length ? h('ul', { class: 'chan-hint sd-rel-titles' }, lines.map((x) => h('li', null, x))) : null,
+      rel?.status === 'newer' && rel.pull ? hint('To update, run on the server: ', code(rel.pull, { long: true })) : null,
+      admin ? h('div', { class: 'row' }, btn(checking ? 'Checking…' : 'Check now', checkNow, { icon: 'antenna', sm: true, disabled: checking || !on, title: on ? null : 'Turn the release check on first' })) : null);
+  }
+  async function refreshRelease() {
+    rel = await ctx.api.get('release').catch(() => rel);
+    if (ctx.alive()) paintRelease();
+  }
+  async function checkNow() {
+    relBusy = true;
+    paintRelease();
+    try {
+      rel = await ctx.api.post('release/check', {});
+      if (rel?.status === 'error') toast(releaseStatus(rel).text, { kind: 'error' });
+    } catch (e) {
+      if (e?.name !== 'AbortError') toast(e?.code === 'release_check_off' ? 'Not checked: the release check is off.' : `Not checked: ${errText(e)}`, { kind: 'error' });
+    } finally {
+      relBusy = false;
+      if (ctx.alive()) paintRelease();
+    }
+  }
+
   function paintServer() {
     if (!server) { replace(serverSlot, hud({ title: 'Server defaults', icon: 'server' }, note('The server settings could not be read. Your own choices above still work.'))); return; }
     const ro = !admin;
@@ -292,7 +330,10 @@ export async function mount(ctx) {
               hint('Each car\'s own zone: ', h('a', { class: 'plc', href: state.buildUrl('settings-cars') }, 'Settings: Cars'), '. The clock in the page header names the zone shown.')),
             chan({ no: 16, title: 'Outside links', text: 'Links that open another site in a new tab, only when someone clicks them.' },
               pc('Map links', [['false', 'No map links'], ['true', 'Map links']], String(!!server.outside_links?.maps), (v) => save({ outside_links: { maps: v === 'true' } }, 'Map links')),
-              pc('Release notes', [['false', 'No release notes'], ['true', 'Release notes']], String(!!server.outside_links?.release_notes), (v) => save({ outside_links: { release_notes: v === 'true' } }, 'Release notes links')))),
+              pc('Release notes', [['false', 'No release notes'], ['true', 'Release notes']], String(!!server.outside_links?.release_notes), (v) => save({ outside_links: { release_notes: v === 'true' } }, 'Release notes links'))),
+            chan({ no: 17, title: 'Check for new releases', id: 'sd-release', text: 'Asks GitHub once a day for the newest published build and what changed since this one, and tells admins. Sends nothing about this server or its cars, and never installs anything. Off by default.' },
+              pc('Check for new releases', [['false', 'Off'], ['true', 'On']], String(!!server.release_check?.enabled), async (v) => { const ok = await save({ release_check: { enabled: v === 'true' } }, 'Release check'); await refreshRelease(); return ok; }),
+              relSlot)),
           h('p', { class: 'note sd-metric' }, icon('info', 'i--sm'), h('span', null, 'Server values are metric (', code('100 km'), ', ', code('20 °C'), ', ', code('290 kPa'), '); every page converts them for each person.'))),
         hud({ title: 'Addresses and maps', icon: 'globe', id: 'sd-maps', side: tag('Private by default', 'grn') },
           h('div', { class: 'chans' },
@@ -309,6 +350,7 @@ export async function mount(ctx) {
               h('ol', { class: 'chan-hint offline-steps' }, OFFLINE_STEPS.map((x) => h('li', null, x))), hint(OFFLINE_NOTE))))));
   }
   paintServer();
+  paintRelease();
 
   replace(ctx.view, h('div', { class: 'page sd' },
     plate({ kicker: 'Set-up · display', title: 'Display and units', aim: ctx.info.aim, tools: rec.el }),

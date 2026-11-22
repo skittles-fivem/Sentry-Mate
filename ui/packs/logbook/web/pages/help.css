@@ -55,3 +55,5 @@ a.licence-name { color: var(--ink-2); }
 }
 .release-note { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); }
 .own-licence strong { color: var(--ink); font-weight: 600; }
+.release-note .release-titles { list-style: disc; padding-left: round(1.125rem, var(--e)); text-align: left; }
+.release-note .release-pull { overflow-wrap: anywhere; background: var(--paper-sunk); padding: 0 round(0.25rem, var(--e)); }
