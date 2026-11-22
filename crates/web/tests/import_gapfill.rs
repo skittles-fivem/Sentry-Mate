@@ -366,6 +366,16 @@ async fn a_live_span_flipped_to_the_imported_side_shows_the_import_alone() {
 const API_AT: u64 = DAY0 + 8 * H;
 
 fn api_and_import(db: &db::Db, car: CarId) {
+    live_api_and_import(db, car, model::Stream::TeslaApi);
+}
+
+/// [`api_and_import`] with TeslaFi's API as the live input (it is live history too: SMO > Tesla API > TeslaFi API >
+/// the chosen import).
+fn teslafi_api_and_import(db: &db::Db, car: CarId) {
+    live_api_and_import(db, car, model::Stream::TeslafiApi);
+}
+
+fn live_api_and_import(db: &db::Db, car: CarId, stream: model::Stream) {
     let api: Vec<Sample> = (0..12u64)
         .map(|k| Sample {
             t_ms: API_AT + k * 100_000,
@@ -382,7 +392,7 @@ fn api_and_import(db: &db::Db, car: CarId) {
             ..Default::default()
         })
         .collect();
-    db.write_points(car, model::Stream::TeslaApi, API_AT, API_AT + 1_200_000, &api).unwrap();
+    db.write_points(car, stream, API_AT, API_AT + 1_200_000, &api).unwrap();
     db.write_points(car, Source::Teslamate, API_AT, API_AT + 1_200_000, &tm).unwrap();
 }
 
@@ -412,6 +422,42 @@ async fn an_import_never_shows_a_value_the_tesla_api_still_holds() {
     let s = ok(&mut admin, &series).await;
     assert!(nums(&s, "soc_pct").iter().all(|v| (v - 50.0).abs() < 1e-6), "{s}");
     assert_eq!(kinds(&s["sources"]), ["tesla_api"], "{s}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn teslafi_api_values_are_live_history_and_missing_data_stays_a_gap() {
+    let k = kit_with(teslafi_api_and_import).await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    // past the data: the last TeslaFi API sample at +1100 s (soc holds 120 s), TeslaMate's last at +1143 s
+    let series = format!(
+        "/api/v1/cars/{car}/series?fields=soc_pct,outside_c&from_ms={API_AT}&to_ms={}&max_points=2000",
+        API_AT + 1_500_000
+    );
+    let s = ok(&mut admin, &series).await;
+    assert_eq!(s["bucket_ms"].as_u64(), Some(1000), "{s}");
+    let (soc, outside) = (nums(&s, "soc_pct"), nums(&s, "outside_c"));
+    assert!(
+        !soc.is_empty() && soc.iter().all(|v| (v - 50.0).abs() < 1e-6),
+        "TeslaFi's API wins over the import: {soc:?}"
+    );
+    assert!(outside.iter().all(|v| (v - 5.0).abs() < 1e-6), "{outside:?}");
+    assert_eq!(kinds(&s["value_sources"]["soc_pct"]), ["teslafi_api"], "{s}");
+    assert_eq!(kinds(&s["sources"]), ["teslafi_api"], "{s}");
+    // where nothing recorded the value is unknown: null buckets (a gap in the line), never the last value held
+    let t = s["t_ms"].as_array().unwrap();
+    let col = s["values"]["soc_pct"].as_array().unwrap();
+    assert_eq!(t.len(), col.len());
+    let after: Vec<&Value> =
+        t.iter().zip(col).filter(|(t, _)| t.as_u64().unwrap() >= API_AT + 1_300_000).map(|(_, v)| v).collect();
+    assert!(!after.is_empty() && after.iter().all(|v| v.is_null()), "a gap past the data: {after:?}");
+    let between: Vec<&Value> = t
+        .iter()
+        .zip(col)
+        .filter(|(t, _)| (API_AT + 5_000..API_AT + 95_000).contains(&t.as_u64().unwrap()))
+        .map(|(_, v)| v)
+        .collect();
+    assert!(between.iter().any(|v| v.is_null()), "no line drawn between two samples 100 s apart: {between:?}");
 }
 
 const STOPPED_AT: u64 = DAY0 + 10 * H;
