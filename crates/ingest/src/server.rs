@@ -47,6 +47,11 @@ use tower::ServiceExt;
 
 /// Connections from one address, at most, anonymous or not: the bridge's 16 uploads at once plus keep-alive slack.
 pub const MAX_PER_ADDRESS: usize = 32;
+/// Uploads the CAN Bridge app should send at once (`maxParallel` of `GET /api/can/logs/ping`): half of
+/// [`MAX_PER_ADDRESS`], so each upload's connection has a spare one for keep-alive (a connection the app still holds
+/// open while it opens the next).
+pub const MAX_PARALLEL_UPLOADS: usize = MAX_PER_ADDRESS / 2;
+const _: () = assert!(MAX_PARALLEL_UPLOADS == 16 && MAX_PARALLEL_UPLOADS * 2 <= MAX_PER_ADDRESS);
 /// Anonymous connections from one address that is not a car's, at most.
 pub const MAX_ANONYMOUS_PER_ADDRESS: usize = 6;
 /// How long an address counts as a car's after its last connection with a valid token.

@@ -32,6 +32,14 @@ pub const GENESIS_SHA: &str = "0000000000000000000000000000000000000000000000000
 pub const RULES_VERSION: u32 = 1;
 /// The reason of a log that is signed and intact, but by a key other than the one its car key is paired with.
 pub const SIGNED_BY_ANOTHER_KEY: &str = "signed by another key";
+/// The reasons of a log whose bytes are not the ones its sidecar names (changed after signing, or cut).
+pub const SHA256_DIFFERS: &str = "the file is not the one that was signed (SHA-256 differs)";
+pub const LENGTH_DIFFERS: &str = "the file is not the one that was signed (length differs)";
+/// The reasons of a signed log whose chain fields can't be read.
+pub const BAD_CHAIN_INDEX: &str = "bad chain index";
+pub const BAD_CHAIN_FIELDS: &str = "bad chain fields";
+/// The reason of a log without a signature from a car that is paired.
+pub const NOT_SIGNED_BUT_PAIRED: &str = "not signed, but this car is paired";
 
 /// Text from a sidecar shown as a reason or note: one line, no control characters, at most `n` characters.
 pub fn one_line(s: &str, n: usize) -> String {
@@ -150,13 +158,13 @@ pub fn check(name: &str, sha256: &str, length: u64, sidecar: &serde_json::Value)
         return bad("signed for another car key", link);
     }
     if !text("sha256").eq_ignore_ascii_case(sha256) {
-        return bad("the file is not the one that was signed (SHA-256 differs)", link);
+        return bad(SHA256_DIFFERS, link);
     }
     if g.get("length").and_then(serde_json::Value::as_u64) != Some(length) {
-        return bad("the file is not the one that was signed (length differs)", link);
+        return bad(LENGTH_DIFFERS, link);
     }
     let Some(link) = link else {
-        return bad("bad chain index", None);
+        return bad(BAD_CHAIN_INDEX, None);
     };
     let prev_ok = prev_name == "-" || LogName::parse(&prev_name).is_some_and(|p| !p.sidecar);
     if prev_name.len() > 200
@@ -164,7 +172,7 @@ pub fn check(name: &str, sha256: &str, length: u64, sidecar: &serde_json::Value)
         || prev_sha256.len() != 64
         || !prev_sha256.bytes().all(|c| c.is_ascii_hexdigit())
     {
-        return bad("bad chain fields", Some(link));
+        return bad(BAD_CHAIN_FIELDS, Some(link));
     }
     let message =
         signed_message(n.vehicle_key, name, &sha256.to_ascii_lowercase(), length, link.index, &prev_name, &prev_sha256);
@@ -200,9 +208,7 @@ pub fn judge(check: &Check, paired: Option<&str>) -> Verdict {
         (Check::NotSigned { bridge_error: Some(e) }, Some(_)) => {
             Verdict::CouldNotSign(format!("the CAN Bridge could not sign it ({e})"))
         }
-        (Check::NotSigned { bridge_error: None }, Some(_)) => {
-            Verdict::Failed("not signed, but this car is paired".into())
-        }
+        (Check::NotSigned { bridge_error: None }, Some(_)) => Verdict::Failed(NOT_SIGNED_BUT_PAIRED.into()),
         (Check::Bad { reason, .. }, _) => Verdict::Failed(reason.clone()),
     }
 }
