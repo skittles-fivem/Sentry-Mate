@@ -378,6 +378,7 @@ export function watchTables() {
   }).observe(document.body, { childList: true, subtree: true, characterData: true });
   if ('ResizeObserver' in window) ro = new ResizeObserver(resized);
   addEventListener('resize', later);
+  addEventListener('phonelayout', later); // the phone layout came or went (core/frame.js moves the period bar)
   document.addEventListener('toggle', later, true); // a <details> opened or closed
   if (document.fonts) {
     document.fonts.ready.then(later);
