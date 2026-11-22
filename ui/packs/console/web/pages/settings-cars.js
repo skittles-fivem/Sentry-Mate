@@ -388,10 +388,13 @@ async function mountCar(ctx) {
   function paintRefs() {
     const s = S.settings;
     const shown = (v, kind) => (v == null ? '' : String(Math.round(convert(v, kind) * 10) / 10));
+    // what the car's build gives when nothing is typed (shown as the empty input's placeholder)
+    const DEF = { capacity_new_kwh: 'capacity_new_kwh_default', full_range_new_km: 'full_range_new_km_default', efficiency_wh_per_km_override: 'efficiency_wh_per_km_default' };
+    const ph = (k, kind) => { const d = s[DEF[k]]; return d == null ? undefined : { placeholder: kind ? shown(d, kind) : String(d) }; };
     const num = (k, label, kind, unit, lo, hi, help, required = false) => {
       const l = kind ? Math.ceil(convert(lo, kind) * 10) / 10 : lo, u = kind ? Math.floor(convert(hi, kind) * 10) / 10 : hi;
-      return { key: k, type: 'number', value: kind ? shown(s[k], kind) : s[k], toText: (v) => (v == null ? '' : String(v)), unit, cls: 'ke--short', readOnly: ro,
-        help: `${help} ${l} to ${u} ${unit}${required ? '' : ', or empty'}.`,
+      return { key: k, type: 'number', value: kind ? shown(s[k], kind) : s[k], toText: (v) => (v == null ? '' : String(v)), unit, cls: 'ke--short', readOnly: ro, attrs: ph(k, kind),
+        help: `${help}${ph(k, kind) ? ` The car's build gives ${ph(k, kind).placeholder} ${unit}.` : ''} ${l} to ${u} ${unit}${required ? '' : ', or empty'}.`,
         parse: (t) => {
           if (t.trim() === '') return required ? { error: `a number from ${l} to ${u}` } : { value: null };
           const n = Number(t);

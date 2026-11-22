@@ -41,17 +41,20 @@ const NEW_SOURCE = {
   early_bms: 'the median of the pack’s own readings in its first 30 days of logging',
   imported_charges: 'the earliest imported charges (estimated)',
   pack_code: 'the pack’s size code: a hint only, type the real value below if you know it',
+  vehicle_info: 'what the car’s build (VIN and CAN) gives: type the real value below if you know it',
 };
 const RANGE_NEW_SOURCE = {
   owner: 'the value the owner typed in (Reference values below)',
   first_30_days: 'the median full-charge range of the first 30 days of logging',
   pack_code: 'the pack’s size code: a hint only, type the real value below if you know it',
+  vehicle_info: 'what the car’s build (VIN and CAN) gives: type the real value below if you know it',
 };
 const NOTE_WORDS = {
   new_value_typed: 'The ‘when new’ capacity is the value typed in by the owner.',
   new_value_from_early_readings: 'The ‘when new’ capacity is the median of the earliest readings, because no value was typed in. If the car was bought used or logged late, type the real value under Reference values.',
   new_value_from_imported_charges: 'The ‘when new’ capacity comes from the earliest imported charges, which are estimated.',
   new_value_from_pack_code: 'The ‘when new’ capacity is only the nominal size of this pack type. Type the real value under Reference values for a true health figure.',
+  new_value_from_vehicle_info: 'There are no early readings, so “when new” is what the car’s build (VIN and CAN) gives. Type the real figure under Reference values if you know it.',
   cold_battery_locks_part: 'The battery is cold: part of its energy is locked until it warms, so usable % is lower than battery %.',
   lfp_charge_to_100_weekly: 'This is an LFP pack: charging it to 100 % about once a week keeps its level reading accurate, so 100 % is inside its everyday band.',
   imported_history_estimated: 'Part of this car’s history was imported; energy figures from it are estimated.',
@@ -263,9 +266,9 @@ export async function mount(ctx) {
         h('p', { class: 'note' }, 'Only an admin can change these. Empty values are worked out from the car’s own early readings.'));
       return;
     }
-    const cap = field({ label: 'Capacity when new (kWh, full pack)', name: 'cap', type: 'number', value: s.capacity_new_kwh, attrs: { min: '10', max: '250', step: '0.1', inputmode: 'decimal', placeholder: 'from early readings' },
+    const cap = field({ label: 'Capacity when new (kWh, full pack)', name: 'cap', type: 'number', value: s.capacity_new_kwh, attrs: { min: '10', max: '250', step: '0.1', inputmode: 'decimal', placeholder: s.capacity_new_kwh_default != null ? String(s.capacity_new_kwh_default) : 'from early readings' },
       hint: 'Only if the car was bought used or logging began late. Leave empty to use the median of the earliest readings. 10 to 250 kWh.', cover: 'bh.setting.capacity_new_override' });
-    const rng = field({ label: `Full-charge range when new (${dist}, rated range)`, name: 'range', type: 'number', value: rangeShown, attrs: { min: String(Math.ceil(convert(100, 'range'))), max: String(Math.floor(convert(1500, 'range'))), step: '1', inputmode: 'numeric', placeholder: 'from the first 30 days' },
+    const rng = field({ label: `Full-charge range when new (${dist}, rated range)`, name: 'range', type: 'number', value: rangeShown, attrs: { min: String(Math.ceil(convert(100, 'range'))), max: String(Math.floor(convert(1500, 'range'))), step: '1', inputmode: 'numeric', placeholder: s.full_range_new_km_default != null ? String(Math.round(convert(s.full_range_new_km_default, 'range'))) : 'from the first 30 days' },
       hint: `The rated range the car showed at 100 % when new (with the car set to rated, not ideal). Leave empty to use the first 30 days. ${Math.ceil(convert(100, 'range'))} to ${Math.floor(convert(1500, 'range'))} ${dist}.`, cover: 'bh.setting.range_new_override' });
     const war = field({ label: 'Warranty line (% of new)', name: 'warranty', type: 'number', value: s.warranty_threshold_pct, attrs: { min: '50', max: '95', step: '1', inputmode: 'numeric', required: true },
       hint: 'The capacity the battery warranty promises, usually 70 %. 50 to 95 %.' });

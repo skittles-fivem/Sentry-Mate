@@ -45,17 +45,20 @@ const NEW_SOURCE = {
   early_bms: 'median of the pack’s readings in its first 30 days',
   imported_charges: 'worked out from the earliest imported charges',
   pack_code: 'the pack-size code the car reports (a hint, not a measurement)',
+  vehicle_info: 'the car’s build (VIN and CAN), not a measurement',
 };
 const RANGE_SOURCE = {
   owner: 'typed by the owner',
   first_30_days: 'median full-charge range of the first 30 days',
   pack_code: 'the pack-size code the car reports (a hint, not a measurement)',
+  vehicle_info: 'the car’s build (VIN and CAN), not a measurement',
 };
 const NOTES = {
   new_value_typed: 'The “when new” values are the ones typed under Reference values.',
   new_value_from_early_readings: 'No value was typed, so “when new” is the median of the earliest pack readings. Type the real figure under Reference values if you know it.',
   new_value_from_imported_charges: 'The car was logged late, so “when new” comes from the earliest imported charges. Type the real figure if you know it.',
   new_value_from_pack_code: 'There are no early readings, so “when new” is only the pack-size code. Type the real figure for a true health figure.',
+  new_value_from_vehicle_info: 'There are no early readings, so “when new” is what the car’s build (VIN and CAN) gives. Type the real figure under Reference values if you know it.',
   cold_battery_locks_part: 'The pack is cold: part of the energy is locked until it warms up, so usable is below battery %.',
   lfp_charge_to_100_weekly: 'LFP pack: charge to 100 % about once a week so the car can recalibrate its battery %.',
   imported_history_estimated: 'Part of the history is imported; figures from it are estimated.',

@@ -506,6 +506,12 @@ fn fill_page(e: &Engine, x: &FleetEntry, i: &mut CarItem, now: u64) -> QResult<(
 
 /// The car's build from everything that says something of it (no lookup: built-in tables only).
 fn vehicle_of(e: &Engine, c: &model::Car, o: &Owner) -> QResult<VehicleInfo> {
+    let can = super::vehicle::can_build(e, c)?;
+    vehicle_from(e, c, o, can)
+}
+
+/// [`vehicle_of`] with the car's CAN build given.
+fn vehicle_from(e: &Engine, c: &model::Car, o: &Owner, can: model::vehicle::CanBuild) -> QResult<VehicleInfo> {
     let mut owner: BTreeMap<String, OwnerValue> = BTreeMap::new();
     for (k, v) in &o.config {
         let value = match v {
@@ -526,12 +532,55 @@ fn vehicle_of(e: &Engine, c: &model::Car, o: &Owner) -> QResult<VehicleInfo> {
     let api = records::api_meta(e.db(), c.id)?.meta;
     let inputs = VehicleInputs {
         vin: c.vin.as_ref().map(|v| v.vin_prefix.clone()),
-        can: super::vehicle::can_build(e, c)?,
+        can,
         tesla_api: super::vehicle::from_api(&api),
         import: super::vehicle::imported(e, c.id)?.map(|b| (FactSource::Teslamate, b)),
         owner,
     };
     Ok(model::vehicle::vehicle_info(&inputs))
+}
+
+/// The reference values the car's build gives when new (VIN, CAN configuration, imported or typed build facts; the
+/// pack's own readings now are left out): the usable capacity (else the full pack, `true`), the rated range (EPA)
+/// and the consumption factor they make (Wh per km of rated range).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct VehicleDefaults {
+    pub capacity_new_kwh: Option<(f64, bool)>,
+    pub full_range_new_km: Option<f64>,
+    pub efficiency_wh_per_km: Option<f64>,
+}
+
+impl VehicleDefaults {
+    pub const SOURCE: &'static str = "vehicle_info";
+
+    /// The usable capacity when new, when the build names it (the settings' default: the owner types usable kWh).
+    pub fn usable_new_kwh(&self) -> Option<f64> {
+        self.capacity_new_kwh.filter(|(_, full)| !full).map(|(v, _)| v)
+    }
+}
+
+fn vehicle_defaults_of(e: &Engine, c: &model::Car, o: &Owner) -> QResult<VehicleDefaults> {
+    // "when new" is the build's, not the pack's reading now
+    let mut can = super::vehicle::can_build(e, c)?;
+    (can.full_pack_kwh, can.buffer_kwh) = (None, None);
+    let v = vehicle_from(e, c, o, can)?;
+    let mid = |f: &model::vehicle::Fact<model::vehicle::KwhRange>| {
+        f.value.as_ref().map(|k| ((k.min + k.max) / 2.0 * 10.0).round() / 10.0).filter(|k| *k > 0.0)
+    };
+    let capacity = mid(&v.usable_kwh).map(|k| (k, false)).or(mid(&v.nominal_kwh).map(|k| (k, true)));
+    let range = v.epa_range_km.value.filter(|k| *k > 0.0);
+    let usable = capacity.filter(|(_, full)| !full).map(|(k, _)| k);
+    Ok(VehicleDefaults {
+        capacity_new_kwh: capacity,
+        full_range_new_km: range,
+        efficiency_wh_per_km: usable.zip(range).map(|(k, r)| (k * 1000.0 / r * 10.0).round() / 10.0),
+    })
+}
+
+/// [`VehicleDefaults`] of one car.
+pub(crate) fn vehicle_defaults(e: &Engine, car: CarId) -> QResult<VehicleDefaults> {
+    let c = car_of(e, car)?;
+    vehicle_defaults_of(e, &c, &owner(e, car)?)
 }
 
 /// `/cars/{car}`.
@@ -897,9 +946,15 @@ pub struct SettingsView {
     /// The car's own choice (null: the server's), and whether filling is on for it now.
     pub import_gap_fill: Option<bool>,
     pub import_gap_fill_on: bool,
+    /// What the car's build gives for the three reference values when the owner has typed none (the inputs'
+    /// prefill; the owner's value, where typed, still wins), and where it comes from (`vehicle_info`, else null).
+    pub capacity_new_kwh_default: Option<f64>,
+    pub full_range_new_km_default: Option<f64>,
+    pub efficiency_wh_per_km_default: Option<f64>,
+    pub defaults_source: Option<&'static str>,
 }
 
-fn settings_view(e: &Engine, o: &Owner) -> SettingsView {
+fn settings_view(e: &Engine, o: &Owner, d: VehicleDefaults) -> SettingsView {
     let s = &o.settings;
     SettingsView {
         version: o.settings_changes + 1,
@@ -912,13 +967,22 @@ fn settings_view(e: &Engine, o: &Owner) -> SettingsView {
         software_version_typed: s.software_version_typed.clone(),
         import_gap_fill: s.import_gap_fill,
         import_gap_fill_on: s.import_gap_fill.unwrap_or_else(|| e.import_gap_fill()),
+        capacity_new_kwh_default: d.usable_new_kwh(),
+        full_range_new_km_default: d.full_range_new_km,
+        efficiency_wh_per_km_default: d.efficiency_wh_per_km,
+        defaults_source: (d.usable_new_kwh().is_some()
+            || d.full_range_new_km.is_some()
+            || d.efficiency_wh_per_km.is_some())
+        .then_some(VehicleDefaults::SOURCE),
     }
 }
 
 /// `GET /cars/{car}/settings`.
 pub fn car_settings(e: &Engine, car: CarId) -> QResult<Scoped<SettingsView>> {
     let c = car_of(e, car)?;
-    Ok(scoped(&c, settings_view(e, &owner(e, car)?)))
+    let o = owner(e, car)?;
+    let d = vehicle_defaults_of(e, &c, &o)?;
+    Ok(scoped(&c, settings_view(e, &o, d)))
 }
 
 const CHEMISTRIES: &[&str] = &["auto", "lfp", "nca_nmc"];
@@ -1147,7 +1211,8 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
     drop(record);
     o.settings_changes += 1;
     put_owner(e, car, &o)?;
-    Ok(Patched::Done(scoped(&c, settings_view(e, &o))))
+    let d = vehicle_defaults_of(e, &c, &o)?;
+    Ok(Patched::Done(scoped(&c, settings_view(e, &o, d))))
 }
 
 #[cfg(test)]

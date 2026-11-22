@@ -31,13 +31,14 @@ const enc = encodeURIComponent;
 const pct = (v, d = 0) => format(v, 'percent', { digits: d });
 const n0 = (v) => (v == null ? '—' : formatNumber(v, { maximumFractionDigits: 0 }));
 const none = (t) => h('span', { class: 'muted' }, t);
-const NEW_SOURCE = { owner: 'typed by the owner', early_bms: 'median of the first 30 days of pack readings', imported_charges: 'the earliest imported charges', pack_code: 'the pack-size code (a hint, not a measurement)' };
-const RANGE_SOURCE = { owner: 'typed by the owner', first_30_days: 'median full range of the first 30 days', pack_code: 'the pack-size code (a hint)' };
+const NEW_SOURCE = { owner: 'typed by the owner', early_bms: 'median of the first 30 days of pack readings', imported_charges: 'the earliest imported charges', pack_code: 'the pack-size code (a hint, not a measurement)', vehicle_info: 'the car\'s build (VIN and CAN), not a measurement' };
+const RANGE_SOURCE = { owner: 'typed by the owner', first_30_days: 'median full range of the first 30 days', pack_code: 'the pack-size code (a hint)', vehicle_info: 'the car\'s build (EPA rating)' };
 const NOTES = {
   new_value_typed: 'the "when new" values are the typed reference values.',
   new_value_from_early_readings: 'no value was typed: "when new" is the median of the earliest pack readings.',
   new_value_from_imported_charges: 'logged late: "when new" comes from the earliest imported charges.',
   new_value_from_pack_code: 'no early readings: "when new" is only the pack-size code; type the real figure for a true health figure.',
+  new_value_from_vehicle_info: 'There are no early readings, so “when new” is what the car’s build (VIN and CAN) gives. Type the real figure under Reference values if you know it.',
   cold_battery_locks_part: 'the pack is cold: part of its energy is locked until it warms, so usable is below battery %.',
   lfp_charge_to_100_weekly: 'lfp pack: charge to 100% about once a week so the car can recalibrate.',
   imported_history_estimated: 'part of the history is imported; figures from it are estimated.',

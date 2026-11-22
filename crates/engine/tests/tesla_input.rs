@@ -638,3 +638,47 @@ fn smo_wins_then_the_tesla_api_then_teslafi_in_one_drive() {
         assert!(k.engine.tesla_api_live(car), "the Tesla API's data just came: TeslaFi is read less");
     });
 }
+
+#[test]
+fn a_used_car_takes_its_values_when_new_from_its_build() {
+    rt().block_on(async {
+        let k = kit();
+        // a made-up US Model 3 RWD of 2023, logged from 12,345 km on (not new), no values typed
+        let new = tesla::NewCar {
+            vin_prefix: Some("5YJ3E1EA2PF".into()),
+            model: Some('3'),
+            year: Some(2023),
+            display_name: Some("Used".into()),
+        };
+        let car = k.engine.api_new_car(&new).unwrap();
+        k.engine.api_points(car, api_readings(0, 2400, 30, Trip { a: 600, b: 1800 }), vec![online(0, 2400)]);
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+
+        let s = query::fleet::car_settings(&k.engine, car).unwrap().body;
+        assert_eq!((s.capacity_new_kwh, s.full_range_new_km), (None, None), "nothing typed");
+        assert_eq!(s.defaults_source, Some("vehicle_info"));
+        assert_eq!(s.full_range_new_km_default, Some(438.0), "the EPA rating");
+        let usable = s.capacity_new_kwh_default.expect("the pack table's usable kWh when new");
+        let w = s.efficiency_wh_per_km_default.expect("usable over the rated range");
+        assert!((w - usable * 1000.0 / 438.0).abs() < 0.1, "{w} {usable}");
+
+        let b = query::battery::battery(&k.engine, car).unwrap().body;
+        assert_eq!(b.capacity["new_source"], "vehicle_info");
+        assert_eq!(b.capacity["new_kwh"].as_f64(), Some(usable));
+        assert!(b.notes.contains(&"new_value_from_vehicle_info"), "{:?}", b.notes);
+        assert_eq!(
+            (b.range["full_new_km"].as_f64(), b.range["new_source"].as_str()),
+            (Some(438.0), Some("vehicle_info"))
+        );
+        // 200 km at 70 %: the range lost against the rating shows
+        assert_eq!(b.range["full_now_km"].as_f64().map(f64::round), Some(286.0));
+        assert_eq!(b.range["lost_km"].as_f64().map(f64::round), Some(152.0));
+
+        // the owner's value still wins
+        let body = serde_json::json!({ "version": s.version, "capacity_new_kwh": 60.0 });
+        query::fleet::patch_settings(&k.engine, car, body.as_object().unwrap()).unwrap();
+        let b = query::battery::battery(&k.engine, car).unwrap().body;
+        assert_eq!((b.capacity["new_kwh"].as_f64(), b.capacity["new_source"].as_str()), (Some(60.0), Some("owner")));
+    });
+}

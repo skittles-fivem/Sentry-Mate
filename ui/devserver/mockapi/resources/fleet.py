@@ -516,6 +516,13 @@ def get_settings(req):
     out = dict(s)
     out.setdefault("import_gap_fill", None)
     out["import_gap_fill_on"] = gapfill.on(st, req.car)
+    # what the car's build gives when the owner has typed nothing (the inputs' placeholders)
+    h = req.history()
+    car = h.car if h is not None else None
+    out["capacity_new_kwh_default"] = round(car.full_new_kwh - car.buffer_kwh, 1) if car else None
+    out["full_range_new_km_default"] = car.full_range_new_km if car else None
+    out["efficiency_wh_per_km_default"] = car.rated_wh_per_km if car else None
+    out["defaults_source"] = "vehicle_info" if car else None
     out["car"] = req.car
     out["time_zone"] = req.tz()
     return out

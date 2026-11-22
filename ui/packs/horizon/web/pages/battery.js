@@ -30,13 +30,14 @@ export const css = true;
 
 const enc = encodeURIComponent;
 const pct = (v, digits = 0) => format(v, 'percent', { digits });
-const NEW_SOURCE = { owner: 'typed by the owner', early_bms: 'the pack\'s readings in its first 30 days', imported_charges: 'the earliest imported charges', pack_code: 'the pack-size code (a hint, not a measurement)' };
-const RANGE_SOURCE = { owner: 'typed by the owner', first_30_days: 'the first 30 days', pack_code: 'the pack-size code (a hint)' };
+const NEW_SOURCE = { owner: 'typed by the owner', early_bms: 'the pack\'s readings in its first 30 days', imported_charges: 'the earliest imported charges', pack_code: 'the pack-size code (a hint, not a measurement)', vehicle_info: 'the car\'s build (VIN and CAN), not a measurement' };
+const RANGE_SOURCE = { owner: 'typed by the owner', first_30_days: 'the first 30 days', pack_code: 'the pack-size code (a hint)', vehicle_info: 'the car\'s build (EPA rating)' };
 const NOTES = {
   new_value_typed: 'The "when new" values are the ones typed under Reference values.',
   new_value_from_early_readings: 'Nothing was typed, so "when new" is the median of the earliest pack readings. Type the real figure if you know it.',
   new_value_from_imported_charges: 'The car was logged late, so "when new" comes from the earliest imported charges.',
   new_value_from_pack_code: 'There are no early readings, so "when new" is only the pack-size code. Type the real figure for a true health figure.',
+  new_value_from_vehicle_info: 'There are no early readings, so “when new” is what the car’s build (VIN and CAN) gives. Type the real figure under Reference values if you know it.',
   cold_battery_locks_part: 'The pack is cold: part of the energy is locked until it warms up, so usable is below battery %.',
   lfp_charge_to_100_weekly: 'LFP pack: charge to 100 % about once a week so the car can recalibrate its battery %.',
   imported_history_estimated: 'Part of the history is imported; figures from it are estimated.',
