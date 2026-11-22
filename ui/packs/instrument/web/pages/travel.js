@@ -313,7 +313,7 @@ export async function mount(ctx) {
       h('div', { class: 'map-overlay map-overlay--tl' }, legend),
       h('div', { class: 'map-overlay map-overlay--tr' }, hoverCard)),
     h('p', { class: 'note tv-map-help', cover: 'visited.text.map_help' }, icon('info', 'ico--sm'),
-      'Lines are every drive of the period, from 1 Hz positions, one line per drive in its car’s colour. Dots are where the cars stopped: one per city, or per place. Hover a dot for its details; click a city to list its days below, or a place to open it in the place editor. Tiles come from Sentry Mate itself unless an admin turned on an online map.'));
+      'Lines are every drive of the period, from 1 Hz positions, one line per drive in its car’s colour. Dots are where the cars stopped: one per city, or per place. Hover a dot for its details (on a phone, tap it); click a city to list its days below, or a place to open it in the place editor. Tiles come from Sentry Mate itself unless an admin turned on an online map.'));
   root.append(h('div', { class: 'tv-top' }, mapPanel, summaryPanel));
 
   /* ---------- countries, rankings */
@@ -540,14 +540,26 @@ export async function mount(ctx) {
         h('dt', null, 'Last visit'), h('dd', null, date(r.last_ms, t, { year: true })),
         multi ? [h('dt', null, 'Cars'), h('dd', null, (r.cars || []).map(carName).join(', '))] : null),
       h('div', { class: 'faint tv-hover-pos' }, `${r.country_code || ''} ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}`.trim()),
-      h('div', { class: 'tv-hover-act' }, markMode === 'cities' ? 'Click to list its days' : r.place ? 'Click to open the place' : 'Click to save it as a place'));
+      onPhone()
+        ? h('div', { class: 'tv-hover-btns' },
+          h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: () => { closeCard(); markAct(r); } }, markMode === 'cities' ? 'List its days' : r.place ? 'Open the place' : 'Save as a place'),
+          h('button', { class: 'btn btn--sm btn--ghost', type: 'button', onclick: closeCard }, icon('x', 'ico--sm'), 'Close'))
+        : h('div', { class: 'tv-hover-act' }, markMode === 'cities' ? 'Click to list its days' : r.place ? 'Click to open the place' : 'Click to save it as a place'));
     hoverCard.hidden = false;
+    hoverCard.parentElement?.parentElement?.classList.add('has-card');
+  }
+  // on a phone there is no hover: a tap on a dot shows its details here, with the action as a button
+  const onPhone = () => !!document.documentElement.dataset.phone;
+  function closeCard() { hoverCard.hidden = true; hoverCard.parentElement?.parentElement?.classList.remove('has-card'); }
+  function markAct(r) {
+    if (markMode === 'cities') pickCity(r.key);
+    else ctx.navigate(r.place ? state.buildUrl('places', { query: { place: r.place.id } }) : state.buildUrl('places', { query: { lat: r.lat.toFixed(5), lon: r.lon.toFixed(5), new: 1 } }));
   }
   const markRows = () => (markMode === 'cities' ? cities.items : placesG.items).filter((r) => r.lat != null && r.lon != null);
   function paintMarks() {
     const word = legend.querySelector('.tv-mark-word');
     if (word) word.textContent = markMode === 'cities' ? 'a city: bigger means more days' : 'a place: bigger means more days';
-    hoverCard.hidden = true;
+    closeCard();
     if (!m) return;
     const rows = markRows();
     const max = Math.max(1, ...rows.map((r) => r.days || 0));
@@ -582,16 +594,17 @@ export async function mount(ctx) {
     { 'circle-radius': () => ['*', ['get', 'r'], rpx(1)], 'circle-stroke-width': () => rpx(1.5) });
   paintMarks();
   m.map.on('mousemove', 'tv-marks', (e) => {
+    if (onPhone()) return;
     m.map.getCanvas().classList.add('is-clickable');
     const r = markRows()[e.features?.[0]?.properties?.i];
     if (r) hoverText(r);
   });
-  m.map.on('mouseleave', 'tv-marks', () => { m.map.getCanvas().classList.remove('is-clickable'); hoverCard.hidden = true; });
-  m.map.on('click', 'tv-marks', (e) => {
-    const r = markRows()[e.features?.[0]?.properties?.i];
-    if (!r) return;
-    if (markMode === 'cities') pickCity(r.key);
-    else ctx.navigate(r.place ? state.buildUrl('places', { query: { place: r.place.id } }) : state.buildUrl('places', { query: { lat: r.lat.toFixed(5), lon: r.lon.toFixed(5), new: 1 } }));
+  m.map.on('mouseleave', 'tv-marks', () => { if (onPhone()) return; m.map.getCanvas().classList.remove('is-clickable'); closeCard(); });
+  m.map.on('click', (e) => {
+    const hit = m.map.queryRenderedFeatures(e.point, { layers: ['tv-marks'] })[0];
+    const r = hit ? markRows()[hit.properties?.i] : null;
+    if (onPhone()) { if (r) hoverText(r); else closeCard(); return; }
+    if (r) markAct(r);
   });
   m.frame(() => { if (pts.length === 1) m.map.jumpTo({ center: pts[0], zoom: 12 }); else m.map.fitBounds(boundsOf(pts), { padding: padClear(mapEl, legend, { beside: true }), duration: 0, maxZoom: 13 }); });
 }

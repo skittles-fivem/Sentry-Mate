@@ -290,7 +290,9 @@ async function mountList(ctx, q) {
 
   /* ---------- the map of every circle (follows the filters) */
   const mapEl = h('div', { class: 'map' });
-  const mapCard = h('div', { class: 'glass-card pl-map-card' }, h('strong', null, 'Every circle'), h('span', { class: 'faint' }, 'Point at a circle for its name; click it to edit.'));
+  // a phone has no pointer to hover with: a tap opens the circle's place
+  const circleHint = () => (document.documentElement.dataset.phone ? 'Tap a circle to edit its place.' : 'Point at a circle for its name; click it to edit.');
+  const mapCard = h('div', { class: 'glass-card pl-map-card' }, h('strong', null, 'Every circle'), h('span', { class: 'faint' }, circleHint()));
   const mapPanel = h('section', { class: 'panel map-panel pl-map-panel', 'aria-label': 'Map of the places' }, mapEl, h('div', { class: 'map-overlay map-overlay--tl' }, mapCard));
   let m = null, mapRows = [], mapBusy = null;
   async function loadMap() {
@@ -333,7 +335,7 @@ async function mountList(ctx, q) {
   }
   function paintCard() {
     replace(mapCard, h('strong', null, mapRows.length ? plural(mapRows.length, 'circle', 'circles') : 'No circle to show'),
-      h('span', { class: 'faint' }, mapRows.length ? 'Point at a circle for its name; click it to edit.' : 'Nothing matches the filters.'));
+      h('span', { class: 'faint' }, mapRows.length ? circleHint() : 'Nothing matches the filters.'));
   }
   function paintMap() {
     if (!m || !m.map.getSource('places')) return;
