@@ -500,7 +500,16 @@ mod tests {
 
     fn now(state: State, gear: Option<Gear>, speed: Option<f64>) -> Now {
         let sample = Sample { gear, speed_kmh: speed, ..Sample::default() };
-        Now { car: 1, at_ms: 10_000, state: Some(state), driving: false, sample, place: None }
+        Now {
+            car: 1,
+            at_ms: 10_000,
+            state: Some(state),
+            driving: false,
+            sample,
+            place: None,
+            range_estimated_km: None,
+            healthy: None,
+        }
     }
 
     fn span(state: State, start_ms: u64, end_ms: u64) -> StateSpan {
