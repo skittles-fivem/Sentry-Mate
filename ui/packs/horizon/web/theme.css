@@ -235,3 +235,9 @@ body { font-feature-settings: normal; font-size: 0.9375rem; }
   border-top-color: color-mix(in srgb, var(--mag) 45%, transparent);
 }
 :root[data-phone] .page-head { padding: round(0.875rem, var(--e)) round(1rem, var(--e)); }
+/* Chakra Petch at the phone's 14 px floor stands a pixel taller than the shared rows were tuned for: the
+   battery-level rows, the week map's hour labels and the set-up step numbers get room for it */
+:root[data-phone] .socmap { grid-auto-rows: round(1.125rem, var(--e)); }
+:root[data-phone] .socmap-y { --LH: round(1.125rem, 2px); }
+:root[data-phone] .weekmap-x { --LH: round(1.25rem, 2px); align-self: start; height: round(1.25rem, var(--e)); }
+:root[data-phone] .su-crumb-n { width: round(1.5rem, var(--e)); height: round(1.5rem, var(--e)); }
