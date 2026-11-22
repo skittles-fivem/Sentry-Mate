@@ -117,6 +117,19 @@ python3 ui/devserver/serve.py --pack ui/packs/instrument --port 8000
 Then open `http://127.0.0.1:8000/`. The pages load map tiles from `tile.openstreetmap.org`.
 Swap `instrument` for `logbook`, `horizon`, `console` or `pebble` to preview another of the five built-in packs.
 
+Before a pack change goes in, check its pages ([`ui/tools/README.md`](../ui/tools/README.md)): the normal check at
+`1440x900,390x844`, `--pixel` at `1440x900,3840x2160,390x844@3`, and `--stable` at `1440x900,390x844`.
+
+The stability rule (the owner's): a page you are on must not jump around, and nothing may show up, go away and
+come back while live updates arrive. A refresh keeps what is on screen until the new data is there (no loading
+text, spinner or empty state in between), a block that fills in later has its room from the start, and a value
+changes its text in place. `--stable` stays on each page for 30 s while the dev server sends live values and list
+changes, and fails a page whose layout shifts (more than 0.01), whose blocks move, or whose elements come and go.
+
+```bash
+node ui/tools/check.js --pack instrument --stable --sizes 1440x900,390x844
+```
+
 ## Crates
 
 | Crate | Job | In the program |

@@ -28,7 +28,10 @@ Check every page of a pack with `node ui/tools/check.js --pack instrument` ([`to
 
 Rules every pack follows: a strict Content Security Policy (scripts, styles and fonts only from the pack itself; map
 tiles from the configured tile server), no outside requests, metric units in the API with the person's units applied
-in the page.
+in the page, and pages that stay still: a page you are on must not jump around, and nothing may show up, go away
+and come back while live values and list changes arrive. Keep the old content until the new data is there (no
+loading text or empty state in between), give blocks that fill in later their room from the start, and change text
+in place. `node ui/tools/check.js --pack NAME --stable` checks it ([`tools/README.md`](tools/README.md#stability-checks---stable)).
 
 Bundled third-party files keep their licences next to them: MapLibre GL JS (BSD-3-Clause), uPlot (MIT), Inter, Orbitron,
 Chakra Petch, IBM Plex Sans, Manrope and JetBrains Mono (SIL Open Font License 1.1), Bitstream Charter (Bitstream's
