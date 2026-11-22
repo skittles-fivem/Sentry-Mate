@@ -16,7 +16,7 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--pack DIR` | (required) | The UI pack; its `web/` folder is served at `/`. The built-in ones: `ui/packs/instrument`, `logbook`, `horizon`, `console`, `pebble`. |
+| `--pack DIR` | (required) | The UI pack; its `web/` folder is served at `/`. The built-in ones: `ui/packs/instrument`, `logbook`, `horizon`, `console`, `pebble`, `manager`. |
 | `--host` | `127.0.0.1` | Address to listen on. |
 | `--port` | `8000` | `0` picks a free port (read it from the printed line). |
 | `--cars N` | `3` | Fleet size. 1 to 3 are the featured cars; above 3 adds light synthetic cars `c4`..`cN`; `0` is an empty fleet. A large fleet's sort, search and attention indexes are built before the server listens (about 1.5 s for 200000 cars). |
@@ -38,8 +38,8 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 
 ### UI packs
 
-`GET /api/v1/ui-packs` lists the five built-in packs of `ui/packs` (ids `instrument`, `logbook`, `horizon`,
-`console`, `pebble`; plus the `--pack` folder when it is another one), as the real server does. The `--pack` one is
+`GET /api/v1/ui-packs` lists the six built-in packs of `ui/packs` (ids `instrument`, `logbook`, `horizon`,
+`console`, `pebble`, `manager`; plus the `--pack` folder when it is another one), as the real server does. The `--pack` one is
 the pack chosen for everyone. A person's `ui_pack` preference picks the pack their browser is served from the next
 page load on, as on the real server; `null` goes back to the `--pack` one, and an unknown id is `422`.
 

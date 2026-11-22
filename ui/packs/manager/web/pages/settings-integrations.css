@@ -13,7 +13,7 @@
 .si-side { display: flex; flex-direction: column; gap: round(1.25rem, var(--e)); min-width: 0; }
 
 /* code bits */
-.si-code { font-family: var(--mono, ui-monospace, monospace); font-size: max(0.8125rem, var(--fs-floor)); padding: 0 round(0.25rem, var(--e)); border-radius: round(0.25rem, var(--e)); background: var(--glass-2); overflow-wrap: anywhere; }
+.si-code { font-family: var(--font-mono); font-size: max(0.8125rem, var(--fs-floor)); padding: 0 round(0.25rem, var(--e)); border-radius: round(0.25rem, var(--e)); background: var(--glass-2); overflow-wrap: anywhere; }
 .si-pre { margin: 0; padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-sunken); font-family: var(--mono, ui-monospace, monospace); font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.5 * 1em), 2px); white-space: pre-wrap; overflow-wrap: anywhere; max-height: round(18rem, var(--e)); overflow: auto; }
 .si-pre--empty { font-family: inherit; color: var(--text-3); }
 
@@ -93,7 +93,7 @@
 .si-cards-wrap { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); min-width: 0; }
 .si-cards-wrap > .si-h3 { margin-top: round(0.5rem, var(--e)); }
 .si-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, round(20rem, var(--e))), 1fr)); gap: var(--gap); }
-.si-card { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); min-width: 0; padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--glass-1, var(--surface-sunken)); }
+.si-card { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); min-width: 0; padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-sunken); }
 .si-card p { margin: 0; color: var(--text-2); }
 .si-card-head { display: flex; align-items: center; justify-content: space-between; gap: round(0.5rem, var(--e)); flex-wrap: wrap; }
 .si-events-list { min-width: 0; }

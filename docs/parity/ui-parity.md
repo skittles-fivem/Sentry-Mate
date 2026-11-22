@@ -4,7 +4,7 @@ This plan makes sure everything a TeslaMate user can see has a place in Sentry M
 
 Sentry Mate gets its data from the car's CAN bus (through the CAN Bridge), not from Tesla's servers. That changes what can be shown: some things become exact, a few things are not on the bus at all, and many TeslaMate settings stop being needed.
 
-Scope: one web UI (UI packs; five designs: Instrument, Logbook, Horizon, Console and Pebble), desktop first, any number of cars, sharp at native 4K. A phone layout comes later.
+Scope: one web UI (UI packs; six designs: Instrument, Logbook, Horizon, Console, Pebble and Simple), desktop first, any number of cars, sharp at native 4K. A phone layout comes later.
 
 ## In numbers
 

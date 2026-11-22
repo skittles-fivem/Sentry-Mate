@@ -19,7 +19,7 @@ the [README](../README.md).
   the time zone and units on the check's page, the report's rows, drives and charges, and "Imported from TeslaFi".
 - **A TeslaFi page in each design.** The server reads TeslaFi's API for owners who pay for TeslaFi (`/api/v1/
   integrations/teslafi`, `docs/ui-api.md`, "Integrations: TeslaFi": add a token, match the car, pause, remove, the
-  status) and the dev server serves a made-up TeslaFi account and car; a later step does the pages in all five
+  status) and the dev server serves a made-up TeslaFi account and car; a later step does the pages in all six
   designs: the TeslaFi account in Settings: Integrations, the token refused notice, and "Data from TeslaFi" beside
   SMO and the Tesla API on every page. Until then a TeslaFi token can't be added from the web UI.
 - **CI in about 5 minutes** per push to main (tests in parallel shards, a build cache), down from 30-45.
@@ -32,7 +32,7 @@ the [README](../README.md).
 2. Vehicle info on each design's car page (the server's `vehicle` facts with their sources, disagreements and unknown
    codes), and check the gateway configuration (`0x7FF`) and the LFP brick count on a real log (until then the brick count is not read for the chemistry).
 3. Check the timeline by hand against real drives and charges.
-4. Every page in all five designs, checked item by item against TeslaMate, on desktop and phone.
+4. Every page in all six designs, checked item by item against TeslaMate, on desktop and phone.
 5. A live connection to TeslaMate's database for the import.
 6. First release: the docs, a licence and the final name.
 

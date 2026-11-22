@@ -7,6 +7,7 @@
 //   nav       the shorter name in the sidebar (defaults to title)
 //   group     section: car | trips | charging | battery | stats | settings (null: not a tab of its own)
 //   tab       the page's name as a tab under its section (defaults to nav, then title)
+//   (a section: id, title, short (its name in the phone's section bar, if shorter), icon, desc)
 //   icon      sprite icon id
 //   desc      one line in the menu
 //   purpose   the line under the page title (from the page plan)
@@ -20,7 +21,7 @@
 export const GROUPS = Object.freeze([
   { id: 'car', title: 'Car', icon: 'car', desc: 'What the car is doing now, its timeline and software.' },
   { id: 'trips', title: 'Trips', icon: 'route', desc: 'Drives, trips, the logbook, travel and places.' },
-  { id: 'charging', title: 'Charging', icon: 'bolt', desc: 'Charging sessions and what they cost.' },
+  { id: 'charging', title: 'Charging', short: 'Charge', icon: 'bolt', desc: 'Charging sessions and what they cost.' },
   { id: 'battery', title: 'Battery', icon: 'battery', desc: 'Battery health and how much energy driving takes.' },
   { id: 'stats', title: 'Stats', icon: 'stats', desc: 'Totals per day, week, month or year.' },
   { id: 'settings', title: 'Settings', icon: 'settings', desc: 'Cars, display, integrations, access, import and help.' },

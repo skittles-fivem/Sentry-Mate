@@ -63,7 +63,7 @@ const SOURCES = {
   topo: { mode: 'online', online_url: 'https://tile.opentopomap.org/{z}/{x}/{y}.png', attribution: '© OpenStreetMap contributors, © OpenTopoMap', max_zoom: 17 },
 };
 
-for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble']) {
+for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'manager']) {
   test(`${pack}: online tiles load after they are turned on or switched, without a reload by hand`, { skip: !playwright && 'Playwright is not installed', timeout: 180000 }, async () => {
     const browser = await playwright.chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
     const server = await devServer(pack);
@@ -137,7 +137,7 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble']) {
 
 // Settings: Display and units at phone width, with a long browser zone name: the "Use this browser's zone" button
 // and the tile source's terms note stay inside the window (they ran up to 88 px past it).
-for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble']) {
+for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'manager']) {
   test(`${pack}: the zone button and the tile terms fit a 360 px phone`, { skip: !playwright && 'Playwright is not installed', timeout: 120000 }, async () => {
     const browser = await playwright.chromium.launch();
     const server = await devServer(pack);
@@ -170,7 +170,7 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble']) {
 const SAT_BASE = /^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/World_Imagery\//;
 const SAT_LABELS = /^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/Reference\//;
 const TILE_HOSTS = /^https:\/\/(server\.arcgisonline\.com|tile\.openstreetmap\.org)\//;
-for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble']) {
+for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'manager']) {
   test(`${pack}: a map with no tiles says so, and an admin turns the satellite map on from it`, { skip: !playwright && 'Playwright is not installed', timeout: 180000 }, async () => {
     const browser = await playwright.chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
     const server = await devServer(pack, ['--map-tiles', 'none']);

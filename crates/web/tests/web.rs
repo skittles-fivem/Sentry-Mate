@@ -412,7 +412,7 @@ async fn packs_are_served_with_a_strict_policy() {
     // a browser left on /original (its cookie is kept a year): /about says so, and choosing a pack ends it
     admin.get("/original").await;
     assert_eq!(admin.get("/api/v1/about").await.json()["ui_pack"]["id"], "instrument");
-    for pack in ["horizon", "console", "pebble", "logbook"] {
+    for pack in ["horizon", "console", "pebble", "manager", "logbook"] {
         assert_eq!(admin.patch("/api/v1/me/preferences", json!({ "ui_pack": pack })).await.status, 200);
         let page = admin.get("/").await;
         assert!(page.header("etag").unwrap().starts_with(&format!("\"{pack}-")), "{pack}: {:?}", page.header("etag"));

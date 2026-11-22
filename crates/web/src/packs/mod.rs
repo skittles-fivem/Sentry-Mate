@@ -1,6 +1,6 @@
 //! UI packs: the interface the browser runs (docs/plans/rust-can-logger.md, "UI packs").
 //!
-//! - **Built in**: `instrument`, `logbook`, `horizon`, `console` and `pebble`, embedded in the binary ([`builtin`]).
+//! - **Built in**: `instrument`, `logbook`, `horizon`, `console`, `pebble` and `manager`, embedded in the binary ([`builtin`]).
 //!   [`DEFAULT_PACK`] (`instrument`) is the one served until an admin chooses another for everyone.
 //! - **Uploaded** (admins, their password and two-step code again): a `.zip` with `ui.json` and `web/` (one folder
 //!   around them is fine), checked before anything is kept ([`check_zip`]): at most 50 MB and 2,000 files, no
@@ -1099,7 +1099,7 @@ mod tests {
         let ids: Vec<&str> = builtin::PACKS.iter().map(|p| p.id).collect();
         assert_eq!(
             ids,
-            ["console", "horizon", "instrument", "logbook", "pebble"],
+            ["console", "horizon", "instrument", "logbook", "manager", "pebble"],
             "every built-in pack, in name order"
         );
         assert!(ids.contains(&DEFAULT_PACK));

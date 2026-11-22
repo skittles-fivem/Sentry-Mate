@@ -47,7 +47,7 @@
 /* time spent and energy */
 .trip-pair { display: grid; gap: var(--gap); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .trip-split { display: flex; height: round(1.25rem, var(--e)); border-radius: round(0.5rem, var(--e)); overflow: hidden; background: var(--glass-3); margin: round(0.25rem, var(--e)) 0 round(1rem, var(--e)); }
-.trip-split > i { flex: 0 0 var(--w); min-width: 2px; border-right: 1px solid var(--panel-solid); }
+.trip-split > i { flex: 0 0 var(--w); min-width: round(0.125rem, var(--e)); border-right: 1px solid var(--panel-solid); }
 .trip-split > i:last-child { border-right: 0; }
 [data-tone="driving"] { --tc: var(--t-driving); }
 [data-tone="ac"] { --tc: var(--t-ac); }
@@ -70,7 +70,7 @@
 .trip-energy li[data-tone="gross"] .hbar > i { background: var(--c-power); }
 .trip-energy li[data-tone="net"] .hbar > i { background: var(--live); }
 .trip-energy li[data-tone="ac"] .hbar > i { background: var(--t-ac); }
-.trip-energy li[data-tone="dc"] .hbar > i { background: var(--t-dc); opacity: 0.9; }
+.trip-energy li[data-tone="dc"] .hbar > i { background: var(--t-dc); }
 .trip-energy .hbar-val { font-weight: 600; color: var(--text); white-space: nowrap; }
 
 /* side by side */

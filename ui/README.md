@@ -11,6 +11,7 @@ installed from a zip in Settings (planned; see [docs/plans/rust-can-logger.md](.
 | [`packs/horizon`](packs/horizon) | Neon panels over a dusk sky, a striped sun and a grid floor; pages picked like stations on a car radio, car pages as an instrument cluster. Runs on `/api/v1`; how its pages are built: [`web/core/README.md`](packs/horizon/web/core/README.md) |
 | [`packs/console`](packs/console) | Keyboard first, like an operator console: flat, monospace and dense, a command bar that shows the route as a path, a command list (Ctrl+K), dark and light. Runs on `/api/v1`; how its pages are built: [`web/core/README.md`](packs/console/web/core/README.md) |
 | [`packs/pebble`](packs/pebble) | Soft and touch first: rounded tiles in a grid, a floating dock at the bottom on every screen, sheets that slide up, light with a dark mode, Manrope type. Runs on `/api/v1`; how its pages are built: [`web/core/README.md`](packs/pebble/web/core/README.md) |
+| [`packs/manager`](packs/manager) | Simple: a header with six sections (Car, Trips, Charging, Battery, Stats, Settings) and tabs under each, a calm flat look in light and dark, the car page with only the key things big and clear. On a phone the sections sit in a bar at the bottom, tables turn into cards and every tap target is at least 44 px. Runs on `/api/v1`; how its pages are built: [`web/core/README.md`](packs/manager/web/core/README.md) |
 
 **Status: being built.** Desktop first: a 1280 px laptop up to a native 4K screen, browser zoom 50 to 200 %, and an
 Interface size setting. The packs only talk to `/api/v1`; until the Sentry Mate server serves it, the dev API server
@@ -37,5 +38,5 @@ Bundled third-party files keep their licences next to them: MapLibre GL JS (BSD-
 Chakra Petch, IBM Plex Sans, Manrope and JetBrains Mono (SIL Open Font License 1.1), Bitstream Charter (Bitstream's
 free licence).
 
-All five are built into the server; Instrument is the default until an admin picks another for everyone (Settings,
+All six are built into the server; Instrument is the default until an admin picks another for everyone (Settings,
 Interface), and each person can pick their own.
