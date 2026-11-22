@@ -495,7 +495,7 @@ export async function mount(ctx) {
     mqtt: ['mqtt broker', 'only while publishing is on (above)', null],
     tesla: ['tesla api', 'only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (tesla account, above)', null],
     teslafi: ['teslafi api', 'only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi', '#teslafi'],
-    release_check: ['release check', 'asks whether a newer Sentry Mate exists, when on', 'settings-server'],
+    release_check: ['release check', 'asks whether a newer Sentry Mate exists, when on', 'settings-display'],
     upload: ['can bridge uploads', 'the car\'s CAN Bridge sends its logs here', null],
     web: ['this app and the api', 'browsers, apps and the api', null],
   };

@@ -49,3 +49,8 @@
   .licence-list a { align-self: start; }
   .qa .nowrap { white-space: normal; overflow-wrap: anywhere; }
 }
+/* the newer build's changes and the pull command */
+.help-release-titles { margin: 0; list-style: disc; padding-left: round(1.25rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); overflow-wrap: anywhere; }
+.help-release-head .ico { vertical-align: round(-0.125em, var(--e)); }
+.help-release-pull { color: var(--text); overflow-wrap: anywhere; user-select: all; }
+.help-release-titles li + li { margin-top: round(0.125rem, var(--e)); }

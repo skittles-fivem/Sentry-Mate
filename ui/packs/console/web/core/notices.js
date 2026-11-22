@@ -1,9 +1,11 @@
 // Server notices (certificate, vault, recovery key file, ...) as lines under the command bar:
-// '[warn] The certificate ends in 9 days.  fix: settings/server'. Information notices can be put away for this tab.
+// '[warn] The certificate ends in 9 days.  fix: settings/server'. Information notices can be put away for this tab;
+// the release notice (admins only) for that newer build, in this browser.
 // Offline is a notice of this browser: shown while the server does not answer.
 
 import * as api from '../shared/api.js';
 import { h, replace } from '../shared/dom.js';
+import { releaseDismissed, dismissRelease } from '../shared/release.js';
 
 const HIDDEN_KEY = 'sentrymate.console.notices-hidden';
 let box = null;
@@ -27,14 +29,14 @@ export function onNotices(f) { subs.add(f); return () => subs.delete(f); }
 function render() {
   if (!box) return;
   const gone = hidden();
-  const list = items.filter((n) => n.code !== 'release_available' && !(n.level === 'info' && gone.has(n.code)));
+  const list = items.filter((n) => (n.code === 'release_available' ? !releaseDismissed(n) : !(n.level === 'info' && gone.has(n.code))));
   const lines = list.map((n) => {
     const tone = n.level === 'error' ? 'bad' : n.level === 'warning' ? 'warn' : 'info';
     return h('div', { class: ['ntc', `ntc--${tone}`], role: tone === 'info' ? 'status' : 'alert' },
       h('span', { class: `tag tag--${tone}` }, `[${tone}]`),
       h('span', { class: 'ntc-text' }, n.message || n.code),
       fixOf(n) ? h('a', { class: 'lnk', href: fixOf(n) }, TESLA.has(n.code) ? 'fix: tesla account' : `fix: ${String(n.fix_link).replace(/^\//, '').split(/[?#]/)[0]}`) : null,
-      tone === 'info' ? h('button', { class: 'ntc-x', type: 'button', 'aria-label': 'Hide this notice for now', onclick: () => { hide(n.code); render(); } }, 'hide') : null);
+      tone === 'info' ? h('button', { class: 'ntc-x', type: 'button', 'aria-label': 'Hide this notice for now', onclick: () => { if (n.code === 'release_available') dismissRelease(n); else hide(n.code); render(); } }, 'hide') : null);
   });
   if (offline) {
     lines.unshift(h('div', { class: 'ntc ntc--bad', role: 'alert' }, h('span', { class: 'tag tag--bad' }, '[offline]'),

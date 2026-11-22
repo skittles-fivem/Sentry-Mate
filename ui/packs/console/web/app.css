@@ -1081,3 +1081,9 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .veh-note { display: block; }
 .tbl .tf-car-col { width: calc(var(--a2) * 48); min-width: calc(var(--a2) * 48); max-width: calc(var(--a2) * 48); white-space: normal; }
 .tesla-sel.tf-sel { max-width: none; }
+/* settings/display: the release check under its switch (this build, the answer, the changes, the pull command) */
+.rel-box { display: flex; flex-direction: column; row-gap: var(--g2); margin-top: var(--g); min-width: 0; }
+.rel-line { min-width: 0; overflow-wrap: anywhere; }
+.rel-titles { margin: 0; padding-left: calc(var(--g) * 2); list-style: '- '; color: var(--muted); overflow-wrap: anywhere; }
+.rel-pull { user-select: all; }
+.rel-help { display: flex; flex-direction: column; row-gap: var(--g2); min-width: 0; overflow-wrap: anywhere; }
