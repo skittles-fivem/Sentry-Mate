@@ -164,7 +164,7 @@ const PURPOSE = {
   tiles: ['Map pictures', 'Asked by each viewer\'s browser when online tiles are on.', 'settings-display'],
   geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
   mqtt: ['MQTT broker', 'Only while sending is on (this page).', null],
-  release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-server'],
+  release_check: ['Release check', 'Asks GitHub once a day whether a newer Sentry Mate build is published, when turned on.', 'settings-display'],
   upload: ['CAN Bridge uploads', 'The car\'s CAN Bridge sends its logs here.', null],
   web: ['This app and the API', 'Browsers, apps and the API.', null],
   tesla: ['Tesla API', 'Only once an admin adds a Tesla account (above): its sign-in, Owner API and live stream hosts.', null],

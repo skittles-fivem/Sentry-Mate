@@ -346,7 +346,7 @@ button { cursor: pointer; }
 .main:focus { outline: none; }
 
 .colophon { border-top: 1px solid var(--rule); color: var(--ink-3); font-size: var(--small-2); }
-.colophon-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: baseline; gap: round(0.5rem, var(--e)) round(2rem, var(--e)); padding: round(1.375rem, var(--e)) 0 round(1.875rem, var(--e)); }
+.colophon-row { display: grid; grid-template-columns: minmax(0, auto) minmax(15rem, 1fr) minmax(0, auto) auto; align-items: baseline; gap: round(0.5rem, var(--e)) round(2rem, var(--e)); padding: round(1.375rem, var(--e)) 0 round(1.875rem, var(--e)); }
 .colophon-name { font-family: var(--serif); font-size: 0.875rem; color: var(--ink-2); }
 .colophon-api { font-family: var(--sans); font-size: var(--small-2); color: var(--ink-3); }
 .colophon-legal a, .colophon-update a { color: var(--ink-2); }

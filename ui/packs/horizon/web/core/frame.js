@@ -25,6 +25,7 @@ import { initNotices, loadNotices, onNotices } from './notices.js';
 import { getMe, usePrefs } from './prefs.js';
 import { onSession } from './session.js';
 import { refreshAgo, carLine, carStatus, stateWord } from './fmt.js';
+import { buildLabel } from '../shared/release.js';
 
 const $ = (id) => document.getElementById(id);
 const E = {};                 // the frame's elements
@@ -241,7 +242,7 @@ function showRelease(items) {
 async function loadAbout() {
   try {
     const a = await api.get('about', null, { maxAgeMs: 600000 });
-    E.ver.textContent = `Sentry Mate ${a.version} · ${a.ui_pack?.name || 'Horizon'} ${a.ui_pack?.version || ''}`.trim();
+    E.ver.textContent = `Sentry Mate ${buildLabel(a)} · ${a.ui_pack?.name || 'Horizon'} ${a.ui_pack?.version || ''}`.trim();
   } catch { /* the plain name stays */ }
 }
 
