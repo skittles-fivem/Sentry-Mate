@@ -21,7 +21,7 @@ import { activityStrip, KINDS as STRIP_KINDS } from '../core/strip.js';
 import { createMap, routePin, boundsOf, padClear, mapFallback } from '../core/map.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA } from '../core/chart.js';
 import { openPeriodPicker } from '../core/period.js';
-import { openCarSwitcher } from '../core/carswitch.js';
+import { openCarSwitcher, soldParts, soldOptions } from '../core/carswitch.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { flash } from '../core/flash.js';
 import { isAdmin } from '../core/prefs.js';
@@ -154,7 +154,8 @@ export async function mount(ctx) {
   const others = (fleet.items || []).filter((c) => c.id !== cid);
   const vsSel = h('select', { class: 'select', id: 'trip-vs', disabled: !others.length && !fleet.next },
     h('option', { value: '' }, others.length || fleet.next ? 'No second car' : 'Only one car'),
-    others.map((c) => h('option', { value: c.id, selected: c.id === vsId }, c.name)),
+    // sold cars last, in a "Sold cars" group (a sold car already compared stays in place)
+    (() => { const { main, sold } = soldParts(others, [vsId]); const mk = (c) => h('option', { value: c.id, selected: c.id === vsId }, c.name); return [main.map(mk), soldOptions(sold, mk)]; })(),
     vsId && !others.some((c) => c.id === vsId) && vsCar ? h('option', { value: vsId, selected: true }, vsCar.name) : null);
   vsSel.addEventListener('change', () => { ctx.setQuery({ vs: vsSel.value || null }); ctx.reload(); });
   const vsSearch = fleet.next ? h('input', { class: 'input input--sm', type: 'search', placeholder: 'Find a car', 'aria-label': 'Find a car to compare' }) : null;
@@ -165,7 +166,9 @@ export async function mount(ctx) {
       t = setTimeout(async () => {
         const pg = await ctx.api.page('cars', { sort: 'name', search: vsSearch.value.trim() || null }, { limit: 100 }).catch(() => null);
         if (!pg || !ctx.alive()) return;
-        replace(vsSel, h('option', { value: '' }, 'No second car'), (pg.items || []).filter((c) => c.id !== cid).map((c) => h('option', { value: c.id, selected: c.id === vsId }, c.name)));
+        const { main, sold } = soldParts((pg.items || []).filter((c) => c.id !== cid), [vsId], { search: !!vsSearch.value.trim() });
+        const mk = (c) => h('option', { value: c.id, selected: c.id === vsId }, c.name);
+        replace(vsSel, h('option', { value: '' }, 'No second car'), main.map(mk), soldOptions(sold, mk));
       }, 300);
     });
     ctx.onCleanup(() => clearTimeout(t));

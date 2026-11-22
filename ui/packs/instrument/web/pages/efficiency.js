@@ -25,7 +25,7 @@ import { dataTable } from '../core/table.js';
 import { emptyState, errorState } from '../core/states.js';
 import { loadUPlot, mountPlot, timeAxis, TIME_INCRS, valueAxis, colors, hexA } from '../core/chart.js';
 import { openPeriodPicker } from '../core/period.js';
-import { openCarSwitcher } from '../core/carswitch.js';
+import { openCarSwitcher, soldParts, soldToggle } from '../core/carswitch.js';
 import { rpx } from '../core/display.js';
 import { srcMark } from '../core/source.js';
 
@@ -307,10 +307,19 @@ export async function mount(ctx) {
     try { fleet = await ctx.api.page('cars', { sort: 'name' }, { limit: 100 }); } catch { /* the picker stays empty */ }
     if (!ctx.alive()) return;
     const list = h('div', { class: 'ef-cars-list', role: 'group', 'aria-label': 'Cars to compare' });
-    const fill = (items) => replace(list, items.filter((c) => c.id !== cid).map((c) => h('label', { class: 'check' },
-      h('input', { type: 'checkbox', checked: opt.cars.includes(c.id), onchange: (e) => toggleCar(c.id, e.currentTarget.checked) }), h('span', null, c.name))),
-    items.filter((c) => c.id !== cid).length ? null : h('span', { class: 'faint' }, 'No other car matches.'));
-    fill(fleet.items || []);
+    // sold cars wait behind "Sold cars (n)" unless compared already or searched for
+    let soldOpen = false, lastItems = [], lastSearch = false;
+    const row = (c) => h('label', { class: 'check' },
+      h('input', { type: 'checkbox', checked: opt.cars.includes(c.id), onchange: (e) => toggleCar(c.id, e.currentTarget.checked) }), h('span', null, c.name),
+      state.isSold(c) ? h('span', { class: 'tag tag--plain' }, 'Sold') : null);
+    const fill = (items, searched = lastSearch) => {
+      lastItems = items; lastSearch = searched;
+      const others = items.filter((c) => c.id !== cid);
+      const { main, sold } = soldParts(others, opt.cars, { search: searched });
+      replace(list, main.map(row), soldToggle(sold.length, soldOpen, () => { soldOpen = !soldOpen; fill(lastItems); }), soldOpen ? sold.map(row) : null,
+        others.length ? null : h('span', { class: 'faint' }, 'No other car matches.'));
+    };
+    fill(fleet.items || [], false);
     const search = fleet.next ? h('input', { class: 'input input--sm ef-cars-search', type: 'search', placeholder: 'Find a car', 'aria-label': 'Find a car to compare' }) : null;
     if (search) {
       let tm = 0;
@@ -318,7 +327,7 @@ export async function mount(ctx) {
         clearTimeout(tm);
         tm = setTimeout(async () => {
           const pg = await ctx.api.page('cars', { sort: 'name', search: search.value.trim() || null }, { limit: 100 }).catch(() => null);
-          if (pg && ctx.alive()) fill(pg.items || []);
+          if (pg && ctx.alive()) fill(pg.items || [], !!search.value.trim());
         }, 300);
       });
       ctx.onCleanup(() => clearTimeout(tm));

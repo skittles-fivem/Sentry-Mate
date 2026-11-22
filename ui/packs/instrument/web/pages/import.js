@@ -19,6 +19,7 @@ import { buildUrl } from '../shared/state.js';
 import { toIsoZoned } from '../shared/time.js';
 import { format } from '../shared/units.js';
 import { icon } from '../core/icons.js';
+import { soldParts, soldOptions } from '../core/carswitch.js';
 import { pageHead, panel, metric, figures, kv, tag, pill, note } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { emptyState, errorWords } from '../core/states.js';
@@ -560,12 +561,16 @@ export async function mount(ctx) {
       { key: 'first_ms', label: 'History', sort: true, render: (c) => `${date(c.first_ms, tz)} – ${date(c.last_ms, tz)}`, csv: false },
       { key: 'match', label: 'Goes to', csv: (c) => c.match ?? 'not chosen', render: (c) => {
         const taken = new Set(S.match.filter((x) => x.tm_car !== c.tm_car && x.match && x.match !== 'new' && x.match !== 'leave_out').map((x) => x.match));
+        // sold cars last, in a "Sold cars" group, unless chosen or suggested (same VIN prefix)
+        const carOpts = soldParts(S.cars, [c.match, c.suggested]);
+        const carOpt = (x) => h('option', { value: x.id, selected: c.match === x.id, disabled: taken.has(x.id) }, `${x.name}${x.id === c.suggested ? ' (same VIN prefix)' : ''}${taken.has(x.id) ? ' (taken)' : ''}`);
         const sel = h('select', { class: 'input select im-select', 'aria-label': `Where ${c.name}'s history goes`, disabled: S.job?.status !== 'ready' && S.job?.status !== 'checking',
           onchange: () => setMatch(c, sel.value) },
         c.match == null ? h('option', { value: '', selected: true, disabled: true }, 'Choose…') : null,
-        S.cars.map((x) => h('option', { value: x.id, selected: c.match === x.id, disabled: taken.has(x.id) }, `${x.name}${x.id === c.suggested ? ' (same VIN prefix)' : ''}${taken.has(x.id) ? ' (taken)' : ''}`)),
+        carOpts.main.map(carOpt),
         h('option', { value: 'new', selected: c.match === 'new' }, 'Add as a new car'),
-        h('option', { value: 'leave_out', selected: c.match === 'leave_out' }, 'Leave out'));
+        h('option', { value: 'leave_out', selected: c.match === 'leave_out' }, 'Leave out'),
+        soldOptions(carOpts.sold, carOpt));
         return h('div', { class: 'row im-goes' }, sel,
           c.match && c.match !== 'new' && c.match !== 'leave_out' ? h('a', { class: 'link', href: buildUrl('settings-cars', { car: c.match }) }, 'Car settings') : null,
           c.suggested && c.match === c.suggested ? tag('VIN match', 'live') : null,

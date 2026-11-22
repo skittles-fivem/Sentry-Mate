@@ -119,3 +119,23 @@ export function openCarSwitcher() {
   input.focus();
   load();
 }
+
+/* ---------- sold cars in a page's own car pickers (like the switcher above and Fleet)
+ * soldParts(items, keep, { search, isSold, id }) -> { main, sold }: sold cars wait in `sold` unless their id is in
+ * `keep` (the current or picked car) or a search is typed; `main` keeps the order given.
+ * soldOptions(sold, mk) -> an <optgroup> "Sold cars (n)" of mk(car) options, or null, for a <select>.
+ * soldToggle(n, open, onToggle) -> a "Sold cars (n)" button for a checkbox list, or null when n is 0. */
+export function soldParts(items = [], keep = [], { search = false, isSold = state.isSold, id = (c) => c.id } = {}) {
+  const ids = new Set([].concat(keep ?? []).filter((x) => x != null && x !== '').map(String));
+  const main = [], sold = [];
+  for (const c of items || []) (!search && isSold(c) && !ids.has(String(id(c))) ? sold : main).push(c);
+  return { main, sold };
+}
+export function soldOptions(sold, mk) {
+  return sold && sold.length ? h('optgroup', { label: `Sold cars (${sold.length})` }, sold.map(mk)) : null;
+}
+export function soldToggle(n, open, onToggle) {
+  if (!n) return null;
+  return h('button', { class: 'sw-sold-toggle pick-sold-toggle', type: 'button', 'aria-expanded': String(!!open), onclick: onToggle },
+    icon('chev-d', open ? 'ico--sm sw-rot' : 'ico--sm'), `Sold cars (${n})`);
+}

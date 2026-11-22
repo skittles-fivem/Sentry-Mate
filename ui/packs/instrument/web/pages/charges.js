@@ -26,6 +26,7 @@ import { isAdmin } from '../core/prefs.js';
 import { flash } from '../core/flash.js';
 import { rpx } from '../core/display.js';
 import { srcMark, sourceOptions, filterWord } from '../core/source.js';
+import { soldParts, soldToggle } from '../core/carswitch.js';
 
 export const id = 'charges';
 export const css = true;
@@ -125,6 +126,7 @@ export async function mount(ctx) {
   const pops = [];
   function pickList({ label, hint, items, selected, allText, onApply, instant = false, cover: cv, title }) {
     const sel = new Set(selected);
+    let soldOpen = false;
     const text = h('span', { class: 'pick-text' });
     const btn = h('button', { class: 'btn pick-btn', type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', title, cover: cv },
       icon(label === 'Cars' ? 'car' : 'pin', 'ico--sm'), text, icon('chev-d', 'ico--sm'));
@@ -144,9 +146,12 @@ export async function mount(ctx) {
     const paint = () => {
       const needle = find.value.trim().toLowerCase();
       const shown = items.filter((x) => !needle || x.label.toLowerCase().includes(needle));
-      replace(list, shown.length ? shown.map((x) => h('label', { class: 'check' },
+      // sold cars wait behind "Sold cars (n)" unless picked or searched for
+      const { main, sold } = soldParts(shown, [...selected, ...sel], { search: !!needle });
+      const row = (x) => h('label', { class: 'check' },
         h('input', { type: 'checkbox', checked: sel.has(x.id), onchange: (e) => { if (e.target.checked) sel.add(x.id); else sel.delete(x.id); paintText(); if (instant) onApply([...sel]); } }),
-        h('span', null, x.label), x.sub ? h('span', { class: 'faint pick-sub' }, x.sub) : null))
+        h('span', null, x.label), x.sold ? h('span', { class: 'tag tag--plain' }, 'Sold') : null, x.sub ? h('span', { class: 'faint pick-sub' }, x.sub) : null);
+      replace(list, shown.length ? [main.map(row), soldToggle(sold.length, soldOpen, () => { soldOpen = !soldOpen; paint(); }), soldOpen ? sold.map(row) : null]
         : h('p', { class: 'note' }, items.length ? `Nothing is called that.` : `There is nothing to pick yet.`));
       paintText();
     };
@@ -172,7 +177,7 @@ export async function mount(ctx) {
       : state.buildUrl('charges', { period: period0, query: { ...query, cars: all ? 'all' : ids.join(',') } }));
   };
   const carBtn = pickList({
-    label: 'Cars', allText: 'Every car', items: fleet.map((c) => ({ id: c.id, label: c.name, sub: [c.model, c.year].filter(Boolean).join(' · ') })),
+    label: 'Cars', allText: 'Every car', items: fleet.map((c) => ({ id: c.id, label: c.name, sold: state.isSold(c), sub: [c.model, c.year].filter(Boolean).join(' · ') })),
     selected: chosen === 'all' ? [] : chosen, onApply: goCars, cover: ['charges.filter.car', 'cs.filter.car'],
     hint: 'Tick one car, several, or none for every car. Every figure, chart and list on this page then covers the cars you picked, in one view.',
     title: 'Which cars this page covers',
