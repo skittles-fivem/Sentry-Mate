@@ -139,6 +139,8 @@ impl<'e> Gaps<'e> {
     /// Live samples of `[a, b)` (fused, in order) with the values the import fills while filling is on, and the
     /// import's own seconds outside their coverage when `own` asks for them (`own` is taken only while filling is
     /// on unless [`Own::Always`]: a series shows the import where there is no live history whatever the switch says).
+    /// Where a live value still holds (its hold time, as the Tesla API's fills SMO's), an import second never shows
+    /// another one for that field; with filling off it is left out there altogether.
     pub(crate) fn samples(&self, live: Vec<Sample>, a: u64, b: u64, cover_ms: u64, own: Own) -> QResult<Given> {
         let (own, values) = match own {
             Own::Always => (true, self.on),
@@ -237,8 +239,8 @@ impl Given {
 }
 
 fn drive_lacks(d: &Drive) -> bool {
+    // (never its end: a live drive without one is one whose data stopped, [`timeline::gapfill::fill_drive`])
     d.start.is_none()
-        || d.end.is_none()
         || d.start_odometer_km.is_none()
         || d.end_odometer_km.is_none()
         || d.start_soc.is_none()

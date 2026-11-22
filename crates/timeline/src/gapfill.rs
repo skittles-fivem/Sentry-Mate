@@ -4,10 +4,12 @@
 //!
 //! - **Samples** ([`fill`]): inside the live samples' coverage (live seconds at most `cover_ms` apart) every live
 //!   second stays, and a value it lacks is taken from the nearest import sample within that value's hold time
-//!   ([`FuseParams`], as the Tesla API fills SMO's). No import sample becomes a second of its own there. Outside it
-//!   (no live data), the import's samples are the seconds when `own` is set (a drive's track gap), else left out.
-//! - **Rows** ([`fill_drive`], [`fill_charge`]): a live drive's or charge's field that is null (its position, the
-//!   odometer, battery level and range at its ends, its mean temperatures, its climb) from the import's samples of
+//!   ([`FuseParams`], as the Tesla API fills SMO's). No import sample becomes a second of its own there. Outside it,
+//!   the import's samples are the seconds when `own` is set (a drive's track gap), else left out; but a live value
+//!   still inside its hold time stands for its field there, so such a second keeps only the values live has none of
+//!   then (and, with `values` off, is left out wherever a live value holds).
+//! - **Rows** ([`fill_drive`], [`fill_charge`]): a live drive's or charge's field that is null (its start, the
+//!   charge's position, the odometer, battery level and range at its ends, its mean temperatures, its climb) from the import's samples of
 //!   the same time. Distance, energy and costs are never filled: they stay what the live row measured (or null),
 //!   so totals are not changed by an import.
 //!
@@ -102,9 +104,23 @@ pub fn fill(live: &[Sample], import: &[Sample], p: &FuseParams, how: How) -> Fil
     }
     let mut own_t = Vec::new();
     if own {
+        // a live value still inside its hold time stands for its field there: the import's second never shows
+        // another one (it keeps only the values live has none of then, and with `values` off it is left out)
+        let held: Vec<Field<'_>> = SLOTS.iter().map(|slot| Field::new(&live, slot.has)).collect();
         for a in import.iter().filter(|a| !covered(a.t_ms)) {
-            own_t.push(a.t_ms);
-            out.push((*a).clone());
+            let mut x = (*a).clone();
+            let mut live_then = false;
+            for (slot, look) in SLOTS.iter().zip(&held) {
+                if look.near(a.t_ms, (slot.hold)(p)).is_some() {
+                    live_then = true;
+                    (slot.copy)(&mut x, &Sample::default());
+                }
+            }
+            if live_then && (!values || !SLOTS.iter().any(|slot| (slot.has)(&x))) {
+                continue;
+            }
+            own_t.push(x.t_ms);
+            out.push(x);
         }
         out.sort_by_key(|s| s.t_ms);
     }
@@ -158,13 +174,8 @@ pub fn fill_drive(d: &mut Drive, import: &[Sample], p: &FuseParams) -> Vec<&'sta
         d.start = position(x);
         out.push("start");
     }
-    if d.end.is_none()
-        && let Some(x) = nearest(&all, b, p.position_ms, |x| x.lat.and(x.lon).map(|_| x.t_ms))
-            .and_then(|t| all.iter().find(|x| x.t_ms == t))
-    {
-        d.end = position(x);
-        out.push("end");
-    }
+    // (never `end`: a live drive without one is one whose data stopped, and the import's position then is where the
+    // data stopped, not where the drive went)
     out
 }
 
@@ -249,11 +260,44 @@ mod tests {
         assert_eq!(g.samples.len(), 20);
         assert!(g.own.is_empty());
         let off = fill(&l, &i, &FuseParams::default(), How { cover_ms: 90_000, own: true, values: false });
-        assert!(
-            off.filled.is_empty() && !off.own.is_empty(),
-            "values off: nothing filled, the import's own seconds kept"
-        );
+        assert!(off.filled.is_empty(), "values off: nothing filled");
+        assert!(off.own.is_empty(), "values off: the live outside temperature holds (300 s) over the whole gap");
         assert!(off.samples.iter().filter(|x| x.t_ms < 10_000).all(|x| x.outside_temp_c.is_none()));
+        // where no live value holds, the import's own seconds stand even with values off
+        let far: Vec<Sample> = (0..10).chain(1000..1010).map(|t| Sample { outside_temp_c: None, ..live(t) }).collect();
+        let off = fill(&far, &i, &FuseParams::default(), How { cover_ms: 90_000, own: true, values: false });
+        assert!(off.filled.is_empty() && !off.own.is_empty());
+        assert!(off.own.iter().all(|t| *t >= 20_000), "none within the live speed's hold (10 s)");
+    }
+
+    #[test]
+    fn an_import_second_never_shows_a_value_live_still_holds() {
+        // the Tesla API alone, every 100 s (live seconds further apart than the coverage): soc and the outside
+        // temperature; the import every 10 s, 3 s later, with its own soc, outside temperature and elevation
+        let api =
+            |k: u64| Sample { t_ms: k * 100_000, soc: Some(50.0), outside_temp_c: Some(5.0), ..Sample::default() };
+        let imp = |k: u64| Sample {
+            t_ms: k * 10_000 + 3_000,
+            soc: Some(60.0),
+            outside_temp_c: Some(25.0),
+            elevation_m: Some(10.0),
+            ..Sample::default()
+        };
+        let l: Vec<Sample> = (0..12).map(api).collect();
+        let i: Vec<Sample> = (0..115).map(imp).collect();
+        let p = FuseParams::default();
+        let f = fill(&l, &i, &p, How { cover_ms: 90_000, own: true, values: true });
+        assert!(!f.own.is_empty(), "the elevation live has none of");
+        for x in f.samples.iter().filter(|x| f.own.binary_search(&x.t_ms).is_ok()) {
+            assert_eq!(x.soc, None, "soc 50 holds (120 s) at {}", x.t_ms);
+            assert_eq!(x.outside_temp_c, None, "outside 5 holds (300 s) at {}", x.t_ms);
+            assert_eq!(x.elevation_m, Some(10.0));
+        }
+        assert!(f.samples.iter().all(|x| x.soc != Some(60.0) && x.outside_temp_c != Some(25.0)));
+        // values off: no import second at all where live values hold
+        let off = fill(&l, &i, &p, How { cover_ms: 90_000, own: true, values: false });
+        assert!(off.own.is_empty() && off.filled.is_empty());
+        assert_eq!(off.samples.len(), 12);
     }
 
     #[test]
@@ -288,7 +332,8 @@ mod tests {
             inputs: model::Inputs::SMO,
             rules_version: 0,
         };
-        let i: Vec<Sample> = (0..7).map(|k| imported(k * 10)).collect();
+        let i: Vec<Sample> =
+            (0..7).map(|k| Sample { lat: Some(37.0), lon: Some(-122.0), ..imported(k * 10) }).collect();
         let names = fill_drive(&mut d, &i, &FuseParams::default());
         assert_eq!(d.outside_temp_avg_c, Some(20.0));
         assert_eq!(d.inside_temp_avg_c, Some(21.0));
@@ -296,6 +341,11 @@ mod tests {
         assert!(names.contains(&"outside_temp_avg_c") && names.contains(&"ascent_m"));
         assert!(!names.contains(&"inside_temp_avg_c"));
         assert!(d.distance_km.is_none() && d.energy_used_kwh.is_none(), "never distance or energy");
+        assert!(d.start.is_some() && names.contains(&"start"));
+        assert!(
+            d.end.is_none() && !names.contains(&"end"),
+            "the data stopped: the import's position is no destination"
+        );
         assert!(fill_drive(&mut d, &[], &FuseParams::default()).is_empty());
     }
 }
