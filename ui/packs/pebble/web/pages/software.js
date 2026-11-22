@@ -6,9 +6,13 @@
 // version (an admin can type it in a sheet), what changed, and what the car did while on it (charges, range).
 // A "Tesla update installed" (found from the modules' firmware fingerprints) shows which fields changed, old hex to
 // new hex, between which drives, and a box to type its version name (admins; clearing it too). Above the list, the
-// car's firmware: each module's fingerprints now, in hex, and when each was first seen (#firmware, linked from Car).
+// car's firmware: each module's fingerprints now, in hex, and when each was first seen (#firmware, linked from Car),
+// then the module firmware history (#firmware-history, linked from Car): a "versions over time" strip, one lane per
+// module, and every fingerprint each module ran (filter by module, Show more), with the version name it came with.
+// Read-only for everyone; live: a `rows` event with updates reads the history again and redraws it in one go.
 // Data: GET /api/v1/cars/{car}/updates (paged, summary), PATCH /updates/{update}, GET /cars/{car}/firmware,
-// GET /cars/{car}/drives (the drive before and after a fingerprint update), GET /settings (release notes).
+// GET /cars/{car}/drives (the drive before and after a fingerprint update), GET /settings (release notes),
+// GET /cars/{car}/firmware/history (paged, with modules, spans and range).
 
 import { h } from '../shared/dom.js';
 import { format } from '../shared/units.js';
@@ -18,11 +22,11 @@ import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tile, num, chip, btn, icon, note } from '../core/ui.js';
 import { srcPill, hasKind } from '../core/source.js';
-import { MODULES, moduleList, fieldName, hexCode, isFingerprint, changesList, aroundDrives, betweenLine, namedLine, nameBox, VERSION_RX } from '../core/firmware.js';
+import { MODULES, moduleName, HISTORY_ID, moduleList, fieldName, hexCode, isFingerprint, changesList, aroundDrives, betweenLine, namedLine, nameBox, VERSION_RX } from '../core/firmware.js';
 import { emptyTile } from '../core/states.js';
 import { createSheet } from '../core/sheet.js';
 import { field, form } from '../core/form.js';
-import { filterBar, statTile, moreButton, facts, sectionHead } from '../core/bits.js';
+import { filterBar, statTile, moreButton, facts, sectionHead, pills, dur } from '../core/bits.js';
 
 export const id = 'software';
 export const css = true;
@@ -39,10 +43,15 @@ export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz;
   const path = api.apiPath`cars/${car.id}/updates`;
   const pager = ctx.api.pager(path, ctx.params, { limit: 30 });
+  const histPath = api.apiPath`cars/${car.id}/firmware/history`;
+  const HIST_LIMIT = 20;
+  let hist = ctx.api.pager(histPath, {}, { limit: HIST_LIMIT });
+  let histErr = null;
   const [settings, fw] = await Promise.all([
     ctx.api.get('settings', null, { maxAgeMs: 300000 }).catch(() => null),
     ctx.api.get(api.apiPath`cars/${car.id}/firmware`).catch((e) => ({ error: e })),
     pager.more(),
+    hist.more().catch((e) => { histErr = e; }),
   ]);
   if (!ctx.alive()) return {};
   // the drives on either side of each fingerprint update, read before its tile is drawn
@@ -156,6 +165,114 @@ export async function mount(ctx) {
     }
   }
 
+  /* ------------------------------------------------------------ module firmware history */
+  const day = (ms) => (ms == null ? 'not known' : formatDate(ms, tz, { now: api.now(), year: true }));
+  const histHead = h('div', { class: 'section-head w-full', id: HISTORY_ID },
+    h('h2', { class: 'section-title' }, 'Module firmware history'),
+    h('p', { class: 'note' }, 'Every fingerprint each module ran, newest first, with the version name its update had. Imported versions carry no fingerprints and show as version rows.'));
+  const spanBody = h('div', { class: 'fwh-body' });
+  const spanTile = tile({ w: 'full', title: 'Versions over time', icon: 'clock', cls: 'fwh-strip-tile' }, spanBody);
+  let hMod = '';
+  const modPills = pills({ label: 'Module', value: '', options: [['', 'All'], ...Object.keys(MODULES).map((m) => [m, moduleName(m)])], onchange: (m) => pickModule(m) });
+  const rowList = h('ul', { class: 'fwh-rows' });
+  const listBody = h('div', { class: 'fwh-body' });
+  const histTile = tile({ w: 'full', title: 'Fingerprints', icon: 'chip', cls: 'fwh-list-tile' }, modPills, listBody);
+  const histMore = moreButton(async () => {
+    const got = await hist.more();
+    if (!ctx.alive()) return false;
+    rowList.append(...got.map(histRow));
+    return !hist.done;
+  });
+
+  function laneSeg(s, i, pct) {
+    const a = pct(s.from_ms), b = pct(s.to_ms ?? api.now());
+    const words = `${s.version || 'unnamed'}: ${String(s.fingerprint ?? '').toLowerCase()}, ${day(s.from_ms)} to ${s.current ? 'now' : day(s.to_ms)}`;
+    const el = h('span', { class: ['fwh-seg', { 'is-alt': i % 2 === 1, 'is-current': !!s.current, 'is-unnamed': !s.version }], title: words },
+      b - a >= 0.16 ? h('span', { class: 'fwh-seg-label' }, s.version || 'unnamed') : null);
+    el.style.setProperty('--a', a.toFixed(5));
+    el.style.setProperty('--b', Math.max(a, b).toFixed(5));
+    return el;
+  }
+  function drawLanes(d) {
+    const spans = d.spans || [];
+    const r = d.range || {};
+    if (r.from_ms == null || !spans.length) return [note(`No fingerprint seen yet. ${car.name}’s modules send theirs while the car is awake; the strip fills in from the first log.`)];
+    const from = r.from_ms;
+    const to = Math.max(from + 1, r.to_ms ?? from, ...spans.map((s) => s.to_ms ?? api.now()));
+    const pct = (t) => Math.max(0, Math.min(1, (t - from) / (to - from)));
+    const mods = (d.modules || []).length ? d.modules : Object.keys(MODULES).map((id) => ({ id }));
+    const lanes = mods.map((m) => {
+      const mine = spans.filter((s) => s.module === m.id);
+      const name = moduleName(m.id, m.name);
+      const ticks = mine.slice(1).map((s) => { const t = h('span', { class: 'fwh-tick' }); t.style.setProperty('--a', pct(s.from_ms).toFixed(5)); return t; });
+      return h('div', { class: 'fwh-lane' },
+        h('span', { class: 'fwh-lane-name' }, name),
+        h('div', { class: 'fwh-bar', role: 'img', 'aria-label': mine.length ? `${name}: ${mine.map((s) => `${s.version || 'unnamed'} from ${day(s.from_ms)}`).join(', ')}` : `${name}: no fingerprint seen` },
+          mine.map((s, i) => laneSeg(s, i, pct)), ticks));
+    });
+    const changes = Math.max(0, spans.length - mods.filter((m) => spans.some((s) => s.module === m.id)).length);
+    return [
+      h('div', { class: 'fwh-lanes' }, lanes,
+        h('div', { class: 'fwh-lane fwh-axis-lane', 'aria-hidden': 'true' }, h('span', { class: 'fwh-lane-name' }),
+          h('div', { class: 'fwh-axis' }, h('span', null, day(from)), h('span', null, spans.some((s) => s.current) ? 'now' : day(to))))),
+      note(`${formatNumber(changes)} ${changes === 1 ? 'change' : 'changes'} since ${day(from)}. Each mark is a new fingerprint; the version names are those of the updates they came with (hover or tap for the fingerprint).`),
+    ];
+  }
+
+  function histRow(r) {
+    const isVer = r.kind === 'version';
+    const ver = h('span', { class: ['fwh-ver', { 'is-unnamed': !r.version }] }, r.version || 'unnamed');
+    return h('li', { class: ['fwh-row', { 'is-version': isVer, 'is-current': !!r.current }] },
+      h('div', { class: 'fwh-main' },
+        h('span', { class: 'fwh-mod' }, isVer ? 'Car version' : moduleName(r.module, r.module_name)),
+        isVer ? ver : hexCode(r.fingerprint)),
+      h('div', { class: 'fwh-when' },
+        h('span', { class: 'fwh-dates' }, `${day(r.first_seen_ms)} – ${r.current ? 'now' : day(r.until_ms ?? r.last_seen_ms)}`),
+        h('span', { class: 'fwh-dur' }, `ran ${dur(r.duration_ms)}`)),
+      h('div', { class: 'fwh-side' },
+        isVer ? null : ver,
+        r.current ? chip('Current', { tone: 'teal' }) : null));
+  }
+  function drawHist() {
+    if (histErr) {
+      spanBody.replaceChildren(note('The firmware history did not load. Refresh to try again.'));
+      listBody.replaceChildren(note('The firmware history did not load. Refresh to try again.'));
+      histMore.hidden = true;
+      return;
+    }
+    const d = hist.last || {};
+    spanBody.replaceChildren(...drawLanes(d));
+    rowList.replaceChildren(...hist.items.map(histRow));
+    listBody.replaceChildren(hist.items.length ? rowList
+      : note(hMod ? `${moduleName(hMod)}: no fingerprint recorded yet. Some cars do not send one from every module.` : `No fingerprint or imported version recorded for ${car.name} yet.`));
+    histMore.hidden = hist.done;
+    histMore.querySelector('button').hidden = false;
+  }
+  // a new pager for the module filter (or a live reload, as many rows as are shown); the old rows stay until it answers
+  let histSeq = 0;
+  async function readHist(limit = HIST_LIMIT) {
+    const my = ++histSeq;
+    const next = ctx.api.pager(histPath, hMod ? { module: hMod } : {}, { limit: Math.min(500, Math.max(HIST_LIMIT, limit)) });
+    listBody.setAttribute('aria-busy', 'true');
+    let err = null;
+    await next.more().catch((e) => { err = e; });
+    if (!ctx.alive() || my !== histSeq) return;
+    listBody.removeAttribute('aria-busy');
+    if (err && api.isAbort(err)) return;
+    hist = next; histErr = err;
+    drawHist();
+  }
+  function pickModule(m) { hMod = m; readHist(); }
+  let liveT = null;
+  ctx.events(['rows'], (ev) => {
+    if (ev.data?.car && ev.data.car !== car.id) return;
+    if (ev.data?.kinds && !ev.data.kinds.includes('updates') && !ev.data.kinds.includes('firmware')) return;
+    clearTimeout(liveT);
+    liveT = setTimeout(() => { if (ctx.alive()) readHist(hist.items.length); }, 1500);
+  });
+  ctx.onCleanup(() => clearTimeout(liveT));
+  drawHist();
+
   const sheet = createSheet({ title: 'Version of this update' });
   ctx.onCleanup(() => sheet.el.remove());
   function editVersion(r, opener) {
@@ -177,7 +294,7 @@ export async function mount(ctx) {
   const drawn = [];
   const more = moreButton(async () => { const n = pager.items.length; await pager.more(); await readAround(pager.items.slice(n)); if (!ctx.alive()) return false; draw(pager.items.slice(n)); return !pager.done; }, { text: 'Show earlier updates' });
   function draw(list) { for (const r of list) { const t = updateTile(r); listEnd.before(t); drawn.push(t); } }
-  ctx.view.replaceChildren(bar, hero, countT, gapT, tell, fwHead, ...fwTiles, listStart, listEnd);
+  ctx.view.replaceChildren(bar, hero, countT, gapT, tell, fwHead, ...fwTiles, histHead, spanTile, histTile, histMore, listStart, listEnd);
   if (!pager.items.length) {
     listEnd.before(emptyTile({ icon: 'chip', cover: ['updates.table.version', 'updates.table.date', 'updates.table.duration', 'updates.table.since_previous', 'updates.table.charge_count', 'updates.table.avg_range'], title: 'No updates in this period', text: ctx.period?.preset === 'all' ? `Nothing recorded for ${car.name} yet. An update shows once the car installs one while recording, or with an imported history.` : 'Pick a longer period above; All time shows every update.' }));
   } else {

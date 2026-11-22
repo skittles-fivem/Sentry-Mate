@@ -15,6 +15,7 @@
 //   betweenLine(ctx, carId, r, d)  "Between the drive Ocean Beach to Home (…) and the drive Home to Work (…)"
 //   namedLine(r)                   "Named from an earlier update with the same fingerprints", or null
 //   nameBox(ctx, carId, r, { onSaved })  the version name box: admins type it (PATCH updates/{update}); others read
+//   HISTORY_ID, historyHref(carId) the "Module firmware history" section on Software (#firmware-history), linked from Car
 //
 // Styles: app.css (.fw-*).
 
@@ -32,6 +33,9 @@ export const moduleName = (id, fallback = null) => MODULES[id] || fallback || id
 export const moduleList = (ids) => (ids || []).map((m) => moduleName(m)).join(', ');
 export const isFingerprint = (r) => !!r && r.detected_by === 'fingerprint';
 export const VERSION_RX = /^\d{4}\.\d{1,2}(\.\d{1,3}){0,2}$/;
+/** The anchor of the module firmware history on Software, and a link to it. */
+export const HISTORY_ID = 'firmware-history';
+export const historyHref = (carId) => `${state.buildUrl('software', { car: carId })}#${HISTORY_ID}`;
 
 // the DBC's signal names in words, by what follows the module prefix
 const FIELD_WORDS = [
