@@ -1,0 +1,245 @@
+# Dev API server
+
+A stand-in for the Sentry Mate server while the UI packs are built: it serves a pack's `web/` folder and
+the `/api/v1` of [`docs/ui-api.md`](../../docs/ui-api.md) on made-up data. Python 3 standard library only, no
+outside network. All data is invented: no real places of anyone's home or car, no real VINs, names or keys.
+
+## Run it
+
+```bash
+python3 ui/devserver/serve.py --pack ui/packs/instrument --port 0
+```
+
+It prints exactly one line when it is ready, `listening on http://127.0.0.1:PORT/`. Open that address.
+Any path that is not under `/api/` and is not a file of the pack gets the pack's `index.html` (client-side
+routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--pack DIR` | (required) | The UI pack; its `web/` folder is served at `/`. The built-in ones: `ui/packs/instrument`, `logbook`, `horizon`, `console`, `pebble`. |
+| `--host` | `127.0.0.1` | Address to listen on. |
+| `--port` | `8000` | `0` picks a free port (read it from the printed line). |
+| `--cars N` | `3` | Fleet size. 1 to 3 are the featured cars; above 3 adds light synthetic cars `c4`..`cN`; `0` is an empty fleet. A large fleet's sort, search and attention indexes are built before the server listens (about 1.5 s for 200000 cars). |
+| `--latency-ms N` | `0` | Waits this long before every `/api` answer (not the event stream). |
+| `--seed N` | `1` | Same seed and flags give the same data. |
+| `--signed-out` | off | Starts with no session, to test the sign-in page. |
+| `--role admin\|watch` | `admin` | Who the automatic session is: `watch` sees only car `c1` and may not change car data. |
+| `--map-tiles online\|none\|offline` | `online` | How maps start: `online` (OpenStreetMap; the page checker answers the tiles), `none` (a new server: offline tiles with no map file, so every map shows its "No map tiles yet" note) or `offline` (a made-up raster offline map file, `bay-area.pmtiles`, served at `/api/v1/maps/tiles/{z}/{x}/{y}` as plain tiles with a grid line). |
+| `--now-ms MS` | `1794850200000` | The virtual "now" at start (2026-11-16 17:30 UTC). It then moves with real time. |
+| `--fresh` (or `--needs-setup`) | off | Starts as a fresh server: no accounts and nobody signed in, the first-run set-up page. The set-up code is `SETUP-DEV-0000`. See "First-run set-up and moving" below. |
+| `--move-state S` | `none` | Starts Settings: Server's "Move to another server" in state `S`: `offered`, `expired`, `copying`, `paused`, `moved` or `done` (screenshots; add `--freeze-clock` to hold it there). Not with `--fresh`. |
+| `--own-certificate` | off | Runs with the owner's own certificate (`certificate.own` in `/network`), expiring in 12 days: the `certificate_expiring` notice is up and `POST /network/certificate` is `409 own_certificate`. Without it the certificate is one the server made, which never expires soon. |
+| `--move-peer-after-s N` | `15` | A made-up new server (`192.168.1.30`) claims a waiting move code `N` seconds after it is made, then copies, pauses, switches and is done in about 17 s. `0`: never. |
+| `--freeze-clock` | off | Keeps "now" fixed (stable screenshots and tests). |
+| `--sse-interval-ms N` | `2000` | How often live values are pushed on `/api/v1/events`. |
+| `--rows-every-s N` | `0` | Also sends every featured car a `rows` event every `N` seconds (all row kinds), as if its rows had changed, so the pages load their lists again (`ui/tools/check.js --stable` uses it). `0`: `rows` only when a drive, charge or parked spell really starts or ends. |
+| `--verbose` | off | Logs every request to stderr. |
+
+### UI packs
+
+`GET /api/v1/ui-packs` lists the five built-in packs of `ui/packs` (ids `instrument`, `logbook`, `horizon`,
+`console`, `pebble`; plus the `--pack` folder when it is another one), as the real server does. The `--pack` one is
+the pack chosen for everyone. A person's `ui_pack` preference picks the pack their browser is served from the next
+page load on, as on the real server; `null` goes back to the `--pack` one, and an unknown id is `422`.
+
+### Signing in
+
+Unless `--signed-out` is given, the first request without a session cookie signs in the default account
+(admin, or watch with `--role watch`) and sets the cookie, so a page load or a plain `curl` just works. After a
+sign-out the browser stays signed out. Accounts, all with the password `sentry-mate-dev`:
+
+| Name | Role | Cars | Notes |
+|---|---|---|---|
+| `admin` | admin | all | the default session |
+| `watch` | watch | `c1` | prefers miles, °F and psi |
+| `alex` | admin | all | two-step sign-in; the code is always `000000` |
+
+The cookie is `sentry-mate=<token>; Path=/; HttpOnly; SameSite=Strict`. It is **not** `Secure`, because the dev
+server is plain HTTP on 127.0.0.1. The real server sends `__Host-sentry-mate` with `Secure` over HTTPS only.
+
+Every change (POST, PUT, PATCH, DELETE) needs the header `X-Sentry-Mate: 1`, else `403 csrf`.
+
+### Headers
+
+Every answer carries a Content Security Policy like the real server's (pages may load tiles only from the online
+tile server, named only while online tiles are on), `X-Content-Type-Options: nosniff` and
+`Referrer-Policy: no-referrer` (pages: `strict-origin` while online tiles are on, as the real server, so
+OpenStreetMap's tile server sees a Referer); `/api/` answers also carry `Cache-Control: no-store`.
+
+## The made-up dataset
+
+Built once at start (about a second) from the seed and "now". History runs to two days past "now": pieces that
+start after the virtual clock are not shown yet, and the piece the clock is in is shown in progress.
+
+| Car | What it is | Story |
+|---|---|---|
+| `c1` Comet | Model Y 2025, Long Range AWD, NCA pack, `America/Los_Angeles` | Home in Noe Valley, work in Mission Bay (San Francisco). Weekday commutes, weekend outings, a road trip to Los Angeles in July with six Supercharger stops, a nine-day holiday parked at home (vampire drain), Sentry at work, scheduled home charging at 23:30 (1 phase, 32 A). **Driving at "now"** (home to Palo Alto). A drive and a charge that stopped mid-way, and a gap of every kind. |
+| `c2` Maple | Model 3 2022, RWD, LFP pack, `America/Chicago` | Home in Logan Square, work garage in River North (Chicago). Cold winters with reduced range days, home charging on 3 phases, public AC at work, a road trip to Toronto in August (DC in Michigan and in Ontario, costs in CAD). A slow leak in the rear left tyre for the last three weeks. **Charging at "now"** at work. |
+| `c3` Atlas | Model S 2017, 90D, old (legacy) CAN profile, `America/Los_Angeles` | East Bay. 16 months imported from TeslaMate (`source: "teslamate"`, estimated energy) that overlap 5 days of CAN rows, and a week of that history imported from TeslaFi as well (TeslaFi's copies of the same drives and charges, `source: "teslafi"`; with no live data there, one import is shown: TeslaMate's at first, flipped in `/overlaps`), free Supercharging, fewer decoded signals (no tyres, no set points). Its CAN Bridge went quiet about 55 hours before "now": the last log failed its check. |
+| `c4`..`cN` | synthetic | Names, models, states and battery from the car's index only; lists elsewhere are empty but valid. |
+
+Where each row came from (`sources`, `source_label`, see `mockapi/sources.py`): `c1` has SMO and the Tesla API
+(most rows SMO, a fifth seen by both, a few by the API alone, and an afternoon two days before "now" when SMO was
+offline and only the API saw the car); `c2` has both on every live row; `c3` has SMO and its TeslaMate import; the
+synthetic cars have SMO. Only the labels differ: the made-up data is the same.
+
+Also present: places that overlap (Work and the Mission Bay Supercharger, Home and Noe Valley), charges with
+and without cost, two software changes per car (one known only as "software changed"), awake, asleep and
+vehicle-bus-only spells, attention items, upload tokens, a CAN Bridge key waiting to be assigned, an audit log,
+saved trips and purpose rules, 40 places (some with prices by time of day), server and MQTT settings, notices (an
+unsaved recovery key; with `--own-certificate` also a certificate that expires in 12 days), a Tesla account (`ta1`, reading `c1` and `c2`, a third
+car not matched; every change asks for the password `sentry-mate-dev` again), the finished import that brought `c3`'s TeslaMate
+history in (its report counts exactly what `c3` holds), and storage figures that add up from the cars to the server.
+Seeds that are not car history are in `mockapi/dataset/extras.py`.
+
+Everything agrees across pages because it is all worked out from the same pieces and rows: a month in Statistics
+has the same drives, energy and cost as the Drives and Charges lists for that month; battery capacity readings come
+from the charges the Charges page lists; a renamed place shows at once in drives, charges, the timeline, stops,
+Travel, `now` and the MQTT preview. A charge keeps the cost it had when it ended until the owner reprices it.
+
+Series (1 Hz while driving or charging, every 30 s parked and awake, nothing asleep) are computed on demand from
+each piece's own seed and never stored, so a year of data answers in a few hundred milliseconds.
+
+## What is built
+
+| docs/ui-api.md section | State |
+|---|---|
+| Conventions (paging, period, `cars=`, errors, access, CSRF, audit, CSV, source and basis, null) | done |
+| Sign-in, accounts and preferences | done |
+| Fleet and cars | done |
+| Live values, including `/api/v1/events` (server-sent events) | done |
+| Time series | done |
+| Timeline and states | done |
+| Drives (track as GeoJSON and GPX, logbook as JSON, CSV and PDF) | done |
+| Charges | done |
+| Battery and efficiency | done |
+| Reports (statistics, mileage, totals, gaps, compare, stops and Travel, tracks, software, car events) | done |
+| Places (preview of a change, reprice, suggestions, the place at a point) | done |
+| Integrations (MQTT settings, status, preview, test; outside connections) | done |
+| Integrations: Tesla (accounts, sign-in at Tesla with a pasted address, refresh token, cars, pause, poll setting, status; nothing leaves the dev server) | done |
+| Server, settings and health (notices, maps, data health, rebuild, overlaps, storage) | done |
+| Import (resumable upload, check, car matching, import, report) | done |
+| Moving and first-run setup (claim, start fresh, move here, restore, move code, undo, export file) | done |
+| Deliberately absent (no car commands, no wake, no Tesla token, no SQL, no VIN serial) | absent: `404` |
+
+Decisions on points the API document left open are at the end of `docs/ui-api.md` ("Decisions").
+
+## First-run set-up and moving
+
+Everything runs on the virtual clock in a few seconds (frozen with `--freeze-clock`: tests move it on). Nothing is
+copied: the progress is worked out from the time.
+
+**A fresh server** (`--fresh`): `POST /api/v1/setup/claim { "setup_code": "SETUP-DEV-0000" }` first (the browser
+keeps the claim in the cookie `sentry-mate-setup`), then one of:
+
+- **Start fresh**: `POST /api/v1/setup/fresh { name, password }` makes the admin, signs it in and answers a made-up
+  recovery key (a new one each time).
+- **Move here**: `POST /api/v1/setup/move-here { from, code }`. The code must read (`SMMV-` and six groups of five
+  with a right check: take one from `POST /api/v1/system/move` on another dev server, or
+  `python3 -c "import sys; sys.path.insert(0, 'ui/devserver'); from mockapi.resources.moving import make_move_code; print(make_move_code()[0])"`).
+  The first label of the address picks what the made-up old server does:
+
+  | `from` | What happens |
+  |---|---|
+  | anything else, e.g. `192.168.1.20` | works: `connecting`, `copying`, `catching_up`, `finishing`, `switching`, `done` in about 12 s |
+  | `127.0.0.1` or `localhost` | works, and `result.same_machine` is true |
+  | `unreachable.example`, or any name ending in `.invalid` | `502 old_server_unreachable`, nothing starts |
+  | `wrong.example` | `422 move_code_wrong` |
+  | `expired.example` | `422 move_code_expired` |
+  | `used.example` | `409 move_code_used` |
+  | `newer.example` | `422 move_too_old` |
+  | `away.example` | `422 move_not_home_network` |
+  | `nomove.example` | `422 move_not_offered` |
+  | `flaky.example` | the connection drops at 40 % for 5 s (`waiting`, problem `unreachable`), then it carries on |
+  | `gone.example` | drops at 50 % and never comes back (`waiting`): try `POST /api/v1/setup/move-here/finish` |
+  | `cancel.example` | the old server cancels at 60 % (`stopped`, problem `cancelled`); `POST /api/v1/setup/move-here` again with the same address and a new code carries it on from there |
+
+- **Restore**: `POST /api/v1/setup/restore { name, size, recovery_key, header }`, then PATCH the chunks. The old
+  server's recovery key is `SMRK-DEVK-EY00-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000`. The file must be
+  one a dev server made (Settings: Server, "Download export file", or `GET /api/v1/system/exports/{export}/file`):
+  any other gives `422 not_an_export`. A file whose name has `newer` in it gives `422 export_too_new`; one with
+  `broken` in it fails at 60 % of the upload (`failed`, problem `export_damaged`). After the last chunk:
+  `checking` (3 s), `switching` (1.5 s), `done`.
+
+After a move or a restore the server has the made-up accounts (`admin`, `watch`, `alex`, password
+`sentry-mate-dev`) and its dataset, and nobody is signed in.
+
+**A set-up server**: `POST /api/v1/system/move { password }` (the account's password: `sentry-mate-dev`; `alex` also
+sends `two_step: "000000"`) answers the move code once. After `--move-peer-after-s` the made-up new server claims it:
+`copying` (10 s, round 1, then round 2), `paused` (2 s), `moved` (2 s: the server takes no changes, `409 moved`),
+`done`. `POST /api/v1/system/move/undo { password, confirm: true }` takes it back. `POST /api/v1/system/exports
+{ password }` prepares a 4 MB made-up export file in 3 s; its `url` downloads it (with `Range`), and it restores
+on a `--fresh` dev server.
+
+**A new certificate**: `POST /api/v1/network/certificate { password }` answers `{ names, sha256, upload_address }`
+with `localhost` and the saved host names and a made-up SHA-256 (a new one each time), which `/network` shows from
+then on. `409 move_under_way` while a move code waits or a copy runs, `409 moved` after a move, and
+`409 own_certificate` (before the password is checked) when the server runs with the owner's own certificate:
+`--own-certificate`, or the store's `cert_own` (tests). `/network` then says `certificate.own: true`, and only
+then is the `certificate_expiring` notice up (a certificate the server makes is valid until 4096). `certificate.names`
+starts with `localhost`, as the real server's do. A missing `password` on any request that asks for it again is
+`400 bad_input`, a wrong one `403 wrong_password`.
+
+## Layout
+
+```
+serve.py                 the entry point (flags in mockapi/config.py)
+mockapi/server.py        HTTP: static files, SPA fallback, headers, cookie, dispatch, event stream
+mockapi/router.py        path patterns -> handlers per method, admin and public methods
+mockapi/conventions.py   the request object, query parsing with field errors, cursor paging, CSV
+mockapi/errors.py        the one error shape
+mockapi/store.py         everything that can change (accounts, sessions, preferences, audit, overrides)
+mockapi/rows.py          history pieces -> Drive, Charge and timeline rows (in progress, costs, purposes)
+mockapi/placing.py       places as they are now, the nearest-centre match, costs that stay put
+mockapi/derive.py        figures several sections share: odometer, stops (visits), parked spells, caching
+mockapi/live.py          the "now" object, the car list item, attention items
+mockapi/series.py        bucketed series that keep minima and maxima
+mockapi/events.py        the event hub behind /api/v1/events
+mockapi/dataset/         places, cars, routes, the day-by-day simulator, pieces, synthetic cars, extras
+mockapi/resources/       one module per section of docs/ui-api.md (Reports is reports, travel and software;
+                         moving.py is first-run set-up, the move to another server and export files;
+                         tesla.py is the Tesla API input: a made-up account `ta1` with c1, c2 and one car not
+                         matched; a refresh token starting `refused` or `unreachable` plays Tesla saying no or
+                         being down)
+tests/                   unittest; test_contract.py checks the server against docs/ui-api.md
+```
+
+### Adding a section
+
+1. Write `mockapi/resources/<section>.py` with a `register(router)` function. `drives.py` shows the pattern:
+   read filters with `req.period()`, `req.enum()`, `req.list_param()` (they answer 400 with `fields`), build
+   rows from `req.history()` (the car's pieces: `h.segs`, `h.drives`, `h.charges`, `h.updates`, `h.shadow` for
+   TeslaMate copies of CAN rows and TeslaFi copies of TeslaMate rows (`site = "teslafi"`; `sources.site_of(row)`),
+   `h.overlaps`, `h.import_overlaps`), page with `conventions.page(req, rows, key=..., reverse=...)` (CSV then
+   comes for free), and for changes validate (400 for shape, 422 for rules), change the store under
+   `st.lock`, then `st.record(account, action, target, summary)` for the audit log.
+2. Add the module to `MODULES` in `mockapi/resources/__init__.py`, and the resource to `docs/ui-api.md`:
+   `tests/test_contract.py` fails for a route the document lacks, and for a documented write without a recipe.
+3. Car-scoped routes (`{car}` in the pattern) are checked before the handler runs; `admin=("PATCH",)` makes a
+   method admin-only; `public=("GET",)` needs no sign-in. Return a dict (JSON), a `conventions.Response`, or
+   raise `errors.ApiError`. A `POST` that sets `"_created": True` in its dict answers 201. Keys starting with
+   `_` are never sent.
+4. Pieces have `values(t)` (every series field at a moment) and `activity()` (strip segments); parked spells
+   have `subs` (awake, vehicle-bus-only and asleep sub-spans with reasons and power) and `soc_at(t)`; charges
+   have `curve(t)` and `figures()`. The owner's choice of side in a CAN and TeslaMate overlap is
+   `h.overlaps[i]["shown"]`, of the import shown where both imports cover the same days
+   `h.import_overlaps[i]["shown"]` (`teslamate` or `teslafi`; `h.shown(row, source)` and `h.site_shown` apply them),
+   and `h.overlap_changes` counts the changes for their `version` (the dataset fields meant to change: change them
+   under `st.lock`).
+
+## Tests
+
+```bash
+python3 -m unittest discover -s ui/devserver/tests -t ui/devserver
+```
+
+They start servers in-process on free ports (about 45 s for all). They cover:
+
+- the conventions: paging, errors, hidden cars with the watch role, CSRF, CSV, headers, the SPA fallback;
+- every section's documented fields and rules, and that figures agree across sections (statistics and the lists,
+  capacity and the charges, a renamed place everywhere, storage from the cars to the server, the import report and
+  `c3`'s history);
+- the contract (`test_contract.py`): every resource, method and field in the tables of `docs/ui-api.md` is read from
+  the document and called with ids from the API; it fails on a missing resource, a 5xx or a missing field, on a route
+  the document lacks, on anything under "Deliberately absent" that answers, and on a VIN serial in any answer;
+- determinism, a 200,000-car fleet paged under 200 ms a page, and the event stream (with `--rows-every-s` at its pace).

@@ -1,0 +1,37 @@
+model,pack,year_from,year_to,plants,pos8,pos7,chemistry,cells,series_bricks,nominal_kwh_min,nominal_kwh_max,usable_kwh_min,usable_kwh_max,pack_code,soft_limited,source,confidence
+S,40 (software-limited 60),2013,2013,F|P,C,A|B|C|D,nca_nmc,18650,96,60,60,37,37,,true,Part 565 2012-03-26 (battery tier 2); EPA 2013 '40 kW-hr'; owners' BMS readings,medium
+S,60,2012,2013,F|P,G,A|B|C|D,nca_nmc,18650,96,58,61,55,55,,false,Part 565 2012-03-26 (battery tier 4); EPA; owners' BMS readings,medium
+S,60,2014,2015,F,1|2,S,nca_nmc,18650,96,58,61,55,55,,false,Part 565 2013-12-10 (S = standard capacity); EPA; owners' BMS readings,medium
+S,85,2012,2013,F|P,N|P,A|B|C|D,nca_nmc,18650,96,81,82,77.5,77.5,,false,Part 565 2012-03-26 (battery tier 7); EPA; owners' BMS readings,medium
+S,85,2014,2015,F,1|2|3|4,H,nca_nmc,18650,96,81,82,77.5,77.5,,false,Part 565 2013-12-10 (H = high capacity); EPA; owners' BMS readings,medium
+S,90,2015,2016,F,1|2|3|4,V,nca_nmc,18650,96,85,86,81.8,81.8,,false,Model S service manual (V = ultra high capacity); EPA; owners' BMS readings,medium
+S,70,2015,2016,F,1|2,E,nca_nmc,18650,96,69,71,66,66,,false,EPA 2015-16 '70 kW-hr'; owners' BMS readings,low
+S,85,2015,2016,F,1|2|3|4,E,nca_nmc,18650,96,81,82,77.5,77.5,,false,EPA 2015-16 '85 kW-hr'; owners' BMS readings,medium
+S|X,90,2015,2017,F,1|2|3|4,E,nca_nmc,18650,96,85,86,81.8,81.8,,false,EPA 2015-17 '90 kW-hr'; owners' BMS readings,medium
+S|X,60 (software-limited 75),2016,2017,F,1|2,E,nca_nmc,18650,96,75,76,57,57,,true,EPA 2016-17 '60 kW-hr'; owners' BMS readings,medium
+S|X,75,2016,2019,F,1|2,E,nca_nmc,18650,96,74,76,72.6,72.6,,false,EPA 2016-19 '75 kW-hr'; owners' BMS readings,medium
+S|X,100 (also 2019-2021 Long Range and Performance),2016,2021,F,2|4,E,nca_nmc,18650,96,100,103,98,98,3,false,EPA '100 kW-hr'; owners' BMS readings,medium
+S|X,Palladium (2021+ Long Range and Plaid),2021,,F,5|6,E,nca_nmc,18650,,99,100,95,95,,false,NHTSA vPIC 99.3 kWh (MY2022 S) and 100.0 kWh (MY2025-26 S); owners' BMS readings,medium
+3,Standard Range / Standard Range Plus (NCA),2019,2021,F,A,E,nca_nmc,2170,96,54,55,50.5,50.5,0,false,model3dbc GTW_packEnergy 0 PACK_50_KWH; EPA 2019-2021; owners' BMS readings,medium
+3,Standard Range Plus (Shanghai; NCM),2020,2021,C,A|R|S,E,nca_nmc,2170,96,52,55,51,51,,false,Model 3 service manual (E = ternary at Shanghai); owners' BMS readings,low
+3,Mid Range,2018,2019,F,A,E,nca_nmc,2170,96,62,62,60,60,2,false,model3dbc GTW_packEnergy 2 PACK_62_KWH; EPA 2018-2020 Mid Range,medium
+3,Long Range (RWD; AWD; Performance),2017,2020,F,A|B|C,E,nca_nmc,2170,96,78,80,75,75,1|4,false,model3dbc GTW_packEnergy 1/4; EPA; owners' BMS readings,medium
+3,Long Range / Performance,2021,2023,F,B|C,E,nca_nmc,2170,96,80,82.5,78,78,,false,NHTSA vPIC 79.5 kWh (MY2022); owners' BMS readings,medium
+3,Long Range / Performance (Shanghai; NCM),2021,2023,C,B|C|K,E,nca_nmc,2170,96,77,79,75,75,,false,Model 3 service manual (E = ternary at Shanghai); owners' BMS readings,medium
+3,RWD (LFP),2021,2023,F,A,E,lfp,prismatic,106,60,62,57.5,57.5,,false,owners' BMS readings; brick count from 0x332,medium
+3,RWD (LFP; Shanghai),2021,2023,C,A|R|S,F,lfp,prismatic,106,60,62,57.5,57.5,,false,Model 3 service manual (F = LFP); owners' BMS readings,medium
+3,Highland RWD (LFP),2024,,F|C,A|J|R|S,E|F,lfp,prismatic,106,60,62,57.5,57.5,,false,owners' BMS readings,medium
+3,Long Range RWD (2024+),2024,,F,A,E,nca_nmc,2170,96,,,,,,false,EPA 2024-25 'Model 3 Long Range RWD' (shares position 8 A with the LFP RWD),low
+3,Highland Long Range / Performance,2024,,F|C,B|K|T,E,nca_nmc,2170,96,78,82.5,75,78,,false,NHTSA vPIC 82.0 kWh (MY2025); owners' BMS readings,low
+3,2026 Model 3 Standard / Premium,2026,,F,A|B|T,E,,,,,,,,,false,NHTSA vPIC 69.5 kWh (MY2026; not per trim),low
+Y,Long Range / Performance (2170),2020,2024,F|A|C|B,E|F|K|L,E,nca_nmc,2170,96,78,82,75,78,4,false,NHTSA vPIC 81.0 kWh (MY2025); owners' BMS readings,medium
+Y,Standard Range RWD (US 2021),2021,2021,F,D,E,nca_nmc,2170,96,,,,,,true,EPA 2021 'Model Y Standard Range RWD' 244 mi,low
+Y,AWD (4680 structural pack),2022,2024,A,E,E,nca_nmc,4680,,67,68,65,65,,false,EPA 2022-23 'Model Y AWD' 279 mi; owners' BMS readings (Austin also built 2170 Long Range),low
+Y,RWD (LFP; Shanghai),2022,,C,J|R|S,F,lfp,prismatic,,57,62.5,57,60,,false,Model Y service manual (F = LFP); owners' BMS readings,low
+Y,RWD (LFP),2023,,F|A,D,E,lfp,prismatic,,57,62.5,57,60,,false,owners' BMS readings,low
+Y,RWD (LFP; Berlin),2023,,B,J,F,lfp,blade,,57,62.5,57,60,,false,Model Y 2025 service manual (F = LFP); owners' BMS readings,low
+Y,Long Range RWD (2024+),2024,,F|A,D,E,nca_nmc,2170,96,,,,,,false,EPA 2024-26 'Model Y Long Range RWD' (shares position 8 D with the LFP RWD),low
+Y,Juniper Long Range / Performance,2025,,F|A|C|B,E|K|L|T,E,nca_nmc,2170,96,78,82.5,75,78,,false,NHTSA vPIC 81.0 kWh (MY2025); owners' BMS readings,low
+Y,2026 Model Y Standard,2026,,F|A,D|E,E,,,,,,,,,false,NHTSA vPIC 60.0 kWh (MY2026; not per trim),low
+C,AWD / Cyberbeast,2024,,A,D|E,E,nca_nmc,4680,,122,123,120,120,,false,owners' BMS readings,low
+C,Long Range RWD,2025,,A,C,E,nca_nmc,4680,,,,,,,false,EPA 2025-26 'Cybertruck Long Range',low

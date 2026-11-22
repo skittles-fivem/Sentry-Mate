@@ -1,0 +1,72 @@
+/* Charges: the session log, the statistics, the habit grids, places and the fast-charging curve. */
+
+.cs-zone { margin-top: 0.375rem; font: 400 var(--fs-sm)/1.5 var(--mono); color: var(--ink-2); }
+.cs-check { align-items: center; font-size: var(--fs-sm); white-space: nowrap; }
+.cs-check input { margin: 0; }
+.cs-pop { width: min(26rem, calc(100vw - 1rem)); }
+.cs-pop-in { display: grid; gap: 0.875rem; padding: 1rem; }
+.cs-pop-list { display: grid; gap: 0.5rem; max-height: 18rem; overflow: auto; }
+.cs .trk td.is-wide { min-width: 13rem; }
+.cs-list .trk td { white-space: nowrap; }
+.cs-list .trk td.is-wide { white-space: normal; }
+.cs-none { color: var(--org-ink); }
+.cs-eff { display: inline-grid; justify-items: end; gap: 0.25rem; }
+.cs-eff-bar { position: relative; display: block; width: 3rem; height: 0.375rem; border-radius: 0.125rem; background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); overflow: hidden; }
+.cs-eff-bar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); background: linear-gradient(90deg, var(--org), var(--grn)); }
+.cs-soc { display: inline-grid; gap: 0.25rem; }
+.cs-soc-bar { position: relative; display: block; width: 6rem; height: 0.5rem; border-radius: 0.125rem; background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); overflow: hidden; }
+.cs-soc-bar > i { position: absolute; top: 0; bottom: 0; left: var(--a); right: calc(100% - var(--b)); background: linear-gradient(90deg, var(--cyan), var(--grn)); }
+.cs-pair { align-items: stretch; }
+.cs-pair > .hud { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.cs-pair .ctrs + .note { margin-top: 1rem; }
+.cs-split { display: grid; gap: 0.5rem; }
+.cs-split + .cs-split { margin-top: 1.25rem; }
+.cs-split-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+.cs-split-head b { font: 400 var(--fs-sm)/1.5 var(--mono); }
+.cs-split-bar { display: flex; height: 0.875rem; border-radius: 0.125rem; overflow: hidden; background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); }
+.cs-split-bar > i { width: var(--w); }
+.cs-split-key { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; font-size: var(--fs-xs); color: var(--ink-2); }
+.cs-split-key > span { display: inline-flex; align-items: center; gap: 0.375rem; }
+.cs-split-key b { color: var(--ink); }
+.cs-split ~ .note { margin-top: 1rem; }
+.cs-sw { display: inline-block; width: 0.75rem; height: 0.75rem; border-radius: 0.125rem; }
+.cs-k-ac { background: var(--grn); }
+.cs-k-dc { background: var(--org); }
+.cs-k-unknown { background: var(--st-unknown); }
+.cs-k-band { background: var(--cyan); opacity: 0.6; }
+.cs-habit-ctl { flex-wrap: wrap; gap: 0.75rem; }
+.cs-block { display: grid; gap: 0.5rem; min-width: 0; }
+.cs-block .scope-head .row { flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; }
+.cs .scope-read { white-space: normal; text-align: right; }
+.cs-heat { position: relative; display: grid; grid-template-columns: 5.5rem repeat(var(--n), minmax(0, 1fr)); gap: 0.125rem; padding: 0.75rem; border-radius: var(--r); background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); }
+.cs-heat-y, .cs-week-y { font: 400 var(--fs-xs)/1.2 var(--mono); color: var(--ink-3); white-space: nowrap; align-self: center; }
+.cs-heat-x, .cs-week-x { min-width: 0; padding-top: 0.25rem; font: 400 var(--fs-xs)/1.2 var(--mono); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cs-heat-x { grid-column: span var(--span, 1); }
+.cs-week-x { grid-column: span 6; }
+.cs-heat-c { display: block; height: 1.125rem; border-radius: 0.0625rem; background: rgba(127, 110, 200, 0.1); }
+.cs-heat-c.has { background: rgba(255, 63, 180, calc(0.18 + var(--a) * 0.82)); }
+.cs-heat-c.has.is-end { background: rgba(61, 240, 255, calc(0.18 + var(--a) * 0.82)); }
+.cs-heat-hl { position: absolute; top: 0.5rem; bottom: 1.75rem; grid-row: 1 / 11; grid-column: var(--col); box-shadow: inset 0 0 0 0.125rem var(--yel); border-radius: 0.125rem; pointer-events: none; }
+.cs-week { display: grid; grid-template-columns: 2.5rem repeat(24, minmax(0, 1fr)); gap: 0.125rem; }
+.cs-week .cs-heat-c { height: 0.875rem; }
+.cs-lists { padding-top: 1rem; box-shadow: inset 0 1px 0 var(--rule); }
+.cs-list-h { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.cs-h3 { font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--cyan-ink); }
+.cs-map { height: 22rem; }
+.cs-mapbox { display: grid; gap: 0.5rem; }
+.cs-temp { gap: 0.375rem; }
+.cs-ramp { display: inline-block; width: 3rem; height: 0.375rem; border-radius: 0.125rem; background: linear-gradient(90deg, var(--cyan), var(--violet), var(--org)); }
+@container view (max-width: 62rem) {
+  .cs-heat { grid-template-columns: 4.5rem repeat(var(--n), minmax(0, 1fr)); gap: 0.0625rem; }
+}
+@container view (max-width: 40rem) {
+  .cs .scope-read { text-align: left; }
+  .cs-block .scope-head .row { justify-content: flex-start; }
+  .cs-heat { padding: 0.5rem; }
+  .cs-heat-c { height: 0.875rem; }
+  .cs-map { height: 16rem; }
+  .cs .trk td.is-wide { min-width: 0; }
+  .cs-list .trk td { white-space: normal; }
+}
+.cs .cell > .tag { justify-self: start; }
+.cs-block .scope-head { align-items: center; }

@@ -1,0 +1,893 @@
+#![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
+//! End to end: synthetic logs (frames made with the DBC's own signal layouts, a made-up VIN and made-up positions in
+//! the open sea) stored the way an upload stores them, judged by ingest's judge, told to the engine, decoded in the
+//! background, and read back as drives and charges through the query API.
+
+use dbc::{Mux, Profile, Signal};
+use engine::query::{self, Paging, Period};
+use engine::{Engine, Options, Scope};
+use ingest::{Judge, Store};
+use model::Source;
+use sha2::{Digest, Sha256};
+use std::fmt::Write;
+use std::sync::Arc;
+
+const KEY: &str = "feedc0ffee42";
+/// 2026-01-01T00:00:00Z.
+const T0_MS: u64 = 1_767_225_600_000;
+/// A made-up VIN (maker `XP7`, no real car's): Model Y of 2024.
+const VIN: &[u8; 17] = b"XP7YGCEK0RB000042";
+/// Made-up positions in the open sea.
+const LAT: f64 = 10.0;
+const LON: f64 = -30.0;
+
+fn signal(series: &str) -> &'static Signal {
+    Profile::Tesla3Y
+        .dbc()
+        .messages
+        .values()
+        .flat_map(|m| m.signals.iter())
+        .find(|s| s.series == series || s.name == series)
+        .unwrap()
+}
+
+fn put(bytes: &mut [u8], sig: &Signal, value: f64) {
+    let mut raw = ((value - sig.offset) / sig.factor).round() as i64;
+    if raw < 0 {
+        raw += 1i64 << sig.length;
+    }
+    let mut set = |bit: u32, on: bool| {
+        if on {
+            bytes[(bit >> 3) as usize] |= 1 << (bit & 7);
+        }
+    };
+    if sig.little {
+        for i in 0..sig.length {
+            set(sig.start + i, (raw >> i) & 1 == 1);
+        }
+    } else {
+        let mut bit = sig.start;
+        for i in (0..sig.length).rev() {
+            set(bit, (raw >> i) & 1 == 1);
+            bit = if bit & 7 == 0 { bit + 15 } else { bit - 1 };
+        }
+    }
+}
+
+/// One frame of the message carrying these series, as a candump line.
+fn frame(t_ms: u64, values: &[(&str, f64)]) -> String {
+    let first = signal(values[0].0);
+    let msg = &Profile::Tesla3Y.dbc().messages[&first.message_id];
+    let mut bytes = vec![0u8; msg.size as usize];
+    for &(series, v) in values {
+        let sig = signal(series);
+        if let (Mux::Value(m), Some(i)) = (sig.mux, msg.mux) {
+            put(&mut bytes, &msg.signals[i], m as f64);
+        }
+        put(&mut bytes, sig, v);
+    }
+    let iface = match msg.bus.as_str() {
+        "VehicleBus" => "can0",
+        "ChassisBus" => "can1",
+        other => panic!("{other}"),
+    };
+    let hex: String = bytes.iter().map(|b| format!("{b:02X}")).collect();
+    format!("({}.{:06}) {iface} {:03X}#{hex}\n", t_ms / 1000, (t_ms % 1000) * 1000, msg.id)
+}
+
+#[derive(Clone, Copy)]
+enum Minute {
+    /// Driving in D for 50 s at 36 km/h, then P.
+    Drive,
+    Parked,
+    /// Charging at 10 kW.
+    Charging,
+    /// Parked, closed as quiet: the car sleeps after it.
+    Quiet,
+}
+
+/// Minute `i` (from T0) of the car: its log and sidecar.
+fn minute(i: u64, what: Minute) -> (String, Vec<u8>, Vec<u8>) {
+    minute_of(KEY, i, what, LON, (i == 0).then_some(VIN))
+}
+
+/// Minute `i` of a car as `key` records it, at longitude `lon0`, with the VIN frames of `vin`.
+fn minute_of(key: &str, i: u64, what: Minute, lon0: f64, vin: Option<&[u8; 17]>) -> (String, Vec<u8>, Vec<u8>) {
+    let start = T0_MS + i * 60_000;
+    let mut log = String::from("# canbridge v1 app=test\n");
+    if let Some(vin) = vin {
+        let mut pages = [[0u8; 8]; 3];
+        pages[0][0] = 0x10;
+        pages[0][5..8].copy_from_slice(&vin[0..3]);
+        pages[1][0] = 0x11;
+        pages[1][1..8].copy_from_slice(&vin[3..10]);
+        pages[2][0] = 0x12;
+        pages[2][1..8].copy_from_slice(&vin[10..17]);
+        for (k, p) in pages.iter().enumerate() {
+            let hex: String = p.iter().map(|b| format!("{b:02X}")).collect();
+            writeln!(log, "({}.{:06}) can0 405#{hex}", start / 1000, 5000 + k * 1000).unwrap();
+        }
+    }
+    // the gateway's configuration pages, in every log: AWD, left-hand drive, a Model Y, base package, pack code 4,
+    // 19" wheels
+    log += &frame(start + 8, &[("GTW_drivetrainType", 1.0), ("GTW_rightHandDrive", 0.0)]);
+    log += &frame(
+        start + 9,
+        &[("GTW_chassisType", 3.0), ("GTW_performancePackage", 0.0), ("GTW_packEnergy", 4.0), ("GTW_wheelType", 1.0)],
+    );
+    let odo0 = 12_345.0;
+    for k in 0..600u64 {
+        let t = start + 10 + k * 100;
+        let secs = (t - T0_MS) as f64 / 1000.0;
+        let moving = matches!(what, Minute::Drive) && k < 500;
+        let driven_s = if i == 0 { secs.min(50.0) } else { 50.0 };
+        let odo = odo0 + 36.0 * driven_s / 3600.0;
+        let gear = if moving { 4.0 } else { 1.0 };
+        log += &frame(t, &[("DI_gear", gear)]);
+        log += &frame(t + 1, &[("DI_vehicleSpeed", if moving { 36.0 } else { 0.0 })]);
+        let amps = match what {
+            Minute::Drive if moving => 25.0,
+            Minute::Charging => -25.0,
+            _ => 0.5,
+        };
+        log += &frame(t + 2, &[("BattVoltage132", 400.0), ("SmoothBattCurrent132", amps)]);
+        let charging = matches!(what, Minute::Charging);
+        log += &frame(t + 3, &[("BMS_uiChargeStatus", if charging { 3.0 } else { 0.0 })]);
+        if k % 10 == 0 {
+            log += &frame(t + 4, &[("UI_odometer", odo)]);
+            let soc = if charging { 70.0 + secs / 600.0 } else { 70.0 };
+            log += &frame(t + 5, &[("UI_SOC", soc.round()), ("UI_Range", 200.0)]);
+            // a degree of longitude is about 110 km here; 36 km/h is 0.01 km a second
+            let lon = lon0 + driven_s * 0.01 / 110.0;
+            log += &frame(t + 6, &[("GPSLatitude04F", LAT), ("GPSLongitude04F", lon), ("GPSAccuracy04F", 5.0)]);
+        }
+    }
+    let name = format!("{key}_20260101T00{i:02}00Z_{}.log.xz", i + 1);
+    let mut xz = Vec::new();
+    lzma_rs::xz_compress(&mut log.as_bytes(), &mut xz).unwrap();
+    let closed = if matches!(what, Minute::Quiet) { "quiet" } else { "rotate" };
+    let side = serde_json::json!({
+        "format": "canbridge-candump-xz/1",
+        "start_wall_ms": start,
+        "end_wall_ms": start + 60_000,
+        "closed_because": closed,
+    });
+    (name, xz, serde_json::to_vec(&side).unwrap())
+}
+
+const DAY: [Minute; 6] =
+    [Minute::Drive, Minute::Parked, Minute::Charging, Minute::Charging, Minute::Parked, Minute::Quiet];
+
+struct Kit {
+    _dir: tempfile::TempDir,
+    store: Store,
+    judge: Judge,
+    engine: Engine,
+    db: db::Db,
+}
+
+fn kit() -> Kit {
+    let dir = tempfile::tempdir().unwrap();
+    let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+    std::fs::create_dir_all(&data).unwrap();
+    let (v, _) = vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+    let v = Arc::new(v);
+    let store = Store::with_limits(data.join("can"), v.clone(), 0, 200_000, |_| u64::MAX);
+    let db = db::Db::open(&data, v, db::Options::default()).unwrap();
+    let engine = Engine::new(db.clone(), store.clone(), Options { workers: 2, ..Options::default() });
+    let judge = Judge::new(store.clone()).on_judged(engine.listener());
+    engine.start().unwrap();
+    Kit { _dir: dir, store, judge, engine, db }
+}
+
+async fn upload(k: &Kit, name: &str, bytes: &[u8]) {
+    let sha = hex::encode(Sha256::digest(bytes));
+    let r = k.store.receive(name, bytes.to_vec().into(), 0, bytes.len() as u64, &sha).await.unwrap();
+    assert!(r.complete);
+    k.judge.arrived(name).await.unwrap();
+}
+
+async fn send(k: &Kit, i: u64) {
+    let (name, log, side) = minute(i, DAY[i as usize]);
+    upload(k, &name, &log).await;
+    upload(k, &format!("{name}.json"), &side).await;
+}
+
+/// The engine's work runs on blocking threads that use the runtime: a multi-threaded runtime.
+fn rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap()
+}
+
+fn drives(k: &Kit, car: u32) -> Vec<query::drives::DriveView> {
+    query::drives::drives(&k.engine, car, &Default::default(), &Paging::default()).unwrap().body.items
+}
+
+fn charges(k: &Kit, car: u32) -> Vec<query::charges::ChargeView> {
+    query::charges::charges(&k.engine, &[car], &Default::default(), &Paging::default()).unwrap().items
+}
+
+fn the_car(k: &Kit) -> u32 {
+    k.db.car_for_key(KEY).unwrap().expect("a car for the key")
+}
+
+type Rows = Vec<(u64, Option<u64>, Option<f64>)>;
+
+/// What a car's history reads as, for comparing two builds of it: drives, charges, states.
+fn shape(k: &Kit, car: u32) -> (Rows, Rows, Vec<(&'static str, u64)>) {
+    let d = drives(k, car).into_iter().map(|d| (d.start_ms, d.end_ms, d.distance_km)).collect();
+    let c = charges(k, car).into_iter().map(|c| (c.start_ms, c.end_ms, c.energy_added_kwh)).collect();
+    let s = query::timeline::states(&k.engine, car, &Period::all(), &Paging::first(500))
+        .unwrap()
+        .body
+        .items
+        .into_iter()
+        .map(|s| (s.state, s.start_ms))
+        .collect();
+    (d, c, s)
+}
+
+#[test]
+fn logs_become_a_drive_and_a_charge_and_late_logs_rebuild_the_same_history() {
+    let rt = rt();
+    rt.block_on(async {
+        // in order
+        let a = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&a, i).await;
+        }
+        a.engine.idle().await;
+        let car = the_car(&a);
+        assert_eq!(a.engine.stats().failures, 0, "{:?}", a.engine.stats().last_error);
+        let c = a.db.car(car).unwrap().unwrap();
+        assert_eq!(c.name, "Model Y XP7YGC", "named after the VIN the log carries");
+        assert_eq!(c.vin.as_ref().map(|v| v.vin_prefix.as_str()), Some("XP7YGCEK0RB"));
+
+        let ds = drives(&a, car);
+        assert_eq!(ds.len(), 1, "{ds:#?}");
+        let d = &ds[0];
+        assert!((d.distance_km.unwrap() - 0.5).abs() < 0.06, "{d:?}");
+        assert!(d.energy_kwh.unwrap() > 0.1, "{d:?}");
+        assert_eq!(d.from.source, "can");
+        assert!(d.start.lat.is_some());
+        let detail = query::drives::drive(&a.engine, car, d.id.parse().unwrap(), None).unwrap();
+        assert!(detail.speed_bands.iter().any(|b| b.from_kph == 30.0 && b.seconds > 40), "{:?}", detail.speed_bands);
+        let track = query::drives::track(&a.engine, car, d.id.parse().unwrap()).unwrap();
+        assert!(track.stretches.iter().map(Vec::len).sum::<usize>() >= 40);
+        let gj = query::drives::geojson(&track, Some(1.0), &["speed"]);
+        assert_eq!(gj["type"], "FeatureCollection");
+
+        let cs = charges(&a, car);
+        assert_eq!(cs.len(), 1, "{cs:#?}");
+        let ch = &cs[0];
+        let kwh = ch.energy_added_kwh.unwrap();
+        assert!((kwh - 0.333).abs() < 0.05, "10 kW for two minutes: {ch:?}");
+        let curve =
+            query::charges::curve(&a.engine, car, ch.id.parse().unwrap(), &["power_kw", "soc_pct"], None).unwrap();
+        assert!(curve.body.t_ms.len() >= 100, "{}", curve.body.t_ms.len());
+        assert!(curve.body.values["power_kw"].numbers().iter().flatten().all(|p| (*p - 10.0).abs() < 0.5));
+
+        // the car sleeps after the quiet log
+        let states = query::timeline::states(&a.engine, car, &Period::all(), &Paging::first(500)).unwrap().body;
+        assert!(states.items.iter().any(|s| s.state == "online"));
+        let tl =
+            query::timeline::timeline(&a.engine, car, &Default::default(), &Paging::first(500)).unwrap().body.items;
+        let kinds: Vec<&str> = tl.iter().map(|r| r.kind).collect();
+        assert!(kinds.contains(&"drive") && kinds.contains(&"charge") && kinds.contains(&"parked"), "{kinds:?}");
+        let now = query::now::now_view(&a.engine, car).unwrap();
+        assert_eq!(now.soc_pct.map(|v| v.value), Some(70.0));
+        let fleet = query::fleet::cars(&a.engine, &[car], &Default::default(), &Paging::default()).unwrap();
+        assert_eq!(fleet.items.len(), 1);
+        assert_eq!(fleet.items[0].model.as_deref(), Some("Model Y"));
+        // the build: the car's own configuration over its VIN (a Berlin car: the year is the year built)
+        let detail = tokio::task::block_in_place(|| query::fleet::car(&a.engine, car)).unwrap();
+        let v = &detail.vehicle;
+        use model::vehicle::FactSource;
+        assert_eq!((v.model.value.as_deref(), v.model.source), (Some("Model Y"), Some(FactSource::Can)));
+        assert_eq!((v.drive.value.as_deref(), v.drive.source), (Some("AWD"), Some(FactSource::Can)));
+        assert_eq!((v.performance.value, v.performance.source), (Some(false), Some(FactSource::Can)));
+        assert_eq!(v.pack_code.value.as_deref(), Some("4 (PACK_75_KWH)"));
+        assert_eq!((v.wheel.value.as_deref(), v.wheel_in.value), (Some("Stiletto 19"), Some(19)));
+        assert_eq!((v.model_year.value, v.year_kind), (Some(2024), Some("build_year")));
+        assert_eq!(v.plant.value.as_deref(), Some("Berlin-Brandenburg (Giga Berlin)"));
+        // (a base AWD's CAN configuration doesn't tell the Long Range from the 4680 AWD: no trim is chosen)
+        assert_eq!(v.trim.value, None);
+        assert!(v.disagreements.is_empty(), "{:?}", v.disagreements);
+        assert_eq!(detail.config["drivetrain"].value, "AWD");
+        assert_eq!(detail.config["drivetrain"].source, Some("can"));
+        assert_eq!(detail.config["right_hand_drive"].value, false);
+        assert_eq!(detail.config["plant"].value, "B");
+        let logs =
+            tokio::task::block_in_place(|| query::system::logs(&a.engine, car, &Period::all(), &Paging::first(100)))
+                .unwrap()
+                .body
+                .items;
+        let health =
+            tokio::task::block_in_place(|| query::system::health(&a.engine, car, &Period::all())).unwrap().body;
+        assert_eq!(health.logs_waiting, 0);
+        assert!(!health.rebuild_pending);
+        assert_eq!(logs.len(), DAY.len());
+        assert!(logs.iter().all(|l| l.decoded == "decoded" && l.result == "unsigned"), "{logs:#?}");
+        let series = query::series::series(
+            &a.engine,
+            car,
+            &query::series::SeriesQuery {
+                fields: vec!["speed_kph".into(), "soc_pct".into()],
+                from_ms: Some(T0_MS),
+                to_ms: Some(T0_MS + 360_000),
+                max_points: Some(60),
+                ..Default::default()
+            },
+            T0_MS + 400_000,
+        )
+        .unwrap();
+        assert_eq!(series.body.bucket_ms, 10_000);
+        assert!(series.body.values["speed_kph"][1].is_some_and(|v| (v - 36.0).abs() < 1.0));
+        assert_eq!(series.body.state[1], Some("driving"));
+        // (one row per day from the first data to now, newest first: the drive and the charge are on one of them)
+        let day1 = Period::new(Some(T0_MS), Some(T0_MS + 86_400_000));
+        let stats = query::reports::statistics(&a.engine, &[car], "day", &day1, &Paging::default()).unwrap();
+        let day = stats.items.iter().find(|d| d.drives > 0).unwrap();
+        assert_eq!((day.drives, day.charges), (1, 1));
+
+        // the same logs, the charge's first minute last: the same history once it is in
+        let b = kit();
+        for i in [0, 1, 3, 4, 5, 2] {
+            send(&b, i).await;
+            b.engine.idle().await;
+        }
+        let car_b = the_car(&b);
+        let before_late = shape(&a, car);
+        assert_eq!(shape(&b, car_b).0, before_late.0, "drives");
+        assert_eq!(shape(&b, car_b).1, before_late.1, "charges");
+        assert_eq!(shape(&b, car_b).2, before_late.2, "states");
+    });
+}
+
+#[test]
+fn a_restart_carries_on_and_decodes_nothing_twice_and_a_rebuild_keeps_imported_rows() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..4 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let first = shape(&k, car);
+        assert_eq!(k.engine.stats().logs_decoded, 4);
+
+        // a log arrives while the engine is down (its judge tells no one): the next start finds it, and only it
+        let silent = Judge::new(k.store.clone());
+        let (name, log, side) = minute(4, DAY[4]);
+        let sha = hex::encode(Sha256::digest(&log));
+        k.store.receive(&name, log.clone().into(), 0, log.len() as u64, &sha).await.unwrap();
+        silent.arrived(&name).await.unwrap();
+        let sha = hex::encode(Sha256::digest(&side));
+        k.store.receive(&format!("{name}.json"), side.clone().into(), 0, side.len() as u64, &sha).await.unwrap();
+        silent.arrived(&format!("{name}.json")).await.unwrap();
+
+        let again = Engine::new(k.db.clone(), k.store.clone(), Options::default());
+        again.start().unwrap();
+        again.idle().await;
+        assert_eq!(again.stats().logs_decoded, 1, "only the log it had not seen");
+        assert_eq!(again.stats().failures, 0, "{:?}", again.stats().last_error);
+        let logs =
+            tokio::task::block_in_place(|| query::system::logs(&again, car, &Period::all(), &Paging::first(100)));
+        assert_eq!(logs.unwrap().body.items.len(), 5);
+
+        // imported history beside it, long before
+        let mut sink = engine::importer::DbSink::new(&again);
+        let tm = model::Drive {
+            id: 0,
+            car,
+            start_ms: T0_MS - 30 * 86_400_000,
+            end_ms: T0_MS - 30 * 86_400_000 + 600_000,
+            start: None,
+            end: None,
+            start_place: None,
+            end_place: None,
+            start_address: None,
+            end_address: None,
+            start_odometer_km: Some(12_000.0),
+            end_odometer_km: Some(12_010.0),
+            distance_km: Some(10.0),
+            speed_max_kmh: None,
+            power_max_kw: None,
+            power_min_kw: None,
+            energy_used_kwh: Some(1.6),
+            start_soc: None,
+            end_soc: None,
+            start_range_km: None,
+            end_range_km: None,
+            outside_temp_avg_c: None,
+            inside_temp_avg_c: None,
+            ascent_m: None,
+            descent_m: None,
+            source: Source::Teslamate,
+            inputs: model::Inputs::NONE,
+            rules_version: 0,
+        };
+        let row = import::DriveRow { tm_id: 7, drive: tm, tm: Default::default() };
+        import::Sink::batch(&mut sink, car, import::Batch::Drives(vec![row])).unwrap();
+
+        // a whole rebuild of the car from its logs
+        let job = again.rebuild(Scope::car(car)).unwrap();
+        again.idle().await;
+        let done = again.job(job.id).unwrap();
+        assert_eq!(done.status, engine::JobStatus::Done, "{done:?}");
+        assert_eq!(done.done, 5);
+        let all = query::drives::drives(&again, car, &Default::default(), &Paging::default()).unwrap().body.items;
+        assert_eq!(all.len(), 2, "the CAN drive and the imported one");
+        assert!(all.iter().any(|d| d.from.source == "teslamate" && d.distance_km == Some(10.0)));
+        let can_only = query::drives::DrivesQuery { source: Some("can".into()), ..Default::default() };
+        let can = query::drives::drives(&again, car, &can_only, &Paging::default()).unwrap().body.items;
+        assert_eq!(
+            can.iter().map(|d| (d.start_ms, d.end_ms)).collect::<Vec<_>>(),
+            first.0.iter().map(|d| (d.0, d.1)).collect::<Vec<_>>()
+        );
+        let totals = query::reports::totals(&again, car, None).unwrap().body;
+        assert_eq!((totals.drives, totals.charges), (2, 1));
+    });
+}
+
+const KEY2: &str = "beadfacade77";
+const KEY3: &str = "0ddba11cafe9";
+
+/// Stores a log and its sidecar, judged by `judge` (one with no listener: the engine is not told).
+async fn upload_with(store: &Store, judge: &Judge, name: &str, log: &[u8], side: &[u8]) {
+    for (n, b) in [(name.to_string(), log), (format!("{name}.json"), side)] {
+        let sha = hex::encode(Sha256::digest(b));
+        let r = store.receive(&n, b.to_vec().into(), 0, b.len() as u64, &sha).await.unwrap();
+        assert!(r.complete);
+        judge.arrived(&n).await.unwrap();
+    }
+}
+
+async fn send_of(k: &Kit, key: &str, i: u64, lon: f64) {
+    let (name, log, side) = minute_of(key, i, DAY[i as usize], lon, (i == 0).then_some(VIN));
+    upload(k, &name, &log).await;
+    upload(k, &format!("{name}.json"), &side).await;
+}
+
+fn logs_of(e: &Engine, car: u32) -> Vec<query::system::LogRow> {
+    tokio::task::block_in_place(|| query::system::logs(e, car, &Period::all(), &Paging::first(100))).unwrap().body.items
+}
+
+#[test]
+fn a_log_that_fails_its_check_while_no_one_is_told_is_taken_out_on_the_next_start() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..5 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        assert_eq!((drives(&k, car).len(), charges(&k, car).len()), (1, 1));
+
+        // the car is paired while the engine is down (a signed log, judged by a judge that tells no one), and its
+        // unsigned logs are judged again: they fail now
+        let silent = Judge::new(k.store.clone());
+        let (name, log, side) = minute(5, DAY[5]);
+        let mut side: serde_json::Value = serde_json::from_slice(&side).unwrap();
+        side["integrity"] = synth::Signer::from_seed(b"engine test").sign(KEY, &name, &log);
+        upload_with(&k.store, &silent, &name, &log, &serde_json::to_vec(&side).unwrap()).await;
+        silent.rejudge_all(KEY).await.unwrap();
+        let book = silent.book(KEY).await;
+        assert_eq!(book.logs.values().filter(|r| r.usable()).count(), 1, "only the signed log is used now");
+
+        let again = Engine::new(k.db.clone(), k.store.clone(), Options::default());
+        again.start().unwrap();
+        again.idle().await;
+        assert_eq!(again.stats().failures, 0, "{:?}", again.stats().last_error);
+        let none = query::drives::drives(&again, car, &Default::default(), &Paging::default()).unwrap().body.items;
+        assert!(none.is_empty(), "a failed log's drive is gone: {none:?}");
+        let cs = query::charges::charges(&again, &[car], &Default::default(), &Paging::default()).unwrap().items;
+        assert!(cs.is_empty(), "a failed log's charge is gone: {cs:?}");
+        let s = query::series::series(
+            &again,
+            car,
+            &query::series::SeriesQuery {
+                fields: vec!["speed_kph".into()],
+                from_ms: Some(T0_MS),
+                to_ms: Some(T0_MS + 300_000),
+                ..Default::default()
+            },
+            T0_MS + 400_000,
+        )
+        .unwrap();
+        assert!(s.body.values["speed_kph"].iter().all(Option::is_none), "and its samples");
+        let logs = logs_of(&again, car);
+        assert_eq!(logs.iter().filter(|l| l.decoded == "decoded").count(), 1, "{logs:#?}");
+        assert_eq!(logs.iter().filter(|l| l.decoded == "left_out").count(), 5);
+        let meta_counts =
+            tokio::task::block_in_place(|| query::system::health(&again, car, &Period::all())).unwrap().body;
+        assert_eq!(meta_counts.logs_waiting, 0);
+    });
+}
+
+#[test]
+fn a_cancelled_rebuild_still_brings_the_whole_history_back() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let before = shape(&k, car);
+        for _ in 0..3 {
+            let job = k.engine.rebuild(Scope::car(car)).unwrap();
+            k.engine.cancel(job.id);
+            k.engine.idle().await;
+            assert_eq!(shape(&k, car), before);
+            assert!(!k.engine.rebuild_pending(car));
+            assert_eq!(logs_of(&k.engine, car).iter().filter(|l| l.decoded == "decoded").count(), DAY.len());
+        }
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+    });
+}
+
+#[test]
+fn a_typed_cost_stays_when_a_late_log_moves_the_charge_start() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in [0, 1, 3, 4, 5] {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let cs = charges(&k, car);
+        assert_eq!(cs.len(), 1);
+        let id: u64 = cs[0].id.parse().unwrap();
+        engine::costs::set_manual(&k.engine, car, id, engine::costs::Mode::Total, 4.2, "EUR", false).unwrap();
+
+        send(&k, 2).await;
+        k.engine.idle().await;
+        let after = charges(&k, car);
+        assert_eq!(after.len(), 1);
+        assert!(after[0].start_ms < cs[0].start_ms, "the charge starts a minute earlier now");
+        assert_eq!(after[0].id, cs[0].id, "the charge keeps its id, so what points at it stays");
+        let cost = after[0].cost.as_ref().expect("the typed cost");
+        assert_eq!((cost.amount, cost.currency.as_str(), cost.source.as_str()), (4.2, "EUR", "manual"));
+    });
+}
+
+#[test]
+fn a_key_moved_to_another_car_takes_its_history_with_it() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let a = the_car(&k);
+        let b =
+            k.db.create_car(model::Car {
+                id: 0,
+                name: "Other".into(),
+                vehicle_keys: Vec::new(),
+                preferred_key: None,
+                vin: None,
+                profile_setting: None,
+                time_zone: "UTC".into(),
+                efficiency_wh_km: None,
+                created_ms: 0,
+                inputs: Default::default(),
+            })
+            .unwrap()
+            .id;
+        k.engine.assign_key(KEY, b).unwrap();
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        assert_eq!(k.db.car_for_key(KEY).unwrap(), Some(b));
+        assert!(drives(&k, a).is_empty() && charges(&k, a).is_empty(), "nothing of it stays on the car it left");
+        assert!(logs_of(&k.engine, a).is_empty());
+        assert_eq!((drives(&k, b).len(), charges(&k, b).len()), (1, 1));
+    });
+}
+
+#[test]
+fn a_new_key_goes_to_the_only_car_and_waits_when_there_are_several() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        send(&k, 0).await;
+        k.engine.idle().await;
+        let a = the_car(&k);
+        send_of(&k, KEY2, 1, LON).await;
+        k.engine.idle().await;
+        assert_eq!(k.db.car_for_key(KEY2).unwrap(), Some(a), "a new Screenmate on the only car");
+
+        let other = model::Car {
+            id: 0,
+            name: "Other".into(),
+            vehicle_keys: Vec::new(),
+            preferred_key: None,
+            vin: None,
+            profile_setting: None,
+            time_zone: "UTC".into(),
+            efficiency_wh_km: None,
+            created_ms: 0,
+            inputs: Default::default(),
+        };
+        k.db.create_car(other).unwrap();
+        for i in 0..2 {
+            send_of(&k, KEY3, i, LON).await;
+        }
+        k.engine.idle().await;
+        assert_eq!(k.db.car_for_key(KEY3).unwrap(), None);
+        assert_eq!(k.engine.waiting_keys().unwrap()[KEY3].logs_waiting, 2);
+        // told again by a restart: still two
+        let again = Engine::new(k.db.clone(), k.store.clone(), Options::default());
+        again.start().unwrap();
+        again.idle().await;
+        assert_eq!(again.waiting_keys().unwrap()[KEY3].logs_waiting, 2);
+        let made_one = Engine::new(k.db.clone(), k.store.clone(), Options::default());
+        assert_eq!(made_one.options().new_keys, engine::NewKeys::OnlyCarElseWait);
+    });
+}
+
+#[test]
+fn two_keys_at_once_give_one_source_per_second_the_preferred_one() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        send(&k, 0).await;
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let mut c = k.db.car(car).unwrap().unwrap();
+        c.vehicle_keys.push(KEY2.into());
+        c.preferred_key = Some(KEY2.into());
+        k.db.update_car(c).unwrap();
+        // the second recorder sees the car a degree further east (made up, to tell the two apart)
+        let east = LON + 1.0;
+        send_of(&k, KEY2, 0, east).await;
+        for i in 1..DAY.len() as u64 {
+            if i % 2 == 0 {
+                send_of(&k, KEY2, i, east).await;
+                send(&k, i).await;
+            } else {
+                send(&k, i).await;
+                send_of(&k, KEY2, i, east).await;
+            }
+            k.engine.idle().await;
+        }
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        let s = query::series::series(
+            &k.engine,
+            car,
+            &query::series::SeriesQuery {
+                fields: vec!["lon".into()],
+                from_ms: Some(T0_MS),
+                to_ms: Some(T0_MS + 360_000),
+                max_points: Some(400),
+                ..Default::default()
+            },
+            T0_MS + 400_000,
+        )
+        .unwrap();
+        assert_eq!(s.body.bucket_ms, 1000);
+        let lons: Vec<f64> = s.body.values["lon"].iter().flatten().copied().collect();
+        assert!(lons.len() > 30, "{}", lons.len());
+        assert!(lons.iter().all(|l| (l - east).abs() < 0.1), "only the preferred key's positions: {lons:?}");
+        assert_eq!(drives(&k, car).len(), 1);
+        assert_eq!(charges(&k, car).len(), 1);
+    });
+}
+
+#[test]
+fn a_log_naming_another_cars_vin_is_left_out() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let (name, log, side) = minute_of(KEY, 7, Minute::Drive, LON, Some(b"XP73GCEK0RB000077"));
+        upload(&k, &name, &log).await;
+        upload(&k, &format!("{name}.json"), &side).await;
+        k.engine.idle().await;
+        let c = k.db.car(car).unwrap().unwrap();
+        assert_eq!(c.vin.as_ref().map(|v| v.vin_prefix.as_str()), Some("XP7YGCEK0RB"), "the car's VIN stays");
+        let logs = logs_of(&k.engine, car);
+        let row = logs.iter().find(|l| l.name == name).unwrap();
+        assert_eq!(row.decoded, "left_out");
+        assert_eq!(drives(&k, car).len(), 1, "its drive is not the car's");
+    });
+}
+
+#[test]
+fn start_outside_a_runtime_can_be_tried_again() {
+    let k = rt().block_on(async { kit() });
+    let e = Engine::new(k.db.clone(), k.store.clone(), Options::default());
+    assert!(e.start().is_err());
+    let rt = rt();
+    rt.block_on(async {
+        e.start().unwrap();
+        e.idle().await;
+        assert_eq!(e.stats().failures, 0);
+    });
+}
+
+/// A second made-up car (a Model 3; no real car's VIN).
+const VIN2: &[u8; 17] = b"XP73GCEK0RB000077";
+
+#[test]
+fn a_new_key_whose_logs_name_another_vin_gets_a_car_of_its_own() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let a = the_car(&k);
+        for i in 0..3u64 {
+            let (name, log, side) = minute_of(KEY2, i, DAY[i as usize], LON + 2.0, Some(VIN2));
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &side).await;
+        }
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        let b = k.db.car_for_key(KEY2).unwrap().expect("a car for the second key");
+        assert_ne!(a, b, "another car's logger is not the only car");
+        let cb = k.db.car(b).unwrap().unwrap();
+        assert_eq!(cb.vin.as_ref().map(|v| v.vin_prefix.as_str()), Some("XP73GCEK0RB"));
+        assert!(logs_of(&k.engine, b).iter().all(|l| l.decoded == "decoded"), "none of its logs is left out");
+        assert_eq!(drives(&k, b).len(), 1);
+        assert_eq!(drives(&k, a).len(), 1);
+    });
+}
+
+#[test]
+fn a_new_key_whose_token_names_another_car_gets_a_car_of_its_own() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::create_dir_all(&data).unwrap();
+        let (v, _) = vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+        let tokens = Arc::new(ingest::Tokens::open(data.join("tokens.json"), Arc::new(v)).await.unwrap());
+        let (_, t1) = tokens.create("My car").await.unwrap();
+        tokens.tie(&t1, KEY).await.unwrap();
+        let (_, t2) = tokens.create("Other car").await.unwrap();
+        tokens.tie(&t2, KEY2).await.unwrap();
+        let (_, t3) = tokens.create("my car").await.unwrap();
+        tokens.tie(&t3, KEY3).await.unwrap();
+        k.engine.set_tokens(tokens);
+        send(&k, 0).await;
+        k.engine.idle().await;
+        let a = the_car(&k);
+        // no VIN in their logs: only the tokens tell the cars apart
+        for (key, i) in [(KEY2, 1u64), (KEY3, 2)] {
+            let (name, log, side) = minute_of(key, i, DAY[i as usize], LON, None);
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &side).await;
+            k.engine.idle().await;
+        }
+        let b = k.db.car_for_key(KEY2).unwrap().expect("a car for the other token's key");
+        assert_ne!(a, b, "a token made for another car");
+        assert_eq!(k.db.car_for_key(KEY3).unwrap(), Some(a), "a token made for the same car's name");
+
+        // an admin moves the key back: it stays where it is put, and a key taken from its car waits
+        let change = query::keys::KeyChange { car: Some(Some(a)), preferred: None };
+        let row = tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], KEY2, &change)).unwrap();
+        assert_eq!(row.car.map(|c| c.0), Some(a));
+        k.engine.idle().await;
+        let change = query::keys::KeyChange { car: Some(None), preferred: None };
+        tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], KEY3, &change)).unwrap();
+        k.engine.reconcile(None);
+        k.engine.idle().await;
+        assert_eq!(k.db.car_for_key(KEY3).unwrap(), None, "a key an admin took from its car waits");
+        let waiting = tokio::task::block_in_place(|| {
+            query::keys::can_keys(&k.engine, &[a, b], Some(false), None, &Paging::default())
+        })
+        .unwrap();
+        assert_eq!(waiting.items.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), vec![KEY3]);
+        let missing = query::keys::KeyChange { car: Some(Some(a)), preferred: None };
+        let e = tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], "000000000000", &missing));
+        assert!(matches!(e, Err(query::QueryError::NotFound("no_such_key"))), "{e:?}");
+    });
+}
+
+#[test]
+fn failed_logs_are_unknown_for_their_own_minutes_whatever_their_sidecar_claims() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        let mut signer = synth::Signer::from_seed(b"engine test failed");
+        let last = 20u64;
+        let failed = 3..=15u64;
+        for i in 0..=last {
+            let what = match i {
+                0 => Minute::Drive,
+                i if i == last => Minute::Quiet,
+                _ => Minute::Parked,
+            };
+            let (name, mut log, side) = minute_of(KEY, i, what, LON, (i == 0).then_some(VIN));
+            let mut side: serde_json::Value = serde_json::from_slice(&side).unwrap();
+            side["integrity"] = signer.sign(KEY, &name, &log);
+            if failed.contains(&i) {
+                // not the file that was signed
+                log.push(0);
+            }
+            if i == 3 {
+                // an unsigned span claiming three days either side
+                side["start_wall_ms"] = serde_json::json!(T0_MS - 3 * 86_400_000);
+                side["end_wall_ms"] = serde_json::json!(T0_MS + 3 * 86_400_000);
+            }
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &serde_json::to_vec(&side).unwrap()).await;
+        }
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        let car = the_car(&k);
+        let logs = logs_of(&k.engine, car);
+        assert_eq!(logs.iter().filter(|l| l.result == "failed").count(), 13, "{logs:#?}");
+        let states = query::timeline::states(&k.engine, car, &Period::all(), &Paging::first(500)).unwrap().body.items;
+        let newest = T0_MS + (last + 1) * 60_000;
+        for s in &states {
+            assert!(s.start_ms >= T0_MS - 60_000, "nothing before the first log: {s:?}");
+            assert!(s.end_ms.is_none_or(|e| e <= newest + 60_000), "nothing past the newest data: {s:?}");
+            if s.state == "unknown" && s.end_ms.is_none_or(|e| e - s.start_ms > 60_000) {
+                assert!(s.start_ms >= T0_MS + 2 * 60_000, "{s:?}");
+                assert!(s.end_ms.is_some_and(|e| e <= T0_MS + 19 * 60_000), "{s:?}");
+            }
+        }
+        let gaps =
+            tokio::task::block_in_place(|| query::timeline::gaps(&k.engine, car, &Period::all(), &Paging::default()))
+                .unwrap()
+                .body
+                .items;
+        assert_eq!(gaps.len(), 1, "{gaps:#?}");
+        assert_eq!((gaps[0].cause, gaps[0].gap_reason), ("unknown", "failed_check"));
+        let h = tokio::task::block_in_place(|| query::system::health(&k.engine, car, &Period::all())).unwrap().body;
+        // earlier failed logs are unknown time, not a problem now: the newest judged log verified
+        assert!(!h.reasons.contains(&"trust_failed"), "{:?}", h.reasons);
+        assert!(h.unknown_ms >= 10 * 60_000, "{}", h.unknown_ms);
+        assert!(h.unknown_spans.iter().any(|u| u.reason == "failed_check"), "{:?}", h.unknown_spans);
+        let t = h.last_log_trust.expect("the newest judged log");
+        assert_eq!((t.result.as_str(), t.log_start_ms), ("verified", Some(T0_MS + last * 60_000)));
+    });
+}
+
+#[test]
+fn live_values_after_a_charge_are_not_the_charge_s_while_driving() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        let plan = [Minute::Drive, Minute::Parked, Minute::Charging, Minute::Charging];
+        for (i, what) in plan.iter().enumerate() {
+            let (name, log, side) = minute_of(KEY, i as u64, *what, LON, (i == 0).then_some(VIN));
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &side).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let n = query::now::now_view(&k.engine, car).unwrap();
+        assert_eq!(n.charge.plugged.map(|p| p.value), Some(true));
+        let (name, log, side) = minute_of(KEY, 4, Minute::Drive, LON, None);
+        upload(&k, &name, &log).await;
+        upload(&k, &format!("{name}.json"), &side).await;
+        k.engine.idle().await;
+        let n = query::now::now_view(&k.engine, car).unwrap();
+        assert_ne!(n.charge.plugged.map(|p| p.value), Some(true), "{:?}", n.charge);
+        assert!(n.charge.kind.is_none() && n.charge.power_kw.is_none(), "{:?}", n.charge);
+        let at = n.at_ms.unwrap();
+        assert!(n.speed_kph.is_some_and(|v| v.at_ms <= at));
+        // a value of the newest log carries its own time, never a later one
+        for v in [n.soc_pct, n.range_km, n.odometer_km].into_iter().flatten() {
+            assert!(v.at_ms <= at && v.at_ms + 60_000 > at, "{v:?} at {at}");
+        }
+        let list = query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default()).unwrap().items;
+        assert_ne!(list[0].now.plugged, Some(true));
+        assert_eq!(list[0].now.charge_power_kw, None);
+    });
+}

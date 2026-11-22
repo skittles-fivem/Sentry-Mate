@@ -1,0 +1,64 @@
+/* Pebble: Import. Step cards with the current one's output, a drop zone, the report and the overlaps. */
+.im-steps-tile .tile-side { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s2); }
+.im-steps .mv-step-out > .rows { margin-top: var(--s1); }
+
+/* the drop zone: a big rounded target; the real file input lies over it, so a tap anywhere picks a file */
+.im-drop {
+  position: relative; display: grid; justify-items: center; align-content: center; gap: var(--s2); min-height: round(10rem, var(--e));
+  padding: var(--s5) var(--s4); border: 2px dashed var(--card-alt); border-radius: var(--r-card); background: var(--well);
+  text-align: center; cursor: pointer; transition: background-color 200ms, border-color 200ms;
+}
+.im-drop:hover, .im-drop.is-over { border-color: var(--coral-fill); background: var(--coral-soft); }
+.im-drop:focus-within { outline: 3px solid color-mix(in srgb, var(--coral-fill) 70%, transparent); outline-offset: 2px; }
+.im-file { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.im-drop-ic { display: grid; place-items: center; width: var(--h-btn); height: var(--h-btn); border-radius: 50%; background: var(--coral-fill); color: var(--on-coral); }
+.im-drop-main { font-size: var(--f16); line-height: var(--l16); font-weight: 800; }
+.im-drop-sub { max-width: 32em; font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+
+.im-file-name { display: flex; align-items: center; gap: var(--s2); font-size: var(--f16); line-height: var(--l16); font-weight: 700; overflow-wrap: anywhere; }
+.im-file-name .ic { width: var(--ic-sm); height: var(--ic-sm); flex: none; color: var(--muted); }
+.im-acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.im-acts > .im-drop { flex: 1 1 100%; }
+.im-why { font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+.im-cur .input, .input.im-cur { max-width: round(10rem, var(--e)); text-transform: uppercase; }
+.im-again { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s3); padding: var(--s2) var(--s1) 0; }
+.im-fail:not([hidden]) { margin-top: var(--s3); }
+
+/* numbers on the right of report rows line up */
+.im-n { font-size: var(--f16); line-height: var(--l16); font-weight: 800; font-variant-numeric: tabular-nums; }
+.im-span { font-size: var(--f20); line-height: var(--l20); font-weight: 800; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+
+/* what to know: short headed paragraphs */
+.im-know-list { display: flex; flex-direction: column; gap: var(--s4); }
+.im-know-list > div { display: flex; flex-direction: column; gap: var(--s1); }
+
+/* overlaps: a span per row with its switch */
+.im-spans { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s1); border-radius: var(--r-card); background: var(--well); }
+.im-span-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s3); padding: var(--s3); }
+.im-span-row + .im-span-row { border-top: 1px solid var(--card-alt); }
+.im-span-row .seg { flex: none; }
+.im-span-row > .row-text { flex: 1 1 round(16rem, var(--e)); }
+
+/* an import in the list: on a narrow tile its status and buttons go on their own line */
+.im-job-row { flex-wrap: wrap; }
+.im-job-row > .row-text { flex: 1 1 round(12rem, var(--e)); }
+.im-job-row > .row-side { flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
+
+/* a car key in the report: on a narrow tile its status chip goes on its own line, the facts keep the width */
+.im-key-row { flex-wrap: wrap; }
+.im-key-row > .row-text { flex: 1 1 round(14rem, var(--e)); }
+.im-key-row > .row-side { margin-left: auto; }
+/* refused logs: the name keeps a readable width; on a narrow tile the reason goes under it */
+.im-refused-logs .log-row { display: flex; flex-wrap: wrap; justify-content: space-between; column-gap: var(--s3); }
+.im-refused-logs .log-k { flex: 1 1 round(18rem, var(--e)); min-width: 0; }
+.im-refused-logs .log-v { flex: 0 1 auto; text-align: left; }
+
+/* the report's numbers */
+.im-report .tile-nums { padding: var(--s2) 0; }
+.im-report-of { font-size: var(--f14); line-height: var(--l14); color: var(--muted); overflow-wrap: anywhere; }
+.im-warn .num-n { color: var(--sun); }
+/* TeslaFi's start step and the overlap spans */
+.im-units { display: flex; flex-wrap: wrap; gap: var(--s4); }
+.im-span-kind { font-size: var(--f13); line-height: var(--l13); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.im-span-row.is-imports .im-span-kind { color: var(--sun); }
+.im-span-counts { display: flex; flex-wrap: wrap; gap: 0 var(--s3); }

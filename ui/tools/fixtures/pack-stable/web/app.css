@@ -1,0 +1,23 @@
+/* Checker fixture: stable. Passes every check but --stable on drives (jumps) and drive (flickers). */
+* { box-sizing: border-box; }
+html { font: 16px/1.4 system-ui, sans-serif; color: #1b1f24; background: #f6f7f9; }
+body { margin: 0; }
+.frame { display: flex; gap: 24px; align-items: baseline; padding: 12px 24px; background: #fff; border-bottom: 1px solid #d8dce1; }
+.nav { display: flex; gap: 16px; }
+.title { margin: 0; font-size: 20px; }
+main { padding: 24px; max-width: 100%; }
+.card { background: #fff; border: 1px solid #d8dce1; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.card h2 { margin: 0 0 8px; font-size: 18px; }
+.card p { margin: 0 0 4px; }
+.value { display: inline-block; min-width: 8ch; font-variant-numeric: tabular-nums; }
+/* a spinner that turns all the time: its box turns, its layout does not move */
+.spinner { width: 24px; height: 24px; border: 3px solid #8a939e; border-top-color: transparent; border-radius: 50%; animation: turn 1s linear infinite; }
+@keyframes turn { to { transform: rotate(360deg); } }
+/* map and chart stand-ins: what is inside redraws by design and is not watched */
+.maplibregl-map { position: relative; width: 240px; height: 120px; background: #e3e6ea; overflow: hidden; }
+.maplibregl-map .pin { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: #c0392b; }
+.chart { display: block; width: 240px; height: 60px; }
+/* drive: the list has a fixed height, so its flicker moves nothing */
+.box { height: 220px; overflow: hidden; }
+.banner { background: #fff4d6; border: 1px solid #e0c060; padding: 8px 16px; margin-bottom: 16px; }
+.badge.off { visibility: hidden; }

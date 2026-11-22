@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en" data-cover="web.shell.document-language">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#eef1f6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17191e" media="(prefers-color-scheme: dark)">
+  <title data-cover="shell.page_title web.shell.page-title">Sentry Mate</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="manifest" href="/manifest.webmanifest" data-cover="shell.installable web.shell.installable">
+  <script src="/boot.js"></script>
+  <link rel="preload" href="/fonts/manrope-500.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/manrope-700.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/manrope-800.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/jetbrainsmono-regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/core/start.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="scroller" id="scroller">
+    <div class="shell" id="shell">
+      <header class="head" id="head"></header>
+      <div class="notices" id="notices" hidden></div>
+      <main class="bento" id="main" tabindex="-1"></main>
+      <footer class="foot" id="foot"></footer>
+    </div>
+  </div>
+  <nav class="dock" id="dock" aria-label="Main"></nav>
+  <div class="toasts" id="toasts" role="status" aria-live="polite" data-cover="shell.banner.flash web.shell.flash"></div>
+</body>
+</html>

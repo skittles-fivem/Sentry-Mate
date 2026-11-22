@@ -1,0 +1,29 @@
+/* Timeline (pages/timeline.js): filters, the state summary, the strip, the rows. */
+.tl-filters { flex-wrap: wrap; }
+.tl-filters .seg { flex-wrap: wrap; }
+.tl-filters .field--search { width: round(18rem, var(--e)); }
+.tl-summary { margin-bottom: var(--gap); }
+.tl-summary .figures { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@container page (max-width: 30rem) { .tl-summary .figures.figures { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.metric-value--sm { font-size: 1.125rem; white-space: normal; }
+.tl-rows { padding-bottom: round(0.25rem, var(--e)); overflow: hidden; }
+.tl-rows .tbl-bar { border-bottom: 0; }
+.tl-legend-note { padding: 0 round(1.375rem, var(--e)) round(0.5rem, var(--e)); }
+.tl-rows .day-head { border-top: 1px solid var(--line); }
+.tl-rows .day-head:first-child { border-top: 0; }
+.tl-rows .tl-item { grid-template-columns: round(11rem, var(--e)) round(1.375rem, var(--e)) minmax(0, 1fr) round(6.5rem, var(--e)) round(1.25rem, var(--e)); }
+.tl-skel { min-height: round(3.25rem, var(--e)); }
+.tl-help { margin-top: var(--gap); }
+.tl-help summary { display: flex; align-items: center; gap: round(0.5rem, var(--e)); cursor: pointer; font-weight: 600; color: var(--text-2); }
+.tl-help summary:hover { color: var(--text); }
+.help-list { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); margin-top: round(0.875rem, var(--e)); max-width: round(60rem, var(--e)); color: var(--text-2); }
+.help-list b { color: var(--text); font-weight: 600; }
+
+@container page (max-width: 85.375rem) {
+  .tl-summary .figures { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container page (max-width: 76rem) {
+  .tl-rows .tl-item { grid-template-columns: round(8.5rem, var(--e)) round(1.125rem, var(--e)) minmax(0, 1fr) round(5rem, var(--e)) round(1rem, var(--e)); column-gap: round(0.625rem, var(--e)); padding: 0 round(1rem, var(--e)); }
+}
+.tl-car-src { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.375rem, var(--e)); margin-top: round(0.25rem, var(--e)); }
+.tl-fp { color: var(--live); font-weight: 500; }

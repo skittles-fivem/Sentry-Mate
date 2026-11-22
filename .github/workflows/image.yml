@@ -1,0 +1,273 @@
+name: Image
+
+# Tests Sentry Mate and publishes its Docker image to GitHub's registry,
+# ghcr.io/<owner>/<repo> (ghcr.io/skittles-fivem/sentry-mate), for amd64 and
+# arm64.
+#   - Every image gets a build number: this workflow's run number, which
+#     only ever goes up (runs that published nothing leave gaps). It shows in
+#     `sentry-mate --version` as build-N, with sha-<commit> and the date, and
+#     in the label org.opencontainers.image.version=build-N.
+#   - A push to main that changes code publishes `latest`, `build-N` and
+#     `sha-<commit>` (pin a `build-` or `sha-` tag in the compose file to
+#     stay on, or go back to, a version).
+#   - Running it by hand for another branch (Actions > Image > Run workflow)
+#     publishes an image tagged with that branch's name, and `sha-<commit>`
+#     when no image has that tag yet (no `build-N` tag: those are only for
+#     releases from main). A branch or git tag named latest, build-... or
+#     sha-... gets branch- in front, so it never replaces a release's tag.
+#   - A push that changes only README.md, docs/ or truenas/ runs nothing: no
+#     code changed, so there is nothing to test and no new image.
+# This replaces ci.yml: it ran the same tests on every push to main, so with
+# this file they would have run twice.
+# The owner's limit: a push to main takes at most 5 minutes, tests and image
+# (docs/development.md has what the runs so far measured; check the job times
+# on a run's page).
+#   - tests runs the fast set (cargo test --workspace --locked, split in two
+#     halves on two machines at once): every unit test and the quick
+#     integration tests, which still take each main
+#     feature end to end once (upload, check, decode, a drive and a charge on
+#     the web API; sign-in and accounts; places; imports; the Tesla client;
+#     moving; the certificate; the packs). The slow tests, which decode
+#     several days of made-up logs each, are #[ignore]d and run in
+#     full-tests.yml (weekly and by hand). docs/development.md has both sets.
+#   - clippy and cargo fmt run beside them, on a machine of their own.
+#   - the image build keeps the dependencies in a layer of their own, cached
+#     per arch in GitHub's cache (type=gha): a push that changes no
+#     Cargo.toml or Cargo.lock builds only the workspace's own crates. That
+#     build is the longest step of a run: with full LTO and one codegen unit
+#     it took 9 minutes, so the release profile (Cargo.toml) has neither.
+# The tests, clippy and the two images (each on its own kind of
+# machine, no emulation) run at the same time. The images are pushed only by
+# digest, which nobody pulls; the tags that people pull are put on them last,
+# and only when the tests and clippy passed and both images passed
+# .github/check-image.sh, as 1000:1000 and as TrueNAS's 568:568: folders it
+# can't keep refused (root's, not mounted, the keys inside the data), no
+# capabilities, a read-only root, healthy, TLS 1.3 only, the recovery key
+# file in keys, a token made with docker exec, a clean stop, the same
+# certificate after a restart.
+# Every action is pinned to a full commit id (its version in the comment) and
+# the Rust base image in the Dockerfile to a digest: a moved tag or branch
+# upstream can't change what runs here with the packages:write token, or what
+# goes into `latest`. Dependabot (.github/dependabot.yml) proposes the bumps;
+# crates/sentry-mate/tests/repo_hygiene.rs fails on an unpinned one.
+# New packages are private: make it public once under the owner's
+# Packages > sentry-mate > Package settings so anyone can pull it.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['README.md', 'docs/**', 'truenas/**']
+  workflow_dispatch:
+
+# Read-only by default; only the jobs that push images may write packages.
+permissions:
+  contents: read
+
+# A newer push replaces a build still running for an older one.
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  names:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.names.outputs.image }}
+      tag: ${{ steps.names.outputs.tag }}
+      sha: ${{ steps.names.outputs.sha }}
+      short: ${{ steps.names.outputs.short }}
+      created: ${{ steps.names.outputs.created }}
+      build: ${{ steps.names.outputs.build }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Image name and tag
+        id: names
+        run: |
+          branch="$GITHUB_REF_NAME"
+          if [ "$branch" = main ]; then tag=latest; else tag="${branch//[^A-Za-z0-9_.-]/-}"; tag="${tag#[.-]}"; fi
+          # latest, build-N and sha- are main's tags: a branch named like one gets branch- in front
+          if [ "$branch" != main ]; then case "$tag" in latest|build-*|sha-*) tag="branch-$tag" ;; esac; fi
+          sha="$(git rev-parse HEAD)"
+          {
+            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+            echo "tag=${tag:0:120}"
+            echo "sha=$sha"
+            echo "short=${sha:0:7}"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "build=$GITHUB_RUN_NUMBER"
+          } >> "$GITHUB_OUTPUT"
+
+  # The fast set, in two halves on two machines at once (cargo runs one test
+  # binary at a time, and most of them wait more than they work): web, the
+  # binary and moving in one, every other crate in the other (a new crate
+  # lands there by itself). The slow tests are in full-tests.yml.
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - half: web
+            packages: -p web -p sentry-mate -p moving
+          - half: rest
+            packages: --workspace --exclude web --exclude sentry-mate --exclude moving
+    steps:
+      # (the tests never see a token)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: tests-${{ matrix.half }}
+      - run: cargo test --locked ${{ matrix.packages }}
+
+  # Beside the tests, on a machine of its own (its own build cache too).
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable branch
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo clippy -p sentry-mate --all-targets --features dev-seed --locked -- -D warnings
+
+  build:
+    needs: names
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build for checking (${{ matrix.arch }})
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: sentry-mate:check
+          build-args: |
+            BUILD_NUMBER=${{ needs.names.outputs.build }}
+            GIT_SHA=${{ needs.names.outputs.sha }}
+            BUILD_DATE=${{ needs.names.outputs.created }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      # as the image's own user (1000), then as TrueNAS's apps user (568)
+      - name: Check the image
+        env:
+          EXPECT_VERSION: build-${{ needs.names.outputs.build }}, sha-${{ needs.names.outputs.short }}
+        run: |
+          label="$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' sentry-mate:check)"
+          [ "$label" = "build-${{ needs.names.outputs.build }}" ] || { echo "::error::version label: $label"; exit 1; }
+          .github/check-image.sh sentry-mate:check
+          .github/check-image.sh sentry-mate:check 568
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushed by digest only (no tag), from the build cache of the check above
+      - name: Push by digest (${{ matrix.arch }})
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ needs.names.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            BUILD_NUMBER=${{ needs.names.outputs.build }}
+            GIT_SHA=${{ needs.names.outputs.sha }}
+            BUILD_DATE=${{ needs.names.outputs.created }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      - name: Keep the digest
+        run: |
+          mkdir -p digests
+          digest="${{ steps.push.outputs.digest }}"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest"; exit 1; }
+          touch "digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [names, tests, clippy, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag both images (amd64, arm64)
+        working-directory: digests
+        run: |
+          image="${{ needs.names.outputs.image }}"
+          tag="${{ needs.names.outputs.tag }}"
+          sha="$image:sha-${{ needs.names.outputs.short }}"
+          test "$(ls | wc -l)" -eq 2
+          tags=()
+          if [ "$tag" = latest ]; then
+            # a release (main): build-N only for one
+            tags+=(-t "$sha" -t "$image:build-${{ needs.names.outputs.build }}")
+          elif ! docker buildx imagetools inspect "$sha" >/dev/null 2>&1; then
+            # a branch run by hand: sha- only for a commit no image has yet (a
+            # branch just reset to main would move the release's)
+            tags+=(-t "$sha")
+          fi
+          # The tags are pushed one after another, in this order: the one that
+          # moves (latest, or the branch's) last, so a run cancelled in between
+          # never leaves latest on a build whose build-N tag is missing.
+          tags+=(-t "$image:$tag")
+          docker buildx imagetools create "${tags[@]}" $(printf "$image@sha256:%s " *)
+          docker buildx imagetools inspect "$image:$tag"

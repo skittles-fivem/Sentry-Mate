@@ -1,0 +1,24 @@
+{
+  "about": "A tiny coverage matrix for the page checker's own fixtures (node ui/tools/check.js --self-test). Same shape as docs/parity/coverage-matrix.json.",
+  "pages": {
+    "frame": { "name": "App frame", "route": "(shared by every page)" },
+    "fleet": { "name": "Fleet", "route": "/" },
+    "drives": { "name": "Drives", "route": "/cars/{car}/drives" },
+    "drive": { "name": "Drive detail", "route": "/cars/{car}/drives/{drive}" },
+    "charge": { "name": "Charge detail", "route": "/cars/{car}/charges/{charge}" },
+    "health": { "name": "Data health and storage", "route": "/cars/{car}/health  and  /system" }
+  },
+  "items": [
+    { "id": "fx.frame.nav", "page": "frame", "section": "Navigation" },
+    { "id": "fx.frame.title", "page": "frame", "section": "Navigation" },
+    { "id": "fx.fleet.list", "page": "fleet", "section": "Cars" },
+    { "id": "fx.fleet.summary", "page": "fleet", "section": "Summary" },
+    { "id": "fx.drives.table", "page": "drives", "section": "List" },
+    { "id": "fx.drive.figures", "page": "drive", "section": "Figures" },
+    { "id": "fx.charge.figures", "page": "charge", "section": "Figures" },
+    { "id": "fx.health.car", "page": "health", "section": "Per-car health" },
+    { "id": "fx.health.server", "page": "health", "section": "Server health" },
+    { "id": "fx.na.separate-app", "page": "not-applicable", "section": "Not needed" }
+  ],
+  "unmapped": []
+}

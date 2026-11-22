@@ -1,0 +1,82 @@
+/* Checker fixture: pixel. Every size here is a whole pixel (line heights too), so the .ok cases sit on whole
+   device pixels; each .bad rule says what it breaks. */
+* { box-sizing: border-box; }
+html { font: 16px/20px system-ui, sans-serif; color: #1b1f24; background: #f6f7f9; }
+body { margin: 0; }
+button, input, select { font: inherit; line-height: 20px; color: inherit; }
+.frame { display: flex; gap: 24px; align-items: center; height: 52px; padding: 12px 16px; background: #fff; border-bottom: 1px solid #d8dce1; }
+.nav { display: flex; gap: 16px; }
+.title { margin: 0; font-size: 20px; line-height: 28px; }
+main { padding: 16px; }
+.card { width: 340px; background: #fff; border: 1px solid #d8dce1; border-radius: 8px; padding: 15px; }
+.case { margin: 0 0 12px; }
+.label { margin: 0 0 4px; font-size: 12px; line-height: 16px; color: #4a525c; }
+
+.coverbox { position: relative; height: 40px; }
+.covered { margin: 0; }
+.stretch { position: absolute; inset: 0; }
+/* breaks "hidden": an opaque box over the text */
+.lid { position: absolute; left: 0; top: 0; width: 60px; height: 20px; background: #c9d3de; }
+
+.labels { position: relative; height: 20px; }
+.labels span { position: absolute; top: 0; }
+.labels .one { left: 0; }
+.labels.ok .two { left: 120px; }
+/* breaks "overlap": the second label starts inside the first */
+.labels.bad .two { left: 16px; }
+
+.boxes { display: flex; gap: 8px; align-items: center; }
+.badge { display: inline-block; width: 48px; padding: 2px 8px; font-size: 12px; line-height: 20px; text-align: center; background: #e3e8ee; border-radius: 12px; }
+/* breaks "centre": 9 px left, 7 px right puts the text 1 px right */
+.badge.bad { padding: 2px 7px 2px 9px; }
+.chip { width: 72px; padding: 4px 0; border: 1px solid #b4bcc6; border-radius: 15px; background: #fff; }
+/* breaks "centre": 5 px top, 3 px bottom puts the text 1 px low */
+.chip.bad { padding: 5px 0 3px; }
+.iconbtn { display: flex; justify-content: center; align-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid #b4bcc6; border-radius: 6px; background: #fff; }
+.glyph { display: block; width: 16px; height: 16px; fill: #1b1f24; }
+/* breaks "centre": the icon 1 px low */
+.iconbtn.bad .glyph { margin-top: 2px; }
+.avatar { display: flex; justify-content: center; align-items: center; width: 40px; height: 40px; border-radius: 20px; background: #c9d3de; font-size: 14px; }
+/* breaks "centre": the initials 1 px left */
+.avatar.bad .initials { margin-right: 2px; }
+
+.empty { width: 240px; margin: 0; text-align: center; }
+.spacer { display: inline-block; width: 0; }
+/* breaks "centre": an invisible 2 px spacer at the end of the centred text */
+.empty.bad .spacer { width: 2px; }
+
+.fields { display: flex; gap: 8px; align-items: flex-start; }
+.fields > * { height: 32px; margin: 0; padding: 0 8px; border: 1px solid #b4bcc6; border-radius: 4px; background: #fff; }
+.f-input { width: 120px; }
+.f-select { width: 100px; }
+.f-button { width: 64px; }
+/* breaks "row": the select 1 px lower */
+.fields.bad .f-select { margin-top: 1px; }
+
+.grid { border-collapse: collapse; }
+.grid td { padding: 8px 12px; }
+/* breaks "row": 10 px on top and 8 px below put the middle cell's text 1 px lower */
+.grid.bad td.c2 { padding-top: 10px; }
+
+.stack > div { width: 200px; background: #eef1f4; }
+/* breaks "column": the middle block 2 px in */
+.stack.bad .s2 { margin-left: 2px; }
+
+.frac-wrap { height: 44px; }
+.frac { width: 120px; height: 28px; padding: 3px 8px; border: 1px solid #b4bcc6; }
+.rule { height: 1px; margin-top: 8px; background: #b4bcc6; }
+/* breaks "fraction": half pixels */
+.frac.bad { margin-left: 0.5px; }
+.rule.bad { margin-top: 7.5px; }
+
+.clipbox { width: 120px; margin: 0; overflow: hidden; white-space: nowrap; }
+.clipbox.ok { text-overflow: ellipsis; }
+.tight { width: 200px; margin: 4px 0 0; overflow: hidden; line-height: 16px; white-space: nowrap; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.over { width: 80px; margin: 0; }
+/* breaks "overflow": the text cannot wrap and sticks out */
+.over.bad { white-space: nowrap; }
+
+/* breaks "scroll": wider than any window */
+.wide { width: 2000px; height: 8px; background: #c9d3de; }

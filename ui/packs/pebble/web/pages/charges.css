@@ -1,0 +1,32 @@
+/* Pebble: Charges. Session tiles, the week map, each session's start-to-end bar. */
+.tl-list-start { height: 0; }
+.charge-more { overflow-wrap: anywhere; }
+.cost-link { display: inline-flex; align-items: center; min-height: var(--l16); font-size: var(--f16); line-height: var(--l16); font-weight: 800; font-variant-numeric: tabular-nums; color: var(--text); text-decoration: none; }
+a.cost-link { color: var(--coral); }
+a.cost-link:hover { text-decoration: underline; }
+.cost-link.is-missing { color: var(--muted); font-weight: 700; }
+a.cost-link.is-missing { color: var(--coral); }
+.inc-list { display: flex; flex-direction: column; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.inc-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s3); font-size: var(--f14); line-height: var(--l14); font-variant-numeric: tabular-nums; }
+.inc-id { font-size: var(--f13); line-height: var(--l14); font-weight: 400; }
+.inc-n { margin-left: auto; color: var(--muted); }
+
+/* when in the week: 7 rows of 24 hours */
+.week { display: grid; grid-template-columns: auto repeat(24, minmax(0, 1fr)); grid-template-rows: auto repeat(7, var(--s5)); gap: 1px; align-items: center; }
+.week-corner { grid-column: 1; grid-row: 1; }
+.week-x { grid-row: 1; grid-column: var(--c) / span 6; font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
+.week-y { grid-column: 1; grid-row: var(--r); padding-right: var(--s2); font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
+.week-cell { grid-column: var(--c); grid-row: var(--r); display: block; height: 100%; border-radius: var(--s1); background: var(--card-alt); }
+.week-cell.has-n { background: color-mix(in srgb, var(--teal) calc(18% + var(--a) * 82%), var(--card-alt)); }
+.week-cell.is-hit { box-shadow: inset 0 0 0 2px var(--coral-fill); }
+.week-read { min-height: calc(2 * var(--l14)); }
+
+/* each session from its start to its end level, over the daily band */
+.deltas { position: relative; display: flex; align-items: stretch; gap: var(--dp); height: round(12rem, var(--e)); padding: 0; border-radius: var(--r-sm); background: var(--chart-ground); overflow: hidden; }
+.deltas-band { position: absolute; left: 0; right: 0; top: 20%; bottom: 20%; background: var(--c3-wash); pointer-events: none; }
+.delta { position: relative; flex: 1 1 0; min-width: 0; display: block; }
+.delta:hover, .delta:focus-visible { background: var(--coral-soft); outline: none; }
+.delta-fill { position: absolute; left: 20%; right: 20%; bottom: calc(var(--lo) * 100%); height: calc((var(--hi) - var(--lo)) * 100%); min-height: var(--e); border-radius: var(--s1); background: var(--tone, var(--c1)); }
+.delta-fill.tone-teal { --tone: var(--teal); } .delta-fill.tone-sky { --tone: var(--sky); } .delta-fill.tone-muted { --tone: var(--muted); }
+.split-sw.tone-teal { --tone: var(--teal); } .split-sw.tone-sky { --tone: var(--sky); } .split-sw.tone-muted { --tone: var(--muted); }
+.deltas-sw { background: var(--c3-wash); box-shadow: inset 0 0 0 1px var(--teal); }

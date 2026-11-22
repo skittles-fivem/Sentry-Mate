@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en" data-cover="web.shell.document-language">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f6f2e9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#11151b" media="(prefers-color-scheme: dark)">
+  <title data-cover="shell.page_title web.shell.page-title">Sentry Mate</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="manifest" href="/manifest.webmanifest" data-cover="shell.installable web.shell.installable">
+  <script src="/boot.js"></script>
+  <link rel="preload" href="/fonts/charter-regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/inter-regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/core/start.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="masthead" id="masthead">
+    <div class="wrap masthead-row" id="masthead-row">
+      <a class="brand" href="/" aria-label="Sentry Mate, home" data-cover="shell.nav.home web.shell.logo-home web.shell.home-routing">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <rect class="brand-mark-bg" width="32" height="32" rx="7"/>
+          <path class="brand-mark-road" d="M9 23c3.5 0 4-4.5 7-7s7-1.5 7-7"/>
+          <circle class="brand-mark-dot" cx="9" cy="23" r="2.6"/>
+          <circle class="brand-mark-ring" cx="23" cy="9" r="2.6"/>
+        </svg>
+        <span class="brand-name">Sentry Mate</span>
+      </a>
+      <div class="masthead-slot" id="car-slot"></div>
+      <div class="masthead-slot" id="period-slot"></div>
+      <div class="masthead-tools" id="tools-slot"></div>
+    </div>
+    <nav class="primary-nav" id="primary-nav" aria-label="Pages"></nav>
+  </header>
+
+  <div class="notices" id="notices" hidden></div>
+  <div class="flash-zone wrap" id="flash" role="status" aria-live="polite" data-cover="shell.banner.flash web.shell.flash"></div>
+
+  <main id="main" class="wrap main" tabindex="-1"></main>
+
+  <footer class="colophon" id="colophon"></footer>
+</body>
+</html>

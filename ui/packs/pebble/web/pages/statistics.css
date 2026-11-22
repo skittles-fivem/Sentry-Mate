@@ -1,0 +1,18 @@
+/* Pebble: Statistics. One tile per period with its figures and links, the record bar, the milestones. */
+.st-precise { padding-top: var(--s4); padding-bottom: var(--s4); }
+.st-row .tile-nums { grid-template-columns: repeat(auto-fill, minmax(min(100%, round(9rem, var(--e))), 1fr)); gap: var(--s3) var(--s5); }
+.st-name { color: var(--text); text-decoration: none; }
+a.st-name:hover { color: var(--coral); text-decoration: underline; }
+.st-count { display: inline-flex; align-items: baseline; font-size: var(--f16); line-height: var(--l16); font-weight: 800; font-variant-numeric: tabular-nums; color: var(--coral); text-decoration: none; }
+a.st-count:hover { text-decoration: underline; }
+.st-count.is-zero { color: var(--muted); }
+.st-rec { display: flex; flex-direction: column; gap: var(--s1); }
+.cov { position: relative; display: block; height: var(--s2); border-radius: 999px; background: var(--card-alt); overflow: hidden; }
+.cov-fill { position: absolute; left: 0; top: 0; bottom: 0; width: max(var(--s2), round(calc(var(--v, 0) * 100%), var(--e))); border-radius: 999px; background: var(--teal); }
+.stones { display: flex; flex-direction: column; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.stone { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; column-gap: var(--s3); padding: var(--s2) 0; }
+.stone + .stone { border-top: 1px solid var(--card-alt); }
+.stone-text { display: flex; flex-direction: column; min-width: 0; font-size: var(--f14); line-height: var(--l14); color: var(--muted); font-variant-numeric: tabular-nums; }
+.stone-text b { font-size: var(--f16); line-height: var(--l16); font-weight: 800; color: var(--text); }
+.stone-go { display: grid; place-items: center; width: var(--h-btn); height: var(--h-btn); border-radius: 50%; color: var(--coral); }
+.stone-go:hover { background: var(--coral-soft); }

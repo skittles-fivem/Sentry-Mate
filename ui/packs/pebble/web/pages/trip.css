@@ -1,0 +1,6 @@
+/* Pebble: Trip. The map, totals, where time and energy went, then legs by day. */
+.tot-nums { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s4); }
+.tot-nums > div { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.tot-money { font-size: var(--f28); line-height: var(--l28); font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.totals-tile.is-end { grid-column: 1 / -1; }
+.charge-item .socbar { --tone: var(--teal); }

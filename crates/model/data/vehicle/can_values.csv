@@ -1,0 +1,73 @@
+signal,code,dbc_name,value,label,source,confidence
+GTW_chassisType,0,MODEL_S_CHASSIS,S,Model S,model3dbc Model3CAN.dbc VAL_ 2047 GTW_chassisType,high
+GTW_chassisType,1,MODEL_X_CHASSIS,X,Model X,model3dbc Model3CAN.dbc VAL_ 2047 GTW_chassisType,high
+GTW_chassisType,2,MODEL_3_CHASSIS,3,Model 3,model3dbc Model3CAN.dbc VAL_ 2047 GTW_chassisType,high
+GTW_chassisType,3,MODEL_Y_CHASSIS,Y,Model Y,model3dbc Model3CAN.dbc VAL_ 2047 GTW_chassisType,high
+GTW_drivetrainType,0,RWD,RWD,RWD,model3dbc Model3CAN.dbc VAL_ 2047 GTW_drivetrainType,high
+GTW_drivetrainType,1,AWD,AWD,AWD,model3dbc Model3CAN.dbc VAL_ 2047 GTW_drivetrainType,high
+GTW_performancePackage,0,BASE,false,Base,model3dbc Model3CAN.dbc VAL_ 2047 GTW_performancePackage,high
+GTW_performancePackage,1,PERFORMANCE,true,Performance,model3dbc Model3CAN.dbc VAL_ 2047 GTW_performancePackage,high
+GTW_performancePackage,2,LUDICROUS,true,Ludicrous,model3dbc Model3CAN.dbc VAL_ 2047 GTW_performancePackage,high
+GTW_performancePackage,3,BASE_PLUS,false,Base Plus (Standard Range Plus),model3dbc Model3CAN.dbc VAL_ 2047 GTW_performancePackage,high
+GTW_performancePackage,4,BASE_PLUS_AWD,false,Base Plus AWD,model3dbc Model3CAN.dbc VAL_ 2047 GTW_performancePackage,high
+GTW_efficiencyPackage,0,DEFAULT,,Default,model3dbc Model3CAN.dbc VAL_ 2047 GTW_efficiencyPackage,high
+GTW_efficiencyPackage,1,M3_SR_PLUS_2020,,M3 Sr Plus 2020,model3dbc Model3CAN.dbc VAL_ 2047 GTW_efficiencyPackage,high
+GTW_efficiencyPackage,2,M3_LR_2020,,M3 Lr 2020,model3dbc Model3CAN.dbc VAL_ 2047 GTW_efficiencyPackage,high
+GTW_efficiencyPackage,3,M3_LR_PERFORMANCE_2020,,M3 Lr Performance 2020,model3dbc Model3CAN.dbc VAL_ 2047 GTW_efficiencyPackage,high
+GTW_softRange,0,STANDARD,,Standard,model3dbc Model3CAN.dbc VAL_ 2047 GTW_softRange,high
+GTW_softRange,1,RANGE_220_MILES,,Range 220 Miles,model3dbc Model3CAN.dbc VAL_ 2047 GTW_softRange,high
+GTW_softRange,2,RANGE_93_MILES,,Range 93 Miles,model3dbc Model3CAN.dbc VAL_ 2047 GTW_softRange,high
+GTW_wheelType,0,PINWHEEL_18,18,Pinwheel 18,model3dbc Model3CAN.dbc VAL_ 2047 GTW_wheelType,high
+GTW_wheelType,1,STILETTO_19,19,Stiletto 19,model3dbc Model3CAN.dbc VAL_ 2047 GTW_wheelType,high
+GTW_wheelType,2,STILETTO_20,20,Stiletto 20,model3dbc Model3CAN.dbc VAL_ 2047 GTW_wheelType,high
+GTW_wheelType,3,STILETTO_20_DARK_STAGGERED,20,Stiletto 20 Dark Staggered,model3dbc Model3CAN.dbc VAL_ 2047 GTW_wheelType,high
+GTW_wheelType,4,GEMINI_19_SQUARE,19,Gemini 19 Square,model3dbc Model3CAN.dbc VAL_ 2047 GTW_wheelType,high
+GTW_wheelType,5,GEMINI_19_STAGGERED,19,Gemini 19 Staggered,model3dbc Model3CAN.dbc VAL_ 2047 GTW_wheelType,high
+GTW_wheelType,14,STILETTO_20_DARK_SQUARE,20,Stiletto 20 Dark Square,model3dbc Model3CAN.dbc VAL_ 2047 GTW_wheelType,high
+GTW_wheelType,15,INDUCTION_20_BLACK,20,Induction 20 Black,model3dbc Model3CAN.dbc VAL_ 2047 GTW_wheelType,high
+GTW_wheelType,16,UBERTURBINE_21_BLACK,21,Uberturbine 21 Black,model3dbc Model3CAN.dbc VAL_ 2047 GTW_wheelType,high
+GTW_wheelType,17,APOLLO_19_SILVER,19,Apollo 19 Silver,model3dbc Model3CAN.dbc VAL_ 2047 GTW_wheelType,high
+GTW_wheelType,18,PINWHEEL_18_CAP_KIT,18,Pinwheel 18 Cap Kit,model3dbc Model3CAN.dbc VAL_ 2047 GTW_wheelType,high
+GTW_wheelType,19,ZEROG_20_GUNPOWDER,20,Zerog 20 Gunpowder,model3dbc Model3CAN.dbc VAL_ 2047 GTW_wheelType,high
+GTW_wheelType,20,APOLLO_19_SILVER_CAP_KIT,19,Apollo 19 Silver Cap Kit,model3dbc Model3CAN.dbc VAL_ 2047 GTW_wheelType,high
+GTW_tireType,1,MICHELIN_ALL_SEASON_18,18,Michelin All Season 18,model3dbc Model3CAN.dbc VAL_ 2047 GTW_tireType,high
+GTW_tireType,2,MICHELIN_SUMMER_18,18,Michelin Summer 18,model3dbc Model3CAN.dbc VAL_ 2047 GTW_tireType,high
+GTW_tireType,3,HANKOOK_SUMMER_19,19,Hankook Summer 19,model3dbc Model3CAN.dbc VAL_ 2047 GTW_tireType,high
+GTW_tireType,4,CONTI_ALL_SEASON_19,19,Conti All Season 19,model3dbc Model3CAN.dbc VAL_ 2047 GTW_tireType,high
+GTW_tireType,5,MICHELIN_SUMMER_20,20,Michelin Summer 20,model3dbc Model3CAN.dbc VAL_ 2047 GTW_tireType,high
+GTW_tireType,17,GOODYEAR_ALL_SEASON_20,20,Goodyear All Season 20,model3dbc Model3CAN.dbc VAL_ 2047 GTW_tireType,high
+GTW_tireType,18,PIRELLI_SUMMER_21,21,Pirelli Summer 21,model3dbc Model3CAN.dbc VAL_ 2047 GTW_tireType,high
+GTW_tireType,19,MICHELIN_ALL_SEASON_21,21,Michelin All Season 21,model3dbc Model3CAN.dbc VAL_ 2047 GTW_tireType,high
+GTW_exteriorColor,0,RED_MULTICOAT,,Red Multicoat,model3dbc Model3CAN.dbc VAL_ 2047 GTW_exteriorColor,medium
+GTW_exteriorColor,1,SOLID_BLACK,,Solid Black,model3dbc Model3CAN.dbc VAL_ 2047 GTW_exteriorColor,medium
+GTW_exteriorColor,2,SILVER_METALLIC,,Silver Metallic,model3dbc Model3CAN.dbc VAL_ 2047 GTW_exteriorColor,medium
+GTW_exteriorColor,3,MIDNIGHT_SILVER,,Midnight Silver,model3dbc Model3CAN.dbc VAL_ 2047 GTW_exteriorColor,medium
+GTW_exteriorColor,5,DEEP_BLUE,,Deep Blue,model3dbc Model3CAN.dbc VAL_ 2047 GTW_exteriorColor,medium
+GTW_exteriorColor,6,PEARL_WHITE,,Pearl White,model3dbc Model3CAN.dbc VAL_ 2047 GTW_exteriorColor,medium
+GTW_roofType,0,METAL,,Metal roof,model3dbc Model3CAN.dbc VAL_ 2047 GTW_roofType,medium
+GTW_roofType,1,FIXED_GLASS,,Glass roof,model3dbc Model3CAN.dbc VAL_ 2047 GTW_roofType,medium
+GTW_roofType,2,PANORAMIC,,Panoramic roof,model3dbc Model3CAN.dbc VAL_ 2047 GTW_roofType,medium
+GTW_spoilerType,0,NOT_INSTALLED,,Not Installed,model3dbc Model3CAN.dbc VAL_ 2047 GTW_spoilerType,high
+GTW_spoilerType,1,PASSIVE,,Passive,model3dbc Model3CAN.dbc VAL_ 2047 GTW_spoilerType,high
+GTW_rightHandDrive,0,LEFT,left,Left-hand drive,model3dbc Model3CAN.dbc VAL_ 2047 GTW_rightHandDrive,high
+GTW_rightHandDrive,1,RIGHT,right,Right-hand drive,model3dbc Model3CAN.dbc VAL_ 2047 GTW_rightHandDrive,high
+GTW_mapRegion,0,US,US,US,model3dbc Model3CAN.dbc VAL_ 2047 GTW_mapRegion,high
+GTW_mapRegion,1,EU,EU,EU,model3dbc Model3CAN.dbc VAL_ 2047 GTW_mapRegion,high
+GTW_mapRegion,3,CN,CN,CN,model3dbc Model3CAN.dbc VAL_ 2047 GTW_mapRegion,high
+GTW_mapRegion,4,AU,AU,AU,model3dbc Model3CAN.dbc VAL_ 2047 GTW_mapRegion,high
+GTW_mapRegion,5,JP,JP,JP,model3dbc Model3CAN.dbc VAL_ 2047 GTW_mapRegion,high
+GTW_mapRegion,6,TW,TW,TW,model3dbc Model3CAN.dbc VAL_ 2047 GTW_mapRegion,high
+GTW_mapRegion,7,KR,KR,KR,model3dbc Model3CAN.dbc VAL_ 2047 GTW_mapRegion,high
+GTW_mapRegion,8,ME,ME,ME,model3dbc Model3CAN.dbc VAL_ 2047 GTW_mapRegion,high
+GTW_mapRegion,9,HK,HK,HK,model3dbc Model3CAN.dbc VAL_ 2047 GTW_mapRegion,high
+GTW_mapRegion,10,MO,MO,MO,model3dbc Model3CAN.dbc VAL_ 2047 GTW_mapRegion,high
+GTW_superchargingAccess,0,NOT_ALLOWED,not_allowed,Not allowed,model3dbc Model3CAN.dbc VAL_ 2047 GTW_superchargingAccess,high
+GTW_superchargingAccess,1,ALLOWED,allowed,Allowed,model3dbc Model3CAN.dbc VAL_ 2047 GTW_superchargingAccess,high
+GTW_superchargingAccess,2,PAY_AS_YOU_GO,pay_as_you_go,Pay as you go,model3dbc Model3CAN.dbc VAL_ 2047 GTW_superchargingAccess,high
+GTW_restraintsHardwareType,21,NA_M3,North America,Na M3,model3dbc Model3CAN.dbc VAL_ 2047 GTW_restraintsHardwareType,high
+GTW_restraintsHardwareType,22,EUROW_ECALL_M3,Europe,Eurow Ecall M3,model3dbc Model3CAN.dbc VAL_ 2047 GTW_restraintsHardwareType,high
+GTW_restraintsHardwareType,23,EUROW_NO_ECALL_M3,Europe,Eurow No Ecall M3,model3dbc Model3CAN.dbc VAL_ 2047 GTW_restraintsHardwareType,high
+GTW_restraintsHardwareType,31,NA_MY_OLD,North America,Na My Old,model3dbc Model3CAN.dbc VAL_ 2047 GTW_restraintsHardwareType,high
+GTW_restraintsHardwareType,32,NA_MY,North America,Na My,model3dbc Model3CAN.dbc VAL_ 2047 GTW_restraintsHardwareType,high
+GTW_restraintsHardwareType,33,EUROW_ECALL_MY,Europe,Eurow Ecall My,model3dbc Model3CAN.dbc VAL_ 2047 GTW_restraintsHardwareType,high
+GTW_restraintsHardwareType,34,EUROW_NO_ECALL_MY,Europe,Eurow No Ecall My,model3dbc Model3CAN.dbc VAL_ 2047 GTW_restraintsHardwareType,high

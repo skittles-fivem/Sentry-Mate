@@ -1,0 +1,63 @@
+/* Pebble: Efficiency. The average tile, the bar tiles with their rows, the energy factor, the temperatures. */
+.ef-avg { gap: var(--s5); }
+.ef-avg-top { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s5) var(--s6); }
+.ef-avg-main { display: flex; flex-direction: column; gap: var(--s1); }
+.ef-avg-top > .tile-nums { flex: 1 1 round(16rem, var(--e)); min-width: 0; }
+.ef-help { gap: var(--s3); }
+.ef-bars-tile { gap: var(--s3); }
+
+/* the groups under the temperature bars: five aligned columns */
+.ef-rows { display: flex; flex-direction: column; }
+.ef-row { display: grid; grid-template-columns: minmax(0, 1.3fr) repeat(4, minmax(0, 1fr)); column-gap: var(--s3); align-items: baseline; padding: var(--s2) 0; border-top: 1px solid var(--card-alt);
+  font-size: var(--f14); line-height: var(--l14); font-variant-numeric: tabular-nums; }
+.ef-row > span { min-width: 0; overflow-wrap: anywhere; }
+.ef-row > span:not(:first-child) { text-align: right; }
+.ef-row-head { border-top: 0; padding-top: 0; color: var(--muted); font-size: var(--f13); line-height: var(--l13); font-weight: 700; }
+.ef-row a { font-weight: 800; color: var(--coral); text-decoration: none; }
+.ef-row a:hover { text-decoration: underline; }
+.ef-row .is-low { color: var(--sun); font-weight: 800; }
+.ef-speed-key { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); margin: 0; padding: 0; list-style: none; font-size: var(--f13); line-height: var(--l13); color: var(--muted); font-variant-numeric: tabular-nums; }
+.ef-speed-key li { display: inline-flex; gap: var(--s2); }
+.ef-speed-key b { color: var(--text); font-weight: 800; }
+
+/* the energy factor: rated and ideal, the one in use marked */
+.ef-factor { gap: var(--s4); }
+.ef-fac { display: flex; flex-direction: column; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.ef-fac li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: var(--s4); align-items: baseline; padding: var(--s2) var(--s3); border-radius: var(--r-sm); background: var(--card-alt);
+  font-size: var(--f14); line-height: var(--l14); font-variant-numeric: tabular-nums; }
+.ef-fac li.is-mine { background: var(--coral-soft); }
+.ef-fac b { font-weight: 800; }
+.ef-fac-n { color: var(--muted); }
+
+/* lowest, average, highest: three columns with a read bar each */
+.tp-sum { gap: var(--s4); }
+.tp-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s5); }
+.tp-col { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+.tp-col > div { display: flex; flex-direction: column; gap: var(--s1); }
+.tp-name { display: flex; align-items: center; gap: var(--s2); font-size: var(--f16); line-height: var(--l16); font-weight: 800; }
+.tp-sw { display: block; width: var(--s3); height: var(--s3); border-radius: 50%; background: var(--tone); flex: none; }
+.tp-outside { --tone: var(--c1); } .tp-cabin { --tone: var(--c2); } .tp-battery { --tone: var(--c3); }
+.tp-col > .tp-lohi { flex-direction: row; gap: var(--s4); }
+.tp-lohi > div { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.tp-col > .tp-cov { gap: var(--s1); }
+.cov { position: relative; display: block; height: var(--s2); border-radius: 999px; background: var(--card-alt); overflow: hidden; }
+.cov-fill { position: absolute; left: 0; top: 0; bottom: 0; width: max(var(--s2), round(calc(var(--v, 0) * 100%), var(--e))); border-radius: 999px; background: var(--tone, var(--teal)); }
+.tp-cov-t { font-size: var(--f13); line-height: var(--l13); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* each day outside: a whisker from lowest to highest, the middle box, the awake bar under it */
+.env { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--s2); }
+.env-axis { display: flex; flex-direction: column; justify-content: space-between; height: round(11rem, var(--e)); font-size: var(--f13); line-height: var(--l13); color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.env-days { display: flex; align-items: stretch; gap: var(--dp); min-width: 0; }
+.env-day { display: flex; flex-direction: column; gap: var(--s1); flex: 1 1 0; min-width: 0; border-radius: var(--s1); outline: none; }
+.env-day:hover, .env-day:focus-visible { background: var(--coral-soft); }
+.env-plot { position: relative; display: block; height: round(11rem, var(--e)); border-radius: var(--s1); background: var(--chart-ground); }
+.env-whisk { position: absolute; left: 0; right: 0; margin: 0 auto; width: max(2px, var(--e)); bottom: calc(var(--lo) * 100%); height: max(2px, var(--e), calc((var(--hi) - var(--lo)) * 100%)); background: var(--muted); }
+.env-box { position: absolute; left: 20%; right: 20%; bottom: calc(var(--blo) * 100%); height: max(2px, var(--e), calc((var(--bhi) - var(--blo)) * 100%)); border-radius: var(--s1); background: var(--coral-fill); }
+.env-cov { position: relative; display: block; height: var(--s2); border-radius: var(--s1); background: var(--card-alt); overflow: hidden; }
+.env-cov-fill { position: absolute; left: 0; right: 0; bottom: 0; height: max(2px, var(--e), calc(var(--v, 0) * 100%)); background: var(--teal); }
+.env-x { display: flex; justify-content: space-between; gap: var(--s3); padding-left: calc(round(2.5rem, var(--e))); font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
+.env-read { min-height: calc(2 * var(--l14)); }
+
+html[data-form="phone"] .tp-cols { grid-template-columns: minmax(0, 1fr); gap: var(--s4); }
+html[data-form="phone"] .ef-row { grid-template-columns: minmax(0, 1.2fr) repeat(2, minmax(0, 1fr)); }
+html[data-form="phone"] .ef-row > span:nth-child(4), html[data-form="phone"] .ef-row > span:nth-child(5) { display: none; }

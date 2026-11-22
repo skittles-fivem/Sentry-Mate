@@ -1,0 +1,196 @@
+model_year,model_line,epa_name,drive,epa_range_mi,epa_range_km,ev_motor,wheel_in,epa_id,source,confidence
+2012,S,Model S,RWD,265,426,260 kW AC Induction,,32557,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 32557,high
+2013,S,Model S (40 kW-hr battery pack),RWD,139,224,225 kW AC Induction,,33612,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 33612,high
+2013,S,Model S (60 kW-hr battery pack),RWD,208,335,225 kW AC Induction,,33367,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 33367,high
+2013,S,Model S (85 kW-hr battery pack),RWD,265,426,270 kW AC Induction,,33368,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 33368,high
+2014,S,Model S (60 kW-hr battery pack),RWD,208,335,225 kW AC Induction (60 kW-hr battery pack),,34776,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 34776,high
+2014,S,Model S (85 kW-hr battery pack),RWD,265,426,270 kW AC Induction (85 kW-hr battery pack),,34775,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 34775,high
+2014,S,Model S AWD (85 kW-hr battery pack),AWD,242,389,180 and 350 kW AC Induction (85 kW-hr battery pack),,35994,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 35994,high
+2015,S,Model S (60 kW-hr battery pack),RWD,208,335,225 kW AC Induction (60 kW-hr battery pack),,36017,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 36017,high
+2015,S,Model S (85 kW-hr battery pack),RWD,265,426,270 kW AC Induction (85 kW-hr battery pack),,35980,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 35980,high
+2015,S,Model S (90 kW-hr battery pack),RWD,265,426,285 kW AC Induction (90 kW-hr battery pack),,37236,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 37236,high
+2015,S,Model S AWD - 70D,AWD,240,386,140 (front) 140 (rear) (70 kW-hr battery pack),,36126,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 36126,high
+2015,S,Model S AWD - 85D,AWD,270,435,140 (front) 140 (rear) (85 kW-hr battery pack),,36009,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 36009,high
+2015,S,Model S AWD - 90D,AWD,270,435,140 (front) 140 (rear) (90 kW-hr battery pack),,36786,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 36786,high
+2015,S,Model S AWD - P85D,AWD,253,407,164 (front) 350 (rear) (85 kW-hr battery pack),,36008,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 36008,high
+2015,S,Model S AWD - P90D,AWD,253,407,164 (front) 350 (rear) (90 kW-hr battery pack),,36787,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 36787,high
+2016,S,Model S (60 kW-hr battery pack),RWD,210,338,285 kW AC Induction (60 kW-hr battery pack),,38170,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38170,high
+2016,S,Model S (70 kW-hr battery pack),RWD,234,377,285 kW AC Induction (70 kW-hr battery pack),,37233,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 37233,high
+2016,S,Model S (75 kW-hr battery pack),RWD,249,401,285 kW AC Induction (75 kW-hr battery pack),,37421,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 37421,high
+2016,S,Model S (85 kW-hr battery pack),RWD,265,426,285 kW AC Induction (85 kW-hr battery pack),,37234,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 37234,high
+2016,S,Model S (90 kW-hr battery pack),RWD,265,426,285 kW AC Induction (90 kW-hr battery pack),,37235,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 37235,high
+2016,S,Model S AWD - 60D,AWD,218,351,193 (front) 193 (rear) (60 kW-hr battery pack),,38171,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38171,high
+2016,S,Model S AWD - 70D,AWD,240,386,193 (front) 193 (rear) (70 kW-hr battery pack),,37238,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 37238,high
+2016,S,Model S AWD - 75D,AWD,259,417,193 (front) 193 (rear) (75 kW-hr battery pack),,37422,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 37422,high
+2016,S,Model S AWD - 85D,AWD,270,435,193 (front) 193 (rear) (85 kW-hr battery pack),,37239,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 37239,high
+2016,S,Model S AWD - 90D,AWD,294,473,193 (front) 193 (rear) (90 kW-hr battery pack),,37240,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 37240,high
+2016,S,Model S AWD - P100D,AWD,315,507,193 (front) 375 (rear) (100 kW-hr battery pack),,38172,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38172,high
+2016,S,Model S AWD - P85D,AWD,253,407,193 (front) 375 (rear) (85 kW-hr battery pack),,37241,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 37241,high
+2016,S,Model S AWD - P90D,AWD,270,435,193 (front) 375 (rear) (90 kW-hr battery pack),,37242,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 37242,high
+2016,X,Model X AWD - 60D,AWD,200,322,193 (front) 193 (rear) (60 kW-hr battery pack),,38173,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38173,high
+2016,X,Model X AWD - 75D,AWD,238,383,193 (front) 193 (rear) (75 kW-hr battery pack),,37423,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 37423,high
+2016,X,Model X AWD - 90D,AWD,257,414,193 (front) 193 (rear) (90 kW-hr battery pack),,36979,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 36979,high
+2016,X,Model X AWD - P100D,AWD,289,465,193 (front) 375 (rear) (100 kW-hr battery pack),,38500,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38500,high
+2016,X,Model X AWD - P90D,AWD,250,402,193 (front) 375 (rear) (90 kW-hr battery pack),,36980,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 36980,high
+2017,3,Model 3 Long Range,RWD,310,499,192 kW AC 3-Phase,,39769,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 39769,high
+2017,S,Model S (60 kW-hr battery pack),RWD,210,338,285 kW AC Induction (60 kW-hr battery pack),,38557,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38557,high
+2017,S,Model S (75 kW-hr battery pack),RWD,249,401,285 kW AC Induction (75 kW-hr battery pack),,38558,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38558,high
+2017,S,Model S AWD - 100D,AWD,335,539,193 (front) 193 (rear) (100 kW-hr battery pack),,38640,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38640,high
+2017,S,Model S AWD - 60D,AWD,218,351,193 (front) 193 (rear) (60 kW-hr battery pack),,38523,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38523,high
+2017,S,Model S AWD - 75D,AWD,259,417,193 (front) 193 (rear) (75 kW-hr battery pack),,38524,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38524,high
+2017,S,Model S AWD - 90D,AWD,294,473,193 (front) 193 (rear) (90 kW-hr battery pack),,38569,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38569,high
+2017,S,Model S AWD - P100D,AWD,315,507,193 (front) 375 (rear) (100 kW-hr battery pack),,38525,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38525,high
+2017,S,Model S AWD - P90D,AWD,270,435,193 (front) 375 (rear) (90 kW-hr battery pack),,38537,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38537,high
+2017,X,Model X AWD - 100D,AWD,295,475,193 (front) 193 (rear) (100 kW-hr battery pack),,39831,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 39831,high
+2017,X,Model X AWD - 60D,AWD,200,322,193 (front) 193 (rear) (60 kW-hr battery pack),,38526,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38526,high
+2017,X,Model X AWD - 75D,AWD,238,383,193 (front) 193 (rear) (75 kW-hr battery pack),,38527,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38527,high
+2017,X,Model X AWD - 90D,AWD,257,414,193 (front) 193 (rear) (90 kW-hr battery pack),,38528,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38528,high
+2017,X,Model X AWD - P100D,AWD,289,465,193 (front) 375 (rear) (100 kW-hr battery pack),,38530,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38530,high
+2017,X,Model X AWD - P90D,AWD,250,402,193 (front) 375 (rear) (90 kW-hr battery pack),,38529,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 38529,high
+2018,3,Model 3 Long Range,RWD,310,499,202 kW AC 3-Phase,,39836,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 39836,high
+2018,3,Model 3 Long Range AWD,AWD,310,499,147 and 188 kW AC 3-Phase,,40385,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 40385,high
+2018,3,Model 3 Long Range AWD Performance,AWD,310,499,147 and 202 kW AC 3-Phase,,40386,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 40386,high
+2018,3,Model 3 Mid Range,RWD,260,418,202 kW AC 3-Phase,,41056,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41056,high
+2018,S,Model S 100D,AWD,335,539,193 (front) 193 (rear) (100 kW-hr battery pack),,39839,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 39839,high
+2018,S,Model S 75D,AWD,259,417,193 (front) 193 (rear) (75 kW-hr battery pack),,39838,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 39838,high
+2018,S,Model S 75kWh,RWD,249,401,270 kW AC Induction (75 kW-hr battery pack),,39837,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 39837,high
+2018,S,Model S P100D,AWD,315,507,193 (front) 375 (rear) (100 kW-hr battery pack),,39840,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 39840,high
+2018,X,Model X 100D,AWD,295,475,193 (front) 193 (rear) (100 kW-hr battery pack),,39842,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 39842,high
+2018,X,Model X 75D,AWD,238,383,193 (front) 193 (rear) (75 kW-hr battery pack),,39841,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 39841,high
+2018,X,Model X P100D,AWD,289,465,193 (front) 375 (rear) (100 kW-hr battery pack),,39843,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 39843,high
+2019,3,Model 3 Long Range,RWD,310,499,211 kW AC 3-Phase,,41189,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41189,high
+2019,3,Model 3 Long Range AWD,AWD,310,499,147 and 188 kW AC 3-Phase,,41190,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41190,high
+2019,3,Model 3 Long Range AWD Performance,AWD,310,499,147 and 211 kW AC 3-Phase,,41191,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41191,high
+2019,3,Model 3 Mid Range,RWD,264,425,211 kW AC 3-Phase,,41188,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41188,high
+2019,3,Model 3 Standard Range,RWD,220,354,211 kW AC 3-Phase,,41415,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41415,high
+2019,3,Model 3 Standard Range Plus,RWD,240,386,211 kW AC 3-Phase,,41416,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41416,high
+2019,S,Model S 100D,AWD,335,539,193 (front) 193 (rear) (100 kW-hr battery pack),,41193,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41193,high
+2019,S,Model S 75D,AWD,259,417,193 (front) 193 (rear) (75 kW-hr battery pack),,41192,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41192,high
+2019,S,Model S Long Range,AWD,370,595,193 and 205 kW AC 3-Phase,,41417,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41417,high
+2019,S,Model S P100D,AWD,315,507,193 (front) 375 (rear) (100 kW-hr battery pack),,41194,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41194,high
+2019,S,Model S Performance (19in Wheels),AWD,345,555,193 and 205 kW AC 3-Phase,19,41418,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41418,high
+2019,S,Model S Performance (21in Wheels),AWD,325,523,193 and 205 kW AC 3-Phase,21,41419,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41419,high
+2019,S,Model S Standard Range,AWD,285,459,193 and 205 kW AC 3-Phase,,41513,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41513,high
+2019,X,Model X 100D,AWD,295,475,193 (front) 193 (rear) (100 kW-hr battery pack),,41196,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41196,high
+2019,X,Model X 75D,AWD,238,383,193 (front) 193 (rear) (75 kW-hr battery pack),,41195,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41195,high
+2019,X,Model X Long Range,AWD,325,523,193 (front); 205/375 (rear) kW ACPM,,41514,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41514,high
+2019,X,Model X P100D,AWD,289,465,193 (front) 375 (rear) (100 kW-hr battery pack),,41197,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41197,high
+2019,X,Model X Performance (22in Wheels),AWD,270,435,193 (front); 205/375 (rear) kW ACPM,22,41515,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 41515,high
+2020,3,Model 3 Long Range,RWD,330,531,211 kW AC 3-Phase,,42274,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42274,high
+2020,3,Model 3 Long Range AWD,AWD,322,518,147 and 188 kW AC 3-Phase,,42275,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42275,high
+2020,3,Model 3 Long Range Performance AWD (18in),AWD,322,518,147 and 211 kW AC 3-Phase,18,42279,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42279,high
+2020,3,Model 3 Long Range Performance AWD (19in),AWD,304,489,147 and 211 kW AC 3-Phase,19,42280,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42280,high
+2020,3,Model 3 Long Range Performance AWD (20in),AWD,299,481,147 and 211 kW AC 3-Phase,20,42281,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42281,high
+2020,3,Model 3 Mid Range,RWD,264,425,211 kW AC 3-Phase,,42276,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42276,high
+2020,3,Model 3 Standard Range,RWD,220,354,211 kW AC 3-Phase,,42277,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42277,high
+2020,3,Model 3 Standard Range Plus,RWD,250,402,211 kW AC 3-Phase,,42278,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42278,high
+2020,S,Model S Long Range,AWD,373,600,193 and 205 kW AC 3-Phase,,42282,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42282,high
+2020,S,Model S Long Range Plus,AWD,402,647,193 and 375 kW AC 3-Phase,,42755,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42755,high
+2020,S,Model S Performance (19in Wheels),AWD,348,560,193 and 205 kW AC 3-Phase,19,42283,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42283,high
+2020,S,Model S Performance (21in Wheels),AWD,326,525,193 and 205 kW AC 3-Phase,21,42284,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42284,high
+2020,S,Model S Standard Range,AWD,287,462,193 and 205 kW AC 3-Phase,,42285,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42285,high
+2020,X,Model X Long Range,AWD,328,528,193 and 205 kW AC 3-Phase,,42286,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42286,high
+2020,X,Model X Long Range Plus,AWD,351,565,193 and 205 kW AC 3-Phase,,43413,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 43413,high
+2020,X,Model X Performance (20in Wheels),AWD,305,491,205 and 375 kW AC 3-Phase,20,42287,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42287,high
+2020,X,Model X Performance (22in Wheels),AWD,272,438,205 and 375 kW AC 3-Phase,22,42288,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42288,high
+2020,X,Model X Standard Range,AWD,258,415,193 and 205 kW AC 3-Phase,,42289,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42289,high
+2020,Y,Model Y Long Range AWD,AWD,316,509,158 and 203 kW AC 3-Phase,,42916,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42916,high
+2020,Y,Model Y Performance AWD,AWD,315,507,147 and 211 kW AC 3-Phase,,42474,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42474,high
+2020,Y,Model Y Performance AWD (21in Wheels),AWD,291,468,158 and 219 kW AC 3-Phase,21,42816,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 42816,high
+2021,3,Model 3 Long Range AWD,AWD,353,568,98 and 195 kW AC 3-Phase,,43401,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 43401,high
+2021,3,Model 3 Performance AWD,AWD,315,507,131 and 190 kW AC 3-Phase,,43402,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 43402,high
+2021,3,Model 3 Standard Range Plus RWD,RWD,263,423,198 kW AC 3-Phase,,43821,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 43821,high
+2021,S,Model S Long Range,AWD,405,652,179 and 186 kW AC 3-Phase,,44051,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 44051,high
+2021,S,Model S Performance (19in Wheels),AWD,387,623,149 and 276 kW AC 3-Phase,19,43516,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 43516,high
+2021,S,Model S Performance (21in Wheels),AWD,334,538,149 and 276 kW AC 3-Phase,21,43517,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 43517,high
+2021,S,Model S Plaid (21inch wheels),AWD,348,560,250 and 250 kW AC 3-Phase,21,44069,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 44069,high
+2021,X,Model X Long Range Plus,AWD,371,597,180 and 189 kW AC 3-Phase,,43403,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 43403,high
+2021,X,Model X Performance (20in Wheels),AWD,341,549,151 and 273 kW AC 3-Phase,20,43404,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 43404,high
+2021,X,Model X Performance (22in Wheels),AWD,300,483,151 and 273 kW AC 3-Phase,22,43405,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 43405,high
+2021,Y,Model Y Long Range AWD,AWD,326,525,69 and 201 kW AC 3-Phase,,43406,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 43406,high
+2021,Y,Model Y Performance AWD,AWD,303,488,133 and 179 kW AC 3-Phase,,43407,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 43407,high
+2021,Y,Model Y Standard Range RWD,RWD,244,393,209 kW AC 3-Phase,,43880,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 43880,high
+2022,3,Model 3 Long Range AWD,AWD,358,576,98 and 195 kW AC 3-Phase,,45011,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 45011,high
+2022,3,Model 3 Performance AWD,AWD,315,507,131 and 190 kW AC 3-Phase,,45012,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 45012,high
+2022,3,Model 3 RWD,RWD,272,438,192 kW AC 3-Phase,,45013,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 45013,high
+2022,S,Model S,AWD,405,652,247 and 247 kW AC 3-Phase,,45014,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 45014,high
+2022,S,Model S Plaid (19 inch wheels),AWD,396,637,250; 250 and 250 kW AC 3-Phase,19,45015,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 45015,high
+2022,S,Model S Plaid (21 inch wheels),AWD,348,560,250; 250 and 250 kW AC 3-Phase,21,45016,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 45016,high
+2022,X,Model X,AWD,348,560,243 and 248 kW AC 3-Phase,,45020,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 45020,high
+2022,X,Model X Plaid (20 inch wheels),AWD,333,536,230; 230 and 230 kW AC 3-Phase,20,45021,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 45021,high
+2022,X,Model X Plaid (22 inch wheels),AWD,311,501,230; 230 and 230 kW AC 3-Phase,22,45022,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 45022,high
+2022,Y,Model Y AWD,AWD,279,449,91 and 200 kW AC 3-Phase,,45196,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 45196,high
+2022,Y,Model Y Long Range AWD,AWD,330,531,91 and 200 kW AC 3-Phase,,45018,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 45018,high
+2022,Y,Model Y Performance AWD,AWD,303,488,133 and 179 kW AC 3-Phase,,45019,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 45019,high
+2022,Y,Model Y RWD,RWD,244,393,209 kW AC 3-Phase,,45017,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 45017,high
+2023,3,Model 3 Long Range AWD,AWD,358,576,98 and 195 kW AC 3-Phase,,46204,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 46204,high
+2023,3,Model 3 Performance AWD,AWD,315,507,131 and 190 kW AC 3-Phase,,46205,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 46205,high
+2023,3,Model 3 RWD,RWD,272,438,192 kW AC 3-Phase,,46206,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 46206,high
+2023,S,Model S,AWD,405,652,247 and 247 kW AC 3-Phase,,46207,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 46207,high
+2023,X,Model X,AWD,348,560,243 and 248 kW AC 3-Phase,,46208,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 46208,high
+2023,X,Model X Plaid (20 inch wheels),AWD,333,536,230; 230 and 230 kW AC 3-Phase,20,46209,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 46209,high
+2023,X,Model X Plaid (22 inch wheels),AWD,311,501,230; 230 and 230 kW AC 3-Phase,22,46210,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 46210,high
+2023,Y,Model Y AWD,AWD,279,449,91 and 200 kW AC 3-Phase,,46211,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 46211,high
+2023,Y,Model Y Long Range AWD,AWD,330,531,91 and 200 kW AC 3-Phase,,46212,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 46212,high
+2023,Y,Model Y Performance AWD,AWD,303,488,133 and 179 kW AC 3-Phase,,46213,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 46213,high
+2024,3,Model 3 Long Range AWD,AWD,342,550,84 and 191 kW ACPM 3-Phase,,47908,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 47908,high
+2024,3,Model 3 Long Range AWD-E,AWD,341,549,191 kW ACPM 3-Phase,,48473,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48473,high
+2024,3,Model 3 Long Range RWD,RWD,363,584,192 kW ACPM 3-Phase,,48795,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48795,high
+2024,3,Model 3 Performance AWD,AWD,303,488,85 and 192 kW ACPM 3-Phase,,48796,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48796,high
+2024,3,Model 3 RWD,RWD,272,438,192 kW ACPM 3-Phase,,47909,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 47909,high
+2024,S,Model S,AWD,402,647,247 and 247 kW ACPM 3-Phase,,47910,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 47910,high
+2024,S,Model S Plaid (19in wheels),AWD,359,578,250; 250 and 250 kW ACPM 3-Phase,19,47911,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 47911,high
+2024,S,Model S Plaid (21in wheels),AWD,320,515,250; 250 and 250 kW ACPM 3-Phase,21,47912,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 47912,high
+2024,X,Model X,AWD,335,539,243 and 243 kW ACPM 3-Phase,,47915,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 47915,high
+2024,X,Model X Plaid (20in wheels),AWD,326,525,230; 230 and 230 kW ACPM 3-Phase,20,47916,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 47916,high
+2024,X,Model X Plaid (22in wheels),AWD,300,483,230; 230 and 230 kW ACPM 3-Phase,22,47917,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 47917,high
+2024,Y,Model Y Long Range AWD,AWD,310,499,91 and 200 kW AC Induction,,47913,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 47913,high
+2024,Y,Model Y Long Range AWD-I,AWD,308,496,200 kW ACPM 3-Phase,,48474,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48474,high
+2024,Y,Model Y Long Range RWD,RWD,320,515,221 kW ACPM 3-Phase,,48475,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48475,high
+2024,Y,Model Y Performance AWD,AWD,279,449,135 and 243 kW AC Induction,,47914,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 47914,high
+2024,Y,Model Y RWD,RWD,260,418,203 kW ACPM 3-Phase,,48476,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48476,high
+2025,C,Cybertruck AWD,AWD,325,523,224 and 239 kW AC Induction,,49123,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 49123,high
+2025,C,Cybertruck Long Range,RWD,335,539,240 kW ACPM 3-Phase,,49152,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 49152,high
+2025,C,Cybertruck Long Range (20in Cyber wheels),RWD,335,539,240 kW ACPM 3-Phase,20,49153,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 49153,high
+2025,3,Model 3 Long Range AWD,AWD,346,557,85 and 88 kW ACPM 3-Phase,,48764,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48764,high
+2025,3,Model 3 Long Range RWD,RWD,363,584,192 kW ACPM 3-Phase,,48765,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48765,high
+2025,3,Model 3 Long Range RWD-I (19in wheels),RWD,346,557,192; 213 and 225 kW ACPM 3-Phase,19,49154,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 49154,high
+2025,3,Model 3 Performance AWD,AWD,298,480,85 and 191 kW ACPM 3-Phase,,48996,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48996,high
+2025,S,Model S,AWD,410,660,243 and 248 kW ACPM 3-Phase,,49124,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 49124,high
+2025,S,Model S Plaid (19in wheels),AWD,348,560,250; 250 and 250 kW ACPM 3-Phase,19,48766,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48766,high
+2025,S,Model S Plaid (21in wheels),AWD,312,502,250; 250 and 250 kW ACPM 3-Phase,21,48767,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48767,high
+2025,X,Model X,AWD,329,529,243 and 248 kW ACPM,,49125,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 49125,high
+2025,X,Model X Plaid (20in wheels),AWD,314,505,230; 230 and 230 kW ACPM 3-Phase,20,48768,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48768,high
+2025,X,Model X Plaid (22in wheels),AWD,294,473,230; 230 and 230 kW ACPM 3-Phase,22,48769,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48769,high
+2025,Y,Model Y Long Range AWD,AWD,311,501,91 and 183 kW ACPM 3-Phase,,48770,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48770,high
+2025,Y,Model Y Long Range RWD,RWD,337,542,221 kW ACPM 3-Phase,,48771,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48771,high
+2025,Y,Model Y Performance AWD,AWD,277,446,135 and 200 kW ACPM 3-Phase,,48772,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 48772,high
+2026,C,Cybertruck AWD,AWD,325,523,223 and 226 kW ACPM 3-Phase,,50039,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50039,high
+2026,C,Cybertruck Dual Motor AWD,AWD,325,523,223 and 226 kW ACPM 3-Phase,,50460,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50460,high
+2026,C,Cybertruck Long Range (20in Cyber wheels),RWD,335,539,240 kW ACPM 3-Phase,20,50249,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50249,high
+2026,3,Model 3 Performance,AWD,309,497,88 and 208 kW AC Induction,,50036,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50036,high
+2026,3,Model 3 Performance AWD,AWD,314,505,88 and 208 kW ACPM 3-Phase,,50250,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50250,high
+2026,3,Model 3 Premium AWD,AWD,346,557,88 and 208 kW AC Induction,,50037,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50037,high
+2026,3,Model 3 Premium RWD,RWD,363,584,225 kW ACPM 3-Phase,,50038,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50038,high
+2026,3,Model 3 Standard RWD,RWD,321,517,225 kW ACPM 3-Phase,,50251,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50251,high
+2026,S,Model S,AWD,410,660,243 and 248 kW ACPM 3-Phase,,49741,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 49741,high
+2026,S,Model S Plaid,AWD,368,592,250 kW ACPM 3-Phase,,49742,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 49742,high
+2026,S,Model S Plaid (21in wheels),AWD,309,497,250 kW ACPM 3-Phase,21,50252,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50252,high
+2026,X,Model X,AWD,352,566,246 and 251 kW ACPM,,49745,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 49745,high
+2026,X,Model X Plaid,AWD,335,539,230 kW ACPM 3-Phase,,49746,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 49746,high
+2026,Y,Model Y Long Range AWD,AWD,327,526,90 and 200 kW ACPM,,49744,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 49744,high
+2026,Y,Model Y Long Range RWD,RWD,357,575,228 and 243 kW ACPM,,49743,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 49743,high
+2026,Y,Model Y Performance AWD,AWD,306,492,91 and 200 kW ACPM 3-Phase,,50253,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50253,high
+2026,Y,Model Y Standard AWD,AWD,294,473,91 and 200 kW ACPM 3-Phase,,50304,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50304,high
+2026,Y,Model Y Standard RWD (18in Wheels),RWD,321,517,228 and 243 kW ACPM 3-Phase,18,50040,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50040,high
+2026,Y,Model Y Standard RWD (19in Wheels),RWD,303,488,228 and 243 kW ACPM 3-Phase,19,50041,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50041,high
+2027,3,Model 3 Performance AWD,AWD,316,509,208 kW ACPM 3-Phase,,50861,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50861,high
+2027,3,Model 3 Premium AWD,AWD,346,557,88 and 208 kW ACPM 3-Phase,,51065,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 51065,high
+2027,3,Model 3 Premium RWD,RWD,363,584,225 kW ACPM 3-Phase,,51066,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 51066,high
+2027,3,Model 3 RWD,RWD,321,517,225 kW ACPM 3-Phase,,51067,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 51067,high
+2027,Y,Model Y AWD,AWD,294,473,91 and 200 kW ACPM 3-Phase,,51068,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 51068,high
+2027,Y,Model Y L (20in Wheels),AWD,328,528,91 and 200 kW ACPM 3-Phase,20,50862,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 50862,high
+2027,Y,Model Y Performance AWD,AWD,306,492,91 and 200 kW ACPM 3-Phase,,51069,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 51069,high
+2027,Y,Model Y Premium AWD,AWD,327,526,91 and 200 kW ACPM 3-Phase,,51070,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 51070,high
+2027,Y,Model Y Premium RWD,RWD,355,571,243 kW ACPM 3-Phase,,51071,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 51071,high
+2027,Y,Model Y RWD,RWD,321,517,243 kW ACPM 3-Phase,,51072,EPA/DOE fueleconomy.gov vehicles.csv (2026-11-04) row 51072,high

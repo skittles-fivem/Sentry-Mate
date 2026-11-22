@@ -1,0 +1,10 @@
+model,efficiency_package,performance_package,soft_range,pack_energy,drivetrain,trim,source,confidence
+3,1,,,,,Standard Range Plus,model3dbc GTW_efficiencyPackage 1 M3_SR_PLUS_2020,high
+3,2,,,,,Long Range,model3dbc GTW_efficiencyPackage 2 M3_LR_2020,high
+3,3,,,,,Long Range Performance,model3dbc GTW_efficiencyPackage 3 M3_LR_PERFORMANCE_2020,high
+3|Y,,1,,,,Performance,model3dbc GTW_performancePackage 1 PERFORMANCE,high
+3,,3,1,,,Standard Range,model3dbc GTW_performancePackage 3 BASE_PLUS with GTW_softRange 1 RANGE_220_MILES,high
+3,,3,,,,Standard Range Plus,model3dbc GTW_performancePackage 3 BASE_PLUS,high
+3,,4,,,,Standard Range Plus AWD,model3dbc GTW_performancePackage 4 BASE_PLUS_AWD,medium
+3,,,,2,,Mid Range,model3dbc GTW_packEnergy 2 PACK_62_KWH,medium
+S|X,,2,,,,Performance Ludicrous,model3dbc GTW_performancePackage 2 LUDICROUS,medium

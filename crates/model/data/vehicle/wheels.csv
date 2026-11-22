@@ -1,0 +1,16 @@
+model,year_from,year_to,kind,trim,base_in,optional_in,source,confidence
+3,2017,2023,non_performance,,18,19,EPA 2020 Performance 18/19/20 split; Tesla design studio history,medium
+3,2018,2023,performance,,20,18,EPA 2020 split (18 in without the Performance Upgrade),medium
+3,2024,,non_performance,,18,19,Tesla design studio; EPA 2025 'RWD-I (19in wheels)',medium
+3,2024,,performance,,20,,Tesla design studio,medium
+Y,2020,2024,non_performance,,19,20,EPA; Tesla design studio,medium
+Y,2020,2024,performance,,21,20,EPA 2020 'Performance AWD (21in Wheels)',high
+Y,2025,,non_performance,,19,20,Tesla design studio,medium
+Y,2026,,non_performance,Standard RWD,18,19,EPA 2026 Model Y Standard RWD 18in (50040) and 19in (50041),high
+Y,2027,,non_performance,Model Y L,20,,EPA 2027 Model Y L (20in Wheels) (50862),high
+Y,2025,,performance,,21,,Tesla design studio,medium
+S,2012,2020,any,,19,21,EPA 2019-20 Performance 19/21 split,high
+S,2021,,any,,19,21,EPA 2021+ Plaid 19/21 split,high
+X,2016,2020,any,,20,22,EPA 2019-20 Performance 20/22 split,high
+X,2021,,any,,20,22,EPA 2022+ Plaid 20/22 split,high
+C,2024,,any,,20,,EPA 2025-26 '20in Cyber wheels',medium

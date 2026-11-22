@@ -1,0 +1,16 @@
+{
+  "name": "Sentry Mate",
+  "short_name": "Sentry Mate",
+  "description": "Your cars' drives, charges and battery, from the car's own CAN bus.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#eef1f6",
+  "theme_color": "#eef1f6",
+  "icons": [
+    { "src": "/icon.svg", "type": "image/svg+xml", "sizes": "any" },
+    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512" },
+    { "src": "/icon-maskable-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
+  ]
+}

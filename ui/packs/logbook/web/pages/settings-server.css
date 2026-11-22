@@ -1,0 +1,164 @@
+/* Sentry Mate, "Logbook" UI pack: Settings: Server and access (pages/settings-server.js). */
+
+.page-settings-server .ss-who { font-size: var(--text-s); color: var(--ink-2); text-align: right; }
+.page-settings-server .ss-who strong { font-weight: 600; color: var(--ink); }
+
+/* two columns: reaching the server | access and safety */
+.page-settings-server .ss-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 0 round(3.5rem, var(--e)); align-items: start; }
+.page-settings-server .ss-col { min-width: 0; }
+.page-settings-server .ss-col > .block, .page-settings-server > .block { margin-top: round(2.5rem, var(--e)); }
+@container page (width < 72rem) {
+  .page-settings-server .ss-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.page-settings-server .note { max-width: 70ch; margin-bottom: round(0.875rem, var(--e)); }
+.page-settings-server .ss-lede { font-size: var(--text-sm); color: var(--ink-2); margin: round(0.25rem, var(--e)) 0 round(0.875rem, var(--e)); overflow-wrap: anywhere; }
+.page-settings-server .ss-code { font-size: 0.92em; padding: round(0.0625rem, var(--e)) round(0.3125rem, var(--e)); border-radius: round(0.1875rem, var(--e)); background: var(--paper-sunk); color: var(--ink); overflow-wrap: anywhere; }
+.page-settings-server .ss-quiet { color: var(--ink-3); }
+.page-settings-server .ss-ok { color: var(--accent-strong); }
+.page-settings-server .ss-warn { color: var(--rust); }
+.page-settings-server .ss-state { font-size: var(--text-s); color: var(--ink-3); }
+
+/* outcomes of a check */
+.page-settings-server .ss-outcomes { list-style: none; margin: 0; padding: 0; display: grid; gap: round(0.625rem, var(--e)); }
+.page-settings-server .ss-out { display: grid; grid-template-columns: round(1.375rem, var(--e)) minmax(0, 1fr); gap: round(0.75rem, var(--e)); padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border: 1px solid var(--rule); border-left-width: 3px; border-radius: round(0.25rem, var(--e)); background: var(--paper-raised); }
+.page-settings-server .ss-out-ok { border-left-color: var(--accent); }
+.page-settings-server .ss-out-warn { border-left-color: var(--rust); }
+.page-settings-server .ss-out-info { border-left-color: var(--slate); }
+.page-settings-server .ss-out-mark { color: var(--slate); padding-top: round(0.125rem, var(--e)); }
+.page-settings-server .ss-out-mark .icon { width: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); }
+.page-settings-server .ss-out-ok .ss-out-mark { color: var(--accent); }
+.page-settings-server .ss-out-warn .ss-out-mark { color: var(--rust); }
+.page-settings-server .ss-out-title { font: 400 1.0625rem var(--serif); --LH: round(calc(1.35 * 1em), 2px); line-height: var(--LH); overflow-wrap: anywhere; }
+.page-settings-server .ss-out-text { color: var(--ink-3); margin-top: round(0.1875rem, var(--e)); max-width: 70ch; font-size: var(--text-sm); --LH: round(calc(1.5 * 1em), 2px); }
+.page-settings-server .ss-out-action { margin-top: round(0.5rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.7 * 1em), 2px); }
+
+/* host names */
+.page-settings-server .ss-names { list-style: none; margin: 0 0 round(1rem, var(--e)); padding: 0; border-top: 1px solid var(--rule); }
+.page-settings-server .ss-name { display: flex; align-items: center; gap: round(0.75rem, var(--e)); padding: round(0.5rem, var(--e)) 0; border-bottom: 1px solid var(--rule); min-height: round(2.75rem, var(--e)); }
+.page-settings-server .ss-name-text { font-size: var(--text-sm); flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.page-settings-server .ss-name .button { margin-left: auto; }
+.page-settings-server .ss-add .field { min-width: 0; }
+.page-settings-server .ss-add .field-control { gap: round(0.75rem, var(--e)); }
+.page-settings-server .ss-add .field-input { flex: 1 1 auto; width: auto; min-width: 0; }
+.page-settings-server .ss-add-btn { flex: none; }
+.page-settings-server .ss-save { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.75rem, var(--e)); margin-top: round(0.75rem, var(--e)); }
+.page-settings-server .ss-details { margin-top: round(1.25rem, var(--e)); border-top: 1px solid var(--rule); padding-top: round(0.875rem, var(--e)); }
+.page-settings-server .ss-details summary { cursor: pointer; font-size: var(--text-sm); color: var(--accent-strong); }
+.page-settings-server .ss-details[open] summary { margin-bottom: round(0.75rem, var(--e)); }
+.page-settings-server .ss-steps { margin: 0; padding-left: round(1.25rem, var(--e)); display: grid; gap: round(0.5rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.6 * 1em), 2px); max-width: 70ch; }
+
+/* ports */
+.page-settings-server .ss-port { font: 400 1.0625rem var(--serif); --LH: normal; line-height: var(--LH); font-variant-numeric: tabular-nums; }
+
+/* access */
+.page-settings-server .ss-me { padding: round(1rem, var(--e)) round(1.125rem, var(--e)); background: var(--accent-wash); border-radius: round(0.25rem, var(--e)); margin: round(0.25rem, var(--e)) 0 round(1.25rem, var(--e)); }
+.page-settings-server .ss-me-name { font: 400 1.25rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); }
+.page-settings-server .ss-me-name .flag { margin-left: round(0.375rem, var(--e)); vertical-align: round(0.1875rem, var(--e)); }
+.page-settings-server .ss-me-text { margin-top: round(0.25rem, var(--e)); color: var(--ink-2); font-size: var(--text-sm); --LH: round(calc(1.5 * 1em), 2px); max-width: 70ch; }
+.page-settings-server .ss-facts { display: grid; grid-template-columns: round(7rem, var(--e)) minmax(0, 1fr); margin: 0; }
+.page-settings-server .ss-facts dt, .page-settings-server .ss-facts dd { padding: round(0.625rem, var(--e)) 0; border-bottom: 1px solid var(--rule); margin: 0; }
+.page-settings-server .ss-facts dt { font: 600 var(--micro-2) var(--sans); --LH: round(calc(1.6 * 1em), 2px); line-height: var(--LH); letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-2); padding-top: round(0.75rem, var(--e)); }
+.page-settings-server .ss-facts dd { font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.5 * 1em), 2px); max-width: 70ch; }
+.page-settings-server .ss-facts dd strong { color: var(--ink); font-weight: 600; }
+@container page (width < 50rem) {
+  .page-settings-server .ss-facts { grid-template-columns: minmax(0, 1fr); }
+  .page-settings-server .ss-facts dt { border-bottom: 0; padding-bottom: 0; }
+}
+
+/* the certificate in use: its SHA-256, names and upload address, each to copy */
+.page-settings-server .ss-cert { display: grid; gap: round(0.75rem, var(--e)); margin-top: round(0.25rem, var(--e)); min-width: 0; }
+.page-settings-server .ss-certfacts { display: grid; gap: round(0.75rem, var(--e)); margin: 0; }
+.ss-fact { display: grid; gap: round(0.3125rem, var(--e)); min-width: 0; justify-items: start; }
+.ss-fact dt, .ss-fact-label { margin: 0; font: 600 var(--micro-2) var(--sans); --LH: round(calc(1.6 * 1em), 2px); letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-2); }
+.ss-fact dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: round(0.375rem, var(--e)) round(0.75rem, var(--e)); min-width: 0; max-width: 100%; }
+.ss-value { font-size: 0.95em; padding: round(0.25rem, var(--e)) round(0.5rem, var(--e)); border-radius: round(0.1875rem, var(--e)); background: var(--paper-sunk); color: var(--ink); user-select: all; min-width: 0; max-width: 100%; overflow-wrap: break-word; }
+.ss-sha { display: inline-flex; flex-wrap: wrap; --LH: round(calc(1.6 * 1em), 2px); font-variant-numeric: tabular-nums; }
+.ss-sha-group { white-space: nowrap; }
+/* an address breaks only between its parts (after a slash or a colon), never at the hyphen of a host name; a part
+   wider than the line on its own still wraps inside */
+.ss-address-part { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+.ss-fact-big .ss-sha { font-size: 1.05rem; padding: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
+.ss-cert-names { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: round(0.375rem, var(--e)); }
+.ss-copy { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); flex-wrap: wrap; }
+.ss-copied { color: var(--ink-3); font-size: var(--text-sm); }
+.ss-copied:empty { display: none; }
+.page-settings-server .ss-cert-need { margin: 0; color: var(--ink-2); }
+.page-settings-server .ss-cert-act { margin: 0; }
+.page-settings-server .ss-cert-own { margin: 0; color: var(--ink-2); max-width: round(40rem, var(--e)); }
+.ss-newcert { display: grid; gap: round(0.75rem, var(--e)); }
+.dialog-text.ss-newcert { margin-bottom: round(1.25rem, var(--e)); }
+.ss-newcert p { margin: 0; }
+.ss-newcert-list { list-style: disc; margin: 0; padding-left: round(1.25rem, var(--e)); display: grid; gap: round(0.5rem, var(--e)); }
+.ss-newcert-name { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+
+/* tables */
+.page-settings-server .ss-actions { display: inline-flex; gap: round(0.5rem, var(--e)); flex-wrap: wrap; }
+.page-settings-server .ss-cars-col, .page-settings-server .ss-summary-col { min-width: round(14rem, var(--e)); }
+.page-settings-server tr.is-focus > * { background: var(--ochre-wash); }
+.page-settings-server .ss-target { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); color: var(--accent-strong); text-decoration: none; font: inherit; line-height: var(--LH); background: none; border: 0; padding: 0; cursor: pointer; }
+.page-settings-server .ss-target:hover { text-decoration: underline; }
+.page-settings-server .ss-target .icon { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); }
+.page-settings-server .ss-targets { display: inline-flex; flex-direction: column; gap: round(0.125rem, var(--e)); }
+
+/* the account dialog */
+.ss-cars-field .choice, .ss-cars-field .segmented { margin-bottom: round(0.5rem, var(--e)); }
+.ss-carpick { display: grid; gap: round(0.5rem, var(--e)); }
+.ss-carpick .field-input { width: 100%; }
+.ss-carlist { list-style: none; margin: 0; padding: round(0.25rem, var(--e)) 0; max-height: round(14rem, var(--e)); overflow: auto; border: 1px solid var(--rule); border-radius: round(0.25rem, var(--e)); }
+.ss-carlist li { padding: round(0.25rem, var(--e)) round(0.75rem, var(--e)); }
+.ss-check { display: flex; align-items: center; gap: round(0.5rem, var(--e)); cursor: pointer; font-size: var(--text-sm); }
+.ss-check .ss-quiet { color: var(--ink-3); }
+.page-settings-server .ss-nowrap { white-space: nowrap; }
+
+/* Narrow windows: a table that does not fit scrolls inside its own box, never the page. */
+@container page (width < 50rem) {
+  .page-settings-server .ledger-scroll { overflow-x: auto; }
+  .page-settings-server .ss-cars-col, .page-settings-server .ss-summary-col { min-width: 0; }
+}
+
+/* Move to another server (pages/settings-move.js) */
+.page-settings-server .mv-block { display: grid; gap: round(1.25rem, var(--e)); }
+.page-settings-server .mv-block > .block-head { margin-bottom: round(-0.25rem, var(--e)); }
+.page-settings-server .mv-lede { font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.55 * 1em), 2px); max-width: 80ch; }
+.page-settings-server .mv-status { display: grid; gap: round(1rem, var(--e)); max-width: round(60rem, var(--e)); }
+.page-settings-server .mv-status:empty { display: none; }
+.page-settings-server .mv-ways { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(1.5rem, var(--e)); align-items: start; }
+@container page (width < 72rem) { .page-settings-server .mv-ways { grid-template-columns: minmax(0, 1fr); } }
+.page-settings-server .mv-way { border: 1px solid var(--rule-strong); border-top: 3px solid var(--ink); border-radius: round(0.25rem, var(--e)); background: var(--paper-raised); padding: round(1.125rem, var(--e)) round(1.25rem, var(--e)) round(1.25rem, var(--e)); min-width: 0; display: grid; gap: round(0.875rem, var(--e)); }
+.page-settings-server .mv-way-title { font: 400 1.375rem var(--serif); --LH: round(calc(1.25 * 1em), 2px); line-height: var(--LH); display: flex; align-items: center; gap: round(0.625rem, var(--e)); flex-wrap: wrap; }
+.page-settings-server .mv-way-when { font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.55 * 1em), 2px); padding-bottom: round(0.875rem, var(--e)); border-bottom: 1px solid var(--rule); }
+.page-settings-server .mv-way-when strong { color: var(--ink); font-weight: 600; }
+.page-settings-server .mv-way-body { display: grid; gap: round(0.875rem, var(--e)); min-width: 0; }
+.page-settings-server .mv-way .mv-code { background: var(--paper); }
+.page-settings-server .mv-h4 { font: 600 var(--micro-2) var(--sans); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-3); margin-top: round(0.25rem, var(--e)); }
+.page-settings-server .mv-text { font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.55 * 1em), 2px); }
+.page-settings-server .mv-text strong { color: var(--ink); }
+.page-settings-server .mv-quiet { font-size: var(--text-s); color: var(--ink-3); --LH: round(calc(1.5 * 1em), 2px); }
+.page-settings-server .mv-list { margin: 0; padding-left: round(1.25rem, var(--e)); display: grid; gap: round(0.4375rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.55 * 1em), 2px); list-style: disc; }
+.page-settings-server .mv-list-num { list-style: decimal; }
+.page-settings-server .mv-list strong { color: var(--ink); font-weight: 600; }
+.page-settings-server .mv-list .mv-copy { vertical-align: middle; }
+.page-settings-server .mv-mono { font-size: 0.92em; padding: round(0.0625rem, var(--e)) round(0.3125rem, var(--e)); border-radius: round(0.1875rem, var(--e)); background: var(--paper-sunk); color: var(--ink); overflow-wrap: anywhere; }
+.page-settings-server .mv-actions { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.625rem, var(--e)) round(0.75rem, var(--e)); }
+.page-settings-server .mv-file { padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: round(0.25rem, var(--e)); background: var(--paper); display: grid; gap: round(0.25rem, var(--e)); }
+.page-settings-server .mv-file-name { font: 400 1.0625rem var(--serif); --LH: round(calc(1.35 * 1em), 2px); line-height: var(--LH); overflow-wrap: anywhere; }
+.page-settings-server .mv-file-facts { font-size: var(--text-sm); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.page-settings-server .mv-more, .page-settings-server .mv-skipped { border-top: 1px solid var(--rule); padding-top: round(0.875rem, var(--e)); }
+.page-settings-server .mv-more summary, .page-settings-server .mv-skipped summary { cursor: pointer; font-size: var(--text-sm); color: var(--accent-strong); }
+.page-settings-server .mv-more[open] summary, .page-settings-server .mv-skipped[open] summary { margin-bottom: round(0.75rem, var(--e)); }
+.page-settings-server .mv-skipped .mv-quiet { margin-bottom: round(0.5rem, var(--e)); }
+
+/* the password dialogs of a move */
+.mv-tick { display: flex; align-items: flex-start; gap: round(0.625rem, var(--e)); cursor: pointer; font-size: var(--text-sm); --LH: round(calc(1.5 * 1em), 2px); color: var(--ink-2); padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); border: 1px solid var(--rule-strong); border-radius: round(0.25rem, var(--e)); }
+.mv-tick input { flex: none; width: round(1.125rem, var(--e)); height: round(1.125rem, var(--e)); margin: round(0.125rem, var(--e)) 0 0; accent-color: var(--accent); }
+.mv-tick strong { color: var(--ink); font-weight: 600; }
+.dialog-text > p + p { margin-top: round(0.5rem, var(--e)); }
+
+/* the recovery key shown again (a dialog: it sits outside the page) */
+.page-settings-server .ss-rk-actions { margin-top: round(0.25rem, var(--e)); }
+.ss-rk-dialog .ss-rk-download { margin: round(0.75rem, var(--e)) 0; }
+.ss-rk-dialog .ss-rk-tick { align-items: flex-start; margin-top: round(1rem, var(--e)); font-weight: 600; color: var(--ink); }
+.ss-rk-dialog .ss-rk-tick input { margin-top: round(0.1875rem, var(--e)); flex: none; }
+.ss-rk-dialog .ss-rk-go { display: flex; justify-content: flex-end; margin-top: round(0.75rem, var(--e)); }
+.ss-rk-dialog .ss-rk-note { color: var(--ink-3); font-size: var(--text-sm); margin-top: round(0.5rem, var(--e)); }

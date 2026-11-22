@@ -1,0 +1,108 @@
+/* Sentry Mate, "Logbook" UI pack: Timeline. Loaded by the router with the page (pages/timeline.js). */
+
+/* the state summary */
+.page-timeline .state-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border-bottom: 1px solid var(--rule); }
+.page-timeline .state-summary > .fig { padding: round(1rem, var(--e)) round(1.125rem, var(--e)); border-left: 1px solid var(--rule); }
+.page-timeline .state-summary > .fig:first-child { border-left: 0; padding-left: 0; }
+.page-timeline .state-summary .fig-value { font-size: 1.25rem; }
+
+/* the strip */
+.page-timeline .strip-block { border-bottom: 1px solid var(--rule); padding: round(1.125rem, var(--e)) 0 round(0.75rem, var(--e)); }
+.page-timeline .strip-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: round(0.375rem, var(--e)) round(1.25rem, var(--e)); margin-bottom: round(0.5rem, var(--e)); }
+.page-timeline .strip-period { flex: 1 1 round(18rem, var(--e)); color: var(--ink-3); font-size: var(--text-s); }
+.page-timeline .strip-note { margin-top: round(0.25rem, var(--e)); font-size: var(--small-2); color: var(--ink-3); }
+
+/* the filters */
+.page-timeline .tl-filters { display: grid; grid-template-columns: minmax(round(10rem, var(--e)), 0.8fr) minmax(0, 2fr) minmax(round(12rem, var(--e)), 1fr) minmax(round(14rem, var(--e)), 1.4fr); gap: round(1rem, var(--e)) round(2rem, var(--e)); align-items: start; padding: round(1.25rem, var(--e)) 0 round(1rem, var(--e)); border-bottom: 1px solid var(--rule); }
+.page-timeline .kinds { border: 0; padding: 0; margin: 0; min-width: 0; }
+.page-timeline .kinds .field-label { padding: 0; margin-bottom: round(0.375rem, var(--e)); }
+.page-timeline .checks { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(1.25rem, var(--e)); font-size: 0.875rem; color: var(--ink-2); padding-top: round(0.5rem, var(--e)); }
+.page-timeline .check { display: inline-flex; align-items: center; gap: round(0.4375rem, var(--e)); cursor: pointer; }
+.page-timeline .check input { accent-color: var(--accent); width: round(1rem, var(--e)); height: round(1rem, var(--e)); margin: 0; }
+.page-timeline .tl-car-name { font: 400 1.0625rem var(--serif); --LH: round(calc(1.4 * 1em), 2px); line-height: var(--LH); padding-top: round(0.375rem, var(--e)); }
+.page-timeline .tl-filters .field-select { width: 100%; }
+
+/* the list and the side */
+.page-timeline .timeline-grid { display: grid; grid-template-columns: minmax(0, round(54rem, var(--e))) minmax(round(21rem, var(--e)), 1fr); gap: round(3.5rem, var(--e)); padding-top: round(0.5rem, var(--e)); }
+.page-timeline .timeline-main { min-width: 0; }
+.page-timeline .ledger-top { display: flex; align-items: center; gap: round(1rem, var(--e)); padding-top: round(1rem, var(--e)); }
+.page-timeline .tl-day { padding-top: round(1.25rem, var(--e)); }
+.page-timeline .tl-day-name { font: 400 1.3125rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); padding-bottom: round(0.5rem, var(--e)); margin-bottom: round(1rem, var(--e)); border-bottom: 1px solid var(--rule-strong); }
+.page-timeline .day-date { font-size: 0.82em; color: var(--ink-3); margin-left: round(0.625rem, var(--e)); }
+.page-timeline .list-more { display: flex; flex-wrap: wrap; align-items: center; gap: round(1rem, var(--e)); padding-top: round(1.375rem, var(--e)); }
+.page-timeline .list-more-note { color: var(--ink-3); font-size: var(--text-s); font-style: italic; font-family: var(--serif); }
+.page-timeline .day-side { border-left: 1px solid var(--rule); padding: round(1.25rem, var(--e)) 0 0 round(2.5rem, var(--e)); display: flex; flex-direction: column; gap: round(1rem, var(--e)); min-width: 0; }
+.page-timeline .roads { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); }
+.page-timeline .map-day { height: round(20.625rem, var(--e)); }
+.page-timeline .map-note-line { font-size: var(--small-2); color: var(--ink-3); }
+.page-timeline .side-figs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.page-timeline .side-figs .fig-note { font-size: var(--small); }
+.page-timeline .awake-help { padding-top: round(0.5rem, var(--e)); }
+.page-timeline .help-list { margin-top: round(0.5rem, var(--e)); display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); font-size: var(--text-s); color: var(--ink-2); }
+.page-timeline .help-list strong { color: var(--ink); font-weight: 600; }
+.page-timeline .awake-words { margin-top: round(1rem, var(--e)); display: grid; gap: round(0.5rem, var(--e)); font-size: var(--small-2); color: var(--ink-3); border-top: 1px solid var(--rule); padding-top: round(0.75rem, var(--e)); }
+.page-timeline .awake-words dt { color: var(--ink-2); font-weight: 600; }
+
+/* one entry */
+.page-timeline .tl-page .tl-item { grid-template-columns: round(5.75rem, var(--e)) round(1.5rem, var(--e)) minmax(0, 1fr); }
+.page-timeline .tl-start { color: var(--ink); text-decoration: none; font-weight: 500; }
+.page-timeline .tl-start:hover { text-decoration: underline; text-decoration-color: var(--rule-strong); }
+.page-timeline .tl-end { white-space: normal; }
+.page-timeline .tl-end-day { display: block; }
+.page-timeline .tl-kind { font-size: var(--micro-2); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; --LH: round(calc(1.6 * 1em), 2px); }
+.page-timeline .tl-drive .tl-kind { color: var(--accent); }
+.page-timeline .tl-charge .tl-kind { color: var(--ochre); }
+.page-timeline .tl-gap .tl-kind { color: var(--rust); }
+.page-timeline .tl-asleep .tl-kind { color: var(--dusk); }
+.page-timeline .tl-to { color: var(--ink-3); }
+.page-timeline .tl-place-link { color: inherit; text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 0.18em; }
+.page-timeline .tl-place-link:hover { text-decoration-color: var(--accent); color: var(--accent-strong); }
+.page-timeline .tl-place-link .icon { width: round(0.75em, var(--e)); height: round(0.75em, var(--e)); margin-left: round(0.2em, var(--e)); vertical-align: round(-0.05em, var(--e)); color: var(--ink-4); }
+.page-timeline .tl-version { font-family: var(--mono); font-size: 0.9em; }
+.page-timeline .tl-figs { display: flex; flex-wrap: wrap; gap: round(0.375rem, var(--e)) round(1.25rem, var(--e)); margin-top: round(0.5rem, var(--e)); }
+.page-timeline .tl-fig dt { font-size: var(--micro-2); color: var(--ink-3); }
+.page-timeline .tl-fig dd { font-size: var(--text-s); color: var(--ink); font-variant-numeric: tabular-nums; }
+.page-timeline .tl-fig-note { color: var(--ink-3); font-size: var(--small-2); }
+.page-timeline .tl-delta { white-space: nowrap; }
+.page-timeline .tl-why { margin-top: round(0.375rem, var(--e)); }
+.page-timeline .tl-why-help { font-style: normal; }
+.page-timeline .tl-once { font-style: normal; color: var(--ink-3); }
+.page-timeline .tl-links { margin-top: round(0.4375rem, var(--e)); }
+.page-timeline .tl-detail a { color: var(--accent-strong); font-weight: 500; }
+
+/* a parked spell's split */
+.page-timeline .tl-split { margin-top: round(0.5rem, var(--e)); max-width: round(32rem, var(--e)); }
+.page-timeline .tl-split-bar { display: flex; height: round(0.5rem, var(--e)); background: var(--paper-sunk); overflow: hidden; }
+.page-timeline .tl-split-seg { width: var(--w); height: 100%; background: var(--ink-4); }
+.page-timeline .tl-split-seg.strip-asleep { background: var(--strip-asleep); }
+.page-timeline .tl-split-seg.strip-online { background: var(--rule-strong); }
+.page-timeline .tl-split-seg.strip-online_vehicle_bus_only { background: color-mix(in srgb, var(--rule-strong) 55%, var(--paper)); }
+.page-timeline .tl-split-seg.strip-unknown { background: var(--rust); }
+.page-timeline .tl-split-word { white-space: nowrap; }
+.page-timeline .tl-split-word .key-swatch { margin-right: round(0.3125rem, var(--e)); }
+.page-timeline .tl-split-words { font-size: var(--small-2); color: var(--ink-3); margin-top: round(0.25rem, var(--e)); }
+
+@container page (width < 72rem) {
+  .page-timeline .tl-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+
+@container page (width < 72rem) {
+  .page-timeline .state-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .page-timeline .state-summary > .fig:nth-child(3n + 1) { border-left: 0; padding-left: 0; }
+  .page-timeline .state-summary > .fig:nth-child(n + 4) { border-top: 1px solid var(--rule); }
+  .page-timeline .timeline-grid { grid-template-columns: minmax(0, 1fr); gap: round(2rem, var(--e)); }
+  .page-timeline .day-side { order: -1; border-left: 0; padding-left: 0; }
+}
+
+@container page (width < 50rem) {
+  .page-timeline .state-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .page-timeline .state-summary > .fig:nth-child(n) { border-left: 0; padding-left: 0; }
+  .page-timeline .tl-filters { grid-template-columns: minmax(0, 1fr); }
+  .page-timeline .tl-page .tl-item { grid-template-columns: round(4.5rem, var(--e)) round(1.25rem, var(--e)) minmax(0, 1fr); column-gap: round(0.625rem, var(--e)); }
+}
+
+@container page (width >= 112.5rem) {
+  .page-timeline .timeline-grid { grid-template-columns: minmax(0, round(56rem, var(--e))) minmax(0, 1fr); gap: round(5rem, var(--e)); }
+  .page-timeline .day-side { position: sticky; top: calc(var(--sticky-top) + round(1.5rem, var(--e))); align-self: start; padding-left: round(4rem, var(--e)); }
+  .page-timeline .map-day { height: clamp(round(24rem, var(--e)), 100vh - var(--masthead-h) - round(26rem, var(--e)), round(44rem, var(--e))); }
+}

@@ -1,0 +1,125 @@
+/* Sentry Mate, "Logbook" UI pack: Logbook. Loaded by the router with the page (pages/logbook.js).
+   Every rule starts with .page-logbook, so nothing here reaches another page. */
+
+.page-logbook {
+  --lb-business: var(--accent);
+  --lb-private: var(--slate);
+  --lb-commute: var(--ochre);
+  --lb-none: var(--ink-4);
+}
+
+/* ------------------------------------------------------------- head */
+.page-logbook .lb-title-car { font-style: italic; }
+.page-logbook .lb-head-aside { display: grid; justify-items: end; gap: round(0.5rem, var(--e)); max-width: round(24rem, var(--e)); }
+.page-logbook .lb-asof { font-size: var(--small-2); color: var(--ink-3); text-align: right; --LH: round(calc(1.45 * 1em), 2px); margin: 0; }
+.page-logbook .lb-export-buttons { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
+
+/* ------------------------------------------------------------- filters */
+.page-logbook .lb-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.3fr); gap: round(1rem, var(--e)) round(2.5rem, var(--e)); padding: round(1.25rem, var(--e)) 0 round(0.5rem, var(--e)); }
+.page-logbook .lb-filter { display: grid; gap: round(0.3125rem, var(--e)); align-content: start; justify-items: start; }
+.page-logbook .lb-filter-value { font: 400 1.0625rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: round(0.25rem, var(--e)) round(0.625rem, var(--e)); }
+.page-logbook .lb-vin { font-size: var(--small-2); color: var(--ink-3); }
+.page-logbook .lb-filter .field-hint { margin: 0; max-width: round(34rem, var(--e)); }
+.page-logbook .lb-filter > .button { margin-top: round(0.25rem, var(--e)); }
+.page-logbook .lb-filter-rows { gap: round(0.5rem, var(--e)); }
+.page-logbook .lb-filter-rows .choice { display: grid; gap: round(0.3125rem, var(--e)); justify-items: start; }
+
+/* ------------------------------------------------------------- totals */
+.page-logbook .lb-purpose-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: round(0.75rem, var(--e)); margin-bottom: round(1.25rem, var(--e)); }
+.page-logbook .lb-purpose-card {
+  display: grid; gap: round(0.3125rem, var(--e)); align-content: start; justify-items: start; text-align: left;
+  padding: round(0.875rem, var(--e)) round(1rem, var(--e)) round(1rem, var(--e)); background: var(--paper-raised); color: var(--ink);
+  border: 1px solid var(--rule); border-top: round(0.1875rem, var(--e)) solid var(--lb-c, var(--rule-strong)); border-radius: round(0.25rem, var(--e));
+  font: inherit; line-height: var(--LH); cursor: pointer;
+}
+.page-logbook .lb-purpose-card:hover { border-color: var(--rule-strong); border-top-color: var(--lb-c); }
+.page-logbook .lb-purpose-card:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: round(0.125rem, var(--e)); }
+.page-logbook .lb-purpose-card.is-on { background: var(--accent-wash); border-color: var(--lb-c); }
+.page-logbook .lb-card-name { display: inline-flex; align-items: center; gap: round(0.4375rem, var(--e)); font: 600 var(--micro) var(--sans); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-2); }
+.page-logbook .lb-card-value { font: 400 1.75rem var(--serif); --LH: round(calc(1.15 * 1em), 2px); line-height: var(--LH); font-variant-numeric: tabular-nums; }
+.page-logbook .lb-card-sub { font-size: var(--small-2); color: var(--ink-2); }
+.page-logbook .lb-card-note { font-size: var(--small-2); color: var(--ink-3); --LH: round(calc(1.45 * 1em), 2px); }
+.page-logbook .lb-bar { display: block; width: 100%; height: round(0.3125rem, var(--e)); background: var(--paper-sunk); border-radius: round(0.25rem, var(--e)); overflow: hidden; margin: round(0.125rem, var(--e)) 0; }
+.page-logbook .lb-bar-fill { display: block; height: 100%; width: var(--w, 0%); background: var(--lb-c); }
+.page-logbook .lb-p-business { --lb-c: var(--lb-business); }
+.page-logbook .lb-p-private { --lb-c: var(--lb-private); }
+.page-logbook .lb-p-commute { --lb-c: var(--lb-commute); }
+.page-logbook .lb-p-none { --lb-c: var(--lb-none); }
+.page-logbook .lb-dot { display: inline-block; flex: none; align-self: center; width: round(0.5625rem, 2px); height: round(0.5625rem, 2px); border-radius: 50%; background: var(--lb-c); }
+.page-logbook .lb-p-none .lb-dot, .page-logbook .lb-p-none.lb-dot { background: transparent; box-shadow: inset 0 0 0 1px var(--ink-3); }
+.page-logbook .lb-check-figs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.page-logbook .lb-check-figs .fig-value { font-size: 1.5rem; }
+.page-logbook .lb-gap-total.is-warn { color: var(--rust); }
+.page-logbook .lb-of { font-size: 0.6em; color: var(--ink-3); }
+.page-logbook .lb-export-note { display: flex; gap: round(0.5rem, var(--e)); align-items: flex-start; max-width: round(62rem, var(--e)); margin: round(0.75rem, var(--e)) 0 0; }
+.page-logbook .lb-export-note .icon { flex: none; width: round(1rem, var(--e)); height: 1lh; color: var(--accent); }
+
+/* ------------------------------------------------------------- the log */
+.page-logbook .lb-table td, .page-logbook .lb-table th { vertical-align: baseline; }
+.page-logbook .lb-table .cell-main { display: grid; justify-items: start; gap: round(0.125rem, var(--e)); }
+.page-logbook .lb-table .num .cell-main { justify-items: end; }
+.page-logbook .lb-id { font-size: var(--micro); color: var(--ink-4); }
+.page-logbook .lb-where { min-width: round(11rem, var(--e)); max-width: round(18rem, var(--e)); white-space: normal; }
+.page-logbook .lb-where-main { font-family: var(--serif); font-size: 1rem; }
+.page-logbook .lb-dur { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.page-logbook .lb-purpose { display: inline-flex; align-items: baseline; /* the word gives the line its baseline; the dot is centred */ gap: round(0.375rem, var(--e)); font-weight: 500; white-space: nowrap; }
+.page-logbook .lb-purpose.lb-p-none { color: var(--ink-3); font-weight: 400; font-style: italic; }
+.page-logbook .lb-purpose-cell { min-width: round(11rem, var(--e)); max-width: round(20rem, var(--e)); white-space: normal; }
+.page-logbook .lb-relation { font-size: var(--small-2); color: var(--ink); }
+.page-logbook .lb-note { font-size: var(--small-2); color: var(--ink-2); font-style: italic; }
+.page-logbook .lb-gap { display: inline-flex; align-items: baseline; gap: round(0.25rem, var(--e)); font-size: var(--small-2); color: var(--rust); white-space: nowrap; text-decoration-color: color-mix(in srgb, var(--rust) 40%, transparent); }
+.page-logbook .lb-gap .icon { align-self: center; width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); }
+.page-logbook .lb-table tr.has-gap > * { box-shadow: inset 0 1px 0 var(--rust); }
+.page-logbook .lb-table tr.has-gap > :first-child { box-shadow: inset 0 1px 0 var(--rust), inset round(0.1875rem, var(--e)) 0 0 var(--rust); }
+.page-logbook .lb-table tr.is-live > * { background: var(--accent-wash); }
+.page-logbook .lb-edit { display: inline-flex; align-items: baseline; gap: round(0.3125rem, var(--e)); font: 500 var(--small-2) var(--sans); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--accent); background: none; border: 0; padding: round(0.125rem, var(--e)) 0; cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 0.1875rem; }
+.page-logbook .lb-edit:hover { text-decoration-color: currentColor; }
+.page-logbook .lb-edit:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: round(0.125rem, var(--e)); }
+.page-logbook .lb-edit .icon { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); align-self: center; }
+.page-logbook .lb-remove { color: var(--rust); text-decoration-color: color-mix(in srgb, var(--rust) 35%, transparent); }
+
+/* ------------------------------------------------------------- rules */
+.page-logbook .lb-rules-note { max-width: round(62rem, var(--e)); margin: 0 0 round(1rem, var(--e)); }
+.page-logbook .lb-rules-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(round(16rem, var(--e)), 1fr); gap: round(1.5rem, var(--e)) round(2.5rem, var(--e)); align-items: start; }
+.page-logbook .lb-rule-form { padding-left: round(2.5rem, var(--e)); border-left: 1px solid var(--rule); display: grid; gap: round(0.75rem, var(--e)); }
+.page-logbook .lb-rule-title { font: 600 var(--micro) var(--sans); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); margin: 0; }
+.page-logbook .lb-rule-form .form { display: grid; gap: round(0.75rem, var(--e)); }
+.page-logbook .lb-rule-form .field-select { width: 100%; }
+
+/* dialogs are outside <main>, so these are by class only */
+.lb-dialog-pick { margin: round(0.75rem, var(--e)) 0; }
+.lb-dialog-remove { margin: round(1rem, var(--e)) 0 0; padding-top: round(0.75rem, var(--e)); border-top: 1px solid var(--rule); }
+
+/* ------------------------------------------------------------- tiers */
+@container page (width >= 112.5rem) {
+  .page-logbook .lb-rules-grid { grid-template-columns: minmax(0, 2.5fr) minmax(round(20rem, var(--e)), 1fr); }
+}
+@container page (width < 72rem) {
+  .page-logbook .lb-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .page-logbook .lb-filter-rows { grid-column: 1 / -1; }
+  .page-logbook .lb-purpose-grid, .page-logbook .lb-check-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .page-logbook .lb-rules-grid { grid-template-columns: minmax(0, 1fr); }
+  .page-logbook .lb-rule-form { padding-left: 0; border-left: 0; padding-top: round(1.25rem, var(--e)); border-top: 1px solid var(--rule); }
+}
+@container page (width < 50rem) {
+  .page-logbook .lb-filters, .page-logbook .lb-purpose-grid, .page-logbook .lb-check-figs { grid-template-columns: minmax(0, 1fr); }
+  .page-logbook .lb-head-aside { justify-items: start; }
+  .page-logbook .lb-asof { text-align: left; }
+}
+
+/* ------------------------------------------------------------- table tools, fitting at 1440 */
+.page-logbook .sort-mark { font-size: max(10px, 0.75em); }
+.page-logbook .lb-table-tools { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)) round(1.25rem, var(--e)); margin-bottom: round(0.25rem, var(--e)); }
+.page-logbook .lb-shown { flex: 1; margin: 0; font-size: var(--text-s); color: var(--ink-3); }
+.page-logbook .lb-more { display: flex; justify-content: center; gap: round(0.75rem, var(--e)); padding-top: round(1.125rem, var(--e)); }
+.page-logbook .lb-more[hidden] { display: none; }
+.page-logbook .lb-table .ledger-table tbody td, .page-logbook .lb-table .ledger-table tbody th,
+.page-logbook .lb-table .ledger-table thead th { padding-left: round(0.5rem, var(--e)); padding-right: round(0.5rem, var(--e)); }
+.page-logbook .lb-table .ledger-table thead th { white-space: normal; }
+@container page (width < 112.5rem) {
+  .page-logbook .lb-where { min-width: round(8rem, var(--e)); max-width: round(13rem, var(--e)); }
+  .page-logbook .lb-purpose-cell { min-width: round(8rem, var(--e)); max-width: round(14rem, var(--e)); }
+  .page-logbook .lb-gap { white-space: normal; }
+}
+.page-logbook .lb-table .ledger-count { display: none; }
+.page-logbook .lb-when { white-space: nowrap; }

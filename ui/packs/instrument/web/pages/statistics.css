@@ -1,0 +1,94 @@
+/* Statistics (pages/statistics.js): the filters, the period totals, the period table, odometer and
+   mileage (charts and each car), and milestones. */
+
+.stats-page > * + *, .stats-page > div > * + * { margin-top: var(--gap); }
+.stats-page .page-head { margin-top: 0; }
+.stats-page .panel-head { flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
+.st-side { font-size: max(0.78125rem, var(--fs-floor)); }
+
+/* filters */
+.st-filters .filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.625rem, var(--e)) round(0.75rem, var(--e)); }
+.st-filter { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); flex-wrap: wrap; font-size: max(0.8125rem, var(--fs-floor)); }
+.st-precision { display: flex; align-items: flex-start; gap: round(0.5rem, var(--e)); margin-top: round(0.875rem, var(--e)); }
+.st-precision .ico { flex: none; color: var(--live); margin-top: round(0.125rem, var(--e)); }
+
+.st-pick-btn.is-on { border-color: var(--live-line); background: var(--live-soft); }
+.st-pick-text { max-width: round(16rem, var(--e)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-pick-pop { width: round(21rem, var(--e)); }
+.st-pick-hint { font-size: max(0.78125rem, var(--fs-floor)); --LH: round(calc(1.45 * 1em), 2px); color: var(--text-2); margin-bottom: round(0.75rem, var(--e)); }
+.st-pick-pop .input { width: 100%; margin-bottom: round(0.625rem, var(--e)); }
+.st-pick-list { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); max-height: round(16rem, var(--e)); overflow-y: auto; padding: round(0.125rem, var(--e)); }
+.st-pick-list .check { width: 100%; }
+.st-pick-sub { margin-left: auto; padding-left: round(0.75rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); white-space: nowrap; }
+.st-pick-actions { display: flex; justify-content: space-between; gap: round(0.5rem, var(--e)); margin-top: round(0.875rem, var(--e)); padding-top: round(0.75rem, var(--e)); border-top: 1px solid var(--line); }
+
+/* totals */
+.st-totals { display: grid; grid-template-columns: repeat(auto-fill, minmax(round(13.5rem, var(--e)), 1fr)); gap: round(1.25rem, var(--e)) round(1.5rem, var(--e)); }
+.st-totals .metric { min-width: 0; }
+.st-totals .metric-value { overflow-wrap: anywhere; white-space: normal; }
+.st-totals .metric--lg { grid-column: span 2; }
+.st-totals .explain { --LH: round(calc(1.4 * 1em), 2px); }
+.st-money { display: inline-flex; flex-direction: column; gap: round(0.125rem, var(--e)); }
+.st-money > span { white-space: nowrap; }
+.st-cur { font-size: max(0.6em, var(--fs-floor)); color: var(--text-3); font-weight: 500; }
+
+/* the period table */
+.st-table .tbl td { vertical-align: top; }
+.st-table .tbl th, .st-table .tbl td { white-space: nowrap; }
+.st-part { color: var(--warm); }
+.st-count { font-weight: 600; }
+.st-car { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); }
+.st-swatch { display: inline-block; flex: none; width: round(0.625rem, var(--e)); height: round(0.625rem, var(--e)); border-radius: 50%; background: var(--c); }
+.st-eff.is-good { color: var(--ok, var(--live)); }
+.st-rec { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); min-width: round(9rem, var(--e)); }
+.st-rec-top { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); }
+.st-rec-top b { font-weight: 600; }
+.st-rec-bar { position: relative; flex: 0 0 round(3.5rem, var(--e)); height: round(0.375rem, var(--e)); border-radius: round(0.1875rem, var(--e)); background: var(--nodata-fill); overflow: hidden; }
+.st-rec-bar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); background: var(--live); border-radius: round(0.1875rem, var(--e)); }
+.st-rec.is-warn .st-rec-bar > i { background: var(--warm); }
+.st-rec.is-warn .sub { color: var(--warm); }
+
+/* odometer and mileage */
+.st-mile-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: round(1.5rem, var(--e)); }
+.st-mile-chart { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); min-width: 0; }
+.st-chart-head { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
+.st-chart-head .csv-btn { margin-left: auto; }
+.st-h3 { font-size: max(0.875rem, var(--fs-floor)); font-weight: 600; color: var(--text); }
+.st-chart { height: round(15rem, var(--e)); min-width: 0; }
+.st-chart-skel .skel { display: block; height: round(15rem, var(--e)); }
+.st-legend { display: flex; flex-wrap: wrap; gap: round(0.375rem, var(--e)); }
+.st-key { display: inline-flex; gap: round(0.875rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-2); }
+.st-key > span { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); }
+.st-key i { display: inline-block; width: round(0.75rem, var(--e)); height: round(0.75rem, var(--e)); border-radius: round(0.1875rem, var(--e)); }
+.st-key-logged { background: var(--live); }
+.st-key-gap { background: var(--warm); opacity: 0.7; }
+.st-readout { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.25rem, var(--e)) round(1rem, var(--e)); min-height: round(1.5rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); }
+.st-readout b { color: var(--text); font-weight: 600; }
+.st-read-item { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); }
+.st-mileage .note { margin-top: round(0.75rem, var(--e)); }
+
+/* milestones */
+.st-stones { display: grid; grid-template-columns: repeat(auto-fill, minmax(round(18rem, var(--e)), 1fr)); gap: round(0.875rem, var(--e)); margin: 0; padding: 0; list-style: none; }
+.st-stone { display: flex; gap: round(0.875rem, var(--e)); padding: round(1rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--glass); min-width: 0; }
+.st-stone-ico { flex: none; display: grid; place-items: center; width: round(2.25rem, var(--e)); height: round(2.25rem, var(--e)); border-radius: 50%; background: var(--live-soft); color: var(--live); }
+.st-stone--first .st-stone-ico { background: var(--warm-soft); color: var(--warm); }
+.st-stone-body { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); min-width: 0; font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); --LH: round(calc(1.4 * 1em), 2px); }
+.st-stone-body b { font-size: max(0.9375rem, var(--fs-floor)); color: var(--text); font-weight: 600; }
+.st-stone-kind { font-size: max(0.6875rem, var(--fs-floor)); text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); }
+.st-stone .link { margin-top: round(0.25rem, var(--e)); }
+.stats-page .panel > .note { margin-top: round(0.875rem, var(--e)); }
+
+@container page (min-width: 140rem) {
+  .st-chart { height: round(18rem, var(--e)); }
+}
+@container page (max-width: 85.375rem) {
+  .st-mile-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@container page (max-width: 50rem) {
+  .st-totals { grid-template-columns: minmax(0, 1fr); }
+  .st-totals .metric--lg { grid-column: auto; }
+  .st-pick-pop { width: min(round(21rem, var(--e)), calc(100vw - round(2rem, var(--e)))); }
+}
+.st-mileage .st-mile-fail { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)); margin: 0 0 round(0.75rem, var(--e)); }
+.st-fail-note { text-align: center; margin: 0 0 round(0.5rem, var(--e)); }
+@container page (max-width: 36rem) { .st-stones { grid-template-columns: minmax(0, 1fr); } .st-filter { flex-wrap: wrap; max-width: 100%; } }

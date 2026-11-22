@@ -1,0 +1,75 @@
+# Sentry Mate: receives the Screenmate CAN Bridge's logs on
+# https://<docker-host>:10100/api/can/logs (TLS 1.3 only), and serves the web
+# UI on https://<docker-host>:10101/ (the same certificate).
+#
+#   mkdir -p data keys
+#   sudo chown 1000:1000 data keys && sudo chmod 700 data keys
+#   docker compose up -d
+#   docker logs sentry-mate        (the certificate SHA-256, and on first
+#                                   start the one-time setup code for the
+#                                   web UI's first admin)
+#
+# On first start the recovery key is put in keys/RECOVERY-KEY.txt (not in the
+# log): copy it somewhere safe away from the server, then delete the file.
+#   sudo cat keys/RECOVERY-KEY.txt
+#   sudo rm keys/RECOVERY-KEY.txt
+#
+# An upload token for the car (shown once, with what to fill in the CAN
+# Bridge app: the address, the token and the certificate SHA-256), in the
+# web UI (Settings > Cars) or with:
+#   docker exec sentry-mate /sentry-mate token new --car "Model Y"
+#
+# Update:  docker compose pull && docker compose up -d
+#
+# Full steps (TrueNAS, backups, restore): docs/install.md. A new server:
+# docs/moving.md (from the web UI or with commands).
+#
+# OPTIONAL lines start with # in the first column. To turn one on, delete only
+# that # (nothing else): the rest of the line is already lined up.
+
+services:
+  sentry-mate:
+    # latest, or set SENTRY_MATE_TAG in .env to stay on a build-N or sha- tag
+    image: ghcr.io/skittles-fivem/sentry-mate:${SENTRY_MATE_TAG:-latest}
+    # OPTIONAL: build it from this folder (a clone of the repository) with
+    # docker compose up -d --build
+#    build: .
+    container_name: sentry-mate
+    restart: unless-stopped
+    # time to stop cleanly (it needs under a second)
+    stop_grace_period: 30s
+    ports:
+      # CAN Bridge uploads, HTTPS (TLS 1.3 only). Another app already on
+      # 10100: change the left number, and use it in the bridge's address.
+      - "10100:10100"
+      # the web UI, HTTPS (TLS 1.3 only, the same certificate): open
+      # https://<this machine>:10101/ in a browser. Another app on 10101:
+      # change the left number. A host with a public IPv6 address: keep
+      # 10101 closed to it, or IPv6 visitors look like the home network
+      # (docs/security.md).
+      - "10101:10101"
+
+    # OPTIONAL: the names / addresses you reach the server by, for the
+    # certificate. Read only when it is made, on first start; the bridge
+    # pins its SHA-256 and does not check names.
+#    environment:
+#      SENTRY_MATE_NAMES: 192.168.1.20,server.local
+
+    # Both lines are needed. Without one it does not start, and the log says
+    # which: a folder not mounted would be lost with the container.
+    volumes:
+      # everything it stores, sealed: logs exactly as uploaded, tokens,
+      # trust records, the certificate's key
+      - ./data:/data
+      # the key file that opens data (and the recovery key file on first
+      # start). On another disk if you can (put its path instead of ./keys),
+      # never inside data, and out of data's backups.
+      - ./keys:/keys
+
+    # the user it runs as: data and keys must belong to it
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

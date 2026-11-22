@@ -1,0 +1,90 @@
+/* Pebble: Car. The hero with the big ring, the map, small number tiles, tyres on a car outline, status flags. */
+.hero { justify-content: space-between; gap: var(--s5); }
+.hero-top { display: flex; align-items: center; gap: var(--s6); }
+.hero-text { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.hero-model { font-size: var(--f14); line-height: var(--l14); color: var(--muted); font-weight: 700; }
+.hero-name { font-size: var(--f44); line-height: var(--l44); font-weight: 800; letter-spacing: -0.02em; overflow-wrap: anywhere; }
+.hero-state { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); font-size: var(--f14); line-height: var(--l14); }
+.hero-where { display: flex; align-items: center; gap: var(--s2); font-size: var(--f16); line-height: var(--l16); font-weight: 700; }
+.hero-where .ic { width: var(--ic-sm); height: var(--ic-sm); color: var(--coral); }
+.hero-nums { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s4); }
+.hero-num, .sum-nums > div { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.hero-k { font-size: var(--f13); line-height: var(--l13); font-weight: 700; color: var(--muted); }
+.band { display: flex; flex-direction: column; gap: var(--s2); }
+.band-track { position: relative; display: block; height: var(--s3); border-radius: 999px; background: var(--card-alt); overflow: hidden; }
+.band-low { position: absolute; left: 0; top: 0; bottom: 0; width: 20%; background: var(--sun-soft); }
+.band-fill { position: absolute; left: 0; top: 0; bottom: 0; width: round(calc(var(--v, 0) * 100%), var(--e)); border-radius: 999px; background: var(--coral-fill); }
+.band.is-low .band-fill { background: var(--sun); }
+.band-limit { position: absolute; top: 0; bottom: 0; left: round(calc(var(--v) * 100% - var(--s1) / 2), var(--e)); width: var(--s1); background: var(--text); border-radius: 999px; }
+.band-words { font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
+.where-tile .map { flex: 1; min-height: round(16rem, var(--e)); height: auto; }
+.tile-link { display: inline-flex; align-items: center; gap: var(--s1); font-size: var(--f14); line-height: var(--l14); font-weight: 700; text-decoration: none; margin-top: auto; }
+.tile-link:hover { text-decoration: underline; }
+.tile-link .ic { width: var(--ic-xs); height: var(--ic-xs); }
+.tile-side .tile-link { margin-top: 0; }
+.tile-line.is-warn { color: var(--sun); font-weight: 700; }
+
+.tyres { position: relative; display: grid; grid-template-columns: 1fr auto 1fr; grid-template-rows: auto auto; column-gap: var(--s4); row-gap: var(--s8); align-items: center; padding: var(--s2) 0; }
+.tyres-car { grid-column: 2; grid-row: 1 / 3; width: round(4.5rem, var(--e)); height: round(9rem, var(--e)); border-radius: var(--s8) var(--s8) var(--s6) var(--s6); background: var(--card-alt); box-shadow: inset 0 0 0 var(--s2) var(--well); }
+.tyre { display: flex; align-items: center; gap: var(--s2); }
+.tyre-fl { grid-column: 1; grid-row: 1; flex-direction: row-reverse; text-align: right; }
+.tyre-fr { grid-column: 3; grid-row: 1; }
+.tyre-rl { grid-column: 1; grid-row: 2; flex-direction: row-reverse; text-align: right; }
+.tyre-rr { grid-column: 3; grid-row: 2; }
+.tyre-dot { display: block; width: var(--s4); height: var(--s4); border-radius: 50%; background: var(--teal); flex: none; }
+.tyre.is-low .tyre-dot { background: var(--sun); }
+.tyre.is-missing .tyre-dot { background: var(--card-alt); }
+.tyre-text { display: flex; flex-direction: column; }
+.tyre-name { font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
+.tyre-val { font-size: var(--f20); line-height: var(--l20); font-weight: 800; font-variant-numeric: tabular-nums; }
+
+.flags { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, round(13rem, var(--e))), 1fr)); gap: var(--s2) var(--s4); margin: 0; padding: 0; list-style: none; }
+.flag { display: flex; align-items: center; gap: var(--s2); min-height: var(--l16); font-size: var(--f14); line-height: var(--l14); }
+.flag-dot { display: block; width: var(--dot); height: var(--dot); border-radius: 50%; background: var(--card-alt); flex: none; }
+.flag.is-on .flag-dot { background: var(--tone); }
+.flag-dot.tone-coral { --tone: var(--coral-fill); }
+.flag-name { flex: 1; min-width: 0; font-weight: 700; }
+.flag-val { color: var(--muted); text-align: right; }
+.flag.is-on .flag-val { color: var(--text); font-weight: 800; }
+
+.charge-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+.sum-nums { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s4); }
+.mini-keys { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.chart-empty { margin-top: var(--s4); }
+.strip-tile .fpill { display: inline-flex; align-items: center; gap: var(--s2); }
+.strip-tile .fpill .ic { width: var(--ic-sm); height: var(--ic-sm); color: var(--coral); }
+.ring-arc.no-anim { animation: none; }
+
+html[data-form="phone"] .hero-top { flex-direction: column; align-items: center; gap: var(--s4); text-align: center; }
+html[data-form="phone"] .hero-text { align-items: center; }
+html[data-form="phone"] :is(.hero-state, .hero-where) { justify-content: center; }
+html[data-form="phone"] .hero-name { font-size: var(--f28); line-height: var(--l28); }
+html[data-form="phone"] .hero-nums, html[data-form="phone"] .sum-nums { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+html[data-form="phone"] .tyres { column-gap: var(--s2); }
+html[data-form="phone"] .car-inputs { justify-content: center; }
+/* vehicle info (pages/vehicle-parts.js) */
+.vi-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.vi-row { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s2) 0; border-top: 1px solid var(--card-alt); }
+.vi-row:first-child { border-top: 0; padding-top: 0; }
+.vi-line { display: flex; align-items: center; gap: var(--s3); min-height: var(--h-sm); }
+.vi-k { flex: 0 0 auto; width: round(9.5rem, var(--e)); font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+.vi-v { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s1) var(--s2); text-align: right; }
+.vi-val { font-size: var(--f14); line-height: var(--l14); font-weight: 700; overflow-wrap: anywhere; }
+.vi-row.is-unknown .vi-val { color: var(--muted); font-weight: 500; }
+.vi-edit { flex: none; }
+.vi-src { display: inline-flex; align-items: center; gap: var(--s1); height: var(--h-chip); padding: 0 var(--s2); border-radius: 999px; background: var(--tone-soft); color: var(--tone); font-size: var(--f13); line-height: var(--l13); font-weight: 700; white-space: nowrap; }
+.vi-src .src-dot { background: var(--tone); }
+.vi-conf { color: var(--muted); font-weight: 500; }
+.vi-src.is-low .vi-conf { color: var(--sun); font-weight: 700; }
+.vi-note { font-size: var(--f13); line-height: var(--l13); color: var(--muted); text-align: right; }
+.vi-differ { display: flex; flex-direction: column; gap: var(--s1); margin: 0; padding: var(--s2) var(--s3); border-radius: var(--r-ctl); background: var(--sun-soft); list-style: none; font-size: var(--f14); line-height: var(--l14); }
+.vi-differ-v { font-weight: 700; }
+.vi-differ-s { color: var(--muted); }
+.vi-legend { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.vi-edit-gap { flex: none; width: var(--h-sm); }
+html[data-form="phone"] .vi-edit-gap { width: var(--h-btn); }
+html[data-form="phone"] .vi-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s3); row-gap: var(--s1); align-items: center; }
+html[data-form="phone"] .vi-k { width: auto; grid-column: 1; grid-row: 1; }
+html[data-form="phone"] .vi-v { grid-column: 1; grid-row: 2; justify-content: flex-start; text-align: left; }
+html[data-form="phone"] :is(.vi-edit, .vi-edit-gap) { grid-column: 2; grid-row: 1 / span 2; }
+html[data-form="phone"] .vi-note { text-align: left; }

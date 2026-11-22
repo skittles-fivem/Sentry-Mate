@@ -1,0 +1,8 @@
+code,plant,country,models,year_kind,source,confidence
+F,Fremont; California,US,S|X|3|Y,model_year,Part 565; all service manuals,high
+A,Austin; Texas (Giga Texas),US,Y|C|T|A,model_year,Part 565 2021-09-29 (c11fdc1d) onward; service manuals,high
+C,Shanghai (Giga Shanghai),CN,3|Y,build_year,Model 3 and Model Y service manuals (position 10 is the calendar year built),high
+B,Berlin-Brandenburg (Giga Berlin),DE,Y,build_year,Model Y service manuals (position 10 is the calendar year built),high
+N,Reno; Nevada (Giga Nevada),US,T,model_year,Part 565 2022-09-13 (7404ccb6) onward,high
+P,Palo Alto; California,US,S,model_year,Part 565 2012-03-26 (5df993c3),high
+1,Menlo Park; California,US,R,model_year,Part 565 2009-03-30 (5e87a425),high

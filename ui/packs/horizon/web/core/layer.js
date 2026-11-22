@@ -1,0 +1,131 @@
+// Things that sit above the page: dialogs (native <dialog>: focus moves in and back, Esc closes),
+// popovers (the popover attribute: a click outside or Esc closes) and toasts (short notes after an action).
+
+import { h, replace } from '../shared/dom.js';
+import { icon, btn, place } from './ui.js';
+import { passwordAdvice } from '../shared/password.js';
+
+/* ------------------------------------------------------------------ dialogs */
+
+/**
+ * Open a dialog: openDialog({ title, body, actions, cls, label, onClose }). body and actions are elements
+ * (or lists). Returns the <dialog>; it is removed from the page when it closes.
+ */
+export function openDialog({ title, body, actions, cls, label, onClose } = {}) {
+  const back = document.activeElement;
+  const d = h('dialog', { class: ['dlg', cls], 'aria-label': label || title || null });
+  const head = title ? h('div', { class: 'dlg-head' }, h('h2', { class: 'dlg-title' }, title), btn(null, () => d.close(), { kind: 'ghost', icon: 'x', label: 'Close', sm: true })) : null;
+  replace(d, head, h('div', { class: 'dlg-body' }, body), actions ? h('div', { class: 'dlg-acts' }, actions) : null);
+  d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
+  d.addEventListener('close', () => { d.remove(); onClose?.(d.returnValue); if (back && document.contains(back)) back.focus?.({ preventScroll: true }); });
+  document.body.append(d);
+  d.showModal();
+  return d;
+}
+
+/** Ask yes or no: resolves true when the person agrees. confirmDialog(text, { title, ok, danger }). */
+export function confirmDialog(text, { title = 'Are you sure?', ok = 'Go on', cancel = 'Cancel', danger = false } = {}) {
+  return new Promise((resolve) => {
+    let yes = false;
+    const d = openDialog({
+      title, body: h('p', null, text),
+      actions: [btn(cancel, () => d.close(), { kind: 'ghost' }), btn(ok, () => { yes = true; d.close(); }, { kind: danger ? 'danger' : 'go' })],
+      onClose: () => resolve(yes),
+    });
+  });
+}
+
+/**
+ * Before a new password is sent: when passwordAdvice has reasons, say why it is easy to guess and let the person
+ * choose. Resolves true to send it (no advice, or "Use it anyway"); false for "Change it" or Esc, with the focus
+ * back in the password field. The server takes any password that is not empty.
+ */
+export function passwordOk(name, password, input = null) {
+  const why = passwordAdvice(name, password);
+  if (!why.length) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let yes = false;
+    const change = btn('Change it', () => d.close(), { kind: 'go' });
+    const d = openDialog({
+      title: 'This password is easy to guess', cls: 'dlg--advice',
+      body: [h('ul', { class: 'dlg-list' }, why.map((t) => h('li', null, t))), h('p', null, 'You can still use it.')],
+      actions: [btn('Use it anyway', () => { yes = true; d.close(); }, { kind: 'ghost' }), change],
+      onClose: () => {
+        resolve(yes);
+        if (!yes && input && typeof input.focus === 'function') setTimeout(() => { input.focus(); input.select?.(); }, 0);
+      },
+    });
+    change.focus();
+  });
+}
+
+/* ------------------------------------------------------------------ popovers */
+
+/**
+ * A popover tied to an anchor button: const p = popover({ cls, label, fill(el) }); p.toggle(button).
+ * fill(el) builds its content each time it opens. aria-expanded on the anchor follows it.
+ */
+export function popover({ cls, label, fill, side = 'below', align = 'start' }) {
+  const el = h('div', { class: ['pop', cls], popover: 'auto', role: 'dialog', 'aria-label': label });
+  let anchor = null;
+  let opening = false;
+  el.addEventListener('toggle', (e) => {
+    anchor?.setAttribute('aria-expanded', String(e.newState === 'open'));
+    if (e.newState === 'closed') el.dispatchEvent(new Event('hz-closed'));
+  });
+  document.body.append(el);
+  const api = {
+    el,
+    get open() { return el.matches(':popover-open'); },
+    show(a, o = {}) {
+      anchor = a || anchor;
+      if (opening) return;
+      opening = true;
+      try {
+        fill?.(el, api);
+        if (!api.open) el.showPopover();
+        if (anchor) place(el, anchor, { side: o.side || side, align: o.align || align });
+      } finally { opening = false; }
+    },
+    hide() { if (api.open) el.hidePopover(); },
+    toggle(a, o) { if (api.open && (!a || a === anchor)) api.hide(); else api.show(a, o); },
+    reposition() { if (api.open && anchor) place(el, anchor, { side, align }); },
+  };
+  window.addEventListener('resize', () => api.reposition());
+  return api;
+}
+
+/* ------------------------------------------------------------------ toasts */
+
+const KEY = 'sentrymate.horizon.toast';
+let box = null;
+
+/** The frame calls this once with the #toasts element. */
+export function initToasts(el) { box = el; }
+
+/**
+ * A short note after an action: toast('Saved.', { kind: 'ok' | 'info' | 'error', next }). With next: true it is
+ * shown on the page the person goes to next (kept for this tab only).
+ */
+export function toast(text, { kind = 'ok', next = false, ms } = {}) {
+  if (next) {
+    try { sessionStorage.setItem(KEY, JSON.stringify({ text, kind })); return; } catch { /* show it now instead */ }
+  }
+  if (!box) return;
+  // the same words again (a button pressed twice) replace the toast that says them, never stack under it
+  for (const o of [...box.children]) if (o.dataset.kind === kind && o.querySelector('.toast-text')?.textContent === String(text)) o.remove();
+  const t = h('div', { class: 'toast', dataset: { kind }, role: kind === 'error' ? 'alert' : null },
+    icon(kind === 'error' ? 'warn' : kind === 'info' ? 'info' : 'check'),
+    h('span', { class: 'toast-text' }, text),
+    btn(null, () => t.remove(), { kind: 'ghost', icon: 'x', label: 'Dismiss', sm: true }));
+  box.append(t);
+  while (box.children.length > 3) box.firstElementChild.remove();
+  setTimeout(() => t.remove(), ms ?? (kind === 'error' ? 9000 : 5000));
+}
+
+/** Show a toast kept with next: true (the router calls this after each page mounts). */
+export function showWaitingToast() {
+  let v = null;
+  try { v = JSON.parse(sessionStorage.getItem(KEY) || 'null'); sessionStorage.removeItem(KEY); } catch { /* none */ }
+  if (v?.text) toast(v.text, { kind: v.kind || 'ok' });
+}

@@ -1,0 +1,18 @@
+/* Pebble: Timeline. Small tiles by day; a state tile and the strip on top. */
+.tl-list-start { height: 0; }
+.tl-nums { gap: var(--s1) var(--s4); }
+.tl-n { display: inline-flex; align-items: center; gap: var(--s1); font-size: var(--f14); line-height: var(--l14); font-weight: 700; font-variant-numeric: tabular-nums; }
+.tl-n .ic { width: var(--ic-xs); height: var(--ic-xs); color: var(--muted); }
+.tl-n .num-s { font-size: var(--f14); line-height: var(--l14); }
+.tl-state-now { display: flex; align-items: center; gap: var(--s2); font-size: var(--f14); line-height: var(--l14); }
+.tl-shares { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s3); }
+.tl-shares > div { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.tl-change { font-size: var(--f28); line-height: var(--l28); font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.hero-k { font-size: var(--f13); line-height: var(--l13); font-weight: 700; color: var(--muted); }
+.tl-awake .note + .note { margin-top: 0; }
+html[data-form="phone"] .tl-shares { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+/* a "Tesla update installed" marker (core/firmware.js) */
+.tl-update.tl-row { gap: var(--s3); }
+.tl-fw { display: flex; flex-direction: column; gap: var(--s3); }
+.tl-fw-ver { font-size: var(--f16); line-height: var(--l16); font-weight: 800; font-variant-numeric: tabular-nums; }
+.tl-fw-ver.is-unknown { color: var(--sun); }

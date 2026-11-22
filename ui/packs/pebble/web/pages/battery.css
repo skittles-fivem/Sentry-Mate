@@ -1,0 +1,27 @@
+/* Pebble: Battery. The level ring with its band, the health ring, the charge level chart and the parked spells. */
+.bat-now, .bat-health { gap: var(--s5); }
+.bat-top { display: flex; align-items: center; gap: var(--s6); min-width: 0; }
+.bat-top > .tile-nums { flex: 1; min-width: 0; }
+.bat-text { display: flex; flex-direction: column; gap: var(--s3); flex: 1; min-width: 0; }
+.bat-text > div { display: flex; flex-direction: column; gap: var(--s1); }
+
+/* the everyday band: low, ok, the level now and the charge limit on one track */
+.band { display: flex; flex-direction: column; gap: var(--s2); }
+.band-track { position: relative; display: block; height: var(--s4); border-radius: 999px; background: var(--card-alt); overflow: hidden; }
+.band-ok { position: absolute; top: 0; bottom: 0; left: calc(var(--lo, 0.2) * 100%); width: calc((var(--hi, 0.8) - var(--lo, 0.2)) * 100%); background: var(--c3-wash); }
+.band-fill { position: absolute; top: 0; bottom: 0; left: 0; width: round(calc(var(--v, 0) * 100%), var(--e)); border-radius: 999px; background: var(--coral-fill); }
+.band-limit { position: absolute; top: 0; bottom: 0; left: round(calc(var(--v, 0.8) * 100%), var(--e)); width: var(--e); background: var(--text); }
+.band-low { display: none; }
+.band-words { font-size: var(--f14); line-height: var(--l14); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* charge level: controls over the chart, the figures under it */
+.cl-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3) var(--s4); }
+.cl-controls > .toggle, .cl-controls > label { flex: 1 1 round(18rem, var(--e)); min-width: 0; }
+.cl-host { display: flex; flex-direction: column; gap: var(--s3); }
+.cl-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(round(8rem, var(--e)), 1fr)); gap: var(--s4); }
+.cl-stats > div { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+
+.spell-tile .item-nums { gap: var(--s1) var(--s5); }
+
+html[data-form="phone"] .bat-top { flex-direction: column; align-items: flex-start; gap: var(--s4); }
+html[data-form="phone"] .bat-top > .tile-nums, html[data-form="phone"] .bat-text { width: 100%; }

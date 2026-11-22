@@ -1,0 +1,6 @@
+/target
+*.log.xz
+*.log.xz.json
+!crates/logfmt/tests/fixtures/*.log.xz
+/data
+/keys

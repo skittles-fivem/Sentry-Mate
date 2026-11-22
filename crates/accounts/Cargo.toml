@@ -1,0 +1,29 @@
+[package]
+name = "accounts"
+description = "People and sign-in for Sentry Mate's web UI: accounts, roles, sessions, two-step sign-in, throttling and the audit log, all sealed with the vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+model = { path = "../model" }
+vault = { path = "../vault" }
+argon2 = { version = "0.5", features = ["std", "zeroize"] }
+base64 = "0.22"
+getrandom = { version = "0.3", features = ["std"] }
+hex = "0.4"
+hmac = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = { version = "0.10", default-features = false }
+sha2 = "0.10"
+subtle = "2"
+thiserror = "2"
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
