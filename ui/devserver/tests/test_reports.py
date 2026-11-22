@@ -188,6 +188,19 @@ class Software(ServerCase):
         self.assertTrue(tl and all(r["detected_by"] == "fingerprint" and r["changed_modules"] for r in tl))
         self.assertEqual(self.c.get("/api/v1/cars/c1/firmware")["modules"][3]["fields"][0]["field"],
                          "DIF_applicationCrc")
+
+    def test_fingerprint_update_never_in_progress(self):
+        # like the real server: between_ms and end_ms are set even while "now" is inside the update's window
+        from types import SimpleNamespace
+        from mockapi.resources.software import update_rows
+        app = self.server.app
+        h = app.ds.history("c2")
+        u = next(u for u in h.updates if u.source == "can" and u.detected_by == "fingerprint")
+        self.assertLess(u.start + 1, u.end)
+        rows = update_rows(SimpleNamespace(app=app, now=u.start + 1), h)
+        row = next(x for x in rows if x["id"] == u.id)
+        self.assertEqual(row["between_ms"], [u.start, u.end])
+        self.assertEqual((row["end_ms"], row["duration_ms"]), (u.end, u.end - u.start))
         self.c.error("GET", "/api/v1/cars/c999/firmware", 404, "no_such_car")
 
     def test_events(self):

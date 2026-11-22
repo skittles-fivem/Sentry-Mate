@@ -18,14 +18,18 @@
 //! never looks like an update. A field a span did not confirm says nothing: an unknown, not a change.
 //!
 //! **Updates.** Where a field's runs change value, the update came between the last time the old value was seen and
-//! the first time the new one was. Changes whose windows meet are one update (an update reflashes several modules
-//! while the car is parked): it is placed between the last span with the old set and the first with the new one. It
-//! becomes a row of the car's software updates ([`db::UpdateRow`], source live, input SMO, an id with
-//! [`FW_BIT`]), so the updates list, the timeline, MQTT's `software_changed` and the totals show it.
+//! the first time the new one was (each value's own times when one log saw both). Changes whose windows meet are one
+//! update (an update reflashes several modules while the car is parked): it is placed between the last span with the
+//! old set and the first with the new one. It becomes a row of the car's software updates ([`db::UpdateRow`], source
+//! live, input SMO, an id with [`FW_BIT`]), so the updates list, the timeline, MQTT's `software_changed` and the
+//! totals show it.
 //!
 //! **Names.** An owner can type the version of an update (`2025.38.6`): it is kept for that update and for its new
 //! fingerprint set (every field's value after it), so a later update to the same set gets the name by itself
 //! (`named_by: "auto"`). Clearing an update's name keeps it without one, even when its set is named elsewhere.
+//! An update's id and set are hashes of its changes and of the set after it, so both change when its changes do (a
+//! late log confirms one more changed field, an earlier update with the same changes goes): its name follows it, by
+//! its changes and window ([`Names::follow`]).
 //!
 //! Bounds: per log a few dozen values ([`timeline::firmware::MAX_VALUES`] at most); a day's tallies share one set
 //! when nothing changed; a day's runs are one or two per field; the history is a few runs per field and an update a
@@ -76,6 +80,20 @@ struct LogRef {
     quiet: bool,
     #[serde(default)]
     hints: u32,
+    /// When the values of a field the log saw more than one value of were first and last seen (index into the set,
+    /// first, last; ms): which came first, and when, inside the log. Others take the log's `from` and `to`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    at: Vec<(u32, u64, u64)>,
+}
+
+impl LogRef {
+    /// When the set's tally `i` was first and last seen in this log.
+    fn seen(&self, i: usize) -> (u64, u64) {
+        match self.at.iter().find(|a| a.0 as usize == i) {
+            Some(&(_, first, last)) => (first, last),
+            None => (self.from, self.to),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +158,131 @@ struct Names {
     events: BTreeMap<u64, Option<String>>,
     /// Fingerprint set → the version, and the update it was typed on.
     sets: BTreeMap<String, (String, u64)>,
+    /// What each update in `events` was when last seen (its changes and window): an update's id and set change
+    /// when its changes do (one more field joins it, an update with the same changes goes), and its name follows
+    /// it by this ([`Names::follow`]). Names kept before this was have none (their id is taken as it is).
+    #[serde(default)]
+    keys: BTreeMap<u64, Key>,
+}
+
+/// What an update was when it was named: its changes and window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Key {
+    changes: Vec<Change>,
+    from_ms: u64,
+    to_ms: u64,
+}
+
+impl Key {
+    fn of(ev: &FwEvent) -> Key {
+        Key { changes: ev.changes.clone(), from_ms: ev.from_ms, to_ms: ev.to_ms }
+    }
+
+    /// Whether `ev` is the update this was: one of its changes, and a window that meets this one's.
+    fn is(&self, ev: &FwEvent) -> bool {
+        self.from_ms <= ev.to_ms && ev.from_ms <= self.to_ms && self.changes.iter().any(|c| ev.changes.contains(c))
+    }
+}
+
+impl Names {
+    /// The version `ev` shows, and who named it (`owner` or `auto`).
+    fn lookup(&self, ev: &FwEvent) -> Option<(String, &'static str)> {
+        let own = self.events.get(&ev.id).filter(|_| self.keys.get(&ev.id).is_none_or(|k| k.is(ev)));
+        match own {
+            Some(Some(v)) => Some((v.clone(), "owner")),
+            Some(None) => None,
+            None => self.sets.get(&ev.set).map(|(v, by)| {
+                let mine = *by == ev.id && self.keys.get(by).is_none_or(|k| k.is(ev));
+                (v.clone(), if mine { "owner" } else { "auto" })
+            }),
+        }
+    }
+
+    /// An owner names `ev` (or, with `None`, clears its name).
+    fn set(&mut self, ev: &FwEvent, version: Option<&str>) {
+        self.keys.insert(ev.id, Key::of(ev));
+        match version {
+            Some(v) => {
+                self.events.insert(ev.id, Some(v.to_string()));
+                self.sets.insert(ev.set.clone(), (v.to_string(), ev.id));
+            }
+            None => {
+                self.events.insert(ev.id, None);
+                if self.sets.get(&ev.set).is_some_and(|(_, by)| *by == ev.id) {
+                    self.sets.remove(&ev.set);
+                }
+            }
+        }
+    }
+
+    /// Moves the names from the updates `old` to the same updates in `new` (their ids and sets made again): a name
+    /// stays with its update when another field's change joins it, or when the id it had goes to another update.
+    /// A name whose update is not in `new` is kept, for when it comes back. `true` when something changed.
+    fn follow(&mut self, old: &[FwEvent], new: &[FwEvent]) -> bool {
+        if self.events.is_empty() {
+            return false;
+        }
+        let before = self.clone();
+        for ev in old {
+            if self.events.contains_key(&ev.id) {
+                self.keys.entry(ev.id).or_insert_with(|| Key::of(ev));
+            }
+        }
+        // new event index → the named id it is; an id it keeps first, then one whose key it matches
+        let mut of: BTreeMap<usize, u64> = BTreeMap::new();
+        let mut taken: BTreeSet<u64> = BTreeSet::new();
+        for (i, ev) in new.iter().enumerate() {
+            if self.events.contains_key(&ev.id) && self.keys.get(&ev.id).is_none_or(|k| k.is(ev)) {
+                of.insert(i, ev.id);
+                taken.insert(ev.id);
+            }
+        }
+        for (i, ev) in new.iter().enumerate() {
+            if of.contains_key(&i) {
+                continue;
+            }
+            let found =
+                self.keys.iter().find(|(id, k)| !taken.contains(id) && self.events.contains_key(id) && k.is(ev));
+            if let Some((&id, _)) = found {
+                of.insert(i, id);
+                taken.insert(id);
+            }
+        }
+        let mut events: BTreeMap<u64, Option<String>> = BTreeMap::new();
+        let mut keys: BTreeMap<u64, Key> = BTreeMap::new();
+        for (id, v) in &self.events {
+            if !taken.contains(id) {
+                events.insert(*id, v.clone());
+                if let Some(k) = self.keys.get(id) {
+                    keys.insert(*id, k.clone());
+                }
+            }
+        }
+        let mut moved: BTreeMap<u64, &FwEvent> = BTreeMap::new();
+        for (&i, &id) in &of {
+            let ev = &new[i];
+            events.insert(ev.id, self.events.get(&id).cloned().flatten());
+            keys.insert(ev.id, Key::of(ev));
+            moved.insert(id, ev);
+        }
+        // a set named on an update that moved goes with it (to its new set), over one named elsewhere
+        let old_sets = std::mem::take(&mut self.sets);
+        let mut sets: BTreeMap<String, (String, u64)> = BTreeMap::new();
+        for (set, (v, by)) in &old_sets {
+            if !moved.contains_key(by) {
+                sets.insert(set.clone(), (v.clone(), *by));
+            }
+        }
+        for (v, by) in old_sets.into_values() {
+            if let Some(ev) = moved.get(&by) {
+                sets.insert(ev.set.clone(), (v, ev.id));
+            }
+        }
+        self.events = events;
+        self.keys = keys;
+        self.sets = sets;
+        *self != before
+    }
 }
 
 fn day_key(car: CarId, d: u32) -> String {
@@ -195,10 +338,11 @@ fn summarize(d: &DayLogs) -> DaySum {
         }
         let Some(set) = d.sets.get(l.set as usize) else { continue };
         for (rank, t) in set.iter().enumerate() {
-            let e = span.entry((t.field.clone(), t.value)).or_insert((0, l.from, l.to, rank));
+            let (first, last) = l.seen(rank);
+            let e = span.entry((t.field.clone(), t.value)).or_insert((0, first, last, rank));
             e.0 = e.0.saturating_add(t.count);
-            e.1 = e.1.min(l.from);
-            e.2 = e.2.max(l.to);
+            e.1 = e.1.min(first);
+            e.2 = e.2.max(last);
         }
         prev = Some(l);
     }
@@ -213,9 +357,10 @@ fn summarize(d: &DayLogs) -> DaySum {
     sum
 }
 
-/// Runs in time order with the neighbours of one value joined.
+/// Runs in time order with the neighbours of one value joined. Runs seen over the same time keep the order they
+/// come in (in a span: the order first seen), never the values' order.
 fn join(mut runs: Vec<Run>) -> Vec<Run> {
-    runs.sort_by_key(|r| (r.first_ms, r.last_ms, r.value));
+    runs.sort_by_key(|r| (r.first_ms, r.last_ms));
     let mut out: Vec<Run> = Vec::with_capacity(runs.len());
     for r in runs {
         match out.last_mut() {
@@ -339,12 +484,7 @@ fn names(db: &db::Db, car: CarId) -> Result<Names> {
 
 /// The version an update found from fingerprints shows, and who named it (`owner` or `auto`).
 pub fn name_of(db: &db::Db, car: CarId, ev: &FwEvent) -> Result<Option<(String, &'static str)>> {
-    let n = names(db, car)?;
-    Ok(match n.events.get(&ev.id) {
-        Some(Some(v)) => Some((v.clone(), "owner")),
-        Some(None) => None,
-        None => n.sets.get(&ev.set).map(|(v, by)| (v.clone(), if *by == ev.id { "owner" } else { "auto" })),
-    })
+    Ok(names(db, car)?.lookup(ev))
 }
 
 impl Engine {
@@ -358,13 +498,7 @@ impl Engine {
         let before = day.clone();
         day.logs.remove(name);
         if let Some((f, quiet)) = fw.filter(|(f, _)| !f.is_empty()) {
-            let set: Vec<Tally> = f
-                .seen
-                .iter()
-                .map(|s| Tally { field: s.field.clone(), value: s.value, count: s.count.min(CONFIRM) })
-                .collect();
-            let from = f.seen.iter().map(|s| s.first_ms).min().unwrap_or(start);
-            let to = f.seen.iter().map(|s| s.last_ms).max().unwrap_or(start);
+            let (set, mut log) = log_ref(f, start, quiet);
             let i = match day.sets.iter().position(|s| *s == set) {
                 Some(i) => i,
                 None => {
@@ -372,8 +506,8 @@ impl Engine {
                     day.sets.len() - 1
                 }
             };
-            let set = u32::try_from(i).unwrap_or(u32::MAX);
-            day.logs.insert(name.to_string(), LogRef { set, from, to, quiet, hints: f.hints });
+            log.set = u32::try_from(i).unwrap_or(u32::MAX);
+            day.logs.insert(name.to_string(), log);
         }
         if day == before {
             return Ok(());
@@ -473,8 +607,14 @@ impl Engine {
     fn fw_finish(&self, car: CarId, mut h: History, force: bool) -> Result<()> {
         let events = events_of(car, &h.runs);
         let changed = events != h.events;
-        h.events = events;
         let db = &self.inner.db;
+        if changed {
+            let mut n = names(db, car)?;
+            if n.follow(&h.events, &events) {
+                records::put(db, NS, &names_key(car), &n)?;
+            }
+        }
+        h.events = events;
         let empty = h.days.is_empty() && h.runs.is_empty() && h.events.is_empty();
         put_or_delete(db, &history_key(car), &h, empty)?;
         if changed || force {
@@ -525,22 +665,28 @@ impl Engine {
         let h = history(db, car)?;
         let Some(ev) = h.events.iter().find(|e| e.id == id) else { return Ok(false) };
         let mut n = names(db, car)?;
-        match version {
-            Some(v) => {
-                n.events.insert(id, Some(v.to_string()));
-                n.sets.insert(ev.set.clone(), (v.to_string(), id));
-            }
-            None => {
-                n.events.insert(id, None);
-                if n.sets.get(&ev.set).is_some_and(|(_, by)| *by == id) {
-                    n.sets.remove(&ev.set);
-                }
-            }
-        }
+        n.set(ev, version);
         records::put(db, NS, &names_key(car), &n)?;
         self.fw_sync_rows(car, &h)?;
         Ok(true)
     }
+}
+
+/// One log's tallies and its entry (`set` still to fill in): the log's first and last fingerprint frame, and each
+/// value's own first and last time for a field the log saw more than one value of.
+fn log_ref(f: &LogFirmware, start: u64, quiet: bool) -> (Vec<Tally>, LogRef) {
+    let set: Vec<Tally> =
+        f.seen.iter().map(|s| Tally { field: s.field.clone(), value: s.value, count: s.count.min(CONFIRM) }).collect();
+    let from = f.seen.iter().map(|s| s.first_ms).min().unwrap_or(start);
+    let to = f.seen.iter().map(|s| s.last_ms).max().unwrap_or(start);
+    let at = f
+        .seen
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| f.seen.iter().any(|o| o.field == s.field && o.value != s.value))
+        .map(|(i, s)| (u32::try_from(i).unwrap_or(u32::MAX), s.first_ms, s.last_ms))
+        .collect();
+    (set, LogRef { set: 0, from, to, quiet, hints: f.hints, at })
 }
 
 /// Drops the sets no log uses any more (indexes kept in step).
@@ -583,15 +729,16 @@ mod tests {
                     d.sets.len() - 1
                 }
             };
-            d.logs
-                .insert((*name).into(), LogRef { set: i as u32, from: *at, to: *at + 55_000, quiet: *quiet, hints: 0 });
+            d.logs.insert(
+                (*name).into(),
+                LogRef { set: i as u32, from: *at, to: *at + 55_000, quiet: *quiet, hints: 0, at: Vec::new() },
+            );
         }
         d
     }
 
     #[test]
     fn confirmed_over_a_span_not_from_one_frame() {
-        const T: u64 = 1_767_225_600_000;
         let d = day(&[
             ("a", T, vec![tally("BMS_appCrc", 1, 1), tally("BMS_bootCrc", 9, 3)], false),
             ("b", T + 60_000, vec![tally("BMS_appCrc", 1, 2), tally("BMS_bootCrc", 7, 1)], true),
@@ -645,6 +792,105 @@ mod tests {
         // another value inside a run: made again from every day
         let mut runs = vec![r(1, 0, 10_000_000)];
         assert!(!merge_into(&mut runs, &[r(2, 500_000, 600_000)]));
+    }
+
+    const T: u64 = 1_767_225_600_000;
+
+    #[test]
+    fn an_update_inside_one_log_keeps_its_direction() {
+        // a one-log wake-up in which the value goes from 0x20 to 0x10 (seen first: 0x20)
+        let d = day(&[("a", T, vec![tally("BMS_appCrc", 0x20, 3), tally("BMS_appCrc", 0x10, 3)], true)]);
+        let s = summarize(&d);
+        let values: Vec<u64> = s.runs["BMS_appCrc"].iter().map(|r| r.value).collect();
+        assert_eq!(values, vec![0x20, 0x10]);
+        // the next day still says 0x10: one update, 0x20 → 0x10
+        let mut runs = BTreeMap::new();
+        let mut all = s.runs["BMS_appCrc"].clone();
+        all.push(Run { value: 0x10, first_ms: T + 86_400_000, last_ms: T + 86_455_000 });
+        runs.insert("BMS_appCrc".to_string(), join(all));
+        let ev = events_of(7, &runs);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(ev[0].changes, vec![Change { field: "BMS_appCrc".into(), old: 0x20, new: 0x10 }]);
+    }
+
+    #[test]
+    fn each_values_own_times_place_an_update_inside_a_log() {
+        let seen = |field: &str, value, first_ms, last_ms| timeline::firmware::Seen {
+            field: field.into(),
+            value,
+            count: 5,
+            first_ms,
+            last_ms,
+        };
+        let f = LogFirmware {
+            seen: vec![
+                seen("BMS_appCrc", 0x20, T, T + 20_000),
+                seen("BMS_bootCrc", 9, T + 1_000, T + 54_000),
+                seen("BMS_appCrc", 0x10, T + 25_000, T + 55_000),
+            ],
+            hints: 0,
+        };
+        let (set, log) = log_ref(&f, T, true);
+        assert_eq!((log.from, log.to), (T, T + 55_000));
+        // only the field with two values keeps each value's times
+        assert_eq!(log.at, vec![(0, T, T + 20_000), (2, T + 25_000, T + 55_000)]);
+        let mut d = DayLogs { sets: vec![set], logs: BTreeMap::new() };
+        d.logs.insert("a".into(), log);
+        let s = summarize(&d);
+        assert_eq!(
+            s.runs["BMS_appCrc"],
+            vec![
+                Run { value: 0x20, first_ms: T, last_ms: T + 20_000 },
+                Run { value: 0x10, first_ms: T + 25_000, last_ms: T + 55_000 }
+            ]
+        );
+        assert_eq!(s.runs["BMS_bootCrc"], vec![Run { value: 9, first_ms: T, last_ms: T + 55_000 }]);
+        let ev = events_of(7, &s.runs);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!((ev[0].from_ms, ev[0].to_ms), (T + 20_000, T + 25_000));
+        assert_eq!((ev[0].changes[0].old, ev[0].changes[0].new), (0x20, 0x10));
+    }
+
+    #[test]
+    fn a_name_follows_its_update_when_another_change_joins_it() {
+        let r = |v, a, b| Run { value: v, first_ms: a, last_ms: b };
+        let mut runs = BTreeMap::new();
+        runs.insert("BMS_appCrc".to_string(), vec![r(1, 0, 100), r(2, 200, 300)]);
+        let one = events_of(7, &runs);
+        let mut n = Names::default();
+        n.set(&one[0], Some("2025.38.6"));
+        // a late log confirms one more changed field whose window meets the update's: a new id and set
+        runs.insert("DIR_applicationCrc".to_string(), vec![r(5, 0, 100), r(6, 200, 300)]);
+        let two = events_of(7, &runs);
+        assert_eq!(two.len(), 1);
+        assert!(two[0].id != one[0].id && two[0].set != one[0].set);
+        assert!(n.follow(&one, &two));
+        assert_eq!(n.lookup(&two[0]), Some(("2025.38.6".to_string(), "owner")));
+        // its new set is named: a later update to the same set gets the name by itself
+        assert_eq!(n.sets.get(&two[0].set), Some(&("2025.38.6".to_string(), two[0].id)));
+        assert!(!n.sets.contains_key(&one[0].set));
+        // nothing changed: nothing moves
+        assert!(!n.follow(&two, &two));
+    }
+
+    #[test]
+    fn a_name_stays_with_its_update_when_an_earlier_one_with_the_same_changes_goes() {
+        let r = |v, a, b| Run { value: v, first_ms: a, last_ms: b };
+        let mut runs = BTreeMap::new();
+        runs.insert("BMS_appCrc".to_string(), vec![r(1, 0, 100), r(2, 200, 300), r(1, 400, 500), r(2, 600, 700)]);
+        let all = events_of(7, &runs);
+        assert_eq!(all.len(), 3);
+        let mut n = Names::default();
+        n.set(&all[0], Some("2026.2.6"));
+        n.set(&all[2], Some("2026.8.1"));
+        // the first update's logs go (a window cleared): the third's changes (1 → 2) now take the first's id
+        runs.insert("BMS_appCrc".to_string(), vec![r(2, 200, 300), r(1, 400, 500), r(2, 600, 700)]);
+        let left = events_of(7, &runs);
+        assert_eq!(left.len(), 2);
+        assert_eq!(left[1].id, all[0].id, "the same changes, no salt now");
+        assert!(n.follow(&all, &left));
+        assert_eq!(n.lookup(&left[1]), Some(("2026.8.1".to_string(), "owner")));
+        assert_eq!(n.lookup(&left[0]), None);
     }
 
     #[test]

@@ -37,10 +37,11 @@ def update_rows(req, h):
     rows = []
     prev_end = None
     for i, u in enumerate(ups):
-        live = u.start <= req.now < u.end
+        fp = u.source == "can" and u.detected_by == "fingerprint"
+        # a fingerprint update is never in progress: the real rows end when the new value was first seen
+        live = not fp and u.start <= req.now < u.end
         nxt_start = ups[i + 1].start if i + 1 < len(ups) else req.now
         v, vs = update_version(req.app, u)
-        fp = u.source == "can" and u.detected_by == "fingerprint"
         on = [c for c in h.charges if u.end <= c.start < nxt_start and c.start <= req.now and h.shown(c)]
         mid = (u.end + nxt_start) // 2
         rows.append({
@@ -52,7 +53,7 @@ def update_rows(req, h):
             "build_id": u.build_id if u.source == "can" else None,
             "changes": FW.update_changes(h, u, req.now) if fp else [],
             "named_by": ({"owner": "owner", "build_match": "auto"}.get(vs) if fp and v else None),
-            "between_ms": [u.start, u.end] if fp and not live else None,
+            "between_ms": [u.start, u.end] if fp else None,
             "charges": len(on), "full_range_km": r(car.full_range_km(mid), 1),
             "full_pack_kwh": r(bms_full(car, mid), 2) if u.source == "can" else None,
             "until_ms": ups[i + 1].start if i + 1 < len(ups) else None,
