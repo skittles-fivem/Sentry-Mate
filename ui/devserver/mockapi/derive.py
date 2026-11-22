@@ -101,7 +101,26 @@ def _build_visits(app, h, now):
     out = []
     cur = None
     prev_drive = None
-    shadow_of = {getattr(s, "tm_copy_of", None): s.id for s in h.shadow}
+    # each shown row's copies: a CAN row's TeslaMate copy, a TeslaMate row's TeslaFi copy (and so a CAN row's
+    # TeslaFi copy through its TeslaMate one); a hidden row's link goes to the copy that is shown
+    copies = {}
+    for c in h.shadow:
+        of = getattr(c, "tm_copy_of", None) or getattr(c, "tf_copy_of", None)
+        if of is not None:
+            copies.setdefault(of, []).append(c)
+
+    def shown_id(row):
+        todo, seen = [row], set()
+        while todo:
+            r = todo.pop(0)
+            if r.id in seen:
+                continue
+            seen.add(r.id)
+            if h.shown(r):
+                return r.id
+            todo.extend(copies.get(r.id, []))
+        return row.id
+
     tz = app.store.car_meta(h.car.id)["time_zone"]
     for s in h.segs:
         if s.start > now:
@@ -109,7 +128,7 @@ def _build_visits(app, h, now):
         if s.kind == "drive":
             if cur is not None:
                 cur["left_ms"] = s.start
-                cur["drive_out"] = s.id if h.shown(s) else shadow_of.get(s.id, s.id)
+                cur["drive_out"] = shown_id(s)
                 out.append(cur)
                 cur = None
             prev_drive = s if s.cut_ms is None else None
@@ -129,13 +148,13 @@ def _build_visits(app, h, now):
             addr = placing.full_address(app, s.lat, s.lon, s.pid)
             din = None
             if prev_drive is not None:
-                din = prev_drive.id if h.shown(prev_drive) else shadow_of.get(prev_drive.id, prev_drive.id)
+                din = shown_id(prev_drive)
             cur = {"id": f"{h.car.id}-{s.start}", "car": h.car.id, "time_zone": tz, "arrived_ms": s.start,
                    "left_ms": None, "lat": round(s.lat, 6), "lon": round(s.lon, 6), "accuracy_m": 5.0,
                    "pid": pid, "address": addr, "drive_in": din, "drive_out": None, "charges": [],
                    **S.of_seg(s), "unknown_ms": 0}
         if s.kind == "charge":
-            cur["charges"].append(s.id if h.shown(s) else shadow_of.get(s.id, s.id))
+            cur["charges"].append(shown_id(s))
         prev_drive = None
     if cur is not None:
         out.append(cur)

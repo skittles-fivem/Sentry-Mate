@@ -19,6 +19,19 @@ pub struct Flip {
     pub shown: String,
 }
 
+impl Flip {
+    /// Whether this choice was made for a span that meets `[a, b)`: a span keeps its choice when a later import
+    /// moves its start or end (and with it its id), so a choice is matched by the time it covers, not its start.
+    fn meets(&self, a: u64, b: u64) -> bool {
+        self.start_ms < b.max(a.saturating_add(1)) && a < self.end_ms.max(self.start_ms.saturating_add(1))
+    }
+}
+
+/// The latest choice made for a span that meets `[a, b)`.
+fn chosen_for(chosen: &[Flip], a: u64, b: u64) -> Option<&Flip> {
+    chosen.iter().rev().find(|f| f.meets(a, b))
+}
+
 fn flips(e: &Engine, car: CarId) -> QResult<Vec<Flip>> {
     Ok(records::get(e.db(), NS, &format!("car/{car}/overlaps"))?.unwrap_or_default())
 }
@@ -41,8 +54,11 @@ pub(crate) struct Sites(Vec<(u64, u64, ImportSite)>);
 
 impl Sites {
     pub(crate) fn new(e: &Engine, car: CarId) -> QResult<Sites> {
-        let pairs = import_pairs(e, car, &choices(e, car)?.sites)?;
-        Ok(Sites(pairs.iter().map(|p| (p.start_ms, p.end_ms, p.shown)).collect()))
+        Ok(Sites::of(&import_pairs(e, car, &choices(e, car)?.sites)?))
+    }
+
+    fn of(pairs: &[Pair]) -> Sites {
+        Sites(pairs.iter().map(|p| (p.start_ms, p.end_ms, p.shown)).collect())
     }
 
     /// Whether a row or point of `site` at `t` is shown.
@@ -87,13 +103,14 @@ impl Shown {
         if let Some(f) = self.filter {
             return f.keeps(source, inputs) && self.sites.keeps(source, t);
         }
-        let flipped = self.flips.iter().find(|f| f.start_ms <= t && t < f.end_ms).map(|f| f.shown.as_str());
+        // the CAN span `t` is in, and the choice made for it (matched by the time it covers, as the list does)
+        let i = self.coverage.partition_point(|s| s.1 <= t);
+        let span = self.coverage.get(i).filter(|s| s.0 <= t);
+        let flipped = span.and_then(|s| chosen_for(&self.flips, s.0, s.1)).map(|f| f.shown.as_str());
         match source {
             Source::Live => flipped != Some("teslamate"),
             Source::Teslamate | Source::Teslafi => {
-                let i = self.coverage.partition_point(|s| s.1 <= t);
-                let covered = self.coverage.get(i).is_some_and(|s| s.0 <= t);
-                (!covered || flipped == Some("teslamate")) && self.sites.keeps(source, t)
+                (span.is_none() || flipped == Some("teslamate")) && self.sites.keeps(source, t)
             }
         }
     }
@@ -132,7 +149,8 @@ pub struct Overlap {
     pub default_reason: Option<&'static str>,
     /// The live side's counts (`can` is the same, kept for one release).
     pub live: Counts,
-    /// The imported side's counts, every site (`teslamate` is the same, kept for one release).
+    /// The imported side's counts as the lists show it: each real drive and charge once (where both imports cover
+    /// the time, the shown site's rows; each site's own are in `sites`). `teslamate` is the same, kept for one release.
     pub imported: Counts,
     /// Each import site's counts.
     pub sites: SiteCounts,
@@ -225,7 +243,8 @@ fn imported_span(e: &Engine, car: CarId) -> QResult<Option<(u64, u64)>> {
     Ok(join(ends::<model::Drive>(e, car)?, ends::<model::Charge>(e, car)?))
 }
 
-/// Where a row of `source` is counted: live 0, TeslaMate 1, TeslaFi 2.
+/// Where a row of `source` is counted: live 0, TeslaMate 1, TeslaFi 2; an imported row the lists show (of the site
+/// its span shows, where both imports cover it) also in [`SHOWN`].
 fn slot(source: Source) -> usize {
     match source {
         Source::Live => 0,
@@ -241,7 +260,8 @@ fn count_into<T: db::Item>(
     car: CarId,
     family: Source,
     spans: &[(u64, u64)],
-    counts: &mut [[u64; 3]],
+    sites: &Sites,
+    counts: &mut [[u64; 4]],
 ) -> QResult<()> {
     let (Some(first), Some(last)) = (spans.first(), spans.last()) else { return Ok(()) };
     let mut q = db::Query::between(first.0, last.1).oldest_first().limit(db::MAX_PAGE);
@@ -255,9 +275,16 @@ fn count_into<T: db::Item>(
                 i += 1;
             }
             if spans.get(i).is_some_and(|s| s.0 <= t)
-                && let Some(n) = counts.get_mut(i).and_then(|c| c.get_mut(slot(r.source())))
+                && let Some(c) = counts.get_mut(i)
             {
-                *n += 1;
+                if let Some(n) = c.get_mut(slot(r.source())) {
+                    *n += 1;
+                }
+                if r.source().site().is_some_and(|site| sites.shows(site, t))
+                    && let Some(n) = c.get_mut(SHOWN)
+                {
+                    *n += 1;
+                }
             }
         }
         match page.next {
@@ -267,27 +294,45 @@ fn count_into<T: db::Item>(
     }
 }
 
-/// Drives and charges of a span from its counts: every import site's, one site's, or the live side's.
-fn counts_of(d: &[u64; 3], c: &[u64; 3], slots: &[usize]) -> Counts {
-    let sum = |v: &[u64; 3]| slots.iter().filter_map(|&k| v.get(k)).sum();
+/// The slot of the imported rows the lists show ([`slot`]): one per real drive or charge where both imports cover a
+/// span.
+const SHOWN: usize = 3;
+
+/// Drives and charges of a span from its counts: every import site's, one site's, the shown ones, or the live side's.
+fn counts_of(d: &[u64; 4], c: &[u64; 4], slots: &[usize]) -> Counts {
+    let sum = |v: &[u64; 4]| slots.iter().filter_map(|&k| v.get(k)).sum();
     Counts { drives: sum(d), charges: sum(c) }
 }
 
 /// A span's drives and charges, by source ([`slot`]).
-type SpanCounts = ([u64; 3], [u64; 3]);
+type SpanCounts = ([u64; 4], [u64; 4]);
 
-/// The spans' counts of drives and charges, by source.
-fn span_counts(e: &Engine, car: CarId, family: Source, spans: &[(u64, u64)]) -> QResult<Vec<SpanCounts>> {
-    let (mut d, mut c) = (vec![[0u64; 3]; spans.len()], vec![[0u64; 3]; spans.len()]);
-    count_into::<model::Drive>(e, car, family, spans, &mut d)?;
-    count_into::<model::Charge>(e, car, family, spans, &mut c)?;
+/// The spans' counts of drives and charges, by source (the imported rows `sites` shows in [`SHOWN`]).
+fn span_counts(
+    e: &Engine,
+    car: CarId,
+    family: Source,
+    spans: &[(u64, u64)],
+    sites: &Sites,
+) -> QResult<Vec<SpanCounts>> {
+    let (mut d, mut c) = (vec![[0u64; 4]; spans.len()], vec![[0u64; 4]; spans.len()]);
+    count_into::<model::Drive>(e, car, family, spans, sites, &mut d)?;
+    count_into::<model::Charge>(e, car, family, spans, sites, &mut c)?;
     Ok(d.into_iter().zip(c).collect())
 }
 
 /// The `live` overlaps among `spans` (CAN coverage): the spans that hold imported drives or charges, with both sides'
-/// counts.
-fn overlaps_of(e: &Engine, car: CarId, spans: &[(u64, u64)], fl: &[Flip], version: u64) -> QResult<Vec<Overlap>> {
-    let imported = span_counts(e, car, Source::Teslamate, spans)?;
+/// counts. The imported side counts each real drive and charge once, as the lists show it: where both imports cover
+/// the time, only the rows of the site `sites` shows there (each site's own counts are in `sites`).
+fn overlaps_of(
+    e: &Engine,
+    car: CarId,
+    spans: &[(u64, u64)],
+    fl: &[Flip],
+    sites: &Sites,
+    version: u64,
+) -> QResult<Vec<Overlap>> {
+    let imported = span_counts(e, car, Source::Teslamate, spans, sites)?;
     let held: Vec<((u64, u64), SpanCounts)> = spans
         .iter()
         .copied()
@@ -295,7 +340,7 @@ fn overlaps_of(e: &Engine, car: CarId, spans: &[(u64, u64)], fl: &[Flip], versio
         .filter(|(_, (d, c))| counts_of(d, c, &[1, 2]) != Counts::default())
         .collect();
     // the CAN side counted over the overlaps only
-    let live = span_counts(e, car, Source::Live, &held.iter().map(|h| h.0).collect::<Vec<_>>())?;
+    let live = span_counts(e, car, Source::Live, &held.iter().map(|h| h.0).collect::<Vec<_>>(), &Sites::default())?;
     let mut items = Vec::new();
     for (((a, b), (d, c)), (ld, lc)) in held.into_iter().zip(live) {
         let sites = SiteCounts { teslamate: counts_of(&d, &c, &[1]), teslafi: counts_of(&d, &c, &[2]) };
@@ -307,7 +352,7 @@ fn overlaps_of(e: &Engine, car: CarId, spans: &[(u64, u64)], fl: &[Flip], versio
                     .map(|(s, _)| model::Origin::Import(s)),
             )
             .collect();
-        let shown = fl.iter().find(|f| f.start_ms == a).map_or_else(|| "can".to_string(), |f| f.shown.clone());
+        let shown = chosen_for(fl, a, b).map_or_else(|| "can".to_string(), |f| f.shown.clone());
         let mut o = Overlap {
             id: format!("overlap:{a}"),
             kind: "live",
@@ -321,7 +366,7 @@ fn overlaps_of(e: &Engine, car: CarId, spans: &[(u64, u64)], fl: &[Flip], versio
             imported: Counts::default(),
             sites,
             can: counts_of(&ld, &lc, &[0]),
-            teslamate: counts_of(&d, &c, &[1, 2]),
+            teslamate: counts_of(&d, &c, &[SHOWN]),
             sources: super::source_refs(&origins),
             version,
         };
@@ -502,22 +547,22 @@ fn import_pairs(e: &Engine, car: CarId, chosen: &[Flip]) -> QResult<Vec<Pair>> {
                 }
             }
         };
-        let shown = chosen.iter().find(|f| f.start_ms == a).and_then(|f| site_word(&f.shown)).unwrap_or(default);
+        let shown = chosen_for(chosen, a, b).and_then(|f| site_word(&f.shown)).unwrap_or(default);
         out.push(Pair { start_ms: a, end_ms: b, shown, default, reason });
     }
     Ok(out)
 }
 
-/// The `imports` overlaps: [`import_pairs`] with each site's counts (and the live side's, which still wins inside its
-/// own coverage).
-fn pair_overlaps(e: &Engine, car: CarId, ch: &Choices) -> QResult<Vec<Overlap>> {
-    let pairs = import_pairs(e, car, &ch.sites)?;
+/// The `imports` overlaps: [`import_pairs`] with each site's counts, the shown site's as the imported side (each real
+/// drive once, as the lists show it), and the live side's, which still wins inside its own coverage.
+fn pair_overlaps(e: &Engine, car: CarId, ch: &Choices, pairs: Vec<Pair>) -> QResult<Vec<Overlap>> {
     let spans: Vec<(u64, u64)> = pairs.iter().map(|p| (p.start_ms, p.end_ms)).collect();
-    let imported = span_counts(e, car, Source::Teslamate, &spans)?;
-    let live = span_counts(e, car, Source::Live, &spans)?;
+    let imported = span_counts(e, car, Source::Teslamate, &spans, &Sites::default())?;
+    let live = span_counts(e, car, Source::Live, &spans, &Sites::default())?;
     let mut items = Vec::new();
     for ((p, (d, c)), (ld, lc)) in pairs.into_iter().zip(imported).zip(live) {
         let word = |s: ImportSite| format!("import:{}", s.word());
+        let shown = [1 + site_slot(p.shown)];
         items.push(Overlap {
             id: format!("imports:{}", p.start_ms),
             kind: "imports",
@@ -528,10 +573,10 @@ fn pair_overlaps(e: &Engine, car: CarId, ch: &Choices) -> QResult<Vec<Overlap>> 
             default_source: word(p.default),
             default_reason: Some(p.reason),
             live: counts_of(&ld, &lc, &[0]),
-            imported: counts_of(&d, &c, &[1, 2]),
+            imported: counts_of(&d, &c, &shown),
             sites: SiteCounts { teslamate: counts_of(&d, &c, &[1]), teslafi: counts_of(&d, &c, &[2]) },
             can: counts_of(&ld, &lc, &[0]),
-            teslamate: counts_of(&d, &c, &[1, 2]),
+            teslamate: counts_of(&d, &c, &shown),
             sources: super::source_refs(&ImportSite::ALL.map(model::Origin::Import)),
             version: ch.changes + 1,
         });
@@ -550,8 +595,10 @@ fn imported_coverage(e: &Engine, car: CarId) -> QResult<Vec<(u64, u64)>> {
 /// Every overlap of a car, both kinds.
 fn all_overlaps(e: &Engine, car: CarId) -> QResult<Vec<Overlap>> {
     let ch = choices(e, car)?;
-    let mut items = overlaps_of(e, car, &imported_coverage(e, car)?, &flips(e, car)?, ch.changes + 1)?;
-    items.extend(pair_overlaps(e, car, &ch)?);
+    let pairs = import_pairs(e, car, &ch.sites)?;
+    let sites = Sites::of(&pairs);
+    let mut items = overlaps_of(e, car, &imported_coverage(e, car)?, &flips(e, car)?, &sites, ch.changes + 1)?;
+    items.extend(pair_overlaps(e, car, &ch, pairs)?);
     Ok(items)
 }
 
@@ -596,10 +643,12 @@ pub fn set_overlap(
     };
     let ch = choices(e, car)?;
     let mut o = if pair {
-        pair_overlaps(e, car, &ch)?.into_iter().find(|o| o.start_ms == start).ok_or_else(none)?
+        let pairs = import_pairs(e, car, &ch.sites)?;
+        pair_overlaps(e, car, &ch, pairs)?.into_iter().find(|o| o.start_ms == start).ok_or_else(none)?
     } else {
         let span = imported_coverage(e, car)?.into_iter().find(|s| s.0 == start).ok_or_else(none)?;
-        overlaps_of(e, car, &[span], &flips(e, car)?, ch.changes + 1)?.into_iter().next().ok_or_else(none)?
+        let sites = Sites::new(e, car)?;
+        overlaps_of(e, car, &[span], &flips(e, car)?, &sites, ch.changes + 1)?.into_iter().next().ok_or_else(none)?
     };
     {
         // read, checked and written back one change at a time
@@ -611,12 +660,13 @@ pub fn set_overlap(
             return Ok(Patched::Stale { version: ch.changes + 1 });
         }
         let flip = Flip { start_ms: o.start_ms, end_ms: o.end_ms, shown: word.clone() };
+        // a new choice replaces every earlier one made for this span, whatever its start was then
         if pair {
-            ch.sites.retain(|f| f.start_ms != o.start_ms);
+            ch.sites.retain(|f| !f.meets(o.start_ms, o.end_ms));
             ch.sites.push(flip);
         } else {
             let mut fl = flips(e, car)?;
-            fl.retain(|f| f.start_ms != o.start_ms);
+            fl.retain(|f| !f.meets(o.start_ms, o.end_ms));
             if word == "teslamate" {
                 fl.push(flip);
             }
@@ -628,6 +678,9 @@ pub fn set_overlap(
     }
     if pair {
         o.shown_source = format!("import:{word}");
+        // the imported side is now the chosen site's rows
+        let n = if word == ImportSite::Teslafi.word() { &o.sites.teslafi } else { &o.sites.teslamate };
+        (o.imported, o.teslamate) = (n.clone(), n.clone());
     } else {
         o.shown = word;
         o.settle_words();

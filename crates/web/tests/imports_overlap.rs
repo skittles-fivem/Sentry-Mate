@@ -2,7 +2,8 @@
 //! A TeslaMate import and a TeslaFi import of the same days, with no live data, through the real router
 //! (web::testkit): one drive per real drive (the import with more data in the span shown), the other import once an
 //! admin flips the span (audited, version checked), totals, statistics, the timeline and series never doubled, and
-//! each site still alone with its own `source=`.
+//! each site still alone with its own `source=`; a choice kept when a later import moves its span's start, and the
+//! imported side counted once per real drive.
 
 use engine::Engine;
 use model::{Car, CarId, Source, State, StateSpan};
@@ -13,6 +14,8 @@ use web::testkit::{Client, TestServer};
 struct Kit {
     s: TestServer,
     car: String,
+    id: CarId,
+    db: db::Db,
     _engine: Engine,
     _dir: tempfile::TempDir,
 }
@@ -149,7 +152,7 @@ async fn kit() -> Kit {
     engine.start().unwrap();
     let (e2, d2) = (engine.clone(), db.clone());
     let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2))).await;
-    Kit { s, car: format!("c{car}"), _engine: engine, _dir: dir }
+    Kit { s, car: format!("c{car}"), id: car, db, _engine: engine, _dir: dir }
 }
 
 async fn ok(c: &mut Client, path: &str) -> Value {
@@ -253,4 +256,87 @@ async fn two_imports_of_the_same_days_show_one_of_them() {
     assert_eq!(st["items"][0]["drives"].as_u64(), Some(4), "{st}");
     let s = ok(&mut admin, &series).await;
     assert!(!speeds(&s).is_empty() && speeds(&s).iter().all(|v| (v - 50.0).abs() < 1e-6), "{s}");
+}
+
+/// The `imports` row of `/overlaps`.
+async fn pair_row(c: &mut Client, car: &str) -> Value {
+    let o = ok(c, &format!("/api/v1/cars/{car}/overlaps")).await;
+    let rows: Vec<&Value> = o["items"].as_array().unwrap().iter().filter(|i| i["kind"] == "imports").collect();
+    assert_eq!(rows.len(), 1, "{o}");
+    rows[0].clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_choice_stays_with_its_span_when_an_earlier_import_moves_its_start() {
+    let k = kit().await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    let (path, drives) = (format!("/api/v1/cars/{car}/overlaps"), format!("/api/v1/cars/{car}/drives"));
+    let span = pair_row(&mut admin, &car).await;
+    assert_eq!(span["shown_source"], "import:teslafi");
+    let body = json!({ "id": span["id"], "shown": "import:teslamate", "version": span["version"] });
+    assert_eq!(admin.patch(&path, body).await.status, 200);
+    assert_eq!(sites(&mut admin, &drives).await, (4, 0));
+
+    // the month before is imported later: both sites' states run straight into the span, so it starts earlier
+    let (tm, tf, id) = (Source::Teslamate, Source::Teslafi, k.id);
+    k.db.upsert(id, &[state(id, tm, 2, DAY0 - 6 * H, DAY0), state(id, tf, 2, DAY0 - 6 * H + 30_000, DAY0 + 30_000)])
+        .unwrap();
+    k.db.upsert(id, &[drive(id, tm, 9, DAY0 - 4 * H, 980.0), drive(id, tf, 9, DAY0 - 4 * H + 40_000, 980.0)]).unwrap();
+    let moved = pair_row(&mut admin, &car).await;
+    assert_eq!(moved["start_ms"].as_u64(), Some(DAY0 - 6 * H + 30_000), "{moved}");
+    assert_ne!(moved["id"], span["id"], "the id follows the start");
+    assert_eq!(moved["shown_source"], "import:teslamate", "the owner's choice kept: {moved}");
+    assert_eq!(moved["default_source"], "import:teslafi", "{moved}");
+    assert_eq!(sites(&mut admin, &drives).await, (5, 0), "TeslaMate's, the new drive too");
+
+    // a new choice for the moved span replaces the old one (none left behind to win again)
+    let body = json!({ "id": moved["id"], "shown": "import:teslafi", "version": moved["version"] });
+    assert_eq!(admin.patch(&path, body).await.status, 200);
+    assert_eq!(sites(&mut admin, &drives).await, (1, 4));
+    assert_eq!(pair_row(&mut admin, &car).await["shown_source"], "import:teslafi");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_imported_side_counts_each_real_drive_once() {
+    let k = kit().await;
+    let car = k.car.clone();
+    // live history from 2 h 30 to 4 h, with its own copy of the drive at 3 h
+    let mut ls = state(k.id, Source::Live, 1, DAY0 + 2 * H + H / 2, DAY0 + 4 * H);
+    ls.id = 500;
+    let mut ld = drive(k.id, Source::Live, 0, DAY0 + 3 * H + 10_000, 1_010.0);
+    ld.id = 77;
+    k.db.upsert(k.id, &[ls]).unwrap();
+    k.db.upsert(k.id, &[ld]).unwrap();
+    let mut admin = k.s.admin().await;
+    let path = format!("/api/v1/cars/{car}/overlaps");
+    let live_row = |o: &Value| o["items"].as_array().unwrap().iter().find(|i| i["kind"] == "live").unwrap().clone();
+    let o = ok(&mut admin, &path).await;
+    let live = live_row(&o);
+    assert_eq!(live["live"], json!({ "drives": 1, "charges": 0 }), "{o}");
+    assert_eq!(live["imported"], json!({ "drives": 1, "charges": 0 }), "one real drive, once: {o}");
+    assert_eq!(live["teslamate"], live["imported"], "{o}");
+    assert_eq!(live["sites"]["teslamate"], json!({ "drives": 1, "charges": 0 }), "{o}");
+    assert_eq!(live["sites"]["teslafi"], json!({ "drives": 1, "charges": 0 }), "{o}");
+    // the imports row: the shown site's counts
+    let pair = pair_row(&mut admin, &car).await;
+    assert_eq!(pair["imported"], pair["sites"]["teslafi"], "{pair}");
+    assert_eq!(pair["teslamate"], pair["imported"], "{pair}");
+
+    // flipped to the imported side, the list shows as many as the row said
+    let r = admin.patch(&path, json!({ "id": live["id"], "shown": "import" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let (a, b) = (live["start_ms"].as_u64().unwrap(), live["end_ms"].as_u64().unwrap());
+    let shown = sites(&mut admin, &format!("/api/v1/cars/{car}/drives?from_ms={a}&to_ms={b}")).await;
+    assert_eq!(shown.0 + shown.1, 1, "{shown:?}");
+
+    // a flip of the imports span: its row and the live row count TeslaMate's now
+    let body =
+        json!({ "id": pair["id"], "shown": "import:teslamate", "version": pair["version"].as_u64().unwrap() + 1 });
+    let r = admin.patch(&path, body).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let v = r.json();
+    assert_eq!(v["changed"]["imported"], json!({ "drives": 3, "charges": 0 }), "{v}");
+    assert_eq!(live_row(&v)["imported"], json!({ "drives": 1, "charges": 0 }), "{v}");
+    assert_eq!(pair_row(&mut admin, &car).await["imported"], json!({ "drives": 3, "charges": 0 }));
 }

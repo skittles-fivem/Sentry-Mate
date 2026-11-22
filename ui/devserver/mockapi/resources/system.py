@@ -381,7 +381,8 @@ def _overlap_view(h, i, o, now):
     """A span of live and imported history (`kind: "live"`)."""
     can = [s for s in h.drives + h.charges if s.source == "can" and o["start_ms"] <= s.start < o["end_ms"]]
     tm = [s for s in h.shadow if o["start_ms"] <= s.start < o["end_ms"]]
-    live, imported = _counts(can), _counts(tm)
+    # the imported side as the lists show it: where both imports cover a span, only its chosen site's rows
+    live, imported = _counts(can), _counts([s for s in tm if h.site_shown(s)])
     sites = _site_counts(tm)
     return {"id": f"overlap:{o['start_ms']}", "kind": "live", "start_ms": o["start_ms"], "end_ms": o["end_ms"],
             "shown": o["shown"], "shown_source": "live" if o["shown"] == "can" else "import:teslamate",
@@ -395,7 +396,8 @@ def _pair_view(h, o):
     """A span both imports cover (`kind: "imports"`): which site it shows, and why at first."""
     rows = [s for s in h.drives + h.charges if s.source == "teslamate" and o["start_ms"] <= s.start < o["end_ms"]]
     live = _counts([s for s in h.drives + h.charges if s.source == "can" and o["start_ms"] <= s.start < o["end_ms"]])
-    imported = _counts(rows)
+    # the shown site's rows (each real drive once, as the lists show it); `sites` has both
+    imported = _counts([s for s in rows if SRC.site_of(s) == o["shown"]])
     return {"id": f"imports:{o['start_ms']}", "kind": "imports", "start_ms": o["start_ms"], "end_ms": o["end_ms"],
             "shown": "teslamate", "shown_source": f"import:{o['shown']}", "default_source": f"import:{o['default']}",
             "default_reason": o["reason"], "live": live, "imported": imported, "sites": _site_counts(rows),

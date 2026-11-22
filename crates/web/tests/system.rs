@@ -509,7 +509,7 @@ async fn a_teslafi_import_overlaps_smo_like_a_teslamate_one() {
     let items = o["items"].as_array().unwrap();
     assert_eq!(items.len(), 2, "a live span and an imports span: {o}");
     let live = items.iter().find(|x| x["kind"] == "live").unwrap();
-    assert_eq!(live["imported"]["drives"], json!(2), "{o}");
+    assert_eq!(live["imported"]["drives"], json!(1), "one real drive, counted once: {o}");
     assert_eq!(live["sites"]["teslafi"]["drives"], json!(1), "{o}");
     let sites: Vec<&str> = live["sources"].as_array().unwrap().iter().filter_map(|s| s["site"].as_str()).collect();
     assert_eq!(sites, ["teslamate", "teslafi"], "{o}");

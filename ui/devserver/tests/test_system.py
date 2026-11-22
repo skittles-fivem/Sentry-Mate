@@ -201,6 +201,24 @@ class Health(ServerCase):
             return len(rows), {x["source"] for x in rows}
 
         self.assertEqual(sources(), (n, {"teslamate"}), "one drive per real drive")
+        self.assertEqual(span["imported"], span["sites"]["teslamate"], "the shown site's rows, each drive once")
+
+        def visits_point_at_shown_rows():
+            # the stops link the drives and charges the lists show, never the hidden site's copies
+            r = f"from_ms={span['start_ms']}&to_ms={span['end_ms']}&limit=500"
+            drives = {x["id"] for x in self.c.get(f"/api/v1/cars/c3/drives?{r}")["items"]}
+            charges = {x["id"] for x in self.c.get(f"/api/v1/cars/c3/charges?{r}")["items"]}
+            vs = self.c.get(f"/api/v1/visits?cars=c3&{r}")["items"]
+            self.assertTrue(vs)
+            links = [v[k] for v in vs for k in ("drive_in", "drive_out")
+                     if v[k] is not None and span["start_ms"] <= v["arrived_ms"] and (v["left_ms"] or 0) < span["end_ms"]]
+            self.assertTrue(links)
+            self.assertEqual([x for x in links if x not in drives], [])
+            got = [x if isinstance(x, str) else x["id"] for v in vs for x in v["charges"]]
+            self.assertTrue(got)
+            self.assertEqual([x for x in got if x not in charges], [])
+
+        visits_point_at_shown_rows()
         self.assertEqual(sources("&source=import"), (n, {"teslamate"}))
         self.assertEqual(sources("&source=import:teslafi"), (n, {"teslafi"}), "TeslaFi alone")
         t0 = self.c.get("/api/v1/cars/c3/totals")
@@ -213,6 +231,8 @@ class Health(ServerCase):
         self.assertEqual(d["changed"]["version"], span["version"] + 1)
         self.assertEqual(self.c.get("/api/v1/audit?limit=1")["items"][0]["action"], "car.overlap")
         self.assertEqual(sources(), (n, {"teslafi"}))
+        self.assertEqual(d["changed"]["imported"], span["sites"]["teslafi"])
+        visits_point_at_shown_rows()
         self.assertEqual(sources("&source=import:teslamate"), (n, {"teslamate"}), "TeslaMate alone")
         t1 = self.c.get("/api/v1/cars/c3/totals")
         self.assertEqual(t1["drives"], t0["drives"], "never doubled")
