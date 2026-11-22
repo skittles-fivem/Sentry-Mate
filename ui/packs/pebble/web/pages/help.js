@@ -3,13 +3,16 @@
 // Plain readable tiles with headings: About (version, API version, this pack, whether a newer release is out,
 // source code and documentation), Licences and notices (Sentry Mate's own, the server's parts, the files this pack
 // bundles, data credits; /help#licence lands here), and one tile per common question with a button to the page it
-// is about. Data: GET about, notices (the release_available note), settings (whether the release check is on).
+// is about. Data: GET about (the build), release (the release check's answer), settings (the release-notes links rule).
 
 import { h } from '../shared/dom.js';
-import { tile, chip, icon, linkBtn, ago } from '../core/ui.js';
+import { tile, chip, icon, linkBtn } from '../core/ui.js';
 import { sectionHead } from '../core/bits.js';
 import { PAGES } from '../core/pages.js';
 import { group, infoRow } from '../core/settings.js';
+import * as api from '../shared/api.js';
+import { buildLabel } from '../shared/release.js';
+import { relState, relNewer } from '../core/release.js';
 
 export const id = 'help';
 export const css = true;
@@ -59,40 +62,59 @@ const val = (t, cls = null) => h('span', { class: ['hp-val', cls] }, t);
 
 export async function mount(ctx) {
   const admin = ctx.admin;
-  const [about, notices, settings] = await Promise.all([
+  const [about, release, settings] = await Promise.all([
     ctx.api.get('about'),
-    ctx.api.get('notices').catch(() => null),
+    ctx.api.get('release').catch(() => null),
     ctx.api.get('settings').catch(() => null),
   ]);
   if (!ctx.alive()) return {};
-  const release = notices ? (notices.items || []).find((n) => n.code === 'release_available') : null;
   const links = about.links || {};
   const pack = about.ui_pack || {};
-  const display = () => h('a', { class: 'place-link', href: ctx.link('settings-display') }, 'Settings: Display');
+  const display = () => h('a', { class: 'place-link', href: `${ctx.link('settings-display')}#release` }, 'Settings: Display');
 
   /* ---------------------------------------------------------------- about */
   const mismatch = pack.api != null && String(pack.api) !== String(about.api_version);
-  const checkOn = !!(settings && settings.release_check && settings.release_check.enabled);
+  const st = release ? relState(release) : null;
+  const status = release ? release.status : null;
+  const isOff = !release || !release.enabled || status === 'off';
   let relSub;
-  if (release) {
-    const notesUrl = (release.detail && release.detail.notes_url) || links.source || null;
+  let relSide;
+  let relTone = null;
+  if (!release) {
+    relSub = 'The server did not say how the release check went.';
+    relSide = val('Not known');
+  } else if (status === 'newer') {
+    const n = release.newest || {};
+    const notesUrl = n.compare_url || links.source || null;
     const allowed = !!(settings && settings.outside_links && settings.outside_links.release_notes);
-    relSub = ['Noticed ', ago(release.since_ms), '. Update the server to get it; your data stays. ',
-      allowed && notesUrl ? [h('a', { class: 'place-link', href: notesUrl, ...outside }, 'Release notes'), ' open on another site.']
-        : admin ? ['Release-notes links are off; turn them on in ', display(), '.'] : 'Release-notes links are off.'];
-  } else if (!settings) relSub = 'The server did not say whether the release check is on.';
-  else if (checkOn) relSub = ['Asked once a day; nothing else is sent. ', admin ? ['Turn it off in ', display(), '.'] : null];
-  else relSub = ['The release check is off, so no other server is asked. ', admin ? ['Turn it on in ', display(), '.'] : 'An admin can turn it on.'];
+    relTone = 'teal';
+    relSub = [h('span', { class: 'hp-rel-text' }, `${st.text}.`), relNewer(release),
+      h('span', { class: 'hp-rel-text' }, 'Your data stays. ', allowed && notesUrl ? [h('a', { class: 'place-link', href: notesUrl, ...outside }, 'What changed'), ' opens on another site.']
+        : admin ? ['Release-notes links are off; turn them on in ', display(), '.'] : 'Release-notes links are off.')];
+    relSide = chip('Newer build', { tone: 'teal' });
+  } else if (status === 'up_to_date') {
+    relSub = [st.ago ? `${st.ago[0].toUpperCase()}${st.ago.slice(1)}. ` : '', 'Asked once a day; nothing else is sent. ', admin ? ['Turn it off in ', display(), '.'] : null];
+    relSide = val('Up to date');
+  } else if (status === 'error') {
+    relTone = 'sun';
+    relSub = [`${st.text}.`, st.ago ? ` Last ${st.ago}.` : '', admin ? [' Try again in ', display(), '.'] : ''];
+    relSide = val('Could not check');
+  } else if (!isOff) {
+    relSub = ['Asked once a day; nothing else is sent. ', admin ? ['See ', display(), '.'] : null];
+    relSide = val(st.text);
+  } else {
+    relSub = ['The release check is off, so no other server is asked. ', admin ? ['Turn it on in ', display(), '.'] : 'An admin can turn it on.'];
+    relSide = admin ? h('a', { class: 'tile-link', href: `${ctx.link('settings-display')}#release` }, 'Off', icon('chevronRight')) : val('Off');
+  }
 
   const docs = links.docs;
   const aboutTile = tile({ w: 2, title: 'About', icon: 'info', id: 'about' },
     h('p', { class: 'hp-lede' }, 'Sentry Mate keeps your car’s history on your own server, from what the CAN Bridge records.'),
     group(null, [
-      infoRow({ icon: 'server', tone: 'coral', name: 'Sentry Mate', sub: about.dev_server ? 'The dev server: every car and figure is made up.' : 'The server this page talks to.', side: val(about.version || '—', 'hp-mono'), cover: 'web.settings.about.version' }),
+      infoRow({ icon: 'server', tone: 'coral', name: 'Sentry Mate', sub: about.dev_server ? 'The dev server: every car and figure is made up.' : 'The server this page talks to.', side: val(buildLabel(about, api.now()) || '—', 'hp-mono'), cover: 'web.settings.about.version', cls: 'hp-build' }),
       infoRow({ icon: 'chip', name: 'API version', sub: 'What the UI packs read.', side: val(String(about.api_version ?? '—'), 'hp-mono') }),
       infoRow({ icon: 'spark', name: `UI pack: ${pack.name || 'Pebble'}`, sub: pack.api == null ? 'It names no API version.' : mismatch ? `Made for API ${pack.api}, the server speaks ${about.api_version}: some parts may not work.` : `Made for API ${pack.api}, the one this server speaks.`, tone: mismatch ? 'sun' : null, side: val(pack.version || '—', 'hp-mono') }),
-      infoRow({ icon: 'refresh', tone: release ? 'teal' : null, name: 'Newer release', sub: relSub, cover: 'web.settings.about.update-available',
-        side: release ? chip(release.message || 'New', { tone: 'teal' }) : val(!settings ? 'Not known' : checkOn ? 'None' : 'Not checked') }),
+      infoRow({ icon: 'refresh', tone: relTone, name: 'Newer release', sub: relSub, cover: 'web.settings.about.update-available', cls: status === 'newer' ? 'hp-rel' : null, side: relSide }),
       infoRow({ icon: 'globe', name: 'Source code', sub: links.source ? 'Opens on another site.' : 'This server names no address for it.', cover: 'web.settings.about.source-link',
         side: links.source ? h('a', { class: 'tile-link', href: links.source, ...outside }, 'Open', icon('external')) : val('Not named') }),
       infoRow({ icon: 'book', name: 'Documentation', sub: docs ? (docs.startsWith('/') ? 'The answers further down this page.' : 'Opens on another site.') : 'This server names no address for it.', cover: 'web.settings.about.docs-link',

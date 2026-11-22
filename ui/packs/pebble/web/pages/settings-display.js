@@ -19,7 +19,9 @@ import { SIZES, SIZE_MIN, SIZE_MAX, sizeState, setSize, sizeNote, display } from
 import { currentAbout } from '../core/frame.js';
 import { sectionHead, facts } from '../core/bits.js';
 import { group, pickRow, ctlRow, infoRow, notSaved } from '../core/settings.js';
-import { inOrder } from '../core/settings.js';
+import { inOrder, said } from '../core/settings.js';
+import { buildLabel } from '../shared/release.js';
+import { relState, relNewer } from '../core/release.js';
 import { packChoices } from '../shared/packs.js';
 import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, LABELS_TEXT, STYLES_TEXT, offlineSummary, offlineFileChoices, showOfflineHelp, presetHosts } from '../shared/maptiles.js';
 
@@ -213,6 +215,44 @@ export async function mount(ctx) {
   }
   const quick = (body, undo) => patch(body).catch((err) => { undo(); ctx.toast(notSaved(err), { kind: 'error' }); });
 
+  // the release check: GET /release's answer, drawn under the switch; "Check now" (admins) asks again
+  let release = await ctx.api.get('release').catch(() => null);
+  let relBox = null; // the group's list: the switch, then the rows drawn here
+  let relToggle = null;
+  let relBusy = false;
+  let relPoll = null;
+  const loadRelease = async () => {
+    const r = await ctx.api.get('release').catch(() => null);
+    if (!ctx.alive()) return;
+    if (r) release = r;
+    drawRel();
+  };
+  async function checkNow() {
+    relBusy = true; drawRel();
+    try { release = await ctx.api.post('release/check', {}); }
+    catch (err) { ctx.toast(`Not checked: ${err && err.message ? err.message : 'the server did not answer.'}`, { kind: 'error' }); }
+    relBusy = false;
+    if (ctx.alive()) drawRel();
+  }
+  function drawRel() {
+    if (!relBox) return;
+    clearTimeout(relPoll);
+    const r = release;
+    const st = r ? relState(r) : { kind: 'bad', text: 'The server did not say how the release check went.', ago: '' };
+    const off = !r || !r.enabled || r.status === 'off';
+    const checking = !!r && r.status === 'checking';
+    const nowBtn = admin ? btn(relBusy ? 'Checking…' : 'Check now', { kind: 'soft', icon: 'refresh', disabled: off || checking || relBusy, onclick: checkNow }) : null;
+    const newer = relNewer(r);
+    relBox.replaceChildren(relToggle,
+      h('div', { class: 'row row-static rel-row' },
+        h('span', { class: 'row-text' }, said(st.kind, st.text), st.ago ? h('span', { class: 'row-sub' }, st.ago[0].toUpperCase() + st.ago.slice(1)) : null),
+        nowBtn ? h('span', { class: 'row-side' }, nowBtn) : null),
+      newer ? h('div', { class: 'row row-static' }, newer) : null,
+      h('div', { class: 'row row-static' }, h('span', { class: 'row-text' }, h('span', { class: 'row-sub' }, `This build: ${buildLabel(currentAbout(), api.now())}`))));
+    // a check in flight finishes within seconds: look again, while this page is open
+    if (checking) relPoll = setTimeout(() => { if (ctx.alive()) loadRelease(); }, 3000);
+  }
+
   function drawServer(s) {
     srv = s;
     drawnFeet = feet();
@@ -384,9 +424,14 @@ export async function mount(ctx) {
     // outside links and the release check
     const maps = toggle({ label: 'Links to an outside map', sub: 'Open a spot in another map site, only when clicked.', checked: !!s.outside_links.maps, disabled: off, onchange: (on) => quick({ outside_links: { maps: on } }, () => maps.set(s.outside_links.maps)) });
     const notes = toggle({ label: 'Release-notes links', sub: 'Link a new version to its notes on another site.', checked: !!s.outside_links.release_notes, disabled: off, onchange: (on) => quick({ outside_links: { release_notes: on } }, () => notes.set(s.outside_links.release_notes)) });
-    const rel = toggle({ label: 'Check for new releases', sub: 'Asks once a day for the newest version number. Off by default.', checked: !!s.release_check.enabled, disabled: off, onchange: (on) => quick({ release_check: { enabled: on } }, () => rel.set(s.release_check.enabled)) });
+    const rel = toggle({ label: 'Check for new releases', sub: 'Asks GitHub once a day for the newest published build; nothing else is sent. Off by default.', checked: !!s.release_check.enabled, disabled: off,
+      onchange: (on) => quick({ release_check: { enabled: on } }, () => rel.set(s.release_check.enabled)).then(loadRelease) });
+    const relGroup = group('Release check', [rel], { id: 'release' });
+    relToggle = rel;
+    relBox = relGroup.querySelector('.rows-list');
+    drawRel();
     const linksT = tile({ w: 2, title: 'Outside links', icon: 'external', side: ro },
-      group(null, [maps, notes]), group('Release check', [rel]),
+      group(null, [maps, notes]), relGroup,
       note('Off by default: nothing on a page sends you to another site unless an admin allows it.'));
 
     serverBox.replaceChildren(defaultsT, addrT, mapsT, proxyT, linksT);

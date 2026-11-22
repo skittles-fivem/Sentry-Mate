@@ -6,3 +6,9 @@
 .hp-qa .set-a { max-width: 40em; }
 .hp-go { display: flex; margin-top: auto; padding-top: var(--s2); }
 #answers, #licence, #about { scroll-margin-top: var(--s6); }
+.hp-rel .row-sub { display: flex; flex-direction: column; gap: var(--s2); }
+.hp-rel .row-text { min-width: 0; }
+.hp-build .row-text { min-width: 6.5em; }
+.hp-build .row-side { flex: 0 1 auto; min-width: 0; }
+.hp-build .hp-val { max-width: 16em; }
+.hp-rel { align-items: flex-start; }
