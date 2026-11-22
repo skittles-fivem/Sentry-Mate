@@ -86,11 +86,14 @@ pub enum Input {
     TeslaApi,
     /// TeslaFi's API (for owners who pay for TeslaFi): TeslaFi's own polls of the car, read by this server.
     TeslafiApi,
+    /// The owner's own TeslaMate server, read live over its MQTT broker (and its database for catch-up).
+    TeslamateLocal,
 }
 
 impl Input {
-    /// In the order they win where two cover the same time: SMO, then the Tesla API, then TeslaFi.
-    pub const ALL: [Input; 3] = [Input::Smo, Input::TeslaApi, Input::TeslafiApi];
+    /// In the order they win where two cover the same time: SMO, then the Tesla API, then TeslaFi, then the local
+    /// TeslaMate.
+    pub const ALL: [Input; 4] = [Input::Smo, Input::TeslaApi, Input::TeslafiApi, Input::TeslamateLocal];
 
     /// The inputs other than SMO (the APIs), in the order they win.
     pub fn apis() -> impl Iterator<Item = Input> {
@@ -103,6 +106,7 @@ impl Input {
             Input::Smo => 0,
             Input::TeslaApi => 1,
             Input::TeslafiApi => 2,
+            Input::TeslamateLocal => 3,
         }
     }
 
@@ -127,6 +131,7 @@ impl Inputs {
     /// SMO and the Tesla API.
     pub const BOTH: Inputs = Inputs(Input::Smo.bit() | Input::TeslaApi.bit());
     pub const TESLAFI_API: Inputs = Inputs(Input::TeslafiApi.bit());
+    pub const TESLAMATE_LOCAL: Inputs = Inputs(Input::TeslamateLocal.bit());
 
     pub fn is_empty(&self) -> bool {
         self.0 == 0
@@ -239,6 +244,7 @@ pub enum Origin {
     Smo,
     TeslaApi,
     TeslafiApi,
+    TeslamateLocal,
     Import(ImportSite),
 }
 
@@ -249,6 +255,7 @@ impl Origin {
             Origin::Smo => "smo",
             Origin::TeslaApi => "tesla_api",
             Origin::TeslafiApi => "teslafi_api",
+            Origin::TeslamateLocal => "teslamate_local",
             Origin::Import(_) => "import",
         }
     }
@@ -275,6 +282,7 @@ impl Origin {
             Origin::Smo => "Data from SMO".into(),
             Origin::TeslaApi => "Data from the Tesla API".into(),
             Origin::TeslafiApi => "Data from TeslaFi".into(),
+            Origin::TeslamateLocal => "Data from local TeslaMate".into(),
             Origin::Import(s) => format!("Imported from {}", s.name()),
         }
     }
@@ -284,6 +292,7 @@ impl Origin {
             Origin::Smo => "SMO".into(),
             Origin::TeslaApi => "the Tesla API".into(),
             Origin::TeslafiApi => "TeslaFi".into(),
+            Origin::TeslamateLocal => "local TeslaMate".into(),
             Origin::Import(s) => s.name().into(),
         }
     }
@@ -322,6 +331,7 @@ impl From<Input> for Origin {
             Input::Smo => Origin::Smo,
             Input::TeslaApi => Origin::TeslaApi,
             Input::TeslafiApi => Origin::TeslafiApi,
+            Input::TeslamateLocal => Origin::TeslamateLocal,
         }
     }
 }
@@ -336,6 +346,8 @@ pub enum Stream {
     TeslaApi,
     /// From TeslaFi's API, read live (dir `teslafi-api`; not the TeslaFi import's `teslafi`).
     TeslafiApi,
+    /// From the owner's own TeslaMate, read live (dir `teslamate-local`; not the TeslaMate import's `teslamate`).
+    TeslamateLocal,
     /// From a TeslaMate import (dir `teslamate`).
     Teslamate,
     /// From a TeslaFi import (dir `teslafi`).
@@ -343,11 +355,11 @@ pub enum Stream {
 }
 
 impl Stream {
-    pub const ALL: [Stream; 5] =
-        [Stream::Smo, Stream::TeslaApi, Stream::TeslafiApi, Stream::Teslamate, Stream::Teslafi];
+    pub const ALL: [Stream; 6] =
+        [Stream::Smo, Stream::TeslaApi, Stream::TeslafiApi, Stream::TeslamateLocal, Stream::Teslamate, Stream::Teslafi];
 
-    /// The live streams, in the order they win: SMO, the Tesla API, TeslaFi's API.
-    pub const LIVE: [Stream; 3] = [Stream::Smo, Stream::TeslaApi, Stream::TeslafiApi];
+    /// The live streams, in the order they win: SMO, the Tesla API, TeslaFi's API, the local TeslaMate.
+    pub const LIVE: [Stream; 4] = [Stream::Smo, Stream::TeslaApi, Stream::TeslafiApi, Stream::TeslamateLocal];
 
     /// The streams imports are kept in.
     pub const IMPORTED: [Stream; 2] = [Stream::Teslamate, Stream::Teslafi];
@@ -355,7 +367,7 @@ impl Stream {
     /// Whether it holds imported points.
     pub fn is_imported(self) -> bool {
         match self {
-            Stream::Smo | Stream::TeslaApi | Stream::TeslafiApi => false,
+            Stream::Smo | Stream::TeslaApi | Stream::TeslafiApi | Stream::TeslamateLocal => false,
             Stream::Teslamate | Stream::Teslafi => true,
         }
     }
@@ -367,8 +379,9 @@ impl Stream {
             Stream::Smo => 0,
             Stream::TeslaApi => 1,
             Stream::TeslafiApi => 2,
-            Stream::Teslamate => 3,
-            Stream::Teslafi => 4,
+            Stream::TeslamateLocal => 3,
+            Stream::Teslamate => 4,
+            Stream::Teslafi => 5,
         }
     }
 
@@ -378,6 +391,7 @@ impl Stream {
             Stream::Smo => "can",
             Stream::TeslaApi => "tesla-api",
             Stream::TeslafiApi => "teslafi-api",
+            Stream::TeslamateLocal => "teslamate-local",
             Stream::Teslamate => "teslamate",
             Stream::Teslafi => "teslafi",
         }
@@ -388,6 +402,7 @@ impl Stream {
             Stream::Smo => Origin::Smo,
             Stream::TeslaApi => Origin::TeslaApi,
             Stream::TeslafiApi => Origin::TeslafiApi,
+            Stream::TeslamateLocal => Origin::TeslamateLocal,
             Stream::Teslamate => Origin::Import(ImportSite::Teslamate),
             Stream::Teslafi => Origin::Import(ImportSite::Teslafi),
         }
@@ -419,6 +434,7 @@ impl From<Input> for Stream {
             Input::Smo => Stream::Smo,
             Input::TeslaApi => Stream::TeslaApi,
             Input::TeslafiApi => Stream::TeslafiApi,
+            Input::TeslamateLocal => Stream::TeslamateLocal,
         }
     }
 }
@@ -1042,10 +1058,23 @@ mod tests {
         assert!(Inputs::NONE.is_empty());
         assert!(serde_json::from_str::<Inputs>(r#"["fleet_api"]"#).is_err(), "an unknown input is refused");
         let all: Inputs = Input::ALL.into_iter().collect();
-        assert_eq!(serde_json::to_string(&all).unwrap(), r#"["smo","tesla_api","teslafi_api"]"#);
+        assert_eq!(serde_json::to_string(&all).unwrap(), r#"["smo","tesla_api","teslafi_api","teslamate_local"]"#);
         assert_eq!(serde_json::from_str::<Inputs>(r#"["teslafi_api"]"#).unwrap(), Inputs::TESLAFI_API);
-        assert_eq!(all.without_smo(), Inputs::TESLA_API.union(Inputs::TESLAFI_API));
+        assert_eq!(all.without_smo(), Inputs::TESLA_API.union(Inputs::TESLAFI_API).union(Inputs::TESLAMATE_LOCAL));
         assert!(Inputs::TESLAFI_API.is_subset(all) && !all.is_subset(Inputs::BOTH));
+    }
+
+    #[test]
+    fn local_teslamate_is_a_live_input_of_its_own() {
+        assert_eq!(Origin::TeslamateLocal.word(), "teslamate_local");
+        assert_eq!(Origin::TeslamateLocal.label(), "Data from local TeslaMate");
+        assert_eq!(Stream::from(Input::TeslamateLocal).dir_name(), "teslamate-local");
+        assert_ne!(Stream::TeslamateLocal.dir_name(), Stream::Teslamate.dir_name(), "never mixed with the import");
+        assert_eq!(serde_json::from_str::<Inputs>(r#"["teslamate_local"]"#).unwrap(), Inputs::TESLAMATE_LOCAL);
+        assert_eq!(
+            Origin::label_of(&[Origin::TeslafiApi, Origin::TeslamateLocal]),
+            "Data from TeslaFi and local TeslaMate"
+        );
     }
 
     #[test]

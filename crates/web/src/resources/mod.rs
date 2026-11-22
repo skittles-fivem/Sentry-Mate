@@ -24,6 +24,7 @@ pub mod statistics;
 pub mod system;
 pub mod tesla;
 pub mod teslafi;
+pub mod teslamate_local;
 pub mod timeline;
 pub mod tokens;
 pub mod travel;
@@ -52,4 +53,5 @@ pub fn routes() -> Router<AppState> {
         .merge(tokens::routes())
         .merge(tesla::routes())
         .merge(teslafi::routes())
+        .merge(teslamate_local::routes())
 }

@@ -179,6 +179,49 @@ impl teslafi::Sink for TeslafiSink {
     }
 }
 
+/// The engine as the `tmlocal` crate (the owner's own TeslaMate) sees it.
+#[derive(Clone)]
+pub struct TeslamateLocalSink {
+    pub engine: Engine,
+    pub on_change: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl TeslamateLocalSink {
+    pub fn new(engine: Engine) -> TeslamateLocalSink {
+        TeslamateLocalSink { engine, on_change: None }
+    }
+}
+
+impl tmlocal::Sink for TeslamateLocalSink {
+    fn new_car(&self, car: &tesla::NewCar) -> std::result::Result<CarId, tesla::SinkError> {
+        self.engine.api_new_car_for(car, Input::TeslamateLocal).map_err(|e| tesla::SinkError(e.to_string()))
+    }
+
+    fn points(
+        &self,
+        car: CarId,
+        samples: &[Sample],
+        facts: &[tesla::ApiFact],
+    ) -> std::result::Result<(), tesla::SinkError> {
+        self.engine.feed_points(Input::TeslamateLocal, car, samples.to_vec(), facts.iter().map(span_of).collect());
+        Ok(())
+    }
+
+    fn catch_up(
+        &self,
+        dump: &std::path::Path,
+        cars: &[(i64, CarId)],
+    ) -> std::result::Result<tmlocal::catchup::Counts, tesla::SinkError> {
+        self.engine.teslamate_local_catch_up(dump, cars).map_err(|e| tesla::SinkError(e.to_string()))
+    }
+
+    fn changed(&self) {
+        if let Some(h) = &self.on_change {
+            h();
+        }
+    }
+}
+
 impl Engine {
     /// The Tesla API's samples and what it saw of the car's state: stored and built into the timeline in the
     /// background; returns at once.
@@ -510,7 +553,7 @@ impl Engine {
                 Input::Smo => continue,
                 Input::TeslaApi => p.margin_ms(),
                 // (it fills the Tesla API's seconds, which fill SMO's)
-                Input::TeslafiApi => p.lower_margin_ms(),
+                Input::TeslafiApi | Input::TeslamateLocal => p.lower_margin_ms(),
             };
             let pts =
                 db.read_points::<Sample>(car, Stream::from(input), from_ms.saturating_sub(m), to_ms.saturating_add(m))?;

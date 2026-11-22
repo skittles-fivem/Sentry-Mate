@@ -729,6 +729,7 @@ async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Valu
     ];
     outbound.extend(tesla);
     outbound.extend(teslafi);
+    outbound.extend(super::teslamate_local::network_rows(&app));
     Ok(Json(json!({
         "outbound": outbound,
         "inbound": inbound,

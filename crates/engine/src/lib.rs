@@ -52,9 +52,10 @@ pub mod placing;
 pub mod query;
 pub mod records;
 pub mod tesla_in;
+pub mod tmlocal_catchup;
 pub mod tz;
 
-pub use tesla_in::{TeslaSink, TeslafiSink};
+pub use tesla_in::{TeslaSink, TeslafiSink, TeslamateLocalSink};
 
 pub use jobs::{Job, JobStatus, Scope};
 pub use records::DECODE_VERSION;

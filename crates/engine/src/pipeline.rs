@@ -865,7 +865,17 @@ impl Engine {
             from.saturating_sub(fp.lower_margin_ms()),
             to.saturating_add(fp.lower_margin_ms()),
         )?;
-        let mut fused = timeline::fuse_all(&smo, &[(&api, Inputs::TESLA_API), (&fi, Inputs::TESLAFI_API)], fp);
+        let tm = db.read_points::<Sample>(
+            car,
+            Stream::TeslamateLocal,
+            from.saturating_sub(fp.lower_margin_ms()),
+            to.saturating_add(fp.lower_margin_ms()),
+        )?;
+        let mut fused = timeline::fuse_all(
+            &smo,
+            &[(&api, Inputs::TESLA_API), (&fi, Inputs::TESLAFI_API), (&tm, Inputs::TESLAMATE_LOCAL)],
+            fp,
+        );
         fused.samples.retain(|s| s.t_ms >= from && s.t_ms < to);
         fused.marks.retain(|m| m.0 >= from && m.0 < to);
         let seen = records::api_between(db, car, meta, from, to)?;
@@ -1229,12 +1239,13 @@ const FAST_FIELDS: &[&str] = &["lat", "lon", "gps_accuracy_m", "elevation_m", "s
 /// How long an SMO value of a fast field beats a newer API value (ms).
 const SMO_FAST_WINS_MS: u64 = 60_000;
 
-/// The order live inputs win in: SMO, then the Tesla API, then TeslaFi.
+/// The order live inputs win in: SMO, then the Tesla API, then TeslaFi, then the local TeslaMate.
 fn input_rank(i: Input) -> u8 {
     match i {
         Input::Smo => 0,
         Input::TeslaApi => 1,
         Input::TeslafiApi => 2,
+        Input::TeslamateLocal => 3,
     }
 }
 

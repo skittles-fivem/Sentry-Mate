@@ -135,6 +135,13 @@ pub struct CarMeta {
     pub teslafi_last_ms: Option<u64>,
     #[serde(default)]
     pub teslafi_received_ms: Option<u64>,
+    /// The same for the local TeslaMate (MQTT).
+    #[serde(default)]
+    pub tmlocal_days: BTreeSet<u32>,
+    #[serde(default)]
+    pub tmlocal_last_ms: Option<u64>,
+    #[serde(default)]
+    pub tmlocal_received_ms: Option<u64>,
 }
 
 impl CarMeta {
@@ -153,6 +160,11 @@ impl CarMeta {
                 last_ms: &mut self.teslafi_last_ms,
                 received_ms: &mut self.teslafi_received_ms,
             }),
+            model::Input::TeslamateLocal => Some(ApiTrack {
+                days: &mut self.tmlocal_days,
+                last_ms: &mut self.tmlocal_last_ms,
+                received_ms: &mut self.tmlocal_received_ms,
+            }),
         }
     }
 
@@ -162,6 +174,7 @@ impl CarMeta {
             model::Input::Smo => None,
             model::Input::TeslaApi => Some(&self.api_days),
             model::Input::TeslafiApi => Some(&self.teslafi_days),
+            model::Input::TeslamateLocal => Some(&self.tmlocal_days),
         }
     }
 
@@ -171,6 +184,7 @@ impl CarMeta {
             model::Input::Smo => (None, None),
             model::Input::TeslaApi => (self.api_last_ms, self.api_received_ms),
             model::Input::TeslafiApi => (self.teslafi_last_ms, self.teslafi_received_ms),
+            model::Input::TeslamateLocal => (self.tmlocal_last_ms, self.tmlocal_received_ms),
         }
     }
 
@@ -483,6 +497,7 @@ fn api_key(car: CarId, input: model::Input, d: u32) -> String {
         model::Input::Smo => "smo_api",
         model::Input::TeslaApi => "api",
         model::Input::TeslafiApi => "teslafi_api",
+        model::Input::TeslamateLocal => "teslamate_local",
     };
     format!("car/{car}/{word}/{d}")
 }

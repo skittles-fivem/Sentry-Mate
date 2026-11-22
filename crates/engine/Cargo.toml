@@ -21,6 +21,7 @@ mqtt = { path = "../mqtt" }
 places = { path = "../places" }
 tesla = { path = "../tesla" }
 teslafi = { path = "../teslafi" }
+tmlocal = { path = "../tmlocal" }
 timeline = { path = "../timeline" }
 trust = { path = "../trust" }
 vault = { path = "../vault" }

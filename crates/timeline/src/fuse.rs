@@ -208,7 +208,7 @@ pub fn fuse(smo: &[Sample], api: &[Sample], p: &FuseParams) -> Fused {
 }
 
 /// Fuses SMO's samples and those of the APIs (`lower`, each any order, highest first: the Tesla API's, then
-/// TeslaFi's), each lower input filling the one above it value by value. See the module's notes.
+/// TeslaFi's, then the local TeslaMate's), each lower input filling the one above it value by value. See the module's notes.
 pub fn fuse_all(smo: &[Sample], lower: &[(&[Sample], Inputs)], p: &FuseParams) -> Fused {
     let smo = seconds(smo);
     let mut below: Vec<(Sample, Inputs)> = Vec::new();
@@ -393,6 +393,30 @@ mod tests {
         assert!(f.samples.windows(2).all(|w| w[0].t_ms < w[1].t_ms));
         // the two-input call is the same as before
         assert_eq!(fuse(&s, &a, &p), fuse_all(&s, &[(&a, Inputs::TESLA_API)], &p));
+    }
+
+    #[test]
+    fn local_teslamate_fills_under_teslafi() {
+        // TeslaFi every 60 s for the first five minutes, the local TeslaMate every 10 s for ten, its own cabin value
+        let t: Vec<Sample> = (0..5).map(|i| fi(i * 60 + 7)).collect();
+        let m: Vec<Sample> = (0..60)
+            .map(|i| Sample {
+                t_ms: (i * 10 + 3) * 1000,
+                soc: Some(66.0),
+                inside_temp_c: Some(18.0),
+                ..Sample::default()
+            })
+            .collect();
+        let p = FuseParams::default();
+        let f =
+            fuse_all(&[], &[(&[], Inputs::TESLA_API), (&t, Inputs::TESLAFI_API), (&m, Inputs::TESLAMATE_LOCAL)], &p);
+        let at = |sec: u64| f.samples.iter().find(|x| x.t_ms == sec * 1000).cloned();
+        // inside TeslaFi's coverage: TeslaFi wins, no TeslaMate second of its own
+        assert_eq!(at(67).unwrap().soc, Some(68.0));
+        assert!(at(73).is_none());
+        // after it: the local TeslaMate's own seconds
+        assert_eq!(at(503).unwrap().soc, Some(66.0));
+        assert_eq!(f.inputs_at(503_000), Inputs::TESLAMATE_LOCAL);
     }
 
     #[test]
