@@ -46,12 +46,15 @@ That is the **fast set**: every unit test and the quick integration tests (cargo
 still takes each main feature end to end at least
 once: logs uploaded, checked and decoded into a drive and a charge on the web API (one made-up light day), sign-in and
 accounts, places, the TeslaMate, TeslaFi and CAN imports, the Tesla API client against its fake server, moving and the export
-file, the certificate, the server settings and MQTT, and the packs served. CI runs it in two halves on two machines at
-once, each half a plain `cargo test`; run one half locally the same way:
+file, the certificate, the server settings and MQTT, and the packs served. CI runs it in four parts on four machines
+at once, each part a plain `cargo test`; run one part locally the same way:
 
 ```bash
-cargo test --locked -p web -p sentry-mate -p moving
-cargo test --locked --workspace --exclude web --exclude sentry-mate --exclude moving
+cargo test --locked -p web
+cargo test --locked -p synth -p engine -p moving
+cargo test --locked -p import -p places -p sentry-mate -p accounts -p timeline
+cargo test --locked --workspace --exclude web --exclude synth --exclude engine --exclude moving \
+  --exclude import --exclude places --exclude sentry-mate --exclude accounts --exclude timeline
 ```
 
 The **full set** adds the slow tests, marked `#[ignore = "slow: full tests (cargo test -- --include-ignored)"]`:
@@ -74,22 +77,29 @@ light day).
 CI is [`.github/workflows/image.yml`](../.github/workflows/image.yml). It runs on a push to `main` that changes code
 (a push that changes only `README.md`, `docs/` or `truenas/` runs nothing), and by hand (*Actions → Image → Run
 workflow*). The owner's limit is 5 minutes for the whole run.
-First the gates (above), once: the fast set in its two halves, and `cargo fmt` with clippy (both commands) beside
+First the gates (above), once: the fast set in its four parts, and `cargo fmt` with clippy (both commands) beside
 them on a machine of its own.
 
 What is known about that limit, from the Image workflow's runs (ubuntu-latest, 4 cores):
 
-- The other half's tests (every crate but `web`, `sentry-mate` and `moving`) took about 196 s in the last run of the
-  whole set (run 13), about 140 s without the three tests now in the full set (scale in `db` and `ingest`, `can_import_memory`). Its build of the workspace took up to
-  3.5 minutes there with no build cache; with GitHub's cache (`Swatinem/rust-cache`, one per half) the dependencies
-  are not built again. The `web` half has not been timed on its own yet.
-- The image: with full LTO and one codegen unit, the workspace's own crates took 9 minutes per arch even with every
-  dependency layer from the cache (runs 13 and 15). The release profile now has neither (`Cargo.toml`); that build
-  has not run on CI yet. Everything else in run 15 took about 80 seconds (the jobs starting, the image check about
-  20 s, the push by digest under 10 s, the tags about 15 s), so for 5 minutes that build has about 3.5 minutes.
+- Run 24 took 7.5 minutes. The tests: about a minute to build each part's workspace crates (the dependencies come
+  from GitHub's cache, `Swatinem/rust-cache`, one per part, written only by runs on `main`), then the test binaries one
+  after another: 300 s for `web` (of which `web/tests/firmware.rs`, 190 s, is now in the full set), 34 s for
+  `moving`, 16 s for `sentry-mate`, 164 s for every other crate together. So the fast set is now in four parts of
+  45 to 105 s of tests each, parted by those times.
+- The image: in the Docker build every workspace crate was built again each run (the dependencies were a cached
+  layer): 4.5 minutes on arm64, 6 on amd64 (with full LTO and one codegen unit 9, so the release profile in
+  `Cargo.toml` has neither). Now `.github/build-binary.sh` builds the binary on each arch's runner, in the
+  Dockerfile's own pinned Rust image with the Dockerfile's command, with its build folder (`target/` and the downloaded
+  crates) kept per arch as an artifact of `main`'s last run (14 days), so a push builds again only the crates it changed and
+  those that use them, and those incremental (measured on 4 cores: a change to `web` or `engine` 20 to 40 s, where
+  `web` and `sentry-mate` alone took 3.5 minutes without). The image is then made from the Dockerfile with that binary in place of its two build stages
+  (`build-contexts: binary=`); a plain `docker build .` still builds them. The first run after a change of the Rust
+  image or with no kept folder builds everything once.
+- Everything else takes about 80 seconds (the jobs starting, the image check about 20 s, the push by digest under
+  10 s, the tags about 15 s).
 
-Whether a run fits in 5 minutes shows in the first runs after this change; the times of each job are on the run's
-page (*Actions → Image*).
+The times of each job are on the run's page (*Actions → Image*).
 
 The full set runs in [`.github/workflows/full-tests.yml`](../.github/workflows/full-tests.yml): every Monday and by
 hand (*Actions → Full tests → Run workflow*). It publishes nothing; a failure there shows on the Actions page.
@@ -100,9 +110,9 @@ are refused (root's, not mounted, the keys inside the data, the same folder at b
 root, healthy, TLS 1.3 only, the recovery key file, a token made with `docker exec`, a clean stop, and the same
 certificate after a restart. Only when all of that passed does it publish both as one image,
 `ghcr.io/skittles-fivem/sentry-mate`, tagged `latest`, `build-N` (the workflow's run number) and `sha-<commit>`.
-`latest` is tagged last. The image build keeps the dependencies in a layer of their own (the `manifests` stage of
-the Dockerfile builds them from the Cargo files alone), cached per arch in GitHub's cache: a push that changes no
-`Cargo.toml` or `Cargo.lock` builds only the workspace's own crates.
+`latest` is tagged last. The binary in it is built by `.github/build-binary.sh` with the build folder of `main`'s last
+run (above); a plain `docker build .` builds the dependencies in a layer of their own (the `manifests` stage of the
+Dockerfile builds them from the Cargo files alone), then the workspace's own crates.
 A run by hand for another branch gets the branch's name as its tag, never `latest` or a
 `build-N`.
 

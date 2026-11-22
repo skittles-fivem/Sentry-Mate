@@ -3,7 +3,9 @@
 #   docker build -t ghcr.io/skittles-fivem/sentry-mate:latest .
 #
 # The same file builds for amd64 and arm64, each on a machine of its kind
-# (.github/workflows/image.yml). Data in /data (sealed), the key file in /keys.
+# (.github/workflows/image.yml, which builds the binary before, with
+# .github/build-binary.sh: see the `binary` stage). Data in /data
+# (sealed), the key file in /keys.
 # It runs as 1000:1000; TrueNAS runs it as its apps user with user: "568:568".
 # The folders must belong to that user.
 #
@@ -50,11 +52,21 @@ RUN find crates -name '*.rs' -exec touch {} + \
  && mkdir -p /out/data /out/keys \
  && chmod 700 /out/data /out/keys
 
-FROM scratch
+# What the image takes, alone: the binary and the two empty folders (mode
+# 700). The Image workflow builds the same binary on its runner, in this
+# same Rust image with the same command, keeping its build folder between
+# runs, and passes a folder laid out like this stage in its place
+# (build-contexts: binary=...): then the two stages above are not run.
+# A plain `docker build .` builds them, as before.
+FROM scratch AS binary
 COPY --from=build /src/target/release/sentry-mate /sentry-mate
+COPY --from=build /out/ /out/
+
+FROM scratch
+COPY --from=binary /sentry-mate /sentry-mate
 # (/out/ whole, not each folder: COPY of a folder copies only what is in it,
 # and the folder it makes for that is mode 755)
-COPY --from=build --chown=1000:1000 /out/ /
+COPY --from=binary --chown=1000:1000 /out/ /
 USER 1000:1000
 # (/data and /keys are the defaults; not set here, or every usage message
 # would show --data and --keys as if they had to be given)
