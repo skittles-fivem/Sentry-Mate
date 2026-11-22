@@ -255,6 +255,9 @@ pub struct Report {
     pub unknown_columns: u64,
     pub peak_buffered_rows: usize,
     pub warnings: Vec<String>,
+    /// Each uploaded file's share, when several were imported as one ([`import_files`]); empty for one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uploads: Vec<Upload>,
 }
 
 impl Report {
@@ -457,77 +460,172 @@ pub fn valid_time_zone(s: &str) -> bool {
 /// report and new state at the end ([`Sink::car_done`]). If it stops part way rows already handed over stay and no
 /// state is given: running it again replaces them.
 pub fn import<R: Read>(r: R, sink: &mut dyn Sink, o: &Options) -> Result<Report, Error> {
-    if let Some(z) = &o.time_zone
-        && parse_tz(z).is_none()
-    {
-        return Err(Error::Unpack(format!("{z} is not a time zone (an IANA name such as Europe/Berlin)")));
+    let mut imp = Importer::new(sink, o)?;
+    let read = imp.source(r, "")?;
+    if imp.report.files == 0 {
+        return Err(Error::NotTeslafi);
     }
-    let mut packed = 0u64;
-    let counted = CountRead { inner: r, n: &mut packed };
-    let mut src = BufReader::with_capacity(BUF, counted);
-    let head = src.fill_buf()?.to_vec();
-    let mut imp = Importer {
-        sink,
-        o,
-        keys: HashMap::new(),
-        hints: HashMap::new(),
-        slots: Vec::new(),
-        report: Report::default(),
-        bad: BTreeMap::new(),
-        fields: Fields::default(),
-        missing: BTreeSet::new(),
-        units_seen: BTreeSet::new(),
-        buffered: 0,
-    };
-    let unpack = |e: io::Error, what: &str| {
-        if e.kind() == io::ErrorKind::InvalidData || e.kind() == io::ErrorKind::UnexpectedEof {
-            Error::Unpack(format!("{what}{e}"))
-        } else {
-            Error::Io(e)
-        }
-    };
-    let mut unpacked = 0u64;
-    if head.starts_with(&[0x1f, 0x8b]) {
-        imp.report.compression = "gzip".into();
-        let r = BufReader::with_capacity(BUF, flate2::read::MultiGzDecoder::new(&mut src));
-        unpacked += imp.file("the file", r, true).map_err(|e| e.unpack("gzip: "))?;
-    } else if head.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
-        imp.report.compression = "xz".into();
-        let r = BufReader::with_capacity(BUF, lzma_rust2::XzReader::new_mem_limit(&mut src, true, XZ_MAX_WINDOW_KIB));
-        unpacked += imp.file("the file", r, true).map_err(|e| e.unpack("xz: "))?;
-    } else if is_zip(&head) {
-        imp.report.compression = "zip".into();
-        let mut z = ZipStream::new(&mut src);
-        loop {
-            let e = match z.next_entry() {
-                Ok(Some(e)) => e,
-                Ok(None) => break,
-                Err(ZipError::Io(e)) => return Err(unpack(e, "zip: ")),
-                Err(e) => return Err(Error::Unpack(e.to_string())),
-            };
-            if skip_entry(&e.name) {
-                continue;
-            }
-            let name = e.name.clone();
-            let r = BufReader::with_capacity(BUF, &mut z);
-            unpacked += imp.file(&name, r, false).map_err(|e| e.unpack(""))?;
-        }
-    } else if head.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
-        return Err(Error::Unsupported("zstd"));
-    } else if head.starts_with(b"BZh") {
-        return Err(Error::Unsupported("bzip2"));
-    } else {
-        imp.report.compression = "plain".into();
-        unpacked += imp.file("the file", &mut src, true).map_err(|e| e.unpack(""))?;
+    imp.report.compression = read.compression.into();
+    imp.report.unpacked_bytes = read.unpacked;
+    let mut report = imp.finish()?;
+    report.packed_bytes = read.packed;
+    Ok(report)
+}
+
+/// What one uploaded file of [`import_files`] brought (its [`Report::uploads`] line).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Upload {
+    pub name: String,
+    /// `plain`, `gzip`, `xz` or `zip`.
+    pub compression: String,
+    pub packed_bytes: u64,
+    pub unpacked_bytes: u64,
+    /// TeslaFi files in it (a zip holds several) and those passed over.
+    pub files: u64,
+    pub files_skipped: u64,
+    pub rows_read: u64,
+    pub rows_used: u64,
+    /// Rows passed over, whatever the reason ([`Report::rows_skipped`] has the reasons for all files together).
+    pub rows_skipped: u64,
+}
+
+/// Imports several uploaded files of TeslaFi's export as one: what [`import`] does with one file (or a zip of them),
+/// for files uploaded one by one (TeslaFi's months, each a CSV, gzipped or a zip). They are read in turn, as a zip's
+/// files are, so a car's months join (a drive over a month's end is one, whichever file comes first) and the result
+/// is the same rows as importing them one after the other. Only one file is open at a time; `files` opens each when
+/// it is its turn. Each file is a TeslaFi file (or a zip with some): one that isn't is refused, named.
+pub fn import_files<R: Read>(
+    files: impl IntoIterator<Item = io::Result<(String, R)>>,
+    sink: &mut dyn Sink,
+    o: &Options,
+) -> Result<Report, Error> {
+    let mut imp = Importer::new(sink, o)?;
+    let (mut packed, mut unpacked) = (0u64, 0u64);
+    let mut kinds: BTreeSet<&'static str> = BTreeSet::new();
+    let mut uploads = Vec::new();
+    for f in files {
+        let (name, r) = f?;
+        let before = (
+            imp.report.files,
+            imp.report.files_skipped_count,
+            imp.report.rows_read,
+            imp.report.rows_used,
+            imp.report.rows_skipped.values().sum::<u64>(),
+        );
+        let named = |e: Error| match e {
+            Error::Unpack(m) => Error::Unpack(format!("{name}: {m}")),
+            e => e,
+        };
+        let read = imp.source(r, &name).map_err(named)?;
+        packed += read.packed;
+        unpacked += read.unpacked;
+        kinds.insert(read.compression);
+        let rp = &imp.report;
+        uploads.push(Upload {
+            name: name.chars().take(200).collect(),
+            compression: read.compression.into(),
+            packed_bytes: read.packed,
+            unpacked_bytes: read.unpacked,
+            files: rp.files - before.0,
+            files_skipped: rp.files_skipped_count - before.1,
+            rows_read: rp.rows_read - before.2,
+            rows_used: rp.rows_used - before.3,
+            rows_skipped: rp.rows_skipped.values().sum::<u64>() - before.4,
+        });
     }
     if imp.report.files == 0 {
         return Err(Error::NotTeslafi);
     }
+    imp.report.compression = match kinds.len() {
+        1 => kinds.first().copied().unwrap_or("plain").into(),
+        _ => "several".into(),
+    };
     imp.report.unpacked_bytes = unpacked;
+    imp.report.uploads = uploads;
     let mut report = imp.finish()?;
-    drop(src);
     report.packed_bytes = packed;
     Ok(report)
+}
+
+/// What reading one file (an upload) saw.
+struct SourceRead {
+    compression: &'static str,
+    packed: u64,
+    unpacked: u64,
+}
+
+impl<'a> Importer<'a> {
+    fn new(sink: &'a mut dyn Sink, o: &'a Options) -> Result<Importer<'a>, Error> {
+        if let Some(z) = &o.time_zone
+            && parse_tz(z).is_none()
+        {
+            return Err(Error::Unpack(format!("{z} is not a time zone (an IANA name such as Europe/Berlin)")));
+        }
+        Ok(Importer {
+            sink,
+            o,
+            keys: HashMap::new(),
+            hints: HashMap::new(),
+            slots: Vec::new(),
+            report: Report::default(),
+            bad: BTreeMap::new(),
+            fields: Fields::default(),
+            missing: BTreeSet::new(),
+            units_seen: BTreeSet::new(),
+            buffered: 0,
+        })
+    }
+
+    /// Reads one uploaded file: a CSV, plain, gzipped or xz'd, or a zip of them. `upload` names it among several
+    /// (its zip's files are then named under it); empty for the one file of [`import`].
+    fn source<R: Read>(&mut self, r: R, upload: &str) -> Result<SourceRead, Error> {
+        let mut packed = 0u64;
+        let counted = CountRead { inner: r, n: &mut packed };
+        let mut src = BufReader::with_capacity(BUF, counted);
+        let head = src.fill_buf()?.to_vec();
+        let unpack = |e: io::Error, what: &str| {
+            if e.kind() == io::ErrorKind::InvalidData || e.kind() == io::ErrorKind::UnexpectedEof {
+                Error::Unpack(format!("{what}{e}"))
+            } else {
+                Error::Io(e)
+            }
+        };
+        let alone_name = if upload.is_empty() { "the file" } else { upload };
+        let (compression, unpacked) = if head.starts_with(&[0x1f, 0x8b]) {
+            let r = BufReader::with_capacity(BUF, flate2::read::MultiGzDecoder::new(&mut src));
+            ("gzip", self.file(alone_name, r, true).map_err(|e| e.unpack("gzip: "))?)
+        } else if head.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
+            let r =
+                BufReader::with_capacity(BUF, lzma_rust2::XzReader::new_mem_limit(&mut src, true, XZ_MAX_WINDOW_KIB));
+            ("xz", self.file(alone_name, r, true).map_err(|e| e.unpack("xz: "))?)
+        } else if is_zip(&head) {
+            let mut z = ZipStream::new(&mut src);
+            let mut unpacked = 0u64;
+            loop {
+                let e = match z.next_entry() {
+                    Ok(Some(e)) => e,
+                    Ok(None) => break,
+                    Err(ZipError::Io(e)) => return Err(unpack(e, "zip: ")),
+                    Err(e) => return Err(Error::Unpack(e.to_string())),
+                };
+                if skip_entry(&e.name) {
+                    continue;
+                }
+                let name = if upload.is_empty() { e.name.clone() } else { format!("{upload}/{}", e.name) };
+                let r = BufReader::with_capacity(BUF, &mut z);
+                unpacked += self.file(&name, r, false).map_err(|e| e.unpack(""))?;
+            }
+            ("zip", unpacked)
+        } else if head.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+            return Err(Error::Unsupported("zstd"));
+        } else if head.starts_with(b"BZh") {
+            return Err(Error::Unsupported("bzip2"));
+        } else {
+            ("plain", self.file(alone_name, &mut src, true).map_err(|e| e.unpack(""))?)
+        };
+        drop(src);
+        Ok(SourceRead { compression, packed, unpacked })
+    }
 }
 
 /// An error from reading one file: the file's own fault, or the sink's.
