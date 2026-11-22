@@ -44,6 +44,8 @@ pub struct ApiMeta {
     pub heading_deg: Option<f64>,
     pub software_update_status: Option<String>,
     pub software_update_version: Option<String>,
+    /// The values no CAN message carries, as this answer gave them ([`model::off_can`]).
+    pub off_can: model::OffCan,
 }
 
 /// What the car is doing, for the poller's cadence.
@@ -99,6 +101,45 @@ pub fn gear(word: &str) -> Option<Gear> {
 
 fn mi(x: Option<f64>) -> Option<f64> {
     x.map(|m| m * KM_PER_MILE)
+}
+
+/// A window's position number (0 closed, anything else open, partly or fully): whether it is open.
+fn window(v: &Value, key: &str) -> Option<bool> {
+    let x = v.get("vehicle_state")?.get(key)?;
+    x.as_f64().filter(|n| n.is_finite()).map(|n| n != 0.0).or_else(|| x.as_bool())
+}
+
+/// A time in s since the epoch (positive) as ms.
+fn secs_ms(v: &Value, section: &str, key: &str) -> Option<u64> {
+    v.get(section)?.get(key)?.as_u64().filter(|t| *t > 0).map(|t| t * 1000)
+}
+
+/// What `vehicle_data` tells of the values no CAN message carries ([`model::OffCan`]).
+pub fn off_can(v: &Value) -> model::OffCan {
+    let update = v.get("vehicle_state").and_then(|x| x.get("software_update"));
+    let word = |key: &str| {
+        update.and_then(|u| u.get(key)).and_then(Value::as_str).map(|t| t.trim().chars().take(32).collect::<String>())
+    };
+    model::OffCan {
+        version: s(v, "vehicle_state", "car_version").and_then(|c| c.split_whitespace().next().map(str::to_string)),
+        // "" is Tesla's word for none waiting: kept as it is
+        update_status: word("status").map(|w| w.to_ascii_lowercase()),
+        update_version: word("version").and_then(|w| w.split_whitespace().next().map(str::to_string)),
+        update_download_pct: update
+            .and_then(|u| u.get("download_perc"))
+            .and_then(Value::as_f64)
+            .filter(|p| p.is_finite() && (0.0..=100.0).contains(p)),
+        locked: b(v, "vehicle_state", "locked"),
+        windows: ["fd_window", "fp_window", "rd_window", "rp_window"].map(|k| window(v, k)),
+        sunroof_state: s(v, "vehicle_state", "sun_roof_state").map(|w| w.to_ascii_lowercase()),
+        sunroof_pct: f(v, "vehicle_state", "sun_roof_percent_open").filter(|p| (0.0..=100.0).contains(p)),
+        scheduled_charge_start_ms: secs_ms(v, "charge_state", "scheduled_charging_start_time"),
+        scheduled_departure_ms: secs_ms(v, "charge_state", "scheduled_departure_time"),
+        route_destination: s(v, "drive_state", "active_route_destination"),
+        route_km: mi(f(v, "drive_state", "active_route_miles_to_arrival")),
+        route_min: f(v, "drive_state", "active_route_minutes_to_arrival"),
+        route_traffic_min: f(v, "drive_state", "active_route_traffic_minutes_delay"),
+    }
 }
 
 /// Converts one `vehicle_data` response. `now_ms` is used only when the answer carries no time of its own.
@@ -189,6 +230,7 @@ pub fn reading(v: &Value, now_ms: u64) -> Reading {
             .map(str::trim)
             .filter(|t| !t.is_empty())
             .map(|t| t.chars().take(32).collect()),
+        off_can: off_can(v),
     };
     let driving = matches!(sample.gear, Some(Gear::D | Gear::R | Gear::N)) || sample.speed_kmh.is_some_and(|x| x > 0.0);
     let plugged = charging_state.as_deref().is_some_and(|c| c != "Disconnected");
@@ -250,6 +292,41 @@ mod tests {
         assert_eq!(r.meta.display_name.as_deref(), Some("Made-up car"));
         assert_eq!(r.meta.charge_limit_soc, Some(80.0));
         assert!(r.activity.driving && r.activity.busy && !r.activity.charging);
+    }
+
+    #[test]
+    fn values_not_on_the_can_bus() {
+        let v = json!({
+            "drive_state": {"timestamp": 1_800_000_000_000u64, "active_route_destination": "Made-up Street 1",
+                            "active_route_miles_to_arrival": 10.0, "active_route_minutes_to_arrival": 14.5,
+                            "active_route_traffic_minutes_delay": 2},
+            "charge_state": {"scheduled_charging_start_time": 1_800_003_600u64, "scheduled_departure_time": null},
+            "vehicle_state": {"car_version": "2026.32.5 abcdef0123", "locked": false,
+                              "fd_window": 0, "fp_window": 0, "rd_window": 2, "rp_window": null,
+                              "sun_roof_state": "Vent", "sun_roof_percent_open": 15,
+                              "software_update": {"status": "downloading", "version": "2026.38.1 ffff",
+                                                  "download_perc": 40}}
+        });
+        let o = reading(&v, 0).meta.off_can;
+        assert_eq!(o.version.as_deref(), Some("2026.32.5"));
+        assert_eq!(o.update_status.as_deref(), Some("downloading"));
+        assert_eq!(o.update_version.as_deref(), Some("2026.38.1"));
+        assert_eq!(o.update_download_pct, Some(40.0));
+        assert_eq!(o.locked, Some(false));
+        assert_eq!(o.windows, [Some(false), Some(false), Some(true), None]);
+        assert_eq!(o.sunroof_state.as_deref(), Some("vent"));
+        assert_eq!(o.sunroof_pct, Some(15.0));
+        assert_eq!(o.scheduled_charge_start_ms, Some(1_800_003_600_000));
+        assert_eq!(o.scheduled_departure_ms, None);
+        assert_eq!(o.route_destination.as_deref(), Some("Made-up Street 1"));
+        assert!(near(o.route_km, 16.09344));
+        assert_eq!((o.route_min, o.route_traffic_min), (Some(14.5), Some(2.0)));
+
+        // no update waiting: Tesla's empty word is kept, meaning none waiting
+        let none = json!({"vehicle_state": {"software_update": {"status": "", "version": " "}}});
+        let o = reading(&none, 0).meta.off_can;
+        assert_eq!((o.update_status.as_deref(), o.update_version), (Some(""), None));
+        assert!(reading(&json!({}), 0).meta.off_can.is_empty());
     }
 
     #[test]

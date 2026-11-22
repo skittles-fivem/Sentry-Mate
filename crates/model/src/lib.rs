@@ -8,7 +8,10 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod off_can;
 pub mod vehicle;
+
+pub use off_can::{OffCan, OffCanNow, Sourced};
 
 pub type CarId = u32;
 pub type DriveId = u64;
@@ -940,6 +943,22 @@ pub struct Now {
     /// The Data health rule's verdict for the car's logger, when it was worked out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub healthy: Option<bool>,
+    /// Since when the car is in its state (the timeline's newest span, the drive's or charge's start), when it was
+    /// worked out (filled for MQTT, not stored).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_ms: Option<u64>,
+    /// The trim as Car settings shows it (filled for MQTT, not stored).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trim: Option<String>,
+    /// The values no CAN message carries, from the API inputs ([`off_can::fuse`]; filled for MQTT, not stored).
+    /// (Boxed: a car waiting for the broker keeps a small Now.)
+    #[serde(default, skip_serializing_if = "off_can_empty")]
+    pub off_can: Box<OffCanNow>,
+}
+
+#[allow(clippy::borrowed_box)]
+fn off_can_empty(o: &Box<OffCanNow>) -> bool {
+    o.is_empty()
 }
 
 #[cfg(test)]

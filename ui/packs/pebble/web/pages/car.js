@@ -6,7 +6,10 @@
 // chart and a charging chart that share one cursor; then the vehicle info (pages/vehicle-parts.js: each fact of the
 // car's build with where it came from and how sure, an admin's corrections). The software tile links to the car's
 // firmware fingerprints on Software (#firmware). Every blank value says why (asleep, not sent by this car,
-// not on the CAN bus). Live: `now` events update the tiles in place.
+// not on the CAN bus). What no CAN message carries (lock, windows, sunroof, the route, the software version and a
+// waiting update, the charge schedule) comes from now.off_can, the Tesla API's or TeslaFi's newest reading: each
+// with its input's mark, and Stale once it is past its age limit; a value no input has is a dash.
+// Live: `now` events update the tiles in place.
 //
 // Data: GET /api/v1/cars/{car}/now, /activity, /series (battery), /trip (the period's summary), /drives and
 // /charges (the latest of each, and the period's charges with their /curve), /settings (outside map links).
@@ -25,10 +28,15 @@ import { v, AWAKE_WORDS, endLabel, placeLink, strip, stripShares, facts, dur } f
 import { srcPill, viaMark, inputsLine } from '../core/source.js';
 
 // a tile's new children; a null or false part is left out (replaceChildren would print it as text)
-const put = (el, ...kids) => el.replaceChildren(...kids.flat().filter((k) => k != null && k !== false && k !== ''));
+const put = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false && k !== ''));
 import { vehicleTiles } from './vehicle-parts.js';
 
 const withVia = (text, x) => { const m = viaMark(x); return m ? h('span', { class: 'src-line' }, text, m) : text; };
+/** The input mark of an off_can value ({ value, at_ms, sources, stale } or null), and Stale past its age limit. */
+const offMark = (x, tz) => (x ? [viaMark(x), x.stale ? h('span', { class: 'src src-via is-stale', title: x.at_ms ? `Newest ${formatWhen(x.at_ms, tz, api.now())}; past its age limit` : null }, 'Stale') : null] : null);
+/** Text with its off_can marks, or null when no input has the value. */
+const withOff = (text, x, tz) => (x == null || v(x) == null || text == null ? null : h('span', { class: ['src-line', { 'is-stale': !!x.stale }] }, text, offMark(x, tz)));
+const WINDOWS = [['driver_front', 'driver front'], ['passenger_front', 'passenger front'], ['driver_rear', 'driver rear'], ['passenger_rear', 'passenger rear']];
 
 export const id = 'car';
 export const css = true;
@@ -83,6 +91,14 @@ export async function mount(ctx) {
     if (sleepy && now.state === 'asleep') return 'asleep, not sent';
     return 'not sent by this car';
   }
+  /** Where the car is navigating to, from the Tesla API or TeslaFi; nothing while no route is known. */
+  function routeLine() {
+    const r = now.off_can?.route || {};
+    const dest = v(r.destination), km = v(r.km), min = v(r.minutes), traffic = v(r.traffic_min);
+    if (dest == null && km == null && min == null) return null;
+    const bits = [km != null ? format(km, 'distance') : null, min != null ? `${formatDuration(min * 60000)} to go` : null, traffic ? `${formatDuration(traffic * 60000)} lost to traffic` : null].filter(Boolean);
+    return h('p', { class: 'hero-route' }, icon('route'), h('span', null, `Navigating to ${dest || 'a destination'}`, bits.length ? h('span', { class: 'muted' }, `, ${bits.join(', ')}`) : null, offMark(r.destination || r.km || r.minutes, tz)));
+  }
   function drawHero() {
     const st = now.state || 'unknown';
     const soc = v(now.soc_pct);
@@ -98,7 +114,7 @@ export async function mount(ctx) {
     if (limit != null) band.querySelector('.band-limit').style.setProperty('--v', (limit / 100).toFixed(4));
     band.classList.toggle('is-low', soc != null && soc < 20);
     const ideal = v(now.ideal_range_km), rated = v(now.range_km), est = v(now.est_range_km);
-    hero.replaceChildren(
+    put(hero, 
       h('div', { class: 'hero-top' },
         ring(soc, { label: 'Battery', size: 'l', tone: st === 'charging' ? 'teal' : 'coral', cover: ['summary.stat.soc', 'overview.stat.battery_level'] }),
         h('div', { class: 'hero-text' },
@@ -107,6 +123,7 @@ export async function mount(ctx) {
           h('p', { class: 'hero-state', cover: ['summary.stat.status', 'summary.state.drive_offline'] }, stateTag(st, { stale: !!now.stale }),
             now.since_ms ? h('span', { class: 'muted' }, `since ${formatWhen(now.since_ms, tz, api.now())}`) : null),
           h('p', { class: 'hero-where' }, icon('pin'), whereWords),
+          routeLine(),
           inputsLine(now.inputs, { cls: 'car-inputs' }),
           viaMark(now.soc_pct) ? h('p', { class: 'src-line' }, h('span', { class: 'hero-k' }, 'Battery level'), viaMark(now.soc_pct)) : null,
           now.stale ? h('p', { class: 'note' }, 'No upload for a while: these are the last known values.') : null)),
@@ -161,17 +178,23 @@ export async function mount(ctx) {
 
   /* ---------------------------------------------------------------- status flags */
   const tFlags = tile({ w: 2, title: 'Car status', icon: 'shield', cls: 'flags-tile' });
-  function flag(text, on, { tone = 'coral', cover = null, why: w = null, via = null } = {}) {
-    return h('li', { class: ['flag', { 'is-on': on === true, 'is-unknown': on == null }], cover },
+  function flag(text, on, { tone = 'coral', cover = null, why: w = null, via = null, off = null, words = ['On', 'Off'] } = {}) {
+    return h('li', { class: ['flag', { 'is-on': on === true, 'is-unknown': on == null, 'is-stale': !!off?.stale }], cover },
       h('span', { class: ['flag-dot', `tone-${tone}`], 'aria-hidden': 'true' }),
       h('span', { class: 'flag-name' }, text),
-      h('span', { class: 'flag-val' }, on == null ? (w || 'not sent') : on ? 'On' : 'Off', via ? viaMark(via) : null));
+      h('span', { class: 'flag-val' }, on == null ? (w || 'not sent') : on ? words[0] : words[1], via ? viaMark(via) : null, on != null && off ? offMark(off, tz) : null));
   }
   function drawFlags() {
     const f = now.flags || {};
     const doors = f.doors ? Object.values(f.doors).map(v) : [];
     const doorsOpen = doors.length ? doors.some(Boolean) || !!v(f.trunk) || !!v(f.frunk) : null;
     const keepC = v(f.keep_climate);
+    const oc = now.off_can || {};
+    const openWins = v(oc.windows_open) ? WINDOWS.filter(([k]) => v(oc.windows?.[k])).map(([, w]) => w) : [];
+    const roofState = v(oc.sunroof_state), roofPct = v(oc.sunroof_pct);
+    const roofWord = roofState != null ? String(roofState).replace(/_/g, ' ') : null;
+    const roof = roofWord == null && roofPct == null ? null : [roofWord && roofWord.charAt(0).toUpperCase() + roofWord.slice(1), roofPct != null ? format(roofPct, 'percent') : null].filter(Boolean).join(', ');
+    const roofOpen = roofPct != null ? roofPct > 0 : roofState != null ? roofState !== 'closed' : null;
     put(tFlags, tFlags.firstChild, h('ul', { class: 'flags' },
       flag('Sentry mode', v(f.sentry), { tone: 'coral', cover: 'summary.flag.sentry_mode', via: f.sentry }),
       flag('Sentry recording', v(f.sentry_event_guess), { tone: 'coral', cover: 'summary.flag.sentry_recording' }),
@@ -182,8 +205,10 @@ export async function mount(ctx) {
       flag('Preconditioning', v(f.climate) == null && v(f.battery_preconditioning) == null ? null : v(f.climate) === 'precondition' || !!v(f.battery_preconditioning), { tone: 'teal', cover: 'summary.flag.preconditioning' }),
       flag('Reduced range', v(f.reduced_range), { tone: 'sun', cover: 'summary.flag.reduced_range' }),
       flag('Service mode', v(f.service_mode), { tone: 'sun', cover: ['summary.flag.service_mode', 'summary.state.in_service'] }),
-      flag('Locked', null, { why: 'not on the CAN bus', cover: 'summary.flag.lock' }),
-      flag('Windows open', null, { why: 'not on the CAN bus', cover: 'summary.flag.windows_open' })));
+      flag('Locked', v(oc.locked), { tone: 'teal', why: '—', off: oc.locked, words: ['Yes', 'No'], cover: 'summary.flag.lock' }),
+      flag('Windows', v(oc.windows_open), { tone: 'sun', why: '—', off: oc.windows_open, words: ['Open', 'Closed'], cover: 'summary.flag.windows_open' }),
+      roof != null ? flag('Sunroof', roofOpen, { tone: 'sun', off: oc.sunroof_state || oc.sunroof_pct, words: [roof, roof] }) : null),
+      openWins.length ? h('p', { class: 'tile-line is-warn' }, `Open: ${formatList(openWins)}.`) : null);
   }
 
   /* ---------------------------------------------------------------- awake */
@@ -199,6 +224,7 @@ export async function mount(ctx) {
 
   /* ---------------------------------------------------------------- charging */
   const tCharge = tile({ w: 2, title: 'Charging', icon: 'bolt', cls: 'charge-tile', cover: ['nr.dash.panel.charge-status'] });
+  const sched = (x) => (v(x) == null ? null : formatWhen(v(x), tz, api.now()));
   function drawCharge() {
     const c = now.charge || {};
     const status = v(c.status);
@@ -217,18 +243,29 @@ export async function mount(ctx) {
         ['Charge limit', withVia(format(v(c.limit_pct), 'percent'), c.limit_pct), 'nr.dash.charge-limit'],
         ['Current', v(c.amps_a) != null ? `${format(v(c.amps_a), 'current')}${v(c.phases) ? `, ${v(c.phases)} phase${v(c.phases) > 1 ? 's' : ''}` : ''}${v(c.pilot_a) ? ` (pilot ${format(v(c.pilot_a), 'current')})` : ''}` : on ? 'not sent' : '—', 'nr.dash.charging-current'],
         ['Voltage', format(v(c.volts_v), 'voltage'), 'overview.stat.ac_voltage'],
-        ['Scheduled charging', 'not on the CAN bus', 'summary.stat.scheduled_charging'],
+        ['Scheduled charging', withOff(sched(now.off_can?.scheduled_charge_start_ms), now.off_can?.scheduled_charge_start_ms, tz) || '—', 'summary.stat.scheduled_charging'],
+        ['Scheduled departure', withOff(sched(now.off_can?.scheduled_departure_ms), now.off_can?.scheduled_departure_ms, tz) || '—'],
       ]));
   }
 
   /* ---------------------------------------------------------------- software, last drive, last charge, data */
-  const sw = now.software || {};
-  const tSoft = tile({ w: 1, title: 'Software', icon: 'chip', cls: 'tile-stat', cover: ['summary.stat.version', 'overview.stat.firmware', 'summary.flag.software_update'] },
-    h('p', { class: 'tile-big' }, sw.version || 'Not known'),
-    h('p', { class: 'tile-line' }, sw.version ? (sw.version_source === 'owner' ? 'typed by the owner' : sw.version_source === 'build_match' ? 'named from an earlier update with the same fingerprints' : sw.version_source === 'tesla_api' ? 'from the Tesla API' : 'from the import') : 'the version is not on the CAN bus',
-      sw.changed_since_ms ? `; changed ${formatDate(sw.changed_since_ms, tz, { now: api.now() })}` : ''),
-    h('a', { class: 'tile-link', href: state.buildUrl('software', { car: car.id }), cover: 'overview.link.updates' }, 'Software history'),
-    h('a', { class: 'tile-link', href: `${state.buildUrl('software', { car: car.id })}#firmware` }, 'Car firmware'));
+  const tSoft = tile({ w: 1, title: 'Software', icon: 'chip', cls: 'tile-stat', cover: ['summary.stat.version', 'overview.stat.firmware', 'summary.flag.software_update'] });
+  function drawSoft() {
+    const sw = now.software || {};
+    const oc = now.off_can || {};
+    const ov = v(oc.version);
+    const ver = sw.version || ov;
+    const upd = v(oc.update_available), pct = v(oc.update_download_pct), uv = v(oc.update_version);
+    const updText = upd == null ? null : v(oc.update_installing) ? `Installing ${uv || 'an update'}` : upd ? `${uv || 'An update'} waiting${pct != null ? `, ${format(pct, 'percent')} downloaded` : ''}` : 'No update waiting';
+    put(tSoft, tSoft.firstChild,
+      h('p', { class: 'tile-big' }, ver || 'Not known'),
+      h('p', { class: 'tile-line' }, sw.version ? (sw.version_source === 'owner' ? 'typed by the owner' : sw.version_source === 'build_match' ? 'named from an earlier update with the same fingerprints' : sw.version_source === 'tesla_api' ? 'from the Tesla API' : 'from the import') : ov ? 'as the car reports it' : 'the version is not on the CAN bus',
+        sw.changed_since_ms ? `; changed ${formatDate(sw.changed_since_ms, tz, { now: api.now() })}` : '', ov && sw.version && ov !== sw.version ? `; the car reports ${ov}` : ''),
+      ov ? h('p', { class: 'src-line' }, offMark(oc.version, tz)) : null,
+      updText ? h('p', { class: ['tile-line', 'src-line', { 'is-warn': !!upd }] }, updText, offMark(oc.update_available, tz)) : null,
+      h('a', { class: 'tile-link', href: state.buildUrl('software', { car: car.id }), cover: 'overview.link.updates' }, 'Software history'),
+      h('a', { class: 'tile-link', href: `${state.buildUrl('software', { car: car.id })}#firmware` }, 'Car firmware'));
+  }
   const d0 = lastDrive.error ? null : lastDrive.items?.[0];
   const tDrive = d0 ? tile({ w: 1, title: 'Last drive', icon: 'route', href: state.buildUrl('drive', { car: car.id, drive: d0.id }), cls: 'tile-stat' },
     num(d0.distance_km, 'distance'),
@@ -274,7 +311,7 @@ export async function mount(ctx) {
   const tChart = tile({ w: 2, title: 'Charging in this period', icon: 'bolt', cls: 'chart-tile', side: h('a', { class: 'tile-link', href: state.buildUrl('charges', { car: car.id, period: ctx.state.period }), cover: 'overview.link.charging_stats' }, 'Charges page'),
     cover: ['overview.chart.charging_details.power', 'overview.chart.charging_details.energy', 'overview.chart.charging_details.ac_current', 'overview.chart.charging_details.ac_voltage', 'overview.chart.charging_details.battery_heater'] });
 
-  drawHero(); drawSmall(); drawTyres(); drawFlags(); drawAwake(); drawCharge(); drawData();
+  drawHero(); drawSmall(); drawTyres(); drawFlags(); drawAwake(); drawCharge(); drawSoft(); drawData();
   ctx.view.replaceChildren(hero, where, tSpeed, tOut, tIn, tOdo, tCharge, tTyres, tFlags, tAwake, tSoft, tDrive, tLastC, tData, tStrip, tSum, tBatt, tChart,
     ...vehicleTiles(ctx, car, { onChanged: () => ctx.reload() }));
 
@@ -318,7 +355,7 @@ export async function mount(ctx) {
     const d = ev.data || {};
     if (d.car !== car.id || !d.now) return;
     now = mergeNow(now, d.now);
-    drawHero(); drawSmall(); drawTyres(); drawFlags(); drawAwake(); drawCharge(); drawData();
+    drawHero(); drawSmall(); drawTyres(); drawFlags(); drawAwake(); drawCharge(); drawSoft(); drawData();
     hero.querySelector('.ring-arc')?.classList.add('no-anim');
   });
   ctx.ready();

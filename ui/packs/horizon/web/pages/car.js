@@ -2,7 +2,8 @@
 // Now: GET /cars/{car}/now (every value with its own time), then live `now` events merged field by field.
 // The cluster: a speedometer, the battery dial with its range and a fuel gauge, a power meter, trip counters
 // (odometer, temperatures, software, data age), warning lights for the car's modes and doors, the map,
-// why the car is awake, the tyres and charging now. Its live inputs (SMO, the Tesla API) are named with the
+// why the car is awake, the tyres, charging now, and what is not on the CAN bus (software update, lock, windows,
+// sunroof, schedule, route) from the Tesla API or TeslaFi. Its live inputs (SMO, the Tesla API) are named with the
 // age of each one's newest value, and every value says which input sent it. The period (default 24 h): figures from /statistics,
 // the battery and charging charts on one cursor, and the activity strip. Rows events reload the period.
 
@@ -43,6 +44,8 @@ const AWAKE = {
 const TYRES = [['fl', 'Front left'], ['fr', 'Front right'], ['rl', 'Rear left'], ['rr', 'Rear right']];
 const DOORS = [['fl', 'Front left door'], ['fr', 'Front right door'], ['rl', 'Rear left door'], ['rr', 'Rear right door']];
 const at = (x) => (x && typeof x === 'object' && 'at_ms' in x ? x.at_ms : null);
+const WINDOWS = [['driver_front', 'Driver front'], ['passenger_front', 'Passenger front'], ['driver_rear', 'Driver rear'], ['passenger_rear', 'Passenger rear']];
+const SUNROOF = { closed: 'Closed', open: 'Open', vent: 'Vent', venting: 'Vent', comfort: 'Comfort', unknown: 'Not known' };
 
 // merge a live `now` delta into the values we hold (objects field by field)
 function merge(into, from) {
@@ -72,6 +75,7 @@ export async function mount(ctx) {
   const awakeEl = h('div');
   const tyresEl = h('div');
   const chargeEl = h('div');
+  const offEl = h('div');
   const periodEl = h('div', { class: 'stack' });
   const fwLink = h('p', { class: 'vi-fw' }, icon('chip', 'i--sm'), h('span', null, 'The modules\' firmware fingerprints, and each Tesla update found from them: ',
     h('a', { class: 'plc', href: `${ctx.link('software')}#firmware` }, 'Car firmware'), ' on Software.'));
@@ -91,6 +95,7 @@ export async function mount(ctx) {
       hud({ title: 'Where it is', icon: 'pin', pad: false, cls: 'cl-map-panel', side: mapSide, cover: ['summary.map.position', 'summary.map.attribution', 'summary.map.zoom'] }, mapEl, placeEl),
       h('div', { class: 'stack' }, awakeEl, tyresEl)),
     chargeEl,
+    offEl,
     vehicle.el,
     periodEl));
 
@@ -179,7 +184,7 @@ export async function mount(ctx) {
         { icon: 'door', text: doorsOpen.length ? `${doorsOpen.length} open` : 'Doors shut', on: doorsOpen.length > 0, tone: 'red', cover: 'summary.flag.doors_open', title: doorsOpen.length ? `Open: ${doorsOpen.join(', ')}` : 'Every door, the trunk and the frunk are shut' },
       ]),
       h('p', { class: 'note cl-lock-note', cover: ['summary.flag.lock', 'summary.flag.windows_open'] }, icon('info', 'i--sm'),
-        h('span', null, doorsOpen.length ? `Open now: ${doorsOpen.join(', ')}. ` : '', 'Locks and windows are not sent on the CAN bus, so they are not shown here; a lit light means the mode is on.',
+        h('span', null, doorsOpen.length ? `Open now: ${doorsOpen.join(', ')}. ` : '', 'A lit light means the mode is on. Locks and windows are not on the CAN bus: they show under Off the CAN bus when the Tesla API or TeslaFi gives them.',
           flagSrc() ? [' Sentry, someone inside and climate ', flagSrc()] : null)));
   }
 
@@ -274,7 +279,56 @@ export async function mount(ctx) {
         how: val(c.to_full_kwh) != null ? `${format(val(c.to_full_kwh), 'energy')} to go` : null, src: valSrc(c.to_full_min) }),
       stat('Done at', c.finish_ms ? when(c.finish_ms, tz) : null, null, { why: charging ? 'Not known yet' : 'No charge under way', cover: 'summary.stat.expected_finish', how: c.finish_ms ? `${zoneName(c.finish_ms, tz)}, the car's time` : null }),
     ]),
-    h('p', { class: 'note' }, icon('info', 'i--sm'), h('span', null, 'A charge timer set on the car is not sent on the CAN bus; a planned start shows here once the charge begins. The charge limit, energy added and time to full can come from the Tesla API while it reads the car.'))));
+    h('p', { class: 'note' }, icon('info', 'i--sm'), h('span', null, 'A charge timer set on the car is not sent on the CAN bus; the Tesla API or TeslaFi gives it under Off the CAN bus. The charge limit, energy added and time to full can come from the Tesla API while it reads the car.'))));
+  }
+
+  /* ---------- off the CAN bus: from the Tesla API or TeslaFi, each with its input, stale past its age limit */
+  function paintOff() {
+    const o = now.off_can || {};
+    const w = o.windows || {};
+    const r = o.route || {};
+    const all = [o.version, o.update_available, o.update_version, o.update_download_pct, o.update_installing, o.locked, o.windows_open,
+      ...WINDOWS.map(([k]) => w[k]), o.sunroof_state, o.sunroof_pct, o.scheduled_charge_start_ms, o.scheduled_departure_ms, r.destination, r.km, r.minutes, r.traffic_min];
+    const cover = ['summary.flag.lock', 'summary.flag.windows_open'];
+    if (all.every((x) => x == null)) {
+      replace(offEl, hud({ title: 'Off the CAN bus', icon: 'antenna', cover, cls: 'cl-off' },
+        h('p', { class: 'cl-awake-none' }, icon('info', 'i--sm'), h('span', null, 'Software updates, lock, windows, sunroof, timers and the route are not on the CAN bus. The Tesla API or TeslaFi gives them; neither has for this car. ',
+          h('a', { href: state.buildUrl('settings-integrations') }, 'Integrations'), '.'))));
+      return;
+    }
+    const v = (x) => (x == null ? null : val(x));
+    // the input that sent it, and STALE once it is older than its limit
+    const src = (...xs) => {
+      const x = xs.find((y) => y != null);
+      if (!x) return null;
+      return [valSrc(x), xs.some((y) => y?.stale) ? tag('Stale', 'org') : null];
+    };
+    // the how line: the input (and Stale), then the words
+    const how = (xs, ...words) => { const w = words.filter(Boolean).join(' · '); const s = src(...xs); return s || w ? h('span', { class: 'cl-off-how' }, s, w ? h('span', null, w) : null) : null; };
+    const read = (...xs) => { const t = Math.max(0, ...xs.map(at).filter(Boolean)); return t ? `read ${ago(t)}` : null; };
+    const inst = v(o.update_installing), avail = v(o.update_available), ver = v(o.update_version), pct = v(o.update_download_pct);
+    const update = inst ? `Installing${ver ? ` ${ver}` : ''}` : avail ? `${ver || 'An update'} waiting${pct != null ? `, ${format(pct, 'percent')} downloaded` : ''}` : avail === false ? 'No update waiting' : 'Update not known';
+    const open = WINDOWS.filter(([k]) => v(w[k])).map(([, n]) => n);
+    const anyOpen = v(o.windows_open);
+    const winVal = anyOpen == null && !WINDOWS.some(([k]) => w[k]) ? null : anyOpen || open.length ? `${open.length || 'Some'} open` : 'All shut';
+    const locked = v(o.locked);
+    const roof = v(o.sunroof_state), roofPct = v(o.sunroof_pct);
+    const dest = v(r.destination), km = v(r.km), min = v(r.minutes), traffic = v(r.traffic_min);
+    const stale = all.some((x) => x?.stale);
+    replace(offEl, hud({ title: 'Off the CAN bus', icon: 'antenna', cover, cls: 'cl-off', side: h('span', { class: 'trk-count' }, 'from the Tesla API or TeslaFi') },
+      rack([
+        stat('Software', v(o.version) ? h('span', { class: 'mono' }, v(o.version)) : null, null, { icon: 'chip', why: 'not known', how: how([o.version], update, read(o.version)),
+          hot: !!(avail || inst) }),
+        stat('Lock', locked == null ? null : locked ? 'Locked' : 'Unlocked', null, { icon: 'lock', why: 'not known', how: how([o.locked], read(o.locked)) }),
+        stat('Windows', winVal, null, { icon: 'door', why: 'not known', hot: !!(anyOpen || open.length),
+          how: how([o.windows_open, ...WINDOWS.map(([k]) => w[k])], open.length ? open.join(', ') : null, read(o.windows_open, ...WINDOWS.map(([k]) => w[k]))) }),
+        stat('Sunroof', roof == null ? null : SUNROOF[roof] || roof, null, { icon: 'sun', why: 'not known', how: how([o.sunroof_state, o.sunroof_pct], roofPct != null ? `${format(roofPct, 'percent')} open` : null, read(o.sunroof_state, o.sunroof_pct)) }),
+        stat('Charge timer', v(o.scheduled_charge_start_ms) ? when(v(o.scheduled_charge_start_ms), tz) : null, null, { icon: 'clock', why: 'none known', how: how([o.scheduled_charge_start_ms], read(o.scheduled_charge_start_ms)) }),
+        stat('Departure', v(o.scheduled_departure_ms) ? when(v(o.scheduled_departure_ms), tz) : null, null, { icon: 'calendar', why: 'none known', how: how([o.scheduled_departure_ms], read(o.scheduled_departure_ms)) }),
+        stat('Route', dest, null, { icon: 'route', why: 'no route known', how: how([r.destination, r.km, r.minutes, r.traffic_min], km != null ? format(km, 'distance') : null, min != null ? `${dur(min * 60000)} left` : null, traffic ? `+${dur(traffic * 60000)} traffic` : null, read(r.destination, r.km, r.minutes)) }),
+      ], { cls: 'cl-rack cl-off-rack' }),
+      h('p', { class: 'note' }, icon('info', 'i--sm'), h('span', null, stale ? 'A value marked Stale is older than its limit (lock, windows and sunroof 1 h, update 6 h, timers 12 h, route 10 min), so it may no longer be true. ' : '',
+        'Never guessed: a lock request on the CAN bus is not the lock state.'))));
   }
 
   /* ---------- the period */
@@ -392,7 +446,7 @@ export async function mount(ctx) {
     void chgPlot;
   }
 
-  paintHead(); paintCluster(); paintMapTools(); paintPlace(); paintAwake(); paintTyres(); paintCharge();
+  paintHead(); paintCluster(); paintMapTools(); paintPlace(); paintAwake(); paintTyres(); paintCharge(); paintOff();
   try { await paintPeriod(); } catch (e) {
     if (!ctx.alive()) return;
     replace(periodEl, hud({ title: 'The period', icon: 'stats' }, h('p', { class: 'empty-line' }, icon('warn', 'i--sm'), h('span', null, `The period could not be loaded: ${e.message}`))));
@@ -406,7 +460,7 @@ export async function mount(ctx) {
     if (ev.data?.car !== cid || !ev.data.now) return;
     merge(now, ev.data.now);
     if (pend) return;
-    pend = setTimeout(() => { pend = 0; if (!ctx.alive()) return; paintHead(); paintCluster(); paintPlace(); paintAwake(); paintTyres(); paintCharge(); moveMarker(); }, 2000);
+    pend = setTimeout(() => { pend = 0; if (!ctx.alive()) return; paintHead(); paintCluster(); paintPlace(); paintAwake(); paintTyres(); paintCharge(); paintOff(); moveMarker(); }, 2000);
   });
   let rowsT = 0;
   ctx.events('rows', (ev) => {
@@ -415,5 +469,5 @@ export async function mount(ctx) {
     rowsT = setTimeout(() => { if (ctx.alive()) paintPeriod().catch(() => {}); }, 1500);
   });
   ctx.onCleanup(() => { clearTimeout(pend); clearTimeout(rowsT); });
-  ctx.onCleanup(onUnitsChange(() => { paintCluster(); paintTyres(); paintCharge(); paintPeriod().catch(() => {}); }));
+  ctx.onCleanup(onUnitsChange(() => { paintCluster(); paintTyres(); paintCharge(); paintOff(); paintPeriod().catch(() => {}); }));
 }

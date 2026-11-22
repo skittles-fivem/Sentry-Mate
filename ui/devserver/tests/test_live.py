@@ -196,3 +196,80 @@ class NoForcedRows(ServerCase):
         events = read_events(self.server.port, self.c.cookie, lambda ev: False, seconds=2)
         self.assertTrue(any(e["event"] == "now" for e in events))
         self.assertFalse(any(e["event"] == "rows" for e in events))
+
+
+OFF_CAN = ["version", "update_available", "update_version", "update_download_pct", "update_installing", "locked",
+           "windows_open", "sunroof_state", "sunroof_pct", "scheduled_charge_start_ms", "scheduled_departure_ms"]
+WINDOWS = ["driver_front", "passenger_front", "driver_rear", "passenger_rear"]
+ROUTE = ["destination", "km", "minutes", "traffic_min"]
+
+
+class OffCan(ServerCase):
+    """Values no CAN message carries, from the Tesla API or TeslaFi, each with its input and a stale mark."""
+
+    def values(self, o):
+        out = {k: o[k] for k in OFF_CAN}
+        out.update({f"window_{k}": o["windows"][k] for k in WINDOWS})
+        out.update({f"route_{k}": o["route"][k] for k in ROUTE})
+        return out
+
+    def check(self, o):
+        self.assertEqual(set(o), set(OFF_CAN) | {"windows", "route"})
+        self.assertEqual(set(o["windows"]), set(WINDOWS))
+        self.assertEqual(set(o["route"]), set(ROUTE))
+        for k, v in self.values(o).items():
+            if v is None:
+                continue
+            self.assertEqual(set(v), {"value", "at_ms", "sources", "stale"}, k)
+            self.assertIsInstance(v["at_ms"], int, k)
+            self.assertIsInstance(v["stale"], bool, k)
+            self.assertEqual(len(v["sources"]), 1, k)
+            self.assertIn(v["sources"][0]["kind"], ("tesla_api", "teslafi_api"), k)
+
+    def test_tesla_api_car(self):
+        n = self.c.get("/api/v1/cars/c1/now")
+        o = n["off_can"]
+        self.check(o)
+        self.assertEqual(o["locked"]["sources"][0], {"kind": "tesla_api", "label": "Data from the Tesla API"})
+        self.assertTrue(o["update_available"]["value"])
+        self.assertEqual(o["update_version"]["value"], "2026.38.4")
+        self.assertEqual(o["update_download_pct"]["value"], 64)
+        self.assertIsNone(o["sunroof_state"])  # Comet has no sunroof
+        self.assertGreater(o["scheduled_charge_start_ms"]["value"], NOW - 86_400_000)
+        # Comet is driving: a route, fresh
+        self.assertTrue(n["driving"])
+        self.assertIsInstance(o["route"]["destination"]["value"], str)
+        self.assertGreater(o["route"]["km"]["value"], 0)
+        self.assertFalse(o["route"]["km"]["stale"])
+        self.assertFalse(o["locked"]["value"])  # someone is in it
+
+    def test_sunroof_and_a_stale_value(self):
+        o = self.c.get("/api/v1/cars/c2/now")["off_can"]
+        self.check(o)
+        self.assertTrue(o["locked"]["value"])
+        self.assertIn(o["sunroof_state"]["value"], ("vent", "closed"))
+        self.assertIsNone(o["update_version"])  # nothing waiting
+        self.assertFalse(o["update_available"]["value"])
+        self.assertTrue(o["scheduled_departure_ms"]["stale"])
+        self.assertFalse(o["scheduled_charge_start_ms"]["stale"])
+        self.assertEqual(o["windows_open"]["value"], any(o["windows"][k]["value"] for k in WINDOWS))
+        self.assertIsNone(o["route"]["destination"])  # not driving
+
+    def test_teslafi_car(self):
+        n = self.c.get("/api/v1/cars/c3/now")
+        o = n["off_can"]
+        self.check(o)
+        self.assertIn("teslafi_api", [i["kind"] for i in n["inputs"]])
+        for k in WINDOWS:
+            self.assertEqual(o["windows"][k]["sources"][0], {"kind": "teslafi_api", "label": "Data from TeslaFi"})
+            self.assertFalse(o["windows"][k]["stale"])
+        self.assertIsNone(o["scheduled_charge_start_ms"])  # TeslaFi's polls of Atlas carry no schedule
+
+    def test_smo_only_cars_have_nothing(self):
+        for car in ("c0", "c4"):
+            st, _, _ = self.c.request("GET", f"/api/v1/cars/{car}/now")
+            if st != 200:
+                continue
+            o = self.c.get(f"/api/v1/cars/{car}/now")["off_can"]
+            self.check(o)
+            self.assertTrue(all(v is None for v in self.values(o).values()), car)

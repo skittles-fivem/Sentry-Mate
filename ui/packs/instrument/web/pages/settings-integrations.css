@@ -76,6 +76,11 @@
 .si-what { display: inline-block; min-width: round(9rem, var(--e)); }
 .si-topics-cell, .si-payloads { display: flex; flex-wrap: wrap; gap: round(0.25rem, var(--e)) round(0.5rem, var(--e)); max-width: round(22rem, var(--e)); }
 .si-payloads .mono { overflow-wrap: anywhere; }
+/* where a value an API input gave came from (the preview's sources), and its stale mark */
+.si-src { display: flex; flex-wrap: wrap; gap: round(0.25rem, var(--e)) round(0.75rem, var(--e)); flex-basis: 100%; }
+.si-src-one { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
+.si-src-one .src-m { height: round(0.625rem, var(--e)); flex: none; }
+.si-stale { padding: 0 round(0.3125rem, var(--e)); border: 1px solid var(--warm-line); border-radius: round(0.25rem, var(--e)); color: var(--warm); font-weight: 600; }
 .si-json { overflow-wrap: anywhere; font-size: max(0.8125rem, var(--fs-floor)); }
 .si-evt-types { margin-top: round(0.75rem, var(--e)); }
 .si-ents { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }

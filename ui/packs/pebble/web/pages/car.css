@@ -7,6 +7,9 @@
 .hero-state { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); font-size: var(--f14); line-height: var(--l14); }
 .hero-where { display: flex; align-items: center; gap: var(--s2); font-size: var(--f16); line-height: var(--l16); font-weight: 700; }
 .hero-where .ic { width: var(--ic-sm); height: var(--ic-sm); color: var(--coral); }
+.hero-route { display: flex; align-items: flex-start; gap: var(--s2); font-size: var(--f14); line-height: var(--l14); font-weight: 700; }
+.hero-route .ic { width: var(--ic-sm); height: var(--ic-sm); color: var(--sky); flex: none; margin-top: calc((var(--l14) - var(--ic-sm)) / 2); }
+.hero-route .muted { color: var(--muted); font-weight: 500; }
 .hero-nums { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s4); }
 .hero-num, .sum-nums > div { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
 .hero-k { font-size: var(--f13); line-height: var(--l13); font-weight: 700; color: var(--muted); }
@@ -46,6 +49,9 @@
 .flag-name { flex: 1; min-width: 0; font-weight: 700; }
 .flag-val { color: var(--muted); text-align: right; }
 .flag.is-on .flag-val { color: var(--text); font-weight: 800; }
+/* a value from the Tesla API or TeslaFi past its age limit: shown, but quieter */
+.flag.is-stale .flag-val, .src-line.is-stale { color: var(--muted); font-weight: 500; }
+.flag-val .src-via { margin-left: var(--s1); }
 
 .charge-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
 .sum-nums { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s4); }
@@ -57,7 +63,7 @@
 
 html[data-form="phone"] .hero-top { flex-direction: column; align-items: center; gap: var(--s4); text-align: center; }
 html[data-form="phone"] .hero-text { align-items: center; }
-html[data-form="phone"] :is(.hero-state, .hero-where) { justify-content: center; }
+html[data-form="phone"] :is(.hero-state, .hero-where, .hero-route) { justify-content: center; }
 html[data-form="phone"] .hero-name { font-size: var(--f28); line-height: var(--l28); }
 html[data-form="phone"] .hero-nums, html[data-form="phone"] .sum-nums { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 html[data-form="phone"] .tyres { column-gap: var(--s2); }
@@ -88,3 +94,6 @@ html[data-form="phone"] .vi-k { width: auto; grid-column: 1; grid-row: 1; }
 html[data-form="phone"] .vi-v { grid-column: 1; grid-row: 2; justify-content: flex-start; text-align: left; }
 html[data-form="phone"] :is(.vi-edit, .vi-edit-gap) { grid-column: 2; grid-row: 1 / span 2; }
 html[data-form="phone"] .vi-note { text-align: left; }
+.src-line > .src-via:first-child { margin-left: 0; }
+.hero-route .src { min-height: 0; vertical-align: top; }
+.charge-top > .src-line { margin-top: 0; }

@@ -796,6 +796,9 @@ impl Engine {
         let now = Now {
             range_estimated_km: None,
             healthy: None,
+            since_ms: None,
+            trim: None,
+            off_can: Box::default(),
             car,
             at_ms,
             state: Some(model::State::Online),

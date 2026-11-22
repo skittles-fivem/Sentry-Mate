@@ -5,7 +5,7 @@
 //! values win where it has them, then the Tesla API's, then TeslaFi's, each filling what the one above did not send
 //! or the time it was offline. TeslaFi's samples go through the same steps as the Tesla API's, below; only its
 //! values beside the samples (1, 3) are not taken (TeslaFi's software version and settings are left to the Tesla API
-//! and SMO).
+//! and SMO), but for the values no CAN message carries (3, below).
 //!
 //! 1. **Stored first** ([`Engine::api_points`], in the background): the samples to the car's `tesla-api` stream, what
 //!    the API saw of the car's state to day records, the span noted as waiting to be built, the car's Now.
@@ -14,6 +14,8 @@
 //!    late SMO log uses. Imported rows are never touched.
 //! 3. **Values beside the samples** ([`Engine::api_meta`]): the software version (a change is an update row), the car's
 //!    build (trim, paint, wheels: `config` with source `tesla_api`), the charge limit and the car's flags for Now.
+//!    The values no CAN message carries (lock, windows, update, route ...) are kept from both inputs (TeslaFi's:
+//!    [`Engine::teslafi_off_can`]) and fused into the car's Now when it is read ([`crate::query::now::off_can_now`]).
 //!
 //! A car for a Tesla vehicle is one an admin picked ([`Engine::suggest_car`] names the one car with the same VIN
 //! prefix), or a new one ([`Engine::api_new_car`]). Restart-safe: what is stored and not built yet is built on the
@@ -168,6 +170,11 @@ impl teslafi::Sink for TeslafiSink {
         Ok(())
     }
 
+    fn off_can(&self, car: CarId, at_ms: u64, values: &model::OffCan) -> std::result::Result<(), tesla::SinkError> {
+        self.engine.teslafi_off_can(car, at_ms, values.clone());
+        Ok(())
+    }
+
     fn other_live(&self, car: CarId) -> bool {
         self.engine.smo_live(car) || self.engine.tesla_api_live(car)
     }
@@ -253,6 +260,31 @@ impl Engine {
             return;
         }
         self.send(Work::ApiMeta { car, meta: Box::new(meta) });
+    }
+
+    /// TeslaFi's values no CAN message carries, from its poll at `at_ms`: kept in the background; returns at once.
+    pub fn teslafi_off_can(&self, car: CarId, at_ms: u64, values: model::OffCan) {
+        if values.is_empty() || crate::query::fleet::is_sold(self, car) {
+            return;
+        }
+        self.send(Work::TeslafiOffCan { car, at_ms, values: Box::new(values) });
+    }
+
+    /// Keeps TeslaFi's values no CAN message carries (the newest poll's win) and tells the car's Now.
+    pub(crate) fn work_teslafi_off_can(&self, car: CarId, at_ms: u64, values: model::OffCan) -> Result<()> {
+        {
+            let l = self.car_lock(car);
+            let _held = lock(&l);
+            let db = &self.inner.db;
+            if db.car(car)?.is_none() || records::teslafi_off_can(db, car)?.at_ms > at_ms {
+                return Ok(());
+            }
+            records::put_teslafi_off_can(db, car, &records::TeslafiOffCan { at_ms, values })?;
+        }
+        if let Ok(now) = crate::query::now::now_view(self, car) {
+            self.emit(Event::Now { car, now: Box::new(now) });
+        }
+        Ok(())
     }
 
     /// Whether SMO sends live data for the car (its newest log came in the last few minutes).

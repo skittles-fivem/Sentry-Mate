@@ -6,7 +6,7 @@ carries its own `at_ms`: while the car sleeps, values keep the time they were la
 
 from __future__ import annotations
 
-from . import placing
+from . import offcan, placing
 from . import sources as S
 from .util import DAY, HOUR, MIN, r
 
@@ -122,7 +122,10 @@ def now_object(app, car_id, t):
         inputs.append({**S.ref("smo"), "last_ms": at})
         if car_id in ("c1", "c2"):
             inputs.append({**S.ref("tesla_api"), "last_ms": at - 45_000})
+        elif offcan.api_input(app, car_id) == "teslafi_api":
+            inputs.append({**S.ref("teslafi_api"), "last_ms": offcan.teslafi_read_ms(t)})
     obj["inputs"] = inputs
+    obj["off_can"] = offcan.off_can(app, car_id, t, obj)
     return obj
 
 

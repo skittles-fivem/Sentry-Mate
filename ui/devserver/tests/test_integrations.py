@@ -190,3 +190,77 @@ class WatchIntegrations(ServerCase):
         p = self.c.get("/api/v1/settings/mqtt/preview")
         self.assertEqual(p["car"], "c1")
         self.c.error("GET", "/api/v1/settings/mqtt/preview?car=c2", 404, "no_such_car")
+
+
+API_TOPICS = ["version", "update_available", "update_version", "update_download", "locked", "windows_open",
+              "window_driver_front", "window_passenger_front", "window_driver_rear", "window_passenger_rear",
+              "sunroof_state", "sunroof_open", "scheduled_charge_start", "scheduled_departure", "route_destination",
+              "route_distance", "route_minutes", "route_traffic_delay"]
+
+
+class OffCanTopics(ServerCase):
+    """The topics an API input gives: where each value came from, stale ones published empty, the car's inputs,
+    and a Home Assistant entity for each."""
+
+    def preview(self, car):
+        p = self.c.get(f"/api/v1/settings/mqtt/preview?car={car}")
+        ns = self.c.get("/api/v1/settings/mqtt")["namespace"]
+        return p, {m["topic"][len(f"{ns}/cars/{car}/"):]: m["payload"] for m in p["messages"]
+                   if m["topic"].startswith(f"{ns}/cars/{car}/")}
+
+    def test_tesla_api_car(self):
+        p, t = self.preview("c1")
+        self.assertEqual([i["kind"] for i in p["inputs"]], ["smo", "tesla_api"])
+        self.assertTrue(all(set(i) == {"kind", "label"} for i in p["inputs"]))
+        self.assertEqual(t["locked"], "false")
+        self.assertEqual(t["update_available"], "true")
+        self.assertEqual(t["update_version"], "2026.38.4")
+        self.assertEqual(t["update_download"], "64")
+        self.assertRegex(t["scheduled_charge_start"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00$")
+        self.assertIn("route_destination", t)
+        self.assertNotIn("sunroof_state", t)  # no input gives it: not published
+        self.assertNotIn("sunroof_state", p["sources"])
+        s = p["sources"]["locked"]
+        self.assertEqual(set(s), {"kind", "label", "at_ms", "stale"})
+        self.assertEqual((s["kind"], s["label"], s["stale"]), ("tesla_api", "Data from the Tesla API", False))
+        self.assertTrue(set(p["sources"]) <= set(API_TOPICS) | {"installing"})
+        self.assertIn("since", t)
+        self.assertEqual(t["trim"], "Long Range AWD")
+        self.assertNotIn("vin", t)
+
+    def test_stale_is_published_empty(self):
+        p, t = self.preview("c2")
+        self.assertEqual(t["scheduled_departure"], "")
+        self.assertTrue(p["sources"]["scheduled_departure"]["stale"])
+        self.assertIn(t["sunroof_state"], ("vent", "closed"))
+        self.assertNotIn("update_version", t)
+
+    def test_teslafi_car(self):
+        p, t = self.preview("c3")
+        self.assertIn({"kind": "teslafi_api", "label": "Data from TeslaFi"}, p["inputs"])
+        self.assertEqual(p["sources"]["window_driver_rear"]["kind"], "teslafi_api")
+        self.assertEqual(t["windows_open"], "false")
+
+    def test_smo_only_car(self):
+        p, t = self.preview("c0")
+        self.assertEqual([i["kind"] for i in p["inputs"]], ["smo"])
+        self.assertEqual(p["sources"], {})
+        for k in API_TOPICS:
+            self.assertNotIn(k, t)
+
+    def test_home_assistant_entities(self):
+        cur = self.c.get("/api/v1/settings/mqtt")
+        body = {k: v for k, v in cur.items() if k not in ("password", "password_set")}
+        body["ha_discovery"] = dict(cur["ha_discovery"], enabled=True)
+        self.c.json("PUT", "/api/v1/settings/mqtt", body)
+        p, _ = self.preview("c1")
+        ents = {e["state_topic"].rsplit("/", 1)[1]: e for e in p["ha_entities"]}
+        for k in API_TOPICS + ["since", "trim"]:
+            self.assertIn(k, ents)
+        self.assertIn("/binary_sensor/", ents["locked"]["config_topic"])
+        self.assertEqual(ents["locked"]["device_class"], "lock")
+        self.assertEqual(ents["window_driver_front"]["device_class"], "window")
+        self.assertIn("/sensor/", ents["scheduled_departure"]["config_topic"])
+        self.assertEqual(ents["scheduled_departure"]["device_class"], "timestamp")
+        self.assertEqual(ents["update_download"]["unit"], "%")
+        self.assertIn(ents["route_distance"]["unit"], ("km", "mi"))

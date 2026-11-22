@@ -132,6 +132,7 @@
 }
 .page-settings-integrations .ledger-table .chip { white-space: nowrap; }
 .si-payload-note { display: block; white-space: normal; margin-top: round(0.125rem, var(--e)); }
+.si-stale-word { font-weight: 600; color: var(--rust); }
 .si-sec > .si-two + h3.si-sub { margin-top: round(2.25rem, var(--e)); }
 .si-note { margin-top: round(1.5rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.55 * 1em), 2px); max-width: 72ch; }
 .si-broker-form, .si-ha-controls { max-width: round(48rem, var(--e)); }

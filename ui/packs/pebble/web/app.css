@@ -1016,6 +1016,7 @@ html[data-form="phone"] .set-ctl .two { grid-template-columns: minmax(0, 1fr); }
 .iv-topics { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); }
 .iv-pay { font-size: var(--f14); line-height: var(--l14); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .iv-pay b { font-weight: 800; }
+.iv-pay.is-none { color: var(--muted); }
 .tile-intro { padding-top: var(--s4); padding-bottom: var(--s4); }
 /* settings pages: tiles keep their order, so a section heading never ends up under its own tiles */
 .bento.in-order { grid-auto-flow: row; }
@@ -1028,6 +1029,8 @@ html[data-form="phone"] .set-ctl .two { grid-template-columns: minmax(0, 1fr); }
 .src-dots { display: inline-flex; flex: none; gap: var(--s1); }
 .src-dot { width: round(0.5rem, var(--e)); height: round(0.5rem, var(--e)); border-radius: 50%; background: var(--tone); }
 .src.is-est { background: var(--sun-soft); color: var(--sun); }
+/* a value from the Tesla API or TeslaFi past its age limit (settings: integrations, car) */
+.src.is-stale { background: var(--sun-soft); color: var(--sun); }
 .src-via { min-height: 0; padding: 0 var(--s2); margin-left: var(--s2); }
 .src-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 .src-inputs { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-size: var(--f14); line-height: var(--l14); color: var(--muted); }

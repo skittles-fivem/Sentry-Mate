@@ -38,6 +38,8 @@
 .si-legend-list dd { font-size: var(--fs-xs); color: var(--ink-2); }
 .si-legend-list dt .tag { justify-content: center; width: 100%; }
 .si-topics, .si-payloads { display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; }
+.si-src { flex-basis: 100%; font-size: var(--fs-xs); color: var(--ink-3); }
+.si-src-stale { color: var(--org-ink); font-weight: 700; letter-spacing: 0.04em; }
 
 .si-ha { display: grid; grid-template-columns: minmax(0, 3fr) minmax(18rem, 2fr); gap: 1.5rem 2rem; align-items: start; }
 .si-ha > .chans .chan { grid-template-columns: minmax(0, 1fr); }
@@ -57,6 +59,8 @@
 @container view (max-width: 40rem) {
   .si-legend-list > div { grid-template-columns: minmax(0, 1fr); gap: 0.25rem; }
   .si-legend-list dt .tag { width: auto; justify-self: start; }
+  /* the status word with its inputs is long: a line of its own in the card */
+  .trk td.si-status { grid-column: 1 / -1; }
   .si-evts li { grid-template-columns: minmax(0, 1fr); gap: 0.125rem; }
   .si-leaf { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .si-log-list li { grid-template-columns: minmax(0, 1fr); gap: 0.125rem; }

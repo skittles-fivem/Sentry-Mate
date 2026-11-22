@@ -38,6 +38,8 @@ pub trait Sink: Send + Sync + 'static {
     fn new_car(&self, car: &NewCar) -> Result<CarId, SinkError>;
     /// Samples (by time) and what TeslaFi said about the car's state.
     fn points(&self, car: CarId, samples: &[Sample], facts: &[ApiFact]) -> Result<(), SinkError>;
+    /// The values no CAN message carries, as a new poll (TeslaFi's time `at_ms`) gave them; only when it gave some.
+    fn off_can(&self, car: CarId, at_ms: u64, values: &model::OffCan) -> Result<(), SinkError>;
     /// SMO or the Tesla API sends live data for this car: TeslaFi is read less.
     fn other_live(&self, car: CarId) -> bool;
     /// The account's state changed (for an audit entry or a notice).
@@ -642,6 +644,11 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                     && let Err(e) = self.sink.points(car, &samples, &facts)
                 {
                     tracing::warn!(account = %self.id, error = %e, "TeslaFi data could not be stored");
+                }
+                if !p.off_can.is_empty()
+                    && let Err(e) = self.sink.off_can(car, p.t_ms, &p.off_can)
+                {
+                    tracing::warn!(account = %self.id, error = %e, "TeslaFi's values could not be stored");
                 }
             }
         }

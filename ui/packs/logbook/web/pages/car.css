@@ -98,6 +98,14 @@
 .status-flags.is-stale .flag-value { color: var(--ink-3); }
 .nil { color: var(--ink-3); font-style: italic; font-family: var(--serif); }
 
+.off-can { padding: round(1.625rem, var(--e)) 0; border-bottom: 1px solid var(--rule); }
+.off-can > .note { margin-top: round(0.75rem, var(--e)); }
+.oc-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(1.25rem, var(--e)) round(1.5rem, var(--e)); margin-top: round(0.75rem, var(--e)); }
+.oc-group { min-width: 0; }
+.oc-name { font: 600 var(--micro-2) var(--sans); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); padding-bottom: round(0.25rem, var(--e)); border-bottom: 1px solid var(--rule-strong); }
+.oc-list .flag-value { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: baseline; gap: round(0.125rem, var(--e)) round(0.5rem, var(--e)); min-width: 0; overflow-wrap: anywhere; }
+.oc-list .flag-item.is-stale .flag-value, .off-can.is-stale .flag-value { color: var(--ink-3); }
+
 .charging-now { padding: round(1.625rem, var(--e)) 0; border-bottom: 1px solid var(--rule); }
 .charging-now .note { margin-top: round(0.875rem, var(--e)); }
 .charging-now.is-idle .charge-value { color: var(--ink-2); }
@@ -188,16 +196,19 @@
   .state-cell, .state-cell:first-child { border-left: 0; padding-inline: 0; }
   .state-cell + .state-cell { border-top: 1px solid var(--rule); }
   .flag-list { grid-template-columns: minmax(0, 1fr); }
+  .oc-groups { grid-template-columns: minmax(0, 1fr); }
 }
 
 @container page (width >= 112.5rem) {
   .now-grid { grid-template-columns: minmax(0, 1fr) clamp(round(24rem, var(--e)), 22%, round(32rem, var(--e))); column-gap: round(3.5rem, var(--e)); }
   .now-aside { padding-left: round(3rem, var(--e)); }
   .now-main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); column-gap: round(3rem, var(--e)); align-content: start;
-    grid-template-areas: "banner banner" "lede where" "state where" "hero where" "vitals where" "awake where" "flags flags" "charging charging" "latest latest"; }
+    grid-template-areas: "banner banner" "lede where" "state where" "hero where" "vitals where" "awake where" "flags flags" "offcan offcan" "charging charging" "latest latest"; }
   .now-main > .state-box { grid-area: state; }
   .now-main > .status-flags { grid-area: flags; }
   .flag-list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .oc-groups { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .now-main > .off-can { grid-area: offcan; }
   .charge-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); }
   .now-main > .stale-banner { grid-area: banner; }
   .now-main > .lede { grid-area: lede; }

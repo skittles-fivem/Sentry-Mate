@@ -195,12 +195,27 @@ ENTITIES = [  # key, name, unit kind, device class
     ("tire_low", "Tire pressure low", None, "problem"),
     # navigation
     ("navigating", "Navigating", None, None), ("energy_at_destination", "Energy at destination", "kWh", "energy_storage"),
+    # from the Tesla API or TeslaFi (no CAN message carries them)
+    ("version", "Software version", None, None), ("update_available", "Software update", None, "update"),
+    ("update_version", "Update version", None, None), ("update_download", "Update downloaded", "%", None),
+    ("locked", "Lock", None, "lock"), ("windows_open", "Windows", None, "window"),
+    ("window_driver_front", "Window driver front", None, "window"),
+    ("window_passenger_front", "Window passenger front", None, "window"),
+    ("window_driver_rear", "Window driver rear", None, "window"),
+    ("window_passenger_rear", "Window passenger rear", None, "window"),
+    ("sunroof_state", "Sunroof", None, None), ("sunroof_open", "Sunroof open", "%", None),
+    ("scheduled_charge_start", "Scheduled charge start", None, "timestamp"),
+    ("scheduled_departure", "Scheduled departure", None, "timestamp"),
+    ("route_destination", "Route destination", None, None), ("route_distance", "Route distance", "distance", "distance"),
+    ("route_minutes", "Route time left", "min", "duration"), ("route_traffic_delay", "Route traffic delay", "min", "duration"),
+    ("since", "State since", None, "timestamp"), ("trim", "Trim", None, None),
 ]
 # true / false topics: Home Assistant gets a binary_sensor for each, the rest are sensors
 BINARY = {"driving", "charging", "in_park", "sentry_mode", "service_mode", "installing", "healthy", "doors_open",
           "door_front_left", "door_front_right", "door_rear_left", "door_rear_right", "trunk_open", "frunk_open",
           "user_present", "climate_on", "preconditioning_cabin", "preconditioning_battery", "plugged_in",
-          "charge_port_open", "tire_low", "navigating"}
+          "charge_port_open", "tire_low", "navigating", "update_available", "locked", "windows_open",
+          "window_driver_front", "window_passenger_front", "window_driver_rear", "window_passenger_rear"}
 
 
 def _units(req):
@@ -299,12 +314,49 @@ def _new_values(req, car, n, u, v, dist, pres):
     }
 
 
+def _iso(ms):
+    return iso_utc(ms).replace("Z", "+00:00")
+
+
+def _off_can_values(n, u):
+    """The topics an API input gives (`off_can` of the now object) and, for each, where its value came from: a stale
+    value is published empty (which clears the broker's copy), one no input gives is not published."""
+    o = n.get("off_can") or {}
+    mi = u["distance"] == "mi"
+    w = o.get("windows") or {}
+    rt = o.get("route") or {}
+    text = {
+        "version": (o.get("version"), str), "update_available": (o.get("update_available"), _tf),
+        "update_version": (o.get("update_version"), str),
+        "update_download": (o.get("update_download_pct"), lambda p: _num(p, 0)),
+        "locked": (o.get("locked"), _tf), "windows_open": (o.get("windows_open"), _tf),
+        "window_driver_front": (w.get("driver_front"), _tf), "window_passenger_front": (w.get("passenger_front"), _tf),
+        "window_driver_rear": (w.get("driver_rear"), _tf), "window_passenger_rear": (w.get("passenger_rear"), _tf),
+        "sunroof_state": (o.get("sunroof_state"), str), "sunroof_open": (o.get("sunroof_pct"), lambda p: _num(p, 0)),
+        "scheduled_charge_start": (o.get("scheduled_charge_start_ms"), _iso),
+        "scheduled_departure": (o.get("scheduled_departure_ms"), _iso),
+        "route_destination": (rt.get("destination"), str),
+        "route_distance": (rt.get("km"), lambda k: _num(k / 1.609344 if mi else k, 1)),
+        "route_minutes": (rt.get("minutes"), lambda m: _num(m, 0)),
+        "route_traffic_delay": (rt.get("traffic_min"), lambda m: _num(m, 0)),
+    }
+    vals, srcs = {}, {}
+    for key, (sv, fmt) in text.items():
+        if sv is None:
+            vals[key] = None
+            continue
+        vals[key] = "" if sv["stale"] else fmt(sv["value"])
+        s0 = sv["sources"][0]
+        srcs[key] = {"kind": s0["kind"], "label": s0["label"], "at_ms": sv["at_ms"], "stale": sv["stale"]}
+    return vals, srcs
+
+
 def preview(req):
     st = req.store
     m = st.mqtt
     car = req.q("car") or next((c for c in req.ds.car_ids_featured() if st.sees(req.account, c)), None)
     if car is None:
-        return {"car": None, "messages": [], "ha_entities": []}
+        return {"car": None, "messages": [], "ha_entities": [], "inputs": [], "sources": {}}
     if not req.ds.exists(car) or not st.sees(req.account, car):
         from ..errors import no_such_car
         raise no_such_car()
@@ -353,6 +405,16 @@ def preview(req):
         "updated": iso_utc(n["at_ms"]).replace("Z", "+00:00") if n.get("at_ms") else None,
     }
     vals.update(_new_values(req, car, n, u, v, dist, pres))
+    api_vals, sources = _off_can_values(n, u)
+    vals.update(api_vals)
+    inst = (n.get("off_can") or {}).get("update_installing")
+    if vals.get("installing") is None and inst is not None:  # CAN first, then the APIs' word
+        vals["installing"] = "" if inst["stale"] else _tf(inst["value"])
+        sources["installing"] = {"kind": inst["sources"][0]["kind"], "label": inst["sources"][0]["label"],
+                                 "at_ms": inst["at_ms"], "stale": inst["stale"]}
+    vals["since"] = _iso(n["since_ms"]) if n.get("since_ms") else None
+    meta = st.car_meta(car)
+    vals["trim"] = (meta.get("config") or {}).get("trim", {}).get("value") or meta.get("trim") or None
     lat, lon = v(loc.get("lat")), v(loc.get("lon"))
     if m["publish_location"] and lat is not None:
         vals["latitude"] = _num(lat, 6)
@@ -386,8 +448,9 @@ def preview(req):
                      "state_topic": f"{ns}/cars/{car}/event",
                      "config_topic": f"{m['ha_discovery']['prefix']}/event/{node}/event/config",
                      "event_types": ["drive_started", "drive_ended", "charge_started", "charge_ended"]})
-    meta = st.car_meta(car)
+    inputs = [{"kind": i["kind"], "label": i["label"]} for i in n.get("inputs") or []]
     return {"car": car, "name": meta["name"], "units": u, "messages": msgs, "ha_entities": ents,
+            "inputs": inputs, "sources": sources,
             "device": {"name": meta["name"], "model": f"{meta['model']} {meta['year']}", "identifiers": [node]}}
 
 
