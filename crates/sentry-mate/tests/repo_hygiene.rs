@@ -4,6 +4,7 @@
 //!   Dockerfile to a digest: the build and publish jobs hold a token that can push `latest`, so a tag or branch
 //!   moved upstream must not change what runs there;
 //! - Dependabot proposes the bumps, so the pins don't go stale;
+//! - the image takes the binary from the one Dockerfile stage the image workflow replaces with the binary it built;
 //! - this public repo carries none of the markers that once came with the owner's car data or a local session path.
 
 use std::path::{Path, PathBuf};
@@ -151,6 +152,25 @@ fn the_base_image_is_pinned_by_digest() {
     let text = std::fs::read_to_string(repo().join("Dockerfile")).unwrap();
     let bad = bad_froms(&text);
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// The Image workflow builds the binary on its runner (`.github/build-binary.sh`, in the Dockerfile's own pinned Rust
+/// image) and passes it as the Dockerfile's `binary` stage; the image takes its files from that stage alone, so the
+/// published image and a plain `docker build .` are made the same way from the same two layers.
+#[test]
+fn the_image_takes_its_binary_from_one_stage_the_workflow_replaces() {
+    let docker = std::fs::read_to_string(repo().join("Dockerfile")).unwrap();
+    assert!(docker.lines().any(|l| l.trim() == "FROM scratch AS binary"), "no `FROM scratch AS binary` stage");
+    let last = docker.rsplit_once("\nFROM ").map(|(_, s)| s).unwrap();
+    let copies: Vec<&str> = last.lines().filter(|l| l.trim_start().starts_with("COPY")).collect();
+    assert!(!copies.is_empty() && copies.iter().all(|l| l.contains("--from=binary ")), "{copies:?}");
+    let script = std::fs::read_to_string(repo().join(".github/build-binary.sh")).unwrap();
+    assert!(script.contains("cargo build --release --locked -p sentry-mate"), "build-binary.sh builds otherwise");
+    let flow = std::fs::read_to_string(repo().join(".github/workflows/image.yml")).unwrap();
+    assert!(flow.contains(".github/build-binary.sh"), "image.yml does not build the binary with build-binary.sh");
+    let builds = flow.matches("uses: docker/build-push-action@").count();
+    let given = flow.matches("build-contexts: binary=${{ runner.temp }}/binary").count();
+    assert!(builds > 0 && builds == given, "{given} of {builds} image builds get the binary built before");
 }
 
 #[test]
