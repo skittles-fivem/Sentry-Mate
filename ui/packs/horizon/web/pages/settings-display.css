@@ -15,3 +15,6 @@
 /* the offline map file's steps: a long command may break anywhere on a phone */
 .offline-steps { margin: 0; padding-left: 1.25rem; overflow-wrap: anywhere; }
 .offline-steps li + li { margin-top: 0.25rem; }
+/* the online map presets: name, hosts, zoom and region of each */
+.sd-presets { margin: 0; padding-left: 1.125rem; display: grid; gap: 0.25rem; overflow-wrap: anywhere; }
+.sd-presets li.is-on b { color: var(--mag); }

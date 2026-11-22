@@ -10,7 +10,7 @@ import * as api from '../shared/api.js';
 import { h, cssVar, esc } from '../shared/dom.js';
 import { rpx, onRedraw, onTheme, getTheme } from './display.js';
 import { getPrefs, onPrefs } from './prefs.js';
-import { tileChoice, rasterPaint, dimmed, mapColors, tileSourceDef, tileLayers, vectorGround, noTilesNote, watchTileErrors } from '../shared/maptiles.js';
+import { tileChoice, rasterPaint, dimmed, mapColors, tileSources, tileLayers, tileLayerIds, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles } from '../shared/maptiles.js';
 
 let mlLoad = null;
 /**
@@ -54,27 +54,29 @@ export function watchTilePolicy(template) {
     location.reload();
   });
 }
-/** The tiles to use (shared/maptiles.js tileChoice): { kind: 'raster' | 'vector' | 'none', offline, template, attribution, maxZoom, why }. */
-export async function tileSource() {
+/** The map settings (GET /maps/config) and the person's tiles (shared/maptiles.js tileChoice, with their map_style). */
+export async function tileConfig() {
   let cfg = null;
   try { cfg = await api.get('maps/config', null, { maxAgeMs: 300000 }); } catch { cfg = null; }
-  return tileChoice(cfg);
+  return { cfg, src: tileChoice(cfg, getPrefs()) };
 }
+/** The tiles to use: { kind: 'raster' | 'vector' | 'none', offline, template, attribution, maxZoom, overlays, imagery, styleId, why }. */
+export const tileSource = async () => (await tileConfig()).src;
 
 const num = (name, fallback) => { const v = parseFloat(cssVar(name)); return Number.isFinite(v) ? v : fallback; };
 const isDark = () => getTheme().look !== 'light';
-// in the dark theme the tiles are dimmed (never inverted) with the pack's violet tint over them; the light theme and
-// "original colours" show the tile server's own colours
+// in the dark theme the tiles are dimmed (never inverted) with the pack's violet tint over them; the light theme,
+// "original colours" and satellite photos show the tile server's own colours
+const tune = () => ({ saturation: num('--map-sat', -0.35), contrast: num('--map-contrast', 0.16), min: num('--map-bmin', 0.03), max: num('--map-bmax', 0.58) });
+const tilePaint = () => { const dark = isDark(); return { dark, paint: rasterPaint({ dark, colors: mapColors(getPrefs()), tune: tune() }) }; };
+const tintPaint = (src) => ({ 'background-color': cssVar('--map-tint'), 'background-opacity': dimmed(isDark(), mapColors(getPrefs()), src) && src.kind === 'raster' ? num('--map-tint-a', 0.12) : 0 });
 function baseStyle(src) {
   const dark = isDark(), colors = mapColors(getPrefs());
   const layers = [{ id: 'bg', type: 'background', paint: { 'background-color': src.kind === 'vector' ? vectorGround(dark) : cssVar('--map-bg') } }];
-  const sources = {};
-  const def = tileSourceDef(src, { attribution: esc(src.attribution) });
-  if (def) {
-    sources.tiles = def;
-    const tune = { saturation: num('--map-sat', -0.35), contrast: num('--map-contrast', 0.16), min: num('--map-bmin', 0.03), max: num('--map-bmax', 0.58) };
-    layers.push(...tileLayers(src, { dark, paint: rasterPaint({ dark, colors, tune }) }));
-    layers.push({ id: 'tint', type: 'background', paint: { 'background-color': cssVar('--map-tint'), 'background-opacity': dimmed(dark, colors) && src.kind === 'raster' ? num('--map-tint-a', 0.12) : 0 } });
+  const sources = tileSources(src, { attribution: esc(src.attribution) });
+  if (sources.tiles) {
+    layers.push(...tileLayers(src, { dark, paint: rasterPaint({ dark, colors, tune: tune() }) }));
+    layers.push({ id: 'tint', type: 'background', paint: tintPaint(src) });
   }
   return { version: 8, sources, layers };
 }
@@ -84,8 +86,9 @@ function baseStyle(src) {
  * await m.ready; m.addLayer(def, { 'line-width': () => rpx(4) }); m.frame(() => m.map.fitBounds(...)).
  * Returns null when the page was left meanwhile; throws when MapLibre cannot start (no WebGL).
  */
-export async function createMap(el, ctx, { center = [0, 0], zoom = 12, bounds = null, interactive = true, fullscreen = false } = {}) {
-  const [ml, src] = await Promise.all([loadMapLibre(), tileSource()]);
+export async function createMap(el, ctx, { center = [0, 0], zoom = 12, bounds = null, interactive = true, fullscreen = false, styleSwitch = interactive } = {}) {
+  const [ml, { cfg, src: first }] = await Promise.all([loadMapLibre(), tileConfig()]);
+  let src = first;
   watchTilePolicy(src.template && !src.offline ? src.template : null);
   if (!ctx.alive()) return null;
   const map = new ml.Map({
@@ -94,12 +97,20 @@ export async function createMap(el, ctx, { center = [0, 0], zoom = 12, bounds = 
     ...(bounds ? { bounds, fitBoundsOptions: { padding: rpx(32) } } : {}),
   });
   if (src.template) map.addControl(new ml.AttributionControl({ compact: false }), 'bottom-right');
+  // the Map / Satellite switch (only when the admin allows two styles or more), over the zoom buttons
+  const sw = styleSwitch ? mapStyleSwitch(cfg, getPrefs(), {
+    classes: { box: 'map-style maplibregl-ctrl', button: 'map-style-btn', active: 'is-on' },
+    onChange: (next) => { const p = getPrefs(); if (p) p.map_style = next.styleId; setTiles(next); },
+  }) : null;
+  if (sw) map.addControl({ onAdd: () => sw, onRemove: () => sw.remove() }, 'top-right');
   if (interactive) map.addControl(new ml.NavigationControl({ showCompass: false }), 'top-right');
   if (fullscreen) map.addControl(new ml.FullscreenControl({ container: el.parentElement || el }), 'top-right');
   map.touchZoomRotate?.disableRotation();
   el.dataset.tiles = src.kind;
+  el.toggleAttribute('data-imagery', onImagery(src));
   if (src.kind === 'none') el.append(noTilesNote(src, { compact: el.clientHeight < 300, classes: { primary: 'btn btn--sm btn--go', secondary: 'btn btn--sm btn--ghost' } }));
-  const offErrors = watchTileErrors(map, el, src, (text) => h('p', { class: 'map-note map-note--error', role: 'status' }, text));
+  const errNote = (text) => h('p', { class: 'map-note map-note--error', role: 'status' }, text);
+  let offErrors = watchTileErrors(map, el, src, errNote);
   const ready = new Promise((res) => map.once('load', res));
   map.on('error', (e) => console.warn('map', e?.error?.message || e));
 
@@ -113,6 +124,19 @@ export async function createMap(el, ctx, { center = [0, 0], zoom = 12, bounds = 
     map.triggerRepaint();
   });
   const repaint = () => { for (const l of baseStyle(src).layers) for (const [k, v] of Object.entries(l.paint)) if (map.getLayer(l.id)) map.setPaintProperty(l.id, k, v); };
+  // another style picked on the switch: new tiles under the page's own layers, the tint just over them, halos redone
+  function setTiles(next) {
+    if (!next || next.kind === 'none') return;
+    watchTilePolicy(next.template && !next.offline ? next.template : null);
+    offErrors();
+    src = swapTiles(map, src, next, { ...tilePaint(), attribution: esc(next.attribution) });
+    const own = (map.getStyle()?.layers || []).find((l) => !['bg', 'tint', ...tileLayerIds(src)].includes(l.id));
+    if (map.getLayer('tint')) map.moveLayer('tint', own?.id);
+    el.toggleAttribute('data-imagery', onImagery(src));
+    offErrors = watchTileErrors(map, el, src, errNote);
+    repaint();
+    for (const f of recolour) f();
+  }
   const offTheme = onTheme(() => {
     repaint();
     for (const f of recolour) f();
@@ -123,7 +147,10 @@ export async function createMap(el, ctx, { center = [0, 0], zoom = 12, bounds = 
   const recolour = [];
   ctx.onCleanup(() => { offRedraw(); offTheme(); offPrefs(); offErrors(); map.remove(); });
   return {
-    map, ml, ready, tiles: src,
+    map, ml, ready,
+    get tiles() { return src; },
+    /** Whether the tiles are satellite photos now (draw the page's lines with a dark casing then). */
+    imagery: () => onImagery(src),
     addLayer(def, sizedPaint = {}) {
       const paint = { ...def.paint };
       for (const [prop, f] of Object.entries(sizedPaint)) { paint[prop] = f(); sized.push([def.id, prop, f]); }
@@ -146,10 +173,22 @@ export function boundsOf(coords) {
   return [[w, s], [e, n]];
 }
 
-/** A neon trace: glow, then the line. data: a LineString Feature or a FeatureCollection. */
+/**
+ * A dark casing under a line layer of source (shown only over satellite photos, where a neon line alone gets lost in
+ * fields and roofs); width(): the line's width in design px. Add it before the line.
+ */
+export function addCasing(m, id, source, width, { filter = null } = {}) {
+  const op = () => (m.imagery() ? 1 : 0);
+  m.addLayer({ id, type: 'line', source, ...(filter ? { filter } : {}), layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': IMAGERY_HALO.casing, 'line-opacity': op() } },
+    { 'line-width': () => rpx(width() + IMAGERY_HALO.casingWidth) });
+  m.onRecolour(() => { if (m.map.getLayer(id)) m.map.setPaintProperty(id, 'line-opacity', op()); });
+}
+
+/** A neon trace: glow, then the line (with a dark casing over satellite photos). data: a LineString Feature or a FeatureCollection. */
 export function addTrace(m, id, data, { color = '--mag', width = 3.5, glow = true } = {}) {
   m.map.addSource(id, { type: 'geojson', lineMetrics: true, data });
   const line = { type: 'line', source: id, layout: { 'line-cap': 'round', 'line-join': 'round' } };
+  addCasing(m, `${id}-case`, id, () => width);
   if (glow) m.addLayer({ ...line, id: `${id}-glow`, paint: { 'line-color': cssVar(color), 'line-opacity': 0.3 } }, { 'line-width': () => rpx(width * 4), 'line-blur': () => rpx(width * 2.5) });
   m.addLayer({ ...line, id: `${id}-line`, paint: { 'line-color': cssVar(color) } }, { 'line-width': () => rpx(width) });
   m.onRecolour(() => {

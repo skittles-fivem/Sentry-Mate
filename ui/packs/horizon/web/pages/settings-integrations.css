@@ -129,3 +129,4 @@
 .tz-clash { margin: 0; }
 .tz-clash[hidden] { display: none; }
 .tz-host { overflow-wrap: normal; word-break: normal; }
+.si-hosts { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; }
