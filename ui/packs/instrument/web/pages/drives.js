@@ -142,7 +142,7 @@ export async function mount(ctx) {
       const next = { places: placeSel.value, place_side: sideSel.value, q: textIn.value.trim(), min_distance: distIn.value, min_speed: speedIn.value, source: sourceSel.value, flags: flagSel.value, efficiency: effSel.value };
       if (Object.keys(next).every((k) => next[k] === f[k])) return;
       Object.assign(f, next);
-      syncQuery();
+      syncQuery(); paintMoreCount();
       paintEffHint(); paintHeads();
       reloadList();
     }, now ? 0 : 350);
@@ -150,7 +150,7 @@ export async function mount(ctx) {
   // places left out change only the patterns: the list and its picks stay
   const applyExclude = () => {
     f.exclude = [...excluded].join(',');
-    syncQuery();
+    syncQuery(); paintMoreCount();
     loadPatterns();
   };
   function reloadList() {
@@ -166,16 +166,34 @@ export async function mount(ctx) {
   for (const el of [placeSel, sideSel, sourceSel, flagSel, effSel]) el.addEventListener('change', () => apply(true));
   for (const el of [textIn, distIn, speedIn]) el.addEventListener('input', () => apply());
 
-  const filters = h('div', { class: 'filter-bar' },
-    h('button', { class: 'btn', type: 'button', onclick: (e) => openPeriodPicker(e.currentTarget), cover: ['drives.filter.time_range', 'ds.filter.time_range'] }, icon('calendar', 'ico--sm'), period.preset === 'custom' ? 'Custom period' : period.label, icon('chev-d', 'ico--sm')),
-    h('span', { class: 'filter', cover: 'drives.filter.geofence' }, icon('pin', 'ico--sm'), placeSel, sideSel),
-    h('label', { class: 'field field--search', cover: 'drives.filter.location' }, icon('search'), textIn),
-    h('label', { class: 'filter', cover: 'drives.filter.min_distance' }, h('span', null, 'At least'), distIn, h('span', { class: 'faint' }, unitLabel('distance'))),
-    h('label', { class: 'filter', cover: 'drives.filter.min_speed' }, h('span', null, 'Average at least'), speedIn, h('span', { class: 'faint' }, unitLabel('speed'))),
+  // the filters used less often: in the bar on a wide screen, folded into "More filters" on a phone
+  const moreFilters = [
+    h('label', { class: 'filter filter--num', cover: 'drives.filter.min_distance' }, h('span', null, 'At least'), distIn, h('span', { class: 'faint' }, unitLabel('distance'))),
+    h('label', { class: 'filter filter--num', cover: 'drives.filter.min_speed' }, h('span', null, 'Average at least'), speedIn, h('span', { class: 'faint' }, unitLabel('speed'))),
     sourceSel, flagSel,
-    h('span', { cover: 'drives.setting.efficiency_method' }, effSel),
-    h('span', { class: 'filter', cover: ['ds.filter.exclude_locations', 'ds.filter.exclude_locations.hint'] }, exclBtn),
-    filterHint);
+    h('span', { class: 'filter-eff', cover: 'drives.setting.efficiency_method' }, effSel),
+    h('span', { class: 'filter filter-excl', cover: ['ds.filter.exclude_locations', 'ds.filter.exclude_locations.hint'] }, exclBtn),
+  ];
+  const moreCount = h('span', { class: 'drv-more-count' });
+  const moreBody = h('div', { class: 'drv-more-body' });
+  const moreBox = h('details', { class: 'drv-more' }, h('summary', { class: 'btn drv-more-sum' }, 'More filters', moreCount, icon('chev-d', 'ico--sm drv-more-chev')), moreBody);
+  const filters = h('div', { class: 'filter-bar drives-filters' },
+    h('button', { class: 'btn drv-period', type: 'button', onclick: (e) => openPeriodPicker(e.currentTarget), cover: ['drives.filter.time_range', 'ds.filter.time_range'] }, icon('calendar', 'ico--sm'), period.preset === 'custom' ? 'Custom period' : period.label, icon('chev-d', 'ico--sm')),
+    h('span', { class: 'filter filter-place', cover: 'drives.filter.geofence' }, icon('pin', 'ico--sm'), placeSel, sideSel),
+    h('label', { class: 'field field--search', cover: 'drives.filter.location' }, icon('search'), textIn),
+    moreFilters, filterHint);
+  // how many of the folded filters are on, shown on the closed "More filters"
+  const paintMoreCount = () => {
+    const n = [f.min_distance, f.min_speed, f.source, f.flags, hill(), f.exclude].filter(Boolean).length;
+    moreCount.textContent = n ? `${formatNumber(n)} on` : '';
+  };
+  const layoutFilters = () => {
+    if (document.documentElement.dataset.phone) { moreBody.append(...moreFilters, filterHint); filters.append(moreBox); } else { moreBox.remove(); filters.append(...moreFilters, filterHint); }
+  };
+  layoutFilters(); paintMoreCount();
+  const phoneWatch = new MutationObserver(layoutFilters);
+  phoneWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-phone'] });
+  ctx.onCleanup(() => phoneWatch.disconnect());
 
   /* ---------- summary */
   const summary = h('section', { class: 'panel drives-summary', 'aria-label': 'Summary of the listed drives' });

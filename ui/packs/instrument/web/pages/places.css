@@ -141,3 +141,34 @@
 @container page (max-width: 50rem) {
   .places-page .tbl .pl-sticky { position: static; box-shadow: none; }
 }
+
+/* ------------------------------------------------------------ phone (<html data-phone>) */
+:root[data-phone] .places-page .pl-trail a { display: inline-flex; align-items: center; min-height: var(--tap); }
+:root[data-phone] .places-page .filter-bar .field--search { width: 100%; }
+:root[data-phone] .places-page .filter-bar .seg { flex-wrap: wrap; width: 100%; }
+:root[data-phone] .places-page .filter-bar .seg-btn { flex: 1 1 auto; }
+:root[data-phone] .pl-banner { flex-wrap: wrap; }
+/* the list as cards: the name heads the card, its actions run across the foot */
+:root[data-phone] .places-page .cell-text > *, :root[data-phone] .pl-hist { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+:root[data-phone] .places-page .col-name .cell-text { max-width: none; }
+:root[data-phone] .places-page a.pl-name { display: inline-flex; align-items: center; min-height: var(--tap); font-size: max(1rem, var(--fs-floor)); }
+:root[data-phone] .places-page .pl-hist a.link { display: inline-block; --LH: var(--tap); }
+:root[data-phone] .places-page .pl-hist { gap: 0; }
+:root[data-phone] .places-page .tbl:not(.tbl--keep) > tbody > tr > td.col-actions { grid-column: 1 / -1; width: auto; position: static; box-shadow: none; background: none; }
+:root[data-phone] .places-page .tbl:not(.tbl--keep) > tbody > tr > td.col-actions::before { display: none; }
+:root[data-phone] .places-page .pl-actions { display: flex; gap: round(0.5rem, var(--e)); }
+:root[data-phone] .places-page .pl-actions > .btn { flex: 1 1 0; justify-content: center; }
+:root[data-phone] .places-page .tbl td .mono { font-size: max(0.875rem, var(--fs-floor)); }
+/* maps: fit the width; in landscape no taller than most of the screen */
+:root[data-phone="short"] .pl-map-panel, :root[data-phone="short"] .pl-edit-map { min-height: min(round(18rem, var(--e)), 60dvh); height: 60dvh; }
+:root[data-phone] .pl-map-card { max-width: round(14rem, var(--e)); }
+/* the editor: one column of fields; rates stack */
+:root[data-phone] .pl-row, :root[data-phone] .pl-row--price { grid-template-columns: minmax(0, 1fr); }
+:root[data-phone] .pl-rate { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+:root[data-phone] .pl-rate-name, :root[data-phone] .pl-rate-days { grid-column: 1 / -1; }
+:root[data-phone] .pl-rate-x { grid-column: 1 / -1; grid-row: auto; justify-self: end; }
+:root[data-phone] .pl-actions-bar > .btn { flex: 1 1 auto; }
+:root[data-phone] .pl-handle { width: round(1.5rem, var(--e)); height: round(1.5rem, var(--e)); }
+:root[data-phone] .pl-handle--edge { width: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); }
+:root[data-phone] .places-page .tbl:not(.tbl--keep) td .nowrap { white-space: normal; overflow-wrap: anywhere; }
+:root[data-phone] .pl-actions-bar { position: static; }
