@@ -12,7 +12,7 @@ import { getLocale, isSupportedLocale } from '../shared/i18n.js';
 import { format, getUnits, FT_PER_M } from '../shared/units.js';
 import { formatDateTime, isValidZone } from '../shared/time.js';
 import { pageHead, errorView, pageLink, flag, button } from '../core/ui.js';
-import { choice, switchField, field, form, setFieldError } from '../core/form.js';
+import { choice, switchField, field, form, setFieldError, carOptions } from '../core/form.js';
 import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, LABELS_TEXT, STYLES_TEXT, presetHosts, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 import { currentPrefs, onPrefs } from '../core/prefs.js';
 import { savePref, currentAbout } from '../core/frame.js';
@@ -67,12 +67,13 @@ const UNIT_WORDS = {
 
 export async function mount(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
-  const [server, geoFirst, mapsFirst, packList, relFirst] = await Promise.all([
+  const [server, geoFirst, mapsFirst, packList, relFirst, carList] = await Promise.all([
     ctx.api.get('settings'),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: (currentPrefs() || {}).ui_pack || null }),
     ctx.api.get('release').catch(() => null),
+    ctx.api.list('cars', { sort: 'name' }, { limit: 200 }).all({ max: 5000 }).catch((e) => { if (api.isAbort(e)) throw e; return null; }),
   ]);
   let rel = relFirst;
   let relBox = null;
@@ -152,6 +153,7 @@ export async function mount(ctx) {
     defaultLine(distDef, 'distance', u.distance); defaultLine(tempDef, 'temperature', u.temperature);
     defaultLine(pressDef, 'pressure', u.pressure); defaultLine(rangeDef, 'range', pr.range);
     if (document.activeElement !== lang) fillLang();
+    if (document.activeElement !== mainSel) fillMain();
     const loc = getLocale();
     const chosen = pr.language && pr.language !== 'auto';
     langNote.textContent = `In use: ${langName(loc) || loc} (${loc}), ${chosen ? 'your choice' : 'the first of your browser’s languages this browser can write'}. If a language cannot be used, the next one in your browser’s list is taken, then English (US).`;
@@ -170,6 +172,30 @@ export async function mount(ctx) {
   mq.addEventListener('change', sync);
   ctx.onCleanup(() => mq.removeEventListener('change', sync));
   fillLang();
+
+  // The main car: the car every page without one in its address shows (main_car), else the car looked at last.
+  const cars = carList || [];
+  const mainSel = h('select', { class: 'field-select', id: 'pref-main-car', 'aria-label': 'Main car', 'aria-describedby': 'pref-main-car-note', disabled: !carList });
+  const mainNote = h('p', { class: 'setting-note', id: 'pref-main-car-note' });
+  const fillMain = () => {
+    const want = (currentPrefs() || {}).main_car || '';
+    const known = !want || cars.some((c) => c.id === want);
+    replace(mainSel, h('option', { value: '' }, 'None (the car you looked at last)'),
+      carOptions(cars, { option: (c) => h('option', { value: c.id, selected: c.id === want }, c.name || c.id) }),
+      known ? null : h('option', { value: want, selected: true }, want));
+    mainSel.value = want;
+    const car = cars.find((c) => c.id === want);
+    mainNote.textContent = !carList ? 'The list of cars did not load. Reload the page to choose a main car.'
+      : !cars.length ? 'No car on your account yet.'
+        : want ? `Pages without a car of their own show ${car ? car.name : want}.`
+          : 'Pages without a car of their own show the car you looked at last.';
+  };
+  mainSel.addEventListener('change', async () => {
+    const before = (currentPrefs() || {}).main_car || null;
+    try { await savePref({ main_car: mainSel.value || null }, { quiet: false }); } catch { mainSel.value = before || ''; }
+    fillMain();
+  });
+  fillMain();
 
   const about = currentAbout();
   // every pack the server offers (GET /ui-packs); the one running now is the served pack
@@ -209,7 +235,9 @@ export async function mount(ctx) {
         { cover: ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation'], extra: langEx }),
       setting('Interface size', 'Text, controls, tables, charts and maps grow or shrink together. With “Follow screen size” on, big screens such as 4K monitors get larger text by themselves. Browser zoom works on top.', h('div', { class: 'size-control' }, size, follow, sizeNoteEl), { cls: 'setting-size' }),
       setting('UI pack', 'The look of the whole app. Admins install other packs; your data and settings stay the same in every pack.',
-        h('div', { class: 'lang-control' }, h('div', { class: 'pack-control' }, packSel, switchBtn), packNote))));
+        h('div', { class: 'lang-control' }, h('div', { class: 'pack-control' }, packSel, switchBtn), packNote)),
+      setting('Main car', 'The car shown first on the pages that do not name one, such as the car overview opened from the menu. With none chosen, the car you looked at last is shown.',
+        h('div', { class: 'lang-control' }, mainSel, mainNote))));
 
   // ------------------------------------------------------------ the divider
   const divider = h('div', { class: 'settings-divider', role: 'separator', cover: 'web.settings.general.divider' },

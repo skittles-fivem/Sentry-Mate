@@ -174,6 +174,8 @@ async function mount(s) {
       throw err;
     }
     if (my !== token) return;
+    // The car loaded, so the account sees it: it is the car looked at last (last_car).
+    if (car) state.rememberCar(car.id, { sold: car.sold });
     ctx.car = car;
     ctx.tz = (car && car.time_zone) || browserZone;
     ctx.period = resolveFor(ctx.info, s, ctx.tz);
