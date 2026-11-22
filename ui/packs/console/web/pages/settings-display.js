@@ -7,13 +7,14 @@ import { h, replace } from '../shared/dom.js';
 import { getUnits, format } from '../shared/units.js';
 import { isSupportedLocale, onLocaleChange } from '../shared/i18n.js';
 import { formatDate, isValidZone } from '../shared/time.js';
-import { head, paint, section, note, link } from '../core/ui.js';
+import { head, paint, section, note, link, btn } from '../core/ui.js';
 import { editLines } from '../core/kvedit.js';
 import { getPrefs, savePrefs, onPrefs } from '../core/prefs.js';
 import { getInterface, applyInterface, getTheme, applyTheme, onChange } from '../core/display.js';
 import { tag, ago } from '../core/fmt.js';
 import { toast } from '../core/toast.js';
 import { packChoices } from '../shared/packs.js';
+import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 import { MAP_COLORS_TEXT, LABELS_TEXT, STYLES_TEXT, presetHosts, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
@@ -55,12 +56,13 @@ function stylesLine(presets, allowed, ro, save) {
 
 export async function mount(ctx) {
   const admin = ctx.admin;
-  let [about, server, geo, maps, packList] = await Promise.all([
+  let [about, server, geo, maps, packList, release] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || null }),
+    ctx.api.get('release').catch(() => null),
   ]);
   if (!ctx.alive()) return;
   const p = getPrefs() || {};
@@ -131,6 +133,43 @@ export async function mount(ctx) {
   }));
   ctx.onCleanup(onChange(() => { look.line('interface_size').set(getInterface().size); }));
   ctx.onCleanup(onLocaleChange(() => { paintExample(); paintLang(); }));
+
+  /* ---------------------------------------------------------------- the release check */
+  // GET /release: this build, the last answer; POST /release/check (admins): check now
+  const releaseBox = h('div', { class: 'rel-box' });
+  let checking = false, releaseTimer = null;
+  ctx.onCleanup(() => clearTimeout(releaseTimer));
+  const refreshRelease = async () => { release = await ctx.api.get('release').catch(() => release); if (ctx.alive()) paintRelease(); };
+  async function checkNow() {
+    checking = true; paintRelease();
+    try {
+      release = await ctx.api.post('release/check', {});
+      if (release?.status === 'error') toast(releaseStatus(release).text, { kind: 'error' });
+    } catch (e) {
+      if (e?.name === 'AbortError') return;
+      toast(e?.code === 'release_check_off' ? 'not checked: the release check is off' : `not checked: ${e?.message || e}`, { kind: 'error' });
+      release = await ctx.api.get('release').catch(() => release);
+    } finally { checking = false; }
+    if (ctx.alive()) paintRelease();
+  }
+  function paintRelease() {
+    const now = ctx.api.now();
+    const st = release ? releaseStatus(release, now) : { tone: 'error', text: 'Could not read the release check from the server' };
+    const when = release ? checkedAgo(release, now) : '';
+    const on = release ? !!release.enabled : !!server?.release_check?.enabled;
+    const busy = checking || release?.status === 'checking';
+    const newer = release?.status === 'newer';
+    const lines = newer ? changeLines(release.newest) : [];
+    const word = { ok: ['ok', 'ok'], newer: ['new', 'accent'], error: ['err', 'bad'], wait: ['wait', 'muted'], off: ['off', 'muted'] }[st.tone] || ['off', 'muted'];
+    replace(releaseBox,
+      h('p', { class: 'rel-line' }, h('span', { class: 'muted' }, 'this build: '), h('span', { class: 'mono' }, buildLabel(about || {}, now))),
+      h('p', { class: 'rel-line', role: 'status' }, busy ? [tag('wait', 'muted'), ' Checking…'] : [tag(...word), ' ', st.text], when ? h('span', { class: 'muted' }, ` · ${when}`) : null),
+      lines.length ? h('ul', { class: 'rel-titles' }, lines.map((x) => h('li', null, x))) : null,
+      newer && release.pull ? h('p', { class: 'rel-line' }, h('span', { class: 'muted' }, 'to update, on the server: '), h('code', { class: 'mono rel-pull' }, release.pull)) : null,
+      admin ? h('div', { class: 'rel-acts' }, btn(busy ? 'checking…' : 'check now', checkNow, { disabled: !on || busy, title: on ? null : 'Turn release_check.enabled on first' })) : null);
+    if (release?.status === 'checking' && !checking) { clearTimeout(releaseTimer); releaseTimer = setTimeout(() => { if (ctx.alive()) refreshRelease(); }, 4000); }
+  }
+  paintRelease();
 
   /* ---------------------------------------------------------------- the server's defaults */
   const serverSlot = h('div');
@@ -228,10 +267,16 @@ export async function mount(ctx) {
       { key: 'outside_links.maps', type: 'bool', value: !!server.outside_links?.maps, readOnly: ro, help: 'A link from a place to an outside map, opened only when someone clicks it.', save: (v) => patchServer({ outside_links: { maps: v } }) },
       { key: 'outside_links.release_notes', type: 'bool', value: !!server.outside_links?.release_notes, readOnly: ro, save: (v) => patchServer({ outside_links: { release_notes: v } }) },
     ]);
+    const rel = editLines([
+      { key: 'release_check.enabled', id: 'release-check-on', type: 'bool', value: !!server.release_check?.enabled, readOnly: ro,
+        help: 'Check for new releases: once a day the server asks GitHub whether a newer Sentry Mate image is published, and tells admins. Only that question goes out (no token, no car, no account); it never downloads or installs anything.',
+        save: async (v) => { await patchServer({ release_check: { enabled: v } }); await refreshRelease(); } },
+    ]);
     replace(serverSlot,
       section({ title: 'server defaults', cover: 'web.settings.general.divider', side: h('span', { class: 'muted' }, ro ? 'set by an admin; read only' : 'for everyone; a person\'s own choice wins') }, lines.el,
         h('datalist', { id: 'sd-zones' }, ZONES.map((x) => h('option', { value: x })))),
-      section({ title: 'addresses and maps', side: h('span', { class: 'muted' }, 'private by default') }, addr.el));
+      section({ title: 'addresses and maps', side: h('span', { class: 'muted' }, 'private by default') }, addr.el),
+      section({ title: 'new releases', id: 'release-check', side: h('span', { class: 'muted' }, 'off by default') }, rel.el, releaseBox));
   }
   paintServer();
 

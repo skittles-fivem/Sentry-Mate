@@ -1,13 +1,15 @@
 // help: plain sans text for reading, a mono key list, the version and release notice, links, licences and
 // notices, data credits, and short answers with a filter.
-// API: GET about (versions, licences, credits, links), notices (the opt-in release notice), settings (admins:
-// is the release check on, where maps and addresses come from).
+// API: GET about (versions and this build, licences, credits, links), release (the release check's last answer),
+// notices (the release notice's notes link), settings (admins: release-notes links allowed, where maps and
+// addresses come from).
 
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { head, paint, section, kv, link, btn, note } from '../core/ui.js';
 import { KEYS } from '../core/keys.js';
-import { tag, date, DASH } from '../core/fmt.js';
+import { tag, DASH } from '../core/fmt.js';
+import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 import { getNotices, onNotices } from '../core/notices.js';
 import { downloadText } from '../core/secret.js';
 import { toast } from '../core/toast.js';
@@ -42,33 +44,50 @@ const hostOf = (u) => { try { return new URL(String(u).replace(/[{}]/g, '')).hos
 
 export async function mount(ctx) {
   const needCar = !(ctx.state.car ?? state.lastCar());
-  const [about, notices, settings, cars] = await Promise.all([
+  let [about, notices, settings, cars, rel] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }),
     ctx.api.get('notices').then((r) => r.items).catch(() => getNotices()),
     ctx.admin ? ctx.api.get('settings').catch(() => null) : null,
     needCar ? ctx.api.get('cars', { limit: 2 }).then((r) => r.items || []).catch(() => null) : null,
+    ctx.api.get('release').catch(() => null),
   ]);
   if (!ctx.alive()) return;
   const pack = about.ui_pack || {};
   const mismatch = pack.api != null && about.api_version != null && String(pack.api) !== String(about.api_version);
 
-  const release = h('span');
+  const release = h('div', { class: 'rel-help' });
   const paintRelease = (list) => {
+    const now = ctx.api.now();
     const n = (list || []).find((x) => x.code === 'release_available');
-    const on = settings?.release_check?.enabled;
-    const to = ctx.admin ? [' ', link(state.buildUrl('settings-server'), 'settings/server')] : null;
-    if (n) replace(release, tag('new', 'accent'), ' ', n.message || 'a newer release is out', n.since_ms ? h('span', { class: 'muted' }, ` (since ${date(n.since_ms, ctx.tz)})`) : null,
-      n.detail?.notes_url && settings?.outside_links?.release_notes ? [' ', outLink(n.detail.notes_url, 'release notes')] : null, '. Your data stays when you update the container.');
-    else if (on === false) replace(release, tag('off', 'muted'), ' not checked: the release check is off, so Sentry Mate never asks the internet.', to);
-    else if (on === true) replace(release, tag('ok', 'ok'), ' this is the newest release.', to);
-    else replace(release, h('span', { class: 'muted' }, 'none reported. Shown only when an admin turns the release check on.'));
+    const to = ctx.admin ? [' ', link(`${state.buildUrl('settings-display')}#release-check`, 'settings/display')] : null;
+    const when = rel ? checkedAgo(rel, now) : '';
+    const ago = when ? h('span', { class: 'muted' }, ` (${when})`) : null;
+    const st = rel ? releaseStatus(rel, now) : null;
+    if (!rel) replace(release, h('span', { class: 'muted' }, 'could not read the release check'));
+    else if (rel.status === 'newer') {
+      // the notes link only while an admin allows release-notes links (settings.outside_links.release_notes)
+      const notes = settings?.outside_links?.release_notes ? (n?.detail?.notes_url || rel.newest?.compare_url) : null;
+      const lines = changeLines(rel.newest);
+      replace(release,
+        h('p', null, tag('new', 'accent'), ' ', st.text, ago, outside(notes) ? [' ', outLink(notes, 'release notes')] : null),
+        lines.length ? h('ul', { class: 'rel-titles' }, lines.map((x) => h('li', null, x))) : null,
+        rel.pull ? h('p', null, h('span', { class: 'muted' }, 'to update, on the server: '), h('code', { class: 'mono rel-pull' }, rel.pull)) : null,
+        h('p', { class: 'muted' }, 'Your data stays when you update the container.', to));
+    } else if (rel.status === 'up_to_date') replace(release, tag('ok', 'ok'), ' up to date', ago, '.', to);
+    else if (rel.status === 'error') replace(release, tag('err', 'bad'), ' ', st.text, ago, to);
+    else if (rel.status === 'never' || rel.status === 'checking') replace(release, tag('wait', 'muted'), ' ', st.text.toLowerCase(), ': the release check is on; its first answer shows here.', to);
+    else if (ctx.admin) replace(release, tag('off', 'muted'), ' not checked: the release check is off, so Sentry Mate never asks the internet. turn it on in', to);
+    else replace(release, tag('off', 'muted'), ' off');
   };
   paintRelease(notices);
-  ctx.onCleanup(onNotices((list) => { if (ctx.alive()) paintRelease(list); }));
+  ctx.onCleanup(onNotices(async (list) => {
+    rel = await ctx.api.get('release').catch(() => rel);
+    if (ctx.alive()) paintRelease(list);
+  }));
 
   const docs = about.links?.docs, source = about.links?.source;
   const aboutSec = section({ title: 'about', id: 'about' }, kv([
-    ['sentry mate', [about.version || DASH, about.dev_server ? [' ', tag('dev server, made-up data', 'warn')] : null], { cover: 'web.settings.about.version' }],
+    ['sentry mate', [buildLabel(about, ctx.api.now()) || DASH, about.dev_server ? [' ', tag('dev server, made-up data', 'warn')] : null], { cover: 'web.settings.about.version' }],
     ['api', `/api/v${about.api_version ?? '?'}`],
     ['ui pack', [`${pack.name || DASH} ${pack.version || ''}`.trim(), mismatch ? [' ', tag('warn', 'warn'), ` made for api ${pack.api}; this server speaks ${about.api_version}`] : null]],
     ['newer release', release, { cover: 'web.settings.about.update-available' }],

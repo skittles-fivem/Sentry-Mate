@@ -6,6 +6,7 @@
 
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
+import { buildLabel } from '../shared/release.js';
 import { h, replace, cover, safeUrl } from '../shared/dom.js';
 import { formatTime, zoneName } from '../shared/time.js';
 import { format } from '../shared/units.js';
@@ -198,11 +199,11 @@ function buildFooter() {
 async function loadAbout() {
   try {
     const a = await api.get('about', null, { maxAgeMs: 600000 });
-    els.version.textContent = `Sentry Mate ${a.version} · ${a.ui_pack?.name || 'Instrument'} ${a.ui_pack?.version || ''}`.trim();
+    els.version.textContent = `Sentry Mate ${buildLabel(a)} · ${a.ui_pack?.name || 'Instrument'} ${a.ui_pack?.version || ''}`.trim();
   } catch { /* the footer keeps the plain name */ }
 }
 
-// the opt-in release notice: shown in the footer, not the notices bar
+// the opt-in release notice: also a link in the footer (the bar shows it too, until dismissed)
 function showRelease(items) {
   const n = items.find((x) => x.code === 'release_available');
   const u = els.update;
