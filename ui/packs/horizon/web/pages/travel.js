@@ -50,14 +50,23 @@ export async function mount(ctx) {
   const go = (patch) => { ctx.setQuery(patch); ctx.reload(); };
 
   /* ---------- which cars */
+  // sold cars wait behind a Sold cars chip; a sold car on the page now stays in the row
+  const carChip = (c) => {
+    const on = chosen !== 'all' && chosen.includes(c.id);
+    return h('button', { class: 'chip', type: 'button', 'aria-pressed': String(on), title: on ? `Leave ${c.name} out` : `Add ${c.name}`,
+      onclick: () => { const next = on ? chosen.filter((x) => x !== c.id) : [...(chosen === 'all' ? [] : chosen), c.id]; go({ cars: next.length ? next.join(',') : null }); } },
+    h('i', { class: 'chip-dot', vars: { '--c': `var(${toneOf.get(c.id) || '--ink-3'})` } }), c.name || c.id);
+  };
+  const isOn = (c) => chosen !== 'all' && chosen.includes(c.id);
+  const soldRest = state.splitSold(fleet).sold.filter((c) => !isOn(c));
+  const soldChips = soldRest.map((c) => { const el = carChip(c); el.hidden = true; return el; });
+  const soldBtn = soldRest.length ? h('button', { class: 'chip', type: 'button', 'aria-expanded': 'false', onclick: (e) => {
+    const open = soldChips[0].hidden; for (const el of soldChips) el.hidden = !open;
+    e.currentTarget.setAttribute('aria-expanded', String(open)); replace(e.currentTarget, icon(open ? 'chev-d' : 'chev-r', 'i--sm'), `Sold cars (${soldRest.length})`);
+  } }, icon('chev-r', 'i--sm'), `Sold cars (${soldRest.length})`) : null;
   const carChips = h('div', { class: 'chips', role: 'group', 'aria-label': 'Cars on this page', cover: ['locations.filter.car', 'visited.filter.car'] },
     h('button', { class: 'chip', type: 'button', 'aria-pressed': String(chosen === 'all'), onclick: () => go({ cars: null }) }, `Every car (${fleet.length})`),
-    fleet.map((c) => {
-      const on = chosen !== 'all' && chosen.includes(c.id);
-      return h('button', { class: 'chip', type: 'button', 'aria-pressed': String(on), title: on ? `Leave ${c.name} out` : `Add ${c.name}`,
-        onclick: () => { const next = on ? chosen.filter((x) => x !== c.id) : [...(chosen === 'all' ? [] : chosen), c.id]; go({ cars: next.length ? next.join(',') : null }); } },
-      h('i', { class: 'chip-dot', vars: { '--c': `var(${toneOf.get(c.id) || '--ink-3'})` } }), c.name || c.id);
-    }));
+    fleet.filter((c) => !state.isSold(c) || isOn(c)).map(carChip), soldBtn, soldChips);
 
   if (!viewCars.length) {
     replace(ctx.view, h('div', { class: 'page tv' }, plate({ kicker: 'Reports', title: 'Travel', aim: ctx.info.aim }),

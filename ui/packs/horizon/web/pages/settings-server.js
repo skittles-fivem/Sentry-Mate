@@ -268,11 +268,18 @@ export async function mount(ctx) {
     const err = h('p', { class: 'field-error', hidden: true });
     const paint = () => {
       const q = find.value.trim().toLowerCase();
-      const shown = S.cars.filter((c) => !q || c.name.toLowerCase().includes(q) || (c.model || '').toLowerCase().includes(q));
-      replace(list, shown.length ? shown.map((c) => h('label', { class: 'check' },
+      const found = S.cars.filter((c) => !q || c.name.toLowerCase().includes(q) || (c.model || '').toLowerCase().includes(q));
+      // sold cars wait behind Sold cars (a chosen one stays in the list); a search finds them all
+      const hidden = q ? [] : state.splitSold(found).sold.filter((c) => !chosen.has(c.id));
+      const shown = found.filter((c) => !hidden.includes(c));
+      const row = (c) => h('label', { class: 'check' },
         h('input', { type: 'checkbox', checked: chosen.has(c.id), onchange: (e) => { if (e.target.checked) chosen.add(c.id); else chosen.delete(c.id); paintCount(); } }),
-        h('span', null, c.name, c.model ? h('span', { class: 'faint' }, ` · ${c.model}`) : null))) : h('p', { class: 'faint small' }, S.cars.length ? 'No car matches.' : 'No cars yet.'));
+        h('span', null, c.name, c.model ? h('span', { class: 'faint' }, ` · ${c.model}`) : null, state.isSold(c) ? h('span', { class: 'faint' }, ' · sold') : null));
+      const soldBtn = hidden.length ? h('button', { class: 'btn btn--sm btn--ghost', type: 'button', 'aria-expanded': String(showSold), onclick: () => { showSold = !showSold; paint(); } },
+        icon(showSold ? 'chev-d' : 'chev-r', 'i--sm'), `Sold cars (${hidden.length})`) : null;
+      replace(list, shown.length || showSold ? [shown.map(row), soldBtn, showSold ? hidden.map(row) : null] : [h('p', { class: 'faint small' }, S.cars.length ? (found.length ? 'Every car here is sold.' : 'No car matches.') : 'No cars yet.'), soldBtn]);
     };
+    let showSold = false;
     const paintCount = () => { countLine.textContent = all.read() ? 'Sees every car, now and later.' : `${format(chosen.size, 'count')} of ${format(S.cars.length, 'count')} cars chosen.`; };
     const box = h('div', { class: 'stack ss-carpick' }, find, list);
     const toggleBox = () => { box.hidden = all.read(); paintCount(); };

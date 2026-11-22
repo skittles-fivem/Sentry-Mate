@@ -52,6 +52,19 @@ export function select(options, value, onChange, { label, cls } = {}) {
   return el;
 }
 
+/**
+ * Car options for select(): the cars not sold, in the order given, then the sold ones under a "Sold cars" group.
+ * A sold car that is chosen now (current: an id or a list of ids) stays in the main list.
+ * text(car) is the option text (default the name). Returns [[id, text], ..., { group, items }?].
+ */
+export function carOptions(cars, current, text = (c) => c.name || c.id) {
+  const cur = new Set([].concat(current ?? []).filter((x) => x != null && x !== '').map(String));
+  const list = cars || [];
+  const main = list.filter((c) => !state.isSold(c) || cur.has(String(c.id)));
+  const rest = state.splitSold(list).sold.filter((c) => !cur.has(String(c.id)));
+  return [...main.map((c) => [c.id, text(c)]), ...(rest.length ? [{ group: `Sold cars (${rest.length})`, items: rest.map((c) => [c.id, text(c)]) }] : [])];
+}
+
 /** A search box that tells after a short pause: search(value, onText, { placeholder, label }). */
 export function search(value, onText, { placeholder = 'Find', label, ctx } = {}) {
   const input = h('input', { class: 'input', type: 'search', value: value || '', placeholder, 'aria-label': label || placeholder, autocomplete: 'off' });
