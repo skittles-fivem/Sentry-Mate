@@ -70,3 +70,21 @@ fn settings_are_checked() {
     let offline_only = MapTiles { online_attribution: String::new(), ..MapTiles::default() };
     assert_eq!(offline_only.validate(), Ok(()));
 }
+
+#[test]
+fn every_preset_is_a_valid_online_source_with_its_credit() {
+    use places::tiles::PRESETS;
+    assert_eq!(PRESETS[0].url, places::tiles::OSM_TILE_URL, "OpenStreetMap first: the default");
+    for p in PRESETS {
+        let t = MapTiles {
+            mode: Mode::Online,
+            online_url: p.url.into(),
+            online_attribution: p.attribution.into(),
+            max_zoom: p.max_zoom,
+            ..MapTiles::default()
+        };
+        assert_eq!(t.validate(), Ok(()), "{}", p.id);
+        assert!(p.attribution.contains("OpenStreetMap"), "{}: OSM data needs its credit", p.id);
+        assert!(p.terms.starts_with("https://"), "{}", p.id);
+    }
+}

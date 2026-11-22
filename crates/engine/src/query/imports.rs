@@ -136,7 +136,7 @@ impl import::Sink for CountSink<'_> {
             Some(c) => self.engine.db().car(c).map_err(sink_err)?.map(|c| c.time_zone),
             None => None,
         };
-        self.zones.insert(id, zone.unwrap_or_else(|| self.engine.inner.opts.default_time_zone.clone()));
+        self.zones.insert(id, zone.unwrap_or_else(|| self.engine.inner.default_zone()));
         Ok(Some(Target { car: id, state }))
     }
 
@@ -336,7 +336,7 @@ fn teslafi_options(e: &Engine, s: &TeslafiSettings) -> import::teslafi::Options 
         distance: s.distance_unit,
         temperature: s.temperature_unit,
         time_zone: s.time_zone.clone(),
-        default_time_zone: e.inner.opts.default_time_zone.clone(),
+        default_time_zone: e.inner.default_zone(),
         ..import::teslafi::Options::default()
     }
 }

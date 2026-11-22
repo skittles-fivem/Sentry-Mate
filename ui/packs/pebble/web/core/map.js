@@ -98,7 +98,7 @@ export async function mapTile(ctx, box, { center = null, zoom = 13, bounds = nul
         ...(src ? [{ id: 'tiles', type: 'raster', source: 'tiles', paint: paint(isDark()) }] : [])],
     },
     center: center || [0, 0], zoom, bounds: bounds || undefined, fitBoundsOptions: { padding: pad(), maxZoom },
-    attributionControl: { compact: true }, refreshExpiredTiles: false,
+    attributionControl: { compact: false }, refreshExpiredTiles: false, // the credit stays in view, as the tile policies ask
     scrollZoom: false, dragRotate: false, pitchWithRotate: false, touchPitch: false, cooperativeGestures: false,
     interactive, fadeDuration: 0, maxZoom: 18, maxCanvasSize: [8192, 8192],
   });

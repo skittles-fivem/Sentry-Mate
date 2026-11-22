@@ -221,7 +221,7 @@ export async function mount(ctx) {
         const n = String(v.name || '').trim();
         let res;
         try {
-          res = await ctx.api.post('setup/fresh', { name: n, password: v.password });
+          res = await ctx.api.post('setup/fresh', { name: n, password: v.password, time_zone: browserZone }); // new cars start in this zone
         } catch (err) {
           if (claimLost(err)) return;
           if (err && err.code === 'setup_busy') throw new Error('A move or a restore into this server is under way. Go back, follow it or give it up, then start fresh.');

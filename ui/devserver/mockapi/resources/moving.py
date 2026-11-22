@@ -904,11 +904,18 @@ def post_fresh(req):
     st = req.store
     body = req.json()
     _types(body, {"name": str, "password": str})
-    _only(body, ("name", "password"))
+    _only(body, ("name", "password", "time_zone"))
     _need_claim(req)
     if _busy(st, req.now) is not None:
         raise conflict("setup_busy", "A move or a restore into this server is under way. Cancel it first.")
     out = _first_admin(req, body["name"], body["password"])
+    # the browser's zone: the one new cars start in (a fresh server has none saved yet); a wrong one is left out
+    from .system import valid_zone
+    z = body.get("time_zone")
+    if isinstance(z, str) and valid_zone(z.strip()):
+        with st.lock:
+            st.server_settings["default_time_zone"] = z.strip()
+            st.server_settings["version"] += 1
     req.set_cookie = [req.set_cookie, clear_setup_cookie()]
     out["_created"] = True
     return out

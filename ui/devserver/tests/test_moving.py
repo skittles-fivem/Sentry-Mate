@@ -80,8 +80,11 @@ class Fresh(ServerCase):
         self.assertTrue(c2.get("/api/v1/setup")["claimed"])
         e, _ = c2.error("POST", "/api/v1/setup/fresh", 422, "invalid", body={"name": "owner", "password": ""})
         self.assertIn("password", e["fields"])
-        d = c2.json("POST", "/api/v1/setup/fresh", {"name": "owner", "password": "a long password"}, expect=201)
+        d = c2.json("POST", "/api/v1/setup/fresh", {"name": "owner", "password": "a long password",
+                                                    "time_zone": "Europe/Berlin"}, expect=201)
         self.assertEqual(d["status"], "done")
+        # the browser's zone: new cars start in it
+        self.assertEqual(c2.get("/api/v1/settings")["default_time_zone"], "Europe/Berlin")
         self.assertRegex(d["recovery_key"], r"^SMRK(-[0-9A-HJKMNP-TV-Z]{4}){13}$")
         self.assertEqual(c2.get("/api/v1/me")["name"], "owner")
         self.assertEqual(c2.get("/api/v1/setup")["state"], "set_up")

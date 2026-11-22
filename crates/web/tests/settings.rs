@@ -146,6 +146,45 @@ async fn server_settings_read_and_change_without_logs() {
     assert_eq!(t.s.client().get("/api/v1/settings").await.status, 401);
 }
 
+/// The time zone new cars start in: the engine's (UTC here, the container's `TZ` in the real server) until one is
+/// saved, an IANA name only, and the engine follows a change at once (cars already made keep theirs).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_default_time_zone_for_new_cars() {
+    let t = bare().await;
+    let mut admin = t.s.admin().await;
+    let s = ok(&mut admin, "/api/v1/settings").await;
+    assert_eq!(s["default_time_zone"], "UTC", "{s}");
+    // first-run setup's browser zone: kept only when it is a zone and none is saved yet
+    let app = t.s.app.clone();
+    tokio::task::spawn_blocking(move || {
+        web::resources::settings::first_time_zone(&app, "Not/A_Zone").unwrap();
+        assert_eq!(app.service::<Engine>().unwrap().default_time_zone(), "UTC");
+        web::resources::settings::first_time_zone(&app, "Europe/Berlin").unwrap();
+        web::resources::settings::first_time_zone(&app, "Asia/Tokyo").unwrap();
+    })
+    .await
+    .unwrap();
+    let s = ok(&mut admin, "/api/v1/settings").await;
+    assert_eq!(s["default_time_zone"], "Europe/Berlin", "the first one stays: {s}");
+    assert_eq!(t._engine.default_time_zone(), "Europe/Berlin");
+    let v = s["version"].as_u64().unwrap();
+    for bad in [json!("Mars/Olympus_Mons"), json!(""), json!("CST6CDT; x")] {
+        let r = admin.patch("/api/v1/settings", json!({ "version": v, "default_time_zone": bad })).await;
+        assert_eq!(r.status, 422, "{bad}: {}", r.text());
+        assert!(fields(&r)["default_time_zone"].is_string(), "{}", r.text());
+    }
+    let r = admin.patch("/api/v1/settings", json!({ "version": v, "default_time_zone": 5 })).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert_eq!(t._engine.default_time_zone(), "Europe/Berlin");
+    let r = admin.patch("/api/v1/settings", json!({ "version": v, "default_time_zone": " America/Chicago " })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["default_time_zone"], "America/Chicago");
+    assert_eq!(t._engine.default_time_zone(), "America/Chicago", "new cars start in it from now on");
+    assert_eq!(ok(&mut admin, "/api/v1/settings").await["default_time_zone"], "America/Chicago");
+    let audit = ok(&mut admin, "/api/v1/audit").await.to_string();
+    assert!(audit.contains("default time zone"), "{audit}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "slow: full tests (cargo test -- --include-ignored)"]
 async fn server_settings() {

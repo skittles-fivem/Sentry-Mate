@@ -542,7 +542,13 @@ async fn maps_and_addresses_say_what_the_server_has() {
     // a fresh server sends no browser to an outside tile server: offline until an admin turns online tiles on
     assert_eq!(m["tiles"]["mode"], "offline", "{m}");
     assert_eq!(m["tiles"]["online_template"], Value::Null, "{m}");
-    has_keys(&m["tiles"], &["mode", "offline_url", "online_template", "attribution", "max_zoom"]);
+    has_keys(&m["tiles"], &["mode", "offline_url", "online_template", "attribution", "max_zoom", "presets"]);
+    // the ready-made online sources: OpenStreetMap's first, each with its credit, zoom and terms
+    let presets = m["tiles"]["presets"].as_array().unwrap();
+    assert_eq!(presets[0]["id"], "osm", "{m}");
+    for p in presets {
+        has_keys(p, &["id", "name", "url", "attribution", "max_zoom", "terms"]);
+    }
     has_keys(&m["geocoding"], &["mode", "credit", "offline_data_present"]);
     let g = ok(&mut admin, "/api/v1/geocode/status").await;
     has_keys(&g, &["mode", "offline_data", "cache_size", "online"]);
@@ -561,8 +567,11 @@ async fn maps_and_addresses_follow_the_settings_at_once() {
     assert_eq!(m["tiles"]["online_template"], Value::Null, "{m}");
     // the pages' policy names no outside host while tiles are offline
     let csp = |r: &web::testkit::Res| r.header("content-security-policy").unwrap().to_string();
-    let before = csp(&admin.get("/").await);
+    let referrer = |r: &web::testkit::Res| r.header("referrer-policy").unwrap().to_string();
+    let page = admin.get("/").await;
+    let before = csp(&page);
     assert!(!before.contains("https://"), "{before}");
+    assert_eq!(referrer(&page), "no-referrer", "no Referer leaves while tiles are offline");
     assert_eq!((m["geocoding"]["mode"].as_str(), m["geocoding"]["language"].as_str()), (Some("offline"), Some("en")));
     let v = ok(&mut admin, "/api/v1/settings").await["version"].as_u64().unwrap();
     let tiles = json!({ "mode": "online", "online_url": "https://tiles.example.org/{z}/{x}/{y}.png",
@@ -575,8 +584,13 @@ async fn maps_and_addresses_follow_the_settings_at_once() {
         (&json!("online"), &json!("https://tiles.example.org/{z}/{x}/{y}.png"), &json!("Example tiles"), &json!(17)),
         "{m}"
     );
-    let on = csp(&admin.get("/").await);
+    let page = admin.get("/").await;
+    let on = csp(&page);
     assert!(on.contains("https://tiles.example.org") && !on.contains("openstreetmap"), "{on}");
+    // the tile server sees the page's origin as Referer (OpenStreetMap's policy blocks tile requests without one),
+    // never its path; the API's answers still send none
+    assert_eq!(referrer(&page), "strict-origin");
+    assert_eq!(referrer(&admin.get("/api/v1/maps/config").await), "no-referrer");
     // offline tiles: none served yet, so no address for them, and nothing online
     let r = admin.patch("/api/v1/settings", json!({ "version": v + 1, "tiles": { "mode": "offline" } })).await;
     assert_eq!(r.status, 200, "{}", r.text());
@@ -585,8 +599,10 @@ async fn maps_and_addresses_follow_the_settings_at_once() {
         (&m["tiles"]["mode"], &m["tiles"]["offline_url"], &m["tiles"]["online_template"]),
         (&json!("offline"), &Value::Null, &Value::Null)
     );
-    let off = csp(&admin.get("/").await);
+    let page = admin.get("/").await;
+    let off = csp(&page);
     assert!(!off.contains("https://"), "{off}");
+    assert_eq!(referrer(&page), "no-referrer");
 
     // addresses: the mode, service, language and rounding saved
     let g = ok(&mut admin, "/api/v1/geocode/status").await;

@@ -194,7 +194,7 @@ impl Engine {
             preferred_key: None,
             vin,
             profile_setting: None,
-            time_zone: self.inner.opts.default_time_zone.clone(),
+            time_zone: self.inner.default_zone(),
             efficiency_wh_km: None,
             created_ms: now_ms(),
             inputs: Inputs::TESLA_API,

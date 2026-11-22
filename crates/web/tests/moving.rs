@@ -184,7 +184,10 @@ async fn the_claim_a_move_here_refused_and_starting_fresh() {
     // start fresh: the first admin, signed in, and the recovery key once
     let r = c.post("/api/v1/setup/fresh", json!({ "name": ADMIN, "password": "" })).await;
     assert_eq!(r.status, 422, "{}", r.text());
-    let r = c.post("/api/v1/setup/fresh", json!({ "name": ADMIN, "password": ADMIN_PASSWORD })).await;
+    // the browser's time zone comes along (the default for new cars, once there is an engine to keep it)
+    let r = c
+        .post("/api/v1/setup/fresh", json!({ "name": ADMIN, "password": ADMIN_PASSWORD, "time_zone": "Europe/Berlin" }))
+        .await;
     assert_eq!(r.status, 201, "{}", r.text());
     let f = r.json();
     assert_eq!(f["status"], "done");

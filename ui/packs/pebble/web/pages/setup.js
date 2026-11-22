@@ -26,6 +26,9 @@ import { authCard, httpsNote } from './sign-in.js';
 import { bytes, bigCode, copyButton, downloadText, stepCards, progressBar, callout, PROBLEM } from './move-parts.js';
 
 export const id = 'setup';
+
+// the browser's time zone goes with the first admin: new cars start in it (Settings: Display and units changes it)
+const browserZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch { return undefined; } };
 export const title = () => 'Set up Sentry Mate';
 
 const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
@@ -226,7 +229,7 @@ export async function mount(ctx) {
         if (!(await passwordOk(n, v.password, password.control))) return;
         let res;
         try {
-          res = await ctx.api.post('setup/fresh', { name: n, password: v.password });
+          res = await ctx.api.post('setup/fresh', { name: n, password: v.password, time_zone: browserZone() });
         } catch (err) {
           if (claimLost(err)) return;
           if (err && err.code === 'setup_busy') throw new Error('A move or a restore into this server is under way. Go back, follow it or give it up, then start fresh.');

@@ -53,7 +53,8 @@ Every change (POST, PUT, PATCH, DELETE) needs the header `X-Sentry-Mate: 1`, els
 ### Headers
 
 Every answer carries the pack's Content Security Policy, `X-Content-Type-Options: nosniff` and
-`Referrer-Policy: no-referrer`; `/api/` answers also carry `Cache-Control: no-store`.
+`Referrer-Policy: no-referrer` (pages: `strict-origin` while online tiles are on, as the real server, so
+OpenStreetMap's tile server sees a Referer); `/api/` answers also carry `Cache-Control: no-store`.
 
 ## The made-up dataset
 

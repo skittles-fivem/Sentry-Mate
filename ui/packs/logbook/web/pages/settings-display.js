@@ -10,8 +10,8 @@ import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { getLocale, isSupportedLocale } from '../shared/i18n.js';
 import { format, getUnits, FT_PER_M } from '../shared/units.js';
-import { formatDateTime } from '../shared/time.js';
-import { pageHead, errorView, pageLink, flag } from '../core/ui.js';
+import { formatDateTime, isValidZone } from '../shared/time.js';
+import { pageHead, errorView, pageLink, flag, button } from '../core/ui.js';
 import { choice, switchField, field, form, setFieldError } from '../core/form.js';
 import { currentPrefs, onPrefs } from '../core/prefs.js';
 import { savePref, currentAbout } from '../core/frame.js';
@@ -62,10 +62,12 @@ const UNIT_WORDS = {
 
 export async function mount(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
-  const [server, geoFirst] = await Promise.all([
+  const [server, geoFirst, maps] = await Promise.all([
     ctx.api.get('settings'),
     ctx.api.get('geocode/status').catch(() => null),
+    ctx.api.get('maps/config').catch(() => null),
   ]);
+  const tilePresets = (maps && maps.tiles && maps.tiles.presets) || [];
   let srv = server;
   let geo = geoFirst;
   const p = currentPrefs() || {};
@@ -269,6 +271,22 @@ export async function mount(ctx) {
       h('span', { class: 'defaults-name' }, 'Pressure'), defPress,
       h('span', { class: 'defaults-name' }, 'Range'), defRange);
 
+    // The time zone new cars start in
+    const zones = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+    const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
+    const tzField = field({ label: 'Time zone for new cars', name: 'default_time_zone', value: s.default_time_zone || 'UTC', hint: 'A name such as America/Chicago. Type to see the list.', attrs: { list: 'sd-zones', spellcheck: 'false', autocomplete: 'off', disabled } });
+    const saveZone = async (v) => {
+      setFieldError(tzField, null);
+      if (!v || !isValidZone(v)) { setFieldError(tzField, 'Not a known time zone. Pick one from the list, for example America/Chicago.'); return; }
+      if (v === s.default_time_zone) return;
+      try { await patch({ default_time_zone: v }); } catch (err) { setFieldError(tzField, (err.fields && err.fields.default_time_zone) || notSaved(err)); }
+    };
+    tzField.control.addEventListener('change', () => saveZone(tzField.control.value.trim()));
+    const zoneControl = h('div', { class: 'tiles-control' }, tzField, h('datalist', { id: 'sd-zones' }, zones.map((z) => h('option', { value: z }))),
+      browserZone && browserZone !== s.default_time_zone && !disabled
+        ? button(`Use this browser’s zone (${browserZone.replace(/_/g, ' ')})`, { cls: 'button-small', onclick: () => { tzField.control.value = browserZone; saveZone(browserZone); } }) : null,
+      h('p', { class: 'setting-note' }, 'Each car keeps its own zone: ', pageLink('Settings: Cars', 'settings-cars'), '. The clock in the masthead names the zone shown.'));
+
     // Address lookup
     const lookup = choice({ label: 'Address lookup', labelHidden: true, name: 'geocode', value: s.geocode.mode, options: [['offline', 'Offline (on this server)'], ['online', 'Online service']],
       onchange: (v) => {
@@ -402,8 +420,17 @@ export async function mount(ctx) {
     let tileHost = null;
     try { tileHost = s.tiles.online_url ? new URL(s.tiles.online_url.replace(/\{[a-z]\}/g, '0')).host : null; } catch { tileHost = null; }
     const tileNow = h('p', { class: 'setting-note' }, s.tiles.mode === 'online'
-      ? `Now: online, from ${tileHost || 'the tile server below'}. Each viewer’s browser asks it for the map pictures, so it sees which area is shown.`
+      ? `Now: online, from ${tileHost || 'the tile server below'}. Each viewer’s browser asks it for the map pictures, so it sees which area is shown and this server’s address (as Referer, which OpenStreetMap needs; never a page or a car).`
       : 'Now: offline. Maps are drawn by this server; where no offline tiles are installed, maps show the routes and pins on plain paper.');
+    const tilePreset = tilePresets.find((x) => x.url === s.tiles.online_url) || null;
+    const tileSource = tilePresets.length ? choice({ label: 'Tile source', labelHidden: true, name: 'tile-source', value: tilePreset ? tilePreset.id : 'custom',
+      options: [...tilePresets.map((x) => [x.id, x.name]), ['custom', 'Custom address']],
+      onchange: (v) => {
+        const x = tilePresets.find((y) => y.id === v);
+        if (!x) { tileUrlField.control.focus(); return; }
+        quick({ tiles: { online_url: x.url, attribution: x.attribution, max_zoom: x.max_zoom } }, () => tileSource.set(tilePreset ? tilePreset.id : 'custom'));
+      } }) : null;
+    const tileTerms = tilePreset ? h('p', { class: 'setting-note' }, `${tilePreset.name}: free, no key. Its terms (${tilePreset.terms.replace(/^https:\/\//, '')}) ask for light use and its credit on every map.`) : null;
     const tileUrlField = field({ label: 'Online tile address', name: 'online_url', value: s.tiles.online_url || '', hint: 'An https:// address with {z}, {x} and {y} in it.', attrs: { spellcheck: 'false', autocomplete: 'off', placeholder: 'https://…/{z}/{x}/{y}.png', disabled } });
     tileUrlField.control.addEventListener('input', () => setFieldError(tileUrlField, null));
     const tileForm = form({
@@ -435,6 +462,7 @@ export async function mount(ctx) {
     const mapsLink = switchField({ label: 'Allow links to an outside map', checked: !!s.outside_links.maps, onchange: (on) => quick({ outside_links: { maps: on } }, () => mapsLink.set(s.outside_links.maps)) });
     const notesLink = switchField({ label: 'Allow release-notes links', checked: !!s.outside_links.release_notes, onchange: (on) => quick({ outside_links: { release_notes: on } }, () => notesLink.set(s.outside_links.release_notes)) });
     const release = switchField({ label: 'Check for new releases', checked: !!s.release_check.enabled, onchange: (on) => quick({ release_check: { enabled: on } }, () => release.set(s.release_check.enabled)) });
+    if (tileSource) tileSource.querySelectorAll('button').forEach((b) => { b.disabled = disabled; });
     for (const el of [defDist, defTemp, defPress, defRange, lookup, tiles]) el.querySelectorAll('button').forEach((b) => { b.disabled = disabled; });
     for (const el of [mapsLink, notesLink, release]) el.input.disabled = disabled;
 
@@ -443,14 +471,15 @@ export async function mount(ctx) {
     replace(serverBox,
       h('section', { class: 'settings', 'aria-labelledby': 'defaults-title' },
         h('h2', { class: 'label settings-label', id: 'defaults-title' }, 'Defaults for everyone', h('span', { class: 'label-note' }, admin ? 'admins only; saved at once' : 'read only for your account'), readOnly()),
-        setting('Units and range', 'For people who have not chosen their own. The distance unit can start from the one a car reports from its own screen settings.', defaults)),
+        setting('Units and range', 'For people who have not chosen their own. The distance unit can start from the one a car reports from its own screen settings.', defaults),
+        setting('Time zone for new cars', 'The zone a new car starts in: its days, weeks and the hours of time-of-use prices.', zoneControl)),
       h('section', { class: 'settings', 'aria-labelledby': 'maps-title' },
         h('h2', { class: 'label settings-label', id: 'maps-title' }, 'Addresses and maps', h('span', { class: 'label-note' }, 'private by default: nothing leaves this server unless an admin turns it on'), readOnly()),
         setting('Address lookup', `How a recorded position becomes a street address. Offline uses the place names bundled with Sentry Mate (${s.geocode.dataset || 'built in'}); nothing leaves the server. Online asks the service below, with positions rounded, and keeps each answer so the same spot is asked once.`,
           lookup, { cover: 'web.settings.general.address-lookup', extra: geoStatus }),
         setting('Address details', 'Language, online service and rounding.', addr, { cls: 'setting-form' }),
         setting('Map tiles', `The pictures under every map. Credit: ${s.tiles.attribution || 'shown on the map'}; zoom up to ${s.tiles.max_zoom}.`, h('div', { class: 'tiles-control' }, tiles, tileNow), { cover: 'web.shell.map-tiles' }),
-        setting('Online tile server', 'Only used with online tiles.', tileForm, { cls: 'setting-form' }),
+        setting('Online tile server', 'Only used with online tiles. A source fills in its address, credit and zoom.', h('div', { class: 'tiles-control' }, tileSource, tileTerms, tileForm), { cls: 'setting-form' }),
         setting('Outbound proxy', 'If this server may only reach the internet through a proxy: online address look-ups and map tiles the server downloads go through it. Viewers’ browsers loading online tiles use their own connection.',
           h('div', { class: 'proxy-control' }, proxyForm, proxyNow), { cls: 'setting-form', cover: 'docs.env.tesla-api.nominatim-proxy' }),
         setting('Outside links', 'Off by default: nothing on a page sends you to another site unless an admin allows it. Links open in a new tab, only when clicked.', h('div', { class: 'switches' }, mapsLink, notesLink)),

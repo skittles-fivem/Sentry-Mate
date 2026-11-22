@@ -414,6 +414,7 @@ async fn maps_config(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<
         "attribution": t.attribution,
         "max_zoom": t.max_zoom,
         "offline_data_present": false,
+        "presets": places::tiles::PRESETS,
     });
     let g = &st.geocode;
     let credit = if g.mode == "offline" { Some(places::geocode::GEONAMES_CREDIT) } else { None };

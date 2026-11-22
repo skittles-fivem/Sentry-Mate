@@ -22,6 +22,20 @@ class OutboundProxy(ServerCase):
         self.assertIsNone(u["outbound"]["proxy"])
 
 
+class DefaultTimeZone(ServerCase):
+    def test_default_time_zone(self):
+        s = self.c.get("/api/v1/settings")
+        self.assertEqual(s["default_time_zone"], "America/Chicago")
+        e, _ = self.c.error("PATCH", "/api/v1/settings", 422, "invalid",
+                            body={"version": s["version"], "default_time_zone": "Mars/Olympus_Mons"})
+        self.assertIn("default_time_zone", e["fields"])
+        e, _ = self.c.error("PATCH", "/api/v1/settings", 400, "bad_input",
+                            body={"version": s["version"], "default_time_zone": 5})
+        self.assertIn("default_time_zone", e["fields"])
+        t = self.c.json("PATCH", "/api/v1/settings", {"version": s["version"], "default_time_zone": " Europe/Berlin "})
+        self.assertEqual(t["default_time_zone"], "Europe/Berlin")
+
+
 class Settings(ServerCase):
     def test_1_checks(self):
         s = self.c.get("/api/v1/settings")
@@ -71,6 +85,15 @@ class Settings(ServerCase):
         m = self.c.get("/api/v1/maps/config")
         self.assertEqual(m["tiles"]["mode"], "online")
         self.assertIn("{z}", m["tiles"]["online_template"])
+        # the ready-made sources, OpenStreetMap first, each with its credit, zoom and terms
+        self.assertEqual(m["tiles"]["presets"][0]["id"], "osm")
+        for p in m["tiles"]["presets"]:
+            self.assertEqual(set(p), {"id", "name", "url", "attribution", "max_zoom", "terms"})
+        # online tiles: the pages send their origin as Referer (OpenStreetMap blocks tiles without one), the API none
+        st, hd, _ = self.c.request("GET", "/")
+        self.assertEqual(hd["referrer-policy"], "strict-origin")
+        st, hd, _ = self.c.request("GET", "/api/v1/me")
+        self.assertEqual(hd["referrer-policy"], "no-referrer")
         g = self.c.get("/api/v1/geocode/status")
         self.assertEqual(g["mode"], "offline")
         self.assertTrue(g["offline_data"]["present"])
@@ -92,6 +115,8 @@ class Settings(ServerCase):
         self.assertTrue(r["detail"]["notes_url"].startswith("https://"))
         m = self.c.get("/api/v1/maps/config")
         self.assertEqual((m["tiles"]["mode"], m["tiles"]["online_template"]), ("offline", None))
+        st, hd, _ = self.c.request("GET", "/")
+        self.assertEqual(hd["referrer-policy"], "no-referrer")
         a = self.c.get("/api/v1/about")
         self.assertEqual(a["api_version"], "1")
         self.assertEqual(a["ui_pack"]["name"], "Instrument")

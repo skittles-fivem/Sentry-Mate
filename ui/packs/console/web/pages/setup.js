@@ -23,6 +23,9 @@ import { textBar } from '../core/ui.js';
 import { bareScreen, canSendSecrets, plainHttpLine } from '../core/bare.js';
 
 export const id = 'setup';
+
+// the browser's time zone goes with the first admin: new cars start in it (Settings: Display and units changes it)
+const browserZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch { return undefined; } };
 export const title = () => 'Set up';
 
 const bytes = (n) => (n == null ? DASH : format(n, 'bytes'));
@@ -149,7 +152,7 @@ export async function mount(ctx) {
         if (!(await passwordOk(v.name.trim(), v.password, pass.input))) return;
         let r;
         try {
-          r = await ctx.api.post('setup/fresh', { name: v.name.trim(), password: v.password });
+          r = await ctx.api.post('setup/fresh', { name: v.name.trim(), password: v.password, time_zone: browserZone() });
         } catch (e) {
           if (e.code === 'setup_busy') { toast('A move or a restore into this server is under way. Give it up first.', { kind: 'info' }); await loadJob(); return; }
           if (common(e)) return;

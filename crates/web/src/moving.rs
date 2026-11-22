@@ -808,15 +808,18 @@ async fn claim(State(app): State<AppState>, Extension(conn): Extension<Conn>, bo
     .await
 }
 
-/// `POST /setup/fresh` `{ name, password }`: the first admin, signed in, and the recovery key shown this once.
+/// `POST /setup/fresh` `{ name, password, time_zone? }`: the first admin, signed in, and the recovery key shown this
+/// once. `time_zone` (the browser's IANA zone) becomes the zone new cars start in, unless one is saved already; a
+/// name that is no zone is left out, never a reason to refuse the first admin.
 async fn fresh(
     State(app): State<AppState>,
     Extension(conn): Extension<Conn>,
     headers: HeaderMap,
     body: JsonBody,
 ) -> ApiResult<Response> {
-    body.only(&["name", "password"])?;
+    body.only(&["name", "password", "time_zone"])?;
     let (name, password) = (body.req_str("name")?.to_string(), body.req_str("password")?.to_string());
+    let zone = body.str("time_zone")?.map(str::to_string);
     let s = site(&app)?;
     let recovery_file = s.recovery_file();
     app.blocking(move |app| {
@@ -835,6 +838,11 @@ async fn fresh(
             Err(e) => return Err(e.into()),
         };
         *s.claim.lock() = None;
+        if let Some(z) = zone.as_deref()
+            && let Err(e) = crate::resources::settings::first_time_zone(app, z)
+        {
+            tracing::warn!("set-up: the browser's time zone was not saved as the default for new cars: {e}");
+        }
         // the key itself, from the file's text (it says what the key is for around it)
         let recovery = moving::import::recovery_from_file(&recovery_file);
         let cars = app.accounts.car_access(ns.account.id)?;

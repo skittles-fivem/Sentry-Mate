@@ -203,7 +203,7 @@ impl import::Sink for DbSink<'_> {
                         preferred_key: None,
                         vin: tm.vin.clone(),
                         profile_setting: None,
-                        time_zone: self.engine.inner.opts.default_time_zone.clone(),
+                        time_zone: self.engine.inner.default_zone(),
                         efficiency_wh_km: tm.efficiency_wh_km,
                         created_ms: now_ms(),
                         inputs: Default::default(),

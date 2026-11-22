@@ -10,6 +10,7 @@ rebuild is pending.
 from __future__ import annotations
 
 import copy
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import ipaddress
 import json
 import os
@@ -53,7 +54,7 @@ def patch_settings(req):
     req.version_check(cur["version"])
     bad, rule = {}, {}
     known = ("version", "units", "range", "car_order", "geocode", "tiles", "release_check", "outside_links",
-             "outbound", "host_names")
+             "outbound", "host_names", "default_time_zone")
     for k in body:
         if k not in known:
             bad[k] = "Unknown field."
@@ -133,6 +134,14 @@ def patch_settings(req):
                     out.append(x)
             out = list(dict.fromkeys(out))
             new["host_names"] = out or [n for n in st.cert_names if n != "localhost"]
+    if "default_time_zone" in body:
+        z = body["default_time_zone"]
+        if not isinstance(z, str):
+            bad["default_time_zone"] = "Must be text."
+        elif not valid_zone(z.strip()):
+            rule["default_time_zone"] = "An IANA time zone such as America/Chicago."
+        else:
+            new["default_time_zone"] = z.strip()
     if bad:
         raise bad_input(bad)
     g, t = new["geocode"], new["tiles"]
@@ -168,12 +177,32 @@ def patch_settings(req):
     return copy.deepcopy(new)
 
 
+def valid_zone(z):
+    try:
+        ZoneInfo(z)
+        return True
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        return False
+
+
+# the ready-made online tile sources, as the real server's places::tiles::PRESETS
+TILE_PRESETS = [
+    {"id": "osm", "name": "OpenStreetMap standard", "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+     "attribution": "© OpenStreetMap contributors", "max_zoom": 19,
+     "terms": "https://operations.osmfoundation.org/policies/tiles/"},
+    {"id": "opentopomap", "name": "OpenTopoMap (terrain)", "url": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
+     "attribution": "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)",
+     "max_zoom": 17, "terms": "https://opentopomap.org/about"},
+]
+
+
 def maps_config(req):
     ss = req.store.server_settings
     t, g = ss["tiles"], ss["geocode"]
     return {"tiles": {"mode": t["mode"], "offline_url": None, "offline_data_present": False,
                       "online_template": t["online_url"] if t["mode"] == "online" else None,
-                      "attribution": t["attribution"], "max_zoom": t["max_zoom"]},
+                      "attribution": t["attribution"], "max_zoom": t["max_zoom"],
+                      "presets": copy.deepcopy(TILE_PRESETS)},
             "geocoding": {"mode": g["mode"], "credit": "GeoNames (CC BY 4.0)" if g["mode"] == "offline" else
                           "The address service set in Settings", "offline_data_present": True,
                           "language": g["language"]}}

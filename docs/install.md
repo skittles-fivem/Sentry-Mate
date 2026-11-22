@@ -190,6 +190,19 @@ the same as 568:568.
    empty is taken; the page warns when one is easy to guess and lets you
    use it anyway. See [The web UI](commands.md#the-web-ui).
 
+7. Check the time zone. Set-up takes your browser's time zone as the one
+   new cars start in (days, weeks and prices by time of day are counted in
+   it, and every page shows the car's times in it). Change it in
+   **Settings → Display and units** ("Time zone for new cars"). Each car
+   keeps its own after that, in **Settings → Cars** → the car → **Time
+   zone**; the clock in the page header names the zone the page shows
+   (`2:52 PM CST`).
+
+8. To see map pictures under the routes, an admin turns on online tiles in
+   **Settings → Display and units** (off by default: no browser asks an
+   outside server until then) and picks a source (OpenStreetMap standard,
+   OpenTopoMap or your own address). See [Map tiles](security.md#map-tiles).
+
 If it doesn't start, the log says why and what to do. For example `Sentry
 Mate runs as uid 1000 (group 1000) and can't write to the data folder /data:
 it belongs to uid 0 (group 0), root.` means the folders belong to root
@@ -746,7 +759,9 @@ app, change the line marked `CHANGE` to the new path, and *Save*. Check
 
 The compose and TrueNAS files set everything. The environment variables it
 reads, and what each does, are in [Settings](commands.md#settings). Times in
-the log are UTC. It does not read `TZ`.
+the log are UTC. `TZ` (an IANA zone such as `America/Chicago`) only sets the
+zone new cars start in until one is saved, at set-up from the first admin's
+browser or in **Settings → Display and units**.
 
 ## When it does not start
 

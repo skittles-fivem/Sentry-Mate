@@ -25,6 +25,9 @@ import * as session from '../core/session.js';
 import { gateBrand } from './sign-in.js';
 
 export const id = 'setup';
+
+// the browser's time zone goes with the first admin: new cars start in it (Settings: Display and units changes it)
+const browserZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch { return undefined; } };
 export const css = true;
 export const title = () => 'Set up';
 
@@ -173,7 +176,7 @@ export async function mount(ctx) {
         if (v.password !== v.again) { again.setError('The two passwords are not the same.'); again.input.focus(); return; }
         if (!(await passwordOk(v.name.trim(), v.password, pass.input))) return;
         let r;
-        try { r = await ctx.api.post('setup/fresh', { name: v.name.trim(), password: v.password }); } catch (e) {
+        try { r = await ctx.api.post('setup/fresh', { name: v.name.trim(), password: v.password, time_zone: browserZone() }); } catch (e) {
           if (e.code === 'setup_busy') { toast('A move or a restore into this server is under way. Give it up first.', { kind: 'info' }); await loadJob(); return; }
           if (common(e)) return;
           throw e;

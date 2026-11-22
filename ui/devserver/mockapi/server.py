@@ -28,6 +28,12 @@ CSP = ("default-src 'self'; img-src 'self' data: blob: https://tile.openstreetma
        "style-src 'self'; script-src 'self'; connect-src 'self' https://tile.openstreetmap.org; font-src 'self'; "
        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 CSRF_HEADER = "X-Sentry-Mate"
+
+
+def page_referrer_policy(store):
+    """As the real server: pages send their origin (never a path) to the tile server while online tiles are on, since
+    OpenStreetMap's tile policy blocks tile requests without a Referer; otherwise no Referer at all."""
+    return "strict-origin" if store.server_settings["tiles"]["mode"] == "online" else "no-referrer"
 MAX_BODY = 1 << 20
 # changes a moved server still takes: the move itself, export files, signing in and out
 # (and the recovery key file: shown again, or removed once saved; a new key is refused, as on the real server)
@@ -117,7 +123,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Security-Policy", CSP)
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Referrer-Policy", "no-referrer" if api else page_referrer_policy(self.app.store))
         if api:
             self.send_header("Cache-Control", "no-store")
             # The virtual clock, so pages count "5 min ago" and the period presets from the dataset's "now".

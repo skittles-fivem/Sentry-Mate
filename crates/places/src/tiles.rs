@@ -16,6 +16,40 @@ use std::path::{Component, Path, PathBuf};
 /// OpenStreetMap's own tile server (its usage policy asks for light use and the credit below).
 pub const OSM_TILE_URL: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 pub const OSM_TILE_CREDIT: &str = "© OpenStreetMap contributors";
+/// An online tile server the settings offer ready filled in: no key, and terms that allow a self-hosted web app to
+/// show its tiles in viewers' browsers, with the credit shown on every map (the browsers send the page's origin as
+/// Referer, which OpenStreetMap's policy expects: the pack files' Referrer-Policy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Preset {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub url: &'static str,
+    pub attribution: &'static str,
+    pub max_zoom: u8,
+    /// The provider's usage terms, for the settings page to link to.
+    pub terms: &'static str,
+}
+
+/// The ready-made online tile servers (Settings → Display and units offers these and a custom address).
+pub const PRESETS: &[Preset] = &[
+    Preset {
+        id: "osm",
+        name: "OpenStreetMap standard",
+        url: OSM_TILE_URL,
+        attribution: OSM_TILE_CREDIT,
+        max_zoom: 19,
+        terms: "https://operations.osmfoundation.org/policies/tiles/",
+    },
+    Preset {
+        id: "opentopomap",
+        name: "OpenTopoMap (terrain)",
+        url: "https://tile.opentopomap.org/{z}/{x}/{y}.png",
+        attribution: "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)",
+        max_zoom: 17,
+        terms: "https://opentopomap.org/about",
+    },
+];
+
 /// Where the offline map file goes in the data folder, unless set otherwise.
 pub const DEFAULT_PMTILES: &str = "maps/world.pmtiles";
 

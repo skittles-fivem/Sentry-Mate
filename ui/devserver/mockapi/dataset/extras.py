@@ -33,6 +33,8 @@ def server_settings(now):
         "outside_links": {"maps": False, "release_notes": False},
         "outbound": {"proxy": None},
         "host_names": ["sentry-mate.local"],
+        # the zone new cars start in (set from the first admin's browser at set-up)
+        "default_time_zone": "America/Chicago",
     }
 
 

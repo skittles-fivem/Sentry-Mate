@@ -74,6 +74,7 @@
   Settings; until then the pages' Content-Security-Policy names no outside host and every map draws the track on a
   plain background. Online tiles send each viewer's browser to that one tile server, which then sees the viewer's
   address and the tiles asked for (where the car drove and parked), so it stays off unless the owner chooses it.
+  See [Map tiles](#map-tiles).
 - **The move code** ([moving.md](moving.md)) is 125 random bits, works once, for 24 hours, and only from the home
   network unless made with `--anywhere`. Logs name it by a short id. Only the old server shows the code itself,
   when asked (`move code`, or in its log with `SENTRY_MATE_OFFER_MOVE`). The new server proves the code over the TLS
@@ -120,6 +121,29 @@
   (`enable_ipv6: true` with an IPv6 subnet) so the real address arrives. The same goes for a reverse proxy on the
   same host: it is the address the server sees.
 - Sealing the key file to the host's TPM is optional, later.
+
+## Map tiles
+
+Online tiles are off by default; Settings → Display and units turns them on and picks the source:
+**OpenStreetMap standard** (`tile.openstreetmap.org`), **OpenTopoMap** (`tile.opentopomap.org`) or your own
+`https://` address with `{z}`, `{x}` and `{y}`. Both ready-made sources are free, need no key and allow a web app
+to show their tiles with light use and their credit on the map; each map shows the credit in its corner, never
+folded away.
+
+- **The browser asks the tile server itself**, as these sources' terms expect. OpenStreetMap's
+  [tile usage policy](https://operations.osmfoundation.org/policies/tiles/) asks browsers to send a valid `Referer`
+  and blocks tile requests without one ("403 Access blocked"), and it advises against putting a caching proxy in
+  front of its servers. So while online tiles are on, the pack pages say `Referrer-Policy: strict-origin`: the tile
+  server gets the page's origin (`https://sentry.example:10101`), never a path, a car, a drive or a query. API
+  answers still say `no-referrer`, and with online tiles off every page does. The Content-Security-Policy lets the
+  pages reach only that one tile server, and links to other sites carry `noreferrer`.
+- **What the tile server sees**: the viewer's address, the server's origin and the tiles asked for (the area the
+  map shows). Nothing else leaves; the server itself downloads no tiles.
+- OpenTopoMap's terms are on [opentopomap.org/about](https://opentopomap.org/about) (light use, no bulk
+  downloads, the credit "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)").
+- OpenFreeMap is not offered: it serves vector tiles only, and the packs draw raster tiles.
+- Offline tiles (a PMTiles file served by Sentry Mate itself) are planned; until then "offline" draws the routes and
+  pins on a plain background.
 
 ## The Tesla API input
 
