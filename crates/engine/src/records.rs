@@ -19,6 +19,7 @@
 //! engine  car/<id>/api_dirty    Tesla API data stored but not yet built into the timeline
 //! engine  car/<id>/api_meta     the Tesla API's newest values beside the samples (version, settings, charger)
 //! engine  car/<id>/teslafi_off_can  TeslaFi's newest values no CAN message carries (lock, windows, update ...)
+//! engine  car/<id>/teslamate_local_off_can  the same from the owner's own TeslaMate
 //! engine  car/<id>/fw/...       the firmware fingerprints of the car's logs, their history and the updates found
 //!                               from them ([`crate::firmware`])
 //! ```
@@ -633,12 +634,29 @@ pub struct TeslafiOffCan {
     pub values: model::OffCan,
 }
 
-pub(crate) fn teslafi_off_can(db: &Db, car: CarId) -> Result<TeslafiOffCan> {
-    Ok(get(db, NS, &format!("car/{car}/teslafi_off_can"))?.unwrap_or_default())
+/// Where an input's newest values no CAN message carries are kept: `None` for SMO (CAN has none of them) and the
+/// Tesla API (kept in its `api_meta`).
+fn off_can_key(car: CarId, input: model::Input) -> Option<String> {
+    match input {
+        model::Input::Smo | model::Input::TeslaApi => None,
+        model::Input::TeslafiApi => Some(format!("car/{car}/teslafi_off_can")),
+        model::Input::TeslamateLocal => Some(format!("car/{car}/teslamate_local_off_can")),
+    }
 }
 
-pub(crate) fn put_teslafi_off_can(db: &Db, car: CarId, m: &TeslafiOffCan) -> Result<()> {
-    put(db, NS, &format!("car/{car}/teslafi_off_can"), m)
+/// An input's newest values no CAN message carries (TeslaFi's, local TeslaMate's).
+pub(crate) fn off_can_of(db: &Db, car: CarId, input: model::Input) -> Result<TeslafiOffCan> {
+    match off_can_key(car, input) {
+        Some(k) => Ok(get(db, NS, &k)?.unwrap_or_default()),
+        None => Ok(TeslafiOffCan::default()),
+    }
+}
+
+pub(crate) fn put_off_can_of(db: &Db, car: CarId, input: model::Input, m: &TeslafiOffCan) -> Result<()> {
+    match off_can_key(car, input) {
+        Some(k) => put(db, NS, &k, m),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]

@@ -851,5 +851,28 @@ fn values_not_on_the_can_bus_come_from_the_tesla_api_and_teslafi_with_their_sour
         assert_eq!(v["off_can"]["update_installing"]["value"], false);
         assert_eq!(v["off_can"]["update_download_pct"]["value"], 35.0);
         assert_eq!(v["off_can"]["locked"]["sources"][0]["kind"], "teslafi_api");
+
+        // the owner's own TeslaMate: its MQTT values fill what TeslaFi did not give, tagged as local TeslaMate's
+        {
+            use tmlocal::Sink as _;
+            let tm = engine::TeslamateLocalSink::new(k.engine.clone());
+            let mut meta = tesla::ApiMeta { at_ms: wall - 30_000, ..tesla::ApiMeta::default() };
+            meta.off_can.locked = Some(true);
+            meta.off_can.windows_open = Some(true);
+            meta.off_can.route_destination = Some("Made-up Lake".into());
+            tm.meta(car, &meta);
+            k.engine.idle().await;
+            let n = query::now::published_now(&k.engine, car).unwrap().unwrap();
+            let o = &n.off_can;
+            assert_eq!(
+                o.locked.as_ref().map(|l| (l.value, l.input)),
+                Some((false, Input::TeslafiApi)),
+                "TeslaFi first"
+            );
+            assert_eq!(o.route_destination.as_ref().map(|r| r.input), Some(Input::TeslamateLocal));
+            let v = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+            assert_eq!(v["off_can"]["route"]["destination"]["sources"][0]["kind"], "teslamate_local");
+            assert_eq!(mqtt_topics(&n).get("route_destination").map(String::as_str), Some("Made-up Lake"));
+        }
     });
 }

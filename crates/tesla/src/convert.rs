@@ -131,6 +131,7 @@ pub fn off_can(v: &Value) -> model::OffCan {
             .filter(|p| p.is_finite() && (0.0..=100.0).contains(p)),
         locked: b(v, "vehicle_state", "locked"),
         windows: ["fd_window", "fp_window", "rd_window", "rp_window"].map(|k| window(v, k)),
+        windows_open: None,
         sunroof_state: s(v, "vehicle_state", "sun_roof_state").map(|w| w.to_ascii_lowercase()),
         sunroof_pct: f(v, "vehicle_state", "sun_roof_percent_open").filter(|p| (0.0..=100.0).contains(p)),
         scheduled_charge_start_ms: secs_ms(v, "charge_state", "scheduled_charging_start_time"),

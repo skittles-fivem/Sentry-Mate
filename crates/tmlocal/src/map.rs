@@ -71,6 +71,13 @@ pub enum MetaField {
     ScheduledChargeStart,
     ChargeEnergyAdded,
     EstRange,
+    /// One flag for all four windows.
+    WindowsOpen,
+    RouteDestination,
+    /// Miles left on the route.
+    RouteMiles,
+    RouteMinutes,
+    RouteTrafficMinutes,
 }
 
 /// Where a topic goes.
@@ -132,8 +139,13 @@ pub fn target(name: &str) -> Target {
         "update_available" => Meta(M::UpdateAvailable),
         "update_version" => Meta(M::UpdateVersion),
         "scheduled_charging_start_time" => Meta(M::ScheduledChargeStart),
-        // one flag for all doors or windows (the sample has a flag per door, none for windows), the sunroof, the
-        // active route, `since`, `healthy`, the charge port door, ...: nothing holds them yet
+        "windows_open" => Meta(M::WindowsOpen),
+        "active_route_destination" => Meta(M::RouteDestination),
+        "active_route_miles_to_arrival" => Meta(M::RouteMiles),
+        "active_route_minutes_to_arrival" => Meta(M::RouteMinutes),
+        "active_route_traffic_minutes_delay" => Meta(M::RouteTrafficMinutes),
+        // one flag for all doors (the sample has a flag per door, and one flag cannot say which), `since`, `healthy`,
+        // the charge port door, ...: nothing holds them yet
         _ => Target::LeftOut,
     }
 }
@@ -312,20 +324,33 @@ impl Car {
     fn meta_value(&mut self, f: MetaField, p: &str) -> bool {
         let m = &mut self.meta;
         let changed = match f {
-            MetaField::Locked => put(&mut m.locked, flag(p)),
+            MetaField::Locked => put(&mut m.locked, flag(p)) | put(&mut m.off_can.locked, flag(p)),
             MetaField::Version => {
-                put(&mut m.car_version, text(p).and_then(|v| v.split_whitespace().next().map(str::to_string)))
+                let v = text(p).and_then(|v| v.split_whitespace().next().map(str::to_string));
+                put(&mut m.car_version, v.clone()) | put(&mut m.off_can.version, v)
             }
             MetaField::UpdateAvailable => {
-                put(&mut m.software_update_status, flag(p).filter(|a| *a).map(|_| "available".to_string()))
+                // true: one is available; false: none waiting ("" as the Tesla API writes it)
+                let w = flag(p).map(|a| if a { "available" } else { "" }.to_string());
+                put(&mut m.software_update_status, w.clone().filter(|w| !w.is_empty()))
+                    | put(&mut m.off_can.update_status, w)
             }
-            MetaField::UpdateVersion => put(&mut m.software_update_version, text(p)),
+            MetaField::UpdateVersion => {
+                put(&mut m.software_update_version, text(p)) | put(&mut m.off_can.update_version, text(p))
+            }
             MetaField::ScheduledChargeStart => {
                 let t = parse_time(p);
-                put(&mut m.scheduled_charging_pending, Some(t.is_some())) | put(&mut m.scheduled_charging_start_ms, t)
+                put(&mut m.scheduled_charging_pending, Some(t.is_some()))
+                    | put(&mut m.scheduled_charging_start_ms, t)
+                    | put(&mut m.off_can.scheduled_charge_start_ms, t)
             }
             MetaField::ChargeEnergyAdded => put(&mut m.charge_energy_added_kwh, num(p)),
             MetaField::EstRange => put(&mut m.est_range_km, num(p)),
+            MetaField::WindowsOpen => put(&mut m.off_can.windows_open, flag(p)),
+            MetaField::RouteDestination => put(&mut m.off_can.route_destination, text(p)),
+            MetaField::RouteMiles => put(&mut m.off_can.route_km, num(p).map(|mi| mi * tesla::convert::KM_PER_MILE)),
+            MetaField::RouteMinutes => put(&mut m.off_can.route_min, num(p)),
+            MetaField::RouteTrafficMinutes => put(&mut m.off_can.route_traffic_min, num(p)),
         };
         self.meta_dirty |= changed;
         changed
@@ -439,7 +464,8 @@ mod tests {
         for bad in ["teslamate/cars/x/speed", "teslamate/cars/1/a/b", "other/cars/1/speed", "teslamate/cars/1/"] {
             assert_eq!(split_topic("teslamate", bad), None, "{bad}");
         }
-        assert_eq!(target("windows_open"), Target::LeftOut);
+        assert_eq!(target("doors_open"), Target::LeftOut);
+        assert_eq!(target("windows_open"), Target::Meta(MetaField::WindowsOpen));
         assert_eq!(target("locked"), Target::Meta(MetaField::Locked));
     }
 
@@ -456,7 +482,7 @@ mod tests {
         c.apply("time_to_full_charge", "1.5", 1_000);
         c.apply("tpms_pressure_rr", "2.9", 1_000);
         c.apply("shift_state", "", 1_000);
-        assert_eq!(c.apply("windows_open", "true", 1_000), Applied::Nothing);
+        assert_eq!(c.apply("doors_open", "true", 1_000), Applied::Nothing);
         let s = c.take(1_500, 1_000).unwrap();
         assert_eq!((s.t_ms, s.soc, s.lat, s.lon), (1_000, Some(55.0), Some(45.0), Some(-93.0)));
         assert_eq!((s.charging, s.charge_power_kw, s.extra.time_to_full_min), (Some(true), Some(7.0), Some(90.0)));
@@ -488,6 +514,23 @@ mod tests {
             (Some(true), Some(1_795_323_600_000))
         );
         assert_eq!(m.charge_energy_added_kwh, Some(12.5));
+        // the values no CAN message carries, for the car's Now (tagged local TeslaMate by the engine)
+        let o = &m.off_can;
+        assert_eq!((o.locked, o.version.as_deref()), (Some(true), Some("2026.32.5")));
+        assert_eq!((o.update_status.as_deref(), o.update_version.as_deref()), (Some("available"), Some("2026.38.1")));
+        assert_eq!(o.scheduled_charge_start_ms, Some(1_795_323_600_000));
+        c.apply("windows_open", "false", 3_000_000);
+        c.apply("active_route_destination", "Made-up Lake", 3_000_000);
+        c.apply("active_route_miles_to_arrival", "10", 3_000_000);
+        c.apply("active_route_minutes_to_arrival", "14", 3_000_000);
+        c.apply("active_route_traffic_minutes_delay", "2", 3_000_000);
+        c.apply("update_available", "false", 3_000_000);
+        let o = c.take_meta(3_000_000).unwrap().off_can;
+        assert_eq!((o.windows_open, o.windows), (Some(false), [None; 4]), "one flag, no window of its own");
+        assert_eq!(o.route_destination.as_deref(), Some("Made-up Lake"));
+        assert!(o.route_km.is_some_and(|k| (k - 16.093_44).abs() < 1e-9));
+        assert_eq!((o.route_min, o.route_traffic_min), (Some(14.0), Some(2.0)));
+        assert_eq!(o.update_status.as_deref(), Some(""), "none waiting");
         assert!(c.take_meta(2_000).is_none());
         assert_eq!(parse_time("2026-11-22T06:00:00.000+01:00"), Some(1_795_323_600_000));
         assert_eq!(parse_time("1970-01-01T00:00:01Z"), Some(1_000));

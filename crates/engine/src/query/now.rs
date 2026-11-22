@@ -361,13 +361,16 @@ pub fn off_can_now(e: &Engine, car: CarId, now_ms: u64) -> QResult<model::OffCan
     use model::off_can::{Reading, fuse};
     let db = e.db();
     let api = records::api_meta(db, car)?.meta;
-    let fi = records::teslafi_off_can(db, car)?;
-    let mut readings = Vec::with_capacity(2);
+    let fi = records::off_can_of(db, car, model::Input::TeslafiApi)?;
+    let tm = records::off_can_of(db, car, model::Input::TeslamateLocal)?;
+    let mut readings = Vec::with_capacity(3);
     if api.at_ms > 0 && !api.off_can.is_empty() {
         readings.push(Reading { input: model::Input::TeslaApi, at_ms: api.at_ms, values: &api.off_can });
     }
-    if fi.at_ms > 0 && !fi.values.is_empty() {
-        readings.push(Reading { input: model::Input::TeslafiApi, at_ms: fi.at_ms, values: &fi.values });
+    for (input, r) in [(model::Input::TeslafiApi, &fi), (model::Input::TeslamateLocal, &tm)] {
+        if r.at_ms > 0 && !r.values.is_empty() {
+            readings.push(Reading { input, at_ms: r.at_ms, values: &r.values });
+        }
     }
     Ok(fuse(now_ms, &readings))
 }

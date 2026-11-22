@@ -43,7 +43,10 @@ const STATUS = {
 const STATUS_ORDER = ['published', 'api', 'device', 'logged', 'signal', 'none', 'never'];
 // The live inputs a value of status `api` can come from, in the order they are preferred.
 const API_INPUTS = ['tesla_api', 'teslafi_api'];
-const INPUT_NAME = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi' };
+// what the owner's own TeslaMate gives too (one flag for the windows, no window of its own, no sunroof)
+const TM_KEYS = new Set(['version', 'update_available', 'update_version', 'locked', 'windows_open', 'scheduled_charge_start', 'route_destination', 'route_distance', 'route_minutes', 'route_traffic_delay']);
+const apiInputs = (keys) => ([].concat(keys ?? []).some((k) => TM_KEYS.has(k)) ? [...API_INPUTS, 'teslamate_local'] : API_INPUTS);
+const INPUT_NAME = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'TeslaMate' };
 /** A row's status word: for `api`, built from the inputs that can give it ("From Tesla API / TeslaFi"). */
 const statusWord = (s, inputs = API_INPUTS) => (s === 'api' ? `From ${inputs.map((k) => INPUT_NAME[k] || k).join(' / ')}` : STATUS[s].word);
 // Sent now: published, from an input, or with the device.
@@ -125,7 +128,7 @@ const VALUES = [
   [null, 'battery_temp', 'Battery temperature', 'temperature', 'published', 'Cell temperatures', ''],
   [null, 'lv_voltage', '12 V battery', 'V', 'published', 'Low-voltage battery', ''],
   [null, 'updated', 'Last data', 'time', 'published', 'The newest decoded frame', 'Every value set carries its time: read it before trusting a value.'],
-].map(([cid, keys, name, unit, status, source, why]) => ({ cid, keys: keys == null ? [] : [].concat(keys), name, unit, status, source, why, inputs: status === 'api' ? API_INPUTS : [] }));
+].map(([cid, keys, name, unit, status, source, why]) => ({ cid, keys: keys == null ? [] : [].concat(keys), name, unit, status, source, why, inputs: status === 'api' ? apiInputs(keys) : [] }));
 
 // Home Assistant entity groups: [item id, name, what it gives, topics, status, note]
 const ENTITY_GROUPS = [
@@ -152,7 +155,7 @@ const ENTITY_GROUPS = [
   [null, 'Schedule sensors', 'Scheduled charge start and departure', 'scheduled_charge_start, scheduled_departure', 'api', 'Timestamps; unavailable while none is set.'],
   ['ha.entity.binary-climate-charge', 'Climate and charging on / off', 'Climate, preconditioning, cable, charge port', 'climate_on, preconditioning_*, plugged_in, charge_port_open', 'published', ''],
   ['ha.proximity', 'Distance to home', 'Home Assistant’s own proximity helper, fed by the device tracker', 'location', 'published', 'Needs location publishing on.'],
-].map(([cid, name, gives, topics, status, why]) => ({ cid, name, gives, topics, status, why, inputs: status === 'api' ? API_INPUTS : [] }));
+].map(([cid, name, gives, topics, status, why]) => ({ cid, name, gives, topics, status, why, inputs: status === 'api' ? apiInputs(topics) : [] }));
 
 // The events: one topic per car, never retained.
 const EVENTS = [

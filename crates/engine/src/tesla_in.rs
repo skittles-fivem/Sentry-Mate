@@ -171,7 +171,7 @@ impl teslafi::Sink for TeslafiSink {
     }
 
     fn off_can(&self, car: CarId, at_ms: u64, values: &model::OffCan) -> std::result::Result<(), tesla::SinkError> {
-        self.engine.teslafi_off_can(car, at_ms, values.clone());
+        self.engine.off_can(Input::TeslafiApi, car, at_ms, values.clone());
         Ok(())
     }
 
@@ -222,6 +222,13 @@ impl tmlocal::Sink for TeslamateLocalSink {
         self.engine.teslamate_local_catch_up(dump, cars).map_err(|e| tesla::SinkError(e.to_string()))
     }
 
+    /// TeslaMate's values no CAN message carries (lock, version, update, schedule, windows, route), tagged as local
+    /// TeslaMate's. The rest of what it maps into the `ApiMeta` (energy added, the estimated range) is not taken:
+    /// those come from CAN or the Tesla API.
+    fn meta(&self, car: CarId, meta: &tesla::ApiMeta) {
+        self.engine.off_can(Input::TeslamateLocal, car, meta.at_ms, meta.off_can.clone());
+    }
+
     fn changed(&self) {
         if let Some(h) = &self.on_change {
             h();
@@ -263,23 +270,23 @@ impl Engine {
     }
 
     /// TeslaFi's values no CAN message carries, from its poll at `at_ms`: kept in the background; returns at once.
-    pub fn teslafi_off_can(&self, car: CarId, at_ms: u64, values: model::OffCan) {
+    pub fn off_can(&self, input: Input, car: CarId, at_ms: u64, values: model::OffCan) {
         if values.is_empty() || crate::query::fleet::is_sold(self, car) {
             return;
         }
-        self.send(Work::TeslafiOffCan { car, at_ms, values: Box::new(values) });
+        self.send(Work::OffCan { input, car, at_ms, values: Box::new(values) });
     }
 
-    /// Keeps TeslaFi's values no CAN message carries (the newest poll's win) and tells the car's Now.
-    pub(crate) fn work_teslafi_off_can(&self, car: CarId, at_ms: u64, values: model::OffCan) -> Result<()> {
+    /// Keeps an input's values no CAN message carries (its newest reading wins) and tells the car's Now.
+    pub(crate) fn work_off_can(&self, input: Input, car: CarId, at_ms: u64, values: model::OffCan) -> Result<()> {
         {
             let l = self.car_lock(car);
             let _held = lock(&l);
             let db = &self.inner.db;
-            if db.car(car)?.is_none() || records::teslafi_off_can(db, car)?.at_ms > at_ms {
+            if db.car(car)?.is_none() || records::off_can_of(db, car, input)?.at_ms > at_ms {
                 return Ok(());
             }
-            records::put_teslafi_off_can(db, car, &records::TeslafiOffCan { at_ms, values })?;
+            records::put_off_can_of(db, car, input, &records::TeslafiOffCan { at_ms, values })?;
         }
         if let Ok(now) = crate::query::now::now_view(self, car) {
             self.emit(Event::Now { car, now: Box::new(now) });
