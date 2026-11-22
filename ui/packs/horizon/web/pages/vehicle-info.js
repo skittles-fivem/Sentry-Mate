@@ -91,7 +91,9 @@ export function vehicleInfoPanel(ctx) {
   let car = ctx.car;
   const body = h('div', { class: 'vi-body' });
   const el = panel({ title: 'Vehicle info', icon: 'car', cls: 'vi', id: 'vehicle-info',
-    side: h('a', { class: 'panel-link', href: `${buildUrl('software', { car: cid })}#firmware` }, 'Car firmware', icon('chev-r', 'ico--sm')) }, body);
+    side: h('span', { class: 'vi-links' },
+      h('a', { class: 'panel-link', href: `${buildUrl('software', { car: cid })}#firmware` }, 'Car firmware', icon('chev-r', 'ico--sm')),
+      h('a', { class: 'panel-link', href: `${buildUrl('software', { car: cid })}#firmware-history`, title: 'Every fingerprint each module has had, with the version it came with' }, 'Firmware history', icon('chev-r', 'ico--sm'))) }, body);
 
   function paint() {
     const v = car.vehicle || {};
