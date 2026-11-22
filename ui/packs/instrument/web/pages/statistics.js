@@ -17,6 +17,7 @@ import { format, formatMoney, convert, unitLabel, getUnits } from '../shared/uni
 import { formatDate, formatDateRange, formatDuration, dateFormat, startOf, addPeriod, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
+import { soldParts, soldToggle } from '../core/carswitch.js';
 import { pageHead, panel, metric, csvButton } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { emptyState, errorState, skel } from '../core/states.js';
@@ -111,6 +112,7 @@ export async function mount(ctx) {
   };
   function carPicker() {
     const sel = new Set(chosen === 'all' ? [] : viewCars);
+    let soldOpen = false;
     const text = h('span', { class: 'st-pick-text' });
     const btn = h('button', { class: 'btn st-pick-btn', type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', title: 'Which cars this page covers',
       cover: ['statistics.filter.car', 'mi.section.per_car'] }, icon('car', 'ico--sm'), text, icon('chev-d', 'ico--sm'));
@@ -130,9 +132,12 @@ export async function mount(ctx) {
     const paint = () => {
       const needle = find.value.trim().toLowerCase();
       const shown = fleet.filter((c) => !needle || c.name.toLowerCase().includes(needle));
-      replace(list, shown.length ? shown.map((c) => h('label', { class: 'check' },
+      // sold cars wait behind "Sold cars (n)" unless picked or searched for
+      const { main, sold } = soldParts(shown, [...(chosen === 'all' ? [] : viewCars), ...sel], { search: !!needle });
+      const row = (c) => h('label', { class: 'check' },
         h('input', { type: 'checkbox', checked: sel.has(c.id), onchange: (e) => { if (e.target.checked) sel.add(c.id); else sel.delete(c.id); paintText(); } }),
-        h('span', null, c.name), h('span', { class: 'faint st-pick-sub' }, [c.model, c.year].filter(Boolean).join(' · '))))
+        h('span', null, c.name), state.isSold(c) ? h('span', { class: 'tag tag--plain' }, 'Sold') : null, h('span', { class: 'faint st-pick-sub' }, [c.model, c.year].filter(Boolean).join(' · ')));
+      replace(list, shown.length ? [main.map(row), soldToggle(sold.length, soldOpen, () => { soldOpen = !soldOpen; paint(); }), soldOpen ? sold.map(row) : null]
         : h('p', { class: 'note' }, fleet.length ? 'No car is called that.' : 'There is no car yet.'));
       paintText();
     };

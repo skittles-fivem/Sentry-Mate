@@ -57,6 +57,11 @@
 .im-report .tile-nums { padding: var(--s2) 0; }
 .im-report-of { font-size: var(--f14); line-height: var(--l14); color: var(--muted); overflow-wrap: anywhere; }
 .im-warn .num-n { color: var(--sun); }
+/* TeslaFi's start step and the overlap spans */
+.im-units { display: flex; flex-wrap: wrap; gap: var(--s4); }
+.im-span-kind { font-size: var(--f13); line-height: var(--l13); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.im-span-row.is-imports .im-span-kind { color: var(--sun); }
+.im-span-counts { display: flex; flex-wrap: wrap; gap: 0 var(--s3); }
 
 /* a count the file does not have: a faint dash, never 0 */
 .im-gap { color: var(--muted); font-weight: 600; }

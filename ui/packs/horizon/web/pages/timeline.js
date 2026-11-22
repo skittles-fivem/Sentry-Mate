@@ -13,8 +13,10 @@ import { icon, hud, plate, btn, lamp, tag } from '../core/ui.js';
 import { controls, slot, select, search, periodBtn, carBtn, csvBtn, placeLink, stat, rack, plural } from '../core/kit.js';
 import { strip, KINDS as STRIP } from '../core/strip.js';
 import { emptyState, errorWords } from '../core/states.js';
+import { toast } from '../core/layer.js';
 import { when, ago, stateWord } from '../core/fmt.js';
-import { srcChip, sourceLabel, kindsOf } from '../core/sources.js';
+import { srcChip, sourceLabel, kindsOf, isLive } from '../core/sources.js';
+import { isFingerprint, moduleWords, nameDialog, DETECTED_WORD } from '../core/firmware.js';
 
 export const id = 'timeline';
 export const css = true;
@@ -39,7 +41,7 @@ const AWAKE = {
 };
 const signed = (v, kind) => (v == null ? null : format(v, kind, { sign: true }));
 
-function entry(r, { car, tz }) {
+function entry(r, { car, tz, nameIt }) {
   const k = KIND[r.kind] || KIND.gap;
   const trip = state.buildUrl('trip', { car, period: { from: r.start_ms, to: r.end_ms ?? null } });
   const detail = r.ref?.drive ? state.buildUrl('drive', { car, drive: r.ref.drive }) : r.ref?.charge ? state.buildUrl('charge', { car, charge: r.ref.charge })
@@ -63,6 +65,11 @@ function entry(r, { car, tz }) {
     what = h('span', { class: 'route' }, r.start ? placeLink(r.start) : null, r.start && r.end ? icon('arrow-r', 'i--sm route-to') : null, r.end ? placeLink(r.end) : null,
       h('span', { class: 'tl-nodata' }, r.distance_km ? `No data · moved ${format(r.distance_km, 'distance')}` : 'No data'));
     facts.push(GAP[r.gap_reason] || 'No data for this time.', r.distance_km ? 'The car moved, but no drive was recorded. A gap never counts as parked time.' : null);
+  } else if (isFingerprint(r)) {
+    what = h('span', { class: 'tl-fw' }, h('span', null, DETECTED_WORD), r.version ? h('span', { class: 'tl-fw-ver' }, r.version) : h('span', { class: 'tl-fw-ver is-unknown' }, 'version not named'),
+      nameIt ? btn(r.version ? 'Rename' : 'Name it', () => nameIt(r), { sm: true, kind: 'ghost', icon: 'chip', title: r.version ? 'Change or clear the version name' : 'Type the version the car screen shows' }) : null);
+    facts.push(r.changed_modules?.length ? `changed: ${moduleWords(r.changed_modules).join(', ')}` : null,
+      r.version && r.version_source === 'build_match' ? 'named from an earlier update with the same fingerprints' : null);
   } else {
     what = h('span', null, 'Software update', r.version ? ` to ${r.version}` : '');
   }
@@ -73,7 +80,7 @@ function entry(r, { car, tz }) {
   const awake = r.kind === 'parked' && r.awake_reasons?.length ? r.awake_reasons.map((x) => AWAKE[x] || x.replace(/_/g, ' ')) : null;
   const dur = r.duration_ms ?? (r.end_ms ? r.end_ms - r.start_ms : null);
   const ks = kindsOf(r);
-  const importedOnly = ks.length ? !ks.includes('smo') && !ks.includes('tesla_api') : r.source === 'teslamate';
+  const importedOnly = ks.length ? !isLive(r) : r.source === 'teslamate';
   return h('li', { class: ['tl-row', importedOnly && 'is-imported'], dataset: { tone: k.tone, kind: r.kind } },
     h('a', { class: 'tl-when', href: trip, title: 'Open exactly this span as a trip' },
       h('span', { class: 'tl-t0' }, formatTime(r.start_ms, tz)), h('span', { class: 'tl-t1' }, r.end_ms ? formatTime(r.end_ms, tz) : 'now')),
@@ -190,7 +197,7 @@ export async function mount(ctx) {
           side = h('ol', { class: 'tl-side' });
           list.append(h('li', { class: 'tl-day' }, h('h3', { class: 'tl-day-head' }, h('span', { class: 'tl-day-name' }, formatDate(r.start_ms, tz, { weekday: 'long', year: true }))), side));
         }
-        side.append(entry(r, { car: cid, tz }));
+        side.append(entry(r, { car: cid, tz, nameIt: ctx.admin ? nameIt : null }));
       }
       shown += items.length;
       foot.hidden = pager.done;
@@ -211,6 +218,17 @@ export async function mount(ctx) {
       const w = errorWords(e);
       replace(list, h('li', null, emptyState({ icon: w.icon, title: w.title, text: w.text, actions: btn('Try again', () => reload(), { icon: 'arrow-r' }) })));
     } finally { moreBtn.disabled = false; }
+  }
+  // the name box of a fingerprint update: its changes come from /updates (the timeline row names the modules only)
+  async function nameIt(r) {
+    let u = null;
+    try {
+      const pg = await ctx.api.get(`cars/${encodeURIComponent(cid)}/updates`, { from_ms: r.start_ms, to_ms: r.start_ms + 1, limit: 5 });
+      u = (pg.items || []).find((x) => x.id === r.ref?.update) || null;
+    } catch (e) { if (e?.name !== 'AbortError') toast(`The update could not be read: ${errorWords(e).text}`, { kind: 'error' }); return; }
+    if (!ctx.alive()) return;
+    if (!u) { toast('This update is gone: newer logs changed it. The timeline loads again.', { kind: 'info' }); ctx.reload(); return; }
+    nameDialog(ctx, car, u, () => { if (ctx.alive()) ctx.reload(); });
   }
   async function reload() {
     const my = ++gen;

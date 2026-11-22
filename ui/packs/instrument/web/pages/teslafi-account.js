@@ -11,6 +11,7 @@
 
 import { h, replace } from '../shared/dom.js';
 import { icon } from '../core/icons.js';
+import { soldParts, soldOptions } from '../core/carswitch.js';
 import { kv, tag, pill, note, metric, figures } from '../core/page.js';
 import { field } from '../core/form.js';
 import { emptyState, errorWords } from '../core/states.js';
@@ -282,6 +283,7 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
       if (o.id === a.id) continue;
       for (const c of carRows[o.id]?.items || []) if (c.match && c.match !== 'new' && c.match !== 'leave_out') takenBy.set(c.match, o.label);
     }
+    const soldIds = new Set(cars.filter((x) => x.sold).map((x) => x.id));
     const opts = [['', 'Not decided (not read)'], ...cars.map((c) => [c.id, takenBy.has(c.id) ? `${c.name} (matched in ${takenBy.get(c.id)})` : c.name, takenBy.has(c.id)]), ['new', 'A new car'], ['leave_out', 'Leave out (not read)']];
     const sels = new Map();
     const saveBtn = h('button', { class: 'btn btn--primary btn--sm', type: 'button', hidden: true }, icon('check', 'ico--sm'), 'Save matches');
@@ -302,7 +304,11 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
       const known = opts.some(([v]) => v === pre) ? opts : [...opts, [pre, carName(pre)]];
       const start = c.match == null && takenBy.has(pre) ? '' : pre;
       const sel = h('select', { class: 'select', 'aria-label': `Sentry Mate car for ${c.display_name || c.vehicle}` },
-        known.map(([v, l, taken]) => h('option', { value: v, selected: v === start, disabled: taken && v !== c.match ? true : null }, l)));
+        (() => { // sold cars last, in a "Sold cars" group, unless matched or suggested
+          const mk = ([v, l, taken]) => h('option', { value: v, selected: v === start, disabled: taken && v !== c.match ? true : null }, l);
+          const { main, sold } = soldParts(known, [start, c.match, pre], { id: ([v]) => v, isSold: ([v]) => soldIds.has(v) });
+          return [main.map(mk), soldOptions(sold, mk)];
+        })());
       sel.addEventListener('change', () => { saveBtn.hidden = !changed().length; });
       sels.set(c.vehicle, sel);
       const tz = cars.find((x) => x.id === c.match)?.time_zone || ctx.tz;
@@ -315,6 +321,8 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
           next ? h('span', { class: ['sub', sv.mode === 'backoff' && 'warn'] }, `${sv.mode === 'backoff' ? 'Next try' : 'Next read'} ${time(next, tz)} (in ${dur(Math.max(0, next - ctx.api.now()))})`) : h('span', { class: 'sub' }, c.current ? 'none planned' : 'another car on the account'))),
         h('td', { class: 'num' }, c.current && sv.last_data_ms ? h('span', { title: dateTime(sv.last_data_ms, tz) }, h('span', { class: 'ta-cell-label' }, 'Last data '), ago(sv.last_data_ms)) : h('span', null, h('span', { class: 'ta-cell-label' }, 'Last data '), h('span', { class: 'faint' }, 'none yet'))));
     });
+    // a waiting suggestion is already picked: it can be saved as it is
+    saveBtn.hidden = !changed().length;
     return h('div', { class: 'ta-cars' },
       h('div', { class: 'ta-cars-head' }, h('span', { class: 'metric-label' }, items.length === 1 ? 'Its car' : `Its cars (${items.length})`), saveBtn),
       h('div', { class: 'tbl-scroll' }, h('table', { class: 'tbl ta-tbl' },

@@ -11,6 +11,7 @@ import { h, replace } from '../shared/dom.js';
 import * as state from '../shared/state.js';
 import { format } from '../shared/units.js';
 import { icon } from '../core/icons.js';
+import { soldParts, soldToggle } from '../core/carswitch.js';
 import { pageHead, panel, kv, tag, pill, metric, figures } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { field, form } from '../core/form.js';
@@ -404,15 +405,20 @@ export async function mount(ctx) {
   function carPicker(current) {
     const all = field({ label: 'All cars, also cars that appear later', name: 'all_cars', type: 'checkbox', value: current === 'all' });
     const chosen = new Set(current === 'all' ? [] : current || []);
+    const first = [...chosen];
+    let soldOpen = false;
     const search = h('input', { class: 'input', type: 'search', placeholder: 'Find a car', 'aria-label': 'Find a car' });
     const list = h('div', { class: 'ss-carlist', role: 'group', 'aria-label': 'Cars this account sees' });
     const count = h('p', { class: 'form-hint' });
     const paint = () => {
       const q = search.value.trim().toLowerCase();
       const shown = S.cars.filter((c) => !q || c.name.toLowerCase().includes(q) || (c.model || '').toLowerCase().includes(q));
-      replace(list, shown.length ? shown.map((c) => h('label', { class: 'check' },
+      // sold cars wait behind "Sold cars (n)" unless this account sees them already or they are searched for
+      const { main, sold } = soldParts(shown, [...first, ...chosen], { search: !!q });
+      const row = (c) => h('label', { class: 'check' },
         h('input', { type: 'checkbox', checked: chosen.has(c.id), onchange: (e) => { if (e.target.checked) chosen.add(c.id); else chosen.delete(c.id); paintCount(); } }),
-        h('span', null, c.name, c.model ? h('span', { class: 'faint' }, ` · ${c.model}`) : null))) : h('p', { class: 'faint' }, S.cars.length ? 'No car matches.' : 'No cars yet.'));
+        h('span', null, c.name, c.model ? h('span', { class: 'faint' }, ` · ${c.model}`) : null), state.isSold(c) ? h('span', { class: 'tag tag--plain' }, 'Sold') : null);
+      replace(list, shown.length ? [main.map(row), soldToggle(sold.length, soldOpen, () => { soldOpen = !soldOpen; paint(); }), soldOpen ? sold.map(row) : null] : h('p', { class: 'faint' }, S.cars.length ? 'No car matches.' : 'No cars yet.'));
     };
     const paintCount = () => { count.textContent = all.value() ? 'Sees every car, now and later.' : `${format(chosen.size, 'count')} of ${format(S.cars.length, 'count')} cars chosen.`; };
     const box = h('div', { class: 'ss-carpick' }, search, list);

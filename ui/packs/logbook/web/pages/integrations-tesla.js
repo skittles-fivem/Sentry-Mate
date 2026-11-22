@@ -18,7 +18,7 @@ import * as state from '../shared/state.js';
 import { formatDateTime, formatTime, formatDuration } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { section, figure, chip, button, icon, ago, errorView, empty } from '../core/ui.js';
-import { field, form, choice, setFieldError } from '../core/form.js';
+import { field, form, choice, setFieldError, carOptions } from '../core/form.js';
 import { openDialog } from '../core/dialog.js';
 import { dataTable } from '../core/table.js';
 
@@ -98,9 +98,9 @@ const quiet = (t) => h('span', { class: 'si-quiet' }, t);
  * the dialog under its field, other errors in clear words on its top line. Resolves with run's answer, or
  * null when closed.
  */
-export function askAgain(ctx, { title, text = null, yes, extra = [], run, danger = false, input = 'Tesla input', words = ERROR_WORDS, errorText = teslaErrorText }) {
+export function askAgain(ctx, { title, text = null, yes, extra = [], run, danger = false, input = 'the Tesla input', errorText = teslaErrorText }) {
   let twoShown = !!(ctx.me && ctx.me.two_step_required);
-  const pass = field({ label: 'Your password', name: 'confirm_password', type: 'password', hint: `Your own Sentry Mate password: it is asked again for every change to the ${input}.`, attrs: { autocomplete: 'current-password', required: true } });
+  const pass = field({ label: 'Your password', name: 'confirm_password', type: 'password', hint: `Your own Sentry Mate password: it is asked again for every change to ${input}.`, attrs: { autocomplete: 'current-password', required: true } });
   const two = field({ label: 'Two-step code', name: 'code', hint: 'The 6 digits from your authenticator app, or a recovery code.', attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', spellcheck: 'false' } });
   two.hidden = !twoShown;
   let result = null;
@@ -124,8 +124,8 @@ export function askAgain(ctx, { title, text = null, yes, extra = [], run, danger
               twoShown = true; two.hidden = false;
               throw Object.assign(new Error('Your account asks for a two-step code as well.'), { fields: { code: 'Type the 6-digit code from your authenticator app.' } });
             }
-            if (c === 'wrong_password' || c === 'password_needed') throw Object.assign(new Error(words[c]), { fields: { confirm_password: words[c] } });
-            if (c === 'wrong_code' || c === 'wrong_two_step') throw Object.assign(new Error(words[c]), { fields: { code: words[c] } });
+            if (c === 'wrong_password' || c === 'password_needed') throw Object.assign(new Error(ERROR_WORDS[c]), { fields: { confirm_password: ERROR_WORDS[c] } });
+            if (c === 'wrong_code' || c === 'wrong_two_step') throw Object.assign(new Error(ERROR_WORDS[c]), { fields: { code: ERROR_WORDS[c] } });
             if (err && err.status === 429) throw new Error(`Too many tries. Wait ${Math.ceil((err.retryAfterMs || 60000) / 1000)} seconds, then try again.`);
             if (err && err.fields) {
               // field errors keep the server's words; a field this dialog does not have goes to the top line
@@ -423,10 +423,10 @@ export function teslaPart(ctx) {
       const mine = chosen.get(c.vehicle) || '';
       const sel = h('select', { class: 'field-select tesla-match', 'aria-label': `Match ${nameOf(c)}` },
         h('option', { value: '' }, 'Not decided: not read'),
-        h('optgroup', { label: 'A car here' }, cars.map((x) => {
+        carOptions(cars, { group: 'A car here', option: (x) => {
           const other = takenBy.get(x.id);
           return h('option', { value: x.id, disabled: !!other && mine !== x.id }, `${x.name}${c.suggested === x.id ? ' (suggested)' : ''}${other ? ` (read through ${other})` : ''}`);
-        })),
+        } }),
         h('option', { value: 'new' }, 'A new car'),
         h('option', { value: 'leave_out' }, 'Leave it out'));
       sel.value = mine;
@@ -562,8 +562,9 @@ export function teslaPart(ctx) {
 /** The account a #tesla-<id> address points at, opened into view once the part is drawn. */
 export function showTeslaHash() {
   const id = (location.hash || '').slice(1);
-  if (!/^tesla(-|$)/.test(id)) return;
-  const t = document.getElementById(id) || document.getElementById('tesla');
+  const m = /^(tesla|teslafi)(-|$)/.exec(id);
+  if (!m) return;
+  const t = document.getElementById(id) || document.getElementById(m[1]);
   if (!t) return;
   // the account (tabindex -1) or the part gets the focus, so a keyboard user carries on from there
   if (!t.hasAttribute('tabindex')) t.setAttribute('tabindex', '-1');

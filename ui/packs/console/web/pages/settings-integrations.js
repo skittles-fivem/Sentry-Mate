@@ -11,6 +11,7 @@
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { head, paint, section, note, link, btn, kv } from '../core/ui.js';
+import { carKeys as soldAwareKeys } from '../core/carpick.js';
 import { table } from '../core/table.js';
 import { editLines, editGroup } from '../core/kvedit.js';
 import { empty, errorWords } from '../core/states.js';
@@ -339,7 +340,7 @@ export async function mount(ctx) {
 
   /* ---------- the car for the preview */
   const carKeys = () => h('div', { class: 'carline', role: 'group', 'aria-label': 'Car for the preview' }, h('span', { class: 'muted' }, 'preview for:'),
-    carList.slice(0, 12).map((c) => h('button', { class: 'key', type: 'button', 'aria-pressed': String(c.id === carId), onclick: () => pickCar(c.id) }, c.name || c.id)));
+    soldAwareKeys(carList.slice(0, 12), (c) => h('button', { class: 'key', type: 'button', 'aria-pressed': String(c.id === carId), onclick: () => pickCar(c.id) }, c.name || c.id), { keep: carId }));
   const carSlot = h('div');
   async function pickCar(next) {
     if (!next || next === carId) return;

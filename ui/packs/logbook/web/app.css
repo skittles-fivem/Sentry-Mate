@@ -431,12 +431,13 @@ html.is-auth .main { min-height: 100vh; display: flex; align-items: flex-start; 
 .flag-warn { color: var(--rust); }
 .flag-estimated { color: var(--ochre); }
 /* Where data came from (core/sources.js): a dot per input and a quiet line. SMO is the car's own green, the
-   Tesla API dusk, an import ochre (the colour of estimates). */
+   Tesla API dusk, TeslaFi a slate diamond, an import ochre (the colour of estimates). */
 .src { display: inline-flex; align-items: baseline; gap: round(0.375rem, var(--e)); font: 500 var(--small) var(--sans); --LH: round(calc(1.35 * 1em), 2px); line-height: var(--LH); color: var(--ink-3); letter-spacing: 0.01em; }
 .src-block { display: flex; margin: round(0.25rem, var(--e)) 0 0; }
 .src-dots { display: inline-flex; gap: round(0.1875rem, var(--e)); align-self: center; flex: none; }
 .src-dot { display: block; width: round(0.4375rem, var(--e)); height: round(0.4375rem, var(--e)); border-radius: 50%; background: var(--accent); }
 .src-dot-tesla_api { background: transparent; box-shadow: inset 0 0 0 round(0.125rem, var(--e)) var(--dusk); }
+.src-dot-teslafi_api { border-radius: 0; background: var(--slate); clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
 .src-dot-import { border-radius: round(0.0625rem, var(--e)); background: var(--ochre); }
 .src-value { font-size: var(--micro); margin-left: round(0.375rem, var(--e)); }
 .src-inputs { font: 500 var(--small-2) var(--sans); --LH: round(calc(1.5 * 1em), 2px); line-height: var(--LH); color: var(--ink-3); margin-top: round(0.5rem, var(--e)); }
@@ -764,6 +765,9 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
 .switcher-sold-toggle .switcher-option-meta { color: var(--ink-2); font-weight: 500; }
 .switcher-sold-mark { justify-self: center; font: 600 var(--small-2) var(--sans); color: var(--ink-3); }
 .tag.tag-sold { background: var(--paper-sunk); color: var(--ink-3); }
+/* A page's own car pick list: the sold cars behind a toggle (core/form.js soldPickRows). */
+.pick-sold { padding: round(0.375rem, var(--e)) round(0.25rem, var(--e)); border-top: 1px solid var(--rule); margin-top: round(0.25rem, var(--e)); }
+.pick-sold .pick-sold-toggle { color: var(--ink-2); }
 .switcher-option-place { color: var(--ink-3); max-width: round(12.5rem, var(--e)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .switcher-list[aria-busy="true"] .switcher-option { opacity: 0.6; }
 .switcher-more { padding: round(0.75rem, var(--e)) round(1.25rem, var(--e)) round(0.375rem, var(--e)); color: var(--ink-3); font: italic 400 0.875rem var(--serif); --LH: normal; line-height: var(--LH); }

@@ -15,7 +15,7 @@ import * as state from '../shared/state.js';
 import { tile, chip, btn, icon, note } from '../core/ui.js';
 import { emptyTile } from '../core/states.js';
 import { mapTile, boundsOf } from '../core/map.js';
-import { filterBar, placeHref, statTile, dur } from '../core/bits.js';
+import { filterBar, placeHref, statTile, dur, soldPill } from '../core/bits.js';
 import { srcPill } from '../core/source.js';
 
 export const id = 'travel';
@@ -50,9 +50,19 @@ export async function mount(ctx) {
   /* ------------------------------------------------------------ controls */
   const carPills = h('div', { class: 'pills', role: 'group', 'aria-label': 'Cars', cover: ['locations.filter.car', 'visited.filter.car'] },
     h('button', { type: 'button', class: 'fpill', 'aria-pressed': String(!chosen.size), onclick: () => { chosen.clear(); syncCars(); write(); load(); } }, 'Every car'),
-    cars.map((c) => h('button', { type: 'button', class: 'fpill', dataset: { car: c.id }, 'aria-pressed': String(chosen.has(c.id)), onclick: () => { if (chosen.has(c.id)) chosen.delete(c.id); else chosen.add(c.id); syncCars(); write(); load(); } }, c.name)));
+    cars.map((c) => h('button', { type: 'button', class: ['fpill', { 'is-sold': state.isSold(c) }], dataset: { car: c.id, sold: state.isSold(c) ? '1' : null }, 'aria-pressed': String(chosen.has(c.id)), onclick: () => { if (chosen.has(c.id)) chosen.delete(c.id); else chosen.add(c.id); syncCars(); write(); load(); } }, c.name)));
+  // sold cars wait behind 'Sold cars (n)'; a chosen one always shows
+  let soldOpen = false;
+  const nSold = state.splitSold(cars).sold.length;
+  const soldTg = nSold ? soldPill(nSold, () => { soldOpen = !soldOpen; syncCars(); }) : null;
+  if (soldTg) carPills.append(soldTg);
   function syncCars() {
-    for (const b of carPills.children) b.setAttribute('aria-pressed', String(b.dataset.car ? chosen.has(b.dataset.car) : !chosen.size));
+    for (const b of carPills.children) {
+      if (b === soldTg) continue;
+      b.setAttribute('aria-pressed', String(b.dataset.car ? chosen.has(b.dataset.car) : !chosen.size));
+      if (b.dataset.sold) b.hidden = !soldOpen && !chosen.has(b.dataset.car);
+    }
+    if (soldTg) soldTg.set(soldOpen);
     carHead.textContent = chosen.size ? [...chosen].map(carName).join(', ') : `Every car (${formatNumber(cars.length)})`;
   }
   const search = h('input', { type: 'search', value: qtext, placeholder: 'Place, street or city', 'aria-label': 'Find a place, street or city', autocomplete: 'off' });

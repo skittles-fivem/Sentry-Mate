@@ -823,6 +823,8 @@ struct Side {
     tesla: Option<Arc<web::resources::tesla::TeslaService>>,
     /// The TeslaFi input's pollers (running only when a TeslaFi account exists).
     teslafi: Option<Arc<web::resources::teslafi::TeslafiService>>,
+    /// The local TeslaMate input (running only when an admin added its settings).
+    teslamate_local: Option<Arc<web::resources::teslamate_local::TeslamateLocalService>>,
 }
 
 impl Side {
@@ -832,6 +834,9 @@ impl Side {
             t.stop();
         }
         if let Some(t) = &self.teslafi {
+            t.stop();
+        }
+        if let Some(t) = &self.teslamate_local {
             t.stop();
         }
         if let Some(e) = self.engine.as_mut() {
@@ -846,6 +851,9 @@ impl Side {
             t.stop();
         }
         if let Some(t) = self.teslafi.take() {
+            t.stop();
+        }
+        if let Some(t) = self.teslamate_local.take() {
             t.stop();
         }
         for t in self.tasks.drain(..) {
@@ -1580,8 +1588,18 @@ async fn start_web(
             tracing::info!("TeslaFi: reading the car(s) of {n} TeslaFi account(s)");
         }
     }
+    // the same for the local TeslaMate: only once an admin added its settings (no file: nothing starts)
+    let teslamate_local = app.service::<web::resources::teslamate_local::TeslamateLocalService>().ok();
+    if let Some(t) = &teslamate_local
+        && !moved
+    {
+        t.start();
+        if t.store().exists() {
+            tracing::info!("local TeslaMate: reading it");
+        }
+    }
     let web = Box::pin(web::serve(listener, live.tls_config()?, web::router_with(app.clone(), api::routes())));
-    Ok(Side { engine: Some(engine), web, app: Some(app), tasks, tesla, teslafi })
+    Ok(Side { engine: Some(engine), web, app: Some(app), tasks, tesla, teslafi, teslamate_local })
 }
 
 /// `SENTRY_MATE_OFFER_MOVE`: keeps a move code ready and prints it in the log (with no shell, the log is the only

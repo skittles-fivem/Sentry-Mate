@@ -11,6 +11,7 @@ import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { format } from '../shared/units.js';
 import { head, paint, section, note, link, btn, kv, textBar } from '../core/ui.js';
+import { carKeys } from '../core/carpick.js';
 import { table } from '../core/table.js';
 import { field, form } from '../core/form.js';
 import { editLines } from '../core/kvedit.js';
@@ -449,8 +450,8 @@ export async function mount(ctx) {
     const two = field({ label: 'require two-step sign-in', name: 'two_step_required', type: 'checkbox', value: !!a?.two_step_required });
     const allCars = field({ label: 'every car, also cars that appear later', name: 'all_cars', type: 'checkbox', value: a?.cars === 'all' });
     const chosen = new Set(Array.isArray(a?.cars) ? a.cars : []);
-    const list = h('div', { class: 'hc' }, S.cars.map((c) => h('label', { class: 'fld-checkline' },
-      h('input', { class: 'chk', type: 'checkbox', checked: chosen.has(c.id), onchange: (e) => (e.target.checked ? chosen.add(c.id) : chosen.delete(c.id)) }), h('span', null, c.name))));
+    const list = h('div', { class: 'hc' }, carKeys(S.cars, (c) => h('label', { class: 'fld-checkline' },
+      h('input', { class: 'chk', type: 'checkbox', checked: chosen.has(c.id), onchange: (e) => (e.target.checked ? chosen.add(c.id) : chosen.delete(c.id)) }), h('span', null, c.name)), { keep: [...chosen] }));
     const syncList = () => { list.hidden = allCars.input.checked; };
     allCars.input.addEventListener('change', syncList); syncList();
     let d = null;

@@ -19,6 +19,7 @@ import { scope, loadUPlot, well } from '../core/chart.js';
 import { createMap, pin, mapFallback } from '../core/map.js';
 import { val, stateWord, when, agoEl, dur, ago } from '../core/fmt.js';
 import { srcChip, valSrc, inputsLine, kindsOf } from '../core/sources.js';
+import { vehiclePanel } from '../core/vehicle.js';
 
 export const id = 'car';
 export const css = true;
@@ -72,7 +73,9 @@ export async function mount(ctx) {
   const tyresEl = h('div');
   const chargeEl = h('div');
   const periodEl = h('div', { class: 'stack' });
-  const trim = car.config?.trim;
+  const fwLink = h('p', { class: 'vi-fw' }, icon('chip', 'i--sm'), h('span', null, 'The modules\' firmware fingerprints, and each Tesla update found from them: ',
+    h('a', { class: 'plc', href: `${ctx.link('software')}#firmware` }, 'Car firmware'), ' on Software.'));
+  const vehicle = vehiclePanel(ctx, car, { foot: fwLink, onSaved: (c) => { ctx.carChanged?.(c); paintHead(); } });
 
   replace(ctx.view, h('div', { class: 'page cl', cover: ['shots.web-interface', 'shots.overview'] },
     plate({
@@ -88,10 +91,12 @@ export async function mount(ctx) {
       hud({ title: 'Where it is', icon: 'pin', pad: false, cls: 'cl-map-panel', side: mapSide, cover: ['summary.map.position', 'summary.map.attribution', 'summary.map.zoom'] }, mapEl, placeEl),
       h('div', { class: 'stack' }, awakeEl, tyresEl)),
     chargeEl,
+    vehicle.el,
     periodEl));
 
   /* ---------- head */
   function paintHead() {
+    const trim = car.config?.trim;
     const st = now.state || 'unknown';
     replace(headLine,
       h('span', { cover: 'summary.header.model', title: 'Model and year come from the VIN start.' }, [car.model, car.year].filter(Boolean).join(' · ') || 'Model not known yet'),
@@ -147,7 +152,7 @@ export async function mount(ctx) {
         stat('Cabin', val(now.cabin_c), 'temperature', { icon: 'thermo', cover: ['summary.stat.inside_temp', 'overview.stat.inside_temp', 'nr.dash.panel.car-status'], why: 'not sent', src: valSrc(now.cabin_c) }),
         stat('Climate', climate === 'off' ? 'Off' : `${setp(now.setpoint_left_c)} · ${setp(now.setpoint_right_c)}`, null, { icon: 'sun', cover: 'overview.stat.driver_temp',
           how: climate === 'off' ? 'no set point is sent while climate is off' : 'set point left · right', src: valSrc(now.flags?.climate) }),
-        stat('Software', h('a', { href: ctx.link('software') }, sw.version || 'not known'), null, { icon: 'chip', cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates', 'summary.flag.software_update'],
+        stat('Software', h('a', { href: `${ctx.link('software')}#firmware`, title: 'Software, with the car firmware' }, sw.version || 'not known'), null, { icon: 'chip', cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates', 'summary.flag.software_update'],
           how: sw.changed_since_ms ? `changed since ${when(sw.changed_since_ms, tz)}; the new version text is not known yet` : sw.version_since_ms ? `since ${formatDate(sw.version_since_ms, tz, { weekday: false })}` : 'no change seen' }),
         stat('12 V battery', val(now.lv_v), 'voltage', { icon: 'battery', why: 'not sent', src: valSrc(now.lv_v) }),
         stat('Newest value', now.at_ms ? agoEl(now.at_ms) : null, null, { icon: 'live', cover: ['nr.dash.last-update', 'summary.data.live_push'], why: 'none yet',

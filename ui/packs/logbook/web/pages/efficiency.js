@@ -23,7 +23,7 @@ import { pageHead, q, figure, figures, icon, empty, errorView, loadingBlock, fla
 import { sourceLabel } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
 import { stackedCharts, spansFromStates, niceSplits, niceStep } from '../core/chart.js';
-import { choice } from '../core/form.js';
+import { choice, soldPickRows } from '../core/form.js';
 import { zoneLabel } from '../core/format.js';
 
 export const id = 'efficiency';
@@ -619,7 +619,8 @@ export async function mount(ctx) {
       if (!fleet.some((c) => c.id === car.id)) fleet.unshift(car);
     }
     const others = fleet.filter((c) => c.id !== car.id);
-    if (opt.compare == null) opt.compare = others.length <= 3 ? others.map((c) => c.id) : [];
+    const kept = others.filter((c) => !state.isSold(c)); // sold cars are compared only when picked
+    if (opt.compare == null) opt.compare = kept.length <= 3 ? kept.map((c) => c.id) : [];
     opt.compare = opt.compare.filter((idv) => others.some((c) => c.id === idv));
     drawPicker(others);
     const chosen = [car, ...others.filter((c) => opt.compare.includes(c.id))];
@@ -702,7 +703,9 @@ export async function mount(ctx) {
     }
   }
 
+  let soldOpen = false;
   function drawPicker(others) {
+    const kept = others.filter((c) => !state.isSold(c));
     const search = h('input', { class: 'field-input field-search ef-carsearch', type: 'search', placeholder: 'Find a car', 'aria-label': 'Find a car to compare' });
     const listEl = h('ul', { class: 'ef-carlist' });
     const SHOW = 8;
@@ -711,15 +714,20 @@ export async function mount(ctx) {
       const match = others.filter((c) => !qv || `${c.name} ${c.model || ''}`.toLowerCase().includes(qv));
       const picked = match.filter((c) => opt.compare.includes(c.id));
       const rest = match.filter((c) => !opt.compare.includes(c.id));
-      const show = [...picked, ...rest.slice(0, Math.max(0, SHOW - picked.length))];
-      replace(listEl, show.map((c) => h('li', null, h('label', { class: 'ef-carcheck' },
-        h('input', { type: 'checkbox', checked: opt.compare.includes(c.id), onchange: (ev) => {
-          opt.compare = ev.target.checked ? [...opt.compare, c.id] : opt.compare.filter((x) => x !== c.id);
-          remember();
-          drawCars().catch(() => {});
-        } }), h('span', null, c.name)))),
-      match.length > show.length ? h('li', { class: 'ef-carmore' }, `${formatNumber(match.length - show.length)} more: type to find them`) : null,
-      !match.length ? h('li', { class: 'ef-carmore' }, 'No car matches.') : null);
+      // Sold cars wait behind their own toggle unless picked or searched for.
+      const { rows, cut } = soldPickRows([...picked, ...rest], {
+        chosen: (c) => opt.compare.includes(c.id), searching: !!qv, open: soldOpen, ontoggle: () => { soldOpen = !soldOpen; drawList(); },
+        max: Math.max(SHOW, picked.length),
+        row: (c) => h('li', null, h('label', { class: 'ef-carcheck' },
+          h('input', { type: 'checkbox', checked: opt.compare.includes(c.id), onchange: (ev) => {
+            opt.compare = ev.target.checked ? [...opt.compare, c.id] : opt.compare.filter((x) => x !== c.id);
+            remember();
+            drawCars().catch(() => {});
+          } }), h('span', null, c.name), state.isSold(c) ? [' ', flag('Sold')] : null)),
+      });
+      replace(listEl, rows,
+        cut ? h('li', { class: 'ef-carmore' }, `${formatNumber(cut)} more: type to find them`) : null,
+        !match.length ? h('li', { class: 'ef-carmore' }, 'No car matches.') : null);
     };
     search.addEventListener('input', drawList);
     drawList();
@@ -728,7 +736,7 @@ export async function mount(ctx) {
       others.length ? [others.length > SHOW ? search : null, listEl,
         h('div', { class: 'ef-carbtns' },
           button('None', { cls: 'button-small', onclick: () => { opt.compare = []; remember(); drawCars().catch(() => {}); } }),
-          others.length <= 20 ? button('Every car', { cls: 'button-small', onclick: () => { opt.compare = others.map((c) => c.id); remember(); drawCars().catch(() => {}); } }) : null)]
+          kept.length && kept.length <= 20 ? button('Every car', { cls: 'button-small', onclick: () => { opt.compare = [...new Set([...opt.compare, ...kept.map((c) => c.id)])]; remember(); drawCars().catch(() => {}); } }) : null)]
         : h('p', { class: 'field-hint' }, 'No other car to compare with.'),
       h('p', { class: 'field-hint' }, 'The cars chosen sit side by side under Compare cars, at the end of the page.'));
   }

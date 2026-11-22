@@ -10,6 +10,7 @@ import { format, formatMoney, convert, unitLabel, getUnits } from '../shared/uni
 import { formatDate, formatDateRange, formatDuration, dateFormat, startOf, addPeriod, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { head, section, kv, note, link } from '../core/ui.js';
+import { carKeys } from '../core/carpick.js';
 import { num, tag } from '../core/fmt.js';
 import { table, cellBar } from '../core/table.js';
 import { empty, loadingLine, errorBlock } from '../core/states.js';
@@ -73,7 +74,7 @@ export async function mount(ctx) {
   const switchLine = h('div', { class: 'st-switch' }, h('span', { class: 'muted' }, 'per> '), groupKeys,
     multi ? h('span', { class: 'st-cars', cover: ['statistics.filter.car', 'mi.section.per_car'] }, h('span', { class: 'muted' }, '  cars> '), h('span', { class: 'keys keys--inline' },
       h('a', { class: 'key', href: state.buildUrl('statistics', { period: state.current().period, query: { group, cars: 'all' } }), 'aria-pressed': String(!q.cars || q.cars === 'all') }, 'all'),
-      fleet.map((c) => h('a', { class: 'key', href: state.buildUrl('statistics', { car: c.id, period: state.current().period, query: { group } }) }, c.name))))
+      carKeys(fleet, (c) => h('a', { class: 'key', href: state.buildUrl('statistics', { car: c.id, period: state.current().period, query: { group } }) }, c.name), { keep: q.cars && q.cars !== 'all' ? viewCars : null })))
       : h('span', { class: 'st-cars' }, link(state.buildUrl('statistics', { period: state.current().period, query: { group, cars: 'all' } }), 'every car at once')));
   const precision = h('p', { class: 'note', cover: 'statistics.filter.high_precision' },
     'no precision switch: net and gross consumption come from the pack’s own energy counters, exact for a day as for a year. rows at the edges of the range can be part periods; they say so.');

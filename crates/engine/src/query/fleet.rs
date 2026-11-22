@@ -70,6 +70,9 @@ fn car_origins(x: &FleetEntry) -> Vec<model::Origin> {
     if inputs.contains(model::Input::TeslafiApi) {
         out.push(model::Origin::TeslafiApi);
     }
+    if inputs.contains(model::Input::TeslamateLocal) {
+        out.push(model::Origin::TeslamateLocal);
+    }
     for site in model::ImportSite::ALL {
         let s = t.of_site(site);
         if s.drives + s.charges > 0 {
@@ -499,7 +502,8 @@ fn put_owner(e: &Engine, car: CarId, o: &Owner) -> QResult<()> {
 fn fill_page(e: &Engine, x: &FleetEntry, i: &mut CarItem, now: u64) -> QResult<()> {
     let meta = records::meta(e.db(), i.id.0)?;
     i.now.since_ms = meta.state_since_ms;
-    i.now.received_ms = meta.last_arrived_ms.max(meta.api_received_ms).max(meta.teslafi_received_ms);
+    i.now.received_ms =
+        meta.last_arrived_ms.max(meta.api_received_ms).max(meta.teslafi_received_ms).max(meta.tmlocal_received_ms);
     i.attention = attention_of(e, x, &meta, now)?.into_iter().map(|a| a.code).collect();
     Ok(())
 }

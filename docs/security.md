@@ -5,6 +5,7 @@
 - [Security](#security)
 - [The Tesla API input](#the-tesla-api-input)
 - [The TeslaFi input](#the-teslafi-input)
+- [The local TeslaMate input](#the-local-teslamate-input)
 - [No way back without a backup](#no-way-back-without-a-backup)
 - [Privacy](#privacy)
 - [When a log fails its check](#when-a-log-fails-its-check)
@@ -70,6 +71,9 @@
     [The Tesla API input](#the-tesla-api-input).
   - **TeslaFi**: to `www.teslafi.com` only, once an admin adds a TeslaFi token. See
     [The TeslaFi input](#the-teslafi-input).
+  - **Local TeslaMate**: to the owner's own TeslaMate MQTT broker (`teslamate_mqtt`) and, when turned on, its
+    database (`teslamate_db`), at the host and port an admin typed, once an admin adds them. See
+    [The local TeslaMate input](#the-local-teslamate-input).
   - **A move**: a new server, during a move you started, connects to the old server's upload port, and nowhere else.
 
   With none of these turned on, Sentry Mate makes no outgoing connection at all.
@@ -245,6 +249,33 @@ given; this server only reads what TeslaFi stored. How to add the token is in
   too, so the old one stops working there as well.
 - Data from TeslaFi is not signed like SMO's logs. Every row and value says where it came from (`teslafi_api`, "Data
   from TeslaFi"), and SMO's and the Tesla API's data win over it where they cover the same time.
+
+## The local TeslaMate input
+
+For owners who run their own TeslaMate, the server can read it on the home network: its MQTT broker for live values,
+and optionally its PostgreSQL database to catch up on what MQTT missed.
+
+- **Off until an admin adds it.** Before that the server starts nothing for it and makes no connection. Removing it
+  stops reading at once and deletes its sealed settings file; the history already stored stays.
+- **Only the two hosts the admin typed**, shown in `/network` as `teslamate_mqtt` and `teslamate_db` (`host:port` as
+  saved; the database row only while the catch-up is on). Nothing else is looked up or connected to for it.
+- **Read only.** On MQTT the server subscribes to `<prefix>/cars/+/#` at QoS 0 and to nothing else; it never
+  publishes (not even a test message), sets no last will and asks for a clean session, so the broker keeps nothing
+  of it. The database is read in a `READ ONLY` transaction, only the tables and columns the TeslaMate import reads
+  (never `private.*` nor any tokens table), and only the first 11 characters of a VIN.
+- **No password in the clear unless the owner says so.** A password (typed now or kept) with TLS off is refused
+  (`plaintext_password`) unless the admin ticks "Allow unencrypted (local network only)". Without a password, plain
+  TCP is allowed. With TLS, the server is trusted by the public web roots and its name, or by the SHA-256 pin of its
+  certificate (for a self-signed one). A kept password goes only to the host it was typed for: changing the host,
+  port or TLS needs the password again (`password_resend`).
+- **The passwords are sealed in the vault** (`teslamate-local/config.json` in the data folder). No page, API answer
+  (it says only `password_set`), audit entry, error or log line shows them. A catch-up's dump is written next to it
+  while it is stored and deleted right after.
+- **Admins only.** Every page and call about it is for admins (reads included), and every change asks for the
+  admin's password again (and the two-step code when it is on) and writes an audit entry. A TeslaMate car is read
+  into no car here until an admin says which car it is.
+- Data from TeslaMate is not signed like SMO's logs. Every value says where it came from (`teslamate_local`, "Data
+  from local TeslaMate"); SMO's, the Tesla API's and TeslaFi's data win over it where they cover the same time.
 
 ## No way back without a backup
 

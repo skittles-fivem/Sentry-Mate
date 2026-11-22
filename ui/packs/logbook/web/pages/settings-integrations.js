@@ -17,11 +17,11 @@ import { format } from '../shared/units.js';
 import { formatDateTime, DAY } from '../shared/time.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { pageHead, section, figure, figures, chip, flag, pageLink, button, icon, empty, errorView, errorWords, ago } from '../core/ui.js';
-import { field, form, setFieldError, switchField, choice } from '../core/form.js';
+import { field, form, setFieldError, switchField, choice, carOptions } from '../core/form.js';
 import { dataTable } from '../core/table.js';
 import { confirmDialog } from '../core/dialog.js';
 import { teslaPart, showTeslaHash } from './integrations-tesla.js';
-import { teslafiPart, showTeslafiHash } from './integrations-teslafi.js';
+import { teslafiPart } from './integrations-teslafi.js';
 
 export const id = 'settings-integrations';
 export const css = true;
@@ -333,11 +333,9 @@ export async function mount(ctx) {
 
   /* ---------------- the Tesla account (its own module) */
   const tesla = teslaPart(ctx);
-  const teslaLoad = tesla.load();
-  /* ---------------- TeslaFi (its own module), right after the Tesla account */
   const teslafi = teslafiPart(ctx);
-  const teslafiLoad = teslafi.load();
-  const onHash = () => { showTeslaHash(); showTeslafiHash(); };
+  const teslaLoad = Promise.all([tesla.load(), teslafi.load()]);
+  const onHash = () => showTeslaHash();
   window.addEventListener('hashchange', onHash);
   ctx.onCleanup(() => window.removeEventListener('hashchange', onHash));
 
@@ -567,7 +565,7 @@ export async function mount(ctx) {
   function paintCarPick() {
     if (!carList.length) { replace(carPickSlot); return; }
     const sel = h('select', { class: 'field-select', id: 'si-car', 'aria-label': 'Car for the preview' },
-      carList.map((c) => h('option', { value: c.id, selected: c.id === carId }, `${c.name} (${c.id})`)));
+      carOptions(carList, { option: (c) => h('option', { value: c.id, selected: c.id === carId }, `${c.name} (${c.id})`) }));
     if (carId && !carOf(carId)) sel.prepend(h('option', { value: carId, selected: true }, carId));
     sel.addEventListener('change', () => pickCar(sel.value));
     let search = null;
@@ -929,10 +927,10 @@ export async function mount(ctx) {
     tesla.el, teslafi.el, brokerSec, topicsSec, valuesSec, haSec, entSec, eventsSec, apiSec, netSec, worksSec);
   // The broker log is in before the page says it is ready, so it does not push the client notes down later.
   const logLoad = paintAll();
-  await Promise.all([teslaLoad, teslafiLoad, logLoad.catch(() => {})]);
+  await Promise.all([teslaLoad, logLoad.catch(() => {})]);
   if (!ctx.alive()) return {};
   // after the router has put focus on the page (it does so once mount returns), so the account keeps it
-  const hashT = setTimeout(() => { if (ctx.alive()) { showTeslaHash(); showTeslafiHash(); } }, 0);
+  const hashT = setTimeout(() => { if (ctx.alive()) showTeslaHash(); }, 0);
   ctx.onCleanup(() => clearTimeout(hashT));
   ctx.ready();
   return {};

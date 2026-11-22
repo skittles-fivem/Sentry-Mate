@@ -4,9 +4,12 @@
 // call: it disables the submit button while saving, puts each field error from the server (ApiError
 // .fields, keyed by path such as 'units.distance') under its field, and shows other errors at the top.
 // choice() is a segmented radio group (the pack's toggle), switchField() a labelled on/off switch.
+// carOptions() and soldPickRows() keep sold cars out of a page's own car pickers, behind a "Sold cars" group.
 
 import { h } from '../shared/dom.js';
-import { errorWords } from './ui.js';
+import * as state from '../shared/state.js';
+import { formatNumber } from '../shared/i18n.js';
+import { errorWords, button } from './ui.js';
 
 let seq = 0;
 const nextId = (p) => `${p}-${++seq}`;
@@ -153,4 +156,44 @@ export function switchField({ label, checked = false, onchange, hint = null, cov
   el.set = (v) => { input.checked = !!v; };
   el.input = input;
   return el;
+}
+
+/**
+ * The cars of a native <select>: the cars not sold (under `group` when one is given), then the sold ones under
+ * a "Sold cars" group, so a sold car still shows when it is the one chosen. option(car) -> <option>.
+ */
+export function carOptions(cars, { option, group = null } = {}) {
+  const { active, sold } = state.splitSold(cars);
+  return [
+    group ? (active.length ? h('optgroup', { label: group }, active.map(option)) : null) : active.map(option),
+    sold.length ? h('optgroup', { label: `Sold cars (${formatNumber(sold.length)})` }, sold.map(option)) : null,
+  ];
+}
+
+/**
+ * The rows of a ticked car list (in the order given) with the sold cars behind a "Show sold cars (n)" button,
+ * as in the car switcher: a sold car already ticked stays in view, and a search lists every match.
+ * soldPickRows(cars, { chosen(car), row(car) -> <li>, open, ontoggle, searching, max }) -> { rows, cut }
+ * (cut: the cars left out by max). ontoggle redraws the list; the new button then takes the focus.
+ */
+export function soldPickRows(cars, { chosen = () => false, row, open = false, ontoggle, searching = false, max = Infinity } = {}) {
+  const tucked = searching ? [] : cars.filter((c) => state.isSold(c) && !chosen(c));
+  const main = searching ? cars : cars.filter((c) => !state.isSold(c) || chosen(c));
+  const shown = main.slice(0, max);
+  const rows = shown.map(row);
+  let cut = main.length - shown.length;
+  if (tucked.length) {
+    const b = button(`${open ? 'Hide' : 'Show'} sold cars (${formatNumber(tucked.length)})`, {
+      cls: 'button-small pick-sold-toggle',
+      onclick: (e) => { const list = e.currentTarget.closest('ul, ol') || document; ontoggle?.(); list.querySelector('.pick-sold-toggle')?.focus({ preventScroll: true }); },
+    });
+    b.setAttribute('aria-expanded', String(open));
+    rows.push(h('li', { class: 'pick-sold' }, b));
+    if (open) {
+      const room = tucked.slice(0, Math.max(0, max - shown.length));
+      rows.push(...room.map(row));
+      cut += tucked.length - room.length;
+    }
+  }
+  return { rows, cut };
 }

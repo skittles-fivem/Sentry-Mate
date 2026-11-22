@@ -14,6 +14,7 @@
 import { h, replace } from '../shared/dom.js';
 import { buildUrl } from '../shared/state.js';
 import { icon } from '../core/icons.js';
+import { soldParts, soldOptions } from '../core/carswitch.js';
 import { kv, tag, pill, note, metric, figures } from '../core/page.js';
 import { field } from '../core/form.js';
 import { emptyState, errorWords } from '../core/states.js';
@@ -352,6 +353,7 @@ export function teslaSection(ctx, { cars = [] } = {}) {
       if (o.id === a.id) continue;
       for (const c of carRows[o.id]?.items || []) if (c.match && c.match !== 'new' && c.match !== 'leave_out') takenBy.set(c.match, o.label);
     }
+    const soldIds = new Set(cars.filter((x) => x.sold).map((x) => x.id));
     const opts = [['', 'Not decided (not read)'], ...cars.map((c) => [c.id, takenBy.has(c.id) ? `${c.name} (read through ${takenBy.get(c.id)})` : c.name, takenBy.has(c.id)]), ['new', 'A new car'], ['leave_out', 'Leave out (not read)']];
     const sels = new Map();
     const saveBtn = h('button', { class: 'btn btn--primary btn--sm', type: 'button', hidden: true }, icon('check', 'ico--sm'), 'Save matches');
@@ -393,7 +395,11 @@ export function teslaSection(ctx, { cars = [] } = {}) {
       // a suggestion another account already reads is not taken over: the picker starts at Not decided
       const start = c.match == null && takenBy.has(pre) ? '' : pre;
       const sel = h('select', { class: 'select', 'aria-label': `Sentry Mate car for ${c.display_name || c.vehicle}` },
-        known.map(([v, l, taken]) => h('option', { value: v, selected: v === start, disabled: taken && v !== c.match ? true : null }, l)));
+        (() => { // sold cars last, in a "Sold cars" group, unless matched or suggested
+          const mk = ([v, l, taken]) => h('option', { value: v, selected: v === start, disabled: taken && v !== c.match ? true : null }, l);
+          const { main, sold } = soldParts(known, [start, c.match, pre], { id: ([v]) => v, isSold: ([v]) => soldIds.has(v) });
+          return [main.map(mk), soldOptions(sold, mk)];
+        })());
       sel.addEventListener('change', sync);
       sels.set(c.vehicle, sel);
       const mode = CAR_MODE[c.mode] || [c.mode, ''];
@@ -408,6 +414,8 @@ export function teslaSection(ctx, { cars = [] } = {}) {
             : next && c.mode !== 'off' ? h('span', { class: 'sub' }, `Next read ${time(next, tz)}`) : h('span', { class: 'sub' }, mode[1]))),
         h('td', { class: 'num' }, sv.last_data_ms ? h('span', { title: dateTime(sv.last_data_ms, tz) }, h('span', { class: 'ta-cell-label' }, 'Last data '), ago(sv.last_data_ms)) : h('span', null, h('span', { class: 'ta-cell-label' }, 'Last data '), h('span', { class: 'faint' }, 'none yet'))));
     });
+    // a waiting suggestion is already picked: it can be saved as it is
+    sync();
     return h('div', { class: 'ta-cars' },
       h('div', { class: 'ta-cars-head' }, h('span', { class: 'metric-label' }, `Its cars (${items.length})`), saveBtn),
       problem,

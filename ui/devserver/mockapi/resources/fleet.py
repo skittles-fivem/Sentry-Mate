@@ -576,6 +576,9 @@ def patch_settings(req):
                 elif b is not None and b < a:
                     rule[f"free_supercharging.{i}.to_date"] = "Must not be before from_date."
     _num_rule(body, "capacity_new_kwh", 10, 250, rule, bad)
+    _num_rule(body, "pack_new_kwh", 10, 250, rule, bad)
+    if body.get("pack_replaced_date") is not None and parse_date(body["pack_replaced_date"]) is None:
+        rule["pack_replaced_date"] = "A date as YYYY-MM-DD, or null for not replaced."
     _num_rule(body, "full_range_new_km", 100, 1500, rule, bad)
     _num_rule(body, "warranty_threshold_pct", 50, 95, rule, bad, allow_null=False)
     _num_rule(body, "efficiency_wh_per_km_override", 60, 500, rule, bad)

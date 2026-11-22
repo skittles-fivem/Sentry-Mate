@@ -16,7 +16,7 @@ import { format, formatMoney, unitLabel } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, buckets, bucketKey } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { icon, hud, plate, btn, seg, tag, note } from '../core/ui.js';
-import { controls, slot, periodBtn, select, search, counters, csvBtn, band, plural, eq, placeLabel, placeHref } from '../core/kit.js';
+import { controls, slot, periodBtn, select, carOptions, search, counters, csvBtn, band, plural, eq, placeLabel, placeHref } from '../core/kit.js';
 import { srcChip, sourceLabel, estimated, SOURCE_FILTER, sourceParam } from '../core/sources.js';
 import { tracks } from '../core/tracks.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, tone, alpha, well } from '../core/chart.js';
@@ -86,7 +86,7 @@ export async function mount(ctx) {
   };
   ctx.onCleanup(() => clearTimeout(tmr));
 
-  const carSel = select([['', `Every car (${fleet.length})`], ...fleet.map((c) => [c.id, c.name])], fixed ? fixed.id : '', (v) => {
+  const carSel = select([['', `Every car (${fleet.length})`], ...carOptions(fleet, fixed?.id)], fixed ? fixed.id : '', (v) => {
     const p = state.current().period;
     ctx.navigate(v ? state.buildUrl('charges', { car: v, period: p, query: queryOf() }) : state.buildUrl('charges', { period: p, query: { ...queryOf(), cars: 'all' } }));
   }, { label: 'Cars' });

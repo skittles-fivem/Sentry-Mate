@@ -11,3 +11,8 @@
 .hero-k { font-size: var(--f13); line-height: var(--l13); font-weight: 700; color: var(--muted); }
 .tl-awake .note + .note { margin-top: 0; }
 html[data-form="phone"] .tl-shares { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+/* a "Tesla update installed" marker (core/firmware.js) */
+.tl-update.tl-row { gap: var(--s3); }
+.tl-fw { display: flex; flex-direction: column; gap: var(--s3); }
+.tl-fw-ver { font-size: var(--f16); line-height: var(--l16); font-weight: 800; font-variant-numeric: tabular-nums; }
+.tl-fw-ver.is-unknown { color: var(--sun); }

@@ -26,6 +26,7 @@ import { activityStrip, placeLink, STRIP_NAMES } from '../core/journal.js';
 import { sourceMark, sourceLabel, isImported, teslaOnly, ESTIMATED_WHY } from '../core/sources.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { zoneLabel } from '../core/format.js';
+import { carOptions } from '../core/form.js';
 import { remount } from '../core/router.js';
 
 export const id = 'trip';
@@ -192,7 +193,7 @@ export async function mount(ctx) {
   const cars = carsR.status === 'fulfilled' ? (carsR.value.items || []).filter((c) => c.id !== car.id) : [];
   const vsSel = h('select', { class: 'field-select', id: 'trip-vs' });
   const fillCars = (list) => replace(vsSel, h('option', { value: '' }, 'No second car'),
-    list.filter((c) => c.id !== car.id).map((c) => h('option', { value: c.id, selected: c.id === vs }, c.name)),
+    carOptions(list.filter((c) => c.id !== car.id), { option: (c) => h('option', { value: c.id, selected: c.id === vs }, c.name) }),
     vs && !list.some((c) => c.id === vs) ? h('option', { value: vs, selected: true }, vsR.status === 'fulfilled' && vsR.value ? `Car ${vs}` : vs) : null);
   fillCars(cars);
   vsSel.addEventListener('change', () => ctx.go(state.buildUrl('trip', { car: car.id, period: ctx.state.period, query: { vs: vsSel.value || null } })));

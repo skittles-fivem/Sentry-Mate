@@ -108,7 +108,7 @@ export async function mount(ctx) {
     const fMin = field({ label: `Shortest drive (${unitLabel('distance')})`, name: 'min', type: 'number', value: f.min != null ? Math.round(convert(f.min, 'distance') * 10) / 10 : '', attrs: { min: '0', step: '0.1', inputmode: 'decimal' } });
     const fSpeed = field({ label: `Slowest average (${unitLabel('speed')})`, name: 'speed', type: 'number', value: f.speed != null ? Math.round(convert(f.speed, 'speed')) : '', attrs: { min: '0', step: '1', inputmode: 'numeric' } });
     const fEff = segmented({ label: 'Efficiency', name: 'eff', value: f.eff, options: [['plain', 'As driven'], ['hill_corrected', 'Hills taken out']] });
-    const fSrc = segmented({ label: 'Data from', name: 'source', value: f.source === 'import:teslamate' ? 'import' : f.source, options: SOURCE_OPTIONS });
+    const fSrc = segmented({ label: 'Data from', name: 'source', value: String(f.source).startsWith('import') ? 'import' : f.source, options: SOURCE_OPTIONS, cls: 'seg-tight' });
     const ex = new Set(f.exclude);
     const exList = h('div', { class: 'ex-list', role: 'group', 'aria-label': 'Places left out of the patterns' },
       places.slice(0, 40).map((p) => h('button', { type: 'button', class: 'fpill', 'aria-pressed': String(ex.has(p.id)), onclick: (e) => { if (ex.has(p.id)) ex.delete(p.id); else ex.add(p.id); e.currentTarget.setAttribute('aria-pressed', String(ex.has(p.id))); } }, p.name)));

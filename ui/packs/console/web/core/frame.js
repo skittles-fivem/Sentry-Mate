@@ -17,6 +17,7 @@ import { openAccountMenu } from './account.js';
 import { onSession } from './session.js';
 import { getMe, applyPrefs } from './prefs.js';
 import { slug } from './fmt.js';
+import { formatTime, zoneName, isValidZone } from '../shared/time.js';
 
 const $ = (sel) => document.querySelector(sel);
 const els = {};
@@ -25,6 +26,8 @@ const names = new Map();   // car id -> its name as a path segment
 let linkCar = null;        // the car the link row is for (the page's, else the last one, else the first)
 let stopEvents = null;
 let started = false;
+let clockTz = null;         // the zone the clock shows: the page's car's, else this browser's
+let clockT = 0;
 
 /* ------------------------------------------------------------------ command bar */
 
@@ -32,6 +35,8 @@ function buildCmd() {
   const home = h('a', { class: 'cmd-home', href: '/', 'aria-label': 'Sentry Mate: fleet', cover: ['shell.nav.home', 'web.shell.logo-home', 'web.shell.home-routing'] }, 'sentry-mate');
   const path = h('nav', { class: 'cmd-path', 'aria-label': 'Where you are' });
   const live = h('span', { class: 'cmd-live', role: 'status', title: 'Live updates from the server' }, '[...]');
+  // the server's time now in the page's zone: '11:20 PM CST'; one text node, changed in place each minute
+  const clock = h('span', { class: 'cmd-clock' }, h('span', { class: 'cmd-clock-t' }), h('span', { class: 'cmd-clock-z muted' }));
   const period = h('button', { class: 'cmd-btn', type: 'button', hidden: true, dataset: { desk: '1' }, onclick: () => openPeriodPicker(), title: 'Change the period' });
   const car = h('button', { class: 'cmd-btn', type: 'button', hidden: true, onclick: () => openCarSwitcher(), title: 'Switch car' });
   const find = h('button', { class: 'cmd-find', type: 'button', onclick: () => openPalette(), 'aria-label': 'Command list: find a page, car, drive or setting',
@@ -39,8 +44,8 @@ function buildCmd() {
   h('span', { class: 'cmd-find-p' }, '>'), h('span', { class: 'cmd-find-t' }, 'find'), h('span', { class: 'kbd cmd-find-k' }, 'ctrl k'));
   const acct = h('button', { class: 'cmd-btn cmd-acct', type: 'button', onclick: () => openAccountMenu(), title: 'Account, size and theme' }, 'account');
   replace($('#cmd'), h('div', { class: 'wrap cmd-wrap' },
-    home, h('span', { class: 'cmd-prompt', 'aria-hidden': 'true' }, '>'), path, h('span', { class: 'grow' }), live, period, car, find, acct));
-  Object.assign(els, { path, live, period, car, acct, find });
+    home, h('span', { class: 'cmd-prompt', 'aria-hidden': 'true' }, '>'), path, h('span', { class: 'grow' }), clock, live, period, car, find, acct));
+  Object.assign(els, { path, live, period, car, acct, find, clock });
 }
 
 // the route as a path, each segment a link: cars / model-y / drives / 1234
@@ -136,6 +141,28 @@ function showRelease(items) {
   if (href.startsWith('/')) { u.removeAttribute('target'); u.setAttribute('rel', 'noopener'); }
 }
 
+/* ------------------------------------------------------------------ clock */
+
+const browserZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } };
+function paintClock() {
+  const c = els.clock;
+  if (!c) return;
+  const tz = clockTz && isValidZone(clockTz) ? clockTz : browserZone();
+  const t = api.now();
+  const text = formatTime(t, tz), zone = zoneName(t, tz);
+  const [te, ze] = c.children;
+  if (te.textContent !== text) te.textContent = text;
+  if (ze.textContent !== ` ${zone}`) ze.textContent = ` ${zone}`;
+  c.title = `The time now in ${tz}${clockTz ? ' (this car\'s zone)' : ' (this browser\'s zone)'}`;
+}
+function startClock() {
+  paintClock();
+  clearTimeout(clockT);
+  // on the next whole minute, then every minute
+  const tick = () => { paintClock(); clockT = setTimeout(tick, 60000 - (api.now() % 60000) + 50); };
+  clockT = setTimeout(tick, 60000 - (api.now() % 60000) + 50);
+}
+
 /* ------------------------------------------------------------------ live status */
 
 function showLive() {
@@ -177,6 +204,8 @@ export function initFrame() {
   api.on('network', showLive);
   api.on('events', showLive);
   showLive();
+  startClock();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) startClock(); });
   onSession((s) => {
     showAccount();
     if (s.signedIn && !started) { started = true; loadAbout(); loadNotices(); startEvents(); }
@@ -187,6 +216,8 @@ export function initFrame() {
 /** The router tells the frame what is shown: { s (state), info, car, period, tz }. */
 export async function update({ s, info, car, period, tz = null }) {
   setPeriodShown(period, tz);
+  const z = car?.time_zone || null;
+  if (z !== clockTz) { clockTz = z; paintClock(); }
   els.period.hidden = !period;
   if (period) replace(els.period, h('span', { class: 'muted' }, 'period '), periodShort(period, tz));
   shown = { car, page: info?.id || s.page };

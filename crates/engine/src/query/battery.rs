@@ -463,16 +463,17 @@ fn factor_day(e: &Engine, car: CarId, start_ms: u64, stamp: String) -> QResult<F
 /// between requests). `ideal` is the same per km of ideal range.
 fn rated_factor(e: &Engine, c: &Car, s: &super::fleet::CarSettings, buffer: Option<f64>) -> QResult<Factor> {
     // the days the car has samples of, newest first, each with what its samples take on disk
-    let mut days: BTreeMap<u64, [u64; 3]> = BTreeMap::new();
+    const N: usize = model::Stream::ALL.len();
+    let mut days: BTreeMap<u64, [u64; N]> = BTreeMap::new();
     for (k, stream) in model::Stream::ALL.into_iter().enumerate() {
         for d in e.db().days::<Sample>(c.id, stream)? {
             days.entry(d.start_ms).or_default()[k] = d.bytes;
         }
     }
     let (mut rated, mut ratio, mut readings, mut as_of) = (Vec::new(), Vec::new(), 0u64, None);
-    for (&start, &[a, b, t]) in days.iter().rev().take(FACTOR_DAYS) {
-        // older stamps had two parts (SMO, TeslaMate); a day without Tesla API data keeps its stamp
-        let stamp = if t == 0 { format!("{a}:{b}") } else { format!("{a}:{b}:{t}") };
+    for (&start, sizes) in days.iter().rev().take(FACTOR_DAYS) {
+        // one part per stream, so a day is read again when any stream's data for it changes
+        let stamp = sizes.iter().map(u64::to_string).collect::<Vec<_>>().join(":");
         let fd = factor_day(e, c.id, start, stamp)?;
         if fd.n > 0 {
             let w = (fd.s_en - buffer.unwrap_or(0.0) * fd.s_inv) / fd.n as f64 * 1000.0;
@@ -587,12 +588,7 @@ fn swap_in(fulls: &[(u64, f64)]) -> Option<u64> {
 type Start = Option<(u64, bool)>;
 
 /// Where the battery figures start: the pack's replacement (counted as a new pack), else the history's start.
-fn pack_start(
-    e: &Engine,
-    c: &Car,
-    s: &super::fleet::CarSettings,
-    shown: &Shown,
-) -> QResult<(Start, Option<Swap>)> {
+fn pack_start(e: &Engine, c: &Car, s: &super::fleet::CarSettings, shown: &Shown) -> QResult<(Start, Option<Swap>)> {
     let swap = pack_swap(e, c, s)?;
     Ok(match swap {
         Some(w) => (Some((w.at_ms, true)), swap),

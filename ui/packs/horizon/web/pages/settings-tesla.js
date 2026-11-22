@@ -17,7 +17,7 @@
 import { h, replace } from '../shared/dom.js';
 import { formatNumber } from '../shared/i18n.js';
 import { icon, hud, btn, tag, kv, note, seg } from '../core/ui.js';
-import { select } from '../core/kit.js';
+import { select, carOptions } from '../core/kit.js';
 import { field } from '../core/form.js';
 import { emptyState, errorWords } from '../core/states.js';
 import { toast } from '../core/layer.js';
@@ -333,7 +333,9 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     const takenBy = new Map();
     for (const o of accounts) if (o.id !== a.id) for (const c of carRows[o.id]?.items || o.cars || []) if (isMatched(c) && c.match !== 'new') takenBy.set(c.match, o.label);
     const free = cars.filter((c) => !takenBy.has(c.id)), taken = cars.filter((c) => takenBy.has(c.id));
-    const opts = [['', 'Not decided (not read)'], ...free.map((c) => [c.id, c.name]), ['new', 'A new car'], ['leave_out', 'Leave out (not read)'],
+    // sold cars wait under Sold cars (a sold car already matched stays up top)
+    const freeOpts = carOptions(free, items.map((c) => c.match));
+    const opts = [['', 'Not decided (not read)'], ...freeOpts.filter((o) => !o.group), ['new', 'A new car'], ['leave_out', 'Leave out (not read)'], ...freeOpts.filter((o) => o.group),
       ...(taken.length ? [{ group: 'Matched on another account', items: taken.map((c) => [c.id, `${c.name} (${takenBy.get(c.id)})`]) }] : [])];
     const sels = new Map();
     const save = btn('Save matches', () => saveMatches(), { kind: 'go', sm: true, icon: 'check' });

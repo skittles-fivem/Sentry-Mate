@@ -516,6 +516,8 @@ html[data-form="phone"] dialog.sheet.is-center { padding: 0 var(--s4); }
 .car-row.is-sold .avatar { background: var(--card-alt); color: var(--muted); }
 .car-row.is-sold .row-name, .sold-toggle .row-name { color: var(--muted); }
 .row.is-current.is-sold .row-name { color: var(--coral); }
+.pick-sold { display: contents; }
+.fpill.is-sold:not([aria-checked="true"]):not([aria-pressed="true"]) { color: var(--muted); }
 .car-soc { font-size: var(--f14); line-height: var(--l14); font-weight: 800; font-variant-numeric: tabular-nums; min-width: 3em; text-align: right; }
 .search { display: flex; align-items: center; gap: var(--s2); height: var(--h-input); margin-bottom: var(--s3); padding: 0 var(--s4); border-radius: var(--r-ctl); background: var(--well); }
 .search .ic { color: var(--muted); }
@@ -1045,3 +1047,44 @@ html[data-form="phone"] .set-ctl .two { grid-template-columns: minmax(0, 1fr); }
 .cert-facts dd { text-align: left; overflow-wrap: normal; }
 .tesla-facts .tesla-hosts { justify-content: flex-end; }
 .tesla-err { display: inline-flex; flex-direction: column; align-items: flex-end; color: var(--sun); }
+/* the header clock (core/frame.js): the time and its zone, next to the account button */
+.head-clock { display: inline-flex; align-items: center; gap: var(--s2); height: var(--h-sm); padding: 0 var(--s3); border-radius: 999px; background: var(--card-alt); color: var(--text); font-size: var(--f14); line-height: var(--l14); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.head-clock .ic { width: var(--ic-xs); height: var(--ic-xs); color: var(--coral); }
+.head-clock-zone { color: var(--muted); }
+/* firmware fingerprints and the "Tesla update installed" marker (core/firmware.js) */
+.fw-hex { font-family: var(--mono); font-weight: 400; font-size: var(--f14); line-height: var(--l14); letter-spacing: 0; overflow-wrap: anywhere; padding: 0 var(--s1); border-radius: var(--s1); background: var(--well); color: var(--text); }
+.fw-hex.is-old { color: var(--muted); }
+.fw-changes { display: flex; flex-direction: column; gap: var(--s3); }
+.fw-mod { display: flex; flex-direction: column; gap: var(--s1); }
+.fw-mod-name { font-size: var(--f14); line-height: var(--l14); font-weight: 800; }
+.fw-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.fw-change { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s1) var(--s3); padding: var(--s2) 0; border-top: 1px solid var(--card-alt); }
+.fw-change:first-child { border-top: 0; padding-top: 0; }
+.fw-k { display: flex; flex-direction: column; min-width: 0; }
+.fw-field { font-size: var(--f14); line-height: var(--l14); font-weight: 700; }
+.fw-sig { font-family: var(--mono); font-size: var(--f13); line-height: var(--l13); color: var(--muted); overflow-wrap: anywhere; }
+.fw-diff { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); min-width: 0; }
+.fw-to { display: inline-flex; align-items: center; color: var(--muted); }
+.fw-to .ic { width: var(--ic-xs); height: var(--ic-xs); }
+.fw-between { display: flex; flex-direction: column; gap: var(--s1); }
+.fw-between-line { font-size: var(--f14); line-height: var(--l14); }
+.fw-between-line .place-link { font-weight: 700; }
+.fw-named { display: flex; align-items: center; gap: var(--s2); font-size: var(--f14); line-height: var(--l14); color: var(--sky); font-weight: 700; }
+.fw-named .ic { flex: none; width: var(--ic-sm); height: var(--ic-sm); }
+.fw-name { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s3) var(--s4); border-radius: var(--r-card); background: var(--well); }
+.fw-name .field { gap: var(--s2); }
+.fw-name-row { display: flex; flex-direction: column; align-items: stretch; gap: var(--s2); }
+.fw-input { width: 100%; min-width: 0; font-family: var(--mono); font-weight: 400; }
+.fw-name-acts { display: flex; gap: var(--s2); }
+.fw-name-k { font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+.fw-name-v { font-size: var(--f20); line-height: var(--l20); font-weight: 800; font-variant-numeric: tabular-nums; }
+.fw-name-v.is-unknown { color: var(--muted); }
+.fw-rows { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.fw-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s1) var(--s3); padding: var(--s2) 0; border-top: 1px solid var(--card-alt); }
+.fw-row:first-child { border-top: 0; padding-top: 0; }
+.fw-v { display: flex; flex-direction: column; align-items: flex-end; gap: var(--s1); min-width: 0; }
+.fw-when { font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
+html[data-form="phone"] .fw-v { align-items: flex-start; }
+html[data-form="phone"] .fw-change { flex-direction: column; align-items: flex-start; }
+.tf-head-text { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); }
+.seg-tight .seg-btn { padding: 0 var(--s2); }

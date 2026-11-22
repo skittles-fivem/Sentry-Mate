@@ -11,7 +11,7 @@ import { format, getUnits, unitLabel, rangeLabel } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, formatDateRange, dayKey, dayRange, addDays, startOf } from '../shared/time.js';
 import { column } from '../shared/csv.js';
 import { icon, hud, plate, btn, linkBtn } from '../core/ui.js';
-import { controls, slot, select, periodBtn, carBtn, csvBtn, placeLink, stat, rack, counters, eq, plural } from '../core/kit.js';
+import { controls, slot, select, carOptions, periodBtn, carBtn, csvBtn, placeLink, stat, rack, counters, eq, plural } from '../core/kit.js';
 import { srcChip, sourceLabel, estimated } from '../core/sources.js';
 import { tracks } from '../core/tracks.js';
 import { strip } from '../core/strip.js';
@@ -88,7 +88,7 @@ export async function mount(ctx) {
     linkBtn('This month', link({ from: startOf(now, 'month', tz), to: null }), { sm: true, kind: 'ghost' }));
   const savedSel = select([['', savedItems.length ? `Saved trips (${savedItems.length})` : 'No saved trips yet'], ...savedItems.map((t) => [t.id, `${t.name} · ${formatDateRange(t.from_ms, Math.max(t.from_ms, (t.to_ms ?? now) - 1), tz, { year: true })}`])],
     match?.id || '', (v) => { const t = savedItems.find((x) => x.id === v); if (t) ctx.navigate(link({ from: t.from_ms, to: t.to_ms })); }, { label: 'Open a saved trip' });
-  const vsSel = select([['', 'No second car'], ...(fleet.items || []).filter((c) => c.id !== cid).map((c) => [c.id, c.name || c.id])], vsId || '',
+  const vsSel = select([['', 'No second car'], ...carOptions((fleet.items || []).filter((c) => c.id !== cid), vsId)], vsId || '',
     (v) => ctx.navigate(link(state.current().period ?? { from, to: ctx.period?.to_ms ?? null }, v || null)), { label: 'A second car for the same window' });
 
   /* ---------- figures */

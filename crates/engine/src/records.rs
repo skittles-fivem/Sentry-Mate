@@ -135,6 +135,13 @@ pub struct CarMeta {
     pub teslafi_last_ms: Option<u64>,
     #[serde(default)]
     pub teslafi_received_ms: Option<u64>,
+    /// The same for the local TeslaMate (MQTT).
+    #[serde(default)]
+    pub tmlocal_days: BTreeSet<u32>,
+    #[serde(default)]
+    pub tmlocal_last_ms: Option<u64>,
+    #[serde(default)]
+    pub tmlocal_received_ms: Option<u64>,
 }
 
 impl CarMeta {
@@ -142,6 +149,7 @@ impl CarMeta {
     pub(crate) fn days_of(&mut self, input: model::Input) -> &mut BTreeSet<u32> {
         match input {
             model::Input::TeslafiApi => &mut self.teslafi_days,
+            model::Input::TeslamateLocal => &mut self.tmlocal_days,
             _ => &mut self.api_days,
         }
     }
@@ -440,6 +448,7 @@ pub(crate) fn put_now_from(db: &Db, car: CarId, m: &BTreeMap<String, model::Inpu
 fn api_key(car: CarId, input: model::Input, d: u32) -> String {
     match input {
         model::Input::TeslafiApi => format!("car/{car}/teslafi_api/{d}"),
+        model::Input::TeslamateLocal => format!("car/{car}/teslamate_local/{d}"),
         _ => format!("car/{car}/api/{d}"),
     }
 }
@@ -518,7 +527,11 @@ pub(crate) fn api_between(
 ) -> Result<Vec<timeline::ApiSpan>> {
     let mut out = Vec::new();
     let days = day_of(from_ms)..=day_of(to_ms.saturating_sub(1).max(from_ms));
-    for (input, set) in [(model::Input::TeslaApi, &meta.api_days), (model::Input::TeslafiApi, &meta.teslafi_days)] {
+    for (input, set) in [
+        (model::Input::TeslaApi, &meta.api_days),
+        (model::Input::TeslafiApi, &meta.teslafi_days),
+        (model::Input::TeslamateLocal, &meta.tmlocal_days),
+    ] {
         for &d in set.range(days.clone()) {
             for a in api_day(db, car, input, d)? {
                 let (x, y) = (a.start_ms.max(from_ms), a.end_ms.min(to_ms));

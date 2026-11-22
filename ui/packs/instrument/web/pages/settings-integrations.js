@@ -13,6 +13,7 @@ import { h, replace } from '../shared/dom.js';
 import { buildUrl, lastCar } from '../shared/state.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { icon } from '../core/icons.js';
+import { soldParts, soldOptions } from '../core/carswitch.js';
 import { pageHead, panel, panelLink, kv, tag, pill, note, csvButton, metric, figures } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { field, form, showApiError } from '../core/form.js';
@@ -443,7 +444,10 @@ export async function mount(ctx) {
   function fillCars(list) {
     const cur = extraCar && extraCar.id === carId ? extraCar : { id: carId, name: pv?.name || carId };
     const items = list.some((c) => c.id === carId) || !carId ? list : [cur, ...list];
-    replace(carSel, items.map((c) => h('option', { value: c.id, selected: c.id === carId }, c.name || c.id)));
+    // sold cars last, in a "Sold cars" group, unless previewed now or searched for
+    const { main, sold } = soldParts(items, [carId], { search: !!carSearch.value.trim() });
+    const mk = (c) => h('option', { value: c.id, selected: c.id === carId }, c.name || c.id);
+    replace(carSel, main.map(mk), soldOptions(sold, mk));
   }
   fillCars(carList);
   let searchGen = 0;

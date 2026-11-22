@@ -5,7 +5,9 @@
 // with its own time; updated live by `now` events), /settings (whether outside map links are on), and for
 // the period: /cars/{car}/timeline, /activity, /series (battery % and range) and /trip (distance and
 // consumption). Latest drive and charge: the first item of /drives and /charges. Arrival time: the open
-// stop of /visits; whether the place is a service centre: its kind from /places/{place}.
+// stop of /visits; whether the place is a service centre: its kind from /places/{place}. Under the period: Vehicle
+// info (the car's `vehicle` facts, each with its source; an admin corrects one with PATCH /cars/{car}) and Car
+// firmware (/cars/{car}/firmware), both in pages/car-facts.js.
 
 import { h, svg, replace } from '../shared/dom.js';
 import { format, parts, rangeLabel, rangeField, getUnits } from '../shared/units.js';
@@ -19,6 +21,7 @@ import { makeMap, coordsText, boundsOf } from '../core/map.js';
 import { stackedCharts, spansFromStates } from '../core/chart.js';
 import { activityStrip, timelineRow, AWAKE_WORDS, endLabel } from '../core/journal.js';
 import { sourceMark, valueMark, inputsLine, labelOf } from '../core/sources.js';
+import { vehiclePanel, firmwarePanel } from './car-facts.js';
 
 export const id = 'car';
 export const css = true;
@@ -123,7 +126,10 @@ export async function mount(ctx) {
   // The time in the current state counts on by itself (a clock, not a request).
   const tick = setInterval(drawState, 30000);
   ctx.onCleanup(() => clearInterval(tick));
-  ctx.main.append(head, h('div', { class: ['now-grid', `now-${now.state}`, { 'is-stale': !!now.stale }] }, live, aside), periodBox);
+  const vehicle = vehiclePanel(ctx, car);
+  const firmware = firmwarePanel(ctx, car);
+  ctx.main.append(head, h('div', { class: ['now-grid', `now-${now.state}`, { 'is-stale': !!now.stale }] }, live, aside), periodBox,
+    h('div', { class: 'car-facts' }, vehicle.el, firmware.el));
 
   // The map: where the car is, with a pin (an arrow along the heading when it is known).
   const lat = v(now.location?.lat), lon = v(now.location?.lon);
@@ -151,7 +157,7 @@ export async function mount(ctx) {
   }).catch((err) => replace(latest, errorView(err, { eyebrow: 'Latest drive and charge' })));
 
   const periodP = drawPeriod(ctx, aside, periodBox);
-  await Promise.all([latestP, periodP]);
+  await Promise.all([latestP, periodP, firmware.load()]);
 
   // Live: values pushed by the server as the car sends them; nothing is re-queried on a timer.
   ctx.events(['now', 'rows'], (ev) => {
@@ -166,6 +172,12 @@ export async function mount(ctx) {
   });
   await Promise.race([mapReady, new Promise((r) => setTimeout(r, 4000))]);
   ctx.ready();
+  // a link to a panel (#car-firmware from Software, #car-vehicle) opens it once the page is drawn
+  const hashT = setTimeout(() => {
+    const t = /^#car-(firmware|vehicle)$/.test(location.hash) ? document.getElementById(location.hash.slice(1)) : null;
+    if (t && ctx.alive()) { if (!t.hasAttribute('tabindex')) t.setAttribute('tabindex', '-1'); t.focus({ preventScroll: true }); t.scrollIntoView({ block: 'start' }); }
+  }, 0);
+  ctx.onCleanup(() => clearTimeout(hashT));
   return {
     async update(c, why = {}) {
       if (why.prefs) draw();

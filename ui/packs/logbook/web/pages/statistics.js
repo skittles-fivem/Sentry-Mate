@@ -25,7 +25,7 @@ import * as state from '../shared/state.js';
 import { pageHead, q, figure, icon, empty, errorView, flag, button, sep } from '../core/ui.js';
 import { dataTable } from '../core/table.js';
 import { popover } from '../core/dialog.js';
-import { choice } from '../core/form.js';
+import { choice, soldPickRows } from '../core/form.js';
 import { niceSplits } from '../core/chart.js';
 import { zoneLabel } from '../core/format.js';
 
@@ -670,6 +670,7 @@ const round2 = (v) => (v == null ? null : Math.round(v * 100) / 100);
 /** The car pick list: tick one car, several, or none for every car; Apply opens that view. */
 function carPicker(ctx, { fleet, chosen, onapply }) {
   let sel = new Set(chosen);
+  let soldOpen = false;
   const trigger = h('button', { type: 'button', class: 'field-select st-pick-trigger', id: 'statistics-cars', disabled: fleet.length < 2 });
   const search = h('input', { class: 'field-input st-pick-search', type: 'search', placeholder: 'Find a car', 'aria-label': 'Find a car', autocomplete: 'off' });
   const list = h('ul', { class: 'st-pick-list' });
@@ -683,12 +684,17 @@ function carPicker(ctx, { fleet, chosen, onapply }) {
     const s = search.value.trim().toLowerCase();
     const found = fleet.filter((c) => !s || String(c.name || '').toLowerCase().includes(s));
     found.sort((a, b) => (sel.has(b.id) - sel.has(a.id)) || String(a.name).localeCompare(String(b.name)));
-    replace(list, found.slice(0, 60).map((c) => {
-      const box = h('input', { type: 'checkbox', id: `st-car-${c.id}`, checked: sel.has(c.id) });
-      box.addEventListener('change', () => { if (box.checked) sel.add(c.id); else sel.delete(c.id); text(); });
-      return h('li', null, h('label', { class: 'st-pick-item', for: `st-car-${c.id}` }, box, h('span', { class: 'st-pick-name' }, c.name || c.id), h('span', { class: 'st-pick-sub' }, [c.model, c.year].filter(Boolean).join(' '))));
-    }));
-    more.textContent = !found.length ? 'No car has that name.' : found.length > 60 ? `${formatNumber(found.length - 60)} more; type to narrow the list.` : '';
+    // Sold cars wait behind their own toggle unless ticked or searched for.
+    const { rows, cut } = soldPickRows(found, {
+      chosen: (c) => sel.has(c.id), searching: !!s, open: soldOpen, ontoggle: () => { soldOpen = !soldOpen; draw(); }, max: 60,
+      row: (c) => {
+        const box = h('input', { type: 'checkbox', id: `st-car-${c.id}`, checked: sel.has(c.id) });
+        box.addEventListener('change', () => { if (box.checked) sel.add(c.id); else sel.delete(c.id); text(); });
+        return h('li', null, h('label', { class: 'st-pick-item', for: `st-car-${c.id}` }, box, h('span', { class: 'st-pick-name' }, c.name || c.id), h('span', { class: 'st-pick-sub' }, [[c.model, c.year].filter(Boolean).join(' '), state.isSold(c) ? 'Sold' : null].filter(Boolean).join(' · '))));
+      },
+    });
+    replace(list, rows);
+    more.textContent = !found.length ? 'No car has that name.' : cut ? `${formatNumber(cut)} more; type to narrow the list.` : '';
   }
   search.addEventListener('input', draw);
   const panel = h('div', { class: 'pop st-pick-pop', id: 'statistics-cars-menu', role: 'group', 'aria-label': 'Cars', tabindex: '-1' },

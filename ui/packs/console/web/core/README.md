@@ -44,6 +44,7 @@ pages/<id>.js  one module per page id, plus sign-in and setup; pages/<id>.css wh
 | `palette.js` | The command list (Ctrl/Cmd+K or `/`): pages, cars, recent drives and charges, settings keys (`SETTINGS_KEYS`). |
 | `keys.js` | Global keys (`KEYS`), `j`/`k` rows, `g <key>` chords, `?` key list. |
 | `carswitch.js`, `period.js`, `account.js` | The car switcher, the period picker and the account menu, all dialogs. |
+| `carpick.js` | A page's own car keys and selects: `carKeys(items, key, { keep })`, `carOptions(items, option)`, `pairOptions(pairs, cars, selected)`. Sold cars sit behind a "sold cars (n)" key or an optgroup; a kept (chosen) sold car still shows. |
 | `notices.js` | Server notices and the offline line under the command bar. |
 | `toast.js` | `toast(text, { kind: 'ok' \| 'info' \| 'error', next })`: bottom-right notes, no motion. |
 | `dialog.js` | `openDialog({ title, body, actions })`, `confirmDialog(text, { danger, ok })` on native `<dialog>`. |

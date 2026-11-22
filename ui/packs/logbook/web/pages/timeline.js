@@ -60,7 +60,8 @@ const ROW_COVERS = ['timeline.table', 'projects.dash', 'shots.timeline', 'shots.
   'timeline.col.soc_diff', 'timeline.col.temp',
   'timeline.link.trip_span', 'timeline.link.slot_details', 'timeline.link.geofence_start', 'timeline.link.geofence_end', 'timeline.link.place_cells_other_rows'];
 
-const VERSION_SOURCE = { teslamate: 'from the import', tesla_api: 'by the Tesla API', owner: 'typed by the owner', build_match: 'matched by its build' };
+const MODULE_NAME = { vcfront: 'front body controller', bms: 'battery management', dir: 'rear drive unit', dif: 'front drive unit' };
+const VERSION_SOURCE = { teslamate: 'from the import', tesla_api: 'by the Tesla API', owner: 'typed by the owner', build_match: 'from an earlier update with the same fingerprints' };
 
 export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz;
@@ -484,14 +485,21 @@ function entry(r, { car, tz, now, period }) {
       r.distance_km ? 'The car moved but no drive was recorded. ' : '',
       'This time is listed once, here: it is never also counted as parked time.'));
   } else if (r.kind === 'update') {
-    detail = h('a', { href: state.buildUrl('software', { car, period }) }, 'Open Software');
-    title = [r.version ? ['Software ', h('span', { class: 'tl-version' }, r.version)] : 'Software changed', r.start ? [' at ', placeA(r.start, 'timeline.link.place_cells_other_rows')] : ''];
+    const fp = r.detected_by === 'fingerprint';
+    const swHref = `${state.buildUrl('software', { car, period })}${r.ref && r.ref.update ? `#update-${r.ref.update}` : ''}`;
+    detail = h('a', { href: swHref }, fp ? (r.version ? 'Its fingerprints on Software' : 'Name it on Software') : 'Open Software');
+    title = fp
+      ? ['Tesla update installed', r.version ? [': ', h('span', { class: 'tl-version' }, r.version)] : '', r.start ? [' at ', placeA(r.start, 'timeline.link.place_cells_other_rows')] : '']
+      : [r.version ? ['Software ', h('span', { class: 'tl-version' }, r.version)] : 'Software changed', r.start ? [' at ', placeA(r.start, 'timeline.link.place_cells_other_rows')] : ''];
     figs = [
-      fig('Took', formatDuration(len), going ? 'so far' : null),
-      fig('Named', r.version ? VERSION_SOURCE[r.version_source] || 'by the car' : null),
+      fig(fp ? 'Between' : 'Took', fp ? `${formatTime(r.start_ms, tz)} and ${dayKey(end, tz) === dayKey(r.start_ms, tz) ? formatTime(end, tz) : formatDateTime(end, tz, { now })}` : formatDuration(len), fp ? 'last old, first new fingerprint' : going ? 'so far' : null),
+      fig('Named', r.version ? VERSION_SOURCE[r.version_source] || 'by the car' : fp ? 'not yet' : null),
+      fp && r.changed_modules && r.changed_modules.length ? fig('Changed', formatList(r.changed_modules.map((m) => MODULE_NAME[m] || m))) : null,
       fig('Battery', q(r.soc_end_pct, 'percent')),
     ];
-    if (!r.version) extra.push(h('p', { class: 'tl-why' }, 'Seen as changed module builds; the version number can be typed on the Software page.'));
+    if (fp) extra.push(h('p', { class: 'tl-why' }, 'Found from the firmware fingerprints the modules broadcast on the vehicle bus: the car does not send its version number. ',
+      r.version_source === 'build_match' ? 'Named from an earlier update with the same fingerprints.' : r.version ? '' : 'An admin can type the version from the car’s screen.'));
+    else if (!r.version) extra.push(h('p', { class: 'tl-why' }, 'Seen as changed module builds; the version number can be typed on the Software page.'));
   }
 
   const endTime = going ? 'now' : dayKey(r.end_ms, tz) === dayKey(r.start_ms, tz) ? formatTime(r.end_ms, tz) : null;

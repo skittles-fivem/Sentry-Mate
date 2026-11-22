@@ -18,7 +18,7 @@ import * as state from '../shared/state.js';
 import { formatDateTime, formatTime, formatDuration } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { section, figure, chip, button, icon, ago, errorView, empty } from '../core/ui.js';
-import { field, choice } from '../core/form.js';
+import { field, choice, carOptions } from '../core/form.js';
 import { dataTable } from '../core/table.js';
 import { askAgain } from './integrations-tesla.js';
 import { zoneLabel } from '../core/format.js';
@@ -311,10 +311,10 @@ export function teslafiPart(ctx) {
       const mine = chosen.get(c.vehicle) || '';
       const sel = h('select', { class: 'field-select tesla-match', 'aria-label': `Which car here is ${nameOf(c)}` },
         h('option', { value: '' }, 'Not decided: not read'),
-        h('optgroup', { label: 'A car here' }, cars.map((x) => {
+        carOptions(cars, { group: 'A car here', option: (x) => {
           const other = takenBy.get(x.id);
           return h('option', { value: x.id, disabled: !!other && mine !== x.id }, `${x.name}${c.suggested === x.id ? ' (suggested: same VIN prefix)' : ''}${other ? ` (read through ${other})` : ''}`);
-        })),
+        } }),
         h('option', { value: 'new' }, 'A new car'),
         h('option', { value: 'leave_out' }, 'Leave it out'));
       sel.value = mine;
