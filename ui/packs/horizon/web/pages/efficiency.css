@@ -1,40 +1,115 @@
-/* Efficiency and temperatures: the economy dials, the factor, the groups and the temperature charts. */
+/* Efficiency and temperatures (pages/efficiency.js): filters, consumption, energy factor, the table by
+   outside temperature (and the drives of a group), other cars, then the temperatures. */
 
-.ef-top { align-items: stretch; }
-.ef-top > .hud { display: grid; grid-template-rows: auto minmax(0, 1fr); }
-.ef-dials { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.5rem; margin-bottom: 1.25rem; }
-.ef-dial { display: grid; justify-items: center; align-content: start; gap: 0.5rem; min-width: 0; }
-.ef-dial .gauge { width: min(100%, 17rem); }
-.ef-dial .gauge-value { font-size: 1.875rem; }
-.ef-dial-how { max-width: 20rem; font-size: var(--fs-xs); color: var(--ink-3); text-align: center; }
-.ef-help { display: grid; gap: 0.5rem; margin-top: 1.25rem; padding-top: 1rem; box-shadow: inset 0 1px 0 var(--rule); }
-.ef-top .ctrs + .note { margin-top: 1rem; }
-.ef-ftab { width: 100%; margin: 1.25rem 0 1rem; border-collapse: separate; border-spacing: 0; font-size: var(--fs-sm); }
-.ef-ftab th, .ef-ftab td { padding: 0.5rem 0.25rem; text-align: left; box-shadow: inset 0 -1px 0 var(--rule); }
-.ef-ftab thead th { font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.12em; text-transform: uppercase; color: var(--cyan-ink); box-shadow: inset 0 -1px 0 var(--ring); }
-.ef-ftab tbody th { font-weight: 600; }
-.ef-ftab .is-num { text-align: right; font-family: var(--mono); }
-.ef-ftab tr.is-mine th, .ef-ftab tr.is-mine td { background: rgba(61, 240, 255, 0.06); }
-.ef-set { display: inline-block; margin-top: 0.75rem; font-size: var(--fs-sm); }
-.ef-whcell { display: inline-grid; justify-items: end; gap: 0.25rem; }
-.ef-whbar { position: relative; display: block; width: 5rem; height: 0.375rem; border-radius: 0.125rem; background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); overflow: hidden; }
-.ef-whbar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); background: linear-gradient(90deg, var(--cyan), var(--org)); }
-.ef .trk td.is-act { text-align: right; }
-.ef-cmp-head { margin-top: 1.25rem; }
-.ef-tcols { margin-bottom: 1rem; }
-.ef-tcol { display: grid; gap: 0.75rem; min-width: 0; padding: 0.875rem 1rem; border-radius: var(--r); background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); }
-.ef-tcol-h { display: flex; align-items: center; gap: 0.5rem; font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink); }
-.ef-tfigs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; }
-.ef-tfig { display: grid; gap: 0.125rem; min-width: 0; }
-.ef-tval { font: 400 1.125rem/1.4 var(--mono); color: var(--ink); white-space: nowrap; }
-.ef-tfig--avg .ef-tval { font-weight: 700; color: var(--mag-ink); }
-.ef-tcov { display: grid; gap: 0.375rem; }
-.ef-miss { margin-bottom: 0.5rem; font-size: var(--fs-sm); color: var(--ink-2); }
-.ef .scope-read { white-space: normal; text-align: right; }
-@container view (max-width: 40rem) {
-  .ef-dials { grid-template-columns: minmax(0, 1fr); }
-  .ef .scope-read { text-align: left; }
-  .ef-whcell { justify-items: start; }
+.efficiency-page .panel-head { flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
+.efficiency-page .panel-side { display: inline-flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
+.efficiency-page .section-title { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); font-family: var(--font-display); font-size: 1.25rem; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+.efficiency-page .metric-value { overflow-wrap: anywhere; }
+.efficiency-page .note .ico { vertical-align: round(-0.125rem, var(--e)); }
+
+/* filters */
+.ef-filters { margin-bottom: var(--gap); position: relative; z-index: 3; }
+.ef-filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.75rem, var(--e)) round(1.5rem, var(--e)); }
+.ef-filters .filter { flex-wrap: wrap; }
+.ef-filters .form-label { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); font-weight: 500; }
+.ef-filter-note { margin: round(0.75rem, var(--e)) 0 0; }
+.ef-cars { margin-left: auto; }
+.ef-cars-pop { position: relative; }
+.ef-cars-pop > summary { list-style: none; cursor: pointer; }
+.ef-cars-pop > summary::-webkit-details-marker { display: none; }
+.ef-cars-count { color: var(--text-3); font-weight: 500; margin-left: round(0.25rem, var(--e)); }
+.ef-cars-menu { position: absolute; right: 0; top: calc(100% + round(0.375rem, var(--e))); z-index: 5; width: round(18rem, var(--e)); max-width: calc(100vw - round(2rem, var(--e))); padding: round(0.875rem, var(--e)); display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); background: var(--panel-solid); }
+.ef-cars-menu .faint { margin: 0; font-size: max(0.78125rem, var(--fs-floor)); }
+.ef-cars-list { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); max-height: round(16rem, var(--e)); overflow: auto; }
+.ef-cars-search { width: 100%; }
+
+/* grid */
+.ef-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--gap); margin-bottom: round(1.75rem, var(--e)); }
+.ef-grid > * { min-width: 0; }
+.ef-cons { grid-column: span 7; }
+.ef-factor { grid-column: span 5; }
+.ef-bytemp { grid-column: span 12; display: flex; flex-direction: column; gap: var(--gap); }
+.ef-compare-slot { grid-column: span 12; }
+.ef-compare-slot:empty, .ef-group-slot:empty { display: none; }
+
+/* consumption */
+.ef-cons-figs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(1.25rem, var(--e)) round(1.75rem, var(--e)); margin-bottom: round(1rem, var(--e)); }
+.ef-cons-help { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); border-top: 1px solid var(--line); padding-top: round(0.875rem, var(--e)); }
+.ef-cons-help .note, .ef-cons-body > .note { margin: 0; }
+.ef-cons-body > .note { margin-bottom: round(0.75rem, var(--e)); }
+
+/* energy factor */
+.ef-factor .metric { margin-bottom: round(1rem, var(--e)); }
+.ef-factor-tbl { margin-bottom: round(0.75rem, var(--e)); }
+.ef-factor-tbl tr.is-mine .ef-rowhead { color: var(--live); }
+.efficiency-page .ef-rowhead { font-weight: 600; white-space: nowrap; }
+.ef-factor .note { margin: 0 0 round(0.625rem, var(--e)); }
+
+/* by temperature */
+.ef-whcell { display: inline-flex; align-items: center; justify-content: flex-end; gap: round(0.625rem, var(--e)); }
+.ef-whcell .bar { width: round(6rem, var(--e)); }
+.ef-eff { font-weight: 600; }
+.ef-eff.is-low { color: var(--danger); }
+.ef-eff.is-mid { color: var(--warm); }
+.ef-eff.is-ok { color: var(--live); }
+.ef-bytemp-tbl .btn.is-on { color: var(--live); box-shadow: inset 0 0 0 1px var(--live-line); }
+.ef-nt { margin: 0; }
+
+/* compare */
+.ef-compare-tbl { margin-bottom: round(0.75rem, var(--e)); }
+.ef-compare-tbl .ef-rowhead .legend-swatch { display: inline-block; margin-right: round(0.5rem, var(--e)); vertical-align: round(0.1875rem, var(--e)); }
+.ef-compare .chart-label { padding-left: 0; flex-wrap: wrap; }
+.ef-compare-chart { --chart-h: round(12rem, var(--e)); margin-bottom: round(0.5rem, var(--e)); }
+.ef-readout { margin-left: auto; font-size: max(0.78125rem, var(--fs-floor)); text-align: right; }
+
+/* temperatures */
+.ef-section-head { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); margin: 0 0 round(0.875rem, var(--e)); }
+.ef-section-head .faint { font-size: max(0.8125rem, var(--fs-floor)); }
+.tp-sum, .tp-hist { grid-column: span 12; }
+.tp-chg, .tp-day { grid-column: span 6; }
+.tp-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: round(1.5rem, var(--e)); margin-bottom: round(1rem, var(--e)); }
+.tp-col { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); min-width: 0; }
+.tp-col + .tp-col { border-left: 1px solid var(--line); padding-left: round(1.5rem, var(--e)); }
+.tp-col-h { display: flex; align-items: center; gap: round(0.5rem, var(--e)); margin: 0; font-size: max(0.875rem, var(--fs-floor)); font-weight: 600; }
+.tp-col-figs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: round(0.75rem, var(--e)); align-items: end; }
+.tp-cov { display: grid; grid-template-columns: auto minmax(round(3rem, var(--e)), 1fr) auto auto; align-items: center; gap: round(0.5rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); }
+.tp-missing { display: flex; flex-wrap: wrap; gap: round(0.375rem, var(--e)) round(1.5rem, var(--e)); margin-bottom: round(0.75rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); }
+.tp-miss { display: inline-flex; align-items: center; gap: round(0.4375rem, var(--e)); flex-wrap: wrap; }
+.k-asleep, .k-unknown, .k-box, .k-whisker, .k-cov { display: inline-block; width: round(0.75rem, var(--e)); height: round(0.75rem, var(--e)); border-radius: round(0.1875rem, var(--e)); vertical-align: round(-0.0625rem, var(--e)); }
+.k-asleep { background: color-mix(in srgb, var(--st-asleep) 30%, transparent); box-shadow: inset 0 0 0 1px var(--st-asleep); }
+.k-unknown { background: color-mix(in srgb, var(--st-unknown) 40%, transparent); box-shadow: inset 0 0 0 1px var(--st-unknown); }
+.k-box { width: round(0.5rem, var(--e)); height: round(0.875rem, var(--e)); border-radius: round(0.125rem, var(--e)); background: var(--warm); }
+.k-whisker { width: round(0.125rem, var(--e)); height: round(0.875rem, var(--e)); background: var(--warm); }
+.k-cov { width: round(0.5rem, var(--e)); height: round(0.5rem, var(--e)); vertical-align: calc(round(-0.0625rem, var(--e)) + (round(0.75rem, var(--e)) - round(0.5rem, var(--e))) / 2); /* centred on the 12 px keys beside it */ background: color-mix(in srgb, var(--live) 45%, transparent); }
+.tp-sum .note { margin: 0; }
+.tp-top { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.375rem, var(--e)) round(0.75rem, var(--e)); margin-bottom: round(0.5rem, var(--e)); }
+.tp-top .legend { margin: 0; }
+.tp-figs { font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); }
+.tp-hist-chart { --chart-h: round(15rem, var(--e)); margin-bottom: round(0.75rem, var(--e)); }
+.tp-chg-chart, .tp-day-chart { --chart-h: round(13rem, var(--e)); margin-bottom: round(0.625rem, var(--e)); }
+.tp-chg-chart .u-over.is-link { cursor: pointer; }
+.tp-stats { margin-bottom: round(0.625rem, var(--e)); }
+.tp-stats .ef-rowhead .legend-swatch { display: inline-block; margin-right: round(0.5rem, var(--e)); vertical-align: round(0.1875rem, var(--e)); }
+.legend-swatch.is-dashed { background: repeating-linear-gradient(90deg, var(--c) 0 round(0.1875rem, var(--e)), transparent round(0.1875rem, var(--e)) round(0.3125rem, var(--e))); }
+.tp-hist .note, .tp-chg .note, .tp-day .note { margin: 0; }
+
+@container page (min-width: 108rem) {
+  .ef-cons-figs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .tp-hist { grid-column: span 8; }
+  .tp-sum { grid-column: span 4; }
+  .tp-sum .tp-cols { grid-template-columns: minmax(0, 1fr); gap: round(1rem, var(--e)); }
+  .tp-sum .tp-col + .tp-col { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: round(1rem, var(--e)); }
 }
-.ef .trk td, .ef .trk td.is-act { vertical-align: baseline; }
-.ef-tcol-h { line-height: normal; }
+@container page (max-width: 85.375rem) {
+  .ef-cons, .ef-factor { grid-column: span 12; }
+  .tp-chg, .tp-day { grid-column: span 12; }
+}
+@container page (max-width: 50rem) {
+  .ef-cons-figs, .tp-cols { grid-template-columns: minmax(0, 1fr); }
+  .tp-col + .tp-col { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: round(1rem, var(--e)); }
+  .ef-cars { margin-left: 0; }
+  .ef-cars-menu { left: 0; right: auto; }
+  .ef-whcell .bar { display: none; }
+}
+@container page (max-width: 36rem) { .ef-filter-row > .filter { flex-wrap: wrap; max-width: 100%; } .ef-cars-menu { max-width: calc(100vw - round(7.5rem, var(--e))); } }
+.tp-day-body p.note > i { vertical-align: middle; } /* the keys in a line of text share one centre */

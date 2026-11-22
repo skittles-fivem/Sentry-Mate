@@ -9,8 +9,9 @@ the [README](../README.md).
   in on Tesla's page or paste a refresh token, match cars, pause, remove) and "Data from SMO / the Tesla API /
   Imported from TeslaMate" on every page. The server side is done; until the pages have it, a Tesla account can't be
   added from the web UI.
-- **Horizon, Console and Pebble catch up:** the certificate SHA-256 with Copy and "Make a new certificate", the
-  Sentry Six Manager CAN export import, and the weak-password warning (Instrument and Logbook have them).
+- **Console and Pebble catch up:** the certificate SHA-256 with Copy and "Make a new certificate", the
+  Sentry Six Manager CAN export import, and the weak-password warning (Instrument, Logbook and Horizon have them;
+  Horizon is built on Instrument's pages).
 - **Logbook pixel clean** at laptop, 4K and phone sizes (Instrument is).
 - **The Import page in each design shows TeslaFi.** The server takes TeslaFi's data download (`kind: "teslafi"`:
   its report, the time zone to confirm and the units to Start, `docs/ui-api.md`, "TeslaFi's data") and the dev

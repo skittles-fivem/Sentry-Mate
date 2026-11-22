@@ -1,74 +1,88 @@
-// Sentry Mate · Horizon UI pack · runs in <head>, before the first paint, so the first frame already has the
-// right size, look and background (no jump on load).
+// Sentry Mate · Horizon UI pack · runs in <head>, before the first paint.
 //
-// Root size = browser default (100%) x Auto x Interface size. The rule is the same in every pack:
-// - Auto follows the screen (screen.width x screen.height in CSS px), not the window: 1 up to 1440 x 810,
-//   then a straight line to 1.45 at 3840 x 2160, capped there. The long and the short side both count. Firefox
-//   reports the screen scaled by its page zoom, so there Auto is 1. Follow screen size off makes Auto 1.
-// - Interface size is the person's interface_size, 75 to 200 (%), default 100.
-// Both are the person's preferences on the server; this browser keeps a copy only for the first paint.
-// core/display.js owns them afterwards; window.hzBoot is its link to this file.
+// Sets the root font size, so the first frame already has the right size and theme (no jump on load):
 //
-// Also set here from this browser's copy: the theme (data-theme: dark | light) and the Background choice
-// (data-sky-choice: auto | full | calm | off), which is kept per browser only.
+//     root size = browser default (100%) x Auto x Interface size
+//
+// - Auto follows the screen, not the window. It is worked out from the screen's size in CSS pixels
+//   (screen.width x screen.height): 1 up to about 1440 x 810, rising smoothly to 1.45 at 3840 x 2160 and
+//   capped there. Both the long and the short side count, so a portrait 4K screen grows and a
+//   3840 x 1080 ultrawide does not grow more than a 1920 x 1080 one. Chromium and WebKit report the screen
+//   in device-independent pixels that page zoom does not change, so browser zoom works fully on top.
+//   Firefox reports the screen scaled by page zoom; there Auto is 1. core/display.js works Auto out again
+//   when the window moves to another screen.
+// - "Follow screen size" (the person's follow_screen preference, on by default) turns Auto on; off, Auto is 1.
+// - Interface size: the person's interface_size preference, 75 to 200 (%), default 100.
+//
+// Both preferences live on the server (/api/v1/me/preferences); this browser keeps a copy in localStorage
+// only so the first paint uses them. The theme copy works the same way. core/display.js owns these values
+// after start-up (window.uiRoot is its only link to this file).
+//
+// Also set here: the Background choice (data-sky-choice: auto | full | calm | off), kept in this browser only;
+// core/sky.js draws the background and owns the choice after start-up.
 (function () {
-  var html = document.documentElement;
-  var SIZE_KEY = 'sentrymate.interface';
+  var root = document.documentElement;
+  var KEY = 'sentrymate.interface';
   var THEME_KEY = 'sentrymate.theme';
   var SKY_KEY = 'sentrymate.horizon.sky';
-  var LOW = 75, HIGH = 200;
-  var firefox = /\bFirefox\//.test(navigator.userAgent || '');
-
-  function read(key) { try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; } }
+  var MIN = 75, MAX = 200;
+  var GECKO_ZOOMED_SCREEN = /\bFirefox\//.test(navigator.userAgent || '');
 
   function clampSize(v) {
     v = Math.round(Number(v));
-    return isFinite(v) ? Math.min(HIGH, Math.max(LOW, v)) : 100;
+    if (!isFinite(v)) return 100;
+    return Math.max(MIN, Math.min(MAX, v));
   }
 
+  // 1 up to 1440 x 810, then linear to 1.45 at 3840 x 2160 (long and short side), capped there.
   function autoFactor() {
-    if (firefox) return 1;
+    if (GECKO_ZOOMED_SCREEN) return 1;
     var w = screen.width || 0, h = screen.height || 0;
-    var big = Math.max(w, h), small = Math.min(w, h);
-    var t = Math.max(0, Math.min(1, Math.min((big - 1440) / 2400, (small - 810) / 1350)));
+    var long = Math.max(w, h), short = Math.min(w, h);
+    var t = Math.min((long - 1440) / 2400, (short - 810) / 1350);
+    t = Math.max(0, Math.min(1, t));
     return Math.round((1 + 0.45 * t) * 1000) / 1000;
   }
 
-  function applySize(s) {
+  // { size: 75..200, follow: true | false }. Returns what was applied, with auto (the factor used).
+  function apply(s) {
     s = s || {};
     var size = clampSize(s.size == null ? 100 : s.size);
     var follow = s.follow !== false;
     var auto = follow ? autoFactor() : 1;
-    html.style.setProperty('--ui-auto', String(auto));
-    html.style.setProperty('--ui-scale', String(size / 100));
-    html.setAttribute('data-ui-size', String(size));
+    root.style.setProperty('--ui-auto', String(auto));
+    root.style.setProperty('--ui-scale', String(size / 100));
+    root.setAttribute('data-ui-size', String(size));
+    root.setAttribute('data-ui-follow', follow ? 'on' : 'off');
     return { size: size, follow: follow, auto: auto };
   }
 
-  function themeFor(choice) {
+  // 'light' | 'dark' | 'device' -> the theme drawn now
+  function effectiveTheme(choice) {
     if (choice === 'light' || choice === 'dark') return choice;
-    try { return matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; } catch (e) { return 'dark'; }
+    try { return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; } catch (e) { return 'dark'; }
   }
   function applyTheme(choice) {
-    var c = choice === 'light' || choice === 'dark' ? choice : 'device';
-    var t = themeFor(c);
-    html.setAttribute('data-theme', t);
-    html.setAttribute('data-theme-choice', c);
-    return t;
+    var eff = effectiveTheme(choice);
+    root.setAttribute('data-theme', eff);
+    root.setAttribute('data-theme-choice', choice === 'light' || choice === 'dark' ? choice : 'device');
+    return eff;
   }
 
   function skyChoice(v) { return v === 'full' || v === 'calm' || v === 'off' ? v : 'auto'; }
 
-  var size = read(SIZE_KEY);
-  var theme = read(THEME_KEY) || 'device';
-  var sky = skyChoice(read(SKY_KEY));
-  applySize(size);
+  var saved = null, theme = 'device', sky = 'auto';
+  try { saved = JSON.parse(localStorage.getItem(KEY)); } catch (e) { /* storage blocked: defaults */ }
+  try { theme = JSON.parse(localStorage.getItem(THEME_KEY)) || 'device'; } catch (e) { /* storage blocked */ }
+  try { sky = skyChoice(JSON.parse(localStorage.getItem(SKY_KEY))); } catch (e) { /* storage blocked */ }
+  apply(saved);
   applyTheme(theme);
-  html.setAttribute('data-sky-choice', sky);
+  root.setAttribute('data-sky-choice', sky);
 
-  window.hzBoot = {
-    LOW: LOW, HIGH: HIGH, SIZE_KEY: SIZE_KEY, THEME_KEY: THEME_KEY, SKY_KEY: SKY_KEY,
-    autoFactor: autoFactor, applySize: applySize, clampSize: clampSize, themeFor: themeFor, applyTheme: applyTheme,
-    skyChoice: skyChoice, savedSize: function () { return size; }, savedSky: function () { return sky; },
+  window.uiRoot = {
+    MIN: MIN, MAX: MAX, KEY: KEY, THEME_KEY: THEME_KEY, SKY_KEY: SKY_KEY, skyChoice: skyChoice,
+    autoFactor: autoFactor, apply: apply, clampSize: clampSize,
+    effectiveTheme: effectiveTheme, applyTheme: applyTheme,
+    saved: function () { return saved; },
   };
 })();
