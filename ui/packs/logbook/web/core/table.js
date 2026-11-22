@@ -40,6 +40,7 @@ export function dataTable(ctx, opts) {
   let rows = opts.rows ? [...opts.rows] : null;
   const pager = path ? ctx.api.pager(path, serverParams(), { limit }) : null;
   let total = null;
+  let drawn = false;                // something (rows or the empty view) is on screen: never show loading again
 
   const count = h('p', { class: 'ledger-count', 'aria-live': 'polite' });
   const csvBtn = csv === false ? null : path
@@ -76,7 +77,7 @@ export function dataTable(ctx, opts) {
     sort = { key: c.key, dir };
     opts.onSort?.({ ...sort });
     head.replaceChildren(h('tr', null, columns.map((x) => headCell(x))));
-    if (pager && typeof c.sort === 'string') { pager.reset(serverParams()); body.replaceChildren(); loadMore(); }
+    if (pager && typeof c.sort === 'string') { total = null; pager.reset(serverParams()); quietLoad(0).then((ok) => ok && draw()); }
     else { draw(); fillForSort(); }
   }
   function clientSorted() { return !!(sort && columns.find((c) => c.key === sort.key && c.sort === true)); }
@@ -133,10 +134,11 @@ export function dataTable(ctx, opts) {
     table.hidden = !n;
     if (csvBtn && path) csvBtn.setAttribute('href', ctx.api.csvUrl(path, serverParams()));
     if (csvBtn) csvBtn.hidden = !n;
+    drawn = true;
   }
   async function loadMore(rethrow = false) {
     more.disabled = true;
-    if (!pager.items.length) status.replaceChildren(loadingBlock(4));
+    if (!pager.items.length && !drawn) status.replaceChildren(loadingBlock(4));
     try {
       const got = await pager.more();
       if (pager.last && typeof pager.last.total === 'number') total = pager.last.total;
@@ -150,6 +152,21 @@ export function dataTable(ctx, opts) {
       return false;
     } finally {
       more.disabled = false;
+    }
+  }
+  // Load pages without drawing until at least `want` rows (or the end) are in; then the caller draws once.
+  async function quietLoad(want) {
+    try {
+      do {
+        const got = await pager.more();
+        if (pager.last && typeof pager.last.total === 'number') total = pager.last.total;
+        opts.onRows?.(got, pager.last);
+      } while (!pager.done && pager.items.length < want && !ctx.signal.aborted);
+      return !ctx.signal.aborted;
+    } catch (err) {
+      if (ctx.signal.aborted) return false;
+      status.replaceChildren(errorView(err, { retry: () => loadMore().then((ok) => ok && fillForSort()), eyebrow: 'Could not load the list' }));
+      return false;
     }
   }
   function clientCsv() {
@@ -167,7 +184,16 @@ export function dataTable(ctx, opts) {
       if (newParams) params = { ...newParams };
       if ('sort' in o) { sort = o.sort ? { ...o.sort } : null; head.replaceChildren(h('tr', null, columns.map((x) => headCell(x)))); }
       total = null;
-      if (pager) { pager.reset(serverParams()); body.replaceChildren(); if (await loadMore()) await fillForSort(); } else draw();
+      if (!pager) { draw(); return; }
+      // The rows on screen stay until the new ones are in (no loading text, no empty flash). A refresh with the
+      // same filters loads as many rows as were shown, so a list opened with "Show more" keeps its length.
+      const same = !newParams && !('sort' in o);
+      const shown = same ? pager.items.length : 0;
+      pager.reset(serverParams());
+      if (!drawn) body.replaceChildren();
+      if (!(await quietLoad(shown))) return;
+      draw();
+      await fillForSort();
     },
     /** Replace the rows (rows source only). */
     setRows(list) { rows = [...list]; draw(); },

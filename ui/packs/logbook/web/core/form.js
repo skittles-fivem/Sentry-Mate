@@ -113,7 +113,8 @@ export function form({ fields = [], submitLabel = 'Save', check = null, onsubmit
  * options: [[value, text]], onchange(value) }). Arrow keys move and pick, as radios do.
  */
 export function choice({ label = null, name, value, options, onchange, cover = null, cls = null, labelHidden = false } = {}) {
-  const id = nextId('c');
+  // Named by its name, so a part of a page drawn again keeps the same ids (no new element on each refresh).
+  const id = name ? `c-${String(name).replace(/[^A-Za-z0-9_-]/g, '-')}` : nextId('c');
   const group = h('div', { class: ['segmented', cls], role: 'radiogroup', 'aria-labelledby': label ? `${id}-label` : null, 'aria-label': label ? null : name, cover });
   const buttons = options.map(([v, t]) => h('button', {
     type: 'button', role: 'radio', class: 'segmented-option', dataset: { value: String(v) },

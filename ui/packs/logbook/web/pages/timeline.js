@@ -124,8 +124,8 @@ export async function mount(ctx) {
   async function loadRows() {
     const seq = ++loadSeq;
     pager = ctx.api.pager(api.apiPath`cars/${car.id}/timeline`, params(), { limit: 60 });
-    replace(list, loadingBlock(8));
-    replace(more);
+    // Loading shows only the first time; after that the entries on screen stay until the new ones are in.
+    if (!list.firstChild) replace(list, loadingBlock(8));
     csv.setAttribute('href', ctx.api.csvUrl(api.apiPath`cars/${car.id}/timeline`, params()));
     await moreRows(true, seq);
   }

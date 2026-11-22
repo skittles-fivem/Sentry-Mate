@@ -157,7 +157,7 @@ export async function mount(ctx) {
   ctx.events(['now', 'rows'], (ev) => {
     const d = ev.data || {};
     if (d.car !== car.id) return;
-    if (ev.type === 'rows') { drawPeriod(ctx, aside, periodBox).catch(() => {}); return; }
+    if (ev.type === 'rows') { drawPeriod(ctx, aside, periodBox, { refresh: true }).catch(() => {}); return; }
     if (!d.now) return;
     now = mergeNow(now, d.now);
     draw();
@@ -596,7 +596,8 @@ function chargeCard(car, c, now, tz) {
 
 /* ------------------------------------------------------------------ the period */
 
-async function drawPeriod(ctx, aside, box) {
+const periodParts = new WeakMap();
+async function drawPeriod(ctx, aside, box, { refresh = false } = {}) {
   const car = ctx.car, tz = ctx.tz, p = ctx.params;
   const label = periodLabel(ctx.period, tz, api.now());
   const [tl, act, series, trip] = await Promise.allSettled([
@@ -626,24 +627,34 @@ async function drawPeriod(ctx, aside, box) {
     ? activityStrip(act.value, { tz, link: (s) => (s.ref && s.ref.drive ? state.buildUrl('drive', { car: car.id, drive: s.ref.drive }) : s.ref && s.ref.charge ? state.buildUrl('charge', { car: car.id, charge: s.ref.charge }) : null) })
     : errorView(act.reason, { eyebrow: 'Activity' });
   const rf = rangeField('range_km');
-  const battery = chartBlock(ctx, {
-    title: 'Battery', note: 'asleep time shaded violet, unknown time shaded red; a line never crosses unknown time',
-    link: h('a', { class: 'link-arrow', href: state.linkTo('battery'), cover: 'overview.link.charge_level' }, 'Battery history', icon('arrowRight')),
-    cover: ['overview.chart.charge_level', 'overview.control.shared_crosshair'], csvName: [car.name, 'battery', label],
-  });
-  const chargingBox = chartBlock(ctx, {
-    title: 'Charging', note: 'each charge in the period; the lines break between charges',
-    link: h('a', { class: 'link-arrow', href: state.linkTo('charges'), cover: 'overview.link.charging_stats' }, 'Charges and their statistics', icon('arrowRight')),
-    cover: ['overview.chart.charging_details.power', 'overview.chart.charging_details.energy', 'overview.chart.charging_details.ac_current', 'overview.chart.charging_details.ac_voltage', 'overview.chart.charging_details.battery_heater'],
-    csvName: [car.name, 'charging', label],
-  });
-  replace(box,
-    h('section', { class: 'block', cover: ['overview.chart.states', 'overview.control.time_range', 'overview.control.refresh', 'overview.filter.car'] },
-      h('div', { class: 'block-head' }, h('h2', { class: 'label' }, 'Activity', h('span', { class: 'label-note' }, label)),
-        h('a', { class: 'link-arrow', href: state.linkTo('timeline'), cover: 'overview.link.states' }, 'Timeline', icon('arrowRight'))),
-      strip),
-    battery.el, chargingBox.el,
-    h('p', { class: 'note period-note' }, 'This part follows the period picker at the top and loads again by itself when a drive, charge or parked spell starts or ends; nothing is re-asked on a timer.'));
+  // A refresh (a drive or charge started or ended) keeps the blocks on screen and draws new values into them,
+  // so nothing goes blank and comes back; a new period builds them again.
+  let parts = refresh ? periodParts.get(box) : null;
+  if (parts && parts.label !== label) parts = null;
+  if (!parts) {
+    parts = { label, strip: h('div', { class: 'period-strip' }) };
+    parts.battery = chartBlock(ctx, {
+      title: 'Battery', note: 'asleep time shaded violet, unknown time shaded red; a line never crosses unknown time',
+      link: h('a', { class: 'link-arrow', href: state.linkTo('battery'), cover: 'overview.link.charge_level' }, 'Battery history', icon('arrowRight')),
+      cover: ['overview.chart.charge_level', 'overview.control.shared_crosshair'], csvName: [car.name, 'battery', label],
+    });
+    parts.charging = chartBlock(ctx, {
+      title: 'Charging', note: 'each charge in the period; the lines break between charges',
+      link: h('a', { class: 'link-arrow', href: state.linkTo('charges'), cover: 'overview.link.charging_stats' }, 'Charges and their statistics', icon('arrowRight')),
+      cover: ['overview.chart.charging_details.power', 'overview.chart.charging_details.energy', 'overview.chart.charging_details.ac_current', 'overview.chart.charging_details.ac_voltage', 'overview.chart.charging_details.battery_heater'],
+      csvName: [car.name, 'charging', label],
+    });
+    periodParts.set(box, parts);
+    replace(box,
+      h('section', { class: 'block', cover: ['overview.chart.states', 'overview.control.time_range', 'overview.control.refresh', 'overview.filter.car'] },
+        h('div', { class: 'block-head' }, h('h2', { class: 'label' }, 'Activity', h('span', { class: 'label-note' }, label)),
+          h('a', { class: 'link-arrow', href: state.linkTo('timeline'), cover: 'overview.link.states' }, 'Timeline', icon('arrowRight'))),
+        parts.strip),
+      parts.battery.el, parts.charging.el,
+      h('p', { class: 'note period-note' }, 'This part follows the period picker at the top and loads again by itself when a drive, charge or parked spell starts or ends; nothing is re-asked on a timer.'));
+  }
+  const battery = parts.battery, chargingBox = parts.charging;
+  replace(parts.strip, strip);
 
   const draws = [];
   if (series.status === 'fulfilled' && series.value.t_ms.length) {
@@ -659,6 +670,7 @@ async function drawPeriod(ctx, aside, box) {
       extraCsv: [{ label: 'State', value: (i) => states[i] }],
     }));
     const sm = sourceMark(s, { block: true, cls: 'chart-src', prefix: 'Readings: ' });
+    battery.el.querySelector(':scope > .chart-src')?.remove();
     if (sm) battery.el.append(sm);
   } else {
     battery.fill(series.status === 'rejected' ? errorView(series.reason, { eyebrow: 'Battery' }) : empty({ title: 'No battery readings in this period.', text: 'Choose a longer period, or look at the Timeline for when data last arrived.' }));

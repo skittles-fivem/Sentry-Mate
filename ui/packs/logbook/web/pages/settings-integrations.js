@@ -915,15 +915,16 @@ export async function mount(ctx) {
   /* ---------------- put it together */
   function paintAll() {
     paintHead(); paintBroker(); paintStatus(); paintClient(); paintTopics(); paintCarPick(); paintValues(); paintHa(); paintEntities(); paintEvents(); paintNetwork(); paintWorks();
-    paintLog();
+    return paintLog();
   }
   ctx.main.append(
     pageHead({ eyebrow: 'Settings', title: 'Integrations', deck: `${ctx.info.purpose} Nothing leaves this server until an admin turns it on, and the VIN is never sent.`, aside: headStatus }),
     jumpNav,
     h('p', { class: 'si-saving' }, icon('info'), ' Switches and single fields save at once and a short note confirms it; the broker connection saves with its button.'),
     tesla.el, brokerSec, topicsSec, valuesSec, haSec, entSec, eventsSec, apiSec, netSec, worksSec);
-  paintAll();
-  await teslaLoad;
+  // The broker log is in before the page says it is ready, so it does not push the client notes down later.
+  const logLoad = paintAll();
+  await Promise.all([teslaLoad, logLoad.catch(() => {})]);
   if (!ctx.alive()) return {};
   // after the router has put focus on the page (it does so once mount returns), so the account keeps it
   const hashT = setTimeout(() => { if (ctx.alive()) showTeslaHash(); }, 0);

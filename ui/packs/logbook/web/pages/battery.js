@@ -771,7 +771,7 @@ export async function mount(ctx) {
     const d = ev.data || {};
     if (d.car && d.car !== car.id) return;
     clearTimeout(rowsTimer);
-    rowsTimer = setTimeout(() => { if (ctx.alive()) { replace(drainSum); drain.reload({ ...ctx.params, min_hours: opt.min_hours }).catch(() => {}); } }, 3000);
+    rowsTimer = setTimeout(() => { if (ctx.alive()) { drain.reload({ ...ctx.params, min_hours: opt.min_hours }).catch(() => {}); } }, 3000);
   });
   ctx.onCleanup(() => clearTimeout(rowsTimer));
 

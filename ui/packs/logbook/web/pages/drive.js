@@ -119,13 +119,17 @@ export async function mount(ctx) {
   });
 
   // A drive still going: say so when it ends, and offer the finished figures (pages never poll).
-  const liveNote = h('p', { class: 'drive-live', hidden: true, role: 'status' });
+  // The note holds its place from the start (a slot, not a block that pushes the page down when news arrives).
+  const liveText = h('span', null, 'This drive is still going. ');
+  const liveBtn = h('button', { type: 'button', class: 'button button-quiet button-small', disabled: true, title: 'Nothing new yet', onclick: () => remount() }, icon('reset'), 'Show new data');
+  const liveNote = h('p', { class: 'drive-live', hidden: !going, role: 'status' }, liveText, liveBtn);
   if (going) {
     ctx.events(['rows'], (ev) => {
       const e = ev.data || {};
       if (e.car !== car.id || !(e.kinds || []).includes('drives')) return;
-      replace(liveNote, 'This drive has new data. ', h('button', { type: 'button', class: 'button button-quiet button-small', onclick: () => remount() }, icon('reset'), 'Show it'));
-      liveNote.hidden = false;
+      liveText.textContent = 'This drive has new data. ';
+      liveBtn.disabled = false;
+      liveBtn.removeAttribute('title');
     });
   }
 

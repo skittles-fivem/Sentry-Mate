@@ -347,7 +347,7 @@ export async function mount(ctx) {
   const missing = h('section', { class: 'block ch-missing', 'aria-labelledby': 'ch-missing-title', cover: ['charges.incomplete.table', 'charges.incomplete.col.id', 'charges.incomplete.col.start_date', 'charges.incomplete.col.end_date', 'charges.incomplete.col.energy_added', 'charges.incomplete.col.energy_used', 'charges.incomplete.col.start_soc', 'charges.incomplete.col.end_soc', 'charges.incomplete.col.duration'] });
   async function drawMissing() {
     const params = { ...base(), flags: 'gap,in_progress' };
-    replace(missing, loadingBlock(3));
+    if (!missing.firstChild) replace(missing, loadingBlock(3));
     let pg;
     try { pg = await ctx.api.page(listPath, params, { limit: 20 }); } catch (err) { if (!ctx.signal.aborted) replace(missing, errorView(err, { eyebrow: 'Charges with missing data', retry: () => drawMissing() })); return; }
     const list = pg.items || [];
@@ -426,7 +426,7 @@ export async function mount(ctx) {
     statsKey = JSON.stringify(sp);
     const left = [f.places.length ? `at ${placePick.summary()}` : null, f.min_dur != null ? `charging ${formatNumber(f.min_dur)} min or longer` : null].filter(Boolean);
     statsNote.textContent = `For ${scopeName}, ${periodLabel(ctx.period, tz, api.now())}${left.length ? `, charges ${left.join(' and ')}` : ''}. Of the filters above, only the period, the cars, the places and the shortest charging time apply here; every chart follows the period.`;
-    for (const b of [costsBox, splitBox, habitsBox]) replace(b, loadingBlock(3));
+    for (const b of [costsBox, splitBox, habitsBox]) if (!b.firstChild) replace(b, loadingBlock(3));
     let s, rows;
     try {
       [s, rows] = await Promise.all([ctx.api.get(statsPath, sp), ctx.api.list(listPath, sp, { limit: 500 }).all({ max: 5000 }), loadChemistry()]);
@@ -726,6 +726,7 @@ export async function mount(ctx) {
   }
 
   /* charging places: a map and two paged tables */
+  let placesUi = null;
   async function drawPlaces(sp, my) {
     const pp = { cars: fixedCar ? fixedCar.id : sp.cars, from_ms: sp.from_ms, to_ms: sp.to_ms, places: sp.places, min_duration_min: sp.min_duration_min };
     const placeCell = (p) => {
@@ -736,47 +737,63 @@ export async function mount(ctx) {
     const sessions = { key: 'sessions', label: 'Sessions', num: true, cell: (p) => formatNumber(p.sessions) };
     const ppkCell = (p) => (p.price_per_kwh != null && p.cost_by_currency && p.cost_by_currency.length === 1 ? format({ amount: p.price_per_kwh, currency: p.cost_by_currency[0].currency }, 'price_energy') : h('span', { class: 'ch-quiet' }, '—'));
     const none = () => empty({ title: 'No charging place in this period.', text: 'Choose a longer period, or clear the place filter.' });
-    const byEnergy = dataTable(ctx, {
-      path: 'charging-stats/places', params: { ...pp, sort: 'energy' }, limit: 8, itemName: ['place', 'places'], label: 'Charging places by energy', cls: 'ch-place-table', cover: 'cs.table.top_energy',
-      columns: [{ key: 'label', label: 'Place', th: true, cover: 'cs.table.top_energy.location', cell: placeCell }, sessions,
-        { key: 'energy', label: 'Added', num: true, cover: 'cs.table.top_energy.charged', cell: (p) => q(p.energy_added_kwh, 'energy') }],
-      empty: none,
-    });
-    const byCost = dataTable(ctx, {
-      path: 'charging-stats/places', params: { ...pp, sort: 'cost' }, limit: 8, itemName: ['place', 'places'], label: 'Charging places by cost', cls: 'ch-place-table', cover: 'cs.table.top_cost',
-      columns: [{ key: 'label', label: 'Place', th: true, cover: 'cs.table.top_cost.location', cell: placeCell }, sessions,
-        { key: 'cost', label: 'Cost', num: true, cover: 'cs.table.top_cost.cost', cell: (p) => (p.cost_by_currency && p.cost_by_currency.length ? moneyList(p.cost_by_currency) : h('span', { class: 'ch-quiet' }, 'no price')) },
-        { key: 'ppk', label: 'Per kWh', num: true, cell: ppkCell }],
-      empty: none,
-    });
-    const mapEl = h('div', { class: 'map ch-map', role: 'region', 'aria-label': 'Map of the charging places' });
-    const mapRead = h('p', { class: 'readout ch-map-read', 'aria-live': 'polite' });
-    let pts = [];
-    replace(placesBox,
-      blockHead('ch-places-title', 'Charging places', 'grouped by saved place, else by position', csvButton('charging places map', () => downloadCsv(file('charging places'), pts, [
-        { label: 'Place', value: (p) => p.label }, { label: 'Place id', value: (p) => p.place || '' }, column('Latitude', 'lat'), column('Longitude', 'lon'), column('Sessions', 'sessions'), column('Energy added', 'energy_added_kwh', 'energy'),
-        { label: 'Cost', value: (p) => moneyList(p.cost_by_currency || []) }]), 'cs.map.energy_by_location')),
-      h('div', { class: 'ch-places-grid' },
-        h('div', { class: 'ch-map-part', cover: 'cs.map.energy_by_location' }, mapRead, mapEl,
-          h('p', { class: 'note' }, 'Bigger circles took more energy. A place is a saved place or one spot, never an address text, so one spot is never split in two. Click a saved place to list its charges.')),
-        h('div', { class: 'ch-place-tables' },
-          h('div', { class: 'ch-part' }, h('h3', { class: 'label' }, 'By energy added'), byEnergy.el),
-          h('div', { class: 'ch-part' }, h('h3', { class: 'label' }, 'By cost'), byCost.el))));
-    const loads = [byEnergy.load().catch(() => {}), byCost.load().catch(() => {})];
+    // Built once; a refresh loads the tables again and moves the map's circles, with the old ones on screen
+    // until the new answer is in (nothing blanks out and comes back).
+    if (!placesUi) {
+      const byEnergy = dataTable(ctx, {
+        path: 'charging-stats/places', params: { ...pp, sort: 'energy' }, limit: 8, itemName: ['place', 'places'], label: 'Charging places by energy', cls: 'ch-place-table', cover: 'cs.table.top_energy',
+        columns: [{ key: 'label', label: 'Place', th: true, cover: 'cs.table.top_energy.location', cell: placeCell }, sessions,
+          { key: 'energy', label: 'Added', num: true, cover: 'cs.table.top_energy.charged', cell: (p) => q(p.energy_added_kwh, 'energy') }],
+        empty: none,
+      });
+      const byCost = dataTable(ctx, {
+        path: 'charging-stats/places', params: { ...pp, sort: 'cost' }, limit: 8, itemName: ['place', 'places'], label: 'Charging places by cost', cls: 'ch-place-table', cover: 'cs.table.top_cost',
+        columns: [{ key: 'label', label: 'Place', th: true, cover: 'cs.table.top_cost.location', cell: placeCell }, sessions,
+          { key: 'cost', label: 'Cost', num: true, cover: 'cs.table.top_cost.cost', cell: (p) => (p.cost_by_currency && p.cost_by_currency.length ? moneyList(p.cost_by_currency) : h('span', { class: 'ch-quiet' }, 'no price')) },
+          { key: 'ppk', label: 'Per kWh', num: true, cell: ppkCell }],
+        empty: none,
+      });
+      const mapEl = h('div', { class: 'map ch-map', role: 'region', 'aria-label': 'Map of the charging places' });
+      const mapRead = h('p', { class: 'readout ch-map-read', 'aria-live': 'polite' });
+      placesUi = { byEnergy, byCost, mapEl, mapRead, m: null, pts: [], first: true };
+      replace(placesBox,
+        blockHead('ch-places-title', 'Charging places', 'grouped by saved place, else by position', csvButton('charging places map', () => downloadCsv(file('charging places'), placesUi.pts, [
+          { label: 'Place', value: (p) => p.label }, { label: 'Place id', value: (p) => p.place || '' }, column('Latitude', 'lat'), column('Longitude', 'lon'), column('Sessions', 'sessions'), column('Energy added', 'energy_added_kwh', 'energy'),
+          { label: 'Cost', value: (p) => moneyList(p.cost_by_currency || []) }]), 'cs.map.energy_by_location')),
+        h('div', { class: 'ch-places-grid' },
+          h('div', { class: 'ch-map-part', cover: 'cs.map.energy_by_location' }, mapRead, mapEl,
+            h('p', { class: 'note' }, 'Bigger circles took more energy. A place is a saved place or one spot, never an address text, so one spot is never split in two. Click a saved place to list its charges.')),
+          h('div', { class: 'ch-place-tables' },
+            h('div', { class: 'ch-part' }, h('h3', { class: 'label' }, 'By energy added'), byEnergy.el),
+            h('div', { class: 'ch-part' }, h('h3', { class: 'label' }, 'By cost'), byCost.el))));
+    }
+    const ui = placesUi;
+    const first = ui.first;
+    ui.first = false;
+    const loads = first
+      ? [ui.byEnergy.load().catch(() => {}), ui.byCost.load().catch(() => {})]
+      : [ui.byEnergy.reload({ ...pp, sort: 'energy' }).catch(() => {}), ui.byCost.reload({ ...pp, sort: 'cost' }).catch(() => {})];
+    let pts;
     try { pts = await ctx.api.list('charging-stats/places', { ...pp, sort: 'energy' }, { limit: 200 }).all({ max: 400 }); } catch { pts = []; }
     if (my !== statsGen || !ctx.alive()) return;
-    const idleMap = () => replace(mapRead, h('span', { class: 'readout-idle' }, pts.length ? `${tn(pts.length, '{n} place', '{n} places')}${pts.length >= 400 ? ' (the 400 with the most energy)' : ''}; point at a circle for its figures.` : 'No charge in this period, so there is nothing to map.'));
+    ui.pts = pts;
+    const idleMap = () => replace(ui.mapRead, h('span', { class: 'readout-idle' }, ui.pts.length ? `${tn(ui.pts.length, '{n} place', '{n} places')}${ui.pts.length >= 400 ? ' (the 400 with the most energy)' : ''}; point at a circle for its figures.` : 'No charge in this period, so there is nothing to map.'));
     idleMap();
-    if (pts.length) loads.push(drawMap());
+    const features = () => {
+      const max = Math.max(1, ...ui.pts.map((p) => p.energy_added_kwh || 0));
+      return { type: 'FeatureCollection', features: ui.pts.map((p, i) => ({ type: 'Feature', properties: { i, r: 4 + 13 * Math.sqrt((p.energy_added_kwh || 0) / max) }, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } })) };
+    };
+    if (ui.m) ui.m.map.getSource('ch-places')?.setData(features());
+    else if (pts.length) loads.push(drawMap());
     await Promise.all(loads);
 
     async function drawMap() {
-      const m = await makeMap(ctx, mapEl, { bounds: boundsOf(pts.map((p) => [p.lon, p.lat])), padding: 44, maxZoom: 14 });
+      const m = await makeMap(ctx, ui.mapEl, { bounds: boundsOf(ui.pts.map((p) => [p.lon, p.lat])), padding: 44, maxZoom: 14 });
       if (!m) return;
       await m.loaded;
       if (ctx.signal.aborted) return;
-      const max = Math.max(1, ...pts.map((p) => p.energy_added_kwh || 0));
-      m.map.addSource('ch-places', { type: 'geojson', data: { type: 'FeatureCollection', features: pts.map((p, i) => ({ type: 'Feature', properties: { i, r: 4 + 13 * Math.sqrt((p.energy_added_kwh || 0) / max) }, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } })) } });
+      ui.m = m;
+      m.map.addSource('ch-places', { type: 'geojson', data: features() });
       const paint = () => ({ 'circle-color': cssVar('--ochre'), 'circle-opacity': 0.42, 'circle-stroke-color': cssVar('--ochre'), 'circle-stroke-width': 1.5 * display.scale, 'circle-radius': ['*', ['get', 'r'], display.scale] });
       m.map.addLayer({ id: 'ch-places', type: 'circle', source: 'ch-places', paint: paint() });
       const restyle = () => { if (m.map.getLayer('ch-places')) for (const [k, v] of Object.entries(paint())) m.map.setPaintProperty('ch-places', k, v); };
@@ -784,13 +801,13 @@ export async function mount(ctx) {
       const stopSize = display.onChange((c) => { if (c.rem) restyle(); });
       ctx.onCleanup(() => { stopTheme(); stopSize(); });
       m.map.on('mousemove', 'ch-places', (e) => {
-        const p = pts[e.features && e.features[0] && e.features[0].properties.i];
+        const p = ui.pts[e.features && e.features[0] && e.features[0].properties.i];
         m.map.getCanvas().classList.add('is-pointing');
-        if (p) replace(mapRead, h('strong', null, p.label), ' · ', format(p.energy_added_kwh, 'energy'), ' in ', tn(p.sessions, '{n} session', '{n} sessions'), (p.cost_by_currency || []).length ? ` · ${moneyList(p.cost_by_currency)}` : '');
+        if (p) replace(ui.mapRead, h('strong', null, p.label), ' · ', format(p.energy_added_kwh, 'energy'), ' in ', tn(p.sessions, '{n} session', '{n} sessions'), (p.cost_by_currency || []).length ? ` · ${moneyList(p.cost_by_currency)}` : '');
       });
       m.map.on('mouseleave', 'ch-places', () => { m.map.getCanvas().classList.remove('is-pointing'); idleMap(); });
       m.map.on('click', 'ch-places', (e) => {
-        const p = pts[e.features && e.features[0] && e.features[0].properties.i];
+        const p = ui.pts[e.features && e.features[0] && e.features[0].properties.i];
         if (!p) return;
         if (p.place) { f.places = [p.place]; placePick.set(f.places); changed(); window.scrollTo({ top: 0 }); } else { const href = placeLink({ lat: p.lat, lon: p.lon }); if (href) ctx.go(href); }
       });
@@ -807,9 +824,16 @@ export async function mount(ctx) {
     const carSel = viewCars.length > 1 ? h('select', { class: 'field-select ch-curve-car', 'aria-label': 'The car whose curve is shown' },
       viewCars.map((cid) => h('option', { value: cid, selected: cid === curveCar }, `${carName(cid)} (${tn(dcCount.get(cid) || 0, '{n} DC session', '{n} DC sessions')})`))) : null;
     carSel?.addEventListener('change', () => { curveCar = carSel.value; ctx.setQuery({ curve_car: curveCar }); drawCurve(rows, statsGen).catch(() => {}); });
-    const plot = h('div', { class: 'ch-curve-plot' }, loadingBlock(4));
+    // The answer first, then the block is drawn once: the curve on screen stays until the new one is in.
+    if (!curveBox.firstChild) replace(curveBox, loadingBlock(4));
+    let data = { median: [], sessions: [] }, fail = null;
+    try { data = await ctx.api.get(api.apiPath`cars/${curveCar}/charging-stats/dc-curve`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms, places: f.places.length ? f.places.join(',') : undefined }); } catch (err) {
+      if (ctx.signal.aborted) return;
+      fail = err;
+    }
+    if (my !== statsGen || !ctx.alive()) return;
+    const plot = h('div', { class: 'ch-curve-plot' });
     const read = h('p', { class: 'readout ch-readout', 'aria-live': 'polite' });
-    let data = { median: [], sessions: [] };
     const csv = () => downloadCsv(file(`fast charging curve ${carName(curveCar)}`), [
       ...(data.median || []).map((p) => ({ row: 'median', ...p })),
       ...(data.sessions || []).flatMap((s) => s.points.map((p) => ({ row: 'session', charge: s.charge, label: s.label, start_ms: s.start_ms, ...p }))),
@@ -822,11 +846,7 @@ export async function mount(ctx) {
         h('li', { class: 'ch-temp-key' }, 'battery temperature ', ['t0', 't1', 't2', 't3', 't4'].map((t, i) => h('span', { class: 'ch-temp-step' }, h('span', { class: ['ch-swatch', `ch-${t}`], 'aria-hidden': 'true' }), ['under ', '', '', '', 'over '][i], format([10, 15, 25, 35, 40][i], 'temperature', { digits: 0 }))))),
       read, plot,
       h('p', { class: 'note' }, 'One dot per battery percent of each session, coloured by the battery’s temperature: a cold pack takes power slower. The line is this car’s median power at each percent. Point at a dot to see its session; click it to open the charge.'));
-    try { data = await ctx.api.get(api.apiPath`cars/${curveCar}/charging-stats/dc-curve`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms, places: f.places.length ? f.places.join(',') : undefined }); } catch (err) {
-      if (!ctx.signal.aborted) replace(plot, errorView(err, { eyebrow: 'Fast-charging curve', retry: () => drawCurve(rows, statsGen) }));
-      return;
-    }
-    if (my !== statsGen || !ctx.alive()) return;
+    if (fail) { replace(plot, errorView(fail, { eyebrow: 'Fast-charging curve', retry: () => drawCurve(rows, statsGen) })); return; }
     const sessions = data.sessions || [];
     const median = data.median || [];
     const zc = data.time_zone || tz;
@@ -880,7 +900,6 @@ export async function mount(ctx) {
 
   async function reloadAll(c = ctx) {
     drawPeriod();
-    replace(totals);
     await Promise.all([table.reload(listParams()), drawMissing(), loadStats()]);
     c.ready?.();
   }

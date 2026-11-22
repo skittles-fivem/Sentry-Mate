@@ -151,20 +151,19 @@ export async function mount(ctx) {
 
   /* ---------------------------------------------------------------- consumption, by temperature, factor */
 
-  let eff = null;
+  let eff = null, effGen = 0;
   async function drawEfficiency() {
-    replace(consBox, loadingBlock(3));
-    replace(tempBox, loadingBlock(5));
-    replace(factorBox, loadingBlock(3));
+    const my = ++effGen;
+    // The boxes start with their loading view; a refresh keeps the figures on screen until the new ones are in.
     try { eff = await ctx.api.get(api.apiPath`cars/${car.id}/efficiency`, effParams()); } catch (err) {
-      if (ctx.signal.aborted) return;
+      if (ctx.signal.aborted || my !== effGen) return;
       const retry = () => drawEfficiency();
       replace(consBox, head('ef-cons-title', 'Consumption'), errorView(err, { eyebrow: 'Consumption', retry }));
       replace(tempBox, head('ef-bytemp-title', 'By outside temperature'), errorView(err, { eyebrow: 'By outside temperature', retry }));
       replace(factorBox, head('ef-factor-title', 'Energy factor'), errorView(err, { eyebrow: 'Energy factor', retry }));
       return;
     }
-    if (!ctx.alive()) return;
+    if (!ctx.alive() || my !== effGen) return;
     drawConsumption(eff);
     drawByTemp(eff);
     drawFactor(eff);

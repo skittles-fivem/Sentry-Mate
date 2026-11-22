@@ -420,7 +420,11 @@ export async function mount(ctx) {
   });
 
   /* ------------------------------------------------------------ layout */
-  const liveNote = h('p', { class: 'trip-live', hidden: true, role: 'status' });
+  // A window that runs up to now keeps a slot for the news from the start, so it never pushes the page down.
+  const liveOn = to >= now - 60000;
+  const liveText = h('span', null, 'New drives or charges in this window show up here. ');
+  const liveBtn = h('button', { type: 'button', class: 'button button-quiet button-small', disabled: true, title: 'Nothing new yet', onclick: () => remount() }, icon('reset'), 'Show them');
+  const liveNote = h('p', { class: 'trip-live', hidden: !liveOn, role: 'status' }, liveText, liveBtn);
   ctx.main.append(head, liveNote, windowBlock,
     h('div', { class: 'trip-body', cover: 'shots.trip' },
       h('div', { class: 'trip-top' }, mapCol,
@@ -430,12 +434,13 @@ export async function mount(ctx) {
       h('section', { class: 'block', 'aria-labelledby': 'tch-title' }, h('div', { class: 'block-head' }, h('h2', { class: 'label', id: 'tch-title' }, 'Charges')), charges.el)));
 
   // A window that runs up to now: say when a drive or charge starts or ends (pages never poll).
-  if (to >= now - 60000) {
+  if (liveOn) {
     ctx.events(['rows'], (ev) => {
       const e = ev.data || {};
       if (e.car !== car.id) return;
-      replace(liveNote, 'The car has new drives or charges in this window. ', h('button', { type: 'button', class: 'button button-quiet button-small', onclick: () => remount() }, icon('reset'), 'Show them'));
-      liveNote.hidden = false;
+      liveText.textContent = 'The car has new drives or charges in this window. ';
+      liveBtn.disabled = false;
+      liveBtn.removeAttribute('title');
     });
   }
 
