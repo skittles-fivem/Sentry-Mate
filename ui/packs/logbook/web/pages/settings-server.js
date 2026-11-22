@@ -13,7 +13,7 @@ import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { pageHead, section, empty, ago, flag, button, icon, note, sep } from '../core/ui.js';
 import { dataTable } from '../core/table.js';
-import { field, form, choice, switchField, setFieldError } from '../core/form.js';
+import { field, form, choice, switchField, setFieldError, soldPickRows } from '../core/form.js';
 import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { dateTime, date, zoneLabel, count } from '../core/format.js';
 import { moveBlock, askPassword } from './settings-move.js';
@@ -511,12 +511,19 @@ export async function mount(ctx) {
     const listEl = h('ul', { class: 'ss-carlist' });
     const countEl = h('p', { class: 'ss-state' });
     const box = h('div', { class: 'ss-carpick' }, search, listEl, countEl);
+    let soldOpen = false;
     function draw() {
       const q = search.value.trim().toLowerCase();
       const shown = cars.filter((c) => !q || `${c.name || ''} ${c.model || ''} ${c.vin_prefix || ''}`.toLowerCase().includes(q));
-      replace(listEl, shown.length ? shown.map((c) => h('li', null, h('label', { class: 'ss-check' },
-        h('input', { type: 'checkbox', checked: chosen.has(c.id), onchange: (e) => { if (e.target.checked) chosen.add(c.id); else chosen.delete(c.id); drawCount(); } }),
-        h('span', null, c.name || c.id), c.model ? h('span', { class: 'ss-quiet' }, ` ${[c.model, c.year].filter(Boolean).join(' ')}`) : null)))
+      // Sold cars wait behind their own toggle unless ticked or searched for.
+      const { rows } = soldPickRows(shown, {
+        chosen: (c) => chosen.has(c.id), searching: !!q, open: soldOpen, ontoggle: () => { soldOpen = !soldOpen; draw(); },
+        row: (c) => h('li', null, h('label', { class: 'ss-check' },
+          h('input', { type: 'checkbox', checked: chosen.has(c.id), onchange: (e) => { if (e.target.checked) chosen.add(c.id); else chosen.delete(c.id); drawCount(); } }),
+          h('span', null, c.name || c.id), c.model ? h('span', { class: 'ss-quiet' }, ` ${[c.model, c.year].filter(Boolean).join(' ')}`) : null,
+          state.isSold(c) ? [' ', flag('Sold')] : null)),
+      });
+      replace(listEl, shown.length ? rows
         : h('li', { class: 'ss-quiet' }, q ? `No car matches “${search.value.trim()}”.` : 'There is no car yet.'));
       drawCount();
     }
