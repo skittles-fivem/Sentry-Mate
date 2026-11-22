@@ -7,12 +7,12 @@
 // the same time, theirs win, value by value; data from TeslaFi is labelled "Data from TeslaFi".
 //
 // Admins only, reading included. Tiles: the input's status (on or off, its host, TLS, requests today, the last
-// error), its pace (fixed by the server), adding a token, and per account a tile with its status and actions
+// error), its pace (Gentle / Normal / Often, PATCH integrations/teslafi), adding a token, and per account a tile with its status and actions
 // (pause or resume, a new token, its time zone, rename, remove) and a tile of its cars, each matched to a car here,
 // a new car or left out, with what the server does for it now. Every change asks for the admin's own password
 // again (and the two-step code): askPassword(). Each account tile has the id teslafi-<account>.
 //
-// Data: GET integrations/teslafi, GET/POST integrations/teslafi/accounts, GET/PATCH/DELETE
+// Data: GET/PATCH integrations/teslafi, GET/POST integrations/teslafi/accounts, GET/PATCH/DELETE
 // integrations/teslafi/accounts/{id}, GET/PUT integrations/teslafi/accounts/{id}/cars, GET integrations/teslafi/status.
 
 import { h } from '../shared/dom.js';
@@ -20,13 +20,15 @@ import * as state from '../shared/state.js';
 import { formatTime, formatDateTime, formatDuration, isValidZone } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { tile, btn, chip, note, ago } from '../core/ui.js';
-import { field } from '../core/form.js';
+import { field, segmented } from '../core/form.js';
 import { errorWords } from '../core/states.js';
 import { facts } from '../core/bits.js';
 import { srcPill } from '../core/source.js';
 import { group, infoRow, pickRow, said, askPassword } from '../core/settings.js';
 
 const enc = encodeURIComponent;
+// the pace (PATCH integrations/teslafi { poll }): [value, word, its waits driving or charging / awake / asleep]
+const PACE = [['gentle', 'Gentle', '2 min · 5 min · 20 min'], ['normal', 'Normal', '60 s · 3 min · 10 min'], ['often', 'Often', '15 s · 60 s · 3 min']];
 const BASE = 'integrations/teslafi';
 const HINT = 'TeslaFi changes ask for it again.';
 const TESLAFI_SRC = { sources: [{ kind: 'teslafi_api', label: 'Data from TeslaFi' }] };
@@ -42,11 +44,11 @@ export const TESLAFI_STATUS = {
 // what the server does for the account's car now: [words, why]
 const MODE = {
   off: ['Not read', 'Not matched, left out, or the account is paused.'],
-  asleep: ['Asleep: every 10 min', 'TeslaFi says the car sleeps: read every 10 minutes. These reads come from TeslaFi’s own database and never wake the car.'],
-  idle: ['Parked: every 3 min', 'Parked and awake: read every 3 minutes.'],
-  charging: ['Charging: every minute', 'TeslaFi says it charges: read once a minute.'],
-  driving: ['Driving: every minute', 'TeslaFi says it drives: read once a minute.'],
-  backoff: ['Waiting after errors', 'TeslaFi answered with errors, asked to slow down, or the day’s 1,500 requests are used up: nothing is asked until the next try.'],
+  asleep: ['Asleep', 'TeslaFi says the car sleeps: read at the asleep pace. These reads come from TeslaFi’s own database and never wake the car.'],
+  idle: ['Parked', 'Parked and awake: read at the parked pace.'],
+  charging: ['Charging', 'TeslaFi says it charges: read at the charging pace.'],
+  driving: ['Driving', 'TeslaFi says it drives: read at the driving pace.'],
+  backoff: ['Waiting after errors', 'TeslaFi answered with errors, asked to slow down, or the day’s requests are used up: nothing is asked until the next try.'],
 };
 const ERROR_WORDS = {
   teslafi_refused: 'TeslaFi did not take this token: check it on TeslaFi’s site (Settings, TeslaFi API), and that the subscription is still on. Nothing was kept.',
@@ -171,7 +173,11 @@ export function teslafiTiles(ctx, { cars = [] } = {}) {
 
   function paceTile() {
     const p = ov.polls || {};
+    const seg = segmented({ name: 'How often TeslaFi is asked', value: ov.poll || 'normal', options: PACE.map(([v, w]) => [v, w]), onchange: (v) => setPace(v, seg) });
     return tile({ w: 2, title: 'How often TeslaFi is asked', icon: 'clock' },
+      seg,
+      facts(PACE.map(([v, w, t]) => [`${w}${v === (ov.poll || 'normal') ? ' (now)' : ''}`, t])),
+      note('Each pace: driving or charging · parked and awake · asleep. Now, in detail:'),
       facts([
         ['Driving or charging', `every ${secs(p.driving_s)}`],
         ['Parked, awake', `every ${secs(p.parked_s)}`],
@@ -181,7 +187,18 @@ export function teslafiTiles(ctx, { cars = [] } = {}) {
         ['Requests a day', `at most ${formatNumber(p.daily_cap ?? 1500)} per account`],
         ['After an error', 'waits 1 min, doubling to 15 min'],
       ]),
-      note('The pace is the server’s own and cannot be changed. These reads come from TeslaFi’s database: they never wake the car and do not count against TeslaFi’s monthly command limit.'));
+      note('One pace for every TeslaFi account. Often reads about as fast as TeslaFi itself polls the car (up to 6,000 requests a day per account); reading faster would only read the same poll again. These reads come from TeslaFi’s database: they never wake the car and do not count against TeslaFi’s monthly command limit.'));
+  }
+
+  async function setPace(v, seg) {
+    if (v === ov.poll) return;
+    const w = PACE.find((x) => x[0] === v)[1];
+    const r = await askPassword(ctx, {
+      title: `Pace: ${w}`, yes: 'Change the pace', hint: HINT,
+      text: 'How often the server reads each car from TeslaFi. The new pace takes effect at once.',
+      run: guarded((cred) => ctx.api.patch(BASE, withPw(cred, { version: ov.version, poll: v }))),
+    });
+    if (!(await after(r, `Pace saved: ${w.toLowerCase()}.`))) seg.set(ov.poll || 'normal');
   }
 
   /* ---------- adding an account */
