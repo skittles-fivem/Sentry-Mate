@@ -191,6 +191,7 @@
 
 /* Vehicle info (pages/vehicle-info.js): the car's build facts, each with its source and confidence */
 .vi { margin-top: var(--gap); scroll-margin-top: round(5rem, var(--e)); }
+.vi-links { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: round(0.25rem, var(--e)) round(1rem, var(--e)); }
 .vi-intro { margin: 0 0 round(1rem, var(--e)); max-width: round(64rem, var(--e)); --LH: round(calc(1.5 * 1em), 2px); }
 .vi-alert { display: flex; align-items: flex-start; gap: round(0.5rem, var(--e)); margin-bottom: round(1rem, var(--e)); padding: round(0.75rem, var(--e)) round(1rem, var(--e)); border: 1px solid var(--warm-line); border-radius: var(--radius-sm); background: var(--warm-soft); font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.5 * 1em), 2px); }
 .vi-alert > .ico { flex: none; color: var(--warm); }

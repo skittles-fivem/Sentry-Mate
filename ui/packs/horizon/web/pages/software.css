@@ -100,6 +100,46 @@
   .sw-fw-val { flex-direction: row; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: round(0.125rem, var(--e)) round(0.5rem, var(--e)); margin: 0; text-align: left; }
 }
 
+/* Module firmware history (#firmware-history): the versions over time, a lane per module, then the table */
+.sw-fh-wrap { scroll-margin-top: round(5rem, var(--e)); }
+.sw-fh-wrap > .panel { margin-bottom: var(--gap); }
+.sw-fh .note { margin: 0 0 round(1rem, var(--e)); --LH: round(calc(1.5 * 1em), 2px); max-width: round(52rem, var(--e)); }
+.sw-fw-links { display: inline-flex; align-items: center; gap: round(1rem, var(--e)); }
+.sw-fh-lanes { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); }
+.sw-fh-lane { display: grid; grid-template-columns: round(13rem, var(--e)) minmax(0, 1fr); align-items: center; gap: round(1rem, var(--e)); transition: opacity 0.15s; }
+.sw-fh-lane.is-dim { opacity: 0.4; }
+.sw-fh-lane-head { display: flex; flex-direction: column; min-width: 0; }
+.sw-fh-lane-name { font-size: max(0.875rem, var(--fs-floor)); font-weight: 600; --LH: 20px; }
+.sw-fh-lane-n { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); --LH: 18px; }
+.sw-fh-track { position: relative; height: 24px; border-radius: round(0.375rem, var(--e)); background: var(--surface-sunken); overflow: hidden; }
+.sw-fh-span { position: absolute; top: 0; bottom: 0; display: block; overflow: hidden; background: var(--glass-3); container: fh-span / inline-size; }
+.sw-fh-span--live { background: color-mix(in srgb, var(--live) 24%, transparent); }
+.sw-fh-span--mag { background: color-mix(in srgb, var(--mag) 24%, transparent); }
+.sw-fh-span--warm { background: color-mix(in srgb, var(--warm) 24%, transparent); }
+.sw-fh-span--violet { background: color-mix(in srgb, var(--violet) 26%, transparent); }
+.sw-fh-span.is-alt { filter: brightness(0.82); }
+.sw-fh-span.is-current { filter: none; box-shadow: inset 0 -3px 0 currentColor; }
+.sw-fh-span--live.is-current { color: var(--live); }
+.sw-fh-span--mag.is-current { color: var(--mag); }
+.sw-fh-span--warm.is-current { color: var(--warm); }
+.sw-fh-span--violet.is-current { color: var(--violet); }
+.sw-fh-span-text { position: absolute; inset: 0 round(0.5rem, var(--e)); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: max(0.75rem, var(--fs-floor)); line-height: 24px; color: var(--text); }
+@container fh-span (max-width: 5.5rem) { .sw-fh-span-text { display: none; } }
+.sw-fh-tick { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text-2); }
+.sw-fh-axis { display: flex; justify-content: space-between; gap: round(1rem, var(--e)); margin: round(0.5rem, var(--e)) 0 0 calc(round(13rem, var(--e)) + round(1rem, var(--e))); font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); --LH: 18px; font-variant-numeric: tabular-nums; }
+.sw-fh-none { margin: 0; }
+.sw-fh-table .tbl-bar { flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
+.sw-fh-seg { flex-wrap: wrap; }
+.sw-fh-pick { display: none; }
+.sw-fh-table .sw-fh-vrow td { background: var(--glass); }
+.sw-fh-unnamed { font-weight: 400; font-style: italic; }
+.sw-hex--sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
+@container page (max-width: 50rem) {
+  .sw-fh-lane { grid-template-columns: minmax(0, 1fr); gap: round(0.375rem, var(--e)); }
+  .sw-fh-lane-head { flex-direction: row; align-items: baseline; justify-content: space-between; gap: round(0.5rem, var(--e)); }
+  .sw-fh-axis { margin-left: 0; }
+}
+
 /* phone (<html data-phone>): cards read left to right and wrap instead of overlapping, links big
    enough to tap, units no smaller than the text floor, and a name box that fills its row */
 :root[data-phone] .sw-page .tbl:not(.tbl--keep) .cell-text > * { white-space: normal; }
@@ -111,3 +151,6 @@
 :root[data-phone] .sw-fp-hexes { margin-left: 0; }
 :root[data-phone] .sw-fp-list { grid-template-columns: minmax(0, 1fr); }
 :root[data-phone] .sw-figs .metric-value, :root[data-phone] .sw-figs .metric-value .q { white-space: normal; }
+:root[data-phone] .sw-fh-seg { display: none; }
+:root[data-phone] .sw-fh-pick { display: block; flex: 1 1 round(10rem, var(--e)); min-width: 0; max-width: 100%; }
+:root[data-phone] .sw-fw-links { flex-wrap: wrap; justify-content: flex-end; }
