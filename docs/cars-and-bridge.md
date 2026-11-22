@@ -195,19 +195,20 @@ import and a TeslaFi import. Every list, detail, total, chart, the timeline and 
 charge once, chosen in this order:
 
 1. **SMO.** Where SMO's logs cover a time, its data is used.
-2. **The Tesla API.** It fills what SMO doesn't have (a value SMO doesn't send, or a time SMO wasn't recording).
-   Together they are the *live* history.
+2. **The Tesla API, then TeslaFi's API.** The Tesla API fills what SMO doesn't have (a value SMO doesn't send, or a
+   time SMO wasn't recording), and TeslaFi's API what both lack. Together they are the *live* history.
 3. **One import per span.** Imported history is shown where there is no live history. Where a TeslaMate import and a
    TeslaFi import cover the same days, only one of them is shown there, never both: at first the one with more data
    in that span (more drives and charges; if they have the same, more positions; if those are equal too,
    TeslaMate's).
-4. **The import fills the gaps.** Where SMO and the Tesla API both have nothing for a value at a time, the import
-   chosen for that span (by rule 3 and the switch below) fills it: a temperature, the elevation and climb, a position
-   (in a chart, and a stretch of a drive's track where the live data has a gap), the odometer, battery level or range
+4. **The import fills the gaps.** Where the live history (SMO, the Tesla API, TeslaFi's API) has nothing for a value
+   at a time, the import chosen for that span (by rule 3 and the switch below) fills it: a temperature, the
+   elevation and climb, a position (in a chart, and a stretch of a drive's track where the live data has a gap), the odometer, battery level or range
    at a drive's or charge's ends. The drive or charge is still the live one, shown once; only its missing values
    come from the import, and each is labelled "Imported from TeslaMate" (or TeslaFi). A value live history has is
    never replaced. Distance, energy and costs are never filled, so totals and consumption don't change and a
-   measured figure stays measured.
+   measured figure stays measured. Where nothing recorded a value, not even the import, it is unknown: a chart
+   shows a gap there, never a line drawn across it or the last value held.
 
 **The switches** (Settings → Cars → overlaps, admins only, each change in the audit log):
 
