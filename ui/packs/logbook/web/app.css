@@ -640,6 +640,20 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
   position: absolute; left: round(0.625rem, var(--e)); bottom: round(1.875rem, var(--e)); z-index: 4; max-width: calc(100% - round(1.25rem, var(--e))); padding: round(0.3125rem, var(--e)) round(0.5625rem, var(--e)); border-radius: round(0.1875rem, var(--e));
   background: color-mix(in srgb, var(--paper) 92%, transparent); box-shadow: 0 0 0 1px var(--rule); font-size: var(--small-2); color: var(--ink-3);
 }
+.map-note-error { bottom: auto; top: round(0.625rem, var(--e)); color: var(--ink); box-shadow: 0 0 0 1px var(--rust); }
+/* the "No map tiles yet" note (shared/maptiles.js) over a map with no tiles */
+.map-empty {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 4; box-sizing: border-box; width: min(25rem, calc(100% - round(1.5rem, var(--e)))); max-height: calc(100% - round(1rem, var(--e))); overflow: auto;
+  padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-radius: round(0.1875rem, var(--e)); background: color-mix(in srgb, var(--paper) 95%, transparent); box-shadow: 0 0 0 1px var(--rule-strong), var(--shadow-pop);
+  color: var(--ink-2); font-size: var(--text-s); line-height: 1.45;
+}
+.map-empty-title { margin: 0 0 round(0.25rem, var(--e)); font-family: var(--serif); font-size: max(round(1.0625rem, var(--e)), 10px); color: var(--ink); }
+.map-empty-text { margin: 0; }
+.map-empty-actions { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); margin-top: round(0.75rem, var(--e)); }
+.map-empty-actions:empty { display: none; }
+.map-empty-error { margin: round(0.5rem, var(--e)) 0 0; color: var(--rust); }
+.map-empty--compact { padding: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
+.map-empty--compact .map-empty-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .pin { display: flex; align-items: center; gap: round(0.4375rem, var(--e)); pointer-events: none; --pin-half: round(0.375rem, var(--e)); translate: calc(-1 * var(--pin-half)) 0; }
 .pin-here { --pin-half: round(0.5rem, var(--e)); }
 .pin-dot { width: round(0.75rem, var(--e)); height: round(0.75rem, var(--e)); border-radius: 50%; flex: none; background: var(--paper); box-shadow: 0 0 0 round(0.15625rem, var(--e)) var(--ink); }
@@ -761,7 +775,7 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
 /* MapLibre sets 12px/20px; the same in rem, so attribution and controls follow the interface size. */
 .maplibregl-map { font-family: var(--sans); font-size: var(--small); --LH: round(1.25rem, 2px); }
 .maplibregl-ctrl-attrib { font-size: var(--micro); }
-.maplibregl-ctrl-attrib.maplibregl-compact, .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib { background: color-mix(in srgb, var(--paper) 86%, transparent); color: var(--ink-2); padding: 1px round(0.375rem, var(--e)); }
+.map .maplibregl-ctrl-attrib.maplibregl-compact, .map .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib { background: color-mix(in srgb, var(--paper) 86%, transparent); color: var(--ink-2); padding: 1px round(0.375rem, var(--e)); }
 .maplibregl-ctrl-attrib a { color: var(--ink-2); }
 .maplibregl-ctrl-group { background: var(--paper-raised); box-shadow: 0 0 0 1px var(--rule-strong); border-radius: round(0.3125rem, var(--e)); }
 .maplibregl-ctrl-group button + button { border-top: 1px solid var(--rule); }

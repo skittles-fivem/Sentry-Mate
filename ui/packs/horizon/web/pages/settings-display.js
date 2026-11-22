@@ -20,6 +20,7 @@ import { getSky, onSky } from '../core/sky.js';
 import { packChoices, packLabel } from '../shared/packs.js';
 import { chan, hint, recLamp, presets, errText, code } from '../core/setting.js';
 import { ago, num } from '../core/fmt.js';
+import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
 export const css = true;
@@ -138,10 +139,12 @@ export async function mount(ctx) {
   const paintSwitch = () => { const other = packSel.value !== packHere; switchBtn.hidden = !other; switchLine.hidden = !other; };
   paintSwitch();
 
+  const mapColors = presetChoice('Map colours', MAP_COLORS_CHOICES, getPrefs()?.map_colors || 'dimmed', (v) => mine({ map_colors: v }, 'Map colours'));
   const lookPanel = hud({ title: 'Look and language', icon: 'monitor', id: 'sd-look', side: tag('Follows you', 'cyan') },
     h('div', { class: 'chans' },
       chan({ no: 5, title: 'Look', text: 'Dusk is the dark look, Daybreak the light one; Device follows this device. Saved with your account, and set before the page is drawn, so there is no flash.', cover: ['shell.theme', 'web.settings.general.theme', 'shots.theme-note'] },
         look.el, hint('Every page, chart and map has both looks; pictures in the help may show either.')),
+      chan({ title: 'Map colours', text: MAP_COLORS_TEXT }, mapColors.el),
       chan({ no: 6, title: 'Interface size', text: 'Text, controls, tables, charts and maps grow or shrink together. Follow screen size adds a step on a very large screen; browser zoom works on top of both.' },
         size.el,
         h('div', { class: 'row' }, h('label', { class: 'faint', for: 'sd-pct' }, 'Any size'), pct, h('span', { class: 'faint' }, '%')), pctErr,
@@ -168,6 +171,7 @@ export async function mount(ctx) {
     const n = getUnits();
     dist.set(n.distance); temp.set(n.temperature); pres.set(n.pressure); rng.set(n.range);
     look.sync(pp);
+    mapColors.set(pp?.map_colors || 'dimmed');
     langSel.value = pp?.language === 'en' ? 'en-US' : (pp?.language || 'auto');
     if (pp?.ui_pack) { packSel.value = pp.ui_pack; paintSwitch(); }
     paintPreview(); paintLang();
@@ -191,7 +195,7 @@ export async function mount(ctx) {
   }
   function tileLine(t) {
     if (t.mode === 'online') return hint('Each viewer\'s browser asks the online source for map pictures; its credit shows on every map: ', h('b', null, t.attribution || '(none set)'), '.');
-    return hint(maps?.tiles?.offline_data_present ? 'Offline tiles are installed: maps need nothing from outside.' : 'No offline tiles yet: maps draw routes and places on a plain background, with a note saying so.');
+    return hint(maps?.tiles?.offline_data_present ? 'An offline map file is installed: maps need nothing from outside.' : 'No offline map file yet: maps draw routes and places on a plain background, with a note saying so. See Offline map file below.');
   }
   function paintServer() {
     if (!server) { replace(serverSlot, hud({ title: 'Server defaults', icon: 'server' }, note('The server settings could not be read. Your own choices above still work.'))); return; }
@@ -277,7 +281,11 @@ export async function mount(ctx) {
               pc('Address lookup', [['offline', 'Offline'], ['online', 'Online service']], g.mode, (v) => save({ geocode: { mode: v } }, 'Address lookup', [gUrl])), geoLine(), gUrl.el, gRound.el),
             chan({ no: 14, title: 'Address language', text: 'Street and place names in this language where the data has it; otherwise in the local language.', cover: ['web.settings.general.address-language', 'web.settings.general.address-language-error', 'web.settings.general.address-language-invalid'] }, gLang.el),
             chan({ no: 15, title: 'Map tiles', text: 'Offline tiles come from Sentry Mate itself. An online source is asked by each viewer\'s browser, so it sees the map area and this server\'s address (as Referer, which OpenStreetMap needs; never a page or a car): turn it on only if you accept that.', cover: 'web.shell.map-tiles' },
-              pc('Map tiles', [['offline', 'Offline'], ['online', 'Online source']], t.mode, (v) => save({ tiles: { mode: v } }, 'Map tiles', [tUrl])), tileLine(t), tSource, tTerms, tUrl.el, tAttr.el)))));
+              pc('Map tiles', [['offline', 'Offline'], ['online', 'Online source']], t.mode, (v) => save({ tiles: { mode: v } }, 'Map tiles', [tUrl])), tileLine(t), tSource, tTerms, tUrl.el, tAttr.el),
+            chan({ title: 'Offline map file', id: OFFLINE_ANCHOR, text: 'A map of your own area kept on this server: maps then need nothing from outside, and no viewer\'s browser asks another site for tiles.' },
+              hint(offlineSummary(maps?.tiles)),
+              offlineFileChoices(maps?.tiles) ? pc('Offline map file', offlineFileChoices(maps?.tiles), t.offline_file || '', (v) => save({ tiles: { offline_file: v || null } }, 'Offline map file')) : null,
+              h('ol', { class: 'chan-hint offline-steps' }, OFFLINE_STEPS.map((x) => h('li', null, x))), hint(OFFLINE_NOTE))))));
   }
   paintServer();
 
@@ -291,5 +299,6 @@ export async function mount(ctx) {
     unitsPanel,
     lookPanel, skyPanel,
     serverSlot));
+  showOfflineHelp(document.getElementById(OFFLINE_ANCHOR));
   ctx.ready();
 }

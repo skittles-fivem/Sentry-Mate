@@ -201,10 +201,13 @@ the same as 568:568.
    zone**; the clock in the page header names the zone the page shows
    (`2:52 PM CST`).
 
-8. To see map pictures under the routes, an admin turns on online tiles in
-   **Settings → Display and units** (off by default: no browser asks an
-   outside server until then) and picks a source (OpenStreetMap standard,
-   OpenTopoMap or your own address). See [Map tiles](security.md#map-tiles).
+8. To see map pictures under the routes, either add an offline map file
+   (below: nothing leaves the server) or have an admin turn on online tiles
+   in **Settings → Display and units** (off by default: no browser asks an
+   outside server until then) and pick a source (OpenStreetMap standard,
+   OpenTopoMap or your own address). Until then every map says "No map
+   tiles yet", and for an admin offers "Use online map (OpenStreetMap)" in
+   one click (after a confirm). See [Map tiles](security.md#map-tiles).
 
 If it doesn't start, the log says why and what to do. For example `Sentry
 Mate runs as uid 1000 (group 1000) and can't write to the data folder /data:
@@ -804,6 +807,33 @@ reads, and what each does, are in [Settings](commands.md#settings). Times in
 the log are UTC. `TZ` (an IANA zone such as `America/Chicago`) only sets the
 zone new cars start in until one is saved, at set-up from the first admin's
 browser or in **Settings → Display and units**.
+
+## Offline map
+
+A map of your own area, kept in the data folder, gives every map streets, water, parks and buildings with no tile
+request leaving the server. Sentry Mate never downloads one itself: you make it once on your own computer and copy
+it in.
+
+1. Get the free `pmtiles` tool from Protomaps ([go-pmtiles releases](https://github.com/protomaps/go-pmtiles/releases):
+   one file for Windows, macOS or Linux).
+2. Cut your area out of a Protomaps world build (pick a date listed on
+   [build.protomaps.com](https://build.protomaps.com/)), giving the box as west, south, east, north in degrees:
+
+   ```bash
+   pmtiles extract https://build.protomaps.com/20261101.pmtiles my-area.pmtiles \
+     --bbox=-122.6,37.6,-122.3,37.9 --maxzoom=15
+   ```
+
+   Only the tiles inside the box are downloaded, by your computer. A city is tens of MB, a country a few GB;
+   `--maxzoom=14` makes it smaller, with less detail close in.
+3. Copy `my-area.pmtiles` into the `maps` folder of the data folder (`./data/maps/` with the compose file; make the
+   folder if it is not there, owned by the same user as the rest of the data folder).
+4. In **Settings → Display and units**, Map tiles is **Offline** (the default). The "Offline map file" row names the
+   file in use at once; no restart. With several files the largest is used, or the one you pick there.
+
+A Protomaps file is a vector map: the pages draw land, water, parks, roads and buildings in a plain style, without
+names (Sentry Mate serves no fonts). A raster `.pmtiles` file (map pictures) is shown as made, names included. The
+file goes with a direct move to a new server; an export file leaves it out (copy it again after a restore). See [Offline map file](security.md#offline-map-file).
 
 ## When it does not start
 

@@ -1,5 +1,5 @@
 //! A person's preferences, `GET`/`PATCH /api/v1/me/preferences` (docs/ui-api.md): units, range, theme, language,
-//! interface size, follow screen, UI pack, car order and pinned cars.
+//! interface size, follow screen, map colours, UI pack, car order and pinned cars.
 //!
 //! Only what the person chose is kept (sealed, one small file per account); the rest comes from the server's
 //! defaults ([`crate::units::Defaults`]) at the time it is read, so a change of the defaults reaches everyone who
@@ -24,6 +24,9 @@ const LABEL: &str = "web/prefs";
 pub const MAX_CAR_ORDER: usize = 10_000;
 pub const MAX_PINNED: usize = 50;
 pub const THEMES: &[&str] = &["light", "dark", "device"];
+/// How maps look in the dark theme: `dimmed` (darker, streets and labels kept readable) or `original` (the tile
+/// server's own colours). The light theme always shows the original colours.
+pub const MAP_COLORS: &[&str] = &["dimmed", "original"];
 
 /// The preferences files. Every change runs under one lock ([`Prefs::update`]), so two changes at the same moment
 /// (two tabs, a slider) neither mix their bytes in the file nor lose each other's fields.
@@ -160,6 +163,7 @@ pub fn view(app: &AppState, id: AccountId, access: &CarAccess) -> ApiResult<Valu
         "language": pick("language", json!("auto")),
         "interface_size": pick("interface_size", json!(100)),
         "follow_screen": pick("follow_screen", json!(true)),
+        "map_colors": pick("map_colors", json!("dimmed")),
         "ui_pack": pack.unwrap_or_else(|| crate::packs::pick_id(app, None)),
         "car_order": visible(app, access, Some(&order)),
         "pinned_cars": visible(app, access, own.get("pinned_cars")),
@@ -176,8 +180,18 @@ async fn get_prefs(State(app): State<AppState>, v: Viewer) -> ApiResult<Json<Val
     Ok(Json(view_for(&app, v.id(), v.cars()).await?))
 }
 
-const KEYS: &[&str] =
-    &["units", "range", "theme", "language", "interface_size", "follow_screen", "ui_pack", "car_order", "pinned_cars"];
+const KEYS: &[&str] = &[
+    "units",
+    "range",
+    "theme",
+    "language",
+    "interface_size",
+    "follow_screen",
+    "map_colors",
+    "ui_pack",
+    "car_order",
+    "pinned_cars",
+];
 
 fn check_cars(
     app: &AppState,
@@ -233,7 +247,7 @@ async fn patch_prefs(State(app): State<AppState>, v: Viewer, body: JsonBody) -> 
             }
         }
     }
-    for (k, allowed) in [("range", units::RANGE), ("theme", THEMES)] {
+    for (k, allowed) in [("range", units::RANGE), ("theme", THEMES), ("map_colors", MAP_COLORS)] {
         if let Some(val) = body.get(k)
             && !val.as_str().is_some_and(|s| allowed.contains(&s))
         {

@@ -190,7 +190,7 @@ def delete_one_session(req):
 # ------------------------------------------------------------------ preferences
 
 UNITS = {"distance": ("km", "mi"), "temperature": ("c", "f"), "pressure": ("bar", "psi")}
-PREF_ENUMS = {"range": ("rated", "ideal"), "theme": ("light", "dark", "device")}
+PREF_ENUMS = {"range": ("rated", "ideal"), "theme": ("light", "dark", "device"), "map_colors": ("dimmed", "original")}
 
 
 def get_prefs(req):
@@ -201,8 +201,8 @@ def patch_prefs(req):
     st = req.store
     body = req.json()
     bad, rule = {}, {}
-    allowed = {"units", "range", "theme", "language", "interface_size", "follow_screen", "ui_pack", "car_order",
-               "pinned_cars"}
+    allowed = {"units", "range", "theme", "language", "interface_size", "follow_screen", "map_colors", "ui_pack",
+               "car_order", "pinned_cars"}
     for k in body:
         if k not in allowed:
             bad[k] = "Unknown field."

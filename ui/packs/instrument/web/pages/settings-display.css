@@ -21,3 +21,6 @@
 }
 .settings-stack .pack-row { flex-wrap: wrap; min-width: 0; max-width: 100%; }
 .settings-stack .pack-row .select { min-width: 0; max-width: 100%; }
+/* the offline map file's steps: a long command may break anywhere on a phone */
+.offline-steps { margin: 0; padding-left: round(1.25rem, var(--e)); overflow-wrap: anywhere; }
+.offline-steps li + li { margin-top: round(0.25rem, var(--e)); }

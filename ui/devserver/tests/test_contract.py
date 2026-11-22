@@ -54,7 +54,7 @@ class Contract(ServerCase):
             "update": c.get("/api/v1/cars/c1/updates")["items"][0]["id"],
             "place": "p1", "session": "s-older-1", "account": "a2", "token": "t12", "key": "cbk_5b2e9f13",
             "trip": "tr1", "rule": "r1", "import": "im1", "tesla_account": "ta1", "sign_in": "si0",
-            "teslafi_account": "fa1",
+            "teslafi_account": "fa1", "z": "13", "x": "1310", "y": "3166",
             "export": c.json("POST", "/api/v1/system/exports", {"password": "sentry-mate-dev"}, expect=201)["id"],
         }
         cls.server.app.store.exports[cls.ids["export"]]["made_ms"] -= 10_000  # prepared
@@ -139,6 +139,11 @@ class Contract(ServerCase):
             if pattern == "/api/v1/system/exports/{export}/file":
                 if st != 200 or hd.get("content-type") != "application/octet-stream" or not raw:
                     problems.append(f"GET {path}: {st} {hd.get('content-type')}")
+                continue
+            if pattern == "/api/v1/maps/tiles/{z}/{x}/{y}":
+                # online tiles here (the dev default): no offline map file is served (tests/test_maps.py has one)
+                if st != 404 or (data or {}).get("error", {}).get("code") != "no_offline_map":
+                    problems.append(f"GET {path}: {st} {raw[:120]!r}")
                 continue
             if pattern == "/health":
                 if st != 200 or raw:

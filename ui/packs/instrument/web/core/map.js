@@ -1,8 +1,10 @@
-// Maps on MapLibre GL (vendor/maplibre-gl, loaded on first use), with tiles chosen offline first:
-//   GET /api/v1/maps/config -> tiles.mode 'offline' with offline_url: tiles from Sentry Mate itself;
-//   'online' with online_template: the source the owner turned on (only then does the browser ask an
-//   outside server); otherwise no tiles: the map shows the track and markers on a plain background,
-//   with a note that says how to turn tiles on.
+// Maps on MapLibre GL (vendor/maplibre-gl, loaded on first use), with tiles chosen offline first
+// (shared/maptiles.js): GET /api/v1/maps/config -> the offline map file Sentry Mate serves (raster, or a
+// Protomaps vector file drawn with a plain style); the online source the owner turned on (only then does
+// the browser ask an outside server); otherwise no tiles: the map shows the track and markers on a plain
+// background under a "No map tiles yet" note (for an admin, a one-click OpenStreetMap switch). Tiles that
+// fail show a short note with the cause. In the dark theme raster tiles are dimmed (never inverted, so
+// streets, labels and water stay readable) unless the person chose original colours.
 // Maps stay sharp and in proportion: MapLibre reads the pixel ratio only in resize(), so the map is
 // resized when the pixel ratio or the root size changes; line widths and circle sizes added with
 // handle.addLayer(def, sized) are functions of rpx() and are set again; the camera framing (handle.frame)
@@ -10,7 +12,9 @@
 
 import * as api from '../shared/api.js';
 import { h, cssVar, esc } from '../shared/dom.js';
-import { rpx, onChange, onTheme } from './display.js';
+import { rpx, onChange, onTheme, getTheme } from './display.js';
+import { getPrefs, onPrefs } from './prefs.js';
+import { tileChoice, rasterPaint, dimmed, mapColors, tileSourceDef, tileLayers, vectorGround, noTilesNote, watchTileErrors } from '../shared/maptiles.js';
 
 let mlLoad = null;
 /** Load MapLibre once (an ES module and its worker, both from this pack). */
@@ -41,30 +45,28 @@ export function watchTilePolicy(template) {
     location.reload();
   });
 }
-/** The tile set to use: { kind: 'offline' | 'online' | 'none', template, attribution, maxZoom }. */
+/** The tile set to use (shared/maptiles.js tileChoice): { kind: 'raster' | 'vector' | 'none', offline, template, attribution, maxZoom, why }. */
 export async function tileSource() {
   let cfg = null;
   try { cfg = await api.get('maps/config', null, { maxAgeMs: 300000 }); } catch { cfg = null; }
-  const t = cfg?.tiles || {};
-  if (t.mode === 'offline' && t.offline_url) return { kind: 'offline', template: t.offline_url, attribution: t.attribution || '', maxZoom: t.max_zoom || 16 };
-  if (t.mode === 'online' && t.online_template) return { kind: 'online', template: t.online_template, attribution: t.attribution || '', maxZoom: t.max_zoom || 19 };
-  return { kind: 'none', template: null, attribution: '', maxZoom: 18 };
+  return tileChoice(cfg);
 }
+
+const isDark = () => getTheme().effective === 'dark';
 
 function style(src) {
   const n = (name, fallback) => { const v = parseFloat(cssVar(name)); return Number.isFinite(v) ? v : fallback; };
-  const layers = [{ id: 'bg', type: 'background', paint: { 'background-color': cssVar('--map-bg') } }];
+  const dark = isDark(), colors = mapColors(getPrefs());
+  const ground = src.kind === 'vector' ? vectorGround(dark) : cssVar('--map-bg');
+  const layers = [{ id: 'bg', type: 'background', paint: { 'background-color': ground } }];
   const sources = {};
-  if (src.template) {
-    sources.tiles = { type: 'raster', tiles: [src.template], tileSize: 256, maxzoom: src.maxZoom, attribution: esc(src.attribution) };
-    layers.push({
-      id: 'tiles', type: 'raster', source: 'tiles',
-      paint: {
-        'raster-hue-rotate': n('--map-raster-hue', 0), 'raster-saturation': n('--map-raster-saturation', 0), 'raster-contrast': 0.05,
-        'raster-brightness-min': n('--map-raster-bright-min', 0), 'raster-brightness-max': n('--map-raster-bright-max', 1), 'raster-fade-duration': 0,
-      },
-    });
-    layers.push({ id: 'tint', type: 'background', paint: { 'background-color': cssVar('--map-tint'), 'background-opacity': n('--map-tint-opacity', 0.1) } });
+  const def = tileSourceDef(src, { attribution: esc(src.attribution) });
+  if (def) {
+    sources.tiles = def;
+    const tune = { saturation: n('--map-dim-saturation', -0.25), contrast: n('--map-dim-contrast', 0.12), min: n('--map-dim-min', 0.04), max: n('--map-dim-max', 0.66) };
+    layers.push(...tileLayers(src, { dark, paint: rasterPaint({ dark, colors, tune }) }));
+    // the pack's blue tint, only over the dimmed look (original colours stay as the tile server drew them)
+    layers.push({ id: 'tint', type: 'background', paint: { 'background-color': cssVar('--map-tint'), 'background-opacity': dimmed(dark, colors) && src.kind === 'raster' ? n('--map-tint-opacity', 0.1) : 0 } });
   }
   return { version: 8, sources, layers };
 }
@@ -79,7 +81,7 @@ function style(src) {
  */
 export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bounds = null, interactive = true } = {}) {
   const [ml, src] = await Promise.all([loadMapLibre(), tileSource()]);
-  watchTilePolicy(src.kind === 'online' ? src.template : null);
+  watchTilePolicy(src.template && !src.offline ? src.template : null);
   if (!ctx.alive()) return null;
   const map = new ml.Map({
     container, style: style(src), center, zoom, attributionControl: false, interactive,
@@ -88,10 +90,11 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
     ...(bounds ? { bounds } : {}),
   });
   if (src.template) map.addControl(new ml.AttributionControl({ compact: false }), 'bottom-right');
+  const offErrors = watchTileErrors(map, container, src, (text) => h('p', { class: 'map-note map-note--error', role: 'status' }, text));
   if (interactive) map.addControl(new ml.NavigationControl({ showCompass: false }), 'top-right');
   map.touchZoomRotate?.disableRotation();
   container.dataset.tiles = src.kind;
-  if (src.kind === 'none') container.append(h('p', { class: 'map-note' }, 'No map tiles: an admin can turn on offline maps or an online map source in Settings: Display and units.'));
+  if (src.kind === 'none') container.append(noTilesNote(src, { compact: container.clientHeight < 300, classes: { primary: 'btn btn--sm btn--primary', secondary: 'btn btn--sm btn--ghost' } }));
   const ready = new Promise((res) => map.once('load', res));
   map.on('error', (e) => { console.warn('map', e && e.error ? e.error.message : e); });
 
@@ -105,10 +108,14 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
     map.triggerRepaint();
   });
   // a theme change recolours the base layers in place (setStyle would drop the page's own layers)
-  const offTheme = onTheme(() => {
+  const repaint = () => {
     for (const l of style(src).layers) for (const [k, v] of Object.entries(l.paint)) if (map.getLayer(l.id)) map.setPaintProperty(l.id, k, v);
-  });
-  ctx.onCleanup(() => { off(); offTheme(); map.remove(); });
+  };
+  const offTheme = onTheme(repaint);
+  // the person's map colours (dimmed or original) change in place too
+  let colorsNow = mapColors(getPrefs());
+  const offPrefs = onPrefs((p) => { if (mapColors(p) !== colorsNow) { colorsNow = mapColors(p); repaint(); } });
+  ctx.onCleanup(() => { off(); offTheme(); offPrefs(); offErrors(); map.remove(); });
   return {
     map, ml, ready, tiles: src,
     addLayer(def, sizedPaint = {}) {

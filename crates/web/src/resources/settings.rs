@@ -73,6 +73,8 @@ pub struct Tiles {
     pub online_url: Option<String>,
     pub attribution: String,
     pub max_zoom: u8,
+    /// The offline map file to use, a `.pmtiles` name in the data folder's `maps/` (none: the largest there).
+    pub offline_file: Option<String>,
 }
 
 impl Default for Tiles {
@@ -82,6 +84,7 @@ impl Default for Tiles {
             online_url: Some(places::tiles::OSM_TILE_URL.into()),
             attribution: places::tiles::OSM_TILE_CREDIT.into(),
             max_zoom: 19,
+            offline_file: None,
         }
     }
 }
@@ -581,7 +584,7 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
             new.geocode.rounding_m = u32::try_from(n.min(u64::from(u32::MAX))).unwrap_or(u32::MAX);
         }
     }
-    if let Some(m) = part(body, "tiles", &["mode", "online_url", "attribution", "max_zoom"], &mut bad) {
+    if let Some(m) = part(body, "tiles", &["mode", "online_url", "attribution", "max_zoom", "offline_file"], &mut bad) {
         if let Some(w) = word(m, "tiles", "mode", TILE_MODES, &mut bad, &mut rule) {
             new.tiles.mode = w;
         }
@@ -593,6 +596,9 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
         }
         if let Some(n) = whole(m, "tiles", "max_zoom", &mut bad) {
             new.tiles.max_zoom = u8::try_from(n).unwrap_or(u8::MAX);
+        }
+        if let Some(f) = text_or_null(m, "tiles", "offline_file", &mut bad) {
+            new.tiles.offline_file = f.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
         }
     }
     if let Some(m) = part(body, "release_check", &["enabled"], &mut bad)
@@ -678,6 +684,11 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
     }
     if t.attribution.chars().count() > 300 {
         rule.add("tiles.attribution", "At most 300 characters.");
+    }
+    if let Some(f) = &t.offline_file
+        && !places::pmtiles::name_ok(f)
+    {
+        rule.add("tiles.offline_file", "A .pmtiles file name in the data folder's maps folder (no folders), or null.");
     }
     if let Some(p) = &new.outbound.proxy
         && !is_proxy(p)

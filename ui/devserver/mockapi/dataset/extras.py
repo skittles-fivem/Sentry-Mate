@@ -28,7 +28,7 @@ def server_settings(now):
         "geocode": {"mode": "offline", "dataset": "made-up offline set", "url": None, "language": "en",
                     "rounding_m": 10},
         "tiles": {"mode": "online", "online_url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-                  "attribution": "© OpenStreetMap contributors", "max_zoom": 19},
+                  "attribution": "© OpenStreetMap contributors", "max_zoom": 19, "offline_file": None},
         "release_check": {"enabled": False},
         "outside_links": {"maps": False, "release_notes": False},
         "outbound": {"proxy": None},

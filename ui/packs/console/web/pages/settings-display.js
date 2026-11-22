@@ -14,6 +14,7 @@ import { getInterface, applyInterface, getTheme, applyTheme, onChange } from '..
 import { tag, ago } from '../core/fmt.js';
 import { toast } from '../core/toast.js';
 import { packChoices } from '../shared/packs.js';
+import { MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
 export const title = () => 'Settings: display';
@@ -77,6 +78,8 @@ export async function mount(ctx) {
     { key: 'theme', id: 'theme', type: 'choice', value: th, options: [['device', 'auto'], ['dark', 'dark'], ['light', 'light']], cover: ['shell.theme', 'web.settings.general.theme', 'shots.theme-note'],
       help: 'Auto follows this device. Saved with your account and set before the page is drawn, so there is no flash. Every page, chart and map has a dark and a light look.',
       save: async (v) => { const before = getTheme().choice; applyTheme(v); try { await pref({ theme: v }); } catch (e) { applyTheme(before); throw e; } } },
+    { key: 'map_colors', id: 'map-colors', type: 'choice', value: p.map_colors || 'dimmed', options: [['dimmed', 'dimmed'], ['original', 'original']],
+      help: MAP_COLORS_TEXT, save: (v) => pref({ map_colors: v }) },
     { key: 'ui_pack', id: 'pack', type: 'choice', value: shownPack, options: packs,
       help: [`The design of the whole app.${about?.ui_pack?.name ? ` This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Another pack is used the next time the app loads, where the server offers it. `, switchBtn, packInfo],
       save: async (v) => { await pref({ ui_pack: v }); switchBtn.hidden = v === packHere; if (v !== packHere) toast('Saved. Used the next time the app loads; switch now reloads.', { kind: 'info' }); } },
@@ -97,6 +100,7 @@ export async function mount(ctx) {
     units.line('units.distance').set(n.distance); units.line('units.temperature').set(n.temperature);
     units.line('units.pressure').set(n.pressure); units.line('range').set(n.range);
     look.line('theme').set(pp?.theme || getTheme().choice);
+    look.line('map_colors').set(pp?.map_colors || 'dimmed');
     paintExample(); paintLang();
   }));
   ctx.onCleanup(onChange(() => { look.line('interface_size').set(getInterface().size); }));
@@ -162,9 +166,18 @@ export async function mount(ctx) {
         help: 'Street and place names in this language where the data has it, else in the local one. A change looks every stored address up again; a code the server refuses is said here.',
         save: (v) => patchServer({ geocode: { language: v } }) },
       { key: 'tiles.mode', type: 'choice', value: t.mode, options: [['offline', 'offline'], ['online', 'online']], readOnly: ro, cover: 'web.shell.map-tiles',
-        help: [t.mode === 'online' ? `Maps load pictures from the online source; its credit shows on every map: ${t.attribution || '(none set)'}. ` : off ? 'Offline tiles are installed: maps need nothing from outside. ' : 'No offline tiles are installed: maps draw routes and places on a plain grey ground, with a note. ',
+        help: [t.mode === 'online' ? `Maps load pictures from the online source; its credit shows on every map: ${t.attribution || '(none set)'}. ` : off ? 'An offline map file is installed: maps need nothing from outside. ' : 'No offline map file yet: maps draw routes and places on a plain grey ground, with a note (see tiles.offline_file). ',
           'An online source is asked by each viewer\'s browser, so it sees the map area and this server\'s address (as Referer: OpenStreetMap refuses tiles without one), never a page or a car.'],
         save: (v) => patchServer({ tiles: { mode: v } }) },
+      (() => {
+        // the offline map file: which is in use, (with several) which to use, and how to make one
+        const files = offlineFileChoices(maps?.tiles);
+        const help = [offlineSummary(maps?.tiles), h('ol', { class: 'offline-steps' }, OFFLINE_STEPS.map((x) => h('li', null, x))), OFFLINE_NOTE];
+        return files
+          ? { key: 'tiles.offline_file', id: OFFLINE_ANCHOR, type: 'choice', value: t.offline_file || '', options: files.map(([v, l]) => [v, v || 'largest']), readOnly: ro, help,
+            save: async (v) => { await patchServer({ tiles: { offline_file: v || null } }); setTimeout(() => { if (ctx.alive()) paintServer(); }, 0); } }
+          : { key: 'tiles.offline_file', id: OFFLINE_ANCHOR, type: 'show', show: () => maps?.tiles?.offline_file || 'none', value: '', help };
+      })(),
       ...(presets.length ? [{ key: 'tiles.source', type: 'choice', value: preset ? preset.id : 'custom', readOnly: ro, options: [...presets.map((p) => [p.id, p.name]), ['custom', 'custom']],
         help: [preset ? `${preset.name}: free, no key; its terms (${preset.terms.replace(/^https:\/\//, '')}) ask for light use and the credit on every map. ` : 'Your own address below. ',
           'A source fills in the address, credit and zoom below.'],
@@ -193,5 +206,6 @@ export async function mount(ctx) {
     section({ title: 'units', side: h('span', { class: 'muted' }, 'yours') }, units.el, example),
     section({ title: 'look and language', side: h('span', { class: 'muted' }, 'yours') }, look.el),
     serverSlot);
+  showOfflineHelp(document.getElementById(OFFLINE_ANCHOR));
   ctx.ready();
 }

@@ -14,6 +14,10 @@ DEFAULT_NOW_MS = 1_794_850_200_000
 MOVE_STATES = ("none", "offered", "expired", "copying", "paused", "moved", "done")
 
 
+# --map-tiles: how the maps start (see parse_args)
+MAP_TILES = ("online", "none", "offline")
+
+
 @dataclasses.dataclass
 class Config:
     pack: str
@@ -33,6 +37,7 @@ class Config:
     rows_every_s: float = 0
     verbose: bool = False
     own_certificate: bool = False
+    map_tiles: str = "online"
 
 
 def parse_args(argv=None) -> Config:
@@ -60,6 +65,9 @@ def parse_args(argv=None) -> Config:
     ap.add_argument("--verbose", action="store_true", help="log every request to stderr")
     ap.add_argument("--own-certificate", action="store_true",
                     help="run with the owner's own certificate (expiring in 12 days): no new one can be made here")
+    ap.add_argument("--map-tiles", choices=MAP_TILES, default="online",
+                    help="map tiles at start: online (OpenStreetMap, the default here), none (a new server: offline with "
+                         "no map file, every map shows its 'No map tiles yet' note) or offline (a made-up offline map file)")
     a = ap.parse_args(argv)
     if a.cars < 0 or a.cars > 5_000_000:
         ap.error("--cars must be between 0 and 5000000")
@@ -78,7 +86,7 @@ def parse_args(argv=None) -> Config:
                   move_state=a.move_state, move_peer_after_s=a.move_peer_after_s,
                   freeze_clock=a.freeze_clock, sse_interval_ms=max(200, a.sse_interval_ms),
                   rows_every_s=a.rows_every_s, verbose=a.verbose,
-                  own_certificate=a.own_certificate)
+                  own_certificate=a.own_certificate, map_tiles=a.map_tiles)
 
 
 class Clock:

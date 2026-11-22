@@ -135,12 +135,12 @@
   --avatar-a: #2A3A5E;
   --avatar-b: #1A2440;
   --map-ctrl-filter: invert(0.88) hue-rotate(180deg);
-  /* the raster map is drawn dark in the dark theme (core/map.js reads these) */
-  --map-raster-hue: 180;
-  --map-raster-saturation: -0.55;
-  --map-raster-bright-min: 0.86;
-  --map-raster-bright-max: 0.07;
-  --map-tint-opacity: 0.22;
+  /* raster maps are dimmed in the dark theme, never inverted (core/map.js reads these; "original colours" skips them) */
+  --map-dim-saturation: -0.3;
+  --map-dim-contrast: 0.16;
+  --map-dim-min: 0.03;
+  --map-dim-max: 0.57;
+  --map-tint-opacity: 0.12;
   --ok: #3FE0D0;
   --focus: var(--live);
 }
@@ -232,11 +232,7 @@
   --avatar-a: #D5DFEF;
   --avatar-b: #BCCBE3;
   --map-ctrl-filter: none;
-  --map-raster-hue: 0;
-  --map-raster-saturation: -0.25;
-  --map-raster-bright-min: 0;
-  --map-raster-bright-max: 1;
-  --map-tint-opacity: 0.08;
+  --map-tint-opacity: 0;
   --ok: #0B9488;
 }
 
@@ -1249,6 +1245,19 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 
 /* maps (core/map.js) */
 .map-note { position: absolute; left: 50%; bottom: round(1rem, var(--e)); transform: translateX(-50%); z-index: 2; max-width: 80%; padding: round(0.375rem, var(--e)) round(0.75rem, var(--e)); border-radius: round(0.625rem, var(--e)); background: var(--surface-attrib); color: var(--text-2); font-size: max(0.75rem, var(--fs-floor)); text-align: center; }
+.map-note--error { bottom: auto; top: round(1rem, var(--e)); max-width: min(32rem, 86%); color: var(--text); box-shadow: inset 0 0 0 1px var(--danger-soft); }
+/* the "No map tiles yet" note (shared/maptiles.js) over a map with no tiles */
+/* bottom right: the pages keep their own cards top left and their buttons bottom left */
+.map-empty { position: absolute; right: round(1rem, var(--e)); bottom: round(1rem, var(--e)); z-index: 3; box-sizing: border-box; width: min(22rem, calc(100% - round(2rem, var(--e)))); max-height: calc(100% - round(1rem, var(--e))); overflow: auto; padding: round(1rem, var(--e)) round(1.125rem, var(--e)); border-radius: var(--radius-sm); background: var(--surface-attrib); box-shadow: inset 0 0 0 1px var(--line); color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: 1.45; text-align: left; backdrop-filter: blur(6px); }
+.map-empty-title { margin: 0 0 round(0.25rem, var(--e)); color: var(--text); font-weight: 600; font-size: max(0.9375rem, var(--fs-floor)); }
+.map-empty-text { margin: 0; }
+.map-empty-actions { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); margin-top: round(0.75rem, var(--e)); }
+.map-empty-actions:empty { display: none; }
+.map-empty-error { margin: round(0.5rem, var(--e)) 0 0; color: var(--danger); }
+.map-empty--compact { padding: round(0.625rem, var(--e)) round(0.75rem, var(--e)); }
+.map-empty--compact .map-empty-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+/* on a phone the note needs the map's bottom edge: the page's own map buttons there wait until the map has tiles */
+@media (max-width: 47.99rem) { .map-panel:has(.map-empty) > .map-overlay--bl, .map-panel:has(.map-empty) > .map-overlay--br { display: none; } }
 
 /* small pieces of states and forms */
 .empty--compact { padding: round(1.5rem, var(--e)) round(1rem, var(--e)); }

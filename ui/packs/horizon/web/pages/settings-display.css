@@ -12,3 +12,6 @@
 .sd-pct { width: 6rem; }
 @container view (max-width: 62rem) { .sd-units { grid-template-columns: minmax(0, 1fr); } }
 .sd-metric { margin-top: 1rem; padding-top: 1rem; box-shadow: inset 0 1px 0 var(--rule); }
+/* the offline map file's steps: a long command may break anywhere on a phone */
+.offline-steps { margin: 0; padding-left: 1.25rem; overflow-wrap: anywhere; }
+.offline-steps li + li { margin-top: 0.25rem; }

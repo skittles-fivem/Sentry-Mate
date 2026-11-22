@@ -111,10 +111,11 @@
   --map-land: #1A1F26;
   --map-water: #12161C;
   --map-road: #2E3641;
-  --map-bright-min: 0.75;  /* above max: the grey raster is turned dark */
-  --map-bright-max: 0.04;
-  --map-contrast: 0.1;
-  --map-opacity: 1;
+  /* dark theme: the raster dimmed and mostly grey, never inverted (core/map.js; "original colours" skips these) */
+  --map-dim-saturation: -0.7;
+  --map-dim-contrast: 0.18;
+  --map-dim-min: 0.03;
+  --map-dim-max: 0.55;
   --sel: rgba(156, 204, 101, 0.14);
 }
 :root[data-theme="light"] {
@@ -137,10 +138,6 @@
   --map-land: #EDEEEA;
   --map-water: #DCE0E3;
   --map-road: #FFFFFF;
-  --map-bright-min: 0.12;
-  --map-bright-max: 1;
-  --map-contrast: -0.1;
-  --map-opacity: 1;
   --sel: rgba(47, 107, 31, 0.10);
 }
 
@@ -534,6 +531,18 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .map--lg { height: calc(var(--g) * 56); }
 .map-note { position: absolute; left: var(--g); top: var(--g); z-index: 2; margin: 0; padding: 0 var(--g2); background: var(--panel); color: var(--muted); font-size: var(--fs1); line-height: var(--lh1); }
 .map-note--fail { position: static; background: none; }
+.map-note--error { right: var(--g); color: var(--text); }
+/* the "No map tiles yet" note (shared/maptiles.js) over a map with no tiles */
+.map-empty { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; box-sizing: border-box; width: min(calc(var(--g) * 52), calc(100% - var(--g) * 2)); max-height: calc(100% - var(--g)); overflow: auto; padding: var(--g) calc(var(--g) * 1.5); border: 1px solid var(--rule-2); background: var(--panel); color: var(--muted); font-size: var(--fs1); line-height: var(--lh1); }
+.map-empty-title { margin: 0 0 calc(var(--g) / 2); color: var(--text); font-weight: 600; }
+.map-empty-title::before { content: '-- '; color: var(--muted); }
+.map-empty-text { margin: 0; }
+.map-empty-actions { display: flex; flex-wrap: wrap; gap: var(--g); margin-top: var(--g); }
+.map-empty-actions:empty { display: none; }
+.map-empty-error { margin: var(--g) 0 0; color: var(--bad); }
+.map-empty--compact .map-empty-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+/* settings/display: the offline map file's steps */
+.offline-steps { margin: var(--g2) 0; padding-left: calc(var(--g) * 4); }
 .map-pin { width: round(up, calc(var(--g2) * 3), 2px); height: round(up, calc(var(--g2) * 3), 2px); background: var(--accent); border: 1px solid var(--map-land); }
 .map-pin--a { background: var(--text); }
 .map-pin--b { background: var(--accent); }
