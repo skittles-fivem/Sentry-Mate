@@ -1454,7 +1454,7 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
   --topbar-h: calc(round(3.5rem, var(--e)) + 1px);
 }
 :root[data-phone] .sidebar { display: none; }
-:root[data-phone] .main { padding-bottom: var(--dock-h); }
+:root[data-phone] .app > .main { padding-bottom: var(--dock-h); }
 :root[data-phone] .view--fill { height: max(calc(100dvh - var(--topbar-h) - var(--safe-t) - var(--dock-h)), round(26rem, var(--e))); }
 
 /* the top bar: the car (opens the switcher), live status, the account */
@@ -1513,7 +1513,7 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 :root[data-phone] .btn--sm { height: var(--tap); }
 :root[data-phone] .btn--icon { width: var(--tap); min-width: var(--tap); }
 :root[data-phone] .period-step { width: var(--tap); height: var(--tap); }
-:root[data-phone] .seg-btn { min-height: calc(var(--tap) - round(0.5rem, var(--e))); }
+:root[data-phone] .seg-btn { min-height: var(--tap); }
 :root[data-phone] :is(.input, .select, select, textarea, input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"])) { min-height: var(--tap); font-size: max(1rem, 16px); }
 :root[data-phone] .input--sm { width: round(6.5rem, var(--e)); }
 :root[data-phone] .check, :root[data-phone] .switch-row { min-height: var(--tap); }
@@ -1588,3 +1588,8 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 :root[data-phone] .hbars li { min-height: var(--tap); }
 :root[data-phone] .maplibregl-ctrl-group button { width: var(--tap) !important; height: var(--tap) !important; }
 :root[data-phone] .skip:not(:focus) { visibility: hidden; }
+
+:root[data-phone] .tbl a.main { display: flex; align-items: center; min-height: var(--tap); }
+:root[data-phone] .back { min-height: var(--tap); }
+:root[data-phone] .empty p { font-size: max(0.84375rem, var(--fs-floor)); }
+:root[data-phone] :is(.popover, .account-menu)::backdrop { background: var(--backdrop); }
