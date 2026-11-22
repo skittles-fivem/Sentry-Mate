@@ -1600,3 +1600,17 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 :root[data-phone][data-screen="bare"] .dock { display: none; }
 :root[data-phone][data-screen="bare"] .app > .main { padding-bottom: var(--safe-b); }
 :root[data-phone] .map-style-btn { height: var(--tap); padding: 0 round(0.875rem, var(--e)); }
+/* the map's credit fills in once the map has loaded: on a phone its lines are kept from the start (two upright,
+   one on its side), so the switch above it and the page's cards over the map never move when it arrives */
+:root[data-phone="tall"] .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib { min-height: round(2.75rem, var(--e)); }
+:root[data-phone="short"] .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib { min-height: round(1.5rem, var(--e)); }
+:root[data-phone] .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib.maplibregl-attrib-empty { display: block; }
+/* with those heights the strip at the map's foot (the switch over the credit) is known before the map has loaded,
+   so the page's cards over the map sit above it from the first paint, not only once the map has measured it */
+:root[data-phone] { --map-foot-phone: calc(var(--tap) + 2 * round(0.1875rem, var(--e)) + 2px + round(0.5rem, var(--e)) + round(2.75rem, var(--e))); }
+:root[data-phone="short"] { --map-foot-phone: calc(var(--tap) + 2 * round(0.1875rem, var(--e)) + 2px + round(0.5rem, var(--e)) + round(1.5rem, var(--e))); }
+:root[data-phone] .map-panel > .map-overlay--br { bottom: calc(round(0.5rem, var(--e)) + var(--map-foot-phone)); }
+:root[data-phone] .map-panel > .map-overlay--bl { bottom: calc(round(1rem, var(--e)) + var(--map-foot-phone)); }
+/* and as wide as the map from the start: the credit is a strip across the map's foot, so it never grows sideways */
+:root[data-phone] .map-panel .maplibregl-ctrl-bottom-right { left: 0; }
+:root[data-phone] .map-panel .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib { float: none; clear: both; margin: 0; border-radius: 0; text-align: right; }
