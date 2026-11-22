@@ -167,7 +167,7 @@ export async function mount(ctx) {
       m.map.setPaintProperty('route-line', 'line-gradient', ['interpolate', ['linear'], ['line-progress'], 0, cssVar('--cyan'), 0.5, cssVar('--mag'), 1, cssVar('--org')]);
       pin(m, coords[0], { text: 'A' });
       pin(m, coords[coords.length - 1], { text: 'B', tone: 'cyan' });
-      m.frame(() => m.map.fitBounds(boundsOf(coords), { padding: pad(36), maxZoom: 16, duration: 0 }));
+      m.frame(() => { const p = pad(36); p.bottom += mapEl.querySelector('.maplibregl-ctrl-attrib')?.offsetHeight || 0; m.map.fitBounds(boundsOf(coords), { padding: p, maxZoom: 16, duration: 0 }); });
     } catch (e) { console.warn(e); replace(mapEl, mapFallback()); }
   })();
   function hoverAt(i) {

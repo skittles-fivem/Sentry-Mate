@@ -155,6 +155,8 @@ const EVENTS = [
   ['user_present', 'Someone is seen in the car', 'the time and place'],
 ];
 
+// every host a connection reaches (map pictures: the preset, its overlays and the styles viewers may switch to)
+const hostsOf = (r) => (Array.isArray(r.hosts) && r.hosts.length ? r.hosts : r.host ? [r.host] : []);
 const ERROR_WORDS = { connection_refused: 'the broker refused the connection', pin_mismatch: 'the certificate did not match the pin', no_host: 'no broker host set', tls_failed: 'TLS failed', auth_failed: 'user name or password refused' };
 
 const PURPOSE = {
@@ -579,7 +581,7 @@ export async function mount(ctx) {
       columns: [
         { key: 'dir', label: 'Way', sort: true, render: (r) => tag(r.dir === 'in' ? 'Inbound' : 'Outbound', r.dir === 'in' ? 'cyan' : null), csv: (r) => r.dir },
         { key: 'purpose', label: 'For', lead: true, sort: true, value: (r) => PURPOSE[r.purpose]?.[0] || r.purpose, render: (r) => h('span', { class: 'cell' }, h('b', null, PURPOSE[r.purpose]?.[0] || r.purpose), h('span', { class: 'cell-sub' }, PURPOSE[r.purpose]?.[1] || '')), csv: (r) => PURPOSE[r.purpose]?.[0] || r.purpose },
-        { key: 'host', label: 'Host or port', render: (r) => (r.port != null ? code(`port ${r.port}${r.tls ? ', TLS' : ''}`) : r.host ? code(r.host, { long: true }) : h('span', { class: 'faint' }, 'not set')), csv: (r) => r.host || (r.port != null ? `port ${r.port}` : '') },
+        { key: 'host', label: 'Host or port', render: (r) => (r.port != null ? code(`port ${r.port}${r.tls ? ', TLS' : ''}`) : hostsOf(r).length ? h('span', { class: 'si-hosts' }, hostsOf(r).map((x) => code(x, { long: true }))) : h('span', { class: 'faint' }, 'not set')), csv: (r) => hostsOf(r).join(' ') || (r.port != null ? `port ${r.port}` : '') },
         { key: 'on', label: 'State', sort: true, value: (r) => (r.enabled ? 0 : 1), render: (r) => (r.enabled ? sig('ok', r.dir === 'in' ? 'Open' : 'On') : sig('off', 'Off')), csv: (r) => (r.enabled ? 'on' : 'off') },
         { key: 'last', label: 'Last used', num: true, sort: true, value: (r) => r.last_used_ms, render: (r) => (r.last_used_ms ? ago(r.last_used_ms) : h('span', { class: 'faint' }, r.dir === 'in' ? 'always listening' : 'never')), csv: (r) => (r.last_used_ms ? new Date(r.last_used_ms).toISOString() : '') },
         { key: 'change', label: 'Change it', csv: false, render: (r) => (PURPOSE[r.purpose]?.[2] ? h('a', { class: 'plc', href: state.buildUrl(PURPOSE[r.purpose][2]) }, 'Settings') : r.purpose === 'teslafi' ? h('a', { class: 'plc', href: state.buildUrl('settings-integrations') + '#teslafi' }, 'TeslaFi') : r.purpose === 'tesla' ? h('a', { class: 'plc', href: '#tesla' }, 'Tesla account') : h('span', { class: 'faint' }, r.purpose === 'mqtt' ? 'Above' : '—')) },
