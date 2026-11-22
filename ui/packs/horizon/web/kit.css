@@ -4,12 +4,13 @@
 
 :root {
   --map-bg: #0b0626;
+  /* dark theme: raster tiles dimmed (never inverted), a light violet tint over them (core/map.js; "original
+     colours" and the light theme show the tile server's own colours) */
   --map-tint: #2a0f5c;
-  --map-tint-a: 0.3;
-  --map-sat: -0.55;
-  --map-hue: 0;
-  --map-contrast: 0.12;
-  --map-bmin: 0;
+  --map-tint-a: 0.14;
+  --map-sat: -0.3;
+  --map-contrast: 0.16;
+  --map-bmin: 0.03;
   --map-bmax: 0.6;
   --digits-bg: #05030f;
   --digits-ink: #f6f0ff;
@@ -17,10 +18,6 @@
 :root[data-theme="light"] {
   --map-bg: #efe7ff;
   --map-tint: #c9b6ff;
-  --map-tint-a: 0.14;
-  --map-sat: -0.35;
-  --map-bmin: 0.08;
-  --map-bmax: 1;
 }
 
 /* ------------------------------------------------------------------ page stack */
@@ -204,7 +201,7 @@ button.key[aria-pressed="false"] { opacity: 0.45; }
 .map { position: relative; height: 26rem; min-width: 0; border-radius: var(--r); overflow: hidden; background: var(--map-bg); box-shadow: inset 0 0 0 1px var(--ring-2); }
 .map--sm { height: 18rem; }
 .map--lg { height: 32rem; }
-.map .maplibregl-ctrl-attrib { font: 400 var(--fs-xs)/1.4 var(--sans); background: var(--glass-solid); color: var(--ink-2); }
+.map .maplibregl-ctrl.maplibregl-ctrl-attrib { font: 400 var(--fs-xs)/1.4 var(--sans); background: var(--glass-solid); color: var(--ink-2); }
 .map .maplibregl-ctrl-attrib a { color: var(--cyan-ink); }
 .map .maplibregl-ctrl-group { background: var(--glass-solid); box-shadow: inset 0 0 0 1px var(--ring); border-radius: var(--r); }
 .map .maplibregl-ctrl-group button { width: 2.25rem; height: 2.25rem; }
@@ -213,6 +210,17 @@ button.key[aria-pressed="false"] { opacity: 0.45; }
 .map-note, .map-fallback { position: absolute; left: 0.75rem; bottom: 0.75rem; z-index: 2; max-width: calc(100% - 1.5rem); padding: 0.375rem 0.625rem; border-radius: var(--r);
   background: var(--glass-solid); box-shadow: inset 0 0 0 1px var(--ring-2); font-size: var(--fs-xs); color: var(--ink-2); }
 .map-fallback { position: static; display: grid; place-items: center; height: 100%; max-width: none; background: none; box-shadow: none; font-size: var(--fs-sm); }
+.map-note--error { bottom: auto; top: 0.75rem; max-width: min(30rem, calc(100% - 1.5rem)); color: var(--ink); box-shadow: inset 0 0 0 1px var(--hot); }
+/* the "No map tiles yet" note (shared/maptiles.js) over a map with no tiles */
+.map-empty { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; box-sizing: border-box; width: min(25rem, calc(100% - 1.5rem)); max-height: calc(100% - 1rem); overflow: auto;
+  padding: 1rem 1.125rem; border-radius: var(--r); background: var(--glass-solid); box-shadow: inset 0 0 0 1px var(--ring-2); color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.45; }
+.map-empty-title { margin: 0 0 0.25rem; font: 800 var(--fs)/1.3 var(--display); color: var(--ink); }
+.map-empty-text { margin: 0; }
+.map-empty-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+.map-empty-actions:empty { display: none; }
+.map-empty-error { margin: 0.5rem 0 0; color: var(--hot); }
+.map-empty--compact { padding: 0.625rem 0.75rem; }
+.map-empty--compact .map-empty-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .pin { display: grid; place-items: center; width: 1.625rem; height: 1.625rem; border-radius: 50%; font: 900 var(--fs-xs)/normal var(--display); color: #1a0626; background: var(--mag);
   box-shadow: 0 0 0 0.125rem #fff, 0 0 0.75rem var(--mag); }
 .pin--cyan { background: var(--cyan); box-shadow: 0 0 0 0.125rem #fff, 0 0 0.75rem var(--cyan); }

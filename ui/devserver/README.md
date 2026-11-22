@@ -24,6 +24,7 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--seed N` | `1` | Same seed and flags give the same data. |
 | `--signed-out` | off | Starts with no session, to test the sign-in page. |
 | `--role admin\|watch` | `admin` | Who the automatic session is: `watch` sees only car `c1` and may not change car data. |
+| `--map-tiles online\|none\|offline` | `online` | How maps start: `online` (OpenStreetMap; the page checker answers the tiles), `none` (a new server: offline tiles with no map file, so every map shows its "No map tiles yet" note) or `offline` (a made-up raster offline map file, `bay-area.pmtiles`, served at `/api/v1/maps/tiles/{z}/{x}/{y}` as plain tiles with a grid line). |
 | `--now-ms MS` | `1794850200000` | The virtual "now" at start (2026-11-16 17:30 UTC). It then moves with real time. |
 | `--fresh` (or `--needs-setup`) | off | Starts as a fresh server: no accounts and nobody signed in, the first-run set-up page. The set-up code is `SETUP-DEV-0000`. See "First-run set-up and moving" below. |
 | `--move-state S` | `none` | Starts Settings: Server's "Move to another server" in state `S`: `offered`, `expired`, `copying`, `paused`, `moved` or `done` (screenshots; add `--freeze-clock` to hold it there). Not with `--fresh`. |

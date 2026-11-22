@@ -9,6 +9,7 @@
 //! - [`geocode`]: addresses, offline (GeoNames towns, nearest lookup in a KD-tree) and online (Nominatim, one
 //!   request a second for the whole server however many cars ask), as the owner chooses.
 //! - [`tiles`]: the map tile settings the web UI reads (a PMTiles file, an online tile server, or both).
+//! - [`pmtiles`]: reading single tiles out of an offline PMTiles file in the data folder.
 //!
 //! Places are shared: nothing here is per car, and nothing grows with the number of cars except what the caller
 //! feeds in. Every type that answers lookups is immutable after it is built or guards its state itself, so cars
@@ -21,6 +22,7 @@ pub mod geocode;
 pub mod geofence;
 mod grid;
 mod http;
+pub mod pmtiles;
 pub mod price;
 pub mod suggest;
 pub mod tiles;

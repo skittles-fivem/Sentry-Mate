@@ -15,8 +15,8 @@ import ipaddress
 import re
 
 from .. import derive
-from ..conventions import page
-from ..errors import bad_input, invalid, not_found, stale_version
+from ..conventions import Response, page
+from ..errors import ApiError, bad_input, invalid, not_found, stale_version
 from ..live import now_object
 from ..util import DAY, HOUR, MIN, date_str, h01, local_date, r
 from .. import sources as SRC
@@ -91,7 +91,8 @@ def patch_settings(req):
     sub("units", UNITS)
     sub("geocode", {"mode": ("offline", "online"), "dataset": "str", "url": "str?", "language": "str",
                     "rounding_m": int})
-    sub("tiles", {"mode": ("offline", "online"), "online_url": "str?", "attribution": "str", "max_zoom": int})
+    sub("tiles", {"mode": ("offline", "online"), "online_url": "str?", "attribution": "str", "max_zoom": int,
+                  "offline_file": "str?"})
     sub("release_check", {"enabled": bool})
     sub("outside_links", {"maps": bool, "release_notes": bool})
     sub("outbound", {"proxy": "str?"})
@@ -158,6 +159,9 @@ def patch_settings(req):
         rule["outbound.proxy"] = "A proxy address such as http://proxy.lan:3128 (no name or password in it), or null."
     if not 1 <= t["max_zoom"] <= 22:
         rule["tiles.max_zoom"] = "Must be between 1 and 22."
+    of = t.get("offline_file")
+    if of is not None and not re.fullmatch(r"(?!\.)[A-Za-z0-9._-]{1,112}\.pmtiles", of):
+        rule["tiles.offline_file"] = "A .pmtiles file name in the data folder's maps folder (no folders), or null."
     if rule:
         raise invalid(rule)
     with st.lock:
@@ -194,16 +198,60 @@ TILE_PRESETS = [
 ]
 
 
+# the made-up offline map file (--map-tiles offline): one raster file, as the real server reports a .pmtiles in data/maps
+MAP_FILES = [{"name": "bay-area.pmtiles", "bytes": 48_200_000}]
+OFFLINE_TILE_URL = "/api/v1/maps/tiles/{z}/{x}/{y}"
+
+
 def maps_config(req):
     ss = req.store.server_settings
     t, g = ss["tiles"], ss["geocode"]
-    return {"tiles": {"mode": t["mode"], "offline_url": None, "offline_data_present": False,
+    present = req.store.map_file
+    files = copy.deepcopy(MAP_FILES) if present else []
+    return {"tiles": {"mode": t["mode"],
+                      "offline_url": OFFLINE_TILE_URL if present and t["mode"] != "online" else None,
+                      "offline_present": present, "offline_data_present": present,
+                      "offline_file": files[0]["name"] if files else None, "offline_choice": t.get("offline_file"),
+                      "offline_files": files, "offline_kind": "raster" if present else None,
+                      "offline_min_zoom": 0 if present else None, "offline_max_zoom": 16 if present else None,
+                      "offline_bounds": [-122.6, 37.6, -122.3, 37.9] if present else None, "offline_error": None,
                       "online_template": t["online_url"] if t["mode"] == "online" else None,
                       "attribution": t["attribution"], "max_zoom": t["max_zoom"],
                       "presets": copy.deepcopy(TILE_PRESETS)},
             "geocoding": {"mode": g["mode"], "credit": "GeoNames (CC BY 4.0)" if g["mode"] == "offline" else
                           "The address service set in Settings", "offline_data_present": True,
                           "language": g["language"]}}
+
+
+def _tile_png(z, x, y):
+    """A 256 x 256 made-up map tile: pale land with a darker grid line on its top and left edge."""
+    import zlib
+    import struct
+    land, line = (0xE9, 0xE6, 0xDF), (0xB8, 0xC4, 0xCC)
+    row_line = b"\x00" + bytes(line) * 256
+    row_land = b"\x00" + bytes(line) * 2 + bytes(land) * 254
+    raw = row_line * 2 + row_land * 254
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 256, 256, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def map_tile(req):
+    """GET /maps/tiles/{z}/{x}/{y}: a tile of the made-up offline map file (as the real server's, 204 outside it)."""
+    t = req.store.server_settings["tiles"]
+    if not req.store.map_file or t["mode"] == "online":
+        raise ApiError(404, "no_offline_map", "No offline map file is in use.")
+    try:
+        z, x, y = (int(req.params[k]) for k in ("z", "x", "y"))
+    except ValueError:
+        raise ApiError(404, "no_such_tile", "No such tile.")
+    if not 0 <= z <= 30 or not 0 <= x < 2 ** z or not 0 <= y < 2 ** z:
+        raise ApiError(404, "no_such_tile", "No such tile.")
+    if z > 16:
+        return Response(204, b"", "application/octet-stream", {"Cache-Control": "private, max-age=86400"})
+    return Response(200, _tile_png(z, x, y), "image/png", {"Cache-Control": "private, max-age=86400"})
 
 
 def geocode_status(req):
@@ -618,6 +666,7 @@ def _teslafi_health(req):
 def register(router):
     router.add("/api/v1/settings", GET=get_settings, PATCH=patch_settings, admin=("PATCH",))
     router.add("/api/v1/maps/config", GET=maps_config)
+    router.add("/api/v1/maps/tiles/{z}/{x}/{y}", GET=map_tile)
     router.add("/api/v1/geocode/status", GET=geocode_status)
     router.add("/api/v1/notices", GET=notices)
     router.add("/api/v1/about", GET=about)

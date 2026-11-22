@@ -101,8 +101,9 @@ class Accounts(ServerCase):
 class Preferences(ServerCase):
     def test_get_patch(self):
         p = self.c.get("/api/v1/me/preferences")
-        self.assertEqual(set(p), {"units", "range", "theme", "language", "interface_size", "follow_screen", "ui_pack",
-                                  "car_order", "pinned_cars"})
+        self.assertEqual(set(p), {"units", "range", "theme", "language", "interface_size", "follow_screen", "map_colors",
+                                  "ui_pack", "car_order", "pinned_cars"})
+        self.assertEqual(p["map_colors"], "dimmed")
         self.assertIs(p["follow_screen"], True)
         self.assertEqual(p["language"], "auto")  # a new account follows its browser until it picks one
         self.assertEqual(p["ui_pack"], "instrument")

@@ -8,7 +8,9 @@
 
 import * as api from '../shared/api.js';
 import { h, cssVar, esc } from '../shared/dom.js';
-import { rpx, onRedraw, onTheme } from './display.js';
+import { rpx, onRedraw, onTheme, getTheme } from './display.js';
+import { getPrefs, onPrefs } from './prefs.js';
+import { tileChoice, rasterPaint, dimmed, mapColors, tileSourceDef, tileLayers, vectorGround, noTilesNote, watchTileErrors } from '../shared/maptiles.js';
 
 let mlLoad = null;
 /** Load MapLibre once (an ES module, its worker and its stylesheet, all from this pack). */
@@ -40,27 +42,27 @@ export function watchTilePolicy(template) {
     location.reload();
   });
 }
-/** The tiles to use: { kind: 'offline' | 'online' | 'none', template, attribution, maxZoom }. */
+/** The tiles to use (shared/maptiles.js tileChoice): { kind: 'raster' | 'vector' | 'none', offline, template, attribution, maxZoom, why }. */
 export async function tileSource() {
   let cfg = null;
   try { cfg = await api.get('maps/config', null, { maxAgeMs: 300000 }); } catch { cfg = null; }
-  const t = cfg?.tiles || {};
-  if (t.mode === 'offline' && t.offline_url) return { kind: 'offline', template: t.offline_url, attribution: t.attribution || '', maxZoom: t.max_zoom || 16 };
-  if (t.mode === 'online' && t.online_template) return { kind: 'online', template: t.online_template, attribution: t.attribution || '', maxZoom: t.max_zoom || 19 };
-  return { kind: 'none', template: null, attribution: '', maxZoom: 18 };
+  return tileChoice(cfg);
 }
 
 const num = (name, fallback) => { const v = parseFloat(cssVar(name)); return Number.isFinite(v) ? v : fallback; };
+const isDark = () => getTheme().look !== 'light';
+// in the dark theme the tiles are dimmed (never inverted) with the pack's violet tint over them; the light theme and
+// "original colours" show the tile server's own colours
 function baseStyle(src) {
-  const layers = [{ id: 'bg', type: 'background', paint: { 'background-color': cssVar('--map-bg') } }];
+  const dark = isDark(), colors = mapColors(getPrefs());
+  const layers = [{ id: 'bg', type: 'background', paint: { 'background-color': src.kind === 'vector' ? vectorGround(dark) : cssVar('--map-bg') } }];
   const sources = {};
-  if (src.template) {
-    sources.tiles = { type: 'raster', tiles: [src.template], tileSize: 256, maxzoom: src.maxZoom, attribution: esc(src.attribution) };
-    layers.push({ id: 'tiles', type: 'raster', source: 'tiles', paint: {
-      'raster-saturation': num('--map-sat', -0.6), 'raster-hue-rotate': num('--map-hue', 0), 'raster-contrast': num('--map-contrast', 0.1),
-      'raster-brightness-min': num('--map-bmin', 0), 'raster-brightness-max': num('--map-bmax', 0.55), 'raster-fade-duration': 0,
-    } });
-    layers.push({ id: 'tint', type: 'background', paint: { 'background-color': cssVar('--map-tint'), 'background-opacity': num('--map-tint-a', 0.25) } });
+  const def = tileSourceDef(src, { attribution: esc(src.attribution) });
+  if (def) {
+    sources.tiles = def;
+    const tune = { saturation: num('--map-sat', -0.35), contrast: num('--map-contrast', 0.16), min: num('--map-bmin', 0.03), max: num('--map-bmax', 0.58) };
+    layers.push(...tileLayers(src, { dark, paint: rasterPaint({ dark, colors, tune }) }));
+    layers.push({ id: 'tint', type: 'background', paint: { 'background-color': cssVar('--map-tint'), 'background-opacity': dimmed(dark, colors) && src.kind === 'raster' ? num('--map-tint-a', 0.12) : 0 } });
   }
   return { version: 8, sources, layers };
 }
@@ -72,7 +74,7 @@ function baseStyle(src) {
  */
 export async function createMap(el, ctx, { center = [0, 0], zoom = 12, bounds = null, interactive = true, fullscreen = false } = {}) {
   const [ml, src] = await Promise.all([loadMapLibre(), tileSource()]);
-  watchTilePolicy(src.kind === 'online' ? src.template : null);
+  watchTilePolicy(src.template && !src.offline ? src.template : null);
   if (!ctx.alive()) return null;
   const map = new ml.Map({
     container: el, style: baseStyle(src), center, zoom, attributionControl: false, interactive,
@@ -84,7 +86,8 @@ export async function createMap(el, ctx, { center = [0, 0], zoom = 12, bounds = 
   if (fullscreen) map.addControl(new ml.FullscreenControl({ container: el.parentElement || el }), 'top-right');
   map.touchZoomRotate?.disableRotation();
   el.dataset.tiles = src.kind;
-  if (src.kind === 'none') el.append(h('p', { class: 'map-note' }, 'No map tiles yet: an admin can turn on offline maps or an online map source in Display and units.'));
+  if (src.kind === 'none') el.append(noTilesNote(src, { compact: el.clientHeight < 300, classes: { primary: 'btn btn--sm btn--go', secondary: 'btn btn--sm btn--ghost' } }));
+  const offErrors = watchTileErrors(map, el, src, (text) => h('p', { class: 'map-note map-note--error', role: 'status' }, text));
   const ready = new Promise((res) => map.once('load', res));
   map.on('error', (e) => console.warn('map', e?.error?.message || e));
 
@@ -97,12 +100,16 @@ export async function createMap(el, ctx, { center = [0, 0], zoom = 12, bounds = 
     map.resize();
     map.triggerRepaint();
   });
+  const repaint = () => { for (const l of baseStyle(src).layers) for (const [k, v] of Object.entries(l.paint)) if (map.getLayer(l.id)) map.setPaintProperty(l.id, k, v); };
   const offTheme = onTheme(() => {
-    for (const l of baseStyle(src).layers) for (const [k, v] of Object.entries(l.paint)) if (map.getLayer(l.id)) map.setPaintProperty(l.id, k, v);
+    repaint();
     for (const f of recolour) f();
   });
+  // the person's map colours (dimmed or original) change in place
+  let colorsNow = mapColors(getPrefs());
+  const offPrefs = onPrefs((p) => { if (mapColors(p) !== colorsNow) { colorsNow = mapColors(p); repaint(); } });
   const recolour = [];
-  ctx.onCleanup(() => { offRedraw(); offTheme(); map.remove(); });
+  ctx.onCleanup(() => { offRedraw(); offTheme(); offPrefs(); offErrors(); map.remove(); });
   return {
     map, ml, ready, tiles: src,
     addLayer(def, sizedPaint = {}) {

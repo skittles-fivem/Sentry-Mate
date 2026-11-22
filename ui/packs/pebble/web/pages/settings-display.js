@@ -21,6 +21,7 @@ import { sectionHead, facts } from '../core/bits.js';
 import { group, pickRow, ctlRow, infoRow, notSaved } from '../core/settings.js';
 import { inOrder } from '../core/settings.js';
 import { packChoices } from '../shared/packs.js';
+import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
 export const shape = [[2, 'h3'], [2, 'h3'], [2, 'h2'], [2, 'h2']];
@@ -96,10 +97,13 @@ export async function mount(ctx) {
   const pack = pickRow({ name: 'UI pack', sub: 'The look of the whole app. Used the next time the app loads.', value: packNow, options: packOpts,
     sheetNote: 'Admins can install more packs. Your data and settings stay the same in every pack.',
     onpick: (v) => save({ ui_pack: v }).then(() => { switchRow.hidden = v === packHere; if (v !== packHere) ctx.toast('UI pack saved. Switch now, or it is used the next time the app loads.', { kind: 'info' }); }) });
+  const mapColors = segmented({ label: null, name: 'Map colours', value: p0.map_colors || 'dimmed', options: MAP_COLORS_CHOICES,
+    onchange: (v) => save({ map_colors: v }).then(() => saved('Map colours')).catch(() => mapColors.set((currentPrefs() || {}).map_colors || 'dimmed')) });
   const lookT = tile({ w: 2, title: 'Look', icon: 'sun', cover: ['shell.theme', 'web.settings.general.theme'] },
     group(null, [
       ctlRow({ name: 'Theme', sub: 'Auto follows your device, day and night.', control: theme, stack: true }),
       h('div', { class: 'row row-static set-ex-row' }, themeEx),
+      ctlRow({ name: 'Map colours', sub: MAP_COLORS_TEXT, control: mapColors, stack: true }),
     ]),
     group('Size', [
       ctlRow({ name: 'Interface size', sub: null, control: h('div', { class: 'stepper', role: 'group', 'aria-label': 'Interface size' }, smaller, sizeValue, bigger) }),
@@ -148,6 +152,7 @@ export async function mount(ctx) {
     const pr = currentPrefs() || {};
     const u = pr.units || {};
     theme.set(pr.theme || 'device');
+    mapColors.set(pr.map_colors || 'dimmed');
     const dark = isDark();
     themeEx.textContent = (pr.theme || 'device') === 'device'
       ? `Your device asks for ${dark ? 'dark' : 'light'} now, so the pages are ${dark ? 'dark' : 'light'}. It is set before a page draws, so it never flashes.`
@@ -189,6 +194,7 @@ export async function mount(ctx) {
     try {
       const next = await ctx.api.patch('settings', { version: srv.version, ...body });
       if (body.geocode || body.outbound) geo = await ctx.api.get('geocode/status').catch(() => geo);
+      if (body.tiles) mapCfg = await ctx.api.get('maps/config').catch(() => mapCfg);
       ctx.toast('Saved for everyone on this server.');
       if (ctx.alive()) drawServer(next);
       return next;
@@ -318,12 +324,24 @@ export async function mount(ctx) {
       },
     });
     if (off) tileForm.submitButton.hidden = true;
+    // the offline map file: which is in use, (with several) which to use, and how to make one
+    const fileOpts = offlineFileChoices(mapCfg && mapCfg.tiles);
+    const fileSeg = fileOpts ? segmented({ name: 'Offline map file', value: s.tiles.offline_file || '', options: fileOpts,
+      onchange: (v) => quick({ tiles: { offline_file: v || null } }, () => fileSeg.set(s.tiles.offline_file || '')) }) : null;
+    if (fileSeg) fileSeg.querySelectorAll('button').forEach((b) => { b.disabled = off; });
+    const offlineGroup = group('Offline map file', [
+      fileSeg ? ctlRow({ name: 'In use', sub: offlineSummary(mapCfg && mapCfg.tiles), control: fileSeg, stack: true })
+        : h('div', { class: 'row row-static' }, h('span', { class: 'row-text' }, h('span', { class: 'row-name' }, 'In use'), h('span', { class: 'row-sub' }, offlineSummary(mapCfg && mapCfg.tiles)))),
+      h('div', { class: 'row row-static' }, h('span', { class: 'row-text' }, h('span', { class: 'row-sub' }, 'A map of your own area kept on this server: maps then need nothing from outside, and no viewer’s browser asks another site for tiles.'),
+        h('ol', { class: 'row-sub offline-steps' }, OFFLINE_STEPS.map((x) => h('li', null, x))), h('span', { class: 'row-sub' }, OFFLINE_NOTE))),
+    ], { id: OFFLINE_ANCHOR });
     const mapsT = tile({ w: 2, title: 'Maps', icon: 'map', side: ro, cover: 'web.shell.map-tiles' },
       group(null, [ctlRow({ name: 'Map tiles', sub: s.tiles.mode === 'online'
         ? `Online, from ${hostOf(s.tiles.online_url) || 'the tile server below'}. Each viewer’s browser asks it for the map pictures, sending this server’s address as Referer (OpenStreetMap needs it; never a page or a car).`
-        : 'Offline: maps are drawn by this server; with no offline tiles, maps show routes and pins on a plain ground.', control: tilesSeg, stack: true }),
+        : 'Offline: maps are drawn from the offline map file on this server; without one, maps show routes and pins on a plain ground, with a note.', control: tilesSeg, stack: true }),
       ...(tileSource ? [ctlRow({ name: 'Tile source', sub: tilePreset ? `${tilePreset.name}: free, no key. Its terms (${tilePreset.terms.replace(/^https:\/\//, '')}) ask for light use and its credit on every map.` : 'Your own address below. A source fills in its address, credit and zoom.', control: tileSource, stack: true })] : [])]),
-      tileForm);
+      tileForm,
+      offlineGroup);
 
     // proxy
     const proxyF = field({ label: 'Proxy address', name: 'proxy', value: (s.outbound && s.outbound.proxy) || '', hint: 'For example http://proxy.lan:3128 or socks5://proxy.lan:1080, with no name or password in it. Empty: connect directly.', attrs: { placeholder: 'http://…', spellcheck: 'false', autocomplete: 'off', disabled: off } });
@@ -360,6 +378,7 @@ export async function mount(ctx) {
         infoRow({ icon: 'server', name: 'The server’s', sub: 'Defaults, addresses and maps below are one setting for everyone.' }),
       ])),
     divider, serverBox);
+  showOfflineHelp(document.getElementById(OFFLINE_ANCHOR));
   ctx.ready();
   return { update: (c) => { sync(); c.ready(); } };
 }

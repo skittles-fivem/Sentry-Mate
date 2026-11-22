@@ -53,3 +53,6 @@
 @container page (width >= 112.5rem) {
   .page-settings-display .settings, .page-settings-display .settings-divider, .page-settings-display .settings-divider-note { max-width: round(84rem, var(--e)); }
 }
+/* the offline map file's steps: a long command may break anywhere on a phone */
+.offline-steps { margin: 0; padding-left: round(1.25rem, var(--e)); overflow-wrap: anywhere; }
+.offline-steps li + li { margin-top: round(0.25rem, var(--e)); }

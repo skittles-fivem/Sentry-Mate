@@ -13,6 +13,7 @@ import { format, getUnits, FT_PER_M } from '../shared/units.js';
 import { formatDateTime, isValidZone } from '../shared/time.js';
 import { pageHead, errorView, pageLink, flag, button } from '../core/ui.js';
 import { choice, switchField, field, form, setFieldError } from '../core/form.js';
+import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 import { currentPrefs, onPrefs } from '../core/prefs.js';
 import { savePref, currentAbout } from '../core/frame.js';
 import { SIZES, sizeState, setSize, sizeNote, display } from '../core/display.js';
@@ -65,12 +66,13 @@ const UNIT_WORDS = {
 
 export async function mount(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
-  const [server, geoFirst, maps, packList] = await Promise.all([
+  const [server, geoFirst, mapsFirst, packList] = await Promise.all([
     ctx.api.get('settings'),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: (currentPrefs() || {}).ui_pack || null }),
   ]);
+  let maps = mapsFirst;
   const tilePresets = (maps && maps.tiles && maps.tiles.presets) || [];
   let srv = server;
   let geo = geoFirst;
@@ -84,6 +86,7 @@ export async function mount(ctx) {
   const press = choice({ label: 'Tyre pressure', labelHidden: true, name: 'pressure', value: units.pressure || 'bar', options: [['bar', 'bar'], ['psi', 'psi']], onchange: (v) => save({ units: { pressure: v } }) });
   const range = choice({ label: 'Range', labelHidden: true, name: 'range', value: p.range || 'rated', options: [['rated', 'Rated'], ['ideal', 'Ideal']], onchange: (v) => save({ range: v }) });
   const theme = choice({ label: 'Theme', labelHidden: true, name: 'theme', value: p.theme || 'device', options: [['device', 'Follow device'], ['light', 'Light (paper)'], ['dark', 'Dark (night ink)']], onchange: (v) => save({ theme: v }) });
+  const mapColors = choice({ label: 'Map colours', labelHidden: true, name: 'map-colors', value: p.map_colors || 'dimmed', options: MAP_COLORS_CHOICES, onchange: (v) => save({ map_colors: v }) });
 
   const example = () => h('p', { class: 'setting-example' });
   const distEx = example();
@@ -132,7 +135,7 @@ export async function mount(ctx) {
     const pr = currentPrefs() || {};
     const u = pr.units || {};
     dist.set(u.distance || 'km'); temp.set(u.temperature || 'c'); press.set(u.pressure || 'bar');
-    range.set(pr.range || 'rated'); theme.set(pr.theme || 'device');
+    range.set(pr.range || 'rated'); theme.set(pr.theme || 'device'); mapColors.set(pr.map_colors || 'dimmed');
     distEx.textContent = `For example: a drive of ${format(42.2, 'distance')} at ${format(88, 'speed')}, a place radius of ${format(150, 'length')}, ${format(152, 'efficiency')}.`;
     tempEx.textContent = `For example: outside ${format(21.5, 'temperature')}, cabin ${format(23, 'temperature')}, battery ${format(31, 'temperature')}.`;
     pressEx.textContent = `For example: front left ${format(290, 'pressure')}, the same pressure in the other unit is ${format(290, 'pressure', { units: { pressure: (u.pressure || 'bar') === 'bar' ? 'psi' : 'bar' } })}.`;
@@ -196,6 +199,7 @@ export async function mount(ctx) {
     h('section', { class: 'settings', 'aria-labelledby': 'look-title' },
       h('h2', { class: 'label settings-label', id: 'look-title' }, 'Look and language', h('span', { class: 'label-note' }, 'yours alone, not this browser’s or the server’s')),
       setting('Theme', 'Paper by day and night ink after dark, following your device, or always one of the two. It is put in place before the page draws, so it never flashes the other one.', theme, { cover: ['shell.theme', 'shots.theme-note', 'web.settings.general.theme'], extra: themeEx }),
+      setting('Map colours', MAP_COLORS_TEXT, mapColors),
       setting('Language', 'How dates, times and numbers are written (for example 1,234.5 or 1.234,5, and the first day of the week).', h('div', { class: 'lang-control' }, lang, langNote),
         { cover: ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation'], extra: langEx }),
       setting('Interface size', 'Text, controls, tables, charts and maps grow or shrink together. With “Follow screen size” on, big screens such as 4K monitors get larger text by themselves. Browser zoom works on top.', h('div', { class: 'size-control' }, size, follow, sizeNoteEl), { cls: 'setting-size' }),
@@ -266,6 +270,7 @@ export async function mount(ctx) {
         const next = await ctx.api.patch('settings', { version: srv.version, ...body });
         ctx.flash('Saved for everyone on this server.');
         if (body.geocode || body.outbound) await refreshGeo();
+        if (body.tiles) maps = await ctx.api.get('maps/config').catch(() => maps);
         if (ctx.alive()) { redraw(next); sync(); }
         return next;
       } catch (err) {
@@ -446,7 +451,16 @@ export async function mount(ctx) {
     try { tileHost = s.tiles.online_url ? new URL(s.tiles.online_url.replace(/\{[a-z]\}/g, '0')).host : null; } catch { tileHost = null; }
     const tileNow = h('p', { class: 'setting-note' }, s.tiles.mode === 'online'
       ? `Now: online, from ${tileHost || 'the tile server below'}. Each viewer’s browser asks it for the map pictures, so it sees which area is shown and this server’s address (as Referer, which OpenStreetMap needs; never a page or a car).`
-      : 'Now: offline. Maps are drawn by this server; where no offline tiles are installed, maps show the routes and pins on plain paper.');
+      : 'Now: offline. Maps are drawn from the offline map file on this server; without one, maps show the routes and pins on plain paper, with a note saying so.');
+    // the offline map file: which is in use, (with several) which to use, and how to make one
+    const tFiles = offlineFileChoices(maps && maps.tiles);
+    const offlineFile = tFiles ? choice({ label: 'Offline map file', labelHidden: true, name: 'offline-file', value: s.tiles.offline_file || '', options: tFiles,
+      onchange: (v) => quick({ tiles: { offline_file: v || null } }, () => offlineFile.set(s.tiles.offline_file || '')) }) : null;
+    if (offlineFile) offlineFile.querySelectorAll('button').forEach((b) => { b.disabled = disabled; });
+    const offlineRow = setting('Offline map file', 'A map of your own area kept on this server: maps then need nothing from outside, and no viewer’s browser asks another site for tiles.',
+      h('div', { class: 'tiles-control' }, h('p', { class: 'setting-note' }, offlineSummary(maps && maps.tiles)), offlineFile,
+        h('ol', { class: 'setting-note offline-steps' }, OFFLINE_STEPS.map((x) => h('li', null, x))), h('p', { class: 'setting-note' }, OFFLINE_NOTE)));
+    offlineRow.id = OFFLINE_ANCHOR;
     const tilePreset = tilePresets.find((x) => x.url === s.tiles.online_url) || null;
     const tileSource = tilePresets.length ? choice({ label: 'Tile source', labelHidden: true, name: 'tile-source', value: tilePreset ? tilePreset.id : 'custom',
       options: [...tilePresets.map((x) => [x.id, x.name]), ['custom', 'Custom address']],
@@ -504,6 +518,7 @@ export async function mount(ctx) {
           lookup, { cover: 'web.settings.general.address-lookup', extra: geoStatus }),
         setting('Address details', 'Language, online service and rounding.', addr, { cls: 'setting-form' }),
         setting('Map tiles', `The pictures under every map. Credit: ${s.tiles.attribution || 'shown on the map'}; zoom up to ${s.tiles.max_zoom}.`, h('div', { class: 'tiles-control' }, tiles, tileNow), { cover: 'web.shell.map-tiles' }),
+        offlineRow,
         setting('Online tile server', 'Only used with online tiles. A source fills in its address, credit and zoom.', h('div', { class: 'tiles-control' }, tileSource, tileTerms, tileForm), { cls: 'setting-form' }),
         setting('Outbound proxy', 'If this server may only reach the internet through a proxy: online address look-ups and map tiles the server downloads go through it. Viewers’ browsers loading online tiles use their own connection.',
           h('div', { class: 'proxy-control' }, proxyForm, proxyNow), { cls: 'setting-form', cover: 'docs.env.tesla-api.nominatim-proxy' }),
@@ -516,6 +531,7 @@ export async function mount(ctx) {
   ctx.main.append(
     pageHead({ eyebrow: 'Settings', title: 'Display and units', deck: ctx.info.purpose }),
     mine, divider, dividerNote, serverBox);
+  showOfflineHelp(document.getElementById(OFFLINE_ANCHOR));
   ctx.ready();
   // Its own controls change the preferences: they follow onPrefs above; the page is not drawn again.
   return { update: (c) => { sync(); c.ready(); } };

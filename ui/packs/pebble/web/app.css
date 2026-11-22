@@ -761,6 +761,20 @@ a.place-link:hover { color: var(--coral); text-decoration: underline; }
 .map.is-loading { animation: ghost 1.6s ease-in-out infinite; }
 .map-note { position: absolute; z-index: 2; left: var(--s3); bottom: var(--s3); max-width: calc(100% - 2 * var(--s3)); padding: var(--s2) var(--s3); border-radius: var(--r-sm);
   background: var(--card); color: var(--text); font-size: var(--f13); line-height: var(--l13); font-weight: 700; }
+.map-note-error { bottom: auto; top: var(--s3); right: var(--s3); font-weight: 600; box-shadow: inset 0 0 0 1px var(--bad); }
+/* the "No map tiles yet" note (shared/maptiles.js) over a map with no tiles */
+.map-empty { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; box-sizing: border-box; width: min(25rem, calc(100% - 2 * var(--s3))); max-height: calc(100% - var(--s3)); overflow: auto;
+  padding: var(--s4); border-radius: var(--r-card); background: var(--card); box-shadow: var(--shadow); color: var(--muted); font-size: var(--f14); line-height: var(--l14); }
+.map-empty-title { margin: 0 0 var(--s1); color: var(--text); font-size: var(--f16); line-height: var(--l16); font-weight: 800; }
+.map-empty-text { margin: 0; }
+.map-empty-actions { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s3); }
+.map-empty-actions:empty { display: none; }
+.map-empty-error { margin: var(--s2) 0 0; color: var(--bad); }
+.map-empty--compact { padding: var(--s3); }
+.map-empty--compact .map-empty-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+/* Settings: Display, the offline map file's steps: a long command may break anywhere on a phone */
+.offline-steps { display: block; margin: var(--s2) 0; padding-left: var(--s5); overflow-wrap: anywhere; }
+.offline-steps li + li { margin-top: var(--s1); }
 .map-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2); padding: 0 var(--s3) var(--s2); font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
 .pin { display: grid; place-items: center; width: var(--s5); height: var(--s5); padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: default; }
 button.pin { cursor: pointer; width: var(--h-sm); height: var(--h-sm); }
@@ -775,7 +789,7 @@ button.pin { cursor: pointer; width: var(--h-sm); height: var(--h-sm); }
 .map .maplibregl-ctrl-icon { filter: none; }
 :root[data-theme="dark"] .map .maplibregl-ctrl-icon { filter: invert(1); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .map .maplibregl-ctrl-icon { filter: invert(1); } }
-.map .maplibregl-ctrl-attrib { background: color-mix(in srgb, var(--card) 85%, transparent); color: var(--muted); font-size: max(0.6875rem, 10px); line-height: max(14px, round(1rem, var(--e))); }
+.map .maplibregl-ctrl.maplibregl-ctrl-attrib { background: color-mix(in srgb, var(--card) 85%, transparent); color: var(--muted); font-size: max(0.6875rem, 10px); line-height: max(14px, round(1rem, var(--e))); }
 .map .maplibregl-ctrl-attrib a { color: var(--text); }
 .map .maplibregl-ctrl-attrib-button { background-color: var(--card); }
 

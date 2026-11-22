@@ -546,6 +546,12 @@ async fn errors_and_methods() {
         (p["language"].as_str(), p["interface_size"].as_u64(), p["ui_pack"].as_str()),
         (Some("auto"), Some(100), Some("instrument"))
     );
+    // map colours in the dark theme: dimmed unless the person picks the tile server's own
+    assert_eq!(p["map_colors"], "dimmed");
+    let p = admin.patch("/api/v1/me/preferences", json!({ "map_colors": "original" })).await.json();
+    assert_eq!(p["map_colors"], "original");
+    let r = admin.patch("/api/v1/me/preferences", json!({ "map_colors": "inverted" })).await;
+    assert_eq!((r.status, r.json()["error"]["fields"]["map_colors"].is_string()), (422, true));
     s.app.set_defaults(web::units::Defaults {
         units: web::units::Units { distance: web::units::Distance::Mi, ..Default::default() },
         ..Default::default()
