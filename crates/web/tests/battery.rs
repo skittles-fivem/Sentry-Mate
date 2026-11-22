@@ -539,4 +539,33 @@ async fn a_car_with_only_a_few_minutes_of_data_and_no_references_answers_every_b
     }
     let b = ok(&mut admin, &format!("/api/v1/cars/{car}/battery")).await;
     assert!(b["capacity"]["degradation_pct"].is_null() || b["capacity"]["degradation_pct"].is_number(), "{b}");
+    assert_eq!(b["pack"], json!({ "replaced_ms": null, "source": null }), "{b}");
+
+    // the owner says the pack was replaced: the figures follow the new pack, its value when new is the owner's
+    let st = ok(&mut admin, &format!("/api/v1/cars/{car}/settings")).await;
+    let r = admin
+        .patch(
+            &format!("/api/v1/cars/{car}/settings"),
+            json!({ "version": st["version"], "pack_replaced_date": "2026-01-05", "pack_new_kwh": 77.5 }),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(
+        (r.json()["pack_replaced_date"].clone(), r.json()["pack_new_kwh"].clone()),
+        (json!("2026-01-05"), json!(77.5))
+    );
+    let b = ok(&mut admin, &format!("/api/v1/cars/{car}/battery")).await;
+    assert_eq!(b["pack"]["source"], json!("owner"), "{b}");
+    assert!(b["pack"]["replaced_ms"].is_u64(), "{b}");
+    assert_eq!((b["capacity"]["new_kwh"].clone(), b["capacity"]["new_source"].clone()), (json!(77.5), json!("owner")));
+    assert!(b["notes"].as_array().unwrap().contains(&json!("pack_replaced")), "{b}");
+    let c = ok(&mut admin, &format!("/api/v1/cars/{car}/battery/capacity")).await;
+    assert_eq!(c["pack"], b["pack"]);
+    let r = admin
+        .patch(
+            &format!("/api/v1/cars/{car}/settings"),
+            json!({ "version": st["version"].as_u64().unwrap() + 1, "pack_replaced_date": "05/01/2026" }),
+        )
+        .await;
+    assert_eq!(r.status, 422, "{}", r.text());
 }
