@@ -10,7 +10,7 @@
 // because host, port, TLS, pin and password are checked together.
 
 import { h, replace } from '../shared/dom.js';
-import { buildUrl, lastCar } from '../shared/state.js';
+import { buildUrl, lastCar, preferredCar, rememberCar, isSold } from '../shared/state.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { icon } from '../core/icons.js';
 import { soldParts, soldOptions } from '../core/carswitch.js';
@@ -222,7 +222,8 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
 
   const carList = cars?.items || [];
-  // the preview car: the address's, else the frame's last car, else the first in the person's own order
+  // the preview car: the address's, else the preferred car (Main car, else the last opened, else the first
+  // in the person's own order)
   const findCar = async (id) => {
     if (!id) return null;
     const known = carList.find((c) => c.id === id);
@@ -234,8 +235,11 @@ export async function mount(ctx) {
     const wanted = ctx.query.car || null;
     extraCar = await findCar(wanted);
     if (wanted && !extraCar) carMissing = wanted;
-    if (!extraCar) extraCar = await findCar(lastCar());
-    if (!extraCar && carList.length) extraCar = (await ctx.api.page('cars', { sort: 'custom', limit: 1 }).catch(() => null))?.items?.[0] || carList[0];
+    if (!extraCar && carList.length) {
+      const all = (await ctx.api.page('cars', { sort: 'custom', limit: 100 }, { maxAgeMs: 30000 }).catch(() => null))?.items || carList;
+      const id = preferredCar(all);
+      extraCar = all.find((c) => c.id === id) || (await findCar(lastCar())) || carList[0];
+    }
   } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
   if (!ctx.alive()) return;
   let carId = extraCar?.id || null;
@@ -479,6 +483,7 @@ export async function mount(ctx) {
     carId = next;
     extraCar = carList.find((c) => c.id === next) || { id: next, name: carSel.selectedOptions[0]?.textContent || next };
     replace(carNoteSlot);
+    rememberCar(next, { sold: isSold(extraCar) }); // picked from the server's list: a car this account sees
     ctx.setQuery({ car: carId });
     await loadPreview();
     if (!ctx.alive()) return;

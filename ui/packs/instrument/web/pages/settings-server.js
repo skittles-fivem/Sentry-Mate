@@ -97,9 +97,10 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
 
   const carName = new Map(S.cars.map((c) => [c.id, c.name]));
-  // the zone the times on this page are in, named with them: the frame clock's (the last car's, else
-  // the first car's), else this browser's
-  const clockCar = S.cars.find((c) => c.id === state.lastCar()) || S.cars[0] || null;
+  // the zone the times on this page are in, named with them: the frame clock's (the preferred car's:
+  // Main car, else the last one opened), else this browser's
+  const clockId = state.preferredCar(S.cars);
+  const clockCar = S.cars.find((c) => c.id === clockId) || null;
   const tz = clockCar?.time_zone || ctx.tz;
   const zone = tzName(tz);
   const zoneText = clockCar?.time_zone ? `${zone}, ${clockCar.name}'s time zone like the clock at the top` : `${zone}, this browser's time zone`;

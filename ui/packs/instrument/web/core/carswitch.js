@@ -29,7 +29,7 @@ function option(c, q, current) {
   const meta = [carMeta(c), where].filter(Boolean).join(' · ');
   const o = h('div', {
     class: ['sw-opt', c.id === current && 'is-current', state.isSold(c) && 'is-sold'], role: 'option', id: `sw-${c.id}`, dataset: { state: st, car: c.id },
-    'aria-selected': 'false', onclick: () => choose(c.id),
+    'aria-selected': 'false', onclick: () => choose(c),
   },
   h('span', { class: ['dot', n.stale && 'is-stale'], 'aria-hidden': 'true' }),
   h('span', { class: 'sw-opt-main' },
@@ -86,10 +86,10 @@ function setActive(i) {
   }
 }
 
-function choose(id) {
+function choose(car) {
   dlg.close();
-  state.rememberCar(id);
-  state.navigate(state.linkForCar(id));
+  state.rememberCar(car.id, { sold: state.isSold(car) });
+  state.navigate(state.linkForCar(car.id));
 }
 
 function build() {
@@ -98,7 +98,7 @@ function build() {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); setActive(Math.min(rows.length - 1, active + 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(Math.max(0, active - 1)); }
-    else if (e.key === 'Enter' && rows[active]) { e.preventDefault(); choose(rows[active].id); }
+    else if (e.key === 'Enter' && rows[active]) { e.preventDefault(); choose(rows[active]); }
   });
   list = h('div', { class: 'sw-list', id: 'sw-list', role: 'listbox', 'aria-label': 'Cars' });
   foot = h('div', { class: 'sw-foot' },
