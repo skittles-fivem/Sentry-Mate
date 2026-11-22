@@ -301,6 +301,8 @@ pub fn report_json(r: &Report, reports: &[CarReport], cars: &[(BackupCar, Value)
                 "imported": if imported { tr.imported } else { 0 },
                 "skipped": skipped(tr),
                 "bad_values": tr.bad_values,
+                // open rows TeslaMate never ended, taken ending at their last reading (not skipped)
+                "closed_at_last_reading": tr.notes.get(import::CLOSED_AT_LAST).copied().unwrap_or(0),
             }),
         );
     }
