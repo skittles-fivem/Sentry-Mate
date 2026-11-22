@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tesla::Clock;
 use tokio::sync::Notify;
 use vault::Vault;
 
@@ -129,6 +130,14 @@ pub struct Change {
     pub time_zone: Option<Option<String>>,
 }
 
+/// The requests a token's check sent: written into the account's pacing, so the poller keeps its gap after them
+/// and counts them for the day.
+#[derive(Default)]
+struct Sent {
+    n: u64,
+    at_ms: u64,
+}
+
 struct Task {
     wake: Arc<Notify>,
     status: Arc<Mutex<Option<AccountStatus>>>,
@@ -161,6 +170,18 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 fn clean_label(label: &str) -> String {
     let l: String = label.trim().chars().filter(|c| !c.is_control()).take(64).collect();
     if l.is_empty() { "TeslaFi account".to_string() } else { l }
+}
+
+fn apply(a: &mut Account, change: &Change) {
+    if let Some(l) = &change.label {
+        a.label = clean_label(l);
+    }
+    if let Some(p) = change.paused {
+        a.paused = p;
+    }
+    if let Some(z) = change.time_zone.clone() {
+        a.time_zone = z;
+    }
 }
 
 /// A token as TeslaFi gives it: printable, no spaces, not too long.
@@ -294,12 +315,24 @@ impl<S: Sink> Service<S> {
         out
     }
 
-    /// One look with a token (the latest poll, and the last poll of the car awake when the latest names no car):
-    /// the VIN it names, if any. Refused: the token is not taken.
-    async fn check(&self, http: &Arc<Http>, token: &Secret) -> Result<Option<(String, Option<String>)>, ServiceError> {
+    /// One look with a token (the latest poll, and, when it names no car, the last poll of the car awake, asked the
+    /// cadence's gap later so even a check never sends two requests closer than that): the VIN it names, if any.
+    /// Refused: the token is not taken. `sent` counts the requests and keeps the time of the last one.
+    async fn check(
+        &self,
+        http: &Arc<Http>,
+        token: &Secret,
+        sent: &mut Sent,
+    ) -> Result<Option<(String, Option<String>)>, ServiceError> {
         let c = Client::new(http.clone());
-        let tz = self.opts().tz();
-        for what in [Read::Latest, Read::LastGood] {
+        let opts = self.opts();
+        let tz = opts.tz();
+        for (i, what) in [Read::Latest, Read::LastGood].into_iter().enumerate() {
+            if i > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(opts.cadence.min_gap_ms)).await;
+            }
+            sent.n += 1;
+            sent.at_ms = tesla::SystemClock.now_ms();
             let poll = c.read(token, what).await.map_err(ServiceError::Feed)?;
             let fields = import::teslafi::feed::fields_of(&poll);
             if let Ok(p) = import::teslafi::feed::read(&fields, tz, None)
@@ -327,7 +360,8 @@ impl<S: Sink> Service<S> {
             return Err(ServiceError::BadTimeZone);
         }
         let http = self.client()?;
-        let seen = self.check(&http, &token).await?;
+        let mut sent = Sent::default();
+        let seen = self.check(&http, &token, &mut sent).await?;
         let store = &self.inner.store;
         let mut cars = Vec::new();
         if let Some((vin, name)) = seen {
@@ -338,7 +372,9 @@ impl<S: Sink> Service<S> {
             }
             cars.push(car);
         }
-        let account = store.add(
+        let mut pacing = store::Pacing::default();
+        pacing.note_requests(sent.n, sent.at_ms);
+        let account = store.add_paced(
             Account {
                 id: String::new(),
                 label: clean_label(label),
@@ -352,14 +388,34 @@ impl<S: Sink> Service<S> {
                 cars,
             },
             &token,
+            pacing,
         )?;
         tracing::info!(account = %account.id, cars = account.cars.len(), "teslafi account added");
         self.spawn(&account.id, Some(http))?;
         Ok(account)
     }
 
-    /// A new token for an account (after TeslaFi refused the old one): checked with one read before it is stored.
+    /// A new token for an account (after TeslaFi refused the old one): checked with one or two reads before it is
+    /// stored.
     pub async fn replace_token(&self, id: &str, version: u64, token: Secret) -> Result<Account, ServiceError> {
+        self.change(id, version, Change::default(), Some(token)).await
+    }
+
+    /// Changes an account, and with `token` gives it a new one. All or nothing: the token is checked with TeslaFi
+    /// first, and when TeslaFi refuses it or cannot be reached nothing at all is changed.
+    pub async fn change(
+        &self,
+        id: &str,
+        version: u64,
+        change: Change,
+        token: Option<Secret>,
+    ) -> Result<Account, ServiceError> {
+        if let Some(Some(z)) = &change.time_zone
+            && !time_zone_ok(z)
+        {
+            return Err(ServiceError::BadTimeZone);
+        }
+        let Some(token) = token else { return self.update(id, version, change) };
         if !token_ok(token.expose()) {
             return Err(ServiceError::BadToken);
         }
@@ -368,7 +424,8 @@ impl<S: Sink> Service<S> {
             return Err(ServiceError::Stale);
         }
         let http = self.client()?;
-        let seen = self.check(&http, &token).await?;
+        let mut sent = Sent::default();
+        let seen = self.check(&http, &token, &mut sent).await?;
         let tag = seen.map(|(vin, _)| self.inner.store.vin_tag(&tesla::FullVin::new(vin)));
         // a token of another TeslaFi account (another car) is not this account's
         if let Some(t) = &tag
@@ -377,10 +434,17 @@ impl<S: Sink> Service<S> {
         {
             return Err(ServiceError::AccountExists);
         }
-        let (a, ()) = self.inner.store.update(id, Some(version), Some(&token), |a| {
-            a.state = AccountState::Ok;
-            a.last_error = None;
-        })?;
+        let (a, ()) = self.inner.store.update_paced(
+            id,
+            Some(version),
+            Some(&token),
+            |a| {
+                apply(a, &change);
+                a.state = AccountState::Ok;
+                a.last_error = None;
+            },
+            |p| p.note_requests(sent.n, sent.at_ms),
+        )?;
         if lock(&self.inner.tasks).contains_key(id) {
             self.wake(id);
         } else {
@@ -395,17 +459,7 @@ impl<S: Sink> Service<S> {
         {
             return Err(ServiceError::BadTimeZone);
         }
-        let (a, ()) = self.inner.store.update(id, Some(version), None, |a| {
-            if let Some(l) = &change.label {
-                a.label = clean_label(l);
-            }
-            if let Some(p) = change.paused {
-                a.paused = p;
-            }
-            if let Some(z) = change.time_zone.clone() {
-                a.time_zone = z;
-            }
-        })?;
+        let (a, ()) = self.inner.store.update(id, Some(version), None, |a| apply(a, &change))?;
         self.wake(id);
         Ok(a)
     }

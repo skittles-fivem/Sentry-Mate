@@ -40,7 +40,7 @@ fn decode(s: &str) -> Option<String> {
 
 /// The words `source=` takes (docs/ui-api.md, Conventions).
 pub const SOURCE_WORDS: &[&str] =
-    &["smo", "tesla_api", "import", "import:teslamate", "import:teslafi", "all", "can", "teslamate"];
+    &["smo", "tesla_api", "teslafi_api", "import", "import:teslamate", "import:teslafi", "all", "can", "teslamate"];
 
 impl Params {
     /// Reads a query string (`a=1&b=x`); a part that is not UTF-8 after decoding is `400`.

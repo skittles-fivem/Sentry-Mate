@@ -244,3 +244,72 @@ async fn a_new_account_whose_car_sleeps_asks_once_for_the_last_poll_awake() {
     assert_eq!(store.get(&id).unwrap().cars.len(), 1, "the car named by the last poll awake");
     assert!(sink.points.lock().unwrap().is_empty());
 }
+
+fn no_car_account(store: &Store) -> String {
+    let a = Account {
+        id: String::new(),
+        label: "x".into(),
+        added_ms: NOW,
+        version: 0,
+        paused: false,
+        time_zone: None,
+        state: AccountState::Ok,
+        last_ok_ms: None,
+        last_error: None,
+        cars: Vec::new(),
+    };
+    store.add(a, &Secret::new(TOKEN)).unwrap().id
+}
+
+#[tokio::test]
+async fn an_awake_car_whose_polls_name_no_car_is_not_asked_every_10_s() {
+    let (_t, data, v) = vault();
+    let store = Store::new(&data, v);
+    let id = no_car_account(&store);
+    let (script, sink) = (Script::default(), Arc::new(MemSink::default()));
+    let mut p = poller(&store, &id, &script, &sink);
+    for i in 0..20 {
+        script.push(Ok(json!({"data_id": format!("10{i}"), "Date": "2027-01-15 09:00:00", "carState": "Idling",
+                              "state": "online", "vin": null})));
+    }
+    let mut t = NOW;
+    let mut gaps = Vec::new();
+    for _ in 0..20 {
+        let next = p.tick(t).await.unwrap();
+        gaps.push(next - t);
+        t = next;
+    }
+    let asked = script.asked.lock().unwrap().clone();
+    // the latest poll, then once the last poll awake 10 s later, then the parked pace
+    assert_eq!(&asked[..2], &[Read::Latest, Read::LastGood]);
+    assert!(asked[2..].iter().all(|r| *r == Read::Latest), "{asked:?}");
+    assert_eq!(gaps[0], 10_000);
+    assert!(gaps[1..].iter().all(|g| *g == 180_000), "{gaps:?}");
+    assert_eq!(p.status().mode, Mode::Idle);
+}
+
+#[tokio::test]
+async fn a_zone_east_of_the_old_one_does_not_drop_teslafis_polls() {
+    let (_t, data, v) = vault();
+    let store = Store::new(&data, v);
+    let id = account(&store, true);
+    let (script, sink) = (Script::default(), Arc::new(MemSink::default()));
+    let mut p = poller(&store, &id, &script, &sink);
+    script.push(Ok(poll(1, "2027-01-15 08:00:00", "Driving", json!({"shift_state": "D"}))));
+    let mut t = p.tick(NOW).await.unwrap();
+    assert_eq!(sink.points.lock().unwrap().len(), 1);
+
+    store.update(&id, None, None, |a| a.time_zone = Some("Asia/Tokyo".into())).unwrap();
+    for k in 1..=5u64 {
+        script.push(Ok(poll(1 + k, &format!("2027-01-15 08:0{k}:00"), "Driving", json!({"shift_state": "D"}))));
+        t = p.tick(t).await.unwrap();
+    }
+    let pts = sink.points.lock().unwrap().clone();
+    assert_eq!(pts.len(), 6, "every new poll after the change goes on: {}", pts.len());
+    // read in the new zone: 08:01 in Tokyo is 23:01 UTC the day before
+    assert_eq!(pts[1].1[0].t_ms, 1_800_000_000_000 - 9 * 3_600_000 + 60_000);
+    // the same poll again is still not handed on twice
+    script.push(Ok(poll(6, "2027-01-15 08:05:00", "Driving", json!({"shift_state": "D"}))));
+    p.tick(t).await.unwrap();
+    assert_eq!(sink.points.lock().unwrap().len(), 6);
+}

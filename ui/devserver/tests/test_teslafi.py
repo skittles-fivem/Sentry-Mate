@@ -29,8 +29,8 @@ class Teslafi(ServerCase):
         self.assertEqual((o["polls"]["driving_s"], o["polls"]["daily_cap"]), (60, 1500))
         a = self.c.get(BASE + "/accounts")["items"][0]
         self.assertEqual((a["id"], a["status"], a["time_zone"]), ("fa1", "ok", "America/Chicago"))
-        self.assertEqual([(c["vehicle"], c["match"], c["vin_prefix"]) for c in a["cars"]],
-                         [("fv1", "c3", "5YJ3E1EA0PF")])
+        self.assertEqual([(c["vehicle"], c["match"], c["vin_prefix"], c["model"]) for c in a["cars"]],
+                         [("fv1", "c3", "5YJ3E1EA0PF", "Model 3")])
         st = self.c.get(BASE + "/status")["items"]
         self.assertEqual(len(st), 1)
         self.assertIn(st[0]["mode"], ("off", "asleep", "idle", "charging", "driving", "backoff"))
@@ -42,8 +42,10 @@ class Teslafi(ServerCase):
     def test_2_add_match_pause_remove(self):
         e, _ = self.c.error("POST", BASE + "/accounts", 403, "password_needed", body={"token": TOKEN})
         self.c.error("POST", BASE + "/accounts", 422, "invalid", body={"token": "has space", "confirm_password": PW})
-        self.c.error("POST", BASE + "/accounts", 422, "invalid",
-                     body={"token": TOKEN, "time_zone": "not a zone", "confirm_password": PW})
+        # the zones the real server takes (chrono-tz's), no others: Mars/Base is refused, EST5EDT taken
+        for zone in ("not a zone", "Mars/Base"):
+            self.c.error("POST", BASE + "/accounts", 422, "invalid",
+                         body={"token": TOKEN, "time_zone": zone, "confirm_password": PW})
         self.c.error("POST", BASE + "/accounts", 422, "teslafi_refused",
                      body={"token": "refused-" + TOKEN, "confirm_password": PW})
         self.c.error("POST", BASE + "/accounts", 502, "teslafi_unreachable",
@@ -65,6 +67,9 @@ class Teslafi(ServerCase):
         a = self.c.json("PATCH", f"{BASE}/accounts/{aid}",
                         {"version": cars["version"], "paused": True, "time_zone": "Europe/Oslo", "confirm_password": PW})
         self.assertEqual((a["status"], a["time_zone"], a["mode"]), ("paused", "Europe/Oslo", "off"))
+        a = self.c.json("PATCH", f"{BASE}/accounts/{aid}",
+                        {"version": a["version"], "time_zone": "EST5EDT", "confirm_password": PW})
+        self.assertEqual(a["time_zone"], "EST5EDT")
         a = self.c.json("PATCH", f"{BASE}/accounts/{aid}",
                         {"version": a["version"], "token": TOKEN + "x", "confirm_password": PW})
         self.no_token(a)

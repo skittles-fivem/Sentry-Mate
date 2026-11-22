@@ -116,6 +116,41 @@ pub struct Pacing {
     /// TeslaFi's time of it.
     #[serde(default)]
     pub last_poll_ms: Option<u64>,
+    /// The time zone `last_poll_ms` was read in: another zone reads TeslaFi's times differently, so a poll is then
+    /// compared by its id only until one has been read in the new zone.
+    #[serde(default)]
+    pub poll_zone: Option<String>,
+}
+
+impl Pacing {
+    /// Writes down `n` requests sent at `at_ms` (the checks of a token, outside the poller): the poller's next
+    /// request waits its gap after them, and they count for the day.
+    pub fn note_requests(&mut self, n: u64, at_ms: u64) {
+        if n == 0 {
+            return;
+        }
+        let day = at_ms / 86_400_000;
+        if self.day != day {
+            self.day = day;
+            self.polls_today = 0;
+        }
+        self.polls_today += n;
+        self.last_request_ms = Some(self.last_request_ms.map_or(at_ms, |t| t.max(at_ms)));
+    }
+
+    /// Takes the requests `other` counted that this one has not (the same day only): the later last request, the
+    /// larger count.
+    pub fn merge_requests(&mut self, other: &Pacing) {
+        if let Some(t) = other.last_request_ms {
+            self.last_request_ms = Some(self.last_request_ms.map_or(t, |s| s.max(t)));
+        }
+        if other.day == self.day {
+            self.polls_today = self.polls_today.max(other.polls_today);
+        } else if other.day > self.day {
+            self.day = other.day;
+            self.polls_today = other.polls_today;
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -213,11 +248,14 @@ impl Store {
         Ok(self.read(id)?.pacing)
     }
 
-    /// Saves the poller's pacing. Changes neither the account's version nor the generation.
+    /// Saves the poller's pacing. Changes neither the account's version nor the generation. Requests written down
+    /// meanwhile by a token's check are kept (the later last request, the larger count of the day).
     pub fn set_pacing(&self, id: &str, pacing: &Pacing) -> Result<(), StoreError> {
         let _g = self.inner.lock.lock().unwrap_or_else(|p| p.into_inner());
         let mut f = self.read(id)?;
-        f.pacing = pacing.clone();
+        let mut p = pacing.clone();
+        p.merge_requests(&f.pacing);
+        f.pacing = p;
         self.write(&f, false)
     }
 
@@ -244,12 +282,17 @@ impl Store {
     }
 
     /// Stores a new account under the next free id (the `id` given is replaced).
-    pub fn add(&self, mut account: Account, token: &Secret) -> Result<Account, StoreError> {
+    pub fn add(&self, account: Account, token: &Secret) -> Result<Account, StoreError> {
+        self.add_paced(account, token, Pacing::default())
+    }
+
+    /// [`Store::add`] with the pacing to start from (the requests of the token's check).
+    pub fn add_paced(&self, mut account: Account, token: &Secret, pacing: Pacing) -> Result<Account, StoreError> {
         let _g = self.inner.lock.lock().unwrap_or_else(|p| p.into_inner());
         let next = self.ids().iter().filter_map(|i| i[2..].parse::<u64>().ok()).max().unwrap_or(0) + 1;
         account.id = format!("fa{next}");
         account.version = 1;
-        let f = AccountFile { account: account.clone(), token: token_file(token), pacing: Pacing::default() };
+        let f = AccountFile { account: account.clone(), token: token_file(token), pacing };
         self.write(&f, true)?;
         Ok(account)
     }
@@ -262,6 +305,18 @@ impl Store {
         version: Option<u64>,
         token: Option<&Secret>,
         change: impl FnOnce(&mut Account) -> T,
+    ) -> Result<(Account, T), StoreError> {
+        self.update_paced(id, version, token, change, |_| {})
+    }
+
+    /// [`Store::update`] that also changes the poller's pacing in the same write (the requests of a token's check).
+    pub fn update_paced<T>(
+        &self,
+        id: &str,
+        version: Option<u64>,
+        token: Option<&Secret>,
+        change: impl FnOnce(&mut Account) -> T,
+        pace: impl FnOnce(&mut Pacing),
     ) -> Result<(Account, T), StoreError> {
         let _g = self.inner.lock.lock().unwrap_or_else(|p| p.into_inner());
         let f = self.read(id)?;
@@ -282,6 +337,7 @@ impl Store {
             }
             None => f.token,
         };
+        pace(&mut pacing);
         self.write(&AccountFile { account: account.clone(), token, pacing }, true)?;
         Ok((account, out))
     }

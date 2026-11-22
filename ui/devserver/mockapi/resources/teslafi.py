@@ -14,6 +14,7 @@ holds a token.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from ..errors import ApiError, bad_input, conflict, invalid, not_found
 from ..util import DAY, MIN
@@ -23,7 +24,8 @@ HOST = "www.teslafi.com"
 MAX_LABEL = 64
 POLLS = {"driving_s": 60, "charging_s": 60, "parked_s": 180, "asleep_s": 600, "other_live_s": 600, "daily_cap": 1500}
 TOKEN_RX = re.compile(r"[\x21-\x7e]{1,256}")
-ZONE_RX = re.compile(r"(UTC|[A-Z][A-Za-z_]+(/[A-Z][A-Za-z0-9_+-]+){1,2})")
+# the zones the real server takes (chrono-tz's list; crates/teslafi/tests/zones.rs checks it is the same)
+ZONES = frozenset((Path(__file__).with_name("time_zones.txt")).read_text(encoding="utf-8").split())
 
 
 def seed(st, now):
@@ -74,7 +76,7 @@ def _zone(body):
     v = body["time_zone"]
     if v is None:
         return None
-    if not isinstance(v, str) or not ZONE_RX.fullmatch(v.strip()):
+    if not isinstance(v, str) or v.strip() not in ZONES:
         raise invalid({"time_zone": "Must be a time zone (e.g. America/Chicago) or null."})
     return v.strip()
 

@@ -294,3 +294,46 @@ async fn accounts_cars_pause_notices_and_removal() {
     assert!(w.svc.store().token(&a.id).is_err());
     assert!(audit_actions(&mut admin).await.iter().any(|(a, _)| a == "teslafi-account-removed"));
 }
+
+#[tokio::test]
+async fn a_change_with_a_token_teslafi_does_not_take_changes_nothing() {
+    let w = world().await;
+    let mut admin = w.s.admin().await;
+    let a = seed(&w);
+    let base = format!("/api/v1/integrations/teslafi/accounts/{}", a.id);
+    let before = admin.get(&base).await.json();
+    // the car as the rest of the API names a model
+    assert_eq!(before["cars"][0]["model"], "Model 3");
+    let r = admin
+        .patch(
+            &base,
+            json!({ "version": a.version, "label": "Renamed", "paused": true, "time_zone": "Asia/Tokyo",
+                    "token": "0000madeup0000eeeeffff", "confirm_password": ADMIN_PASSWORD }),
+        )
+        .await;
+    assert_eq!((r.status, r.code().as_deref()), (502, Some("teslafi_unreachable")), "{}", r.text());
+    clean(&r);
+    let after = admin.get(&base).await.json();
+    for k in ["label", "paused", "time_zone", "version", "status"] {
+        assert_eq!(after[k], before[k], "{k} changed");
+    }
+    assert_eq!(w.svc.store().token(&a.id).unwrap().expose(), TOKEN);
+    let actions: Vec<String> = audit_actions(&mut admin).await.into_iter().map(|(a, _)| a).collect();
+    assert!(!actions.iter().any(|a| a.starts_with("teslafi-account")), "{actions:?}");
+}
+
+#[tokio::test]
+async fn source_teslafi_api_filters_drives_charges_and_statistics() {
+    let w = world().await;
+    let mut admin = w.s.admin().await;
+    let c = format!("c{}", w.car);
+    for path in ["drives", "charges", "statistics"] {
+        for word in ["teslafi_api", "tesla_api"] {
+            let r = admin.get(&format!("/api/v1/cars/{c}/{path}?source={word}")).await;
+            assert_eq!(r.status, 200, "{path} source={word}: {}", r.text());
+        }
+    }
+    let r = admin.get(&format!("/api/v1/cars/{c}/drives?source=teslafi")).await;
+    assert_eq!(r.status, 400);
+    assert!(r.text().contains("teslafi_api"), "the word is listed: {}", r.text());
+}

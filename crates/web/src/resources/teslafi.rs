@@ -272,7 +272,7 @@ fn car_json(e: &Engine, c: &teslafi::AccountCar, st: Option<&AccountStatus>) -> 
     json!({
         "vehicle": c.vehicle,
         "vin_prefix": c.vin_prefix,
-        "model": c.model.map(String::from),
+        "model": c.model.map(|m| format!("Model {m}")),
         "year": c.year,
         "display_name": c.display_name,
         "match": match_json(c.matched),
@@ -456,9 +456,15 @@ async fn change(
     };
     reconfirm(&app, &v, &body, &headers).await?;
     let change = teslafi::Change { label: label.clone(), paused, time_zone: time_zone.clone() };
-    let after = {
-        let (s, id) = (s.clone(), id.clone());
-        app.blocking(move |_| s.update(&id, version, change).map_err(|e| failed(&s, Some(&id), e))).await?
+    // all or nothing: a new token is checked with TeslaFi first, and when TeslaFi refuses it or cannot be reached
+    // nothing at all is changed
+    let new_token = token.is_some();
+    let after = match token {
+        Some(t) => s.change(&id, version, change, Some(t)).await.map_err(|e| failed(&s, Some(&id), e))?,
+        None => {
+            let (s, id) = (s.clone(), id.clone());
+            app.blocking(move |_| s.update(&id, version, change).map_err(|e| failed(&s, Some(&id), e))).await?
+        }
     };
     let target = target("teslafi", None, &id);
     let mut audited = false;
@@ -487,9 +493,8 @@ async fn change(
         v.audit(&app, "teslafi-account-changed", Some(&target), &summary).await?;
         audited = true;
     }
-    if let Some(t) = token {
-        let a = s.replace_token(&id, after.version, t).await.map_err(|e| failed(&s, Some(&id), e))?;
-        let summary = format!("Gave the TeslaFi account {} a new token (checked with TeslaFi).", a.label);
+    if new_token {
+        let summary = format!("Gave the TeslaFi account {} a new token (checked with TeslaFi).", after.label);
         v.audit(&app, "teslafi-token-replaced", Some(&target), &summary).await?;
         audited = true;
     }

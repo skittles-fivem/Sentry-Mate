@@ -9,8 +9,9 @@
 //! | `backoff` | errors, TeslaFi's wait, the daily cap | 429: TeslaFi's wait (at least 60 s, else 5 min); others: 60 s doubling to 15 min |
 //!
 //! While SMO or the Tesla API sends live data for the car, a read waits 10 min at least: their data wins there
-//! anyway. At most one request every 10 s and 1,500 a day per account (then nothing until midnight UTC). TeslaFi's
-//! own poll time is the time of the data, and a poll already handed on (the same `data_id`) is not handed on again.
+//! anyway. At most one request every 10 s and 1,500 a day per account (then nothing until midnight UTC), the checks of
+//! a token included (their requests are written into the pacing). TeslaFi's own poll time is the time of the data, and
+//! a poll already handed on (the same `data_id`) is not handed on again.
 //! A refused token stops the account until an admin gives a new one. The back-off, TeslaFi's wait and the day's
 //! count are saved with the account, so a restart does not start asking again early.
 
@@ -141,6 +142,11 @@ pub struct Poller<F: Feed, S: Sink> {
     last_error: Option<ErrorInfo>,
     last_ok_written_ms: u64,
     now_ms: u64,
+    /// The account has no car yet and its latest poll named none: the next read asks for the last poll awake.
+    last_good_due: bool,
+    /// The last poll awake was asked for once by this poller: not again (the latest polls name the car once TeslaFi
+    /// knows it).
+    last_good_asked: bool,
 }
 
 impl<F: Feed, S: Sink> Poller<F, S> {
@@ -183,6 +189,8 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             last_seen: None,
             last_ok_written_ms: 0,
             now_ms: 0,
+            last_good_due: false,
+            last_good_asked: false,
         })
     }
 
@@ -249,12 +257,16 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 let new_token = t != self.token;
                 self.account = a;
                 self.token = t;
-                if new_token {
-                    // the admin gave a new token: start over (the store dropped the old waits)
-                    if let Ok(p) = self.store.pacing(&self.id) {
+                if let Ok(p) = self.store.pacing(&self.id) {
+                    // requests a token's check sent meanwhile: the gap after them, and the day's count
+                    self.pacing.merge_requests(&p);
+                    if new_token {
+                        // the admin gave a new token: start over (the store dropped the old waits)
                         self.pacing.backoff_until_ms = p.backoff_until_ms;
                         self.pacing.backoff_step = p.backoff_step;
                     }
+                }
+                if new_token {
                     self.next_ms = 0;
                 }
                 if self.current.as_deref().is_some_and(|v| self.car_of(v).is_none()) {
@@ -386,13 +398,8 @@ impl<F: Feed, S: Sink> Poller<F, S> {
         if let Err(t) = self.gate(now_ms) {
             return Some(t);
         }
-        // the first look at an account whose car is not known yet asks for the last poll of the car awake (the
-        // latest one of a sleeping car may name no car)
-        let what = if self.account.cars.is_empty() && self.mode == Mode::Asleep && self.car_state.is_some() {
-            Read::LastGood
-        } else {
-            Read::Latest
-        };
+        // an account whose car is not known yet, its latest poll naming none: once, the last poll of the car awake
+        let what = if self.account.cars.is_empty() && self.last_good_due { Read::LastGood } else { Read::Latest };
         match self.feed.read(&self.token, what).await {
             Ok(poll) => {
                 self.pacing.backoff_step = 0;
@@ -506,22 +513,8 @@ impl<F: Feed, S: Sink> Poller<F, S> {
         self.account.time_zone.as_deref().and_then(|z| z.parse().ok()).unwrap_or(self.default_tz)
     }
 
-    fn take(&mut self, raw: &crate::api::Poll, what: Read, now_ms: u64) {
-        let fields = feed::fields_of(raw);
-        let p: FeedPoll = match feed::read(&fields, self.tz(), self.pacing.last_poll_ms) {
-            Ok(p) => p,
-            Err(e) => {
-                self.last_error = Some(err("bad_answer", e.to_string(), now_ms));
-                self.next_ms = now_ms + self.cadence.idle_ms;
-                return;
-            }
-        };
-        self.set_state(AccountState::Ok, None, now_ms);
-        self.car_state = p.car_state.clone();
-        if let Some(vin) = &p.vin {
-            self.current = self.note_vin(vin, p.display_name.as_deref());
-        }
-        self.mode = if p.driving || p.car_state.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("driving")) {
+    fn mode_of(&self, p: &FeedPoll) -> Mode {
+        if p.driving || p.car_state.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("driving")) {
             Mode::Driving
         } else if p.charging {
             Mode::Charging
@@ -531,7 +524,43 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 _ if p.car_state.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("sleeping")) => Mode::Asleep,
                 _ => Mode::Idle,
             }
+        }
+    }
+
+    fn take(&mut self, raw: &crate::api::Poll, what: Read, now_ms: u64) {
+        if what == Read::LastGood {
+            self.last_good_due = false;
+            self.last_good_asked = true;
+        }
+        // TeslaFi's times are local times of the account's zone: after a change of zone the time of the last poll
+        // handed on is not comparable any more (a zone east of the old one makes every new poll look older), so
+        // until a poll is read in the new zone only its id tells a poll handed on already
+        let tz = self.tz();
+        if self.pacing.poll_zone.as_deref() != Some(tz.name()) {
+            if self.pacing.poll_zone.is_some() {
+                self.pacing.last_poll_ms = None;
+                self.last_seen = None;
+            }
+            self.pacing.poll_zone = Some(tz.name().to_string());
+        }
+        let fields = feed::fields_of(raw);
+        let p: FeedPoll = match feed::read(&fields, tz, self.pacing.last_poll_ms) {
+            Ok(p) => p,
+            Err(e) => {
+                self.last_error = Some(err("bad_answer", e.to_string(), now_ms));
+                self.next_ms = now_ms + self.cadence.idle_ms;
+                return;
+            }
         };
+        self.set_state(AccountState::Ok, None, now_ms);
+        if let Some(vin) = &p.vin {
+            self.current = self.note_vin(vin, p.display_name.as_deref());
+        }
+        // the last poll awake is an old one: it says which car, not what the car does now
+        if what == Read::Latest {
+            self.car_state = p.car_state.clone();
+            self.mode = self.mode_of(&p);
+        }
         // a poll already handed on (the same id), or one older than it (the last awake poll asked for later): not
         // again
         let new = match p.data_id {
@@ -567,8 +596,15 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             _ => self.cadence.idle_ms,
         };
         let gap = if car.is_some_and(|c| self.sink.other_live(c)) { gap.max(self.cadence.other_live_ms) } else { gap };
-        // the first look at a car not known yet: once more soon, for the last poll of it awake
-        let gap = if self.account.cars.is_empty() && what == Read::Latest { self.cadence.min_gap_ms } else { gap };
+        // the first look at an account whose car is not known yet, the latest poll naming none: once more soon, for
+        // the last poll of the car awake; after that the normal pace (an awake car whose polls name no car is not
+        // asked every 10 s)
+        let gap = if self.account.cars.is_empty() && what == Read::Latest && !self.last_good_asked {
+            self.last_good_due = true;
+            self.cadence.min_gap_ms
+        } else {
+            gap
+        };
         self.next_ms = now_ms + gap;
     }
 }

@@ -25,6 +25,7 @@ pub struct Seen {
     pub authorization: Option<String>,
     pub user_agent: String,
     pub version: String,
+    pub at: std::time::Instant,
 }
 
 /// A canned answer: status, headers, body.
@@ -146,6 +147,7 @@ impl Fake {
                                 authorization: header("authorization"),
                                 user_agent: header("user-agent").unwrap_or_default(),
                                 version: format!("{:?}", r.version()),
+                                at: std::time::Instant::now(),
                             };
                             Ok::<_, std::convert::Infallible>(handle(&st, seen))
                         }

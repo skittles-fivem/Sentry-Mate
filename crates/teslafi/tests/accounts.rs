@@ -20,7 +20,10 @@ async fn add_pause_match_and_remove_with_the_token_sealed_and_never_logged() {
     let f = Fake::start(true, true).await;
     let (_t, data, v) = vault();
     let sink = Arc::new(MemSink::default());
-    let s = Service::new(&data, v.clone(), sink.clone(), Options::default().with_endpoint(f.endpoint()));
+    // a short gap between requests, so the poller's first read (the gap after the check's) comes soon
+    let mut opts = Options::default().with_endpoint(f.endpoint());
+    opts.cadence.min_gap_ms = 300;
+    let s = Service::new(&data, v.clone(), sink.clone(), opts);
     // off until a token is added: no task, no client, no host
     s.start();
     assert_eq!(s.clients_built(), 0);
