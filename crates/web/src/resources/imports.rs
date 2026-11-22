@@ -60,7 +60,6 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/imports", get(list).post(create))
         .route("/api/v1/imports/{import}", get(one).patch(chunk).delete(discard))
-        .route("/api/v1/imports/{import}/files/{index}", axum::routing::patch(chunk_file))
         .route("/api/v1/imports/{import}/cars", get(cars).put(match_cars))
         .route("/api/v1/imports/{import}/start", post(start))
 }
@@ -119,8 +118,7 @@ impl Imports {
     }
 
     fn forget_chunks(&self, id: &str) {
-        let part = format!("{id}/");
-        self.chunks.lock().unwrap_or_else(|e| e.into_inner()).retain(|k, _| k != id && !k.starts_with(&part));
+        self.chunks.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     }
 
     /// Times an upload's file has been opened to add to it since the server started (once per upload, again only
@@ -158,22 +156,6 @@ struct CarRow {
     matched: Option<String>,
 }
 
-/// One uploaded file of an import of several (TeslaFi's monthly CSVs, uploaded side by side).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Part {
-    name: String,
-    bytes_total: u64,
-    uploaded_bytes: u64,
-}
-
-/// The sealed file of upload `k` (the first is `backup`, as for an import of one file).
-fn backup_file(k: usize) -> String {
-    if k == 0 { "backup".into() } else { format!("backup.{k}") }
-}
-
-/// The most files one import takes.
-const MAX_FILES: usize = 500;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Job {
     id: String,
@@ -197,9 +179,6 @@ struct Job {
     /// A TeslaFi import's time zone and units, as the start said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     teslafi: Option<TeslafiSettings>,
-    /// The files, when several were uploaded as one import (empty: one file, the job's own name and sizes).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    files: Vec<Part>,
 }
 
 impl Job {
@@ -209,28 +188,6 @@ impl Job {
 
     fn is_teslafi(&self) -> bool {
         self.kind.as_deref() == Some(KIND_TESLAFI)
-    }
-
-    /// Its files: several, or the one of an import of one file.
-    fn parts(&self) -> Vec<Part> {
-        if self.files.is_empty() {
-            vec![Part { name: self.name.clone(), bytes_total: self.bytes_total, uploaded_bytes: self.uploaded_bytes }]
-        } else {
-            self.files.clone()
-        }
-    }
-
-    /// The report without the cars left out (not in its cars, not in its counts).
-    fn report_view(&self) -> Option<Value> {
-        let mut r = self.report.clone()?;
-        let left: Vec<String> = self
-            .cars
-            .iter()
-            .filter(|c| c.matched.as_deref() == Some("leave_out"))
-            .map(|c| c.car.tm_car.to_string())
-            .collect();
-        im::without_left_out(&mut r, &left);
-        Some(r)
     }
 
     fn view(&self, live: Option<&Live>) -> Value {
@@ -254,12 +211,8 @@ impl Job {
             "checked_ms": self.checked_ms,
             "finished_ms": self.finished_ms,
             "error": self.error,
-            "report": self.report_view(),
+            "report": self.report,
             "cars_to_match": cars_to_match,
-            "files": self.parts().iter().enumerate().map(|(k, p)| json!({
-                "index": k, "name": p.name, "bytes_total": p.bytes_total, "uploaded_bytes": p.uploaded_bytes,
-                "upload_url": format!("/api/v1/imports/{}/files/{k}", self.id),
-            })).collect::<Vec<_>>(),
         })
     }
 
@@ -395,24 +348,8 @@ async fn create(
     headers: HeaderMap,
     body: JsonBody,
 ) -> ApiResult<Response> {
-    body.only(&["name", "bytes_total", "compression", "files"])?;
-    let mut parts: Vec<Part> = Vec::new();
-    if let Some(f) = body.get("files") {
-        let Value::Array(items) = f else { return Err(ApiError::bad_input("files", "Send [{ name, bytes_total }].")) };
-        if items.is_empty() || items.len() > MAX_FILES {
-            return Err(ApiError::invalid("files", "Between 1 and 500 files."));
-        }
-        for (i, x) in items.iter().enumerate() {
-            let size = x.get("bytes_total").and_then(Value::as_u64).filter(|n| (1..=MAX_FILE).contains(n));
-            let size =
-                size.ok_or_else(|| ApiError::invalid(&format!("files.{i}.bytes_total"), "Between 1 byte and 64 GB."))?;
-            let name: String = x.get("name").and_then(Value::as_str).unwrap_or("").trim().chars().take(200).collect();
-            let name = if name.is_empty() { format!("file-{}", i + 1) } else { name };
-            parts.push(Part { name, bytes_total: size, uploaded_bytes: 0 });
-        }
-    }
+    body.only(&["name", "bytes_total", "compression"])?;
     let total = match body.u64("bytes_total")? {
-        _ if !parts.is_empty() => parts.iter().map(|p| p.bytes_total).sum(),
         Some(n) => n,
         None => header_u64(&headers, "Upload-Length")?.ok_or_else(|| {
             ApiError::bad_input("bytes_total", "Required: the size of the whole file in bytes (or Upload-Length).")
@@ -423,15 +360,6 @@ async fn create(
     }
     let name: String = body.str("name")?.unwrap_or("teslamate-backup.sql").trim().chars().take(200).collect();
     let name = if name.is_empty() { "teslamate-backup.sql".to_string() } else { name };
-    let name = match parts.as_slice() {
-        [] => name,
-        [one] => one.name.clone(),
-        [first, more @ ..] => format!("{} and {} more files", first.name, more.len()),
-    };
-    // one file of several is one import of one file
-    if parts.len() == 1 {
-        parts.clear();
-    }
     let compression = match body.str("compression")? {
         Some(c) => c.to_string(),
         None if name.to_ascii_lowercase().ends_with(".zip") => "zip".into(),
@@ -469,7 +397,6 @@ async fn create(
             report: None,
             kind: None,
             teslafi: None,
-            files: parts,
         };
         save(app, &j)?;
         st.jobs.insert(j.id.clone(), j.clone());
@@ -516,29 +443,13 @@ pub(crate) fn sha_header_opt(h: &HeaderMap) -> ApiResult<Option<[u8; 32]>> {
     raw.try_into().map(Some).map_err(|_| bad())
 }
 
-/// `PATCH /imports/{import}`: the next chunk of the file (of the first file, of an import of several).
+/// `PATCH /imports/{import}`: the next chunk of the file.
 async fn chunk(
     State(app): State<AppState>,
     Admin(v): Admin,
     Path(id): Path<String>,
     req: Request,
 ) -> ApiResult<Json<Value>> {
-    chunk_of(app, v, id, 0, req).await
-}
-
-/// `PATCH /imports/{import}/files/{index}`: the next chunk of one file of an import of several (files go up side by
-/// side; each file's chunks in turn).
-async fn chunk_file(
-    State(app): State<AppState>,
-    Admin(v): Admin,
-    Path((id, index)): Path<(String, String)>,
-    req: Request,
-) -> ApiResult<Json<Value>> {
-    let k: usize = index.parse().map_err(|_| ApiError::not_found("no_such_file"))?;
-    chunk_of(app, v, id, k, req).await
-}
-
-async fn chunk_of(app: AppState, v: crate::ctx::Viewer, id: String, k: usize, req: Request) -> ApiResult<Json<Value>> {
     let headers = req.headers().clone();
     let ct = headers.get(http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
     if !ct.is_empty()
@@ -556,7 +467,7 @@ async fn chunk_of(app: AppState, v: crate::ctx::Viewer, id: String, k: usize, re
         return Err(ApiError::bad_input("body", "Send the chunk's bytes."));
     }
     let (done, out) = with_jobs(&app, move |app, all| {
-        let one = all.chunk_lock(&if k == 0 { id.clone() } else { format!("{id}/{k}") });
+        let one = all.chunk_lock(&id);
         let mut held = one.lock().unwrap_or_else(|e| e.into_inner());
         let j = job(all, &id)?;
         if j.status != "uploading" {
@@ -565,17 +476,14 @@ async fn chunk_of(app: AppState, v: crate::ctx::Viewer, id: String, k: usize, re
                 format!("This import is {}; it takes no chunks.", j.status),
             ));
         }
-        let part = j.parts().get(k).cloned().ok_or_else(|| ApiError::not_found("no_such_file"))?;
-        if length.is_some_and(|l| l != part.bytes_total) {
-            return Err(ApiError::invalid("Upload-Length", &format!("This upload is {} bytes.", part.bytes_total)));
+        if length.is_some_and(|l| l != j.bytes_total) {
+            return Err(ApiError::invalid("Upload-Length", &format!("This upload is {} bytes.", j.bytes_total)));
         }
-        let wrong = |at: u64| {
-            ApiError::new(409, "wrong_offset", format!("The upload is at byte {at}; send from there."))
+        if offset != j.uploaded_bytes {
+            let at = j.uploaded_bytes;
+            return Err(ApiError::new(409, "wrong_offset", format!("The upload is at byte {at}; send from there."))
                 .with("offset", at)
-                .header(http::HeaderName::from_static("upload-offset"), &at.to_string())
-        };
-        if offset != part.uploaded_bytes {
-            return Err(wrong(part.uploaded_bytes));
+                .header(http::HeaderName::from_static("upload-offset"), &at.to_string()));
         }
         if Sha256::digest(&bytes).as_slice() != want {
             return Err(ApiError::new(
@@ -585,7 +493,7 @@ async fn chunk_of(app: AppState, v: crate::ctx::Viewer, id: String, k: usize, re
             )
             .with_fields(Map::from_iter([("Upload-SHA256".to_string(), json!("Does not match the bytes sent."))])));
         }
-        if offset + bytes.len() as u64 > part.bytes_total {
+        if offset + bytes.len() as u64 > j.bytes_total {
             return Err(ApiError::invalid("body", "More bytes than the upload's length."));
         }
         let rec = match &mut *held {
@@ -596,54 +504,46 @@ async fn chunk_of(app: AppState, v: crate::ctx::Viewer, id: String, k: usize, re
                 all.upload_opens.fetch_add(1, Ordering::Relaxed);
                 let rec = app
                     .vault
-                    .records(&dir.join(backup_file(k)), &label(&j.id, &backup_file(k)))
+                    .records(&dir.join("backup"), &label(&j.id, "backup"))
                     .map_err(|e| ApiError::server(format!("opening the upload: {e}")))?;
                 slot.insert(rec)
             }
         };
-        // the job as it is now (another file's chunk may have changed it meanwhile), with this file at `len`
-        let put = |len: u64| -> ApiResult<(Job, bool)> {
-            let mut st = all.lock();
-            let j = st.jobs.get_mut(&id).ok_or_else(|| ApiError::not_found("no_such_import"))?;
-            if j.files.is_empty() {
-                j.uploaded_bytes = len;
-            } else if let Some(p) = j.files.get_mut(k) {
-                p.uploaded_bytes = len;
-                j.uploaded_bytes = j.files.iter().map(|p| p.uploaded_bytes).sum();
-            }
-            j.bytes_read = j.uploaded_bytes;
-            let done = j.status == "uploading" && j.uploaded_bytes == j.bytes_total;
-            if done {
-                j.status = "checking".into();
-                j.pass = 1;
-                j.bytes_read = 0;
-            }
-            save(app, j)?;
-            Ok((j.clone(), done))
-        };
-        if rec.plain_len() != part.uploaded_bytes {
+        if rec.plain_len() != j.uploaded_bytes {
             // what is on disk is what counts (a write the job's record missed)
-            let at = rec.plain_len();
-            put(at)?;
-            return Err(wrong(at));
+            let mut j = j;
+            j.uploaded_bytes = rec.plain_len();
+            save(app, &j)?;
+            let at = j.uploaded_bytes;
+            all.lock().jobs.insert(j.id.clone(), j);
+            return Err(ApiError::new(409, "wrong_offset", format!("The upload is at byte {at}; send from there."))
+                .with("offset", at)
+                .header(http::HeaderName::from_static("upload-offset"), &at.to_string()));
         }
         if let Err(e) = rec.append(&bytes) {
             // opened again for the next chunk, which cuts off whatever this write left
             *held = None;
             return Err(ApiError::server(format!("storing the chunk: {e}")));
         }
-        let len = rec.plain_len();
-        if len == part.bytes_total {
-            // this file is whole; no more chunks come for it
+        let mut j = j;
+        j.uploaded_bytes = rec.plain_len();
+        j.bytes_read = j.uploaded_bytes;
+        let done = j.uploaded_bytes == j.bytes_total;
+        if done {
+            j.status = "checking".into();
+            j.pass = 1;
+            j.bytes_read = 0;
+            // the check reads the file on its own; no more chunks come
             *held = None;
         }
-        let (j, done) = put(len)?;
+        save(app, &j)?;
+        all.lock().jobs.insert(j.id.clone(), j.clone());
         if done {
             spawn_check(app, &j.id)?;
         }
         let mut out = view_of(all, &j);
         if let Value::Object(m) = &mut out {
-            m.insert("offset".into(), json!(len));
+            m.insert("offset".into(), json!(j.uploaded_bytes));
         }
         Ok((done.then(|| j.id.clone()), out))
     })
@@ -682,12 +582,7 @@ impl Read for Backup {
 }
 
 fn opener(app: &AppState, id: &str) -> impl FnMut() -> io::Result<Backup> + use<> {
-    opener_of(app, id, 0)
-}
-
-/// Opens file `k` of the import.
-fn opener_of(app: &AppState, id: &str, k: usize) -> impl FnMut() -> io::Result<Backup> + use<> {
-    let (vault, path, label) = (app.vault.clone(), folder(app, id).join(backup_file(k)), label(id, &backup_file(k)));
+    let (vault, path, label) = (app.vault.clone(), folder(app, id).join("backup"), label(id, "backup"));
     move || {
         let mut r = vault.records_read(&path, &label).map_err(|e| io::Error::other(e.to_string()))?;
         let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<Vec<u8>>>(4);
@@ -734,21 +629,6 @@ fn head_of(app: &AppState, id: &str) -> io::Result<Vec<u8>> {
     Ok(head)
 }
 
-/// The files of an import of several, each opened when it is its turn, its reads counted into `live`.
-fn several_files(
-    app: &AppState,
-    id: &str,
-    parts: &[Part],
-    live: &Live,
-) -> im::TeslafiFiles<im::Counted<Backup>, impl Iterator<Item = io::Result<(String, im::Counted<Backup>)>> + use<>> {
-    let (app, id, live) = (app.clone(), id.to_string(), live.clone());
-    let names: Vec<String> = parts.iter().map(|p| p.name.clone()).collect();
-    im::TeslafiFiles::Several(names.into_iter().enumerate().map(move |(k, name)| {
-        let mut open = im::counted(opener_of(&app, &id, k), live.read.clone(), live.stop.clone());
-        open().map(|r| (name, r))
-    }))
-}
-
 /// Where a CAN export's pass keeps a log too big for memory while it is read (sealed; removed after).
 fn spool_of(app: &AppState, id: &str) -> PathBuf {
     folder(app, id).join("spool")
@@ -758,7 +638,7 @@ fn spool_of(app: &AppState, id: &str) -> PathBuf {
 fn spawn_check(app: &AppState, id: &str) -> ApiResult<()> {
     let all = imports(app)?;
     let e = app.service::<Engine>()?;
-    let (compression, parts) = all.lock().jobs.get(id).map(|j| (j.compression.clone(), j.parts())).unwrap_or_default();
+    let compression = all.lock().jobs.get(id).map(|j| j.compression.clone()).unwrap_or_default();
     let live = Live::new(2);
     all.lock().live.insert(id.to_string(), live.clone());
     let (app, id) = (app.clone(), id.to_string());
@@ -772,47 +652,8 @@ fn spawn_check(app: &AppState, id: &str) -> ApiResult<()> {
             Can(Result<Value, can::CanImportError>),
             Failed(&'static str, String),
         }
-        // several files: TeslaFi's, read as one; anything else is imported on its own
-        let several = parts.len() > 1;
-        let not_teslafi = || {
-            (1..parts.len()).find(|&k| {
-                !import::teslafi::sniff(match opener_of(&app, &id, k)() {
-                    Ok(r) => r,
-                    Err(_) => return true,
-                })
-                .is_ok_and(|s| s != import::teslafi::Sniff::Other)
-            })
-        };
         let r = match head {
             Err(err) => Outcome::Failed("read_failed", format!("reading the upload: {err}")),
-            Ok(_) if several && !teslafi => Outcome::Failed(
-                "one_file_only",
-                format!(
-                    "{} is not TeslaFi's export. Several files are taken for TeslaFi's monthly CSVs only; a TeslaMate \
-                     backup or a CAN export is imported on its own: upload it alone.",
-                    parts[0].name
-                ),
-            ),
-            Ok(_) if several => match not_teslafi() {
-                Some(k) => Outcome::Failed(
-                    "not_a_teslafi_export",
-                    format!(
-                        "{} is not one of TeslaFi's CSV files (or a zip of them). Upload TeslaFi's files only, or a \
-                         TeslaMate backup on its own.",
-                        parts[k].name
-                    ),
-                ),
-                None => {
-                    if let Some(l) = all.lock().live.get_mut(&id) {
-                        l.reads = 1;
-                    }
-                    Outcome::Tf(im::teslafi_check_files(
-                        &e,
-                        several_files(&app, &id, &parts, &live),
-                        &TeslafiSettings::default(),
-                    ))
-                }
-            },
             Ok(_) if teslafi => {
                 if let Some(l) = all.lock().live.get_mut(&id) {
                     l.reads = 1;
@@ -1177,15 +1018,11 @@ async fn start(
         let (app2, id2, all2) = (app.clone(), j.id.clone(), imports(app)?);
         let tables_before = j.cars.clone();
         let teslafi = j.is_teslafi();
-        let parts = j.parts();
         tokio::task::spawn_blocking(move || {
             let mut open = im::counted(opener(&app2, &id2), live.read.clone(), live.stop.clone());
             let pairs: Vec<(BackupCar, Value)> =
                 tables_before.iter().map(|c| (c.car.clone(), json!(c.matched))).collect();
-            let r = if teslafi && parts.len() > 1 {
-                im::teslafi_run_files(&e, several_files(&app2, &id2, &parts, &live), &m, &tf)
-                    .map(|done| im::teslafi_report_json(&done.report, &done.cars, &pairs, true))
-            } else if teslafi {
+            let r = if teslafi {
                 open()
                     .map_err(import::Error::Io)
                     .and_then(|r| im::teslafi_run(&e, r, &m, &tf))

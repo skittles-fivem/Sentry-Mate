@@ -29,14 +29,11 @@ class Imports(ServerCase):
         self.assertEqual(t["drives"]["imported"], tm["drives"])
         self.assertEqual(t["charging_processes"]["imported"], tm["charges"])
         self.assertEqual(t["updates"]["imported"], tm["updates"])
-        self.assertIsNone(t["geofences"]["read"])  # a table the backup lacks is null, never 0
         for name, x in t.items():
-            if x["read"] is not None:
-                self.assertEqual(x["read"], x["imported"] + sum(x["skipped"].values()), name)
+            self.assertEqual(x["read"], x["imported"] + sum(x["skipped"].values()), name)
         for car in im["report"]["cars"]:  # per car too, and the cars add up to the tables (geofences belong to none)
             self.assertEqual(car["read"], car["imported"] + sum(car["skipped"].values()), car["tm_car"])
-        self.assertEqual(sum(x["read"] for x in im["report"]["cars"]), sum(x["read"] or 0 for x in t.values()))
-        self.assertEqual([(f["index"], f["upload_url"]) for f in im["files"]], [(0, "/api/v1/imports/im1/files/0")])
+        self.assertEqual(sum(x["read"] for x in im["report"]["cars"]), sum(x["read"] for n, x in t.items() if n != "geofences"))
         first = self.c.get("/api/v1/cars/c3/drives?source=teslamate&sort=start&dir=asc&limit=1")["items"][0]
         self.assertLessEqual(im["report"]["span"]["from_ms"], first["start_ms"])
         self.assertEqual(self.c.get("/api/v1/imports/im1/cars")["items"][0]["match"], "c3")
@@ -53,7 +50,7 @@ class Imports(ServerCase):
         job = c.json("POST", "/api/v1/imports", {"name": "backup.sql.gz", "bytes_total": n}, expect=201)
         jid = job["id"]
         self.assertEqual((job["status"], job["compression"], job["upload_url"]),
-                         ("uploading", "gzip", f"/api/v1/imports/{jid}/files/0"))
+                         ("uploading", "gzip", f"/api/v1/imports/{jid}"))
         c.error("POST", "/api/v1/imports", 409, "import_running", body={"name": "y.sql", "bytes_total": 5})
         self.assertTrue(c.get("/api/v1/setup/status")["import_running"])
         c.error("GET", f"/api/v1/imports/{jid}/cars", 409, "not_checked")
@@ -100,8 +97,7 @@ class Imports(ServerCase):
         self.assertTrue(rep["imported"])
         self.assertEqual(rep["tables"]["drives"]["imported"], cars[0]["drives"])  # the left-out car is not counted
         self.assertEqual(rep["tables"]["cars"]["imported"], 1)
-        self.assertEqual([x["tm_car"] for x in rep["cars"]], [1])  # the left-out car is not in the report
-        self.assertEqual([x["match"] for x in c.get(f"{url}/cars")["items"]], ["c3", "leave_out"])  # still matchable
+        self.assertEqual([x["read"] is None for x in rep["cars"]], [False, True])  # the left-out car is not counted
         self.assertEqual([x["id"] for x in c.get("/api/v1/imports")["items"]], [jid, "im1"])
         actions = [x["action"] for x in c.get("/api/v1/audit?limit=20")["items"]]
         for want in ("import.create", "import.uploaded", "import.cars", "import.start"):
@@ -309,74 +305,6 @@ class TeslafiLikeTheServer(ServerCase):
         other = self.run_it(url, "new", {"time_zone": "Europe/Berlin"})
         self.assertEqual((other["rows"]["used"], other["found"]["read_again"]), (rows, 1))
         self.assertIn("in America/Phoenix were read again", other["warnings"][0])
-
-
-class MultiFile(ServerCase):
-    """Several files make one import: TeslaFi's months only."""
-
-    def send(self, job, files):
-        for f, data in zip(job["files"], files):
-            half = len(data) // 2
-            self.c.json("PATCH", f["upload_url"], data[:half], headers=chunk(data[:half], 0, len(data)))
-            d = self.c.json("PATCH", f["upload_url"], data[half:], headers=chunk(data[half:], half, len(data)))
-        return d
-
-    def test_1_teslafi_months(self):
-        c = self.c
-        with open(TF_FILE, "rb") as f:
-            data = f.read()
-        n = len(data)
-        c.error("POST", "/api/v1/imports", 400, "bad_input", body={"files": []})
-        c.error("POST", "/api/v1/imports", 422, "invalid", body={"files": [{"name": "a.csv", "bytes_total": 0}]})
-        names = ["TeslaFi12023.csv", "TeslaFi22023.csv", "TeslaFi32023.csv"]
-        job = c.json("POST", "/api/v1/imports", {"files": [{"name": x, "bytes_total": n} for x in names]}, expect=201)
-        jid = job["id"]
-        self.assertEqual((job["name"], job["bytes_total"]), ("TeslaFi12023.csv and 2 more files", 3 * n))
-        self.assertEqual([f["upload_url"] for f in job["files"]], [f"/api/v1/imports/{jid}/files/{i}" for i in range(3)])
-        self.assertEqual(job["upload_url"], job["files"][0]["upload_url"])
-        c.error("PATCH", f"/api/v1/imports/{jid}/files/3", 404, "no_such_file", body=data, headers=chunk(data, 0, n))
-        # offsets are per file: file 1 starts at 0 while file 0 is half sent
-        c.json("PATCH", job["files"][0]["upload_url"], data[:n // 2], headers=chunk(data[:n // 2], 0, n))
-        d = c.json("PATCH", job["files"][1]["upload_url"], data[:n // 2], headers=chunk(data[:n // 2], 0, n))
-        self.assertEqual((d["offset"], d["uploaded_bytes"], d["status"]), (n // 2, 2 * (n // 2), "uploading"))
-        c.json("PATCH", job["files"][0]["upload_url"], data[n // 2:], headers=chunk(data[n // 2:], n // 2, n))
-        c.json("PATCH", job["files"][1]["upload_url"], data[n // 2:], headers=chunk(data[n // 2:], n // 2, n))
-        d = c.json("PATCH", job["files"][2]["upload_url"], data, headers=chunk(data, 0, n))
-        self.assertEqual(d["status"], "checking")
-        self.assertEqual([f["uploaded_bytes"] for f in d["files"]], [n, n, n])
-        self.server.app.clock.advance(7000)
-        ready = c.get(f"/api/v1/imports/{jid}")
-        self.assertEqual((ready["status"], ready["kind"]), ("ready", "teslafi"))
-        rep = ready["report"]
-        self.assertEqual([u["name"] for u in rep["uploads"]], names)
-        self.assertEqual(rep["files"], 3)
-        self.assertEqual(rep["rows"]["read"], sum(u["rows_read"] for u in rep["uploads"]))
-        # left out: gone from the report and its counts, still in the matching list
-        c.json("PUT", f"/api/v1/imports/{jid}/cars", {"items": [{"tm_car": 1, "match": "leave_out"}]})
-        rep = c.get(f"/api/v1/imports/{jid}")["report"]
-        self.assertEqual((rep["cars"], rep["cars_count"], rep["rows"]["read"]), ([], 0, 0))
-        self.assertEqual(c.get(f"/api/v1/imports/{jid}/cars")["items"][0]["match"], "leave_out")
-        c.json("DELETE", f"/api/v1/imports/{jid}")
-
-    def test_2_one_file_only(self):
-        c = self.c
-        sql = b"-- made-up TeslaMate backup\n" * 4
-        job = c.json("POST", "/api/v1/imports", {"files": [{"name": "a.sql", "bytes_total": len(sql)},
-                                                           {"name": "b.sql", "bytes_total": len(sql)}]}, expect=201)
-        self.send(job, [sql, sql])
-        self.server.app.clock.advance(7000)
-        d = c.get(f"/api/v1/imports/{job['id']}")
-        self.assertEqual((d["status"], d["error"]["code"]), ("failed", "one_file_only"))
-        c.json("DELETE", f"/api/v1/imports/{job['id']}")
-        with open(TF_FILE, "rb") as f:
-            data = f.read()
-        job = c.json("POST", "/api/v1/imports", {"files": [{"name": "TeslaFi32023.csv", "bytes_total": len(data)},
-                                                           {"name": "b.sql", "bytes_total": len(sql)}]}, expect=201)
-        self.send(job, [data, sql])
-        self.server.app.clock.advance(7000)
-        d = c.get(f"/api/v1/imports/{job['id']}")
-        self.assertEqual((d["error"]["code"], d["kind"]), ("not_a_teslafi_export", "teslafi"))
-        self.assertIn("b.sql", d["error"]["message"])
 
 
 class WatchImports(ServerCase):
