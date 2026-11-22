@@ -516,6 +516,8 @@ html[data-form="phone"] dialog.sheet.is-center { padding: 0 var(--s4); }
 .car-row.is-sold .avatar { background: var(--card-alt); color: var(--muted); }
 .car-row.is-sold .row-name, .sold-toggle .row-name { color: var(--muted); }
 .row.is-current.is-sold .row-name { color: var(--coral); }
+.pick-sold { display: contents; }
+.fpill.is-sold:not([aria-checked="true"]):not([aria-pressed="true"]) { color: var(--muted); }
 .car-soc { font-size: var(--f14); line-height: var(--l14); font-weight: 800; font-variant-numeric: tabular-nums; min-width: 3em; text-align: right; }
 .search { display: flex; align-items: center; gap: var(--s2); height: var(--h-input); margin-bottom: var(--s3); padding: 0 var(--s4); border-radius: var(--r-ctl); background: var(--well); }
 .search .ic { color: var(--muted); }

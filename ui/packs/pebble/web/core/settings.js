@@ -30,7 +30,8 @@ export function infoRow({ icon: ic = null, name, sub = null, side = null, tone =
 
 /**
  * A picker row: the name on the left, the choice on the right, a sheet of choices when pressed.
- * pickRow({ name, sub, value, options: [[value, text, sub?]], onpick(v) -> Promise, cover, disabled }). el.set(v).
+ * pickRow({ name, sub, value, options: [[value, text, sub?, sold?]], onpick(v) -> Promise, cover, disabled }). el.set(v).
+ * An option with sold = true (a sold car) waits behind a 'Sold cars (n)' row unless it is the current choice.
  */
 export function pickRow({ name, sub = null, value, options, onpick, cover = null, disabled = false, sheetTitle = null, sheetNote = null } = {}) {
   let cur = value;
@@ -46,8 +47,8 @@ export function pickRow({ name, sub = null, value, options, onpick, cover = null
   function set(v) { cur = v; shown.textContent = textOf(v); el.setAttribute('aria-label', `${name}: ${textOf(v)}. Change`); }
   function open(opener) {
     const s = createSheet({ title: sheetTitle || name, cls: 'pick-sheet', onClose: () => setTimeout(() => s.el.remove(), 240) });
-    const rows = options.map(([v, t, sb]) => sheetRow({
-      name: t, sub: sb || null, role: 'radio', checked: String(v) === String(cur),
+    const rowOf = ([v, t, sb, sold]) => sheetRow({
+      name: t, sub: sold ? (sb ? `Sold · ${sb}` : 'Sold') : sb || null, role: 'radio', checked: String(v) === String(cur),
       onclick: async () => {
         s.close();
         if (String(v) === String(cur)) return;
@@ -55,7 +56,26 @@ export function pickRow({ name, sub = null, value, options, onpick, cover = null
         set(v);
         try { await onpick?.(v); } catch { set(before); }
       },
-    }));
+    });
+    // Sold cars (a 4th item `true`) wait behind 'Sold cars (n)', where the first of them would be; the current
+    // choice always shows, sold or not.
+    const hid = options.filter((o) => o[3] && String(o[0]) !== String(cur));
+    const rows = [];
+    for (const o of options) {
+      if (!hid.includes(o)) { rows.push(rowOf(o)); continue; }
+      if (o !== hid[0]) continue;
+      const box = h('div', { class: 'pick-sold', hidden: true }, hid.map(rowOf));
+      const tg = h('button', { type: 'button', class: 'row sold-toggle', 'aria-expanded': 'false' },
+        h('span', { class: 'row-ic', 'aria-hidden': 'true' }, icon('chevronDown')),
+        h('span', { class: 'row-text' }, h('span', { class: 'row-name' }, `Sold cars (${hid.length})`),
+          h('span', { class: 'row-sub' }, 'Their history stays; pick one to use it.')));
+      tg.addEventListener('click', () => {
+        box.hidden = !box.hidden;
+        tg.setAttribute('aria-expanded', String(!box.hidden));
+        tg.querySelector('.row-ic').replaceChildren(icon(box.hidden ? 'chevronDown' : 'chevronUp'));
+      });
+      rows.push(tg, box);
+    }
     s.body.append(h('div', { class: 'rows' }, h('div', { class: 'rows-list', role: 'radiogroup', 'aria-label': name }, rows)),
       sheetNote ? h('p', { class: 'sheet-note' }, sheetNote) : null);
     s.open(opener);

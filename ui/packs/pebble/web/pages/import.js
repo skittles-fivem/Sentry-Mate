@@ -432,8 +432,8 @@ export async function mount(ctx) {
     const opts = [];
     if (row.match == null) opts.push(['', 'Not matched yet']);
     const sug = row.suggested && carById.get(row.suggested);
-    if (sug) opts.push([sug.id, sug.name, 'Same VIN prefix']);
-    for (const c of S.cars) if (c.id !== row.suggested) opts.push([c.id, c.name, taken.has(c.id) ? 'Already matched to another car of the file' : null]);
+    if (sug) opts.push([sug.id, sug.name, 'Same VIN prefix', state.isSold(sug)]);
+    for (const c of S.cars) if (c.id !== row.suggested) opts.push([c.id, c.name, taken.has(c.id) ? 'Already matched to another car of the file' : null, state.isSold(c)]);
     if (isCar(row.match) && !carById.has(row.match)) opts.push([row.match, row.match]);
     opts.push(['new', 'Add as a new car', 'Made with this name and VIN prefix'], ['leave_out', 'Leave out', 'Nothing of this car is imported']);
     return opts;
