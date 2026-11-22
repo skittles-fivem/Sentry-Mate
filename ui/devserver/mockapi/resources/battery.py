@@ -37,6 +37,8 @@ def bms_full(car, t):
 def _new_capacity(req, h):
     car = h.car
     s = req.store.car_settings.get(car.id) or {}
+    if s.get("pack_replaced_date") and s.get("pack_new_kwh"):
+        return float(s["pack_new_kwh"]), "owner"
     if s.get("capacity_new_kwh"):
         return float(s["capacity_new_kwh"]), "owner"
     if car.odo_start_km < 5000:
@@ -115,6 +117,15 @@ def _lifetime(req, h):
 # ------------------------------------------------------------------ /battery
 
 
+def _pack(req):
+    """The pack replacement the owner typed (the mock never detects one): { replaced_ms, source }."""
+    d = (req.store.car_settings.get(req.car) or {}).get("pack_replaced_date")
+    if not d:
+        return {"replaced_ms": None, "source": None}
+    from ..util import parse_date
+    return {"replaced_ms": local_ms(parse_date(d), 0, req.tz()), "source": "owner"}
+
+
 def get_battery(req):
     h = req.history()
     tz = req.tz()
@@ -129,7 +140,7 @@ def get_battery(req):
                 "energy_now_kwh": None, "soc_pct": _v(n.get("soc_pct")), "usable_soc_pct": None,
                 "band": {"low_pct": 20, "high_pct": 80, "charge_limit_pct": None},
                 "chemistry": {"value": None, "source": None}, "brick_spread_v": None,
-                "lifetime": None, "notes": ["no_history"]}
+                "lifetime": None, "notes": ["no_history"], "pack": _pack(req)}
     car = h.car
     n = now_object(req.app, req.car, req.now)
     at = n.get("at_ms") or req.now
@@ -155,6 +166,9 @@ def get_battery(req):
         notes.append("lfp_charge_to_100_weekly")
     if any(c.source == "teslamate" for c in h.charges):
         notes.append("imported_history_estimated")
+    pack = _pack(req)
+    if pack["replaced_ms"] is not None:
+        notes.append("pack_replaced")
     legacy = car.profile == "tesla-sx-legacy"
     return {
         "car": req.car, "time_zone": req.tz(), "as_of_ms": at,
@@ -175,6 +189,7 @@ def get_battery(req):
         "brick_spread_v": None if legacy else r(0.008 + 0.01 * h01("brick", car.id, at // DAY), 3),
         "lifetime": lifetime(req, h),
         "notes": notes,
+        "pack": pack,
     }
 
 
@@ -187,7 +202,7 @@ def get_capacity(req):
     x = req.enum("x", ("time", "odometer"), "time")
     h = req.history()
     tz = req.tz()
-    out = {"car": req.car, "time_zone": tz, "group": group, "x": x}
+    out = {"car": req.car, "time_zone": tz, "group": group, "x": x, "pack": _pack(req)}
     if h is None:
         out.update({"items": [], "next": None, "trend": {"slope_kwh_per_10000_km": None, "projection": None}})
         return out

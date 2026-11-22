@@ -8,7 +8,7 @@
 import * as state from '../shared/state.js';
 import { h, replace, setTitle as docTitle } from '../shared/dom.js';
 import { invalidate } from '../shared/api.js';
-import { isValidZone } from '../shared/time.js';
+import { isValidZone, dayKey } from '../shared/time.js';
 import { convert, toMetric, unitLabel, format } from '../shared/units.js';
 import { icon, hud, plate, btn, linkBtn, tag, kv, note, callout } from '../core/ui.js';
 import { search, plural } from '../core/kit.js';
@@ -519,6 +519,7 @@ async function mountCar(ctx) {
       ['full_range_new_km', 'Full range when new', 'Empty: taken from the first 30 days.', 'distance', unitLabel('distance'), [100, 1500], '0.1'],
       ['warranty_threshold_pct', 'Warranty threshold', 'The share of the capacity when new that the battery warranty promises.', null, '%', [50, 95], '1'],
       ['efficiency_wh_per_km_override', 'Consumption factor', 'Empty: worked out from energy and range.', 'efficiency', unitLabel('efficiency'), [60, 500], '0.1'],
+      ['pack_new_kwh', 'New pack capacity when new', 'The usable capacity of the replacement pack when new.', null, 'kWh', [10, 250], '0.1'],
     ];
     const fields = defs.map(([k, label, why, kind, unit, [a, b], step]) => {
       const [lo, hi] = lim(a, b, kind);
@@ -539,12 +540,17 @@ async function mountCar(ctx) {
       });
       return f;
     });
+    const pk = S.battery?.pack;
+    const detected = !s.pack_replaced_date && pk?.source === 'detected' && pk.replaced_ms != null ? dayKey(pk.replaced_ms, S.car.time_zone || ctx.tz) : null;
+    const swap = field({ label: 'Pack replaced on', name: 'sc-pack-date', type: 'date', path: 'pack_replaced_date', value: s.pack_replaced_date || '',
+      hint: `${detected ? `Detected from the pack's readings: ${detected}. ` : ''}The day a new pack went in: from then on the battery figures cover the new pack. Empty: not replaced.`, attrs: { disabled: ro, placeholder: detected || undefined } });
+    swap.input.addEventListener('change', () => patchSettings({ pack_replaced_date: swap.input.value || null }, 'Pack replaced on', (errs) => swap.setError(errs.pack_replaced_date || Object.values(errs)[0])));
     const sw = field({ label: 'Software version, typed', name: 'sc-sw', path: 'software_version_typed', value: s.software_version_typed || '', hint: 'Only for a car whose bus does not send it, such as 2026.38.4. Empty: what the car reports.', attrs: { disabled: ro, autocomplete: 'off', spellcheck: 'false' } });
     sw.input.addEventListener('change', () => patchSettings({ software_version_typed: sw.input.value.trim() || null }, 'Software version', (errs) => sw.setError(errs.software_version_typed || Object.values(errs)[0])));
     replace(slots.refs, hud({ title: 'Reference values', icon: 'sliders', id: 'sc-refs', side: tag('Optional') },
       h('div', { class: 'chans' },
         chan({ no: 7, title: 'Battery and range', text: 'Battery health compares today\'s capacity and range with these. Without them Sentry Mate uses its earliest readings, and says so on Battery.' },
-          h('div', { class: 'sc-fields' }, fields[0].el, fields[1].el, fields[2].el)),
+          h('div', { class: 'sc-fields' }, fields[0].el, fields[1].el, fields[2].el, swap.el, fields[4].el)),
         chan({ no: 8, title: 'Consumption and software', text: 'The consumption factor turns range into energy on Efficiency. A typed version is marked as typed on Software.' },
           h('div', { class: 'sc-fields' }, fields[3].el, sw.el)))));
   }

@@ -16,7 +16,7 @@
 
 import { h, svg, replace, cover } from '../shared/dom.js';
 import { format, formatMoney, convert, toMetric, unitLabel, rangeField } from '../shared/units.js';
-import { formatDate, formatDateTime, formatDuration, periodLabel, dateFormat, HOUR } from '../shared/time.js';
+import { formatDate, formatDateTime, formatDuration, periodLabel, dateFormat, dayKey, HOUR } from '../shared/time.js';
 import { formatNumber, formatList, tn } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import * as api from '../shared/api.js';
@@ -59,7 +59,10 @@ const NOTE_WORDS = {
   lfp_charge_to_100_weekly: 'This is an LFP pack: charging it to 100 % about once a week keeps its level reading accurate, so 100 % is inside its everyday band.',
   imported_history_estimated: 'Part of this car’s history was imported; energy figures from it are estimated.',
   no_history: 'No history has been logged for this car yet.',
+  pack_replaced: 'The pack was replaced: capacity, health and the trend cover the new pack only.',
 };
+const packWords = (pk, tz) => (pk && pk.replaced_ms != null
+  ? `Pack replaced on ${formatDate(pk.replaced_ms, tz, { weekday: false, month: 'long' })} (${pk.source === 'owner' ? 'typed by the owner' : 'detected from the pack’s readings'}).` : null);
 const CHEM = { lfp: 'LFP (iron phosphate)', nca_nmc: 'NCA / NMC (nickel)' };
 const CHEM_SOURCE = { detected: 'detected from the pack', owner: 'set by the owner', imported: 'from an import' };
 const METHOD = { counter: 'from the pack’s energy counters', bms_energy: 'from the pack’s stored energy', range: 'estimated from range (imported)' };
@@ -230,6 +233,7 @@ export async function mount(ctx) {
           { cover: 'bh.stat.efficiency' }),
       ]),
       h('dl', { class: 'bt-spec' },
+        packWords(bat.pack, tz) ? h('div', null, h('dt', null, 'Pack'), h('dd', { dataset: { pack: 'replaced' } }, packWords(bat.pack, tz))) : null,
         h('div', null, h('dt', null, 'Chemistry'), h('dd', null, bat.chemistry && bat.chemistry.value ? `${CHEM[bat.chemistry.value] || bat.chemistry.value}, ${CHEM_SOURCE[bat.chemistry.source] || bat.chemistry.source || ''}` : 'not known')),
         h('div', null, h('dt', null, 'Cell balance'), h('dd', null, num(bat.brick_spread_v) ? [q(bat.brick_spread_v * 1000, 'number', { digits: 0 }), ' mV between the highest and lowest cell group', bat.brick_spread_v > 0.05 ? flag('wide', { kind: 'warn' }) : ' (well balanced)'] : 'not sent by this car')),
         h('div', null, h('dt', null, 'Spread of readings'), h('dd', null, num(c.spread_kwh) ? ['±', q(c.spread_kwh / 2, 'energy', { digits: 2 }), ' around the median'] : '—'))),
@@ -262,7 +266,9 @@ export async function mount(ctx) {
         h('dl', { class: 'bt-spec', cover: ['bh.setting.capacity_new_override', 'bh.setting.range_new_override', 'bh.setting.override_help'] },
           h('div', null, h('dt', null, 'Capacity when new'), h('dd', null, num(s.capacity_new_kwh) ? q(s.capacity_new_kwh, 'energy', { digits: 1 }) : 'not typed in')),
           h('div', null, h('dt', null, 'Full-charge range when new (rated)'), h('dd', null, num(s.full_range_new_km) ? q(s.full_range_new_km, 'range') : 'not typed in')),
-          h('div', null, h('dt', null, 'Warranty line'), h('dd', null, pctText(s.warranty_threshold_pct)))),
+          h('div', null, h('dt', null, 'Warranty line'), h('dd', null, pctText(s.warranty_threshold_pct))),
+          h('div', null, h('dt', null, 'Pack replaced on'), h('dd', null, s.pack_replaced_date || 'not typed in')),
+          h('div', null, h('dt', null, 'New pack capacity when new'), h('dd', null, num(s.pack_new_kwh) ? q(s.pack_new_kwh, 'energy', { digits: 1 }) : 'not typed in'))),
         h('p', { class: 'note' }, 'Only an admin can change these. Empty values are worked out from the car’s own early readings.'));
       return;
     }
@@ -272,20 +278,26 @@ export async function mount(ctx) {
       hint: `The rated range the car showed at 100 % when new (with the car set to rated, not ideal). Leave empty to use the first 30 days. ${Math.ceil(convert(100, 'range'))} to ${Math.floor(convert(1500, 'range'))} ${dist}.`, cover: 'bh.setting.range_new_override' });
     const war = field({ label: 'Warranty line (% of new)', name: 'warranty', type: 'number', value: s.warranty_threshold_pct, attrs: { min: '50', max: '95', step: '1', inputmode: 'numeric', required: true },
       hint: 'The capacity the battery warranty promises, usually 70 %. 50 to 95 %.' });
+    const pk = bat && bat.pack;
+    const detected = !s.pack_replaced_date && pk && pk.source === 'detected' && pk.replaced_ms != null ? dayKey(pk.replaced_ms, tz) : null;
+    const swap = field({ label: 'Pack replaced on', name: 'swap', type: 'date', value: s.pack_replaced_date || '', attrs: detected ? { placeholder: detected } : {},
+      hint: `${detected ? `Detected from the pack’s readings: ${detected}. ` : ''}The day a new pack went in: from then on the battery figures cover the new pack. Leave empty if it was never replaced.` });
+    const swapKwh = field({ label: 'New pack capacity when new (kWh)', name: 'swapKwh', type: 'number', value: s.pack_new_kwh, attrs: { min: '10', max: '250', step: '0.1', inputmode: 'decimal' },
+      hint: 'The usable capacity of the replacement pack when new. Leave empty to use the new pack’s first readings. 10 to 250 kWh.' });
     const check = (f, v, lo, hi, text) => { if (v != null && !(v >= lo && v <= hi)) { setFieldError(f, text); return false; } return true; };
     replace(refBox, head('bt-ref-title', 'Reference values', 'for this car only'),
       h('p', { class: 'note bt-ref-help', cover: 'bh.setting.override_help' }, 'Typed once for this car and checked as you save. Fill a box only when you know the real value when new; an empty box is worked out from the car’s own early readings, and the page always says which was used.'),
       form({
-        fields: [cap, rng, war], submitLabel: 'Save the reference values', cls: 'bt-ref-form',
+        fields: [cap, rng, war, swap, swapKwh], submitLabel: 'Save the reference values', cls: 'bt-ref-form',
         onsubmit: async (v) => {
           const lo = Math.ceil(convert(100, 'range')), hi = Math.floor(convert(1500, 'range'));
-          const ok = [check(cap, v.cap, 10, 250, 'Between 10 and 250 kWh, or empty.'), check(rng, v.range, lo, hi, `Between ${lo} and ${hi} ${dist}, or empty.`),
+          const ok = [check(cap, v.cap, 10, 250, 'Between 10 and 250 kWh, or empty.'), check(rng, v.range, lo, hi, `Between ${lo} and ${hi} ${dist}, or empty.`), check(swapKwh, v.swapKwh, 10, 250, 'Between 10 and 250 kWh, or empty.'),
             v.warranty == null ? (setFieldError(war, 'A number from 50 to 95.'), false) : check(war, v.warranty, 50, 95, 'Between 50 and 95 %.')].every(Boolean);
           if (!ok) throw Object.assign(new Error('Check the values marked below.'), { fields: {} });
-          const body = { version: settings.version, capacity_new_kwh: v.cap, full_range_new_km: v.range == null ? null : Math.round(toMetric(v.range, 'range') * 10) / 10, warranty_threshold_pct: v.warranty };
+          const body = { version: settings.version, capacity_new_kwh: v.cap, full_range_new_km: v.range == null ? null : Math.round(toMetric(v.range, 'range') * 10) / 10, warranty_threshold_pct: v.warranty, pack_replaced_date: v.swap || null, pack_new_kwh: v.swapKwh };
           let saved;
           try { saved = await ctx.api.patch(api.apiPath`cars/${car.id}/settings`, body); } catch (e) {
-            if (e && e.fields) { const map = { capacity_new_kwh: 'cap', full_range_new_km: 'range', warranty_threshold_pct: 'warranty' }; e.fields = Object.fromEntries(Object.entries(e.fields).map(([k, m]) => [map[k] || k, m])); }
+            if (e && e.fields) { const map = { capacity_new_kwh: 'cap', full_range_new_km: 'range', warranty_threshold_pct: 'warranty', pack_replaced_date: 'swap', pack_new_kwh: 'swapKwh' }; e.fields = Object.fromEntries(Object.entries(e.fields).map(([k, m]) => [map[k] || k, m])); }
             throw e;
           }
           settings = saved;
@@ -363,10 +375,15 @@ export async function mount(ctx) {
     const slope = sxx > 0 ? sxy / sxx : 0;
     const line = (a, b, cls) => svg('line', { class: cls, x1: p3(X(a[0])), y1: p3(Y(a[1])), x2: p3(X(b[0])), y2: p3(Y(b[1])) });
     const hoverG = svg('g');
+    // the day the pack was replaced: the readings before it are the previous pack's, drawn faint
+    const swapMs = bat && bat.pack && bat.pack.replaced_ms != null ? bat.pack.replaced_ms : null;
+    const swapAt = swapMs == null ? null : pts.find((r) => r.t_ms >= swapMs);
+    const swapX = swapMs == null ? null : opt.axis === 'odometer' ? (swapAt ? xOf(swapAt) : null) : swapMs;
     const graph = svg('svg', { class: 'bt-cap-svg', width: '100%', height: '100%', role: 'img', 'aria-label': `${byFull ? 'Full-pack' : 'Usable'} capacity ${opt.axis === 'odometer' ? 'against odometer' : 'over time'}: ${tn(n, '{n} reading', '{n} readings')} from ${format(ys[0], 'energy')} to ${format(ys[n - 1], 'energy')}` },
       yTicks.map((v) => svg('line', { class: 'bt-gline', x1: 0, x2: '100%', y1: p3(Y(v)), y2: p3(Y(v)) })),
       newKwh != null ? line([x0, newKwh], [x1, newKwh], 'bt-new-line') : null,
-      svg('g', { class: 'bt-dots' }, pts.map((r, i) => svg('circle', { class: ['bt-dot', { 'is-link': !!r.charge }], cx: p3(X(xOf(r))), cy: p3(Y(r[yKey])), dataset: { i } }))),
+      swapX != null && swapX >= x0 && swapX <= x1 ? svg('line', { class: 'bt-swap-line', x1: p3(X(swapX)), x2: p3(X(swapX)), y1: 0, y2: '100%' }) : null,
+      svg('g', { class: 'bt-dots' }, pts.map((r, i) => svg('circle', { class: ['bt-dot', { 'is-link': !!r.charge, 'is-old': swapMs != null && r.t_ms < swapMs }], cx: p3(X(xOf(r))), cy: p3(Y(r[yKey])), dataset: { i } }))),
       n > 2 ? med.slice(1).map((v, i) => line([xOf(pts[i]), med[i]], [xOf(pts[i + 1]), v], 'bt-median')) : null,
       n > 1 ? line([x0, my2 + slope * (x0 - mx)], [x1, my2 + slope * (x1 - mx)], 'bt-trend') : null,
       hoverG);
@@ -395,7 +412,8 @@ export async function mount(ctx) {
     replace(proj,
       per10k != null ? ['Trend: ', q(per10k, 'energy', { digits: 2 }), ` per ${formatNumber(convert(10000, 'distance'), { maximumFractionDigits: 0 })} ${unitLabel('distance')} driven. `] : 'Not enough readings for a trend yet. ',
       pr ? ['At this rate the pack reaches its warranty line (', pctText(pr.warranty_pct), ', ', q(pr.full_pack_kwh_at_warranty, 'energy', { digits: 1 }), ') at about ', q(pr.odometer_km, 'odometer'), num(pr.t_ms) ? `, around ${dateFormat(tz, { year: 'numeric' }).format(pr.t_ms)}` : '', '. A straight line is a rough guide: packs lose most in their first years.']
-        : per10k != null ? 'The pack is not losing capacity at a rate that reaches the warranty line.' : null);
+        : per10k != null ? 'The pack is not losing capacity at a rate that reaches the warranty line.' : null,
+      swapMs != null ? ` ${packWords(bat.pack, tz)} The faint dots, left of the line, are the previous pack; the trend covers the new pack.` : null);
   }
 
   /* ---------------------------------------------------------------- lifetime totals */

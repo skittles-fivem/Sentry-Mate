@@ -43,6 +43,7 @@ const NOTES = {
   lfp_charge_to_100_weekly: 'lfp pack: charge to 100% about once a week so the car can recalibrate.',
   imported_history_estimated: 'part of the history is imported; figures from it are estimated.',
   no_history: 'no history for this car yet.',
+  pack_replaced: 'the pack was replaced: capacity, health and the trend cover the new pack only.',
 };
 const CHEM = { lfp: 'lfp (iron phosphate)', nca_nmc: 'nca / nmc (nickel)' };
 const REASONS = {
@@ -202,6 +203,9 @@ export async function mount(ctx) {
   const clSlot = h('div', null, loadingLine('loading charge level'));
   const prSlot = h('div', null, loadingLine('loading projected range'));
   const vdSlot = h('div', null, loadingLine('loading parked spells'));
+  const pk = bat.pack || {};
+  const packLine = pk.replaced_ms != null ? h('p', { class: 'note', dataset: { pack: 'replaced' } }, tag('pack', 'muted'), ' ',
+    `Pack replaced on ${formatDate(pk.replaced_ms, tz, { weekday: false })} (${pk.source === 'owner' ? 'typed by the owner' : "detected from the pack's readings"}).`) : null;
   const notes = (bat.notes || []).filter((c) => NOTES[c]).map((c) => h('p', { class: 'note' }, /cold|lfp/.test(c) ? tag('warn', 'warn') : tag('info', 'muted'), ' ', NOTES[c]));
 
   replace(ctx.view, h('div', { class: 'page', dataset: { page: 'battery' } },
@@ -211,7 +215,7 @@ export async function mount(ctx) {
         section({ title: 'now', side: none('live') }, nowSlot),
         section({ title: 'capacity and health' }, capBlock,
           h('p', { class: 'note', cover: ['bh.capacity.help', 'bh.gauge.degradation_help'] }, 'health is usable now over usable when new, both from the battery management system (it reports capacity every awake minute; nothing from range). a guide, not a lab test: it moves with temperature and balancing.'),
-          notes)),
+          packLine, notes)),
       h('div', { class: 'cols2' },
         section({ title: 'full-charge range' }, rangeBlock, note('the range estimate scales with the car’s energy factor, so it drops in step with capacity. real range depends on speed, weather and climate: see efficiency.')),
         section({ title: 'lifetime totals', side: none('whole life') }, lifeBlock)),
@@ -264,7 +268,8 @@ export async function mount(ctx) {
     replace(capSlot, rows,
       h('div', { class: 'chart-head' }, h('b', null, 'usable capacity'), h('span', null, 'kWh'), h('span', { class: 'chart-key' },
         h('span', { class: 'chart-key-i chart-key-i--2' }, `. ${opt.capGroup}`), h('span', { class: 'chart-key-i chart-key-i--1' }, '-- monthly median'), h('span', { class: 'chart-key-i chart-key-i--3' }, '- - trend'),
-        newKwh != null ? h('span', { class: 'chart-key-i muted' }, `.. new ${format(newKwh, 'energy')}`) : null), src(mergedSources(items))),
+        newKwh != null ? h('span', { class: 'chart-key-i muted' }, `.. new ${format(newKwh, 'energy')}`) : null,
+        pk.replaced_ms != null ? h('span', { class: 'chart-key-i muted' }, '| pack replaced; left of it: the previous pack') : null), src(mergedSources(items))),
       box, rd.el,
       note(slope == null ? 'not enough readings for a trend yet.' : slope >= 0 ? 'the pack is not losing capacity at the moment.' : `trend: ${format(Math.abs(slope) / convert(1, 'distance'), 'energy')} less per ${formatNumber(10000)} ${unitLabel('distance')}.`,
         proj ? ` at this rate it reaches the ${pct(proj.warranty_pct)} warranty line at about ${format(proj.odometer_km, 'odometer')}, around ${formatDate(proj.t_ms, tz, { weekday: false })}. a straight line is rough: packs lose more early.` : '',
@@ -279,6 +284,13 @@ export async function mount(ctx) {
       series: [{}, { label: 'reading', stroke: c.c2, width: 0, paths: () => null, points: { show: true, space: 0, size: rpx(opt.capGroup === 'day' ? 3 : 5), width: 0, fill: c.c2, stroke: c.c2 } },
         { ...line('median', 0, { width: 2 }), spanGaps: true }, { ...line('trend', 2, { width: 1.5 }), spanGaps: true }],
       hooks: { draw: [(u) => {
+        // the day the pack was replaced: readings left of the line are the previous pack's
+        const swapX = pk.replaced_ms == null ? null : opt.capX === 'time' ? pk.replaced_ms : P.find((p) => p.it.t_ms >= pk.replaced_ms)?.x;
+        if (swapX != null && swapX >= u.scales.x.min && swapX <= u.scales.x.max) {
+          const x = Math.round(u.valToPos(swapX, 'x', true)) + 0.5, cx = u.ctx;
+          cx.save(); cx.strokeStyle = c.warn || c.muted; cx.lineWidth = 1; cx.beginPath(); cx.moveTo(x, u.bbox.top); cx.lineTo(x, u.bbox.top + u.bbox.height); cx.stroke();
+          cx.fillStyle = c.muted; cx.font = `${rpx(10)}px sans-serif`; cx.textAlign = 'right'; cx.fillText('previous pack ', x, u.bbox.top + rpx(12)); cx.restore();
+        }
         if (newKwh == null) return;
         const y = Math.round(u.valToPos(newKwh, 'y', true)) + 0.5, cx = u.ctx;
         cx.save(); cx.strokeStyle = c.muted; cx.lineWidth = 1; cx.setLineDash([rpx(2), rpx(3)]);

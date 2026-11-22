@@ -63,6 +63,7 @@ const NOTES = {
   lfp_charge_to_100_weekly: 'LFP pack: charge to 100 % about once a week so the car can recalibrate its battery %.',
   imported_history_estimated: 'Part of the history is imported; figures from it are estimated.',
   no_history: 'There is no history for this car yet.',
+  pack_replaced: 'The pack was replaced: capacity, health and the trend cover the new pack only.',
 };
 const CHEM = { lfp: 'LFP (iron phosphate)', nca_nmc: 'NCA / NMC (nickel)' };
 const REASONS = {
@@ -166,6 +167,8 @@ export async function mount(ctx) {
   const health = cap.health_pct, warranty = cap.warranty_pct;
   const factor = eff?.factor ? (toIdeal ? fr.ideal_wh_per_km : fr.rated_wh_per_km) : null;
   const ring = healthRing(health, warranty);
+  const pk = bat.pack || {};
+  const packLine = pk.replaced_ms != null ? h('p', { class: 'note bat-note' }, icon('info', 'ico--sm'), ` Pack replaced on ${formatDate(pk.replaced_ms, tz, { weekday: false, month: 'long' })} (${pk.source === 'owner' ? 'typed by the owner' : "detected from the pack's readings"}).`) : null;
   const notesEl = (bat.notes || []).filter((c) => NOTES[c]).map((c) => h('p', { class: ['note', 'bat-note', /cold|lfp/.test(c) && 'warn'] }, icon(/cold|lfp/.test(c) ? 'warn' : 'info', 'ico--sm'), NOTES[c]));
   const capPanel = panel({ title: 'Capacity and health', icon: 'battery', cls: 'bat-cap', cover: 'shots.battery-health' },
     h('div', { class: 'cap-body' },
@@ -184,7 +187,7 @@ export async function mount(ctx) {
     h('div', { class: 'cap-explain', cover: ['bh.capacity.help', 'bh.gauge.degradation_help'] },
       h('p', { class: 'note' }, icon('info', 'ico--sm'), ' Health is usable now as a share of usable when new. Both come from the battery management system, which reports the pack’s capacity every awake minute; nothing is worked out from range. It is a guide, not a lab test: it moves a little with temperature and with how long since the pack last balanced.'),
       warranty != null ? h('p', { class: 'note' }, h('i', { class: 'k-warranty', 'aria-hidden': 'true' }), ` Warranty line: ${pct(warranty)} health. Above it the pack is inside the usual battery warranty threshold; the threshold is set under Reference values.`) : null,
-      notesEl));
+      packLine, notesEl));
 
   /* ---------- Full-charge range */
   const rangePanel = panel({ title: 'Full-charge range', icon: 'gauge', cls: 'bat-range' },
@@ -366,6 +369,7 @@ export async function mount(ctx) {
         h('span', { class: 'key', vars: { '--c': 'var(--live)' } }, h('i'), 'Monthly median'),
         h('span', { class: 'key', vars: { '--c': 'var(--warm)' } }, h('i'), 'Trend'),
         newKwh != null ? h('span', { class: 'key', vars: { '--c': 'var(--text-3)' } }, h('i'), `When new ${format(newKwh, 'energy')}`) : null,
+        pk.replaced_ms != null ? h('span', { class: 'key', vars: { '--c': 'var(--warm)' } }, h('i'), 'Pack replaced: left of the line is the previous pack') : null,
         h('span', { class: 'chart-unit' }, 'usable kWh'), readout),
       // what the readings came from: every input among them, once
       h('p', { class: 'note cap-src' }, 'Readings from: ', srcMark({ sources: [...new Map(items.flatMap((it) => it.sources || []).map((x) => [`${x.kind}:${x.site || ''}`, x])).values()] }),
@@ -394,6 +398,13 @@ export async function mount(ctx) {
           { label: 'Trend', stroke: c.warm, width: rpx(1.5), dash: [rpx(6), rpx(4)], spanGaps: true, points: { show: false } }],
         hooks: {
           draw: [(u) => {
+            // the day the pack was replaced: readings left of the line are the previous pack's
+            const swapX = pk.replaced_ms == null ? null : opt.capX === 'time' ? pk.replaced_ms / 1000 : P.find((p) => p.it.t_ms >= pk.replaced_ms)?.x;
+            if (swapX != null && swapX >= u.scales.x.min && swapX <= u.scales.x.max) {
+              const x = Math.round(u.valToPos(swapX, 'x', true)) + 0.5, g = u.ctx;
+              g.save(); g.strokeStyle = c.warm; g.lineWidth = Math.max(1, rpx(1.5)); g.beginPath(); g.moveTo(x, u.bbox.top); g.lineTo(x, u.bbox.top + u.bbox.height); g.stroke();
+              g.fillStyle = c.axis; g.font = `${rpx(11)}px sans-serif`; g.textAlign = 'right'; g.fillText('previous pack ', x, u.bbox.top + rpx(12)); g.restore();
+            }
             if (newKwh == null) return;
             const y = u.valToPos(newKwh, 'y', true), cx = u.ctx;
             cx.save(); cx.strokeStyle = c.axis; cx.lineWidth = Math.max(1, rpx(1)); cx.setLineDash([rpx(2), rpx(3)]);

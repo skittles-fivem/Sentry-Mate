@@ -11,7 +11,7 @@
 
 import { h } from '../shared/dom.js';
 import { format, formatMoney, convert, toMetric, unitLabel, rangeLabel } from '../shared/units.js';
-import { formatTime, formatDate, formatDuration, startOf } from '../shared/time.js';
+import { formatTime, formatDate, formatDuration, startOf, dayKey } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
@@ -82,7 +82,8 @@ export async function mount(ctx) {
         [`Per ${unitLabel('range')} of range`, num(factor, 'efficiency', { size: 'm', why: 'not worked out yet' }), 'bh.stat.efficiency'],
       ])),
     h('p', { class: 'note', cover: ['bh.capacity.help', 'bh.gauge.degradation_help'] },
-      `Health is usable capacity now over usable when new (${NEW_SOURCE[cap.new_source] || 'not known'}). ${cap.degradation_pct != null ? `Down ${pct(cap.degradation_pct, 1)}; ` : ''}the warranty promises ${pct(cap.warranty_pct ?? 70)}. Usable is the full pack minus the ${format(cap.buffer_kwh, 'energy')} the car keeps back, from ${n0(cap.readings)} pack readings.`));
+      `Health is usable capacity now over usable when new (${NEW_SOURCE[cap.new_source] || 'not known'}). ${cap.degradation_pct != null ? `Down ${pct(cap.degradation_pct, 1)}; ` : ''}the warranty promises ${pct(cap.warranty_pct ?? 70)}. Usable is the full pack minus the ${format(cap.buffer_kwh, 'energy')} the car keeps back, from ${n0(cap.readings)} pack readings.`),
+    bat.pack?.replaced_ms != null ? note(`Pack replaced on ${formatDate(bat.pack.replaced_ms, tz, { weekday: false, month: 'long' })} (${bat.pack.source === 'owner' ? 'typed by the owner' : 'detected from the pack’s readings'}). Capacity and health cover the new pack only.`) : null);
   const lostShare = rng.lost_km != null && rng.full_new_km ? (rng.lost_km / rng.full_new_km) * 100 : null;
   const rangeT = tile({ w: 2, title: 'Full-charge range', icon: 'gauge' },
     nums([
@@ -117,7 +118,7 @@ export async function mount(ctx) {
     h('p', { class: 'note', cover: 'bh.charging.help' }, 'Efficiency is energy into the pack over energy from the grid, for AC charges where both were measured. DC is left out, not counted as 100 %. A full cycle is one usable pack’s worth of charging.'));
 
   /* ------------------------------------------------------------ reference values */
-  const refT = referenceTile(ctx, { base, settings, cap });
+  const refT = referenceTile(ctx, { base, settings, cap, pack: bat.pack, tz });
 
   /* ------------------------------------------------------------ charts and lists (filled below) */
   const capT = tile({ w: 2, title: 'Capacity over the car’s life', icon: 'bars', cls: 'chart-tile', cover: ['bh.chart.capacity_by_distance.points', 'bh.chart.capacity_by_distance.median'] });
@@ -138,13 +139,16 @@ export async function mount(ctx) {
     ]);
     if (!ctx.alive()) return;
     const m = (med?.items || []).filter((x) => x.odometer_km != null && x.usable_kwh != null).sort((a, b) => a.odometer_km - b.odometer_km);
+    const swapMs = bat.pack?.replaced_ms ?? null;
     if (!pts.length && !m.length) { capT.append(emptyTile({ icon: 'battery', title: 'No capacity readings yet', text: 'The pack reports its capacity while the car is awake.', w: 2 })); return; }
     await xyChart(ctx, capT, { label: 'Usable capacity against the odometer', xs: m.map((x) => x.odometer_km), xKind: 'odometer', yKind: 'energy', yFloor: null,
-      dots: pts.map((x) => ({ x: x.odometer_km, y: x.usable_kwh })), dotsName: 'Per day',
+      // readings before the pack was replaced are the previous pack's: drawn grey
+      dots: pts.map((x) => ({ x: x.odometer_km, y: x.usable_kwh, tone: swapMs != null && x.t_ms < swapMs ? 'muted' : undefined })), dotsName: 'Per day',
       series: [{ name: 'Monthly median', kind: 'energy', values: m.map((x) => x.usable_kwh), tone: 'c3' }] });
     const tr = med?.trend;
     const from = unionOf([...pts, ...(med?.items || [])]);
     if (from.sources.length) capT.append(h('p', { class: 'src-line' }, srcPill(from)));
+    if (swapMs != null) capT.append(note('Grey dots are the previous pack, before it was replaced.'));
     capT.append(note(tr?.slope_kwh_per_10000_km != null ? `About ${format(Math.abs(tr.slope_kwh_per_10000_km), 'energy')} ${tr.slope_kwh_per_10000_km < 0 ? 'less' : 'more'} every ${format(10000, 'distance')}${tr.projection?.odometer_km ? `; at this pace the warranty line comes at about ${format(tr.projection.odometer_km, 'odometer')}` : ''}.` : 'Not enough readings for a trend yet.'));
   }
 
@@ -282,7 +286,7 @@ export async function mount(ctx) {
 }
 
 /** The reference values an admin may type: capacity and range when new, and the warranty line. */
-function referenceTile(ctx, { base, settings, cap }) {
+function referenceTile(ctx, { base, settings, cap, pack, tz }) {
   const s = settings || {};
   const can = !!ctx.admin && !!settings;
   const capF = field({ label: 'Usable capacity when new (kWh)', name: 'capacity_new_kwh', type: 'number', value: s.capacity_new_kwh ?? '', cover: 'bh.setting.capacity_new_override',
@@ -290,12 +294,17 @@ function referenceTile(ctx, { base, settings, cap }) {
   const rngF = field({ label: `Full-charge range when new (${unitLabel('range')})`, name: 'full_range_new_km', type: 'number', cover: 'bh.setting.range_new_override',
     value: s.full_range_new_km == null ? '' : Math.round(convert(s.full_range_new_km, 'range')), hint: 'Leave empty to use the median of the first 30 days.', attrs: { min: '1', step: '1', inputmode: 'numeric', disabled: !can, placeholder: s.full_range_new_km_default != null ? String(Math.round(convert(s.full_range_new_km_default, 'range'))) : undefined } });
   const warF = field({ label: 'Warranty line (% health)', name: 'warranty_threshold_pct', type: 'number', value: s.warranty_threshold_pct ?? '', hint: 'The health your battery warranty promises, often 70 %.', attrs: { min: '50', max: '100', step: '1', inputmode: 'numeric', disabled: !can } });
+  const detected = !s.pack_replaced_date && pack?.source === 'detected' && pack.replaced_ms != null ? dayKey(pack.replaced_ms, tz) : null;
+  const swapF = field({ label: 'Pack replaced on', name: 'pack_replaced_date', type: 'date', value: s.pack_replaced_date || '',
+    hint: `${detected ? `Detected from the pack’s readings: ${detected}. ` : ''}The day a new pack went in; from then on health covers the new pack. Leave empty if it was never replaced.`, attrs: { disabled: !can, placeholder: detected || undefined } });
+  const swapKwhF = field({ label: 'New pack capacity when new (kWh)', name: 'pack_new_kwh', type: 'number', value: s.pack_new_kwh ?? '', hint: 'The usable capacity of the replacement pack when new. 10 to 250 kWh.',
+    attrs: { min: '10', max: '250', step: '0.1', inputmode: 'decimal', disabled: !can } });
   let version = s.version;
   const f = form({
-    fields: [capF, rngF, warF], submitLabel: 'Save reference values',
+    fields: [capF, rngF, warF, swapF, swapKwhF], submitLabel: 'Save reference values',
     async onsubmit(v) {
       if (!can) return;
-      const r = await ctx.api.patch(`${base}/settings`, { version, capacity_new_kwh: v.capacity_new_kwh, full_range_new_km: v.full_range_new_km == null ? null : Math.round(toMetric(v.full_range_new_km, 'range') * 10) / 10, warranty_threshold_pct: v.warranty_threshold_pct });
+      const r = await ctx.api.patch(`${base}/settings`, { version, capacity_new_kwh: v.capacity_new_kwh, full_range_new_km: v.full_range_new_km == null ? null : Math.round(toMetric(v.full_range_new_km, 'range') * 10) / 10, warranty_threshold_pct: v.warranty_threshold_pct, pack_replaced_date: v.pack_replaced_date || null, pack_new_kwh: v.pack_new_kwh });
       version = r?.version;
       ctx.toast('Reference values saved. Health and range use them now.', { next: true });
       ctx.reload();

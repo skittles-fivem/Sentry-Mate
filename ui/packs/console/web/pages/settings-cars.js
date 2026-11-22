@@ -9,7 +9,7 @@
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { invalidate } from '../shared/api.js';
-import { isValidZone } from '../shared/time.js';
+import { isValidZone, dayKey } from '../shared/time.js';
 import { convert, toMetric, unitLabel, format } from '../shared/units.js';
 import { head, paint, section, note, link, btn, kv } from '../core/ui.js';
 import { table } from '../core/table.js';
@@ -403,10 +403,16 @@ async function mountCar(ctx) {
         save: async (v) => { await patchSettings({ [k]: v == null ? null : kind ? Math.round(toMetric(v, kind) * 10) / 10 : v }); return undefined; },
         label };
     };
+    const pk = S.battery?.pack;
+    const detectedPack = () => (!s.pack_replaced_date && pk?.source === 'detected' && pk.replaced_ms != null ? `Detected from the pack's readings: ${dayKey(pk.replaced_ms, tz())}. ` : '');
     const lines = editLines([
       num('capacity_new_kwh', 'capacity when new', null, 'kWh', 10, 250, 'Empty: taken from the pack\'s first readings.'),
       num('full_range_new_km', 'full range when new', 'distance', unitLabel('distance'), 100, 1500, 'Empty: taken from the first 30 days.'),
       num('warranty_threshold_pct', 'warranty threshold', null, '%', 50, 95, 'The share of the capacity when new the warranty promises.', true),
+      { key: 'pack_replaced_date', type: 'date', value: s.pack_replaced_date || '', readOnly: ro, label: 'pack replaced on',
+        help: `${detectedPack()}The day a new pack went in: from then on the battery figures cover the new pack. Empty: not replaced${detectedPack() ? ' (or as detected)' : ''}.`,
+        save: (v) => patchSettings({ pack_replaced_date: v || null }) },
+      num('pack_new_kwh', 'new pack capacity when new', null, 'kWh', 10, 250, 'The usable capacity of the replacement pack when new.'),
       num('efficiency_wh_per_km_override', 'consumption factor', 'efficiency', unitLabel('efficiency'), 60, 500, 'Turns range into energy on efficiency. Empty: worked out from energy and range.'),
       { key: 'software_version_typed', type: 'text', value: s.software_version_typed || '', readOnly: ro, attrs: { placeholder: '2026.38.4' },
         help: 'Only for a car whose bus does not send it. Marked as typed on software. Empty: what the car reports.',
