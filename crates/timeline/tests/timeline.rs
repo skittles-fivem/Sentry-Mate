@@ -209,12 +209,51 @@ fn a_gap_with_no_logs_is_unknown_not_asleep() {
         vec![
             (State::Online, 0, 119_900),
             (State::Unknown, 119_900, 1_920_000),
-            (State::Online, 1_920_000, 2_039_900),
-            (State::Unknown, 2_039_900, 2_040_000),
+            // the window ends 0.1 s after the last frame: still online, no sliver of unknown
+            (State::Online, 1_920_000, 2_040_000),
         ]
     );
     assert!(t.states.iter().all(|s| s.state != State::Asleep));
     assert_eq!(t.states[0].buses, vec!["can0", "can1"]);
+}
+
+/// [`states`] with adjacent spans of one state joined (as a page shows them across idle cut points).
+fn joined(t: &Timeline) -> Vec<(State, i64, i64)> {
+    let mut out: Vec<(State, i64, i64)> = Vec::new();
+    for s in states(t) {
+        match out.last_mut() {
+            Some(l) if l.0 == s.0 && l.2 == s.1 => l.2 = s.2,
+            _ => out.push(s),
+        }
+    }
+    out
+}
+
+#[test]
+fn a_parked_awake_car_is_online_up_to_its_newest_data_and_a_real_gap_stays_unknown() {
+    // parked in P at speed 0, awake, one log a minute: the newest span is online to the end of the data
+    let mut car = Car::new(1, T0);
+    car.park(600);
+    let end = car.t;
+    let (samples, logs) = car.finish();
+    assert!(samples.iter().all(|s| s.gear == Some(model::Gear::P) && s.speed_kmh == Some(0.0)));
+    let t = build(1, T0, end, &samples, &logs);
+    assert_eq!(joined(&t), vec![(State::Online, 0, 600_000)]);
+    // the window reaching on past the newest frames by more than a join: that part is not known
+    let t = build(1, T0, end + 60_000, &samples, &logs);
+    assert_eq!(joined(&t), vec![(State::Online, 0, 599_900), (State::Unknown, 599_900, 660_000)]);
+    // nor is a log that stopped (no quiet close) followed by a gap
+    let mut car = Car::new(1, T0);
+    car.park(120);
+    car.gap(600);
+    car.park(60);
+    let end = car.t;
+    let (samples, logs) = car.finish();
+    let t = build(1, T0, end, &samples, &logs);
+    assert_eq!(
+        joined(&t),
+        vec![(State::Online, 0, 119_900), (State::Unknown, 119_900, 720_000), (State::Online, 720_000, 780_000)]
+    );
 }
 
 #[test]
@@ -237,8 +276,7 @@ fn a_quiet_log_means_asleep_until_the_next_frames() {
             (State::Online, 0, 360_000),
             (State::Online, 360_000, 419_900),
             (State::Asleep, 419_900, 7_620_000), // from the last frame to the next
-            (State::Online, 7_620_000, 7_679_900),
-            (State::Unknown, 7_679_900, 7_680_000),
+            (State::Online, 7_620_000, 7_680_000),
         ]
     );
     assert_eq!(t.states[1].buses, vec!["can0", "can1"]);
@@ -266,8 +304,7 @@ fn a_recording_pause_is_unknown_even_after_a_quiet_log() {
             (State::Unknown, 3_660_000, 5_460_000), // the 1,800 s the bridge says it didn't record
             (State::Online, 5_460_000, 5_519_900),
             (State::Unknown, 5_519_900, 6_120_000), // no length given: back to the log before
-            (State::Online, 6_120_000, 6_179_900),
-            (State::Unknown, 6_179_900, 6_180_000),
+            (State::Online, 6_120_000, 6_180_000),
         ]
     );
     // a hole the caller knows of (a log that failed its check) is unknown too, never asleep

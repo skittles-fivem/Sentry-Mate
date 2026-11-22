@@ -11,7 +11,7 @@
 
 use crate::signals::{Field, Kind, Table, charger_of, gear_of, table};
 use crate::vin::VinCollector;
-use model::{ChargeKind, Sample, VinInfo};
+use model::{ChargeKind, Sample, SocBasis, VinInfo};
 
 /// How long values are held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +33,37 @@ const LEGACY_CHARGING_KW: f64 = 0.1;
 /// An AC line current above this, while charging, says AC when no signal names the charger (A).
 const AC_CURRENT_A: f64 = 0.5;
 
+/// The pack's full energy and its buffer are held this long (ms): they change over weeks, and 0x352 sends them on
+/// pages of their own, so one may be a while behind the other.
+const PACK_HOLD_MS: u64 = 120_000;
+/// The screen's % is not used while it is more than this many points off the % the pack's energy (or the rated range)
+/// gives, and is used again once it is within [`SOC_AGREE`]. The screen rounds to a whole %, and Tesla's own figure
+/// is close to the energy formula, so a point or so is normal.
+const SOC_DISAGREE: f64 = 2.0;
+const SOC_AGREE: f64 = 1.0;
+/// A range this short (km) is too little to scale a % from.
+const MIN_RANGE_KM: f64 = 10.0;
+
+/// The battery % from the pack's energy, as the screen's figure is worked out: (energy remaining less the buffer)
+/// over (full pack less the buffer). `None` when a value is missing or the three don't fit together.
+pub(crate) fn soc_from_energy(remaining: Option<f64>, full: Option<f64>, buffer: Option<f64>) -> Option<f64> {
+    let (rem, full, buf) = (remaining?, full?, buffer?);
+    let usable = full - buf;
+    if !(buf >= 0.0 && usable > 10.0 && (0.0..=full * 1.05).contains(&rem)) {
+        return None;
+    }
+    Some(((rem - buf) / usable * 100.0).clamp(0.0, 100.0))
+}
+
+/// How the screen's % has held up against the pack's energy so far in the log.
+#[derive(Debug, Clone, Copy, Default)]
+struct SocCheck {
+    /// The screen's % is off the pack's energy: the worked-out one is used until they agree again.
+    distrust: bool,
+    /// A checked % and the rated range (km) at that second: the range scales it while the energy is missing.
+    anchor: Option<(f64, f64)>,
+}
+
 /// Builds the samples of one log (or of several logs of one car, fed in order). Its memory is fixed: one value per
 /// wanted signal, plus the samples not taken yet.
 #[derive(Debug)]
@@ -46,6 +77,7 @@ pub struct SampleBuilder {
     first: bool,
     out: Vec<Sample>,
     vin: VinCollector,
+    soc_check: SocCheck,
 }
 
 impl SampleBuilder {
@@ -59,6 +91,7 @@ impl SampleBuilder {
             first: true,
             out: Vec::new(),
             vin: VinCollector::new(),
+            soc_check: SocCheck::default(),
         }
     }
 
@@ -144,9 +177,11 @@ impl SampleBuilder {
             .find_map(|&i| self.fresh(i, end_us, hold).map(|v| (v, self.table.cands[i].kind)))
     }
 
-    fn sample(&self, sec: u64) -> Sample {
+    fn sample(&mut self, sec: u64) -> Sample {
         // (saturating: a frame time near the end of u64 must not overflow)
         let end_us = sec.saturating_add(1).saturating_mul(1_000_000);
+        let range_km = self.best(Field::Range, end_us).map(|(v, _)| v);
+        let (soc, soc_basis) = self.soc(end_us, range_km);
         let num = |f: Field| self.best(f, end_us).map(|(v, _)| v);
 
         let battery_voltage_v = num(Field::BattVolts);
@@ -198,9 +233,10 @@ impl SampleBuilder {
             speed_kmh: num(Field::Speed),
             gear: num(Field::Gear).and_then(gear_of),
             odometer_km: num(Field::Odometer),
-            soc: num(Field::Soc),
+            soc,
+            soc_basis,
             soc_bms: num(Field::SocBms),
-            range_km: num(Field::Range),
+            range_km,
             ideal_range_km: num(Field::IdealRange),
             energy_remaining_kwh: num(Field::EnergyRemaining),
             battery_voltage_v,
@@ -219,6 +255,63 @@ impl SampleBuilder {
             lv_voltage_v: num(Field::LvVolts),
             tpms_bar: [num(Field::Tire0), num(Field::Tire1), num(Field::Tire2), num(Field::Tire3)],
         }
+    }
+
+    /// A slot's value by series name, if it was sent within `hold_ms` before `end_us`.
+    fn series(&self, name: &str, end_us: u64, hold_ms: u64) -> Option<f64> {
+        let &i = self.table.by_series.get(name)?;
+        self.fresh(i, end_us, hold_ms.saturating_mul(1000))
+    }
+
+    /// The battery %, and what it rests on. The screen's figure while it follows the pack's energy (within
+    /// [`SOC_DISAGREE`] points of it); else the % the energy gives. Where the energy is not there, the rated range
+    /// scales the last checked % of the log, and the screen's figure is used while it follows that. A car whose set
+    /// has no energy signals (the legacy S/X) keeps the screen's figure as it is.
+    fn soc(&mut self, end_us: u64, range_km: Option<f64>) -> (Option<f64>, Option<SocBasis>) {
+        let hold = self.params.hold_ms;
+        let ui = self.best(Field::Soc, end_us).map(|(v, _)| v);
+        // the nominal energy remaining only: the expected one is what a cold pack can give, not the screen's
+        let energy = soc_from_energy(
+            self.series("BMS_nominalEnergyRemaining", end_us, hold),
+            self.series("BMS_nominalFullPackEnergy", end_us, PACK_HOLD_MS),
+            self.series("BMS_energyBuffer", end_us, PACK_HOLD_MS),
+        );
+        let range = range_km.filter(|r| *r >= MIN_RANGE_KM);
+        let check = &mut self.soc_check;
+        let judge = |check: &mut SocCheck, ui: f64, other: f64| {
+            let off = (ui - other).abs();
+            if off > SOC_DISAGREE {
+                check.distrust = true;
+            } else if off <= SOC_AGREE {
+                check.distrust = false;
+            }
+        };
+        let (soc, basis) = match (ui, energy) {
+            (Some(u), Some(e)) => {
+                judge(check, u, e);
+                if check.distrust { (e, SocBasis::BmsEnergy) } else { (u, SocBasis::Screen) }
+            }
+            (None, Some(e)) => (e, SocBasis::BmsEnergy),
+            (ui, None) => {
+                let by_range = check.anchor.zip(range).map(|((s0, r0), r)| (s0 * r / r0).clamp(0.0, 100.0));
+                match (ui, by_range) {
+                    (Some(u), Some(r)) => {
+                        judge(check, u, r);
+                        if check.distrust { (r, SocBasis::RatedRange) } else { (u, SocBasis::Screen) }
+                    }
+                    (Some(u), None) => return (Some(u), Some(SocBasis::Screen)),
+                    (None, Some(r)) => return (Some(r), Some(SocBasis::RatedRange)),
+                    (None, None) => return (None, None),
+                }
+            }
+        };
+        // a % checked against the energy is where the range scales from while the energy is missing
+        if energy.is_some()
+            && let Some(r) = range
+        {
+            check.anchor = Some((soc, r));
+        }
+        (Some(soc), Some(basis))
     }
 
     /// Latitude, longitude and accuracy of one message, the best with all three fresh. A position is kept only when
@@ -362,6 +455,133 @@ mod tests {
         let (s, _) = b.finish();
         assert_eq!(s.len(), 2);
         assert_eq!(s[0].soc, Some(60.0));
+    }
+
+    /// A Model Y's pack on made-up figures: 78 kWh full, 3 kWh buffer (75 usable), `pct` % of it left.
+    fn pack(b: &mut SampleBuilder, t: f64, pct: f64, pages: bool) {
+        b.value(at(t), "BMS_nominalEnergyRemaining", 3.0 + 0.75 * pct);
+        if pages {
+            b.value(at(t), "BMS_nominalFullPackEnergy", 78.0);
+            b.value(at(t), "BMS_energyBuffer", 3.0);
+        }
+    }
+
+    fn socs(s: &[Sample]) -> Vec<(Option<f64>, Option<SocBasis>)> {
+        s.iter().map(|x| (x.soc.map(|v| (v * 10.0).round() / 10.0), x.soc_basis)).collect()
+    }
+
+    #[test]
+    fn the_battery_percent_from_the_pack_energy() {
+        assert_eq!(soc_from_energy(Some(56.25), Some(78.0), Some(3.0)), Some(71.0));
+        assert_eq!(soc_from_energy(Some(2.0), Some(78.0), Some(3.0)), Some(0.0), "inside the buffer: 0 %");
+        assert_eq!(soc_from_energy(Some(56.25), Some(78.0), None), None, "no buffer: not worked out");
+        assert_eq!(soc_from_energy(Some(90.0), Some(78.0), Some(3.0)), None, "more left than the pack holds");
+        assert_eq!(soc_from_energy(Some(5.0), Some(12.0), Some(3.0)), None, "too small a pack to be one");
+    }
+
+    #[test]
+    fn the_screen_percent_is_kept_while_it_follows_the_pack_energy() {
+        let mut b = SampleBuilder::new(dbc::Profile::Tesla3Y, SampleParams::default());
+        for (k, (ui, pct)) in [(71.0, 71.0), (71.0, 71.0), (71.0, 71.4), (72.0, 71.6), (72.0, 72.3)].iter().enumerate() {
+            b.value(at(k as f64 + 0.5), "UI_SOC", *ui);
+            pack(&mut b, k as f64 + 0.6, *pct, true);
+        }
+        let (s, _) = b.finish();
+        assert_eq!(socs(&s), vec![(Some(71.0), Some(SocBasis::Screen)); 2].into_iter().chain([(Some(72.0), Some(SocBasis::Screen)); 2]).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_screen_percent_stuck_while_a_charge_adds_energy_gives_way_to_the_pack_energy() {
+        // UI_SOC stays at 71 % while the pack takes energy and the rated range rises (as a Model Y's logs showed)
+        let mut b = SampleBuilder::new(dbc::Profile::Tesla3Y, SampleParams::default());
+        for k in 0..8 {
+            let t = k as f64 + 0.5;
+            b.value(at(t), "UI_SOC", 71.0);
+            b.value(at(t), "BMS_uiChargeStatus", 3.0); // BMS_CHARGING
+            pack(&mut b, t, 71.0 + 0.5 * k as f64, true);
+            b.value(at(t), "UI_Range", 228.0 + 1.6 * k as f64);
+        }
+        let (s, _) = b.finish();
+        assert!(s.iter().all(|x| x.charging == Some(true)));
+        let got = socs(&s);
+        // the first seconds agree within 2 points: the screen's figure
+        assert_eq!(&got[..4], &[(Some(71.0), Some(SocBasis::Screen)); 4]);
+        // 73.5 % from the energy is 2.5 points off: the energy's figure from then on
+        assert_eq!(&got[4..], &[(Some(73.5), Some(SocBasis::BmsEnergy)), (Some(74.0), Some(SocBasis::BmsEnergy)), (Some(74.5), Some(SocBasis::BmsEnergy))]);
+        // a charge over those seconds shows the % rising, not 71 % to 71 %
+        assert!(s.last().unwrap().soc.unwrap() > s[0].soc.unwrap() + 3.0);
+    }
+
+    #[test]
+    fn a_screen_percent_off_the_energy_while_parked_is_replaced_and_comes_back_once_they_agree() {
+        let mut b = SampleBuilder::new(dbc::Profile::Tesla3Y, SampleParams::default());
+        let seq = [(71.0, 77.0), (71.0, 77.0), (75.0, 76.6), (77.0, 77.0)];
+        for (k, (ui, pct)) in seq.iter().enumerate() {
+            let t = k as f64 + 0.5;
+            b.value(at(t), "UI_SOC", *ui);
+            pack(&mut b, t, *pct, true);
+        }
+        b.value(at(4.5), "UI_SOC", 77.0);
+        let (s, _) = b.finish();
+        assert_eq!(
+            socs(&s),
+            vec![
+                (Some(77.0), Some(SocBasis::BmsEnergy)),
+                (Some(76.6), Some(SocBasis::BmsEnergy)), // 1.6 off: not yet within a point of agreeing again
+                (Some(77.0), Some(SocBasis::Screen)),
+                (Some(77.0), Some(SocBasis::Screen)), // the energy is still held from 3.5 s
+            ]
+        );
+    }
+
+    #[test]
+    fn without_the_energy_the_rated_range_checks_the_screen_percent() {
+        let mut b = SampleBuilder::new(dbc::Profile::Tesla3Y, SampleParams::default());
+        // one second with the energy: 72 % at 230 mi checked
+        b.value(at(0.5), "UI_SOC", 72.0);
+        b.value(at(0.5), "UI_Range", 230.0);
+        pack(&mut b, 0.5, 72.0, true);
+        b.value(at(1.5), "UI_SOC", 72.0);
+        b.value(at(1.5), "UI_Range", 230.0);
+        pack(&mut b, 1.5, 72.0, true);
+        // then 0x352 stops: the range rises while the screen stays at 72 %
+        for k in 2..14 {
+            let t = k as f64 * 5.0 + 0.5;
+            b.value(at(t), "UI_SOC", 72.0);
+            b.value(at(t), "UI_Range", 230.0 + 2.0 * (k - 1) as f64);
+        }
+        let (s, _) = b.finish();
+        let got = socs(&s);
+        assert_eq!(got[0], (Some(72.0), Some(SocBasis::Screen)));
+        // within two points of 72 × range / 230: the screen's
+        let t = |k: u64| s.iter().position(|x| x.t_ms == (T0 / 1000) + k * 5000).unwrap();
+        assert_eq!(got[t(2)], (Some(72.0), Some(SocBasis::Screen)));
+        // 72 × 254 / 230 = 79.5: more than two points off
+        let late = &s[t(13)];
+        assert_eq!(late.soc_basis, Some(SocBasis::RatedRange));
+        assert!((late.soc.unwrap() - 72.0 * 254.0 / 230.0).abs() < 1e-6, "{late:?}");
+    }
+
+    #[test]
+    fn with_neither_the_screen_percent_stands_and_the_legacy_set_is_unchanged() {
+        let mut b = SampleBuilder::new(dbc::Profile::Tesla3Y, SampleParams::default());
+        b.value(at(0.5), "UI_SOC", 64.0);
+        b.value(at(1.5), "UI_SOC", 64.0);
+        b.value(at(1.5), "UI_Range", 200.0);
+        let (s, _) = b.finish();
+        assert_eq!(socs(&s), vec![(Some(64.0), Some(SocBasis::Screen))], "no energy, no checked range: the screen's");
+        // the energy alone (UI_SOC late): the energy's figure
+        let mut b = SampleBuilder::new(dbc::Profile::Tesla3Y, SampleParams { hold_ms: 500, gps_hold_ms: 500 });
+        b.value(at(0.2), "UI_SOC", 64.0);
+        pack(&mut b, 1.8, 50.0, true);
+        b.value(at(2.2), "DI_gear", 1.0);
+        let (s, _) = b.finish();
+        assert_eq!(socs(&s), vec![(Some(50.0), Some(SocBasis::BmsEnergy))]);
+        let mut b = SampleBuilder::new(dbc::Profile::TeslaSxLegacy, SampleParams::default());
+        b.value(at(0.5), "SOCUI302", 55.0);
+        b.value(at(1.5), "SOCUI302", 55.0);
+        let (s, _) = b.finish();
+        assert_eq!(socs(&s), vec![(Some(55.0), Some(SocBasis::Screen))]);
     }
 
     #[test]
