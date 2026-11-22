@@ -1,5 +1,7 @@
-// settings/import: TeslaMate history from TeslaMate's own backup file, or the CAN Bridge logs Sentry Six Manager
-// already has, from its CAN export (a .zip), as numbered steps:
+// settings/import: TeslaMate history from TeslaMate's own backup file, TeslaFi's history from its data download (its
+// monthly CSVs, alone, gzipped or in a .zip), or the CAN Bridge logs Sentry Six Manager already has, from its CAN export
+// (a .zip), as numbered steps (TeslaFi's data has one more: the time zone and units its times and figures are read in,
+// sent with Start as time_zone, distance_unit and temperature_unit):
 //   1. choose the file     it goes up in chunks over https, each with its SHA-256 (it can stop and go on)
 //   2. check               the server reads the whole file and stores nothing yet (a zip: every log's signature)
 //   3. match the cars      each imported car goes to a car here, a new car, or is left out (a zip has none:
@@ -13,6 +15,7 @@
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { format } from '../shared/units.js';
+import { isValidZone } from '../shared/time.js';
 import { head, paint, section, note, link, btn, kv, textBar } from '../core/ui.js';
 import { table } from '../core/table.js';
 import { empty, errorWords } from '../core/states.js';
@@ -39,9 +42,11 @@ const REASONS = {
   'bad-value': 'a value it needs cannot be read', 'wrong-field-count': 'wrong number of fields', 'too-long': 'line too long to read',
 };
 const CAN = 'sentry_manager_can';
+const TF = 'teslafi';
+const isTf = (j) => j?.kind === TF || j?.report?.kind === TF;
 const isCan = (j) => j?.kind === CAN || j?.report?.kind === CAN;
 // a zip is never a TeslaMate backup: it has no cars to match, also while it is checked (its kind is known after)
-const isZip = (j) => isCan(j) || j?.compression === 'zip' || /\.zip$/i.test(j?.name || '');
+const isZip = (j) => !isTf(j) && (isCan(j) || ((j?.compression === 'zip' || /\.zip$/i.test(j?.name || '')) && !j?.kind));
 // a zip the check refused: not a CAN export, or not a zip at all
 const NOT_CAN = new Set(['not_a_can_export', 'unreadable']);
 // why a log of a CAN export was refused
@@ -69,8 +74,17 @@ const FAILURES = {
   store_failed: 'The server could not store a log (the disk may be full). Logs stored before stay; free some space and run it again.',
   stopped: 'The import was stopped. Logs stored before stay; run it again to import the rest.',
   interrupted: 'The server restarted part way. Logs stored before stay; run it again to import the rest.',
+  not_a_teslafi_export: 'No TeslaFi data is in the upload. In TeslaFi open Settings > Account > Advanced > "Download TeslaFi Data" and upload the monthly CSV (TeslaFi<M><YYYY>.csv) as it is, gzipped, or several months in one .zip.',
+  teslafi_summary: 'This is TeslaFi\'s drives or charges list (one row per drive, no positions). Upload TeslaFi\'s raw data instead: Settings > Account > Advanced > "Download TeslaFi Data", one CSV per month.',
   internal_error: 'A fault in the import itself. Logs stored before stay; run it again, and if it fails the same way, the server log says more.',
 };
+// TeslaFi's report: why rows were passed over
+const TF_REASONS = {
+  already_imported: 'already imported: an earlier import holds this time', duplicate: 'the same time twice', out_of_order: 'older than the row before it',
+  bad_time: 'no readable Date', dst_gap: 'a wall time the clocks skip (spring forward)', car_left_out: 'for a car you left out',
+  too_many_cars: 'past 64 cars in one upload', wrong_field_count: 'wrong number of fields', too_long: 'a line over 1 MB',
+};
+const TF_FROM = { detected: 'worked out from the file', default: 'nothing in the file tells: the default', setting: 'as you chose', car: 'the matched car\'s zone', default_zone: 'the server\'s default zone' };
 const START_WORDS = {
   not_ready: 'The file is not checked yet. Import is possible once the check is done.',
   cars_unmatched: 'Some imported cars have no match yet: choose a car, new or leave out for each.',
@@ -100,10 +114,10 @@ export async function mount(ctx) {
   pick();
 
   /* ---------------------------------------------------------------- the file and the upload */
-  const fileInput = h('input', { type: 'file', id: 'im-file', accept: '.sql,.gz,.xz,.zip,.dump,.bak,.txt,application/sql,application/gzip,application/x-xz,application/zip', 'aria-label': 'TeslaMate backup or Sentry Six Manager CAN export',
+  const fileInput = h('input', { type: 'file', id: 'im-file', accept: '.sql,.gz,.xz,.zip,.dump,.bak,.txt,.csv,text/csv,application/sql,application/gzip,application/x-xz,application/zip', 'aria-label': 'TeslaMate backup, TeslaFi data download or Sentry Six Manager CAN export',
     onchange: () => { const f = fileInput.files?.[0]; fileInput.value = ''; if (f) chose(f); } });
   const choose = h('label', { class: 'file-pick', id: 'file' }, fileInput, h('span', { class: 'btn btn--primary', 'aria-hidden': 'true' }, 'choose file'),
-    h('span', { class: 'muted' }, 'or drop it here: the .sql of a TeslaMate database backup (plain, .gz or .xz), or the .zip of Sentry Six Manager\'s CAN export; up to 64 GB'));
+    h('span', { class: 'muted' }, 'or drop it here: the .sql of a TeslaMate database backup (plain, .gz or .xz), TeslaFi\'s data download (a month\'s .csv, gzipped, or months in a .zip), or the .zip of Sentry Six Manager\'s CAN export; up to 64 GB'));
   ctx.on(choose, 'dragover', (e) => { e.preventDefault(); choose.classList.add('is-over'); });
   ctx.on(choose, 'dragleave', () => choose.classList.remove('is-over'));
   ctx.on(choose, 'drop', (e) => { e.preventDefault(); choose.classList.remove('is-over'); const f = e.dataTransfer?.files?.[0]; if (f) chose(f); });
@@ -174,13 +188,14 @@ export async function mount(ctx) {
     startErr.hidden = true;
     if (!j) return;
     try {
-      const r = await ctx.api.post(`imports/${enc(j.id)}/start`, {});
+      const r = await ctx.api.post(`imports/${enc(j.id)}/start`, isTf(j) ? tfBody() : {});
       if (!ctx.alive()) return;
       setJob(r);
       toast('Import started. You can leave this page; it goes on without it.');
     } catch (e) {
       if (!ctx.alive()) return;
-      replace(startErr, START_WORDS[e?.code] || errorWords(e).text); startErr.hidden = false;
+      replace(startErr, START_WORDS[e?.code] || (e?.fields ? Object.values(e.fields).join(' ') : errorWords(e).text)); startErr.hidden = false;
+      if (e?.fields?.time_zone) { zoneIn.setAttribute('aria-invalid', 'true'); tf.ok = false; okBox.checked = false; }
       await refreshJob();
       return;
     }
@@ -205,6 +220,56 @@ export async function mount(ctx) {
     paintAll();
   }
 
+  /* ---------------------------------------------------------------- TeslaFi: the time zone and units */
+  // TeslaFi writes local wall time without a zone and its units follow the owner's settings, so the owner confirms
+  // both before the import: the zone TeslaFi shows times in (TeslaFi: Settings > Account), miles or km, °C or °F
+  // ("auto": what the check worked out from the file). Built once, so typing survives the steps being drawn again.
+  const tf = { job: null, zone: '', dist: 'auto', temp: 'auto', ok: false, typed: false };
+  const zones = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+  const zoneList = h('datalist', { id: 'im-tf-zones' }, zones.map((z) => h('option', { value: z })));
+  const zoneIn = h('input', { class: 'in im-tf-zone', id: 'im-tf-zone', type: 'text', list: 'im-tf-zones', autocomplete: 'off', spellcheck: 'false', 'aria-describedby': 'im-tf-zone-hint',
+    oninput: () => { tf.zone = zoneIn.value.trim(); tf.typed = true; tf.ok = false; okBox.checked = false; zoneIn.removeAttribute('aria-invalid'); paintSteps(); } });
+  const keysOf = (label, opts, get, set) => h('div', { class: 'keys', role: 'group', 'aria-label': label },
+    opts.map(([v, l]) => h('button', { class: 'key', type: 'button', 'aria-pressed': String(get() === v), dataset: { v }, onclick: (e) => { set(v); tf.ok = false; okBox.checked = false; for (const b of e.currentTarget.parentNode.children) b.setAttribute('aria-pressed', String(b.dataset.v === v)); paintSteps(); } }, l)));
+  const distKeys = keysOf('Distance unit of the file', [['auto', 'auto'], ['mi', 'miles'], ['km', 'km']], () => tf.dist, (v) => { tf.dist = v; });
+  const tempKeys = keysOf('Temperature unit of the file', [['auto', 'auto'], ['c', '°C'], ['f', '°F']], () => tf.temp, (v) => { tf.temp = v; });
+  const okBox = h('input', { class: 'chk', type: 'checkbox', id: 'im-tf-ok', onchange: () => { tf.ok = okBox.checked; paintSteps(); } });
+  const unitWords = h('p', { class: 'fld-hint' });
+  const tfBox = h('div', { class: 'im-tf' }, zoneList,
+    h('div', { class: 'fld' }, h('label', { class: 'fld-label', for: 'im-tf-zone' }, 'time zone'),
+      h('div', { class: 'fld-box' }, zoneIn, h('p', { class: 'fld-hint', id: 'im-tf-zone-hint' }, 'The zone TeslaFi shows your times in: TeslaFi, Settings > Account. An IANA name such as America/Chicago.'))),
+    h('div', { class: 'fld' }, h('span', { class: 'fld-label' }, 'distance'), h('div', { class: 'fld-box' }, distKeys)),
+    h('div', { class: 'fld' }, h('span', { class: 'fld-label' }, 'temperature'), h('div', { class: 'fld-box' }, tempKeys, unitWords)),
+    h('label', { class: 'fld-checkline', for: 'im-tf-ok' }, okBox, h('span', null, 'These are the zone and units of my TeslaFi data.')));
+  // the zone offered: until the owner types one, the zone of the car the data goes to (else the check's)
+  const offeredZone = () => {
+    const to = S.match.map((c) => c.match).find((m) => m && m !== 'new' && m !== 'leave_out');
+    return S.cars.find((c) => c.id === to)?.time_zone || S.job?.report?.time_zone?.name || '';
+  };
+  function syncTf() {
+    const j = S.job;
+    if (!isTf(j)) return;
+    if (tf.job !== j.id) {
+      Object.assign(tf, { job: j.id, zone: '', dist: 'auto', temp: 'auto', ok: false, typed: false });
+      okBox.checked = false;
+      for (const [box, v] of [[distKeys, 'auto'], [tempKeys, 'auto']]) for (const b of box.children) b.setAttribute('aria-pressed', String(b.dataset.v === v));
+    }
+    if (!tf.typed) {
+      const z = offeredZone();
+      if (z !== tf.zone) { tf.zone = z; zoneIn.value = z; tf.ok = false; okBox.checked = false; }
+    }
+  }
+  function paintUnitWords() {
+    const u = S.job?.report?.units, z = S.job?.report?.time_zone;
+    replace(unitWords, u ? `The check read it in ${u.distance === 'km' ? 'km' : 'miles'} (${TF_FROM[u.distance_from] || u.distance_from}) and ${u.temperature === 'f' ? '°F' : '°C'} (${TF_FROM[u.temperature_from] || u.temperature_from})${z ? `, times in ${z.name} (${TF_FROM[z.from] || z.from})` : ''}. auto keeps what the check found.` : 'auto: what the check works out from the file.');
+  }
+  const tfBody = () => {
+    const b = { time_zone: tf.zone };
+    if (tf.dist !== 'auto') b.distance_unit = tf.dist;
+    if (tf.temp !== 'auto') b.temperature_unit = tf.temp;
+    return b;
+  };
+
   /* ---------------------------------------------------------------- the steps */
   const stepsSlot = h('div');
   const progSlot = h('div', { cover: 'web.import.files.col-status' });
@@ -226,24 +291,42 @@ export async function mount(ctx) {
     const step = (n, k, headText, text, acts, extra = null) => h('li', { class: ['run', st[k] === 'todo' || st[k] === 'running' ? 'run--now' : st[k] === 'later' ? 'run--later' : null], dataset: { row: '' } },
       h('span', { class: 'run-n' }, `${n}.`), h('span', { class: 'run-tag' }, tagOf(st[k])),
       h('div', { class: 'run-body' }, h('p', { class: 'run-head' }, headText), h('p', { class: 'run-text' }, text), extra), h('div', { class: 'run-acts' }, acts));
-    const canStart = s === 'ready' && !unmatched;
+    const teslafi = isTf(j);
+    if (teslafi) { syncTf(); paintUnitWords(); }
+    const zoneOk = !teslafi || (!!tf.zone && isValidZone(tf.zone));
+    st.zone = !j || ['uploading', 'checking'].includes(s) || failedAt ? 'later' : s === 'ready' ? (zoneOk && tf.ok ? 'ok' : 'todo') : 'ok';
+    if (teslafi && s === 'ready' && !(zoneOk && tf.ok)) st.run = 'later';
+    const canStart = s === 'ready' && !unmatched && (!teslafi || (zoneOk && tf.ok));
+    const had = tfBox.contains(document.activeElement) ? document.activeElement : null;
+    const sel = had === zoneIn ? [zoneIn.selectionStart, zoneIn.selectionEnd] : null;
+    if (teslafi && tf.zone && !isValidZone(tf.zone)) zoneIn.setAttribute('aria-invalid', 'true');
+    const n = teslafi ? 5 : 4;
     replace(stepsSlot, h('ol', { class: 'runs' },
-      step(1, 'file', 'choose the file', 'A TeslaMate backup or a Sentry Six Manager CAN export (.zip). It goes up over https in chunks of about 1 MB, each with its SHA-256, so a damaged chunk is sent again and a stopped upload goes on from the last chunk.',
+      step(1, 'file', 'choose the file', 'A TeslaMate backup, TeslaFi\'s data download (Settings > Account > Advanced > "Download TeslaFi Data": a CSV per month, alone, gzipped or several in a .zip) or a Sentry Six Manager CAN export (.zip). It goes up over https in chunks of about 1 MB, each with its SHA-256, so a damaged chunk is sent again and a stopped upload goes on from the last chunk.',
         s === 'uploading' && up.active ? btn('pause', () => { up.paused = true; }) : s === 'uploading' && up.paused && up.file ? btn('go on', () => upload(S.job), { kind: 'primary' }) : null,
         [(!j || !UNFINISHED.includes(s) || (s === 'uploading' && !up.active)) ? choose : null, upErr]),
       step(2, 'check', 'check', can ? 'Pass 1: every log of the zip is read and its signature checked, as an upload\'s is. Nothing is stored yet.' : 'Pass 1: every row is read and checked. Nothing is stored yet; a failed check stores nothing.', null,
         failedAt ? h('div', { class: 'errbox-line', cover: 'web.import.run-error', role: 'alert' }, tag('bad', 'bad'), ` ${failedAt === 'check' ? 'the check found a problem' : 'the import failed'}: ${FAILURES[j.error?.code] || j.error?.message || 'the server gave no reason'}`,
           FAILURES[j.error?.code] && j.error?.message ? h('span', { class: 'muted' }, ` (the server says: ${j.error.message})`) : null, h('span', { class: 'muted' }, failedAt === 'import' && can ? ' Logs stored before stay (they are signed and checked); running it again skips them.' : failedAt === 'import' ? ' Rows stored before stay; running it again skips them.' : ' Nothing from this file was stored. Discard it, then choose a good file.'))
           : h('span', { cover: 'web.import.run-error', class: 'muted' }, 'If the check or the import fails, why is said here in plain words.')),
-      step(3, 'match', 'match the cars', can ? 'Nothing to match: each log goes to the car its car key belongs to (a new key as its first upload would, by settings/cars).' : unmatched ? `${unmatched} imported car${unmatched === 1 ? '' : 's'} still need a choice below.` : 'Each car of the backup goes to a car here, a new car, or is left out.', null),
-      step(4, 'run', 'import', s === 'done' ? `Done ${dateTime(j.finished_ms, tz)}; it took ${dur(j.finished_ms - j.started_ms)}. ${can ? ' The logs are in as the car\'s own SMO data; drives and charges are built from them.' : ' The history shows on every page, marked as imported.'}` : can ? 'Pass 2: each log is stored and checked as if the CAN Bridge had uploaded it, then decoded.' : 'Pass 2: the rows are stored and the timeline is built again for the matched cars.',
+      step(3, 'match', 'match the cars', can ? 'Nothing to match: each log goes to the car its car key belongs to (a new key as its first upload would, by settings/cars).' : unmatched ? `${unmatched} imported car${unmatched === 1 ? '' : 's'} still need a choice below.` : (teslafi ? 'Each car of the TeslaFi data (told apart by its VIN) goes to a car here, a new car, or is left out.' : 'Each car of the backup goes to a car here, a new car, or is left out.'), null),
+      teslafi ? step(4, 'zone', 'time zone and units', s === 'done' ? `Read in ${S.job.report?.time_zone?.name || 'its zone'}, ${S.job.report?.units?.distance === 'km' ? 'km' : 'miles'} and ${S.job.report?.units?.temperature === 'f' ? '°F' : '°C'}. To correct them, import the same files again with the right ones: what they stored is replaced.`
+        : 'TeslaFi writes its times without a zone, and its figures in the units of your TeslaFi settings. Confirm both: the import reads every row in them.', null,
+      s === 'ready' ? tfBox : null) : null,
+      step(n, 'run', 'import', s === 'done' ? `Done ${dateTime(j.finished_ms, tz)}; it took ${dur(j.finished_ms - j.started_ms)}. ${can ? ' The logs are in as the car\'s own SMO data; drives and charges are built from them.' : ' The history shows on every page, marked as imported.'}` : can ? 'Pass 2: each log is stored and checked as if the CAN Bridge had uploaded it, then decoded.' : 'Pass 2: the rows are stored and the timeline is built again for the matched cars.',
         [h('button', { class: 'btn btn--primary', type: 'button', cover: 'web.import.start', disabled: !canStart, onclick: start }, 'run'),
           h('button', { class: 'btn', type: 'button', cover: 'web.import.discard', disabled: !j, onclick: discard }, j && !UNFINISHED.includes(s) ? 'remove' : 'discard')],
-        [startErr, h('p', { class: 'fld-hint' }, !j ? 'choose a file first' : s === 'ready' ? (unmatched ? 'match the cars first' : 'checked and matched: ready') : s === 'uploading' || s === 'checking' ? 'possible once the file is uploaded and checked' : s === 'importing' ? 'running now' : s === 'done' ? 'choose a file to import again' : 'discard it and choose a good file')])));
+        [startErr, h('p', { class: 'fld-hint' }, !j ? 'choose a file first' : s === 'ready' ? (unmatched ? 'match the cars first' : !canStart ? (zoneOk ? 'confirm the time zone and units first' : 'type a time zone the list has, then confirm it') : 'checked and matched: ready') : s === 'uploading' || s === 'checking' ? 'possible once the file is uploaded and checked' : s === 'importing' ? 'running now' : s === 'done' ? 'choose a file to import again' : 'discard it and choose a good file')])));
+    refocusTf(had, sel);
+  }
+  function refocusTf(had, sel) {
+    if (!had || !had.isConnected || document.activeElement === had) return;
+    had.focus({ preventScroll: true });
+    if (sel) try { had.setSelectionRange(sel[0], sel[1]); } catch { /* not a text field */ }
   }
   function paintProgress() {
     const j = S.job;
-    if (!j) { replace(progSlot, h('pre', { class: 'mono-box' }, 'no import yet: choose a TeslaMate backup or a CAN export above')); return; }
+    if (!j) { replace(progSlot, h('pre', { class: 'mono-box' }, 'no import yet: choose a TeslaMate backup, TeslaFi data or a CAN export above')); return; }
     const s = j.status;
     let doneB = 0, of = j.bytes_total, what = s;
     if (s === 'uploading') { doneB = j.uploaded_bytes ?? 0; what = up.active ? 'uploading' : up.paused ? 'paused' : 'stopped'; }
@@ -257,7 +340,7 @@ export async function mount(ctx) {
       `${what.padEnd(9)} `, textBar(p, { tone: s === 'failed' ? 'bad' : 'accent' }), ` ${format(p, 'number', { digits: 0 }).padStart(3)} %  ${bytes(doneB)} of ${bytes(of)}`,
       rate ? `  ${bytes(rate)}/s, about ${dur(((of - doneB) / rate) * 1000)} left` : '',
       `\nfile      ${j.name}${j.compression && j.compression !== 'plain' ? ` (${j.compression})` : ''}`,
-      `\nkind      ${s === 'failed' && NOT_CAN.has(j.error?.code) ? (j.error.code === 'unreadable' ? 'not a zip that can be read' : 'a zip, not a Sentry Six Manager CAN export') : isCan(j) ? 'Sentry Six Manager CAN export' : j.kind === 'teslamate' ? 'TeslaMate backup' : isZip(j) ? 'a zip: a CAN export once checked' : 'known once checked'}`,
+      `\nkind      ${s === 'failed' && NOT_CAN.has(j.error?.code) ? (j.error.code === 'unreadable' ? 'not a zip that can be read' : 'a zip, not a Sentry Six Manager CAN export') : isCan(j) ? 'Sentry Six Manager CAN export' : isTf(j) ? 'TeslaFi data download' : j.kind === 'teslamate' ? 'TeslaMate backup' : isZip(j) ? 'a zip: a CAN export once checked' : 'known once checked'}`,
       `\nstarted   ${dateTime(j.started_ms, tz)}`, j.checked_ms ? `\nchecked   ${dateTime(j.checked_ms, tz)}` : '', j.finished_ms ? `\nfinished  ${dateTime(j.finished_ms, tz)}` : '',
       s === 'uploading' && !up.active ? `\nThe server has the first ${bytes(j.uploaded_bytes)}. Choose the same file again to go on from there.` : ''));
   }
@@ -304,7 +387,7 @@ export async function mount(ctx) {
   const tablesT = table(ctx, {
     title: 'rows per table', rows: [], csv: false, label: 'Rows read, imported and skipped per table', note: 'Counts only: the report never keeps row values or positions.',
     columns: [
-      { key: 'name', label: 'table', ph: 'main', grow: true, render: (r) => TABLES[r.name] || r.name.replace(/_/g, ' ') },
+      { key: 'name', label: 'table', ph: 'main', grow: true, render: (r) => (r.tf ? TF_TABLES : TABLES)[r.name] || r.name.replace(/_/g, ' ') },
       { key: 'read', label: 'read', num: true, ph: 'sub', render: (r) => nf(r.read) },
       { key: 'imp', label: 'imported', num: true, ph: 'num', render: (r) => (S.rep?.imported ? nf(r.imported) : h('span', { class: 'muted' }, `${nf(r.would)} to import`)) },
       { key: 'skipped', label: 'skipped', num: true, ph: 'sub', render: (r) => (r.skipped ? h('span', { class: 'tone--warn' }, nf(r.skipped)) : h('span', { class: 'muted' }, '0')) },
@@ -315,7 +398,7 @@ export async function mount(ctx) {
     title: 'why rows were skipped', rows: [], csv: false, cover: 'web.import.rejected.col-reason', label: 'Skipped rows by reason', sort: { key: 'n', dir: 'desc' },
     columns: [
       { key: 'table', label: 'table', ph: 'sub', render: (r) => TABLES[r.table] || r.table },
-      { key: 'reason', label: 'reason', ph: 'main', grow: true, render: (r) => [r.reason, h('span', { class: 'muted' }, ` ${REASONS[r.reason] || ''}`)] },
+      { key: 'reason', label: 'reason', ph: 'main', grow: true, render: (r) => [r.reason.replace(/_/g, ' '), h('span', { class: 'muted' }, ` ${(r.tf ? TF_REASONS : REASONS)[r.reason] || ''}`)] },
       { key: 'n', label: 'rows', num: true, sort: true, ph: 'num', render: (r) => nf(r.n) },
     ],
     empty: () => empty('no row was skipped'),
@@ -323,7 +406,7 @@ export async function mount(ctx) {
   const carsT = table(ctx, {
     title: 'rows per car', rows: [], csv: false, label: 'Rows per imported car', note: 'Places belong to no car, so they count only per table.',
     columns: [
-      { key: 'name', label: 'in the backup', ph: 'main', render: (c) => [c.name || `car ${c.tm_car}`, h('span', { class: 'muted' }, ` #${c.tm_car}`)] },
+      { key: 'name', label: 'in the file', ph: 'main', render: (c) => [c.name || `car ${c.tm_car}`, h('span', { class: 'muted' }, ` #${c.tm_car}`)] },
       { key: 'match', label: 'went to', ph: 'sub', render: (c) => (c.match && !['new', 'leave_out'].includes(c.match) ? link(state.buildUrl('car', { car: c.match }), carName(c.match)) : c.match === 'new' ? 'a new car' : c.match === 'leave_out' ? h('span', { class: 'muted' }, 'left out') : h('span', { class: 'tone--warn' }, 'not matched')) },
       { key: 'read', label: 'read', num: true, render: (c) => (c.read == null ? h('span', { class: 'muted' }, 'not counted') : nf(c.read)) },
       { key: 'imp', label: 'imported', num: true, ph: 'num', render: (c) => (c.read == null ? null : S.rep?.imported ? nf(c.imported) : h('span', { class: 'muted' }, `${nf(c.read - sum(c.skipped))} to import`)) },
@@ -379,11 +462,42 @@ export async function mount(ctx) {
     keysT.setRows(rep.cars || []);
     refusedT.setRows(rep.refused_logs || []);
   }
+  /* ---------------------------------------------------------------- TeslaFi's report */
+  const TF_TABLES = { positions: 'polls (positions)', drives: 'drives', charging_processes: 'charges', states: 'car states', updates: 'software updates' };
+  function paintTfReport(rep) {
+    keysT.el.hidden = refusedT.el.hidden = true;
+    tablesT.el.hidden = reasonsT.el.hidden = false; carsT.el.hidden = !(rep.cars || []).length;
+    const R = rep.rows || {}, F = rep.found || {}, u = rep.units || {}, z = rep.time_zone || {};
+    const skipped = Object.entries(R.skipped || {}).filter(([, n]) => n);
+    const names = Object.keys(rep.tables || {});
+    tablesT.setRows(names.map((name) => { const t = rep.tables[name]; return { name, tf: true, read: t.read, imported: t.imported, would: t.found, skipped: sum(t.skipped), bad: [] }; }));
+    reasonsT.setRows(skipped.map(([reason, n]) => ({ table: 'polls', reason, n, tf: true })));
+    carsT.setRows((rep.cars || []).map((c) => ({ ...c, read: c.rows, imported: rep.imported ? c.rows : 0, skipped: c.rows == null ? null : {} })));
+    const fileSk = Object.entries(rep.files_skipped || {});
+    replace(repSlot, kv([
+      ['file', [h('span', null, 'TeslaFi data download'), h('span', { class: 'muted' }, ` ${nf(rep.files)} file${rep.files === 1 ? '' : 's'}${rep.compression && rep.compression !== 'plain' ? `, ${rep.compression}` : ''}, ${bytes(rep.unpacked_bytes)}`)]],
+      ['polls read', [nf(R.read), h('span', { class: 'muted' }, ` (${nf(R.used)} used)`)]],
+      ['polls skipped', skipped.length ? [h('span', { class: 'tone--warn' }, nf(sum(R.skipped))), ` ${skipped.map(([k, n]) => `${k.replace(/_/g, ' ')} ${nf(n)}`).join(', ')}`] : 'none: every poll was used', { tone: skipped.length ? 'warn' : null }],
+      [rep.imported ? 'stored' : 'will store', `${nf(F.drives)} drives, ${nf(F.charges)} charges, ${nf(F.states)} states, ${nf(F.updates)} updates, ${nf(F.positions)} positions, ${nf(F.charge_points)} charge points`],
+      ['history', rep.span?.from_ms ? `${dateTime(rep.span.from_ms, z.name || tz)} .. ${dateTime(rep.span.to_ms, z.name || tz)}` : 'no poll used'],
+      ['time zone', [z.name || DASH, h('span', { class: 'muted' }, ` ${TF_FROM[z.from] || z.from || ''}${z.dst_repeated_rows ? `; ${nf(z.dst_repeated_rows)} polls in the hour the clocks went back, read in order` : ''}`)]],
+      ['units', [`${u.distance === 'km' ? 'km' : 'miles'}, ${u.temperature === 'f' ? '°F' : '°C'}`, h('span', { class: 'muted' }, ` distance ${TF_FROM[u.distance_from] || u.distance_from || ''}; temperature ${TF_FROM[u.temperature_from] || u.temperature_from || ''}`)]],
+      F.replaced || F.read_again ? ['replaced', `${nf(F.replaced)} halves of drives or charges over a month's end joined; ${nf(F.read_again)} stretches read again`, { tone: F.read_again ? 'warn' : null }] : null,
+      (rep.missing_columns || []).length ? ['missing columns', [h('span', { class: 'tone--warn' }, rep.missing_columns.join(', ')), h('span', { class: 'muted' }, ' read as empty')], { tone: 'warn' }] : null,
+      rep.unknown_columns ? ['other columns', [nf(rep.unknown_columns), h('span', { class: 'muted' }, ' passed over')]] : null,
+      fileSk.length ? ['files passed over', fileSk.map(([n, why]) => `${n} (${why})`).join(', ')] : null,
+      R.windows_1252 ? ['text', `${nf(R.windows_1252)} lines read as Windows-1252`] : null,
+    ].filter(Boolean)),
+    note(rep.imported ? 'What the import stored. Drive energy is estimated (TeslaFi\'s power once a minute, summed); TeslaFi\'s files keep no charge cost. ' : 'From the check, in the zone and units above: what the import will store. Nothing is stored yet. ',
+      'Every row says imported from TeslaFi.'),
+    (rep.warnings || []).length ? h('ul', { class: 'ln-list' }, rep.warnings.map((w) => h('li', null, tag('warn', 'warn'), h('span', { class: 'ln-list-t' }, typeof w === 'string' ? w : w.message || w.code)))) : null);
+  }
   function paintReport() {
     const j = S.job, rep = j?.report || null;
     S.rep = rep;
     keysT.el.hidden = refusedT.el.hidden = true;
     if (rep && rep.kind === CAN) { paintCanReport(rep); return; }
+    if (rep && rep.kind === TF) { paintTfReport(rep); return; }
     if (!rep) {
       replace(repSlot, empty(j ? 'no report yet' : 'no import yet', j ? 'The report appears once the whole file has been checked.' : 'Each import gets a report: rows read, imported and skipped per table, and why.'));
       tablesT.el.hidden = reasonsT.el.hidden = carsT.el.hidden = true;
@@ -415,40 +529,73 @@ export async function mount(ctx) {
     S.overlaps = all.flat().sort((a, b) => b.start_ms - a.start_ms);
   }
   const zoneOf = (o) => S.cars.find((c) => c.id === o.car)?.time_zone || tz;
-  // the side shown: live (SMO or the Tesla API) or import:teslamate; the old words can and teslamate still read
+  // the side shown: live (SMO or the Tesla API), import (the imported side; on a span both imports cover, the
+  // site chosen there) or one import site; the old words can and teslamate still read
   const shownOf = (o) => o.shown_source || (o.shown === 'teslamate' ? 'import:teslamate' : 'live');
   const liveOf = (o) => o.live || o.can;
   const importedOf = (o) => o.imported || o.teslamate;
+  const SHOWN = { live: 'live', import: 'imported', 'import:teslamate': 'TeslaMate', 'import:teslafi': 'TeslaFi' };
+  const REASON = { more_drives_and_charges: 'it has more drives and charges', more_samples: 'the same drives and charges, more positions', tie: 'a tie: TeslaMate\'s, the older format' };
   const liveSrc = (o) => ({ sources: (o.sources || []).filter((x) => x.kind !== 'import') });
-  const impSrc = (o) => ({ sources: (o.sources || []).filter((x) => x.kind === 'import') });
+  const siteSrc = (o, site) => ({ sources: (o.sources || []).filter((x) => x.kind === 'import' && (!site || x.site === site)) });
+  // a live span's imported side counts as shown whatever site it names
+  const isShown = (o, v) => (o.kind === 'imports' ? shownOf(o) === v : v === 'live' ? shownOf(o) === 'live' : shownOf(o) !== 'live');
+  const flipping = new Set();
   async function flip(o, shown) {
-    if (shownOf(o) === shown) return;
-    try {
-      const r = await ctx.api.patch(`cars/${enc(o.car)}/overlaps`, { id: o.id, shown });
-      if (!ctx.alive()) return;
-      const ch = r.changed || { ...o, shown_source: shown };
-      S.overlaps = S.overlaps.map((x) => (x.car === o.car && x.id === o.id ? { ...x, ...ch, car: o.car } : x));
-      toast(`${carName(o.car)}: ${shown === 'live' ? 'live' : 'imported'} history shown for that span on every page.`);
-    } catch (e) { if (ctx.alive()) toast(`Could not switch: ${errorWords(e).text}`, { kind: 'error' }); }
+    if (isShown(o, shown) || flipping.has(`${o.car}:${o.id}`)) return;
+    flipping.add(`${o.car}:${o.id}`);
     overlapT.setRows(S.overlaps);
+    try {
+      const r = await ctx.api.patch(`cars/${enc(o.car)}/overlaps`, { id: o.id, shown, version: o.version });
+      if (!ctx.alive()) return;
+      // every row of the car carries the car's new version; the answer has the whole list
+      const fresh = (r.items || []).map((x) => ({ ...x, car: o.car }));
+      S.overlaps = fresh.length ? [...S.overlaps.filter((x) => x.car !== o.car), ...fresh].sort((a, b) => b.start_ms - a.start_ms)
+        : S.overlaps.map((x) => (x.car === o.car && x.id === o.id ? { ...x, ...(r.changed || {}), shown_source: shown, car: o.car } : x));
+      toast(`${carName(o.car)}: ${o.kind === 'imports' ? `${SHOWN[shown]}'s import` : shown === 'live' ? 'live history' : 'imported history'} shown for that span on every page.`);
+    } catch (e) {
+      if (!ctx.alive()) return;
+      if (e?.code === 'stale_version' || e?.status === 409) {
+        toast('Someone switched a span of this car a moment ago. The list shows what is shown now; switch again if you still want to.', { kind: 'error' });
+        await loadOverlaps();
+      } else toast(`Could not switch: ${errorWords(e).text}`, { kind: 'error' });
+    } finally { flipping.delete(`${o.car}:${o.id}`); }
+    if (!ctx.alive()) return;
+    overlapT.setRows(S.overlaps);
+    // the rows were drawn again: the focus goes back to the switch of this span (the id of a span can move with a
+    // later import; then to the page)
+    const lost = !document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected;
+    if (lost) overlapT.el.querySelector(`button[data-ov="${CSS.escape(`${o.car}:${o.id}:${shown}`)}"]:not([hidden])`)?.focus({ preventScroll: true });
   }
   const side = (x) => (x ? `${nf(x.drives)} drives, ${nf(x.charges)} charges` : DASH);
+  const choices = (o) => (o.kind === 'imports' ? [['import:teslamate', 'teslamate'], ['import:teslafi', 'teslafi']] : [['live', 'live'], ['import', 'imported']]);
   const overlapT = table(ctx, {
-    title: 'spans with both histories', rows: [], csv: false, label: 'Spans where imported and live history overlap',
+    title: 'spans with two histories', rows: [], csv: false, label: 'Spans where two histories cover the same time',
+    note: 'live: SMO or the Tesla API recorded it and an import has it too. two imports: a TeslaMate and a TeslaFi import both have it. One side is shown per span on every page; nothing is deleted.',
     sort: { key: 'start_ms', dir: 'desc' },
     columns: [
-      { key: 'car', label: 'car', ph: 'main', render: (o) => carName(o.car) },
+      { key: 'car', label: 'car', ph: 'main', render: (o) => [carName(o.car), ' ', tag(o.kind === 'imports' ? 'two imports' : 'live + import', 'muted')] },
       { key: 'start_ms', label: 'from', sort: true, ph: 'sub', render: (o) => dateTime(o.start_ms, zoneOf(o)) },
-      { key: 'end_ms', label: 'to', render: (o) => dateTime(o.end_ms, zoneOf(o)) },
-      { key: 'len', label: 'length', num: true, render: (o) => dur(o.end_ms - o.start_ms) },
-      { key: 'live', label: 'live has', render: (o) => [side(liveOf(o)), ' ', src(liveSrc(o))] },
-      { key: 'imported', label: 'imported has', render: (o) => [side(importedOf(o)), ' ', src(impSrc(o))] },
-      { key: 'shown', label: 'shown', grow: true, ph: 'num', render: (o) => h('div', { class: 'keys', role: 'group', 'aria-label': `Which history is shown for ${carName(o.car)}` },
-        [['live', 'live'], ['import:teslamate', 'imported']].map(([v, l]) => h('button', { class: 'key', type: 'button', 'aria-pressed': String(shownOf(o) === v), onclick: () => flip(o, v) }, l)),
-        link(state.buildUrl('timeline', { car: o.car, period: { from: o.start_ms, to: o.end_ms } }), 'timeline')) },
+      { key: 'end_ms', label: 'to', ph: 'sub', render: (o) => [h('span', { class: 'ph-k' }, 'to '), dateTime(o.end_ms, zoneOf(o)), h('span', { class: 'muted' }, ` (${dur(o.end_ms - o.start_ms)})`)] },
+      { key: 'a', label: 'one side has', ph: 'sub', render: (o) => (o.kind === 'imports'
+        ? [h('span', { class: 'muted' }, 'teslamate '), side(o.sites?.teslamate), ' ', src(siteSrc(o, 'teslamate'))]
+        : [h('span', { class: 'muted' }, 'live '), side(liveOf(o)), ' ', src(liveSrc(o))]) },
+      { key: 'b', label: 'the other has', ph: 'sub', render: (o) => (o.kind === 'imports'
+        ? [h('span', { class: 'muted' }, 'teslafi '), side(o.sites?.teslafi), ' ', src(siteSrc(o, 'teslafi'))]
+        : [h('span', { class: 'muted' }, 'imported '), side(importedOf(o)), ' ', src(siteSrc(o))]) },
+      { key: 'shown', label: 'shown', grow: true, ph: 'num', render: (o) => {
+        const dflt = o.default_source ? (shownOf(o) === o.default_source ? 'as at first' : `at first: ${SHOWN[o.default_source] || o.default_source}`) : null;
+        const why = o.kind === 'imports' && o.default_reason ? `${SHOWN[o.default_source] || ''} at first: ${REASON[o.default_reason] || o.default_reason}` : null;
+        const busy = flipping.has(`${o.car}:${o.id}`);
+        return h('div', { class: 'ov-shown' },
+          h('div', { class: 'keys', role: 'group', 'aria-label': `Which history is shown for ${carName(o.car)} from ${dateTime(o.start_ms, zoneOf(o))}` },
+            choices(o).map(([v, l]) => h('button', { class: 'key', type: 'button', 'aria-pressed': String(isShown(o, v)), disabled: busy, dataset: { ov: `${o.car}:${o.id}:${v}` }, onclick: () => flip(o, v) }, l))),
+          h('span', { class: 'muted', title: why }, [dflt, why ? ` (${REASON[o.default_reason] || o.default_reason})` : null].filter(Boolean)),
+          link(state.buildUrl('timeline', { car: o.car, period: { from: o.start_ms, to: o.end_ms } }), 'timeline'));
+      } },
     ],
     empty: () => (S.overlapErr ? empty('overlaps could not be read', `${errorWords(S.overlapErr).text} Reload the page to try again.`)
-      : empty('no overlap', 'No span has both imported and live (SMO or Tesla API) history, so every span shows the one history it has.')),
+      : empty('no overlap', 'No span has two histories (live and imported, or two imports), so every span shows the one history it has.')),
   });
 
   /* ---------------------------------------------------------------- every import */
@@ -511,7 +658,7 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
   const firstCar = S.cars.find((c) => c.id === S.overlaps[0]?.car) || S.cars[0];
   paint(ctx, head(ctx, { title: 'Import' }), trail,
-    h('p', { class: 'note' }, 'Brings in the history TeslaMate recorded before the CAN Bridge, from TeslaMate\'s own backup file, or the CAN Bridge logs Sentry Six Manager already has, from its CAN export (.zip). The whole file is checked before anything is stored, and running it again stores nothing twice.'),
+    h('p', { class: 'note' }, 'Brings in the history TeslaMate or TeslaFi recorded before the CAN Bridge, from TeslaMate\'s own backup file or TeslaFi\'s data download, or the CAN Bridge logs Sentry Six Manager already has, from its CAN export (.zip). The whole file is checked before anything is stored, and running it again stores nothing twice.'),
     section({ title: 'steps' }, stepsSlot, h('p', { class: 'sub-title' }, 'progress'), progSlot,
       h('p', { class: 'note', cover: 'web.import.restart-note' }, 'Safe to leave: close the page or the browser while it runs. After a server restart an upload goes on from the last chunk once you choose the file again; a check starts over (nothing was stored); an import runs again and rows already in are known by their TeslaMate id (a CAN export\'s logs by name and SHA-256), so nothing is stored twice.')),
     matchT.el,
