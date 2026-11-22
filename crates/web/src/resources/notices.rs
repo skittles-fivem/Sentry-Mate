@@ -5,7 +5,8 @@
 //!
 //! The program says where to look with a [`Sources`] service; without one there is nothing to say. The move adds its
 //! own ([`move_notices`]): a move code waiting, a new server copying this one, the data moved away; the Tesla API
-//! input its own (a Tesla account that needs a new sign-in or that Tesla refuses), for admins.
+//! input its own (a Tesla account that needs a new sign-in or that Tesla refuses), for admins; the release check its
+//! own (a newer build published), for admins.
 
 use crate::{ApiResult, AppState};
 use axum::Router;
@@ -66,6 +67,7 @@ async fn list(State(app): State<AppState>, v: crate::Viewer) -> ApiResult<axum::
             if v.is_admin() {
                 out.extend(super::tesla::notices(app));
                 out.extend(super::teslafi::notices(app));
+                out.extend(super::release::notices(app));
             }
             Ok(out)
         })

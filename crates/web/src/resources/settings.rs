@@ -1,7 +1,7 @@
 //! Server settings: `GET`/`PATCH /api/v1/settings` (docs/ui-api.md, "Server, settings and health").
 //!
 //! The server's defaults (units, range, car order) that everyone's preferences start from, where addresses and map
-//! tiles come from, the release check (none exists in this server yet: it stays off, and turning it on is `422`),
+//! tiles come from, the release check (off by default; [`super::release`]),
 //! links to other sites, the proxy for what the server fetches itself, and the host names the next certificate is
 //! made for (an empty list: the running certificate's names). Kept in the history's database (sealed with the vault)
 //! under the `server` setting; until a first change, every value is its default.
@@ -337,8 +337,6 @@ pub fn load(e: &Engine, cert_names: &[String]) -> ApiResult<ServerSettings> {
         None => Ok(ServerSettings { host_names: default_host_names(cert_names), ..ServerSettings::default() }),
     }
     .map(|mut s| {
-        // (no release check exists yet, whatever an older version saved)
-        s.release_check.enabled = false;
         // none saved: the default names
         if s.host_names.is_empty() {
             s.host_names = default_host_names(cert_names);
@@ -371,8 +369,8 @@ fn cert_host_name(n: &str) -> Option<String> {
     is_host_name(&n).then_some(n)
 }
 
-/// Makes the frame follow `s`: the preference defaults (pushing `prefs` events only when they changed) and the tile
-/// origins.
+/// Makes the frame follow `s`: the preference defaults (pushing `prefs` events only when they changed), the tile
+/// origins, the proxy, and the release check's switch.
 pub fn apply(app: &AppState, s: &ServerSettings) {
     let d = s.defaults();
     if app.defaults() != d {
@@ -386,6 +384,7 @@ pub fn apply(app: &AppState, s: &ServerSettings) {
     }
     super::tesla::follow_proxy(app, s.outbound.proxy.as_deref());
     super::teslafi::follow_proxy(app, s.outbound.proxy.as_deref());
+    app.release.follow(s.release_check.enabled, s.outbound.proxy.as_deref().and_then(tesla::Proxy::parse));
     if let Ok(e) = app.service::<Engine>() {
         e.set_import_gap_fill(s.import_gap_fill.enabled);
     }
@@ -796,11 +795,7 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
     if let Some(m) = part(body, "release_check", &["enabled"], &mut bad)
         && let Some(b) = flag(m, "release_check", "enabled", &mut bad)
     {
-        // no release check exists in this server yet: it stays off rather than look on and never run
-        if b {
-            rule.add("release_check.enabled", "This server has no release check yet, so it stays off.");
-        }
-        new.release_check.enabled = false;
+        new.release_check.enabled = b;
     }
     if let Some(m) = part(body, "outside_links", &["maps", "release_notes"], &mut bad) {
         if let Some(b) = flag(m, "outside_links", "maps", &mut bad) {
