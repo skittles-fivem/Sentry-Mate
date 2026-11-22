@@ -1,13 +1,15 @@
 // Sentry Mate, "Logbook" UI pack: Help and about (/help).
 //
-// Version, API version and UI pack (GET /api/v1/about), the opt-in release check (GET /api/v1/settings for
-// whether it is on, GET /api/v1/notices for the `release_available` note), licences and data credits (the
+// Version and build, API version and UI pack (GET /api/v1/about), the opt-in release check (GET /api/v1/release,
+// and GET /api/v1/settings for whether release-notes links are allowed), licences and data credits (the
 // server's, then the files this pack bundles), and short answers that each lead to the page they are about.
 
 import { h } from '../shared/dom.js';
 import { pageHead, icon, ago, flag } from '../core/ui.js';
 import { PAGES } from '../core/pages.js';
 import { parseUrl } from '../shared/state.js';
+import { now } from '../shared/api.js';
+import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 
 export const id = 'help';
 export const css = true;
@@ -61,12 +63,11 @@ const outside = { target: '_blank', rel: 'external noopener noreferrer' };
 
 export async function mount(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
-  const [about, notices, settings] = await Promise.all([
+  const [about, release, settings] = await Promise.all([
     ctx.api.get('about'),
-    ctx.api.get('notices').catch(() => null),
+    ctx.api.get('release').catch(() => null),
     ctx.api.get('settings').catch(() => null),
   ]);
-  const release = notices ? (notices.items || []).find((n) => n.code === 'release_available') : null;
   const links = about.links || {};
   const pack = about.ui_pack || {};
 
@@ -75,14 +76,14 @@ export async function mount(ctx) {
 
   const packMismatch = pack.api != null && String(pack.api) !== String(about.api_version);
   const aboutList = h('dl', { class: 'about-list' },
-    row('Sentry Mate', h('span', { class: 'mono' }, about.version || '—'),
+    row('Sentry Mate', h('span', { class: 'mono' }, buildLabel(about) || '—'),
       about.dev_server ? 'The dev server: every car and figure is made up.' : 'The server this page talks to.', 'web.settings.about.version'),
     row('API version', h('span', { class: 'mono' }, String(about.api_version ?? '—')), 'The version of the web API the UI packs read.'),
     row('UI pack', `${pack.name || 'Logbook'} ${pack.version || ''}`.trim(),
       pack.api == null ? 'This pack names no API version.' : packMismatch
         ? h('span', { class: 'about-warn' }, `Made for API ${pack.api}, but the server speaks API ${about.api_version}: some parts may not work.`)
         : `Made for API ${pack.api}, the one this server speaks.`),
-    row('Newer release', releaseValue(release, settings), releaseNote(release, settings, admin, ctx, links), 'web.settings.about.update-available'),
+    row('Newer release', releaseValue(release), releaseNote(release, settings, admin, ctx), 'web.settings.about.update-available'),
     row('Source code', links.source ? h('a', { href: links.source, ...outside }, 'Sentry Mate’s source code') : 'Not named',
       links.source ? 'Opens on another site.' : 'This server gives no address for its source code.', 'web.settings.about.source-link'),
     row('Documentation', docsLink(links.docs), links.docs ? (links.docs.startsWith('/') ? 'Short answers further down this page.' : 'Opens on another site.') : 'This server gives no address for its documentation.', 'web.settings.about.docs-link'));
@@ -141,30 +142,46 @@ export async function mount(ctx) {
   return {};
 }
 
-function releaseValue(release, settings) {
-  if (release) return h('span', { class: 'about-new' }, flag('New'), ' ', release.message);
-  if (!settings) return 'Not known';
-  return settings.release_check && settings.release_check.enabled ? 'None: this is the newest' : 'Not checked';
+/** GET /release's status line: "A newer build is ready: …", "Up to date", "Could not check: …", "Off". */
+function releaseValue(r) {
+  if (!r) return 'Not known';
+  const st = releaseStatus(r, now());
+  if (r.status === 'newer') return h('span', { class: 'about-new' }, flag('New'), ' ', st.text);
+  if (r.status === 'error') return h('span', { class: 'about-warn' }, st.text);
+  return st.text;
 }
 
-function releaseNote(release, settings, admin, ctx, links) {
+function releaseNote(r, settings, admin, ctx) {
   const where = () => h('a', { href: ctx.link('settings-display') }, 'Settings: Display and units');
-  if (release) {
-    const notesUrl = (release.detail && release.detail.notes_url) || links.source || null;
+  if (!r) return 'The server did not say whether the release check is on.';
+  const ago = checkedAgo(r, now());
+  if (r.status === 'off' || !r.enabled) {
+    return ['The release check is off, so Sentry Mate asks no other server. ', admin ? ['Turn it on in ', where(), '.'] : 'An admin can turn it on.'];
+  }
+  const turnOff = admin ? h('span', null, 'Turn the release check off in ', where(), '.') : null;
+  if (r.status === 'newer') {
+    const notesUrl = (r.newest && r.newest.compare_url) || null;
     const allowed = !!(settings && settings.outside_links && settings.outside_links.release_notes);
     let notes;
     if (!settings) notes = 'The server did not say whether release-notes links are allowed, so none is shown.';
-    else if (!allowed) notes = ['Release-notes links are off, so what is new cannot be shown here. ', admin ? ['Turn them on in ', where(), '.'] : 'An admin can turn them on.'];
-    else if (!notesUrl) notes = 'The server gives no address for the release notes.';
-    else notes = [h('a', { href: notesUrl, ...outside }, 'Release notes'), ' say what is new; they open on another site.'];
+    else if (!allowed) notes = ['Release-notes links are off, so the changes are not linked. ', admin ? ['Turn them on in ', where(), '.'] : 'An admin can turn them on.'];
+    else if (!notesUrl) notes = 'The server gives no address for the changes.';
+    else notes = [h('a', { href: notesUrl, ...outside }, 'What changed'), ' opens on another site.'];
+    const lines = changeLines(r.newest);
     return h('span', { class: 'release-note' },
-      h('span', null, 'Noticed ', ago(release.since_ms), '. Update the server to get it; your data stays.'),
+      lines.length ? h('ul', { class: 'release-titles' }, lines.map((x) => h('li', null, x))) : null,
+      r.pull ? h('span', null, 'To update, run on the server: ', h('code', { class: 'mono release-pull' }, r.pull), ' Your data stays.') : null,
       h('span', null, notes),
-      admin ? h('span', null, 'Turn the release check off in ', where(), '.') : null);
+      ago ? h('span', null, `Last ${ago}.`) : null,
+      turnOff);
   }
-  if (!settings) return 'The server did not say whether the release check is on.';
-  if (settings.release_check && settings.release_check.enabled) return ['The release check asks once a day for the newest version number and sends nothing else. ', admin ? ['Turn it off in ', where(), '.'] : 'An admin can turn it off.'];
-  return ['The release check is off, so Sentry Mate asks no other server. ', admin ? ['Turn it on in ', where(), '.'] : 'An admin can turn it on.'];
+  const first = r.status === 'up_to_date' ? 'This is the newest published build.'
+    : r.status === 'error' ? 'The check tries again tomorrow.'
+      : r.status === 'checking' ? 'Asking GitHub now.' : 'The first check runs soon.';
+  return h('span', { class: 'release-note' },
+    h('span', null, first, ago ? ` Last ${ago}.` : ''),
+    h('span', null, 'The release check asks GitHub once a day for the newest build and sends nothing about this server.'),
+    turnOff);
 }
 
 /** Sentry Mate's own licence (GET /api/v1/about `licence`), and where its full text is, if anywhere. */

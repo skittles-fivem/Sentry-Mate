@@ -33,11 +33,19 @@
 .geo-status-list dd { color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .geo-status-list .geo-bad { color: var(--rust); font-weight: 500; }
 .lang-name { position: absolute; right: round(0.75rem, var(--e)); pointer-events: none; }
+.release-control { display: flex; flex-direction: column; align-items: flex-end; gap: round(0.5rem, var(--e)); max-width: round(30rem, var(--e)); }
+.release-info { display: flex; flex-direction: column; align-items: flex-end; min-width: 0; max-width: 100%; }
+.release-info .setting-note { margin-top: round(0.25rem, var(--e)); }
+.release-info .button { margin-top: round(0.75rem, var(--e)); }
+.release-status.release-newer { color: var(--accent); font-weight: 600; }
+.release-status.release-error { color: var(--rust); }
+.release-titles { list-style: disc; padding-left: round(1.25rem, var(--e)); text-align: left; }
+.release-pull code { overflow-wrap: anywhere; background: var(--paper-sunk); padding: 0 round(0.25rem, var(--e)); }
 .settings-server .settings:first-child { margin-top: round(1.5rem, var(--e)); }
 
 @container page (width < 72rem) {
   .setting { flex-wrap: wrap; row-gap: round(1rem, var(--e)); }
-  .setting-control, .size-control, .lang-control, .tiles-control { align-items: flex-start; }
+  .setting-control, .size-control, .lang-control, .tiles-control, .release-control, .release-info { align-items: flex-start; }
   .pack-control { justify-content: flex-start; }
   .defaults-grid { justify-items: start; }
   .setting-note { text-align: left; }

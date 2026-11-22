@@ -24,3 +24,5 @@
   .hp-part-u { grid-column: 1 / -1; grid-row: 2; }
 }
 .hp-dd > .chan-hint { margin-top: 0.25rem; }
+.hp-rel-titles { margin: 0.25rem 0 0; padding-left: 1.25rem; list-style: disc; }
+.hp-dd .sig { white-space: normal; min-width: 0; }

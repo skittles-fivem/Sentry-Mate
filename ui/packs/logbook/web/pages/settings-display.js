@@ -18,6 +18,7 @@ import { currentPrefs, onPrefs } from '../core/prefs.js';
 import { savePref, currentAbout } from '../core/frame.js';
 import { SIZES, sizeState, setSize, sizeNote, display } from '../core/display.js';
 import { packChoices, packLabel } from '../shared/packs.js';
+import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 
 export const id = 'settings-display';
 export const css = true;
@@ -66,12 +67,16 @@ const UNIT_WORDS = {
 
 export async function mount(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
-  const [server, geoFirst, mapsFirst, packList] = await Promise.all([
+  const [server, geoFirst, mapsFirst, packList, relFirst] = await Promise.all([
     ctx.api.get('settings'),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: (currentPrefs() || {}).ui_pack || null }),
+    ctx.api.get('release').catch(() => null),
   ]);
+  let rel = relFirst;
+  let relBox = null;
+  let relBusy = false;
   let maps = mapsFirst;
   const tilePresets = (maps && maps.tiles && maps.tiles.presets) || [];
   let srv = server;
@@ -260,6 +265,46 @@ export async function mount(ctx) {
     const why = err && err.fields ? Object.values(err.fields).join(' ') : (err && err.message) || String(err);
     return `Not saved: ${why}`;
   };
+
+  // ------------------------------------------------------------ release check (GET /release, POST /release/check)
+  /** This build, the check's answer, a newer build's changes and pull command, and "Check now" (admins). */
+  function drawRelease() {
+    if (!relBox) return;
+    const about = currentAbout();
+    const now = api.now();
+    const st = rel ? releaseStatus(rel, now) : { tone: 'error', text: 'Could not read the release check from the server.' };
+    const ago = rel ? checkedAgo(rel, now) : '';
+    const lines = rel && rel.status === 'newer' ? changeLines(rel.newest) : [];
+    const on = !!(rel ? rel.enabled : srv.release_check && srv.release_check.enabled);
+    const checkBtn = admin ? button(relBusy || (rel && rel.status === 'checking') ? 'Checking…' : 'Check now', {
+      disabled: relBusy || !on || (rel && rel.status === 'checking'),
+      title: on ? null : 'Turn the release check on first',
+      onclick: checkNow,
+    }) : null;
+    replace(relBox,
+      h('p', { class: 'setting-note release-build' }, `This build: ${buildLabel(about || {})}`),
+      h('p', { class: ['setting-note', 'release-status', `release-${st.tone}`] }, st.text, ago ? ` · ${ago}` : ''),
+      lines.length ? h('ul', { class: 'setting-note release-titles' }, lines.map((x) => h('li', null, x))) : null,
+      rel && rel.status === 'newer' && rel.pull ? h('p', { class: 'setting-note release-pull' }, 'To update: ', h('code', { class: 'mono' }, rel.pull)) : null,
+      checkBtn);
+  }
+  async function refreshRelease() {
+    try { rel = await ctx.api.get('release'); } catch { /* keep the last answer */ }
+    if (ctx.alive()) drawRelease();
+  }
+  async function checkNow() {
+    relBusy = true;
+    drawRelease();
+    try {
+      rel = await ctx.api.post('release/check', {});
+      if (rel && rel.status === 'error') ctx.flash(releaseStatus(rel).text, { kind: 'error' });
+    } catch (err) {
+      ctx.flash(err && err.code === 'release_check_off' ? 'Not checked: the release check is off.' : `Not checked: ${(err && err.message) || err}`, { kind: 'error' });
+    } finally {
+      relBusy = false;
+      if (ctx.alive()) drawRelease();
+    }
+  }
 
   function drawServer(s) {
     srv = s;
@@ -538,7 +583,11 @@ export async function mount(ctx) {
 
     const mapsLink = switchField({ label: 'Allow links to an outside map', checked: !!s.outside_links.maps, onchange: (on) => quick({ outside_links: { maps: on } }, () => mapsLink.set(s.outside_links.maps)) });
     const notesLink = switchField({ label: 'Allow release-notes links', checked: !!s.outside_links.release_notes, onchange: (on) => quick({ outside_links: { release_notes: on } }, () => notesLink.set(s.outside_links.release_notes)) });
-    const release = switchField({ label: 'Check for new releases', checked: !!s.release_check.enabled, onchange: (on) => quick({ release_check: { enabled: on } }, () => release.set(s.release_check.enabled)) });
+    const release = switchField({ label: 'Check for new releases', checked: !!s.release_check.enabled,
+      onchange: (on) => quick({ release_check: { enabled: on } }, () => release.set(s.release_check.enabled)).then(refreshRelease) });
+    relBox = h('div', { class: 'release-info' });
+    drawRelease();
+    if (tileSource) tileSource.querySelectorAll('button').forEach((b) => { b.disabled = disabled; });
     for (const el of [defDist, defTemp, defPress, defRange, lookup, tiles]) el.querySelectorAll('button').forEach((b) => { b.disabled = disabled; });
     for (const el of [mapsLink, notesLink, release]) el.input.disabled = disabled;
 
@@ -562,7 +611,8 @@ export async function mount(ctx) {
         setting('Outbound proxy', 'If this server may only reach the internet through a proxy: online address look-ups and map tiles the server downloads go through it. Viewers’ browsers loading online tiles use their own connection.',
           h('div', { class: 'proxy-control' }, proxyForm, proxyNow), { cls: 'setting-form', cover: 'docs.env.tesla-api.nominatim-proxy' }),
         setting('Outside links', 'Off by default: nothing on a page sends you to another site unless an admin allows it. Links open in a new tab, only when clicked.', h('div', { class: 'switches' }, mapsLink, notesLink)),
-        setting('Release check', 'Asks for the newest version number once a day and shows a note in the footer. Off by default.', release)));
+        setting('Release check', 'Asks GitHub once a day for the newest published build of Sentry Mate and what changed since this one, and shows a note to admins. Sends nothing about this server or its cars, and never installs anything. Off by default.',
+          h('div', { class: 'release-control' }, release, relBox))));
   }
   try { drawServer(server); } catch (err) { replace(serverBox, errorView(err)); }
   sync();

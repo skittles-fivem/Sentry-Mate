@@ -18,3 +18,8 @@
 /* the online map presets: name, hosts, zoom and region of each */
 .sd-presets { margin: 0; padding-left: 1.125rem; display: grid; gap: 0.25rem; overflow-wrap: anywhere; }
 .sd-presets li.is-on b { color: var(--mag); }
+.sd-rel { gap: 0.5rem; margin-top: 0.75rem; }
+.sd-rel-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; }
+.sd-rel-titles { margin: 0; padding-left: 1.25rem; list-style: disc; }
+.sd-rel { min-width: 0; }
+.sd-rel .sig { white-space: normal; min-width: 0; }

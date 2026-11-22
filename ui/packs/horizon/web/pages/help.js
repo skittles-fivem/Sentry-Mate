@@ -1,17 +1,17 @@
 // Help and about (/help): the version on a radio face, the opt-in release notice, the source and the guides,
 // the licences of Sentry Mate and of every part this pack ships (each licence text served from this server),
 // the data credits, a Download notices button, and short answers with a filter.
-// GET /about for versions, licences and credits; GET /notices for the release notice (only there when the
-// owner turned the release check on); GET /settings (admins) to say whether the release check is on.
+// GET /about for versions, the build, licences and credits; GET /release for the release check's answer;
+// GET /settings (admins) for whether release-notes links are allowed.
 
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { icon, hud, plate, btn, tag, kv, note } from '../core/ui.js';
 import { band, search, csvBtn } from '../core/kit.js';
-import { getNotices, onNotices } from '../core/notices.js';
 import { toast } from '../core/layer.js';
 import { date } from '../core/fmt.js';
 import { presets, sig, code, downloadText } from '../core/setting.js';
+import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 
 export const id = 'help';
 export const css = true;
@@ -63,12 +63,12 @@ function notices(about) {
 }
 
 export async function mount(ctx) {
-  let about, list, settings = null, cars = null;
+  let about, rel, settings = null, cars = null;
   const needCar = !(ctx.state.car ?? state.lastCar());
   try {
-    [about, list, settings, cars] = await Promise.all([
+    [about, rel, settings, cars] = await Promise.all([
       ctx.api.get('about', null, { maxAgeMs: 600000 }),
-      ctx.api.get('notices').then((r) => r.items).catch(() => getNotices()),
+      ctx.api.get('release').catch(() => null),
       ctx.admin ? ctx.api.get('settings').catch(() => null) : null,
       needCar ? ctx.api.get('cars', { limit: 2 }).then((r) => r.items || []).catch(() => null) : null,
     ]);
@@ -78,29 +78,46 @@ export async function mount(ctx) {
   const pack = about.ui_pack || {};
   const mismatch = pack.api != null && about.api_version != null && String(pack.api) !== String(about.api_version);
 
-  /* ---------- release notice */
+  /* ---------- release check (GET /release) */
+  const build = buildLabel(about);
   const releaseSlot = h('div', { class: 'hp-dd' });
-  const paintRelease = (items) => {
-    const n = (items || []).find((x) => x.code === 'release_available');
-    const on = settings?.release_check?.enabled;
-    const turn = ctx.admin ? h('a', { class: 'plc', href: state.buildUrl('settings-server') }, 'Release check in Server and access') : null;
-    if (n) replace(releaseSlot, sig('ok', n.message || 'A newer release is out'), h('p', { class: 'chan-hint' }, n.since_ms ? `Reported ${date(n.since_ms, ctx.tz, { year: true })}. ` : '', 'Your data stays as it is when you update the container. ', turn));
-    else if (on === false) replace(releaseSlot, sig('off', 'Not checked'), h('p', { class: 'chan-hint' }, 'The release check is off, so Sentry Mate never asks the internet about new releases. ', turn));
-    else if (on === true) replace(releaseSlot, sig('ok', 'This is the newest release'), h('p', { class: 'chan-hint' }, 'The release check is on and found nothing newer. ', turn));
-    else replace(releaseSlot, sig('off', 'No newer release reported'), h('p', { class: 'chan-hint' }, 'Shown only when an admin turns the release check on; until then Sentry Mate does not look.'));
+  const paintRelease = () => {
+    const turn = ctx.admin ? h('a', { class: 'plc', href: `${state.buildUrl('settings-display')}#sd-release` }, 'Release check in Display and units') : null;
+    if (!rel) { replace(releaseSlot, sig('off', 'Not known'), h('p', { class: 'chan-hint' }, 'The release check could not be read.')); return; }
+    const now = ctx.api.now();
+    const st = releaseStatus(rel, now);
+    const when = checkedAgo(rel, now);
+    const whenText = when ? `${when[0].toUpperCase()}${when.slice(1)}. ` : '';
+    if (rel.status === 'newer') {
+      const lines = changeLines(rel.newest);
+      const notesUrl = rel.newest?.compare_url;
+      const notesOn = !!settings?.outside_links?.release_notes;
+      replace(releaseSlot, sig('live', st.text),
+        lines.length ? h('ul', { class: 'chan-hint hp-rel-titles' }, lines.map((x) => h('li', null, x))) : null,
+        rel.pull ? h('p', { class: 'chan-hint' }, 'To update, run on the server: ', code(rel.pull, { long: true }), ' Your data stays as it is.') : null,
+        notesOn && outside(notesUrl) ? h('p', { class: 'chan-hint' }, outLink(notesUrl, 'What changed')) : null,
+        h('p', { class: 'chan-hint' }, whenText, turn));
+    } else if (rel.status === 'off' || !rel.enabled) {
+      replace(releaseSlot, sig('off', 'Off'), h('p', { class: 'chan-hint' }, 'The release check is off, so Sentry Mate never asks the internet about new builds. ', turn || 'An admin can turn it on.'));
+    } else if (rel.status === 'up_to_date') {
+      replace(releaseSlot, sig('ok', st.text), h('p', { class: 'chan-hint' }, 'This is the newest published build. ', whenText, turn));
+    } else if (rel.status === 'error') {
+      replace(releaseSlot, sig('bad', st.text), h('p', { class: 'chan-hint' }, whenText, 'It tries again tomorrow. ', turn));
+    } else {
+      replace(releaseSlot, sig('off', st.text), h('p', { class: 'chan-hint' }, 'The release check asks GitHub once a day. ', turn));
+    }
   };
-  paintRelease(list);
-  ctx.onCleanup(onNotices((items) => { if (ctx.alive()) paintRelease(items); }));
+  paintRelease();
 
   const source = about.links?.source, docs = about.links?.docs;
   const aboutPanel = hud({ title: 'About', icon: 'info', id: 'about', tone: 'cyan' },
     h('div', { class: 'hp-about' },
-      h('div', { class: 'hp-face', role: 'img', 'aria-label': `Sentry Mate ${about.version || ''}`, cover: 'web.settings.about.version' },
+      h('div', { class: 'hp-face', role: 'img', 'aria-label': `Sentry Mate ${build}`, cover: 'web.settings.about.version' },
         h('span', { class: 'hp-face-l' }, 'Sentry Mate'),
         h('span', { class: 'hp-face-v' }, about.version || '—'),
         h('span', { class: 'hp-face-s' }, `API v${about.api_version ?? '?'} · ${pack.name || 'Horizon'} ${pack.version || ''}`.trim())),
       kv([
-        ['Version', h('span', { class: 'tagline' }, code(about.version || '—'), about.dev_server ? tag('Dev server, made-up data', 'org') : null), { cover: 'web.settings.about.version' }],
+        ['Version', h('span', { class: 'tagline' }, code(build || '—'), about.dev_server ? tag('Dev server, made-up data', 'org') : null), { cover: 'web.settings.about.version' }],
         ['API', h('span', null, code(`/api/v${about.api_version ?? '?'}`), ' · what UI packs talk to')],
         ['UI pack', h('span', { class: mismatch ? 'warn' : null }, `${pack.name || '—'} ${pack.version || ''}`.trim(), mismatch ? ` · made for API ${pack.api}, but the server speaks API ${about.api_version}: some pages may not work.` : ` · made for API ${pack.api ?? about.api_version}, which this server speaks.`)],
         ['Newer release', releaseSlot, { cover: 'web.settings.about.update-available' }],

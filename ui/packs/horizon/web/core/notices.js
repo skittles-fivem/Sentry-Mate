@@ -1,14 +1,15 @@
 // The notices row: the server's notices (vault, certificate, recovery key file, move under way, a Tesla account
 // that needs a sign-in or that Tesla refuses), each with
 // its cause and a link to the fix, plus an "offline" line while this browser has no network or the server
-// does not answer. Information notices can be put away for this tab. The opt-in release notice goes to the
-// footer instead (onNotices).
+// does not answer. Information notices can be put away for this tab. The opt-in release notice (admins only)
+// shows here too, and in the footer (onNotices); putting it away hides it in this browser until a later build.
 
 import * as api from '../shared/api.js';
 import { h, replace } from '../shared/dom.js';
 import { parseUrl } from '../shared/state.js';
 import { icon, btn } from './ui.js';
 import { station, fullName } from './stations.js';
+import { releaseDismissed, dismissRelease } from '../shared/release.js';
 
 const PUT_AWAY = 'sentrymate.horizon.notices-away';
 let box = null;
@@ -38,14 +39,16 @@ function fixOf(n) {
 function paint() {
   if (!box) return;
   const gone = away();
-  const list = items.filter((n) => n.code !== 'release_available' && !(n.level === 'info' && gone.has(n.code)));
+  const isRel = (n) => n.code === 'release_available';
+  const list = items.filter((n) => (isRel(n) ? !releaseDismissed(n) : !(n.level === 'info' && gone.has(n.code))));
   const rows = list.map((n) => {
     const level = n.level === 'error' || n.level === 'warning' ? n.level : 'info';
     return h('div', { class: 'notice', dataset: { level, code: n.code }, role: level === 'info' ? 'status' : 'alert' },
       icon(level === 'info' ? 'info' : 'warn'),
       h('span', { class: 'notice-text' }, n.message || n.code),
-      fixOf(n) ? h('a', { class: 'btn btn--sm', href: fixOf(n) }, h('span', null, TESLA.has(n.code) ? 'Open the Tesla account' : fixText(n.fix_link)), icon('arrow-r', 'i--sm')) : null,
-      level === 'info' ? btn(null, () => { putAway(n.code); paint(); }, { kind: 'ghost', icon: 'x', sm: true, label: 'Put this notice away for now' }) : null);
+      fixOf(n) ? h('a', { class: 'btn btn--sm', href: fixOf(n) }, h('span', null, TESLA.has(n.code) ? 'Open the Tesla account' : isRel(n) ? 'About this build' : fixText(n.fix_link)), icon('arrow-r', 'i--sm')) : null,
+      isRel(n) ? btn(null, () => { dismissRelease(n); paint(); }, { kind: 'ghost', icon: 'x', sm: true, label: 'Put this notice away until a later build' })
+        : level === 'info' ? btn(null, () => { putAway(n.code); paint(); }, { kind: 'ghost', icon: 'x', sm: true, label: 'Put this notice away for now' }) : null);
   });
   if (offline) {
     rows.unshift(h('div', { class: 'notice', dataset: { level: 'offline' }, role: 'alert' }, icon('signal'),
