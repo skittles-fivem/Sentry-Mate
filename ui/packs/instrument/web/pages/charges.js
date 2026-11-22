@@ -42,6 +42,14 @@ const COST_SOURCE = { tariff: 'place price', manual: 'typed by hand', free_super
 const PLACE_KINDS = [['', 'Any kind of place'], ['home', 'Home'], ['work', 'Work'], ['charger', 'Public charger'], ['service', 'Service'], ['other', 'Other place'], ['none', 'Not a saved place']];
 // device pixels per CSS pixel of a uPlot canvas
 const pxr = (u) => (u.width ? u.ctx.canvas.width / u.width : globalThis.devicePixelRatio || 1);
+// on a touch screen the first tap on a bar, dot or circle shows its figures and a second tap on the same one opens it
+const tapAgain = () => { let last = null; return (e, key) => { if (e?.pointerType !== 'touch' || key === last) return true; last = key; return false; }; };
+// a tap ends with a mouseleave in Chromium; ignore that one so a tapped cell keeps its readout
+const keepTap = (el) => {
+  let t = 0;
+  el.addEventListener('pointerdown', (e) => { if (e.pointerType === 'touch') t = performance.now(); }, true);
+  el.addEventListener('mouseleave', (e) => { if (performance.now() - t < 1000) e.stopImmediatePropagation(); }, true);
+};
 const iso = (ms) => (ms == null ? '' : new Date(ms).toISOString());
 const pct = (v) => format(v, 'percent');
 const placeLabel = (c) => c?.place?.name || c?.label || c?.address?.short || spotText(c) || '—';
@@ -513,7 +521,7 @@ export async function mount(ctx) {
       }
       hl.hidden = true;
       replace(socMap, cells, hl);
-      const step = Math.max(1, Math.ceil(cols.length / 8));
+      const step = Math.max(1, Math.ceil(cols.length / (document.documentElement.dataset.phone === 'tall' ? 4 : 8)));
       setVars(socAxis, { '--n': String(Math.max(1, cols.length)) });
       replace(socAxis, h('span'), cols.map((b, i) => (i % step === 0 ? h('span', { class: 'socmap-x', vars: { '--col': String(i + 2), '--span': String(Math.min(step, cols.length - i)) } }, colLabel(b)) : null)));
       idleRead();
@@ -536,6 +544,7 @@ export async function mount(ctx) {
       }
     };
     socMap.addEventListener('mousemove', (e) => { const c = e.target.closest('.socmap-cell'); if (c) showCol(+c.dataset.col); });
+    keepTap(socMap);
     socMap.addEventListener('mouseleave', () => { showCol(null); delta?.u?.setCursor({ left: -10, top: -10 }); });
 
     const sideSeg = h('span', { class: 'seg', role: 'group', 'aria-label': 'Start or end level' },
@@ -551,6 +560,12 @@ export async function mount(ctx) {
 
     // when in the week sessions start or end (the car's local time)
     const week = h('div', { class: 'weekmap', role: 'img' });
+    const weekIdle = 'Sessions by the hour they start (or end), in each car’s own time.';
+    const weekRead = h('p', { class: 'note week-read', 'aria-live': 'polite' }, weekIdle);
+    // a cell's figures show below the grid when pointed at or tapped
+    week.addEventListener('mousemove', (e) => { const c = e.target.closest('.weekmap-cell'); if (c) replace(weekRead, h('b', null, c.dataset.read)); });
+    week.addEventListener('mouseleave', () => replace(weekRead, weekIdle));
+    keepTap(week);
     const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     function paintWeek() {
       const g = s.heatmap?.[heatSide] || [];
@@ -563,7 +578,7 @@ export async function mount(ctx) {
         cells.push(h('span', { class: 'weekmap-y' }, DAYS[d]));
         for (let hr = 0; hr < 24; hr++) {
           const n = g[d]?.[hr] || 0;
-          cells.push(h('i', { class: ['weekmap-cell', n && 'has', heatSide === 'end' && 'is-end'], title: `${DAYS[d]} ${String(hr).padStart(2, '0')}:00–${String(hr + 1).padStart(2, '0')}:00: ${n} ${n === 1 ? 'session' : 'sessions'}`, vars: { '--a': (n / max).toFixed(3) } }));
+          cells.push(h('i', { class: ['weekmap-cell', n && 'has', heatSide === 'end' && 'is-end'], dataset: { read: `${DAYS[d]} ${String(hr).padStart(2, '0')}:00–${String(hr + 1).padStart(2, '0')}:00: ${n} ${n === 1 ? 'session' : 'sessions'}` }, vars: { '--a': (n / max).toFixed(3) } }));
         }
       }
       replace(week, cells);
@@ -615,7 +630,7 @@ export async function mount(ctx) {
         h('div', { class: 'legend' }, ['ac', 'dc', 'unknown'].map((k) => h('span', { class: 'legend-chip legend-chip--static' }, h('i', { class: ['legend-swatch', `split-${k}`] }), KIND[k])),
           h('span', { class: 'legend-chip legend-chip--static' }, h('i', { class: 'legend-swatch legend-band' }), 'daily band')),
         deltaEl,
-        h('p', { class: 'note' }, 'Hover either chart: the other one points at the same moment. Click a bar to open that charge.')),
+        h('p', { class: 'note' }, 'Point at either chart (tap on a touch screen): the other one points at the same moment. Click a bar, or tap it again, to open that charge.')),
       h('div', { class: 'habit-lists' },
         h('div', { cover: ['cs.table.discharge_stats', 'cs.table.discharge_stats.soc', 'cs.table.discharge_stats.count'] },
           h('div', { class: 'list-head' }, h('h3', { class: 'list-title' }, 'Level when plugging in'), csvOf('charging-start-bands', s.start_bands || [], bandCols)),
@@ -629,7 +644,7 @@ export async function mount(ctx) {
           h('div', { class: 'list-head' }, h('h3', { class: 'list-title' }, 'When in the week'), csvOf(`charging-${heatSide}-week-hours`, () => (s.heatmap?.[heatSide] || []).map((r, d) => ({ day: DAYS[d], ...Object.fromEntries(r.map((n, hr) => [`h${hr}`, n])) })),
             [column('Day', 'day'), ...Array.from({ length: 24 }, (_, hr) => column(`${String(hr).padStart(2, '0')}:00`, `h${hr}`))])),
           week,
-          h('p', { class: 'note' }, 'Sessions by the hour they start (or end), in each car’s own time.'))),
+          weekRead)),
       runsTable.el);
     paintSocMap();
     paintWeek();
@@ -690,7 +705,8 @@ export async function mount(ctx) {
     };
     delta = mountPlot(deltaEl, make, [xs, lo, hi], ctx, (u) => {
       u.over.classList.add('is-clickable');
-      u.over.addEventListener('click', () => { const i = u.cursor.idx; if (i != null && rows[i]) ctx.navigate(state.buildUrl('charge', { car: rows[i].car, charge: rows[i].id })); });
+      const again = tapAgain();
+      u.over.addEventListener('click', (e) => { const i = u.cursor.idx; if (i != null && rows[i] && again(e, i)) ctx.navigate(state.buildUrl('charge', { car: rows[i].car, charge: rows[i].id })); });
       u.over.addEventListener('mouseleave', () => showCol(null, true));
     });
   }
@@ -742,9 +758,12 @@ export async function mount(ctx) {
         if (p) replace(mapRead, h('b', null, p.label), ` · ${format(p.energy_added_kwh, 'energy')} · ${formatNumber(p.sessions)} ${p.sessions === 1 ? 'session' : 'sessions'}`);
       });
       m.map.on('mouseleave', 'cplaces', () => { m.map.getCanvas().classList.remove('is-clickable'); replace(mapRead, `${formatNumber(pts.length)} places`); });
+      const again = tapAgain();
       m.map.on('click', 'cplaces', (e) => {
         const p = pts[e.features?.[0]?.properties?.i];
         if (!p) return;
+        replace(mapRead, h('b', null, p.label), ` · ${format(p.energy_added_kwh, 'energy')} · ${formatNumber(p.sessions)} ${p.sessions === 1 ? 'session' : 'sessions'}`);
+        if (!again(e.originalEvent, p)) return;
         if (p.place) { f.places = p.place; ctx.setQuery(queryOf()); ctx.reload(); } else ctx.navigate(state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }));
       });
       m.frame(() => { if (pts.length === 1) m.map.jumpTo({ center: [pts[0].lon, pts[0].lat], zoom: 13 }); else m.map.fitBounds(boundsOf(pts.map((p) => [p.lon, p.lat])), { padding: rpx(36), duration: 0, maxZoom: 14 }); });
@@ -775,7 +794,7 @@ export async function mount(ctx) {
       ], [column('Row', 'kind'), column('Charge', 'charge'), column('Place', 'label'), column('Start', 'start'), column('Battery level', 'soc_pct', 'percent'), column('Power', 'power_kw', 'power'), column('Battery temperature', 'battery_c', 'temperature')], 'cs.chart.dc_curve_sessions')),
       h('div', { class: 'chart-head' }, h('span', { class: 'chart-title' }, `Power against battery level, every DC session${multi ? ` of ${carName(curveCar)}` : ''}`), h('span', { class: 'chart-side' }, read)),
       legend, h('div', { class: 'curve-wrap', cover: ['cs.chart.dc_curve_median', 'cs.link.dc_curve_details'] }, plotEl),
-      h('p', { class: 'note' }, 'One dot per battery percent of each session, coloured by battery temperature (a cold pack charges slower). The line is this car’s median power at each percent. Hover a dot to see its session, click it to open the charge.'));
+      h('p', { class: 'note' }, 'One dot per battery percent of each session, coloured by battery temperature (a cold pack charges slower). The line is this car’s median power at each percent. Point at a dot (or tap it) to see its session; click it, or tap it again, to open the charge.'));
     try { data = await ctx.api.get(`cars/${enc(curveCar)}/charging-stats/dc-curve`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms, places: f.places || null }); } catch (e) { replace(plotEl, h('p', { class: 'note warn' }, `The curve could not be loaded: ${e.message}`)); return; }
     if (my !== statsGen || !ctx.alive()) return;
     const sessions = data.sessions || [];
@@ -836,7 +855,8 @@ export async function mount(ctx) {
         if (changed) u.redraw(false, false);
       });
       u.over.addEventListener('mouseleave', () => { if (hover) { hover = null; u.redraw(false, false); } idle(); });
-      u.over.addEventListener('click', () => { if (hover) ctx.navigate(state.buildUrl('charge', { car: curveCar, charge: hover.s.charge })); });
+      const again = tapAgain();
+      u.over.addEventListener('click', (e) => { if (hover && again(e, hover.s)) ctx.navigate(state.buildUrl('charge', { car: curveCar, charge: hover.s.charge })); });
     });
     return plot;
   }

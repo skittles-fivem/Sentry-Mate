@@ -99,3 +99,15 @@
   .sw-fw-row { grid-template-columns: minmax(0, 1fr); gap: round(0.125rem, var(--e)); }
   .sw-fw-val { flex-direction: row; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: round(0.125rem, var(--e)) round(0.5rem, var(--e)); margin: 0; text-align: left; }
 }
+
+/* phone (<html data-phone>): cards read left to right and wrap instead of overlapping, links big
+   enough to tap, units no smaller than the text floor, and a name box that fills its row */
+:root[data-phone] .sw-page .tbl:not(.tbl--keep) .cell-text > * { white-space: normal; }
+:root[data-phone] .sw-page .tbl:not(.tbl--keep) .is-num .cell-text { align-items: flex-start; }
+:root[data-phone] .sw-page .sw-ver { flex-wrap: wrap; overflow-wrap: normal; row-gap: round(0.25rem, var(--e)); }
+:root[data-phone] .sw-page .tbl:not(.tbl--keep) td > a.link, :root[data-phone] .sw-page .tbl .cell-text > a.link { display: inline-flex; align-items: center; min-height: var(--tap); min-width: var(--tap); }
+:root[data-phone] .sw-page .q-u { font-size: max(0.86em, var(--fs-floor)); }
+:root[data-phone] .sw-fp-input { max-width: none; }
+:root[data-phone] .sw-fp-hexes { margin-left: 0; }
+:root[data-phone] .sw-fp-list { grid-template-columns: minmax(0, 1fr); }
+:root[data-phone] .sw-figs .metric-value, :root[data-phone] .sw-figs .metric-value .q { white-space: normal; }
