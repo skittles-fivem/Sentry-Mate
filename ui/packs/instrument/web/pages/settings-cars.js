@@ -542,6 +542,7 @@ async function mountCar(ctx) {
     const disp = (v, kind) => (v == null ? '' : String(Math.round(convert(v, kind) * 10) / 10));
     // the limits the server takes (metric), shown and checked in the person's unit
     const lim = (a, b, kind) => (kind ? [Math.ceil(convert(a, kind) * 10) / 10, Math.floor(convert(b, kind) * 10) / 10] : [a, b]);
+    const DEF = { capacity_new_kwh: 'capacity_new_kwh_default', full_range_new_km: 'full_range_new_km_default', efficiency_wh_per_km_override: 'efficiency_wh_per_km_default' };
     const defs = [
       ['capacity_new_kwh', 'Capacity when new', 'Leave empty to take it from the pack\'s first readings.', null, 'kWh', [10, 250], '0.1'],
       ['full_range_new_km', 'Full range when new', 'Leave empty to take it from the first 30 days.', 'distance', unitLabel('distance'), [100, 1500], '0.1'],
@@ -550,11 +551,13 @@ async function mountCar(ctx) {
     ];
     const fields = defs.map(([k, label, hint, kind, u, [a, b], step]) => {
       const [lo, hi] = lim(a, b, kind);
+      // what the car's build gives when nothing is typed (the empty input's placeholder)
+      const d = s[DEF[k]], dv = d == null ? undefined : kind ? String(Math.round(convert(d, kind) * 10) / 10) : String(d);
       const range = `${num(lo)} to ${num(hi)} ${u}`;
       const required = k === 'warranty_threshold_pct';
       const f = field({ label: `${label} (${u})`, name: `sc-${k}`, path: k, type: 'number', value: kind ? disp(s[k], kind) : s[k] ?? '',
-        hint: `${range}. ${hint}`,
-        attrs: { min: String(lo), max: String(hi), step, required, disabled: ro } });
+        hint: `${range}. ${hint}${dv ? ` The car's build gives ${dv} ${u}.` : ''}`,
+        attrs: { min: String(lo), max: String(hi), step, required, disabled: ro, placeholder: dv } });
       const say = required ? `A number from ${range}.` : `A number from ${range}, or empty.`;
       f.input.addEventListener('change', () => {
         const raw = f.input.value.trim();

@@ -46,7 +46,7 @@ def _new_capacity(req, h):
     tm = [c for c in h.charges if c.source == "teslamate"][:10]
     if tm:
         return median([_charge_full(car, c) for c in tm]), "imported_charges"
-    return car.full_new_kwh, "pack_code"
+    return car.full_new_kwh, "vehicle_info"
 
 
 def _new_range(req, h):
@@ -56,7 +56,7 @@ def _new_range(req, h):
         return float(s["full_range_new_km"]), "owner"
     if car.odo_start_km < 5000:
         return car.full_range_km(h.first_ms + 15 * DAY), "first_30_days"
-    return car.full_range_new_km, "pack_code"
+    return car.full_range_new_km, "vehicle_info"
 
 
 def _charge_full(car, c):
@@ -148,7 +148,7 @@ def get_battery(req):
     notes = []
     notes.append({"owner": "new_value_typed", "early_bms": "new_value_from_early_readings",
                   "imported_charges": "new_value_from_imported_charges",
-                  "pack_code": "new_value_from_pack_code"}[new_src])
+                  "vehicle_info": "new_value_from_vehicle_info"}[new_src])
     if soc is not None and usable_soc is not None and usable_soc < soc - 0.5:
         notes.append("cold_battery_locks_part")
     if chem["value"] == "lfp":

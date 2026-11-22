@@ -28,8 +28,8 @@ export const shape = [['full', 'h1'], [2, 'h3'], [2, 'h3'], [1, 'h1'], [1, 'h1']
 export const title = () => 'Battery';
 
 const DAY = 864e5;
-const NEW_SOURCE = { owner: 'typed by the owner', early_bms: 'the pack’s earliest readings', profile: 'the model’s own figure' };
-const RANGE_SOURCE = { owner: 'typed by the owner', first_30_days: 'the median of the first 30 days', profile: 'the model’s own figure' };
+const NEW_SOURCE = { owner: 'typed by the owner', early_bms: 'the pack’s earliest readings', profile: 'the model’s own figure', vehicle_info: 'the car’s build (VIN and CAN)' };
+const RANGE_SOURCE = { owner: 'typed by the owner', first_30_days: 'the median of the first 30 days', profile: 'the model’s own figure', vehicle_info: 'the car’s build (VIN and CAN)' };
 const CHEM = { lfp: 'LFP', nca_nmc: 'NCA or NMC' };
 const pct = (v, d) => format(v, 'percent', d != null ? { digits: d } : undefined);
 const n0 = (v) => (v == null ? '—' : formatNumber(v));
@@ -286,9 +286,9 @@ function referenceTile(ctx, { base, settings, cap }) {
   const s = settings || {};
   const can = !!ctx.admin && !!settings;
   const capF = field({ label: 'Usable capacity when new (kWh)', name: 'capacity_new_kwh', type: 'number', value: s.capacity_new_kwh ?? '', cover: 'bh.setting.capacity_new_override',
-    hint: `Leave empty to use ${NEW_SOURCE[cap.new_source === 'owner' ? 'early_bms' : cap.new_source] || 'the earliest readings'}. 10 to 250 kWh.`, attrs: { min: '10', max: '250', step: '0.1', inputmode: 'decimal', disabled: !can } });
+    hint: `Leave empty to use ${NEW_SOURCE[cap.new_source === 'owner' ? 'early_bms' : cap.new_source] || 'the earliest readings'}. 10 to 250 kWh.`, attrs: { min: '10', max: '250', step: '0.1', inputmode: 'decimal', disabled: !can, placeholder: s.capacity_new_kwh_default != null ? String(s.capacity_new_kwh_default) : undefined } });
   const rngF = field({ label: `Full-charge range when new (${unitLabel('range')})`, name: 'full_range_new_km', type: 'number', cover: 'bh.setting.range_new_override',
-    value: s.full_range_new_km == null ? '' : Math.round(convert(s.full_range_new_km, 'range')), hint: 'Leave empty to use the median of the first 30 days.', attrs: { min: '1', step: '1', inputmode: 'numeric', disabled: !can } });
+    value: s.full_range_new_km == null ? '' : Math.round(convert(s.full_range_new_km, 'range')), hint: 'Leave empty to use the median of the first 30 days.', attrs: { min: '1', step: '1', inputmode: 'numeric', disabled: !can, placeholder: s.full_range_new_km_default != null ? String(Math.round(convert(s.full_range_new_km_default, 'range'))) : undefined } });
   const warF = field({ label: 'Warranty line (% health)', name: 'warranty_threshold_pct', type: 'number', value: s.warranty_threshold_pct ?? '', hint: 'The health your battery warranty promises, often 70 %.', attrs: { min: '50', max: '100', step: '1', inputmode: 'numeric', disabled: !can } });
   let version = s.version;
   const f = form({

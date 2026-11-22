@@ -537,7 +537,7 @@ fn history_start(e: &Engine, car: CarId, shown: &Shown) -> QResult<Option<(u64, 
 
 /// The usable capacity when new, where it comes from and whether it is the full pack (early readings without a
 /// buffer): the owner's, the pack's readings of its first 30 days (a
-/// history that starts with the car new), the first imported charges.
+/// history that starts with the car new), the first imported charges, the car's build (VIN, CAN configuration).
 fn new_capacity(
     e: &Engine,
     c: &Car,
@@ -575,11 +575,14 @@ fn new_capacity(
     if let Some(m) = median(imported) {
         return Ok((Some(m), Some("imported_charges"), false));
     }
-    Ok((None, None, false))
+    Ok(match super::fleet::vehicle_defaults(e, c.id)?.capacity_new_kwh {
+        Some((v, full)) => (Some(v), Some(super::fleet::VehicleDefaults::SOURCE), full),
+        None => (None, None, false),
+    })
 }
 
 /// The full-charge range when new: the owner's, else from the drives of the first 30 days of a history that starts
-/// with the car new.
+/// with the car new, else the car's build (its EPA rating).
 fn new_range(
     e: &Engine,
     car: CarId,
@@ -590,17 +593,22 @@ fn new_range(
     if let Some(v) = s.full_range_new_km {
         return Ok((Some(v), Some("owner")));
     }
-    let Some((t0, true)) = start else { return Ok((None, None)) };
     let mut v = Vec::new();
-    each_row::<Drive>(e, car, t0, t0 + 30 * DAY, None, shown, false, |d| {
-        if let (Some(rg), Some(soc)) = (d.start_range_km, d.start_soc)
-            && soc >= 50.0
-        {
-            v.push(rg / soc * 100.0);
-        }
-        Ok(true)
-    })?;
-    Ok(median(v).map_or((None, None), |m| (Some(m), Some("first_30_days"))))
+    if let Some((t0, true)) = start {
+        each_row::<Drive>(e, car, t0, t0 + 30 * DAY, None, shown, false, |d| {
+            if let (Some(rg), Some(soc)) = (d.start_range_km, d.start_soc)
+                && soc >= 50.0
+            {
+                v.push(rg / soc * 100.0);
+            }
+            Ok(true)
+        })?;
+    }
+    if let Some(m) = median(v) {
+        return Ok((Some(m), Some("first_30_days")));
+    }
+    let vd = super::fleet::vehicle_defaults(e, car)?.full_range_new_km;
+    Ok((vd, vd.map(|_| super::fleet::VehicleDefaults::SOURCE)))
 }
 
 fn chemistry(s: &super::fleet::CarSettings) -> (Option<&'static str>, Option<&'static str>) {
@@ -699,8 +707,16 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
     let now_basis = if new_is_full { pack_full.or(full) } else { usable };
     let diff = new_kwh.zip(now_basis).map(|(n, u)| n - u);
     let degradation = diff.zip(new_kwh).filter(|(_, n)| *n > 0.0).map(|(d, n)| d / n * 100.0);
-    let full_now = smp.range_km.zip(smp.soc).filter(|(_, soc)| *soc >= 5.0).map(|(rg, soc)| rg / soc * 100.0);
-    let from_energy = usable.zip(factor.rated).filter(|(_, w)| *w > 0.0).map(|(u, w)| u * 1000.0 / w);
+    // the consumption factor the build gives where the car has none of its own yet
+    let rated = match factor.rated {
+        Some(w) => Some(w),
+        None if usable.is_some() => super::fleet::vehicle_defaults(e, car)?.efficiency_wh_per_km,
+        None => None,
+    };
+    let from_energy = usable.zip(rated).filter(|(_, w)| *w > 0.0).map(|(u, w)| u * 1000.0 / w);
+    // the current range at 100 %: the car's own range over its charge level, else the usable energy at the factor
+    let full_now =
+        smp.range_km.zip(smp.soc).filter(|(_, soc)| *soc >= 5.0).map(|(rg, soc)| rg / soc * 100.0).or(from_energy);
     let (chem, chem_src) = chemistry(&s);
     let lfp = chem == Some("lfp");
     let has_history = drives_n + charges_n > 0 || newest.is_some();
@@ -710,6 +726,7 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
         Some("owner") => notes.push("new_value_typed"),
         Some("early_bms") => notes.push("new_value_from_early_readings"),
         Some("imported_charges") => notes.push("new_value_from_imported_charges"),
+        Some("vehicle_info") => notes.push("new_value_from_vehicle_info"),
         _ => {}
     }
     if lfp {
