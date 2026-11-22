@@ -11,12 +11,12 @@
 // the car TeslaFi polls matched to a car here, a new car or left out.
 //
 // Admins only, reading included. Every change asks for the admin's own password again (and the two-step code).
-// API: GET integrations/teslafi, GET/POST .../accounts, PATCH/DELETE .../accounts/{id},
+// API: GET/PATCH integrations/teslafi (PATCH { version, poll }: the pace), GET/POST .../accounts, PATCH/DELETE .../accounts/{id},
 // GET/PUT .../accounts/{id}/cars, GET .../status.
 
 import { h, replace } from '../shared/dom.js';
 import { formatNumber } from '../shared/i18n.js';
-import { icon, hud, btn, tag, kv, note } from '../core/ui.js';
+import { icon, hud, btn, tag, kv, note, seg } from '../core/ui.js';
 import { select } from '../core/kit.js';
 import { field } from '../core/form.js';
 import { emptyState, errorWords } from '../core/states.js';
@@ -37,13 +37,20 @@ const STATUS = {
   token_refused: ['Token refused', 'bad', 'TeslaFi no longer takes this token (it was changed or removed there, or the TeslaFi subscription ended). Nothing is asked until you give a new token.'],
   error: ['TeslaFi answers with errors', 'warn', 'TeslaFi answers this account with errors, so the server waits longer between tries.'],
 };
+/** The pace (`poll`): [value, word, driving or charging, awake, asleep, why]. As docs/ui-api.md, "Pace". */
+const PACES = [
+  ['gentle', 'Gentle', '2 min', '5 min', '20 min', 'Fewest requests; coarser drives and charges.'],
+  ['normal', 'Normal', '60 s', '3 min', '10 min', 'The usual pace: about one read a minute while the car is busy.'],
+  ['often', 'Often', '15 s', '60 s', '3 min', 'About as fast as TeslaFi itself refreshes: finest drives and charges, more of the day\'s requests.'],
+];
+const paceOf = (v) => PACES.find((x) => x[0] === v) || PACES[1];
 /** What the server does for the car now. */
 const MODE = {
   off: ['Off', 'off', 'Not read: the car is left out or not matched yet, or the account is paused or its token refused.'],
-  asleep: ['Asleep', 'off', 'TeslaFi says the car sleeps: read every 10 minutes.'],
-  idle: ['Parked', 'live', 'Parked and awake: read every 3 minutes.'],
-  charging: ['Charging', 'ok', 'Read once a minute.'],
-  driving: ['Driving', 'ok', 'Read once a minute.'],
+  asleep: ['Asleep', 'off', 'TeslaFi says the car sleeps: read at the asleep pace, never woken.'],
+  idle: ['Parked', 'live', 'Parked and awake: read at the awake pace.'],
+  charging: ['Charging', 'ok', 'Read at the driving and charging pace.'],
+  driving: ['Driving', 'ok', 'Read at the driving and charging pace.'],
   backoff: ['Waiting after an error', 'warn', 'TeslaFi answered with an error, so the server waits before it asks again (60 s, doubling to 15 minutes).'],
 };
 const ERRORS = {
@@ -90,7 +97,7 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
   const el = h('section', { class: 'stack tz', id: 'teslafi', 'aria-label': 'TeslaFi' },
     hud({ title: 'TeslaFi', icon: 'antenna', tone: 'cyan', side },
       h('div', { class: 'stack' },
-        h('p', { class: 'tz-intro' }, 'A third live input, for owners who pay for TeslaFi: the server reads TeslaFi\'s own polls of the car (about one a minute while it is awake) with your TeslaFi token. It only reads, never wakes the car or sends it a command, and no page shows the token again. Off until an admin adds a token; until then the server makes no connection to TeslaFi at all. Where SMO or the Tesla API cover the same time, theirs win; pages label the rest "Data from TeslaFi".'),
+        h('p', { class: 'tz-intro' }, 'A third live input, for owners who pay for TeslaFi: the server reads TeslaFi\'s own polls of the car (at the pace chosen below) with your TeslaFi token. It only reads, never wakes the car or sends it a command, and no page shows the token again. Off until an admin adds a token; until then the server makes no connection to TeslaFi at all. Where SMO or the Tesla API cover the same time, theirs win; pages label the rest "Data from TeslaFi".'),
         body)));
   const accSlot = h('div', { class: 'stack' });
   el.append(accSlot);
@@ -157,6 +164,8 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
     const p = ov.polls || {};
     const rd = reading();
     const cap = (p.daily_cap || 0) * Math.max(1, ov.accounts || 0);
+    const poll = ov.poll || 'normal';
+    const pace = seg(PACES.map(([v, l]) => [v, l]), poll, (v) => setPace(v, pace), { label: 'How often TeslaFi is asked' });
     const input = !ov.enabled ? ['Off', 'until a token is added']
       : !rd.live ? [rd.refused ? 'Stopped' : 'Paused', `${[rd.paused ? `${nOf(rd.paused, 'account', 'accounts')} paused` : '', rd.refused ? `${nOf(rd.refused, 'token', 'tokens')} refused` : ''].filter(Boolean).join(', ')}: no car read`]
         : ['On', `${nOf(rd.live, 'account', 'accounts')}, ${nOf(rd.cars, 'car', 'cars')} read`];
@@ -174,11 +183,26 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
         ov.hosts?.length ? h('ul', { class: 'tz-hosts' }, ov.hosts.map((x) => h('li', null, code(x))))
           : h('p', { class: 'tz-dim' }, 'None while there is no token. Once one is added: www.teslafi.com only, over HTTPS, the token in a header (never in an address).')),
       h('div', { class: 'tz-block' },
-        h('p', { class: 'tz-k' }, 'How often TeslaFi is asked'),
+        h('div', { class: 'tz-pace-head' }, h('p', { class: 'tz-k' }, 'How often TeslaFi is asked'), pace.el),
+        h('ul', { class: 'tz-paces' }, PACES.map(([v, l, busy, awake, asleep]) => h('li', { class: ['tz-pc', v === poll && 'is-on'] },
+          h('b', null, l), h('span', { class: 'mono' }, `${busy} driving or charging · ${awake} awake · ${asleep} asleep`)))),
         h('dl', { class: 'tz-pace' },
           [['A driving car', p.driving_s], ['A charging car', p.charging_s], ['A parked, awake car', p.parked_s], ['A sleeping car', p.asleep_s], ['While SMO or the Tesla API is live', p.other_live_s]]
             .map(([l, s]) => h('div', null, h('dt', null, l), h('dd', null, l.startsWith('While') ? `at most every ${secs(s)}` : `every ${secs(s)}`)))),
-        h('p', { class: 'tz-dim' }, `A fixed, polite pace: at most one request every 10 s${p.daily_cap ? ` and ${formatNumber(p.daily_cap)} a day per account (then nothing until midnight UTC)` : ''}, checks of a new token included. Errors wait 60 s, doubling to 15 minutes; TeslaFi asking to slow down waits what it asks.`)));
+        h('p', { class: 'tz-dim' }, `${paceOf(poll)[5]} TeslaFi only has new data as often as it polls the car itself, and these reads never wake the car. Whatever the pace: at most one request every 10 s${p.daily_cap ? ` and ${formatNumber(p.daily_cap)} a day per account (then nothing until midnight UTC)` : ''}, checks of a new token included. Errors wait 60 s, doubling to 15 minutes; TeslaFi asking to slow down waits what it asks.`)));
+  }
+  async function setPace(v, pace) {
+    const cur = ov.poll || 'normal';
+    if (v === cur) return;
+    const pc = paceOf(v);
+    const r = await ask({
+      title: `Pace: ${pc[1]}`,
+      intro: h('p', null, `How often the server reads TeslaFi, for every TeslaFi account: driving or charging every ${pc[2]}, awake every ${pc[3]}, asleep every ${pc[4]}. `, pc[5]),
+      submit: 'Change the pace',
+      run: async (cred) => ctx.api.patch(BASE, withPw(cred, { version: ov.version, poll: v })),
+    });
+    if (r) await reload(`How often TeslaFi is asked: ${pc[1]}, saved.`);
+    else if (ctx.alive()) pace.set(ov.poll || 'normal');
   }
 
   /* ---------- adding a token */
