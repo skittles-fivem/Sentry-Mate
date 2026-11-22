@@ -535,6 +535,75 @@ fn history_start(e: &Engine, car: CarId, shown: &Shown) -> QResult<Option<(u64, 
     Ok(out)
 }
 
+/// A full pack this much larger than the pack's readings before it, staying so, says the pack was replaced.
+const SWAP_RISE: f64 = 1.08;
+
+/// When the car's battery pack was replaced: the owner's date (the car's local midnight), else a rise of the pack's
+/// own full-pack reading (0x352) by [`SWAP_RISE`] or more over the readings before it that the next readings keep.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Swap {
+    pub at_ms: u64,
+    pub source: &'static str,
+}
+
+fn pack_swap(e: &Engine, c: &Car, s: &super::fleet::CarSettings) -> QResult<Option<Swap>> {
+    if let Some(d) = s.pack_replaced_date.as_deref().and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()) {
+        let at_ms = crate::tz::start_of(d, crate::tz::zone(&c.time_zone));
+        return Ok(Some(Swap { at_ms, source: "owner" }));
+    }
+    let meta = records::meta(e.db(), c.id)?;
+    let days: Vec<u32> = meta.days.iter().copied().collect();
+    let mut fulls: Vec<(u64, f64)> = Vec::new();
+    for d in thin(&days, MAX_SPREAD_DAYS) {
+        if let Some(p) = day_pack(e, c, d)?
+            && let Some(f) = p.full_pack_kwh
+        {
+            fulls.push((p.t_ms, f));
+        }
+    }
+    Ok(swap_in(&fulls).map(|at_ms| Swap { at_ms, source: "detected" }))
+}
+
+/// The time of the newest reading that rises by [`SWAP_RISE`] over the median of the (up to five) readings before it,
+/// with the next two readings (at least one) as high.
+fn swap_in(fulls: &[(u64, f64)]) -> Option<u64> {
+    // (`lo`: the first reading of the pack in the car, as found so far)
+    let (mut found, mut lo) = (None, 0);
+    for i in 2..fulls.len() {
+        if i < lo + 2 {
+            continue;
+        }
+        let before = median(fulls[i.saturating_sub(5).max(lo)..i].iter().map(|x| x.1).collect())?;
+        let after = &fulls[i..(i + 3).min(fulls.len())];
+        if after.len() >= 2 && after.iter().all(|x| x.1 >= before * SWAP_RISE) {
+            found = Some(fulls[i].0);
+            lo = i;
+        }
+    }
+    found
+}
+
+/// When the history starts, and whether the car was about new then.
+type Start = Option<(u64, bool)>;
+
+/// Where the battery figures start: the pack's replacement (counted as a new pack), else the history's start.
+fn pack_start(
+    e: &Engine,
+    c: &Car,
+    s: &super::fleet::CarSettings,
+    shown: &Shown,
+) -> QResult<(Start, Option<Swap>)> {
+    let swap = pack_swap(e, c, s)?;
+    Ok(match swap {
+        Some(w) => (Some((w.at_ms, true)), swap),
+        None => (history_start(e, c.id, shown)?, None),
+    })
+}
+
+fn pack_json(swap: Option<Swap>) -> Value {
+    json!({ "replaced_ms": swap.map(|w| w.at_ms), "source": swap.map(|w| w.source) })
+}
+
 /// The usable capacity when new, where it comes from and whether it is the full pack (early readings without a
 /// buffer): the owner's, the pack's readings of its first 30 days (a
 /// history that starts with the car new), the first imported charges, the car's build (VIN, CAN configuration).
@@ -543,9 +612,12 @@ fn new_capacity(
     c: &Car,
     s: &super::fleet::CarSettings,
     start: Option<(u64, bool)>,
+    swap: Option<Swap>,
     shown: &Shown,
 ) -> QResult<(Option<f64>, Option<&'static str>, bool)> {
-    if let Some(v) = s.capacity_new_kwh {
+    // after a replacement the owner's value when new is the new pack's
+    let owner = if swap.is_some() { s.pack_new_kwh } else { s.capacity_new_kwh };
+    if let Some(v) = owner {
         return Ok((Some(v), Some("owner"), false));
     }
     if let Some((t0, true)) = start {
@@ -566,7 +638,9 @@ fn new_capacity(
         }
     }
     let mut imported = Vec::new();
-    each_row::<Charge>(e, c.id, 0, u64::MAX, Some(super::SourceFilter::Import(None)), shown, false, |ch| {
+    // (imported charges of the pack before a replacement are not the new pack's)
+    let from = swap.map_or(0, |w| w.at_ms);
+    each_row::<Charge>(e, c.id, from, u64::MAX, Some(super::SourceFilter::Import(None)), shown, false, |ch| {
         if let Some(u) = charge_usable(&ch) {
             imported.push(u);
         }
@@ -633,6 +707,8 @@ pub struct Battery {
     pub chemistry: Value,
     pub brick_spread_v: Option<f64>,
     pub lifetime: Value,
+    /// The pack's replacement, when there was one: `{ replaced_ms, source: "owner" | "detected" }` (nulls when not).
+    pub pack: Value,
     pub notes: Vec<&'static str>,
 }
 
@@ -644,7 +720,10 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
     let shown = Shown::new(e, car, None)?;
     let now = e.db().entry(car)?.and_then(|x| x.summary.now);
     let smp = now.as_ref().map(|n| n.sample.clone()).unwrap_or_default();
-    let packs = recent_packs(e, &c)?;
+    let (start, swap) = pack_start(e, &c, &s, &shown)?;
+    let since = swap.map_or(0, |w| w.at_ms);
+    // the pack's readings of the pack in the car now (not the one before a replacement)
+    let packs: Vec<PackReading> = recent_packs(e, &c)?.into_iter().filter(|p| p.t_ms >= since).collect();
     let newest = packs.first().cloned();
     // the newest buffer the pack named in those days (not every reading names it)
     let buffer = packs.iter().find_map(|p| p.buffer_kwh);
@@ -656,6 +735,7 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
         imported |= ch.source.is_imported();
         if Some(ch.id) != live
             && charge_usable_v.len() < 5
+            && ch.start_ms >= since
             && let Some(u) = charge_usable(&ch)
         {
             charge_usable_v.push(u);
@@ -674,8 +754,7 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
         drive_kwh += d.energy_used_kwh.unwrap_or(0.0);
         Ok(true)
     })?;
-    let start = history_start(e, car, &shown)?;
-    let (new_kwh, new_source, new_is_full) = new_capacity(e, &c, &s, start, &shown)?;
+    let (new_kwh, new_source, new_is_full) = new_capacity(e, &c, &s, start, swap, &shown)?;
     let (range_new, range_new_source) = new_range(e, car, &s, start, &shown)?;
     let factor = rated_factor(e, &c, &s, buffer)?;
 
@@ -734,6 +813,9 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
     }
     if imported {
         notes.push("imported_history_estimated");
+    }
+    if swap.is_some() {
+        notes.push("pack_replaced");
     }
     if !has_history {
         notes.push("no_history");
@@ -803,6 +885,7 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
                 3,
             ),
             lifetime,
+            pack: pack_json(swap),
             notes,
         },
     ))
@@ -816,6 +899,8 @@ pub struct Capacity {
     pub x: &'static str,
     pub items: Vec<Reading>,
     pub trend: Value,
+    /// As `/battery`'s: readings before `replaced_ms` are the pack before (the trend is over the pack in the car now).
+    pub pack: Value,
     pub next: Option<String>,
 }
 
@@ -945,8 +1030,9 @@ pub fn capacity(
     let b = b.min(crate::now_ms().saturating_add(DAY));
     let s = super::fleet::settings_of(e, car)?;
     let shown = Shown::new(e, car, None)?;
-    let start = history_start(e, car, &shown)?;
-    let (new_kwh, _, _) = new_capacity(e, &c, &s, start, &shown)?;
+    let (start, swap) = pack_start(e, &c, &s, &shown)?;
+    let since = swap.map_or(0, |w| w.at_ms);
+    let (new_kwh, _, _) = new_capacity(e, &c, &s, start, swap, &shown)?;
     let sig = format!("capacity|{car}|{}|{group}|{by_odo}", period.sig());
     let after = super::read_after(paging, &sig)?;
     let key_of = |rd: &Reading| -> (f64, String) {
@@ -967,7 +1053,9 @@ pub fn capacity(
                 if Some(ch.id) != live
                     && let Some(rd) = charge_reading(&ch, buffer)
                 {
-                    if let (Some(o), Some(u)) = (rd.odometer_km, rd.usable_kwh) {
+                    if let (Some(o), Some(u)) = (rd.odometer_km, rd.usable_kwh)
+                        && rd.t_ms >= since
+                    {
                         tr.add(o, u, rd.t_ms);
                     }
                     if keep(&rd) {
@@ -987,7 +1075,7 @@ pub fn capacity(
             let mut tr = Trend::default();
             for d in thin(&days, MAX_SPREAD_DAYS) {
                 if let Some(rd) = day_pack(e, &c, d)?.as_ref().and_then(|p| pack_reading_row(p, buffer))
-                    && rd.t_ms >= a
+                    && rd.t_ms >= a.max(since)
                     && rd.t_ms < b
                     && let (Some(o), Some(u)) = (rd.odometer_km, rd.usable_kwh)
                 {
@@ -1113,7 +1201,7 @@ pub fn capacity(
         _ => resume,
     };
     let x_word = if by_odo { "odometer" } else { "time" };
-    Ok(scoped(&c, Capacity { group, x: x_word, items, trend: trend_v, next }))
+    Ok(scoped(&c, Capacity { group, x: x_word, items, trend: trend_v, pack: pack_json(swap), next }))
 }
 
 /// The newest buffer the pack named (looking back at most [`RECENT_DAYS`] record days).
@@ -1953,6 +2041,22 @@ pub fn temperatures(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QRe
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn a_full_pack_that_rises_and_stays_is_a_replaced_pack() {
+        let d = |k: u64| k * DAY;
+        // a 72 kWh pack wearing slowly, then a new 79 kWh one from day 6 on
+        let worn = [72.0, 71.9, 71.8, 71.8, 71.7, 79.1, 79.0, 79.0];
+        let v: Vec<(u64, f64)> = worn.iter().enumerate().map(|(k, f)| (d(k as u64), *f)).collect();
+        assert_eq!(swap_in(&v), Some(d(5)));
+        // one high reading that does not stay is not a new pack, nor is a slow drift
+        let blip = [72.0, 71.9, 71.8, 79.0, 71.8, 71.7];
+        let v: Vec<(u64, f64)> = blip.iter().enumerate().map(|(k, f)| (d(k as u64), *f)).collect();
+        assert_eq!(swap_in(&v), None);
+        let v: Vec<(u64, f64)> = (0..10).map(|k| (d(k), 70.0 + 0.3 * k as f64)).collect();
+        assert_eq!(swap_in(&v), None);
+        assert_eq!(swap_in(&[]), None);
+    }
 
     #[test]
     fn thinning_keeps_both_ends_and_spreads_evenly() {

@@ -898,6 +898,12 @@ pub struct CarSettings {
     /// Whether the car's import fills what its live history lacks: null follows the server setting.
     #[serde(default)]
     pub import_gap_fill: Option<bool>,
+    /// The day (YYYY-MM-DD, the car's local date) the battery pack was replaced, and the new pack's usable capacity
+    /// when new: the battery figures follow the new pack from then on.
+    #[serde(default)]
+    pub pack_replaced_date: Option<String>,
+    #[serde(default)]
+    pub pack_new_kwh: Option<f64>,
 }
 
 impl Default for CarSettings {
@@ -911,6 +917,8 @@ impl Default for CarSettings {
             efficiency_wh_per_km_override: None,
             software_version_typed: None,
             import_gap_fill: None,
+            pack_replaced_date: None,
+            pack_new_kwh: None,
         }
     }
 }
@@ -946,6 +954,8 @@ pub struct SettingsView {
     /// The car's own choice (null: the server's), and whether filling is on for it now.
     pub import_gap_fill: Option<bool>,
     pub import_gap_fill_on: bool,
+    pub pack_replaced_date: Option<String>,
+    pub pack_new_kwh: Option<f64>,
     /// What the car's build gives for the three reference values when the owner has typed none (the inputs'
     /// prefill; the owner's value, where typed, still wins), and where it comes from (`vehicle_info`, else null).
     pub capacity_new_kwh_default: Option<f64>,
@@ -967,6 +977,8 @@ fn settings_view(e: &Engine, o: &Owner, d: VehicleDefaults) -> SettingsView {
         software_version_typed: s.software_version_typed.clone(),
         import_gap_fill: s.import_gap_fill,
         import_gap_fill_on: s.import_gap_fill.unwrap_or_else(|| e.import_gap_fill()),
+        pack_replaced_date: s.pack_replaced_date.clone(),
+        pack_new_kwh: s.pack_new_kwh,
         capacity_new_kwh_default: d.usable_new_kwh(),
         full_range_new_km_default: d.full_range_new_km,
         efficiency_wh_per_km_default: d.efficiency_wh_per_km,
@@ -1103,6 +1115,8 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
         "efficiency_wh_per_km_override",
         "software_version_typed",
         "import_gap_fill",
+        "pack_replaced_date",
+        "pack_new_kwh",
     ];
     let version = errs.head(body, &known);
     let chemistry = match body.get("battery_chemistry") {
@@ -1157,6 +1171,17 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
             None
         }
     };
+    let pack_date = match body.get("pack_replaced_date") {
+        None => None,
+        Some(serde_json::Value::Null) => Some(None),
+        Some(serde_json::Value::String(s)) if s.trim().is_empty() => Some(None),
+        Some(serde_json::Value::String(s)) if date(s.trim()).is_some() => Some(Some(s.trim().to_string())),
+        Some(_) => {
+            errs.rule("pack_replaced_date", "A date as YYYY-MM-DD, or null.");
+            None
+        }
+    };
+    let pack_kwh = number(body, "pack_new_kwh", 10.0, 250.0, true, &mut errs);
     let _one = crate::lock(&e.inner.claim);
     // the car's record is read and written back under its own lock (the pipeline's VIN and key changes take it too)
     let record = crate::lock(&e.inner.car_record);
@@ -1190,6 +1215,12 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
     }
     if let Some(x) = gap_fill {
         s.import_gap_fill = x;
+    }
+    if let Some(x) = pack_date {
+        s.pack_replaced_date = x;
+    }
+    if let Some(x) = pack_kwh {
+        s.pack_new_kwh = x;
     }
     if let Some(x) = efficiency {
         let before = s.efficiency_wh_per_km_override;
