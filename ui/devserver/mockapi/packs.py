@@ -8,7 +8,7 @@ import json
 import os
 
 BUILTIN_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "packs"))
-BUILTIN_ORDER = ["instrument", "logbook", "horizon", "console", "pebble"]
+BUILTIN_ORDER = ["instrument", "logbook", "horizon", "console", "pebble", "manager"]
 DEFAULT_PACK = "instrument"
 API_VERSION = 1
 

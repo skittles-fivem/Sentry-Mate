@@ -69,12 +69,12 @@
 
 /* milestones */
 .st-stones { display: grid; grid-template-columns: repeat(auto-fill, minmax(round(18rem, var(--e)), 1fr)); gap: round(0.875rem, var(--e)); margin: 0; padding: 0; list-style: none; }
-.st-stone { display: flex; gap: round(0.875rem, var(--e)); padding: round(1rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--glass); min-width: 0; }
+.st-stone { display: flex; gap: round(0.875rem, var(--e)); padding: round(1rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-sunken); min-width: 0; }
 .st-stone-ico { flex: none; display: grid; place-items: center; width: round(2.25rem, var(--e)); height: round(2.25rem, var(--e)); border-radius: 50%; background: var(--live-soft); color: var(--live); }
 .st-stone--first .st-stone-ico { background: var(--warm-soft); color: var(--warm); }
 .st-stone-body { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); min-width: 0; font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); --LH: round(calc(1.4 * 1em), 2px); }
 .st-stone-body b { font-size: max(0.9375rem, var(--fs-floor)); color: var(--text); font-weight: 600; }
-.st-stone-kind { font-size: max(0.6875rem, var(--fs-floor)); text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); }
+.st-stone-kind { font-size: max(0.6875rem, var(--fs-floor)); font-weight: 500; color: var(--text-3); }
 .st-stone .link { margin-top: round(0.25rem, var(--e)); }
 .stats-page .panel > .note { margin-top: round(0.875rem, var(--e)); }
 

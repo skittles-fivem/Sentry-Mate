@@ -15,13 +15,13 @@
 .charge-soc { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: round(1rem, var(--e)); margin-top: round(1.25rem, var(--e)); padding-top: round(1.125rem, var(--e)); border-top: 1px solid var(--line); }
 .charge-soc > div { display: flex; flex-direction: column; --LH: round(calc(1.25 * 1em), 2px); }
 .charge-soc > div.r { text-align: right; }
-.charge-soc b { font-family: var(--font-display); font-weight: 500; font-size: 1.5rem; }
+.charge-soc b { font-weight: 600; font-size: 1.5rem; }
 .charge-soc span { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
-.charge-soc .lbl { text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
+.charge-soc .lbl { font-weight: 500; color: var(--text-2); }
 .charge-soc-bar { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); align-items: stretch; }
 .charge-soc-bar .bar { height: round(0.625rem, var(--e)); }
 .bar--charge::before { content: ""; position: absolute; inset: 0 auto 0 0; width: var(--from, 0%); background: color-mix(in oklab, var(--text-3) 35%, transparent); }
-.bar--charge > i { left: var(--from, 0%); border-radius: 0 99px 99px 0; background: linear-gradient(90deg, var(--warm), var(--c-charge)); }
+.bar--charge > i { left: var(--from, 0%); border-radius: 0 99rem 99rem 0; background: var(--c-charge); }
 .charge-soc-bar .charge-soc-added { text-align: center; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); }
 .charge-soc-bar .charge-soc-added b { font-family: var(--font); font-size: max(0.875rem, var(--fs-floor)); font-weight: 600; color: var(--text); }
 .charge-figures-panel .note { margin-top: round(0.625rem, var(--e)); }
@@ -32,7 +32,7 @@
 .charge-page .charts-panel { padding: round(1.125rem, var(--e)) round(1.25rem, var(--e)) round(0.875rem, var(--e)); margin-bottom: var(--gap); }
 .charge-page .charts-panel .panel-head .row { justify-content: flex-end; }
 .charge-page .selection { display: flex; flex-wrap: wrap; align-items: flex-end; gap: round(0.75rem, var(--e)) round(1.75rem, var(--e)); padding: round(0.25rem, var(--e)) 0 round(0.875rem, var(--e)); border-bottom: 1px solid var(--line); }
-.charge-page .selection-title { flex-basis: 100%; font-size: max(0.75rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+.charge-page .selection-title { flex-basis: 100%; font-size: max(0.8125rem, var(--fs-floor)); font-weight: 600; color: var(--text-2); }
 .charge-charts .chart { height: round(8rem, var(--e)); }
 .charge-charts .chart-block[data-series="range"] .chart, .charge-charts .chart-block[data-series="heat"] .chart { height: round(6.5rem, var(--e)); }
 .charge-charts .chart-block[data-series="phases"] .chart { height: round(5.5rem, var(--e)); }
@@ -52,7 +52,7 @@
 .cost-left { display: flex; flex-direction: column; gap: round(1.25rem, var(--e)); min-width: 0; }
 .cost-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: round(0.25rem, var(--e)) round(1rem, var(--e)); }
 .cost-now .metric-label { flex-basis: 100%; }
-.cost-amount { font-family: var(--font-display); font-size: 2.25rem; font-weight: 500; --LH: round(calc(1.1 * 1em), 2px); }
+.cost-amount { font-size: 2.25rem; font-weight: 600; --LH: round(calc(1.1 * 1em), 2px); }
 .cost-now .explain { flex: 1 1 round(14rem, var(--e)); }
 .cost-left .tbl-panel { background: transparent; border: 0; box-shadow: none; padding: 0; }
 .cost-edit { padding: round(1.125rem, var(--e)) round(1.25rem, var(--e)); border-radius: var(--radius); background: var(--surface-sunken); border: 1px solid var(--line); }

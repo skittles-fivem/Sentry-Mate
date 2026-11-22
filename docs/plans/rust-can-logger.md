@@ -186,7 +186,7 @@ looks and works in the browser. So a pack you upload can do everything the built
   places, prices, settings, accounts, and a live stream (server-sent events) for the Now page. Cookies carry the
   session; every change needs the CSRF header. A pack made for an older `api` keeps working while that version
   is served; the UI shows a note when a pack targets a version the server no longer has.
-- **Built in**: five packs (Instrument, the default, Logbook, Horizon, Console and Pebble; an admin picks the one
+- **Built in**: six packs (Instrument, the default, Logbook, Horizon, Console, Pebble and Simple; an admin picks the one
   for everyone) and **Download the
   built-in pack to start from**.
 - **Choosing**: Settings → Interface, for everyone (admins), and each person can pick their own on their Account

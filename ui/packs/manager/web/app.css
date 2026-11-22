@@ -1968,3 +1968,9 @@ body { background: var(--bg-0); font-feature-settings: "cv11"; }
 :root[data-phone] .tab[aria-current="page"] { color: var(--live); font-weight: 600; }
 :root[data-phone] .tab[aria-current="page"] .ico { stroke-width: 2; }
 :root[data-phone] .tab-label { font-size: max(0.6875rem, var(--fs-floor)); }
+
+/* labels in sentence case, as in the rest of the Simple look */
+.tbl th { letter-spacing: 0; text-transform: none; font-size: max(0.78125rem, var(--fs-floor)); font-weight: 600; color: var(--text-2); background: var(--surface-head); }
+.account-menu-label, .list-title, .nav-label { letter-spacing: 0.02em; text-transform: none; font-size: max(0.75rem, var(--fs-floor)); }
+.tag { text-transform: none; letter-spacing: 0; font-weight: 600; }
+.tbl tbody tr:hover { background: var(--surface-row-hover); }

@@ -307,7 +307,7 @@ class UiPacks(ServerCase):
 
     def test_list_and_choice(self):
         r = self.c.get("/api/v1/ui-packs")
-        self.assertEqual([p["id"] for p in r["items"]], ["instrument", "logbook", "horizon", "console", "pebble"])
+        self.assertEqual([p["id"] for p in r["items"]], ["instrument", "logbook", "horizon", "console", "pebble", "manager"])
         self.assertEqual(r["chosen"], "instrument")
         self.assertEqual(r["default"], "instrument")
         for p in r["items"]:

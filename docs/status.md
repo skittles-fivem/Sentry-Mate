@@ -42,4 +42,4 @@ What Sentry Mate does today. What is left: [To do](todo.md). Back to the [README
 
 | Part | State |
 |---|---|
-| Web UI: five designs in [`ui/`](ui/), built into the server; every TeslaMate tab gets a page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) | being built: every page in all five designs, checked item by item, with screenshots |
+| Web UI: six designs in [`ui/`](ui/), built into the server; every TeslaMate tab gets a page, planned in [`docs/parity/ui-parity.md`](docs/parity/ui-parity.md) | being built: every page in all six designs, checked item by item, with screenshots |

@@ -203,6 +203,10 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   if (!alive()) return;
   if (gate.redirect) { state.navigate(gate.redirect, { replace: true }); return; }
 
+  // a section's own short address (/trips, /charging, /stats, /settings ...): its last tab, or its first
+  const sec = id === 'not-found' && /^\/(car|trips|charging|battery|stats|settings)\/?$/.exec(s.path);
+  if (sec) { state.navigate(state.linkTo(frame.sectionPage(sec[1])), { replace: true }); return; }
+
   if (id === 'not-found' || !info) {
     frame.update({ s, info: null, car: null, period: null });
     docTitle('Not found');
