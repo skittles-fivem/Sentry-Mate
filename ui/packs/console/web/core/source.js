@@ -1,6 +1,7 @@
 // Where data came from: SMO (the Screenmate CAN Bridge's signed logs), the Tesla API (the Tesla Owner API this
-// server reads) or an import (TeslaMate's history). Every row of the API carries `sources` (a list of
-// { kind: smo | tesla_api | import, site?, label }) and `source_label` (one line for all of them, "Data from SMO
+// server reads), TeslaFi (TeslaFi's own polls of the car, read with the owner's TeslaFi token) or an import
+// (TeslaMate's or TeslaFi's history). Every row of the API carries `sources` (a list of
+// { kind: smo | tesla_api | teslafi_api | import, site?, label }) and `source_label` (one line for all of them, "Data from SMO
 // and the Tesla API"). Pages show that line, small, beside the data and never instead of it. The old one-word
 // `source` (can, teslamate, tesla_api) is read only for an answer that has no `sources` (an older server).
 //
@@ -8,23 +9,24 @@
 //   src(row, { full: true })  '[smo+api] data from SMO and the Tesla API' (detail pages, chart heads)
 //   srcText(row)              the line as text (CSV, titles)
 //   est(row)                  '[est]' when the row's energy is estimated (Tesla API data alone), else null
-//   inputsLine(inputs)        the car's live inputs: 'live inputs  [smo] 1 min ago  [api] 2 min ago'
+//   inputsLine(inputs)        the car's live inputs: 'live inputs  [smo] 1 min ago  [api] 2 min ago  [tfi] ...'
 //   via(value)                '[api]' after a live value the Tesla API sent ({ value, at_ms, sources }), else null
-//   sourceWord(v)             a filter word (smo, api, tesla, imported, can, teslamate) -> the API's source= value
+//   sourceWord(v)             a filter word (smo, api, teslafi, imported, teslamate, ...) -> the API's source= value
 //   sourceCheck(v)            null for a known source word, else why it is left out (filterLine's check)
 
 import { h } from '../shared/dom.js';
 import { formatRelative } from '../shared/time.js';
 import * as api from '../shared/api.js';
 
-const SHORT = { smo: 'smo', tesla_api: 'api', import: 'imp' };
-const SITE = { teslamate: 'TeslaMate' };
+const SHORT = { smo: 'smo', tesla_api: 'api', teslafi_api: 'tfi', import: 'imp' };
+const SITE = { teslamate: 'TeslaMate', teslafi: 'TeslaFi' };
+const LIVE_NAME = { smo: 'SMO', tesla_api: 'the Tesla API', teslafi_api: 'TeslaFi' };
 const OLD = {
   can: [{ kind: 'smo', label: 'Data from SMO' }],
   teslamate: [{ kind: 'import', site: 'teslamate', label: 'Imported from TeslaMate' }],
   tesla_api: [{ kind: 'tesla_api', label: 'Data from the Tesla API' }],
 };
-const LABEL = { smo: 'Data from SMO', tesla_api: 'Data from the Tesla API' };
+const LABEL = { smo: 'Data from SMO', tesla_api: 'Data from the Tesla API', teslafi_api: 'Data from TeslaFi' };
 
 /** The row's inputs (never null). */
 export function sourcesOf(r) {
@@ -45,7 +47,7 @@ export function srcText(r) {
   const list = sourcesOf(r);
   if (!list.length) return '';
   if (list.length === 1) return labelOf(list[0]);
-  const live = [...new Set(list.filter((s) => s.kind !== 'import').map((s) => (s.kind === 'smo' ? 'SMO' : s.kind === 'tesla_api' ? 'the Tesla API' : s.kind)))];
+  const live = [...new Set(list.filter((s) => s.kind !== 'import').map((s) => LIVE_NAME[s.kind] || s.kind))];
   const imp = [...new Set(list.filter((s) => s.kind === 'import').map((s) => SITE[s.site] || s.site || 'another site'))];
   const and = (a) => (a.length > 1 ? `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}` : a[0]);
   if (live.length && imp.length) return `Data from ${and(live)}; imported from ${and(imp)}`;
@@ -90,22 +92,26 @@ export function inputsLine(inputs, { cls = null } = {}) {
     h('span', { class: 'src-inputs-k' }, list.length === 1 ? 'live input' : 'live inputs'),
     list.length ? list.map((i) => h('span', { class: 'src-in', title: i.label || null },
       h('span', { class: 'src-b' }, '[', h('span', { class: ['src-k', `src-k--${i.kind}`] }, SHORT[i.kind] || i.kind), ']'),
-      ` ${i.kind === 'smo' ? 'SMO' : i.kind === 'tesla_api' ? 'Tesla API' : i.label || i.kind}`,
+      ` ${i.kind === 'smo' ? 'SMO' : i.kind === 'tesla_api' ? 'Tesla API' : i.kind === 'teslafi_api' ? 'TeslaFi' : i.label || i.kind}`,
       h('span', { class: 'muted' }, i.last_ms != null ? `, newest ${formatRelative(i.last_ms, now)}` : ', nothing yet')))
       : h('span', { class: 'muted' }, 'none yet: no SMO log and no Tesla API reading'));
 }
 
-/** The filter words: smo, api (tesla, tesla_api), imported (import, teslamate), and the old can. */
+/** The filter words: smo, api (tesla, tesla_api), teslafi (tfi, teslafi_api: TeslaFi's live polls), imported
+ * (import), teslamate and teslafi-import (one import site), and the old can. */
 export function sourceWord(v) {
   const w = String(v || '').toLowerCase();
   if (!w) return null;
   if (w === 'smo' || w === 'can') return 'smo';
   if (w === 'api' || w === 'tesla' || w === 'tesla_api' || w === 'tesla-api') return 'tesla_api';
   if (w === 'imported' || w === 'import' || w === 'imp') return 'import';
+  if (w === 'teslafi' || w === 'tfi' || w === 'teslafi_api' || w === 'teslafi-api') return 'teslafi_api';
   if (w === 'teslamate' || w === 'import:teslamate') return 'import:teslamate';
+  if (w === 'teslafi-import' || w === 'import:teslafi') return 'import:teslafi';
   return null;
 }
-const SOURCE_WORDS = new Set(['smo', 'can', 'api', 'tesla', 'tesla_api', 'tesla-api', 'imported', 'import', 'imp', 'teslamate', 'import:teslamate', 'all']);
+const SOURCE_WORDS = new Set(['smo', 'can', 'api', 'tesla', 'tesla_api', 'tesla-api', 'teslafi', 'tfi', 'teslafi_api', 'teslafi-api', 'imported', 'import', 'imp',
+  'teslamate', 'import:teslamate', 'teslafi-import', 'import:teslafi', 'all']);
 /** For filterLine's check: null for a word sourceWord knows (or all), else why it is not taken. */
-export const sourceCheck = (v) => (SOURCE_WORDS.has(String(v || '').toLowerCase()) ? null : `not a source this page knows: smo, api, imported or all. It is left out, so every source is listed.`);
-export const SOURCE_KEY = 'smo | api | imported';
+export const sourceCheck = (v) => (SOURCE_WORDS.has(String(v || '').toLowerCase()) ? null : `not a source this page knows: smo, api, teslafi, imported, teslamate, teslafi-import or all. It is left out, so every source is listed.`);
+export const SOURCE_KEY = 'smo | api | teslafi | imported | teslamate | teslafi-import';

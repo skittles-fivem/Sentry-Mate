@@ -4,6 +4,9 @@
 //   update with a known version. An update seen only as changed module builds says "build changed".
 // - GET /cars/{car}/updates (period, newest first, paged, summary in each page), PATCH .../updates/{id}
 //   (admin: type or forget a version), GET /fleet/versions (every car, searched, paged).
+// - Tesla updates found from the modules' firmware fingerprints (detected_by "fingerprint"): what changed (old ->
+//   new hex), between which drives, and a box to type the version (admin); the car's firmware fingerprints
+//   (GET /cars/{car}/firmware), #firmware. Both in pages/firmware.js.
 // - Live: "rows" events with kind "updates" load the lists again.
 
 import * as state from '../shared/state.js';
@@ -18,15 +21,15 @@ import { field, form } from '../core/form.js';
 import { openDialog } from '../core/dialog.js';
 import { toast } from '../core/toast.js';
 import { src, srcText } from '../core/source.js';
+import { firmwarePanel, fingerprintUpdates, modWords } from './firmware.js';
 
 export const id = 'software';
 export const title = () => 'Software';
 
 const enc = encodeURIComponent;
 const SOURCE = { teslamate: 'imported', tesla_api: 'tesla api', owner: 'typed', build_match: 'same build' };
-const FOUND = { ota_status: 'update status', build_change: 'module builds', teslamate: 'imported', tesla_api: 'tesla api' };
-const MODULES = { bms: 'bms', vcfront: 'front body', di_front: 'front motor', di_rear: 'rear motor', fc: 'fast charge' };
-const mods = (list) => (list || []).map((m) => MODULES[m] || m).join(', ');
+const FOUND = { ota_status: 'update status', build_change: 'module builds', fingerprint: 'fingerprints', teslamate: 'imported', tesla_api: 'tesla api' };
+const mods = (list) => modWords(list, { short: true });
 const none = (t) => h('span', { class: 'muted' }, t);
 const VERSION_RX = /^\d{4}\.\d{1,2}(\.\d{1,3}){0,2}$/;
 
@@ -59,7 +62,7 @@ export async function mount(ctx) {
       ['updates', h('span', { cover: 'updates.stat.count' }, formatNumber(sm.count ?? 0), none(' in this range'))],
       ['typical gap', h('span', { cover: 'updates.stat.median_gap' }, sm.median_gap_ms != null ? formatDuration(sm.median_gap_ms) : none('needs two updates')), { }],
       installing ? ['installing', [tag('running', 'warn'), ` since ${formatTime(installing.start_ms, tz)}`], { tone: 'warn' }] : null,
-      ['state', changed ? [tag('warn', 'warn'), ' the module builds changed; nobody has said which version it is'] : [tag('ok', 'good'), ' the version is known']],
+      ['state', changed ? [tag('warn', 'warn'), ' a tesla update was installed; nobody has named its version yet: ', link('#tesla-updates', 'name it below')] : [tag('ok', 'good'), ' the version is known']],
     ]),
     note('the car does not send its version text: a version is imported, typed by an admin, or taken from an update with the same builds. never guessed.'),
     h('p', { class: 'note', cover: 'projects.telegram-bot' }, 'a "software changed" event goes out on mqtt and the events list when an update ends: ',
@@ -76,9 +79,11 @@ export async function mount(ctx) {
       ? (notesOn && VERSION_RX.test(r.version)
         ? h('a', { class: 'lnk', href: notesHref(r.version), target: '_blank', rel: 'noopener noreferrer external', title: 'release notes on an outside site' }, r.version)
         : h('b', null, r.version))
-      : h('span', { class: 'tone--warn' }, 'build changed'),
+      : h('span', { class: 'tone--warn' }, r.detected_by === 'fingerprint' ? 'tesla update installed' : 'build changed'),
     r.version && SOURCE[r.version_source] ? [' ', tag(SOURCE[r.version_source], 'muted')] : null,
-    ctx.admin && r.source === 'can' ? [' ', h('button', { class: 'btn btn--line tone--accent', type: 'button', onclick: () => editVersion(r) }, r.version ? '[edit]' : '[type it]')] : null);
+    ctx.admin && r.source === 'can' ? [' ', r.detected_by === 'fingerprint'
+      ? h('a', { class: 'btn btn--line tone--accent', href: `#upd-${r.id}`, title: 'name it below, with what changed' }, r.version ? '[edit]' : '[name it]')
+      : h('button', { class: 'btn btn--line tone--accent', type: 'button', onclick: () => editVersion(r) }, r.version ? '[edit]' : '[type it]')] : null);
 
   let painted = false;
   const updates = table(ctx, {
@@ -126,8 +131,10 @@ export async function mount(ctx) {
   ctx.on(search, 'input', () => { clearTimeout(searchT); searchT = setTimeout(() => { if (ctx.alive()) fleet.reload({ search: search.value.trim() || undefined }); }, 250); });
   ctx.onCleanup(() => clearTimeout(searchT));
 
+  const fpUpdates = fingerprintUpdates(ctx, { onNamed: () => { echoUntil = Date.now() + 5000; reloadAll(false); } });
+  const firmware = firmwarePanel(ctx);
   replace(ctx.view, h('div', { class: 'page', dataset: { page: 'software' }, cover: 'shots.updates' },
-    hd, section({ title: 'now' }, nowSlot), updates.el, notesLine, fleet.el));
+    hd, section({ title: 'now' }, nowSlot), updates.el, notesLine, fpUpdates.el, firmware.el, fleet.el));
   paintNow(null, []);
 
   async function editVersion(r) {
@@ -150,17 +157,17 @@ export async function mount(ctx) {
   let echoUntil = 0;
   async function reloadAll(say) {
     reloadBtn.disabled = true;
-    try { await Promise.all([updates.reload(), fleet.reload()]); if (say && ctx.alive()) toast('loaded again', { kind: 'info' }); } catch { /* the tables say why */ } finally { reloadBtn.disabled = false; }
+    try { await Promise.all([updates.reload(), fleet.reload(), fpUpdates.reload(), firmware.reload()]); if (say && ctx.alive()) toast('loaded again', { kind: 'info' }); } catch { /* the tables say why */ } finally { reloadBtn.disabled = false; }
   }
   ctx.events('rows', (ev) => {
     const d = ev?.data || {};
     if (!(d.kinds || []).includes('updates')) return;
     if (Date.now() < echoUntil) { echoUntil = 0; return; }
-    if (d.car === cid) updates.reload(null, { quiet: true });
+    if (d.car === cid) { updates.reload(null, { quiet: true }); fpUpdates.reload(); firmware.reload(); }
     fleet.reload(null, { quiet: true });
   });
 
-  try { await Promise.all([updates.ready, fleet.ready]); } catch (e) { if (!painted) { ctx.fail(e); return; } }
+  try { await Promise.all([updates.ready, fleet.ready, fpUpdates.ready, firmware.ready]); } catch (e) { if (!painted) { ctx.fail(e); return; } }
   if (!ctx.alive()) return;
   ctx.ready();
 }

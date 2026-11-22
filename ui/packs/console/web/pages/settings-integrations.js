@@ -1,4 +1,4 @@
-// settings/integrations: the Tesla account (a second live input beside SMO, pages/tesla.js), and sending the cars'
+// settings/integrations: the Tesla account (a second live input beside SMO, pages/tesla.js), TeslaFi (a third, pages/teslafi.js), and sending the cars'
 // live values to other systems, if the owner wants to. One block per integration, each with a status tag: MQTT (the broker as 'key = value' lines, a test, live counts), its
 // topics and rules, every value it publishes (previewed for a chosen car), Home Assistant discovery and the
 // entities it gets, events for automations, the read API, every network connection, and tools that use them.
@@ -19,6 +19,7 @@ import { formatNumber } from '../shared/i18n.js';
 import { copyBtn } from '../core/secret.js';
 import { toast } from '../core/toast.js';
 import { teslaSection } from './tesla.js';
+import { teslafiSection } from './teslafi.js';
 
 export const id = 'settings-integrations';
 export const title = () => 'Settings: integrations';
@@ -513,10 +514,12 @@ export async function mount(ctx) {
   /* ---------- put it together */
   paintStatus(); paintBroker(); paintTopics(); paintValues(); paintHa(); paintEvents();
   const tesla = teslaSection(ctx, { cars: carList });
+  const teslafi = teslafiSection(ctx, { cars: carList });
   const recipe = (t, cv, uses, text, s) => [statusTag(s), [h('b', null, t), ': ', text, h('span', { class: 'muted' }, ` uses ${uses.join(', ')}.`)], cv];
   paint(ctx, head(ctx, { extra: h('span', { class: 'muted' }, headTag) }),
     h('p', { class: 'note' }, 'Switches and single lines save at once (Enter saves, Esc undoes); the broker connection lines save together. Nothing leaves the server until publishing is on.'),
     tesla.el,
+    teslafi.el,
     section({ title: 'mqtt', id: 'mqtt', side: mqttTag }, brokerSlot, h('p', { class: 'sub-title' }, 'status'), statusSlot, logSlot,
       h('p', { class: 'note', cover: 'nr.setup.mqtt' }, 'Connect a client: Node-RED, Home Assistant or any MQTT client uses this broker. Subscribe to ', code(`${ns()}/cars/+/#`), ' for every car, or ', code(`${ns()}/cars/<car id>/#`), ' for one. Use TLS as here.')),
     section({ title: 'mqtt topics', side: h('span', { class: 'muted' }, 'layout and rules') }, topicsSlot),
@@ -559,6 +562,6 @@ export async function mount(ctx) {
         [tag('mqtt', 'muted'), 'garage door openers that act on arrival and departure, by place: good for closing behind you, late for opening.', 'projects.geogdo'],
       ])));
   paintLog();
-  await Promise.all([valuesT?.ready, eventsT?.ready, netT?.ready, tesla.load(), ...(S.haTables || []).map((t) => t.ready)].filter(Boolean)).catch(() => {});
+  await Promise.all([valuesT?.ready, eventsT?.ready, netT?.ready, tesla.load(), teslafi.load(), ...(S.haTables || []).map((t) => t.ready)].filter(Boolean)).catch(() => {});
   if (ctx.alive()) ctx.ready();
 }
