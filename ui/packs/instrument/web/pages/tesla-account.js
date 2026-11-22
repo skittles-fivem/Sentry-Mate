@@ -408,6 +408,8 @@ export function teslaSection(ctx, { cars = [] } = {}) {
             : next && c.mode !== 'off' ? h('span', { class: 'sub' }, `Next read ${time(next, tz)}`) : h('span', { class: 'sub' }, mode[1]))),
         h('td', { class: 'num' }, sv.last_data_ms ? h('span', { title: dateTime(sv.last_data_ms, tz) }, h('span', { class: 'ta-cell-label' }, 'Last data '), ago(sv.last_data_ms)) : h('span', null, h('span', { class: 'ta-cell-label' }, 'Last data '), h('span', { class: 'faint' }, 'none yet'))));
     });
+    // a waiting suggestion is already picked: it can be saved as it is
+    sync();
     return h('div', { class: 'ta-cars' },
       h('div', { class: 'ta-cars-head' }, h('span', { class: 'metric-label' }, `Its cars (${items.length})`), saveBtn),
       problem,

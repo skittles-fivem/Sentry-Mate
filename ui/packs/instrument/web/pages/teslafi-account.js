@@ -315,6 +315,8 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
           next ? h('span', { class: ['sub', sv.mode === 'backoff' && 'warn'] }, `${sv.mode === 'backoff' ? 'Next try' : 'Next read'} ${time(next, tz)} (in ${dur(Math.max(0, next - ctx.api.now()))})`) : h('span', { class: 'sub' }, c.current ? 'none planned' : 'another car on the account'))),
         h('td', { class: 'num' }, c.current && sv.last_data_ms ? h('span', { title: dateTime(sv.last_data_ms, tz) }, h('span', { class: 'ta-cell-label' }, 'Last data '), ago(sv.last_data_ms)) : h('span', null, h('span', { class: 'ta-cell-label' }, 'Last data '), h('span', { class: 'faint' }, 'none yet'))));
     });
+    // a waiting suggestion is already picked: it can be saved as it is
+    saveBtn.hidden = !changed().length;
     return h('div', { class: 'ta-cars' },
       h('div', { class: 'ta-cars-head' }, h('span', { class: 'metric-label' }, items.length === 1 ? 'Its car' : `Its cars (${items.length})`), saveBtn),
       h('div', { class: 'tbl-scroll' }, h('table', { class: 'tbl ta-tbl' },
