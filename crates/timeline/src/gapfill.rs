@@ -107,7 +107,7 @@ pub fn fill(live: &[Sample], import: &[Sample], p: &FuseParams, how: How) -> Fil
     if own {
         // a live value still inside its hold time stands for its field there: the import's second never shows
         // another one (it keeps only the values live has none of then, and with `values` off it is left out)
-        let held: Vec<Field<'_>> = SLOTS.iter().map(|slot| Field::new(&live, slot.has)).collect();
+        let held: Vec<Field<'_>> = SLOTS.iter().map(|slot| Field::of(&live, slot.has)).collect();
         for a in import.iter().filter(|a| !covered(a.t_ms)) {
             let mut x = (*a).clone();
             let mut live_then = false;
