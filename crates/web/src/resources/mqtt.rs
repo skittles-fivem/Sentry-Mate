@@ -813,7 +813,7 @@ async fn publish_car(e: &Engine, m: &Arc<mqtt::Mqtt>, car: CarId, no_place: &Arc
     })
     .await;
     if let Ok(Err(err)) = r {
-        tracing::debug!("MQTT: car {car} not published: {}", err.message);
+        tracing::debug!("MQTT: car {car} was not published: {}", err.message);
     }
 }
 
