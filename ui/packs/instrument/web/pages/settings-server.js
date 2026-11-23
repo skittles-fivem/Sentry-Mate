@@ -786,7 +786,7 @@ export async function mount(ctx) {
       } });
     fullPanel = panel({ title: 'Full rebuild', icon: 'reset', pad: true, id: 'full-rebuild' },
       full.el, staleLine,
-      setting('Rebuild automatically', 'When a new server version decodes the stored logs differently, the cars whose history was made the old way are rebuilt by themselves at its start. Off, a notice offers it instead.',
+      setting('Rebuild automatically', 'When a new server version decodes the stored logs differently, the cars whose history was made the old way are rebuilt by themselves, once for that version: 10 minutes after the start, unless you start it now, put it off until tonight or pause it. Off, a notice offers it instead.',
         h('div', { class: 'switch-row switch-row--inline' }, h('span', { class: 'switch' }, autoInput, h('i', { 'aria-hidden': 'true' })), autoState)));
   }
 

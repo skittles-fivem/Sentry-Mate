@@ -184,6 +184,9 @@
 .fr-errors-head { margin: 0 0 round(0.25rem, var(--e)); color: var(--text-3); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
 .fr-errors { display: flex; flex-direction: column; gap: round(0.125rem, var(--e)); margin: 0; padding: 0; list-style: none; }
 .fr-errors li { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; height: round(2.5rem, var(--e)); overflow: hidden; overflow-wrap: anywhere; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+/* the recent rebuilds: as the problems, in the plain text colour whatever the tone */
+.fr-history { display: flex; flex-direction: column; gap: round(0.125rem, var(--e)); margin: 0; padding: 0; list-style: none; }
+.fr-history li { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; height: round(2.5rem, var(--e)); overflow: hidden; overflow-wrap: anywhere; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
 .fr-panel[data-tone="error"] .fr-errors li, .fr-panel[data-tone="warn"] .fr-errors li { color: var(--warm); }
 .fr-panel[data-tone="error"] .fr-errors li:last-child:not(:empty) { color: var(--danger); }
 .fr-intro { margin: 0 0 round(0.75rem, var(--e)); }
@@ -200,3 +203,5 @@
 /* Rebuild all data at the bottom of the health card: the full rebuild block (below) over the whole width */
 .hl-full { display: block; }
 .hl-full > .hl-sub { margin-top: 0; }
+/* the buttons beside the full rebuild (start now, tonight, pause) wrap on a narrow screen */
+.fr-acts { flex-wrap: wrap; }
