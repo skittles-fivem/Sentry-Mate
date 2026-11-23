@@ -24,6 +24,8 @@
   {"code":"import-cars","group":"imports","item":"import"},
   {"code":"import-created","group":"imports","item":"import"},
   {"code":"import-discarded","group":"imports","item":"import"},
+  {"code":"import-rows-ignored","group":"imports","item":"import-hold"},
+  {"code":"import-rows-moved","group":"imports","item":null},
   {"code":"import-started","group":"imports","item":"import"},
   {"code":"import-uploaded","group":"imports","item":"import"},
   {"code":"invoices-downloaded","group":"integrations","item":null},

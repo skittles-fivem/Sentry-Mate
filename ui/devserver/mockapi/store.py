@@ -102,6 +102,12 @@ class Store:
         self.release_checked_ms = None if rc in ("off", "never") else now - 2 * 3_600_000
         self.mqtt = extras.mqtt(now)
         self.imports = extras.imports(now, ds.history("c3"))
+        # a TeslaFi import whose rows were checked again: a move, and rows that wait for a car
+        self.holds = {}
+        if self.imports and ds.exists("c1") and ds.exists("c2"):
+            job, self.holds = extras.teslafi_rehomed(now)
+            job["_holds"] = self.holds
+            self.imports[job["id"]] = job
         self.storage = extras.storage(now)
         self.compaction = None  # the compaction's state, made on the first read (resources/system.py)
         from .resources import moving
