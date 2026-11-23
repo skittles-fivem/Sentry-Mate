@@ -1,6 +1,11 @@
 // Sentry Mate, "Pebble" UI pack: Settings: Integrations (/settings/integrations).
 //
-// The Tesla account first (a second live input beside SMO, pages/tesla.js, admins only), TeslaFi (a third,
+// Two tabs in the pack's segmented control, kept in the address (?tab=setup; Overview is the default): Overview,
+// every connection the server keeps with its status, counts, sparkline and problems (pages/connections.js), and
+// Set up, everything below. A link with #tesla, #teslafi, #teslamate, #mqtt (or any part of Set up) opens Set up
+// and lands there.
+//
+// Set up: the Tesla account first (a second live input beside SMO, pages/tesla.js, admins only), TeslaFi (a third,
 // pages/teslafi.js, #teslafi), then sending the cars'
 // live values to other systems, if the owner wants to. One card per integration, each with its
 // status: the MQTT broker (publishing switch, connection form, a test, live counts), the topic layout and its rules,
@@ -26,9 +31,12 @@ import { copyButton } from './move-parts.js';
 import { teslaTiles } from './tesla.js';
 import { teslafiTiles } from './teslafi.js';
 import { teslamateTiles } from './teslamate.js';
+import { connectionsOverview } from './connections.js';
+import { segmented } from '../core/form.js';
 
 export const id = 'settings-integrations';
-export const shape = [['full', 'h1'], [2, 'h3'], [2, 'h3'], [2, 'h2'], [2, 'h2']];
+export const css = true;
+export const shape = [['full', 'h1'], ['full', 'h1'], [2, 'h3'], [2, 'h3'], [2, 'h3'], [2, 'h3']];
 export const title = () => 'Integrations';
 
 const DAY = 864e5;
@@ -213,7 +221,8 @@ export async function mount(ctx) {
   const tesla = teslaTiles(ctx, { cars: allCars });
   const teslafi = teslafiTiles(ctx, { cars: allCars });
   const teslamate = teslamateTiles(ctx, { cars: allCars });
-  await Promise.all([tesla.load(), teslafi.load(), teslamate.load()]);
+  const overview = connectionsOverview(ctx);
+  await Promise.all([tesla.load(), teslafi.load(), teslamate.load(), overview.load()]);
   if (!ctx.alive()) return {};
   let carId = (ctx.query.car && cars.some((c) => c.id === ctx.query.car) ? ctx.query.car : null) || state.preferredCar(cars);
   let pv = null;
@@ -263,7 +272,7 @@ export async function mount(ctx) {
   function brokerTile() {
     const covers = ['docs.env.mqtt.disable-mqtt', 'docs.env.mqtt.mqtt-host', 'docs.env.mqtt.mqtt-port', 'docs.env.mqtt.mqtt-username', 'docs.env.mqtt.mqtt-password', 'docs.env.mqtt.mqtt-tls', 'docs.env.mqtt.mqtt-tls-accept-invalid-certs', 'docs.env.mqtt.mqtt-ipv6', 'docs.env.mqtt.mqtt-namespace'];
     if (!cfg) {
-      return tile({ w: 2, title: 'MQTT broker', icon: 'plug', side: headChip(), cover: covers },
+      return tile({ w: 2, title: 'MQTT broker', icon: 'plug', id: 'mqtt', side: headChip(), cover: covers },
         said('info', 'Only an admin sees and changes the broker settings. The status, the preview and the events are yours to read.'),
         group(null, [infoRow({ name: 'Publishing', side: h('span', { class: 'set-value' }, status && status.enabled ? 'On' : 'Off') }),
           infoRow({ name: 'Broker', side: h('span', { class: 'set-value' }, status && status.broker ? `${status.broker}${status.tls ? ', TLS' : ''}` : 'Not set') }),
@@ -317,7 +326,7 @@ export async function mount(ctx) {
       if (!await confirmSheet({ title: 'Remove the password?', text: 'The broker password is deleted from Sentry Mate. Publishing then connects without one.', yes: 'Remove', danger: true })) return;
       await save({ password: null }, 'Password removal');
     } }) : null;
-    return tile({ w: 2, title: 'MQTT broker', icon: 'plug', side: headChip() },
+    return tile({ w: 2, title: 'MQTT broker', icon: 'plug', id: 'mqtt', side: headChip() },
       group(null, [onSw]), f, removePw, testOut);
   }
 
@@ -546,10 +555,40 @@ export async function mount(ctx) {
   /* ---------- the car for the preview */
   const carPills = cars.length > 1 ? pills({ label: 'Preview for', value: carId, options: cars.map((c) => [c.id, c.name || c.id, state.isSold(c)]), onchange: async (v) => { carId = v; state.rememberCar(v, { sold: state.isSold(cars.find((c) => c.id === v)) }); ctx.setQuery({ car: v }); await loadCar(); if (ctx.alive()) draw(); } }) : null;
 
+  /* ---------- the two tabs: Overview (the default) and Set up; the tab is in the address */
+  const overviewPane = h('div', { class: 'contents si-pane', id: 'overview', role: 'tabpanel', 'aria-label': 'Overview' }, overview.el);
+  const setupPane = h('div', { class: 'contents si-pane', id: 'setup', role: 'tabpanel', 'aria-label': 'Set up' });
+  const hashId = () => { try { return decodeURIComponent((location.hash || '').slice(1)); } catch { return ''; } };
+  // the tab the address asks for: ?tab=, else the tab holding #part, else Overview
+  const tabFor = (query) => {
+    if (query.tab === 'setup' || query.tab === 'overview') return query.tab;
+    const k = hashId();
+    const target = k ? document.getElementById(k) : null;
+    return k && k !== 'overview' && (!target || !overviewPane.contains(target)) ? 'setup' : 'overview';
+  };
+  let tab = null;
+  const tabs = segmented({ name: 'Integrations view', value: 'overview', cls: 'si-tabs', options: [['overview', 'Overview'], ['setup', 'Set up']],
+    onchange: (v) => { show(v); ctx.setQuery({ tab: v === 'overview' && !location.hash ? null : v }); } });
+  const tabBar = h('div', { class: 'page-bar w-full si-tabbar' }, tabs);
+  function show(v) {
+    tab = v;
+    tabs.set(v);
+    overviewPane.hidden = v !== 'overview';
+    setupPane.hidden = v !== 'setup';
+  }
+  function land() {
+    const k = hashId();
+    const target = k ? document.getElementById(k) : null;
+    if (target && !target.closest('[hidden]')) target.scrollIntoView({ block: 'start' });
+  }
+  // an in-page link (#tesla from a card): open the tab holding it, then land on it
+  // (the browser's popstate for it took data-ready away; the page is still ready)
+  ctx.on(window, 'hashchange', () => { if (!ctx.alive()) return; show(tabFor({})); land(); ctx.ready(); });
+
   function draw() {
     statusEl = statusTile();
     ctx.head({ actions: [headChip()] });
-    ctx.view.replaceChildren(
+    setupPane.replaceChildren(
       tile({ w: 'full', cls: 'tile-intro' }, said('ok', admin ? 'Switches and single fields save at once and a toast confirms it; the broker connection saves with its button. Nothing leaves the server until publishing is on. Tesla account, TeslaFi and local TeslaMate changes ask for your password again.' : 'Your account can read these; an admin changes them.')),
       tesla.el,
       teslafi.el,
@@ -564,6 +603,16 @@ export async function mount(ctx) {
       ...worksTiles());
   }
   draw();
+  ctx.view.replaceChildren(tabBar, overviewPane, setupPane);
+  show(tabFor(ctx.query));
+  overview.start();
   ctx.ready();
-  return {};
+  return {
+    /** Back, forward or a link to this page with another ?tab= or #part: switch the tab without a remount. */
+    onQuery(query) {
+      if (query.car && query.car !== carId && cars.some((c) => c.id === query.car)) { ctx.reload(); return; }
+      show(tabFor(query));
+      requestAnimationFrame(() => { if (ctx.alive()) land(); });
+    },
+  };
 }

@@ -1,0 +1,79 @@
+/* Pebble: Settings: Integrations. The two tabs, and the Connections overview (pages/connections.js). */
+.contents.si-pane[hidden] { display: none; }
+.si-tabbar { justify-content: flex-start; }
+.si-tabs { min-width: min(100%, round(20rem, var(--e))); }
+html[data-form="phone"] .si-tabs { width: 100%; }
+
+/* status tones: live teal, idle sky, paused sun, off muted, problem bad */
+:is(.cn-card, .cn-tot-i).is-live { --tone: var(--teal); --tone-soft: var(--teal-soft); }
+:is(.cn-card, .cn-tot-i).is-idle { --tone: var(--sky); --tone-soft: var(--sky-soft); }
+:is(.cn-card, .cn-tot-i).is-paused { --tone: var(--sun); --tone-soft: var(--sun-soft); }
+:is(.cn-card, .cn-tot-i).is-off { --tone: var(--muted); --tone-soft: var(--card-alt); }
+:is(.cn-card, .cn-tot-i).is-problem { --tone: var(--bad); --tone-soft: var(--bad-soft); }
+.cn-light { display: block; flex: none; width: var(--dot); height: var(--dot); border-radius: 50%; background: var(--tone, var(--muted)); }
+.cn-card.is-live .cn-light { box-shadow: 0 0 0 var(--s1) var(--teal-soft); }
+
+/* the totals: five counters in one row, also on a phone */
+.cn-tot { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.cn-tot-i { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s1); min-width: 0; padding: var(--s3) var(--s4); border-radius: var(--r-sm); background: var(--tone-soft); }
+.cn-tot-n { font-size: var(--f28); line-height: var(--l28); font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.cn-tot-k { display: flex; align-items: center; gap: var(--s2); min-width: 0; font-size: var(--f13); line-height: var(--l13); font-weight: 700; color: var(--tone); white-space: nowrap; }
+html[data-form="phone"] .cn-tot-i { padding: var(--s2); align-items: center; }
+html[data-form="phone"] .cn-tot-k { gap: var(--s1); }
+html[data-form="phone"] .cn-tot-k .cn-light { display: none; }
+
+/* one card per connection */
+.cn-card { gap: var(--s3); color: var(--text); }
+.cn-top { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; column-gap: var(--s3); min-height: var(--h-sm); }
+.cn-label { margin: 0; font-size: var(--f16); line-height: var(--l16); font-weight: 800; overflow-wrap: anywhere; }
+.cn-status { display: inline-flex; align-items: center; gap: var(--s2); height: var(--h-chip); padding: 0 var(--s3); border-radius: 999px; background: var(--tone-soft); color: var(--tone); font-size: var(--f13); line-height: var(--l13); font-weight: 800; white-space: nowrap; }
+.cn-go { width: var(--ic-sm); height: var(--ic-sm); color: var(--muted); }
+.cn-card:hover .cn-go { color: var(--coral); }
+.cn-reason { margin: 0; min-height: var(--l14); font-size: var(--f14); line-height: var(--l14); font-weight: 700; color: var(--tone, var(--text)); }
+.cn-card.is-off .cn-reason, .cn-card.is-live .cn-reason { color: var(--muted); }
+
+.cn-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--s5); margin: 0; }
+html[data-form="phone"] .cn-facts { grid-template-columns: minmax(0, 1fr); }
+.cn-fact { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3); padding: var(--s2) 0; border-top: 1px solid var(--card-alt); min-width: 0; }
+.cn-fact dt { flex: none; font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
+.cn-fact dd { margin: 0; min-width: 0; font-size: var(--f14); line-height: var(--l14); font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* the last error: two lines kept for it, so a longer message never pushes the card */
+.cn-err { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s2) var(--s3); border-radius: var(--r-sm); background: var(--well); }
+.cn-card.has-err .cn-err { background: var(--sun-soft); }
+.cn-err-head { display: flex; justify-content: space-between; gap: var(--s3); font-size: var(--f13); line-height: var(--l13); }
+.cn-err-k { font-weight: 800; }
+.cn-err-at { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cn-err-text { margin: 0; height: calc(2 * var(--l13)); font-size: var(--f13); line-height: var(--l13); color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+.cn-card.has-err .cn-err-text { color: var(--text); }
+
+/* the 24 h sparkline: one bar per hour, error hours red */
+.cn-spark-box { margin-top: auto; height: var(--s10); }
+.cn-spark { display: block; width: 100%; height: 100%; }
+.cn-bar { fill: var(--tone, var(--teal)); }
+.cn-card.is-off .cn-bar, .cn-card.is-idle .cn-bar, .cn-card.is-paused .cn-bar { fill: var(--sky); }
+.cn-card.is-problem .cn-bar { fill: var(--muted); }
+.cn-bar.is-zero { fill: var(--card-alt); }
+.cn-bar.is-err { fill: var(--bad); }
+.cn-spark-axis { display: flex; justify-content: space-between; font-size: var(--f13); line-height: var(--l13); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* the problems of the last 7 days: rows on a wide screen, small cards on a phone */
+.cn-probs { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.cn-prob { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.2fr) minmax(0, 2.6fr) minmax(0, 0.9fr) auto; column-gap: var(--s4); align-items: baseline; padding: var(--s3) 0; border-top: 1px solid var(--card-alt); font-size: var(--f14); line-height: var(--l14); }
+.cn-prob-head { border-top: 0; padding-top: 0; font-size: var(--f13); line-height: var(--l13); font-weight: 700; color: var(--muted); }
+.cn-prob-head > :last-child { min-width: round(6rem, var(--e)); }
+.cn-prob-at, .cn-prob-dur { font-variant-numeric: tabular-nums; }
+.cn-prob-conn { font-weight: 800; overflow-wrap: anywhere; }
+.cn-prob-what { overflow-wrap: anywhere; }
+.cn-prob-st { min-width: round(6rem, var(--e)); display: flex; justify-content: flex-end; }
+.cn-prob.is-open .cn-prob-dur { color: var(--bad); font-weight: 700; }
+.cn-prob-none { padding: var(--s3) 0; font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+html[data-form="phone"] .cn-prob-head { display: none; }
+html[data-form="phone"] .cn-prob { grid-template-columns: minmax(0, 1fr) auto; row-gap: var(--s1); }
+html[data-form="phone"] .cn-prob:first-child { border-top: 0; padding-top: 0; }
+html[data-form="phone"] .cn-prob-at { grid-column: 1; grid-row: 1; color: var(--muted); font-size: var(--f13); line-height: var(--l13); }
+html[data-form="phone"] .cn-prob-st { grid-column: 2; grid-row: 1 / span 2; align-self: start; min-width: 0; }
+html[data-form="phone"] .cn-prob-conn { grid-column: 1; grid-row: 2; }
+html[data-form="phone"] .cn-prob-what { grid-column: 1 / -1; grid-row: 3; }
+html[data-form="phone"] .cn-prob-dur { grid-column: 1 / -1; grid-row: 4; color: var(--muted); font-size: var(--f13); line-height: var(--l13); }
+.cn-read { min-height: var(--l14); }
