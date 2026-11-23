@@ -24,6 +24,7 @@ use crate::logged::{LEVEL_COLD, Logged, LoggedFile, append_only, snapshot_head};
 use columns::{Reader, put_varint};
 use model::Stream;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub const DAY_MS: u64 = 86_400_000;
 
@@ -316,12 +317,49 @@ fn days_in(dir: &Path, from: u64, to: u64) -> Result<Vec<u64>> {
         .collect())
 }
 
+/// A day's snapshot opened and unpacked (its generation and body), from the cache of days read last while its file
+/// is the same ([`crate::plain`]). `None`: there is no snapshot.
+fn snapshot_plain(ctx: &Ctx, files: &Files) -> Result<Option<crate::plain::Plain>> {
+    let Some(st) = crate::plain::stamp(&files.snap)? else { return Ok(None) };
+    if let Some(p) = ctx.plain.get(&files.snap, st) {
+        return Ok(Some(p));
+    }
+    let label = ctx.label(&files.snap);
+    let Some(b) = ctx.read(&files.snap)? else { return Ok(None) };
+    let body = check_header(&b, Kind::Segment, &label)?;
+    let generation = body
+        .get(..8)
+        .and_then(|g| <[u8; 8]>::try_from(g).ok())
+        .map(u64::from_be_bytes)
+        .ok_or_else(|| Error::Damaged { file: label.clone(), why: "snapshot header cut short".into() })?;
+    let plain = body.get(9..).ok_or_else(|| Error::Corrupt("cut short".into())).and_then(codec::decompress);
+    let p = Arc::new((generation, zeroize::Zeroizing::new(plain.map_err(|e| e.in_file(&label))?)));
+    // kept only when the file read is the one looked at (a day written meanwhile is read again next time)
+    if crate::plain::stamp(&files.snap)? == Some(st) {
+        ctx.plain.put(&files.snap, st, p.clone());
+    }
+    Ok(Some(p))
+}
+
+/// A day's points: from its snapshot alone (through the cache) when its journal is empty, else snapshot and journal.
+fn day_points<P: Point>(ctx: &Ctx, files: Files) -> Result<Vec<P>> {
+    if !files.log.exists() {
+        let label = ctx.label(&files.snap);
+        return match snapshot_plain(ctx, &files)? {
+            Some(p) => Ok(DayLog::<P>::decode_state(&p.1).map_err(|e| e.in_file(&label))?.points),
+            None if files.log.exists() => Ok(LoggedFile::<DayLog<P>>::read_state(ctx, files)?.points),
+            None => Ok(Vec::new()),
+        };
+    }
+    Ok(LoggedFile::<DayLog<P>>::read_state(ctx, files)?.points)
+}
+
 /// Every point of `[from, to)`, in time order.
 pub(crate) fn read<P: Point>(ctx: &Ctx, car_dir: &Path, source: Stream, from: u64, to: u64) -> Result<Vec<P>> {
     let dir = series_dir::<P>(car_dir, source);
     let mut out = Vec::new();
     for day in days_in(&dir, from, to)? {
-        let pts = LoggedFile::<DayLog<P>>::read_state(ctx, day_files(&dir, day))?.points;
+        let pts = day_points::<P>(ctx, day_files(&dir, day))?;
         let a = pts.partition_point(|p| p.t_ms() < from);
         let b = pts.partition_point(|p| p.t_ms() < to);
         out.extend(pts.into_iter().skip(a).take(b - a));
@@ -345,7 +383,7 @@ pub(crate) fn read_fields<P: Point>(
     for day in days_in(&dir, from, to)? {
         let files = day_files(&dir, day);
         let fields = if files.log.exists() {
-            let points = LoggedFile::<DayLog<P>>::read_state(ctx, files)?.points;
+            let points = day_points::<P>(ctx, files)?;
             let mut f = Fields::new(names);
             f.t_ms = points.iter().map(Point::t_ms).collect();
             for ((_, v), c) in f.values.iter_mut().zip(&cols) {
@@ -354,10 +392,8 @@ pub(crate) fn read_fields<P: Point>(
             f
         } else {
             let label = ctx.label(&files.snap);
-            let Some(b) = ctx.read(&files.snap)? else { continue };
-            let body = check_header(&b, Kind::Segment, &label)?;
-            let plain = body.get(9..).ok_or_else(|| Error::Corrupt("cut short".into())).and_then(codec::decompress);
-            decode_fields::<P>(&plain.map_err(|e| e.in_file(&label))?, names).map_err(|e| e.in_file(&label))?
+            let Some(p) = snapshot_plain(ctx, &files)? else { continue };
+            decode_fields::<P>(&p.1, names).map_err(|e| e.in_file(&label))?
         };
         out.extend_range(fields, from, to);
     }

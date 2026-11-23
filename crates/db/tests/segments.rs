@@ -180,3 +180,36 @@ fn charge_points(t0: u64, n: u64) -> Vec<ChargePoint> {
         .map(|i| ChargePoint { t_ms: t0 + i * 1000, power_kw: Some(11.0), soc: Some(50.0), ..ChargePoint::default() })
         .collect()
 }
+
+#[test]
+fn a_day_read_again_after_a_write_has_the_new_points_and_versions_move_on() {
+    let t = test_db(Options::default());
+    let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
+    let v0 = t.db.version(car);
+    // a whole day, written whole (a snapshot), read twice: the second read comes from the kept day
+    let day = samples(DAY0, 600);
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + DAY_MS, &day).unwrap();
+    let v1 = t.db.version(car);
+    assert!(v1.live > v0.live && v1.imported == v0.imported, "{v0:?} {v1:?}");
+    for _ in 0..2 {
+        assert_eq!(t.db.read_points::<Sample>(car, Source::Live, DAY0, DAY0 + DAY_MS).unwrap(), day);
+        let f = t.db.read_fields::<Sample>(car, Source::Live, DAY0, DAY0 + DAY_MS, &["soc"]).unwrap();
+        assert_eq!(f.t_ms.len(), 600);
+    }
+    // the day written whole again with other values: read again, never the kept one
+    let mut again = samples(DAY0, 300);
+    for s in &mut again {
+        s.soc = Some(12.0);
+    }
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + DAY_MS, &again).unwrap();
+    assert!(t.db.version(car).live > v1.live);
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Live, DAY0, DAY0 + DAY_MS).unwrap(), again);
+    let f = t.db.read_fields::<Sample>(car, Source::Live, DAY0, DAY0 + DAY_MS, &["soc"]).unwrap();
+    assert_eq!(f.t_ms.len(), 300);
+    assert!(f.values[0].1.iter().all(|v| *v == Some(12.0)));
+    // an imported day moves only the imported part; a place moves the shared part
+    let v2 = t.db.version(car);
+    t.db.write_points(car, Source::Teslamate, DAY0, DAY0 + DAY_MS, &day).unwrap();
+    let v3 = t.db.version(car);
+    assert!(v3.imported > v2.imported && v3.live == v2.live && v3.shared == v2.shared, "{v2:?} {v3:?}");
+}

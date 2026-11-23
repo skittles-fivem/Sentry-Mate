@@ -48,6 +48,7 @@ pub mod importer;
 pub mod jobs;
 mod pipeline;
 pub use pipeline::NEW_CAR_NAME;
+mod memo;
 pub mod placing;
 pub mod query;
 pub mod records;
@@ -239,6 +240,8 @@ pub(crate) struct Inner {
     pub(crate) gap_fill: std::sync::atomic::AtomicBool,
     /// Per car, the position its zone was last looked up at and the zone found there ([`Inner::car_zone`]).
     zone_at: Mutex<HashMap<CarId, ZoneAt>>,
+    /// Answers' parts kept while their data stays the same.
+    pub(crate) memo: memo::Memo,
 }
 
 /// Where a car's zone was last looked up (latitude, longitude) and the zone found there.
@@ -341,6 +344,7 @@ impl Engine {
                 default_zone: RwLock::new(opts.default_time_zone.clone()),
                 gap_fill: std::sync::atomic::AtomicBool::new(true),
                 zone_at: Mutex::new(HashMap::new()),
+                memo: memo::Memo::default(),
                 opts,
             }),
         }

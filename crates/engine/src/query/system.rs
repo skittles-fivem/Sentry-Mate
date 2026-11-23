@@ -54,7 +54,13 @@ pub(crate) struct Sites(Vec<(u64, u64, ImportSite)>);
 
 impl Sites {
     pub(crate) fn new(e: &Engine, car: CarId) -> QResult<Sites> {
-        Ok(Sites::of(&import_pairs(e, car, &choices(e, car)?.sites)?))
+        // worked out again only when the imports or the choices change (it may read every position both imports
+        // have where they overlap)
+        let ch = choices(e, car)?;
+        let kept = e.memo(car, "import-sites", crate::memo::On::Imported, crate::memo::key(&ch.sites), || {
+            Ok::<_, QueryError>(Sites::of(&import_pairs(e, car, &ch.sites)?))
+        })?;
+        Ok((*kept).clone())
     }
 
     fn of(pairs: &[Pair]) -> Sites {
@@ -95,7 +101,7 @@ impl Shown {
         if filter.is_some() || !imported {
             return Ok(Shown { filter, coverage: Vec::new(), flips: Vec::new(), sites });
         }
-        Ok(Shown { filter, coverage: imported_coverage(e, car)?, flips: flips(e, car)?, sites })
+        Ok(Shown { filter, coverage: imported_coverage(e, car)?.to_vec(), flips: flips(e, car)?, sites })
     }
 
     /// Whether a row of `source` from `inputs`, starting at `t`, is shown.
@@ -592,12 +598,13 @@ fn pair_overlaps(e: &Engine, car: CarId, ch: &Choices, pairs: Vec<Pair>) -> QRes
     Ok(items)
 }
 
-/// The CAN coverage where imported history exists (none when nothing was imported).
-fn imported_coverage(e: &Engine, car: CarId) -> QResult<Vec<(u64, u64)>> {
-    match imported_span(e, car)? {
+/// The CAN coverage where imported history exists (none when nothing was imported); kept while the car's data
+/// stays the same.
+fn imported_coverage(e: &Engine, car: CarId) -> QResult<std::sync::Arc<Vec<(u64, u64)>>> {
+    e.memo(car, "imported-coverage", crate::memo::On::All, 0, || match imported_span(e, car)? {
         Some((lo, hi)) => can_coverage(e, car, lo, hi),
         None => Ok(Vec::new()),
-    }
+    })
 }
 
 /// The live spans flipped to show the imported side (in order, apart): a series shows the import there.
@@ -607,7 +614,8 @@ pub(crate) fn flipped_spans(e: &Engine, car: CarId) -> QResult<Vec<(u64, u64)>> 
         return Ok(Vec::new());
     }
     Ok(imported_coverage(e, car)?
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|s| chosen_for(&fl, s.0, s.1).is_some_and(|f| f.shown == "teslamate"))
         .collect())
 }
@@ -617,7 +625,8 @@ fn all_overlaps(e: &Engine, car: CarId) -> QResult<Vec<Overlap>> {
     let ch = choices(e, car)?;
     let pairs = import_pairs(e, car, &ch.sites)?;
     let sites = Sites::of(&pairs);
-    let mut items = overlaps_of(e, car, &imported_coverage(e, car)?, &flips(e, car)?, &sites, ch.changes + 1)?;
+    let mut items =
+        overlaps_of(e, car, imported_coverage(e, car)?.as_slice(), &flips(e, car)?, &sites, ch.changes + 1)?;
     items.extend(pair_overlaps(e, car, &ch, pairs)?);
     Ok(items)
 }
@@ -666,7 +675,7 @@ pub fn set_overlap(
         let pairs = import_pairs(e, car, &ch.sites)?;
         pair_overlaps(e, car, &ch, pairs)?.into_iter().find(|o| o.start_ms == start).ok_or_else(none)?
     } else {
-        let span = imported_coverage(e, car)?.into_iter().find(|s| s.0 == start).ok_or_else(none)?;
+        let span = imported_coverage(e, car)?.iter().copied().find(|s| s.0 == start).ok_or_else(none)?;
         let sites = Sites::new(e, car)?;
         overlaps_of(e, car, &[span], &flips(e, car)?, &sites, ch.changes + 1)?.into_iter().next().ok_or_else(none)?
     };
