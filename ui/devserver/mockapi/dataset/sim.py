@@ -210,7 +210,15 @@ class Sim:
         while not stop and self.t < self.plan_end:
             rel = (day - self.now_day).days
             rnd = self.rnd("day", day.isoformat())
-            for tr in planner(self.car, day, rel, rnd):
+            plan = planner(self.car, day, rel, rnd)
+            per_day = getattr(self.car, "errands_per_day", 0)
+            if per_day and rel < 0 and plan and plan[-1]["to"] == self.car.home:
+                # --drives: short errands from home in the evening (a separate draw, so the rest stays as it was)
+                er = self.rnd("errands", day.isoformat())
+                n = int(per_day) + (1 if er.random() < per_day - int(per_day) else 0)
+                for _ in range(n):
+                    plan += [trip(er.choice(("p10", "p6", "p5")), dwell=(12, 25)), trip(self.car.home, dwell=(10, 20))]
+            for tr in plan:
                 if tr["at_ms"] is not None:
                     dep = tr["at_ms"]
                 elif tr["hour"] is None:

@@ -125,6 +125,61 @@ pub fn response(name: &str, body: String) -> Response {
     res
 }
 
+/// Rows (of one shape) as a CSV answer named `<name>.csv`, written a chunk at a time while it is sent: the columns
+/// are the first row's (in its order), a value another row has under a new name is left out.
+pub fn stream<T: serde::Serialize + Send + 'static>(name: &str, rows: Vec<T>) -> Response {
+    const CHUNK: usize = 256;
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
+    tokio::task::spawn_blocking(move || {
+        let mut columns: Vec<String> = Vec::new();
+        let mut out = String::from("\u{feff}");
+        for (i, row) in rows.iter().enumerate() {
+            let item = serde_json::to_value(row).unwrap_or(Value::Null);
+            let mut flat = Vec::new();
+            flatten("", &item, &mut flat);
+            if i == 0 {
+                columns = flat.iter().map(|(k, _)| k.clone()).collect();
+                out.push_str(&columns.iter().map(|c| cell(c, false)).collect::<Vec<_>>().join(","));
+                out.push_str("\r\n");
+            }
+            let values: std::collections::HashMap<String, String> = flat.into_iter().collect();
+            let line: Vec<String> = columns
+                .iter()
+                .map(|c| cell(values.get(c).map_or("", String::as_str), is_number_at(&item, c)))
+                .collect();
+            out.push_str(&line.join(","));
+            out.push_str("\r\n");
+            if (i + 1) % CHUNK == 0 && tx.blocking_send(Ok(bytes::Bytes::from(std::mem::take(&mut out)))).is_err() {
+                return; // the download was cancelled
+            }
+        }
+        if !out.is_empty() {
+            let _ = tx.blocking_send(Ok(bytes::Bytes::from(out)));
+        }
+    });
+    let mut res = axum::body::Body::from_stream(Chunks(rx)).into_response();
+    let safe: String =
+        name.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' }).collect();
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/csv; charset=utf-8"));
+    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{safe}.csv\"")) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    res
+}
+
+struct Chunks(tokio::sync::mpsc::Receiver<Result<bytes::Bytes, std::io::Error>>);
+
+impl futures_core::Stream for Chunks {
+    type Item = Result<bytes::Bytes, std::io::Error>;
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.0.poll_recv(cx)
+    }
+}
+
 /// A list answer as CSV when asked (`items` of `answer`, or its columns), else as JSON. Something that is neither
 /// asked for as CSV is `400` on `format`.
 pub fn answer(q: &crate::Params, name: &str, answer: Value) -> ApiResult<Response> {

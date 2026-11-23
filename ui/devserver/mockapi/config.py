@@ -52,6 +52,7 @@ class Config:
     release_check: str = "off"
     teslamate_trouble: str = "none"
     full_rebuild: str = "none"
+    drives: int = 0
 
 
 def parse_args(argv=None) -> Config:
@@ -100,9 +101,14 @@ def parse_args(argv=None) -> Config:
                     help="start with a full rebuild of every car under way (running: a long one, a third through), "
                          "one that failed on the second car (failed), or the first car's history made with an older "
                          "decoding and the automatic run off (offered: the notice offers one)")
+    ap.add_argument("--drives", type=int, default=0,
+                    help="give car c1 about this many drives in all (short errands from home added each day; "
+                         "0: the usual history, about 1150)")
     a = ap.parse_args(argv)
     if a.cars < 0 or a.cars > 5_000_000:
         ap.error("--cars must be between 0 and 5000000")
+    if a.drives < 0 or a.drives > 100_000:
+        ap.error("--drives must be between 0 and 100000")
     if a.latency_ms < 0:
         ap.error("--latency-ms must be 0 or more")
     if a.rows_every_s < 0:
@@ -123,7 +129,7 @@ def parse_args(argv=None) -> Config:
                   rows_every_s=a.rows_every_s, verbose=a.verbose,
                   own_certificate=a.own_certificate, map_tiles=a.map_tiles,
                   release_check=a.release_check, teslamate_trouble=a.teslamate_trouble,
-                  full_rebuild=a.full_rebuild)
+                  full_rebuild=a.full_rebuild, drives=a.drives)
 
 
 class Clock:

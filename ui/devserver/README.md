@@ -20,6 +20,7 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--host` | `127.0.0.1` | Address to listen on. |
 | `--port` | `8000` | `0` picks a free port (read it from the printed line). |
 | `--cars N` | `3` | Fleet size. 1 to 3 are the featured cars; above 3 adds light synthetic cars `c4`..`cN`; `0` is an empty fleet. A large fleet's sort, search and attention indexes are built before the server listens (about 1.5 s for 200000 cars). |
+| `--drives N` | `0` | Gives `c1` about `N` drives in all (short errands from home added on most evenings; about 2,200 of them this year with `--drives 3000`), to try long lists (Logbook, Drives, Charges). `0`: the usual history, about 1,150. |
 | `--latency-ms N` | `0` | Waits this long before every `/api` answer (not the event stream). |
 | `--seed N` | `1` | Same seed and flags give the same data. |
 | `--signed-out` | off | Starts with no session, to test the sign-in page. |
