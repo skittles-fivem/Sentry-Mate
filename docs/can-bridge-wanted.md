@@ -57,7 +57,7 @@ An upload of a wanted name whose `Upload-SHA256` is not the SHA-256 the server s
 gap, the `prev_sha256` the next log names) is refused before its body is kept:
 
 ```text
-409 {"error": {"code": "wanted_mismatch", "message": "..."}}
+409 {"error": "This server lost its copy of this file and asked for it again, but this is a different file of its name.", "code": "wanted_mismatch"}
 ```
 
 It is a different file under the name of a lost one: keep it, don't retry it, and don't count it as sent. When the
