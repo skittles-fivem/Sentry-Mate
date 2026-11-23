@@ -383,17 +383,13 @@ async fn rebuild(
 }
 
 /// `GET /cars/{car}/gps-layout`: the car's own layout of the Screenmate's GPS frame (0x04F on its internal bus) as
-/// `sentry-mate gps-layout` prints it, or null while the DBC's is used; `set_ms` when it was last changed (null:
-/// never).
+/// `sentry-mate gps-layout` prints it, or null while the DBC's is used.
 async fn gps_layout(State(app): State<AppState>, CarParam(car): CarParam) -> ApiResult<Json<Value>> {
     let e = app.service::<Engine>()?;
-    let (l, set) = app
-        .blocking(move |_| {
-            let read = |x: engine::Error| ApiError::server(format!("reading the layout: {x}"));
-            Ok::<_, ApiError>((e.gps_layout(car).map_err(read)?, e.gps_layout_set_ms(car).map_err(read)?))
-        })
+    let l = app
+        .blocking(move |_| e.gps_layout(car).map_err(|x| ApiError::server(format!("reading the layout: {x}"))))
         .await?;
-    Ok(Json(json!({ "car": ids::car(car), "layout": l.map(|l| l.to_string()), "set_ms": set })))
+    Ok(Json(json!({ "car": ids::car(car), "layout": l.map(|l| l.to_string()) })))
 }
 
 /// `PUT /cars/{car}/gps-layout` `{ layout }`: the layout `sentry-mate gps-layout` printed (`lat 0|28@1- (1e-6,0);
@@ -429,14 +425,9 @@ async fn put_gps_layout(
         };
         v.audit(&app, "car-gps-layout", Some(&target("car", Some(car), "")), &summary).await?;
     }
-    let e = app.service::<Engine>()?;
-    let set = app
-        .blocking(move |_| e.gps_layout_set_ms(car).map_err(|x| ApiError::server(format!("reading the layout: {x}"))))
-        .await?;
     Ok(Json(json!({
         "car": ids::car(car),
         "layout": layout.map(|l| l.to_string()),
-        "set_ms": set,
         "job": job.map(|j| j.id.to_string()),
     })))
 }

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import './fake-browser.js';
-import { fitModel, applyBody, metres, gpsFit, fitPath, layoutPath, layoutModel, hasCanData, STANDARD, BUTTON, AGAIN, RUNNING } from '../gpsfit.js';
+import { fitModel, applyBody, metres, gpsFit, fitPath, layoutPath, BUTTON, AGAIN, RUNNING } from '../gpsfit.js';
 
 // made-up answers of GET /cars/{car}/gps-layout/fit (layouts, counts and metres only)
 const LAYOUT = 'lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)';
@@ -92,26 +92,4 @@ test('the controller starts, reads again while running and applies with the PUT'
   assert.deepEqual(calls.find((x) => x[0] === 'PUT'), ['PUT', layoutPath('c1'), { layout: LAYOUT }]);
   assert.equal(c.status().applied, true);
   assert.ok(seen.includes('running') && seen.includes('done'));
-});
-
-test('the GPS layout line: standard or the car’s own with when it was set, and "…" until read', () => {
-  const when = (ms) => `at ${ms}`;
-  assert.deepEqual(layoutModel(null, when), { custom: false, value: '…', when: '', title: '' });
-  const std = layoutModel({ car: 'c1', layout: null, set_ms: null }, when);
-  assert.equal(std.value, STANDARD);
-  assert.equal(std.custom, false);
-  assert.equal(std.when, '');
-  assert.equal(layoutModel({ layout: null, set_ms: 5 }, when).when, 'since at 5');
-  const own = layoutModel({ layout: LAYOUT, set_ms: 9 }, when);
-  assert.equal(own.custom, true);
-  assert.equal(own.value, `custom: ${LAYOUT}`);
-  assert.equal(own.when, 'set at 9');
-  assert.match(own.title, /its own layout/);
-});
-
-test('the section is for cars with SMO (CAN) data: an SMO source or a CAN Bridge key', () => {
-  assert.equal(hasCanData({ sources: [{ kind: 'smo' }] }, null), true);
-  assert.equal(hasCanData({ sources: [{ kind: 'tesla_api' }] }, { keys: [] }), false);
-  assert.equal(hasCanData({ sources: [] }, { keys: [{ key: 'k1' }] }), true);
-  assert.equal(hasCanData(null, null), false);
 });

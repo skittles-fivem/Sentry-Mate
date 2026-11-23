@@ -7,8 +7,12 @@
 //   keepEl(el, 'rebuild')                        an element built once and kept as it is (a panel with its own
 //                                                state): the first paint puts it in, later ones leave it alone
 //
+// A swap on the page keeps what is on screen in place (shared/dom.js holdScroll: the page scrolls in .scroller).
+//
 // Rules: an element of another tag, a button that changed (its click handler goes with its data) and an element
 // whose data-keep differs are replaced whole; an element with the same data-keep is left as it is.
+
+import { holdScroll } from '../shared/dom.js';
 
 const KEEP = 'data-keep';
 
@@ -37,6 +41,7 @@ function syncAttrs(el, to) {
 export function morph(el, to) {
   if (!el) return to;
   if (el === to) return el;
+  holdScroll(el.parentNode);
   if (el.nodeType !== to.nodeType || el.nodeName !== to.nodeName) { el.replaceWith(to); return to; }
   if (el.nodeType === 3 || el.nodeType === 8) {
     if (el.nodeValue !== to.nodeValue) el.nodeValue = to.nodeValue;
@@ -61,6 +66,7 @@ export function morph(el, to) {
 
 /** Makes `parent`'s children look like `nodes` (nodes or strings; null and false are left out). */
 export function morphChildren(parent, nodes) {
+  holdScroll(parent);
   const want = [].concat(nodes).flat(Infinity).filter((n) => n != null && n !== false)
     .map((n) => (typeof n === 'object' ? n : document.createTextNode(String(n))));
   let i = 0;

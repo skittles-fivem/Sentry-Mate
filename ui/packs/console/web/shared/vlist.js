@@ -215,8 +215,11 @@ export function windowList(opts) {
       for (let s = a; s < Math.max(last, a + 1); s += limit) starts.push(s);
       const pages = await Promise.all(starts.map((s) => ask({ offset: s }, my)));
       if (pages.some((p) => !p)) return null;
-      items = new Map(); cursors = new Map(); clear(); total = null;
+      items = new Map(); cursors = new Map(); total = null;
       for (const pg of pages) keep(pg);
+      // the rows on screen are swapped one by one for the new ones (draw() swaps a row whose flag differs), never all
+      // taken out first: the box keeps its height, so it is not scrolled up to fit a list that is empty for a moment
+      for (const d of drawn.values()) d[1] = null;
       const end = Math.max(0, headH() + total * rowH - box.clientHeight);
       if (box.scrollTop > end) box.scrollTop = end;
       draw();

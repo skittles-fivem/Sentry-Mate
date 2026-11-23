@@ -12,12 +12,6 @@
 // state). gpsFit(api, carId, { onChange }) -> { load(), start(days), apply(), stop(), status() }: reads the status
 // again every POLL_MS while a fit runs. gpsFitBlock({ api, car, ... }) -> { el, ready, stop() }: the block itself,
 // built once and changed in place (classes gf-*, styled by each pack; its buttons take the pack's classes).
-//
-// gpsLayoutSection({ api, car, admin, ... }) -> { el, ready, load(), stop() }: the "GPS layout" line Data health
-// always shows for a car with SMO (CAN) data (hasCanData): the layout its Screenmate GPS frames are read with now
-// ("standard (DBC)" or the car's own, with when it was set; GET /cars/{car}/gps-layout, read by everyone), and for
-// admins "Find GPS layout" (the fit block opens under the line, and stays open) and "Reset to standard" while the
-// car's own layout is set. layoutModel(answer, when) -> the line's slots as text.
 
 import { formatNumber } from './i18n.js';
 import { h, setVars } from './dom.js';
@@ -26,9 +20,6 @@ export const BUTTON = 'Find GPS layout';
 export const AGAIN = 'Find again';
 export const RUNNING = 'Finding…';
 export const APPLY = 'Apply';
-export const RESET = 'Reset to standard';
-export const LABEL = 'GPS layout';
-export const STANDARD = 'standard (DBC)';
 export const EXPLAIN = 'Works out where this car’s Screenmate GPS frame keeps latitude and longitude, from its stored logs of the last 30 days and the positions its other inputs reported at the same moments. It only reads; the result shows layouts and errors in metres, never a position.';
 /** How often the status is read again while a fit runs. */
 export const POLL_MS = 1500;
@@ -189,15 +180,13 @@ export function gpsFit(api, car, { onChange = () => {} } = {}) {
  *   flash(text, { kind }): the pack's toast; errorText(e): an error in words;
  *   onApplied(): after Apply (the page reads its health again); btnClass / applyClass: the buttons' classes;
  *   barClass: the pack's progress bar class (the bar is a div holding an <i> as wide as --w);
- *   icon(name): the pack's icon element for the buttons (or null);
- *   inline: the Find button is left out of el (the caller places `find`, see gpsLayoutSection);
- *   onStatus(status): after every read.
- * -> { el, find, ready (the first read), status(), load(), stop() }
+ *   icon(name): the pack's icon element for the buttons (or null).
+ * -> { el, ready (the first read), stop() }
  */
 export function gpsFitBlock({ api, car, alive = () => true, confirm = async () => true, flash = () => {},
   errorText = (e) => e?.message || String(e), onApplied = () => {}, btnClass = 'btn btn--sm', applyClass = 'btn btn--sm',
-  barClass = '', icon = () => null, inline = false, onStatus = () => {} } = {}) {
-  const find = h('button', { class: [btnClass, 'gf-find'], type: 'button', title: inline ? EXPLAIN : null, onclick: () => press() });
+  barClass = '', icon = () => null } = {}) {
+  const find = h('button', { class: [btnClass, 'gf-find'], type: 'button', onclick: () => press() });
   const apply = h('button', { class: [applyClass, 'gf-apply'], type: 'button', onclick: () => applyIt() });
   const bar = h('div', { class: [barClass, 'gf-bar'], role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': 'GPS layout fit progress' }, h('i'));
   const pct = h('span', { class: 'gf-pct' });
@@ -212,7 +201,7 @@ export function gpsFitBlock({ api, car, alive = () => true, confirm = async () =
   const notes = h('p', { class: 'gf-notes' });
   const el = h('div', { class: 'gf', 'aria-live': 'polite' },
     h('p', { class: 'gf-explain' }, EXPLAIN),
-    h('div', { class: 'gf-acts' }, inline ? null : find, apply),
+    h('div', { class: 'gf-acts' }, find, apply),
     h('div', { class: 'gf-bar-row' }, bar, pct),
     head, step,
     h('dl', { class: 'gf-rows' }, rows.map((r) => r.el)),
@@ -243,7 +232,7 @@ export function gpsFitBlock({ api, car, alive = () => true, confirm = async () =
     notes.textContent = m.notes;
   }
 
-  const fit = gpsFit(api, car, { onChange: (s) => { if (alive()) { paint(s); onStatus(s); } } });
+  const fit = gpsFit(api, car, { onChange: (s) => { if (alive()) paint(s); } });
   async function press() {
     busy = true;
     paint(fit.status());
@@ -270,102 +259,5 @@ export function gpsFitBlock({ api, car, alive = () => true, confirm = async () =
   }
   paint(null);
   const ready = fit.load().catch(() => {});
-  return { el, find, ready, status: () => fit.status(), load: () => fit.load(), stop: () => fit.stop() };
-}
-
-/** Whether the car has SMO (CAN) data: an SMO input among its sources, or a CAN Bridge key tied to it. */
-export function hasCanData(car, health) {
-  const kinds = (car?.sources || []).map((x) => x?.kind);
-  return kinds.includes('smo') || (health?.keys || []).length > 0;
-}
-
-/**
- * The GPS layout line's slots, from GET /cars/{car}/gps-layout ({ layout, set_ms }; null: not read yet), as text:
- * { custom, value, when, title }. when(ms) -> the pack's words for a moment.
- */
-export function layoutModel(a, when = (ms) => new Date(ms).toISOString()) {
-  if (!a) return { custom: false, value: '…', when: '', title: '' };
-  const custom = typeof a.layout === 'string' && a.layout !== '';
-  const at = a.set_ms != null ? when(a.set_ms) : '';
-  return {
-    custom,
-    value: custom ? `custom: ${a.layout}` : STANDARD,
-    when: at ? `${custom ? 'set' : 'since'} ${at}` : '',
-    title: custom
-      ? `This car’s Screenmate GPS frames are read with its own layout: ${a.layout}.`
-      : 'This car’s Screenmate GPS frames are read as the DBC says.',
-  };
-}
-
-/**
- * The always-present "GPS layout" section of Data health, built once and changed in place:
- * gpsLayoutSection({ api, car, admin, when, ...gpsFitBlock's options, resetClass })
- *   admin: the buttons are there (others see the line read-only); when(ms): the pack's words for a moment;
- *   onApplied(): after Apply or Reset (the page reads its health again).
- * -> { el, ready (the first reads), load() (the layout read again), stop() }
- */
-export function gpsLayoutSection({ api, car, admin = false, when, alive = () => true, confirm = async () => true,
-  flash = () => {}, errorText = (e) => e?.message || String(e), onApplied = () => {}, btnClass = 'btn btn--sm',
-  applyClass = 'btn btn--sm', resetClass = btnClass, barClass = '', icon = () => null } = {}) {
-  let A = null;
-  let open = false;
-  let busy = false;
-  const val = h('span', { class: 'gl-val' });
-  const at = h('span', { class: 'gl-when' });
-  const reset = admin ? h('button', { class: [resetClass, 'gl-reset'], type: 'button', onclick: () => resetIt() }) : null;
-  const fitHere = h('div', { class: 'gl-fit' });
-  async function load() {
-    const a = await api.get(layoutPath(car));
-    A = a;
-    if (alive()) paint();
-    return a;
-  }
-  const block = admin ? gpsFitBlock({
-    api, car, alive, confirm, flash, errorText, btnClass, applyClass, barClass, icon, inline: true,
-    onApplied: () => { load().catch(() => {}); onApplied(); },
-    onStatus: (s) => { if (s && s.state !== 'idle') open = true; paint(); },
-  }) : null;
-  if (block) fitHere.append(block.el);
-  const el = h('div', { class: 'gl', id: 'gps-layout' },
-    h('div', { class: 'gl-line' },
-      h('span', { class: 'gl-label' }, LABEL),
-      // its width follows the line (the packs' pixel snap leaves it alone, so the buttons stay on the line)
-      h('span', { class: 'gl-text', 'data-nosnap': '' }, val, at),
-      admin ? h('span', { class: 'gl-acts' }, block.find, reset) : null),
-    admin ? fitHere : null);
-
-  function paint() {
-    const m = layoutModel(A, when);
-    el.dataset.custom = m.custom ? 'true' : 'false';
-    val.textContent = m.value;
-    val.title = m.title;
-    at.textContent = m.when ? ` · ${m.when}` : '';
-    fitHere.hidden = !open;
-    el.dataset.open = open ? 'true' : 'false';
-    if (reset) {
-      reset.replaceChildren(...[icon('reset'), RESET].filter(Boolean));
-      reset.hidden = !m.custom;
-      reset.disabled = busy || running(block?.status());
-      reset.title = 'Read this car’s Screenmate GPS frames as the DBC says again. Its history is rebuilt from the stored logs.';
-    }
-  }
-  if (block) block.find.addEventListener('click', () => { open = true; paint(); });
-
-  async function resetIt() {
-    if (!(await confirm('Read this car’s Screenmate GPS frames as the DBC says again? Its history is rebuilt from the stored logs, which can take a while.',
-      { title: 'Reset the GPS layout?', ok: 'Reset' }))) return;
-    busy = true;
-    paint();
-    try {
-      A = await api.put(layoutPath(car), { layout: null });
-      if (alive()) { flash('GPS layout reset to standard. The car’s history is being rebuilt.'); onApplied(); }
-      block?.load().catch(() => {});
-    } catch (e) { if (alive()) flash(errorText(e), { kind: 'error' }); }
-    busy = false;
-    if (alive()) paint();
-  }
-
-  paint();
-  const ready = Promise.all([load().catch(() => {}), block?.ready]).then(() => {});
-  return { el, ready, load, stop: () => block?.stop() };
+  return { el, ready, stop: () => fit.stop() };
 }
