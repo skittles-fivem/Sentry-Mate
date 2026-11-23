@@ -1741,3 +1741,7 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 #view { transition: opacity 0.2s ease; }
 :root[data-stale] #view { opacity: 0.72; transition: opacity 0.3s ease 0.25s; }
 @media (prefers-reduced-motion: reduce) { #view, :root[data-stale] #view { transition: none; } }
+
+/* a page drawn for the first time is built in the view, hidden with the footer, under a copy of its skeleton
+   (core/router.js firstStage) */
+:root[data-building] :is(#view, #footer) { visibility: hidden; }

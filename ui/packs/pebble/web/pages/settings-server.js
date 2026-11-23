@@ -35,7 +35,7 @@ import { inOrder } from '../core/settings.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { fullRebuildTile } from '../core/fullrebuild.js';
 import { serverUpdates, RELEASE_OFF_TEXT } from '../shared/release.js';
-import { compactionProgress } from '../shared/compaction.js';
+import { compactionProgress, laterCompaction } from '../shared/compaction.js';
 import { bytes, bigCode, copyButton, downloadUrl, stepCards, progressBar, callout, PROBLEM } from './move-parts.js';
 import { exportModel, exportPollMs } from '../shared/exportjob.js';
 import { follow, jobOf, setText, setAttr } from '../shared/live.js';
@@ -559,7 +559,7 @@ export async function mount(ctx) {
   function followStorage() {
     let firstRead = true;
     storeLive = follow(ctx.api, {
-      type: 'job', match: jobOf('compaction'), pick: (d) => d.status,
+      type: 'job', match: jobOf('compaction'), pick: (d) => laterCompaction(store?.compaction, d.status), // (a failed pass keeps its reason)
       load: async () => {
         // the page's own read of the detail stands for the first one
         if (firstRead && store) { firstRead = false; return store.compaction || null; }

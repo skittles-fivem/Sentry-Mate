@@ -21,6 +21,10 @@
 //   stall,            'No progress for 3 min: the server may be busy, or the pass is stuck.' | null
 //   errors,           '2 days could not be packed and were left as they were: <why>' | null
 // }
+//
+// laterCompaction(shown, next) -> what to show when a `job` event brings `next` while the page shows `shown`: a
+// failed pass keeps how it ended (and why) until a new pass starts; an event that only says no pass is running, about
+// that same pass, brings no news of it.
 
 import { formatDuration } from './time.js';
 import { formatNumber } from './i18n.js';
@@ -64,4 +68,11 @@ export function compactionProgress(c, { now = Date.now(), bytes = (n) => `${form
     out.errors = `${formatNumber(n)} ${plural(n, unit)} could not be packed and ${n === 1 ? 'was' : 'were'} left as ${n === 1 ? 'it was' : 'they were'}${c.last_unit_error ? `: ${c.last_unit_error}` : '.'}`;
   }
   return out;
+}
+
+/** The compaction to show after an event (see the top of this file). */
+export function laterCompaction(shown, next) {
+  if (!shown || !next || shown.status !== 'failed' || next.status !== 'idle') return next;
+  if (next.started_ms != null && next.started_ms !== shown.started_ms) return next;
+  return { ...next, status: 'failed', error: next.error ?? shown.error ?? null };
 }
