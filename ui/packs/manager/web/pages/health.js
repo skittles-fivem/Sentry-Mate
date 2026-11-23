@@ -10,8 +10,7 @@
 // cars/{car}/storage, cars/{car}/signals/latest, cars/{car}/signals; POST cars/{car}/rebuild (admin),
 // PATCH can-keys/{key} (admin: a key's name, can-key-name.js); GET, POST cars/{car}/full-rebuild and
 // DELETE system/full-rebuild (admin, "Rebuild all data": pages/full-rebuild.js); GET, POST
-// cars/{car}/gps-layout/fit and PUT cars/{car}/gps-layout (admin, "Find GPS layout"), GET cars/{car}/gps-layout
-// (the GPS layout line, everyone): shared/gpsfit.js;
+// cars/{car}/gps-layout/fit and PUT cars/{car}/gps-layout (admin, "Find GPS layout": shared/gpsfit.js);
 // GET system/storage, system/health (admin), cars, geocode/status.
 // Live: `health` events of the car change every figure of "Is data arriving?" in place (live events, polling
 // only while the live stream is down); `rows` events of the car load the gaps and totals again, in place; on
@@ -27,7 +26,7 @@ import { formatDateTime, formatDuration, formatDayKey, dayStart, HOUR } from '..
 import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, metric, figures, pill, tag, kv, csvButton, panelLink } from '../core/page.js';
-import { dataTable } from '../core/table.js';
+import { dataTable, windowTable } from '../core/table.js';
 import { scrollBox } from '../shared/scrollbox.js';
 import { emptyState, errorWords } from '../core/states.js';
 import { openCarSwitcher } from '../core/carswitch.js';
@@ -39,7 +38,7 @@ import { q, agoEl, statePill, stateLabel, DASH } from '../core/fmt.js';
 import { overviewCard } from './conn-overview.js';
 import { deviceText, renameKeyButton } from './can-key-name.js';
 import { fullRebuild } from './full-rebuild.js';
-import { gpsLayoutSection, hasCanData } from '../shared/gpsfit.js';
+import { gpsFitBlock } from '../shared/gpsfit.js';
 import { confirmDialog } from '../core/dialog.js';
 import { follow, carOf, onRows, FALLBACK_POLL_MS } from '../shared/live.js';
 import { morph, morphChildren, keepEl } from '../core/morph.js';
@@ -275,17 +274,15 @@ async function mountCar(ctx) {
   // the full rebuild's block, built once and kept in place under the figures painted again
   const rebuildEl = full ? h('div', { class: 'hl-rebuild hl-full', id: 'full-rebuild' }, h('h3', { class: 'hl-sub' }, 'Rebuild all data'), full.el)
     : h('p', { class: 'note hl-rebuild' }, 'An admin can rebuild all of this car’s data from the stored logs.');
-  // GPS layout: the layout this car's Screenmate GPS frames are read with, always shown for a car with SMO data,
-  // with Find GPS layout and Reset to standard for admins (read-only for others); built once and kept in place
-  // when the card is drawn again (the fit opens under its line once used)
-  const gpsLayout = gpsLayoutSection({
-    api: ctx.api, car: cid, admin, alive: () => ctx.alive(), flash, when: (ms) => when(ctx, ms),
+  // Find GPS layout (admin): in the notice that one input's positions are out of step; built once and kept in
+  // place when the card is drawn again
+  const gpsFit = admin ? gpsFitBlock({
+    api: ctx.api, car: cid, alive: () => ctx.alive(), flash,
     confirm: (text, o) => confirmDialog(text, { title: o.title, ok: o.ok }),
     errorText: (e) => errorWords(e).text, onApplied: () => refreshHealth(),
-    btnClass: 'btn btn--sm', applyClass: 'btn btn--sm btn--primary', resetClass: 'btn btn--sm btn--ghost', barClass: 'bar', icon: (n) => icon(n, 'ico--sm'),
-  });
-  ctx.onCleanup(() => gpsLayout.stop());
-  let gpsRead = false;
+    btnClass: 'btn btn--sm', applyClass: 'btn btn--sm btn--primary', barClass: 'bar', icon: (n) => icon(n, 'ico--sm'),
+  }) : null;
+  ctx.onCleanup(() => gpsFit?.stop());
   // the Rebuild row: the full rebuild's step while one runs for this car, else the period rebuild's state
   const rebuildVal = h('span');
   let lastPending = false;
@@ -310,10 +307,8 @@ async function mountCar(ctx) {
   let periodTimer = null;
   ctx.onCleanup(() => clearTimeout(periodTimer));
   async function readHealth() {
-    const [hl, , ts] = await Promise.all([
+    const [hl, ts] = await Promise.all([
       ctx.api.get(`${base}/health`, fullPeriod(ctx.params)),
-      // the GPS layout line's first reads (so it is drawn whole), then the layout again with every read
-      gpsRead ? gpsLayout.load().catch(() => {}) : gpsLayout.ready.then(() => { gpsRead = true; }),
       // the Tesla API input for this car (admins only): what the server does for it now
       admin ? ctx.api.get('integrations/tesla/status').catch(() => null) : Promise.resolve(null),
     ]);
@@ -366,7 +361,7 @@ async function mountCar(ctx) {
         h('span', { class: 'hl-fix-ic' }, icon('warn', 'ico--sm')),
         h('div', null, h('div', { class: 'hl-fix-head' }, r.title), h('p', { class: 'hl-fix-text' }, r.text),
           r.fix ? h('a', { class: 'btn btn--sm', href: state.buildUrl(r.page, { car: cid }) }, r.fix, icon('chev-r', 'ico--sm')) : null,
-          code === 'gps_inputs_disagree' ? h('p', { class: 'hl-fix-text hl-fix-more' }, 'See GPS layout below: Find GPS layout works out how this car’s Screenmate GPS frames should be read.') : null));
+          code === 'gps_inputs_disagree' && gpsFit ? keepEl(gpsFit.el, 'gps-fit') : null));
     })) : null;
 
     const figs = figures([
@@ -423,7 +418,7 @@ async function mountCar(ctx) {
     paintRebuildRow();
 
     // only the texts that changed are written; the full rebuild's panel stays as it is
-    morphChildren(healthSlot, [status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), h('div', null, spanList, missingBlock(hl.missing_logs))), hasCanData(car, hl) ? keepEl(gpsLayout.el, 'gps-layout') : null, keepEl(rebuildEl, 'rebuild')]);
+    morphChildren(healthSlot, [status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), h('div', null, spanList, missingBlock(hl.missing_logs))), keepEl(rebuildEl, 'rebuild')]);
   }
 
   // logs the server should have but no longer does, asked of the car again (always shown, same rows every time)
@@ -587,42 +582,76 @@ async function mountCar(ctx) {
   const sigInfo = h('span', { class: 'faint hl-sig-info' });
   let signals = [];
   let chosen = null;
-  const sigTable = dataTable(ctx, {
-    title: 'Signals from the newest log', icon: 'signals', rows: [], cls: 'hl-signals', csvName: 'signals', cover: ['nr.dash.state-table', 'nr.dash.state-table.sort-scroll'],
-    side: h('label', { class: 'field field--search' }, icon('search', 'ico--sm'), sigSearch),
+  // the signals: a box five rows high that scrolls inside itself under a header that stays (the owner's: a long list
+  // need not take a big part of the page), with only the rows in view drawn (shared/vlist.js). The rows all have one
+  // height, and pressing Plot marks its button in place: nothing in the box is drawn again or moves.
+  let shown = [];
+  const sigCols = [
+    { key: 'name', label: 'Signal', sort: true, cover: 'nr.dash.state-table.parameter', value: (s) => s.comment || s.series,
+      render: (s) => h('span', { class: 'cell-text' }, h('span', { class: 'main' }, s.comment || s.series), h('span', { class: 'sub mono' }, s.series)),
+      csv: { label: 'Signal', value: (s) => s.series } },
+    { key: 'message', label: 'Message', sort: true, value: (s) => `${s.bus} ${s.message_id}`,
+      render: (s) => h('span', { class: 'cell-text' }, h('span', { class: 'mono' }, s.message_id), h('span', { class: 'sub' }, s.bus === 'chassis' ? 'Chassis bus' : s.bus === 'vehicle' ? 'Vehicle bus' : s.bus)),
+      csv: { label: 'Message', value: (s) => `${s.bus} ${s.message_id}` } },
+    { key: 'value', label: 'Value', num: true, sort: true, cover: 'nr.dash.state-table.value', firstDir: 'desc',
+      value: (s) => (s.value_name ? s.value_name : s.value == null ? null : (signalKind(s) ? convert(s.value, signalKind(s)) : s.value)),
+      render: (s) => h('span', { class: 'cell-text' }, h('span', { class: 'hl-sig-val' }, signalText(s)), s.value_name ? h('span', { class: 'sub' }, `code ${s.value}`) : null),
+      csv: { label: 'Value (shown)', value: (s) => signalText(s) } },
+    { key: 'raw', label: 'As sent', num: true, title: 'The value in the unit the car sends', render: (s) => h('span', { class: 'faint' }, s.value == null ? DASH : `${formatNumber(s.value, { maximumFractionDigits: 6 })}${s.unit ? ` ${s.unit}` : ''}`),
+      csv: { label: 'Value (as sent)', value: (s) => s.value } },
+    { key: 'unit', label: 'Unit', csv: { label: 'Unit (as sent)', value: (s) => s.unit || '' }, render: (s) => h('span', { class: 'faint' }, s.unit || 'named values') },
+    { key: 'at', label: 'Read', num: true, sort: true, value: (s) => s.at_ms, render: (s) => (s.at_ms != null ? agoEl(s.at_ms, tz) : DASH), csv: { label: 'Read (UTC)', value: (s) => iso(s.at_ms) } },
+    { key: 'plot', label: '', csv: false,
+      render: (s) => (s.has_series ? h('button', { class: ['btn', 'btn--sm', chosen === s.series ? 'btn--primary' : 'btn--ghost'], type: 'button', dataset: { plot: s.series }, onclick: () => plot(s), 'aria-pressed': chosen === s.series ? 'true' : 'false', title: 'Show this signal over the period' }, icon('stats', 'ico--sm'), 'Plot')
+        : h('span', { class: 'faint', title: 'A signal with named values has its newest value only.' }, 'latest only')) },
+  ];
+  const sortedSignals = (sort) => {
+    const col = sort && sigCols.find((c) => c.key === sort.key);
+    if (!col) return shown;
+    const val = col.value || ((r) => r[col.key]);
+    const k = sort.dir === 'asc' ? 1 : -1;
+    return [...shown].sort((a, b) => {
+      const x = val(a), y = val(b);
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;
+      if (y == null) return -1;
+      return (typeof x === 'string' || typeof y === 'string' ? String(x).localeCompare(String(y), undefined, { numeric: true }) : x - y) * k;
+    });
+  };
+  let sigOrder = { key: 'name', dir: 'asc' };
+  const sigCsv = csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'signals'), sortedSignals(sigOrder), sigCols.filter((c) => c.csv).map((c) => c.csv)) });
+  const sigTable = windowTable(ctx, {
+    title: 'Signals from the newest log', icon: 'signals', cls: 'hl-signals', rows: 5, boxLabel: 'Signals', cover: ['nr.dash.state-table', 'nr.dash.state-table.sort-scroll'],
+    side: [h('label', { class: 'field field--search' }, icon('search', 'ico--sm'), sigSearch), sigCsv],
     sort: { key: 'name', dir: 'asc' },
     note: 'Every signal decoded from the newest log, with its name, unit and value names. Sort by any heading (numbers sort as numbers); the list scrolls inside. Plot a signal to see it over the period.',
-    columns: [
-      { key: 'name', label: 'Signal', sort: true, cover: 'nr.dash.state-table.parameter', value: (s) => s.comment || s.series,
-        render: (s) => h('span', { class: 'cell-text' }, h('span', { class: 'main' }, s.comment || s.series), h('span', { class: 'sub mono' }, s.series)),
-        csv: { label: 'Signal', value: (s) => s.series } },
-      { key: 'message', label: 'Message', sort: true, value: (s) => `${s.bus} ${s.message_id}`,
-        render: (s) => h('span', { class: 'cell-text' }, h('span', { class: 'mono' }, s.message_id), h('span', { class: 'sub' }, s.bus === 'chassis' ? 'Chassis bus' : s.bus === 'vehicle' ? 'Vehicle bus' : s.bus)),
-        csv: { label: 'Message', value: (s) => `${s.bus} ${s.message_id}` } },
-      { key: 'value', label: 'Value', num: true, sort: true, cover: 'nr.dash.state-table.value', firstDir: 'desc',
-        value: (s) => (s.value_name ? s.value_name : s.value == null ? null : (signalKind(s) ? convert(s.value, signalKind(s)) : s.value)),
-        render: (s) => h('span', { class: 'cell-text' }, h('span', { class: 'hl-sig-val' }, signalText(s)), s.value_name ? h('span', { class: 'sub' }, `code ${s.value}`) : null),
-        csv: { label: 'Value (shown)', value: (s) => signalText(s) } },
-      { key: 'raw', label: 'As sent', num: true, title: 'The value in the unit the car sends', render: (s) => h('span', { class: 'faint' }, s.value == null ? DASH : `${formatNumber(s.value, { maximumFractionDigits: 6 })}${s.unit ? ` ${s.unit}` : ''}`),
-        csv: { label: 'Value (as sent)', value: (s) => s.value } },
-      { key: 'unit', label: 'Unit', csv: { label: 'Unit (as sent)', value: (s) => s.unit || '' }, render: (s) => h('span', { class: 'faint' }, s.unit || 'named values') },
-      { key: 'at', label: 'Read', num: true, sort: true, value: (s) => s.at_ms, render: (s) => (s.at_ms != null ? agoEl(s.at_ms, tz) : DASH), csv: { label: 'Read (UTC)', value: (s) => iso(s.at_ms) } },
-      { key: 'plot', label: '', csv: false,
-        render: (s) => (s.has_series ? h('button', { class: ['btn', 'btn--sm', chosen === s.series ? 'btn--primary' : 'btn--ghost'], type: 'button', onclick: () => plot(s), 'aria-pressed': chosen === s.series ? 'true' : 'false', title: 'Show this signal over the period' }, icon('stats', 'ico--sm'), 'Plot')
-          : h('span', { class: 'faint', title: 'A signal with named values has its newest value only.' }, 'latest only')) },
-    ],
+    columns: sigCols,
+    load: ({ sort, offset = 0, limit = 50 }) => {
+      sigOrder = sort || sigOrder;
+      const rows = sortedSignals(sort);
+      return { items: rows.slice(offset, offset + limit), offset, total: rows.length, next: null };
+    },
     empty: () => emptyState({ icon: 'search', title: signals.length ? 'No signal matches' : 'No signals yet',
       text: signals.length ? `Nothing holds “${sigSearch.value}”. Clear the search to see all ${signals.length}.` : 'Signals show once the first log of this car has been decoded.' }),
   });
 
   function filterSignals() {
     const words = sigSearch.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const rows = !words.length ? signals : signals.filter((s) => {
+    shown = !words.length ? signals : signals.filter((s) => {
       const hay = [s.series, s.comment, s.message_id, s.bus, s.unit, s.value_name, signalText(s)].filter(Boolean).join(' ').toLowerCase();
       return words.every((w) => hay.includes(w));
     });
-    sigTable.setRows(rows);
-    replace(sigInfo, words.length ? `${rows.length} of ${signals.length}` : `${signals.length} signals`);
+    replace(sigInfo, words.length ? `${shown.length} of ${signals.length}` : `${signals.length} signals`);
+    return sigTable.setParams({});
+  }
+  // the chosen signal's Plot button, marked in place (the rows are not drawn again)
+  function markChosen() {
+    for (const b of sigTable.el.querySelectorAll('button[data-plot]')) {
+      const on = b.dataset.plot === chosen;
+      b.classList.toggle('btn--primary', on);
+      b.classList.toggle('btn--ghost', !on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
   }
   let sigTimer = null;
   ctx.on(sigSearch, 'input', () => { clearTimeout(sigTimer); sigTimer = setTimeout(() => ctx.alive() && filterSignals(), 150); });
@@ -631,7 +660,7 @@ async function mountCar(ctx) {
   async function loadSignals() {
     signals = await ctx.api.list(`${base}/signals/latest`, {}, { limit: 500 }).all({ max: 20000 });
     if (!ctx.alive()) return;
-    filterSignals();
+    await filterSignals();
   }
 
   // a chosen signal over the period
@@ -652,7 +681,7 @@ async function mountCar(ctx) {
 
   async function plot(s) {
     chosen = s.series;
-    filterSignals();
+    markChosen();
     const kind = signalKind(s);
     const unitText = kind ? unitLabel(kind) : s.unit || '';
     replace(plotSlot, h('p', { class: 'note' }, `Loading ${s.comment || s.series}…`));

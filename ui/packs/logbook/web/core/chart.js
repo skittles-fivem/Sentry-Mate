@@ -12,7 +12,7 @@
 // A chart below the fold is built when it comes within a screen of view (shared/lazy.js); its box has its height
 // from app.css already, so nothing moves, and it takes the zoom the others have then.
 
-import { h, cssVar, styleSheet } from '../shared/dom.js';
+import { h, holdScroll, cssVar, styleSheet } from '../shared/dom.js';
 import { convert, unitLabel } from '../shared/units.js';
 import { formatNumber } from '../shared/i18n.js';
 import { dateFormat } from '../shared/time.js';
@@ -263,6 +263,45 @@ export async function stackedCharts(ctx, container, { tz, t_ms, rows, spans = []
     resetZoom() { if (x.length) for (const p of plots) p.setScale('x', { min: x[0], max: x[x.length - 1] }); },
     destroy,
   };
+}
+
+/**
+ * Draw a part again off screen: offstage(slot, async (box) => { replace(box, ...); await stackedCharts(ctx, box, ...); })
+ * builds slot's new children in an invisible box of the same width (in copies of slot's parents, tags and classes
+ * only, so the page's style sheets give it the same layout; fixed, hidden and inert) and swaps them in at once when
+ * build resolves (or throws). A part emptied first and drawn after the chart library is in was for a moment as short
+ * as nothing, and everything under it moved (on a phone: the page jumped on every live update). A slot not in the
+ * page, or in an off-screen box already (the router's first draw), is built in place.
+ */
+export async function offstage(slot, build) {
+  if (!slot.isConnected || slot.closest('[inert]')) return build(slot);
+  const chain = [];
+  for (let e = slot.parentElement; e && e !== document.body && e !== document.documentElement; e = e.parentElement) chain.unshift(e);
+  const outer = h('div', { 'aria-hidden': 'true', inert: '' });
+  Object.assign(outer.style, {
+    position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh', overflow: 'hidden',
+    visibility: 'hidden', pointerEvents: 'none', zIndex: '-1', contain: 'strict',
+  });
+  let at = outer;
+  for (const a of chain) {
+    const c = document.createElement(a.localName);
+    if (a.className && typeof a.className === 'string') c.className = a.className;
+    Object.assign(c.style, { display: 'block', position: 'static', margin: '0', padding: '0', border: '0', width: 'auto', height: 'auto', minHeight: '0', overflow: 'visible' });
+    at.append(c);
+    at = c;
+  }
+  const box = document.createElement(slot.localName);
+  if (slot.className) box.className = slot.className;
+  box.style.boxSizing = 'border-box';
+  box.style.width = `${slot.getBoundingClientRect().width}px`;
+  at.append(box);
+  document.body.append(outer);
+  try {
+    return await build(box);
+  } finally {
+    if (slot.isConnected) { holdScroll(slot); slot.replaceChildren(...box.childNodes); }
+    outer.remove();
+  }
 }
 
 /**

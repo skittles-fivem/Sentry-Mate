@@ -95,8 +95,9 @@
 .page-health .hl-search { min-width: round(18rem, var(--e)); }
 .page-health .hl-search .field-input { width: 100%; padding-left: round(2.25rem, var(--e)); }
 .page-health .hl-sig-info { margin: round(0.75rem, var(--e)) 0 0; }
-.page-health .hl-signals .ledger-scroll { max-height: round(32rem, var(--e)); overflow-y: auto; --sticky-top: 0px; }
-.page-health .hl-signals .ledger-table tbody td, .page-health .hl-signals .ledger-table tbody th { padding-top: round(0.5rem, var(--e)); padding-bottom: round(0.4375rem, var(--e)); }
+/* the signals box is five rows high (core/table.js windowLedger, rows: 5); its head stays as the rows scroll */
+.page-health .hl-signals .ledger-scroll { --sticky-top: 0px; }
+.page-health .hl-signals .ledger-table tbody tr:not(.vl-gap) > :is(td, th) { padding-top: round(0.5rem, var(--e)); padding-bottom: round(0.4375rem, var(--e)); } /* not the window's spacer rows (shared/vlist.js) */
 .page-health .hl-sig-v { font: 400 1rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); white-space: nowrap; }
 .page-health .hl-plot { padding-top: round(0.25rem, var(--e)); }
 .page-health .hl-plot-name { font: 400 1.1875rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); margin: 0; }
@@ -192,7 +193,7 @@
 
 /* Find GPS layout (shared/gpsfit.js), in the notice that one input's positions are out of step (admins): every
    row keeps its height in every state (not run, running, done, failed); long text ends in an ellipsis */
-.page-health .gf { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); min-width: 0; margin-top: round(0.5rem, var(--e)); padding-top: round(0.625rem, var(--e)); border-top: 1px dotted var(--rule); max-width: 62rem; }
+.page-health .hl-fix .gf { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); min-width: 0; margin-top: round(0.5rem, var(--e)); padding-top: round(0.625rem, var(--e)); border-top: 1px dotted var(--rule); max-width: 62rem; }
 .page-health .gf-explain { margin: 0; font-size: var(--text-sm); color: var(--ink-2); }
 .page-health .gf-acts { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
 .page-health .gf-bar-row { display: flex; align-items: center; gap: round(0.75rem, var(--e)); height: round(1.25rem, var(--e)); }
@@ -211,13 +212,3 @@
 .page-health .gf[data-tone="warn"] .gf-head { color: var(--ochre); }
 .page-health .gf[data-tone="error"] .gf-head { color: var(--rust); }
 @media (prefers-reduced-motion: reduce) { .page-health .gf-bar > i { transition: none; } }
-/* GPS layout: one line (the layout in use, Find GPS layout, Reset to standard); the fit opens under it once used */
-.page-health .gl { min-width: 0; margin-top: round(1rem, var(--e)); padding-top: round(0.75rem, var(--e)); border-top: 1px solid var(--rule); }
-.page-health .gl-line { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); min-height: round(2rem, var(--e)); }
-.page-health .gl-label { flex: none; font: 400 1.0625rem var(--serif); color: var(--ink); }
-.page-health .gl-text { flex: 1 1 round(8rem, var(--e)); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-sm); color: var(--ink-2); }
-.page-health .gl-val { color: var(--ink); }
-.page-health .gl[data-custom="true"] .gl-val { font-family: var(--mono); }
-.page-health .gl-acts { display: flex; flex: none; flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
-.page-health .gl [hidden] { display: none !important; }
-.page-health .hl-fix-more { margin-bottom: 0; }
