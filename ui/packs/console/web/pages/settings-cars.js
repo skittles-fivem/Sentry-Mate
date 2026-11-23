@@ -23,6 +23,8 @@ import { confirmDialog } from '../core/dialog.js';
 import { copyBtn, showOnce } from '../core/secret.js';
 import { openCarSwitcher } from '../core/carswitch.js';
 import { src } from '../core/source.js';
+import { deviceName } from '../shared/devices.js';
+import { deviceText, renameBtn } from './device-name.js';
 
 export const id = 'settings-cars';
 export const css = true;
@@ -155,7 +157,7 @@ function waitingTable(ctx, rows, car, after, tz) {
     sort: { key: 'first', dir: 'desc' },
     columns: [
       { key: 'key', label: 'key', ph: 'main' },
-      { key: 'device', label: 'device', ph: 'sub', render: (k) => k.device || 'not reported' },
+      { key: 'device', label: 'device', ph: 'sub', render: (k) => [deviceText(k), ctx.admin ? [' ', renameBtn(ctx, k, () => after())] : null] },
       { key: 'first', label: 'first upload', sort: true, value: (k) => k.first_seen_ms, render: (k) => dateTime(k.first_seen_ms, tz) },
       { key: 'last', label: 'last upload', ph: 'sub', sort: true, value: (k) => k.last_upload_ms, render: (k) => (k.last_upload_ms ? ago(k.last_upload_ms) : 'never') },
       { key: 'logs_waiting', label: 'logs', num: true, ph: 'num', render: (k) => format(k.logs_waiting ?? 0, 'count') },
@@ -416,7 +418,7 @@ async function mountCar(ctx) {
     else { t = tag('ok', 'ok'); text = `Uploading: the last log arrived ${ago(last)}.`; }
     const more = [
       trust === 'verified' ? 'Its signature matches a key tied to this car.' : trust === 'unsigned' ? 'It carried no signature: kept, marked unsigned.' : trust === 'failed' ? 'It failed its check and was not used.' : null,
-      pref ? `Preferred key: ${pref.key}${pref.device ? ` (${pref.device})` : ''}.` : null,
+      pref ? `Preferred key: ${pref.key} (${deviceName(pref).text}).` : null,
       S.waiting.length ? `${S.waiting.length} key${S.waiting.length === 1 ? '' : 's'} waiting for a car below.` : null,
       hl?.logs_waiting ? `${hl.logs_waiting} logs wait to be checked.` : null,
     ].filter(Boolean).join(' ');
@@ -454,7 +456,7 @@ async function mountCar(ctx) {
         { key: 'id', label: 'token', ph: 'main' },
         { key: 'created', label: 'made', sort: true, ph: 'sub', value: (t) => t.created_ms, render: (t) => dateTime(t.created_ms, z) },
         { key: 'state', label: 'state', ph: 'num', render: tokenState },
-        { key: 'key', label: 'key it brought', ph: 'sub', render: (t) => t.key || h('span', { class: 'muted' }, t.revoked ? DASH : 'none yet') },
+        { key: 'key', label: 'key it brought', ph: 'sub', render: (t) => (t.key ? [t.key, ' ', deviceText(t)] : h('span', { class: 'muted' }, t.revoked ? DASH : 'none yet')) },
         { key: 'last', label: 'last upload', sort: true, value: (t) => t.last_upload_ms, render: (t) => (t.last_upload_ms ? ago(t.last_upload_ms) : 'never') },
         { key: 'act', label: '', grow: true, render: (t) => (t.revoked ? false : btn('revoke', () => revokeToken(t), { kind: 'danger' })) },
       ],
@@ -466,7 +468,7 @@ async function mountCar(ctx) {
       sort: { key: 'last', dir: 'desc' },
       columns: [
         { key: 'key', label: 'key', ph: 'main' },
-        { key: 'device', label: 'device', ph: 'sub', render: (k) => k.device || 'not reported' },
+        { key: 'device', label: 'device', ph: 'sub', render: (k) => [deviceText(k), ' ', renameBtn(ctx, k, (row) => { S.keys = S.keys.map((x) => (x.key === k.key ? { ...x, ...row } : x)); if (ctx.alive()) paintUploads(); })] },
         { key: 'first', label: 'first upload', sort: true, value: (k) => k.first_seen_ms, render: (k) => dateTime(k.first_seen_ms, z) },
         { key: 'last', label: 'last upload', sort: true, ph: 'sub', value: (k) => k.last_upload_ms, render: (k) => (k.last_upload_ms ? ago(k.last_upload_ms) : 'never') },
         { key: 'logs_waiting', label: 'logs waiting', num: true, render: (k) => format(k.logs_waiting ?? 0, 'count') },

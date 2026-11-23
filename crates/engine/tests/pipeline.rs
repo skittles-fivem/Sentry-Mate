@@ -778,12 +778,32 @@ fn a_new_key_whose_token_names_another_car_gets_a_car_of_its_own() {
         assert_ne!(a, b, "a token made for another car");
         assert_eq!(k.db.car_for_key(KEY3).unwrap(), Some(a), "a token made for the same car's name");
 
+        // an admin names the other car's logger before moving it: the name goes with the key
+        let unnamed = tokio::task::block_in_place(|| query::keys::key_row(&k.engine, KEY2)).unwrap();
+        assert_eq!(unnamed.device, None);
+        assert!(unnamed.device_label.starts_with("CAN Bridge key "), "{}", unnamed.device_label);
+        let name = |n: Option<&str>| query::keys::KeyChange { name: Some(n.map(String::from)), ..Default::default() };
+        for bad in ["   ", &"x".repeat(61), "two\nlines"] {
+            let e = tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], KEY2, &name(Some(bad))));
+            assert!(matches!(&e, Err(query::QueryError::Invalid { fields }) if fields.contains_key("name")), "{e:?}");
+        }
+        let row = tokio::task::block_in_place(|| {
+            query::keys::set_key(&k.engine, &[a, b], KEY2, &name(Some("  Pi logger in the boot ")))
+        })
+        .unwrap();
+        assert_eq!(
+            (row.device.as_deref(), row.device_label.as_str()),
+            (Some("Pi logger in the boot"), "Pi logger in the boot")
+        );
+        tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], KEY3, &name(Some("Screenmate"))))
+            .unwrap();
+
         // an admin moves the key back: it stays where it is put, and a key taken from its car waits
-        let change = query::keys::KeyChange { car: Some(Some(a)), preferred: None };
+        let change = query::keys::KeyChange { car: Some(Some(a)), preferred: None, name: None };
         let row = tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], KEY2, &change)).unwrap();
         assert_eq!(row.car.map(|c| c.0), Some(a));
         k.engine.idle().await;
-        let change = query::keys::KeyChange { car: Some(None), preferred: None };
+        let change = query::keys::KeyChange { car: Some(None), preferred: None, name: None };
         tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], KEY3, &change)).unwrap();
         k.engine.reconcile(None);
         k.engine.idle().await;
@@ -793,7 +813,35 @@ fn a_new_key_whose_token_names_another_car_gets_a_car_of_its_own() {
         })
         .unwrap();
         assert_eq!(waiting.items.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), vec![KEY3]);
-        let missing = query::keys::KeyChange { car: Some(Some(a)), preferred: None };
+        assert_eq!(waiting.items[0].device.as_deref(), Some("Screenmate"), "a waiting key keeps its name");
+
+        // the names hold through a rebuild of every car and a restart, in every answer that lists keys
+        let job = k.engine.rebuild(Scope::all()).unwrap();
+        k.engine.idle().await;
+        assert_eq!(k.engine.job(job.id).unwrap().status, engine::JobStatus::Done);
+        let again = Engine::new(k.db.clone(), k.store.clone(), Options::default());
+        again.start().unwrap();
+        again.idle().await;
+        let keys = tokio::task::block_in_place(|| {
+            query::keys::can_keys(&again, &[a, b], Some(true), Some(a), &Paging::default())
+        })
+        .unwrap();
+        let moved = keys.items.iter().find(|r| r.key == KEY2).expect("the moved key");
+        assert_eq!(moved.device.as_deref(), Some("Pi logger in the boot"));
+        let health = tokio::task::block_in_place(|| query::system::health(&again, a, &Period::all())).unwrap().body;
+        let h = health.keys.iter().find(|r| r.key == KEY2).expect("the moved key's health");
+        assert_eq!(
+            (h.device.as_deref(), h.device_label.as_str()),
+            (Some("Pi logger in the boot"), "Pi logger in the boot")
+        );
+        let other = health.keys.iter().find(|r| r.key == KEY).expect("the car's own key");
+        assert_eq!(other.device, None);
+        assert!(other.device_label.starts_with("CAN Bridge key "));
+        // and a name can be cleared
+        let row = tokio::task::block_in_place(|| query::keys::set_key(&again, &[a, b], KEY2, &name(None))).unwrap();
+        assert_eq!(row.device, None);
+        assert!(row.device_label.starts_with("CAN Bridge key "));
+        let missing = query::keys::KeyChange { car: Some(Some(a)), preferred: None, name: None };
         let e = tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], "000000000000", &missing));
         assert!(matches!(e, Err(query::QueryError::NotFound("no_such_key"))), "{e:?}");
     });

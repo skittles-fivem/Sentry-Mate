@@ -5,10 +5,8 @@ after an age limit (body 1 h, update 6 h, schedule 12 h, route 10 min, version 3
 
 The made-up inputs: Comet (`c1`) and Maple (`c2`) have the Tesla API, Atlas (`c3`) has TeslaFi while its TeslaFi
 account is matched, running and not paused; every other car has SMO alone, so all its values are null. Comet waits
-on an update that is downloading; Maple has a sunroof and a departure set the evening before (stale by now). Atlas's
-four windows are from TeslaFi's last full poll, 6 h ago (stale; its polls since carry none): while the owner's local
-TeslaMate reads Atlas its current "any window open" covers them and they are left out, as the server does; else they
-stay, stale, and the pages fold them into the Windows row. The software version: Comet's from the Tesla API, Atlas's from TeslaFi
+on an update that is downloading; Maple has a sunroof and a departure set the evening before (stale by now); Atlas
+reads its windows from TeslaFi like the rest. The software version: Comet's from the Tesla API, Atlas's from TeslaFi
 (live.live_version), Maple's from the owner's local TeslaMate once its car there is matched to Maple (its Tesla API
 reads carry none). A car that drives follows a route. Nothing is ever guessed: a lock
 state comes only from what an input read, never from a lock request.
@@ -101,15 +99,9 @@ def off_can(app, car_id, t, n):
     win = {k: False for k in WINDOWS}
     if car_id == "c2" and not driving and 9 <= local_dt(t, tz).hour < 18:
         win["driver_rear"] = True
-    win_at = at - 6 * HOUR if kind == "teslafi_api" else at
     for k in WINDOWS:
-        out["windows"][k] = _v(win[k], win_at, kind, t, AGE["body"])
-    out["windows_open"] = _v(any(win.values()), win_at, kind, t, AGE["body"])
-    from .live import teslamate_local_on
-    if kind == "teslafi_api" and teslamate_local_on(app, car_id):
-        # local TeslaMate's one current flag wins over TeslaFi's stale reading and covers its four windows
-        out["windows_open"] = _v(any(win.values()), t - 30_000, "teslamate_local", t, AGE["body"])
-        out["windows"] = {k: None for k in WINDOWS}
+        out["windows"][k] = _v(win[k], at, kind, t, AGE["body"])
+    out["windows_open"] = _v(any(win.values()), at, kind, t, AGE["body"])
     if car_id == "c2":  # the one car with a sunroof
         vent = not driving and 9 <= local_dt(t, tz).hour < 18
         out["sunroof_state"] = _v("vent" if vent else "closed", at, kind, t, AGE["body"])

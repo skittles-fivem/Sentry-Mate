@@ -42,7 +42,6 @@
 //! the contract's field names and units (metric, named in the field; ids as strings; times in ms UTC; local days in
 //! the car's time zone), with its paging, filters and sorting.
 
-pub mod compact;
 pub mod costs;
 pub mod firmware;
 pub mod importer;
@@ -251,11 +250,6 @@ pub(crate) struct Inner {
     pub(crate) packs: query::pack_logs::Fills,
     /// The SMO samples of the days being worked on ([`hot`]).
     pub(crate) hot: Mutex<hot::Hot>,
-    /// The compaction pass under way ([`compact`]), whether it was asked to stop, and whether passes start by
-    /// themselves.
-    pub(crate) compaction: Mutex<compact::Running>,
-    pub(crate) compact_stop: std::sync::atomic::AtomicBool,
-    pub(crate) compact_auto: std::sync::atomic::AtomicBool,
 }
 
 /// Where a car's zone was last looked up (latitude, longitude) and the zone found there.
@@ -362,9 +356,6 @@ impl Engine {
                 warm: Mutex::default(),
                 packs: Default::default(),
                 hot: Mutex::new(hot::Hot::default()),
-                compaction: Mutex::default(),
-                compact_stop: std::sync::atomic::AtomicBool::new(false),
-                compact_auto: std::sync::atomic::AtomicBool::new(false),
                 opts,
             }),
         }

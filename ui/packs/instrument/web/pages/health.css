@@ -164,3 +164,6 @@
 .hl-missing-line > .ico { flex: none; }
 .hl-missing-line:not(.warn) > .ico { color: var(--text-3); }
 .hl-missing-line.warn { color: var(--warm); }
+
+/* a key's Rename (can-key-name.js): on a phone the words line up with the name when the button wraps */
+:root[data-phone] .hl-key .main > .key-rename { padding-inline: 0; }

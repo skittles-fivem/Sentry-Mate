@@ -145,33 +145,6 @@ async fn versions_from_a_live_input_name_the_car_and_its_fingerprint_updates() {
     assert_eq!(narrow["summary"]["current_version"], json!("2026.12.1"));
     assert_eq!(narrow["summary"]["last_update"]["start_ms"], fp[1]["start_ms"]);
 
-    // the module history: each fingerprint came with its update's name (from the input), in the table and the bars;
-    // the car versions are the imported one (until the first update) and the input's, the newest current
-    let h = ok(&mut admin, &format!("/api/v1/cars/{car}/firmware/history")).await;
-    let items = h["items"].as_array().unwrap();
-    let mut bms: Vec<&Value> = items.iter().filter(|r| r["module"] == "bms").collect();
-    bms.sort_by_key(|r| r["first_seen_ms"].as_u64().unwrap());
-    let came: Vec<Value> = bms.iter().map(|r| r["version"].clone()).collect();
-    assert_eq!(came, vec![Value::Null, json!("2026.8.3"), json!("2026.12.1")], "{h}");
-    assert_eq!(bms[2]["update"]["version_source"], json!("teslamate_local"));
-    let bars: Vec<Value> =
-        h["spans"].as_array().unwrap().iter().filter(|s| s["module"] == "bms").map(|s| s["version"].clone()).collect();
-    assert_eq!(bars, came);
-    let mut versions: Vec<&Value> = items.iter().filter(|r| r["kind"] == "version").collect();
-    versions.sort_by_key(|r| r["first_seen_ms"].as_u64().unwrap());
-    let vv: Vec<(Value, Value, bool)> =
-        versions.iter().map(|r| (r["version"].clone(), r["source"].clone(), r["current"].as_bool().unwrap())).collect();
-    assert_eq!(
-        vv,
-        vec![
-            (json!("2026.2.9"), json!("teslamate"), false),
-            (json!("2026.8.3"), json!("teslamate_local"), false),
-            (json!("2026.12.1"), json!("teslamate_local"), true),
-        ],
-        "{h}"
-    );
-    assert_eq!(versions[0]["until_ms"], fp[0]["end_ms"], "the imported version ends with the first update");
-
     // a typed name wins, on the update and as the current version
     let second = fp[1]["id"].as_str().unwrap().to_string();
     let r = admin.patch(&format!("{base}/{second}"), json!({ "version": "2026.12.2" })).await;
@@ -183,13 +156,6 @@ async fn versions_from_a_live_input_name_the_car_and_its_fingerprint_updates() {
     assert_eq!(fp[0]["version_source"], json!("teslamate_local"), "the other keeps its input's name");
     assert_eq!(all["summary"]["current_version"], json!("2026.12.2"));
     assert_eq!(all["summary"]["current_version_source"], json!("owner"));
-    // and the fingerprints it brought come with it at once
-    let h = ok(&mut admin, &format!("/api/v1/cars/{car}/firmware/history?module=bms")).await;
-    let newest = h["items"].as_array().unwrap().iter().find(|r| r["current"] == true).unwrap().clone();
-    assert_eq!(
-        (newest["version"].clone(), newest["update"]["version_source"].clone()),
-        (json!("2026.12.2"), json!("owner"))
-    );
 
     // a cleared name stays cleared: the input does not name it again
     let r = admin.patch(&format!("{base}/{second}"), json!({ "version": null })).await;

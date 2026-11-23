@@ -391,60 +391,6 @@ pub fn encode<P: Point>(points: &[P]) -> Vec<u8> {
     out
 }
 
-/// What one column of an encoded body takes (for measurements).
-#[doc(hidden)]
-#[derive(Debug, Clone, PartialEq)]
-pub struct ColumnSize {
-    pub name: &'static str,
-    /// `none`, `derived`, `xor`, `div`, `mul`, `factor` or `raw`.
-    pub encoding: &'static str,
-    pub values: usize,
-    /// The presence bitmap and the payload, as they are in the body.
-    pub bitmap: Vec<u8>,
-    pub payload: Vec<u8>,
-}
-
-/// The bytes of the time column and each column of an encoded body (for measurements).
-#[doc(hidden)]
-pub fn describe<P: Point>(body: &[u8]) -> Result<(usize, Vec<ColumnSize>), Error> {
-    let mut r = Reader::new(body);
-    let n = r.count(1)?;
-    let start = body.len() - r.rest().len();
-    for _ in 0..n {
-        r.varint()?;
-    }
-    let times = body.len() - r.rest().len() - start;
-    let (_, readers) = parse::<P>(body)?;
-    let mut out = Vec::new();
-    for c in readers {
-        let bitmap = match c.present {
-            Present::Map(m) => m.to_vec(),
-            Present::None | Present::All | Present::Derived => Vec::new(),
-        };
-        let values = match c.present {
-            Present::All => n,
-            Present::Map(m) => m.iter().map(|b| b.count_ones() as usize).sum(),
-            Present::None | Present::Derived => 0,
-        };
-        let (encoding, payload) = match (&c.present, &c.vals) {
-            (Present::Derived, _) => ("derived", Vec::new()),
-            (_, Vals::None) => ("none", Vec::new()),
-            (_, Vals::Xor { control, data, .. }) => ("xor", [control, data.rest()].concat()),
-            (_, Vals::Ints { r, scale, .. }) => (
-                match scale {
-                    Scale::Div(_) => "div",
-                    Scale::Mul(_) => "mul",
-                    Scale::Factor(_) => "factor",
-                },
-                r.rest().to_vec(),
-            ),
-            (_, Vals::Bytes { b, .. }) => ("raw", b.to_vec()),
-        };
-        out.push(ColumnSize { name: c.col.name(), encoding, values, bitmap, payload });
-    }
-    Ok((times, out))
-}
-
 /// Where a column says its values are.
 enum Present<'a> {
     None,

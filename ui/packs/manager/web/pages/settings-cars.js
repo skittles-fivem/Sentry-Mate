@@ -1,7 +1,7 @@
 // Settings: Cars (/settings/cars and /settings/cars/{car}): per-car settings, and how each car's CAN
 // Bridge is tied to it. Without a car: every car the account sees (searched and paged by the server),
 // keys waiting for a car, and how a car appears. With a car: its name, what it reports about itself,
-// its upload tokens and CAN Bridge keys (with the outcome of its uploads), its time zone, battery
+// its upload tokens and CAN Bridge keys (with the outcome of its uploads; an admin names a key, can-key-name.js), its time zone, battery
 // chemistry, reference values, free Supercharging as dated ranges, and its data sources (#data-sources: the
 // live inputs' priority order, gap filling from an import, a link to the overlaps). Every change saves at once
 // (PATCH with the object's version) and a short note confirms it.
@@ -22,6 +22,8 @@ import { openDialog, confirmDialog } from '../core/dialog.js';
 import { openCarSwitcher, SWITCH_KEYS } from '../core/carswitch.js';
 import { carChanged } from '../core/frame.js';
 import { dateTime, date, time, ago, agoEl, tzName, carMeta, statePill } from '../core/fmt.js';
+import { deviceText, deviceWords, renameKeyButton } from './can-key-name.js';
+import { deviceName } from '../shared/devices.js';
 
 export const id = 'settings-cars';
 export const css = true;
@@ -219,7 +221,8 @@ function waitingTable(ctx, rows, car, after, noCars = false) {
     sort: { key: 'first', dir: 'desc' },
     columns: [
       { key: 'key', label: 'Key', render: (k) => h('span', { class: 'mono' }, k.key), sort: true },
-      { key: 'device', label: 'Device', render: (k) => k.device || 'Not reported', sort: true },
+      { key: 'device', label: 'Device', value: deviceWords, csv: deviceWords, sort: true,
+        render: (k) => h('span', { class: 'row sc-dev' }, deviceText(k), renameKeyButton(ctx, k, ctx.admin, after)) },
       { key: 'first', label: 'First upload', value: (k) => k.first_seen_ms, sort: true, render: (k) => dateTime(k.first_seen_ms, tz), csv: (k) => k.first_seen_ms },
       { key: 'last', label: 'Last upload', value: (k) => k.last_upload_ms, sort: true, render: (k) => (k.last_upload_ms ? agoEl(k.last_upload_ms, tz) : 'Never'), csv: (k) => k.last_upload_ms ?? '' },
       { key: 'logs_waiting', label: 'Logs waiting', num: true, sort: true, render: (k) => format(k.logs_waiting ?? 0, 'count') },
@@ -415,7 +418,7 @@ async function mountCar(ctx) {
       detail = '';
     }
     if (trust && tone === 'ok') detail += trust === 'verified' ? 'Its signature was checked and matches a key tied to this car. ' : trust === 'unsigned' ? 'It carried no signature, so it is kept but marked unsigned. ' : 'It failed its check and was not used. ';
-    if (pref) detail += `Preferred key: ${pref.key}${pref.device ? ` (${pref.device})` : ''}. `;
+    if (pref) detail += `Preferred key: ${pref.key}${deviceName(pref).named ? ` (${deviceName(pref).text})` : ''}. `;
     if (S.waiting.length) detail += `${S.waiting.length === 1 ? 'One key is' : `${S.waiting.length} keys are`} waiting for a car below. `;
     if (hl?.logs_waiting) detail += `${hl.logs_waiting} logs wait to be checked. `;
     return h('div', { class: ['sc-outcome', `sc-outcome--${tone}`], role: 'status', cover: 'faq.car-missing.outcomes' },
@@ -467,7 +470,7 @@ async function mountCar(ctx) {
         { key: 'created', label: 'Made', value: (t) => t.created_ms, sort: true, render: (t) => dateTime(t.created_ms, z), csv: (t) => t.created_ms },
         { key: 'state', label: 'State', value: (t) => (t.revoked ? 2 : t.last_upload_ms ? 0 : 1), sort: true,
           render: tokenState, csv: tokenStateText },
-        { key: 'key', label: 'Key it brought', render: (t) => (t.key ? h('span', { class: 'mono' }, t.key) : h('span', { class: 'faint' }, t.revoked ? '—' : 'None yet')) },
+        { key: 'key', label: 'Key it brought', render: (t) => (t.key ? [h('span', { class: 'mono' }, t.key), ' ', deviceText(t)] : h('span', { class: 'faint' }, t.revoked ? '—' : 'None yet')) },
         { key: 'last', label: 'Last upload', value: (t) => t.last_upload_ms, sort: true, render: (t) => (t.last_upload_ms ? agoEl(t.last_upload_ms, z) : 'Never'), csv: (t) => t.last_upload_ms ?? '' },
         { key: 'act', label: '', csv: false, render: (t) => (t.revoked ? null : h('button', { class: 'btn btn--sm btn--danger', type: 'button', onclick: () => revokeToken(t) }, icon('x', 'ico--sm'), 'Revoke')) },
       ],
@@ -479,7 +482,8 @@ async function mountCar(ctx) {
       sort: { key: 'last', dir: 'desc' },
       columns: [
         { key: 'key', label: 'Key', render: (k) => h('span', { class: 'mono' }, k.key), sort: true },
-        { key: 'device', label: 'Device', render: (k) => k.device || 'Not reported', sort: true },
+        { key: 'device', label: 'Device', value: deviceWords, csv: deviceWords, sort: true,
+          render: (k) => h('span', { class: 'row sc-dev' }, deviceText(k), renameKeyButton(ctx, k, admin, () => refresh())) },
         { key: 'first', label: 'First upload', value: (k) => k.first_seen_ms, sort: true, render: (k) => dateTime(k.first_seen_ms, z), csv: (k) => k.first_seen_ms },
         { key: 'last', label: 'Last upload', value: (k) => k.last_upload_ms, sort: true, render: (k) => (k.last_upload_ms ? agoEl(k.last_upload_ms, z) : 'Never'), csv: (k) => k.last_upload_ms ?? '' },
         { key: 'logs_waiting', label: 'Logs waiting', num: true, sort: true, render: (k) => format(k.logs_waiting ?? 0, 'count') },

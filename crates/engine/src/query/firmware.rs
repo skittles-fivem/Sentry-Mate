@@ -258,10 +258,13 @@ pub struct FirmwareHistory {
 /// How far after an update the first drive is looked for.
 const DRIVE_LOOKAHEAD_MS: u64 = 60 * 86_400_000;
 
-/// The version an update found from fingerprints shows, however it was named (typed, a live input, a build match):
-/// what the fingerprints it brought came with.
+/// The version an update found from fingerprints shows: `owner`, or `build_match` when its set was named elsewhere.
 fn update_ref(e: &Engine, car: CarId, ev: &FwEvent) -> QResult<UpdateRef> {
-    let (version, version_source) = super::software::fw_version_of(e, car, ev)?;
+    let (version, version_source) = match crate::firmware::name_of(e.db(), car, ev)? {
+        Some((v, "auto")) => (Some(v), Some("build_match")),
+        Some((v, _)) => (Some(v), Some("owner")),
+        None => (None, None),
+    };
     Ok(UpdateRef { id: ev.id.to_string(), version, version_source })
 }
 
@@ -346,97 +349,33 @@ fn module_rows(e: &Engine, car: CarId, h: &History) -> QResult<Vec<HistoryRow>> 
     Ok(out)
 }
 
-/// The versions the car was said to run (no module fingerprints): imported updates (TeslaMate, TeslaFi), and the
-/// versions the live inputs read (the Tesla API, TeslaFi, local TeslaMate; a stretch of one version, the inputs
-/// together, from when one first said it). Each lasts until the next one starts, or until an update found from
-/// fingerprints (the build changed), whichever comes first.
-fn version_rows(e: &Engine, car: CarId, h: &History) -> QResult<Vec<HistoryRow>> {
-    struct V {
-        id: String,
-        start: u64,
-        last: u64,
-        version: Option<String>,
-        version_source: Option<&'static str>,
-        update: Option<String>,
-        from: super::Sources,
-    }
-    let mut vs: Vec<V> = Vec::new();
-    for u in super::software::all_updates(e, car)?.into_iter().filter(|u| u.update.source.site().is_some()) {
-        let (version, version_source) = super::software::version_of(e, car, &u)?;
-        let start = u.update.start_ms;
-        vs.push(V {
-            id: format!("version:{}", u.id),
-            start,
-            last: u.update.end_ms.unwrap_or(start).max(start),
-            version,
-            version_source,
-            update: Some(u.id.to_string()),
-            from: super::Sources::of(u.update.source, u.update.inputs),
-        });
-    }
-    let mut seen = crate::records::input_versions(e.db(), car)?;
-    seen.retain(|s| super::software::valid_version(&s.version));
-    seen.sort_by_key(|s| (s.first_ms, s.last_ms));
-    for s in seen {
-        vs.push(V {
-            id: format!("version:live:{}", s.first_ms),
-            start: s.first_ms,
-            last: s.last_ms.max(s.first_ms),
-            version: Some(s.version.clone()),
-            version_source: Some(model::Origin::from(s.input).kind()),
-            update: None,
-            from: super::Sources::of(model::Source::Live, model::Inputs::from(s.input)),
-        });
-    }
-    vs.sort_by(|a, b| (a.start, &a.id).cmp(&(b.start, &b.id)));
-    // an input saying the version the row before says, with no build change between: the same stretch
-    let builds: Vec<u64> = h.events.iter().map(|ev| ev.to_ms).collect();
-    let mut kept: Vec<V> = Vec::with_capacity(vs.len());
-    for v in vs {
-        match kept.last_mut() {
-            Some(l)
-                if v.update.is_none()
-                    && l.version.is_some()
-                    && l.version == v.version
-                    && !builds.iter().any(|&b| b > l.start && b <= v.start) =>
-            {
-                l.last = l.last.max(v.last);
-            }
-            _ => kept.push(v),
-        }
-    }
-    let vs = kept;
-    // where a newer version starts: the next row's start, or an update found from fingerprints
+/// The versions imported updates gave the car (TeslaMate, TeslaFi: a car version, no module fingerprints).
+fn version_rows(e: &Engine, car: CarId) -> QResult<Vec<HistoryRow>> {
+    let all: Vec<db::UpdateRow> =
+        super::software::all_updates(e, car)?.into_iter().filter(|u| u.update.source.site().is_some()).collect();
     let now = crate::now_ms();
-    let mut out = Vec::with_capacity(vs.len());
-    for (i, v) in vs.iter().enumerate() {
-        let next = vs[i + 1..].iter().map(|n| n.start).find(|&s| s > v.start);
-        let build = builds.iter().copied().filter(|&b| b > v.start).min();
-        let until = match (next, build) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+    let mut out = Vec::with_capacity(all.len());
+    for (i, u) in all.iter().enumerate() {
+        let (version, version_source) = super::software::version_of(e, car, u)?;
+        let start = u.update.start_ms;
+        let until = all.get(i + 1).map(|n| n.update.start_ms);
         out.push(HistoryRow {
-            id: v.id.clone(),
+            id: format!("version:{}", u.id),
             kind: "version",
             module: None,
             module_name: None,
             fingerprint: None,
             previous: None,
             fields: Vec::new(),
-            first_seen_ms: v.start,
-            last_seen_ms: v.last,
+            first_seen_ms: start,
+            last_seen_ms: u.update.end_ms.unwrap_or(start).max(start),
             until_ms: until,
-            duration_ms: until.unwrap_or(now).saturating_sub(v.start),
-            current: until.is_none(),
-            update: v.update.as_ref().map(|id| UpdateRef {
-                id: id.clone(),
-                version: v.version.clone(),
-                version_source: v.version_source,
-            }),
-            version: v.version.clone(),
+            duration_ms: until.unwrap_or(now).saturating_sub(start),
+            current: i + 1 == all.len(),
+            update: Some(UpdateRef { id: u.id.to_string(), version: version.clone(), version_source }),
+            version,
             changed_in: None,
-            from: v.from.clone(),
+            from: super::Sources::of(u.update.source, u.update.inputs),
         });
     }
     Ok(out)
@@ -508,7 +447,7 @@ pub fn history(
         Some(m) => modules_rows.into_iter().filter(|r| r.module == Some(m)).collect(),
         None => {
             let mut all = modules_rows;
-            all.extend(version_rows(e, car, &h)?);
+            all.extend(version_rows(e, car)?);
             all
         }
     };

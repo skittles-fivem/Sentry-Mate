@@ -6,7 +6,7 @@
 //   ## now        key: value lines in two columns (state, battery, range, odometer, temperatures,
 //                 doors and modes, lock, windows, sunroof, route, tyres FL FR RL RR, software and updates, data age;
 //                 lock, windows, sunroof, route, version, updates and the charge schedule are not on CAN: they come from
-//                 now.off_can, the other inputs' newest reading, its input and age (stale when old) in its hover title)
+//                 now.off_can, the Tesla API's or TeslaFi's newest reading, each marked [api] or [tfi] and [stale] when old)
 //   ## where      a small flat grey map, and charging now / why the car is awake beside it
 //   ## period     figures, the battery sparkline, the charging chart, the state strip, last drive and charge
 //   ## vehicle    the car's build facts, each with its source and how sure (pages/vehicle.js); an admin can type over them
@@ -125,11 +125,10 @@ export async function mount(ctx) {
     return [content, old ? h('span', { class: 'muted' }, ` (${ago(t)})`) : null, via(pair)];
   };
   const by = (pair, content) => (content == null ? null : [content, via(pair)]);
-  // a value from now.off_can ({ value, at_ms, sources, stale } or null): its input and age (stale past its age limit)
-  // are its hover title, never words beside it
+  // a value from now.off_can ({ value, at_ms, sources, stale } or null): its input's mark, [stale] past its age limit
   const oc = () => now.off_can || {};
-  const offTitle = (p) => { const s = p?.sources?.[0]; return s ? `${s.label}, read ${p.at_ms ? ago(p.at_ms) : 'at a time not known'}${p.stale ? '; stale, may have changed since' : ''}` : null; };
-  const off = (p, content) => (val(p) == null || content == null ? null : h('span', { class: p.stale ? 'muted' : null, title: offTitle(p) }, content));
+  const offMark = (p) => (p ? [via(p), p.stale ? h('span', { class: 'src-stale', title: p.at_ms ? `newest ${formatDateTime(p.at_ms, tz)}; past its age limit` : null }, tag('stale', 'warn'), h('span', { class: 'muted' }, p.at_ms ? ` ${ago(p.at_ms)}` : '')) : null] : null);
+  const off = (p, content) => (val(p) == null || content == null ? null : [p.stale ? h('span', { class: 'muted' }, content) : content, offMark(p)]);
   const WINDOWS = [['driver_front', 'driver front'], ['passenger_front', 'passenger front'], ['driver_rear', 'driver rear'], ['passenger_rear', 'passenger rear']];
   const yes = (pair, on = 'open', off = 'closed', warn = true) => { const v = val(pair); return v == null ? null : v ? (warn ? h('span', { class: 'tone--warn' }, on) : on) : off; };
   function paintNow() {
@@ -198,13 +197,14 @@ export async function mount(ctx) {
         ['tyre pressure', h('span', { class: 'muted' }, recommendedLine(n))],
         ['12 v battery', aged(n.lv_v, num(val(n.lv_v), 'voltage'))],
         ['software', [h('a', { class: 'lnk-plain', href: ctx.link('software') }, sw.version || ov || 'not known'), sw.version && swSrc ? h('span', { class: 'muted' }, ` (${swSrc})`) : null,
-          ov != null && sw.version && ov !== sw.version ? h('span', { class: 'muted', title: offTitle(o.version) }, `; the car reports ${ov}`) : null], { cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
+          ov != null && sw.version && ov !== sw.version ? h('span', { class: 'muted' }, `; the car reports ${ov}`) : null, ov != null ? offMark(o.version) : null], { cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
         ['update', off(o.update_available, updText)],
         ['firmware', [h('a', { class: 'lnk-plain', href: `${ctx.link('software')}#firmware`, title: 'the modules\' firmware fingerprints, and the Tesla updates found from them' }, 'module fingerprints'), h('span', { class: 'muted' }, ', '), h('a', { class: 'lnk-plain', href: `${ctx.link('software')}#firmware-history`, title: 'every fingerprint each module has had, and the versions over time' }, 'history')]],
         ['update seen', sw.changed_since_ms ? h('span', { class: 'tone--warn' }, `builds changed ${when(sw.changed_since_ms, tz)}`) : h('span', { class: 'muted' }, 'no change seen'), { cover: 'summary.flag.software_update' }],
         ['log received', n.received_ms ? ago(n.received_ms) : null],
       ]),
-      note('Lock, windows, sunroof, route and updates come from the car’s other inputs: point at one for its input and age. ', `Logs arrive about ${n.delay_s ? (n.delay_s < 120 ? `${Math.round(n.delay_s)} s` : dur(n.delay_s * 1000)) : '75 s'} after the car records them; a value older than that shows its own age. Values in your units (${unitLabel('distance')}, ${unitLabel('temperature')}, ${unitLabel('pressure')}). `,
+      note(h('span', { class: 'src' }, h('span', { class: 'src-b' }, '[', h('span', { class: 'src-k src-k--tesla_api' }, 'api'), ']')), ' or ', h('span', { class: 'src' }, h('span', { class: 'src-b' }, '[', h('span', { class: 'src-k src-k--teslafi_api' }, 'tfi'), ']')),
+        ' after a value: the Tesla API or TeslaFi sent it; the rest came from SMO. ', tag('stale', 'warn'), ' that input has not sent it again within its age limit. ', `Logs arrive about ${n.delay_s ? (n.delay_s < 120 ? `${Math.round(n.delay_s)} s` : dur(n.delay_s * 1000)) : '75 s'} after the car records them; a value older than that shows its own age. Values in your units (${unitLabel('distance')}, ${unitLabel('temperature')}, ${unitLabel('pressure')}). `,
         h('a', { class: 'lnk', href: ctx.link('health'), cover: 'summary.data.prefs_snapshot' }, 'every signal'))));
   }
 

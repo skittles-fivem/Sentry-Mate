@@ -1,6 +1,6 @@
 // Runs inside Chromium for browser.test.js, under the same Content-Security-Policy the dev server sends.
 // Each check pushes { name, ok, detail }; window.__results is set when all are done.
-import { h, svg, cover, ready, unready, failed, setTitle, quantity, setVars, safeUrl, readyPage, disclose } from './shared/dom.js';
+import { h, svg, cover, ready, unready, failed, setTitle, quantity, setVars, safeUrl, readyPage } from './shared/dom.js';
 import { setLocale, t } from './shared/i18n.js';
 import { setUnits } from './shared/units.js';
 import * as api from './shared/api.js';
@@ -24,21 +24,6 @@ async function run() {
   check('h wires event handlers', clicked.length === 1);
   check('CSS custom properties and styles go through CSSOM', getComputedStyle(el).getPropertyValue('--w').trim() === '42%' && getComputedStyle(el).minWidth === '48px', el.getAttribute('style'));
   check('cover marks item ids without repeats', cover(el, 'x.two', 'x.three').dataset.cover === 'x.one x.two x.three', el.dataset.cover);
-  // disclose(): a button that opens a small form in place, focus in and back out, Escape closes it
-  const edit = h('button', { type: 'button' }, 'Edit');
-  const box = h('form', null, h('label', { for: 'dz-in' }, 'Version'), h('input', { id: 'dz-in' }), h('button', { type: 'submit' }, 'Save'));
-  const toggles = [];
-  document.body.append(edit, box);
-  const dz = disclose(edit, box, { onOpen: () => toggles.push('open'), onClose: () => toggles.push('close') });
-  check('disclose starts closed and names its part', box.hidden && edit.getAttribute('aria-expanded') === 'false' && edit.getAttribute('aria-controls') === box.id && !!box.id, edit.outerHTML);
-  edit.click();
-  check('disclose opens on click and focuses the first control', !box.hidden && dz.isOpen() && edit.getAttribute('aria-expanded') === 'true' && document.activeElement?.id === 'dz-in', document.activeElement?.outerHTML);
-  document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-  check('Escape closes it and gives the focus back to the button', box.hidden && edit.getAttribute('aria-expanded') === 'false' && document.activeElement === edit, document.activeElement?.outerHTML);
-  dz.open();
-  dz.close();
-  check('closing from code keeps the focus where it is unless it was inside', box.hidden && toggles.join(',') === 'open,close,open,close', toggles.join(','));
-  edit.remove(); box.remove();
   const evil = h('div', null, '<img src=x onerror="window.__pwned=1">');
   check('text is never markup', evil.childElementCount === 0 && evil.textContent.startsWith('<img'));
   const link = h('a', { href: 'javascript:window.__pwned=1', onmouseover: 'window.__pwned=1' }, 'x');

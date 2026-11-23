@@ -342,6 +342,33 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
     let r = c.request("PATCH", "/api/v1/can-keys/000000000000", Some(json!({ "preferred": false }))).await;
     assert_eq!(r.json()["error"]["code"], json!("no_such_key"), "{}", r.text());
 
+    // naming a key: unnamed, it has an automatic label; a name is trimmed, 1 to 60 characters, null clears it
+    assert_eq!(items[0]["device"], Value::Null, "{}", keys_list.text());
+    assert!(
+        items[0]["device_label"].as_str().is_some_and(|l| l.starts_with("CAN Bridge key ")),
+        "{}",
+        keys_list.text()
+    );
+    let key_path = format!("/api/v1/can-keys/{key}");
+    let r = c.request("PATCH", &key_path, Some(json!({ "name": json!(5) }))).await;
+    assert_eq!((r.status, r.json()["error"]["fields"]["name"].is_string()), (400, true), "{}", r.text());
+    for bad in [json!("  "), json!("x".repeat(61))] {
+        let r = c.request("PATCH", &key_path, Some(json!({ "name": bad }))).await;
+        assert_eq!((r.status, r.json()["error"]["code"].clone()), (422, json!("invalid")), "{}", r.text());
+    }
+    let r = c.request("PATCH", &key_path, Some(json!({ "name": json!("  Screenmate in the test car ") }))).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(
+        (r.json()["device"].clone(), r.json()["device_label"].clone()),
+        (json!("Screenmate in the test car"), json!("Screenmate in the test car")),
+        "{}",
+        r.text()
+    );
+    let r = c.request("PATCH", &key_path, Some(json!({ "name": json!(null) }))).await;
+    assert_eq!(r.json()["device"], Value::Null, "{}", r.text());
+    let r = c.request("PATCH", &key_path, Some(json!({ "name": json!("Screenmate in the test car") }))).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+
     // tokens: each car's, and one for a new car (its secret shown once)
     let r = c.get(&format!("/api/v1/cars/{}/upload-tokens", ids[0])).await;
     assert_eq!(r.status, 200, "{}", r.text());
@@ -371,6 +398,15 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
     assert_eq!((r.status, r.json()["car"].clone()), (200, json!(other)), "{}", r.text());
     let r = c.request("PATCH", &format!("/api/v1/can-keys/{key}"), Some(json!({ "car": owner }))).await;
     assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["device"], json!("Screenmate in the test car"), "the name goes with the key: {}", r.text());
+    let health = c.get(&format!("/api/v1/cars/{owner}/health")).await.json();
+    let named = health["keys"].as_array().unwrap().iter().find(|k| k["key"] == json!(key)).cloned().unwrap();
+    assert_eq!(named["device"], json!("Screenmate in the test car"), "{health}");
+    let tokens = c.get(&format!("/api/v1/cars/{owner}/upload-tokens")).await.json();
+    let tied = tokens["items"].as_array().unwrap().iter().find(|t| t["key"] == json!(key)).cloned();
+    if let Some(t) = tied {
+        assert_eq!(t["device"], json!("Screenmate in the test car"), "{tokens}");
+    }
     let r = c.request("POST", &format!("/api/v1/cars/{other}/upload-tokens"), None).await;
     assert_eq!(r.status, 201, "{}", r.text());
     let tid = r.json()["id"].as_str().unwrap().to_string();
@@ -387,6 +423,11 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
     assert!(has("key-assigned", format!("key:{other}:{key}"), &t), "the car the key went to: {rows:?}");
     assert!(has("key-assigned", format!("key:{owner}:{key}"), &o), "and back: {rows:?}");
     assert!(has("key-preferred", format!("key:{owner}:{key}"), &o), "{rows:?}");
+    assert!(has("can-key-renamed", format!("key:{owner}:{key}"), &o), "{rows:?}");
+    let renames: Vec<&str> =
+        rows.iter().filter(|e| e["action"] == "can-key-renamed").filter_map(|e| e["summary"].as_str()).collect();
+    assert_eq!(renames.len(), 3, "named, cleared, named again: {renames:?}");
+    assert!(renames.iter().any(|s| s.contains("Screenmate in the test car") && s.starts_with("Named")), "{renames:?}");
     assert!(has("token-created", format!("token:{other}:{tid}"), &t), "{rows:?}");
     assert!(has("token-revoked", format!("token:{other}:{tid}"), &t), "{rows:?}");
     let new_id = made["id"].as_str().unwrap();
