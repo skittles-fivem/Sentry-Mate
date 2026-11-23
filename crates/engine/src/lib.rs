@@ -49,6 +49,7 @@ pub mod full;
 pub mod importer;
 pub mod invoices;
 pub mod jobs;
+mod live_gps;
 mod pipeline;
 pub use pipeline::NEW_CAR_NAME;
 mod hot;

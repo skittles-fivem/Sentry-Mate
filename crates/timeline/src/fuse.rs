@@ -128,6 +128,9 @@ pub struct Fused {
     /// Of those, the ones whose fixes were not used (the others' agree with each other, or it is SMO's decoded
     /// position against the car's own as an API reports it).
     pub gps_distrusted: Inputs,
+    /// The inputs whose fixes agree with another input's fixes of the same moments ([`gps_cross_check`]): a decode
+    /// put right shows here.
+    pub gps_agree: Inputs,
 }
 
 impl Fused {
@@ -282,7 +285,7 @@ fn gap_of(inputs: Inputs, p: &FuseParams) -> u64 {
 /// The inputs' samples (`layers`, highest first), each filling the one above it: the bottom one first, each higher
 /// one laid over what is below it.
 fn layered(layers: &[(&[Sample], Inputs)], p: &FuseParams) -> Fused {
-    let (gps_disagree, gps_distrusted) = gps_cross_check(layers);
+    let GpsCross { disagree: gps_disagree, distrusted: gps_distrusted, agree: gps_agree } = gps_cross_check(layers);
     // a distrusted input's samples without their fixes (its other values stay)
     let blind: Vec<Vec<Sample>> = layers
         .iter()
@@ -306,7 +309,7 @@ fn layered(layers: &[(&[Sample], Inputs)], p: &FuseParams) -> Fused {
     let marks = below.iter().filter(|(_, i)| *i != Inputs::SMO).map(|(s, i)| (s.t_ms, *i)).collect();
     let mut samples: Vec<Sample> = below.into_iter().map(|(s, _)| s).collect();
     let fixes_dropped = crate::calc::drop_bad_fixes(&mut samples, crate::calc::MAX_FIX_KMH);
-    Fused { samples, marks, fixes_dropped, gps_disagree, gps_distrusted }
+    Fused { samples, marks, fixes_dropped, gps_disagree, gps_distrusted, gps_agree }
 }
 
 /// Two inputs' fixes at most this far apart in time are compared (ms).
@@ -319,6 +322,13 @@ const CROSS_KMH: f64 = 200.0;
 const CROSS_MIN: usize = 5;
 /// At most this many fixes of an input are compared (spread over the window).
 const CROSS_MAX: usize = 500;
+
+/// Whether two fixes (`(ms, lat, lon)`, of two inputs) are further apart than the car can be between them: more
+/// than [`CROSS_KM`] plus what it drives at [`CROSS_KMH`] in the time between them.
+pub fn fixes_apart(a: (u64, f64, f64), b: (u64, f64, f64)) -> bool {
+    let allowed = CROSS_KM + CROSS_KMH * a.0.abs_diff(b.0) as f64 / 3_600_000.0;
+    crate::calc::haversine_km((a.1, a.2), (b.1, b.2)) > allowed
+}
 
 /// Whether two inputs' fixes agree: `None` with too few of about the same moments, else whether most of those
 /// pairs are close.
@@ -346,22 +356,31 @@ fn fixes_agree(a: &[Sample], b: &[Sample]) -> Option<bool> {
             .filter_map(|j| b.get(j))
             .filter(|f| f.0.abs_diff(t) <= CROSS_MS)
             .min_by_key(|f| f.0.abs_diff(t));
-        let Some(&(u, lb, ob)) = near else { continue };
+        let Some(&f) = near else { continue };
         compared += 1;
-        let allowed = CROSS_KM + CROSS_KMH * u.abs_diff(t) as f64 / 3_600_000.0;
-        if crate::calc::haversine_km((la, lo), (lb, ob)) > allowed {
+        if fixes_apart((t, la, lo), f) {
             apart += 1;
         }
     }
     (compared >= CROSS_MIN).then_some(apart * 2 <= compared)
 }
 
-/// The live inputs' fixes compared with each other's of the same moments: (the inputs whose fixes disagree with
-/// another's and agree with none, the inputs whose fixes are not to be used). An input that disagrees with another and agrees with none is not
+/// What [`gps_cross_check`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GpsCross {
+    /// The inputs whose fixes disagree with another's and agree with none.
+    pub disagree: Inputs,
+    /// Of those, the ones whose fixes are not to be used.
+    pub distrusted: Inputs,
+    /// The inputs whose fixes agree with another's.
+    pub agree: Inputs,
+}
+
+/// The live inputs' fixes compared with each other's of the same moments ([`GpsCross`]). An input that disagrees with another and agrees with none is not
 /// used when the one it disagrees with agrees with a third, or when it is SMO (its position is decoded from the
 /// car's bus, where a layout mistake shifts every fix; an API reports the car's own position in plain degrees).
 /// Two APIs that disagree with no third to decide are both still used, and named.
-pub fn gps_cross_check(layers: &[(&[Sample], Inputs)]) -> (Inputs, Inputs) {
+pub fn gps_cross_check(layers: &[(&[Sample], Inputs)]) -> GpsCross {
     let n = layers.len();
     let mut agree = vec![vec![None; n]; n];
     for i in 0..n {
@@ -374,7 +393,11 @@ pub fn gps_cross_check(layers: &[(&[Sample], Inputs)]) -> (Inputs, Inputs) {
     let agrees = |i: usize| (0..n).any(|j| agree[i][j] == Some(true));
     let mut disagree = Inputs::NONE;
     let mut distrusted = Inputs::NONE;
+    let mut agree_with = Inputs::NONE;
     for i in 0..n {
+        if agrees(i) {
+            agree_with = agree_with.union(layers[i].1);
+        }
         let against: Vec<usize> = (0..n).filter(|&j| agree[i][j] == Some(false)).collect();
         if against.is_empty() {
             continue;
@@ -388,7 +411,7 @@ pub fn gps_cross_check(layers: &[(&[Sample], Inputs)]) -> (Inputs, Inputs) {
             distrusted = distrusted.union(layers[i].1);
         }
     }
-    (disagree, distrusted)
+    GpsCross { disagree, distrusted, agree: agree_with }
 }
 
 /// `top`'s seconds (one per second, sorted) with the values they lack from `below` (sorted, one per second), and
@@ -491,10 +514,12 @@ mod tests {
         // SMO against one API alone: the API's position is the car's own
         let f = fuse(&smo_s, &a, &p);
         assert_eq!((f.gps_disagree, f.gps_distrusted), (Inputs::BOTH, Inputs::SMO));
+        assert_eq!(f.gps_agree, Inputs::NONE);
         // inputs that agree (an API's lag of a kilometre is agreement), or SMO alone: nothing is named
         let near: Vec<Sample> = a.iter().map(|x| Sample { lon: Some(2.01), ..x.clone() }).collect();
         let f = fuse(&(0..120).map(smo).collect::<Vec<_>>(), &near, &p);
         assert_eq!((f.gps_disagree, f.gps_distrusted), (Inputs::NONE, Inputs::NONE));
+        assert_eq!(f.gps_agree, Inputs::BOTH, "SMO's fixes agree with the API's: trusted again");
         assert_eq!(fuse(&smo_s, &[], &p).gps_disagree, Inputs::NONE);
         // two APIs that disagree with no third to decide: named, both still used
         let far: Vec<Sample> = a.iter().map(|x| Sample { lon: Some(12.0), ..x.clone() }).collect();
