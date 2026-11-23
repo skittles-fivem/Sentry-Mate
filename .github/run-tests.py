@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runs the tests of some packages the way `cargo test` does, but several test binaries at once.
 
-    .github/run-tests.py [-j N] -- CARGO-TEST-ARGS...   (e.g. -- --locked -p web)
+    .github/run-tests.py [-j N] [--part K/N --slow NAME=SECS,...] -- CARGO-TEST-ARGS...   (e.g. -- --locked -p web)
 
 `cargo test` runs one test binary at a time, and most of them wait more than they work (a server started, files
 written and read back), so a part of the fast set took as long as its slowest binaries added up (web: about 190 s
@@ -10,6 +10,10 @@ at a time (default: the machine's cores), each in its package's folder with CARG
 them, and the doc tests beside them (`cargo test --doc` with the same arguments, so nothing is built again). Each binary's
 output is printed whole when it ends, with its time; the run fails when any of them does, and the times end the
 log, slowest first (docs/development.md keeps what they were).
+
+With --part K/N only part K of N of the binaries runs (every part builds them all): the binaries are dealt out
+slowest first, each to the part with the least time so far, by the times --slow gives (a test target's name and
+its seconds; any other counts 3 s), so the parts take about as long on N machines. The doc tests are in part 1.
 """
 
 import json
@@ -24,8 +28,15 @@ from concurrent.futures import ThreadPoolExecutor
 def main() -> int:
     argv = sys.argv[1:]
     jobs = os.cpu_count() or 2
-    if len(argv) >= 2 and argv[0] == "-j":
-        jobs, argv = int(argv[1]), argv[2:]
+    part, parts, slow = 1, 1, {}
+    while len(argv) >= 2 and argv[0] in ("-j", "--part", "--slow"):
+        if argv[0] == "-j":
+            jobs = int(argv[1])
+        elif argv[0] == "--part":
+            part, parts = (int(x) for x in argv[1].split("/"))
+        else:
+            slow = {k: float(v) for k, v in (x.split("=") for x in argv[1].split(",") if x)}
+        argv = argv[2:]
     if argv[:1] == ["--"]:
         argv = argv[1:]
     started = time.monotonic()
@@ -36,7 +47,7 @@ def main() -> int:
     )
     if build.returncode != 0:
         return build.returncode
-    tests = []  # (name, executable, package folder, package id)
+    tests = []  # (name, executable, package folder, test target)
     lib_packages = set()
     for line in build.stdout.splitlines():
         if not line.startswith("{"):
@@ -52,12 +63,21 @@ def main() -> int:
             lib_packages.add(name)
         if m.get("executable") and m["profile"]["test"]:
             kind = "unittests" if set(target["kind"]) & {"lib", "bin"} else "tests"
-            tests.append((f"{name} {kind} {target['name']}", m["executable"], folder, package))
+            tests.append((f"{name} {kind} {target['name']}", m["executable"], folder, target["name"]))
+    if parts > 1:
+        load, mine = [0.0] * parts, []
+        for t in sorted(tests, key=lambda t: (-slow.get(t[3], 3.0), t[0])):
+            i = load.index(min(load))
+            load[i] += slow.get(t[3], 3.0)
+            if i == part - 1:
+                mine.append(t)
+        print(f"part {part} of {parts}: {len(mine)} of {len(tests)} test binaries (about {load[part - 1]:.0f} s)")
+        tests = mine
     print(f"built in {time.monotonic() - started:.0f} s: {len(tests)} test binaries, {jobs} at a time", flush=True)
 
     # The doc tests, with the same arguments as the build: other packages or features would build the libraries
     # again for them (cargo leaves out a package with no library). None when no package asked has a library.
-    doc = ["cargo", "test", "--doc", *argv] if lib_packages else None
+    doc = ["cargo", "test", "--doc", *argv] if lib_packages and part == 1 else None
 
     def run(task):
         name, cmd, folder, env = task
