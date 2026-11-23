@@ -46,6 +46,7 @@ pub struct Options {
 
 impl Options {
     /// The owner's size: about 12 months, 1,300 drives, 500 charges, about 3 million positions.
+    #[cfg(test)]
     pub fn big(end_ms: u64) -> Options {
         Options {
             days: 330,
@@ -501,7 +502,7 @@ fn import_into(
         sink.batch(id, Batch::States(rows)).map_err(sink_err)?;
         // a software update every six weeks, at 2 in the night
         let n_day = (day - from) / DAY;
-        if n_day % 42 == 0 {
+        if n_day.is_multiple_of(42) {
             let k = updates.len() as i64;
             updates.push(UpdateRow {
                 tm_id: k + 1,

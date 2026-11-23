@@ -63,11 +63,14 @@ charges, battery, settings, drives, the system pages; 3 to 6 minutes each on CI'
 2,000-car upload and database, and the big CAN export imported in bounded memory. They take most of half an hour more:
 
 ```bash
-cargo test --workspace --locked -- --include-ignored --skip measure_
+cargo test --workspace --locked -- --include-ignored --skip measure_ --skip perf_
 ```
 
-(`--skip measure_` leaves out the two measurements in `crates/db/tests/compression.rs`, which are for a `--release`
-run by hand.) Only the slow ones: `cargo test --workspace --locked -- --ignored`. One file's, for example:
+(`--skip measure_` leaves out the measurements, which are for a `--release` run by hand: the two in
+`crates/db/tests/compression.rs` and the pages' times on a year of made-up history in `crates/sentry-mate/src/perf.rs`.
+`--skip perf_` leaves out the pages' time budget, which only means something in a release build:
+`cargo test --release --locked -p sentry-mate perf_ -- --ignored --nocapture`, about 6 minutes; the Full tests workflow
+runs it after the rest. How the pages are timed: [`docs/plans/performance.md`](plans/performance.md).) Only the slow ones: `cargo test --workspace --locked -- --ignored`. One file's, for example:
 `cargo test --workspace --locked --test places -- --include-ignored`. A test that takes more than about 20 seconds
 on 4 cores belongs in the full set; a feature whose only tests are slow gets a small fast one too (no logs, or one
 light day).
