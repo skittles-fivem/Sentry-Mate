@@ -20,6 +20,7 @@ import { formatNumber, tn } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
+import { costSourceLabel } from '../shared/invoices.js';
 import { pageHead, q, figure, icon, empty, errorView, loadingBlock, flag, button, sep } from '../core/ui.js';
 import { dataTable } from '../core/table.js';
 import { makeMap, boundsOf } from '../core/map.js';
@@ -42,7 +43,7 @@ const KIND_WHY = {
   dc: 'DC: a fast charger fed the pack directly. Its grid side is not metered, so the efficiency is unknown.',
   unknown: 'Unknown: the charge port did not say AC or DC (often imported history). It is never counted as DC.',
 };
-const COST_SOURCE = { tariff: 'place price', manual: 'typed in', free_supercharging: 'free Supercharging', teslamate: 'imported' };
+const COST_SOURCE = { tariff: 'place price', manual: 'typed in', free_supercharging: 'free Supercharging', teslamate: 'imported', tesla_invoice: 'Tesla invoice', teslafi: 'from TeslaFi' };
 const PLACE_KINDS = [['', 'Any kind of place'], ['home', 'Home'], ['work', 'Work'], ['charger', 'Public charger'], ['service', 'Service centre'], ['other', 'Other saved place'], ['none', 'Not a saved place']];
 const TYPES = [['', 'All'], ['ac', 'AC'], ['dc', 'DC'], ['unknown', 'Unknown']];
 const SOURCES = SOURCE_FILTER;
@@ -227,11 +228,12 @@ export async function mount(ctx) {
   // hover or focus (always on touch screens), so it does not repeat down the list.
   const costCell = (c) => {
     const text = c.cost ? formatMoney(c.cost.amount, c.cost.currency) : '—';
-    const why = c.cost ? `Cost from the ${COST_SOURCE[c.cost.source] || c.cost.source}` : c.place ? 'No price: the place has no price' : 'No price: not at a saved place';
+    // the hover title names where the cost came from (Place price, From Tesla invoice, ...)
+    const why = c.cost ? costSourceLabel(c.cost.source) || `Cost from the ${COST_SOURCE[c.cost.source] || c.cost.source}` : c.place ? 'No price: the place has no price' : 'No price: not at a saved place';
     const main = admin
       ? h('button', { type: 'button', class: ['ch-cost-button', { 'is-missing': !c.cost }], title: `${why}. ${c.cost ? 'Change the cost of this charge' : 'Set a cost for this charge'}`, 'aria-label': c.cost ? `${text}, change the cost` : 'No price, set a cost', onclick: () => costDialog(c) }, text, icon('settings'))
       : h('a', { class: ['ch-cost-link', { 'is-missing': !c.cost }], href: state.buildUrl('charge', { car: c.car, charge: c.id, period: ctx.state.period, query: { edit: 'cost' } }), title: `${why}. Open the charge to see how its cost was worked out` }, text);
-    return h('span', null, main,
+    return h('span', { cover: 'inv.charges.cost-source' }, main,
       c.price_per_kwh && c.price_per_kwh.value != null
         ? h('span', { class: 'cell-sub ch-ppk ch-nowrap', title: c.price_per_kwh.basis === 'grid' ? 'Per kWh: cost over the energy from the grid (metered)' : 'Per kWh: cost over the energy added to the pack' }, format({ amount: c.price_per_kwh.value, currency: c.cost && c.cost.currency }, 'price_energy'))
         : null);

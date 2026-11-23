@@ -14,6 +14,7 @@ import { formatTime, formatDate, formatDuration } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
+import { costSourceLabel } from '../shared/invoices.js';
 import { tile, num, chip, btn, icon, note } from '../core/ui.js';
 import { emptyTile } from '../core/states.js';
 import { createSheet } from '../core/sheet.js';
@@ -30,7 +31,7 @@ export const title = () => 'Charges';
 
 const KIND = { ac: 'AC', dc: 'DC', unknown: 'Unknown' };
 const KIND_TONE = { ac: 'teal', dc: 'sky', unknown: 'muted' };
-const COST_SOURCE = { tariff: 'place price', manual: 'typed by hand', free_supercharging: 'free Supercharging', teslamate: 'imported' };
+const COST_SOURCE = { tariff: 'place price', manual: 'typed by hand', free_supercharging: 'free Supercharging', teslamate: 'imported', tesla_invoice: 'Tesla invoice', teslafi: 'from TeslaFi' };
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const pct = (v) => format(v, 'percent');
 const placeName = (c) => c?.place?.name || c?.address?.short || (c?.position?.lat != null ? `${c.position.lat.toFixed(4)}, ${c.position.lon.toFixed(4)}` : 'Unnamed spot');
@@ -46,7 +47,8 @@ function chargeTile(c, ctx, tz, carName) {
   const pHref = placeHref(c);
   const kind = c.kind || 'unknown';
   const costSrc = c.cost ? String(COST_SOURCE[c.cost.source] || c.cost.source || '') : '';
-  const costWhy = costSrc ? costSrc.charAt(0).toUpperCase() + costSrc.slice(1) : null;
+  // the hover title names where the cost came from (Place price, From Tesla invoice, ...)
+  const costWhy = (c.cost && costSourceLabel(c.cost.source)) || (costSrc ? costSrc.charAt(0).toUpperCase() + costSrc.slice(1) : null);
   // no efficiency: a fast charger (no grid side), or the engine's reason (added and grid energy over different spans)
   const effWords = c.efficiency_pct != null ? `${pct(c.efficiency_pct)} efficient`
     : h('span', { title: c.efficiency_note || (kind === 'dc' ? 'A fast charger does not report its grid side.' : 'Not known: the energy from the grid and the energy added were not both measured.') }, 'efficiency —');
@@ -65,7 +67,7 @@ function chargeTile(c, ctx, tz, carName) {
     h('div', { class: 'item-nums' },
       h('span', { cover: 'charges.table.energy_added' }, num(c.energy_added_kwh, 'energy', { size: 's' })),
       h('span', { cover: 'charges.table.duration' }, num(c.charging_ms, 'duration', { size: 's' })),
-      h('span', { cover: ['charges.table.cost', 'charges.link.set_cost'] },
+      h('span', { cover: ['charges.table.cost', 'charges.link.set_cost', 'inv.charges.cost-source'] },
         c.cost
           ? (ctx.admin ? h('a', { class: 'cost-link', href: costHref, title: costWhy ? `${costWhy}. Change the cost` : 'Change the cost' }, formatMoney(c.cost.amount, c.cost.currency))
             : h('span', { class: 'cost-link', title: costWhy }, formatMoney(c.cost.amount, c.cost.currency)))

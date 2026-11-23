@@ -151,3 +151,8 @@
   .charge-stats .fig:nth-child(n) { padding-left: 0; border-left: 0; }
   .charge-stats .fig:not(:nth-child(3n + 1)) { padding-left: round(1.125rem, var(--e)); border-left: 1px solid var(--rule); }
 }
+/* the charge's Supercharger invoices, under the cost */
+.cost-now .inv-note, .cost-now .inv-pdfs { margin-top: round(0.25rem, var(--e)); }
+.inv-note .inv-line { display: block; }
+.inv-pdfs { display: flex; flex-wrap: wrap; gap: round(0.25rem, var(--e)) round(1rem, var(--e)); }
+.inv-pdfs[hidden], .inv-note[hidden] { display: none; }

@@ -25,6 +25,7 @@ import { field, form, choice, setFieldError } from '../core/form.js';
 import { confirmDialog } from '../core/dialog.js';
 import { remount } from '../core/router.js';
 import { browserZone } from '../core/format.js';
+import { appliedInvoice, unusedInvoices, invoiceSourceLabel, feeLabel, chargeInvoicePdfUrl } from '../shared/invoices.js';
 
 export const id = 'charge';
 export const css = true;
@@ -47,6 +48,7 @@ const LIMIT = Object.freeze({
 const COST_SOURCE = Object.freeze({
   tariff: 'Priced with the place’s price', manual: 'Entered by hand; kept through rebuilds',
   free_supercharging: 'Free Supercharging on this car', teslamate: 'Imported from TeslaMate',
+  tesla_invoice: 'From Tesla invoice', teslafi: 'From TeslaFi',
 });
 const MODE_WORDS = Object.freeze({ total: 'a total', per_kwh: 'a price per kWh', per_minute: 'a price per minute' });
 
@@ -434,6 +436,8 @@ function mapCostNote(c) {
   const src = c.cost && c.cost.source;
   if (src === 'manual') return '. A cost was entered by hand, so the place’s price is not used.';
   if (src === 'teslamate') return '. The cost was imported from TeslaMate, so the place’s price is not used.';
+  if (src === 'tesla_invoice') return '. The cost is Tesla’s invoice for the session, so the place’s price is not used.';
+  if (src === 'teslafi') return '. The cost is the one TeslaFi gave, so the place’s price is not used.';
   if (src === 'free_supercharging') return '. Supercharging was free for this car, so the place’s price is not used.';
   if (src === 'tariff') return '. The place’s price sets the cost unless one is entered below.';
   return c.place ? '. The place’s price would set the cost, but it has none: enter a cost below or give the place a price.' : '. No place here, so no price: enter a cost below or name the place with a price.';
@@ -502,6 +506,28 @@ function chargeFigures(c, { tz, going, end }) {
   ];
 }
 
+/**
+ * The charge's Supercharger invoices, under the cost: where it came from (the site and its fees, in a line), an
+ * invoice an entered cost won over, and a download link per invoice PDF. Both lines are always there (hidden when
+ * the charge has no invoice), so the page keeps its shape and the items are marked.
+ */
+function invoiceNotes(c, car, chargeId) {
+  const list = Array.isArray(c.invoices) ? c.invoices : [];
+  const used = appliedInvoice(c);
+  const usage = (f) => (f.usage == null ? '' : f.unit === 'kwh' ? ` for ${format(f.usage, 'energy')}` : f.unit === 'min' ? ` for ${formatDuration(f.usage * 60000)}` : '');
+  const fees = (i) => (i.fees || []).map((f) => `${feeLabel(f.kind).toLowerCase()} ${formatMoney(f.amount, i.currency)}${usage(f)}`).join(', ');
+  const lines = [];
+  if (used) lines.push(h('span', { class: 'inv-line' }, used.site || invoiceSourceLabel(used.source), fees(used) ? `: ${fees(used)}` : ''));
+  for (const i of unusedInvoices(c)) lines.push(h('span', { class: 'inv-line' }, `${invoiceSourceLabel(i.source)}: ${formatMoney(i.total, i.currency)} (an entered cost is used instead)`));
+  const pdfs = list.filter((i) => i.pdf);
+  return [
+    h('p', { class: 'fig-note inv-note', cover: 'inv.charge.source', hidden: !lines.length }, lines),
+    h('p', { class: 'fig-note inv-pdfs', cover: 'inv.charge.pdf', hidden: !pdfs.length },
+      pdfs.map((i, n) => h('a', { class: 'link-arrow', href: chargeInvoicePdfUrl(car.id, chargeId, i.id), download: true, title: i.invoice_name || null },
+        icon('download'), pdfs.length > 1 ? `Invoice ${n + 1} (PDF)` : 'Invoice (PDF)'))),
+  ];
+}
+
 /** The cost: what it is and how it was made, the breakdown per rate, and the editor (admins). */
 function costView(ctx, c, { tz, car, listUrl, place, onSaved }) {
   const cost = c.cost;
@@ -515,7 +541,8 @@ function costView(ctx, c, { tz, car, listUrl, place, onSaved }) {
     h('p', { class: 'cost-amount' }, cost ? formatMoney(cost.amount, cost.currency) : q(null, 'money', { why: 'no price' })),
     h('p', { class: 'fig-note' }, cost ? COST_SOURCE[cost.source] || cost.source : c.place ? `${c.place.name} has no price, and none was entered.` : 'No place with a price here, and none was entered.'),
     ppk && ppk.value != null && cur ? h('p', { class: 'fig-note' }, rateText(ppk.value, cur, 'price_energy'), ppk.basis === 'grid' ? ' over the energy drawn from the grid' : c.kind === 'dc' ? ' over the energy added to the pack (the grid side of a fast charger is not known)' : ' over the energy added to the pack, as entered') : null,
-    bd.gap_ms > 0 ? h('p', { class: 'fig-note' }, `${formatDuration(bd.gap_ms)} without data is priced from the energy at its ends.`) : null);
+    bd.gap_ms > 0 ? h('p', { class: 'fig-note' }, `${formatDuration(bd.gap_ms)} without data is priced from the energy at its ends.`) : null,
+    invoiceNotes(c, car, ctx.chargeId));
 
   const rows = (bd.parts || []).map((p) => ({ ...p }));
   if (bd.session_fee != null) rows.push({ rate: 'Session fee', per_kwh: null, per_minute: null, kwh: null, minutes: null, cost: bd.session_fee, fee: true });

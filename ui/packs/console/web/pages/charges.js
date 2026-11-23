@@ -12,6 +12,7 @@
 // per currency and never added across currencies.
 
 import * as state from '../shared/state.js';
+import { costSourceLabel } from '../shared/invoices.js';
 import { h, replace } from '../shared/dom.js';
 import { format, formatMoney, unitLabel, rangeLabel } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, buckets, bucketKey } from '../shared/time.js';
@@ -36,7 +37,7 @@ export const id = 'charges';
 const enc = encodeURIComponent;
 export const KIND = { ac: 'ac', dc: 'dc', unknown: '?' };
 export const KIND_TONE = { ac: 'accent', dc: 'warn', unknown: 'muted' };
-const COST_SOURCE = { tariff: 'place price', manual: 'typed', free_supercharging: 'free', teslamate: 'imported' };
+const COST_SOURCE = { tariff: 'place price', manual: 'typed', free_supercharging: 'free', teslamate: 'imported', tesla_invoice: 'invoice', teslafi: 'teslafi' };
 const KEYS = {
   place: 'saved places (place:home,work)', kind: 'ac | dc | unknown', at: 'home | work | charger | service | other | none',
   cost: 'lowest cost (cost:5)', unpriced: 'with cost: keep charges with no price', dur: 'shortest charging time in min', source: SOURCE_KEY, flag: 'gap | live',
@@ -161,14 +162,15 @@ export async function mount(ctx) {
   // the cost, or a dash when unpriced; the price's source in the title, the edit link only on row hover / focus
   // (always on a phone)
   const costCell = (c) => {
-    const why = c.cost ? (COST_SOURCE[c.cost.source] || c.cost.source) : null;
+    // the hover title names where the cost came from (Place price, From Tesla invoice, ...)
+    const why = c.cost ? (costSourceLabel(c.cost.source) || COST_SOURCE[c.cost.source] || c.cost.source) : null;
     const amount = c.cost ? formatMoney(c.cost.amount, c.cost.currency) : null;
     const editHref = state.buildUrl('charge', { car: c.car, charge: c.id, query: { edit: 'cost' } });
     const main = c.cost
       ? (isAdmin() ? h('a', { class: 'lnk-plain', href: editHref, title: `${why}; change the cost` }, amount) : h('span', { title: why }, amount))
       : h('span', { class: 'muted', title: 'no price: the place has none and none was typed' }, '\u2014');
     // the hidden link goes before the dash, so the dash stays right-aligned with the amounts
-    return h('span', { class: 'nowrap' },
+    return h('span', { class: 'nowrap', cover: 'inv.charges.cost-source' },
       !c.cost && isAdmin() ? h('a', { class: 'lnk-plain tone--accent row-act', href: editHref, title: 'set a cost for this charge' }, '[set] ') : null, main);
   };
   const ppkCell = (c) => (c.price_per_kwh?.value != null ? format({ amount: c.price_per_kwh.value, currency: c.cost?.currency }, 'price_energy') : false);

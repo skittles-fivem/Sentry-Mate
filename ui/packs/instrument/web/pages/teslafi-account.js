@@ -19,6 +19,7 @@ import { emptyState, errorWords } from '../core/states.js';
 import { flash } from '../core/flash.js';
 import { dateTime, ago, num, dur, time, tzName } from '../core/fmt.js';
 import { askPassword } from './settings-server-move.js';
+import { invoicesBlock, loadUnmatched } from './invoices-block.js';
 
 const enc = encodeURIComponent;
 const BASE = 'integrations/teslafi';
@@ -102,13 +103,13 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
     h('p', { class: 'note' }, 'For owners who pay for TeslaFi: a third live input beside SMO and the Tesla API. The server reads TeslaFi\'s own polls of the car (about one a minute while it is awake) with your TeslaFi token. It only reads: it never wakes the car or sends a command, and its reads do not count against TeslaFi\'s monthly command limit. Off until an admin adds a token. Where SMO or the Tesla API cover the same time, theirs win, value by value; rows from it say "Data from TeslaFi".'),
     body);
 
-  let ov = null, accounts = [], status = [], carRows = {};
+  let ov = null, accounts = [], status = [], carRows = {}, unmatched = [];
   const carName = (id) => cars.find((c) => c.id === id)?.name || id;
 
   async function load() {
     if (!admin) {
       replace(headPill, pill('Admins only'));
-      replace(body, h('div', { class: 'panel panel-pad' }, note(icon('lock', 'ico--sm'), ' Only an admin sees and changes TeslaFi: its token, status and car. Every page still says where its data came from, "Data from TeslaFi" included.')));
+      replace(body, h('div', { class: 'panel panel-pad' }, note(icon('lock', 'ico--sm'), ' Only an admin sees and changes TeslaFi: its token, status and car. Every page still says where its data came from, "Data from TeslaFi" included.')), h('div', { hidden: true, cover: 'inv.settings.teslafi' }));
       return;
     }
     try {
@@ -116,7 +117,8 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
         ctx.api.get(BASE),
         ctx.api.list(`${BASE}/accounts`).all().catch(() => []),
         ctx.api.list(`${BASE}/status`).all().catch(() => []),
-      ]);
+        loadUnmatched(ctx, 'teslafi'),
+      ]).then(([a, b, c, d]) => { unmatched = d; return [a, b, c]; });
       const rows = await Promise.all(accounts.map((a) => ctx.api.get(`${BASE}/accounts/${enc(a.id)}/cars`).catch(() => null)));
       carRows = Object.fromEntries(accounts.map((a, i) => [a.id, rows[i] || { items: a.cars || [], version: a.version }]));
     } catch (e) {
@@ -153,7 +155,8 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
       : accounts.some((a) => a.status === 'token_refused') ? pill('Token refused', { tone: 'warm', lg: true })
         : read ? pill(`Reading ${read === 1 ? 'one car' : `${num(read)} cars`}`, { tone: 'live', lg: true })
           : matched && accounts.every((a) => a.paused) ? pill('Paused', { lg: true }) : pill(matched ? 'No car is read now' : 'No car matched yet', { tone: 'warm', lg: true }));
-    replace(body, h('div', { class: 'ta-grid' }, statusPanel(), addPanel()), accounts.map(accountPanel));
+    replace(body, h('div', { class: 'ta-grid' }, statusPanel(), addPanel()),
+      invoicesBlock(ctx, { source: 'teslafi', ov, base: BASE, unmatched, guarded, withPw, after }), accounts.map(accountPanel));
   }
 
   function statusPanel() {
