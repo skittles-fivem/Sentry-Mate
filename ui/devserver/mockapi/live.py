@@ -369,7 +369,8 @@ def _now_object(app, car_id, t):
 
 
 # made-up variety: c2's sensors are not mapped yet and the car sends no recommended pressure (the door placard's for
-# its 18 in wheels is used); the other cars send theirs on CAN
+# its 18 in wheels is used, a size taken from its factory tyre until an admin types one); the other cars send theirs
+# on CAN
 PLACARD_CARS = {"c2": 18}
 
 
@@ -380,7 +381,7 @@ def tyres_now(car, meta, legacy, has_ty, kpa, tyres_at, rec_at):
     typed = [(cfg.get(k) or {}).get("value") if (cfg.get(k) or {}).get("source") == "owner" else None
              for k in ("tyre_pressure_front_kpa", "tyre_pressure_rear_kpa")]
     mapped = has_ty and car.id not in PLACARD_CARS
-    src = wheel = None
+    src = wheel = wheel_from = wheel_guess = None
     front = rear = None
     if typed[0] is not None or typed[1] is not None:
         front = typed[0] if typed[0] is not None else typed[1]
@@ -388,7 +389,9 @@ def tyres_now(car, meta, legacy, has_ty, kpa, tyres_at, rec_at):
         src = "owner"
     elif car.id in PLACARD_CARS:
         front = rear = 290.0
-        src, wheel = "placard", PLACARD_CARS[car.id]
+        typed_wheel = (cfg.get("wheel_in") or {}).get("value") if (cfg.get("wheel_in") or {}).get("source") == "owner" else None
+        src, wheel = "placard", int(typed_wheel) if typed_wheel is not None else PLACARD_CARS[car.id]
+        wheel_from, wheel_guess = ("owner", False) if typed_wheel is not None else ("can", True)
     elif not legacy:
         front = rear = float(car.tyre_rec_kpa)
         src = "can"
@@ -403,7 +406,8 @@ def tyres_now(car, meta, legacy, has_ty, kpa, tyres_at, rec_at):
         against = [front, front, rear, rear] if mapped else [min(front, rear)] * 4
         low = W(any(p < a * 0.9 for p, a in zip(kpa, against)), tyres_at)
     return {"tyres_slots_mapped": bool(mapped), "tyre_recommended_kpa": rec(front), "tyre_recommended_rear_kpa": rec(rear),
-            "tyre_recommended_source": src, "tyre_recommended_wheel_in": wheel, "tyre_low": low}
+            "tyre_recommended_source": src, "tyre_recommended_wheel_in": wheel, "tyre_recommended_wheel_from": wheel_from,
+            "tyre_recommended_wheel_guess": wheel_guess, "tyre_low": low}
 
 
 def charge_now(app, h, cur, seg, ts, tv, flags):

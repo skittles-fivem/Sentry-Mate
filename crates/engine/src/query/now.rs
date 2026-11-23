@@ -164,6 +164,10 @@ pub struct NowView {
     pub tyre_recommended_source: Option<&'static str>,
     /// The wheel size the placard's pressures are for (placard only).
     pub tyre_recommended_wheel_in: Option<u8>,
+    /// Where that wheel size comes from (placard only): `owner`, `can`, `vin`, `tesla_api` or `teslamate`.
+    pub tyre_recommended_wheel_from: Option<&'static str>,
+    /// That wheel size is a guess (not typed, not the car's own wheel setting): the owner may set it (placard only).
+    pub tyre_recommended_wheel_guess: Option<bool>,
     /// A tyre more than 10 % under its recommended pressure (each against the lower axle's while the slots are not
     /// mapped).
     pub tyre_low: Option<V<bool>>,
@@ -702,6 +706,8 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
             .map(|x| recommended(x.recommended.rear_kpa, "extra.tire_recommended_rear_bar")),
         tyre_recommended_source: tyres.as_ref().map(|x| x.recommended.source.word()),
         tyre_recommended_wheel_in: tyres.as_ref().and_then(|x| x.recommended.wheel_in),
+        tyre_recommended_wheel_from: tyres.as_ref().and_then(|x| x.recommended.wheel_from),
+        tyre_recommended_wheel_guess: tyres.as_ref().and_then(|x| x.recommended.wheel_guess),
         tyre_low: v(tyres.as_ref().and_then(|x| x.low), t("tpms_bar")),
         flags: {
             // the car's own word (CAN) first, the Tesla API's while its reading is current
