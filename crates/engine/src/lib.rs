@@ -46,6 +46,7 @@ pub mod compact;
 pub mod costs;
 pub mod firmware;
 pub mod importer;
+pub mod invoice_prices;
 pub mod jobs;
 mod pipeline;
 pub use pipeline::NEW_CAR_NAME;

@@ -28,6 +28,9 @@ import { field, setFieldError, choice, switchField } from '../core/form.js';
 import { zoneLabel } from '../core/format.js';
 import { onTheme } from '../core/prefs.js';
 import { remount } from '../core/router.js';
+import { openPriceEditor, pricesOf, priceOnDay, priceLine, fromWord, dayIn } from '../shared/prices.js';
+
+const PRICE_CLS = { btn: 'button button-small', primary: '', ghost: 'button-quiet', plain: 'button-quiet', input: 'field-input', select: 'field-select' };
 
 export const id = 'places';
 export const css = true;
@@ -742,6 +745,20 @@ async function mountEditor(ctx) {
 
   /* ---------------------------------------------------------------- save, leave, delete */
   const topError = h('div', { class: 'form-error', role: 'alert', hidden: true });
+  // prices by date: each from its first day on, edited in the place price editor
+  const dated = pricesOf(cur);
+  const nowEntry = cur ? priceOnDay(dated, dayIn(Date.now(), cur.time_zone)) : null;
+  const datedBox = h('div', { class: 'pl-dated' },
+    h('h4', { class: 'pl-dated-title' }, 'Prices by date'),
+    dated.length ? h('ul', { class: 'pl-dated-list' }, dated.map((x) => h('li', { class: x === nowEntry ? 'is-now' : null },
+      h('span', { class: 'pl-dated-from' }, fromWord(x.from)), ' ', priceLine(x.price),
+      h('span', { class: 'cell-sub' }, [x.source === 'invoice' ? 'from Supercharger invoices' : null, x === nowEntry ? 'in force today' : null].filter(Boolean).join(' · '))))) : null,
+    h('p', { class: 'note' }, cur ? 'A charge is costed at the price of its own day. The fields below change the price in force today; a price you type wins over one from invoices.' : 'Save the place first; then it can have prices from a date on.'),
+    cur && editable ? button(dated.length ? 'Add or change prices by date' : 'Add prices by date', { cls: 'button-small', iconName: 'calendar', onclick: async () => {
+      if (dirty && !(await confirmDialog({ title: 'Edit prices by date?', text: 'Your other changes to this place are not saved yet.', yes: 'Edit prices', no: 'Stay' }))) return;
+      const saved = await openPriceEditor({ client: api, place: cur, cls: PRICE_CLS });
+      if (saved) { dirty = false; ctx.flash('Prices saved.'); remount(); }
+    } }) : null);
   const saveBtn = h('button', { type: 'submit', class: 'button', cover: 'web.geofences.form.save', hidden: !editable }, cur ? 'Save the place' : 'Add the place');
   const leaveBtn = h('a', { class: 'button button-quiet', href: listUrl(), cover: 'web.geofences.form.back' }, editable ? 'Leave without saving' : 'Back to all places');
   const delBtn = cur && editable ? button('Delete…', { kind: 'danger', cls: 'pl-del-btn', onclick: async () => { if (await removePlace(ctx, cur, null)) { dirty = false; ctx.go(listUrl()); } } }) : null;
@@ -865,7 +882,7 @@ async function mountEditor(ctx) {
       startNote),
     section({ title: 'Where it is', note: 'centre and radius', cls: 'pl-block-where' },
       h('div', { class: 'pl-fields pl-fields-3' }, fLat, fLon, fRadius), zoneNote),
-    section({ title: 'Charging price', cls: 'pl-block-price' }, priceSwitch, priceBody, autoCost),
+    section({ title: 'Charging price', cls: 'pl-block-price' }, datedBox, priceSwitch, priceBody, autoCost),
     actions].filter(Boolean));
   const aside = h('div', { class: 'pl-aside' },
     h('div', { class: 'pl-map-wrap', cover: 'web.geofences.form.position-map' }, mapBox, mapNote),

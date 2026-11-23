@@ -163,3 +163,11 @@
 
 .page-places .pl-toolbar .choice { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); }
 .page-places .pl-nowrap { white-space: nowrap; }
+
+/* prices by date */
+.pl-dated { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); margin-bottom: round(0.75rem, var(--e)); }
+.pl-dated-title { margin: 0; font-size: var(--text-s); }
+.pl-dated-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--rule); }
+.pl-dated-list li { display: flex; flex-wrap: wrap; gap: 0 round(0.5rem, var(--e)); padding: round(0.25rem, var(--e)) 0; border-bottom: 1px solid var(--rule); overflow-wrap: anywhere; }
+.pl-dated-list li.is-now .pl-dated-from { color: var(--accent); }
+.pl-dated-from { font-weight: 600; }

@@ -1,5 +1,6 @@
-//! What charges cost. A charge is priced at its place's price (one price or time-of-use rates in the place's time zone,
-//! else the car's; a session fee and a price per minute where set) from its curve, the energy taken from the grid
+//! What charges cost. A charge is priced at its place's price in force on the charge's day (a place has dated prices:
+//! [`crate::placing::DatedPrice`]; one price or time-of-use rates in the place's time zone, else the car's; a session
+//! fee and a price per minute where set) from its curve, the energy taken from the grid
 //! where known. Once a charge has ended its cost is kept ([`records::CostEntry`]) and stays put: rebuilding the
 //! charge, or changing the place's price, does not change it. A price change reaches past charges only through
 //! [`reprice`], and a cost typed in ([`set_manual`]) is never repriced.
@@ -145,13 +146,17 @@ fn free_supercharging(e: &Engine, places: &crate::placing::Places, ch: &Charge, 
         return None;
     }
     let here = ch.position.as_ref().and_then(|p| places.place_at(p.lat, p.lon));
-    let priced = here.and_then(|p| p.price.as_ref());
+    // a price worked out from Supercharger invoices does not make a place a third-party charger
+    let priced = here.and_then(|p| places.typed_price(p.id)).map(|d| &d.price.currency);
     if let (Some(p), Some(_)) = (here, priced)
         && !p.name.to_lowercase().contains("supercharger")
     {
         return None;
     }
-    let currency = priced.or_else(|| places.all().iter().find_map(|p| p.price.as_ref())).map(|p| p.currency.clone())?;
+    let currency = priced
+        .or_else(|| here.and_then(|p| places.prices(p.id).last()).map(|d| &d.price.currency))
+        .or_else(|| places.all().iter().find_map(|p| p.price.as_ref()).map(|p| &p.currency))
+        .cloned()?;
     Some(CostEntry {
         amount: 0.0,
         currency,
@@ -167,7 +172,8 @@ fn free_supercharging(e: &Engine, places: &crate::placing::Places, ch: &Charge, 
     })
 }
 
-/// The cost at the price of the place it is at among `places` (the saved ones, or a draft set for a preview).
+/// The cost at the price of the place it is at among `places` (the saved ones, or a draft set for a preview): the
+/// place's price in force on the day the charge started, in the place's time zone (else the car's).
 pub fn price_in(
     places: &crate::placing::Places,
     ch: &Charge,
@@ -176,15 +182,15 @@ pub fn price_in(
 ) -> Option<CostEntry> {
     let pos = ch.position.as_ref()?;
     let place = places.place_at(pos.lat, pos.lon)?;
-    let plan = place.price.as_ref()?;
     let extra = places.extra(place.id);
     let tz = extra.and_then(|x| x.time_zone.as_deref()).unwrap_or(car_tz);
+    let day = crate::tz::date_str(ch.start_ms, crate::tz::zone(tz));
+    let given = &places.price_on(place.id, &day)?.price;
+    let plan = &crate::query::places::plan_of(given);
     let tariff = places::Tariff::new(plan, tz).or_else(|_| places::Tariff::new(plan, "UTC")).ok()?;
-    // a rate's own price per minute (the rate in force when the charge started), else the place's
-    let rate_per_minute = tariff
-        .rate_at(ch.start_ms)
-        .and_then(|i| extra.and_then(|x| x.price.as_ref()).and_then(|p| p.rates.get(i)).and_then(|r| r.per_minute));
-    let per_minute = rate_per_minute.or(extra.and_then(|x| x.per_minute)).unwrap_or(0.0);
+    // a rate's own price per minute (the rate in force when the charge started), else the price's
+    let rate_per_minute = tariff.rate_at(ch.start_ms).and_then(|i| given.rates.get(i)).and_then(|r| r.per_minute);
+    let per_minute = rate_per_minute.or(given.per_minute).unwrap_or(0.0);
     let minutes = ch.end_ms.saturating_sub(ch.start_ms) as f64 / 60_000.0;
     let (total, parts, _fee, gap_ms) = if curve.len() >= 2 {
         let opts = places::CostOptions { grid_kwh: ch.energy_used_kwh, ..places::CostOptions::default() };

@@ -23,6 +23,9 @@ import { createMap, mapFallback, boundsOf } from '../core/map.js';
 import { field } from '../core/form.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { flash } from '../core/flash.js';
+import { openPriceEditor, pricesOf, priceOnDay, priceLine, fromWord, dayIn } from '../shared/prices.js';
+
+const PRICE_CLS = { btn: 'btn', primary: 'btn--primary', ghost: 'btn--ghost', input: 'input', select: 'select' };
 import { rpx } from '../core/display.js';
 import { dur, ago, dateTime, DASH } from '../core/fmt.js';
 
@@ -982,8 +985,24 @@ async function mountEditor(ctx, q) {
     h('div', { class: 'pl-row' }, fKind.el, fRadius.el),
     h('div', { class: 'pl-row' }, fLat.el, fLon.el),
     addrLine, fZone.el, entryNote);
+  // the place's prices by date (each from its first day), edited in the place price editor
+  const dated = pricesOf(cur);
+  const todayEntry = cur ? priceOnDay(dated, dayIn(Date.now(), cur.time_zone)) : null;
+  const datedBox = h('div', { class: 'pl-dated' },
+    h('div', { class: 'pl-sub-head' }, h('h3', null, 'Prices by date'),
+      admin && cur ? h('button', { class: 'btn btn--sm', type: 'button', onclick: async () => {
+        if (dirty && !(await confirmDialog('Your other changes to this place are not saved. Leave them and edit the prices?', { title: 'Edit prices', ok: 'Edit prices' }))) return;
+        const saved = await openPriceEditor({ client: ctx.api, place: cur, cls: PRICE_CLS, currency: usedCurrency });
+        if (saved) { dirty = false; flash('Prices saved.', { next: true }); ctx.reload(); }
+      } }, icon('plus', 'ico--sm'), dated.length ? 'Add or change prices by date' : 'Add prices by date') : null),
+    dated.length ? h('ul', { class: 'pl-dated-list' }, dated.map((x) => h('li', { class: ['pl-dated-row', x === todayEntry && 'is-now'] },
+      h('span', { class: 'pl-dated-from' }, fromWord(x.from)), h('span', null, priceLine(x.price)),
+      h('span', { class: 'faint' }, [x.source === 'invoice' ? 'from invoices' : null, x === todayEntry ? 'in force today' : null].filter(Boolean).join(' · '))))) : null,
+    h('p', { class: 'faint' }, cur
+      ? 'A charge is costed at the price of its own day. The fields below change the price in force today; a price you type wins over one from Supercharger invoices.'
+      : 'Save the place first; then it can have prices from a date on.'));
   const pricePanel = panel({ title: 'Charging price', icon: 'bolt', cls: 'pl-price' },
-    h('div', { class: 'form-row' }, pricedSeg), priceMsg, priceBody);
+    datedBox, h('div', { class: 'form-row' }, pricedSeg), priceMsg, priceBody);
 
   const formEl = h('form', { class: 'pl-form', novalidate: true, cover: 'web.geofences.form.validation', onsubmit: (e) => { e.preventDefault(); save(); } },
     h('div', { class: 'pl-editor' },
