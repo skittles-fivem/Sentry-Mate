@@ -408,12 +408,22 @@ fn site_counts(d: &Slots, c: &Slots) -> SiteCounts {
 }
 
 /// Spans (in start order) joined where they meet or are less than a minute apart.
-fn joined(mut v: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+fn joined(v: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    joined_within(v, 60_000)
+}
+
+/// A hole in one import's history shorter than this is taken as covered when two imports are matched: TeslaFi does not
+/// poll for a while when it lets the car fall asleep, and a drive or charge in such a hole (seen by the other import)
+/// must still be in the span both imports cover, or both copies of it would be shown.
+const IMPORT_HOLE_MS: u64 = 2 * 3_600_000;
+
+/// Spans (in start order) joined where they meet or are less than `gap` apart.
+fn joined_within(mut v: Vec<(u64, u64)>, gap: u64) -> Vec<(u64, u64)> {
     v.sort_unstable();
     let mut out: Vec<(u64, u64)> = Vec::new();
     for (a, b) in v {
         match out.last_mut() {
-            Some(last) if a <= last.1.saturating_add(60_000) => last.1 = last.1.max(b),
+            Some(last) if a <= last.1.saturating_add(gap) => last.1 = last.1.max(b),
             _ => out.push((a, b)),
         }
     }
@@ -435,6 +445,12 @@ fn intersect(x: &[(u64, u64)], y: &[(u64, u64)]) -> Vec<(u64, u64)> {
         }
     }
     out
+}
+
+/// `[a, b)`, at least a millisecond long: a row or state that ends where it starts (one poll) still covers its moment,
+/// else no span of the other import could ever meet it, and its twin there would be shown beside it.
+fn at_least_a_moment(a: u64, b: u64) -> (u64, u64) {
+    (a, b.max(a.saturating_add(1)))
 }
 
 /// How many of the starts (in order) are in `[a, b)`.
@@ -490,7 +506,7 @@ fn import_pairs(e: &Engine, car: CarId, chosen: &[Flip]) -> QResult<Vec<Pair>> {
             && s.span.state != State::Unknown
             && let Some(r) = by.get_mut(site.index())
         {
-            r.cover.push((s.span.start_ms, s.span.end_ms.max(s.span.start_ms)));
+            r.cover.push(at_least_a_moment(s.span.start_ms, s.span.end_ms));
             r.starts.push(s.span.start_ms);
         }
         Ok(true)
@@ -504,7 +520,9 @@ fn import_pairs(e: &Engine, car: CarId, chosen: &[Flip]) -> QResult<Vec<Pair>> {
     ) -> QResult<()> {
         super::reports::overlapping::<T>(e, car, 0, u64::MAX, Some(Source::Teslamate), false, |r| {
             if let Some(s) = r.source().site().and_then(|site| by.get_mut(site.index())) {
-                let (a, b) = (r.start_ms(), r.end_ms());
+                // a row of one poll (TeslaFi's short drives and charges) ends where it starts: it still covers
+                // its moment, so the same drive from the other import meets it
+                let (a, b) = at_least_a_moment(r.start_ms(), r.end_ms());
                 s.cover.push((a, b));
                 s.starts.push(a);
                 if charge {
@@ -520,7 +538,7 @@ fn import_pairs(e: &Engine, car: CarId, chosen: &[Flip]) -> QResult<Vec<Pair>> {
     gather::<model::Drive>(e, car, &mut by, &mut reach, false)?;
     gather::<model::Charge>(e, car, &mut by, &mut reach, true)?;
     for r in &mut by {
-        r.cover = joined(std::mem::take(&mut r.cover));
+        r.cover = joined_within(std::mem::take(&mut r.cover), IMPORT_HOLE_MS);
         r.drives.sort_unstable();
         r.charges.sort_unstable();
         r.starts.sort_unstable();
