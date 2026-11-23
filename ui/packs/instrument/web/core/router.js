@@ -197,7 +197,7 @@ function stageView(view, finishOld) {
 // screen they would each push what is under them down (a phone: the page jumps while it loads). Charts and maps
 // that land near the screen are drawn in the box; the rest when they come near once in place (shared/lazy.js).
 const FIRST_MS = 3000;
-const NOTICES_MS = 1500;
+const NOTICES_MS = 3000;
 const FONTS_MS = 1000;
 function firstStage(view, onCommit) {
   const r = view.getBoundingClientRect();
