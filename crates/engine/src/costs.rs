@@ -118,7 +118,7 @@ pub(crate) fn carry(e: &Engine, car: CarId, old: &[Charge], new: &[Charge]) -> R
 
 /// The cost at the place's price as it is now (nothing kept, nothing written).
 pub fn price_now(e: &Engine, ch: &Charge, curve: &[ChargePoint], car_tz: &str) -> Option<CostEntry> {
-    free_now(e, ch, car_tz).or_else(|| price_in(e, &e.places(), ch, curve, car_tz))
+    free_now(e, ch, car_tz).or_else(|| price_in(&e.places(), ch, curve, car_tz))
 }
 
 /// The free Supercharging cost of a charge, where the car's settings make it free ([`free_supercharging`]).
@@ -164,15 +164,11 @@ fn free_supercharging(e: &Engine, places: &crate::placing::Places, ch: &Charge, 
         session_fee: None,
         gap_ms: 0,
         at_ms: now_ms(),
-        cycle: None,
     })
 }
 
-/// The cost at the price of the place it is at among `places` (the saved ones, or a draft set for a preview). With
-/// tiered prices the charge follows on from the kWh of the earlier charges at that place in its billing cycle (every
-/// car's, matched among `places`), as [`cycle_kwh`].
+/// The cost at the price of the place it is at among `places` (the saved ones, or a draft set for a preview).
 pub fn price_in(
-    e: &Engine,
     places: &crate::placing::Places,
     ch: &Charge,
     curve: &[ChargePoint],
@@ -183,40 +179,35 @@ pub fn price_in(
     let plan = place.price.as_ref()?;
     let extra = places.extra(place.id);
     let tz = extra.and_then(|x| x.time_zone.as_deref()).unwrap_or(car_tz);
-    let mut tariff = places::Tariff::new(plan, tz).or_else(|_| places::Tariff::new(plan, "UTC")).ok()?;
-    if let Some(t) = extra.and_then(|x| x.price.as_ref()).and_then(|p| p.tiers.as_ref()) {
-        tariff = tariff.with_tiers(t).ok()?;
-    }
-    let cycle = match tariff.cycle_of(ch.start_ms) {
-        Some((start_ms, end_ms)) => Some((start_ms, end_ms, cycle_kwh(e, places, place.id, start_ms, ch).ok()?)),
-        None => None,
-    };
-    let before = cycle.map_or(0.0, |c| c.2);
+    let tariff = places::Tariff::new(plan, tz).or_else(|_| places::Tariff::new(plan, "UTC")).ok()?;
     // a rate's own price per minute (the rate in force when the charge started), else the place's
     let rate_per_minute = tariff
         .rate_at(ch.start_ms)
         .and_then(|i| extra.and_then(|x| x.price.as_ref()).and_then(|p| p.rates.get(i)).and_then(|r| r.per_minute));
     let per_minute = rate_per_minute.or(extra.and_then(|x| x.per_minute)).unwrap_or(0.0);
     let minutes = ch.end_ms.saturating_sub(ch.start_ms) as f64 / 60_000.0;
-    let c = if curve.len() >= 2 {
+    let (total, parts, _fee, gap_ms) = if curve.len() >= 2 {
         let opts = places::CostOptions { grid_kwh: ch.energy_used_kwh, ..places::CostOptions::default() };
-        tariff.charge_cost_after(curve, &opts, before)
+        let c = tariff.charge_cost(curve, &opts);
+        let parts = c
+            .parts
+            .iter()
+            .map(|p| CostPart { rate: p.rate.clone(), per_kwh: p.per_kwh, kwh: p.kwh, cost: p.cost })
+            .collect();
+        (c.total, parts, c.session_fee, c.gap_ms)
     } else {
-        tariff.energy_cost(ch.energy_used_kwh.or(ch.energy_added_kwh)?, ch.start_ms, before)
+        let kwh = ch.energy_used_kwh.or(ch.energy_added_kwh)?;
+        let fee = plan.session_fee.unwrap_or(0.0);
+        let cost = tariff.cost_of(kwh, ch.start_ms);
+        let part = CostPart {
+            rate: tariff.rate_name_at(ch.start_ms).map(str::to_string),
+            per_kwh: tariff.price_at(ch.start_ms),
+            kwh,
+            cost,
+        };
+        (cost + fee, vec![part], fee, 0)
     };
-    let parts = c
-        .parts
-        .iter()
-        .map(|p| CostPart {
-            rate: p.rate.clone(),
-            per_kwh: p.per_kwh,
-            kwh: p.kwh,
-            cost: p.cost,
-            from_kwh: p.from_kwh,
-            to_kwh: p.to_kwh,
-        })
-        .collect();
-    let amount = c.total + per_minute * minutes;
+    let amount = total + per_minute * minutes;
     if !amount.is_finite() {
         return None;
     }
@@ -230,52 +221,9 @@ pub fn price_in(
         place: Some(place.id),
         parts,
         session_fee: plan.session_fee,
-        gap_ms: c.gap_ms,
+        gap_ms,
         at_ms: now_ms(),
-        cycle: cycle.map(|(start_ms, end_ms, _)| records::TierCycle {
-            start_ms,
-            end_ms,
-            before_kwh: c.tier_start_kwh.unwrap_or(before),
-        }),
     })
-}
-
-/// The kWh charged at `place` (matched among `places`) from `from_ms` up to `ch`, by every car: the charges shown
-/// (imported history settled as the lists settle it) that started before it, or at the same moment and listed before
-/// it (by car, then id). Each counts its grid energy, else what went into the pack.
-pub fn cycle_kwh(
-    e: &Engine,
-    places: &crate::placing::Places,
-    place: model::PlaceId,
-    from_ms: u64,
-    ch: &Charge,
-) -> std::result::Result<f64, QueryError> {
-    let mut sum = 0.0;
-    let me = (ch.start_ms, ch.car, ch.id);
-    for car in crate::query::all_cars(e)? {
-        let shown = crate::query::system::Shown::new(e, car, None)?;
-        crate::query::drives::each::<Charge>(
-            e,
-            car,
-            from_ms,
-            ch.start_ms.saturating_add(1),
-            None,
-            &shown,
-            false,
-            |o| {
-                if (o.start_ms, o.car, o.id) >= me {
-                    return Ok(true);
-                }
-                let here = o.position.as_ref().and_then(|p| places.place_at(p.lat, p.lon)).map(|p| p.id);
-                if here == Some(place) {
-                    sum +=
-                        o.energy_used_kwh.or(o.energy_added_kwh).filter(|k| k.is_finite() && *k > 0.0).unwrap_or(0.0);
-                }
-                Ok(true)
-            },
-        )?;
-    }
-    Ok(sum)
 }
 
 pub(crate) fn round2(v: f64) -> f64 {
@@ -347,7 +295,6 @@ pub fn set_manual(
         session_fee: None,
         gap_ms: 0,
         at_ms: now_ms(),
-        cycle: None,
     };
     if let Some(before) = records::cost(db, car, charge, ch.start_ms)?.filter(|k| k.source != "manual") {
         put_replaced(e, car, charge, Some(&before))?;

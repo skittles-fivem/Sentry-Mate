@@ -293,10 +293,6 @@ pub struct Loaded {
     pub meta: Meta,
     pub ui_json: Bytes,
     pub files: HashMap<String, PackFile>,
-    /// A built-in pack's bundled and minified files (a release build: `ui/tools/bundle`), served in place of the
-    /// file of the same path in `files`. `files` stays the sources: the zip a download gives, and what an uploaded
-    /// pack is laid over (its own `core/fmt.js` must be the one its pages import).
-    pub bundle: HashMap<String, PackFile>,
     pub base: Option<Arc<Loaded>>,
     /// A hash of every file it serves (its own and its base's): the `/_v/<version>/` its pages load their files
     /// under, cached for good ([`index`]).
@@ -310,45 +306,23 @@ pub struct Loaded {
 
 impl Loaded {
     fn new(meta: Meta, ui_json: Bytes, list: Vec<(String, Bytes)>, base: Option<Arc<Loaded>>) -> Loaded {
-        Loaded::with_bundle(meta, ui_json, list, Vec::new(), base)
-    }
-
-    /// A built-in pack with its bundled files ([`Loaded::bundle`]; none: served as its sources).
-    pub fn bundled(meta: Meta, ui_json: Bytes, list: Vec<(String, Bytes)>, bundle: Vec<(String, Bytes)>) -> Loaded {
-        Loaded::with_bundle(meta, ui_json, list, bundle, None)
-    }
-
-    fn with_bundle(
-        meta: Meta,
-        ui_json: Bytes,
-        list: Vec<(String, Bytes)>,
-        bundle: Vec<(String, Bytes)>,
-        base: Option<Arc<Loaded>>,
-    ) -> Loaded {
-        let id = meta.id.clone();
-        let map = |list: Vec<(String, Bytes)>| -> HashMap<String, PackFile> {
-            list.into_iter()
-                .filter_map(|(path, bytes)| {
-                    let mime = mime(&path)?;
-                    let sum = Sha256::digest(&bytes);
-                    let etag = format!("\"{id}-{}\"", hex::encode(&sum[..12]));
-                    let f = PackFile::new(&path, bytes, etag, mime, &sum);
-                    Some((path, f))
-                })
-                .collect()
-        };
-        let files = map(list);
-        let bundle = map(bundle);
+        let files: HashMap<String, PackFile> = list
+            .into_iter()
+            .filter_map(|(path, bytes)| {
+                let mime = mime(&path)?;
+                let sum = Sha256::digest(&bytes);
+                let etag = format!("\"{}-{}\"", meta.id, hex::encode(&sum[..12]));
+                let f = PackFile::new(&path, bytes, etag, mime, &sum);
+                Some((path, f))
+            })
+            .collect();
         let mut h = Sha256::new();
-        for set in [&files, &bundle] {
-            let mut names: Vec<&String> = set.keys().collect();
-            names.sort();
-            for n in names {
-                h.update(n.as_bytes());
-                h.update([0]);
-                h.update(set[n].etag.as_bytes());
-            }
-            h.update([1]);
+        let mut names: Vec<&String> = files.keys().collect();
+        names.sort();
+        for n in names {
+            h.update(n.as_bytes());
+            h.update([0]);
+            h.update(files[n].etag.as_bytes());
         }
         if let Some(b) = &base {
             h.update(b.version.as_bytes());
@@ -356,25 +330,16 @@ impl Loaded {
         let version = hex::encode(&h.finalize()[..8]);
         let source = files.get("index.html").or_else(|| base.as_ref().and_then(|b| b.files.get("index.html")));
         let index = source.map(|src| {
-            let has = |p: &str| {
-                bundle.contains_key(p)
-                    || files.contains_key(p)
-                    || base.as_ref().is_some_and(|b| b.files.contains_key(p))
-            };
-            let read = |p: &str| {
-                bundle
-                    .get(p)
-                    .or_else(|| files.get(p))
-                    .or_else(|| base.as_ref().and_then(|b| b.files.get(p)))
-                    .map(|f| f.bytes.clone())
-            };
+            let has = |p: &str| files.contains_key(p) || base.as_ref().is_some_and(|b| b.files.contains_key(p));
+            let read =
+                |p: &str| files.get(p).or_else(|| base.as_ref().and_then(|b| b.files.get(p))).map(|f| f.bytes.clone());
             let html = index::rewrite(&String::from_utf8_lossy(&src.bytes), &version, &has, &read);
             let bytes = Bytes::from(html);
             let sum = Sha256::digest(&bytes);
             let etag = format!("\"{}-{}\"", meta.id, hex::encode(&sum[..12]));
             PackFile::new("index.html", bytes, etag, "text/html; charset=utf-8", &sum)
         });
-        Loaded { meta, ui_json, files, bundle, base, version, index, zip: std::sync::OnceLock::new() }
+        Loaded { meta, ui_json, files, base, version, index, zip: std::sync::OnceLock::new() }
     }
 
     /// The pack as a zip (`ui.json` and `web/`), built once and shared by every download of it.
@@ -396,17 +361,13 @@ impl Loaded {
 
     /// The bytes it holds in memory (its own files, and its zip once built).
     fn size(&self) -> u64 {
-        let files: u64 =
-            self.files.values().chain(self.bundle.values()).chain(self.index.as_ref()).map(PackFile::size).sum();
+        let files: u64 = self.files.values().chain(self.index.as_ref()).map(PackFile::size).sum();
         files + self.ui_json.len() as u64 + self.zip.get().map_or(0, |z| z.len() as u64)
     }
 
-    /// A file of the pack as it is served (its bundled copy first), or of the pack under it (its sources).
+    /// A file of the pack, or of the pack under it.
     pub fn file(&self, path: &str) -> Option<&PackFile> {
-        self.bundle
-            .get(path)
-            .or_else(|| self.files.get(path))
-            .or_else(|| self.base.as_ref().and_then(|b| b.files.get(path)))
+        self.files.get(path).or_else(|| self.base.as_ref().and_then(|b| b.files.get(path)))
     }
 }
 
@@ -483,8 +444,7 @@ impl Packs {
                 installed_ms: None,
             };
             let list = b.files.iter().map(|(p, d)| (p.to_string(), Bytes::from_static(d))).collect();
-            let bundle = b.bundle.iter().map(|(p, d)| (p.to_string(), Bytes::from_static(d))).collect();
-            builtin.push(Arc::new(Loaded::bundled(meta, Bytes::from_static(b.ui_json), list, bundle)));
+            builtin.push(Arc::new(Loaded::new(meta, Bytes::from_static(b.ui_json), list, None)));
         }
         if builtin.is_empty() {
             return Err(other("no built-in UI pack was embedded"));
@@ -1166,7 +1126,7 @@ pub fn serve_file(app: &AppState, pack: &Loaded, path: &str, headers: &HeaderMap
             None => return plain(StatusCode::NOT_FOUND, "Not found"),
         }
     };
-    let etag = if page || pack.files.contains_key(rel) || pack.bundle.contains_key(rel) || pack.base.is_none() {
+    let etag = if page || pack.files.contains_key(rel) || pack.base.is_none() {
         file.etag.clone()
     } else {
         format!("\"{}-{}", pack.meta.id, file.etag.trim_start_matches('"'))
@@ -1323,51 +1283,5 @@ mod tests {
             assert!(p.files.iter().all(|(n, _)| !n.ends_with("README.md") && !n.contains("mock")), "{}", p.id);
             assert!(p.files.iter().all(|(n, _)| mime(n).is_some()), "every file has a type: {}", p.id);
         }
-    }
-
-    #[test]
-    fn a_bundle_is_served_in_place_of_the_sources_but_not_downloaded_or_laid_under() {
-        let meta = |id: &str| Meta {
-            id: id.into(),
-            name: id.into(),
-            description: String::new(),
-            author: String::new(),
-            version: "1".into(),
-            api: 1,
-            builtin: true,
-            sha256: String::new(),
-            files: 3,
-            bytes: 0,
-            installed_ms: None,
-        };
-        let b = |s: &'static str| Bytes::from_static(s.as_bytes());
-        let src = vec![
-            ("index.html".to_string(), b(r#"<head><script src="/core/app.js" type="module"></script></head>"#)),
-            ("core/app.js".to_string(), b("import { f } from './fmt.js'; f();")),
-            ("core/fmt.js".to_string(), b("export const f = () => 1;")),
-        ];
-        let bundle = vec![
-            ("core/app.js".to_string(), b("import{a}from\"./c-ABC.js\";a();")),
-            ("core/c-ABC.js".to_string(), b("export const a=()=>1;")),
-        ];
-        let plain = Loaded::bundled(meta("p"), Bytes::new(), src.clone(), Vec::new());
-        let packed = Arc::new(Loaded::bundled(meta("p"), Bytes::new(), src.clone(), bundle));
-        assert_ne!(plain.version, packed.version, "a bundle is another version");
-        assert_eq!(&packed.file("core/app.js").unwrap().bytes[..], b"import{a}from\"./c-ABC.js\";a();");
-        assert!(packed.file("core/c-ABC.js").is_some());
-        assert!(packed.file("core/fmt.js").is_some(), "the sources stay servable");
-        let index = String::from_utf8_lossy(&packed.index.as_ref().unwrap().bytes).into_owned();
-        assert!(index.contains(&format!("modulepreload\" href=\"/_v/{}/core/c-ABC.js\"", packed.version)), "{index}");
-        assert!(!index.contains("core/fmt.js"), "the bundle's graph is preloaded, not the sources': {index}");
-        let limits = zip::Limits { max_entries: 10, max_entry_bytes: 1 << 20, max_total_bytes: 1 << 20 };
-        let zip = zip::read(&packed.zip(), limits).unwrap();
-        let app = zip.iter().find(|e| e.name == "web/core/app.js").map(|e| e.data.clone()).unwrap();
-        assert_eq!(&app[..], b"import { f } from './fmt.js'; f();", "a download is the sources");
-        assert!(!zip.iter().any(|e| e.name.contains("c-ABC")));
-        // an uploaded pack over it imports the sources, so its own core/fmt.js is the one that runs
-        let own = vec![("core/fmt.js".to_string(), b("export const f = () => 2;"))];
-        let up = Loaded::new(Meta { builtin: false, ..meta("u") }, Bytes::new(), own, Some(packed.clone()));
-        assert_eq!(&up.file("core/app.js").unwrap().bytes[..], b"import { f } from './fmt.js'; f();");
-        assert_eq!(&up.file("core/fmt.js").unwrap().bytes[..], b"export const f = () => 2;");
     }
 }

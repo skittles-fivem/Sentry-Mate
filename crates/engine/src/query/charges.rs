@@ -1053,17 +1053,6 @@ pub struct BreakdownPart {
     pub kwh: Option<f64>,
     pub minutes: Option<f64>,
     pub cost: f64,
-    /// A step of tiered prices: its range of the cycle's kWh (`to_kwh` null: no end); null for other parts.
-    pub from_kwh: Option<f64>,
-    pub to_kwh: Option<f64>,
-}
-
-/// The billing cycle of a charge priced by steps, and the cycle's kWh before it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct BreakdownCycle {
-    pub start_ms: u64,
-    pub end_ms: u64,
-    pub before_kwh: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1072,8 +1061,6 @@ pub struct Breakdown {
     pub session_fee: Option<f64>,
     pub total: Option<f64>,
     pub gap_ms: u64,
-    /// Tiered prices: the billing cycle; null otherwise.
-    pub cycle: Option<BreakdownCycle>,
     /// `tariff` (each rate of the place's price), `total`, `per_kwh` or `per_minute` (typed in), or the cost's own
     /// source (`teslamate`, `free_supercharging`); null without a cost.
     pub mode: Option<String>,
@@ -1143,13 +1130,10 @@ pub fn charge(e: &Engine, car: CarId, id: u64) -> QResult<ChargeDetail> {
                 ),
                 minutes: (k.mode.as_deref() == Some("per_minute")).then(|| (minutes * 10.0).round() / 10.0),
                 cost: k.amount,
-                from_kwh: None,
-                to_kwh: None,
             }],
             session_fee: None,
             total: Some(k.amount),
             gap_ms: 0,
-            cycle: None,
             mode: k.mode.clone(),
         },
         Some(k) => Breakdown {
@@ -1163,21 +1147,14 @@ pub fn charge(e: &Engine, car: CarId, id: u64) -> QResult<ChargeDetail> {
                     kwh: r(Some(p.kwh), 3),
                     minutes: None,
                     cost: (p.cost * 100.0).round() / 100.0,
-                    from_kwh: p.from_kwh,
-                    to_kwh: p.to_kwh,
                 })
                 .collect(),
             session_fee: k.session_fee,
             total: Some(k.amount),
             gap_ms: k.gap_ms,
-            cycle: k.cycle.as_ref().map(|c| BreakdownCycle {
-                start_ms: c.start_ms,
-                end_ms: c.end_ms,
-                before_kwh: (c.before_kwh * 1000.0).round() / 1000.0,
-            }),
             mode: Some(k.source.clone()),
         },
-        None => Breakdown { parts: Vec::new(), session_fee: None, total: None, gap_ms: 0, mode: None, cycle: None },
+        None => Breakdown { parts: Vec::new(), session_fee: None, total: None, gap_ms: 0, mode: None },
     };
     let manual_cost = kept.as_ref().filter(|k| k.source == "manual").map(|k| ManualCost {
         mode: k.mode.clone(),

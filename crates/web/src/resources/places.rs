@@ -145,7 +145,7 @@ fn read_price(v: &Value, f: &mut Fields) -> Option<Option<Price>> {
         }
     };
     for k in o.keys() {
-        if !["currency", "per_kwh", "per_minute", "rates", "session_fee", "tiers"].contains(&k.as_str()) {
+        if !["currency", "per_kwh", "per_minute", "rates", "session_fee"].contains(&k.as_str()) {
             f.add(&format!("price.{k}"), "Unknown field.");
         }
     }
@@ -186,64 +186,7 @@ fn read_price(v: &Value, f: &mut Fields) -> Option<Option<Price>> {
         }
         Some(_) => f.add("price.rates", "Must be a list of rates."),
     }
-    let tiers = read_tiers(o.get("tiers"), f);
-    Some(Some(Price { currency, per_kwh, per_minute, rates, session_fee, tiers }))
-}
-
-/// `price.tiers`: `{ steps: [{ from_kwh, per_kwh }], cycle_day, base_kwh }` or null (types here; rules: the engine's).
-fn read_tiers(v: Option<&Value>, f: &mut Fields) -> Option<places::Tiers> {
-    let o = match v {
-        None | Some(Value::Null) => return None,
-        Some(Value::Object(o)) => o,
-        Some(_) => {
-            f.add("price.tiers", "Must be an object or null.");
-            return None;
-        }
-    };
-    for k in o.keys() {
-        if !["steps", "cycle_day", "base_kwh"].contains(&k.as_str()) {
-            f.add(&format!("price.tiers.{k}"), "Unknown field.");
-        }
-    }
-    let mut steps = Vec::new();
-    match o.get("steps") {
-        Some(Value::Array(list)) if list.len() <= 100 => {
-            for (i, st) in list.iter().enumerate() {
-                let key = |k: &str| format!("price.tiers.steps.{i}.{k}");
-                let Some(r) = st.as_object() else {
-                    f.add(&format!("price.tiers.steps.{i}"), "Must be a step.");
-                    continue;
-                };
-                for k in r.keys() {
-                    if !["from_kwh", "per_kwh"].contains(&k.as_str()) {
-                        f.add(&key(k), "Unknown field.");
-                    }
-                }
-                let from_kwh = r.get("from_kwh").map_or(Some(0.0), |x| num(x, &key("from_kwh"), f));
-                let per_kwh = match r.get("per_kwh") {
-                    Some(x) => num(x, &key("per_kwh"), f),
-                    None => {
-                        f.add(&key("per_kwh"), "Required: a price per kWh.");
-                        None
-                    }
-                };
-                steps.push(places::Tier { from_kwh: from_kwh.unwrap_or(0.0), per_kwh: per_kwh.unwrap_or(0.0) });
-            }
-        }
-        _ => f.add("price.tiers.steps", "Required: a list of steps."),
-    }
-    let cycle_day = match o.get("cycle_day") {
-        None | Some(Value::Null) => 1,
-        Some(x) => match x.as_u64() {
-            Some(d) => u8::try_from(d).unwrap_or(0),
-            None => {
-                f.add("price.tiers.cycle_day", "Must be a whole number.");
-                1
-            }
-        },
-    };
-    let base_kwh = opt_num(o.get("base_kwh"), "price.tiers.base_kwh", f).unwrap_or(0.0);
-    Some(places::Tiers { steps, cycle_day, base_kwh })
+    Some(Some(Price { currency, per_kwh, per_minute, rates, session_fee }))
 }
 
 /// The fields of a place a body sends (each `None` when absent), `400` on a wrong type or an unknown field.

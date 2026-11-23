@@ -6,9 +6,8 @@
 // (PUT/DELETE .../cost, admin) that survives rebuilds.
 
 import * as state from '../shared/state.js';
-import { h, replace, cssVar, cover } from '../shared/dom.js';
+import { h, replace, cssVar, cover, steady } from '../shared/dom.js';
 import { format, convert, unitLabel, getUnits, formatMoney } from '../shared/units.js';
-import * as TI from '../shared/tiers.js';
 import { formatTime, formatDate, formatDuration, zoneName, dayRange, dayKey, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
@@ -209,7 +208,7 @@ export async function mount(ctx) {
 
   const chargePanel = h('section', { class: 'panel charts-panel', 'aria-label': 'Through the charge', cover: 'cd.chart.timeline' },
     h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('signals'), 'Through the charge'),
-      h('span', { class: 'row' }, timeEl, h('span', { class: 'faint zoom-hint' }, 'Drag across a chart to zoom; double-click for the whole session'), resetBtn, csvCurve('curve'))),
+      h('span', { class: 'row' }, steady(timeEl, t.map((v) => formatTime(v, tz, { seconds: true }))), h('span', { class: 'faint zoom-hint' }, 'Drag across a chart to zoom; double-click for the whole session'), resetBtn, csvCurve('curve'))),
     selBox, gapNote, chargeHost, h('p', { class: 'note' }, stepNote));
   const limitSeen = [...new Set(col('limit_source').filter((v) => v != null))];
   const supplyPanel = h('section', { class: 'panel charts-panel', 'aria-label': 'The supply' },
@@ -259,14 +258,10 @@ export async function mount(ctx) {
   }
   if (bd.session_fee) parts.push({ rate: 'Session fee', per_kwh: null, per_minute: null, kwh: null, minutes: null, cost: bd.session_fee });
   const cur = cost?.currency || price?.currency || 'USD';
-  // tiered prices: each step with its range of the cycle's kWh, the split in one line, and the cycle
-  const stepName = (p) => (p.from_kwh != null ? `${p.rate}: ${TI.stepLabel(p.from_kwh, p.to_kwh)}` : p.rate);
-  const steps = TI.stepParts(bd);
-  const cycleNote = bd.cycle ? ` Tiered price: ${TI.splitText(steps, cur)}. This billing cycle (from ${formatDate(bd.cycle.start_ms, place?.time_zone || tz, { weekday: false })}) had ${format(bd.cycle.before_kwh, 'energy')} before this charge${price?.tiers?.base_kwh ? `, household use of ${format(price.tiers.base_kwh, 'energy')} included` : ''}; a time-of-use rate still sets the price of its hours.` : '';
   const breakdown = dataTable(ctx, {
     title: 'How the cost was made', icon: 'stats', rows: parts, cls: 'cost-table',
     columns: [
-      { key: 'rate', label: 'Rate', render: (p) => stepName(p), csv: (p) => stepName(p) },
+      { key: 'rate', label: 'Rate', render: (p) => p.rate, csv: (p) => p.rate },
       { key: 'per_kwh', label: 'Per kWh', num: true, render: (p) => (p.per_kwh != null ? rateText(p.per_kwh, 'price_energy', cur) : '—'), csv: (p) => p.per_kwh },
       { key: 'per_minute', label: 'Per minute', num: true, render: (p) => (p.per_minute != null ? rateText(p.per_minute, 'price_time', cur) : '—'), csv: (p) => p.per_minute },
       { key: 'kwh', label: 'Energy', num: true, render: (p) => format(p.kwh, 'energy'), csv: (p) => p.kwh },
@@ -275,7 +270,7 @@ export async function mount(ctx) {
     ],
     csv: { filename: csvFilename(car.name, 'charge', day, 'cost'), columns: [{ label: 'Rate', value: (p) => p.rate }, { label: `Per kWh (${cur})`, value: (p) => p.per_kwh }, { label: `Per minute (${cur})`, value: (p) => p.per_minute }, { label: 'Energy (kWh)', value: (p) => p.kwh }, { label: 'Minutes', value: (p) => p.minutes }, { label: `Cost (${cur})`, value: (p) => p.cost }] },
     empty: () => emptyState({ title: 'No parts', text: cost?.source === 'free_supercharging' ? 'Free Supercharging: nothing to pay.' : cost ? 'This cost is one amount with no rates.' : 'There is no cost to break down yet.' }),
-    note: cost?.source === 'tariff' ? `Each rate of the place price for the time it applied, in the car's time zone (${zone})${bd.gap_ms ? `; ${formatDuration(bd.gap_ms)} without data is priced at the rate around it` : ''}.${cycleNote}` : null,
+    note: cost?.source === 'tariff' ? `Each rate of the place price for the time it applied, in the car's time zone (${zone})${bd.gap_ms ? `; ${formatDuration(bd.gap_ms)} without data is priced at the rate around it` : ''}.` : null,
   });
 
   const facts = kv([
@@ -283,7 +278,7 @@ export async function mount(ctx) {
     ['Charging time', h('span', { cover: 'web.charge-cost.duration' }, formatDuration(c.charging_ms), h('span', { class: 'faint block' }, 'pauses under 3 min count as one charge'))],
     ['Energy', h('span', { cover: 'web.charge-cost.energy' }, `${format(c.energy_added_kwh, 'energy')} into the pack`,
       h('span', { class: 'faint block' }, ac && gridKwh != null ? `${format(gridKwh, 'energy')} drawn, ${format(c.losses_kwh, 'energy')} lost` : dc ? `${format(c.dc_inlet_kwh, 'energy')} delivered; grid energy unknown` : 'energy drawn unknown'))],
-    ['Place', price ? `${placeLabel(c)}: ${[price.per_kwh != null ? format(price.per_kwh, 'price_energy', { currency: price.currency }) : null, price.tiers?.steps?.length ? TI.tiersSummary(price.tiers, price.currency) : null, price.per_minute != null ? format(price.per_minute, 'price_time', { currency: price.currency }) : null, (price.rates || []).length ? `${price.rates.length} time rates` : null, price.session_fee ? `${formatMoney(price.session_fee, price.currency)} per session` : null].filter(Boolean).join(', ') || 'priced'}` : `${placeLabel(c)}: no price`],
+    ['Place', price ? `${placeLabel(c)}: ${[price.per_kwh != null ? format(price.per_kwh, 'price_energy', { currency: price.currency }) : null, price.per_minute != null ? format(price.per_minute, 'price_time', { currency: price.currency }) : null, (price.rates || []).length ? `${price.rates.length} time rates` : null, price.session_fee ? `${formatMoney(price.session_fee, price.currency)} per session` : null].filter(Boolean).join(', ') || 'priced'}` : `${placeLabel(c)}: no price`],
   ]);
 
   const editor = costEditor(ctx, { c, base, manual, cur, gridKwh, dc });

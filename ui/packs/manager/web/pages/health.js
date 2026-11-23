@@ -75,11 +75,6 @@ const REASONS = {
     text: 'They are worked out again from the stored logs. This page reads the figures again every few seconds until it is done; nothing needs doing.',
     fix: null, page: null,
   },
-  gps_inputs_disagree: {
-    title: 'Positions from one input are out of step',
-    text: 'One input’s GPS positions are far from the other inputs’ positions at the same moments, more than lag or noise explains (often a decoding problem). Its positions are not used there; the other inputs’ positions are. The rest of its data is still used.',
-    fix: null, page: null,
-  },
   logs_missing: {
     title: 'Logs missing on the server',
     text: 'The server lost some logs and asked the car to send them again. They are read as soon as they come; any the car no longer has either stay unknown time.',

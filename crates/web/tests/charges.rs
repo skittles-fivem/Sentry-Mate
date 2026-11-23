@@ -7,7 +7,6 @@ use engine::Engine;
 use model::CarId;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use web::testkit::{Client, TestServer};
 
@@ -681,128 +680,6 @@ async fn free_supercharging_days_make_dc_charges_cost_nothing() {
         admin.put(&cost, json!({ "mode": "total", "amount": 3.5, "currency": "EUR", "energy_basis": "pack" })).await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["cost"]["source"], "manual");
-}
-
-/// Saves `price` on the place and reprices its past charges with it.
-async fn set_price(admin: &mut Client, place: &str, price: Value) -> Value {
-    let v = ok(admin, place).await["version"].clone();
-    let r = admin.patch(place, json!({ "version": v, "price": price })).await;
-    assert_eq!(r.status, 200, "{}", r.text());
-    let r = admin.post(&format!("{place}/reprice"), json!({})).await;
-    assert_eq!(r.status, 200, "{}", r.text());
-    r.json()
-}
-
-/// Tiered (block) prices through the API, made-up numbers: steps at a third and two thirds of the home's charging,
-/// so the charges cross them. Each charge follows on from the kWh of the charges before it in its billing cycle (both
-/// cars, in time order), is split where it crosses a step, and adds the session fee; household use is counted first;
-/// the cycle starts again on its start day; a typed cost still wins over a reprice.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
-async fn tiered_prices_follow_the_cycle_in_time_order() {
-    let k = seeded().await;
-    let mut admin = k.s.admin().await;
-    let place = format!("/api/v1/places/{}", k.home);
-    // every home charge of both cars, oldest first, with the kWh it counts (the grid's, else the pack's)
-    let mut home: Vec<(u64, String, String, f64)> = Vec::new();
-    for car in &k.cars {
-        let l = ok(&mut admin, &format!("/api/v1/cars/{car}/charges?places={}&limit=500", k.home)).await;
-        for c in l["items"].as_array().unwrap() {
-            let kwh = c["energy_grid_kwh"].as_f64().or(c["energy_added_kwh"].as_f64()).unwrap();
-            home.push((c["start_ms"].as_u64().unwrap(), car.clone(), c["id"].as_str().unwrap().into(), kwh));
-        }
-    }
-    home.sort_by_key(|a| a.0);
-    assert!(home.len() >= 2, "{home:?}");
-    let all: f64 = home.iter().map(|h| h.3).sum();
-    let (s2, s3) = ((all / 3.0 * 1000.0).round() / 1000.0, (all * 2.0 / 3.0 * 1000.0).round() / 1000.0);
-    let price = |base: f64, day: u32| {
-        json!({ "currency": "EUR", "per_kwh": null, "session_fee": 0.5, "rates": [], "tiers": {
-            "steps": [{ "from_kwh": 0, "per_kwh": 0.16 }, { "from_kwh": s2, "per_kwh": 0.10 }, { "from_kwh": s3, "per_kwh": 0.05 }],
-            "cycle_day": day, "base_kwh": base } })
-    };
-    // a per_kwh beside the steps, a first step above 0 and a cycle day of 30 are refused, each on its field
-    let v = ok(&mut admin, &place).await["version"].clone();
-    let mut bad = price(0.0, 30);
-    bad["per_kwh"] = json!(0.2);
-    bad["tiers"]["steps"][0]["from_kwh"] = json!(5);
-    let r = admin.patch(&place, json!({ "version": v, "price": bad })).await;
-    assert_eq!(r.status, 422, "{}", r.text());
-    let fields = &r.json()["error"]["fields"];
-    for f in ["price.per_kwh", "price.tiers.steps.0.from_kwh", "price.tiers.cycle_day"] {
-        assert!(fields.get(f).is_some(), "{f}: {fields}");
-    }
-
-    let check = |d: &Value, before: f64, kwh: f64| {
-        let b = &d["cost_breakdown"];
-        let got = b["cycle"]["before_kwh"].as_f64().unwrap();
-        assert!((got - before).abs() < 0.01, "before {got} != {before}: {b}");
-        let parts = b["parts"].as_array().unwrap();
-        let sum: f64 = parts.iter().map(|p| p["kwh"].as_f64().unwrap()).sum();
-        assert!((sum - kwh).abs() < 0.01, "{sum} != {kwh}: {b}");
-        // each part is the step its kWh fall in, in order, and the parts follow on from one another
-        let mut at = before;
-        for p in parts {
-            let (from, to) = (p["from_kwh"].as_f64().unwrap(), p["to_kwh"].as_f64());
-            assert!(at >= from - 0.01 && to.is_none_or(|t| at < t + 0.01), "{at} not in {p}");
-            at += p["kwh"].as_f64().unwrap();
-            assert!(to.is_none_or(|t| at <= t + 0.01), "{at} past {p}");
-        }
-        let cost: f64 = parts.iter().map(|p| p["kwh"].as_f64().unwrap() * p["per_kwh"].as_f64().unwrap()).sum();
-        assert!((b["total"].as_f64().unwrap() - (cost + 0.5)).abs() < 0.02, "{b}");
-        assert_eq!(b["session_fee"].as_f64(), Some(0.5));
-        parts.len()
-    };
-
-    // no household use: the running total of the cycle, both cars in time order
-    let r = set_price(&mut admin, &place, price(0.0, 1)).await;
-    assert!(r["repriced"].as_u64().unwrap() > 0, "{r}");
-    let mut running: BTreeMap<u64, f64> = BTreeMap::new();
-    let mut split = 0;
-    for (_, car, id, kwh) in &home {
-        let d = ok(&mut admin, &format!("/api/v1/cars/{car}/charges/{id}")).await;
-        let start = d["cost_breakdown"]["cycle"]["start_ms"].as_u64().unwrap();
-        let before = *running.get(&start).unwrap_or(&0.0);
-        split += usize::from(check(&d, before, *kwh) > 1);
-        *running.entry(start).or_default() += kwh;
-    }
-    assert!(split > 0, "a charge crosses a step");
-
-    // household use counted first: the whole house before the car puts every charge in the last step
-    set_price(&mut admin, &place, price(s3 + 1.0, 1)).await;
-    let (_, car, id, kwh) = home[0].clone();
-    let d = ok(&mut admin, &format!("/api/v1/cars/{car}/charges/{id}")).await;
-    assert_eq!(check(&d, s3 + 1.0, kwh), 1);
-    assert_eq!(d["cost_breakdown"]["parts"][0]["per_kwh"].as_f64(), Some(0.05), "{d}");
-
-    // the cycle starts again at midnight on its start day: with the last charge's day as the start day, only that
-    // day's earlier charges are before it
-    let n = home.len() - 1;
-    let (last_ms, car, id, kwh) = home[n].clone();
-    let midnight = last_ms / 86_400_000 * 86_400_000;
-    let day = (last_ms / 86_400_000) as i64 + 719_468;
-    let doe = day - day.div_euclid(146_097) * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let dom = (doy - (153 * ((5 * doy + 2) / 153) + 2) / 5 + 1) as u32;
-    let earlier: f64 = home[..n].iter().filter(|h| h.0 >= midnight).map(|h| h.3).sum();
-    if dom < 28 {
-        set_price(&mut admin, &place, price(0.0, dom)).await;
-        let d = ok(&mut admin, &format!("/api/v1/cars/{car}/charges/{id}")).await;
-        check(&d, earlier, kwh);
-        assert_eq!(d["cost_breakdown"]["cycle"]["start_ms"].as_u64(), Some(midnight), "{d}");
-        assert!(d["cost_breakdown"]["cycle"]["end_ms"].as_u64().unwrap() >= midnight + 28 * 86_400_000, "{d}");
-    }
-
-    // a typed cost wins over a reprice
-    let (_, car, id, _) = home[0].clone();
-    let cost = format!("/api/v1/cars/{car}/charges/{id}/cost");
-    let r =
-        admin.put(&cost, json!({ "mode": "total", "amount": 7.0, "currency": "EUR", "energy_basis": "pack" })).await;
-    assert_eq!(r.status, 200, "{}", r.text());
-    set_price(&mut admin, &place, price(0.0, 1)).await;
-    let d = ok(&mut admin, &format!("/api/v1/cars/{car}/charges/{id}")).await;
-    assert_eq!((d["cost"]["source"].as_str(), d["cost"]["amount"].as_f64()), (Some("manual"), Some(7.0)), "{d}");
 }
 
 /// The fast set's charges test: one made-up car, one light day (a trip to the supercharger), uploaded, judged and

@@ -921,9 +921,6 @@ pub struct Health {
     /// The logs the server should have but no longer does (see `ingest::missing`), over all the car's keys.
     pub missing_logs: MissingLogs,
     pub rebuild_pending: bool,
-    /// The newest stretch where one input's GPS fixes disagreed with another's (`gps_inputs_disagree`): which
-    /// inputs, and whose fixes were left out of positions there.
-    pub gps_disagreement: Option<crate::GpsDisagreement>,
     /// The web server fills this from the upload settings.
     pub uploads_enabled: Option<bool>,
 }
@@ -1038,11 +1035,6 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
     if missing.count > 0 {
         reasons.push("logs_missing");
     }
-    // an input's GPS out of step with the others' in the last 30 days of the car's history
-    let recent = meta.newest_ms.unwrap_or(now).saturating_sub(30 * 86_400_000);
-    if e.gps_disagreement(car).is_some_and(|g| g.to_ms >= recent) {
-        reasons.push("gps_inputs_disagree");
-    }
     Ok(Verdict { keys, waiting, last_upload, last_trust, rebuild_pending, missing, reasons })
 }
 
@@ -1146,7 +1138,6 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
             logs_waiting: waiting,
             missing_logs: missing,
             rebuild_pending,
-            gps_disagreement: e.gps_disagreement(car),
             uploads_enabled: None,
         },
     ))

@@ -275,7 +275,6 @@ impl import::Sink for DbSink<'_> {
                             session_fee: None,
                             gap_ms: 0,
                             at_ms: now_ms(),
-                            cycle: None,
                         };
                         records::put_cost(db, car, c.id, c.start_ms, Some(entry)).map_err(err)?;
                     }
@@ -387,7 +386,6 @@ impl import::Sink for DbSink<'_> {
                         per_minute: Some(m),
                         rates: Vec::new(),
                         session_fee: r.session_fee,
-                        tiers: None,
                     });
                     Some(m)
                 }

@@ -59,7 +59,7 @@ class Charges(ServerCase):
     def test_detail_curve_and_manual_cost(self):
         x = self.c.get("/api/v1/cars/c1/charges?kind=dc&limit=3")["items"][1]
         d = self.c.get(f"/api/v1/cars/c1/charges/{x['id']}")
-        self.assertEqual(set(d["cost_breakdown"]), {"parts", "session_fee", "total", "gap_ms", "mode", "cycle"})
+        self.assertEqual(set(d["cost_breakdown"]), {"parts", "session_fee", "total", "gap_ms", "mode"})
         self.assertTrue(d["prev"])
         cv = self.c.get(f"/api/v1/cars/c1/charges/{x['id']}/curve")
         self.assertEqual(cv["step_ms"], 1000)  # 1 Hz

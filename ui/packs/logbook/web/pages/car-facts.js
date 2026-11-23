@@ -1,10 +1,8 @@
 // Sentry Mate, "Logbook" UI pack: the car page's two reference panels (not a page of its own).
 //
-// Vehicle info: everything the server knows of the car's build (GET /cars/{car} `vehicle`). A row shows the name,
-// the value and Change; where the fact came from (the car's own CAN configuration, the VIN, the Tesla API, the owner,
-// an import), how sure it is and the evidence are in the row's hover title, its "source" toggle (touch screens) and
-// the Change dialog; a low-confidence value is muted with a faint ?. Facts two inputs disagree on are listed below the
-// groups; a fact nothing says shows "unknown", never a guess. An admin can type a
+// Vehicle info: everything the server knows of the car's build (GET /cars/{car} `vehicle`), each fact with where it
+// came from (the car's own CAN configuration, the VIN, the Tesla API, the owner, an import) and how sure it is;
+// facts two inputs disagree on show both; a fact nothing says shows "unknown", never a guess. An admin can type a
 // fact (PATCH /cars/{car} `config`, with the car's `version`), or forget a typed one.
 //
 // Car firmware: the fingerprints of their code that the four main modules broadcast on the vehicle bus
@@ -86,17 +84,6 @@ const GROUPS = [
 const NAMES = Object.fromEntries(GROUPS.flatMap(([, list]) => list.map(([k, n]) => [k, n])));
 const SHOW = Object.fromEntries(GROUPS.flatMap(([, list]) => list.map(([k, , f]) => [k, f])));
 const showValue = (k, v) => { if (v == null) return null; try { return (SHOW[k] || String)(v); } catch { return String(v); } };
-// where a fact came from, how sure and the evidence, as sentences (the hover title, the source toggle, the dialog)
-function howLines(k, f, disagree) {
-  if (!f || f.value == null) return ['Nothing tells this.'];
-  const src = SOURCE[f.source];
-  return [
-    src ? `${src[0]}: ${src[1]}` : f.source ? `From ${f.source}.` : null,
-    f.confidence ? `${CONFIDENCE[f.confidence] ? CONFIDENCE[f.confidence].replace(/^./, (c) => c.toUpperCase()) : f.confidence}.` : null,
-    f.note ? f.note.replace(/\.?$/, '.') : null,
-    disagree && disagree.length > 1 ? `Also said: ${disagree.slice(1).map((x) => `${showValue(k, x.value) ?? 'nothing'} (${(SOURCE[x.source] || [x.source])[0]})`).join(', ')}.` : null,
-  ].filter(Boolean);
-}
 
 /** The Vehicle info panel: { el, setCar(car) }, drawn from the car the page already has. */
 export function vehiclePanel(ctx, car) {
@@ -113,7 +100,10 @@ export function vehiclePanel(ctx, car) {
     const dis = new Map((v.disagreements || []).map((d) => [d.field, d.values || []]));
     const unknownCodes = v.unknown_codes || [];
     replace(body,
-      h('p', { class: 'note vi-lead' }, `How this car was built, as this server works it out. Hover a fact for its source${admin ? '; Change types the right value' : ''}.`),
+      h('p', { class: 'note vi-lead' }, 'Worked out on this server from the VIN’s first 11 characters', v.vin_prefix ? [' (', h('span', { class: 'mono' }, v.vin_prefix), ')'] : '',
+        ', the car’s own configuration on CAN, the Tesla API and imports. A fact nothing tells says “unknown”: it is never guessed.',
+        v.year_kind === 'build_year' ? ' This car’s 10th VIN character is the calendar year it was built, not a model year.' : '',
+        admin ? ' An admin can type a fact to correct it; a typed fact beats every other source.' : ''),
       h('div', { class: 'vi-groups' }, GROUPS.map(([gname, list]) => h('div', { class: 'vi-group' },
         h('h3', { class: 'vi-group-name' }, gname),
         h('dl', { class: 'vi-facts' }, list.map(([k, name, , edit]) => factRow(k, name === 'Model year' && v.year_kind === 'build_year' ? 'Year built' : name, v[k], dis.get(k), edit)))))),
@@ -127,26 +117,24 @@ export function vehiclePanel(ctx, car) {
       unknownCodes.length ? h('div', { class: 'vi-unknown-codes' },
         h('p', { class: 'vi-faint' }, 'Codes the built-in tables do not know (no value is given for them):'),
         h('ul', null, unknownCodes.map((c) => h('li', null, NAMES[c.field] || c.field, ': code ', h('span', { class: 'mono' }, String(c.code)), h('span', { class: 'vi-faint' }, ` at ${c.at} (${(SOURCE[c.source] || [c.source])[0]})`))))) : null,
-      (v.notes || []).length ? h('ul', { class: 'vi-notes' }, v.notes.map((t) => h('li', null, t))) : null,
-      v.vin_prefix ? h('p', { class: 'note vi-prefix' }, 'VIN prefix ', h('span', { class: 'mono' }, v.vin_prefix),
-        v.year_kind === 'build_year' ? ': its 10th character is the calendar year built, not a model year.' : '') : null);
+      (v.notes || []).length ? h('ul', { class: 'vi-notes' }, v.notes.map((t) => h('li', null, t))) : null);
   }
 
   function factRow(k, name, f, disagree, edit) {
     const value = f && f.value != null ? showValue(k, f.value) : null;
-    const low = value != null && f.confidence === 'low';
-    const how = howLines(k, f, disagree);
-    const detail = h('span', { class: 'vi-detail', hidden: true }, how.join(' '));
-    const info = h('button', { type: 'button', class: 'vi-info', 'aria-expanded': 'false', 'aria-label': `Where the ${name.toLowerCase()} comes from`,
-      onclick: (e) => { const open = detail.hidden; detail.hidden = !open; e.currentTarget.setAttribute('aria-expanded', String(open)); } }, 'Source');
-    const edBtn = admin && edit ? h('button', { type: 'button', class: 'vi-edit', 'aria-label': `${f && f.source === 'owner' ? 'Change or forget' : 'Type'} ${name.toLowerCase()}`, onclick: (e) => editFact(k, name, f, edit, e.currentTarget) },
-      f && f.source === 'owner' ? 'Change' : 'Correct') : null;
-    return h('div', { class: ['vi-fact', { 'is-unknown': value == null, 'is-owner': f && f.source === 'owner', 'is-disputed': !!disagree, 'is-low': low }], title: how.join('\n') },
+    const src = f && f.source ? SOURCE[f.source] || [f.source, ''] : null;
+    return h('div', { class: ['vi-fact', { 'is-unknown': value == null, 'is-owner': f && f.source === 'owner', 'is-disputed': !!disagree }] },
       h('dt', null, name),
       h('dd', null,
-        h('span', { class: 'vi-value' }, value ?? 'unknown', low ? h('span', { class: 'vi-q', 'aria-hidden': 'true' }, '?') : null, low ? h('span', { class: 'sr-only' }, ' (low confidence)') : null),
-        detail,
-        h('span', { class: 'vi-acts' }, edBtn, info)));
+        h('span', { class: 'vi-value' }, value ?? 'unknown'),
+        value != null && src ? h('span', { class: 'vi-meta' },
+          h('span', { class: ['vi-src', `vi-src-${f.source}`], title: src[1] }, src[0]),
+          f.confidence ? h('span', { class: `vi-conf vi-conf-${f.confidence}`, title: CONFIDENCE[f.confidence] || f.confidence }, f.confidence) : null) : null,
+        f && f.note ? h('span', { class: 'vi-note' }, f.note) : null,
+        disagree && disagree.length > 1 ? h('span', { class: 'vi-note is-warn' }, 'Also said: ',
+          disagree.slice(1).map((x, i) => [i ? ', ' : '', showValue(k, x.value) ?? 'nothing', ` (${(SOURCE[x.source] || [x.source])[0]})`])) : null,
+        admin && edit ? h('button', { type: 'button', class: 'vi-edit', 'aria-label': `${f && f.source === 'owner' ? 'Change or forget' : 'Type'} ${name.toLowerCase()}`, onclick: (e) => editFact(k, name, f, edit, e.currentTarget) },
+          f && f.source === 'owner' ? 'Change' : 'Correct') : null));
   }
 
   async function editFact(k, name, f, edit, opener) {
@@ -205,10 +193,9 @@ export function vehiclePanel(ctx, car) {
         closeIt = close;
         return [
           h('p', { class: 'dialog-text' }, f && f.value != null
-            ? ['Now: ', showValue(k, f.value), '. ']
+            ? ['Now: ', showValue(k, f.value), ' (', (SOURCE[f.source] || [f.source])[0], f.confidence ? `, ${f.confidence} confidence` : '', '). ']
             : 'Nothing tells this now. ',
           'What you type is shown everywhere for this car and beats every other source.'),
-          f && f.value != null ? h('p', { class: 'dialog-text vi-dlg-how' }, howLines(k, f, null).join(' ')) : null,
           f2,
           typed ? h('p', { class: 'vi-forget' }, h('button', {
             type: 'button', class: 'button button-quiet button-small',

@@ -153,67 +153,6 @@ def free_supercharging(app, car_id, ms, tz):
     return False
 
 
-def _midnight(y, m, d, tz):
-    from .util import zone
-    return int(dt.datetime(y, m, d, tzinfo=zone(tz)).timestamp() * 1000)
-
-
-def tier_cycle(tiers, ms, tz):
-    """[start, end) ms of the billing cycle `ms` is in: midnight on the cycle day (1 to 28) to a month later."""
-    day = int(tiers.get("cycle_day") or 1)
-    d = local_dt(ms, tz)
-    y, m = d.year, d.month
-    if d.day < day:
-        y, m = (y - 1, 12) if m == 1 else (y, m - 1)
-    ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
-    return _midnight(y, m, day, tz), _midnight(ny, nm, day, tz)
-
-
-_CYCLE_CACHE = {}
-
-
-def cycle_kwh(app, pid, a, c):
-    """kWh charged at place `pid` from `a` up to charge `c` (started before it, or at the same moment and listed
-    before it), by every car: each charge's grid energy, else what went into the pack."""
-    sig = tuple((p["id"], p["lat"], p["lon"], p["radius_m"]) for p in placing.all_places(app))
-    key = (pid, a, sig)
-    rows = _CYCLE_CACHE.get(key)
-    if rows is None:
-        rows = []
-        for cid, h in app.ds.featured.items():
-            for o in h.charges:
-                if o.start < a or not h.shown(o) or placing.piece_pid(app, o) != pid:
-                    continue
-                ff = o.figures()
-                k = ff["grid"] if ff["grid"] is not None else ff["added"]
-                rows.append((o.start, cid, o.id, max(0.0, k or 0.0)))
-        rows.sort()
-        if len(_CYCLE_CACHE) > 512:
-            _CYCLE_CACHE.clear()
-        _CYCLE_CACHE[key] = rows
-    return sum(k for (st, _cid, rid, k) in rows if (st, rid) < (c.start, c.id))
-
-
-def _tier_split(steps, at, kwh, parts):
-    """Adds `kwh` used from `at` of the cycle on to the steps' parts; answers where the cycle is after it."""
-    while kwh > 1e-12:
-        i = max(0, sum(1 for s in steps if s["from_kwh"] <= at) - 1)
-        nxt = steps[i + 1]["from_kwh"] if i + 1 < len(steps) else None
-        take = kwh if nxt is None or nxt <= at else min(kwh, nxt - at)
-        name = f"Step {i + 1}"
-        p = parts.setdefault(name, {"rate": name, "per_kwh": steps[i]["per_kwh"], "per_minute": None, "kwh": 0.0,
-                                    "minutes": 0.0, "cost": 0.0, "from_kwh": steps[i]["from_kwh"], "to_kwh": nxt})
-        p["kwh"] += take
-        p["cost"] += take * steps[i]["per_kwh"]
-        at += take
-        kwh -= take
-    return at
-
-
-def _no_cost(gap_ms):
-    return {"parts": [], "session_fee": None, "total": None, "gap_ms": gap_ms, "mode": None, "cycle": None}
-
-
 def charge_cost(app, car_id, c, f, now, pricing=None):
     """(cost, price_per_kwh, cost_breakdown) for a charge, applying owner overrides first.
 
@@ -245,69 +184,51 @@ def charge_cost(app, car_id, c, f, now, pricing=None):
                          "per_minute": over["amount"] if mode == "per_minute" else None,
                          "minutes": r(minutes, 1) if mode == "per_minute" else None,
                          "cost": round(amount, 2)}], "session_fee": None, "total": round(amount, 2),
-              "gap_ms": gap_ms, "mode": mode, "cycle": None}
+              "gap_ms": gap_ms, "mode": mode}
         return cost, ppk, bd
     if c.source == "teslamate":
         if c.tm_cost is None:
-            return None, None, _no_cost(gap_ms)
+            return None, None, {"parts": [], "session_fee": None, "total": None, "gap_ms": gap_ms, "mode": None}
         amount = round(c.tm_cost * (grid or added), 2)
         cost = {"amount": amount, "currency": "USD", "source": "teslamate"}
         return cost, {"value": c.tm_cost, "basis": "grid" if grid else "pack"}, {
             "parts": [{"rate": "Imported", "per_kwh": c.tm_cost, "kwh": r(grid or added, 3), "cost": amount}],
-            "session_fee": None, "total": amount, "gap_ms": gap_ms, "mode": "teslamate", "cycle": None}
+            "session_fee": None, "total": amount, "gap_ms": gap_ms, "mode": "teslamate"}
     if c.ckind == "dc" and c.station_kw >= 250 and free_supercharging(app, car_id, c.start, tz):
         cur = price["currency"] if price else "USD"
         return ({"amount": 0.0, "currency": cur, "source": "free_supercharging"}, {"value": 0.0, "basis": "pack"},
-                {"parts": [], "session_fee": None, "total": 0.0, "gap_ms": gap_ms, "mode": "free_supercharging",
-                 "cycle": None})
+                {"parts": [], "session_fee": None, "total": 0.0, "gap_ms": gap_ms, "mode": "free_supercharging"})
     if not price:
-        return None, None, _no_cost(gap_ms)
+        return None, None, {"parts": [], "session_fee": None, "total": None, "gap_ms": gap_ms, "mode": None}
     basis = "grid" if grid is not None else "pack"
     # AC is billed by the grid meter; a fast charger bills what it delivered (about the car's inlet energy)
     kwh = grid if grid is not None else (inlet if inlet is not None else added)
     parts = {}
     total_ms = max(1, end - c.start)
     step = 15 * MIN
-    tiers = price.get("tiers")
-    steps = sorted((tiers or {}).get("steps") or [], key=lambda x: x["from_kwh"])
-    cycle = None
-    if steps:
-        a, b = tier_cycle(tiers, c.start, tz)
-        before = (tiers.get("base_kwh") or 0) + cycle_kwh(app, pl["id"] if pl else None, a, c)
-        cycle = {"start_ms": a, "end_ms": b, "before_kwh": r(before, 3)}
-        at = before
     t = c.start
     while t < end:
         e = min(end, t + step)
         rate = _rate_at(price, t, tz)
-        share = kwh * (e - t) / total_ms
-        if steps and not (rate and rate.get("per_kwh") is not None):
-            # tiered prices: a step's price where no time-of-use rate sets one
-            at = _tier_split(steps, at, share, parts)
-            t = e
-            continue
         name = rate["name"] if rate else "Standard"
         per = rate["per_kwh"] if rate and rate.get("per_kwh") is not None else price.get("per_kwh")
         pm = rate["per_minute"] if rate and rate.get("per_minute") is not None else price.get("per_minute")
+        share = kwh * (e - t) / total_ms
         p = parts.setdefault(name, {"rate": name, "per_kwh": per, "per_minute": pm, "kwh": 0.0, "minutes": 0.0,
-                                    "cost": 0.0, "from_kwh": None, "to_kwh": None})
+                                    "cost": 0.0})
         p["kwh"] += share
         p["minutes"] += (e - t) / MIN
         p["cost"] += share * (per or 0) + (e - t) / MIN * (pm or 0)
-        if steps:
-            at += share
         t = e
-    order = sorted(parts.values(), key=lambda p: (p["from_kwh"] is not None, p["from_kwh"] or 0))
     plist = [{"rate": p["rate"], "per_kwh": p["per_kwh"], "per_minute": p["per_minute"], "kwh": r(p["kwh"], 3),
-              "minutes": r(p["minutes"], 1) if p["from_kwh"] is None else None, "cost": round(p["cost"], 2),
-              "from_kwh": p["from_kwh"], "to_kwh": p["to_kwh"]} for p in order]
+              "minutes": r(p["minutes"], 1), "cost": round(p["cost"], 2)} for p in parts.values()]
     fee = price.get("session_fee")
     amount = sum(p["cost"] for p in parts.values()) + (fee or 0)
     cost = {"amount": round(amount, 2), "currency": price["currency"], "source": "tariff"}
     per = grid if basis == "grid" else added
     ppk = {"value": round(amount / per, 4), "basis": basis} if per else None
     return cost, ppk, {"parts": plist, "session_fee": fee, "total": round(amount, 2), "gap_ms": gap_ms,
-                       "mode": "tariff", "cycle": cycle}
+                       "mode": "tariff"}
 
 
 def charge_row(app, h, c, now, with_breakdown=False):

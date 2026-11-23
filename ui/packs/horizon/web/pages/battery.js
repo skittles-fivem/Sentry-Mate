@@ -13,7 +13,7 @@
 // grey and lines break there. Live: `now` deltas move the Now panel; `rows` reloads the parked list.
 
 import * as state from '../shared/state.js';
-import { h, svg, replace, cssVar } from '../shared/dom.js';
+import { h, svg, replace, cssVar, steady } from '../shared/dom.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import { format, formatMoney, convert, toMetric, unitLabel, getUnits } from '../shared/units.js';
 import { formatDateTime, formatDate, formatTime, formatDuration, startOf, toIsoZoned } from '../shared/time.js';
@@ -29,6 +29,7 @@ import { field, form, showApiError } from '../core/form.js';
 import { flash } from '../core/flash.js';
 import { rpx } from '../core/display.js';
 import { srcMark, srcText, srcShort } from '../core/source.js';
+const CL_IDLE = 'Point at the chart for the values at a time.';
 const LIFE_KINDS = ['smo', 'tesla_api', 'teslafi_api', 'teslamate_local', 'import'];
 const LIFE_WORDS = { smo: 'SMO', tesla_api: 'the Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'local TeslaMate', import: 'imported history' };
 
@@ -514,7 +515,7 @@ export async function mount(ctx) {
     const plot = {};
     const chips = entries.map((e) => {
       const btn = h('button', { class: 'legend-chip', type: 'button', 'aria-pressed': 'true', title: 'Show or hide this line', cover: e.cover || null },
-        h('i', { class: ['legend-swatch', /^p/.test(e.key) && 'is-dashed'], vars: { '--c': `var(${e.color})` } }), h('span', null, e.label), h('b', { class: 'legend-val' }, ''));
+        h('i', { class: ['legend-swatch', /^p/.test(e.key) && 'is-dashed'], vars: { '--c': `var(${e.color})` } }), h('span', null, e.label), steady(h('b', { class: 'legend-val' }, '')));
       btn.addEventListener('click', () => { const on = btn.getAttribute('aria-pressed') !== 'true'; btn.setAttribute('aria-pressed', String(on)); plot.p?.u?.setSeries(e.index, { show: on }); });
       return btn;
     });
@@ -525,7 +526,7 @@ export async function mount(ctx) {
     replace(clSlot,
       h('div', { class: 'cl-top' },
         h('div', { class: 'legend', role: 'group', 'aria-label': 'Charge level lines' }, chips),
-        h('span', { class: 'cl-cursor faint', 'aria-live': 'off' })),
+        steady(h('span', { class: 'cl-cursor faint', 'aria-live': 'off' }), [CL_IDLE, ...ts.map((t) => formatDateTime(t, tz, { now: now() }))])),
       plotEl,
       h('div', { class: 'cl-foot' },
         h('div', { class: 'cl-shares' },
@@ -561,7 +562,7 @@ export async function mount(ctx) {
           setCursor: [(u) => {
             const i = u.cursor.idx;
             const out = clSlot.querySelector('.cl-cursor');
-            if (i == null || u.cursor.left < 0) { chips.forEach((ch) => { ch.querySelector('.legend-val').textContent = ''; }); if (out) out.textContent = 'Point at the chart for the values at a time.'; return; }
+            if (i == null || u.cursor.left < 0) { chips.forEach((ch) => { ch.querySelector('.legend-val').textContent = ''; }); if (out) out.textContent = CL_IDLE; return; }
             entries.forEach((e, k) => { chips[k].querySelector('.legend-val').textContent = pct(u.data[e.index]?.[i], 1); });
             if (out) out.textContent = formatDateTime(ts[i], tz, { now: now() });
           }],
@@ -571,8 +572,10 @@ export async function mount(ctx) {
     const data = [xs, soc, usable];
     if (opt.clMoving) data.push(mv.mean || xs.map(() => null), mv.median || xs.map(() => null), mv.p7_5 || xs.map(() => null), mv.p92_5 || xs.map(() => null));
     data.push(lim);
+    // each value in its chip gets the room of the widest it can show, so pointing at the chart resizes no chip
+    entries.forEach((e, k) => chips[k].querySelector('.steady').fit(['—', ...(data[e.index] || []).map((v) => pct(v, 1))]));
     plot.p = mountPlot(plotEl, make, data, ctx);
-    clSlot.querySelector('.cl-cursor').textContent = 'Point at the chart for the values at a time.';
+    clSlot.querySelector('.cl-cursor').textContent = CL_IDLE;
   }
 
   // asleep (blue) and unknown (grey) spans, and the everyday band, behind the lines

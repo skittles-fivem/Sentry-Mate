@@ -9,7 +9,6 @@
 
 import { h } from '../shared/dom.js';
 import { format, formatMoney } from '../shared/units.js';
-import * as TI from '../shared/tiers.js';
 import { formatTime, formatDate, formatDuration, zoneName, dayKey, dayRange } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
@@ -143,9 +142,8 @@ export async function mount(ctx) {
       ['When', h('span', { cover: 'web.charge-cost.dates' }, `${formatDate(t0, tz, { weekday: false })} ${formatTime(t0, tz)} – ${live ? 'now' : formatTime(t1, tz)} ${zone}`)],
       ['Charging', h('span', { cover: 'web.charge-cost.duration' }, formatDuration(c.charging_ms))],
       ['Energy', h('span', { cover: 'web.charge-cost.energy' }, `${format(c.energy_added_kwh, 'energy')} added${c.energy_grid_kwh != null ? `, ${format(c.energy_grid_kwh, 'energy')} drawn` : ''}`)],
-      ...(bd.parts || []).map((p) => [p.from_kwh != null ? `${p.rate}: ${TI.stepLabel(p.from_kwh, p.to_kwh)}` : p.rate || 'Rate', `${p.per_kwh != null ? `${format({ amount: p.per_kwh, currency: cur }, 'price_energy')} × ${format(p.kwh, 'energy')}` : p.per_minute != null ? `${format({ amount: p.per_minute, currency: cur }, 'price_time')} × ${formatNumber(p.minutes, { maximumFractionDigits: 1 })} min` : 'one amount'} = ${formatMoney(p.cost, cur)}`]),
+      ...(bd.parts || []).map((p) => [p.rate || 'Rate', `${p.per_kwh != null ? `${format({ amount: p.per_kwh, currency: cur }, 'price_energy')} × ${format(p.kwh, 'energy')}` : p.per_minute != null ? `${format({ amount: p.per_minute, currency: cur }, 'price_time')} × ${formatNumber(p.minutes, { maximumFractionDigits: 1 })} min` : 'one amount'} = ${formatMoney(p.cost, cur)}`]),
       bd.session_fee ? ['Session fee', formatMoney(bd.session_fee, cur)] : null,
-      bd.cycle ? ['Tiered price', `${TI.splitText(TI.stepParts(bd), cur)}; the billing cycle from ${formatDate(bd.cycle.start_ms, place?.time_zone || tz, { weekday: false })} had ${format(bd.cycle.before_kwh, 'energy')} before this charge`] : null,
     ].filter(Boolean)),
     costEditor(ctx, { c, base, manual, cur }),
     h('p', { class: 'note', cover: 'web.charge-cost.not-found' }, 'A link to a charge that was rebuilt under a new number says so and points back to Charges.'));

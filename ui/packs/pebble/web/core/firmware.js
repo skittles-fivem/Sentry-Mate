@@ -14,13 +14,12 @@
 //   aroundDrives(ctx, carId, r)    the drive before and the drive after it (two reads), for betweenLine()
 //   betweenLine(ctx, carId, r, d)  "Between the drive Ocean Beach to Home (…) and the drive Home to Work (…)"
 //   namedLine(r)                   "Named from an earlier update with the same fingerprints", or null
-//   nameBox(ctx, carId, r, { onSaved })  the version name and who gave it; admins open a box with Edit to type or
-//                                  clear it (PATCH updates/{update}), Escape or Cancel closes it; others read
+//   nameBox(ctx, carId, r, { onSaved })  the version name box: admins type it (PATCH updates/{update}); others read
 //   HISTORY_ID, historyHref(carId) the "Module firmware history" section on Software (#firmware-history), linked from Car
 //
 // Styles: app.css (.fw-*).
 
-import { h, disclose } from '../shared/dom.js';
+import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { formatDateTime } from '../shared/time.js';
@@ -149,52 +148,35 @@ const NAME_WORDS = {
   no_such_update: 'This update is not here any more: the logs changed it (another field joined it). The page now shows it again.',
 };
 
-/** After a save the page is drawn again: the focus goes back to that update's Edit button once it is there. */
-function refocus(updateId, tries = 50) {
-  const b = document.querySelector(`.fw-name-edit[data-update="${CSS.escape(String(updateId))}"]`);
-  if (b && b.isConnected) { b.focus({ preventScroll: true }); return; }
-  if (tries > 0) setTimeout(() => refocus(updateId, tries - 1), 100);
-}
-
 /**
- * The version name of a fingerprint update: the name (or "Not named yet") and who gave it. Admins also get an
- * "Edit" ("Name it" while it has none) button that opens the box in place: type it, Save, Clear (null forgets
- * it), Cancel or Escape closes it again. onSaved(text) runs after the server took it (the page reads again,
+ * The version name of a fingerprint update. Admins get a box to type it, Save, and Clear (null forgets it); a
+ * watch account sees the name and who gave it. onSaved(text) runs after the server took it (the page reads again,
  * since other updates with the same fingerprints change too).
  */
 export function nameBox(ctx, carId, r, { onSaved = null } = {}) {
-  const words = r.version ? (r.named_by === 'owner' || r.version_source === 'owner' ? 'Typed by an admin.' : namedWords(r) || 'Named by its source.')
-    : ctx.admin ? 'Type the version the car shows (Controls, Software) once it is known.' : 'An admin can type the version the car shows (Controls, Software) once it is known.';
-  const shown = h('div', { class: 'fw-name-shown' },
-    h('div', { class: 'fw-name-text' },
+  if (!ctx.admin) {
+    return h('div', { class: 'fw-name is-read' },
       h('p', { class: 'fw-name-k' }, 'Version'),
       h('p', { class: ['fw-name-v', { 'is-unknown': !r.version }] }, r.version || 'Not named yet'),
-      h('p', { class: 'note' }, words)));
-  if (!ctx.admin) return h('div', { class: 'fw-name is-read' }, shown);
+      h('p', { class: 'note' }, r.version ? (r.named_by === 'owner' ? 'Typed by an admin.' : namedWords(r) || 'Named by its source.') : 'An admin can type the version the car shows (Controls, Software) once it is known.'));
+  }
   const id = `fw-name-${++seq}`;
-  const edit = btn(r.version ? 'Edit' : 'Name it', { kind: 'soft', icon: 'edit', cls: 'btn-sm fw-name-edit',
-    title: r.version ? 'Type another name for this update' : 'Type the version this update installed', attrs: { 'data-update': String(r.id) } });
-  shown.append(edit);
   const input = h('input', {
     id, class: 'input fw-input', name: 'version', value: r.version || '', placeholder: '2026.38.4', autocomplete: 'off', spellcheck: 'false', inputmode: 'decimal',
     maxlength: '20', 'aria-describedby': `${id}-hint ${id}-err`,
   });
   input.value = r.version || '';
   const err = h('p', { class: 'field-error', id: `${id}-err`, role: 'alert', hidden: true });
-  const cancel = btn('Cancel', { kind: 'soft', title: 'Close without saving (Escape)' });
   const fieldEl = h('div', { class: 'field fw-field-box' },
     h('label', { class: 'label', for: id }, 'Version name'),
     h('div', { class: 'fw-name-row' }, input,
       h('span', { class: 'fw-name-acts' },
         btn('Save', { kind: 'primary', type: 'submit', icon: 'check' }),
-        r.version ? btn('Clear', { kind: 'soft', icon: 'close', onclick: () => save(null) }) : null,
-        cancel)),
+        r.version ? btn('Clear', { kind: 'soft', icon: 'close', onclick: () => save(null) }) : null)),
     h('p', { class: 'hint', id: `${id}-hint` }, 'As the car shows it (Controls, Software), like 2026.38.4. Other updates with the same fingerprints get it too; Clear forgets it.'),
     err);
   fieldEl.control = input;
-  const form = h('form', { class: 'fw-name-form', novalidate: true }, fieldEl);
-  const dz = disclose(edit, form, { focus: input, onClose: () => { input.value = r.version || ''; setFieldError(fieldEl, null); } });
-  cancel.addEventListener('click', () => dz.close({ focus: true }));
+  const form = h('form', { class: 'fw-name', novalidate: true }, fieldEl);
   let busy = false;
   async function save(text) {
     if (busy) return;
@@ -209,9 +191,7 @@ export function nameBox(ctx, carId, r, { onSaved = null } = {}) {
       await ctx.api.patch(api.apiPath`cars/${carId}/updates/${r.id}`, { version: text || null });
       api.invalidate('');
       ctx.toast(text ? `Named ${text}.` : 'Name cleared.', { next: true });
-      dz.close({ focus: true });
       onSaved?.(text);
-      refocus(r.id);
     } catch (e) {
       if (api.isAbort(e)) return;
       if (e && e.code === 'no_such_update') { ctx.toast(NAME_WORDS.no_such_update, { kind: 'info', next: true }); onSaved?.(null); return; }
@@ -225,5 +205,5 @@ export function nameBox(ctx, carId, r, { onSaved = null } = {}) {
     }
   }
   form.addEventListener('submit', (e) => { e.preventDefault(); save(input.value.trim()); });
-  return h('div', { class: 'fw-name' }, shown, form);
+  return form;
 }

@@ -4,9 +4,8 @@
 |---|---|
 | `sync_shared.py` | Copies the shared browser modules (`ui/shared/*.js`) into every pack's `web/shared/`. |
 | `check.js` | The page checker: opens a pack's pages in Chromium on the dev API server (or a real server) and reports what is wrong. |
-| `perf/` | Delivery measurement on the real server (release build, seeded made-up cars): each pack's car, drives, drive, charges, battery, statistics, settings and settings-integrations pages, cold and warm, on an emulated phone with 4x CPU slowdown and a Fast 3G-like network (or an unthrottled desktop, `--desktop`), and in-app navigation between them (`--nav`); bytes, requests, protocol, first paint, time to usable, long tasks, duplicate API calls. `perf/README.txt` says how to seed and run; `perf/compare.js` puts runs side by side. Results: [docs/plans/performance.md](../../docs/plans/performance.md). |
-| `bundle/` | The release build's bundler: `npm ci --prefix ui/tools/bundle && node ui/tools/bundle/bundle.mjs OUT` writes each built-in pack's scripts bundled and minified (esbuild, pinned by `bundle/package-lock.json`; each page its own entry at `pages/<id>.js`, the code pages share in `core/c-<hash>.js` chunks) and its style sheets and `boot.js` minified. `crates/web/build.rs` embeds them with `SENTRY_MATE_UI_BUNDLE=OUT` and the server serves them in place of the sources' files of the same path; a pack's download and an uploaded pack laid over a built-in one keep the sources. `.github/build-binary.sh` (the Image workflow) runs it; tests, a plain `cargo build` and the dev server serve the sources as they are. |
-| `pixel.js`, `stable.js` | The in-page parts of `check.js --pixel` and `check.js --stable`. |
+| `perf/` | Delivery measurement on the real server (release build, seeded made-up cars): each pack's car, drives, charges, battery and settings pages, cold and warm, on an emulated phone with 4x CPU slowdown and a Fast 3G-like network; bytes, requests, protocol, first paint, time to usable, long tasks, duplicate API calls. `perf/README.txt` says how to seed and run; `perf/compare.js` puts runs side by side. Results: [docs/plans/performance.md](../../docs/plans/performance.md). |
+| `pixel.js`, `stable.js`, `hover.js` | The in-page parts of `check.js --pixel`, `check.js --stable` and `check.js --hover`. |
 | `map-tiles.test.js` | `node --test ui/tools/map-tiles.test.js`: in all six packs, a page loaded with tiles offline shows OpenStreetMap tiles once an admin turns them on and the person moves to a map inside the app (the page loads itself again once, for the server's new policy), the same after a switch to OpenTopoMap, and every tile request carries only the page origin as Referer; and Settings: Display and units at 360 px with a long zone name (America/Argentina/Buenos_Aires) keeps its zone button and tile terms inside the window. The tile servers are answered inside the browser; nothing leaves the machine. Skipped without Playwright. |
 | `live-rows.test.js` | `node --test ui/tools/live-rows.test.js`: Pebble's Charges page in Chromium on the dev server (`--rows-every-s 2`) loads its list again on a `rows` event and draws a charge that was not there before, without loading the page again. Skipped without Playwright. |
 | `settings-server.test.js` | `node --test ui/tools/settings-server.test.js`: Settings: Server and access of both built-in packs in Chromium at phone size on the dev server: the CAN Bridge upload address breaks only after a slash or a colon, the certificate's names start with `localhost`, and with `--own-certificate` no "Make a new certificate" is offered; and the Storage panel of all six packs at desktop size: the categories largest first with what compaction saved, "Compact now" with its progress and what it freed, a failed pass with the server's error, no panel for a watch account, and no more reads of the detail once the page is left. Skipped without Playwright. |
@@ -19,6 +18,7 @@ node ui/tools/check.js --pack instrument --pages fleet,drives --sizes 1280x800
 node ui/tools/check.js --pack instrument --allow-missing --json > report.json
 node ui/tools/check.js --pack instrument --pixel --sizes 1440x900,3840x2160,390x844@3   # pixel centred and correct?
 node ui/tools/check.js --pack instrument --stable --sizes 1440x900,390x844             # still while live updates come in?
+node ui/tools/check.js --pack instrument --hover                                       # still while the mouse moves?
 node ui/tools/check.js --self-test                             # checks the checker
 ```
 
@@ -39,13 +39,13 @@ also on Ctrl-C and on errors. It needs Node and the Playwright that is already i
 | `--pixel` | off | Also the pixel checks (below): fails a page that is not pixel centred and correct, and saves a screenshot with the problems outlined. |
 | `--stable [SECONDS]` | off (`30` when given without a number) | Also the stability checks (below): stays on each ready page that long while the dev server sends live updates, and fails a page whose layout shifts, whose blocks move, or whose elements and loading texts come and go. |
 | `--stable-fast` | off | With `--stable`: the dev server sends live values every 0.5 s and list changes every 3 s instead of every 2 s and 10 s. |
+| `--hover` | off | Also the hover checks (below): moves the mouse over a grid of points, every interactive element and every chart, focuses every element that takes focus, and fails a page where anything outside what is hovered moves or changes size by more than 0.5 px. Starts the dev server with `--freeze-clock` (unless `--stable` is given too) and the browser with its scrollbars shown. |
 | `--device-size N` | `auto` | The Interface size on this device (`80`, `90`, `100`, `110` or `125`): put in each window's storage before the page starts, as if picked in Settings: Display and units on that device ([`ui/shared/devicesize.js`](../shared/devicesize.js)). |
 | `--fixture-matrix FILE` | `docs/parity/coverage-matrix.json` | Another coverage matrix (the fixtures use `fixtures/matrix.json`). |
 | `--ready-timeout-ms N` | `20000` | How long to wait for the page to say it is ready. |
 | `--idle-timeout-ms N` | `10000` | How long to wait after that for the network to go quiet. |
 | `--jobs N` | `2` | Pages checked at the same time. |
 | `--car`, `--drive`, `--charge ID` | from the API | Open these instead. |
-| `--place ID` | none | The `places` page opens that place's editor (`/places?place=ID`) instead of the list; the list's items then count as missing (add `--allow-missing`). |
 | `--base URL` | none | Check against a running real server (`https://127.0.0.1:PORT`) instead of the dev server; see below. |
 | `--user NAME` | none | With `--base`: the account to sign in with. |
 | `--password PW`, `--password-file FILE` | `UI_CHECK_PASSWORD` | With `--base`: that account's password. |
@@ -117,6 +117,7 @@ Each page and size is checked in a fresh browser window, then gets a screenshot.
 | **small text** | Visible text is smaller than 10 CSS px: the computed font size, scaled by an SVG `viewBox` or a shrinking transform. The 5 smallest are listed with a selector. Hidden, transparent and off-page text is left out. |
 
 | **pixel** | Only with `--pixel`: a pixel check found a problem (see "Pixel checks"). |
+| **hover** | Only with `--hover`: the hovers and focuses that moved something (see "Hover checks"). |
 | **shift**, **moved**, **flicker** | Only with `--stable`: the layout shift score after ready (fails above 0.01), the blocks that moved, and the elements that came and went more than once (fails on any); see "Stability checks". |
 
 Under the table, lines explain each problem; a line shared by every size is printed once as `all sizes:`.
@@ -147,12 +148,14 @@ Status per page: **PASS**, **WARN** (passes, with missing items under `--allow-m
         shiftSources: [{ selector, times, px }], moved: [{ selector, px, times, atMs: [ms], cause, box }], movedCount,
         toggling: [{ selector, times, first, atMs: [ms], text? }], togglingCount, late: [{ selector, h, atMs, pushed }],
         events: { now, rows, ... }, eventCount, apiRequests, cost, before, after, outlined },
+      hover: null | { error } | { targets, points, charts, focused, groups, count, noise, ms, pageMs, shot,
+        findings: [{ n, kind, target, x, y, count, scrolled, scrollbar, moved: [{ selector, dx, dy, dw, dh, box }] }] },
       shot, fullShot, tiles, covered, notes: [text], ms, dropped? }] }] }
 ```
 
 `fails` names the checks that failed (`load`, `ready`, `missing`, `foreign`, `unknown`, `console`,
-`pageErrors`, `csp`, `apiFailures`, `outside`, `overflow`, `smallText`, `pixel` with `--pixel`, and `stable` with
-`--stable`). The report also has `pixel: true|false` and `stable: null | { seconds, pace, maxShift }`. `pixel` per
+`pageErrors`, `csp`, `apiFailures`, `outside`, `overflow`, `smallText`, `pixel` with `--pixel`, `stable` with
+`--stable`, and `hover` with `--hover`). The report also has `pixel: true|false`, `stable: null | { seconds, pace, maxShift }` and `hover: null | { tol, grid }`. `pixel` per
 size is `null` without `--pixel`, `stable` per size `null` without `--stable` (see "Stability checks" for its shape). `covered` is the number of distinct
 `data-cover` ids found. Lists keep 100 entries; `dropped` counts the rest.
 
@@ -257,6 +260,63 @@ What it cannot see: a flash shorter than one frame (never painted, so never seen
 a block that moves and comes back between two 250 ms samples (the layout shift entries still see it when it was in
 the window), and movement inside a box that scrolls (its scroll position is not counted).
 
+### Hover checks (`--hover`)
+
+The owner's rule: moving the mouse over a page must not move the page. Hover and focus may change only colour,
+opacity, shadow and transform, never a width, height, margin, padding, border width or font weight; a tooltip or a
+chart's crosshair label sits in an overlay (absolute or fixed, out of the flow) and never takes room; a scrollbar
+never comes or goes because of a hover (the page's scroller has `scrollbar-gutter: stable`). With `--hover` the
+checker, on each ready page (`hover.js`):
+
+1. moves the mouse outside the window and takes the box of every element in the window and half a window above
+   and below it (`getBoundingClientRect`; inside `svg`, `canvas` and a MapLibre map only their own box);
+2. moves the real mouse (Playwright) to each target: every interactive element whose middle is in the window and
+   not under something else (links, buttons, fields, `summary`, `label`, rows and header cells, anything with a
+   `title`, a `tabindex`, a role such as `button` or `tab`, or a pointer cursor; at most 4 of one kind, such as a
+   row or the cells of a column), 10 points across each chart (`svg`, `canvas`, uPlot, map) at 35 % and 70 % of
+   its height and the marks of an svg chart that react to the mouse, and a grid of 10 x 6 points over the window;
+   then focuses each target that takes focus (`focus({ focusVisible: true })`), and lets it go again;
+3. after each move compares every box with step 1 and lists the elements that moved or changed size by more than
+   0.5 CSS px, only the outermost of those that moved together;
+4. when something moved, moves the mouse away again: the page must be back as it was in step 1 (else the page
+   changed by itself, and step 1 is taken again), and the same hover must move it again. Only then it counts;
+5. scrolls down by 0.9 of a window and does it again, up to 6 windows down. The scroller is the document, or the
+   box that fills most of the window when the document does not scroll (Pebble's `.scroller`).
+
+| Not counted | Why |
+|---|---|
+| The hovered (or focused) element and what is inside it | It may change its own look; what is around it may not move. |
+| An element hidden (opacity 0 or visibility hidden) with the mouse away or on it, or out of the flow and hidden with the mouse away, with `pointer-events: none`, with `role="tooltip"` or marked `data-hover-overlay` (and what is inside it) | An overlay: it takes no room. |
+| An element under a transform that the hover changed | Transforms are allowed. |
+| An element whose text the hover changed (a readout) | Its own box follows its text; the elements around it still count, so a readout needs a box of its own size (a fixed width, or `flex: 1` with an ellipsis). |
+
+The page scrolling, or the page's scroller (or the window) changing its inner width or height, is reported too ("a
+page scrollbar came or went"). While it runs, transitions end at once (so the hover's last state is measured) and
+what only paints is left out (blur behind glass, filters, shadows, gradients: at 4K they made each mouse move wait a
+quarter of a second); both come back afterwards. Then, when something moved, a full-page screenshot with the moved
+boxes outlined and numbered (`<page>-<size>-hover.png`, in `hover.shot`).
+
+Playwright hides the scrollbars of the browser it starts; with `--hover` they are shown (15 px), as in a desktop
+browser, so a scrollbar that a hover brings in takes room as it would for a person.
+
+```text
+FAIL  drives  /cars/c1/drives
+  size      ready  ...  hover
+  1280x800  yes    ...  35
+  hover: 1. hover on main#view > section.card.bad > div.row:nth-of-type(1) > button.btn.bold:nth-of-type(1) (71, 143) moved main#view > section.card.bad > div.row:nth-of-type(1) > button.btn:nth-of-type(2) (x +1.09 px)
+  hover: 6. hover on main#view > section.card.bad > p:nth-of-type(2) > span.low (97, 576) moved body > header.frame (width -15 px), main#view (width -15 px); a page scrollbar came or went
+```
+
+`hover` in `--json`: `null` without `--hover`, `{ error }` when it could not run, else `{ targets, points, charts,
+focused, groups, count, noise, ms, pageMs, truncated?, shot, findings: [{ n, kind: element | point | chart | focus,
+target, x, y, count, scrolled, scrollbar, moved: [{ selector, dx, dy, dw, dh, box }] }] }`. `count` is every hover
+that moved something; `findings` keeps one per kind of target and what it moved (up to 100). A page stops being
+hovered after 240 s (a `note:` says so).
+
+What it cannot see: a hover that only acts after a delay longer than one frame, what is drawn inside a canvas or
+svg, an element out of the window or inside a box that scrolls it out of view, elements more than half a window
+away from the window, and a non-interactive element that changes on hover where no grid point falls.
+
 ## Fixtures and the self-test
 
 `fixtures/pack-ok`, `fixtures/pack-bad` and `fixtures/pack-pixel` are tiny packs on the dev server, with their
@@ -279,6 +339,17 @@ node ui/tools/check.js --pack ui/tools/fixtures/pack-stable --fixture-matrix ui/
   --pages fleet,drives,drive --sizes 1280x800,390x844@3 --stable 6 --stable-fast
 ```
 
+`fixtures/pack-hover` is for `--hover`: on `fleet` hover and focus change only colour, shadow, transform and
+opacity, a chart's tooltip is an overlay and its readout has a fixed width, and nothing may be reported; on `drives`
+a button turns bold, a row's padding grows, an edit icon takes room, a chart puts its tooltip in the flow, a box gets
+a scrollbar, a tooltip makes the page longer than the window (a page scrollbar) and a field's border grows on focus,
+and each must be reported.
+
+```bash
+node ui/tools/check.js --pack ui/tools/fixtures/pack-hover --fixture-matrix ui/tools/fixtures/matrix.json \
+  --pages fleet,drives --sizes 1280x800 --hover
+```
+
 `fixtures/pack-pixel` has the same small cases twice: right on `fleet`, off on purpose (mostly by 1 px) on
 `drives`; its `app.js` and `app.css` say which case breaks what. Every size in it is a whole pixel.
 
@@ -292,4 +363,5 @@ and the bad one reports every kind of failure, then that `--allow-missing` turns
 warning, then checks the pixel pack with `--pixel` at 1280x800 and at 390x844@3 and asserts that the right
 cases report nothing and each case off by 1 px is found, with how much, then checks the stable pack with `--stable 6
 --stable-fast` and asserts that live updates arrived, the still page passes, and the jumping and the flickering
-pages fail with what moved (how far, why, the late block) and what came and went (how often). It prints one line per assertion and exits `0` when all hold.
+pages fail with what moved (how far, why, the late block) and what came and went (how often), then checks the hover
+pack with `--hover` and asserts that the still page passes and each case on the moving page is found with what moved. It prints one line per assertion and exits `0` when all hold.
