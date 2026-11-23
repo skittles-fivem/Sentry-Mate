@@ -784,6 +784,13 @@ impl Db {
         self.with_car(car, |_, _, dir| segment::days::<P>(dir, stream))
     }
 
+    /// Per day of a series (its UTC start), a key of what its files are now: it changes whenever the day is written
+    /// (what was worked out from a day can be kept with it).
+    pub fn day_stamps<P: Point>(&self, car: CarId, stream: impl Into<Stream>) -> Result<Vec<(u64, u64)>> {
+        let stream = stream.into();
+        self.with_car(car, |_, _, dir| segment::day_stamps::<P>(dir, stream))
+    }
+
     /// Bytes a car's time series take on disk.
     pub fn segment_bytes(&self, car: CarId) -> Result<u64> {
         self.with_car(car, |_, _, dir| segment::bytes(dir))

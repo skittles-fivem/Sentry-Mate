@@ -17,6 +17,7 @@ pub mod awake;
 pub mod battery;
 pub mod can_import;
 pub mod charges;
+pub(crate) mod dayparts;
 pub mod decoding;
 pub mod drives;
 pub mod firmware;

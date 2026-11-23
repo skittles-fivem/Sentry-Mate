@@ -412,6 +412,22 @@ pub(crate) fn days<P: Point>(car_dir: &Path, source: Stream) -> Result<Vec<DayIn
     Ok(out)
 }
 
+/// Per day of a series (its UTC start), a key of what its files are now (each one's inode, size and change time): it
+/// changes whenever the day is written, so what was worked out from a day can be kept with it.
+pub(crate) fn day_stamps<P: Point>(car_dir: &Path, source: Stream) -> Result<Vec<(u64, u64)>> {
+    use std::hash::{Hash, Hasher};
+    let dir = series_dir::<P>(car_dir, source);
+    let mut out = Vec::new();
+    for day in list_days(&dir)? {
+        let f = day_files(&dir, day);
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        crate::plain::stamp(&f.snap)?.hash(&mut h);
+        crate::plain::stamp(&f.log)?.hash(&mut h);
+        out.push((day * DAY_MS, h.finish()));
+    }
+    Ok(out)
+}
+
 /// Bytes on disk of every series of a car.
 pub(crate) fn bytes(car_dir: &Path) -> Result<u64> {
     let mut total = 0;
