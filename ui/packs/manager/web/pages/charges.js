@@ -24,6 +24,9 @@ import { openPeriodPicker } from '../core/period.js';
 import { placePopover } from '../core/popover.js';
 import { isAdmin } from '../core/prefs.js';
 import { flash } from '../core/flash.js';
+import { setPrice } from '../shared/prices.js';
+
+const PRICE_CLS = { btn: 'btn', primary: 'btn--primary', ghost: 'btn--ghost', input: 'input', select: 'select' };
 import { rpx } from '../core/display.js';
 import { srcTitle, sourceOptions, filterWord } from '../core/source.js';
 import { soldParts, soldToggle } from '../core/carswitch.js';
@@ -726,9 +729,19 @@ export async function mount(ctx) {
     const placeCol = (cv) => ({ key: 'label', label: 'Place', cover: cv, render: (p) => h('span', { class: 'cell-text' }, placeCell(p),
       multi && p.cars?.length ? h('span', { class: 'sub' }, p.cars.map(carName).join(', ')) : null), csv: (p) => p.label });
     const sessionsCol = { key: 'sessions', label: 'Sessions', num: true, render: (p) => formatNumber(p.sessions) };
+    // an admin sets a place's price from here (the place price editor); a spot that is no saved place is saved first
+    const setPriceCol = { key: 'set_price', label: '', csv: false, render: (p) => (isAdmin() ? h('button', {
+      class: 'btn btn--sm btn--ghost set-price', type: 'button', title: p.place ? `Set the price at ${p.label}` : 'Save this spot as a place, then set its price',
+      onclick: async () => {
+        try {
+          const saved = await setPrice({ client: ctx.api, placeId: p.place, spot: p.place ? null : { name: p.label, lat: p.lat, lon: p.lon }, cls: PRICE_CLS });
+          if (saved && ctx.alive()) { flash(`Prices at ${saved.name} saved.`); paintPlaces(sp); }
+        } catch (e) { flash(`Could not set the price: ${e.message}`, { kind: 'error' }); }
+      },
+    }, icon('settings', 'ico--sm'), p.place ? 'Set price' : 'Save place and set price') : null) };
     const byEnergy = dataTable(ctx, {
       title: 'By energy', icon: 'bolt', path: 'charging-stats/places', params: { ...pp, sort: 'energy' }, limit: 10, csvName: 'charging-places-energy', cls: 'places-table', cover: 'cs.table.top_energy',
-      columns: [placeCol('cs.table.top_energy.location'), sessionsCol, { key: 'energy', label: 'Added', num: true, cover: 'cs.table.top_energy.charged', render: (p) => format(p.energy_added_kwh, 'energy') }],
+      columns: [placeCol('cs.table.top_energy.location'), sessionsCol, { key: 'energy', label: 'Added', num: true, cover: 'cs.table.top_energy.charged', render: (p) => format(p.energy_added_kwh, 'energy') }, setPriceCol],
       empty: () => emptyState({ icon: 'pin', title: 'No charging place', text: 'No charge in this period.' }),
     });
     const byCost = dataTable(ctx, {
@@ -736,7 +749,8 @@ export async function mount(ctx) {
       columns: [placeCol('cs.table.top_cost.location'), sessionsCol,
         { key: 'cost', label: 'Cost', num: true, cover: 'cs.table.top_cost.cost', title: 'The cost, then its price per kWh', render: (p) => (p.cost_by_currency?.length ? h('span', { class: 'cell-text cell-num' }, moneyStack(p.cost_by_currency),
           p.price_per_kwh != null && p.cost_by_currency.length === 1 ? h('span', { class: 'sub' }, format({ amount: p.price_per_kwh, currency: p.cost_by_currency[0].currency }, 'price_energy')) : null)
-          : h('span', { class: 'faint', title: 'No price' }, '—')) }],
+          : h('span', { class: 'faint', title: 'No price' }, '—')) },
+        setPriceCol],
       empty: () => emptyState({ icon: 'pin', title: 'No charging place', text: 'No charge in this period.' }),
     });
     const mapEl = h('div', { class: 'map places-map' });

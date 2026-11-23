@@ -29,6 +29,9 @@ import { spark, textGrid, gridAxis } from '../core/spark.js';
 import { rpx } from '../core/display.js';
 import { isAdmin } from '../core/prefs.js';
 import { toast } from '../core/toast.js';
+import { setPrice } from '../shared/prices.js';
+
+const PRICE_CLS = { dialog: 'dlg-pp', btn: 'btn', primary: 'btn--primary', ghost: '', plain: '', input: 'in', select: 'in' };
 import { placeLink } from './timeline.js';
 import { est as estTag, rowTitle, sourceWord, sourceCheck, SOURCE_KEY } from '../core/source.js';
 
@@ -465,16 +468,24 @@ export async function mount(ctx) {
     const placeCell = (p) => h('a', { class: 'lnk-plain', href: p.place ? state.buildUrl('places', { query: { place: p.place } }) : state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }), title: p.place ? `edit the place ${p.label}` : 'save this spot as a place' }, p.label);
     const placeCol = (cv) => ({ key: 'label', label: 'place', cls: 'wrap-cell', ph: 'main', cover: cv, render: placeCell });
     const sessions = { key: 'sessions', label: 'sessions', num: true, ph: 'sub', render: (p) => formatNumber(p.sessions) };
+    const setCol = { key: 'set_price', label: '', ph: 'sub', csv: false, render: (p) => (isAdmin() ? h('button', { class: 'btn set-price', type: 'button',
+      title: p.place ? `set the price at ${p.label}` : 'save this spot as a place, then set its price',
+      onclick: async () => {
+        try {
+          const saved = await setPrice({ client: ctx.api, placeId: p.place, spot: p.place ? null : { name: p.label, lat: p.lat, lon: p.lon }, cls: PRICE_CLS });
+          if (saved && ctx.alive()) { toast(`Prices at ${saved.name} saved.`); paintPlaces(sp); }
+        } catch (e) { toast(`Could not set the price: ${e.message}`, { kind: 'error' }); }
+      } }, p.place ? 'set price' : 'save place, set price') : null) };
     const byEnergy = table(ctx, {
       title: 'by energy', path: 'charging-stats/places', params: { ...pp, sort: 'energy' }, limit: 10, csvName: 'charging-places-energy', cover: 'cs.table.top_energy',
-      columns: [placeCol('cs.table.top_energy.location'), sessions, { key: 'energy', label: 'added', num: true, ph: 'num', cover: 'cs.table.top_energy.charged', render: (p) => num(p.energy_added_kwh, 'energy') }],
+      columns: [placeCol('cs.table.top_energy.location'), sessions, { key: 'energy', label: 'added', num: true, ph: 'num', cover: 'cs.table.top_energy.charged', render: (p) => num(p.energy_added_kwh, 'energy') }, setCol],
       empty: () => empty('no charge in this range'),
     });
     const byCost = table(ctx, {
       title: 'by cost', path: 'charging-stats/places', params: { ...pp, sort: 'cost' }, limit: 10, csvName: 'charging-places-cost', cover: 'cs.table.top_cost',
       columns: [placeCol('cs.table.top_cost.location'), sessions,
         { key: 'cost', label: 'cost', num: true, ph: 'num', cover: 'cs.table.top_cost.cost', render: (p) => money(p.cost_by_currency) || none('no price') },
-        { key: 'ppk', label: '/kwh', num: true, render: (p) => (p.price_per_kwh != null && p.cost_by_currency?.length === 1 ? format({ amount: p.price_per_kwh, currency: p.cost_by_currency[0].currency }, 'price_energy') : null) }],
+        { key: 'ppk', label: '/kwh', num: true, render: (p) => (p.price_per_kwh != null && p.cost_by_currency?.length === 1 ? format({ amount: p.price_per_kwh, currency: p.cost_by_currency[0].currency }, 'price_energy') : null) }, setCol],
       empty: () => empty('no charge in this range'),
     });
     const mapEl = h('div', { class: 'map map--sm', role: 'img', 'aria-label': 'Map of the charging places' });

@@ -19,6 +19,9 @@ import { createSheet, confirmSheet } from '../core/sheet.js';
 import { field, segmented } from '../core/form.js';
 import { mapTile, boundsOf, coordsText } from '../core/map.js';
 import { pills, moreButton } from '../core/bits.js';
+import { openPriceEditor, pricesOf, priceOnDay, priceLine, fromWord, dayIn } from '../shared/prices.js';
+
+const PRICE_CLS = { btn: 'btn', primary: 'btn-primary', ghost: 'btn-ghost', plain: 'btn-soft', input: 'input', select: 'input' };
 
 export const id = 'places';
 export const css = true;
@@ -124,13 +127,29 @@ export async function mount(ctx) {
   const delBtn = btn('Delete', { kind: 'danger', icon: 'trash', cover: 'web.geofences.list.delete', onclick: () => remove() });
   const backBtn = btn('Back to places', { kind: 'soft', icon: 'chevronLeft', cover: 'web.geofences.form.back', onclick: () => sheet.close() });
   const checkBtn = btn('What would change?', { kind: 'soft', icon: 'search', onclick: () => preview() });
+  // prices by date: each from its first day on, edited in the place price editor
+  const datedBox = h('div', { class: 'dated' });
+  function paintDated() {
+    const dated = pricesOf(cur);
+    const nowEntry = cur ? priceOnDay(dated, dayIn(Date.now(), cur.time_zone)) : null;
+    datedBox.replaceChildren(
+      h('span', { class: 'label' }, 'Prices by date'),
+      dated.length ? h('ul', { class: 'dated-list' }, dated.map((x) => h('li', { class: x === nowEntry ? 'is-now' : null },
+        h('b', null, fromWord(x.from)), h('span', null, priceLine(x.price)),
+        h('span', { class: 'hint' }, [x.source === 'invoice' ? 'from invoices' : null, x === nowEntry ? 'in force today' : null].filter(Boolean).join(' · '))))) : null,
+      h('p', { class: 'hint' }, cur ? 'A charge is costed at the price of its own day. The price below is the one in force today; a price you type wins over one from invoices.' : 'Save the place first; then it can have prices from a date on.'),
+      cur && admin ? btn(dated.length ? 'Add or change prices by date' : 'Add prices by date', { kind: 'soft', icon: 'calendar', onclick: async () => {
+        const saved = await openPriceEditor({ client: ctx.api, place: cur, cls: PRICE_CLS });
+        if (saved) { ctx.toast('Prices saved.'); sheet.close(); load(); }
+      } }) : null);
+  }
   const priceBox = h('div', { class: 'form price-box' }, f.unit, tiersBox, f.fee, f.currency, h('p', { class: 'hint', cover: 'web.geofences.form.auto-cost' }, 'Charges that start here from now on get this price by themselves. Past charges keep theirs until you apply the price to them.'), ratesBox);
   const formEl = h('div', { class: 'form', cover: ['web.geofences.form.entry-from-dashboards', 'web.geofences.form.defaults'] },
     f.crumb, missing, f.name, f.kind,
     h('div', { class: 'field', cover: 'web.geofences.form.position-map' }, h('span', { class: 'label' }, 'Where'), mapEl, h('p', { class: 'hint' }, 'Tap the map to move the centre.')),
     h('div', { class: 'two' }, f.lat, f.lon), f.radius,
     h('p', { class: 'hint', cover: 'web.geofences.form.match-rule' }, 'A drive or charge belongs to this place when it starts or ends inside the circle. Where circles overlap, the nearest centre wins.'),
-    f.billing, priceBox, err,
+    datedBox, f.billing, priceBox, err,
     h('div', { class: 'sheet-actions' }, backBtn, checkBtn, admin ? delBtn : null, admin ? saveBtn : null),
     effect, reprice);
   sheet.body.append(formEl);
@@ -231,7 +250,7 @@ export async function mount(ctx) {
     f.fee.control.value = pr?.session_fee != null ? String(pr.session_fee) : '';
     f.currency.control.value = pr?.currency || 'USD';
     rates = (pr?.rates || []).map((r) => ({ ...r }));
-    drawRates(); showPrice();
+    drawRates(); showPrice(); paintDated();
     delBtn.hidden = !p;
     for (const x of [f.name, f.kind, f.lat, f.lon, f.radius, f.unit, f.fee, f.currency]) x.control.disabled = !admin;
     sheet.open(opener);

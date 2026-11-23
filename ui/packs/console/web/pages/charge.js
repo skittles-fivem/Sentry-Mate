@@ -21,6 +21,9 @@ import { field, form } from '../core/form.js';
 import { empty } from '../core/states.js';
 import { rpx } from '../core/display.js';
 import { toast } from '../core/toast.js';
+import { setPrice } from '../shared/prices.js';
+
+const PRICE_CLS = { dialog: 'dlg-pp', btn: 'btn', primary: 'btn--primary', ghost: '', plain: '', input: 'in', select: 'in' };
 import { placeLink } from './timeline.js';
 import { KIND, KIND_TONE } from './charges.js';
 import { src, est as estTag, kindsOf, apiOnly, isEstimated, EST_WHY } from '../core/source.js';
@@ -95,7 +98,15 @@ export async function mount(ctx) {
   const figures = kv([
     ['when', h('span', { cover: 'web.charge-cost.dates' }, `${formatTime(t0, tz)} - ${live ? 'now' : formatTime(t1, tz)} ${zone}`)],
     ['charging', h('span', { cover: 'web.charge-cost.duration' }, formatDuration(c.charging_ms), c.plugged_ms != null ? none(` plugged ${formatDuration(c.plugged_ms)}`) : null), { cover: 'cd.stat.duration' }],
-    ['place', h('span', { cover: 'web.charge-cost.location' }, placeLink(c) || '—', c.place && c.address?.short ? none(` ${c.address.short}`) : null), { cover: 'cd.stat.location' }],
+    ['place', h('span', { cover: 'web.charge-cost.location' }, placeLink(c) || '—', c.place && c.address?.short ? none(` ${c.address.short}`) : null,
+      ctx.admin && (c.place?.id || c.position?.lat != null) ? [' ', h('button', { class: 'btn set-price', type: 'button',
+        title: c.place?.id ? 'set the price of this place' : 'save this spot as a place, then set its price',
+        onclick: async () => {
+          try {
+            const saved = await setPrice({ client: ctx.api, placeId: c.place?.id || null, spot: c.place?.id ? null : { name: c.address?.short || 'Charging place', lat: c.position.lat, lon: c.position.lon }, cls: PRICE_CLS });
+            if (saved) { toast(`Prices at ${saved.name} saved.`, { next: true }); ctx.reload(); }
+          } catch (e) { toast(`Could not set the price: ${e.message}`, { kind: 'error' }); }
+        } }, c.place?.id ? 'set price' : 'save place, set price')] : null), { cover: 'cd.stat.location' }],
     ['added', h('span', { cover: 'web.charge-cost.energy' }, m(c.energy_added_kwh, 'energy'), estTag(c), none(' into the pack')), { cover: 'cd.stat.energy_added' }],
     [ac ? 'drawn' : dc ? 'delivered' : 'drawn', ac ? [m(gridKwh, 'energy'), gridKwh != null ? none(` from the line${c.losses_kwh != null ? `, ${format(c.losses_kwh, 'energy')} lost` : ''}`) : null]
       : dc ? [m(c.dc_inlet_kwh, 'energy'), none(c.fast_charger?.billed_kwh != null ? ` at the inlet; billed ${format(c.fast_charger.billed_kwh, 'energy')}` : ' at the inlet; the grid side is not sent')] : none('unknown whether ac or dc'), { cover: 'cd.stat.energy_used' }],
