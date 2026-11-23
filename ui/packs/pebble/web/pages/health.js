@@ -2,7 +2,7 @@
 // - /cars/{car}/health: is this car's data arriving and trusted (one check per row with a status word and its
 //   dot, the fix for each problem, the bridge keys, Rebuild all data for admins with its progress), the gaps
 //   and unknown time of the period as a log, what is recorded (totals and rows kept), what its data takes on
-//   disk, and every signal of its newest log in a list that sorts and scrolls on its own.
+//   disk, and every signal of its newest log in a box five rows high that sorts and scrolls on its own.
 // - /system: the server's storage (total, free, growth, full in, by kind), the server's own checks (uptime,
 //   versions, memory, timings), the clock, the /health address for container checks, the one error shape of the
 //   API with a live try, and every car's data status.
@@ -16,13 +16,14 @@
 // gaps and totals again, in place, once a burst has passed. Reload reads the whole page again.
 
 import { h } from '../shared/dom.js';
+import { windowList } from '../shared/vlist.js';
 import { format, convert } from '../shared/units.js';
 import { formatDateTime, formatDuration, formatDayKey } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tile, btn, linkBtn, icon, note, stateTag, ago } from '../core/ui.js';
-import { emptyTile, errorWords, ghostTile, plotGhost } from '../core/states.js';
+import { emptyTile, errorWords, ghostTile } from '../core/states.js';
 import { bars } from '../core/chart.js';
 import { filterBar, statTile, checkRow, sectionHead, pills, moreButton, listBox, nums, facts } from '../core/bits.js';
 import { srcShort, srcPill } from '../core/source.js';
@@ -304,28 +305,47 @@ async function mountCar(ctx) {
   let sort = 'name', sig = [];
   const search = h('input', { type: 'search', placeholder: 'Find a signal or value', 'aria-label': 'Find a signal', autocomplete: 'off' });
   const count = h('span', { class: 'filter-note' });
-  const listEl = h('div', { class: 'sig-list', role: 'table', 'aria-label': 'Signals', tabindex: '0', cover: ['nr.dash.state-table', 'nr.dash.state-table.sort-scroll'] });
+  // The signals: a box five rows high that scrolls inside itself under a head that stays (a long list need not take a
+  // big part of the page), the search and the sort above it. Only the rows in view are drawn (shared/vlist.js), from
+  // the list the page holds; every row is one height (each line cut short, its whole text in its title).
+  let shown = [];
+  const busWord = (s) => (s.bus === 'chassis' ? 'chassis' : s.bus === 'vehicle' ? 'vehicle' : s.bus);
+  const sigRow = (s, i) => h('div', { class: 'sig-row', role: 'row', dataset: { vlRow: String(i) } },
+    h('span', { role: 'cell', class: 'sig-name', title: s.comment && s.comment !== s.series ? `${s.comment} (${s.series})` : s.series },
+      h('b', null, s.comment || s.series), h('span', { class: 'sig-id' }, s.series)),
+    h('span', { role: 'cell', class: 'sig-msg' }, `${s.message_id} · ${busWord(s)}`),
+    h('span', { role: 'cell', class: 'sig-val', title: text(s) }, text(s)));
+  const sigSkel = (i) => h('div', { class: 'sig-row is-skel', role: 'row', 'aria-hidden': 'true', dataset: { vlSkel: String(i) } },
+    h('span', { class: 'sig-name' }, h('b', null, '…')));
+  const sigHeadRow = h('div', { class: 'sig-row sig-head', role: 'row' }, h('span', { role: 'columnheader', cover: 'nr.dash.state-table.parameter' }, 'Signal'), h('span', { role: 'columnheader', class: 'sig-mh' }, 'Message'), h('span', { role: 'columnheader', cover: 'nr.dash.state-table.value' }, 'Value'));
+  const sigBody = h('div', { class: 'sig-body', role: 'rowgroup' });
+  const sigNone = h('p', { class: 'lede sig-none', hidden: true });
+  // (is-loading: the box is its full five rows high until the signals are in)
+  const listEl = h('div', { class: 'sig-list is-loading', role: 'table', 'aria-label': 'Signals (scrolls)', tabindex: '0', cover: ['nr.dash.state-table', 'nr.dash.state-table.sort-scroll'] }, sigHeadRow, sigBody, sigNone);
+  const sigList = windowList({
+    box: listEl, body: sigBody, head: sigHeadRow, limit: 100, overscan: 6, rowHeight: 56,
+    row: sigRow, placeholder: sigSkel, spacer: () => h('div', { class: 'vl-gap' }),
+    load: ({ offset = 0, limit = 100 }) => Promise.resolve({ items: shown.slice(offset, offset + limit), offset, total: shown.length, next: null }),
+  });
+  ctx.onCleanup(() => sigList.destroy());
   const sortPills = pills({ label: 'Sort by', value: sort, options: [['name', 'Name'], ['value', 'Value'], ['message', 'Message'], ['at', 'Newest']], onchange: (v) => { sort = v; paint(); } });
   function paint() {
     const words = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
     let rows = sig.filter((s) => !words.length || words.every((w) => [s.series, s.comment, s.message_id, s.bus, s.unit, s.value_name, text(s)].filter(Boolean).join(' ').toLowerCase().includes(w)));
     const val = (s) => (s.value_name ? null : s.value == null ? null : kindOf(s) ? convert(s.value, kindOf(s)) : s.value);
     const cmp = { name: (a, b) => (a.comment || a.series).localeCompare(b.comment || b.series), value: (a, b) => (val(b) ?? -Infinity) - (val(a) ?? -Infinity), message: (a, b) => `${a.bus}${a.message_id}`.localeCompare(`${b.bus}${b.message_id}`), at: (a, b) => (b.at_ms || 0) - (a.at_ms || 0) }[sort];
-    rows = rows.slice().sort(cmp);
-    count.textContent = words.length ? `${n0(rows.length)} of ${n0(sig.length)}` : `${n0(sig.length)} signals`;
-    listEl.replaceChildren(
-      h('div', { class: 'sig-row sig-head', role: 'row' }, h('span', { role: 'columnheader', cover: 'nr.dash.state-table.parameter' }, 'Signal'), h('span', { role: 'columnheader' }, 'Message'), h('span', { role: 'columnheader', cover: 'nr.dash.state-table.value' }, 'Value')),
-      ...(rows.length ? rows.slice(0, 400).map((s) => h('div', { class: 'sig-row', role: 'row' },
-        h('span', { role: 'cell', class: 'sig-name' }, h('b', null, s.comment || s.series), h('span', { class: 'sig-id' }, s.series)),
-        h('span', { role: 'cell', class: 'sig-msg' }, `${s.message_id} · ${s.bus === 'chassis' ? 'chassis' : s.bus === 'vehicle' ? 'vehicle' : s.bus}`),
-        h('span', { role: 'cell', class: 'sig-val' }, text(s)))) : [h('p', { class: 'lede sig-none' }, sig.length ? 'No signal matches.' : 'Signals show once the first log is decoded.')]));
+    shown = rows.slice().sort(cmp);
+    count.textContent = words.length ? `${n0(shown.length)} of ${n0(sig.length)}` : `${n0(sig.length)} signals`;
+    sigNone.hidden = !!shown.length;
+    sigNone.textContent = shown.length ? '' : sig.length ? 'No signal matches.' : 'Signals show once the first log is decoded.';
+    // (the box keeps its full height until its rows are in: the window of rows is worked out from that height)
+    return sigList.start().finally(() => listEl.classList.remove('is-loading'));
   }
   let timer = 0;
   ctx.on(search, 'input', () => { clearTimeout(timer); timer = setTimeout(() => ctx.alive() && paint(), 150); });
   ctx.onCleanup(() => clearTimeout(timer));
   const sigT = tile({ w: 'full', title: 'Signals', icon: 'pulse', cls: 'sig-tile' },
     h('div', { class: 'page-bar' }, h('label', { class: 'search-pill' }, icon('search'), search), sortPills, count), listEl);
-  listEl.append(plotGhost());
 
   let status = statusOf(), keysT = keysOf(), missT = missOf(), rowsT = rowsOf(), tots = totsOf();
   let logSig = JSON.stringify(logLines());
@@ -405,7 +425,8 @@ async function mountCar(ctx) {
   });
   [sig] = await Promise.all([sigP, full?.ready]);
   if (!ctx.alive()) return {};
-  paint();
+  await paint();
+  if (!ctx.alive()) return {};
   ctx.ready();
   return {};
 }
