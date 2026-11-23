@@ -34,7 +34,7 @@ import { VERSION_SOURCE } from '../core/firmware.js';
 import { STATUS, STATUS_ORDER } from './connections.js';
 import { deviceText, keyRows } from './device-name.js';
 import { fullRebuildTile } from '../core/fullrebuild.js';
-import { gpsFitBlock } from '../shared/gpsfit.js';
+import { gpsLayoutSection, hasCanData } from '../shared/gpsfit.js';
 import { confirmSheet } from '../core/sheet.js';
 import { toast } from '../core/toast.js';
 import * as fr from '../shared/fullrebuild.js';
@@ -127,6 +127,17 @@ async function mountCar(ctx) {
 
   // The signals of the newest log are decoded from the stored logs (the slowest answer by far): they load beside
   // the rest and fill their own tile when they are in. The other tiles wait in grey tiles of their size meanwhile.
+  // GPS layout: the layout this car's Screenmate GPS frames are read with, always shown for a car with SMO data (in
+  // the keys tile), with Find GPS layout and Reset to standard for admins (read-only for others); built once and
+  // kept in place (the fit opens under its line once used). Its first reads go with the page's.
+  const gpsLayout = gpsLayoutSection({
+    api: ctx.api, car: car.id, admin: !!ctx.admin, alive: () => ctx.alive(), when,
+    flash: (t, o) => toast(t, { kind: o?.kind === 'error' ? 'error' : 'ok' }),
+    confirm: (text, o) => confirmSheet({ title: o.title, text, yes: o.ok }),
+    errorText: (e) => errorWords(e).text, onApplied: () => ctx.alive() && ctx.reload(),
+    btnClass: 'btn btn-soft btn-sm', applyClass: 'btn btn-primary btn-sm', resetClass: 'btn btn-soft btn-sm', icon: (n) => icon(n),
+  });
+  ctx.onCleanup(() => gpsLayout.stop());
   const sigP = ctx.api.list(`${base}/signals/latest`, {}, { limit: 500 }).all({ max: 5000 }).catch(() => []);
   ctx.view.replaceChildren(bar, ghostTile(2, 'h3'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile('full', 'h3'));
   const [hl0, gaps0, all0, can0, tm0, upd0, st, tapi0, tst, tfi0, tfst, tmst, ov] = await Promise.all([
@@ -143,6 +154,7 @@ async function mountCar(ctx) {
     ctx.admin ? ctx.api.list('integrations/teslafi/status').all().catch(() => null) : Promise.resolve(null),
     ctx.admin ? ctx.api.get(TM_BASE).catch(() => null) : Promise.resolve(null),
     ctx.admin ? ctx.api.get('integrations/overview').catch(() => null) : Promise.resolve(null),
+    gpsLayout.ready,
   ]);
   if (!ctx.alive()) return {};
   // what the live parts are painted from: the health (its events), the gaps and the totals (read again on `rows`)
@@ -163,14 +175,6 @@ async function mountCar(ctx) {
   paintRebuild(null);
   // Rebuild all data (admins): everything worked out made again from the stored data, in the keys tile
   const full = ctx.admin ? fullRebuildTile(ctx, { car, label: 'Rebuild all data', bare: true, onStatus: paintRebuild }) : null;
-  // Find GPS layout (admins): in the notice that one input's positions are out of step; built once and kept in place
-  const gpsFit = ctx.admin ? gpsFitBlock({
-    api: ctx.api, car: car.id, alive: () => ctx.alive(), flash: (t, o) => toast(t, { kind: o?.kind === 'error' ? 'error' : 'ok' }),
-    confirm: (text, o) => confirmSheet({ title: o.title, text, yes: o.ok }),
-    errorText: (e) => errorWords(e).text, onApplied: () => ctx.alive() && ctx.reload(),
-    btnClass: 'btn btn-soft btn-sm', applyClass: 'btn btn-primary btn-sm', icon: (n) => icon(n),
-  }) : null;
-  if (gpsFit) ctx.onCleanup(() => gpsFit.stop());
 
   // each live tile is built by a function of its data: the first time it goes on the page, later ones are made
   // like it in place (core/morph.js: only the texts that changed are written)
@@ -199,7 +203,7 @@ async function mountCar(ctx) {
         const r = REASONS[code] || [code, '', null];
         return h('li', { class: 'fix' }, h('b', null, r[0]), h('span', null, r[1]),
           r[2] ? linkBtn(r[2], state.buildUrl('settings-cars', { car: car.id }), { icon: 'key', cls: 'fix-btn' }) : null,
-          code === 'gps_inputs_disagree' && gpsFit ? keepEl(gpsFit.el, 'gps-fit') : null);
+          code === 'gps_inputs_disagree' ? h('span', { class: 'fix-more' }, 'See GPS layout under CAN Bridge keys: Find GPS layout works out how this car’s Screenmate GPS frames should be read.') : null);
       })) : null);
   };
 
@@ -212,6 +216,7 @@ async function mountCar(ctx) {
         level: k.logs_waiting ? 'warn' : k.last_upload_ms != null ? 'ok' : 'off',
         side: h('span', { class: 'hl-key-side' }, h('span', { class: 'check-word' }, k.preferred ? 'Preferred · ' : '', k.last_upload_ms != null ? ago(k.last_upload_ms) : 'never'), rename) })))
         : note('No key is tied to this car yet. Pair a CAN Bridge in car settings.'),
+      hasCanData(car, hl) ? keepEl(gpsLayout.el, 'gps-layout') : null,
       keepEl(fullEl, 'full-rebuild'));
   };
 
@@ -381,6 +386,7 @@ async function mountCar(ctx) {
     type: 'health', match: carOf(car.id), pick: (d) => d.health,
     load: () => {
       if (firstHealth) { firstHealth = false; return Promise.resolve(hl0); }
+      gpsLayout.load().catch(() => {});
       return ctx.api.get(`${base}/health`, fullPeriod(ctx.params));
     },
     pollMs: (v) => (v?.rebuild_pending ? 3000 : FALLBACK_POLL_MS),

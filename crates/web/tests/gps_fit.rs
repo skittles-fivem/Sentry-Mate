@@ -199,11 +199,19 @@ async fn an_admin_finds_the_layout_in_the_background_and_applies_it() {
 
     // Apply: the existing PUT, which rebuilds the car; the fit then says it is the layout in use
     let layout = format!("/api/v1/cars/c{}/gps-layout", k.car);
+    let before = admin.get(&layout).await.json();
+    assert_eq!((&before["layout"], &before["set_ms"]), (&Value::Null, &Value::Null), "{before}");
+    let t0 = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
     let r = admin.put(&layout, json!({ "layout": res["layout"] })).await;
     assert_eq!(r.status, 200, "{}", r.text());
     let applied = r.json();
     assert_eq!(applied["layout"], json!(FOUND));
     assert!(applied["job"].is_string(), "{applied}");
+    let set = applied["set_ms"].as_u64().expect("set_ms");
+    assert!(set >= t0, "{applied}");
+    // the GET says the same, watch-only accounts too
+    let now = admin.get(&layout).await.json();
+    assert_eq!((now["layout"].as_str(), now["set_ms"].as_u64()), (Some(FOUND), Some(set)), "{now}");
     let after = admin.get(&fit).await.json();
     assert_eq!((after["applied"].as_bool(), after["current"].as_str()), (Some(true), Some(FOUND)), "{after}");
     // applied again: nothing to do
@@ -212,6 +220,9 @@ async fn an_admin_finds_the_layout_in_the_background_and_applies_it() {
     // admins only; an unknown car is one
     let mut watch = k.s.watch(&mut admin, &[k.car]).await;
     assert_eq!(watch.get(&fit).await.status, 403);
+    let seen = watch.get(&layout).await;
+    assert_eq!((seen.status, seen.json()["set_ms"].as_u64()), (200, Some(set)), "{}", seen.text());
+    assert_eq!(watch.put(&layout, json!({ "layout": null })).await.status, 403);
     assert_eq!(watch.post(&fit, json!({})).await.status, 403);
     let other = format!("/api/v1/cars/c{}/gps-layout/fit", k.car + 9);
     assert_eq!(admin.post(&other, json!({})).await.status, 404);

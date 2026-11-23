@@ -67,7 +67,15 @@ html[data-form="phone"] .sig-msg { display: none; }
 
 /* Find GPS layout (shared/gpsfit.js), in the notice that one input's positions are out of step (admins): every
    row keeps its height in every state; long text ends in an ellipsis */
-.fix .gf { display: flex; flex-direction: column; gap: var(--s2); align-self: stretch; min-width: 0; padding-top: var(--s3); border-top: 1px solid var(--line); }
+/* GPS layout: one line (the layout in use, Find GPS layout, Reset to standard); the fit opens under it once used */
+.gl { min-width: 0; margin-top: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--card-alt); }
+.gl-line { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s3); min-height: var(--l14); font-size: var(--f14); line-height: var(--l14); }
+.gl-label { flex: none; font-weight: 800; }
+.gl-text { flex: 1 1 8rem; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-variant-numeric: tabular-nums; }
+.gl-val { color: var(--text); }
+.gl-acts { display: flex; flex: none; flex-wrap: wrap; gap: var(--s2); }
+.gl [hidden] { display: none !important; }
+.gl-fit .gf { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; margin-top: var(--s3); }
 .gf-explain { margin: 0; color: var(--muted); font-size: var(--f13); line-height: var(--l13); }
 .gf-acts { display: flex; flex-wrap: wrap; gap: var(--s2); }
 .gf-bar-row { display: flex; align-items: center; gap: var(--s3); height: var(--l14); }
