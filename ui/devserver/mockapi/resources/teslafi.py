@@ -24,11 +24,11 @@ HOST = "www.teslafi.com"
 MAX_LABEL = 64
 # how often TeslaFi is read, by pace (crates/teslafi Pace): `often` as often as TeslaFi itself refreshes its data
 PACES = {
-    "often": {"driving_s": 15, "charging_s": 15, "parked_s": 60, "asleep_s": 180, "other_live_s": 600,
+    "often": {"driving_s": 15, "charging_s": 15, "parked_s": 60, "asleep_s": 180,
               "daily_cap": 6000},
-    "normal": {"driving_s": 60, "charging_s": 60, "parked_s": 180, "asleep_s": 600, "other_live_s": 600,
+    "normal": {"driving_s": 60, "charging_s": 60, "parked_s": 180, "asleep_s": 600,
                "daily_cap": 1500},
-    "gentle": {"driving_s": 120, "charging_s": 120, "parked_s": 300, "asleep_s": 1200, "other_live_s": 1200,
+    "gentle": {"driving_s": 120, "charging_s": 120, "parked_s": 300, "asleep_s": 1200,
                "daily_cap": 1500},
 }
 POLLS = PACES["normal"]

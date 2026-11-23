@@ -396,7 +396,6 @@ async fn overview(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Jso
                 "charging_s": c.charging_ms / 1000,
                 "parked_s": c.idle_ms / 1000,
                 "asleep_s": c.asleep_ms / 1000,
-                "other_live_s": c.other_live_ms / 1000,
                 "daily_cap": c.daily_cap,
             },
             "polls_today": status.iter().map(|s| s.polls_today).sum::<u64>(),

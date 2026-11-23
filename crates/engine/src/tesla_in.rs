@@ -33,7 +33,7 @@ use timeline::{ApiSpan, ApiState};
 /// API samples this close are one stretch the car was seen awake in (ms): polled every minute while parked.
 const SEEN_JOIN_MS: u64 = 150_000;
 
-/// SMO's newest log came this recently: SMO is live for the car, the API is polled less (ms).
+/// SMO's newest log came this recently: SMO is live for the car (ms).
 pub const SMO_LIVE_MS: u64 = 5 * 60_000;
 
 /// What the poller saw of the car's state, as the timeline takes it.
@@ -129,10 +129,6 @@ impl tesla::Sink for TeslaSink {
         Ok(())
     }
 
-    fn smo_live(&self, car: CarId) -> bool {
-        self.engine.smo_live(car)
-    }
-
     fn account_changed(&self, account: &tesla::Account) {
         if let Some(h) = &self.on_account {
             h(account);
@@ -175,10 +171,6 @@ impl teslafi::Sink for TeslafiSink {
     fn off_can(&self, car: CarId, at_ms: u64, values: &model::OffCan) -> std::result::Result<(), tesla::SinkError> {
         self.engine.off_can(Input::TeslafiApi, car, at_ms, values.clone());
         Ok(())
-    }
-
-    fn other_live(&self, car: CarId) -> bool {
-        self.engine.smo_live(car) || self.engine.tesla_api_live(car)
     }
 
     fn account_changed(&self, account: &teslafi::Account) {

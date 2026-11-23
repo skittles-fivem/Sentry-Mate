@@ -295,10 +295,10 @@ async fn charging_every_30_seconds_and_less_when_smo_is_live() {
     // Charging: the position is asked for.
     assert!(r.tesla.calls("data").is_empty());
     let n = all.len();
-    *r.sink.smo_live.lock().unwrap() = true;
+    // SMO live or not, the charging pace stays (no input waits on another)
     r.run(40 * MIN).await;
     let later = r.tesla.calls("data+location").len() - n;
-    assert!((5..=7).contains(&later), "{later} looks in 30 min with SMO live");
+    assert!((70..=90).contains(&later), "{later} looks in 40 min, every 30 s");
     let pts = r.sink.points.lock().unwrap();
     assert!(pts.iter().any(|(_, s, _)| s.first().is_some_and(|s| s.charge_power_kw == Some(11.0))));
 }

@@ -171,7 +171,6 @@ export function teslafiPart(ctx) {
     });
     const paceRows = [
       ['Driving', p.driving_s], ['Charging', p.charging_s], ['Parked and awake', p.parked_s], ['Asleep', p.asleep_s],
-      ['While SMO or the Tesla API is live', p.other_live_s],
     ];
     const err = over.last_error;
     return h('div', { class: 'tesla-over' },

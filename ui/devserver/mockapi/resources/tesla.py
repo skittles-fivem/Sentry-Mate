@@ -233,7 +233,7 @@ def overview(req):
     poll = t["settings"]["poll"]
     return {
         "enabled": bool(t["accounts"]), "accounts": len(t["accounts"]), "cars": _matched(t), "hosts": _hosts(t),
-        "poll": poll, "polls": dict(PACES[poll], smo_live_s=300, daily_cap=3000),
+        "poll": poll, "polls": dict(PACES[poll], daily_cap=3000),
         "polls_today": sum(_polls_today(req, a) for a in t["accounts"].values()), "last_error": _last_error(t),
         "clients_built": t["clients_built"], "version": t["settings"]["version"],
     }

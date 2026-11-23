@@ -207,7 +207,6 @@ export function teslaSection(ctx, { cars = [] } = {}) {
         ['driving', `every ${secs(p.driving_s)}`],
         ['driving, streamed', [`every ${secs(p.driving_streaming_s)}`, h('span', { class: 'muted' }, ' with Tesla\'s live stream')]],
         ['car list', [`every ${secs(p.list_s)}`, h('span', { class: 'muted' }, ' all an asleep car gets')]],
-        ['SMO is live', [`every ${secs(p.smo_live_s)}`, h('span', { class: 'muted' }, ' any car while its SMO sends')]],
       ]),
       note('In every pace an asleep car is never woken (only the list of cars is read), and an awake car with nothing going on is left alone so it can fall asleep. At most one request a second goes to Tesla per account.'));
   }

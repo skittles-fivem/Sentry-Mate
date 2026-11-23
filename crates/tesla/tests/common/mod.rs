@@ -352,7 +352,6 @@ pub struct MemSink {
     pub points: Mutex<Vec<Points>>,
     pub metas: Mutex<Vec<(u32, tesla::ApiMeta)>>,
     pub new_cars: Mutex<Vec<tesla::NewCar>>,
-    pub smo_live: Mutex<bool>,
     pub changed: Mutex<Vec<tesla::AccountState>>,
 }
 
@@ -369,9 +368,6 @@ impl tesla::Sink for MemSink {
     fn meta(&self, car: u32, meta: &tesla::ApiMeta) -> Result<(), tesla::SinkError> {
         self.metas.lock().unwrap().push((car, meta.clone()));
         Ok(())
-    }
-    fn smo_live(&self, _car: u32) -> bool {
-        *self.smo_live.lock().unwrap()
     }
     fn account_changed(&self, account: &tesla::Account) {
         self.changed.lock().unwrap().push(account.state);
