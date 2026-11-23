@@ -135,7 +135,7 @@ export const frag = (...children) => append(globalThis.document.createDocumentFr
 // lay a page out in the middle of a swap (the old children out, the new ones not in yet) and scroll the window up to
 // fit that shorter page, throwing the reader towards the top. So the first swap of a part on the page in a task notes,
 // for each box that scrolls (the window, and any element marked data-scroll-box: a pack whose page scrolls inside a
-// fixed box), where it is scrolled and the block in the middle of what it shows; at the end of the task (a microtask,
+// fixed box), where it is scrolled and the first block of the page from the top of what it shows; at the end of the task (a microtask,
 // before anything is painted) the box is scrolled by as much as that block moved, or back where it was when the block
 // itself was drawn again. A part built off the page (not connected, or in an [inert] staging box) costs nothing.
 let held = null;
@@ -144,10 +144,14 @@ function anchorIn(doc, b) {
   const win = b === doc.scrollingElement;
   const view = doc.defaultView;
   const r = win ? { left: 0, top: 0, width: view.innerWidth, height: view.innerHeight } : b.getBoundingClientRect();
-  let a = doc.elementFromPoint?.(r.left + r.width / 2, r.top + r.height / 2) || null;
-  // a block of the page, not a bar fixed over it
-  for (let x = a; x && x !== b && x !== doc.body; x = x.parentElement) if (FIXED.has(view.getComputedStyle(x).position)) { a = null; break; }
-  return a && b.contains(a) && a !== b ? a : null;
+  // the first block of the page from the top of what the box shows, as browsers anchor: what is above it changing
+  // moves nothing on screen (the points step down past a bar fixed over the top)
+  for (const f of [0.1, 0.2, 0.35, 0.5]) {
+    let a = doc.elementFromPoint?.(r.left + r.width / 2, r.top + r.height * f) || null;
+    for (let x = a; x && x !== b && x !== doc.body; x = x.parentElement) if (FIXED.has(view.getComputedStyle(x).position)) { a = null; break; }
+    if (a && b.contains(a) && a !== b) return a;
+  }
+  return null;
 }
 /** Keep what is on screen in place across the swaps of el's children in this task (see above). */
 export function holdScroll(el) {
