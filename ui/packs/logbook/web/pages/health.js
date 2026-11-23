@@ -398,7 +398,7 @@ async function mountCar(ctx) {
 
     const figs = figures([
       figure('Last upload', hl.last_upload_ms != null ? ago(hl.last_upload_ms, { stale: now - hl.last_upload_ms > HOUR }) : q(null, 'count', { why: 'nothing yet' }),
-        hl.last_upload_ms != null ? `${when(hl.last_upload_ms, tz)}. ${now - hl.last_upload_ms > HOUR ? (reasons.includes('upload_silence') ? 'Over an hour ago: see the fix above.' : 'Over an hour ago, but the car is asleep: nothing to fix.') : 'Logs arrive as the car sends them.'}` : 'No log has arrived. Pair a CAN Bridge on Settings: Cars.'),
+        hl.last_upload_ms != null ? `${when(hl.last_upload_ms, tz)}: the CAN Bridge's last contact.${hl.newest_log_ms != null ? ` Newest log arrived ${when(hl.newest_log_ms, tz)}.` : ''} ${now - hl.last_upload_ms > HOUR ? (reasons.includes('upload_silence') ? 'Over an hour ago: see the fix above.' : 'Over an hour ago, but the car is asleep: nothing to fix.') : 'Logs arrive as the car sends them.'}` : 'No log has arrived. Pair a CAN Bridge on Settings: Cars.'),
       figure('Last log check', tw ? h('span', { class: `hl-${tw[1]}` }, tw[0]) : q(null, 'count', { why: 'none checked yet' }),
         [tw ? [tw[2], trust.reason ? ` Why: ${TRUST_REASONS[trust.reason] || trust.reason}.` : '', trust.log_start_ms != null ? ` The log from ${when(trust.log_start_ms, tz)}.` : ''].join('') : 'A log is checked as soon as it arrives.', logChecksText(hl.log_checks, formatNumber)].filter(Boolean).join(' ')),
       figure('Logs waiting', q(hl.logs_waiting ?? 0, 'count'), hl.logs_waiting ? 'Arrived, not read yet: their key is not trusted.' : 'Every log that arrived has been read.'),

@@ -186,7 +186,7 @@ async function mountCar(ctx) {
         h('div', null, h('p', { class: 'hl-verdict-t' }, hl.healthy ? 'All good' : `${reasons.length === 1 ? 'One thing needs' : `${reasons.length} things need`} a look`),
           h('p', { class: 'tile-line' }, 'The same test sets “healthy” in MQTT.'))),
       h('ul', { class: 'checks' },
-        checkRow({ name: 'Last log arrived', sub: hl.last_upload_ms != null ? when(hl.last_upload_ms) : 'Pair a CAN Bridge in car settings.', word: hl.last_upload_ms != null ? ago(hl.last_upload_ms) : 'Never', level: reasons.includes('upload_silence') ? 'bad' : hl.last_upload_ms != null ? 'ok' : 'off' }),
+        checkRow({ name: 'Last upload', sub: hl.last_upload_ms != null ? `${when(hl.last_upload_ms)}, the CAN Bridge’s last contact${hl.newest_log_ms != null ? `; newest log arrived ${when(hl.newest_log_ms)}` : ''}` : 'Pair a CAN Bridge in car settings.', word: hl.last_upload_ms != null ? ago(hl.last_upload_ms) : 'Never', level: reasons.includes('upload_silence') ? 'bad' : hl.last_upload_ms != null ? 'ok' : 'off' }),
         checkRow({ name: 'Last log check', sub: trust.reason ? `Reason: ${trust.reason.replace(/_/g, ' ')}` : trust.log_start_ms != null ? `Log from ${when(trust.log_start_ms)}` : 'Signature and hash chain', word: tw ? tw[0] : 'None yet', level: tw ? tw[1] : 'off' }),
         checkRow({ name: 'All log checks', sub: logChecksText(hl.log_checks, n0) || 'Not known yet', word: hl.log_checks ? `${n0(hl.log_checks.failed)} failed` : '—', level: !hl.log_checks ? 'off' : hl.log_checks.failed ? 'warn' : 'ok' }),
         checkRow({ name: 'Logs waiting', sub: hl.logs_waiting ? 'Their key is not trusted yet.' : 'Every log that arrived was read.', word: n0(hl.logs_waiting ?? 0), level: hl.logs_waiting ? 'warn' : 'ok' }),

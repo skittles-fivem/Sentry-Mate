@@ -12,6 +12,7 @@
 //!
 //! HTTPS only (`403 https_only` otherwise), `Authorization: Bearer <token>`, every answer JSON, anything else 404.
 
+use crate::contacts::Call;
 use crate::error::ApiError;
 use crate::judge::Judge;
 use crate::judge::{Status, UploadCheck};
@@ -284,18 +285,27 @@ fn conn_of(req_conn: Option<&Conn>) -> Result<Conn, ApiError> {
     }
 }
 
-/// The token's record, or why not.
+/// The token's record, or why not. An accepted token is the bridge's last contact (see [`crate::contacts`]).
 async fn authorize(
     up: &Uploads,
     headers: &HeaderMap,
     shown: Option<TokenShown>,
     conn: Conn,
+    call: Call,
 ) -> Result<Token, ApiError> {
     let token = check_token(up, headers, conn).await?;
+    contact(up, &token.id, token.vehicle_key.as_deref(), call);
     if let Some(TokenShown(shown)) = shown {
         shown();
     }
     Ok(token)
+}
+
+/// Notes a contact in memory; the file is saved later, at most once a minute, through the gate.
+fn contact(up: &Uploads, token_id: &str, key: Option<&str>, call: Call) {
+    let c = up.tokens.contacts();
+    c.seen(token_id, key, call);
+    c.save_soon(&up.gate);
 }
 
 async fn check_token(up: &Uploads, headers: &HeaderMap, conn: Conn) -> Result<Token, ApiError> {
@@ -352,7 +362,7 @@ fn wrong_car() -> ApiError {
 
 async fn ping(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, ApiError> {
     let conn = conn_of(req.extensions().get::<Conn>())?;
-    let token = authorize(&up, req.headers(), req.extensions().get::<TokenShown>().cloned(), conn).await?;
+    let token = authorize(&up, req.headers(), req.extensions().get::<TokenShown>().cloned(), conn, Call::Ping).await?;
     open_for_uploads(&up, &token, conn)?;
     let wanted = match token.vehicle_key.as_deref() {
         Some(k) => up.judge.wanted(k).await.unwrap_or_else(|e| {
@@ -385,7 +395,8 @@ struct StatusBody {
 
 async fn status(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, ApiError> {
     let conn = conn_of(req.extensions().get::<Conn>())?;
-    let token = authorize(&up, req.headers(), req.extensions().get::<TokenShown>().cloned(), conn).await?;
+    let token =
+        authorize(&up, req.headers(), req.extensions().get::<TokenShown>().cloned(), conn, Call::Status).await?;
     open_for_uploads(&up, &token, conn)?;
     let bad = || ApiError::new(400, "bad_request", "Send { \"names\": [...] } with up to 2000 names.");
     let body = axum::body::to_bytes(req.into_body(), 2 << 20).await.map_err(|_| bad())?;
@@ -480,7 +491,8 @@ fn header_u64(h: &HeaderMap, name: &str) -> Option<u64> {
 
 async fn upload(AxState(up): St, Path(name): Path<String>, req: Request) -> Result<Response, ApiError> {
     let conn = conn_of(req.extensions().get::<Conn>())?;
-    let token = authorize(&up, req.headers(), req.extensions().get::<TokenShown>().cloned(), conn).await?;
+    let token =
+        authorize(&up, req.headers(), req.extensions().get::<TokenShown>().cloned(), conn, Call::Upload).await?;
     open_for_uploads(&up, &token, conn)?;
     let n = trust::LogName::parse(&name)
         .ok_or_else(|| ApiError::new(400, "bad_name", "That is not a CAN Bridge log name."))?;
@@ -550,6 +562,8 @@ async fn write_chunk(
         if bound.as_deref() != Some(vehicle_key) {
             return Err(wrong_car());
         }
+        // the key it claimed is now its car's: this upload is that car's contact
+        contact(up, &token.id, Some(vehicle_key), Call::Upload);
     }
     // a log that failed its check (or its sidecar) may be sent again: asked of the judge when the name is here
     // already, at the first chunk (a replacement under way goes on: its part was allowed when it began)
@@ -559,6 +573,10 @@ async fn write_chunk(
             || up.judge.replaceable(log_name, up.store.uploading(vehicle_key).await).await);
     let r = up.store.receive_replacing(name, body, offset, length, sha, replace).await?;
     if r.complete && !r.already {
+        if log_name == name {
+            up.tokens.contacts().log_arrived(vehicle_key);
+            up.tokens.contacts().save_soon(&up.gate);
+        }
         match up.judge.arrived(name).await {
             // the copy sent again verified: the bad one is no longer kept
             Ok(Some(rec)) if r.replaced && rec.status == Status::Verified => {
