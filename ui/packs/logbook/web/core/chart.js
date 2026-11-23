@@ -240,7 +240,13 @@ export async function stackedCharts(ctx, container, { tz, t_ms, rows, spans = []
   boxes.forEach((b) => ro.observe(b.box));
   const stopSize = display.onChange((change) => { if (change.rem) build(); });
   const stopTheme = onTheme(() => build());
-  const destroy = () => { stopSize(); stopTheme(); ro.disconnect(); plots.forEach((p) => p.destroy()); plots = []; };
+  // (the page takes its charts down before it draws them again, as on a live refresh: nothing of them is held on to
+  // then, though the page's clean-up list still names this function)
+  const destroy = () => {
+    stopSize(); stopTheme(); ro.disconnect(); plots.forEach((p) => p.destroy()); plots = [];
+    boxes.length = 0; x.length = 0;
+    t_ms = null; rows = null; spans = null; states = null; onHover = null; onZoom = null; container = null;
+  };
   ctx.onCleanup(destroy);
   return {
     get plots() { return plots; },

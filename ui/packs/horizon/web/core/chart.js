@@ -69,6 +69,7 @@ export function mountPlot(target, make, data, ctx, onBuild = null) {
   const cursorAt = () => (u && u.cursor.idx != null && u.cursor.left >= 0 ? { x: u.posToVal(u.cursor.left, 'x'), fy: u.cursor.top / Math.max(1, u.over.clientHeight) } : null);
   const putCursor = (c) => { if (c) requestAnimationFrame(() => { if (u) u.setCursor({ left: u.valToPos(c.x, 'x'), top: c.fy * u.over.clientHeight }); }); };
   const build = () => {
+    if (!target) return; // taken down
     clearTimeout(later);
     const c = cursorAt();
     u?.destroy();
@@ -90,7 +91,14 @@ export function mountPlot(target, make, data, ctx, onBuild = null) {
     else { clearTimeout(later); later = setTimeout(build, 150); }
   });
   const offTheme = onTheme(() => build());
-  const destroy = () => { clearTimeout(later); ro.disconnect(); off(); offTheme(); u?.destroy(); u = null; if (target.__smPlot === plot) delete target.__smPlot; };
+  // (taken down before the page is left, as on a live refresh: nothing of the chart is held on to, though the
+  // page's clean-up list still names this function)
+  const destroy = () => {
+    if (!target) return;
+    clearTimeout(later); ro.disconnect(); off(); offTheme(); u?.destroy(); u = null;
+    if (target.__smPlot === plot) delete target.__smPlot;
+    target = null; make = null; cur = null; data = null; onBuild = null;
+  };
   ctx.onCleanup(destroy);
   const plot = { get u() { return u; }, setData(d) { cur = d; u?.setData(d); }, rebuild: build, destroy };
   target.__smPlot = plot;

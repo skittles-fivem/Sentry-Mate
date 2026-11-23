@@ -96,6 +96,7 @@ export function plot(el, ctx, make, data, { onCursor = null, onBuild = null } = 
   let u = null, cur = data;
   const box = () => ({ width: Math.max(10, Math.floor(el.clientWidth)), height: Math.max(10, Math.floor(el.clientHeight)) });
   const build = () => {
+    if (!el) return; // taken down
     u?.destroy();
     const b = box();
     const o = make({ ...b, colors: colors() });
@@ -115,11 +116,22 @@ export function plot(el, ctx, make, data, { onCursor = null, onBuild = null } = 
   ro.observe(el);
   const off = onChange(() => build());
   const offTheme = onTheme(() => build());
-  ctx.onCleanup(() => { ro.disconnect(); off(); offTheme(); u?.destroy(); u = null; });
-  return {
+  // taken down with the page, or before it when the part of the page it is in is drawn again (core/stage.js): then
+  // nothing of the chart is held on to, though the page's clean-up list still names this function
+  const destroy = () => {
+    if (!el) return;
+    ro.disconnect(); off(); offTheme(); u?.destroy(); u = null;
+    if (el.__smPlot === handle) delete el.__smPlot;
+    el = null; make = null; cur = null; data = null; onCursor = null; onBuild = null;
+  };
+  ctx.onCleanup(destroy);
+  const handle = {
     get u() { return u; },
     setData(d) { cur = d; u?.setData(d); },
+    destroy,
   };
+  el.__smPlot = handle;
+  return handle;
 }
 
 /** A cursor that follows the mouse with a 1 px line, no points; sync: a key shared by stacked panes. */

@@ -3,6 +3,9 @@ Sentry Mate browser-delivery measurement (made-up data only)
 
 Files
   compare.js   node compare.js before.json after.json [...]: a markdown table of runs side by side, and means
+  idle.js      what an open page costs while nothing is touched, on the dev API server (no seeded server needed):
+               node idle.js --pack horizon [--page /cars/c1] [--seconds 120] [--server-args "--rows-every-s 3"];
+               main-thread and whole-browser CPU, heap, DOM nodes and listeners over time (a leak shows as a rise)
   measure.js   the harness: per pack x page, a cold and a warm load on an emulated phone; writes JSON + a markdown table
   setup.js     first-run setup of a freshly seeded server (reads SETUP-CODE.txt, POST /api/v1/setup over HTTPS)
   settled.js   waits until the engine has decoded the seeded logs (drive/charge counts stop changing)

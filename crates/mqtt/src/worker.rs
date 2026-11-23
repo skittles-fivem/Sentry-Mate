@@ -364,6 +364,48 @@ mod tests {
         );
     }
 
+    /// What a car's newest values cost to turn into messages (docs/plans/performance.md, "MQTT"): by hand,
+    /// `cargo test --release -p mqtt measure_a_sample -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, run by hand in release"]
+    #[allow(clippy::print_stdout)]
+    fn measure_a_sample() {
+        let l = layout(true, Units::default());
+        let mut sent = Sent::default();
+        let first = changed(&l, 7, &item(80.0), &mut sent);
+        let (configs, values) = first
+            .iter()
+            .fold((0, 0), |(c, v), m| if m.topic.starts_with("homeassistant/") { (c + 1, v) } else { (c, v + 1) });
+        let bytes: usize = first.iter().map(|m| m.topic.len() + m.payload.len()).sum();
+        let n = 20_000u32;
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            assert!(changed(&l, 7, &item(80.0), &mut sent).is_empty());
+        }
+        let same = t.elapsed().as_secs_f64() * 1e6 / f64::from(n);
+        let t = std::time::Instant::now();
+        let mut msgs = 0;
+        for i in 0..n {
+            let mut it = item(50.0 + f64::from(i % 300) / 10.0);
+            it.now.at_ms += u64::from(i) * 1000;
+            msgs += changed(&l, 7, &it, &mut sent).len();
+        }
+        let moving = t.elapsed().as_secs_f64() * 1e6 / f64::from(n);
+        let t = std::time::Instant::now();
+        for i in 0..2_000u32 {
+            let mut it = item(80.0);
+            it.info.name = format!("Car {i}");
+            std::hint::black_box(changed(&l, 7, &it, &mut sent));
+        }
+        let renamed = t.elapsed().as_secs_f64() * 1e6 / 2_000.0;
+        println!(
+            "mqtt: the first time {configs} discovery configs and {values} values ({bytes} bytes); a sample with \
+             nothing new {same:.1} us and no message; one with the charge level and time new {moving:.1} us and \
+             {:.1} messages; a renamed car (every config again) {renamed:.0} us",
+            f64::from(u32::try_from(msgs).unwrap_or(u32::MAX)) / f64::from(n)
+        );
+    }
+
     #[test]
     fn forget_clears_everything() {
         let l = layout(true, Units::default());
