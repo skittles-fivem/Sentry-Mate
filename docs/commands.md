@@ -402,6 +402,7 @@ The data folder (contents sealed unless said):
 | `db/` | Each car's history (drives, charges, states, time series), made from the logs: rebuilt from them if lost. |
 | `accounts/`, `audit/` | The web UI's accounts, sessions and their audit log. |
 | `web/` | The web UI's own files: uploaded UI packs, the pack chosen, preferences. |
+| `web/overview.sealed` | The connections overview's hourly counters (7 days, per connection) and its problem log, saved every few minutes and on a stop. A missing or damaged file just starts them again empty. |
 | `*.smexport` | An export file put there to import. Delete it once the new server runs. |
 
 The keys folder:

@@ -70,7 +70,7 @@ async fn about(State(app): State<AppState>, v: Viewer, headers: axum::http::Head
 }
 
 /// Whether the car has an upload token that is not revoked.
-fn uploads_enabled(e: &Engine, car: model::CarId) -> q::QResult<bool> {
+pub(crate) fn uploads_enabled(e: &Engine, car: model::CarId) -> q::QResult<bool> {
     let mut paging = q::Paging { limit: Some(q::MAX_LIMIT), after: None };
     for _ in 0..100 {
         let page = q::keys::car_tokens(e, car, &paging)?;

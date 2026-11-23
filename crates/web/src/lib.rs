@@ -144,6 +144,8 @@ pub struct Inner {
     pub heavy: heavy::Heavy,
     /// The release check ([`resources::release`]); off until the settings turn it on.
     pub release: Arc<resources::release::Checker>,
+    /// The connections overview's hourly counters and problem log ([`resources::overview`]), saved in `dir`.
+    pub overview: resources::overview::Tracker,
     services: HashMap<std::any::TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
@@ -252,6 +254,7 @@ impl Builder {
             ),
         };
         let release = Arc::new(resources::release::Checker::new(fetch, build, self.clock.clone()));
+        let overview = resources::overview::Tracker::open(&self.dir, self.vault.clone());
         Ok(AppState(Arc::new(Inner {
             accounts: self.accounts,
             vault: self.vault,
@@ -269,6 +272,7 @@ impl Builder {
             body_timeout: self.body_timeout,
             heavy: heavy::Heavy::new(self.heavy.0, self.heavy.1),
             release,
+            overview,
             services: self.services,
         })))
     }
