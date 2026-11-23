@@ -7,7 +7,7 @@
 // already has are drawn 200 at a time; the next 200 come as the foot scrolls into view (or "Show more").
 
 import * as state from '../shared/state.js';
-import { h, replace, cover } from '../shared/dom.js';
+import { h, replace, cover, holdScroll } from '../shared/dom.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { scrollBox } from '../shared/scrollbox.js';
 import { formatNumber, compareText } from '../shared/i18n.js';
@@ -198,6 +198,7 @@ export function dataTable(ctx, opts) {
   function setBody(trs) {
     const now = tbody.children;
     if (now.length === trs.length && trs.every((tr, i) => now[i] === tr)) return;
+    holdScroll(tbody);
     tbody.replaceChildren(...trs);
   }
 
@@ -298,7 +299,10 @@ export function dataTable(ctx, opts) {
       count.textContent = '';
     }
     prevPager = pager;
-    pager = ctx.api.pager(opts.path, { ...params, ...sortParams() }, { limit });
+    // a live refresh asks for as many rows as are on screen (at most a server page): the list keeps its length, so
+    // nothing below it moves and a page scrolled down the list is not cut back to the first page
+    const n = freshQuiet ? Math.min(500, Math.max(limit, loaded.length)) : limit;
+    pager = ctx.api.pager(opts.path, { ...params, ...sortParams() }, { limit: n });
     if (!freshQuiet) setCsv();
     await more(my);
   }
@@ -400,6 +404,9 @@ export function cardLabels(table) {
  *   csv(params): href,                      the Download CSV link (the server's, every row the filters show)
  *   onPage(page),                           after each answer (every one holds the totals of the whole list)
  *   boxLabel,                               the box's accessible name
+ *   load({ ...params, sort: { key, dir }, offset, limit }) -> { items, next, offset, total }
+ *                                           in place of path: a list the page holds already (a chunk of it, at once)
+ *   rows: N,                                a box N rows high instead of about ten
  * }) -> { el, ready, setParams(patch), refresh(), total() }
  *
  * The rows sit in a box about ten rows high that scrolls under a header that stays: only the rows in view and a few
@@ -429,7 +436,7 @@ export function windowTable(ctx, opts) {
   const tbody = h('tbody', { dataset: { vlBody: '' } });
   const table = h('table', { class: 'tbl tbl--keep vl-table', 'aria-label': opts.label || opts.title || null }, thead, tbody);
   const noteEl = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null }, opts.note) : null;
-  const box = h('div', { class: 'tbl-scroll tbl-box vl-box', tabindex: '0', role: 'region', 'aria-label': opts.boxLabel || opts.label || opts.title || null }, table);
+  const box = h('div', { class: ['tbl-scroll tbl-box vl-box', opts.rows && 'vl-box--rows'], vars: opts.rows ? { '--vl-rows': String(opts.rows) } : null, tabindex: '0', role: 'region', 'aria-label': opts.boxLabel || opts.label || opts.title || null }, table);
   const emptyBox = h('div', { class: 'vl-empty', hidden: true });
   const el = h('section', { class: ['panel', 'tbl-panel', 'vl-panel', opts.cls], 'aria-label': opts.label || opts.title || null }, bar, noteEl, box, emptyBox);
   if (opts.cover) cover(el, opts.cover);
@@ -471,7 +478,7 @@ export function windowTable(ctx, opts) {
   const list = windowList({
     box, body: tbody, head: thead, limit: opts.limit || 50, overscan: 6, rowHeight: 55,
     row: rowEl, placeholder: skelRow, spacer: gapRow,
-    load: (p) => ctx.api.get(opts.path, { ...query(), ...pick(p) }, { signal: p.signal }),
+    load: (p) => (opts.load ? Promise.resolve(opts.load({ ...query(), sort: sort ? { ...sort } : null, ...pick(p) })) : ctx.api.get(opts.path, { ...query(), ...pick(p) }, { signal: p.signal })),
     onPage: (pg) => { if (pg.total !== total) { total = pg.total; paintCount(); } opts.onPage?.(pg); },
     onError: (e) => opts.onError?.(e),
   });

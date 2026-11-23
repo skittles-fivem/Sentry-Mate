@@ -65,7 +65,7 @@ function buildHead() {
       el.actions));
 }
 
-function drawHead() {
+function drawHead(keep = false) {
   const info = view.info;
   const id = navId(view.page, !!view.car);
   el.title.textContent = view.title || (id === 'system' ? 'System' : info ? info.title : '');
@@ -97,7 +97,7 @@ function drawHead() {
     el.dateDates.hidden = !w.dates;
     el.datePill.setAttribute('aria-label', `Period: ${w.name}${w.dates ? `, ${w.dates}` : ''}. Change the period`);
   }
-  el.actions.replaceChildren();
+  if (!keep) el.actions.replaceChildren();
 }
 
 /** The clock: the time now in the page's zone and the zone's short name; text changed in place only when it changes. */
@@ -325,13 +325,14 @@ export function mountFrame(opts) {
   return { update, setHead };
 }
 
-/** The router: a new page (or period) is shown. view: { page, info, car, tz, period, carsCount }. */
-function update(v) {
+/** The router: a new page (or period) is shown. view: { page, info, car, tz, period, carsCount, keepHead }.
+ *  keepHead: the same page drawn again; its title and buttons stay (taken away, the header would shrink and grow). */
+function update({ keepHead = false, ...v }) {
   // a new page: take away the items the last page marked on the header's pills (core/bits.js filterBar)
   if (v.page !== view.page) for (const p of [el.carPill, el.datePill]) delete p.dataset.cover;
-  view = { ...view, ...v, carsCount: v.carsCount ?? view.carsCount, title: null };
+  view = { ...view, ...v, carsCount: v.carsCount ?? view.carsCount, title: keepHead ? view.title : null };
   setSwitcherCar(view.car ? view.car.id : null);
-  drawHead();
+  drawHead(keepHead);
   drawClock();
   drawDock();
   if (el.moreSheet.isOpen) el.moreSheet.close();

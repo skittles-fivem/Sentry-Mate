@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import './fake-browser.js';
-import { compactionProgress } from '../compaction.js';
+import { compactionProgress, laterCompaction } from '../compaction.js';
 
 const NOW = Date.parse('2026-11-16T17:30:00Z');
 const run = (over) => ({ status: 'running', automatic: false, step: 'logs', step_number: 1, steps: 3, phase: 'packing', unit: 'days',
@@ -47,4 +47,16 @@ test('records, a slow rate, a stall and units left as they were', () => {
   assert.equal(p.rate, '3.6 records an hour');
   assert.match(p.stall, /^No progress for 3 min/);
   assert.equal(p.errors, '2 records could not be packed and were left as they were: a pack is damaged');
+});
+
+test('a failed pass keeps how it ended until a new pass starts', () => {
+  const failed = { status: 'failed', started_ms: 100, finished_ms: 200, error: 'No room.' };
+  // the stream says no pass runs, about the same pass: still failed, with its reason
+  assert.deepEqual(laterCompaction(failed, { status: 'idle', started_ms: 100, finished_ms: 200 }), { status: 'failed', started_ms: 100, finished_ms: 200, error: 'No room.' });
+  assert.equal(laterCompaction(failed, { status: 'idle' }).status, 'failed');
+  // a new pass, or one that runs: what the stream says
+  assert.equal(laterCompaction(failed, { status: 'idle', started_ms: 300 }).status, 'idle');
+  assert.equal(laterCompaction(failed, { status: 'running', started_ms: 300 }).status, 'running');
+  assert.equal(laterCompaction({ status: 'done', started_ms: 100 }, { status: 'idle', started_ms: 100 }).status, 'idle');
+  assert.equal(laterCompaction(null, { status: 'idle' }).status, 'idle');
 });

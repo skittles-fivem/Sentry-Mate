@@ -269,7 +269,7 @@ What a hunter reported and the second pass could not stand up.
 
 ### API and security
 
-- Inventory: every route of crates/web (156 route lines) plus crates/sentry-mate/src/api.rs written to /tmp/claude-0/-home-user-Sentry-Mate/8e0ef923-1103-5bca-b053-93b509ca6024/scratchpad/hunt/api-security/inventory.md; all attacks ran against the real binary (dev-seed build, 2 seeded cars, TLS) with scripts in that folder (smc.py client, t*.py, fuzz*.py)
+- Inventory: every route of crates/web (156 route lines) plus crates/sentry-mate/src/api.rs written to (hunt scratch)/api-security/inventory.md; all attacks ran against the real binary (dev-seed build, 2 seeded cars, TLS) with scripts in that folder (smc.py client, t*.py, fuzz*.py)
 - Role and car matrix: all 170 GET routes as admin, watch (c1 only), watch with no cars and signed out (matrix.py / matrix.out): signed out always 401, admin-only reads 403 for watch, c2 always 404 no_such_car for the c1 watch account
 - Per-car isolation on fleet-wide reports: /charges, /charging-stats[/places], /compare, /statistics, /tracks, /visits/*, /fleet/*, /places/suggestions, mqtt preview: watch answer equals admin's ?cars=c1 answer (t4.py); cars=c2, car=c2, percent-encoded and ../ path tricks give 404
 - Places isolation: a place only c2 used is 404 for the watch account, /places/at shows nothing, preview by id is 422, preview counts and place counts for a place covering both cars hold only c1's rows (t5.py, t6.py)
@@ -292,12 +292,12 @@ What a hunter reported and the second pass could not stand up.
 - Imports upload: wrong offset 409 with Upload-Offset, bad checksum 422, missing checksum 400, 1 MiB chunk 413, second import 409, start before ready refused, size 0, negative and 2^63 refused (t13.py)
 - HTTP layer: TLS 1.2 refused, plain HTTP refused, 2 MB JSON body 413 (also chunked), 70 KB header refused on HTTP/2, unknown /api paths 404 in the error shape, OPTIONS/TRACE 405 with Allow
 - Audit log: wrong sign-ins, confirms and changes recorded with account and address; group filter validated; entries cannot be forged through names (target brackets are escaped)
-- Rust tests through web::testkit compile and run against a copy of the tree: /tmp/claude-0/-home-user-Sentry-Mate/8e0ef923-1103-5bca-b053-93b509ca6024/scratchpad/hunt/api-security/repro/api_security_hunt.rs (3 tests, all fail on the code as found; log in repro/test.log)
+- Rust tests through web::testkit compile and run against a copy of the tree: (hunt scratch)/api-security/repro/api_security_hunt.rs (3 tests, all fail on the code as found; log in repro/test.log)
 - Not tested: behaviour for addresses outside the home network (the sandbox has only loopback addresses), offline map tiles with a real .pmtiles file, a real move between two servers, Tesla/TeslaFi/TeslaMate inputs against live services
 
 ### Inputs and ingest
 
-- Scratch harness: a cargo workspace outside the repo with path deps on the crates (/tmp/claude-0/-home-user-Sentry-Mate/8e0ef923-1103-5bca-b053-93b509ca6024/scratchpad/hunt/inputs-ingest/ws, run with `cargo test --offline --test <name> -- --nocapture`); inventory at /tmp/claude-0/-home-user-Sentry-Mate/8e0ef923-1103-5bca-b053-93b509ca6024/scratchpad/hunt/inputs-ingest/inventory.md; no tracked file changed, git status clean
+- Scratch harness: a cargo workspace outside the repo with path deps on the crates ((hunt scratch)/inputs-ingest/ws, run with `cargo test --offline --test <name> -- --nocapture`); inventory at (hunt scratch)/inputs-ingest/inventory.md; no tracked file changed, git status clean
 - logfmt empty and truncated input: every prefix of a candump and a columns .log.xz is refused, never taken as a whole log (ws/tests/logfmt_fuzz.rs)
 - logfmt bit flips: 6,000 mutated xz files of both formats never panic, and read_log + Line::parse gives the same lines and summary as read_lines (fast columns path)
 - logfmt columns body: 40,000 mutated bodies (flips, inserts, truncation) never panic; accepted ones decode the same through both paths; odd keys (can00, trailing space, 8-digit ids, embedded newline) agree between fast path and text path
@@ -395,7 +395,7 @@ What a hunter reported and the second pass could not stand up.
 
 ### Instrument
 
-- Page checker --pixel at 390x844@3, 1440x900, 2560x1440, 3840x2160: 22 of 25 routes pass; the 3 fails are sub-pixel only (logbook baselines 1 px, places border fraction, settings-server step number 0.66 px). Log: /tmp/claude-0/-home-user-Sentry-Mate/8e0ef923-1103-5bca-b053-93b509ca6024/scratchpad/hunt/pack-instrument/check-pixel.log
+- Page checker --pixel at 390x844@3, 1440x900, 2560x1440, 3840x2160: 22 of 25 routes pass; the 3 fails are sub-pixel only (logbook baselines 1 px, places border fraction, settings-server step number 0.66 px). Log: (hunt scratch)/pack-instrument/check-pixel.log
 - Page checker --hover: 25 of 25 routes pass (check-hover.log in the same folder)
 - Page checker --stable 30 s at 1440x900 and 390x844: only timeline fails (reported); no flicker anywhere (check-stable.log)
 - Page checker with --role watch, --cars 0, --cars 200 --latency-ms 300: no console errors, page errors, CSP violations or overflow; fails are missing cover ids in empty states plus the mock's 500 on /places?car= (check-watch.log, check-cars0.log, check-cars200.log)
@@ -448,7 +448,7 @@ What a hunter reported and the second pass could not stand up.
 
 ### Manager
 
-- Checker, every page, --pixel at 390x844@3/1440x900/2560x1440/3840x2160: 20 of 25 routes pass (logs: /tmp/claude-0/-home-user-Sentry-Mate/8e0ef923-1103-5bca-b053-93b509ca6024/scratchpad/hunt/pack-manager/check-*.log); the 5 failures are in the findings or are 1 px nits (logbook totals baseline, integrations ov-err icon, settings-server step numbers, places action buttons on fractional pixels)
+- Checker, every page, --pixel at 390x844@3/1440x900/2560x1440/3840x2160: 20 of 25 routes pass (logs: (hunt scratch)/pack-manager/check-*.log); the 5 failures are in the findings or are 1 px nits (logbook totals baseline, integrations ov-err icon, settings-server step numbers, places action buttons on fractional pixels)
 - Checker --hover (390 and 1440): 25 of 25 pass; --stable 30 s (390 and 1440): 25 of 25 pass (7 with warnings); --latency-ms 400: all pass
 - Checker --role watch: only coverage-mark misses on settings-server and import (admin-only content), no API failures; my own watch crawl (watch.js) found no 403s, no other cars' names leaking, no enabled admin controls (charge cost form is in a disabled fieldset, hidden cars answer Not found)
 - crawl.js: all 26 routes x dark/light (prefers-color-scheme) x 390/1440 on default data, --role watch, --cars 1 --map-tiles none: every page ready, no console errors, no page errors, no failed requests, no horizontal overflow, every visible input labelled, every button and link has an accessible name
@@ -471,7 +471,7 @@ What a hunter reported and the second pass could not stand up.
 
 ### Console
 
-- Checker, plain: `check.js --pack console --pixel --sizes 390x844@3,1440x900,2560x1440,3840x2160` passes every page (exit 0); with `--latency-ms 400` also passes. Logs: /tmp/claude-0/-home-user-Sentry-Mate/8e0ef923-1103-5bca-b053-93b509ca6024/scratchpad/hunt/pack-console/check-*.log
+- Checker, plain: `check.js --pack console --pixel --sizes 390x844@3,1440x900,2560x1440,3840x2160` passes every page (exit 0); with `--latency-ms 400` also passes. Logs: (hunt scratch)/pack-console/check-*.log
 - Every route loads and reaches ready with no console error, page error or failed request: admin at 1440x900, watch role, car c3 at 390x844, a synthetic car (--cars 5, --cars 200), crawl.js
 - Mock modes on fleet, settings/server, settings/integrations (both tabs), settings/display, system, help, car, health, import: --move-state (all 6), --export-state (all 4), --map-tiles none/offline, --release-check newer/error/checking/never, --teslamate-trouble auth_failed/catchup_failed, --full-rebuild running/failed/offered, --own-certificate, --cars 1/2, --seed 7, --now-ms: all ready, no console errors (modes.log)
 - Every link of every page (578 unique hrefs) visited: no dead page apart from the findings; licence text files answer 200 text/plain (links.js)
@@ -494,7 +494,7 @@ What a hunter reported and the second pass could not stand up.
 
 ### Pebble
 
-- Checker baseline: check.js --pack pebble --pixel at 390x844@3, 1440x900, 2560x1440, 3840x2160 passes 25 of 25; --hover passes 25 of 25; --device-size 80 passes; --server-args "--latency-ms 400" passes (outputs in /tmp/claude-0/-home-user-Sentry-Mate/8e0ef923-1103-5bca-b053-93b509ca6024/scratchpad/hunt/pack-pebble/check-*.txt)
+- Checker baseline: check.js --pack pebble --pixel at 390x844@3, 1440x900, 2560x1440, 3840x2160 passes 25 of 25; --hover passes 25 of 25; --device-size 80 passes; --server-args "--latency-ms 400" passes (outputs in (hunt scratch)/pack-pebble/check-*.txt)
 - Checker with --role watch, --cars 0 and --cars 200: the only failures are 'missing' coverage items for admin-only controls or cars with no data, and 'no car to open'; no console, page, CSP or API errors
 - Every route loads to its ready state with no console errors, page errors or failed requests: own sweep at 1440x900 light and OS-dark, 390x844, 360x740, with --cars 0/1/200, --role watch, and a combined trouble run (--map-tiles none, --release-check newer, --teslamate-trouble, --full-rebuild failed, --move-state, --export-state failed)
 - Every button on every route clicked as admin and as watch at 390x844 (clicker.js): no page errors, no console errors, no HTTP 4xx/5xx, Escape closes every sheet, no unlabeled inputs or icon buttons without a name inside sheets
@@ -518,7 +518,7 @@ What a hunter reported and the second pass could not stand up.
 
 ### Logbook
 
-- Checker --pixel at 390x844@3, 1440x900, 2560x1440, 3840x2160: 20 of 25 routes pass (failures reported below); output in /tmp/claude-0/-home-user-Sentry-Mate/8e0ef923-1103-5bca-b053-93b509ca6024/scratchpad/hunt/pack-logbook/check-pixel.txt
+- Checker --pixel at 390x844@3, 1440x900, 2560x1440, 3840x2160: 20 of 25 routes pass (failures reported below); output in (hunt scratch)/pack-logbook/check-pixel.txt
 - Checker --stable (30 s per page, 1440x900 and 390x844): 25 of 25 pass, no layout shift, moved blocks or flicker while live updates arrive (check-stable.txt)
 - Checker with --server-args "--latency-ms 400": 25 of 25 pass (check-latency.txt)
 - Checker with --role watch: no console, api, csp or overflow failures; the only 'missing' items are admin-only controls that are rightly hidden (check-watch.txt)

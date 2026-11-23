@@ -14,6 +14,9 @@
 // queries) always decides the layout and the snap only rounds it. It reads every size before it writes one.
 // While the router builds a page, the runs wait and one runs when it is drawn (holdSnap).
 
+// what the page is scrolled to is kept across a run (shared/dom.js holdScroll): a run puts back the sizes it gave and
+// measures them again, and Safari pulled a window scrolled to the end of the page up by a few pixels each time
+import { holdScroll } from '../shared/dom.js';
 // what a run changed: element -> { property: the inline value it had before }, so the next run can put it back
 const snapped = new Map();
 function put(e, prop, value) {
@@ -39,8 +42,16 @@ const off = (v) => Math.abs(v - Math.round(v)) > 0.01;
 
 function depth(e) { let d = 0; for (let x = e; x; x = x.parentElement) d++; return d; }
 
+// On a phone (<html data-phone>) column widths, and the widths of boxes whose edges do not show, are left as the CSS
+// gives them: the snap runs again on live updates and after late parts, and a column or a box half a pixel narrower or
+// wider wraps a line of text differently (or pushes what shares its line onto the next), so a block grew or shrank by
+// a line under the reader. At three device pixels to the CSS pixel a column edge between two of them
+// does not show; borders still land on whole device pixels (nudge() moves them, without a change of layout).
+const phone = () => document.documentElement.hasAttribute('data-phone');
+
 // grid: whole px columns with the same total width
 function gridPlan(g) {
+  if (phone()) return null;
   const v = getComputedStyle(g).gridTemplateColumns;
   if (!v || v === 'none' || /[^\d.\spx-]/.test(v)) return null; // subgrid, names or anything not plain px
   const tracks = v.trim().split(/\s+/).map(parseFloat);
@@ -60,6 +71,7 @@ function gridPlan(g) {
 // wider than its box keeps all its widths, rounded up); the table gets the sum as its width and a fixed
 // layout, so it has nothing left to share out
 function tablePlan(t) {
+  if (phone()) return null;
   const row = (t.tHead && t.tHead.rows[0]) || t.rows[0];
   if (!row || row.cells.length < 2) return null;
   const cells = Array.from(row.cells);
@@ -109,6 +121,8 @@ function contentBox(e, u) {
   }
   return u;
 }
+const wraps = (e) => { const p = e.parentElement; if (!p) return false; const ps = getComputedStyle(p); return /flex/.test(ps.display) && ps.flexWrap !== 'nowrap'; };
+const edged = (s) => s.backgroundColor !== 'rgba(0, 0, 0, 0)' || s.backgroundImage !== 'none' || SIDES.some((k) => s[`border${k}Style`] !== 'none' && parseFloat(s[`border${k}Width`]) > 0);
 const seen = (s) => s.backgroundColor !== 'rgba(0, 0, 0, 0)' || s.backgroundImage !== 'none' || s.borderTopStyle !== 'none';
 function grow(u, q) {
   if (u.top == null || q.top < u.top) u.top = q.top;
@@ -222,15 +236,23 @@ function boxPass(boxes) {
   const r = devicePixelRatio || 1;
   const up = (v) => Math.ceil(v * r - 0.02) / r;
   const offd = (v) => Math.abs(v * r - Math.round(v * r)) > 0.02;
+  const narrow = phone();
   const sets = [];
   // read everything first (a computed style read after a write would lay the page out again each time)
   for (const e of boxes) {
     const b = e.getBoundingClientRect();
     if (!b.width && !b.height) continue;
-    const w = offd(b.width) ? up(b.width) : 0;
+    let w = offd(b.width) ? up(b.width) : 0;
     const h = offd(b.height) ? up(b.height) : 0;
     if (!w && !h) continue;
     const cs = getComputedStyle(e);
+    // on a phone only a box whose edges show (a border, a background) grows sideways: a box of words a fraction of a
+    // pixel wider can push what shares its line onto the next, and the block it is in grows or shrinks by a line
+    // (what follows it still lands on whole pixels: nudge() moves it there without a change of layout); and on any
+    // screen an item of a flex row that wraps keeps its width: the items (and a spacer) stretched to fill a line, each
+    // held at its width rounded up, no longer fit on it, and the last one went to a line of its own
+    if (w && ((narrow && !edged(cs)) || wraps(e))) w = 0;
+    if (!w && !h) continue;
     // min-width and min-height size the border box only for border-box boxes
     const side = (ks) => (cs.boxSizing === 'content-box' ? ks.reduce((x, k) => x + (parseFloat(cs[k]) || 0), 0) : 0);
     sets.push([e, w && w - side(['paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth']),
@@ -298,7 +320,17 @@ function collect(root, into) {
   const accept = (e) => {
     if (e.localName === 'table') { tables.push(e); return NodeFilter.FILTER_REJECT; }
     if (e.localName === 'svg' || e.localName === 'script' || e.localName === 'template') return NodeFilter.FILTER_REJECT;
-    if (e.localName === 'details' && !e.open) return NodeFilter.FILTER_REJECT; // its content is not laid out
+    if (e.localName === 'details' && !e.open) {
+      // its content is not laid out; the box itself and its summary are on screen
+      for (const x of [e, e.querySelector(':scope > summary')]) {
+        if (!x) continue;
+        const d = getComputedStyle(x).display;
+        if (d === 'none') continue;
+        if (BOXES.has(d)) boxes.push(x);
+        lined.push(x);
+      }
+      return NodeFilter.FILTER_REJECT;
+    }
     // a map or a chart draws its own boxes: neither it nor anything in it is looked at (nor styled, nor measured)
     if (e.matches(NOT_BOXES)) return NodeFilter.FILTER_REJECT;
     const d = getComputedStyle(e).display;
@@ -376,6 +408,7 @@ function cellLines(cells, lined) {
 const lists = () => ({ grids: [], tables: [], boxes: [], lined: [] });
 
 export function snapAll() {
+  holdScroll(document.body);
   restore();
   const l = lists();
   collect(document.body, l);
@@ -385,6 +418,7 @@ export function snapAll() {
 // Only the parts of the page in roots, after their content changed: the rest of the page is laid out as before
 // as long as each part keeps its size, so it keeps what the last run gave it (settled() below).
 function snapIn(roots) {
+  holdScroll(document.body);
   const was = roots.map((r) => sizeAt.get(r));
   restore(roots);
   const l = lists();
@@ -396,6 +430,7 @@ function snapIn(roots) {
 // Rows added under the ones a table had (the next page of a list): the table keeps its columns (fixed by the last
 // run), so only the new rows need whole heights, their cells' content centred and their lines on whole pixels.
 function snapRows(table, rows) {
+  holdScroll(document.body);
   const was = left.get(table);
   rowPass(rows);
   const lined = [];
@@ -471,7 +506,11 @@ function resized(entries) {
     // a grid or table that was taken off the page (a card drawn again) reports 0 x 0: nothing on the page moved
     if (!x.target.isConnected) { ro.unobserve(x.target); watched.delete(x.target); continue; }
     const b = x.target.getBoundingClientRect();
-    if (left.get(x.target) !== `${b.width} ${b.height}`) { later(); return; }
+    // (less than a quarter of a pixel is the engine's own rounding of the sizes the last run set, not a change: Safari
+    // laid a pinned grid out a sixteenth of a pixel taller and shorter by turns, and each run started the next one;
+    // at the end of a page each run's put-back made the page shorter for a moment and pulled the window up)
+    const [w0, h0] = (left.get(x.target) || 'NaN NaN').split(' ').map(Number);
+    if (!(Math.abs(b.width - w0) < 0.25 && Math.abs(b.height - h0) < 0.25)) { later(); return; }
   }
 }
 

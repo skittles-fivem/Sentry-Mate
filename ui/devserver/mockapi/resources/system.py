@@ -761,19 +761,35 @@ def gps_disagreement(req, cid):
             "to_ms": req.now - 2 * DAY}
 
 
+def _fit_source(name, positions, pairs=0, trimmed=0, errors=(None, None, None, None), left_out=None):
+    lat_median, lat_p95, lon_median, lon_p95 = errors
+    return {"input": name, "positions": positions, "pairs": pairs, "trimmed": trimmed, "lat_median_m": lat_median,
+            "lat_p95_m": lat_p95, "lon_median_m": lon_median, "lon_p95_m": lon_p95, "left_out": left_out}
+
+
+def _fit_line(bits, slope, intercept, constant):
+    # the straight line from the raw values of the best's bits to degrees (docs/ui-api.md: gps-layout/fit)
+    return {"bits": bits, "slope": slope, "intercept": intercept, "nominal": 1e-6, "scale_error": 0.0,
+            "median_m": 3, "p95_m": 9, "mad_m": 2,
+            "drift": {"scale": 1e-6, "quarters_m": [0, 0, 1, 0], "per_km_north_m": 0, "per_km_value_m": 0,
+                      "constant": constant != 0}}
+
+
 def _fit_result(cid, days):
     return {
         "car": cid, "days": days, "logs": 412, "logs_skipped": 0, "days_read": 58, "days_skipped": 2,
-        "pairs": 18_240, "sources": [{"input": "teslamate-local", "positions": 0}, {"input": "tesla-api", "positions": 21_904},
-                                     {"input": "teslafi-api", "positions": 0}, {"input": "teslamate", "positions": 0},
-                                     {"input": "teslafi", "positions": 0}],
+        "pairs": 18_240, "paired": 19_020, "trimmed": 37,
+        "sources": [_fit_source("teslamate-local", 0), _fit_source("tesla-api", 21_904, 18_240, 37, (3, 9, 4, 11)),
+                    _fit_source("teslafi-api", 0), _fit_source("teslamate", 0),
+                    _fit_source("teslafi", 0, left_out="its positions disagree with the live inputs' at the same moments")],
         "enough": True, "spread_ns_m": 8_400, "spread_ew_m": None, "weak": False,
         "lat": {"dbc": {"layout": "0|28@1- (1e-6,0)", "median_m": 3, "p95_m": 9},
                 "best": {"layout": "0|28@1- (1e-6,0)", "median_m": 3, "p95_m": 9},
-                "runner_up": {"layout": "0|27@1- (1e-6,0)", "median_m": 3, "p95_m": 9}},
+                "runner_up": {"layout": "0|27@1- (1e-6,0)", "median_m": 3, "p95_m": 9},
+                "line": _fit_line("0|28@1-", 1e-6, 0.0, 0.0)},
         "lon": {"dbc": {"layout": "28|28@1- (1e-6,0)", "median_m": None, "p95_m": None},
                 "best": {"layout": "28|28@1- (1e-6,16.777216)", "median_m": 4, "p95_m": 11},
-                "runner_up": None},
+                "runner_up": None, "line": _fit_line("28|28@1-", 1e-6, 16.777216, 16.777216)},
         "layout": _FIT_LAYOUT, "median_m": 5, "p95_m": 14, "is_dbc": False, "good": True,
     }
 
