@@ -3,8 +3,9 @@
 // feed the list (GET /cars/{car}/drives, sorted and paged by the server, CSV) and its summary; the places
 // left out feed only the patterns (GET /cars/{car}/drive-stats). Each change reloads only what it feeds.
 // The place pick lists hold this car's places, counted by this car (GET /places?car=), every page.
-// Energy is measured at the pack; drives with Tesla API data alone and imported ones say "estimated". Each drive
-// says where its data came from (SMO, the Tesla API, an import: sources, source_label). Ticked drives open as one trip.
+// Energy is measured at the pack; drives with Tesla API data alone and imported ones are marked ≈ (estimated). Where
+// a drive's data came from (sources, source_label) is the row's hover title, never shown in the row; the drive's own
+// page shows it. Ticked drives open as one trip.
 // Live: a drive that starts or ends ("rows" events) loads the lists and patterns again.
 
 import * as state from '../shared/state.js';
@@ -24,7 +25,7 @@ import { openPeriodPicker } from '../core/period.js';
 import { placePopover } from '../core/popover.js';
 import { isAdmin } from '../core/prefs.js';
 import { flash } from '../core/flash.js';
-import { srcMark, sourceOptions, filterWord, FILTER_WORDS } from '../core/source.js';
+import { srcTitle, sourceOptions, filterWord, FILTER_WORDS } from '../core/source.js';
 
 export const id = 'drives';
 export const css = true;
@@ -255,32 +256,34 @@ export async function mount(ctx) {
     { key: 'pick', label: '', cls: 'col-pick', csv: false, title: 'Pick drives to open them together as one trip', render: (d) => h('label', { class: 'pick', title: 'Pick this drive for a trip' },
       h('input', { type: 'checkbox', checked: picked.has(d.id), 'aria-label': `Pick the drive of ${formatDate(d.start_ms, tz, { year: false })}, ${formatTime(d.start_ms, tz)}`,
         onchange: (e) => { if (e.target.checked) picked.set(d.id, d); else picked.delete(d.id); paintPicks(); } })) },
-    { key: 'start', label: 'Start', sort: 'start', firstDir: 'desc', cover: 'drives.table.date', render: (d) => h('span', { class: 'cell-text' },
+    // the end under the start, with the flags: a cold battery, missing data, still driving
+    { key: 'start', label: 'Start', sort: 'start', firstDir: 'desc', cover: ['drives.table.date', 'drives.table.reduced_range'], title: 'Start, then end. A thermometer marks a cold battery, a warning sign missing data.', render: (d) => h('span', { class: 'cell-text' },
       h('a', { class: 'main', href: state.buildUrl('drive', { car: cid, drive: d.id }) }, `${formatDate(d.start_ms, tz, { year: false })}, ${formatTime(d.start_ms, tz)}`),
-      h('span', { class: 'sub sub--src' }, d.end_ms ? `to ${formatTime(d.end_ms, tz)}` : 'still driving', srcMark(d, { short: true }))),
+      h('span', { class: 'sub start-sub' }, d.end_ms && !d.flags?.in_progress ? `to ${formatTime(d.end_ms, tz)}` : h('span', { class: 'tag tag--live' }, 'driving now'),
+        d.flags?.reduced_range ? h('span', { class: 'flag-ico', title: 'Cold battery: part of the charge was locked, so range and consumption read high' }, icon('thermo', 'ico--sm')) : null,
+        d.flags?.gap_ms ? h('span', { class: 'flag-ico', title: `Data missing for ${formatDuration(d.flags.gap_ms)}` }, icon('warn', 'ico--sm')) : null)),
       csv: (d) => new Date(d.start_ms).toISOString() },
     { key: 'route', label: 'Route', cls: 'col-route', cover: ['drives.table.start', 'drives.table.destination', 'drives.table.link.geofence_start', 'drives.table.link.geofence_end'], render: (d) => h('span', { class: 'cell-text' },
       h('span', { class: 'route' }, placeCell(d.start), h('span', { class: 'tl-arrow', 'aria-hidden': 'true' }, ' → '), d.end && d.end_ms != null ? placeCell(d.end) : h('span', null, d.end_ms == null ? 'driving now' : '…')),
       h('span', { class: 'sub' }, [d.start?.address?.short, d.end?.address?.short].filter(Boolean).join(' → '))), csv: (d) => `${placeLabel(d.start)} → ${placeLabel(d.end)}` },
-    { key: 'duration', label: 'Time', num: true, sort: 'duration', cover: 'drives.table.duration', render: (d) => formatDuration(d.duration_ms) },
-    { key: 'distance', label: 'Distance', num: true, sort: 'distance', cover: 'drives.table.distance', render: (d) => format(d.distance_km, 'distance') },
-    { key: 'soc', label: 'Battery', num: true, cover: ['drives.table.soc_start', 'drives.table.soc_end'], render: (d) => h('span', { class: 'nowrap' }, `${format(d.start_soc_pct, 'percent')} → ${format(d.end_soc_pct, 'percent')}`) },
-    { key: 'outside', label: 'Outside', num: true, cover: 'drives.table.outside_temp', render: (d) => h('span', { class: ['temp-cell', d.outside_avg_c != null && (d.outside_avg_c < 5 ? 'is-cold' : d.outside_avg_c > 25 ? 'is-warm' : null)] }, format(d.outside_avg_c, 'temperature')) },
-    { key: 'speed', label: 'Average', num: true, cover: 'drives.table.speed_avg', render: (d) => format(d.speed_avg_kph, 'speed') },
-    { key: 'speed_max', label: 'Top', num: true, sort: 'speed_max', cover: 'drives.table.speed_max', render: (d) => format(d.speed_max_kph, 'speed') },
-    { key: 'power', label: 'Peak', num: true, cover: 'drives.table.power_max', title: 'Highest power taken from the battery', render: (d) => format(d.power_max_kw, 'power') },
-    { key: 'energy', label: 'Energy', num: true, sort: 'energy', cover: 'drives.table.energy', render: (d) => h('span', { class: 'nowrap' }, format(d.energy_kwh, 'energy'), d.energy_basis === 'estimated' ? [' ', h('span', { class: 'tag tag--warm', title: 'Estimated: from the Tesla API\'s power readings (or an import), not measured at the pack' }, 'est.')] : null) },
+    { key: 'duration', label: 'Time', cls: 'col-time', num: true, sort: 'duration', cover: 'drives.table.duration', render: (d) => formatDuration(d.duration_ms) },
+    // a narrow table has no Time column: the time goes under the distance
+    { key: 'distance', label: 'Distance', num: true, sort: 'distance', cover: 'drives.table.distance', render: (d) => h('span', { class: 'cell-text cell-num' },
+      h('span', { class: 'main' }, format(d.distance_km, 'distance')), h('span', { class: 'sub dist-time' }, formatDuration(d.duration_ms))) },
+    { key: 'soc', label: 'Battery', num: true, cover: ['drives.table.soc_start', 'drives.table.soc_end'], render: (d) => h('span', { class: 'nowrap', title: d.outside_avg_c != null ? `Outside ${format(d.outside_avg_c, 'temperature')}` : null }, `${format(d.start_soc_pct, 'percent')} → ${format(d.end_soc_pct, 'percent')}`) },
+    { key: 'outside', label: 'Outside', cls: 'col-outside', num: true, cover: 'drives.table.outside_temp', render: (d) => h('span', { class: ['temp-cell', d.outside_avg_c != null && (d.outside_avg_c < 5 ? 'is-cold' : d.outside_avg_c > 25 ? 'is-warm' : null)] }, format(d.outside_avg_c, 'temperature')) },
+    { key: 'speed_max', label: 'Speed', cls: 'col-speed', num: true, sort: 'speed_max', cover: ['drives.table.speed_avg', 'drives.table.speed_max'], title: 'Average speed, then the top speed (the order sorts by the top speed)', render: (d) => h('span', { class: 'cell-text cell-num' },
+      h('span', { class: 'main' }, format(d.speed_avg_kph, 'speed')), h('span', { class: 'sub' }, d.speed_max_kph != null ? `top ${format(d.speed_max_kph, 'speed')}` : '')) },
+    { key: 'energy', label: 'Energy', num: true, sort: 'energy', cover: ['drives.table.energy', 'drives.table.power_max'], title: 'Energy from the pack, regen taken off; the peak power in each value’s title', render: (d) => h('span', { class: 'nowrap', title: d.power_max_kw != null ? `Peak power ${format(d.power_max_kw, 'power')}` : null }, d.energy_basis === 'estimated' ? h('span', { class: 'est-mark', title: 'Estimated: from the Tesla API\'s power readings (or an import), not measured at the pack' }, '≈ ') : null, format(d.energy_kwh, 'energy')) },
     { key: 'wh', label: whHead, num: true, sort: 'wh_per_km', cover: 'drives.table.consumption', render: (d) => format(d.wh_per_km, 'efficiency') },
     { key: 'eff', label: effHead, cover: 'drives.table.efficiency', title: 'Rated consumption against this drive\'s consumption, on the basis chosen above (100 % = as rated)', render: effBar, csv: (d) => d.efficiency_pct },
-    { key: 'flags', label: 'Flags', cover: 'drives.table.reduced_range', csv: false, title: 'Thermometer: cold battery. Warning sign: data missing. Live: still driving.', render: (d) => h('span', { class: 'flag-icons' },
-      d.flags?.reduced_range ? h('span', { class: 'flag-ico', title: 'Cold battery: part of the charge was locked, so range and consumption read high' }, icon('thermo', 'ico--sm')) : null,
-      d.flags?.gap_ms ? h('span', { class: 'flag-ico', title: `Data missing for ${formatDuration(d.flags.gap_ms)}` }, icon('warn', 'ico--sm')) : null,
-      d.flags?.in_progress ? h('span', { class: 'tag tag--live' }, 'live') : null) },
   ];
   const table = dataTable(ctx, {
     title: 'Drives', icon: 'route', path, params: apiParams(), limit: 25, columns, sort: { key: 'start', dir: 'desc' }, csvName: 'drives', cls: 'drives-table',
     cover: ['drives.table', 'drives.table.link.details', 'drives.empty_states'], side: pickBar,
-    note: 'Energy is measured at the battery pack, with regen taken off; drives whose energy is an estimate (Tesla API data alone, or imported) are marked "est.", and the line under each start says where its data came from (SMO, the Tesla API, an import). Efficiency is the rated consumption against the drive\'s own. Flags: a thermometer marks a cold battery (part of the charge was locked, so range and consumption read high), a warning sign missing data. Tick drives to open them together as a trip.',
+    note: 'Energy is measured at the pack, regen taken off (≈ marks an estimate). Tick drives to open them together as a trip.',
+    noteMore: 'Drives whose energy is an estimate (Tesla API data alone, or imported) are marked ≈; hover a row to see where its data came from (SMO, the Tesla API, an import), and open it for the details. Efficiency is the rated consumption against the drive\'s own. A thermometer by the end time marks a cold battery (part of the charge was locked, so range and consumption read high), a warning sign missing data. The CSV has every figure.',
+    rowTitle: srcTitle,
     rowHref: (d) => state.buildUrl('drive', { car: cid, drive: d.id }),
     onPage: (pg) => { if (pg.summary) paintSummary(pg.summary); },
     onError: () => paintSummary(null, 'error'),

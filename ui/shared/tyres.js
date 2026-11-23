@@ -7,10 +7,7 @@
 // (front and rear axle) and where they come from, and which tyre is low, by the server's rule: more than
 // 10 % under the recommended pressure of its axle, or of the lower axle while which wheel each sensor is is
 // not known (so a tyre at the rear's pressure is never called low against a higher front one).
-// recommendedLine(now) is the short sentence pages show under the tyres: "Recommended 2.9 bar (from CAN).";
-// wheelGuessLine(now) the nudge to set the wheel size while the placard's is for a size that is only a guess;
-// tyresTitle(now) the longer explanation pages put in the line's hover title (how tyres are judged, the sensor
-// slots not being known, cold mornings).
+// recommendedLine(now) is the sentence pages show under the tyres: "Recommended 2.9 bar (from CAN)".
 
 import { t } from './i18n.js';
 import { format } from './units.js';
@@ -23,8 +20,7 @@ const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : null);
 
 /**
  * The Now's tyres: { kpa: [4], mapped, front, rear (kPa or null), source: 'can' | 'placard' | 'owner' | null,
- * wheelIn, wheelFrom (where that size comes from: 'owner' | 'can' | 'vin' | 'tesla_api' | 'teslamate' | null),
- * wheelGuess (true when that size is not typed and not the car's own wheel setting), against: [4] (the pressure each tyre is judged against), low: [4] (true, false or null), anyLow }.
+ * wheelIn, against: [4] (the pressure each tyre is judged against), low: [4] (true, false or null), anyLow }.
  * `anyLow` is the server's `tyre_low` when it gives one.
  */
 export function tyreView(now) {
@@ -39,10 +35,7 @@ export function tyreView(now) {
   const server = val(n.tyre_low);
   const anyLow = typeof server === 'boolean' ? server : low.includes(true) ? true : low.every((l) => l === false) ? false : null;
   const source = ['can', 'placard', 'owner'].includes(n.tyre_recommended_source) ? n.tyre_recommended_source : front != null ? 'can' : null;
-  const wheelIn = source === 'placard' ? num(n.tyre_recommended_wheel_in) : null;
-  const wheelFrom = wheelIn != null && typeof n.tyre_recommended_wheel_from === 'string' ? n.tyre_recommended_wheel_from : null;
-  const wheelGuess = wheelIn != null && n.tyre_recommended_wheel_guess === true;
-  return { kpa, mapped, front, rear, source, wheelIn, wheelFrom, wheelGuess, against, low, anyLow };
+  return { kpa, mapped, front, rear, source, wheelIn: num(n.tyre_recommended_wheel_in), against, low, anyLow };
 }
 
 /** Where the recommended pressure comes from, in words: "from CAN", "from the door placard for 20″ wheels", "typed". */
@@ -62,46 +55,16 @@ export function recommendedValue(view) {
   return t('{front} front, {rear} rear', { front: format(v.front, 'pressure'), rear: format(v.rear, 'pressure') });
 }
 
-/** The line under the tyres: "Recommended 2.9 bar (from CAN)." or "No recommended pressure known." */
+/**
+ * The line under the tyres: "Recommended 2.9 bar (from CAN)." or "No recommended pressure known.", and, while
+ * which wheel each sensor sits on is not known, a sentence saying so.
+ */
 export function recommendedLine(now) {
   const v = tyreView(now);
   const value = recommendedValue(v);
-  return value == null ? t('No recommended pressure known.') : t('Recommended {value} ({from}).', { value, from: recommendedFrom(v) });
-}
-
-const GUESS_FROM = {
-  can: 'Wheel size taken from the factory tyre.',
-  vin: 'Wheel size guessed from the VIN.',
-  tesla_api: 'Wheel size taken from the Tesla API.',
-  teslamate: 'Wheel size taken from the import.',
-};
-
-/**
- * While the placard's pressure is for a wheel size that is only a guess: { said: "Wheel size guessed from the
- * VIN.", ask: "Not 21″?", action: "Set the wheel size" } (pages link the action to where an admin types it);
- * else null.
- */
-export function wheelGuessLine(now) {
-  const v = tyreView(now);
-  if (!v.wheelGuess) return null;
-  return {
-    said: t(GUESS_FROM[v.wheelFrom] || 'Wheel size guessed.'),
-    ask: t('Not {inch}″?', { inch: v.wheelIn }),
-    action: t('Set the wheel size'),
-  };
-}
-
-/**
- * The hover title of the tyres line: how a tyre is judged, and, while which wheel each sensor sits on is not known
- * (nothing the owner can change: the car's input does not say), that each is judged against the lower axle's.
- */
-export function tyresTitle(now) {
-  const v = tyreView(now);
-  const out = [];
-  if (v.front != null) out.push(t('A tyre more than 10 % under its recommended pressure is flagged; a cold morning alone takes a few percent off every tyre.'));
-  if (v.kpa.some((p) => p != null) && !v.mapped) {
-    const split = v.front != null && v.rear != null && Math.abs(v.rear - v.front) >= 0.5;
-    out.push(split ? t('Which wheel each sensor sits on is not known yet, so each tyre is judged against the lower one.') : t('Which wheel each sensor sits on is not known yet.'));
-  }
-  return out.join(' ');
+  const first = value == null ? t('No recommended pressure known.') : t('Recommended {value} ({from}).', { value, from: recommendedFrom(v) });
+  const anyTyre = v.kpa.some((p) => p != null);
+  if (!anyTyre || v.mapped) return first;
+  const split = v.front != null && v.rear != null && Math.abs(v.rear - v.front) >= 0.5;
+  return `${first} ${split ? t('Which wheel each sensor sits on is not known yet, so each tyre is judged against the lower one.') : t('Which wheel each sensor sits on is not known yet.')}`;
 }

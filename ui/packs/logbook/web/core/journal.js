@@ -14,7 +14,7 @@ import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { sep } from './ui.js';
 import { spanHref } from './period.js';
-import { sourceMark, isImported } from './sources.js';
+import { rowTitle } from './sources.js';
 
 export const STRIP_NAMES = Object.freeze({
   driving: 'Driving', charging: 'Charging', online: 'Awake, parked', online_vehicle_bus_only: 'Awake, vehicle bus only',
@@ -168,9 +168,8 @@ export function timelineRow(r, { car, tz, now = api.now(), full = false, period 
   const links = full ? h('p', { class: 'tl-links' },
     r.kind !== 'update' ? h('a', { href: spanHref('trip', { car, from: r.start_ms, to: Math.max(end, r.start_ms + 60000) }) }, 'Trip for this span') : null,
     placeLink(r.start) && r.kind !== 'gap' ? h('a', { href: placeLink(r.start) }, r.start.place ? `Edit ${r.start.place.name}` : 'Name this place') : null,
-    r.kind === 'drive' && !going && placeLink(r.end) ? h('a', { href: placeLink(r.end) }, r.end.place ? `Edit ${r.end.place.name}` : 'Name the destination') : null,
-    isImported(r) ? h('span', { class: 'flag flag-estimated' }, 'Imported') : null) : null;
-  return h('li', { class: ['tl-item', `tl-${cls}`, { 'is-now': going }], dataset: { id: r.id } },
+    r.kind === 'drive' && !going && placeLink(r.end) ? h('a', { href: placeLink(r.end) }, r.end.place ? `Edit ${r.end.place.name}` : 'Name the destination') : null) : null;
+  return h('li', { class: ['tl-item', `tl-${cls}`, { 'is-now': going }], dataset: { id: r.id }, title: rowTitle(r, { energy: r.kind !== 'update' && r.kind !== 'gap' }) || null },
     h('div', { class: 'tl-time' },
       h('time', { datetime: new Date(r.start_ms).toISOString() }, formatTime(r.start_ms, tz)),
       full ? h('span', { class: 'tl-end' }, going ? 'now' : dayKey(r.end_ms, tz) === dayKey(r.start_ms, tz) ? formatTime(r.end_ms, tz) : `${formatDate(r.end_ms, tz, { weekday: false, now })}, ${formatTime(r.end_ms, tz)}`) : null),
@@ -178,5 +177,5 @@ export function timelineRow(r, { car, tz, now = api.now(), full = false, period 
     h('div', { class: 'tl-body' },
       h('p', { class: 'tl-title' }, href ? h('a', { href }, title) : title),
       h('p', { class: 'tl-meta' }, seg(meta)),
-      awake, sourceMark(r, { block: true, short: !full, cls: 'tl-src' }), links));
+      awake, links));
 }

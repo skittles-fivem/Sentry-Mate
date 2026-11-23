@@ -260,7 +260,7 @@ export function defaultCrumbs(s, info, car) {
   const fleet = { label: 'All cars', href: '/' };
   if (info.id === 'fleet') return [{ label: 'All cars' }];
   const group = GROUPS.find((g) => g.id === info.group);
-  const carCrumb = car ? { label: car.name, href: state.linkTo('car', { car: car.id }) } : null;
+  const carCrumb = car ? { label: car.name, href: state.buildUrl('car', { car: car.id, period: s.period }) } : null;
   if (info.id === 'car') return [fleet, { label: car?.name || 'Car' }];
   if (info.parent) {
     const parent = pageInfo(info.parent);

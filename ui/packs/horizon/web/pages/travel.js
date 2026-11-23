@@ -257,7 +257,7 @@ export async function mount(ctx) {
   /* ---------- the cars (one colour each, as on the map) */
   const carStrip = h('div', { class: 'tv-cars', cover: 'visited.section.car_header', 'aria-label': 'Cars on this page' },
     h('span', { class: 'tv-cars-label' }, multi ? 'Cars together on this page' : 'Car'),
-    viewCars.slice(0, 12).map((cid) => h('a', { class: 'tv-car', href: state.linkTo('car', { car: cid }), vars: { '--cc': cssVar(colorOf.get(cid)) }, title: `${carName(cid)}: days counted in ${carTz(cid).replace(/_/g, ' ')}` },
+    viewCars.slice(0, 12).map((cid) => h('a', { class: 'tv-car', href: state.buildUrl('car', { car: cid, period: state.current().period }), vars: { '--cc': cssVar(colorOf.get(cid)) }, title: `${carName(cid)}: days counted in ${carTz(cid).replace(/_/g, ' ')}` },
       h('i', { 'aria-hidden': 'true' }), h('span', null, carName(cid)), h('span', { class: 'faint' }, tzName(carTz(cid))))),
     viewCars.length > 12 ? h('span', { class: 'faint' }, `and ${formatNumber(viewCars.length - 12)} more`) : null);
   root.append(carStrip);
