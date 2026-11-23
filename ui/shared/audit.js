@@ -82,6 +82,7 @@ const BY_GROUP = {
     'place-created': 'Added a place',
     'place-changed': 'Changed a place',
     'place-deleted': 'Removed a place',
+    'place-invoice-priced': 'Priced a place from its Supercharger invoices',
     'place-repriced': 'Repriced a place’s charges',
     'key-assigned': 'Assigned a key',
     'key-unassigned': 'Unassigned a key',

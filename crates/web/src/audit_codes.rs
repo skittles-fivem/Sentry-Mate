@@ -93,6 +93,7 @@ pub const CODES: &[Code] = &[
     c("place-changed", CARS, Some("place"), "Changed a place"),
     c("place-created", CARS, Some("place"), "Added a place"),
     c("place-deleted", CARS, Some("place"), "Deleted a place"),
+    c("place-invoice-priced", CARS, Some("place"), "Priced a place from its Supercharger invoices"),
     c("place-repriced", CARS, Some("place"), "Priced a place's charges again"),
     c("preferences-changed", SET, Some("account"), "Changed preferences"),
     c("purpose-rule-created", CARS, Some("car"), "Added a purpose rule"),

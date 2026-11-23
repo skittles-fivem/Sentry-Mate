@@ -12,14 +12,24 @@
 //!   admin typed covers, and is never written over one. Charges at the place with no cost then get it (a reprice of
 //!   the charges without a cost); costs kept already stay put.
 //!
-//! The sessions come through [`InvoiceRates`], so this does not depend on how invoices are read or kept.
+//! The sessions come through [`InvoiceRates`], so this does not depend on how invoices are read or kept; the
+//! engine's own store is [`Kept`].
+//!
+//! - **When**: [`run`] works them out again in the background ([`Engine::invoice_prices_soon`], one run at a time,
+//!   runs asked for while one is queued folded into it): when the server starts, when an input keeps new or changed
+//!   sessions ([`Engine::invoice_upsert`]), and when a car's charges are rebuilt over the time of one of its sessions
+//!   (the matches may move with them).
+//! - **Audited**: each place whose invoice prices changed leaves an entry ([`Audited`]) the web server takes into the
+//!   audit log ([`Engine::invoice_price_audits`]), kept until then, so a restart in between loses none.
 
+use crate::invoices::Session;
 use crate::placing::{DatedPrice, InvoiceBasis, PriceSource};
 use crate::query::places::Price;
-use crate::{Engine, Result};
+use crate::{Engine, Result, lock, now_ms, records};
 use model::{CarId, Charge, PlaceId};
-use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::Ordering;
 
 /// The median is taken over this many of a place's newest sessions.
 pub const RECENT: usize = 10;
@@ -54,6 +64,40 @@ impl InvoiceRates for Vec<InvoiceRate> {
     fn invoice_rates(&self, e: &Engine) -> Result<Vec<InvoiceRate>> {
         self.as_slice().invoice_rates(e)
     }
+}
+
+/// The invoices this server keeps ([`crate::invoices`]): every session matched to a charge, at the price per kWh
+/// its charging was billed at.
+pub struct Kept;
+
+impl InvoiceRates for Kept {
+    fn invoice_rates(&self, e: &Engine) -> Result<Vec<InvoiceRate>> {
+        let all = e.invoice_sessions()?;
+        let cars: BTreeSet<CarId> = all.values().filter_map(|s| s.car).collect();
+        let mut out = Vec::new();
+        for car in cars {
+            let matches = e.invoice_matches(car)?;
+            for (&charge, keys) in matches.iter() {
+                for s in keys.iter().filter_map(|k| all.get(k)) {
+                    let (Some(per_kwh), Some(currency)) = (rate_of(s), s.currency.clone()) else { continue };
+                    out.push(InvoiceRate { car, charge, start_ms: s.start_ms, currency, per_kwh });
+                }
+            }
+        }
+        out.sort_by_key(|r| (r.car, r.start_ms, r.charge));
+        Ok(out)
+    }
+}
+
+/// The price per kWh a session's charging was billed at: its charging fee by the kWh (the one that billed the most
+/// kWh, when there are more), none when it was billed by the minute or gives no rate.
+pub fn rate_of(s: &Session) -> Option<f64> {
+    s.fees
+        .iter()
+        .filter(|f| f.kind == "charging" && f.unit.as_deref() == Some("kwh"))
+        .filter_map(|f| Some((f.rate.filter(|r| r.is_finite() && *r > 0.0)?, f.usage.unwrap_or(0.0))))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(rate, _)| rate)
 }
 
 /// A price per kWh as kept (5 decimals, as a typed price).
@@ -114,6 +158,51 @@ pub struct Updated {
     pub places: Vec<String>,
     /// Charges without a cost that got one from them.
     pub charges_priced: u64,
+    /// Each place whose invoice prices changed: what it has now.
+    pub changes: Vec<Audited>,
+}
+
+/// A place whose invoice prices changed, as the audit log tells it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Audited {
+    pub at_ms: u64,
+    /// `p<id>`.
+    pub place: String,
+    pub name: String,
+    /// Its invoice prices now, oldest first (none: it has none any more).
+    pub prices: Vec<DatedPrice>,
+    /// Its charges without a cost that got one.
+    pub charges_priced: u64,
+}
+
+impl Audited {
+    /// The sentence of its audit entry.
+    pub fn summary(&self) -> String {
+        let Some(last) = self.prices.last() else {
+            return format!(
+                "The place {} has no price from Supercharger invoices any more (no invoiced session is matched to a \
+                 charge there).",
+                self.name
+            );
+        };
+        let rate = last.price.per_kwh.map_or_else(String::new, |r| format!("{r} {} a kWh", last.price.currency));
+        let from = last.from.as_deref().map_or_else(String::new, |d| format!(" from {d}"));
+        let n = last.invoice.as_ref().map_or(0, |b| b.sessions);
+        let older = match self.prices.len() - 1 {
+            0 => String::new(),
+            1 => " (and 1 older price)".to_string(),
+            k => format!(" (and {k} older prices)"),
+        };
+        let charges = match self.charges_priced {
+            0 => String::new(),
+            1 => "; 1 charge without a cost priced at it".to_string(),
+            k => format!("; {k} charges without a cost priced at it"),
+        };
+        format!(
+            "Priced the place {} from Supercharger invoices: {rate}{from}, the median of {n} recent sessions{older}{charges}.",
+            self.name
+        )
+    }
 }
 
 /// Works out every place's invoice prices from the sessions `src` gives and keeps those that changed (a place
@@ -157,16 +246,94 @@ pub fn update(e: &Engine, src: &dyn InvoiceRates) -> crate::query::QResult<Updat
         want.insert(id, derive(&list, &currency));
     }
     let changed = crate::query::places::set_invoice_prices(e, &want)?;
-    let mut out =
-        Updated { places: changed.iter().map(|&id| crate::query::place_ref(id)).collect(), charges_priced: 0 };
+    let mut out = Updated {
+        places: changed.iter().map(|&id| crate::query::place_ref(id)).collect(),
+        charges_priced: 0,
+        changes: Vec::new(),
+    };
     if changed.is_empty() {
         return Ok(out);
     }
     let cars = crate::query::all_cars(e)?;
+    let now = e.places();
     for id in changed {
-        out.charges_priced += crate::query::places::reprice(e, &cars, id, None, None, true, false)?.charges;
+        let n = crate::query::places::reprice(e, &cars, id, None, None, true, false)?.charges;
+        out.charges_priced += n;
+        out.changes.push(Audited {
+            at_ms: now_ms(),
+            place: crate::query::place_ref(id),
+            name: now.get(id).map(|p| p.name.clone()).unwrap_or_default(),
+            prices: now.prices(id).iter().filter(|x| x.source == PriceSource::Invoice).cloned().collect(),
+            charges_priced: n,
+        });
     }
     Ok(out)
+}
+
+/// The key/value place of the entries the audit log has not taken yet.
+const NS: &str = "invoice-prices";
+const PENDING: &str = "audit";
+/// The most entries kept for the audit log (the oldest go first).
+const MAX_PENDING: usize = 500;
+
+/// Works every place's invoice prices out again from the invoices kept ([`Kept`]) and keeps an audit entry for each
+/// place that changed. One run at a time.
+pub fn run(e: &Engine) -> Result<()> {
+    // a change from here on asks for another run
+    e.inner.invoice_prices_queued.store(false, Ordering::SeqCst);
+    let _one = lock(&e.inner.invoice_prices_run);
+    let up = update(e, &Kept).map_err(|x| match x {
+        crate::query::QueryError::Engine(x) => x,
+        crate::query::QueryError::Db(x) => crate::Error::Db(x),
+        other => crate::Error::Other(other.to_string()),
+    })?;
+    if up.changes.is_empty() {
+        return Ok(());
+    }
+    tracing::info!(
+        "invoice prices: {} place(s) changed, {} charge(s) without a cost priced",
+        up.changes.len(),
+        up.charges_priced
+    );
+    let _w = lock(&e.inner.invoice_write);
+    let mut pending: Vec<Audited> = records::get(&e.inner.db, NS, PENDING)?.unwrap_or_default();
+    pending.extend(up.changes);
+    let over = pending.len().saturating_sub(MAX_PENDING);
+    pending.drain(..over);
+    records::put(&e.inner.db, NS, PENDING, &pending)
+}
+
+impl Engine {
+    /// Queues a run of the places' invoice prices ([`run`]); nothing while the engine is not running (its start
+    /// queues one) or while one is queued already.
+    pub fn invoice_prices_soon(&self) {
+        if self.handle().is_err() || self.inner.invoice_prices_queued.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.send(crate::Work::InvoicePrices);
+    }
+
+    /// Charges of a car changed in `[from_ms, to_ms)`: a run when one of its invoiced sessions is in that time.
+    pub(crate) fn invoice_rows_changed(&self, car: CarId, from_ms: u64, to_ms: u64) {
+        let slack = crate::invoices::TIME_SLACK_MS;
+        let Ok(all) = self.invoice_sessions() else { return };
+        if all.values().any(|s| {
+            s.car == Some(car) && s.start_ms < to_ms.saturating_add(slack) && s.end_ms.saturating_add(slack) >= from_ms
+        }) {
+            self.invoice_prices_soon();
+        }
+    }
+
+    /// Takes the entries of invoice price changes the audit log has not had yet, oldest first (they are gone from
+    /// here once taken).
+    pub fn invoice_price_audits(&self) -> Result<Vec<Audited>> {
+        let _w = lock(&self.inner.invoice_write);
+        let pending: Vec<Audited> = records::get(&self.inner.db, NS, PENDING)?.unwrap_or_default();
+        if !pending.is_empty() {
+            records::put(&self.inner.db, NS, PENDING, &Vec::<Audited>::new())?;
+        }
+        Ok(pending)
+    }
 }
 
 #[cfg(test)]

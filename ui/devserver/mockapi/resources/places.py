@@ -75,7 +75,8 @@ def view(req, p, counts=None):
     c = counts.get(p["id"], {"drives": 0, "charges": 0, "visits": 0, "last_visit_ms": None})
     return {"id": p["id"], "name": p["name"], "kind": p["kind"], "lat": p["lat"], "lon": p["lon"],
             "radius_m": p["radius_m"], "time_zone": p["time_zone"], "address": p["address"],
-            "price": placing.price_on(p, req.now), "prices": copy.deepcopy(placing.prices_of(p)),
+            "price": placing.price_on(p, req.now), "price_source": placing.source_on(p, req.now),
+            "prices": copy.deepcopy(placing.prices_of(p)),
             "counts": {"drives": c["drives"], "charges": c["charges"], "visits": c["visits"]},
             "last_visit_ms": c["last_visit_ms"], "created_ms": p.get("created_ms"), "version": p["version"]}
 

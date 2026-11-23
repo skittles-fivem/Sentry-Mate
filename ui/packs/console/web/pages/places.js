@@ -19,7 +19,7 @@ import { field } from '../core/form.js';
 import { confirmDialog } from '../core/dialog.js';
 import { toast } from '../core/toast.js';
 import { isAdmin } from '../core/prefs.js';
-import { openPriceEditor, pricesOf, priceOnDay, priceLine, fromWord, dayIn } from '../shared/prices.js';
+import { openPriceEditor, pricesOf, priceOnDay, priceLine, fromWord, dayIn, sourceWord, invoiceNote } from '../shared/prices.js';
 
 const PRICE_CLS = { dialog: 'dlg-pp', btn: 'btn', primary: 'btn--primary', ghost: '', plain: '', input: 'in', select: 'in' };
 
@@ -399,13 +399,15 @@ export async function mount(ctx) {
     const datedBox = h('div', { class: 'fld pl-dated' }, h('span', { class: 'fld-label' }, 'by date:'),
       h('div', { class: 'fld-box' },
         dated.length ? h('ul', { class: 'pl-dated-list' }, dated.map((x) => h('li', null, h('b', null, fromWord(x.from).toLowerCase()), ' ', priceLine(x.price),
-          x.source === 'invoice' ? h('span', { class: 'muted' }, ' (from invoices)') : null, x === nowEntry ? h('span', { class: 'muted' }, ' <- today') : null))) : h('span', { class: 'muted' }, 'no prices yet '),
+          x.source === 'invoice' ? h('span', { class: 'muted' }, ` (${sourceWord(x.source)})`) : null, x === nowEntry ? h('span', { class: 'muted' }, ' <- today') : null))) : h('span', { class: 'muted' }, 'no prices yet '),
         cur && !lock ? h('button', { class: 'btn', type: 'button', onclick: async () => {
           if (dirty && !(await confirmDialog('Your other changes are not saved. Leave them and edit the prices?', { title: 'edit prices?', ok: 'edit prices' }))) return;
           const saved = await openPriceEditor({ client: ctx.api, place: cur, cls: PRICE_CLS });
           if (saved) { dirty = false; toast('Prices saved.', { next: true }); ctx.reload(); }
         } }, 'edit prices by date') : null,
-        h('p', { class: 'note' }, cur ? 'A charge is costed at the price of its own day; the fields below change the price in force today. A typed price wins over one from invoices.' : 'Save the place first; then it can have prices from a date on.')));
+        h('p', { class: 'note' }, cur ? 'A charge is costed at the price of its own day; the fields below change the price in force today. A typed price wins over one from invoices.' : 'Save the place first; then it can have prices from a date on.'),
+        // the price in force today is from invoices: the fields show it, and a price typed there wins over it
+        invoiceNote(cur) ? h('p', { class: 'note pl-from-invoice' }, invoiceNote(cur)) : null));
     const mapEl = h('div', { class: 'map map--sm', role: 'img', 'aria-label': 'The circle on the map' });
     const formEl = h('form', { class: 'frm', novalidate: true, cover: 'web.geofences.form.validation', onsubmit: (e) => { e.preventDefault(); save(); } },
       h('div', { cover: 'web.geofences.form.name' }, fName.el), fKind.el, fRadius.el, fLat.el, fLon.el, fZone.el,

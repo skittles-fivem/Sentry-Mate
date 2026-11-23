@@ -30,7 +30,7 @@ import { field, setFieldError, choice, switchField } from '../core/form.js';
 import { zoneLabel } from '../core/format.js';
 import { onTheme } from '../core/prefs.js';
 import { remount } from '../core/router.js';
-import { openPriceEditor, pricesOf, priceOnDay, priceLine, fromWord, dayIn } from '../shared/prices.js';
+import { openPriceEditor, pricesOf, priceOnDay, priceLine, fromWord, dayIn, sourceWord, invoiceNote } from '../shared/prices.js';
 
 const PRICE_CLS = { btn: 'button button-small', primary: '', ghost: 'button-quiet', plain: 'button-quiet', input: 'field-input', select: 'field-select' };
 
@@ -819,8 +819,10 @@ async function mountEditor(ctx) {
     h('h4', { class: 'pl-dated-title' }, 'Prices by date'),
     dated.length ? h('ul', { class: 'pl-dated-list' }, dated.map((x) => h('li', { class: x === nowEntry ? 'is-now' : null },
       h('span', { class: 'pl-dated-from' }, fromWord(x.from)), ' ', priceLine(x.price),
-      h('span', { class: 'cell-sub' }, [x.source === 'invoice' ? 'from Supercharger invoices' : null, x === nowEntry ? 'in force today' : null].filter(Boolean).join(' · '))))) : null,
+      h('span', { class: 'cell-sub' }, [x.source === 'invoice' ? `${sourceWord(x.source)} (Supercharger)` : null, x === nowEntry ? 'in force today' : null].filter(Boolean).join(' · '))))) : null,
     h('p', { class: 'note' }, cur ? 'A charge is costed at the price of its own day. The fields below change the price in force today; a price you type wins over one from invoices.' : 'Save the place first; then it can have prices from a date on.'),
+    // the price in force today is from invoices: the fields show it, and a price typed there wins over it
+    invoiceNote(cur) ? h('p', { class: 'note pl-from-invoice' }, invoiceNote(cur)) : null,
     cur && editable ? button(dated.length ? 'Add or change prices by date' : 'Add prices by date', { cls: 'button-small', iconName: 'calendar', onclick: async () => {
       if (dirty && !(await confirmDialog({ title: 'Edit prices by date?', text: 'Your other changes to this place are not saved yet.', yes: 'Edit prices', no: 'Stay' }))) return;
       const saved = await openPriceEditor({ client: api, place: cur, cls: PRICE_CLS });

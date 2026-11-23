@@ -34,7 +34,7 @@ import { zoneLabel } from '../core/format.js';
 import { display } from '../core/display.js';
 import { onTheme } from '../core/prefs.js';
 import { remount } from '../core/router.js';
-import { setPrice } from '../shared/prices.js';
+import { setPrice, priceInForce } from '../shared/prices.js';
 
 const PRICE_CLS = { btn: 'button button-small', primary: '', ghost: 'button-quiet', plain: 'button-quiet', input: 'field-input', select: 'field-select' };
 
@@ -774,7 +774,12 @@ export async function mount(ctx) {
     const placeCell = (p) => {
       const href = placeLink({ place: p.place ? { id: p.place } : null, lat: p.lat, lon: p.lon });
       return h('span', null, href ? h('a', { class: 'ch-place', href, title: p.place ? `Edit ${p.label} in Places` : 'Save this spot as a place' }, p.label) : p.label,
-        multi && p.cars && p.cars.length ? h('span', { class: 'cell-sub' }, p.cars.map(carName).join(', ')) : null);
+        multi && p.cars && p.cars.length ? h('span', { class: 'cell-sub' }, p.cars.map(carName).join(', ')) : null, invoicePrice(p));
+    };
+    // a place priced from its Supercharger invoices says so under its name
+    const invoicePrice = (p) => {
+      const f = priceInForce(p);
+      return f?.source === 'invoice' ? h('span', { class: 'cell-sub from-invoice', title: 'Worked out from its Supercharger invoices; a price typed on the place wins over it' }, `${f.line} from invoice`) : null;
     };
     const sessions = { key: 'sessions', label: 'Sessions', num: true, cell: (p) => formatNumber(p.sessions) };
     // an admin sets the place's price from here; a spot that is no saved place is saved first

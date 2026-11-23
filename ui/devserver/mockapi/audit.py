@@ -153,6 +153,7 @@ def seed(ds, now):
         (26 * DAY, "alex", "place-created", "place:p20", None, "Added the place Corner Bakery (12 drives and 0 charges now carry its name)."),
         (26 * DAY - HOUR, "alex", "place-changed", "place:p20", None, "Changed the radius of the place Corner Bakery to 80 m."),
         (25 * DAY, "alex", "place-repriced", "place:p1", None, "Repriced 14 past charges at Home."),
+        (25 * DAY - 2 * HOUR, S, "place-invoice-priced", "place:p36", None, "Priced the place Supercharger Schaumburg from Supercharger invoices: 0.42 USD a kWh from 2025-10-12, the median of 8 recent sessions."),
         (25 * DAY - HOUR, "alex", "place-deleted", "place:p20", None, "Removed the place Corner Bakery (12 drives lost the name)."),
         (24 * DAY, "alex", "update-version", f"update:c2:{up1}", "c2", "Set the software version of an update of Maple to 2026.32.6."),
         (21 * DAY, "admin", "role-changed", "account:a2", None, "Made watch a watch account."),

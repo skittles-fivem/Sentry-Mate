@@ -81,6 +81,37 @@ export function priceLine(price) {
   return out.join(' · ') || c || 'No price';
 }
 
+/** Who set a price in force, in words: 'from invoice' for one worked out from Supercharger invoices (`source` or
+ *  `price_source` "invoice"), '' for a typed one or none. */
+export const sourceWord = (source) => (source === 'invoice' ? 'from invoice' : '');
+
+/** The price in force of a place (GET /places/{place}) or a charging place (GET /charging-stats/places), with who set
+ *  it: { price, source, line, invoice } (invoice: the entry's { sessions } when it is from invoices), or null with no
+ *  price. Uses `price_source` when the server gives it, else the dated entry in force today. */
+export function priceInForce(place, now = Date.now()) {
+  if (!place) return null;
+  const price = place.place_price !== undefined ? place.place_price : place.price;
+  if (!price) return null;
+  let source = place.price_source || null;
+  let entry = null;
+  if (Array.isArray(place.prices)) {
+    entry = priceOnDay(pricesOf(place), dayIn(now, place.time_zone));
+    if (!source) source = entry ? srcOf(entry) : 'typed';
+  }
+  source = source || 'typed';
+  return { price, source, line: priceLine(price), invoice: source === 'invoice' ? entry?.invoice || null : null };
+}
+
+/** A sentence for a place price from invoices, for an editor: "Today's price, $0.42/kWh, is from Supercharger
+ *  invoices: the median of the 8 most recent sessions here. A price you type wins over it." ('' when typed). */
+export function invoiceNote(place, now = Date.now()) {
+  const f = priceInForce(place, now);
+  if (!f || f.source !== 'invoice') return '';
+  const n = f.invoice?.sessions;
+  const of = n ? `: the median of the ${n === 1 ? 'one most recent session' : `${n} most recent sessions`} here` : '';
+  return `Today's price, ${f.line}, is from Supercharger invoices${of}. A price you type wins over it.`;
+}
+
 /** The words for an entry's first day. */
 export const fromWord = (from) => (from ? `From ${from}` : 'From the start');
 

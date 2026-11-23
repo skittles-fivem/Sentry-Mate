@@ -88,6 +88,7 @@ class App:
         self.build_s = time.monotonic() - t0
         self.store = Store(cfg, self.ds, self.clock)
         self.cache = {}
+        resources.invoices.apply_prices(self)  # the places' prices from the made-up Supercharger invoices
         # One change at a time: a handler checks `version` and then changes the data, and two requests
         # with the same version must not both pass the check.
         self.write_lock = threading.Lock()

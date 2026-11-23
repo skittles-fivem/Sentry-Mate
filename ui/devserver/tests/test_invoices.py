@@ -151,3 +151,42 @@ class WatchSeesNone(ServerCase):
         for path in (BASE, BASE + "/zip", BASE + "/tesla-1000101/pdf"):
             st, _, _ = self.c.request("GET", path)
             self.assertEqual(st, 403, path)
+
+
+class InvoicePrices(ServerCase):
+    """A place's prices from its Supercharger invoices: dated, marked "invoice", the median per kWh billed; the price
+    in force at Supercharger Schaumburg (no typed price) is one, and the Charging places list says so."""
+
+    def test_a_place_without_a_typed_price_is_priced_from_its_invoices(self):
+        p = self.c.get("/api/v1/places/p36")
+        self.assertEqual(p["price_source"], "invoice")
+        inv = [x for x in p["prices"] if x["source"] == "invoice"]
+        self.assertEqual(len(inv), len(p["prices"]))
+        self.assertEqual(p["price"], inv[-1]["price"])
+        self.assertEqual(inv[-1]["price"]["currency"], "USD")
+        self.assertGreater(inv[-1]["invoice"]["sessions"], 0)
+        # a rate some session was billed at (the median is always one)
+        rates = {f["rate"] for s in self.walk(BASE, limit=100) if s["charge"] for f in s["fees"] if f["kind"] == "charging"}
+        self.assertIn(inv[-1]["price"]["per_kwh"], rates)
+
+    def test_a_typed_price_wins_and_says_so(self):
+        p = self.c.get("/api/v1/places/p3")
+        self.assertEqual(p["price_source"], "typed")
+        self.assertTrue(any(x["source"] == "invoice" for x in p["prices"]))
+        self.assertIsNone(self.c.get("/api/v1/places/p2")["price_source"])
+
+    def test_the_charging_places_list_gives_the_place_price_and_who_set_it(self):
+        rows = self.walk(f"/api/v1/charging-stats/places?cars=c2&from_ms={NOW - 400 * DAY}&to_ms={NOW}", limit=100)
+        by = {x["place"]: x for x in rows if x["place"]}
+        self.assertEqual(by["p36"]["price_source"], "invoice")
+        self.assertEqual(by["p36"]["place_price"]["currency"], "USD")
+        for x in rows:
+            self.assertIn("place_price", x)
+            if x["place"] is None:
+                self.assertIsNone(x["price_source"])
+
+    def test_the_audit_log_has_the_change(self):
+        rows = self.walk("/api/v1/audit", limit=100)
+        hit = [r for r in rows if r["action"] == "place-invoice-priced"]
+        self.assertTrue(hit)
+        self.assertEqual(hit[0]["target"], "place:p36")
