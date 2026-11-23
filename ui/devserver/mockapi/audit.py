@@ -136,7 +136,6 @@ def seed(ds, now):
         (34 * DAY, "alex", "teslamate-local-added", "teslamate:local", None, "Added the local TeslaMate (MQTT 192.0.2.40:1883)."),
         (33 * DAY, "admin", "mqtt-changed", "settings:mqtt", None, "Changed the MQTT settings: publishing on, broker 192.0.2.40:1883."),
         (33 * DAY - MIN, "admin", "mqtt-tested", "settings:mqtt", None, "Tested the MQTT broker: connected."),
-        (2 * DAY - 5 * HOUR, S, "can-logs-rechecked", "car:c2", "c2", "Checked 12 CAN logs of Maple that had failed their check again, by this version's rules: 9 verified now"),
         (2 * DAY - 4 * HOUR, S, "can-logs-missing", "car:c2", "c2", "Found 3 CAN logs of Maple missing on the server; asked the car to send them again"),
         (30 * DAY, "admin", "car-changed", "car:c2", "c2", "Changed Maple's time zone to America/Chicago."),
         (30 * DAY - HOUR, "admin", "car-settings-changed", "car:c3", "c3", "Changed Atlas's battery size when new to 87 kWh."),

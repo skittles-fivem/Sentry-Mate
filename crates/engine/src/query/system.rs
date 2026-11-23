@@ -951,9 +951,6 @@ pub struct Health {
     pub logs_waiting: u64,
     /// The logs the server should have but no longer does (see `ingest::missing`), over all the car's keys.
     pub missing_logs: MissingLogs,
-    /// Every log of the car's keys as the CAN Bridge app is told it now (`check` and `check_reason` of the upload
-    /// API's status call), counted, with the runs of failed logs: what `sentry-mate log-checks` prints.
-    pub log_checks: ingest::judge::LogChecks,
     pub rebuild_pending: bool,
     /// The newest stretch where one input's GPS fixes disagreed with another's (`gps_inputs_disagree`): which
     /// inputs, and whose fixes were left out of positions there.
@@ -1013,22 +1010,6 @@ pub fn missing_logs(e: &Engine, car: CarId) -> QResult<MissingLogs> {
         }
     }
     Ok(m)
-}
-
-/// Every log of `keys` as the CAN Bridge app is told it now, counted over the keys (one pass over each key's records).
-pub fn log_checks(e: &Engine, keys: &[String]) -> QResult<ingest::judge::LogChecks> {
-    let rt = e.handle()?;
-    let mut all = ingest::judge::LogChecks::default();
-    for key in keys {
-        if !e.judge().known(key) {
-            continue;
-        }
-        let uploading = rt.block_on(e.store().uploading(key));
-        let c =
-            rt.block_on(e.judge().log_checks(key, uploading)).map_err(|x| QueryError::Engine(crate::Error::Io(x)))?;
-        all.merge(c);
-    }
-    Ok(all)
 }
 
 /// What the Data health verdict rests on: the car's keys and their uploads, the newest judged log, and the reasons
@@ -1198,7 +1179,6 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
             unknown_ms,
             logs_waiting: waiting,
             missing_logs: missing,
-            log_checks: log_checks(e, &c.vehicle_keys)?,
             rebuild_pending,
             gps_disagreement: e.gps_disagreement(car),
             uploads_enabled: None,

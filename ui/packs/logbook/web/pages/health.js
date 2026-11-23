@@ -35,14 +35,6 @@ import { fullRebuild } from './rebuild-parts.js';
 import * as fr from '../shared/fullrebuild.js';
 import { scrollBox } from '../shared/scrollbox.js';
 
-// every log of the car as the CAN Bridge app is told it now (`sentry-mate log-checks --car` prints the same)
-function logChecksText(lc, fmt) {
-  if (!lc) return '';
-  const why = [['mismatch', lc.mismatch], ['bad signature', lc.bad_signature], ['unsigned', lc.unsigned], ['chain break', lc.chain_break]]
-    .filter((x) => x[1]).map((x) => `${x[0]} ${fmt(x[1])}`).join(', ');
-  return `All logs as the CAN Bridge app is told: ${fmt(lc.verified)} verified, ${fmt(lc.pending)} pending, ${fmt(lc.failed)} failed${why ? ` (${why})` : ''}.`;
-}
-
 export const id = 'health';
 export const css = true;
 export const title = (ctx) => (ctx.car ? 'Data health and storage' : 'Server and storage');
@@ -343,7 +335,7 @@ async function mountCar(ctx) {
       figure('Last upload', hl.last_upload_ms != null ? ago(hl.last_upload_ms, { stale: now - hl.last_upload_ms > HOUR }) : q(null, 'count', { why: 'nothing yet' }),
         hl.last_upload_ms != null ? `${when(hl.last_upload_ms, tz)}. ${now - hl.last_upload_ms > HOUR ? (reasons.includes('upload_silence') ? 'Over an hour ago: see the fix above.' : 'Over an hour ago, but the car is asleep: nothing to fix.') : 'Logs arrive as the car sends them.'}` : 'No log has arrived. Pair a CAN Bridge on Settings: Cars.'),
       figure('Last log check', tw ? h('span', { class: `hl-${tw[1]}` }, tw[0]) : q(null, 'count', { why: 'none checked yet' }),
-        [tw ? [tw[2], trust.reason ? ` Why: ${TRUST_REASONS[trust.reason] || trust.reason}.` : '', trust.log_start_ms != null ? ` The log from ${when(trust.log_start_ms, tz)}.` : ''].join('') : 'A log is checked as soon as it arrives.', logChecksText(hl.log_checks, formatNumber)].filter(Boolean).join(' ')),
+        tw ? [tw[2], trust.reason ? ` Why: ${TRUST_REASONS[trust.reason] || trust.reason}.` : '', trust.log_start_ms != null ? ` The log from ${when(trust.log_start_ms, tz)}.` : ''].join('') : 'A log is checked as soon as it arrives.'),
       figure('Logs waiting', q(hl.logs_waiting ?? 0, 'count'), hl.logs_waiting ? 'Arrived, not read yet: their key is not trusted.' : 'Every log that arrived has been read.'),
       figure('Unknown time', hl.unknown_ms != null ? q(hl.unknown_ms, 'duration') : q(null, 'duration', { why: 'not known' }),
         `In the period: time with no usable data, in ${count(spans.length, 'span')}. Asleep is known time, not counted here.`),

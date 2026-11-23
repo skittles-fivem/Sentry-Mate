@@ -136,12 +136,28 @@ async fn scan_keys(app: &AppState, gate: &gate::Gate, e: &Arc<Engine>, keys: Vec
             continue;
         }
         found += scan.new.len();
-        let n = scan.new.len();
-        let logs = if n == 1 { "1 CAN log".to_string() } else { format!("{n} CAN logs") };
-        audit_key(app, &key, "can-logs-missing", move |whose| {
-            format!("Found {logs} of {whose} missing on the server; asked the car to send them again")
-        })
-        .await;
+        let (n, k) = (scan.new.len(), key.clone());
+        let _ = app
+            .blocking(move |app| {
+                let e = app.service::<Engine>()?;
+                let car = q::all_cars(&e)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|&c| e.db().car(c).ok().flatten().is_some_and(|c| c.vehicle_keys.contains(&k)));
+                let logs = if n == 1 { "1 CAN log".to_string() } else { format!("{n} CAN logs") };
+                let (t, whose) = match car {
+                    Some(c) => (Some(target("car", Some(c), "")), app.car_name(c)),
+                    None => (None, "a CAN Bridge key not given to a car".to_string()),
+                };
+                let summary =
+                    format!("Found {logs} of {whose} missing on the server; asked the car to send them again");
+                let details = crate::ctx::audit_details(t.as_deref(), &summary);
+                if let Err(err) = app.accounts.audit().record(None, None, "can-logs-missing", &details) {
+                    tracing::warn!("audit: {err}");
+                }
+                Ok(())
+            })
+            .await;
     }
     if found > 0 {
         tracing::info!("missing CAN logs: {found} found missing on the server; the cars are asked to send them again");
@@ -156,77 +172,6 @@ impl Drop for KeyDone {
     fn drop(&mut self) {
         scan_edit(|s| s.keys_done += 1);
     }
-}
-
-/// An audit entry by the server itself on the car a car key belongs to (`summary` is told the car's name, or what the
-/// key is when no car has it).
-async fn audit_key(
-    app: &AppState,
-    key: &str,
-    code: &'static str,
-    summary: impl FnOnce(String) -> String + Send + 'static,
-) {
-    let k = key.to_string();
-    let _ = app
-        .blocking(move |app| {
-            let e = app.service::<Engine>()?;
-            let car = q::all_cars(&e)
-                .unwrap_or_default()
-                .into_iter()
-                .find(|&c| e.db().car(c).ok().flatten().is_some_and(|c| c.vehicle_keys.contains(&k)));
-            let (t, whose) = match car {
-                Some(c) => (Some(target("car", Some(c), "")), app.car_name(c)),
-                None => (None, "a CAN Bridge key not given to a car".to_string()),
-            };
-            let details = crate::ctx::audit_details(t.as_deref(), &summary(whose));
-            if let Err(err) = app.accounts.audit().record(None, None, code, &details) {
-                tracing::warn!("audit: {err}");
-            }
-            Ok(())
-        })
-        .await;
-}
-
-/// Once at the start, before the first look for missing logs: each car key whose records were judged by older rules
-/// has its failed logs judged again by the rules of this version (`ingest::judge::Judge::rejudge_old`), each key
-/// through the data folder's write gate; nothing is sent again. A key with logs judged again gets an audit entry
-/// (`can-logs-rechecked`) on its car, saying how many verify now. Returns how many verify now.
-pub async fn rejudge_old_logs(app: &AppState, gate: &gate::Gate) -> u64 {
-    let Ok(e) = app.service::<Engine>() else { return 0 };
-    let keys = match e.judge().keys().await {
-        Ok(k) => k,
-        Err(err) => {
-            tracing::warn!("CAN log checks: the car keys could not be listed: {err}");
-            return 0;
-        }
-    };
-    let mut verified = 0;
-    for key in keys {
-        tokio::task::yield_now().await;
-        let Some(pass) = through_gate(gate).await else { continue };
-        let r = e.judge().rejudge_old(&key).await;
-        drop(pass);
-        let done = match r {
-            Ok(Some(d)) if d.judged > 0 => d,
-            Ok(_) => continue,
-            // not the key: the server's log is kept in the clear
-            Err(err) => {
-                tracing::warn!("CAN log checks: a car key's failed logs could not be judged again: {err}");
-                continue;
-            }
-        };
-        verified += done.verified;
-        let logs = |n: u64| if n == 1 { "1 CAN log".to_string() } else { format!("{n} CAN logs") };
-        let (judged, now) = (logs(done.judged), done.verified);
-        audit_key(app, &key, "can-logs-rechecked", move |whose| {
-            format!("Checked {judged} of {whose} that had failed their check again, by this version's rules: {now} verified now")
-        })
-        .await;
-    }
-    if verified > 0 {
-        tracing::info!("CAN log checks: {verified} logs that had failed their check verify by this version's rules");
-    }
-    verified
 }
 
 pub fn routes() -> Router<AppState> {

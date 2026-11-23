@@ -33,14 +33,6 @@ import { deviceText, keyRows } from './device-name.js';
 import { fullRebuildTile } from '../core/fullrebuild.js';
 import * as fr from '../shared/fullrebuild.js';
 
-// every log of the car as the CAN Bridge app is told it now (`sentry-mate log-checks --car` prints the same)
-function logChecksText(lc, fmt) {
-  if (!lc) return '';
-  const why = [['mismatch', lc.mismatch], ['bad signature', lc.bad_signature], ['unsigned', lc.unsigned], ['chain break', lc.chain_break]]
-    .filter((x) => x[1]).map((x) => `${x[0]} ${fmt(x[1])}`).join(', ');
-  return `All logs as the CAN Bridge app is told: ${fmt(lc.verified)} verified, ${fmt(lc.pending)} pending, ${fmt(lc.failed)} failed${why ? ` (${why})` : ''}.`;
-}
-
 export const id = 'health';
 export const css = true;
 export const shape = [['full', 'h1'], [2, 'h3'], [2, 'h3'], [1, 'h1'], [1, 'h1'], [1, 'h1'], [1, 'h1']];
@@ -163,7 +155,6 @@ async function mountCar(ctx) {
     h('ul', { class: 'checks' },
       checkRow({ name: 'Last log arrived', sub: hl.last_upload_ms != null ? when(hl.last_upload_ms) : 'Pair a CAN Bridge in car settings.', word: hl.last_upload_ms != null ? ago(hl.last_upload_ms) : 'Never', level: reasons.includes('upload_silence') ? 'bad' : hl.last_upload_ms != null ? 'ok' : 'off' }),
       checkRow({ name: 'Last log check', sub: trust.reason ? `Reason: ${trust.reason.replace(/_/g, ' ')}` : trust.log_start_ms != null ? `Log from ${when(trust.log_start_ms)}` : 'Signature and hash chain', word: tw ? tw[0] : 'None yet', level: tw ? tw[1] : 'off' }),
-      checkRow({ name: 'All log checks', sub: logChecksText(hl.log_checks, n0) || 'Not known yet', word: hl.log_checks ? `${n0(hl.log_checks.failed)} failed` : '—', level: !hl.log_checks ? 'off' : hl.log_checks.failed ? 'warn' : 'ok' }),
       checkRow({ name: 'Logs waiting', sub: hl.logs_waiting ? 'Their key is not trusted yet.' : 'Every log that arrived was read.', word: n0(hl.logs_waiting ?? 0), level: hl.logs_waiting ? 'warn' : 'ok' }),
       checkRow({ name: 'Unknown time', sub: `${n0(hl.unknown_spans_total ?? spans.length)} spans in the period (asleep is known, not unknown)`, word: formatDuration(hl.unknown_ms ?? 0), level: hl.unknown_ms ? 'warn' : 'ok' }),
       checkRow({ name: 'Chain gaps', sub: 'Logs missing from the hash chain', word: n0(hl.chain_gaps_total ?? (hl.chain_gaps || []).length), level: (hl.chain_gaps || []).length ? 'warn' : 'ok' }),

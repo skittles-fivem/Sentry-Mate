@@ -387,15 +387,8 @@ Every log is kept as uploaded, whatever its check says. Each gets one of these r
 | failed | A bad signature or sidecar, a changed file, not signed although the car key is paired, or signed by another key. |
 | waiting | The sidecar hasn't come. After 10 minutes the log is judged without it. |
 
-- `log-checks --car c1` counts every log of a car as the app is told it, per `check_reason`, with when the failed
-  runs were, naming no log or key ([Log checks](commands.md#log-checks)); Data health shows the same counts. `chain`
-  shows the paired key's failed logs and the gaps ([The chain report](commands.md#the-chain-report)). `log decode`
-  says one log's result.
-- A log fails for what is wrong with it, never for an earlier log. A changed, cut, unsigned or wrongly signed log
-  fails, and so does a log whose chain link contradicts the verified log before it. A log after a failed or missing
-  one, whose own file and signature are fine, is verified and starts a new segment of the chain: the break shows
-  once, as that log's failure or as a gap in the chain report and on Data health, and a missing log is asked of the
-  car again ([Did each log arrive intact](cars-and-bridge.md#did-each-log-arrive-intact)).
+- No command lists each log's result yet. `chain` shows the paired key's failed logs and the gaps
+  ([The chain report](commands.md#the-chain-report)). `log decode` says one log's result.
 - `log decode` decodes only `verified` and `unsigned` logs, unless `--any`. That is the only way to use a failed log
   today, one log at a time.
 - A log signed by another key is marked failed. `keys` lists that key. Check it in the app, then trust it with

@@ -10,7 +10,7 @@
 // - Reference values (capacity and range when new, warranty threshold) are the car's settings
 //   (PATCH .../settings, admin), typed in the person's units and checked by the server.
 // Asleep is not unknown: asleep spans are shaded blue and lines go on through them; unknown spans are
-// grey and lines break there. Live: `now` deltas move the Now panel; `rows` reloads the parked list.
+// grey and lines break there. Live: `now` deltas move the Now panel; `rows` events of the car build the page again.
 
 import * as state from '../shared/state.js';
 import { h, svg, replace, cssVar, steady } from '../shared/dom.js';
@@ -29,6 +29,7 @@ import { field, form, showApiError } from '../core/form.js';
 import { flash } from '../core/flash.js';
 import { rpx } from '../core/display.js';
 import { srcMark, srcText, srcShort } from '../core/source.js';
+import { onRows } from '../shared/live.js';
 const CL_IDLE = 'Point at the chart for the values at a time.';
 const LIFE_KINDS = ['smo', 'tesla_api', 'teslafi_api', 'teslamate_local', 'import'];
 const LIFE_WORDS = { smo: 'SMO', tesla_api: 'the Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'local TeslaMate', import: 'imported history' };
@@ -274,6 +275,9 @@ export async function mount(ctx) {
     uplot(paintProjected)().catch((e) => replace(prSlot, errorState(e, { compact: true, home: false, retry: () => paintProjected() }))),
     uplot(paintParked)(),
   ]);
+  // live: a drive, charge or parked spell of the car started or ended (a burst of them, once it has passed): the
+  // capacity, lifetime and parked figures change, so the page is built again off screen and swapped in whole
+  onRows(ctx.api, { car: cid, kinds: ['drives', 'charges', 'states', 'visits'], waitMs: 1500, run: () => { if (ctx.alive()) ctx.refresh(); } });
   // ready once every section has its data: the charts and the parked list are part of the first render
   if (ctx.alive()) ctx.ready();
   return {};
@@ -748,7 +752,6 @@ export async function mount(ctx) {
         metric('What it cost', s.cost?.amount != null ? formatMoney(s.cost.amount, s.cost.currency) : null, null, { size: 'sm', explain: s.cost ? `At the ${s.cost.basis || 'home price'}.` : 'Set a home price in Places to see this.', why: 'No home price' }));
     }
     replace(vdSlot, h('div', { class: 'vd-wrap' }, sumEl, t.el));
-    ctx.events('rows', (ev) => { if (ev.data?.car === cid && (ev.data.kinds || []).some((k) => k === 'parked' || k === 'drive' || k === 'charge')) t.reload(params()); });
     await t.ready;
   }
 

@@ -135,10 +135,7 @@ impl Watcher {
             let t0 = self.clock();
             for car in q::all_cars(&e).unwrap_or_default() {
                 if let Ok(h) = crate::resources::system::health_now(&e, car) {
-                    out.push((
-                        Topic::Health(car),
-                        ("health", Some(car), false, json!({ "car": ids::car(car), "health": h })),
-                    ));
+                    out.push((Topic::Health(car), ("health", Some(car), false, json!({ "car": ids::car(car), "health": h }))));
                 }
             }
             self.due.health = next(t0, self.clock(), HEALTH_GAP_MS);

@@ -1347,3 +1347,4 @@ mod tests {
         assert!(s.key_work().is_some());
     }
 }
+
