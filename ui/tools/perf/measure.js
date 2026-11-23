@@ -1,0 +1,285 @@
+#!/usr/bin/env node
+// Browser-delivery measurement for Sentry Mate's UI packs: for each pack x page, a cold load (new browser context,
+// empty cache) and a warm load (the same URL again in the same page), on an emulated phone with a throttled CPU and
+// network. Made-up data only (a `dev seed` data folder).
+//
+//   node measure.js --base https://127.0.0.1:10101 --user owner --pass 'correct horse battery staple' \
+//     [--packs instrument,logbook,...] [--pages car,drives,charges,battery,settings] \
+//     [--out results.json] [--md results.md] [--label baseline] [--timeout 90000] [--quiet 500]
+//
+// Conditions (stated in the output too):
+//   CPU      Emulation.setCPUThrottlingRate { rate: 4 }
+//   network  Network.emulateNetworkConditions { latency: 150 ms, download 1.6 Mbit/s * 0.9 = 180000 B/s,
+//            upload 750 kbit/s * 0.9 = 84375 B/s } (Lighthouse's mobile "slow 4G / fast 3G" figures)
+//   device   390 x 844 CSS px, deviceScaleFactor 3, isMobile, hasTouch
+//
+// Time to usable (ms after navigation start, in the page's own clock):
+//   the later of (a) the moment the page's main view (#view, else #main, else <main>) last became "ready" — it
+//   has content (an element child and some text), no aria-busy="true" on it or inside it, and no loading
+//   placeholder inside it (.loading, .page--loading, .lb-loading, .loading-grid, .loading-head, .skeleton,
+//   [class*="skeleton"]) — and (b) the last responseEnd of any resource except /api/v1/events (the SSE stream);
+//   the run waits until the view is ready and the network (CDP, excluding /api/v1/events) has had no request in
+//   flight for --quiet ms (500 by default). All counts (bytes, requests, duplicates, long tasks) are taken over
+//   the load up to that settle point.
+'use strict';
+const { chromium } = require('playwright');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const args = (() => {
+  const a = {};
+  const v = process.argv.slice(2);
+  for (let i = 0; i < v.length; i++) {
+    if (v[i].startsWith('--')) {
+      const k = v[i].slice(2);
+      const nx = v[i + 1];
+      if (nx === undefined || nx.startsWith('--')) a[k] = true; else { a[k] = nx; i++; }
+    }
+  }
+  return a;
+})();
+
+const BASE = (args.base || 'https://127.0.0.1:10101').replace(/\/$/, '');
+const USER = args.user || 'owner';
+const PASS = args.pass || process.env.SM_PASS || 'correct horse battery staple';
+const PACKS = (args.packs || 'instrument,logbook,horizon,console,pebble,manager').split(',');
+const PAGES = (args.pages || 'car,drives,charges,battery,settings').split(',');
+const TIMEOUT = Number(args.timeout || 90000);
+const QUIET = Number(args.quiet || 500);
+const LABEL = args.label || 'run';
+const OUT = args.out || 'perf-results.json';
+const MD = args.md || OUT.replace(/\.json$/, '') + '.md';
+
+const NET = { offline: false, latency: Number(args.latency || 150), downloadThroughput: Math.round(1.6e6 * 0.9 / 8), uploadThroughput: Math.round(750e3 * 0.9 / 8) };
+const CPU = Number(args.cpu || 4);
+const DEVICE = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true,
+  userAgent: 'Mozilla/5.0 (Linux; Android 13; Phone) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36' };
+
+// every pack shares ui/packs/*/web/shared/state.js's ROUTES; "settings" is Settings: Display and units
+const PATHS = {
+  car: (c) => `/cars/${c}`,
+  drives: (c) => `/cars/${c}/drives`,
+  charges: (c) => `/cars/${c}/charges`,
+  battery: (c) => `/cars/${c}/battery`,
+  settings: () => '/settings/display',
+};
+
+const READY_SELECTOR_BLOCKERS = '[aria-busy="true"], .loading, .page--loading, .lb-loading, .loading-grid, .loading-head, .skeleton, [class*="skeleton"]';
+
+// runs in every document before its scripts: long tasks, a resource buffer big enough, and the "view ready" clock
+const INIT = `(() => {
+  try { performance.setResourceTimingBufferSize(100000); } catch (e) {}
+  const lt = { count: 0, total: 0, max: 0 };
+  window.__perf = { lt, readyAt: null, ready: false, blocker: 'no view' };
+  try {
+    new PerformanceObserver((l) => { for (const e of l.getEntries()) { lt.count++; lt.total += e.duration; if (e.duration > lt.max) lt.max = e.duration; } })
+      .observe({ type: 'longtask', buffered: true });
+  } catch (e) {}
+  const BLOCK = ${JSON.stringify(READY_SELECTOR_BLOCKERS)};
+  function check() {
+    const v = document.getElementById('view') || document.getElementById('main') || document.querySelector('main');
+    let blocker = null;
+    if (!v) blocker = 'no view';
+    else if (v.getAttribute('aria-busy') === 'true') blocker = 'view aria-busy';
+    else if (!v.firstElementChild || (v.textContent || '').trim().length < 2) blocker = 'view empty';
+    else { const b = v.querySelector(BLOCK); if (b) blocker = 'placeholder: ' + (b.getAttribute('aria-busy') === 'true' ? '[aria-busy]' : '.' + String(b.className).split(' ').join('.')); }
+    const ready = blocker === null;
+    if (ready && !window.__perf.ready) window.__perf.readyAt = performance.now();
+    window.__perf.ready = ready; window.__perf.blocker = blocker;
+  }
+  window.__perfCheck = check;
+  const start = () => {
+    new MutationObserver(check).observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+    check();
+  };
+  if (document.documentElement) start(); else document.addEventListener('readystatechange', start, { once: true });
+})();`;
+
+const isSse = (u) => new URL(u).pathname === '/api/v1/events';
+
+async function load(page, cdp, url) {
+  const t0 = Date.now();
+  // in flight, as Playwright sees it (it follows workers' requests to the end, which the page's CDP session
+  // does not); the SSE stream never ends and is left out
+  const pw = new Set();
+  const ctx = page.context();
+  const pwReq = (q) => { if (!isSse(q.url()) && !q.url().startsWith('data:')) { pw.add(q); lastActivity = Date.now(); } };
+  const pwDone = [];
+  const pwEnd = (q) => { if (pw.delete(q)) { lastActivity = Date.now(); pwDone.push(q); } };
+  ctx.on('request', pwReq); ctx.on('requestfinished', pwEnd); ctx.on('requestfailed', pwEnd);
+  const reqs = new Map(); // requestId -> {url, method, start, protocol, bytes, done, status, fromCache}
+  let inflight = 0;
+  let lastActivity = Date.now();
+  const on = (ev, fn) => { cdp.on(ev, fn); return () => cdp.off(ev, fn); };
+  const offs = [
+    on('Network.requestWillBeSent', (e) => {
+      if (e.request.url.startsWith('data:')) return;
+      if (reqs.has(e.requestId)) { reqs.get(e.requestId).redirects++; return; }
+      const sse = isSse(e.request.url);
+      reqs.set(e.requestId, { url: e.request.url, method: e.request.method, type: e.type, sse, done: false, bytes: 0, redirects: 0, at: Date.now() - t0 });
+      if (!sse) inflight++;
+      lastActivity = Date.now();
+    }),
+    on('Network.responseReceived', (e) => {
+      const r = reqs.get(e.requestId); if (!r) return;
+      r.respondedAt = Date.now(); lastActivity = Date.now();
+      r.protocol = e.response.protocol; r.status = e.response.status; r.fromCache = !!(e.response.fromDiskCache || e.response.fromServiceWorker || e.response.fromPrefetchCache);
+    }),
+    on('Network.dataReceived', (e) => { const r = reqs.get(e.requestId); if (r) { r.received = (r.received || 0) + (e.encodedDataLength || 0); if (!r.sse) lastActivity = Date.now(); } }),
+    on('Network.loadingFinished', (e) => {
+      const r = reqs.get(e.requestId); if (!r || r.done) return;
+      r.done = true; r.bytes = e.encodedDataLength; if (!r.sse) inflight--; lastActivity = Date.now();
+    }),
+    on('Network.loadingFailed', (e) => {
+      const r = reqs.get(e.requestId); if (!r || r.done) return;
+      r.done = true; r.failed = e.errorText; if (!r.sse) inflight--; lastActivity = Date.now();
+    }),
+  ];
+  let navError = null;
+  await page.goto(url, { waitUntil: 'commit', timeout: TIMEOUT }).catch((e) => { navError = String(e.message || e); });
+  let timedOut = false;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 100));
+    let ready = false;
+    try { ready = await page.evaluate(() => (window.__perfCheck && window.__perfCheck(), !!(window.__perf && window.__perf.ready))); } catch (e) { /* navigating */ }
+    const now = Date.now();
+    const pending = pw.size;
+    if (ready && pending <= 0 && now - lastActivity >= QUIET) break;
+    if (Date.now() - t0 > TIMEOUT) { timedOut = true; break; }
+  }
+  offs.forEach((f) => f());
+  ctx.off('request', pwReq); ctx.off('requestfinished', pwEnd); ctx.off('requestfailed', pwEnd);
+  const m = await page.evaluate(() => {
+    const p = window.__perf || {};
+    const fcp = performance.getEntriesByName('first-contentful-paint')[0];
+    const res = performance.getEntriesByType('resource').filter((e) => !/\/api\/v1\/events(\?|$)/.test(new URL(e.name).pathname));
+    const nav = performance.getEntriesByType('navigation')[0];
+    const lastRes = Math.max(nav ? nav.responseEnd : 0, ...res.map((e) => e.responseEnd));
+    return { fcp: fcp ? fcp.startTime : null, readyAt: p.readyAt, ready: p.ready, blocker: p.blocker, lastRes, lt: p.lt,
+      dcl: nav ? nav.domContentLoadedEventEnd : null, load: nav ? nav.loadEventEnd : null, finalPath: location.pathname };
+  }).catch((e) => ({ error: String(e) }));
+  const list = [...reqs.values()];
+  // a worker's own script: its response never reaches the page's CDP session; take its size from Playwright
+  for (const r of list) {
+    if (r.done || r.sse) continue;
+    const q = pwDone.find((x) => x.url() === r.url);
+    if (!q) continue;
+    try {
+      const z = await q.sizes(); const resp = await q.response();
+      r.done = true; r.bytes = z.responseBodySize + z.responseHeadersSize; r.status = resp ? resp.status() : r.status; r.via = 'playwright';
+    } catch (e) { /* gone */ }
+  }
+  const api = list.filter((r) => new URL(r.url).pathname.startsWith('/api/'));
+  const stat = list.filter((r) => !new URL(r.url).pathname.startsWith('/api/'));
+  const sum = (a) => a.reduce((s, r) => s + (r.done ? (r.bytes || 0) : (r.received || 0)), 0);
+  const gets = {};
+  for (const r of api) if (r.method === 'GET' && !r.sse) gets[r.url] = (gets[r.url] || 0) + 1;
+  const dups = Object.entries(gets).filter(([, n]) => n > 1).map(([u, n]) => ({ url: new URL(u).pathname + new URL(u).search, n }));
+  const protos = {};
+  for (const r of list) if (r.protocol) protos[r.protocol] = (protos[r.protocol] || 0) + 1;
+  const ttu = m.readyAt != null ? Math.round(Math.max(m.readyAt, m.lastRes || 0)) : null;
+  return {
+    url: new URL(url).pathname, final_path: m.finalPath, nav_error: navError, timed_out: timedOut, blocker: timedOut ? m.blocker : null,
+    inflight_at_end: timedOut ? [...pw].map((q) => new URL(q.url()).pathname) : undefined,
+    late_requests: timedOut ? list.filter((r) => r.at > TIMEOUT - 5000).map((r) => new URL(r.url).pathname).slice(0, 20) : undefined,
+    bytes: sum(list), bytes_static: sum(stat), bytes_api: sum(api),
+    requests: list.length, requests_static: stat.length, requests_api: api.length,
+    not_modified: list.filter((r) => r.status === 304).length, from_cache: list.filter((r) => r.fromCache).length,
+    failed: list.filter((r) => r.failed).length,
+    protocols: protos,
+    fcp_ms: m.fcp != null ? Math.round(m.fcp) : null,
+    view_ready_ms: m.readyAt != null ? Math.round(m.readyAt) : null,
+    ttu_ms: ttu,
+    dcl_ms: m.dcl != null ? Math.round(m.dcl) : null,
+    long_tasks: m.lt ? m.lt.count : null, long_tasks_ms: m.lt ? Math.round(m.lt.total) : null, long_task_max_ms: m.lt ? Math.round(m.lt.max) : null,
+    dup_api_gets: dups.reduce((s, d) => s + d.n - 1, 0), dup_api_list: dups,
+    all: args.verbose ? list.map((r) => [new URL(r.url).pathname, r.status, r.done ? r.bytes : r.received, r.type, r.at]) : undefined,
+    biggest: list.map((r) => ({ path: new URL(r.url).pathname, status: r.status, bytes: r.done ? r.bytes : (r.received || 0) }))
+      .sort((x, y) => y.bytes - x.bytes).slice(0, 8),
+    api_gets: Object.keys(gets).map((u) => new URL(u).pathname + new URL(u).search),
+  };
+}
+
+async function main() {
+  const browser = await chromium.launch({ args: ['--ignore-certificate-errors'] });
+  // one sign-in for the whole run (the server limits right-password sign-ins per minute)
+  const auth = await browser.newContext({ ignoreHTTPSErrors: true });
+  const h = { 'X-Sentry-Mate': '1', 'Content-Type': 'application/json' };
+  const s = await auth.request.post(BASE + '/api/v1/session', { headers: h, data: { name: USER, password: PASS } });
+  if (!s.ok()) throw new Error('sign-in: ' + s.status() + ' ' + (await s.text()));
+  const cars = await (await auth.request.get(BASE + '/api/v1/cars', { headers: h })).json();
+  const car = args.car || cars.items[0].id;
+  const cookies = (await auth.storageState()).cookies;
+  const about = await (await auth.request.get(BASE + '/api/v1/about', { headers: h })).json().catch(() => ({}));
+  const results = { label: LABEL, base: BASE, when: new Date().toISOString(), server_version: about.version || null,
+    build: about.build || null, car, cars: cars.items.length,
+    conditions: { cpu_throttling_rate: CPU, network: NET, device: { ...DEVICE, userAgent: undefined }, quiet_ms: QUIET, timeout_ms: TIMEOUT,
+      ttu: 'max(main view ready: content, no aria-busy, no placeholders; last resource responseEnd excl. /api/v1/events), after ' + QUIET + ' ms network quiet',
+      warm: 'second page.goto of the same URL in the same page and persistent profile (fresh profile folder per pack/page) (HTTP cache warm; packs answer Cache-Control: no-cache, so 304 revalidations)' },
+    runs: [] };
+  for (const pack of PACKS) {
+    const pr = await auth.request.patch(BASE + '/api/v1/me/preferences', { headers: h, data: { ui_pack: pack } });
+    if (!pr.ok()) { console.error(`pack ${pack}: ${pr.status()} ${await pr.text()}`); continue; }
+    const got = (await pr.json()).ui_pack;
+    for (const pg of PAGES) {
+      const url = BASE + PATHS[pg](car);
+      // a persistent profile in a new empty folder: an empty disk cache, like a phone's browser (an incognito
+      // context's in-memory cache does not keep maplibre-gl.mjs, 1.1 MB, for the warm load)
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-perf-'));
+      const ctx = await chromium.launchPersistentContext(dir, { ignoreHTTPSErrors: true, args: ['--ignore-certificate-errors'], ...DEVICE });
+      await ctx.addCookies(cookies);
+      await ctx.addInitScript(INIT);
+      const page = ctx.pages()[0] || await ctx.newPage();
+      const cdp = await ctx.newCDPSession(page);
+      await cdp.send('Network.enable');
+      await cdp.send('Network.setCacheDisabled', { cacheDisabled: false });
+      if (!args['no-throttle']) {
+        await cdp.send('Emulation.setCPUThrottlingRate', { rate: CPU });
+        await cdp.send('Network.emulateNetworkConditions', NET);
+      }
+      for (const phase of ['cold', 'warm']) {
+        if (phase === 'warm') await new Promise((r) => setTimeout(r, Number(args['warm-pause'] || 0)));
+        const r = await load(page, cdp, url);
+        const row = { pack, pack_served: got, page: pg, phase, ...r };
+        results.runs.push(row);
+        console.log(`${pack.padEnd(10)} ${pg.padEnd(8)} ${phase} ttu=${r.ttu_ms}ms fcp=${r.fcp_ms}ms ${(r.bytes / 1024).toFixed(1)}KiB req=${r.requests_static}+${r.requests_api}api dup=${r.dup_api_gets} lt=${r.long_tasks}/${r.long_tasks_ms}ms ${JSON.stringify(r.protocols)}${r.timed_out ? ' TIMEOUT ' + r.blocker : ''}`);
+      }
+      await ctx.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  await auth.request.patch(BASE + '/api/v1/me/preferences', { headers: h, data: { ui_pack: null } }).catch(() => {});
+  await browser.close();
+  fs.writeFileSync(OUT, JSON.stringify(results, null, 2));
+  fs.writeFileSync(MD, table(results));
+  console.log('wrote', OUT, MD);
+}
+
+function table(res) {
+  const c = res.conditions;
+  let s = `# ${res.label}: browser delivery per pack and page\n\n`;
+  s += `Server ${res.server_version || '?'} at ${res.base}, ${res.when}. Car ${res.car} (${res.cars} cars).\n`;
+  s += `Phone 390x844 @3x, CPU x${c.cpu_throttling_rate}, network latency ${c.network.latency} ms, down ${c.network.downloadThroughput} B/s, up ${c.network.uploadThroughput} B/s.\n`;
+  s += `TTU = ${c.ttu}. Warm = ${c.warm}.\n\n`;
+  s += '| pack | page | phase | TTU ms | FCP ms | KiB | static req | api req | 304 | dup GETs | long tasks (n / ms) | proto |\n';
+  s += '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|\n';
+  for (const r of res.runs) {
+    s += `| ${r.pack} | ${r.page} | ${r.phase} | ${r.timed_out ? 'timeout' : r.ttu_ms} | ${r.fcp_ms ?? '-'} | ${(r.bytes / 1024).toFixed(1)} | ${r.requests_static} | ${r.requests_api} | ${r.not_modified} | ${r.dup_api_gets} | ${r.long_tasks} / ${r.long_tasks_ms} | ${Object.keys(r.protocols).join(',')} |\n`;
+  }
+  // per pack means
+  s += '\n| pack | phase | mean TTU ms | mean KiB | mean requests | total dup GETs |\n|---|---|---:|---:|---:|---:|\n';
+  for (const p of [...new Set(res.runs.map((r) => r.pack))]) for (const ph of ['cold', 'warm']) {
+    const rs = res.runs.filter((r) => r.pack === p && r.phase === ph);
+    const mean = (f) => rs.reduce((a, r) => a + (f(r) || 0), 0) / rs.length;
+    s += `| ${p} | ${ph} | ${Math.round(mean((r) => r.ttu_ms))} | ${mean((r) => r.bytes / 1024).toFixed(1)} | ${mean((r) => r.requests).toFixed(1)} | ${rs.reduce((a, r) => a + r.dup_api_gets, 0)} |\n`;
+  }
+  const dups = res.runs.filter((r) => r.dup_api_list.length);
+  if (dups.length) {
+    s += '\n## Duplicate API GETs\n\n';
+    for (const r of dups) s += `- ${r.pack} ${r.page} ${r.phase}: ${r.dup_api_list.map((d) => `${d.url} x${d.n}`).join(', ')}\n`;
+  }
+  return s;
+}
+
+main().catch((e) => { console.error(e); process.exit(1); });
