@@ -227,8 +227,12 @@ button:disabled { cursor: default; }
 .ntc-text { flex: 1 1 auto; min-width: 0; }
 .ntc-x { background: none; border: 0; padding: 0; color: var(--muted); text-decoration: underline; }
 
-.scroller { display: contents; }   /* phones: the one box that scrolls, between the link row and the command bar */
-.view { flex: 1 0 auto; display: block; }
+/* phones: the one box that scrolls, between the link row and the command bar; data-scroll-box (index.html): a part
+   drawn again keeps what is on screen in place in it too (holdScroll, shared/dom.js) */
+.scroller { display: contents; }
+/* at least a screen high (the small one: a phone's toolbars shown), so the footer starts below the fold and is never
+   pushed down on screen as the page draws (the loading line, then the page) */
+.view { flex: 1 0 auto; display: block; min-height: 100svh; }
 .view:focus { outline: none; }
 .page { width: 100%; padding-inline: max(var(--gut), round(down, calc((100% - var(--maxw)) / 2), 1px)); padding-bottom: calc(var(--g) * 6); }
 
@@ -464,6 +468,8 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 /* a long list in a box of ten rows (core/table.js windowTable): the head line stays, the rows scroll, only those in
    view are drawn; every row is one line (two on a phone), so a row's place is its index times its height */
 .vl-box { --vl-row: calc(var(--lh2) + 2 * var(--g2) + 1px); max-height: calc(11 * var(--vl-row)); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; border-bottom: 1px solid var(--rule); }
+/* a box N rows high under its head (windowTable rows: N), and its own rule below */
+.vl-box--rows { max-height: calc((1 + var(--vl-rows)) * var(--vl-row) + 1px); }
 .vl-box:focus-visible { outline-offset: -2px; }
 .vl-box thead th { position: sticky; top: 0; z-index: 1; background: var(--bg); }
 .vl-table > tbody > tr.vl-gap, .vl-table > tbody > tr.vl-gap:hover { background: none; }
@@ -1204,6 +1210,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
   .audit-sec .scroll-box { --box-row: calc(2 * var(--g2) + var(--lh2) + 2 * var(--lh1) + 1px); }
   .scroll-box { --box-head: 0px; --box-row: max(45px, calc(2 * var(--g2) + var(--lh2) + var(--lh1) + 1px)); }
   .vl-box { --vl-row: calc(max(44px, 2 * var(--g2) + var(--lh2) + var(--lh1)) + 1px); max-height: min(calc(var(--lh2) + 2 * var(--g2) + 1px + 10 * var(--vl-row)), 70svh); }
+  .vl-box.vl-box--rows { max-height: calc(var(--vl-rows) * var(--vl-row) + 1px); }   /* no head line on a phone */
   .vl-table td.tbl-ph { height: calc(var(--vl-row) - 1px); min-height: 0; box-sizing: border-box; overflow: hidden; }
   .vl-table .tbl-ph-main, .vl-table .tbl-ph-sub { flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
   .vl-table .tbl-ph-m, .vl-table .tbl-ph-s { min-width: 0; overflow: hidden; text-overflow: ellipsis; }

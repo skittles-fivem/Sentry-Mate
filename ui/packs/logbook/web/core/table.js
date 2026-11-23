@@ -9,7 +9,7 @@
 //     is built in the browser (shared/csv.js).
 // Cells are built by each column's cell(row) (nodes or text), so values keep their units.
 
-import { h } from '../shared/dom.js';
+import { h, holdScroll } from '../shared/dom.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { compareText, formatNumber } from '../shared/i18n.js';
 import { icon, empty as emptyView, errorView, loadingBlock } from './ui.js';
@@ -161,7 +161,7 @@ export function dataTable(ctx, opts) {
   function draw(added = null) {
     const list = kept(pager && !clientSorted() ? pager.items : sortedClient(items() || []));
     if (added) body.append(...kept(added).map(rowEl));
-    else body.replaceChildren(...list.map(rowEl));
+    else { holdScroll(body); body.replaceChildren(...list.map(rowEl)); }
     const loaded = (items() || []).length;
     const n = list.length;
     const left = loaded - n; // loaded but not shown: the total counts them too
@@ -248,7 +248,9 @@ export function dataTable(ctx, opts) {
     /** Draw every row again (after something they show changed, such as a pin). */
     redraw() { draw(); },
     /** Draw one row again in place (a live update of that item). */
-    redrawRow(item) { const old = rowOf.get(item); if (old && old.isConnected) old.replaceWith(rowEl(item)); },
+    // (Safari can lay the page out with the old row out and the new one not in yet, and pull a window scrolled to the
+    // end of the page up by a row's height: holdScroll puts it back, shared/dom.js)
+    redrawRow(item) { const old = rowOf.get(item); if (old && old.isConnected) { holdScroll(old.parentElement); old.replaceWith(rowEl(item)); } },
     get items() { return items(); },
   };
   return ctl;
@@ -265,6 +267,10 @@ export function dataTable(ctx, opts) {
  *   jump: true,                       // "Jump to date" (the API's at_ms)
  *   tools: node,                      // more controls in the tool line (an order choice)
  *   onPage(page), onError(err),
+ *   load({ ...params, sort: { key, dir }, offset, limit }) -> { items, next, offset, total }
+ *                                     // in place of path: a list the page holds already (a chunk of it, at once;
+ *                                     // no Download CSV of the server's, the page gives its own in tools)
+ *   rows: N,                          // a box N rows high instead of about ten
  * }) -> { el, ready, setParams(patch, { sort }), refresh(), total(), params() }
  *
  * The rows sit in a box about ten rows high that scrolls under its head: only the rows in view and a few more are
@@ -286,10 +292,10 @@ export function windowLedger(ctx, opts) {
   const head = h('thead', null, h('tr', null, columns.map((c) => headCell(c))));
   const body = h('tbody', { dataset: { vlBody: '' } });
   const table = h('table', { class: 'ledger-table vl-ledger', 'aria-label': label }, head, body);
-  const box = h('div', { class: 'ledger-scroll ledger-box vl-box', tabindex: '0', role: 'region', 'aria-label': opts.boxLabel || label }, table);
+  const box = h('div', { class: ['ledger-scroll ledger-box vl-box', opts.rows && 'vl-box--rows'], vars: opts.rows ? { '--vl-rows': String(opts.rows) } : null, tabindex: '0', role: 'region', 'aria-label': opts.boxLabel || label }, table);
   const status = h('div', { class: 'ledger-status' });
   const el = h('div', { class: ['ledger', cls], cover },
-    h('div', { class: 'ledger-top vl-tools' }, opts.tools || null, search, opts.jump ? h('span', { class: 'vl-jump' }, jumpIn, jumpBtn) : null, count, csvBtn),
+    h('div', { class: 'ledger-top vl-tools' }, opts.tools || null, search, opts.jump ? h('span', { class: 'vl-jump' }, jumpIn, jumpBtn) : null, count, opts.path ? csvBtn : null),
     opts.caption ? h('p', { class: 'ledger-caption vl-caption' }, opts.caption) : null,
     box, status);
 
@@ -329,7 +335,7 @@ export function windowLedger(ctx, opts) {
   const list = windowList({
     box, body, head, limit: opts.limit || 50, overscan: 6, rowHeight: 70,
     row: rowEl, placeholder: skelRow, spacer: gapRow,
-    load: (p) => ctx.api.get(opts.path, { ...serverParams(), ...paging(p) }, { signal: p.signal }),
+    load: (p) => (opts.load ? Promise.resolve(opts.load({ ...serverParams(), sort: sort ? { ...sort } : null, ...paging(p) })) : ctx.api.get(opts.path, { ...serverParams(), ...paging(p) }, { signal: p.signal })),
     onPage: (pg) => { if (pg.total !== total) { total = pg.total; paint(); } opts.onPage?.(pg); },
     onError: (e) => opts.onError?.(e),
   });
@@ -342,7 +348,7 @@ export function windowLedger(ctx, opts) {
     table.setAttribute('aria-rowcount', String(n + 1));
     box.hidden = !n;
     csvBtn.hidden = !n;
-    csvBtn.setAttribute('href', ctx.api.csvUrl(opts.path, serverParams()));
+    if (opts.path) csvBtn.setAttribute('href', ctx.api.csvUrl(opts.path, serverParams()));
     status.replaceChildren(n ? '' : (opts.empty ? opts.empty({ total: n }) : emptyView({ title: `No ${many}.` })));
     if (jumpIn) {
       const can = !!n && sort && base && sort.key === base.key;
