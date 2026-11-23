@@ -212,6 +212,22 @@ impl Engine {
         }
     }
 
+    /// Rebuilds a car's whole history after a change to the order its live inputs win in (its `source_order`): noted
+    /// pending at once (a restart before the job carries it out does it then), then rebuilt in the background as a
+    /// change of preferred key is.
+    pub(crate) fn rebuild_for_order(&self, car: CarId) -> Result<()> {
+        {
+            let l = self.car_lock(car);
+            let _held = lock(&l);
+            let mark = RebuildMark { from_ms: 0, to_ms: u64::MAX, started_ms: now_ms(), cleared: false };
+            records::put_rebuild_mark(&self.inner.db, car, Some(&mark))?;
+        }
+        if self.handle().is_ok() {
+            self.rebuild(Scope::car(car))?;
+        }
+        Ok(())
+    }
+
     /// Whether a car has a rebuild under way (or one a restart cut off).
     pub fn rebuild_pending(&self, car: CarId) -> bool {
         records::rebuild_mark(&self.inner.db, car).ok().flatten().is_some()

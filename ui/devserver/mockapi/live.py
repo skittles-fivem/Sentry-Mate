@@ -53,9 +53,14 @@ def last_sample(h, tv):
     return None, None, None
 
 
-# How long after a fingerprint update a live input's new version still names it, and the inputs' order.
+# How long after a fingerprint update a live input's new version still names it.
 INPUT_NAME_WINDOW_MS = 24 * HOUR
-INPUT_RANK = ("tesla_api", "teslafi_api", "teslamate_local")
+
+
+def _in_order(app, car_id, inputs):
+    """`inputs` in the car's input order (`source_order`), highest priority first."""
+    order = S.order_of(app.store, car_id)
+    return sorted(set(inputs), key=lambda i: order.index(i) if i in order else len(order))
 
 
 def input_versions(h):
@@ -75,12 +80,12 @@ def input_versions(h):
     return got
 
 
-def input_named(h, from_ms, to_ms):
+def input_named(app, h, from_ms, to_ms):
     """(version, input) a live input started reporting from `from_ms` until a day after `to_ms` that is not the one
-    it said before `from_ms`, from the inputs in their order (the Tesla API, TeslaFi, local TeslaMate); else None."""
+    it said before `from_ms`, from the inputs in the car's order (`source_order`); else None."""
     seen = input_versions(h)
     until = to_ms + INPUT_NAME_WINDOW_MS
-    for inp in sorted({s[0] for s in seen}, key=INPUT_RANK.index):
+    for inp in _in_order(app, h.car.id, (s[0] for s in seen)):
         mine = [s for s in seen if s[0] == inp]
         before = next((s[1] for s in reversed(mine) if s[2] < from_ms), None)
         hit = next((s for s in mine if from_ms <= s[2] <= until), None)
@@ -101,7 +106,7 @@ def live_version(app, h, t):
     """(version, read at, input) the car's live input reads now, or None: the newest version that input reported
     by t, while the input is read."""
     seen = [s for s in input_versions(h) if s[2] <= t]
-    for inp in INPUT_RANK:
+    for inp in _in_order(app, h.car.id, (s[0] for s in seen)):
         mine = [s for s in seen if s[0] == inp]
         if not mine:
             continue
@@ -160,7 +165,7 @@ def update_version(app, u):
         return u.version, "owner"
     if is_fingerprint(u):
         h = app.ds.history(u.car.id)
-        named = input_named(h, u.start, u.end) if h is not None else None
+        named = input_named(app, h, u.start, u.end) if h is not None else None
         if named:
             return named
     learned = st.builds.get(u.build_id)
@@ -211,6 +216,8 @@ def now_object(app, car_id, t):
             inputs.append({**S.ref("teslafi_api"), "last_ms": offcan.teslafi_read_ms(t)})
         if teslamate_local_on(app, car_id):
             inputs.append({**S.ref("teslamate_local"), "last_ms": t - 30_000})
+    # in the car's input order (`source_order`), highest priority first
+    inputs.sort(key=S.rank(S.order_of(app.store, car_id)))
     obj["inputs"] = inputs
     obj["off_can"] = offcan.off_can(app, car_id, t, obj)
     return obj

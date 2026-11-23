@@ -1,8 +1,10 @@
 //! The live inputs over the same time, made one: SMO's samples (1 Hz, from the car's own buses), the Tesla API's
-//! (every few seconds while streaming, every half minute to minute when polled) and TeslaFi's (TeslaFi's own polls,
-//! about once a minute, read from its API). They are laid in that order ([`fuse_all`]): the Tesla API's over
-//! TeslaFi's first (inside the Tesla API's coverage, [`FuseParams::api_gap_ms`], its seconds, TeslaFi filling the
-//! values it lacks), then SMO's over the result, as below.
+//! (every few seconds while streaming, every half minute to minute when polled), TeslaFi's (TeslaFi's own polls,
+//! about once a minute, read from its API) and the local TeslaMate's. They are laid in the car's order
+//! ([`fuse_ordered`], a [`SourceOrder`]; by default SMO, the Tesla API, TeslaFi, local TeslaMate, as [`fuse_all`]
+//! lays them), the lowest first: each input over what is below it (inside its coverage, [`FuseParams::smo_gap_ms`]
+//! for SMO, [`FuseParams::api_gap_ms`] for an API, its seconds, the inputs below filling the values it lacks). With
+//! SMO on top, as below (with an API on top, the same with that API in SMO's place).
 //!
 //! - **Inside SMO's coverage** (seconds between two SMO samples at most [`FuseParams::smo_gap_ms`] apart), SMO's
 //!   sample is the second, and every value it has is SMO's. A value it lacks is taken from the nearest API sample
@@ -15,7 +17,7 @@
 //! and a second's answer only looks at samples within the longest hold time of it, so a window that brings that much
 //! API data on each side gives every second inside it as a longer window would.
 
-use model::{Inputs, Sample};
+use model::{Input, Inputs, Sample, SourceOrder};
 use serde::{Deserialize, Serialize};
 
 /// What the Tesla API said about the car's state over a span.
@@ -95,6 +97,17 @@ impl FuseParams {
     /// How far around a window TeslaFi's samples must be read (they fill the Tesla API's seconds, which fill SMO's).
     pub fn lower_margin_ms(&self) -> u64 {
         self.margin_ms().saturating_mul(2).saturating_add(self.api_gap_ms)
+    }
+
+    /// How far around a window an input's samples must be read for [`fuse_ordered`], by its place in the car's
+    /// order (`rank` 0: the top one). The top input is read a margin too unless it is SMO (an API's coverage is
+    /// wide), the second [`Self::margin_ms`], the ones below it [`Self::lower_margin_ms`].
+    pub fn read_margin_ms(&self, input: Input, rank: usize) -> u64 {
+        match (rank, input) {
+            (0, Input::Smo) => 0,
+            (0 | 1, Input::Smo | Input::TeslaApi | Input::TeslafiApi | Input::TeslamateLocal) => self.margin_ms(),
+            (_, Input::Smo | Input::TeslaApi | Input::TeslafiApi | Input::TeslamateLocal) => self.lower_margin_ms(),
+        }
     }
 }
 
@@ -210,30 +223,52 @@ pub(crate) const SLOTS: &[Slot] = slots!(
     slow_ms: outside_temp_c, inside_temp_c, battery_temp_c
 );
 
-/// Fuses SMO's samples and the Tesla API's (each any order). See the module's notes.
+/// Fuses SMO's samples and the Tesla API's (each any order), SMO first. See the module's notes.
 pub fn fuse(smo: &[Sample], api: &[Sample], p: &FuseParams) -> Fused {
     fuse_all(smo, &[(api, Inputs::TESLA_API)], p)
 }
 
 /// Fuses SMO's samples and those of the APIs (`lower`, each any order, highest first: the Tesla API's, then
-/// TeslaFi's, then the local TeslaMate's), each lower input filling the one above it value by value. See the module's notes.
+/// TeslaFi's, then the local TeslaMate's) in the default order (SMO first), each lower input filling the one above
+/// it value by value. See the module's notes; [`fuse_ordered`] takes a car's own order.
 pub fn fuse_all(smo: &[Sample], lower: &[(&[Sample], Inputs)], p: &FuseParams) -> Fused {
-    let smo = seconds(smo);
+    let mut layers: Vec<(&[Sample], Inputs)> = Vec::with_capacity(lower.len() + 1);
+    layers.push((smo, Inputs::SMO));
+    layers.extend(lower.iter().copied());
+    layered(&layers, p)
+}
+
+/// Fuses the live inputs' samples in a car's own order: `by_input` holds each input's samples (any order; an input
+/// not there has none), and they are laid highest first as `order` says, each lower input filling the one above it
+/// value by value. Inside an input's coverage its seconds are the seconds (SMO's coverage is
+/// [`FuseParams::smo_gap_ms`], an API's [`FuseParams::api_gap_ms`]); outside it the next input's are.
+pub fn fuse_ordered(by_input: &[(&[Sample], Input)], order: &SourceOrder, p: &FuseParams) -> Fused {
+    let layers: Vec<(&[Sample], Inputs)> = order
+        .iter()
+        .map(|i| (by_input.iter().find(|(_, x)| *x == i).map_or(&[][..], |(s, _)| *s), Inputs::from(i)))
+        .collect();
+    layered(&layers, p)
+}
+
+/// How long a gap between two of an input's samples still counts as its coverage.
+fn gap_of(inputs: Inputs, p: &FuseParams) -> u64 {
+    if inputs == Inputs::SMO { p.smo_gap_ms } else { p.api_gap_ms }
+}
+
+/// The inputs' samples (`layers`, highest first), each filling the one above it: the bottom one first, each higher
+/// one laid over what is below it.
+fn layered(layers: &[(&[Sample], Inputs)], p: &FuseParams) -> Fused {
     let mut below: Vec<(Sample, Inputs)> = Vec::new();
-    for (samples, inputs) in lower.iter().rev() {
+    for (samples, inputs) in layers.iter().rev() {
         let top = seconds(samples);
         below = if below.is_empty() {
             top.into_iter().map(|s| (s.clone(), *inputs)).collect()
         } else {
-            lay(&top, *inputs, &below, p.api_gap_ms, p)
+            lay(&top, *inputs, &below, gap_of(*inputs, p), p)
         };
     }
-    if below.is_empty() {
-        return Fused { samples: smo.into_iter().cloned().collect(), marks: Vec::new() };
-    }
-    let out = lay(&smo, Inputs::SMO, &below, p.smo_gap_ms, p);
-    let marks = out.iter().filter(|(_, i)| *i != Inputs::SMO).map(|(s, i)| (s.t_ms, *i)).collect();
-    Fused { samples: out.into_iter().map(|(s, _)| s).collect(), marks }
+    let marks = below.iter().filter(|(_, i)| *i != Inputs::SMO).map(|(s, i)| (s.t_ms, *i)).collect();
+    Fused { samples: below.into_iter().map(|(s, _)| s).collect(), marks }
 }
 
 /// `top`'s seconds (one per second, sorted) with the values they lack from `below` (sorted, one per second), and
@@ -430,6 +465,42 @@ mod tests {
         assert!(f.samples.windows(2).all(|w| w[0].t_ms < w[1].t_ms));
         // the two-input call is the same as before
         assert_eq!(fuse(&s, &a, &p), fuse_all(&s, &[(&a, Inputs::TESLA_API)], &p));
+    }
+
+    #[test]
+    fn a_car_that_puts_the_tesla_api_above_smo() {
+        // SMO each second for two minutes (with the odometer, which the API does not send), the Tesla API every 10 s
+        // for the first minute (one of its samples without the level)
+        let s: Vec<Sample> = (0..120).map(|t| Sample { odometer_km: Some(1000.0), ..smo(t) }).collect();
+        let a: Vec<Sample> = (0..6)
+            .map(|i| {
+                let mut x = api(i * 10 + 5);
+                if i == 2 {
+                    x.soc = None;
+                }
+                x
+            })
+            .collect();
+        let order = SourceOrder::new(&[Input::TeslaApi, Input::Smo, Input::TeslafiApi, Input::TeslamateLocal]).unwrap();
+        let p = FuseParams::default();
+        let f = fuse_ordered(&[(&s, Input::Smo), (&a, Input::TeslaApi)], &order, &p);
+        let at = |sec: u64| f.samples.iter().find(|x| x.t_ms == sec * 1000).cloned();
+        // inside the Tesla API's coverage its seconds are the seconds, its values win value by value
+        let x = at(15).unwrap();
+        assert_eq!((x.speed_kmh, x.soc, x.lat, x.inside_temp_c), (Some(48.0), Some(69.0), Some(1.1), Some(21.0)));
+        assert_eq!(x.odometer_km, Some(1000.0), "SMO fills what the API lacks");
+        assert_eq!(at(25).unwrap().soc, Some(70.0), "the level the API did not send that second: SMO's");
+        assert_eq!(f.inputs_at(15_000), Inputs::BOTH);
+        assert!(at(16).is_none() && at(30).is_none(), "no SMO second of its own between two of the API's");
+        // after it: SMO's own seconds
+        let x = at(100).unwrap();
+        assert_eq!((x.speed_kmh, x.soc), (Some(50.0), Some(70.0)));
+        assert_eq!(f.inputs_at(100_000), Inputs::SMO);
+        assert!(f.samples.windows(2).all(|w| w[0].t_ms < w[1].t_ms));
+        // the default order is fuse_all's
+        let d = fuse_ordered(&[(&a, Input::TeslaApi), (&s, Input::Smo)], &SourceOrder::default(), &p);
+        assert_eq!(d, fuse_all(&s, &[(&a, Inputs::TESLA_API)], &p));
+        assert_eq!(d.samples.iter().find(|x| x.t_ms == 15_000).unwrap().speed_kmh, Some(50.0), "SMO first by default");
     }
 
     #[test]

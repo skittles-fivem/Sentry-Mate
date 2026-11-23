@@ -201,6 +201,11 @@ fn word<T: serde::Serialize>(t: &T) -> Value {
     serde_json::to_value(t).unwrap_or(Value::Null)
 }
 
+/// Whether a local TeslaMate car is matched to `car` (its MQTT messages feed that car), for the car's data sources.
+pub fn feeds_car(app: &AppState, car: CarId) -> bool {
+    svc(app).is_ok_and(|s| s.config().is_some_and(|c| c.cars.iter().any(|k| k.matched == Some(Match::Car { car }))))
+}
+
 /// The `/system/health` part: `{ enabled, mqtt_state, database_state, cars, last_message_ms, last_sync_ms }`.
 pub fn health(app: &AppState) -> Value {
     let Ok(s) = svc(app) else {

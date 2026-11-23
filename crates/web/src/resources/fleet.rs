@@ -179,9 +179,40 @@ async fn patch_car(
     Ok(axum::Json(serde_json::to_value(d).map_err(ApiError::server)?))
 }
 
+/// The live inputs linked to `car` on the web side's integrations (a Tesla or TeslaFi vehicle matched to it, a local
+/// TeslaMate car matched to it): they count as set up in the car's `inputs` even before data came.
+fn linked_inputs(app: &AppState, car: CarId) -> Vec<model::Input> {
+    model::Input::ALL
+        .into_iter()
+        .filter(|i| match i {
+            model::Input::Smo => false,
+            model::Input::TeslaApi => super::tesla::feeds_car(app, car),
+            model::Input::TeslafiApi => super::teslafi::feeds_car(app, car),
+            model::Input::TeslamateLocal => super::teslamate_local::feeds_car(app, car),
+        })
+        .collect()
+}
+
+/// The car's settings with the linked inputs marked on.
+fn with_links(
+    app: &AppState,
+    car: CarId,
+    mut s: q::Scoped<q::fleet::SettingsView>,
+) -> q::Scoped<q::fleet::SettingsView> {
+    let linked = linked_inputs(app, car);
+    for x in &mut s.body.inputs {
+        if model::Input::from_word(x.kind).is_some_and(|i| linked.contains(&i)) {
+            x.on = true;
+        }
+    }
+    s
+}
+
 /// `GET /cars/{car}/settings`.
 async fn settings(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
-    let value = run(&app, move |e| q::fleet::car_settings(e, car)).await?;
+    let e = app.service::<Engine>()?;
+    let s = app.blocking(move |_| q::fleet::car_settings(&e, car).map_err(failed)).await?;
+    let value = serde_json::to_value(with_links(&app, car, s)).map_err(ApiError::server)?;
     crate::csv::answer(&p, "car-settings", value)
 }
 
@@ -199,7 +230,7 @@ async fn patch_settings(
             q::fleet::patch_settings(&e, car, &body).map_err(failed)
         })
         .await?;
-    let s = done(r)?;
+    let s = with_links(&app, car, done(r)?);
     let target = crate::ctx::target("car", Some(car), "");
     v.audit(&app, "car-settings-changed", Some(&target), &format!("Changed the car's {what}.")).await?;
     Ok(axum::Json(serde_json::to_value(s).map_err(ApiError::server)?))

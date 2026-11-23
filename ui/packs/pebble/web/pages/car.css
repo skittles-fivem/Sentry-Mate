@@ -99,3 +99,6 @@ html[data-form="phone"] .vi-note { text-align: left; }
 .hero-route .src-via { margin-left: 0; } /* the space before it (.src-gap) is the gap, and goes away at a line end */
 .hero-route .src-gap { word-spacing: var(--s1); }
 .charge-top > .src-line { margin-top: 0; }
+/* "Change order" after the live inputs (admins): to Settings, Cars, Data sources */
+.car-inputs-link { min-height: var(--l14); }
+html[data-form="phone"] .car-inputs-link { min-height: var(--h-btn); }

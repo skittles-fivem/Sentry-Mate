@@ -51,8 +51,17 @@ fn one_car(car: u32) -> Summary {
     c.park(30);
     let end = c.t;
     let (samples, logs) = c.finish();
-    let input =
-        Input { car, from_ms: T0, to_ms: end, samples: &samples, logs: &logs, holes: &[], api: &[], marks: &[] };
+    let input = Input {
+        car,
+        from_ms: T0,
+        to_ms: end,
+        samples: &samples,
+        logs: &logs,
+        holes: &[],
+        api: &[],
+        marks: &[],
+        order: Default::default(),
+    };
     let t = timeline::build(&input, &Params::default());
     Summary {
         car,

@@ -27,6 +27,7 @@ fn timeline_of(s: &Scenario) -> (timeline::Timeline, Report) {
         holes: &[],
         api: &[],
         marks: &[],
+        order: Default::default(),
     };
     (timeline::build(&input, &timeline::Params::default()), logs.report())
 }

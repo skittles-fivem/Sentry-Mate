@@ -372,7 +372,18 @@ async fn a_cars_settings_keep_their_rules_and_the_consumption_factor_reaches_the
                 "import_gap_fill": null, "import_gap_fill_on": true, "pack_replaced_date": null, "pack_new_kwh": null,
                 // what the car's build (a US Model 3 RWD) gives when nothing is typed
                 "capacity_new_kwh_default": 57.5, "full_range_new_km_default": 438.0,
-                "efficiency_wh_per_km_default": 131.3, "defaults_source": "vehicle_info" })
+                "efficiency_wh_per_km_default": 131.3, "defaults_source": "vehicle_info",
+                // the car's data sources: the default order, nothing set up yet, no import
+                "import_gap_fill_default": true,
+                "source_order": ["smo", "tesla_api", "teslafi_api", "teslamate_local"],
+                "source_order_default": ["smo", "tesla_api", "teslafi_api", "teslamate_local"],
+                "inputs": [
+                    { "kind": "smo", "label": "SMO", "on": false, "last_ms": null },
+                    { "kind": "tesla_api", "label": "Tesla API", "on": false, "last_ms": null },
+                    { "kind": "teslafi_api", "label": "TeslaFi", "on": false, "last_ms": null },
+                    { "kind": "teslamate_local", "label": "local TeslaMate", "on": false, "last_ms": null },
+                ],
+                "imports": [] })
     );
     let r = admin
         .patch(

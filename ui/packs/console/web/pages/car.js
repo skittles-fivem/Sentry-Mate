@@ -12,7 +12,7 @@
 //   ## vehicle    the car's build facts, each with its source and how sure (pages/vehicle.js); an admin can type over them
 
 import { h, replace, cover } from '../shared/dom.js';
-import { isSold } from '../shared/state.js';
+import { isSold, buildUrl } from '../shared/state.js';
 import { tyreView, recommendedLine } from '../shared/tyres.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDateTime } from '../shared/time.js';
@@ -99,7 +99,10 @@ export async function mount(ctx) {
       car.vin_prefix ? [h('span', { class: 'sep', 'aria-hidden': 'true' }, '\u00a0| '), h('span', { class: 'muted', title: 'Only the VIN prefix is stored' }, 'vin '), car.vin_prefix] : null);
     // the live inputs (SMO, the Tesla API) with each one's newest value, and every input its history has
     const hist = src(car, { full: true });
-    replace(inputsEl, inputsLine(n.inputs), hist ? h('p', { class: 'src-line src-line--car' }, h('span', { class: 'src-inputs-k' }, 'history '), hist) : null);
+    const inputs = inputsLine(n.inputs);
+    // admins change the inputs' priority in the car's settings (data sources)
+    if (ctx.admin) inputs.append(h('span', { class: 'src-in' }, link(`${buildUrl('settings-cars', { car: car.id })}#data-sources`, 'change order', { class: 'lnk lnk--tap' })));
+    replace(inputsEl, inputs, hist ? h('p', { class: 'src-line src-line--car' }, h('span', { class: 'src-inputs-k' }, 'history '), hist) : null);
     const midDrive = n.state === 'driving' && n.stale;
     // no data: no sample at all (an unknown state with fresh values is not "no data")
     const none = !n.at_ms;

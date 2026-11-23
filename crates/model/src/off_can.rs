@@ -3,12 +3,13 @@
 //! the inputs that gave one.
 //!
 //! Each input hands over what it read as an [`OffCan`] with the time it was read. [`fuse`] takes them in the order
-//! inputs win ([`Input::ALL`]: SMO, the Tesla API, TeslaFi's API, local TeslaMate), value by value: the first input with a value
+//! inputs win (the car's [`SourceOrder`], by default SMO, the Tesla API, TeslaFi's API, local TeslaMate), value by
+//! value: the first input with a value
 //! that is not stale gives it; when every input's value is stale, the first one's is kept, marked stale. A value is
 //! stale once it is older than its age limit ([`max_age_ms`]): the lock state an hour after the input stopped
 //! reading the car is no longer the lock state. Nothing is guessed: a value an input did not send is `None`.
 
-use crate::Input;
+use crate::{Input, SourceOrder};
 use serde::{Deserialize, Serialize};
 
 /// Locked, windows, sunroof: stale an hour after they were read.
@@ -149,16 +150,6 @@ pub fn max_age_ms(kind: Kind) -> u64 {
     }
 }
 
-/// Where an input stands where two give the same value: SMO first.
-pub fn rank(i: Input) -> usize {
-    match i {
-        Input::Smo => 0,
-        Input::TeslaApi => 1,
-        Input::TeslafiApi => 2,
-        Input::TeslamateLocal => 3,
-    }
-}
-
 /// Whether an update status word says an update is waiting, and whether it is installing. `None` for a word not
 /// known (never guessed).
 pub fn update_words(status: &str) -> Option<(bool, bool)> {
@@ -172,10 +163,10 @@ pub fn update_words(status: &str) -> Option<(bool, bool)> {
     }
 }
 
-/// The car's newest values across `readings` at `now_ms` (see the module docs).
-pub fn fuse(now_ms: u64, readings: &[Reading<'_>]) -> OffCanNow {
+/// The car's newest values across `readings` at `now_ms`, the inputs winning in `order` (see the module docs).
+pub fn fuse(now_ms: u64, readings: &[Reading<'_>], order: &SourceOrder) -> OffCanNow {
     let mut rs: Vec<Reading<'_>> = readings.to_vec();
-    rs.sort_by_key(|r| (rank(r.input), std::cmp::Reverse(r.at_ms)));
+    rs.sort_by_key(|r| (order.rank(r.input), std::cmp::Reverse(r.at_ms)));
     let stale = |at: u64, kind: Kind| now_ms.saturating_sub(at) > max_age_ms(kind);
     fn pick<T: Clone>(
         rs: &[Reading<'_>],
@@ -256,6 +247,7 @@ mod tests {
                 Reading { input: Input::TeslafiApi, at_ms: now - 60_000, values: &fi },
                 Reading { input: Input::TeslaApi, at_ms: now - 120_000, values: &api },
             ],
+            &SourceOrder::default(),
         );
         let l = n.locked.unwrap();
         assert_eq!((l.value, l.input, l.stale), (true, Input::TeslaApi, false), "the Tesla API wins over TeslaFi");
@@ -271,13 +263,28 @@ mod tests {
                 Reading { input: Input::TeslaApi, at_ms: now - 2 * H, values: &api },
                 Reading { input: Input::TeslafiApi, at_ms: now - 60_000, values: &fi },
             ],
+            &SourceOrder::default(),
         );
         assert_eq!(n.locked.as_ref().map(|l| (l.value, l.input, l.stale)), Some((false, Input::TeslafiApi, false)));
         // every input stopped: the first one's value, marked stale (the version stays current far longer)
-        let n = fuse(now, &[Reading { input: Input::TeslaApi, at_ms: now - 2 * H, values: &api }]);
+        let n =
+            fuse(now, &[Reading { input: Input::TeslaApi, at_ms: now - 2 * H, values: &api }], &SourceOrder::default());
         assert_eq!(n.locked.as_ref().map(|l| (l.value, l.stale)), Some((true, true)));
         assert_eq!(n.version.as_ref().map(|v| v.stale), Some(false));
-        assert!(fuse(now, &[]).is_empty());
+        assert!(fuse(now, &[], &SourceOrder::default()).is_empty());
+
+        // the car puts TeslaFi above the Tesla API: TeslaFi's lock state wins, the Tesla API still gives the version
+        let order = SourceOrder::new(&[Input::TeslafiApi, Input::Smo, Input::TeslaApi, Input::TeslamateLocal]).unwrap();
+        let n = fuse(
+            now,
+            &[
+                Reading { input: Input::TeslaApi, at_ms: now - 30_000, values: &api },
+                Reading { input: Input::TeslafiApi, at_ms: now - 60_000, values: &fi },
+            ],
+            &order,
+        );
+        assert_eq!(n.locked.as_ref().map(|l| (l.value, l.input)), Some((false, Input::TeslafiApi)));
+        assert_eq!(n.version.as_ref().map(|v| v.input), Some(Input::TeslaApi));
     }
 
     #[test]
@@ -286,7 +293,7 @@ mod tests {
         assert_eq!(update_words("Installing"), Some((true, true)));
         assert_eq!(update_words("something_new"), None);
         let half = OffCan { windows: [Some(false), None, None, None], ..OffCan::default() };
-        let n = fuse(0, &[Reading { input: Input::TeslaApi, at_ms: 0, values: &half }]);
+        let n = fuse(0, &[Reading { input: Input::TeslaApi, at_ms: 0, values: &half }], &SourceOrder::default());
         assert_eq!(n.windows_open, None, "three windows unknown: not all closed");
         assert_eq!(n.windows[0].as_ref().map(|w| w.value), Some(false));
         let none = OffCan {
@@ -294,7 +301,7 @@ mod tests {
             update_version: Some("2026.38.1".into()),
             ..OffCan::default()
         };
-        let n = fuse(0, &[Reading { input: Input::TeslaApi, at_ms: 0, values: &none }]);
+        let n = fuse(0, &[Reading { input: Input::TeslaApi, at_ms: 0, values: &none }], &SourceOrder::default());
         assert_eq!(n.update_version, None, "no update waiting: no waiting version");
     }
 }

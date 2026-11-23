@@ -166,12 +166,13 @@ pub(crate) const INPUT_NAME_WINDOW_MS: u64 = 24 * 3600 * 1000;
 
 /// The version a live input said the car ran after the update whose old fingerprints were last seen at `from_ms` and
 /// the new ones first at `to_ms`: the newest version an input started saying from `from_ms` until a day after `to_ms`
-/// that is not the one it said before `from_ms` (before `to_ms`, only one it changed to), from the inputs in their order (the Tesla API, TeslaFi, local
-/// TeslaMate).
+/// that is not the one it said before `from_ms` (before `to_ms`, only one it changed to), from the inputs in the car's
+/// order (its `source_order`, [`Engine::source_order`]).
 fn input_named(e: &Engine, car: CarId, from_ms: u64, to_ms: u64) -> QResult<Option<(String, model::Input)>> {
     let seen = crate::records::input_versions(e.db(), car)?;
     let mut inputs: Vec<model::Input> = seen.iter().map(|s| s.input).collect();
-    inputs.sort_by_key(|&i| model::off_can::rank(i));
+    let order = e.source_order(car);
+    inputs.sort_by_key(|&i| order.rank(i));
     inputs.dedup();
     let until = to_ms.saturating_add(INPUT_NAME_WINDOW_MS);
     for input in inputs {

@@ -1,9 +1,9 @@
 //! The Tesla API and TeslaFi's API as live inputs beside SMO. The `tesla` crate's poller hands the engine what it
 //! read ([`TeslaSink`]), the `teslafi` crate's what TeslaFi polled ([`TeslafiSink`]); the engine keeps each apart from
 //! SMO's data (its own sample stream, `tesla-api` or `teslafi-api`, and its own state spans) and builds the timeline
-//! from all of them at once ([`timeline::fuse_all`]): one drive seen by several inputs is one row naming them, SMO's
-//! values win where it has them, then the Tesla API's, then TeslaFi's, each filling what the one above did not send
-//! or the time it was offline. TeslaFi's samples go through the same steps as the Tesla API's, below; only its
+//! from all of them at once ([`timeline::fuse_ordered`]): one drive seen by several inputs is one row naming them, the
+//! inputs winning in the car's `source_order` (by default SMO's values where it has them, then the Tesla API's, then
+//! TeslaFi's, then the local TeslaMate's), each filling what the one above did not send or the time it was offline. TeslaFi's samples go through the same steps as the Tesla API's, below; only its
 //! values beside the samples (1, 3) are not taken (TeslaFi's software version and settings are left to the Tesla API
 //! and SMO), but for the values no CAN message carries (3, below).
 //!
@@ -612,26 +612,22 @@ impl Engine {
         Ok(self.live_fused(car, from_ms, to_ms)?.samples)
     }
 
-    /// [`Self::live_samples`] (SMO's, the Tesla API's and TeslaFi's API's) and the seconds that are not SMO's alone ([`timeline::Fused::marks`]).
+    /// [`Self::live_samples`] (SMO's, the Tesla API's, TeslaFi's API's and the local TeslaMate's, in the car's
+    /// order) and the seconds that are not SMO's alone ([`timeline::Fused::marks`]).
     pub(crate) fn live_fused(&self, car: CarId, from_ms: u64, to_ms: u64) -> Result<LiveFused> {
         let db = &self.inner.db;
         let p = &self.inner.opts.fuse;
-        let smo = db.read_points::<Sample>(car, Stream::Smo, from_ms, to_ms)?;
-        // each API's samples, in the order they win, read as far around the window as it fills seconds
-        let mut apis = Vec::new();
-        for input in Input::apis() {
-            let m = match input {
-                Input::Smo => continue,
-                Input::TeslaApi => p.margin_ms(),
-                // (it fills the Tesla API's seconds, which fill SMO's)
-                Input::TeslafiApi | Input::TeslamateLocal => p.lower_margin_ms(),
-            };
+        let order = self.source_order(car);
+        // each input's samples, read as far around the window as its place in the car's order fills seconds
+        let mut by = Vec::new();
+        for (rank, input) in order.iter().enumerate() {
+            let m = p.read_margin_ms(input, rank);
             let pts =
                 db.read_points::<Sample>(car, Stream::from(input), from_ms.saturating_sub(m), to_ms.saturating_add(m))?;
-            apis.push((pts, Inputs::from(input)));
+            by.push((pts, input));
         }
-        let lower: Vec<(&[Sample], Inputs)> = apis.iter().map(|(v, i)| (v.as_slice(), *i)).collect();
-        let mut f = timeline::fuse_all(&smo, &lower, p);
+        let by: Vec<(&[Sample], Input)> = by.iter().map(|(v, i)| (v.as_slice(), *i)).collect();
+        let mut f = timeline::fuse_ordered(&by, &order, p);
         f.samples.retain(|s| s.t_ms >= from_ms && s.t_ms < to_ms);
         f.marks.retain(|(t, _)| *t >= from_ms && *t < to_ms);
         Ok(LiveFused { samples: f.samples, marks: f.marks })

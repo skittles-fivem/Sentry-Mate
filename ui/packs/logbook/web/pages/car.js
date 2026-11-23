@@ -118,7 +118,7 @@ export async function mount(ctx) {
   const stateBox = h('div', { class: 'state-box' });
   const drawState = () => replace(stateBox, stateLine(now, tz, placeKind()));
   function draw() {
-    replace(head, header(car, now, tz));
+    replace(head, header(car, now, tz, ctx.me && ctx.me.role === 'admin'));
     replace(whereText, whereLines(now, tz, outsideMaps, currentVisit()));
     drawState();
     replace(live, staleBanner(now, tz), h('p', { class: 'lede' }, lede(now, tz)), stateBox, hero(car, now, tz), vitals(car, now, tz), awake(now), statusFlags(now, tz), offCan(now, tz), charging(now, tz, usualStart()), where, latest);
@@ -190,7 +190,7 @@ export async function mount(ctx) {
 
 /* ------------------------------------------------------------------ the head and the story */
 
-function header(car, now, tz) {
+function header(car, now, tz, admin = false) {
   const cfg = car.config || {};
   const trim = cfg.trim && cfg.trim.value ? cfg.trim : null;
   const src = (s, list) => (Array.isArray(list) && list.length ? labelOf(list).replace(/^Data from/, 'from').replace(/^Imported/, 'imported')
@@ -216,6 +216,7 @@ function header(car, now, tz) {
         : sameDay ? `Measured ${formatTime(now.at_ms, tz, { seconds: true })}, received ${formatTime(now.received_ms, tz, { seconds: true })}${now.delay_s != null ? ` (${now.delay_s} s later)` : ''}`
           : `Last report ${formatDateTime(now.at_ms, tz, { now: api.now() })}`),
       inputsLine(now.inputs, { cls: 'freshness-inputs' }),
+      admin ? h('p', { class: 'freshness-order' }, h('a', { href: `${state.buildUrl('settings-cars', { car: car.id })}#data-sources` }, 'Change order')) : null,
       h('p', { class: 'freshness-note' }, 'Values usually arrive about 75 s after the car sends them; each shows its own time on hover and the input that sent it.')),
   });
 }

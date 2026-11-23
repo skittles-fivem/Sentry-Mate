@@ -528,6 +528,12 @@ def get_settings(req):
     out.setdefault("pack_replaced_date", None)
     out.setdefault("pack_new_kwh", None)
     out["import_gap_fill_on"] = gapfill.on(st, req.car)
+    out["import_gap_fill_default"] = bool((st.server_settings.get("import_gap_fill") or {}).get("enabled", True))
+    # the live inputs, highest priority first (the car's `source_order`, else the default), and the imports
+    out["source_order"] = SRC.order_of(st, req.car)
+    out["source_order_default"] = list(SRC.DEFAULT_ORDER)
+    out["inputs"] = _inputs(req, out["source_order"])
+    out["imports"] = _imports(req)
     # what the car's build gives when the owner has typed nothing (the inputs' placeholders)
     h = req.history()
     car = h.car if h is not None else None
@@ -538,6 +544,35 @@ def get_settings(req):
     out["car"] = req.car
     out["time_zone"] = req.tz()
     return out
+
+
+def _inputs(req, order):
+    """One entry per live input word in the car's order: whether it feeds this car in the made-up data (as
+    /cars/{car}/now `inputs` says) and its newest data."""
+    from ..live import now_object
+    last = {}
+    try:
+        for x in now_object(req.app, req.car, req.now).get("inputs") or []:
+            last[x["kind"]] = x.get("last_ms")
+    except Exception:  # a car with no live values yet: every input off
+        last = {}
+    return [{"kind": k, "label": SRC.INPUT_LABEL[k], "on": k in last, "last_ms": last.get(k)} for k in order]
+
+
+def _imports(req):
+    """The car's imported history per site, oldest first: { site, label, from_ms, to_ms }."""
+    h = req.history()
+    if h is None:
+        return []
+    span = {}
+    for x in list(h.segs) + list(h.shadow):
+        site = SRC.site_of(x)
+        if site is None or x.start > req.now:
+            continue
+        a, b = span.get(site, (x.start, x.end))
+        span[site] = (min(a, x.start), max(b, min(x.end, req.now)))
+    return [{"site": k, "label": SRC.ref("import", k)["label"], "from_ms": a, "to_ms": b}
+            for k, (a, b) in sorted(span.items(), key=lambda kv: kv[1][0])]
 
 
 def _num_rule(body, k, lo, hi, rule, bad, allow_null=True):
@@ -561,7 +596,7 @@ def patch_settings(req):
     bad, rule = {}, {}
     known = ("version", "battery_chemistry", "free_supercharging", "capacity_new_kwh", "full_range_new_km",
              "warranty_threshold_pct", "efficiency_wh_per_km_override", "software_version_typed", "import_gap_fill",
-             "pack_replaced_date", "pack_new_kwh")
+             "pack_replaced_date", "pack_new_kwh", "source_order")
     for k in body:
         if k not in known:
             bad[k] = "Unknown field."
@@ -608,10 +643,15 @@ def patch_settings(req):
             rule["software_version_typed"] = "A version such as 2026.38.4."
     if "import_gap_fill" in body and body["import_gap_fill"] is not None and not isinstance(body["import_gap_fill"], bool):
         bad["import_gap_fill"] = "Must be true, false or null (the server's setting)."
+    if "source_order" in body and body["source_order"] is not None and not SRC.order_valid(body["source_order"]):
+        rule["source_order"] = SRC.ORDER_RULE
     if bad:
         raise bad_input(bad)
     if rule:
         raise invalid(rule)
+    reorder = "source_order" in body and SRC.order_of(st, req.car) != (body["source_order"] or SRC.DEFAULT_ORDER)
+    h = req.history()
+    a = h.first_ms if h is not None and h.first_ms is not None else req.now - 30 * 86_400_000
     with st.lock:
         s = st.car_settings[req.car]
         for k, v in body.items():
@@ -621,11 +661,23 @@ def patch_settings(req):
                 s["battery_chemistry"] = dict(s["battery_chemistry"], setting=v["setting"])
             elif k == "software_version_typed":
                 s[k] = v.strip() if isinstance(v, str) else None
+            elif k == "source_order":
+                # the default is kept as null, so a car follows a later change of the default
+                s[k] = list(v) if v is not None and v != SRC.DEFAULT_ORDER else None
             else:
                 s[k] = v
         s["version"] += 1
+        if reorder:
+            # the server fuses the car's rows again in the new order: its health says rebuild_pending for a moment
+            st.rebuilds.setdefault(req.car, []).append({
+                "id": st.new_id("rb"), "from_ms": a, "to_ms": req.now, "at_ms": req.now, "took_ms": 3000,
+                "pending_until": req.now + 3000, "kinds": ["drives", "charges", "states", "visits"],
+                "cause": "source_order"})
     st.record(req.account, "car.settings", f"car:{req.car}",
               "Changed " + ", ".join(sorted(k for k in body if k != "version")) + ".")
+    if reorder:
+        req.app.events.publish("rows", {"car": req.car, "kinds": ["drives", "charges", "states", "visits"],
+                                        "from_ms": a, "to_ms": req.now}, car=req.car)
     return get_settings(req)
 
 

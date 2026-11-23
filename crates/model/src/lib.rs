@@ -94,11 +94,11 @@ pub enum Input {
 }
 
 impl Input {
-    /// In the order they win where two cover the same time: SMO, then the Tesla API, then TeslaFi, then the local
-    /// TeslaMate.
+    /// Every input, in the order they win by default where two cover the same time (a car's [`SourceOrder`] may
+    /// set another): SMO, then the Tesla API, then TeslaFi, then the local TeslaMate.
     pub const ALL: [Input; 4] = [Input::Smo, Input::TeslaApi, Input::TeslafiApi, Input::TeslamateLocal];
 
-    /// The inputs other than SMO (the APIs), in the order they win.
+    /// The inputs other than SMO (the APIs), in [`Input::ALL`]'s order.
     pub fn apis() -> impl Iterator<Item = Input> {
         Input::ALL.into_iter().filter(|i| *i != Input::Smo)
     }
@@ -162,7 +162,7 @@ impl Inputs {
         Inputs(self.0 & !Input::Smo.bit())
     }
 
-    /// In a fixed order: SMO first.
+    /// In a fixed order ([`Input::ALL`]'s): SMO first.
     pub fn iter(self) -> impl Iterator<Item = Input> {
         Input::ALL.into_iter().filter(move |i| self.contains(*i))
     }
@@ -193,6 +193,97 @@ impl Serialize for Inputs {
 impl<'de> Deserialize<'de> for Inputs {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Inputs, D::Error> {
         Ok(Vec::<Input>::deserialize(d)?.into_iter().collect())
+    }
+}
+
+impl Input {
+    /// The input's short name a page shows: "SMO", "Tesla API", "TeslaFi", "local TeslaMate".
+    pub fn name(self) -> &'static str {
+        match self {
+            Input::Smo => "SMO",
+            Input::TeslaApi => "Tesla API",
+            Input::TeslafiApi => "TeslaFi",
+            Input::TeslamateLocal => "local TeslaMate",
+        }
+    }
+
+    /// The input's word (`smo`, `tesla_api`, `teslafi_api`, `teslamate_local`).
+    pub fn word(self) -> &'static str {
+        match self {
+            Input::Smo => "smo",
+            Input::TeslaApi => "tesla_api",
+            Input::TeslafiApi => "teslafi_api",
+            Input::TeslamateLocal => "teslamate_local",
+        }
+    }
+
+    pub fn from_word(w: &str) -> Option<Input> {
+        Input::ALL.into_iter().find(|i| i.word() == w)
+    }
+}
+
+/// The order a car's live inputs win in where two cover the same time, highest first: every input once (the car's
+/// `source_order` setting; [`SourceOrder::default`] is [`Input::ALL`]: SMO, the Tesla API, TeslaFi, local
+/// TeslaMate). Imports always come after every live input. Stored as its words; a list that is not every input
+/// exactly once is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "Vec<Input>", into = "Vec<Input>")]
+pub struct SourceOrder([Input; Input::ALL.len()]);
+
+impl Default for SourceOrder {
+    fn default() -> SourceOrder {
+        SourceOrder(Input::ALL)
+    }
+}
+
+impl SourceOrder {
+    /// The order of `list`, when it names every input exactly once.
+    pub fn new(list: &[Input]) -> Option<SourceOrder> {
+        if list.len() != Input::ALL.len() || !Input::ALL.iter().all(|i| list.iter().filter(|x| *x == i).count() == 1) {
+            return None;
+        }
+        let mut out = Input::ALL;
+        for (slot, i) in out.iter_mut().zip(list) {
+            *slot = *i;
+        }
+        Some(SourceOrder(out))
+    }
+
+    /// Every input, highest first.
+    pub fn iter(&self) -> impl Iterator<Item = Input> + '_ {
+        self.0.iter().copied()
+    }
+
+    /// Where `i` stands (0: it wins over every other).
+    pub fn rank(&self, i: Input) -> usize {
+        self.0.iter().position(|x| *x == i).unwrap_or(self.0.len())
+    }
+
+    /// The first input of `set` in this order.
+    pub fn first_of(&self, set: Inputs) -> Option<Input> {
+        self.iter().find(|i| set.contains(*i))
+    }
+
+    /// The words, highest first.
+    pub fn words(&self) -> Vec<&'static str> {
+        self.iter().map(Input::word).collect()
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == SourceOrder::default()
+    }
+}
+
+impl TryFrom<Vec<Input>> for SourceOrder {
+    type Error = String;
+    fn try_from(v: Vec<Input>) -> Result<SourceOrder, String> {
+        SourceOrder::new(&v).ok_or_else(|| "a source order names every live input exactly once".to_string())
+    }
+}
+
+impl From<SourceOrder> for Vec<Input> {
+    fn from(o: SourceOrder) -> Vec<Input> {
+        o.0.to_vec()
     }
 }
 
@@ -1130,6 +1221,23 @@ mod tests {
         }
         let all: Inputs = Input::ALL.into_iter().collect();
         assert_eq!(all.iter().count(), Input::ALL.len(), "every input has its own bit");
+    }
+
+    #[test]
+    fn source_orders_name_every_input_once() {
+        let d = SourceOrder::default();
+        assert_eq!(d.words(), vec!["smo", "tesla_api", "teslafi_api", "teslamate_local"]);
+        assert_eq!(serde_json::to_string(&d).unwrap(), r#"["smo","tesla_api","teslafi_api","teslamate_local"]"#);
+        let o: SourceOrder = serde_json::from_str(r#"["tesla_api","smo","teslamate_local","teslafi_api"]"#).unwrap();
+        assert_eq!((o.rank(Input::TeslaApi), o.rank(Input::Smo), o.rank(Input::TeslafiApi)), (0, 1, 3));
+        assert_eq!(o.first_of(Inputs::BOTH), Some(Input::TeslaApi));
+        for bad in [r#"["smo","smo","teslafi_api","teslamate_local"]"#, r#"["smo","tesla_api","teslafi_api"]"#, "[]"] {
+            assert!(serde_json::from_str::<SourceOrder>(bad).is_err(), "{bad}");
+        }
+        for i in Input::ALL {
+            assert_eq!(Input::from_word(i.word()), Some(i));
+            assert_eq!(Origin::from(i).kind(), i.word());
+        }
     }
 
     #[test]

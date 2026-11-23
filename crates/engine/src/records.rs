@@ -721,7 +721,7 @@ pub(crate) fn note_input_version(db: &Db, car: CarId, input: model::Input, versi
         Some(s) if at_ms <= s.last_ms => return Ok(()),
         _ => all.push(VersionSeen { input, version: version.to_string(), first_ms: at_ms, last_ms: at_ms }),
     }
-    all.sort_by_key(|s| (s.first_ms, model::off_can::rank(s.input)));
+    all.sort_by_key(|s| (s.first_ms, s.input));
     let over = all.len().saturating_sub(VERSIONS_KEPT);
     all.drain(..over);
     put(db, NS, &versions_key(car), &all)

@@ -66,7 +66,8 @@ def get_series(req):
         return out
     # with source=all, the import shown fills what live history lacks (mockapi/gapfill.py)
     fill = source == "all" and G.on(req.store, req.car)
-    out.update(S.build(h, fields, a, b, max_points, aggs, req.now, source, explicit_aggs=aggs is not None, fill=fill))
+    out.update(S.build(h, fields, a, b, max_points, aggs, req.now, source, explicit_aggs=aggs is not None, fill=fill,
+                       order=SRC.order_of(req.store, req.car)))
     return out
 
 
