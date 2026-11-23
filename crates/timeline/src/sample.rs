@@ -687,6 +687,25 @@ mod tests {
         // the DBC's layout reads another longitude from the same frame
         let s = run(None);
         assert!(s.iter().filter_map(|x| x.lon).all(|l| (l + 20.25).abs() > 1.0), "{s:?}");
+        // any scale and offset (a line `sentry-mate gps-layout` fitted): the longitude 28 bits at bit 28, made up as
+        // half a percent more degrees per step and an offset of no power of two of them
+        let (scale, offset): (f64, f64) = (1.005e-6, 3.1234567);
+        let lon = ((-20.25 - offset) / scale).round() as i64;
+        let word = enc(10.5, 28) | ((lon.rem_euclid(1i64 << 28) as u64) << 28) | (15u64 << 57);
+        let mut lined_data = data;
+        lined_data[..8].copy_from_slice(&word.to_le_bytes());
+        let frame = |s: u64| logfmt::Frame { data: lined_data, ..frame(s) };
+        let lined: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1.005e-6,3.1234567)".parse().unwrap();
+        assert_eq!((lined.lon.scale, lined.lon.offset), (scale, offset));
+        let mut d = dbc::Decoder::new(dbc::Profile::Tesla3Y, &side);
+        let mut b = SampleBuilder::new(dbc::Profile::Tesla3Y, SampleParams::default());
+        b.set_internal_gps(Some(lined));
+        for s in 0..4 {
+            b.feed(&mut d, &frame(s));
+        }
+        let s = b.finish().0;
+        let x = s.iter().find(|x| x.lat.is_some()).expect("a fix");
+        assert!((x.lat.unwrap() - 10.5).abs() < 1e-9 && (x.lon.unwrap() + 20.25).abs() < 1e-6, "{x:?}");
     }
 
     #[test]
