@@ -607,6 +607,11 @@ async fn the_records_in_memory_are_the_records_on_disk() {
         assert_eq!(judge.chain(KEY).await, disk.chain(KEY).await, "{what}");
         assert_eq!(judge.signers(KEY).await.unwrap().keys, disk.signers(KEY).await.unwrap().keys, "{what}");
         assert_eq!(judge.last_arrived(KEY).await.unwrap(), disk.last_arrived(KEY).await.unwrap(), "{what}");
+        let arr = judge.arrivals(KEY).await;
+        assert_eq!(arr, disk.arrivals(KEY).await, "{what}");
+        let times = || a.logs.values().map(|r| r.arrived_ms);
+        let waiting = a.logs.values().filter(|r| r.status == Status::Waiting).count() as u64;
+        assert_eq!((arr.first_ms, arr.last_ms, arr.waiting), (times().min(), times().max(), waiting), "{what}");
         assert_eq!(judge.latest_usable(KEY, 9).await.unwrap(), disk.latest_usable(KEY, 9).await.unwrap(), "{what}");
         assert_eq!(judge.log_checks(KEY, none()).await.unwrap(), disk.log_checks(KEY, none()).await.unwrap(), "{what}");
         let names: Vec<String> = a.logs.keys().cloned().collect();
