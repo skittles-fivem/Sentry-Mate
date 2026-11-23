@@ -440,7 +440,9 @@ ul { margin: 0; padding: 0; list-style: none; }
 @keyframes pulse { 0% { transform: scale(0.6); opacity: 1; } 100% { transform: scale(1.8); opacity: 0; } }
 
 /* no max-width: wide screens get more columns and side panels (see "xwide"), not a narrow column in the middle */
-.view { flex: 1; padding: var(--view-pad-top) var(--gutter) var(--view-pad-bottom); width: 100%; min-width: 0; outline: none; }
+/* at least a screen high (the small one: a phone's toolbars shown), so the footer starts below the fold and is never
+   pushed down on screen as the page draws (the loading skeleton, then the page) */
+.view { flex: 1; padding: var(--view-pad-top) var(--gutter) var(--view-pad-bottom); width: 100%; min-width: 0; min-height: 100svh; outline: none; }
 /* the fleet page fills the window; in a very short window (or at a large interface size) it keeps a usable table and the page scrolls */
 .view--fill { flex: none; height: max(calc(100vh - var(--topbar-h)), round(36rem, var(--e))); display: flex; flex-direction: column; padding-bottom: round(1.25rem, var(--e)); overflow: hidden; }
 
@@ -928,6 +930,9 @@ a.tl-kind:hover { color: var(--live); }
 .chart-block + .chart-block { border-top: 1px solid var(--line); }
 .chart-block { padding: round(0.625rem, var(--e)) 0 round(0.25rem, var(--e)); }
 .chart-label { display: flex; align-items: center; gap: round(0.625rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); padding: 0 0 round(0.125rem, var(--e)) round(4rem, var(--e)); }
+/* the name keeps one line: the readout beside it comes and goes with the cursor, and a name wrapping under it moved
+   the charts below by a line */
+.chart-label > .name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chart-label .swatch { flex: none; width: round(0.875rem, var(--e)); height: round(0.1875rem, var(--e)); border-radius: round(0.125rem, var(--e)); background: var(--c); }
 .chart-label .name { font-weight: 600; color: var(--text); }
 .chart-label .chart-unit { font-weight: 500; color: var(--text-3); }
@@ -1232,6 +1237,8 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 /* a long list in a box of ten rows (core/table.js windowTable): the header stays, the rows scroll, only those in view
    are drawn; every row is one table row high (each cell holds at most two lines) */
 .vl-box { --vl-row: calc(round(3.375rem, var(--e)) + 1px); max-height: calc(round(2.625rem, var(--e)) + 1px + 10 * var(--vl-row)); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.vl-box--rows { max-height: calc(round(2.625rem, var(--e)) + 1px + var(--vl-rows) * var(--vl-row)); }
+:root[data-phone] .vl-box.vl-box--rows { max-height: calc(round(2.625rem, var(--e)) + 1px + var(--vl-rows) * var(--vl-row)); }
 .vl-box:focus-visible { outline-offset: round(-0.125rem, var(--e)); }
 .vl-table { table-layout: auto; }
 .vl-table > tbody > tr.vl-gap, .vl-table > tbody > tr.vl-gap:hover { background: none; }
@@ -1546,7 +1553,9 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
   background: var(--bg-1);
   border-top: 1px solid var(--line);
 }
-.dock-period:empty, .dock-period:has(> .period[hidden]) { display: none; }
+/* shown on every page with a period from its first paint (the router sets data-has-period as it starts), so the dock
+   never grows over the page once it is there */
+.dock-period:empty, :root:not([data-has-period]) .dock-period { display: none; }
 .dock-period { display: flex; align-items: center; height: var(--dock-period-h); padding: 0 var(--gutter); border-bottom: 1px solid var(--line); }
 .dock-period .period { display: flex; width: 100%; gap: round(0.5rem, var(--e)); }
 .dock-period .period-btn { flex: 1; min-width: 0; max-width: none; justify-content: center; }
