@@ -1185,3 +1185,6 @@ html[data-form="phone"] .fw-change { flex-direction: column; align-items: flex-s
 .steady { display: inline-grid; font-variant-numeric: tabular-nums; }
 .steady > * { grid-area: 1 / 1; }
 .steady-size { visibility: hidden; }
+/* a chart is never the browser's scroll anchor: its cursor line comes and goes under the mouse, and the page
+   would scroll to keep it in place */
+.uplot, .uplot * { overflow-anchor: none; }
