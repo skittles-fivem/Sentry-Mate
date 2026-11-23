@@ -24,7 +24,7 @@
 import * as state from '../shared/state.js';
 import * as api from '../shared/api.js';
 import { loadPage, reloadPage, isPageFailed } from '../shared/build.js';
-import { h, ready, failed, unready, setTitle, cover } from '../shared/dom.js';
+import { h, holdScroll, ready, failed, unready, setTitle, cover } from '../shared/dom.js';
 import { periodParams } from '../shared/time.js';
 import { pageInfo } from './pages.js';
 import { resolveFor } from './period.js';
@@ -32,6 +32,7 @@ import { loadingView, errorView } from './ui.js';
 import { showPending, clearFlash, flash } from './flash.js';
 import { onPrefs } from './prefs.js';
 import { holdSnap } from './snap.js';
+import { noticesLoaded } from './frame.js';
 import { watchLinks, warmModules, prefetchApi, pageSheet, setStale } from '../shared/prefetch.js';
 
 /** Page id -> its module, loaded when first shown. */
@@ -127,6 +128,7 @@ function stageIn(m, finishOld, busy) {
     if (done) return;
     const nodes = [...box.childNodes];
     end();
+    holdScroll(m);
     m.replaceChildren(...nodes);
     setStale(false);
     finishOld?.();
@@ -145,6 +147,38 @@ function stageIn(m, finishOld, busy) {
   const drop = (keepOld) => { if (done) return null; end(); if (keepOld) return finishOld; finishOld?.(); return null; };
   staged = { box, commit, settle, drop };
   return staged;
+}
+
+// A page drawn for the first time (not drawn again in place) is built in an invisible box of <main>'s size too,
+// while <main> shows the loading view, and put in <main> in one step when it says it is ready (or after FIRST_MS, a
+// slow page: what it draws after that is drawn in place). Its parts come in one by one as their answers arrive; on
+// screen they would each push what is under them down (a phone: the page jumps while it loads).
+const FIRST_MS = 3000;
+const NOTICES_MS = 1500;
+const FONTS_MS = 1000;
+function firstBox(m, onCommit) {
+  const r = m.getBoundingClientRect();
+  const box = h('div', { class: m.className, 'aria-hidden': 'true', inert: '' });
+  Object.assign(box.style, {
+    position: 'fixed', top: '0', left: `${r.left}px`, width: `${r.width}px`, boxSizing: 'border-box', height: '100vh', overflow: 'hidden',
+    visibility: 'hidden', pointerEvents: 'none', zIndex: '-1',
+  });
+  // where it lands: <main>'s top in the page, which opens at its top
+  box.dataset.nearShift = String(Math.round(r.top + window.scrollY));
+  document.body.append(box);
+  let done = false;
+  const maxT = setTimeout(() => commit(), FIRST_MS);
+  function commit() {
+    if (done) return;
+    done = true;
+    clearTimeout(maxT);
+    holdScroll(m);
+    m.replaceChildren(...box.childNodes);
+    box.remove();
+    onCommit();
+  }
+  const drop = () => { if (done) return; done = true; clearTimeout(maxT); box.remove(); };
+  return { box, commit, drop };
 }
 
 // A page's API client that counts its requests under way (a page drawn again waits for them), and with a
@@ -195,7 +229,8 @@ function jumpToHash() {
 }
 
 /** The context a page gets. Everything a page needs from the frame goes through it. */
-function makeCtx(s, my, scope, cleanups, view = main(), stage = null, tracker = null, release = () => {}) {
+// box: a first draw's box (see firstBox), { shown(then): put in place when it may be, then `then` runs; now() }
+function makeCtx(s, my, scope, cleanups, view = main(), stage = null, tracker = null, release = () => {}, box = null) {
   const id = s.page;
   let jumped = !!stage;
   const info = pageInfo(id);
@@ -208,20 +243,26 @@ function makeCtx(s, my, scope, cleanups, view = main(), stage = null, tracker = 
     /** The first render with data is done: data-ready = page id. A link with #id lands on that part. */
     ready: () => {
       if (my !== token) return;
-      release();
       tracker?.close();
       if (!warmedMain) { warmedMain = true; warmModules(MAIN.map((p) => MODULES[p])); }
-      ready(id);
-      if (!jumped) { jumped = true; jumpToHash(); }
+      // once the page is in <main> (a first draw waits for the notices bar, see mount)
+      const then = () => {
+        if (my !== token) return;
+        release();
+        ready(id);
+        if (!jumped) { jumped = true; jumpToHash(); }
+      };
+      if (box) box.shown(then); else then();
     },
     /** The page could not load: its error state, and data-ready = 'error:<id>'. */
     fail: (err, { retry = () => remount() } = {}) => {
       if (my !== token || api.isAbort(err)) return;
       console.warn(`page ${id}:`, err);
       main().removeAttribute('aria-busy');
-      view.replaceChildren(errorView(err, { retry }));
+      ctx.main.replaceChildren(errorView(err, { retry }));
       release();
       stage?.commit();
+      box?.now();
       failed(id);
     },
     /** Run fn when the page is left. */
@@ -274,12 +315,29 @@ async function mount(s, { live = false } = {}) {
   const cleanups = [];
   // the page is built in one go from kept answers: the whole-pixel snap runs once, when it is drawn (core/snap.js)
   const release = holdSnap();
-  const ctx = makeCtx(s, my, scope, cleanups, stage ? stage.box : m, stage, tracker, release);
+  // the first page of a visit waits for the notices bar (at most NOTICES_MS) before it shows its loading view and
+  // itself: a bar that came in after them would push the whole page down
+  const noticesIn = first && !live && frame && !AUTH_SCREENS.includes(id) && id !== 'not-found'
+    ? Promise.race([noticesLoaded, new Promise((r) => { setTimeout(r, NOTICES_MS); })]) : null;
+  // a first draw's box (firstBox), once the page module is in
+  const fb = {
+    box: null,
+    shown(then) {
+      const go = () => { if (my !== token) return; fb.box?.commit(); then(); };
+      // in place once the fonts its words use are in too (at most FONTS_MS): a face that came in after the page was
+      // on screen would re-wrap its lines under the reader
+      const fonts = fb.box && document.fonts?.status === 'loading' ? Promise.race([document.fonts.ready, new Promise((r) => { setTimeout(r, FONTS_MS); })]) : null;
+      if (noticesIn || fonts) Promise.all([noticesIn, fonts]).then(go); else go();
+    },
+    now() { fb.box?.commit(); },
+  };
+  const ctx = makeCtx(s, my, scope, cleanups, stage ? stage.box : m, stage, tracker, release, live ? null : fb);
   rec = current = { key: keyOf(s), id, ctx, instance: null, scope, cleanups, mod: null, tracker, shown: false, changed: false, release };
   if (!live) {
     m.className = `wrap main page-${id}`;
     m.setAttribute('aria-busy', 'true');
-    m.replaceChildren(loadingView());
+    if (noticesIn) noticesIn.then(() => { if (my === token && !m.hasChildNodes()) m.replaceChildren(loadingView()); });
+    else m.replaceChildren(loadingView());
     if (!first) { window.scrollTo(0, 0); }
   }
   try {
@@ -320,6 +378,12 @@ async function mount(s, { live = false } = {}) {
     current.mod = mod;
     if (my !== token) return;
     setTitle(mod.title ? mod.title(ctx) : (ctx.info ? ctx.info.name : id), car ? car.name : null);
+    if (!live && !auth) {
+      // (once in place, the page's main is <main> itself: what it looks up or draws later is there)
+      fb.box = firstBox(m, () => { ctx.main = m; });
+      cleanups.push(fb.box.drop);
+      ctx.main = fb.box.box;
+    }
     ctx.main.replaceChildren();
     const inst = await mod.mount(ctx);
     if (my !== token) { try { inst?.unmount?.(); } catch { /* left */ } return; }

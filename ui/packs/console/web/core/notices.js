@@ -13,6 +13,9 @@ let box = null;
 let items = [];
 let offline = false;
 const subs = new Set();
+let firstDone = null;
+/** Resolves once the notices were loaded the first time and are on screen (or could not be loaded). */
+export const noticesLoaded = new Promise((resolve) => { firstDone = resolve; });
 
 const hidden = () => { try { return new Set(JSON.parse(sessionStorage.getItem(HIDDEN_KEY) || '[]')); } catch { return new Set(); } };
 const hide = (code) => { try { const s = hidden(); s.add(code); sessionStorage.setItem(HIDDEN_KEY, JSON.stringify([...s])); } catch { /* fine */ } };
@@ -59,6 +62,7 @@ export async function loadNotices() {
   // kept: a page that lists the notices too reuses this answer
   try { items = (await api.get('notices', null, { keep: true })).items || []; } catch { items = []; }
   render();
+  firstDone();
   for (const f of [...subs]) { try { f(items); } catch (e) { console.error(e); } }
   return items;
 }

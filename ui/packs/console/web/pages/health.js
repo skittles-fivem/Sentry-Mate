@@ -15,10 +15,10 @@ import * as state from '../shared/state.js';
 import { h, replace, cover } from '../shared/dom.js';
 import { format, convert, unitLabel } from '../shared/units.js';
 import { formatDateTime, formatDuration, formatDayKey, dayStart, toIsoZoned, HOUR, DAY } from '../shared/time.js';
-import { formatNumber } from '../shared/i18n.js';
+import { formatNumber, compareText } from '../shared/i18n.js';
 import { head, section, kv, note, link, btn, textBar } from '../core/ui.js';
 import { num, tag, stateWord, ago, DASH } from '../core/fmt.js';
-import { table, cellBar } from '../core/table.js';
+import { table, windowTable, cellBar } from '../core/table.js';
 import { empty, errorWords, loadingLine } from '../core/states.js';
 import { toast } from '../core/toast.js';
 import { chartOrNote, line, timeAxis, valueAxis, cursor, readout } from '../core/chart.js';
@@ -374,43 +374,76 @@ async function mountCar(ctx) {
   }
 
   /* ---------- signals */
+  // a box five rows high that scrolls inside itself under a head that stays (the owner's: a long list need not take a
+  // big part of the page), with only the rows in view drawn (core/table.js windowTable, shared/vlist.js); the search
+  // is above it. The rows all have one height, and [plot] marks its button in place: nothing in the box is drawn
+  // again or moves.
   const sigSearch = h('input', { class: 'in in--search', type: 'search', placeholder: 'signal or value', 'aria-label': 'Find a signal', spellcheck: 'false' });
-  let signals = [], chosen = null;
-  const sigTable = table(ctx, {
-    title: 'signals', rows: [], csv: false, cover: ['nr.dash.state-table', 'nr.dash.state-table.sort-scroll'], sort: { key: 'name', dir: 'asc' }, limit: 40,
+  let signals = [], shown = [], chosen = null;
+  const sigCols = [
+    { key: 'name', label: 'signal', sort: true, ph: 'main', grow: true, cover: 'nr.dash.state-table.parameter', value: (s) => s.comment || s.series,
+      render: (s) => [s.comment || s.series, s.comment ? none(` ${s.series}`) : null] },
+    { key: 'message', label: 'message', sort: true, value: (s) => `${s.bus} ${s.message_id}`, render: (s) => [s.message_id, none(` ${s.bus}`)] },
+    { key: 'value', label: 'value', num: true, sort: true, ph: 'num', firstDir: 'desc', cover: 'nr.dash.state-table.value',
+      value: (s) => (s.value_name ? s.value_name : s.value == null ? null : signalKind(s) ? convert(s.value, signalKind(s)) : s.value), render: (s) => signalText(s) },
+    { key: 'raw', label: 'as sent', num: true, render: (s) => none(s.value == null ? DASH : `${formatNumber(s.value, { maximumFractionDigits: 6 })}${s.unit ? ` ${s.unit}` : ''}`) },
+    { key: 'at', label: 'read', num: true, sort: true, ph: 'sub', value: (s) => s.at_ms, render: (s) => (s.at_ms != null ? ago(s.at_ms) : DASH) },
+    { key: 'plot', label: '', render: (s) => (s.has_series ? h('button', { class: ['btn', 'btn--line', chosen === s.series ? 'tone--accent' : null], type: 'button', dataset: { plot: s.series }, 'aria-pressed': String(chosen === s.series), onclick: () => plotSignal(s) }, '[plot]') : none('latest')) },
+  ];
+  const sortedSignals = (sort) => {
+    const col = sort && sigCols.find((c) => c.key === sort.key);
+    if (!col) return shown;
+    const val = col.value || ((r) => r[col.key]);
+    const k = sort.dir === 'asc' ? 1 : -1;
+    return [...shown].sort((a, b) => {
+      const x = val(a), y = val(b);
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;
+      if (y == null) return -1;
+      return (typeof x === 'string' || typeof y === 'string' ? compareText(String(x), String(y)) : x - y) * k;
+    });
+  };
+  const sigTable = windowTable(ctx, {
+    title: 'signals', rows: 5, boxLabel: 'signals', csv: false, cover: ['nr.dash.state-table', 'nr.dash.state-table.sort-scroll'], sort: { key: 'name', dir: 'asc' },
     side: h('label', { class: 'filt filt--inline' }, h('span', { class: 'filt-p' }, 'find>'), sigSearch),
-    note: 'every signal decoded from the newest log. sort by any heading; [plot] draws one over the range below.',
-    columns: [
-      { key: 'name', label: 'signal', sort: true, ph: 'main', grow: true, cover: 'nr.dash.state-table.parameter', value: (s) => s.comment || s.series,
-        render: (s) => [s.comment || s.series, s.comment ? none(` ${s.series}`) : null] },
-      { key: 'message', label: 'message', sort: true, value: (s) => `${s.bus} ${s.message_id}`, render: (s) => [s.message_id, none(` ${s.bus}`)] },
-      { key: 'value', label: 'value', num: true, sort: true, ph: 'num', firstDir: 'desc', cover: 'nr.dash.state-table.value',
-        value: (s) => (s.value_name ? s.value_name : s.value == null ? null : signalKind(s) ? convert(s.value, signalKind(s)) : s.value), render: (s) => signalText(s) },
-      { key: 'raw', label: 'as sent', num: true, render: (s) => none(s.value == null ? DASH : `${formatNumber(s.value, { maximumFractionDigits: 6 })}${s.unit ? ` ${s.unit}` : ''}`) },
-      { key: 'at', label: 'read', num: true, sort: true, ph: 'sub', value: (s) => s.at_ms, render: (s) => (s.at_ms != null ? ago(s.at_ms) : DASH) },
-      { key: 'plot', label: '', render: (s) => (s.has_series ? h('button', { class: ['btn', 'btn--line', chosen === s.series ? 'tone--accent' : null], type: 'button', 'aria-pressed': String(chosen === s.series), onclick: () => plotSignal(s) }, '[plot]') : none('latest')) },
-    ],
+    note: 'every signal decoded from the newest log. sort by any heading; the list scrolls inside; [plot] draws one over the range below.',
+    columns: sigCols,
+    load: ({ sort, offset = 0, limit = 50 }) => {
+      const rows = sortedSignals(sort);
+      return { items: rows.slice(offset, offset + limit), offset, total: rows.length, next: null };
+    },
     empty: () => empty(signals.length ? `no signal holds "${sigSearch.value}"` : 'no signals yet', signals.length ? null : 'signals show once the first log is decoded'),
   });
-  const filterSignals = () => {
+  // again: the same search after a live refresh, its rows swapped in place (the box keeps where it is scrolled)
+  const filterSignals = (again = false) => {
     const words = sigSearch.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    sigTable.setRows(!words.length ? signals : signals.filter((s) => {
+    shown = !words.length ? signals : signals.filter((s) => {
       const hay = [s.series, s.comment, s.message_id, s.bus, s.unit, s.value_name, signalText(s)].filter(Boolean).join(' ').toLowerCase();
       return words.every((w) => hay.includes(w));
-    }));
+    });
+    return again ? sigTable.refresh() : sigTable.setParams({});
   };
-  let sigT = 0;
+  // the chosen signal's [plot], marked in place (the rows are not drawn again)
+  const markChosen = () => {
+    for (const b of sigTable.el.querySelectorAll('button[data-plot]')) {
+      const on = b.dataset.plot === chosen;
+      b.classList.toggle('tone--accent', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
+  };
+  let sigT = 0, sigLoaded = false;
   ctx.on(sigSearch, 'input', () => { clearTimeout(sigT); sigT = setTimeout(() => ctx.alive() && filterSignals(), 150); });
   ctx.onCleanup(() => clearTimeout(sigT));
   async function loadSignals() {
     signals = await ctx.api.list(`${base}/signals/latest`, {}, { limit: 500 }).all({ max: 20000 });
     if (!ctx.alive()) return;
-    filterSignals();
+    await filterSignals(sigLoaded);
+    sigLoaded = true;
   }
   const plotSlot = h('div', null, empty('no signal plotted', 'press [plot] on a signal with values over time'));
   async function plotSignal(s) {
     chosen = s.series;
-    sigTable.repaint();
+    markChosen();
     const kind = signalKind(s);
     replace(plotSlot, loadingLine(`reading ${s.comment || s.series}`));
     let data;
