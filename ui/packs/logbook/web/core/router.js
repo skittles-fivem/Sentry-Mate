@@ -15,7 +15,6 @@
 
 import * as state from '../shared/state.js';
 import * as api from '../shared/api.js';
-import { loadPage, reloadPage, isPageFailed } from '../shared/build.js';
 import { h, ready, failed, unready, setTitle, cover } from '../shared/dom.js';
 import { periodParams } from '../shared/time.js';
 import { pageInfo } from './pages.js';
@@ -71,13 +70,9 @@ let selfQuery = false;
 function pageCss(id) {
   const href = new URL(`../pages/${id}.css`, import.meta.url).href;
   let link = document.head.querySelector(`link[data-page-css="${id}"]`);
-  const wait = (l) => new Promise((resolve, reject) => {
-    l.addEventListener('load', resolve, { once: true });
-    l.addEventListener('error', () => { l.remove(); reject(new Error(`${href} did not load`)); }, { once: true });
-  });
-  if (link) return link.sheet ? Promise.resolve() : wait(link);
+  if (link) return link.sheet ? Promise.resolve() : new Promise((r) => { link.addEventListener('load', r, { once: true }); link.addEventListener('error', r, { once: true }); });
   link = h('link', { rel: 'stylesheet', href, dataset: { pageCss: id } });
-  const p = wait(link);
+  const p = new Promise((r) => { link.addEventListener('load', r, { once: true }); link.addEventListener('error', r, { once: true }); });
   document.head.append(link);
   return p;
 }
@@ -112,11 +107,11 @@ function makeCtx(s, my, scope, cleanups) {
     /** The first render with data is done: data-ready = page id. A link with #id lands on that part. */
     ready: () => { if (my === token) { ready(id); if (!jumped) { jumped = true; jumpToHash(); } } },
     /** The page could not load: its error state, and data-ready = 'error:<id>'. */
-    fail: (err, { retry = () => remount() } = {}) => {
+    fail: (err) => {
       if (my !== token || api.isAbort(err)) return;
       console.warn(`page ${id}:`, err);
       main().removeAttribute('aria-busy');
-      main().replaceChildren(errorView(err, { retry }));
+      main().replaceChildren(errorView(err, { retry: () => remount() }));
       failed(id);
     },
     /** Run fn when the page is left. */
@@ -171,13 +166,7 @@ async function mount(s) {
     }
     const auth = AUTH_SCREENS.includes(id);
     document.documentElement.classList.toggle('is-auth', auth);
-    // after a server update the tab loads the address in full; a file that fails is tried once more that way
-    const modP = loadPage(async () => {
-      const mod = await MODULES[id]();
-      if (mod.css) await pageCss(id);
-      return mod;
-    });
-    modP.catch(() => { /* answered where it is awaited */ });
+    const modP = MODULES[id]();
     const carP = s.car && !auth ? scope.get(api.apiPath`cars/${s.car}`) : null;
     let car = null;
     try { car = carP ? await carP : null; } catch (err) {
@@ -194,8 +183,9 @@ async function mount(s) {
     if (!auth) frame?.update({ page: id, info: ctx.info, car, tz: ctx.tz, period: ctx.period, carsCount });
     const mod = await modP;
     current.mod = mod;
-    if (my !== token) return;
     setTitle(mod.title ? mod.title(ctx) : (ctx.info ? ctx.info.name : id), car ? car.name : null);
+    if (mod.css) await pageCss(id);
+    if (my !== token) return;
     m.replaceChildren();
     const inst = await mod.mount(ctx);
     if (my !== token) { try { inst?.unmount?.(); } catch { /* left */ } return; }
@@ -207,12 +197,7 @@ async function mount(s) {
   } catch (err) {
     if (my !== token || api.isAbort(err)) return;
     first = false;
-    // failed before the page was built: the frame and the tab's title are this page's, never the one before
-    if (!current?.instance) {
-      if (!AUTH_SCREENS.includes(id) && !ctx.car) frame?.update({ page: id, info: ctx.info, car: null, tz: ctx.tz, period: null, carsCount });
-      setTitle(ctx.info ? ctx.info.name : id, ctx.car ? ctx.car.name : null);
-    }
-    ctx.fail(err, isPageFailed(err) ? { retry: () => reloadPage() } : undefined);
+    ctx.fail(err);
   }
 }
 

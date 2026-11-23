@@ -12,7 +12,6 @@
 
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { loadPage, reloadPage } from '../shared/build.js';
 import { h, replace, ready as markReady, failed as markFailed, unready, setTitle as docTitle, on } from '../shared/dom.js';
 import { resolvePeriod, periodParams } from '../shared/time.js';
 import { pageInfo } from './pages.js';
@@ -155,10 +154,7 @@ function markWhenSettled(id, alive) {
 function pageCss(id) {
   if (document.head.querySelector(`link[data-page-css="${id}"]`)) return Promise.resolve();
   const link = h('link', { rel: 'stylesheet', href: new URL(`../pages/${id}.css`, import.meta.url).href, dataset: { pageCss: id } });
-  const done = new Promise((resolve, reject) => {
-    link.addEventListener('load', resolve, { once: true });
-    link.addEventListener('error', () => { link.remove(); reject(new Error(`${link.href} did not load`)); }, { once: true });
-  });
+  const done = new Promise((resolve) => { link.addEventListener('load', resolve, { once: true }); link.addEventListener('error', resolve, { once: true }); });
   document.head.append(link);
   return done;
 }
@@ -184,11 +180,8 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   document.documentElement.dataset.screen = info?.bare ? 'bare' : 'app';
   if (!live) view.setAttribute('aria-busy', 'true');
 
-  let shownCar = null;
   const showError = (err, retry = () => mount(state.current(), { keepScroll: true })) => {
     if (!alive()) return;
-    // failed before the page was built: the tab's title is this page's, never the one before
-    if (!rec.ctx && !live && info && id !== 'not-found') docTitle(info.name, shownCar?.name);
     replace(view, h('div', { class: 'page' }, h('header', { class: 'ph' }, h('h1', { class: 'ph-title' }, info?.name || 'not found')), errorBlock(err, { retry, home: id !== 'fleet' && !info?.bare })));
     shown();
     frame.view().removeAttribute('aria-busy');
@@ -229,7 +222,6 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
       return;
     }
     if (!alive()) return;
-    shownCar = car;
     if (car.time_zone) fallbackZone = car.time_zone;
     state.rememberCar(car.id, { sold: state.isSold(car) });
   } else if (info.period && state.lastCar()) {
@@ -246,18 +238,14 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   const period = info.period ? resolvePeriod(s.period ?? { preset: info.period }, { now: api.now(), tz, fallback: info.period }) : null;
   frame.update({ s, info, car, period, tz });
 
-  // after a server update the tab loads the address in full; a file that fails is tried once more that way
   let mod;
   try {
-    mod = await loadPage(async () => {
-      const m = await import(`../pages/${id}.js`);
-      if (m.css) await pageCss(id);
-      return m;
-    });
+    mod = await import(`../pages/${id}.js`);
+    if (mod.css) await pageCss(id);
   } catch (err) {
     if (!alive()) return;
     console.error(err);
-    showError(err, () => reloadPage());
+    showError(new api.ApiError({ status: 0, code: 'page_failed', message: 'This page could not be loaded. Reload the browser tab.' }));
     return;
   }
   if (!alive()) return;

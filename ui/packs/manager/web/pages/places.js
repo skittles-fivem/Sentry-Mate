@@ -262,10 +262,10 @@ async function mountList(ctx, q) {
     columns: [
       { key: 'name', label: 'Name', sort: 'name', firstDir: 'asc', cover: 'web.geofences.list.col-name', cls: 'col-name',
         title: 'The name, its kind and the street address of the centre',
-        render: (p) => h('span', { class: 'cell-text' }, h('a', { class: 'pl-name', href: editUrl(p.id), title: `${p.name}: ${format(p.radius_m, 'length')} radius around ${posText(p.lat, p.lon)}` }, p.name),
+        render: (p) => h('span', { class: 'cell-text' }, h('a', { class: 'pl-name', href: editUrl(p.id) }, p.name),
           h('span', { class: 'sub' }, h('span', { class: ['pl-kind', `pl-kind--${p.kind}`] }, icon(KIND_ICON[p.kind] || 'pin', 'ico--sm'), kindLabel(p.kind)),
             (p.address?.short || p.address?.locality) ? ` · ${p.address.short || p.address.locality}` : null)) },
-      { key: 'circle', label: 'Circle', cls: 'col-circle', cover: ['web.geofences.list.col-position', 'web.geofences.list.col-radius'],
+      { key: 'circle', label: 'Circle', cover: ['web.geofences.list.col-position', 'web.geofences.list.col-radius'],
         title: `The radius (${unitLabel('length')}) and the centre (latitude, longitude)`,
         render: (p) => h('span', { class: 'cell-text' }, h('span', null, `${format(p.radius_m, 'length')} radius`), h('span', { class: 'sub mono' }, posText(p.lat, p.lon))) },
       { key: 'history', label: 'History, all time', sort: 'visits', firstDir: 'desc', cls: 'col-hist',
@@ -276,7 +276,7 @@ async function mountList(ctx, q) {
       { key: 'actions', label: 'Change', cls: 'col-actions pl-sticky', cover: ['web.geofences.list.edit', 'web.geofences.list.delete'],
         render: (p) => h('span', { class: 'pl-actions' },
           h('a', { class: 'btn btn--sm', href: editUrl(p.id), cover: 'web.geofences.list.edit' }, admin ? 'Edit' : 'View'),
-          admin ? h('button', { class: 'btn btn--sm btn--ghost btn--danger', type: 'button', cover: ['web.geofences.list.delete', 'web.geofences.form.relabel-history'], 'aria-label': `Delete ${p.name}`, title: `Delete ${p.name}`, onclick: () => removePlace(ctx, p, () => reloadAll(), cars) }, icon('x', 'ico--sm'), h('span', { class: 'pl-del-word' }, 'Delete')) : null) },
+          admin ? h('button', { class: 'btn btn--sm btn--ghost btn--danger', type: 'button', cover: ['web.geofences.list.delete', 'web.geofences.form.relabel-history'], 'aria-label': `Delete ${p.name}`, onclick: () => removePlace(ctx, p, () => reloadAll(), cars) }, icon('x', 'ico--sm'), 'Delete') : null) },
     ],
     rowHref: (p) => editUrl(p.id),
     empty: () => (f.search || f.kind
@@ -355,9 +355,9 @@ async function mountList(ctx, q) {
     note: 'Spots with no saved place where the cars stopped most. Naming one renames those stops at once.',
     sort: { key: 'visits', dir: 'desc' },
     columns: [
-      { key: 'label', label: 'Where', cls: 'col-where', sort: true, value: (s) => s.label || '', render: (s) => h('span', { class: 'cell-text', title: posText(s.lat, s.lon) }, h('span', null, s.label || posText(s.lat, s.lon)), h('span', { class: 'sub' }, [s.address?.locality, s.address?.region].filter(Boolean).join(', '))),
+      { key: 'label', label: 'Where', sort: true, value: (s) => s.label || '', render: (s) => h('span', { class: 'cell-text' }, h('span', null, s.label || posText(s.lat, s.lon)), h('span', { class: 'sub' }, [s.address?.locality, s.address?.region].filter(Boolean).join(', '))),
         csv: (s) => s.label },
-      { key: 'position', label: 'Centre (lat, lon)', cls: 'col-pos', render: (s) => h('span', { class: 'mono nowrap' }, posText(s.lat, s.lon)), csv: (s) => `${s.lat}, ${s.lon}` },
+      { key: 'position', label: 'Centre (lat, lon)', render: (s) => h('span', { class: 'mono nowrap' }, posText(s.lat, s.lon)), csv: (s) => `${s.lat}, ${s.lon}` },
       { key: 'visits', label: 'Stops', num: true, sort: true, render: (s) => formatNumber(s.visits) },
       { key: 'dwell_ms', label: 'Time parked', num: true, sort: true, render: (s) => dur(s.dwell_ms), csv: (s) => Math.round((s.dwell_ms || 0) / 60000) + ' min' },
       { key: 'cars', label: 'Cars', render: (s) => (s.cars || []).map((c) => carName[c] || c).join(', '), csv: (s) => (s.cars || []).map((c) => carName[c] || c).join('; ') },

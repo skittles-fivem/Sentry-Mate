@@ -22,7 +22,7 @@ import { empty } from '../core/states.js';
 import { field, form } from '../core/form.js';
 import { openDialog } from '../core/dialog.js';
 import { toast } from '../core/toast.js';
-import { rowTitle } from '../core/source.js';
+import { src, srcText } from '../core/source.js';
 import { firmwarePanel, fingerprintUpdates, modWords, VERSION_SOURCE as SOURCE, versionTag } from './firmware.js';
 import { firmwareHistory } from './firmware-history.js';
 
@@ -113,8 +113,8 @@ export async function mount(ctx) {
         render: (r) => (r.charges ? link(state.buildUrl('charges', { car: cid, period: onVersion(r) }), formatNumber(r.charges)) : formatNumber(r.charges ?? 0)) },
       { key: 'range', label: 'range 100%', num: true, cover: 'updates.table.avg_range', render: (r) => num(r.full_range_km, 'range') },
       { key: 'pack', label: 'full pack', num: true, render: (r) => (r.full_pack_kwh == null ? none('not measured') : num(r.full_pack_kwh, 'energy')) },
+      { key: 'from', label: 'data', title: 'where the data came from: smo, api (the Tesla API), imp (imported)', render: (r) => src(r), value: (r) => srcText(r) },
     ],
-    rowTitle,
     empty: () => (ctx.period.preset !== 'all' && summary?.last_update
       ? empty(`no updates in this period; the last one was ${lastWords(summary.last_update)}`, allBtn())
       : empty('no updates in this range', ctx.period.preset === 'all' ? 'an update shows once the car installs one while recording, or with an imported history' : 'choose a longer range; all shows every update')),

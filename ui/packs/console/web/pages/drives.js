@@ -20,7 +20,7 @@ import { filterLine, dateSpan, numberOf } from '../core/filterline.js';
 import { placeLink } from './timeline.js';
 import { isAdmin } from '../core/prefs.js';
 import { toast } from '../core/toast.js';
-import { est as estTag, rowTitle, sourceWord, sourceCheck, SOURCE_KEY } from '../core/source.js';
+import { src, est as estTag, srcText, sourceWord, sourceCheck, SOURCE_KEY } from '../core/source.js';
 
 export const id = 'drives';
 
@@ -103,7 +103,7 @@ export async function mount(ctx) {
     { key: 'duration', label: 'time', num: true, sort: 'duration', cover: 'drives.table.duration', ph: 'sub', render: (d) => formatDuration(d.duration_ms), total: (pg) => (sum(pg) ? formatDuration(sum(pg).duration_ms) : null) },
     { key: 'distance', label: 'dist', num: true, sort: 'distance', cover: 'drives.table.distance', ph: 'num', render: (d) => num(d.distance_km, 'distance'), total: (pg) => (sum(pg) ? num(sum(pg).distance_km, 'distance') : null) },
     { key: 'soc', label: 'soc', num: true, cover: ['drives.table.soc_start', 'drives.table.soc_end'], ph: 'sub', render: (d) => h('span', null, format(d.start_soc_pct, 'percent'), h('span', { class: 'arrow' }, '->'), format(d.end_soc_pct, 'percent')) },
-    { key: 'outside', label: 'out', num: true, cls: 'wide-col', cover: 'drives.table.outside_temp', render: (d) => num(d.outside_avg_c, 'temperature') },
+    { key: 'outside', label: 'out', num: true, cover: 'drives.table.outside_temp', render: (d) => num(d.outside_avg_c, 'temperature') },
     { key: 'speed', label: 'avg', num: true, cover: 'drives.table.speed_avg', render: (d) => num(d.speed_avg_kph, 'speed') },
     { key: 'speed_max', label: 'top', num: true, sort: 'speed_max', cover: 'drives.table.speed_max', render: (d) => num(d.speed_max_kph, 'speed') },
     { key: 'power', label: 'peak', num: true, cover: 'drives.table.power_max', title: 'highest power out of the battery', render: (d) => num(d.power_max_kw, 'power') },
@@ -115,11 +115,12 @@ export async function mount(ctx) {
       render: (d) => (d.efficiency_pct == null ? null : h('span', { class: 'nowrap' }, cellBar(d.efficiency_pct / 100, 8, d.efficiency_pct >= 90 ? 'accent' : 'text'), ' ', h('span', { class: 'eff-n' }, format(d.efficiency_pct, 'percent')))) },
     { key: 'flags', label: 'flags', cover: 'drives.table.reduced_range', title: 'cold: cold battery; gap: data missing; live: still driving',
       render: (d) => [d.flags?.reduced_range ? tag('cold', 'warn') : null, d.flags?.gap_ms ? tag('gap', 'bad') : null, d.flags?.in_progress ? tag('live', 'accent') : null].filter(Boolean) },
+    { key: 'from', label: 'data', title: 'where the data came from: smo (the CAN Bridge), api (the Tesla API), imp (imported)', ph: 'sub', render: (d) => src(d), value: (d) => srcText(d) },
   ];
   const list = table(ctx, {
     title: 'drives', path, params, limit: 50, columns, sort: { key: 'start', dir: 'desc' }, csvName: 'drives',
     cover: ['drives.table', 'drives.table.link.details', 'drives.empty_states'],
-    rowHref: (d) => ctx.link('drive', { drive: d.id }), rowTitle,
+    rowHref: (d) => ctx.link('drive', { drive: d.id }),
     onPage: (pg) => { if (pg?.summary) paintSummary(pg.summary); },
     onError: () => paintSummary(null, 'error'),
     empty: () => empty(`no drives in this range${fl.input.value.trim() ? ' that pass the filter' : ''}`, fl.input.value.trim() ? h('button', { class: 'btn', type: 'button', onclick: () => fl.set('') }, 'clear the filter') : `pick a longer range than ${period.label.toLowerCase()}`),

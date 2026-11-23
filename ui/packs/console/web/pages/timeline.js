@@ -13,7 +13,7 @@ import { head, section, kv, note } from '../core/ui.js';
 import { num, stateWord, when, ago, tag } from '../core/fmt.js';
 import { stateStrip } from '../core/strip.js';
 import { empty, loadingLine, errorWords } from '../core/states.js';
-import { rowTitle, isEstimated } from '../core/source.js';
+import { src, isEstimated } from '../core/source.js';
 import { modWords, VERSION_SOURCE } from './firmware.js';
 
 export const id = 'timeline';
@@ -44,7 +44,7 @@ export function placeLink(p) {
   const text = placeLabel(p);
   if (!text) return null;
   const href = placeHref(p);
-  return href ? h('a', { class: 'lnk-plain', href, title: p.place ? `edit the place ${p.place.name}` : 'save this spot as a place' }, text) : h('span', null, text);
+  return href ? h('a', { class: 'lnk-plain', href, title: p.place ? `edit the place ${p.place.name}` : 'make this spot a place' }, text) : h('span', null, text);
 }
 const sign = (v, kind) => (v == null ? null : format(v, kind, { sign: true }));
 
@@ -87,10 +87,11 @@ export function eventLine(r, { car, tz }) {
   if (r.range_end_km != null && r.kind !== 'gap') bits.push(`range ${format(r.range_end_km, 'range')}${r.range_delta_km != null && r.kind !== 'charge' ? ` (${sign(r.range_delta_km, 'range')})` : ''}`);
   if (r.outside_avg_c != null) bits.push(`${format(r.outside_avg_c, 'temperature')} out`);
   if (r.odometer_km != null) bits.push(`odo ${format(r.odometer_km, 'odometer')}`);
+  // where it came from: [smo] [api] [imp], the full line in its title
+  bits.push(src(r));
   const end = r.end_ms;
   const numCell = r.kind === 'drive' ? num(r.distance_km, 'distance') : r.kind === 'charge' && r.energy_delta_kwh != null ? num(r.energy_delta_kwh, 'energy') : null;
-  // where it came from is the line's hover title, not a mark in it
-  return h('div', { class: ['ln', 'ln--ev', `ln--${k.tone}`], dataset: { row: '', href: detailHref || tripHref }, title: rowTitle(r) },
+  return h('div', { class: ['ln', 'ln--ev', `ln--${k.tone}`], dataset: { row: '', href: detailHref || tripHref } },
     h('a', { class: 'ln-t lnk-plain', href: tripHref, title: `open ${formatTime(r.start_ms, tz)} to ${end ? formatTime(end, tz) : 'now'} as a trip` }, formatTime(r.start_ms, tz)),
     h('span', { class: 'ln-tag' }, detailHref ? h('a', { class: `tag tag--${k.tone} lnk-plain`, href: detailHref }, `[${k.tag}]`) : tag(k.tag, k.tone)),
     h('span', { class: 'ln-what' },
@@ -197,9 +198,12 @@ export async function mount(ctx) {
     await loadMore(my);
   }
 
-  // the overlaps in the range (where only one side is listed); where each line came from is in its hover title
+  // what the marks mean, and the overlaps in the range (where only one side is listed)
   function srcNote(overlaps) {
+    const key = (kind, label, site) => src({ sources: [{ kind, label, ...(site ? { site } : {}) }] });
     return [
+      h('p', { class: 'note' }, 'data from: ', key('smo', 'Data from SMO'), ' smo (the CAN Bridge)  ', key('tesla_api', 'Data from the Tesla API'), ' the tesla api  ',
+        key('teslafi_api', 'Data from TeslaFi'), ' teslafi  ', key('teslamate_local', 'Data from local TeslaMate'), ' local teslamate  ', key('import', 'Imported from TeslaMate', 'teslamate'), ' imported (teslamate or teslafi)', car.sources?.length ? h('span', { class: 'muted' }, `. ${car.name} has: `) : null, car.sources?.length ? src(car) : null),
       overlaps.length ? h('p', { class: 'note tone--warn' }, tag('overlap', 'warn'), ' ',
         overlaps.map((o, i) => [i ? '; ' : '', `${formatDate(o.start_ms, tz, { year: false })} ${formatTime(o.start_ms, tz)} to ${formatDate(o.end_ms, tz, { year: false })} ${formatTime(o.end_ms, tz)}: `,
           o.kind === 'imports' ? `${SHOWN[o.shown_source] || 'one import'} is listed (TeslaMate and TeslaFi imports both cover it)` : `${SHOWN[o.shown_source || (o.shown === 'teslamate' ? 'import:teslamate' : 'live')] || 'imported history'} is listed (live and imported both exist)`]),
@@ -236,7 +240,7 @@ export async function mount(ctx) {
     section({ title: 'entries', side: [count, csvLink], cover: ['timeline.table', 'projects.dash', 'timeline.row.drive', 'timeline.row.charging', 'timeline.row.parking', 'timeline.row.missing', 'timeline.row.parking_gap_overlap', 'timeline.row.updating',
       'timeline.col.start', 'timeline.col.end', 'timeline.col.action', 'timeline.col.start_address', 'timeline.col.end_address', 'timeline.col.odometer', 'timeline.col.duration', 'timeline.col.distance', 'timeline.col.range', 'timeline.col.range_diff', 'timeline.col.energy_diff', 'timeline.col.soc', 'timeline.col.soc_diff', 'timeline.col.temp',
       'timeline.link.trip_span', 'timeline.link.slot_details', 'timeline.link.geofence_start', 'timeline.link.geofence_end', 'timeline.link.place_cells_other_rows'] },
-    h('p', { class: 'note', title: 'A time opens that span as a trip; a [tag] opens the drive, charge or software page; a place opens the place editor. A gap is never counted as parked time; the text filter only hides rows. Hover a line to see where its data came from.' }, 'newest first; hover a line for where its data came from.'),
+    note('newest first. A time opens that span as a trip; a [tag] opens the drive, charge or software page; a place opens the place editor. A gap is never counted as parked time; the text filter only hides rows.'),
     srcBox, list, foot),
     section({ title: 'why a car stays awake' },
       kv([

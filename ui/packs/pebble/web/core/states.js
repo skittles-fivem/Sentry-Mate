@@ -6,7 +6,6 @@
 // a way out. errorWords(err) turns an ApiError into a title and a line of help.
 
 import { h } from '../shared/dom.js';
-import { PAGE_FAILED, isPageFailed } from '../shared/build.js';
 import { icon, btn, linkBtn } from './ui.js';
 
 /** Placeholder shapes per page: [columns, height step]. Pages may pass their own. */
@@ -43,7 +42,6 @@ export function emptyTile({ icon: ic = 'spark', title, text = null, action = nul
 /** What went wrong, in words: { title, text, icon }. */
 export function errorWords(err) {
   const s = err && err.status;
-  if (isPageFailed(err)) return { icon: 'reset', title: PAGE_FAILED.title, text: PAGE_FAILED.text };
   if (s === 0 || (err && (err.code === 'network' || err.code === 'timeout'))) {
     return { icon: 'offline', title: 'Sentry Mate does not answer', text: 'The server may be restarting, or this device is offline. It tries again when you press Try again.' };
   }
@@ -65,6 +63,6 @@ export function errorTile(err, { retry = null, home = true, w = 'full' } = {}) {
     h('p', { class: 'empty-text' }, words.text),
     h('div', { class: 'empty-act' },
       signIn ? linkBtn('Sign in', `/sign-in?next=${encodeURIComponent(location.pathname + location.search)}`, { kind: 'primary', icon: 'person' })
-        : retry ? btn(isPageFailed(err) ? PAGE_FAILED.action : 'Try again', { kind: 'primary', icon: 'reset', onclick: retry }) : null,
+        : retry ? btn('Try again', { kind: 'primary', icon: 'reset', onclick: retry }) : null,
       home && location.pathname !== '/' ? linkBtn('Fleet', '/', { kind: 'soft', icon: 'fleet' }) : null));
 }

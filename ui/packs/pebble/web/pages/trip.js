@@ -16,7 +16,7 @@ import { emptyTile } from '../core/states.js';
 import { mapTile, boundsOf } from '../core/map.js';
 import { timeChart, spansOf } from '../core/chart.js';
 import { placeLink, byDay, dayHead, socBar, filterBar, strip, statTile, dur, facts } from '../core/bits.js';
-import { rowTitle } from '../core/source.js';
+import { srcPill, estPill } from '../core/source.js';
 
 export const id = 'trip';
 export const css = true;
@@ -98,9 +98,7 @@ export async function mount(ctx) {
   const chartT = tile({ w: 'full', title: 'Battery and elevation', icon: 'mountain', cls: 'chart-tile', cover: ['trip.chart.battery.soc', 'trip.chart.battery.range', 'trip.chart.elevation'] });
 
   /* ------------------------------------------------------------ legs and charges */
-  // where a leg's data came from is its card's hover title (the drive and charge pages show it in full)
-  const titled = (t, r) => { const why = rowTitle(r); if (why) t.title = why; return t; };
-  const legTile = (d) => titled(tile({ w: 2, cls: ['item', 'drive-tile'], cover: 'trip.drives.table' },
+  const legTile = (d) => tile({ w: 2, cls: ['item', 'drive-tile'], cover: 'trip.drives.table' },
     h('div', { class: 'item-top' },
       h('span', { class: 'item-ic tone-coral', 'aria-hidden': 'true' }, icon('route')),
       h('div', { class: 'item-text' },
@@ -112,8 +110,9 @@ export async function mount(ctx) {
       h('span', { cover: ['trip.drives.duration', 'trip.drives.link.duration_hint'], title: `${formatNumber(Math.round((d.duration_ms || 0) / 60000))} minutes` }, num(d.duration_ms, 'duration', { size: 's' })),
       h('span', { cover: 'trip.drives.consumption' }, num(d.wh_per_km, 'efficiency', { size: 's' }))),
     socBar(d.start_soc_pct, d.end_soc_pct, { cover: ['trip.drives.soc_start', 'trip.drives.soc_end'] }),
-    h('p', { class: 'item-links tile-foot' }, h('a', { href: state.buildUrl('drive', { car: car.id, drive: d.id }), cover: 'trip.drives.link.details' }, 'Details'))), d);
-  const chargeTile = (c) => titled(tile({ w: 2, cls: ['item', 'charge-item'], cover: 'trip.charges.table' },
+    h('p', { class: 'src-line' }, srcPill(d, { short: true }), estPill(d)),
+    h('p', { class: 'item-links tile-foot' }, h('a', { href: state.buildUrl('drive', { car: car.id, drive: d.id }), cover: 'trip.drives.link.details' }, 'Details')));
+  const chargeTile = (c) => tile({ w: 2, cls: ['item', 'charge-item'], cover: 'trip.charges.table' },
     h('div', { class: 'item-top' },
       h('span', { class: 'item-ic tone-teal', 'aria-hidden': 'true' }, icon('bolt')),
       h('div', { class: 'item-text' },
@@ -126,12 +125,13 @@ export async function mount(ctx) {
       h('span', { cover: 'trip.charges.power_avg' }, num(c.power_avg_kw, 'power', { size: 's' })),
       h('span', { cover: 'trip.charges.range_added' }, `+${format(c.range_added_km, 'range')}`)),
     socBar(c.start_soc_pct, c.end_soc_pct, { tone: 'teal', cover: ['trip.charges.soc_start', 'trip.charges.soc_end'] }),
+    h('p', { class: 'src-line' }, srcPill(c, { short: true }), estPill(c)),
     h('p', { class: 'item-sub' },
       h('span', { cover: 'trip.charges.energy_used' }, `Drawn ${c.energy_grid_kwh != null ? format(c.energy_grid_kwh, 'energy') : 'not known'}`), ' · ',
-      h('span', { cover: 'trip.charges.cost', title: c.cost ? null : 'No price' }, c.cost ? format(c.cost.amount, 'money', { currency: c.cost.currency }) : '—')),
+      h('span', { cover: 'trip.charges.cost' }, c.cost ? format(c.cost.amount, 'money', { currency: c.cost.currency }) : 'no price')),
     h('p', { class: 'item-links tile-foot' },
       h('a', { href: state.buildUrl('charge', { car: car.id, charge: c.id }), cover: 'trip.charges.link.details' }, 'Details'),
-      h('a', { class: 'row-act', href: state.buildUrl('charge', { car: car.id, charge: c.id, query: { edit: 'cost' } }), cover: 'trip.charges.link.cost' }, c.cost ? 'Change the cost' : 'Add a cost'))), c);
+      h('a', { href: state.buildUrl('charge', { car: car.id, charge: c.id, query: { edit: 'cost' } }), cover: 'trip.charges.link.cost' }, c.cost ? 'Change the cost' : 'Add a cost')));
 
   // legs and charges in time order, grouped by day
   const items = [...dl.map((d) => ({ k: 'd', t: d.start_ms, x: d })), ...cl.map((c) => ({ k: 'c', t: c.start_ms, x: c }))].sort((a, b) => a.t - b.t);

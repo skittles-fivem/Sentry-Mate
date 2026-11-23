@@ -132,46 +132,6 @@ async fn pack_files_are_compressed_versioned_and_cached() {
     assert!(!logbook.text().contains(&format!("/_v/{version}/")));
 }
 
-/// A tab open across an update: its page still asks for its files under the version it was loaded with. It gets the
-/// current file of every kind (never `404`), checked again each time; only the current version is kept for good. Every
-/// answer says which build the server runs, so the tab can tell that it changed.
-#[tokio::test]
-async fn an_old_version_gets_the_current_files_and_the_build_is_named() {
-    let s = server().await;
-    let mut c = s.client();
-    let index = c.get("/").await;
-    let app = versioned(&index, "core/app.js");
-    let version = app.trim_start_matches("/_v/").split('/').next().unwrap().to_string();
-    let build = index.header("x-sentry-mate-build").expect("the page names the build").to_string();
-    assert_eq!(build.len(), 16, "{build}");
-    assert!(build.chars().all(|ch| ch.is_ascii_hexdigit()), "{build}");
-    for path in ["/health", "/api/v1/setup", "/core/app.js", &app] {
-        assert_eq!(c.get(path).await.header("x-sentry-mate-build"), Some(build.as_str()), "{path}");
-    }
-    assert_eq!(s.client().get("/api/v1/probe-small").await.header("x-sentry-mate-build"), Some(build.as_str()));
-
-    for (old, path) in [
-        ("0123456789abcdef", "core/router.js"),
-        ("0123456789abcdef", "pages/health.js"),
-        ("0123456789abcdef", "pages/health.css"),
-        ("0123456789abcdef", "app.css"),
-        ("not-a-hash", "core/router.js"),
-    ] {
-        let now = c.get(&format!("/_v/{version}/{path}")).await;
-        assert_eq!((now.status, now.header("cache-control")), (200, Some(web::packs::IMMUTABLE)), "{path}");
-        let stale = c.get(&format!("/_v/{old}/{path}")).await;
-        assert_eq!(stale.status, 200, "{old}/{path}");
-        assert_eq!(stale.header("cache-control"), Some("no-cache"), "{old}/{path}: not kept for good");
-        assert_eq!(stale.header("content-type"), now.header("content-type"), "{path}");
-        assert_eq!(stale.body, now.body, "{old}/{path}: the current file");
-        assert!(stale.header("vary").unwrap_or("").contains("Cookie"), "{path}: may differ per person");
-        assert_eq!(stale.header("x-sentry-mate-build"), Some(build.as_str()));
-    }
-    // still no file that isn't there, and no way out of the pack
-    assert_eq!(c.get("/_v/0123456789abcdef/pages/no-such-page.js").await.status, 404);
-    assert_eq!(c.get("/_v/0123456789abcdef/../ui.json").await.status, 404);
-}
-
 #[tokio::test]
 async fn api_answers_are_compressed_and_come_back_304() {
     let s = server().await;

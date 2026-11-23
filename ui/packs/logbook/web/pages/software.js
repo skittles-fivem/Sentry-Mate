@@ -25,7 +25,7 @@ import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { pageHead, q, figure, icon, empty, flag, button, sep, loadingBlock, errorWords } from '../core/ui.js';
-import { hasSmo, isImported, rowTitle } from '../core/sources.js';
+import { sourceMark, hasSmo, isImported } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
 import { openDialog } from '../core/dialog.js';
 import { field, form, choice } from '../core/form.js';
@@ -247,8 +247,8 @@ export async function mount(ctx) {
       cell: versionCell, value: (r) => r.version,
     },
     {
-      key: 'found', label: 'Found by', hint: 'How Sentry Mate knows about this update. Point at a row for where its data came from.',
-      cell: (r) => { const d = DETECTED[r.detected_by] || [r.detected_by, '']; return h('div', { class: 'cell-main', title: d[1] }, d[0]); },
+      key: 'found', label: 'Found by', hint: 'How Sentry Mate knows about this update, and where the row comes from.',
+      cell: (r) => { const d = DETECTED[r.detected_by] || [r.detected_by, '']; return h('div', { class: 'cell-main', title: d[1] }, d[0], h('span', { class: 'cell-sub' }, isImported(r) ? [flag('Imported', { kind: 'estimated' }), ' '] : null, sourceMark(r, { short: true }))); },
       value: (r) => r.detected_by,
     },
     {
@@ -264,7 +264,7 @@ export async function mount(ctx) {
     },
     {
       key: 'pack', label: 'Full pack', num: true, hint: 'Full-pack energy the battery management system reported while on this version. Imported rows have no such reading.',
-      cell: (r) => (r.full_pack_kwh == null ? h('span', { class: 'sw-faint', title: isImported(r) ? 'Not measured: an imported row' : 'No reading' }, '—') : q(r.full_pack_kwh, 'energy')),
+      cell: (r) => (r.full_pack_kwh == null ? h('span', { class: 'sw-faint' }, isImported(r) ? 'not measured (imported)' : 'no reading') : q(r.full_pack_kwh, 'energy')),
       value: (r) => r.full_pack_kwh,
     },
   ];
@@ -273,7 +273,6 @@ export async function mount(ctx) {
   const table = dataTable(ctx, {
     path, params: ctx.params, limit: 50, columns, cls: 'sw-table', cover: 'updates.table', label: 'Update history',
     itemName: ['update', 'updates'],
-    rowTitle: (r) => rowTitle(r, { energy: false }),
     caption: 'Newest first. Charges and range are what the car did while on each version: from the end of the update to the start of the next one, or now.',
     empty: () => {
       const all = ctx.period && ctx.period.preset === 'all';
@@ -431,7 +430,8 @@ export async function mount(ctx) {
       cell: (r) => h('div', { class: 'cell-main fwh-module' },
         h('span', { class: 'fwh-module-line' },
           h('span', { class: 'fwh-module-name' }, r.kind === 'version' ? 'Car version' : r.module_name || fwModName(r.module)),
-          r.current ? flag('current', { kind: null, title: r.kind === 'version' ? 'The newest imported version.' : 'The fingerprint this module broadcasts now.' }) : null)),
+          r.current ? flag('current', { kind: null, title: r.kind === 'version' ? 'The newest imported version.' : 'The fingerprint this module broadcasts now.' }) : null),
+        h('span', { class: 'cell-sub' }, r.source_label || (r.kind === 'version' ? 'Imported' : 'Data from SMO'))),
     },
     {
       key: 'fingerprint', label: 'Fingerprint', hint: 'The module’s main fingerprint (its app checksum), lowercase hex, and the one before it.',
@@ -466,7 +466,6 @@ export async function mount(ctx) {
     cls: 'fwh-table', label: 'Module firmware history', itemName: ['fingerprint', 'fingerprints'],
     caption: 'Newest first. A fingerprint runs from the update that brought it to the next one.',
     rowAttrs: (r) => ({ class: [r.kind === 'version' ? 'is-version' : null, r.current ? 'is-current' : null].filter(Boolean).join(' ') || null }),
-    rowTitle: (r) => r.source_label || (r.kind === 'version' ? 'Imported' : 'Data from SMO'),
     empty: () => empty({
       title: fwModule === 'all' ? 'No fingerprint recorded yet.' : `No fingerprint from the ${fwModName(fwModule).toLowerCase()} yet.`,
       text: fwModule === 'all' ? 'They show once the car’s logs carry the modules’ info messages; some older cars send none.' : 'Choose All to see every module.',

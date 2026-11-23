@@ -19,7 +19,7 @@ import { tile, num, stateTag, chip, icon, note } from '../core/ui.js';
 import { emptyTile, ghostTile } from '../core/states.js';
 import { spanHref } from '../core/period.js';
 import { AWAKE_WORDS, GAP_WORDS, endLabel, placeLink, byDay, dayHead, strip, stripShares, filterBar, moreButton, dur } from '../core/bits.js';
-import { rowTitle } from '../core/source.js';
+import { srcPill } from '../core/source.js';
 import { isFingerprint, changesList, aroundDrives, betweenLine, namedLine, nameBox, moduleList } from '../core/firmware.js';
 
 export const id = 'timeline';
@@ -68,7 +68,7 @@ function rowTile(r, ctx, extra = {}) {
     r.kind !== 'update' ? h('a', { href: spanHref('trip', { car: car.id, from: r.start_ms, to: Math.max(end, r.start_ms + 60000) }), cover: 'timeline.link.trip_span' }, 'Trip for this span') : null,
   ];
   const kinds = { drive: 'timeline.row.drive', charge: 'timeline.row.charging', parked: 'timeline.row.parking', gap: ['timeline.row.missing', 'timeline.row.parking_gap_overlap'], update: 'timeline.row.updating' };
-  const t = tile({ w: 2, cls: ['item', 'tl-row', `tl-${r.kind}`], cover: kinds[r.kind] },
+  return tile({ w: 2, cls: ['item', 'tl-row', `tl-${r.kind}`], cover: kinds[r.kind] },
     h('div', { class: 'item-top' },
       h('span', { class: ['item-ic', `tone-${k.tone}`], 'aria-hidden': 'true' }, icon(k.ic)),
       h('div', { class: 'item-text' },
@@ -89,11 +89,7 @@ function rowTile(r, ctx, extra = {}) {
       upd ? nameBox(ctx, car.id, upd, { onSaved: () => ctx.reload() }) : null) : null,
     pm ? h('p', { class: 'item-sub' }, `Asleep ${dur(pm.asleep)}, awake ${dur((pm.awake || 0) + (pm.awake_vehicle_bus_only || 0))}${pm.unknown ? `, no data ${dur(pm.unknown)}` : ''}`,
       r.awake_reasons?.length ? `; awake for ${formatList(r.awake_reasons.map((x) => AWAKE_WORDS[x] || x.replace(/_/g, ' ')))}` : '', '.') : null,
-    h('p', { class: 'item-links tile-foot' }, links));
-  // where the data came from: the card's hover title; the drive and charge pages show it in full
-  const why = rowTitle(r);
-  if (why) t.title = why;
-  return t;
+    h('p', { class: 'item-links tile-foot' }, srcPill(r, { short: true, cls: 'tl-src' }), links));
 }
 
 export async function mount(ctx) {

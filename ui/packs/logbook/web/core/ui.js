@@ -8,7 +8,6 @@ import { h, svg, cover as markCover } from '../shared/dom.js';
 import { format, parts } from '../shared/units.js';
 import * as state from '../shared/state.js';
 import * as api from '../shared/api.js';
-import { PAGE_FAILED, isPageFailed } from '../shared/build.js';
 import { formatRelative } from '../shared/time.js';
 
 /* ------------------------------------------------------------------ icons */
@@ -173,7 +172,6 @@ export function errorWords(err) {
   if (s === 404) return { title: 'There is nothing here.', text: code === 'no_such_car' ? 'There is no car with this id, or your account may not see it.' : 'It does not exist, or it was removed.' };
   if (s === 401) return { title: 'You are signed out.', text: 'Sign in again to see this page.' };
   if (s === 403) return { title: 'Your account may not do this.', text: 'Ask an admin if you need it.' };
-  if (isPageFailed(err)) return { title: `${PAGE_FAILED.title}.`, text: PAGE_FAILED.text };
   if (s === 0) return { title: 'The server does not answer.', text: 'Check the connection; the page tries again when you reload it.' };
   if (s === 429) return { title: 'Too many requests.', text: 'Wait a moment and try again.' };
   return { title: 'This page could not be loaded.', text: (err && err.message) || String(err), generic: true };
@@ -191,7 +189,7 @@ export function errorView(err, { retry = null, cls = null, eyebrow = 'Could not 
     h('p', { class: 'empty-title' }, title && w.generic ? title : w.title),
     h('p', { class: 'empty-text' }, w.text),
     h('p', { class: 'empty-action' },
-      retry ? button(isPageFailed(err) ? PAGE_FAILED.action : 'Try again', { onclick: retry, iconName: 'reset' }) : null,
+      retry ? button('Try again', { onclick: retry, iconName: 'reset' }) : null,
       home ? [' ', h('a', { class: 'link-arrow', href: '/' }, 'Go to Fleet', icon('arrowRight'))] : null));
 }
 

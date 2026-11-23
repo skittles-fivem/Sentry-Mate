@@ -21,7 +21,7 @@ import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tile, num, chip, btn, icon, note } from '../core/ui.js';
-import { rowTitle, hasKind } from '../core/source.js';
+import { srcPill, hasKind } from '../core/source.js';
 import { MODULES, moduleName, HISTORY_ID, moduleList, fieldName, hexCode, isFingerprint, changesList, aroundDrives, betweenLine, namedLine, nameBox, VERSION_RX, VERSION_SOURCE as SOURCE, VERSION_CHIP as CHIP, VERSION_CHIP_SHORT } from '../core/firmware.js';
 import { emptyTile } from '../core/states.js';
 import { createSheet } from '../core/sheet.js';
@@ -110,7 +110,7 @@ export async function mount(ctx) {
         : h('span', { class: 'sw-ver' }, r.version))
       : h('span', { class: 'sw-ver is-unknown' }, fp ? 'Not named yet' : 'Build changed');
     const canType = !fp && ctx.admin && (r.sources ? hasKind(r, 'smo') && r.version_source !== 'tesla_api' : r.source === 'can');
-    const t = tile({ w: 2, cls: ['item', 'sw-tile', { 'is-fp': fp }], id: `update-${r.id}`, label: fp ? `Tesla update installed, ${r.version || 'not named yet'}` : null },
+    return tile({ w: 2, cls: ['item', 'sw-tile', { 'is-fp': fp }], id: `update-${r.id}`, label: fp ? `Tesla update installed, ${r.version || 'not named yet'}` : null },
       h('div', { class: 'item-top' },
         h('span', { class: ['item-ic', fp ? 'tone-coral' : 'tone-sky'], 'aria-hidden': 'true' }, icon(fp ? 'download' : 'chip')),
         h('div', { class: 'item-text' },
@@ -131,12 +131,9 @@ export async function mount(ctx) {
       fp ? betweenLine(ctx, car.id, r, around.get(r.id), tz) : null,
       fp ? changesList(r) : null,
       h('p', { class: 'item-sub' }, `Found by ${DETECTED[r.detected_by] || r.detected_by || 'the car'}${!fp && r.changed_modules?.length ? ` · changed: ${mods(r.changed_modules)}` : fp && r.changed_modules?.length ? ` · ${r.changed_modules.length} of 4 modules changed` : ''}${r.full_pack_kwh != null ? ` · full pack ${format(r.full_pack_kwh, 'energy')}` : ''}`),
+      h('p', { class: 'src-line' }, srcPill(r, { short: true })),
       fp ? nameBox(ctx, car.id, r, { onSaved: () => ctx.reload() }) : null,
       canType ? h('div', { class: 'item-links' }, btn(r.version ? 'Change the version' : 'Type the version', { kind: 'soft', icon: 'edit', onclick: (e) => editVersion(r, e.currentTarget) })) : null);
-    // where the data came from: the card's hover title, not a pill in it
-    const why = rowTitle(r);
-    if (why) t.title = why;
-    return t;
   }
 
   /* ------------------------------------------------------------ the car's firmware now */
