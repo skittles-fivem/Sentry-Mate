@@ -11,7 +11,9 @@
 // PATCH can-keys/{key} (admin: a key's name, can-key-name.js); GET, POST cars/{car}/full-rebuild and
 // DELETE system/full-rebuild (admin, "Rebuild all data": pages/full-rebuild.js);
 // GET system/storage, system/health (admin), cars, geocode/status.
-// Live: "rows" events for the car load the health and gaps again.
+// Live: `health` events of the car change every figure of "Is data arriving?" in place (live events, polling
+// only while the live stream is down); `rows` events of the car load the gaps and totals again, in place; on
+// /system, `storage` events change the storage figures in place.
 
 import * as state from '../shared/state.js';
 import { srcMark, srcText } from '../core/source.js';
@@ -35,6 +37,8 @@ import { q, agoEl, statePill, stateLabel, DASH } from '../core/fmt.js';
 import { overviewCard } from './conn-overview.js';
 import { deviceText, renameKeyButton } from './can-key-name.js';
 import { fullRebuild } from './full-rebuild.js';
+import { follow, carOf, onRows, FALLBACK_POLL_MS } from '../shared/live.js';
+import { morph, morphChildren, keepEl } from '../core/morph.js';
 import { running, lines as frLines } from '../shared/fullrebuild.js';
 
 export const id = 'health';
@@ -47,6 +51,8 @@ const bytes = (v) => format(v, 'bytes');
 // the period for resources that fall back to a short window without from_ms (health 30 days, signals 1 hour):
 // All time sends from_ms 0, so their figures cover the same window as the gaps list
 const fullPeriod = (params) => ({ ...params, from_ms: params?.from_ms ?? 0 });
+// the figures of /health that cover a period: a `health` event has them for the default 30 days only
+const PERIOD_KEYS = ['unknown_ms', 'unknown_spans', 'unknown_spans_total', 'chain_gaps', 'chain_gaps_total', 'dropped_frames', 'dropped_frames_total'];
 // "N km are in both" when the two sources overlap and the total counts the overlap once
 function overlapText(a, b, total, kind, noun) {
   const both = (a ?? 0) + (b ?? 0) - (total ?? 0);
@@ -85,7 +91,7 @@ const REASONS = {
   },
   rebuild_pending: {
     title: 'Drives and charges are being rebuilt',
-    text: 'They are worked out again from the stored logs. This page reads the figures again every few seconds until it is done; nothing needs doing.',
+    text: 'They are worked out again from the stored logs. This page follows it as it goes until it is done; nothing needs doing.',
     fix: null, page: null,
   },
 };
@@ -166,12 +172,13 @@ const timelineAt = (car, from, to) => state.buildUrl('timeline', { car, period: 
 function reloadButton(onclick, coverId = null) {
   return h('button', {
     class: 'btn', type: 'button', cover: coverId, onclick,
-    title: 'Read every figure on this page again now. Health and gaps also reload by themselves when the car’s data changes.',
+    title: 'Read every figure on this page again now. Health, gaps and totals also change by themselves when the car’s data changes.',
   }, icon('reset', 'ico--sm'), 'Reload');
 }
 
 function kindsTable(ctx, kinds, total, { title, csvName, coverIds }) {
-  const rows = (kinds || []).map((k) => ({ ...k, share: total ? (k.bytes / total) * 100 : null }));
+  const rowsOf = (ks, all) => (ks || []).map((k) => ({ ...k, share: all ? (k.bytes / all) * 100 : null }));
+  const rows = rowsOf(kinds, total);
   const t = dataTable(ctx, {
     title, icon: 'server', rows, cls: 'hl-kinds', csvName, cover: coverIds,
     sort: { key: 'bytes', dir: 'desc' },
@@ -195,9 +202,19 @@ function kindsTable(ctx, kinds, total, { title, csvName, coverIds }) {
     ],
     empty: () => emptyState({ icon: 'server', title: 'Nothing stored yet', text: 'Storage grows once the first log arrives.' }),
   });
+  const totalVal = h('span', { class: 'hl-total-val' }, bytes(total));
   const totalEl = h('div', { class: 'hl-total', cover: 'dbinfo.sizes.total' },
-    h('span', { class: 'metric-label' }, 'All kinds together'), h('span', { class: 'hl-total-val' }, bytes(total)));
+    h('span', { class: 'metric-label' }, 'All kinds together'), totalVal);
   t.el.append(totalEl);
+  // new sizes of the same kinds: the rows and the total, in the table already there
+  let last = JSON.stringify([kinds, total]);
+  t.update = (ks, all) => {
+    const now = JSON.stringify([ks, all]);
+    if (now === last) return;
+    last = now;
+    t.setRows(rowsOf(ks, all));
+    if (totalVal.textContent !== bytes(all)) totalVal.textContent = bytes(all);
+  };
   return t;
 }
 
@@ -243,6 +260,9 @@ async function mountCar(ctx) {
   const full = admin ? fullRebuild(ctx, { car, label: 'Rebuild all data', carName: (id) => names.get(id) || id, onStatus: () => paintRebuildRow(), onEnded: () => reloadAll(false) }) : null;
   // the other cars' names, for the step line of a run over every car
   if (admin) ctx.api.list('cars', { limit: 500 }).all({ max: 5000 }).then((cs) => { for (const c of cs) names.set(c.id, c.name); if (ctx.alive()) full.repaint(); }).catch(() => {});
+  // the full rebuild's block, built once and kept in place under the figures painted again
+  const rebuildEl = full ? h('div', { class: 'hl-rebuild hl-full', id: 'full-rebuild' }, h('h3', { class: 'hl-sub' }, 'Rebuild all data'), full.el)
+    : h('p', { class: 'note hl-rebuild' }, 'An admin can rebuild all of this car’s data from the stored logs.');
   // the Rebuild row: the full rebuild's step while one runs for this car, else the period rebuild's state
   const rebuildVal = h('span');
   let lastPending = false;
@@ -258,33 +278,50 @@ async function mountCar(ctx) {
     }
   }
 
-  // while a rebuild runs, read the health again every few seconds until it is done
-  let pendingTimer = null;
+  // the figures follow the car's `health` events; its endpoint is read at the start, after a reconnect and, only
+  // while the live stream is down, every few seconds (every 3 s while a rebuild runs)
   let wasPending = false;
-  ctx.onCleanup(() => clearTimeout(pendingTimer));
   let teslaRows = null;
-  async function loadHealth() {
+  let lastHl = null;
+  let eventPeriod = null;
+  let periodTimer = null;
+  ctx.onCleanup(() => clearTimeout(periodTimer));
+  async function readHealth() {
     const [hl, ts] = await Promise.all([
       ctx.api.get(`${base}/health`, fullPeriod(ctx.params)),
       // the Tesla API input for this car (admins only): what the server does for it now
       admin ? ctx.api.get('integrations/tesla/status').catch(() => null) : Promise.resolve(null),
     ]);
-    if (!ctx.alive()) return;
     teslaRows = ts;
+    return hl;
+  }
+  function onHealth(v, how) {
+    let hl = v;
+    if (how === 'event' && lastHl) {
+      // an event's period figures (unknown time, chain gaps, dropped frames) cover the last 30 days: the page's own
+      // read keeps them for its period, and is made again (at most every 2 s) when the event's ones changed
+      const sig = JSON.stringify(PERIOD_KEYS.map((k) => v[k] ?? null));
+      if (sig !== eventPeriod && !periodTimer) periodTimer = setTimeout(() => { periodTimer = null; if (ctx.alive()) healthLive.refresh(); }, 2000);
+      eventPeriod = sig;
+      hl = { ...v };
+      for (const k of PERIOD_KEYS) hl[k] = lastHl[k];
+    }
+    lastHl = hl;
     paintHealth(hl);
-    clearTimeout(pendingTimer);
-    pendingTimer = null;
-    if (hl.rebuild_pending) {
-      pendingTimer = setTimeout(() => { if (ctx.alive()) loadHealth().catch(() => {}); }, 3000);
-    } else if (wasPending) {
+    if (!hl.rebuild_pending && wasPending) {
       // the rebuild finished: the gaps and totals it changed are read again too
       gapsTable.reload();
       loadTotals().catch(() => {});
     }
     wasPending = !!hl.rebuild_pending;
   }
+  let healthLive = null;
+  const refreshHealth = () => healthLive?.refresh();
 
-  let spanBox = null;   // the unknown spans' box of the last paint (its observers end when it is drawn anew)
+  let spanBox = null;   // the unknown spans' box (its observers end when it is drawn anew)
+  let spanEl = null;
+  let spanSig = null;
+  let spanN = 0;
   ctx.onCleanup(() => spanBox?.destroy());
   function paintHealth(hl) {
     const trust = hl.last_log_trust || {};
@@ -324,7 +361,7 @@ async function mountCar(ctx) {
 
     const flags = kv([
       kvRow('Uploads', hl.uploads_enabled ? h('span', { class: 'ok' }, 'Accepted') : h('span', { class: 'warn' }, 'Turned off for this car'), 'upload'),
-      kvRow('Rebuild', rebuildVal, 'reset'),
+      kvRow('Rebuild', keepEl(rebuildVal, 'rebuild-row'), 'reset'),
     ]);
 
     // keys of this car
@@ -334,29 +371,33 @@ async function mountCar(ctx) {
       keys.length ? h('ul', { class: 'hl-key-list' }, keys.map((k) => h('li', { class: 'hl-key' },
         icon('lock', 'ico--sm'),
         h('span', { class: 'cell-text' }, h('span', { class: 'main' }, deviceText(k), k.preferred ? tag('Preferred', 'live') : null,
-          renameKeyButton(ctx, k, admin, () => loadHealth().catch(() => {}))),
+          renameKeyButton(ctx, k, admin, refreshHealth)),
           h('span', { class: 'sub mono' }, k.key)),
         h('span', { class: 'cell-text hl-key-r' }, k.last_upload_ms != null ? agoEl(k.last_upload_ms, tz) : h('span', { class: 'faint' }, 'never uploaded'),
           h('span', { class: ['sub', k.logs_waiting ? 'warn' : null] }, k.logs_waiting ? `${formatNumber(k.logs_waiting)} waiting` : 'none waiting')))))
         : h('p', { class: 'note' }, 'No key is tied to this car yet. Pair a CAN Bridge on Settings: Cars.'));
 
-    // unknown spans
-    spanBox?.destroy(); spanBox = null;
-    const spanList = h('div', { class: 'hl-spans' },
-      h('h3', { class: 'hl-sub' }, 'Unknown time in the period'),
-      spans.length ? (spanBox = scrollBox({ cls: 'hl-span-box scroll-box--fit', label: 'Unknown time in the period' }, h('ul', { class: 'hl-span-list' }, spans.map((s) => h('li', null,
-        h('a', { class: 'link', href: timelineAt(cid, s.start_ms, s.end_ms ?? ctx.api.now()), title: 'Open the timeline at this time' }, when(ctx, s.start_ms)),
-        h('span', { class: 'faint' }, s.end_ms == null ? ' · still unknown' : ` · ${formatDuration(s.end_ms - s.start_ms)}`),
-        h('span', null, ` · ${SPAN_REASONS[s.reason] || s.reason}`)))))).el
-        : h('p', { class: 'note' }, 'None: every moment of the period is known (driving, charging, parked or asleep).'));
+    // unknown spans: the list is made again only when they changed (its scroll box keeps its place otherwise)
+    const sig = JSON.stringify(spans);
+    if (sig !== spanSig || !spanEl) {
+      spanBox?.destroy(); spanBox = null;
+      spanSig = sig;
+      spanN += 1;
+      spanEl = h('div', { class: 'hl-spans' },
+        h('h3', { class: 'hl-sub' }, 'Unknown time in the period'),
+        spans.length ? (spanBox = scrollBox({ cls: 'hl-span-box scroll-box--fit', label: 'Unknown time in the period' }, h('ul', { class: 'hl-span-list' }, spans.map((s) => h('li', null,
+          h('a', { class: 'link', href: timelineAt(cid, s.start_ms, s.end_ms ?? ctx.api.now()), title: 'Open the timeline at this time' }, when(ctx, s.start_ms)),
+          h('span', { class: 'faint' }, s.end_ms == null ? ' · still unknown' : ` · ${formatDuration(s.end_ms - s.start_ms)}`),
+          h('span', null, ` · ${SPAN_REASONS[s.reason] || s.reason}`)))))).el
+          : h('p', { class: 'note' }, 'None: every moment of the period is known (driving, charging, parked or asleep).'));
+    }
+    const spanList = keepEl(spanEl, `spans-${spanN}`);
 
     lastPending = !!hl.rebuild_pending;
     paintRebuildRow();
-    // Rebuild all data: the full rebuild of this car, its progress panel kept in place between reads
-    const rebuild = full ? h('div', { class: 'hl-rebuild hl-full', id: 'full-rebuild' }, h('h3', { class: 'hl-sub' }, 'Rebuild all data'), full.el)
-      : h('p', { class: 'note hl-rebuild' }, 'An admin can rebuild all of this car’s data from the stored logs.');
 
-    replace(healthSlot, status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), h('div', null, spanList, missingBlock(hl.missing_logs))), rebuild);
+    // only the texts that changed are written; the full rebuild's panel stays as it is
+    morphChildren(healthSlot, [status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), h('div', null, spanList, missingBlock(hl.missing_logs))), keepEl(rebuildEl, 'rebuild')]);
   }
 
   // the CAN logs the server should have but no longer does, which it asked the car to send again
@@ -444,11 +485,13 @@ async function mountCar(ctx) {
     return `${parts.join(', ')}.${api ? ' A row both live inputs saw counts under each.' : hasImport ? overlapText(a, b, total, kind, noun) : ''}`;
   }
 
+  let counts = null;
+  let countsImport = null;
   function paintTotals(all, can, apiT, tm, sm) {
     hasImport = ((tm?.drives || 0) + (tm?.charges || 0) + (tm?.updates || 0)) > 0;
     const vSrc = { teslamate: 'imported from TeslaMate', teslafi: 'imported from TeslaFi', teslamate_local: 'read live from local TeslaMate', teslafi_api: 'read live from TeslaFi',
       tesla_api: 'read from the Tesla API', owner: 'typed by the owner', build_match: 'same module builds as a named update' };
-    replace(totalsSlot, figures([
+    morphChildren(totalsSlot, figures([
       metric('Logged distance', all.distance_km, 'distance', { size: 'lg', cover: 'dbinfo.stat.logged_distance', explain: `The sum of every recorded drive. ${split(can.distance_km, apiT.distance_km, tm.distance_km, 'distance', all.distance_km)}` }),
       metric('Odometer', all.odometer_last_km, 'odometer', { size: 'lg', cover: 'dbinfo.stat.odometer', why: 'The car has not sent it yet.',
         explain: all.odometer_last_ms != null ? `Last read ${when(ctx, all.odometer_last_ms)}. The car sends it while driving.` : null }),
@@ -471,7 +514,10 @@ async function mountCar(ctx) {
       { kind: 'Charges', what: 'One row per charge', can: can.charges, api: apiT.charges, teslamate: tm.charges, total: all.charges },
       { kind: 'Software updates', what: 'One row per update', can: can.updates, api: apiT.updates, teslamate: tm.updates, total: all.updates },
     ];
-    const counts = dataTable(ctx, {
+    // the same columns as before: only the counts change, in the table already there
+    if (counts && countsImport === hasImport) { counts.setRows(rows); return; }
+    countsImport = hasImport;
+    counts = dataTable(ctx, {
       title: 'Rows kept', icon: 'book', rows, cls: 'hl-counts', csvName: 'rows kept', cover: 'dbinfo.table.row_counts',
       sort: { key: 'total', dir: 'desc' },
       note: `Exact counts, kept up to date as rows change (nothing is counted again on load). A row SMO and the Tesla API both saw counts in both columns${hasImport ? '; where imported and live history overlap, both are counted, and Shown is what the other pages list (one side)' : ''}.`,
@@ -629,7 +675,7 @@ async function mountCar(ctx) {
   async function reloadAll(say) {
     reloadBtn.disabled = true;
     try {
-      await Promise.all([loadHealth(), gapsTable.reload(), loadTotals(), loadStorage(), loadSignals()]);
+      await Promise.all([refreshHealth(), gapsTable.reload(), loadTotals(), loadStorage(), loadSignals()]);
       readAt = ctx.api.now(); paintReadAt();
       if (say && ctx.alive()) flash('Read again.', { kind: 'info' });
     } catch (e) {
@@ -637,15 +683,24 @@ async function mountCar(ctx) {
     } finally { reloadBtn.disabled = false; }
   }
 
-  ctx.events('rows', (ev) => {
-    if (ev?.data?.car !== cid) return;
-    loadHealth().catch(() => {});
+  // the car's rows changed (a burst of them, once it has passed): its gaps and totals, read again in place
+  onRows(ctx.api, { car: cid, waitMs: 1000, run: () => {
+    if (!ctx.alive()) return;
     gapsTable.reload();
     loadTotals().catch(() => {});
+  } });
+
+  let firstHealth = null;
+  const healthReady = new Promise((res, rej) => { firstHealth = { res, rej }; });
+  healthLive = follow(ctx.api, {
+    type: 'health', match: carOf(cid), pick: (d) => d.health, load: readHealth,
+    onValue: (v, how) => { if (!ctx.alive()) return; onHealth(v, how); firstHealth.res(); },
+    onError: (e) => firstHealth.rej(e),
+    pollMs: (hl) => (hl?.rebuild_pending ? 3000 : FALLBACK_POLL_MS),
   });
 
   try {
-    await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), gapsTable.ready, ovLoad, full?.ready]);
+    await Promise.all([healthReady, loadTotals(), loadStorage(), loadSignals(), gapsTable.ready, ovLoad, full?.ready]);
   } catch (e) {
     if (ctx.alive()) ctx.fail(e);
     return;
@@ -683,31 +738,52 @@ async function mountSystem(ctx) {
   /* ---------- storage */
   const storeSlot = h('div', { class: 'hl-sys-store' });
   const storePanel = panel({ title: 'Storage', icon: 'server', cls: 'hl-store', cover: ['dbinfo.section.database'] }, storeSlot);
-  async function loadStorage() {
-    if (!admin) { replace(storeSlot, storageLocked()); return; }
-    let st;
-    try { st = await ctx.api.get('system/storage'); } catch (e) {
-      if (e.status === 403) { replace(storeSlot, storageLocked()); return; }
-      throw e;
-    }
-    if (!ctx.alive()) return;
+  // the figures follow `storage` events, changed in place; the table by kind and the growth chart are drawn
+  // again only when their rows changed (live events, the storage read again every 30 s only while the stream is down)
+  let storeSig = null;
+  let figsEl = null;
+  let storeKinds = null;
+  let storeLive = null;
+  function loadStorage() {
+    if (!admin) { replace(storeSlot, storageLocked()); return Promise.resolve(); }
+    if (storeLive) return storeLive.refresh();
+    return new Promise((res, rej) => {
+      let first = true;
+      const done = (f) => { if (first) { first = false; f(); } };
+      storeLive = follow(ctx.api, {
+        type: 'storage', load: () => ctx.api.get('system/storage'), pollMs: 30000,
+        onValue: (st) => { if (!ctx.alive() || !st) return; paintStore(st).then(() => done(res), (e) => done(() => rej(e))); },
+        onError: (e) => {
+          if (e.status === 403) { replace(storeSlot, storageLocked()); done(res); return; }
+          done(() => rej(e));
+        },
+      });
+    });
+  }
+  async function paintStore(st) {
     const growth = st.growth || [];
     const perDay = st.growth_per_day_bytes ?? (growth.length ? growth.reduce((a, g) => a + g.bytes, 0) / growth.length : null);
     const used = st.total_bytes;
     const disk = used != null && st.free_bytes != null ? used + st.free_bytes : null;
-    const kt = kindsTable(ctx, st.kinds, st.total_bytes, { title: 'By kind', csvName: 'server storage by kind', coverIds: ['dbinfo.table.sizes'] });
+    const figs = figures([
+      metric('Data takes', bytes(used), null, { size: 'lg', cover: 'dbinfo.stat.total_size', explain: 'Every car’s data, imported history and offline maps together, as stored on disk.' }),
+      metric('Free on the disk', st.free_bytes != null ? bytes(st.free_bytes) : null, null, { size: 'lg', why: 'Not known.',
+        explain: disk ? `${format((used / disk) * 100, 'percent', { digits: 1 })} of ${bytes(disk)} is Sentry Mate’s data.` : null }),
+      metric('Grows by', perDay != null ? `${bytes(perDay)} a day` : null, null, { size: 'lg', why: 'Needs a few days of history.', explain: perDay != null ? `The mean of the last ${growth.length} full days.` : null }),
+      metric('Full in', st.full_in_days != null ? `${formatNumber(st.full_in_days)} days` : null, null, { size: 'lg', why: 'Not growing, or not known.',
+        explain: st.full_in_days != null ? (st.full_in_days > 3650 ? 'More than ten years at this rate: nothing to do.' : st.full_in_days < 60 ? 'Soon. Free space on the disk or move the data to a bigger one.' : 'Free space divided by the mean growth.') : null }),
+    ], 'hl-tot-figs');
+    // the same kinds and days: the figures and the sizes change in place, the chart stays
+    const sig = JSON.stringify([(st.kinds || []).map((k) => k.kind), growth]);
+    if (figsEl && sig === storeSig) { figsEl = morph(figsEl, figs); storeKinds?.update(st.kinds, st.total_bytes); return; }
+    storeSig = sig;
+    figsEl = figs;
+    const kt = storeKinds = kindsTable(ctx, st.kinds, st.total_bytes, { title: 'By kind', csvName: 'server storage by kind', coverIds: ['dbinfo.table.sizes'] });
     const chartBox = h('div', { class: 'chart hl-growth' });
     const readout = h('span', { class: 'val' }, 'Point at a day.');
     const growthCsv = csvButton({ onClick: () => downloadCsv(csvFilename('sentry-mate', 'storage growth'), growth, [column('Day', 'date'), column('Added (bytes)', 'bytes')]) });
     replace(storeSlot,
-      figures([
-        metric('Data takes', bytes(used), null, { size: 'lg', cover: 'dbinfo.stat.total_size', explain: 'Every car’s data, imported history and offline maps together, as stored on disk.' }),
-        metric('Free on the disk', st.free_bytes != null ? bytes(st.free_bytes) : null, null, { size: 'lg', why: 'Not known.',
-          explain: disk ? `${format((used / disk) * 100, 'percent', { digits: 1 })} of ${bytes(disk)} is Sentry Mate’s data.` : null }),
-        metric('Grows by', perDay != null ? `${bytes(perDay)} a day` : null, null, { size: 'lg', why: 'Needs a few days of history.', explain: perDay != null ? `The mean of the last ${growth.length} full days.` : null }),
-        metric('Full in', st.full_in_days != null ? `${formatNumber(st.full_in_days)} days` : null, null, { size: 'lg', why: 'Not growing, or not known.',
-          explain: st.full_in_days != null ? (st.full_in_days > 3650 ? 'More than ten years at this rate: nothing to do.' : st.full_in_days < 60 ? 'Soon. Free space on the disk or move the data to a bigger one.' : 'Free space divided by the mean growth.') : null }),
-      ], 'hl-tot-figs'),
+      figs,
       h('div', { class: 'hl-store-cols' },
         kt.el,
         h('section', { class: 'panel panel-pad hl-growth-panel', 'aria-label': 'Added per day' },

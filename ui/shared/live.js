@@ -89,7 +89,8 @@ export function follow(api, opts = {}) {
   }
   function status(info) {
     const up = info?.state === 'open';
-    if (up === live) { if (!up) schedule(); return; }
+    // still down (connecting, then reconnecting, again and again): a fallback read already planned keeps its time
+    if (up === live) { if (!up && !timer) schedule(); return; }
     live = up;
     onLive?.(up);
     // back up: what changed while it was down, read once; down: the fallback reads start

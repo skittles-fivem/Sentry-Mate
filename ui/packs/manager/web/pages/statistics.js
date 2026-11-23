@@ -691,7 +691,13 @@ export async function mount(ctx) {
   let timer = 0;
   ctx.onCleanup(() => clearTimeout(timer));
   // a drive or charge started or ended: the page is built again off screen and swapped in whole (no skeletons)
-  ctx.events('rows', () => { clearTimeout(timer); timer = setTimeout(() => ctx.refresh(), 1500); });
+  ctx.events('rows', (ev) => {
+    const d = ev?.data || {};
+    // only the cars shown, and only rows the totals count (drives, charges, updates)
+    if (d.car && !viewCars.includes(d.car)) return;
+    if (d.kinds && !d.kinds.some((k) => k === 'drives' || k === 'charges' || k === 'updates')) return;
+    clearTimeout(timer); timer = setTimeout(() => ctx.refresh(), 1500);
+  });
 
   await load();
 }
