@@ -102,7 +102,7 @@ docker run --rm \
   -e SENTRY_MATE_UI_BUNDLE=/cache/ui-bundle \
   -e SENTRY_MATE_BUILD="${BUILD_NUMBER:-}" -e SENTRY_MATE_COMMIT="${GIT_SHA:-}" -e SENTRY_MATE_DATE="${BUILD_DATE:-}" \
   "$image" \
-  sh -c 'apk info -e musl-dev >/dev/null && cargo build --release --locked -p sentry-mate --timings'
+  sh -c 'ls "$(rustc --print sysroot)"/lib/rustlib/*/bin "$(rustc --print sysroot)"/lib/rustlib/*/bin/gcc-ld 2>&1 | head; apk info -e musl-dev >/dev/null && cargo build --release --locked -p sentry-mate --timings'
 prune_incremental "$cache/target"
 # the slowest units of this build (the report itself is not kept)
 python3 - "$cache"/target/cargo-timings/cargo-timing.html <<'PY' || true

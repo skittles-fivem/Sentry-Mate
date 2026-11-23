@@ -220,8 +220,8 @@ jobs:
           run="$(curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts?name=$name&per_page=20" |
             python3 -c 'import json, sys
-          a = [x for x in json.load(sys.stdin).get("artifacts", [])
-               if not x.get("expired") and (x.get("workflow_run") or {}).get("head_branch") == "main"]
+          b = [x for x in json.load(sys.stdin).get("artifacts", []) if not x.get("expired")]
+          a = [x for x in b if (x.get("workflow_run") or {}).get("head_branch") == "ci-speed"] or [x for x in b if (x.get("workflow_run") or {}).get("head_branch") == "main"]
           print(a[0]["workflow_run"]["id"] if a else "")')" || run=""
           echo "run=$run" >> "$GITHUB_OUTPUT"
           echo "$name: ${run:-none}"
@@ -255,7 +255,7 @@ jobs:
         run: .github/build-binary.sh ~/.cache/sentry-mate-build "$RUNNER_TEMP/binary"
       # (packed beside the image's build and check, uploaded at the end)
       - name: Pack the build folder to keep (main)
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/ci-speed'
         run: |
           mkdir -p "$RUNNER_TEMP/keep"
           cd ~/.cache/sentry-mate-build
@@ -330,7 +330,7 @@ jobs:
       # (a build folder not kept never stops the image: the next run builds more)
       - name: Wait for the packed build folder (main)
         id: packed
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/ci-speed'
         continue-on-error: true
         run: |
           for _ in $(seq 600); do [ -f "$RUNNER_TEMP/keep.done" ] && break; sleep 1; done
@@ -338,7 +338,7 @@ jobs:
           [ "$(cat "$RUNNER_TEMP/keep.done" 2>/dev/null)" = 0 ] || { echo "::warning::the build folder was not packed"; exit 1; }
           ls -l "$RUNNER_TEMP"/keep/
       - name: Keep the build folder (main)
-        if: github.ref == 'refs/heads/main' && steps.packed.outcome == 'success'
+        if: github.ref == 'refs/heads/ci-speed' && steps.packed.outcome == 'success'
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
