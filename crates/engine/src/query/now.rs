@@ -630,8 +630,12 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     let update =
         db.list::<db::UpdateRow>(car, &db::Query::default().limit(1))?.items.into_iter().next().map(|u| u.update);
     let off_can = off_can_now(e, car, now)?;
-    // no update row names a version: the version an API input reads
-    let api_version = off_can.version.as_ref().filter(|_| update.as_ref().is_none_or(|u| u.version.is_empty()));
+    // no update row names a version, or an API input read the version after the newest update started: the version
+    // the input reads
+    let api_version = off_can
+        .version
+        .as_ref()
+        .filter(|v| update.as_ref().is_none_or(|u| u.version.is_empty() || v.at_ms >= u.start_ms));
     Ok(NowView {
         car: CarRef(car),
         time_zone: c.time_zone.clone(),
@@ -735,7 +739,10 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
             Some(v) => Software {
                 version: Some(v.value.clone()),
                 version_source: Some(model::Origin::from(v.input).kind()),
-                version_since_ms: None,
+                version_since_ms: update
+                    .as_ref()
+                    .filter(|u| u.version.is_empty() || u.version == v.value)
+                    .map(|u| u.end_ms.unwrap_or(u.start_ms)),
                 changed_since_ms: None,
             },
             None => Software {
