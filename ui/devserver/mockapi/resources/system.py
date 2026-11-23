@@ -542,6 +542,34 @@ def missing_count(req, cid):
     return missing_logs(req, cid)["count"]
 
 
+LOG_MS = 10 * MIN  # a made-up CAN Bridge log's length
+
+
+def log_checks(req, h, waiting):
+    """`log_checks` of `/cars/{car}/health`: every log as the CAN Bridge app is told it now, counted (one log per
+    ten minutes of history; a failed_check stretch is a run of failed logs, unsigned; waiting logs are pending)."""
+    out = {"verified": 0, "pending": waiting, "failed": 0, "mismatch": 0, "bad_signature": 0, "unsigned": 0,
+           "chain_break": 0, "failed_runs": [], "runs_total": 0}
+    if h is None or not h.segs:
+        return out
+    first = h.segs[0].start
+    for s in h.segs:
+        if s.start > req.now:
+            break
+        if s.kind == "gap" and s.reason == "failed_check":
+            end = min(s.end, req.now)
+            n = max(1, (end - s.start) // LOG_MS)
+            out["failed"] += n
+            out["unsigned"] += n
+            out["failed_runs"].append({"first_start_ms": s.start, "last_start_ms": s.start + (n - 1) * LOG_MS,
+                                       "logs": n, "mismatch": 0, "bad_signature": 0, "unsigned": n,
+                                       "chain_break": 0})
+    out["runs_total"] = len(out["failed_runs"])
+    out["failed_runs"] = out["failed_runs"][-200:]
+    out["verified"] = max(0, (req.now - first) // LOG_MS - out["failed"] - waiting)
+    return out
+
+
 def car_health(req):
     st = req.store
     cid = req.car
@@ -561,8 +589,8 @@ def car_health(req):
                 "last_upload_ms": it["now"]["received_ms"],
                 "last_log_trust": {"result": "failed" if "trust_failed" in reasons else "verified", "reason": None},
                 "keys": [], "chain_gaps": [], "dropped_frames": [], "unknown_spans": [], "unknown_ms": 0,
-                "logs_waiting": 0, "missing_logs": missing_logs(req, cid), "rebuild_pending": pending,
-                "gps_disagreement": None, "uploads_enabled": True}
+                "logs_waiting": 0, "missing_logs": missing_logs(req, cid), "log_checks": log_checks(req, None, 0),
+                "rebuild_pending": pending, "gps_disagreement": None, "uploads_enabled": True}
     n = now_object(req.app, cid, req.now)
     last_upload = n.get("received_ms")
     reasons = []
@@ -612,7 +640,8 @@ def car_health(req):
                  for k in keys],
         "chain_gaps": chain, "dropped_frames": dropped, "unknown_spans": unknown,
         "unknown_ms": sum(((u["end_ms"] or req.now) - u["start_ms"]) for u in unknown),
-        "logs_waiting": waiting, "missing_logs": missing, "rebuild_pending": pending, "gps_disagreement": None,
+        "logs_waiting": waiting, "missing_logs": missing, "log_checks": log_checks(req, h, waiting),
+        "rebuild_pending": pending, "gps_disagreement": None,
         "uploads_enabled": bool(toks),
         "from_ms": a, "to_ms": min(b, req.now),
     }

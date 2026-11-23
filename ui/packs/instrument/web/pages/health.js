@@ -38,6 +38,14 @@ import { deviceText, renameKeyButton } from './can-key-name.js';
 import { fullRebuild } from './full-rebuild.js';
 import { running, lines as frLines } from '../shared/fullrebuild.js';
 
+// every log of the car as the CAN Bridge app is told it now (`sentry-mate log-checks --car` prints the same)
+function logChecksText(lc, fmt) {
+  if (!lc) return '';
+  const why = [['mismatch', lc.mismatch], ['bad signature', lc.bad_signature], ['unsigned', lc.unsigned], ['chain break', lc.chain_break]]
+    .filter((x) => x[1]).map((x) => `${x[0]} ${fmt(x[1])}`).join(', ');
+  return `All logs as the CAN Bridge app is told: ${fmt(lc.verified)} verified, ${fmt(lc.pending)} pending, ${fmt(lc.failed)} failed${why ? ` (${why})` : ''}.`;
+}
+
 export const id = 'health';
 export const css = true;
 export const title = (ctx) => (ctx.car ? 'Data health and storage' : 'Server and storage');
@@ -317,7 +325,7 @@ async function mountCar(ctx) {
       }),
       metric('Last log check', tw ? h('span', { class: tw[1] === 'live' ? 'ok' : 'warn' }, tw[0]) : null, null, {
         why: 'No log checked yet.',
-        explain: tw ? `${tw[2]}${trust.reason ? ` Reason: ${TRUST_REASONS[trust.reason] || trust.reason}.` : ''}${trust.log_start_ms != null ? ` Log from ${when(ctx, trust.log_start_ms)}.` : ''}` : null,
+        explain: [tw ? `${tw[2]}${trust.reason ? ` Reason: ${TRUST_REASONS[trust.reason] || trust.reason}.` : ''}${trust.log_start_ms != null ? ` Log from ${when(ctx, trust.log_start_ms)}.` : ''}` : '', logChecksText(hl.log_checks, formatNumber)].filter(Boolean).join(' ') || null,
       }),
       metric('Logs waiting', hl.logs_waiting ?? null, 'count', { explain: hl.logs_waiting ? 'Arrived but not read: their key is not trusted yet.' : 'Every log that arrived has been read.' }),
       metric('Unknown time', hl.unknown_ms != null ? formatDuration(hl.unknown_ms) : null, null, {

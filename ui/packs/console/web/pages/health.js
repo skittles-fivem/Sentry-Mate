@@ -29,6 +29,14 @@ import { deviceText, renameBtn } from './device-name.js';
 import { fullRebuild } from '../core/fullrebuild.js';
 import * as fr from '../shared/fullrebuild.js';
 
+// every log of the car as the CAN Bridge app is told it now (`sentry-mate log-checks --car` prints the same)
+function logChecksText(lc, fmt) {
+  if (!lc) return '';
+  const why = [['mismatch', lc.mismatch], ['bad signature', lc.bad_signature], ['unsigned', lc.unsigned], ['chain break', lc.chain_break]]
+    .filter((x) => x[1]).map((x) => `${x[0]} ${fmt(x[1])}`).join(', ');
+  return `All logs as the CAN Bridge app is told: ${fmt(lc.verified)} verified, ${fmt(lc.pending)} pending, ${fmt(lc.failed)} failed${why ? ` (${why})` : ''}.`;
+}
+
 export const id = 'health';
 export const title = (ctx) => (ctx.car ? 'Health' : 'System');
 
@@ -187,6 +195,7 @@ async function mountCar(ctx) {
       kv([
         ['last upload', hl.last_upload_ms != null ? status(silent ? warn() : ok(), ago(hl.last_upload_ms), none(` ${formatDateTime(hl.last_upload_ms, tz, { now: ctx.api.now() })}`)) : status(warn(), 'no log yet')],
         ['log check', tw ? status(tag(tw[0], tw[1]), trust.reason ? none(TRUST_REASONS[trust.reason] || trust.reason) : none('signature and hash chain match')) : none('no log checked yet')],
+        ['all log checks', hl.log_checks ? status(hl.log_checks.failed ? warn() : ok(), `${formatNumber(hl.log_checks.failed)} failed`, none(` ${logChecksText(hl.log_checks, formatNumber).toLowerCase().replace(/, [\d,]+ failed/, '')}`)) : none(DASH)],
         ['logs waiting', status(hl.logs_waiting ? warn() : ok(), formatNumber(hl.logs_waiting ?? 0), none(hl.logs_waiting ? ' key not trusted yet' : ' every log was read'))],
         ['unknown time', status(hl.unknown_ms ? warn() : ok(), hl.unknown_ms != null ? formatDuration(hl.unknown_ms) : DASH, none(` in ${spans.length} ${spans.length === 1 ? 'span' : 'spans'}`))],
         ['chain gaps', status((hl.chain_gaps || []).length ? bad() : ok(), formatNumber((hl.chain_gaps || []).length))],
