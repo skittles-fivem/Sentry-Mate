@@ -45,6 +45,7 @@ const REASONS = {
   upload_silence: ['No log has arrived for a while', 'Check that the CAN Bridge has power and a network, and that its key still uploads. Nothing is lost while the car sleeps.', 'Check the keys'],
   trust_failed: ['The last log failed its check', 'Its signature or hash chain did not match, so its data is kept apart. Pair the bridge again if its key changed.', 'Pair again'],
   logs_waiting_trust: ['Logs wait for a key to be trusted', 'They came from a key nobody has approved yet. Approve it and they are read at once.', 'Approve the key'],
+  logs_missing: ['Logs missing on the server', 'The server lost some logs and asked the car to send them again. Nothing needs doing; see Missing on the server below.', null],
   rebuild_pending: ['Drives and charges are being rebuilt', 'This page reads again every few seconds until it is done. Nothing needs doing.', null],
 };
 const TRUST = { verified: ['Verified', 'ok'], unsigned: ['Unsigned', 'warn'], failed: ['Failed', 'bad'] };
@@ -105,7 +106,7 @@ async function mountCar(ctx) {
   // The signals of the newest log are decoded from the stored logs (the slowest answer by far): they load beside
   // the rest and fill their own tile when they are in. The other tiles wait in grey tiles of their size meanwhile.
   const sigP = ctx.api.list(`${base}/signals/latest`, {}, { limit: 500 }).all({ max: 5000 }).catch(() => []);
-  ctx.view.replaceChildren(bar, ghostTile(2, 'h3'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile('full', 'h3'));
+  ctx.view.replaceChildren(bar, ghostTile(2, 'h3'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile('full', 'h3'));
   const [hl, gaps, all, can, tm, upd, st, tapi, tst, tfi, tfst, tmst, ov] = await Promise.all([
     ctx.api.get(`${base}/health`, fullPeriod(ctx.params)),
     ctx.api.page(`${base}/gaps`, ctx.params, { limit: 40 }).catch(() => ({ items: [] })),
@@ -170,6 +171,20 @@ async function mountCar(ctx) {
       ctx.reload();
     } catch (e) { ctx.toast(errorWords(e).text, { kind: 'error' }); } finally { b.disabled = false; }
   }
+
+  /* logs the server should have but lost: asked of the car again, and those the car no longer has either */
+  const ml = hl.missing_logs || {};
+  const mn = ml.count || 0, mg = ml.gone || 0;
+  const plural = (n, one, many) => `${n0(n)} ${n === 1 ? one : many}`;
+  const missT = tile({ w: 2, title: 'Missing on the server', icon: 'server', cls: 'hl-miss' },
+    h('ul', { class: 'checks' },
+      checkRow({ name: 'Missing logs', sub: mn ? `Oldest from ${when(ml.oldest_ms)}${ml.found_ms != null ? `, found ${when(ml.found_ms)}` : ''}` : 'Every log the server recorded is here.',
+        word: mn ? plural(mn, 'log', 'logs') : 'None', level: mn ? 'warn' : 'ok' }),
+      checkRow({ name: 'Asked the car', sub: !mn ? 'Nothing to ask for.' : ml.asked ? `Asked the car to send them again${ml.asked_ms != null ? `, ${when(ml.asked_ms)}` : ''}.` : 'The server will ask the car to send them again.',
+        word: !mn ? '—' : ml.asked ? (ml.asked_ms != null ? ago(ml.asked_ms) : 'Asked') : 'Not yet', level: !mn ? 'off' : 'warn' }),
+      checkRow({ name: 'Lost for good', sub: mg ? `The car no longer has ${n0(mg)} of these either; oldest from ${when(ml.gone_oldest_ms)}. Their time shows as unknown time.` : 'The car still has every missing log.',
+        word: mg ? plural(mg, 'log', 'logs') : 'None', level: mg ? 'bad' : 'ok' })),
+    note(ml.scanned_ms != null ? `Last checked ${when(ml.scanned_ms)}. The server looks at start-up and once a day.` : 'Not checked yet. The server looks at start-up and once a day.'));
 
   /* the gaps and unknown time as a log */
   const lines = [
@@ -260,7 +275,7 @@ async function mountCar(ctx) {
     h('div', { class: 'page-bar' }, h('label', { class: 'search-pill' }, icon('search'), search), sortPills, count), listEl);
   listEl.append(plotGhost());
 
-  ctx.view.replaceChildren(bar, status, keysT, connTile(ctx, ov, car.id), teslaT, teslafiT, teslamateT, logT, rowsT, ...tots, storeT, daysT, sigHead, sigT);
+  ctx.view.replaceChildren(bar, status, keysT, missT, connTile(ctx, ov, car.id), teslaT, teslafiT, teslamateT, logT, rowsT, ...tots, storeT, daysT, sigHead, sigT);
   sig = await sigP;
   if (!ctx.alive()) return {};
   paint();
