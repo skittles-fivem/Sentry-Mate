@@ -159,7 +159,7 @@ fn parse_index(plain: &[u8], month: Month, label: &str, whole: bool) -> Result<I
     let table = b.get(1..1 + count * ENTRY).ok_or_else(|| damaged(label, "pack index cut short"))?;
     let mut offset = HEADER + 1 + count * ENTRY;
     let mut entries: Vec<Entry> = Vec::with_capacity(count);
-    for e in table.chunks_exact(ENTRY) {
+    for e in table.as_chunks::<ENTRY>().0 {
         let u32_at = |i: usize| u64::from(u32::from_be_bytes([e[i], e[i + 1], e[i + 2], e[i + 3]]));
         let u64_at = |i: usize| {
             let mut v = [0u8; 8];
