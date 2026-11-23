@@ -1616,6 +1616,11 @@ async fn start_web(
         site::spawn_upkeep(app.clone(), announced),
         web::resources::mqtt::spawn(app.clone()),
     ];
+    // the logs the server lost are looked for after the start and once a day (not after a move away: no uploads)
+    let mut tasks = tasks;
+    if !moved {
+        tasks.push(site::spawn_missing_scan(app.clone(), gate.clone()));
+    }
     // the Tesla API input reads cars only on a server that serves its data (not after a move away), and only for an
     // account an admin added: with none, nothing is started and nothing connects to Tesla
     let tesla = app.service::<web::resources::tesla::TeslaService>().ok();

@@ -48,6 +48,12 @@ pub const CODES: &[Code] = &[
     c("account-changed", A, Some("account"), "Changed an account"),
     c("account-created", A, Some("account"), "Added an account"),
     c("account-removed", A, Some("account"), "Removed an account"),
+    c(
+        "can-logs-missing",
+        CARS,
+        Some("car"),
+        "Found CAN logs missing on the server and asked the car to send them again",
+    ),
     c("car-changed", CARS, Some("car"), "Changed a car"),
     c("car-overlap", CARS, Some("car"), "Chose how a car's overlapping data is read"),
     c("car-rebuild", CARS, Some("car"), "Rebuilt a car's history"),
