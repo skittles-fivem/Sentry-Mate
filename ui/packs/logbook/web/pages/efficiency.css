@@ -160,6 +160,6 @@
 /* day axes: each label starts at its day's midnight, with a short tick there */
 .page-efficiency .ef-x-days span, .page-efficiency .ef-x-days span:first-child, .page-efficiency .ef-x-days span:last-child { left: round(var(--x), 1px); transform: none; padding-left: round(0.25rem, var(--e)); border-left: 1px solid var(--ink-3); }
 
-/* Not a scroll anchor: pointing at its charts rewrites the readouts in it, and the browser then scrolled the page
-   by a pixel or two each time, so the page crept up while the mouse moved. */
-.page-efficiency .ef-temps { overflow-anchor: none; }
+/* No scroll anchor on this page: pointing at its charts rewrites the readouts beside them, and the browser then
+   scrolled the page by a pixel or two each time, so the page crept while the mouse moved. */
+.page-efficiency, .page-efficiency * { overflow-anchor: none; }
