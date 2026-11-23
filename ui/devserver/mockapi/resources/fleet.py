@@ -713,7 +713,7 @@ def create_token(req):
         st.tokens.setdefault(req.car, []).append(tok)
     st.record(req.account, "token-created", f"token:{req.car}:{tok['id']}",
               f"Made the upload token {tok['id']} for {st.car_meta(req.car)['name']}.")
-    out = dict(tok)
+    out = _tok_out(st, tok)
     out["secret"] = "smu_" + secrets.token_urlsafe(24)
     out["app"] = bridge_fields(req, out["secret"])
     out["car"] = req.car
@@ -753,7 +753,7 @@ def create_new_token(req):
     with st.lock:
         st.new_car_tokens.append(tok)
     st.record(req.account, "token-created", f"token:{tok['id']}", f"Made the upload token {tok['id']} for a new car.")
-    out = dict(tok, car=None)
+    out = _tok_out(st, tok, car=None)
     out["secret"] = "smu_" + secrets.token_urlsafe(24)
     out["app"] = bridge_fields(req, out["secret"])
     out["_created"] = True
