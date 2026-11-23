@@ -110,6 +110,9 @@ def featured_specs():
                 "roof": ("Glass", "can"), "spoiler": ("None", "can"), "right_hand_drive": (False, "can"),
                 "map_region": ("North America", "can"), "supercharging_access": ("Paid", "can")},
         updates=[(-341, "2025.44.25", "owner", "fingerprint"), (-17, None, None, "fingerprint")],
+        # the versions a live input started reporting: (input, version, update seq, hours after that update's end).
+        # The owner's local TeslaMate: its first says the typed one (typed wins), its second names the newest update.
+        input_versions=[("teslamate_local", "2025.44.25", 1, 6.0), ("teslamate_local", "2026.44.1", 2, 4.0)],
         first_version=("2025.32.6", "owner"),
         special={"road_trip": (-95, -90), "leak_start": -21},
         gaps=[
@@ -136,6 +139,9 @@ def featured_specs():
                  (-860, "2024.20.9", "teslamate", "teslamate"), (-800, "2024.32.7", "teslamate", "teslamate"),
                  (-625, "2025.8.3", "teslamate", "teslamate"), (-511, "2025.20.6", "teslamate", "teslamate"),
                  (-308, "2025.45.8", "build_match", "fingerprint")],
+        # TeslaFi's polls first said 2025.45.8 eight days after the update: too late to name it (24 h), but it is
+        # the version TeslaFi reads now, so the current version comes from TeslaFi
+        input_versions=[("teslafi_api", "2025.45.8", 6, 8 * 24.0)],
         first_version=("2024.14.11", "teslamate"),
         special={"can_from": -398, "teslamate_until": -393, "silent_from_h": 55.0,
                  "teslafi_from": -430, "teslafi_until": -423},

@@ -53,31 +53,116 @@ def last_sample(h, tv):
     return None, None, None
 
 
+# How long after a fingerprint update a live input's new version still names it, and the inputs' order.
+INPUT_NAME_WINDOW_MS = 24 * HOUR
+INPUT_RANK = ("tesla_api", "teslafi_api", "teslamate_local")
+
+
+def input_versions(h):
+    """[(input, version, first_ms)] in time order: each version a live input started reporting (made up, from the
+    car spec's `input_versions`; a record stays whatever the input's state is now)."""
+    got = getattr(h, "_input_versions", None)
+    if got is None:
+        from .dataset.segments import update_id
+        car = h.car
+        got = []
+        for inp, ver, seq, after_h in getattr(car, "input_versions", None) or ():
+            u = h.by_id.get(update_id(car.n, seq))
+            if u is not None:
+                got.append((inp, ver, u.end + int(after_h * HOUR)))
+        got.sort(key=lambda x: x[2])
+        h._input_versions = got
+    return got
+
+
+def input_named(h, from_ms, to_ms):
+    """(version, input) a live input started reporting from `from_ms` until a day after `to_ms` that is not the one
+    it said before `from_ms`, from the inputs in their order (the Tesla API, TeslaFi, local TeslaMate); else None."""
+    seen = input_versions(h)
+    until = to_ms + INPUT_NAME_WINDOW_MS
+    for inp in sorted({s[0] for s in seen}, key=INPUT_RANK.index):
+        mine = [s for s in seen if s[0] == inp]
+        before = next((s[1] for s in reversed(mine) if s[2] < from_ms), None)
+        hit = next((s for s in mine if from_ms <= s[2] <= until), None)
+        if hit is not None and hit[1] != before:
+            return hit[1], inp
+    return None
+
+
+def teslamate_local_on(app, car_id):
+    """Whether the owner's local TeslaMate is read for this car now: on, not paused, no trouble, the car matched."""
+    t = getattr(app.store, "teslamate", None) or {}
+    if not t.get("enabled") or t.get("paused") or t.get("mqtt_error") or t.get("mqtt_quiet"):
+        return False
+    return any(c.get("match") == car_id for c in t.get("cars") or [])
+
+
+def live_version(app, h, t):
+    """(version, read at, input) the car's live input reads now, or None: the newest version that input reported
+    by t, while the input is read."""
+    seen = [s for s in input_versions(h) if s[2] <= t]
+    for inp in INPUT_RANK:
+        mine = [s for s in seen if s[0] == inp]
+        if not mine:
+            continue
+        if inp == "teslafi_api" and offcan.api_input(app, h.car.id) == "teslafi_api":
+            return mine[-1][1], offcan.teslafi_read_ms(t), inp
+        if inp == "teslamate_local" and teslamate_local_on(app, h.car.id):
+            return mine[-1][1], t - 30_000, inp
+    return None
+
+
 def software_at(app, h, t):
-    car = h.car
-    ver, src = car.first_version
-    since = h.first_ms
-    changed = None
-    for u in h.updates:
-        if u.start > t:
-            break
-        v, vs = update_version(app, u)
-        if v:
-            ver, src, since, changed = v, vs, u.end, None
+    """The car's software at t (crates/engine query/software.rs `current`): the version typed on the newest update;
+    else the live input's when it read it after the newest update started; else the newest update's; else the car
+    settings' typed version."""
+    ups = [u for u in h.updates if u.start <= t]
+    newest = ups[-1] if ups else None
+    nv, ns = update_version(app, newest) if newest else (None, None)
+    end = newest.end if newest else None
+    changed = end if newest and not nv else None
+    if newest and ns == "owner":
+        return {"version": nv, "version_source": "owner", "version_since_ms": end, "changed_since_ms": None}
+    live = live_version(app, h, t)
+    if live and (newest is None or live[1] >= newest.start):
+        v, _at, inp = live
+        if newest and (nv is None or nv == v):
+            since = end
         else:
-            changed = u.end
-    typed = (app.store.car_settings.get(car.id) or {}).get("software_version_typed")
+            since = next((s[2] for s in reversed(input_versions(h)) if s[0] == inp and s[1] == v), None)
+        return {"version": v, "version_source": inp, "version_since_ms": since, "changed_since_ms": None}
+    if nv:
+        return {"version": nv, "version_source": ns, "version_since_ms": end, "changed_since_ms": None}
+    if newest is None:
+        ver, src = h.car.first_version
+    else:
+        ver, src = None, None
+    typed = (app.store.car_settings.get(h.car.id) or {}).get("software_version_typed")
     if typed:
         ver, src = typed, "owner"
-    return {"version": ver, "version_source": src, "version_since_ms": since, "changed_since_ms": changed}
+    return {"version": ver, "version_source": src, "version_since_ms": end if newest else h.first_ms,
+            "changed_since_ms": changed}
+
+
+def is_fingerprint(u):
+    return u.source == "can" and u.detected_by == "fingerprint"
 
 
 def update_version(app, u):
-    """(version, version_source) of an update: the owner's, else one learned from the same build, else the dataset's."""
+    """(version, version_source) of an update (crates/engine query/software.rs `version_of`): the owner's typed one
+    (a name an owner cleared stays cleared); for one found from fingerprints, else the version a live input started
+    reporting around it, else one learned from the same build; else the dataset's."""
     st = app.store
-    own = st.update_versions.get(u.id)
-    if own is not None:
-        return own, "owner"
+    if u.id in st.update_versions:
+        own = st.update_versions[u.id]
+        return (own, "owner") if own is not None else (None, None)
+    if u.version_source == "owner":
+        return u.version, "owner"
+    if is_fingerprint(u):
+        h = app.ds.history(u.car.id)
+        named = input_named(h, u.start, u.end) if h is not None else None
+        if named:
+            return named
     learned = st.builds.get(u.build_id)
     if learned and learned["from_update"] != u.id:
         return learned["version"], "build_match"
@@ -124,6 +209,8 @@ def now_object(app, car_id, t):
             inputs.append({**S.ref("tesla_api"), "last_ms": at - 45_000})
         elif offcan.api_input(app, car_id) == "teslafi_api":
             inputs.append({**S.ref("teslafi_api"), "last_ms": offcan.teslafi_read_ms(t)})
+        if teslamate_local_on(app, car_id):
+            inputs.append({**S.ref("teslamate_local"), "last_ms": t - 30_000})
     obj["inputs"] = inputs
     obj["off_can"] = offcan.off_can(app, car_id, t, obj)
     return obj

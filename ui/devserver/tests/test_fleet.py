@@ -176,8 +176,9 @@ class Settings(ServerCase):
         self.assertEqual(set(e["fields"]), {"warranty_threshold_pct", "software_version_typed"})
         up = self.c.json("PATCH", "/api/v1/cars/c3/settings", {"version": s["version"], "software_version_typed": "2026.38.4"})
         self.assertEqual(up["version"], s["version"] + 1)
+        # the typed setting is the last resort: Atlas's TeslaFi reads its version
         sw = self.c.get("/api/v1/cars/c3/now")["software"]
-        self.assertEqual((sw["version"], sw["version_source"]), ("2026.38.4", "owner"))
+        self.assertEqual((sw["version"], sw["version_source"]), ("2025.45.8", "teslafi_api"))
 
 
 class TokensAndKeys(ServerCase):
