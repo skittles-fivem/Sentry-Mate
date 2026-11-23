@@ -208,6 +208,26 @@ const KEYS: &[&str] = &[
     "last_car",
 ];
 
+/// A preference in words, for the audit log ("Changed: text size, units").
+fn key_words(key: &str) -> &'static str {
+    match key {
+        "units" => "units",
+        "range" => "range",
+        "theme" => "theme",
+        "language" => "language",
+        "interface_size" => "text size",
+        "follow_screen" => "follow the screen",
+        "map_colors" => "map colors",
+        "map_style" => "map style",
+        "ui_pack" => "design",
+        "car_order" => "car order",
+        "pinned_cars" => "pinned cars",
+        "main_car" => "main car",
+        "last_car" => "last car shown",
+        _ => "other",
+    }
+}
+
 fn check_cars(
     app: &AppState,
     v: &Viewer,
@@ -364,15 +384,26 @@ async fn patch_prefs(
                     }
                 }
                 if let Some(p) = pack_change {
-                    app.accounts.set_ui_pack(viewer.signed_in(), p.as_deref())?;
+                    // its own entry: `ui-pack-chosen`, naming the pack
+                    let shown = p.clone().unwrap_or_else(|| app.packs.chosen());
+                    let name = app.packs.meta(&shown).map_or_else(|| shown.clone(), |m| m.name);
+                    let said = match &p {
+                        Some(_) => format!("Chose the {name} design."),
+                        None => format!("Went back to the design chosen for everyone ({name})."),
+                    };
+                    app.accounts.set_ui_pack_said(viewer.signed_in(), p.as_deref(), &shown, &said)?;
                 }
                 Ok(())
             })?;
             view(app, id, viewer.cars())
         })
         .await?;
-    let summary = format!("Changed: {}.", changed.join(", "));
-    if app.prefs.needs_audit(v.id(), &summary, app.now()) {
+    // the pack has its own entry (`ui-pack-chosen`)
+    let mut words: Vec<&str> = changed.iter().filter(|k| *k != "ui_pack").map(|k| key_words(k)).collect();
+    words.sort_unstable();
+    words.dedup();
+    let summary = format!("Changed: {}.", words.join(", "));
+    if !words.is_empty() && app.prefs.needs_audit(v.id(), &summary, app.now()) {
         v.audit(&app, "preferences-changed", Some(&format!("account:{}", ids::account(v.id()))), &summary).await?;
     } else {
         v.mark_audited();

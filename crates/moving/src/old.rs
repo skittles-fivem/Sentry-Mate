@@ -308,6 +308,8 @@ pub enum Cancelled {
     },
     /// A move under way ended (the new server is told `410 cancelled`).
     Ended {
+        /// The move code's id.
+        id: String,
         to: String,
     },
 }
@@ -328,7 +330,7 @@ pub fn cancel(data: &Path, vault: &Vault) -> Result<Cancelled, Error> {
     }
     crate::import::remove_file(&path(data, CODE))?;
     Ok(match c.claimed {
-        Some(cl) => Cancelled::Ended { to: cl.from },
+        Some(cl) => Cancelled::Ended { id: c.id, to: cl.from },
         None => Cancelled::Revoked { id: c.id },
     })
 }
@@ -1804,7 +1806,7 @@ mod tests {
         write(&data, &v, CODE, &c).unwrap();
         // the finish has authorized the request (it holds `c`) when the owner cancels
         let what = cancel(&data, &v).unwrap();
-        assert_eq!(what, Cancelled::Ended { to: "192.0.2.10".into() });
+        assert!(matches!(what, Cancelled::Ended { ref to, .. } if to == "192.0.2.10"), "{what:?}");
         let committed = o.commit(&c, &session);
         assert!(committed.is_err(), "the commit wrote the moved state for a move the owner had cancelled");
         assert!(!is_moved(&data), "the old server now refuses uploads although `move cancel` said they go on");

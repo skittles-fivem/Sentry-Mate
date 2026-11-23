@@ -929,7 +929,7 @@ async fn upload(State(app): State<AppState>, Admin(v): Admin, req: Request) -> A
             app.packs.install(checked, now)
         })
         .await?;
-    let summary = format!("Installed UI pack {} {} (zip SHA-256 {}).", meta.name, meta.version, meta.sha256);
+    let summary = format!("Added the {} design, version {} (zip SHA-256 {}).", meta.name, meta.version, meta.sha256);
     v.audit(&app, "ui-pack-installed", Some(&format!("ui-pack:{}", meta.id)), &summary).await?;
     Ok((StatusCode::CREATED, Json(meta.json(&app.packs.chosen()))).into_response())
 }
@@ -950,14 +950,9 @@ async fn choose(
     reconfirm(&app, &v, Some(&body), &headers).await?;
     let id2 = id.clone();
     app.blocking(move |app| app.packs.choose(&id2)).await?;
-    let sha = app.packs.meta(&id).map(|m| m.sha256).unwrap_or_default();
-    v.audit(
-        &app,
-        "ui-pack-chosen",
-        Some(&format!("ui-pack:{id}")),
-        &format!("The UI pack for everyone (SHA-256 {sha})."),
-    )
-    .await?;
+    let (name, sha) = app.packs.meta(&id).map(|m| (m.name, m.sha256)).unwrap_or_else(|| (id.clone(), String::new()));
+    let summary = format!("Chose the {name} design for everyone (SHA-256 {sha}).");
+    v.audit(&app, "ui-pack-chosen", Some(&format!("ui-pack:{id}")), &summary).await?;
     let chosen = app.packs.chosen();
     let items: Vec<Value> = app.packs.list().iter().map(|m| m.json(&chosen)).collect();
     let mut res = Json(json!({ "items": items, "next": null, "chosen": chosen, "default": app.packs.default_id() }))
@@ -980,7 +975,7 @@ async fn remove(
     reconfirm(&app, &v, Some(&body), &headers).await?;
     let id2 = id.clone();
     let meta = app.blocking(move |app| app.packs.remove(&id2)).await?;
-    let summary = format!("Removed UI pack {} {} (zip SHA-256 {}).", meta.name, meta.version, meta.sha256);
+    let summary = format!("Removed the {} design, version {} (zip SHA-256 {}).", meta.name, meta.version, meta.sha256);
     v.audit(&app, "ui-pack-removed", Some(&format!("ui-pack:{id}")), &summary).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }

@@ -48,6 +48,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod accounts_admin;
+pub mod audit_codes;
 pub mod auth;
 pub mod csv;
 pub mod ctx;
@@ -312,6 +313,22 @@ impl AppState {
             .get(&std::any::TypeId::of::<T>())
             .and_then(|s| s.clone().downcast::<T>().ok())
             .ok_or_else(|| ApiError::unavailable(std::any::type_name::<T>()))
+    }
+
+    /// A car's name for a sentence (the audit log's): its own name, else `car c3`. Reads the database: call it off
+    /// the async threads ([`AppState::blocking`]) where it can wait.
+    pub fn car_name(&self, car: CarId) -> String {
+        self.service::<engine::Engine>()
+            .ok()
+            .and_then(|e| e.db().car(car).ok().flatten())
+            .map(|c| c.name)
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| format!("car {}", ids::car(car)))
+    }
+
+    /// [`AppState::car_name`] from an async handler.
+    pub async fn car_name_now(&self, car: CarId) -> String {
+        self.blocking(move |app| Ok(app.car_name(car))).await.unwrap_or_else(|_| format!("car {}", ids::car(car)))
     }
 
     /// Whether a car exists (not whether someone may see it: [`Viewer::sees`]).
