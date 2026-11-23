@@ -13,7 +13,8 @@
 // (document.documentElement.dataset.ready = '<page id>'), and reports per page and size: coverage items
 // that are missing, marked on the wrong page or unknown; console errors; page errors; Content Security
 // Policy violations; failed /api requests; requests to other hosts; horizontal overflow; visible text
-// under 10 CSS px. It saves a screenshot of each. Exit code 0 only when every checked page passes.
+// under 10 CSS px. It saves a screenshot of each. Exit code 0 only when every checked page passes. Before it
+// measures it scrolls through the page and back, so parts drawn only when they come near the screen are there.
 // With --pixel it also measures whether the page is pixel centred and correct (ui/tools/pixel.js): text and
 // icons off centre, rows and columns that just miss, borders off device pixels, text cut off, sticking out,
 // overlapping or hidden, sideways scroll; and saves a screenshot with the bad boxes outlined.
@@ -567,12 +568,82 @@ function pageChecks({ minPx, maxElements }) {
 
 // ------------------------------------------------------------------ one page at one size
 
+// Runs in the page after ready (and after the --stable watch): scrolls the page down about a screen at a time to its
+// end and back, so blocks that a page draws only when they come near the screen (charts, maps and lists below the
+// fold, ui/shared/lazy.js) are drawn before the page is measured and photographed. The page scrolls in the window,
+// else in its tallest box that scrolls up and down. It also notes the layout top of every block before and after:
+// a block that moved meanwhile (a part drawn on the way that had no room kept for it) is listed.
+async function scrollThrough({ maxBlocks }) {
+  const frames = (n) => new Promise((r) => { const f = () => (n-- > 0 ? requestAnimationFrame(f) : r()); f(); });
+  const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+  const SCROLLS = new Set(['auto', 'scroll', 'overlay']);
+  const de = document.scrollingElement || document.documentElement;
+  let box = de.scrollHeight > de.clientHeight + 1 ? de : null;
+  if (!box) {
+    let best = 0;
+    for (const e of document.querySelectorAll('body *')) {
+      if (e.scrollHeight > e.clientHeight + 1 && e.clientHeight > best && SCROLLS.has(getComputedStyle(e).overflowY)) { best = e.clientHeight; box = e; }
+    }
+  }
+  if (!box) return { steps: 0, moved: [] };
+  const sel = (e) => {
+    const parts = [];
+    for (let x = e; x && x !== document.body && parts.length < 4; x = x.parentElement) {
+      let k = x.localName;
+      if (x.id) k += '#' + x.id;
+      else if (typeof x.className === 'string' && x.className.trim()) k += '.' + x.className.trim().split(/\s+/)[0];
+      parts.unshift(k);
+    }
+    return parts.join(' > ');
+  };
+  const layoutTop = (e) => { let y = 0; for (let x = e; x; x = x.offsetParent) y += x.offsetTop; return y; };
+  const tops = () => {
+    const m = new Map();
+    for (const e of document.querySelectorAll('body *')) {
+      if (m.size >= maxBlocks) break;
+      if (!(e instanceof HTMLElement) || e.offsetWidth < 40 || e.offsetHeight < 8) continue;
+      if (e.closest('svg, canvas, .maplibregl-map, [data-stable-ignore], [data-offstage], [inert]')) continue;
+      const cs = getComputedStyle(e);
+      if (cs.position === 'fixed' || cs.position === 'sticky') continue;
+      m.set(e, layoutTop(e));
+    }
+    return m;
+  };
+  const before = tops();
+  const start = box.scrollTop;
+  let steps = 0;
+  for (; steps < 300; steps++) {
+    const at = box.scrollTop;
+    box.scrollTo({ top: at + Math.max(100, Math.round(box.clientHeight * 0.8)), behavior: 'instant' });
+    await frames(2);
+    await pause(40);
+    if (box.scrollTop <= at + 1) break;
+  }
+  await frames(2);
+  await pause(250);
+  // back where it was, so blocks in sticky bars are measured where they were
+  box.scrollTo({ top: start, behavior: 'instant' });
+  await frames(2);
+  const moved = [];
+  const after = tops();
+  for (const [e, y] of before) {
+    if (!e.isConnected || !after.has(e)) continue;
+    const dy = after.get(e) - y;
+    if (Math.abs(dy) <= 1) continue;
+    // only the outermost of blocks that moved together
+    let p = e.parentElement, inner = false;
+    for (; p && p !== document.body; p = p.parentElement) if (before.has(p) && after.has(p) && Math.abs(after.get(p) - before.get(p) - dy) <= 1) { inner = true; break; }
+    if (!inner) moved.push({ selector: sel(e), px: Math.round(dy) });
+  }
+  return { steps, moved: moved.slice(0, 100), movedCount: moved.length };
+}
+
 async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
   const t0 = Date.now();
   const res = {
     size: size.label, ready: { ok: false, value: null, ms: null, landed: null, reason: null },
     missing: [], foreign: [], unknown: [], console: [], pageErrors: [], csp: [], apiFailures: [], outside: [],
-    overflow: null, smallText: null, pixel: null, stable: null, hover: null, shot: null, fullShot: null, tiles: 0, notes: [], loadError: null,
+    overflow: null, smallText: null, pixel: null, stable: null, scrolled: null, hover: null, shot: null, fullShot: null, tiles: 0, notes: [], loadError: null,
     _tokens: new Set(), _dropped: {},
   };
   if (entry.problem) { res.loadError = entry.problem; res.ready.reason = 'not_loaded'; return finish(); }
@@ -692,6 +763,19 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
       push(res, 'apiFailures', { method: r.method(), url: clip(u.pathname + u.search, 300), status: null, code: null, error: err });
     });
 
+    // wait until no request has been in flight for QUIET_MS (at most --idle-timeout-ms)
+    const idle = async (what = '') => {
+      const idleStart = Date.now();
+      while (!(inflight.size === 0 && Date.now() - lastBusy >= QUIET_MS)) {
+        if (Date.now() - idleStart >= o.idleTimeoutMs) {
+          const busy = [...inflight].slice(0, 3).map((r) => shortUrl(r.url(), origin)).join(', ');
+          res.notes.push(`the network was still busy${what} after ${(o.idleTimeoutMs / 1000).toFixed(0)} s (${plural(inflight.size, 'request')} open: ${busy})`);
+          break;
+        }
+        await sleep(50);
+      }
+    };
+
     // navigate and wait for data-ready
     const navStart = Date.now();
     try {
@@ -717,15 +801,7 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
         await sleep(100);
       }
       // then wait until no request has been in flight for QUIET_MS
-      const idleStart = Date.now();
-      while (!(inflight.size === 0 && Date.now() - lastBusy >= QUIET_MS)) {
-        if (Date.now() - idleStart >= o.idleTimeoutMs) {
-          const busy = [...inflight].slice(0, 3).map((r) => shortUrl(r.url(), origin)).join(', ');
-          res.notes.push(`the network was still busy after ${(o.idleTimeoutMs / 1000).toFixed(0)} s (${plural(inflight.size, 'request')} open: ${busy})`);
-          break;
-        }
-        await sleep(50);
-      }
+      await idle();
       if (popups) await within(5000, page.bringToFront(), 'bringing the page to the front').catch(() => {});
       await within(2000, page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))), 'two animation frames').catch(() => {});
     }
@@ -762,6 +838,25 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
         if (!st.eventCount && !watch.api) res.notes.push(`nothing was updated during the ${o.stableSeconds} s watch (no event and no /api request)`);
       } catch (e) {
         res.stable = { error: clip(e.message.split('\n')[0], 200) };
+      }
+    }
+
+    // scroll through the page and back, so the parts drawn only when they come near the screen are there for the
+    // checks and screenshots below; then wait for what they loaded
+    if (!res.loadError && res.ready.ok) {
+      try {
+        res.scrolled = await within(120000, page.evaluate(scrollThrough, { maxBlocks: 20000 }), 'scrolling through the page');
+        if (res.scrolled.steps) {
+          await idle(' after scrolling through the page');
+          await within(2000, page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))), 'two animation frames').catch(() => {});
+        }
+        // with --stable, a block that moved while the page was scrolled through is a moved block too
+        if (res.stable && !res.stable.error && res.scrolled.movedCount) {
+          res.stable.scrollMoved = res.scrolled.moved;
+          res.stable.scrollMovedCount = res.scrolled.movedCount;
+        }
+      } catch (e) {
+        res.notes.push(`could not scroll through the page: ${clip(e.message.split('\n')[0], 200)}`);
       }
     }
 
@@ -863,7 +958,7 @@ function failures(r, o) {
 
 // A watched page fails when its layout shifted after ready, a block moved, or something came and went more than once.
 function stableFails(st) {
-  return !st || !!st.error || st.shift > STABLE_MAX_SHIFT || st.movedCount > 0 || st.togglingCount > 0;
+  return !st || !!st.error || st.shift > STABLE_MAX_SHIFT || st.movedCount > 0 || st.togglingCount > 0 || st.scrollMovedCount > 0;
 }
 
 // Missing, foreign and unknown ids. A page's own items count when they are on any of its routes at that
@@ -1062,6 +1157,8 @@ function stableDetails(st) {
     d.push(`stable: moved ${m.selector} by ${m.px > 0 ? '+' : ''}${m.px} px, ${m.times}x (at ${ms(m.atMs)})${m.cause ? ` after ${m.cause}` : ''}`);
   }
   if (st.movedCount > STABLE_LINES) d.push(`stable: and ${st.movedCount - STABLE_LINES} more moved blocks (--json)`);
+  for (const m of (st.scrollMoved || []).slice(0, STABLE_LINES)) d.push(`stable: moved ${m.selector} by ${m.px > 0 ? '+' : ''}${m.px} px while the page was scrolled through (a part drawn on the way had no room kept)`);
+  if (st.scrollMovedCount > STABLE_LINES) d.push(`stable: and ${st.scrollMovedCount - STABLE_LINES} more blocks moved while scrolling (--json)`);
   for (const t of st.toggling.slice(0, STABLE_LINES)) {
     const how = t.first === 'appeared' ? 'appeared and went away again' : 'went away and came back';
     d.push(`stable: flicker ${t.selector}${t.text ? ` "${clip(t.text, 30)}"` : ''} ${how} (${t.times} changes, at ${ms(t.atMs)})`);
