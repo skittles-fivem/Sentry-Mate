@@ -22,7 +22,7 @@
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { loadPage, reloadPage } from '../shared/build.js';
-import { h, replace, ready as markReady, failed as markFailed, unready, setTitle as docTitle, on } from '../shared/dom.js';
+import { h, replace, holdScroll, ready as markReady, failed as markFailed, unready, setTitle as docTitle, on } from '../shared/dom.js';
 import { resolvePeriod, periodParams } from '../shared/time.js';
 import { pageInfo } from './pages.js';
 import * as frame from './frame.js';
@@ -163,6 +163,7 @@ function stageView(view, finishOld) {
     // the control that had the focus: the same place in the new page gets it back
     const path = [];
     for (let e = document.activeElement; e && e !== view && view.contains(e); e = e.parentElement) path.unshift([...e.parentElement.children].indexOf(e));
+    holdScroll(view);
     view.replaceChildren(...nodes);
     setStale(false); // the page built again has checked answers only
     takeOld()?.();
@@ -213,6 +214,7 @@ function firstStage(view, onCommit) {
     if (done) return;
     done = true;
     clearTimeout(maxT);
+    holdScroll(view);
     view.replaceChildren(...stage.childNodes);
     stage.remove();
     onCommit();
