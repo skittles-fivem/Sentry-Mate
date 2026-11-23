@@ -71,6 +71,8 @@ struct SocCheck {
 #[derive(Debug)]
 pub struct SampleBuilder {
     table: &'static Table,
+    /// The DBC set the table was made from.
+    dbc: &'static dbc::Dbc,
     params: SampleParams,
     /// Per wanted signal: its value as kept, and when (µs).
     slots: Vec<Option<(f64, u64)>>,
@@ -87,6 +89,7 @@ impl SampleBuilder {
         let table = table(profile);
         SampleBuilder {
             table,
+            dbc: profile.dbc(),
             params,
             slots: vec![None; table.cands.len()],
             second: None,
@@ -121,8 +124,27 @@ impl SampleBuilder {
     /// A frame and every value the decoder gets from it.
     pub fn feed(&mut self, decoder: &mut dbc::Decoder, frame: &logfmt::Frame) {
         self.frame(frame);
-        for (sig, v) in decoder.decode(frame) {
-            self.value(frame.time_us, &sig.series, v);
+        if !std::ptr::eq(decoder.dbc(), self.dbc) {
+            // a decoder of another DBC set: by the series' names
+            for (sig, v) in decoder.decode(frame) {
+                self.value(frame.time_us, &sig.series, v);
+            }
+            return;
+        }
+        // only the signals a sample is made of are taken out of the frame (most messages have none)
+        let Some((msg, only_internal)) = decoder.message(frame) else { return };
+        let Some(wanted) = self.table.by_message.get(&msg.id) else { return };
+        let bytes = frame.payload();
+        let mux_value = msg.mux_value(bytes);
+        for w in wanted {
+            if only_internal && !w.internal {
+                continue;
+            }
+            if let Some(value) = msg.signals[w.signal].value_in(bytes, mux_value) {
+                for &i in &w.cands {
+                    self.slots[i] = self.table.cands[i].read(value).map(|v| (v, frame.time_us));
+                }
+            }
         }
     }
 

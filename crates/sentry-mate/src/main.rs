@@ -41,6 +41,8 @@ mod keys;
 mod migrate;
 #[cfg(test)]
 mod perf;
+#[cfg(test)]
+mod perf_engine;
 #[cfg(any(test, feature = "dev-seed"))]
 mod seed;
 mod site;

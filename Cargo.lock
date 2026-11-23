@@ -2364,6 +2364,7 @@ dependencies = [
  "model",
  "serde",
  "serde_json",
+ "synth",
 ]
 
 [[package]]
