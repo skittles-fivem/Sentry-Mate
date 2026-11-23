@@ -30,8 +30,9 @@ export const GAP_WORDS = Object.freeze({
 });
 export const PURPOSES = Object.freeze({ business: 'Business', private: 'Private', commute: 'Commute' });
 
-/** A drive's start or end in words: its label, saved place or short address. */
-export const endLabel = (e) => (e && (e.label || (e.place && e.place.name) || (typeof e.address === 'string' ? e.address : e.address && e.address.short))) || 'Unnamed spot';
+/** A drive's start or end in words: its label, saved place, short address, else its coordinates. */
+export const endLabel = (e) => (e && (e.label || (e.place && e.place.name) || (typeof e.address === 'string' ? e.address : e.address && e.address.short)))
+  || (e && e.lat != null && e.lon != null ? `${Number(e.lat).toFixed(4)}, ${Number(e.lon).toFixed(4)}` : 'Unnamed spot');
 /** The line under a place name: the street or area, when it says more than the name. */
 export function endSub(e) {
   if (!e) return null;
@@ -50,7 +51,7 @@ export function placeHref(e) {
 export function placeLink(e, { cover = null, still = false } = {}) {
   const href = still ? null : placeHref(e);
   const text = endLabel(e);
-  return href ? h('a', { class: 'place-link', href, cover, title: e.place ? `Edit ${text}` : 'Name this place' }, text) : h('span', { class: 'place-link', cover }, text);
+  return href ? h('a', { class: 'place-link', href, cover, title: e.place ? `Edit ${text}` : 'Save this spot as a place' }, text) : h('span', { class: 'place-link', cover }, text);
 }
 
 /** 'Today', 'Yesterday', a weekday within the week, else 'Tue, Nov 3'. */

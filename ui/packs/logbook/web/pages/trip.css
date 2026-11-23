@@ -108,6 +108,12 @@
 .cost-link.is-missing, .trip-charges .is-missing { color: var(--rust); }
 .cost-ro { white-space: nowrap; }
 .cost-edit { margin-left: round(0.375rem, var(--e)); font: 500 var(--small-2) var(--sans); --LH: normal; line-height: var(--LH); color: var(--accent); }
+/* "change" / "set" shows on the row under the pointer or with the keyboard in it; always on touch screens and phones */
+.trip-charges .cost-edit { visibility: hidden; }
+.trip-charges tr:hover .cost-edit, .trip-charges tr:focus-within .cost-edit { visibility: visible; }
+@media (hover: none) { .trip-charges .cost-edit { visibility: visible; } }
+@container page (width < 50rem) { .trip-charges .cost-edit { visibility: visible; } }
+.trip-soc { white-space: nowrap; }
 .pw { padding: round(0.0625rem, var(--e)) round(0.375rem, var(--e)); border-radius: round(0.25rem, var(--e)); }
 .pw-slow { background: var(--paper-sunk); }
 .pw-mid { background: var(--ochre-wash); }

@@ -17,7 +17,7 @@ import { openCarSwitcher } from '../core/carswitch.js';
 import { openPeriodPicker } from '../core/period.js';
 import { emptyState, errorWords } from '../core/states.js';
 import { when, ago, statePill, spotText, dateTime } from '../core/fmt.js';
-import { srcMark, srcText, isImported, hasKind } from '../core/source.js';
+import { srcText, srcTitle, isImported, hasKind } from '../core/source.js';
 
 export const id = 'timeline';
 export const css = true;
@@ -107,7 +107,8 @@ export function timelineRow(r, { car, tz, compact = false }) {
   detail = bits.filter(Boolean).join(' · ');
   const awake = r.kind === 'parked' && r.awake_reasons?.length ? r.awake_reasons.map((x) => AWAKE_WORD[x] || x.replace(/_/g, ' ')) : null;
   const t0 = formatTime(r.start_ms, tz), t1 = end ? formatTime(end, tz) : 'now';
-  return h('div', { class: ['tl-item', isImported(r) && !hasKind(r, 'smo') && !hasKind(r, 'tesla_api') && 'is-imported'], dataset: { state: k.state, kind: r.kind } },
+  // where the entry's data came from is its hover title, not a line of its own
+  return h('div', { class: ['tl-item', isImported(r) && !hasKind(r, 'smo') && !hasKind(r, 'tesla_api') && 'is-imported'], dataset: { state: k.state, kind: r.kind }, title: srcTitle(r) || null },
     h('a', { class: 'tl-time', href: tripHref, title: 'Open this span as a trip' },
       compact ? [h('span', null, t0), h('span', { class: 'faint' }, ` – ${t1}`)] : [h('span', { class: 'tl-day' }, formatDate(r.start_ms, tz, { weekday: true, year: false })), h('span', null, `${t0} – ${t1}`)]),
     h('span', { class: 'tl-rail', 'aria-hidden': 'true' }, h('i')),
@@ -116,8 +117,7 @@ export function timelineRow(r, { car, tz, compact = false }) {
         detailHref ? h('a', { class: 'tl-kind', href: detailHref, title: `Open the ${k.word.toLowerCase()}` }, icon(k.icon, 'ico--sm'), k.word) : h('span', { class: 'tl-kind' }, icon(k.icon, 'ico--sm'), k.word),
         h('span', { class: 'tl-what' }, title)),
       detail ? h('span', { class: 'detail' }, detail) : null,
-      awake ? h('span', { class: 'detail tl-awake' }, `Kept awake by ${awake.join(', ')}`) : null,
-      r.sources?.length || r.source ? h('span', { class: 'detail tl-src' }, srcMark(r, { short: compact, estimated: true })) : null),
+      awake ? h('span', { class: 'detail tl-awake' }, `Kept awake by ${awake.join(', ')}`) : null),
     h('span', { class: 'tl-dur' }, r.duration_ms != null ? formatDuration(r.duration_ms) : end ? formatDuration(end - r.start_ms) : ''),
     detailHref ? h('a', { class: 'row-chev', href: detailHref, 'aria-label': `Open the ${k.word.toLowerCase()}` }, icon('chev-r')) : h('span', { class: 'row-chev' }));
 }
@@ -284,9 +284,7 @@ export async function mount(ctx) {
     ovNote.hidden = false;
   };
   function overlapNote() {
-    const where = h('p', { class: 'note tl-legend-note tl-src-note' }, 'Each entry says where its data came from: ', h('span', { class: 'src-key' },
-      srcMark({ sources: [{ kind: 'smo', label: 'SMO (the car\'s CAN Bridge)' }] }), srcMark({ sources: [{ kind: 'tesla_api', label: 'the Tesla API' }] }), srcMark({ sources: [{ kind: 'import', site: 'teslamate', label: 'an import (TeslaMate)' }] })),
-      car.sources?.length ? h('span', { class: 'tl-car-src' }, h('span', null, `${car.name}, all its history:`), srcMark(car)) : null);
+    const where = h('p', { class: 'note tl-legend-note tl-src-note', title: car.sources?.length ? `${car.name}, all its history: ${srcText(car)}` : null }, 'Hover an entry to see where its data came from; its own page has the details.');
     return [where, ovNote];
   }
 

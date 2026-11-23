@@ -428,6 +428,14 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .tbl tbody tr.is-sel { background: var(--sel); }
 .tbl tbody tr.is-sel > :first-child { color: var(--accent); }
 .tbl tfoot td { border-top: 1px solid var(--rule-2); border-bottom: 0; font-weight: 600; }
+/* a row's own action (charges: [set] a cost) shows on row hover or keyboard focus, always on touch screens */
+.tbl .row-act { opacity: 0; }
+.tbl tbody tr:hover .row-act, .tbl tbody tr:focus-within .row-act, .tbl .row-act:focus-visible { opacity: 1; }
+@media (hover: none), (max-width: 860px) { .tbl .row-act { opacity: 1; } }
+/* low-value columns (outside temperature, odometer) only where the table's box is wide; they stay in the CSV */
+.tbl-scroll { container-type: inline-size; }
+.tbl .wide-col { display: none; }
+@container (min-width: 1700px) { .tbl .wide-col { display: table-cell; } }
 .tbl-ph { display: none; }
 /* words a phone row needs because it has no column heads */
 .ph-k { display: none; }

@@ -25,6 +25,7 @@ import { icon, empty as emptyView, errorView, loadingBlock } from './ui.js';
  *   csv: { filename, columns } | false, // client CSV columns (shared/csv.js column()); server CSV needs nothing
  *   empty: () => node,                // what to say when nothing matches (say which filter removed it all)
  *   rowAttrs(row) -> attrs,           // a class, a data- value, a cover id for a row
+ *   rowTitle(row) -> text,            // the row's hover title: where its data came from, kept out of the cells
  *   keep(row) -> bool,                // rows loaded but not shown (and not counted), such as sold cars
  *   onRows(items, page),              // after each page arrives (summaries in the answer: page.summary)
  *   onSort({ key, dir }),             // a column head was clicked, before the rows load again in that order
@@ -146,7 +147,8 @@ export function dataTable(ctx, opts) {
   }
   const rowOf = new WeakMap();
   function rowEl(r) {
-    const attrs = opts.rowAttrs ? opts.rowAttrs(r) || {} : {};
+    const attrs = { ...(opts.rowAttrs ? opts.rowAttrs(r) || {} : {}) };
+    if (opts.rowTitle && attrs.title == null) attrs.title = opts.rowTitle(r) || null;
     const tr = h('tr', attrs, columns.map((c) => {
       const v = c.cell ? c.cell(r) : r[c.key];
       return h(c.th ? 'th' : 'td', { class: [c.cls, { num: c.num }], scope: c.th ? 'row' : null }, v == null ? '—' : v);

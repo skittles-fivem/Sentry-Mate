@@ -14,6 +14,7 @@
 //     columns: [{ key, label, num, sort, firstDir, render(row), value(row), title, cover, ph, desk, cls, total(page, rows) }],
 //     sort: { key, dir }, onSort({ key, dir }),
 //     rowHref(row), empty(), onPage(page), csv: true | false, csvName,
+//     rowTitle(row),                             the row's hover title (where its data came from: kept out of the cells)
 //     keep(row),                                 an API list: only the rows it says yes to are shown (and counted)
 //     filters,                                   controls put above the table
 //     autoMore: true, moreLabel,                 an API list: the next page also loads when the end of the table
@@ -115,7 +116,7 @@ export function table(ctx, opts) {
 
   function rowEl(r) {
     const href = rowHref ? rowHref(r) : null;
-    const tr = h('tr', { dataset: { row: '', href: href || null } },
+    const tr = h('tr', { dataset: { row: '', href: href || null }, title: opts.rowTitle ? opts.rowTitle(r) || null : null },
       columns.map((c) => h('td', { class: colCls(c) }, cell(c, r))),
       h('td', { class: 'tbl-ph', colspan: String(columns.length) },
         h('div', { class: 'tbl-ph-main' }, phCols.main.map((c) => h('span', { class: 'tbl-ph-m' }, cell(c, r)))),

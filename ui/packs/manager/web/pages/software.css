@@ -31,7 +31,7 @@
 /* sub-lines and helper lines use the pack's small text (.note, .btn--sm), never less */
 .sw-page .cell-text .sub, .sw-page .form-hint { font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-3); }
 .sw-ver { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); font-weight: 500; font-variant-numeric: tabular-nums; }
-.sw-ver.is-unknown { color: var(--text-2); font-weight: 400; }
+.sw-ver.is-unknown { color: var(--text-2); font-weight: 400; flex-wrap: wrap; row-gap: round(0.25rem, var(--e)); }
 .sw-ver .link .ico { width: round(0.8125rem, var(--e)); height: round(0.8125rem, var(--e)); vertical-align: round(-0.0625em, var(--e)); }
 .sw-edit { margin-top: round(0.25rem, var(--e)); }
 .sw-fleet .is-current { font-weight: 600; }
@@ -50,6 +50,8 @@
 
 /* the Version column: the module list wraps so all eight columns fit the panel */
 .sw-table .sw-col-ver { min-width: round(12rem, var(--e)); max-width: round(16rem, var(--e)); }
+.sw-table { container: sw-list / inline-size; }
+@container sw-list (max-width: 66rem) { :root:not([data-phone]) .sw-table .sw-col-ver { max-width: round(13rem, var(--e)); } }
 /* long headers take two lines instead of widening their columns */
 .sw-table th { white-space: normal; --LH: round(calc(1.25 * 1em), 2px); height: auto; padding-top: round(0.5rem, var(--e)); padding-bottom: round(0.5rem, var(--e)); }
 .sw-table th .tbl-sort { display: inline; }

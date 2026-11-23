@@ -21,13 +21,15 @@ import { errorWords } from './states.js';
  *   onSort(sort),                      called when the person sorts by a header ({ key, dir })
  *   rowHref(row),                       a row opens this page
  *   rowClass(row),                      more classes for a row (a string, or null)
+ *   rowTitle(row),                      the row's hover title (e.g. where its data came from), or null
  *   empty(),                            what to show when there are no rows (say why)
  *   csv: true | false | { filename, columns: [{ label, value(row) }], all }   (true: the server's CSV;
  *                                       an object: CSV from the columns' csv specs, all: every page of an API list)
  *   side,                               more elements in the bar (filters, a note)
  *   onPage(page),                       after each API page (the first holds summary or totals)
  *   cover,                              item ids for the table panel
- *   note, noteCover,                    a line under the bar that explains the table (and its item ids)
+ *   note, noteCover, noteMore,          a line under the bar that explains the table (and its item ids);
+ *                                       noteMore: the longer explanation, as the line's hover title
  *   autoMore,                           an API list: the next page loads as the foot scrolls into view
  *                                       (IntersectionObserver); the button stays, for the keyboard
  *   moreLabel,                          the button's words (default "Show more")
@@ -65,7 +67,7 @@ export function dataTable(ctx, opts) {
   const moreBtn = h('button', { class: 'btn btn--sm', type: 'button', onclick: () => more() }, icon('chev-d', 'ico--sm'), opts.moreLabel || 'Show more');
   const footText = h('span');
   const foot = h('div', { class: 'tbl-foot', hidden: true }, footText, moreBtn);
-  const noteEl = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null }, opts.note) : null;
+  const noteEl = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null, title: opts.noteMore || null }, opts.note) : null;
   const boxEnd = opts.box ? h('div', { class: 'tbl-box-end', 'aria-hidden': 'true' }) : null;
   const scroller = h('div', opts.box
     ? { class: 'tbl-scroll tbl-box', tabindex: '0', role: 'region', 'aria-label': typeof opts.box === 'string' ? opts.box : opts.label || opts.title || null }
@@ -158,7 +160,7 @@ export function dataTable(ctx, opts) {
 
   function rowEl(r) {
     const href = rowHref ? rowHref(r) : null;
-    const tr = h('tr', { class: [href && 'is-link', opts.rowClass?.(r)] }, columns.map((c) => h('td', { class: [c.num && 'is-num', c.cls], dataset: { label: labelText(c) || null } }, c.render ? c.render(r) : r[c.key] ?? '—')));
+    const tr = h('tr', { class: [href && 'is-link', opts.rowClass?.(r)], title: opts.rowTitle?.(r) || null }, columns.map((c) => h('td', { class: [c.num && 'is-num', c.cls], dataset: { label: labelText(c) || null } }, c.render ? c.render(r) : r[c.key] ?? '—')));
     if (href) {
       tr.addEventListener('click', (e) => {
         if (e.defaultPrevented || e.target.closest('a, button, input, select, label')) return;

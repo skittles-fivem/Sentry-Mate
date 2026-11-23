@@ -9,6 +9,7 @@
 //   srcMark(row, { short: true })   the same with short words ("SMO + Tesla API"), the full line as its title
 //   srcText(row)           the line as text (for CSV and titles)
 //   srcShort(row)          the short words as text
+//   srcTitle(row)          a list row's hover title (the line, and when its energy is estimated)
 //   estimated(row)         true when the row's energy is an estimate (Tesla API data alone: energy_basis estimated)
 //   SOURCE_FILTER          the options of a source filter: every source, SMO, Tesla API, TeslaFi, imported (each site)
 
@@ -80,6 +81,14 @@ export function srcMark(row, { short = false, estimated: est = false, typed = nu
     h('span', { class: 'src-marks', 'aria-hidden': 'true' }, kinds.map((k) => h('i', { class: `src-m src-m--${k}` }))),
     h('span', { class: 'src-text' }, short ? srcShort(row) : full),
     showEst ? h('span', { class: 'src-est' }, short ? 'est.' : 'energy estimated') : null);
+}
+
+/** A list row's hover title: where its data came from (and that its energy is estimated), never shown in the row
+ * itself; the row's own page shows the sources. Empty when the row has no sources. */
+export function srcTitle(row) {
+  const line = srcText(row);
+  if (!line) return '';
+  return `${line}${estimated(row) ? '. Energy is estimated from the Tesla API\'s power readings.' : ''}`;
 }
 
 /** "estimated" words for an energy figure of a Tesla-only row, else null. */

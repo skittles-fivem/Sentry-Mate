@@ -208,7 +208,7 @@ async function mountList(ctx) {
       { key: 'position', label: 'Centre (lat, lon)', cover: 'web.geofences.list.col-position',
         cell: (p) => h('span', { class: 'pl-coords', title: coordsText([p.lon, p.lat]) }, h('span', null, fix5(p.lat)), h('span', null, fix5(p.lon))) },
       { key: 'radius', label: `Radius (${unitLabel('length')})`, num: true, cover: 'web.geofences.list.col-radius', cell: (p) => q(p.radius_m, 'length') },
-      { key: 'price', label: 'Charging price', cell: (p) => (p.price ? h('span', { class: 'pl-price' }, priceText(p.price)) : h('span', { class: 'cell-sub', title: 'Charges here get no cost unless one is typed on the charge' }, 'No price')) },
+      { key: 'price', label: 'Charging price', cell: (p) => (p.price ? h('span', { class: 'pl-price' }, priceText(p.price)) : h('span', { class: 'cell-sub', title: 'No price: charges here get no cost unless one is typed on the charge' }, '—')) },
       { key: 'use', label: 'Used by', sort: 'visits', firstDir: 'desc', cell: use, hint: 'Drives that start or end here, charges here and stops here' },
       { key: 'last', label: 'Last visit', sort: 'last_visit', firstDir: 'desc',
         cls: 'pl-nowrap', cell: (p) => (p.last_visit_ms ? h('time', { datetime: new Date(p.last_visit_ms).toISOString(), title: `${zoneLabel(p.time_zone)}` }, formatDate(p.last_visit_ms, p.time_zone, { now: api.now() })) : h('span', { class: 'cell-sub' }, 'Never')) },
