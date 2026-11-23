@@ -955,3 +955,40 @@ fn local_teslamates_energy_added_and_range_are_its_own_and_the_tesla_api_wins() 
         assert_eq!(v["charge"]["added_kwh"], serde_json::Value::Null);
     });
 }
+
+/// A stretch of fixes far east at the same latitude (a longitude 16.78 degrees off, one bit of the field): no map,
+/// distance, drive end or stop shows it, and the fixes left out are counted.
+#[test]
+fn fixes_far_away_at_the_same_latitude_are_never_drawn_or_counted() {
+    rt().block_on(async {
+        let k = kit();
+        let car = api_car(&k);
+        let trip = Trip { a: 600, b: 1800 };
+        let mut v = api_readings(0, 2400, 10, trip);
+        // the drive's last two minutes: the longitude is off (a straight line east and a hook there)
+        for x in v.iter_mut().filter(|x| (1680..1800).contains(&((x.t_ms - T0) / 1000))) {
+            x.lon = x.lon.map(|l| l + 16.777216);
+        }
+        k.engine.api_points(car, v, vec![online(0, 2400)]);
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        assert!(k.engine.stats().gps_fixes_dropped >= 12, "{:?}", k.engine.stats());
+
+        let far = |lon: f64| (lon - LON).abs() > 1.0;
+        let ds = drives(&k, car);
+        assert_eq!(ds.len(), 1, "{ds:#?}");
+        let d = &ds[0];
+        assert!((d.distance_km.unwrap() - 12.0).abs() < 0.4, "{d:?}");
+        let id: u64 = d.id.parse().unwrap();
+        let track = query::drives::track(&k.engine, car, id).unwrap();
+        let pts: Vec<_> = track.stretches.iter().flatten().collect();
+        assert!(pts.len() >= 100, "{}", pts.len());
+        assert!(!pts.iter().any(|p| far(p.lon)), "the drive's map");
+        let all = query::travel::tracks(&k.engine, &[car], &Period::all(), None).unwrap();
+        assert!(all.drives.iter().flat_map(|t| &t.lon).all(|&l| !far(l)), "the travel map");
+        let q = query::travel::VisitsQuery { period: Period::all(), ..Default::default() };
+        let visits = query::travel::visits(&k.engine, &[car], &q, &Paging::default()).unwrap();
+        assert!(!visits.items.is_empty());
+        assert!(visits.items.iter().all(|v| !far(v.lon) && (v.lat - LAT).abs() < 0.01), "the stops");
+    });
+}
