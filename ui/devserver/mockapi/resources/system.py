@@ -923,6 +923,12 @@ PACK_SHARE, PACK_RATIO = 0.8, 0.82
 SHRINK = {"series.can.snapshots": 0.18, "series.teslamate.snapshots": 0.12, "curves.can.snapshots": 0.1,
           "rows.snapshots": 0.06, "kv.engine": 0.22, "kv.day-parts": 0.3}
 COMPACT_STEPS = ("logs", "series", "records")
+COMPACT_UNIT = {"logs": "days", "series": "days", "records": "records"}
+STALL_MS = 120_000
+# the progress fields of a pass that is not running
+_IDLE_PROGRESS = {"phase": None, "step_number": None, "steps": 3, "unit": None, "pass_saved_bytes": None,
+                  "rate_per_s": None, "eta_ms": None, "progress_ms": None, "stalled": False, "unit_errors": 0,
+                  "last_unit_error": None}
 
 
 def _detail_base(req):
@@ -995,7 +1001,7 @@ def _compaction(req, advance=False):
         # the last pass the server ran by itself: three hours before the start, 42 s long
         t0 = req.app.cfg.now_ms - 3 * HOUR - 17 * MIN
         c = st.compaction = {"status": "idle", "automatic": True, "started_ms": t0, "finished_ms": t0 + 42_000,
-                             "step": None, "done": 0, "total": 0, "last_saved_bytes": 9_512_345,
+                             "step": None, "done": 0, "total": 0, **_IDLE_PROGRESS, "last_saved_bytes": 9_512_345,
                              "saved_bytes": int(system_storage(req)["kinds"][0]["bytes"] * 0.31 * (1 - PACK_RATIO)),
                              "error": None, "_passes": 0, "_tick": 0}
     if advance and c["status"] == "running":
@@ -1003,17 +1009,29 @@ def _compaction(req, advance=False):
         cats = {x["key"]: x for x in _detail_categories(req, c["_passes"])}
         totals = {"logs": cats["logs.raw"]["files"], "series": cats["series.can.snapshots"]["files"],
                   "records": cats["kv.engine"]["files"] + cats["kv.day-parts"]["files"]}
-        # the notches: logs counted and half done, logs done, series, records, finished
+        # the notches: logs counted and half done, logs done, series, records, finished; each notch is told as
+        # 40 s of work (whatever the clock does), so rate and estimate read the same on every run
         plan = [("logs", 0.45), ("logs", 1.0), ("series", 0.6), ("records", 0.5)]
         if c["_tick"] <= len(plan):
             step, share = plan[c["_tick"] - 1]
-            c.update(step=step, total=totals[step], done=int(totals[step] * share))
+            total = totals[step]
+            done = int(total * share)
+            before = _disk_total(req, c["_passes"])
+            freed = before - _disk_total(req, c["_passes"] + 1)
+            part = (c["_tick"] - 1 + share) / len(plan)
+            rate = done / 40.0 if done else None
+            c.update(step=step, total=total, done=done, phase="packing", step_number=COMPACT_STEPS.index(step) + 1,
+                     unit=COMPACT_UNIT[step], pass_saved_bytes=int(freed * part) if c["_passes"] == 0 else 0,
+                     rate_per_s=rate, eta_ms=int((total - done) / rate * 1000) if rate else None,
+                     progress_ms=req.now - 5_000, stalled=False)
         else:
             before = _disk_total(req, c["_passes"])
             c["_passes"] += 1
             saved = before - _disk_total(req, c["_passes"])
             c.update(status="idle", step=None, done=0, total=0, finished_ms=req.now, last_saved_bytes=saved,
-                     saved_bytes=c["saved_bytes"] + saved)
+                     saved_bytes=c["saved_bytes"] + saved, **_IDLE_PROGRESS)
+    if c["status"] == "running" and c.get("progress_ms") is not None:
+        c["stalled"] = req.now - c["progress_ms"] >= STALL_MS
     return {k: v for k, v in c.items() if not k.startswith("_")}
 
 
@@ -1035,7 +1053,9 @@ def storage_compact(req):
         c = req.store.compaction
         started = c["status"] != "running"
         if started:
-            c.update(status="running", started_ms=req.now, step="logs", done=0, total=0, error=None, _tick=0)
+            c.update(status="running", started_ms=req.now, step="logs", done=0, total=0, error=None, _tick=0,
+                     **{**_IDLE_PROGRESS, "phase": "counting", "step_number": 1, "unit": "days",
+                        "pass_saved_bytes": 0, "progress_ms": req.now})
         comp = _compaction(req)
     if started:
         req.store.record(req.account, "storage-compacted", "server:storage", "Started packing the stored data (Compact now).")
