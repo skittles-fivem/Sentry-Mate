@@ -88,16 +88,17 @@ class Settings(ServerCase):
         m = self.c.get("/api/v1/maps/config")
         self.assertEqual(m["tiles"]["mode"], "online")
         self.assertIn("{z}", m["tiles"]["online_template"])
-        # the ready-made sources, satellite (the default) first, each with its credit, zoom and terms
-        self.assertEqual(m["tiles"]["presets"][0]["id"], "satellite")
+        # the ready-made sources (the street map, the default, and satellite), each with its credit, zoom and terms
+        self.assertEqual(m["tiles"]["preset"], "osm")
+        self.assertTrue({"osm", "satellite"} <= {p["id"] for p in m["tiles"]["presets"]})
         for p in m["tiles"]["presets"]:
             self.assertEqual(set(p), {"id", "name", "short", "kind", "url", "attribution", "max_zoom", "terms",
                                       "overlays", "region"})
         # online tiles: the pages send their origin as Referer (OpenStreetMap blocks tiles without one), the API none
         st, hd, _ = self.c.request("GET", "/")
         self.assertEqual(hd["referrer-policy"], "strict-origin")
-        # the satellite default and the OpenStreetMap style viewers may switch to
-        self.assertIn("img-src 'self' data: blob: https://server.arcgisonline.com https://tile.openstreetmap.org;",
+        # the OpenStreetMap default and the satellite style viewers may switch to
+        self.assertIn("img-src 'self' data: blob: https://tile.openstreetmap.org https://server.arcgisonline.com;",
                       hd["content-security-policy"])
         st, hd, _ = self.c.request("GET", "/api/v1/me")
         self.assertEqual(hd["referrer-policy"], "no-referrer")

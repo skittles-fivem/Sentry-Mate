@@ -3,7 +3,7 @@
 // mapTile(ctx, box, opts) draws a soft map inside a rounded box: the tiles from the server's map settings
 // (GET /api/v1/maps/config, read by shared/maptiles.js: the offline map file Sentry Mate serves, raster or a
 // Protomaps vector file in a plain style, else the online tile server the owner turned on, else none: only the
-// routes and pins on a plain ground under a "No map tiles yet" note, with a one-click satellite map switch for
+// routes and pins on a plain ground under a "No map tiles yet" note, with a one-click online map switch for
 // an admin), routes in the pack's series colours and round pins. Tiles that fail show their cause. The light
 // theme shows the tile server's own colours; the dark one dims them (never inverted, so streets, labels and
 // water stay readable) unless the person chose original colours. Satellite photos are never dimmed, and over
